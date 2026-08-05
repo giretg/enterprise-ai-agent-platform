@@ -8,6 +8,7 @@ loadEnv({ path: resolve(process.cwd(), '.env') })
 const devServerEnv: Record<string, string> = {
   NODE_ENV: 'development',
   FILE_EDITOR_STUB: 'true',
+  FILE_EDITOR_STUB_MEMORY: 'true',
   DEV_AUTH_ROLE: 'operator',
   CLERK_SECRET_KEY: '',
   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: '',

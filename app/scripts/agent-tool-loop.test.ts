@@ -20,6 +20,12 @@ import type {
   ToolBrokerInvokeInput,
   ToolBrokerInvokeResult,
 } from '../src/domain/tool-broker/tool-broker-service'
+import {
+  buildToolModelText,
+  validateToolOutput,
+} from '../src/domain/tool-broker/tool-output-contract'
+import { resolveToolOutputContract } from '../src/domain/tool-broker/tool-output-contracts'
+import { isSideEffectingTool } from '../src/domain/tool-broker/tool-trust-registry'
 import type { AuditRepository, ToolBrokerRepository } from '../src/repositories/interfaces'
 
 let failures = 0
@@ -76,6 +82,12 @@ function fakeToolBroker(record: ToolBrokerInvokeInput[]): ToolBrokerService {
   } as unknown as ToolBrokerService
 }
 
+/**
+ * Stub Tool Broker. issue #195 óta a broker KÉT csatornát ad (`modelText` +
+ * `machineData`), és a kimenetel kötelező mező — a stub ugyanazokkal a
+ * tiszta függvényekkel állítja elő, mint az éles keret, hogy a tool-loop a
+ * valódi alakot lássa.
+ */
 function fakeToolBrokerResult(
   record: ToolBrokerInvokeInput[],
   result: Record<string, unknown>,
@@ -84,9 +96,28 @@ function fakeToolBrokerResult(
   return {
     invoke: async (input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> => {
       record.push(input)
+      const verdict = validateToolOutput({
+        tool: input.tool,
+        output: result,
+        contract: resolveToolOutputContract(input.tool),
+        sideEffecting: isSideEffectingTool(input.tool),
+      })
+      const modelChannel = buildToolModelText({
+        tool: input.tool,
+        trust,
+        outcome: verdict.outcome,
+        reason: verdict.reason,
+        effect: verdict.effect,
+        machineData: result,
+      })
       return {
         denied: false,
         trust,
+        outcome: verdict.outcome,
+        outcomeReason: verdict.reason,
+        effect: verdict.effect,
+        modelText: modelChannel.modelText,
+        machineData: result,
         result,
         resultMeta: {},
         latencyMs: 1,
@@ -95,9 +126,32 @@ function fakeToolBrokerResult(
   } as unknown as ToolBrokerService
 }
 
-const fakeToolCaps = {
-  findConnectorsForAgent: async () => [],
-} as unknown as ToolBrokerRepository
+/**
+ * issue #180 WP-3 — a loop saját (nem brokeren átmenő) eszközhívásai is
+ * `tool_calls` sort írnak, ezért a fake caps-nak ismernie kell a `createToolCall`
+ * metódust. A rögzített sorokat a hívó a `recordedToolCalls` tömbben nézi meg.
+ */
+type RecordedToolCall = {
+  toolName: string
+  status: string
+  policyDecision: string | null
+  argsMeta: Record<string, unknown>
+  resultMeta: Record<string, unknown> | null
+  conversationId: string | null
+  ticketId: string | null
+}
+
+function fakeToolCapsRecording(record: RecordedToolCall[]): ToolBrokerRepository {
+  return {
+    findConnectorsForAgent: async () => [],
+    createToolCall: async (data: Record<string, unknown>) => {
+      record.push(data as unknown as RecordedToolCall)
+      return data as never
+    },
+  } as unknown as ToolBrokerRepository
+}
+
+const fakeToolCaps = fakeToolCapsRecording([])
 
 function fakeAudit(record: Array<Record<string, unknown>>): AuditRepository {
   return {
@@ -492,7 +546,13 @@ async function main() {
         ],
         gwCalls,
       ),
-      toolBroker: fakeToolBrokerResult(brokerCalls, { customers: largeRows }, 'external_untrusted'),
+      // issue #195 — a http_api_get kimeneti szerződése a valódi alakot kéri
+      // (ok + status + body); a stub ezért a tényleges connector-válasszal felel.
+      toolBroker: fakeToolBrokerResult(
+        brokerCalls,
+        { ok: true, status: 200, body: { customers: largeRows } },
+        'external_untrusted',
+      ),
       toolCaps: fakeToolCaps,
       agentId: 'agent-1',
       agentVersion: 1,
@@ -521,7 +581,7 @@ async function main() {
     const workspaceCopy = workspaceWrites.get('tool-outputs/01-http_api_get-crm-call.json')!
     assert.match(workspaceCopy, /Ügyfél 400/)
     assert.doesNotMatch(workspaceCopy, /EXTERNAL_UNTRUSTED_DATA/)
-    assert.ok(JSON.parse(workspaceCopy).customers.length === 400)
+    assert.ok(JSON.parse(workspaceCopy).body.customers.length === 400)
     const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
     assert.ok(toolMessage)
     assert.match(toolMessage.content, /A teljes eredmény elmentve/)
@@ -798,6 +858,170 @@ async function main() {
 
   await check('Sima szöveg nem ad hamis kimentést', () => {
     assert.equal(recoverOpenAiToolCallsFromText('Kész az Excel fájl, itt a tartalma.').length, 0)
+  })
+
+  // ── issue #180 ─────────────────────────────────────────────────────────────
+
+  await check('WP-3: a tool_result_read a tool_calls táblába is bekerül (internal jelöléssel)', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const recorded: RecordedToolCall[] = []
+    const archivePath = '.tool-results/01-http_api_get-prev.json'
+    const archiveContent = JSON.stringify({ hello: 'archived', pad: 'x'.repeat(200) })
+
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'read-1',
+                name: 'tool_result_read',
+                input: { path: archivePath, offset: 0, limit: 500 },
+              },
+            ],
+          },
+          { content: 'Megvan.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCapsRecording(recorded),
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-180', agentTurnId: 'turn-180' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'olvasd vissza' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get'],
+      archiveLargeToolResult: async () => ({ path: archivePath, bytes: archiveContent.length }),
+      listWorkspaceFiles: async () => [archivePath],
+      readWorkspaceFile: async (path) => (path === archivePath ? archiveContent : null),
+    })
+
+    // Mért eset: a visszaolvasások nem a brokeren mentek át, ezért egyetlen
+    // `tool_calls` sor sem keletkezett róluk — pont a kárt okozó hívásokról nem.
+    const reads = recorded.filter((call) => call.toolName === 'tool_result_read')
+    assert.equal(reads.length, 1, 'a visszaolvasásról kell tool_calls sor')
+    assert.equal(reads[0].status, 'ok')
+    assert.equal(reads[0].policyDecision, 'internal')
+    assert.equal(reads[0].conversationId, 'conv-180')
+    assert.equal(reads[0].argsMeta.path, archivePath)
+    assert.equal(reads[0].argsMeta.returned_chars, archiveContent.length)
+    assert.equal(reads[0].argsMeta.total_chars, archiveContent.length)
+  })
+
+  await check('WP-3: hiányzó archívum és a fékbe futott visszaolvasás is naplózódik', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const recorded: RecordedToolCall[] = []
+
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'read-missing',
+                name: 'tool_result_read',
+                input: { path: '.tool-results/nincs-ilyen.json', offset: 0, limit: 100 },
+              },
+            ],
+          },
+          { content: 'Nem találtam.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCapsRecording(recorded),
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-180-missing' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'olvasd vissza' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get'],
+      listWorkspaceFiles: async () => [],
+      readWorkspaceFile: async () => null,
+    })
+
+    const reads = recorded.filter((call) => call.toolName === 'tool_result_read')
+    assert.equal(reads.length, 1)
+    assert.equal(reads[0].status, 'error')
+    assert.equal(reads[0].policyDecision, 'internal')
+    assert.equal(reads[0].resultMeta?.archive_missing, true)
+  })
+
+  await check('WP-3: a load_skill hívás is tool_calls sort ír (skill-verzió + karakterszám)', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const recorded: RecordedToolCall[] = []
+    const instructions = 'A skill teljes instrukciója.'
+
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              { id: 'skill-1', name: 'load_skill', input: { skillVersionId: 'skill-v-1' } },
+            ],
+          },
+          { content: 'Betöltve.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCapsRecording(recorded),
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-180-skill' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'töltsd be a skillt' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: [],
+      skillIndexPrompt: 'skill-index',
+      loadSkill: async () => ({ ok: true, instructions }),
+    })
+
+    const loads = recorded.filter((call) => call.toolName === 'load_skill')
+    assert.equal(loads.length, 1)
+    assert.equal(loads[0].status, 'ok')
+    assert.equal(loads[0].policyDecision, 'internal')
+    assert.equal(loads[0].argsMeta.skill_version_id, 'skill-v-1')
+    assert.equal(loads[0].argsMeta.returned_chars, instructions.length)
+  })
+
+  await check('WP-1: az onTurnStart a kör eleji számlálókat is átadja', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const seen: Array<{ turn: number; toolCallCount: number; deniedCount: number }> = []
+
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          { toolCalls: [{ id: 'c1', name: 'file_read', input: { path: 'a.txt' } }] },
+          { toolCalls: [{ id: 'c2', name: 'file_read', input: { path: 'b.txt' } }] },
+          { content: 'Kész.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-180-counters' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'olvasd be' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['file_read'],
+      onTurnStart: (turn, counters) => {
+        seen.push({ turn, ...counters })
+      },
+    })
+
+    // A kör eleji állás a MEGELŐZŐ körök összesítése — enélkül a futó forduló
+    // rekordja nullát mutatna, amíg a futás el nem száll.
+    assert.deepEqual(
+      seen.map((s) => s.toolCallCount),
+      [0, 1, 2],
+    )
+    assert.ok(seen.every((s) => s.deniedCount === 0))
   })
 
   if (failures > 0) {

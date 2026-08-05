@@ -28,6 +28,7 @@ import {
   buildTaskOnlyTaskPrompt,
   buildTaskOnlyTicketTitle,
   readTicketPreferredSkillVersionIds,
+  shouldBlockTaskOnlyWebChat,
   validateTaskOnlyTaskInput,
 } from '../src/lib/task-only-ticket'
 import { SkillService } from '../src/domain/skill/skill-service'
@@ -115,6 +116,53 @@ test('SKILL.md import: `allow-attachments: true` nem zajosítja a hasht', () => 
     ['---', 'name: Számlafeldolgozás', 'allow-attachments: true', '---', '', 'Törzs'].join('\n'),
   )
   assert.equal(parsed.content.runtimeHints, undefined)
+})
+
+test('clampSkillRuntimeHints: csatolmány-leírás trimmelve és mentve', () => {
+  assert.deepEqual(
+    clampSkillRuntimeHints({ attachmentDescription: '  Excel táblázat  ' }),
+    { attachmentDescription: 'Excel táblázat' },
+  )
+  assert.equal(clampSkillRuntimeHints({ attachmentDescription: '   ' }), undefined)
+})
+
+test('clampSkillRuntimeHints: csatolmány-tiltásnál a leírás nem kerül mentésre', () => {
+  assert.deepEqual(
+    clampSkillRuntimeHints({
+      allowAttachments: false,
+      attachmentDescription: 'Excel táblázat',
+    }),
+    { allowAttachments: false },
+  )
+})
+
+test('diffSkillVersions: a csatolmány-leírás megjelenik a verzió-diffben', () => {
+  const before = parseSkillContent({ instructions: ['a'] })
+  const after = parseSkillContent({
+    instructions: ['a'],
+    runtimeHints: { attachmentDescription: 'PDF számla' },
+  })
+  const diff = diffSkillVersions(
+    { content: before, requires: [] },
+    { content: after, requires: [] },
+  )
+  const change = diff.changes.find((c) => c.detail.startsWith('attachmentDescription'))
+  assert.ok(change, 'a diffnek jeleznie kell az attachmentDescription változást')
+  assert.match(change.detail, /PDF számla/)
+})
+
+test('SKILL.md import: `attachment-description` átjön a runtimeHints-be', () => {
+  const parsed = parseSkillMd(
+    [
+      '---',
+      'name: Számlafeldolgozás',
+      'attachment-description: PDF formátumú számla',
+      '---',
+      '',
+      '# Lépések',
+    ].join('\n'),
+  )
+  assert.equal(parsed.content.runtimeHints?.attachmentDescription, 'PDF formátumú számla')
 })
 
 // ── 2. Korlátozott feladat-bemenet validációja ───────────────────────────────
@@ -304,6 +352,29 @@ async function runAttachmentPolicyTests() {
 
 test('audit event-catalog: az `agent.task_only` esemény regisztrált', () => {
   assert.ok(REGISTERED_AUDIT_ACTIONS.has('agent.task_only'))
+})
+
+// ── 7. Webes chat-kapu + Megbeszélés kivétel (#199 × #219) ───────────────────
+
+test('shouldBlockTaskOnlyWebChat: taskOnly agentnél a sima chat tiltott', () => {
+  assert.equal(shouldBlockTaskOnlyWebChat({ taskOnly: true, continuedFromTicketId: null }), true)
+  assert.equal(shouldBlockTaskOnlyWebChat({ taskOnly: true }), true)
+})
+
+test('shouldBlockTaskOnlyWebChat: nem-taskOnly agentnél a chat szabad', () => {
+  assert.equal(shouldBlockTaskOnlyWebChat({ taskOnly: false }), false)
+  assert.equal(
+    shouldBlockTaskOnlyWebChat({ taskOnly: false, continuedFromTicketId: 'ticket-1' }),
+    false,
+  )
+})
+
+test('shouldBlockTaskOnlyWebChat: ticket-megbeszélés (#219) kivétel a taskOnly tiltás alól', () => {
+  // Ági (taskOnly) ticket → Megbeszélés: a kérdés ne tűnjön el 409-cel.
+  assert.equal(
+    shouldBlockTaskOnlyWebChat({ taskOnly: true, continuedFromTicketId: 'ticket-1' }),
+    false,
+  )
 })
 
 async function main() {

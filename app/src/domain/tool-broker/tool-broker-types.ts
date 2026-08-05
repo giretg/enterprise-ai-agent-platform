@@ -12,6 +12,7 @@ import type {
   ConnectorGrant,
   TicketState,
 } from '@prisma/client'
+import type { SettledToolOutcome, ToolEffectSummary } from './tool-output-contract'
 import type { AgentCatalogEntry } from '@/lib/agent-catalog'
 import type { TulajdoniLapNezet, TulajdoniLapView } from '@/lib/tulajdoni-lap'
 import type {
@@ -36,6 +37,8 @@ import type {
   DocxReadResult,
   DocxCreateResult,
   PdfReadResult,
+  PdfCreateResult,
+  PptxCreateResult,
 } from '@/domain/file-editor/file-editor-service'
 import type {
   XlsxRow,
@@ -329,7 +332,7 @@ export type TulajdoniLapParseResult = TulajdoniLapView & {
 }
 
 /**
- * Egy hívásos egyeztetés (issue #161): lap-parse → párosítás → kész Excel.
+ * Egy hívásos egyeztetés (issue #161): lap-parse → párosítás → opcionális Excel.
  * A nyilvántartás oldala vagy közvetlenül jön (`nyilvantartas`), vagy egy
  * munkaterület-beli JSON fájlból (`nyilvantartasPath`) — utóbbi a nagy
  * névsoroknál kíméli a modell kontextusát.
@@ -339,13 +342,27 @@ export type TulajdoniLapEgyeztetesArgs = {
   path?: string
   nyilvantartas?: EgyeztetesNyilvantartasSor[]
   nyilvantartasPath?: string
-  /** Kimeneti munkafüzet a munkaterületen. Alap: `egyeztetes.xlsx`. */
+  /**
+   * Ha megadod: Excel munkafüzet a munkaterületre (pl. `egyeztetes.xlsx`).
+   * Ha nincs: NEM készül Excel — a válasz JSON (`osszegzes` + `eltero`) a
+   * deliverable (pl. Ostoros Föld frissítő skill). A skill dönti el a kimenetet, nem a tool.
+   */
   kimenet?: string
   /**
    * Csonka-lista védelem felülírása. Csak akkor true, ha http_api_get_all után
    * is ugyanez a sorok száma (a nyilvántartás tényleg ennyi).
    */
   confirmNyilvantartasComplete?: boolean
+  /** Parcel id a determinisztikus `fold_muveletek.json` path-okhoz. */
+  parcelId?: string
+  /**
+   * Lefedettség-ellenőrzés: a proposal / alkalmazott ownership id-k JSON path-ja
+   * (pl. `proposal_items_extract.json`). Document nélkül is hívható
+   * (`coverageMuveletekPath` + ez) — ilyenkor NEM fut újra a lap-parse.
+   */
+  coverageAppliedPath?: string
+  /** Terv path a coverage-hez; alapértelmezés: `fold_muveletek.json`. */
+  coverageMuveletekPath?: string
 }
 
 /** Két workspace JSON-lista determinisztikus egyeztetése (issue #179). */
@@ -393,14 +410,37 @@ export type TulajdoniLapEgyeztetesResult = {
   meta: TulajdoniLapView['meta']
   osszesites: TulajdoniLapView['osszesites']
   egyeztetes: EgyeztetesOsszegzes | null
-  /** A beavatkozást igénylő sorok — a modell ezekből fogalmazza a választ. */
+  /**
+   * Eltérő sorok — a modellnek SZÁNDÉKOSAN kompakt / mintavételezett
+   * (hosszú `megjegyzes` nélkül), hogy a 12k inline-küszöb alatt maradjon.
+   * A teljes lista az `elteroPath` fájlban van (Föld PATCH/DELETE forrás).
+   */
   eltero: Array<{
     nev: string
     statusz: string
     hanyadLap: string | null
     hanyadNyilvantartas: string | null
-    megjegyzes: string
+    azonosito: string | null
   }>
+  /** Teljes kompakt eltérő lista a munkaterületen — Föld-írás / extract forrás. */
+  elteroPath: string | null
+  /** Az `elteroPath` / teljes eltérő lista elemszáma (nem a mintáé). */
+  elteroDb: number
+  /**
+   * Determinisztikus Föld Ownership terv (DELETE→PATCH→POST, teljes `items`).
+   * A modell EBBŐL hívja az `http_api_request`-eket — ne szerkessze az id-ket.
+   */
+  muveletekPath: string | null
+  muveletekDb: number
+  /** `coverageAppliedPath` megadásakor: terv id-k ⊆ proposal id-k. */
+  coverage: {
+    ok: boolean
+    expected: number
+    applied: number
+    missing: Array<{ ownershipId: string; nev: string; action: string }>
+    extra: string[]
+    message: string
+  } | null
   szeljegyDb: number
 }
 
@@ -463,6 +503,12 @@ export type HttpApiGetAllResult = {
   itemCount: number
   items: unknown[]
   error?: string
+  /**
+   * Honnan jött a lista és teljes-e a lapozás. A csonka lista a legveszélyesebb
+   * csendes hiba (egy oldalnyi névsorból hamis „új rekord" egyeztetés lesz),
+   * ezért a kimeneti szerződés ebből ad `partial` kimenetelt (issue #195).
+   */
+  provenance?: { sourceTool: string; paginationComplete: boolean }
 }
 
 export type GmailSearchResult = { messages: Array<Record<string, string>> }
@@ -756,6 +802,12 @@ export type ToolBrokerInvokeResult =
       denied: true
       reason: string
       latencyMs: number
+      /**
+       * D1 (issue #195) — az elutasított hívás kimenetele mindig `failed`: nem
+       * futott le, tehát semmit nem végzett el. Így a fogyasztó egyetlen mezőből
+       * dönthet, anélkül hogy a `denied` ágat külön kellene kezelnie.
+       */
+      outcome: 'failed'
     }
   | {
       denied: false
@@ -765,6 +817,35 @@ export type ToolBrokerInvokeResult =
        * tools API) kezelnie kell, mielőtt az eredmény a modell elé kerül.
        */
       trust: TrustClass
+      /**
+       * D1 (issue #195) — KÖTELEZŐ kimenetel. Az `empty` és a `partial` nem hiba,
+       * hanem TÉNY: az agent és a felhasználó eddig épp azt nem tudta meg, hogy az
+       * eszköz „sikeresen semmit nem csinált". A `failed` kivételként bukik ki, ide
+       * nem jut el.
+       */
+      outcome: SettledToolOutcome
+      /** Miért `empty` / `partial` — hétköznapi magyarul. `ok`-nál `null`. */
+      outcomeReason: string | null
+      /** D4 — a MÉRT mellékhatás (olvasó toolnál `null`). */
+      effect: ToolEffectSummary | null
+      /**
+       * D5 — a MODELLNEK szánt csatorna: bizalmi osztály szerint BECSOMAGOLVA
+       * (`envelopeToolResultForModel`), méret-kapuval, és a kimenetel hétköznapi
+       * nyelvű közlésével. Aki a modellnek ad tool-eredményt, EZT adja.
+       */
+      modelText: string
+      /**
+       * D5 — a GÉPI csatorna: strukturált adat a munkaterületnek, downstream
+       * toolnak, egyeztetésnek, exportnak. SOHA nem burkolt, és soha nem megy
+       * közvetlenül a modellhez — így a burkolat elvi szinten nem kerülhet gépi
+       * útra (a korábbi `unwrapExternalDataEnvelope` folt szükségtelenné vált).
+       */
+      machineData: unknown
+      /**
+       * @deprecated WP-2 — a `machineData` alias-a, egy migrációs körig megtartva,
+       * hogy a fogyasztók átállítása ne legyen big-bang. Új kód a `machineData`
+       * (gépi) vagy a `modelText` (modell) mezőt használja.
+       */
       result:
         | KbSearchResult
         | KbListIndexResult
@@ -781,6 +862,7 @@ export type ToolBrokerInvokeResult =
         | GmailCreateDraftResult
         | GmailSendResult
         | HttpApiCallResult
+        | HttpApiGetAllResult
         | RepoPrepareResult
         | RepoOpenPullRequestResult
         | FileReadResult
@@ -800,6 +882,8 @@ export type ToolBrokerInvokeResult =
         | DocxReadResult
         | DocxCreateResult
         | PdfReadResult
+        | PdfCreateResult
+        | PptxCreateResult
         | SandboxCommitResult
         | SandboxRequestPromotionResult
         | SandboxSnapshotResult
@@ -814,6 +898,8 @@ export type ToolBrokerInvokeResult =
         | MemoryProposeResult
         | DocumentReadResult
         | TulajdoniLapParseResult
+        | TulajdoniLapEgyeztetesResult
+        | ReconcileRecordsResult
       resultMeta: Record<string, unknown>
       latencyMs: number
     }

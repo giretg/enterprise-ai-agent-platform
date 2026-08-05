@@ -16,6 +16,8 @@ export interface AssignedSkillEntry {
   skillId: string
   skillVersionId: string
   name: string
+  /** Embernek szóló címke — ticket cím / UI. Hiányzik → `name`. */
+  displayName?: string | null
   description: string
   version: number
 }

@@ -53,13 +53,23 @@ export const TICKET_CONTINUE_RULES = [
   'A „Nem készült el” listából vedd a következő konkrét lépést, és azzal folytasd.',
 ].join('\n')
 
+/** Ticket → Megbeszélés (#219): chat-kontextus, nem ticket-handback. */
+export const TICKET_DISCUSSION_RULES = [
+  'Ez MEGBESZÉLÉS a felhasználóval egy meglévő feladatról — NEM ticket-handback és NEM ticket-folytatás a boardon.',
+  'A ticket állapota, TicketComment szála és handback flow-ja NEM változik ebből a chatből.',
+  'A ticket előzménye tájékoztató kontextus: belőle tájékozódj, a válaszod a chatben hangzik el.',
+].join('\n')
+
 export function buildThreadContextPrompt(input: {
   comments: TicketCommentWithAttachments[]
   originalTask: string
   maxChars?: number
   workspaceFiles?: string[]
+  /** `discussion`: chat-megbeszélés (#219) — continue szabályok helyett megbeszélés-szabályok. */
+  mode?: 'ticket' | 'discussion'
 }): string {
   const maxChars = input.maxChars ?? 14000
+  const mode = input.mode ?? 'ticket'
   const relevant = input.comments.filter((comment) =>
     ['human_comment', 'agent_answer', 'system_note'].includes(comment.kind),
   )
@@ -71,7 +81,9 @@ export function buildThreadContextPrompt(input: {
   const sections: string[] = [
     `Eredeti feladat:\n${clip(input.originalTask.trim(), 2400)}`,
   ]
-  if (isContinuation) {
+  if (mode === 'discussion') {
+    sections.push(`Megbeszelesi szabalyok (kotelezo):\n${TICKET_DISCUSSION_RULES}`)
+  } else if (isContinuation) {
     sections.push(`Folytatasi szabalyok (kotelezo):\n${TICKET_CONTINUE_RULES}`)
   }
   if (lastHuman) {
@@ -94,4 +106,72 @@ export function buildThreadContextPrompt(input: {
   }
 
   return clip(sections.join('\n\n---\n\n'), maxChars)
+}
+
+/** Ticket → Megbeszélés (#219): a chat UI-ban látható előzmény (nem Message rekord). */
+export type TicketDiscussionHistoryItem = {
+  id: string
+  role: 'user' | 'agent' | 'system'
+  text: string
+  authorLabel: string
+  createdAt: string
+}
+
+function historyRole(
+  kind: TicketCommentWithAttachments['kind'],
+): TicketDiscussionHistoryItem['role'] {
+  if (kind === 'agent_answer' || kind === 'agent_progress') return 'agent'
+  if (kind === 'system_note') return 'system'
+  return 'user'
+}
+
+/**
+ * A ticket-szál olvasható másolata a megbeszélés chatben. Nem perzisztál Message-ként —
+ * csak megjelenítés; a modell továbbra is a system prompt prior kontextusát kapja.
+ */
+export function buildTicketDiscussionHistory(input: {
+  comments: TicketCommentWithAttachments[]
+  originalTask: string
+  ticketCreatedAt?: Date | string | null
+}): TicketDiscussionHistoryItem[] {
+  const items: TicketDiscussionHistoryItem[] = []
+  const task = input.originalTask.trim()
+  if (task) {
+    items.push({
+      id: 'ticket-original-task',
+      role: 'user',
+      text: task,
+      authorLabel: 'Eredeti feladat',
+      createdAt:
+        input.ticketCreatedAt instanceof Date
+          ? input.ticketCreatedAt.toISOString()
+          : typeof input.ticketCreatedAt === 'string'
+            ? input.ticketCreatedAt
+            : new Date(0).toISOString(),
+    })
+  }
+
+  const relevant = input.comments.filter((comment) =>
+    ['human_comment', 'agent_answer', 'system_note'].includes(comment.kind),
+  )
+  for (const comment of relevant) {
+    const text = comment.body.trim()
+    if (!text) continue
+    // Ha az első emberi komment szó szerint az eredeti feladat, ne duplikáljuk.
+    if (
+      items.length === 1 &&
+      comment.kind === 'human_comment' &&
+      text === task
+    ) {
+      continue
+    }
+    items.push({
+      id: comment.id,
+      role: historyRole(comment.kind),
+      text,
+      authorLabel: actorLabel(comment),
+      createdAt: comment.createdAt.toISOString(),
+    })
+  }
+  return items
 }

@@ -89,6 +89,8 @@ export class ConversationService {
     /** Csatorna-megjelölés (D14): Telegram-szál esetén a webes felület ebből tudja, honnan jön. */
     channel?: ChannelType | null
     channelExternalId?: string | null
+    /** Ticket → Megbeszélés (#219): forrás ticket (prior kontextus a chat runtime-nak). */
+    continuedFromTicketId?: string | null
   }) {
     const conversation = await this.conversations.create({
       tenantId: params.tenantId ?? null,
@@ -100,6 +102,7 @@ export class ConversationService {
       projectKey: params.projectKey ?? null,
       channel: params.channel ?? null,
       channelExternalId: params.channelExternalId ?? null,
+      continuedFromTicketId: params.continuedFromTicketId ?? null,
     })
 
     await this.audit.append({
@@ -121,6 +124,7 @@ export class ConversationService {
         retentionPolicyId: conversation.retentionPolicyId,
         retainUntil: conversation.retainUntil?.toISOString() ?? null,
         legalHold: conversation.legalHold,
+        continuedFromTicketId: conversation.continuedFromTicketId,
       },
     })
 

@@ -38,6 +38,7 @@ import type {
   TulajdoniLapEgyeztetesResult,
   TicketCreateResult,
   ToolBrokerInvokeInput,
+  ToolExecutionResult,
   UserDirectoryResult,
   WebResearchDelegationResult,
 } from '../tool-broker-service'
@@ -162,9 +163,15 @@ export interface ToolHandlerArgs {
  * Egy tool (vagy tool-csoport) végrehajtója. A `handles` predikátum dönti el,
  * hogy a handler melyik tool-neveket kezeli — így a prefix-csoportok (file_,
  * sandbox_app.) is egyetlen handlerbe foghatók.
+ *
+ * issue #195 WP-1 — az `execute` visszatérése TIPIZÁLT (`ToolExecutionResult`),
+ * nem `unknown`: egy handler nem ígérhet olyat, amit a broker publikus felülete
+ * nem ismer. A típus azonban csak fordításidejű állítás — a tényleges kimenetet
+ * a broker határán futó KIMENETI SZERZŐDÉS (`tool-output-contract.ts`) validálja
+ * futásidőben, az audit-rögzítés előtt.
  */
 export interface ToolHandler {
   readonly id: string
   handles(tool: string): boolean
-  execute(args: ToolHandlerArgs): Promise<unknown>
+  execute(args: ToolHandlerArgs): Promise<ToolExecutionResult>
 }

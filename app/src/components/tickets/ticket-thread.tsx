@@ -176,6 +176,11 @@ function TicketCommentComposer({
           {message.text}
         </p>
       )}
+      <p className="mb-2 text-xs text-ink-faint">
+        {canHandBack && !handBackBlockedReason
+          ? 'Pontosítás az AI munkatársnak: a szöveg bekerül a kontextusba, és a feladat azonnal újraindul. Egyszerű naplóhoz használd a „Komment hozzáadása” gombot.'
+          : 'Komment a feladat-szálhoz (napló). Az AI munkatársnak szánt pontosításhoz várd meg, amíg a ticket kész vagy emberi döntésre vár.'}
+      </p>
       <textarea
         value={body}
         onChange={(event) => setBody(event.target.value)}
@@ -190,7 +195,11 @@ function TicketCommentComposer({
         maxLength={16 * 1024}
         rows={4}
         className="w-full rounded-lg border border-line bg-night-2 p-3 text-sm text-ink"
-        placeholder="Írj kommentet vagy pontosítást..."
+        placeholder={
+          canHandBack && !handBackBlockedReason
+            ? 'Pontosítás az AI munkatársnak…'
+            : 'Írj kommentet…'
+        }
       />
       {drafts.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-2">
@@ -229,14 +238,6 @@ function TicketCommentComposer({
             }}
           />
         </label>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => submit(false)}
-          className="rounded-lg bg-sky/20 px-4 py-2 text-sm font-semibold text-sky hover:bg-sky/30 disabled:opacity-50"
-        >
-          Komment hozzáadása
-        </button>
         {canHandBack && !handBackBlockedReason && (
           <button
             type="button"
@@ -247,6 +248,14 @@ function TicketCommentComposer({
             Pontosítás + visszaadás az AI munkatársnak
           </button>
         )}
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => submit(false)}
+          className="rounded-lg bg-sky/20 px-4 py-2 text-sm font-semibold text-sky hover:bg-sky/30 disabled:opacity-50"
+        >
+          Komment hozzáadása
+        </button>
       </div>
       {canHandBack && handBackBlockedReason && (
         <p className="mt-3 whitespace-pre-wrap rounded-lg border border-coral/25 bg-coral/5 px-3 py-2 text-sm leading-relaxed text-coral">

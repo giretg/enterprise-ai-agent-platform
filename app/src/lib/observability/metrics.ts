@@ -211,6 +211,55 @@ export const toolBrokerCallsTotal = registry.counter(
   'Tool broker invocations by tool, status and policy decision',
 )
 /**
+ * Tool-broker KIMENETELEK tool-onként (issue #195 WP-6): `ok` / `empty` /
+ * `partial` / `failed`. Ez a bontás mondja meg, melyik eszköz megy a
+ * leggyakrabban csendben félre — vagyis melyiket kell javítani. Az `empty`-arány
+ * tartós megugrása egy eszköznél üzleti tünet: üres Excelt, hiányzó sorokat,
+ * „kész vagyok" válasz mögötti semmit jelent.
+ */
+export const toolBrokerOutcomesTotal = registry.counter(
+  'tool_broker_outcomes_total',
+  'Tool broker invocation outcomes by tool (ok/empty/partial/failed)',
+)
+/**
+ * Fordulónkénti archívum-visszaolvasás (issue #195 D6). A mért incidensben egy
+ * tömörítés ↔ visszaolvasás körforgás 7 futásból 0-t fejezett be és 5,4M tokent
+ * égetett el. A `chars` címke a becsült token-költség alapja (~4 kar/token).
+ */
+export const toolResultReadbackTotal = registry.counter(
+  'tool_result_readback_total',
+  'Archived tool-result readbacks by phase (allowed/blocked)',
+)
+/**
+ * issue #180 WP-4 — forrás-újraolvasási arány fordulónként. A mért incidensben
+ * ez 89% volt (132/149): a futás 40 körön át ugyanazokat a forrásokat olvasta
+ * újra. A hisztogram teszi riaszthatóvá azt, amit eddig csak kézi
+ * napló-nyomozással lehetett kimutatni.
+ */
+export const agentTurnRereadRatio = registry.histogram(
+  'agent_turn_source_reread_ratio',
+  'Share of a turn tool calls that re-read an already ingested source (0..1)',
+  [0.1, 0.25, 0.5, 0.75, 0.9, 1],
+)
+/**
+ * issue #180 WP-4 — kiváltott forduló-költség riasztások ok szerint
+ * (source_reread_ratio / compaction_steps / missing_tool_results). Erre lehet
+ * riasztási szabályt tenni: ugyanaz a körforgás ne ismétlődhessen meg csendben.
+ */
+export const agentTurnCostAlertsTotal = registry.counter(
+  'agent_turn_cost_alerts_total',
+  'Agent turn cost alerts by reason',
+)
+/**
+ * issue #180 WP-3 — a loop SAJÁT (nem brokeren átmenő) eszközhívásai
+ * tool-onként. A mért futásban 244 ilyen hívás volt, amiről a `tool_calls` tábla
+ * nem tudott — pontosan azok, amelyek a kárt okozták.
+ */
+export const agentInternalToolCallsTotal = registry.counter(
+  'agent_internal_tool_calls_total',
+  'Loop-internal (non-broker) tool invocations by tool and status',
+)
+/**
  * Dispatch-események száma kimenet szerint
  * (dispatched / budget_blocked / denied_inactive / denied_tenant_inactive / error).
  */

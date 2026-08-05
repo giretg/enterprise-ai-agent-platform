@@ -12,11 +12,12 @@
 export const TASK_ONLY_TITLE_TIME_ZONE = 'Europe/Budapest'
 
 /**
- * `<skill neve> — YYYY-MM-DD HH:mm`. A `sv-SE` locale pont ezt az ISO-szerű
- * alakot adja, így nem kell kézzel nulláznunk a mezőket.
+ * `<megjelenített név | technikai név> — YYYY-MM-DD HH:mm`.
+ * A hívó tipikusan `skillDisplayLabel(...)`-t ad át. A `sv-SE` locale pont ezt az
+ * ISO-szerű alakot adja, így nem kell kézzel nulláznunk a mezőket.
  */
 export function buildTaskOnlyTicketTitle(
-  skillName: string,
+  skillLabel: string,
   now: Date,
   timeZone: string = TASK_ONLY_TITLE_TIME_ZONE,
 ): string {
@@ -32,7 +33,7 @@ export function buildTaskOnlyTicketTitle(
     // A `sv-SE` „2026-08-01 14:03" alakot ad, de a futtatókörnyezettől függően
     // keskeny nem-törő szóköz kerülhet a dátum és az idő közé — normalizáljuk.
     .replace(/\s+/g, ' ')
-  return `${skillName.trim()} — ${stamp}`
+  return `${skillLabel.trim()} — ${stamp}`
 }
 
 /**
@@ -98,4 +99,18 @@ export function buildTaskOnlyTaskPrompt(skillName: string): string {
     'kövesd pontosan. Szabad szöveges feladatleírás nincs — a bemenetet a megadott',
     'paraméterek és a csatolt fájlok adják.',
   ].join(' ')
+}
+
+/**
+ * A webes chat-stream kapuja (#199): korlátozott feladatkörű agentnél új forduló
+ * tiltott — KIVÉVE a Ticket → Megbeszélés (#219) beszélgetést, ahol a ticket
+ * előzményéről kell tudni beszélni.
+ */
+export function shouldBlockTaskOnlyWebChat(input: {
+  taskOnly: boolean
+  continuedFromTicketId?: string | null
+}): boolean {
+  if (!input.taskOnly) return false
+  if (input.continuedFromTicketId) return false
+  return true
 }

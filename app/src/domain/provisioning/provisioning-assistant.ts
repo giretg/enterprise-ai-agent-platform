@@ -42,6 +42,7 @@ import {
   structuringModelFromEnv,
   toStructuringModelConfig,
 } from '@/domain/contract-runtime'
+import { PROVISIONING_ASSISTANT_AGENT_NAME } from '@/lib/platform-agent-registry'
 import { z } from 'zod'
 
 /**
@@ -103,7 +104,7 @@ OUTPUT: a single JSON object only (no prose, no markdown fences) matching this s
  * az egyetlen kimenete a draft. A capability-ket külön seedeljük (deny-by-default).
  */
 export const PROVISIONING_ASSISTANT_TEMPLATE = {
-  name: 'Provisioning Assistant',
+  name: PROVISIONING_ASSISTANT_AGENT_NAME,
   role: 'worker' as const,
   roleInstruction: PROVISIONING_ASSISTANT_ROLE_INSTRUCTION,
   behaviorProfile:

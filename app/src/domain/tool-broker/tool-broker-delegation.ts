@@ -32,14 +32,18 @@ import {
   EGYEZTETES_STATUSZOK,
   assessNyilvantartasCompleteness,
   buildEgyeztetesMunkafuzet,
+  buildFoldMuveletekFromEltero,
+  checkFoldMuveletekCoverage,
+  describeInvalidAppliedSource,
+  extractAppliedOwnershipIds,
   hasCompleteHttpApiGetAllProvenance,
   egyeztetesSorok,
   normalizeNyilvantartasRows,
   type EgyeztetesNyilvantartasSor,
+  type FoldMuveletekPlan,
 } from '@/lib/tulajdoni-lap-egyeztetes'
 import { parseReconcileRecordList } from '@/lib/reconcile-records'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
-import { unwrapExternalDataEnvelope } from '@/domain/tool-broker/tool-result-envelope'
 import { personaFor } from '@/lib/agent-persona'
 import {
   buildAgentCatalogEntry,
@@ -293,11 +297,20 @@ export async function repoPrepare(self: ToolBrokerService,
       path: REPO_WORKSPACE_PATH,
       recursive: true,
     })
-    await Promise.all(
-      current.entries
-        .filter((entry) => entry.type === 'file')
-        .map((entry) => self.fileEditor.deleteFile(tenantId, workspaceId, { path: entry.path })),
-    )
+    // Korlátozott párhuzamosság: 660 fájlnál a korábbi `Promise.all` egyszerre
+    // 660 HTTPS-kapcsolatot nyitott a tár felé (socket-kimerülés, 429-kockázat).
+    await self.fileEditor.deleteFiles(tenantId, workspaceId, {
+      paths: current.entries.filter((entry) => entry.type === 'file').map((entry) => entry.path),
+    })
+
+    /**
+     * A kvótát EGYETLEN kezdeti méret-listázásból könyveljük az import teljes
+     * idejére. Enélkül minden egyes fájl kiírása újra lekérdezte az egész
+     * workspace méretét: 660 fájlnál ~1300 felesleges hálózati kör, és a
+     * költség négyzetesen nőtt a repo méretével. (A session a takarítás UTÁN
+     * nyílik, hogy a most törölt fájlok már ne számítsanak bele.)
+     */
+    const quota = await self.fileEditor.openQuotaSession(tenantId, workspaceId)
 
     const blobs = tree.tree.filter((item) => item.type === 'blob')
     const candidates = blobs
@@ -330,10 +343,15 @@ export async function repoPrepare(self: ToolBrokerService,
         filesSkipped += 1
         return
       }
-      await self.fileEditor.writeFile(tenantId, workspaceId, {
-        path: `${REPO_WORKSPACE_PATH}/${item.path}`,
-        content: buffer.toString('utf8'),
-      })
+      await self.fileEditor.writeFile(
+        tenantId,
+        workspaceId,
+        {
+          path: `${REPO_WORKSPACE_PATH}/${item.path}`,
+          content: buffer.toString('utf8'),
+        },
+        { quota },
+      )
       bytesWritten += buffer.length
       filesWritten += 1
     }
@@ -357,10 +375,15 @@ export async function repoPrepare(self: ToolBrokerService,
       bytesWritten,
       preparedAt: new Date().toISOString(),
     }
-    await self.fileEditor.writeFile(tenantId, workspaceId, {
-      path: REPO_METADATA_PATH,
-      content: JSON.stringify(metadata, null, 2),
-    })
+    await self.fileEditor.writeFile(
+      tenantId,
+      workspaceId,
+      {
+        path: REPO_METADATA_PATH,
+        content: JSON.stringify(metadata, null, 2),
+      },
+      { quota },
+    )
 
     return {
       ok: true,
@@ -1974,8 +1997,9 @@ async function loadTulajdoniLapPages(
 }
 
 /**
- * tulajdoni_lap_egyeztetes — EGY hívás: lap-parse → párosítás → kész munkafüzet
- * (issue #161).
+ * tulajdoni_lap_egyeztetes — EGY hívás: lap-parse → párosítás → opcionális
+ * munkafüzet (issue #161). Excel CSAK ha a hívó megadja a `kimenet` path-ot;
+ * különben a JSON összegzés + eltérő sorok a kimenet (pl. Ostoros Föld frissítés).
  *
  * Korábban ez a chatben, sok LLM-körben zajlott: a tulajdonos-nézet lapozása
  * (minden hívás ÚJRA parse-olta a PDF-et), ad-hoc JSON köztes fájlok, majd
@@ -2007,6 +2031,22 @@ export async function tulajdoniLapEgyeztetes(
     connector.tenantId,
   )
 
+  // Csak lefedettség: nem kell újra parse + párosítás (proposal ellenőrzés).
+  const coverageOnly =
+    Boolean(input.args.coverageAppliedPath?.trim()) &&
+    !input.args.documentId?.trim() &&
+    !input.args.path?.trim() &&
+    !input.args.nyilvantartasPath?.trim() &&
+    !(Array.isArray(input.args.nyilvantartas) && input.args.nyilvantartas.length > 0)
+  if (coverageOnly) {
+    return runFoldMuveletekCoverageCheck(self, {
+      tenantId,
+      workspaceId,
+      muveletekPath: input.args.coverageMuveletekPath?.trim() || 'fold_muveletek.json',
+      appliedPath: input.args.coverageAppliedPath!.trim(),
+    })
+  }
+
   const { pages } = await loadTulajdoniLapPages(self, input, actingUserId, extras)
   const parsed = parseTulajdoniLap(pages)
   const view = buildTulajdoniLapView(parsed, { nezet: 'osszefoglalo' })
@@ -2025,6 +2065,11 @@ export async function tulajdoniLapEgyeztetes(
       osszesites: view.osszesites,
       egyeztetes: null,
       eltero: [],
+      elteroPath: null,
+      elteroDb: 0,
+      muveletekPath: null,
+      muveletekDb: 0,
+      coverage: null,
       szeljegyDb: parsed.szeljegyek.length,
     }
   }
@@ -2061,83 +2106,274 @@ export async function tulajdoniLapEgyeztetes(
       osszesites: view.osszesites,
       egyeztetes: osszegzes,
       eltero: [],
+      elteroPath: null,
+      elteroDb: 0,
+      muveletekPath: null,
+      muveletekDb: 0,
+      coverage: null,
       szeljegyDb: parsed.szeljegyek.length,
     }
   }
 
-  const munkafuzet = buildEgyeztetesMunkafuzet({ sorok, parsed })
+  const kimenetRaw = typeof input.args.kimenet === 'string' ? input.args.kimenet.trim() : ''
+  let path: string | null = null
+  if (kimenetRaw) {
+    const munkafuzet = buildEgyeztetesMunkafuzet({ sorok, parsed })
+    path = kimenetRaw.toLowerCase().endsWith('.xlsx') ? kimenetRaw : `${kimenetRaw}.xlsx`
 
-  const kimenet = (input.args.kimenet ?? 'egyeztetes.xlsx').trim() || 'egyeztetes.xlsx'
-  const path = kimenet.toLowerCase().endsWith('.xlsx') ? kimenet : `${kimenet}.xlsx`
+    // A munkafüzet egyetlen menetben áll elő: létrehozás → cellák → elrendezés →
+    // fejléc-kiemelés. Ez korábban 4+ külön eszközhívás volt, körönként.
+    // Excel CSAK explicit `kimenet` mellett — a skill dönti el a deliverable-t.
+    await self.fileEditor.xlsxCreate(tenantId, workspaceId, {
+      path,
+      sheets: [
+        { name: 'Egyeztetés', rows: munkafuzet.egyeztetesSorok },
+        { name: 'Ingatlan', rows: munkafuzet.ingatlanSorok },
+      ],
+    })
+    await self.fileEditor.xlsxLayout(tenantId, workspaceId, {
+      path,
+      sheet: 'Egyeztetés',
+      freeze: { rows: 1 },
+      autoFilter: `A1:L1`,
+      columnWidths: [
+        { column: 'A', width: 16 },
+        { column: 'B', width: 30 },
+        { column: 'C', width: 12 },
+        { column: 'D', width: 26 },
+        { column: 'E', width: 14 },
+        { column: 'F', width: 14 },
+        { column: 'G', width: 10 },
+        { column: 'H', width: 16 },
+        { column: 'I', width: 12 },
+        { column: 'J', width: 10 },
+        { column: 'K', width: 22 },
+        { column: 'L', width: 60 },
+      ],
+      dataValidations: [
+        {
+          range: `K2:K${Math.max(2, munkafuzet.utolsoAdatSor)}`,
+          values: EGYEZTETES_STATUSZOK,
+          errorTitle: 'Érvénytelen státusz',
+          error: 'Válassz a legördülő listából.',
+        },
+      ],
+    })
+    await self.fileEditor.xlsxFormatRange(tenantId, workspaceId, {
+      path,
+      sheet: 'Egyeztetés',
+      range: 'A1:L1',
+      style: { font: { bold: true } },
+    })
+  }
 
-  // A munkafüzet egyetlen menetben áll elő: létrehozás → cellák → elrendezés →
-  // fejléc-kiemelés. Ez korábban 4+ külön eszközhívás volt, körönként.
-  await self.fileEditor.xlsxCreate(tenantId, workspaceId, {
-    path,
-    sheets: [
-      { name: 'Egyeztetés', rows: munkafuzet.egyeztetesSorok },
-      { name: 'Ingatlan', rows: munkafuzet.ingatlanSorok },
-    ],
-  })
-  await self.fileEditor.xlsxLayout(tenantId, workspaceId, {
-    path,
-    sheet: 'Egyeztetés',
-    freeze: { rows: 1 },
-    autoFilter: `A1:L1`,
-    columnWidths: [
-      { column: 'A', width: 16 },
-      { column: 'B', width: 30 },
-      { column: 'C', width: 12 },
-      { column: 'D', width: 26 },
-      { column: 'E', width: 14 },
-      { column: 'F', width: 14 },
-      { column: 'G', width: 10 },
-      { column: 'H', width: 16 },
-      { column: 'I', width: 12 },
-      { column: 'J', width: 10 },
-      { column: 'K', width: 22 },
-      { column: 'L', width: 60 },
-    ],
-    dataValidations: [
-      {
-        range: `K2:K${Math.max(2, munkafuzet.utolsoAdatSor)}`,
-        values: EGYEZTETES_STATUSZOK,
-        errorTitle: 'Érvénytelen státusz',
-        error: 'Válassz a legördülő listából.',
-      },
-    ],
-  })
-  await self.fileEditor.xlsxFormatRange(tenantId, workspaceId, {
-    path,
-    sheet: 'Egyeztetés',
-    range: 'A1:L1',
-    style: { font: { bold: true } },
-  })
-
-  const eltero = sorok
+  // Kompakt eltérő lista (ownership id-val). A hosszú megjegyzés + a 200+
+  // `figyelmet_igenyel` tétel korábban 50kB-ra duzzasztotta a választ → 12k
+  // felett archívumba került, és a 10k preview AZ ELŐTT vágott, hogy az
+  // `eltero` kulcs egyáltalán megjelenjen → a modell „nincs ID" indokkal állt meg.
+  const elteroCompact = sorok
     .filter((sor) => sor.statusz !== 'Rendben')
-    .slice(0, 100)
     .map((sor) => ({
       nev: sor.nev,
       statusz: sor.statusz,
       hanyadLap: sor.hanyadLap,
       hanyadNyilvantartas: sor.hanyadNyilvantartas,
-      megjegyzes: sor.megjegyzes,
+      azonosito: sor.azonosito,
     }))
 
-  const figyelmeztetes = [view.figyelmeztetes, completeness.warn ? completeness.indok : null]
+  let elteroPath: string | null = null
+  let muveletekPath: string | null = null
+  let muveletekDb = 0
+  let foldPlan: FoldMuveletekPlan | null = null
+  if (elteroCompact.length > 0) {
+    elteroPath = 'egyeztetes-eltero.json'
+    await self.fileEditor.writeFile(tenantId, workspaceId, {
+      path: elteroPath,
+      content: JSON.stringify(
+        {
+          parcelMeta: view.meta,
+          osszegzes: {
+            osszesSor: osszegzes.osszesSor,
+            rendben: osszegzes.rendben,
+            modositas: osszegzes.modositas,
+            torles: osszegzes.torles,
+            ujRekord: osszegzes.ujRekord,
+            bizonytalanParositas: osszegzes.bizonytalanParositas,
+          },
+          eltero: elteroCompact,
+        },
+        null,
+        2,
+      ),
+    })
+
+    // Determinisztikus Föld terv — a modell ne másolja kézzel a 80+ ownership id-t.
+    foldPlan = buildFoldMuveletekFromEltero({
+      eltero: elteroCompact,
+      parcelId: input.args.parcelId,
+    })
+    muveletekPath = 'fold_muveletek.json'
+    muveletekDb = foldPlan.summary.total
+    await self.fileEditor.writeFile(tenantId, workspaceId, {
+      path: muveletekPath,
+      content: JSON.stringify(foldPlan, null, 2),
+    })
+  }
+
+  let coverage: TulajdoniLapEgyeztetesResult['coverage'] = null
+  const coverageAppliedPath = input.args.coverageAppliedPath?.trim()
+  if (coverageAppliedPath && foldPlan) {
+    const appliedRaw = await readWorkspaceJson(self, tenantId, workspaceId, coverageAppliedPath)
+    assertAppliedSourceIsProposalExtract(coverageAppliedPath, muveletekPath, appliedRaw)
+    coverage = checkFoldMuveletekCoverage(foldPlan, extractAppliedOwnershipIds(appliedRaw))
+  } else if (coverageAppliedPath) {
+    // Nulla eltérés ebben a futásban → nincs tervezett PATCH/DELETE; ne követeljük
+    // a korábbi fold_muveletek.json-t (hiányában se dobjuk el a sikeres egyeztetést).
+    coverage = {
+      ok: true,
+      expected: 0,
+      applied: 0,
+      missing: [],
+      extra: [],
+      message: 'Nincs eltérő ownership — lefedettség triviálisan rendben.',
+    }
+  }
+
+  const FIGYELMET_MINTA = 20
+  const ELTERO_MINTA = 12
+  const egyeztetesForModel = {
+    ...osszegzes,
+    figyelmet_igenyel: osszegzes.figyelmet_igenyel.slice(0, FIGYELMET_MINTA),
+  }
+
+  const figyelmeztetes = [
+    view.figyelmeztetes,
+    completeness.warn ? completeness.indok : null,
+    coverage && !coverage.ok ? `Lefedettség: ${coverage.message}` : null,
+  ]
     .filter((part): part is string => Boolean(part?.trim()))
     .join(' ') || null
 
   return {
+    // A lap/párosítás sikere; a coverage külön mező (`coverage.ok`) — ne olvadjon
+    // össze a „hányad ≠ 1 → ne írj a Föld-be" kapuval.
     ok: true,
     figyelmeztetes,
     path,
     meta: view.meta,
     osszesites: view.osszesites,
-    egyeztetes: osszegzes,
-    eltero,
+    egyeztetes: egyeztetesForModel,
+    eltero: elteroCompact.slice(0, ELTERO_MINTA),
+    elteroPath,
+    elteroDb: elteroCompact.length,
+    muveletekPath,
+    muveletekDb,
+    coverage,
     szeljegyDb: parsed.szeljegyek.length,
+  }
+}
+
+async function readWorkspaceJson(
+  self: ToolBrokerService,
+  tenantId: string,
+  workspaceId: string,
+  path: string,
+): Promise<unknown> {
+  const content = await self.fileEditor.readTextFileOrNull(tenantId, workspaceId, { path })
+  if (content == null) {
+    throw new Error(`tulajdoni_lap_egyeztetes: a(z) "${path}" fájl nem található`)
+  }
+  try {
+    return JSON.parse(content)
+  } catch {
+    throw new Error(`tulajdoni_lap_egyeztetes: a(z) "${path}" nem érvényes JSON`)
+  }
+}
+
+/**
+ * A lefedettség-kapu csak akkor jelent bármit, ha a „mit írtunk ki" oldal
+ * tényleg a Föld proposal tételeiről szól. Ha a terv (vagy az eltérés-lista)
+ * megy be, a kapu magát igazolná — ezért itt megállunk, és megmondjuk, mit
+ * kell megadni helyette. Néma „hiányzik mind a N id" helyett érthető hiba.
+ */
+function assertAppliedSourceIsProposalExtract(
+  appliedPath: string,
+  muveletekPath: string | null,
+  appliedRaw: unknown,
+): void {
+  const same =
+    muveletekPath != null &&
+    appliedPath.trim().toLowerCase() === muveletekPath.trim().toLowerCase()
+  const reason = same
+    ? 'ugyanaz a fájl, mint a terv (coverageMuveletekPath)'
+    : describeInvalidAppliedSource(appliedRaw)
+  if (!reason) return
+  throw new Error(
+    `tulajdoni_lap_egyeztetes coverage: a(z) "${appliedPath}" nem használható ` +
+      `alkalmazott csomagként — ${reason}. Add meg a Föld proposal tételeinek ` +
+      'kivonatát (pl. proposal_items_extract.json: entityType + entityId + muvelet ' +
+      'soronként), vagy a ténylegesen kiírt ownership id-k listáját.',
+  )
+}
+
+async function runFoldMuveletekCoverageCheck(
+  self: ToolBrokerService,
+  input: {
+    tenantId: string
+    workspaceId: string
+    muveletekPath: string
+    appliedPath: string
+  },
+): Promise<TulajdoniLapEgyeztetesResult> {
+  const planRaw = await readWorkspaceJson(
+    self,
+    input.tenantId,
+    input.workspaceId,
+    input.muveletekPath,
+  )
+  const appliedRaw = await readWorkspaceJson(
+    self,
+    input.tenantId,
+    input.workspaceId,
+    input.appliedPath,
+  )
+  if (!planRaw || typeof planRaw !== 'object' || !Array.isArray((planRaw as FoldMuveletekPlan).items)) {
+    throw new Error(
+      `tulajdoni_lap_egyeztetes coverage: a(z) "${input.muveletekPath}" nem fold_muveletek terv (hiányzik az items tömb)`,
+    )
+  }
+  assertAppliedSourceIsProposalExtract(input.appliedPath, input.muveletekPath, appliedRaw)
+  const plan = planRaw as FoldMuveletekPlan
+  const coverage = checkFoldMuveletekCoverage(plan, extractAppliedOwnershipIds(appliedRaw))
+  return {
+    ok: coverage.ok,
+    figyelmeztetes: coverage.ok ? null : coverage.message,
+    path: null,
+    meta: {
+      oldalak: 0,
+      tipus: 'ismeretlen',
+    },
+    osszesites: {
+      resz2Osszes: 0,
+      resz2Hatalyos: 0,
+      resz2Torolt: 0,
+      resz3Osszes: 0,
+      resz3Hatalyos: 0,
+      szeljegyDb: 0,
+      egyediTulajdonos: 0,
+      hatalyosHanyadOsszeg: 'n/a',
+      hatalyosHanyadOsszegSzazalek: 0,
+      valid: true,
+      megjegyzes: 'coverage-only — nincs lap-parse',
+    },
+    egyeztetes: null,
+    eltero: [],
+    elteroPath: null,
+    elteroDb: 0,
+    muveletekPath: input.muveletekPath,
+    muveletekDb: plan.summary?.total ?? plan.items.length,
+    coverage,
+    szeljegyDb: 0,
   }
 }
 
@@ -2168,12 +2404,13 @@ async function resolveEgyeztetesNyilvantartas(
   let parsed: unknown
   try {
     // Nyers szöveg kell — a readFile sortáblázott (1\t…) kimenete NEM érvényes JSON.
-    // Legacy tool-outputs: korábban a modellnek szánt EXTERNAL_UNTRUSTED burkolat
-    // került a fájlba; azt is elfogadjuk, hogy a régi futások újraegyeztethetők legyenek.
-    parsed = JSON.parse(unwrapExternalDataEnvelope(content).trim())
+    // issue #195 D5 — a munkaterületre már csak burkolat NÉLKÜLI gépi adat kerül,
+    // ezért itt nincs mit kicsomagolni; egy régi, burkolt fájl hangosan elbukik.
+    parsed = JSON.parse(content.trim())
   } catch {
     throw new Error(
-      `tulajdoni_lap_egyeztetes: a(z) "${input.path}" fájl nem érvényes JSON (tömb vagy { sorok|items|data|…: [...] } kell)`,
+      `tulajdoni_lap_egyeztetes: a(z) "${input.path}" fájl nem érvényes JSON (tömb vagy { sorok|items|data|…: [...] } kell). ` +
+        'Ha ez egy régi tool-eredmény fájl, futtasd újra a forrás-eszközt — az új futás nyers, gépi adatot ír ki.',
     )
   }
   const rows = parseReconcileRecordList(parsed)

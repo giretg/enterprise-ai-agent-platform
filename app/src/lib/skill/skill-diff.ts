@@ -131,7 +131,13 @@ function diffRuntimeHints(
   after: SkillContent['runtimeHints'],
 ): SkillDiffChange[] {
   const changes: SkillDiffChange[] = []
-  const fields = ['maxWallClockMs', 'maxToolCalls', 'preferredMode', 'allowAttachments'] as const
+  const fields = [
+    'maxWallClockMs',
+    'maxToolCalls',
+    'preferredMode',
+    'allowAttachments',
+    'attachmentDescription',
+  ] as const
   for (const field of fields) {
     const a = before?.[field]
     const b = after?.[field]
@@ -147,7 +153,9 @@ function diffRuntimeHints(
             ? value === false
               ? 'tiltott'
               : 'engedett'
-            : String(value)
+            : field === 'attachmentDescription'
+              ? truncate(String(value))
+              : String(value)
     changes.push({
       category: 'runtimeHints',
       kind: a === undefined ? 'added' : b === undefined ? 'removed' : 'modified',

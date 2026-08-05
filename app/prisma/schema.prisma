@@ -193,6 +193,27 @@ enum ConnectorAccessMode {
   write
 }
 
+/// issue #220 — agent↔connector írás-bizalom a következmény-kapuhoz.
+/// `per_call` = mai viselkedés (minden író hívás külön kártya); `preapproved` = kapu-skip
+/// allowlistelt write(/danger) hívásokra, audit + opcionális szigorú fékekkel.
+enum WriteApprovalMode {
+  per_call
+  preapproved
+}
+
+/// `preapproved` trust mód: laza = csak audit; szigorú = hívásszám-limit + lejárat.
+enum PreapprovedTrustMode {
+  lax
+  strict
+}
+
+/// Opcionális címke: hol van a „valódi” emberi következmény-határ.
+/// Nem kapcsolja a kaput — UI javaslat az adminnak (issue #220).
+enum ConsequenceBoundary {
+  external_draft
+  platform
+}
+
 // ── Fázis 2: Provisioning Assistant (Connector Onboarding) ──────────────────
 // A connector életciklus-állapota. DEFAULT `active`, hogy a meglévő sorok
 // viselkedése változatlan maradjon; a draft-connector `draft|validated`
@@ -288,6 +309,16 @@ enum TrustClass {
   trusted
   internal
   external_untrusted
+}
+
+/// Eszközhívás kimenetele (issue #195 D1). Az `empty` és a `partial` NEM hiba,
+/// hanem tény: eddig épp az volt a baj, hogy a „sikeresen semmit nem csinált"
+/// eset `ok`-ként jelent meg (üres Excel, hiányzó sorok, néma adatvesztés).
+enum ToolOutcome {
+  ok
+  empty
+  partial
+  failed
 }
 
 enum ModelCallStatus {
@@ -821,13 +852,14 @@ model Agent {
   // (`agent_ask`, csatorna, agent API-kulcs, ticket-komment) nyitva maradnak.
   // Csak tenant admin írhatja, minden váltás auditált (`agent.task_only`).
   taskOnly                      Boolean     @default(false) @map("task_only")
-  // Agent-hozzáférési gráf kapcsolói (Access-Policy §agent-scope, C4 kompatibilitási
-  // alapérték). `inboundRestricted`: az agent FELÉ tartó view/address kapcsolat csak
-  // explicit `AgentAccessGrant`-tal engedett. `outboundRestricted`: az agentBŐL induló
-  // agent→agent view/address kapcsolat csak explicit granttal engedett. Alapérték
-  // false/false → korlátozás nélkül a tenanton belüli kapcsolat grant nélkül engedett
-  // (nincs migrációs élgenerálás, nincs shadow rollout).
-  inboundRestricted             Boolean     @default(false) @map("inbound_restricted")
+  // Agent-hozzáférési gráf kapcsolói.
+  // `inboundRestricted`: user→agent view/address csak explicit granttal.
+  // Üzleti alap: true — a tenant tagok kiinduló jogait `AgentAccessGrant` sorok
+  // hordozzák (mindenki látja/megszólíthatja, az admin pipával vesz el).
+  // Normál agent→agent utat NEM zárja (az a forrás `outboundRestricted`-je);
+  // Web-Egress célra az evaluate továbbra is grantot követel.
+  // `outboundRestricted`: agent→agent kimenő él csak explicit granttal.
+  inboundRestricted             Boolean     @default(true) @map("inbound_restricted")
   outboundRestricted            Boolean     @default(false) @map("outbound_restricted")
   selfEvolutionProfile          Json?       @map("self_evolution_profile")
   memoryId                      String      @unique @map("memory_id") @db.Uuid
@@ -993,6 +1025,8 @@ model RecipeVersion {
 model Skill {
   id           String            @id @default(uuid()) @db.Uuid
   name         String
+  /** Embernek szóló feladatnév (select / modál). Hiányzik → `name`. */
+  displayName  String?           @map("display_name")
   description  String // Level-0 index szöveg (méret-limitált)
   catalogScope SkillCatalogScope @default(tenant)
   tenantId     String?           @map("tenant_id") @db.Uuid // null ⇔ global
@@ -1613,6 +1647,9 @@ model Connector {
   activeSpecVersionId String?               @map("active_spec_version_id") @db.Uuid
   activeSpecVersion   ConnectorSpecVersion? @relation("ActiveSpecVersion", fields: [activeSpecVersionId], references: [id], onDelete: SetNull)
 
+  /// issue #220 — opcionális UI címke / admin-javaslat (NEM kapcsolja a kaput).
+  consequenceBoundary ConsequenceBoundary? @map("consequence_boundary")
+
   agentConnectors    AgentConnector[]
   toolCalls          ToolCall[]
   documents          Document[]
@@ -1753,6 +1790,17 @@ model AgentConnector {
   accessMode  ConnectorAccessMode @map("access_mode")
   secretAlias String?             @map("secret_alias")
 
+  /// issue #220 — írás-bizalom. Új `write` kötésnél default `per_call`.
+  writeApproval        WriteApprovalMode     @default(per_call) @map("write_approval")
+  /// Kötelező, ha `writeApproval = preapproved` (laza | szigorú).
+  preapprovedTrustMode PreapprovedTrustMode? @map("preapproved_trust_mode")
+  /// Szigorú módban kötelező; laza módban opcionális visszavonási határ.
+  preapprovedExpiresAt DateTime?             @map("preapproved_expires_at") @db.Timestamptz
+  /// Szigorú: max író hívás / futás (hard cap a domain rétegben).
+  preapprovedWriteLimit Int?                 @map("preapproved_write_limit")
+  /// Danger risk is skipelhető-e preapproved alatt. Default off.
+  dangerPreapproved    Boolean               @default(false) @map("danger_preapproved")
+
   agent     Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
 
@@ -1889,9 +1937,14 @@ model Conversation {
   channel           ChannelType?       @map("channel")
   channelExternalId String?            @map("channel_external_id")
 
-  agent           Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  createdBy       User             @relation("ConversationCreatedBy", fields: [createdById], references: [id])
-  retentionPolicy RetentionPolicy? @relation(fields: [retentionPolicyId], references: [id])
+  // Ticket → Megbeszélés (#219): új chat a ticket-szállal prior kontextusként.
+  // Nem az origin `ticket.conversationId`; egy tickethez több ilyen conversation is lehet.
+  continuedFromTicketId String? @map("continued_from_ticket_id") @db.Uuid
+
+  agent               Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  createdBy           User             @relation("ConversationCreatedBy", fields: [createdById], references: [id])
+  retentionPolicy     RetentionPolicy? @relation(fields: [retentionPolicyId], references: [id])
+  continuedFromTicket Ticket?          @relation("ConversationContinuedFromTicket", fields: [continuedFromTicketId], references: [id], onDelete: SetNull)
   messages             Message[]
   tickets              Ticket[]
   modelCalls           ModelCall[]
@@ -1904,6 +1957,7 @@ model Conversation {
   @@index([tenantId, createdById])
   @@index([retainUntil, legalHold])
   @@index([channel, channelExternalId])
+  @@index([continuedFromTicketId])
   @@map("conversations")
 }
 
@@ -1911,7 +1965,8 @@ model Conversation {
 /// args-ával. Jóváhagyáskor a szerver egyszer lefuttatja a toolt (agent újraindítás nélkül).
 model ConsequenceApproval {
   id             String                     @id @default(uuid()) @db.Uuid
-  conversationId String                     @map("conversation_id") @db.Uuid
+  /// Chat-kötött jóváhagyás. Task-only ticketnél null — ilyenkor a `ticketId` kötelező.
+  conversationId String?                    @map("conversation_id") @db.Uuid
   agentId        String                     @map("agent_id") @db.Uuid
   agentVersion   Int                        @map("agent_version")
   tenantId       String?                    @map("tenant_id") @db.Uuid
@@ -1931,10 +1986,12 @@ model ConsequenceApproval {
   createdAt      DateTime                   @default(now()) @map("created_at") @db.Timestamptz
   updatedAt      DateTime                   @updatedAt @map("updated_at") @db.Timestamptz
 
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  agent        Agent        @relation("ConsequenceApprovalAgent", fields: [agentId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  ticket       Ticket?       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  agent        Agent         @relation("ConsequenceApprovalAgent", fields: [agentId], references: [id], onDelete: Cascade)
 
   @@index([conversationId, status])
+  @@index([ticketId, status])
   @@index([agentId, status])
   @@index([expiresAt, status])
   @@map("consequence_approvals")
@@ -2019,6 +2076,8 @@ model AgentTurn {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  // issue #180 WP-2 — a fordulóhoz kötött modellhívások (per-forduló költség).
+  modelCalls   ModelCall[]
 
   @@index([conversationId, status])
   @@index([status, heartbeatAt])
@@ -2347,6 +2406,7 @@ model Ticket {
   sourceDocument                Document?           @relation(fields: [sourceDocumentId], references: [id])
   conversation                  Conversation?       @relation(fields: [conversationId], references: [id])
   createdBy                     User                @relation("TicketCreatedBy", fields: [createdById], references: [id])
+  discussionConversations       Conversation[]      @relation("ConversationContinuedFromTicket")
   modelCalls                    ModelCall[]
   toolCalls                     ToolCall[]
   writeGateTokens               WriteGateToken[]
@@ -2357,6 +2417,7 @@ model Ticket {
   linkedMessages                Message[]
   scheduledTaskMaterializations ScheduledTask[]
   comments                      TicketComment[]
+  consequenceApprovals          ConsequenceApproval[]
 
   @@index([source, state])
   @@index([tenantId, state])
@@ -2590,10 +2651,20 @@ model ModelCall {
   agentVersion     Int?            @map("agent_version")
   ticketId         String?         @map("ticket_id") @db.Uuid
   conversationId   String?         @map("conversation_id") @db.Uuid
+  // issue #180 WP-2 — MELYIK FORDULÓ költötte el. E nélkül egy drága futás
+  // per-forduló költségét csak időbélyeg-illesztéssel lehetett szétszedni; ezzel
+  // egyetlen `group by agent_turn_id` megadja. Nullable: a ticket/task úton és a
+  // bevezetés előtti rekordokon nincs forduló-rekord.
+  agentTurnId      String?         @map("agent_turn_id") @db.Uuid
   provider         String
   model            String
   promptTokens     Int             @map("prompt_tokens")
   completionTokens Int             @map("completion_tokens")
+  // issue #180 WP-2 — a prompt-cache-ből (töredék áron) kiszolgált prompt-tokenek.
+  // A gateway eddig csak metrikába és naplóba tette, a rekordba nem — így utólag
+  // nem volt eldönthető, fogott-e a cache. `null` = a provider nem ad cache-adatot
+  // („nincs adat" ≠ „nem volt találat").
+  cachedPromptTokens Int?          @map("cached_prompt_tokens")
   costEstimate     Decimal         @map("cost_estimate") @db.Decimal(12, 6)
   latencyMs        Int             @default(0) @map("latency_ms")
   status           ModelCallStatus @default(ok)
@@ -2602,11 +2673,14 @@ model ModelCall {
   agent        Agent         @relation(fields: [agentId], references: [id])
   ticket       Ticket?       @relation(fields: [ticketId], references: [id])
   conversation Conversation? @relation(fields: [conversationId], references: [id])
+  agentTurn    AgentTurn?    @relation(fields: [agentTurnId], references: [id], onDelete: SetNull)
 
   @@index([createdAt])
   @@index([agentId, createdAt])
   @@index([ticketId])
   @@index([conversationId])
+  // „mennyibe került ez a forduló?" — a per-forduló összesítés egyetlen indexelt lekérdezés.
+  @@index([agentTurnId])
   @@map("model_calls")
 }
 
@@ -2685,6 +2759,14 @@ model ToolCall {
   // audit-lekérdezéshez: „mely futásokat befolyásolt külső tartalom?"). A
   // bevezetés utáni hívásokra töltődik; meglévő rekordokon null.
   trustClass     TrustClass?    @map("trust_class")
+  // issue #195 — a hívás KIMENETELE a kikényszerített kimeneti szerződés szerint.
+  // Ez teszi megválaszolhatóvá: „melyik eszköz ad a leggyakrabban üres vagy
+  // részleges eredményt?" — vagyis melyik eszközt kell javítani. A bevezetés utáni
+  // hívásokra töltődik; meglévő rekordokon null.
+  outcome        ToolOutcome?   @map("outcome")
+  // issue #195 D4 — a MÉRT mellékhatás összegzése (mennyiség + egység + cél).
+  // „Sikeresen írtam" állítás önmagában nem elfogadható kimenet.
+  effectSummary  Json?          @map("effect_summary")
   createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
 
   agent        Agent         @relation(fields: [agentId], references: [id])
@@ -2693,6 +2775,8 @@ model ToolCall {
   connector    Connector?    @relation(fields: [connectorId], references: [id])
 
   @@index([trustClass, createdAt])
+  // issue #195 — „melyik eszköz ad a leggyakrabban empty/partial/failed eredményt?"
+  @@index([outcome, toolName, createdAt])
   @@index([createdAt])
   @@index([agentId, createdAt])
   @@index([ticketId])

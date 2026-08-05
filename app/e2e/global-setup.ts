@@ -13,6 +13,7 @@ import { prisma } from '../src/lib/db'
 
 async function globalSetup() {
   process.env.FILE_EDITOR_STUB = 'true'
+  process.env.FILE_EDITOR_STUB_MEMORY = 'true'
 
   const operator = await prisma.user.findFirst({
     where: { externalAuthId: process.env.DEV_AUTH_USER_ID ?? 'dev-user-001' },

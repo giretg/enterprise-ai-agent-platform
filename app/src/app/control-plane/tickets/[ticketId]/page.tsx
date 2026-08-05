@@ -12,9 +12,11 @@ import {
   type TicketStartableProcessDefinition,
 } from '@/components/tickets/ticket-detail'
 import { TicketThread } from '@/components/tickets/ticket-thread'
+import { TicketConsequenceApprovals } from '@/components/tickets/ticket-consequence-approvals'
 import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
 import { TicketHistory } from '@/components/tickets/ticket-history'
 import { TicketActivityHistory } from '@/components/tickets/ticket-activity-history'
+import { canDeleteBoardTicket } from '@/lib/ticket-display'
 
 export default async function TicketDetailPage({
   params,
@@ -37,6 +39,11 @@ export default async function TicketDetailPage({
   const isAdmin = hasMinimumRole(ctx?.activeTenantRole, 'admin')
   const canManageRunAs = hasMinimumRole(ctx?.activeTenantRole, 'operator')
   const canStartProcess = hasMinimumRole(ctx?.activeTenantRole, 'operator')
+  const deleteInfo = canDeleteBoardTicket(ticket, {
+    isAdmin,
+    canManage: canManageRunAs,
+    userId: ctx?.user.id,
+  })
   const definitions: TicketStartableProcessDefinition[] =
     canStartProcess && definitionsRes.success
       ? definitionsRes.data
@@ -58,12 +65,28 @@ export default async function TicketDetailPage({
 
   return (
     <div className="space-y-6">
-      <TicketMeta ticket={ticket} isAdmin={isAdmin} canDispatch={canManageRunAs} />
+      <TicketMeta
+        ticket={ticket}
+        isAdmin={isAdmin}
+        canDispatch={canManageRunAs}
+        canDelete={deleteInfo.allowed}
+        isAdminDelete={deleteInfo.isAdminDelete}
+      />
 
-      {/* Fő sáv: mi történik most → mit kell döntened → a beszélgetés.
-          Oldalsáv: kísérő adatok (fájlok, engedélyek, előzmények). */}
+      {/* Fő sáv: primer akció (jóváhagyás) → kontextus (szál) → aktivitás.
+          Oldalsáv: kísérő adatok (fájlok, engedélyek, állapot-előzmények). */}
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] xl:grid-cols-[minmax(0,1fr)_23rem]">
         <div className="min-w-0 space-y-6">
+          {/* Feltétel nélkül renderelve: a kártyák a futás KÖZBEN születnek, és a
+              komponens maga tölti újra a listát — feltételes mountnál a nulláról
+              induló lista sosem frissülne magától. */}
+          <TicketConsequenceApprovals
+            initial={ticket.pendingConsequenceApprovals ?? []}
+            ticketId={ticket.id}
+            ticketState={ticket.state}
+          />
+          <TicketThread ticket={ticket} comments={commentsRes.success ? commentsRes.data : []} />
+          <TicketActions ticket={ticket} />
           <TicketActivityHistory
             ticket={{
               id: ticket.id,
@@ -73,8 +96,6 @@ export default async function TicketDetailPage({
               lockedAt: ticket.lockedAt,
             }}
           />
-          <TicketActions ticket={ticket} />
-          <TicketThread ticket={ticket} comments={commentsRes.success ? commentsRes.data : []} />
         </div>
 
         <aside className="min-w-0 space-y-6">

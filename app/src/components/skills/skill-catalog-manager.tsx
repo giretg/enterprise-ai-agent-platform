@@ -5,6 +5,8 @@ import { useEffect, useState, useTransition } from 'react'
 import {
   importSkillMdAction,
   createSkillAction,
+  updateSkillDisplayNameAction,
+  updateSkillDescriptionAction,
   approveSkillVersionAction,
   rollbackSkillVersionAction,
   deactivateSkillAction,
@@ -24,9 +26,13 @@ import type { SkillDiff } from '@/lib/skill/skill-diff'
 import type { SkillParameter, SkillRuntimeHints } from '@/lib/skill/skill-content'
 import {
   SKILL_RUNTIME_HINT_LIMITS,
+  SKILL_ATTACHMENT_DESCRIPTION_MAX,
+  SKILL_DESCRIPTION_MAX,
+  SKILL_NAME_MAX,
   clampSkillRuntimeHints,
 } from '@/lib/skill/skill-content'
 import { NORMAL_TOOL_CAPABILITY_GROUPS } from '@/lib/tool-capability-catalog'
+import { skillDisplayLabel } from '@/lib/skill/skill-name'
 
 const STATUS_TONE: Record<string, 'neutral' | 'success' | 'warning' | 'danger'> = {
   proposed: 'warning',
@@ -91,6 +97,8 @@ type RuntimeHintsDraft = {
   preferredMode: '' | 'chat' | 'task'
   /** #199 — csatolható-e fájl a skillhez kötött feladathoz. Alapérték: igen. */
   allowAttachments: boolean
+  /** Várt csatolmány leírása — a feladat-indító űrlapon jelenik meg. */
+  attachmentDescription: string
 }
 
 const EMPTY_RUNTIME_HINTS: RuntimeHintsDraft = {
@@ -98,6 +106,7 @@ const EMPTY_RUNTIME_HINTS: RuntimeHintsDraft = {
   toolCalls: '',
   preferredMode: '',
   allowAttachments: true,
+  attachmentDescription: '',
 }
 
 function runtimeHintsToDraft(hints: SkillRuntimeHints | undefined): RuntimeHintsDraft {
@@ -107,6 +116,7 @@ function runtimeHintsToDraft(hints: SkillRuntimeHints | undefined): RuntimeHints
     preferredMode: hints?.preferredMode ?? '',
     // Hiányzó érték = engedett (visszafelé kompatibilitás a meglévő skillekkel).
     allowAttachments: hints?.allowAttachments !== false,
+    attachmentDescription: hints?.attachmentDescription ?? '',
   }
 }
 
@@ -118,6 +128,7 @@ function draftToRuntimeHints(draft: RuntimeHintsDraft): SkillRuntimeHints | unde
     maxToolCalls: draft.toolCalls.trim() && Number.isFinite(calls) ? calls : null,
     preferredMode: draft.preferredMode === '' ? null : draft.preferredMode,
     allowAttachments: draft.allowAttachments ? null : false,
+    attachmentDescription: draft.allowAttachments ? draft.attachmentDescription : null,
   })
 }
 
@@ -130,6 +141,7 @@ function describeRuntimeHints(hints: SkillRuntimeHints | undefined): string | nu
   if (hints.preferredMode === 'task') parts.push('a boardon fut')
   else if (hints.preferredMode === 'chat') parts.push('chatben fut')
   if (hints.allowAttachments === false) parts.push('nem csatolható fájl')
+  if (hints.attachmentDescription) parts.push('csatolmány-leírás')
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
@@ -232,7 +244,13 @@ function SkillRuntimeHintsFields({
         <input
           type="checkbox"
           checked={draft.allowAttachments}
-          onChange={(e) => onChange({ ...draft, allowAttachments: e.target.checked })}
+          onChange={(e) =>
+            onChange({
+              ...draft,
+              allowAttachments: e.target.checked,
+              ...(!e.target.checked ? { attachmentDescription: '' } : {}),
+            })
+          }
           className="mt-0.5"
         />
         <span>
@@ -244,6 +262,23 @@ function SkillRuntimeHintsFields({
           </span>
         </span>
       </label>
+      {draft.allowAttachments && (
+        <label className="mt-3 block text-[11px] text-ink-faint">
+          Milyen fájlt várunk?
+          <textarea
+            value={draft.attachmentDescription}
+            onChange={(e) => onChange({ ...draft, attachmentDescription: e.target.value })}
+            maxLength={SKILL_ATTACHMENT_DESCRIPTION_MAX}
+            rows={2}
+            placeholder="Pl.: Excel táblázat az értékesítési adatokkal, PDF formátumú számla…"
+            className="mt-1 w-full rounded-lg border border-ink-faint/30 bg-transparent px-2 py-1.5 text-sm text-ink"
+          />
+          <span className="mt-1 block">
+            Ez a szöveg a feladat-indító űrlapon a fájlcsatolás fölött jelenik meg, és elmagyarázza
+            a felhasználónak, milyen csatolmányt érdemes feltölteni.
+          </span>
+        </label>
+      )}
     </div>
   )
 }
@@ -287,9 +322,12 @@ type DiffResult = {
 export function SkillCatalogManager({
   skills,
   isAdmin,
+  isPlatformAdmin = false,
 }: {
   skills: SkillCatalogEntry[]
   isAdmin: boolean
+  /** Global skill meta/verzió írásához kell — tenant-admin önmagában nem elég. */
+  isPlatformAdmin?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -332,15 +370,22 @@ export function SkillCatalogManager({
           <p className="text-sm text-ink-faint">Még nincs skill a katalógusban.</p>
         ) : (
           <ul className="space-y-4">
-            {skills.map((s) => (
+            {skills.map((s) => {
+              // Global skillt csak platform-admin írhat — a szerver is ezt kapuzza.
+              const canWriteSkill =
+                isAdmin && (s.catalogScope === 'tenant' || isPlatformAdmin)
+              return (
               <li key={s.id} className="atelier-soft p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
-                    <span className="font-medium text-ink">{s.name}</span>
+                    <span className="font-medium text-ink">{skillDisplayLabel(s)}</span>
+                    {s.displayName?.trim() && s.displayName.trim() !== s.name ? (
+                      <span className="ml-2 font-mono text-[11px] text-ink-faint">{s.name}</span>
+                    ) : null}
                     <span className="ml-2 text-xs uppercase text-ink-faint">{s.riskTier}</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    {isAdmin && (
+                    {canWriteSkill && (
                       <>
                         <button
                           type="button"
@@ -359,7 +404,7 @@ export function SkillCatalogManager({
                             onClick={() =>
                               run(
                                 () => deactivateSkillAction(s.id),
-                                `„${s.name}” deaktiválva — nem hozzárendelhető új agentekhez.`,
+                                `„${skillDisplayLabel(s)}” deaktiválva — nem hozzárendelhető új agentekhez.`,
                               )
                             }
                             className="rounded-full border border-honey/40 px-3 py-1 text-xs font-medium text-honey disabled:opacity-50"
@@ -373,14 +418,14 @@ export function SkillCatalogManager({
                           onClick={() => {
                             if (
                               !window.confirm(
-                                `Biztosan törlöd a „${s.name}” skillt és az összes verzióját? Csak hozzárendelés nélkül lehetséges.`,
+                                `Biztosan törlöd a „${skillDisplayLabel(s)}” skillt és az összes verzióját? Csak hozzárendelés nélkül lehetséges.`,
                               )
                             ) {
                               return
                             }
                             run(
                               () => deleteSkillAction(s.id),
-                              `„${s.name}” törölve a katalógusból.`,
+                              `„${skillDisplayLabel(s)}” törölve a katalógusból.`,
                             )
                           }}
                           className="rounded-full border border-coral/40 px-3 py-1 text-xs font-medium text-coral disabled:opacity-50"
@@ -394,14 +439,21 @@ export function SkillCatalogManager({
                     {s.license && <Badge tone="neutral">{s.license}</Badge>}
                   </div>
                 </div>
-                <p className="mt-1 text-xs text-ink-soft">{s.description}</p>
+                {canWriteSkill && (
+                  <SkillDisplayNameEditor skill={s} running={pending} onRun={run} />
+                )}
+                {canWriteSkill ? (
+                  <SkillDescriptionEditor skill={s} running={pending} onRun={run} />
+                ) : (
+                  <p className="mt-1 text-xs text-ink-soft">{s.description}</p>
+                )}
                 {describeRuntimeHints(s.runtimeHints) && (
                   <p className="mt-1 text-[11px] text-ink-faint">
                     Futási keret: {describeRuntimeHints(s.runtimeHints)}
                   </p>
                 )}
 
-                {isAdmin && editingSkillId === s.id && (
+                {canWriteSkill && editingSkillId === s.id && (
                   <EditSkillVersionForm
                     skill={s}
                     running={pending}
@@ -428,7 +480,7 @@ export function SkillCatalogManager({
                           {v.contentHash.slice(0, 10)}…
                         </span>
                       </div>
-                      {isAdmin && (
+                      {canWriteSkill && (
                         <div className="flex flex-wrap items-center gap-2">
                           {(v.status === 'proposed' || v.status === 'approved') && (
                             <>
@@ -469,7 +521,8 @@ export function SkillCatalogManager({
                   ))}
                 </ul>
               </li>
-            ))}
+              )
+            })}
           </ul>
         )}
       </Card>
@@ -823,7 +876,7 @@ function ImportSkillForm({
         value={raw}
         onChange={(e) => setRaw(e.target.value)}
         rows={8}
-        placeholder="---&#10;name: ...&#10;description: ...&#10;---&#10;# Áttekintés"
+        placeholder="---&#10;name: ...&#10;title: Megjelenített feladatnév&#10;description: ...&#10;---&#10;# Áttekintés"
         className="w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 font-mono text-xs"
       />
       <input
@@ -871,6 +924,153 @@ function ImportSkillForm({
   )
 }
 
+function SkillDisplayNameEditor({
+  skill,
+  running,
+  onRun,
+}: {
+  skill: SkillCatalogEntry
+  running: boolean
+  onRun: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
+}) {
+  // A props-ból jövő érték mellett helyi „utolsó sikeres mentés” — ha a
+  // router.refresh() régi Prisma-klienssel üresen jön vissza, ne törölje a mezőt.
+  const propSaved = skill.displayName ?? ''
+  const [committed, setCommitted] = useState(propSaved)
+  const [value, setValue] = useState(propSaved)
+  const propEpoch = `${skill.id}\0${propSaved}`
+  const [appliedEpoch, setAppliedEpoch] = useState(propEpoch)
+
+  // Prop-csere: render közben szinkronizálunk (ne setState-in-effect).
+  // Üres props + meglévő committed = stale Prisma-read a refresh után — ne wipe-oljuk.
+  // Nem-üres props mindig nyer (szerver az igazság).
+  if (propEpoch !== appliedEpoch) {
+    setAppliedEpoch(propEpoch)
+    if (propSaved.trim() || !committed.trim()) {
+      setCommitted(propSaved)
+      setValue(propSaved)
+    }
+  }
+
+  const dirty = value.trim() !== committed.trim()
+
+  return (
+    <div className="mt-2 space-y-1">
+      <label
+        htmlFor={`skill-display-name-${skill.id}`}
+        className="block text-[11px] font-medium text-ink-faint"
+      >
+        Megjelenített név
+      </label>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          id={`skill-display-name-${skill.id}`}
+          value={value}
+          maxLength={SKILL_NAME_MAX}
+          disabled={running}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="Feladatválasztóban megjelenő név (üres = technikai név)"
+          className="min-w-[14rem] flex-1 rounded-lg border border-ink-faint/30 bg-transparent px-3 py-1.5 text-sm text-ink"
+        />
+        <button
+          type="button"
+          disabled={running || !dirty}
+          onClick={() =>
+            onRun(async () => {
+              const res = await updateSkillDisplayNameAction({
+                skillId: skill.id,
+                displayName: value.trim() || null,
+              })
+              if (res.success) {
+                const next = res.data.displayName ?? ''
+                setCommitted(next)
+                setValue(next)
+              }
+              return res
+            }, value.trim()
+              ? `Megjelenített név mentve: „${value.trim()}”.`
+              : 'Megjelenített név törölve — a select a technikai nevet mutatja.')
+          }
+          className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-medium text-ink-soft disabled:opacity-50"
+        >
+          Mentés
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SkillDescriptionEditor({
+  skill,
+  running,
+  onRun,
+}: {
+  skill: SkillCatalogEntry
+  running: boolean
+  onRun: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
+}) {
+  const saved = skill.description
+  const [value, setValue] = useState(saved)
+  const propEpoch = `${skill.id}\0${saved}`
+  const [appliedEpoch, setAppliedEpoch] = useState(propEpoch)
+
+  // Prop-csere: render közben szinkronizálunk (ne setState-in-effect).
+  if (propEpoch !== appliedEpoch) {
+    setAppliedEpoch(propEpoch)
+    setValue(saved)
+  }
+
+  const trimmed = value.trim()
+  const dirty = trimmed !== saved.trim()
+  const tooLong = trimmed.length > SKILL_DESCRIPTION_MAX
+  const empty = trimmed.length === 0
+
+  return (
+    <div className="mt-2 space-y-1.5">
+      <label
+        htmlFor={`skill-description-${skill.id}`}
+        className="block text-[11px] font-medium text-ink-faint"
+      >
+        Leírás (Level-0 index)
+      </label>
+      <textarea
+        id={`skill-description-${skill.id}`}
+        key={`description-${skill.id}-${saved.slice(0, 32)}`}
+        value={value}
+        maxLength={SKILL_DESCRIPTION_MAX}
+        disabled={running}
+        rows={3}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="Rövid leírás — a skill-választó / katalógus mutatja betöltés előtt"
+        className="w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-xs text-ink"
+      />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className={`text-[11px] ${tooLong || empty ? 'text-coral' : 'text-ink-faint'}`}>
+          {trimmed.length}/{SKILL_DESCRIPTION_MAX}
+          {empty ? ' — nem lehet üres' : ''}
+        </span>
+        <button
+          type="button"
+          disabled={running || !dirty || empty || tooLong}
+          onClick={() =>
+            onRun(
+              () =>
+                updateSkillDescriptionAction({
+                  skillId: skill.id,
+                  description: trimmed,
+                }),
+              'Leírás mentve.',
+            )
+          }
+          className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-medium text-ink-soft disabled:opacity-50"
+        >
+          Leírás mentése
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function CreateSkillForm({
   running,
   onRun,
@@ -879,6 +1079,7 @@ function CreateSkillForm({
   onRun: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
 }) {
   const [name, setName] = useState('')
+  const [displayName, setDisplayName] = useState('')
   const [description, setDescription] = useState('')
   const [instructions, setInstructions] = useState('')
   const [triggerKeywordsRaw, setTriggerKeywordsRaw] = useState('')
@@ -895,6 +1096,7 @@ function CreateSkillForm({
     const hints = draftToRuntimeHints(runtimeHints)
     return createSkillAction({
       name,
+      displayName: displayName.trim() || null,
       description,
       scope: 'tenant',
       content: {
@@ -916,8 +1118,15 @@ function CreateSkillForm({
       <input
         value={name}
         onChange={(e) => setName(e.target.value)}
-        placeholder="Skill neve"
+        placeholder="Skill neve (technikai azonosító)"
         className="w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-sm"
+      />
+      <input
+        value={displayName}
+        onChange={(e) => setDisplayName(e.target.value)}
+        maxLength={SKILL_NAME_MAX}
+        placeholder="Megjelenített név (feladatválasztó, opcionális)"
+        className="mt-2 w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-sm"
       />
       <input
         value={description}

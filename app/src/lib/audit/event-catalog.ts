@@ -28,6 +28,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'tenant.member.role.change',
   'tenant.member.suspend',
   'tenant.member.invite_accept',
+  'tenant.language.update',
+  // Szerepkörönkénti fejléc-menü kurálás (Menü-hozzáférés). A metadata a teljes
+  // előtte/utána policy-t hordozza, hogy a döntés visszakereshető legyen.
+  'tenant.nav_visibility.update',
   'tenant.oauth.google.update',
   'tenant.self_update.policy.update',
   'user.authz.deny',
@@ -66,6 +70,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent_access.grant.create',
   'agent_access.grant.revoke',
   'agent_access.restriction.update',
+  // Tenant user↔agent kiinduló jogmátrix (minden tag látja/megszólíthatja a tenant agenteket).
+  'agent_access.default_grants.materialize',
   // Tenant admin: agent elrejtése / megjelenítése az operátorok listájából.
   'agent.operator_visibility',
   'agent.persona',
@@ -306,6 +312,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'ticket.comment.add',
   'ticket.comment.attachment.uploaded',
   'ticket.debug_log.export',
+  'ticket.delete',
   'ticket.handback',
   'ticket.runas.authorize',
   'ticket.runas.revoke',
@@ -325,6 +332,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // Skill-katalógus (skill-catalog-spec.md, WP-7)
   'skill.imported',
   'skill.created',
+  'skill.display_name_updated',
+  'skill.description_updated',
   'skill.version.proposed',
   'skill.version.reviewed',
   'skill.version.approved',

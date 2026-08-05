@@ -44,7 +44,11 @@ import {
   mergedEnabledForAgent,
   planAgentSkillMigrations,
 } from '../src/lib/skill/skill-agent-migration'
-import { normalizeSkillName, skillNamesEqual } from '../src/lib/skill/skill-name'
+import {
+  normalizeSkillName,
+  skillDisplayLabel,
+  skillNamesEqual,
+} from '../src/lib/skill/skill-name'
 import {
   appendSkillSlashToken,
   filterSkillsForSlashQuery,
@@ -96,6 +100,7 @@ async function main() {
 
     const parsed = parseSkillMd(raw, { url: 'https://example.com/skill' })
     assert.equal(parsed.name, 'Reconciliation Checklist')
+    assert.equal(parsed.displayName, null)
     assert.equal(parsed.license, 'MIT')
     assert.equal(parsed.content.instructions.length, 2, 'két szekció (## fejlécek mentén)')
     assert.deepEqual(
@@ -107,12 +112,42 @@ async function main() {
     assert.equal(parsed.originalHash.length, 64)
   })
 
+  await check('frontmatter title → displayName', () => {
+    const parsed = parseSkillMd(
+      [
+        '---',
+        'name: tulajdoni-lap-crm-frissites',
+        'title: Tulajdoni lap → CRM frissítés',
+        'description: CRM frissítés tulajdoni lap alapján.',
+        '---',
+        'Csináld.',
+      ].join('\n'),
+    )
+    assert.equal(parsed.name, 'tulajdoni-lap-crm-frissites')
+    assert.equal(parsed.displayName, 'Tulajdoni lap → CRM frissítés')
+  })
+
+  await check('frontmatter display-name alias → displayName', () => {
+    const parsed = parseSkillMd(
+      [
+        '---',
+        'name: slug-skill',
+        'display-name: Emberi címke',
+        'description: Leírás.',
+        '---',
+        'Törzs.',
+      ].join('\n'),
+    )
+    assert.equal(parsed.displayName, 'Emberi címke')
+  })
+
   await check('bájt-hash determinisztikus, frontmatter nélküli törzs egy blokk', () => {
     const a = parseSkillMd('csak törzs, nincs frontmatter')
     const b = parseSkillMd('csak törzs, nincs frontmatter')
     assert.equal(a.originalHash, b.originalHash)
     assert.equal(a.content.instructions.length, 1)
     assert.equal(a.name, 'Untitled skill')
+    assert.equal(a.displayName, null)
   })
 
   await check('inline + blokk lista frontmatter parse', () => {
@@ -689,6 +724,16 @@ async function main() {
     assert.equal(normalizeSkillName('  x  '), 'x')
   })
 
+  await check('skillDisplayLabel: displayName vagy fallback name', () => {
+    assert.equal(
+      skillDisplayLabel({ name: 'slug', displayName: 'Emberi név' }),
+      'Emberi név',
+    )
+    assert.equal(skillDisplayLabel({ name: 'slug', displayName: '  ' }), 'slug')
+    assert.equal(skillDisplayLabel({ name: 'slug', displayName: null }), 'slug')
+    assert.equal(skillDisplayLabel({ name: 'slug' }), 'slug')
+  })
+
   console.log('Skill tanácsadó LLM-review (WP-3 §D5)')
 
   await check('parseReviewOutput: érvényes JSON → advisory review', () => {
@@ -1051,6 +1096,12 @@ async function main() {
     assert.ok(
       systemPrompts.some((p) => p.includes('eszköz-hatóköre szűkebb')),
       'a modell előre megkapja a szűkítést, nem csak az elutasításból tudja meg',
+    )
+    assert.ok(
+      systemPrompts.some(
+        (p) => p.includes('tool_result_read') && p.includes('tool_result_extract') && p.includes('infrastruktúra'),
+      ),
+      'a skill-hatókör mellett az infra-eszközök (extract/read) továbbra is jelezve vannak',
     )
     assert.equal(result.deniedCount, 1, 'a hívás elutasításra került')
     assert.ok(result.content.includes('Nem tudom elvégezni.'))

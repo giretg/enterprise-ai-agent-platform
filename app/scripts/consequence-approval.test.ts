@@ -7,6 +7,8 @@ import type { ConsequenceApproval, ConsequenceApprovalStatus } from '@prisma/cli
 import {
   ConsequenceApprovalService,
   CONSEQUENCE_APPROVAL_TTL_MS,
+  CONSEQUENCE_APPROVAL_TICKET_TTL_MS,
+  CONSEQUENCE_APPROVAL_TICKET_VISIBILITY_MS,
   CONSEQUENCE_APPROVAL_VISIBILITY_MS,
 } from '../src/domain/tool-broker/consequence-approval-service'
 import type { ToolBrokerInvokeInput } from '../src/domain/tool-broker/tool-broker-types'
@@ -16,7 +18,9 @@ import type {
   AuditRepository,
   ConsequenceApprovalRepository,
   ConversationRepository,
+  TicketRepository,
 } from '../src/repositories/interfaces'
+import { fakeToolBrokerDenied, fakeToolBrokerSuccess } from './fixtures/tool-broker-result'
 
 let failures = 0
 async function test(name: string, fn: () => Promise<void> | void) {
@@ -27,6 +31,16 @@ async function test(name: string, fn: () => Promise<void> | void) {
     failures++
     console.error(`FAIL  ${name}\n      ${e instanceof Error ? e.message : String(e)}`)
   }
+}
+
+/** Kulcssorrendtől független JSON-alak — a Postgres jsonb-egyenlőség utánzása. */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null)
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  )
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`
 }
 
 function memoryRepo(): ConsequenceApprovalRepository & {
@@ -62,6 +76,37 @@ function memoryRepo(): ConsequenceApprovalRepository & {
             row.createdAt.getTime() > createdAfter.getTime(),
         )
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+    },
+    async listOpenByTicket(ticketId, createdAfter) {
+      lastCreatedAfter.value = createdAfter
+      return [...rows.values()]
+        .filter(
+          (row) =>
+            row.ticketId === ticketId &&
+            (row.status === 'pending' || row.status === 'approved') &&
+            row.createdAt.getTime() > createdAfter.getTime(),
+        )
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+    },
+    async findOpenDuplicate(input) {
+      if (!input.conversationId && !input.ticketId) return null
+      // A valódi repo jsonb-egyenlőséget használ: az KULCSSORRENDTŐL FÜGGETLEN.
+      // A fake-nek ugyanígy kell viselkednie, különben zöld tesztet adna egy
+      // olyan dedupra, ami élesben nem fog egyezni (vagy fordítva).
+      const canonical = canonicalJson(input.args ?? null)
+      return (
+        [...rows.values()]
+          .filter(
+            (row) =>
+              (input.conversationId ? row.conversationId === input.conversationId : true) &&
+              (input.ticketId ? row.ticketId === input.ticketId : true) &&
+              row.toolName === input.toolName &&
+              row.status === 'pending' &&
+              row.expiresAt.getTime() > input.now.getTime() &&
+              canonicalJson(row.args ?? null) === canonical,
+          )
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0] ?? null
+      )
     },
     async casUpdateStatus(id, expectedStatus, patch) {
       const row = rows.get(id)
@@ -121,22 +166,15 @@ function fakeBroker(
       }
       if (denyLeft > 0) {
         denyLeft -= 1
-        return {
-          denied: true,
-          reason: 'policy_denied',
-          trust: 'trusted' as const,
-          result: null,
-          resultMeta: {},
-          latencyMs: 1,
-        }
+        return fakeToolBrokerDenied('policy_denied')
       }
-      return {
-        denied: false,
-        trust: 'trusted' as const,
-        result: result !== undefined ? result : { path: (input.args as { path?: string }).path ?? 'ok.xlsx' },
-        resultMeta: {},
-        latencyMs: 1,
-      }
+      // issue #195 — a dublőr a broker VALÓDI alakját adja. A `xlsx_create`
+      // szerződése a mért hatást (`sheets`) kéri, nem a puszta útvonalat.
+      const output =
+        result !== undefined
+          ? result
+          : { path: (input.args as { path?: string }).path ?? 'ok.xlsx', sheets: 1 }
+      return fakeToolBrokerSuccess(input.tool, output, 'trusted')
     },
   } as unknown as ToolBrokerService
 }
@@ -147,6 +185,8 @@ function buildService(opts?: {
   conversationTenantId?: string | null
   /** Az agent tenantja; `null` = platform-szintű, minden tenantból elérhető. */
   agentTenantId?: string | null
+  /** Ticket tenant (task-only jóváhagyás). */
+  ticketTenantId?: string | null
   /** A broker által visszaadott eredmény (a hossz-korlát teszteléséhez). */
   brokerResult?: unknown
   /** Hányszor dobjon kivételt az invoke (az Újrapróbálom ág teszteléséhez). */
@@ -163,6 +203,7 @@ function buildService(opts?: {
   const agentTenantId = opts?.agentTenantId === undefined ? 'tenant-1' : opts.agentTenantId
   const conversationTenantId =
     opts?.conversationTenantId === undefined ? 'tenant-1' : opts.conversationTenantId
+  const ticketTenantId = opts?.ticketTenantId === undefined ? 'tenant-1' : opts.ticketTenantId
   const service = new ConsequenceApprovalService(
     repo,
     {
@@ -192,6 +233,16 @@ function buildService(opts?: {
       failTimes: opts?.failTimes,
       denyTimes: opts?.denyTimes,
     }),
+    {
+      findById: async (id: string) =>
+        id === 'ticket-1'
+          ? ({
+              id: 'ticket-1',
+              tenantId: ticketTenantId,
+              createdById: 'user-1',
+            } as never)
+          : null,
+    } as unknown as TicketRepository,
   )
   return { service, repo, invoked, audits }
 }
@@ -209,6 +260,175 @@ const baseInvoke = {
 
 async function main() {
   console.log('=== consequence-approval service (issue #97) ===')
+
+  await test('createFromBlocked: task-only ticket (conversation nélkül) pending rekord', async () => {
+    const { service, repo } = buildService()
+    const card = await service.createFromBlocked({
+      invoke: {
+        agentId: 'agent-1',
+        agentVersion: 1,
+        ticketId: 'ticket-1',
+        tool: 'http_api_request',
+        args: { method: 'PATCH', path: '/parcels/x/ownerships/y', body: { hanyad: '1/2' } },
+      } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    const row = repo.rows.get(card.approvalId)
+    assert.ok(row)
+    assert.equal(row.conversationId, null)
+    assert.equal(row.ticketId, 'ticket-1')
+    // Ticket TTL ≥ 3 nap — 1 órás chat-TTL itt zsákutca lenne (a45744db).
+    assert.ok(row.expiresAt.getTime() > Date.now() + CONSEQUENCE_APPROVAL_TICKET_TTL_MS - 5_000)
+    assert.ok(row.expiresAt.getTime() <= Date.now() + CONSEQUENCE_APPROVAL_TICKET_TTL_MS + 1_000)
+    const open = await service.listOpenForTicket('ticket-1', actor)
+    assert.equal(open.length, 1)
+    assert.equal(open[0].approvalId, card.approvalId)
+  })
+
+  await test('listOpenForTicket: a lookback lefedi a 3 napos TTL-t', async () => {
+    const { service, repo } = buildService()
+    await service.createFromBlocked({
+      invoke: {
+        agentId: 'agent-1',
+        agentVersion: 1,
+        ticketId: 'ticket-1',
+        tool: 'http_api_request',
+        args: { method: 'POST', path: '/proposals/x/validate', body: {} },
+      } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    const before = Date.now()
+    await service.listOpenForTicket('ticket-1', actor)
+    const cutoff = repo.lastCreatedAfter.value
+    assert.ok(cutoff, 'a repository kapott vágópontot')
+    const delta = before - cutoff!.getTime()
+    assert.ok(
+      Math.abs(delta - CONSEQUENCE_APPROVAL_TICKET_VISIBILITY_MS) < 5_000,
+      `ticket lookback ~${CONSEQUENCE_APPROVAL_TICKET_VISIBILITY_MS} ms, kapott: ${delta}`,
+    )
+  })
+
+  await test('createFromBlocked: azonos függő művelet NEM kap második kártyát', async () => {
+    // Megszakadt futás folytatásakor a modell a checkpointból újraszámolja a
+    // hátralévő tételeket, és a már kártyázott hívást ismét beküldi (`f7ef867f`:
+    // 4 ownership kapott kétszer DELETE kártyát). Duplikátum mellett a
+    // felhasználó nem tudja eldönteni, két külön törlésről van-e szó, a
+    // „Mind jóváhagyom" pedig kétszer futtatná — a második 404-gyel.
+    const { service, repo } = buildService()
+    const invoke = {
+      agentId: 'agent-1',
+      agentVersion: 1,
+      ticketId: 'ticket-1',
+      tool: 'http_api_request',
+      args: { method: 'DELETE', path: '/parcels/x/ownerships/own-1' },
+    } as ToolBrokerInvokeInput
+    const first = await service.createFromBlocked({ invoke, tenantId: 'tenant-1' })
+    // Kulcssorrendtől függetlenül ugyanaz a művelet (a repo jsonb-egyenlőséget néz).
+    const second = await service.createFromBlocked({
+      invoke: {
+        ...invoke,
+        args: { path: '/parcels/x/ownerships/own-1', method: 'DELETE' },
+      } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    assert.equal(second.approvalId, first.approvalId)
+    assert.equal(repo.rows.size, 1)
+    const open = await service.listOpenForTicket('ticket-1', actor)
+    assert.equal(open.length, 1)
+  })
+
+  await test('createFromBlocked: MÁS művelet külön kártyát kap (a dedup nem ken össze)', async () => {
+    const { service, repo } = buildService()
+    const base = {
+      agentId: 'agent-1',
+      agentVersion: 1,
+      ticketId: 'ticket-1',
+      tool: 'http_api_request',
+    }
+    await service.createFromBlocked({
+      invoke: { ...base, args: { method: 'DELETE', path: '/o/own-1' } } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    await service.createFromBlocked({
+      invoke: { ...base, args: { method: 'DELETE', path: '/o/own-2' } } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    assert.equal(repo.rows.size, 2)
+  })
+
+  await test('createFromBlocked: MÁSIK ticket azonos művelete külön kártya', async () => {
+    // A dedup a szálon belül él: két párhuzamos ticket ugyanarra a rekordra
+    // szándékosan két külön döntés.
+    const { service, repo } = buildService()
+    const args = { method: 'DELETE', path: '/o/own-1' }
+    await service.createFromBlocked({
+      invoke: {
+        agentId: 'agent-1',
+        agentVersion: 1,
+        ticketId: 'ticket-1',
+        tool: 'http_api_request',
+        args,
+      } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    await service.createFromBlocked({
+      invoke: {
+        agentId: 'agent-1',
+        agentVersion: 1,
+        ticketId: 'ticket-2',
+        tool: 'http_api_request',
+        args,
+      } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    assert.equal(repo.rows.size, 2)
+  })
+
+  await test('createFromBlocked: a MÁR lefutott művelet megismételhető (a dedup csak pendingre néz)', async () => {
+    const { service, repo } = buildService()
+    const invoke = { ...baseInvoke, conversationId: undefined, ticketId: 'ticket-1' } as ToolBrokerInvokeInput
+    const first = await service.createFromBlocked({ invoke, tenantId: 'tenant-1' })
+    const approved = await service.approve(first.approvalId, actor)
+    assert.ok(approved.ok, !approved.ok ? approved.reason : 'ok')
+    const second = await service.createFromBlocked({ invoke, tenantId: 'tenant-1' })
+    assert.notEqual(second.approvalId, first.approvalId)
+    assert.equal(repo.rows.size, 2)
+  })
+
+  await test('approve: task-only ticket jóváhagyás lefuttatja a toolt', async () => {
+    const invoked: ToolBrokerInvokeInput[] = []
+    const { service } = buildService({ invoked })
+    const card = await service.createFromBlocked({
+      invoke: {
+        ...baseInvoke,
+        conversationId: undefined,
+        ticketId: 'ticket-1',
+      } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    const res = await service.approve(card.approvalId, actor)
+    assert.ok(res.ok, !res.ok ? res.reason : 'ok')
+    assert.equal(invoked.length, 1)
+    assert.equal(invoked[0].ticketId, 'ticket-1')
+    assert.equal(invoked[0].conversationId, undefined)
+  })
+
+  await test('getApprovedContinuation: task-only ticketnél nincs chat-folytatás', async () => {
+    const { service } = buildService()
+    const card = await service.createFromBlocked({
+      invoke: {
+        ...baseInvoke,
+        conversationId: undefined,
+        ticketId: 'ticket-1',
+      } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    const approved = await service.approve(card.approvalId, actor)
+    assert.ok(approved.ok)
+    const cont = await service.getApprovedContinuation([card.approvalId], actor)
+    assert.equal(cont.ok, false)
+    if (!cont.ok) assert.equal(cont.reason, 'approval_ticket_only_no_chat_continuation')
+  })
 
   await test('createFromBlocked: pending rekord teljes args-szal', async () => {
     const { service, repo, audits } = buildService()
@@ -666,8 +886,13 @@ async function main() {
     assert.match(res.continuation.prompt, /NE futtasd újra/)
   })
 
-  await test('resultSummary: a hosszú SZÖVEGES eredmény is korlátozva kerül a kártyára', async () => {
-    const { service } = buildService({ brokerResult: 'x'.repeat(50_000) })
+  await test('resultSummary: a hosszú eredmény is korlátozva kerül a kártyára', async () => {
+    // issue #195 óta a broker kimeneti szerződése miatt egy `xlsx_create` NEM
+    // adhat vissza csupasz szöveget — a hosszú tartalom a szerződésnek megfelelő
+    // eredmény MEZŐJÉBEN érkezik. A kártya korlátozásának ugyanúgy állnia kell.
+    const { service } = buildService({
+      brokerResult: { path: `${'x'.repeat(50_000)}.xlsx`, sheets: 1 },
+    })
     const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
     const result = await service.approve(card.approvalId, actor)
     assert.equal(result.ok, true)
@@ -675,6 +900,34 @@ async function main() {
       assert.ok(result.resultSummary.length < 1000, 'a kártya szövege korlátos marad')
       assert.match(result.resultSummary, /rövidítve/)
     }
+  })
+
+  await test('a jóváhagyott, de ÜRES eredmény nem látszik sikeresnek', async () => {
+    // issue #195 — épp a jóváhagyott úton futnak a mellékhatásos eszközök. Ha a
+    // kimenetel itt elveszne, a kártya és a folytatás-prompt „lefutott"-at
+    // mondana egy olyan xlsx_create-re, ami 0 munkalapot hozott létre.
+    const { service } = buildService({ brokerResult: { path: 'ures.xlsx', sheets: 0 } })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const result = await service.approve(card.approvalId, actor)
+    assert.equal(result.ok, true)
+    if (!result.ok || result.outcome !== 'approved') return
+    assert.match(result.resultSummary, /nem született eredmény/)
+
+    // A folytatás-prompt sem mondhat mást, mint a kártya.
+    const cont = await service.getApprovedContinuation([card.approvalId], actor)
+    assert.equal(cont.ok, true)
+    if (!cont.ok) return
+    assert.match(cont.continuation.prompt, /nem született eredmény/)
+  })
+
+  await test('szerződés-sértő eszköz-kimenet a jóváhagyás után sem megy át némán', async () => {
+    // A jóváhagyott hívás sem kaphat érvénytelen eredményt: a szerződés-kapu
+    // `failed`-del bukik, és a kártya EZT mutatja — nem hamis sikert.
+    const { service } = buildService({ brokerResult: 'csupasz szöveg, nem xlsx_create eredmény' })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const result = await service.approve(card.approvalId, actor)
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.match(result.reason, /kimeneti szerződés/)
   })
 
   await test('getApprovedContinuation: ismeretlen azonosítóra nem indul forduló', async () => {

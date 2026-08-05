@@ -60,7 +60,8 @@ export function normalizeNyilvantartasRow(
     anyjaNeve: firstString(row, ['anyjaNeve', 'anyja_neve', 'motherName', 'anyja']),
     hanyad: firstString(row, ['hanyad', 'ownershipShare', 'share', 'tulajdoniHanyad']),
     cim: firstString(row, ['cim', 'address', 'lakcim']),
-    azonosito: firstString(row, ['azonosito', 'id', 'partnerId', 'ownershipId', 'uuid']),
+    // Ownership rekord ID (PATCH/DELETE path). NE partnerId — az a partner, nem az ownership.
+    azonosito: firstString(row, ['azonosito', 'ownershipId', 'id', 'uuid']),
     megjegyzes: firstString(row, ['megjegyzes', 'jogcim', 'note', 'title', 'jogallas']),
   }
 }
@@ -96,6 +97,11 @@ export type EgyeztetesSor = {
   megjegyzes: string
   /** A lap II. részének sorszámai, amikből a hányad összeáll (visszakereséshez). */
   bejegyzesSorszamok: number[]
+  /**
+   * Nyilvántartásbeli ownership / rekord ID (PATCH/DELETE).
+   * Új rekordnál null — ott még nincs ownership id.
+   */
+  azonosito: string | null
 }
 
 export type EgyeztetesOsszegzes = {
@@ -288,6 +294,15 @@ export function egyeztetesSorok(input: {
   const sorok: EgyeztetesSor[] = []
   const figyelmet_igenyel: string[] = []
   const parositottRegisztraciok = new Set<number>()
+  /**
+   * Párosított személykulcsok (név|év|anyja) — sibling DELETE megjegyzéshez.
+   * Csak a név nem elég: apa/fia azonos névvel eltérő születési évnél nem összevonás.
+   */
+  const parositottSzemelyek: Array<{
+    nev: string
+    szuletesiEv: string | null
+    anyjaNeve: string | null
+  }> = []
   let bizonytalanParositas = 0
 
   const szeljegyMegjegyzes = input.vanSzeljegy
@@ -320,12 +335,18 @@ export function egyeztetesSorok(input: {
         statusz: 'Új rekord',
         megjegyzes: megjegyzesek.join(' '),
         bejegyzesSorszamok: owner.bejegyzesSorszamok,
+        azonosito: null,
       })
       figyelmet_igenyel.push(`Új rekord: ${owner.nev}`)
       continue
     }
 
     parositottRegisztraciok.add(parositott.index)
+    parositottSzemelyek.push({
+      nev: owner.nev,
+      szuletesiEv: owner.szuletesiEv ?? normalizeEv(parositott.reg.szuletesiEv),
+      anyjaNeve: owner.anyjaNeve ?? parositott.reg.anyjaNeve ?? null,
+    })
     if (parositott.strength === 'részleges') {
       bizonytalanParositas += 1
       megjegyzesek.push(
@@ -381,6 +402,7 @@ export function egyeztetesSorok(input: {
       statusz,
       megjegyzes: megjegyzesek.join(' '),
       bejegyzesSorszamok: owner.bejegyzesSorszamok,
+      azonosito: parositott.reg.azonosito ?? null,
     })
     if (statusz !== 'Rendben') {
       figyelmet_igenyel.push(`Módosítás: ${owner.nev}`)
@@ -389,6 +411,18 @@ export function egyeztetesSorok(input: {
 
   input.nyilvantartas.forEach((reg, index) => {
     if (parositottRegisztraciok.has(index)) return
+    // Összevonás csak akkor, ha van párosított személy UGYANAZZAL a névvel, és
+    // a meglévő kulcsok (év / anyja neve) nem mondanak ellent — különben más ember.
+    const osszevonas = parositottSzemelyek.some((paired) => {
+      if (normalizeNev(paired.nev) !== normalizeNev(reg.nev)) return false
+      const pairedEv = normalizeEv(paired.szuletesiEv)
+      const regEv = normalizeEv(reg.szuletesiEv)
+      const pairedAnyja = normalizeNev(paired.anyjaNeve)
+      const regAnyja = normalizeNev(reg.anyjaNeve)
+      if (pairedEv && regEv && pairedEv !== regEv) return false
+      if (pairedAnyja && regAnyja && pairedAnyja !== regAnyja) return false
+      return true
+    })
     sorok.push({
       forras: 'Nyilvántartás',
       nev: reg.nev,
@@ -400,15 +434,22 @@ export function egyeztetesSorok(input: {
       hanyadNyilvantartas: reg.hanyad ?? null,
       statusz: 'Törlés szükséges',
       megjegyzes: [
-        'A hatályos tulajdoni lapon nem szerepel tulajdonosként.',
+        osszevonas
+          ? 'Összevonás: ugyanezen tulajdonos másik nyilvántartási sora — a lap összesített hányada a párosított sorra (Módosítás/Rendben) kerül; ezt a sort kötelező törölni (DELETE), különben a hányad duplázódik.'
+          : 'A hatályos tulajdoni lapon nem szerepel tulajdonosként.',
         reg.megjegyzes ?? '',
         szeljegyMegjegyzes,
       ]
         .filter(Boolean)
         .join(' '),
       bejegyzesSorszamok: [],
+      azonosito: reg.azonosito ?? null,
     })
-    figyelmet_igenyel.push(`Törlés szükséges: ${reg.nev}`)
+    figyelmet_igenyel.push(
+      osszevonas
+        ? `Törlés szükséges (összevonás): ${reg.nev}`
+        : `Törlés szükséges: ${reg.nev}`,
+    )
   })
 
   const osszegzes: EgyeztetesOsszegzes = {
@@ -543,4 +584,346 @@ function numberOrNull(value: string | undefined): number | null {
   if (!value) return null
   const normalized = Number(value.replace(/\s/g, '').replace(',', '.'))
   return Number.isFinite(normalized) ? normalized : null
+}
+
+// ── Föld műveleti terv (determinisztikus, modell nélkül) ─────────────────────
+
+export type FoldElteroSor = {
+  nev: string
+  statusz: string
+  hanyadLap: string | null
+  hanyadNyilvantartas?: string | null
+  azonosito: string | null
+}
+
+export type FoldMuveletAction = 'delete' | 'patch' | 'post'
+
+export type FoldMuveletItem = {
+  action: FoldMuveletAction
+  method: 'DELETE' | 'PATCH' | 'POST'
+  statusFromEgyeztetes: string
+  nev: string
+  ownershipId: string | null
+  /** Path `{parcelId}` placeholderral, ha a parcelId még nincs meg. */
+  path: string
+  body: Record<string, unknown> | null
+  megjegyzes: string | null
+}
+
+export type FoldMuveletekPlan = {
+  parcelId: string | null
+  proposalId: null
+  source: 'egyeztetes-eltero.json'
+  /** Jóváhagyáskor / draft-írásnál kötelező: DELETE → PATCH → POST. */
+  executionOrder: readonly ['delete', 'patch', 'post']
+  summary: { delete: number; patch: number; post: number; total: number }
+  items: FoldMuveletItem[]
+}
+
+const FOLD_STATUS_TO_ACTION: Record<string, FoldMuveletAction | null> = {
+  'Törlés szükséges': 'delete',
+  'Módosítás szükséges': 'patch',
+  'Új rekord': 'post',
+  Rendben: null,
+}
+
+const FOLD_ACTION_ORDER: Record<FoldMuveletAction, number> = {
+  delete: 0,
+  patch: 1,
+  post: 2,
+}
+
+/**
+ * Eltérő egyeztető sorok → végrehajtható Föld Ownership terv.
+ * Sorrend: DELETE, majd PATCH, majd POST — a Föld hányadösszeg-invariánsához.
+ * Az `items` a forrásigazság: a modell NE cserélje / NE találjon ki ownership id-t.
+ */
+export function buildFoldMuveletekFromEltero(input: {
+  eltero: FoldElteroSor[]
+  parcelId?: string | null
+}): FoldMuveletekPlan {
+  const parcelId = input.parcelId?.trim() || null
+  const parcelSegment = parcelId ?? '{parcelId}'
+  const parcelPlaceholderNote = parcelId
+    ? null
+    : 'HIÁNYZÓ parcelId — a path `{parcelId}` placeholdert a Föld parcel-keresés után cseréld; ne hívd literálisan.'
+  const items: FoldMuveletItem[] = []
+
+  for (const row of input.eltero) {
+    const action = FOLD_STATUS_TO_ACTION[row.statusz] ?? null
+    if (!action) continue
+
+    if (action === 'post') {
+      items.push({
+        action: 'post',
+        method: 'POST',
+        statusFromEgyeztetes: row.statusz,
+        nev: row.nev,
+        ownershipId: null,
+        path: `/parcels/${parcelSegment}/ownerships`,
+        body: row.hanyadLap ? { hanyad: row.hanyadLap } : null,
+        megjegyzes: [
+          'Új ownership — partnerId a Föld partner-keresés / POST /partners után.',
+          parcelPlaceholderNote,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      })
+      continue
+    }
+
+    const ownershipId = row.azonosito?.trim() || null
+    if (!ownershipId) {
+      items.push({
+        action,
+        method: action === 'delete' ? 'DELETE' : 'PATCH',
+        statusFromEgyeztetes: row.statusz,
+        nev: row.nev,
+        ownershipId: null,
+        path: `/parcels/${parcelSegment}/ownerships/{ownershipId}`,
+        body: action === 'patch' && row.hanyadLap ? { hanyad: row.hanyadLap } : null,
+        megjegyzes: ['HIÁNYZÓ ownership id — ne tippelj; állj meg.', parcelPlaceholderNote]
+          .filter(Boolean)
+          .join(' '),
+      })
+      continue
+    }
+
+    items.push({
+      action,
+      method: action === 'delete' ? 'DELETE' : 'PATCH',
+      statusFromEgyeztetes: row.statusz,
+      nev: row.nev,
+      ownershipId,
+      path: `/parcels/${parcelSegment}/ownerships/${ownershipId}`,
+      body: action === 'patch' && row.hanyadLap ? { hanyad: row.hanyadLap } : null,
+      megjegyzes: [
+        action === 'delete' && !row.hanyadLap
+          ? 'Összevonás vagy felesleges sor — DELETE kötelező, ha a névnek van PATCH/Rendben párja is.'
+          : null,
+        parcelPlaceholderNote,
+      ]
+        .filter(Boolean)
+        .join(' ') || null,
+    })
+  }
+
+  items.sort((a, b) => FOLD_ACTION_ORDER[a.action] - FOLD_ACTION_ORDER[b.action])
+
+  const summary = {
+    delete: items.filter((i) => i.action === 'delete').length,
+    patch: items.filter((i) => i.action === 'patch').length,
+    post: items.filter((i) => i.action === 'post').length,
+    total: items.length,
+  }
+
+  return {
+    parcelId,
+    proposalId: null,
+    source: 'egyeztetes-eltero.json',
+    executionOrder: ['delete', 'patch', 'post'],
+    summary,
+    items,
+  }
+}
+
+export type FoldMuveletekCoverage = {
+  ok: boolean
+  expected: number
+  applied: number
+  missing: Array<{ ownershipId: string; nev: string; action: FoldMuveletAction }>
+  /** Alkalmazott id, ami NINCS a tervben — tipikusan hallucinált cuid. */
+  extra: string[]
+  message: string
+}
+
+/**
+ * Proposal / HTTP invoke sor: ténylegesen alkalmazott Ownership írás.
+ * A magyar változatok is kellenek: a Föld-tool kimenetek vegyesen használják az
+ * angol HTTP igét és a magyar szót — a hiányuk NÉMA hamis „hiányzó DELETE”
+ * riasztást adna, amitől az agent újraírná a már meglévő tételeket.
+ * A státusz-mondatok (`Törlés szükséges`) SZÁNDÉKOSAN nincsenek benne: azok az
+ * egyeztető terv-sorai, nem alkalmazott írások.
+ */
+const APPLIED_OWNERSHIP_WRITE_MUVELETEK = new Set([
+  'DELETE',
+  'PATCH',
+  'PUT',
+  'UPDATE',
+  'TORLES',
+  'MODOSITAS',
+])
+
+/** Ékezet + kisbetű nélküli alak — `Módosítás` és `MODOSITAS` ugyanaz. */
+function normalizeMuvelet(raw: string): string {
+  return raw
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase()
+}
+
+function isFoldMuveletekPlanShape(rec: Record<string, unknown>): boolean {
+  // A terv (fold_muveletek.json) NEM alkalmazott proposal — ha „applied”-ként
+  // adjuk be, a path / ownershipId mezők hamis lefedettség-OK-ot adnának, és a
+  // hiányzó sibling DELETE validate/submitig eljutna.
+  if (rec.source === 'egyeztetes-eltero.json') return true
+  if (Array.isArray(rec.executionOrder) && Array.isArray(rec.items)) return true
+  return false
+}
+
+/**
+ * Egyeztető eltérés-sor (nev + statusz + azonosito) — terv, nem alkalmazás.
+ * A `statusz` értékét is nézzük: egy valódi proposal tételnek is lehet státusza
+ * (pl. `draft`), azt nem szabad emiatt eldobni.
+ */
+function isElteroRowShape(rec: Record<string, unknown>): boolean {
+  if (typeof rec.statusFromEgyeztetes === 'string') return true
+  return (
+    typeof rec.statusz === 'string' &&
+    (EGYEZTETES_STATUSZOK as string[]).includes(rec.statusz.trim())
+  )
+}
+
+/**
+ * Rossz fájl a `coverageAppliedPath`-on? → közérthető indok, különben null.
+ *
+ * Enélkül a terv/eltérés-lista beadása „hiányzik mind a N id” üzenetet adna,
+ * ami rossz irányba tereli az agentet (újraír), holott csak a fájlt tévesztette.
+ */
+export function describeInvalidAppliedSource(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const rec = raw as Record<string, unknown>
+  if (isFoldMuveletekPlanShape(rec)) {
+    return 'ez a fold_muveletek terv, nem a Föld proposal tételeinek kivonata'
+  }
+  if (Array.isArray(rec.eltero)) {
+    return 'ez az egyeztetes-eltero lista, nem a Föld proposal tételeinek kivonata'
+  }
+  return null
+}
+
+/**
+ * Proposal extract / tool-eredmény → ownership id halmaz (PATCH/DELETE).
+ * CREATE / Partner / LandParcel tételek és a proposal `itemId` (`id`) NEM számítanak —
+ * azok `extra` hamis pozitívot adnának a coverage-ben.
+ *
+ * Fontos: a `fold_muveletek` terv path/ownershipId mezői NEM „alkalmazott” id-k.
+ * A path-ból csak DELETE/PATCH/PUT/UPDATE muvelet után olvasunk — CREATE sor
+ * pathje (vagy a terv maga) korábban a filter ELŐTT bekerült, és silent false OK-ot
+ * adott a coverage kapun.
+ */
+export function extractAppliedOwnershipIds(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    if (raw.every((x) => typeof x === 'string')) {
+      return [...new Set(raw.map((x) => x.trim()).filter(Boolean))]
+    }
+    const ids: string[] = []
+    for (const row of raw) {
+      if (!row || typeof row !== 'object') continue
+      const rec = row as Record<string, unknown>
+      // Terv- / egyeztető sor: `statusFromEgyeztetes` (fold_muveletek items) vagy
+      // `statusz` (egyeztetes-eltero) — egyik sem alkalmazott írás.
+      if (isElteroRowShape(rec)) continue
+
+      const entityType =
+        typeof rec.entityType === 'string' ? rec.entityType.toLowerCase() : null
+      if (entityType && !entityType.includes('ownership')) continue
+
+      // `action` SZÁNDÉKOSAN kimarad: az a fold_muveletek terv mezője
+      // (`delete`/`patch`/`post`), nem a proposal `muvelet` / HTTP method.
+      const muveletRaw =
+        (typeof rec.muvelet === 'string' && rec.muvelet) ||
+        (typeof rec.method === 'string' && rec.method) ||
+        ''
+      const muvelet = normalizeMuvelet(muveletRaw)
+      // Művelet nélküli sor csak akkor számít, ha kimondottan Ownership tétel
+      // (`entityType`) — a terv és az eltérés-lista sorain nincs ilyen mező, így
+      // ez nem nyitja vissza a hamis „minden megvan” utat, viszont a puszta
+      // id-listát tartalmazó kivonat nem esik ki némán.
+      const applied = muvelet
+        ? APPLIED_OWNERSHIP_WRITE_MUVELETEK.has(muvelet)
+        : entityType != null
+      if (!applied) continue
+
+      const path = typeof rec.path === 'string' ? rec.path : null
+      if (path) {
+        const m = /\/ownerships\/([^/?#]+)/.exec(path)
+        const fromPath = m?.[1]?.trim()
+        if (fromPath && fromPath !== '{ownershipId}') ids.push(fromPath)
+      }
+
+      const id =
+        (typeof rec.entityId === 'string' && rec.entityId) ||
+        (typeof rec.ownershipId === 'string' && rec.ownershipId) ||
+        (typeof rec.azonosito === 'string' && rec.azonosito) ||
+        null
+      if (id?.trim()) ids.push(id.trim())
+    }
+    return [...new Set(ids)]
+  }
+  if (raw && typeof raw === 'object') {
+    const rec = raw as Record<string, unknown>
+    if (isFoldMuveletekPlanShape(rec)) return []
+    // `eltero` kimarad: az egyeztető eltérő sorai (azonosito + státusz), nem
+    // proposal-alkalmazás — belőle hamis „minden id megvan” OK jönne.
+    for (const key of ['items', 'applied', 'rows', 'data']) {
+      if (Array.isArray(rec[key])) return extractAppliedOwnershipIds(rec[key])
+    }
+  }
+  return []
+}
+
+/**
+ * A terv PATCH/DELETE ownership id-jei ⊆ alkalmazott id-k?
+ * (POST-nál nincs előzetes id — azokat a summary.post számossággal ellenőrizd külön.)
+ */
+export function checkFoldMuveletekCoverage(
+  plan: FoldMuveletekPlan,
+  appliedIds: Iterable<string>,
+): FoldMuveletekCoverage {
+  const applied = new Set([...appliedIds].map((id) => id.trim()).filter(Boolean))
+  const expectedItems = plan.items.filter(
+    (item) => (item.action === 'delete' || item.action === 'patch') && item.ownershipId,
+  )
+  const expectedIds = new Set(expectedItems.map((item) => item.ownershipId!))
+  const missing = expectedItems
+    .filter((item) => !applied.has(item.ownershipId!))
+    .map((item) => ({
+      ownershipId: item.ownershipId!,
+      nev: item.nev,
+      action: item.action,
+    }))
+  const extra = [...applied].filter((id) => !expectedIds.has(id))
+  const ok = missing.length === 0 && extra.length === 0
+  const message = ok
+    ? `Lefedettség rendben: ${expectedItems.length}/${expectedItems.length} tervezett PATCH/DELETE id a proposalban.`
+    : [
+        missing.length
+          ? `Hiányzó ${missing.length} tervezett Ownership id (nem került a csomagba).`
+          : null,
+        // Egy id sem jött ki: majdnem mindig rossz fájl (terv / eltérés-lista /
+        // nem Ownership kivonat), nem 80 kimaradt írás. Ha ezt nem mondjuk ki,
+        // az agent újraírja a már meglévő tételeket.
+        missing.length && applied.size === 0
+          ? 'Egyetlen alkalmazott Ownership id sem jött ki a megadott fájlból — ' +
+            'ellenőrizd, hogy a coverageAppliedPath a Föld proposal tételeinek ' +
+            'kivonatára mutat-e (nem a fold_muveletek tervre és nem az ' +
+            'egyeztetes-eltero listára).'
+          : null,
+        extra.length
+          ? `${extra.length} extra / ismeretlen id a csomagban (ne hagyj jóvá — lehet hallucinált).`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(' ')
+
+  return {
+    ok,
+    expected: expectedItems.length,
+    applied: applied.size,
+    missing,
+    extra,
+    message,
+  }
 }

@@ -140,6 +140,17 @@ export type TicketFilter = {
   source?: TicketSource | TicketSource[]
   /** Board / dashboard: user + system ticketek, teszt kizárva. */
   excludeTest?: boolean
+  /** Ha megadott: csak a felhasználó által létrehozott ticketek. */
+  createdById?: string
+  /**
+   * Futások panel: a user által létrehozott VAGY human assignee-ként rá
+   * szignált ticketek (`createdById` / `assigneeType=human`+`assigneeId`).
+   */
+  belongingToUserId?: string
+  /** updatedAt alsó határ (inklúzív). */
+  updatedAtGte?: Date
+  /** updatedAt felső határ (inklúzív). */
+  updatedAtLte?: Date
   /** Ha megadott: take+1 pagináció. Üresen korlátlan (full dump / internal). */
   limit?: number
   offset?: number
@@ -242,6 +253,8 @@ export interface TicketRepository {
   listComments(ticketId: string): Promise<TicketCommentWithAttachments[]>
   /** Transition statistics for the governance dashboard (§11: kontroll — jóváhagyott vs. automatikus lépések, visszadobási arány). */
   getTransitionStats(since?: Date): Promise<TransitionStats>
+  /** Csak backlog/ready, lock nélkül — a kapcsolódó sorokat is takarítja. `force` esetén admin: bármilyen állapot. */
+  deleteTicket(id: string, options?: { force?: boolean }): Promise<void>
 }
 
 export type TicketCommentWithAttachments = TicketComment & {
@@ -897,6 +910,29 @@ export interface ConsequenceApprovalRepository {
     conversationId: string,
     createdAfter: Date,
   ): Promise<ConsequenceApproval[]>
+  /** Task-only ticket függő jóváhagyásai (conversationId nélkül). */
+  listOpenByTicket(ticketId: string, createdAfter: Date): Promise<ConsequenceApproval[]>
+  /**
+   * Ugyanaz a még EL NEM DÖNTÖTT (pending, le nem járt) művelet ugyanabban a
+   * szálban/ticketben — a kártya-duplikáció ellen.
+   *
+   * ÜZLETI OK: egy megszakadt futás folytatásakor a modell a szöveges
+   * checkpointból újraszámolja a hátralévő tételeket, és a már kártyázott
+   * műveletet ismét beküldi. A `f7ef867f` ticketen 4 ownership kapott kétszer
+   * DELETE kártyát: egy „Jóváhagyom mind" mindkettőt lefuttatta volna, a
+   * második 404-gyel. A felhasználónak ugyanaz a törlés kétszer jelenik meg —
+   * nem tudja eldönteni, két külön tételről van-e szó.
+   *
+   * Csak `pending` sorra egyezik: egy MÁR lefutott művelet szándékos
+   * megismétlését nem akadályozzuk.
+   */
+  findOpenDuplicate(input: {
+    conversationId?: string | null
+    ticketId?: string | null
+    toolName: string
+    args: unknown
+    now: Date
+  }): Promise<ConsequenceApproval | null>
   /**
    * CAS állapotváltás: csak akkor sikerül, ha a sor még `expectedStatus`.
    * Concurrent approve/reject ellen — a vesztes null-t kap.
@@ -1005,8 +1041,16 @@ export interface AuditRepository {
     since?: Date
     limit?: number
   }): Promise<AuditLog[]>
-  /** Teljes lánc vagy egy [fromSeq..toSeq] szegmens, seq szerint rendezve (§6.3 részleges verifikáció). */
-  findAll(range?: { fromSeq?: bigint; toSeq?: bigint }): Promise<AuditLog[]>
+  /**
+   * Audit-sorok seq szerint rendezve. A tenant/since szűrő az audit-olvasó és SIEM-export
+   * kötelező adat-határa; a [fromSeq..toSeq] a hash-lánc részleges ellenőrzéséhez kell.
+   */
+  findAll(filter?: {
+    fromSeq?: bigint
+    toSeq?: bigint
+    tenantId?: string
+    since?: Date
+  }): Promise<AuditLog[]>
   /** Counts of audit events grouped by `action`, optionally narrowed to a set / time window (§11 governance). */
   getActionCounts(filter?: { actions?: string[]; since?: Date }): Promise<Record<string, number>>
 }
@@ -1101,6 +1145,18 @@ export interface ModelBudgetRepository {
 
 export { ModelBudgetPeriod, ModelBudgetScope, ModelRoutingScope }
 
+/** issue #220 — agent↔connector kötés a kapu / admin UI számára. */
+export type AgentConnectorBinding = {
+  connector: Connector
+  accessMode: ConnectorAccessMode
+  agentSecretAlias: string | null
+  writeApproval: 'per_call' | 'preapproved'
+  preapprovedTrustMode: 'lax' | 'strict' | null
+  preapprovedExpiresAt: Date | null
+  preapprovedWriteLimit: number | null
+  dangerPreapproved: boolean
+}
+
 export interface ToolBrokerRepository {
   findCapability(agentId: string, toolName: string): Promise<{ allowed: boolean } | null>
   /**
@@ -1125,7 +1181,7 @@ export interface ToolBrokerRepository {
     tenantId?: string | null,
   ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null>
   findCapabilitiesForAgent(agentId: string): Promise<{ toolName: string; allowed: boolean }[]>
-  findConnectorsForAgent(agentId: string): Promise<{ connector: Connector; accessMode: ConnectorAccessMode; agentSecretAlias: string | null }[]>
+  findConnectorsForAgent(agentId: string): Promise<AgentConnectorBinding[]>
   findDocumentsForConnector(
     connectorId: string,
   ): Promise<{ id: string; filename: string; extractedText: string | null }[]>
@@ -1189,6 +1245,7 @@ export type AgentSkillWithVersion = AgentSkill & {
 
 export interface CreateSkillInput {
   name: string
+  displayName?: string | null
   description: string
   catalogScope: SkillCatalogScope
   tenantId: string | null
@@ -1230,6 +1287,10 @@ export interface SkillRepository {
   /** Batch skill-verzió betöltés — preload / slash path N+1 elkerülésére. */
   findVersionsByIds(versionIds: string[]): Promise<(SkillVersion & { skill: Skill })[]>
   createSkill(input: CreateSkillInput): Promise<{ skill: Skill; version: SkillVersion }>
+  /** Embernek szóló feladatnév — nem verziózott metaadat. */
+  updateDisplayName(skillId: string, displayName: string | null): Promise<Skill>
+  /** Level-0 index leírás — nem verziózott metaadat (katalógus / skill-választó). */
+  updateDescription(skillId: string, description: string): Promise<Skill>
   addVersion(input: AddSkillVersionInput): Promise<SkillVersion>
   /** Jóváhagyás: az adott verzió `active`, az addigi aktív `retired`, agentek átkötése. */
   approveVersion(
@@ -1602,6 +1663,8 @@ export interface ConversationRepository {
     /** Csatorna-megjelölés (D14): ha a beszélgetés egy csatorna-adapteren (pl. Telegram) él. */
     channel?: ChannelType | null
     channelExternalId?: string | null
+    /** Ticket → Megbeszélés (#219): forrás ticket (prior kontextus). */
+    continuedFromTicketId?: string | null
   }): Promise<Conversation>
   findById(id: string): Promise<Conversation | null>
   findByIdForTenant(id: string, tenantId: string | null): Promise<Conversation | null>
@@ -1715,6 +1778,15 @@ export type FinalizeAgentTurnInput = {
 export type UpdateAgentTurnProgressInput = {
   partialText?: string
   activities?: Prisma.InputJsonValue
+  /**
+   * issue #180 WP-1 — a loop-elszámolók MENET KÖZBEN is. E nélkül egy futó
+   * forduló nullát mutat, és egy elszaladt futásról csak a lezárása után derül
+   * ki, hogy tucatnyi körön és több száz eszközhíváson át pörgött — épp akkor
+   * nem látszik, amikor még be lehetne avatkozni.
+   */
+  turnCount?: number
+  toolCallCount?: number
+  deniedCount?: number
 }
 
 /**
@@ -1736,8 +1808,9 @@ export interface AgentTurnRepository {
     options?: { createdById?: string; limit?: number },
   ): Promise<AgentTurn[]>
   /**
-   * Tenant-szintű friss terminális fordulók (Futások panel — lefutott lista).
+   * Friss terminális fordulók (Futások panel — lefutott lista).
    * `finishedAt` szerint csökkenő; null finishedAt a végére kerül.
+   * `createdById` megadása esetén csak a felhasználó saját futásai.
    */
   listRecentTerminalByTenant(
     tenantId: string | null,

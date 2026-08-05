@@ -5,7 +5,9 @@
 import assert from 'node:assert/strict'
 import {
   TICKET_CONTINUE_RULES,
+  TICKET_DISCUSSION_RULES,
   buildThreadContextPrompt,
+  buildTicketDiscussionHistory,
 } from '../src/lib/ticket-thread-prompt'
 import type { TicketCommentWithAttachments } from '../src/repositories/interfaces'
 
@@ -68,6 +70,46 @@ check('handback után: continue szabály + checkpoint + deliverable lista', () =
   assert.match(prompt, /audit\.xlsx/)
   assert.doesNotMatch(prompt, /\.tool-results/)
   assert.match(prompt, /folytasd/)
+})
+
+check('megbeszélés mód: discussion szabály, nincs continue', () => {
+  const prompt = buildThreadContextPrompt({
+    comments: [
+      comment({
+        seq: 1,
+        kind: 'agent_answer',
+        body: '## Elkészült\n- Excel kész',
+      }),
+      comment({ seq: 2, kind: 'human_comment', body: 'meséld el mi volt' }),
+    ],
+    originalTask: 'csatolva a tulajdoni lap',
+    mode: 'discussion',
+  })
+  assert.match(prompt, /Megbeszelesi szabalyok/)
+  assert.match(prompt, new RegExp(TICKET_DISCUSSION_RULES.slice(0, 40).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.doesNotMatch(prompt, /Folytatasi szabalyok/)
+  assert.match(prompt, /CHECKPOINT/)
+  assert.match(prompt, /meséld el mi volt/)
+})
+
+check('megbeszélés history: eredeti feladat + szál a chat UI-nak', () => {
+  const history = buildTicketDiscussionHistory({
+    comments: [
+      comment({ seq: 1, kind: 'human_comment', body: 'csatolva a tulajdoni lap' }),
+      comment({ seq: 2, kind: 'agent_answer', body: 'Excel kész' }),
+      comment({ seq: 3, kind: 'human_comment', body: 'mi hiányzik?' }),
+    ],
+    originalTask: 'csatolva a tulajdoni lap',
+    ticketCreatedAt: new Date('2026-08-05T06:57:00Z'),
+  })
+  assert.equal(history[0]?.text, 'csatolva a tulajdoni lap')
+  assert.equal(history[0]?.authorLabel, 'Eredeti feladat')
+  // Az első human komment = eredeti feladat → ne duplikálódjon.
+  assert.equal(history.length, 3)
+  assert.equal(history[1]?.role, 'agent')
+  assert.equal(history[1]?.text, 'Excel kész')
+  assert.equal(history[2]?.role, 'user')
+  assert.equal(history[2]?.text, 'mi hiányzik?')
 })
 
 if (failures > 0) {

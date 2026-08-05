@@ -183,6 +183,7 @@ export type EnrichedBoardTicket = Pick<
   | 'updatedAt'
   | 'createdById'
   | 'processInstanceId'
+  | 'lockToken'
 > &
   TicketDisplayExtras & {
     creator: TicketCreatorDisplay
@@ -197,6 +198,37 @@ export function formatTicketDateTime(value: Date | string): string {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+/**
+ * Rövid, hétköznapi időtávolság („3 órája”). A boardon ez olvashatóbb, mint a
+ * teljes időbélyeg — a pontos érték a `title`/tooltip marad.
+ */
+export function formatRelativeTicketTime(value: Date | string, now: Date = new Date()): string {
+  const then = new Date(value).getTime()
+  if (Number.isNaN(then)) return '—'
+
+  const diffMinutes = Math.floor((now.getTime() - then) / 60_000)
+  if (diffMinutes < 0) return 'most'
+  if (diffMinutes < 1) return 'most'
+  if (diffMinutes < 60) return `${diffMinutes} perce`
+
+  const hours = Math.floor(diffMinutes / 60)
+  if (hours < 24) return `${hours} órája`
+
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days} napja`
+  if (days < 31) return `${Math.floor(days / 7)} hete`
+  if (days < 365) return `${Math.floor(days / 30)} hónapja`
+  return `${Math.floor(days / 365)} éve`
+}
+
+/** Név → monogram az avatar-pöttyhöz (max 2 betű). */
+export function initialsFor(label: string): string {
+  const words = label.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return '?'
+  const letters = words.slice(0, 2).map((word) => word[0])
+  return letters.join('').toUpperCase()
 }
 
 export function getAssigneeFilterKey(
@@ -214,6 +246,26 @@ export function matchesAssigneeFilter(
 ): boolean {
   if (filterKey === 'all') return true
   return getAssigneeFilterKey(ticket) === filterKey
+}
+
+export const UNSTARTED_DELETABLE_STATES = ['ready', 'backlog'] as const
+
+export function canDeleteBoardTicket(
+  ticket: Pick<Ticket, 'state' | 'lockToken' | 'createdById'>,
+  ctx: { isAdmin: boolean; canManage: boolean; userId?: string | null },
+): { allowed: boolean; isAdminDelete: boolean } {
+  const canDeleteUnstarted =
+    (ctx.canManage || ticket.createdById === ctx.userId) &&
+    UNSTARTED_DELETABLE_STATES.includes(ticket.state as (typeof UNSTARTED_DELETABLE_STATES)[number]) &&
+    !ticket.lockToken
+
+  if (ctx.isAdmin) {
+    return { allowed: true, isAdminDelete: !canDeleteUnstarted }
+  }
+  if (canDeleteUnstarted) {
+    return { allowed: true, isAdminDelete: false }
+  }
+  return { allowed: false, isAdminDelete: false }
 }
 
 export function enrichTicketsForBoard(
@@ -262,6 +314,7 @@ export function enrichTicketsForBoard(
       createdAt: ticket.createdAt,
       updatedAt: ticket.updatedAt,
       createdById: ticket.createdById,
+      lockToken: ticket.lockToken,
       processInstanceId: ticket.processInstanceId,
       ...display,
       creator: formatTicketCreator({

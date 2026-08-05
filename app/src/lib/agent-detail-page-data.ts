@@ -33,6 +33,7 @@ export type AgentDetailSkillRow = {
   enabled: boolean
   skillId: string
   name: string
+  displayName: string | null
   description: string
   version: number
   riskTier: SkillRiskTier
@@ -43,6 +44,7 @@ export type AgentDetailSkillRow = {
 export type AgentDetailAssignableSkill = {
   skillId: string
   name: string
+  displayName: string | null
   description: string
   riskTier: SkillRiskTier
   activeVersionId: string
@@ -241,6 +243,7 @@ function mapAgentSkillRows(
     enabled: r.enabled,
     skillId: r.skillId,
     name: r.name,
+    displayName: r.displayName,
     description: r.description,
     version: r.version,
     riskTier: r.riskTier,
@@ -260,6 +263,7 @@ function mapAssignableSkills(
     rows.push({
       skillId: skill.id,
       name: skill.name,
+      displayName: skill.displayName,
       description: skill.description,
       riskTier: skill.riskTier,
       activeVersionId: active.id,

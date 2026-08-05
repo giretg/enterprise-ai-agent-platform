@@ -103,13 +103,22 @@ export class PostgresAuditRepository implements AuditRepository {
     })
   }
 
-  async findAll(range?: { fromSeq?: bigint; toSeq?: bigint }): Promise<AuditLog[]> {
+  async findAll(filter?: {
+    fromSeq?: bigint
+    toSeq?: bigint
+    tenantId?: string
+    since?: Date
+  }): Promise<AuditLog[]> {
     const seqFilter: Prisma.BigIntFilter = {}
-    if (range?.fromSeq !== undefined) seqFilter.gte = range.fromSeq
-    if (range?.toSeq !== undefined) seqFilter.lte = range.toSeq
+    if (filter?.fromSeq !== undefined) seqFilter.gte = filter.fromSeq
+    if (filter?.toSeq !== undefined) seqFilter.lte = filter.toSeq
 
     return prisma.auditLog.findMany({
-      where: Object.keys(seqFilter).length > 0 ? { seq: seqFilter } : undefined,
+      where: {
+        ...(Object.keys(seqFilter).length > 0 ? { seq: seqFilter } : {}),
+        ...(filter?.tenantId ? { tenantId: filter.tenantId } : {}),
+        ...(filter?.since ? { createdAt: { gte: filter.since } } : {}),
+      },
       orderBy: { seq: 'asc' },
     })
   }
@@ -361,9 +370,11 @@ export class PostgresModelRoutingPolicyRepository implements ModelRoutingPolicyR
               { scopeRef: { in: scopeRefs } },
             ],
           },
-          ...(filter.tenantId !== undefined
-            ? [{ OR: [{ tenantId: null }, { tenantId: filter.tenantId }] }]
-            : []),
+          // A tenant-szűrő MINDIG érvényes: hiányzó `tenantId` esetén csak a
+          // platform-szintű (`tenantId: null`) policy jöhet szóba. Korábban a
+          // hiányzó szűrő azt jelentette, hogy MINDEN tenant policy-je bekerült,
+          // így egy másik szervezet routing-szabálya irányíthatta ezt az agentet.
+          { OR: [{ tenantId: null }, ...(filter.tenantId ? [{ tenantId: filter.tenantId }] : [])] },
         ],
       },
       orderBy: { priority: 'asc' },
@@ -427,9 +438,15 @@ export class PostgresModelBudgetRepository implements ModelBudgetRepository {
               { scopeRef: { in: scopeRefs } },
             ],
           },
-          ...(filter.tenantId !== undefined
-            ? [{ OR: [{ tenantId: null }, { tenantId: filter.tenantId }] }]
-            : []),
+          // ÜZLETI PROBLÉMA (javítva): a tenant-szűrő korábban kimaradt, ha a hívó
+          // nem adott `tenantId`-t — ilyenkor MINDEN szervezet kerete alkalmazandó
+          // lett. Mivel a kapu ÉS-ben értékel, egy idegen tenant per-agent
+          // alapértelmezése megállította ezt az agentet: a feladat „Végrehajtásra
+          // vár"-ban ragadt, és a felületen semmi nem magyarázta, miért (a másik
+          // szervezet keretsora nem is látszik itt).
+          // A szűrő ezért mindig érvényes: tenantId nélkül csak a platform-szintű
+          // (`tenantId: null`) keretek élnek.
+          { OR: [{ tenantId: null }, ...(filter.tenantId ? [{ tenantId: filter.tenantId }] : [])] },
         ],
       },
     })

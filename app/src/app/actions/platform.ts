@@ -1,7 +1,14 @@
 'use server'
 
 import { z } from 'zod'
-import type { ConnectorAccessMode, ConnectorType, Prisma, UserRole } from '@prisma/client'
+import type {
+  ConnectorAccessMode,
+  ConnectorType,
+  ModelBudgetPeriod,
+  Prisma,
+  Ticket,
+  UserRole,
+} from '@prisma/client'
 import { mkdir, unlink, writeFile } from 'fs/promises'
 import path from 'path'
 import { clerkClient } from '@clerk/nextjs/server'
@@ -33,6 +40,7 @@ import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
 import { logger } from '@/lib/observability'
+import { resolveBoardDateRange } from '@/lib/board-date-range'
 import { BOARD_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
@@ -42,6 +50,9 @@ import {
   buildTaskOnlyTicketTitle,
   validateTaskOnlyTaskInput,
 } from '@/lib/task-only-ticket'
+import { buildTicketDiscussionHistory } from '@/lib/ticket-thread-prompt'
+import { readTicketPromptText } from '@/lib/wiki-ticket-payload'
+import { skillDisplayLabel } from '@/lib/skill/skill-name'
 import { isAgentAccessError } from '@/domain/agent-access/agent-access-errors'
 import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
 import { getReportTemplate, listReportTemplates } from '@/domain/report/report-templates'
@@ -59,6 +70,7 @@ import {
   formatTicketCreator,
 } from '@/lib/ticket-display'
 import { fail, ok, type ActionResult } from '@/lib/result'
+import { isRuleExhausted, pickPeakAgent } from '@/lib/budget-rule-usage'
 import { NORMAL_TOOL_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
 import {
@@ -130,6 +142,7 @@ import {
   modelPolicyEntrySchema,
   createBoardTicketSchema,
   dispatchBoardTicketSchema,
+  deleteBoardTicketSchema,
   inviteUserSchema,
   provisionUserSchema,
   redeemInvitationSchema,
@@ -338,6 +351,7 @@ export async function listBoardAssignees() {
           personaNickname: agent.personaNickname,
           personaTrait: agent.personaTrait,
           status: agent.status,
+          taskOnly: agent.taskOnly,
         })),
       users: memberships.map((membership) => ({
         id: membership.user.id,
@@ -394,13 +408,13 @@ async function runAgentTicketDispatch(
     if (dispatchResult.status === 'paused') {
       return {
         warning:
-          'Ticket létrejött (ready), de a dispatcher ki van kapcsolva — System → Dispatcher panelen kapcsold be.',
+          'A ticket ready állapotban van, de a dispatcher ki van kapcsolva — System → Dispatcher panelen kapcsold be, vagy indítsd kézzel.',
       }
     }
     if (dispatchResult.status === 'skipped') {
       return {
         warning:
-          'Ticket létrejött (ready), de a feldolgozás most nem indult el — a cron safety-net vagy egy kézi dispatch veszi fel.',
+          'A ticket ready állapotban van, de a feldolgozás most nem indult el — a cron safety-net vagy egy kézi dispatch veszi fel.',
       }
     }
     return {}
@@ -550,9 +564,11 @@ export async function createBoardTicket(input: {
         taskOnlySkillParameterValues = validation.parameterValues
 
         // A cím szerveroldalon generált; a kliens `title` bemenete nem érvényesül.
-        ticketTitle = buildTaskOnlyTicketTitle(skillEntry.name, new Date())
+        // Megjelenített név (ha van), különben a technikai slug.
+        ticketTitle = buildTaskOnlyTicketTitle(skillDisplayLabel(skillEntry), new Date())
         // A generált cím NE váljon rejtett prompttá: a runtime a `question`
         // hiányában a címre esne vissza. Determinisztikus feladat-szöveget írunk.
+        // A promptban a technikai név marad — ez egyezik a betöltött skill `name`-jével.
         promptText = buildTaskOnlyTaskPrompt(skillEntry.name)
       } else if (parsed.skillParameterValues) {
         return fail('Skill-paraméterek csak korlátozott feladatkörű agentnél adhatók meg')
@@ -685,13 +701,60 @@ export async function dispatchBoardTicket(input: { ticketId: string }) {
   }
 }
 
-export async function listBoardTickets() {
+export async function deleteBoardTicket(input: { ticketId: string }) {
   try {
     const user = await requireTenantRole('viewer')
+    const { ticketId } = deleteBoardTicketSchema.parse(input)
+    const ticket = await repositories.tickets.findById(ticketId)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+
+    const isAdmin = hasMinimumRole(user.activeTenantRole, 'admin')
+    if (!isAdmin && !canWriteTicketComment(ticket, user)) {
+      return fail('Insufficient permissions')
+    }
+
+    const tenantId = ticket.tenantId ?? user.activeTenantId
+    // Workspace előbb — ha a GCS törlés elbukik, a ticket sor még megvan (újrapróbálható).
+    await services.workspaceLifecycle.purgeTicketWorkspace(tenantId, ticketId)
+    await repositories.tickets.deleteTicket(ticketId, { force: isAdmin })
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'ticket.delete',
+      targetType: 'ticket',
+      targetId: ticketId,
+      modelUsed: null,
+      inputRef: ticket.state,
+      outputRef: 'deleted',
+      policyDecision: 'allowed',
+      metadata: {
+        force: isAdmin,
+        title: ticket.title,
+        assigneeType: ticket.assigneeType,
+        assigneeId: ticket.assigneeId,
+      },
+      tenantId: ticket.tenantId,
+      ticketId,
+    })
+
+    return ok({ ticketId })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to delete board ticket')
+  }
+}
+
+export async function listBoardTickets(input?: { updatedFrom?: string; updatedTo?: string }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const range = resolveBoardDateRange({ from: input?.updatedFrom, to: input?.updatedTo })
     const page = await repositories.tickets.listPage({
       excludeTest: true,
       tenantId: user.activeTenantId,
       limit: BOARD_LIST_LIMIT,
+      updatedAtGte: range.updatedAtGte,
+      updatedAtLte: range.updatedAtLte,
     })
     const tickets = page.items
 
@@ -846,11 +909,21 @@ export async function getTicket(input: { id: string }) {
       })
     }
 
+    const pendingConsequenceApprovals = await services.consequenceApproval.listOpenForTicket(
+      id,
+      {
+        id: user.user.id,
+        tenantId: user.activeTenantId,
+        role: user.activeTenantRole,
+      },
+    )
+
     return ok({
       ...ticket,
       reproduction,
       ...display,
       process,
+      pendingConsequenceApprovals,
       creator: formatTicketCreator({
         createdById: ticket.createdById,
         payload: ticket.payload,
@@ -1093,7 +1166,10 @@ export async function addTicketComment(input: {
         ticketId: ticket.id,
       })
       if (!ticket.agentId) return fail('A ticket nincs agenthez rendelve')
-      const dispatchOutcome = await runAgentTicketDispatch(ticket.id, ticket.agentId)
+      // User-intent handback: ne a cron/dispatcher enable-re várjunk.
+      const dispatchOutcome = await runAgentTicketDispatch(ticket.id, ticket.agentId, {
+        bypassDispatcherEnabledCheck: true,
+      })
       warning = dispatchOutcome.error ?? dispatchOutcome.warning
     }
 
@@ -1163,7 +1239,10 @@ export async function transitionTicket(input: {
     }
 
     if (parsed.toState === 'ready' && existing.agentId) {
-      await runAgentTicketDispatch(parsed.id, existing.agentId)
+      // „Újra feldolgozás" user-intent — ne a dispatcher enable-re várjunk.
+      await runAgentTicketDispatch(parsed.id, existing.agentId, {
+        bypassDispatcherEnabledCheck: true,
+      })
     }
 
     return ok(ticket)
@@ -1499,6 +1578,17 @@ export async function updateAgentConnectorBinding(input: {
   apiKey?: string
   /** Ha true: a per-agent kulcs törlődik, az agent a tenant-szintű kulcsra esik vissza. */
   clearApiKey?: boolean
+  /**
+   * issue #220 — írási bizalom. Csak admin; `preapproved` esetén kötelező a
+   * laza/szigorú módválasztás (nincs előjelölt default).
+   */
+  writeApproval?: 'per_call' | 'preapproved'
+  preapprovedTrustMode?: 'lax' | 'strict' | null
+  preapprovedExpiresAt?: string | null
+  preapprovedWriteLimit?: number | null
+  dangerPreapproved?: boolean
+  /** Opcionális connector-címke (nem kapcsolja a kaput). */
+  consequenceBoundary?: 'external_draft' | 'platform' | null
 }) {
   try {
     const user = await requireTenantRole('admin')
@@ -1540,14 +1630,64 @@ export async function updateAgentConnectorBinding(input: {
       nextSecretAlias = buildConnectorSecretRef(scopedSecretId)
     }
 
-    await prisma.agentConnector.update({
-      where: {
-        agentId_connectorId: { agentId: input.agentId, connectorId: input.connectorId },
-      },
-      data: {
-        accessMode,
-        ...(nextSecretAlias !== undefined ? { secretAlias: nextSecretAlias } : {}),
-      },
+    // issue #220 — read módban nincs értelme a preapproved trustnak; mindig per_call.
+    const { validateWriteApprovalBinding } = await import(
+      '@/domain/tool-broker/write-approval-trust'
+    )
+    const writeApprovalInput =
+      accessMode === 'read'
+        ? { writeApproval: 'per_call' as const }
+        : {
+            writeApproval: input.writeApproval === 'preapproved' ? ('preapproved' as const) : ('per_call' as const),
+            preapprovedTrustMode: input.preapprovedTrustMode,
+            preapprovedExpiresAt: input.preapprovedExpiresAt,
+            preapprovedWriteLimit: input.preapprovedWriteLimit,
+            dangerPreapproved: input.dangerPreapproved,
+          }
+    const trustValidated = validateWriteApprovalBinding(writeApprovalInput)
+    if (!trustValidated.ok) return fail(trustValidated.error)
+    const trust = trustValidated.trust
+
+    const requestedBoundary =
+      input.consequenceBoundary === 'external_draft' || input.consequenceBoundary === 'platform'
+        ? input.consequenceBoundary
+        : input.consequenceBoundary === null
+          ? null
+          : undefined
+
+    // A címke a CONNECTOR sorára megy, az pedig platformszintű (tenantId = null)
+    // is lehet — ilyet több tenant használ, egy tenant-admin nem írhatja át
+    // mások alatt. A kötés-mentő űrlap minden mentésnél küldi a mezőt, ezért
+    // csak a TÉNYLEGES változtatást utasítjuk vissza (és hangosan, nem némán).
+    const currentBoundary = link.connector.consequenceBoundary ?? null
+    const boundaryChanged = requestedBoundary !== undefined && requestedBoundary !== currentBoundary
+    if (boundaryChanged && link.connector.tenantId !== (user.activeTenantId ?? null)) {
+      return fail(
+        'Ez a kapcsolat platformszintű (több tenant használja) — a következmény-határ címkéjét itt nem lehet átírni. Az írási bizalom (kötés-szintű) továbbra is állítható.',
+      )
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.agentConnector.update({
+        where: {
+          agentId_connectorId: { agentId: input.agentId, connectorId: input.connectorId },
+        },
+        data: {
+          accessMode,
+          ...(nextSecretAlias !== undefined ? { secretAlias: nextSecretAlias } : {}),
+          writeApproval: trust.mode,
+          preapprovedTrustMode: trust.trustMode,
+          preapprovedExpiresAt: trust.expiresAt,
+          preapprovedWriteLimit: trust.writeLimitPerRun,
+          dangerPreapproved: trust.dangerPreapproved,
+        },
+      })
+      if (boundaryChanged) {
+        await tx.connector.update({
+          where: { id: input.connectorId },
+          data: { consequenceBoundary: requestedBoundary },
+        })
+      }
     })
 
     await syncHttpApiCapabilities(input.agentId, input.connectorId, accessMode)
@@ -1565,6 +1705,12 @@ export async function updateAgentConnectorBinding(input: {
       policyDecision: 'allowed',
       metadata: {
         accessMode,
+        writeApproval: trust.mode,
+        preapprovedTrustMode: trust.trustMode,
+        preapprovedExpiresAt: trust.expiresAt?.toISOString() ?? null,
+        preapprovedWriteLimit: trust.writeLimitPerRun,
+        dangerPreapproved: trust.dangerPreapproved,
+        ...(boundaryChanged ? { consequenceBoundary: requestedBoundary } : {}),
         perAgentKeyRotated: Boolean(input.apiKey?.trim()),
         perAgentKeyCleared: Boolean(input.clearApiKey),
       },
@@ -1616,6 +1762,31 @@ export async function createAgent(input: {
       policyDecision: 'allowed',
       metadata: { role: result.agent.role, status: result.agent.status },
     })
+
+    // Kiinduló jog: a tenant minden tagja láthatja / megszólíthatja az új agentet.
+    // Az agent már létrejött — grant-hiba ne mutasson „létrehozás sikertelen”-t.
+    if (user.activeTenantId) {
+      try {
+        const { materializeDefaultUserAgentGrants } = await import(
+          '@/domain/agent-access/default-user-agent-grants'
+        )
+        await materializeDefaultUserAgentGrants({
+          tenantId: user.activeTenantId,
+          actorUserId: user.user.id,
+          agentId: result.agent.id,
+        })
+      } catch (err) {
+        logger.error(
+          {
+            event: 'agent_access.default_grants.materialize_failed',
+            agentId: result.agent.id,
+            tenantId: user.activeTenantId,
+            error: String(err),
+          },
+          'Default user→agent grants failed after agent.create',
+        )
+      }
+    }
 
     return ok(result)
   } catch (e) {
@@ -3140,6 +3311,74 @@ export async function createScheduledAgentTask(input: {
   }
 }
 
+/**
+ * Ticket → Megbeszélés (#219): új conversation a tickethez kötve, az agent chat
+ * panelben megnyitható. Nem az origin `ticket.conversationId`; ismételt hívás
+ * mindig új conversationt hoz létre.
+ */
+export async function createDiscussionFromTicket(input: { ticketId: string }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const { ticketId } = z.object({ ticketId: z.string().uuid() }).parse(input)
+    const ticket = await repositories.tickets.findById(ticketId)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+
+    const agentId =
+      ticket.agentId ??
+      (ticket.assigneeType === 'agent' && ticket.assigneeId ? ticket.assigneeId : null)
+    if (!agentId) return fail('Ehhez a feladathoz nincs megszólítható AI munkatárs')
+
+    const subject = tenantUserSubject(user)
+    if (!subject) return fail('Agent not found')
+    try {
+      await services.agentAccess.assertCanAccessAgent({
+        subject,
+        targetAgentId: agentId,
+        verb: 'address',
+        subjectIsTenantAdmin: isTenantAdmin(user),
+        audit: {
+          channel: 'chat',
+          ticketId: ticket.id,
+          initiatingUserId: user.user.id,
+        },
+      })
+    } catch (error) {
+      if (isAgentAccessError(error)) return fail(error.message)
+      throw error
+    }
+
+    const agent = await repositories.agents.findById(agentId)
+    if (!agent) return fail('Agent not found')
+
+    const title = `Megbeszélés: ${ticket.title}`.slice(0, 80)
+    const conversation = await services.conversations.createConversation({
+      agentId,
+      createdById: user.user.id,
+      tenantId: user.activeTenantId,
+      title,
+      continuedFromTicketId: ticket.id,
+    })
+
+    return ok({
+      conversationId: conversation.id,
+      ticketId: ticket.id,
+      ticketTitle: ticket.title,
+      agent: {
+        id: agent.id,
+        name: agent.name,
+        status: agent.status,
+        avatarUrl: agent.avatarUrl,
+        personaNickname: agent.personaNickname,
+        personaGreeting: agent.personaGreeting,
+        personaTrait: agent.personaTrait,
+      },
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to start discussion from ticket')
+  }
+}
+
 export async function loadAgentChatMessages(input: { conversationId: string; agentId: string }) {
   try {
     const user = await requireTenantRole('viewer')
@@ -3202,6 +3441,34 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
       { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole },
     )
 
+    let continuedFromTicket: { id: string; title: string } | null = null
+    let ticketDiscussionHistory: Array<{
+      id: string
+      role: 'user' | 'agent' | 'system'
+      text: string
+      authorLabel: string
+      createdAt: string
+    }> = []
+    if (conversation.continuedFromTicketId) {
+      const sourceTicket = await repositories.tickets.findById(conversation.continuedFromTicketId)
+      if (sourceTicket && sourceTicket.tenantId === user.activeTenantId) {
+        continuedFromTicket = { id: sourceTicket.id, title: sourceTicket.title }
+        const payload =
+          sourceTicket.payload &&
+          typeof sourceTicket.payload === 'object' &&
+          !Array.isArray(sourceTicket.payload)
+            ? (sourceTicket.payload as Record<string, unknown>)
+            : {}
+        const originalTask = readTicketPromptText(payload) || sourceTicket.title
+        const comments = await repositories.tickets.listComments(sourceTicket.id)
+        ticketDiscussionHistory = buildTicketDiscussionHistory({
+          comments,
+          originalTask,
+          ticketCreatedAt: sourceTicket.createdAt,
+        })
+      }
+    }
+
     return ok({
       conversationId,
       conversation: {
@@ -3209,7 +3476,10 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
         status: conversation.status,
         title: conversation.title,
         lastMessageAt: conversation.lastMessageAt.toISOString(),
+        continuedFromTicketId: conversation.continuedFromTicketId,
       },
+      continuedFromTicket,
+      ticketDiscussionHistory,
       messages: views,
       pendingConsequenceApprovals,
     })
@@ -3566,14 +3836,186 @@ export async function approveConsequenceApproval(input: { approvalId: string }) 
   try {
     const user = await requireTenantRole('operator')
     const parsed = consequenceApprovalIdSchema.parse(input)
-    const result = await services.consequenceApproval.approve(parsed.approvalId, {
+    const actor = {
       id: user.user.id,
       tenantId: user.activeTenantId,
       role: user.activeTenantRole,
+    }
+    const existing = await repositories.consequenceApprovals.findById(parsed.approvalId)
+    // Task-only ticket: mid-run approve race a loop végével — csak awaiting_human-nél.
+    if (existing?.ticketId && !existing.conversationId) {
+      const ticket = await repositories.tickets.findById(existing.ticketId)
+      if (ticket && ticket.state !== 'awaiting_human') {
+        return fail(
+          'A jóváhagyás csak akkor indítható, amikor a ticket emberi jóváhagyásra vár.',
+        )
+      }
+    }
+    const result = await services.consequenceApproval.approve(parsed.approvalId, actor)
+    if (!result.ok) return fail(result.reason)
+
+    const row = existing ?? (await repositories.consequenceApprovals.findById(parsed.approvalId))
+    const resume = row?.ticketId
+      ? await resumeTicketAfterConsequenceApprovals(row.ticketId, row.conversationId, {
+          id: user.user.id,
+          name: user.user.name,
+          tenantId: user.activeTenantId,
+          role: user.activeTenantRole,
+        })
+      : { ticketResumed: false as const }
+
+    return ok({
+      ...result,
+      ticketResumed: resume.ticketResumed,
+      ...('warning' in resume && resume.warning ? { warning: resume.warning } : {}),
     })
-    return result.ok ? ok(result) : fail(result.reason)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to approve consequence action')
+  }
+}
+
+/**
+ * Task-only ticket folytatása a következmény-kapu ALATT lefutott műveletek után.
+ *
+ * Ha nincs több függő kártya, handback + dispatch — különben a Föld PATCH lefut,
+ * de az agent soha nem folytatja a terv többi sorát / a záró összefoglalót
+ * (cade35e7: ticket-szintű „Jóváhagyás" ≠ API invoke). A visszatérés a hívó két
+ * útján (egyedi és batch jóváhagyás) KÖZÖS, hogy a folytatás feltétele egy
+ * helyen éljen.
+ */
+async function resumeTicketAfterConsequenceApprovals(
+  ticketId: string,
+  conversationId: string | null,
+  actor: { id: string; name: string | null; tenantId: string; role: UserRole },
+): Promise<{ ticketResumed: boolean; warning?: string }> {
+  if (conversationId) return { ticketResumed: false }
+  const open = await services.consequenceApproval.listOpenForTicket(ticketId, {
+    id: actor.id,
+    tenantId: actor.tenantId,
+    role: actor.role,
+  })
+  if (open.length > 0) return { ticketResumed: false }
+
+  const ticket = await repositories.tickets.findById(ticketId)
+  if (!ticket?.agentId || ticket.state !== 'awaiting_human') return { ticketResumed: false }
+
+  const prevPayload =
+    ticket.payload && typeof ticket.payload === 'object' && !Array.isArray(ticket.payload)
+      ? { ...(ticket.payload as Record<string, unknown>) }
+      : {}
+  delete prevPayload.awaitingConsequenceApproval
+  delete prevPayload.consequenceApprovalIds
+  await repositories.tickets.update(ticket.id, {
+    payload: {
+      ...prevPayload,
+      consequenceApprovalsCompletedAt: new Date().toISOString(),
+    } as Prisma.JsonValue,
+  })
+  await repositories.tickets.appendComment({
+    ticketId: ticket.id,
+    kind: 'human_comment',
+    authorType: 'human',
+    authorUserId: actor.id,
+    authorDisplayName: actor.name,
+    body:
+      '✅ Jóváhagyva — a kapu alatti API-műveletek lefutottak. Folytasd a feladatot a munkaterület checkpointjából (fold_muveletek / fold_frissites_progress); ne egyeztess újra elölről.',
+  })
+  await services.tickets.transition({
+    ticketId: ticket.id,
+    toState: 'needs_info',
+    actor: { type: 'human', userId: actor.id, role: actor.role },
+    note: 'Következmény-kapu jóváhagyás utáni folytatás',
+  })
+  await services.tickets.transition({
+    ticketId: ticket.id,
+    toState: 'ready',
+    actor: { type: 'system' },
+  })
+  await repositories.tickets.appendComment({
+    ticketId: ticket.id,
+    kind: 'system_note',
+    authorType: 'system',
+    body: 'Visszaadva újrafeldolgozásra (következmény-kapu után)',
+  })
+  // User-intent folytatás a kapu után — ne a dispatcher enable / cron-ra várjunk.
+  const dispatchOutcome = await runAgentTicketDispatch(ticket.id, ticket.agentId, {
+    bypassDispatcherEnabledCheck: true,
+  })
+  const warning = dispatchOutcome.error ?? dispatchOutcome.warning
+  return { ticketResumed: true, ...(warning ? { warning } : {}) }
+}
+
+/**
+ * EGY döntés — N művelet. A ticket összes nyitott kártyáját a SZERVEREN futtatja
+ * le, sorban, friss listából.
+ *
+ * ÜZLETI OK (`f7ef867f`, 2026-08-04): a felhasználó 30 műveletből 10-et hagyott
+ * jóvá, mert a gomb a lapbetöltés pillanatképéből dolgozott, és a futás közben
+ * született 20 kártyát nem látta. A friss lista itt a szerveren áll össze, tehát
+ * a „mind" tényleg mindet jelenti. A sorrend a létrehozás sorrendje: a műveleti
+ * terv (PATCH → POST → DELETE) így marad érvényes.
+ *
+ * Részleges hiba nem állítja meg a sort: a hívó megkapja, MI bukott el és miért.
+ */
+const CONSEQUENCE_BATCH_BUDGET_MS = 60_000
+
+export async function approveTicketConsequenceApprovals(input: { ticketId: string }) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = z.object({ ticketId: z.string().uuid() }).parse(input)
+    const actor = {
+      id: user.user.id,
+      tenantId: user.activeTenantId,
+      role: user.activeTenantRole,
+    }
+
+    const ticket = await repositories.tickets.findById(parsed.ticketId)
+    if (!ticket) return fail('ticket_not_found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+    if (ticket.state !== 'awaiting_human') {
+      return fail(
+        'A jóváhagyás csak akkor indítható, amikor a ticket emberi jóváhagyásra vár.',
+      )
+    }
+
+    const open = await services.consequenceApproval.listOpenForTicket(parsed.ticketId, actor)
+    const decidable = open.filter((card) => !card.expired || card.failedReason)
+    let approved = 0
+    let remaining = 0
+    const failed: { approvalId: string; summary: string; reason: string }[] = []
+    // Falióra-korlát: egy valós szinkron 89 külső HTTP-hívást jelent, ez egyetlen
+    // szerver-akcióban időtúllépésbe futna — a felhasználó pedig nem tudná meg,
+    // mi futott le. Ezért a sort itt vágjuk el, és MEGMONDJUK, mennyi maradt:
+    // a gomb újbóli megnyomása onnan folytatja (a lefutott sorok már nem nyitottak).
+    const deadline = Date.now() + CONSEQUENCE_BATCH_BUDGET_MS
+    for (const card of decidable) {
+      if (Date.now() >= deadline) {
+        remaining += 1
+        continue
+      }
+      const result = await services.consequenceApproval.approve(card.approvalId, actor)
+      if (result.ok) approved += 1
+      else failed.push({ approvalId: card.approvalId, summary: card.summary, reason: result.reason })
+    }
+
+    const resume = await resumeTicketAfterConsequenceApprovals(parsed.ticketId, null, {
+      id: user.user.id,
+      name: user.user.name,
+      tenantId: user.activeTenantId,
+      role: user.activeTenantRole,
+    })
+
+    return ok({
+      total: decidable.length,
+      approved,
+      failed,
+      remaining,
+      skippedExpired: open.length - decidable.length,
+      ticketResumed: resume.ticketResumed,
+      ...(resume.warning ? { warning: resume.warning } : {}),
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to approve consequence actions')
   }
 }
 
@@ -4087,6 +4529,15 @@ export async function provisionUser(input: { email: string; role: string }) {
       createdById: ctx.user.id,
       tenantId: ctx.activeTenantId,
     })
+    // Kiinduló jog: az új kolléga a tenant minden agentjét láthatja / megszólíthatja.
+    const { materializeDefaultUserAgentGrants } = await import(
+      '@/domain/agent-access/default-user-agent-grants'
+    )
+    await materializeDefaultUserAgentGrants({
+      tenantId: ctx.activeTenantId,
+      actorUserId: ctx.user.id,
+      userId: result.user.id,
+    })
     return ok({ userId: result.user.id, membershipId: result.membership.id })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to provision user')
@@ -4394,9 +4845,12 @@ export async function rollbackMemory(input: { agentId: string; toVersion: number
 
 export async function listAuditLog(input?: z.infer<typeof listAuditLogSchema>) {
   try {
-    await requireTenantRole('approver')
+    const user = await requireTenantRole('approver')
     const parsed = input ? listAuditLogSchema.parse(input) : {}
     const entries = await repositories.audit.findMany({
+      // Az audit-nézet compliance-adatot mutat (agent, döntés, cél és időpont), ezért
+      // az approver szerep SOHA nem jelenthet cross-tenant olvasási jogosultságot.
+      tenantId: user.activeTenantId,
       limit: parsed.limit ?? 100,
       action: parsed.action,
       actorType: parsed.actorType,
@@ -4468,9 +4922,12 @@ export async function verifyAuditChain() {
 
 export async function exportAuditSiem(input?: { since?: string }) {
   try {
-    await requireTenantRole('admin')
-    const since = input?.since ? new Date(input.since) : undefined
-    const jsonLines = await services.auditChain.exportJsonLines(since)
+    const user = await requireTenantRole('admin')
+    const { since } = z.object({ since: z.coerce.date().optional() }).parse(input ?? {})
+    const jsonLines = await services.auditChain.exportJsonLines({
+      tenantId: user.activeTenantId,
+      since,
+    })
     return ok({ content: jsonLines, filename: `audit-siem-${new Date().toISOString().slice(0, 10)}.jsonl` })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Export failed')
@@ -5324,18 +5781,160 @@ export async function deleteModelRoutingPolicy(input: { id: string }) {
 
 // ── Model Gateway: Budgets (Fázis 2-A) ──────────────────────────────────────
 
-export async function listModelBudgets() {
+/**
+ * Egy keretszabály a felület számára. Szándékosan NEM a nyers Prisma sor: a
+ * `softThreshold` `Decimal` példány, amit a szerver→kliens határ nem tud
+ * szerializálni, és a felületnek amúgy sincs rá szüksége.
+ */
+export type BudgetRuleView = {
+  id: string
+  /** `null` = platform-szintű, minden szervezetre érvényes szabály. */
+  tenantId: string | null
+  scope: 'tenant' | 'agent' | 'ticket_type'
+  scopeRef: string | null
+  period: 'day' | 'week' | 'month'
+  callLimit: number | null
+  tokenLimit: number | null
+  hardCap: boolean
+  /**
+   * A szabály SAJÁT hatókörén mért fogyasztás — ugyanaz a mérés, amit a kapu néz,
+   * hogy a felületen látszó „hol tartunk" ne térjen el a tényleges döntéstől.
+   * A platform-szintű sornál az aktív szervezetben mérve (ott dől el, blokkol-e itt).
+   */
+  usage: {
+    calls: number
+    tokens: number
+    /**
+     * A „minden munkatársra külön-külön" szabálynál nincs egyetlen fogyasztás: a
+     * korlátot az éri el először, aki a legtöbbet fogyasztotta. A számok ezért az
+     * ő fogyasztását mutatják — ő a szűk keresztmetszet.
+     */
+    peakAgentName?: string
+    /** Igaz, ha ez a szabály most blokkolna egy új hívást. */
+    exhausted: boolean
+  }
+}
+
+type BudgetRuleRow = {
+  id: string
+  tenantId: string | null
+  scope: string
+  scopeRef: string | null
+  period: string
+  callLimit: number | null
+  tokenLimit: number | null
+  hardCap: boolean
+}
+
+function toBudgetRuleView(row: BudgetRuleRow, usage: BudgetRuleView['usage']): BudgetRuleView {
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    scope: row.scope as BudgetRuleView['scope'],
+    scopeRef: row.scopeRef,
+    period: row.period as BudgetRuleView['period'],
+    callLimit: row.callLimit,
+    tokenLimit: row.tokenLimit,
+    hardCap: row.hardCap,
+    usage,
+  }
+}
+
+/** Frissen létrehozott / most mentett szabály — a fogyasztás a következő betöltéskor pontosul. */
+function toBudgetRuleViewWithoutUsage(row: BudgetRuleRow): BudgetRuleView {
+  return toBudgetRuleView(row, { calls: 0, tokens: 0, exhausted: false })
+}
+
+/**
+ * Egy keretszabály fogyasztása a SAJÁT hatókörén, az aktív szervezetben mérve.
+ * A hatókör dönti el, mit összegzünk — ugyanaz a szabály, amit a kapu is követ
+ * (`usageForBudget`), különben a felületen látszó szám és a blokkolás elválna.
+ */
+async function budgetRuleUsage(
+  row: BudgetRuleRow,
+  tenantId: string,
+  agentNameById: Map<string, string>,
+  byAgentByPeriod: Map<string, Array<{ agentId: string; calls: number; tokens: number }>>,
+): Promise<BudgetRuleView['usage']> {
+  const period = row.period as ModelBudgetPeriod
+  const exhausted = (usage: { calls: number; tokens: number }) => isRuleExhausted(row, usage)
+
+  if (row.scope === 'tenant') {
+    const usage = await repositories.modelCalls.getUsageForTenant(tenantId, period)
+    return { ...usage, exhausted: exhausted(usage) }
+  }
+
+  if (row.scope === 'ticket_type') {
+    if (!row.scopeRef) return { calls: 0, tokens: 0, exhausted: false }
+    const usage = await repositories.modelCalls.getUsageForTicketType(
+      tenantId,
+      row.scopeRef as Ticket['type'],
+      period,
+    )
+    return { ...usage, exhausted: exhausted(usage) }
+  }
+
+  if (row.scopeRef) {
+    const usage = await repositories.modelCalls.getUsageForAgent(row.scopeRef, period)
+    return { ...usage, exhausted: exhausted(usage) }
+  }
+
+  // `scope=agent` + `scopeRef=null`: minden munkatársra külön érvényes. A korlátot az
+  // éri el először, aki a legtöbbet fogyasztotta — őt mutatjuk szűk keresztmetszetként.
+  const peak = pickPeakAgent(byAgentByPeriod.get(period) ?? [], row)
+  if (!peak) return { calls: 0, tokens: 0, exhausted: false }
+  return {
+    calls: peak.calls,
+    tokens: peak.tokens,
+    peakAgentName: agentNameById.get(peak.agentId) ?? peak.agentId,
+    exhausted: exhausted(peak),
+  }
+}
+
+export async function listModelBudgets(): Promise<ActionResult<BudgetRuleView[]>> {
   try {
     const ctx = await requireTenantRole('operator')
     // A `list()` szűrő nélkül MINDEN tenant keretét visszaadta egy tenant-operatornak.
     // A saját tenant + a platform-szintű (tenantId: null) sorok láthatók, más nem.
-    const [own, platformWide] = await Promise.all([
+    const [own, platformWide, agents] = await Promise.all([
       repositories.modelBudgets.list({ tenantId: ctx.activeTenantId }),
       repositories.modelBudgets.list({ tenantId: undefined }).then((rows) =>
         rows.filter((b) => b.tenantId === null),
       ),
+      repositories.agents.findMany({
+        tenantId: ctx.activeTenantId,
+        excludeHiddenFromOperators: shouldExcludeHiddenAgents(ctx.activeTenantRole),
+      }),
     ])
-    return ok([...own, ...platformWide])
+    const rows = [...own, ...platformWide]
+    const agentNameById = new Map(agents.map((a) => [a.id, a.name]))
+
+    // Az agentenkénti bontás periódusonként egyszer kell, nem szabályonként.
+    const periods = [
+      ...new Set(
+        rows
+          .filter((r) => r.scope === 'agent' && r.scopeRef === null)
+          .map((r) => r.period as ModelBudgetPeriod),
+      ),
+    ]
+    const byAgentByPeriod = new Map(
+      await Promise.all(
+        periods.map(
+          async (period) =>
+            [period, await repositories.modelCalls.getUsageByAgent(ctx.activeTenantId, period)] as const,
+        ),
+      ),
+    )
+
+    const views = await Promise.all(
+      rows.map(async (row) =>
+        toBudgetRuleView(
+          row,
+          await budgetRuleUsage(row, ctx.activeTenantId, agentNameById, byAgentByPeriod),
+        ),
+      ),
+    )
+    return ok(views)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list model budgets')
   }
@@ -5360,6 +5959,11 @@ export type DailyBudgetOverview = {
     tenant: { calls: number; tokens: number }
     agents: Array<{ agentId: string; name: string; calls: number; tokens: number }>
   }
+  /**
+   * A szervezet AI munkatársai — az egyedi keretszabályok UUID helyett nevet
+   * mutatnak, és új szabálynál listából lehet munkatársat választani.
+   */
+  agents: Array<{ id: string; name: string }>
 }
 
 /**
@@ -5407,6 +6011,9 @@ export async function getDailyBudgetOverview(): Promise<ActionResult<DailyBudget
           .map((u) => ({ ...u, name: nameById.get(u.agentId) ?? u.agentId }))
           .sort((a, b) => b.tokens - a.tokens),
       },
+      agents: agents
+        .map((a) => ({ id: a.id, name: a.name }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'hu')),
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load budget overview')
@@ -5479,6 +6086,13 @@ export async function setTenantDailyBudget(
   }
 }
 
+/**
+ * Egyedi keretszabály létrehozása.
+ *
+ * A `appliesTo` szándékosan kötelező döntés: korábban a hiányzó `tenantId` némán
+ * PLATFORM-szintű (minden szervezetre érvényes) sort hozott létre, amit a felületen
+ * semmi nem jelzett — így egy szervezetnek szánt korlát az összes többit is fogta.
+ */
 export async function createModelBudget(input: {
   scope: 'tenant' | 'agent' | 'ticket_type'
   scopeRef?: string
@@ -5487,12 +6101,15 @@ export async function createModelBudget(input: {
   tokenLimit?: number
   softThreshold?: number
   hardCap?: boolean
-  tenantId?: string
+  appliesTo: 'tenant' | 'platform'
 }) {
   try {
-    await requirePlatformRole('superadmin')
+    const ctx = await requirePlatformRole('superadmin')
+    if (input.appliesTo === 'tenant' && !ctx.activeTenantId) {
+      return fail('Nincs kiválasztott szervezet — válts szervezetet, vagy add meg platform-szintűnek.')
+    }
     const budget = await repositories.modelBudgets.create({
-      tenantId: input.tenantId ?? null,
+      tenantId: input.appliesTo === 'platform' ? null : ctx.activeTenantId,
       scope: input.scope,
       scopeRef: input.scopeRef ?? null,
       period: input.period,
@@ -5501,15 +6118,70 @@ export async function createModelBudget(input: {
       softThreshold: input.softThreshold != null ? new (await import('@prisma/client')).Prisma.Decimal(input.softThreshold) : null,
       hardCap: input.hardCap ?? true,
     })
-    return ok(budget)
+    return ok(toBudgetRuleViewWithoutUsage(budget))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create model budget')
   }
 }
 
+/**
+ * Meglévő keretszabály korlátainak módosítása. A hatókör (kire vonatkozik) és a
+ * periódus nem változtatható — az más szabály, ott törlés + új a helyes út.
+ */
+export async function updateModelBudget(input: {
+  id: string
+  callLimit: number | null
+  tokenLimit: number | null
+  hardCap: boolean
+}) {
+  try {
+    const ctx = await requirePlatformRole('superadmin')
+    const existing = await repositories.modelBudgets.findById(input.id)
+    if (!existing) return fail('A keretszabály nem található.')
+    // Platform-szintű sort bárhonnan, tenant-sort csak a saját szervezet nézetéből.
+    if (existing.tenantId !== null && existing.tenantId !== ctx.activeTenantId) {
+      return fail('Ez a keretszabály másik szervezethez tartozik — válts arra a szervezetre.')
+    }
+    const budget = await repositories.modelBudgets.update(input.id, {
+      callLimit: input.callLimit,
+      tokenLimit: input.tokenLimit,
+      hardCap: input.hardCap,
+    })
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: ctx.user.id,
+      agentVersion: null,
+      action: 'model.budget_changed',
+      targetType: 'tenant',
+      targetId: existing.tenantId ?? 'platform',
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: {
+        budgetId: input.id,
+        scope: existing.scope,
+        scopeRef: existing.scopeRef,
+        period: existing.period,
+        callLimit: input.callLimit,
+        tokenLimit: input.tokenLimit,
+        hardCap: input.hardCap,
+      },
+    })
+    return ok(toBudgetRuleViewWithoutUsage(budget))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update model budget')
+  }
+}
+
 export async function deleteModelBudget(input: { id: string }) {
   try {
-    await requirePlatformRole('superadmin')
+    const ctx = await requirePlatformRole('superadmin')
+    const existing = await repositories.modelBudgets.findById(input.id)
+    if (!existing) return fail('A keretszabály nem található.')
+    if (existing.tenantId !== null && existing.tenantId !== ctx.activeTenantId) {
+      return fail('Ez a keretszabály másik szervezethez tartozik — válts arra a szervezetre.')
+    }
     await repositories.modelBudgets.delete(input.id)
     return ok({ deleted: true })
   } catch (e) {
@@ -5642,5 +6314,17 @@ export async function clearManualModelPrice(input: { model: string }) {
     return ok(true)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to clear manual price')
+  }
+}
+
+/** OpenRouter models API → szinkronizált tarifa-réteg (superadmin). */
+export async function syncModelPricingFromOpenRouter() {
+  try {
+    await ensureActiveDatabaseMode()
+    const user = await requirePlatformRole('superadmin')
+    const result = await services.platformSettings.syncModelPricingFromOpenRouter(user.user.id)
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to sync model pricing')
   }
 }

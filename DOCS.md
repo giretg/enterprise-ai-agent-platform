@@ -484,6 +484,46 @@ gráf elutasította volna — auditál, nem blokkol), valamint
 `agent_access.grant.create` / `.revoke` és `agent_access.restriction.update`.
 A grant-írás és az audit-esemény ugyanabban a tranzakcióban keletkezik.
 
+### Menü-hozzáférés (melyik szerepkör milyen menüt lát)
+
+**Fájlok:** `src/lib/nav-visibility.ts` (tiszta policy),
+`src/lib/control-plane-nav.ts` (nav-katalógus + szűrés),
+`src/lib/nav-visibility-server.ts` (kérés-scope-olt betöltés),
+`src/app/actions/menu-access.ts` (írás + audit),
+`src/app/control-plane/menu-access` (admin felület)
+
+A fejléc-navigáció teljes tartalma egyetlen katalógusban él
+(`CONTROL_PLANE_NAV_CATALOG`); minden menüpont és almenü stabil `key`-t kap. A
+tenant admin szerepkörönként (`viewer` / `operator` / `approver` / `admin`)
+elrejtheti ezeket a kulcsokat. A policy a `tenants.settings.navVisibility`
+mezőben lakik — nincs séma-migráció, és az **üres policy az alapérték**, tehát a
+meglévő telepítések menüje változatlan.
+
+**Ez kurálás, nem jogosultság.** A szűrés sorrendje: előbb a szerep-követelmény
+(`requires.tenantRole` / `requires.platformRole`), utána a láthatósági policy —
+így a policy csak **szűkíthet**, sosem jeleníthet meg olyan menüpontot, amihez a
+felhasználónak nincs szerepe. Az oldalak `requireTenantRole` guardjai
+változatlanul az egyetlen authorizációs határ: az elrejtett menüpont útvonala
+közvetlen URL-lel továbbra is annyira elérhető, amennyire a szerepkör engedi.
+
+**Normatív invariánsok:**
+
+1. **Nincs kizárás:** az `admin` szerepkör elől sem az `admin` csoport, sem az
+   `admin.menu-access` levél nem rejthető el (`NAV_KEYS_LOCKED_FOR_ADMIN`) —
+   különben egyetlen mentés visszavonhatatlanná tenné a beállítást. A
+   `sanitizeNavVisibilityPolicy` minden olvasási és írási úton kikényszeríti.
+2. **Üresre szűkült csoport eltűnik:** nem marad a fejlécben olyan legördülő,
+   ami semmit nem nyit ki.
+3. **Ismeretlen kulcs kiesik:** a mentés a katalógushoz méri az inputot, így a
+   policy nem hivatkozhat megszűnt menüpontra.
+4. **Szerep nélküli hívó elől nem rejtünk:** a tisztán platform-szerepű
+   (tenant-role nélküli) superadmin menüje érintetlen.
+5. **Fail-open betöltés:** ha a tenant nem oldható fel, üres policy-vel megy
+   tovább — egy DB-hiba nem zárhatja ki a felhasználót a saját menüjéből.
+
+**Audit:** `tenant.nav_visibility.update`, a metadatában a teljes előtte/utána
+policy-vel; a settings-írás és az audit-esemény egy tranzakcióban keletkezik.
+
 ### Feladatkör-korlátozás (taskOnly agent)
 
 **Fájlok:** `prisma/schema.prisma` (`Agent.taskOnly`),
@@ -605,6 +645,58 @@ az agent-hozzáférési gráf (7. fejezet). A sorrend kötött:
 
 A gráf-kapu nem írja felül a capability-checket, az agent státuszát vagy az
 orchestrator-szabályt — mindegyik feltétel önállóan is elutasíthat.
+
+### Kimeneti szerződés — a néma eszköz-hibák ellen (issue #195)
+
+**Fájlok:** `src/domain/tool-broker/tool-output-contract.ts` (kapu),
+`tool-output-contracts.ts` (tool-onkénti szerződések).
+
+Amikor az agent „nem végzi el a feladatát", az esetek nagy részében nem a modell
+hibázott, hanem az eszköz csendben félrement: a rendszer sikert jelentett, de a
+végeredmény üres volt (üres Excel, hiányzó sorok), és a felhasználó csak a fájl
+megnyitásakor vette észre. Ezért MINDEN eszköz-eredmény átmegy egy kikényszerített
+kimeneti szerződésen a broker határán, az audit-rögzítés ELŐTT:
+
+```
+invoke()
+  1. bemeneti méret-kapu (D7)          → korlát fölött azonnal `failed`
+  2. handler végrehajtás
+  3. kimeneti séma (Zod, D2)           → sértés → tipizált `failed`, nem néma átengedés
+  4. mért mellékhatás (D4)             → „sikeresen írtam" állítás nem elég
+  5. üresség (D3) / részlegesség       → `empty` / `partial`
+  6. modellnek szánt szöveg (D5, D6)   → becsomagolás + méret-kapu jelölt csonkolással
+  7. audit + ToolCall (outcome, effect_summary)
+```
+
+**Kimenetel (`ToolOutcome`)** minden eredményen: `ok` · `empty` · `partial` ·
+`failed`. Az `empty` és a `partial` NEM hiba, hanem tény, amit a modell és a
+felhasználó is megkap — hétköznapi mondatként, nem gépi címkeként.
+
+**Két csatorna (D5)** — a `ToolBrokerInvokeResult` külön adja:
+
+| mező | kinek | burkolat |
+|------|-------|----------|
+| `modelText` | a modellnek | bizalmi osztály szerint BECSOMAGOLVA (issue #97) |
+| `machineData` | munkaterület, downstream tool, egyeztetés, export | SOHA nem burkolt |
+
+Így a védőburkolat elvi szinten nem kerülhet gépi útra, és nincs szükség utólagos
+kicsomagolásra. A régi `result` mező a `machineData` deprecated aliasa.
+
+A `POST /api/v1/agent/tools` (külső agent REST API) GÉPI fogyasztó: a válasz a
+`result` (= `machineData`) mezőt adja, `modelText`-et SOHA — kiegészítve az
+`outcome` / `outcomeReason` / `effect` mezőkkel, hogy a hívó agent is megtudja,
+ha az eszköz „sikeresen semmit nem csinált".
+
+A kimenetel hétköznapi mondata a burkolaton KÍVÜL, platform-szövegként megy a
+modellhez, a szövege viszont a tool kimenetéből származik (fájlnév, connector-
+hibaüzenet, munkalap-név). Ezért a dinamikus töredékek `sanitizeOutcomeNotice`-on
+mennek át: a határoló-szekvenciák escape-elve, a közlés egy sorba fogva és
+hosszban korlátozva — enélkül egy támadó által írt fájlnév lezárhatná a burkolt
+blokkot és saját utasítás-kontextust nyithatna.
+
+**Megfigyelhetőség:** `ToolCall.outcome` + `ToolCall.effect_summary` (indexelt),
+és a `tool_broker_outcomes_total{tool,outcome}` metrika a `/api/metrics`
+végponton — ebből derül ki, melyik eszköz megy a leggyakrabban csendben félre.
 
 ### Per-user connector grant flow (pl. Gmail)
 
@@ -831,6 +923,7 @@ Az agent képes egyszerű, egyfájlos HTML alkalmazásokat generálni (A0 szint)
 | `/control-plane/connectors` | `connectors/page.tsx` | Connector kezelés |
 | `/control-plane/governance` | `governance/page.tsx` | Governance dashboard |
 | `/control-plane/iam` | `iam/page.tsx` | IAM + meghívók |
+| `/control-plane/menu-access` | `menu-access/page.tsx` | Menü-hozzáférés — melyik szerepkör milyen menüt lát (admin) |
 | `/control-plane/scheduled-tasks` | `scheduled-tasks/page.tsx` | Ütemezett feladatok |
 | `/control-plane/system` | `system/page.tsx` | Platform beállítások |
 | `/control-plane/training` | `training/page.tsx` | Agent tanítás |

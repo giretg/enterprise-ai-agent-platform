@@ -86,19 +86,33 @@ function basePersonaFor(name: string): AgentPersona {
   }
 }
 
-/** A warm, human reading of a machine status. */
-export function humanStatus(status: string): { label: string; mood: 'awake' | 'resting' } {
+export type HumanStatusTone = 'working' | 'available' | 'unknown' | 'idle'
+
+/** A warm, human reading of a machine status.
+ *  `isWorking`: ha ismert (saját futásokból — dashboard / csapatlista), az dönt
+ *  az active agent feliratáról; ha nincs megadva, a régi „Most épp dolgozik” marad. */
+export function humanStatus(
+  status: string,
+  isWorking?: boolean,
+): { label: string; mood: 'awake' | 'resting'; tone: HumanStatusTone } {
   if (status === 'active') {
-    return { label: 'Most épp dolgozik', mood: 'awake' }
+    if (isWorking === true) {
+      return { label: 'Most épp dolgozik', mood: 'awake', tone: 'working' }
+    }
+    if (isWorking === false) {
+      return { label: 'Feladatra vár', mood: 'resting', tone: 'available' }
+    }
+    // Más felületeken még nincs futás-jel: régi szöveg, zöld pötty.
+    return { label: 'Most épp dolgozik', mood: 'awake', tone: 'unknown' }
   }
   if (status === 'retired') {
-    return { label: 'Nyugdíjazva', mood: 'resting' }
+    return { label: 'Nyugdíjazva', mood: 'resting', tone: 'idle' }
   }
   if (status === 'suspended') {
-    return { label: 'Felfüggesztve', mood: 'resting' }
+    return { label: 'Felfüggesztve', mood: 'resting', tone: 'idle' }
   }
   if (status === 'draft') {
-    return { label: 'Még vázlat', mood: 'resting' }
+    return { label: 'Még vázlat', mood: 'resting', tone: 'idle' }
   }
-  return { label: 'Kávészünetet tart', mood: 'resting' }
+  return { label: 'Kávészünetet tart', mood: 'resting', tone: 'idle' }
 }

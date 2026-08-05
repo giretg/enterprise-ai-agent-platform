@@ -97,7 +97,14 @@ import {
 import { recordCall, recordDenied } from './tool-broker-audit'
 import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
 // issue #97 — bizalmi regiszter (tool-nevenkénti TrustClass leképezés).
-import { resolveTrustClass } from './tool-trust-registry'
+import { isSideEffectingTool, resolveTrustClass } from './tool-trust-registry'
+// issue #195 — kikényszerített KIMENETI SZERZŐDÉS a broker határán (WP-1).
+import {
+  assertToolInputWithinLimits,
+  buildToolOutcomeChannels,
+  ToolContractError,
+} from './tool-output-contract'
+import { resolveToolOutputContract } from './tool-output-contracts'
 export { AllowlistAuthorizer } from './tool-broker-authorizer'
 export type {
   Authorizer,
@@ -298,7 +305,14 @@ export class ToolBrokerService {
       webSearchEffective = decision.effective
     }
 
+    // issue #195 — a tool kimeneti szerződése. A `contract` a bemeneti méret-kapuhoz
+    // (D7) már a handler-hívás ELŐTT kell, hogy egy kombinatorikus tool ne a workert
+    // fagyassza le, hanem azonnal, érthető hibával álljon meg.
+    const contract = resolveToolOutputContract(input.tool)
+
     try {
+      assertToolInputWithinLimits(input.tool, input.args, contract)
+
       const result = await this.executeTool(
         input,
         authorization,
@@ -306,11 +320,28 @@ export class ToolBrokerService {
         actingUserId,
         webSearchEffective,
       )
-      const latencyMs = Date.now() - startedAt
-      const meta = resultMeta(result)
       // issue #97 — bizalmi osztály a tool-nevenkénti regiszterből (determinisztikus,
       // args-független, az agent által nem befolyásolható).
       const trust = resolveTrustClass(input.tool)
+      // issue #195 D1–D6 — a KIMENETI SZERZŐDÉS KAPUJA + a kétcsatornás eredmény.
+      // Szándékosan az audit- és a `ToolCall`-rögzítés ELŐTT fut: séma-sértés →
+      // `ToolContractError` (`failed`), és a hibás eredmény nem kerül be sikerként.
+      const channels = buildToolOutcomeChannels({
+        tool: input.tool,
+        trust,
+        output: result,
+        contract,
+        sideEffecting: isSideEffectingTool(input.tool),
+      })
+      const { outcome, outcomeReason, effect, modelText, machineData } = channels
+
+      const latencyMs = Date.now() - startedAt
+      const meta = {
+        ...resultMeta(result),
+        outcome,
+        outcome_reason: outcomeReason,
+        effect,
+      }
 
       await recordCall(this, {
         input,
@@ -324,11 +355,18 @@ export class ToolBrokerService {
         grantId: authorization.grant?.id ?? null,
         webSearchEffective,
         trustClass: trust,
+        outcome,
+        effect,
       })
 
       return {
         denied: false,
         trust,
+        outcome,
+        outcomeReason,
+        effect,
+        modelText,
+        machineData,
         result,
         resultMeta: meta,
         latencyMs,
@@ -360,16 +398,25 @@ export class ToolBrokerService {
         )
       }
 
+      // issue #195 — a szerződés-sértés TIPIZÁLT `failed` kimenetel, nem néma
+      // továbbengedés: az audit-sor megmondja, MELYIK szerződés bukott
+      // (séma / bemeneti méret / munkamennyiség).
+      const contractViolation = e instanceof ToolContractError ? e.code : null
       await recordCall(this, {
         input,
         ticketId,
         connectorId: authorization.connector?.id ?? null,
         status: 'error',
         latencyMs,
-        policyDecision: 'error',
-        resultMeta: { error: message },
+        policyDecision: contractViolation ?? 'error',
+        resultMeta: {
+          error: message,
+          outcome: 'failed',
+          ...(contractViolation ? { contract_violation: contractViolation } : {}),
+        },
         actingUserId,
         grantId: authorization.grant?.id ?? null,
+        outcome: 'failed',
       })
       throw e
     }

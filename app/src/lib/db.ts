@@ -17,10 +17,24 @@ const globalForPrisma = globalThis as unknown as {
 
 /** Dev HMR cache-ből maradt kliens nem látja az új sémát — ilyenkor újra generálunk. */
 const DEV_REQUIRED_MODELS = ['conversation', 'message'] as const
+/** Oszlopok, amiket a hosszú életű `next dev` Prisma-példánya gyakran „lefagyaszt”. */
+const DEV_REQUIRED_SKILL_FIELDS = ['displayName'] as const
 
 function prismaClientIsStale(client: PrismaClient): boolean {
   if (process.env.NODE_ENV === 'production') return false
-  return DEV_REQUIRED_MODELS.some((model) => !(model in client))
+  if (DEV_REQUIRED_MODELS.some((model) => !(model in client))) return true
+  // A runtime DMMF a folyamatban betöltött Prisma-modulé — ha a `prisma generate`
+  // után nem restartoltunk, az új oszlop itt hiányzik, és a SELECT/UPDATE elhasal.
+  const skillFields = (
+    client as unknown as {
+      _runtimeDataModel?: {
+        models?: { Skill?: { fields?: Array<{ name: string }> } }
+      }
+    }
+  )._runtimeDataModel?.models?.Skill?.fields
+  if (!skillFields) return false
+  const names = new Set(skillFields.map((f) => f.name))
+  return DEV_REQUIRED_SKILL_FIELDS.some((field) => !names.has(field))
 }
 
 function getClientCache(): Partial<Record<DatabaseMode, PrismaClient>> {

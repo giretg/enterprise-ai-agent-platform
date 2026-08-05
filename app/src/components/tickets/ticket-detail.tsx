@@ -4,10 +4,11 @@ import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import Link from 'next/link'
 import type { ProcessStatus } from '@prisma/client'
-import { transitionTicket } from '@/app/actions/platform'
+import { createDiscussionFromTicket, transitionTicket, deleteBoardTicket } from '@/app/actions/platform'
 import { exportTicketDebugLog } from '@/app/actions/debug-log'
 import { startProcessFromTicket } from '@/app/actions/process'
 import { authorizeTicketRunAs, revokeTicketRunAs } from '@/app/actions/connector-grants'
+import { openAgentChat } from '@/components/agents/agent-chat-session-store'
 import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
 import { ProposalCard } from '@/components/tickets/proposal-card'
 import { Badge, Card } from '@/components/ui/shell'
@@ -41,6 +42,8 @@ type TicketView = {
   agentId?: string | null
   processInstanceId?: string | null
   taskDescription?: string | null
+  /** Nyitott következmény-kapu kártyák — ticket-szintű Approve elrejtéséhez. */
+  pendingConsequenceApprovals?: unknown[] | null
   assignee?: {
     type: string | null
     label: string
@@ -326,7 +329,21 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
   const [note, setNote] = useState('')
 
   const isTrainingTicket = ticket.type === 'training'
-  const canApprove = ticket.state === 'awaiting_human'
+  const pendingConsequence = (ticket.pendingConsequenceApprovals ?? []) as Array<{
+    expired?: boolean
+    failedReason?: string
+  }>
+  const hasActionableConsequence = pendingConsequence.some(
+    (a) => !a.expired || Boolean(a.failedReason),
+  )
+  const hasExpiredConsequence = pendingConsequence.some(
+    (a) => Boolean(a.expired) && !a.failedReason,
+  )
+  // Consequence-kapu mellett a ticket-szintű Approve bezárná a feladatot API
+  // futtatás nélkül (cade35e7) — élő kapunál csak a „Mind jóváhagyom" a helyes út.
+  // Lejárt kapunál sem Approve: az sem futtatná az API-t, csak hazudna.
+  const canApprove =
+    ticket.state === 'awaiting_human' && !hasActionableConsequence && !hasExpiredConsequence
   const canReject = REJECTABLE_STATES.has(ticket.state)
   const callCapMessage = readTicketCallCapMessageFromPayload(ticket.payload)
   const canRerun = ticket.state === 'rejected' && !callCapMessage
@@ -334,10 +351,18 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
   const showRejectedCallCapNotice = ticket.state === 'rejected' && Boolean(callCapMessage)
   const hasActions = canApprove || canReject || canRerun || showRejectedCallCapNotice
   const isWikiFollowUp = hasWikiAnswer(ticket.payload)
+  // A note csak hard-stop / lezárás indoklás — az agentnek szánt pontosítás a
+  // feladat-szál „Pontosítás + visszaadás" gombja. Futás közbeni rejectnél
+  // (nem wiki) ne jelenjen meg párhuzamos „prompt az agentnek" mező.
+  const showNoteField =
+    canApprove ||
+    canRerun ||
+    (canReject &&
+      (isWikiFollowUp || ticket.state === 'awaiting_human' || ticket.state === 'done'))
 
   const act = (toState: string) => {
     if (toState === 'rejected' && isWikiFollowUp && !note.trim()) {
-      setError('Pontosító kérdés vagy indoklás megadása kötelező a visszadobáshoz.')
+      setError('Indoklás megadása kötelező a visszadobáshoz.')
       return
     }
 
@@ -355,23 +380,33 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
 
   if (!hasActions) return null
 
+  const hint = hasActionableConsequence
+    ? ticket.state === 'awaiting_human'
+      ? 'Külső műveletek várnak jóváhagyásra — használd a fenti „Mind jóváhagyom” gombot a folytatáshoz. A visszadobás megállítja a feladatot.'
+      : 'Külső műveletek gyűlnek a futás alatt; a jóváhagyás a futás vége után lesz elérhető. A visszadobás megállítja a feladatot.'
+    : hasExpiredConsequence
+      ? 'A fenti külső műveletek jóváhagyási ablaka lejárt. Dobd vissza a feladatot, majd indítsd újra — az agent újra kéri a gombot. A ticket-szintű „Jóváhagyás” itt nem jelenik meg, mert nem futtatná le az API-hívást.'
+      : (TICKET_STATE_HINTS[ticket.state] ?? 'Válaszd ki, hogyan folytatódjon a feladat.')
+
   return (
     <Card title="Döntés">
-      <p className="-mt-2 mb-4 text-sm text-ink-soft">
-        {TICKET_STATE_HINTS[ticket.state] ?? 'Válaszd ki, hogyan folytatódjon a feladat.'}
-      </p>
+      <p className="-mt-2 mb-4 text-sm text-ink-soft">{hint}</p>
       {error && <p className="mb-3 text-sm text-coral">{error}</p>}
-      <textarea
-        className="mb-3 w-full rounded-lg border border-line bg-night-2 p-3 text-sm text-ink"
-        placeholder={
-          isWikiFollowUp && canReject
-            ? 'Pontosító kérdés vagy indoklás (visszadobáshoz kötelező)'
-            : 'Indoklás vagy pontosító kérdés (opcionális)'
-        }
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        rows={3}
-      />
+      {showNoteField && (
+        <textarea
+          className="mb-3 w-full rounded-lg border border-line bg-night-2 p-3 text-sm text-ink"
+          placeholder={
+            isWikiFollowUp && canReject && !canApprove
+              ? 'Indoklás a visszadobáshoz (kötelező)'
+              : canApprove
+                ? 'Indoklás (opcionális)'
+                : 'Indoklás a visszadobáshoz (opcionális)'
+          }
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          rows={3}
+        />
+      )}
       <div className="flex flex-wrap gap-2">
         {canApprove && (
           <button
@@ -408,6 +443,11 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
         <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-coral">{callCapMessage}</p>
       )}
       <p className="mt-3 text-xs text-ink-faint">
+        {hasActionableConsequence &&
+          'A ticket-szintű jóváhagyás most rejtve van: az nem futtatja le a külső API-műveleteket. '}
+        {hasExpiredConsequence &&
+          !hasActionableConsequence &&
+          'A ticket-szintű jóváhagyás rejtve van: a lejárt kapu alatt nem futtatná az API-t. '}
         {canApprove &&
           isTrainingTicket &&
           'Tanítási feladat: a jóváhagyás write-gate-en keresztül frissíti az AI munkatárs memóriáját, majd done állapotba zár. '}
@@ -416,8 +456,9 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
           'Jóváhagyás után a szerver automatikusan: approved → done. '}
         {canReject &&
           !callCapMessage &&
-          'Visszadobás után az «Újra feldolgozás» gombbal indíthatod újra az AI munkatársat — a pontosító kérdés bekerül a kontextusba. '}
-        {canRerun && 'Újra feldolgozás után a feladat ready állapotba kerül, és a dispatcher újraindítja az AI munkatársat.'}
+          'Visszadobás megállítja a feladatot (rejected). Pontosítással folytatni a feladat-szál alján tudsz. '}
+        {canRerun &&
+          'Újra feldolgozás azonnal újraindítja az AI munkatársat — nem kell a dispatcherre várni.'}
       </p>
     </Card>
   )
@@ -451,11 +492,16 @@ export function TicketMeta({
   ticket,
   isAdmin = false,
   canDispatch = false,
+  canDelete = false,
+  isAdminDelete = false,
 }: {
   ticket: TicketView
   isAdmin?: boolean
   canDispatch?: boolean
+  canDelete?: boolean
+  isAdminDelete?: boolean
 }) {
+  const router = useRouter()
   const dispatchTicket = useTicketDispatch()
   const payload = ticket.payload as Record<string, unknown> | null
   const proposal = payload?.proposal as Record<string, unknown> | undefined
@@ -464,9 +510,23 @@ export function TicketMeta({
   const contractReview = contractReviewFromPayload(payload)
   const [debugLogPending, startDebugLogTransition] = useTransition()
   const [dispatchPending, startDispatchTransition] = useTransition()
+  const [deletePending, startDeleteTransition] = useTransition()
+  const [discussPending, startDiscussTransition] = useTransition()
   const [headerMessage, setHeaderMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(
     null,
   )
+
+  const discussAgentId =
+    ticket.agentId ??
+    (ticket.assigneeType === 'agent' && ticket.assigneeId ? ticket.assigneeId : null)
+  const assigneeAgentHref =
+    assignee?.type === 'agent'
+      ? ticket.assigneeId
+        ? `/control-plane/agents/${ticket.assigneeId}`
+        : ticket.agentId
+          ? `/control-plane/agents/${ticket.agentId}`
+          : null
+      : null
 
   const canStartDispatch =
     canDispatch &&
@@ -508,14 +568,50 @@ export function TicketMeta({
     })
   }
 
+  function handleDelete() {
+    const confirmMessage = isAdminDelete
+      ? 'Biztosan véglegesen törlöd ezt a feladatot (admin)? A művelet nem vonható vissza, és a csatolt fájlok is törlődnek.'
+      : 'Biztosan törlöd ezt a feladatot? A művelet nem vonható vissza, és a csatolt fájlok is törlődnek.'
+    if (!window.confirm(confirmMessage)) {
+      return
+    }
+
+    startDeleteTransition(async () => {
+      setHeaderMessage(null)
+      const res = await deleteBoardTicket({ ticketId: ticket.id })
+      if (!res.success) {
+        setHeaderMessage({ tone: 'err', text: res.error })
+        return
+      }
+      router.replace('/control-plane/board')
+    })
+  }
+
+  function handleDiscuss() {
+    if (!discussAgentId) return
+    startDiscussTransition(async () => {
+      setHeaderMessage(null)
+      const res = await createDiscussionFromTicket({ ticketId: ticket.id })
+      if (!res.success) {
+        setHeaderMessage({ tone: 'err', text: res.error })
+        return
+      }
+      openAgentChat({
+        agent: res.data.agent,
+        initialConversationId: res.data.conversationId,
+      })
+    })
+  }
+
   const stateTone = TICKET_STATE_TONE[ticket.state] ?? 'neutral'
   const stateLabel = TICKET_STATE_LABELS[ticket.state] ?? ticket.state
   const stateHint = TICKET_STATE_HINTS[ticket.state] ?? null
+  const isInProgress = ticket.state === 'in_progress'
   const typeLabel = ticket.type === 'training' ? 'Tanítás' : 'Interakció'
   const assigneeHint =
     assignee?.detail ??
     (assignee?.type === 'agent'
-      ? ticket.state === 'in_progress'
+      ? isInProgress
         ? 'AI munkatárs — most éppen ezen dolgozik'
         : 'AI munkatárs a felelős'
       : assignee?.type === 'human'
@@ -541,14 +637,20 @@ export function TicketMeta({
               </h1>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <span
-                  className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${STATE_PILL_CLASS[stateTone]}`}
+                  className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${
+                    isInProgress
+                      ? 'animate-activity-run-row text-sky'
+                      : STATE_PILL_CLASS[stateTone]
+                  }`}
                 >
-                  <span
-                    className={`h-2 w-2 rounded-full ${TICKET_TONE_DOT_CLASS[stateTone]} ${
-                      ticket.state === 'in_progress' ? 'animate-soul' : ''
-                    }`}
-                    aria-hidden
-                  />
+                  {isInProgress ? (
+                    <LiveStatusDot size="md" />
+                  ) : (
+                    <span
+                      className={`h-2 w-2 rounded-full ${TICKET_TONE_DOT_CLASS[stateTone]}`}
+                      aria-hidden
+                    />
+                  )}
                   {stateLabel}
                 </span>
                 <Badge tone="neutral">{typeLabel}</Badge>
@@ -567,11 +669,37 @@ export function TicketMeta({
                 <button
                   type="button"
                   onClick={handleStartDispatch}
-                  disabled={dispatchPending}
+                  disabled={dispatchPending || deletePending || discussPending}
                   className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-coral-deep disabled:opacity-40"
                   title="Kézi feldolgozás indítása — függetlenül a dispatcher állapotától"
                 >
                   {dispatchPending ? 'Indítás…' : 'Feldolgozás indítása'}
+                </button>
+              )}
+              {discussAgentId ? (
+                <button
+                  type="button"
+                  onClick={handleDiscuss}
+                  disabled={discussPending || deletePending || dispatchPending}
+                  className="rounded-full border border-sky/35 bg-sky/10 px-4 py-2.5 text-sm font-semibold text-sky transition-colors hover:bg-sky/20 disabled:opacity-40"
+                  title="Új chat az AI munkatárssal — a feladat előzményével a háttérben"
+                >
+                  {discussPending ? 'Megnyitás…' : 'Megbeszélés'}
+                </button>
+              ) : null}
+              {canDelete && (
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  disabled={deletePending || dispatchPending || discussPending}
+                  className="rounded-full border border-coral/35 bg-coral/10 px-4 py-2.5 text-sm font-semibold text-coral transition-colors hover:bg-coral/20 disabled:opacity-40"
+                  title={
+                    isAdminDelete
+                      ? 'Admin törlés — bármilyen állapotú feladat'
+                      : 'A feladat törlése — csak feldolgozás megkezdése előtt'
+                  }
+                >
+                  {deletePending ? 'Törlés…' : 'Törlés'}
                 </button>
               )}
               {isAdmin && (
@@ -598,10 +726,17 @@ export function TicketMeta({
           )}
 
           <dl className="mt-5 grid gap-px overflow-hidden rounded-2xl border border-line bg-line/70 sm:grid-cols-2 xl:grid-cols-4">
-            <HeroFact label="Hol tart" value={stateLabel} hint={stateHint} dotClass={TICKET_TONE_DOT_CLASS[stateTone]} />
+            <HeroFact
+              label="Hol tart"
+              value={stateLabel}
+              hint={stateHint}
+              dotClass={isInProgress ? 'bg-sky' : TICKET_TONE_DOT_CLASS[stateTone]}
+              live={isInProgress}
+            />
             <HeroFact
               label="Ki dolgozik rajta"
               value={assignee?.label ?? 'Nincs hozzárendelve'}
+              valueHref={assigneeAgentHref}
               hint={assigneeHint}
             />
             <HeroFact
@@ -613,7 +748,7 @@ export function TicketMeta({
               label="Utolsó mozgás"
               value={formatTicketDateTime(ticket.updatedAt)}
               hint={
-                ticket.state === 'in_progress'
+                isInProgress
                   ? 'A lépések élőben frissülnek alább.'
                   : `${typeLabel} típusú feladat`
               }
@@ -663,27 +798,60 @@ const STATE_PILL_CLASS: Record<'neutral' | 'success' | 'warning' | 'danger', str
   danger: 'bg-coral/15 text-coral',
 }
 
+/** Élő „radar” pötty — futó feladaton rögtön látszik, hogy dolgozik valami. */
+function LiveStatusDot({ size = 'sm' }: { size?: 'sm' | 'md' }) {
+  const dim = size === 'md' ? 'h-2.5 w-2.5' : 'h-2 w-2'
+  return (
+    <span className={`relative flex shrink-0 ${dim}`} aria-hidden>
+      <span
+        className={`absolute inline-flex h-full w-full rounded-full bg-sky opacity-60 animate-activity-run-dot`}
+      />
+      <span className={`relative inline-flex rounded-full bg-sky ${dim}`} />
+    </span>
+  )
+}
+
 function HeroFact({
   label,
   value,
+  valueHref,
   hint,
   dotClass,
+  live = false,
 }: {
   label: string
   value: string
+  valueHref?: string | null
   hint?: string | null
   dotClass?: string
+  live?: boolean
 }) {
   return (
-    <div className="bg-card px-4 py-3">
+    <div className={`bg-card px-4 py-3 ${live ? 'animate-activity-run-row' : ''}`}>
       <dt className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
         {label}
       </dt>
-      <dd className="mt-1 flex items-center gap-2 text-sm font-semibold text-ink">
-        {dotClass && <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} aria-hidden />}
-        <span className="truncate" title={value}>
-          {value}
-        </span>
+      <dd
+        className={`mt-1 flex items-center gap-2 text-sm font-semibold ${live ? 'text-sky' : 'text-ink'}`}
+      >
+        {live ? (
+          <LiveStatusDot size="md" />
+        ) : (
+          dotClass && <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} aria-hidden />
+        )}
+        {valueHref ? (
+          <Link
+            href={valueHref}
+            className="truncate text-sky transition-colors hover:text-coral-deep"
+            title={value}
+          >
+            {value}
+          </Link>
+        ) : (
+          <span className="truncate" title={value}>
+            {value}
+          </span>
+        )}
       </dd>
       {hint && <p className="mt-1 text-xs leading-snug text-ink-soft">{hint}</p>}
     </div>

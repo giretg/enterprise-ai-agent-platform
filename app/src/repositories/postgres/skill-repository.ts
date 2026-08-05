@@ -128,6 +128,7 @@ export class PostgresSkillRepository implements SkillRepository {
       const skill = await tx.skill.create({
         data: {
           name: input.name,
+          displayName: input.displayName ?? null,
           description: input.description,
           catalogScope: input.catalogScope,
           tenantId: input.tenantId,
@@ -148,6 +149,20 @@ export class PostgresSkillRepository implements SkillRepository {
         },
       })
       return { skill, version }
+    })
+  }
+
+  async updateDisplayName(skillId: string, displayName: string | null): Promise<Skill> {
+    return prisma.skill.update({
+      where: { id: skillId },
+      data: { displayName },
+    })
+  }
+
+  async updateDescription(skillId: string, description: string): Promise<Skill> {
+    return prisma.skill.update({
+      where: { id: skillId },
+      data: { description },
     })
   }
 

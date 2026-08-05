@@ -7,6 +7,9 @@ import { SkillCatalogManager } from '@/components/skills/skill-catalog-manager'
 export default async function SkillCatalogPage() {
   const ctx = await getAuthContext()
   const isAdmin = hasMinimumRole(ctx?.activeTenantRole, 'admin')
+  const isPlatformAdmin = Boolean(
+    ctx?.platformRoles.some((r) => r === 'superadmin' || r === 'platform_operator'),
+  )
   const canView = hasMinimumRole(ctx?.activeTenantRole, 'operator')
 
   if (!canView) {
@@ -39,7 +42,11 @@ export default async function SkillCatalogPage() {
         </p>
       </div>
 
-      <SkillCatalogManager skills={skills} isAdmin={isAdmin} />
+      <SkillCatalogManager
+        skills={skills}
+        isAdmin={isAdmin}
+        isPlatformAdmin={isPlatformAdmin}
+      />
     </div>
   )
 }

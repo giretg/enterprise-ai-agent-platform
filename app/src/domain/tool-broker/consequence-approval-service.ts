@@ -13,13 +13,22 @@ import type {
   AuditRepository,
   ConsequenceApprovalRepository,
   ConversationRepository,
+  TicketRepository,
 } from '@/repositories/interfaces'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { envelopeToolResultForModel } from './tool-result-envelope'
+import { describeOutcomeForUi, type SettledToolOutcome } from './tool-output-contract'
 import type { ToolBrokerInvokeInput } from './tool-broker-types'
 import type { ToolBrokerService } from './tool-broker-service'
 
+/** Chat következmény-kapu: rövid ablak — a felhasználó tipikusan a forduló végén dönt. */
 export const CONSEQUENCE_APPROVAL_TTL_MS = 60 * 60 * 1000
+
+/**
+ * Ticket következmény-kapu: multi-körös, hosszú feladatok (pl. Föld-szinkron).
+ * 1 óra itt zsákutca: a ticket `awaiting_human`-en ragad, a gomb pedig eltűnik.
+ */
+export const CONSEQUENCE_APPROVAL_TICKET_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 /**
  * Meddig mutatjuk még a MÁR LEJÁRT függő jóváhagyást a beszélgetésben?
@@ -29,6 +38,19 @@ export const CONSEQUENCE_APPROVAL_TTL_MS = 60 * 60 * 1000
  * csak zaj lenne a szálban.
  */
 export const CONSEQUENCE_APPROVAL_VISIBILITY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Ticket listázási lookback: a még érvényes pendingek (TTL) + a frissen lejártak
+ * magyarázata (visibility). Enélkül a 3 napos TTL 24 órán túl láthatatlan lenne.
+ */
+export const CONSEQUENCE_APPROVAL_TICKET_VISIBILITY_MS =
+  CONSEQUENCE_APPROVAL_TICKET_TTL_MS + CONSEQUENCE_APPROVAL_VISIBILITY_MS
+
+export function consequenceApprovalTtlMs(input: {
+  ticketId?: string | null
+}): number {
+  return input.ticketId ? CONSEQUENCE_APPROVAL_TICKET_TTL_MS : CONSEQUENCE_APPROVAL_TTL_MS
+}
 
 export type ConsequenceApprovalActor = {
   id: string
@@ -41,6 +63,8 @@ export type ConsequenceApprovalCard = {
   toolName: string
   summary: string
   expiresAt: string
+  /** A művelet már sorban állt — ez a MEGLÉVŐ kártya, nem új sor. */
+  deduplicated?: boolean
   /**
    * A szerver órája szerint lejárt-e. A kliens órájára nem bízzuk: egy elállított
    * gép „még él" gombot mutatna egy halott jóváhagyáshoz.
@@ -116,10 +140,34 @@ function describeResult(result: unknown): string {
   return clip(text, CONTINUATION_RESULT_MAX_CHARS)
 }
 
+/**
+ * issue #195 — a kimenetel HÉTKÖZNAPI mondata a nyers eredmény elé. A puszta
+ * JSON-kivonat („{path: …}") eddig sikernek látszott akkor is, ha az eszköz
+ * 0 sort írt: a kártya és a folytatás-prompt is ezen a szövegen múlik.
+ */
+function describeToolOutcome(
+  outcome: SettledToolOutcome | undefined,
+  outcomeReason: string | null | undefined,
+  result: unknown,
+): string {
+  const body = describeResult(result)
+  const notice = outcome ? describeOutcomeForUi(outcome, outcomeReason ?? null) : null
+  return notice ? `${notice} — ${body}` : body
+}
+
 /** A `resultMeta`-ból (perzisztált végállapot) ugyanaz a szöveg, mint frissen futtatva. */
 function describeResultMeta(resultMeta: unknown): string {
   if (resultMeta && typeof resultMeta === 'object' && 'result' in resultMeta) {
-    return describeResult((resultMeta as { result: unknown }).result)
+    const meta = resultMeta as { result: unknown; outcome?: unknown; outcomeReason?: unknown }
+    const outcome =
+      meta.outcome === 'empty' || meta.outcome === 'partial' || meta.outcome === 'ok'
+        ? meta.outcome
+        : undefined
+    return describeToolOutcome(
+      outcome,
+      typeof meta.outcomeReason === 'string' ? meta.outcomeReason : null,
+      meta.result,
+    )
   }
   return describeResult(resultMeta)
 }
@@ -159,6 +207,7 @@ export class ConsequenceApprovalService {
     private readonly agents: AgentRepository,
     private readonly audit: AuditRepository,
     private readonly toolBroker: ToolBrokerService,
+    private readonly tickets?: TicketRepository,
   ) {}
 
   async createFromBlocked(input: {
@@ -166,18 +215,41 @@ export class ConsequenceApprovalService {
     tenantId?: string | null
     blockedToolCallId?: string | null
   }): Promise<ConsequenceApprovalCard> {
-    const conversationId = input.invoke.conversationId
-    if (!conversationId) {
-      throw new Error('consequence_approval_requires_conversation')
+    const conversationId = input.invoke.conversationId ?? null
+    const ticketId = input.invoke.ticketId ?? null
+    if (!conversationId && !ticketId) {
+      throw new Error('consequence_approval_requires_conversation_or_ticket')
     }
-    const expiresAt = new Date(Date.now() + CONSEQUENCE_APPROVAL_TTL_MS)
+    // Kártya-dedup: ugyanaz a még el nem döntött művelet ne kapjon második
+    // kártyát. Folytatás után a modell a checkpointból újraszámolja a hátralévő
+    // tételeket, és a már kártyázott hívást ismét beküldi — a felhasználó
+    // ilyenkor ugyanazt a törlést kétszer látja, és egy „Jóváhagyom mind"
+    // kétszer futtatná le.
+    const existing = await this.approvals.findOpenDuplicate({
+      conversationId,
+      ticketId,
+      toolName: input.invoke.tool,
+      args: input.invoke.args,
+      now: new Date(),
+    })
+    if (existing) {
+      return {
+        approvalId: existing.id,
+        toolName: existing.toolName,
+        summary: summarizeArgs(existing.toolName, (existing.args ?? {}) as Record<string, unknown>),
+        expiresAt: existing.expiresAt.toISOString(),
+        deduplicated: true,
+      }
+    }
+
+    const expiresAt = new Date(Date.now() + consequenceApprovalTtlMs({ ticketId }))
     const row = await this.approvals.create({
       conversationId,
       agentId: input.invoke.agentId,
       agentVersion: input.invoke.agentVersion,
       tenantId: input.tenantId ?? null,
       actingUserId: input.invoke.actingUserId ?? null,
-      ticketId: input.invoke.ticketId ?? null,
+      ticketId,
       toolName: input.invoke.tool,
       args: input.invoke.args as object,
       status: 'pending',
@@ -195,8 +267,8 @@ export class ConsequenceApprovalService {
       actorId: input.invoke.agentId,
       agentVersion: input.invoke.agentVersion,
       action: 'consequence.approval.pending',
-      targetType: 'conversation',
-      targetId: conversationId,
+      targetType: conversationId ? 'conversation' : 'ticket',
+      targetId: conversationId ?? ticketId!,
       modelUsed: null,
       inputRef: input.invoke.tool,
       outputRef: row.id,
@@ -205,6 +277,8 @@ export class ConsequenceApprovalService {
         approval_id: row.id,
         tool: input.invoke.tool,
         expires_at: expiresAt.toISOString(),
+        ticket_id: ticketId,
+        conversation_id: conversationId,
       },
     })
 
@@ -237,7 +311,30 @@ export class ConsequenceApprovalService {
       conversationId,
       new Date(now - CONSEQUENCE_APPROVAL_VISIBILITY_MS),
     )
+    return this.toOpenCards(rows, actor, now)
+  }
 
+  /** Task-only ticket függő jóváhagyásai a ticket UI-hoz. */
+  async listOpenForTicket(
+    ticketId: string,
+    actor: ConsequenceApprovalActor,
+  ): Promise<ConsequenceApprovalCard[]> {
+    const access = await this.assertActorCanAccessTicket(ticketId, actor)
+    if (!access.ok) return []
+
+    const now = Date.now()
+    const rows = await this.approvals.listOpenByTicket(
+      ticketId,
+      new Date(now - CONSEQUENCE_APPROVAL_TICKET_VISIBILITY_MS),
+    )
+    return this.toOpenCards(rows, actor, now)
+  }
+
+  private async toOpenCards(
+    rows: ConsequenceApproval[],
+    actor: ConsequenceApprovalActor,
+    now: number,
+  ): Promise<ConsequenceApprovalCard[]> {
     const cards: ConsequenceApprovalCard[] = []
     for (const row of rows) {
       // A sikeresen lefutott jóváhagyás lezárt ügy — nem kérünk rá újra gombot.
@@ -345,12 +442,14 @@ export class ConsequenceApprovalService {
     const invokeInput = {
       agentId: row.agentId,
       agentVersion: row.agentVersion,
-      conversationId: row.conversationId,
+      ...(row.conversationId ? { conversationId: row.conversationId } : {}),
       ...(row.ticketId ? { ticketId: row.ticketId } : {}),
       ...(row.actingUserId ? { actingUserId: row.actingUserId } : {}),
       tool: row.toolName,
       args: row.args,
     } as ToolBrokerInvokeInput
+
+    const auditTarget = this.auditTargetFor(row)
 
     let result: Awaited<ReturnType<ToolBrokerService['invoke']>>
     try {
@@ -368,8 +467,8 @@ export class ConsequenceApprovalService {
         actorId: actor.id,
         agentVersion: row.agentVersion,
         action: 'consequence.approval.approved',
-        targetType: 'conversation',
-        targetId: row.conversationId,
+        targetType: auditTarget.type,
+        targetId: auditTarget.id,
         modelUsed: null,
         inputRef: row.toolName,
         outputRef: row.id,
@@ -384,9 +483,18 @@ export class ConsequenceApprovalService {
       return { ok: false, reason }
     }
 
+    // issue #195 D1 — a kimenetel a JÓVÁHAGYOTT úton is végigmegy. Épp itt futnak
+    // a mellékhatásos eszközök (levélküldés, írás, API-hívás): ha az `empty` /
+    // `partial` ítélet itt elveszne, a folytatás-prompt és a kártya „lefutott"-at
+    // mondana egy olyan hívásra, ami valójában semmit nem termelt.
     const resultMeta = result.denied
       ? { denied: true, reason: result.reason ?? 'denied' }
-      : { denied: false, result: result.result }
+      : {
+          denied: false,
+          result: result.result,
+          outcome: result.outcome,
+          outcomeReason: result.outcomeReason,
+        }
 
     await this.approvals.casUpdateStatus(row.id, 'approved', {
       status: 'approved',
@@ -398,8 +506,8 @@ export class ConsequenceApprovalService {
       actorId: actor.id,
       agentVersion: row.agentVersion,
       action: 'consequence.approval.approved',
-      targetType: 'conversation',
-      targetId: row.conversationId,
+      targetType: auditTarget.type,
+      targetId: auditTarget.id,
       modelUsed: null,
       inputRef: row.toolName,
       outputRef: row.id,
@@ -409,6 +517,8 @@ export class ConsequenceApprovalService {
         tool: row.toolName,
         denied: result.denied,
         reason: result.denied ? result.reason : undefined,
+        tool_outcome: result.denied ? 'failed' : result.outcome,
+        tool_outcome_reason: result.denied ? null : result.outcomeReason,
       },
     })
 
@@ -419,7 +529,7 @@ export class ConsequenceApprovalService {
       ok: true,
       outcome: 'approved',
       result: result.result,
-      resultSummary: describeResult(result.result),
+      resultSummary: describeToolOutcome(result.outcome, result.outcomeReason, result.result),
     }
   }
 
@@ -458,6 +568,11 @@ export class ConsequenceApprovalService {
       // a mellékhatás (levél, POST, törlés) már megtörtént volna.
       if (isInvokeInFlightResultMeta(row.resultMeta) || row.resultMeta == null) {
         return { ok: false, reason: 'approval_in_flight' }
+      }
+
+      if (!row.conversationId) {
+        // Task-only jóváhagyás: a tool a gombbal lefut; chat-folytatás nincs.
+        return { ok: false, reason: 'approval_ticket_only_no_chat_continuation' }
       }
 
       // Egy folytatás EGY beszélgetést visz tovább — kevert szál nem értelmezhető.
@@ -512,13 +627,14 @@ export class ConsequenceApprovalService {
     })
     if (!claimed) return { ok: false, reason: 'approval_already_decided' }
 
+    const auditTarget = this.auditTargetFor(row)
     await this.audit.append({
       actorType: 'human',
       actorId: actor.id,
       agentVersion: row.agentVersion,
       action: 'consequence.approval.rejected',
-      targetType: 'conversation',
-      targetId: row.conversationId,
+      targetType: auditTarget.type,
+      targetId: auditTarget.id,
       modelUsed: null,
       inputRef: row.toolName,
       outputRef: row.id,
@@ -529,11 +645,24 @@ export class ConsequenceApprovalService {
     return { ok: true, outcome: 'rejected' }
   }
 
+  private auditTargetFor(row: ConsequenceApproval): {
+    type: 'conversation' | 'ticket'
+    id: string
+  } {
+    if (row.conversationId) return { type: 'conversation', id: row.conversationId }
+    if (row.ticketId) return { type: 'ticket', id: row.ticketId }
+    return { type: 'ticket', id: row.id }
+  }
+
   private async assertActorCanDecide(
     row: ConsequenceApproval,
     actor: ConsequenceApprovalActor,
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
-    const access = await this.assertActorCanAccessConversation(row.conversationId, actor)
+    const access = row.conversationId
+      ? await this.assertActorCanAccessConversation(row.conversationId, actor)
+      : row.ticketId
+        ? await this.assertActorCanAccessTicket(row.ticketId, actor)
+        : { ok: false as const, reason: 'approval_not_found' }
     if (!access.ok) return access
 
     // Defense-in-depth: az agent is elérhető kell legyen a döntéshozó tenantjából.
@@ -561,6 +690,25 @@ export class ConsequenceApprovalService {
 
     // A beszélgetés létrehozója vagy operator+ dönthet — a chat user a tipikus döntéshozó.
     const isCreator = conversation.createdById === actor.id
+    const isElevated = actor.role === 'admin' || actor.role === 'approver' || actor.role === 'operator'
+    if (!isCreator && !isElevated) {
+      return { ok: false, reason: 'forbidden' }
+    }
+    return { ok: true }
+  }
+
+  private async assertActorCanAccessTicket(
+    ticketId: string,
+    actor: ConsequenceApprovalActor,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (!this.tickets) return { ok: false, reason: 'ticket_not_found' }
+    const ticket = await this.tickets.findById(ticketId)
+    if (!ticket) return { ok: false, reason: 'ticket_not_found' }
+    // Tenant-határ: idegen tenant ticketje „nincs ilyen".
+    if (ticket.tenantId && ticket.tenantId !== actor.tenantId) {
+      return { ok: false, reason: 'ticket_not_found' }
+    }
+    const isCreator = ticket.createdById === actor.id
     const isElevated = actor.role === 'admin' || actor.role === 'approver' || actor.role === 'operator'
     if (!isCreator && !isElevated) {
       return { ok: false, reason: 'forbidden' }

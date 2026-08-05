@@ -552,6 +552,88 @@ async function main() {
     }
   })
 
+  await test('runtime: GitHub Contents base64 body → utf-8 dekódolva', async () => {
+    const markdown = '# Riportok\n\nElérhető riportok listája.\n'
+    const payload = {
+      type: 'file',
+      encoding: 'base64',
+      content: Buffer.from(markdown, 'utf8').toString('base64'),
+      path: 'docs/felhasznaloi-kezikonyv.md',
+      name: 'felhasznaloi-kezikonyv.md',
+      sha: 'deadbeef',
+      download_url: 'https://raw.githubusercontent.com/o/r/main/docs/f.md',
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof fetch
+    try {
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://api.github.com',
+        auth: { scheme: 'bearer' },
+        endpoints: [{ method: 'GET', path: '/repos/:owner/:repo/contents/*' }],
+        restrictToEndpoints: false,
+      })
+      const client = new HttpApiClient(config, 'gh_token')
+      const res = await client.request({
+        method: 'GET',
+        path: '/repos/o/r/contents/docs/felhasznaloi-kezikonyv.md',
+      })
+      assert.equal(res.ok, true)
+      const body = res.body as Record<string, unknown>
+      assert.equal(body.encoding, 'utf-8')
+      assert.equal(body.content, markdown)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('runtime: dekódolt forrásfájl nem kap csonkolás-jelzést a base64 hossza miatt', async () => {
+    // A base64 ~33%-kal hosszabb: a nyers válasz átlépi a limitet, a dekódolt
+    // fájl viszont bőven alatta marad — a modellnek nem szabad azt hinnie,
+    // hogy csonka forráskódot kapott.
+    const source = 'export function riport() {\n  return 42\n}\n'.repeat(200)
+    const payload = {
+      type: 'file',
+      encoding: 'base64',
+      content: Buffer.from(source, 'utf8').toString('base64'),
+      path: 'app/src/riport.ts',
+      name: 'riport.ts',
+      sha: 'cafebabe',
+      download_url: 'https://raw.githubusercontent.com/o/r/main/app/src/riport.ts',
+    }
+    const rawJson = JSON.stringify(payload)
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(rawJson, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof fetch
+    try {
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://api.github.com',
+        auth: { scheme: 'bearer' },
+        // A nyers válasz fölötte, a dekódolt tartalom alatta van a limitnek.
+        maxResponseChars: Math.floor((rawJson.length + source.length) / 2),
+        endpoints: [{ method: 'GET', path: '/repos/:owner/:repo/contents/*' }],
+      })
+      assert.ok(rawJson.length > (config.maxResponseChars ?? 0), 'a nyers válasz limit fölött van')
+      const client = new HttpApiClient(config, 'gh_token')
+      const res = await client.request({
+        method: 'GET',
+        path: '/repos/o/r/contents/app/src/riport.ts',
+      })
+      assert.equal(res.ok, true)
+      assert.equal(res.truncated, undefined)
+      assert.equal(res.hint, undefined)
+      assert.equal((res.body as Record<string, unknown>).content, source)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   await test('runtime: hívó által beadott platform-injektált header → platform_injected_header', async () => {
     const config = parseHttpApiConfig({
       baseUrl: 'https://crm.example/api/v1',
@@ -570,6 +652,109 @@ async function main() {
       }),
       (e: unknown) => e instanceof HttpApiError && e.code === 'platform_injected_header',
     )
+  })
+
+  await test('SSRF: idegen hostra mutató redirectet NEM követ (metadata/belső host blokk)', async () => {
+    const calls: string[] = []
+    const fakeFetch: typeof fetch = async (input) => {
+      calls.push(String(input))
+      // Az allowlistolt (konfigurált) host egy nyílt-redirekttel a felhő-metadata hostra
+      // próbál átirányítani — ezt a kliensnek blokkolnia kell, nem szabad követnie.
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'https://169.254.169.254/latest/meta-data/iam/security-credentials/' },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'live-key')
+      await assert.rejects(
+        client.request({ method: 'GET', path: '/banks', context: crmTraceContext }),
+        (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+      )
+      // Csak az eredeti host lett meghívva; a metadata hostra SOSEM ment ki kérés.
+      assert.equal(calls.length, 1)
+      assert.ok(calls[0].startsWith('https://posnavigator.eu/'))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('redirect: azonos-host átirányítást KÖVET, majd a 200-at adja vissza', async () => {
+    const calls: string[] = []
+    const fakeFetch: typeof fetch = async (input) => {
+      const url = String(input)
+      calls.push(url)
+      if (calls.length === 1) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: 'https://posnavigator.eu/api/v1/banks/moved' },
+        })
+      }
+      return new Response(JSON.stringify({ ok: true, moved: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'live-key')
+      const res = await client.request({ method: 'GET', path: '/banks', context: crmTraceContext })
+      assert.equal(res.ok, true)
+      assert.equal((res.body as Record<string, unknown>).moved, true)
+      assert.equal(calls.length, 2)
+      assert.equal(calls[1], 'https://posnavigator.eu/api/v1/banks/moved')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('SSRF: azonos hostnév MÁS PORTRA (belső admin) mutató redirectet NEM követ', async () => {
+    const calls: string[] = []
+    const fakeFetch: typeof fetch = async (input) => {
+      calls.push(String(input))
+      // Azonos hostnév, de belső admin/docker port — az origin (host:port) más, ezért blokk.
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'https://posnavigator.eu:2375/v1.40/containers/json' },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'live-key')
+      await assert.rejects(
+        client.request({ method: 'GET', path: '/banks', context: crmTraceContext }),
+        (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+      )
+      assert.equal(calls.length, 1)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('redirect: azonos-host átirányítás-hurok a hop-limitnél blokkol', async () => {
+    let n = 0
+    const fakeFetch: typeof fetch = async () => {
+      n += 1
+      return new Response(null, {
+        status: 302,
+        headers: { location: `https://posnavigator.eu/api/v1/loop/${n}` },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'live-key')
+      await assert.rejects(
+        client.request({ method: 'GET', path: '/banks', context: crmTraceContext }),
+        (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 
   if (failures > 0) {

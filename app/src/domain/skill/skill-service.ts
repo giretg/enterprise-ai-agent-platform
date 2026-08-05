@@ -20,8 +20,13 @@ import {
   type SkillAdvisoryReview,
 } from '@/domain/skill/skill-review-agent'
 import { signSkillVersion } from '@/lib/crypto/hash-chain'
-import { normalizeSkillName } from '@/lib/skill/skill-name'
 import {
+  normalizeSkillDisplayName,
+  normalizeSkillName,
+} from '@/lib/skill/skill-name'
+import {
+  SKILL_DESCRIPTION_MAX,
+  SKILL_NAME_MAX,
   aggregateSkillRuntimeHints,
   computeSkillContentHash,
   parseSkillContent,
@@ -193,6 +198,7 @@ export class SkillService {
 
   async createSkill(input: {
     name: string
+    displayName?: string | null
     description: string
     catalogScope: SkillCatalogScope
     tenantId: string | null
@@ -206,8 +212,11 @@ export class SkillService {
   }): Promise<{ skill: Skill; versionId: string }> {
     await this.assertSkillNameAvailable(input.name, input.tenantId)
     const contentHash = computeSkillContentHash(input.content, input.requires)
+    const displayName =
+      normalizeSkillDisplayName(input.displayName)?.slice(0, SKILL_NAME_MAX) ?? null
     const { skill, version } = await this.skills.createSkill({
       name: input.name,
+      displayName,
       description: input.description,
       catalogScope: input.catalogScope,
       tenantId: input.tenantId,
@@ -271,6 +280,7 @@ export class SkillService {
 
     const { skill, versionId } = await this.createSkill({
       name: parsed.name,
+      displayName: parsed.displayName,
       description: parsed.description,
       catalogScope: input.catalogScope,
       tenantId: input.catalogScope === 'global' ? null : input.tenantId,
@@ -284,6 +294,97 @@ export class SkillService {
     })
 
     return { ok: true, skill, versionId, validation }
+  }
+
+  /**
+   * Embernek szóló feladatnév frissítése — nem verziózott metaadat (nem kell
+   * új SkillVersion). Üres string → null (UI visszaesik a technikai `name`-re).
+   */
+  async updateDisplayName(input: {
+    skillId: string
+    displayName: string | null
+    actor: ActorContext
+  }): Promise<Skill> {
+    const skill = await this.getReadableSkill(input.actor.actorTenantId, input.skillId)
+    if (!skill) throw new SkillAccessError('Skill not found')
+    if (
+      !isSkillWritableFromTenant(
+        skill.tenantId,
+        input.actor.actorTenantId,
+        input.actor.isPlatformAdmin,
+      )
+    ) {
+      throw new SkillAccessError(
+        skill.tenantId === null
+          ? 'Global skill megjelenített nevét csak platform-admin módosíthatja.'
+          : 'Ez a skill nem szerkeszthető ebből a tenantból.',
+      )
+    }
+    const displayName =
+      normalizeSkillDisplayName(input.displayName)?.slice(0, SKILL_NAME_MAX) ?? null
+    const updated = await this.skills.updateDisplayName(skill.id, displayName)
+    await this.audit.append({
+      actorType: input.actor.actorId ? 'human' : 'system',
+      actorId: input.actor.actorId,
+      agentVersion: null,
+      action: 'skill.display_name_updated',
+      targetType: 'skill',
+      targetId: skill.id,
+      modelUsed: null,
+      inputRef: skill.name,
+      outputRef: displayName,
+      policyDecision: 'allow',
+      tenantId: skill.tenantId,
+      metadata: { displayName },
+    })
+    return updated
+  }
+
+  /**
+   * Level-0 index leírás frissítése — nem verziózott metaadat (nem kell új
+   * SkillVersion). A katalógus / skill-választó ezt mutatja betöltés előtt.
+   */
+  async updateDescription(input: {
+    skillId: string
+    description: string
+    actor: ActorContext
+  }): Promise<Skill> {
+    const skill = await this.getReadableSkill(input.actor.actorTenantId, input.skillId)
+    if (!skill) throw new SkillAccessError('Skill not found')
+    if (
+      !isSkillWritableFromTenant(
+        skill.tenantId,
+        input.actor.actorTenantId,
+        input.actor.isPlatformAdmin,
+      )
+    ) {
+      throw new SkillAccessError(
+        skill.tenantId === null
+          ? 'Global skill leírását csak platform-admin módosíthatja.'
+          : 'Ez a skill nem szerkeszthető ebből a tenantból.',
+      )
+    }
+    const description = input.description.trim()
+    if (!description) throw new SkillAccessError('A leírás nem lehet üres.')
+    if (description.length > SKILL_DESCRIPTION_MAX) {
+      throw new SkillAccessError(`A leírás túl hosszú (max ${SKILL_DESCRIPTION_MAX}).`)
+    }
+    const updated = await this.skills.updateDescription(skill.id, description)
+    await this.audit.append({
+      actorType: input.actor.actorId ? 'human' : 'system',
+      actorId: input.actor.actorId,
+      agentVersion: null,
+      action: 'skill.description_updated',
+      targetType: 'skill',
+      targetId: skill.id,
+      modelUsed: null,
+      inputRef: skill.name,
+      outputRef: description.slice(0, 200),
+      policyDecision: 'allow',
+      tenantId: skill.tenantId,
+      metadata: { descriptionLength: description.length },
+    })
+    return updated
   }
 
   /**
@@ -877,6 +978,7 @@ export class SkillService {
       skillId: a.skillVersion.skill.id,
       skillVersionId: a.skillVersionId,
       name: a.skillVersion.skill.name,
+      displayName: a.skillVersion.skill.displayName,
       description: a.skillVersion.skill.description,
       version: a.skillVersion.version,
     }))
@@ -1306,6 +1408,7 @@ export class SkillService {
         enabled: a.enabled,
         skillId: a.skillVersion.skill.id,
         name: a.skillVersion.skill.name,
+        displayName: a.skillVersion.skill.displayName,
         description: a.skillVersion.skill.description,
         version: a.skillVersion.version,
         riskTier: a.skillVersion.skill.riskTier,

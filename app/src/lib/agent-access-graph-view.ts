@@ -32,6 +32,10 @@ export type GraphUserView = {
   name: string
   email: string
   role: string
+  /** User.status — `pending` = első belépésre vár (előre konfigurálható). */
+  status: string
+  /** TenantMembership.status — grant-írásnál `active` és `pending` is elfogadott. */
+  membershipStatus: string
 }
 
 export type GraphGrantView = {
@@ -79,6 +83,11 @@ function findGrant(
  * Ez a különbségtétel az, amitől a szerkesztő őszinte: az implicit kapcsolat nem
  * „beállított jog", hanem a korlátozás HIÁNYA — ha az admin bekapcsol egy korlátozást,
  * pontosan ezek szűnnek meg csendben.
+ *
+ * FONTOS: a runtime `evaluateAgentAccess` default-open agentnél FIGYELMEN KÍVÜL
+ * hagyja a grantot (C4). A szerkesztőnek viszont mutatnia kell az előre felvett
+ * (előzetes) kapcsolatokat — különben a gomb kattintás után is „(alapból)" marad,
+ * és úgy tűnik, mintha nem lehetne állítani.
  */
 export function connectionState(params: {
   tenantId: string
@@ -96,6 +105,12 @@ export function connectionState(params: {
       ? params.agents.find((a) => a.id === params.subject.id) ?? null
       : null
 
+  const grant = findGrant(params.grants, params.subject, params.targetAgentId)
+  if (grant) {
+    const verbOn = params.verb === 'view' ? grant.canView : grant.canAddress
+    if (verbOn) return { allowed: true, basis: 'grant' }
+  }
+
   const decision = evaluateAgentAccess({
     subject:
       params.subject.kind === 'user'
@@ -105,7 +120,7 @@ export function connectionState(params: {
     source: source
       ? { id: source.id, tenantId: params.tenantId, outboundRestricted: source.outboundRestricted }
       : null,
-    grant: findGrant(params.grants, params.subject, params.targetAgentId),
+    grant,
     verb: params.verb,
     options: { subjectIsTenantAdmin: params.subjectIsTenantAdmin },
   })

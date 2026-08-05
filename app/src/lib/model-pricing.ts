@@ -196,8 +196,12 @@ export function buildModelPricingViewRows(input: {
   const configured = new Set(
     input.configuredModels.map((model) => model.trim()).filter(Boolean),
   )
+  // Ne listázzuk a teljes OpenRouter katalógust: csak beépített / kézi kulcsok +
+  // az alkalmazásban engedélyezett modellek. A synced árak az `effective`-en át
+  // feloldódnak, ha a modell szerepel a listában.
   const keys = new Set<string>([
-    ...Object.keys(input.effective).filter((key) => key !== 'default'),
+    ...Object.keys(input.layers.builtin).filter((key) => key !== 'default'),
+    ...Object.keys(input.layers.manual ?? {}),
     ...configured,
   ])
 

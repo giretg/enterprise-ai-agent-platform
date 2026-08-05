@@ -65,6 +65,24 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         default: true,
       },
       {
+        name: 'get_repository_tree',
+        method: 'GET',
+        path: '/repos/{owner}/{repo}/git/trees/{ref}',
+        access: 'read',
+        description:
+          'A repository teljes fájllistája EGY hívásban (ref = branch neve vagy commit SHA), recursive=1 query paraméterrel az alkönyvtárakkal együtt. Kódkérdésnél ezzel kezdj: ebből válaszd ki, melyik fájlt kell elolvasni — ne lépkedj könyvtáranként.',
+        default: true,
+      },
+      {
+        name: 'get_file_contents',
+        method: 'GET',
+        path: '/repos/{owner}/{repo}/contents/{path}',
+        access: 'read',
+        description:
+          'Egy fájl tartalma, vagy könyvtár-útvonalon a könyvtár listája. Fájlnál a platform a base64 tartalmat UTF-8 szöveggé dekódolja (encoding: "utf-8"), tehát közvetlenül olvasható. Nem alapértelmezett ághoz: ?ref=<branch|sha>.',
+        default: true,
+      },
+      {
         name: 'list_issues',
         method: 'GET',
         path: '/repos/{owner}/{repo}/issues',
@@ -356,6 +374,26 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         path: '/insights',
         access: 'read',
         description: 'CRM analitika lekerdezese.',
+        default: true,
+      },
+      {
+        name: 'query_report',
+        method: 'POST',
+        path: '/reports/query',
+        access: 'read',
+        risk: 'read',
+        description:
+          'Riportlekérdezés (nem módosít). Kötelező: period.from + period.to (YYYY-MM-DD, inkluzív); plusz preset VAGY dataset+measures. Példa: {"preset":"turnover","period":{"from":"2026-01-01","to":"2026-06-30"}}',
+        default: true,
+      },
+      {
+        name: 'export_report',
+        method: 'POST',
+        path: '/reports/exports',
+        access: 'read',
+        risk: 'read',
+        description:
+          'Riportexport (nem módosít). Ugyanaz a body, mint /reports/query, plusz format: "csv"|"xlsx".',
         default: true,
       },
       {

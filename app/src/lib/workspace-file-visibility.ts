@@ -88,6 +88,48 @@ export function workspaceFileLink(baseUrl: string, path: string): string {
   return `${baseUrl}?${params}`
 }
 
+/** Attachment letöltés — disposition nélkül (a route alapból attachment). */
+export function workspaceFileDownloadLink(baseUrl: string, path: string): string {
+  return `${baseUrl}?${new URLSearchParams({ path })}`
+}
+
+export type WorkspaceHtmlPreviewTarget = {
+  url: string
+  downloadUrl: string
+  fileName: string
+  path: string
+}
+
+/** Modal / előnézet cél egy ismert workspace HTML path-ból. */
+export function workspaceHtmlPreviewTarget(
+  baseUrl: string,
+  path: string,
+): WorkspaceHtmlPreviewTarget | null {
+  if (!isHtmlWorkspaceFile(path)) return null
+  return {
+    url: workspaceFileLink(baseUrl, path),
+    downloadUrl: workspaceFileDownloadLink(baseUrl, path),
+    fileName: path.split('/').pop() ?? path,
+    path,
+  }
+}
+
+/**
+ * Workspace HTML megnyitási linkből állít előnézeti célt
+ * (chat markdown href → modal).
+ */
+export function workspaceHtmlPreviewFromLink(href: string): WorkspaceHtmlPreviewTarget | null {
+  try {
+    const url = new URL(href, 'http://local.invalid')
+    if (!url.pathname.includes('/workspace/files')) return null
+    const path = url.searchParams.get('path')
+    if (!path) return null
+    return workspaceHtmlPreviewTarget(url.pathname, path)
+  } catch {
+    return null
+  }
+}
+
 /**
  * Az agent olykor maga ír Markdown-linket egy workspace-fájl nevére
  * (például `[Riport megnyitása](riport.html)`). Ilyenkor a relatív href

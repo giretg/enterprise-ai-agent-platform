@@ -2,14 +2,18 @@
 
 import Link from 'next/link'
 import type { Agent } from '@prisma/client'
-import { Badge, Card } from '@/components/ui/shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
-import { AgentChatButton } from '@/components/agents/agent-chat-panel'
-import { AgentTaskButton } from '@/components/agents/agent-task-button'
-import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
+import { AgentCardActions, type AssigneeOptions } from '@/components/agents/agent-card-actions'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { modelLabel, modelTypeLabel } from '@/lib/model-providers'
+
+const LABEL_TONE = {
+  working: 'text-coral-deep',
+  available: 'text-sage',
+  unknown: 'text-sage',
+  idle: 'text-ink-faint',
+} as const
 
 function agentBrainLabel(agent: Agent) {
   const modelConfig = agent.modelConfig as Record<string, unknown>
@@ -22,88 +26,110 @@ function agentBrainLabel(agent: Agent) {
   return type ? `${modelLabel(provider, model)} · ${type}` : modelLabel(provider, model)
 }
 
+function Chip({
+  children,
+  tone = 'neutral',
+}: {
+  children: React.ReactNode
+  tone?: 'neutral' | 'success' | 'danger'
+}) {
+  const toneClass =
+    tone === 'success'
+      ? 'bg-sage/12 text-sage'
+      : tone === 'danger'
+        ? 'bg-coral/12 text-coral-deep'
+        : 'bg-night-2 text-ink-faint'
+  return (
+    <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${toneClass}`}>
+      {children}
+    </span>
+  )
+}
+
+/**
+ * Egy munkatárs a csapat-listában: ugyanaz az arc és gombsor, mint a
+ * dashboardon, de itt a „ki ez és mire van beállítva” a fontos — jellem,
+ * feladatkör-leírás, agy (modell) és a kormányzási jelzők.
+ */
 export function AgentRegistryCard({
   agent,
   canDelete,
+  isWorking = false,
+  canCreateTicket = false,
+  assigneeOptions,
 }: {
   agent: Agent
   canDelete: boolean
+  /** Aktívan futó ügy a saját futásokból — dashboard `act.working` párja. */
+  isWorking?: boolean
+  canCreateTicket?: boolean
+  assigneeOptions?: AssigneeOptions
 }) {
   const p = personaFor(agent.name, agent)
-  const mood = humanStatus(agent.status)
+  const mood = humanStatus(agent.status, isWorking)
   const brainLabel = agentBrainLabel(agent)
+  const detailHref = `/control-plane/agents/${agent.id}`
 
   return (
-    <Card className="h-full transition-transform duration-200 hover:-translate-y-1">
-      <div className="flex items-start gap-4">
-        <Link href={`/control-plane/agents/${agent.id}`} className="flex min-w-0 flex-1 items-start gap-4">
+    <article className="atelier-card group relative flex h-full flex-col overflow-hidden transition-transform duration-200 hover:-translate-y-1">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-32"
+        style={{
+          background: `linear-gradient(165deg, ${p.gradient[0]}1f, ${p.gradient[1]}00 72%)`,
+        }}
+      />
+
+      <div className="relative flex items-start gap-4 px-5 pt-5">
+        <Link href={detailHref} aria-label={`${p.nickname} adatlapja`}>
           <AgentAvatar
             name={agent.name}
             status={agent.status}
             size="lg"
             avatarUrl={agent.avatarUrl}
             personaNickname={agent.personaNickname}
+            isWorking={isWorking}
           />
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h2 className="font-display text-2xl font-semibold leading-none">{p.nickname}</h2>
-              <span className="text-lg" aria-hidden>
-                {p.emoji}
-              </span>
-            </div>
-            <p className="mt-1 text-xs font-medium text-sage">
-              {mood.label}
-              {brainLabel && ` (Agy: ${brainLabel})`}
-            </p>
+        </Link>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start gap-2">
+            <Link href={detailHref} className="min-w-0 flex-1">
+              <h2 className="truncate font-display text-[1.6rem] font-semibold leading-tight transition-colors group-hover:text-coral-deep">
+                {p.nickname} <span aria-hidden>{p.emoji}</span>
+              </h2>
+            </Link>
+            {canDelete && <DeleteAgentButton agentId={agent.id} agentName={p.nickname} compact />}
           </div>
-        </Link>
-        <div className="flex shrink-0 flex-col items-end gap-2">
-          <Badge tone={agent.status === 'active' ? 'success' : 'neutral'}>
-            {agent.status === 'active'
-              ? 'aktív'
-              : agent.status === 'retired'
-                ? 'nyugdíjazva'
-                : agent.status === 'suspended'
-                  ? 'felfüggesztve'
-                  : agent.status === 'draft'
-                    ? 'vázlat'
-                    : 'pihen'}
-          </Badge>
-          {agent.hiddenFromOperators && <Badge tone="neutral">operátoroktól rejtett</Badge>}
-          {agent.taskOnly && <Badge tone="neutral">korlátozott feladatkör</Badge>}
-          {canDelete && <DeleteAgentButton agentId={agent.id} agentName={p.nickname} compact />}
+          <p className={`mt-1 text-xs font-medium ${LABEL_TONE[mood.tone]}`}>{mood.label}</p>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {agent.status === 'active' ? (
+              <Chip tone="success">aktív</Chip>
+            ) : (
+              <Chip tone={agent.status === 'suspended' ? 'danger' : 'neutral'}>{mood.label}</Chip>
+            )}
+            {brainLabel && <Chip>Agy: {brainLabel}</Chip>}
+            {agent.taskOnly && <Chip>korlátozott feladatkör</Chip>}
+            {agent.hiddenFromOperators && <Chip>operátoroktól rejtett</Chip>}
+          </div>
         </div>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-        <Link href={`/control-plane/agents/${agent.id}`} className="flex-1 min-w-0">
-          <p className="text-sm leading-relaxed text-ink-soft">{p.trait}</p>
+      <Link href={detailHref} className="relative flex-1 px-5 pb-4 pt-4">
+        <p className="line-clamp-2 text-sm leading-relaxed text-ink-soft">{p.trait}</p>
+        <div className="estate-rule my-3.5" />
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">
+          Mivel bízták meg
+        </p>
+        <p className="mt-1 line-clamp-3 text-[13px] leading-relaxed text-ink-faint">
+          {agent.roleInstruction}
+        </p>
+      </Link>
 
-          <div className="estate-rule my-4" />
-
-          <p className="line-clamp-2 text-xs text-ink-faint">{agent.roleInstruction}</p>
-        </Link>
-        <div className="flex shrink-0 flex-col items-end gap-2">
-          {/* #199 — korlátozott feladatkörű agentnél nincs chat, csak feladat-gomb. */}
-          {agent.taskOnly ? (
-            <AgentTaskButton agentId={agent.id} compact />
-          ) : (
-            <AgentChatButton
-              agent={{
-                id: agent.id,
-                name: agent.name,
-                status: agent.status,
-                avatarUrl: agent.avatarUrl,
-                personaNickname: agent.personaNickname,
-                personaGreeting: agent.personaGreeting,
-                personaTrait: agent.personaTrait,
-              }}
-              compact
-            />
-          )}
-          <AgentMiniAppsLink agentId={agent.id} compact />
-        </div>
-      </div>
-    </Card>
+      <AgentCardActions
+        agent={agent}
+        canCreateTicket={canCreateTicket}
+        assigneeOptions={assigneeOptions}
+      />
+    </article>
   )
 }

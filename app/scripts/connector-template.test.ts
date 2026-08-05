@@ -340,6 +340,57 @@ async function main() {
     })
   })
 
+  await test('Ostorosbor enrich: meglévő POST /reports/query → risk:read (HITL kikapcsolás)', () => {
+    const { config, changed } = enrichOstorosborConnectorConfig({
+      provider: 'custom-import',
+      baseUrl: 'https://crm.example/api/connector/v1',
+      egressHosts: ['crm.example'],
+      authMode: 'service',
+      auth: { type: 'bearer_token' },
+      scopesSuggested: [],
+      proposedTools: [
+        {
+          name: 'queryReport',
+          method: 'POST',
+          path: '/reports/query',
+          access: 'write',
+        },
+        {
+          name: 'exportReport',
+          method: 'POST',
+          path: '/reports/exports',
+          access: 'write',
+          risk: 'write',
+        },
+      ],
+    })
+    assert.equal(changed, true)
+    const query = config.proposedTools.find((t) => t.path === '/reports/query')
+    const exp = config.proposedTools.find((t) => t.path === '/reports/exports')
+    assert.equal(query?.risk, 'read')
+    assert.equal(exp?.risk, 'read')
+  })
+
+  await test('Ostorosbor enrich: service-insight hiányzó report végpontokat pótol', () => {
+    const { config, changed } = enrichOstorosborConnectorConfig({
+      provider: 'ostorosbor-crm-service-insight',
+      baseUrl: 'https://crm.example/api/connector/v1',
+      egressHosts: ['crm.example'],
+      authMode: 'service',
+      auth: { type: 'bearer_token' },
+      scopesSuggested: [],
+      proposedTools: [{ name: 'list_accounts', method: 'GET', path: '/accounts', access: 'read' }],
+      requestHeaders: {
+        'X-Agent-Id': '{{agent.id}}',
+        'X-Acting-User': '{{actingUser.email}}',
+        'X-Connector-Call-Id': '{{call.id}}',
+      },
+    })
+    assert.equal(changed, true)
+    assert.ok(config.proposedTools.some((t) => t.method === 'POST' && t.path === '/reports/query' && t.risk === 'read'))
+    assert.ok(config.proposedTools.some((t) => t.method === 'POST' && t.path === '/reports/exports' && t.risk === 'read'))
+  })
+
   await test('Ostorosbor bearer migráció újramaterializál, sandbox /accounts 200', async () => {
     const config = rematerializeOstorosborConnectorConfig({
       id: 'connector-1',

@@ -7,6 +7,14 @@ import { updateAgentConnectorBinding } from '@/app/actions/platform'
 import { unassignConnectorFromAgent } from '@/app/actions/provisioning'
 import { Badge } from '@/components/ui/shell'
 import { connectorAccessLabel } from '@/lib/agent-profile-labels'
+import {
+  PREAPPROVED_SUGGESTED_WRITE_LIMIT,
+  consequenceBoundaryLabel,
+  suggestedExpiryIso,
+  type ConsequenceBoundary,
+  type PreapprovedTrustMode,
+  type WriteApprovalMode,
+} from '@/domain/tool-broker/write-approval-trust'
 
 type ConnectorItem = {
   connector: {
@@ -17,19 +25,33 @@ type ConnectorItem = {
     secretAlias: string | null
     config: unknown
     authMode?: string
+    consequenceBoundary?: ConsequenceBoundary | null
   }
   accessMode: 'read' | 'write'
   /** Per-agent kulcs alias (kötés-szint). Jelenléte = az agentnek saját kulcsa van. */
   agentSecretAlias?: string | null
+  writeApproval?: WriteApprovalMode
+  preapprovedTrustMode?: PreapprovedTrustMode | null
+  preapprovedExpiresAt?: Date | string | null
+  preapprovedWriteLimit?: number | null
+  dangerPreapproved?: boolean
 }
 
 const KEY_STORAGE_NOTE = 'A kulcs titkosítva tárolódik, sosem kerül az adatbázisba.'
 const INPUT = 'mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm'
 
+function expiryDateValue(raw: Date | string | null | undefined): string {
+  if (!raw) return ''
+  const d = raw instanceof Date ? raw : new Date(raw)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toISOString().slice(0, 10)
+}
+
 /**
  * WP-5 (B4) — KÖTÉS-szerkesztő: az egyetlen biztonságos agent-szintű művelet. Csak a
- * hozzáférést és az opcionális per-agent kulcsot állítja (az `AgentConnector` sort), a
- * connector strukturális configját SOHA nem érinti.
+ * hozzáférést, az írási bizalmat és az opcionális per-agent kulcsot állítja
+ * (az `AgentConnector` sort), a connector strukturális configját SOHA nem érinti —
+ * kivéve az opcionális `consequenceBoundary` címkét (issue #220).
  */
 function BindingEditor({
   agentId,
@@ -47,8 +69,33 @@ function BindingEditor({
   const [accessMode, setAccessMode] = useState<'read' | 'write'>(item.accessMode)
   const [apiKey, setApiKey] = useState('')
   const [clearApiKey, setClearApiKey] = useState(false)
+  const [writeApproval, setWriteApproval] = useState<WriteApprovalMode>(
+    item.writeApproval === 'preapproved' ? 'preapproved' : 'per_call',
+  )
+  // Nincs előjelölt default preapproved módban — üres = mentéskor hiba, ha preapproved.
+  const [trustMode, setTrustMode] = useState<'' | PreapprovedTrustMode>(
+    item.preapprovedTrustMode === 'lax' || item.preapprovedTrustMode === 'strict'
+      ? item.preapprovedTrustMode
+      : '',
+  )
+  const [writeLimit, setWriteLimit] = useState(
+    String(item.preapprovedWriteLimit ?? PREAPPROVED_SUGGESTED_WRITE_LIMIT),
+  )
+  const [expiresAt, setExpiresAt] = useState(
+    expiryDateValue(item.preapprovedExpiresAt) || suggestedExpiryIso(),
+  )
+  const [dangerPreapproved, setDangerPreapproved] = useState(Boolean(item.dangerPreapproved))
+  const [consequenceBoundary, setConsequenceBoundary] = useState<'' | ConsequenceBoundary>(
+    item.connector.consequenceBoundary === 'external_draft' ||
+      item.connector.consequenceBoundary === 'platform'
+      ? item.connector.consequenceBoundary
+      : '',
+  )
   const hasPerAgentKey = Boolean(item.agentSecretAlias)
   const isDelegated = item.connector.authMode === 'user_delegated'
+  const boundaryHint = consequenceBoundaryLabel(
+    consequenceBoundary || item.connector.consequenceBoundary,
+  )
 
   function submit() {
     startTransition(async () => {
@@ -59,6 +106,21 @@ function BindingEditor({
         connectorId: item.connector.id,
         accessMode,
         ...(clearApiKey ? { clearApiKey: true } : apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
+        writeApproval: accessMode === 'write' ? writeApproval : 'per_call',
+        ...(accessMode === 'write' && writeApproval === 'preapproved'
+          ? {
+              preapprovedTrustMode: trustMode || null,
+              preapprovedExpiresAt: expiresAt || null,
+              preapprovedWriteLimit: writeLimit ? Number(writeLimit) : null,
+              dangerPreapproved,
+            }
+          : {
+              preapprovedTrustMode: null,
+              preapprovedExpiresAt: null,
+              preapprovedWriteLimit: null,
+              dangerPreapproved: false,
+            }),
+        consequenceBoundary: consequenceBoundary || null,
       })
       if (res.success) {
         setDone('Kötés mentve.')
@@ -93,6 +155,125 @@ function BindingEditor({
           <option value="write">Olvasás + írás</option>
           <option value="read">Csak olvasás</option>
         </select>
+      </label>
+
+      {accessMode === 'write' && (
+        <fieldset className="space-y-3 rounded-lg border border-line/60 bg-night-2/40 p-3">
+          <legend className="px-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">
+            Írási bizalom (következmény-kapu)
+          </legend>
+          <label className="block text-sm">
+            <span className="text-ink-soft">Szint</span>
+            <select
+              value={writeApproval}
+              onChange={(event) => setWriteApproval(event.target.value as WriteApprovalMode)}
+              className={INPUT}
+            >
+              <option value="per_call">Hívásonkénti jóváhagyás (alapértelmezett)</option>
+              <option value="preapproved">Előzetesen engedélyezve (kapu nélkül, audittal)</option>
+            </select>
+          </label>
+
+          {writeApproval === 'preapproved' && (
+            <>
+              <p className="text-xs text-ink-faint">
+                Csak allowlistelt write végpontokra érvényes. Ismeretlen path mindig kapu.
+                {boundaryHint ? ` ${boundaryHint}.` : ''}
+              </p>
+              <label className="block text-sm">
+                <span className="text-ink-soft">Mód (kötelező választás)</span>
+                <select
+                  value={trustMode}
+                  onChange={(event) => setTrustMode(event.target.value as '' | PreapprovedTrustMode)}
+                  className={INPUT}
+                  required
+                >
+                  <option value="">— válassz —</option>
+                  <option value="lax">Laza — csak audit</option>
+                  <option value="strict">Szigorú — hívásszám-limit + lejárat</option>
+                </select>
+              </label>
+
+              {trustMode === 'strict' && (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label className="block text-sm">
+                    <span className="text-ink-soft">Író hívás / agent-futás (max 500)</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={500}
+                      value={writeLimit}
+                      onChange={(event) => setWriteLimit(event.target.value)}
+                      className={INPUT}
+                      required
+                    />
+                    <span className="mt-1 block text-xs text-ink-faint">
+                      A limit EGY agent-futásra szól. Egy hosszabb feladat több futásból
+                      állhat, ilyenkor a keret futásonként újraindul — ez nem a feladat
+                      összes írására vonatkozó plafon.
+                    </span>
+                  </label>
+                  <label className="block text-sm">
+                    <span className="text-ink-soft">Lejárat</span>
+                    <input
+                      type="date"
+                      value={expiresAt}
+                      onChange={(event) => setExpiresAt(event.target.value)}
+                      className={INPUT}
+                      required
+                    />
+                  </label>
+                </div>
+              )}
+
+              {trustMode === 'lax' && (
+                <label className="block text-sm">
+                  <span className="text-ink-soft">Lejárat (opcionális)</span>
+                  <input
+                    type="date"
+                    value={expiresAt}
+                    onChange={(event) => setExpiresAt(event.target.value)}
+                    className={INPUT}
+                  />
+                </label>
+              )}
+
+              <label className="flex items-start gap-2 text-sm text-ink-soft">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={dangerPreapproved}
+                  onChange={(event) => setDangerPreapproved(event.target.checked)}
+                />
+                <span>
+                  Danger végpontok is előzetesen engedélyezve
+                  <span className="mt-0.5 block text-xs text-ink-faint">
+                    Alapból ki. Kapcsoló nélkül a danger mindig hívásonkénti kapu.
+                  </span>
+                </span>
+              </label>
+            </>
+          )}
+        </fieldset>
+      )}
+
+      <label className="block text-sm">
+        <span className="text-ink-soft">Következmény-határ címke (opcionális)</span>
+        <select
+          value={consequenceBoundary}
+          onChange={(event) =>
+            setConsequenceBoundary(event.target.value as '' | ConsequenceBoundary)
+          }
+          className={INPUT}
+        >
+          <option value="">Nincs címke</option>
+          <option value="external_draft">Külső draft (javaslat: preapproved megfontolható)</option>
+          <option value="platform">Platform a határ (maradjon per_call)</option>
+        </select>
+        <span className="mt-1 block text-xs text-ink-faint">
+          Csak UI javaslat — önmagában nem kapcsolja ki a kaput. A tényleges skiphez
+          binding-szintű „előzetesen engedélyezve” kell.
+        </span>
       </label>
 
       {isDelegated ? (
@@ -154,6 +335,31 @@ function BindingEditor({
   )
 }
 
+/**
+ * A jelvény a KIKAPCSOLT kaput jelzi, nem egy elért állapotot — ezért `warning`,
+ * nem `success`: zöld pipával az „előzetesen engedélyezve” azt sugallná, hogy ez
+ * az egészségesebb beállítás, holott itt fut írás emberi jóváhagyás nélkül.
+ */
+function writeApprovalBadge(
+  item: ConnectorItem,
+): { label: string; tone: 'warning' | 'neutral'; title: string } | null {
+  if (item.accessMode !== 'write') return null
+  if (item.writeApproval === 'preapproved') {
+    const mode = item.preapprovedTrustMode === 'strict' ? 'szigorú' : 'laza'
+    return {
+      label: `kapu nélkül — előzetesen engedélyezve (${mode})`,
+      tone: 'warning',
+      title:
+        'Az allowlistelt író hívások jóváhagyó kártya nélkül futnak ezen a kapcsolaton. Ismeretlen végpont továbbra is kapu.',
+    }
+  }
+  return {
+    label: 'hívásonkénti kapu',
+    tone: 'neutral',
+    title: 'Minden író hívás külön emberi jóváhagyást kér.',
+  }
+}
+
 export function ApiConnectorList({
   agentId,
   connectors,
@@ -199,15 +405,22 @@ export function ApiConnectorList({
       {connectors.map((item) => {
         const editing = editingId === item.connector.id
         const confirming = confirmingId === item.connector.id
+        const trustBadge = writeApprovalBadge(item)
+        const boundary = consequenceBoundaryLabel(item.connector.consequenceBoundary)
 
         return (
           <li key={item.connector.id} className="atelier-soft p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <span className="font-medium text-ink">{item.connector.name}</span>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Badge tone={item.accessMode === 'write' ? 'warning' : 'neutral'}>
                   {connectorAccessLabel(item.accessMode)}
                 </Badge>
+                {trustBadge && (
+                  <Badge tone={trustBadge.tone} title={trustBadge.title}>
+                    {trustBadge.label}
+                  </Badge>
+                )}
                 <button
                   type="button"
                   onClick={() => setEditingId(editing ? null : item.connector.id)}
@@ -227,6 +440,7 @@ export function ApiConnectorList({
             <p className="mt-1 break-all text-xs text-ink-faint">
               {item.connector.type} · {item.connector.scope}
               {item.connector.secretAlias && ` · ${item.connector.secretAlias}`}
+              {boundary && ` · ${boundary}`}
             </p>
 
             {confirming && (
@@ -254,8 +468,9 @@ export function ApiConnectorList({
                 />
                 <div className="mt-3 rounded-xl border border-honey/30 bg-honey/5 p-3 text-xs">
                   <p className="text-ink-faint">
-                    Ez a beállítás a connector egészére, az egész tenantra vonatkozik — a
-                    strukturális konfiguráció kizárólag a provisioningban módosítható.
+                    A strukturális konfiguráció (base URL, endpointok) kizárólag a
+                    provisioningban módosítható. Az írási bizalom ehhez az agent–connector
+                    kötéshez tartozik.
                   </p>
                   <Link
                     href="/control-plane/provisioning"

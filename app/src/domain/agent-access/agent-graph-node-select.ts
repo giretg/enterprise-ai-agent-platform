@@ -19,4 +19,5 @@ export const AGENT_GRAPH_NODE_SELECT = {
   hiddenFromOperators: true,
   inboundRestricted: true,
   outboundRestricted: true,
+  taskOnly: true,
 } as const

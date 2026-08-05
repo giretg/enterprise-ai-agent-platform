@@ -41,6 +41,7 @@ import {
 import { AGENT_TURN_RECONNECT_POLL_DEFAULT_MS } from '@/domain/agent/agent-turn-reconnect'
 import {
   decideChatStreamRecovery,
+  resolveChatStreamConflict,
   STREAM_RECOVERED_MESSAGE,
   STREAM_RECOVERY_FAILED_MESSAGE,
   type ChatStreamEnding,
@@ -323,19 +324,86 @@ const MEMORY_CANDIDATE_STATUS_LABEL: Record<MemoryCandidateCard['status'], strin
   rejected: 'Elutasítva',
 }
 
-function FieldHelp({ description }: { description: string }) {
+/**
+ * Fejléc-menü a ritkán használt szál-műveleteknek. Korábban 5 gomb versengett
+ * a fejlécben az agent nevével — a napi használatban egyik sem kell, viszont
+ * elvonta a figyelmet a beszélgetésről.
+ */
+function ChatHeaderMenu({
+  label = 'Szál műveletei',
+  children,
+}: {
+  label?: string
+  children: React.ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+
   return (
-    <details className="group relative inline-flex">
-      <summary
-        className="flex h-4 w-4 cursor-help list-none items-center justify-center rounded-full border border-line bg-card text-[10px] font-semibold text-ink-faint transition-colors hover:border-coral/40 hover:text-coral-deep"
-        aria-label="Mező súgó"
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        aria-label={label}
+        title={label}
+        className={`flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-semibold transition-colors ${
+          open
+            ? 'border-coral/40 bg-coral/10 text-coral-deep'
+            : 'border-line text-ink-soft hover:border-coral/30 hover:text-coral-deep'
+        }`}
       >
-        ?
-      </summary>
-      <div className="pointer-events-none absolute left-1/2 top-[calc(100%+0.35rem)] z-20 w-56 -translate-x-1/2 rounded-lg border border-line bg-card px-2.5 py-2 text-[11px] leading-relaxed text-ink-soft opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-open:opacity-100">
-        {description}
-      </div>
-    </details>
+        <span aria-hidden className="text-sm leading-none">⋯</span>
+        <span className="hidden lg:inline">Műveletek</span>
+      </button>
+      {open && (
+        <>
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-hidden
+            className="fixed inset-0 z-30 cursor-default"
+            onClick={() => setOpen(false)}
+          />
+          <div
+            role="menu"
+            className="absolute right-0 z-40 mt-1.5 w-64 overflow-hidden rounded-xl border border-line bg-card p-1 shadow-xl"
+            onClick={() => setOpen(false)}
+          >
+            {children}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function ChatMenuItem({
+  onClick,
+  disabled,
+  title,
+  hint,
+  tone = 'neutral',
+}: {
+  onClick: () => void
+  disabled?: boolean
+  title: string
+  hint: string
+  tone?: 'neutral' | 'warn'
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      disabled={disabled}
+      className={`w-full rounded-lg px-3 py-2 text-left transition-colors disabled:opacity-40 ${
+        tone === 'warn' ? 'hover:bg-honey/10' : 'hover:bg-night-2'
+      }`}
+    >
+      <span className="block text-xs font-semibold text-ink">{title}</span>
+      <span className="mt-0.5 block text-[11px] leading-snug text-ink-faint">{hint}</span>
+    </button>
   )
 }
 
@@ -422,9 +490,12 @@ function AgentActivityRow({
 function AgentActivityPanel({
   activities,
   thinking,
+  separated,
 }: {
   activities: AgentActivity[]
   thinking?: Record<string, string>
+  /** Követi-e válaszszöveg — csak akkor kell elválasztó vonal. */
+  separated: boolean
 }) {
   // Alapból zárt — a teljes lista csak kattintásra nyílik; stream közben sem
   // erőltetjük ki a nyitást, hogy a user választása megmaradjon.
@@ -438,36 +509,41 @@ function AgentActivityPanel({
       ? 'Műveletek hibával'
       : 'Műveletek kész'
 
+  // A panel a válasz-buborékon BELÜL él, ezért nem kap saját keretet: a
+  // "doboz a dobozban" hatás volt a régi elrendezés legzavaróbb eleme. A
+  // munkamenetet egy hajszálvonal választja el a tényleges választól.
   return (
     <details
       open={open}
       onToggle={(event) => setOpen(event.currentTarget.open)}
-      className={`mb-3 rounded-lg border px-3 py-2 text-xs text-ink-soft transition-colors ${
-        running
-          ? 'border-sky/35 bg-sky/5'
-          : 'border-line bg-night-2/70'
+      className={`text-xs text-ink-soft ${
+        separated ? 'mb-3 border-b border-line pb-2' : ''
       }`}
     >
-      <summary className="cursor-pointer list-none">
-        <div className="flex items-center justify-between gap-3 font-medium text-ink">
-          <span className="min-w-0 truncate">
-            Agent aktivitás
-            {open ? (
-              <span className="ml-2 font-normal text-ink-faint">{headerHint}</span>
-            ) : null}
+      <summary className="flex cursor-pointer list-none items-center gap-2">
+        <span
+          className={`shrink-0 rounded-full ${
+            running
+              ? 'h-2 w-2 animate-pulse bg-sky'
+              : hasError
+                ? 'h-2 w-2 bg-coral'
+                : 'h-2 w-2 bg-sage'
+          }`}
+          aria-hidden
+        />
+        <span className="min-w-0 flex-1 truncate font-medium text-ink">
+          {running ? 'Éppen dolgozik' : hasError ? 'Elakadt egy lépésnél' : 'Kész'}
+          <span className="ml-1.5 font-normal text-ink-faint">
+            · {activities.length} lépés
           </span>
-          <span className="shrink-0 rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold text-ink-faint">
-            {activities.length}
-          </span>
-        </div>
-        {!open && latest ? (
-          <div className="mt-2">
-            <AgentActivityRow activity={latest} thinking={thinking} prominent />
-          </div>
-        ) : null}
+        </span>
+        <span className="shrink-0 text-[11px] font-medium text-ink-faint">
+          {open ? 'elrejt ▴' : 'részletek ▾'}
+        </span>
       </summary>
+
       {open ? (
-        <div className="mt-2 space-y-1.5">
+        <div className="mt-2 space-y-1.5 border-t border-line/70 pt-2">
           {activities.map((activity) => (
             <AgentActivityRow
               key={activity.id}
@@ -476,6 +552,17 @@ function AgentActivityPanel({
               prominent={activity.status === 'running'}
             />
           ))}
+        </div>
+      ) : latest ? (
+        <div className="mt-1.5 pl-4">
+          <p className="truncate text-[11px] text-ink-faint" title={headerHint}>
+            {activityDisplayTitle(latest)}
+            {activityLiveThinking(latest, thinking)
+              ? ` — ${activityLiveThinking(latest, thinking)}`
+              : latest.detail
+                ? ` — ${latest.detail}`
+                : ''}
+          </p>
         </div>
       ) : null}
     </details>
@@ -959,9 +1046,20 @@ function ConsequenceApprovalsPanel({
   )
 }
 
+function formatMessageTime(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' })
+}
+
 function MessageBubble({
   message,
   isBusy,
+  showAuthor,
+  agentName,
+  agentAvatarUrl,
+  agentStatus,
+  personaNickname,
   onDeleteContent,
   onOpenTask,
   onMemoryCandidateUpdate,
@@ -972,6 +1070,12 @@ function MessageBubble({
 }: {
   message: ChatMessage
   isBusy: boolean
+  /** Új szerző kezdi a blokkot: ilyenkor jár avatar + név + időbélyeg. */
+  showAuthor: boolean
+  agentName: string
+  agentAvatarUrl?: string | null
+  agentStatus?: string
+  personaNickname?: string | null
   onDeleteContent: (messageId: string) => void
   onOpenTask: () => void
   onMemoryCandidateUpdate: (messageId: string, candidateId: string, patch: Partial<MemoryCandidateCard>) => void
@@ -986,18 +1090,49 @@ function MessageBubble({
 }) {
   const isUser = message.role === 'user'
   const isDeleted = Boolean(message.contentDeletedAt)
+  const time = formatMessageTime(message.createdAt)
 
   return (
-    <div className={`flex animate-rise ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`group relative rounded-2xl px-4 py-3 shadow-sm ${
-          isDeleted
-            ? 'max-w-[85%] border border-dashed border-line bg-night-2 text-ink-faint'
-            : isUser
-              ? 'max-w-[85%] rounded-br-md bg-coral text-card'
-              : 'max-w-[85%] rounded-bl-md border border-line bg-card text-ink-soft lg:max-w-[min(90%,64rem)]'
-        }`}
-      >
+    <div
+      className={`group/msg flex animate-rise gap-2.5 ${
+        isUser ? 'flex-row-reverse' : 'flex-row'
+      } ${showAuthor ? 'mt-4 first:mt-0' : 'mt-1'}`}
+    >
+      {/* Avatar-oszlop: a blokk első üzeneténél látszik, alatta csak helyet tart,
+          hogy a folytatás-buborékok egy vonalban maradjanak. */}
+      <div className="w-7 shrink-0 sm:w-8">
+        {!isUser && showAuthor ? (
+          <AgentAvatar
+            name={agentName}
+            status={agentStatus}
+            size="sm"
+            avatarUrl={agentAvatarUrl}
+            personaNickname={personaNickname}
+          />
+        ) : null}
+      </div>
+
+      <div className={`flex min-w-0 flex-col ${isUser ? 'items-end' : 'items-start'} max-w-[min(88%,64rem)]`}>
+        {showAuthor && (
+          <div
+            className={`mb-1 flex items-baseline gap-2 px-1 text-[11px] ${
+              isUser ? 'flex-row-reverse' : ''
+            }`}
+          >
+            <span className="font-semibold text-ink-soft">{isUser ? 'Te' : agentName}</span>
+            {time && <time className="tabular-nums text-ink-faint">{time}</time>}
+          </div>
+        )}
+
+        <div
+          className={`relative w-full rounded-2xl px-4 py-3 shadow-sm ${
+            isDeleted
+              ? 'border border-dashed border-line bg-night-2 text-ink-faint'
+              : isUser
+                ? 'rounded-tr-md bg-coral text-card'
+                : 'rounded-tl-md border border-line bg-card text-ink-soft'
+          }`}
+        >
         {isDeleted ? (
           <div className="flex items-center gap-2 text-xs">
             <span className="h-2 w-10 rounded-full bg-line" aria-hidden />
@@ -1009,6 +1144,7 @@ function MessageBubble({
               <AgentActivityPanel
                 activities={message.activities}
                 thinking={message.thinking}
+                separated={Boolean(message.text)}
               />
             )}
             {!isUser && message.memoryCandidates && message.memoryCandidates.length > 0 && (
@@ -1074,18 +1210,6 @@ function MessageBubble({
             )}
           </div>
         )}
-        {!isDeleted && !message.id.startsWith('optimistic-') && (
-          <button
-            type="button"
-            onClick={() => onDeleteContent(message.id)}
-            disabled={isBusy}
-            className={`absolute -top-2 ${isUser ? '-left-2' : '-right-2'} rounded-full border border-line bg-card px-2 py-1 text-[10px] font-semibold text-ink-faint opacity-0 pointer-events-none shadow-sm transition-opacity hover:text-coral-deep group-hover:pointer-events-auto group-hover:opacity-100 focus:pointer-events-auto focus:opacity-100 disabled:opacity-40`}
-            title="Üzenettartalom törlése"
-            aria-label="Üzenettartalom törlése"
-          >
-            Törlés
-          </button>
-        )}
         {message.ticketRefId && (
           <Link
             href={`/control-plane/tickets/${message.ticketRefId}`}
@@ -1098,6 +1222,23 @@ function MessageBubble({
               ? 'Belépő feladat megnyitása →'
               : 'Feladat megnyitása →'}
           </Link>
+        )}
+        </div>
+
+        {/* A törlés a buborék ALATT ül: korábban rálógott a szomszéd üzenetre és
+            eltakarta a szöveg elejét. */}
+        {!isDeleted && !message.id.startsWith('optimistic-') && (
+          <div className="mt-1 h-4 px-1">
+            <button
+              type="button"
+              onClick={() => onDeleteContent(message.id)}
+              disabled={isBusy}
+              className="text-[10px] font-semibold text-ink-faint opacity-0 transition-opacity hover:text-coral-deep focus:opacity-100 group-hover/msg:opacity-100 disabled:opacity-40"
+              title="Az üzenet szövegének végleges törlése"
+            >
+              Tartalom törlése
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -1169,8 +1310,31 @@ export function AgentChatPanel({
   const [sessionsOpen, setSessionsOpen] = useState(false)
   const [sessionsFilter, setSessionsFilter] = useState<ChatSessionStatusFilter>('active')
   const [conversationStatus, setConversationStatus] = useState<'active' | 'archived'>('active')
+  /** Ticket → Megbeszélés (#219): forrás feladat a chat fejlécében. */
+  const [continuedFromTicket, setContinuedFromTicket] = useState<{
+    id: string
+    title: string
+  } | null>(null)
+  /** Ticket-szál olvasható előzménye a megbeszélés chatben (nem Message rekord). */
+  const [ticketDiscussionHistory, setTicketDiscussionHistory] = useState<
+    Array<{
+      id: string
+      role: 'user' | 'agent' | 'system'
+      text: string
+      authorLabel: string
+      createdAt: string
+    }>
+  >([])
   const [chatProcessDefs, setChatProcessDefs] = useState<ChatProcessDefinition[]>([])
   const [selectedProcessDefId, setSelectedProcessDefId] = useState<string | null>(null)
+  /**
+   * Mi legyen az üzenetből: válasz most (chat) vagy feladat a táblán (task).
+   * Korábban ez implicit volt — két egyenrangú gomb állt egymás mellett, és a
+   * feladat-specifikus mezők (ütemezés, run-as) akkor is látszottak, amikor
+   * sima beszélgetés folyt.
+   */
+  const [composerMode, setComposerMode] = useState<'chat' | 'task'>('chat')
+  const [composerPanel, setComposerPanel] = useState<'skill' | 'process' | null>(null)
   const [pending, startTransition] = useTransition()
   const [ticketPending, startTicketTransition] = useTransition()
   const [archivePending, startArchiveTransition] = useTransition()
@@ -1432,6 +1596,8 @@ export function AgentChatPanel({
     setMessages([])
     setStatusMessage(null)
     setLastTicketId(null)
+    setContinuedFromTicket(null)
+    setTicketDiscussionHistory([])
     setConversationStatus('active')
     setSessionsFilter('active')
     setSessionsOpen(false)
@@ -1606,6 +1772,26 @@ export function AgentChatPanel({
   const composerDisabled = controlsBusy || conversationStatus === 'archived'
   const slashMenuOpen = !composerDisabled && slashContext !== null
 
+  /**
+   * Módváltáskor a feladat-specifikus beállítások nem maradhatnak élve
+   * láthatatlanul: a rejtett ütemezés a küldés jelentését változtatná meg.
+   */
+  const switchComposerMode = useCallback((next: 'chat' | 'task') => {
+    setComposerMode(next)
+    setComposerPanel(null)
+    if (next === 'chat') {
+      setTicketExecuteAfter('')
+      setTicketRecurrence('none')
+      setTicketMaxRuns('')
+      setTicketAuthorizeRunAs(false)
+    }
+  }, [])
+
+  const selectedProcessDef = useMemo(
+    () => chatProcessDefs.find((def) => def.id === selectedProcessDefId) ?? null,
+    [chatProcessDefs, selectedProcessDefId],
+  )
+
   const handleDeleteMessageContent = useCallback(
     (messageId: string) => {
       if (controlsBusy) return
@@ -1681,6 +1867,8 @@ export function AgentChatPanel({
       const refreshed = await loadAgentChatMessages({ conversationId, agentId: agent.id })
       if (refreshed.success) {
         setConversationStatus(refreshed.data.conversation.status)
+        setContinuedFromTicket(refreshed.data.continuedFromTicket ?? null)
+        setTicketDiscussionHistory(refreshed.data.ticketDiscussionHistory ?? [])
         setMessages(
           attachPendingConsequenceApprovals(
             refreshed.data.messages.map((m) => ({
@@ -1777,6 +1965,8 @@ export function AgentChatPanel({
       }
       setConversationId(convId)
       setConversationStatus(res.data.conversation.status)
+      setContinuedFromTicket(res.data.continuedFromTicket ?? null)
+      setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
       setMessages(
         attachPendingConsequenceApprovals(
           res.data.messages.map((m) => ({
@@ -2053,6 +2243,8 @@ export function AgentChatPanel({
       setConversationId(id)
       setStatusMessage(null)
       setLastTicketId(null)
+      setContinuedFromTicket(null)
+      setTicketDiscussionHistory([])
       setSessionsOpen(false)
       setSelectedProcessDefId(null)
       setConversationStatus(sessions.find((session) => session.id === id)?.status ?? 'active')
@@ -2060,6 +2252,8 @@ export function AgentChatPanel({
       const res = await loadAgentChatMessages({ conversationId: id, agentId: agent.id })
       if (res.success) {
         setConversationStatus(res.data.conversation.status)
+        setContinuedFromTicket(res.data.continuedFromTicket ?? null)
+        setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
         setMessages(
           attachPendingConsequenceApprovals(
             res.data.messages.map((m) => ({
@@ -2247,42 +2441,45 @@ export function AgentChatPanel({
           }),
         })
 
-        // Aktív-forduló ütközés (D7): a beszélgetésen már fut egy válasz. Nem
-        // néma hiba — a szerver az aktív forduló azonosítóját is visszaadja; a
-        // Aktív forduló ütközés: reattach az activeTurnId-re, ne új küldés.
+        // Aktív-forduló ütközés (D7) VAGY taskOnly tiltás (#199): mindkettő 409.
+        // A fajtákat nem szabad összekeverni — a taskOnly eddig „már készül a
+        // válasz”-ként jelent meg, eltüntette a kérdést, és beragadt a „most dolgozik".
         if (response.status === 409) {
           removeFailedOptimisticMessages()
-          let activeTurnIdFromConflict: string | null = null
-          let conflictConversationId = conversationId
+          markConversationRunning(conversationId, false)
+          let conflictBody: {
+            error?: string
+            message?: string
+            activeTurnId?: string | null
+            conversationId?: string
+          } = {}
           try {
-            const body = (await response.json()) as {
-              activeTurnId?: string | null
-              conversationId?: string
-            }
-            activeTurnIdFromConflict = body.activeTurnId ?? null
-            conflictConversationId = body.conversationId ?? conversationId
+            conflictBody = (await response.json()) as typeof conflictBody
           } catch {
             // ignore
           }
-          if (conflictConversationId) {
-            setConversationId(conflictConversationId)
-            const attached = await reattachToConversation(conflictConversationId)
-            if (attached) {
-              setStatusMessage('Már fut egy válasz — visszacsatlakoztál hozzá.')
-              return
+          const conflict = resolveChatStreamConflict(conflictBody, conversationId)
+          if (conflict.kind === 'active_turn') {
+            if (conflict.conversationId) {
+              setConversationId(conflict.conversationId)
+              const attached = await reattachToConversation(conflict.conversationId)
+              if (attached) {
+                setStatusMessage('Már fut egy válasz — visszacsatlakoztál hozzá.')
+                return
+              }
             }
+            setStatusMessage(conflict.message)
+            setIsAgentTyping(false)
+            return
           }
-          setStatusMessage(
-            activeTurnIdFromConflict
-              ? 'Ebben a beszélgetésben már készül egy válasz. Próbáld újra a megnyitást, vagy állítsd le.'
-              : 'Ebben a beszélgetésben már készül egy válasz. Várd meg, amíg elkészül, vagy állítsd le a Stop gombbal.',
-          )
+          setStatusMessage(conflict.message)
           setIsAgentTyping(false)
           return
         }
 
         if (!response.ok || !response.body) {
           removeFailedOptimisticMessages()
+          markConversationRunning(conversationId, false)
           setStatusMessage(
             options.consequenceApprovalIds?.length
               ? `A jóváhagyott művelet lefutott, de az agent folytatása nem indult el (${response.status}). Írd meg a chatben, hogy folytassa.`
@@ -2644,7 +2841,9 @@ export function AgentChatPanel({
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      handleSend()
+      // Az Enter mindig azt teszi, amit az elsődleges gomb ígér.
+      if (composerMode === 'task') handleCreateTicket()
+      else handleSend()
     }
   }
 
@@ -2685,14 +2884,15 @@ export function AgentChatPanel({
             : 'relative z-[1] flex h-[100dvh] w-full flex-col overflow-hidden border border-line bg-card shadow-2xl sm:h-[min(calc(100dvh-3rem),calc(100vh-3rem))] sm:max-w-[min(calc(100vw-3rem),100rem)] sm:rounded-2xl lg:h-[min(calc(100dvh-2rem),calc(100vh-2rem))] lg:max-w-[min(calc(100vw-2rem),120rem)]'
         }
       >
-        <header className="flex shrink-0 items-center gap-3 border-b border-line px-4 py-3 sm:px-5">
+        <header className="flex shrink-0 items-center gap-2.5 border-b border-line bg-card px-3 py-2.5 sm:gap-3 sm:px-4">
           <button
             type="button"
             onClick={() => setSessionsOpen((v) => !v)}
-            className="rounded-xl border border-line px-2.5 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-coral-deep sm:hidden"
+            className="shrink-0 rounded-lg border border-line px-2 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-coral-deep sm:hidden"
             aria-expanded={sessionsOpen}
+            aria-label="Előzmények megnyitása"
           >
-            Előzmények
+            ☰
           </button>
           <AgentAvatar
             name={agent.name}
@@ -2702,43 +2902,61 @@ export function AgentChatPanel({
             personaNickname={agent.personaNickname}
           />
           <div className="min-w-0 flex-1">
-            <h2 id="agent-chat-title" className="truncate font-display text-lg font-semibold">
-              {persona.nickname}
-            </h2>
-            {conversationId ? (
-              <p className="truncate text-xs text-ink-faint">
-                <span className="rounded-full border border-line px-2 py-0.5">
-                  {conversationStatus === 'archived' ? 'archivált szál' : 'aktív szál'}
+            <div className="flex min-w-0 items-center gap-2">
+              <h2
+                id="agent-chat-title"
+                className="truncate font-display text-base font-semibold leading-tight sm:text-lg"
+              >
+                {persona.nickname}
+              </h2>
+              {/* Egyetlen állapotjelző a szál helyzetéről — a régi „aktív szál”
+                  chip nem árulta el a lényeget: dolgozik-e éppen az agent. */}
+              {isAgentTyping ? (
+                <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-sky/40 bg-sky/10 px-2 py-0.5 text-[10px] font-semibold text-sky">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky" aria-hidden />
+                  dolgozik
                 </span>
-              </p>
-            ) : null}
+              ) : conversationStatus === 'archived' ? (
+                <span className="shrink-0 rounded-full border border-line bg-night-2 px-2 py-0.5 text-[10px] font-semibold text-ink-faint">
+                  archivált
+                </span>
+              ) : null}
+            </div>
             {connectableUserConnectorsLoading ? (
-              <p className="mt-2 text-[11px] text-ink-faint">Kapcsolatok betöltése…</p>
+              <p className="text-[11px] text-ink-faint">Kapcsolatok betöltése…</p>
             ) : connectableUserConnectors.length > 0 ? (
               <AgentDelegatedConnectorsBar items={connectableUserConnectors} variant="compact" />
-            ) : null}
+            ) : (
+              <p className="truncate text-[11px] text-ink-faint">
+                {conversationId ? 'Mentett beszélgetés' : 'Új beszélgetés'}
+              </p>
+            )}
           </div>
-          <div className="hidden items-center gap-2 sm:flex">
-            {conversationId && (
-              <>
-                <button
-                  type="button"
-                  onClick={handlePromoteConversation}
-                  disabled={controlsBusy || conversationStatus === 'archived'}
-                  className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-honey/50 hover:bg-honey/10 hover:text-honey disabled:opacity-40"
-                  title="AI feladat készítése a beszélgetésből"
-                >
-                  {ticketPending ? 'Elemzés…' : 'Feladat készítése'}
-                </button>
-                {canDistillSkill && (
-                  <>
-                    {distillTargets.length > 0 && (
+
+          {conversationId && (
+            <ChatHeaderMenu>
+              <ChatMenuItem
+                title={ticketPending ? 'Elemzés…' : 'Feladat készítése a szálból'}
+                hint="A beszélgetésből AI-feladat lesz a Kanban táblán."
+                onClick={handlePromoteConversation}
+                disabled={controlsBusy || conversationStatus === 'archived'}
+                tone="warn"
+              />
+              {canDistillSkill && (
+                <>
+                  {distillTargets.length > 0 && (
+                    <label
+                      className="block px-3 py-2"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <span className="block text-[11px] font-semibold text-ink-soft">
+                        Desztillálás célja
+                      </span>
                       <select
                         value={distillTargetSkillId}
                         onChange={(e) => setDistillTargetSkillId(e.target.value)}
                         disabled={controlsBusy}
-                        className="max-w-[10rem] rounded-xl border border-line bg-card px-2 py-1.5 text-xs text-ink-soft disabled:opacity-40"
-                        title="Desztillálás célja: új skill, vagy az agenthez rendelt skill új verziója"
+                        className="mt-1 w-full rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink-soft disabled:opacity-40"
                       >
                         <option value="">Új skill</option>
                         {distillTargets.map((s) => (
@@ -2747,59 +2965,72 @@ export function AgentChatPanel({
                           </option>
                         ))}
                       </select>
-                    )}
-                    <button
-                      type="button"
-                      onClick={handleDistillSkill}
-                      disabled={controlsBusy || messages.length === 0}
-                      className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-sage/50 hover:bg-sage/10 hover:text-sage disabled:opacity-40"
-                      title="Skill draft készítése a beszélgetés módszeréből (proposed — jóváhagyás kell)"
-                    >
-                      {distillPending ? 'Desztillálás…' : 'Skill desztillálása'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleExportDebugLog}
-                      disabled={controlsBusy}
-                      className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-honey/50 hover:bg-honey/10 hover:text-honey disabled:opacity-40"
-                      title="Teljes beszélgetés-telemetria letöltése elemzéshez (üzenetek, fordulók, model/tool, audit)"
-                    >
-                      {debugLogPending ? 'Log…' : 'Debug-log'}
-                    </button>
-                  </>
-                )}
-                {conversationStatus !== 'archived' && (
-                  <button
-                    type="button"
+                    </label>
+                  )}
+                  <ChatMenuItem
+                    title={distillPending ? 'Desztillálás…' : 'Skill desztillálása'}
+                    hint="A beszélgetés módszeréből skill-vázlat készül (jóváhagyás kell)."
+                    onClick={handleDistillSkill}
+                    disabled={controlsBusy || messages.length === 0}
+                  />
+                  <ChatMenuItem
+                    title={debugLogPending ? 'Log készül…' : 'Debug-log letöltése'}
+                    hint="Teljes telemetria: üzenetek, fordulók, model- és tool-hívások."
+                    onClick={handleExportDebugLog}
+                    disabled={controlsBusy}
+                  />
+                </>
+              )}
+              {conversationStatus !== 'archived' && (
+                <>
+                  <div className="my-1 h-px bg-line" />
+                  <ChatMenuItem
+                    title={archivePending ? 'Archiválás…' : 'Szál archiválása'}
+                    hint="Olvasható marad, de nem lehet hozzá új üzenetet fűzni."
                     onClick={handleArchiveConversation}
                     disabled={controlsBusy || ticketPending || archivePending}
-                    className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:bg-coral/10 hover:text-coral-deep disabled:opacity-40"
-                    title="Beszélgetés archiválása"
-                  >
-                    {archivePending ? 'Archiválás…' : 'Archiválás'}
-                  </button>
-                )}
-              </>
-            )}
+                  />
+                </>
+              )}
+            </ChatHeaderMenu>
+          )}
+
+          <div className="flex shrink-0 items-center gap-0.5 border-l border-line pl-1.5">
+            <button
+              type="button"
+              onClick={handleMinimize}
+              className="rounded-lg p-1.5 text-ink-faint transition-colors hover:bg-night-2 hover:text-ink"
+              aria-label="Beszélgetés tálcára rakása"
+              title="Tálcára rakás"
+            >
+              −
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-ink-faint transition-colors hover:bg-night-2 hover:text-ink"
+              aria-label="Beszélgetés bezárása"
+              title="Bezárás"
+            >
+              ✕
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={handleMinimize}
-            className="rounded-full p-2 text-ink-faint transition-colors hover:bg-night-2 hover:text-ink"
-            aria-label="Beszélgetés tálcára rakása"
-            title="Tálcára rakás"
-          >
-            −
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full p-2 text-ink-faint transition-colors hover:bg-night-2 hover:text-ink"
-            aria-label="Beszélgetés bezárása"
-          >
-            ✕
-          </button>
         </header>
+
+        {continuedFromTicket && (
+          <div className="shrink-0 border-b border-sky/25 bg-sky/8 px-3 py-2 sm:px-4">
+            <p className="text-xs leading-snug text-ink-soft">
+              <span className="font-semibold text-sky">Feladat megbeszélése:</span>{' '}
+              <Link
+                href={`/control-plane/tickets/${continuedFromTicket.id}`}
+                className="font-medium text-ink underline decoration-sky/40 underline-offset-2 transition-colors hover:text-coral-deep hover:decoration-coral/50"
+                title={continuedFromTicket.title}
+              >
+                {continuedFromTicket.title}
+              </Link>
+            </p>
+          </div>
+        )}
 
         <div className="relative flex min-h-0 flex-1">
           {sessionsOpen && (
@@ -2835,23 +3066,114 @@ export function AgentChatPanel({
 
           <div className="flex min-w-0 flex-1 flex-col">
             <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
-              {messages.length === 0 && !isAgentTyping ? (
-                <div className="flex h-full min-h-[200px] flex-col items-center justify-center text-center">
+              {messages.length === 0 && ticketDiscussionHistory.length === 0 && !isAgentTyping ? (
+                <div className="mx-auto flex h-full min-h-[200px] max-w-md flex-col items-center justify-center text-center">
                   <span className="text-4xl" aria-hidden>
                     {persona.emoji}
                   </span>
-                  <p className="mt-4 max-w-sm text-base text-ink-soft">{persona.greeting}</p>
-                  <p className="mt-2 text-xs text-ink-faint">
-                    Írj üzenetet, csatolj fájlt vagy képet — {persona.nickname} válaszol.
+                  <p className="mt-4 text-base text-ink-soft">{persona.greeting}</p>
+                  <p className="mt-1.5 text-xs text-ink-faint">
+                    Írd le, mire van szükséged — {persona.nickname} válaszol.
                   </p>
+                  {/* Üres állapot: a panel képességei nem derülnek ki a beviteli
+                      mezőből, ezért itt egyszer, hétköznapi nyelven kimondjuk. */}
+                  <ul className="mt-6 w-full space-y-2 text-left">
+                    {[
+                      {
+                        icon: '📎',
+                        title: 'Fájl vagy kép csatolása',
+                        hint: 'Húzd be, vagy használd a gemkapcsot a beviteli mezőnél.',
+                      },
+                      ...(agentSkills.length > 0
+                        ? [
+                            {
+                              icon: '⚡',
+                              title: 'Skill indítása',
+                              hint: 'Írj / jelet, vagy válassz a „Skill” gombbal.',
+                            },
+                          ]
+                        : []),
+                      {
+                        icon: '📋',
+                        title: 'Üzenetből feladat',
+                        hint: 'Válts „Feladat” módra, ha a táblára kell kerülnie — akár időzítve.',
+                      },
+                    ].map((tip) => (
+                      <li
+                        key={tip.title}
+                        className="flex items-start gap-2.5 rounded-xl border border-line bg-card px-3 py-2.5"
+                      >
+                        <span aria-hidden className="text-base leading-5">
+                          {tip.icon}
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block text-xs font-semibold text-ink">{tip.title}</span>
+                          <span className="block text-[11px] leading-snug text-ink-faint">
+                            {tip.hint}
+                          </span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  {messages.map((message) => (
+                <div className="mx-auto max-w-5xl">
+                  {ticketDiscussionHistory.length > 0 && (
+                    <div className="mb-6 space-y-3 border-b border-line pb-5">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
+                        Feladat előzménye
+                      </p>
+                      {ticketDiscussionHistory.map((item) => {
+                        const isUser = item.role === 'user'
+                        return (
+                          <div
+                            key={item.id}
+                            className={`flex gap-2.5 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
+                          >
+                            <div
+                              className={`max-w-[min(88%,64rem)] rounded-2xl px-4 py-3 text-sm shadow-sm ${
+                                isUser
+                                  ? 'rounded-tr-md bg-coral/85 text-card'
+                                  : item.role === 'system'
+                                    ? 'rounded-tl-md border border-dashed border-line bg-night-2 text-ink-faint'
+                                    : 'rounded-tl-md border border-line bg-card/80 text-ink-soft'
+                              }`}
+                            >
+                              <div
+                                className={`mb-1 text-[11px] font-semibold ${
+                                  isUser ? 'text-card/80' : 'text-ink-faint'
+                                }`}
+                              >
+                                {item.authorLabel}
+                              </div>
+                              {isUser ? (
+                                <div className="[&_a]:text-card [&_a]:underline [&_strong]:text-card">
+                                  <ChatMarkdown content={item.text} variant="user" />
+                                </div>
+                              ) : (
+                                <ChatMarkdown content={item.text} variant="agent" />
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                      {messages.length === 0 && !isAgentTyping && (
+                        <p className="pt-1 text-center text-xs text-ink-faint">
+                          Írd meg a kérdésed — {persona.nickname} a feladat előzményével válaszol.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {messages.map((message, index) => (
                     <MessageBubble
                       key={message.id}
                       message={message}
                       isBusy={controlsBusy}
+                      showAuthor={messages[index - 1]?.role !== message.role}
+                      agentName={persona.nickname}
+                      agentAvatarUrl={agent.avatarUrl}
+                      agentStatus={agent.status}
+                      personaNickname={agent.personaNickname}
                       onDeleteContent={handleDeleteMessageContent}
                       onOpenTask={handleMinimize}
                       onMemoryCandidateUpdate={handleMemoryCandidateUpdate}
@@ -2868,7 +3190,9 @@ export function AgentChatPanel({
                   {isAgentTyping &&
                     !messages[messages.length - 1]?.text &&
                     !chatMessageShowsAgentActivity(messages[messages.length - 1]) && (
-                    <TypingIndicator agentName={persona.nickname} />
+                    <div className="mt-4">
+                      <TypingIndicator agentName={persona.nickname} />
+                    </div>
                   )}
                 </div>
               )}
@@ -2885,44 +3209,7 @@ export function AgentChatPanel({
             <div className="shrink-0 border-t border-line bg-night/40 px-4 py-3 sm:px-5 sm:py-4">
               {conversationStatus === 'archived' && (
                 <p className="mb-2 rounded-lg border border-line bg-night-2 px-3 py-2 text-xs text-ink-faint">
-                  Archivált szál: olvasható, új üzenet nem fűzhető hozzá.
-                </p>
-              )}
-              {chatProcessDefs.length > 0 && (
-                <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
-                  <label className="flex min-w-[13rem] flex-1 items-center gap-2">
-                    <span className="inline-flex shrink-0 items-center gap-1.5">
-                      Folyamat indítása
-                      <FieldHelp description="Ha kiválasztasz egy folyamatot, a következő üzenet nem sima chat válasz lesz, hanem ezt a folyamatot indítja el." />
-                    </span>
-                    <select
-                      value={selectedProcessDefId ?? ''}
-                      onChange={(e) => setSelectedProcessDefId(e.target.value || null)}
-                      disabled={composerDisabled}
-                      className="min-w-0 flex-1 rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink"
-                    >
-                      <option value="">— nincs —</option>
-                      {chatProcessDefs.map((def) => (
-                        <option key={def.id} value={def.id}>
-                          {def.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-              )}
-              {selectedProcessDefId && (
-                <p className="mb-2 rounded-lg border border-line bg-night-2 px-3 py-2 text-xs text-ink-faint">
-                  {(() => {
-                    const def = chatProcessDefs.find((d) => d.id === selectedProcessDefId)
-                    const requiredSlots = def?.slots.filter((slot) => slot.required) ?? []
-                    if (requiredSlots.length === 0) {
-                      return 'A kiválasztott Folyamat indul a következő üzeneteddel.'
-                    }
-                    return `Add meg üzenetben: ${requiredSlots
-                      .map((slot) => slot.description ? `${slot.name} (${slot.description})` : slot.name)
-                      .join(', ')}`
-                  })()}
+                  Ez a szál archivált: elolvasható, de új üzenet nem fűzhető hozzá.
                 </p>
               )}
               {statusMessage && (
@@ -2970,11 +3257,13 @@ export function AgentChatPanel({
                       📎 {attachment.file.name}
                     </div>
                   )}
+                  {/* Érintőképernyőn nincs hover: az eltávolítás nem tűnhet el. */}
                   <button
                     type="button"
                     onClick={() => removeAttachment(attachment.id)}
-                    className="absolute right-1 top-1 rounded-full bg-ink/60 px-1.5 py-0.5 text-[10px] text-card opacity-0 transition-opacity group-hover:opacity-100"
-                    aria-label="Csatolmány eltávolítása"
+                    className="absolute right-1 top-1 rounded-full bg-ink/70 px-1.5 py-0.5 text-[10px] text-card transition-colors hover:bg-ink"
+                    aria-label={`${attachment.file.name} eltávolítása`}
+                    title="Csatolmány eltávolítása"
                   >
                     ✕
                   </button>
@@ -2983,99 +3272,258 @@ export function AgentChatPanel({
             </div>
           )}
 
-          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
-            <label className="flex min-w-[10rem] items-center gap-2">
-              <span className="inline-flex shrink-0 items-center gap-1.5">
-                Skill
-                <FieldHelp description="Skill kiválasztásával a /skill-név token bekerül az üzenetbe — ugyanúgy, mintha / -tel írtad volna be." />
-              </span>
-              <select
-                value=""
-                onChange={(e) => {
-                  const versionId = e.target.value
-                  if (!versionId) return
-                  const skill = agentSkills.find((s) => s.skillVersionId === versionId)
-                  if (skill) insertSkillFromPicker(skill)
-                }}
-                disabled={composerDisabled || agentSkills.length === 0}
-                className="min-w-[9rem] max-w-[14rem] rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink"
-                aria-label="Skill beszúrása"
-              >
-                <option value="">
-                  {agentSkills.length === 0 ? 'Nincs skill' : 'Válassz…'}
-                </option>
-                {agentSkills.map((skill) => (
-                  <option key={skill.skillVersionId} value={skill.skillVersionId}>
-                    /{skillNameToSlashToken(skill.name)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex min-w-[13rem] flex-1 items-center gap-2">
-              <span className="inline-flex shrink-0 items-center gap-1.5">
-                Ütemezés
-                <FieldHelp description="Időpont megadásával az üzenetből azonnali küldés helyett ütemezett task lesz." />
-              </span>
-              <input
-                type="datetime-local"
-                value={ticketExecuteAfter}
-                onChange={(e) => setTicketExecuteAfter(e.target.value)}
-                disabled={composerDisabled}
-                className="min-w-0 flex-1 rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink"
-              />
-            </label>
-            {ticketExecuteAfter && (
-              <>
-                <label className="flex items-center gap-2">
-                  <span className="inline-flex shrink-0 items-center gap-1.5">
-                    Ismétlés
-                    <FieldHelp description="Megadja, hogy az ütemezett task egyszer fusson vagy ismétlődjön napi/heti/havi ritmusban." />
-                  </span>
-                  <select
-                    value={ticketRecurrence}
-                    onChange={(e) => setTicketRecurrence(e.target.value as ScheduledTaskRecurrence)}
-                    disabled={composerDisabled}
-                    className="rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink"
-                  >
-                    <option value="none">nincs</option>
-                    <option value="daily">naponta</option>
-                    <option value="weekly">hetente</option>
-                    <option value="monthly">havonta</option>
-                  </select>
-                </label>
-                {ticketRecurrence !== 'none' && (
-                  <label className="flex items-center gap-2">
-                    <span className="inline-flex shrink-0 items-center gap-1.5">
-                      Max
-                      <FieldHelp description="Az ismétlődő ütemezés legfeljebb ennyi alkalommal fut le, utána leáll." />
-                    </span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={365}
-                      value={ticketMaxRuns}
-                      onChange={(e) => setTicketMaxRuns(e.target.value)}
-                      disabled={composerDisabled}
-                      className="w-20 rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink"
+          {/*
+            Mit csináljon az üzenettel? Egyetlen, kimondott döntés — és csak az
+            ehhez tartozó beállítások látszanak. A régi elrendezésben az
+            ütemezés/run-as mezők akkor is ott sorakoztak, amikor a user csak
+            beszélgetni akart, a „Feladat” gomb pedig a „Küldés”-sel versengett.
+          */}
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <div
+              className="inline-flex rounded-lg border border-line bg-night-2 p-0.5"
+              role="radiogroup"
+              aria-label="Mi legyen az üzenetből"
+            >
+              {(
+                [
+                  { value: 'chat', label: 'Beszélgetés', hint: 'Az agent most válaszol.' },
+                  {
+                    value: 'task',
+                    label: 'Feladat',
+                    hint: 'Az üzenetből feladat lesz a táblán — akár időzítve.',
+                  },
+                ] as const
+              ).map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={composerMode === option.value}
+                  title={option.hint}
+                  onClick={() => switchComposerMode(option.value)}
+                  disabled={composerDisabled}
+                  className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors disabled:opacity-40 ${
+                    composerMode === option.value
+                      ? 'bg-card text-ink shadow-sm'
+                      : 'text-ink-faint hover:text-ink-soft'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
+            {agentSkills.length > 0 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setComposerPanel((p) => (p === 'skill' ? null : 'skill'))}
+                  disabled={composerDisabled}
+                  aria-expanded={composerPanel === 'skill'}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors disabled:opacity-40 ${
+                    composerPanel === 'skill'
+                      ? 'border-coral/40 bg-coral/10 text-coral-deep'
+                      : 'border-line bg-card text-ink-soft hover:border-coral/30 hover:text-coral-deep'
+                  }`}
+                >
+                  <span aria-hidden>⚡</span> Skill
+                </button>
+                {composerPanel === 'skill' && (
+                  <>
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      aria-hidden
+                      className="fixed inset-0 z-30 cursor-default"
+                      onClick={() => setComposerPanel(null)}
                     />
-                  </label>
+                    <div className="absolute bottom-full left-0 z-40 mb-1.5 max-h-64 w-80 overflow-y-auto rounded-xl border border-line bg-card p-1 shadow-xl">
+                      <p className="px-3 py-2 text-[11px] leading-snug text-ink-faint">
+                        A kiválasztott skill neve bekerül az üzenetbe — ugyanaz, mintha
+                        <span className="font-semibold"> / </span>jellel írnád be.
+                      </p>
+                      {agentSkills.map((skill) => (
+                        <button
+                          key={skill.skillVersionId}
+                          type="button"
+                          onClick={() => {
+                            insertSkillFromPicker(skill)
+                            setComposerPanel(null)
+                          }}
+                          className="flex w-full flex-col rounded-lg px-3 py-2 text-left transition-colors hover:bg-night-2"
+                        >
+                          <span className="text-xs font-semibold text-ink">{skill.name}</span>
+                          <span className="line-clamp-2 text-[11px] leading-snug text-ink-faint">
+                            {skill.description}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
                 )}
-              </>
+              </div>
             )}
-            <label className="flex items-center gap-2 rounded-lg border border-line bg-night-2 px-2 py-1.5">
-              <input
-                type="checkbox"
-                checked={ticketAuthorizeRunAs}
-                onChange={(e) => setTicketAuthorizeRunAs(e.target.checked)}
-                disabled={composerDisabled}
-                className="h-3.5 w-3.5 accent-coral"
-              />
-              <span className="inline-flex items-center gap-1.5">
-                Run-as
-                <FieldHelp description="Engedélyezi, hogy a feladat végrehajtásakor a rendszer a nevedben futtathasson jogosultságot igénylő lépéseket." />
-              </span>
-            </label>
+
+            {chatProcessDefs.length > 0 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setComposerPanel((p) => (p === 'process' ? null : 'process'))}
+                  disabled={composerDisabled}
+                  aria-expanded={composerPanel === 'process'}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors disabled:opacity-40 ${
+                    selectedProcessDef
+                      ? 'border-sage/50 bg-sage/10 text-sage'
+                      : composerPanel === 'process'
+                        ? 'border-coral/40 bg-coral/10 text-coral-deep'
+                        : 'border-line bg-card text-ink-soft hover:border-coral/30 hover:text-coral-deep'
+                  }`}
+                >
+                  <span aria-hidden>▶</span>
+                  <span className="max-w-[12rem] truncate">
+                    {selectedProcessDef ? selectedProcessDef.name : 'Folyamat'}
+                  </span>
+                </button>
+                {selectedProcessDef && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedProcessDefId(null)}
+                    className="ml-1 rounded-full px-1 text-xs text-ink-faint hover:text-coral-deep"
+                    aria-label="Folyamat kiválasztásának törlése"
+                    title="Mégsem indítok folyamatot"
+                  >
+                    ✕
+                  </button>
+                )}
+                {composerPanel === 'process' && (
+                  <>
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      aria-hidden
+                      className="fixed inset-0 z-30 cursor-default"
+                      onClick={() => setComposerPanel(null)}
+                    />
+                    <div className="absolute bottom-full left-0 z-40 mb-1.5 max-h-64 w-80 overflow-y-auto rounded-xl border border-line bg-card p-1 shadow-xl">
+                      <p className="px-3 py-2 text-[11px] leading-snug text-ink-faint">
+                        Folyamatot választva a következő üzeneted nem sima választ kap: azt a
+                        folyamatot indítja el.
+                      </p>
+                      {chatProcessDefs.map((def) => (
+                        <button
+                          key={def.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedProcessDefId(def.id)
+                            setComposerPanel(null)
+                          }}
+                          className="flex w-full flex-col rounded-lg px-3 py-2 text-left transition-colors hover:bg-night-2"
+                        >
+                          <span className="text-xs font-semibold text-ink">{def.name}</span>
+                          {def.description && (
+                            <span className="line-clamp-2 text-[11px] leading-snug text-ink-faint">
+                              {def.description}
+                            </span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
+
+          {selectedProcessDef && (
+            <p className="mb-2 rounded-lg border border-sage/30 bg-sage/5 px-3 py-2 text-xs text-ink-soft">
+              {(() => {
+                const requiredSlots = selectedProcessDef.slots.filter((slot) => slot.required)
+                if (requiredSlots.length === 0) {
+                  return `A(z) „${selectedProcessDef.name}” folyamat indul a következő üzeneteddel.`
+                }
+                return `A(z) „${selectedProcessDef.name}” folyamat indul. Add meg üzenetben: ${requiredSlots
+                  .map((slot) => (slot.description ? `${slot.name} (${slot.description})` : slot.name))
+                  .join(', ')}`
+              })()}
+            </p>
+          )}
+
+          {composerMode === 'task' && (
+            <div className="mb-2 rounded-xl border border-honey/35 bg-honey/5 px-3 py-2.5">
+              <p className="text-[11px] leading-snug text-ink-soft">
+                Az üzenetből feladat készül a Kanban táblán. Ha időpontot is megadsz, a feladat
+                magától elindul akkor.
+              </p>
+              <div className="mt-2 flex flex-wrap items-end gap-3 text-xs text-ink-soft">
+                <label className="flex min-w-[13rem] flex-1 flex-col gap-1">
+                  <span className="font-semibold text-ink">Mikor induljon</span>
+                  <input
+                    type="datetime-local"
+                    value={ticketExecuteAfter}
+                    onChange={(e) => setTicketExecuteAfter(e.target.value)}
+                    disabled={composerDisabled}
+                    className="min-w-0 rounded-lg border border-line bg-card px-2 py-1.5 text-xs text-ink"
+                  />
+                  <span className="text-[10px] text-ink-faint">
+                    Üresen hagyva azonnal a táblára kerül.
+                  </span>
+                </label>
+
+                {ticketExecuteAfter && (
+                  <>
+                    <label className="flex flex-col gap-1">
+                      <span className="font-semibold text-ink">Ismétlődés</span>
+                      <select
+                        value={ticketRecurrence}
+                        onChange={(e) =>
+                          setTicketRecurrence(e.target.value as ScheduledTaskRecurrence)
+                        }
+                        disabled={composerDisabled}
+                        className="rounded-lg border border-line bg-card px-2 py-1.5 text-xs text-ink"
+                      >
+                        <option value="none">egyszer fusson</option>
+                        <option value="daily">naponta</option>
+                        <option value="weekly">hetente</option>
+                        <option value="monthly">havonta</option>
+                      </select>
+                    </label>
+                    {ticketRecurrence !== 'none' && (
+                      <label className="flex flex-col gap-1">
+                        <span className="font-semibold text-ink">Legfeljebb</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={365}
+                          value={ticketMaxRuns}
+                          onChange={(e) => setTicketMaxRuns(e.target.value)}
+                          disabled={composerDisabled}
+                          placeholder="alkalom"
+                          className="w-24 rounded-lg border border-line bg-card px-2 py-1.5 text-xs text-ink"
+                        />
+                      </label>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-lg bg-card px-2.5 py-2">
+                <input
+                  type="checkbox"
+                  checked={ticketAuthorizeRunAs}
+                  onChange={(e) => setTicketAuthorizeRunAs(e.target.checked)}
+                  disabled={composerDisabled}
+                  className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-coral"
+                />
+                <span className="text-xs">
+                  <span className="font-semibold text-ink">Futhat a nevemben</span>
+                  <span className="mt-0.5 block text-[11px] leading-snug text-ink-faint">
+                    Engedélyezi, hogy a feladat a te jogosultságoddal végezzen olyan lépéseket,
+                    amikhez külön hozzáférés kell.
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
 
           <div className="relative flex items-end gap-2 rounded-2xl border border-line bg-card p-2 shadow-sm focus-within:border-coral/40 focus-within:ring-2 focus-within:ring-coral/15">
             {slashMenuOpen && (
@@ -3144,36 +3592,46 @@ export function AgentChatPanel({
               onKeyUp={(e) => syncInputCursor(e.currentTarget)}
               onKeyDown={handleKeyDown}
               rows={1}
-              placeholder={`Üzenet ${persona.nickname}-nak… (/ a skill betöltéséhez)`}
+              placeholder={
+                composerMode === 'task'
+                  ? 'Mi legyen a feladat? Írd le egy mondatban…'
+                  : `Üzenet ${persona.nickname} részére…`
+              }
               disabled={composerDisabled}
               className="max-h-36 min-h-[44px] flex-1 resize-none bg-transparent px-1 py-2.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none disabled:opacity-50"
             />
-            <FieldHelp description="Ide írd az üzenetet. / megnyomására skill választható — a kiválasztott skill a küldéskor bekerül a promptba. Enter küld, Shift+Enter új sor." />
 
-            <button
-              type="button"
-              onClick={handleCreateTicket}
-              disabled={!canSubmit}
-              title={ticketExecuteAfter ? 'Ütemezett task létrehozása' : 'Feladat létrehozása a Kanban táblán'}
-              className="shrink-0 rounded-xl border border-line px-3 py-2.5 text-xs font-semibold text-ink-soft transition-colors hover:border-honey/50 hover:bg-honey/10 hover:text-honey disabled:opacity-40"
-            >
-              {ticketPending ? '…' : ticketExecuteAfter ? 'Ütemezés' : 'Feladat'}
-            </button>
-
+            {/* Egyetlen elsődleges gomb: a jelentését a fenti mód-választó adja. */}
             {isAgentTyping ? (
               <button
                 type="button"
                 onClick={handleStop}
                 disabled={stopPending}
+                title="Az agent leállítása — az eddigi részeredmény megmarad"
                 className="shrink-0 rounded-xl border border-coral bg-card px-4 py-2.5 text-sm font-semibold text-coral shadow-[0_8px_20px_-10px_rgba(178,58,85,0.35)] transition-transform hover:-translate-y-0.5 hover:bg-coral/10 disabled:opacity-50"
               >
                 {stopPending ? 'Megállítás…' : 'Megállítás'}
+              </button>
+            ) : composerMode === 'task' ? (
+              <button
+                type="button"
+                onClick={handleCreateTicket}
+                disabled={!canSubmit}
+                title={
+                  ticketExecuteAfter
+                    ? 'Ütemezett feladat létrehozása'
+                    : 'Feladat létrehozása a Kanban táblán'
+                }
+                className="shrink-0 rounded-xl bg-honey px-4 py-2.5 text-sm font-semibold text-card shadow-[0_8px_20px_-10px_rgba(176,125,36,0.8)] transition-transform hover:-translate-y-0.5 disabled:opacity-40"
+              >
+                {ticketPending ? '…' : ticketExecuteAfter ? 'Ütemezés' : 'Feladat létrehozása'}
               </button>
             ) : (
               <button
                 type="button"
                 onClick={handleSend}
                 disabled={!canSubmit}
+                title="Üzenet küldése (Enter)"
                 className="shrink-0 rounded-xl bg-coral px-4 py-2.5 text-sm font-semibold text-card shadow-[0_8px_20px_-10px_rgba(178,58,85,0.8)] transition-transform hover:-translate-y-0.5 disabled:opacity-40"
               >
                 {pending ? '…' : 'Küldés'}
@@ -3181,8 +3639,9 @@ export function AgentChatPanel({
             )}
           </div>
 
-          <p className="mt-2 text-center text-[11px] text-ink-faint">
-            Enter küld · Shift+Enter új sor · /skill-név = skill betöltése a promptba
+          <p className="mt-1.5 px-1 text-[11px] text-ink-faint">
+            Enter küld · Shift+Enter új sor
+            {agentSkills.length > 0 ? ' · / jellel skillt indítasz' : ''}
           </p>
             </div>
           </div>
@@ -3197,6 +3656,7 @@ export function AgentChatButton({
   agent,
   className = '',
   compact = false,
+  label = '💬 Beszélgetés',
   canDistillSkill = false,
   initialConversationId = null,
   autoOpen = false,
@@ -3204,6 +3664,7 @@ export function AgentChatButton({
   agent: ChatAgent
   className?: string
   compact?: boolean
+  label?: string
   canDistillSkill?: boolean
   initialConversationId?: string | null
   autoOpen?: boolean
@@ -3238,7 +3699,7 @@ export function AgentChatButton({
           : 'rounded-full bg-sage px-4 py-2 text-sm font-semibold text-card shadow-[0_8px_20px_-12px_rgba(93,138,79,0.7)] transition-transform hover:-translate-y-0.5')
       }
     >
-      💬 {compact ? 'Beszél' : 'Beszélgetés'}
+      {label}
     </button>
   )
 }

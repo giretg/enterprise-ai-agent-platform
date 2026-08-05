@@ -1,15 +1,34 @@
 import Link from 'next/link'
-import { listAgents } from '@/app/actions/platform'
+import { listAgents, listBoardAssignees } from '@/app/actions/platform'
 import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { AgentRegistryList } from '@/components/agents/agent-registry-list'
+import { workingAgentIds } from '@/lib/active-runs'
+import { loadActiveRuns } from '@/lib/active-runs-load'
 
 export default async function AgentRegistryPage() {
-  const [res, ctx] = await Promise.all([listAgents(), getAuthContext()])
+  const ctx = await getAuthContext()
+  const canSeeRuns = hasMinimumRole(ctx?.activeTenantRole, 'operator')
+  const canCreateTicket = hasMinimumRole(ctx?.activeTenantRole, 'operator')
+  const [res, activeRuns, assigneesRes] = await Promise.all([
+    listAgents(),
+    canSeeRuns && ctx?.activeTenantId && ctx.user
+      ? loadActiveRuns({
+          tenantId: ctx.activeTenantId,
+          userId: ctx.user.id,
+          activeTenantRole: ctx.activeTenantRole,
+        })
+      : Promise.resolve([]),
+    canCreateTicket ? listBoardAssignees() : Promise.resolve(null),
+  ])
   const agents = res.success ? res.data : []
   const loadError = res.success ? null : res.error
   const canDelete = hasMinimumRole(ctx?.activeTenantRole, 'admin')
   const canCreate = canDelete
+  // Ugyanaz a döntés, mint a dashboard-kártyán: csak valóban futó ügyek számítanak.
+  const workingIds = [...workingAgentIds(activeRuns)]
+  const assigneeOptions =
+    assigneesRes && assigneesRes.success ? assigneesRes.data : undefined
 
   return (
     <div className="space-y-8">
@@ -34,7 +53,14 @@ export default async function AgentRegistryPage() {
         )}
       </div>
 
-      <AgentRegistryList agents={agents} canDelete={canDelete} loadError={loadError} />
+      <AgentRegistryList
+        agents={agents}
+        canDelete={canDelete}
+        loadError={loadError}
+        workingAgentIds={workingIds}
+        canCreateTicket={canCreateTicket}
+        assigneeOptions={assigneeOptions}
+      />
     </div>
   )
 }

@@ -38,6 +38,7 @@ import type {
   ToolBrokerService,
 } from '../src/domain/tool-broker/tool-broker-service'
 import type { ToolBrokerRepository } from '../src/repositories/interfaces'
+import { fakeToolBrokerSuccess } from './fixtures/tool-broker-result'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -409,9 +410,10 @@ async function main() {
       invoke: async (input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> => {
         brokerCalls.push(input)
         const page = brokerCalls.length
-        return {
-          denied: false,
-          result: {
+        return fakeToolBrokerSuccess(input.tool, {
+          ok: true,
+          status: 200,
+          body: {
             rows: Array.from({ length: 300 }, (_, i) => ({
               id: page * 1000 + i,
               name: `Tulajdonos ${page}-${i}`,
@@ -419,9 +421,7 @@ async function main() {
               note: 'ingatlan-nyilvántartási megjegyzés '.repeat(4),
             })),
           },
-          resultMeta: {},
-          latencyMs: 1,
-        } as unknown as ToolBrokerInvokeResult
+        })
       },
     } as unknown as ToolBrokerService
 
@@ -560,10 +560,11 @@ async function main() {
     } as unknown as ModelGateway
 
     const toolBroker = {
-      invoke: async (): Promise<ToolBrokerInvokeResult> =>
-        ({
-          denied: false,
-          result: {
+      invoke: async (input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> =>
+        fakeToolBrokerSuccess(input.tool, {
+          ok: true,
+          status: 200,
+          body: {
             rows: Array.from({ length: 300 }, (_, i) => ({
               id: i,
               name: `Tulajdonos ${i}`,
@@ -571,9 +572,7 @@ async function main() {
               note: 'ingatlan-nyilvántartási megjegyzés '.repeat(4),
             })),
           },
-          resultMeta: {},
-          latencyMs: 1,
-        }) as unknown as ToolBrokerInvokeResult,
+        }),
     } as unknown as ToolBrokerService
 
     const result = await runAgentToolLoop({

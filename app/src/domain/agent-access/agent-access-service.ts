@@ -39,6 +39,7 @@ export type AgentGraphNode = AgentAccessTargetNode & {
   personaNickname: string | null
   personaTrait: string | null
   role: string
+  taskOnly: boolean
 }
 
 /**
@@ -478,6 +479,7 @@ export class AgentAccessService {
     }
 
     // Mindkét ige levétele = a sor törlése (a DB CHECK sem engedne false/false sort).
+    // Idempotens: ha már nincs él, siker — a UI ne kapjon hibát „üres” kikapcsoláskor.
     if (!params.canView && !params.canAddress) {
       const deleted = await this.deps.grants.deleteEdge({
         ...key,
@@ -499,8 +501,10 @@ export class AgentAccessService {
           } as Prisma.JsonValue,
         }),
       })
-      if (!deleted.ok) return { ok: false, reason: deleted.reason }
-      return { ok: true, action: 'deleted', grantId: deleted.grantId }
+      if (!deleted.ok && deleted.reason !== 'not_found') {
+        return { ok: false, reason: deleted.reason }
+      }
+      return { ok: true, action: 'deleted', grantId: deleted.ok ? deleted.grantId : null }
     }
 
     const written = await this.deps.grants.upsertEdge({

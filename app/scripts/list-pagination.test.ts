@@ -84,9 +84,14 @@ assert.doesNotMatch(
   'dashboard must not dump all agents',
 )
 
-const activeRuns = read('src/app/api/v1/active-runs/route.ts')
-assert.match(activeRuns, /tickets\.listPage/, 'active-runs uses listPage')
-assert.doesNotMatch(activeRuns, /\.slice\(0,\s*50\)/, 'active-runs no client-side slice after full fetch')
+const activeRunsRoute = read('src/app/api/v1/active-runs/route.ts')
+assert.match(activeRunsRoute, /loadActiveRuns/, 'active-runs route delegates to shared loader')
+
+const activeRunsLoad = read('src/lib/active-runs-load.ts')
+assert.match(activeRunsLoad, /tickets\.listPage/, 'active-runs uses listPage')
+assert.match(activeRunsLoad, /createdById/, 'active-runs scopes chat turns to the viewer')
+assert.match(activeRunsLoad, /belongingToUserId/, 'active-runs includes created or assigned tickets')
+assert.doesNotMatch(activeRunsLoad, /\.slice\(0,\s*50\)/, 'active-runs no client-side slice after full fetch')
 
 const startable = read('src/domain/playbook/playbook-v2-service.ts')
 assert.match(startable, /listDefaultAssignments/, 'startable uses batch assignments')

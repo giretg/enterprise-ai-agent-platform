@@ -17,19 +17,29 @@
  *     hívható, kimenő éle nincs, és a napi operátori felületeken (katalógus,
  *     felelős-választó, chat-indító) nem jelenik meg.
  */
-import { PLAYBOOK_AUTHOR_TEMPLATE } from '@/domain/playbook/playbook-author-agent'
-import { PROVISIONING_ASSISTANT_TEMPLATE } from '@/domain/provisioning/provisioning-assistant'
+/**
+ * FÜGGŐSÉGI IRÁNY: ez a modul SZÁNDÉKOSAN import-mentes. A varázsló-neveket itt
+ * deklaráljuk, és a domain-sablonok (`PLAYBOOK_AUTHOR_TEMPLATE`,
+ * `PROVISIONING_ASSISTANT_TEMPLATE`) innen veszik át — fordítva nem lehet, mert a
+ * sablonok a Model Gateway-en át `node:fs`-ig húzzák be a szervert. A kapcsolati
+ * ábra (`agent-access-graph-editor`) kliens-komponens ezt a fájlt is bundle-öli,
+ * és egy szerver-import ott build-hibát okoz.
+ */
 
 /** A Web-Egress perzisztált rendszer-szerepazonosítója. */
 export const WEB_EGRESS_SYSTEM_ROLE = 'web_egress' as const
+
+/** A dedikált-panel varázslók kanonikus Registry-nevei. */
+export const PLAYBOOK_AUTHOR_AGENT_NAME = 'Playbook Author' as const
+export const PROVISIONING_ASSISTANT_AGENT_NAME = 'Provisioning Assistant' as const
 
 /**
  * A dedikált-panel varázslók nevei. A Skill Distiller és a Skill Review a
  * Provisioning Assistant Registry-bejegyzését használja, ezért nincs külön sora.
  */
 export const PANEL_WIZARD_AGENT_NAMES: readonly string[] = [
-  PLAYBOOK_AUTHOR_TEMPLATE.name,
-  PROVISIONING_ASSISTANT_TEMPLATE.name,
+  PLAYBOOK_AUTHOR_AGENT_NAME,
+  PROVISIONING_ASSISTANT_AGENT_NAME,
 ]
 
 /**

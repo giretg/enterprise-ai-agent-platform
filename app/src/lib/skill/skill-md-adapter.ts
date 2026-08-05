@@ -1,5 +1,7 @@
 import { createHash } from 'crypto'
 import type { SkillContent, SkillProvenance, SkillRequirement } from './skill-content'
+import { SKILL_ATTACHMENT_DESCRIPTION_MAX, SKILL_NAME_MAX } from './skill-content'
+import { normalizeSkillDisplayName } from './skill-name'
 
 /**
  * `SKILL.md` import-adapter (spec §D6, WP-2). Az Anthropic Agent Skills formátum:
@@ -13,6 +15,8 @@ import type { SkillContent, SkillProvenance, SkillRequirement } from './skill-co
 
 export interface ParsedSkillMd {
   name: string
+  /** Embernek szóló feladatnév — frontmatter `title` / `display-name`. */
+  displayName: string | null
   description: string
   content: SkillContent
   /** Frontmatter `allowed-tools`-ból levezetett capability-javaslat (requires). */
@@ -139,11 +143,19 @@ function parseRuntimeHints(
     frontmatter['allow-attachments'] ?? frontmatter.allowAttachments,
   )
   const allowAttachments = allowAttachmentsRaw === false ? false : undefined
+  const attachmentDescriptionRaw = asString(
+    frontmatter['attachment-description'] ?? frontmatter.attachmentDescription,
+  ).trim()
+  const attachmentDescription =
+    allowAttachments !== false && attachmentDescriptionRaw
+      ? attachmentDescriptionRaw.slice(0, SKILL_ATTACHMENT_DESCRIPTION_MAX)
+      : undefined
   if (
     maxWallClockMs == null &&
     maxToolCalls == null &&
     preferredMode == null &&
-    allowAttachments == null
+    allowAttachments == null &&
+    attachmentDescription == null
   ) {
     return undefined
   }
@@ -152,6 +164,7 @@ function parseRuntimeHints(
     ...(maxToolCalls != null ? { maxToolCalls } : {}),
     ...(preferredMode != null ? { preferredMode } : {}),
     ...(allowAttachments != null ? { allowAttachments } : {}),
+    ...(attachmentDescription != null ? { attachmentDescription } : {}),
   }
 }
 
@@ -186,6 +199,10 @@ export function parseSkillMd(raw: string, source?: { url?: string }): ParsedSkil
   const { frontmatter, body } = parseFrontmatter(raw)
 
   const name = asString(frontmatter.name).trim() || 'Untitled skill'
+  const displayNameRaw = asString(
+    frontmatter.title ?? frontmatter['display-name'] ?? frontmatter.displayName,
+  )
+  const displayName = normalizeSkillDisplayName(displayNameRaw)?.slice(0, SKILL_NAME_MAX) ?? null
   const description = asString(frontmatter.description).trim()
   const license = asString(frontmatter.license).trim() || null
   const triggerKeywords = asList(frontmatter['trigger-keywords'] ?? frontmatter.triggers)
@@ -213,6 +230,7 @@ export function parseSkillMd(raw: string, source?: { url?: string }): ParsedSkil
 
   return {
     name,
+    displayName,
     description,
     content,
     suggestedRequires,

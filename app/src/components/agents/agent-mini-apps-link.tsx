@@ -9,15 +9,22 @@ export function agentMiniAppsHref(agentId: string) {
 export function AgentMiniAppsLink({
   agentId,
   compact = false,
+  label,
+  title,
   className = '',
 }: {
   agentId: string
   compact?: boolean
+  /** Ha nincs megadva, a compact mód „Mini-appok”, egyébként „Mini-appok →”. */
+  label?: string
+  title?: string
   className?: string
 }) {
+  const text = label ?? (compact ? 'Mini-appok' : 'Mini-appok →')
   return (
     <Link
       href={agentMiniAppsHref(agentId)}
+      title={title}
       onClick={(e) => e.stopPropagation()}
       className={
         className ||
@@ -26,7 +33,7 @@ export function AgentMiniAppsLink({
           : 'rounded-full border border-line bg-card px-5 py-2.5 text-sm font-semibold text-ink-soft transition-colors hover:border-sage/50 hover:text-sage')
       }
     >
-      {compact ? 'Mini-appok' : 'Mini-appok →'}
+      {text}
     </Link>
   )
 }

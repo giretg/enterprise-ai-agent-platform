@@ -69,6 +69,8 @@ import {
   referencedWorkspaceFiles,
 } from '@/lib/workspace-file-visibility'
 import type { SkillService } from '../skill/skill-service'
+import type { ConsequenceApprovalService } from '../tool-broker/consequence-approval-service'
+import { formatPreapprovedRunSummary } from '../tool-broker/consequence-gate-policy'
 import type { PromptSegments } from './prompt-assembler'
 import {
   TicketProgressFlusher,
@@ -187,6 +189,8 @@ export class GeneralTaskRuntime {
      * Ha nincs bekötve, a roster ÜRES (fail-closed) — nem a teljes agent-lista.
      */
     private agentAccess?: AgentAccessService,
+    /** Következmény-kapu (http_api_request write) — task ticketen is kell gomb. */
+    private consequenceApprovals?: ConsequenceApprovalService,
   ) {}
 
   async processTicket(params: { ticketId: string; agentId: string }) {
@@ -378,6 +382,10 @@ export class GeneralTaskRuntime {
     }
 
     let loopResult: Awaited<ReturnType<typeof runAgentToolLoop>>
+    // issue #180 WP-1 — a MEGKEZDETT körök száma. A `ToolLoopResult` csak a
+    // tool-számlálókat adja vissza; a kör-szám az `onTurnStart` horogból jön, hogy
+    // a ticket-kimeneten is látszódjon, hány körön át futott a lépés.
+    let loopTurnCount = 0
     try {
       loopResult = await runAgentToolLoop({
         gateway: this.gateway,
@@ -385,7 +393,10 @@ export class GeneralTaskRuntime {
         toolCaps: this.toolCaps,
         agentId: params.agentId,
         agentVersion,
-        context: { ticketId: ticket.id },
+        context: {
+          ticketId: ticket.id,
+          ...(ticket.tenantId ? { tenantId: ticket.tenantId } : {}),
+        },
         mode: 'task',
         promptSegments: messages,
         modelConfig,
@@ -423,12 +434,25 @@ export class GeneralTaskRuntime {
             return null
           }
         },
+        ...(this.consequenceApprovals
+          ? {
+              createConsequenceApproval: async (invoke: import('../tool-broker/tool-broker-types').ToolBrokerInvokeInput) =>
+                this.consequenceApprovals!.createFromBlocked({
+                  invoke: {
+                    ...invoke,
+                    ticketId: invoke.ticketId ?? ticket.id,
+                  },
+                  tenantId: ticket.tenantId ?? null,
+                }),
+            }
+          : {}),
         shouldCancel: () => {
           if (dbCancelRequested) return true
           void refreshCancel()
           return dbCancelRequested
         },
-        onTurnStart: async () => {
+        onTurnStart: async (turnIndex: number) => {
+          loopTurnCount = turnIndex + 1
           await refreshCancel()
         },
         onActivity: async (activity) => {
@@ -482,8 +506,165 @@ export class GeneralTaskRuntime {
     }
 
     await persistProgress(true)
-    const { content: answer, toolCallCount } = loopResult
+    const { toolCallCount } = loopResult
+    const deniedCount = loopResult.deniedCount
+    // issue #220 — utólagos futás-összesítő (N író hívás, trust mód, limit).
+    const preapprovedNotice = formatPreapprovedRunSummary(loopResult.preapprovedWriteSummary ?? [])
+    const answer = preapprovedNotice
+      ? `${loopResult.content.trim()}\n\n---\n\n_${preapprovedNotice}_`
+      : loopResult.content
     await this.publishReferencedWorkspaceFiles(wsTenant, ticket.id, answer)
+
+    // Következmény-kapu: a http_api_request (write) gombra vár — a ticket NEM lehet
+    // done, amíg a felhasználó a ticket UI-n nem hagyja jóvá a műveleteket.
+    // A feltétel szándékosan NEM köti a `status === 'completed'`-et: a függő
+    // jóváhagyás erősebb jelzés, mint a loop leállásának módja. Ha van nyitott
+    // kártya, a ticket a gombra vár — nem eshet se hibaágra (a kapu miatti
+    // `deniedCount > 0` „failed" outcome-ra), se `done`-ra.
+    if (loopResult.awaitingConsequenceApproval) {
+      const approvalIds = loopResult.consequenceApprovalIds ?? []
+      if (approvalIds.length === 0) {
+        // Kapu blokkolt, de kártya nincs — ne ígérjünk gombot (cade35e7 repro).
+        const failedAnswer =
+          `${answer.trim()}\n\n` +
+          '⚠️ Platform hiba: a következmény-kapu blokkolta az író műveletet, ' +
+          'de nem jött létre jóváhagyó kártya a ticketen. Indítsd újra a feladatot, ' +
+          'vagy jelezd a hibát — ticket-szintű „Jóváhagyás” NEM futtatja le a Föld API hívást.'
+        await this.tickets.appendComment({
+          ticketId: ticket.id,
+          kind: 'system_note',
+          authorType: 'system',
+          body:
+            'Következmény-kapu: jóváhagyó kártya létrehozása sikertelen (üres consequenceApprovalIds).',
+        })
+        await this.appendAgentAnswerComment({
+          ticketId: ticket.id,
+          agentId: params.agentId,
+          agentName: agentDetails.agent.name,
+          agentVersion,
+          answerPayload: {
+            answer: failedAnswer,
+            toolCallCount,
+            turnCount: loopTurnCount,
+            deniedCount,
+            awaitingConsequenceApproval: false,
+            consequenceApprovalIds: [],
+            consequenceApprovalCreateFailed: true,
+            agentVersion,
+            model: modelConfig.model,
+            memoryVersion: agentDetails.memoryVersion,
+          },
+          extraStructured: {
+            model: modelConfig.model,
+            toolCallCount,
+            turnCount: loopTurnCount,
+            deniedCount,
+            status: 'awaiting_human',
+            consequenceApprovalCreateFailed: true,
+          },
+        })
+        const write = await this.toolBroker.invoke({
+          agentId: params.agentId,
+          agentVersion,
+          ticketId: ticket.id,
+          tool: 'board_write',
+          args: {
+            ticketId: ticket.id,
+            patch: {
+              state: 'awaiting_human',
+              payload: {
+                answer: failedAnswer,
+                toolCallCount,
+                turnCount: loopTurnCount,
+                deniedCount,
+                awaitingConsequenceApproval: false,
+                consequenceApprovalIds: [],
+                consequenceApprovalCreateFailed: true,
+                agentVersion,
+                model: modelConfig.model,
+                memoryVersion: agentDetails.memoryVersion,
+              },
+            },
+          },
+        })
+        if (write.denied) {
+          throw new Error(`board_write denied: ${write.reason}`)
+        }
+        return {
+          ticketId: ticket.id,
+          answer: failedAnswer,
+          toolCallCount,
+          ticket: await this.tickets.findById(ticket.id),
+        }
+      }
+      // A gombra vonatkozó mondat PLATFORM-szöveg, nem a modellé. A kapuzott
+      // hívások eredménye szándékosan már nem szólítja fel a modellt, hogy
+      // minden egyes tételnél a felhasználóhoz forduljon (attól hagyta abba a
+      // terv feldolgozását) — így viszont a záró szövegéből kimaradhatna, hogy
+      // MIT kell tennie a felhasználónak. Ez a mondat determinisztikusan ott lesz.
+      const approvalNotice =
+        `\n\n---\n\n**${approvalIds.length} külső rendszerbe író művelet vár jóváhagyásra.** ` +
+        'Az alábbi „Mind jóváhagyom" gombbal egyszerre engedélyezheted mindet; ' +
+        'a műveletek lefutnak, és a feladat magától folytatódik — nem kell újraindítanod.'
+      const answerWithNotice = `${answer.trim()}${approvalNotice}`
+      await this.appendAgentAnswerComment({
+        ticketId: ticket.id,
+        agentId: params.agentId,
+        agentName: agentDetails.agent.name,
+        agentVersion,
+        answerPayload: {
+          answer: answerWithNotice,
+          toolCallCount,
+          turnCount: loopTurnCount,
+          deniedCount,
+          awaitingConsequenceApproval: true,
+          consequenceApprovalIds: approvalIds,
+          agentVersion,
+          model: modelConfig.model,
+          memoryVersion: agentDetails.memoryVersion,
+        },
+        extraStructured: {
+          model: modelConfig.model,
+          toolCallCount,
+          turnCount: loopTurnCount,
+          deniedCount,
+          awaitingConsequenceApproval: true,
+          status: 'awaiting_human',
+        },
+      })
+      const write = await this.toolBroker.invoke({
+        agentId: params.agentId,
+        agentVersion,
+        ticketId: ticket.id,
+        tool: 'board_write',
+        args: {
+          ticketId: ticket.id,
+          patch: {
+            state: 'awaiting_human',
+            payload: {
+              answer: answerWithNotice,
+              toolCallCount,
+              turnCount: loopTurnCount,
+              deniedCount,
+              awaitingConsequenceApproval: true,
+              consequenceApprovalIds: approvalIds,
+              agentVersion,
+              model: modelConfig.model,
+              memoryVersion: agentDetails.memoryVersion,
+            },
+          },
+        },
+      })
+      if (write.denied) {
+        throw new Error(`board_write denied: ${write.reason}`)
+      }
+      return {
+        ticketId: ticket.id,
+        answer: answerWithNotice,
+        toolCallCount,
+        ticket: await this.tickets.findById(ticket.id),
+      }
+    }
 
     if (loopResult.status === 'exhausted') {
       const updated = await this.routeNonOkStepOutcome({
@@ -494,6 +675,8 @@ export class GeneralTaskRuntime {
         agentVersion,
         answer,
         toolCallCount,
+        turnCount: loopTurnCount,
+        deniedCount: loopResult.deniedCount,
         model: modelConfig.model,
         memoryVersion: agentDetails.memoryVersion,
         payload,
@@ -651,6 +834,8 @@ export class GeneralTaskRuntime {
         agentVersion,
         answer,
         toolCallCount,
+        turnCount: loopTurnCount,
+        deniedCount,
         model: modelConfig.model,
         memoryVersion: agentDetails.memoryVersion,
         payload,
@@ -665,10 +850,15 @@ export class GeneralTaskRuntime {
       }
     }
 
+    // issue #180 WP-1 — a kör- és elutasítás-szám a ticket kimenetén is látszik:
+    // e nélkül egy drága lépésről csak a tool-hívások száma derült ki, az nem,
+    // hogy hány körön át és hány elutasítással jutott el idáig.
     const completionPayload = processStep
       ? {
           ...structuredOutput,
           toolCallCount,
+          turnCount: loopTurnCount,
+          deniedCount,
           agentVersion,
           model: modelConfig.model,
           memoryVersion: agentDetails.memoryVersion,
@@ -678,6 +868,8 @@ export class GeneralTaskRuntime {
       : {
           answer,
           toolCallCount,
+          turnCount: loopTurnCount,
+          deniedCount,
           agentVersion,
           model: modelConfig.model,
           memoryVersion: agentDetails.memoryVersion,
@@ -698,6 +890,8 @@ export class GeneralTaskRuntime {
       extraStructured: {
         model: modelConfig.model,
         toolCallCount,
+        turnCount: loopTurnCount,
+        deniedCount,
         memoryVersion: agentDetails.memoryVersion,
         status: stepOutcome.status,
       },
@@ -751,6 +945,9 @@ export class GeneralTaskRuntime {
     agentVersion: number
     answer: string
     toolCallCount: number
+    /** issue #180 WP-1 — a lépés kör- és elutasítás-száma a ticket kimenetén. */
+    turnCount: number
+    deniedCount: number
     model: string
     memoryVersion: number | null
     payload: Record<string, unknown>
@@ -770,6 +967,8 @@ export class GeneralTaskRuntime {
       answer: input.answer,
       outcome: stepOutcome,
       toolCallCount: input.toolCallCount,
+      turnCount: input.turnCount,
+      deniedCount: input.deniedCount,
       agentVersion,
       model: input.model,
       memoryVersion: input.memoryVersion,
@@ -786,6 +985,8 @@ export class GeneralTaskRuntime {
       extraStructured: {
         model: input.model,
         toolCallCount: input.toolCallCount,
+        turnCount: input.turnCount,
+        deniedCount: input.deniedCount,
         memoryVersion: input.memoryVersion,
         status: stepOutcome.status,
         reason: stepOutcome.reason,

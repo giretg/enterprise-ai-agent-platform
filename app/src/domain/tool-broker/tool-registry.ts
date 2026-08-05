@@ -1793,11 +1793,15 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
   tulajdoni_lap_egyeztetes: descriptor({
     description:
       'Tulajdoni lap ↔ nyilvántartás EGYEZTETÉSE EGY hívásban: kiolvassa a lapot, párosítja a ' +
-      'nyilvántartás soraival, és kész Excel munkafüzetet ír a munkaterületre (Egyeztetés + Ingatlan lap, ' +
-      'legördülő státusz, összegsor).\n' +
+      'nyilvántartás soraival, és visszaadja az összegzést + az ELTÉRŐ sorokat.\n' +
+      'Excel: CSAK ha megadod a `kimenet` path-ot (pl. "egyeztetes.xlsx") — akkor Egyeztetés + ' +
+      'Ingatlan lap, legördülő státusz, összegsor. Ha NINCS `kimenet`, NEM készül Excel ' +
+      '(pl. Ostoros Föld frissítő skill: a JSON a forrás). A skill dönti el a deliverable-t, ne a tool.\n' +
       'HA egyeztetni kell, EZT hívd — ne a tulajdoni_lap_parse-t lapozgatva, ne köztes JSON-nal, ' +
       'ne cellánkénti xlsx-írással: az sokszoros költség és kifut a forduló keretéből.\n' +
-      'Lap-forrás (EGYIK kötelező): documentId (UUID csatolmány) VAGY path (munkaterület-fájl).\n' +
+      'Lap-forrás (egyeztetéshez EGYIK kötelező): documentId (UUID) VAGY path (munkaterület-fájl). ' +
+      'Kivétel: coverage-only — csak `coverageAppliedPath` (+ opcionális `coverageMuveletekPath`), ' +
+      'ilyenkor NINCS lap-parse.\n' +
       'Nyilvántartás oldal (EGYIK): nyilvantartas (sorok tömbje) VAGY nyilvantartasPath ' +
       '(munkaterület JSON — tömb VAGY { items|sorok|data|rows|records }. Az http_api_get_all ' +
       'tool-outputs/… fájlja közvetlenül is jó; partnerNev/id/jogcim mezőaliasok elfogadottak).\n' +
@@ -1808,7 +1812,12 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       'tűnik (pl. 50 sor vs százas tulajdonosi lista — tipikus get első oldal), NEM készül tábla: ' +
       'ok=false + figyelmeztetes. Ilyenkor http_api_get_all → újra egyeztetés; ' +
       'confirmNyilvantartasComplete=true CSAK ha get_all után is ennyi a sor.\n' +
-      'A válasz összegzést és az ELTÉRŐ sorokat adja (nem a teljes táblát) — a részletek az Excelben vannak.',
+      'A válasz: összegzés + `elteroPath` + determinisztikus `muveletekPath` ' +
+      '(`fold_muveletek.json`: teljes items, DELETE→PATCH→POST sorrend, ownership id-kkal). ' +
+      'Add meg a `parcelId`-t is — nélküle a path `{parcelId}` placeholdert tartalmaz. ' +
+      'Föld Ownership-írás: a `muveletekPath` items-ből dolgozz — NE találj ki / NE cserélj id-t. ' +
+      'Lefedettség: `coverageAppliedPath` (pl. proposal_items_extract.json) — document nélkül is ' +
+      'hívható; a kapu a `coverage.ok` (nem az egyeztetés `ok`-ja). Excel csak `kimenet` mellett.',
     argsSchema: z.object({
       documentId: z.string().max(200).optional(),
       path: z.string().max(500).optional(),
@@ -1829,6 +1838,9 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       nyilvantartasPath: z.string().max(500).optional(),
       confirmNyilvantartasComplete: z.boolean().optional(),
       kimenet: z.string().max(500).optional(),
+      parcelId: z.string().max(200).optional(),
+      coverageAppliedPath: z.string().max(500).optional(),
+      coverageMuveletekPath: z.string().max(500).optional(),
     }),
     toInvokeInput: (args, ctx) => ({
       ...ctx,
@@ -1844,6 +1856,9 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
         nyilvantartasPath: optStr(args, 'nyilvantartasPath'),
         kimenet: optStr(args, 'kimenet'),
         confirmNyilvantartasComplete: boolArg(args, 'confirmNyilvantartasComplete'),
+        parcelId: optStr(args, 'parcelId'),
+        coverageAppliedPath: optStr(args, 'coverageAppliedPath'),
+        coverageMuveletekPath: optStr(args, 'coverageMuveletekPath'),
       },
     }),
     trust: 'external_untrusted',

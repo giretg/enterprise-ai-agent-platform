@@ -3,6 +3,7 @@ import type { Ticket, TicketTransition } from '@prisma/client'
 import { notifyTicketReady } from '@/lib/dispatch-notify'
 import { prisma } from '@/lib/db'
 import { prismaPageArgs, toListPage } from '@/lib/list-pagination'
+import { UNSTARTED_DELETABLE_STATES } from '@/lib/ticket-display'
 import { resolveTicketSource } from '@/lib/ticket-source'
 import type {
   AppendTicketCommentInput,
@@ -61,6 +62,19 @@ function ticketWhere(filter?: TicketFilter): Prisma.TicketWhereInput {
     where.source = Array.isArray(filter.source) ? { in: filter.source } : filter.source
   } else if (filter?.excludeTest) {
     where.source = { not: 'test' }
+  }
+  if (filter?.createdById) where.createdById = filter.createdById
+  if (filter?.belongingToUserId) {
+    where.OR = [
+      { createdById: filter.belongingToUserId },
+      { assigneeType: 'human', assigneeId: filter.belongingToUserId },
+    ]
+  }
+  if (filter?.updatedAtGte || filter?.updatedAtLte) {
+    where.updatedAt = {
+      ...(filter.updatedAtGte ? { gte: filter.updatedAtGte } : {}),
+      ...(filter.updatedAtLte ? { lte: filter.updatedAtLte } : {}),
+    }
   }
   return where
 }
@@ -359,5 +373,37 @@ export class PostgresTicketRepository implements TicketRepository {
       toRejected: stateCounts.rejected ?? 0,
       toDone: stateCounts.done ?? 0,
     }
+  }
+
+  async deleteTicket(id: string, options?: { force?: boolean }): Promise<void> {
+    await prisma.$transaction(async (tx) => {
+      const ticket = await tx.ticket.findUnique({ where: { id } })
+      if (!ticket) throw new Error('Ticket not found')
+      if (!options?.force) {
+        if (
+          !UNSTARTED_DELETABLE_STATES.includes(
+            ticket.state as (typeof UNSTARTED_DELETABLE_STATES)[number],
+          )
+        ) {
+          throw new Error('A feladat feldolgozása már elkezdődött — törlés nem lehetséges')
+        }
+        if (ticket.lockToken) {
+          throw new Error('A feladat éppen feldolgozás alatt van')
+        }
+      }
+
+      await tx.message.updateMany({ where: { ticketRefId: id }, data: { ticketRefId: null } })
+      await tx.scheduledTask.updateMany({
+        where: { materializedTicketId: id },
+        data: { materializedTicketId: null, materializedAt: null },
+      })
+      await tx.memoryCandidate.updateMany({ where: { ticketId: id }, data: { ticketId: null } })
+      await tx.sandboxAppVersion.updateMany({ where: { sourceTicketId: id }, data: { sourceTicketId: null } })
+      // Költség-elszámolás / tool-nyom: a sorok megmaradnak, csak a ticket FK oldódik.
+      await tx.modelCall.updateMany({ where: { ticketId: id }, data: { ticketId: null } })
+      await tx.toolCall.updateMany({ where: { ticketId: id }, data: { ticketId: null } })
+
+      await tx.ticket.delete({ where: { id } })
+    })
   }
 }

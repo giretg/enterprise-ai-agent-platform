@@ -124,6 +124,7 @@ class FakeDraftRepo implements ConnectorDraftRepository {
       lifecycleState: 'draft',
       connectorMode: 'fixed',
       activeSpecVersionId: null,
+      consequenceBoundary: null,
       tenantId: input.tenantId,
       createdAt: new Date(),
     }

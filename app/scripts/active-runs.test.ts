@@ -14,8 +14,15 @@ import {
   TICKET_PROGRESS_STALL_MS,
 } from '../src/domain/agent/ticket-runtime-progress'
 import { activeRunFromChatTurn, activeRunFromTicket } from '../src/lib/active-runs-map'
-import { composeRunsPanel } from '../src/lib/active-runs-compose'
-import { activeRunKey, type ActiveRun } from '../src/lib/active-runs'
+import { composeRunsPanel, runsSummaryChips, summarizeRuns } from '../src/lib/active-runs-compose'
+import {
+  formatRunClock,
+  formatRunElapsed,
+  runDayLabel,
+  statusLabel,
+} from '../src/lib/active-runs-labels'
+import { activeRunKey, workingAgentIds, type ActiveRun } from '../src/lib/active-runs'
+import { summarizeAgentActivity } from '../src/lib/agent-activity'
 import type { AgentTurn, Ticket } from '@prisma/client'
 
 let failures = 0
@@ -178,6 +185,45 @@ check('activeRunFromTicket keeps human input states visible, but only running ti
   const run = activeRunFromTicket(ticket)
   assert.equal(run.phase, 'active')
   assert.equal(run.canStop, false)
+  assert.equal(run.canStart, false)
+})
+
+check('activeRunFromTicket: ready agent ticket is startable', () => {
+  const ticket = {
+    id: 'ticket-ready',
+    title: 'Tulajdoni lap frissítés',
+    state: 'ready',
+    agentId: 'agent-2',
+    assigneeType: 'agent',
+    assigneeId: 'agent-2',
+    payload: {},
+    lockedAt: null,
+    updatedAt: new Date('2026-08-04T09:00:00.000Z'),
+  } as unknown as Ticket
+  const run = activeRunFromTicket(ticket)
+  assert.equal(run.phase, 'active')
+  assert.equal(run.status, 'ready')
+  assert.equal(run.canStart, true)
+  assert.equal(run.canStop, false)
+  assert.ok(run.latestActivity?.includes('Indításra kész'))
+})
+
+check('activeRunFromTicket: ready without agent assignee is not startable', () => {
+  const ticket = {
+    id: 'ticket-ready-human',
+    title: 'Emberi feladat',
+    state: 'ready',
+    agentId: null,
+    assigneeType: 'human',
+    assigneeId: 'user-1',
+    payload: {},
+    lockedAt: null,
+    updatedAt: new Date('2026-08-04T09:00:00.000Z'),
+  } as unknown as Ticket
+  const run = activeRunFromTicket(ticket)
+  assert.equal(run.phase, 'active')
+  assert.equal(run.canStart, false)
+  assert.equal(statusLabel(run), 'Végrehajtásra vár')
 })
 
 function makeRun(partial: Partial<ActiveRun> & Pick<ActiveRun, 'id' | 'phase' | 'startedAt'>): ActiveRun {
@@ -189,13 +235,14 @@ function makeRun(partial: Partial<ActiveRun> & Pick<ActiveRun, 'id' | 'phase' | 
     latestActivity: null,
     finishedAt: partial.finishedAt ?? (partial.phase === 'completed' ? partial.startedAt : null),
     canStop: partial.phase === 'active',
+    canStart: false,
     targetId: partial.id,
     agentId: null,
     ...partial,
   }
 }
 
-check('composeRunsPanel: unseen completed above seen tail; badge ignores seen', () => {
+check('composeRunsPanel: keeps recency order; seen only flips flag (no drop / no re-order)', () => {
   const runs = [
     makeRun({ id: 'active-1', phase: 'active', startedAt: '2026-07-31T12:00:00.000Z' }),
     makeRun({
@@ -221,13 +268,16 @@ check('composeRunsPanel: unseen completed above seen tail; badge ignores seen', 
   const composed = composeRunsPanel({ runs, seenKeys })
   assert.deepEqual(
     composed.runs.map((r) => r.id),
-    ['active-1', 'unseen-new', 'unseen-older', 'seen-old'],
+    ['active-1', 'unseen-new', 'seen-old', 'unseen-older'],
   )
   assert.equal(composed.badgeCount, 3)
-  assert.equal(composed.runs.at(-1)?.seen, true)
+  assert.deepEqual(
+    composed.runs.map((r) => r.seen),
+    [false, false, true, false],
+  )
 })
 
-check('composeRunsPanel: keeps only last 5 seen completed at bottom', () => {
+check('composeRunsPanel: keeps all seen completed in place (no limit/tail)', () => {
   const seenRuns = Array.from({ length: 7 }, (_, i) =>
     makeRun({
       id: `seen-${i}`,
@@ -237,14 +287,148 @@ check('composeRunsPanel: keeps only last 5 seen completed at bottom', () => {
     }),
   )
   const seenKeys = new Set(seenRuns.map((r) => activeRunKey(r)))
-  const composed = composeRunsPanel({ runs: seenRuns, seenKeys, seenLimit: 5 })
-  assert.equal(composed.runs.length, 5)
+  const composed = composeRunsPanel({ runs: seenRuns, seenKeys })
+  assert.equal(composed.runs.length, 7)
   assert.equal(composed.badgeCount, 0)
   assert.deepEqual(
     composed.runs.map((r) => r.id),
-    ['seen-6', 'seen-5', 'seen-4', 'seen-3', 'seen-2'],
+    ['seen-6', 'seen-5', 'seen-4', 'seen-3', 'seen-2', 'seen-1', 'seen-0'],
   )
   assert.ok(composed.runs.every((r) => r.seen))
+})
+
+check('summarizeRuns: fut / indításra vár / vár rád / új eredmény / sikertelen bontás', () => {
+  const startedAt = '2026-07-31T09:00:00.000Z'
+  const runs = [
+    { ...makeRun({ id: 'a', phase: 'active', status: 'running', startedAt }), seen: false },
+    { ...makeRun({ id: 'b', phase: 'active', status: 'awaiting_human', startedAt }), seen: false },
+    { ...makeRun({ id: 'ready', phase: 'active', status: 'ready', startedAt }), seen: false },
+    { ...makeRun({ id: 'c', phase: 'completed', status: 'done', startedAt }), seen: false },
+    { ...makeRun({ id: 'd', phase: 'completed', status: 'done', startedAt }), seen: true },
+    { ...makeRun({ id: 'e', phase: 'completed', status: 'failed', startedAt }), seen: false },
+  ]
+  const summary = summarizeRuns(runs)
+  assert.deepEqual(summary, { running: 1, waiting: 1, ready: 1, fresh: 2, failed: 1 })
+  assert.deepEqual(
+    runsSummaryChips(summary).map((chip) => chip.label),
+    ['1 fut', '1 indításra vár', '1 vár rád', '2 új eredmény', '1 sikertelen'],
+  )
+  // Üres helyzetben nincs mit kiírni — nem szemetel a felületen.
+  assert.deepEqual(
+    runsSummaryChips({ running: 0, waiting: 0, ready: 0, fresh: 0, failed: 0 }),
+    [],
+  )
+})
+
+check('workingAgentIds: csak aktívan futó agentek, awaiting_human / ready nem', () => {
+  const startedAt = '2026-07-31T09:00:00.000Z'
+  const ids = workingAgentIds([
+    makeRun({ id: 'r1', phase: 'active', status: 'running', agentId: 'a1', startedAt }),
+    makeRun({ id: 'r2', phase: 'active', status: 'awaiting_human', agentId: 'a2', startedAt }),
+    makeRun({ id: 'r3', phase: 'active', status: 'streaming', agentId: 'a3', startedAt }),
+    makeRun({ id: 'r4', phase: 'completed', status: 'done', agentId: 'a4', startedAt }),
+    makeRun({ id: 'r5', phase: 'active', status: 'in_progress', agentId: 'a1', startedAt }),
+    makeRun({ id: 'r6', phase: 'active', status: 'ready', agentId: 'a5', startedAt }),
+  ])
+  assert.deepEqual([...ids].sort(), ['a1', 'a3'])
+})
+
+check('summarizeAgentActivity: a kártya azt mondja, épp min dolgozik', () => {
+  const now = new Date('2026-08-03T12:00:00')
+  const activity = summarizeAgentActivity(
+    [
+      // Ági: régebbi futó ügy + frissebb döntésre váró → a FUTÓ a „most ezen dolgozik”.
+      makeRun({
+        id: 'r1',
+        phase: 'active',
+        status: 'running',
+        agentId: 'agi',
+        title: 'Tulajdoni lap egyeztetés',
+        href: '/control-plane/tickets/r1',
+        startedAt: '2026-08-03T11:45:00',
+      }),
+      makeRun({
+        id: 'r2',
+        phase: 'active',
+        status: 'awaiting_human',
+        agentId: 'agi',
+        startedAt: '2026-08-03T11:55:00',
+      }),
+      makeRun({
+        id: 'r3',
+        phase: 'completed',
+        status: 'done',
+        agentId: 'agi',
+        startedAt: '2026-08-03T08:00:00',
+        finishedAt: '2026-08-03T08:20:00',
+      }),
+      // Tegnap lezárult ügy nem számít bele a mai mérlegbe.
+      makeRun({
+        id: 'r4',
+        phase: 'completed',
+        status: 'done',
+        agentId: 'agi',
+        startedAt: '2026-08-02T08:00:00',
+        finishedAt: '2026-08-02T08:20:00',
+      }),
+    ],
+    now,
+  )
+
+  const agi = activity.get('agi')
+  assert.ok(agi)
+  assert.equal(agi.working, true)
+  assert.equal(agi.awaitingHuman, 1)
+  assert.equal(agi.completedToday, 1)
+  assert.equal(agi.current?.title, 'Tulajdoni lap egyeztetés')
+  assert.equal(agi.current?.href, '/control-plane/tickets/r1')
+  assert.equal(agi.current?.label, 'Fut')
+  assert.equal(agi.current?.elapsed, '15 perce')
+  assert.equal(agi.current?.needsYou, false)
+})
+
+check('summarizeAgentActivity: ha csak várakozó ügy van, a felhasználón a sor', () => {
+  const now = new Date('2026-08-03T12:00:00')
+  const activity = summarizeAgentActivity(
+    [
+      makeRun({
+        id: 'r1',
+        phase: 'active',
+        status: 'needs_info',
+        agentId: 'reka',
+        title: 'CRM adatpótlás',
+        startedAt: '2026-08-03T10:00:00',
+      }),
+      // agentId nélküli futás senkihez sem tartozik — nem torzítja a kártyát.
+      makeRun({ id: 'r2', phase: 'active', status: 'running', startedAt: '2026-08-03T11:00:00' }),
+    ],
+    now,
+  )
+
+  const reka = activity.get('reka')
+  assert.ok(reka)
+  assert.equal(reka.working, false)
+  assert.equal(reka.awaitingHuman, 1)
+  assert.equal(reka.current?.needsYou, true)
+  assert.equal(reka.current?.label, 'Információra vár')
+  assert.equal(activity.size, 1)
+})
+
+check('runDayLabel / formatRunClock: mai és tegnapi napok magyarul', () => {
+  const now = new Date('2026-08-03T12:00:00')
+  assert.equal(runDayLabel('2026-08-03T09:20:00', now), 'Ma')
+  assert.equal(runDayLabel('2026-08-02T23:50:00', now), 'Tegnap')
+  assert.ok(!['Ma', 'Tegnap'].includes(runDayLabel('2026-08-01T10:00:00', now)))
+  assert.match(formatRunClock('2026-08-03T09:20:00', now), /^09:20$/)
+  assert.match(formatRunClock('2026-08-02T08:22:00', now), /^tegnap 08:22$/)
+})
+
+check('formatRunElapsed: aktív futásnál a kor a fő információ', () => {
+  const now = new Date('2026-08-03T12:00:00')
+  assert.equal(formatRunElapsed('2026-08-03T11:59:40', now), 'most indult')
+  assert.equal(formatRunElapsed('2026-08-03T11:45:00', now), '15 perce')
+  assert.equal(formatRunElapsed('2026-08-03T09:00:00', now), '3 órája')
+  assert.equal(formatRunElapsed('2026-08-01T09:00:00', now), '2 napja')
 })
 
 check('assessTicketRunLiveness: active vs stalled vs cancelling', () => {
