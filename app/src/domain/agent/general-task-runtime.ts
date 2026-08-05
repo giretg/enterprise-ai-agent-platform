@@ -393,7 +393,10 @@ export class GeneralTaskRuntime {
         toolCaps: this.toolCaps,
         agentId: params.agentId,
         agentVersion,
-        context: { ticketId: ticket.id },
+        context: {
+          ticketId: ticket.id,
+          ...(ticket.tenantId ? { tenantId: ticket.tenantId } : {}),
+        },
         mode: 'task',
         promptSegments: messages,
         modelConfig,

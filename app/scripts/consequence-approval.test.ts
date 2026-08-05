@@ -7,6 +7,8 @@ import type { ConsequenceApproval, ConsequenceApprovalStatus } from '@prisma/cli
 import {
   ConsequenceApprovalService,
   CONSEQUENCE_APPROVAL_TTL_MS,
+  CONSEQUENCE_APPROVAL_TICKET_TTL_MS,
+  CONSEQUENCE_APPROVAL_TICKET_VISIBILITY_MS,
   CONSEQUENCE_APPROVAL_VISIBILITY_MS,
 } from '../src/domain/tool-broker/consequence-approval-service'
 import type { ToolBrokerInvokeInput } from '../src/domain/tool-broker/tool-broker-types'
@@ -275,9 +277,35 @@ async function main() {
     assert.ok(row)
     assert.equal(row.conversationId, null)
     assert.equal(row.ticketId, 'ticket-1')
+    // Ticket TTL ≥ 3 nap — 1 órás chat-TTL itt zsákutca lenne (a45744db).
+    assert.ok(row.expiresAt.getTime() > Date.now() + CONSEQUENCE_APPROVAL_TICKET_TTL_MS - 5_000)
+    assert.ok(row.expiresAt.getTime() <= Date.now() + CONSEQUENCE_APPROVAL_TICKET_TTL_MS + 1_000)
     const open = await service.listOpenForTicket('ticket-1', actor)
     assert.equal(open.length, 1)
     assert.equal(open[0].approvalId, card.approvalId)
+  })
+
+  await test('listOpenForTicket: a lookback lefedi a 3 napos TTL-t', async () => {
+    const { service, repo } = buildService()
+    await service.createFromBlocked({
+      invoke: {
+        agentId: 'agent-1',
+        agentVersion: 1,
+        ticketId: 'ticket-1',
+        tool: 'http_api_request',
+        args: { method: 'POST', path: '/proposals/x/validate', body: {} },
+      } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    const before = Date.now()
+    await service.listOpenForTicket('ticket-1', actor)
+    const cutoff = repo.lastCreatedAfter.value
+    assert.ok(cutoff, 'a repository kapott vágópontot')
+    const delta = before - cutoff!.getTime()
+    assert.ok(
+      Math.abs(delta - CONSEQUENCE_APPROVAL_TICKET_VISIBILITY_MS) < 5_000,
+      `ticket lookback ~${CONSEQUENCE_APPROVAL_TICKET_VISIBILITY_MS} ms, kapott: ${delta}`,
+    )
   })
 
   await test('createFromBlocked: azonos függő művelet NEM kap második kártyát', async () => {

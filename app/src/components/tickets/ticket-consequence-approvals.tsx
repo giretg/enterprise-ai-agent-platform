@@ -72,8 +72,15 @@ export function TicketConsequenceApprovals({
   const [batchNote, setBatchNote] = useState<string | null>(null)
   const [showDetails, setShowDetails] = useState(false)
 
+  // Dönthető: élő pending, VAGY elbukott invoke (újrapróba). A lejárt pending NEM.
   const open = useMemo(
     () => initial.filter((a) => !decisions[a.approvalId] && (!a.expired || a.failedReason)),
+    [initial, decisions],
+  )
+  // Lejárt pending: gomb nélkül, de LÁTHATÓ — különben a ticket hazudik („vár
+  // jóváhagyásra"), a CTA pedig eltűnik (a45744db repro).
+  const expiredPending = useMemo(
+    () => initial.filter((a) => !decisions[a.approvalId] && a.expired && !a.failedReason),
     [initial, decisions],
   )
   const anyBusy = busyIds.size > 0 || batchBusy
@@ -81,16 +88,17 @@ export function TicketConsequenceApprovals({
   // biztonságos, amikor a runtime már `awaiting_human`-re állt (különben race
   // a loop végével, és a resume sem indul el).
   const canDecide = ticketState === 'awaiting_human'
+  const allExpired = open.length === 0 && expiredPending.length > 0
 
   // Élő lista: amíg a ticket dolgozhat vagy van nyitott kártya, újratöltjük. A
   // kártyák a futás KÖZBEN születnek — pillanatkép mellett a felhasználó úgy
   // zárná le a feladatot, hogy közben műveletek maradtak jóváhagyatlanul.
   useEffect(() => {
     if (anyBusy) return
-    if (!LIVE_STATES.has(ticketState) && open.length === 0) return
+    if (!LIVE_STATES.has(ticketState) && open.length === 0 && expiredPending.length === 0) return
     const timer = setInterval(() => router.refresh(), POLL_MS)
     return () => clearInterval(timer)
-  }, [router, ticketState, open.length, anyBusy])
+  }, [router, ticketState, open.length, expiredPending.length, anyBusy])
 
   const decide = useCallback((approvalId: string, decision: Decision) => {
     setDecisions((prev) => ({ ...prev, [approvalId]: decision }))
@@ -203,26 +211,28 @@ export function TicketConsequenceApprovals({
   }
 
   const decidedRows = initial.filter((a) => decisions[a.approvalId])
-  if (open.length === 0 && decidedRows.length === 0 && !batchNote) return null
+  if (open.length === 0 && expiredPending.length === 0 && decidedRows.length === 0 && !batchNote) {
+    return null
+  }
 
   const collecting = open.length > 0 && !canDecide
+  const title = allExpired
+    ? `${expiredPending.length} művelet jóváhagyása lejárt`
+    : open.length > 0
+      ? collecting
+        ? `${open.length} művelet gyűlik — jóváhagyás a futás vége után`
+        : `${open.length} művelet vár jóváhagyásra`
+      : 'Jóváhagyott API-műveletek'
+  const description = allExpired
+    ? 'A jóváhagyási ablak lejárt, ezek a gombok már nem élnek. Dobd vissza a feladatot alább, majd indítsd újra — az agent újra kéri a jóváhagyást. A ticket-szintű „Jóváhagyás” NEM futtatja le ezeket a műveleteket.'
+    : collecting
+      ? 'Az AI munkatárs még dolgozik; a külső rendszerbe író hívások sorban gyűlnek. A jóváhagyó gomb akkor lesz elérhető, amikor a futás emberi döntésre áll.'
+      : 'Ezeket a külső rendszerbe író hívásokat a platform nem futtatta le magától. A gomb megnyomása után sorban lefutnak, és a feladat magától folytatódik.'
 
   return (
-    <Card
-      title={
-        open.length > 0
-          ? collecting
-            ? `${open.length} művelet gyűlik — jóváhagyás a futás vége után`
-            : `${open.length} művelet vár jóváhagyásra`
-          : 'Jóváhagyott API-műveletek'
-      }
-    >
+    <Card title={title}>
       <div className="space-y-3">
-        <p className="text-sm text-ink-faint">
-          {collecting
-            ? 'Az AI munkatárs még dolgozik; a külső rendszerbe író hívások sorban gyűlnek. A jóváhagyó gomb akkor lesz elérhető, amikor a futás emberi döntésre áll.'
-            : 'Ezeket a külső rendszerbe író hívásokat a platform nem futtatta le magától. A gomb megnyomása után sorban lefutnak, és a feladat magától folytatódik.'}
-        </p>
+        <p className={`text-sm ${allExpired ? 'text-coral' : 'text-ink-faint'}`}>{description}</p>
 
         {open.length > 0 && canDecide && (
           <div className="flex flex-wrap items-center gap-3">
@@ -256,13 +266,20 @@ export function TicketConsequenceApprovals({
 
         {batchNote && <p className="text-sm text-ink">{batchNote}</p>}
 
-        {(showDetails || open.length === 0) && (
+        {(showDetails || open.length === 0 || allExpired) && (
           <ul className="space-y-2">
             {initial.map((a) => {
               const decision = decisions[a.approvalId]
               const busy = busyIds.has(a.approvalId)
               const openRow = !decision && (!a.expired || Boolean(a.failedReason))
-              const note = decision?.note ?? rowErrors[a.approvalId] ?? (a.failedReason ? errorLabel(a.failedReason) : '')
+              const note =
+                decision?.note ??
+                rowErrors[a.approvalId] ??
+                (a.failedReason
+                  ? errorLabel(a.failedReason)
+                  : a.expired
+                    ? 'A jóváhagyási ablak lejárt — dobd vissza és indítsd újra a feladatot.'
+                    : '')
               return (
                 <li
                   key={a.approvalId}
@@ -276,7 +293,7 @@ export function TicketConsequenceApprovals({
                           : decision?.status === 'rejected'
                             ? 'neutral'
                             : a.expired && !a.failedReason
-                              ? 'neutral'
+                              ? 'danger'
                               : 'warning'
                       }
                     >
@@ -293,7 +310,11 @@ export function TicketConsequenceApprovals({
                     <span className="font-medium text-ink">{a.toolName}</span>
                   </div>
                   <p className="text-ink-faint">{a.summary}</p>
-                  {note && <p className="mt-1 text-xs text-ink-faint">{note}</p>}
+                  {note && (
+                    <p className={`mt-1 text-xs ${a.expired && !decision ? 'text-coral' : 'text-ink-faint'}`}>
+                      {note}
+                    </p>
+                  )}
                   {openRow && canDecide && (
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button

@@ -117,8 +117,20 @@ export type ChatPlatformToolName = ToolName
  * A két ág kölcsönösen kizáró — egyszerre csak az egyik adható meg.
  */
 export type ToolLoopContext =
-  | { conversationId: string; ticketId?: never; agentTurnId?: string }
-  | { ticketId: string; conversationId?: never; agentTurnId?: string }
+  | {
+      conversationId: string
+      ticketId?: never
+      agentTurnId?: string
+      /** Budget-kapu tenant-szűrése — hiányában a platform alap keret is beleszámít. */
+      tenantId?: string
+    }
+  | {
+      ticketId: string
+      conversationId?: never
+      agentTurnId?: string
+      /** Budget-kapu tenant-szűrése — hiányában a platform alap keret is beleszámít. */
+      tenantId?: string
+    }
 
 export type ToolLoopMode = 'chat' | 'task'
 /** A loop leállási indokai (a `cancelled` külön, kivétel-ágon megy — spec §7). */

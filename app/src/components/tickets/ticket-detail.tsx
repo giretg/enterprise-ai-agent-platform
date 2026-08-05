@@ -329,10 +329,21 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
   const [note, setNote] = useState('')
 
   const isTrainingTicket = ticket.type === 'training'
-  const hasPendingConsequence = (ticket.pendingConsequenceApprovals?.length ?? 0) > 0
+  const pendingConsequence = (ticket.pendingConsequenceApprovals ?? []) as Array<{
+    expired?: boolean
+    failedReason?: string
+  }>
+  const hasActionableConsequence = pendingConsequence.some(
+    (a) => !a.expired || Boolean(a.failedReason),
+  )
+  const hasExpiredConsequence = pendingConsequence.some(
+    (a) => Boolean(a.expired) && !a.failedReason,
+  )
   // Consequence-kapu mellett a ticket-szintű Approve bezárná a feladatot API
-  // futtatás nélkül (cade35e7) — ilyenkor csak a „Mind jóváhagyom" a helyes út.
-  const canApprove = ticket.state === 'awaiting_human' && !hasPendingConsequence
+  // futtatás nélkül (cade35e7) — élő kapunál csak a „Mind jóváhagyom" a helyes út.
+  // Lejárt kapunál sem Approve: az sem futtatná az API-t, csak hazudna.
+  const canApprove =
+    ticket.state === 'awaiting_human' && !hasActionableConsequence && !hasExpiredConsequence
   const canReject = REJECTABLE_STATES.has(ticket.state)
   const callCapMessage = readTicketCallCapMessageFromPayload(ticket.payload)
   const canRerun = ticket.state === 'rejected' && !callCapMessage
@@ -369,11 +380,13 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
 
   if (!hasActions) return null
 
-  const hint = hasPendingConsequence
+  const hint = hasActionableConsequence
     ? ticket.state === 'awaiting_human'
       ? 'Külső műveletek várnak jóváhagyásra — használd a fenti „Mind jóváhagyom” gombot a folytatáshoz. A visszadobás megállítja a feladatot.'
       : 'Külső műveletek gyűlnek a futás alatt; a jóváhagyás a futás vége után lesz elérhető. A visszadobás megállítja a feladatot.'
-    : (TICKET_STATE_HINTS[ticket.state] ?? 'Válaszd ki, hogyan folytatódjon a feladat.')
+    : hasExpiredConsequence
+      ? 'A fenti külső műveletek jóváhagyási ablaka lejárt. Dobd vissza a feladatot, majd indítsd újra — az agent újra kéri a gombot. A ticket-szintű „Jóváhagyás” itt nem jelenik meg, mert nem futtatná le az API-hívást.'
+      : (TICKET_STATE_HINTS[ticket.state] ?? 'Válaszd ki, hogyan folytatódjon a feladat.')
 
   return (
     <Card title="Döntés">
@@ -430,8 +443,11 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
         <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-coral">{callCapMessage}</p>
       )}
       <p className="mt-3 text-xs text-ink-faint">
-        {hasPendingConsequence &&
+        {hasActionableConsequence &&
           'A ticket-szintű jóváhagyás most rejtve van: az nem futtatja le a külső API-műveleteket. '}
+        {hasExpiredConsequence &&
+          !hasActionableConsequence &&
+          'A ticket-szintű jóváhagyás rejtve van: a lejárt kapu alatt nem futtatná az API-t. '}
         {canApprove &&
           isTrainingTicket &&
           'Tanítási feladat: a jóváhagyás write-gate-en keresztül frissíti az AI munkatárs memóriáját, majd done állapotba zár. '}
@@ -590,11 +606,12 @@ export function TicketMeta({
   const stateTone = TICKET_STATE_TONE[ticket.state] ?? 'neutral'
   const stateLabel = TICKET_STATE_LABELS[ticket.state] ?? ticket.state
   const stateHint = TICKET_STATE_HINTS[ticket.state] ?? null
+  const isInProgress = ticket.state === 'in_progress'
   const typeLabel = ticket.type === 'training' ? 'Tanítás' : 'Interakció'
   const assigneeHint =
     assignee?.detail ??
     (assignee?.type === 'agent'
-      ? ticket.state === 'in_progress'
+      ? isInProgress
         ? 'AI munkatárs — most éppen ezen dolgozik'
         : 'AI munkatárs a felelős'
       : assignee?.type === 'human'
@@ -620,14 +637,20 @@ export function TicketMeta({
               </h1>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <span
-                  className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${STATE_PILL_CLASS[stateTone]}`}
+                  className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${
+                    isInProgress
+                      ? 'animate-activity-run-row text-sky'
+                      : STATE_PILL_CLASS[stateTone]
+                  }`}
                 >
-                  <span
-                    className={`h-2 w-2 rounded-full ${TICKET_TONE_DOT_CLASS[stateTone]} ${
-                      ticket.state === 'in_progress' ? 'animate-soul' : ''
-                    }`}
-                    aria-hidden
-                  />
+                  {isInProgress ? (
+                    <LiveStatusDot size="md" />
+                  ) : (
+                    <span
+                      className={`h-2 w-2 rounded-full ${TICKET_TONE_DOT_CLASS[stateTone]}`}
+                      aria-hidden
+                    />
+                  )}
                   {stateLabel}
                 </span>
                 <Badge tone="neutral">{typeLabel}</Badge>
@@ -703,7 +726,13 @@ export function TicketMeta({
           )}
 
           <dl className="mt-5 grid gap-px overflow-hidden rounded-2xl border border-line bg-line/70 sm:grid-cols-2 xl:grid-cols-4">
-            <HeroFact label="Hol tart" value={stateLabel} hint={stateHint} dotClass={TICKET_TONE_DOT_CLASS[stateTone]} />
+            <HeroFact
+              label="Hol tart"
+              value={stateLabel}
+              hint={stateHint}
+              dotClass={isInProgress ? 'bg-sky' : TICKET_TONE_DOT_CLASS[stateTone]}
+              live={isInProgress}
+            />
             <HeroFact
               label="Ki dolgozik rajta"
               value={assignee?.label ?? 'Nincs hozzárendelve'}
@@ -719,7 +748,7 @@ export function TicketMeta({
               label="Utolsó mozgás"
               value={formatTicketDateTime(ticket.updatedAt)}
               hint={
-                ticket.state === 'in_progress'
+                isInProgress
                   ? 'A lépések élőben frissülnek alább.'
                   : `${typeLabel} típusú feladat`
               }
@@ -769,26 +798,47 @@ const STATE_PILL_CLASS: Record<'neutral' | 'success' | 'warning' | 'danger', str
   danger: 'bg-coral/15 text-coral',
 }
 
+/** Élő „radar” pötty — futó feladaton rögtön látszik, hogy dolgozik valami. */
+function LiveStatusDot({ size = 'sm' }: { size?: 'sm' | 'md' }) {
+  const dim = size === 'md' ? 'h-2.5 w-2.5' : 'h-2 w-2'
+  return (
+    <span className={`relative flex shrink-0 ${dim}`} aria-hidden>
+      <span
+        className={`absolute inline-flex h-full w-full rounded-full bg-sky opacity-60 animate-activity-run-dot`}
+      />
+      <span className={`relative inline-flex rounded-full bg-sky ${dim}`} />
+    </span>
+  )
+}
+
 function HeroFact({
   label,
   value,
   valueHref,
   hint,
   dotClass,
+  live = false,
 }: {
   label: string
   value: string
   valueHref?: string | null
   hint?: string | null
   dotClass?: string
+  live?: boolean
 }) {
   return (
-    <div className="bg-card px-4 py-3">
+    <div className={`bg-card px-4 py-3 ${live ? 'animate-activity-run-row' : ''}`}>
       <dt className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
         {label}
       </dt>
-      <dd className="mt-1 flex items-center gap-2 text-sm font-semibold text-ink">
-        {dotClass && <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} aria-hidden />}
+      <dd
+        className={`mt-1 flex items-center gap-2 text-sm font-semibold ${live ? 'text-sky' : 'text-ink'}`}
+      >
+        {live ? (
+          <LiveStatusDot size="md" />
+        ) : (
+          dotClass && <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} aria-hidden />
+        )}
         {valueHref ? (
           <Link
             href={valueHref}

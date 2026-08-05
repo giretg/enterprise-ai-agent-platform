@@ -321,8 +321,11 @@ function TicketCard({
           {ticket.type === 'training' ? 'Tanítás' : 'Interakció'}
         </span>
         {ticket.state === 'in_progress' && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-sky/15 px-2 py-0.5 text-[11px] font-semibold text-sky">
-            <span className="animate-soul h-1.5 w-1.5 rounded-full bg-sky" aria-hidden />
+          <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold text-sky animate-activity-run-row">
+            <span className="relative flex h-1.5 w-1.5" aria-hidden>
+              <span className="absolute inline-flex h-full w-full rounded-full bg-sky opacity-60 animate-activity-run-dot" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-sky" />
+            </span>
             Fut
           </span>
         )}

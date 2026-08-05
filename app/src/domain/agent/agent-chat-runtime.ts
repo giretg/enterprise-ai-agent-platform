@@ -1546,6 +1546,7 @@ export class AgentChatRuntime {
           // megkapható (nem időbélyeg-illesztéssel).
           context: {
             conversationId,
+            ...(params.tenantId ? { tenantId: params.tenantId } : {}),
             ...(turn.turnRecordId ? { agentTurnId: turn.turnRecordId } : {}),
           },
           mode: 'chat',
