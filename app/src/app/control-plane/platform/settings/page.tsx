@@ -5,7 +5,6 @@ import {
   getDispatcherControls,
   getModelCallsSummary,
   getModelPolicy,
-  listModelBudgets,
   listModelRoutingPolicies,
 } from '@/app/actions/platform'
 import { getMonitorControls } from '@/app/actions/monitor'
@@ -40,7 +39,6 @@ export default async function PlatformSettingsPage() {
     webFetchControlsRes,
     gatewayStatsRes,
     routingPoliciesRes,
-    budgetsRes,
   ] = await Promise.all([
     getAuthContext(),
     getDispatcherControls(),
@@ -52,7 +50,6 @@ export default async function PlatformSettingsPage() {
     getWebFetchControls(),
     getModelCallsSummary(),
     listModelRoutingPolicies(),
-    listModelBudgets(),
   ])
   const isPlatform = Boolean(
     ctx && (ctx.platformRoles.includes('superadmin') || ctx.platformRoles.includes('platform_operator')),
@@ -117,7 +114,6 @@ export default async function PlatformSettingsPage() {
         <ModelGatewayPanel
           stats={gatewayStatsRes.data}
           routingPolicies={routingPoliciesRes.success ? routingPoliciesRes.data : []}
-          budgets={budgetsRes.success ? budgetsRes.data : []}
           canEdit={canEdit}
           providers={enabledProviders}
         />

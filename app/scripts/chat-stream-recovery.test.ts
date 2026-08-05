@@ -15,7 +15,9 @@
 import assert from 'node:assert/strict'
 import {
   decideChatStreamRecovery,
+  resolveChatStreamConflict,
   STREAM_INTERRUPTED_MESSAGE,
+  STREAM_TASK_ONLY_BLOCKED_MESSAGE,
   type ChatStreamEnding,
 } from '../src/lib/chat-stream-recovery'
 
@@ -74,6 +76,28 @@ check('beszélgetés-azonosító nélkül nincs mihez visszacsatlakozni', () => 
     conversationId: null,
   })
   assert.equal(action.kind, 'discard')
+})
+
+check('409 agent_task_only: nem „már készül a válasz”, hanem tiltás', () => {
+  const action = resolveChatStreamConflict(
+    { error: 'agent_task_only', message: STREAM_TASK_ONLY_BLOCKED_MESSAGE },
+    'conv-1',
+  )
+  assert.equal(action.kind, 'blocked')
+  assert.equal(action.kind === 'blocked' ? action.message : null, STREAM_TASK_ONLY_BLOCKED_MESSAGE)
+})
+
+check('409 active_turn_exists: reattach-üzenet, turnId-vel', () => {
+  const action = resolveChatStreamConflict(
+    { error: 'active_turn_exists', activeTurnId: 'turn-1', conversationId: 'conv-9' },
+    'conv-1',
+  )
+  assert.equal(action.kind, 'active_turn')
+  if (action.kind !== 'active_turn') throw new Error('expected active_turn')
+  assert.equal(action.activeTurnId, 'turn-1')
+  assert.equal(action.conversationId, 'conv-9')
+  assert.match(action.message, /már készül egy válasz/)
+  assert.doesNotMatch(action.message, /korlátozott feladatkör/)
 })
 
 if (failures > 0) {

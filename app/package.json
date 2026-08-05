@@ -60,6 +60,7 @@
     "test:model-pricing-sync": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/model-pricing-sync.test.ts",
     "sync:model-pricing": "tsx scripts/sync-model-pricing.ts",
     "test:dispatch-budget": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/dispatch-budget.test.ts",
+    "test:gateway-tenant-budget-scope": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/gateway-tenant-budget-scope.test.ts",
     "test:dispatch-board-ticket-schema": "tsx scripts/dispatch-board-ticket-schema.test.ts",
     "test:local-wiki-harness": "tsx scripts/local-wiki-harness-launcher.test.ts",
     "test:monitor": "tsx scripts/monitor-engine.test.ts",

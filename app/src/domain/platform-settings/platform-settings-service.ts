@@ -1339,12 +1339,12 @@ export class PlatformSettingsService {
       agentVersion: null,
       action: 'model.pricing.manual_set',
       targetType: 'platform_setting',
-      targetId: MODEL_PRICING_SETTING_KEY,
+      targetId: null,
       modelUsed: model,
       inputRef: null,
       outputRef: null,
       policyDecision: 'allowed',
-      metadata: { model, price: parsedPrice },
+      metadata: { settingKey: MODEL_PRICING_SETTING_KEY, model, price: parsedPrice },
     })
   }
 
@@ -1364,12 +1364,61 @@ export class PlatformSettingsService {
       agentVersion: null,
       action: 'model.pricing.manual_clear',
       targetType: 'platform_setting',
-      targetId: MODEL_PRICING_SETTING_KEY,
+      targetId: null,
       modelUsed: model,
       inputRef: null,
       outputRef: null,
       policyDecision: 'allowed',
-      metadata: { model },
+      metadata: { settingKey: MODEL_PRICING_SETTING_KEY, model },
     })
+  }
+
+  /**
+   * OpenRouter `/api/v1/models` → szinkronizált tarifa-réteg (írás).
+   * A modell-id-k megmaradnak (pl. `deepseek/deepseek-v4-flash-0731`).
+   */
+  async syncModelPricingFromOpenRouter(actorId: string): Promise<{
+    written: number
+    changed: number
+    fingerprint: string
+    eurPerUsd: number
+    rateAsOf: string
+    sourceLabel: string
+  }> {
+    const {
+      fetchOpenRouterPriceSnapshot,
+      OPENROUTER_PRICE_SOURCE_LABEL,
+      syncModelPricing,
+    } = await import('@/domain/gateway/price-sync')
+
+    let snapshot
+    try {
+      snapshot = await fetchOpenRouterPriceSnapshot()
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'openrouter_fetch_failed')
+    }
+
+    const result = await syncModelPricing({
+      snapshot,
+      settings: this.settings,
+      audit: this.audit,
+      dryRun: false,
+      keepSourceIds: true,
+      sourceLabel: OPENROUTER_PRICE_SOURCE_LABEL,
+      actorId,
+    })
+
+    if (!result.ok) {
+      throw new Error(result.error ?? 'model_pricing_sync_failed')
+    }
+
+    return {
+      written: result.written,
+      changed: result.diffs.filter((d) => d.changed).length,
+      fingerprint: result.fingerprint,
+      eurPerUsd: result.eurPerUsd,
+      rateAsOf: result.rateAsOf,
+      sourceLabel: OPENROUTER_PRICE_SOURCE_LABEL,
+    }
   }
 }

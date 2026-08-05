@@ -7,7 +7,12 @@
 import assert from 'node:assert/strict'
 import {
   convertSnapshotToPricingTable,
+  fetchOpenRouterPriceSnapshot,
+  getRepoPriceSnapshot,
   mapSourceModelName,
+  openRouterLocalModelAliases,
+  OPENROUTER_PRICE_SOURCE_LABEL,
+  REPO_PRICE_SNAPSHOT_LABEL,
   syncModelPricing,
   usdPerTokenToEurPerM,
   DEFAULT_EUR_PER_USD,
@@ -158,15 +163,162 @@ async function main() {
     assert.deepEqual(table, {})
   })
 
+  await check('repo-pillanatkép beágyazva (offline CLI forrás)', async () => {
+    const snapshot = getRepoPriceSnapshot()
+    assert.ok(Array.isArray(snapshot) && snapshot.length > 0)
+    assert.ok(REPO_PRICE_SNAPSHOT_LABEL.includes('litellm-price-snapshot'))
+    const settings = makeSettings()
+    const result = await syncModelPricing({
+      snapshot,
+      settings,
+      dryRun: false,
+      sourceLabel: REPO_PRICE_SNAPSHOT_LABEL,
+      actorId: 'cli:test',
+    })
+    assert.equal(result.ok, true)
+    assert.ok(result.written >= 1)
+    assert.ok(settings.store[MODEL_PRICING_SYNCED_SETTING_KEY])
+  })
+
+  await check('OpenRouter fetch → keepSourceIds sync (0$ = ingyenes)', async () => {
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          data: [
+            {
+              id: 'deepseek/deepseek-r1:free',
+              pricing: { prompt: '0', completion: '0' },
+            },
+            {
+              id: 'deepseek/deepseek-v4-flash-0731',
+              pricing: { prompt: '0.00000009', completion: '0.00000018' },
+            },
+            {
+              id: 'ignored/no-pricing',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+
+    const snapshot = await fetchOpenRouterPriceSnapshot({ fetchImpl, baseUrl: 'https://openrouter.ai/api/v1' })
+    assert.equal(snapshot.length, 2)
+    assert.equal(snapshot[0]!.inputCostPerToken, 0)
+
+    const table = convertSnapshotToPricingTable(snapshot, {
+      keepSourceIds: true,
+      eurPerUsd: 0.92,
+    })
+    assert.equal(table['deepseek/deepseek-r1:free']?.inputPerMTokens, 0)
+    assert.equal(table['deepseek/deepseek-r1:free']?.outputPerMTokens, 0)
+    // 0.00000009 * 1e6 * 0.92 = 0.0828
+    assert.equal(table['deepseek/deepseek-v4-flash-0731']?.inputPerMTokens, 0.0828)
+    assert.equal(table['deepseek/deepseek-v4-flash-0731']?.outputPerMTokens, 0.1656)
+
+    const settings = makeSettings()
+    const result = await syncModelPricing({
+      snapshot,
+      settings,
+      dryRun: false,
+      keepSourceIds: true,
+      sourceLabel: OPENROUTER_PRICE_SOURCE_LABEL,
+      eurPerUsd: 0.92,
+      actorId: 'ui:test',
+    })
+    assert.equal(result.ok, true)
+    assert.equal(result.written, 2)
+    assert.equal(
+      (settings.store[MODEL_PRICING_SYNCED_SETTING_KEY] as Record<string, { inputPerMTokens: number }>)[
+        'deepseek/deepseek-v4-flash-0731'
+      ]?.inputPerMTokens,
+      0.0828,
+    )
+  })
+
+  await check('OpenRouter HTTP hiba → throw', async () => {
+    const fetchImpl: typeof fetch = async () => new Response('nope', { status: 503 })
+    await assert.rejects(
+      () => fetchOpenRouterPriceSnapshot({ fetchImpl }),
+      (e: unknown) => e instanceof Error && e.message === 'openrouter_models_http_503',
+    )
+  })
+
+  await check('OpenRouter google/gemini-… → gemini-… alias (közvetlen Gemini provider)', () => {
+    assert.deepEqual(openRouterLocalModelAliases('google/gemini-2.5-flash'), ['gemini-2.5-flash'])
+    assert.deepEqual(openRouterLocalModelAliases('~google/gemini-3.5-flash'), ['gemini-3.5-flash'])
+    assert.deepEqual(openRouterLocalModelAliases('deepseek/deepseek-v4-flash-0731'), [])
+    assert.deepEqual(openRouterLocalModelAliases('google/gemma-3-27b'), [])
+
+    const table = convertSnapshotToPricingTable(
+      [
+        {
+          model: 'google/gemini-2.5-flash',
+          inputCostPerToken: 0.0000003,
+          outputCostPerToken: 0.0000025,
+        },
+      ],
+      { keepSourceIds: true, eurPerUsd: 0.92 },
+    )
+    // $0.30 / $2.50 per 1M → €0.276 / €2.3
+    assert.equal(table['google/gemini-2.5-flash']?.inputPerMTokens, 0.276)
+    assert.equal(table['gemini-2.5-flash']?.inputPerMTokens, 0.276)
+    assert.equal(table['gemini-2.5-flash']?.outputPerMTokens, 2.3)
+  })
+
+  await check('OpenRouter anthropic/claude-… → claude-… alias (családkulcsok)', () => {
+    assert.deepEqual(openRouterLocalModelAliases('anthropic/claude-haiku-4.5').sort(), [
+      'claude-haiku',
+      'claude-haiku-4-5',
+    ])
+    assert.deepEqual(openRouterLocalModelAliases('anthropic/claude-sonnet-5').sort(), [
+      'claude-sonnet',
+      'claude-sonnet-5',
+    ])
+    assert.deepEqual(openRouterLocalModelAliases('anthropic/claude-opus-4.8').sort(), [
+      'claude-opus',
+      'claude-opus-4-8',
+    ])
+    assert.deepEqual(openRouterLocalModelAliases('~anthropic/claude-sonnet-latest').sort(), [
+      'claude-sonnet',
+      'claude-sonnet-5',
+      'claude-sonnet-latest',
+    ])
+    // Régi verzió: csak saját normalizált id, ne írja felül a család aktuális árát
+    assert.deepEqual(openRouterLocalModelAliases('anthropic/claude-sonnet-4.5'), ['claude-sonnet-4-5'])
+
+    const table = convertSnapshotToPricingTable(
+      [
+        {
+          model: 'anthropic/claude-sonnet-4.5',
+          inputCostPerToken: 0.000003,
+          outputCostPerToken: 0.000015,
+        },
+        {
+          model: 'anthropic/claude-sonnet-5',
+          inputCostPerToken: 0.000002,
+          outputCostPerToken: 0.00001,
+        },
+      ],
+      { keepSourceIds: true, eurPerUsd: 0.92 },
+    )
+    // $2 / $10 → €1.84 / €9.2 — a család a sonnet-5 árat kapja, nem a 4.5-ét
+    assert.equal(table['claude-sonnet-5']?.inputPerMTokens, 1.84)
+    assert.equal(table['claude-sonnet']?.inputPerMTokens, 1.84)
+    assert.equal(table['claude-sonnet-4-5']?.inputPerMTokens, 2.76)
+  })
+
   await check('árazási view: engedélyezett modellek is megjelennek (örökölt árral)', () => {
     const rows = buildModelPricingViewRows({
       effective: {
         ...DEFAULT_MODEL_PRICING,
         'x-ai/grok-4.5': { inputPerMTokens: 1, outputPerMTokens: 2 },
+        'openrouter/only-in-synced-catalog': { inputPerMTokens: 0.1, outputPerMTokens: 0.2 },
       },
       layers: {
         builtin: DEFAULT_MODEL_PRICING,
-        synced: {},
+        synced: {
+          'openrouter/only-in-synced-catalog': { inputPerMTokens: 0.1, outputPerMTokens: 0.2 },
+        },
         manual: { 'x-ai/grok-4.5': { inputPerMTokens: 1, outputPerMTokens: 2 } },
       },
       syncMeta: null,
@@ -181,6 +333,8 @@ async function main() {
     assert.equal(grok.source, 'manual')
     assert.equal(grok.resolvedFrom, null)
     assert.equal(rows.some((r) => r.model === 'default'), false)
+    // A teljes OpenRouter katalógus ne duzzassza a listát.
+    assert.equal(rows.some((r) => r.model === 'openrouter/only-in-synced-catalog'), false)
   })
 
   console.log(`\n=== Összesítés ===`)

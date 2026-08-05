@@ -1,4 +1,8 @@
-import { ModelGateway, type AgentSensitivityPolicyReader } from '@/domain/gateway/model-gateway'
+import {
+  ModelGateway,
+  type AgentSensitivityPolicyReader,
+  type AgentTenantResolver,
+} from '@/domain/gateway/model-gateway'
 import { RoutingEngine } from '@/domain/gateway/routing-engine'
 import { BudgetEngine } from '@/domain/gateway/budget-engine'
 import { BookkeeperAgentRuntime } from '@/domain/agent/bookkeeper-runtime'
@@ -522,6 +526,15 @@ const agentSensitivityPolicy: AgentSensitivityPolicyReader = {
     return agent?.allowSensitiveExternalModel ?? false
   },
 }
+// A keret- és routing-kapu szervezet-helyessége: a futásidejű hívási helyek nem
+// visznek `tenantId`-t, ezért a gateway az agentből oldja fel. Enélkül egy másik
+// szervezet napi kerete állította meg ezt az agentet.
+const agentTenantResolver: AgentTenantResolver = {
+  async tenantIdForAgent(agentId: string): Promise<string | null> {
+    const agent = await repositories.agents.findById(agentId)
+    return agent?.tenantId ?? null
+  },
+}
 const modelGateway = new ModelGateway(
   repositories.audit,
   repositories.modelCalls,
@@ -532,6 +545,7 @@ const modelGateway = new ModelGateway(
   undefined, // sensitivityPolicy → env (sensitivityPolicyFromEnv)
   repositories.platformSettings, // D11 — model.pricing tarifa a valódi costEstimate-hez
   agentSensitivityPolicy,
+  agentTenantResolver,
 )
 // Tartós agent-memória (agent-memory-persistent-cross-conversation-spec.md
 // WP-2/WP-4): a retrieval service pure, a proposal service a T1 candidate-írást

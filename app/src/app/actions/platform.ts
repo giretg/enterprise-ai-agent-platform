@@ -1,7 +1,14 @@
 'use server'
 
 import { z } from 'zod'
-import type { ConnectorAccessMode, ConnectorType, Prisma, UserRole } from '@prisma/client'
+import type {
+  ConnectorAccessMode,
+  ConnectorType,
+  ModelBudgetPeriod,
+  Prisma,
+  Ticket,
+  UserRole,
+} from '@prisma/client'
 import { mkdir, unlink, writeFile } from 'fs/promises'
 import path from 'path'
 import { clerkClient } from '@clerk/nextjs/server'
@@ -43,6 +50,8 @@ import {
   buildTaskOnlyTicketTitle,
   validateTaskOnlyTaskInput,
 } from '@/lib/task-only-ticket'
+import { buildTicketDiscussionHistory } from '@/lib/ticket-thread-prompt'
+import { readTicketPromptText } from '@/lib/wiki-ticket-payload'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
 import { isAgentAccessError } from '@/domain/agent-access/agent-access-errors'
 import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
@@ -61,6 +70,7 @@ import {
   formatTicketCreator,
 } from '@/lib/ticket-display'
 import { fail, ok, type ActionResult } from '@/lib/result'
+import { isRuleExhausted, pickPeakAgent } from '@/lib/budget-rule-usage'
 import { NORMAL_TOOL_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
 import {
@@ -3432,10 +3442,30 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
     )
 
     let continuedFromTicket: { id: string; title: string } | null = null
+    let ticketDiscussionHistory: Array<{
+      id: string
+      role: 'user' | 'agent' | 'system'
+      text: string
+      authorLabel: string
+      createdAt: string
+    }> = []
     if (conversation.continuedFromTicketId) {
       const sourceTicket = await repositories.tickets.findById(conversation.continuedFromTicketId)
       if (sourceTicket && sourceTicket.tenantId === user.activeTenantId) {
         continuedFromTicket = { id: sourceTicket.id, title: sourceTicket.title }
+        const payload =
+          sourceTicket.payload &&
+          typeof sourceTicket.payload === 'object' &&
+          !Array.isArray(sourceTicket.payload)
+            ? (sourceTicket.payload as Record<string, unknown>)
+            : {}
+        const originalTask = readTicketPromptText(payload) || sourceTicket.title
+        const comments = await repositories.tickets.listComments(sourceTicket.id)
+        ticketDiscussionHistory = buildTicketDiscussionHistory({
+          comments,
+          originalTask,
+          ticketCreatedAt: sourceTicket.createdAt,
+        })
       }
     }
 
@@ -3449,6 +3479,7 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
         continuedFromTicketId: conversation.continuedFromTicketId,
       },
       continuedFromTicket,
+      ticketDiscussionHistory,
       messages: views,
       pendingConsequenceApprovals,
     })
@@ -5750,18 +5781,160 @@ export async function deleteModelRoutingPolicy(input: { id: string }) {
 
 // ── Model Gateway: Budgets (Fázis 2-A) ──────────────────────────────────────
 
-export async function listModelBudgets() {
+/**
+ * Egy keretszabály a felület számára. Szándékosan NEM a nyers Prisma sor: a
+ * `softThreshold` `Decimal` példány, amit a szerver→kliens határ nem tud
+ * szerializálni, és a felületnek amúgy sincs rá szüksége.
+ */
+export type BudgetRuleView = {
+  id: string
+  /** `null` = platform-szintű, minden szervezetre érvényes szabály. */
+  tenantId: string | null
+  scope: 'tenant' | 'agent' | 'ticket_type'
+  scopeRef: string | null
+  period: 'day' | 'week' | 'month'
+  callLimit: number | null
+  tokenLimit: number | null
+  hardCap: boolean
+  /**
+   * A szabály SAJÁT hatókörén mért fogyasztás — ugyanaz a mérés, amit a kapu néz,
+   * hogy a felületen látszó „hol tartunk" ne térjen el a tényleges döntéstől.
+   * A platform-szintű sornál az aktív szervezetben mérve (ott dől el, blokkol-e itt).
+   */
+  usage: {
+    calls: number
+    tokens: number
+    /**
+     * A „minden munkatársra külön-külön" szabálynál nincs egyetlen fogyasztás: a
+     * korlátot az éri el először, aki a legtöbbet fogyasztotta. A számok ezért az
+     * ő fogyasztását mutatják — ő a szűk keresztmetszet.
+     */
+    peakAgentName?: string
+    /** Igaz, ha ez a szabály most blokkolna egy új hívást. */
+    exhausted: boolean
+  }
+}
+
+type BudgetRuleRow = {
+  id: string
+  tenantId: string | null
+  scope: string
+  scopeRef: string | null
+  period: string
+  callLimit: number | null
+  tokenLimit: number | null
+  hardCap: boolean
+}
+
+function toBudgetRuleView(row: BudgetRuleRow, usage: BudgetRuleView['usage']): BudgetRuleView {
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    scope: row.scope as BudgetRuleView['scope'],
+    scopeRef: row.scopeRef,
+    period: row.period as BudgetRuleView['period'],
+    callLimit: row.callLimit,
+    tokenLimit: row.tokenLimit,
+    hardCap: row.hardCap,
+    usage,
+  }
+}
+
+/** Frissen létrehozott / most mentett szabály — a fogyasztás a következő betöltéskor pontosul. */
+function toBudgetRuleViewWithoutUsage(row: BudgetRuleRow): BudgetRuleView {
+  return toBudgetRuleView(row, { calls: 0, tokens: 0, exhausted: false })
+}
+
+/**
+ * Egy keretszabály fogyasztása a SAJÁT hatókörén, az aktív szervezetben mérve.
+ * A hatókör dönti el, mit összegzünk — ugyanaz a szabály, amit a kapu is követ
+ * (`usageForBudget`), különben a felületen látszó szám és a blokkolás elválna.
+ */
+async function budgetRuleUsage(
+  row: BudgetRuleRow,
+  tenantId: string,
+  agentNameById: Map<string, string>,
+  byAgentByPeriod: Map<string, Array<{ agentId: string; calls: number; tokens: number }>>,
+): Promise<BudgetRuleView['usage']> {
+  const period = row.period as ModelBudgetPeriod
+  const exhausted = (usage: { calls: number; tokens: number }) => isRuleExhausted(row, usage)
+
+  if (row.scope === 'tenant') {
+    const usage = await repositories.modelCalls.getUsageForTenant(tenantId, period)
+    return { ...usage, exhausted: exhausted(usage) }
+  }
+
+  if (row.scope === 'ticket_type') {
+    if (!row.scopeRef) return { calls: 0, tokens: 0, exhausted: false }
+    const usage = await repositories.modelCalls.getUsageForTicketType(
+      tenantId,
+      row.scopeRef as Ticket['type'],
+      period,
+    )
+    return { ...usage, exhausted: exhausted(usage) }
+  }
+
+  if (row.scopeRef) {
+    const usage = await repositories.modelCalls.getUsageForAgent(row.scopeRef, period)
+    return { ...usage, exhausted: exhausted(usage) }
+  }
+
+  // `scope=agent` + `scopeRef=null`: minden munkatársra külön érvényes. A korlátot az
+  // éri el először, aki a legtöbbet fogyasztotta — őt mutatjuk szűk keresztmetszetként.
+  const peak = pickPeakAgent(byAgentByPeriod.get(period) ?? [], row)
+  if (!peak) return { calls: 0, tokens: 0, exhausted: false }
+  return {
+    calls: peak.calls,
+    tokens: peak.tokens,
+    peakAgentName: agentNameById.get(peak.agentId) ?? peak.agentId,
+    exhausted: exhausted(peak),
+  }
+}
+
+export async function listModelBudgets(): Promise<ActionResult<BudgetRuleView[]>> {
   try {
     const ctx = await requireTenantRole('operator')
     // A `list()` szűrő nélkül MINDEN tenant keretét visszaadta egy tenant-operatornak.
     // A saját tenant + a platform-szintű (tenantId: null) sorok láthatók, más nem.
-    const [own, platformWide] = await Promise.all([
+    const [own, platformWide, agents] = await Promise.all([
       repositories.modelBudgets.list({ tenantId: ctx.activeTenantId }),
       repositories.modelBudgets.list({ tenantId: undefined }).then((rows) =>
         rows.filter((b) => b.tenantId === null),
       ),
+      repositories.agents.findMany({
+        tenantId: ctx.activeTenantId,
+        excludeHiddenFromOperators: shouldExcludeHiddenAgents(ctx.activeTenantRole),
+      }),
     ])
-    return ok([...own, ...platformWide])
+    const rows = [...own, ...platformWide]
+    const agentNameById = new Map(agents.map((a) => [a.id, a.name]))
+
+    // Az agentenkénti bontás periódusonként egyszer kell, nem szabályonként.
+    const periods = [
+      ...new Set(
+        rows
+          .filter((r) => r.scope === 'agent' && r.scopeRef === null)
+          .map((r) => r.period as ModelBudgetPeriod),
+      ),
+    ]
+    const byAgentByPeriod = new Map(
+      await Promise.all(
+        periods.map(
+          async (period) =>
+            [period, await repositories.modelCalls.getUsageByAgent(ctx.activeTenantId, period)] as const,
+        ),
+      ),
+    )
+
+    const views = await Promise.all(
+      rows.map(async (row) =>
+        toBudgetRuleView(
+          row,
+          await budgetRuleUsage(row, ctx.activeTenantId, agentNameById, byAgentByPeriod),
+        ),
+      ),
+    )
+    return ok(views)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list model budgets')
   }
@@ -5786,6 +5959,11 @@ export type DailyBudgetOverview = {
     tenant: { calls: number; tokens: number }
     agents: Array<{ agentId: string; name: string; calls: number; tokens: number }>
   }
+  /**
+   * A szervezet AI munkatársai — az egyedi keretszabályok UUID helyett nevet
+   * mutatnak, és új szabálynál listából lehet munkatársat választani.
+   */
+  agents: Array<{ id: string; name: string }>
 }
 
 /**
@@ -5833,6 +6011,9 @@ export async function getDailyBudgetOverview(): Promise<ActionResult<DailyBudget
           .map((u) => ({ ...u, name: nameById.get(u.agentId) ?? u.agentId }))
           .sort((a, b) => b.tokens - a.tokens),
       },
+      agents: agents
+        .map((a) => ({ id: a.id, name: a.name }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'hu')),
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load budget overview')
@@ -5905,6 +6086,13 @@ export async function setTenantDailyBudget(
   }
 }
 
+/**
+ * Egyedi keretszabály létrehozása.
+ *
+ * A `appliesTo` szándékosan kötelező döntés: korábban a hiányzó `tenantId` némán
+ * PLATFORM-szintű (minden szervezetre érvényes) sort hozott létre, amit a felületen
+ * semmi nem jelzett — így egy szervezetnek szánt korlát az összes többit is fogta.
+ */
 export async function createModelBudget(input: {
   scope: 'tenant' | 'agent' | 'ticket_type'
   scopeRef?: string
@@ -5913,12 +6101,15 @@ export async function createModelBudget(input: {
   tokenLimit?: number
   softThreshold?: number
   hardCap?: boolean
-  tenantId?: string
+  appliesTo: 'tenant' | 'platform'
 }) {
   try {
-    await requirePlatformRole('superadmin')
+    const ctx = await requirePlatformRole('superadmin')
+    if (input.appliesTo === 'tenant' && !ctx.activeTenantId) {
+      return fail('Nincs kiválasztott szervezet — válts szervezetet, vagy add meg platform-szintűnek.')
+    }
     const budget = await repositories.modelBudgets.create({
-      tenantId: input.tenantId ?? null,
+      tenantId: input.appliesTo === 'platform' ? null : ctx.activeTenantId,
       scope: input.scope,
       scopeRef: input.scopeRef ?? null,
       period: input.period,
@@ -5927,15 +6118,70 @@ export async function createModelBudget(input: {
       softThreshold: input.softThreshold != null ? new (await import('@prisma/client')).Prisma.Decimal(input.softThreshold) : null,
       hardCap: input.hardCap ?? true,
     })
-    return ok(budget)
+    return ok(toBudgetRuleViewWithoutUsage(budget))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create model budget')
   }
 }
 
+/**
+ * Meglévő keretszabály korlátainak módosítása. A hatókör (kire vonatkozik) és a
+ * periódus nem változtatható — az más szabály, ott törlés + új a helyes út.
+ */
+export async function updateModelBudget(input: {
+  id: string
+  callLimit: number | null
+  tokenLimit: number | null
+  hardCap: boolean
+}) {
+  try {
+    const ctx = await requirePlatformRole('superadmin')
+    const existing = await repositories.modelBudgets.findById(input.id)
+    if (!existing) return fail('A keretszabály nem található.')
+    // Platform-szintű sort bárhonnan, tenant-sort csak a saját szervezet nézetéből.
+    if (existing.tenantId !== null && existing.tenantId !== ctx.activeTenantId) {
+      return fail('Ez a keretszabály másik szervezethez tartozik — válts arra a szervezetre.')
+    }
+    const budget = await repositories.modelBudgets.update(input.id, {
+      callLimit: input.callLimit,
+      tokenLimit: input.tokenLimit,
+      hardCap: input.hardCap,
+    })
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: ctx.user.id,
+      agentVersion: null,
+      action: 'model.budget_changed',
+      targetType: 'tenant',
+      targetId: existing.tenantId ?? 'platform',
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: {
+        budgetId: input.id,
+        scope: existing.scope,
+        scopeRef: existing.scopeRef,
+        period: existing.period,
+        callLimit: input.callLimit,
+        tokenLimit: input.tokenLimit,
+        hardCap: input.hardCap,
+      },
+    })
+    return ok(toBudgetRuleViewWithoutUsage(budget))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update model budget')
+  }
+}
+
 export async function deleteModelBudget(input: { id: string }) {
   try {
-    await requirePlatformRole('superadmin')
+    const ctx = await requirePlatformRole('superadmin')
+    const existing = await repositories.modelBudgets.findById(input.id)
+    if (!existing) return fail('A keretszabály nem található.')
+    if (existing.tenantId !== null && existing.tenantId !== ctx.activeTenantId) {
+      return fail('Ez a keretszabály másik szervezethez tartozik — válts arra a szervezetre.')
+    }
     await repositories.modelBudgets.delete(input.id)
     return ok({ deleted: true })
   } catch (e) {
@@ -6068,5 +6314,17 @@ export async function clearManualModelPrice(input: { model: string }) {
     return ok(true)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to clear manual price')
+  }
+}
+
+/** OpenRouter models API → szinkronizált tarifa-réteg (superadmin). */
+export async function syncModelPricingFromOpenRouter() {
+  try {
+    await ensureActiveDatabaseMode()
+    const user = await requirePlatformRole('superadmin')
+    const result = await services.platformSettings.syncModelPricingFromOpenRouter(user.user.id)
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to sync model pricing')
   }
 }

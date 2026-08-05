@@ -1,5 +1,18 @@
 # Enterprise code review log
 
+## 2026-08-05 - Model Gateway: idegen tenant kerete állította meg a saját agentet
+
+- Áttekintett komponens: a Model Gateway keret- és routing-kapuja (`model-gateway.ts`, `budget-engine` / `routing-engine` hívások), a Postgres `ModelBudget` / `ModelRoutingPolicy` listázás, a control-plane napi keret UI, plusz a kapcsolódó chat 409-kezelés és ár-szinkron.
+- **Lelet (kritikus, cross-tenant keret-izoláció):** a futásidejű hívási helyek (chat tool-loop, ticket-dispatch) nem adtak `tenantId`-t a gateway-nek. A budget/routing repository szűrője hiányzó tenantnál **minden szervezet** szabályát betöltötte; a kapu ÉS-ben értékel, ezért egy idegen tenant szigorú per-agent alapértelmezése megállította a saját agentet. A feladat „Végrehajtásra vár”-ban ragadt, a blokkoló keretsor a saját felületen nem is látszott.
+- Javítás:
+  - A gateway az `agentId`-ból oldja fel a szervezetet (`AgentTenantResolver`); explicit hívói `tenantId` erősebb.
+  - Budget/routing listázásnál tenant nélkül csak a platform-szintű (`tenantId: null`) sorok élnek — idegen tenant soha.
+  - A keret UI saját hatókörű fogyasztást mutat (ugyanaz a mérés, mint a kapu), kötelező `appliesTo` (tenant vs platform) új szabálynál, szerkeszthető korlátok.
+  - Mellék: taskOnly 409 nem „már készül a válasz”-ként jelenik meg; ticket-megbeszélés előzmény; OpenRouter ár-szinkron aliasok.
+  - Regresszió: `test:gateway-tenant-budget-scope` (GT-1…GT-6).
+- Üzleti hatás: egy ügyfél elfogyott napi kerete nem állíthatja meg a másik ügyfél munkatársait. A saját keret továbbra is blokkol; a platform-szintű szabály minden szervezetre érvényes marad.
+- Ellenőrzés: `npm run test:gateway-tenant-budget-scope`, `test:model-pricing-sync`, `test:chat-stream-recovery`, `test:agent-task-only`, `test:ticket-thread-prompt` — zöld; `npx tsc --noEmit` tiszta.
+
 ## 2026-08-05 - Audit control plane: cross-tenant audit-idővonal és SIEM-export lezárása
 
 - Áttekintett, korábban külön nem naplózott komponens: a központi **Audit & Observability control plane** teljes olvasási/export útja — `app/src/app/actions/platform.ts` (`listAuditLog`, `exportAuditSiem`), `app/src/domain/audit/audit-chain-service.ts`, `app/src/repositories/postgres/audit-repository.ts`, az `AuditRepository` szerződés, hash-lánc és SIEM regressziós tesztek. Ez a compliance-bizonyíték, esemény-idővonal és külső SIEM-integráció közös adatkapuja.

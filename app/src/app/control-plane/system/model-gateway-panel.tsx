@@ -3,18 +3,17 @@
 import Link from 'next/link'
 import { useEffect, useState, useTransition } from 'react'
 import { Card } from '@/components/ui/shell'
-import type { ModelRoutingPolicy, ModelBudget } from '@prisma/client'
+import type { ModelRoutingPolicy } from '@prisma/client'
 import {
   createModelRoutingPolicy,
   deleteModelRoutingPolicy,
-  createModelBudget,
-  deleteModelBudget,
   getFallbackChain,
   setFallbackChain,
   previewEffectiveFallbackChain,
   getModelPricingView,
   setManualModelPrice,
   clearManualModelPrice,
+  syncModelPricingFromOpenRouter,
   listAgents,
 } from '@/app/actions/platform'
 import { ModelSelectField } from '@/components/agents/model-select-field'
@@ -221,154 +220,6 @@ function RoutingPoliciesSection({
   )
 }
 
-function BudgetsSection({
-  initial,
-  canEdit,
-}: {
-  initial: ModelBudget[]
-  canEdit: boolean
-}) {
-  const [budgets, setBudgets] = useState(initial)
-  const [pending, startTransition] = useTransition()
-  const [newScope, setNewScope] = useState<'tenant' | 'agent' | 'ticket_type'>('tenant')
-  const [newScopeRef, setNewScopeRef] = useState('')
-  const [newPeriod, setNewPeriod] = useState<'day' | 'week' | 'month'>('week')
-  const [newCallLimit, setNewCallLimit] = useState('')
-  const [newTokenLimit, setNewTokenLimit] = useState('')
-  const [msg, setMsg] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
-
-  function addBudget() {
-    setMsg(null)
-    startTransition(async () => {
-      const res = await createModelBudget({
-        scope: newScope,
-        scopeRef: newScopeRef.trim() || undefined,
-        period: newPeriod,
-        callLimit: newCallLimit ? Number(newCallLimit) : undefined,
-        tokenLimit: newTokenLimit ? Number(newTokenLimit) : undefined,
-        hardCap: true,
-      })
-      if (res.success) {
-        setBudgets((prev) => [...prev, res.data])
-        setNewScopeRef('')
-        setNewCallLimit('')
-        setNewTokenLimit('')
-        setMsg({ tone: 'ok', text: 'Budget létrehozva.' })
-      } else {
-        setMsg({ tone: 'err', text: res.error })
-      }
-    })
-  }
-
-  function removeBudget(id: string) {
-    setMsg(null)
-    startTransition(async () => {
-      const res = await deleteModelBudget({ id })
-      if (res.success) {
-        setBudgets((prev) => prev.filter((b) => b.id !== id))
-        setMsg({ tone: 'ok', text: 'Törölve.' })
-      } else {
-        setMsg({ tone: 'err', text: res.error })
-      }
-    })
-  }
-
-  return (
-    <div className="space-y-3">
-      <p className="text-xs font-semibold uppercase tracking-wider text-ink-faint">Budget szabályok</p>
-      {budgets.length === 0 && (
-        <p className="text-sm text-ink-soft">Nincs budget korlát — csak a ticket-szintű guardrail aktív.</p>
-      )}
-      <div className="space-y-2">
-        {budgets.map((b) => (
-          <div
-            key={b.id}
-            className="flex items-center justify-between rounded-md border border-line/50 bg-night/40 px-3 py-2 text-sm"
-          >
-            <div>
-              <span className="font-medium text-ink">
-                {b.scope}
-                {b.scopeRef ? ` / ${b.scopeRef}` : ''}
-              </span>
-              <span className="ml-2 text-ink-faint">
-                {b.period}
-                {b.callLimit != null ? ` · ${b.callLimit} hívás` : ''}
-                {b.tokenLimit != null ? ` · ${b.tokenLimit} token` : ''}
-                {b.hardCap ? ' · hard cap' : ' · soft cap'}
-              </span>
-            </div>
-            {canEdit && (
-              <button
-                type="button"
-                disabled={pending}
-                onClick={() => removeBudget(b.id)}
-                className="text-xs text-coral hover:text-coral-deep disabled:opacity-50"
-              >
-                Töröl
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {canEdit && (
-        <div className="grid grid-cols-2 gap-2 rounded-md border border-line/40 bg-panel/20 p-3 md:grid-cols-4">
-          <select
-            value={newScope}
-            onChange={(e) => setNewScope(e.target.value as typeof newScope)}
-            className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink"
-          >
-            <option value="tenant">tenant</option>
-            <option value="agent">agent</option>
-            <option value="ticket_type">ticket_type</option>
-          </select>
-          <select
-            value={newPeriod}
-            onChange={(e) => setNewPeriod(e.target.value as typeof newPeriod)}
-            className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink"
-          >
-            <option value="day">nap</option>
-            <option value="week">hét</option>
-            <option value="month">hónap</option>
-          </select>
-          <input
-            placeholder="scope ref (opcionális)"
-            value={newScopeRef}
-            onChange={(e) => setNewScopeRef(e.target.value)}
-            className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink placeholder:text-ink-faint"
-          />
-          <input
-            type="number"
-            placeholder="hívás korlát"
-            value={newCallLimit}
-            onChange={(e) => setNewCallLimit(e.target.value)}
-            className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink placeholder:text-ink-faint"
-          />
-          <input
-            type="number"
-            placeholder="token korlát"
-            value={newTokenLimit}
-            onChange={(e) => setNewTokenLimit(e.target.value)}
-            className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink placeholder:text-ink-faint"
-          />
-          <div className="col-span-2 md:col-span-2" />
-          <button
-            type="button"
-            disabled={pending || (!newCallLimit && !newTokenLimit)}
-            onClick={addBudget}
-            className="rounded-md bg-coral px-3 py-1 text-xs font-medium text-night disabled:opacity-50"
-          >
-            Hozzáad
-          </button>
-        </div>
-      )}
-
-      {msg && (
-        <p className={`text-xs ${msg.tone === 'ok' ? 'text-emerald-400' : 'text-coral'}`}>{msg.text}</p>
-      )}
-    </div>
-  )
-}
 
 function FallbackChainSection({
   canEdit,
@@ -656,10 +507,13 @@ function PricingSection({ canEdit }: { canEdit: boolean }) {
     rateAsOf: string
   } | null>(null)
   const [pending, startTransition] = useTransition()
+  const [syncing, startSyncTransition] = useTransition()
   const [msg, setMsg] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
   const [editModel, setEditModel] = useState('')
   const [editIn, setEditIn] = useState('')
   const [editOut, setEditOut] = useState('')
+
+  const busy = pending || syncing
 
   function reload() {
     startTransition(async () => {
@@ -686,25 +540,53 @@ function PricingSection({ canEdit }: { canEdit: boolean }) {
       <p className="text-xs font-semibold uppercase tracking-wider text-ink-faint">Modell-árazás (€ / 1M token)</p>
       <ExplainBox>
         <p>
-          Három réteg: beépített alap → szinkronizált (CLI) → kézi felülírás. A felső réteg mindig nyer.
-          A listában a tarifakulcsok mellett megjelennek az alkalmazásban engedélyezett / kiválasztható
-          modellek is — ha még nincs saját tarifa, az örökölt (pl. default) ár látszik.
+          Három réteg: beépített alap → szinkronizált (OpenRouter) → kézi felülírás. A felső réteg mindig
+          nyer. A listában a beépített / kézi tarifakulcsok és az engedélyezett modellek jelennek meg — ha
+          még nincs saját tarifa, az örökölt (pl. default) ár látszik.
         </p>
         <p>
-          A szinkron parancssorból fut (<code className="text-ink">npx tsx scripts/sync-model-pricing.ts</code>),
-          innen csak a státusz látszik — böngészőből nincs indító gomb.
+          A szinkron gomb az OpenRouter <code className="text-ink">GET /api/v1/models</code> listájából
+          tölti a szinkronizált réteget (USD → EUR, fix árfolyam). Aliasok:{' '}
+          <code className="text-ink">google/gemini-…</code> → <code className="text-ink">gemini-…</code>,{' '}
+          <code className="text-ink">anthropic/claude-…</code> → <code className="text-ink">claude-…</code>{' '}
+          (haiku / sonnet / opus családkulcsok). Ami nincs az OpenRouteren (pl. helyi Ollama, ChatGPT
+          OAuth), az a beépített / kézi áron marad.
         </p>
       </ExplainBox>
 
-      <div className="rounded-md border border-line/40 bg-night/40 px-3 py-2 text-xs text-ink-soft">
-        {syncMeta ? (
-          <>
-            Utolsó szinkron: {new Date(syncMeta.lastSyncedAt).toLocaleString('hu-HU')} · forrás:{' '}
-            {syncMeta.sourceLabel ?? syncMeta.sourceFingerprint} · árfolyam: {syncMeta.eurPerUsd} EUR/USD (
-            {syncMeta.rateAsOf})
-          </>
-        ) : (
-          <>Még nem futott szinkron — a beépített / kézi tarifák érvényesek.</>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-line/40 bg-night/40 px-3 py-2 text-xs text-ink-soft">
+        <div>
+          {syncMeta ? (
+            <>
+              Utolsó szinkron: {new Date(syncMeta.lastSyncedAt).toLocaleString('hu-HU')} · forrás:{' '}
+              {syncMeta.sourceLabel ?? syncMeta.sourceFingerprint} · árfolyam: {syncMeta.eurPerUsd}{' '}
+              EUR/USD ({syncMeta.rateAsOf})
+            </>
+          ) : (
+            <>Még nem futott szinkron — a beépített / kézi tarifák érvényesek.</>
+          )}
+        </div>
+        {canEdit && (
+          <button
+            type="button"
+            disabled={busy}
+            className="shrink-0 rounded-md border border-line/60 bg-panel/60 px-3 py-1 text-xs font-medium text-ink hover:bg-panel disabled:opacity-50"
+            onClick={() => {
+              setMsg(null)
+              startSyncTransition(async () => {
+                const res = await syncModelPricingFromOpenRouter()
+                if (res.success) {
+                  setMsg({
+                    tone: 'ok',
+                    text: `OpenRouter szinkron kész: ${res.data.written} modell, ${res.data.changed} változás.`,
+                  })
+                  reload()
+                } else setMsg({ tone: 'err', text: res.error })
+              })
+            }}
+          >
+            {syncing ? 'Szinkron…' : 'Árak szinkronizálása'}
+          </button>
         )}
       </div>
 
@@ -747,7 +629,7 @@ function PricingSection({ canEdit }: { canEdit: boolean }) {
                     {row.source === 'manual' && !row.resolvedFrom && (
                       <button
                         type="button"
-                        disabled={pending}
+                        disabled={busy}
                         className="text-xs text-coral"
                         onClick={() => {
                           setMsg(null)
@@ -797,7 +679,7 @@ function PricingSection({ canEdit }: { canEdit: boolean }) {
           />
           <button
             type="button"
-            disabled={pending || !editModel || !editIn || !editOut}
+            disabled={busy || !editModel || !editIn || !editOut}
             className="rounded-md bg-coral px-3 py-1 text-xs font-medium text-night disabled:opacity-50"
             onClick={() => {
               setMsg(null)
@@ -935,16 +817,21 @@ export function ModelRoutingPanel({
   )
 }
 
-export function ModelBudgetsPanel({
-  initial,
-  canEdit,
-}: {
-  initial: ModelBudget[]
-  canEdit: boolean
-}) {
+/**
+ * A keretek szerkesztése a Rendszer → Model-keretek fülön van, együtt a napi
+ * alapkeretekkel és a tényleges fogyasztással. Korábban két külön helyen, két
+ * szóhasználattal jelentek meg ugyanazok a sorok.
+ */
+function BudgetsLinkNote() {
   return (
-    <Card title="Budget szabályok">
-      <BudgetsSection initial={initial} canEdit={canEdit} />
+    <Card title="Költségkeretek">
+      <p className="text-sm text-ink-soft">
+        A napi hívás- és token-korlátok — és az egy-egy munkatársra szabott kivételek — a{' '}
+        <Link href="/control-plane/system#napi-keret" className="text-accent hover:underline">
+          Rendszer → Model-keretek
+        </Link>{' '}
+        fülön szerkeszthetők, ahol a mai fogyasztás is látszik mellettük.
+      </p>
     </Card>
   )
 }
@@ -953,13 +840,11 @@ export function ModelBudgetsPanel({
 export function ModelGatewayPanel({
   stats,
   routingPolicies,
-  budgets,
   canEdit,
   providers,
 }: {
   stats: GatewaySummaryData
   routingPolicies: ModelRoutingPolicy[]
-  budgets: ModelBudget[]
   canEdit: boolean
   providers?: ModelProviderOption[]
 }) {
@@ -969,7 +854,7 @@ export function ModelGatewayPanel({
       <FallbackChainPanel canEdit={canEdit} providers={providers} />
       <ModelPricingPanel canEdit={canEdit} />
       <ModelRoutingPanel initial={routingPolicies} canEdit={canEdit} providers={providers} />
-      <ModelBudgetsPanel initial={budgets} canEdit={canEdit} />
+      <BudgetsLinkNote />
     </div>
   )
 }

@@ -41,6 +41,7 @@ import {
 import { AGENT_TURN_RECONNECT_POLL_DEFAULT_MS } from '@/domain/agent/agent-turn-reconnect'
 import {
   decideChatStreamRecovery,
+  resolveChatStreamConflict,
   STREAM_RECOVERED_MESSAGE,
   STREAM_RECOVERY_FAILED_MESSAGE,
   type ChatStreamEnding,
@@ -1314,6 +1315,16 @@ export function AgentChatPanel({
     id: string
     title: string
   } | null>(null)
+  /** Ticket-szál olvasható előzménye a megbeszélés chatben (nem Message rekord). */
+  const [ticketDiscussionHistory, setTicketDiscussionHistory] = useState<
+    Array<{
+      id: string
+      role: 'user' | 'agent' | 'system'
+      text: string
+      authorLabel: string
+      createdAt: string
+    }>
+  >([])
   const [chatProcessDefs, setChatProcessDefs] = useState<ChatProcessDefinition[]>([])
   const [selectedProcessDefId, setSelectedProcessDefId] = useState<string | null>(null)
   /**
@@ -1586,6 +1597,7 @@ export function AgentChatPanel({
     setStatusMessage(null)
     setLastTicketId(null)
     setContinuedFromTicket(null)
+    setTicketDiscussionHistory([])
     setConversationStatus('active')
     setSessionsFilter('active')
     setSessionsOpen(false)
@@ -1856,6 +1868,7 @@ export function AgentChatPanel({
       if (refreshed.success) {
         setConversationStatus(refreshed.data.conversation.status)
         setContinuedFromTicket(refreshed.data.continuedFromTicket ?? null)
+        setTicketDiscussionHistory(refreshed.data.ticketDiscussionHistory ?? [])
         setMessages(
           attachPendingConsequenceApprovals(
             refreshed.data.messages.map((m) => ({
@@ -1953,6 +1966,7 @@ export function AgentChatPanel({
       setConversationId(convId)
       setConversationStatus(res.data.conversation.status)
       setContinuedFromTicket(res.data.continuedFromTicket ?? null)
+      setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
       setMessages(
         attachPendingConsequenceApprovals(
           res.data.messages.map((m) => ({
@@ -2230,6 +2244,7 @@ export function AgentChatPanel({
       setStatusMessage(null)
       setLastTicketId(null)
       setContinuedFromTicket(null)
+      setTicketDiscussionHistory([])
       setSessionsOpen(false)
       setSelectedProcessDefId(null)
       setConversationStatus(sessions.find((session) => session.id === id)?.status ?? 'active')
@@ -2238,6 +2253,7 @@ export function AgentChatPanel({
       if (res.success) {
         setConversationStatus(res.data.conversation.status)
         setContinuedFromTicket(res.data.continuedFromTicket ?? null)
+        setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
         setMessages(
           attachPendingConsequenceApprovals(
             res.data.messages.map((m) => ({
@@ -2425,42 +2441,45 @@ export function AgentChatPanel({
           }),
         })
 
-        // Aktív-forduló ütközés (D7): a beszélgetésen már fut egy válasz. Nem
-        // néma hiba — a szerver az aktív forduló azonosítóját is visszaadja; a
-        // Aktív forduló ütközés: reattach az activeTurnId-re, ne új küldés.
+        // Aktív-forduló ütközés (D7) VAGY taskOnly tiltás (#199): mindkettő 409.
+        // A fajtákat nem szabad összekeverni — a taskOnly eddig „már készül a
+        // válasz”-ként jelent meg, eltüntette a kérdést, és beragadt a „most dolgozik".
         if (response.status === 409) {
           removeFailedOptimisticMessages()
-          let activeTurnIdFromConflict: string | null = null
-          let conflictConversationId = conversationId
+          markConversationRunning(conversationId, false)
+          let conflictBody: {
+            error?: string
+            message?: string
+            activeTurnId?: string | null
+            conversationId?: string
+          } = {}
           try {
-            const body = (await response.json()) as {
-              activeTurnId?: string | null
-              conversationId?: string
-            }
-            activeTurnIdFromConflict = body.activeTurnId ?? null
-            conflictConversationId = body.conversationId ?? conversationId
+            conflictBody = (await response.json()) as typeof conflictBody
           } catch {
             // ignore
           }
-          if (conflictConversationId) {
-            setConversationId(conflictConversationId)
-            const attached = await reattachToConversation(conflictConversationId)
-            if (attached) {
-              setStatusMessage('Már fut egy válasz — visszacsatlakoztál hozzá.')
-              return
+          const conflict = resolveChatStreamConflict(conflictBody, conversationId)
+          if (conflict.kind === 'active_turn') {
+            if (conflict.conversationId) {
+              setConversationId(conflict.conversationId)
+              const attached = await reattachToConversation(conflict.conversationId)
+              if (attached) {
+                setStatusMessage('Már fut egy válasz — visszacsatlakoztál hozzá.')
+                return
+              }
             }
+            setStatusMessage(conflict.message)
+            setIsAgentTyping(false)
+            return
           }
-          setStatusMessage(
-            activeTurnIdFromConflict
-              ? 'Ebben a beszélgetésben már készül egy válasz. Próbáld újra a megnyitást, vagy állítsd le.'
-              : 'Ebben a beszélgetésben már készül egy válasz. Várd meg, amíg elkészül, vagy állítsd le a Stop gombbal.',
-          )
+          setStatusMessage(conflict.message)
           setIsAgentTyping(false)
           return
         }
 
         if (!response.ok || !response.body) {
           removeFailedOptimisticMessages()
+          markConversationRunning(conversationId, false)
           setStatusMessage(
             options.consequenceApprovalIds?.length
               ? `A jóváhagyott művelet lefutott, de az agent folytatása nem indult el (${response.status}). Írd meg a chatben, hogy folytassa.`
@@ -3047,7 +3066,7 @@ export function AgentChatPanel({
 
           <div className="flex min-w-0 flex-1 flex-col">
             <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
-              {messages.length === 0 && !isAgentTyping ? (
+              {messages.length === 0 && ticketDiscussionHistory.length === 0 && !isAgentTyping ? (
                 <div className="mx-auto flex h-full min-h-[200px] max-w-md flex-col items-center justify-center text-center">
                   <span className="text-4xl" aria-hidden>
                     {persona.emoji}
@@ -3099,6 +3118,52 @@ export function AgentChatPanel({
                 </div>
               ) : (
                 <div className="mx-auto max-w-5xl">
+                  {ticketDiscussionHistory.length > 0 && (
+                    <div className="mb-6 space-y-3 border-b border-line pb-5">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
+                        Feladat előzménye
+                      </p>
+                      {ticketDiscussionHistory.map((item) => {
+                        const isUser = item.role === 'user'
+                        return (
+                          <div
+                            key={item.id}
+                            className={`flex gap-2.5 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
+                          >
+                            <div
+                              className={`max-w-[min(88%,64rem)] rounded-2xl px-4 py-3 text-sm shadow-sm ${
+                                isUser
+                                  ? 'rounded-tr-md bg-coral/85 text-card'
+                                  : item.role === 'system'
+                                    ? 'rounded-tl-md border border-dashed border-line bg-night-2 text-ink-faint'
+                                    : 'rounded-tl-md border border-line bg-card/80 text-ink-soft'
+                              }`}
+                            >
+                              <div
+                                className={`mb-1 text-[11px] font-semibold ${
+                                  isUser ? 'text-card/80' : 'text-ink-faint'
+                                }`}
+                              >
+                                {item.authorLabel}
+                              </div>
+                              {isUser ? (
+                                <div className="[&_a]:text-card [&_a]:underline [&_strong]:text-card">
+                                  <ChatMarkdown content={item.text} variant="user" />
+                                </div>
+                              ) : (
+                                <ChatMarkdown content={item.text} variant="agent" />
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                      {messages.length === 0 && !isAgentTyping && (
+                        <p className="pt-1 text-center text-xs text-ink-faint">
+                          Írd meg a kérdésed — {persona.nickname} a feladat előzményével válaszol.
+                        </p>
+                      )}
+                    </div>
+                  )}
                   {messages.map((message, index) => (
                     <MessageBubble
                       key={message.id}

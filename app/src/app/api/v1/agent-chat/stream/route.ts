@@ -3,6 +3,7 @@ import { services } from '@/domain'
 import { agentTurnRunner, type AgentChatStreamEvent } from '@/domain/agent/agent-turn-runner'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { startSseCommentHeartbeat } from '@/lib/sse-comment-heartbeat'
+import { shouldBlockTaskOnlyWebChat } from '@/lib/task-only-ticket'
 import { repositories } from '@/repositories/postgres'
 
 // SSE: dinamikus, Node runtime, ne bufferelődjön / cache-elődjön a stream.
@@ -52,24 +53,6 @@ export async function POST(request: Request) {
     return new Response('content is required', { status: 400 })
   }
 
-  // Feladatkör-korlátozás (#199): korlátozott agentnél a WEBES chat-felületről nem
-  // indítható ÚJ forduló. Ez UI-egyszerűsítés, nem jogosultsági korlát: a már futó
-  // forduló végigfut (`/turns/[turnId]/stream`, `/cancel`), a meglévő beszélgetések
-  // olvashatók, és a nem-emberi belépési pontok (agent_ask, csatorna-integrációk,
-  // agent API-kulcs, monitor-eszkaláció) érintetlenül maradnak — ezért a kapu itt,
-  // a felhasználói kérés-úton áll, nem a chat-runtime-ban.
-  const targetAgent = await repositories.agents.findById(agentId, user.activeTenantId)
-  if (targetAgent?.taskOnly) {
-    return Response.json(
-      {
-        error: 'agent_task_only',
-        message:
-          'Ez az agent korlátozott feladatkörű — feladatot az agent oldalán lévő feladat-gombbal indíthatsz.',
-      },
-      { status: 409 },
-    )
-  }
-
   // issue #97 — jóváhagyás utáni FOLYTATÁS. A gomb megnyomása eddig lefuttatta a
   // műveletet, de a felhasználó semmit nem látott belőle és a hátralévő lépések
   // is elmaradtak. Itt a szerver állítja össze a forduló szövegét a MÁR
@@ -96,6 +79,37 @@ export async function POST(request: Request) {
     }
     continuationContent = continuation.continuation.prompt
     continuationConversationId = continuation.continuation.conversationId
+  }
+
+  // Feladatkör-korlátozás (#199): korlátozott agentnél a WEBES chat-felületről nem
+  // indítható ÚJ forduló — kivéve a Ticket → Megbeszélés (#219) beszélgetést, ahol
+  // a ticket előzményéről kell tudni beszélgetni. Ez UI-egyszerűsítés, nem
+  // jogosultsági korlát: a már futó forduló végigfut (`/turns/[turnId]/stream`,
+  // `/cancel`), a meglévő beszélgetések olvashatók, és a nem-emberi belépési
+  // pontok (agent_ask, csatorna-integrációk, agent API-kulcs, monitor-eszkaláció)
+  // érintetlenül maradnak — ezért a kapu itt, a felhasználói kérés-úton áll, nem
+  // a chat-runtime-ban.
+  const targetAgent = await repositories.agents.findById(agentId, user.activeTenantId)
+  if (targetAgent?.taskOnly) {
+    let continuedFromTicketId: string | null = null
+    const effectiveConversationId = continuationConversationId ?? conversationId
+    if (typeof effectiveConversationId === 'string') {
+      const conversation = await repositories.conversations.findByIdForTenant(
+        effectiveConversationId,
+        user.activeTenantId,
+      )
+      continuedFromTicketId = conversation?.continuedFromTicketId ?? null
+    }
+    if (shouldBlockTaskOnlyWebChat({ taskOnly: true, continuedFromTicketId })) {
+      return Response.json(
+        {
+          error: 'agent_task_only',
+          message:
+            'Ez az agent korlátozott feladatkörű — feladatot az agent oldalán lévő feladat-gombbal indíthatsz.',
+        },
+        { status: 409 },
+      )
+    }
   }
 
   const encoder = new TextEncoder()

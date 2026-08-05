@@ -223,7 +223,7 @@ export function AgentChatSessionSidebar({
                             <p className="mt-0.5 line-clamp-1 text-xs text-ink-faint">{preview}</p>
                           )}
 
-                          {(running || archived || (!preview && !session.preview)) && (
+                          {(running || archived) && (
                             <div className="mt-1 flex flex-wrap items-center gap-1.5">
                               {running && (
                                 <span className="inline-flex items-center gap-1 rounded-full border border-sky/40 bg-sky/10 px-1.5 py-0.5 text-[10px] font-semibold text-sky">
@@ -234,11 +234,6 @@ export function AgentChatSessionSidebar({
                               {archived && (
                                 <span className="rounded-full border border-line px-1.5 py-0.5 text-[10px] text-ink-faint">
                                   archivált
-                                </span>
-                              )}
-                              {!preview && !session.preview && (
-                                <span className="rounded-full bg-night-2 px-1.5 py-0.5 text-[10px] text-ink-faint">
-                                  tartalom törölve
                                 </span>
                               )}
                             </div>

@@ -370,9 +370,11 @@ export class PostgresModelRoutingPolicyRepository implements ModelRoutingPolicyR
               { scopeRef: { in: scopeRefs } },
             ],
           },
-          ...(filter.tenantId !== undefined
-            ? [{ OR: [{ tenantId: null }, { tenantId: filter.tenantId }] }]
-            : []),
+          // A tenant-szűrő MINDIG érvényes: hiányzó `tenantId` esetén csak a
+          // platform-szintű (`tenantId: null`) policy jöhet szóba. Korábban a
+          // hiányzó szűrő azt jelentette, hogy MINDEN tenant policy-je bekerült,
+          // így egy másik szervezet routing-szabálya irányíthatta ezt az agentet.
+          { OR: [{ tenantId: null }, ...(filter.tenantId ? [{ tenantId: filter.tenantId }] : [])] },
         ],
       },
       orderBy: { priority: 'asc' },
@@ -436,9 +438,15 @@ export class PostgresModelBudgetRepository implements ModelBudgetRepository {
               { scopeRef: { in: scopeRefs } },
             ],
           },
-          ...(filter.tenantId !== undefined
-            ? [{ OR: [{ tenantId: null }, { tenantId: filter.tenantId }] }]
-            : []),
+          // ÜZLETI PROBLÉMA (javítva): a tenant-szűrő korábban kimaradt, ha a hívó
+          // nem adott `tenantId`-t — ilyenkor MINDEN szervezet kerete alkalmazandó
+          // lett. Mivel a kapu ÉS-ben értékel, egy idegen tenant per-agent
+          // alapértelmezése megállította ezt az agentet: a feladat „Végrehajtásra
+          // vár"-ban ragadt, és a felületen semmi nem magyarázta, miért (a másik
+          // szervezet keretsora nem is látszik itt).
+          // A szűrő ezért mindig érvényes: tenantId nélkül csak a platform-szintű
+          // (`tenantId: null`) keretek élnek.
+          { OR: [{ tenantId: null }, ...(filter.tenantId ? [{ tenantId: filter.tenantId }] : [])] },
         ],
       },
     })

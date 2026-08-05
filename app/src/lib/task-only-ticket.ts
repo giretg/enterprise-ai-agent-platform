@@ -100,3 +100,17 @@ export function buildTaskOnlyTaskPrompt(skillName: string): string {
     'paraméterek és a csatolt fájlok adják.',
   ].join(' ')
 }
+
+/**
+ * A webes chat-stream kapuja (#199): korlátozott feladatkörű agentnél új forduló
+ * tiltott — KIVÉVE a Ticket → Megbeszélés (#219) beszélgetést, ahol a ticket
+ * előzményéről kell tudni beszélni.
+ */
+export function shouldBlockTaskOnlyWebChat(input: {
+  taskOnly: boolean
+  continuedFromTicketId?: string | null
+}): boolean {
+  if (!input.taskOnly) return false
+  if (input.continuedFromTicketId) return false
+  return true
+}

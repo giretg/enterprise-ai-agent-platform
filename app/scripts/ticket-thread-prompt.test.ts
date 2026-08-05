@@ -7,6 +7,7 @@ import {
   TICKET_CONTINUE_RULES,
   TICKET_DISCUSSION_RULES,
   buildThreadContextPrompt,
+  buildTicketDiscussionHistory,
 } from '../src/lib/ticket-thread-prompt'
 import type { TicketCommentWithAttachments } from '../src/repositories/interfaces'
 
@@ -89,6 +90,26 @@ check('megbeszélés mód: discussion szabály, nincs continue', () => {
   assert.doesNotMatch(prompt, /Folytatasi szabalyok/)
   assert.match(prompt, /CHECKPOINT/)
   assert.match(prompt, /meséld el mi volt/)
+})
+
+check('megbeszélés history: eredeti feladat + szál a chat UI-nak', () => {
+  const history = buildTicketDiscussionHistory({
+    comments: [
+      comment({ seq: 1, kind: 'human_comment', body: 'csatolva a tulajdoni lap' }),
+      comment({ seq: 2, kind: 'agent_answer', body: 'Excel kész' }),
+      comment({ seq: 3, kind: 'human_comment', body: 'mi hiányzik?' }),
+    ],
+    originalTask: 'csatolva a tulajdoni lap',
+    ticketCreatedAt: new Date('2026-08-05T06:57:00Z'),
+  })
+  assert.equal(history[0]?.text, 'csatolva a tulajdoni lap')
+  assert.equal(history[0]?.authorLabel, 'Eredeti feladat')
+  // Az első human komment = eredeti feladat → ne duplikálódjon.
+  assert.equal(history.length, 3)
+  assert.equal(history[1]?.role, 'agent')
+  assert.equal(history[1]?.text, 'Excel kész')
+  assert.equal(history[2]?.role, 'user')
+  assert.equal(history[2]?.text, 'mi hiányzik?')
 })
 
 if (failures > 0) {

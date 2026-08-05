@@ -141,6 +141,25 @@ export interface AgentSensitivityPolicyReader {
   allowsSensitiveExternalModel(agentId: string): Promise<boolean>
 }
 
+/**
+ * Az agent szervezetének feloldása a gateway határán — ugyanaz a seam-minta, mint
+ * az `AgentSensitivityPolicyReader`-nél.
+ *
+ * ÜZLETI PROBLÉMA: a keret- és routing-kapu a hívótól várta a `tenantId`-t, de a
+ * futásidejű hívási helyek egyike sem adta át (a tool-loop kontextusa csak
+ * ticket/conversation azonosítót visz). A kapu így tenant-vakon értékelt: egy másik
+ * szervezet napi keretének elfogyása megállította ezt az agentet is, holott a saját
+ * kerete még bőven élt. A felhasználó ebből annyit látott, hogy a feladat
+ * „Végrehajtásra vár"-ban marad, magyarázat nélkül.
+ *
+ * A tenantot ezért a gateway maga oldja fel az `agentId`-ból: nincs hívási hely,
+ * ahol el lehetne felejteni.
+ */
+export interface AgentTenantResolver {
+  /** Az agent szervezete; `null`, ha az agent nem található vagy platform-szintű. */
+  tenantIdForAgent(agentId: string): Promise<string | null>
+}
+
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 }
@@ -999,6 +1018,11 @@ export class ModelGateway {
     private pricingSettings?: Pick<PlatformSettingsRepository, 'get'>,
     /** Ha nincs megadva, egyetlen agent sem kap sensitivity-router felmentést. */
     private agentSensitivityPolicy?: AgentSensitivityPolicyReader,
+    /**
+     * Ha nincs megadva, a hívó `tenantId`-ja dönt; annak hiányában csak a
+     * platform-szintű keretek és routing-policy-k élnek (idegen tenant sosem).
+     */
+    private agentTenantResolver?: AgentTenantResolver,
   ) {}
 
   /**
@@ -1038,6 +1062,26 @@ export class ModelGateway {
       },
     })
     return true
+  }
+
+  /**
+   * A hívás szervezete: az explicit `tenantId` erősebb, egyébként az agent
+   * szervezete. Ha egyik sincs, `null` — ilyenkor csak a platform-szintű keretek
+   * és routing-policy-k élnek, idegen szervezeté soha.
+   */
+  private async resolveTenantId(
+    agentId: string,
+    explicitTenantId?: string,
+  ): Promise<string | null> {
+    if (explicitTenantId) return explicitTenantId
+    if (!this.agentTenantResolver) return null
+    try {
+      return await this.agentTenantResolver.tenantIdForAgent(agentId)
+    } catch {
+      // A feloldás hibája nem buktathatja a modellhívást; a szűkebb (platform-szintű)
+      // keret-halmaz marad érvényben.
+      return null
+    }
   }
 
   /** Közös forbidden preflight a normál és a streaming modellhíváshoz. */
@@ -1358,6 +1402,10 @@ export class ModelGateway {
     targetId: string
   }> {
     const agentVersion = params.agentVersion ?? null
+    // A szervezet a keret- és routing-kapu kulcsa. A hívó megadhatja, de ha nem
+    // teszi (a futásidejű utak nem viszik), az agentből oldjuk fel — így nem
+    // eshetünk vissza a „minden tenant kerete érvényes" állapotba.
+    const tenantId = await this.resolveTenantId(params.agentId, params.tenantId)
 
     const sensitivity = classifyPrompt(params.messages)
     await this.enforceForbiddenSensitivityPolicy({
@@ -1374,7 +1422,7 @@ export class ModelGateway {
     if (this.routingEngine) {
       const decision = await this.routingEngine.resolve({
         agentId: params.agentId,
-        tenantId: params.tenantId,
+        ...(tenantId ? { tenantId } : {}),
         ticketType: params.ticketType,
         overrideHint: params.modelOverrideHint,
         agentModelConfig: params.modelConfig,
@@ -1420,7 +1468,7 @@ export class ModelGateway {
 
     if (this.budgetEngine) {
       const budgetCheck = await this.budgetEngine.check({
-        tenantId: params.tenantId,
+        tenantId,
         agentId: params.agentId,
         ticketType: params.ticketType,
       })
