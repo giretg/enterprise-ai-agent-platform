@@ -4814,9 +4814,12 @@ export async function rollbackMemory(input: { agentId: string; toVersion: number
 
 export async function listAuditLog(input?: z.infer<typeof listAuditLogSchema>) {
   try {
-    await requireTenantRole('approver')
+    const user = await requireTenantRole('approver')
     const parsed = input ? listAuditLogSchema.parse(input) : {}
     const entries = await repositories.audit.findMany({
+      // Az audit-nézet compliance-adatot mutat (agent, döntés, cél és időpont), ezért
+      // az approver szerep SOHA nem jelenthet cross-tenant olvasási jogosultságot.
+      tenantId: user.activeTenantId,
       limit: parsed.limit ?? 100,
       action: parsed.action,
       actorType: parsed.actorType,
@@ -4888,9 +4891,12 @@ export async function verifyAuditChain() {
 
 export async function exportAuditSiem(input?: { since?: string }) {
   try {
-    await requireTenantRole('admin')
-    const since = input?.since ? new Date(input.since) : undefined
-    const jsonLines = await services.auditChain.exportJsonLines(since)
+    const user = await requireTenantRole('admin')
+    const { since } = z.object({ since: z.coerce.date().optional() }).parse(input ?? {})
+    const jsonLines = await services.auditChain.exportJsonLines({
+      tenantId: user.activeTenantId,
+      since,
+    })
     return ok({ content: jsonLines, filename: `audit-siem-${new Date().toISOString().slice(0, 10)}.jsonl` })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Export failed')

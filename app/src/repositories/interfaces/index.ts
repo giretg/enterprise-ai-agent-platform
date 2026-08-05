@@ -1041,8 +1041,16 @@ export interface AuditRepository {
     since?: Date
     limit?: number
   }): Promise<AuditLog[]>
-  /** Teljes lánc vagy egy [fromSeq..toSeq] szegmens, seq szerint rendezve (§6.3 részleges verifikáció). */
-  findAll(range?: { fromSeq?: bigint; toSeq?: bigint }): Promise<AuditLog[]>
+  /**
+   * Audit-sorok seq szerint rendezve. A tenant/since szűrő az audit-olvasó és SIEM-export
+   * kötelező adat-határa; a [fromSeq..toSeq] a hash-lánc részleges ellenőrzéséhez kell.
+   */
+  findAll(filter?: {
+    fromSeq?: bigint
+    toSeq?: bigint
+    tenantId?: string
+    since?: Date
+  }): Promise<AuditLog[]>
   /** Counts of audit events grouped by `action`, optionally narrowed to a set / time window (§11 governance). */
   getActionCounts(filter?: { actions?: string[]; since?: Date }): Promise<Record<string, number>>
 }

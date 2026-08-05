@@ -103,13 +103,22 @@ export class PostgresAuditRepository implements AuditRepository {
     })
   }
 
-  async findAll(range?: { fromSeq?: bigint; toSeq?: bigint }): Promise<AuditLog[]> {
+  async findAll(filter?: {
+    fromSeq?: bigint
+    toSeq?: bigint
+    tenantId?: string
+    since?: Date
+  }): Promise<AuditLog[]> {
     const seqFilter: Prisma.BigIntFilter = {}
-    if (range?.fromSeq !== undefined) seqFilter.gte = range.fromSeq
-    if (range?.toSeq !== undefined) seqFilter.lte = range.toSeq
+    if (filter?.fromSeq !== undefined) seqFilter.gte = filter.fromSeq
+    if (filter?.toSeq !== undefined) seqFilter.lte = filter.toSeq
 
     return prisma.auditLog.findMany({
-      where: Object.keys(seqFilter).length > 0 ? { seq: seqFilter } : undefined,
+      where: {
+        ...(Object.keys(seqFilter).length > 0 ? { seq: seqFilter } : {}),
+        ...(filter?.tenantId ? { tenantId: filter.tenantId } : {}),
+        ...(filter?.since ? { createdAt: { gte: filter.since } } : {}),
+      },
       orderBy: { seq: 'asc' },
     })
   }

@@ -313,6 +313,13 @@ function buildChainV2(n: number): AuditLog[] {
 }
 
 class FakeAuditRepository implements AuditRepository {
+  lastFindAllFilter: {
+    fromSeq?: bigint
+    toSeq?: bigint
+    tenantId?: string
+    since?: Date
+  } | undefined
+
   constructor(private rows: AuditLog[]) {}
   async append(): Promise<AuditLog> {
     throw new Error('not used in this test')
@@ -320,9 +327,19 @@ class FakeAuditRepository implements AuditRepository {
   async findMany(): Promise<AuditLog[]> {
     return this.rows
   }
-  async findAll(range?: { fromSeq?: bigint; toSeq?: bigint }): Promise<AuditLog[]> {
+  async findAll(filter?: {
+    fromSeq?: bigint
+    toSeq?: bigint
+    tenantId?: string
+    since?: Date
+  }): Promise<AuditLog[]> {
+    this.lastFindAllFilter = filter
     return this.rows.filter(
-      (r) => (range?.fromSeq === undefined || r.seq >= range.fromSeq) && (range?.toSeq === undefined || r.seq <= range.toSeq),
+      (r) =>
+        (filter?.fromSeq === undefined || r.seq >= filter.fromSeq) &&
+        (filter?.toSeq === undefined || r.seq <= filter.toSeq) &&
+        (filter?.tenantId === undefined || r.tenantId === filter.tenantId) &&
+        (filter?.since === undefined || r.createdAt >= filter.since),
     )
   }
   async getActionCounts(): Promise<Record<string, number>> {
@@ -448,6 +465,35 @@ async function main() {
     const svc = new AuditChainService(new FakeAuditRepository(rows))
     const result = await svc.verifyChain(BigInt(4), BigInt(8))
     assert.equal(result.ok, false)
+  })
+
+  await checkAsync('SIEM export: kötelező tenant-szűrővel csak a saját evidencia exportálható', async () => {
+    const tenantA = 'aaaaaaaa-bbbb-4000-8000-000000000001'
+    const tenantB = 'bbbbbbbb-cccc-4000-8000-000000000002'
+    const rows = buildChainV2(2)
+    rows[0] = { ...rows[0], tenantId: tenantA, ticketId: 'cccccccc-dddd-4000-8000-000000000003' }
+    rows[1] = { ...rows[1], tenantId: tenantB, conversationId: 'dddddddd-eeee-4000-8000-000000000004' }
+    const audit = new FakeAuditRepository(rows)
+    const svc = new AuditChainService(audit)
+
+    const jsonLines = await svc.exportJsonLines({ tenantId: tenantA })
+    const exported = JSON.parse(jsonLines) as Record<string, unknown>
+
+    assert.deepEqual(audit.lastFindAllFilter, { tenantId: tenantA })
+    assert.equal(exported.tenant_id, tenantA)
+    assert.equal(exported.ticket_id, rows[0].ticketId)
+    assert.equal(exported.conversation_id, null)
+    assert.equal(jsonLines.includes(tenantB), false)
+  })
+
+  check('audit control plane: lista és SIEM export az aktív tenanttal szűr', () => {
+    const source = readFileSync(path.join(__dirname, '..', 'src', 'app', 'actions', 'platform.ts'), 'utf8')
+    const listAction = source.slice(source.indexOf('export async function listAuditLog'), source.indexOf('export async function archiveSandboxApp'))
+    const exportAction = source.slice(source.indexOf('export async function exportAuditSiem'), source.indexOf('export async function listWorkspaceTenants'))
+    assert.match(listAction, /const user = await requireTenantRole\('approver'\)/)
+    assert.match(listAction, /tenantId: user\.activeTenantId/)
+    assert.match(exportAction, /const user = await requireTenantRole\('admin'\)/)
+    assert.match(exportAction, /exportJsonLines\(\{\s*tenantId: user\.activeTenantId,/)
   })
 
   // ── katalógus-lefedettség: minden append() action-literál regisztrálva van ──
