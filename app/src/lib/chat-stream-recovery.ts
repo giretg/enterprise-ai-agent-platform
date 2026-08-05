@@ -69,3 +69,56 @@ export const STREAM_RECOVERED_MESSAGE = 'Megszakadt a kapcsolat — a mentett v�
 /** A visszaszerzés is elbukott (tartós hálózatkiesés) — a munka attól még megvan. */
 export const STREAM_RECOVERY_FAILED_MESSAGE =
   'Megszakadt a kapcsolat. A forduló a szerveren fut tovább — nyisd meg újra a beszélgetést a folytatáshoz.'
+
+/** #199 — korlátozott feladatkörű agent webes chat-tiltása. */
+export const STREAM_TASK_ONLY_BLOCKED_MESSAGE =
+  'Ez az agent korlátozott feladatkörű — feladatot az agent oldalán lévő feladat-gombbal indíthatsz.'
+
+export type ChatStreamConflictBody = {
+  error?: string
+  message?: string
+  activeTurnId?: string | null
+  conversationId?: string
+}
+
+export type ChatStreamConflictAction =
+  | {
+      kind: 'active_turn'
+      conversationId: string | null
+      activeTurnId: string | null
+      message: string
+    }
+  | { kind: 'blocked'; message: string }
+  | { kind: 'other'; message: string }
+
+/**
+ * A stream `409` válaszának értelmezése. A taskOnly tiltás (#199) és az aktív
+ * forduló ütközés (D7) ugyanazt a státuszkódot használja — összekeverésük
+ * eltünteti a user üzenetét, és hamis „már készül a válasz” állapotot hagy.
+ */
+export function resolveChatStreamConflict(
+  body: ChatStreamConflictBody,
+  fallbackConversationId: string | null,
+): ChatStreamConflictAction {
+  if (body.error === 'agent_task_only') {
+    return {
+      kind: 'blocked',
+      message: body.message?.trim() || STREAM_TASK_ONLY_BLOCKED_MESSAGE,
+    }
+  }
+  if (body.error === 'active_turn_exists' || body.activeTurnId) {
+    const activeTurnId = body.activeTurnId ?? null
+    return {
+      kind: 'active_turn',
+      conversationId: body.conversationId ?? fallbackConversationId,
+      activeTurnId,
+      message: activeTurnId
+        ? 'Ebben a beszélgetésben már készül egy válasz. Próbáld újra a megnyitást, vagy állítsd le.'
+        : 'Ebben a beszélgetésben már készül egy válasz. Várd meg, amíg elkészül, vagy állítsd le a Stop gombbal.',
+    }
+  }
+  return {
+    kind: 'other',
+    message: body.message?.trim() || `Küldés sikertelen (409)`,
+  }
+}

@@ -28,6 +28,7 @@ import {
   buildTaskOnlyTaskPrompt,
   buildTaskOnlyTicketTitle,
   readTicketPreferredSkillVersionIds,
+  shouldBlockTaskOnlyWebChat,
   validateTaskOnlyTaskInput,
 } from '../src/lib/task-only-ticket'
 import { SkillService } from '../src/domain/skill/skill-service'
@@ -351,6 +352,29 @@ async function runAttachmentPolicyTests() {
 
 test('audit event-catalog: az `agent.task_only` esemény regisztrált', () => {
   assert.ok(REGISTERED_AUDIT_ACTIONS.has('agent.task_only'))
+})
+
+// ── 7. Webes chat-kapu + Megbeszélés kivétel (#199 × #219) ───────────────────
+
+test('shouldBlockTaskOnlyWebChat: taskOnly agentnél a sima chat tiltott', () => {
+  assert.equal(shouldBlockTaskOnlyWebChat({ taskOnly: true, continuedFromTicketId: null }), true)
+  assert.equal(shouldBlockTaskOnlyWebChat({ taskOnly: true }), true)
+})
+
+test('shouldBlockTaskOnlyWebChat: nem-taskOnly agentnél a chat szabad', () => {
+  assert.equal(shouldBlockTaskOnlyWebChat({ taskOnly: false }), false)
+  assert.equal(
+    shouldBlockTaskOnlyWebChat({ taskOnly: false, continuedFromTicketId: 'ticket-1' }),
+    false,
+  )
+})
+
+test('shouldBlockTaskOnlyWebChat: ticket-megbeszélés (#219) kivétel a taskOnly tiltás alól', () => {
+  // Ági (taskOnly) ticket → Megbeszélés: a kérdés ne tűnjön el 409-cel.
+  assert.equal(
+    shouldBlockTaskOnlyWebChat({ taskOnly: true, continuedFromTicketId: 'ticket-1' }),
+    false,
+  )
 })
 
 async function main() {

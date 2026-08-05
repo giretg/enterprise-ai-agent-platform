@@ -11,15 +11,16 @@
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { syncModelPricing, type PriceSnapshotEntry } from '../src/domain/gateway/price-sync'
+import {
+  REPO_PRICE_SNAPSHOT_LABEL,
+  syncModelPricing,
+  type PriceSnapshotEntry,
+} from '../src/domain/gateway/price-sync'
 import { repositories } from '../src/repositories/postgres'
 
 async function main() {
   const write = process.argv.includes('--write')
-  const fixturePath = resolve(
-    process.cwd(),
-    'scripts/fixtures/model-pricing/litellm-price-snapshot.json',
-  )
+  const fixturePath = resolve(process.cwd(), REPO_PRICE_SNAPSHOT_LABEL)
 
   let snapshot: PriceSnapshotEntry[] | null = null
   try {
@@ -34,7 +35,7 @@ async function main() {
     settings: repositories.platformSettings,
     audit: write ? repositories.audit : undefined,
     dryRun: !write,
-    sourceLabel: 'scripts/fixtures/model-pricing/litellm-price-snapshot.json',
+    sourceLabel: REPO_PRICE_SNAPSHOT_LABEL,
     actorId: 'cli:sync-model-pricing',
   })
 

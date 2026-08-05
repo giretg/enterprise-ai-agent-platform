@@ -29,7 +29,6 @@ import { AutomationControlSection } from './automation-control-section'
 import { DailyBudgetPanel } from './daily-budget-panel'
 import {
   FallbackChainPanel,
-  ModelBudgetsPanel,
   ModelGatewayObservabilityPanel,
   ModelPricingPanel,
   ModelRoutingPanel,
@@ -165,10 +164,17 @@ export default async function SystemPage() {
           },
           {
             id: 'napi-keret',
-            label: 'Napi model-keret',
-            description: 'Tenant- és agent-szintű napi hívás/token plafon.',
+            label: 'Model-keretek',
+            description: 'Mennyit dolgozhatnak naponta az AI munkatársak — és a kivételek.',
             content: dailyBudgetRes.success
-              ? <DailyBudgetPanel overview={dailyBudgetRes.data} canEdit={canEditTenantBudget} />
+              ? (
+                <DailyBudgetPanel
+                  overview={dailyBudgetRes.data}
+                  canEdit={canEditTenantBudget}
+                  rules={budgetsRes.success ? budgetsRes.data : []}
+                  canEditRules={canEdit}
+                />
+              )
               : errorBox(dailyBudgetRes.error),
           },
           {
@@ -258,17 +264,6 @@ export default async function SystemPage() {
                 initial={routingPoliciesRes.success ? routingPoliciesRes.data : []}
                 canEdit={canEdit}
                 providers={enabledProviders}
-              />
-            ),
-          },
-          {
-            id: 'budget',
-            label: 'Budget szabályok',
-            description: 'Tenant / agent / ticket-típus hívás- és token-korlátok.',
-            content: (
-              <ModelBudgetsPanel
-                initial={budgetsRes.success ? budgetsRes.data : []}
-                canEdit={canEdit}
               />
             ),
           },
