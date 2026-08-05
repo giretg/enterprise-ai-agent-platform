@@ -34,6 +34,7 @@ import {
   buildEgyeztetesMunkafuzet,
   buildFoldMuveletekFromEltero,
   checkFoldMuveletekCoverage,
+  describeInvalidAppliedSource,
   extractAppliedOwnershipIds,
   hasCompleteHttpApiGetAllProvenance,
   egyeztetesSorok,
@@ -2223,6 +2224,7 @@ export async function tulajdoniLapEgyeztetes(
   const coverageAppliedPath = input.args.coverageAppliedPath?.trim()
   if (coverageAppliedPath && foldPlan) {
     const appliedRaw = await readWorkspaceJson(self, tenantId, workspaceId, coverageAppliedPath)
+    assertAppliedSourceIsProposalExtract(coverageAppliedPath, muveletekPath, appliedRaw)
     coverage = checkFoldMuveletekCoverage(foldPlan, extractAppliedOwnershipIds(appliedRaw))
   } else if (coverageAppliedPath) {
     // Nulla eltérés ebben a futásban → nincs tervezett PATCH/DELETE; ne követeljük
@@ -2288,6 +2290,32 @@ async function readWorkspaceJson(
   }
 }
 
+/**
+ * A lefedettség-kapu csak akkor jelent bármit, ha a „mit írtunk ki" oldal
+ * tényleg a Föld proposal tételeiről szól. Ha a terv (vagy az eltérés-lista)
+ * megy be, a kapu magát igazolná — ezért itt megállunk, és megmondjuk, mit
+ * kell megadni helyette. Néma „hiányzik mind a N id" helyett érthető hiba.
+ */
+function assertAppliedSourceIsProposalExtract(
+  appliedPath: string,
+  muveletekPath: string | null,
+  appliedRaw: unknown,
+): void {
+  const same =
+    muveletekPath != null &&
+    appliedPath.trim().toLowerCase() === muveletekPath.trim().toLowerCase()
+  const reason = same
+    ? 'ugyanaz a fájl, mint a terv (coverageMuveletekPath)'
+    : describeInvalidAppliedSource(appliedRaw)
+  if (!reason) return
+  throw new Error(
+    `tulajdoni_lap_egyeztetes coverage: a(z) "${appliedPath}" nem használható ` +
+      `alkalmazott csomagként — ${reason}. Add meg a Föld proposal tételeinek ` +
+      'kivonatát (pl. proposal_items_extract.json: entityType + entityId + muvelet ' +
+      'soronként), vagy a ténylegesen kiírt ownership id-k listáját.',
+  )
+}
+
 async function runFoldMuveletekCoverageCheck(
   self: ToolBrokerService,
   input: {
@@ -2314,6 +2342,7 @@ async function runFoldMuveletekCoverageCheck(
       `tulajdoni_lap_egyeztetes coverage: a(z) "${input.muveletekPath}" nem fold_muveletek terv (hiányzik az items tömb)`,
     )
   }
+  assertAppliedSourceIsProposalExtract(input.appliedPath, input.muveletekPath, appliedRaw)
   const plan = planRaw as FoldMuveletekPlan
   const coverage = checkFoldMuveletekCoverage(plan, extractAppliedOwnershipIds(appliedRaw))
   return {

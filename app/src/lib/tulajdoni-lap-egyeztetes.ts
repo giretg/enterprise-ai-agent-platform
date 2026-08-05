@@ -737,13 +737,31 @@ export type FoldMuveletekCoverage = {
   message: string
 }
 
-/** Proposal / HTTP invoke sor: ténylegesen alkalmazott Ownership írás. */
+/**
+ * Proposal / HTTP invoke sor: ténylegesen alkalmazott Ownership írás.
+ * A magyar változatok is kellenek: a Föld-tool kimenetek vegyesen használják az
+ * angol HTTP igét és a magyar szót — a hiányuk NÉMA hamis „hiányzó DELETE”
+ * riasztást adna, amitől az agent újraírná a már meglévő tételeket.
+ * A státusz-mondatok (`Törlés szükséges`) SZÁNDÉKOSAN nincsenek benne: azok az
+ * egyeztető terv-sorai, nem alkalmazott írások.
+ */
 const APPLIED_OWNERSHIP_WRITE_MUVELETEK = new Set([
   'DELETE',
   'PATCH',
   'PUT',
   'UPDATE',
+  'TORLES',
+  'MODOSITAS',
 ])
+
+/** Ékezet + kisbetű nélküli alak — `Módosítás` és `MODOSITAS` ugyanaz. */
+function normalizeMuvelet(raw: string): string {
+  return raw
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase()
+}
 
 function isFoldMuveletekPlanShape(rec: Record<string, unknown>): boolean {
   // A terv (fold_muveletek.json) NEM alkalmazott proposal — ha „applied”-ként
@@ -752,6 +770,37 @@ function isFoldMuveletekPlanShape(rec: Record<string, unknown>): boolean {
   if (rec.source === 'egyeztetes-eltero.json') return true
   if (Array.isArray(rec.executionOrder) && Array.isArray(rec.items)) return true
   return false
+}
+
+/**
+ * Egyeztető eltérés-sor (nev + statusz + azonosito) — terv, nem alkalmazás.
+ * A `statusz` értékét is nézzük: egy valódi proposal tételnek is lehet státusza
+ * (pl. `draft`), azt nem szabad emiatt eldobni.
+ */
+function isElteroRowShape(rec: Record<string, unknown>): boolean {
+  if (typeof rec.statusFromEgyeztetes === 'string') return true
+  return (
+    typeof rec.statusz === 'string' &&
+    (EGYEZTETES_STATUSZOK as string[]).includes(rec.statusz.trim())
+  )
+}
+
+/**
+ * Rossz fájl a `coverageAppliedPath`-on? → közérthető indok, különben null.
+ *
+ * Enélkül a terv/eltérés-lista beadása „hiányzik mind a N id” üzenetet adna,
+ * ami rossz irányba tereli az agentet (újraír), holott csak a fájlt tévesztette.
+ */
+export function describeInvalidAppliedSource(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const rec = raw as Record<string, unknown>
+  if (isFoldMuveletekPlanShape(rec)) {
+    return 'ez a fold_muveletek terv, nem a Föld proposal tételeinek kivonata'
+  }
+  if (Array.isArray(rec.eltero)) {
+    return 'ez az egyeztetes-eltero lista, nem a Föld proposal tételeinek kivonata'
+  }
+  return null
 }
 
 /**
@@ -773,8 +822,9 @@ export function extractAppliedOwnershipIds(raw: unknown): string[] {
     for (const row of raw) {
       if (!row || typeof row !== 'object') continue
       const rec = row as Record<string, unknown>
-      // Terv-sor (buildFoldMuveletekFromEltero): statusFromEgyeztetes mindig van.
-      if (typeof rec.statusFromEgyeztetes === 'string') continue
+      // Terv- / egyeztető sor: `statusFromEgyeztetes` (fold_muveletek items) vagy
+      // `statusz` (egyeztetes-eltero) — egyik sem alkalmazott írás.
+      if (isElteroRowShape(rec)) continue
 
       const entityType =
         typeof rec.entityType === 'string' ? rec.entityType.toLowerCase() : null
@@ -786,8 +836,15 @@ export function extractAppliedOwnershipIds(raw: unknown): string[] {
         (typeof rec.muvelet === 'string' && rec.muvelet) ||
         (typeof rec.method === 'string' && rec.method) ||
         ''
-      const muvelet = muveletRaw.toUpperCase()
-      if (!APPLIED_OWNERSHIP_WRITE_MUVELETEK.has(muvelet)) continue
+      const muvelet = normalizeMuvelet(muveletRaw)
+      // Művelet nélküli sor csak akkor számít, ha kimondottan Ownership tétel
+      // (`entityType`) — a terv és az eltérés-lista sorain nincs ilyen mező, így
+      // ez nem nyitja vissza a hamis „minden megvan” utat, viszont a puszta
+      // id-listát tartalmazó kivonat nem esik ki némán.
+      const applied = muvelet
+        ? APPLIED_OWNERSHIP_WRITE_MUVELETEK.has(muvelet)
+        : entityType != null
+      if (!applied) continue
 
       const path = typeof rec.path === 'string' ? rec.path : null
       if (path) {
@@ -844,6 +901,15 @@ export function checkFoldMuveletekCoverage(
     : [
         missing.length
           ? `Hiányzó ${missing.length} tervezett Ownership id (nem került a csomagba).`
+          : null,
+        // Egy id sem jött ki: majdnem mindig rossz fájl (terv / eltérés-lista /
+        // nem Ownership kivonat), nem 80 kimaradt írás. Ha ezt nem mondjuk ki,
+        // az agent újraírja a már meglévő tételeket.
+        missing.length && applied.size === 0
+          ? 'Egyetlen alkalmazott Ownership id sem jött ki a megadott fájlból — ' +
+            'ellenőrizd, hogy a coverageAppliedPath a Föld proposal tételeinek ' +
+            'kivonatára mutat-e (nem a fold_muveletek tervre és nem az ' +
+            'egyeztetes-eltero listára).'
           : null,
         extra.length
           ? `${extra.length} extra / ismeretlen id a csomagban (ne hagyj jóvá — lehet hallucinált).`
