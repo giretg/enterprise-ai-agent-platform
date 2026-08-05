@@ -1,5 +1,13 @@
 # Enterprise code review log
 
+## 2026-08-05 - Ticket következmény-jóváhagyás: 1 órás TTL zsákutca hosszú feladatokon
+
+- Áttekintett komponens: `ConsequenceApprovalService` TTL/listázás, ticket következmény-UI (`ticket-consequence-approvals`, `ticket-detail`), kanban „Fut” jelzés.
+- **Lelet (magas, UX/üzleti zsákutca):** a chat- és ticket-jóváhagyás ugyanazt az **1 órás** TTL-t használta. Multi-körös ticketeken (pl. Föld-szinkron) a kártyák lejárnak, miközben a ticket `awaiting_human`-en ragad; a CTA eltűnik, a felhasználó nem tudja, miért nem megy tovább a feladat. A listázási lookback is 24 óra volt, így a 3 napos TTL mellett a még élő pendingek is láthatatlanná válhattak volna.
+- Javítás: ticketre **3 napos TTL** + megfelelő lookback; chat marad 1 óra. A lejárt pending LÁTHATÓ (gomb nélkül), magyarázattal: dobd vissza és indítsd újra. Élő „Fut” animáció a ticket/kanban státuszon.
+- Üzleti hatás: hosszú, emberi jóváhagyást váró feladatoknál a gombok a teljes munkaablak alatt elérhetők maradnak; lejárat után a ticket nem hazudik „vár jóváhagyásra”-t gomb nélkül.
+- Ellenőrzés: `npm run test:consequence-approval` — zöld; `npx tsc --noEmit` tiszta.
+
 ## 2026-08-05 - Model Gateway: idegen tenant kerete állította meg a saját agentet
 
 - Áttekintett komponens: a Model Gateway keret- és routing-kapuja (`model-gateway.ts`, `budget-engine` / `routing-engine` hívások), a Postgres `ModelBudget` / `ModelRoutingPolicy` listázás, a control-plane napi keret UI, plusz a kapcsolódó chat 409-kezelés és ár-szinkron.
