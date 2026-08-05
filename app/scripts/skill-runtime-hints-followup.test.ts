@@ -599,6 +599,76 @@ test('coverage extract: CREATE / Partner / itemId nem lesz extra', () => {
   assert.equal(checkFoldMuveletekCoverage(plan, applied).ok, true)
 })
 
+test('coverage extract: fold_muveletek terv NEM számít alkalmazottnak (false OK)', () => {
+  const plan = buildFoldMuveletekFromEltero({
+    parcelId: 'parcel-1',
+    eltero: [
+      {
+        nev: 'Anna',
+        statusz: 'Módosítás szükséges',
+        hanyadLap: '1/2',
+        azonosito: 'own-a',
+      },
+      {
+        nev: 'Anna',
+        statusz: 'Törlés szükséges',
+        hanyadLap: null,
+        azonosito: 'own-sibling',
+      },
+    ],
+  })
+  // A modell / hibás skill néha a tervet adja coverageAppliedPath-nak.
+  // A path + ownershipId + action mezők korábban mind „alkalmazottnak” számítottak
+  // → coverage.ok true DELETE nélkül → validate/submit hányad-duplázódással.
+  const fromPlan = extractAppliedOwnershipIds(plan)
+  assert.deepEqual(fromPlan, [])
+  assert.equal(checkFoldMuveletekCoverage(plan, fromPlan).ok, false)
+  assert.equal(
+    checkFoldMuveletekCoverage(plan, fromPlan).missing.map((m) => m.ownershipId).sort().join(','),
+    'own-a,own-sibling',
+  )
+})
+
+test('coverage extract: CREATE pathje és eltero NEM ad hamis id-t', () => {
+  const plan = buildFoldMuveletekFromEltero({
+    parcelId: 'parcel-1',
+    eltero: [
+      {
+        nev: 'Anna',
+        statusz: 'Módosítás szükséges',
+        hanyadLap: '1/2',
+        azonosito: 'own-a',
+      },
+      {
+        nev: 'Anna',
+        statusz: 'Törlés szükséges',
+        hanyadLap: null,
+        azonosito: 'own-sibling',
+      },
+    ],
+  })
+  // Path a CREATE/POST filter ELŐTT került ki → sibling DELETE „megvolt” hamisan.
+  const createWithPath = extractAppliedOwnershipIds([
+    {
+      muvelet: 'CREATE',
+      entityType: 'Ownership',
+      path: '/parcels/parcel-1/ownerships/own-sibling',
+      entityId: '',
+    },
+    { muvelet: 'UPDATE', entityType: 'Ownership', entityId: 'own-a' },
+  ])
+  assert.deepEqual(createWithPath, ['own-a'])
+  assert.equal(checkFoldMuveletekCoverage(plan, createWithPath).ok, false)
+
+  const fromEltero = extractAppliedOwnershipIds({
+    eltero: [
+      { nev: 'Anna', statusz: 'Módosítás szükséges', azonosito: 'own-a' },
+      { nev: 'Anna', statusz: 'Törlés szükséges', azonosito: 'own-sibling' },
+    ],
+  })
+  assert.deepEqual(fromEltero, [])
+})
+
 test('fold_muveletek: hiányzó parcelId → placeholder megjegyzés', () => {
   const plan = buildFoldMuveletekFromEltero({
     eltero: [

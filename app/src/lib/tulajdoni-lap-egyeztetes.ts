@@ -737,10 +737,32 @@ export type FoldMuveletekCoverage = {
   message: string
 }
 
+/** Proposal / HTTP invoke sor: ténylegesen alkalmazott Ownership írás. */
+const APPLIED_OWNERSHIP_WRITE_MUVELETEK = new Set([
+  'DELETE',
+  'PATCH',
+  'PUT',
+  'UPDATE',
+])
+
+function isFoldMuveletekPlanShape(rec: Record<string, unknown>): boolean {
+  // A terv (fold_muveletek.json) NEM alkalmazott proposal — ha „applied”-ként
+  // adjuk be, a path / ownershipId mezők hamis lefedettség-OK-ot adnának, és a
+  // hiányzó sibling DELETE validate/submitig eljutna.
+  if (rec.source === 'egyeztetes-eltero.json') return true
+  if (Array.isArray(rec.executionOrder) && Array.isArray(rec.items)) return true
+  return false
+}
+
 /**
  * Proposal extract / tool-eredmény → ownership id halmaz (PATCH/DELETE).
  * CREATE / Partner / LandParcel tételek és a proposal `itemId` (`id`) NEM számítanak —
  * azok `extra` hamis pozitívot adnának a coverage-ben.
+ *
+ * Fontos: a `fold_muveletek` terv path/ownershipId mezői NEM „alkalmazott” id-k.
+ * A path-ból csak DELETE/PATCH/PUT/UPDATE muvelet után olvasunk — CREATE sor
+ * pathje (vagy a terv maga) korábban a filter ELŐTT bekerült, és silent false OK-ot
+ * adott a coverage kapun.
  */
 export function extractAppliedOwnershipIds(raw: unknown): string[] {
   if (Array.isArray(raw)) {
@@ -751,30 +773,27 @@ export function extractAppliedOwnershipIds(raw: unknown): string[] {
     for (const row of raw) {
       if (!row || typeof row !== 'object') continue
       const rec = row as Record<string, unknown>
-      const path = typeof rec.path === 'string' ? rec.path : null
-      if (path) {
-        const m = /\/ownerships\/([^/?#]+)/.exec(path)
-        const fromPath = m?.[1]?.trim()
-        if (fromPath && fromPath !== '{ownershipId}') ids.push(fromPath)
-      }
+      // Terv-sor (buildFoldMuveletekFromEltero): statusFromEgyeztetes mindig van.
+      if (typeof rec.statusFromEgyeztetes === 'string') continue
 
       const entityType =
         typeof rec.entityType === 'string' ? rec.entityType.toLowerCase() : null
       if (entityType && !entityType.includes('ownership')) continue
 
+      // `action` SZÁNDÉKOSAN kimarad: az a fold_muveletek terv mezője
+      // (`delete`/`patch`/`post`), nem a proposal `muvelet` / HTTP method.
       const muveletRaw =
         (typeof rec.muvelet === 'string' && rec.muvelet) ||
-        (typeof rec.action === 'string' && rec.action) ||
         (typeof rec.method === 'string' && rec.method) ||
         ''
       const muvelet = muveletRaw.toUpperCase()
-      if (
-        muvelet === 'CREATE' ||
-        muvelet === 'POST' ||
-        muvelet === 'ÚJ REKORD' ||
-        muvelet === 'UJ REKORD'
-      ) {
-        continue
+      if (!APPLIED_OWNERSHIP_WRITE_MUVELETEK.has(muvelet)) continue
+
+      const path = typeof rec.path === 'string' ? rec.path : null
+      if (path) {
+        const m = /\/ownerships\/([^/?#]+)/.exec(path)
+        const fromPath = m?.[1]?.trim()
+        if (fromPath && fromPath !== '{ownershipId}') ids.push(fromPath)
       }
 
       const id =
@@ -788,7 +807,10 @@ export function extractAppliedOwnershipIds(raw: unknown): string[] {
   }
   if (raw && typeof raw === 'object') {
     const rec = raw as Record<string, unknown>
-    for (const key of ['items', 'eltero', 'applied', 'rows', 'data']) {
+    if (isFoldMuveletekPlanShape(rec)) return []
+    // `eltero` kimarad: az egyeztető eltérő sorai (azonosito + státusz), nem
+    // proposal-alkalmazás — belőle hamis „minden id megvan” OK jönne.
+    for (const key of ['items', 'applied', 'rows', 'data']) {
       if (Array.isArray(rec[key])) return extractAppliedOwnershipIds(rec[key])
     }
   }
