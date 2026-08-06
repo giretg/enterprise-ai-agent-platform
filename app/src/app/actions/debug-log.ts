@@ -6,8 +6,8 @@ import { fail, ok } from '@/lib/result'
 import { conversationIdSchema, ticketIdSchema } from '@/lib/validators/actions'
 
 /**
- * Admin debug-pack: beszélgetés telemetria (üzenetek, fordulók, model/tool, audit,
- * kapcsolt ticketek) egy JSON fájlban. Nem tartalmaz nyers LLM promptot.
+ * Admin debug-pack: beszélgetés telemetria (fordulók, model/tool, audit,
+ * kapcsolt ticketek) egy JSON fájlban. Nyers chat- és modell-tartalmat nem tartalmaz.
  */
 export async function exportConversationDebugLog(input: { conversationId: string }) {
   try {
@@ -25,8 +25,8 @@ export async function exportConversationDebugLog(input: { conversationId: string
 }
 
 /**
- * Admin debug-pack: ticket telemetria (szál, átmenetek, model/tool, audit,
- * opcionális kapcsolt beszélgetés) egy JSON fájlban.
+ * Admin debug-pack: ticket telemetria (átmenetek, model/tool, audit,
+ * opcionális kapcsolt beszélgetés) egy JSON fájlban, nyers tartalom nélkül.
  */
 export async function exportTicketDebugLog(input: { id: string }) {
   try {
