@@ -8,6 +8,7 @@ import {
   buildConversationDebugLogBundle,
   buildTicketDebugLogBundle,
   serializeDebugLogBundle,
+  toDebugLogSafe,
   toJsonSafe,
 } from '../src/domain/debug-log/debug-log-export'
 import { assertAuditActionRegistered } from '../src/lib/audit/event-catalog'
@@ -47,6 +48,39 @@ async function main() {
     assert.deepEqual(safe.nested, [{ n: 1 }])
   })
 
+  await check('debug export: nyers tartalom, dokumentum és hozzáférési token fail-closed kiesik', () => {
+    const safe = toDebugLogSafe({
+      content: 'modellválasz: szintetikus_token=EXAMPLEONLY',
+      body: 'titkos ticket-komment',
+      title: 'Ügyfél incidens',
+      partialText: 'részválasz',
+      lockToken: 'runtime-lock',
+      metadata: { customerNote: 'nem exportálható' },
+      unrecognizedRawText: 'egy jövőbeli reláció nyers tartalma',
+      attachment: {
+        document: {
+          filename: 'partner@example.com.pdf',
+          extractedText: 'A csatolmány teljes szövege',
+          storageRef: 'gcs://tenant/document',
+          contentHash: 'sha256:ok',
+        },
+      },
+      status: 'ok',
+    }) as Record<string, unknown>
+
+    assert.equal('content' in safe, false)
+    assert.equal('body' in safe, false)
+    assert.equal('title' in safe, false)
+    assert.equal('partialText' in safe, false)
+    assert.equal('lockToken' in safe, false)
+    assert.equal('metadata' in safe, false)
+    assert.equal('unrecognizedRawText' in safe, false)
+    assert.deepEqual(safe.attachment, {
+      document: { contentHash: 'sha256:ok' },
+    })
+    assert.equal(safe.status, 'ok')
+  })
+
   await check('conversation bundle + serialize fájlnév', () => {
     const bundle = buildConversationDebugLogBundle({
       exportedAt: new Date('2026-07-28T15:00:00.000Z'),
@@ -66,7 +100,7 @@ async function main() {
     })
     assert.equal(bundle.schemaVersion, DEBUG_LOG_SCHEMA_VERSION)
     assert.equal(bundle.kind, 'conversation')
-    assert.equal(bundle.messages[0]?.content, 'szia')
+    assert.equal('content' in (bundle.messages[0] ?? {}), false)
     assert.equal(bundle.audit[0]?.seq, '1')
 
     const file = serializeDebugLogBundle(bundle, '11111111-2222-3333-4444-555555555555')

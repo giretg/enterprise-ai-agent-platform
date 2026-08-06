@@ -1,9 +1,13 @@
+import { redactSensitiveText } from '@/domain/gateway/sensitivity-router'
+
 /**
  * Admin debug-log export — conversation/ticket telemetria egy JSON bundle-ben.
- * Nem tartalmaz nyers LLM prompt/completion tartalmat (payload-guard invariáns).
+ * A csomag kizárólag működési metaadat: nyers chat-, ticket-, dokumentum- és
+ * modell-tartalom nem hagyhatja el benne a platformot.
  */
 
-export const DEBUG_LOG_SCHEMA_VERSION = 1 as const
+// v2: a korábbi teljes-objektum szerializálás helyett csak tartalommentes telemetria.
+export const DEBUG_LOG_SCHEMA_VERSION = 2 as const
 
 export type DebugLogExportFile = {
   content: string
@@ -43,6 +47,96 @@ export type TicketDebugLogSlice = {
   transitions: Array<Record<string, unknown>>
 }
 
+/**
+ * A debug-csomag támogatási/incident-vizsgálati artefakt, nem általános adat-export.
+ * Ezek a mezők nyers ügyfél-, modell- vagy hozzáférési adatot hordozhatnak; a
+ * forrásobjektumok Prisma-relációinak jövőbeli bővítése se nyithasson új szivárgási
+ * utat csak azért, mert a szerializáló automatikusan felvesz minden mezőt.
+ */
+const OMITTED_DEBUG_EXPORT_FIELDS = new Set([
+  'accesskey',
+  'accesstoken',
+  'activities',
+  'apikey',
+  'authorization',
+  'body',
+  'content',
+  'contentref',
+  'completion',
+  'cookie',
+  'channelexternalid',
+  'description',
+  'detail',
+  'error',
+  'extractedtext',
+  'filename',
+  'inputpayload',
+  'locktoken',
+  'message',
+  'metadata',
+  'outputpayload',
+  'partialtext',
+  'password',
+  'payload',
+  'prompt',
+  'raw',
+  'refreshtoken',
+  'request',
+  'response',
+  'secret',
+  'secretref',
+  'storageref',
+  'structured',
+  'summary',
+  'text',
+  'title',
+])
+
+const SAFE_DEBUG_EXPORT_STRING_FIELDS = new Set([
+  'action',
+  'assigneetype',
+  'channel',
+  'criticality',
+  'kind',
+  'model',
+  'outcome',
+  'policydecision',
+  'provider',
+  'role',
+  'scope',
+  'seq',
+  'source',
+  'state',
+  'status',
+  'targettype',
+  'toolname',
+  'trustclass',
+  'type',
+])
+
+function normalizedFieldName(field: string): string {
+  return field.replace(/[_-]/g, '').toLowerCase()
+}
+
+function shouldOmitDebugExportField(field: string): boolean {
+  return OMITTED_DEBUG_EXPORT_FIELDS.has(normalizedFieldName(field))
+}
+
+function mayContainStableDebugString(field: string): boolean {
+  const normalized = normalizedFieldName(field)
+  return (
+    SAFE_DEBUG_EXPORT_STRING_FIELDS.has(normalized) ||
+    normalized.endsWith('id') ||
+    normalized.endsWith('hash') ||
+    normalized.endsWith('ref') ||
+    normalized.endsWith('at') ||
+    normalized === 'ts' ||
+    normalized === 'retainuntil' ||
+    normalized === 'executeafter' ||
+    normalized === 'dueby'
+  )
+}
+
 /** JSON-safe érték: Date → ISO, Decimal/BigInt → string/number, egyéb primitív/struktúra. */
 export function toJsonSafe(value: unknown): unknown {
   if (value == null) return value
@@ -72,8 +166,42 @@ export function toJsonSafe(value: unknown): unknown {
   return value
 }
 
+/**
+ * `toJsonSafe` után alkalmazott, fail-closed export-határ. A megmaradó stringek
+ * is átmennek a közös érzékenyadat-redaktoron, így például egy megengedett
+ * állapotjelzésbe került e-mail, IBAN vagy titok sem kerülhet ki olvashatóan.
+ */
+export function toDebugLogSafe(value: unknown, field?: string): unknown {
+  const jsonSafe = toJsonSafe(value)
+
+  if (typeof jsonSafe === 'string') {
+    // Ismeretlen stringet nem exportálunk. Új Prisma-reláció vagy metadata-mező
+    // így csak tudatos, felülvizsgált bővítéssel adhat a debug-csomaghoz szöveget.
+    if (!field || !mayContainStableDebugString(field)) return undefined
+    return redactSensitiveText(jsonSafe).text
+  }
+
+  if (Array.isArray(jsonSafe)) {
+    return jsonSafe
+      .map((item) => toDebugLogSafe(item, field))
+      .filter((item) => item !== undefined)
+  }
+
+  if (jsonSafe && typeof jsonSafe === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, child] of Object.entries(jsonSafe as Record<string, unknown>)) {
+      if (shouldOmitDebugExportField(key)) continue
+      const safeChild = toDebugLogSafe(child, key)
+      if (safeChild !== undefined) out[key] = safeChild
+    }
+    return out
+  }
+
+  return jsonSafe
+}
+
 export function recordFromUnknown(value: unknown): Record<string, unknown> {
-  return toJsonSafe(value) as Record<string, unknown>
+  return toDebugLogSafe(value) as Record<string, unknown>
 }
 
 export function recordsFromUnknown(values: unknown[]): Array<Record<string, unknown>> {
