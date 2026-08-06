@@ -209,8 +209,9 @@ export function evaluateAgentAccess(params: {
  * MEGJELENÍTÉSE: egy user→A grant valójában A teljes kúpjára ad hozzáférést. Ezért
  * mutatja az admin UI a kúpot a grant/restriction szerkesztése mellett.
  *
- * - Ciklus engedett: a bejárás visited-halmazzal minden agentet EGYSZER vesz fel, így
- *   determinisztikusan terminál.
+ * - Ciklus engedett: a bejárás minden agentet EGYSZER vesz fel, így determinisztikusan
+ *   terminál. A `hasCycle` VALÓDI irányított kört jelent (egy agent önmagát közvetve
+ *   újra eléri), nem pusztán azt, hogy egy csomópont több úton is elérhető.
  * - Nincs policy-szintű mélységplafon (a futó delegáció mélysége külön runtime-védelem).
  * - Nincs cache-tábla: a szerver és a kliens UGYANEZT a tiszta algoritmust futtatja.
  */
@@ -224,54 +225,96 @@ export function reachableAgentIds(params: {
   tenantId: string
 }): { agentIds: string[]; maxDepth: number; hasCycle: boolean } {
   const { seedAgentIds, nodes, agentGrants, tenantId } = params
-  const visited = new Set<string>()
+
+  /**
+   * Egy forrás-agentből `address`-szel elérhető tenant-agentek. Csomópontonként
+   * egyszer számoljuk ki és cache-eljük, mert a BFS és a ciklus-detektáló DFS is kéri.
+   */
+  const adjacencyCache = new Map<string, string[]>()
+  const addressableFrom = (sourceId: string): string[] => {
+    const cached = adjacencyCache.get(sourceId)
+    if (cached) return cached
+    const source = nodes.get(sourceId)
+    const out: string[] = []
+    if (source) {
+      for (const [targetId, target] of nodes) {
+        if (targetId === sourceId) continue
+        const decision = evaluateAgentAccess({
+          subject: { kind: 'agent', agentId: source.id, tenantId },
+          target,
+          source: {
+            id: source.id,
+            tenantId: source.tenantId,
+            outboundRestricted: source.outboundRestricted,
+          },
+          grant: agentGrants.get(source.id)?.get(targetId) ?? null,
+          verb: 'address',
+        })
+        if (decision.allowed) out.push(targetId)
+      }
+    }
+    adjacencyCache.set(sourceId, out)
+    return out
+  }
+
+  // 1. Elérhető halmaz + legrövidebb-út mélység: BFS, minden csomópontot EGYSZER
+  //    veszünk sorba. Egy csomópont többszöri FELFEDEZÉSE (pl. gyémánt/DAG-minta:
+  //    két külön kollégán át is elérhető ugyanaz az agent) NEM ciklus — ezt a
+  //    korábbi „már láttam, tehát ciklus" jelzés hamisan körnek minősítette.
   const reached = new Set<string>()
   let maxDepth = 0
-  let hasCycle = false
-
   type QueueItem = { agentId: string; depth: number }
   const queue: QueueItem[] = []
 
   for (const seed of seedAgentIds) {
-    if (!nodes.has(seed)) continue
-    if (reached.has(seed)) continue
+    if (!nodes.has(seed) || reached.has(seed)) continue
     reached.add(seed)
     queue.push({ agentId: seed, depth: 1 })
   }
 
   while (queue.length > 0) {
     const item = queue.shift()!
-    if (visited.has(item.agentId)) {
-      // Visszacsatolás: a csomópont már fel van véve, nem járjuk be újra.
-      hasCycle = true
-      continue
-    }
-    visited.add(item.agentId)
     maxDepth = Math.max(maxDepth, item.depth)
+    for (const targetId of addressableFrom(item.agentId)) {
+      if (reached.has(targetId)) continue
+      reached.add(targetId)
+      queue.push({ agentId: targetId, depth: item.depth + 1 })
+    }
+  }
 
-    const source = nodes.get(item.agentId)
-    if (!source) continue
+  // 2. Ciklus-detektálás az ELÉRHETŐ részgráfon: iteratív, három-színes (fehér/szürke/
+  //    fekete) DFS. Egy MÉG NYITOTT (szürke, azaz az aktuális bejárási úton lévő)
+  //    csomópontra visszamutató él = visszaél = valódi irányított kör. A gyémánt/DAG
+  //    minta (közös leszármazott két úton) itt már feketévé zárult csomópontra mutat,
+  //    ezért helyesen NEM számít ciklusnak.
+  const WHITE = 0
+  const GRAY = 1
+  const BLACK = 2
+  const color = new Map<string, number>()
+  let hasCycle = false
 
-    for (const [targetId, target] of nodes) {
-      if (targetId === item.agentId) continue
-      const decision = evaluateAgentAccess({
-        subject: { kind: 'agent', agentId: source.id, tenantId },
-        target,
-        source: {
-          id: source.id,
-          tenantId: source.tenantId,
-          outboundRestricted: source.outboundRestricted,
-        },
-        grant: agentGrants.get(source.id)?.get(targetId) ?? null,
-        verb: 'address',
-      })
-      if (!decision.allowed) continue
-      if (visited.has(targetId)) {
+  for (const start of reached) {
+    if ((color.get(start) ?? WHITE) !== WHITE) continue
+    const stack: Array<{ id: string; iter: Iterator<string> }> = []
+    color.set(start, GRAY)
+    stack.push({ id: start, iter: addressableFrom(start)[Symbol.iterator]() })
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1]
+      const next = top.iter.next()
+      if (next.done) {
+        color.set(top.id, BLACK)
+        stack.pop()
+        continue
+      }
+      const child = next.value
+      const childColor = color.get(child) ?? WHITE
+      if (childColor === GRAY) {
         hasCycle = true
         continue
       }
-      if (!reached.has(targetId)) reached.add(targetId)
-      queue.push({ agentId: targetId, depth: item.depth + 1 })
+      if (childColor === BLACK) continue
+      color.set(child, GRAY)
+      stack.push({ id: child, iter: addressableFrom(child)[Symbol.iterator]() })
     }
   }
 

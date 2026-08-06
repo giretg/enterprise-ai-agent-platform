@@ -382,6 +382,70 @@ async function coneTests() {
     assert.ok(cone.agentIds.includes('f'))
   })
 
+  await check('gyémánt/DAG (közös leszármazott két úton) NEM ciklus', () => {
+    // s → x, s → y, x → t, y → t. Nincs visszaél, tehát nincs valódi kör — de a
+    // `t` csomópont két külön úton is elérhető. A korábbi „már láttam" jelzés ezt
+    // hamisan ciklusnak minősítette; a governance-figyelmeztetés így minden reális
+    // szervezetben (bármely, több kollégán át is elérhető agentnél) tévesen villant.
+    const dagNodes = new Map<string, AgentAccessTargetNode>()
+    for (const id of ['s', 'x', 'y', 't']) {
+      dagNodes.set(id, {
+        id,
+        tenantId: TENANT,
+        inboundRestricted: true,
+        outboundRestricted: true,
+        hiddenFromOperators: false,
+        status: 'active',
+      })
+    }
+    const dagGrants = new Map<string, Map<string, AgentAccessGrantEdge>>()
+    const dagLink = (from: string, to: string) => {
+      const inner = dagGrants.get(from) ?? new Map<string, AgentAccessGrantEdge>()
+      inner.set(to, { id: `d-${from}-${to}`, canView: true, canAddress: true })
+      dagGrants.set(from, inner)
+    }
+    dagLink('s', 'x')
+    dagLink('s', 'y')
+    dagLink('x', 't')
+    dagLink('y', 't')
+
+    const cone = reachableAgentIds({
+      seedAgentIds: ['s'],
+      nodes: dagNodes,
+      agentGrants: dagGrants,
+      tenantId: TENANT,
+    })
+    assert.deepEqual([...cone.agentIds].sort(), ['s', 't', 'x', 'y'])
+    assert.equal(cone.hasCycle, false)
+    assert.equal(cone.maxDepth, 3) // s(1) → x/y(2) → t(3)
+  })
+
+  await check('valódi kölcsönös kör (a↔b) hasCycle=true', () => {
+    const twoNodes = new Map<string, AgentAccessTargetNode>()
+    for (const id of ['p', 'q']) {
+      twoNodes.set(id, {
+        id,
+        tenantId: TENANT,
+        inboundRestricted: true,
+        outboundRestricted: true,
+        hiddenFromOperators: false,
+        status: 'active',
+      })
+    }
+    const twoGrants = new Map<string, Map<string, AgentAccessGrantEdge>>([
+      ['p', new Map([['q', { id: 'e-p-q', canView: true, canAddress: true }]])],
+      ['q', new Map([['p', { id: 'e-q-p', canView: true, canAddress: true }]])],
+    ])
+    const cone = reachableAgentIds({
+      seedAgentIds: ['p'],
+      nodes: twoNodes,
+      agentGrants: twoGrants,
+      tenantId: TENANT,
+    })
+    assert.deepEqual([...cone.agentIds].sort(), ['p', 'q'])
+    assert.equal(cone.hasCycle, true)
+  })
+
   await check('teljesen nyitott gráf felismerése (nincs N² él-rajzolás)', () => {
     const open = [
       { ...nodes.get('a')!, inboundRestricted: false, outboundRestricted: false },
