@@ -76,7 +76,10 @@ async function main() {
     assert.ok(workOwner)
     const workOr = asRecord(workOwner).OR as unknown[]
     assert.ok(
-      workOr.some((part) => asRecord(asRecord(part).ticket).tenantId === TENANT),
+      workOr.some((part) => {
+        const ticket = asRecord(part).ticket
+        return !!ticket && asRecord(ticket).tenantId === TENANT
+      }),
       'ticket work-owner filter missing',
     )
   })
@@ -92,7 +95,10 @@ async function main() {
     assert.ok(workOwner)
     const workOr = asRecord(workOwner).OR as unknown[]
     assert.ok(
-      workOr.some((part) => asRecord(asRecord(part).conversation).tenantId === TENANT),
+      workOr.some((part) => {
+        const conversation = asRecord(part).conversation
+        return !!conversation && asRecord(conversation).tenantId === TENANT
+      }),
       'conversation work-owner filter missing',
     )
   })
