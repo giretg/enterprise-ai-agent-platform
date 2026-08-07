@@ -2,6 +2,10 @@ import { Prisma } from '@prisma/client'
 import type { AuditLog, ModelBudget, ModelCall, ModelRoutingPolicy, TicketType } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { budgetPeriodSince } from '@/lib/budget-period'
+import {
+  modelCallWhereForTenantUsage,
+  modelCallWhereForTicketTypeUsage,
+} from '@/lib/model-call-budget-where'
 import type {
   AuditRepository,
   ModelBudgetRepository,
@@ -192,12 +196,7 @@ export class PostgresModelCallRepository implements ModelCallRepository {
   }
 
   async getUsageForTenant(tenantId: string | null, period: ModelBudgetPeriod) {
-    // `agent.tenantId` a bucket-kulcs: a `model_calls` táblán nincs tenant oszlop, és nem is
-    // kell — a `null` ág pontosan a megosztott (platform) agenteket fogja meg.
-    return this.sumUsage({
-      createdAt: { gte: budgetPeriodSince(period) },
-      agent: { tenantId },
-    })
+    return this.sumUsage(modelCallWhereForTenantUsage(tenantId, period))
   }
 
   async getUsageForTicketType(
@@ -205,17 +204,13 @@ export class PostgresModelCallRepository implements ModelCallRepository {
     ticketType: TicketType,
     period: ModelBudgetPeriod,
   ) {
-    return this.sumUsage({
-      createdAt: { gte: budgetPeriodSince(period) },
-      agent: { tenantId },
-      ticket: { type: ticketType },
-    })
+    return this.sumUsage(modelCallWhereForTicketTypeUsage(tenantId, ticketType, period))
   }
 
   async getUsageByAgent(tenantId: string | null, period: ModelBudgetPeriod) {
     const rows = await prisma.modelCall.groupBy({
       by: ['agentId'],
-      where: { createdAt: { gte: budgetPeriodSince(period) }, agent: { tenantId } },
+      where: modelCallWhereForTenantUsage(tenantId, period),
       _count: { _all: true },
       _sum: { promptTokens: true, completionTokens: true },
     })

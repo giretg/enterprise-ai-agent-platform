@@ -19,6 +19,90 @@ export const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses'
 const TOKEN_URL = 'https://auth.openai.com/oauth/token'
 
+/**
+ * Egy beragadt OAuth/SSE kapcsolat az alapértelmezett accountonkénti egyes
+ * konkurencia mellett az összes további modellhívást feltartaná. Ezért a
+ * timeout a válasz teljes streamjének végéig él, nem csak a HTTP fejlécekig.
+ */
+export const DEFAULT_CHATGPT_OAUTH_REQUEST_TIMEOUT_MS = 120_000
+
+export function chatGptOAuthRequestTimeoutMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env.CHATGPT_OAUTH_REQUEST_TIMEOUT_MS?.trim()
+  const parsed = raw ? Number(raw) : DEFAULT_CHATGPT_OAUTH_REQUEST_TIMEOUT_MS
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.floor(parsed)
+    : DEFAULT_CHATGPT_OAUTH_REQUEST_TIMEOUT_MS
+}
+
+/**
+ * A provider választeste külső, potenciálisan promptot vagy titkot visszhangzó
+ * adat. Ez az osztály ezért csak a biztonságosan naplózható hibakategóriát és
+ * HTTP-státuszt hordozza, nyers upstream szöveget soha.
+ */
+export class ChatGptOAuthBackendError extends Error {
+  constructor(
+    readonly kind: 'http' | 'network' | 'timeout',
+    readonly status?: number,
+    timeoutMs?: number,
+  ) {
+    super(
+      kind === 'timeout'
+        ? `ChatGPT OAuth backend request timed out after ${timeoutMs}ms`
+        : kind === 'http'
+          ? `ChatGPT OAuth backend failed: ${status}`
+          : 'ChatGPT OAuth backend network request failed',
+    )
+    this.name = 'ChatGptOAuthBackendError'
+  }
+}
+
+type ChatGptOAuthRequest = {
+  response: Response
+  timedOut: () => boolean
+  close: () => void
+}
+
+async function startChatGptOAuthRequest(url: string, init: RequestInit): Promise<ChatGptOAuthRequest> {
+  const controller = new AbortController()
+  const timeoutMs = chatGptOAuthRequestTimeoutMs()
+  let didTimeOut = false
+  const timer = setTimeout(() => {
+    didTimeOut = true
+    controller.abort()
+  }, timeoutMs)
+
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal })
+    return {
+      response,
+      timedOut: () => didTimeOut,
+      close: () => {
+        clearTimeout(timer)
+        controller.abort()
+      },
+    }
+  } catch {
+    clearTimeout(timer)
+    throw new ChatGptOAuthBackendError(didTimeOut ? 'timeout' : 'network', undefined, timeoutMs)
+  }
+}
+
+function backendReadError(request: ChatGptOAuthRequest, error: unknown): never {
+  if (request.timedOut() || (error instanceof Error && error.name === 'AbortError')) {
+    throw new ChatGptOAuthBackendError('timeout', undefined, chatGptOAuthRequestTimeoutMs())
+  }
+  throw error
+}
+
+function successfulChatGptOAuthResponse(request: ChatGptOAuthRequest): Response {
+  if (!request.response.ok) {
+    throw new ChatGptOAuthBackendError('http', request.response.status)
+  }
+  return request.response
+}
+
 /** A seed sentinel-modellt (és üres értéket) valódi ChatGPT-modellre mappeljük. */
 export function resolveModel(requested: string | undefined): string {
   const fallback = process.env.CHATGPT_OAUTH_MODEL?.trim() || 'gpt-5.5'
@@ -420,7 +504,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<{
   refreshToken: string
   idToken?: string
 }> {
-  const res = await fetch(TOKEN_URL, {
+  const request = await startChatGptOAuthRequest(TOKEN_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -430,15 +514,22 @@ export async function refreshAccessToken(refreshToken: string): Promise<{
       scope: 'openid profile email',
     }),
   })
-  if (!res.ok) {
-    throw new Error(`OAuth token refresh failed: ${res.status} ${(await res.text()).slice(0, 200)}`)
-  }
-  const data = (await res.json()) as { access_token?: string; refresh_token?: string; id_token?: string }
-  if (!data.access_token) throw new Error('OAuth token refresh returned no access_token')
-  return {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token ?? refreshToken,
-    idToken: data.id_token,
+  try {
+    const response = successfulChatGptOAuthResponse(request)
+    let data: { access_token?: string; refresh_token?: string; id_token?: string }
+    try {
+      data = await response.json()
+    } catch (error) {
+      backendReadError(request, error)
+    }
+    if (!data.access_token) throw new Error('OAuth token refresh returned no access_token')
+    return {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token ?? refreshToken,
+      idToken: data.id_token,
+    }
+  } finally {
+    request.close()
   }
 }
 
@@ -490,7 +581,7 @@ async function* callChatGptOAuthStreamUnlocked(
   const model = resolveModel(input.model)
   const { instructions, input: responsesInput } = toResponsesRequest(input.messages)
 
-  const res = await fetch(RESPONSES_URL, {
+  const request = await startChatGptOAuthRequest(RESPONSES_URL, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${input.tokens.accessToken}`,
@@ -511,48 +602,49 @@ async function* callChatGptOAuthStreamUnlocked(
     }),
   })
 
-  if (!res.ok) {
-    const body = (await res.text()).slice(0, 400)
-    throw new Error(`ChatGPT OAuth backend failed: ${res.status} ${body}`)
-  }
-
-  if (!res.body) throw new Error('ChatGPT OAuth backend returned no body')
-
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
   try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
+    const response = successfulChatGptOAuthResponse(request)
+    if (!response.body) throw new Error('ChatGPT OAuth backend returned no body')
 
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
+    const reader = response.body.getReader()
+    try {
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
 
-      for (const line of lines) {
-        if (!line.startsWith('data:')) continue
-        const payload = line.slice(5).trim()
-        if (!payload || payload === '[DONE]') continue
-        let evt: { type?: string; delta?: string }
-        try {
-          evt = JSON.parse(payload) as typeof evt
-        } catch {
-          continue
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue
+          const payload = line.slice(5).trim()
+          if (!payload || payload === '[DONE]') continue
+          let evt: { type?: string; delta?: string }
+          try {
+            evt = JSON.parse(payload) as typeof evt
+          } catch {
+            continue
+          }
+          if (evt.type === 'response.output_text.delta' && typeof evt.delta === 'string' && evt.delta) {
+            yield evt.delta
+          }
+          if (input.onReasoningDelta) {
+            const reasoning = reasoningSummaryDelta(evt)
+            if (reasoning) input.onReasoningDelta(reasoning)
+          }
+          if (evt.type === 'response.completed') return
         }
-        if (evt.type === 'response.output_text.delta' && typeof evt.delta === 'string' && evt.delta) {
-          yield evt.delta
-        }
-        if (input.onReasoningDelta) {
-          const reasoning = reasoningSummaryDelta(evt)
-          if (reasoning) input.onReasoningDelta(reasoning)
-        }
-        if (evt.type === 'response.completed') return
       }
+    } finally {
+      reader.releaseLock()
     }
+  } catch (error) {
+    backendReadError(request, error)
   } finally {
-    reader.releaseLock()
+    request.close()
   }
 }
 
@@ -630,7 +722,7 @@ async function callChatGptOAuthUnlocked(
     serializedBody: serializedRequestBody,
   })
 
-  const res = await fetch(RESPONSES_URL, {
+  const request = await startChatGptOAuthRequest(RESPONSES_URL, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${input.tokens.accessToken}`,
@@ -644,138 +736,140 @@ async function callChatGptOAuthUnlocked(
     body: serializedRequestBody,
   })
 
-  if (!res.ok) {
-    const body = (await res.text()).slice(0, 400)
-    throw new Error(`ChatGPT OAuth backend failed: ${res.status} ${body}`)
-  }
+  try {
+    const response = successfulChatGptOAuthResponse(request)
+    if (!response.body) throw new Error('ChatGPT OAuth backend returned no body')
 
-  if (!res.body) throw new Error('ChatGPT OAuth backend returned no body')
+    let content = ''
+    let promptTokens = 0
+    let completionTokens = 0
+    const toolCalls: GatewayToolCall[] = []
+    const eventTypeCounts: Record<string, number> = {}
+    const outputItemTypeCounts: Record<string, number> = {}
+    let parseErrorCount = 0
+    let textDeltaCount = 0
+    let textDeltaChars = 0
+    let terminal: Record<string, string | number | boolean | null> = {}
 
-  let content = ''
-  let promptTokens = 0
-  let completionTokens = 0
-  const toolCalls: GatewayToolCall[] = []
-  const eventTypeCounts: Record<string, number> = {}
-  const outputItemTypeCounts: Record<string, number> = {}
-  let parseErrorCount = 0
-  let textDeltaCount = 0
-  let textDeltaChars = 0
-  let terminal: Record<string, string | number | boolean | null> = {}
-
-  const handleLine = (line: string) => {
-    if (!line.startsWith('data:')) return
-    const payload = line.slice(5).trim()
-    if (!payload || payload === '[DONE]') return
-    let evt: Record<string, unknown>
-    try {
-      evt = JSON.parse(payload)
-    } catch {
-      parseErrorCount++
-      return
-    }
-    incrementCounter(eventTypeCounts, evt.type)
-    if (evt.type === 'response.output_text.delta' && typeof evt.delta === 'string') {
-      content += evt.delta
-      textDeltaCount++
-      textDeltaChars += evt.delta.length
-    }
-    // Reasoning-summary delta: érkezéskor, a válasz-token/tool-hívás előtt megy ki.
-    if (input.onReasoningDelta) {
-      const reasoning = reasoningSummaryDelta(evt)
-      if (reasoning) input.onReasoningDelta(reasoning)
-    }
-    // A modell egy kész tool hívása: function_call output item.
-    const item = evt.item && typeof evt.item === 'object' ? evt.item as Record<string, unknown> : undefined
-    if (evt.type === 'response.output_item.done' && item) {
-      incrementCounter(outputItemTypeCounts, item.type)
-    }
-    if (evt.type === 'response.output_item.done' && item?.type === 'function_call') {
-      const name = item.name
-      if (typeof name === 'string' && name) {
-        const resolvedName = responseToolNameToOriginal.get(name) ?? name
-        let parsed: Record<string, unknown> = {}
-        if (typeof item.arguments === 'string' && item.arguments.trim()) {
-          try {
-            const obj = JSON.parse(item.arguments)
-            if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
-              parsed = obj as Record<string, unknown>
+    const handleLine = (line: string) => {
+      if (!line.startsWith('data:')) return
+      const payload = line.slice(5).trim()
+      if (!payload || payload === '[DONE]') return
+      let evt: Record<string, unknown>
+      try {
+        evt = JSON.parse(payload)
+      } catch {
+        parseErrorCount++
+        return
+      }
+      incrementCounter(eventTypeCounts, evt.type)
+      if (evt.type === 'response.output_text.delta' && typeof evt.delta === 'string') {
+        content += evt.delta
+        textDeltaCount++
+        textDeltaChars += evt.delta.length
+      }
+      // Reasoning-summary delta: érkezéskor, a válasz-token/tool-hívás előtt megy ki.
+      if (input.onReasoningDelta) {
+        const reasoning = reasoningSummaryDelta(evt)
+        if (reasoning) input.onReasoningDelta(reasoning)
+      }
+      // A modell egy kész tool hívása: function_call output item.
+      const item = evt.item && typeof evt.item === 'object' ? evt.item as Record<string, unknown> : undefined
+      if (evt.type === 'response.output_item.done' && item) {
+        incrementCounter(outputItemTypeCounts, item.type)
+      }
+      if (evt.type === 'response.output_item.done' && item?.type === 'function_call') {
+        const name = item.name
+        if (typeof name === 'string' && name) {
+          const resolvedName = responseToolNameToOriginal.get(name) ?? name
+          let parsed: Record<string, unknown> = {}
+          if (typeof item.arguments === 'string' && item.arguments.trim()) {
+            try {
+              const obj = JSON.parse(item.arguments)
+              if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+                parsed = obj as Record<string, unknown>
+              }
+            } catch {
+              // hibás argument JSON → üres input
             }
-          } catch {
-            // hibás argument JSON → üres input
           }
+          toolCalls.push({
+            id: typeof item.call_id === 'string' ? item.call_id : typeof item.id === 'string' ? item.id : `call_${toolCalls.length}`,
+            name: resolvedName,
+            input: parsed,
+          })
         }
-        toolCalls.push({
-          id: typeof item.call_id === 'string' ? item.call_id : typeof item.id === 'string' ? item.id : `call_${toolCalls.length}`,
-          name: resolvedName,
-          input: parsed,
-        })
+      }
+      if (evt.type === 'response.completed' || evt.type === 'response.failed' || evt.type === 'response.incomplete') {
+        terminal = terminalSseFields(evt)
+      }
+      const response = evt.response && typeof evt.response === 'object' ? evt.response as Record<string, unknown> : undefined
+      const usage = response?.usage && typeof response.usage === 'object' ? response.usage as Record<string, unknown> : undefined
+      if (evt.type === 'response.completed' && usage) {
+        promptTokens = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0
+        completionTokens = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0
       }
     }
-    if (evt.type === 'response.completed' || evt.type === 'response.failed' || evt.type === 'response.incomplete') {
-      terminal = terminalSseFields(evt)
-    }
-    const response = evt.response && typeof evt.response === 'object' ? evt.response as Record<string, unknown> : undefined
-    const usage = response?.usage && typeof response.usage === 'object' ? response.usage as Record<string, unknown> : undefined
-    if (evt.type === 'response.completed' && usage) {
-      promptTokens = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0
-      completionTokens = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0
-    }
-  }
 
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
-      for (const line of lines) handleLine(line)
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) handleLine(line)
+      }
+    } finally {
+      reader.releaseLock()
     }
+    if (buffer) handleLine(buffer)
+
+    const diagnostic = (): ChatGptOAuthEmptyResponseDiagnostic => ({
+      concurrency: oauthConcurrency,
+      request: profile,
+      http: {
+        status: response.status,
+        statusText: response.statusText,
+        mimeType: response.headers.get('content-type'),
+        requestId: response.headers.get('x-request-id') ?? response.headers.get('request-id'),
+      },
+      sse: {
+        eventTypeCounts,
+        parseErrorCount,
+        textDeltaCount,
+        textDeltaChars,
+        toolCallCount: toolCalls.length,
+        outputItemTypeCounts,
+        terminal,
+      },
+    })
+
+    if (terminal.eventType === 'response.failed') {
+      const code = typeof terminal.errorCode === 'string' ? terminal.errorCode : null
+      throw new ChatGptOAuthResponseFailedError(diagnostic(), code)
+    }
+
+    // Tool-only válasznál a content üres — csak akkor hiba, ha sem szöveg, sem
+    // tool hívás nem jött vissza.
+    if (!content.trim() && toolCalls.length === 0) {
+      throw new ChatGptOAuthEmptyContentError(diagnostic())
+    }
+
+    return {
+      content,
+      ...(toolCalls.length ? { toolCalls } : {}),
+      usage: { promptTokens, completionTokens },
+      model,
+      oauthConcurrency,
+    }
+  } catch (error) {
+    backendReadError(request, error)
   } finally {
-    reader.releaseLock()
-  }
-  if (buffer) handleLine(buffer)
-
-  const diagnostic = (): ChatGptOAuthEmptyResponseDiagnostic => ({
-    concurrency: oauthConcurrency,
-    request: profile,
-    http: {
-      status: res.status,
-      statusText: res.statusText,
-      mimeType: res.headers.get('content-type'),
-      requestId: res.headers.get('x-request-id') ?? res.headers.get('request-id'),
-    },
-    sse: {
-      eventTypeCounts,
-      parseErrorCount,
-      textDeltaCount,
-      textDeltaChars,
-      toolCallCount: toolCalls.length,
-      outputItemTypeCounts,
-      terminal,
-    },
-  })
-
-  if (terminal.eventType === 'response.failed') {
-    const code = typeof terminal.errorCode === 'string' ? terminal.errorCode : null
-    throw new ChatGptOAuthResponseFailedError(diagnostic(), code)
-  }
-
-  // Tool-only válasznál a content üres — csak akkor hiba, ha sem szöveg, sem
-  // tool hívás nem jött vissza.
-  if (!content.trim() && toolCalls.length === 0) {
-    throw new ChatGptOAuthEmptyContentError(diagnostic())
-  }
-
-  return {
-    content,
-    ...(toolCalls.length ? { toolCalls } : {}),
-    usage: { promptTokens, completionTokens },
-    model,
-    oauthConcurrency,
+    request.close()
   }
 }
 

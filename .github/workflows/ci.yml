@@ -68,6 +68,7 @@ jobs:
           npm run test:tenant-web-egress-selection
           npm run test:provisioning-governance
           npm run test:dispatch-budget
+          npm run test:model-call-budget-where
           npm run test:dispatch-board-ticket-schema
           npm run test:playbook-v2-process
           npm run test:n-plus-one-batch

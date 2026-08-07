@@ -1084,15 +1084,20 @@ export interface ModelCallRepository {
   getUsageForTicket(ticketId: string): Promise<{ calls: number; tokens: number }>
   getUsageForAgent(agentId: string, period: ModelBudgetPeriod): Promise<{ calls: number; tokens: number }>
   /**
-   * Egy tenant összes agentjének együttes fogyasztása. `tenantId: null` = platform-bucket,
-   * azaz a tenanthoz nem kötött (megosztott) agentek — ezek egyetlen tenant keretét sem
-   * terhelik, külön platform-szintű kereten osztoznak.
+   * Tenant-szintű fogyasztás a budget-kapuhoz.
+   * - `tenantId: null` = platform-bucket (megosztott agentek).
+   * - konkrét tenant: a szervezet saját agentjei + a platform-agentek ezen a
+   *   tenanton (ticket/conversation work-owner) végzett hívásai. A kapu a
+   *   work-owner `tenantId`-t adja át, ezért e nélkül a hard cap megkerülhető.
    */
   getUsageForTenant(
     tenantId: string | null,
     period: ModelBudgetPeriod,
   ): Promise<{ calls: number; tokens: number }>
-  /** Egy ticket-típusra elszámolt hívások a bucketen belül (`tenantId: null` = platform). */
+  /**
+   * Ticket-típus fogyasztás. Konkrét tenantnál a platform-agent work-owner
+   * hívások is beleszámítanak (ugyanaz a szabály, mint `getUsageForTenant`).
+   */
   getUsageForTicketType(
     tenantId: string | null,
     ticketType: Ticket['type'],
