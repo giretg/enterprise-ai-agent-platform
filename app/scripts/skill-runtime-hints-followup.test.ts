@@ -28,6 +28,7 @@ import {
   describeInvalidAppliedSource,
   egyeztetesSorok,
   extractAppliedOwnershipIds,
+  extractAppliedOwnershipWrites,
   hasCompleteHttpApiGetAllProvenance,
   matchStrength,
   normalizeNyilvantartasRows,
@@ -557,11 +558,47 @@ test('fold_muveletek: DELETE→PATCH→POST + coverage fogja a hiányzó sibling
   assert.equal(withHallucination.ok, false)
   assert.deepEqual(withHallucination.extra, ['cmrp-fake-id'])
 
-  const ok = checkFoldMuveletekCoverage(plan, extractAppliedOwnershipIds([
+  const ok = checkFoldMuveletekCoverage(plan, extractAppliedOwnershipWrites([
     { muvelet: 'DELETE', entityId: 'own-sibling' },
     { muvelet: 'UPDATE', entityId: 'own-a' },
   ]))
   assert.equal(ok.ok, true)
+})
+
+test('coverage: PATCH nem helyettesíti a kötelező DELETE-et (hányad-duplázódás)', () => {
+  const plan = buildFoldMuveletekFromEltero({
+    parcelId: 'parcel-1',
+    eltero: [
+      {
+        nev: 'Anna',
+        statusz: 'Módosítás szükséges',
+        hanyadLap: '1/2',
+        azonosito: 'own-a',
+      },
+      {
+        nev: 'Anna',
+        statusz: 'Törlés szükséges',
+        hanyadLap: null,
+        azonosito: 'own-sibling',
+      },
+    ],
+  })
+  // Mindkét ownershipId „megvan", de a sibling DELETE helyett PATCH került a csomagba.
+  // Id-halmaz alapján ez korábban coverage.ok=true volt → validate/submit sibling nélkül.
+  const patchOnly = extractAppliedOwnershipWrites([
+    { entityType: 'Ownership', entityId: 'own-sibling', muvelet: 'PATCH' },
+    { entityType: 'Ownership', entityId: 'own-a', muvelet: 'PATCH' },
+  ])
+  assert.deepEqual(
+    patchOnly.map((w) => `${w.action}:${w.ownershipId}`).sort(),
+    ['patch:own-a', 'patch:own-sibling'],
+  )
+  const coverage = checkFoldMuveletekCoverage(plan, patchOnly)
+  assert.equal(coverage.ok, false)
+  assert.equal(coverage.missing.length, 1)
+  assert.equal(coverage.missing[0].ownershipId, 'own-sibling')
+  assert.equal(coverage.missing[0].action, 'delete')
+  assert.match(coverage.message, /rossz művelettel|DELETE/)
 })
 
 test('coverage extract: CREATE / Partner / itemId nem lesz extra', () => {
@@ -588,15 +625,16 @@ test('coverage extract: CREATE / Partner / itemId nem lesz extra', () => {
       },
     ],
   })
-  const applied = extractAppliedOwnershipIds({
+  const appliedRaw = {
     items: [
       { id: 'item-del', entityType: 'Ownership', entityId: 'own-sibling', muvelet: 'DELETE' },
       { id: 'item-patch', entityType: 'Ownership', entityId: 'own-a', muvelet: 'UPDATE' },
       { id: 'item-create', entityType: 'Ownership', entityId: '', muvelet: 'CREATE' },
       { id: 'item-partner', entityType: 'Partner', entityId: 'partner-1', muvelet: 'CREATE' },
     ],
-  })
-  assert.deepEqual(applied.sort(), ['own-a', 'own-sibling'])
+  }
+  const applied = extractAppliedOwnershipWrites(appliedRaw)
+  assert.deepEqual(extractAppliedOwnershipIds(appliedRaw).sort(), ['own-a', 'own-sibling'])
   assert.equal(checkFoldMuveletekCoverage(plan, applied).ok, true)
 })
 
@@ -691,11 +729,15 @@ test('coverage extract: magyar muvelet-nevek és id-lista NEM esnek ki némán',
   // A Föld-kimenetek vegyesen írnak angol igét és magyar szót. Ha a magyar
   // változat kiesne, hamis „hiányzó DELETE" jönne → az agent újraírná a
   // meglévő tételeket (hányad-duplázódás + token-égés).
-  const magyar = extractAppliedOwnershipIds([
+  const magyar = extractAppliedOwnershipWrites([
     { entityType: 'Ownership', entityId: 'own-a', muvelet: 'Módosítás' },
     { entityType: 'Ownership', entityId: 'own-sibling', muvelet: 'TÖRLÉS' },
   ])
-  assert.deepEqual(magyar.sort(), ['own-a', 'own-sibling'])
+  assert.deepEqual(magyar.map((w) => w.ownershipId).sort(), ['own-a', 'own-sibling'])
+  assert.deepEqual(
+    magyar.map((w) => w.action).sort(),
+    ['delete', 'patch'],
+  )
   assert.equal(checkFoldMuveletekCoverage(plan, magyar).ok, true)
 
   // Művelet-mező nélküli, de kimondottan Ownership tétel: számít.
