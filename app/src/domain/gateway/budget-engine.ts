@@ -5,10 +5,11 @@
  * If hard_cap is true and limit is exceeded → deny (model.call.denied).
  * If soft_threshold is set and cost is near limit → warning in metadata.
  *
- * A fogyasztást MINDIG a budget saját hatókörén méri: a `tenant` keretet a tenant összes
- * agentjének együttes forgalmán, az `agent` keretet az adott agentén, a `ticket_type`
- * keretet az adott típusú ticketekre elszámolt hívásokon. (Korábban mindhárom az agent
- * fogyasztását nézte, így egy tenant-szintű keret valójában per-agent keretként viselkedett.)
+ * A fogyasztást MINDIG a budget saját hatókörén méri: a `tenant` keretet a tenant saját
+ * agentjeinek + a platform-agentek work-owner forgalmán, az `agent` keretet az adott
+ * agentén, a `ticket_type` keretet az adott típusú ticketekre elszámolt hívásokon
+ * (ugyanazzal a work-owner szabállyal). (Korábban mindhárom az agent fogyasztását nézte,
+ * így egy tenant-szintű keret valójában per-agent keretként viselkedett.)
  */
 
 import type { ModelBudget } from '@prisma/client'
