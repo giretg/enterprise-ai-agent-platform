@@ -57,7 +57,12 @@ export function extractAgentFallbackModels(modelConfig: unknown): FallbackCandid
 
 export function classifyProviderError(error: unknown): FallbackErrorClass {
   const err = error instanceof Error ? error : null
-  const message = (err?.message ?? String(error)).toLowerCase()
+  // Az időkorlát-üzenetek beleírják a beállított ezredmásodperc-értéket
+  // ("... timed out after 240000ms"). Ez a szám nem hibakód, de a lentebbi
+  // szövegmintákba beleeshet (240000 → "400" → content_error), és akkor egy
+  // beragadt szolgáltatóra épp NEM indulna el a tartalék-lánc. Ezért a
+  // besorolás előtt a puszta időtartamot kivesszük a szövegből.
+  const message = (err?.message ?? String(error)).toLowerCase().replace(/\b\d+\s*ms\b/g, ' ')
   const name = (err?.name ?? '').toLowerCase()
 
   if (

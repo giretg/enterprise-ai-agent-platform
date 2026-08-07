@@ -200,6 +200,7 @@
     "test:workspace-inline-html-headers": "tsx scripts/workspace-inline-html-headers.test.ts",
     "test:task-workspace-prompt": "tsx scripts/task-workspace-prompt.test.ts",
     "test:chat-thinking-trace": "tsx scripts/chat-thinking-trace.test.ts",
+    "test:chatgpt-oauth-runtime-safety": "tsx scripts/chatgpt-oauth-runtime-safety.test.ts",
     "test:debug-log-export": "tsx scripts/debug-log-export.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
