@@ -838,6 +838,10 @@ const provisioningSandboxTester = new HttpSandboxConnectionTester({
   resolveBankPreset: async () => provisioningBankPreset,
   resolveSandboxToken: async ({ secretAlias, tenantId }) =>
     resolveProvisioningSandboxToken(secretAlias, tenantId),
+  // Feloldás-utáni privát/reserved IP re-check (DNS-rebinding) — ugyanaz a feloldó,
+  // mint a `web_fetch`/`http_api` egress-őrében: egy allowlistolt hostnév se érhessen
+  // el belső címet (RFC1918, loopback, felhő-metadata) a próbahíváson keresztül.
+  resolveHostIps: async (host) => (await lookup(host, { all: true })).map((e) => e.address),
 })
 const provisioningService = new ProvisioningService({
   drafts: repositories.connectorDrafts,

@@ -10,7 +10,10 @@
  *   2. EGRESS DENY-BY-DEFAULT a hívás pillanatában: a feloldott URL host-ja KÖTELEZŐ
  *      módon a tenant allowliston legyen — szigorúbb, mint a validátor warn-szintje,
  *      mert itt tényleges kifelé menő kapcsolat jön létre (§3.2.1).
- *   3. SSRF-őr: tiltott host-minták (felhő-metaadat, localhost, nyers IP) → blokk.
+ *   3. SSRF-őr: tiltott host-minták (felhő-metaadat, localhost, nyers IP) → blokk,
+ *      MAJD feloldás-utáni privát/reserved IP re-check (DNS-rebinding): egy allowlistolt
+ *      hostnév is BELSŐ címre oldódhat fel — a próbahívás előtt a feloldott IP-ket
+ *      ugyanazzal a közös őrrel ellenőrizzük, mint a `web_fetch` (§3.1 „A" réteg).
  *   4. CSAK GET (read-only); write-tool SOHA nem hívódik. Átirányítás (3xx) tiltott
  *      (manual redirect), mert egy redirect a metaadat-hostra vihetne.
  *   5. A secret/token SOSEM az agentnél: legfeljebb egy injektálható non-prod token
@@ -23,7 +26,7 @@ import {
   type ProposedTool,
 } from './connector-config'
 import { validateDraftConfig } from './draft-validator'
-import { isForbiddenHost } from '@/domain/net/egress-guard'
+import { isForbiddenHost, isPrivateOrReservedIp } from '@/domain/net/egress-guard'
 import type { SandboxConnectionTester } from './provisioning-service'
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>
@@ -42,6 +45,14 @@ export interface HttpSandboxConnectionTesterDeps {
     secretAlias: string | null
     tenantId: string | null
   }) => Promise<string | null>
+  /**
+   * DNS-feloldó (injektálható). Ha megadva, a próbahívás ELŐTT a feloldott IP-ket
+   * a privát/reserved tartományok ellen re-checkeljük (feloldás-utáni SSRF /
+   * DNS-rebinding: egy allowlistolt hostnév is belső címre — pl. 169.254.169.254,
+   * RFC1918 — oldódhat fel). Ugyanaz a védelem, mint a `web_fetch` egress-őrében.
+   * Ha nincs megadva, csak a host-minta alapú SSRF-szűrés fut (determinisztikus teszt).
+   */
+  resolveHostIps?: (host: string) => Promise<string[]>
   /** Injektálható fetch (teszthez); alapból a globális fetch. */
   fetchImpl?: FetchLike
   /** Próbahívás időkorlátja ms-ban (alapból 5000). */
@@ -201,6 +212,30 @@ export class HttpSandboxConnectionTester implements SandboxConnectionTester {
     // (3) SSRF-őr a feloldott hoston (közös egress-guard host-minták).
     if (isForbiddenHost(probeHost)) {
       return { ok: false, detail: 'forbidden_host' }
+    }
+
+    // (3b) Feloldás-utáni privát/reserved IP re-check (DNS-rebinding). Egy allowlistolt,
+    // ártatlannak látszó hostnév is belső címre (RFC1918, loopback, felhő-metadata)
+    // oldódhat fel — a statikus host-minta (3) ezt nem fogja meg. A `web_fetch`-csel közös
+    // `isPrivateOrReservedIp` őrrel ellenőrizzük a tényleges cél-IP-ket a hívás ELŐTT.
+    if (this.deps.resolveHostIps) {
+      // A feloldáshoz a porttalan hostname kell — ugyanúgy származtatva, mint a
+      // közös egress-őrben (`new URL().hostname`), hogy a viselkedés bájtpontosan
+      // egyezzen a `web_fetch`/`http_api` úttal. (A `probeUrl` már biztosan valid:
+      // a fenti `hostOf` sikeresen feloldotta.)
+      const bareHost = new URL(probeUrl).hostname
+      let ips: string[]
+      try {
+        ips = await this.deps.resolveHostIps(bareHost)
+      } catch {
+        return { ok: false, detail: 'dns_resolution_failed' }
+      }
+      if (ips.length === 0) {
+        return { ok: false, detail: 'dns_no_address' }
+      }
+      if (ips.some((ip) => isPrivateOrReservedIp(ip))) {
+        return { ok: false, detail: 'resolved_private_ip' }
+      }
     }
 
     // (4) Token feloldása (opcionális). A token SOHA nem kerül naplóba.
