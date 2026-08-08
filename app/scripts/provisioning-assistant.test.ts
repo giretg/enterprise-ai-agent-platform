@@ -1140,6 +1140,74 @@ async function run() {
     assert.equal(calls.length, 0)
   })
 
+  await test('SBX: allowlistolt hostnév BELSŐ IP-re oldódik fel → resolved_private_ip, NINCS hívás', async () => {
+    // DNS-rebinding / belső-IP hostnév: a host az allowliston van és nem tiltott
+    // host-minta, de a feloldott cím privát → a próbahívás előtt blokk (SSRF).
+    const { fn, calls } = recordingFetch({ status: 200 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      resolveHostIps: async () => ['169.254.169.254'],
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: cleanConfig() as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, false)
+    assert.equal(r.detail, 'resolved_private_ip')
+    assert.equal(calls.length, 0)
+  })
+
+  await test('SBX: allowlistolt hostnév RFC1918 címre oldódik fel → resolved_private_ip', async () => {
+    const { fn, calls } = recordingFetch({ status: 200 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      resolveHostIps: async () => ['10.0.0.5'],
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: cleanConfig() as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, false)
+    assert.equal(r.detail, 'resolved_private_ip')
+    assert.equal(calls.length, 0)
+  })
+
+  await test('SBX: allowlistolt hostnév PUBLIKUS IP-re oldódik fel → átengedve (reachable)', async () => {
+    const { fn, calls } = recordingFetch({ status: 200 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      resolveHostIps: async () => ['93.184.216.34'],
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: cleanConfig() as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, true)
+    assert.equal(r.detail, 'reachable')
+    assert.equal(calls.length, 1)
+  })
+
+  await test('SBX: DNS-feloldás nélkül (back-compat) → a viselkedés változatlan', async () => {
+    const { fn, calls } = recordingFetch({ status: 200 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: cleanConfig() as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, true)
+    assert.equal(calls.length, 1)
+  })
+
   await test('SBX: 3xx redirect (manual) → redirect_blocked, nem siker', async () => {
     const { fn } = recordingFetch({ status: 302 })
     const tester = new HttpSandboxConnectionTester({
