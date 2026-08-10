@@ -14,6 +14,7 @@ export type ProvisioningErrorCode =
   | 'ACTIVATION_AUTH_TEST_FAILED'
   | 'EGRESS_HOST_REJECTED' // aktiváláskor a konnektor kimenő címe nem vehető fel az allowlistre (pl. privát IP)
   | 'ACTIVATION_KEYLESS_UNCONFIRMED'
+  | 'DRAFT_CHANGED_DURING_ACTIVATION' // a config/gate az aktiválási commit előtt megváltozott
   | 'SECRET_ALIAS_NOT_TRUSTED' // csak connector-owned vagy tenant-scope-ban engedélyezett külső alias
   | 'SECRET_ALIAS_MISSING'
   | 'OAUTH_CLIENT_ID_MISSING' // service-oauth2: hiányzik a config.auth.clientId

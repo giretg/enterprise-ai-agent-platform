@@ -418,11 +418,14 @@ export interface ConnectorDraftRepository {
   setSandboxTestResult(draftId: string, ok: boolean): Promise<ConnectorDraft>
   activate(params: {
     draftId: string
+    /** Monotonikus konkurencia-token a service által ellenőrzött draft-verzióhoz. */
+    expectedDraftRevision: number
     secretAlias: string
     authMode: ConnectorAuthMode
     secondApproverId: string | null
     config?: Prisma.InputJsonValue
-  }): Promise<Connector>
+    /** `null`, ha a draft az ellenőrzés és a commit között megváltozott. */
+  }): Promise<Connector | null>
   assignToAgent(params: {
     connectorId: string
     agentId: string
