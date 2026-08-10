@@ -585,11 +585,23 @@ export class ProvisioningService {
 
     const connector = await this.deps.drafts.activate({
       draftId: draft.id,
+      // A credential-próba és a Secret Store-írás között egy másik admin
+      // szerkesztheti a configot. A repository ezt a monotonikus revíziót a
+      // tényleges lifecycle-váltással egy tranzakcióban ellenőrzi, így új,
+      // még nem validált config nem aktiválódhat régi approval alapján.
+      expectedDraftRevision: draft.revision,
       secretAlias: resolvedAlias,
       authMode,
       secondApproverId: dualControlRequired ? input.approverId ?? null : null,
       ...(nextConfig ? { config: nextConfig } : {}),
     })
+
+    if (!connector) {
+      throw new ProvisioningError(
+        'DRAFT_CHANGED_DURING_ACTIVATION',
+        'draft changed while activation was in progress; validate, review, and test the latest config again',
+      )
+    }
 
     await this.appendAudit(actor, 'provisioning.connector.activate', connector.id, {
       draft_id: draft.id,
