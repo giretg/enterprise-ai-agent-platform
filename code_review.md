@@ -1091,3 +1091,15 @@
   - Reduces the chance that AI-driven web discovery can be abused to reach cloud metadata services, internal networks, or special-use network ranges through DNS tricks.
   - Makes the documented "reserved IP re-check" behavior match the actual runtime behavior more closely, which is important for enterprise security review and audit evidence.
   - Keeps the mitigation in the shared server-side egress guard, so callers cannot accidentally bypass it by constructing a different web fetch flow.
+
+## 2026-08-10 - Provisioning Assistant: párhuzamos draft-szerkesztés régi jóváhagyással aktiválhatott új integrációt
+
+- Áttekintett, korábban külön nem naplózott kritikus komponens: a **Provisioning Assistant** teljes draft→validáció→admin review→sandbox→aktiválás útja — `app/src/domain/provisioning/provisioning-service.ts`, `connector-draft-repository.ts`, a `ConnectorDraft` séma/migráció, az admin server actionök és a provisioning regressziós teszt. Ez az a kontrollpont, ahol egy AI által javasolt külső kapcsolat tényleges, agenteknek kiosztható enterprise integrációvá válik.
+- **Lelet (magas, integritás / HITL-kapu megkerülése versenyhelyzetben):** az aktiválás a korábban beolvasott validáció-, review- és sandbox-eredményből indult, de a repository az éles `lifecycle_state=active` átmenetnél nem kötötte ezt ugyanahhoz a draft-változathoz. Két admin párhuzamos műveleténél az egyik szerkeszthetett egy már ellenőrzött draft configján, ami resetelte volna a kapukat, míg a másik a régi ellenőrzéssel még aktiválhatta az új configot. Így egy módosított egress-host, scope vagy endpoint kerülhetett volna éles használatba friss emberi ellenőrzés nélkül.
+- Javítás:
+  - A `ConnectorDraft` monotonikus `revision` compare-and-set tokent kapott (migráció: `0028_connector_draft_revision`), nem időbélyegre támaszkodik.
+  - Validáció, review, sandbox-eredmény, config-/reopen-gate reset, valamint a Gmail seed/backfill közvetlen gate-frissítése minden esetben atomikusan növeli a revíziót.
+  - Az aktiválás csak akkor állítja a connectort `active`-ra, ha ugyanaz a revízió és még szerkeszthető lifecycle állapot szerepel az adatbázisban; eltérésnél nem auditál sikeres aktiválást, és a kezelőnek újra kell ellenőriznie a legfrissebb draftot.
+  - A config-szerkesztés sem írhat utólag aktív connectorba, ha közben egy aktiválás megnyerte a versenyt.
+- Üzleti hatás: a „jóváhagyva” most valóban a használatba kerülő integráció-verzióra vonatkozik. Ez megakadályozza, hogy egy admin jó szándékú párhuzamos szerkesztése után egy még nem felülvizsgált külső API-kapcsolat kapjon agent-hozzáférést — fontos kontroll banki, CRM- és más érzékeny connectoroknál.
+- Ellenőrzés: `npx prisma validate`, `npm run test:provisioning`, `npx tsc --noEmit`, célzott ESLint és `git diff --check` zöld. A két-tengelyes review: Standards — nincs hard violation; Spec — a timestamp-alapú kísérlet P1 rése monotonic revisionnel lezárva, majd a review által talált Gmail seed/backfill bypass is revíziónöveléssel és célzott teszttel javítva; scope creep nincs.

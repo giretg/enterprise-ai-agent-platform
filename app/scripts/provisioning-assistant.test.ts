@@ -37,6 +37,7 @@ import {
   type ConnectorConfig,
 } from '../src/domain/provisioning/connector-config'
 import { HttpSandboxConnectionTester } from '../src/domain/provisioning/sandbox-connection-tester'
+import { ensureGmailProvisioningDraft } from '../src/lib/seed-gmail-connector'
 import {
   ProvisioningAssistant,
   PROVISIONING_ASSISTANT_ROLE_INSTRUCTION,
@@ -527,6 +528,29 @@ async function run() {
 
     assert.equal(drafts.drafts.get(created.draftId)?.connector.lifecycleState, 'draft')
     assert.equal(audit.byAction('provisioning.connector.activate').length, 0)
+  })
+
+  await test('P5-race: Gmail seed/backfill gate-frissítése is új revíziót kényszerít', async () => {
+    let upsertInput: Record<string, unknown> | undefined
+    await ensureGmailProvisioningDraft(
+      {
+        connectorDraft: {
+          async upsert(input: unknown) {
+            upsertInput = input as unknown as Record<string, unknown>
+            return input as never
+          },
+        },
+      } as never,
+      {
+        tenantId: TENANT,
+        connectorId: 'conn-gmail-seeded',
+        templateKey: 'google-workspace',
+        templateDescriptor: { key: 'google-workspace', version: 1 },
+      },
+    )
+
+    assert.deepEqual((upsertInput?.update as { revision?: unknown }).revision, { increment: 1 })
+    assert.equal((upsertInput?.create as { revision?: unknown }).revision, undefined)
   })
 
   await test('P5-security: tenant-admin nem használhat tetszőleges runtime secret aliast', async () => {
