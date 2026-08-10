@@ -13,7 +13,11 @@
 import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { getCloudRunAccessToken } from '@/domain/dispatcher/cloud-run-auth'
-import { guardEgressUrl } from '@/domain/net/egress-guard'
+import {
+  checkResolvedHostIps,
+  guardEgressUrl,
+  matchForbiddenHost,
+} from '@/domain/net/egress-guard'
 import {
   GITHUB_REPOSITORY_PATTERN,
   parseGitHubRepositoryAccessConfig,
@@ -576,10 +580,26 @@ export type HttpApiCredentials =
   | {
       defaultApiKey?: string
       resolveProfileApiKey?: (profile: string, secretAlias: string) => Promise<string>
+      /**
+       * Injektálható DNS-feloldó a futásidejű egress-őrhöz (feloldás-utáni privát/reserved
+       * IP re-check, DNS-rebinding ellen). Élesben a Tool Broker a `node:dns` `lookup`-ot
+       * köti be; a determinisztikus, hálózat nélküli tesztek feloldó nélkül futnak (ilyenkor
+       * csak a hálózat-mentes host-minta SSRF-őr fut le).
+       */
+      resolveHostIps?: (host: string) => Promise<string[]>
     }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Élő `node:dns` feloldó a futásidejű egress-SSRF-őrhöz. Egy helyen: a pin-elt connector-ág
+ * és a Tool Broker is ezt köti be `resolveHostIps`-ként. A determinisztikus, hálózat nélküli
+ * tesztek NEM ezt használják — ott feloldó nélkül fut a kliens (csak a host-minta őrrel).
+ */
+export async function nodeDnsResolveHostIps(host: string): Promise<string[]> {
+  return (await lookup(host, { all: true })).map((entry) => entry.address)
 }
 
 /**
@@ -590,6 +610,7 @@ function sleep(ms: number): Promise<void> {
 export class HttpApiClient {
   private defaultApiKey?: string
   private resolveProfileApiKey?: (profile: string, secretAlias: string) => Promise<string>
+  private resolveHostIps?: (host: string) => Promise<string[]>
 
   constructor(
     private config: HttpApiConfig,
@@ -600,6 +621,7 @@ export class HttpApiClient {
     } else {
       this.defaultApiKey = credentials.defaultApiKey
       this.resolveProfileApiKey = credentials.resolveProfileApiKey
+      this.resolveHostIps = credentials.resolveHostIps
     }
   }
 
@@ -866,6 +888,27 @@ export class HttpApiClient {
     }
   }
 
+  /**
+   * Futásidejű egress-őr a nem-pin-elt connectorok KEZDETI kérésének cél-hostjára.
+   *   1. Host-minta SSRF-őr (hálózat nélkül, mindig fut): nyers privát/loopback IP-literál,
+   *      localhost, felhő-metadata host, ismert exfil-sink → `egress_blocked`.
+   *   2. Feloldás-utáni privát/reserved IP re-check (DNS-rebinding elleni védelem): csak akkor
+   *      fut, ha a hívó bekötötte a DNS-feloldót (élesben a Tool Broker); a determinisztikus,
+   *      hálózat nélküli tesztek feloldó nélkül futnak, ilyenkor csak az 1. lépés véd.
+   */
+  private async assertRuntimeEgressAllowed(input: URL): Promise<void> {
+    const host = input.hostname.toLowerCase()
+    const forbidden = matchForbiddenHost(host)
+    if (forbidden) {
+      throw new HttpApiError(`runtime egress blocked: ${forbidden}`, 'egress_blocked')
+    }
+    if (!this.resolveHostIps) return
+    const check = await checkResolvedHostIps(host, this.resolveHostIps)
+    if (!check.ok) {
+      throw new HttpApiError(`runtime egress blocked: ${check.detail}`, 'egress_blocked')
+    }
+  }
+
   private async fetchWithBackoff(input: URL, init: RequestInit): Promise<Response> {
     const connectorUrl = new URL(this.config.baseUrl)
     const connectorHost = connectorUrl.hostname.toLowerCase()
@@ -877,11 +920,19 @@ export class HttpApiClient {
       const guard = await guardEgressUrl({
         url: input.toString(),
         allowlistHosts: [connectorHost],
-        resolveHostIps: async (host) => (await lookup(host, { all: true })).map((entry) => entry.address),
+        resolveHostIps: nodeDnsResolveHostIps,
       })
       if (!guard.ok || guard.host !== connectorHost) {
         throw new HttpApiError(`runtime egress blocked: ${guard.ok ? 'host_mismatch' : guard.reason}`, 'egress_blocked')
       }
+    } else {
+      // Nem-pin-elt connector: a KEZDETI kérés cél-hostját is át kell futtatni a
+      // futásidejű SSRF-őrön. A connector `baseUrl` host-ját a létrehozáskor csak
+      // statikus mintaszűrés nézi (a nyers privát-IP host pl. csak `warned`), és DNS-
+      // feloldás nélkül; így a nyers belső-IP host és a DNS-rebinding (publikus hostnév,
+      // ami futásidőben belső/metadata IP-re old fel) különben átcsúszik. Ugyanaz a
+      // deny-by-default szint, mint a `web_fetch` és a pin-elt connectorok útján.
+      await this.assertRuntimeEgressAllowed(input)
     }
     // Host-pinning a redirecteken is: a `fetch` alapból KÖVETI a 3xx-eket, ezért egy
     // allowlistolt host egyetlen átirányítással kivihetné a hívást egy belső szolgáltatásra

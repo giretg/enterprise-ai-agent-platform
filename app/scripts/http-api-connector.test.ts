@@ -757,6 +757,113 @@ async function main() {
     }
   })
 
+  await test('SSRF (kezdeti kérés): nyers privát-IP baseUrl host → blokk, hálózat nélkül', async () => {
+    // Egy tenant-admin belső IP-re (RFC1918) állított baseUrl-t; a létrehozás statikus
+    // validációja ezt csak `warned`-ként jelezné. Futásidőben a host-minta őr blokkolja,
+    // és feloldó (DNS) nélkül is véd — a fetch SOHA nem indul el.
+    let called = 0
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      called += 1
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+    try {
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://10.0.0.5/api',
+        auth: { scheme: 'header', header: 'X-Api-Key' },
+      })
+      const client = new HttpApiClient(config, 'internal-key')
+      await assert.rejects(
+        client.request({ method: 'GET', path: '/status', context: crmTraceContext }),
+        (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+      )
+      assert.equal(called, 0)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('SSRF (kezdeti kérés): felhő-metadata baseUrl host → blokk, hálózat nélkül', async () => {
+    let called = 0
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      called += 1
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+    try {
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://metadata.google.internal/computeMetadata/v1',
+        auth: { scheme: 'bearer' },
+      })
+      const client = new HttpApiClient(config, 'k')
+      await assert.rejects(
+        client.request({ method: 'GET', path: '/', context: crmTraceContext }),
+        (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+      )
+      assert.equal(called, 0)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('SSRF (DNS-rebinding): publikus host, ami privát IP-re old fel → blokk', async () => {
+    // A baseUrl host publikus és statikusan érvényes, de futásidőben belső IP-re old fel
+    // (DNS-rebinding). A bekötött feloldó privát IP-t ad vissza → deny-by-default, a fetch
+    // nem indul el.
+    let called = 0
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      called += 1
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+    try {
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://rebind.example/api',
+        auth: { scheme: 'bearer' },
+      })
+      const client = new HttpApiClient(config, {
+        defaultApiKey: 'k',
+        resolveHostIps: async () => ['203.0.113.9', '10.1.2.3'],
+      })
+      await assert.rejects(
+        client.request({ method: 'GET', path: '/status', context: crmTraceContext }),
+        (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+      )
+      assert.equal(called, 0)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('egress (kezdeti kérés): publikus IP-re feloldó host átmegy a futásidejű őrön', async () => {
+    // Kontroll: a bekötött feloldó csak publikus IP-t ad vissza → a hívás lemehet.
+    const calls: string[] = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (input) => {
+      calls.push(String(input))
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as typeof fetch
+    try {
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://api.partner.example/v1',
+        auth: { scheme: 'bearer' },
+      })
+      const client = new HttpApiClient(config, {
+        defaultApiKey: 'k',
+        resolveHostIps: async () => ['93.184.216.34'],
+      })
+      const res = await client.request({ method: 'GET', path: '/ping', context: crmTraceContext })
+      assert.equal(res.ok, true)
+      assert.equal(calls.length, 1)
+      assert.equal(calls[0], 'https://api.partner.example/v1/ping')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt elbukott.`)
     process.exit(1)

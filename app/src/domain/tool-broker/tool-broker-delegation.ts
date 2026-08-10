@@ -73,6 +73,7 @@ import {
 
 import {
   HttpApiClient,
+  nodeDnsResolveHostIps,
   parseHttpApiConfig,
   resolveConnectorApiKey,
 } from '@/domain/connector/http-api-client'
@@ -171,6 +172,9 @@ export async function executeHttpApiTool(self: ToolBrokerService,
     actingUserId: string | null,
     agentSecretAlias?: string | null,
     delegatedAccessToken?: string,
+    // A futásidejű egress-őr DNS-feloldója. Élesben az alapérték a valós `node:dns`
+    // (fail-closed); a determinisztikus, hálózat nélküli teszteknek injektálható.
+    resolveHostIps: (host: string) => Promise<string[]> = nodeDnsResolveHostIps,
   ): Promise<HttpApiCallResult> {
     const config = parseHttpApiConfig(resolveHttpApiConnectorConfig(connector.config))
     // user_delegated (auto-consent oauth2): a per-user grant access token megy ki
@@ -190,6 +194,9 @@ export async function executeHttpApiTool(self: ToolBrokerService,
     const client = new HttpApiClient(config, {
       defaultApiKey,
       resolveProfileApiKey: (_profile, secretAlias) => resolveConnectorApiKey(secretAlias),
+      // Futásidejű egress-SSRF-őr: a connector cél-hostját feloldjuk, és a privát/reserved
+      // IP-re feloldó (belső szolgáltatás, felhő-metadata) hívást deny-by-default blokkoljuk.
+      resolveHostIps,
     })
     const callId = randomUUID()
     const actingUser = actingUserId
