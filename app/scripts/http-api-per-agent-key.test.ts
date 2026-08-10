@@ -71,6 +71,10 @@ function installFetchCapture(): { lastAuth: () => string | undefined } {
   return { lastAuth: () => captured }
 }
 
+// Hálózat nélküli DNS-feloldó: a futásidejű egress-őr publikus IP-t lát, így a fake
+// fetch-ig eljut (a valós `node:dns` a `crm.example` hosztot nem oldaná fel a tesztben).
+const publicHostResolver = async () => ['93.184.216.34']
+
 async function callGet(connector: Connector, agentSecretAlias: string | null) {
   return executeHttpApiTool(
     dummySelf,
@@ -84,6 +88,8 @@ async function callGet(connector: Connector, agentSecretAlias: string | null) {
     'tenant-A',
     null, // actingUserId=null → nincs prisma.user lookup
     agentSecretAlias,
+    undefined, // delegatedAccessToken
+    publicHostResolver,
   )
 }
 

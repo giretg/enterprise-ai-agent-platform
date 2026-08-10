@@ -178,6 +178,44 @@ function isPrivateOrReservedIpv6(addr: string): boolean {
   ].some(([base, prefix]) => ipv6InCidr(ip, base as string, prefix as number))
 }
 
+/** A feloldás-utáni IP re-check `detail`-kódjai — EGY helyen, a fogyasztók újrahasználják. */
+export type ResolvedHostIpBlockDetail =
+  | 'dns_resolution_failed'
+  | 'dns_no_address'
+  | 'resolved_private_ip'
+
+export type ResolvedHostIpCheckResult =
+  | { ok: true; ips: string[] }
+  | { ok: false; detail: ResolvedHostIpBlockDetail }
+
+/**
+ * Feloldás-utáni privát/reserved IP re-check (DNS-rebinding elleni védelem) — a
+ * host-osztály SSRF-őr feloldó-függő MAGJA, séma/allowlist nélkül. Így a tiltott
+ * osztályok és a `detail`-kódok egy helyen élnek: ezt hívja a `guardEgressUrl` és a
+ * generikus connector-runtime (`http-api-client.ts`) egyaránt, elkerülve a párhuzamos,
+ * egymástól elcsúszó implementációt.
+ */
+export async function checkResolvedHostIps(
+  host: string,
+  resolveHostIps: (host: string) => Promise<string[]>,
+): Promise<ResolvedHostIpCheckResult> {
+  let ips: string[]
+  try {
+    ips = await resolveHostIps(host)
+  } catch {
+    return { ok: false, detail: 'dns_resolution_failed' }
+  }
+  if (ips.length === 0) {
+    return { ok: false, detail: 'dns_no_address' }
+  }
+  for (const ip of ips) {
+    if (isPrivateOrReservedIp(ip)) {
+      return { ok: false, detail: 'resolved_private_ip' }
+    }
+  }
+  return { ok: true, ips }
+}
+
 export type EgressBlockReason =
   | 'invalid_url'
   | 'scheme_blocked'
@@ -239,19 +277,9 @@ export async function guardEgressUrl(input: EgressGuardInput): Promise<EgressGua
 
   // (4b) DNS-rebinding: feloldás-utáni privát/reserved IP re-check (ha van feloldó).
   if (input.resolveHostIps) {
-    let ips: string[]
-    try {
-      ips = await input.resolveHostIps(host)
-    } catch {
-      return { ok: false, reason: 'ssrf_blocked', detail: 'dns_resolution_failed' }
-    }
-    if (ips.length === 0) {
-      return { ok: false, reason: 'ssrf_blocked', detail: 'dns_no_address' }
-    }
-    for (const ip of ips) {
-      if (isPrivateOrReservedIp(ip)) {
-        return { ok: false, reason: 'ssrf_blocked', detail: 'resolved_private_ip' }
-      }
+    const check = await checkResolvedHostIps(host, input.resolveHostIps)
+    if (!check.ok) {
+      return { ok: false, reason: 'ssrf_blocked', detail: check.detail }
     }
   }
 
