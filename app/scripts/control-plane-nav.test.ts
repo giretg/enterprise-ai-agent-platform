@@ -84,7 +84,7 @@ function main() {
     assert.ok(hrefs.includes('/control-plane/platform/tenants'))
     assert.ok(hrefs.includes('/control-plane/platform/iam'))
     assert.ok(hrefs.includes('/control-plane/platform/settings'))
-    assert.ok(hrefs.includes('/control-plane/platform/system-agents'))
+    assert.ok(!hrefs.includes('/control-plane/platform/system-agents'))
   })
 
   check('viewer with no admin children still sees core nav', () => {

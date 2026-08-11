@@ -2,7 +2,7 @@
 
 import { useState, type ReactNode } from 'react'
 
-export type SystemSettingsSection = {
+export type SettingsSection = {
   id: string
   label: string
   description?: string
@@ -12,7 +12,13 @@ export type SystemSettingsSection = {
 /**
  * Bal oldali témaválasztó: egyszerre egy szekció látszik.
  */
-export function SystemSettingsShell({ sections }: { sections: SystemSettingsSection[] }) {
+export function SettingsSectionShell({
+  sections,
+  ariaLabel = 'Beállítási témák',
+}: {
+  sections: SettingsSection[]
+  ariaLabel?: string
+}) {
   const fallbackId = sections[0]?.id ?? ''
   const [activeId, setActiveId] = useState(fallbackId)
 
@@ -25,7 +31,7 @@ export function SystemSettingsShell({ sections }: { sections: SystemSettingsSect
   return (
     <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
       <nav
-        aria-label="Rendszer témák"
+        aria-label={ariaLabel}
         className="shrink-0 rounded-xl border border-line/60 bg-panel/40 p-2 lg:sticky lg:top-4 lg:w-56"
       >
         <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">

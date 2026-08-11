@@ -45,7 +45,7 @@ export async function updateSystemAgentModelConfig(input: {
       actorId: ctx.user.id,
       scope: 'system_agent',
     })
-    revalidatePath('/control-plane/platform/system-agents')
+    revalidatePath('/control-plane/platform/settings')
     return ok(result)
   } catch (error) {
     return fail(error instanceof Error ? error.message : 'Failed to update system agent model config')

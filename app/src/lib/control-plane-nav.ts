@@ -144,12 +144,6 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         requires: { platformRole: 'platform_auditor' },
       },
       {
-        key: 'admin.platform-system-agents',
-        href: '/control-plane/platform/system-agents',
-        label: 'Platform · Rendszer agentek',
-        requires: { platformRole: 'platform_auditor' },
-      },
-      {
         key: 'admin.governance',
         href: '/control-plane/governance',
         label: 'Governance',

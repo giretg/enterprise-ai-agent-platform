@@ -27,6 +27,7 @@ export function UpdateModelConfigForm({
   providers = MODEL_PROVIDERS,
   scope = 'tenant',
   mode = 'full',
+  embedded = false,
 }: {
   agentId: string
   current: {
@@ -42,6 +43,8 @@ export function UpdateModelConfigForm({
   scope?: 'tenant' | 'system'
   /** A rendszeragenteknél csak a tényleges modellválasztás szerkeszthető. */
   mode?: 'full' | 'model-only'
+  /** A szülő kártya adja a vizuális keretet és a címet. */
+  embedded?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -86,9 +89,8 @@ export function UpdateModelConfigForm({
     modelType === currentType &&
     fallbacksEqual
 
-  return (
-    <Card title="Gondolkodási motor beállítása">
-      <form
+  const form = (
+    <form
         className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
@@ -274,7 +276,8 @@ export function UpdateModelConfigForm({
         >
           {pending ? 'Mentés...' : 'Új verzió mentése'}
         </button>
-      </form>
-    </Card>
+    </form>
   )
+
+  return embedded ? form : <Card title="Gondolkodási motor beállítása">{form}</Card>
 }
