@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { updateAgentModelConfig } from '@/app/actions/platform'
+import { updateSystemAgentModelConfig } from '@/app/actions/system-agents'
 import { ModelSelectField } from '@/components/agents/model-select-field'
 import { ModelTypeSelectField } from '@/components/agents/model-type-select-field'
 import { Card } from '@/components/ui/shell'
@@ -24,6 +25,8 @@ export function UpdateModelConfigForm({
   agentId,
   current,
   providers = MODEL_PROVIDERS,
+  scope = 'tenant',
+  mode = 'full',
 }: {
   agentId: string
   current: {
@@ -35,6 +38,10 @@ export function UpdateModelConfigForm({
     fallbackModels?: FallbackRow[]
   }
   providers?: ModelProviderOption[]
+  /** Platform-szintű, tenant nélküli agent szerkesztése. */
+  scope?: 'tenant' | 'system'
+  /** A rendszeragenteknél csak a tényleges modellválasztás szerkeszthető. */
+  mode?: 'full' | 'model-only'
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -91,20 +98,35 @@ export function UpdateModelConfigForm({
           startTransition(async () => {
             setError(null)
             setDone(null)
-            const res = await updateAgentModelConfig({
+            const input = {
               agentId,
               modelConfig: {
                 provider,
                 model: normalizeModelForProvider(provider, model, providerOptions),
-                modelType,
-                ...(Number.isFinite(temperature) ? { temperature } : {}),
-                ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { maxTokens } : {}),
-                ...(fallbacks.length > 0 ? { fallbackModels: fallbacks } : { fallbackModels: [] }),
+                ...(mode === 'full'
+                  ? {
+                      modelType,
+                      ...(Number.isFinite(temperature) ? { temperature } : {}),
+                      ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { maxTokens } : {}),
+                      ...(fallbacks.length > 0 ? { fallbackModels: fallbacks } : { fallbackModels: [] }),
+                    }
+                  : {
+                      ...(current.modelType ? { modelType: current.modelType } : {}),
+                      ...(current.temperature !== undefined ? { temperature: current.temperature } : {}),
+                      ...(current.maxTokens !== undefined ? { maxTokens: current.maxTokens } : {}),
+                      fallbackModels: current.fallbackModels ?? [],
+                    }),
               },
-            })
+            }
+            const res =
+              scope === 'system'
+                ? await updateSystemAgentModelConfig(input)
+                : await updateAgentModelConfig(input)
             if (res.success) {
               setDone(
-                `Agent v${res.data.agentVersion} — ${provider}/${model.trim() || selected.defaultModel} · ${modelType}`,
+                `Agent v${res.data.agentVersion} — ${provider}/${model.trim() || selected.defaultModel}${
+                  mode === 'full' ? ` · ${modelType}` : ''
+                }`,
               )
               router.refresh()
             } else {
@@ -141,36 +163,40 @@ export function UpdateModelConfigForm({
               providers={providerOptions}
             />
           </label>
-          <label className="block text-sm sm:col-span-2">
-            <span className="text-ink-soft">Modell típus (gondolkodási profil)</span>
-            <ModelTypeSelectField modelType={modelType} onModelTypeChange={setModelType} />
-          </label>
-          <label className="block text-sm">
-            <span className="text-ink-soft">Temperature</span>
-            <input
-              name="temperature"
-              type="number"
-              step="0.1"
-              min={0}
-              max={2}
-              defaultValue={current.temperature ?? 0.2}
-              className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="text-ink-soft">Max tokens</span>
-            <input
-              name="maxTokens"
-              type="number"
-              min={1}
-              defaultValue={current.maxTokens ?? 4096}
-              className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
-            />
-          </label>
+          {mode === 'full' && (
+            <>
+              <label className="block text-sm sm:col-span-2">
+                <span className="text-ink-soft">Modell típus (gondolkodási profil)</span>
+                <ModelTypeSelectField modelType={modelType} onModelTypeChange={setModelType} />
+              </label>
+              <label className="block text-sm">
+                <span className="text-ink-soft">Temperature</span>
+                <input
+                  name="temperature"
+                  type="number"
+                  step="0.1"
+                  min={0}
+                  max={2}
+                  defaultValue={current.temperature ?? 0.2}
+                  className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-ink-soft">Max tokens</span>
+                <input
+                  name="maxTokens"
+                  type="number"
+                  min={1}
+                  defaultValue={current.maxTokens ?? 4096}
+                  className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
+                />
+              </label>
+            </>
+          )}
         </div>
         <p className="text-xs text-ink-faint">{selected.hint}</p>
 
-        <div className="rounded-lg border border-line/50 bg-night/30 p-3">
+        {mode === 'full' && <div className="rounded-lg border border-line/50 bg-night/30 p-3">
           <button
             type="button"
             className="text-sm font-medium text-ink"
@@ -233,7 +259,7 @@ export function UpdateModelConfigForm({
               </div>
             </div>
           )}
-        </div>
+        </div>}
 
         {error && <p className="text-sm text-coral">{error}</p>}
         {done && (

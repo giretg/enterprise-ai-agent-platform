@@ -70,6 +70,8 @@ import {
   formatTicketCreator,
 } from '@/lib/ticket-display'
 import { fail, ok, type ActionResult } from '@/lib/result'
+import { applyAgentModelConfigUpdate } from '@/app/actions/agent-model-config-update'
+import type { AgentModelConfigInput } from '@/app/actions/agent-model-config-update'
 import { isRuleExhausted, pickPeakAgent } from '@/lib/budget-rule-usage'
 import { NORMAL_TOOL_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
@@ -2043,41 +2045,17 @@ export async function updateAgentAvatar(input: { agentId: string; avatarUrl: str
 
 export async function updateAgentModelConfig(input: {
   agentId: string
-  modelConfig: {
-    provider: string
-    model: string
-    modelType?: 'luna' | 'terra' | 'sol'
-    temperature?: number
-    maxTokens?: number
-    fallbackModels?: Array<{ provider: string; model: string }>
-  }
+  modelConfig: AgentModelConfigInput
 }) {
   try {
     const user = await requireTenantRole('admin')
     const parsed = updateAgentModelConfigSchema.parse(input)
     const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
-    await services.platformSettings.assertModelAllowed(
-      parsed.modelConfig.provider,
-      parsed.modelConfig.model,
-    )
-    for (const fallback of parsed.modelConfig.fallbackModels ?? []) {
-      await services.platformSettings.assertModelAllowed(fallback.provider, fallback.model)
-    }
-    const result = await repositories.agents.updateModelConfig(parsed)
-
-    await repositories.audit.append({
-      actorType: 'human',
+    const result = await applyAgentModelConfigUpdate({
+      ...parsed,
       actorId: user.user.id,
-      agentVersion: result.agentVersion,
-      action: 'agent.version',
-      targetType: 'agent',
-      targetId: parsed.agentId,
-      modelUsed: parsed.modelConfig.model,
-      inputRef: null,
-      outputRef: `v${result.agentVersion}`,
-      policyDecision: 'allowed',
-      metadata: { changed: ['modelConfig'], modelConfig: parsed.modelConfig },
+      scope: 'tenant_agent',
     })
 
     return ok(result)
