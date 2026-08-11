@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client'
-import type { Ticket, TicketTransition } from '@prisma/client'
+import type { Ticket, TicketState, TicketTransition } from '@prisma/client'
 import { notifyTicketReady } from '@/lib/dispatch-notify'
 import { prisma } from '@/lib/db'
 import { prismaPageArgs, toListPage } from '@/lib/list-pagination'
@@ -234,6 +234,28 @@ export class PostgresTicketRepository implements TicketRepository {
       data: data as Prisma.TicketUpdateInput,
     })
     if (data.state === 'ready') await notifyTicketReady(ticket.id)
+    return ticket
+  }
+
+  /**
+   * Compare-and-set a Playbook state machine-hez. A `where state = currentState` feltétel
+   * egyetlen adatbázis-műveletben zárja le azt az ablakot, amikor két jóváhagyó ugyanazt a
+   * még nyitott ticketet próbálja eldönteni.
+   */
+  async updateIfCurrentState(
+    id: string,
+    currentState: TicketState,
+    data: Parameters<TicketRepository['update']>[1],
+  ): Promise<Ticket | null> {
+    const ticket = await prisma.$transaction(async (tx) => {
+      const result = await tx.ticket.updateMany({
+        where: { id, state: currentState },
+        data: data as Prisma.TicketUpdateManyMutationInput,
+      })
+      if (result.count !== 1) return null
+      return tx.ticket.findUnique({ where: { id } })
+    })
+    if (ticket && data.state === 'ready') await notifyTicketReady(ticket.id)
     return ticket
   }
 

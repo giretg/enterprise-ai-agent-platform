@@ -165,10 +165,35 @@ export class TicketStateMachine {
         ? { ...(ticket.payload as Record<string, unknown>), ...input.outputPayload }
         : undefined
 
-    const updated = await this.tickets.update(ticket.id, {
+    // Az olvasás + policy-értékelés után az állapot megváltozhatott (pl. két Telegram-gomb,
+    // vagy egy webes és egy csatornás jóváhagyás versenye). A feltételes írás biztosítja,
+    // hogy csak az a kérés auditáljon sikeres átmenetet és indítsa el a process advance-et,
+    // amelyik még a korábban ellenőrzött állapotot váltja le.
+    const updated = await this.tickets.updateIfCurrentState(ticket.id, ticket.state, {
       state: toState,
       ...(mergedPayload != null ? { payload: mergedPayload as Prisma.JsonObject } : {}),
     })
+    if (!updated) {
+      await this.append(input.tenantId, input.actor, {
+        action: 'ticket.transition.denied',
+        targetType: 'ticket',
+        targetId: ticket.id,
+        policyDecision: 'denied',
+        metadata: {
+          process_instance_id: ticket.processInstanceId,
+          step_id: ticket.playbookStepId,
+          deny_code: 'STALE_TICKET_STATE',
+          reason: 'A ticket állapota időközben megváltozott; a döntést nem rögzítettük újra.',
+          from_state: fromState,
+          to_state: input.toState,
+        },
+      })
+      throw new TicketTransitionDenied({
+        denied: true,
+        denyCode: 'STALE_TICKET_STATE',
+        reason: 'A ticketet időközben már eldöntötték.',
+      })
+    }
 
     const actorType = this.auditActorType(input.actor.type)
     await this.tickets.recordTransition({
