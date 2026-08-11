@@ -6,12 +6,12 @@ import { services } from '@/domain'
 import { applyAgentModelConfigUpdate } from '@/app/actions/agent-model-config-update'
 import type { AgentModelConfigInput } from '@/app/actions/agent-model-config-update'
 import { fail, ok } from '@/lib/result'
-import { isPanelWizardAgent } from '@/lib/platform-agent-registry'
+import { isPanelWizardAgentName } from '@/lib/platform-agent-registry'
 import { updateAgentModelConfigSchema } from '@/lib/validators/actions'
 import { repositories } from '@/repositories/postgres'
 
 /**
- * Tenant nélküli, platform-szintű agentek modellkonfigurációja.
+ * Platform-szintű, dedikált panel-varázslók modellkonfigurációja.
  *
  * Ezeket kizárólag platform-szerep kezelheti: egy tenant adminja nem állíthatja
  * át a többi tenant automatizmusait. A módosítás mégis ugyanúgy új, auditálható
@@ -21,10 +21,10 @@ export async function getSystemAgentsPageData() {
   try {
     await requirePlatformRole('platform_auditor')
     const [agents, modelPolicy] = await Promise.all([
-      repositories.agents.findMany({ tenantId: null }),
+      repositories.agents.findMany(),
       services.platformSettings.getModelPolicy(),
     ])
-    return ok({ agents: agents.filter(isPanelWizardAgent), modelPolicy })
+    return ok({ agents: agents.filter((agent) => isPanelWizardAgentName(agent.name)), modelPolicy })
   } catch (error) {
     return fail(error instanceof Error ? error.message : 'Failed to list system agents')
   }
@@ -37,8 +37,8 @@ export async function updateSystemAgentModelConfig(input: {
   try {
     const ctx = await requirePlatformRole('superadmin')
     const parsed = updateAgentModelConfigSchema.parse(input)
-    const agent = await repositories.agents.findById(parsed.agentId, null)
-    if (!agent || !isPanelWizardAgent(agent)) return fail('System agent not found')
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent || !isPanelWizardAgentName(agent.name)) return fail('System agent not found')
 
     const result = await applyAgentModelConfigUpdate({
       ...parsed,

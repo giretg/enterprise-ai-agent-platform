@@ -43,12 +43,20 @@ export const PANEL_WIZARD_AGENT_NAMES: readonly string[] = [
 ]
 
 /**
+ * Beépített panel-varázsló név. A platform adminfelület a régi, tenanthez kötött
+ * seedelt rekordokat is ezzel találja meg; a gráf-besoroláshoz önmagában NEM elég.
+ */
+export function isPanelWizardAgentName(name: string): boolean {
+  return PANEL_WIZARD_AGENT_NAMES.includes(name)
+}
+
+/**
  * True, ha az agent dedikált-panel varázsló: `tenantId = null` ÉS a nevesített
  * varázslók egyike. A `tenantId` feltétel szándékos: egy tenant SAJÁT, azonos nevű
  * agentje normál gráfcsomópont marad, nem kap varázsló-immunitást.
  */
 export function isPanelWizardAgent(agent: { name: string; tenantId: string | null }): boolean {
-  return agent.tenantId === null && PANEL_WIZARD_AGENT_NAMES.includes(agent.name)
+  return agent.tenantId === null && isPanelWizardAgentName(agent.name)
 }
 
 /**

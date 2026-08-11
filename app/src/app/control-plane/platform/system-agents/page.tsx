@@ -46,9 +46,9 @@ export default async function SystemAgentsPage() {
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Platform</p>
         <h1 className="mt-2 font-display text-3xl font-semibold">Rendszer agentek</h1>
         <p className="mt-1 max-w-3xl text-ink-soft">
-          Ezek a tenant nélküli agentek központi, háttérben futó feladatokat végeznek. A modellváltás
-          minden tenantban az új indításokra érvényes; a korábbi futások a korábbi agent-verzióhoz
-          kötve auditálhatók maradnak.
+          Ezek a beépített, dedikált háttéragentek központi feladatokat végeznek. A modellváltás az
+          új indításokra érvényes; a korábbi futások a korábbi agent-verzióhoz kötve auditálhatók
+          maradnak.
         </p>
       </header>
 

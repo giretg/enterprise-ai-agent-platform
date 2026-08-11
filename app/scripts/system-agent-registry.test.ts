@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict'
 import {
   isPanelWizardAgent,
+  isPanelWizardAgentName,
   PLAYBOOK_AUTHOR_AGENT_NAME,
   PROVISIONING_ASSISTANT_AGENT_NAME,
 } from '../src/lib/platform-agent-registry'
@@ -16,5 +17,8 @@ assert.equal(isPanelWizardAgent({ name: PLAYBOOK_AUTHOR_AGENT_NAME, tenantId: nu
 assert.equal(isPanelWizardAgent({ name: PROVISIONING_ASSISTANT_AGENT_NAME, tenantId: null }), true)
 assert.equal(isPanelWizardAgent({ name: PLAYBOOK_AUTHOR_AGENT_NAME, tenantId }), false)
 assert.equal(isPanelWizardAgent({ name: 'Other global agent', tenantId: null }), false)
+assert.equal(isPanelWizardAgentName(PLAYBOOK_AUTHOR_AGENT_NAME), true)
+assert.equal(isPanelWizardAgentName(PROVISIONING_ASSISTANT_AGENT_NAME), true)
+assert.equal(isPanelWizardAgentName('Other global agent'), false)
 
 console.log('A rendszeragent-registry scope-kapu zöld.')
