@@ -260,10 +260,17 @@ export async function setStepTemplateEvalSamples(
   prisma: PrismaClient,
   input: { id: string; tenantId: string; versionId: string; evalSamples: unknown },
 ) {
-  await requireEditable(prisma, input.id, input.tenantId)
+  const template = await requireEditable(prisma, input.id, input.tenantId)
+  // A `versionId` a kliens által beküldött érték: a tulajdon-ellenőrzés a `template`-re
+  // szól, ezért a verziót IS a saját sablon verziói közül kell feloldani. Máskülönben egy
+  // tenant-admin a saját (jogszerű) template-id-jét megadva egy MÁSIK tenant vagy a globális
+  // seed-katalógus verziójának ID-jét írhatná felül (cross-tenant írási IDOR). Ugyanez a
+  // kötelező kötés, amit a `certifyStepTemplateVersion` már helyesen alkalmaz.
+  const version = template.versions.find((v) => v.id === input.versionId)
+  if (!version) throw new StepTemplateError('A verzió nem található.')
   const samples = parseEvalSamples(input.evalSamples)
   await prisma.stepTemplateVersion.update({
-    where: { id: input.versionId },
+    where: { id: version.id },
     data: { evalSamples: samples as unknown as object },
   })
   return { count: samples.length }
