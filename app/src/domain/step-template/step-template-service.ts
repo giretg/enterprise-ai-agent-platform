@@ -178,6 +178,25 @@ async function requireEditable(prisma: PrismaClient, id: string, tenantId: strin
   return template
 }
 
+/**
+ * Verzió-szintű mutáció tulajdon-kapuja: a `versionId` kliens-oldali érték, ezért nem elég a
+ * sablon tulajdonjogát ellenőrizni — a verziót IS a saját sablon verziói közül kell feloldani.
+ * Máskülönben egy tenant-admin a saját (jogszerű) template-id-jét megadva egy MÁSIK tenant vagy
+ * a globális seed-katalógus verziójának ID-jét célozhatná meg (cross-tenant írási IDOR). Ez a
+ * közös helper garantálja, hogy egyetlen verzió-író út se felejthesse el az újra-feloldást.
+ */
+async function requireOwnedVersion(
+  prisma: PrismaClient,
+  id: string,
+  tenantId: string,
+  versionId: string,
+) {
+  const template = await requireEditable(prisma, id, tenantId)
+  const version = template.versions.find((v) => v.id === versionId)
+  if (!version) throw new StepTemplateError('A verzió nem található.')
+  return { template, version }
+}
+
 export type UpdateStepTemplateInput = {
   id: string
   tenantId: string
@@ -255,15 +274,16 @@ export async function deleteStepTemplate(prisma: PrismaClient, id: string, tenan
   await prisma.stepTemplate.delete({ where: { id } })
 }
 
-/** Eval-minták mentése a legfrissebb verzióhoz (a hash-elt fragmenten kívül, D8). */
+/** Eval-minták mentése a megadott (a hívó saját sablonjához kötött) verzióhoz — a hash-elt
+ *  fragmenten kívül, D8. A verzió tulajdon-feloldását a `requireOwnedVersion` végzi. */
 export async function setStepTemplateEvalSamples(
   prisma: PrismaClient,
   input: { id: string; tenantId: string; versionId: string; evalSamples: unknown },
 ) {
-  await requireEditable(prisma, input.id, input.tenantId)
+  const { version } = await requireOwnedVersion(prisma, input.id, input.tenantId, input.versionId)
   const samples = parseEvalSamples(input.evalSamples)
   await prisma.stepTemplateVersion.update({
-    where: { id: input.versionId },
+    where: { id: version.id },
     data: { evalSamples: samples as unknown as object },
   })
   return { count: samples.length }
@@ -280,9 +300,7 @@ export async function certifyStepTemplateVersion(
   prisma: PrismaClient,
   input: { id: string; tenantId: string; versionId: string },
 ): Promise<{ certified: boolean }> {
-  const template = await requireEditable(prisma, input.id, input.tenantId)
-  const version = template.versions.find((v) => v.id === input.versionId)
-  if (!version) throw new StepTemplateError('A verzió nem található.')
+  const { version } = await requireOwnedVersion(prisma, input.id, input.tenantId, input.versionId)
 
   const samples = parseEvalSamples(version.evalSamples)
   if (samples.length === 0) {

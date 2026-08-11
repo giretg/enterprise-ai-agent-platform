@@ -79,6 +79,7 @@
     "test:playbook-v2": "tsx scripts/playbook-v2-core.test.ts",
     "test:flow-builder-canvas": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/flow-builder-canvas.test.ts",
     "test:flow-builder-governed": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/flow-builder-governed.test.ts",
+    "test:step-template-isolation": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/step-template-eval-samples-isolation.test.ts",
     "test:playbook-v2-registry": "tsx scripts/playbook-v2-registry.test.ts",
     "test:playbook-v2-runtime": "tsx scripts/playbook-v2-runtime.test.ts",
     "test:playbook-v2-process": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/playbook-v2-process.test.ts",
