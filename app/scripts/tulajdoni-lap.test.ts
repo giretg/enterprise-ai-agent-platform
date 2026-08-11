@@ -8,9 +8,11 @@
  */
 import assert from 'node:assert/strict'
 import {
+  buildTulajdoniLapHandoff,
   buildTulajdoniLapView,
   detectLapTipus,
   parseEntries,
+  parseTulajdoniLapHandoff,
   parseTulajdoniLap,
   splitSections,
   stripFurniture,
@@ -365,6 +367,31 @@ check('a valódi teljes lap típusa felismerhető és a régi üzenet marad', ()
   assert.equal(r.meta.tipus, 'teljes')
   assert.equal(r.osszesites.valid, true)
   assert.match(r.osszesites.megjegyzes, /pontosan 1/)
+})
+
+check('a feldolgozott lap handoff teljes és visszaolvasható', () => {
+  const parsed = parseTulajdoniLap(PAGES.map((p) => `${p}\nTulajdonilap-másolat\n(teljes)`))
+  const handoff = buildTulajdoniLapHandoff({
+    parsed,
+    documentId: '86eee1ea-e7a6-40b4-ab8f-2e996d37a468',
+    filename: '043_15.pdf',
+  })
+  const restored = parseTulajdoniLapHandoff(JSON.parse(JSON.stringify(handoff)))
+
+  assert.equal(restored.schemaVersion, 1)
+  assert.equal(restored.source.filename, '043_15.pdf')
+  assert.deepEqual(restored.parsed.tulajdonosok, parsed.tulajdonosok)
+})
+
+check('a feldolgozott lap handoff hibás sémánál fail-closed', () => {
+  assert.throws(
+    () =>
+      parseTulajdoniLapHandoff({
+        kind: 'tulajdoni_lap_feldolgozas',
+        schemaVersion: 2,
+      }),
+    /schemaVersion/,
+  )
 })
 
 console.log(failures === 0 ? '\n✅ minden teszt zöld' : `\n❌ ${failures} teszt bukott`)

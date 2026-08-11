@@ -297,11 +297,13 @@ export class AllowlistAuthorizer implements Authorizer {
             typeof input.args?.documentId === 'string' ? input.args.documentId : undefined,
           path: typeof input.args?.path === 'string' ? input.args.path : undefined,
         })
-        if (source.kind === 'document') return { allowed: true }
+        const writesHandoff =
+          typeof input.args?.kimenet === 'string' && input.args.kimenet.trim().length > 0
+        if (source.kind === 'document' && !writesHandoff) return { allowed: true }
       } catch {
         return { allowed: false, reason: 'missing_parse_source' }
       }
-      // workspace path → fall through connector feloldásra
+      // workspace path, vagy documentId + handoff-írás → connector feloldás
     }
     // A `tulajdoni_lap_egyeztetes` Excel-t CSAK `kimenet` mellett ír; JSON-only
     // úton elég a workspace read. A forrás érvényességét a delegáció nézi.
@@ -312,17 +314,26 @@ export class AllowlistAuthorizer implements Authorizer {
         input.args.coverageAppliedPath.trim().length > 0 &&
         !(typeof input.args?.documentId === 'string' && input.args.documentId.trim()) &&
         !(typeof input.args?.path === 'string' && input.args.path.trim()) &&
+        !(
+          typeof input.args?.feldolgozottLapPath === 'string' &&
+          input.args.feldolgozottLapPath.trim()
+        ) &&
         !(typeof input.args?.nyilvantartasPath === 'string' && input.args.nyilvantartasPath.trim()) &&
         !(Array.isArray(input.args?.nyilvantartas) && input.args.nyilvantartas.length > 0)
       if (!coverageOnly) {
-        try {
-          resolveTulajdoniLapParseSource({
-            documentId:
-              typeof input.args?.documentId === 'string' ? input.args.documentId : undefined,
-            path: typeof input.args?.path === 'string' ? input.args.path : undefined,
-          })
-        } catch {
-          return { allowed: false, reason: 'missing_parse_source' }
+        const hasProcessedPath =
+          typeof input.args?.feldolgozottLapPath === 'string' &&
+          input.args.feldolgozottLapPath.trim().length > 0
+        if (!hasProcessedPath) {
+          try {
+            resolveTulajdoniLapParseSource({
+              documentId:
+                typeof input.args?.documentId === 'string' ? input.args.documentId : undefined,
+              path: typeof input.args?.path === 'string' ? input.args.path : undefined,
+            })
+          } catch {
+            return { allowed: false, reason: 'missing_parse_source' }
+          }
         }
       }
     }
@@ -335,11 +346,19 @@ export class AllowlistAuthorizer implements Authorizer {
       input.tool === 'tulajdoni_lap_egyeztetes' && typeof input.args?.kimenet === 'string'
         ? input.args.kimenet.trim()
         : ''
+    const parseKimenetRaw =
+      input.tool === 'tulajdoni_lap_parse' && typeof input.args?.kimenet === 'string'
+        ? input.args.kimenet.trim()
+        : ''
     const accessMode: ConnectorAccessMode =
       input.tool === 'tulajdoni_lap_egyeztetes'
         ? kimenetRaw
           ? 'write'
           : 'read'
+        : input.tool === 'tulajdoni_lap_parse'
+          ? parseKimenetRaw
+            ? 'write'
+            : 'read'
         : requirement.accessMode
     const requestedConnectorId =
       (input.tool === 'http_api_get' ||
