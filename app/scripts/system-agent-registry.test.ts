@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import {
   isPanelWizardAgent,
   isPanelWizardAgentName,
+  selectSystemPanelWizardAgents,
   PLAYBOOK_AUTHOR_AGENT_NAME,
   PROVISIONING_ASSISTANT_AGENT_NAME,
 } from '../src/lib/platform-agent-registry'
@@ -20,5 +21,10 @@ assert.equal(isPanelWizardAgent({ name: 'Other global agent', tenantId: null }),
 assert.equal(isPanelWizardAgentName(PLAYBOOK_AUTHOR_AGENT_NAME), true)
 assert.equal(isPanelWizardAgentName(PROVISIONING_ASSISTANT_AGENT_NAME), true)
 assert.equal(isPanelWizardAgentName('Other global agent'), false)
+
+const platformWizard = { id: 'platform-wizard', name: PLAYBOOK_AUTHOR_AGENT_NAME, tenantId: null }
+const tenantLookalike = { id: 'tenant-lookalike', name: PLAYBOOK_AUTHOR_AGENT_NAME, tenantId }
+const selected = selectSystemPanelWizardAgents([platformWizard, tenantLookalike])
+assert.deepEqual(selected.map((agent) => agent.id), ['platform-wizard'])
 
 console.log('A rendszeragent-registry scope-kapu zöld.')
