@@ -42,6 +42,7 @@ import {
 } from '@/lib/agent-profile-labels'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { enabledModelProviders } from '@/lib/model-policy'
+import { SettingsSectionShell, type SettingsSection } from '../../system/system-settings-shell'
 
 function ProfileSection({
   title,
@@ -124,6 +125,252 @@ export default async function AgentDetailPage({
   const modelProviders = modelPolicy ? enabledModelProviders(modelPolicy) : []
   const behaviorOverlay = resolveBehaviorOverlay(agent)
 
+  const agentSections: SettingsSection[] = [
+    {
+      id: 'munkakor',
+      label: 'Munkakör',
+      description: 'Mit csinál az agent a csapatban.',
+      content: (
+        <ProfileSection title="Munkaköri leírás" subtitle="Mit csinál a csapatban">
+          <ExpandableContent>
+            <ProseBlock text={agent.roleInstruction} empty="Még nincs leírva, miben segít." />
+          </ExpandableContent>
+        </ProfileSection>
+      ),
+    },
+    {
+      id: 'munkastilus',
+      label: 'Munkastílus',
+      description: 'Hogyan dolgozik — központi profil + egyedi rész.',
+      content: (
+        <ProfileSection
+          title="Munkastílus"
+          subtitle="Hogyan dolgozik — központi profil + egyedi rész"
+        >
+          <BehaviorProfileBox
+            agentId={agent.id}
+            canEdit={isAdmin}
+            profiles={behaviorProfiles}
+            link={behaviorProfileLink}
+            overlay={behaviorOverlay}
+          />
+        </ProfileSection>
+      ),
+    },
+    {
+      id: 'tanulas',
+      label: 'Tanulás',
+      description: 'A rögzített tapasztalatok és tanulási szabályok.',
+      content: (
+        <div className="space-y-6">
+          <ProfileSection
+            title="Amit eddig megtanult"
+            subtitle={
+              memoryVersion != null
+                ? `${memoryVersion}. frissítés — ezt használja a mindennapi munkában`
+                : 'Tanulási emlékek'
+            }
+          >
+            <ExpandableContent>
+              <ProseBlock text={memoryContent} empty="Még nincs rögzített tapasztalat." />
+            </ExpandableContent>
+          </ProfileSection>
+          <Card>
+            <h2 className="font-display text-xl font-semibold text-ink">Fejlődés</h2>
+            <p className="mt-2 text-sm leading-relaxed text-ink-soft">
+              Itt tudod szerkeszteni vagy törölni a megtanult szabályokat, újakat hozzáadni, és
+              korábbi állapotokra visszaállítani.
+            </p>
+            <Link
+              href={`/control-plane/training?agentId=${agent.id}`}
+              className="mt-4 inline-block rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky"
+            >
+              Szabályok szerkesztése / törlése →
+            </Link>
+          </Card>
+        </div>
+      ),
+    },
+    ...(canManageKb
+      ? [
+          {
+            id: 'tudasbazis',
+            label: 'Tudásbázis',
+            description: 'Az agent által használható dokumentumok és tudásforrások.',
+            content: (
+              <AgentKnowledgeBasePanel
+                agentId={agent.id}
+                agentName={persona.nickname}
+                isOrchestrator={agent.role === 'orchestrator'}
+                canUpload={canManageKb}
+                canApprove={canApproveKb}
+                initialData={knowledgeBase ?? undefined}
+              />
+            ),
+          },
+        ]
+      : []),
+    ...(isAdmin
+      ? [
+          {
+            id: 'admin-attekintes',
+            label: 'Admin áttekintés',
+            description: 'Az agent technikai és életciklus-információi.',
+            content: (
+              <div className="grid gap-6 xl:grid-cols-2">
+                <Card title="Gondolkodási motor">
+                  <p className="text-sm text-ink-soft">{modelConfigSummary(modelConfig)}</p>
+                  {apiKeyPreview && (
+                    <p className="mt-3 text-xs text-ink-faint">API kulcs: {apiKeyPreview}</p>
+                  )}
+                </Card>
+                <Card title="Szerep a rendszerben">
+                  <p className="font-medium text-ink">{roleInfo.title}</p>
+                  <p className="mt-1 text-sm text-ink-soft">{roleInfo.description}</p>
+                  <p className="mt-2 text-xs text-ink-faint">
+                    Munkakör v{agent.currentRoleInstructionVersion} · Munkastílus v
+                    {agent.currentBehaviorProfileVersion} · Agent v{agent.currentVersion}
+                  </p>
+                </Card>
+                <Card title="Munkafolyamat-sablon">
+                  {recipe ? (
+                    <div className="space-y-1 text-sm">
+                      <p className="font-medium text-ink">{recipe.name}</p>
+                      <p className="text-ink-soft">
+                        {recipe.ticketType === 'training' ? 'tanítási' : 'interakciós'} folyamat ·
+                        v{recipe.version} · {recipeStatusLabel(recipe.status)}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-ink-faint">Nincs munkafolyamat-sablon ehhez a verzióhoz.</p>
+                  )}
+                </Card>
+                <Card title="Hozzárendelt források">
+                  {resources.length === 0 ? (
+                    <p className="text-sm text-ink-faint">Nincs hozzárendelt forrás.</p>
+                  ) : (
+                    <ul className="space-y-2 text-sm">
+                      {resources.map((r) => (
+                        <li key={r.id} className="atelier-soft p-3">
+                          <span className="font-medium text-ink">{r.name}</span>
+                          <span className="ml-2 text-ink-faint">
+                            {resourceTypeLabel(r.type)} · {r.scope} · v{r.version}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </Card>
+                <Card title="Önfejlesztés szabályai">
+                  <p className="text-sm leading-relaxed text-ink-soft">{selfEvolutionSummary(evolutionProfile)}</p>
+                </Card>
+                <Card title="Életciklus">
+                  <p className="mb-3 text-sm leading-relaxed text-ink-soft">
+                    Aktiválás befagyaszt egy reprodukálhatósági verziót; felfüggesztve/nyugdíjazva az agent nem kap új feladatot, a múltbeli munkák visszakereshetők maradnak.
+                  </p>
+                  <AgentLifecycleControls
+                    agentId={agent.id}
+                    status={agent.status}
+                    suspendedReason={agent.suspendedReason}
+                  />
+                </Card>
+              </div>
+            ),
+          },
+          {
+            id: 'projekt-memoria',
+            label: 'Projekt-memória',
+            description: 'Tartós, conversationök közötti projektfolytonosság.',
+            content: (
+              <Card title="Projekt-memória (tartós, cross-conversation)">
+                <p className="mb-4 text-sm leading-relaxed text-ink-soft">
+                  Amit az agent projektfolytonossági állapotként megjegyzett — fókusz, döntések,
+                  nyitott feladatok, konfliktusok — és a jóváhagyási/karbantartási/rollback-eszközök.
+                </p>
+                {memoryPanel ? (
+                  <MemoryPanel
+                    agentId={agent.id}
+                    initialProjectKeys={memoryPanel.projectKeys}
+                    initialProjectKey={memoryPanel.initialProjectKey}
+                    initialOverview={memoryPanel.initialOverview}
+                  />
+                ) : (
+                  <MemoryPanel agentId={agent.id} />
+                )}
+              </Card>
+            ),
+          },
+          {
+            id: 'eszkozok',
+            label: 'Eszközök és kapcsolatok',
+            description: 'Engedélyezett eszközök, külső kapcsolatok és webes keresés.',
+            content: (
+              <div className="space-y-6">
+                {governance && (
+                  <div className="grid gap-6 xl:grid-cols-2">
+                    <Card title="Engedélyezett eszközök">
+                      {governance.capabilities.length === 0 ? (
+                        <p className="text-sm text-ink-faint">Nincs meghatározott eszközjog.</p>
+                      ) : (
+                        <ExpandableContent>
+                          <ul className="space-y-2 text-sm">
+                            {governance.capabilities.map((cap) => (
+                              <li key={cap.toolName} className="flex items-center justify-between atelier-soft p-3">
+                                <span className="font-medium text-ink">{formatToolUiName(cap.toolName)}</span>
+                                <Badge tone={cap.allowed ? 'success' : 'danger'}>{cap.allowed ? 'engedélyezett' : 'tiltott'}</Badge>
+                              </li>
+                            ))}
+                          </ul>
+                        </ExpandableContent>
+                      )}
+                    </Card>
+                    <Card title="Külső kapcsolatok">
+                      <ApiConnectorList agentId={agent.id} connectors={governance.connectors} />
+                    </Card>
+                  </div>
+                )}
+                {governance && <WebSearchPolicyCard agentId={agent.id} connectors={governance.connectors} />}
+              </div>
+            ),
+          },
+          {
+            id: 'szerkesztes',
+            label: 'Szerkesztés',
+            description: 'Az agent alapadatainak, modelljének és jogosultságainak kezelése.',
+            content: (
+              <div className="space-y-6">
+                <UpdateInstructionForm agentId={agent.id} roleInstruction={agent.roleInstruction} roleVersion={agent.currentRoleInstructionVersion} />
+                <AgentAvatarUpload agentId={agent.id} name={agent.name} status={agent.status} avatarUrl={agent.avatarUrl} personaNickname={agent.personaNickname} />
+                <UpdatePersonaForm agentId={agent.id} storedNickname={agent.personaNickname} storedGreeting={agent.personaGreeting} storedTrait={agent.personaTrait} defaultNickname={defaultPersona.nickname} defaultGreeting={defaultPersona.greeting} defaultTrait={defaultPersona.trait} />
+                <SensitivityPolicyForm agentId={agent.id} allowSensitiveExternalModel={agent.allowSensitiveExternalModel} />
+                <OperatorVisibilityForm agentId={agent.id} hiddenFromOperators={agent.hiddenFromOperators} />
+                <TaskOnlyForm agentId={agent.id} taskOnly={agent.taskOnly} />
+                <UpdateModelConfigForm agentId={agent.id} providers={modelProviders} current={{
+                  provider: String(modelConfig.provider ?? 'chatgpt-oauth'),
+                  model: String(modelConfig.model ?? ''),
+                  modelType: modelConfig.modelType === 'luna' || modelConfig.modelType === 'terra' || modelConfig.modelType === 'sol' ? modelConfig.modelType : undefined,
+                  temperature: typeof modelConfig.temperature === 'number' ? modelConfig.temperature : undefined,
+                  maxTokens: typeof modelConfig.maxTokens === 'number' ? modelConfig.maxTokens : undefined,
+                  fallbackModels: Array.isArray(modelConfig.fallbackModels) ? (modelConfig.fallbackModels as Array<{ provider: string; model: string }>).filter((row) => row && typeof row.provider === 'string' && typeof row.model === 'string').map((row) => ({ provider: row.provider, model: row.model })) : undefined,
+                }} />
+                <UpdateSelfEvolutionProfileForm agentId={agent.id} currentProfile={agent.selfEvolutionProfile} />
+                <Card title="Külső kapcsolatok kezelése">
+                  <p className="mb-4 text-xs text-ink-faint">Új REST API bekötése vagy egy meglévő kapcsolat hozzárendelése. Nyisd ki a kívánt szekciót.</p>
+                  <div className="space-y-3">
+                    <Collapsible title="Új API-kapcsolat hozzáadása" subtitle="Külső REST API bekötése új connectorként"><AddApiConnectorForm agentId={agent.id} bare /></Collapsible>
+                    <Collapsible title="Meglévő kapcsolat hozzárendelése" subtitle="Már aktivált provisioning-kapcsolat csatolása"><AssignExistingConnectorForm agentId={agent.id} connectors={assignableConnectors} bare /></Collapsible>
+                  </div>
+                </Card>
+                {governance && <AgentToolAccessDiagnostics report={governance.toolAccess} />}
+                {governance && <AgentCapabilitiesPanel agentId={agent.id} currentCapabilities={governance.capabilities} isOrchestrator={agent.role === 'orchestrator'} />}
+                <AgentSkillsPanel agentId={agent.id} assigned={agentSkills as AgentSkillRow[]} assignable={assignableSkills as AssignableSkill[]} />
+              </div>
+            ),
+          },
+        ]
+      : []),
+  ]
+
   return (
     <div className="space-y-6">
       <Link
@@ -188,321 +435,7 @@ export default async function AgentDetailPage({
         </div>
       </Card>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <ProfileSection title="Munkaköri leírás" subtitle="Mit csinál a csapatban">
-          <ExpandableContent>
-            <ProseBlock
-              text={agent.roleInstruction}
-              empty="Még nincs leírva, miben segít."
-            />
-          </ExpandableContent>
-        </ProfileSection>
-
-        <ProfileSection
-          title="Munkastílus"
-          subtitle="Hogyan dolgozik — központi profil + egyedi rész"
-        >
-          <BehaviorProfileBox
-            agentId={agent.id}
-            canEdit={isAdmin}
-            profiles={behaviorProfiles}
-            link={behaviorProfileLink}
-            overlay={behaviorOverlay}
-          />
-        </ProfileSection>
-
-        <ProfileSection
-          title="Amit eddig megtanult"
-          subtitle={
-            memoryVersion != null
-              ? `${memoryVersion}. frissítés — ezt használja a mindennapi munkában`
-              : 'Tanulási emlékek'
-          }
-        >
-          <ExpandableContent>
-            <ProseBlock text={memoryContent} empty="Még nincs rögzített tapasztalat." />
-          </ExpandableContent>
-        </ProfileSection>
-
-        <Card>
-          <h2 className="font-display text-xl font-semibold text-ink">Fejlődés</h2>
-          <p className="mt-2 text-sm leading-relaxed text-ink-soft">
-            Itt tudod szerkeszteni vagy törölni a megtanult szabályokat, újakat hozzáadni, és
-            korábbi állapotokra visszaállítani.
-          </p>
-          <Link
-            href={`/control-plane/training?agentId=${agent.id}`}
-            className="mt-4 inline-block rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky"
-          >
-            Szabályok szerkesztése / törlése →
-          </Link>
-        </Card>
-
-        {canManageKb && (
-          <div className="lg:col-span-2">
-            <AgentKnowledgeBasePanel
-              agentId={agent.id}
-              agentName={persona.nickname}
-              isOrchestrator={agent.role === 'orchestrator'}
-              canUpload={canManageKb}
-              canApprove={canApproveKb}
-              initialData={knowledgeBase ?? undefined}
-            />
-          </div>
-        )}
-      </div>
-
-      {isAdmin && (
-        <>
-          <div>
-            <p className="mb-4 text-sm font-medium uppercase tracking-[0.18em] text-coral">
-              Admin beállítások
-            </p>
-            <div className="grid gap-6 lg:grid-cols-2">
-              <Card title="Gondolkodási motor">
-                <p className="text-sm text-ink-soft">{modelConfigSummary(modelConfig)}</p>
-                {apiKeyPreview && (
-                  <p className="mt-3 text-xs text-ink-faint">API kulcs: {apiKeyPreview}</p>
-                )}
-              </Card>
-
-              <Card title="Szerep a rendszerben">
-                <p className="font-medium text-ink">{roleInfo.title}</p>
-                <p className="mt-1 text-sm text-ink-soft">{roleInfo.description}</p>
-                <p className="mt-2 text-xs text-ink-faint">
-                  Munkakör v{agent.currentRoleInstructionVersion} · Munkastílus v
-                  {agent.currentBehaviorProfileVersion} · Agent v{agent.currentVersion}
-                </p>
-              </Card>
-
-              <Card title="Munkafolyamat-sablon">
-                {recipe ? (
-                  <div className="space-y-1 text-sm">
-                    <p className="font-medium text-ink">{recipe.name}</p>
-                    <p className="text-ink-soft">
-                      {recipe.ticketType === 'training' ? 'tanítási' : 'interakciós'} folyamat ·
-                      v{recipe.version} · {recipeStatusLabel(recipe.status)}
-                    </p>
-                  </div>
-                ) : (
-                  <p className="text-sm text-ink-faint">
-                    Nincs munkafolyamat-sablon ehhez a verzióhoz.
-                  </p>
-                )}
-              </Card>
-
-              <Card title="Hozzárendelt források">
-                {resources.length === 0 ? (
-                  <p className="text-sm text-ink-faint">Nincs hozzárendelt forrás.</p>
-                ) : (
-                  <ul className="space-y-2 text-sm">
-                    {resources.map((r) => (
-                      <li key={r.id} className="atelier-soft p-3">
-                        <span className="font-medium text-ink">{r.name}</span>
-                        <span className="ml-2 text-ink-faint">
-                          {resourceTypeLabel(r.type)} · {r.scope} · v{r.version}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </Card>
-
-              <Card title="Önfejlesztés szabályai">
-                <p className="text-sm leading-relaxed text-ink-soft">
-                  {selfEvolutionSummary(evolutionProfile)}
-                </p>
-              </Card>
-
-              <Card title="Életciklus">
-                <p className="mb-3 text-sm leading-relaxed text-ink-soft">
-                  Aktiválás befagyaszt egy reprodukálhatósági verziót; felfüggesztve/nyugdíjazva
-                  az agent nem kap új feladatot, a múltbeli munkák visszakereshetők maradnak.
-                </p>
-                <AgentLifecycleControls
-                  agentId={agent.id}
-                  status={agent.status}
-                  suspendedReason={agent.suspendedReason}
-                />
-              </Card>
-
-            </div>
-          </div>
-
-          <Card title="Projekt-memória (tartós, cross-conversation)">
-            <p className="mb-4 text-sm leading-relaxed text-ink-soft">
-              Amit az agent projektfolytonossági állapotként megjegyzett — fókusz, döntések,
-              nyitott feladatok, konfliktusok — és a jóváhagyási/karbantartási/rollback-eszközök.
-            </p>
-            {memoryPanel ? (
-              <MemoryPanel
-                agentId={agent.id}
-                initialProjectKeys={memoryPanel.projectKeys}
-                initialProjectKey={memoryPanel.initialProjectKey}
-                initialOverview={memoryPanel.initialOverview}
-              />
-            ) : (
-              <MemoryPanel agentId={agent.id} />
-            )}
-          </Card>
-
-          {governance && (
-            <div className="grid gap-6 lg:grid-cols-2">
-              <Card title="Engedélyezett eszközök">
-                {governance.capabilities.length === 0 ? (
-                  <p className="text-sm text-ink-faint">Nincs meghatározott eszközjog.</p>
-                ) : (
-                  <ExpandableContent>
-                    <ul className="space-y-2 text-sm">
-                      {governance.capabilities.map((cap) => (
-                        <li
-                          key={cap.toolName}
-                          className="flex items-center justify-between atelier-soft p-3"
-                        >
-                          <span className="font-medium text-ink">{formatToolUiName(cap.toolName)}</span>
-                          <Badge tone={cap.allowed ? 'success' : 'danger'}>
-                            {cap.allowed ? 'engedélyezett' : 'tiltott'}
-                          </Badge>
-                        </li>
-                      ))}
-                    </ul>
-                  </ExpandableContent>
-                )}
-              </Card>
-              <Card title="Külső kapcsolatok">
-                <ApiConnectorList agentId={agent.id} connectors={governance.connectors} />
-              </Card>
-            </div>
-          )}
-
-          {governance && (
-            <WebSearchPolicyCard agentId={agent.id} connectors={governance.connectors} />
-          )}
-
-          <div>
-            <p className="mb-4 text-sm font-medium uppercase tracking-[0.18em] text-coral">
-              Szerkesztés
-            </p>
-            <div className="space-y-6">
-              <UpdateInstructionForm
-                agentId={agent.id}
-                roleInstruction={agent.roleInstruction}
-                roleVersion={agent.currentRoleInstructionVersion}
-              />
-
-              <AgentAvatarUpload
-                agentId={agent.id}
-                name={agent.name}
-                status={agent.status}
-                avatarUrl={agent.avatarUrl}
-                personaNickname={agent.personaNickname}
-              />
-
-              <UpdatePersonaForm
-                agentId={agent.id}
-                storedNickname={agent.personaNickname}
-                storedGreeting={agent.personaGreeting}
-                storedTrait={agent.personaTrait}
-                defaultNickname={defaultPersona.nickname}
-                defaultGreeting={defaultPersona.greeting}
-                defaultTrait={defaultPersona.trait}
-              />
-
-              <SensitivityPolicyForm
-                agentId={agent.id}
-                allowSensitiveExternalModel={agent.allowSensitiveExternalModel}
-              />
-
-              <OperatorVisibilityForm
-                agentId={agent.id}
-                hiddenFromOperators={agent.hiddenFromOperators}
-              />
-
-              <TaskOnlyForm agentId={agent.id} taskOnly={agent.taskOnly} />
-
-              <UpdateModelConfigForm
-                agentId={agent.id}
-                providers={modelProviders}
-                current={{
-                  provider: String(modelConfig.provider ?? 'chatgpt-oauth'),
-                  model: String(modelConfig.model ?? ''),
-                  modelType:
-                    modelConfig.modelType === 'luna' ||
-                    modelConfig.modelType === 'terra' ||
-                    modelConfig.modelType === 'sol'
-                      ? modelConfig.modelType
-                      : undefined,
-                  temperature:
-                    typeof modelConfig.temperature === 'number'
-                      ? modelConfig.temperature
-                      : undefined,
-                  maxTokens:
-                    typeof modelConfig.maxTokens === 'number' ? modelConfig.maxTokens : undefined,
-                  fallbackModels: Array.isArray(modelConfig.fallbackModels)
-                    ? (modelConfig.fallbackModels as Array<{ provider: string; model: string }>)
-                        .filter(
-                          (row) =>
-                            row &&
-                            typeof row.provider === 'string' &&
-                            typeof row.model === 'string',
-                        )
-                        .map((row) => ({ provider: row.provider, model: row.model }))
-                    : undefined,
-                }}
-              />
-
-              <UpdateSelfEvolutionProfileForm
-                agentId={agent.id}
-                currentProfile={agent.selfEvolutionProfile}
-              />
-
-              <Card title="Külső kapcsolatok kezelése">
-                <p className="mb-4 text-xs text-ink-faint">
-                  Új REST API bekötése vagy egy meglévő kapcsolat hozzárendelése. Nyisd ki a kívánt
-                  szekciót.
-                </p>
-                <div className="space-y-3">
-                  <Collapsible
-                    title="Új API-kapcsolat hozzáadása"
-                    subtitle="Külső REST API bekötése új connectorként"
-                  >
-                    <AddApiConnectorForm agentId={agent.id} bare />
-                  </Collapsible>
-                  <Collapsible
-                    title="Meglévő kapcsolat hozzárendelése"
-                    subtitle="Már aktivált provisioning-kapcsolat csatolása"
-                  >
-                    <AssignExistingConnectorForm
-                      agentId={agent.id}
-                      connectors={assignableConnectors}
-                      bare
-                    />
-                  </Collapsible>
-                </div>
-              </Card>
-
-              {governance && (
-                <>
-                  <AgentToolAccessDiagnostics report={governance.toolAccess} />
-                  <AgentCapabilitiesPanel
-                    agentId={agent.id}
-                    currentCapabilities={governance.capabilities}
-                    isOrchestrator={agent.role === 'orchestrator'}
-                  />
-                </>
-              )}
-
-              {isAdmin && (
-                <AgentSkillsPanel
-                  agentId={agent.id}
-                  assigned={agentSkills as AgentSkillRow[]}
-                  assignable={assignableSkills as AssignableSkill[]}
-                />
-              )}
-            </div>
-          </div>
-        </>
-      )}
+      <SettingsSectionShell ariaLabel="Agent témák" sections={agentSections} />
     </div>
   )
 }
