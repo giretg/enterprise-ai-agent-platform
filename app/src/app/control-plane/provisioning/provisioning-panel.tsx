@@ -1,7 +1,8 @@
 'use client'
 
-import { type ChangeEvent, useCallback, useEffect, useMemo, useState, useTransition } from 'react'
+import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState, useTransition } from 'react'
 import { Badge, Card } from '@/components/ui/shell'
+import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import {
   activateConnector,
   assignConnectorToAgent,
@@ -231,6 +232,50 @@ type ConnectorTemplateRow = {
   tenantId: string | null
   status: 'active' | 'deprecated' | 'archived'
   descriptor: TemplateDescriptor
+}
+
+function ProvisioningTopicShell({
+  selfUpdating,
+  connectorCreation,
+  templates,
+  connections,
+}: {
+  selfUpdating: ReactNode
+  connectorCreation: ReactNode
+  templates: ReactNode
+  connections: ReactNode
+}) {
+  return (
+    <SettingsSectionShell
+      ariaLabel="Provisioning témák"
+      sections={[
+        {
+          id: 'onfrissito-kapcsolatok',
+          label: 'Önfrissítő kapcsolatok',
+          description: 'Kapcsolatok, amelyek jóváhagyással átvehetik a partner új képességeit.',
+          content: selfUpdating,
+        },
+        {
+          id: 'uj-kapcsolat',
+          label: 'Új kapcsolat',
+          description: 'Új draft connector létrehozása ellenőrizhető lépésekben.',
+          content: connectorCreation,
+        },
+        {
+          id: 'sablonok',
+          label: 'Connector-sablonok',
+          description: 'Egyedi connector-sablonok kezelése és verziózása.',
+          content: templates,
+        },
+        {
+          id: 'kapcsolatok',
+          label: 'Draftok és aktív kapcsolatok',
+          description: 'A függőben lévő draftok és az aktivált provisioning-kapcsolatok.',
+          content: connections,
+        },
+      ]}
+    />
+  )
 }
 
 function templateLineKey(input: {
@@ -735,8 +780,10 @@ export function ProvisioningPanel() {
         </div>
       ) : null}
 
-      <SelfUpdatingConnectorsPanel embedded />
-
+      <ProvisioningTopicShell
+        selfUpdating={<SelfUpdatingConnectorsPanel embedded />}
+        connectorCreation={
+          <>
       {!showCreateDraftForm ? (
         <div>
           <button
@@ -1348,7 +1395,10 @@ export function ProvisioningPanel() {
         </div>
       </Card>
       )}
-
+          </>
+        }
+        templates={
+          <>
       {!templateEditorOpen ? (
         <div>
           <button
@@ -1483,7 +1533,10 @@ export function ProvisioningPanel() {
         </div>
       </Card>
       )}
-
+          </>
+        }
+        connections={
+          <div className="space-y-6">
       <Card title={`Draftok (${openDrafts.length})`}>
         {!loadedOnce ? (
           <p className="text-sm text-ink-soft">Betöltés…</p>
@@ -1527,6 +1580,9 @@ export function ProvisioningPanel() {
           </div>
         )}
       </Card>
+          </div>
+        }
+      />
     </div>
   )
 }
