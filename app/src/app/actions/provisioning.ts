@@ -1078,7 +1078,7 @@ export async function unassignConnectorFromAgent(input: unknown) {
 
 /**
  * Draft/validated connector config-jának javító szerkesztése (admin-only). A módosítás
- * resetteli a gate-et (validáció/review/sandbox), így a javított config újra végigmegy a
+ * resetteli a gate-et (validáció/sandbox/review), így a javított config újra végigmegy a
  * teljes kapun. Aktív connectorra előbb `reopenConnector` kell.
  */
 export async function updateConnectorDraftConfig(input: unknown) {

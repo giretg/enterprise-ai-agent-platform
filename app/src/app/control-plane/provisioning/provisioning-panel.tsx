@@ -1710,17 +1710,17 @@ function DraftCard({
   const validationReady = !!v && v.status !== 'failed'
   const reviewApproved = draft.reviewStatus === 'approved'
   const sandboxReady = draft.sandboxTestOk === true
-  const activationReady = reviewApproved && validationReady && sandboxReady
+  const activationReady = validationReady && sandboxReady && reviewApproved
   const draftSteps: Array<{ id: DraftManageStep; label: string; hint: string; done: boolean }> = [
     { id: 'inspect', label: 'Áttekintés', hint: 'Config és toolok', done: !!cfg || !!draft.httpApiView || !!gmailView },
     { id: 'validate', label: 'Validáció', hint: v ? v.status : 'Még nem futott', done: validationReady },
-    { id: 'review', label: 'Review', hint: draft.reviewStatus, done: reviewApproved },
     {
       id: 'sandbox',
       label: 'Sandbox',
       hint: draft.sandboxTestOk === true ? 'ok' : draft.sandboxTestOk === false ? 'fail' : 'Még nem futott',
       done: sandboxReady,
     },
+    { id: 'review', label: 'Review', hint: draft.reviewStatus, done: reviewApproved },
     {
       id: 'activate',
       label: 'Aktiválás',
@@ -2231,8 +2231,8 @@ function DraftCard({
             <div>
               <h4 className="mb-1 font-semibold">Determinisztikus validáció</h4>
               <p className="text-xs text-ink-soft">
-                A draft még nincs validálva. Futtasd le a validátort, mielőtt review vagy aktiválás
-                következne.
+                A draft még nincs validálva. Futtasd le a validátort, mielőtt sandbox-teszt,
+                review vagy aktiválás következne.
               </p>
             </div>
           )}
@@ -2260,8 +2260,9 @@ function DraftCard({
               <div>
                 <h4 className="font-semibold">Review döntés</h4>
                 <p className="mt-1 text-xs text-ink-soft">
-                  Ez csak draft állapotban értelmezett kapu. Aktív connectornál visszavonás vagy
-                  új verzió kell, nem utólagos review-átírás.
+                  A sandbox-teszt eredményét is figyelembe vevő végső emberi jóváhagyás. Ez csak
+                  draft állapotban értelmezett kapu. Aktív connectornál visszavonás vagy új verzió
+                  kell, nem utólagos review-átírás.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -2381,8 +2382,8 @@ function DraftCard({
               ) : null}
               {!activationReady ? (
                 <p className="mb-3 text-xs text-honey">
-                  Az aktiválás feltétele: approved review, nem-failed validáció és sikeres
-                  sandbox-teszt.
+                  Az aktiválás feltétele: nem-failed validáció, sikeres sandbox-teszt és approved
+                  review.
                 </p>
               ) : null}
               <div className="grid gap-2 sm:grid-cols-2">
