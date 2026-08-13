@@ -7,6 +7,7 @@ import { AgentCardActions, type AssigneeOptions } from '@/components/agents/agen
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { modelLabel, modelTypeLabel } from '@/lib/model-providers'
+import { stripMarkdownForPreview } from '@/lib/markdown-text'
 
 const LABEL_TONE = {
   working: 'text-coral-deep',
@@ -121,7 +122,7 @@ export function AgentRegistryCard({
           Mivel bízták meg
         </p>
         <p className="mt-1 line-clamp-3 text-[13px] leading-relaxed text-ink-faint">
-          {agent.roleInstruction}
+          {stripMarkdownForPreview(agent.roleInstruction)}
         </p>
       </Link>
 

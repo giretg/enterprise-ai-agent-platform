@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation'
 import { getAgentDetailPageData } from '@/app/actions/agent-detail-page'
 import { Badge, Card } from '@/components/ui/shell'
 import { ExpandableContent } from '@/components/ui/expandable-content'
+import { ChatMarkdown } from '@/components/chat/chat-markdown'
 import { Collapsible } from '@/components/ui/collapsible'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
@@ -68,7 +69,7 @@ function ProseBlock({ text, empty }: { text: string | null | undefined; empty: s
   if (!text?.trim()) {
     return <p className="text-sm italic text-ink-faint">{empty}</p>
   }
-  return <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">{text}</p>
+  return <ChatMarkdown content={text} variant="agent" />
 }
 
 export default async function AgentDetailPage({

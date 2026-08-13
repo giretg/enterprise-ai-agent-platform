@@ -199,6 +199,7 @@ export default async function SystemPage() {
             description: 'Chat thinking-trace megjelenítése a tenantnél.',
             content: tenantThinkingTraceControlsRes.success ? (
               <TenantThinkingTracePanel
+                key="thinking-trace"
                 initialEnabled={tenantThinkingTraceControlsRes.data.enabled}
                 canEdit={canEditTenantWebSearch}
               />

@@ -29,6 +29,11 @@ import {
 import { PLAYBOOK_AUTHOR_AGENT_NAME } from '@/lib/platform-agent-registry'
 import { PLAYBOOK_SCHEMA_VERSION } from '@/lib/playbook-v2/spec'
 import {
+  buildReferencedSkillPrompt,
+  buildSkillCatalogPrompt,
+  type SkillReferenceEntry,
+} from '@/lib/skill/skill-reference'
+import {
   DEFAULT_TENANT_LANGUAGE,
   outputLanguageInstruction,
   type TenantLanguage,
@@ -49,11 +54,28 @@ HARD RULES (non-negotiable):
 - Every "human_role" role may declare "requiredPermissions" from the IAM permission vocabulary when a platform permission is actually required.
 - Steps should carry a templated "instructionTemplate" with "{{slot}}" placeholders, and a matching "inputSlots" array. Each slot has: name, type ("string"|"number"|"boolean"|"freeform"), required, and source: "config" (a value the operator fills in once when assembling the Process) or "trigger" (a value that comes from each run's input, e.g. from chat/ticket/cron) or "step" (output from the previous step in the flow).
 - Every "{{token}}" used in instructionTemplate MUST appear in that step's inputSlots, and vice versa for required slots.
-- If a LATER step has a required inputSlot with source "step" (meaning it expects that value as output from an earlier step), the EARLIER step's instructionTemplate must explicitly name that exact field and ask the executing agent to return it as a structured value (e.g. "at the end of your answer, return a JSON object with the key <fieldName>"). Do not rely on the runtime to infer this silently — an agent that only sees prose instructions will often answer in prose only, and the step will then be blocked as "output_contract_unmet". Optionally also declare the step's own "outputContract": { "requiredFields": [...] } to make this explicit.
 - Blocking gates with a "human_approval" type must have requiredActorRole pointing to a "human_role", never an "agent_role" — nobody could approve it otherwise.
 - L2/L3 criticality gates must be blocking.
 - entryStepId must reference an existing step id; every step/gate id must be unique; the graph must be reachable from entryStepId and free of cycles unless a gate breaks the loop.
 - Never output secrets, credentials, or personal data as example values.
+
+STEP CONTRACT CHAINING (the most common way a generated Playbook dies at runtime — check it explicitly before you answer):
+- The output of one step and the input of the next step are ONE contract, matched by EXACT field name. "companyName", "company_name" and "cegnev" are three different fields: the runtime does no fuzzy matching, no translation, no case folding.
+- For every edge A → B (via onComplete.nextStepId, a decision branch/fallback, or a transition): every inputSlot of B with source "step" and required true MUST be produced by A under exactly that name. For each such field do all three of these:
+  1. DECLARE it on A: "outputContract": { "requiredFields": ["<exact name>", ...] } (typed form also allowed: { "fields": [ { "name": ..., "type": "string"|"number"|"boolean"|"date"|"enum"|"array"|"object", "required": true } ] }).
+  2. PROMPT it in A's instructionTemplate: literally write the field name there and ask for a structured answer, e.g. 'A válaszod végén adj vissza egy JSON objektumot pontosan ezekkel a kulcsokkal: {"crmStatus": ..., "contactEmail": ...}'. A step that is never asked for its own contract answers in prose, and the run stops with "output_contract_unmet". The runtime's generic fallback instruction is NOT strong enough.
+  3. TYPE it: if B's slot is "number"/"boolean", say so in A's prompt; if only a fixed set of values is acceptable (routing!), enumerate those exact values verbatim in A's prompt.
+- Routing fields: if any onComplete condition or decision branch compares { "field": "X", "op": ..., "value": V }, then X must be in the producing step's outputContract AND named in its instructionTemplate, and every compared V must be listed in that prompt as an allowed value. A router comparing against a value the prompt never mentioned never routes.
+- A step may use source "step" ONLY for values that some step BEFORE it on EVERY incoming path actually produces. If a value cannot come from an earlier step, its source is "config" (the operator fills it in once) or "trigger" (it arrives with each run) — never "step".
+- Do not rename a value as it travels: if B expects "invoiceId", A must emit "invoiceId", and if C also needs it, C's slot is "invoiceId" too and B must pass it through (declare it in B's outputContract and prompt as well).
+- Before returning the JSON, walk every edge once and verify points 1-3 for each chained field. Fixing this here costs nothing; at runtime it is a blocked process a human has to unstick.
+
+SKILLS (approved, versioned working procedures — you may be given a SKILL CATALOG and the full text of the skills the request refers to):
+- A skill is NOT a capability and NOT a step: it is written guidance that the EXECUTING agent loads at runtime. You never call a skill, never inline it, and never invent one that is missing from the catalog.
+- If the request (or the spec you are editing) refers to a skill, its full instruction text is given to you. READ IT, and make the affected step consistent with it: the step must ask for exactly what the skill can produce, and provide exactly what the skill needs.
+- For a step meant to run with a skill: (a) name the skill in the instructionTemplate ("Használd a \`<skill-name>\` skillt."), (b) copy every tool from that skill's "required tools" into the assignedRole's requiredCapabilities — without them the runtime refuses to load the skill and the step degrades silently, (c) turn the skill's declared parameters into inputSlots of that step (source "config" or "trigger"), (d) only put fields into that step's outputContract that the skill actually produces.
+- Never paste the skill's text into instructionTemplate: the skill is versioned separately, and copying it forks it.
+- If the request names a skill that is NOT in the catalog, do not invent it — describe the work in the step's "description" and state there that the skill is missing.
 
 OUTPUT: a single JSON object only (no prose, no markdown fences) matching this shape:
 {
@@ -68,6 +90,7 @@ OUTPUT: a single JSON object only (no prose, no markdown fences) matching this s
     "id": string, "name": string, "ticketType": string, "assignedRole": string,
     "description"?: string,
     "instructionTemplate"?: string, "inputSlots"?: [ { "name": string, "type": "string"|"number"|"boolean"|"freeform", "required": boolean, "source": "config"|"trigger"|"step", "description"?: string } ],
+    "outputContract"?: { "requiredFields"?: string[], "fields"?: [ { "name": string, "type": "string"|"number"|"boolean"|"date"|"enum"|"array"|"object", "required"?: boolean, "description"?: string, "enumValues"?: string[] } ] },
     "requiredGateIds"?: string[],
     "onComplete"?: [ { "condition": "default" | { "field": string, "op": "=="|"!="|">="|"<="|">"|"<", "value": string|number|boolean }, "nextStepId"?: string, "gateId"?: string } ]
   } ],
@@ -162,12 +185,22 @@ export class PlaybookAuthorAgent {
     description: string
     knownCapabilities?: string[]
     knownPermissions?: string[]
+    skillCatalog?: SkillReferenceEntry[]
+    referencedSkills?: SkillReferenceEntry[]
     existingSpec?: unknown
     priorValidation?: ValidationResult
     outputLanguage?: TenantLanguage
   }): GatewayMessage[] {
     const language = input.outputLanguage ?? DEFAULT_TENANT_LANGUAGE
     const parts: string[] = []
+    // Skill-kontextus (skill-reference.ts): Level-0 katalógus mindig, Level-1 törzs
+    // csak a ténylegesen hivatkozott skillekre. A katalógus a capability-szótár ELŐTT
+    // áll, mert a hivatkozott skill `requiredTools`-a magyarázza a szótár egy részét.
+    const catalogPrompt = buildSkillCatalogPrompt(input.skillCatalog ?? [])
+    if (catalogPrompt) parts.push(catalogPrompt)
+    for (const skill of input.referencedSkills ?? []) {
+      parts.push(buildReferencedSkillPrompt(skill))
+    }
     if (input.knownCapabilities?.length) {
       parts.push(`Capability vocabulary (only use these for requiredCapabilities):\n${input.knownCapabilities.join(', ')}`)
     } else {
@@ -221,6 +254,10 @@ export class PlaybookAuthorAgent {
     description: string
     knownCapabilities?: string[]
     knownPermissions?: string[]
+    /** A tenantból olvasható skillek Level-0 indexe (`SkillService.listReferenceCatalog`). */
+    skillCatalog?: SkillReferenceEntry[]
+    /** A kérésben hivatkozott skillek — teljes törzzsel (`detectReferencedSkills`). */
+    referencedSkills?: SkillReferenceEntry[]
     existingSpec?: unknown
     priorValidation?: ValidationResult
     validationContext?: TenantValidationContext
@@ -236,6 +273,8 @@ export class PlaybookAuthorAgent {
       description: input.description,
       knownCapabilities: input.knownCapabilities,
       knownPermissions: input.knownPermissions,
+      skillCatalog: input.skillCatalog,
+      referencedSkills: input.referencedSkills,
       existingSpec: input.existingSpec,
       priorValidation: input.priorValidation,
       outputLanguage: input.outputLanguage,

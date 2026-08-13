@@ -1260,6 +1260,8 @@ export interface CreateSkillInput {
   riskTier: SkillRiskTier
   content: Prisma.InputJsonValue
   requires: Prisma.InputJsonValue
+  /** Level-2 mellékletek (csomag-import); hiányzó érték = nincs melléklet. */
+  attachments?: Prisma.InputJsonValue
   contentHash: string
 }
 
@@ -1267,6 +1269,7 @@ export interface AddSkillVersionInput {
   skillId: string
   content: Prisma.InputJsonValue
   requires: Prisma.InputJsonValue
+  attachments?: Prisma.InputJsonValue
   contentHash: string
 }
 

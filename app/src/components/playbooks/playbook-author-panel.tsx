@@ -7,7 +7,7 @@
  * kerül a draft a meglévő `draft → validál → jóváhagy → publish` láncba — az agent maga
  * sosem ír a DB-be, sosem publikál.
  */
-import { useState, useTransition } from 'react'
+import { useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { draftPlaybookFromDescription, createPlaybookV2, createPlaybookVersionV2 } from '@/app/actions/playbook'
 import {
@@ -15,6 +15,11 @@ import {
   type PlaybookDraftSpec,
   type PlaybookValidationResult,
 } from '@/components/playbooks/playbook-spec-editor'
+import {
+  SkillSlashMenu,
+  useSkillSlashAutocomplete,
+} from '@/components/skills/skill-slash-autocomplete'
+import { useTenantSkillOptions } from '@/components/skills/use-tenant-skill-options'
 
 export function PlaybookAuthorPanel({ playbookId }: { playbookId?: string }) {
   const router = useRouter()
@@ -27,9 +32,26 @@ export function PlaybookAuthorPanel({ playbookId }: { playbookId?: string }) {
   const [validation, setValidation] = useState<PlaybookValidationResult | null>(null)
   const [message, setMessage] = useState<{ tone: 'ok' | 'err' | 'warn'; text: string } | null>(null)
   const [statusText, setStatusText] = useState<string | null>(null)
+  // Melyik skill leírását olvasta el az agent a tervezéshez — enélkül nem látszana,
+  // hogy a draft egy meglévő, jóváhagyott munkamenet-leírásra épül-e.
+  const [usedSkills, setUsedSkills] = useState<{ name: string; version: number }[]>([])
+
+  // `/` a promptban → tenant skill-lista, ugyanaz a viselkedés, mint a chatben.
+  // A kiválasztott `/skill-név` a szövegben marad: a szerző agent ebből ismeri fel,
+  // melyik skill teljes leírását kell elolvasnia a folyamat tervezéséhez.
+  const promptRef = useRef<HTMLTextAreaElement | null>(null)
+  const tenantSkills = useTenantSkillOptions(open)
+  const slash = useSkillSlashAutocomplete({
+    skills: tenantSkills,
+    value: description,
+    onChange: setDescription,
+    inputRef: promptRef,
+    disabled: pending,
+  })
 
   async function generate() {
     setMessage(null)
+    setUsedSkills([])
     setGenerating(true)
     setStatusText(
       spec
@@ -51,10 +73,12 @@ export function PlaybookAuthorPanel({ playbookId }: { playbookId?: string }) {
         validation: PlaybookValidationResult
         fixRounds?: number
         autoFixFailed?: boolean
+        usedSkills?: { name: string; version: number }[]
       }
       setSpec(data.spec)
       setValidation(data.validation)
       setDescription('')
+      setUsedSkills(data.usedSkills ?? [])
 
       if (data.autoFixFailed) {
         setMessage({
@@ -129,13 +153,32 @@ export function PlaybookAuthorPanel({ playbookId }: { playbookId?: string }) {
             <span className="mb-1 block text-ink-soft">
               {spec ? 'Pontosítás / javítás' : 'Folyamat leírása'}
             </span>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={4}
-              placeholder="Pl.: egy kutató agent gyűjtsön céginfót, majd egy ember hagyja jóvá."
-              className="w-full rounded-lg border border-ink/15 bg-transparent px-3 py-2 text-sm"
-            />
+            <span className="relative block">
+              <textarea
+                ref={promptRef}
+                value={description}
+                onChange={(e) => {
+                  setDescription(e.target.value)
+                  slash.syncCursor(e.target)
+                  slash.setSelectedIndex(0)
+                }}
+                onSelect={(e) => slash.syncCursor(e.currentTarget)}
+                onClick={(e) => slash.syncCursor(e.currentTarget)}
+                onKeyUp={(e) => slash.syncCursor(e.currentTarget)}
+                onKeyDown={(e) => slash.handleKeyDown(e)}
+                rows={4}
+                placeholder="Pl.: egy kutató agent gyűjtsön céginfót, majd egy ember hagyja jóvá. Skillre a / jellel hivatkozhatsz."
+                className="w-full rounded-lg border border-ink/15 bg-transparent px-3 py-2 text-sm"
+              />
+              <SkillSlashMenu
+                autocomplete={slash}
+                emptyLabel="Ebben a szervezetben még nincs jóváhagyott skill."
+              />
+            </span>
+            <span className="mt-1 block text-xs text-ink-soft">
+              Írj <code>/</code> jelet, ha egy meglévő skillre akarsz hivatkozni — az agent
+              elolvassa a skill teljes leírását, és ahhoz igazítja a lépést.
+            </span>
           </label>
 
           <button
@@ -167,6 +210,13 @@ export function PlaybookAuthorPanel({ playbookId }: { playbookId?: string }) {
               className={`text-sm ${message.tone === 'err' ? 'text-coral' : message.tone === 'warn' ? 'text-honey' : 'text-sage'}`}
             >
               {message.text}
+            </p>
+          )}
+
+          {usedSkills.length > 0 && (
+            <p className="text-xs text-ink-soft">
+              Az agent elolvasta ezt a skill-leírást és ehhez igazította a lépéseket:{' '}
+              {usedSkills.map((s) => `${s.name} (v${s.version})`).join(', ')}.
             </p>
           )}
 

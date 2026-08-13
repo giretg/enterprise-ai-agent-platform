@@ -40,7 +40,24 @@ import {
 import { isSkillReadableFromTenant, isSkillWritableFromTenant } from '@/lib/skill/skill-scope'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { parseSkillMd } from '@/lib/skill/skill-md-adapter'
-import { validateSkill, type SkillValidationResult } from '@/lib/skill/skill-validator'
+import {
+  findInjectionPatterns,
+  validateSkill,
+  type SkillValidationResult,
+} from '@/lib/skill/skill-validator'
+import { readZipEntries, ZipReadError } from '@/lib/skill/zip-reader'
+import {
+  buildSkillPackage,
+  SkillPackageError,
+  type SkillPackageResult,
+  type SkillPackageSkippedFile,
+} from '@/lib/skill/skill-package-adapter'
+import {
+  formatAttachmentForPrompt,
+  formatAttachmentIndex,
+  parseSkillAttachments,
+  type SkillAttachment,
+} from '@/lib/skill/skill-attachments'
 import { computeSkillReadiness, type SkillReadiness } from '@/lib/skill/skill-readiness'
 import {
   buildLoadedSkillPrompt,
@@ -49,6 +66,7 @@ import {
   type AssignedSkillEntry,
 } from '@/lib/skill/skill-context'
 import { parseSkillSlashCommands } from '@/lib/skill/skill-slash-command'
+import type { SkillReferenceEntry } from '@/lib/skill/skill-reference'
 import {
   flattenToolCapabilityGroups,
   PLAYBOOK_CAPABILITY_GROUPS,
@@ -79,6 +97,8 @@ export interface SkillPreloadResult {
   blocked: Array<{ name: string; missingTools: string[]; reason: string }>
   requiredTools?: string[]
   runtimeHints?: SkillRuntimeHints
+  /** Van-e Level-2 melléklet az előtöltött skilleken (ettől él a `load_skill_attachment`). */
+  attachmentsAvailable?: boolean
   /**
    * A ténylegesen betöltött skillek DEKLARÁLT paraméterei (#199), betöltési
    * sorrendben, névre deduplikálva. Ebből köti a feladat-runtime a ticketen
@@ -117,6 +137,30 @@ export type SkillDistillResult =
       created: boolean
     }
   | { ok: false; stage: 'access' | 'empty' | 'distill' | 'validation'; detail: string }
+
+/**
+ * Csomag-import eredmény. A hibás ágak is BESZÉDESEK: az admin abból, amit
+ * visszakap, tudja, mi a következő lépés (melyik skillt válassza, mi maradt ki,
+ * miért bukott a validátor) — nem egy általános „import sikertelen” üzenetet lát.
+ */
+export type SkillPackageImportResult =
+  | {
+      ok: true
+      skill: Skill
+      versionId: string
+      validation: SkillValidationResult
+      attachments: SkillAttachment[]
+      skipped: SkillPackageSkippedFile[]
+      skillRoot: string
+    }
+  | { ok: false; stage: 'archive'; message: string; code: string }
+  | { ok: false; stage: 'package'; message: string; code: string; candidates: string[] }
+  | {
+      ok: false
+      stage: 'validation'
+      validation: SkillValidationResult
+      skipped: SkillPackageSkippedFile[]
+    }
 
 export class SkillService {
   constructor(
@@ -167,6 +211,37 @@ export class SkillService {
     return this.skills.listForTenant(actorTenantId)
   }
 
+  /**
+   * A tenantból OLVASHATÓ skillek aktív verziója, teljes tartalommal — a
+   * Playbook-szerző agent skill-kontextusához (`skill-reference.ts`).
+   *
+   * A `listForTenant` már fail-closed (global + saját tenant), így ez nem nyit új
+   * határt. Csak `active` verzió kerül bele: egy javaslati (`proposed`) vagy
+   * nyugdíjazott skillre hivatkozó lépés a futásidőben úgysem tölthetne be.
+   */
+  async listReferenceCatalog(actorTenantId: string | null): Promise<SkillReferenceEntry[]> {
+    const skills = await this.skills.listForTenant(actorTenantId)
+    const entries: SkillReferenceEntry[] = []
+    for (const skill of skills) {
+      const active = skill.versions.find((v) => v.status === 'active')
+      if (!active) continue
+      const content = parseSkillContent(active.content)
+      entries.push({
+        skillId: skill.id,
+        skillVersionId: active.id,
+        name: skill.name,
+        displayName: skill.displayName,
+        description: skill.description,
+        version: active.version,
+        requiredTools: parseSkillRequires(active.requires).map((r) => r.toolName),
+        triggerKeywords: content.triggerKeywords,
+        parameters: content.parameters,
+        instructions: content.instructions,
+      })
+    }
+    return entries
+  }
+
   /** Fail-closed: null, ha a skill nem olvasható az actor tenantjából. */
   async getReadableSkill(
     actorTenantId: string | null,
@@ -208,10 +283,13 @@ export class SkillService {
     riskTier: SkillRiskTier
     content: SkillContent
     requires: SkillRequirement[]
+    /** Level-2 mellékletek (csomag-import); üres lista = nincs melléklet. */
+    attachments?: SkillAttachment[]
     actor: ActorContext
   }): Promise<{ skill: Skill; versionId: string }> {
     await this.assertSkillNameAvailable(input.name, input.tenantId)
-    const contentHash = computeSkillContentHash(input.content, input.requires)
+    const attachments = input.attachments ?? []
+    const contentHash = computeSkillContentHash(input.content, input.requires, attachments)
     const displayName =
       normalizeSkillDisplayName(input.displayName)?.slice(0, SKILL_NAME_MAX) ?? null
     const { skill, version } = await this.skills.createSkill({
@@ -226,6 +304,9 @@ export class SkillService {
       riskTier: input.riskTier,
       content: input.content as unknown as Prisma.InputJsonValue,
       requires: input.requires as unknown as Prisma.InputJsonValue,
+      ...(attachments.length > 0
+        ? { attachments: attachments as unknown as Prisma.InputJsonValue }
+        : {}),
       contentHash,
     })
 
@@ -294,6 +375,126 @@ export class SkillService {
     })
 
     return { ok: true, skill, versionId, validation }
+  }
+
+  /**
+   * Több-fájlos skill-CSOMAG import (ZIP-bájtokból). A szabványos skillek nem egy
+   * fájlból állnak: a `SKILL.md` mellett referencia-dokumentumok és szkriptek is
+   * érkeznek. Az itteni szerződés:
+   *
+   *   - a `SKILL.md` ugyanazon a teherhordó validátoron megy át, mint az egy-fájlos
+   *     import — a kapun nincs kedvezmény azért, mert csomagban jött;
+   *   - a futtatható kód-fájlok KIMARADNAK (a platform nem futtat skill-kódot),
+   *     de nem buktatják el az importot — az admin tételes jelentést kap;
+   *   - a megtartott szöveges mellékletek Level-2 tartalomként tárolódnak: nulla
+   *     bájt a promptban, amíg valaki `load_skill_attachment`-tel el nem kéri őket;
+   *   - a mellékletekre is fut az injection-szűrés; a gyanús melléklet kimarad.
+   */
+  async importSkillPackage(input: {
+    archive: Uint8Array
+    /** A csomagon belüli skill-alkönyvtár (több-skilles repónál kötelező). */
+    subpath?: string
+    sourceUrl?: string
+    sourceLabel?: string
+    catalogScope: SkillCatalogScope
+    tenantId: string | null
+    actor: ActorContext
+  }): Promise<SkillPackageImportResult> {
+    let entries: { path: string; bytes: Uint8Array }[]
+    try {
+      entries = readZipEntries(input.archive)
+    } catch (e) {
+      if (e instanceof ZipReadError) {
+        return { ok: false, stage: 'archive', message: e.message, code: e.code }
+      }
+      throw e
+    }
+
+    let pkg: SkillPackageResult
+    try {
+      pkg = buildSkillPackage(entries, input.subpath ? { subpath: input.subpath } : {})
+    } catch (e) {
+      if (e instanceof SkillPackageError) {
+        return {
+          ok: false,
+          stage: 'package',
+          message: e.message,
+          code: e.code,
+          candidates: e.candidates,
+        }
+      }
+      throw e
+    }
+
+    const parsed = parseSkillMd(pkg.skillMdRaw, input.sourceUrl ? { url: input.sourceUrl } : {})
+    const validation = validateSkill({
+      name: parsed.name,
+      description: parsed.description,
+      content: parsed.content,
+      requires: parsed.suggestedRequires,
+    })
+    if (!validation.ok) {
+      return { ok: false, stage: 'validation', validation, skipped: pkg.skipped }
+    }
+
+    // A melléklet ugyanolyan nem-megbízható input, mint a skill-törzs: az egyetlen
+    // különbség, hogy a gyanús melléklet kimarad, nem az egész skill bukik el.
+    const skipped = [...pkg.skipped]
+    const attachments: SkillAttachment[] = []
+    for (const attachment of pkg.attachments) {
+      const hits = findInjectionPatterns(attachment.text)
+      if (hits.length > 0) {
+        skipped.push({ path: attachment.path, reason: 'injection_pattern', bytes: attachment.bytes })
+        continue
+      }
+      attachments.push(attachment)
+    }
+
+    const provenance = {
+      ...parsed.provenance,
+      format: 'skill-package',
+      packageRoot: pkg.skillRoot,
+      ...(input.sourceLabel ? { sourceLabel: input.sourceLabel } : {}),
+    }
+
+    const { skill, versionId } = await this.createSkill({
+      name: parsed.name,
+      displayName: parsed.displayName,
+      description: parsed.description,
+      catalogScope: input.catalogScope,
+      tenantId: input.catalogScope === 'global' ? null : input.tenantId,
+      sourceType: 'imported',
+      provenance: provenance as unknown as Prisma.InputJsonValue,
+      license: parsed.license,
+      riskTier: validation.riskTier,
+      content: parsed.content,
+      requires: parsed.suggestedRequires,
+      attachments,
+      actor: input.actor,
+    })
+
+    await this.audit.append({
+      actorType: input.actor.actorId ? 'human' : 'system',
+      actorId: input.actor.actorId,
+      agentVersion: null,
+      action: 'skill.package_imported',
+      targetType: 'skill',
+      targetId: skill.id,
+      modelUsed: null,
+      inputRef: input.sourceLabel ?? input.sourceUrl ?? 'zip-upload',
+      outputRef: versionId,
+      policyDecision: 'proposed',
+      tenantId: skill.tenantId,
+      metadata: {
+        skillRoot: pkg.skillRoot,
+        attachmentCount: attachments.length,
+        attachmentBytes: attachments.reduce((sum, a) => sum + a.bytes, 0),
+        skippedCount: skipped.length,
+        skipped: skipped.map((s) => ({ path: s.path, reason: s.reason })),
+      },
+    })
+
+    return { ok: true, skill, versionId, validation, attachments, skipped, skillRoot: pkg.skillRoot }
   }
 
   /**
@@ -1014,6 +1215,7 @@ export class SkillService {
     const blocked: SkillPreloadResult['blocked'] = []
     const requiredTools: string[] = []
     let sawSkillWithoutRequires = false
+    let attachmentsAvailable = false
     const seen = new Set<string>()
     const orderedIds: string[] = []
     for (const skillVersionId of input.skillVersionIds) {
@@ -1096,7 +1298,14 @@ export class SkillService {
       })
       loadedSkillNames.push(entry.name)
       loadedSkillVersionIds.push(skillVersionId)
-      preloadedPrompts.push(`${reason}\n\n${buildLoadedSkillPrompt(entry, content)}`)
+      // Level-2: az előtöltött skill mellékleteinek LISTÁJA is megy (tartalom nem).
+      const attachmentIndex = formatAttachmentIndex(parseSkillAttachments(version.attachments))
+      if (attachmentIndex) attachmentsAvailable = true
+      preloadedPrompts.push(
+        `${reason}\n\n${buildLoadedSkillPrompt(entry, content)}${
+          attachmentIndex ? `\n\n${attachmentIndex}` : ''
+        }`,
+      )
       if (content.runtimeHints) collectedHints.push(content.runtimeHints)
       for (const parameter of content.parameters) {
         if (collectedParameters.some((p) => p.name === parameter.name)) continue
@@ -1108,6 +1317,7 @@ export class SkillService {
       loadedSkillNames,
       loadedSkillVersionIds,
       blocked,
+      ...(attachmentsAvailable ? { attachmentsAvailable: true } : {}),
       ...(collectedParameters.length > 0 ? { parameters: collectedParameters } : {}),
       // A betöltött skillek `allowed-tools`-a = a forduló eszköz-hatóköre. Ha
       // BÁRMELYIK betöltött skill üres requires-szel jön, nincs mit szűkíteni:
@@ -1240,6 +1450,8 @@ export class SkillService {
         runtimeHints?: SkillRuntimeHints
         /** A skill `allowed-tools`-a — a hívó ezzel szűkíti a forduló eszköz-hatókörét. */
         requiredTools?: string[]
+        /** Van-e Level-2 melléklet — ettől jelenik meg a `load_skill_attachment` eszköz. */
+        attachmentsAvailable?: boolean
       }
     | { ok: false; reason: string }
   > {
@@ -1297,12 +1509,97 @@ export class SkillService {
     })
 
     const requiredTools = parseSkillRequires(version.requires).map((r) => r.toolName)
+    // Level-2: a melléklet LISTÁJA megy a Level-1 törzzsel (néhány sor), a
+    // TARTALMA nem — azt külön, explicit `load_skill_attachment` hívás hozza be.
+    const attachments = parseSkillAttachments(version.attachments)
+    const attachmentIndex = formatAttachmentIndex(attachments)
+    const instructions = attachmentIndex
+      ? `${buildLoadedSkillPrompt(entry, content)}\n\n${attachmentIndex}`
+      : buildLoadedSkillPrompt(entry, content)
     return {
       ok: true,
-      instructions: buildLoadedSkillPrompt(entry, content),
+      instructions,
       ...(content.runtimeHints ? { runtimeHints: content.runtimeHints } : {}),
       ...(requiredTools.length > 0 ? { requiredTools } : {}),
+      ...(attachments.length > 0 ? { attachmentsAvailable: true } : {}),
     }
+  }
+
+  /**
+   * `load_skill_attachment` végrehajtás (Level-2, a D7 progresszió harmadik szintje).
+   *
+   * Ugyanaz a fail-closed szerződés, mint a Level-1-nél: csak ténylegesen
+   * hozzárendelt (enabled) skill-verzió mellékletét adjuk vissza, és CSAK a tárolt
+   * útvonalak közül — a `path` a modelltől jön, tehát nem-megbízható input; itt
+   * nincs fájlrendszer-elérés, kizárólag pontos egyezés a tárolt listán.
+   */
+  async loadSkillAttachmentForAgent(input: {
+    agentId: string
+    skillVersionId: string
+    path: string
+    actor: ActorContext
+  }): Promise<{ ok: true; text: string; path: string } | { ok: false; reason: string }> {
+    const index = await this.getAssignedSkillIndex(input.agentId)
+    const entry = resolveLoadableSkill(index, input.skillVersionId)
+    if (!entry) {
+      await this.audit.append({
+        actorType: 'agent',
+        actorId: input.agentId,
+        agentVersion: null,
+        action: 'skill.access_denied',
+        targetType: 'agent',
+        targetId: input.agentId,
+        modelUsed: null,
+        inputRef: input.skillVersionId,
+        outputRef: 'denied',
+        policyDecision: 'deny',
+        tenantId: input.actor.actorTenantId,
+        metadata: {
+          skillVersionId: input.skillVersionId,
+          attachmentPath: input.path,
+          reason: 'not_assigned',
+        },
+      })
+      return { ok: false, reason: 'A skill nincs ehhez az agenthez rendelve (deny-by-default).' }
+    }
+
+    const version = await this.skills.findVersionById(input.skillVersionId)
+    if (!version) return { ok: false, reason: 'A skill-verzió nem található.' }
+
+    const attachments = parseSkillAttachments(version.attachments)
+    const wanted = input.path.trim()
+    const found = attachments.find((a) => a.path === wanted)
+    if (!found) {
+      const available = attachments.map((a) => a.path).join(', ')
+      return {
+        ok: false,
+        reason: available
+          ? `Ehhez a skillhez nincs „${wanted}” nevű melléklet. Elérhető: ${available}`
+          : 'Ehhez a skillhez nem tartozik melléklet.',
+      }
+    }
+
+    await this.audit.append({
+      actorType: 'agent',
+      actorId: input.agentId,
+      agentVersion: null,
+      action: 'skill.attachment_loaded',
+      targetType: 'skill',
+      targetId: entry.skillId,
+      modelUsed: null,
+      inputRef: input.skillVersionId,
+      outputRef: found.path,
+      policyDecision: 'allow',
+      tenantId: input.actor.actorTenantId,
+      metadata: {
+        skillVersionId: input.skillVersionId,
+        skillId: entry.skillId,
+        attachmentPath: found.path,
+        attachmentSha256: found.sha256,
+      },
+    })
+
+    return { ok: true, path: found.path, text: formatAttachmentForPrompt(found) }
   }
 
   /**

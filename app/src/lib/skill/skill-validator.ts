@@ -45,6 +45,16 @@ const INJECTION_PATTERNS: { re: RegExp; label: string }[] = [
 const CODE_FENCE_RE = /```+\s*(python|py|bash|sh|shell|zsh|js|javascript|ts|typescript|ruby|rb|php|go|golang|rust|rs|java|c|cpp|c\+\+|perl|powershell|ps1)\b/i
 const SHEBANG_RE = /(^|\n)\s*#!\s*\/(usr\/)?bin\//
 
+/**
+ * Injection-minta kereső NEM-SKILL szövegen (Level-2 mellékletek). Ugyanaz a
+ * mintakészlet, mint a skill-törzsé: a melléklet is támadó-kontrollált bájt, és a
+ * `load_skill_attachment` ugyanúgy a modell kontextusába teszi. A hívó dönt a
+ * következményről — a csomag-import a MELLÉKLETET hagyja ki, nem az egész skillt.
+ */
+export function findInjectionPatterns(text: string): string[] {
+  return INJECTION_PATTERNS.filter(({ re }) => re.test(text)).map(({ label }) => label)
+}
+
 export function validateSkill(input: SkillValidationInput): SkillValidationResult {
   const errors: string[] = []
   const warnings: string[] = []

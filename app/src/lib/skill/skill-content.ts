@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { computeDiffHash } from '@/lib/crypto/hash-chain'
+import { attachmentsFingerprint, type SkillAttachment } from './skill-attachments'
 
 /**
  * Kanonikus belső skill-séma (spec §D6). A tárolt `SkillVersion.content` és
@@ -243,8 +244,17 @@ export function parseSkillRequires(value: unknown): SkillRequirement[] {
  * verzió-diffhez, WP-7). A kulcsokat rendezetten szerializáljuk, hogy a hash a
  * mezők sorrendjétől független legyen.
  */
-export function computeSkillContentHash(content: SkillContent, requires: SkillRequirement[]): string {
+export function computeSkillContentHash(
+  content: SkillContent,
+  requires: SkillRequirement[],
+  attachments: SkillAttachment[] = [],
+): string {
+  // A melléklet-ujjlenyomat CSAK akkor kerül a kanonikus alakba, ha van melléklet:
+  // így a mező bevezetése előtt aláírt verziók hash-e bitre változatlan marad.
+  const attachmentPart =
+    attachments.length > 0 ? { attachments: attachmentsFingerprint(attachments) } : {}
   const canonical = JSON.stringify({
+    ...attachmentPart,
     content: {
       instructions: content.instructions,
       triggerKeywords: content.triggerKeywords,

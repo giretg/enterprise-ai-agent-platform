@@ -345,6 +345,8 @@ export type LoadSkillFn = (
       }
       /** A skill `allowed-tools`-a — betöltés után ERRE szűkül a forduló eszköz-hatóköre. */
       requiredTools?: string[]
+      /** Van-e Level-2 melléklete — ettől jelenik meg a `load_skill_attachment` eszköz. */
+      attachmentsAvailable?: boolean
     }
   | { ok: false; reason: string }
 >
@@ -353,6 +355,24 @@ const LOAD_SKILL_DEFINITION: ToolDefinition = {
   description:
     'Egy hozzád rendelt skill (készség-leírás) teljes instrukciójának betöltése a Level-0 indexben látott `id` (skillVersionId) alapján. Csak akkor hívd, ha az index egy skilljét relevánsnak látod a feladathoz. A skill szövege puha iránymutatás; a tényleges jogosultságokat továbbra is a Tool Broker dönti el.',
   inputSchema: objectSchema({ skillVersionId: STR }, ['skillVersionId']),
+}
+
+// Level-2 (skill-catalog-phase2-spec §P2-D8): a skill MELLÉKLETEI. A Level-1
+// betöltés csak a melléklet-LISTÁT hozza; a tartalmat ez a külön, auditált hívás.
+// A tool CSAK akkor jelenik meg a modellnek, ha egy betöltött skillnek ténylegesen
+// van melléklete — enélkül minden fordulóban felesleges tool-definíciót fizetnénk.
+const LOAD_SKILL_ATTACHMENT_TOOL = 'load_skill_attachment'
+
+export type LoadSkillAttachmentFn = (
+  skillVersionId: string,
+  path: string,
+) => Promise<{ ok: true; text: string; path: string } | { ok: false; reason: string }>
+
+const LOAD_SKILL_ATTACHMENT_DEFINITION: ToolDefinition = {
+  name: LOAD_SKILL_ATTACHMENT_TOOL,
+  description:
+    'Egy már betöltött skill mellékletének (referencia-dokumentum, adat-tábla) behúzása a skill `id`-je (skillVersionId) és a melléklet útvonala alapján. Csak a betöltött skill melléklet-listájában szereplő útvonal kérhető le. Akkor hívd, ha a skill instrukciója egy mellékletre hivatkozik, és annak tartalma kell a feladathoz.',
+  inputSchema: objectSchema({ skillVersionId: STR, path: STR }, ['skillVersionId', 'path']),
 }
 
 /**
@@ -793,6 +813,14 @@ export async function runAgentToolLoop(params: {
   preloadedSkillPrompts?: string[]
   /** `load_skill` végrehajtó (fail-closed a SkillService-ben). Ha megadva, a tool elérhető. */
   loadSkill?: LoadSkillFn
+  /** Level-2 melléklet-betöltő (fail-closed a SkillService-ben). */
+  loadSkillAttachment?: LoadSkillAttachmentFn
+  /**
+   * Előtöltött (slash) skillnek van-e melléklete — ilyenkor a
+   * `load_skill_attachment` már az első modellhívásnál elérhető, mert a Level-1
+   * törzs (és benne a melléklet-lista) `load_skill` nélkül került a promptba.
+   */
+  initialSkillAttachmentsAvailable?: boolean
   /**
    * Slash / előtöltött skillek runtimeHints-e — a loop indulásakor emeli a
    * wallclock / tool-büdzsét (skill csak emelhet, lásd mergeSkillRuntimeHints).
@@ -1030,6 +1058,13 @@ export async function runAgentToolLoop(params: {
       : null
   /** A hatókört kiváltó skill neve(i) — az elutasító üzenet ezt nevezi meg. */
   const skillScopeSources: string[] = []
+  const loadSkillAttachment = params.loadSkillAttachment
+  /**
+   * A Level-2 eszköz csak akkor létezik a modell számára, ha van mit betölteni:
+   * vagy egy előtöltött skill hozott mellékletet, vagy egy futás közbeni
+   * `load_skill` jelezte. Így a melléklet nélküli agenteknél nulla a többletköltség.
+   */
+  let attachmentToolAvailable = params.initialSkillAttachmentsAvailable === true
 
   const buildTools = (): ToolDefinition[] => {
     const inScope = skillToolScope
@@ -1043,6 +1078,7 @@ export async function runAgentToolLoop(params: {
         ? [TOOL_RESULT_READ_DEFINITION, TOOL_RESULT_EXTRACT_DEFINITION]
         : []),
       ...(loadSkill ? [LOAD_SKILL_DEFINITION] : []),
+      ...(loadSkillAttachment && attachmentToolAvailable ? [LOAD_SKILL_ATTACHMENT_DEFINITION] : []),
     ]
   }
   let tools = buildTools()
@@ -1987,6 +2023,11 @@ export async function runAgentToolLoop(params: {
           if (!skillScopeSources.includes(skillTitle)) skillScopeSources.push(skillTitle)
           tools = buildTools()
         }
+        // A betöltött skillnek van melléklete → a Level-2 eszköz mostantól látszik.
+        if (loaded.ok && loaded.attachmentsAvailable && !attachmentToolAvailable) {
+          attachmentToolAvailable = true
+          tools = buildTools()
+        }
         // Ugyanaz a skill újratöltése ugyanazt az instrukciót adja vissza: a
         // forrás-számvitel ezt ismételt behozásnak látja, így a körönként
         // újratöltő futás sem tudja tisztára mosni a zsákutca-sorozatot.
@@ -2023,6 +2064,67 @@ export async function runAgentToolLoop(params: {
               : 'skill betöltve'
             : loaded.reason,
           status: loaded.ok ? 'done' : 'skipped',
+        })
+        continue
+      }
+
+      // load_skill_attachment (Level-2): a melléklet TARTALMA. Ugyanaz a
+      // fail-closed enforcement a SkillService-ben (hozzárendelés + pontos
+      // útvonal-egyezés a tárolt listán) — a modell által adott `path` nem nyit
+      // fájlrendszert, csak a tárolt mellékletek közül választ.
+      if (loadSkillAttachment && call.name === LOAD_SKILL_ATTACHMENT_TOOL) {
+        turnToolCallsIssued += 1
+        const attachmentStartedAt = now()
+        const skillVersionId = strArg(call.input, 'skillVersionId')
+        const attachmentPath = strArg(call.input, 'path')
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: LOAD_SKILL_ATTACHMENT_TOOL,
+          detail: attachmentPath ? shortText(attachmentPath, 48) : undefined,
+          status: 'running',
+        })
+        const attachment =
+          skillVersionId && attachmentPath
+            ? await loadSkillAttachment(skillVersionId, attachmentPath)
+            : ({ ok: false, reason: 'Hiányzó skillVersionId vagy path.' } as const)
+        toolCallCount += 1
+        if (!attachment.ok) deniedCount += 1
+        const attachmentContent = attachment.ok
+          ? attachment.text
+          : `ELUTASÍTVA: ${attachment.reason}`
+        // Ugyanannak a mellékletnek az újratöltése nem hoz új információt — a
+        // forrás-számvitel ezt zsákutcaként látja (mint a `load_skill`-nél).
+        const attachmentRedundant = noteSourceIngest(
+          toolCallSourceKey(call.name, call.input),
+          attachmentContent.length,
+          attachmentContent.length,
+        )
+        pushToolResult(
+          call,
+          attachmentContent,
+          attachment.ok && !attachmentRedundant ? 'new' : 'barren',
+        )
+        await recordInternalToolCall({
+          toolName: LOAD_SKILL_ATTACHMENT_TOOL,
+          status: attachment.ok ? 'ok' : 'denied',
+          outcome: attachment.ok ? (attachmentRedundant ? 'partial' : 'ok') : 'failed',
+          startedAt: attachmentStartedAt,
+          argsMeta: {
+            skill_version_id: skillVersionId || null,
+            attachment_path: attachmentPath || null,
+            returned_chars: attachmentContent.length,
+          },
+          resultMeta: attachment.ok
+            ? { redundant: attachmentRedundant }
+            : { reason: attachment.reason },
+        })
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: LOAD_SKILL_ATTACHMENT_TOOL,
+          detail: attachment.ok ? `melléklet betöltve: ${attachment.path}` : attachment.reason,
+          status: attachment.ok ? 'done' : 'skipped',
         })
         continue
       }

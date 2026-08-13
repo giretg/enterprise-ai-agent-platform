@@ -61,13 +61,11 @@ import {
   canStartThinkingTraceStream,
   type ThinkingTraceControlState,
 } from '@/lib/chat-thinking-trace'
+import { skillNameToSlashToken } from '@/lib/skill/skill-slash-command'
 import {
-  appendSkillSlashToken,
-  filterSkillsForSlashQuery,
-  getActiveSlashQuery,
-  insertSkillSlashToken,
-  skillNameToSlashToken,
-} from '@/lib/skill/skill-slash-command'
+  SkillSlashMenu,
+  useSkillSlashAutocomplete,
+} from '@/components/skills/skill-slash-autocomplete'
 import { getToolUiLabel } from '@/lib/tool-ui-labels'
 
 type PendingAttachment = {
@@ -1343,8 +1341,6 @@ export function AgentChatPanel({
   const [distillTargetSkillId, setDistillTargetSkillId] = useState<string>('')
   const [distillTargets, setDistillTargets] = useState<Array<{ id: string; name: string }>>([])
   const [agentSkills, setAgentSkills] = useState<ChatSkillOption[]>([])
-  const [inputCursor, setInputCursor] = useState(0)
-  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -1699,15 +1695,6 @@ export function AgentChatPanel({
     }
   }, [agent.id, canDistillSkill, open])
 
-  const slashContext = useMemo(
-    () => getActiveSlashQuery(input, inputCursor),
-    [input, inputCursor],
-  )
-  const slashSkillOptions = useMemo(
-    () => (slashContext ? filterSkillsForSlashQuery(agentSkills, slashContext.query) : []),
-    [agentSkills, slashContext],
-  )
-
   // #199/D6 — chatben a csatolmány-tiltás CSAK figyelmeztetés: a küldést nem
   // törjük meg. A kemény kapu ott van, ahol a skillt explicit kiválasztják
   // (korlátozott feladat + normál board-feladat); a chat szabad beszélgetés,
@@ -1724,53 +1711,16 @@ export function AgentChatPanel({
       .map((skill) => skill.name)
   }, [agentSkills, input, pendingAttachments.length])
 
-  const applySkillSlashSelection = useCallback(
-    (skill: ChatSkillOption) => {
-      if (!slashContext) return
-      const next = insertSkillSlashToken({
-        text: input,
-        cursorPos: inputCursor,
-        slashStart: slashContext.start,
-        token: skillNameToSlashToken(skill.name),
-      })
-      setInput(next.text)
-      setInputCursor(next.cursorPos)
-      setSlashSelectedIndex(0)
-      requestAnimationFrame(() => {
-        const textarea = textareaRef.current
-        if (!textarea) return
-        textarea.focus()
-        textarea.setSelectionRange(next.cursorPos, next.cursorPos)
-      })
-    },
-    [input, inputCursor, slashContext],
-  )
-
-  const insertSkillFromPicker = useCallback(
-    (skill: ChatSkillOption) => {
-      const next = appendSkillSlashToken({
-        text: input,
-        cursorPos: inputCursor,
-        token: skillNameToSlashToken(skill.name),
-      })
-      setInput(next.text)
-      setInputCursor(next.cursorPos)
-      setSlashSelectedIndex(0)
-      requestAnimationFrame(() => {
-        const textarea = textareaRef.current
-        if (!textarea) return
-        textarea.focus()
-        textarea.setSelectionRange(next.cursorPos, next.cursorPos)
-      })
-    },
-    [input, inputCursor],
-  )
-
-  const syncInputCursor = useCallback((target: HTMLTextAreaElement) => {
-    setInputCursor(target.selectionStart ?? 0)
-  }, [])
   const composerDisabled = controlsBusy || conversationStatus === 'archived'
-  const slashMenuOpen = !composerDisabled && slashContext !== null
+  // A `/` menü viselkedése közös a Playbook-szerző prompttal (`skill-slash-autocomplete`),
+  // hogy a két felület ne tudjon szétcsúszni.
+  const slash = useSkillSlashAutocomplete({
+    skills: agentSkills,
+    value: input,
+    onChange: setInput,
+    inputRef: textareaRef,
+    disabled: composerDisabled,
+  })
 
   /**
    * Módváltáskor a feladat-specifikus beállítások nem maradhatnak élve
@@ -2821,24 +2771,7 @@ export function AgentChatPanel({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (slashMenuOpen && slashSkillOptions.length > 0) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        setSlashSelectedIndex((index) => Math.min(index + 1, slashSkillOptions.length - 1))
-        return
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        setSlashSelectedIndex((index) => Math.max(index - 1, 0))
-        return
-      }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault()
-        const skill = slashSkillOptions[slashSelectedIndex]
-        if (skill) applySkillSlashSelection(skill)
-        return
-      }
-    }
+    if (slash.handleKeyDown(e)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       // Az Enter mindig azt teszi, amit az elsődleges gomb ígér.
@@ -3347,7 +3280,7 @@ export function AgentChatPanel({
                           key={skill.skillVersionId}
                           type="button"
                           onClick={() => {
-                            insertSkillFromPicker(skill)
+                            slash.insertAtCursor(skill)
                             setComposerPanel(null)
                           }}
                           className="flex w-full flex-col rounded-lg px-3 py-2 text-left transition-colors hover:bg-night-2"
@@ -3526,40 +3459,12 @@ export function AgentChatPanel({
           )}
 
           <div className="relative flex items-end gap-2 rounded-2xl border border-line bg-card p-2 shadow-sm focus-within:border-coral/40 focus-within:ring-2 focus-within:ring-coral/15">
-            {slashMenuOpen && (
-              <div
-                role="listbox"
-                aria-label="Skill slash-parancsok"
-                className="absolute bottom-full left-12 z-20 mb-1 max-h-48 w-72 overflow-y-auto rounded-xl border border-line bg-card py-1 shadow-lg"
-              >
-                {agentSkills.length === 0 ? (
-                  <p className="px-3 py-2 text-xs text-ink-faint">
-                    Ehhez az AI munkatárshoz nincs engedélyezett skill hozzárendelve.
-                  </p>
-                ) : slashSkillOptions.length === 0 ? (
-                  <p className="px-3 py-2 text-xs text-ink-faint">Nincs illeszkedő skill.</p>
-                ) : (
-                  slashSkillOptions.map((skill, index) => (
-                    <button
-                      key={skill.skillVersionId}
-                      type="button"
-                      role="option"
-                      aria-selected={index === slashSelectedIndex}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => applySkillSlashSelection(skill)}
-                      className={`flex w-full flex-col px-3 py-2 text-left text-xs transition-colors ${
-                        index === slashSelectedIndex
-                          ? 'bg-coral/10 text-coral-deep'
-                          : 'hover:bg-night-2'
-                      }`}
-                    >
-                      <span className="font-semibold">/{skillNameToSlashToken(skill.name)}</span>
-                      <span className="line-clamp-2 text-ink-faint">{skill.description}</span>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
+            <SkillSlashMenu
+              autocomplete={slash}
+              emptyLabel="Ehhez az AI munkatárshoz nincs engedélyezett skill hozzárendelve."
+              position="above"
+              className="left-12"
+            />
             <input
               ref={fileInputRef}
               type="file"
@@ -3584,12 +3489,12 @@ export function AgentChatPanel({
               value={input}
               onChange={(e) => {
                 setInput(e.target.value)
-                syncInputCursor(e.target)
-                setSlashSelectedIndex(0)
+                slash.syncCursor(e.target)
+                slash.setSelectedIndex(0)
               }}
-              onSelect={(e) => syncInputCursor(e.currentTarget)}
-              onClick={(e) => syncInputCursor(e.currentTarget)}
-              onKeyUp={(e) => syncInputCursor(e.currentTarget)}
+              onSelect={(e) => slash.syncCursor(e.currentTarget)}
+              onClick={(e) => slash.syncCursor(e.currentTarget)}
+              onKeyUp={(e) => slash.syncCursor(e.currentTarget)}
               onKeyDown={handleKeyDown}
               rows={1}
               placeholder={
