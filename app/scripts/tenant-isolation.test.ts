@@ -254,7 +254,7 @@ async function main() {
     ])
     const platform = makePlatformRepo([{ userId: 'root', role: 'superadmin', status: 'active' }])
     const svc = new TenantService(tenants as any, memberships as any, platform as any, audit.repo as any)
-    return { svc, audit, platform }
+    return { svc, audit, platform, memberships }
   }
 
   await check('TenantService.changeMemberRole: cross-tenant célpont ⇒ "membership: not found"', async () => {
@@ -304,6 +304,22 @@ async function main() {
     const all = await platform.findAll()
     assert.ok(!all.some((m: any) => m.userId === 'temp'))
     assert.ok(audit.events.some((e) => e.action === 'platform.role.revoke'))
+  })
+
+  await check('TenantService.addMember: új default leszed minden korábbi defaultot', async () => {
+    const { svc, memberships } = tenantFixture()
+    await svc.addMember({
+      tenantId: TENANT_B,
+      userId: 'admin-a',
+      role: 'admin',
+      status: 'active',
+      isDefault: true,
+      actorId: 'admin-a',
+    })
+    const forUser = await memberships.findByUser('admin-a')
+    const defaults = forUser.filter((m) => m.isDefault)
+    assert.equal(defaults.length, 1)
+    assert.equal(defaults[0].tenantId, TENANT_B)
   })
 
   await check('TenantService.createTenant: duplikált slug ⇒ elutasít (registry izoláció)', async () => {

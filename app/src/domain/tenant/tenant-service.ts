@@ -212,6 +212,15 @@ export class TenantService {
     const existing = await this.memberships.findByTenantAndUser(params.tenantId, params.userId)
     const status = params.status ?? 'pending'
 
+    if (params.isDefault) {
+      const others = await this.memberships.findByUser(params.userId)
+      for (const row of others) {
+        if (row.isDefault && row.tenantId !== params.tenantId) {
+          await this.memberships.update(row.id, { isDefault: false })
+        }
+      }
+    }
+
     const membership = existing
       ? await this.memberships.update(existing.id, {
           role: params.role,

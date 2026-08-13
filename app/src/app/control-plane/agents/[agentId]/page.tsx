@@ -1,7 +1,11 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
 import { notFound } from 'next/navigation'
-import { getAgentDetailPageData } from '@/app/actions/agent-detail-page'
+import { requireTenantRole, TenantAuthError } from '@/auth/tenant-context'
+import { isAgentDetailLoadError } from '@/lib/agent-detail-access'
+import { loadAgentDetailPageData } from '@/lib/agent-detail-page-data'
+import { AgentDetailUnavailable } from '@/components/agents/agent-detail-unavailable'
+import { repositories } from '@/repositories/postgres'
 import { Badge, Card } from '@/components/ui/shell'
 import { ExpandableContent } from '@/components/ui/expandable-content'
 import { ChatMarkdown } from '@/components/chat/chat-markdown'
@@ -45,6 +49,8 @@ import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { enabledModelProviders } from '@/lib/model-policy'
 import { SettingsSectionShell, type SettingsSection } from '../../system/system-settings-shell'
 
+export const dynamic = 'force-dynamic'
+
 function ProfileSection({
   title,
   subtitle,
@@ -81,8 +87,40 @@ export default async function AgentDetailPage({
 }) {
   const { agentId } = await params
   const query = await searchParams
-  const res = await getAgentDetailPageData({ id: agentId })
-  if (!res.success) notFound()
+
+  let tenantCtx
+  try {
+    tenantCtx = await requireTenantRole('viewer')
+  } catch (e) {
+    if (e instanceof TenantAuthError) notFound()
+    throw e
+  }
+
+  let loaded
+  try {
+    loaded = await loadAgentDetailPageData(agentId, tenantCtx)
+  } catch (e) {
+    if (isAgentDetailLoadError(e) && e.code === 'WRONG_TENANT' && e.meta.agentTenantId) {
+      const tenant = await repositories.tenants.findById(e.meta.agentTenantId)
+      return (
+        <AgentDetailUnavailable
+          reason="wrong_tenant"
+          agentName={e.meta.agentName ?? 'Ez az agent'}
+          tenantId={e.meta.agentTenantId}
+          tenantLabel={tenant?.displayName ?? 'másik tenant'}
+        />
+      )
+    }
+    if (isAgentDetailLoadError(e) && (e.code === 'NOT_FOUND' || e.code === 'NO_VIEW')) {
+      notFound()
+    }
+    return (
+      <AgentDetailUnavailable
+        reason="load_failed"
+        message={e instanceof Error ? e.message : 'Failed to load agent detail page'}
+      />
+    )
+  }
 
   const {
     isAdmin,
@@ -104,7 +142,8 @@ export default async function AgentDetailPage({
     assignableSkills,
     memoryPanel,
     knowledgeBase,
-  } = res.data
+    secondaryError,
+  } = loaded
 
   const openChat = query.openChat === '1' || Boolean(query.conversation)
   const initialConversationId = query.conversation ?? null
@@ -380,6 +419,12 @@ export default async function AgentDetailPage({
       >
         ← Vissza a csapathoz
       </Link>
+      {secondaryError ? (
+        <div className="rounded-xl border border-honey/40 bg-honey/10 px-4 py-3 text-sm text-ink-soft">
+          Az agent betöltődött, de néhány panel (memória, tudásbázis vagy eszközök) most nem ért
+          el. Frissítsd az oldalt, ha hiányzik valami.
+        </div>
+      ) : null}
 
       <Card className="animate-rise">
         <div className="flex flex-wrap items-start gap-5">

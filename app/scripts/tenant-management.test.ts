@@ -146,6 +146,19 @@ async function main() {
     if (r.kind === 'tenant') assert.equal(r.tenantId, 't2')
   })
 
+  await check('resolveActiveTenant: több isDefault ⇒ a lista utolsó defaultja', () => {
+    const r = resolveActiveTenant({
+      memberships: [
+        M({ tenantId: 't1', isDefault: true }),
+        M({ tenantId: 't2' }),
+        M({ tenantId: 't3', isDefault: true }),
+      ],
+      platformRoles: [],
+    })
+    assert.equal(r.kind, 'tenant')
+    if (r.kind === 'tenant') assert.equal(r.tenantId, 't3')
+  })
+
   await check('resolveActiveTenant: több active default nélkül ⇒ első (determinisztikus)', () => {
     const r = resolveActiveTenant({
       memberships: [M({ tenantId: 't1' }), M({ tenantId: 't2' })],
