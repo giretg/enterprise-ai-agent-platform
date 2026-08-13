@@ -285,9 +285,13 @@ function mapAssignableSkills(
  *
  * A gate-ek az AKTÍV tenant-szerepre döntenek, nem a legacy `User.role`-ra (§5.4).
  * Itt ez nem UI-dísz: az alábbi lekérdezések közvetlenül a repository/service rétegre
- * mennek, megkerülve a korábbi per-action `requireTenantRole` kapukat (`getAgentGovernance`
- * = viewer, `getModelPolicy` = operator, `listAssignableSkillsAction` = admin), így az
+ * mennek, megkerülve a korábbi per-action `requireTenantRole` kapukat, így az
  * `isAdmin`/`canManageKb` az EGYETLEN authorizációs határ rájuk.
+ *
+ * View-safe panelek (eszközjogok, kapcsolatok, hozzárendelt skillek) minden
+ * viewernek mennek — a régi `getAgentGovernance` viewer-kapuval egyezik.
+ * Admin-only: modellpolicy, connector-katalógus, assignable skillek,
+ * behavior-profil katalógus, projekt-memória.
  */
 export async function loadAgentDetailPageData(
   agentId: string,
@@ -345,31 +349,27 @@ export async function loadAgentDetailPageData(
       ctx.activeTenantId,
     )
 
+    const [capabilities, connectors, assignedWithReadiness] = await Promise.all([
+      repositories.toolBroker.findCapabilitiesForAgent(agentId),
+      repositories.toolBroker.findConnectorsForAgent(agentId),
+      services.skills.listAgentSkillsWithReadiness(agentId),
+    ])
+
+    governance = {
+      capabilities,
+      connectors,
+      toolAccess: buildAgentToolAccessReport(agentId, capabilities),
+    }
+    agentSkills = mapAgentSkillRows(assignedWithReadiness)
+
     if (isAdmin) {
-      const [
-        [capabilities, connectors],
-        policy,
-        catalog,
-        profiles,
-        assignedWithReadiness,
-        skillCatalog,
-      ] = await Promise.all([
-        Promise.all([
-          repositories.toolBroker.findCapabilitiesForAgent(agentId),
-          repositories.toolBroker.findConnectorsForAgent(agentId),
-        ]),
+      const [policy, catalog, profiles, skillCatalog] = await Promise.all([
         services.platformSettings.getModelPolicy(),
         services.provisioning.listCatalog(provisioningActor(ctx)),
         repositories.behaviorProfiles.findMany(ctx.activeTenantId),
-        services.skills.listAgentSkillsWithReadiness(agentId),
         services.skills.listForActor(ctx.activeTenantId),
       ])
 
-      governance = {
-        capabilities,
-        connectors,
-        toolAccess: buildAgentToolAccessReport(agentId, capabilities),
-      }
       modelPolicy = policy
       connectorCatalog = catalog
       behaviorProfiles = profiles.map((p) => ({
@@ -378,7 +378,6 @@ export async function loadAgentDetailPageData(
         currentVersion: p.currentVersion,
       }))
 
-      agentSkills = mapAgentSkillRows(assignedWithReadiness)
       const assignedSkillIds = new Set(assignedWithReadiness.map((a) => a.skillId))
       assignableSkills = mapAssignableSkills(skillCatalog, assignedSkillIds)
 

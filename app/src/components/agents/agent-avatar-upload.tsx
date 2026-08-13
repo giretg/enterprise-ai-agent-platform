@@ -49,12 +49,15 @@ export function AgentAvatarUpload({
   status,
   avatarUrl,
   personaNickname,
+  bare = false,
 }: {
   agentId: string
   name: string
   status: string
   avatarUrl: string | null
   personaNickname?: string | null
+  /** A hívó már adott keretet (címsor + doboz) — ne rajzoljunk másodikat. */
+  bare?: boolean
 }) {
   const router = useRouter()
   const inputRef = useRef<HTMLInputElement>(null)
@@ -95,8 +98,8 @@ export function AgentAvatarUpload({
     }
   }
 
-  return (
-    <Card title="Avatár">
+  const body = (
+    <>
       <p className="mb-4 text-xs text-ink-faint">
         Tölts fel portrét az agentnek. A kép automatikusan négyzetre igazodik. Ha
         törlöd, visszaáll a színes emoji-arc.
@@ -145,6 +148,9 @@ export function AgentAvatarUpload({
         </div>
       </div>
       {error && <p className="mt-3 text-sm text-coral">{error}</p>}
-    </Card>
+    </>
   )
+
+  if (bare) return body
+  return <Card title="Avatár">{body}</Card>
 }

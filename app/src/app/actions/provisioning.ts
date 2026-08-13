@@ -1,7 +1,7 @@
 'use server'
 
 import { z } from 'zod'
-import { requirePlatformRole, requireTenantPermission, requireTenantRole } from '@/auth/tenant-context'
+import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { prisma } from '@/lib/db'
@@ -97,7 +97,6 @@ const templateSelfCheckSchema = z.object({
 const upsertConnectorTemplateSchema = z.object({
   descriptor: templateDescriptorSchema,
   description: z.string().max(1000).optional(),
-  tenantScoped: z.boolean().optional(),
   selfCheck: templateSelfCheckSchema.optional(),
 })
 
@@ -818,21 +817,12 @@ export async function upsertConnectorTemplateAction(input: unknown) {
 
     selfCheckTemplateDescriptor(descriptor, parsed.selfCheck)
 
-    // §13/6: globális (platform-fallback) sablont CSAK platform-szerep írhat;
-    // tenant-scope sablont a tenant-admin, az AKTÍV tenant kontextusában.
-    const isGlobal = parsed.tenantScoped === false
-    let actorId: string
-    let tenantId: string | null
-    if (isGlobal) {
-      actorId = (await requirePlatformRole('superadmin')).user.id
-      tenantId = null
-    } else {
-      const ctx = await requireTenantPermission('connector_template:manage')
-      actorId = ctx.user.id
-      tenantId = ctx.activeTenantId
-    }
+    // A katalógus platform-szintű: új/frissített custom sablont csak superadmin írhat,
+    // és mindig globális (tenantId = null). Tenantok csak felhasználhatják.
+    const actorId = (await requirePlatformRole('superadmin')).user.id
+    const tenantId = null
 
-    const latest = await repositories.connectorTemplates.findLatestByKey(descriptor.key, tenantId ?? null)
+    const latest = await repositories.connectorTemplates.findLatestByKey(descriptor.key, tenantId)
     if (latest?.origin === 'builtin') {
       return fail('Builtin connector-sablon nem írható felül. Klónozd másik kulccsal.')
     }
@@ -894,16 +884,7 @@ export async function deprecateConnectorTemplateAction(input: unknown) {
       return fail('Builtin connector-sablon nem deprecálható ezen a felületen.')
     }
 
-    // §13/6: globális sablon → platform-szerep; tenant-sablon → tenant-admin az
-    // AKTÍV tenant kontextusában (cross-tenant célpont "not found").
-    let actorId: string
-    if (template.tenantId === null) {
-      actorId = (await requirePlatformRole('superadmin')).user.id
-    } else {
-      const ctx = await requireTenantPermission('connector_template:manage')
-      if (template.tenantId !== ctx.activeTenantId) return fail('Connector template not found')
-      actorId = ctx.user.id
-    }
+    const actorId = (await requirePlatformRole('superadmin')).user.id
 
     await repositories.connectorTemplates.deprecate(template.id)
     await repositories.audit.append({

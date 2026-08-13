@@ -10,9 +10,11 @@ import { Card } from '@/components/ui/shell'
 export function OperatorVisibilityForm({
   agentId,
   hiddenFromOperators,
+  canEdit = true,
 }: {
   agentId: string
   hiddenFromOperators: boolean
+  canEdit?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -43,25 +45,35 @@ export function OperatorVisibilityForm({
         munkatársak listájában és a részletező oldalon.
       </p>
 
-      <label className="flex items-start gap-3 rounded-lg border border-line bg-night-2 px-3 py-3 text-sm">
-        <input
-          type="checkbox"
-          checked={hidden}
-          disabled={pending}
-          onChange={(e) => submit(e.currentTarget.checked)}
-          className="mt-1"
-        />
-        <span>
-          <span className="text-ink-soft">Elrejtve az operátorok elől</span>
-          <span className="mt-1 block text-xs text-ink-faint">
-            Bekapcsolva csak a tenant adminok látják ezt az agentet. A futás és a
-            dispatch változatlan marad.
-          </span>
-        </span>
-      </label>
+      {canEdit ? (
+        <>
+          <label className="flex items-start gap-3 rounded-lg border border-line bg-night-2 px-3 py-3 text-sm">
+            <input
+              type="checkbox"
+              checked={hidden}
+              disabled={pending}
+              onChange={(e) => submit(e.currentTarget.checked)}
+              className="mt-1"
+            />
+            <span>
+              <span className="text-ink-soft">Elrejtve az operátorok elől</span>
+              <span className="mt-1 block text-xs text-ink-faint">
+                Bekapcsolva csak a tenant adminok látják ezt az agentet. A futás és a
+                dispatch változatlan marad.
+              </span>
+            </span>
+          </label>
 
-      {error && <p className="mt-3 text-sm text-coral">{error}</p>}
-      {pending && <p className="mt-3 text-xs text-ink-faint">Mentés...</p>}
+          {error && <p className="mt-3 text-sm text-coral">{error}</p>}
+          {pending && <p className="mt-3 text-xs text-ink-faint">Mentés...</p>}
+        </>
+      ) : (
+        <p className="text-sm leading-relaxed text-ink">
+          {hidden
+            ? 'El van rejtve az operátorok elől — csak adminok látják a listában.'
+            : 'Az operátorok is látják ezt az agentet a csapatlistában.'}
+        </p>
+      )}
     </Card>
   )
 }

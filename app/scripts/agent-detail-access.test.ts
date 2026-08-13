@@ -130,6 +130,11 @@ check('a detail oldal nem nyeli 404-be a loader minden hibáját', () => {
   assert.doesNotMatch(pageSrc, /getAgentDetailPageData/)
 })
 
+check('a detail oldal nem tart külön ömlesztett Szerkesztés menüpontot', () => {
+  assert.doesNotMatch(pageSrc, /id:\s*['"]szerkesztes['"]/)
+  assert.match(pageSrc, /EGY TÉMA/)
+})
+
 check('a control-plane szegmensnek van saját 404 oldala (fejléc megmarad)', () => {
   const notFoundSrc = readFileSync(join(root, 'src/app/control-plane/not-found.tsx'), 'utf8')
   assert.match(notFoundSrc, /tenant/i)
@@ -139,4 +144,4 @@ if (failures > 0) {
   console.error(`\n${failures} failure(s)`)
   process.exit(1)
 }
-console.log('OK — agent detail access (9 checks)')
+console.log('OK — agent detail access (10 checks)')

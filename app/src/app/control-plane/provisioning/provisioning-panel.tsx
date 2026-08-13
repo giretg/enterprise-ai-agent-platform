@@ -239,11 +239,13 @@ function ProvisioningTopicShell({
   connectorCreation,
   templates,
   connections,
+  canManageCatalog,
 }: {
   selfUpdating: ReactNode
   connectorCreation: ReactNode
   templates: ReactNode
   connections: ReactNode
+  canManageCatalog: boolean
 }) {
   return (
     <SettingsSectionShell
@@ -264,7 +266,9 @@ function ProvisioningTopicShell({
         {
           id: 'sablonok',
           label: 'Connector-sablonok',
-          description: 'Egyedi connector-sablonok kezelése és verziózása.',
+          description: canManageCatalog
+            ? 'Platform-katalógus. Új sablont csak superadmin vehet fel; a tenantok ezekből hoznak létre connectort.'
+            : 'Platform-katalógus. Ezekből a sablonokból hozhatsz létre új connectort.',
           content: templates,
         },
         {
@@ -275,6 +279,69 @@ function ProvisioningTopicShell({
         },
       ]}
     />
+  )
+}
+
+function TemplateCatalogList({
+  templates,
+  pending,
+  canManage,
+  onLoad,
+  onDeprecate,
+}: {
+  templates: ConnectorTemplateRow[]
+  pending: boolean
+  canManage: boolean
+  onLoad?: (template: ConnectorTemplateRow) => void
+  onDeprecate?: (templateId: string) => void
+}) {
+  return (
+    <div className="space-y-2">
+      <h3 className="text-base font-semibold">Elérhető sablonok</h3>
+      {templates.length === 0 ? (
+        <p className="text-sm text-ink-soft">Nincs elérhető sablon.</p>
+      ) : (
+        templates.map((template) => (
+          <div key={template.id} className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold">{template.displayName}</span>
+              <Badge tone="neutral">v{template.version}</Badge>
+              <Badge tone={template.origin === 'builtin' ? 'success' : 'warning'}>
+                {template.origin}
+              </Badge>
+              <Badge tone={template.status === 'active' ? 'success' : 'warning'}>
+                {template.status}
+              </Badge>
+            </div>
+            <p className="mt-1 font-mono text-[11px] text-ink-soft">{template.key}</p>
+            {template.description ? (
+              <p className="mt-1 text-ink-soft">{template.description}</p>
+            ) : null}
+            {canManage ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="rounded-md border border-ink/20 px-2 py-1 font-semibold"
+                  onClick={() => onLoad?.(template)}
+                >
+                  Betöltés
+                </button>
+                {template.origin === 'custom' && template.status === 'active' ? (
+                  <button
+                    type="button"
+                    disabled={pending}
+                    className="rounded-md border border-honey/40 bg-honey/10 px-2 py-1 font-semibold text-honey disabled:opacity-50"
+                    onClick={() => onDeprecate?.(template.id)}
+                  >
+                    Deprecate
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ))
+      )}
+    </div>
   )
 }
 
@@ -314,7 +381,7 @@ const EXAMPLE_TEMPLATE_DESCRIPTOR = JSON.stringify(
   {
     key: 'custom-crm',
     displayName: 'Custom CRM',
-    description: 'Tenant-scope-olt HTTP API sablon API-kulcsos hitelesítéssel.',
+    description: 'Platform-katalógus HTTP API sablon API-kulcsos hitelesítéssel.',
     activationHelp:
       'Írd le röviden, hol hoz létre a user API kulcsot, milyen scopes/jogok kellenek, és mit kell beállítania az aktiválás előtt.',
     baseUrl: 'https://api.custom-crm.example',
@@ -392,7 +459,7 @@ function lifecycleTone(s: string): 'neutral' | 'success' | 'warning' | 'danger' 
   return 'neutral'
 }
 
-export function ProvisioningPanel() {
+export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: boolean }) {
   const [drafts, setDrafts] = useState<DraftRow[]>([])
   const [agents, setAgents] = useState<AgentOption[]>([])
   const [templates, setTemplates] = useState<ConnectorTemplateRow[]>([])
@@ -422,7 +489,7 @@ export function ProvisioningPanel() {
   const [discovering, setDiscovering] = useState(false)
   const [discoverySources, setDiscoverySources] = useState<DiscoverySource[]>([])
 
-  // Custom connector-sablon szerkesztő láthatósága (alapból csak egy gomb)
+  // Katalógus-szerkesztő láthatósága (csak superadmin, alapból csak egy gomb)
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false)
   // Új draft connector wizard (alapból csak egy gomb)
   const [showCreateDraftForm, setShowCreateDraftForm] = useState(false)
@@ -436,7 +503,6 @@ export function ProvisioningPanel() {
   const [selectedScopes, setSelectedScopes] = useState<string[]>([])
   const [selectedEndpoints, setSelectedEndpoints] = useState<string[]>([])
   const [templateEditorText, setTemplateEditorText] = useState(EXAMPLE_TEMPLATE_DESCRIPTOR)
-  const [templateTenantScoped, setTemplateTenantScoped] = useState(true)
 
   const applyTemplateSelection = useCallback((template: ConnectorTemplateRow) => {
     const descriptor = template.descriptor
@@ -781,6 +847,7 @@ export function ProvisioningPanel() {
       ) : null}
 
       <ProvisioningTopicShell
+        canManageCatalog={canManageCatalog}
         selfUpdating={<SelfUpdatingConnectorsPanel embedded />}
         connectorCreation={
           <>
@@ -1399,18 +1466,22 @@ export function ProvisioningPanel() {
         }
         templates={
           <>
-      {!templateEditorOpen ? (
-        <div>
+      {canManageCatalog && !templateEditorOpen ? (
+        <div className="space-y-4">
           <button
             type="button"
             onClick={() => setTemplateEditorOpen(true)}
             className="inline-flex items-center gap-2 rounded-md border border-ink/15 bg-card px-4 py-2 text-sm font-semibold text-ink transition hover:border-coral/40 hover:text-coral-deep"
           >
-            Custom connector-sablonok
+            Katalógus szerkesztése
           </button>
+          <Card title="Platform connector-sablonok">
+            <TemplateCatalogList templates={templates} pending={pending} canManage={false} />
+          </Card>
         </div>
-      ) : (
-      <Card title="Custom connector-sablonok">
+      ) : null}
+      {canManageCatalog && templateEditorOpen ? (
+      <Card title="Platform connector-sablonok">
         <div className="mb-4 flex justify-end">
           <button
             type="button"
@@ -1426,7 +1497,7 @@ export function ProvisioningPanel() {
               <div>
                 <h3 className="text-base font-semibold">Sablon descriptor</h3>
                 <p className="mt-1 text-xs text-ink-soft">
-                  Mentéskor új verzió jön létre, és lefut a materializer self-check.
+                  A sablon a teljes platform katalógusába kerül. Mentéskor új verzió jön létre, és lefut a materializer self-check.
                 </p>
               </div>
               <button
@@ -1443,14 +1514,6 @@ export function ProvisioningPanel() {
               onChange={(e) => setTemplateEditorText(e.target.value)}
             />
             <div className="flex flex-wrap items-center gap-3">
-              <label className="inline-flex items-center gap-2 text-xs font-semibold text-ink-soft">
-                <input
-                  type="checkbox"
-                  checked={templateTenantScoped}
-                  onChange={(e) => setTemplateTenantScoped(e.target.checked)}
-                />
-                Tenant-scope
-              </label>
               <button
                 type="button"
                 disabled={pending || !templateEditorText.trim()}
@@ -1463,11 +1526,7 @@ export function ProvisioningPanel() {
                     return
                   }
                   run(
-                    () =>
-                      upsertConnectorTemplateAction({
-                        descriptor,
-                        tenantScoped: templateTenantScoped,
-                      }),
+                    () => upsertConnectorTemplateAction({ descriptor }),
                     'Connector-sablon mentve új verzióként.',
                   )
                 }}
@@ -1478,61 +1537,29 @@ export function ProvisioningPanel() {
             </div>
           </div>
 
-          <div className="space-y-2">
-            <h3 className="text-base font-semibold">Elérhető sablonok</h3>
-            {templates.length === 0 ? (
-              <p className="text-sm text-ink-soft">Nincs elérhető sablon.</p>
-            ) : (
-              templates.map((template) => (
-                <div key={template.id} className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold">{template.displayName}</span>
-                    <Badge tone="neutral">v{template.version}</Badge>
-                    <Badge tone={template.origin === 'builtin' ? 'success' : 'warning'}>
-                      {template.origin}
-                    </Badge>
-                    <Badge tone={template.status === 'active' ? 'success' : 'warning'}>
-                      {template.status}
-                    </Badge>
-                  </div>
-                  <p className="mt-1 font-mono text-[11px] text-ink-soft">{template.key}</p>
-                  {template.description ? (
-                    <p className="mt-1 text-ink-soft">{template.description}</p>
-                  ) : null}
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="rounded-md border border-ink/20 px-2 py-1 font-semibold"
-                      onClick={() => {
-                        setTemplateEditorText(JSON.stringify(template.descriptor, null, 2))
-                        setTemplateTenantScoped(template.tenantId !== null)
-                      }}
-                    >
-                      Betöltés
-                    </button>
-                    {template.origin === 'custom' && template.status === 'active' ? (
-                      <button
-                        type="button"
-                        disabled={pending}
-                        className="rounded-md border border-honey/40 bg-honey/10 px-2 py-1 font-semibold text-honey disabled:opacity-50"
-                        onClick={() =>
-                          run(
-                            () => deprecateConnectorTemplateAction({ templateId: template.id }),
-                            'Connector-sablon deprecated állapotba került.',
-                          )
-                        }
-                      >
-                        Deprecate
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+          <TemplateCatalogList
+            templates={templates}
+            pending={pending}
+            canManage
+            onLoad={(template) => setTemplateEditorText(JSON.stringify(template.descriptor, null, 2))}
+            onDeprecate={(templateId) =>
+              run(
+                () => deprecateConnectorTemplateAction({ templateId }),
+                'Connector-sablon deprecated állapotba került.',
+              )
+            }
+          />
         </div>
       </Card>
-      )}
+      ) : null}
+      {!canManageCatalog ? (
+        <Card title="Platform connector-sablonok">
+          <p className="mb-4 text-sm text-ink-soft">
+            Ezekből a sablonokból hozhatsz létre connectort. Új sablont csak platform-superadmin vehet fel.
+          </p>
+          <TemplateCatalogList templates={templates} pending={pending} canManage={false} />
+        </Card>
+      ) : null}
           </>
         }
         connections={

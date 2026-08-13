@@ -10,9 +10,12 @@ import { Card } from '@/components/ui/shell'
 export function SensitivityPolicyForm({
   agentId,
   allowSensitiveExternalModel,
+  canEdit = true,
 }: {
   agentId: string
   allowSensitiveExternalModel: boolean
+  /** Operátor csak a jelenlegi szabályt látja; az admin ugyanitt kapcsolja. */
+  canEdit?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -44,31 +47,41 @@ export function SensitivityPolicyForm({
         Egy email-lel dolgozó agent enélkül a felmentés nélkül nem tud működni.
       </p>
 
-      <label className="flex items-start gap-3 rounded-lg border border-line bg-night-2 px-3 py-3 text-sm">
-        <input
-          type="checkbox"
-          checked={allowed}
-          disabled={pending}
-          onChange={(e) => submit(e.currentTarget.checked)}
-          className="mt-1"
-        />
-        <span>
-          <span className="text-ink-soft">Érzékeny tartalom külső modellnek is küldhető</span>
-          <span className="mt-1 block text-xs text-ink-faint">
-            Bekapcsolva a platform érzékenységi ellenőrzése semmilyen tartalom miatt nem
-            blokkolja vagy tereli helyi modellre ezt az agentet. Minden ilyen hívás auditba
-            kerül.
-          </span>
-        </span>
-      </label>
+      {canEdit ? (
+        <>
+          <label className="flex items-start gap-3 rounded-lg border border-line bg-night-2 px-3 py-3 text-sm">
+            <input
+              type="checkbox"
+              checked={allowed}
+              disabled={pending}
+              onChange={(e) => submit(e.currentTarget.checked)}
+              className="mt-1"
+            />
+            <span>
+              <span className="text-ink-soft">Érzékeny tartalom külső modellnek is küldhető</span>
+              <span className="mt-1 block text-xs text-ink-faint">
+                Bekapcsolva a platform érzékenységi ellenőrzése semmilyen tartalom miatt nem
+                blokkolja vagy tereli helyi modellre ezt az agentet. Minden ilyen hívás auditba
+                kerül.
+              </span>
+            </span>
+          </label>
 
-      <p className="mt-3 rounded-lg border border-line bg-night-2 px-3 py-2 text-xs text-ink-faint">
-        Ideiglenes teljes felmentés: bankkártyaszám, IBAN és privát kulcs vagy API-token
-        észlelésekor is átengedi a modellhívást. Az észlelés auditálása aktív marad.
-      </p>
+          <p className="mt-3 rounded-lg border border-line bg-night-2 px-3 py-2 text-xs text-ink-faint">
+            Ideiglenes teljes felmentés: bankkártyaszám, IBAN és privát kulcs vagy API-token
+            észlelésekor is átengedi a modellhívást. Az észlelés auditálása aktív marad.
+          </p>
 
-      {error && <p className="mt-3 text-sm text-coral">{error}</p>}
-      {pending && <p className="mt-3 text-xs text-ink-faint">Mentés...</p>}
+          {error && <p className="mt-3 text-sm text-coral">{error}</p>}
+          {pending && <p className="mt-3 text-xs text-ink-faint">Mentés...</p>}
+        </>
+      ) : (
+        <p className="text-sm leading-relaxed text-ink">
+          {allowed
+            ? 'Érzékeny tartalom külső modellnek is küldhető. Minden ilyen hívás auditba kerül.'
+            : 'Érzékeny tartalomnál a platform helyi modellre terel, vagy blokkol, ha nincs helyi modell.'}
+        </p>
+      )}
     </Card>
   )
 }

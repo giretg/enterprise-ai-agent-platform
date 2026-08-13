@@ -322,6 +322,14 @@ function assignTarget(
     config.defaultActingUserEmail = interpolated
     return
   }
+  if (target.startsWith('requestHeaders.')) {
+    const headerName = target.slice('requestHeaders.'.length).trim()
+    if (!headerName) {
+      throw new ConnectorTemplateMaterializationError(`unsupported template target: ${target}`)
+    }
+    config.requestHeaders = { ...(config.requestHeaders ?? {}), [headerName]: interpolated }
+    return
+  }
   throw new ConnectorTemplateMaterializationError(`unsupported template target: ${target}`)
 }
 

@@ -271,11 +271,6 @@ export const DEFAULT_ROLE_PERMISSIONS: Array<{
   { permissionKey: 'user.read', minRole: 'admin', description: 'Felhasználólista olvasása' },
   { permissionKey: 'audit.read', minRole: 'approver', description: 'Hozzáférési audit olvasása' },
   { permissionKey: 'user.permission.write', minRole: 'admin', description: 'Permission-mátrix szerkesztése' },
-  {
-    permissionKey: 'connector_template:manage',
-    minRole: 'admin',
-    description: 'Connector-sablon katalógus kezelése',
-  },
   // agent-memory-persistent-cross-conversation-spec.md §12.1 (WP-1/WP-6)
   { permissionKey: 'memory.propose', minRole: 'operator', description: 'Memória-javaslat kezdeményezése' },
   {

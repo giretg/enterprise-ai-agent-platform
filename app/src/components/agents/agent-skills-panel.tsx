@@ -42,10 +42,13 @@ export function AgentSkillsPanel({
   agentId,
   assigned,
   assignable,
+  canEdit = true,
 }: {
   agentId: string
   assigned: AgentSkillRow[]
   assignable: AssignableSkill[]
+  /** Operátor a listát látja; az admin ugyanitt rendel / tilt / leszerel. */
+  canEdit?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -117,39 +120,42 @@ export function AgentSkillsPanel({
                 </ul>
               )}
 
-              <div className="mt-3 flex items-center gap-3">
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() =>
-                    run(() =>
-                      setSkillEnabledAction({
-                        agentId,
-                        skillVersionId: s.skillVersionId,
-                        enabled: !s.enabled,
-                      }),
-                    )
-                  }
-                  className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-medium text-ink-soft disabled:opacity-50"
-                >
-                  {s.enabled ? 'Letiltás' : 'Engedélyezés'}
-                </button>
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() =>
-                    run(() => unassignSkillAction({ agentId, skillVersionId: s.skillVersionId }))
-                  }
-                  className="rounded-full px-3 py-1 text-xs font-medium text-coral disabled:opacity-50"
-                >
-                  Leszerelés
-                </button>
-              </div>
+              {canEdit ? (
+                <div className="mt-3 flex items-center gap-3">
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() =>
+                      run(() =>
+                        setSkillEnabledAction({
+                          agentId,
+                          skillVersionId: s.skillVersionId,
+                          enabled: !s.enabled,
+                        }),
+                      )
+                    }
+                    className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-medium text-ink-soft disabled:opacity-50"
+                  >
+                    {s.enabled ? 'Letiltás' : 'Engedélyezés'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() =>
+                      run(() => unassignSkillAction({ agentId, skillVersionId: s.skillVersionId }))
+                    }
+                    className="rounded-full px-3 py-1 text-xs font-medium text-coral disabled:opacity-50"
+                  >
+                    Leszerelés
+                  </button>
+                </div>
+              ) : null}
             </li>
           ))}
         </ul>
       )}
 
+      {canEdit ? (
       <div className="mt-5 border-t border-ink-faint/15 pt-4">
         <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-ink-faint">
           Skill hozzárendelése
@@ -184,6 +190,7 @@ export function AgentSkillsPanel({
           </div>
         )}
       </div>
+      ) : null}
 
       {error && <p className="mt-4 text-sm text-coral">{error}</p>}
     </Card>

@@ -1203,6 +1203,22 @@ async function run() {
     assert.equal(r.detail, 'reachable')
   })
 
+  await test('SBX: token NÉLKÜLI 400 → reachable_auth_required (Meta Graph /me stílus)', async () => {
+    const { fn } = recordingFetch({ status: 400 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: cleanConfig() as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, true)
+    assert.equal(r.statusCode, 400)
+    assert.equal(r.detail, 'reachable_auth_required')
+  })
+
   await test('SBX: token NÉLKÜLI 401 → reachable_auth_required (elért, auth később)', async () => {
     const { fn } = recordingFetch({ status: 401 })
     const tester = new HttpSandboxConnectionTester({
