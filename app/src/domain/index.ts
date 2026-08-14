@@ -41,6 +41,7 @@ import { HttpSearchProviderAdapter, StubSearchProviderAdapter } from '@/domain/w
 import { findPlatformWebSearchConnector } from '@/domain/web-search/web-search-connector-service'
 import { parseWebSearchConfig, type WebSearchAdapterResolver, type WebSearchResult } from '@/domain/web-search/web-search-types'
 import { WebFetchService, toWebFetchAuditMeta } from '@/domain/web-fetch/web-fetch-service'
+import { performAuditedWebFetch } from '@/domain/web-fetch/audited-web-fetch'
 import { resolveWebFetchLimitsFromEnv } from '@/domain/web-fetch/web-fetch-types'
 import { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
@@ -740,21 +741,38 @@ const toolBrokerService = new ToolBrokerService(
   undefined,
   undefined,
   agentAccessService,
-  async ({ agentId, tenantId, url, sourceType, allowedSourceUrls, fetchIndex }) => {
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
-    const perAgentDayUsed = await prisma.auditLog
-      .count({ where: { action: 'web_fetch.request', actorId: agentId, createdAt: { gte: since } } })
-      .catch(() => 0)
-    return webFetchService.fetch({
-      url,
-      sourceType,
-      allowedSourceUrls,
-      allowlistHosts: await resolveEgressAllowlist(tenantId),
-      enabled: await platformSettingsService.isWebFetchEnabled(),
-      maxContentChars: 20_000,
-      budget: { perDiscoveryUsed: fetchIndex, perDiscoveryMax: 8, perAgentDayUsed, perAgentDayMax: 50 },
-    })
-  },
+  // A web-kutatási delegáció egress-nyelője. A KÖZÖS `performAuditedWebFetch` garantálja,
+  // hogy minden letöltési kísérlet — sikeres és blokkolt egyaránt — hash-only audit-eseményt
+  // (`web_fetch.request`/`web_fetch.blocked`) kap, és a napi egress-keret (perAgentDayUsed) e
+  // úton is érvényre jut. Korábban ez a closure a fetch-et audit ÉS keret-könyvelés nélkül
+  // hívta, így a delegált webes egress láthatatlan volt a naplóban és a napi keret alól kicsúszott.
+  async ({ agentId, tenantId, url, sourceType, allowedSourceUrls, fetchIndex }) =>
+    performAuditedWebFetch(
+      {
+        countRecentAgentFetches: (id) =>
+          prisma.auditLog.count({
+            where: {
+              action: 'web_fetch.request',
+              actorId: id,
+              createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+            },
+          }),
+        webFetch: async (perAgentDayUsed) =>
+          webFetchService.fetch({
+            url,
+            sourceType,
+            allowedSourceUrls,
+            allowlistHosts: await resolveEgressAllowlist(tenantId),
+            enabled: await platformSettingsService.isWebFetchEnabled(),
+            maxContentChars: 20_000,
+            budget: { perDiscoveryUsed: fetchIndex, perDiscoveryMax: 8, perAgentDayUsed, perAgentDayMax: 50 },
+          }),
+        audit: repositories.audit,
+        resolveAgentVersion: async (id) => (await repositories.agents.findById(id))?.currentVersion ?? null,
+        hashPrefix: sha256Prefix,
+      },
+      { agentId, url, sourceType },
+    ),
 )
 const consequenceApprovalService = new ConsequenceApprovalService(
   repositories.consequenceApprovals,
