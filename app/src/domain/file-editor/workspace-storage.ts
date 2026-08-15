@@ -72,6 +72,33 @@ function stubRootDir(): string {
   return path.resolve(configured && configured.length > 0 ? configured : path.join(process.cwd(), '.data', 'workspace'))
 }
 
+/**
+ * Tár-szintű útvonal-kapu.
+ *
+ * A `FileEditorService` eddig maga normalizálta az agent-útvonalakat, de a
+ * HTTP letöltő route-ok KÖZVETLENÜL a `WorkspaceStorage`-ot hívják (a szolgáltatás
+ * megkerülésével), így egy nyers `?path=…` sosem esett át a `..`-szűrésen. GCS-en
+ * a kulcs literál (a `..` nem lép ki a prefixből), de a lokális/stub úton és
+ * bármely jövőbeli tár-adapternél ez valódi kilépés lehetne. Ezért a tár
+ * MAGA is önvédő: minden kulcsépítő metódus ezen a normalizáláson engedi át a
+ * bemenetet, függetlenül a hívótól.
+ */
+export function safeObjectPath(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/').replace(/\/+/g, '/')
+  const parts = normalized.split('/').filter(Boolean)
+  const resolved: string[] = []
+  for (const part of parts) {
+    if (part === '..') {
+      throw new FileEditorError('PATH_TRAVERSAL', `Path traversal detected: ${filePath}`)
+    }
+    if (part !== '.') resolved.push(part)
+  }
+  if (!resolved.length) {
+    throw new FileEditorError('INVALID_PATH', `Path is empty or invalid: ${filePath}`)
+  }
+  return resolved.join('/')
+}
+
 function stubKey(tenantId: string, ticketId: string, filePath: string): string {
   return `${tenantId}/${ticketId}/${filePath}`
 }
@@ -230,7 +257,8 @@ export class WorkspaceStorage {
     return this.isStub() && isMemoryStub()
   }
 
-  async getFileSize(tenantId: string, ticketId: string, filePath: string): Promise<number> {
+  async getFileSize(tenantId: string, ticketId: string, rawFilePath: string): Promise<number> {
+    const filePath = safeObjectPath(rawFilePath)
     if (this.usesMemoryStub()) {
       return stubStore.get(stubKey(tenantId, ticketId, filePath))?.content.length ?? 0
     }
@@ -357,7 +385,8 @@ export class WorkspaceStorage {
     }
   }
 
-  async read(tenantId: string, ticketId: string, filePath: string): Promise<Buffer | null> {
+  async read(tenantId: string, ticketId: string, rawFilePath: string): Promise<Buffer | null> {
+    const filePath = safeObjectPath(rawFilePath)
     if (this.usesMemoryStub()) {
       return stubStore.get(stubKey(tenantId, ticketId, filePath))?.content ?? null
     }
@@ -390,10 +419,11 @@ export class WorkspaceStorage {
   async write(
     tenantId: string,
     ticketId: string,
-    filePath: string,
+    rawFilePath: string,
     data: Buffer,
     opts: { quota?: WorkspaceQuotaSession } = {},
   ): Promise<void> {
+    const filePath = safeObjectPath(rawFilePath)
     if (data.length > MAX_FILE_SIZE_BYTES) {
       throw new FileEditorError('FILE_TOO_LARGE', 'File exceeds 50 MB write limit')
     }
@@ -431,7 +461,8 @@ export class WorkspaceStorage {
     if (!res.ok) throw new FileEditorError('GCS_WRITE_FAILED', `GCS write failed: HTTP ${res.status}`)
   }
 
-  async delete(tenantId: string, ticketId: string, filePath: string): Promise<void> {
+  async delete(tenantId: string, ticketId: string, rawFilePath: string): Promise<void> {
+    const filePath = safeObjectPath(rawFilePath)
     if (this.usesMemoryStub()) {
       stubStore.delete(stubKey(tenantId, ticketId, filePath))
       return
@@ -580,15 +611,44 @@ export class WorkspaceStorage {
   async setFileAudience(
     tenantId: string,
     ticketId: string,
-    filePath: string,
+    rawFilePath: string,
     audience: WorkspaceFileAudience,
   ): Promise<void> {
+    // A markert a NORMALIZÁLT path-ra kulcsoljuk, hogy a `getFileAudience`
+    // (amely szintén normalizál) mindig megtalálja — különben egy `./foo`
+    // feltöltés markere sosem párosulna a `foo` letöltéssel.
+    const filePath = safeObjectPath(rawFilePath)
     await this.write(
       tenantId,
       ticketId,
       `${WORKSPACE_FILE_AUDIENCE_PREFIX}${Buffer.from(filePath, 'utf8').toString('base64url')}`,
       Buffer.from(audience, 'utf8'),
     )
+  }
+
+  /**
+   * Egyetlen fájl közönség-besorolása (`user`/`internal`), a fájlonkénti rejtett
+   * markerből, majd (visszafelé kompatibilisen) a régi manifestből. `undefined`,
+   * ha nincs explicit besorolás — ilyenkor a hívó az útvonal-heurisztikára
+   * (`isWorkspaceFileUserFacing`) támaszkodik.
+   *
+   * Ezt a letöltő route-ok használják: a listázás elrejti a belső fájlokat, a
+   * letöltésnek UGYANAZT a döntést kell hoznia — különben a „rejtett" jelző
+   * puszta UI-dísz maradna, és a nyers path ismeretében letölthető lenne.
+   */
+  async getFileAudience(
+    tenantId: string,
+    ticketId: string,
+    rawFilePath: string,
+  ): Promise<WorkspaceFileAudience | undefined> {
+    const filePath = safeObjectPath(rawFilePath)
+    const markerPath = `${WORKSPACE_FILE_AUDIENCE_PREFIX}${Buffer.from(filePath, 'utf8').toString('base64url')}`
+    const marker = await this.read(tenantId, ticketId, markerPath)
+    const value = marker?.toString('utf8')
+    if (value === 'user' || value === 'internal') return value
+
+    const legacy = await this.readLegacyFileAudiences(tenantId, ticketId)
+    return legacy[filePath]
   }
 
   async listUserFacing(tenantId: string, ticketId: string): Promise<string[]> {
@@ -644,9 +704,10 @@ export class WorkspaceStorage {
   async getSignedDownloadUrl(
     tenantId: string,
     ticketId: string,
-    filePath: string,
+    rawFilePath: string,
     opts: { expiresInSeconds?: number; stubDownloadPath?: string } = {},
   ): Promise<{ url: string; expiresAt: Date }> {
+    const filePath = safeObjectPath(rawFilePath)
     const expiresInSeconds = opts.expiresInSeconds ?? SIGNED_URL_TTL_SECONDS
     const expiresAt = new Date(Date.now() + expiresInSeconds * 1000)
 
@@ -706,8 +767,9 @@ export class WorkspaceStorage {
   async streamToClient(
     tenantId: string,
     ticketId: string,
-    filePath: string,
+    rawFilePath: string,
   ): Promise<{ stream: ReadableStream; contentType: string; size: number } | null> {
+    const filePath = safeObjectPath(rawFilePath)
     if (this.isStub()) {
       const buf = this.usesMemoryStub()
         ? stubStore.get(stubKey(tenantId, ticketId, filePath))?.content ?? null

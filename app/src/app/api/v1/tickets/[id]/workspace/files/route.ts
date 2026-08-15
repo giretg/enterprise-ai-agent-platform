@@ -2,10 +2,10 @@ import { NextResponse } from 'next/server'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { prisma } from '@/lib/db'
-import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
+import { WorkspaceStorage, safeObjectPath } from '@/domain/file-editor/workspace-storage'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
 import { resolveWorkspaceTenantKey } from '@/lib/workspace-resource-access'
-import { isHtmlWorkspaceFile } from '@/lib/workspace-file-visibility'
+import { isHtmlWorkspaceFile, isWorkspaceFileUserFacing } from '@/lib/workspace-file-visibility'
 import {
   INLINE_HTML_CONTENT_TYPE,
   inlineHtmlPreviewSecurityHeaders,
@@ -58,11 +58,27 @@ export async function GET(
 
   try {
     if (filePath) {
-      if (inline && !isHtmlWorkspaceFile(filePath)) {
+      // Letöltés-kapu: a listázás elrejti a belső (agent-munka) fájlokat, ezért a
+      // letöltésnek is KI KELL zárnia őket — különben egy nyers `?path=…`-sal a
+      // legalacsonyabb szerepkör is lekérhetné a rejtett tool-kimeneteket,
+      // nyers kivonatokat és a `.workspace-meta` markereket. A path itt
+      // normalizálódik (`..` kizárva), és a döntés a listázással azonos.
+      let safePath: string
+      try {
+        safePath = safeObjectPath(filePath)
+      } catch {
+        return jsonError('File not found', 404)
+      }
+      const audience = await storage.getFileAudience(tenantId, ticketId, safePath)
+      if (!isWorkspaceFileUserFacing(safePath, audience)) {
+        return jsonError('File not found', 404)
+      }
+
+      if (inline && !isHtmlWorkspaceFile(safePath)) {
         return jsonError('Only HTML workspace files can be opened inline', 400)
       }
       if (signed) {
-        const signedUrl = await storage.getSignedDownloadUrl(tenantId, ticketId, filePath, {
+        const signedUrl = await storage.getSignedDownloadUrl(tenantId, ticketId, safePath, {
           stubDownloadPath: `/api/v1/tickets/${ticketId}/workspace/files`,
         })
         return NextResponse.json({
@@ -71,9 +87,9 @@ export async function GET(
         })
       }
 
-      const result = await storage.streamToClient(tenantId, ticketId, filePath)
+      const result = await storage.streamToClient(tenantId, ticketId, safePath)
       if (!result) return jsonError('File not found', 404)
-      const filename = filePath.split('/').pop() ?? filePath
+      const filename = safePath.split('/').pop() ?? safePath
       return new NextResponse(result.stream, {
         headers: {
           'content-type': inline ? INLINE_HTML_CONTENT_TYPE : result.contentType,

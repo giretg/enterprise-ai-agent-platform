@@ -202,6 +202,7 @@
     "test:health-endpoints": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/health-endpoints.test.ts",
     "test:workspace-resource-access": "tsx scripts/workspace-resource-access.test.ts",
     "test:workspace-file-visibility": "tsx scripts/workspace-file-visibility.test.ts",
+    "test:workspace-download-guard": "tsx scripts/workspace-download-audience-guard.test.ts",
     "test:workspace-inline-html-headers": "tsx scripts/workspace-inline-html-headers.test.ts",
     "test:task-workspace-prompt": "tsx scripts/task-workspace-prompt.test.ts",
     "test:chat-thinking-trace": "tsx scripts/chat-thinking-trace.test.ts",
