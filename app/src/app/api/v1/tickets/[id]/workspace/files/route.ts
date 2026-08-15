@@ -4,6 +4,7 @@ import { services } from '@/domain'
 import { prisma } from '@/lib/db'
 import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
+import { resolveDownloadableWorkspacePath } from '@/domain/file-editor/workspace-download-guard'
 import { resolveWorkspaceTenantKey } from '@/lib/workspace-resource-access'
 import { isHtmlWorkspaceFile } from '@/lib/workspace-file-visibility'
 import {
@@ -58,11 +59,21 @@ export async function GET(
 
   try {
     if (filePath) {
-      if (inline && !isHtmlWorkspaceFile(filePath)) {
+      // Letöltés-kapu: a listázással AZONOS user/internal döntés (rejtett = 404),
+      // közös helperben, hogy a két route ne tudjon szétcsúszni.
+      const safePath = await resolveDownloadableWorkspacePath(
+        storage,
+        tenantId,
+        ticketId,
+        filePath,
+      )
+      if (!safePath) return jsonError('File not found', 404)
+
+      if (inline && !isHtmlWorkspaceFile(safePath)) {
         return jsonError('Only HTML workspace files can be opened inline', 400)
       }
       if (signed) {
-        const signedUrl = await storage.getSignedDownloadUrl(tenantId, ticketId, filePath, {
+        const signedUrl = await storage.getSignedDownloadUrl(tenantId, ticketId, safePath, {
           stubDownloadPath: `/api/v1/tickets/${ticketId}/workspace/files`,
         })
         return NextResponse.json({
@@ -71,9 +82,9 @@ export async function GET(
         })
       }
 
-      const result = await storage.streamToClient(tenantId, ticketId, filePath)
+      const result = await storage.streamToClient(tenantId, ticketId, safePath)
       if (!result) return jsonError('File not found', 404)
-      const filename = filePath.split('/').pop() ?? filePath
+      const filename = safePath.split('/').pop() ?? safePath
       return new NextResponse(result.stream, {
         headers: {
           'content-type': inline ? INLINE_HTML_CONTENT_TYPE : result.contentType,
