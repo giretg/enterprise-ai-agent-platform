@@ -2,6 +2,7 @@ import {
   FileEditorError,
   WorkspaceStorage,
   WORKSPACE_IO_CONCURRENCY,
+  safeObjectPath,
   type WorkspaceQuotaSession,
 } from './workspace-storage'
 import { requiresDeleteConfirm } from './delete-confirm-policy'
@@ -36,19 +37,11 @@ import type {
 
 const MAX_SEARCH_RESULTS = 1000
 
-function resolveSafePath(userPath: string): string {
-  const normalized = userPath.replace(/\\/g, '/').replace(/\/+/g, '/')
-  const parts = normalized.split('/').filter(Boolean)
-  const resolved: string[] = []
-  for (const part of parts) {
-    if (part === '..') {
-      throw new FileEditorError('PATH_TRAVERSAL', `Path traversal detected: ${userPath}`)
-    }
-    if (part !== '.') resolved.push(part)
-  }
-  if (!resolved.length) throw new FileEditorError('INVALID_PATH', `Path is empty or invalid: ${userPath}`)
-  return resolved.join('/')
-}
+// A fájl-útvonal normalizálás/„..”-kizárás EGYETLEN forrása a tár-szintű
+// `safeObjectPath` (workspace-storage). A szolgáltatás és a HTTP letöltő
+// route-ok is ugyanazt a biztonsági primitívet használják — egy jövőbeli
+// szigorítás (pl. NUL-bájt tiltás) így egy helyen hat, nem két másolatban.
+const resolveSafePath = safeObjectPath
 
 /**
  * Könyvtár-műveletekhez (list/search): a gyökeret jelölő bemenetek
