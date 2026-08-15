@@ -6,7 +6,7 @@ import { services } from '@/domain'
 import { applyAgentModelConfigUpdate } from '@/app/actions/agent-model-config-update'
 import type { AgentModelConfigInput } from '@/app/actions/agent-model-config-update'
 import { fail, ok } from '@/lib/result'
-import { isPanelWizardAgentName } from '@/lib/platform-agent-registry'
+import { isPanelWizardAgent, selectSystemPanelWizardAgents } from '@/lib/platform-agent-registry'
 import { updateAgentModelConfigSchema } from '@/lib/validators/actions'
 import { repositories } from '@/repositories/postgres'
 
@@ -21,10 +21,10 @@ export async function getSystemAgentsPageData() {
   try {
     await requirePlatformRole('platform_auditor')
     const [agents, modelPolicy] = await Promise.all([
-      repositories.agents.findMany(),
+      repositories.agents.findMany({ tenantId: null }),
       services.platformSettings.getModelPolicy(),
     ])
-    return ok({ agents: agents.filter((agent) => isPanelWizardAgentName(agent.name)), modelPolicy })
+    return ok({ agents: selectSystemPanelWizardAgents(agents), modelPolicy })
   } catch (error) {
     return fail(error instanceof Error ? error.message : 'Failed to list system agents')
   }
@@ -37,8 +37,10 @@ export async function updateSystemAgentModelConfig(input: {
   try {
     const ctx = await requirePlatformRole('superadmin')
     const parsed = updateAgentModelConfigSchema.parse(input)
-    const agent = await repositories.agents.findById(parsed.agentId)
-    if (!agent || !isPanelWizardAgentName(agent.name)) return fail('System agent not found')
+    // A tenantId:null a lekérdezésben is kötelező: azonos nevű tenant-agent soha nem
+    // válhat globális rendszeragentté pusztán egy kliens által küldött ID miatt.
+    const agent = await repositories.agents.findById(parsed.agentId, null)
+    if (!agent || !isPanelWizardAgent(agent)) return fail('System agent not found')
 
     const result = await applyAgentModelConfigUpdate({
       ...parsed,
