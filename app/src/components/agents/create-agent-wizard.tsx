@@ -2,9 +2,10 @@
 
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState, useTransition } from 'react'
-import { createAgent, getAgentGovernance, listBehaviorProfiles, setAgentBehaviorProfile } from '@/app/actions/platform'
+import { createAgent, draftAgentFromDescription, getAgentGovernance, listBehaviorProfiles, setAgentBehaviorProfile, updateAgentCapabilities } from '@/app/actions/platform'
 import { listConnectorCatalog } from '@/app/actions/provisioning'
 import {
+  assignSkillAction,
   getAgentSkillsAction,
   listAssignableSkillsAction,
   type AgentSkillRow,
@@ -35,9 +36,11 @@ import {
   isIdentityStepComplete,
   isPreCreateComplete,
   isStyleStepComplete,
+  matchAssignableSkillsByName,
   nextCreateAgentWizardStep,
   parseCreateAgentWizardStep,
   prevCreateAgentWizardStep,
+  type CreateAgentWizardProposal,
   type CreateAgentWizardStepId,
 } from '@/lib/create-agent-wizard'
 import {
@@ -156,6 +159,10 @@ export function CreateAgentWizard({
   const [assignableConnectors, setAssignableConnectors] = useState(
     continuation?.assignableConnectors ?? [],
   )
+  const [prompt, setPrompt] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const [proposal, setProposal] = useState<CreateAgentWizardProposal | null>(null)
+  const [proposalWarnings, setProposalWarnings] = useState<string[]>([])
 
   const selectedProvider = safeProviders.find((p) => p.value === provider) ?? safeProviders[0]
   const gate = { name, roleInstruction, behaviorProfile, createdAgentId }
@@ -251,6 +258,32 @@ export function CreateAgentWizard({
         }
       }
 
+      // Jóváhagyott provisioning-javaslat: toolok / skillek a review után kerülnek rá.
+      if (proposal && role === 'worker' && proposal.suggestedCapabilities.length > 0) {
+        const capRes = await updateAgentCapabilities({
+          agentId,
+          enabledTools: proposal.suggestedCapabilities,
+        })
+        if (!capRes.success) {
+          setError(
+            `Az agent létrejött, de a javasolt eszközöket nem sikerült beállítani: ${capRes.error}`,
+          )
+        }
+      }
+
+      if (proposal?.suggestedSkills.length) {
+        const assignableRes = await listAssignableSkillsAction(agentId)
+        if (assignableRes.success) {
+          const matches = matchAssignableSkillsByName(
+            assignableRes.data,
+            proposal.suggestedSkills,
+          )
+          for (const skill of matches) {
+            await assignSkillAction({ agentId, skillVersionId: skill.activeVersionId })
+          }
+        }
+      }
+
       storeApiKey(agentId, res.data.apiKey)
       setApiKey(res.data.apiKey)
       setCreatedAgentId(agentId)
@@ -259,6 +292,45 @@ export function CreateAgentWizard({
       router.replace(createAgentWizardContinueHref(agentId, 'tools'), { scroll: false })
       router.refresh()
     })
+  }
+
+  async function generateProposal() {
+    setError(null)
+    setProposalWarnings([])
+    if (!prompt.trim()) {
+      setError('Írd le, milyen agentet szeretnél — a provisioning agent ebből javasol vázat.')
+      return
+    }
+    setGenerating(true)
+    try {
+      const res = await draftAgentFromDescription({ description: prompt.trim() })
+      if (!res.success) {
+        setError(res.error)
+        return
+      }
+      const data = res.data as {
+        draft: CreateAgentWizardProposal
+        validation: { warnings: Array<{ message: string }> }
+      }
+      const draft = data.draft
+      setProposal(draft)
+      setName(draft.name)
+      setRole(draft.role)
+      setRoleInstruction(draft.roleInstruction)
+      setBehaviorProfile(draft.behaviorProfile)
+      setProvider(draft.modelConfig.provider)
+      setModel(
+        normalizeModelForProvider(draft.modelConfig.provider, draft.modelConfig.model, safeProviders),
+      )
+      if (draft.modelConfig.modelType) setModelType(draft.modelConfig.modelType)
+      if (typeof draft.modelConfig.temperature === 'number') {
+        setTemperature(String(draft.modelConfig.temperature))
+      }
+      setProposalWarnings(data.validation.warnings.map((w) => w.message))
+      setPrompt('')
+    } finally {
+      setGenerating(false)
+    }
   }
 
   function handleNext() {
@@ -365,6 +437,73 @@ export function CreateAgentWizard({
 
           {step === 'identity' ? (
             <div className="space-y-4">
+              {!createdAgentId ? (
+                <div className="space-y-3 rounded-md border border-ink/12 bg-paper px-3 py-3">
+                  <div>
+                    <p className="text-sm font-semibold">Provisioning agent javaslat</p>
+                    <p className="mt-1 text-xs text-ink-soft">
+                      Írd le természetes nyelven, milyen agent kell — a provisioning agent
+                      vázat javasol. Te átnézed, módosítod, majd a varázsló végén jóváhagyod
+                      (az agent csak akkor jön létre).
+                    </p>
+                  </div>
+                  <textarea
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    rows={3}
+                    disabled={generating || pending}
+                    className={INPUT}
+                    placeholder="Pl. Belső tudás-asszisztens, aki csak a jóváhagyott wiki-ből válaszol, magyarul, forráshivatkozással…"
+                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void generateProposal()}
+                      disabled={generating || pending || !prompt.trim()}
+                      className="rounded-lg bg-coral px-3 py-1.5 text-sm font-medium text-card disabled:opacity-50"
+                    >
+                      {generating ? 'Javaslat készül…' : 'Provisioning agent javasol'}
+                    </button>
+                    {proposal ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProposal(null)
+                          setProposalWarnings([])
+                        }}
+                        className="rounded-lg border border-ink/20 px-3 py-1.5 text-sm"
+                      >
+                        Javaslat elvetése
+                      </button>
+                    ) : null}
+                  </div>
+                  {proposal ? (
+                    <div className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-ink">
+                      <p className="font-semibold text-sage">
+                        Javaslat betöltve — nézd át az alábbi mezőket, majd lépj tovább.
+                      </p>
+                      {proposal.summary ? <p className="mt-1 text-ink-soft">{proposal.summary}</p> : null}
+                      {proposal.suggestedCapabilities.length > 0 ? (
+                        <p className="mt-1 text-ink-soft">
+                          Javasolt eszközök: {proposal.suggestedCapabilities.join(', ')}
+                        </p>
+                      ) : null}
+                      {proposal.suggestedSkills.length > 0 ? (
+                        <p className="mt-1 text-ink-soft">
+                          Javasolt skillek: {proposal.suggestedSkills.join(', ')}
+                        </p>
+                      ) : null}
+                      {proposalWarnings.length > 0 ? (
+                        <ul className="mt-2 list-disc space-y-0.5 pl-4 text-ink-soft">
+                          {proposalWarnings.map((w) => (
+                            <li key={w}>{w}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <label className="block text-sm">
                 <span className="text-ink-soft">Név</span>
                 <input

@@ -74,6 +74,7 @@ import { applyAgentModelConfigUpdate } from '@/app/actions/agent-model-config-up
 import type { AgentModelConfigInput } from '@/app/actions/agent-model-config-update'
 import { isRuleExhausted, pickPeakAgent } from '@/lib/budget-rule-usage'
 import { NORMAL_TOOL_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
+import { PROVISIONING_ASSISTANT_AGENT_NAME } from '@/lib/platform-agent-registry'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
 import {
   agentIdSchema,
@@ -91,6 +92,7 @@ import {
   archiveSandboxAppSchema,
   listAuditLogSchema,
   createAgentSchema,
+  draftAgentFromDescriptionSchema,
   agentApiKeyIdSchema,
   suspendAgentSchema,
   createBehaviorProfileSchema,
@@ -1793,6 +1795,76 @@ export async function createAgent(input: {
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create agent')
+  }
+}
+
+/**
+ * Provisioning Assistant (§13 agent-scaffold): NL leírás → agent-vázlat.
+ * Propose-not-apply — nem hoz létre agentet; a create-agent varázsló tölti fel,
+ * az ember átnézi / módosítja, majd a meglévő `createAgent`-tel jóváhagyja.
+ */
+export async function draftAgentFromDescription(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = draftAgentFromDescriptionSchema.parse(input)
+
+    const agents = await repositories.agents.findMany()
+    const assistant = agents.find((a) => a.name === PROVISIONING_ASSISTANT_AGENT_NAME)
+    if (!assistant) {
+      return fail(
+        'A provisioning-asszisztens agent nincs seedelve. Futtasd: npm run db:seed.',
+      )
+    }
+
+    const skillCatalog = await services.skills.listReferenceCatalog(user.activeTenantId)
+    const tenant = await repositories.tenants.findById(user.activeTenantId!)
+    const { readTenantLanguage } = await import('@/lib/tenant-language')
+    const outputLanguage = readTenantLanguage(tenant?.settings)
+
+    const result = await services.agentScaffoldAgent.draftFromDescription({
+      agentId: assistant.id,
+      agentVersion: assistant.currentVersion,
+      agentModelConfig: assistant.modelConfig,
+      tenantId: user.activeTenantId,
+      description: parsed.description,
+      knownCapabilities: [...NORMAL_TOOL_CAPABILITY_NAMES],
+      knownSkills: skillCatalog.map((s) => ({
+        name: s.name,
+        description: s.description,
+      })),
+      outputLanguage,
+    })
+
+    if (!result.ok) {
+      return fail(`${result.error}: ${result.detail}`)
+    }
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'agent.scaffold.propose',
+      targetType: 'agent',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: result.draft.name,
+      policyDecision: 'allowed',
+      metadata: {
+        assistantAgentId: assistant.id,
+        role: result.draft.role,
+        suggestedCapabilityCount: result.draft.suggestedCapabilities.length,
+        suggestedSkillCount: result.draft.suggestedSkills.length,
+        warningCount: result.validation.warnings.length,
+      },
+    })
+
+    return ok({
+      draft: result.draft,
+      validation: result.validation,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült az agent-vázlatot generálni')
   }
 }
 

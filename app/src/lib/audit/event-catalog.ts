@@ -57,6 +57,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.behavior_profile_update_accepted',
   'agent.behavior_profile_updated',
   'agent.create',
+  // Provisioning Assistant §13: NL → agent-vázlat javaslat (ember még nem hozott létre agentet).
+  'agent.scaffold.propose',
   'agent.delete',
   'agent.dispatch_denied_inactive',
   // Agent-hozzáférési gráf (Access-Policy §agent-scope, #142). A `channel`
