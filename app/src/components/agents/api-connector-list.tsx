@@ -481,9 +481,11 @@ export function ApiConnectorList({
                   </p>
                   <Link
                     href="/control-plane/provisioning"
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="mt-2 inline-block font-semibold text-honey hover:underline"
                   >
-                    Connector megnyitása a provisioningban →
+                    Connector megnyitása a provisioningban ↗
                   </Link>
                 </div>
               </>
