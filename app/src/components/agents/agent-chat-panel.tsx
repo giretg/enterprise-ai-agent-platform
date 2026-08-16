@@ -190,7 +190,7 @@ type AgentChatStreamEvent =
     }
   | {
       type: 'connector_grant_needed'
-      grant: ConnectorGrantNeededView
+      grant: { connectorId: string; toolName: string; reason: string }
     }
   | { type: 'thinking'; turnId: string; delta: string }
   | { type: 'token'; chunk: string }
@@ -2106,9 +2106,9 @@ export function AgentChatPanel({
                       ? {
                           ...m,
                           connectorGrants: upsertConnectorGrant(m.connectorGrants, {
+                            ...event.grant,
                             connectorType: 'gmail',
                             connectorName: 'Gmail',
-                            ...event.grant,
                           }),
                         }
                       : m,
@@ -2654,9 +2654,9 @@ export function AgentChatPanel({
                       ? {
                           ...m,
                           connectorGrants: upsertConnectorGrant(m.connectorGrants, {
+                            ...event.grant,
                             connectorType: 'gmail',
                             connectorName: 'Gmail',
-                            ...event.grant,
                           }),
                         }
                       : m,

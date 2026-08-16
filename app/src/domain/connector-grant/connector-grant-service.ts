@@ -17,6 +17,7 @@ import {
   mergeOauthScopes,
   scopesSuggestedForGrantNeeded,
   type ConnectorGrantNeededCard,
+  type ConnectorGrantNeededReason,
 } from './connector-grant-needed'
 import { gmailToolAllowedByScopes, normalizeGmailScope } from './gmail-scopes'
 
@@ -721,7 +722,11 @@ export class ConnectorGrantService {
       },
     })
 
-    const fromCalls: Array<{ connectorId: string; toolName: string; reason: string }> = []
+    const fromCalls: Array<{
+      connectorId: string
+      toolName: string
+      reason: ConnectorGrantNeededReason
+    }> = []
     for (const call of calls) {
       if (!call.connectorId || !isConnectorGrantNeededReason(call.policyDecision)) continue
       fromCalls.push({
