@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getCurrentUser } from '@/auth'
+import { oauthReturnPath } from '@/domain/connector-grant/connector-grant-needed'
 import { services } from '@/domain'
 import { prisma } from '@/lib/db'
 import { publicAppUrl } from '@/lib/public-app-url'
@@ -39,7 +40,10 @@ export async function GET(request: Request) {
       actorId: user.id,
     })
 
-    return NextResponse.redirect(publicAppUrl('/control-plane/connectors?connected=1', request))
+    const successPath = statePayload.returnTo
+      ? oauthReturnPath(statePayload.returnTo)
+      : '/control-plane/connectors?connected=1'
+    return NextResponse.redirect(publicAppUrl(successPath, request))
   } catch (e) {
     const message = e instanceof Error ? e.message : 'oauth_callback_failed'
     return NextResponse.redirect(

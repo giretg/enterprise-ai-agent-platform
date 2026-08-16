@@ -859,6 +859,13 @@ const gmailOAuthScopeSchema = z.enum([
 export const startConnectorOAuthSchema = z.object({
   connectorId: z.string().uuid(),
   scopes: z.array(gmailOAuthScopeSchema).min(1).max(3).optional(),
+  returnTo: z
+    .object({
+      kind: z.enum(['conversation', 'ticket']),
+      id: z.string().uuid(),
+      agentId: z.string().uuid().optional(),
+    })
+    .optional(),
 })
 
 export const approveGmailSendSchema = z.object({

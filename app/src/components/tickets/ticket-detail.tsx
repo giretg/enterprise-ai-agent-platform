@@ -44,6 +44,8 @@ type TicketView = {
   taskDescription?: string | null
   /** Nyitott következmény-kapu kártyák — ticket-szintű Approve elrejtéséhez. */
   pendingConsequenceApprovals?: unknown[] | null
+  /** Nyitott Gmail/delegált OAuth-grant kártyák — ticket-szintű Approve elrejtéséhez. */
+  pendingConnectorGrants?: unknown[] | null
   assignee?: {
     type: string | null
     label: string
@@ -333,17 +335,23 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
     expired?: boolean
     failedReason?: string
   }>
+  const pendingConnectorGrants = ticket.pendingConnectorGrants ?? []
   const hasActionableConsequence = pendingConsequence.some(
     (a) => !a.expired || Boolean(a.failedReason),
   )
   const hasExpiredConsequence = pendingConsequence.some(
     (a) => Boolean(a.expired) && !a.failedReason,
   )
+  const hasPendingConnectorGrant = pendingConnectorGrants.length > 0
   // Consequence-kapu mellett a ticket-szintű Approve bezárná a feladatot API
   // futtatás nélkül (cade35e7) — élő kapunál csak a „Mind jóváhagyom" a helyes út.
   // Lejárt kapunál sem Approve: az sem futtatná az API-t, csak hazudna.
+  // Grant-hiánynál sem Approve: a folytatás az OAuth-gomb után indul.
   const canApprove =
-    ticket.state === 'awaiting_human' && !hasActionableConsequence && !hasExpiredConsequence
+    ticket.state === 'awaiting_human' &&
+    !hasActionableConsequence &&
+    !hasExpiredConsequence &&
+    !hasPendingConnectorGrant
   const canReject = REJECTABLE_STATES.has(ticket.state)
   const callCapMessage = readTicketCallCapMessageFromPayload(ticket.payload)
   const canRerun = ticket.state === 'rejected' && !callCapMessage
@@ -380,7 +388,9 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
 
   if (!hasActions) return null
 
-  const hint = hasActionableConsequence
+  const hint = hasPendingConnectorGrant
+    ? 'Gmail/delegált hozzáférés kell — használd a fenti „Hozzáférés megadása” gombot. OAuth után a feladat magától folytatódik.'
+    : hasActionableConsequence
     ? ticket.state === 'awaiting_human'
       ? 'Külső műveletek várnak jóváhagyásra — használd a fenti „Mind jóváhagyom” gombot a folytatáshoz. A visszadobás megállítja a feladatot.'
       : 'Külső műveletek gyűlnek a futás alatt; a jóváhagyás a futás vége után lesz elérhető. A visszadobás megállítja a feladatot.'

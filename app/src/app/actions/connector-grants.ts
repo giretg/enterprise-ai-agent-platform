@@ -169,16 +169,23 @@ export async function listUserDelegatedConnectors() {
   }
 }
 
-export async function startConnectorOAuth(input: { connectorId: string; scopes?: string[] }) {
+export async function startConnectorOAuth(input: {
+  connectorId: string
+  scopes?: string[]
+  returnTo?: { kind: 'conversation' | 'ticket'; id: string; agentId?: string }
+}) {
   try {
     const user = await getCurrentUser()
     if (!user) return fail('Not authenticated')
-    const { connectorId, scopes } = startConnectorOAuthSchema.parse(input)
+    const { connectorId, scopes, returnTo } = startConnectorOAuthSchema.parse(input)
     const connector = await prisma.connector.findUnique({ where: { id: connectorId } })
     if (!connector) return fail('Connector not found')
     if (connector.authMode !== 'user_delegated') return fail('Connector is not user_delegated')
     if (connector.lifecycleState !== 'active') return fail('Connector is not active')
     if (connector.tenantId && connector.tenantId !== user.tenantId) return fail('Connector not found')
+
+    const { oauthReturnPath } = await import('@/domain/connector-grant/connector-grant-needed')
+    const successPath = returnTo ? oauthReturnPath(returnTo) : '/control-plane/connectors?connected=1'
 
     if (process.env.GMAIL_OAUTH_STUB === 'true') {
       const { createOAuthState } = await import('@/lib/crypto/oauth-state')
@@ -187,6 +194,7 @@ export async function startConnectorOAuth(input: { connectorId: string; scopes?:
         connectorId: connector.id,
         tenantId: user.tenantId,
         requestedScopes: scopes,
+        ...(returnTo ? { returnTo } : {}),
       })
       await services.connectorGrants.completeOAuthCallback({
         code: 'stub-auth-code',
@@ -194,7 +202,7 @@ export async function startConnectorOAuth(input: { connectorId: string; scopes?:
         connector,
         actorId: user.id,
       })
-      return ok({ url: '/control-plane/connectors?connected=1', stub: true })
+      return ok({ url: successPath, stub: true })
     }
 
     const { url } = await services.connectorGrants.buildAuthorizationUrl({
@@ -202,6 +210,7 @@ export async function startConnectorOAuth(input: { connectorId: string; scopes?:
       userId: user.id,
       tenantId: user.tenantId,
       requestedScopes: scopes,
+      ...(returnTo ? { returnTo } : {}),
     })
     return ok({ url })
   } catch (e) {

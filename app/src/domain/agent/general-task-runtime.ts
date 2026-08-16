@@ -515,6 +515,75 @@ export class GeneralTaskRuntime {
       : loopResult.content
     await this.publishReferencedWorkspaceFiles(wsTenant, ticket.id, answer)
 
+    if (loopResult.awaitingConnectorGrant) {
+      const grantNeeds = loopResult.connectorGrantNeeds ?? []
+      const grantNotice =
+        grantNeeds.length > 0
+          ? `\n\n---\n\n**Gmail/delegált hozzáférés kell.** ` +
+            'Az alábbi „Hozzáférés megadása" gombbal összekötheted a fiókodat; ' +
+            'OAuth után a feladat magától folytatódik — nem kell újraindítanod.'
+          : `\n\n---\n\n⚠️ A Gmail/delegált hozzáférés hiányzik, de a gomb nem jött létre. ` +
+            'Kösd össze a fiókot a Kapcsolatoknál, majd indítsd újra a feladatot.'
+      const answerWithGrant = `${answer.trim()}${grantNotice}`
+      await this.appendAgentAnswerComment({
+        ticketId: ticket.id,
+        agentId: params.agentId,
+        agentName: agentDetails.agent.name,
+        agentVersion,
+        answerPayload: {
+          answer: answerWithGrant,
+          toolCallCount,
+          turnCount: loopTurnCount,
+          deniedCount,
+          awaitingConnectorGrant: grantNeeds.length > 0,
+          connectorGrantNeeds: grantNeeds,
+          agentVersion,
+          model: modelConfig.model,
+          memoryVersion: agentDetails.memoryVersion,
+        },
+        extraStructured: {
+          model: modelConfig.model,
+          toolCallCount,
+          turnCount: loopTurnCount,
+          deniedCount,
+          awaitingConnectorGrant: grantNeeds.length > 0,
+          status: 'awaiting_human',
+        },
+      })
+      const write = await this.toolBroker.invoke({
+        agentId: params.agentId,
+        agentVersion,
+        ticketId: ticket.id,
+        tool: 'board_write',
+        args: {
+          ticketId: ticket.id,
+          patch: {
+            state: 'awaiting_human',
+            payload: {
+              answer: answerWithGrant,
+              toolCallCount,
+              turnCount: loopTurnCount,
+              deniedCount,
+              awaitingConnectorGrant: grantNeeds.length > 0,
+              connectorGrantNeeds: grantNeeds,
+              agentVersion,
+              model: modelConfig.model,
+              memoryVersion: agentDetails.memoryVersion,
+            },
+          },
+        },
+      })
+      if (write.denied) {
+        throw new Error(`board_write denied: ${write.reason}`)
+      }
+      return {
+        ticketId: ticket.id,
+        answer: answerWithGrant,
+        toolCallCount,
+        ticket: await this.tickets.findById(ticket.id),
+      }
+    }
+
     // Következmény-kapu: a http_api_request (write) gombra vár — a ticket NEM lehet
     // done, amíg a felhasználó a ticket UI-n nem hagyja jóvá a műveleteket.
     // A feltétel szándékosan NEM köti a `status === 'completed'`-et: a függő

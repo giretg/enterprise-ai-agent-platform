@@ -814,6 +814,8 @@ export type ToolBrokerInvokeResult =
       denied: true
       reason: string
       latencyMs: number
+      /** Grant-hiány kártyához — ha a connector feloldódott, de a user-grant nem. */
+      connectorId?: string | null
       /**
        * D1 (issue #195) — az elutasított hívás kimenetele mindig `failed`: nem
        * futott le, tehát semmit nem végzett el. Így a fogyasztó egyetlen mezőből

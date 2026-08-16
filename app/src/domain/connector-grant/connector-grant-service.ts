@@ -10,7 +10,15 @@ import {
   type ConnectorGrantTokens,
 } from './grant-token-vault'
 import { createOAuthState, pkceChallenge, verifyOAuthState } from '@/lib/crypto/oauth-state'
-import { normalizeGmailScope } from './gmail-scopes'
+import { extractGmailScopesFromConfig } from '@/lib/agent-delegated-connectors'
+import {
+  CONNECTOR_GRANT_NEEDED_VISIBILITY_MS,
+  isConnectorGrantNeededReason,
+  mergeOauthScopes,
+  scopesSuggestedForGrantNeeded,
+  type ConnectorGrantNeededCard,
+} from './connector-grant-needed'
+import { gmailToolAllowedByScopes, normalizeGmailScope } from './gmail-scopes'
 
 export type ConnectorOAuthConfig = {
   provider?: string
@@ -376,6 +384,7 @@ export class ConnectorGrantService {
     userId: string
     tenantId: string | null
     requestedScopes?: string[]
+    returnTo?: import('./connector-grant-needed').OAuthReturnTo
   }): Promise<{ url: string; state: string }> {
     if (params.connector.authMode !== 'user_delegated') {
       throw new Error('connector is not user_delegated')
@@ -390,6 +399,7 @@ export class ConnectorGrantService {
       connectorId: params.connector.id,
       tenantId: params.tenantId,
       requestedScopes: scopes,
+      ...(params.returnTo ? { returnTo: params.returnTo } : {}),
     })
 
     const url = new URL(oauth.authUrl)
@@ -680,5 +690,103 @@ export class ConnectorGrantService {
 
   listForUser(userId: string, tenantId?: string | null) {
     return this.grants.findByUser(userId, tenantId)
+  }
+
+  /**
+   * Chat/ticket újratöltés: a közelmúltbeli grant-hiányos tool-hívásokból
+   * kártyát ad, ha a user grantje MÉG mindig hiányzik / kevés a scope.
+   */
+  async listOpenGrantNeeds(params: {
+    userId: string
+    tenantId: string | null
+    conversationId?: string
+    ticketId?: string
+    payloadCards?: ConnectorGrantNeededCard[]
+  }): Promise<ConnectorGrantNeededCard[]> {
+    const since = new Date(Date.now() - CONNECTOR_GRANT_NEEDED_VISIBILITY_MS)
+    const calls = await prisma.toolCall.findMany({
+      where: {
+        status: 'denied',
+        createdAt: { gte: since },
+        policyDecision: { in: ['connector_grant_missing', 'gmail_scope_not_granted'] },
+        ...(params.conversationId ? { conversationId: params.conversationId } : {}),
+        ...(params.ticketId ? { ticketId: params.ticketId } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 30,
+      select: {
+        connectorId: true,
+        toolName: true,
+        policyDecision: true,
+      },
+    })
+
+    const fromCalls: Array<{ connectorId: string; toolName: string; reason: string }> = []
+    for (const call of calls) {
+      if (!call.connectorId || !isConnectorGrantNeededReason(call.policyDecision)) continue
+      fromCalls.push({
+        connectorId: call.connectorId,
+        toolName: call.toolName,
+        reason: call.policyDecision,
+      })
+    }
+    const fromPayload = (params.payloadCards ?? []).filter(
+      (card) => card.connectorId && isConnectorGrantNeededReason(card.reason),
+    )
+    const seeds = [
+      ...fromPayload.map((card) => ({
+        connectorId: card.connectorId,
+        toolName: card.toolName,
+        reason: card.reason,
+      })),
+      ...fromCalls,
+    ]
+
+    const seen = new Set<string>()
+    const unique: typeof seeds = []
+    for (const seed of seeds) {
+      const key = `${seed.connectorId}:${seed.reason}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      unique.push(seed)
+    }
+    if (unique.length === 0) return []
+
+    const connectors = await prisma.connector.findMany({
+      where: { id: { in: unique.map((row) => row.connectorId) } },
+    })
+    const byId = new Map(connectors.map((connector) => [connector.id, connector]))
+    const cards: ConnectorGrantNeededCard[] = []
+    for (const seed of unique) {
+      const connector = byId.get(seed.connectorId)
+      if (!connector || connector.lifecycleState !== 'active') continue
+      if (connector.authMode !== 'user_delegated') continue
+      const grant = await this.grants.findActiveGrant({
+        tenantId: connector.tenantId ?? params.tenantId,
+        connectorId: connector.id,
+        userId: params.userId,
+      })
+      const stillMissing = !grant
+      const stillNarrow =
+        Boolean(grant) &&
+        seed.reason === 'gmail_scope_not_granted' &&
+        !gmailToolAllowedByScopes({
+          tool: seed.toolName as Parameters<typeof gmailToolAllowedByScopes>[0]['tool'],
+          scopes: grant?.scopes,
+        })
+      if (!stillMissing && !stillNarrow) continue
+      cards.push({
+        connectorId: connector.id,
+        connectorType: connector.type,
+        connectorName: connector.name,
+        toolName: seed.toolName,
+        reason: seed.reason,
+        scopes: mergeOauthScopes(
+          extractGmailScopesFromConfig(connector.config),
+          scopesSuggestedForGrantNeeded(seed.toolName),
+        ),
+      })
+    }
+    return cards
   }
 }

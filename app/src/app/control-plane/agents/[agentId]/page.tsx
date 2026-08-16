@@ -161,7 +161,7 @@ export default async function AgentDetailPage({
   searchParams,
 }: {
   params: Promise<{ agentId: string }>
-  searchParams: Promise<{ conversation?: string; openChat?: string }>
+  searchParams: Promise<{ conversation?: string; openChat?: string; granted?: string }>
 }) {
   const { agentId } = await params
   const query = await searchParams
@@ -225,6 +225,7 @@ export default async function AgentDetailPage({
 
   const openChat = query.openChat === '1' || Boolean(query.conversation)
   const initialConversationId = query.conversation ?? null
+  const resumeAfterGrant = query.granted === '1'
 
   const assignedConnectorIds = new Set(
     governance?.connectors.map((item) => item.connector.id) ?? [],
@@ -665,6 +666,7 @@ export default async function AgentDetailPage({
                 canDistillSkill={isAdmin}
                 initialConversationId={initialConversationId}
                 autoOpen={openChat}
+                resumeAfterGrant={resumeAfterGrant}
               />
             )}
             <AgentMiniAppsLink agentId={agent.id} />
