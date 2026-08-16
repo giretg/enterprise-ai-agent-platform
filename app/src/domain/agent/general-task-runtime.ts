@@ -71,6 +71,7 @@ import {
 import type { SkillService } from '../skill/skill-service'
 import type { ConsequenceApprovalService } from '../tool-broker/consequence-approval-service'
 import { formatPreapprovedRunSummary } from '../tool-broker/consequence-gate-policy'
+import { describeConnectorGrantTargets } from '@/domain/connector-grant/connector-grant-needed'
 import type { PromptSegments } from './prompt-assembler'
 import {
   TicketProgressFlusher,
@@ -517,12 +518,13 @@ export class GeneralTaskRuntime {
 
     if (loopResult.awaitingConnectorGrant) {
       const grantNeeds = loopResult.connectorGrantNeeds ?? []
+      const grantTargets = describeConnectorGrantTargets(grantNeeds)
       const grantNotice =
         grantNeeds.length > 0
-          ? `\n\n---\n\n**Gmail/delegált hozzáférés kell.** ` +
+          ? `\n\n---\n\n**${grantTargets} hozzáférés kell.** ` +
             'Az alábbi „Hozzáférés megadása" gombbal összekötheted a fiókodat; ' +
             'OAuth után a feladat magától folytatódik — nem kell újraindítanod.'
-          : `\n\n---\n\n⚠️ A Gmail/delegált hozzáférés hiányzik, de a gomb nem jött létre. ` +
+          : `\n\n---\n\n⚠️ A(z) ${grantTargets} hozzáférés hiányzik, de a gomb nem jött létre. ` +
             'Kösd össze a fiókot a Kapcsolatoknál, majd indítsd újra a feladatot.'
       const answerWithGrant = `${answer.trim()}${grantNotice}`
       await this.appendAgentAnswerComment({

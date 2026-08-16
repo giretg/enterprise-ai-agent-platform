@@ -1,5 +1,9 @@
 import type { Connector, ConnectorGrant } from '@prisma/client'
 import type { ConnectorAccessMode } from '@prisma/client'
+import {
+  delegatedConnectorLabel,
+  scopesFromConnectorConfig,
+} from '@/domain/connector-grant/delegated-oauth-registry'
 
 export type AgentDelegatedConnectorRow = {
   connector: Pick<Connector, 'id' | 'name' | 'type' | 'authMode' | 'lifecycleState' | 'config'>
@@ -7,9 +11,9 @@ export type AgentDelegatedConnectorRow = {
   grant: Pick<ConnectorGrant, 'accountLabel' | 'status'> | null
 }
 
+/** Emberi címke: a provider-regiszterből, különben a connector saját neve. */
 export function connectorFriendlyLabel(type: string, name: string): string {
-  if (type === 'gmail') return 'Gmail'
-  return name
+  return delegatedConnectorLabel(type, name)
 }
 
 export function connectorWithArticle(label: string): string {
@@ -26,9 +30,10 @@ export function connectorPossessive(label: string): string {
   return `${label} fiókodhoz`
 }
 
-export function extractGmailScopesFromConfig(config: unknown): string[] {
-  const cfg = config as { oauth?: { scopes?: unknown } } | null
-  const scopes = cfg?.oauth?.scopes
-  if (!Array.isArray(scopes)) return ['https://www.googleapis.com/auth/gmail.modify']
-  return scopes.filter((s): s is string => typeof s === 'string')
+/**
+ * A connector configjában konfigurált OAuth-scope-ok — provider-független.
+ * (A korábbi Gmail-specifikus olvasás helyén; a Gmail-default a regiszterben él.)
+ */
+export function connectorOAuthScopesFromConfig(config: unknown, connectorType?: string): string[] {
+  return scopesFromConnectorConfig(config, connectorType)
 }

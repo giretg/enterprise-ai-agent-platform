@@ -1,14 +1,30 @@
 /**
- * Delegált connector (Gmail-first) hozzáférés-hiány a chat/ticket futás közben.
+ * Delegált connector (per-user OAuth) hozzáférés-hiány a chat/ticket futás közben.
  *
- * Ha az agentnek VAN gmail/user_delegated eszköze, de a user még nem adott
- * OAuth-grantet (vagy a scope nem elég), a loop NEM fejezi be „kész”-ként a
+ * Ha az agentnek VAN `user_delegated` eszköze, de a user még nem adott
+ * OAuth-grantet (vagy a scope nem elég), a loop NEM fejezi be „kész"-ként a
  * feladatot: kártyát mutat, OAuth-ot indít, siker után folytat.
+ *
+ * A modul provider-független — a Gmail csak egy bejegyzés a
+ * {@link ./delegated-oauth-registry} regiszterben. Egy új delegált OAuth
+ * connector kód nélkül megkapja ugyanezt a kaput.
  */
-import { GMAIL_SCOPES } from './gmail-scopes'
+import {
+  delegatedConnectorLabel,
+  delegatedConnectorTypeForTool,
+  delegatedScopeDeniedReason,
+  GENERIC_SCOPE_DENIED_REASON,
+  registeredDelegatedProviderTypes,
+} from './delegated-oauth-registry'
 
+/**
+ * A grant-kapu okai. A `connector_scope_not_granted` a kanonikus scope-hiány;
+ * a `gmail_scope_not_granted` a Gmail providertől jövő, auditban rögzített
+ * történeti alak — a régi `tool_calls` sorok miatt is fel kell ismernünk.
+ */
 export const CONNECTOR_GRANT_NEEDED_REASONS = [
   'connector_grant_missing',
+  GENERIC_SCOPE_DENIED_REASON,
   'gmail_scope_not_granted',
 ] as const
 
@@ -35,37 +51,47 @@ export type ToolLoopConnectorGrantNeededEvent = {
   connectorId: string
   toolName: string
   reason: ConnectorGrantNeededReason
+  /** A regiszterből számolt típus — a kártya és a prompt címkéjéhez. */
+  connectorType?: string
 }
 
-export function isConnectorGrantNeededReason(reason: string | null | undefined): reason is ConnectorGrantNeededReason {
-  return reason === 'connector_grant_missing' || reason === 'gmail_scope_not_granted'
+/** Minden scope-hiány ok — provider-specifikus alakokkal együtt. */
+const SCOPE_NOT_GRANTED_REASONS = new Set<string>([
+  GENERIC_SCOPE_DENIED_REASON,
+  ...registeredDelegatedProviderTypes().map((type) => delegatedScopeDeniedReason(type)),
+])
+
+export function isConnectorGrantNeededReason(
+  reason: string | null | undefined,
+): reason is ConnectorGrantNeededReason {
+  if (!reason) return false
+  return reason === 'connector_grant_missing' || SCOPE_NOT_GRANTED_REASONS.has(reason)
 }
 
-export function isGmailFamilyTool(toolName: string): boolean {
-  return toolName.startsWith('gmail_') || toolName === 'mailbox_count'
+export function isScopeNotGrantedReason(reason: string | null | undefined): boolean {
+  return Boolean(reason) && SCOPE_NOT_GRANTED_REASONS.has(reason as string)
 }
 
-/** A toolhoz kért minimális Gmail-scope-ok — OAuth-nál a connector configgal uniózva. */
-export function scopesSuggestedForGrantNeeded(toolName: string): string[] {
-  if (toolName === 'gmail_send') return [GMAIL_SCOPES.modify, GMAIL_SCOPES.send]
-  if (toolName === 'gmail_create_draft') return [GMAIL_SCOPES.modify, GMAIL_SCOPES.compose]
-  if (isGmailFamilyTool(toolName)) return [GMAIL_SCOPES.readonly]
-  return []
+/** Az eszközhöz tartozó delegált connector-típus, ha ismert providerhez tartozik. */
+export function connectorTypeForGrantTool(toolName: string): string | null {
+  return delegatedConnectorTypeForTool(toolName)
 }
 
-export function mergeOauthScopes(...groups: Array<string[] | undefined>): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const group of groups) {
-    if (!group) continue
-    for (const scope of group) {
-      const trimmed = scope.trim()
-      if (!trimmed || seen.has(trimmed)) continue
-      seen.add(trimmed)
-      out.push(trimmed)
-    }
-  }
-  return out
+/** Emberi címke a kártyán / a modellnek szánt szövegben. */
+export function connectorGrantLabel(card: {
+  connectorType?: string | null
+  connectorName?: string | null
+}): string {
+  return delegatedConnectorLabel(card.connectorType, card.connectorName)
+}
+
+/** Az érintett fiókok felsorolása („Gmail, Google Drive") — prompt/komment szöveghez. */
+export function describeConnectorGrantTargets(
+  cards: Array<{ connectorType?: string | null; connectorName?: string | null }>,
+): string {
+  const labels = [...new Set(cards.map((card) => connectorGrantLabel(card)))]
+  if (labels.length === 0) return 'a szükséges külső fiók'
+  return labels.join(', ')
 }
 
 /**
@@ -100,13 +126,13 @@ function isUuid(value: string): boolean {
 }
 
 export const CONNECTOR_GRANT_NEEDED_CHAT_PROMPT =
-  'A felhasználó megadta a kért connector-hozzáférést (OAuth). ' +
-  'A korábban elutasított Gmail/delegált eszközök most már futtathatók. ' +
+  'A felhasználó megadta a kért fiók-hozzáférést (OAuth). ' +
+  'A korábban elutasított delegált eszközök most már futtathatók. ' +
   'Folytasd a feladatot: hívd újra a szükséges eszközt, és fejezd be amit elkezdtél. ' +
   'Ne kérj újra hozzáférést, ne mondd hogy a fiók nincs összekötve.'
 
 export const CONNECTOR_GRANT_NEEDED_TICKET_NOTE =
-  'Hozzáférés megadva — folytasd a feladatot a korábban elutasított Gmail/connector lépéssel; ne kezdd elölről.'
+  'Hozzáférés megadva — folytasd a feladatot a korábban elutasított külső fiókos lépéssel; ne kezdd elölről.'
 
 export function readConnectorGrantNeedsFromPayload(payload: unknown): ConnectorGrantNeededCard[] {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return []
@@ -118,10 +144,17 @@ export function readConnectorGrantNeedsFromPayload(payload: unknown): ConnectorG
     const rec = item as Record<string, unknown>
     if (typeof rec.connectorId !== 'string' || typeof rec.toolName !== 'string') continue
     if (!isConnectorGrantNeededReason(typeof rec.reason === 'string' ? rec.reason : '')) continue
+    const connectorType =
+      typeof rec.connectorType === 'string' && rec.connectorType
+        ? rec.connectorType
+        : (connectorTypeForGrantTool(rec.toolName) ?? 'http_api')
     cards.push({
       connectorId: rec.connectorId,
-      connectorType: typeof rec.connectorType === 'string' ? rec.connectorType : 'gmail',
-      connectorName: typeof rec.connectorName === 'string' ? rec.connectorName : 'Gmail',
+      connectorType,
+      connectorName:
+        typeof rec.connectorName === 'string' && rec.connectorName
+          ? rec.connectorName
+          : delegatedConnectorLabel(connectorType),
       toolName: rec.toolName,
       reason: rec.reason as ConnectorGrantNeededReason,
       scopes: Array.isArray(rec.scopes)

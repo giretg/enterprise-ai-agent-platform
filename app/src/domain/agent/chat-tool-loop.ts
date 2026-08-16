@@ -36,6 +36,8 @@ import {
 import { isTulajdoniLapNezet } from '@/lib/tulajdoni-lap'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
 import {
+  connectorTypeForGrantTool,
+  describeConnectorGrantTargets,
   isConnectorGrantNeededReason,
   type ToolLoopConnectorGrantNeededEvent,
 } from '@/domain/connector-grant/connector-grant-needed'
@@ -2546,10 +2548,12 @@ export async function runAgentToolLoop(params: {
             (card) => card.connectorId === result.connectorId && card.reason === result.reason,
           )
           if (!already) {
+            const grantConnectorType = connectorTypeForGrantTool(toolName)
             const grantCard: ToolLoopConnectorGrantNeededEvent = {
               connectorId: result.connectorId,
               toolName,
               reason: result.reason,
+              ...(grantConnectorType ? { connectorType: grantConnectorType } : {}),
             }
             connectorGrantNeeds.push(grantCard)
             await params.onConnectorGrantNeeded?.(grantCard)
@@ -2843,13 +2847,16 @@ export async function runAgentToolLoop(params: {
   if (connectorGrantNeededTriggered && !consequenceGateTriggered) {
     const grantSurface = params.mode === 'task' ? 'a ticket felületén' : 'a chatben'
     const hasGrantCards = connectorGrantNeeds.length > 0
+    // A fiók nevét a provider-regiszter adja (Gmail, Drive, saját API…) — a
+    // felhasználó a SAJÁT fiókjának nevét látja, nem egy beégetett szolgáltatót.
+    const grantTargets = describeConnectorGrantTargets(connectorGrantNeeds)
     messages.push({
       role: 'system',
       content: hasGrantCards
-        ? `Fogalmazd meg a felhasználónak magyarul RÖVIDEN: a Gmail/delegált fiók hozzáférése hiányzik, ezért a feladat megállt. ` +
+        ? `Fogalmazd meg a felhasználónak magyarul RÖVIDEN: a(z) ${grantTargets} hozzáférése hiányzik, ezért a feladat megállt. ` +
           `A „Hozzáférés megadása" gomb ${grantSurface} jelenik meg — OAuth után a feladat MAGÁTÓL folytatódik. ` +
           'NE kérj szöveges „ok"-ot, NE ígérd hogy újraindítod, NE hívd újra az eszközt.'
-        : 'Fogalmazd meg a felhasználónak magyarul RÖVIDEN: a Gmail/delegált hozzáférés hiányzik, de a gomb NEM jött létre. ' +
+        : `Fogalmazd meg a felhasználónak magyarul RÖVIDEN: a(z) ${grantTargets} hozzáférés hiányzik, de a gomb NEM jött létre. ` +
           'Kérd, hogy kösse össze a fiókot a kapcsolatoknál, majd indítsa újra a feladatot.',
     })
     const grantFinal = await params.gateway.call({
@@ -2864,8 +2871,8 @@ export async function runAgentToolLoop(params: {
       content:
         grantContent ||
         (hasGrantCards
-          ? `A Gmail hozzáférés megadása szükséges — a gomb ${params.mode === 'task' ? 'a ticket' : 'a chat'} felületén jelenik meg.`
-          : 'A Gmail hozzáférés hiányzik — kösd össze a fiókot, majd indítsd újra a feladatot.'),
+          ? `A(z) ${grantTargets} hozzáférés megadása szükséges — a gomb ${params.mode === 'task' ? 'a ticket' : 'a chat'} felületén jelenik meg.`
+          : `A(z) ${grantTargets} hozzáférés hiányzik — kösd össze a fiókot, majd indítsd újra a feladatot.`),
       toolCallCount,
       deniedCount,
       status: 'completed',

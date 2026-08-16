@@ -845,8 +845,10 @@ function formatConsequenceApprovalError(error: string): string {
       return 'A művelethez tartozó eszköz nincs beállítva.'
     case 'provider_auth_error':
       return 'A külső szolgáltató elutasította a hitelesítést (lejárt vagy hibás hozzáférés).'
+    // Provider-független scope-hiány; a `gmail_…` alak a Gmail történeti oka.
+    case 'connector_scope_not_granted':
     case 'gmail_scope_not_granted':
-      return 'A Gmail hozzáférés nem tartalmazza a szükséges jogosultságot.'
+      return 'A megadott fiók-hozzáférés nem tartalmazza a szükséges jogosultságot.'
     case 'acting_user_required':
       return 'A művelethez a saját felhasználói hozzáférésed kell — jelentkezz be újra.'
     case 'acting_user_suspended':

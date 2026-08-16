@@ -848,17 +848,30 @@ export const connectorIdSchema = z.object({
   connectorId: z.string().uuid(),
 })
 
-const gmailOAuthScopeSchema = z.enum([
-  'https://mail.google.com/',
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.compose',
-  'https://www.googleapis.com/auth/gmail.modify',
-  'https://www.googleapis.com/auth/gmail.send',
-])
+/**
+ * Delegált OAuth-scope: provider-független alak.
+ *
+ * A scope-listát a SZERVER validálja a connector configjához
+ * (`resolveRequestedScopes` — configon kívüli scope-ot kérni hiba), ezért itt
+ * nincs beégetett szolgáltatói enum: egy új OAuth-connector (Drive, Slack,
+ * saját API) scope-jai séma-módosítás nélkül átmennek. A forma-ellenőrzés csak
+ * a szemetet szűri.
+ */
+const delegatedOAuthScopeSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .regex(/^[A-Za-z0-9._:\-\/]+$/, 'invalid oauth scope')
 
 export const startConnectorOAuthSchema = z.object({
   connectorId: z.string().uuid(),
-  scopes: z.array(gmailOAuthScopeSchema).min(1).max(3).optional(),
+  scopes: z.array(delegatedOAuthScopeSchema).min(1).max(20).optional(),
+  /**
+   * Melyik eszköz akadt el grant-hiányon. Ebből a szerver a legkisebb
+   * szükséges scope-halmazt oldja fel — a kliens nem kér jogosultságot.
+   */
+  toolName: z.string().trim().min(1).max(120).optional(),
   returnTo: z
     .object({
       kind: z.enum(['conversation', 'ticket']),

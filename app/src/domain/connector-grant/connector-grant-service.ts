@@ -10,16 +10,22 @@ import {
   type ConnectorGrantTokens,
 } from './grant-token-vault'
 import { createOAuthState, pkceChallenge, verifyOAuthState } from '@/lib/crypto/oauth-state'
-import { extractGmailScopesFromConfig } from '@/lib/agent-delegated-connectors'
 import {
+  CONNECTOR_GRANT_NEEDED_REASONS,
   CONNECTOR_GRANT_NEEDED_VISIBILITY_MS,
   isConnectorGrantNeededReason,
-  mergeOauthScopes,
-  scopesSuggestedForGrantNeeded,
+  isScopeNotGrantedReason,
   type ConnectorGrantNeededCard,
   type ConnectorGrantNeededReason,
 } from './connector-grant-needed'
-import { gmailToolAllowedByScopes, normalizeGmailScope } from './gmail-scopes'
+import {
+  hasDelegatedScopeCheck,
+  isDelegatedOAuthStubEnabled,
+  isDelegatedToolAllowedByScopes,
+  parseDelegatedGrantScopes,
+  scopesFromConnectorConfig,
+} from './delegated-oauth-registry'
+import { normalizeGmailScope } from './gmail-scopes'
 
 export type ConnectorOAuthConfig = {
   provider?: string
@@ -197,7 +203,7 @@ function resolveGrantedScopes(params: {
 }
 
 async function resolveClientSecret(connector: Connector): Promise<string> {
-  if (process.env.GMAIL_OAUTH_STUB === 'true') return 'stub-client-secret'
+  if (isDelegatedOAuthStubEnabled()) return 'stub-client-secret'
   const tenantGoogle = await resolveTenantGoogleOAuthConfig(connector)
   if (tenantGoogle?.clientSecret) return tenantGoogle.clientSecret
   const alias = connector.secretAlias
@@ -227,7 +233,7 @@ async function exchangeCodeForTokens(params: {
   const oauth = await resolveOAuthConfig(params.connector)
   const fallbackScopes = resolveRequestedScopes(params.connector, params.requestedScopes)
 
-  if (process.env.GMAIL_OAUTH_STUB === 'true') {
+  if (isDelegatedOAuthStubEnabled()) {
     return {
       accessToken: `stub-access-${Date.now()}`,
       refreshToken: `stub-refresh-${Date.now()}`,
@@ -307,7 +313,7 @@ async function refreshGrantTokens(
   connector: Connector,
   current: ConnectorGrantTokens,
 ): Promise<ConnectorGrantTokens> {
-  if (process.env.GMAIL_OAUTH_STUB === 'true') {
+  if (isDelegatedOAuthStubEnabled()) {
     return {
       ...current,
       accessToken: `stub-access-${Date.now()}`,
@@ -709,7 +715,7 @@ export class ConnectorGrantService {
       where: {
         status: 'denied',
         createdAt: { gte: since },
-        policyDecision: { in: ['connector_grant_missing', 'gmail_scope_not_granted'] },
+        policyDecision: { in: [...CONNECTOR_GRANT_NEEDED_REASONS] },
         ...(params.conversationId ? { conversationId: params.conversationId } : {}),
         ...(params.ticketId ? { ticketId: params.ticketId } : {}),
       },
@@ -772,12 +778,17 @@ export class ConnectorGrantService {
         userId: params.userId,
       })
       const stillMissing = !grant
+      // Scope-szűkösség: csak akkor tartjuk nyitva a kártyát, ha a providernek
+      // van scope-értelmezése. Ismeretlen providernél a grant létezése a jel —
+      // különben a kártya sosem tűnne el.
       const stillNarrow =
         Boolean(grant) &&
-        seed.reason === 'gmail_scope_not_granted' &&
-        !gmailToolAllowedByScopes({
-          tool: seed.toolName as Parameters<typeof gmailToolAllowedByScopes>[0]['tool'],
-          scopes: grant?.scopes,
+        isScopeNotGrantedReason(seed.reason) &&
+        hasDelegatedScopeCheck(connector.type) &&
+        !isDelegatedToolAllowedByScopes({
+          connectorType: connector.type,
+          toolName: seed.toolName,
+          scopes: parseDelegatedGrantScopes(grant?.scopes),
         })
       if (!stillMissing && !stillNarrow) continue
       cards.push({
@@ -786,10 +797,7 @@ export class ConnectorGrantService {
         connectorName: connector.name,
         toolName: seed.toolName,
         reason: seed.reason,
-        scopes: mergeOauthScopes(
-          extractGmailScopesFromConfig(connector.config),
-          scopesSuggestedForGrantNeeded(seed.toolName),
-        ),
+        scopes: scopesFromConnectorConfig(connector.config, connector.type),
       })
     }
     return cards
