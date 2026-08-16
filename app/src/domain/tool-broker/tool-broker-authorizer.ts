@@ -30,6 +30,10 @@ import type {
   UserDirectorySearchEntry,
 } from './tool-broker-types'
 import { resolveTulajdoniLapParseSource } from '@/lib/tulajdoni-lap-source'
+import {
+  isTulajdoniLapEgyeztetesCoverageOnly,
+  resolveTulajdoniWorkspaceAccessMode,
+} from '@/lib/tulajdoni-workspace-access'
 
 export const TOOL_REQUIREMENTS: Partial<Record<
   ToolName,
@@ -305,21 +309,10 @@ export class AllowlistAuthorizer implements Authorizer {
       }
       // workspace path, vagy documentId + handoff-írás → connector feloldás
     }
-    // A `tulajdoni_lap_egyeztetes` Excel-t CSAK `kimenet` mellett ír; JSON-only
-    // úton elég a workspace read. A forrás érvényességét a delegáció nézi.
     // Coverage-only (proposal lefedettség): nincs lap-forrás — ne követeljük.
+    // A többi egyeztető útvonal a forrás érvényességét a delegációban nézi.
     if (input.tool === 'tulajdoni_lap_egyeztetes') {
-      const coverageOnly =
-        typeof input.args?.coverageAppliedPath === 'string' &&
-        input.args.coverageAppliedPath.trim().length > 0 &&
-        !(typeof input.args?.documentId === 'string' && input.args.documentId.trim()) &&
-        !(typeof input.args?.path === 'string' && input.args.path.trim()) &&
-        !(
-          typeof input.args?.feldolgozottLapPath === 'string' &&
-          input.args.feldolgozottLapPath.trim()
-        ) &&
-        !(typeof input.args?.nyilvantartasPath === 'string' && input.args.nyilvantartasPath.trim()) &&
-        !(Array.isArray(input.args?.nyilvantartas) && input.args.nyilvantartas.length > 0)
+      const coverageOnly = isTulajdoniLapEgyeztetesCoverageOnly(input.args)
       if (!coverageOnly) {
         const hasProcessedPath =
           typeof input.args?.feldolgozottLapPath === 'string' &&
@@ -342,23 +335,13 @@ export class AllowlistAuthorizer implements Authorizer {
     if (!requirement) {
       return { allowed: false, reason: 'tool_not_configured' }
     }
-    const kimenetRaw =
-      input.tool === 'tulajdoni_lap_egyeztetes' && typeof input.args?.kimenet === 'string'
-        ? input.args.kimenet.trim()
-        : ''
-    const parseKimenetRaw =
-      input.tool === 'tulajdoni_lap_parse' && typeof input.args?.kimenet === 'string'
-        ? input.args.kimenet.trim()
-        : ''
+    // tulajdoni_lap_egyeztetes: Excel NÉLKÜL is írhat `egyeztetes-eltero.json` /
+    // `fold_muveletek.json` fájlokat. A korábbi „JSON-only → read” szabály
+    // read-only workspace connectorral is átengedte ezeket az írásokat.
+    // Coverage-only ágon tényleg csak olvasunk → maradhat read.
     const accessMode: ConnectorAccessMode =
-      input.tool === 'tulajdoni_lap_egyeztetes'
-        ? kimenetRaw
-          ? 'write'
-          : 'read'
-        : input.tool === 'tulajdoni_lap_parse'
-          ? parseKimenetRaw
-            ? 'write'
-            : 'read'
+      input.tool === 'tulajdoni_lap_egyeztetes' || input.tool === 'tulajdoni_lap_parse'
+        ? resolveTulajdoniWorkspaceAccessMode(input.tool, input.args)
         : requirement.accessMode
     const requestedConnectorId =
       (input.tool === 'http_api_get' ||
