@@ -134,6 +134,34 @@ export function createAgentWizardContinueHref(
   return `/control-plane/agents/new?${params.toString()}`
 }
 
+/** Provisioning agent által javasolt vázlat — a varázsló űrlapjába tölthető. */
+export type CreateAgentWizardProposal = {
+  name: string
+  role: 'worker' | 'orchestrator'
+  roleInstruction: string
+  behaviorProfile: string
+  modelConfig: {
+    provider: string
+    model: string
+    modelType?: 'luna' | 'terra' | 'sol'
+    temperature?: number
+  }
+  suggestedCapabilities: string[]
+  suggestedSkills: string[]
+  summary?: string
+}
+
+export function matchAssignableSkillsByName<T extends { name: string }>(
+  assignable: T[],
+  suggestedNames: Iterable<string>,
+): T[] {
+  const wanted = new Set(
+    [...suggestedNames].map((n) => n.trim().toLowerCase()).filter(Boolean),
+  )
+  if (wanted.size === 0) return []
+  return assignable.filter((skill) => wanted.has(skill.name.trim().toLowerCase()))
+}
+
 export function assignableConnectorsFromCatalog<T extends { id: string; type: string }>(
   catalog: T[],
   assignedIds: Iterable<string>,

@@ -917,7 +917,7 @@ Az agent képes egyszerű, egyfájlos HTML alkalmazásokat generálni (A0 szint)
 | `/control-plane/board` | `board/page.tsx` | Kanban board |
 | `/control-plane/agents` | `agents/page.tsx` | Agent registry |
 | `/control-plane/agents/[id]` | `agents/[agentId]/page.tsx` | Agent részletek + chat |
-| `/control-plane/agents/new` | `agents/new/page.tsx` | Új agent varázsló (eszközök, skillek, kapcsolatok; kitérők új ablakban) |
+| `/control-plane/agents/new` | `agents/new/page.tsx` | Új agent varázsló (provisioning-javaslat → átnézés; eszközök, skillek, kapcsolatok; kitérők új ablakban) |
 | `/control-plane/agent-access` | `agent-access/page.tsx` | Kapcsolatok — ki kivel dolgozhat (admin) |
 | `/control-plane/audit` | `audit/page.tsx` | Audit lánc néző |
 | `/control-plane/connectors` | `connectors/page.tsx` | Connector kezelés |

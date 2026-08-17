@@ -520,6 +520,11 @@ export const createAgentSchema = z.object({
   }),
 })
 
+/** Provisioning agent → új-agent vázlat (propose-not-apply); a createAgent a jóváhagyás. */
+export const draftAgentFromDescriptionSchema = z.object({
+  description: z.string().trim().min(1).max(4000),
+})
+
 const httpApiEndpointSchema = z.object({
   method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']),
   path: z.string().trim().min(1).max(500),

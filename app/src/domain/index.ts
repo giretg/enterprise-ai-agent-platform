@@ -102,6 +102,7 @@ import {
   PROVISIONING_DRAFT_CAPABILITIES,
 } from '@/domain/provisioning/provisioning-assistant'
 import { PlaybookAuthorAgent } from '@/domain/playbook/playbook-author-agent'
+import { AgentScaffoldAgent } from '@/domain/agents/agent-scaffold-agent'
 import { SkillDistillerAgent } from '@/domain/skill/skill-distiller-agent'
 import { SkillReviewAgent } from '@/domain/skill/skill-review-agent'
 import {
@@ -942,6 +943,11 @@ const playbookAuthorAgent = new PlaybookAuthorAgent({
   model: modelGateway,
 })
 
+/** Provisioning §13: NL leírás → agent-vázlat (propose-not-apply); a PA modelConfig-jét a hívó adja. */
+const agentScaffoldAgent = new AgentScaffoldAgent({
+  model: modelGateway,
+})
+
 const provisioningAssistant = new ProvisioningAssistant({
   model: modelGateway,
   discovery: {
@@ -1291,6 +1297,7 @@ export const services = {
   provisioning: provisioningService,
   selfUpdatingConnectors: selfUpdatingConnectorService,
   provisioningAssistant,
+  agentScaffoldAgent,
   playbookAuthorAgent,
   sandboxApps: sandboxAppService,
   sandboxVersioning: sandboxVersioningService,

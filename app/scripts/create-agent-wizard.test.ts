@@ -16,6 +16,7 @@ import {
   isIdentityStepComplete,
   isPreCreateComplete,
   isStyleStepComplete,
+  matchAssignableSkillsByName,
   nextCreateAgentWizardStep,
   parseCreateAgentWizardStep,
   prevCreateAgentWizardStep,
@@ -132,7 +133,21 @@ function main() {
     )
   })
 
-  check('a varázsló és a panelek új ablakban nyitják a kitérőket', () => {
+  check('skillnév-egyeztetés a javaslatból (kisbetű-érzéketlen)', () => {
+    const matched = matchAssignableSkillsByName(
+      [
+        { name: 'Wiki-QA', activeVersionId: 'v1' },
+        { name: 'other', activeVersionId: 'v2' },
+      ],
+      ['wiki-qa'],
+    )
+    assert.deepEqual(
+      matched.map((s) => s.activeVersionId),
+      ['v1'],
+    )
+  })
+
+  check('a varázsló provisioning-javaslatot és új-ablakos kitérőket tartalmaz', () => {
     const wizard = readFileSync(
       resolve(process.cwd(), 'src/components/agents/create-agent-wizard.tsx'),
       'utf8',
@@ -154,6 +169,8 @@ function main() {
     assert.match(wizard, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\.skills/)
     assert.match(wizard, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\.connections/)
     assert.match(wizard, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\.behaviorProfiles/)
+    assert.match(wizard, /draftAgentFromDescription/)
+    assert.match(wizard, /Provisioning agent javasol/)
     assert.match(skills, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\.skills/)
     assert.match(style, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\.behaviorProfiles/)
   })
