@@ -5,9 +5,9 @@ import type { Connector } from '@prisma/client'
 import { startConnectorOAuth } from '@/app/actions/connector-grants'
 import {
   connectorFriendlyLabel,
+  connectorOAuthScopesFromConfig,
   connectorPossessive,
   connectorWithArticle,
-  extractGmailScopesFromConfig,
   type AgentDelegatedConnectorRow,
 } from '@/lib/agent-delegated-connectors'
 
@@ -24,9 +24,13 @@ export function AgentDelegatedConnectorsBar({
 
   function connect(connector: Pick<Connector, 'id' | 'type' | 'config'>) {
     startTransition(async () => {
-      const scopes =
-        connector.type === 'gmail' ? extractGmailScopesFromConfig(connector.config) : undefined
-      const res = await startConnectorOAuth({ connectorId: connector.id, scopes })
+      // Nincs eszköz-kontextus (ez a profil-sáv „Összekötés" gombja): a
+      // connector configjában konfigurált teljes scope-listát kérjük.
+      const configured = connectorOAuthScopesFromConfig(connector.config, connector.type)
+      const res = await startConnectorOAuth({
+        connectorId: connector.id,
+        ...(configured.length > 0 ? { scopes: configured } : {}),
+      })
       if (!res.success) return
       if ('stub' in res.data && res.data.stub) {
         window.location.reload()

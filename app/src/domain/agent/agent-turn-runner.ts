@@ -21,6 +21,7 @@
 import type {
   ToolLoopActivityEvent,
   ToolLoopConsequenceApprovalEvent,
+  ToolLoopConnectorGrantNeededEvent,
   ToolLoopMemoryCandidateEvent,
 } from './chat-tool-loop'
 
@@ -42,6 +43,7 @@ export type AgentChatStreamEvent =
   | { type: 'activity'; activity: ToolLoopActivityEvent }
   | { type: 'memory_candidate'; candidate: ToolLoopMemoryCandidateEvent }
   | { type: 'consequence_approval'; approval: ToolLoopConsequenceApprovalEvent }
+  | { type: 'connector_grant_needed'; grant: ToolLoopConnectorGrantNeededEvent }
   | { type: 'thinking'; turnId: string; delta: string }
   | { type: 'token'; chunk: string }
   | {

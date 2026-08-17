@@ -6,6 +6,7 @@
  */
 import assert from 'node:assert/strict'
 import {
+  clearAgentChatResumeAfterGrant,
   clearAgentChatSessions,
   closeAgentChat,
   getAgentChatSessions,
@@ -33,11 +34,15 @@ assert.deepEqual(
   'több agent chat egyszerre nyitva',
 )
 
-openAgentChat({ agent: agentA, initialConversationId: 'conv-1' })
+openAgentChat({ agent: agentA, initialConversationId: 'conv-1', resumeAfterGrant: true })
 const revived = getAgentChatSessions().find((s) => s.id === 'agent-a')
 assert.equal(getAgentChatSessions().length, 2, 'nem nyit második ablakot ugyanarra az agentre')
 assert.equal(revived?.restoreSignal, 1)
 assert.equal(revived?.initialConversationId, 'conv-1')
+assert.equal(revived?.resumeAfterGrant, true)
+
+clearAgentChatResumeAfterGrant('agent-a')
+assert.equal(getAgentChatSessions().find((s) => s.id === 'agent-a')?.resumeAfterGrant, false)
 
 closeAgentChat('agent-b')
 assert.deepEqual(

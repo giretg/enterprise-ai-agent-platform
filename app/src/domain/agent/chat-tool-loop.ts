@@ -35,6 +35,12 @@ import {
 } from '@/lib/observability/metrics'
 import { isTulajdoniLapNezet } from '@/lib/tulajdoni-lap'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
+import {
+  connectorTypeForGrantTool,
+  describeConnectorGrantTargets,
+  isConnectorGrantNeededReason,
+  type ToolLoopConnectorGrantNeededEvent,
+} from '@/domain/connector-grant/connector-grant-needed'
 // issue #97 — a becsomagolás, issue #195 — a kimenetel közlése: mindkettő a Tool
 // Broker határán történik, a fogyasztó a kész `modelText`-et kapja.
 import {
@@ -145,6 +151,9 @@ export type ToolLoopResult =
       /** Következmény-kapu: van függő jóváhagyás (task ticketen is). */
       awaitingConsequenceApproval?: boolean
       consequenceApprovalIds?: string[]
+      /** Delegált connector OAuth-grant hiányzik — gombra vár. */
+      awaitingConnectorGrant?: boolean
+      connectorGrantNeeds?: import('@/domain/connector-grant/connector-grant-needed').ToolLoopConnectorGrantNeededEvent[]
       /** issue #220 — preapproved író hívások futás-összesítője. */
       preapprovedWriteSummary?: PreapprovedRunSummary[]
     }
@@ -161,6 +170,8 @@ export type ToolLoopResult =
        */
       awaitingConsequenceApproval?: boolean
       consequenceApprovalIds?: string[]
+      awaitingConnectorGrant?: boolean
+      connectorGrantNeeds?: import('@/domain/connector-grant/connector-grant-needed').ToolLoopConnectorGrantNeededEvent[]
       /** issue #220 — preapproved író hívások futás-összesítője. */
       preapprovedWriteSummary?: PreapprovedRunSummary[]
     }
@@ -230,6 +241,8 @@ export type ToolLoopMemoryCandidateEvent = {
   // §3.2/§16 S3 — lágy PII-figyelmeztetés kategóriái (a kártyán jelölve).
   piiWarning: string[]
 }
+
+export type { ToolLoopConnectorGrantNeededEvent } from '@/domain/connector-grant/connector-grant-needed'
 
 /** issue #97 — következmény-kapu pending jóváhagyás a chat-kártyához. */
 export type ToolLoopConsequenceApprovalEvent = {
@@ -885,6 +898,8 @@ export async function runAgentToolLoop(params: {
   ) => Promise<ToolLoopConsequenceApprovalEvent>
   /** issue #97 — pending jóváhagyás stream-kártyához. */
   onConsequenceApproval?: (event: ToolLoopConsequenceApprovalEvent) => void | Promise<void>
+  /** Delegált connector grant hiányzik — OAuth-gomb a chatben/ticketen. */
+  onConnectorGrantNeeded?: (event: ToolLoopConnectorGrantNeededEvent) => void | Promise<void>
   /**
    * issue #97 — a futás MÁR indulásakor „tainted".
    *
@@ -1010,6 +1025,8 @@ export async function runAgentToolLoop(params: {
   // újabb tool-körös modellhívást (tokenégetés elkerülése); záró összefoglaló jön.
   let consequenceGateTriggered = false
   const consequenceApprovalIds: string[] = []
+  let connectorGrantNeededTriggered = false
+  const connectorGrantNeeds: ToolLoopConnectorGrantNeededEvent[] = []
   const preapprovedBudget = createPreapprovedRunBudget()
   const preapprovedNoticesShown = new Set<string>()
   /**
@@ -1034,12 +1051,20 @@ export async function runAgentToolLoop(params: {
   const consequenceGateFields = (): {
     awaitingConsequenceApproval?: boolean
     consequenceApprovalIds?: string[]
+    awaitingConnectorGrant?: boolean
+    connectorGrantNeeds?: ToolLoopConnectorGrantNeededEvent[]
     preapprovedWriteSummary?: PreapprovedRunSummary[]
   } => ({
     ...(consequenceGateTriggered
       ? {
           awaitingConsequenceApproval: consequenceApprovalIds.length > 0,
           consequenceApprovalIds: [...consequenceApprovalIds],
+        }
+      : {}),
+    ...(connectorGrantNeededTriggered
+      ? {
+          awaitingConnectorGrant: connectorGrantNeeds.length > 0,
+          connectorGrantNeeds: [...connectorGrantNeeds],
         }
       : {}),
     ...preapprovedSummaryFields(),
@@ -2517,6 +2542,23 @@ export async function runAgentToolLoop(params: {
         const result = await params.toolBroker.invoke(invokeInput)
         toolCallCount += 1
         if (result.denied) deniedCount += 1
+        if (result.denied && isConnectorGrantNeededReason(result.reason) && result.connectorId) {
+          connectorGrantNeededTriggered = true
+          const already = connectorGrantNeeds.some(
+            (card) => card.connectorId === result.connectorId && card.reason === result.reason,
+          )
+          if (!already) {
+            const grantConnectorType = connectorTypeForGrantTool(toolName)
+            const grantCard: ToolLoopConnectorGrantNeededEvent = {
+              connectorId: result.connectorId,
+              toolName,
+              reason: result.reason,
+              ...(grantConnectorType ? { connectorType: grantConnectorType } : {}),
+            }
+            connectorGrantNeeds.push(grantCard)
+            await params.onConnectorGrantNeeded?.(grantCard)
+          }
+        }
         // Forrás-számvitel (tool-független): ha ez a hívás ugyanabból a forrásból
         // (fájl, dokumentum, oldal, URL) hoz be tartalmat, amiből már nagyjából
         // mindent behoztunk, akkor a TARTALOM lehet új, de a MUNKA nem haladt. Így
@@ -2796,6 +2838,48 @@ export async function runAgentToolLoop(params: {
     if (consequenceGateTriggered && params.mode !== 'task') {
       break turnLoop
     }
+    // Grant-hiány: egy kártya elég, ne próbálgassa újra a Gmailt körönként.
+    if (connectorGrantNeededTriggered) {
+      break turnLoop
+    }
+  }
+
+  if (connectorGrantNeededTriggered && !consequenceGateTriggered) {
+    const grantSurface = params.mode === 'task' ? 'a ticket felületén' : 'a chatben'
+    const hasGrantCards = connectorGrantNeeds.length > 0
+    // A fiók nevét a provider-regiszter adja (Gmail, Drive, saját API…) — a
+    // felhasználó a SAJÁT fiókjának nevét látja, nem egy beégetett szolgáltatót.
+    const grantTargets = describeConnectorGrantTargets(connectorGrantNeeds)
+    messages.push({
+      role: 'system',
+      content: hasGrantCards
+        ? `Fogalmazd meg a felhasználónak magyarul RÖVIDEN: a(z) ${grantTargets} hozzáférése hiányzik, ezért a feladat megállt. ` +
+          `A „Hozzáférés megadása" gomb ${grantSurface} jelenik meg — OAuth után a feladat MAGÁTÓL folytatódik. ` +
+          'NE kérj szöveges „ok"-ot, NE ígérd hogy újraindítod, NE hívd újra az eszközt.'
+        : `Fogalmazd meg a felhasználónak magyarul RÖVIDEN: a(z) ${grantTargets} hozzáférés hiányzik, de a gomb NEM jött létre. ` +
+          'Kérd, hogy kösse össze a fiókot a kapcsolatoknál, majd indítsa újra a feladatot.',
+    })
+    const grantFinal = await params.gateway.call({
+      agentId: params.agentId,
+      ...params.context,
+      messages,
+      modelConfig: params.modelConfig,
+    })
+    const grantContent =
+      stripToolArtifacts(grantFinal.content) || grantFinal.content.trim() || lastAssistantText.trim()
+    return {
+      content:
+        grantContent ||
+        (hasGrantCards
+          ? `A(z) ${grantTargets} hozzáférés megadása szükséges — a gomb ${params.mode === 'task' ? 'a ticket' : 'a chat'} felületén jelenik meg.`
+          : `A(z) ${grantTargets} hozzáférés hiányzik — kösd össze a fiókot, majd indítsd újra a feladatot.`),
+      toolCallCount,
+      deniedCount,
+      status: 'completed',
+      awaitingConnectorGrant: hasGrantCards,
+      connectorGrantNeeds: [...connectorGrantNeeds],
+      ...preapprovedSummaryFields(),
+    }
   }
 
   if (consequenceGateTriggered) {
@@ -2843,7 +2927,7 @@ export async function runAgentToolLoop(params: {
   messages.push({
     role: 'system',
     content:
-      'Fogalmazd meg a felhasználónak magyarul. agent_ask: completed:true + answer → fogalmazd át; completed:false → mondd el hogy nem sikerült. Gmail/file eszköz: csak a tool eredményére támaszkodj, ne találj ki adatot. connector_grant_missing esetén jelezd hogy csatlakoztasd a fiókot. Ne használj JSON tool blokkot. FONTOS: ha valamelyik feladatot (pl. Excel vagy prezentáció létrehozása) NEM hajtottad végre (mert elfogytak a körök vagy nem hívtad meg az eszközt), NE állítsd hogy kész — mondd el őszintén, hogy mi maradt el és miért.',
+      'Fogalmazd meg a felhasználónak magyarul. agent_ask: completed:true + answer → fogalmazd át; completed:false → mondd el hogy nem sikerült. Gmail/file eszköz: csak a tool eredményére támaszkodj, ne találj ki adatot. Ne használj JSON tool blokkot. FONTOS: ha valamelyik feladatot (pl. Excel vagy prezentáció létrehozása) NEM hajtottad végre (mert elfogytak a körök vagy nem hívtad meg az eszközt), NE állítsd hogy kész — mondd el őszintén, hogy mi maradt el és miért.',
   })
   // Az új leállási okoknál a záró prózát is a valós okhoz igazítjuk (a
   // `max_turns_exhausted` szövege szándékosan változatlan marad).

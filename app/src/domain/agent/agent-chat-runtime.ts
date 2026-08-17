@@ -487,6 +487,8 @@ export type AgentChatSendParams = {
    * kapnak. Kizárólag szerveroldalról (a validált jóváhagyás után) állítható.
    */
   consequenceApprovalContinuation?: boolean
+  /** OAuth-grant megadása utáni folytatás — a szerver adja a promptot. */
+  connectorGrantContinuation?: boolean
 }
 
 type ChatModelConfig = {
@@ -1635,6 +1637,7 @@ export class AgentChatRuntime {
                   emit({ type: 'consequence_approval', approval }),
               }
             : {}),
+          onConnectorGrantNeeded: (grant) => emit({ type: 'connector_grant_needed', grant }),
         }).then(
           (value) => ({ ok: true as const, value }),
           (error: unknown) => ({ ok: false as const, error }),

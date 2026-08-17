@@ -23,6 +23,10 @@ import {
 } from '@/lib/run-as-payload'
 import { loadAgentDelegatedConnectors } from '@/lib/agent-delegated-connectors-server'
 import {
+  isDelegatedOAuthStubEnabled,
+  resolveGrantOAuthScopes,
+} from '@/domain/connector-grant/delegated-oauth-registry'
+import {
   readTenantGoogleOAuthConfig,
   upsertTenantGoogleOAuthConfig,
 } from '@/lib/tenant-google-oauth-config'
@@ -169,24 +173,48 @@ export async function listUserDelegatedConnectors() {
   }
 }
 
-export async function startConnectorOAuth(input: { connectorId: string; scopes?: string[] }) {
+export async function startConnectorOAuth(input: {
+  connectorId: string
+  scopes?: string[]
+  /** A grant-hiányon elakadt eszköz — ebből jön a legkisebb szükséges scope. */
+  toolName?: string
+  returnTo?: { kind: 'conversation' | 'ticket'; id: string; agentId?: string }
+}) {
   try {
     const user = await getCurrentUser()
     if (!user) return fail('Not authenticated')
-    const { connectorId, scopes } = startConnectorOAuthSchema.parse(input)
+    const { connectorId, scopes, toolName, returnTo } = startConnectorOAuthSchema.parse(input)
     const connector = await prisma.connector.findUnique({ where: { id: connectorId } })
     if (!connector) return fail('Connector not found')
     if (connector.authMode !== 'user_delegated') return fail('Connector is not user_delegated')
     if (connector.lifecycleState !== 'active') return fail('Connector is not active')
     if (connector.tenantId && connector.tenantId !== user.tenantId) return fail('Connector not found')
 
-    if (process.env.GMAIL_OAUTH_STUB === 'true') {
+    const { oauthReturnPath } = await import('@/domain/connector-grant/connector-grant-needed')
+    const successPath = returnTo ? oauthReturnPath(returnTo) : '/control-plane/connectors?connected=1'
+
+    // A kért scope forrás-igazsága a SZERVER: a `toolName` alapján a
+    // provider-regiszter a connector configjából oldja fel a legkisebb
+    // szükséges halmazt. A kliens scope-listája csak explicit admin-választásnál
+    // (kapcsolatok oldali scope-profil) érvényes, és a szerviz azt is a
+    // confighoz validálja.
+    const requestedScopes = toolName
+      ? resolveGrantOAuthScopes({
+          connectorType: connector.type,
+          config: connector.config,
+          toolName,
+        })
+      : scopes
+    const effectiveScopes = requestedScopes && requestedScopes.length > 0 ? requestedScopes : undefined
+
+    if (isDelegatedOAuthStubEnabled()) {
       const { createOAuthState } = await import('@/lib/crypto/oauth-state')
       const { state } = createOAuthState({
         userId: user.id,
         connectorId: connector.id,
         tenantId: user.tenantId,
-        requestedScopes: scopes,
+        requestedScopes: effectiveScopes,
+        ...(returnTo ? { returnTo } : {}),
       })
       await services.connectorGrants.completeOAuthCallback({
         code: 'stub-auth-code',
@@ -194,14 +222,15 @@ export async function startConnectorOAuth(input: { connectorId: string; scopes?:
         connector,
         actorId: user.id,
       })
-      return ok({ url: '/control-plane/connectors?connected=1', stub: true })
+      return ok({ url: successPath, stub: true })
     }
 
     const { url } = await services.connectorGrants.buildAuthorizationUrl({
       connector,
       userId: user.id,
       tenantId: user.tenantId,
-      requestedScopes: scopes,
+      requestedScopes: effectiveScopes,
+      ...(returnTo ? { returnTo } : {}),
     })
     return ok({ url })
   } catch (e) {

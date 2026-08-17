@@ -36,6 +36,7 @@ export async function POST(request: Request) {
     processDefinitionId,
     processInputPayload,
     consequenceApprovalIds,
+    connectorGrantContinuation,
   } = body as {
     agentId?: string
     content?: string
@@ -44,6 +45,7 @@ export async function POST(request: Request) {
     processDefinitionId?: string
     processInputPayload?: Record<string, unknown>
     consequenceApprovalIds?: string[]
+    connectorGrantContinuation?: boolean
   }
 
   if (!agentId || typeof agentId !== 'string') {
@@ -79,6 +81,28 @@ export async function POST(request: Request) {
     }
     continuationContent = continuation.continuation.prompt
     continuationConversationId = continuation.continuation.conversationId
+  } else if (connectorGrantContinuation === true) {
+    if (typeof conversationId !== 'string' || conversationId.length === 0) {
+      return Response.json(
+        { error: 'conversation_required', message: 'A hozzáférés utáni folytatáshoz beszélgetés kell.' },
+        { status: 400 },
+      )
+    }
+    const conversation = await repositories.conversations.findByIdForTenant(
+      conversationId,
+      user.activeTenantId,
+    )
+    if (!conversation) {
+      return Response.json(
+        { error: 'conversation_not_found', message: 'A beszélgetés nem található.' },
+        { status: 404 },
+      )
+    }
+    const { CONNECTOR_GRANT_NEEDED_CHAT_PROMPT } = await import(
+      '@/domain/connector-grant/connector-grant-needed'
+    )
+    continuationContent = CONNECTOR_GRANT_NEEDED_CHAT_PROMPT
+    continuationConversationId = conversationId
   }
 
   // Feladatkör-korlátozás (#199): korlátozott agentnél a WEBES chat-felületről nem
@@ -139,7 +163,10 @@ export async function POST(request: Request) {
     // Folytatáskor a kliens csak azonosítót küld: se csatolmány, se folyamat-indítás
     // nem utazhat vele — a forduló tartalmát teljes egészében a szerver adja.
     ...(continuationContent
-      ? { consequenceApprovalContinuation: true }
+      ? {
+          consequenceApprovalContinuation: true,
+          ...(connectorGrantContinuation === true ? { connectorGrantContinuation: true } : {}),
+        }
       : { attachmentDocumentIds, processDefinitionId, processInputPayload }),
   })
 
