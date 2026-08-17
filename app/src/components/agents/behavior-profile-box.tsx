@@ -1,10 +1,11 @@
 'use client'
 
-import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useMemo, useState, useTransition } from 'react'
 import { setAgentBehaviorProfile } from '@/app/actions/platform'
+import { OpenInNewWindowLink } from '@/components/ui/open-in-new-window-link'
 import { Badge } from '@/components/ui/shell'
+import { CREATE_AGENT_WIZARD_EXTERNAL_HREFS } from '@/lib/create-agent-wizard'
 
 type ProfileOption = {
   id: string
@@ -142,17 +143,15 @@ export function BehaviorProfileEditForm({
         </select>
       </label>
 
-      {profiles.length === 0 && (
-        <p className="text-xs text-ink-faint">
-          Még nincs megosztott profil.{' '}
-          <Link
-            href="/control-plane/behavior-profiles"
-            className="font-medium text-coral hover:text-coral-deep"
-          >
-            Hozz létre egyet a katalógusban.
-          </Link>
-        </p>
-      )}
+      <p className="text-xs text-ink-faint">
+        {profiles.length === 0
+          ? 'Még nincs megosztott profil. '
+          : 'Ha közben új hangnem kell, '}
+        <OpenInNewWindowLink href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.behaviorProfiles}>
+          {profiles.length === 0 ? 'Hozz létre egyet a katalógusban' : 'új profil a katalógusban'}
+        </OpenInNewWindowLink>
+        {profiles.length === 0 ? '' : ' — új ablakban nyílik.'}
+      </p>
 
       {isStale && selectedId === link?.id && (
         <div className="rounded-xl border border-coral/30 bg-coral/5 p-3 text-sm text-ink-soft">
