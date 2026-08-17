@@ -7,6 +7,7 @@ import {
   AgentScaffoldAgent,
   AGENT_SCAFFOLD_FORBIDDEN_TOOLS,
   AGENT_SCAFFOLD_ROLE_INSTRUCTION,
+  agentScaffoldUserMessage,
   resolveAgentScaffoldModelConfig,
   sanitizeAgentScaffoldDraft,
   type AgentScaffoldingModel,
@@ -129,6 +130,18 @@ async function main() {
   await test('resolveAgentScaffoldModelConfig: ismeretlen → default', () => {
     const cfg = resolveAgentScaffoldModelConfig({ provider: 'nope', model: 'x' })
     assert.equal(cfg.provider, 'chatgpt-oauth')
+  })
+
+  await test('user message: PARSE_FAILED nem szivárog kóddal', () => {
+    const schema = agentScaffoldUserMessage('PARSE_FAILED', 'schema mismatch')
+    assert.equal(schema.includes('PARSE_FAILED'), false)
+    assert.equal(schema.includes('schema mismatch'), false)
+    assert.match(schema, /értelmezhető/)
+    const empty = agentScaffoldUserMessage('PARSE_FAILED', 'empty description')
+    assert.equal(empty.includes('PARSE_FAILED'), false)
+    const missing = agentScaffoldUserMessage('MISSING_ASSISTANT')
+    assert.equal(missing.includes('npm'), false)
+    assert.equal(missing.includes('seed'), false)
   })
 
   if (failures > 0) {

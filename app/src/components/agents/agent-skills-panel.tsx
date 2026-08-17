@@ -11,7 +11,10 @@ import {
 } from '@/app/actions/skills'
 import { Badge, Card } from '@/components/ui/shell'
 import { OpenInNewWindowLink } from '@/components/ui/open-in-new-window-link'
-import { CREATE_AGENT_WIZARD_EXTERNAL_HREFS } from '@/lib/create-agent-wizard'
+import {
+  CREATE_AGENT_WIZARD_EXTERNAL_HREFS,
+  matchAssignableSkillsByName,
+} from '@/lib/create-agent-wizard'
 import type { SkillReadinessColor } from '@/lib/skill/skill-readiness'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
 import { formatToolUiName } from '@/lib/tool-ui-labels'
@@ -44,6 +47,7 @@ export function AgentSkillsPanel({
   agentId,
   assigned,
   assignable,
+  suggestedSkillNames,
   canEdit = true,
   bare = false,
   onChanged,
@@ -51,6 +55,8 @@ export function AgentSkillsPanel({
   agentId: string
   assigned: AgentSkillRow[]
   assignable: AssignableSkill[]
+  /** Javaslat: csak megjelenik; hozzárendelés külön admin-kattintás. */
+  suggestedSkillNames?: string[]
   /** Operátor a listát látja; az admin ugyanitt rendel / tilt / leszerel. */
   canEdit?: boolean
   /** A hívó már adott keretet (címsor + doboz) — ne rajzoljunk másodikat. */
@@ -60,10 +66,16 @@ export function AgentSkillsPanel({
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
-  const [selected, setSelected] = useState<string>(assignable[0]?.activeVersionId ?? '')
+  const suggestedAssignable = matchAssignableSkillsByName(
+    assignable,
+    suggestedSkillNames ?? [],
+  )
+  const [selected, setSelected] = useState<string>(
+    suggestedAssignable[0]?.activeVersionId ?? assignable[0]?.activeVersionId ?? '',
+  )
   const selectedId = assignable.some((s) => s.activeVersionId === selected)
     ? selected
-    : (assignable[0]?.activeVersionId ?? '')
+    : (suggestedAssignable[0]?.activeVersionId ?? assignable[0]?.activeVersionId ?? '')
 
   function run(fn: () => Promise<{ success: boolean; error?: string }>) {
     startTransition(async () => {
@@ -165,6 +177,31 @@ export function AgentSkillsPanel({
           ))}
         </ul>
       )}
+
+      {canEdit && suggestedAssignable.length > 0 ? (
+        <div className="mt-4 rounded-lg border border-sage/30 bg-sage/10 px-3 py-3">
+          <p className="text-xs font-medium text-ink">
+            Javasolt skillek — csak akkor kerülnek rá, ha hozzárendeled.
+          </p>
+          <ul className="mt-2 space-y-2">
+            {suggestedAssignable.map((s) => (
+              <li key={s.activeVersionId} className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm text-ink">{skillDisplayLabel(s)}</span>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() =>
+                    run(() => assignSkillAction({ agentId, skillVersionId: s.activeVersionId }))
+                  }
+                  className="rounded-full bg-coral/20 px-3 py-1 text-xs font-semibold text-coral disabled:opacity-50"
+                >
+                  Hozzárendelés
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {canEdit ? (
       <div className="mt-5 border-t border-ink-faint/15 pt-4">

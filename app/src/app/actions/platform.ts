@@ -75,6 +75,7 @@ import type { AgentModelConfigInput } from '@/app/actions/agent-model-config-upd
 import { isRuleExhausted, pickPeakAgent } from '@/lib/budget-rule-usage'
 import { NORMAL_TOOL_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
 import { PROVISIONING_ASSISTANT_AGENT_NAME } from '@/lib/platform-agent-registry'
+import { agentScaffoldUserMessage } from '@/domain/agents/agent-scaffold-agent'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
 import {
   agentIdSchema,
@@ -1821,9 +1822,7 @@ export async function draftAgentFromDescription(input: unknown) {
     const agents = await repositories.agents.findMany()
     const assistant = agents.find((a) => a.name === PROVISIONING_ASSISTANT_AGENT_NAME)
     if (!assistant) {
-      return fail(
-        'A provisioning-asszisztens agent nincs seedelve. Futtasd: npm run db:seed.',
-      )
+      return fail(agentScaffoldUserMessage('MISSING_ASSISTANT'))
     }
 
     const skillCatalog = await services.skills.listReferenceCatalog(user.activeTenantId)
@@ -1846,7 +1845,7 @@ export async function draftAgentFromDescription(input: unknown) {
     })
 
     if (!result.ok) {
-      return fail(`${result.error}: ${result.detail}`)
+      return fail(agentScaffoldUserMessage(result.error, result.detail))
     }
 
     await repositories.audit.append({

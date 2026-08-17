@@ -2,10 +2,9 @@
 
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState, useTransition } from 'react'
-import { createAgent, draftAgentFromDescription, getAgentGovernance, listBehaviorProfiles, setAgentBehaviorProfile, updateAgentCapabilities } from '@/app/actions/platform'
+import { createAgent, draftAgentFromDescription, getAgentGovernance, listBehaviorProfiles, setAgentBehaviorProfile } from '@/app/actions/platform'
 import { listConnectorCatalog } from '@/app/actions/provisioning'
 import {
-  assignSkillAction,
   getAgentSkillsAction,
   listAssignableSkillsAction,
   type AgentSkillRow,
@@ -36,7 +35,6 @@ import {
   isIdentityStepComplete,
   isPreCreateComplete,
   isStyleStepComplete,
-  matchAssignableSkillsByName,
   nextCreateAgentWizardStep,
   parseCreateAgentWizardStep,
   prevCreateAgentWizardStep,
@@ -258,33 +256,6 @@ export function CreateAgentWizard({
         }
       }
 
-      // Jóváhagyott provisioning-javaslat: toolok / skillek a review után kerülnek rá.
-      if (proposal && role === 'worker' && proposal.suggestedCapabilities.length > 0) {
-        const capRes = await updateAgentCapabilities({
-          agentId,
-          enabledTools: proposal.suggestedCapabilities,
-        })
-        if (!capRes.success) {
-          setError(
-            `Az agent létrejött, de a javasolt eszközöket nem sikerült beállítani: ${capRes.error}`,
-          )
-        }
-      }
-
-      if (proposal?.suggestedSkills.length) {
-        const assignableRes = await listAssignableSkillsAction(agentId)
-        if (assignableRes.success) {
-          const matches = matchAssignableSkillsByName(
-            assignableRes.data,
-            proposal.suggestedSkills,
-          )
-          for (const skill of matches) {
-            await assignSkillAction({ agentId, skillVersionId: skill.activeVersionId })
-          }
-        }
-      }
-
-
       storeApiKey(agentId, res.data.apiKey)
       setApiKey(res.data.apiKey)
       setCreatedAgentId(agentId)
@@ -445,8 +416,9 @@ export function CreateAgentWizard({
                     <p className="text-sm font-semibold">Provisioning agent javaslat</p>
                     <p className="mt-1 text-xs text-ink-soft">
                       Írd le természetes nyelven, milyen agent kell — a provisioning agent
-                      vázat javasol. Te átnézed, módosítod, majd a varázsló végén jóváhagyod
-                      (az agent csak akkor jön létre).
+                      vázat javasol. Te átnézed és módosítod; az agent a „Létrehozás”
+                      gombra jön létre. A javasolt eszközöket és skilleket a következő
+                      lépéseken te kapcsolod be (connector nem rendelődik magától).
                     </p>
                   </div>
                   <textarea
@@ -483,6 +455,7 @@ export function CreateAgentWizard({
                     <div className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-ink">
                       <p className="font-semibold text-sage">
                         Javaslat betöltve — nézd át az alábbi mezőket, majd lépj tovább.
+                        Az eszközök és skillek a létrehozás utáni lépéseken, mentésre kerülnek rá.
                       </p>
                       {proposal.summary ? <p className="mt-1 text-ink-soft">{proposal.summary}</p> : null}
                       {proposal.suggestedCapabilities.length > 0 ? (
@@ -658,6 +631,9 @@ export function CreateAgentWizard({
                 agentId={createdAgentId}
                 currentCapabilities={capabilities}
                 isOrchestrator={role === 'orchestrator'}
+                suggestedTools={
+                  role === 'worker' ? proposal?.suggestedCapabilities : undefined
+                }
                 bare
               />
               <WizardExternalPrompt
@@ -680,6 +656,7 @@ export function CreateAgentWizard({
                 agentId={createdAgentId}
                 assigned={assignedSkills}
                 assignable={assignableSkills}
+                suggestedSkillNames={proposal?.suggestedSkills}
                 canEdit
                 bare
                 onChanged={refreshCatalogs}

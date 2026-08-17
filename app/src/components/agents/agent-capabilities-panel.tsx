@@ -5,17 +5,25 @@ import { useState, useTransition } from 'react'
 import { updateAgentCapabilities } from '@/app/actions/platform'
 import { ToolCapabilityCheckboxGroups } from '@/components/tool-capabilities/tool-capability-checkbox-groups'
 import { Card } from '@/components/ui/shell'
+import {
+  grantedToolNames,
+  initialEnabledToolNames,
+  toolSelectionHasChanges,
+} from '@/lib/create-agent-wizard'
 import { NORMAL_TOOL_CAPABILITY_GROUPS } from '@/lib/tool-capability-catalog'
 
 export function AgentCapabilitiesPanel({
   agentId,
   currentCapabilities,
   isOrchestrator,
+  suggestedTools,
   bare = false,
 }: {
   agentId: string
   currentCapabilities: Array<{ toolName: string; allowed: boolean }>
   isOrchestrator: boolean
+  /** Javaslat: bejelölve, de mentésig nincs grant / connector-kötés. */
+  suggestedTools?: string[]
   /** A hívó már adott keretet (címsor + doboz) — ne rajzoljunk másodikat. */
   bare?: boolean
 }) {
@@ -24,10 +32,10 @@ export function AgentCapabilitiesPanel({
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
 
-  const initialEnabled = new Set(
-    currentCapabilities.filter((c) => c.allowed).map((c) => c.toolName),
+  const granted = grantedToolNames(currentCapabilities)
+  const [enabled, setEnabled] = useState<Set<string>>(
+    () => new Set(initialEnabledToolNames(currentCapabilities, suggestedTools)),
   )
-  const [enabled, setEnabled] = useState<Set<string>>(initialEnabled)
 
   function setEnabledAndClearDone(next: Set<string>) {
     setEnabled(next)
@@ -65,10 +73,10 @@ export function AgentCapabilitiesPanel({
     })
   }
 
-  const hasChanges =
-    enabled.size !== initialEnabled.size ||
-    [...enabled].some((t) => !initialEnabled.has(t)) ||
-    [...initialEnabled].some((t) => !enabled.has(t))
+  const hasChanges = toolSelectionHasChanges(enabled, granted)
+  const hasSuggestedPending =
+    (suggestedTools?.length ?? 0) > 0 &&
+    suggestedTools!.some((t) => enabled.has(t) && !granted.includes(t))
 
   const body = (
     <>
@@ -76,6 +84,12 @@ export function AgentCapabilitiesPanel({
         Jelöld be az eszközöket, amelyeket az agent hívhat. A kapcsolódó platform
         connectorokat a rendszer mentéskor automatikusan linkeli, ha szükséges.
       </p>
+      {hasSuggestedPending ? (
+        <p className="mb-4 rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-ink">
+          A javaslat bejelölte ezeket az eszközöket. Connector csak a „Jogok mentése”
+          után kapcsolódik — vedd ki, amit nem akarsz.
+        </p>
+      ) : null}
 
       <ToolCapabilityCheckboxGroups
         groups={NORMAL_TOOL_CAPABILITY_GROUPS}
