@@ -35,6 +35,12 @@ import {
 } from '@/lib/observability/metrics'
 import { isTulajdoniLapNezet } from '@/lib/tulajdoni-lap'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
+import {
+  connectorTypeForGrantTool,
+  describeConnectorGrantTargets,
+  isConnectorGrantNeededReason,
+  type ToolLoopConnectorGrantNeededEvent,
+} from '@/domain/connector-grant/connector-grant-needed'
 // issue #97 — a becsomagolás, issue #195 — a kimenetel közlése: mindkettő a Tool
 // Broker határán történik, a fogyasztó a kész `modelText`-et kapja.
 import {
@@ -145,6 +151,9 @@ export type ToolLoopResult =
       /** Következmény-kapu: van függő jóváhagyás (task ticketen is). */
       awaitingConsequenceApproval?: boolean
       consequenceApprovalIds?: string[]
+      /** Delegált connector OAuth-grant hiányzik — gombra vár. */
+      awaitingConnectorGrant?: boolean
+      connectorGrantNeeds?: import('@/domain/connector-grant/connector-grant-needed').ToolLoopConnectorGrantNeededEvent[]
       /** issue #220 — preapproved író hívások futás-összesítője. */
       preapprovedWriteSummary?: PreapprovedRunSummary[]
     }
@@ -161,6 +170,8 @@ export type ToolLoopResult =
        */
       awaitingConsequenceApproval?: boolean
       consequenceApprovalIds?: string[]
+      awaitingConnectorGrant?: boolean
+      connectorGrantNeeds?: import('@/domain/connector-grant/connector-grant-needed').ToolLoopConnectorGrantNeededEvent[]
       /** issue #220 — preapproved író hívások futás-összesítője. */
       preapprovedWriteSummary?: PreapprovedRunSummary[]
     }
@@ -230,6 +241,8 @@ export type ToolLoopMemoryCandidateEvent = {
   // §3.2/§16 S3 — lágy PII-figyelmeztetés kategóriái (a kártyán jelölve).
   piiWarning: string[]
 }
+
+export type { ToolLoopConnectorGrantNeededEvent } from '@/domain/connector-grant/connector-grant-needed'
 
 /** issue #97 — következmény-kapu pending jóváhagyás a chat-kártyához. */
 export type ToolLoopConsequenceApprovalEvent = {
@@ -345,6 +358,8 @@ export type LoadSkillFn = (
       }
       /** A skill `allowed-tools`-a — betöltés után ERRE szűkül a forduló eszköz-hatóköre. */
       requiredTools?: string[]
+      /** Van-e Level-2 melléklete — ettől jelenik meg a `load_skill_attachment` eszköz. */
+      attachmentsAvailable?: boolean
     }
   | { ok: false; reason: string }
 >
@@ -353,6 +368,24 @@ const LOAD_SKILL_DEFINITION: ToolDefinition = {
   description:
     'Egy hozzád rendelt skill (készség-leírás) teljes instrukciójának betöltése a Level-0 indexben látott `id` (skillVersionId) alapján. Csak akkor hívd, ha az index egy skilljét relevánsnak látod a feladathoz. A skill szövege puha iránymutatás; a tényleges jogosultságokat továbbra is a Tool Broker dönti el.',
   inputSchema: objectSchema({ skillVersionId: STR }, ['skillVersionId']),
+}
+
+// Level-2 (skill-catalog-phase2-spec §P2-D8): a skill MELLÉKLETEI. A Level-1
+// betöltés csak a melléklet-LISTÁT hozza; a tartalmat ez a külön, auditált hívás.
+// A tool CSAK akkor jelenik meg a modellnek, ha egy betöltött skillnek ténylegesen
+// van melléklete — enélkül minden fordulóban felesleges tool-definíciót fizetnénk.
+const LOAD_SKILL_ATTACHMENT_TOOL = 'load_skill_attachment'
+
+export type LoadSkillAttachmentFn = (
+  skillVersionId: string,
+  path: string,
+) => Promise<{ ok: true; text: string; path: string } | { ok: false; reason: string }>
+
+const LOAD_SKILL_ATTACHMENT_DEFINITION: ToolDefinition = {
+  name: LOAD_SKILL_ATTACHMENT_TOOL,
+  description:
+    'Egy már betöltött skill mellékletének (referencia-dokumentum, adat-tábla) behúzása a skill `id`-je (skillVersionId) és a melléklet útvonala alapján. Csak a betöltött skill melléklet-listájában szereplő útvonal kérhető le. Akkor hívd, ha a skill instrukciója egy mellékletre hivatkozik, és annak tartalma kell a feladathoz.',
+  inputSchema: objectSchema({ skillVersionId: STR, path: STR }, ['skillVersionId', 'path']),
 }
 
 /**
@@ -793,6 +826,14 @@ export async function runAgentToolLoop(params: {
   preloadedSkillPrompts?: string[]
   /** `load_skill` végrehajtó (fail-closed a SkillService-ben). Ha megadva, a tool elérhető. */
   loadSkill?: LoadSkillFn
+  /** Level-2 melléklet-betöltő (fail-closed a SkillService-ben). */
+  loadSkillAttachment?: LoadSkillAttachmentFn
+  /**
+   * Előtöltött (slash) skillnek van-e melléklete — ilyenkor a
+   * `load_skill_attachment` már az első modellhívásnál elérhető, mert a Level-1
+   * törzs (és benne a melléklet-lista) `load_skill` nélkül került a promptba.
+   */
+  initialSkillAttachmentsAvailable?: boolean
   /**
    * Slash / előtöltött skillek runtimeHints-e — a loop indulásakor emeli a
    * wallclock / tool-büdzsét (skill csak emelhet, lásd mergeSkillRuntimeHints).
@@ -857,6 +898,8 @@ export async function runAgentToolLoop(params: {
   ) => Promise<ToolLoopConsequenceApprovalEvent>
   /** issue #97 — pending jóváhagyás stream-kártyához. */
   onConsequenceApproval?: (event: ToolLoopConsequenceApprovalEvent) => void | Promise<void>
+  /** Delegált connector grant hiányzik — OAuth-gomb a chatben/ticketen. */
+  onConnectorGrantNeeded?: (event: ToolLoopConnectorGrantNeededEvent) => void | Promise<void>
   /**
    * issue #97 — a futás MÁR indulásakor „tainted".
    *
@@ -982,6 +1025,8 @@ export async function runAgentToolLoop(params: {
   // újabb tool-körös modellhívást (tokenégetés elkerülése); záró összefoglaló jön.
   let consequenceGateTriggered = false
   const consequenceApprovalIds: string[] = []
+  let connectorGrantNeededTriggered = false
+  const connectorGrantNeeds: ToolLoopConnectorGrantNeededEvent[] = []
   const preapprovedBudget = createPreapprovedRunBudget()
   const preapprovedNoticesShown = new Set<string>()
   /**
@@ -1006,12 +1051,20 @@ export async function runAgentToolLoop(params: {
   const consequenceGateFields = (): {
     awaitingConsequenceApproval?: boolean
     consequenceApprovalIds?: string[]
+    awaitingConnectorGrant?: boolean
+    connectorGrantNeeds?: ToolLoopConnectorGrantNeededEvent[]
     preapprovedWriteSummary?: PreapprovedRunSummary[]
   } => ({
     ...(consequenceGateTriggered
       ? {
           awaitingConsequenceApproval: consequenceApprovalIds.length > 0,
           consequenceApprovalIds: [...consequenceApprovalIds],
+        }
+      : {}),
+    ...(connectorGrantNeededTriggered
+      ? {
+          awaitingConnectorGrant: connectorGrantNeeds.length > 0,
+          connectorGrantNeeds: [...connectorGrantNeeds],
         }
       : {}),
     ...preapprovedSummaryFields(),
@@ -1030,6 +1083,13 @@ export async function runAgentToolLoop(params: {
       : null
   /** A hatókört kiváltó skill neve(i) — az elutasító üzenet ezt nevezi meg. */
   const skillScopeSources: string[] = []
+  const loadSkillAttachment = params.loadSkillAttachment
+  /**
+   * A Level-2 eszköz csak akkor létezik a modell számára, ha van mit betölteni:
+   * vagy egy előtöltött skill hozott mellékletet, vagy egy futás közbeni
+   * `load_skill` jelezte. Így a melléklet nélküli agenteknél nulla a többletköltség.
+   */
+  let attachmentToolAvailable = params.initialSkillAttachmentsAvailable === true
 
   const buildTools = (): ToolDefinition[] => {
     const inScope = skillToolScope
@@ -1043,6 +1103,7 @@ export async function runAgentToolLoop(params: {
         ? [TOOL_RESULT_READ_DEFINITION, TOOL_RESULT_EXTRACT_DEFINITION]
         : []),
       ...(loadSkill ? [LOAD_SKILL_DEFINITION] : []),
+      ...(loadSkillAttachment && attachmentToolAvailable ? [LOAD_SKILL_ATTACHMENT_DEFINITION] : []),
     ]
   }
   let tools = buildTools()
@@ -1987,6 +2048,11 @@ export async function runAgentToolLoop(params: {
           if (!skillScopeSources.includes(skillTitle)) skillScopeSources.push(skillTitle)
           tools = buildTools()
         }
+        // A betöltött skillnek van melléklete → a Level-2 eszköz mostantól látszik.
+        if (loaded.ok && loaded.attachmentsAvailable && !attachmentToolAvailable) {
+          attachmentToolAvailable = true
+          tools = buildTools()
+        }
         // Ugyanaz a skill újratöltése ugyanazt az instrukciót adja vissza: a
         // forrás-számvitel ezt ismételt behozásnak látja, így a körönként
         // újratöltő futás sem tudja tisztára mosni a zsákutca-sorozatot.
@@ -2023,6 +2089,67 @@ export async function runAgentToolLoop(params: {
               : 'skill betöltve'
             : loaded.reason,
           status: loaded.ok ? 'done' : 'skipped',
+        })
+        continue
+      }
+
+      // load_skill_attachment (Level-2): a melléklet TARTALMA. Ugyanaz a
+      // fail-closed enforcement a SkillService-ben (hozzárendelés + pontos
+      // útvonal-egyezés a tárolt listán) — a modell által adott `path` nem nyit
+      // fájlrendszert, csak a tárolt mellékletek közül választ.
+      if (loadSkillAttachment && call.name === LOAD_SKILL_ATTACHMENT_TOOL) {
+        turnToolCallsIssued += 1
+        const attachmentStartedAt = now()
+        const skillVersionId = strArg(call.input, 'skillVersionId')
+        const attachmentPath = strArg(call.input, 'path')
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: LOAD_SKILL_ATTACHMENT_TOOL,
+          detail: attachmentPath ? shortText(attachmentPath, 48) : undefined,
+          status: 'running',
+        })
+        const attachment =
+          skillVersionId && attachmentPath
+            ? await loadSkillAttachment(skillVersionId, attachmentPath)
+            : ({ ok: false, reason: 'Hiányzó skillVersionId vagy path.' } as const)
+        toolCallCount += 1
+        if (!attachment.ok) deniedCount += 1
+        const attachmentContent = attachment.ok
+          ? attachment.text
+          : `ELUTASÍTVA: ${attachment.reason}`
+        // Ugyanannak a mellékletnek az újratöltése nem hoz új információt — a
+        // forrás-számvitel ezt zsákutcaként látja (mint a `load_skill`-nél).
+        const attachmentRedundant = noteSourceIngest(
+          toolCallSourceKey(call.name, call.input),
+          attachmentContent.length,
+          attachmentContent.length,
+        )
+        pushToolResult(
+          call,
+          attachmentContent,
+          attachment.ok && !attachmentRedundant ? 'new' : 'barren',
+        )
+        await recordInternalToolCall({
+          toolName: LOAD_SKILL_ATTACHMENT_TOOL,
+          status: attachment.ok ? 'ok' : 'denied',
+          outcome: attachment.ok ? (attachmentRedundant ? 'partial' : 'ok') : 'failed',
+          startedAt: attachmentStartedAt,
+          argsMeta: {
+            skill_version_id: skillVersionId || null,
+            attachment_path: attachmentPath || null,
+            returned_chars: attachmentContent.length,
+          },
+          resultMeta: attachment.ok
+            ? { redundant: attachmentRedundant }
+            : { reason: attachment.reason },
+        })
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: LOAD_SKILL_ATTACHMENT_TOOL,
+          detail: attachment.ok ? `melléklet betöltve: ${attachment.path}` : attachment.reason,
+          status: attachment.ok ? 'done' : 'skipped',
         })
         continue
       }
@@ -2415,6 +2542,23 @@ export async function runAgentToolLoop(params: {
         const result = await params.toolBroker.invoke(invokeInput)
         toolCallCount += 1
         if (result.denied) deniedCount += 1
+        if (result.denied && isConnectorGrantNeededReason(result.reason) && result.connectorId) {
+          connectorGrantNeededTriggered = true
+          const already = connectorGrantNeeds.some(
+            (card) => card.connectorId === result.connectorId && card.reason === result.reason,
+          )
+          if (!already) {
+            const grantConnectorType = connectorTypeForGrantTool(toolName)
+            const grantCard: ToolLoopConnectorGrantNeededEvent = {
+              connectorId: result.connectorId,
+              toolName,
+              reason: result.reason,
+              ...(grantConnectorType ? { connectorType: grantConnectorType } : {}),
+            }
+            connectorGrantNeeds.push(grantCard)
+            await params.onConnectorGrantNeeded?.(grantCard)
+          }
+        }
         // Forrás-számvitel (tool-független): ha ez a hívás ugyanabból a forrásból
         // (fájl, dokumentum, oldal, URL) hoz be tartalmat, amiből már nagyjából
         // mindent behoztunk, akkor a TARTALOM lehet új, de a MUNKA nem haladt. Így
@@ -2694,6 +2838,48 @@ export async function runAgentToolLoop(params: {
     if (consequenceGateTriggered && params.mode !== 'task') {
       break turnLoop
     }
+    // Grant-hiány: egy kártya elég, ne próbálgassa újra a Gmailt körönként.
+    if (connectorGrantNeededTriggered) {
+      break turnLoop
+    }
+  }
+
+  if (connectorGrantNeededTriggered && !consequenceGateTriggered) {
+    const grantSurface = params.mode === 'task' ? 'a ticket felületén' : 'a chatben'
+    const hasGrantCards = connectorGrantNeeds.length > 0
+    // A fiók nevét a provider-regiszter adja (Gmail, Drive, saját API…) — a
+    // felhasználó a SAJÁT fiókjának nevét látja, nem egy beégetett szolgáltatót.
+    const grantTargets = describeConnectorGrantTargets(connectorGrantNeeds)
+    messages.push({
+      role: 'system',
+      content: hasGrantCards
+        ? `Fogalmazd meg a felhasználónak magyarul RÖVIDEN: a(z) ${grantTargets} hozzáférése hiányzik, ezért a feladat megállt. ` +
+          `A „Hozzáférés megadása" gomb ${grantSurface} jelenik meg — OAuth után a feladat MAGÁTÓL folytatódik. ` +
+          'NE kérj szöveges „ok"-ot, NE ígérd hogy újraindítod, NE hívd újra az eszközt.'
+        : `Fogalmazd meg a felhasználónak magyarul RÖVIDEN: a(z) ${grantTargets} hozzáférés hiányzik, de a gomb NEM jött létre. ` +
+          'Kérd, hogy kösse össze a fiókot a kapcsolatoknál, majd indítsa újra a feladatot.',
+    })
+    const grantFinal = await params.gateway.call({
+      agentId: params.agentId,
+      ...params.context,
+      messages,
+      modelConfig: params.modelConfig,
+    })
+    const grantContent =
+      stripToolArtifacts(grantFinal.content) || grantFinal.content.trim() || lastAssistantText.trim()
+    return {
+      content:
+        grantContent ||
+        (hasGrantCards
+          ? `A(z) ${grantTargets} hozzáférés megadása szükséges — a gomb ${params.mode === 'task' ? 'a ticket' : 'a chat'} felületén jelenik meg.`
+          : `A(z) ${grantTargets} hozzáférés hiányzik — kösd össze a fiókot, majd indítsd újra a feladatot.`),
+      toolCallCount,
+      deniedCount,
+      status: 'completed',
+      awaitingConnectorGrant: hasGrantCards,
+      connectorGrantNeeds: [...connectorGrantNeeds],
+      ...preapprovedSummaryFields(),
+    }
   }
 
   if (consequenceGateTriggered) {
@@ -2741,7 +2927,7 @@ export async function runAgentToolLoop(params: {
   messages.push({
     role: 'system',
     content:
-      'Fogalmazd meg a felhasználónak magyarul. agent_ask: completed:true + answer → fogalmazd át; completed:false → mondd el hogy nem sikerült. Gmail/file eszköz: csak a tool eredményére támaszkodj, ne találj ki adatot. connector_grant_missing esetén jelezd hogy csatlakoztasd a fiókot. Ne használj JSON tool blokkot. FONTOS: ha valamelyik feladatot (pl. Excel vagy prezentáció létrehozása) NEM hajtottad végre (mert elfogytak a körök vagy nem hívtad meg az eszközt), NE állítsd hogy kész — mondd el őszintén, hogy mi maradt el és miért.',
+      'Fogalmazd meg a felhasználónak magyarul. agent_ask: completed:true + answer → fogalmazd át; completed:false → mondd el hogy nem sikerült. Gmail/file eszköz: csak a tool eredményére támaszkodj, ne találj ki adatot. Ne használj JSON tool blokkot. FONTOS: ha valamelyik feladatot (pl. Excel vagy prezentáció létrehozása) NEM hajtottad végre (mert elfogytak a körök vagy nem hívtad meg az eszközt), NE állítsd hogy kész — mondd el őszintén, hogy mi maradt el és miért.',
   })
   // Az új leállási okoknál a záró prózát is a valós okhoz igazítjuk (a
   // `max_turns_exhausted` szövege szándékosan változatlan marad).

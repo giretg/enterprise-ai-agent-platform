@@ -14,6 +14,8 @@ export type AgentChatSession = {
   agent: AgentChatSessionAgent
   canDistillSkill: boolean
   initialConversationId: string | null
+  /** OAuth-grant után a chat-forduló automatikus folytatása. */
+  resumeAfterGrant: boolean
   /** Növelve: a panel visszaáll a tálcáról / előtérbe jön. */
   restoreSignal: number
 }
@@ -45,6 +47,7 @@ export function openAgentChat(input: {
   agent: AgentChatSessionAgent
   canDistillSkill?: boolean
   initialConversationId?: string | null
+  resumeAfterGrant?: boolean
 }): string {
   const existing = sessions.find((session) => session.agent.id === input.agent.id)
   if (existing) {
@@ -58,6 +61,10 @@ export function openAgentChat(input: {
               input.initialConversationId !== undefined
                 ? input.initialConversationId
                 : session.initialConversationId,
+            resumeAfterGrant:
+              input.resumeAfterGrant !== undefined
+                ? input.resumeAfterGrant
+                : session.resumeAfterGrant,
             restoreSignal: session.restoreSignal + 1,
           }
         : session,
@@ -74,11 +81,22 @@ export function openAgentChat(input: {
       agent: input.agent,
       canDistillSkill: input.canDistillSkill ?? false,
       initialConversationId: input.initialConversationId ?? null,
+      resumeAfterGrant: input.resumeAfterGrant ?? false,
       restoreSignal: 0,
     },
   ]
   emit()
   return id
+}
+
+/** OAuth-folytatás egyszer fusson le — a panel indulás után törli a zászlót. */
+export function clearAgentChatResumeAfterGrant(id: string) {
+  const existing = sessions.find((session) => session.id === id)
+  if (!existing || !existing.resumeAfterGrant) return
+  sessions = sessions.map((session) =>
+    session.id === id ? { ...session, resumeAfterGrant: false } : session,
+  )
+  emit()
 }
 
 export function closeAgentChat(id: string) {

@@ -6,6 +6,8 @@ import {
   randomBytes,
   timingSafeEqual,
 } from 'crypto'
+import type { OAuthReturnTo } from '@/domain/connector-grant/connector-grant-needed'
+import { isSafeOAuthReturnTo } from '@/domain/connector-grant/connector-grant-needed'
 import { resolveSecret } from './secret-resolver'
 
 const OAUTH_STATE_SECRET = resolveSecret(
@@ -22,6 +24,8 @@ export type OAuthStatePayload = {
   requestedScopes?: string[]
   codeVerifier: string
   expiresAt: number
+  /** Chat/ticket folytatás OAuth után — csak kind + uuid, nem nyers URL. */
+  returnTo?: OAuthReturnTo
 }
 
 function signPayload(payload: string): string {
@@ -81,6 +85,7 @@ export function createOAuthState(params: {
   connectorId: string
   tenantId: string | null
   requestedScopes?: string[]
+  returnTo?: OAuthReturnTo
 }): { state: string; codeVerifier: string } {
   const codeVerifier = randomBytes(32).toString('base64url')
   const payload: OAuthStatePayload = {
@@ -90,6 +95,7 @@ export function createOAuthState(params: {
     requestedScopes: params.requestedScopes,
     codeVerifier,
     expiresAt: Date.now() + STATE_TTL_MS,
+    ...(params.returnTo && isSafeOAuthReturnTo(params.returnTo) ? { returnTo: params.returnTo } : {}),
   }
   return { state: encodeJson(payload), codeVerifier }
 }

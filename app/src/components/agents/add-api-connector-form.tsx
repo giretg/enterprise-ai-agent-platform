@@ -82,7 +82,15 @@ function parseAuthProfilesJson(value: string): AuthProfiles | undefined {
 // Admin egy külső REST API-t köt egy agenthez: connector (http_api) létrehozása,
 // a kulcs a secret-store mögé kerül (NEM a DB-be), és a két http_api capability
 // engedélyezése. A megadott endpointok + leírás a modell elé kerülnek híváskor.
-export function AddApiConnectorForm({ agentId, bare = false }: { agentId: string; bare?: boolean }) {
+export function AddApiConnectorForm({
+  agentId,
+  bare = false,
+  onCreated,
+}: {
+  agentId: string
+  bare?: boolean
+  onCreated?: () => void
+}) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -213,6 +221,7 @@ export function AddApiConnectorForm({ agentId, bare = false }: { agentId: string
         setGitHubRepositoriesText('')
         setEndpoints([{ method: 'GET', path: '', description: '', idempotent: false, profile: '' }])
         setRestrictToEndpoints(false)
+        onCreated?.()
         router.refresh()
       } else {
         setError(res.error)

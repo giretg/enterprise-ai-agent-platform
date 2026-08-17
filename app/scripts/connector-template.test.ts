@@ -241,6 +241,82 @@ async function main() {
     assert.equal(config.restrictToEndpoints, undefined)
   })
 
+  await test('all seeded custom descriptors parse; marketing templates self-check', () => {
+    const marketingKeys = new Set([
+      'google-search-console',
+      'google-analytics',
+      'google-ads',
+      'meta-ads',
+    ])
+    for (const rawDescriptor of GLOBAL_CUSTOM_CONNECTOR_TEMPLATES) {
+      const descriptor = parseTemplateDescriptor(rawDescriptor)
+      assert.equal(descriptor.key, rawDescriptor.key)
+      if (!marketingKeys.has(descriptor.key)) continue
+      const config = selfCheckTemplateDescriptor(descriptor)
+      parseHttpApiConfig(config)
+      assert.equal(config.provenance?.templateKey, descriptor.key)
+    }
+  })
+
+  await test('Google Ads template injects developer-token request header', () => {
+    const rawDescriptor = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-ads')
+    assert.ok(rawDescriptor, 'missing google-ads custom template')
+    const config = materializeConnectorConfig(
+      parseTemplateDescriptor(rawDescriptor),
+      {
+        authMethodKind: 'user_delegated_oauth2',
+        instanceValues: {
+          clientId: 'google-ads-client-id.apps.googleusercontent.com',
+          developerToken: 'dev-token-example',
+          loginCustomerId: '1234567890',
+        },
+      },
+      { clientSecret: 'secret-ref:google-ads-oauth-client-secret' },
+    )
+    const runtime = parseHttpApiConfig(config)
+    assert.equal(runtime.baseUrl, 'https://googleads.googleapis.com')
+    assert.equal(config.requestHeaders?.['developer-token'], 'dev-token-example')
+    assert.equal(config.requestHeaders?.['login-customer-id'], '1234567890')
+    assert.equal(config.auth.type, 'oauth2')
+    assert.equal(config.auth.scope, 'https://www.googleapis.com/auth/adwords')
+    assert.equal(config.restrictToEndpoints, true)
+    assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'search'))
+  })
+
+  await test('marketing custom templates expose documented hosts and default read tools', () => {
+    const expected = {
+      'google-search-console': {
+        baseUrl: 'https://searchconsole.googleapis.com',
+        auth: 'user_delegated_oauth2',
+        defaultTool: 'query_search_analytics',
+      },
+      'google-analytics': {
+        baseUrl: 'https://analyticsdata.googleapis.com',
+        auth: 'user_delegated_oauth2',
+        defaultTool: 'run_report',
+      },
+      'google-ads': {
+        baseUrl: 'https://googleads.googleapis.com',
+        auth: 'user_delegated_oauth2',
+        defaultTool: 'list_accessible_customers',
+      },
+      'meta-ads': {
+        baseUrl: 'https://graph.facebook.com/v26.0',
+        auth: 'bearer',
+        defaultTool: 'list_ad_accounts',
+      },
+    } as const
+
+    for (const [key, spec] of Object.entries(expected)) {
+      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      assert.ok(raw, `missing ${key} custom template`)
+      const descriptor = parseTemplateDescriptor(raw)
+      assert.equal(descriptor.baseUrl, spec.baseUrl)
+      assert.equal(descriptor.authMethods[0]?.kind, spec.auth)
+      assert.ok(descriptor.endpoints.some((endpoint) => endpoint.name === spec.defaultTool && endpoint.default))
+    }
+  })
+
   await test('broken custom descriptor fails template self-check', () => {
     // Séma-szinten érvényes, de a példány materializálása elbukik: az instance-mező
     // egy nem támogatott config-targetre mutat → a mentés self-checkje elutasítja.

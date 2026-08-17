@@ -22,7 +22,13 @@ import { readFile as nodeReadFile } from 'node:fs/promises'
 import nodePath from 'node:path'
 import { prisma } from '@/lib/db'
 import { loadPdfParse } from '@/lib/pdf-parse'
-import { buildTulajdoniLapView, parseTulajdoniLap } from '@/lib/tulajdoni-lap'
+import {
+  buildTulajdoniLapHandoff,
+  buildTulajdoniLapView,
+  parseTulajdoniLap,
+  parseTulajdoniLapHandoff,
+  type TulajdoniLapResult,
+} from '@/lib/tulajdoni-lap'
 import {
   bufferLooksLikePdf,
   pagesFromDocumentExtraction,
@@ -1924,7 +1930,34 @@ export async function tulajdoniLapParse(
     raw: input.args.raw,
   })
 
-  return { documentId, path, filename, ...view }
+  const kimenetRaw = input.args.kimenet?.trim() ?? ''
+  let kimenet: string | null = null
+  if (kimenetRaw) {
+    const connector = extras?.authorization.connector
+    if (!connector) {
+      throw new Error('tulajdoni_lap_parse kimenet requires workspace connector authorization')
+    }
+    const workspaceId = input.ticketId ?? input.conversationId
+    if (!workspaceId) {
+      throw new Error('tulajdoni_lap_parse kimenet requires ticketId or conversationId')
+    }
+    const tenantId = await resolveWorkspaceStorageTenantId(
+      self,
+      input,
+      extras.actingTenantId,
+      connector.tenantId,
+    )
+    kimenet = kimenetRaw.toLowerCase().endsWith('.json')
+      ? kimenetRaw
+      : `${kimenetRaw}.json`
+    const handoff = buildTulajdoniLapHandoff({ parsed, documentId, path, filename })
+    await self.fileEditor.writeFile(tenantId, workspaceId, {
+      path: kimenet,
+      content: JSON.stringify(handoff, null, 2),
+    })
+  }
+
+  return { documentId, path, filename, kimenet, ...view }
 }
 
 /**
@@ -2036,6 +2069,7 @@ export async function tulajdoniLapEgyeztetes(
     Boolean(input.args.coverageAppliedPath?.trim()) &&
     !input.args.documentId?.trim() &&
     !input.args.path?.trim() &&
+    !input.args.feldolgozottLapPath?.trim() &&
     !input.args.nyilvantartasPath?.trim() &&
     !(Array.isArray(input.args.nyilvantartas) && input.args.nyilvantartas.length > 0)
   if (coverageOnly) {
@@ -2047,8 +2081,21 @@ export async function tulajdoniLapEgyeztetes(
     })
   }
 
-  const { pages } = await loadTulajdoniLapPages(self, input, actingUserId, extras)
-  const parsed = parseTulajdoniLap(pages)
+  let parsed: TulajdoniLapResult
+  const feldolgozottLapPath = input.args.feldolgozottLapPath?.trim()
+  if (feldolgozottLapPath) {
+    const raw = await readWorkspaceJson(self, tenantId, workspaceId, feldolgozottLapPath)
+    try {
+      parsed = parseTulajdoniLapHandoff(raw).parsed
+    } catch (error) {
+      throw new Error(
+        `tulajdoni_lap_egyeztetes: érvénytelen feldolgozottLapPath (${error instanceof Error ? error.message : String(error)})`,
+      )
+    }
+  } else {
+    const { pages } = await loadTulajdoniLapPages(self, input, actingUserId, extras)
+    parsed = parseTulajdoniLap(pages)
+  }
   const view = buildTulajdoniLapView(parsed, { nezet: 'osszefoglalo' })
 
   // Bukott ellenőrzés (a hatályos hányadok összege ≠ 1) → NEM készítünk táblát.

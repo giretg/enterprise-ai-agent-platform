@@ -115,7 +115,11 @@ export function resolveActiveTenant(params: {
     // Érvénytelen/nem-active választás ⇒ nem dobunk, hanem a default-útra esünk vissza.
   }
 
-  const byDefault = active.find((m) => m.isDefault)
+  // Több `isDefault` előfordulhat (régi addMember nem vette le a korábbi
+  // defaultot). A membership-lista createdAt szerint nő — az UTOLSÓ default
+  // a frissebb tagság, ne a legrégebbi Demo nyelje el a cookie nélküli belépést.
+  const defaults = active.filter((m) => m.isDefault)
+  const byDefault = defaults.length > 0 ? defaults[defaults.length - 1] : undefined
   const chosen = byDefault ?? active[0]
   if (chosen) {
     return { kind: 'tenant', tenantId: chosen.tenantId, role: chosen.role, fromMembership: true }

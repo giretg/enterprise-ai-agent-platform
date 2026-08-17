@@ -40,7 +40,8 @@ import { WebSearchService } from '@/domain/web-search/web-search-service'
 import { HttpSearchProviderAdapter, StubSearchProviderAdapter } from '@/domain/web-search/search-provider-adapter'
 import { findPlatformWebSearchConnector } from '@/domain/web-search/web-search-connector-service'
 import { parseWebSearchConfig, type WebSearchAdapterResolver, type WebSearchResult } from '@/domain/web-search/web-search-types'
-import { WebFetchService, toWebFetchAuditMeta } from '@/domain/web-fetch/web-fetch-service'
+import { WebFetchService } from '@/domain/web-fetch/web-fetch-service'
+import { performAuditedWebFetch } from '@/domain/web-fetch/audited-web-fetch'
 import { resolveWebFetchLimitsFromEnv } from '@/domain/web-fetch/web-fetch-types'
 import { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
@@ -740,21 +741,47 @@ const toolBrokerService = new ToolBrokerService(
   undefined,
   undefined,
   agentAccessService,
-  async ({ agentId, tenantId, url, sourceType, allowedSourceUrls, fetchIndex }) => {
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
-    const perAgentDayUsed = await prisma.auditLog
-      .count({ where: { action: 'web_fetch.request', actorId: agentId, createdAt: { gte: since } } })
-      .catch(() => 0)
-    return webFetchService.fetch({
-      url,
-      sourceType,
-      allowedSourceUrls,
-      allowlistHosts: await resolveEgressAllowlist(tenantId),
-      enabled: await platformSettingsService.isWebFetchEnabled(),
-      maxContentChars: 20_000,
-      budget: { perDiscoveryUsed: fetchIndex, perDiscoveryMax: 8, perAgentDayUsed, perAgentDayMax: 50 },
-    })
-  },
+  // A web-kutatási delegáció egress-nyelője. A KÖZÖS `performAuditedWebFetch` garantálja,
+  // hogy minden letöltési kísérlet — sikeres és blokkolt egyaránt — hash-only audit-eseményt
+  // (`web_fetch.request`/`web_fetch.blocked`) kap, és a napi egress-keret (perAgentDayUsed) e
+  // úton is érvényre jut. Korábban ez a closure a fetch-et audit ÉS keret-könyvelés nélkül
+  // hívta, így a delegált webes egress láthatatlan volt a naplóban és a napi keret alól kicsúszott.
+  async ({ agentId, tenantId, url, sourceType, allowedSourceUrls, fetchIndex }) =>
+    performAuditedWebFetch(
+      {
+        countRecentAgentFetches: (id) =>
+          prisma.auditLog.count({
+            where: {
+              action: 'web_fetch.request',
+              actorId: id,
+              createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+            },
+          }),
+        webFetch: async (perAgentDayUsed) =>
+          webFetchService.fetch({
+            url,
+            sourceType,
+            allowedSourceUrls,
+            allowlistHosts: await resolveEgressAllowlist(tenantId),
+            enabled: await platformSettingsService.isWebFetchEnabled(),
+            maxContentChars: 20_000,
+            // A napi plafon a KONFIGURÁLHATÓ `webFetchBudgetMax.perAgentDay` (spec §9.3: „az
+            // elsődleges korlát a maxFetchesPerAgentDay") — nem fix érték, hogy egy admin által
+            // csökkentett keret a delegációs úton is hasson. A per-request forrás-korlátot a hívó
+            // `maxSources` slice-a adja (spec §9.3), a `perDiscoveryMax` csak a felső biztonsági plafon.
+            budget: {
+              perDiscoveryUsed: fetchIndex,
+              perDiscoveryMax: WEB_RESEARCH_MAX_SOURCES_CEILING,
+              perAgentDayUsed,
+              perAgentDayMax: webFetchBudgetMax.perAgentDay,
+            },
+          }),
+        audit: repositories.audit,
+        resolveAgentVersion: async (id) => (await repositories.agents.findById(id))?.currentVersion ?? null,
+        hashPrefix: sha256Prefix,
+      },
+      { agentId, url, sourceType },
+    ),
 )
 const consequenceApprovalService = new ConsequenceApprovalService(
   repositories.consequenceApprovals,
@@ -889,6 +916,12 @@ const webFetchBudgetMax = {
   perDiscovery: Number(process.env.WEB_FETCH_MAX_PER_DISCOVERY) > 0 ? Number(process.env.WEB_FETCH_MAX_PER_DISCOVERY) : 2,
   perAgentDay: Number(process.env.WEB_FETCH_MAX_PER_AGENT_DAY) > 0 ? Number(process.env.WEB_FETCH_MAX_PER_AGENT_DAY) : 50,
 }
+// A web-kutatási delegáció per-request forrás-plafonja (spec §9.3: a `maxSources` a
+// provisioning `maxFetchesPerDiscovery` megfelelője). Ugyanaz a felső korlát, amivel a
+// `webResearchRequest` a `maxSources`-t vágja; a delegációs fetch `perDiscoveryMax`-jának
+// biztonsági plafonja is ez.
+const WEB_RESEARCH_MAX_SOURCES_CEILING =
+  Number(process.env.WEB_RESEARCH_MAX_SOURCES) > 0 ? Number(process.env.WEB_RESEARCH_MAX_SOURCES) : 8
 function sha256Prefix(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 16)
 }
@@ -966,54 +999,42 @@ const provisioningAssistant = new ProvisioningAssistant({
         return { ok: false, reason: 'fetch_failed', detail: 'not_authorized' }
       }
 
+      // A role/capability-kapu (fent) UTÁN a letöltés+audit+keret a KÖZÖS nyelőn fut —
+      // ugyanaz a hash-only audit-alak és napi-keret-könyvelés, mint a delegációs úton,
+      // hogy a két egress-út SOSE csússzon szét (§11.3, WF-N10).
       const enabled = await platformSettingsService.isWebFetchEnabled()
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
-      const perAgentDayUsed = await prisma.auditLog
-        .count({ where: { action: 'web_fetch.request', actorId: agentId, createdAt: { gte: since } } })
-        .catch(() => 0)
-
-      const result = await webFetchService.fetch({
-        url,
-        sourceType,
-        allowedSourceUrls,
-        allowlistHosts,
-        enabled,
-        maxContentChars,
-        budget: {
-          perDiscoveryUsed: fetchIndex,
-          perDiscoveryMax: webFetchBudgetMax.perDiscovery,
-          perAgentDayUsed,
-          perAgentDayMax: webFetchBudgetMax.perAgentDay,
+      return performAuditedWebFetch(
+        {
+          countRecentAgentFetches: (id) =>
+            prisma.auditLog.count({
+              where: {
+                action: 'web_fetch.request',
+                actorId: id,
+                createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+              },
+            }),
+          webFetch: (perAgentDayUsed) =>
+            webFetchService.fetch({
+              url,
+              sourceType,
+              allowedSourceUrls,
+              allowlistHosts,
+              enabled,
+              maxContentChars,
+              budget: {
+                perDiscoveryUsed: fetchIndex,
+                perDiscoveryMax: webFetchBudgetMax.perDiscovery,
+                perAgentDayUsed,
+                perAgentDayMax: webFetchBudgetMax.perAgentDay,
+              },
+            }),
+          audit: repositories.audit,
+          // Az agent már feloldva a role-kapunál — nincs újabb DB-kör.
+          resolveAgentVersion: async () => agent.currentVersion ?? null,
+          hashPrefix: sha256Prefix,
         },
-      })
-
-      // §11.3 hash-only audit: nyers URL/tartalom SOSEM kerül a naplóba (WF-N10).
-      const meta = toWebFetchAuditMeta({
-        urlHash: sha256Prefix(url),
-        host: (() => {
-          try {
-            return new URL(url).hostname
-          } catch {
-            return 'unknown'
-          }
-        })(),
-        sourceType,
-        result,
-      })
-      await repositories.audit.append({
-        actorType: 'agent',
-        actorId: agentId,
-        agentVersion: agent?.currentVersion ?? null,
-        action: result.ok ? 'web_fetch.request' : 'web_fetch.blocked',
-        targetType: 'web_fetch',
-        targetId: null,
-        modelUsed: null,
-        inputRef: null,
-        outputRef: null,
-        policyDecision: result.ok ? 'allowed' : 'blocked',
-        metadata: meta as unknown as import('@prisma/client').Prisma.JsonValue,
-      })
-      return result
+        { agentId, url, sourceType },
+      )
     },
   },
 })

@@ -118,6 +118,39 @@ export async function getAgentSkillsAction(
   }
 }
 
+export interface TenantSkillOption {
+  skillId: string
+  skillVersionId: string
+  name: string
+  displayName: string | null
+  description: string
+  version: number
+}
+
+/**
+ * A tenantból elérhető, AKTÍV verziójú skillek — a `/` slash-választóhoz olyan
+ * felületeken, ahol nincs konkrét agent (Playbook-szerző prompt). Ugyanaz a
+ * fail-closed olvasás, mint a katalógusban: global + saját tenant, semmi más.
+ */
+export async function listTenantSkillOptionsAction(): Promise<ActionResult<TenantSkillOption[]>> {
+  try {
+    const ctx = await requireTenantRole('admin')
+    const catalog = await services.skills.listReferenceCatalog(ctx.activeTenantId)
+    return ok(
+      catalog.map((s) => ({
+        skillId: s.skillId,
+        skillVersionId: s.skillVersionId,
+        name: s.name,
+        displayName: s.displayName ?? null,
+        description: s.description,
+        version: s.version,
+      })),
+    )
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
 export interface AssignableSkill {
   skillId: string
   name: string

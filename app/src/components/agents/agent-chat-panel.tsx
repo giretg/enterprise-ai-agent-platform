@@ -23,6 +23,9 @@ import { distillSkillFromConversationAction, getAgentSkillsAction } from '@/app/
 import { exportConversationDebugLog } from '@/app/actions/debug-log'
 import { listChatTriggerableProcessDefinitions } from '@/app/actions/process'
 import { listAgentDelegatedConnectors } from '@/app/actions/connector-grants'
+import { ConnectorGrantNeededPanel } from '@/components/connectors/connector-grant-needed-panel'
+import type { ConnectorGrantNeededView } from '@/components/connectors/connector-grant-needed-panel'
+import { connectorGrantCardFromLoopEvent } from '@/domain/connector-grant/connector-grant-needed'
 import { getTenantThinkingTraceControls } from '@/app/actions/chat-thinking-trace'
 import { AgentDelegatedConnectorsBar } from '@/components/agents/agent-delegated-connectors-bar'
 import type { AgentDelegatedConnectorRow } from '@/lib/agent-delegated-connectors'
@@ -31,7 +34,10 @@ import {
   removeAgentChatDockEntry,
   upsertAgentChatDockEntry,
 } from '@/components/agents/agent-chat-dock-store'
-import { openAgentChat } from '@/components/agents/agent-chat-session-store'
+import {
+  clearAgentChatResumeAfterGrant,
+  openAgentChat,
+} from '@/components/agents/agent-chat-session-store'
 import { ChatMarkdown, TypingIndicator } from '@/components/chat/chat-markdown'
 import {
   chatMessageShowsAgentActivity,
@@ -61,13 +67,11 @@ import {
   canStartThinkingTraceStream,
   type ThinkingTraceControlState,
 } from '@/lib/chat-thinking-trace'
+import { skillNameToSlashToken } from '@/lib/skill/skill-slash-command'
 import {
-  appendSkillSlashToken,
-  filterSkillsForSlashQuery,
-  getActiveSlashQuery,
-  insertSkillSlashToken,
-  skillNameToSlashToken,
-} from '@/lib/skill/skill-slash-command'
+  SkillSlashMenu,
+  useSkillSlashAutocomplete,
+} from '@/components/skills/skill-slash-autocomplete'
 import { getToolUiLabel } from '@/lib/tool-ui-labels'
 
 type PendingAttachment = {
@@ -93,6 +97,7 @@ type ChatMessage = {
   activities?: AgentActivity[]
   memoryCandidates?: MemoryCandidateCard[]
   consequenceApprovals?: ConsequenceApprovalCard[]
+  connectorGrants?: ConnectorGrantNeededView[]
   /**
    * Chat "thinking-trace" spec §6 — élő, streamelt reasoning-szöveg körönként
    * (turnId → felhalmozott szöveg). Csak a folyamat alatti megjelenítésre; nem
@@ -183,6 +188,10 @@ type AgentChatStreamEvent =
   | {
       type: 'consequence_approval'
       approval: Omit<ConsequenceApprovalCard, 'status' | 'resultMessage'>
+    }
+  | {
+      type: 'connector_grant_needed'
+      grant: { connectorId: string; toolName: string; reason: string; connectorType?: string }
     }
   | { type: 'thinking'; turnId: string; delta: string }
   | { type: 'token'; chunk: string }
@@ -303,6 +312,55 @@ function attachPendingConsequenceApprovals(
   return messages.map((m, i) =>
     i === anchorIndex ? { ...m, consequenceApprovals: pending } : m,
   )
+}
+
+function attachPendingConnectorGrants(
+  messages: ChatMessage[],
+  pending: ConnectorGrantNeededView[] | undefined,
+): ChatMessage[] {
+  if (!pending || pending.length === 0) return messages
+  let anchorIndex = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== 'user') {
+      anchorIndex = i
+      break
+    }
+  }
+  if (anchorIndex < 0) anchorIndex = messages.length - 1
+  if (anchorIndex < 0) return messages
+  return messages.map((m, i) => (i === anchorIndex ? { ...m, connectorGrants: pending } : m))
+}
+
+function upsertConnectorGrant(
+  cards: ConnectorGrantNeededView[] | undefined,
+  next: ConnectorGrantNeededView,
+): ConnectorGrantNeededView[] {
+  const current = cards ?? []
+  const index = current.findIndex(
+    (card) => card.connectorId === next.connectorId && card.reason === next.reason,
+  )
+  if (index < 0) return [...current, next]
+  return current.map((card, i) => (i === index ? { ...card, ...next } : card))
+}
+
+function withPendingChatExtras(
+  messages: ChatMessage[],
+  pendingApprovals: ConsequenceApprovalCard[] | undefined,
+  pendingGrants: ConnectorGrantNeededView[] | undefined,
+): ChatMessage[] {
+  return attachPendingConnectorGrants(
+    attachPendingConsequenceApprovals(messages, pendingApprovals),
+    pendingGrants,
+  )
+}
+
+function stripGrantedQueryFromUrl() {
+  if (typeof window === 'undefined') return
+  const url = new URL(window.location.href)
+  if (!url.searchParams.has('granted')) return
+  url.searchParams.delete('granted')
+  const search = url.searchParams.toString()
+  window.history.replaceState({}, '', `${url.pathname}${search ? `?${search}` : ''}${url.hash}`)
 }
 
 const MEMORY_CANDIDATE_TYPE_LABEL: Record<string, string> = {
@@ -788,8 +846,10 @@ function formatConsequenceApprovalError(error: string): string {
       return 'A művelethez tartozó eszköz nincs beállítva.'
     case 'provider_auth_error':
       return 'A külső szolgáltató elutasította a hitelesítést (lejárt vagy hibás hozzáférés).'
+    // Provider-független scope-hiány; a `gmail_…` alak a Gmail történeti oka.
+    case 'connector_scope_not_granted':
     case 'gmail_scope_not_granted':
-      return 'A Gmail hozzáférés nem tartalmazza a szükséges jogosultságot.'
+      return 'A megadott fiók-hozzáférés nem tartalmazza a szükséges jogosultságot.'
     case 'acting_user_required':
       return 'A művelethez a saját felhasználói hozzáférésed kell — jelentkezz be újra.'
     case 'acting_user_suspended':
@@ -1065,6 +1125,7 @@ function MessageBubble({
   onMemoryCandidateUpdate,
   onConsequenceApprovalUpdate,
   onConsequenceApproved,
+  grantReturnTo,
   workspaceBaseUrl,
   workspaceFilePaths,
 }: {
@@ -1085,6 +1146,7 @@ function MessageBubble({
     patch: Partial<ConsequenceApprovalCard>,
   ) => void
   onConsequenceApproved: (approvalIds: string[]) => void
+  grantReturnTo?: { kind: 'conversation'; id: string; agentId: string }
   workspaceBaseUrl?: string
   workspaceFilePaths: string[]
 }) {
@@ -1180,6 +1242,9 @@ function MessageBubble({
                 onApproved={onConsequenceApproved}
               />
             )}
+            {!isUser && message.connectorGrants && message.connectorGrants.length > 0 && (
+              <ConnectorGrantNeededPanel cards={message.connectorGrants} returnTo={grantReturnTo} />
+            )}
           </>
         )}
         {!isDeleted && message.attachments.length > 0 && (
@@ -1270,6 +1335,7 @@ export function AgentChatPanel({
   onClose,
   canDistillSkill = false,
   initialConversationId = null,
+  resumeAfterGrant = false,
   restoreSignal = 0,
   tileTarget = null,
 }: {
@@ -1280,6 +1346,8 @@ export function AgentChatPanel({
   canDistillSkill?: boolean
   /** Deep-link / Aktív futások: nyitáskor ezt a beszélgetést tölti be + reattach. */
   initialConversationId?: string | null
+  /** OAuth-grant után a szerveroldali folytatás-forduló. */
+  resumeAfterGrant?: boolean
   /** Növekvő jel: újboli megnyitáskor leveszi a tálcáról. */
   restoreSignal?: number
   /** A közös session-host célpontja: itt a megnyitott panelek reszponzív rácsba kerülnek. */
@@ -1343,8 +1411,6 @@ export function AgentChatPanel({
   const [distillTargetSkillId, setDistillTargetSkillId] = useState<string>('')
   const [distillTargets, setDistillTargets] = useState<Array<{ id: string; name: string }>>([])
   const [agentSkills, setAgentSkills] = useState<ChatSkillOption[]>([])
-  const [inputCursor, setInputCursor] = useState(0)
-  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -1359,12 +1425,14 @@ export function AgentChatPanel({
    * a folytatás (különben a gomb eltűnik, Excel/munkafájl soha nem készül el).
    */
   const pendingConsequenceContinuationRef = useRef<string[] | null>(null)
+  const grantResumeStartedRef = useRef(false)
   const startAgentTurnRef = useRef<
     | ((options: {
         text: string
         attachments: PendingAttachment[]
         userBubbleText?: string
         consequenceApprovalIds?: string[]
+        connectorGrantContinuation?: boolean
       }) => void)
     | null
   >(null)
@@ -1699,15 +1767,6 @@ export function AgentChatPanel({
     }
   }, [agent.id, canDistillSkill, open])
 
-  const slashContext = useMemo(
-    () => getActiveSlashQuery(input, inputCursor),
-    [input, inputCursor],
-  )
-  const slashSkillOptions = useMemo(
-    () => (slashContext ? filterSkillsForSlashQuery(agentSkills, slashContext.query) : []),
-    [agentSkills, slashContext],
-  )
-
   // #199/D6 — chatben a csatolmány-tiltás CSAK figyelmeztetés: a küldést nem
   // törjük meg. A kemény kapu ott van, ahol a skillt explicit kiválasztják
   // (korlátozott feladat + normál board-feladat); a chat szabad beszélgetés,
@@ -1724,53 +1783,16 @@ export function AgentChatPanel({
       .map((skill) => skill.name)
   }, [agentSkills, input, pendingAttachments.length])
 
-  const applySkillSlashSelection = useCallback(
-    (skill: ChatSkillOption) => {
-      if (!slashContext) return
-      const next = insertSkillSlashToken({
-        text: input,
-        cursorPos: inputCursor,
-        slashStart: slashContext.start,
-        token: skillNameToSlashToken(skill.name),
-      })
-      setInput(next.text)
-      setInputCursor(next.cursorPos)
-      setSlashSelectedIndex(0)
-      requestAnimationFrame(() => {
-        const textarea = textareaRef.current
-        if (!textarea) return
-        textarea.focus()
-        textarea.setSelectionRange(next.cursorPos, next.cursorPos)
-      })
-    },
-    [input, inputCursor, slashContext],
-  )
-
-  const insertSkillFromPicker = useCallback(
-    (skill: ChatSkillOption) => {
-      const next = appendSkillSlashToken({
-        text: input,
-        cursorPos: inputCursor,
-        token: skillNameToSlashToken(skill.name),
-      })
-      setInput(next.text)
-      setInputCursor(next.cursorPos)
-      setSlashSelectedIndex(0)
-      requestAnimationFrame(() => {
-        const textarea = textareaRef.current
-        if (!textarea) return
-        textarea.focus()
-        textarea.setSelectionRange(next.cursorPos, next.cursorPos)
-      })
-    },
-    [input, inputCursor],
-  )
-
-  const syncInputCursor = useCallback((target: HTMLTextAreaElement) => {
-    setInputCursor(target.selectionStart ?? 0)
-  }, [])
   const composerDisabled = controlsBusy || conversationStatus === 'archived'
-  const slashMenuOpen = !composerDisabled && slashContext !== null
+  // A `/` menü viselkedése közös a Playbook-szerző prompttal (`skill-slash-autocomplete`),
+  // hogy a két felület ne tudjon szétcsúszni.
+  const slash = useSkillSlashAutocomplete({
+    skills: agentSkills,
+    value: input,
+    onChange: setInput,
+    inputRef: textareaRef,
+    disabled: composerDisabled,
+  })
 
   /**
    * Módváltáskor a feladat-specifikus beállítások nem maradhatnak élve
@@ -1870,7 +1892,7 @@ export function AgentChatPanel({
         setContinuedFromTicket(refreshed.data.continuedFromTicket ?? null)
         setTicketDiscussionHistory(refreshed.data.ticketDiscussionHistory ?? [])
         setMessages(
-          attachPendingConsequenceApprovals(
+          withPendingChatExtras(
             refreshed.data.messages.map((m) => ({
               ...m,
               createdAt: new Date(m.createdAt).toISOString(),
@@ -1879,6 +1901,7 @@ export function AgentChatPanel({
               ...a,
               status: 'pending' as const,
             })),
+            refreshed.data.pendingConnectorGrants,
           ),
         )
       }
@@ -1968,12 +1991,13 @@ export function AgentChatPanel({
       setContinuedFromTicket(res.data.continuedFromTicket ?? null)
       setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
       setMessages(
-        attachPendingConsequenceApprovals(
+        withPendingChatExtras(
           res.data.messages.map((m) => ({
             ...m,
             createdAt: new Date(m.createdAt).toISOString(),
           })),
           res.data.pendingConsequenceApprovals?.map((a) => ({ ...a, status: 'pending' as const })),
+          res.data.pendingConnectorGrants,
         ),
       )
       startTransition(() => {
@@ -2072,6 +2096,22 @@ export function AgentChatPanel({
                             ...event.approval,
                             status: 'pending',
                           }),
+                        }
+                      : m,
+                  ),
+                )
+              })
+            } else if (event.type === 'connector_grant_needed' && event.grant) {
+              flushSync(() => {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === params.agentMessageId
+                      ? {
+                          ...m,
+                          connectorGrants: upsertConnectorGrant(
+                            m.connectorGrants,
+                            connectorGrantCardFromLoopEvent(event.grant),
+                          ),
                         }
                       : m,
                   ),
@@ -2255,12 +2295,13 @@ export function AgentChatPanel({
         setContinuedFromTicket(res.data.continuedFromTicket ?? null)
         setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
         setMessages(
-          attachPendingConsequenceApprovals(
+          withPendingChatExtras(
             res.data.messages.map((m) => ({
               ...m,
               createdAt: new Date(m.createdAt).toISOString(),
             })),
             res.data.pendingConsequenceApprovals?.map((a) => ({ ...a, status: 'pending' as const })),
+            res.data.pendingConnectorGrants,
           ),
         )
         void reattachToConversation(id)
@@ -2329,6 +2370,7 @@ export function AgentChatPanel({
     /** Amit a felhasználó a saját buborékában lát, amíg a DB-végállapot meg nem érkezik. */
     userBubbleText?: string
     consequenceApprovalIds?: string[]
+    connectorGrantContinuation?: boolean
   }) => {
     const text = options.text
     const localAttachments = options.attachments
@@ -2438,6 +2480,7 @@ export function AgentChatPanel({
             ...(options.consequenceApprovalIds?.length
               ? { consequenceApprovalIds: options.consequenceApprovalIds }
               : {}),
+            ...(options.connectorGrantContinuation ? { connectorGrantContinuation: true } : {}),
           }),
         })
 
@@ -2481,9 +2524,11 @@ export function AgentChatPanel({
           removeFailedOptimisticMessages()
           markConversationRunning(conversationId, false)
           setStatusMessage(
-            options.consequenceApprovalIds?.length
-              ? `A jóváhagyott művelet lefutott, de az agent folytatása nem indult el (${response.status}). Írd meg a chatben, hogy folytassa.`
-              : `Küldés sikertelen (${response.status})`,
+            options.connectorGrantContinuation
+              ? `A hozzáférés megvan, de az agent folytatása nem indult el (${response.status}). Írd meg a chatben, hogy folytassa.`
+              : options.consequenceApprovalIds?.length
+                ? `A jóváhagyott művelet lefutott, de az agent folytatása nem indult el (${response.status}). Írd meg a chatben, hogy folytassa.`
+                : `Küldés sikertelen (${response.status})`,
           )
           return
         }
@@ -2598,6 +2643,22 @@ export function AgentChatPanel({
                             ...event.approval,
                             status: 'pending',
                           }),
+                        }
+                      : m,
+                  ),
+                )
+              })
+            } else if (event.type === 'connector_grant_needed' && event.grant) {
+              flushSync(() => {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === agentBubbleMessageId
+                      ? {
+                          ...m,
+                          connectorGrants: upsertConnectorGrant(
+                            m.connectorGrants,
+                            connectorGrantCardFromLoopEvent(event.grant),
+                          ),
                         }
                       : m,
                   ),
@@ -2726,6 +2787,41 @@ export function AgentChatPanel({
     })
   }, [isAgentTyping, conversationStatus])
 
+  useEffect(() => {
+    if (resumeAfterGrant) grantResumeStartedRef.current = false
+  }, [resumeAfterGrant, restoreSignal])
+
+  /**
+   * OAuth-grant után (`?granted=1`): a beszélgetés betöltődése után egy
+   * folytatás-forduló indul. A zászló a session-store-ban él, hogy a URL
+   * takarítása ne írja felül.
+   */
+  useEffect(() => {
+    if (!open || !resumeAfterGrant) return
+    if (!initialConversationId || conversationId !== initialConversationId) return
+    if (isAgentTyping) return
+    if (conversationStatus === 'archived') return
+    if (grantResumeStartedRef.current) return
+    grantResumeStartedRef.current = true
+    clearAgentChatResumeAfterGrant(agent.id)
+    stripGrantedQueryFromUrl()
+    startAgentTurnRef.current?.({
+      text: '',
+      attachments: [],
+      userBubbleText: '✅ Hozzáférés megadva — folytasd.',
+      connectorGrantContinuation: true,
+    })
+  }, [
+    agent.id,
+    conversationId,
+    conversationStatus,
+    initialConversationId,
+    isAgentTyping,
+    open,
+    resumeAfterGrant,
+    restoreSignal,
+  ])
+
   /**
    * A „Jóváhagyom" gomb után a művelet a szerveren MÁR lefutott — innen az agent
    * folytatja. Enélkül a felhasználó csak annyit lát, hogy „nem történik semmi":
@@ -2821,24 +2917,7 @@ export function AgentChatPanel({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (slashMenuOpen && slashSkillOptions.length > 0) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        setSlashSelectedIndex((index) => Math.min(index + 1, slashSkillOptions.length - 1))
-        return
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        setSlashSelectedIndex((index) => Math.max(index - 1, 0))
-        return
-      }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault()
-        const skill = slashSkillOptions[slashSelectedIndex]
-        if (skill) applySkillSlashSelection(skill)
-        return
-      }
-    }
+    if (slash.handleKeyDown(e)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       // Az Enter mindig azt teszi, amit az elsődleges gomb ígér.
@@ -3179,6 +3258,11 @@ export function AgentChatPanel({
                       onMemoryCandidateUpdate={handleMemoryCandidateUpdate}
                       onConsequenceApprovalUpdate={handleConsequenceApprovalUpdate}
                       onConsequenceApproved={handleConsequenceApproved}
+                      grantReturnTo={
+                        conversationId
+                          ? { kind: 'conversation', id: conversationId, agentId: agent.id }
+                          : undefined
+                      }
                       workspaceBaseUrl={
                         conversationId
                           ? `/api/v1/conversations/${conversationId}/workspace/files`
@@ -3347,7 +3431,7 @@ export function AgentChatPanel({
                           key={skill.skillVersionId}
                           type="button"
                           onClick={() => {
-                            insertSkillFromPicker(skill)
+                            slash.insertAtCursor(skill)
                             setComposerPanel(null)
                           }}
                           className="flex w-full flex-col rounded-lg px-3 py-2 text-left transition-colors hover:bg-night-2"
@@ -3526,40 +3610,12 @@ export function AgentChatPanel({
           )}
 
           <div className="relative flex items-end gap-2 rounded-2xl border border-line bg-card p-2 shadow-sm focus-within:border-coral/40 focus-within:ring-2 focus-within:ring-coral/15">
-            {slashMenuOpen && (
-              <div
-                role="listbox"
-                aria-label="Skill slash-parancsok"
-                className="absolute bottom-full left-12 z-20 mb-1 max-h-48 w-72 overflow-y-auto rounded-xl border border-line bg-card py-1 shadow-lg"
-              >
-                {agentSkills.length === 0 ? (
-                  <p className="px-3 py-2 text-xs text-ink-faint">
-                    Ehhez az AI munkatárshoz nincs engedélyezett skill hozzárendelve.
-                  </p>
-                ) : slashSkillOptions.length === 0 ? (
-                  <p className="px-3 py-2 text-xs text-ink-faint">Nincs illeszkedő skill.</p>
-                ) : (
-                  slashSkillOptions.map((skill, index) => (
-                    <button
-                      key={skill.skillVersionId}
-                      type="button"
-                      role="option"
-                      aria-selected={index === slashSelectedIndex}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => applySkillSlashSelection(skill)}
-                      className={`flex w-full flex-col px-3 py-2 text-left text-xs transition-colors ${
-                        index === slashSelectedIndex
-                          ? 'bg-coral/10 text-coral-deep'
-                          : 'hover:bg-night-2'
-                      }`}
-                    >
-                      <span className="font-semibold">/{skillNameToSlashToken(skill.name)}</span>
-                      <span className="line-clamp-2 text-ink-faint">{skill.description}</span>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
+            <SkillSlashMenu
+              autocomplete={slash}
+              emptyLabel="Ehhez az AI munkatárshoz nincs engedélyezett skill hozzárendelve."
+              position="above"
+              className="left-12"
+            />
             <input
               ref={fileInputRef}
               type="file"
@@ -3584,12 +3640,12 @@ export function AgentChatPanel({
               value={input}
               onChange={(e) => {
                 setInput(e.target.value)
-                syncInputCursor(e.target)
-                setSlashSelectedIndex(0)
+                slash.syncCursor(e.target)
+                slash.setSelectedIndex(0)
               }}
-              onSelect={(e) => syncInputCursor(e.currentTarget)}
-              onClick={(e) => syncInputCursor(e.currentTarget)}
-              onKeyUp={(e) => syncInputCursor(e.currentTarget)}
+              onSelect={(e) => slash.syncCursor(e.currentTarget)}
+              onClick={(e) => slash.syncCursor(e.currentTarget)}
+              onKeyUp={(e) => slash.syncCursor(e.currentTarget)}
               onKeyDown={handleKeyDown}
               rows={1}
               placeholder={
@@ -3660,6 +3716,7 @@ export function AgentChatButton({
   canDistillSkill = false,
   initialConversationId = null,
   autoOpen = false,
+  resumeAfterGrant = false,
 }: {
   agent: ChatAgent
   className?: string
@@ -3668,6 +3725,7 @@ export function AgentChatButton({
   canDistillSkill?: boolean
   initialConversationId?: string | null
   autoOpen?: boolean
+  resumeAfterGrant?: boolean
 }) {
   useEffect(() => {
     if (!autoOpen) return
@@ -3675,10 +3733,11 @@ export function AgentChatButton({
       agent,
       canDistillSkill,
       initialConversationId,
+      ...(resumeAfterGrant ? { resumeAfterGrant: true } : {}),
     })
     // Szándékos: autoOpen / deep-link változáskor nyissa (vagy hozza elő) a panelt.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoOpen, agent.id, initialConversationId, canDistillSkill])
+  }, [autoOpen, agent.id, initialConversationId, canDistillSkill, resumeAfterGrant])
 
   return (
     <button

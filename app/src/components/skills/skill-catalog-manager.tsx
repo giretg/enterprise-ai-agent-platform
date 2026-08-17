@@ -334,6 +334,33 @@ export function SkillCatalogManager({
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [editingSkillId, setEditingSkillId] = useState<string | null>(null)
+  const [creationMode, setCreationMode] = useState<'import' | 'manual' | null>(null)
+  const [expandedSkillIds, setExpandedSkillIds] = useState<Set<string>>(() => new Set())
+  const [catalogQuery, setCatalogQuery] = useState('')
+
+  const normalizedCatalogQuery = catalogQuery.trim().toLocaleLowerCase('hu-HU')
+  const filteredSkills = normalizedCatalogQuery
+    ? skills.filter((skill) =>
+        [skillDisplayLabel(skill), skill.name, skill.description, skill.catalogScope, skill.sourceType]
+          .join(' ')
+          .toLocaleLowerCase('hu-HU')
+          .includes(normalizedCatalogQuery),
+      )
+    : skills
+
+  function toggleVersions(skillId: string) {
+    setExpandedSkillIds((current) => {
+      const next = new Set(current)
+      if (next.has(skillId)) next.delete(skillId)
+      else next.add(skillId)
+      return next
+    })
+  }
+
+  function openVersionEditor(skillId: string) {
+    setExpandedSkillIds((current) => new Set(current).add(skillId))
+    setEditingSkillId(skillId)
+  }
 
   function run(fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) {
     startTransition(async () => {
@@ -359,115 +386,254 @@ export function SkillCatalogManager({
       )}
 
       {isAdmin && (
-        <div className="grid gap-6 lg:grid-cols-2">
-          <ImportSkillForm running={pending} onRun={run} />
-          <CreateSkillForm running={pending} onRun={run} />
-        </div>
+        <section className="atelier-card overflow-hidden">
+          <div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-coral">Új skill</p>
+              <h2 className="mt-1 font-display text-xl font-semibold tracking-tight">Hogyan szeretnéd létrehozni?</h2>
+              <p className="mt-1 max-w-2xl text-sm text-ink-soft">
+                Válaszd ki a szerzés módját. Az űrlap csak megnyitás után jelenik meg, így a
+                katalógus áttekintése fókuszban marad.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                aria-expanded={creationMode === 'import'}
+                onClick={() => setCreationMode((current) => (current === 'import' ? null : 'import'))}
+                className={`rounded-full border px-4 py-2 text-sm font-semibold transition-colors ${
+                  creationMode === 'import'
+                    ? 'border-coral bg-coral text-white'
+                    : 'border-coral/35 bg-coral/8 text-coral hover:bg-coral/15'
+                }`}
+              >
+                SKILL.md importálása
+              </button>
+              <button
+                type="button"
+                aria-expanded={creationMode === 'manual'}
+                onClick={() => setCreationMode((current) => (current === 'manual' ? null : 'manual'))}
+                className={`rounded-full border px-4 py-2 text-sm font-semibold transition-colors ${
+                  creationMode === 'manual'
+                    ? 'border-ink bg-ink text-card'
+                    : 'border-ink-faint/35 bg-card text-ink-soft hover:border-ink-soft hover:text-ink'
+                }`}
+              >
+                Kézi létrehozás
+              </button>
+            </div>
+          </div>
+          {creationMode && (
+            <div className="border-t border-line bg-night-2/35 p-5">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <p className="text-sm font-medium text-ink-soft">
+                  {creationMode === 'import' ? 'SKILL.md importálása' : 'Skill kézi létrehozása'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setCreationMode(null)}
+                  className="rounded-full px-2 py-1 text-xs font-medium text-ink-faint hover:bg-card hover:text-ink"
+                >
+                  Bezárás
+                </button>
+              </div>
+              {creationMode === 'import' ? (
+                <ImportSkillForm running={pending} onRun={run} />
+              ) : (
+                <CreateSkillForm running={pending} onRun={run} />
+              )}
+            </div>
+          )}
+        </section>
       )}
 
-      <Card title={`Katalógus (${skills.length})`}>
+      <Card
+        title={`Katalógus · ${skills.length} skill`}
+        className="[&>h2]:mb-1"
+      >
+        <p className="mb-5 text-sm text-ink-faint">
+          Alapból minden skill legutóbbi verzióját látod. A teljes előzmény és a verzióműveletek
+          a „Verziók” gomb mögött érhetők el.
+        </p>
+        {skills.length > 0 && (
+          <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-center">
+            <label className="relative block min-w-0 flex-1">
+              <span className="sr-only">Keresés a skillek között</span>
+              <svg
+                aria-hidden
+                viewBox="0 0 20 20"
+                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-faint"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+              >
+                <circle cx="8.5" cy="8.5" r="4.75" />
+                <path d="m12 12 4.25 4.25" strokeLinecap="round" />
+              </svg>
+              <input
+                type="search"
+                value={catalogQuery}
+                onChange={(event) => setCatalogQuery(event.target.value)}
+                placeholder="Keresés név, azonosító vagy leírás alapján…"
+                className="w-full rounded-xl border border-ink-faint/30 bg-card px-9 py-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-coral focus:ring-2 focus:ring-coral/15"
+              />
+              {catalogQuery && (
+                <button
+                  type="button"
+                  aria-label="Keresés törlése"
+                  onClick={() => setCatalogQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-xs text-ink-faint hover:bg-night-2 hover:text-ink"
+                >
+                  ×
+                </button>
+              )}
+            </label>
+            <p className="shrink-0 text-xs text-ink-faint">
+              {filteredSkills.length} / {skills.length} találat
+            </p>
+          </div>
+        )}
         {skills.length === 0 ? (
           <p className="text-sm text-ink-faint">Még nincs skill a katalógusban.</p>
+        ) : filteredSkills.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-ink-faint/30 bg-night-2/30 px-4 py-7 text-center">
+            <p className="text-sm font-medium text-ink-soft">Nincs egyező skill.</p>
+            <p className="mt-1 text-xs text-ink-faint">Próbálj más keresőkifejezést, vagy töröld a szűrőt.</p>
+          </div>
         ) : (
-          <ul className="space-y-4">
-            {skills.map((s) => {
+          <ul className="space-y-3">
+            {filteredSkills.map((s) => {
               // Global skillt csak platform-admin írhat — a szerver is ezt kapuzza.
               const canWriteSkill =
                 isAdmin && (s.catalogScope === 'tenant' || isPlatformAdmin)
+              const latestVersion = s.versions[0]
+              const versionsOpen = expandedSkillIds.has(s.id)
               return (
-              <li key={s.id} className="atelier-soft p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <span className="font-medium text-ink">{skillDisplayLabel(s)}</span>
-                    {s.displayName?.trim() && s.displayName.trim() !== s.name ? (
-                      <span className="ml-2 font-mono text-[11px] text-ink-faint">{s.name}</span>
-                    ) : null}
-                    <span className="ml-2 text-xs uppercase text-ink-faint">{s.riskTier}</span>
+              <li key={s.id} className="atelier-soft overflow-hidden">
+                <div className="p-4 sm:p-5">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="font-display text-lg font-semibold tracking-tight text-ink">
+                          {skillDisplayLabel(s)}
+                        </h3>
+                        {latestVersion && (
+                          <Badge tone={STATUS_TONE[latestVersion.status] ?? 'neutral'}>
+                            v{latestVersion.version} · {latestVersion.status}
+                          </Badge>
+                        )}
+                        <span className="text-xs uppercase tracking-wide text-ink-faint">{s.riskTier}</span>
+                      </div>
+                      {s.displayName?.trim() && s.displayName.trim() !== s.name ? (
+                        <p className="mt-0.5 font-mono text-[11px] text-ink-faint">{s.name}</p>
+                      ) : null}
+                      <p className="mt-2 max-w-3xl text-sm leading-relaxed text-ink-soft">{s.description}</p>
+                    </div>
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
+                      <Badge tone="neutral">{s.catalogScope}</Badge>
+                      <Badge tone="neutral">{s.sourceType}</Badge>
+                      {s.license && <Badge tone="neutral">{s.license}</Badge>}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {canWriteSkill && (
-                      <>
+
+                  <div className="mt-4 flex flex-col gap-3 border-t border-ink-faint/15 pt-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-faint">
+                      {latestVersion ? (
+                        <span>
+                          Legutóbbi változat: <span className="font-medium text-ink-soft">v{latestVersion.version}</span>
+                          {latestVersion.signed && ' · aláírt'}
+                          {' · '}{new Date(latestVersion.createdAt).toLocaleDateString('hu-HU')}
+                        </span>
+                      ) : (
+                        <span>Nincs elérhető verzió.</span>
+                      )}
+                      {describeRuntimeHints(s.runtimeHints) && <span>Aktív futási keret: {describeRuntimeHints(s.runtimeHints)}</span>}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        aria-expanded={versionsOpen}
+                        onClick={() => toggleVersions(s.id)}
+                        className="rounded-full border border-ink-faint/30 px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-ink-soft hover:text-ink"
+                      >
+                        {versionsOpen ? 'Verziók bezárása' : `Verziók (${s.versions.length})`}
+                      </button>
+                      {canWriteSkill && (
                         <button
                           type="button"
                           disabled={pending}
-                          onClick={() =>
-                            setEditingSkillId((cur) => (cur === s.id ? null : s.id))
-                          }
-                          className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-medium text-ink-soft disabled:opacity-50"
+                          onClick={() => openVersionEditor(s.id)}
+                          className="rounded-full bg-coral/15 px-3 py-1.5 text-xs font-semibold text-coral transition-colors hover:bg-coral/25 disabled:opacity-50"
                         >
-                          {editingSkillId === s.id ? 'Szerkesztés bezárása' : 'Új verzió'}
+                          Új verzió
                         </button>
-                        {s.versions.some((v) => v.status === 'active') && (
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {versionsOpen && (
+                  <div className="border-t border-line bg-card/55 p-4 sm:p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-ink">Verzióelőzmény és kezelés</p>
+                      {canWriteSkill && (
+                        <div className="flex flex-wrap gap-2">
+                          {s.versions.some((v) => v.status === 'active') && (
+                            <button
+                              type="button"
+                              disabled={pending}
+                              onClick={() =>
+                                run(
+                                  () => deactivateSkillAction(s.id),
+                                  `„${skillDisplayLabel(s)}” deaktiválva — nem hozzárendelhető új agentekhez.`,
+                                )
+                              }
+                              className="rounded-full border border-honey/40 px-3 py-1 text-xs font-medium text-honey disabled:opacity-50"
+                            >
+                              Deaktiválás
+                            </button>
+                          )}
                           <button
                             type="button"
                             disabled={pending}
-                            onClick={() =>
+                            onClick={() => {
+                              if (!window.confirm(`Biztosan törlöd a „${skillDisplayLabel(s)}” skillt és az összes verzióját? Csak hozzárendelés nélkül lehetséges.`)) return
                               run(
-                                () => deactivateSkillAction(s.id),
-                                `„${skillDisplayLabel(s)}” deaktiválva — nem hozzárendelhető új agentekhez.`,
+                                () => deleteSkillAction(s.id),
+                                `„${skillDisplayLabel(s)}” törölve a katalógusból.`,
                               )
-                            }
-                            className="rounded-full border border-honey/40 px-3 py-1 text-xs font-medium text-honey disabled:opacity-50"
+                            }}
+                            className="rounded-full border border-coral/40 px-3 py-1 text-xs font-medium text-coral disabled:opacity-50"
                           >
-                            Deaktiválás
+                            Törlés
                           </button>
-                        )}
-                        <button
-                          type="button"
-                          disabled={pending}
-                          onClick={() => {
-                            if (
-                              !window.confirm(
-                                `Biztosan törlöd a „${skillDisplayLabel(s)}” skillt és az összes verzióját? Csak hozzárendelés nélkül lehetséges.`,
-                              )
-                            ) {
-                              return
-                            }
-                            run(
-                              () => deleteSkillAction(s.id),
-                              `„${skillDisplayLabel(s)}” törölve a katalógusból.`,
-                            )
-                          }}
-                          className="rounded-full border border-coral/40 px-3 py-1 text-xs font-medium text-coral disabled:opacity-50"
-                        >
-                          Törlés
-                        </button>
-                      </>
+                        </div>
+                      )}
+                    </div>
+
+                    {canWriteSkill && (
+                      <details className="mt-4 rounded-lg border border-ink-faint/20 bg-night-2/30 px-3 py-2">
+                        <summary className="cursor-pointer text-xs font-medium text-ink-soft">Skill metaadatainak szerkesztése</summary>
+                        <div className="mt-3 border-t border-ink-faint/15 pt-1">
+                          <SkillDisplayNameEditor skill={s} running={pending} onRun={run} />
+                          <SkillDescriptionEditor skill={s} running={pending} onRun={run} />
+                        </div>
+                      </details>
                     )}
-                    <Badge tone="neutral">{s.catalogScope}</Badge>
-                    <Badge tone="neutral">{s.sourceType}</Badge>
-                    {s.license && <Badge tone="neutral">{s.license}</Badge>}
-                  </div>
-                </div>
-                {canWriteSkill && (
-                  <SkillDisplayNameEditor skill={s} running={pending} onRun={run} />
-                )}
-                {canWriteSkill ? (
-                  <SkillDescriptionEditor skill={s} running={pending} onRun={run} />
-                ) : (
-                  <p className="mt-1 text-xs text-ink-soft">{s.description}</p>
-                )}
-                {describeRuntimeHints(s.runtimeHints) && (
-                  <p className="mt-1 text-[11px] text-ink-faint">
-                    Futási keret: {describeRuntimeHints(s.runtimeHints)}
-                  </p>
-                )}
 
-                {canWriteSkill && editingSkillId === s.id && (
-                  <EditSkillVersionForm
-                    skill={s}
-                    running={pending}
-                    onRun={run}
-                    onClose={() => setEditingSkillId(null)}
-                  />
-                )}
+                    {canWriteSkill && editingSkillId === s.id && (
+                      <EditSkillVersionForm
+                        skill={s}
+                        running={pending}
+                        onRun={run}
+                        onClose={() => setEditingSkillId(null)}
+                      />
+                    )}
 
-                {s.versions.length >= 2 && (
-                  <SkillVersionDiffPanel skill={s} running={pending} />
-                )}
+                    {s.versions.length >= 2 && <SkillVersionDiffPanel skill={s} running={pending} />}
 
-                <ul className="mt-3 space-y-2">
-                  {s.versions.map((v) => (
+                    <ul className="mt-4 space-y-2">
+                      {s.versions.map((v) => (
                     <li
                       key={v.id}
                       className="flex flex-wrap items-center justify-between gap-2 border-t border-ink-faint/10 pt-2 text-xs"
@@ -519,7 +685,9 @@ export function SkillCatalogManager({
                       )}
                     </li>
                   ))}
-                </ul>
+                    </ul>
+                  </div>
+                )}
               </li>
               )
             })}
@@ -866,7 +1034,7 @@ function ImportSkillForm({
   const [scope, setScope] = useState<'tenant' | 'global'>('tenant')
 
   return (
-    <Card title="Import — SKILL.md">
+    <div className="max-w-4xl">
       <p className="mb-3 text-xs text-ink-faint">
         Illeszd be a <code>SKILL.md</code> tartalmát (YAML frontmatter + markdown törzs). A
         hardcoded validátor elutasítja a kódot (T2/T3) és a prompt-injection mintákat. A skill
@@ -920,7 +1088,7 @@ function ImportSkillForm({
       >
         {running ? 'Importálás...' : 'Import'}
       </button>
-    </Card>
+    </div>
   )
 }
 
@@ -1110,7 +1278,7 @@ function CreateSkillForm({
   }
 
   return (
-    <Card title="Kézi szerzés">
+    <div className="max-w-4xl">
       <p className="mb-3 text-xs text-ink-faint">
         Üres editor: strukturált mezők. Az instrukció-blokkokat üres sor választja el. A
         javasolt eszközöket pipáld ki — a grant külön admin-aktus.
@@ -1170,6 +1338,6 @@ function CreateSkillForm({
       >
         {running ? 'Létrehozás...' : 'Skill létrehozása'}
       </button>
-    </Card>
+    </div>
   )
 }

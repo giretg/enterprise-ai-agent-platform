@@ -16,6 +16,7 @@ export function UpdatePersonaForm({
   defaultNickname,
   defaultGreeting,
   defaultTrait,
+  bare = false,
 }: {
   agentId: string
   storedNickname: string | null
@@ -24,14 +25,16 @@ export function UpdatePersonaForm({
   defaultNickname: string
   defaultGreeting: string
   defaultTrait: string
+  /** A hívó már adott keretet (címsor + doboz) — ne rajzoljunk másodikat. */
+  bare?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
 
-  return (
-    <Card title="Bemutatkozás szerkesztése">
+  const body = (
+    <>
       <p className="mb-4 text-xs text-ink-faint">
         A megjelenített név, az üdvözlő mondat és a jellemvonás jelenik meg az agent
         kártyáin és a chat bevezetőjében. Hagyd üresen valamelyiket, hogy visszaálljon
@@ -110,6 +113,9 @@ export function UpdatePersonaForm({
           {pending ? 'Mentés...' : 'Mentés'}
         </button>
       </form>
-    </Card>
+    </>
   )
+
+  if (bare) return body
+  return <Card title="Bemutatkozás szerkesztése">{body}</Card>
 }

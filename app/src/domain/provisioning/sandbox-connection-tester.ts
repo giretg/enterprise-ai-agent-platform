@@ -252,10 +252,12 @@ export class HttpSandboxConnectionTester implements SandboxConnectionTester {
       if (res.status === 403 && token) {
         return { ok: true, statusCode: 403, detail: 'authenticated_scope_limited' }
       }
-      if (res.status === 401 || res.status === 403) {
+      if (res.status === 401 || res.status === 403 || (res.status === 400 && !token)) {
         if (token) {
           return { ok: false, statusCode: res.status, detail: authFailureDetail(config, res.status) }
         }
+        // Token nélküli 400: a Meta Graph API /me (és több más vendor) hiányzó
+        // access tokenre 400-at ad, nem 401-et. A próba célja a host elérhetősége.
         return { ok: true, statusCode: res.status, detail: 'reachable_auth_required' }
       }
       const ok = res.status >= 200 && res.status < 300

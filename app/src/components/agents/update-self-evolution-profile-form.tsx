@@ -15,9 +15,12 @@ type Profile = {
 export function UpdateSelfEvolutionProfileForm({
   agentId,
   currentProfile,
+  bare = false,
 }: {
   agentId: string
   currentProfile: unknown
+  /** A hívó már adott keretet (címsor + doboz) — ne rajzoljunk másodikat. */
+  bare?: boolean
 }) {
   const router = useRouter()
   const resolved = resolveSelfEvolutionProfile(currentProfile)
@@ -33,8 +36,8 @@ export function UpdateSelfEvolutionProfileForm({
     })
   }
 
-  return (
-    <Card title="Önfejlesztés szabályainak szerkesztése">
+  const form = (
+    <>
       <form
         className="space-y-4"
         onSubmit={(e) => {
@@ -108,6 +111,9 @@ export function UpdateSelfEvolutionProfileForm({
           {pending ? 'Mentés...' : 'Profil mentése'}
         </button>
       </form>
-    </Card>
+    </>
   )
+
+  if (bare) return form
+  return <Card title="Önfejlesztés szabályainak szerkesztése">{form}</Card>
 }

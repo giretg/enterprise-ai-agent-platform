@@ -15,6 +15,11 @@ import {
   buildAgentToolAccessReport,
   type AgentToolAccessReport,
 } from '@/domain/tool-broker/tool-access-diagnostics'
+import {
+  AgentDetailLoadError,
+  classifyAgentDetailLookup,
+} from '@/lib/agent-detail-access'
+import { logger } from '@/lib/observability/logger'
 
 const DEFAULT_MEMORY_PROJECT_KEY = '__general__'
 
@@ -85,6 +90,8 @@ export type AgentDetailPageData = {
     initialOverview: AgentDetailMemoryOverview
   } | null
   knowledgeBase: AgentDetailKbInitial | null
+  /** Másodlagos panelek (memória/KB/governance) hibája — az agent ettől még megjelenik. */
+  secondaryError: string | null
 }
 
 function provisioningActor(ctx: TenantAuthContext): ProvisioningActor {
@@ -278,9 +285,13 @@ function mapAssignableSkills(
  *
  * A gate-ek az AKTÍV tenant-szerepre döntenek, nem a legacy `User.role`-ra (§5.4).
  * Itt ez nem UI-dísz: az alábbi lekérdezések közvetlenül a repository/service rétegre
- * mennek, megkerülve a korábbi per-action `requireTenantRole` kapukat (`getAgentGovernance`
- * = viewer, `getModelPolicy` = operator, `listAssignableSkillsAction` = admin), így az
+ * mennek, megkerülve a korábbi per-action `requireTenantRole` kapukat, így az
  * `isAdmin`/`canManageKb` az EGYETLEN authorizációs határ rájuk.
+ *
+ * View-safe panelek (eszközjogok, kapcsolatok, hozzárendelt skillek) minden
+ * viewernek mennek — a régi `getAgentGovernance` viewer-kapuval egyezik.
+ * Admin-only: modellpolicy, connector-katalógus, assignable skillek,
+ * behavior-profil katalógus, projekt-memória.
  */
 export async function loadAgentDetailPageData(
   agentId: string,
@@ -291,7 +302,23 @@ export async function loadAgentDetailPageData(
   const canApproveKb = hasMinimumRole(ctx.activeTenantRole, 'approver')
 
   const detail = await repositories.agents.findByIdForDisplay(agentId, ctx.activeTenantId)
-  if (!detail) throw new Error('Agent not found')
+  if (!detail) {
+    const unrestricted = await repositories.agents.findById(agentId)
+    const decision = classifyAgentDetailLookup({
+      displayed: null,
+      unrestricted: unrestricted
+        ? { tenantId: unrestricted.tenantId, name: unrestricted.name }
+        : null,
+      activeTenantId: ctx.activeTenantId,
+      membershipTenantIds: new Set(
+        ctx.memberships.filter((m) => m.status === 'active').map((m) => m.tenantId),
+      ),
+    })
+    if (decision.status === 'wrong_tenant') {
+      throw AgentDetailLoadError.wrongTenant(decision.agentTenantId, decision.agentName)
+    }
+    throw AgentDetailLoadError.notFound()
+  }
   // #142 — a detail oldal a gráf `view` döntését használja (nem csak a régi
   // hiddenFromOperators kaput), így közvetlen URL sem fed fel elrejtett agentet.
   const subject = tenantUserSubject(ctx)
@@ -302,28 +329,9 @@ export async function loadAgentDetailPageData(
         })
       ).allowed
     : false
-  if (!viewAllowed) throw new Error('Agent not found')
+  if (!viewAllowed) throw AgentDetailLoadError.noView()
 
-  const delegatedConnectors = await loadAgentDelegatedConnectors(
-    agentId,
-    ctx.user.id,
-    ctx.activeTenantId,
-  )
-
-  const adminLoads = isAdmin
-    ? await Promise.all([
-        Promise.all([
-          repositories.toolBroker.findCapabilitiesForAgent(agentId),
-          repositories.toolBroker.findConnectorsForAgent(agentId),
-        ]),
-        services.platformSettings.getModelPolicy(),
-        services.provisioning.listCatalog(provisioningActor(ctx)),
-        repositories.behaviorProfiles.findMany(ctx.activeTenantId),
-        services.skills.listAgentSkillsWithReadiness(agentId),
-        services.skills.listForActor(ctx.activeTenantId),
-      ] as const)
-    : null
-
+  let delegatedConnectors: AgentDetailPageData['delegatedConnectors'] = []
   let governance: AgentDetailPageData['governance'] = null
   let modelPolicy: AgentDetailPageData['modelPolicy'] = null
   let connectorCatalog: AgentDetailPageData['connectorCatalog'] = null
@@ -331,44 +339,76 @@ export async function loadAgentDetailPageData(
   let agentSkills: AgentDetailSkillRow[] = []
   let assignableSkills: AgentDetailAssignableSkill[] = []
   let memoryPanel: AgentDetailPageData['memoryPanel'] = null
+  let knowledgeBase: AgentDetailPageData['knowledgeBase'] = null
+  let secondaryError: string | null = null
 
-  if (adminLoads) {
-    const [[capabilities, connectors], policy, catalog, profiles, assignedWithReadiness, skillCatalog] =
-      adminLoads
+  try {
+    delegatedConnectors = await loadAgentDelegatedConnectors(
+      agentId,
+      ctx.user.id,
+      ctx.activeTenantId,
+    )
+
+    const [capabilities, connectors, assignedWithReadiness] = await Promise.all([
+      repositories.toolBroker.findCapabilitiesForAgent(agentId),
+      repositories.toolBroker.findConnectorsForAgent(agentId),
+      services.skills.listAgentSkillsWithReadiness(agentId),
+    ])
 
     governance = {
       capabilities,
       connectors,
       toolAccess: buildAgentToolAccessReport(agentId, capabilities),
     }
-    modelPolicy = policy
-    connectorCatalog = catalog
-    behaviorProfiles = profiles.map((p) => ({
-      id: p.id,
-      name: p.name,
-      currentVersion: p.currentVersion,
-    }))
-
     agentSkills = mapAgentSkillRows(assignedWithReadiness)
-    const assignedSkillIds = new Set(assignedWithReadiness.map((a) => a.skillId))
-    assignableSkills = mapAssignableSkills(skillCatalog, assignedSkillIds)
 
-    const memoryId = detail.agent.memoryId
-    const [projectKeys, initialOverview] = await Promise.all([
-      loadMemoryProjectKeys(agentId, memoryId),
-      loadMemoryOverview(memoryId, DEFAULT_MEMORY_PROJECT_KEY),
-    ])
-    memoryPanel = {
-      projectKeys,
-      initialProjectKey: DEFAULT_MEMORY_PROJECT_KEY,
-      initialOverview,
+    if (isAdmin) {
+      const [policy, catalog, profiles, skillCatalog] = await Promise.all([
+        services.platformSettings.getModelPolicy(),
+        services.provisioning.listCatalog(provisioningActor(ctx)),
+        repositories.behaviorProfiles.findMany(ctx.activeTenantId),
+        services.skills.listForActor(ctx.activeTenantId),
+      ])
+
+      modelPolicy = policy
+      connectorCatalog = catalog
+      behaviorProfiles = profiles.map((p) => ({
+        id: p.id,
+        name: p.name,
+        currentVersion: p.currentVersion,
+      }))
+
+      const assignedSkillIds = new Set(assignedWithReadiness.map((a) => a.skillId))
+      assignableSkills = mapAssignableSkills(skillCatalog, assignedSkillIds)
+
+      const memoryId = detail.agent.memoryId
+      const [projectKeys, initialOverview] = await Promise.all([
+        loadMemoryProjectKeys(agentId, memoryId),
+        loadMemoryOverview(memoryId, DEFAULT_MEMORY_PROJECT_KEY),
+      ])
+      memoryPanel = {
+        projectKeys,
+        initialProjectKey: DEFAULT_MEMORY_PROJECT_KEY,
+        initialOverview,
+      }
     }
-  }
 
-  const knowledgeBase =
-    canManageKb && detail.agent.role !== 'orchestrator'
-      ? await loadKnowledgeBaseInitial(detail.agent, ctx, true)
-      : null
+    knowledgeBase =
+      canManageKb && detail.agent.role !== 'orchestrator'
+        ? await loadKnowledgeBaseInitial(detail.agent, ctx, true)
+        : null
+  } catch (e) {
+    secondaryError = e instanceof Error ? e.message : 'Secondary agent panels failed to load'
+    logger.error(
+      {
+        event: 'agent_detail.secondary_load_failed',
+        agentId,
+        tenantId: ctx.activeTenantId,
+        error: secondaryError,
+      },
+      'Agent detail secondary panels failed; rendering identity anyway',
+    )
+  }
 
   return {
     isAdmin,
@@ -390,5 +430,6 @@ export async function loadAgentDetailPageData(
     assignableSkills,
     memoryPanel,
     knowledgeBase,
+    secondaryError,
   }
 }

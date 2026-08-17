@@ -41,7 +41,13 @@ export async function recordDenied(
   })
 
   // issue #195 D1 — az elutasított hívás kimenetele `failed`: nem futott le.
-  return { denied: true, reason, latencyMs, outcome: 'failed' }
+  return {
+    denied: true,
+    reason,
+    latencyMs,
+    outcome: 'failed',
+    ...(connectorId ? { connectorId } : {}),
+  }
 }
 
 export async function recordCall(

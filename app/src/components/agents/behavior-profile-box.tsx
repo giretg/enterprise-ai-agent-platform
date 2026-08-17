@@ -1,10 +1,11 @@
 'use client'
 
-import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useMemo, useState, useTransition } from 'react'
 import { setAgentBehaviorProfile } from '@/app/actions/platform'
+import { OpenInNewWindowLink } from '@/components/ui/open-in-new-window-link'
 import { Badge } from '@/components/ui/shell'
+import { CREATE_AGENT_WIZARD_EXTERNAL_HREFS } from '@/lib/create-agent-wizard'
 
 type ProfileOption = {
   id: string
@@ -23,91 +24,74 @@ type BehaviorProfileLink = {
 /**
  * A "Munkastílus" doboz tartalma (§3.4). A ténylegesen használt viselkedés-profil
  * két rétegből áll: a választott KÖZPONTI profil (pinnelt verzió) + az agent
- * EGYEDI kiegészítése (overlay). Admin itt válthat profilt és szerkesztheti az
- * egyedi részt; a nem-admin a kettőt bontva, olvashatóan látja.
+ * EGYEDI kiegészítése (overlay).
+ *
+ * Ugyanannak a doboznak két állapota: az olvasható nézet (mindenki ezt látja
+ * elsőre) és a szerkesztő (az admin a doboz „Szerkesztés" gombjával váltja át).
  */
-export function BehaviorProfileBox({
+export function BehaviorProfileView({
+  link,
+  overlay,
+}: {
+  link: BehaviorProfileLink | null
+  overlay: string
+}) {
+  const profilePart = link?.pinnedBody ?? ''
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-soft">
+          Központi profil
+        </p>
+        {link ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone="neutral">{link.name}</Badge>
+            <span className="text-xs text-ink-faint">v{link.pinnedVersion}</span>
+          </div>
+        ) : (
+          <p className="text-sm italic text-ink-faint">
+            Nincs központi profil — csak egyedi munkastílus.
+          </p>
+        )}
+        {profilePart && (
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">
+            {profilePart}
+          </p>
+        )}
+      </div>
+
+      <div className="border-t border-line pt-3">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-soft">
+          Egyedi rész
+        </p>
+        {overlay.trim() ? (
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">{overlay}</p>
+        ) : (
+          <p className="text-sm italic text-ink-faint">Nincs egyedi kiegészítés.</p>
+        )}
+      </div>
+
+      <p className="text-xs text-ink-faint">
+        A kettő együtt adja a ténylegesen használt munkastílust.
+      </p>
+    </div>
+  )
+}
+
+/** Szerkesztő nézet — ugyanannak a doboznak a másik állapota. */
+export function BehaviorProfileEditForm({
   agentId,
-  canEdit,
   profiles,
   link,
   overlay,
 }: {
   agentId: string
-  canEdit: boolean
   profiles: ProfileOption[]
   link: BehaviorProfileLink | null
   overlay: string
 }) {
   const isStale = link != null && link.pinnedVersion < link.currentVersion
-  const profilePart = link?.pinnedBody ?? ''
-
-  if (!canEdit) {
-    return (
-      <div className="space-y-4">
-        <div>
-          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-soft">
-            Központi profil
-          </p>
-          {link ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge tone="neutral">{link.name}</Badge>
-              <span className="text-xs text-ink-faint">v{link.pinnedVersion}</span>
-            </div>
-          ) : (
-            <p className="text-sm italic text-ink-faint">
-              Nincs központi profil — csak egyedi munkastílus.
-            </p>
-          )}
-          {profilePart && (
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">
-              {profilePart}
-            </p>
-          )}
-        </div>
-
-        <div className="border-t border-line pt-3">
-          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-soft">
-            Egyedi rész
-          </p>
-          {overlay.trim() ? (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">{overlay}</p>
-          ) : (
-            <p className="text-sm italic text-ink-faint">Nincs egyedi kiegészítés.</p>
-          )}
-        </div>
-
-        <p className="text-xs text-ink-faint">
-          A kettő együtt adja a ténylegesen használt munkastílust.
-        </p>
-      </div>
-    )
-  }
-
-  return (
-    <BehaviorProfileEditor
-      agentId={agentId}
-      profiles={profiles}
-      link={link}
-      overlay={overlay}
-      isStale={isStale}
-    />
-  )
-}
-
-function BehaviorProfileEditor({
-  agentId,
-  profiles,
-  link,
-  overlay,
-  isStale,
-}: {
-  agentId: string
-  profiles: ProfileOption[]
-  link: BehaviorProfileLink | null
-  overlay: string
-  isStale: boolean
-}) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -159,17 +143,15 @@ function BehaviorProfileEditor({
         </select>
       </label>
 
-      {profiles.length === 0 && (
-        <p className="text-xs text-ink-faint">
-          Még nincs megosztott profil.{' '}
-          <Link
-            href="/control-plane/behavior-profiles"
-            className="font-medium text-coral hover:text-coral-deep"
-          >
-            Hozz létre egyet a katalógusban.
-          </Link>
-        </p>
-      )}
+      <p className="text-xs text-ink-faint">
+        {profiles.length === 0
+          ? 'Még nincs megosztott profil. '
+          : 'Ha közben új hangnem kell, '}
+        <OpenInNewWindowLink href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.behaviorProfiles}>
+          {profiles.length === 0 ? 'Hozz létre egyet a katalógusban' : 'új profil a katalógusban'}
+        </OpenInNewWindowLink>
+        {profiles.length === 0 ? '' : ' — új ablakban nyílik.'}
+      </p>
 
       {isStale && selectedId === link?.id && (
         <div className="rounded-xl border border-coral/30 bg-coral/5 p-3 text-sm text-ink-soft">

@@ -789,6 +789,7 @@ export function argsMeta(
       csakHatalyos: input.args.csakHatalyos ?? true,
       limit: input.args.limit ?? null,
       offset: input.args.offset ?? null,
+      kimenet: input.args.kimenet ?? null,
     }
   }
 
@@ -797,6 +798,7 @@ export function argsMeta(
       ...base,
       documentId: input.args.documentId ?? null,
       path: input.args.path ?? null,
+      feldolgozottLapPath: input.args.feldolgozottLapPath ?? null,
       // Csak a MÉRET megy az audit-metába, a névsor maga nem (tartalom-őr).
       nyilvantartasSorok: Array.isArray(input.args.nyilvantartas)
         ? input.args.nyilvantartas.length

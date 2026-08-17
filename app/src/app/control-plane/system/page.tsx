@@ -42,7 +42,7 @@ import { MemoryObservabilityPanel } from './memory-observability-panel'
 import { ContractObservabilityPanel } from './contract-observability-panel'
 import { ChannelOpsPanel } from './channel-ops-panel'
 import { ChannelBotPanel } from './channel-bot-panel'
-import { SystemSettingsShell } from './system-settings-shell'
+import { SettingsSectionShell } from './system-settings-shell'
 
 export default async function SystemPage() {
   const [
@@ -129,7 +129,8 @@ export default async function SystemPage() {
         </p>
       </div>
 
-      <SystemSettingsShell
+      <SettingsSectionShell
+        ariaLabel="Rendszer témák"
         sections={[
           {
             id: 'adatbazis',
@@ -198,6 +199,7 @@ export default async function SystemPage() {
             description: 'Chat thinking-trace megjelenítése a tenantnél.',
             content: tenantThinkingTraceControlsRes.success ? (
               <TenantThinkingTracePanel
+                key="thinking-trace"
                 initialEnabled={tenantThinkingTraceControlsRes.data.enabled}
                 canEdit={canEditTenantWebSearch}
               />

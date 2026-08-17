@@ -53,6 +53,7 @@ import {
   resolveToolLoopMaxTurns,
   runAgentToolLoop,
   type LoadSkillFn,
+  type LoadSkillAttachmentFn,
   type ToolLoopActivityEvent,
   type ToolLoopStopReason,
 } from './chat-tool-loop'
@@ -486,6 +487,8 @@ export type AgentChatSendParams = {
    * kapnak. Kizárólag szerveroldalról (a validált jóváhagyás után) állítható.
    */
   consequenceApprovalContinuation?: boolean
+  /** OAuth-grant megadása utáni folytatás — a szerver adja a promptot. */
+  connectorGrantContinuation?: boolean
 }
 
 type ChatModelConfig = {
@@ -507,6 +510,8 @@ type SlashSkillResolution = {
   blocked: Array<{ name: string; missingTools: string[]; reason: string }>
   /** A betöltött skillek `allowed-tools` uniója — a forduló eszköz-hatóköre. */
   requiredTools?: string[]
+  /** Van-e Level-2 melléklet az előtöltött skilleken. */
+  attachmentsAvailable?: boolean
   runtimeHints?: {
     maxWallClockMs?: number
     maxToolCalls?: number
@@ -842,18 +847,21 @@ export class AgentChatRuntime {
   private async buildSkillBinding(
     agentId: string,
     tenantId: string | null,
-  ): Promise<{ skillIndexPrompt: string; loadSkill?: LoadSkillFn }> {
+  ): Promise<{
+    skillIndexPrompt: string
+    loadSkill?: LoadSkillFn
+    loadSkillAttachment?: LoadSkillAttachmentFn
+  }> {
     if (!this.skills) return { skillIndexPrompt: '' }
     const skills = this.skills
     const skillIndexPrompt = await skills.buildSkillIndexPrompt(agentId)
     if (!skillIndexPrompt) return { skillIndexPrompt: '' }
+    const actor = { actorId: null, actorTenantId: tenantId, isPlatformAdmin: false }
     const loadSkill: LoadSkillFn = (skillVersionId) =>
-      skills.loadSkillForAgent({
-        agentId,
-        skillVersionId,
-        actor: { actorId: null, actorTenantId: tenantId, isPlatformAdmin: false },
-      })
-    return { skillIndexPrompt, loadSkill }
+      skills.loadSkillForAgent({ agentId, skillVersionId, actor })
+    const loadSkillAttachment: LoadSkillAttachmentFn = (skillVersionId, path) =>
+      skills.loadSkillAttachmentForAgent({ agentId, skillVersionId, path, actor })
+    return { skillIndexPrompt, loadSkill, loadSkillAttachment }
   }
 
   private async resolveSlashSkillsForMessage(
@@ -882,6 +890,7 @@ export class AgentChatRuntime {
       loadedSkillVersionIds: resolved.loadedSkillVersionIds,
       blocked: resolved.blocked,
       ...(resolved.requiredTools ? { requiredTools: resolved.requiredTools } : {}),
+      ...(resolved.attachmentsAvailable ? { attachmentsAvailable: true } : {}),
       runtimeHints: resolved.runtimeHints,
     }
   }
@@ -1558,6 +1567,10 @@ export class AgentChatRuntime {
           skillIndexPrompt: skillBinding.skillIndexPrompt,
           preloadedSkillPrompts: slashResolved.preloadedSkillPrompts,
           loadSkill: skillBinding.loadSkill,
+          loadSkillAttachment: skillBinding.loadSkillAttachment,
+          ...(slashResolved.attachmentsAvailable
+            ? { initialSkillAttachmentsAvailable: true }
+            : {}),
           initialSkillRuntimeHints: slashResolved.runtimeHints,
           ...(slashResolved.requiredTools
             ? { initialSkillToolScope: slashResolved.requiredTools }
@@ -1624,6 +1637,7 @@ export class AgentChatRuntime {
                   emit({ type: 'consequence_approval', approval }),
               }
             : {}),
+          onConnectorGrantNeeded: (grant) => emit({ type: 'connector_grant_needed', grant }),
         }).then(
           (value) => ({ ok: true as const, value }),
           (error: unknown) => ({ ok: false as const, error }),

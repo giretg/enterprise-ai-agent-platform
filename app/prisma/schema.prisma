@@ -1048,6 +1048,9 @@ model SkillVersion {
   version      Int
   content      Json // { instructions[], triggerKeywords[], parameters[] }
   requires     Json // capability-manifeszt: [{ toolName, reason }]
+  // Level-2 mellékletek: [{ path, text, bytes, sha256 }] — csak SZÖVEGES referencia.
+  // A csomag-importáló a futtatható kód-fájlokat kihagyja, tehát ide sosem kerül kód.
+  attachments  Json?
   status       SkillVersionStatus @default(proposed)
   contentHash  String             @map("content_hash")
   signature    String? // WriteGateToken-mechanizmussal aláírva (WP-7)

@@ -363,9 +363,12 @@ function writeApprovalBadge(
 export function ApiConnectorList({
   agentId,
   connectors,
+  canEdit = true,
 }: {
   agentId: string
   connectors: ConnectorItem[]
+  /** Operátor a listát látja; az admin ugyanitt szerkeszti a kötést vagy leválaszt. */
+  canEdit?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -421,25 +424,29 @@ export function ApiConnectorList({
                     {trustBadge.label}
                   </Badge>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setEditingId(editing ? null : item.connector.id)}
-                  className="rounded-full border border-line px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-night-2"
-                >
-                  {editing ? 'Bezárás' : 'Kötés szerkesztése'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmingId(confirming ? null : item.connector.id)}
-                  className="rounded-full border border-coral/40 px-3 py-1 text-xs font-semibold text-coral hover:bg-coral/10"
-                >
-                  {confirming ? 'Mégse' : 'Leválasztás'}
-                </button>
+                {canEdit ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setEditingId(editing ? null : item.connector.id)}
+                      className="rounded-full border border-line px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-night-2"
+                    >
+                      {editing ? 'Bezárás' : 'Kötés szerkesztése'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingId(confirming ? null : item.connector.id)}
+                      className="rounded-full border border-coral/40 px-3 py-1 text-xs font-semibold text-coral hover:bg-coral/10"
+                    >
+                      {confirming ? 'Mégse' : 'Leválasztás'}
+                    </button>
+                  </>
+                ) : null}
               </div>
             </div>
             <p className="mt-1 break-all text-xs text-ink-faint">
               {item.connector.type} · {item.connector.scope}
-              {item.connector.secretAlias && ` · ${item.connector.secretAlias}`}
+              {canEdit && item.connector.secretAlias && ` · ${item.connector.secretAlias}`}
               {boundary && ` · ${boundary}`}
             </p>
 
@@ -474,9 +481,11 @@ export function ApiConnectorList({
                   </p>
                   <Link
                     href="/control-plane/provisioning"
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="mt-2 inline-block font-semibold text-honey hover:underline"
                   >
-                    Connector megnyitása a provisioningban →
+                    Connector megnyitása a provisioningban ↗
                   </Link>
                 </div>
               </>

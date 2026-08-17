@@ -1,8 +1,13 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { draftPlaybookFromDescription } from '@/app/actions/playbook'
 import { PlaybookFieldHint } from '@/components/playbooks/playbook-field-hint'
+import {
+  SkillSlashMenu,
+  useSkillSlashAutocomplete,
+} from '@/components/skills/skill-slash-autocomplete'
+import { useTenantSkillOptions } from '@/components/skills/use-tenant-skill-options'
 import {
   syncPlaybookSpecInputSlots,
   type PlaybookDraftSpec,
@@ -61,10 +66,26 @@ export function PlaybookAgentAssist({
   const [message, setMessage] = useState<{ tone: 'ok' | 'err' | 'warn'; text: string } | null>(
     null,
   )
+  // Melyik skill leírását olvasta el az agent a tervezéshez — enélkül nem látszana,
+  // hogy a javaslat egy meglévő, jóváhagyott munkamenet-leírásra épül-e.
+  const [usedSkills, setUsedSkills] = useState<{ name: string; version: number }[]>([])
+
+  // `/` a promptban → tenant skill-lista, ugyanaz a viselkedés, mint a chatben.
+  // Csak nyitott dobozra töltünk (egy specen sok ilyen panel van).
+  const promptRef = useRef<HTMLTextAreaElement | null>(null)
+  const tenantSkills = useTenantSkillOptions(open || !compact)
+  const slash = useSkillSlashAutocomplete({
+    skills: tenantSkills,
+    value: description,
+    onChange: setDescription,
+    inputRef: promptRef,
+    disabled: generating,
+  })
 
   async function runAssist() {
     if (!description.trim()) return
     setMessage(null)
+    setUsedSkills([])
     setGenerating(true)
     setStatusText('A Playbook-szerző agent elemzi és frissíti a specet…')
     try {
@@ -82,10 +103,12 @@ export function PlaybookAgentAssist({
         validation: PlaybookValidationResult
         fixRounds?: number
         autoFixFailed?: boolean
+        usedSkills?: { name: string; version: number }[]
       }
       const syncedSpec = syncPlaybookSpecInputSlots(data.spec)
       onApply({ spec: syncedSpec, validation: data.validation })
       setDescription('')
+      setUsedSkills(data.usedSkills ?? [])
 
       if (data.autoFixFailed) {
         setMessage({
@@ -132,12 +155,14 @@ export function PlaybookAgentAssist({
           {!compact && (
             <p className="text-xs text-ink-soft">
               Természetes nyelven írd le a módosítást — az agent javaslatot ad, de nem publikál.
+              Meglévő skillre a <code>/</code> jellel hivatkozhatsz.
             </p>
           )}
           {compact && (
             <PlaybookFieldHint>
               Írd le szövegesen, mit szeretnél változtatni — az agent kitölti a mezőket, te ellenőrzöd
-              és mented.
+              és mented. Meglévő skillre a <code>/</code> jellel hivatkozhatsz: az agent elolvassa a
+              skill teljes leírását, és ahhoz igazítja a lépést.
             </PlaybookFieldHint>
           )}
         </div>
@@ -154,14 +179,29 @@ export function PlaybookAgentAssist({
 
       {(open || !compact) && (
         <>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            rows={compact ? 2 : 3}
-            placeholder={PLACEHOLDERS[scope]}
-            disabled={generating}
-            className="w-full rounded-lg border border-ink/15 bg-transparent px-3 py-2 text-sm disabled:opacity-50"
-          />
+          <div className="relative">
+            <textarea
+              ref={promptRef}
+              value={description}
+              onChange={(e) => {
+                setDescription(e.target.value)
+                slash.syncCursor(e.target)
+                slash.setSelectedIndex(0)
+              }}
+              onSelect={(e) => slash.syncCursor(e.currentTarget)}
+              onClick={(e) => slash.syncCursor(e.currentTarget)}
+              onKeyUp={(e) => slash.syncCursor(e.currentTarget)}
+              onKeyDown={(e) => slash.handleKeyDown(e)}
+              rows={compact ? 2 : 3}
+              placeholder={PLACEHOLDERS[scope]}
+              disabled={generating}
+              className="w-full rounded-lg border border-ink/15 bg-transparent px-3 py-2 text-sm disabled:opacity-50"
+            />
+            <SkillSlashMenu
+              autocomplete={slash}
+              emptyLabel="Ebben a szervezetben még nincs jóváhagyott skill."
+            />
+          </div>
           <button
             type="button"
             onClick={runAssist}
@@ -195,6 +235,12 @@ export function PlaybookAgentAssist({
               className={`text-xs ${message.tone === 'err' ? 'text-coral' : message.tone === 'warn' ? 'text-honey' : 'text-sage'}`}
             >
               {message.text}
+            </p>
+          )}
+          {usedSkills.length > 0 && (
+            <p className="text-xs text-ink-soft">
+              Az agent elolvasta ezt a skill-leírást és ehhez igazította a lépéseket:{' '}
+              {usedSkills.map((s) => `${s.name} (v${s.version})`).join(', ')}.
             </p>
           )}
         </>

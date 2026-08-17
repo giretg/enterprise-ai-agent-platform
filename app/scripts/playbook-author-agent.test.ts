@@ -15,6 +15,11 @@ import {
   type PlaybookDraftingModel,
 } from '../src/domain/playbook/playbook-author-agent'
 import { PLAYBOOK_SCHEMA_VERSION } from '../src/lib/playbook-v2/spec'
+import {
+  detectReferencedSkills,
+  resolveReferencedSkills,
+  type SkillReferenceEntry,
+} from '../src/lib/skill/skill-reference'
 
 let failures = 0
 async function test(name: string, fn: () => void | Promise<void>) {
@@ -36,6 +41,36 @@ function fixedModel(content: string): PlaybookDraftingModel & { lastMessages?: u
     },
   }
   return m
+}
+
+function tulajdoniLapSkill(): SkillReferenceEntry {
+  return {
+    skillId: 'skill-1',
+    skillVersionId: 'skill-1-v3',
+    name: 'tulajdoni-lap',
+    displayName: 'Tulajdoni lap feldolgozás',
+    description: 'E-hiteles tulajdoni lap feldolgozása, tulajdonosok és terhek kinyerése.',
+    version: 3,
+    requiredTools: ['file_read', 'xlsx_create'],
+    triggerKeywords: ['tulajdoni lap', 'földhivatali kivonat', 'hrsz'],
+    parameters: [{ name: 'hrsz', description: 'Helyrajzi szám' }],
+    instructions: ['Olvasd ki a hatályos tulajdonosokat és a tulajdoni hányadokat.'],
+  }
+}
+
+function unrelatedSkill(): SkillReferenceEntry {
+  return {
+    skillId: 'skill-2',
+    skillVersionId: 'skill-2-v1',
+    name: 'email-triage',
+    displayName: null,
+    description: 'Beérkező levelek osztályozása.',
+    version: 1,
+    requiredTools: ['gmail_search'],
+    triggerKeywords: ['levelezés'],
+    parameters: [],
+    instructions: ['Rendezd a beérkező leveleket kategóriákba.'],
+  }
 }
 
 function validRawSpec() {
@@ -244,6 +279,100 @@ async function main() {
 
   await test('draftSpec: rendszerprompt előírja a downstream step-mezők explicit nevesítését', async () => {
     assert.ok(PLAYBOOK_AUTHOR_ROLE_INSTRUCTION.includes('output_contract_unmet'))
+  })
+
+  await test('rendszerprompt: a lépés-szerződések összehangolása külön, kötelező blokk', () => {
+    assert.ok(PLAYBOOK_AUTHOR_ROLE_INSTRUCTION.includes('STEP CONTRACT CHAINING'))
+    // A három lépés (deklarálás / promptba írás / típus) mindegyike szerepel.
+    assert.ok(PLAYBOOK_AUTHOR_ROLE_INSTRUCTION.includes('DECLARE it on A'))
+    assert.ok(PLAYBOOK_AUTHOR_ROLE_INSTRUCTION.includes("PROMPT it in A's instructionTemplate"))
+    assert.ok(PLAYBOOK_AUTHOR_ROLE_INSTRUCTION.includes('TYPE it'))
+    // A név-egyezés szó szerinti: se fordítás, se kis/nagybetű-tolerancia.
+    assert.ok(PLAYBOOK_AUTHOR_ROLE_INSTRUCTION.includes('EXACT field name'))
+  })
+
+  await test('rendszerprompt: a skill-használat szabályai benne vannak', () => {
+    assert.ok(PLAYBOOK_AUTHOR_ROLE_INSTRUCTION.includes('SKILLS ('))
+    assert.ok(PLAYBOOK_AUTHOR_ROLE_INSTRUCTION.includes('requiredCapabilities'))
+    assert.ok(PLAYBOOK_AUTHOR_ROLE_INSTRUCTION.includes('never invent one that is missing'))
+  })
+
+  await test('skill-katalógus és a hivatkozott skill törzse bekerül a promptba', async () => {
+    const model = fixedModel(JSON.stringify(validRawSpec()))
+    const agent = new PlaybookAuthorAgent({ model })
+    await agent.draftSpec({
+      agentId: 'agent-author',
+      description: 'A második lépésben használd a tulajdoni-lap skillt.',
+      skillCatalog: [tulajdoniLapSkill(), unrelatedSkill()],
+      referencedSkills: [tulajdoniLapSkill()],
+    })
+    const messages = (model as { lastMessages?: unknown }).lastMessages as Array<{ role: string; content: string }>
+    const userMsg = messages.find((m) => m.role === 'user')!
+    // Level-0: mindkét skill neve+leírása
+    assert.ok(userMsg.content.includes('SKILL CATALOG'))
+    assert.ok(userMsg.content.includes('email-triage'))
+    // Level-1: CSAK a hivatkozott skill törzse
+    assert.ok(userMsg.content.includes('SKILL IN USE'))
+    assert.ok(userMsg.content.includes('Olvasd ki a hatályos tulajdonosokat'))
+    assert.ok(!userMsg.content.includes('Rendezd a beérkező leveleket'))
+    // A skill kötelező eszközei nevesítve, hogy a szerep requiredCapabilities-ébe kerüljenek
+    assert.ok(userMsg.content.includes('file_read'))
+    // A skill deklarált paraméterei is ott vannak (inputSlot-jelöltek)
+    assert.ok(userMsg.content.includes('hrsz'))
+  })
+
+  await test('skill-kontextus nélkül a prompt nem tartalmaz skill-blokkot (üres katalógus)', async () => {
+    const model = fixedModel(JSON.stringify(validRawSpec()))
+    const agent = new PlaybookAuthorAgent({ model })
+    await agent.draftSpec({ agentId: 'agent-author', description: 'Készíts folyamatot.' })
+    const messages = (model as { lastMessages?: unknown }).lastMessages as Array<{ role: string; content: string }>
+    const userMsg = messages.find((m) => m.role === 'user')!
+    assert.ok(!userMsg.content.includes('SKILL CATALOG'))
+    assert.ok(!userMsg.content.includes('SKILL IN USE'))
+  })
+
+  await test('detectReferencedSkills: névre, ékezet- és írásjel-függetlenül illeszt', () => {
+    const catalog = [tulajdoniLapSkill(), unrelatedSkill()]
+    assert.deepEqual(
+      detectReferencedSkills('Használd a Tulajdoni Lap skillt a második lépésben.', catalog).map((s) => s.name),
+      ['tulajdoni-lap'],
+    )
+    assert.deepEqual(
+      detectReferencedSkills('futtasd a /tulajdoni-lap skillt', catalog).map((s) => s.name),
+      ['tulajdoni-lap'],
+    )
+  })
+
+  await test('detectReferencedSkills: trigger-kulcsszó is hivatkozás, de a nem érintett skill nem jön be', () => {
+    const catalog = [tulajdoniLapSkill(), unrelatedSkill()]
+    const hits = detectReferencedSkills('Kérj be egy földhivatali kivonatot az ügyféltől.', catalog)
+    assert.deepEqual(hits.map((s) => s.name), ['tulajdoni-lap'])
+    assert.deepEqual(detectReferencedSkills('Írj egy egyszerű riportot.', catalog), [])
+  })
+
+  await test('resolveReferencedSkills: az explicit /token választás mindig érvényesül', () => {
+    const catalog = [tulajdoniLapSkill(), unrelatedSkill()]
+    // A `/` menüből választott token akkor is betölt, ha a szöveg másról szól.
+    assert.deepEqual(
+      resolveReferencedSkills('Az utolsó lépésben /email-triage kell.', catalog).map((s) => s.name),
+      ['email-triage'],
+    )
+    // Explicit + felismert együtt, az explicit elöl.
+    assert.deepEqual(
+      resolveReferencedSkills('/email-triage után nézd meg a tulajdoni lapot is.', catalog).map(
+        (s) => s.name,
+      ),
+      ['email-triage', 'tulajdoni-lap'],
+    )
+  })
+
+  await test('detectReferencedSkills: szóhatáron illeszt (nincs részszó-találat)', () => {
+    const catalog = [
+      { ...unrelatedSkill(), name: 'lead', triggerKeywords: [] },
+    ]
+    // A 'lead' önmagában 4 karakter, de a 'leadership' szóban nem találat.
+    assert.deepEqual(detectReferencedSkills('Fejleszd a leadership programot.', catalog), [])
+    assert.equal(detectReferencedSkills('Indítsd a lead folyamatot.', catalog).length, 1)
   })
 
   await test('draftSpec: sosem tartalmaz konkrét agent-kötést kérő instrukciót — a role kulcs marad', async () => {

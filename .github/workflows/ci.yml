@@ -94,6 +94,7 @@ jobs:
           npm run test:agent-turn-watchdog
           npm run test:loop-stop
           npm run test:tool-loop
+          npm run test:connector-grant-needed
           npm run test:turn-cost
           npm run test:http-api
           npm run test:decode-github-contents
@@ -112,6 +113,7 @@ jobs:
           npm run test:channel-approval
           npm run test:ttl-secret-cache
           npm run test:public-routes
+          npm run test:create-agent-wizard
           npm run test:dispatch-cycle-endpoint
           npm run test:conversation-session
           npm run test:agent-interaction-ticket

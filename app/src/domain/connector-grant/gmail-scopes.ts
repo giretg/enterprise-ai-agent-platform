@@ -18,7 +18,7 @@ const ABBREVIATED_SCOPES: Record<string, string> = {
   'gmail.metadata': GMAIL_SCOPES.metadata,
 }
 
-type GmailTool =
+export type GmailTool =
   | 'gmail_search'
   | 'gmail_get_message'
   | 'gmail_create_draft'

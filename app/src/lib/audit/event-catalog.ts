@@ -331,6 +331,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   // Skill-katalógus (skill-catalog-spec.md, WP-7)
   'skill.imported',
+  /** Több-fájlos csomag-import (ZIP/URL): mi jött be és mi maradt ki, tételesen. */
+  'skill.package_imported',
+  /** Level-2 melléklet betöltése futás közben (a `load_skill` utáni harmadik szint). */
+  'skill.attachment_loaded',
   'skill.created',
   'skill.display_name_updated',
   'skill.description_updated',

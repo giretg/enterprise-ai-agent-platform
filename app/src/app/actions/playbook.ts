@@ -34,6 +34,7 @@ import { listPublishedStepTemplates } from '@/domain/step-template/step-template
 import { createStepTemplate } from '@/domain/step-template/step-template-service'
 import { PLAYBOOK_AUTHOR_TEMPLATE } from '@/domain/playbook/playbook-author-agent'
 import { PLAYBOOK_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
+import { resolveReferencedSkills } from '@/lib/skill/skill-reference'
 import type { PlaybookV2, PlaybookVersionV2 } from '@prisma/client'
 import { errorPolicySchema } from '@/lib/playbook-v2/spec'
 import { z } from 'zod'
@@ -249,16 +250,33 @@ export async function draftPlaybookFromDescription(input: unknown) {
     const capabilitySets = await Promise.all(
       agents.map((a) => repositories.toolBroker.findCapabilitiesForAgent(a.id)),
     )
+    const permissions = await repositories.rolePermissions.findAll()
+    const knownPermissions = permissions.map((p) => p.permissionKey)
+
+    // Skill-kontextus: a tenantból olvasható skillek indexe MINDIG a promptba kerül,
+    // a ténylegesen hivatkozott skillek teljes törzse pedig mellé — így a szerző a
+    // skill valódi bemenetéhez/kimenetéhez igazítja a lépést, nem találgat. A
+    // felismerés a leírás ÉS a szerkesztett spec szövegén fut, hogy az auto-fix
+    // körökben (üres leírás) se essen ki a betöltött skill.
+    const skillCatalog = await services.skills.listReferenceCatalog(user.activeTenantId)
+    const referenceText = [
+      parsed.description ?? '',
+      parsed.existingSpec != null ? JSON.stringify(parsed.existingSpec) : '',
+    ].join('\n')
+    const referencedSkills = resolveReferencedSkills(referenceText, skillCatalog)
+
     const knownCapabilities = [
       ...new Set(
         [
           ...PLAYBOOK_CAPABILITY_NAMES,
           ...capabilitySets.flat().filter((c) => c.allowed).map((c) => c.toolName),
+          // A hivatkozott skill `requires`-e is érvényes capability-szó: enélkül a
+          // szerző nem tehetné a szerep requiredCapabilities-ébe, amit a skill
+          // futásidőben megkövetel (a skill betöltése ilyenkor fail-closed elbukna).
+          ...referencedSkills.flatMap((s) => s.requiredTools),
         ],
       ),
     ]
-    const permissions = await repositories.rolePermissions.findAll()
-    const knownPermissions = permissions.map((p) => p.permissionKey)
 
     const tenant = await repositories.tenants.findById(user.activeTenantId!)
     const outputLanguage = readTenantLanguage(tenant?.settings)
@@ -270,6 +288,8 @@ export async function draftPlaybookFromDescription(input: unknown) {
       tenantId: user.activeTenantId,
       knownCapabilities,
       knownPermissions,
+      skillCatalog,
+      referencedSkills,
       outputLanguage,
     }
 
@@ -300,7 +320,14 @@ export async function draftPlaybookFromDescription(input: unknown) {
     }
 
     const autoFixFailed = fixRounds === AUTO_FIX_ROUNDS && result.validation.errors.length > 0
-    return ok({ spec: result.spec, validation: result.validation, fixRounds, autoFixFailed })
+    return ok({
+      spec: result.spec,
+      validation: result.validation,
+      fixRounds,
+      autoFixFailed,
+      // A UI-nak: melyik skillt olvasta el az agent a folyamat megtervezéséhez.
+      usedSkills: referencedSkills.map((s) => ({ name: s.name, version: s.version })),
+    })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült Playbook-draftot generálni')
   }

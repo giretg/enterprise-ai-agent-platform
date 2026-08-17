@@ -263,6 +263,12 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
   },
   tulajdoni_lap_parse: {
     outputSchema: z.looseObject({ nezet: z.string(), filename: z.string() }),
+    effect: (output) => {
+      const summary = rec(rec(output).osszesites)
+      const owners = num(summary, 'egyediTulajdonos') ?? arr(output, 'tulajdonosok')?.length ?? 0
+      const parsed = Object.keys(summary).length > 0 ? Math.max(owners, 1) : owners
+      return effect(parsed, 'feldolgozott tulajdonosi rekord', str(output, 'kimenet'))
+    },
     emptiness: (output) => {
       const owners = arr(output, 'tulajdonosok')
       const entries = arr(output, 'bejegyzesek')

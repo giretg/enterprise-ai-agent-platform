@@ -1,7 +1,8 @@
 'use client'
 
-import { type ChangeEvent, useCallback, useEffect, useMemo, useState, useTransition } from 'react'
+import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState, useTransition } from 'react'
 import { Badge, Card } from '@/components/ui/shell'
+import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import {
   activateConnector,
   assignConnectorToAgent,
@@ -233,6 +234,117 @@ type ConnectorTemplateRow = {
   descriptor: TemplateDescriptor
 }
 
+function ProvisioningTopicShell({
+  selfUpdating,
+  connectorCreation,
+  templates,
+  connections,
+  canManageCatalog,
+}: {
+  selfUpdating: ReactNode
+  connectorCreation: ReactNode
+  templates: ReactNode
+  connections: ReactNode
+  canManageCatalog: boolean
+}) {
+  return (
+    <SettingsSectionShell
+      ariaLabel="Provisioning témák"
+      sections={[
+        {
+          id: 'onfrissito-kapcsolatok',
+          label: 'Önfrissítő kapcsolatok',
+          description: 'Kapcsolatok, amelyek jóváhagyással átvehetik a partner új képességeit.',
+          content: selfUpdating,
+        },
+        {
+          id: 'uj-kapcsolat',
+          label: 'Új kapcsolat',
+          description: 'Új draft connector létrehozása ellenőrizhető lépésekben.',
+          content: connectorCreation,
+        },
+        {
+          id: 'sablonok',
+          label: 'Connector-sablonok',
+          description: canManageCatalog
+            ? 'Platform-katalógus. Új sablont csak superadmin vehet fel; a tenantok ezekből hoznak létre connectort.'
+            : 'Platform-katalógus. Ezekből a sablonokból hozhatsz létre új connectort.',
+          content: templates,
+        },
+        {
+          id: 'kapcsolatok',
+          label: 'Draftok és aktív kapcsolatok',
+          description: 'A függőben lévő draftok és az aktivált provisioning-kapcsolatok.',
+          content: connections,
+        },
+      ]}
+    />
+  )
+}
+
+function TemplateCatalogList({
+  templates,
+  pending,
+  canManage,
+  onLoad,
+  onDeprecate,
+}: {
+  templates: ConnectorTemplateRow[]
+  pending: boolean
+  canManage: boolean
+  onLoad?: (template: ConnectorTemplateRow) => void
+  onDeprecate?: (templateId: string) => void
+}) {
+  return (
+    <div className="space-y-2">
+      <h3 className="text-base font-semibold">Elérhető sablonok</h3>
+      {templates.length === 0 ? (
+        <p className="text-sm text-ink-soft">Nincs elérhető sablon.</p>
+      ) : (
+        templates.map((template) => (
+          <div key={template.id} className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold">{template.displayName}</span>
+              <Badge tone="neutral">v{template.version}</Badge>
+              <Badge tone={template.origin === 'builtin' ? 'success' : 'warning'}>
+                {template.origin}
+              </Badge>
+              <Badge tone={template.status === 'active' ? 'success' : 'warning'}>
+                {template.status}
+              </Badge>
+            </div>
+            <p className="mt-1 font-mono text-[11px] text-ink-soft">{template.key}</p>
+            {template.description ? (
+              <p className="mt-1 text-ink-soft">{template.description}</p>
+            ) : null}
+            {canManage ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="rounded-md border border-ink/20 px-2 py-1 font-semibold"
+                  onClick={() => onLoad?.(template)}
+                >
+                  Betöltés
+                </button>
+                {template.origin === 'custom' && template.status === 'active' ? (
+                  <button
+                    type="button"
+                    disabled={pending}
+                    className="rounded-md border border-honey/40 bg-honey/10 px-2 py-1 font-semibold text-honey disabled:opacity-50"
+                    onClick={() => onDeprecate?.(template.id)}
+                  >
+                    Deprecate
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ))
+      )}
+    </div>
+  )
+}
+
 function templateLineKey(input: {
   key?: string
   origin?: 'builtin' | 'custom'
@@ -269,7 +381,7 @@ const EXAMPLE_TEMPLATE_DESCRIPTOR = JSON.stringify(
   {
     key: 'custom-crm',
     displayName: 'Custom CRM',
-    description: 'Tenant-scope-olt HTTP API sablon API-kulcsos hitelesítéssel.',
+    description: 'Platform-katalógus HTTP API sablon API-kulcsos hitelesítéssel.',
     activationHelp:
       'Írd le röviden, hol hoz létre a user API kulcsot, milyen scopes/jogok kellenek, és mit kell beállítania az aktiválás előtt.',
     baseUrl: 'https://api.custom-crm.example',
@@ -347,7 +459,7 @@ function lifecycleTone(s: string): 'neutral' | 'success' | 'warning' | 'danger' 
   return 'neutral'
 }
 
-export function ProvisioningPanel() {
+export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: boolean }) {
   const [drafts, setDrafts] = useState<DraftRow[]>([])
   const [agents, setAgents] = useState<AgentOption[]>([])
   const [templates, setTemplates] = useState<ConnectorTemplateRow[]>([])
@@ -377,7 +489,7 @@ export function ProvisioningPanel() {
   const [discovering, setDiscovering] = useState(false)
   const [discoverySources, setDiscoverySources] = useState<DiscoverySource[]>([])
 
-  // Custom connector-sablon szerkesztő láthatósága (alapból csak egy gomb)
+  // Katalógus-szerkesztő láthatósága (csak superadmin, alapból csak egy gomb)
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false)
   // Új draft connector wizard (alapból csak egy gomb)
   const [showCreateDraftForm, setShowCreateDraftForm] = useState(false)
@@ -391,7 +503,6 @@ export function ProvisioningPanel() {
   const [selectedScopes, setSelectedScopes] = useState<string[]>([])
   const [selectedEndpoints, setSelectedEndpoints] = useState<string[]>([])
   const [templateEditorText, setTemplateEditorText] = useState(EXAMPLE_TEMPLATE_DESCRIPTOR)
-  const [templateTenantScoped, setTemplateTenantScoped] = useState(true)
 
   const applyTemplateSelection = useCallback((template: ConnectorTemplateRow) => {
     const descriptor = template.descriptor
@@ -735,8 +846,11 @@ export function ProvisioningPanel() {
         </div>
       ) : null}
 
-      <SelfUpdatingConnectorsPanel embedded />
-
+      <ProvisioningTopicShell
+        canManageCatalog={canManageCatalog}
+        selfUpdating={<SelfUpdatingConnectorsPanel embedded />}
+        connectorCreation={
+          <>
       {!showCreateDraftForm ? (
         <div>
           <button
@@ -1348,19 +1462,26 @@ export function ProvisioningPanel() {
         </div>
       </Card>
       )}
-
-      {!templateEditorOpen ? (
-        <div>
+          </>
+        }
+        templates={
+          <>
+      {canManageCatalog && !templateEditorOpen ? (
+        <div className="space-y-4">
           <button
             type="button"
             onClick={() => setTemplateEditorOpen(true)}
             className="inline-flex items-center gap-2 rounded-md border border-ink/15 bg-card px-4 py-2 text-sm font-semibold text-ink transition hover:border-coral/40 hover:text-coral-deep"
           >
-            Custom connector-sablonok
+            Katalógus szerkesztése
           </button>
+          <Card title="Platform connector-sablonok">
+            <TemplateCatalogList templates={templates} pending={pending} canManage={false} />
+          </Card>
         </div>
-      ) : (
-      <Card title="Custom connector-sablonok">
+      ) : null}
+      {canManageCatalog && templateEditorOpen ? (
+      <Card title="Platform connector-sablonok">
         <div className="mb-4 flex justify-end">
           <button
             type="button"
@@ -1376,7 +1497,7 @@ export function ProvisioningPanel() {
               <div>
                 <h3 className="text-base font-semibold">Sablon descriptor</h3>
                 <p className="mt-1 text-xs text-ink-soft">
-                  Mentéskor új verzió jön létre, és lefut a materializer self-check.
+                  A sablon a teljes platform katalógusába kerül. Mentéskor új verzió jön létre, és lefut a materializer self-check.
                 </p>
               </div>
               <button
@@ -1393,14 +1514,6 @@ export function ProvisioningPanel() {
               onChange={(e) => setTemplateEditorText(e.target.value)}
             />
             <div className="flex flex-wrap items-center gap-3">
-              <label className="inline-flex items-center gap-2 text-xs font-semibold text-ink-soft">
-                <input
-                  type="checkbox"
-                  checked={templateTenantScoped}
-                  onChange={(e) => setTemplateTenantScoped(e.target.checked)}
-                />
-                Tenant-scope
-              </label>
               <button
                 type="button"
                 disabled={pending || !templateEditorText.trim()}
@@ -1413,11 +1526,7 @@ export function ProvisioningPanel() {
                     return
                   }
                   run(
-                    () =>
-                      upsertConnectorTemplateAction({
-                        descriptor,
-                        tenantScoped: templateTenantScoped,
-                      }),
+                    () => upsertConnectorTemplateAction({ descriptor }),
                     'Connector-sablon mentve új verzióként.',
                   )
                 }}
@@ -1428,62 +1537,33 @@ export function ProvisioningPanel() {
             </div>
           </div>
 
-          <div className="space-y-2">
-            <h3 className="text-base font-semibold">Elérhető sablonok</h3>
-            {templates.length === 0 ? (
-              <p className="text-sm text-ink-soft">Nincs elérhető sablon.</p>
-            ) : (
-              templates.map((template) => (
-                <div key={template.id} className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold">{template.displayName}</span>
-                    <Badge tone="neutral">v{template.version}</Badge>
-                    <Badge tone={template.origin === 'builtin' ? 'success' : 'warning'}>
-                      {template.origin}
-                    </Badge>
-                    <Badge tone={template.status === 'active' ? 'success' : 'warning'}>
-                      {template.status}
-                    </Badge>
-                  </div>
-                  <p className="mt-1 font-mono text-[11px] text-ink-soft">{template.key}</p>
-                  {template.description ? (
-                    <p className="mt-1 text-ink-soft">{template.description}</p>
-                  ) : null}
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="rounded-md border border-ink/20 px-2 py-1 font-semibold"
-                      onClick={() => {
-                        setTemplateEditorText(JSON.stringify(template.descriptor, null, 2))
-                        setTemplateTenantScoped(template.tenantId !== null)
-                      }}
-                    >
-                      Betöltés
-                    </button>
-                    {template.origin === 'custom' && template.status === 'active' ? (
-                      <button
-                        type="button"
-                        disabled={pending}
-                        className="rounded-md border border-honey/40 bg-honey/10 px-2 py-1 font-semibold text-honey disabled:opacity-50"
-                        onClick={() =>
-                          run(
-                            () => deprecateConnectorTemplateAction({ templateId: template.id }),
-                            'Connector-sablon deprecated állapotba került.',
-                          )
-                        }
-                      >
-                        Deprecate
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+          <TemplateCatalogList
+            templates={templates}
+            pending={pending}
+            canManage
+            onLoad={(template) => setTemplateEditorText(JSON.stringify(template.descriptor, null, 2))}
+            onDeprecate={(templateId) =>
+              run(
+                () => deprecateConnectorTemplateAction({ templateId }),
+                'Connector-sablon deprecated állapotba került.',
+              )
+            }
+          />
         </div>
       </Card>
-      )}
-
+      ) : null}
+      {!canManageCatalog ? (
+        <Card title="Platform connector-sablonok">
+          <p className="mb-4 text-sm text-ink-soft">
+            Ezekből a sablonokból hozhatsz létre connectort. Új sablont csak platform-superadmin vehet fel.
+          </p>
+          <TemplateCatalogList templates={templates} pending={pending} canManage={false} />
+        </Card>
+      ) : null}
+          </>
+        }
+        connections={
+          <div className="space-y-6">
       <Card title={`Draftok (${openDrafts.length})`}>
         {!loadedOnce ? (
           <p className="text-sm text-ink-soft">Betöltés…</p>
@@ -1527,6 +1607,9 @@ export function ProvisioningPanel() {
           </div>
         )}
       </Card>
+          </div>
+        }
+      />
     </div>
   )
 }
@@ -1710,17 +1793,17 @@ function DraftCard({
   const validationReady = !!v && v.status !== 'failed'
   const reviewApproved = draft.reviewStatus === 'approved'
   const sandboxReady = draft.sandboxTestOk === true
-  const activationReady = reviewApproved && validationReady && sandboxReady
+  const activationReady = validationReady && sandboxReady && reviewApproved
   const draftSteps: Array<{ id: DraftManageStep; label: string; hint: string; done: boolean }> = [
     { id: 'inspect', label: 'Áttekintés', hint: 'Config és toolok', done: !!cfg || !!draft.httpApiView || !!gmailView },
     { id: 'validate', label: 'Validáció', hint: v ? v.status : 'Még nem futott', done: validationReady },
-    { id: 'review', label: 'Review', hint: draft.reviewStatus, done: reviewApproved },
     {
       id: 'sandbox',
       label: 'Sandbox',
       hint: draft.sandboxTestOk === true ? 'ok' : draft.sandboxTestOk === false ? 'fail' : 'Még nem futott',
       done: sandboxReady,
     },
+    { id: 'review', label: 'Review', hint: draft.reviewStatus, done: reviewApproved },
     {
       id: 'activate',
       label: 'Aktiválás',
@@ -2231,8 +2314,8 @@ function DraftCard({
             <div>
               <h4 className="mb-1 font-semibold">Determinisztikus validáció</h4>
               <p className="text-xs text-ink-soft">
-                A draft még nincs validálva. Futtasd le a validátort, mielőtt review vagy aktiválás
-                következne.
+                A draft még nincs validálva. Futtasd le a validátort, mielőtt sandbox-teszt,
+                review vagy aktiválás következne.
               </p>
             </div>
           )}
@@ -2260,8 +2343,9 @@ function DraftCard({
               <div>
                 <h4 className="font-semibold">Review döntés</h4>
                 <p className="mt-1 text-xs text-ink-soft">
-                  Ez csak draft állapotban értelmezett kapu. Aktív connectornál visszavonás vagy
-                  új verzió kell, nem utólagos review-átírás.
+                  A sandbox-teszt eredményét is figyelembe vevő végső emberi jóváhagyás. Ez csak
+                  draft állapotban értelmezett kapu. Aktív connectornál visszavonás vagy új verzió
+                  kell, nem utólagos review-átírás.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -2381,8 +2465,8 @@ function DraftCard({
               ) : null}
               {!activationReady ? (
                 <p className="mb-3 text-xs text-honey">
-                  Az aktiválás feltétele: approved review, nem-failed validáció és sikeres
-                  sandbox-teszt.
+                  Az aktiválás feltétele: nem-failed validáció, sikeres sandbox-teszt és approved
+                  review.
                 </p>
               ) : null}
               <div className="grid gap-2 sm:grid-cols-2">

@@ -232,7 +232,7 @@ export class ProvisioningService {
     return { validationResult }
   }
 
-  // ── §8.3 reviewConnectorDraft (emberi) ────────────────────────────────────
+  // ── §8.3 reviewConnectorDraft (emberi, sandbox után) ──────────────────────
 
   async reviewConnectorDraft(
     input: { draftId: string; decision: 'approve' | 'changes_requested' | 'reject'; note?: string },
@@ -240,6 +240,17 @@ export class ProvisioningService {
   ): Promise<{ reviewStatus: string }> {
     const user = this.requireHumanAdmin(actor, 'reviewConnectorDraft')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
+
+    const validation = draft.validationResult as ValidationResult | null
+    if (!validation || validation.status === 'failed') {
+      throw new ProvisioningError(
+        'DRAFT_VALIDATION_FAILED',
+        'validation_result must be passed/warned before review',
+      )
+    }
+    if (draft.sandboxTestOk !== true) {
+      throw new ProvisioningError('SANDBOX_TEST_FAILED', 'sandbox connection-test must pass before review')
+    }
 
     const reviewStatus =
       input.decision === 'approve'
@@ -377,11 +388,8 @@ export class ProvisioningService {
     const draft = await this.loadDraftForTenant(input.draftId, actor)
     const isGmail = draft.connector.type === 'gmail'
 
-    // Előfeltételek (§8.5, P5): approved review + nem-failed validáció + sikeres
-    // sandbox-teszt + (secretAlias VAGY apiKey).
-    if (draft.reviewStatus !== 'approved') {
-      throw new ProvisioningError('DRAFT_NOT_APPROVED', 'review_status must be approved')
-    }
+    // Előfeltételek (§8.5, P5): nem-failed validáció + sikeres sandbox-teszt +
+    // approved review + (secretAlias VAGY apiKey).
     const validation = draft.validationResult as ValidationResult | null
     if (!validation || validation.status === 'failed') {
       throw new ProvisioningError(
@@ -391,6 +399,9 @@ export class ProvisioningService {
     }
     if (draft.sandboxTestOk !== true) {
       throw new ProvisioningError('SANDBOX_TEST_FAILED', 'sandbox connection-test must pass first')
+    }
+    if (draft.reviewStatus !== 'approved') {
+      throw new ProvisioningError('DRAFT_NOT_APPROVED', 'review_status must be approved')
     }
 
     const hasApiKey = Boolean(input.apiKey?.trim())
@@ -717,7 +728,7 @@ export class ProvisioningService {
   /**
    * Egy még NEM aktivált (draft/validated) connector config-jának javító szerkesztése.
    * A módosítás resetteli a gate-et (validationResult/review/sandbox), így a javított
-   * config újra végigmegy a valid→review→sandbox→aktiválás úton. A secret SOSEM része a
+   * config újra végigmegy a valid→sandbox→review→aktiválás úton. A secret SOSEM része a
    * confignak — csak a javasolt alias. Agent-aktor tiltott (CR-MVP-002).
    */
   async updateConnectorDraftConfig(

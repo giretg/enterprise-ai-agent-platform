@@ -1756,6 +1756,9 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       'már NEM hatályos, ezért a lap naiv olvasása súlyosan téves képet ad.\n' +
       'A tool a hatályos hányadok összegét ellenőrzi: ha `osszesites.valid` HAMIS, a `figyelmeztetes` ' +
       'meződ ki van töltve — ilyenkor NE válaszolj tulajdoni adatot, hanem jelezd a bizonytalanságot.\n' +
+      '`kimenet`: opcionális workspace JSON path. Megadásakor a tool a TELJES strukturált, ' +
+      'verziózott agent-handoffot fájlba írja; ezt a következő agent ' +
+      '`tulajdoni_lap_egyeztetes.feldolgozottLapPath` paraméterként adja át.\n' +
       'nezet: "osszefoglalo" (alap — ingatlan, top tulajdonosok, széljegyek, ellenőrzés), ' +
       '"tulajdonosok" (teljes, lapozható tulajdonoslista), "bejegyzesek" (II. rész), "terhek" (III. rész). ' +
       'csakHatalyos alapból igaz; a raw (szó szerinti szöveg) alapból kimarad, mert nagy.',
@@ -1767,6 +1770,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       limit: z.number().int().min(1).max(5000).optional(),
       offset: z.number().int().min(0).max(100_000).optional(),
       raw: z.boolean().optional(),
+      kimenet: z.string().min(1).max(500).optional(),
     }),
     toInvokeInput: (args, ctx) => ({
       ...ctx,
@@ -1780,10 +1784,11 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
         limit: numArg(args, 'limit'),
         offset: numArg(args, 'offset'),
         raw: boolArg(args, 'raw'),
+        kimenet: optStr(args, 'kimenet'),
       },
     }),
     trust: 'external_untrusted',
-    sideEffecting: false,
+    sideEffecting: true,
     surfaces: CHAT_ONLY,
     capability: 'tulajdoni_lap_parse',
     handlerId: 'tulajdoni_lap_parse',
@@ -1799,7 +1804,9 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       '(pl. Ostoros Föld frissítő skill: a JSON a forrás). A skill dönti el a deliverable-t, ne a tool.\n' +
       'HA egyeztetni kell, EZT hívd — ne a tulajdoni_lap_parse-t lapozgatva, ne köztes JSON-nal, ' +
       'ne cellánkénti xlsx-írással: az sokszoros költség és kifut a forduló keretéből.\n' +
-      'Lap-forrás (egyeztetéshez EGYIK kötelező): documentId (UUID) VAGY path (munkaterület-fájl). ' +
+      'Lap-forrás (egyeztetéshez EGYIK kötelező): documentId (UUID), path (munkaterület-fájl), ' +
+      'VAGY feldolgozottLapPath (a tulajdoni_lap_parse verziózott handoff JSON-ja). ' +
+      'A feldolgozottLapPath ágon NINCS új PDF-parse. ' +
       'Kivétel: coverage-only — csak `coverageAppliedPath` (+ opcionális `coverageMuveletekPath`), ' +
       'ilyenkor NINCS lap-parse.\n' +
       'Nyilvántartás oldal (EGYIK): nyilvantartas (sorok tömbje) VAGY nyilvantartasPath ' +
@@ -1821,6 +1828,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     argsSchema: z.object({
       documentId: z.string().max(200).optional(),
       path: z.string().max(500).optional(),
+      feldolgozottLapPath: z.string().max(500).optional(),
       nyilvantartas: z
         .array(
           z.object({
@@ -1848,6 +1856,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       args: {
         documentId: optStr(args, 'documentId'),
         path: optStr(args, 'path'),
+        feldolgozottLapPath: optStr(args, 'feldolgozottLapPath'),
         nyilvantartas: Array.isArray(args.nyilvantartas)
           ? (args.nyilvantartas as Array<Record<string, unknown>>)
               .map((row) => normalizeNyilvantartasRow(row))

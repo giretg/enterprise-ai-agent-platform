@@ -42,13 +42,29 @@ export const PANEL_WIZARD_AGENT_NAMES: readonly string[] = [
   PROVISIONING_ASSISTANT_AGENT_NAME,
 ]
 
+/** Beépített panel-varázsló kanonikus neve. Önmagában nem jogosultsági kapu. */
+export function isPanelWizardAgentName(name: string): boolean {
+  return PANEL_WIZARD_AGENT_NAMES.includes(name)
+}
+
 /**
  * True, ha az agent dedikált-panel varázsló: `tenantId = null` ÉS a nevesített
  * varázslók egyike. A `tenantId` feltétel szándékos: egy tenant SAJÁT, azonos nevű
  * agentje normál gráfcsomópont marad, nem kap varázsló-immunitást.
  */
 export function isPanelWizardAgent(agent: { name: string; tenantId: string | null }): boolean {
-  return agent.tenantId === null && PANEL_WIZARD_AGENT_NAMES.includes(agent.name)
+  return agent.tenantId === null && isPanelWizardAgentName(agent.name)
+}
+
+/**
+ * A platform-beállítások felületén megjelenő valódi rendszer-varázslókat választja ki.
+ * Egy tenant saját, azonos nevű agentje adat- és módosítási szempontból is tenant-scope-os
+ * marad; nem kerülhet át a globális rendszeragent-admin felületre.
+ */
+export function selectSystemPanelWizardAgents<T extends { name: string; tenantId: string | null }>(
+  agents: readonly T[],
+): T[] {
+  return agents.filter(isPanelWizardAgent)
 }
 
 /**

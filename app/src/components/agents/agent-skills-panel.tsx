@@ -10,6 +10,8 @@ import {
   type AssignableSkill,
 } from '@/app/actions/skills'
 import { Badge, Card } from '@/components/ui/shell'
+import { OpenInNewWindowLink } from '@/components/ui/open-in-new-window-link'
+import { CREATE_AGENT_WIZARD_EXTERNAL_HREFS } from '@/lib/create-agent-wizard'
 import type { SkillReadinessColor } from '@/lib/skill/skill-readiness'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
 import { formatToolUiName } from '@/lib/tool-ui-labels'
@@ -42,21 +44,33 @@ export function AgentSkillsPanel({
   agentId,
   assigned,
   assignable,
+  canEdit = true,
+  bare = false,
+  onChanged,
 }: {
   agentId: string
   assigned: AgentSkillRow[]
   assignable: AssignableSkill[]
+  /** Operátor a listát látja; az admin ugyanitt rendel / tilt / leszerel. */
+  canEdit?: boolean
+  /** A hívó már adott keretet (címsor + doboz) — ne rajzoljunk másodikat. */
+  bare?: boolean
+  onChanged?: () => void
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<string>(assignable[0]?.activeVersionId ?? '')
+  const selectedId = assignable.some((s) => s.activeVersionId === selected)
+    ? selected
+    : (assignable[0]?.activeVersionId ?? '')
 
   function run(fn: () => Promise<{ success: boolean; error?: string }>) {
     startTransition(async () => {
       setError(null)
       const res = await fn()
       if (res.success) {
+        onChanged?.()
         router.refresh()
       } else {
         setError(res.error ?? 'Ismeretlen hiba.')
@@ -64,8 +78,8 @@ export function AgentSkillsPanel({
     })
   }
 
-  return (
-    <Card title="Skillek (progresszív betöltés)">
+  const body = (
+    <>
       <p className="mb-4 text-xs text-ink-faint">
         A hozzárendelt skillek Level-0 indexe a promptba kerül; a teljes instrukciót az
         agent a <code>load_skill</code> toollal, auditáltan húzza be. A readiness csak
@@ -117,51 +131,57 @@ export function AgentSkillsPanel({
                 </ul>
               )}
 
-              <div className="mt-3 flex items-center gap-3">
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() =>
-                    run(() =>
-                      setSkillEnabledAction({
-                        agentId,
-                        skillVersionId: s.skillVersionId,
-                        enabled: !s.enabled,
-                      }),
-                    )
-                  }
-                  className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-medium text-ink-soft disabled:opacity-50"
-                >
-                  {s.enabled ? 'Letiltás' : 'Engedélyezés'}
-                </button>
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() =>
-                    run(() => unassignSkillAction({ agentId, skillVersionId: s.skillVersionId }))
-                  }
-                  className="rounded-full px-3 py-1 text-xs font-medium text-coral disabled:opacity-50"
-                >
-                  Leszerelés
-                </button>
-              </div>
+              {canEdit ? (
+                <div className="mt-3 flex items-center gap-3">
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() =>
+                      run(() =>
+                        setSkillEnabledAction({
+                          agentId,
+                          skillVersionId: s.skillVersionId,
+                          enabled: !s.enabled,
+                        }),
+                      )
+                    }
+                    className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-medium text-ink-soft disabled:opacity-50"
+                  >
+                    {s.enabled ? 'Letiltás' : 'Engedélyezés'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() =>
+                      run(() => unassignSkillAction({ agentId, skillVersionId: s.skillVersionId }))
+                    }
+                    className="rounded-full px-3 py-1 text-xs font-medium text-coral disabled:opacity-50"
+                  >
+                    Leszerelés
+                  </button>
+                </div>
+              ) : null}
             </li>
           ))}
         </ul>
       )}
 
+      {canEdit ? (
       <div className="mt-5 border-t border-ink-faint/15 pt-4">
         <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-ink-faint">
           Skill hozzárendelése
         </p>
         {assignable.length === 0 ? (
           <p className="text-xs text-ink-faint">
-            Nincs több hozzárendelhető aktív skill a katalógusban.
+            Nincs több hozzárendelhető aktív skill a katalógusban.{' '}
+            <OpenInNewWindowLink href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.skills}>
+              Új skill létrehozása
+            </OpenInNewWindowLink>
           </p>
         ) : (
           <div className="flex flex-wrap items-center gap-3">
             <select
-              value={selected}
+              value={selectedId}
               onChange={(e) => setSelected(e.target.value)}
               className="rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-sm"
             >
@@ -173,19 +193,29 @@ export function AgentSkillsPanel({
             </select>
             <button
               type="button"
-              disabled={pending || !selected}
+              disabled={pending || !selectedId}
               onClick={() =>
-                run(() => assignSkillAction({ agentId, skillVersionId: selected }))
+                run(() => assignSkillAction({ agentId, skillVersionId: selectedId }))
               }
               className="rounded-full bg-coral/20 px-4 py-2 text-sm font-semibold text-coral disabled:opacity-50"
             >
               {pending ? 'Folyamatban...' : 'Hozzárendelés'}
             </button>
+            <OpenInNewWindowLink
+              href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.skills}
+              className="text-xs font-medium text-coral hover:text-coral-deep"
+            >
+              Új skill
+            </OpenInNewWindowLink>
           </div>
         )}
       </div>
+      ) : null}
 
       {error && <p className="mt-4 text-sm text-coral">{error}</p>}
-    </Card>
+    </>
   )
+
+  if (bare) return body
+  return <Card title="Skillek (progresszív betöltés)">{body}</Card>
 }

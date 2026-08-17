@@ -11,10 +11,13 @@ export function AgentCapabilitiesPanel({
   agentId,
   currentCapabilities,
   isOrchestrator,
+  bare = false,
 }: {
   agentId: string
   currentCapabilities: Array<{ toolName: string; allowed: boolean }>
   isOrchestrator: boolean
+  /** A hívó már adott keretet (címsor + doboz) — ne rajzoljunk másodikat. */
+  bare?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -67,8 +70,8 @@ export function AgentCapabilitiesPanel({
     [...enabled].some((t) => !initialEnabled.has(t)) ||
     [...initialEnabled].some((t) => !enabled.has(t))
 
-  return (
-    <Card title="Eszközjogok szerkesztése">
+  const body = (
+    <>
       <p className="mb-4 text-xs text-ink-faint">
         Jelöld be az eszközöket, amelyeket az agent hívhat. A kapcsolódó platform
         connectorokat a rendszer mentéskor automatikusan linkeli, ha szükséges.
@@ -101,6 +104,9 @@ export function AgentCapabilitiesPanel({
           <span className="text-xs text-ink-faint">Nem mentett változtatások</span>
         )}
       </div>
-    </Card>
+    </>
   )
+
+  if (bare) return body
+  return <Card title="Eszközjogok szerkesztése">{body}</Card>
 }

@@ -162,6 +162,89 @@ export type TulajdoniLapResult = {
   }
 }
 
+/**
+ * Agentek közötti, fájlalapú átadási szerződés. A teljes parse-eredmény a
+ * workspace-ben marad, így a több száz tulajdonosi sor nem kerül az LLM
+ * kontextusába, a következő agent mégis ugyanabból a determinisztikus adatból
+ * tud dolgozni.
+ */
+export const TULAJDONI_LAP_HANDOFF_KIND = 'tulajdoni_lap_feldolgozas' as const
+export const TULAJDONI_LAP_HANDOFF_SCHEMA_VERSION = 1 as const
+
+export type TulajdoniLapHandoff = {
+  kind: typeof TULAJDONI_LAP_HANDOFF_KIND
+  schemaVersion: typeof TULAJDONI_LAP_HANDOFF_SCHEMA_VERSION
+  source: {
+    documentId: string | null
+    path: string | null
+    filename: string
+  }
+  parsed: TulajdoniLapResult
+}
+
+export function buildTulajdoniLapHandoff(input: {
+  parsed: TulajdoniLapResult
+  documentId: string | null
+  path?: string
+  filename: string
+}): TulajdoniLapHandoff {
+  return {
+    kind: TULAJDONI_LAP_HANDOFF_KIND,
+    schemaVersion: TULAJDONI_LAP_HANDOFF_SCHEMA_VERSION,
+    source: {
+      documentId: input.documentId,
+      path: input.path ?? null,
+      filename: input.filename,
+    },
+    parsed: input.parsed,
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Fail-closed ellenőrzés a workspace-ből visszaolvasott agent-handoffhoz. */
+export function parseTulajdoniLapHandoff(value: unknown): TulajdoniLapHandoff {
+  if (!isRecord(value)) throw new Error('az átadási fájl gyökere nem objektum')
+  if (value.kind !== TULAJDONI_LAP_HANDOFF_KIND) {
+    throw new Error(`hibás kind (elvárt: ${TULAJDONI_LAP_HANDOFF_KIND})`)
+  }
+  if (value.schemaVersion !== TULAJDONI_LAP_HANDOFF_SCHEMA_VERSION) {
+    throw new Error(
+      `nem támogatott schemaVersion (elvárt: ${TULAJDONI_LAP_HANDOFF_SCHEMA_VERSION})`,
+    )
+  }
+  if (!isRecord(value.source) || typeof value.source.filename !== 'string') {
+    throw new Error('hiányos source metaadat')
+  }
+  const parsed = value.parsed
+  if (!isRecord(parsed) || !isRecord(parsed.meta) || !isRecord(parsed.osszesites)) {
+    throw new Error('hiányos parsed/meta/osszesites adat')
+  }
+  if (
+    !Array.isArray(parsed.tulajdonosok) ||
+    !Array.isArray(parsed.szeljegyek) ||
+    !Array.isArray(parsed.tulajdoniBejegyzesek) ||
+    !Array.isArray(parsed.terhek)
+  ) {
+    throw new Error('hiányos strukturált rekordlisták')
+  }
+  if (typeof parsed.osszesites.valid !== 'boolean') {
+    throw new Error('hiányzik az osszesites.valid ellenőrzési eredmény')
+  }
+  const invalidOwner = parsed.tulajdonosok.some(
+    (owner) =>
+      !isRecord(owner) ||
+      typeof owner.nev !== 'string' ||
+      typeof owner.hanyad !== 'string' ||
+      !Array.isArray(owner.bejegyzesSorszamok),
+  )
+  if (invalidOwner) throw new Error('érvénytelen tulajdonos rekord')
+
+  return value as TulajdoniLapHandoff
+}
+
 // ── 1. Oldal-szemét eltávolítása ────────────────────────────────────────────
 
 const FOOTER_PATTERNS = ['Folytatás a következő oldalon', 'Folytatás az előző oldalról']

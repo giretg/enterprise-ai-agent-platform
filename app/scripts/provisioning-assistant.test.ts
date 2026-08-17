@@ -377,8 +377,8 @@ async function draftToActivatable(
     actor,
   )
   await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
-  await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
   await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+  await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
   return created
 }
 
@@ -468,13 +468,15 @@ async function run() {
     assert.equal(drafts.drafts.get(created.draftId)!.connector.authMode, 'user_delegated')
   })
 
-  // P4: admin review jóváhagy/módosítást kér; auditált
-  await test('P4: reviewConnectorDraft changes_requested + approve auditált', async () => {
+  // P4: a sandbox után az admin review jóváhagy/módosítást kér; auditált
+  await test('P4: sandbox utáni review changes_requested + approve auditált', async () => {
     const { svc, audit } = makeService()
     const created = await svc.createConnectorDraft(
       { name: 'Acme CRM', sourceType: 'api_doc', generatedConfig: cleanConfig() },
       adminActor,
     )
+    await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
+    await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
     const r1 = await svc.reviewConnectorDraft(
       { draftId: created.draftId, decision: 'changes_requested' },
       adminActor,
@@ -483,6 +485,18 @@ async function run() {
     const r2 = await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
     assert.equal(r2.reviewStatus, 'approved')
     assert.equal(audit.byAction('provisioning.draft.review').length, 2)
+  })
+
+  await test('P4-neg: review sandbox-teszt előtt → SANDBOX_TEST_FAILED', async () => {
+    const { svc } = makeService()
+    const created = await svc.createConnectorDraft(
+      { name: 'Acme CRM', sourceType: 'api_doc', generatedConfig: cleanConfig() },
+      adminActor,
+    )
+    await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
+    await expectError('SANDBOX_TEST_FAILED', () =>
+      svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor),
+    )
   })
 
   // P5: aktiválás csak approved + nem-failed + sikeres sandbox + secret-alias mellett
@@ -572,8 +586,8 @@ async function run() {
       adminActor,
     )
     await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
-    await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
     await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+    await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
     return created
   }
 
@@ -641,8 +655,8 @@ async function run() {
       adminActor,
     )
     await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
-    await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
     await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+    await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
     const res = await svc.activateConnector(
       { draftId: created.draftId, secretAlias: 'env:GSC_CLIENT_SECRET' },
       adminActor,
@@ -789,8 +803,8 @@ async function run() {
       adminActor,
     )
     await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
-    await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
     await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+    await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
     await svc.activateConnector(
       { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
       adminActor,
@@ -820,8 +834,7 @@ async function run() {
     const { validationResult } = await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
     assert.equal(validationResult.status, 'failed')
     assert.equal(validationResult.checks.forbiddenPatterns, 'failed')
-    // még ha valaki jóváhagyná és sandbox is átmenne, a failed validáció blokkol
-    await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
+    // A failed validáció a sandboxot és a review-t is megelőzi.
     await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
     await expectError('DRAFT_VALIDATION_FAILED', () =>
       svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, adminActor),
@@ -885,7 +898,6 @@ async function run() {
       adminActor,
     )
     await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
-    await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
     const t = await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
     assert.equal(t.ok, false)
     await expectError('SANDBOX_TEST_FAILED', () =>
@@ -1189,6 +1201,22 @@ async function run() {
     assert.equal(headers['X-Api-Key'], SECRET) // a fejlécben ott a token...
     assert.ok(!JSON.stringify(r).includes(SECRET)) // ...de a visszaadott eredményben SOHA
     assert.equal(r.detail, 'reachable')
+  })
+
+  await test('SBX: token NÉLKÜLI 400 → reachable_auth_required (Meta Graph /me stílus)', async () => {
+    const { fn } = recordingFetch({ status: 400 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: cleanConfig() as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, true)
+    assert.equal(r.statusCode, 400)
+    assert.equal(r.detail, 'reachable_auth_required')
   })
 
   await test('SBX: token NÉLKÜLI 401 → reachable_auth_required (elért, auth később)', async () => {

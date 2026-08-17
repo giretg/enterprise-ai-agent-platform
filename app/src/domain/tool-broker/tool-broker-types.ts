@@ -323,12 +323,19 @@ export type TulajdoniLapParseArgs = {
   limit?: number
   offset?: number
   raw?: boolean
+  /**
+   * Teljes, verziózott agent-handoff JSON a workspace-be. Ha meg van adva, a
+   * következő agent ezt adhatja át `feldolgozottLapPath`-ként az egyeztetőnek.
+   */
+  kimenet?: string
 }
 
 export type TulajdoniLapParseResult = TulajdoniLapView & {
   documentId: string | null
   path?: string
   filename: string
+  /** A létrehozott teljes handoff JSON útvonala; csak `kimenet` mellett. */
+  kimenet: string | null
 }
 
 /**
@@ -340,6 +347,11 @@ export type TulajdoniLapParseResult = TulajdoniLapView & {
 export type TulajdoniLapEgyeztetesArgs = {
   documentId?: string
   path?: string
+  /**
+   * A `tulajdoni_lap_parse` által készített teljes, verziózott handoff JSON.
+   * Megadásakor az egyeztető nem olvassa és nem parse-olja újra a PDF-et.
+   */
+  feldolgozottLapPath?: string
   nyilvantartas?: EgyeztetesNyilvantartasSor[]
   nyilvantartasPath?: string
   /**
@@ -802,6 +814,8 @@ export type ToolBrokerInvokeResult =
       denied: true
       reason: string
       latencyMs: number
+      /** Grant-hiány kártyához — ha a connector feloldódott, de a user-grant nem. */
+      connectorId?: string | null
       /**
        * D1 (issue #195) — az elutasított hívás kimenetele mindig `failed`: nem
        * futott le, tehát semmit nem végzett el. Így a fogyasztó egyetlen mezőből

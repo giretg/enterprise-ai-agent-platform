@@ -22,10 +22,13 @@ export function AgentLifecycleControls({
   agentId,
   status,
   suspendedReason,
+  canManage = true,
 }: {
   agentId: string
   status: Status
   suspendedReason?: string | null
+  /** Operátor csak az állapotot látja; az admin ugyanitt kapcsol. */
+  canManage?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -61,6 +64,7 @@ export function AgentLifecycleControls({
 
       {error && <p className="text-xs text-coral">{error}</p>}
 
+      {!canManage ? null : (
       <div className="flex flex-wrap gap-2">
         {status === 'draft' && (
           <button
@@ -161,6 +165,7 @@ export function AgentLifecycleControls({
           </p>
         )}
       </div>
+      )}
     </div>
   )
 }

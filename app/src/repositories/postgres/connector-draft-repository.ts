@@ -215,7 +215,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
       if (draft.connector.lifecycleState !== 'active') {
         throw new Error('only an active connector can be reopened')
       }
-      // A gate resetelése — a javított config újra végigmegy a valid→review→sandbox úton.
+      // A gate resetelése — a javított config újra végigmegy a valid→sandbox→review úton.
       await tx.connectorDraft.update({
         where: { id: params.draftId },
         data: {
