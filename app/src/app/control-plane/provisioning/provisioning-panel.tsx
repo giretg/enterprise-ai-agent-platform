@@ -27,7 +27,7 @@ import {
   validateConnectorDraft,
   type FetchApiDocFromUrlData,
 } from '@/app/actions/provisioning'
-import { startConnectorOAuth } from '@/app/actions/connector-grants'
+import { startConnectorOAuth, getGoogleOAuthConfiguredStatus } from '@/app/actions/connector-grants'
 import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'
 import { OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES } from '@/domain/connector-template/custom-template-seeds'
 import { SelfUpdatingConnectorsPanel } from '@/app/control-plane/connectors/self-updating/self-updating-connectors-panel'
@@ -463,6 +463,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
   const [drafts, setDrafts] = useState<DraftRow[]>([])
   const [agents, setAgents] = useState<AgentOption[]>([])
   const [templates, setTemplates] = useState<ConnectorTemplateRow[]>([])
+  const [googleOauthConfigured, setGoogleOauthConfigured] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [loadedOnce, setLoadedOnce] = useState(false)
@@ -528,10 +529,11 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
 
   const reload = useCallback(() => {
     startTransition(async () => {
-      const [d, a, t] = await Promise.all([
+      const [d, a, t, g] = await Promise.all([
         listProvisioningDrafts(),
         listProvisioningAssignableAgents(),
         listConnectorTemplatesAction(),
+        getGoogleOAuthConfiguredStatus(),
       ])
       if (d.success) setDrafts(d.data as DraftRow[])
       else setError(d.error)
@@ -541,6 +543,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
         setTemplates(rows)
         if (!selectedTemplateId && rows[0]) applyTemplateSelection(rows[0])
       }
+      if (g.success) setGoogleOauthConfigured(g.data.configured)
       setLoadedOnce(true)
     })
   }, [applyTemplateSelection, selectedTemplateId])
@@ -1578,6 +1581,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                 agents={agents}
                 templates={templates}
                 latestTemplateVersions={latestTemplateVersions}
+                googleOauthConfigured={googleOauthConfigured}
                 pending={pending}
                 run={run}
               />
@@ -1600,6 +1604,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                 agents={agents}
                 templates={templates}
                 latestTemplateVersions={latestTemplateVersions}
+                googleOauthConfigured={googleOauthConfigured}
                 pending={pending}
                 run={run}
               />
@@ -1670,6 +1675,7 @@ function DraftCard({
   agents,
   templates,
   latestTemplateVersions,
+  googleOauthConfigured,
   pending,
   run,
 }: {
@@ -1677,6 +1683,7 @@ function DraftCard({
   agents: AgentOption[]
   templates: ConnectorTemplateRow[]
   latestTemplateVersions: Record<string, number>
+  googleOauthConfigured: boolean
   pending: boolean
   run: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
 }) {
@@ -1750,21 +1757,27 @@ function DraftCard({
   const isOstorosborCrm =
     provenance?.templateKey?.startsWith('ostorosbor-crm') === true ||
     cfg?.provider?.startsWith('ostorosbor-crm') === true
-  const hasActivationCredentials =
-    !!apiKey.trim() ||
-    (!!secretAlias.trim() && isResolvableSecretAlias(secretAlias.trim()))
+  const hasActivationCredentials = isGmailConnector
+    ? googleOauthConfigured
+    : !!apiKey.trim() ||
+      (!!secretAlias.trim() && isResolvableSecretAlias(secretAlias.trim()))
   const hasInvalidSecretAlias =
-    !apiKey.trim() && !!secretAlias.trim() && !isResolvableSecretAlias(secretAlias.trim())
+    !isGmailConnector &&
+    !apiKey.trim() &&
+    !!secretAlias.trim() &&
+    !isResolvableSecretAlias(secretAlias.trim())
 
   const buildActivationInput = (confirmKeyless?: boolean) => ({
     draftId: draft.draftId,
-    ...(apiKey.trim()
-      ? { apiKey: apiKey.trim() }
-      : secretAlias.trim()
-        ? { secretAlias: secretAlias.trim() }
-        : {}),
-    ...(confirmKeyless ? { confirmKeyless: true as const } : {}),
-    ...(isOauth2 && clientId.trim() ? { clientId: clientId.trim() } : {}),
+    ...(isGmailConnector
+      ? {}
+      : apiKey.trim()
+        ? { apiKey: apiKey.trim() }
+        : secretAlias.trim()
+          ? { secretAlias: secretAlias.trim() }
+          : {}),
+    ...(confirmKeyless && !isGmailConnector ? { confirmKeyless: true as const } : {}),
+    ...(isOauth2 && !isGmailConnector && clientId.trim() ? { clientId: clientId.trim() } : {}),
     ...(isOstorosborCrm && actingUserEmail.trim()
       ? { defaultActingUserEmail: actingUserEmail.trim() }
       : {}),
@@ -1774,7 +1787,8 @@ function DraftCard({
 
   const handleActivate = () => {
     if (hasInvalidSecretAlias) return
-    if (!hasActivationCredentials) {
+    if (isGmailConnector && !googleOauthConfigured) return
+    if (!isGmailConnector && !hasActivationCredentials) {
       const confirmed = window.confirm(
         'Nem adtál meg API-kulcsot vagy érvényes titok-hivatkozást. Biztosan kulcs nélkül aktiválod? Az agent hívásai addig auth hibát fognak adni.',
       )
@@ -2034,7 +2048,7 @@ function DraftCard({
                     {gmailView.clientId?.trim() ? (
                       <code>{gmailView.clientId}</code>
                     ) : (
-                      <span className="text-honey">aktiváláskor megadandó</span>
+                      <span className="text-ink-soft">platform Google OAuth alkalmazás</span>
                     )}
                   </li>
                 </ul>
@@ -2470,6 +2484,24 @@ function DraftCard({
                 </p>
               ) : null}
               <div className="grid gap-2 sm:grid-cols-2">
+                {isGmailConnector ? (
+                  <div className="text-xs sm:col-span-2">
+                    {googleOauthConfigured ? (
+                      <p className="flex items-center gap-2 text-sage">
+                        <span aria-hidden className="h-2 w-2 rounded-full bg-sage" />
+                        A platform Google OAuth alkalmazása be van állítva — Client ID és Secret
+                        nem kell tenant szinten.
+                      </p>
+                    ) : (
+                      <p className="text-honey">
+                        A Gmail connector a platform Google OAuth alkalmazását használja. Aktiválás
+                        előtt a platform-adminnak be kell állítania a Platform · Beállítások →
+                        Google OAuth oldalon.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <>
                 <label className="text-xs sm:col-span-2">
                   <span className="mb-1 block text-ink-soft">
                     {isUserDelegated ? 'OAuth client secret' : 'API kulcs'}
@@ -2569,7 +2601,6 @@ function DraftCard({
                   <label className="text-xs sm:col-span-2">
                     <span className="mb-1 block text-ink-soft">
                       OAuth client ID (nem titok → config)
-                      {isGmailConnector ? ' — Google Cloud OAuth client' : ''}
                     </span>
                     <input
                       className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
@@ -2579,6 +2610,8 @@ function DraftCard({
                     />
                   </label>
                 ) : null}
+                  </>
+                )}
                 <label className="text-xs">
                   <span className="mb-1 block text-ink-soft">Kritikusság</span>
                   <select
@@ -2601,7 +2634,7 @@ function DraftCard({
                   />
                 </label>
               </div>
-              {!hasActivationCredentials ? (
+              {!isGmailConnector && !hasActivationCredentials ? (
                 <p className="mt-2 text-xs text-honey">
                   Kulcs nélkül is aktiválhatsz, de megerősítést kérünk — az agent addig nem fog
                   sikeresen hívni.
@@ -2643,7 +2676,12 @@ function DraftCard({
                 ) : null}
                 <button
                   type="button"
-                  disabled={pending || !activationReady || hasInvalidSecretAlias}
+                  disabled={
+                    pending ||
+                    !activationReady ||
+                    hasInvalidSecretAlias ||
+                    (isGmailConnector && !googleOauthConfigured)
+                  }
                   onClick={handleActivate}
                   className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
                 >
@@ -2652,9 +2690,14 @@ function DraftCard({
                 {isUserDelegated ? (
                   <button
                     type="button"
-                    disabled={pending || !activationReady || hasInvalidSecretAlias}
+                    disabled={
+                      pending ||
+                      !activationReady ||
+                      hasInvalidSecretAlias ||
+                      (isGmailConnector && !googleOauthConfigured)
+                    }
                     onClick={() => {
-                      if (!hasActivationCredentials) {
+                      if (!isGmailConnector && !hasActivationCredentials) {
                         const confirmed = window.confirm(
                           'Nem adtál meg API-kulcsot vagy érvényes titok-hivatkozást. Biztosan kulcs nélkül aktiválod?',
                         )
@@ -2662,7 +2705,7 @@ function DraftCard({
                       }
                       run(async () => {
                         const activated = await activateConnector(
-                          buildActivationInput(!hasActivationCredentials),
+                          buildActivationInput(!isGmailConnector && !hasActivationCredentials),
                         )
                         if (!activated.success) return { success: false, error: activated.error }
 

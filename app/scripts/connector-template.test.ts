@@ -139,7 +139,7 @@ async function main() {
     }
   })
 
-  await test('Gmail draft materializes without client id (activation supplies it)', () => {
+  await test('Gmail draft materializes without client id (platform OAuth supplies it)', () => {
     const descriptor = parseTemplateDescriptor(BUILTIN_CONNECTOR_TEMPLATES[0])
     const config = materializeGmailConnectorConfig(
       descriptor,
@@ -152,7 +152,7 @@ async function main() {
     )
     assert.equal(config.oauth.clientId, undefined)
     assert.ok(config.oauth.scopes.length > 0)
-    assert.ok(descriptor.activationHelp?.includes('Google Cloud Console'))
+    assert.ok(descriptor.activationHelp?.includes('platform Google OAuth'))
   })
 
   await test('unknown selected Gmail scope is rejected', () => {

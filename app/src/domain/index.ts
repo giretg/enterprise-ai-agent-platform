@@ -875,6 +875,10 @@ const provisioningService = new ProvisioningService({
   sandboxTester: provisioningSandboxTester,
   isTrustedExternalSecretAlias: (alias, tenantId) =>
     isTrustedExternalConnectorSecretAlias(alias, tenantId, trustedConnectorSecretAliasPolicy),
+  resolvePlatformGoogleOAuth: async () => {
+    const resolved = await platformSettingsService.getGoogleOAuthConfig()
+    return { configured: Boolean(resolved) }
+  },
   // F2-P-F: az agent-aktor draft-jogai deny-by-default a Capability táblából (§6.1/§9).
   resolveAgentCapabilities: async (agentId) => {
     const rows = await repositories.toolBroker.findCapabilitiesForAgents(
