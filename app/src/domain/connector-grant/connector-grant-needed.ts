@@ -85,6 +85,26 @@ export function connectorGrantLabel(card: {
   return delegatedConnectorLabel(card.connectorType, card.connectorName)
 }
 
+/**
+ * Élő stream-kártya a loop eseményéből. A típus/címke a regiszterből jön —
+ * Gmail-hardcode nélkül, különben egy Drive/Slack/saját API gombja is
+ * „Gmail”-t írna, amíg a lap újra nem tölt.
+ */
+export function connectorGrantCardFromLoopEvent(
+  event: ToolLoopConnectorGrantNeededEvent,
+): ConnectorGrantNeededCard {
+  const connectorType =
+    event.connectorType ?? connectorTypeForGrantTool(event.toolName) ?? 'http_api'
+  return {
+    connectorId: event.connectorId,
+    connectorType,
+    connectorName: delegatedConnectorLabel(connectorType),
+    toolName: event.toolName,
+    reason: event.reason,
+    scopes: [],
+  }
+}
+
 /** Az érintett fiókok felsorolása („Gmail, Google Drive") — prompt/komment szöveghez. */
 export function describeConnectorGrantTargets(
   cards: Array<{ connectorType?: string | null; connectorName?: string | null }>,

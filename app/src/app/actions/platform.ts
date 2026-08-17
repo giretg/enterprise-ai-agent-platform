@@ -3961,7 +3961,7 @@ export async function resumeTicketAfterConnectorGrant(input: { ticketId: string 
       payloadCards: readConnectorGrantNeedsFromPayload(ticket.payload),
     })
     if (stillOpen.length > 0) {
-      return fail('A Gmail/delegált hozzáférés még hiányzik — előbb add meg a hozzáférést.')
+      return fail('A kért fiók-hozzáférés még hiányzik — előbb add meg a hozzáférést.')
     }
 
     const prevPayload =
@@ -3999,7 +3999,7 @@ export async function resumeTicketAfterConnectorGrant(input: { ticketId: string 
       ticketId: ticket.id,
       kind: 'system_note',
       authorType: 'system',
-      body: 'Visszaadva újrafeldolgozásra (Gmail/connector hozzáférés után)',
+      body: 'Visszaadva újrafeldolgozásra (külső fiók hozzáférés után)',
     })
     const dispatchOutcome = await runAgentTicketDispatch(ticket.id, ticket.agentId, {
       bypassDispatcherEnabledCheck: true,

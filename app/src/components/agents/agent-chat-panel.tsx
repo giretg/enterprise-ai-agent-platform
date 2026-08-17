@@ -25,6 +25,7 @@ import { listChatTriggerableProcessDefinitions } from '@/app/actions/process'
 import { listAgentDelegatedConnectors } from '@/app/actions/connector-grants'
 import { ConnectorGrantNeededPanel } from '@/components/connectors/connector-grant-needed-panel'
 import type { ConnectorGrantNeededView } from '@/components/connectors/connector-grant-needed-panel'
+import { connectorGrantCardFromLoopEvent } from '@/domain/connector-grant/connector-grant-needed'
 import { getTenantThinkingTraceControls } from '@/app/actions/chat-thinking-trace'
 import { AgentDelegatedConnectorsBar } from '@/components/agents/agent-delegated-connectors-bar'
 import type { AgentDelegatedConnectorRow } from '@/lib/agent-delegated-connectors'
@@ -2107,11 +2108,10 @@ export function AgentChatPanel({
                     m.id === params.agentMessageId
                       ? {
                           ...m,
-                          connectorGrants: upsertConnectorGrant(m.connectorGrants, {
-                            ...event.grant,
-                            connectorType: 'gmail',
-                            connectorName: 'Gmail',
-                          }),
+                          connectorGrants: upsertConnectorGrant(
+                            m.connectorGrants,
+                            connectorGrantCardFromLoopEvent(event.grant),
+                          ),
                         }
                       : m,
                   ),
@@ -2655,11 +2655,10 @@ export function AgentChatPanel({
                     m.id === agentBubbleMessageId
                       ? {
                           ...m,
-                          connectorGrants: upsertConnectorGrant(m.connectorGrants, {
-                            ...event.grant,
-                            connectorType: 'gmail',
-                            connectorName: 'Gmail',
-                          }),
+                          connectorGrants: upsertConnectorGrant(
+                            m.connectorGrants,
+                            connectorGrantCardFromLoopEvent(event.grant),
+                          ),
                         }
                       : m,
                   ),

@@ -12,6 +12,7 @@ import {
   CONNECTOR_GRANT_NEEDED_CHAT_PROMPT,
   CONNECTOR_GRANT_NEEDED_REASONS,
   CONNECTOR_GRANT_NEEDED_TICKET_NOTE,
+  connectorGrantCardFromLoopEvent,
   connectorGrantLabel,
   connectorTypeForGrantTool,
   describeConnectorGrantTargets,
@@ -246,6 +247,26 @@ check('payload kártyák: érvényes okok, típus/címke kitöltése', () => {
   assert.deepEqual(cards[1]?.scopes, [])
   assert.deepEqual(readConnectorGrantNeedsFromPayload({}), [])
   assert.deepEqual(readConnectorGrantNeedsFromPayload(null), [])
+})
+
+check('élő stream kártya: generikus provider NEM Gmail', () => {
+  const generic = connectorGrantCardFromLoopEvent({
+    connectorId: CONV,
+    toolName: 'http_api_get',
+    reason: 'connector_grant_missing',
+  })
+  assert.equal(generic.connectorType, 'http_api')
+  assert.equal(generic.connectorName, 'külső fiók')
+  assert.ok(!/gmail/i.test(generic.connectorName))
+
+  const gmail = connectorGrantCardFromLoopEvent({
+    connectorId: CONV,
+    toolName: 'gmail_search',
+    reason: 'connector_grant_missing',
+    connectorType: 'gmail',
+  })
+  assert.equal(gmail.connectorType, 'gmail')
+  assert.equal(gmail.connectorName, 'Gmail')
 })
 
 check('folytatás-szövegek provider-függetlenek', () => {
