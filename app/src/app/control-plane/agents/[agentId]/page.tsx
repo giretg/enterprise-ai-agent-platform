@@ -52,6 +52,8 @@ import {
 } from '@/lib/agent-profile-labels'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { enabledModelProviders } from '@/lib/model-policy'
+import { OpenInNewWindowLink } from '@/components/ui/open-in-new-window-link'
+import { CREATE_AGENT_WIZARD_EXTERNAL_HREFS } from '@/lib/create-agent-wizard'
 import { SettingsSectionShell, type SettingsSection } from '../../system/system-settings-shell'
 
 export const dynamic = 'force-dynamic'
@@ -440,6 +442,17 @@ export default async function AgentDetailPage({
               {isAdmin ? (
                 <div className="mt-6 space-y-3 border-t border-line pt-5">
                   <p className="text-sm font-semibold text-ink">Új kapcsolat</p>
+                  <p className="text-xs text-ink-faint">
+                    Ha közben új kapcsolatot kell definiálnod, az új ablakban nyílik — ez az
+                    oldal itt marad.{' '}
+                    <OpenInNewWindowLink href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connections}>
+                      Provisioning-varázsló
+                    </OpenInNewWindowLink>
+                    {' · '}
+                    <OpenInNewWindowLink href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connectors}>
+                      Kapcsolat-katalógus
+                    </OpenInNewWindowLink>
+                  </p>
                   <Collapsible
                     title="Új API-kapcsolat hozzáadása"
                     subtitle="Külső REST API bekötése új connectorként"

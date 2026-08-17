@@ -17,10 +17,12 @@ export function AssignExistingConnectorForm({
   agentId,
   connectors,
   bare = false,
+  onAssigned,
 }: {
   agentId: string
   connectors: ConnectorOption[]
   bare?: boolean
+  onAssigned?: () => void
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -50,6 +52,7 @@ export function AssignExistingConnectorForm({
       if (res.success) {
         setDone(selected ? `„${selected.name}" hozzárendelve.` : 'Kapcsolat hozzárendelve.')
         setApiKey('')
+        onAssigned?.()
         router.refresh()
       } else {
         setError(res.error ?? 'Nem sikerült hozzárendelni a kapcsolatot.')

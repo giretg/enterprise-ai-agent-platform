@@ -1,0 +1,146 @@
+/** Új-agent varázsló: lépések, kapuk és a „közben eszembe jutott” új-ablakos útvonalak. */
+
+export const CREATE_AGENT_WIZARD_STEPS = [
+  {
+    id: 'identity',
+    label: 'Alapok',
+    hint: 'Név, szerep, munkakör',
+    phase: 'pre',
+  },
+  {
+    id: 'style',
+    label: 'Munkastílus',
+    hint: 'Hogyan dolgozik',
+    phase: 'pre',
+  },
+  {
+    id: 'model',
+    label: 'Modell',
+    hint: 'Gondolkodási motor',
+    phase: 'pre',
+  },
+  {
+    id: 'tools',
+    label: 'Eszközök',
+    hint: 'Mit hívhat meg',
+    phase: 'post',
+  },
+  {
+    id: 'skills',
+    label: 'Skillek',
+    hint: 'Katalógusból hozzárendelve',
+    phase: 'post',
+  },
+  {
+    id: 'connections',
+    label: 'Kapcsolatok',
+    hint: 'Külső rendszerek',
+    phase: 'post',
+  },
+  {
+    id: 'knowledge',
+    label: 'Tudásbázis',
+    hint: 'Dokumentumok',
+    phase: 'post',
+  },
+  {
+    id: 'operation',
+    label: 'Működés',
+    hint: 'Hozzáférés és szabályok',
+    phase: 'post',
+  },
+  {
+    id: 'done',
+    label: 'Kész',
+    hint: 'Összegzés',
+    phase: 'post',
+  },
+] as const
+
+export type CreateAgentWizardStepId = (typeof CREATE_AGENT_WIZARD_STEPS)[number]['id']
+
+export const CREATE_AGENT_WIZARD_EXTERNAL_HREFS = {
+  skills: '/control-plane/skills',
+  connections: '/control-plane/provisioning',
+  connectors: '/control-plane/connectors',
+  behaviorProfiles: '/control-plane/behavior-profiles',
+} as const
+
+export type CreateAgentWizardGate = {
+  name: string
+  roleInstruction: string
+  behaviorProfile: string
+  createdAgentId: string | null
+}
+
+export function isCreateAgentWizardStepId(value: unknown): value is CreateAgentWizardStepId {
+  return CREATE_AGENT_WIZARD_STEPS.some((step) => step.id === value)
+}
+
+export function parseCreateAgentWizardStep(
+  value: string | null | undefined,
+): CreateAgentWizardStepId {
+  return isCreateAgentWizardStepId(value) ? value : 'identity'
+}
+
+export function createAgentWizardStepIndex(id: CreateAgentWizardStepId): number {
+  return CREATE_AGENT_WIZARD_STEPS.findIndex((step) => step.id === id)
+}
+
+export function isIdentityStepComplete(gate: Pick<CreateAgentWizardGate, 'name' | 'roleInstruction'>) {
+  return gate.name.trim().length > 0 && gate.roleInstruction.trim().length > 0
+}
+
+export function isStyleStepComplete(gate: Pick<CreateAgentWizardGate, 'behaviorProfile'>) {
+  return gate.behaviorProfile.trim().length > 0
+}
+
+export function isPreCreateComplete(gate: CreateAgentWizardGate) {
+  return isIdentityStepComplete(gate) && isStyleStepComplete(gate)
+}
+
+export function canEnterCreateAgentWizardStep(
+  stepId: CreateAgentWizardStepId,
+  gate: CreateAgentWizardGate,
+): boolean {
+  const step = CREATE_AGENT_WIZARD_STEPS.find((item) => item.id === stepId)
+  if (!step) return false
+  if (step.phase === 'post') return Boolean(gate.createdAgentId)
+  if (stepId === 'identity') return true
+  if (stepId === 'style') return isIdentityStepComplete(gate)
+  if (stepId === 'model') return isPreCreateComplete(gate)
+  return false
+}
+
+export function nextCreateAgentWizardStep(
+  stepId: CreateAgentWizardStepId,
+): CreateAgentWizardStepId | null {
+  const index = createAgentWizardStepIndex(stepId)
+  return CREATE_AGENT_WIZARD_STEPS[index + 1]?.id ?? null
+}
+
+export function prevCreateAgentWizardStep(
+  stepId: CreateAgentWizardStepId,
+): CreateAgentWizardStepId | null {
+  const index = createAgentWizardStepIndex(stepId)
+  return index > 0 ? CREATE_AGENT_WIZARD_STEPS[index - 1].id : null
+}
+
+export function createAgentWizardContinueHref(
+  agentId: string,
+  stepId: CreateAgentWizardStepId,
+): string {
+  const params = new URLSearchParams({ continue: agentId, step: stepId })
+  return `/control-plane/agents/new?${params.toString()}`
+}
+
+export function assignableConnectorsFromCatalog<T extends { id: string; type: string }>(
+  catalog: T[],
+  assignedIds: Iterable<string>,
+): T[] {
+  const assigned = new Set(assignedIds)
+  return catalog.filter(
+    (connector) =>
+      (connector.type === 'http_api' || connector.type === 'gmail') && !assigned.has(connector.id),
+  )
+}
