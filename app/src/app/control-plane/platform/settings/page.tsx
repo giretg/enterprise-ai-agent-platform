@@ -52,7 +52,6 @@ export default async function PlatformSettingsPage({
   const query = await searchParams
   const [
     ctx,
-    ctx,
     controlsRes,
     dbModeRes,
     modelPolicyRes,
