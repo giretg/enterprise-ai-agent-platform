@@ -33,6 +33,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // előtte/utána policy-t hordozza, hogy a döntés visszakereshető legyen.
   'tenant.nav_visibility.update',
   'tenant.oauth.google.update',
+  'platform.oauth.google.update',
   'tenant.self_update.policy.update',
   'user.authz.deny',
   'user.invite.issue',

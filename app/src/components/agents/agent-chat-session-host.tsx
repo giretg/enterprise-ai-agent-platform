@@ -38,6 +38,7 @@ export function AgentChatSessionHost() {
           onClose={() => closeAgentChat(session.id)}
           canDistillSkill={session.canDistillSkill}
           initialConversationId={session.initialConversationId}
+          resumeAfterGrant={session.resumeAfterGrant}
           restoreSignal={session.restoreSignal}
           tileTarget={tileTarget}
         />

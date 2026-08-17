@@ -284,6 +284,7 @@ export function CreateAgentWizard({
         }
       }
 
+
       storeApiKey(agentId, res.data.apiKey)
       setApiKey(res.data.apiKey)
       setCreatedAgentId(agentId)
@@ -332,6 +333,7 @@ export function CreateAgentWizard({
       setGenerating(false)
     }
   }
+
 
   function handleNext() {
     if (step === 'identity' && !isIdentityStepComplete(gate)) {
@@ -504,6 +506,7 @@ export function CreateAgentWizard({
                   ) : null}
                 </div>
               ) : null}
+
               <label className="block text-sm">
                 <span className="text-ink-soft">Név</span>
                 <input

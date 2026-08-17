@@ -988,6 +988,91 @@ async function main() {
     assert.equal(loads[0].argsMeta.returned_chars, instructions.length)
   })
 
+  /**
+   * A grant-kapu nem egy providerhez szól: ugyanaz a leállás + kártya jár egy
+   * regisztrált (Gmail) és egy regiszterben NEM szereplő delegált connectornak
+   * (generikus OAuth-os http_api) is.
+   */
+  for (const scenario of [
+    {
+      title: 'regisztrált provider (Gmail)',
+      tool: 'gmail_search' as const,
+      reason: 'connector_grant_missing',
+      prompt: 'hány olvasatlan levelem van?',
+      expectedConnectorType: 'gmail',
+    },
+    {
+      title: 'generikus OAuth-connector (http_api)',
+      tool: 'http_api_get' as const,
+      reason: 'connector_scope_not_granted',
+      prompt: 'kérdezd le a saját fiókom adatait',
+      expectedConnectorType: undefined,
+    },
+  ]) {
+    await check(
+      `grant-hiány (${scenario.title}): a loop megáll, kártyát ad, nem hívja újra az eszközt`,
+      async () => {
+        const gwCalls: GatewayCallArgs[] = []
+        const brokerCalls: ToolBrokerInvokeInput[] = []
+        const grants: Array<{ connectorId: string; toolName: string; reason: string }> = []
+        const connectorId = '11111111-1111-4111-8111-111111111111'
+        const broker: ToolBrokerService = {
+          invoke: async (input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> => {
+            brokerCalls.push(input)
+            return {
+              denied: true,
+              reason: scenario.reason,
+              connectorId,
+              latencyMs: 1,
+              outcome: 'failed',
+            }
+          },
+        } as unknown as ToolBrokerService
+
+        const result = await runAgentToolLoop({
+          gateway: fakeGateway(
+            [
+              { toolCalls: [{ id: 'c1', name: scenario.tool, input: { query: 'x', path: '/me' } }] },
+              { content: 'Hozzáférés kell — a gomb a chatben jelenik meg.' },
+            ],
+            gwCalls,
+          ),
+          toolBroker: broker,
+          toolCaps: fakeToolCaps,
+          agentId: 'agent-1',
+          agentVersion: 1,
+          context: { conversationId: 'conv-grant' },
+          mode: 'chat',
+          messages: [{ role: 'user', content: scenario.prompt }],
+          modelConfig: MODEL_CONFIG,
+          allowedTools: [scenario.tool],
+          onConnectorGrantNeeded: (event) => {
+            grants.push(event)
+          },
+        })
+
+        assert.equal(brokerCalls.length, 1, 'az eszközt csak egyszer hívja')
+        assert.equal(result.awaitingConnectorGrant, true)
+        assert.equal(result.connectorGrantNeeds?.length, 1)
+        assert.equal(result.connectorGrantNeeds?.[0]?.connectorId, connectorId)
+        assert.equal(result.connectorGrantNeeds?.[0]?.reason, scenario.reason)
+        assert.equal(result.connectorGrantNeeds?.[0]?.connectorType, scenario.expectedConnectorType)
+        assert.equal(grants.length, 1)
+        assert.ok(
+          gwCalls.some((call) =>
+            call.messages.some(
+              (m) =>
+                m.role === 'system' &&
+                typeof m.content === 'string' &&
+                m.content.includes('Hozzáférés megadása'),
+            ),
+          ),
+          'a záró prompt a gombra utal',
+        )
+      },
+    )
+  }
+
   await check('WP-1: az onTurnStart a kör eleji számlálókat is átadja', async () => {
     const gwCalls: GatewayCallArgs[] = []
     const seen: Array<{ turn: number; toolCallCount: number; deniedCount: number }> = []

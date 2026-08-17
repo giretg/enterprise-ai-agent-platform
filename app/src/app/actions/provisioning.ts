@@ -758,10 +758,7 @@ export async function createConnectorFromTemplateAction(input: unknown) {
             },
           )
 
-    const secretAliasSuggested =
-      connectorType === 'gmail'
-        ? (parsed.secretAliases.clientSecret?.trim() || 'google-workspace-oauth-client-secret')
-        : null
+    const secretAliasSuggested = null
 
     const res = await services.provisioning.createConnectorDraft(
       {

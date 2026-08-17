@@ -921,6 +921,15 @@ export async function getTicket(input: { id: string }) {
         role: user.activeTenantRole,
       },
     )
+    const { readConnectorGrantNeedsFromPayload } = await import(
+      '@/domain/connector-grant/connector-grant-needed'
+    )
+    const pendingConnectorGrants = await services.connectorGrants.listOpenGrantNeeds({
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
+      ticketId: id,
+      payloadCards: readConnectorGrantNeedsFromPayload(ticket.payload),
+    })
 
     return ok({
       ...ticket,
@@ -928,6 +937,7 @@ export async function getTicket(input: { id: string }) {
       ...display,
       process,
       pendingConsequenceApprovals,
+      pendingConnectorGrants,
       creator: formatTicketCreator({
         createdById: ticket.createdById,
         payload: ticket.payload,
@@ -3490,6 +3500,11 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
       conversationId,
       { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole },
     )
+    const pendingConnectorGrants = await services.connectorGrants.listOpenGrantNeeds({
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
+      conversationId,
+    })
 
     let continuedFromTicket: { id: string; title: string } | null = null
     let ticketDiscussionHistory: Array<{
@@ -3532,6 +3547,7 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
       ticketDiscussionHistory,
       messages: views,
       pendingConsequenceApprovals,
+      pendingConnectorGrants,
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load chat messages')
@@ -3993,6 +4009,78 @@ async function resumeTicketAfterConsequenceApprovals(
   })
   const warning = dispatchOutcome.error ?? dispatchOutcome.warning
   return { ticketResumed: true, ...(warning ? { warning } : {}) }
+}
+
+export async function resumeTicketAfterConnectorGrant(input: { ticketId: string }) {
+  try {
+    const user = await requireTenantRole('operator')
+    const { ticketId } = z.object({ ticketId: z.string().uuid() }).parse(input)
+    const ticket = await repositories.tickets.findById(ticketId)
+    if (!ticket) return fail('ticket_not_found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+    if (!ticket.agentId) return fail('ticket_not_found')
+    if (ticket.state !== 'awaiting_human') {
+      return fail('A folytatás csak akkor indítható, amikor a ticket emberi lépésre vár.')
+    }
+
+    const { readConnectorGrantNeedsFromPayload, CONNECTOR_GRANT_NEEDED_TICKET_NOTE } = await import(
+      '@/domain/connector-grant/connector-grant-needed'
+    )
+    const stillOpen = await services.connectorGrants.listOpenGrantNeeds({
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
+      ticketId,
+      payloadCards: readConnectorGrantNeedsFromPayload(ticket.payload),
+    })
+    if (stillOpen.length > 0) {
+      return fail('A kért fiók-hozzáférés még hiányzik — előbb add meg a hozzáférést.')
+    }
+
+    const prevPayload =
+      ticket.payload && typeof ticket.payload === 'object' && !Array.isArray(ticket.payload)
+        ? { ...(ticket.payload as Record<string, unknown>) }
+        : {}
+    delete prevPayload.awaitingConnectorGrant
+    delete prevPayload.connectorGrantNeeds
+    await repositories.tickets.update(ticket.id, {
+      payload: {
+        ...prevPayload,
+        connectorGrantCompletedAt: new Date().toISOString(),
+      } as Prisma.JsonValue,
+    })
+    await repositories.tickets.appendComment({
+      ticketId: ticket.id,
+      kind: 'human_comment',
+      authorType: 'human',
+      authorUserId: user.user.id,
+      authorDisplayName: user.user.name,
+      body: `✅ ${CONNECTOR_GRANT_NEEDED_TICKET_NOTE}`,
+    })
+    await services.tickets.transition({
+      ticketId: ticket.id,
+      toState: 'needs_info',
+      actor: { type: 'human', userId: user.user.id, role: user.activeTenantRole },
+      note: 'Connector-hozzáférés megadása utáni folytatás',
+    })
+    await services.tickets.transition({
+      ticketId: ticket.id,
+      toState: 'ready',
+      actor: { type: 'system' },
+    })
+    await repositories.tickets.appendComment({
+      ticketId: ticket.id,
+      kind: 'system_note',
+      authorType: 'system',
+      body: 'Visszaadva újrafeldolgozásra (külső fiók hozzáférés után)',
+    })
+    const dispatchOutcome = await runAgentTicketDispatch(ticket.id, ticket.agentId, {
+      bypassDispatcherEnabledCheck: true,
+    })
+    const warning = dispatchOutcome.error ?? dispatchOutcome.warning
+    return ok({ ticketResumed: true, ...(warning ? { warning } : {}) })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to resume ticket after connector grant')
+  }
 }
 
 /**

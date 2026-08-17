@@ -7,14 +7,9 @@ export const BUILTIN_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     displayName: 'Gmail (felhasználói)',
     description:
       'Per-user delegált Gmail OAuth connector — a platform gmail_* eszközei ezen a connectoron futnak.',
-    activationHelp: `1. Nyisd meg a Google Cloud Console-t: https://console.cloud.google.com/
-2. Válaszd ki vagy hozd létre a projektet.
-3. APIs & Services → Library → engedélyezd a „Gmail API” szolgáltatást.
-4. APIs & Services → OAuth consent screen → állítsd be (Internal vagy External; teszthez add hozzá a tesztfelhasználókat).
-5. APIs & Services → Credentials → Create credentials → OAuth client ID.
-6. Application type: Web application.
-7. Authorized redirect URIs: add meg a platform redirect URI-ját (az aktiválás lépésnél másolható: …/api/connectors/oauth/callback).
-8. Másold ki a Client ID-t és a Client secretet — ezeket az aktiválás lépésnél add meg (nem a sablon-forrásnál).`,
+    activationHelp: `A Gmail connector a platform Google OAuth alkalmazását használja (Platform · Beállítások → Google OAuth). Tenant szinten nem kell Client ID-t vagy Secretet megadni.
+
+Aktiválás után a felhasználók a saját Google-fiókjukkal kötik be a postafiókot (Összekötött fiókok).`,
     baseUrl: 'https://gmail.googleapis.com',
     egressHosts: [
       'gmail.googleapis.com',

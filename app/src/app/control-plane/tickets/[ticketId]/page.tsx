@@ -13,6 +13,7 @@ import {
 } from '@/components/tickets/ticket-detail'
 import { TicketThread } from '@/components/tickets/ticket-thread'
 import { TicketConsequenceApprovals } from '@/components/tickets/ticket-consequence-approvals'
+import { TicketConnectorGrants } from '@/components/tickets/ticket-connector-grants'
 import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
 import { TicketHistory } from '@/components/tickets/ticket-history'
 import { TicketActivityHistory } from '@/components/tickets/ticket-activity-history'
@@ -20,10 +21,13 @@ import { canDeleteBoardTicket } from '@/lib/ticket-display'
 
 export default async function TicketDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ ticketId: string }>
+  searchParams: Promise<{ granted?: string }>
 }) {
   const { ticketId } = await params
+  const query = await searchParams
   const [commentsRes, ctx, definitionsRes, transitionsRes] = await Promise.all([
     listTicketComments({ ticketId }),
     getAuthContext(),
@@ -84,6 +88,12 @@ export default async function TicketDetailPage({
             initial={ticket.pendingConsequenceApprovals ?? []}
             ticketId={ticket.id}
             ticketState={ticket.state}
+          />
+          <TicketConnectorGrants
+            initial={ticket.pendingConnectorGrants ?? []}
+            ticketId={ticket.id}
+            ticketState={ticket.state}
+            resumeAfterGrant={query.granted === '1'}
           />
           <TicketThread ticket={ticket} comments={commentsRes.success ? commentsRes.data : []} />
           <TicketActions ticket={ticket} />

@@ -476,9 +476,15 @@ class FakeProcessRepository implements ProcessRepository {
 class FakeTicketRepository {
   tickets: Ticket[] = []
   transitions: Array<{ ticketId: string; fromState: string; toState: string }> = []
+  beforeFindById?: () => Promise<void>
 
   async findById(id: string) {
-    return this.tickets.find((t) => t.id === id) ?? null
+    const returnSnapshot = this.beforeFindById != null
+    await this.beforeFindById?.()
+    const ticket = this.tickets.find((t) => t.id === id) ?? null
+    // A valódi Prisma-tár külön adat-pillanatképet ad vissza. A versenytesztben ezt is
+    // modellezzük, hogy az egyik írás ne módosítsa a másik kérés már beolvasott állapotát.
+    return returnSnapshot && ticket ? ({ ...ticket } as Ticket) : ticket
   }
   async create(data: Record<string, unknown>) {
     const t = {
@@ -497,6 +503,12 @@ class FakeTicketRepository {
   }
   async update(id: string, data: Record<string, unknown>) {
     const t = this.tickets.find((x) => x.id === id)!
+    Object.assign(t, data)
+    return t
+  }
+  async updateIfCurrentState(id: string, currentState: string, data: Record<string, unknown>) {
+    const t = this.tickets.find((x) => x.id === id)
+    if (!t || t.state !== currentState) return null
     Object.assign(t, data)
     return t
   }
@@ -667,6 +679,83 @@ async function main() {
     assert.equal(delegation.status, 'delivered')
     assert.equal(ctx.audit.byAction('process.step.create').length, 2) // entry + approval
     assert.equal(ctx.audit.byAction('delegation.create').length, 1)
+  })
+
+  await test('P5a — két egyidejű jóváhagyásból csak az egyik léptet és indítja a folyamatot', async () => {
+    const ctx = await setupPublished(demoSpec())
+    const proc = await ctx.processService.startProcess({
+      tenantId: TENANT,
+      processType: 'invoice_processing',
+      inputPayload: {},
+      startedBy: { type: 'agent', id: AGENT },
+    })
+    const entry = ctx.ticketRepo.tickets.find((t) => t.id === proc.rootTicketId)!
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: entry.id,
+      toState: 'in_progress',
+      actor: { type: 'agent', id: AGENT },
+    })
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: entry.id,
+      toState: 'done',
+      actor: { type: 'agent', id: AGENT },
+      outputPayload: { decision: 'post' },
+    })
+    const approvalTicket = ctx.ticketRepo.tickets.find((t) => t.playbookStepId === 'approval')!
+
+    // Mindkét jóváhagyás ugyanazt a régi állapotot olvassa; így a teszt a read→write
+    // ablakot reprodukálja, nem csak a már megváltozott ticket policy-elutasítását méri.
+    let releaseRead: (() => void) | undefined
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve
+    })
+    let readersReady: (() => void) | undefined
+    const bothReadersWaiting = new Promise<void>((resolve) => {
+      readersReady = resolve
+    })
+    let blockedReads = 0
+    ctx.ticketRepo.beforeFindById = async () => {
+      if (blockedReads < 2) {
+        blockedReads++
+        if (blockedReads === 2) readersReady!()
+        await readGate
+      }
+    }
+
+    const firstAttempt = ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: approvalTicket.id,
+      toState: 'approved',
+      actor: { type: 'user', id: APPROVER_USER, roles: ['approver'] },
+      approvalEvidence: { channel: 'telegram' },
+    })
+    const secondAttempt = ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: approvalTicket.id,
+      toState: 'approved',
+      actor: { type: 'user', id: '22222222-2222-2222-2222-222222222222', roles: ['approver'] },
+      approvalEvidence: { channel: 'telegram' },
+    })
+    await bothReadersWaiting
+    releaseRead!()
+    const attempts = await Promise.allSettled([
+      firstAttempt,
+      secondAttempt,
+    ])
+    ctx.ticketRepo.beforeFindById = undefined
+
+    assert.equal(attempts.filter((attempt) => attempt.status === 'fulfilled').length, 1)
+    const rejected = attempts.find((attempt) => attempt.status === 'rejected')
+    assert.ok(rejected?.status === 'rejected')
+    assert.ok(rejected.reason instanceof TicketTransitionDenied)
+    assert.equal(rejected.reason.detail.denyCode, 'STALE_TICKET_STATE')
+    assert.equal(
+      ctx.ticketRepo.transitions.filter((transition) => transition.ticketId === approvalTicket.id).length,
+      1,
+      'csak a nyertes ír sikeres ticket-transitiont',
+    )
   })
 
   await test('P5c — agent board_write (done) a brokeren át → state machine → advance (nem legacy TicketService)', async () => {

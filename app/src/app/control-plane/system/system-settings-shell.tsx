@@ -15,11 +15,16 @@ export type SettingsSection = {
 export function SettingsSectionShell({
   sections,
   ariaLabel = 'Beállítási témák',
+  initialId,
 }: {
   sections: SettingsSection[]
   ariaLabel?: string
+  initialId?: string
 }) {
-  const fallbackId = sections[0]?.id ?? ''
+  const fallbackId =
+    (initialId && sections.some((section) => section.id === initialId) ? initialId : null) ??
+    sections[0]?.id ??
+    ''
   const [activeId, setActiveId] = useState(fallbackId)
 
   const active =

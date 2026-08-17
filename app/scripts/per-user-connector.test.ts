@@ -508,9 +508,9 @@ await test('buildAuthorizationUrl: Google provisioning descriptor explicit auth 
   assert.equal(parsed.searchParams.get('access_type'), 'offline')
 })
 
-await test('buildAuthorizationUrl: Google API host alapján sem defaultolja az authUrl-t', () => {
+await test('buildAuthorizationUrl: Google API host alapján sem defaultolja az authUrl-t', async () => {
   const { service } = buildGrantService()
-  assert.throws(
+  await assert.rejects(
     () =>
       service.buildAuthorizationUrl({
         connector: httpApiDelegatedConnector({
@@ -533,9 +533,9 @@ await test('buildAuthorizationUrl: Google API host alapján sem defaultolja az a
   )
 })
 
-await test('buildAuthorizationUrl: Search Console üres scopesSuggested mellett nem talál ki scope-ot', () => {
+await test('buildAuthorizationUrl: Search Console üres scopesSuggested mellett nem talál ki scope-ot', async () => {
   const { service } = buildGrantService()
-  assert.throws(
+  await assert.rejects(
     () =>
       service.buildAuthorizationUrl({
         connector: httpApiDelegatedConnector({
