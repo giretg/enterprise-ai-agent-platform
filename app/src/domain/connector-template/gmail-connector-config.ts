@@ -113,7 +113,7 @@ export function materializeGmailConnectorConfig(
   }
 
   if (!clientId) {
-    // Draft-fázisban opcionális — az aktiválás kapuja kényszeríti ki.
+    // A Gmail Client ID a platform Google OAuth appból jön, nem a sablon-példányból.
   }
 
   const scopes = chooseGmailScopes(descriptor, chosen.selectedScopes)

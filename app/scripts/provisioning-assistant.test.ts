@@ -348,6 +348,7 @@ function makeService(opts?: {
   verifyApprover?: (input: { approverId: string; tenantId: string | null }) => Promise<boolean>
   /** A külső secret-alias platform-oldali, tenant-scope-os engedélyezésének fake-je. */
   isTrustedExternalSecretAlias?: (alias: string, tenantId: string | null) => boolean
+  resolvePlatformGoogleOAuth?: () => Promise<{ configured: boolean }>
 }) {
   const audit = opts?.audit ?? new FakeAudit()
   const drafts = opts?.drafts ?? new FakeDraftRepo()
@@ -363,6 +364,7 @@ function makeService(opts?: {
     verifyDualControlApprover:
       opts?.verifyApprover ?? (async ({ tenantId }) => tenantId === TENANT),
     isTrustedExternalSecretAlias: opts?.isTrustedExternalSecretAlias ?? (() => true),
+    resolvePlatformGoogleOAuth: opts?.resolvePlatformGoogleOAuth,
   })
   return { svc, audit, drafts }
 }
@@ -1309,7 +1311,7 @@ async function run() {
     assert.ok(!JSON.stringify(r).includes('api.acme-crm.example'))
   })
 
-  await test('SBX: Gmail sandbox zöld clientId nélkül (aktiváláskor kell)', async () => {
+  await test('SBX: Gmail sandbox zöld clientId nélkül (platform OAuth az aktiváláskor kell)', async () => {
     const audit = new FakeAudit()
     const drafts = new FakeDraftRepo()
     const svc = new ProvisioningService({
@@ -1340,6 +1342,50 @@ async function run() {
     assert.equal(t.ok, true)
     assert.equal(t.detail, 'gmail_oauth_metadata_check')
     assert.equal(drafts.drafts.get(created.draftId)!.sandboxTestOk, true)
+  })
+
+  async function gmailActivatable(svc: ProvisioningService) {
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Gmail',
+        sourceType: 'template',
+        connectorType: 'gmail',
+        generatedConfig: {
+          provider: 'google',
+          oauth: {
+            authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+            userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
+            scopes: ['https://www.googleapis.com/auth/gmail.modify'],
+            scopeTransform: 'gmailAlias',
+          },
+        },
+      },
+      adminActor,
+    )
+    await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
+    await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+    await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
+    return created
+  }
+
+  await test('Gmail: aktiválás platform OAuth nélkül → PLATFORM_GOOGLE_OAUTH_MISSING', async () => {
+    const { svc } = makeService({
+      resolvePlatformGoogleOAuth: async () => ({ configured: false }),
+    })
+    const created = await gmailActivatable(svc)
+    await expectError('PLATFORM_GOOGLE_OAUTH_MISSING', () =>
+      svc.activateConnector({ draftId: created.draftId }, adminActor),
+    )
+  })
+
+  await test('Gmail: platform OAuth mellett clientId/secret nélkül aktiválható', async () => {
+    const { svc } = makeService({
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+    })
+    const created = await gmailActivatable(svc)
+    const res = await svc.activateConnector({ draftId: created.draftId }, adminActor)
+    assert.equal(res.lifecycleState, 'active')
   })
 
   await test('SBX: integráció — testConnectorDraft a valódi testerrel zöld utat ad', async () => {

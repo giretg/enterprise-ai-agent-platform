@@ -107,6 +107,16 @@ export async function getPlatformGoogleOAuth() {
   }
 }
 
+export async function getGoogleOAuthConfiguredStatus() {
+  try {
+    await requireTenantRole('viewer')
+    const resolved = await services.platformSettings.getGoogleOAuthConfig()
+    return ok({ configured: Boolean(resolved) })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load Google OAuth status')
+  }
+}
+
 export async function upsertPlatformGoogleOAuth(input: {
   clientId: string
   clientSecret?: string

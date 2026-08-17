@@ -95,6 +95,11 @@ export interface ProvisioningDeps {
    * Hiányzó resolver = nincs külső alias (fail-closed).
    */
   isTrustedExternalSecretAlias?: (alias: string, tenantId: string | null) => boolean
+  /**
+   * Gmail aktiváláskor a platform Google OAuth alkalmazás (Client ID + Secret)
+   * kell, nem tenant-szintű creds. Hiányzó resolver = nincs beállítva (fail-closed).
+   */
+  resolvePlatformGoogleOAuth?: () => Promise<{ configured: boolean }>
 }
 
 function sha256Hex(content: string): string {
@@ -413,15 +418,26 @@ export class ProvisioningService {
     )
 
     const hasCredentials = hasApiKey || Boolean(approvedAlias)
+    const usesPlatformGoogleOAuth = isGmail
 
-    if (!hasCredentials) {
+    if (usesPlatformGoogleOAuth) {
+      const platformGoogle = this.deps.resolvePlatformGoogleOAuth
+        ? await this.deps.resolvePlatformGoogleOAuth()
+        : { configured: false }
+      if (!platformGoogle.configured) {
+        throw new ProvisioningError(
+          'PLATFORM_GOOGLE_OAUTH_MISSING',
+          'A Gmail connector a platform Google OAuth alkalmazását használja — állítsd be a Platform · Beállítások → Google OAuth oldalon.',
+        )
+      }
+    } else if (!hasCredentials) {
       if (!input.confirmKeyless) {
         throw new ProvisioningError(
           'ACTIVATION_KEYLESS_UNCONFIRMED',
           'confirmKeyless is required to activate without apiKey or resolvable secretAlias',
         )
       }
-    } else if (!isGmail && this.deps.sandboxTester) {
+    } else if (this.deps.sandboxTester) {
       const token = await resolveActivationToken(input, approvedAlias)
       if (!token) {
         throw new ProvisioningError(
@@ -468,22 +484,8 @@ export class ProvisioningService {
     let authMode: ConnectorConfig['authMode']
 
     if (isGmail) {
-      const gmailConfig = parseGmailStoredConfig(draft.connector.config)
-      const effectiveClientId = trimmedClientId || gmailConfig.oauth.clientId?.trim() || ''
-      if (!effectiveClientId) {
-        throw new ProvisioningError(
-          'OAUTH_CLIENT_ID_MISSING',
-          'gmail connector requires oauth.clientId (from the provider OAuth app registration)',
-        )
-      }
+      parseGmailStoredConfig(draft.connector.config)
       authMode = 'user_delegated'
-      nextConfig = {
-        ...gmailConfig,
-        oauth: {
-          ...gmailConfig.oauth,
-          clientId: effectiveClientId,
-        },
-      } as unknown as Prisma.InputJsonValue
     } else {
       const config = parseStoredConfig(draft.connector.config, {
         defaultActingUserEmail: input.defaultActingUserEmail,
