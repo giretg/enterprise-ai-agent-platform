@@ -108,7 +108,9 @@ async function main() {
     const storage = new WorkspaceStorage('test-bucket')
     await storage.write(TENANT, TICKET, '.tool-results/raw.json', Buffer.from('{}'))
     await storage.write(TENANT, TICKET, 'invoice_raw.json', Buffer.from('{}'))
-    await storage.write(TENANT, TICKET, '.workspace-meta/file-audience.json', Buffer.from('{}'))
+    await storage.write(TENANT, TICKET, '.workspace-meta/file-audience.json', Buffer.from('{}'), {
+      allowWorkspaceMeta: true,
+    })
     assert.equal(await downloadAllowed(storage, '.tool-results/raw.json'), false)
     assert.equal(await downloadAllowed(storage, 'invoice_raw.json'), false)
     assert.equal(await downloadAllowed(storage, '.workspace-meta/file-audience.json'), false)
@@ -116,7 +118,9 @@ async function main() {
 
   await check('normalized alias of a hidden path is still blocked', async () => {
     const storage = new WorkspaceStorage('test-bucket')
-    await storage.write(TENANT, TICKET, '.workspace-meta/x', Buffer.from('secret'))
+    await storage.write(TENANT, TICKET, '.workspace-meta/x', Buffer.from('secret'), {
+      allowWorkspaceMeta: true,
+    })
     // Nyers, „ártatlannak látszó" alias — a normalizálás után ugyanaz a rejtett path.
     assert.equal(await downloadAllowed(storage, './.workspace-meta//x'), false)
   })

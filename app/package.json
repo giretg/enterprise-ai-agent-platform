@@ -203,6 +203,7 @@
     "test:workspace-resource-access": "tsx scripts/workspace-resource-access.test.ts",
     "test:workspace-file-visibility": "tsx scripts/workspace-file-visibility.test.ts",
     "test:workspace-download-guard": "tsx scripts/workspace-download-audience-guard.test.ts",
+    "test:workspace-audience-meta-guard": "tsx scripts/workspace-audience-meta-guard.test.ts",
     "test:workspace-inline-html-headers": "tsx scripts/workspace-inline-html-headers.test.ts",
     "test:task-workspace-prompt": "tsx scripts/task-workspace-prompt.test.ts",
     "test:chat-thinking-trace": "tsx scripts/chat-thinking-trace.test.ts",
