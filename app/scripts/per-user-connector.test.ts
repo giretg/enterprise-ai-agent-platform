@@ -482,6 +482,79 @@ await test('buildAuthorizationUrl: Google/Gmail connector explicit configból ka
   assert.equal(parsed.searchParams.get('scope'), GMAIL_SCOPES.readonly)
 })
 
+await test('buildAuthorizationUrl: Gmail saját clientId nélkül a GMAIL_OAUTH_* env-et használja', async () => {
+  const prevId = process.env.GMAIL_OAUTH_CLIENT_ID
+  const prevSecret = process.env.GMAIL_OAUTH_CLIENT_SECRET
+  const prevRedirect = process.env.GMAIL_OAUTH_REDIRECT_URI
+  process.env.GMAIL_OAUTH_CLIENT_ID = 'env-gmail-client'
+  process.env.GMAIL_OAUTH_CLIENT_SECRET = 'env-gmail-secret'
+  process.env.GMAIL_OAUTH_REDIRECT_URI = 'https://app.example/api/connectors/oauth/callback'
+  try {
+    const { service } = buildGrantService()
+    const { url } = await service.buildAuthorizationUrl({
+      connector: gmailConnector({
+        config: {
+          oauth: {
+            authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+            scopes: ['gmail.readonly'],
+            offlineParams: { access_type: 'offline' },
+            scopeTransform: 'gmailAlias',
+          },
+        } as unknown as Connector['config'],
+      }),
+      userId: 'user-Y',
+      tenantId: 'tenant-A',
+    })
+    const parsed = new URL(url)
+    assert.equal(parsed.searchParams.get('client_id'), 'env-gmail-client')
+    assert.equal(
+      parsed.searchParams.get('redirect_uri'),
+      'https://app.example/api/connectors/oauth/callback',
+    )
+  } finally {
+    if (prevId === undefined) delete process.env.GMAIL_OAUTH_CLIENT_ID
+    else process.env.GMAIL_OAUTH_CLIENT_ID = prevId
+    if (prevSecret === undefined) delete process.env.GMAIL_OAUTH_CLIENT_SECRET
+    else process.env.GMAIL_OAUTH_CLIENT_SECRET = prevSecret
+    if (prevRedirect === undefined) delete process.env.GMAIL_OAUTH_REDIRECT_URI
+    else process.env.GMAIL_OAUTH_REDIRECT_URI = prevRedirect
+  }
+})
+
+await test('buildAuthorizationUrl: Gmail saját clientId-jét a GMAIL_OAUTH_* nem írja felül', async () => {
+  const prevId = process.env.GMAIL_OAUTH_CLIENT_ID
+  const prevSecret = process.env.GMAIL_OAUTH_CLIENT_SECRET
+  process.env.GMAIL_OAUTH_CLIENT_ID = 'env-gmail-client'
+  process.env.GMAIL_OAUTH_CLIENT_SECRET = 'env-gmail-secret'
+  try {
+    const { service } = buildGrantService()
+    const { url } = await service.buildAuthorizationUrl({
+      connector: gmailConnector({
+        config: {
+          oauth: {
+            authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+            clientId: 'connector-gmail-client',
+            scopes: ['gmail.readonly'],
+            offlineParams: { access_type: 'offline' },
+            scopeTransform: 'gmailAlias',
+          },
+        } as unknown as Connector['config'],
+      }),
+      userId: 'user-Y',
+      tenantId: 'tenant-A',
+    })
+    const parsed = new URL(url)
+    assert.equal(parsed.searchParams.get('client_id'), 'connector-gmail-client')
+  } finally {
+    if (prevId === undefined) delete process.env.GMAIL_OAUTH_CLIENT_ID
+    else process.env.GMAIL_OAUTH_CLIENT_ID = prevId
+    if (prevSecret === undefined) delete process.env.GMAIL_OAUTH_CLIENT_SECRET
+    else process.env.GMAIL_OAUTH_CLIENT_SECRET = prevSecret
+  }
+})
+
 await test('buildAuthorizationUrl: Google provisioning descriptor explicit auth mezőiből épít consent URL-t', async () => {
   const { service } = buildGrantService()
   const { url } = await service.buildAuthorizationUrl({

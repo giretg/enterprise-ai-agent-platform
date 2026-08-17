@@ -1,7 +1,11 @@
 import type { Connector, ConnectorGrant, Prisma } from '@prisma/client'
 import type { AuditRepository, ConnectorGrantRepository } from '@/repositories/interfaces'
 import { prisma } from '@/lib/db'
-import { loadGoogleOAuthConfig, type GoogleOAuthConfig } from '@/lib/platform-google-oauth-config'
+import {
+  loadGoogleOAuthConfig,
+  readGoogleOAuthConfigFromEnv,
+  type GoogleOAuthConfig,
+} from '@/lib/platform-google-oauth-config'
 import {
   buildGrantTokenRef,
   createGrantTokenStore,
@@ -145,24 +149,30 @@ async function resolvePlatformGoogleOAuthConfig(
 ): Promise<GoogleOAuthConfig | null> {
   if (!isGoogleConnector(connector)) return null
   try {
-    // Az env-fallback csak a platform-UI előtöltésére kell. A consent/token csere
-    // a platform_settings (vagy a korábbi tenant-beállítás) alapján írja felül a
-    // connector clientId-t — különben a GMAIL_OAUTH_* minden Google connector
-    // saját clientjét elnyomná.
+    // Gmail (és más Google connector clientId nélkül) a platform OAuth appot
+    // használja. A UI a GMAIL_OAUTH_* env-et is „beállítva”-nak mutatja — a
+    // consentnek ugyanazt a sorrendet kell követnie (platform_settings → env).
+    // Tenant-harvest itt szándékosan ki van kapcsolva: idegen tenant secretje
+    // ne szivárogjon a consentbe.
     const resolved = await loadGoogleOAuthConfig({
-      includeEnv: false,
+      includeEnv: true,
       listTenantSettings: async () => [],
     })
     return resolved?.config ?? null
   } catch {
-    return null
+    // A platform_settings olvasás DB-hibája ne némítsa el az env-fallbacket:
+    // különben a UI „be van állítva (GMAIL_OAUTH_*)”, a gomb meg missing clientId.
+    return readGoogleOAuthConfigFromEnv()
   }
 }
 
 async function resolveOAuthConfig(connector: Connector): Promise<ResolvedOAuthConfig> {
   const base = readOAuthConfig(connector)
+  // A connector saját clientId-je nyer — a GMAIL_OAUTH_* ne írja felül pl. egy
+  // Search Console connector saját Google-appját.
+  if (base.clientId) return base
   const platformGoogle = await resolvePlatformGoogleOAuthConfig(connector)
-  const clientId = platformGoogle?.clientId || base.clientId
+  const clientId = platformGoogle?.clientId ?? ''
   if (!clientId) throw new Error('connector oauth config missing clientId')
   return {
     ...base,
@@ -206,8 +216,11 @@ function resolveGrantedScopes(params: {
 
 async function resolveClientSecret(connector: Connector): Promise<string> {
   if (isDelegatedOAuthStubEnabled()) return 'stub-client-secret'
-  const platformGoogle = await resolvePlatformGoogleOAuthConfig(connector)
-  if (platformGoogle?.clientSecret) return platformGoogle.clientSecret
+  const base = readOAuthConfig(connector)
+  if (!base.clientId) {
+    const platformGoogle = await resolvePlatformGoogleOAuthConfig(connector)
+    if (platformGoogle?.clientSecret) return platformGoogle.clientSecret
+  }
   const alias = connector.secretAlias
   if (!alias) throw new Error('connector missing client secret alias')
 
