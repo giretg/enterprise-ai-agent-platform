@@ -241,6 +241,36 @@ export interface TicketRepository {
       >
     >,
   ): Promise<Ticket>
+  /**
+   * Atomi állapot-összehasonlítás és frissítés. A state machine ezt használja, hogy két
+   * egyidejű jóváhagyás közül csak az egyik vihesse végig ugyanazt az átmenetet.
+   * `null` = a ticket állapota időközben megváltozott.
+   */
+  updateIfCurrentState(
+    id: string,
+    currentState: TicketState,
+    data: Partial<
+      Pick<
+        Ticket,
+        | 'state'
+        | 'payload'
+        | 'assigneeType'
+        | 'assigneeId'
+        | 'agentId'
+        | 'lockToken'
+        | 'lockedAt'
+        | 'playbookRef'
+        | 'conversationId'
+        | 'processInstanceId'
+        | 'playbookVersionId'
+        | 'playbookStepId'
+        | 'requiredGateId'
+        | 'cancelRequested'
+        | 'cancelRequestedById'
+        | 'cancelRequestedAt'
+      >
+    >,
+  ): Promise<Ticket | null>
   /** Explicit Stop: cancelRequested flag in_progress ticketen. */
   requestCancel(id: string, byUserId: string, now?: Date): Promise<Ticket | null>
   isCancelRequested(id: string): Promise<boolean>
