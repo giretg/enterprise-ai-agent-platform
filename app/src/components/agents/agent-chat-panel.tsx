@@ -191,7 +191,7 @@ type AgentChatStreamEvent =
     }
   | {
       type: 'connector_grant_needed'
-      grant: { connectorId: string; toolName: string; reason: string }
+      grant: { connectorId: string; toolName: string; reason: string; connectorType?: string }
     }
   | { type: 'thinking'; turnId: string; delta: string }
   | { type: 'token'; chunk: string }

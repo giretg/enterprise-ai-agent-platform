@@ -89,10 +89,18 @@ export function connectorGrantLabel(card: {
  * Élő stream-kártya a loop eseményéből. A típus/címke a regiszterből jön —
  * Gmail-hardcode nélkül, különben egy Drive/Slack/saját API gombja is
  * „Gmail”-t írna, amíg a lap újra nem tölt.
+ *
+ * A chat-stream JSON-ja laza (`reason: string`); itt szűkítjük a kártya okát.
  */
-export function connectorGrantCardFromLoopEvent(
-  event: ToolLoopConnectorGrantNeededEvent,
-): ConnectorGrantNeededCard {
+export function connectorGrantCardFromLoopEvent(event: {
+  connectorId: string
+  toolName: string
+  reason: string
+  connectorType?: string
+}): ConnectorGrantNeededCard {
+  const reason: ConnectorGrantNeededReason = isConnectorGrantNeededReason(event.reason)
+    ? event.reason
+    : 'connector_grant_missing'
   const connectorType =
     event.connectorType ?? connectorTypeForGrantTool(event.toolName) ?? 'http_api'
   return {
@@ -100,7 +108,7 @@ export function connectorGrantCardFromLoopEvent(
     connectorType,
     connectorName: delegatedConnectorLabel(connectorType),
     toolName: event.toolName,
-    reason: event.reason,
+    reason,
     scopes: [],
   }
 }
