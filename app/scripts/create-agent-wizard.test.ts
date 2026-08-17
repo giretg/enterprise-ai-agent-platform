@@ -13,6 +13,7 @@ import {
   assignableConnectorsFromCatalog,
   canEnterCreateAgentWizardStep,
   createAgentWizardContinueHref,
+  initialEnabledToolNames,
   isIdentityStepComplete,
   isPreCreateComplete,
   isStyleStepComplete,
@@ -20,6 +21,7 @@ import {
   nextCreateAgentWizardStep,
   parseCreateAgentWizardStep,
   prevCreateAgentWizardStep,
+  toolSelectionHasChanges,
 } from '../src/lib/create-agent-wizard'
 
 let failures = 0
@@ -147,6 +149,13 @@ function main() {
     )
   })
 
+  check('javasolt tool be van jelölve, de még nincs grantolva', () => {
+    const enabled = initialEnabledToolNames([], ['kb_search', 'web_search'])
+    assert.deepEqual(enabled, ['kb_search', 'web_search'])
+    assert.equal(toolSelectionHasChanges(enabled, []), true)
+    assert.equal(toolSelectionHasChanges(['kb_search'], ['kb_search']), false)
+  })
+
   check('a varázsló provisioning-javaslatot és új-ablakos kitérőket tartalmaz', () => {
     const wizard = readFileSync(
       resolve(process.cwd(), 'src/components/agents/create-agent-wizard.tsx'),
@@ -171,6 +180,10 @@ function main() {
     assert.match(wizard, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\.behaviorProfiles/)
     assert.match(wizard, /draftAgentFromDescription/)
     assert.match(wizard, /Provisioning agent javasol/)
+    assert.match(wizard, /suggestedTools=\{/)
+    assert.match(wizard, /suggestedSkillNames=\{/)
+    assert.doesNotMatch(wizard, /updateAgentCapabilities/)
+    assert.doesNotMatch(wizard, /assignSkillAction/)
     assert.match(skills, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\.skills/)
     assert.match(style, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\.behaviorProfiles/)
   })

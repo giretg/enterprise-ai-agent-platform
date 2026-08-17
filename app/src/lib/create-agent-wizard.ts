@@ -162,6 +162,34 @@ export function matchAssignableSkillsByName<T extends { name: string }>(
   return assignable.filter((skill) => wanted.has(skill.name.trim().toLowerCase()))
 }
 
+export function grantedToolNames(
+  currentCapabilities: Array<{ toolName: string; allowed: boolean }>,
+): string[] {
+  return currentCapabilities.filter((c) => c.allowed).map((c) => c.toolName)
+}
+
+/** Granted ∪ javasolt — a checkboxok kiindulása; mentés nélkül még nincs grant. */
+export function initialEnabledToolNames(
+  currentCapabilities: Array<{ toolName: string; allowed: boolean }>,
+  suggestedTools: Iterable<string> = [],
+): string[] {
+  const suggested = [...suggestedTools].map((t) => t.trim()).filter(Boolean)
+  return [...new Set([...grantedToolNames(currentCapabilities), ...suggested])]
+}
+
+export function toolSelectionHasChanges(
+  enabled: Iterable<string>,
+  granted: Iterable<string>,
+): boolean {
+  const enabledSet = new Set([...enabled])
+  const grantedSet = new Set([...granted])
+  if (enabledSet.size !== grantedSet.size) return true
+  for (const name of enabledSet) {
+    if (!grantedSet.has(name)) return true
+  }
+  return false
+}
+
 export function assignableConnectorsFromCatalog<T extends { id: string; type: string }>(
   catalog: T[],
   assignedIds: Iterable<string>,

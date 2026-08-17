@@ -6,7 +6,8 @@
  * bejegyzésének modelConfig-jét használja (mint a Skill Distiller) — propose-not-apply:
  * a modell SOSEM hoz létre agentet, SOSEM grantol capability-t, SOSEM aktivál.
  * A hívó (server action + create-agent varázsló) tölti fel az űrlapot; az ember
- * átnézi / módosítja, majd a meglévő `createAgent` + post-lépésekkel ment.
+ * átnézi / módosítja, majd a meglévő `createAgent`-tel jóváhagy. A javasolt
+ * toolok/skillek a varázsló későbbi lépésein, külön mentésre kerülnek rá.
  */
 import { z } from 'zod'
 import type { GatewayMessage, ModelConfig, SensitivityOverride } from '@/domain/gateway/model-gateway'
@@ -108,6 +109,24 @@ export type AgentScaffoldValidation = {
 export type AgentScaffoldDraftResult =
   | { ok: true; draft: AgentScaffoldDraft; validation: AgentScaffoldValidation }
   | { ok: false; error: 'PARSE_FAILED'; detail: string }
+
+/** Control-plane szöveg — soha ne szivárogjon ki a PARSE_FAILED / schema mismatch kód. */
+export function agentScaffoldUserMessage(error: string, detail?: string): string {
+  if (error === 'MISSING_ASSISTANT') {
+    return 'A javaslatkészítő nincs telepítve ezen a környezeten. Szólj a platform-adminnak.'
+  }
+  if (error !== 'PARSE_FAILED') {
+    return 'Nem sikerült az agent-vázlatot generálni.'
+  }
+  const d = detail?.trim() ?? ''
+  if (!d || d === 'empty description') {
+    return 'Írd le, milyen agentet szeretnél — ebből készül a vázlat.'
+  }
+  if (d === 'schema mismatch' || /schema mismatch/i.test(d)) {
+    return 'A javaslat nem volt értelmezhető. Próbáld újra, vagy töltsd ki kézzel a mezőket.'
+  }
+  return `Nem sikerült érvényes agent-vázat készíteni: ${d}`
+}
 
 export interface AgentScaffoldingModel {
   call(params: {
