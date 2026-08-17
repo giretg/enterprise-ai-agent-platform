@@ -216,6 +216,7 @@ export interface TicketRepository {
         /** A tickettel egy tranzakcióban létrehozott első komment és csatolmányai. */
         initialComment?: Omit<AppendTicketCommentInput, 'ticketId'>
       },
+    options?: { attachments?: CreateTicketAttachmentInput[] },
   ): Promise<Ticket>
   update(
     id: string,
@@ -285,6 +286,13 @@ export interface TicketRepository {
   getTransitionStats(since?: Date): Promise<TransitionStats>
   /** Csak backlog/ready, lock nélkül — a kapcsolódó sorokat is takarítja. `force` esetén admin: bármilyen állapot. */
   deleteTicket(id: string, options?: { force?: boolean }): Promise<void>
+}
+
+export type CreateTicketAttachmentInput = {
+  documentId: string
+  filename: string
+  mimeType?: string | null
+  byteSize?: number | null
 }
 
 export type TicketCommentWithAttachments = TicketComment & {

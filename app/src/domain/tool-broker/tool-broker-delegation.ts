@@ -50,6 +50,7 @@ import {
 } from '@/lib/tulajdoni-lap-egyeztetes'
 import { parseReconcileRecordList } from '@/lib/reconcile-records'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
+import { ticketReferencesDocument } from '@/domain/ticket/ticket-document-reference'
 import { personaFor } from '@/lib/agent-persona'
 import {
   buildAgentCatalogEntry,
@@ -1830,20 +1831,6 @@ async function conversationReferencesDocument(
     }
   }
   return false
-}
-
-async function ticketReferencesDocument(ticketId: string, documentId: string): Promise<boolean> {
-  const ticket = await prisma.ticket.findUnique({
-    where: { id: ticketId },
-    select: { sourceDocumentId: true },
-  })
-  if (ticket?.sourceDocumentId === documentId) return true
-
-  const attachment = await prisma.ticketCommentAttachment.findFirst({
-    where: { documentId, comment: { ticketId } },
-    select: { id: true },
-  })
-  return Boolean(attachment)
 }
 
 /**

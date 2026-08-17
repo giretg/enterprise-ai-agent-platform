@@ -146,6 +146,7 @@
     "test:workspace-io-performance": "tsx scripts/workspace-io-performance.test.ts",
     "test:xlsx-data-validation": "tsx scripts/xlsx-data-validation.test.ts",
     "test:ticket-thread-prompt": "tsx scripts/ticket-thread-prompt.test.ts",
+    "test:ticket-input-attachments": "tsx scripts/ticket-input-attachments.test.ts",
     "test:agent-turn-snapshot": "tsx scripts/agent-turn-snapshot.test.ts",
     "test:agent-turn-reconnect": "tsx scripts/agent-turn-reconnect.test.ts",
     "test:chat-turn-progress": "tsx scripts/chat-turn-progress.test.ts",

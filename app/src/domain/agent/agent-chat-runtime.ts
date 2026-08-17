@@ -61,6 +61,7 @@ import { formatPreapprovedRunSummary } from '../tool-broker/consequence-gate-pol
 import type { SkillService } from '../skill/skill-service'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
 import {
+  buildPromotedTaskAttachmentTransfer,
   buildSkillTaskPromotionBinding,
   buildSkillTaskPromotionMessage,
   buildSkillTaskTitle,
@@ -941,38 +942,34 @@ export class AgentChatRuntime {
         kind: isImageDocument(doc) ? 'screenshot' : 'file',
       })),
     })
+    const attachmentTransfer = buildPromotedTaskAttachmentTransfer(input.attachmentDocs)
 
     try {
-      const ticket = await this.tickets.create({
-        tenantId: input.params.tenantId ?? null,
-        type: 'interaction',
-        title,
-        state: 'ready',
-        assigneeType: 'agent',
-        assigneeId: input.params.agentId,
-        agentId: input.params.agentId,
-        payload: {
-          question,
-          source: 'chat_skill_promotion',
+      const ticket = await this.tickets.create(
+        {
+          tenantId: input.params.tenantId ?? null,
+          type: 'interaction',
+          title,
+          state: 'ready',
+          assigneeType: 'agent',
+          assigneeId: input.params.agentId,
+          agentId: input.params.agentId,
+          payload: {
+            question,
+            source: 'chat_skill_promotion',
+            conversationId: binding.conversationId,
+            attachmentDocumentIds: binding.attachmentDocumentIds,
+            preferredSkillVersionIds: slashResolved.loadedSkillVersionIds,
+            promotedSkillNames: slashResolved.loadedSkillNames,
+          } as Prisma.JsonValue,
+          sourceDocumentId: attachmentTransfer.sourceDocumentId,
           conversationId: binding.conversationId,
-          attachmentDocumentIds: binding.attachmentDocumentIds,
-          preferredSkillVersionIds: slashResolved.loadedSkillVersionIds,
-          promotedSkillNames: slashResolved.loadedSkillNames,
-        } as Prisma.JsonValue,
-        sourceDocumentId: binding.sourceDocumentId,
-        conversationId: binding.conversationId,
-        executeAfter: null,
-        dueBy: null,
-        createdById: input.params.createdById,
-        initialComment: binding.ticketAttachments.length > 0
-          ? {
-              kind: 'system_note',
-              authorType: 'system',
-              body: 'A chatból a tickethez átvitt csatolmányok.',
-              attachments: binding.ticketAttachments,
-            }
-          : undefined,
-      })
+          executeAfter: null,
+          dueBy: null,
+          createdById: input.params.createdById,
+        },
+        { attachments: attachmentTransfer.attachments },
+      )
 
       await this.audit.append({
         actorType: 'human',

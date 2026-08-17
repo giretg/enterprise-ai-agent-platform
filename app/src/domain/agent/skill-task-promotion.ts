@@ -26,6 +26,42 @@ export type SkillTaskPromotionBinding = {
   }>
 }
 
+export type PromotedTaskAttachment = {
+  documentId: string
+  filename: string
+  mimeType: string | null
+  byteSize: number | null
+}
+
+function metadataByteSize(metadata: unknown): number | null {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null
+  const value = (metadata as Record<string, unknown>).byteSize
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+}
+
+/**
+ * A chat csatolmányait első osztályú ticket-csatolmányokká alakító szerződés.
+ * A `sourceDocumentId` az egyfájlos legacy fogyasztókat tartja működésben.
+ */
+export function buildPromotedTaskAttachmentTransfer(
+  documents: Array<{
+    id: string
+    filename: string
+    mimeType?: string | null
+    metadata?: unknown
+  }>,
+): { sourceDocumentId: string | null; attachments: PromotedTaskAttachment[] } {
+  return {
+    sourceDocumentId: documents[0]?.id ?? null,
+    attachments: documents.map((document) => ({
+      documentId: document.id,
+      filename: document.filename,
+      mimeType: document.mimeType ?? null,
+      byteSize: metadataByteSize(document.metadata),
+    })),
+  }
+}
+
 /**
  * A chatből promótált ticket erőforrás-kapcsolatai.
  *

@@ -7,6 +7,7 @@ import { UNSTARTED_DELETABLE_STATES } from '@/lib/ticket-display'
 import { resolveTicketSource } from '@/lib/ticket-source'
 import type {
   AppendTicketCommentInput,
+  CreateTicketAttachmentInput,
   ListPageResult,
   TicketCommentWithAttachments,
   TicketFilter,
@@ -182,14 +183,30 @@ export class PostgresTicketRepository implements TicketRepository {
     })
   }
 
-  async create(data: Parameters<TicketRepository['create']>[0]): Promise<Ticket> {
+  async create(
+    data: Parameters<TicketRepository['create']>[0],
+    options?: { attachments?: CreateTicketAttachmentInput[] },
+  ): Promise<Ticket> {
     const { initialComment, ...ticketData } = data
+    const attachments = options?.attachments ?? []
+    if (attachments.length > 8) throw new Error('Too many ticket attachments')
 
     const ticket = await prisma.$transaction(async (tx) => {
       const created = await tx.ticket.create({
         data: {
           ...ticketData,
           source: resolveTicketSource(ticketData.source),
+          attachments: attachments.length
+            ? {
+                create: attachments.map((attachment, index) => ({
+                  documentId: attachment.documentId,
+                  seq: index + 1,
+                  filename: attachment.filename,
+                  mimeType: attachment.mimeType ?? null,
+                  byteSize: attachment.byteSize ?? null,
+                })),
+              }
+            : undefined,
         } as Prisma.TicketUncheckedCreateInput,
       })
 

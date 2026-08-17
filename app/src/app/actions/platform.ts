@@ -69,6 +69,8 @@ import {
   extractCreatorAgentId,
   formatTicketCreator,
 } from '@/lib/ticket-display'
+import { buildOriginalDocumentMetadata } from '@/lib/document-storage'
+import { listTicketInputAttachments } from '@/domain/ticket/ticket-input-attachment-service'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { applyAgentModelConfigUpdate } from '@/app/actions/agent-model-config-update'
 import type { AgentModelConfigInput } from '@/app/actions/agent-model-config-update'
@@ -876,7 +878,7 @@ export async function getTicket(input: { id: string }) {
       ? await repositories.agents.findById(ticket.agentId)
       : null
     const creatorAgentId = extractCreatorAgentId(ticket.payload)
-    const [assigneeUser, creatorUser, creatorAgent, process] = await Promise.all([
+    const [assigneeUser, creatorUser, creatorAgent, process, inputAttachments] = await Promise.all([
       ticket.assigneeType === 'human' && ticket.assigneeId
         ? prisma.user.findUnique({ where: { id: ticket.assigneeId }, select: { name: true } })
         : Promise.resolve(null),
@@ -890,6 +892,7 @@ export async function getTicket(input: { id: string }) {
             select: { id: true, processType: true, status: true },
           })
         : Promise.resolve(null),
+      listTicketInputAttachments(ticket.id),
     ])
 
     const display = buildTicketDisplayExtras(ticket, {
@@ -937,6 +940,7 @@ export async function getTicket(input: { id: string }) {
       reproduction,
       ...display,
       process,
+      inputAttachments,
       pendingConsequenceApprovals,
       pendingConnectorGrants,
       creator: formatTicketCreator({
@@ -1005,7 +1009,9 @@ export async function uploadTicketCommentAttachment(formData: FormData) {
 
     const { storageRef, absolutePath } = resolveUploadTarget(filename)
     await mkdir(path.dirname(absolutePath), { recursive: true })
-    await writeFile(absolutePath, extractedText)
+    // A Document.extractedText a kereshető/LLM-olvasható reprezentáció, a
+    // storageRef viszont az ember által letölthető EREDETI fájl bájtjait őrzi.
+    await writeFile(absolutePath, buffer)
 
     const document = await repositories.documents.create({
       filename,
@@ -1015,13 +1021,12 @@ export async function uploadTicketCommentAttachment(formData: FormData) {
       connectorId: null,
       uploadedById: user.user.id,
       mimeType,
-      metadata: {
+      metadata: buildOriginalDocumentMetadata(file.size, {
         ticketCommentDraft: true,
         ticketId: ticket.id,
         kind,
-        byteSize: file.size,
         ...(extraction ? { extraction: toExtractionMetadata(extraction) } : {}),
-      },
+      }),
     })
 
     await repositories.audit.append({
@@ -2621,6 +2626,7 @@ export async function uploadDocument(formData: FormData) {
     let filename = 'upload.txt'
     let extractedText = ''
     let mimeType: string | null = null
+    let storageBytes: Buffer
     // KB-v3 §7.3 — formátumfüggő extraction: normalizált markdown +
     // forrás-provenance-os szeletek (PDF oldal / DOCX section / XLSX cella).
     let extraction: StructuredExtraction | null = null
@@ -2630,15 +2636,16 @@ export async function uploadDocument(formData: FormData) {
       filename = 'paste.txt'
       mimeType = 'text/plain'
       extraction = extractTextContent(textOverride)
+      storageBytes = Buffer.from(textOverride, 'utf8')
     } else if (file instanceof File) {
       filename = safeUploadFilename(file.name)
       mimeType = file.type || null
+      storageBytes = Buffer.from(await file.arrayBuffer())
       if (file.type.startsWith('image/')) {
-        const buffer = Buffer.from(await file.arrayBuffer())
-        extractedText = `[image:${file.type}]${buffer.toString('base64')}`
+        extractedText = `[image:${file.type}]${storageBytes.toString('base64')}`
       } else {
         extraction = await extractStructured({
-          buffer: Buffer.from(await file.arrayBuffer()),
+          buffer: storageBytes,
           filename,
           mimeType: file.type || null,
         })
@@ -2650,7 +2657,7 @@ export async function uploadDocument(formData: FormData) {
 
     const { storageRef, absolutePath } = resolveUploadTarget(filename)
     await mkdir(path.dirname(absolutePath), { recursive: true })
-    await writeFile(absolutePath, extractedText)
+    await writeFile(absolutePath, storageBytes)
 
     const document = await repositories.documents.create({
       filename,
@@ -2662,7 +2669,9 @@ export async function uploadDocument(formData: FormData) {
       mimeType,
       // A szeletek (§4.7 forrás-refekkel) a metadata-ba kerülnek; az OKF-artifact
       // generáláskor innen épül a bundle. Régi doksin nincs → heading-split fallback.
-      ...(extraction ? { metadata: { extraction: toExtractionMetadata(extraction) } } : {}),
+      metadata: buildOriginalDocumentMetadata(storageBytes.length, {
+        ...(extraction ? { extraction: toExtractionMetadata(extraction) } : {}),
+      }),
     })
 
     return ok(document)

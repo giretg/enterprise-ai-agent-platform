@@ -81,7 +81,7 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
   }
 
   return (
-    <Card title="Fájlok">
+    <Card title="Munkafájlok">
       {!isReadOnly && (
         <div className="mb-3">
           <WorkspaceFileDropzone
@@ -99,7 +99,7 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
       ) : error ? (
         <p className="text-sm text-coral">{error}</p>
       ) : visibleFiles.length === 0 ? (
-        <p className="text-sm text-ink-faint">Nincs fájl a workspace-ben.</p>
+        <p className="text-sm text-ink-faint">Nincs munkafájl a workspace-ben.</p>
       ) : (
         <ul className="divide-y divide-line">
           {visibleFiles.map((f) => (

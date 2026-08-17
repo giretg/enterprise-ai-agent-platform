@@ -10,6 +10,10 @@ import {
   agentAnswerStructuredFromPayload,
   extractAgentAnswerDisplayBody,
 } from '@/lib/playbook-v2/process-step-payload'
+import {
+  TicketInputAttachmentList,
+  type TicketInputAttachmentView,
+} from '@/components/tickets/ticket-input-attachment-list'
 import { readTicketCallCapMessageFromPayload } from '@/lib/ticket-call-cap'
 
 type ThreadAttachment = {
@@ -282,6 +286,7 @@ export function TicketThread({
     createdAt: string | Date
     creator?: { label: string } | null
     assignee?: { label: string } | null
+    inputAttachments?: TicketInputAttachmentView[]
   }
   comments: TicketThreadComment[]
 }) {
@@ -326,6 +331,10 @@ export function TicketThread({
             <span>{formatTicketDateTime(ticket.createdAt)}</span>
           </div>
           <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{originalTask}</p>
+          <TicketInputAttachmentList
+            ticketId={ticket.id}
+            attachments={ticket.inputAttachments ?? []}
+          />
         </article>
 
         {sorted.map((comment) => {

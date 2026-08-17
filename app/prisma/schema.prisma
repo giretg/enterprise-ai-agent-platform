@@ -1844,6 +1844,7 @@ model Document {
   connector                Connector?                @relation(fields: [connectorId], references: [id])
   tickets                  Ticket[]
   artifacts                KnowledgeArtifact[]
+  ticketAttachments        TicketAttachment[]
   ticketCommentAttachments TicketCommentAttachment[]
 
   @@index([connectorId, status])
@@ -2419,12 +2420,34 @@ model Ticket {
   sandboxAppVersions            SandboxAppVersion[]
   linkedMessages                Message[]
   scheduledTaskMaterializations ScheduledTask[]
+  attachments                   TicketAttachment[]
   comments                      TicketComment[]
   consequenceApprovals          ConsequenceApproval[]
 
   @@index([source, state])
   @@index([tenantId, state])
   @@map("tickets")
+}
+
+/// A ticket bemeneti dokumentumai. Külön élnek a workspace kimeneti fájljaitól
+/// és a későbbi kommentek csatolmányaitól.
+model TicketAttachment {
+  id         String   @id @default(uuid()) @db.Uuid
+  ticketId   String   @map("ticket_id") @db.Uuid
+  documentId String   @map("document_id") @db.Uuid
+  seq        Int
+  filename   String
+  mimeType   String?  @map("mime_type")
+  byteSize   Int?     @map("byte_size")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  ticket   Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  document Document @relation(fields: [documentId], references: [id], onDelete: Restrict)
+
+  @@unique([ticketId, seq])
+  @@unique([ticketId, documentId])
+  @@index([documentId])
+  @@map("ticket_attachments")
 }
 
 model ScheduledTask {
