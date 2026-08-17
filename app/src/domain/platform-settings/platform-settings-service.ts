@@ -47,6 +47,12 @@ import {
 } from '@/domain/channel/channel-types'
 import { matchForbiddenHost } from '@/domain/net/egress-guard'
 import { errorPolicySchema, type ErrorPolicy } from '@/lib/playbook-v2/spec'
+import {
+  GOOGLE_OAUTH_PLATFORM_KEY,
+  loadGoogleOAuthConfig,
+  type GoogleOAuthConfig,
+  type GoogleOAuthResolved,
+} from '@/lib/platform-google-oauth-config'
 
 export const DISPATCHER_CONTROLS_KEY = 'dispatcher.controls'
 export const DISPATCHER_LAST_CYCLE_KEY = 'dispatcher.last_cycle'
@@ -1420,5 +1426,54 @@ export class PlatformSettingsService {
       rateAsOf: result.rateAsOf,
       sourceLabel: OPENROUTER_PRICE_SOURCE_LABEL,
     }
+  }
+
+  async getGoogleOAuthConfig(): Promise<GoogleOAuthResolved | null> {
+    return loadGoogleOAuthConfig({
+      getPlatformValue: () => this.settings.get(GOOGLE_OAUTH_PLATFORM_KEY),
+    })
+  }
+
+  async upsertGoogleOAuthConfig(
+    input: { clientId: string; clientSecret?: string; redirectUri?: string },
+    actorId: string,
+  ): Promise<GoogleOAuthResolved> {
+    const existing = await this.getGoogleOAuthConfig()
+    const clientSecret = input.clientSecret?.trim() || existing?.config.clientSecret
+    if (!clientSecret) {
+      throw new Error('Client Secret szükséges az első beállításhoz.')
+    }
+    const redirectUri =
+      input.redirectUri === undefined
+        ? existing?.config.redirectUri
+        : input.redirectUri.trim() || undefined
+    const config: GoogleOAuthConfig = {
+      clientId: input.clientId.trim(),
+      clientSecret,
+      ...(redirectUri ? { redirectUri } : {}),
+    }
+    await this.settings.set(
+      GOOGLE_OAUTH_PLATFORM_KEY,
+      config as unknown as Prisma.InputJsonObject,
+      actorId,
+    )
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: 'platform.oauth.google.update',
+      targetType: 'platform_setting',
+      targetId: GOOGLE_OAUTH_PLATFORM_KEY,
+      modelUsed: null,
+      inputRef: 'google',
+      outputRef: config.clientId,
+      policyDecision: existing?.source === 'platform' ? 'updated' : 'configured',
+      metadata: {
+        redirectUri: config.redirectUri ?? null,
+        secretRotated: Boolean(input.clientSecret?.trim()),
+        previousSource: existing?.source ?? null,
+      },
+    })
+    return { config, source: 'platform' }
   }
 }

@@ -3,8 +3,9 @@
 import type { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { getCurrentUser } from '@/auth'
-import { requireTenantRole } from '@/auth/tenant-context'
+import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
 import { hasMinimumRole } from '@/auth/types'
+import { isSuperadmin } from '@/lib/tenant-policy'
 import { services } from '@/domain'
 import { prisma } from '@/lib/db'
 import { repositories } from '@/repositories/postgres'
@@ -26,10 +27,7 @@ import {
   isDelegatedOAuthStubEnabled,
   resolveGrantOAuthScopes,
 } from '@/domain/connector-grant/delegated-oauth-registry'
-import {
-  readTenantGoogleOAuthConfig,
-  upsertTenantGoogleOAuthConfig,
-} from '@/lib/tenant-google-oauth-config'
+import { toGoogleOAuthPublicView } from '@/lib/platform-google-oauth-config'
 
 export async function listAgentDelegatedConnectors(agentId: string) {
   try {
@@ -70,7 +68,7 @@ export async function listConnectorsPanelContext() {
       user.activeTenantId,
       user.user.id,
     )
-    const [grants, connectors, tenant] = await Promise.all([
+    const [grants, connectors, googleResolved] = await Promise.all([
       services.connectorGrants.listForUser(user.user.id, user.activeTenantId),
       prisma.connector.findMany({
         where: {
@@ -80,20 +78,18 @@ export async function listConnectorsPanelContext() {
         },
         orderBy: { name: 'asc' },
       }),
-      repositories.tenants.findById(user.activeTenantId),
+      services.platformSettings.getGoogleOAuthConfig(),
     ])
-    const googleOauth = readTenantGoogleOAuthConfig(tenant?.settings)
+    const googleView = toGoogleOAuthPublicView(googleResolved)
     return ok({
       grants,
       connectors,
       isAdmin,
+      canManagePlatformOauth: isSuperadmin(user.platformRoles),
       googleOauth: {
-        configured: Boolean(googleOauth),
-        clientIdHint: googleOauth?.clientId ? `${googleOauth.clientId.slice(0, 14)}...` : null,
-        // A client ID nem titok (az OAuth flow-ban a böngészőbe kerül), de csak adminnak
-        // adjuk vissza teljes egészében, hogy a szerkesztő űrlap előtölthető legyen.
-        clientId: isAdmin ? googleOauth?.clientId ?? null : null,
-        redirectUri: googleOauth?.redirectUri ?? null,
+        configured: googleView.configured,
+        persisted: googleView.persisted,
+        source: googleView.source,
       },
     })
   } catch (e) {
@@ -101,58 +97,40 @@ export async function listConnectorsPanelContext() {
   }
 }
 
-export async function upsertTenantGoogleOAuth(input: {
+export async function getPlatformGoogleOAuth() {
+  try {
+    await requirePlatformRole('platform_auditor')
+    const resolved = await services.platformSettings.getGoogleOAuthConfig()
+    return ok(toGoogleOAuthPublicView(resolved))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load platform Google OAuth config')
+  }
+}
+
+export async function upsertPlatformGoogleOAuth(input: {
   clientId: string
   clientSecret?: string
   redirectUri?: string
 }) {
   try {
-    const user = await requireTenantRole('admin')
+    const ctx = await requirePlatformRole('superadmin')
     const parsed = z.object({
       clientId: z.string().trim().min(1),
-      // Üresen hagyva a meglévő secret marad érvényben — így a client ID vagy a
-      // redirect URI önmagában is szerkeszthető, secret újragépelés nélkül.
       clientSecret: z.string().trim().optional(),
       redirectUri: z.union([z.literal(''), z.string().trim().url()]).optional(),
     }).parse(input)
 
-    const tenant = await repositories.tenants.findById(user.activeTenantId)
-    if (!tenant) return fail('Tenant not found')
-    const existing = readTenantGoogleOAuthConfig(tenant.settings)
-    const clientSecret = parsed.clientSecret || existing?.clientSecret
-    if (!clientSecret) {
-      return fail('Client Secret szükséges az első beállításhoz.')
-    }
-    // undefined = nem küldték → marad a meglévő; '' = törlés; egyébként új érték.
-    const redirectUri =
-      parsed.redirectUri === undefined ? existing?.redirectUri : parsed.redirectUri || undefined
-    const settings = upsertTenantGoogleOAuthConfig(tenant.settings, {
-      clientId: parsed.clientId,
-      clientSecret,
-      ...(redirectUri ? { redirectUri } : {}),
-    })
-    await repositories.tenants.update(user.activeTenantId, { settings })
-    await repositories.audit.append({
-      actorType: 'human',
-      actorId: user.user.id,
-      agentVersion: null,
-      action: 'tenant.oauth.google.update',
-      targetType: 'tenant',
-      targetId: user.activeTenantId,
-      modelUsed: null,
-      inputRef: 'google',
-      outputRef: parsed.clientId,
-      policyDecision: existing ? 'updated' : 'configured',
-      metadata: {
-        redirectUri: redirectUri ?? null,
-        secretRotated: Boolean(parsed.clientSecret),
-        source: 'connectors_panel',
-      } as Prisma.JsonValue,
-      tenantId: user.activeTenantId,
-    })
-    return ok({ configured: true, clientId: parsed.clientId, redirectUri: redirectUri ?? null })
+    const resolved = await services.platformSettings.upsertGoogleOAuthConfig(
+      {
+        clientId: parsed.clientId,
+        ...(parsed.clientSecret ? { clientSecret: parsed.clientSecret } : {}),
+        redirectUri: parsed.redirectUri,
+      },
+      ctx.user.id,
+    )
+    return ok(toGoogleOAuthPublicView(resolved))
   } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to save tenant Google OAuth config')
+    return fail(e instanceof Error ? e.message : 'Failed to save platform Google OAuth config')
   }
 }
 

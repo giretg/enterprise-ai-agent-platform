@@ -184,6 +184,7 @@
     "test:http-api-prompt": "tsx scripts/http-api-prompt.test.ts",
     "test:http-api-per-agent-key": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/http-api-per-agent-key.test.ts",
     "test:per-user-connector": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/per-user-connector.test.ts",
+    "test:platform-google-oauth": "tsx scripts/platform-google-oauth.test.ts",
     "test:kb-gate": "DATABASE_URL=postgresql://kbtest:kbtest@127.0.0.1:5432/kbtest tsx scripts/knowledge-base-gate.test.ts",
     "test:kb-tenant-boundary": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/kb-tenant-boundary.test.ts",
     "test:kb-retrieval": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/kb-retrieval.test.ts",
