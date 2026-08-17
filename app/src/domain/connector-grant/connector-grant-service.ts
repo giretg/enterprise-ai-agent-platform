@@ -1,7 +1,7 @@
 import type { Connector, ConnectorGrant, Prisma } from '@prisma/client'
 import type { AuditRepository, ConnectorGrantRepository } from '@/repositories/interfaces'
 import { prisma } from '@/lib/db'
-import { readTenantGoogleOAuthConfig } from '@/lib/tenant-google-oauth-config'
+import { loadGoogleOAuthConfig, type GoogleOAuthConfig } from '@/lib/platform-google-oauth-config'
 import {
   buildGrantTokenRef,
   createGrantTokenStore,
@@ -109,7 +109,6 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
   if (!tokenUrl) throw new Error('connector oauth config missing tokenUrl')
 
   const clientId = oauth.clientId ?? auth.clientId ?? ''
-  if (!clientId) throw new Error('connector oauth config missing clientId')
   const authScopes = auth.scope?.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
   const configuredScopes = oauth.scopes ?? authScopes ?? config.scopesSuggested ?? []
   const scopes = configuredScopes.length > 0 ? configuredScopes : []
@@ -141,31 +140,34 @@ function isGoogleConnector(connector: Connector): boolean {
   return provider.includes('google')
 }
 
-async function resolveTenantGoogleOAuthConfig(
+async function resolvePlatformGoogleOAuthConfig(
   connector: Connector,
-): Promise<TenantGoogleOAuthConfig | null> {
-  if (!isGoogleConnector(connector) || !connector.tenantId) return null
-  const tenant = await prisma.tenant.findUnique({
-    where: { id: connector.tenantId },
-    select: { settings: true },
-  })
-  return readTenantGoogleOAuthConfig(tenant?.settings)
-}
-
-type TenantGoogleOAuthConfig = {
-  clientId: string
-  clientSecret: string
-  redirectUri?: string
+): Promise<GoogleOAuthConfig | null> {
+  if (!isGoogleConnector(connector)) return null
+  try {
+    // Az env-fallback csak a platform-UI előtöltésére kell. A consent/token csere
+    // a platform_settings (vagy a korábbi tenant-beállítás) alapján írja felül a
+    // connector clientId-t — különben a GMAIL_OAUTH_* minden Google connector
+    // saját clientjét elnyomná.
+    const resolved = await loadGoogleOAuthConfig({
+      includeEnv: false,
+      listTenantSettings: async () => [],
+    })
+    return resolved?.config ?? null
+  } catch {
+    return null
+  }
 }
 
 async function resolveOAuthConfig(connector: Connector): Promise<ResolvedOAuthConfig> {
   const base = readOAuthConfig(connector)
-  const tenantGoogle = await resolveTenantGoogleOAuthConfig(connector)
-  if (!tenantGoogle) return base
+  const platformGoogle = await resolvePlatformGoogleOAuthConfig(connector)
+  const clientId = platformGoogle?.clientId || base.clientId
+  if (!clientId) throw new Error('connector oauth config missing clientId')
   return {
     ...base,
-    clientId: tenantGoogle.clientId,
-    ...(tenantGoogle.redirectUri ? { redirectUri: tenantGoogle.redirectUri } : {}),
+    clientId,
+    ...(platformGoogle?.redirectUri ? { redirectUri: platformGoogle.redirectUri } : {}),
   }
 }
 
@@ -204,8 +206,8 @@ function resolveGrantedScopes(params: {
 
 async function resolveClientSecret(connector: Connector): Promise<string> {
   if (isDelegatedOAuthStubEnabled()) return 'stub-client-secret'
-  const tenantGoogle = await resolveTenantGoogleOAuthConfig(connector)
-  if (tenantGoogle?.clientSecret) return tenantGoogle.clientSecret
+  const platformGoogle = await resolvePlatformGoogleOAuthConfig(connector)
+  if (platformGoogle?.clientSecret) return platformGoogle.clientSecret
   const alias = connector.secretAlias
   if (!alias) throw new Error('connector missing client secret alias')
 

@@ -13,6 +13,7 @@ import {
   getPlatformWebSearchPolicy,
 } from '@/app/actions/web-search'
 import { getSystemAgentsPageData } from '@/app/actions/system-agents'
+import { getPlatformGoogleOAuth } from '@/app/actions/connector-grants'
 import { readDispatcherRuntime } from '@/lib/dispatcher-runtime'
 import { enabledModelProviders } from '@/lib/model-policy'
 import { PLAYBOOK_AUTHOR_AGENT_NAME, PROVISIONING_ASSISTANT_AGENT_NAME } from '@/lib/platform-agent-registry'
@@ -23,6 +24,7 @@ import { ModelGatewayPanel } from '@/app/control-plane/system/model-gateway-pane
 import { ModelPolicyPanel } from '@/app/control-plane/system/model-policy-panel'
 import { WebSearchControlPanel } from '@/app/control-plane/system/web-search-control-panel'
 import { WebFetchControlPanel } from '@/app/control-plane/system/web-fetch-control-panel'
+import { GoogleOAuthControlPanel } from '@/app/control-plane/system/google-oauth-control-panel'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { Card } from '@/components/ui/shell'
@@ -42,8 +44,14 @@ function purposeFor(name: string): string {
  * policy/gateway, web-fetch/web-search. Az automatizmus-vezérlés (dispatcher, biztonsági
  * háló, monitor) a Rendszer → Üzemeltetés oldalon van.
  */
-export default async function PlatformSettingsPage() {
+export default async function PlatformSettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ section?: string }>
+}) {
+  const query = await searchParams
   const [
+    ctx,
     ctx,
     controlsRes,
     dbModeRes,
@@ -55,6 +63,7 @@ export default async function PlatformSettingsPage() {
     gatewayStatsRes,
     routingPoliciesRes,
     systemAgentsRes,
+    googleOauthRes,
   ] = await Promise.all([
     getAuthContext(),
     getDispatcherControls(),
@@ -67,6 +76,7 @@ export default async function PlatformSettingsPage() {
     getModelCallsSummary(),
     listModelRoutingPolicies(),
     getSystemAgentsPageData(),
+    getPlatformGoogleOAuth(),
   ])
   const isPlatform = Boolean(
     ctx && (ctx.platformRoles.includes('superadmin') || ctx.platformRoles.includes('platform_operator')),
@@ -111,6 +121,7 @@ export default async function PlatformSettingsPage() {
 
       <SettingsSectionShell
         ariaLabel="Platform beállítási témák"
+        initialId={query.section}
         sections={[
           {
             id: 'adatbazis',
@@ -137,6 +148,14 @@ export default async function PlatformSettingsPage() {
                   {!monitorControlsRes.success ? errorBox(monitorControlsRes.error) : null}
                 </div>
               ),
+          },
+          {
+            id: 'google-oauth',
+            label: 'Google OAuth',
+            description: 'Az Enterprise AI Agent Google Cloud OAuth clientje minden tenant számára.',
+            content: googleOauthRes.success
+              ? <GoogleOAuthControlPanel initial={googleOauthRes.data} canEdit={canEdit} />
+              : errorBox(googleOauthRes.error),
           },
           {
             id: 'web-search',
