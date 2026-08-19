@@ -135,7 +135,11 @@ export function oauthReturnPath(
   returnTo: OAuthReturnTo,
   result?: { error?: string },
 ): string {
-  const extra = result?.error
+  // A feltételes ágak együtt union típust kapnak (az egymás ágában nem létező
+  // kulcsok opcionálisak lennének), miközben a query builder csak tényleges
+  // string értékeket fogad. A szerződés itt egyértelmű: pontosan egy státusz
+  // paraméter kerül a visszatérő URL-be.
+  const extra: Record<string, string> = result?.error
     ? { error: result.error }
     : returnTo.kind === 'conversation' || returnTo.kind === 'ticket'
       ? { granted: '1' }
