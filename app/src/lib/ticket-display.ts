@@ -253,9 +253,11 @@ export function matchesAssigneeFilter(
  * nem az `assigneeId`-t — folyamat-agent-lépésnél az assigneeId szándékosan
  * üres (emberi user-id), az AI a `agentId`-ben van.
  */
-export function canStartTicketDispatch(
-  ticket: Pick<Ticket, 'state' | 'assigneeType' | 'agentId'>,
-): boolean {
+export function canStartTicketDispatch(ticket: {
+  state: string
+  assigneeType?: string | null
+  agentId?: string | null
+}): boolean {
   return ticket.state === 'ready' && ticket.assigneeType === 'agent' && Boolean(ticket.agentId)
 }
 
