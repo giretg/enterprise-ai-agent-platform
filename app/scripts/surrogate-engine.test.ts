@@ -332,6 +332,20 @@ async function main() {
     assert.equal(row.hmac.length, 64)
   })
 
+  await check('megjelenítési érték: allokációkor megjegyzett név peek-elhető, vault nélkül', async () => {
+    const { engine, tenantId, scope } = setup()
+    const surrogate = await engine.allocateRef({
+      tenantId,
+      scope,
+      ...company('crm/company/4821'),
+      displayValue: 'SPAR',
+    })
+    assert.equal(surrogate, '[[COMPANY_1]]')
+    assert.equal(engine.peekDisplayValue(tenantId, scope, surrogate), 'SPAR')
+    const peeked = await engine.peekRef({ tenantId, scope, surrogate })
+    assert.equal(peeked.ok, true)
+  })
+
   console.log(failures === 0 ? '\nMinden surrogate-engine teszt zöld.' : `\n${failures} teszt elbukott.`)
   process.exitCode = failures === 0 ? 0 : 1
 }

@@ -27,6 +27,8 @@ export type PrivacyAuditSink = {
 export type AllocateRefInput = {
   tenantId: string
   scope: PrivacyScope
+  /** Megjelenítési érték a trusted UI-hoz — a vault ref-rekord NEM tárolja (spec §6). */
+  displayValue?: string
 } & RefEntityRef
 
 export type ResolveRefInput = {
@@ -42,10 +44,35 @@ export type ResolveRefResult =
 const MAX_ALLOC_ATTEMPTS = 16
 
 export class SurrogateEngine {
+  private readonly displayValues = new Map<string, string>()
+
   constructor(
     private readonly vault: SurrogateVault,
     private readonly audit: PrivacyAuditSink,
   ) {}
+
+  rememberDisplayValue(
+    tenantId: string,
+    scope: PrivacyScope,
+    surrogate: string,
+    displayValue: string,
+  ): void {
+    if (!displayValue) return
+    this.displayValues.set(displayKey(tenantId, scope, surrogate), displayValue)
+  }
+
+  peekDisplayValue(tenantId: string, scope: PrivacyScope, surrogate: string): string | undefined {
+    return this.displayValues.get(displayKey(tenantId, scope, surrogate))
+  }
+
+  /** Vault-lookup audit nélkül — megjelenítési feloldás, ismételt history-olvasáskor. */
+  async peekRef(input: ResolveRefInput): Promise<ResolveRefResult> {
+    const parsed = parseSurrogate(input.surrogate)
+    if (!parsed) return { ok: false, reason: 'unknown' }
+    const lookup = await this.vault.findBySurrogate(input.tenantId, input.scope, input.surrogate)
+    if (lookup.status === 'hit') return { ok: true, record: lookup.record }
+    return { ok: false, reason: lookup.status === 'tampered' ? 'hmac_invalid' : 'unknown' }
+  }
 
   async allocateRef(input: AllocateRefInput): Promise<string> {
     const existing = await this.vault.findByEntity(input.tenantId, input.scope, {
@@ -53,7 +80,12 @@ export class SurrogateEngine {
       connectorId: input.connectorId,
       sourceId: input.sourceId,
     })
-    if (existing.status === 'hit') return existing.record.surrogate
+    if (existing.status === 'hit') {
+      if (input.displayValue) {
+        this.rememberDisplayValue(input.tenantId, input.scope, existing.record.surrogate, input.displayValue)
+      }
+      return existing.record.surrogate
+    }
     if (existing.status === 'tampered') {
       throw new Error('a meglévő vault-sor HMAC-je érvénytelen, új álnév nem allokálható')
     }
@@ -70,6 +102,7 @@ export class SurrogateEngine {
           sourceId: input.sourceId,
           surrogate,
         })
+        this.rememberAllocatedDisplay(input, record.surrogate)
         return record.surrogate
       } catch (error) {
         if (error instanceof SurrogateTakenError) {
@@ -81,7 +114,10 @@ export class SurrogateEngine {
           connectorId: input.connectorId,
           sourceId: input.sourceId,
         })
-        if (raced.status === 'hit') return raced.record.surrogate
+        if (raced.status === 'hit') {
+          this.rememberAllocatedDisplay(input, raced.record.surrogate)
+          return raced.record.surrogate
+        }
         throw error
       }
     }
@@ -105,4 +141,14 @@ export class SurrogateEngine {
     })
     return { ok: false, reason }
   }
+
+  private rememberAllocatedDisplay(input: AllocateRefInput, surrogate: string): void {
+    if (input.displayValue) {
+      this.rememberDisplayValue(input.tenantId, input.scope, surrogate, input.displayValue)
+    }
+  }
+}
+
+function displayKey(tenantId: string, scope: PrivacyScope, surrogate: string): string {
+  return `${tenantId}\0${scope.type}\0${scope.id}\0${surrogate}`
 }

@@ -375,6 +375,8 @@ async function main() {
     assert.equal(transformed.body[0]?.company_name, '[[COMPANY_1]]')
     assert.equal(transformed.body[1]?.company_name, '[[COMPANY_2]]')
     assert.equal(transformed.body[2]?.company_name, '[[COMPANY_1]]')
+    assert.equal(eng.peekDisplayValue(TENANT, scope, '[[COMPANY_1]]'), COMPANY)
+    assert.equal(eng.peekDisplayValue(TENANT, scope, '[[COMPANY_2]]'), OTHER_COMPANY)
     assert.equal(transformed.body[0]?.revenue, 10)
     assert.equal(transformed.body[1]?.revenue, 20)
     assert.equal(output.body[0]?.company_name, COMPANY)

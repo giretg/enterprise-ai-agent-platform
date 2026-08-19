@@ -30,6 +30,9 @@ import {
 } from '@/lib/playbook-v2/trigger-input'
 import type { ModelGateway } from '../gateway/model-gateway'
 import { StreamingSensitiveTextRedactor } from '../gateway/sensitivity-router'
+import { createWebUiStreamingResolver } from '../privacy/streaming-surrogate-resolver'
+import { createWebUiDisplayLookup, resolveDisplayText } from '../privacy/resolve-display-text'
+import type { SurrogateEngine } from '../privacy/surrogate-engine'
 import type { ConversationService } from '../conversation/conversation-service'
 import {
   assembleContext,
@@ -627,6 +630,8 @@ export class AgentChatRuntime {
      * Ha nincs bekötve, a roster ÜRES (fail-closed) — nem a teljes agent-lista.
      */
     private agentAccess?: AgentAccessService,
+    /** APG-06 — megjelenítési feloldás a web UI streamjén. Hiányában a töredék álnév akkor is bent marad. */
+    private surrogateEngine?: SurrogateEngine | null,
   ) {}
 
   /**
@@ -1323,9 +1328,20 @@ export class AgentChatRuntime {
     }
     const snapshot = new TurnSnapshotFlusher()
 
+    const displayResolver = createWebUiStreamingResolver({
+      engine: this.surrogateEngine,
+      tenantId: params.tenantId ?? null,
+      conversationId,
+      emit: async (text) => {
+        emit({ type: 'token', chunk: text })
+        await this.persistTurnProgress(turn, snapshot.pushToken(text))
+      },
+    })
     const emitToken = async (chunk: string) => {
-      emit({ type: 'token', chunk })
-      await this.persistTurnProgress(turn, snapshot.pushToken(chunk))
+      await displayResolver.push(chunk)
+    }
+    const finishDisplay = async () => {
+      await displayResolver.finish()
     }
     const emitActivity = async (activity: ToolLoopActivityEvent) => {
       const flush = snapshot.pushActivity(activity)
@@ -1344,25 +1360,29 @@ export class AgentChatRuntime {
       turn.completedReply = prepared.text
       for (const chunk of chunkForStreaming(prepared.text)) {
         await refreshCancelFromDb()
-        const cancelledId = await this.cancelTurnIfRequested(turn, isCancelRequestedNow())
-        if (cancelledId) {
-          messageId = cancelledId
-          outcome = {
-            status: 'cancelled',
-            reason: 'cancelled',
-            assistantMessageId: cancelledId,
+        if (isCancelRequestedNow()) {
+          await finishDisplay()
+          const cancelledId = await this.cancelTurnIfRequested(turn, true)
+          if (cancelledId) {
+            messageId = cancelledId
+            outcome = {
+              status: 'cancelled',
+              reason: 'cancelled',
+              assistantMessageId: cancelledId,
+            }
+            emit({
+              type: 'done',
+              conversationId,
+              messageId: cancelledId,
+              reason: 'cancelled',
+            })
+            return
           }
-          emit({
-            type: 'done',
-            conversationId,
-            messageId: cancelledId,
-            reason: 'cancelled',
-          })
-          return
         }
         await emitToken(chunk)
         await new Promise<void>((r) => setTimeout(r, 12))
       }
+      await finishDisplay()
       const persistedId = await this.finalizeAgentTurn(turn, prepared.text, {
         ticketRefId: prepared.ticketRefId ?? null,
       })
@@ -1620,6 +1640,20 @@ export class AgentChatRuntime {
                   emit({ type: 'thinking', turnId, delta }),
               }
             : {}),
+          resolveAssistantDisplay: async (text: string) => {
+            let out = ''
+            const resolver = createWebUiStreamingResolver({
+              engine: this.surrogateEngine,
+              tenantId: params.tenantId ?? null,
+              conversationId,
+              emit: (chunk) => {
+                out += chunk
+              },
+            })
+            await resolver.push(text)
+            await resolver.finish()
+            return out
+          },
           onMemoryCandidate: (candidate) => emit({ type: 'memory_candidate', candidate }),
           // Folytatás: a külső tartalom envelope továbbra is releváns a modellnek,
           // de a consequence gate már risk-class (nem taint) alapú — initialTainted
@@ -1645,6 +1679,7 @@ export class AgentChatRuntime {
         if (!result.ok) {
           if (result.error instanceof AgentToolLoopCancelledError) {
             await refreshCancelFromDb()
+            await finishDisplay()
             const cancelledId = await this.cancelTurnIfRequested(turn, true)
             messageId = cancelledId
             outcome = {
@@ -1665,6 +1700,7 @@ export class AgentChatRuntime {
           const message = result.error instanceof Error ? result.error.message : 'Tool loop failed'
           outcome = { status: 'failed', reason: 'error', error: message }
           emit({ type: 'error', message })
+          await finishDisplay()
           await this.persistFailedTurn(turn, message, snapshot.partialText)
           return
         }
@@ -1683,25 +1719,31 @@ export class AgentChatRuntime {
         turn.completedReply = reply
         for (const chunk of chunkForStreaming(reply)) {
           await refreshCancelFromDb()
-          const cancelledId = await this.cancelTurnIfRequested(turn, isCancelRequestedNow())
-          if (cancelledId) {
-            messageId = cancelledId
-            outcome = {
-              status: 'cancelled',
-              reason: 'cancelled',
-              assistantMessageId: cancelledId,
+          if (isCancelRequestedNow()) {
+            await finishDisplay()
+            const cancelledId = await this.cancelTurnIfRequested(turn, true)
+            if (cancelledId) {
+              messageId = cancelledId
+              outcome = {
+                status: 'cancelled',
+                reason: 'cancelled',
+                assistantMessageId: cancelledId,
+              }
+              emit({
+                type: 'done',
+                conversationId,
+                messageId: cancelledId,
+                reason: 'cancelled',
+              })
+              return
             }
-            emit({
-              type: 'done',
-              conversationId,
-              messageId: cancelledId,
-              reason: 'cancelled',
-            })
-            return
           }
           await emitToken(chunk)
           await new Promise<void>((r) => setTimeout(r, 12))
         }
+        await finishDisplay()
+        reply = snapshot.partialText
+        turn.completedReply = reply
       } else {
         // Chat "thinking-trace" (tool nélküli ág): a reasoning-summary deltákat
         // közös stateful tartalom-őr (D5) mögött gyűjtjük, és a következő token
@@ -1727,36 +1769,38 @@ export class AgentChatRuntime {
           modelConfig,
           ...(onReasoningDelta ? { onReasoningDelta } : {}),
         }
-        let accumulated = ''
         for await (const chunk of this.gateway.callStream(gatewayInput)) {
           await refreshCancelFromDb()
-          const cancelledId = await this.cancelTurnIfRequested(turn, isCancelRequestedNow())
-          if (cancelledId) {
-            messageId = cancelledId
-            outcome = {
-              status: 'cancelled',
-              reason: 'cancelled',
-              assistantMessageId: cancelledId,
+          if (isCancelRequestedNow()) {
+            await finishDisplay()
+            const cancelledId = await this.cancelTurnIfRequested(turn, true)
+            if (cancelledId) {
+              messageId = cancelledId
+              outcome = {
+                status: 'cancelled',
+                reason: 'cancelled',
+                assistantMessageId: cancelledId,
+              }
+              emit({
+                type: 'done',
+                conversationId,
+                messageId: cancelledId,
+                reason: 'cancelled',
+              })
+              return
             }
-            emit({
-              type: 'done',
-              conversationId,
-              messageId: cancelledId,
-              reason: 'cancelled',
-            })
-            return
           }
           while (pendingThinking.length > 0) {
             emit({ type: 'thinking', turnId: 'reasoning-0', delta: pendingThinking.shift()! })
           }
-          accumulated += chunk
           await emitToken(chunk)
         }
         reasoningRedactor.finish()
         while (pendingThinking.length > 0) {
           emit({ type: 'thinking', turnId: 'reasoning-0', delta: pendingThinking.shift()! })
         }
-        reply = accumulated
+        await finishDisplay()
+        reply = snapshot.partialText
         turn.completedReply = reply
       }
 
@@ -1780,6 +1824,7 @@ export class AgentChatRuntime {
       // Az SSE `error` esemény múlékony: aki nem nézi épp a képernyőt, vagy
       // újratölt, annak nyoma sem marad. A lezáró üzenet a beszélgetésbe kerül,
       // így a leállás oka utólag is látszik (a watchdog-lezárás mintájára).
+      await finishDisplay()
       await this.persistFailedTurn(turn, message, snapshot.partialText)
     } finally {
       // Terminális teljes részszöveg (§5.3): completedReply, vagy ami a flusherben
@@ -2220,13 +2265,29 @@ export class AgentChatRuntime {
       views.push({
         id: message.id,
         role: message.role as ChatMessageView['role'],
-        text: parsed.text,
+        text: await this.resolveWebUiText(parsed.text, conversationId, tenantId),
         attachments,
         createdAt: message.createdAt,
       })
     }
 
     return views
+  }
+
+  private async resolveWebUiText(
+    text: string,
+    conversationId: string,
+    tenantId?: string | null,
+  ): Promise<string> {
+    if (!this.surrogateEngine || !tenantId || !text) return text
+    return resolveDisplayText(
+      text,
+      createWebUiDisplayLookup({
+        engine: this.surrogateEngine,
+        tenantId,
+        scope: { type: 'conversation', id: conversationId },
+      }),
+    )
   }
 
   async listSessions(params: {

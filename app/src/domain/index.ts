@@ -785,7 +785,8 @@ const toolBrokerService = new ToolBrokerService(
       { agentId, url, sourceType },
     ),
 )
-toolBrokerService.setStructuredPrivacyEngine(createPlatformSurrogateEngine(repositories.audit))
+const surrogateEngine = createPlatformSurrogateEngine(repositories.audit)
+toolBrokerService.setStructuredPrivacyEngine(surrogateEngine)
 const consequenceApprovalService = new ConsequenceApprovalService(
   repositories.consequenceApprovals,
   repositories.conversations,
@@ -1082,6 +1083,7 @@ const agentChatRuntime = new AgentChatRuntime(
   repositories.agentTurns,
   consequenceApprovalService,
   agentAccessService,
+  surrogateEngine,
 )
 // 1:1 agent-chat a csatornán (#74, D8/D9/D10/D11). A worker második munkatípusa: a bejövő
 // Telegram-fordulót a MEGLÉVŐ webes chat-futásidőre képezzük (ugyanabba a beszélgetésbe, így a

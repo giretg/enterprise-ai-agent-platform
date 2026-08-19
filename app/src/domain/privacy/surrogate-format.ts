@@ -27,6 +27,9 @@ const TYPE_BY_LABEL: Record<string, SurrogateEntityType> = Object.fromEntries(
 /** Teljes álnév: `[[TYPE_N]]`, N ≥ 1, vezető nulla nélkül. */
 const SURROGATE_EXACT = /^\[\[([A-Z]+)_([1-9][0-9]*)\]\]$/
 
+/** Beágyazott álnév szövegben. A típusnév-ellenőrzést a `parseSurrogate` adja. */
+const SURROGATE_EMBEDDED = /\[\[([A-Z]+)_([1-9][0-9]*)\]\]/g
+
 export type ParsedSurrogate = {
   entityType: SurrogateEntityType
   ordinal: number
@@ -61,4 +64,46 @@ export function parseSurrogate(text: string): ParsedSurrogate | null {
   const entityType = TYPE_BY_LABEL[match[1] ?? '']
   if (!entityType) return null
   return { entityType, ordinal: Number(match[2]) }
+}
+
+export type EmbeddedSurrogate = {
+  start: number
+  end: number
+  text: string
+  parsed: ParsedSurrogate | null
+}
+
+/** Álnevek a szövegben, előfordulási sorrendben. Ismeretlen típusnál `parsed` null. */
+export function findEmbeddedSurrogates(text: string): EmbeddedSurrogate[] {
+  const found: EmbeddedSurrogate[] = []
+  const re = new RegExp(SURROGATE_EMBEDDED.source, 'g')
+  for (const match of text.matchAll(re)) {
+    const raw = match[0]
+    const start = match.index ?? 0
+    found.push({
+      start,
+      end: start + raw.length,
+      text: raw,
+      parsed: parseSurrogate(raw),
+    })
+  }
+  return found
+}
+
+/**
+ * Lezáratlan álnév-prefix, amit a streamelő feloldó visszatart.
+ * `[[COMP` igaz; `[[hello` hamis (kisbetű, nem lehet típuscímke).
+ */
+export function isSurrogatePrefix(text: string): boolean {
+  if (text === '[') return true
+  if (!text.startsWith('[[')) return false
+  if (text.includes(']]')) return false
+  const inner = text.slice(2)
+  return (
+    inner === '' ||
+    /^[A-Z]+$/.test(inner) ||
+    /^[A-Z]+_$/.test(inner) ||
+    /^[A-Z]+_[1-9][0-9]*$/.test(inner) ||
+    /^[A-Z]+_[1-9][0-9]*\]$/.test(inner)
+  )
 }

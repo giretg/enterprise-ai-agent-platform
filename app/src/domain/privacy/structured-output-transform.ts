@@ -97,6 +97,7 @@ async function walk(
           entityType: spec.entityType,
           connectorId: ctx.connectorId,
           sourceId,
+          displayValue: child,
         })
         continue
       }
