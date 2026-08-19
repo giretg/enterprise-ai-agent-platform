@@ -4,19 +4,24 @@
  * Futtatás: npx tsx scripts/document-tenant-access.test.ts
  *
  * ÜZLETI HÁTTÉR: a `Document`-nek nincs saját tenantId oszlopa; a tenant-kötés a
- * feltöltő tagságából (friss feltöltés) vagy a KB-connector tenantjából (bekötött dok)
- * vezethető le. A dokumentum-feldolgozó control-plane műveletek eddig tenant-ellenőrzés
- * NÉLKÜL oldották fel a kliens `documentId`-jét — így egy tenant operátora egy MÁSIK
- * tenant feltöltött dokumentumát is beköthette a saját KB-jébe / leelemeztethette.
+ * feltöltéskor bélyegzett `metadata.tenantId`-ből (új dok), a feltöltő tagságából
+ * (legacy dok), vagy a KB-connector tenantjából (bekötött dok) vezethető le. A
+ * dokumentum-feldolgozó control-plane műveletek eddig tenant-ellenőrzés NÉLKÜL oldották
+ * fel a kliens `documentId`-jét — így egy tenant operátora egy MÁSIK tenant feltöltött
+ * dokumentumát is beköthette a saját KB-jébe / leelemeztethette / kiolvashatta.
  * A `decideDocumentTenantAccess` a fail-closed határ tiszta, DB-mentes magja.
  *
- * DT-1: friss feltöltés + a feltöltő a hívó tenantjának tagja → engedélyezett.
- * DT-2: friss feltöltés + a feltöltő NEM tagja (idegen tenant) → tiltott (a támadási eset).
- * DT-3: friss feltöltés + platform-kontextus (actorTenantId=null) → fail-closed.
- * DT-4: bekötött dok, connector a hívó tenantjában → engedélyezett.
- * DT-5: bekötött dok, connector IDEGEN tenantban → tiltott.
- * DT-6: bekötött dok, MEGOSZTOTT (platform, tenantId=null) connector → engedélyezett.
- * DT-7: bekötött dok, de a connector eltűnt → fail-closed.
+ * DT-1: friss dok, bélyeg == hívó tenant → engedélyezett.
+ * DT-2: friss dok, bélyeg IDEGEN tenant → tiltott (a fő támadási eset).
+ * DT-3: friss dok, bélyeg IDEGEN, de a feltöltő a hívó tenantjának is tagja → TILTOTT
+ *       (a több-tenantos feltöltő nem nyitja meg a doksit a másik tenant előtt).
+ * DT-4: legacy dok (nincs bélyeg) + a feltöltő a hívó tenant tagja → engedélyezett.
+ * DT-5: legacy dok (nincs bélyeg) + a feltöltő NEM tagja → tiltott.
+ * DT-6: friss/legacy dok + platform-kontextus (actorTenantId=null) → fail-closed.
+ * DT-7: bekötött dok, connector a hívó tenantjában → engedélyezett.
+ * DT-8: bekötött dok, connector IDEGEN tenantban → tiltott.
+ * DT-9: bekötött dok, MEGOSZTOTT (platform, tenantId=null) connector → engedélyezett.
+ * DT-10: bekötött dok, de a connector eltűnt → fail-closed.
  */
 
 import assert from 'node:assert/strict'
@@ -38,21 +43,21 @@ function check(name: string, fn: () => void) {
 
 console.log('document-tenant-access')
 
-check('DT-1: unattached + uploader is member of actor tenant → allowed', () => {
+check('DT-1: fresh doc, stamp == actor tenant → allowed', () => {
   assert.equal(
     decideDocumentTenantAccess({
-      attachment: { kind: 'unattached' },
-      uploaderHasActiveMembership: true,
+      attachment: { kind: 'unattached', stampedTenantId: TENANT_A },
+      uploaderHasActiveMembership: false,
       actorTenantId: TENANT_A,
     }),
     true,
   )
 })
 
-check('DT-2: unattached + uploader NOT a member (foreign tenant doc) → denied', () => {
+check('DT-2: fresh doc, stamp is FOREIGN tenant → denied', () => {
   assert.equal(
     decideDocumentTenantAccess({
-      attachment: { kind: 'unattached' },
+      attachment: { kind: 'unattached', stampedTenantId: TENANT_B },
       uploaderHasActiveMembership: false,
       actorTenantId: TENANT_A,
     }),
@@ -60,10 +65,44 @@ check('DT-2: unattached + uploader NOT a member (foreign tenant doc) → denied'
   )
 })
 
-check('DT-3: unattached + platform context (null actor tenant) → fail-closed', () => {
+check('DT-3: fresh doc, foreign stamp but uploader ALSO member of actor tenant → denied', () => {
+  // A több-tenantos feltöltő tagsága NEM írhatja felül a bélyeget.
   assert.equal(
     decideDocumentTenantAccess({
-      attachment: { kind: 'unattached' },
+      attachment: { kind: 'unattached', stampedTenantId: TENANT_B },
+      uploaderHasActiveMembership: true,
+      actorTenantId: TENANT_A,
+    }),
+    false,
+  )
+})
+
+check('DT-4: legacy doc (no stamp) + uploader is member of actor tenant → allowed', () => {
+  assert.equal(
+    decideDocumentTenantAccess({
+      attachment: { kind: 'unattached', stampedTenantId: null },
+      uploaderHasActiveMembership: true,
+      actorTenantId: TENANT_A,
+    }),
+    true,
+  )
+})
+
+check('DT-5: legacy doc (no stamp) + uploader NOT a member → denied', () => {
+  assert.equal(
+    decideDocumentTenantAccess({
+      attachment: { kind: 'unattached', stampedTenantId: null },
+      uploaderHasActiveMembership: false,
+      actorTenantId: TENANT_A,
+    }),
+    false,
+  )
+})
+
+check('DT-6: unattached + platform context (null actor tenant) → fail-closed', () => {
+  assert.equal(
+    decideDocumentTenantAccess({
+      attachment: { kind: 'unattached', stampedTenantId: TENANT_A },
       uploaderHasActiveMembership: true,
       actorTenantId: null,
     }),
@@ -71,7 +110,7 @@ check('DT-3: unattached + platform context (null actor tenant) → fail-closed',
   )
 })
 
-check('DT-4: attached, connector in actor tenant → allowed', () => {
+check('DT-7: attached, connector in actor tenant → allowed', () => {
   assert.equal(
     decideDocumentTenantAccess({
       attachment: { kind: 'connector', connectorTenantId: TENANT_A },
@@ -82,7 +121,7 @@ check('DT-4: attached, connector in actor tenant → allowed', () => {
   )
 })
 
-check('DT-5: attached, connector in FOREIGN tenant → denied', () => {
+check('DT-8: attached, connector in FOREIGN tenant → denied', () => {
   assert.equal(
     decideDocumentTenantAccess({
       attachment: { kind: 'connector', connectorTenantId: TENANT_B },
@@ -93,7 +132,7 @@ check('DT-5: attached, connector in FOREIGN tenant → denied', () => {
   )
 })
 
-check('DT-6: attached, SHARED platform connector (null tenant) → allowed', () => {
+check('DT-9: attached, SHARED platform connector (null tenant) → allowed', () => {
   assert.equal(
     decideDocumentTenantAccess({
       attachment: { kind: 'connector', connectorTenantId: null },
@@ -104,7 +143,7 @@ check('DT-6: attached, SHARED platform connector (null tenant) → allowed', () 
   )
 })
 
-check('DT-7: attached but connector missing → fail-closed', () => {
+check('DT-10: attached but connector missing → fail-closed', () => {
   assert.equal(
     decideDocumentTenantAccess({
       attachment: { kind: 'connector-missing' },

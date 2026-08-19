@@ -479,6 +479,20 @@ function allowedTicketAttachment(file: File): boolean {
   return allowedMime || allowedExtension
 }
 
+/** Feltöltött (untrusted) fájl legnagyobb mérete — zip-bomba / OOM elleni közös plafon. */
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+/**
+ * Egységes feltöltés-kapu (méret + típus) MINDEN feltöltési úthoz (ticket-csatolmány
+ * ÉS KB-dokumentum). Egy helyen tartja a korlátot, hogy a két út ne tudjon szétcsúszni.
+ * Elutasítási okot ad vissza, vagy `null`-t, ha a fájl rendben van.
+ */
+function uploadRejectionReason(file: File): string | null {
+  if (file.size > MAX_UPLOAD_BYTES) return 'A fájl legfeljebb 25 MB lehet'
+  if (!allowedTicketAttachment(file)) return 'Nem támogatott fájltípus'
+  return null
+}
+
 async function requireCommentWritableTicket(ticketId: string) {
   const user = await requireTenantRole(['viewer', 'operator', 'approver', 'admin'])
   const ticket = await repositories.tickets.findById(ticketId)
@@ -991,8 +1005,8 @@ export async function uploadTicketCommentAttachment(formData: FormData) {
     if (typeof ticketId !== 'string') return fail('ticketId is required')
     const { user, ticket } = await requireCommentWritableTicket(ticketId)
     if (!(file instanceof File)) return fail('No file provided')
-    if (file.size > 25 * 1024 * 1024) return fail('A fájl legfeljebb 25 MB lehet')
-    if (!allowedTicketAttachment(file)) return fail('Nem támogatott fájltípus')
+    const attachmentRejection = uploadRejectionReason(file)
+    if (attachmentRejection) return fail(attachmentRejection)
 
     const kind = kindRaw === 'screenshot' ? 'screenshot' : 'file'
     const filename = safeUploadFilename(file.name || (kind === 'screenshot' ? 'screenshot.png' : 'upload.bin'))
@@ -1023,6 +1037,7 @@ export async function uploadTicketCommentAttachment(formData: FormData) {
       uploadedById: user.user.id,
       mimeType,
       metadata: buildOriginalDocumentMetadata(file.size, {
+        tenantId: ticket.tenantId,
         ticketCommentDraft: true,
         ticketId: ticket.id,
         kind,
@@ -2633,6 +2648,10 @@ export async function uploadDocument(formData: FormData) {
     let extraction: StructuredExtraction | null = null
 
     if (typeof textOverride === 'string' && textOverride.trim()) {
+      // A beillesztett szöveg is untrusted és a fájl-úttal azonos plafon alá esik.
+      if (Buffer.byteLength(textOverride, 'utf8') > MAX_UPLOAD_BYTES) {
+        return fail('A beillesztett szöveg legfeljebb 25 MB lehet')
+      }
       extractedText = textOverride
       filename = 'paste.txt'
       mimeType = 'text/plain'
@@ -2641,10 +2660,10 @@ export async function uploadDocument(formData: FormData) {
     } else if (file instanceof File) {
       // Erőforrás-védelem: a KB-feltöltés is untrusted bájtokat parse-ol
       // (PDF/DOCX/XLSX = zip → dekompressziós bomba kockázat). A ticket-csatolmány
-      // úttal azonos korlát: max 25 MB + típus-allowlist, hogy egy tenant operátora
-      // ne tudja a MEGOSZTOTT Node-folyamatot memóriából kiéheztetni (DoS).
-      if (file.size > 25 * 1024 * 1024) return fail('A fájl legfeljebb 25 MB lehet')
-      if (!allowedTicketAttachment(file)) return fail('Nem támogatott fájltípus')
+      // úttal AZONOS közös kapu (max 25 MB + típus-allowlist), hogy egy tenant
+      // operátora ne tudja a MEGOSZTOTT Node-folyamatot memóriából kiéheztetni (DoS).
+      const uploadRejection = uploadRejectionReason(file)
+      if (uploadRejection) return fail(uploadRejection)
       filename = safeUploadFilename(file.name)
       mimeType = file.type || null
       storageBytes = Buffer.from(await file.arrayBuffer())
@@ -2676,7 +2695,10 @@ export async function uploadDocument(formData: FormData) {
       mimeType,
       // A szeletek (§4.7 forrás-refekkel) a metadata-ba kerülnek; az OKF-artifact
       // generáláskor innen épül a bundle. Régi doksin nincs → heading-split fallback.
+      // A `tenantId` bélyeg a feldolgozási utak tenant-kapujának (l.
+      // document-tenant-access) mérvadó forrása — pontos egyezést kényszerít.
       metadata: buildOriginalDocumentMetadata(storageBytes.length, {
+        tenantId: user.activeTenantId,
         ...(extraction ? { extraction: toExtractionMetadata(extraction) } : {}),
       }),
     })
