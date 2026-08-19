@@ -717,6 +717,7 @@ model Tenant {
   createdBy         User?              @relation("TenantCreatedBy", fields: [createdById], references: [id])
   memberships       TenantMembership[]
   agentAccessGrants AgentAccessGrant[]
+  surrogateMaps     SurrogateMap[]
 
   @@index([status])
   @@map("tenants")
@@ -3174,6 +3175,50 @@ model EvalRun {
   memoryVersion MemoryVersion? @relation(fields: [memoryVersionId], references: [id])
 
   @@map("eval_runs")
+}
+
+// ── AI Privacy Gateway (spec §5–§6, D2) ──────────────────────────────────────
+
+enum SurrogateScopeType {
+  conversation
+  trace
+
+  @@map("surrogate_scope_type")
+}
+
+/// `ref` = csak forráshivatkozás, nyers érték nélkül. `val` mezői APG-19-ig üresek.
+enum SurrogateClass {
+  ref
+  val
+
+  @@map("surrogate_class")
+}
+
+/// Perzisztens álnév-leképezés (tenant + scope + entitás ↔ surrogate). Bijektív
+/// a unique kényszerekkel: egy álnév egy entitáshoz tartozik a scope-on belül,
+/// és egy entitás egy álnevet kap — párhuzamos fordulóknál is.
+model SurrogateMap {
+  id             String             @id @default(uuid()) @db.Uuid
+  tenantId       String             @map("tenant_id") @db.Uuid
+  scopeType      SurrogateScopeType @map("scope_type")
+  scopeId        String             @map("scope_id")
+  entityType     String             @map("entity_type")
+  /// Típusos álnév, pl. `[[COMPANY_1]]`. A HMAC NEM része a szövegnek.
+  surrogate      String
+  class          SurrogateClass
+  connectorId    String?            @map("connector_id") @db.Uuid
+  sourceId       String?            @map("source_id")
+  /// Csak `val` osztály; `ref` sorban CHECK tiltja. APG-19 tölti.
+  encryptedValue String?            @map("encrypted_value")
+  hmac           String
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, scopeType, scopeId, surrogate], map: "surrogate_map_scope_surrogate_key")
+  @@unique([tenantId, scopeType, scopeId, entityType, connectorId, sourceId], map: "surrogate_map_entity_identity_key")
+  @@index([scopeType, scopeId], map: "surrogate_map_scope_idx")
+  @@map("surrogate_map")
 }
 
 /// Globális, runtime-állítható platform-beállítások (kulcs-érték). Pl. a dispatcher

@@ -202,6 +202,12 @@ jobs:
       - name: Agent-hozzáférési gráf DB-invariánsok
         run: npm run test:agent-access-grant-db
 
+      # AI Privacy Gateway APG-01: a surrogate_map bijektivitását (unique +
+      # párhuzamos allokáció → újraolvasás, nem duplikátum) csak valódi Postgres
+      # ellen lehet bizonyítani.
+      - name: Privacy surrogate_map DB-invariánsok
+        run: npm run test:surrogate-map
+
   security-scan:
     name: Titok-szkennelés + CodeQL
     runs-on: ubuntu-latest
