@@ -96,15 +96,16 @@ import {
 // WP-8 — az audit/telemetria choke-point külön modulban (tool-broker-audit.ts).
 import { recordCall, recordDenied } from './tool-broker-audit'
 import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
+import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 // issue #97 — bizalmi regiszter (tool-nevenkénti TrustClass leképezés).
 import { isSideEffectingTool, resolveTrustClass } from './tool-trust-registry'
 // issue #195 — kikényszerített KIMENETI SZERZŐDÉS a broker határán (WP-1).
 import {
   assertToolInputWithinLimits,
-  buildToolOutcomeChannels,
   ToolContractError,
 } from './tool-output-contract'
 import { resolveToolOutputContract } from './tool-output-contracts'
+import { buildPrivacyAwareOutcomeChannels } from './tool-output-privacy'
 export { AllowlistAuthorizer } from './tool-broker-authorizer'
 export type {
   Authorizer,
@@ -125,6 +126,7 @@ export { isAgentReachableFromTenant, filterAgentsByTenant } from '@/lib/tenant-r
 export class ToolBrokerService {
   delegationProcessor: DelegationProcessor | null = null
   playbookTransitioner: PlaybookTicketTransitioner | null = null
+  private structuredPrivacyEngine: SurrogateEngine | null = null
 
   /** WP-8: a handlerek felé átadott, `this`-hez kötött broker-képességek. */
   private readonly handlerContext: HandlerContext
@@ -214,6 +216,14 @@ export class ToolBrokerService {
   /** A folyamat-ticketek állapotváltását a Playbook state machine-hez köti (l. board_write). */
   setPlaybookTransitioner(transitioner: PlaybookTicketTransitioner | null): void {
     this.playbookTransitioner = transitioner
+  }
+
+  /**
+   * APG-04 — strukturált tool-output pszeudonimizáció a `modelText` csatornán.
+   * Hiányában a kimenet érintetlen (a meglévő hívások viselkedése nem változik).
+   */
+  setStructuredPrivacyEngine(engine: SurrogateEngine | null): void {
+    this.structuredPrivacyEngine = engine
   }
 
   async invoke(input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> {
@@ -326,12 +336,18 @@ export class ToolBrokerService {
       // issue #195 D1–D6 — a KIMENETI SZERZŐDÉS KAPUJA + a kétcsatornás eredmény.
       // Szándékosan az audit- és a `ToolCall`-rögzítés ELŐTT fut: séma-sértés →
       // `ToolContractError` (`failed`), és a hibás eredmény nem kerül be sikerként.
-      const channels = buildToolOutcomeChannels({
+      // APG-04: a pszeudonimizáció a szerződés-validáció UTÁN, csak a `modelText` ágon.
+      const channels = await buildPrivacyAwareOutcomeChannels({
         tool: input.tool,
         trust,
         output: result,
         contract,
         sideEffecting: isSideEffectingTool(input.tool),
+        connector: authorization.connector,
+        conversationId: input.conversationId,
+        ticketId,
+        actingTenantId,
+        engine: this.structuredPrivacyEngine,
       })
       const { outcome, outcomeReason, effect, modelText, machineData } = channels
 

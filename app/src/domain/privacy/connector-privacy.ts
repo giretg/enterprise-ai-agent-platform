@@ -137,6 +137,13 @@ export function privacyDeclarationsEqual(
   return JSON.stringify(canonicalizePrivacyDeclaration(left)) === JSON.stringify(canonicalizePrivacyDeclaration(right))
 }
 
+/** Mezőszintű privacy-séma a connector `config.fields`-jéből. Hibás alak → nincs transzformáció. */
+export function readConnectorPrivacyFields(config: unknown): ConnectorFieldsPrivacy | null {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return null
+  const parsed = connectorFieldsPrivacySchema.safeParse((config as Record<string, unknown>).fields)
+  return parsed.success ? parsed.data : null
+}
+
 export function readPrivacyDeclaration(raw: unknown): PrivacyCapabilityDeclaration | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const cfg = raw as Record<string, unknown>

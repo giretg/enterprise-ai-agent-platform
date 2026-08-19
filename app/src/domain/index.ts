@@ -34,6 +34,7 @@ import {
 } from '@/domain/dispatcher/docker-local-harness-launcher'
 import { LocalWikiHarnessLauncher } from '@/domain/dispatcher/local-wiki-harness-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
+import { createPlatformSurrogateEngine } from '@/domain/privacy/create-surrogate-engine'
 import { ConsequenceApprovalService } from '@/domain/tool-broker/consequence-approval-service'
 import { WebSearchPolicyService } from '@/domain/web-search/web-search-policy-service'
 import { WebSearchService } from '@/domain/web-search/web-search-service'
@@ -784,6 +785,7 @@ const toolBrokerService = new ToolBrokerService(
       { agentId, url, sourceType },
     ),
 )
+toolBrokerService.setStructuredPrivacyEngine(createPlatformSurrogateEngine(repositories.audit))
 const consequenceApprovalService = new ConsequenceApprovalService(
   repositories.consequenceApprovals,
   repositories.conversations,
