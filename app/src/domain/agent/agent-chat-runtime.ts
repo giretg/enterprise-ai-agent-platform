@@ -23,6 +23,7 @@ import { attachmentPageCount } from '@/lib/document-read'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { pollCancelRequested } from '@/lib/cancel-flag-poll'
 import {
+  applyChatTriggerAttachments,
   chatTriggerSlotDescriptors,
   missingRequiredTriggerSlots,
   resolveChatTriggerInputPayload,
@@ -1388,6 +1389,7 @@ export class AgentChatRuntime {
         agentId: params.agentId,
         agentVersion: agentDetails.agent.currentVersion,
         modelConfig,
+        attachmentDocs,
       })
       if (processReply) {
         await deliverPreparedReply(processReply)
@@ -2035,6 +2037,7 @@ export class AgentChatRuntime {
     agentId: string
     agentVersion: number
     modelConfig: { provider: string; model: string; temperature?: number; maxTokens?: number }
+    attachmentDocs: PreparedTurn['attachmentDocs']
   }): Promise<ChatProcessReply | null> {
     if (!params.processDefinitionId) return null
     if (!this.processDefinitions || !this.playbooksV2 || !this.processService) {
@@ -2064,6 +2067,12 @@ export class AgentChatRuntime {
       params.message,
       params.explicitPayload,
     )
+    const triggerSlots = chatTriggerSlotDescriptors(compiled, compiled.entryStepId)
+    inputPayload = applyChatTriggerAttachments(
+      inputPayload,
+      triggerSlots.map((slot) => slot.name),
+      params.attachmentDocs,
+    )
     let missing = missingRequiredTriggerSlots(compiled, inputPayload, compiled.entryStepId)
 
     // §4.4 „az LLM megkapja a kitöltendő mezőket, kinyeri őket az üzenetből":
@@ -2079,6 +2088,7 @@ export class AgentChatRuntime {
         conversationId: params.conversationId,
         startedByUserId: params.startedByUserId,
         modelConfig: params.modelConfig,
+        attachments: params.attachmentDocs,
       })
       if (extracted) {
         inputPayload = { ...inputPayload, ...extracted }
@@ -2099,6 +2109,7 @@ export class AgentChatRuntime {
       inputPayload,
       conversationId: params.conversationId,
       startedBy: { type: 'user', id: params.startedByUserId },
+      attachments: buildPromotedTaskAttachmentTransfer(params.attachmentDocs).attachments,
     })
 
     const processLink = `/control-plane/processes/${run.id}`
@@ -2123,6 +2134,7 @@ export class AgentChatRuntime {
     conversationId: string
     startedByUserId: string
     modelConfig: { provider: string; model: string; temperature?: number; maxTokens?: number }
+    attachments: PreparedTurn['attachmentDocs']
   }): Promise<Record<string, unknown> | null> {
     const descriptors = chatTriggerSlotDescriptors(params.compiled).filter((slot) =>
       params.missing.includes(slot.name),
@@ -2134,10 +2146,17 @@ export class AgentChatRuntime {
       .join('\n')
 
     const system =
-      'Egy folyamatindító mezőkitöltő vagy. A felhasználó üzenetéből told ki a felsorolt mezőket. ' +
+      'Egy folyamatindító mezőkitöltő vagy. A felhasználó üzenetéből és a csatolt fájlokból told ki a felsorolt mezőket. ' +
       'KIZÁRÓLAG egy JSON objektumot adj vissza (semmi mást, se magyarázatot, se kódblokkot), ' +
-      'aminek a kulcsai a felsorolt mezőnevek. Ha egy mezőt nem tudsz kinyerni az üzenetből, hagyd ki a kulcsot.'
-    const user = `Mezők:\n${slotList}\n\nFelhasználói üzenet:\n${params.message}`
+      'aminek a kulcsai a felsorolt mezőnevek. Fájl-szerű mezőhöz (pdf_path, path, file) a csatolmány fájlneve kell; documentId-hez a UUID. ' +
+      'Ha egy mezőt nem tudsz kinyerni, hagyd ki a kulcsot.'
+    const attachmentLines =
+      params.attachments.length > 0
+        ? `\n\nCsatolt fájlok:\n${params.attachments
+            .map((doc) => `- ${doc.filename} (documentId=${doc.id})`)
+            .join('\n')}`
+        : ''
+    const user = `Mezők:\n${slotList}\n\nFelhasználói üzenet:\n${params.message || '(üres)'}${attachmentLines}`
 
     try {
       const result = await this.gateway.call({

@@ -16,6 +16,7 @@ import { randomUUID } from 'node:crypto'
 import { PlaybookCompiler } from '../src/domain/playbook/playbook-compiler'
 import { parsePlaybookSpecV2, type PlaybookSpecV2 } from '../src/lib/playbook-v2/spec'
 import {
+  applyChatTriggerAttachments,
   missingRequiredTriggerSlots,
   resolveChatTriggerInputPayload,
   resolveTicketTriggerInputPayload,
@@ -223,8 +224,8 @@ function makeStubs(opts: {
     updateDelegation: async (id: string, data: Record<string, unknown>) => ({ id, ...data }),
   }
   const ticketRepo = {
-    create: async (input: Record<string, unknown>) => {
-      const t = { id: randomUUID(), ...input }
+    create: async (input: Record<string, unknown>, options?: { attachments?: unknown[] }) => {
+      const t = { id: randomUUID(), ...input, attachments: options?.attachments ?? [] }
       tickets.push(t)
       return t
     },
@@ -665,6 +666,59 @@ async function main() {
     const s = makeStubs({})
     const missing = missingRequiredTriggerSlots(s.version.compiledSpec, {})
     assert.deepEqual(missing, ['ceg'])
+  })
+
+  await test('chat-csatolmány kitölti a hiányzó pdf_path / documentId rést', () => {
+    const pdf = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      filename: '043_15 2026.07.16.pdf',
+      mimeType: 'application/pdf',
+    }
+    const filled = applyChatTriggerAttachments({}, ['pdf_path', 'ceg'], [pdf])
+    assert.deepEqual(filled, { pdf_path: '043_15 2026.07.16.pdf' })
+
+    const withId = applyChatTriggerAttachments({}, ['pdf_path', 'documentId'], [pdf])
+    assert.equal(withId.pdf_path, '043_15 2026.07.16.pdf')
+    assert.equal(withId.documentId, pdf.id)
+
+    const explicitWins = applyChatTriggerAttachments(
+      { pdf_path: 'már-megadva.pdf' },
+      ['pdf_path'],
+      [pdf],
+    )
+    assert.equal(explicitWins.pdf_path, 'már-megadva.pdf')
+
+    const notFileSlot = applyChatTriggerAttachments({}, ['ceg'], [pdf])
+    assert.deepEqual(notFileSlot, {})
+  })
+
+  await test('chat-triggeres Futás a csatolmányt a belépő ticketre viszi', async () => {
+    const s = makeStubs({})
+    const svc = makeProcessService(s)
+    const documentId = randomUUID()
+    const conversationId = randomUUID()
+    const proc = await svc.startProcess({
+      tenantId: TENANT,
+      processDefinitionId: s.defRow.id,
+      triggerType: 'chat',
+      inputPayload: { ceg: 'Acme Kft' },
+      conversationId,
+      startedBy: { type: 'user', id: randomUUID() },
+      attachments: [
+        { documentId, filename: '043_15 2026.07.16.pdf', mimeType: 'application/pdf', byteSize: 12 },
+      ],
+    })
+    assert.equal(proc.status, 'running')
+    assert.equal(s.tickets.length, 1)
+    const ticket = s.tickets[0] as {
+      sourceDocumentId: string | null
+      payload: Record<string, unknown>
+      attachments: Array<{ documentId: string; filename: string }>
+    }
+    assert.equal(ticket.sourceDocumentId, documentId)
+    assert.deepEqual(ticket.payload.attachmentDocumentIds, [documentId])
+    assert.equal(ticket.attachments[0]?.documentId, documentId)
+    assert.equal(ticket.attachments[0]?.filename, '043_15 2026.07.16.pdf')
   })
 
   await test('chat-triggeres Futás conversationId-vel linkelt', async () => {

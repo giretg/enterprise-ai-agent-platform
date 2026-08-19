@@ -42,6 +42,7 @@ import type {
   TicketRepository,
   ToolBrokerRepository,
   UserRepository,
+  type CreateTicketAttachmentInput,
 } from '@/repositories/interfaces'
 
 export type ProcessActor = { type: 'user' | 'agent' | 'system'; id?: string | null }
@@ -296,6 +297,8 @@ export class ProcessService {
     startedBy: ProcessActor
     conversationId?: string | null
     rootTicketId?: string | null
+    /** Chat-trigger: a csatolt fájlok a belépő ticket bemeneti csatolmányai lesznek. */
+    attachments?: CreateTicketAttachmentInput[]
   }): Promise<ProcessInstance> {
     if (input.processDefinitionId) {
       return this.startFromDefinition({
@@ -306,6 +309,7 @@ export class ProcessService {
         startedBy: input.startedBy,
         conversationId: input.conversationId ?? null,
         rootTicketId: input.rootTicketId ?? null,
+        attachments: input.attachments,
       })
     }
     if (!input.processType) {
@@ -420,6 +424,7 @@ export class ProcessService {
     startedBy: ProcessActor
     conversationId: string | null
     rootTicketId: string | null
+    attachments?: CreateTicketAttachmentInput[]
   }): Promise<ProcessInstance> {
     if (!this.defs || !this.agents || !this.toolBroker) {
       throw new ProcessServiceError(
@@ -509,7 +514,7 @@ export class ProcessService {
         compiled,
         entryRule.stepId,
         input.startedBy,
-        { processInput: runInput },
+        { processInput: runInput, attachments: input.attachments },
         undefined,
         resolution,
       )
@@ -899,6 +904,7 @@ export class ProcessService {
     slotContext: {
       processInput: Record<string, unknown>
       previousStepResult?: Record<string, unknown>
+      attachments?: CreateTicketAttachmentInput[]
     },
     delegationFrom?: { fromStepId: string; fromTicketId: string | null },
     resolution?: RoleResolution | null,
@@ -908,6 +914,10 @@ export class ProcessService {
       throw new ProcessServiceError('COMPILED_SPEC_MISSING', `Nincs compiled szabály a(z) '${stepId}' stephez.`)
     }
     const ticketPayload = this.stepTicketPayload(rule, slotContext)
+    const attachments = slotContext.attachments ?? []
+    if (attachments.length > 0) {
+      ticketPayload.attachmentDocumentIds = attachments.map((attachment) => attachment.documentId)
+    }
     const isHuman = this.isHumanStep(rule)
     const requiredGateId = isHuman
       ? compiled.gates.find((g) => g.stepId === stepId && g.blocking)?.gateId ?? null
@@ -953,26 +963,29 @@ export class ProcessService {
 
     // A belépő agent-step azonnal dispatch-elhető (ready); az emberi step awaiting_human.
     const ticketState: TicketState = isHuman ? 'awaiting_human' : 'ready'
-    const ticket = await this.tickets.create({
-      tenantId,
-      type: 'interaction',
-      title: rule.stepName,
-      state: ticketState,
-      assigneeType: isHuman ? 'human' : 'agent',
-      assigneeId: resolvedUserId,
-      agentId: resolvedAgentId,
-      payload: ticketPayload as Prisma.JsonObject,
-      sourceDocumentId: null,
-      executeAfter: null,
-      dueBy: null,
-      createdById: this.systemUserId(process),
-      processInstanceId: process.id,
-      playbookRef: process.playbookRef,
-      playbookVersionId: process.playbookVersionId,
-      playbookStepId: rule.stepId,
-      requiredGateId,
-      conversationId: process.conversationId,
-    })
+    const ticket = await this.tickets.create(
+      {
+        tenantId,
+        type: 'interaction',
+        title: rule.stepName,
+        state: ticketState,
+        assigneeType: isHuman ? 'human' : 'agent',
+        assigneeId: resolvedUserId,
+        agentId: resolvedAgentId,
+        payload: ticketPayload as Prisma.JsonObject,
+        sourceDocumentId: attachments[0]?.documentId ?? null,
+        executeAfter: null,
+        dueBy: null,
+        createdById: this.systemUserId(process),
+        processInstanceId: process.id,
+        playbookRef: process.playbookRef,
+        playbookVersionId: process.playbookVersionId,
+        playbookStepId: rule.stepId,
+        requiredGateId,
+        conversationId: process.conversationId,
+      },
+      attachments.length > 0 ? { attachments } : undefined,
+    )
 
     await this.processes.updateStep(step.id, { ticketId: ticket.id, startedAt: new Date() })
 

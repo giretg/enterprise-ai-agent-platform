@@ -79,6 +79,76 @@ export function resolveChatTriggerInputPayload(
   return out
 }
 
+export type ChatTriggerAttachment = {
+  id: string
+  filename: string
+  mimeType?: string | null
+}
+
+const FILE_LIKE_SLOT_RE = /(pdf|file|path|document|csatol|fajl|filename)/i
+const DOCUMENT_ID_SLOT_RE = /^(documentId|document_id|doc_id|document)$/i
+
+function isFileLikeSlot(name: string): boolean {
+  return FILE_LIKE_SLOT_RE.test(name)
+}
+
+function isPdfAttachment(attachment: ChatTriggerAttachment): boolean {
+  return /\.pdf$/i.test(attachment.filename) || attachment.mimeType === 'application/pdf'
+}
+
+function pickAttachmentForSlot(
+  slotName: string,
+  attachments: ChatTriggerAttachment[],
+  usedIds: Set<string>,
+): ChatTriggerAttachment | undefined {
+  const unused = attachments.filter((attachment) => !usedIds.has(attachment.id))
+  const pool = unused.length > 0 ? unused : attachments
+  if (pool.length === 0) return undefined
+  if (/pdf/i.test(slotName)) {
+    return pool.find(isPdfAttachment) ?? pool[0]
+  }
+  return pool[0]
+}
+
+function attachmentValueForSlot(slotName: string, attachment: ChatTriggerAttachment): string {
+  return DOCUMENT_ID_SLOT_RE.test(slotName) ? attachment.id : attachment.filename
+}
+
+/**
+ * Chat-csatolmány → hiányzó fájl-szerű trigger-rés.
+ *
+ * A slot-filling eddig csak üzenetszöveget (JSON / `név: érték`) és explicit
+ * payloadot nézett. A felhasználó viszont a fájlt csatolja, nem gépel
+ * `pdf_path: …`-t — a feltöltött dokumentumot a résbe kell tenni.
+ *
+ * `documentId` / `document_id` → Document UUID; minden más fájl-szerű név
+ * (`pdf_path`, `path`, `file`, …) → eredeti fájlnév.
+ */
+export function applyChatTriggerAttachments(
+  payload: Record<string, unknown>,
+  slotNames: string[],
+  attachments: ChatTriggerAttachment[],
+): Record<string, unknown> {
+  if (attachments.length === 0 || slotNames.length === 0) return payload
+  const out = { ...payload }
+  const usedIds = new Set<string>()
+  for (const slotName of slotNames) {
+    if (!isFileLikeSlot(slotName)) continue
+    const current = out[slotName]
+    if (current !== undefined && current !== null && current !== '') continue
+    const reuseSameFile =
+      DOCUMENT_ID_SLOT_RE.test(slotName) && usedIds.size > 0
+        ? attachments.find((attachment) => usedIds.has(attachment.id))
+        : undefined
+    const attachment =
+      reuseSameFile ?? pickAttachmentForSlot(slotName, attachments, usedIds)
+    if (!attachment) continue
+    out[slotName] = attachmentValueForSlot(slotName, attachment)
+    usedIds.add(attachment.id)
+  }
+  return out
+}
+
 type CompiledForSlots = {
   entryStepId?: string
   ticketRules?: Array<{
