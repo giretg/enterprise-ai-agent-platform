@@ -136,6 +136,7 @@ jobs:
           npm run test:surrogate-engine
           npm run test:connector-privacy
           npm run test:structured-output-privacy
+          npm run test:tool-arg-resolve
 
       # Prompt-eval A fázis — piros vonalak (issue #35). SZÁNDÉKOSAN külön lépés:
       # ez biztonsági kapu, nem funkcionális teszt. Ha elbukik, egy prompt-módosítás

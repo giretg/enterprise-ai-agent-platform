@@ -96,6 +96,11 @@ import {
 // WP-8 — az audit/telemetria choke-point külön modulban (tool-broker-audit.ts).
 import { recordCall, recordDenied } from './tool-broker-audit'
 import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
+import { privacyScopeForCall } from '@/domain/privacy/privacy-scope'
+import {
+  resolveToolArgs,
+  UnknownSurrogateError,
+} from '@/domain/privacy/resolve-tool-args'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 // issue #97 — bizalmi regiszter (tool-nevenkénti TrustClass leképezés).
 import { isSideEffectingTool, resolveTrustClass } from './tool-trust-registry'
@@ -219,8 +224,9 @@ export class ToolBrokerService {
   }
 
   /**
-   * APG-04 — strukturált tool-output pszeudonimizáció a `modelText` csatornán.
-   * Hiányában a kimenet érintetlen (a meglévő hívások viselkedése nem változik).
+   * APG-04/APG-05 — strukturált tool-output pszeudonimizáció a `modelText` csatornán,
+   * és tool-argumentum feloldás a connector-hívás előtt. Hiányában mindkét ág
+   * érintetlen (a meglévő hívások viselkedése nem változik).
    */
   setStructuredPrivacyEngine(engine: SurrogateEngine | null): void {
     this.structuredPrivacyEngine = engine
@@ -321,10 +327,18 @@ export class ToolBrokerService {
     const contract = resolveToolOutputContract(input.tool)
 
     try {
-      assertToolInputWithinLimits(input.tool, input.args, contract)
+      // APG-05 §10.1 — feloldás az authorizer/kapuk UTÁN, a connector-hívás ELŐTT.
+      // A nyers source ID csak a végrehajtott argumentumba kerül; a `recordCall`
+      // az eredeti `input.args`-ot (surrogate-alak) naplózza.
+      const executionInput = await this.resolveInvokeArgs(
+        input,
+        actingTenantId,
+        authorization.connector?.tenantId ?? null,
+      )
+      assertToolInputWithinLimits(executionInput.tool, executionInput.args, contract)
 
       const result = await this.executeTool(
-        input,
+        executionInput,
         authorization,
         actingTenantId,
         actingUserId,
@@ -418,13 +432,14 @@ export class ToolBrokerService {
       // továbbengedés: az audit-sor megmondja, MELYIK szerződés bukott
       // (séma / bemeneti méret / munkamennyiség).
       const contractViolation = e instanceof ToolContractError ? e.code : null
+      const unknownSurrogate = e instanceof UnknownSurrogateError
       await recordCall(this, {
         input,
         ticketId,
         connectorId: authorization.connector?.id ?? null,
         status: 'error',
         latencyMs,
-        policyDecision: contractViolation ?? 'error',
+        policyDecision: contractViolation ?? (unknownSurrogate ? 'privacy.surrogate.unknown' : 'error'),
         resultMeta: {
           error: message,
           outcome: 'failed',
@@ -436,6 +451,33 @@ export class ToolBrokerService {
       })
       throw e
     }
+  }
+
+  /**
+   * APG-05 §10.1 — álnév → source ID a connector-argumentumban. Az eredeti
+   * `input` (surrogate-alak) érintetlen marad az audit / `argsMeta` számára.
+   */
+  private async resolveInvokeArgs(
+    input: ToolBrokerInvokeInput,
+    actingTenantId: string | null,
+    connectorTenantId: string | null,
+  ): Promise<ToolBrokerInvokeInput> {
+    if (!this.structuredPrivacyEngine) return input
+    const tenantId = actingTenantId ?? connectorTenantId
+    if (!tenantId) return input
+    const ticketId = input.tool === 'board_write' ? input.args.ticketId : input.ticketId ?? null
+    const scope = privacyScopeForCall(input.conversationId, ticketId)
+    if (!scope) return input
+
+    const resolved = await resolveToolArgs({
+      args: input.args,
+      engine: this.structuredPrivacyEngine,
+      tenantId,
+      scope,
+    })
+    if (!resolved.ok) throw new UnknownSurrogateError(resolved.surrogate, resolved.reason)
+    if (resolved.resolvedCount === 0) return input
+    return { ...input, args: resolved.args } as ToolBrokerInvokeInput
   }
 
   private async executeTool(

@@ -8,8 +8,8 @@
  */
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import { readConnectorPrivacyFields } from '@/domain/privacy/connector-privacy'
+import { privacyScopeForCall } from '@/domain/privacy/privacy-scope'
 import { pseudonymizeStructuredOutput } from '@/domain/privacy/structured-output-transform'
-import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
 import type { TrustClass } from './tool-broker-types'
 import {
   buildToolOutcomeChannels,
@@ -54,7 +54,7 @@ async function resolveModelOutput(params: PrivacyAwareOutcomeInput): Promise<unk
   if (!fields) return params.output
   const tenantId = params.actingTenantId ?? connector.tenantId
   if (!tenantId) return params.output
-  const scope = privacyScope(params.conversationId, params.ticketId)
+  const scope = privacyScopeForCall(params.conversationId, params.ticketId)
   if (!scope) return params.output
 
   return pseudonymizeStructuredOutput({
@@ -65,13 +65,4 @@ async function resolveModelOutput(params: PrivacyAwareOutcomeInput): Promise<unk
     connectorId: connector.id,
     scope,
   })
-}
-
-function privacyScope(
-  conversationId: string | null | undefined,
-  ticketId: string | null | undefined,
-): PrivacyScope | null {
-  if (conversationId) return { type: 'conversation', id: conversationId }
-  if (ticketId) return { type: 'conversation', id: ticketId }
-  return null
 }
