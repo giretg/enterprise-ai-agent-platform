@@ -166,6 +166,21 @@ export function computeCapabilityDiff(
       })
     }
 
+    const currentPagination = currentTool.pagination
+    const nextPagination = nextTool.pagination
+    if (canonicalJson(currentPagination) !== canonicalJson(nextPagination)) {
+      if (!currentPagination && nextPagination) {
+        added.push({ op, risk: 'low', change: 'pagination_declared' })
+      } else {
+        breaking.push({
+          op,
+          risk: 'high',
+          change: 'pagination_changed',
+          usedBy: usedBy(usedByResolver, op),
+        })
+      }
+    }
+
 
     // 3c) Paraméter-kontraktus: új kötelező vagy típusváltozás breaking;
     // opcionális bővítés additív; eltűnés használattól függően breaking/narrowed.

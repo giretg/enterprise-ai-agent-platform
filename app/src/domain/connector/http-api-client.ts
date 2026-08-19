@@ -15,6 +15,10 @@ import { lookup } from 'node:dns/promises'
 import { getCloudRunAccessToken } from '@/domain/dispatcher/cloud-run-auth'
 import { guardEgressUrl } from '@/domain/net/egress-guard'
 import {
+  httpPaginationSchema,
+  type HttpPagination,
+} from '@/domain/provisioning/connector-config'
+import {
   GITHUB_REPOSITORY_PATTERN,
   parseGitHubRepositoryAccessConfig,
   type GitHubRepositoryAccess,
@@ -72,6 +76,7 @@ export type HttpApiEndpoint = {
   queryParams?: HttpApiEndpointParam[]
   /** Dokumentált path paraméterek (template mellett). */
   pathParams?: HttpApiEndpointParam[]
+  pagination?: HttpPagination
 }
 
 export type HttpApiAuthProfile = {
@@ -266,6 +271,7 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
           const headerParams = parseEndpointHeaderParams(e, platformHeaders)
           const queryParams = parseEndpointLocationParams(e, 'query')
           const pathParams = parseEndpointLocationParams(e, 'path')
+          const paginationResult = httpPaginationSchema.safeParse(e.pagination)
           return {
             method,
             path: String(e.path ?? ''),
@@ -278,6 +284,7 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
             ...(headerParams ? { headerParams } : {}),
             ...(queryParams ? { queryParams } : {}),
             ...(pathParams ? { pathParams } : {}),
+            ...(paginationResult.success ? { pagination: paginationResult.data } : {}),
           }
         })
         .filter((e) => e.method && e.path)
@@ -534,6 +541,8 @@ export async function resolveConnectorApiKey(secretAlias: string | null): Promis
 export type HttpApiRequestParams = {
   method: string
   path: string
+  /** Belső get_all jelzés: a pathot az eredeti next_link endpoint válasza adta. */
+  continuationOf?: string
   query?: Record<string, string | number | boolean>
   headers?: Record<string, string>
   body?: unknown
@@ -548,6 +557,8 @@ export type HttpApiResponse = {
   hint?: string
   /** true, ha a body truncate-elt előnézet (maxResponseChars). */
   truncated?: boolean
+  /** RFC 8288 lapozáshoz; csak a Link fejléc, más response header nem kerül tovább. */
+  linkHeader?: string
 }
 
 export class HttpApiError extends Error {
@@ -607,18 +618,30 @@ export class HttpApiClient {
     return process.env.HTTP_API_STUB === 'true' || Boolean(this.defaultApiKey?.startsWith('stub-'))
   }
 
-  private selectEndpoint(method: string, path: string): HttpApiEndpoint | undefined {
+  private selectEndpoint(
+    method: string,
+    path: string,
+    continuationOf?: string,
+  ): HttpApiEndpoint | undefined {
     if (/:\/\//.test(path)) {
       // SSRF-védelem: a path nem írhatja felül a connector hostját.
       throw new HttpApiError('path must be relative to the connector baseUrl', 'invalid_path')
     }
     this.assertGitHubRepositoryAllowed(path)
-    const normalized = path.split('?')[0]
-    const endpoint = (this.config.endpoints ?? []).find(
-      (e) => e.method === method && httpApiPathMatches(e.path, normalized),
-    )
+    const endpoint = findHttpApiEndpoint(this.config, method, path)
+    const continuationEndpoint = continuationOf
+      ? findHttpApiEndpoint(this.config, method, continuationOf)
+      : undefined
     if (this.config.restrictToEndpoints) {
       if (!endpoint) {
+        if (
+          method === 'GET'
+          && continuationEndpoint?.pagination?.kind === 'next_link'
+          && continuationEndpoint.pagination.continuationPathTemplate
+          && httpApiPathMatches(continuationEndpoint.pagination.continuationPathTemplate, path)
+        ) {
+          return continuationEndpoint
+        }
         throw new HttpApiError(`endpoint not allowed: ${method} ${path}`, 'endpoint_not_allowed')
       }
     }
@@ -761,7 +784,7 @@ export class HttpApiClient {
     if (!READ_METHODS.has(method) && !WRITE_METHODS.has(method)) {
       throw new HttpApiError(`unsupported HTTP method: ${method}`, 'invalid_method')
     }
-    const endpoint = this.selectEndpoint(method, params.path)
+    const endpoint = this.selectEndpoint(method, params.path, params.continuationOf)
     const platformInjected = this.platformInjectedHeaderNames(method, endpoint)
     const parameterHeaders = this.buildParameterHeaders(endpoint, params.headers, platformInjected)
 
@@ -859,6 +882,7 @@ export class HttpApiClient {
       status: res.status,
       ok: res.ok,
       body,
+      ...(res.headers.get('link') ? { linkHeader: res.headers.get('link')! } : {}),
       ...(truncated ? { truncated: true } : {}),
       ...(errorHint || truncationHint
         ? { hint: [errorHint, truncationHint].filter(Boolean).join(' ') }
@@ -1102,6 +1126,19 @@ export function httpApiPathMatches(template: string, actual: string): boolean {
   const a = actual.split('/').filter(Boolean)
   if (t.length !== a.length) return false
   return t.every((seg, i) => isPathParamSegment(seg) || seg === a[i])
+}
+
+/** Közös endpoint-feloldás a kliens és a get_all lapozási terv számára. */
+export function findHttpApiEndpoint(
+  config: Pick<HttpApiConfig, 'endpoints'>,
+  method: string,
+  path: string,
+): HttpApiEndpoint | undefined {
+  const normalized = path.split('?')[0]
+  const upperMethod = method.toUpperCase()
+  return (config.endpoints ?? []).find(
+    (endpoint) => endpoint.method === upperMethod && httpApiPathMatches(endpoint.path, normalized),
+  )
 }
 
 function isPathParamSegment(segment: string): boolean {

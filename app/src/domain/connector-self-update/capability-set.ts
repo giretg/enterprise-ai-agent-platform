@@ -57,18 +57,16 @@ export function parseCapabilitySet(value: unknown): CapabilitySet | null {
  * A rögzített verzió képességei EZ, és csak ez, hívható; `restrictToEndpoints` mindig
  * true (a self-updating connector lényege, hogy a lista az engedélylista is).
  */
-export function capabilitySetToRuntimeEndpoints(set: CapabilitySet): Array<{
-  method: HttpMethod
-  path: string
-  description?: string
-  idempotent?: boolean
-  access: 'read' | 'write'
-}> {
+export function capabilitySetToRuntimeEndpoints(
+  set: CapabilitySet,
+): Array<Pick<ProposedTool, 'method' | 'path' | 'description' | 'idempotent' | 'access' | 'parameters' | 'pagination'>> {
   return (set.proposedTools ?? []).map((tool) => ({
     method: tool.method,
     path: tool.path,
     access: tool.access,
     ...(tool.description ? { description: tool.description } : {}),
     ...(tool.idempotent ? { idempotent: true } : {}),
+    ...(tool.parameters ? { parameters: tool.parameters } : {}),
+    ...(tool.pagination ? { pagination: tool.pagination } : {}),
   }))
 }

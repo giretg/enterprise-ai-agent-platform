@@ -61,6 +61,25 @@ async function main() {
     assert.equal(c.baseUrl, 'https://x.io/api')
   })
 
+  await test('parseHttpApiConfig megőrzi az endpoint lapozási szerződését', () => {
+    const c = parseHttpApiConfig({
+      baseUrl: 'https://x.io/api',
+      auth: { scheme: 'bearer' },
+      endpoints: [{
+        method: 'GET',
+        path: '/accounts',
+        pagination: {
+          kind: 'cursor', cursorParam: 'cursor', limitParam: 'limit',
+          itemsPath: 'data', nextCursorPath: 'meta.nextCursor',
+        },
+      }],
+    })
+    assert.deepEqual(c.endpoints?.[0]?.pagination, {
+      kind: 'cursor', cursorParam: 'cursor', limitParam: 'limit',
+      itemsPath: 'data', nextCursorPath: 'meta.nextCursor',
+    })
+  })
+
   await test('resolveConnectorApiKey env: aliasból olvas', async () => {
     process.env.TEST_CRM_KEY = 'pn_secret_123'
     const key = await resolveConnectorApiKey('env:TEST_CRM_KEY')
@@ -111,6 +130,42 @@ async function main() {
     assert.equal(ok.ok, true)
     await assert.rejects(
       client.request({ method: 'GET', path: '/customers' }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'endpoint_not_allowed',
+    )
+  })
+
+  await test('allowlist: next_link endpoint szerver által adott relatív continuation pathja hívható', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://api.example/v1',
+      auth: { scheme: 'bearer' },
+      endpoints: [{
+        method: 'GET', path: '/items',
+        pagination: {
+          kind: 'next_link', linkHeaderRel: 'next', itemsPath: 'items',
+          continuationPathTemplate: '/items/page/{page}',
+        },
+      }],
+      restrictToEndpoints: true,
+    })
+    const client = new HttpApiClient(config, 'stub-api-key')
+    const result = await client.request({
+      method: 'GET', path: '/items/page/2', continuationOf: '/items',
+    })
+    assert.equal(result.ok, true)
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/items/page/2' }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'endpoint_not_allowed',
+    )
+    await assert.rejects(
+      client.request({
+        method: 'GET', path: '/admin/secrets', continuationOf: '/items',
+      }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'endpoint_not_allowed',
+    )
+    await assert.rejects(
+      new HttpApiClient(baseConfig, 'stub-api-key').request({
+        method: 'GET', path: '/banks/page/2', continuationOf: '/banks',
+      }),
       (e: unknown) => e instanceof HttpApiError && e.code === 'endpoint_not_allowed',
     )
   })

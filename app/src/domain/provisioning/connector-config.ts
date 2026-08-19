@@ -19,6 +19,52 @@ export const WRITE_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>([
   'DELETE',
 ])
 
+const paginationCommonSchema = z.object({
+  itemsPath: z.string().min(1),
+  totalPath: z.string().min(1).optional(),
+  defaultPageSize: z.number().int().positive().optional(),
+  maxPageSize: z.number().int().positive().optional(),
+})
+
+/**
+ * Endpoint-szintű lapozási szerződés. Nem a modell találja ki hívásonként:
+ * OpenAPI-ból vagy admin által jóváhagyott connector-konfigból származik.
+ */
+export const httpPaginationSchema = z.union([
+  paginationCommonSchema.extend({
+    kind: z.literal('cursor'),
+    cursorParam: z.string().min(1),
+    nextCursorPath: z.string().min(1),
+    limitParam: z.string().min(1).optional(),
+  }),
+  paginationCommonSchema.extend({
+    kind: z.literal('page'),
+    pageParam: z.string().min(1),
+    pageSizeParam: z.string().min(1).optional(),
+    firstPage: z.number().int().min(0).default(1),
+  }),
+  paginationCommonSchema.extend({
+    kind: z.literal('offset'),
+    offsetParam: z.string().min(1),
+    limitParam: z.string().min(1),
+    firstOffset: z.number().int().min(0).default(0),
+  }),
+  paginationCommonSchema.extend({
+    kind: z.literal('next_link'),
+    nextLinkPath: z.string().min(1).optional(),
+    linkHeaderRel: z.literal('next').optional(),
+    /** Opaque pathos folytatás csak erre a jóváhagyott endpoint-sablonra válthat. */
+    continuationPathTemplate: z.string().min(1).optional(),
+  }).refine((value) => Boolean(value.nextLinkPath || value.linkHeaderRel), {
+    message: 'next_link pagination requires nextLinkPath or linkHeaderRel',
+  }),
+  z.object({
+    kind: z.literal('none'),
+    itemsPath: z.string().min(1),
+  }),
+])
+export type HttpPagination = z.infer<typeof httpPaginationSchema>
+
 export const proposedToolSchema = z.object({
   name: z.string().min(1),
   method: z.enum(HTTP_METHODS),
@@ -34,6 +80,7 @@ export const proposedToolSchema = z.object({
    * header-paramétert deklarál. Csak mutáló metódusokon van értelme.
    */
   idempotent: z.boolean().optional(),
+  pagination: httpPaginationSchema.optional(),
   /** Capability-diffhez megőrzött, titokmentes paraméter-kontraktus. */
   parameters: z.array(z.object({
     name: z.string().min(1),
@@ -73,6 +120,8 @@ export const connectorAuthSchema = z.object({
 export type ConnectorAuth = z.infer<typeof connectorAuthSchema>
 
 export const connectorConfigSchema = z.object({
+  /** Az extractor szemantikai verziója; ugyanaz a nyers spec új capability-t adhat. */
+  capabilitySchemaVersion: z.number().int().positive().optional(),
   provider: z.string().min(1),
   baseUrl: z.string().url(),
   egressHosts: z.array(z.string().min(1)).min(1),

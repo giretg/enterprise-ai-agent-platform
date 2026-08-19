@@ -230,6 +230,31 @@ async function run() {
     assert.ok(audit.events.some((event) => event.action === 'connector.self_update.sync.failed'))
   })
 
+  await test('azonos nyers spec új capability-sémával új proposal lesz', async () => {
+    const { service, repo, sync, connectorId } = await ready()
+    await service.approveUrl(connectorId, { id: APPROVER, tenantId: TENANT })
+    await service.markTrusted(connectorId, { id: APPROVER, tenantId: TENANT })
+    await service.sync(connectorId, { id: SETTER, tenantId: TENANT })
+    await service.approveVersion(connectorId, repo.versions[0].id, { id: APPROVER, tenantId: TENANT })
+
+    const upgraded = capabilitySet([{ method: 'GET', path: '/customers' }])
+    upgraded.capabilitySchemaVersion = 2
+    upgraded.proposedTools[0].pagination = {
+      kind: 'cursor', cursorParam: 'cursor', limitParam: 'limit',
+      itemsPath: 'data', nextCursorPath: 'meta.nextCursor',
+    }
+    sync.result = {
+      ok: true,
+      rawText: '{"v":1}',
+      rawHash: 'hash-1',
+      capabilitySet: upgraded,
+      host: 'partner.example',
+    }
+    const result = await service.sync(connectorId, { id: SETTER, tenantId: TENANT })
+    assert.equal(result.kind, 'proposed')
+    assert.equal(repo.versions.length, 2)
+  })
+
   await test('rollback érvényteleníti a régi alapverzióhoz készült proposalokat', async () => {
     const { service, repo, sync, connectorId } = await ready()
     await service.approveUrl(connectorId, { id: APPROVER, tenantId: TENANT }); await service.markTrusted(connectorId, { id: APPROVER, tenantId: TENANT })

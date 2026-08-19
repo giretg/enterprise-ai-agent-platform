@@ -238,7 +238,13 @@ export class SelfUpdatingConnectorService {
       return { kind: 'failed', reason: result.reason, ...(result.detail ? { detail: result.detail } : {}) }
     }
 
-    if (ctx.activeVersion?.rawHash === result.rawHash) {
+    const current = ctx.activeVersion ? parseCapabilitySet(ctx.activeVersion.capabilitySet) : null
+    if (ctx.activeVersion && !current) {
+      throw new SelfUpdateError('INVALID_CAPABILITY_SET', 'Az aktív pillanatkép nem értelmezhető; semmi nem változott.')
+    }
+    const currentSchemaVersion = current?.capabilitySchemaVersion ?? 1
+    const nextSchemaVersion = result.capabilitySet.capabilitySchemaVersion ?? 1
+    if (ctx.activeVersion?.rawHash === result.rawHash && currentSchemaVersion === nextSchemaVersion) {
       await this.repo.touchSynced(ctx.source.id, this.now())
       await this.record('connector.self_update.sync.no_change', actor, connectorId, 'unchanged', {
         raw_hash: result.rawHash,
@@ -247,7 +253,13 @@ export class SelfUpdatingConnectorService {
     }
 
     const existingProposal = await this.repo.findOpenProposalByHash(connectorId, actor.tenantId, result.rawHash)
-    if (existingProposal) {
+    const existingProposalSet = existingProposal
+      ? parseCapabilitySet(existingProposal.capabilitySet)
+      : null
+    if (
+      existingProposal
+      && (existingProposalSet?.capabilitySchemaVersion ?? 1) === nextSchemaVersion
+    ) {
       await this.repo.touchSynced(ctx.source.id, this.now())
       await this.record('connector.self_update.sync.no_change', actor, connectorId, 'proposal_already_exists', {
         raw_hash: result.rawHash,
@@ -256,10 +268,6 @@ export class SelfUpdatingConnectorService {
       return { kind: 'proposed', version: existingProposal, autoApproved: false }
     }
 
-    const current = ctx.activeVersion ? parseCapabilitySet(ctx.activeVersion.capabilitySet) : null
-    if (ctx.activeVersion && !current) {
-      throw new SelfUpdateError('INVALID_CAPABILITY_SET', 'Az aktív pillanatkép nem értelmezhető; semmi nem változott.')
-    }
     const usage = await this.repo.listUsage(connectorId, actor.tenantId)
     const diff = computeCapabilityDiff(current, result.capabilitySet, (op) => {
       const path = op.includes(' ') ? op.slice(op.indexOf(' ') + 1) : op

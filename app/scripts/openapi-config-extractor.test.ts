@@ -100,6 +100,67 @@ const IDEMPOTENCY_OPENAPI = {
   },
 }
 
+const CURSOR_PAGINATION_OPENAPI = {
+  openapi: '3.1.0',
+  info: { title: 'Cursor API', version: '1.0.0' },
+  servers: [{ url: 'https://api.cursor.example/v1' }],
+  components: {
+    securitySchemes: {
+      ApiKeyAuth: { type: 'apiKey', in: 'header', name: 'X-Api-Key' },
+    },
+    parameters: {
+      Cursor: { name: 'cursor', in: 'query', schema: { type: 'string' } },
+      Limit: { name: 'limit', in: 'query', schema: { type: 'integer' } },
+    },
+    schemas: {
+      SuccessEnvelope: {
+        type: 'object',
+        properties: { ok: { type: 'boolean' } },
+      },
+      ListMeta: {
+        type: 'object',
+        properties: {
+          total: { type: 'integer' },
+          nextCursor: { type: ['string', 'null'] },
+        },
+      },
+    },
+  },
+  security: [{ ApiKeyAuth: [] }],
+  paths: {
+    '/accounts': {
+      get: {
+        operationId: 'listAccounts',
+        parameters: [
+          { $ref: '#/components/parameters/Cursor' },
+          { $ref: '#/components/parameters/Limit' },
+        ],
+        responses: {
+          '200': {
+            description: 'Cursor page',
+            content: {
+              'application/json': {
+                schema: {
+                  allOf: [
+                    { $ref: '#/components/schemas/SuccessEnvelope' },
+                    {
+                      type: 'object',
+                      properties: {
+                        data: { type: 'array', items: { type: 'object' } },
+                        meta: { $ref: '#/components/schemas/ListMeta' },
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+}
+
 function toolByName(
   result: ReturnType<typeof tryExtractConnectorConfigFromOpenApi>,
   name: string,
@@ -215,6 +276,101 @@ async function run() {
         description: 'Create contact',
       },
     )
+  })
+
+  await test('cursoros OpenAPI → endpoint pagination capability', () => {
+    const result = tryExtractConnectorConfigFromOpenApi(
+      JSON.stringify(CURSOR_PAGINATION_OPENAPI),
+      'cursor-api',
+    )
+    assert.deepEqual(toolByName(result, 'listAccounts').pagination, {
+      kind: 'cursor',
+      cursorParam: 'cursor',
+      limitParam: 'limit',
+      itemsPath: 'data',
+      nextCursorPath: 'meta.nextCursor',
+      totalPath: 'meta.total',
+    })
+  })
+
+  await test('OpenAPI Link response header → next_link pagination capability', () => {
+    const spec = structuredClone(CURSOR_PAGINATION_OPENAPI)
+    const operation = spec.paths['/accounts'].get as unknown as {
+      parameters: unknown[]
+      responses: Record<string, unknown>
+    }
+    operation.parameters = []
+    operation.responses['200'] = {
+      description: 'Link-paginated page',
+      headers: {
+        Link: { schema: { type: 'string' }, description: 'RFC 8288 rel=next' },
+      },
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: { results: { type: 'array', items: { type: 'object' } } },
+          },
+        },
+      },
+    }
+    const result = tryExtractConnectorConfigFromOpenApi(JSON.stringify(spec), 'link-api')
+    assert.deepEqual(toolByName(result, 'listAccounts').pagination, {
+      kind: 'next_link', itemsPath: 'results', linkHeaderRel: 'next',
+    })
+
+    const response = operation.responses['200'] as {
+      headers: { Link: { description: string } }
+    }
+    response.headers.Link.description = 'Kapcsolódó erőforrások hivatkozásai'
+    const unrelated = tryExtractConnectorConfigFromOpenApi(JSON.stringify(spec), 'link-api')
+    assert.equal(toolByName(unrelated, 'listAccounts').pagination, undefined)
+  })
+
+  await test('page és offset query-konvenciók determinisztikusan felismerhetők', () => {
+    const pageSpec = structuredClone(CURSOR_PAGINATION_OPENAPI)
+    const pageOperation = pageSpec.paths['/accounts'].get as unknown as { parameters: unknown[] }
+    pageOperation.parameters = [
+      { name: 'page', in: 'query', schema: { type: 'integer', default: 0, minimum: 0 } },
+      { name: 'per_page', in: 'query', schema: { type: 'integer', default: 25, maximum: 50 } },
+    ]
+    const page = tryExtractConnectorConfigFromOpenApi(JSON.stringify(pageSpec), 'page-api')
+    assert.deepEqual(toolByName(page, 'listAccounts').pagination, {
+      kind: 'page', pageParam: 'page', pageSizeParam: 'per_page', firstPage: 0,
+      defaultPageSize: 25, maxPageSize: 50,
+      itemsPath: 'data', totalPath: 'meta.total',
+    })
+
+    const offsetSpec = structuredClone(CURSOR_PAGINATION_OPENAPI)
+    const offsetOperation = offsetSpec.paths['/accounts'].get as unknown as { parameters: unknown[] }
+    offsetOperation.parameters = [
+      { name: 'offset', in: 'query', schema: { type: 'integer', default: 1, minimum: 1 } },
+      { name: 'limit', in: 'query', schema: { type: 'integer', maximum: 40 } },
+    ]
+    const offset = tryExtractConnectorConfigFromOpenApi(JSON.stringify(offsetSpec), 'offset-api')
+    assert.deepEqual(toolByName(offset, 'listAccounts').pagination, {
+      kind: 'offset', offsetParam: 'offset', limitParam: 'limit', firstOffset: 1,
+      maxPageSize: 40,
+      itemsPath: 'data', totalPath: 'meta.total',
+    })
+  })
+
+  await test('bizonytalan lista nem kap implicit none/page stratégiát', () => {
+    const spec = structuredClone(CURSOR_PAGINATION_OPENAPI)
+    const operation = spec.paths['/accounts'].get as unknown as {
+      parameters: unknown[]
+      'x-pagination'?: unknown
+    }
+    operation.parameters = [{ name: 'page', in: 'query', schema: { type: 'integer' } }]
+    const uncertain = tryExtractConnectorConfigFromOpenApi(JSON.stringify(spec), 'uncertain-api')
+    assert.equal(toolByName(uncertain, 'listAccounts').pagination, undefined)
+
+    operation.parameters = []
+    operation['x-pagination'] = { kind: 'none', itemsPath: 'data' }
+    const explicit = tryExtractConnectorConfigFromOpenApi(JSON.stringify(spec), 'explicit-api')
+    assert.deepEqual(toolByName(explicit, 'listAccounts').pagination, {
+      kind: 'none', itemsPath: 'data',
+    })
   })
 
   await test('x-action-class: read → POST risk:read (access továbbra is write)', () => {

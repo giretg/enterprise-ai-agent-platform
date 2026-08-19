@@ -480,7 +480,14 @@ export type GmailSendArgs = {
 
 export type HttpApiQuery = Record<string, string | number | boolean>
 export type HttpApiHeaders = Record<string, string>
-export type HttpApiGetArgs = { connectorId?: string; path: string; query?: HttpApiQuery; headers?: HttpApiHeaders }
+export type HttpApiGetArgs = {
+  connectorId?: string
+  path: string
+  query?: HttpApiQuery
+  headers?: HttpApiHeaders
+  /** Csak a broker állítja: szerver által adott next-link eredeti endpointja. */
+  continuationOf?: string
+}
 export type HttpApiGetAllArgs = {
   connectorId?: string
   path: string
@@ -507,6 +514,7 @@ export type HttpApiCallResult = {
   body: unknown
   hint?: string
   truncated?: boolean
+  linkHeader?: string
 }
 export type HttpApiGetAllResult = {
   ok: boolean
@@ -520,7 +528,12 @@ export type HttpApiGetAllResult = {
    * csendes hiba (egy oldalnyi névsorból hamis „új rekord" egyeztetés lesz),
    * ezért a kimeneti szerződés ebből ad `partial` kimenetelt (issue #195).
    */
-  provenance?: { sourceTool: string; paginationComplete: boolean }
+  provenance?: {
+    sourceTool: string
+    paginationComplete: boolean
+    strategy?: 'cursor' | 'page' | 'offset' | 'next_link' | 'none'
+    stopReason?: string
+  }
 }
 
 export type GmailSearchResult = { messages: Array<Record<string, string>> }

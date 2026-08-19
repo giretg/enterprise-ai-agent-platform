@@ -2,8 +2,10 @@ import type { ToolHandler, ToolHandlerArgs } from './tool-handler'
 import {
   paginateHttpApiGet,
   resolveHttpApiPaginatePlan,
+  undocumentedPaginationQueryParams,
   type HttpApiPaginateQuery,
 } from '@/domain/connector/http-api-paginate'
+import { findHttpApiEndpoint, parseHttpApiConfig } from '@/domain/connector/http-api-client'
 import { buildHttpApiLikelyPaginatedHint } from '@/domain/connector/http-api-prompt'
 import { requiresHttpApiGetAll } from '@/lib/http-api-pagination-signals'
 
@@ -49,7 +51,10 @@ export const httpApiHandler: ToolHandler = {
     }
 
     if (input.tool === 'http_api_get_all') {
+      const config = parseHttpApiConfig(authorization.connector.config)
+      const endpoint = findHttpApiEndpoint(config, 'GET', input.args.path)
       const plan = resolveHttpApiPaginatePlan({
+        pagination: endpoint?.pagination,
         pageParam: input.args.pageParam,
         pageSizeParam: input.args.pageSizeParam,
         pageSize: input.args.pageSize,
@@ -57,17 +62,44 @@ export const httpApiHandler: ToolHandler = {
         maxPages: input.args.maxPages,
         arrayPath: input.args.arrayPath,
       })
+      if (!plan) {
+        return {
+          ok: false,
+          path: input.args.path,
+          pageCount: 0,
+          itemCount: 0,
+          items: [],
+          error:
+            'A végponthoz nincs megbízható lapozási szerződés. ' +
+            'Frissítsd a connector OpenAPI snapshotját, adj meg endpoint.pagination konfigurációt, ' +
+            'vagy legacy API-nál explicit pageParam értéket.',
+        }
+      }
+      const undocumented = undocumentedPaginationQueryParams(plan, endpoint?.queryParams)
+      if (undocumented.length > 0) {
+        return {
+          ok: false,
+          path: input.args.path,
+          pageCount: 0,
+          itemCount: 0,
+          items: [],
+          error: `A lapozási szerződés nem dokumentált query paramétert használ: ${undocumented.join(', ')}.`,
+        }
+      }
       const outcome = await paginateHttpApiGet({
         plan,
+        path: input.args.path,
+        baseUrl: config.baseUrl,
         baseQuery: input.args.query,
-        fetchPage: async (query: HttpApiPaginateQuery) => {
+        fetchPage: async (query: HttpApiPaginateQuery, path) => {
           const page = await ctx.executeHttpApiTool(
             {
               ...input,
               tool: 'http_api_get',
               args: {
                 connectorId: input.args.connectorId,
-                path: input.args.path,
+                path: path ?? input.args.path,
+                continuationOf: plan.kind === 'next_link' ? input.args.path : undefined,
                 query,
                 headers: input.args.headers,
               },
@@ -78,7 +110,13 @@ export const httpApiHandler: ToolHandler = {
             authorization.agentSecretAlias,
             delegatedAccessToken,
           )
-          return { ok: page.ok, status: page.status, body: page.body, hint: page.hint }
+          return {
+            ok: page.ok,
+            status: page.status,
+            body: page.body,
+            hint: page.hint,
+            linkHeader: page.linkHeader,
+          }
         },
       })
       if (!outcome.ok) {
@@ -100,6 +138,8 @@ export const httpApiHandler: ToolHandler = {
         provenance: {
           sourceTool: 'http_api_get_all',
           paginationComplete: outcome.paginationComplete,
+          strategy: outcome.strategy,
+          stopReason: outcome.stopReason,
         },
       }
     }

@@ -5,6 +5,7 @@
 import {
   normalizeConnectorConfig,
   ConnectorConfigParseError,
+  httpPaginationSchema,
   WRITE_METHODS,
   type ConnectorAuth,
   type ConnectorConfig,
@@ -14,6 +15,7 @@ import {
 import { extractLoose } from '@/domain/contract-runtime'
 
 const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const
+export const OPENAPI_CAPABILITY_SCHEMA_VERSION = 2
 
 export type OpenApiExtractResult =
   | { ok: true; config: ConnectorConfig }
@@ -472,6 +474,240 @@ function operationParameters(
   return [...byKey.values()].sort((a, b) => `${a.in}:${a.name}`.localeCompare(`${b.in}:${b.name}`))
 }
 
+function successResponseForOperation(
+  spec: OpenApiSpec,
+  operation: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const responses = isRecord(operation.responses) ? operation.responses : {}
+  const successKey = Object.keys(responses)
+    .filter((key) => /^2\d\d$/.test(key))
+    .sort()[0]
+  if (!successKey) return undefined
+  const response = resolveMaybeRef(spec, responses[successKey])
+  return isRecord(response) ? response : undefined
+}
+
+function responseSchemaForOperation(spec: OpenApiSpec, operation: Record<string, unknown>): unknown {
+  const response = successResponseForOperation(spec, operation)
+  if (!response) return undefined
+  if (isRecord(response.content)) {
+    const json = response.content['application/json']
+      ?? Object.entries(response.content).find(([type]) => type.includes('json'))?.[1]
+    const media = resolveMaybeRef(spec, json)
+    return isRecord(media) ? resolveMaybeRef(spec, media.schema) : undefined
+  }
+  // Swagger 2.0
+  return resolveMaybeRef(spec, response.schema)
+}
+
+function hasNextLinkResponseHeader(spec: OpenApiSpec, operation: Record<string, unknown>): boolean {
+  const response = successResponseForOperation(spec, operation)
+  if (!response || !isRecord(response.headers)) return false
+  return Object.entries(response.headers).some(([name, rawHeader]) => {
+    if (name.toLowerCase() !== 'link') return false
+    const header = resolveMaybeRef(spec, rawHeader)
+    if (!isRecord(header)) return false
+    const schema = isRecord(header.schema) ? header.schema : {}
+    const description = [header.description, schema.description]
+      .filter((value): value is string => typeof value === 'string')
+      .join(' ')
+    return /\bnext\b|paginat/i.test(description)
+  })
+}
+
+type ResponseShape = { arrays: string[]; scalars: string[] }
+
+function collectResponseShape(
+  spec: OpenApiSpec,
+  schema: unknown,
+  prefix = '',
+  seenRefs = new Set<string>(),
+  out: ResponseShape = { arrays: [], scalars: [] },
+): ResponseShape {
+  if (!isRecord(schema)) return out
+  if (typeof schema.$ref === 'string') {
+    if (seenRefs.has(schema.$ref)) return out
+    const target = resolveLocalRef(spec, schema.$ref)
+    if (target) collectResponseShape(spec, target, prefix, new Set([...seenRefs, schema.$ref]), out)
+    return out
+  }
+  for (const key of ['allOf', 'oneOf', 'anyOf']) {
+    if (!Array.isArray(schema[key])) continue
+    for (const part of schema[key] as unknown[]) {
+      collectResponseShape(spec, resolveMaybeRef(spec, part), prefix, seenRefs, out)
+    }
+  }
+  if (schema.type === 'array' || schema.items !== undefined) {
+    out.arrays.push(prefix || '$')
+    return out
+  }
+  const properties = isRecord(schema.properties) ? schema.properties : {}
+  for (const [name, raw] of Object.entries(properties)) {
+    const path = prefix ? `${prefix}.${name}` : name
+    const resolved = resolveMaybeRef(spec, raw)
+    if (!isRecord(resolved)) continue
+    if (resolved.type === 'array' || resolved.items !== undefined) {
+      out.arrays.push(path)
+      continue
+    }
+    if (resolved.type === 'object' || resolved.properties !== undefined || resolved.allOf !== undefined) {
+      collectResponseShape(spec, resolved, path, seenRefs, out)
+      continue
+    }
+    out.scalars.push(path)
+  }
+  return out
+}
+
+function firstPathByLeaf(paths: readonly string[], names: readonly string[]): string | undefined {
+  const wanted = new Set(names.map((name) => name.toLowerCase()))
+  return paths.find((path) => wanted.has(path.split('.').at(-1)?.toLowerCase() ?? ''))
+}
+
+function queryParamName(
+  parameters: NonNullable<ProposedTool['parameters']>,
+  names: readonly string[],
+): string | undefined {
+  const wanted = new Set(names.map((name) => name.toLowerCase()))
+  return parameters.find(
+    (param) => param.in === 'query' && wanted.has(param.name.toLowerCase()),
+  )?.name
+}
+
+type QueryParameterContract = {
+  defaultValue?: number
+  minimum?: number
+  maximum?: number
+}
+
+function queryParameterContract(
+  spec: OpenApiSpec,
+  pathItem: Record<string, unknown>,
+  operation: Record<string, unknown>,
+  name: string | undefined,
+): QueryParameterContract {
+  if (!name) return {}
+  let matched: Record<string, unknown> | undefined
+  for (const group of [pathItem.parameters, operation.parameters]) {
+    if (!Array.isArray(group)) continue
+    for (const raw of group) {
+      const param = resolveMaybeRef(spec, raw)
+      if (
+        isRecord(param)
+        && param.in === 'query'
+        && typeof param.name === 'string'
+        && param.name.toLowerCase() === name.toLowerCase()
+      ) {
+        matched = param
+      }
+    }
+  }
+  if (!matched) return {}
+  const rawSchema = isRecord(matched.schema) ? resolveMaybeRef(spec, matched.schema) : matched
+  const schema = isRecord(rawSchema) ? rawSchema : {}
+  const integer = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined
+  return {
+    ...(integer(schema.default ?? matched.default) !== undefined
+      ? { defaultValue: integer(schema.default ?? matched.default) }
+      : {}),
+    ...(integer(schema.minimum ?? matched.minimum) !== undefined
+      ? { minimum: integer(schema.minimum ?? matched.minimum) }
+      : {}),
+    ...(integer(schema.maximum ?? matched.maximum) !== undefined
+      ? { maximum: integer(schema.maximum ?? matched.maximum) }
+      : {}),
+  }
+}
+
+function pageSizeContract(
+  contract: QueryParameterContract,
+): { defaultPageSize?: number; maxPageSize?: number } {
+  const maxPageSize = contract.maximum && contract.maximum > 0 ? contract.maximum : undefined
+  const rawDefault = contract.defaultValue && contract.defaultValue > 0
+    ? contract.defaultValue
+    : undefined
+  const defaultPageSize = rawDefault && maxPageSize
+    ? Math.min(rawDefault, maxPageSize)
+    : rawDefault
+  return {
+    ...(defaultPageSize ? { defaultPageSize } : {}),
+    ...(maxPageSize ? { maxPageSize } : {}),
+  }
+}
+
+/** Csak egyértelmű OpenAPI-jelekből következtetünk; bizonytalan esetben nincs stratégia. */
+function paginationForOperation(
+  spec: OpenApiSpec,
+  pathItem: Record<string, unknown>,
+  operation: Record<string, unknown>,
+  parameters: NonNullable<ProposedTool['parameters']>,
+): ProposedTool['pagination'] {
+  const explicit = httpPaginationSchema.safeParse(operation['x-pagination'])
+  if (explicit.success) return explicit.data
+
+  const schema = responseSchemaForOperation(spec, operation)
+  const shape = collectResponseShape(spec, schema)
+  const arrayPaths = [...new Set(shape.arrays)]
+  const scalarPaths = [...new Set(shape.scalars)]
+  if (arrayPaths.length !== 1) return undefined
+  const itemsPath = arrayPaths[0]
+  const totalPath = firstPathByLeaf(scalarPaths, ['total', 'totalCount', 'total_count'])
+
+  if (hasNextLinkResponseHeader(spec, operation)) {
+    return { kind: 'next_link', itemsPath, linkHeaderRel: 'next' }
+  }
+
+  const cursorParam = queryParamName(parameters, [
+    'cursor', 'pageToken', 'page_token', 'continuationToken', 'continuation_token',
+  ])
+  const nextCursorPath = firstPathByLeaf(scalarPaths, [
+    'nextCursor', 'next_cursor', 'nextPageToken', 'next_page_token',
+    'continuationToken', 'continuation_token',
+  ])
+  const limitParam = queryParamName(parameters, ['limit', 'pageSize', 'page_size', 'perPage', 'per_page'])
+  const limitContract = pageSizeContract(queryParameterContract(spec, pathItem, operation, limitParam))
+  if (cursorParam && nextCursorPath) {
+    return {
+      kind: 'cursor', cursorParam, itemsPath, nextCursorPath,
+      ...(limitParam ? { limitParam } : {}),
+      ...limitContract,
+      ...(totalPath ? { totalPath } : {}),
+    }
+  }
+
+  const offsetParam = queryParamName(parameters, ['offset', 'skip'])
+  const offsetContract = queryParameterContract(spec, pathItem, operation, offsetParam)
+  const firstOffset = offsetContract.defaultValue ?? offsetContract.minimum
+  if (offsetParam && limitParam && firstOffset !== undefined) {
+    return {
+      kind: 'offset', offsetParam, limitParam, itemsPath, firstOffset,
+      ...limitContract,
+      ...(totalPath ? { totalPath } : {}),
+    }
+  }
+
+  const pageParam = queryParamName(parameters, ['page', 'pageNumber', 'page_number'])
+  const pageSizeParam = queryParamName(parameters, ['pageSize', 'page_size', 'perPage', 'per_page', 'limit'])
+  const pageContract = queryParameterContract(spec, pathItem, operation, pageParam)
+  const firstPage = pageContract.defaultValue ?? pageContract.minimum
+  if (pageParam && firstPage !== undefined) {
+    return {
+      kind: 'page', pageParam, itemsPath, firstPage,
+      ...(pageSizeParam ? { pageSizeParam } : {}),
+      ...pageSizeContract(queryParameterContract(spec, pathItem, operation, pageSizeParam)),
+      ...(totalPath ? { totalPath } : {}),
+    }
+  }
+
+  const nextLinkPath = firstPathByLeaf(scalarPaths, ['nextLink', 'next_link'])
+    ?? scalarPaths.find((path) => /(^|\.)links\.next$/i.test(path))
+    ?? scalarPaths.find((path) => /(^|\.)@odata\.nextLink$/i.test(path))
+  if (nextLinkPath) return { kind: 'next_link', itemsPath, nextLinkPath }
+
+  return undefined
+}
+
 function extractProposedTools(spec: OpenApiSpec): ProposedTool[] {
   const tools: ProposedTool[] = []
   const seen = new Set<string>()
@@ -501,6 +737,9 @@ function extractProposedTools(spec: OpenApiSpec): ProposedTool[] {
       const idempotent =
         WRITE_METHODS.has(httpMethod) && operationRequiresIdempotencyKey(spec, pathItem, operation)
       const parameters = operationParameters(spec, pathItem, operation, httpMethod)
+      const pagination = httpMethod === 'GET'
+        ? paginationForOperation(spec, pathItem, operation, parameters)
+        : undefined
       // Olvasó POST (report/query): az OpenAPI `x-action-class` / `x-write: false`
       // extensionje → risk. Az `access` metódus-alapú marad (normalize write-ra
       // kényszeríti a POST-ot); a következmény-kapu a `risk` mezőt nézi.
@@ -514,6 +753,7 @@ function extractProposedTools(spec: OpenApiSpec): ProposedTool[] {
         ...(risk ? { risk } : {}),
         ...(descriptionForOperation(operation) ? { description: descriptionForOperation(operation) } : {}),
         ...(idempotent ? { idempotent: true } : {}),
+        ...(pagination ? { pagination } : {}),
         ...(parameters.length ? { parameters } : {}),
       })
     }
@@ -595,6 +835,7 @@ export function extractConnectorConfigFromOpenApiSpec(
   }
 
   const rawConfig = {
+    capabilitySchemaVersion: OPENAPI_CAPABILITY_SCHEMA_VERSION,
     provider,
     baseUrl,
     egressHosts,

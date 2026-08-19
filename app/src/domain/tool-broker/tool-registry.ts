@@ -647,9 +647,9 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
 
   http_api_get_all: descriptor({
     description:
-      'Lapozott GET lista EGY hívásban: a szerver végiglapozza az oldalakat (page/pageSize), összevonja a rekordtömböt, és EGY eredményt ad vissza. ' +
+      'Lapozott GET lista EGY hívásban: a szerver az endpoint OpenAPI/config lapozási szerződése alapján (cursor, page, offset vagy next-link) végiglapozza és összevonja a rekordokat. ' +
       'KÖTELEZŐ ownership / ownerships / partner / nagy nyilvántartás listához — ne http_api_get-tel oldalanként. ' +
-      'Opcionális: pageParam (alap: page), pageSizeParam (alap: pageSize), pageSize (alap: 100), maxPages (alap: 50), arrayPath (ha a tömb nestelt), startPage. ' +
+      'Opcionális: pageSize és maxPages biztonsági limit. A pageParam/pageSizeParam/arrayPath/startPage csak régi, OpenAPI nélküli page-alapú connector explicit kompatibilitási beállítása; a rendszer nem talál ki globális paraméterneveket. ' +
       'Nagy válasz archívumba kerül — tulajdoni_lap_egyeztetes-hez add át közvetlenül a tool-outputs/…http_api_get_all… path-ot nyilvantartasPath-ként (extract csak ha más a mezőalak).',
     argsSchema: z.object({
       connectorId: z.string().uuid().optional(),

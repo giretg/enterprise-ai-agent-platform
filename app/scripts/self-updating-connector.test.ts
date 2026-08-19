@@ -196,6 +196,32 @@ async function run() {
     assert.equal(diff.highestRisk, 'none')
   })
 
+  await test('új endpoint-lapozási szerződés capability-diffként látszik', () => {
+    const before: ConnectorConfig = {
+      ...V1,
+      proposedTools: [{
+        name: 'listOrders', method: 'GET', path: '/orders', access: 'read',
+        parameters: [
+          { name: 'cursor', in: 'query', required: false, type: 'string' },
+          { name: 'limit', in: 'query', required: false, type: 'integer' },
+        ],
+      }],
+    }
+    const after: ConnectorConfig = {
+      ...before,
+      capabilitySchemaVersion: 2,
+      proposedTools: [{
+        ...before.proposedTools[0],
+        pagination: {
+          kind: 'cursor', cursorParam: 'cursor', limitParam: 'limit',
+          itemsPath: 'data', nextCursorPath: 'meta.nextCursor',
+        },
+      }],
+    }
+    const diff = computeCapabilityDiff(before, after, noUsage)
+    assert.ok(diff.added.some((item) => item.change === 'pagination_declared'))
+  })
+
   await test('API cél-host változása magas kockázatú auth-változás, sosem auto-approve', () => {
     const moved: ConnectorConfig = { ...V1, baseUrl: 'https://other.example/v1', egressHosts: ['other.example'] }
     const diff = computeCapabilityDiff(V1, moved)

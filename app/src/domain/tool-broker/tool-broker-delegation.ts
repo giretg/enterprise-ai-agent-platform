@@ -219,6 +219,7 @@ export async function executeHttpApiTool(self: ToolBrokerService,
       return client.request({
         method: 'GET',
         path: input.args.path,
+        continuationOf: input.args.continuationOf,
         query: input.args.query,
         headers: input.args.headers,
         context,
