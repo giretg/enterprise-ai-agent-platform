@@ -404,6 +404,56 @@ async function run() {
     )
   })
 
+  await test('Ostoros AutoRefresh snapshot a kapcsolat nevétől függetlenül platformból injektálja a trace-fejléceket', async () => {
+    const autoRefreshSnapshot: ConnectorConfig = {
+      ...V1,
+      provider: 'ujonnan-felvett-crm-kapcsolat',
+      baseUrl: 'https://ostorosbor-crm--enterprise-ai-demo.europe-west4.hosted.app/api/connector/v1',
+      egressHosts: ['ostorosbor-crm--enterprise-ai-demo.europe-west4.hosted.app'],
+      proposedTools: [{
+        ...V1.proposedTools[0],
+        parameters: [
+          { name: 'X-Agent-Id', in: 'header', required: true, type: 'string' },
+          { name: 'X-Acting-User', in: 'header', required: true, type: 'string' },
+          { name: 'X-Connector-Call-Id', in: 'header', required: true, type: 'string' },
+        ],
+      }],
+    }
+    const pinned = pinnedRuntimeConfig('self_updating', {}, autoRefreshSnapshot) as Record<string, unknown>
+    assert.deepEqual(pinned.requestHeaders, {
+      'X-Agent-Id': '{{agent.id}}',
+      'X-Acting-User': '{{actingUser.email}}',
+      'X-Connector-Call-Id': '{{call.id}}',
+    })
+    const calls: RequestInit[] = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (_input, init) => {
+      calls.push(init ?? {})
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    try {
+      const client = new HttpApiClient(parseHttpApiConfig(pinned), { defaultApiKey: 'test-key' })
+      await client.request({
+        method: 'POST',
+        path: '/orders',
+        context: {
+          agent: { id: 'agent-1' },
+          connector: { id: 'connector-1', name: 'Új CRM kapcsolat' },
+          actingUser: { id: 'user-1', email: 'user@example.com', tenantId: 'tenant-1' },
+          tenant: { id: 'tenant-1' },
+          call: { id: 'call-1', idempotencyKey: 'idem-1' },
+          now: { iso: '2026-08-19T08:00:00.000Z' },
+        },
+      })
+      const headers = calls[0].headers as Record<string, string>
+      assert.equal(headers['X-Agent-Id'], 'agent-1')
+      assert.equal(headers['X-Acting-User'], 'user@example.com')
+      assert.equal(headers['X-Connector-Call-Id'], 'call-1')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   await test('fixed connector runtime configja változatlan marad', () => {
     const fixed = { baseUrl: 'https://fixed.example', untouched: true }
     assert.equal(pinnedRuntimeConfig('fixed', fixed, null), fixed)

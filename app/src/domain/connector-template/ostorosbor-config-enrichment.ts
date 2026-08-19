@@ -8,6 +8,7 @@ export const OSTOROSBOR_TEMPLATE_KEYS = new Set([
 
 /** Ostoros connector API path — report query/export POST-ok itt olvasók. */
 const OSTOROSBOR_CONNECTOR_API_SUFFIX = /\/api\/connector\/v1\/?$/i
+const OSTOROSBOR_TRUSTED_CRM_HOST = 'ostorosbor-crm--enterprise-ai-demo.europe-west4.hosted.app'
 
 /**
  * Olvasó POST riportvégpontok — a következmény-kapu `risk: read` alapján
@@ -42,6 +43,16 @@ export function ostorosborTemplateKey(config: ConnectorConfig): string | null {
 function isOstorosborConnectorApi(config: ConnectorConfig): boolean {
   if (ostorosborTemplateKey(config)) return true
   return OSTOROSBOR_CONNECTOR_API_SUFFIX.test(config.baseUrl)
+}
+
+/**
+ * Trace-fejlécet csak a platform által ismert Ostoros CRM hostnak adunk automatikusan.
+ * A self-updating kapcsolat neve és OpenAPI-ja admin által megadható, ezért ezek nem
+ * elegendőek ahhoz, hogy az acting-user e-mail külső API-hoz kerülhessen.
+ */
+function isTrustedOstorosborCrm(config: ConnectorConfig): boolean {
+  if (ostorosborTemplateKey(config)) return true
+  return new URL(config.baseUrl).hostname === OSTOROSBOR_TRUSTED_CRM_HOST
 }
 
 function toolKey(tool: Pick<ProposedTool, 'method' | 'path'>): string {
@@ -93,18 +104,31 @@ export function enrichOstorosborReadPostReports(config: ConnectorConfig): {
  * Régi (DB-ben elavult) Ostorosbor configok kiegészítése:
  * kötelező trace fejlécek + olvasó report POST `risk` jelölés.
  */
+export function enrichOstorosborTraceHeaders(config: ConnectorConfig): {
+  config: ConnectorConfig
+  changed: boolean
+} {
+  if (!isTrustedOstorosborCrm(config) || (config.requestHeaders && Object.keys(config.requestHeaders).length > 0)) {
+    return { config, changed: false }
+  }
+
+  return {
+    config: { ...config, requestHeaders: { ...OSTOROSBOR_CRM_REQUEST_HEADERS } },
+    changed: true,
+  }
+}
+
 export function enrichOstorosborConnectorConfig(config: ConnectorConfig): {
   config: ConnectorConfig
   changed: boolean
 } {
   let changed = false
-  let next = { ...config }
+  let next = config
 
-  if (ostorosborTemplateKey(config)) {
-    if (!next.requestHeaders || Object.keys(next.requestHeaders).length === 0) {
-      next = { ...next, requestHeaders: { ...OSTOROSBOR_CRM_REQUEST_HEADERS } }
-      changed = true
-    }
+  const traceHeaders = enrichOstorosborTraceHeaders(next)
+  if (traceHeaders.changed) {
+    next = traceHeaders.config
+    changed = true
   }
 
   const reports = enrichOstorosborReadPostReports(next)
