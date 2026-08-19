@@ -334,6 +334,7 @@ export class ToolBrokerService {
         input,
         actingTenantId,
         authorization.connector?.tenantId ?? null,
+        actingUserId,
       )
       assertToolInputWithinLimits(executionInput.tool, executionInput.args, contract)
 
@@ -433,13 +434,19 @@ export class ToolBrokerService {
       // (séma / bemeneti méret / munkamennyiség).
       const contractViolation = e instanceof ToolContractError ? e.code : null
       const unknownSurrogate = e instanceof UnknownSurrogateError
+      const privacyDecision =
+        unknownSurrogate && e.reason === 'denied'
+          ? 'privacy.resolve.denied'
+          : unknownSurrogate
+            ? 'privacy.surrogate.unknown'
+            : null
       await recordCall(this, {
         input,
         ticketId,
         connectorId: authorization.connector?.id ?? null,
         status: 'error',
         latencyMs,
-        policyDecision: contractViolation ?? (unknownSurrogate ? 'privacy.surrogate.unknown' : 'error'),
+        policyDecision: contractViolation ?? privacyDecision ?? 'error',
         resultMeta: {
           error: message,
           outcome: 'failed',
@@ -461,6 +468,7 @@ export class ToolBrokerService {
     input: ToolBrokerInvokeInput,
     actingTenantId: string | null,
     connectorTenantId: string | null,
+    actingUserId: string | null,
   ): Promise<ToolBrokerInvokeInput> {
     if (!this.structuredPrivacyEngine) return input
     const tenantId = actingTenantId ?? connectorTenantId
@@ -474,6 +482,7 @@ export class ToolBrokerService {
       engine: this.structuredPrivacyEngine,
       tenantId,
       scope,
+      requesterUserId: actingUserId,
     })
     if (!resolved.ok) throw new UnknownSurrogateError(resolved.surrogate, resolved.reason)
     if (resolved.resolvedCount === 0) return input

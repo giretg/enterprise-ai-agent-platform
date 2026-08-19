@@ -94,11 +94,16 @@ const RAW_GET = {
   },
 }
 
-type AuditEvent = Parameters<PrivacyAuditSink['recordUnknownSurrogate']>[0]
+type AuditEvent =
+  | Parameters<PrivacyAuditSink['recordUnknownSurrogate']>[0]
+  | Parameters<PrivacyAuditSink['recordResolveDenied']>[0]
 
 class RecordingAudit implements PrivacyAuditSink {
   readonly events: AuditEvent[] = []
-  async recordUnknownSurrogate(event: AuditEvent): Promise<void> {
+  async recordUnknownSurrogate(event: Parameters<PrivacyAuditSink['recordUnknownSurrogate']>[0]): Promise<void> {
+    this.events.push(event)
+  }
+  async recordResolveDenied(event: Parameters<PrivacyAuditSink['recordResolveDenied']>[0]): Promise<void> {
     this.events.push(event)
   }
 }
@@ -158,6 +163,16 @@ class InMemorySurrogateVault implements SurrogateVault {
           row.surrogate === surrogate,
       ),
     )
+  }
+
+  async findHitsBySurrogateInTenant(tenantId: string, surrogate: string): Promise<RefVaultRecord[]> {
+    const hits: RefVaultRecord[] = []
+    for (const row of this.rows) {
+      if (row.tenantId !== tenantId || row.surrogate !== surrogate) continue
+      const result = this.lookup(row)
+      if (result.status === 'hit') hits.push(result.record)
+    }
+    return hits
   }
 
   async maxOrdinal(tenantId: string, scope: PrivacyScope, entityType: string): Promise<number> {

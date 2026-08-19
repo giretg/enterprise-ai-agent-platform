@@ -67,6 +67,7 @@ export function createWebUiStreamingResolver(params: {
   engine: SurrogateEngine | null | undefined
   tenantId: string | null | undefined
   conversationId: string
+  requesterUserId?: string | null
   emit: (text: string) => void | Promise<void>
 }): StreamingSurrogateResolver {
   const lookup: SurrogateDisplayLookup =
@@ -75,6 +76,7 @@ export function createWebUiStreamingResolver(params: {
           engine: params.engine,
           tenantId: params.tenantId,
           scope: { type: 'conversation', id: params.conversationId } satisfies PrivacyScope,
+          requesterUserId: params.requesterUserId,
         })
       : async () => null
   return new StreamingSurrogateResolver(lookup, params.emit)

@@ -52,15 +52,15 @@ export function createWebUiDisplayLookup(params: {
   engine: SurrogateEngine
   tenantId: string
   scope: PrivacyScope
+  requesterUserId?: string | null
 }): SurrogateDisplayLookup {
   return async (surrogate) => {
     if (!parseSurrogate(surrogate)) return null
-    const cached = params.engine.peekDisplayValue(params.tenantId, params.scope, surrogate)
-    if (cached) return cached
     const peeked = await params.engine.peekRef({
       tenantId: params.tenantId,
       scope: params.scope,
       surrogate,
+      requester: { tenantId: params.tenantId, userId: params.requesterUserId ?? null },
     })
     if (!peeked.ok) return null
     return params.engine.peekDisplayValue(params.tenantId, params.scope, surrogate) ?? null

@@ -785,7 +785,11 @@ const toolBrokerService = new ToolBrokerService(
       { agentId, url, sourceType },
     ),
 )
-const surrogateEngine = createPlatformSurrogateEngine(repositories.audit)
+const surrogateEngine = createPlatformSurrogateEngine(
+  repositories.audit,
+  repositories.conversations,
+  repositories.tickets,
+)
 toolBrokerService.setStructuredPrivacyEngine(surrogateEngine)
 const consequenceApprovalService = new ConsequenceApprovalService(
   repositories.consequenceApprovals,

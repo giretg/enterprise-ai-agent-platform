@@ -1332,6 +1332,7 @@ export class AgentChatRuntime {
       engine: this.surrogateEngine,
       tenantId: params.tenantId ?? null,
       conversationId,
+      requesterUserId: params.createdById,
       emit: async (text) => {
         emit({ type: 'token', chunk: text })
         await this.persistTurnProgress(turn, snapshot.pushToken(text))
@@ -1646,6 +1647,7 @@ export class AgentChatRuntime {
               engine: this.surrogateEngine,
               tenantId: params.tenantId ?? null,
               conversationId,
+              requesterUserId: params.createdById,
               emit: (chunk) => {
                 out += chunk
               },
@@ -2228,6 +2230,7 @@ export class AgentChatRuntime {
     conversationId: string,
     tenantId?: string | null,
     agentId?: string,
+    requesterUserId?: string | null,
   ): Promise<ChatMessageView[]> {
     const { conversation, messages } = await this.conversations.getConversation(
       conversationId,
@@ -2265,7 +2268,7 @@ export class AgentChatRuntime {
       views.push({
         id: message.id,
         role: message.role as ChatMessageView['role'],
-        text: await this.resolveWebUiText(parsed.text, conversationId, tenantId),
+        text: await this.resolveWebUiText(parsed.text, conversationId, tenantId, requesterUserId),
         attachments,
         createdAt: message.createdAt,
       })
@@ -2278,6 +2281,7 @@ export class AgentChatRuntime {
     text: string,
     conversationId: string,
     tenantId?: string | null,
+    requesterUserId?: string | null,
   ): Promise<string> {
     if (!this.surrogateEngine || !tenantId || !text) return text
     return resolveDisplayText(
@@ -2286,6 +2290,7 @@ export class AgentChatRuntime {
         engine: this.surrogateEngine,
         tenantId,
         scope: { type: 'conversation', id: conversationId },
+        requesterUserId,
       }),
     )
   }

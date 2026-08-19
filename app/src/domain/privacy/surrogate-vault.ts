@@ -65,6 +65,11 @@ export class SurrogateTakenError extends Error {
 export interface SurrogateVault {
   findByEntity(tenantId: string, scope: PrivacyScope, entity: RefEntityRef): Promise<VaultLookup>
   findBySurrogate(tenantId: string, scope: PrivacyScope, surrogate: string): Promise<VaultLookup>
+  /**
+   * Tenant-szintű, scope nélküli keresés — csak a cross-conversation deny
+   * megkülönböztetésére (APG-08). A publikus feloldás továbbra is scope-kötött.
+   */
+  findHitsBySurrogateInTenant(tenantId: string, surrogate: string): Promise<RefVaultRecord[]>
   /** A típus eddig kiosztott legnagyobb sorszáma; üres scope-on 0. */
   maxOrdinal(tenantId: string, scope: PrivacyScope, entityType: string): Promise<number>
   /** HMAC-et a vault képzi. Entitás-ütközésnél a meglévő sort adja vissza. */
@@ -220,6 +225,22 @@ export class PostgresSurrogateVault implements SurrogateVault {
     const record = row ? toRecord(row) : null
     if (!record) return { status: 'miss' }
     return authenticate(record, this.resolveTenantKey(tenantId))
+  }
+
+  async findHitsBySurrogateInTenant(tenantId: string, surrogate: string): Promise<RefVaultRecord[]> {
+    const rows = await prisma.surrogateMap.findMany({
+      where: { tenantId, surrogate },
+      select: REF_SELECT,
+    })
+    const hits: RefVaultRecord[] = []
+    const tenantKey = this.resolveTenantKey(tenantId)
+    for (const row of rows) {
+      const record = toRecord(row)
+      if (!record) continue
+      const verified = authenticate(record, tenantKey)
+      if (verified.status === 'hit') hits.push(verified.record)
+    }
+    return hits
   }
 
   async maxOrdinal(tenantId: string, scope: PrivacyScope, entityType: string): Promise<number> {

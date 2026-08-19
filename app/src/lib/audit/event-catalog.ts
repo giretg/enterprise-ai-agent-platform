@@ -174,6 +174,11 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'tool.authorize_denied_orchestrator',
   'tool.call',
   'tool.call.denied',
+
+  // AI Privacy Gateway (APG-08 §10.5; APG-02 unknown-álnév). A payload soha
+  // nem tartalmazza a nyers entitásértéket — csak álnév, scope, ok.
+  'privacy.resolve.denied',
+  'privacy.surrogate.unknown',
   'consequence.approval.pending',
   'consequence.approval.approved',
   'consequence.approval.rejected',

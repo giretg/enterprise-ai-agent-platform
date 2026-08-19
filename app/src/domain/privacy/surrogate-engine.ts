@@ -1,10 +1,19 @@
 /**
- * Surrogate Engine: allokálás és feloldás (APG-02, spec §5).
+ * Surrogate Engine: allokálás és feloldás (APG-02, spec §5; APG-08 §10.5).
  *
  * `(tenantId, scope, entityRef) → surrogate` bijektív a scope-on belül.
  * A sorszámozás entitástípusonként 1-től nő. A feloldás kizárólag vault-találaton
  * múlik — a kitalált álnév `privacy.surrogate.unknown` auditot kap, és nem oldódik fel.
+ *
+ * A vault-lookup nem globálisan címezhető: feloldás csak azonos tenant + azonos
+ * scope + jogosult résztvevő mellett. Bukás → `privacy.resolve.denied`, nem néma üres.
  */
+import {
+  allowAllPrivacyResolveAccess,
+  type PrivacyResolveAccess,
+  type PrivacyResolveRequester,
+  type ResolveDenyReason,
+} from '@/domain/privacy/resolve-access'
 import { formatSurrogate, parseSurrogate } from '@/domain/privacy/surrogate-format'
 import {
   SurrogateTakenError,
@@ -22,6 +31,14 @@ export type PrivacyAuditSink = {
     surrogate: string
     reason: 'unknown' | 'hmac_invalid'
   }): Promise<void>
+  recordResolveDenied(event: {
+    action: 'privacy.resolve.denied'
+    tenantId: string
+    scope: PrivacyScope
+    surrogate: string
+    reason: ResolveDenyReason
+    requesterUserId?: string | null
+  }): Promise<void>
 }
 
 export type AllocateRefInput = {
@@ -35,11 +52,13 @@ export type ResolveRefInput = {
   tenantId: string
   scope: PrivacyScope
   surrogate: string
+  requester: PrivacyResolveRequester
 }
 
 export type ResolveRefResult =
   | { ok: true; record: RefVaultRecord }
   | { ok: false; reason: 'unknown' | 'hmac_invalid' }
+  | { ok: false; reason: 'denied'; denyReason: ResolveDenyReason }
 
 const MAX_ALLOC_ATTEMPTS = 16
 
@@ -49,6 +68,7 @@ export class SurrogateEngine {
   constructor(
     private readonly vault: SurrogateVault,
     private readonly audit: PrivacyAuditSink,
+    private readonly access: PrivacyResolveAccess = allowAllPrivacyResolveAccess,
   ) {}
 
   rememberDisplayValue(
@@ -65,13 +85,9 @@ export class SurrogateEngine {
     return this.displayValues.get(displayKey(tenantId, scope, surrogate))
   }
 
-  /** Vault-lookup audit nélkül — megjelenítési feloldás, ismételt history-olvasáskor. */
+  /** Vault-lookup unknown-audit nélkül — megjelenítési feloldás, ismételt history-olvasáskor. */
   async peekRef(input: ResolveRefInput): Promise<ResolveRefResult> {
-    const parsed = parseSurrogate(input.surrogate)
-    if (!parsed) return { ok: false, reason: 'unknown' }
-    const lookup = await this.vault.findBySurrogate(input.tenantId, input.scope, input.surrogate)
-    if (lookup.status === 'hit') return { ok: true, record: lookup.record }
-    return { ok: false, reason: lookup.status === 'tampered' ? 'hmac_invalid' : 'unknown' }
+    return this.lookupRef(input, { auditUnknown: false })
   }
 
   async allocateRef(input: AllocateRefInput): Promise<string> {
@@ -125,21 +141,75 @@ export class SurrogateEngine {
   }
 
   async resolveRef(input: ResolveRefInput): Promise<ResolveRefResult> {
+    return this.lookupRef(input, { auditUnknown: true })
+  }
+
+  private async lookupRef(
+    input: ResolveRefInput,
+    opts: { auditUnknown: boolean },
+  ): Promise<ResolveRefResult> {
     const parsed = parseSurrogate(input.surrogate)
     if (!parsed) return { ok: false, reason: 'unknown' }
+
+    const denied = await this.denyIfOutOfScope(input)
+    if (denied) return denied
 
     const lookup = await this.vault.findBySurrogate(input.tenantId, input.scope, input.surrogate)
     if (lookup.status === 'hit') return { ok: true, record: lookup.record }
 
+    const crossScope = await this.denyIfSurrogateLivesInOtherScope(input)
+    if (crossScope) return crossScope
+
     const reason = lookup.status === 'tampered' ? 'hmac_invalid' : 'unknown'
-    await this.audit.recordUnknownSurrogate({
-      action: 'privacy.surrogate.unknown',
-      tenantId: input.tenantId,
+    if (opts.auditUnknown) {
+      await this.audit.recordUnknownSurrogate({
+        action: 'privacy.surrogate.unknown',
+        tenantId: input.tenantId,
+        scope: input.scope,
+        surrogate: input.surrogate,
+        reason,
+      })
+    }
+    return { ok: false, reason }
+  }
+
+  private async denyIfOutOfScope(input: ResolveRefInput): Promise<Extract<ResolveRefResult, { reason: 'denied' }> | null> {
+    if (input.requester.tenantId !== input.tenantId) {
+      return this.deny(input, 'tenant')
+    }
+    const access = await this.access.authorize({
+      requester: input.requester,
+      claimedTenantId: input.tenantId,
+      scope: input.scope,
+    })
+    if (!access.allowed) return this.deny(input, access.reason)
+    return null
+  }
+
+  private async denyIfSurrogateLivesInOtherScope(
+    input: ResolveRefInput,
+  ): Promise<Extract<ResolveRefResult, { reason: 'denied' }> | null> {
+    const hits = await this.vault.findHitsBySurrogateInTenant(input.tenantId, input.surrogate)
+    const elsewhere = hits.some(
+      (record) => record.scopeType !== input.scope.type || record.scopeId !== input.scope.id,
+    )
+    if (!elsewhere) return null
+    return this.deny(input, 'scope')
+  }
+
+  private async deny(
+    input: ResolveRefInput,
+    reason: ResolveDenyReason,
+  ): Promise<Extract<ResolveRefResult, { reason: 'denied' }>> {
+    await this.audit.recordResolveDenied({
+      action: 'privacy.resolve.denied',
+      tenantId: input.requester.tenantId,
       scope: input.scope,
       surrogate: input.surrogate,
       reason,
+      requesterUserId: input.requester.userId ?? null,
     })
-    return { ok: false, reason }
+    return { ok: false, reason: 'denied', denyReason: reason }
   }
 
   private rememberAllocatedDisplay(input: AllocateRefInput, surrogate: string): void {

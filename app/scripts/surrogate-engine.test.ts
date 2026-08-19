@@ -54,11 +54,16 @@ const HMAC_FIXTURE_KEY = 'test-tenant-hmac-key'
 /** Előre számolt HMAC-SHA256(hex) a fenti kanonikus payloadra — független a produkciós kódtól. */
 const HMAC_FIXTURE_DIGEST = 'bf2e5d5521d8b6c3dfab1b8a294739aa3ada78c35db3549487c2c79fabf29c74'
 
-type AuditEvent = Parameters<PrivacyAuditSink['recordUnknownSurrogate']>[0]
+type AuditEvent =
+  | Parameters<PrivacyAuditSink['recordUnknownSurrogate']>[0]
+  | Parameters<PrivacyAuditSink['recordResolveDenied']>[0]
 
 class RecordingAudit implements PrivacyAuditSink {
   readonly events: AuditEvent[] = []
-  async recordUnknownSurrogate(event: AuditEvent): Promise<void> {
+  async recordUnknownSurrogate(event: Parameters<PrivacyAuditSink['recordUnknownSurrogate']>[0]): Promise<void> {
+    this.events.push(event)
+  }
+  async recordResolveDenied(event: Parameters<PrivacyAuditSink['recordResolveDenied']>[0]): Promise<void> {
     this.events.push(event)
   }
 }
@@ -118,6 +123,16 @@ class InMemorySurrogateVault implements SurrogateVault {
           row.surrogate === surrogate,
       ),
     )
+  }
+
+  async findHitsBySurrogateInTenant(tenantId: string, surrogate: string): Promise<RefVaultRecord[]> {
+    const hits: RefVaultRecord[] = []
+    for (const row of this.rows) {
+      if (row.tenantId !== tenantId || row.surrogate !== surrogate) continue
+      const result = this.lookup(row)
+      if (result.status === 'hit') hits.push(result.record)
+    }
+    return hits
   }
 
   async maxOrdinal(tenantId: string, scope: PrivacyScope, entityType: string): Promise<number> {
@@ -183,7 +198,8 @@ function setup() {
   const engine = new SurrogateEngine(vault, audit)
   const tenantId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
   const scope: PrivacyScope = { type: 'conversation', id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' }
-  return { vault, audit, engine, tenantId, scope }
+  const requester = { tenantId, userId: 'ffffffff-ffff-ffff-ffff-ffffffffffff' }
+  return { vault, audit, engine, tenantId, scope, requester }
 }
 
 function company(sourceId: string): RefEntityRef {
@@ -252,13 +268,13 @@ async function main() {
   })
 
   await check('bijektivitás: ugyanaz az entitás ugyanazt az álnevet kapja, feloldása az eredeti ref', async () => {
-    const { engine, tenantId, scope } = setup()
+    const { engine, tenantId, scope, requester } = setup()
     const entity = company('crm/company/4821')
     const first = await engine.allocateRef({ tenantId, scope, ...entity })
     const second = await engine.allocateRef({ tenantId, scope, ...entity })
     assert.equal(first, '[[COMPANY_1]]')
     assert.equal(second, '[[COMPANY_1]]')
-    const resolved = await engine.resolveRef({ tenantId, scope, surrogate: first })
+    const resolved = await engine.resolveRef({ tenantId, scope, surrogate: first, requester })
     assert.equal(resolved.ok, true)
     if (!resolved.ok) return
     assert.equal(resolved.record.connectorId, entity.connectorId)
@@ -267,37 +283,43 @@ async function main() {
   })
 
   await check('bijektivitás: két entitás a scope-on belül két álnevet kap', async () => {
-    const { engine, tenantId, scope } = setup()
+    const { engine, tenantId, scope, requester } = setup()
     const a = await engine.allocateRef({ tenantId, scope, ...company('crm/company/1') })
     const b = await engine.allocateRef({ tenantId, scope, ...company('crm/company/2') })
     assert.notEqual(a, b)
-    const resolvedA = await engine.resolveRef({ tenantId, scope, surrogate: a })
-    const resolvedB = await engine.resolveRef({ tenantId, scope, surrogate: b })
+    const resolvedA = await engine.resolveRef({ tenantId, scope, surrogate: a, requester })
+    const resolvedB = await engine.resolveRef({ tenantId, scope, surrogate: b, requester })
     assert.equal(resolvedA.ok && resolvedA.record.sourceId, 'crm/company/1')
     assert.equal(resolvedB.ok && resolvedB.record.sourceId, 'crm/company/2')
   })
 
   await check('scope: ugyanaz az entitás másik beszélgetésben új sorszámozást kap, és ott oldható fel', async () => {
-    const { engine, tenantId, scope } = setup()
+    const { engine, tenantId, scope, requester } = setup()
     const entity = company('crm/company/4821')
     const otherScope: PrivacyScope = { type: 'conversation', id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee' }
     await engine.allocateRef({ tenantId, scope, ...entity })
     const other = await engine.allocateRef({ tenantId, scope: otherScope, ...entity })
     assert.equal(other, '[[COMPANY_1]]')
-    const leaked = await engine.resolveRef({ tenantId, scope: otherScope, surrogate: '[[COMPANY_1]]' })
+    const leaked = await engine.resolveRef({
+      tenantId,
+      scope: otherScope,
+      surrogate: '[[COMPANY_1]]',
+      requester,
+    })
     assert.equal(leaked.ok && leaked.record.sourceId, 'crm/company/4821')
     const cross = await engine.resolveRef({
       tenantId,
       scope: otherScope,
       surrogate: '[[COMPANY_2]]',
+      requester,
     })
     assert.equal(cross.ok, false)
   })
 
   await check('kitalált álnév: [[COMPANY_99]] nem oldható fel, privacy.surrogate.unknown audit', async () => {
-    const { engine, audit, tenantId, scope } = setup()
+    const { engine, audit, tenantId, scope, requester } = setup()
     await engine.allocateRef({ tenantId, scope, ...company('crm/company/1') })
-    const result = await engine.resolveRef({ tenantId, scope, surrogate: '[[COMPANY_99]]' })
+    const result = await engine.resolveRef({ tenantId, scope, surrogate: '[[COMPANY_99]]', requester })
     assert.equal(result.ok, false)
     if (result.ok) return
     assert.equal(result.reason, 'unknown')
@@ -309,12 +331,12 @@ async function main() {
   })
 
   await check('HMAC-ellenőrzés: meghamisított vault-sor nem oldható fel, audit hmac_invalid', async () => {
-    const { engine, vault, audit, tenantId, scope } = setup()
+    const { engine, vault, audit, tenantId, scope, requester } = setup()
     const surrogate = await engine.allocateRef({ tenantId, scope, ...company('crm/company/4821') })
     const row = vault.rows.find((r) => r.surrogate === surrogate)
     assert.ok(row)
     row.hmac = '0'.repeat(64)
-    const result = await engine.resolveRef({ tenantId, scope, surrogate })
+    const result = await engine.resolveRef({ tenantId, scope, surrogate, requester })
     assert.equal(result.ok, false)
     if (result.ok) return
     assert.equal(result.reason, 'hmac_invalid')
@@ -333,7 +355,7 @@ async function main() {
   })
 
   await check('megjelenítési érték: allokációkor megjegyzett név peek-elhető, vault nélkül', async () => {
-    const { engine, tenantId, scope } = setup()
+    const { engine, tenantId, scope, requester } = setup()
     const surrogate = await engine.allocateRef({
       tenantId,
       scope,
@@ -342,7 +364,7 @@ async function main() {
     })
     assert.equal(surrogate, '[[COMPANY_1]]')
     assert.equal(engine.peekDisplayValue(tenantId, scope, surrogate), 'SPAR')
-    const peeked = await engine.peekRef({ tenantId, scope, surrogate })
+    const peeked = await engine.peekRef({ tenantId, scope, surrogate, requester })
     assert.equal(peeked.ok, true)
   })
 

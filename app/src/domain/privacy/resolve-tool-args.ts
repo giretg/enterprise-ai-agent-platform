@@ -15,11 +15,13 @@ import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
 
 export class UnknownSurrogateError extends Error {
   readonly surrogate: string
-  readonly reason: 'unknown' | 'hmac_invalid'
+  readonly reason: 'unknown' | 'hmac_invalid' | 'denied'
 
-  constructor(surrogate: string, reason: 'unknown' | 'hmac_invalid' = 'unknown') {
+  constructor(surrogate: string, reason: 'unknown' | 'hmac_invalid' | 'denied' = 'unknown') {
     super(
-      `Ismeretlen álnév: ${surrogate}. Csak a tool-válaszban kapott álnevet használd; kitalált álnév nem oldható fel.`,
+      reason === 'denied'
+        ? `Az álnév ebben a beszélgetésben nem oldható fel: ${surrogate}.`
+        : `Ismeretlen álnév: ${surrogate}. Csak a tool-válaszban kapott álnevet használd; kitalált álnév nem oldható fel.`,
     )
     this.name = 'UnknownSurrogateError'
     this.surrogate = surrogate
@@ -32,11 +34,12 @@ export type ResolveToolArgsInput = {
   engine: SurrogateEngine
   tenantId: string
   scope: PrivacyScope
+  requesterUserId?: string | null
 }
 
 export type ResolveToolArgsResult =
   | { ok: true; args: unknown; resolvedCount: number }
-  | { ok: false; surrogate: string; reason: 'unknown' | 'hmac_invalid' }
+  | { ok: false; surrogate: string; reason: 'unknown' | 'hmac_invalid' | 'denied' }
 
 export async function resolveToolArgs(input: ResolveToolArgsInput): Promise<ResolveToolArgsResult> {
   let copy: unknown
@@ -111,6 +114,7 @@ async function replaceIfSurrogate(
     tenantId: ctx.tenantId,
     scope: ctx.scope,
     surrogate: value,
+    requester: { tenantId: ctx.tenantId, userId: ctx.requesterUserId ?? null },
   })
   if (!resolved.ok) return { ok: false, surrogate: value, reason: resolved.reason }
   return { ok: true, changed: true, value: resolved.record.sourceId }
