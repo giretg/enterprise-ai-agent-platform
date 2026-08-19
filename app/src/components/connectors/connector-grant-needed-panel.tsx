@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { startConnectorOAuth } from '@/app/actions/connector-grants'
 import { delegatedConnectorLabel } from '@/domain/connector-grant/delegated-oauth-registry'
 import { isScopeNotGrantedReason } from '@/domain/connector-grant/connector-grant-needed'
@@ -27,13 +27,21 @@ export function ConnectorGrantNeededPanel({
   cards,
   returnTo,
   onBusy,
+  onBeforeRedirect,
 }: {
   cards: ConnectorGrantNeededView[]
-  returnTo?: { kind: 'conversation' | 'ticket'; id: string; agentId?: string }
+  returnTo?: { kind: 'conversation' | 'ticket'; id: string; agentId?: string; originPath?: string }
   onBusy?: (busy: boolean) => void
+  /** OAuth full-page redirect előtt (tálca + session persist). */
+  onBeforeRedirect?: () => void
 }) {
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const err = new URLSearchParams(window.location.search).get('error')
+    if (err) setError(err)
+  }, [])
 
   if (cards.length === 0) return null
 
@@ -42,16 +50,26 @@ export function ConnectorGrantNeededPanel({
     setPendingId(card.connectorId)
     onBusy?.(true)
     try {
+      const originPath =
+        typeof window !== 'undefined' ? window.location.pathname : undefined
       const res = await startConnectorOAuth({
         connectorId: card.connectorId,
         toolName: card.toolName,
-        ...(returnTo ? { returnTo } : {}),
+        ...(returnTo
+          ? {
+              returnTo: {
+                ...returnTo,
+                ...(originPath ? { originPath } : {}),
+              },
+            }
+          : {}),
       })
       if (!res.success) {
         setError(res.error)
         return
       }
       if ('url' in res.data && typeof res.data.url === 'string') {
+        onBeforeRedirect?.()
         // A stub-ág is URL-t ad vissza (a visszatérési útvonalat), tehát mindkét
         // esetben navigálunk — `assign`, nem `location.href` írása.
         window.location.assign(res.data.url)

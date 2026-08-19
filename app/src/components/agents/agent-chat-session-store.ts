@@ -23,6 +23,7 @@ export type AgentChatSession = {
 let sessions: AgentChatSession[] = []
 const EMPTY_SERVER_SNAPSHOT: AgentChatSession[] = []
 const listeners = new Set<() => void>()
+const OAUTH_RETURN_STORAGE_KEY = 'eai.agent-chat.oauth-return'
 
 function emit() {
   for (const listener of listeners) listener()
@@ -111,4 +112,54 @@ export function clearAgentChatSessions() {
   if (sessions.length === 0) return
   sessions = []
   emit()
+}
+
+/**
+ * Google OAuth teljes oldaltöltés — a memóriabeli tálca elvész. A sessiont
+ * sessionStorage-ba tesszük, hogy a callback után bármely control-plane
+ * oldalon vissza lehessen venni a chatet.
+ */
+export function persistAgentChatForOAuth(input: {
+  agent: AgentChatSessionAgent
+  canDistillSkill?: boolean
+  initialConversationId?: string | null
+}) {
+  const payload = {
+    agent: input.agent,
+    canDistillSkill: input.canDistillSkill ?? false,
+    initialConversationId: input.initialConversationId ?? null,
+  }
+  try {
+    sessionStorage.setItem(OAUTH_RETURN_STORAGE_KEY, JSON.stringify(payload))
+  } catch {
+    // private mode / quota — a callback URL akkor is visszavisz
+  }
+}
+
+export function consumePendingOAuthAgentChat(): {
+  agent: AgentChatSessionAgent
+  canDistillSkill: boolean
+  initialConversationId: string | null
+} | null {
+  try {
+    const raw = sessionStorage.getItem(OAUTH_RETURN_STORAGE_KEY)
+    if (!raw) return null
+    sessionStorage.removeItem(OAUTH_RETURN_STORAGE_KEY)
+    const parsed = JSON.parse(raw) as {
+      agent?: AgentChatSessionAgent
+      canDistillSkill?: boolean
+      initialConversationId?: string | null
+    }
+    if (!parsed.agent || typeof parsed.agent.id !== 'string' || typeof parsed.agent.name !== 'string') {
+      return null
+    }
+    return {
+      agent: parsed.agent,
+      canDistillSkill: Boolean(parsed.canDistillSkill),
+      initialConversationId:
+        typeof parsed.initialConversationId === 'string' ? parsed.initialConversationId : null,
+    }
+  } catch {
+    return null
+  }
 }

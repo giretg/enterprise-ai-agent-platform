@@ -164,7 +164,7 @@ export async function startConnectorOAuth(input: {
   scopes?: string[]
   /** A grant-hiányon elakadt eszköz — ebből jön a legkisebb szükséges scope. */
   toolName?: string
-  returnTo?: { kind: 'conversation' | 'ticket'; id: string; agentId?: string }
+  returnTo?: { kind: 'conversation' | 'ticket'; id: string; agentId?: string; originPath?: string }
 }) {
   try {
     const ctx = await requireTenantRole('viewer')

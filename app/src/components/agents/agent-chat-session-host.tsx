@@ -1,12 +1,14 @@
 'use client'
 
-import { useState, useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { AgentChatPanel } from '@/components/agents/agent-chat-panel'
 import { AgentChatDockHost } from '@/components/agents/agent-chat-dock'
 import {
   closeAgentChat,
+  consumePendingOAuthAgentChat,
   getAgentChatSessions,
   getAgentChatSessionsServerSnapshot,
+  openAgentChat,
   subscribeAgentChatSessions,
 } from '@/components/agents/agent-chat-session-store'
 
@@ -22,6 +24,20 @@ export function useAgentChatSessions() {
 export function AgentChatSessionHost() {
   const sessions = useAgentChatSessions()
   const [tileTarget, setTileTarget] = useState<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const pending = consumePendingOAuthAgentChat()
+    if (!pending) return
+    const granted =
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('granted') === '1'
+    openAgentChat({
+      agent: pending.agent,
+      canDistillSkill: pending.canDistillSkill,
+      initialConversationId: pending.initialConversationId,
+      ...(granted ? { resumeAfterGrant: true } : {}),
+    })
+  }, [])
 
   return (
     <>

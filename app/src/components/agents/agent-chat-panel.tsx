@@ -37,6 +37,7 @@ import {
 import {
   clearAgentChatResumeAfterGrant,
   openAgentChat,
+  persistAgentChatForOAuth,
 } from '@/components/agents/agent-chat-session-store'
 import { ChatMarkdown, TypingIndicator } from '@/components/chat/chat-markdown'
 import {
@@ -1128,6 +1129,7 @@ function MessageBubble({
   grantReturnTo,
   workspaceBaseUrl,
   workspaceFilePaths,
+  onOauthRedirect,
 }: {
   message: ChatMessage
   isBusy: boolean
@@ -1149,6 +1151,7 @@ function MessageBubble({
   grantReturnTo?: { kind: 'conversation'; id: string; agentId: string }
   workspaceBaseUrl?: string
   workspaceFilePaths: string[]
+  onOauthRedirect?: () => void
 }) {
   const isUser = message.role === 'user'
   const isDeleted = Boolean(message.contentDeletedAt)
@@ -1243,7 +1246,11 @@ function MessageBubble({
               />
             )}
             {!isUser && message.connectorGrants && message.connectorGrants.length > 0 && (
-              <ConnectorGrantNeededPanel cards={message.connectorGrants} returnTo={grantReturnTo} />
+              <ConnectorGrantNeededPanel
+                cards={message.connectorGrants}
+                returnTo={grantReturnTo}
+                onBeforeRedirect={onOauthRedirect}
+              />
             )}
           </>
         )}
@@ -1439,6 +1446,14 @@ export function AgentChatPanel({
   const [mounted, setMounted] = useState(false)
   const [minimized, setMinimized] = useState(false)
   const handleMinimize = useCallback(() => setMinimized(true), [])
+  const handleOauthRedirect = useCallback(() => {
+    persistAgentChatForOAuth({
+      agent,
+      canDistillSkill,
+      initialConversationId: conversationId,
+    })
+    handleMinimize()
+  }, [agent, canDistillSkill, conversationId, handleMinimize])
   const [connectableUserConnectors, setConnectableUserConnectors] = useState<
     AgentDelegatedConnectorRow[]
   >([])
@@ -3263,6 +3278,7 @@ export function AgentChatPanel({
                           ? { kind: 'conversation', id: conversationId, agentId: agent.id }
                           : undefined
                       }
+                      onOauthRedirect={handleOauthRedirect}
                       workspaceBaseUrl={
                         conversationId
                           ? `/api/v1/conversations/${conversationId}/workspace/files`

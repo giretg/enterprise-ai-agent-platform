@@ -194,7 +194,7 @@ check('címkék: kártya és prompt-felsorolás', () => {
   assert.equal(describeConnectorGrantTargets([]), 'a szükséges külső fiók')
 })
 
-check('oauth return path: ticket / conversation / fallback', () => {
+check('oauth return path: ticket / conversation / origin / fallback', () => {
   assert.equal(
     oauthReturnPath({ kind: 'ticket', id: TICKET }),
     `/control-plane/tickets/${TICKET}?granted=1`,
@@ -207,11 +207,32 @@ check('oauth return path: ticket / conversation / fallback', () => {
     oauthReturnPath({ kind: 'conversation', id: CONV }),
     '/control-plane/connectors?connected=1',
   )
+  assert.equal(
+    oauthReturnPath({ kind: 'conversation', id: CONV, agentId: AGENT, originPath: '/control-plane' }),
+    '/control-plane?granted=1',
+  )
+  assert.equal(
+    oauthReturnPath(
+      { kind: 'conversation', id: CONV, agentId: AGENT, originPath: '/control-plane' },
+      { error: 'invalid_client' },
+    ),
+    '/control-plane?error=invalid_client',
+  )
+  assert.equal(
+    oauthReturnPath(
+      { kind: 'conversation', id: CONV, agentId: AGENT, originPath: 'https://evil.example' },
+    ),
+    `/control-plane/agents/${AGENT}?conversation=${CONV}&granted=1`,
+  )
 })
 
 check('returnTo: csak kind + uuid, nincs nyers URL', () => {
   assert.equal(isSafeOAuthReturnTo({ kind: 'ticket', id: TICKET }), true)
   assert.equal(isSafeOAuthReturnTo({ kind: 'conversation', id: CONV, agentId: AGENT }), true)
+  assert.equal(
+    isSafeOAuthReturnTo({ kind: 'conversation', id: CONV, agentId: AGENT, originPath: '/control-plane' }),
+    true,
+  )
   assert.equal(isSafeOAuthReturnTo({ kind: 'conversation', id: 'not-a-uuid' }), false)
   assert.equal(isSafeOAuthReturnTo({ kind: 'conversation', id: CONV, agentId: 'nope' }), false)
   assert.equal(isSafeOAuthReturnTo({ kind: 'evil', id: TICKET }), false)

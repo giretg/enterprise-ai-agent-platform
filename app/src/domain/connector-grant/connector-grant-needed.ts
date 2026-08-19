@@ -36,6 +36,11 @@ export type OAuthReturnTo = {
   kind: 'conversation' | 'ticket'
   id: string
   agentId?: string
+  /**
+   * A chat/ticket oldala, ahonnan az OAuth indult. Csak `/control-plane…`
+   * path — a callback ide hozza vissza a usert (open redirect ellen szűrve).
+   */
+  originPath?: string
 }
 
 export type ConnectorGrantNeededCard = {
@@ -124,16 +129,53 @@ export function describeConnectorGrantTargets(
 
 /**
  * OAuth utáni visszatérési útvonal. A kliens NEM küldhet nyers URL-t —
- * csak kind + uuid, a path itt áll össze (open redirect ellen).
+ * csak kind + uuid (+ opcionális control-plane path), a path itt áll össze.
  */
-export function oauthReturnPath(returnTo: OAuthReturnTo): string {
+export function oauthReturnPath(
+  returnTo: OAuthReturnTo,
+  result?: { error?: string },
+): string {
+  const extra = result?.error
+    ? { error: result.error }
+    : returnTo.kind === 'conversation' || returnTo.kind === 'ticket'
+      ? { granted: '1' }
+      : { connected: '1' }
+
+  const origin = returnTo.originPath && isSafeControlPlanePath(returnTo.originPath)
+    ? returnTo.originPath
+    : null
+  if (origin) return withQuery(origin, extra)
   if (returnTo.kind === 'ticket') {
-    return `/control-plane/tickets/${returnTo.id}?granted=1`
+    return withQuery(`/control-plane/tickets/${returnTo.id}`, extra)
   }
   if (returnTo.agentId) {
-    return `/control-plane/agents/${returnTo.agentId}?conversation=${returnTo.id}&granted=1`
+    return withQuery(`/control-plane/agents/${returnTo.agentId}`, {
+      conversation: returnTo.id,
+      ...extra,
+    })
   }
-  return `/control-plane/connectors?connected=1`
+  return withQuery(
+    '/control-plane/connectors',
+    result?.error ? { error: result.error } : { connected: '1' },
+  )
+}
+
+/** Control-plane path whitelist — nyers URL / open redirect nélkül. */
+export function isSafeControlPlanePath(path: string): boolean {
+  if (path.length < 14 || path.length > 200) return false
+  if (path.includes('//') || path.includes('\\') || path.includes('..') || path.includes('://')) {
+    return false
+  }
+  return /^\/control-plane(\/[A-Za-z0-9._\-]+)*\/?$/.test(path)
+}
+
+function withQuery(pathname: string, extra: Record<string, string>): string {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(extra)) {
+    if (value) query.set(key, value)
+  }
+  const encoded = query.toString()
+  return encoded ? `${pathname}?${encoded}` : pathname
 }
 
 export function isSafeOAuthReturnTo(value: unknown): value is OAuthReturnTo {
@@ -144,6 +186,7 @@ export function isSafeOAuthReturnTo(value: unknown): value is OAuthReturnTo {
   if (rec.agentId !== undefined && (typeof rec.agentId !== 'string' || !isUuid(rec.agentId))) {
     return false
   }
+  if (rec.originPath !== undefined && typeof rec.originPath !== 'string') return false
   return true
 }
 

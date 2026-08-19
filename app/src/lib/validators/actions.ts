@@ -882,6 +882,7 @@ export const startConnectorOAuthSchema = z.object({
       kind: z.enum(['conversation', 'ticket']),
       id: z.string().uuid(),
       agentId: z.string().uuid().optional(),
+      originPath: z.string().trim().max(200).optional(),
     })
     .optional(),
 })
