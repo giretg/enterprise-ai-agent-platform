@@ -160,6 +160,7 @@
     "test:dispatcher-retry-loop": "tsx scripts/dispatcher-retry-loop.test.ts",
     "test:agent-access-grant-db": "tsx scripts/agent-access-grant-db.test.ts",
     "test:surrogate-map": "tsx scripts/surrogate-map.test.ts",
+    "test:surrogate-engine": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/surrogate-engine.test.ts",
     "test:agent-access-graph": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-access-graph.test.ts",
     "test:agent-detail-access": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-detail-access.test.ts",
     "backfill:agent-access-grants": "tsx scripts/backfill-explicit-user-agent-access.ts",

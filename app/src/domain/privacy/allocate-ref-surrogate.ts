@@ -1,7 +1,7 @@
 /**
  * Ref-surrogate allokáció: insert, unique ütközésnél a meglévő sor újraolvasása.
  *
- * A sorszámozást és a HMAC-képzést az APG-02 Surrogate Engine adja; ez a függvény
+ * A sorszámozást a Surrogate Engine, a HMAC-et a vault képzi (APG-02); ez a függvény
  * csak a DB-szintű bijektivitást tartja: két párhuzamos forduló ugyanarra az
  * entitásra ugyanazt az álnevet kapja, nem duplikátumot.
  */
