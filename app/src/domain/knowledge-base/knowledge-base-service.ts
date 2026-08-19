@@ -18,6 +18,10 @@ import type {
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import {
+  assertDocumentReachableFromTenant,
+  isDocumentReachableFromTenant,
+} from '@/lib/document-tenant-access'
+import {
   buildOkfBundle,
   chunkOkfBundle,
   type OkfBundleFile,
@@ -134,6 +138,10 @@ export class KnowledgeBaseService {
 
     const document = await this.documents.findById(params.documentId)
     if (!document) throw new Error('Document not found')
+    // Tenant-határ: a dokumentum a hívó tenantjához kell tartozzon. Enélkül egy
+    // idegen tenant friss feltöltésű dokumentumához is lehetett volna KB-jóváhagyási
+    // ticketet nyitni, majd jóváhagyás után a saját KB-be beolvasni (cross-tenant IDOR).
+    await assertDocumentReachableFromTenant(document, params.actorTenantId)
     if (document.connectorId) throw new Error('Document already attached to a knowledge base')
 
     const connector = await this.ensureKnowledgeBase(agent)
@@ -560,6 +568,10 @@ export class KnowledgeBaseService {
 
     const document = await this.documents.findById(params.documentId)
     if (!document) return null
+    // Tenant-határ: a review a forrás `extractedText`-et adja vissza, ezért a
+    // dokumentum a hívó tenantjához kell tartozzon. Enélkül tetszőleges tenant
+    // dokumentumának teljes tartalma kiolvasható lett volna a saját agent review-n át.
+    if (!(await isDocumentReachableFromTenant(document, params.actorTenantId))) return null
 
     // A dokumentumhoz tartozó (draft vagy publikált) artifact — a legfrissebb.
     const artifacts = await this.artifacts.findByConnector(connector.id)

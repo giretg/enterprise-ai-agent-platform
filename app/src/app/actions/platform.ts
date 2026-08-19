@@ -44,6 +44,7 @@ import { resolveBoardDateRange } from '@/lib/board-date-range'
 import { BOARD_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
+import { assertDocumentReachableFromTenant } from '@/lib/document-tenant-access'
 import { shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
 import {
   buildTaskOnlyTaskPrompt,
@@ -2638,6 +2639,12 @@ export async function uploadDocument(formData: FormData) {
       extraction = extractTextContent(textOverride)
       storageBytes = Buffer.from(textOverride, 'utf8')
     } else if (file instanceof File) {
+      // Erőforrás-védelem: a KB-feltöltés is untrusted bájtokat parse-ol
+      // (PDF/DOCX/XLSX = zip → dekompressziós bomba kockázat). A ticket-csatolmány
+      // úttal azonos korlát: max 25 MB + típus-allowlist, hogy egy tenant operátora
+      // ne tudja a MEGOSZTOTT Node-folyamatot memóriából kiéheztetni (DoS).
+      if (file.size > 25 * 1024 * 1024) return fail('A fájl legfeljebb 25 MB lehet')
+      if (!allowedTicketAttachment(file)) return fail('Nem támogatott fájltípus')
       filename = safeUploadFilename(file.name)
       mimeType = file.type || null
       storageBytes = Buffer.from(await file.arrayBuffer())
@@ -2684,6 +2691,18 @@ export async function processDocument(input: { documentId: string; agentId: stri
   try {
     const user = await requireTenantRole('operator')
     const parsed = processDocumentSchema.parse(input)
+
+    // Tenant-határ: a cél-agent ÉS a feldolgozandó dokumentum is a hívó
+    // tenantjához kell tartozzon. Enélkül egy operátor idegen tenant agentjével
+    // idegen tenant dokumentumát elemeztethette volna le (cross-tenant szivárgás).
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent) return fail('Agent not found')
+    assertAgentTenantReachable(agent, user.activeTenantId)
+
+    const document = await repositories.documents.findById(parsed.documentId)
+    if (!document) return fail('Document not found')
+    await assertDocumentReachableFromTenant(document, user.activeTenantId)
+
     const result = await services.bookkeeper.processDocument(
       parsed.documentId,
       parsed.agentId,
@@ -2702,6 +2721,9 @@ export async function processDocumentForWiki(input: { documentId: string; agentI
 
     const document = await repositories.documents.findById(parsed.documentId)
     if (!document) return fail('Document not found')
+    // Tenant-határ: a dokumentum a hívó tenantjához kell tartozzon, különben egy
+    // idegen tenant feltöltött doksiját is be lehetne kötni a saját KB-be.
+    await assertDocumentReachableFromTenant(document, user.activeTenantId)
 
     const agent = await repositories.agents.findById(parsed.agentId)
     if (!agent) return fail('Agent not found')
