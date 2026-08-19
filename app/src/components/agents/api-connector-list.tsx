@@ -8,6 +8,11 @@ import { unassignConnectorFromAgent } from '@/app/actions/provisioning'
 import { Badge } from '@/components/ui/shell'
 import { connectorAccessLabel } from '@/lib/agent-profile-labels'
 import {
+  privacyCapabilityLevel,
+  privacyCapabilityUi,
+  readPrivacyDeclaration,
+} from '@/domain/privacy/connector-privacy'
+import {
   PREAPPROVED_SUGGESTED_WRITE_LIMIT,
   consequenceBoundaryLabel,
   suggestedExpiryIso,
@@ -410,6 +415,9 @@ export function ApiConnectorList({
         const confirming = confirmingId === item.connector.id
         const trustBadge = writeApprovalBadge(item)
         const boundary = consequenceBoundaryLabel(item.connector.consequenceBoundary)
+        const privacyUi = privacyCapabilityUi(
+          privacyCapabilityLevel(readPrivacyDeclaration(item.connector.config)),
+        )
 
         return (
           <li key={item.connector.id} className="atelier-soft p-3">
@@ -418,6 +426,9 @@ export function ApiConnectorList({
               <div className="flex flex-wrap items-center gap-2">
                 <Badge tone={item.accessMode === 'write' ? 'warning' : 'neutral'}>
                   {connectorAccessLabel(item.accessMode)}
+                </Badge>
+                <Badge tone={privacyUi.tone} title={privacyUi.title}>
+                  {privacyUi.label}
                 </Badge>
                 {trustBadge && (
                   <Badge tone={trustBadge.tone} title={trustBadge.title}>

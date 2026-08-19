@@ -18,6 +18,7 @@
 import type { CapabilitySet, OpKey } from './capability-set'
 import { indexCapabilities } from './capability-set'
 import type { ProposedTool } from '@/domain/provisioning/connector-config'
+import { PRIVACY_CAPABILITY_KEYS } from '@/domain/privacy/connector-privacy'
 
 export type UsageRef = {
   type: 'agent' | 'playbook' | 'process'
@@ -254,6 +255,23 @@ export function computeCapabilityDiff(
       change: `egress_hosts_changed: ${currentHosts.join(',')} -> ${nextHosts.join(',')}`,
       scope: '*',
     })
+  }
+
+  // 5) Privacy capability-deklaráció (APG-03, spec §11): verziózott, a változása
+  //    a capability-diffben jelenik meg, így a jóváhagyás auditja is rögzíti.
+  for (const key of PRIVACY_CAPABILITY_KEYS) {
+    const was = Boolean(current.privacy?.[key])
+    const now = Boolean(next.privacy?.[key])
+    if (was === now) continue
+    if (!was && now) {
+      added.push({ op: 'PRIVACY *', risk: 'low', change: `privacy_capability_added: ${key}` })
+    } else {
+      breaking.push({
+        op: 'PRIVACY *',
+        risk: 'high',
+        change: `privacy_capability_removed: ${key}`,
+      })
+    }
   }
 
   return finalize({ added, breaking, narrowed, auth })

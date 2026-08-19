@@ -2,6 +2,7 @@
 
 import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState, useTransition } from 'react'
 import { Badge, Card } from '@/components/ui/shell'
+import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import {
   activateConnector,
@@ -60,6 +61,13 @@ type DraftConfig = {
   rateLimit?: { rps: number; burst: number }
   defaultActingUserEmail?: string
   proposedTools: ProposedTool[]
+  privacy?: {
+    structured_field_privacy: boolean
+    stable_entity_ids: boolean
+    entity_resolution: boolean
+    free_text_hints: boolean
+  }
+  fields?: Record<string, { privacy?: string; entity_type?: string; type?: string }>
   provenance?: {
     sourceHash?: string
     extractedAt?: string
@@ -2008,6 +2016,16 @@ function DraftCard({
                   <br />
                   secret-alias (javasolt): <code>{cfg.auth.secretAliasSuggested ?? '—'}</code>
                 </p>
+                {(() => {
+                  const ui = privacyCapabilityUi(privacyCapabilityLevel(cfg.privacy))
+                  return (
+                    <p className="mt-3">
+                      <Badge tone={ui.tone} title={ui.title}>
+                        {ui.label}
+                      </Badge>
+                    </p>
+                  )
+                })()}
               </div>
               <div>
                 <h4 className="mb-1 font-semibold">Scope-ok</h4>

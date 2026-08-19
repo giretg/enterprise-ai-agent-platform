@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useState, useTransition } from 'react'
 import { Badge, Card } from '@/components/ui/shell'
+import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
 import {
   approveSelfUpdatingSource,
   approveSelfUpdatingVersion,
@@ -26,11 +27,18 @@ type Capability = {
 type Version = {
   id: string; versionNo: number; status: string; diffSummary: Diff | null
   capabilities: Capability[]
+  privacy: {
+    structured_field_privacy: boolean
+    stable_entity_ids: boolean
+    entity_resolution: boolean
+    free_text_hints: boolean
+  } | null
   fetchedAt: string; approvedAt: string | null; approvedByName: string
 }
 type ConnectorRow = {
   id: string; name: string; specUrl: string; urlApproved: boolean; trusted: boolean
   autoApproveEnabled: boolean; lastSyncedAt: string | null; activeSpecVersionId: string | null
+  privacy: Version['privacy']
   versions: Version[]
 }
 
@@ -45,6 +53,12 @@ function friendlyChange(item: DiffItem) {
   if (item.change?.startsWith('header_now_required')) return 'A híváshoz mostantól egy új kötelező biztonsági fejléc kell.'
   if (item.change?.startsWith('initial_auth_mode')) return 'A partner által kért beléptetési mód első jóváhagyásra vár.'
   if (item.change?.startsWith('auth_config_changed')) return 'Megváltozott a partner beléptetési beállítása.'
+  if (item.change?.startsWith('privacy_capability_added')) {
+    return 'A kapcsolat mostantól jelöli a védendő mezőket, így a platform álnévre tudja cserélni őket.'
+  }
+  if (item.change?.startsWith('privacy_capability_removed')) {
+    return 'A kapcsolat kevesebb adatvédelmi képességet vállal. Ezt ellenőrizni kell.'
+  }
   if (item.change === 'added_write') return 'Új, adatot módosító képesség.'
   if (item.change === 'added') return 'Új, csak olvasási képesség.'
   return item.change ?? 'A képesség megváltozott.'
@@ -379,6 +393,14 @@ function ConnectorCard({ row, pending, run, onSync }: {
           <Badge tone={row.trusted ? 'success' : 'warning'}>
             {row.trusted ? 'megbízható partner' : 'bizalom nincs jóváhagyva'}
           </Badge>
+          {(() => {
+            const ui = privacyCapabilityUi(privacyCapabilityLevel(row.privacy))
+            return (
+              <Badge tone={ui.tone} title={ui.title}>
+                {ui.label}
+              </Badge>
+            )
+          })()}
           {proposal ? <Badge tone="warning">frissítés vár</Badge> : null}
           <button
             type="button"

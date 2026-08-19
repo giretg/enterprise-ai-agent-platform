@@ -7,6 +7,10 @@
  */
 import { z } from 'zod'
 import { githubRepositoryAccessSchema } from '@/domain/connector/github-repository-access-schema'
+import {
+  connectorFieldsPrivacySchema,
+  privacyCapabilityDeclarationSchema,
+} from '@/domain/privacy/connector-privacy'
 
 export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
 export type HttpMethod = (typeof HTTP_METHODS)[number]
@@ -144,6 +148,16 @@ export const connectorConfigSchema = z.object({
   /** CRM acting user fallback, ha a runtime actingUser.email hiányzik (Ostorosbor). */
   defaultActingUserEmail: z.string().email().optional(),
   githubRepositoryAccess: githubRepositoryAccessSchema.optional(),
+  /**
+   * Privacy interface contract (spec §11). Hiányában a connector működik, de a
+   * platform alacsonyabb privacy capability-t jelez (UI + audit).
+   */
+  privacy: privacyCapabilityDeclarationSchema.optional(),
+  /**
+   * Mezőszintű privacy metadata (spec §7). `privacy: tokenize` csak string
+   * mezőre érvényes — numerikus/dátum mentéskor elbukik (R6).
+   */
+  fields: connectorFieldsPrivacySchema.optional(),
   provenance: z
     .object({
       sourceHash: z.string().optional(),
@@ -174,11 +188,18 @@ export class ConnectorConfigParseError extends Error {
  * write-tool figyelmeztetést egy téves `read` jelöléssel). Ez determinisztikus,
  * nem LLM-döntés.
  */
+function formatConnectorConfigParseMessage(issues: ReadonlyArray<{ path: PropertyKey[]; message: string }>): string {
+  const first = issues[0]
+  if (!first) return 'A connector-config séma érvénytelen.'
+  const path = first.path.length > 0 ? `${first.path.map(String).join('.')}: ` : ''
+  return `${path}${first.message}`
+}
+
 export function normalizeConnectorConfig(input: unknown): ConnectorConfig {
   const parsed = connectorConfigSchema.safeParse(input)
   if (!parsed.success) {
     throw new ConnectorConfigParseError(
-      'generatedConfig does not match ConnectorConfig schema',
+      formatConnectorConfigParseMessage(parsed.error.issues),
       parsed.error.issues,
     )
   }

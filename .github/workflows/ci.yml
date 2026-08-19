@@ -134,6 +134,7 @@ jobs:
           npm run test:prompt-assembler
           npm run test:prompt-cache
           npm run test:surrogate-engine
+          npm run test:connector-privacy
 
       # Prompt-eval A fázis — piros vonalak (issue #35). SZÁNDÉKOSAN külön lépés:
       # ez biztonsági kapu, nem funkcionális teszt. Ha elbukik, egy prompt-módosítás

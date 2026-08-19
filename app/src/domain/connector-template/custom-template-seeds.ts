@@ -1,5 +1,9 @@
 import type { InstanceFieldDescriptor, TemplateDescriptor } from './template-descriptor'
 import { GITHUB_REPOSITORY_LIST_PATTERN_SOURCE } from '@/domain/connector/github-repository-access'
+import {
+  OSTOROSBOR_CRM_PRIVACY_CAPABILITIES,
+  OSTOROSBOR_CRM_PRIVACY_FIELDS,
+} from '@/domain/privacy/connector-privacy'
 
 const GOOGLE_USER_DELEGATED_OAUTH = {
   kind: 'user_delegated_oauth2' as const,
@@ -194,6 +198,8 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     authMethods: [{ kind: 'bearer' }],
     requestHeaders: { ...OSTOROSBOR_CRM_REQUEST_HEADERS },
     scopeCatalog: [],
+    privacy: { ...OSTOROSBOR_CRM_PRIVACY_CAPABILITIES },
+    fields: { ...OSTOROSBOR_CRM_PRIVACY_FIELDS },
     endpoints: [
       {
         name: 'list_accounts',
@@ -347,6 +353,8 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     authMethods: [{ kind: 'bearer' }],
     requestHeaders: { ...OSTOROSBOR_CRM_REQUEST_HEADERS },
     scopeCatalog: [],
+    privacy: { ...OSTOROSBOR_CRM_PRIVACY_CAPABILITIES },
+    fields: { ...OSTOROSBOR_CRM_PRIVACY_FIELDS },
     endpoints: [
       {
         name: 'list_accounts',
