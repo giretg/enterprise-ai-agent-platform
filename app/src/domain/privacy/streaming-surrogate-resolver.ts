@@ -4,7 +4,8 @@
  * Az álnév karakterei SSE-delták között szétszakadhatnak (`[[COMP` | `ANY_1]]`).
  * A feloldó a közös `StreamingPendingBuffer` mintáját követi: a `[[` nyitótól
  * a záró `]]`-ig visszatartás, korlátos puffer, `finish()` ürítés. Töredék
- * álnév (`[[COMP`) soha nem megy ki.
+ * álnév (`[[COMP`) soha nem megy ki. A feloldás a teljes eddigi markdown
+ * kontextusában történik (APG-07): URL/kód darabjai nem oldódnak fel.
  */
 import {
   STREAM_BUFFER_LIMITS,
@@ -24,6 +25,8 @@ import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
 export class StreamingSurrogateResolver {
   private readonly buffer = new StreamingPendingBuffer()
   private finished = false
+  /** Az eddig kiadott eredeti (álneves) markdown — a darab önmagában nem osztályozható. */
+  private originalEmitted = ''
 
   constructor(
     private readonly lookup: SurrogateDisplayLookup,
@@ -52,7 +55,9 @@ export class StreamingSurrogateResolver {
       released.push(chunk),
     )
     for (const chunk of released) {
-      const resolved = await resolveDisplayText(chunk, this.lookup)
+      const originalSoFar = this.originalEmitted + chunk
+      const resolved = await resolveDisplayText(chunk, this.lookup, originalSoFar)
+      this.originalEmitted = originalSoFar
       if (resolved) await this.emit(resolved)
     }
   }

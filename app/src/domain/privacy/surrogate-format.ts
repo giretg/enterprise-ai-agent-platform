@@ -73,6 +73,12 @@ export type EmbeddedSurrogate = {
   parsed: ParsedSurrogate | null
 }
 
+/** Van-e a szövegben felismerhető, típusos álnév (UI jelzéshez). */
+export function containsEmbeddedSurrogate(text: string): boolean {
+  if (!text) return false
+  return findEmbeddedSurrogates(text).some((match) => match.parsed != null)
+}
+
 /** Álnevek a szövegben, előfordulási sorrendben. Ismeretlen típusnál `parsed` null. */
 export function findEmbeddedSurrogates(text: string): EmbeddedSurrogate[] {
   const found: EmbeddedSurrogate[] = []
