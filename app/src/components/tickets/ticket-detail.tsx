@@ -19,7 +19,7 @@ import {
   TICKET_STATE_TONE,
   TICKET_TONE_DOT_CLASS,
 } from '@/lib/ticket-labels'
-import { formatTicketDateTime } from '@/lib/ticket-display'
+import { canStartTicketDispatch, formatTicketDateTime } from '@/lib/ticket-display'
 import { isRunAsAuthorized } from '@/lib/run-as-payload'
 import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
 import { readStepOutcome } from '@/lib/playbook-v2/process-step-payload'
@@ -538,11 +538,7 @@ export function TicketMeta({
           : null
       : null
 
-  const canStartDispatch =
-    canDispatch &&
-    ticket.state === 'ready' &&
-    ticket.assigneeType === 'agent' &&
-    Boolean(ticket.assigneeId)
+  const canStartDispatch = canDispatch && canStartTicketDispatch(ticket)
 
   function handleExportDebugLog() {
     startDebugLogTransition(async () => {

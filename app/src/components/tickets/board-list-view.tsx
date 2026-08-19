@@ -9,6 +9,7 @@ import { ProcessBadge } from '@/components/processes/process-badge'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE, TICKET_TONE_DOT_CLASS } from '@/lib/ticket-labels'
 import {
   canDeleteBoardTicket,
+  canStartTicketDispatch,
   formatTicketDateTime,
   type EnrichedBoardTicket,
 } from '@/lib/ticket-display'
@@ -81,11 +82,7 @@ function TicketActions({
   onStopDispatch: (ticketId: string) => void
   onDelete: (ticketId: string, isAdminDelete: boolean) => void
 }) {
-  const canStart =
-    canDispatch &&
-    ticket.state === 'ready' &&
-    ticket.assigneeType === 'agent' &&
-    Boolean(ticket.assigneeId)
+  const canStart = canDispatch && canStartTicketDispatch(ticket)
   const canStop = canDispatch && ticket.state === 'in_progress'
   const deleteInfo = canDeleteBoardTicket(ticket, {
     isAdmin,

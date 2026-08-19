@@ -248,6 +248,17 @@ export function matchesAssigneeFilter(
   return getAssigneeFilterKey(ticket) === filterKey
 }
 
+/**
+ * Manuális „Feldolgozás indítása”. A dispatcher a `ticket.agentId`-t indítja,
+ * nem az `assigneeId`-t — folyamat-agent-lépésnél az assigneeId szándékosan
+ * üres (emberi user-id), az AI a `agentId`-ben van.
+ */
+export function canStartTicketDispatch(
+  ticket: Pick<Ticket, 'state' | 'assigneeType' | 'agentId'>,
+): boolean {
+  return ticket.state === 'ready' && ticket.assigneeType === 'agent' && Boolean(ticket.agentId)
+}
+
 export const UNSTARTED_DELETABLE_STATES = ['ready', 'backlog'] as const
 
 export function canDeleteBoardTicket(

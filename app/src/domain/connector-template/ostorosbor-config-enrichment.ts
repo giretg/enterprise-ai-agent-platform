@@ -8,7 +8,10 @@ export const OSTOROSBOR_TEMPLATE_KEYS = new Set([
 
 /** Ostoros connector API path — report query/export POST-ok itt olvasók. */
 const OSTOROSBOR_CONNECTOR_API_SUFFIX = /\/api\/connector\/v1\/?$/i
-const OSTOROSBOR_TRUSTED_CRM_HOST = 'ostorosbor-crm--enterprise-ai-demo.europe-west4.hosted.app'
+const OSTOROSBOR_TRUSTED_CRM_HOSTS = new Set([
+  'ostorosbor-crm--e-ai-ab8f1.europe-west4.hosted.app',
+  'ostorosbor-crm--enterprise-ai-demo.europe-west4.hosted.app',
+])
 
 /**
  * Olvasó POST riportvégpontok — a következmény-kapu `risk: read` alapján
@@ -52,7 +55,7 @@ function isOstorosborConnectorApi(config: ConnectorConfig): boolean {
  */
 function isTrustedOstorosborCrm(config: ConnectorConfig): boolean {
   if (ostorosborTemplateKey(config)) return true
-  return new URL(config.baseUrl).hostname === OSTOROSBOR_TRUSTED_CRM_HOST
+  return OSTOROSBOR_TRUSTED_CRM_HOSTS.has(new URL(config.baseUrl).hostname)
 }
 
 function toolKey(tool: Pick<ProposedTool, 'method' | 'path'>): string {

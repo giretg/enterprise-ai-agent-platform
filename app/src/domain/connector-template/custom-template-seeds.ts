@@ -37,9 +37,9 @@ function googleOauthClientFields(secretAliasHint: string): InstanceFieldDescript
   ]
 }
 
-/** Demo CRM host — provisioning UI alapértelmezett kitöltéshez. */
+/** Éles CRM host — provisioning UI alapértelmezett kitöltéshez. */
 export const OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES: Record<string, string> = {
-  crmHost: 'ostorosbor-crm--enterprise-ai-demo.europe-west4.hosted.app',
+  crmHost: 'ostorosbor-crm--e-ai-ab8f1.europe-west4.hosted.app',
 }
 
 /** Kötelező CRM audit/trace fejlécek — a sablon materializáláskor a connector configba kerülnek. */

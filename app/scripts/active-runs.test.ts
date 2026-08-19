@@ -208,6 +208,23 @@ check('activeRunFromTicket: ready agent ticket is startable', () => {
   assert.ok(run.latestActivity?.includes('Indításra kész'))
 })
 
+check('activeRunFromTicket: ready process ticket with agentId and empty assigneeId is startable', () => {
+  const ticket = {
+    id: 'ticket-process-ready',
+    title: 'Tulajdoni lap PDF beolvasása',
+    state: 'ready',
+    agentId: 'agent-marika',
+    assigneeType: 'agent',
+    assigneeId: null,
+    payload: {},
+    lockedAt: null,
+    updatedAt: new Date('2026-08-19T12:43:00.000Z'),
+  } as unknown as Ticket
+  const run = activeRunFromTicket(ticket)
+  assert.equal(run.canStart, true)
+  assert.ok(run.latestActivity?.includes('Indításra kész'))
+})
+
 check('activeRunFromTicket: ready without agent assignee is not startable', () => {
   const ticket = {
     id: 'ticket-ready-human',

@@ -434,8 +434,8 @@ async function run() {
     const autoRefreshSnapshot: ConnectorConfig = {
       ...V1,
       provider: 'ujonnan-felvett-crm-kapcsolat',
-      baseUrl: 'https://ostorosbor-crm--enterprise-ai-demo.europe-west4.hosted.app/api/connector/v1',
-      egressHosts: ['ostorosbor-crm--enterprise-ai-demo.europe-west4.hosted.app'],
+      baseUrl: 'https://ostorosbor-crm--e-ai-ab8f1.europe-west4.hosted.app/api/connector/v1',
+      egressHosts: ['ostorosbor-crm--e-ai-ab8f1.europe-west4.hosted.app'],
       proposedTools: [{
         ...V1.proposedTools[0],
         parameters: [

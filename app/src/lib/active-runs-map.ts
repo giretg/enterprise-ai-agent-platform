@@ -1,6 +1,7 @@
 import type { AgentTurn, Ticket } from '@prisma/client'
 import type { ActiveRun, ActiveRunPhase } from '@/lib/active-runs'
 import { readTicketRuntimeProgress } from '@/domain/agent/ticket-runtime-progress'
+import { canStartTicketDispatch } from '@/lib/ticket-display'
 
 /** Sync a repository ACTIVE_AGENT_TURN_STATUSES listájával. */
 const ACTIVE_CHAT_STATUSES = new Set(['queued', 'running', 'streaming'])
@@ -60,14 +61,6 @@ function ticketPhase(state: string): ActiveRunPhase {
     : 'completed'
 }
 
-function ticketCanStart(ticket: Ticket): boolean {
-  return (
-    ticket.state === 'ready' &&
-    ticket.assigneeType === 'agent' &&
-    Boolean(ticket.assigneeId)
-  )
-}
-
 /**
  * E9: chat-forduló Stop csak a létrehozónak (tenant+createdById).
  * Ticket Stop: bármely tenant-operator (a cancel route tenant-szintű).
@@ -102,7 +95,7 @@ export function activeRunFromChatTurn(
 export function activeRunFromTicket(ticket: Ticket): ActiveRun {
   const progress = readTicketRuntimeProgress(ticket.payload)
   const phase = ticketPhase(ticket.state)
-  const canStart = ticketCanStart(ticket)
+  const canStart = canStartTicketDispatch(ticket)
   return {
     kind: 'ticket',
     id: ticket.id,

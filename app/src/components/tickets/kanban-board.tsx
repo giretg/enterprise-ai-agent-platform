@@ -27,6 +27,7 @@ import {
   ticketStateAccent,
 } from '@/lib/ticket-labels'
 import {
+  canStartTicketDispatch,
   formatRelativeTicketTime,
   formatTicketDateTime,
   getAssigneeFilterKey,
@@ -247,11 +248,7 @@ function TicketCard({
   onStartDispatch,
   onStopDispatch,
 }: TicketCardProps) {
-  const canStart =
-    canDispatch &&
-    ticket.state === 'ready' &&
-    ticket.assigneeType === 'agent' &&
-    Boolean(ticket.assigneeId)
+  const canStart = canDispatch && canStartTicketDispatch(ticket)
   const canStop = canDispatch && ticket.state === 'in_progress'
   const accent = ticketStateAccent(ticket.state)
   const needsHuman = ticket.state === 'awaiting_human' || ticket.state === 'needs_info'
