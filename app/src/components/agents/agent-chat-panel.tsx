@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useTransition } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useTransition, type ReactNode } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import {
   approveConsequenceApproval,
@@ -74,6 +74,11 @@ import {
   useSkillSlashAutocomplete,
 } from '@/components/skills/skill-slash-autocomplete'
 import { getToolUiLabel } from '@/lib/tool-ui-labels'
+import {
+  approvalContinuationDisplayText,
+  extractApprovalContinuationTechnicalDetails,
+  isApprovalContinuationMessage,
+} from '@/lib/consequence-approval-display'
 
 type PendingAttachment = {
   id: string
@@ -860,6 +865,36 @@ function formatConsequenceApprovalError(error: string): string {
   }
 }
 
+/** Admin-only összecsukható technikai részletek (API útvonal, nyers eredmény). */
+function AdminTechnicalDetails({
+  isAdmin,
+  title = 'Technikai részletek',
+  children,
+}: {
+  isAdmin: boolean
+  title?: string
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  if (!isAdmin) return null
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-[11px] font-semibold text-ink-faint underline underline-offset-2 hover:text-ink-soft"
+      >
+        {open ? 'Részletek elrejtése' : title}
+      </button>
+      {open && (
+        <div className="mt-1 rounded border border-line/70 bg-night-2/40 px-2 py-1.5 font-mono text-[10px] break-all whitespace-pre-wrap text-ink-faint">
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /**
  * issue #97 — következmény-kapu kártya: külső tartalom után blokkolt mellékhatás
  * (xlsx/file/email/…). Jóváhagyáskor a szerver lefuttatja a toolt, majd a szál
@@ -878,16 +913,19 @@ function ConsequenceApprovalsPanel({
   approvals,
   onUpdate,
   onApproved,
+  isAdmin,
 }: {
   approvals: ConsequenceApprovalCard[]
   onUpdate: (approvalId: string, patch: Partial<ConsequenceApprovalCard>) => void
   /** A sikeresen lefuttatott jóváhagyás(ok) — a szál innen folytatódik. */
   onApproved: (approvalIds: string[]) => void
+  isAdmin: boolean
 }) {
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set())
   const isOpen = (a: ConsequenceApprovalCard) => a.status === 'pending' && !a.expired
   const openCount = approvals.filter(isOpen).length
   const anyBusy = busyIds.size > 0
+  const hasExpiredPending = approvals.some((a) => a.status === 'pending' && a.expired)
 
   const markBusy = (approvalId: string, busy: boolean) => {
     setBusyIds((prev) => {
@@ -998,11 +1036,19 @@ function ConsequenceApprovalsPanel({
           </button>
         )}
       </div>
-      <p className="mb-2 text-[11px] text-ink-faint">
-        {openCount > 0
-          ? 'Ez a művelet kockázatos (kilépő / visszafordíthatatlan / írási HTTP), ezért a platform nem futtatta le automatikusan. A gomb lefuttatja, majd az agent folytatja — nem kell újraírnod a chatben.'
-          : 'Ez a művelet kockázatos volt, és a jóváhagyási idő letelt.'}
-      </p>
+      {openCount > 0 && (
+        <p className="mb-2 text-[11px] text-ink-faint">
+          Ez a művelet kockázatos (kilépő / visszafordíthatatlan / írási HTTP), ezért a platform
+          nem futtatta le automatikusan. A gomb lefuttatja, majd az agent folytatja — nem kell
+          újraírnod a chatben.
+        </p>
+      )}
+      {openCount === 0 && hasExpiredPending && (
+        <p className="mb-2 text-[11px] text-ink-faint">
+          Egy vagy több jóváhagyás lejárt — ezek már nem futtathatók. Írd meg az agentnek, hogy
+          próbálja újra.
+        </p>
+      )}
       <div className="space-y-2">
         {approvals.map((a) => {
           const busy = busyIds.has(a.approvalId)
@@ -1027,10 +1073,6 @@ function ConsequenceApprovalsPanel({
           return (
             <div key={a.approvalId} className="rounded-md border border-line/70 bg-card/40 px-2.5 py-2">
               <div className="flex flex-wrap items-baseline gap-2">
-                <span className="rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
-                  {getToolUiLabel(a.toolName).label}
-                </span>
-                <span className="font-medium text-ink">{a.summary}</span>
                 <span
                   className={`text-[10px] font-semibold ${
                     a.status === 'approved'
@@ -1046,6 +1088,13 @@ function ConsequenceApprovalsPanel({
                   {statusLabel}
                 </span>
               </div>
+              <AdminTechnicalDetails isAdmin={isAdmin}>
+                <span className="mb-1 block font-sans text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
+                  {getToolUiLabel(a.toolName).label}
+                </span>
+                {a.summary}
+                {a.resultSummary ? `\n\nEredmény: ${a.resultSummary}` : ''}
+              </AdminTechnicalDetails>
               {errorMessage && (
                 <div className="mt-1.5 space-y-1.5">
                   <p className="text-[11px] text-coral" role="alert">
@@ -1068,16 +1117,13 @@ function ConsequenceApprovalsPanel({
                   hogy próbálja újra — az új kéréshez új gomb jelenik meg.
                 </p>
               )}
-              {a.status === 'approved' &&
-                (a.resultSummary ? (
-                  <p className="mt-1 break-all text-[11px] text-ink-faint">
-                    Eredmény: {a.resultSummary}
-                  </p>
-                ) : (
-                  <p className="mt-1 text-[11px] text-sage">
-                    A művelet lefutott. Ha fájlt írt, a Workspace fájlok panelen megjelenik.
-                  </p>
-                ))}
+              {a.status === 'approved' && (
+                <p className="mt-1 text-[11px] text-sage">
+                  {a.resultSummary
+                    ? 'A művelet lefutott.'
+                    : 'A művelet lefutott. Ha fájlt írt, a Workspace fájlok panelen megjelenik.'}
+                </p>
+              )}
               {isOpen(a) && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button
@@ -1130,6 +1176,7 @@ function MessageBubble({
   workspaceBaseUrl,
   workspaceFilePaths,
   onOauthRedirect,
+  isAdmin,
 }: {
   message: ChatMessage
   isBusy: boolean
@@ -1152,10 +1199,16 @@ function MessageBubble({
   workspaceBaseUrl?: string
   workspaceFilePaths: string[]
   onOauthRedirect?: () => void
+  isAdmin: boolean
 }) {
   const isUser = message.role === 'user'
   const isDeleted = Boolean(message.contentDeletedAt)
   const time = formatMessageTime(message.createdAt)
+  const isApprovalBubble = isUser && !isDeleted && isApprovalContinuationMessage(message.text)
+  const approvalDisplayText = isApprovalBubble ? approvalContinuationDisplayText(message.text) : null
+  const approvalTechnicalDetails = isApprovalBubble
+    ? extractApprovalContinuationTechnicalDetails(message.text)
+    : null
 
   return (
     <div
@@ -1193,9 +1246,11 @@ function MessageBubble({
           className={`relative w-full rounded-2xl px-4 py-3 shadow-sm ${
             isDeleted
               ? 'border border-dashed border-line bg-night-2 text-ink-faint'
-              : isUser
-                ? 'rounded-tr-md bg-coral text-card'
-                : 'rounded-tl-md border border-line bg-card text-ink-soft'
+              : isApprovalBubble
+                ? 'rounded-tr-md border border-sage/30 bg-sage/10 text-ink-soft'
+                : isUser
+                  ? 'rounded-tr-md bg-coral text-card'
+                  : 'rounded-tl-md border border-line bg-card text-ink-soft'
           }`}
         >
         {isDeleted ? (
@@ -1219,7 +1274,16 @@ function MessageBubble({
               />
             )}
             {message.text &&
-              (isUser ? (
+              (isApprovalBubble ? (
+                <div className="text-sm text-ink-soft">
+                  <p>{approvalDisplayText}</p>
+                  {approvalTechnicalDetails && (
+                    <AdminTechnicalDetails isAdmin={isAdmin} title="API hívás részletei">
+                      {approvalTechnicalDetails}
+                    </AdminTechnicalDetails>
+                  )}
+                </div>
+              ) : isUser ? (
                 <div className="text-sm [&_a]:text-card [&_a]:underline [&_strong]:text-card">
                   <ChatMarkdown content={message.text} variant="user" />
                 </div>
@@ -1231,11 +1295,6 @@ function MessageBubble({
                   workspaceFilePaths={workspaceFilePaths}
                 />
               ))}
-            {/*
-              A jóváhagyó kártya a SZÖVEG UTÁN áll: az agent a válasza végén mondja
-              el, hogy gombra vár — ha a kártya a hosszú szöveg fölött lenne, a
-              felhasználó pont ott nem látná, ahol keresi.
-            */}
             {!isUser && message.consequenceApprovals && message.consequenceApprovals.length > 0 && (
               <ConsequenceApprovalsPanel
                 approvals={message.consequenceApprovals}
@@ -1243,6 +1302,7 @@ function MessageBubble({
                   onConsequenceApprovalUpdate(message.id, approvalId, patch)
                 }
                 onApproved={onConsequenceApproved}
+                isAdmin={isAdmin}
               />
             )}
             {!isUser && message.connectorGrants && message.connectorGrants.length > 0 && (
@@ -1366,6 +1426,7 @@ export function AgentChatPanel({
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [workspaceFilePaths, setWorkspaceFilePaths] = useState<string[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [isAdmin, setIsAdmin] = useState(false)
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([])
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [lastTicketId, setLastTicketId] = useState<string | null>(null)
@@ -1906,6 +1967,7 @@ export function AgentChatPanel({
         setConversationStatus(refreshed.data.conversation.status)
         setContinuedFromTicket(refreshed.data.continuedFromTicket ?? null)
         setTicketDiscussionHistory(refreshed.data.ticketDiscussionHistory ?? [])
+        setIsAdmin(refreshed.data.isAdmin)
         setMessages(
           withPendingChatExtras(
             refreshed.data.messages.map((m) => ({
@@ -2005,6 +2067,7 @@ export function AgentChatPanel({
       setConversationStatus(res.data.conversation.status)
       setContinuedFromTicket(res.data.continuedFromTicket ?? null)
       setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
+      setIsAdmin(res.data.isAdmin)
       setMessages(
         withPendingChatExtras(
           res.data.messages.map((m) => ({
@@ -2309,6 +2372,7 @@ export function AgentChatPanel({
         setConversationStatus(res.data.conversation.status)
         setContinuedFromTicket(res.data.continuedFromTicket ?? null)
         setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
+        setIsAdmin(res.data.isAdmin)
         setMessages(
           withPendingChatExtras(
             res.data.messages.map((m) => ({
@@ -3285,6 +3349,7 @@ export function AgentChatPanel({
                           : undefined
                       }
                       workspaceFilePaths={workspaceFilePaths}
+                      isAdmin={isAdmin}
                     />
                   ))}
                   {isAgentTyping &&

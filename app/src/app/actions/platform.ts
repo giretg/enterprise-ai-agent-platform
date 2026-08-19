@@ -3556,6 +3556,7 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
       messages: views,
       pendingConsequenceApprovals,
       pendingConnectorGrants,
+      isAdmin: hasMinimumRole(user.activeTenantRole, 'admin'),
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load chat messages')
