@@ -42,7 +42,7 @@ import type {
   TicketRepository,
   ToolBrokerRepository,
   UserRepository,
-  type CreateTicketAttachmentInput,
+  CreateTicketAttachmentInput,
 } from '@/repositories/interfaces'
 
 export type ProcessActor = { type: 'user' | 'agent' | 'system'; id?: string | null }
