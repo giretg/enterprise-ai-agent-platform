@@ -44,6 +44,7 @@ import { resolveBoardDateRange } from '@/lib/board-date-range'
 import { BOARD_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
+import { assertDocumentReachableFromTenant } from '@/lib/document-tenant-access'
 import { shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
 import {
   buildTaskOnlyTaskPrompt,
@@ -476,6 +477,20 @@ function allowedTicketAttachment(file: File): boolean {
     ].includes(mime)
   const allowedExtension = /\.(txt|md|csv|pdf|docx|xlsx|png|jpe?g|webp|gif)$/i.test(file.name)
   return allowedMime || allowedExtension
+}
+
+/** Feltöltött (untrusted) fájl legnagyobb mérete — zip-bomba / OOM elleni közös plafon. */
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+/**
+ * Egységes feltöltés-kapu (méret + típus) MINDEN feltöltési úthoz (ticket-csatolmány
+ * ÉS KB-dokumentum). Egy helyen tartja a korlátot, hogy a két út ne tudjon szétcsúszni.
+ * Elutasítási okot ad vissza, vagy `null`-t, ha a fájl rendben van.
+ */
+function uploadRejectionReason(file: File): string | null {
+  if (file.size > MAX_UPLOAD_BYTES) return 'A fájl legfeljebb 25 MB lehet'
+  if (!allowedTicketAttachment(file)) return 'Nem támogatott fájltípus'
+  return null
 }
 
 async function requireCommentWritableTicket(ticketId: string) {
@@ -990,8 +1005,8 @@ export async function uploadTicketCommentAttachment(formData: FormData) {
     if (typeof ticketId !== 'string') return fail('ticketId is required')
     const { user, ticket } = await requireCommentWritableTicket(ticketId)
     if (!(file instanceof File)) return fail('No file provided')
-    if (file.size > 25 * 1024 * 1024) return fail('A fájl legfeljebb 25 MB lehet')
-    if (!allowedTicketAttachment(file)) return fail('Nem támogatott fájltípus')
+    const attachmentRejection = uploadRejectionReason(file)
+    if (attachmentRejection) return fail(attachmentRejection)
 
     const kind = kindRaw === 'screenshot' ? 'screenshot' : 'file'
     const filename = safeUploadFilename(file.name || (kind === 'screenshot' ? 'screenshot.png' : 'upload.bin'))
@@ -1022,6 +1037,7 @@ export async function uploadTicketCommentAttachment(formData: FormData) {
       uploadedById: user.user.id,
       mimeType,
       metadata: buildOriginalDocumentMetadata(file.size, {
+        tenantId: ticket.tenantId,
         ticketCommentDraft: true,
         ticketId: ticket.id,
         kind,
@@ -2632,12 +2648,22 @@ export async function uploadDocument(formData: FormData) {
     let extraction: StructuredExtraction | null = null
 
     if (typeof textOverride === 'string' && textOverride.trim()) {
+      // A beillesztett szöveg is untrusted és a fájl-úttal azonos plafon alá esik.
+      if (Buffer.byteLength(textOverride, 'utf8') > MAX_UPLOAD_BYTES) {
+        return fail('A beillesztett szöveg legfeljebb 25 MB lehet')
+      }
       extractedText = textOverride
       filename = 'paste.txt'
       mimeType = 'text/plain'
       extraction = extractTextContent(textOverride)
       storageBytes = Buffer.from(textOverride, 'utf8')
     } else if (file instanceof File) {
+      // Erőforrás-védelem: a KB-feltöltés is untrusted bájtokat parse-ol
+      // (PDF/DOCX/XLSX = zip → dekompressziós bomba kockázat). A ticket-csatolmány
+      // úttal AZONOS közös kapu (max 25 MB + típus-allowlist), hogy egy tenant
+      // operátora ne tudja a MEGOSZTOTT Node-folyamatot memóriából kiéheztetni (DoS).
+      const uploadRejection = uploadRejectionReason(file)
+      if (uploadRejection) return fail(uploadRejection)
       filename = safeUploadFilename(file.name)
       mimeType = file.type || null
       storageBytes = Buffer.from(await file.arrayBuffer())
@@ -2669,7 +2695,10 @@ export async function uploadDocument(formData: FormData) {
       mimeType,
       // A szeletek (§4.7 forrás-refekkel) a metadata-ba kerülnek; az OKF-artifact
       // generáláskor innen épül a bundle. Régi doksin nincs → heading-split fallback.
+      // A `tenantId` bélyeg a feldolgozási utak tenant-kapujának (l.
+      // document-tenant-access) mérvadó forrása — pontos egyezést kényszerít.
       metadata: buildOriginalDocumentMetadata(storageBytes.length, {
+        tenantId: user.activeTenantId,
         ...(extraction ? { extraction: toExtractionMetadata(extraction) } : {}),
       }),
     })
@@ -2684,6 +2713,18 @@ export async function processDocument(input: { documentId: string; agentId: stri
   try {
     const user = await requireTenantRole('operator')
     const parsed = processDocumentSchema.parse(input)
+
+    // Tenant-határ: a cél-agent ÉS a feldolgozandó dokumentum is a hívó
+    // tenantjához kell tartozzon. Enélkül egy operátor idegen tenant agentjével
+    // idegen tenant dokumentumát elemeztethette volna le (cross-tenant szivárgás).
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent) return fail('Agent not found')
+    assertAgentTenantReachable(agent, user.activeTenantId)
+
+    const document = await repositories.documents.findById(parsed.documentId)
+    if (!document) return fail('Document not found')
+    await assertDocumentReachableFromTenant(document, user.activeTenantId)
+
     const result = await services.bookkeeper.processDocument(
       parsed.documentId,
       parsed.agentId,
@@ -2702,6 +2743,9 @@ export async function processDocumentForWiki(input: { documentId: string; agentI
 
     const document = await repositories.documents.findById(parsed.documentId)
     if (!document) return fail('Document not found')
+    // Tenant-határ: a dokumentum a hívó tenantjához kell tartozzon, különben egy
+    // idegen tenant feltöltött doksiját is be lehetne kötni a saját KB-be.
+    await assertDocumentReachableFromTenant(document, user.activeTenantId)
 
     const agent = await repositories.agents.findById(parsed.agentId)
     if (!agent) return fail('Agent not found')

@@ -10,8 +10,22 @@ export function isAgentReachableFromTenant(
   agentTenantId: string | null,
   effectiveTenantId: string | null,
 ): boolean {
-  if (agentTenantId === null) return true
-  return agentTenantId === effectiveTenantId
+  return isTenantReachable(agentTenantId, effectiveTenantId)
+}
+
+/**
+ * Erőforrás-semleges tenant-határ primitív: egy `resourceTenantId`-jű erőforrás
+ * (agent, connector, dokumentum, …) akkor érhető el az `effectiveTenantId`
+ * kontextusból, ha MEGOSZTOTT (`null` = platform-szintű) vagy pontosan egyezik.
+ * Ez a platform egységes szabályának a magja; a nevesített változatok
+ * (pl. {@link isAgentReachableFromTenant}) csak olvashatóság kedvéért delegálnak ide.
+ */
+export function isTenantReachable(
+  resourceTenantId: string | null,
+  effectiveTenantId: string | null,
+): boolean {
+  if (resourceTenantId === null) return true
+  return resourceTenantId === effectiveTenantId
 }
 
 /** Cél-agent lista tenant-szűrése (l. {@link isAgentReachableFromTenant}). */
