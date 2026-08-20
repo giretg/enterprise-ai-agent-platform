@@ -96,6 +96,12 @@ import {
 // WP-8 — az audit/telemetria choke-point külön modulban (tool-broker-audit.ts).
 import { recordCall, recordDenied } from './tool-broker-audit'
 import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
+import { recordPrivacyGatewayAudit } from '@/domain/privacy/privacy-audit'
+import type { PrivacyGatewayMode, PrivacyModeResolver } from '@/domain/privacy/privacy-mode'
+import {
+  allowsExternalRaw,
+  type PrivacyCategoryActionResolver,
+} from '@/domain/privacy/privacy-category-policy'
 import { privacyScopeForCall } from '@/domain/privacy/privacy-scope'
 import {
   resolveToolArgs,
@@ -132,6 +138,8 @@ export class ToolBrokerService {
   delegationProcessor: DelegationProcessor | null = null
   playbookTransitioner: PlaybookTicketTransitioner | null = null
   private structuredPrivacyEngine: SurrogateEngine | null = null
+  private privacyModeResolver: PrivacyModeResolver | null = null
+  private privacyCategoryActionResolver: PrivacyCategoryActionResolver | null = null
 
   /** WP-8: a handlerek felé átadott, `this`-hez kötött broker-képességek. */
   private readonly handlerContext: HandlerContext
@@ -232,6 +240,19 @@ export class ToolBrokerService {
     this.structuredPrivacyEngine = engine
   }
 
+  /**
+   * APG-09 — platform → tenant → agent üzemmód. Hiányában ENFORCE (APG-04
+   * tesztek viselkedése). Élesben a PlatformSettingsService oldja fel.
+   */
+  setPrivacyModeResolver(resolver: PrivacyModeResolver | null): void {
+    this.privacyModeResolver = resolver
+  }
+
+  /** APG-11 — kategória-policy a web_search query-safety guardhoz. */
+  setPrivacyCategoryActionResolver(resolver: PrivacyCategoryActionResolver | null): void {
+    this.privacyCategoryActionResolver = resolver
+  }
+
   async invoke(input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> {
     const startedAt = Date.now()
     const ticketId = input.tool === 'board_write' ? input.args.ticketId : input.ticketId ?? null
@@ -305,7 +326,12 @@ export class ToolBrokerService {
         enabled,
         scopedQueryCount,
         agentDayQueryCount,
-        bypassSensitivity: agent?.allowSensitiveExternalModel ?? false,
+        bypassSensitivity: await this.webSearchBypassSensitivity(
+          actingTenantId,
+          input.agentId,
+          input.args.query,
+          agent?.allowSensitiveExternalModel ?? false,
+        ),
       })
       if (!decision.allowed) {
         return recordDenied(this, 
@@ -363,6 +389,8 @@ export class ToolBrokerService {
         ticketId,
         actingTenantId,
         engine: this.structuredPrivacyEngine,
+        mode: await this.resolvePrivacyMode(actingTenantId, input.agentId),
+        audit: this.audit,
       })
       const { outcome, outcomeReason, effect, modelText, machineData } = channels
 
@@ -486,7 +514,47 @@ export class ToolBrokerService {
     })
     if (!resolved.ok) throw new UnknownSurrogateError(resolved.surrogate, resolved.reason)
     if (resolved.resolvedCount === 0) return input
+    await recordPrivacyGatewayAudit(this.audit, {
+      action: 'privacy.resolve.applied',
+      tenantId,
+      scope,
+      summary: {
+        spanCount: resolved.resolvedCount,
+        categories: (Object.keys(resolved.byCategory) as Array<keyof typeof resolved.byCategory>).sort(),
+        byCategory: resolved.byCategory,
+      },
+      mode: await this.resolvePrivacyMode(tenantId, input.agentId),
+      actorType: actingUserId ? 'human' : 'system',
+      actorId: actingUserId,
+      ticketId,
+    })
     return { ...input, args: resolved.args } as ToolBrokerInvokeInput
+  }
+
+  private async resolvePrivacyMode(
+    tenantId: string | null,
+    agentId: string,
+  ): Promise<PrivacyGatewayMode> {
+    if (!this.privacyModeResolver) return 'enforce'
+    return this.privacyModeResolver({ tenantId, agentId })
+  }
+
+  private async webSearchBypassSensitivity(
+    tenantId: string | null,
+    agentId: string,
+    query: string,
+    legacyAllowSensitiveExternalModel: boolean,
+  ): Promise<boolean> {
+    if (!this.privacyCategoryActionResolver) return legacyAllowSensitiveExternalModel
+    const safety = this.webSearchPolicy.classifyQuery(query)
+    if (!safety.blocked) return false
+    const action = await this.privacyCategoryActionResolver({
+      tenantId,
+      agentId,
+      category: safety.category ?? '',
+      legacyAllowSensitiveExternalModel,
+    })
+    return allowsExternalRaw(action)
   }
 
   private async executeTool(

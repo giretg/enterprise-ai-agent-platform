@@ -3,6 +3,7 @@
  * A Tool Broker ezt kapja (APG-04); a feloldás (APG-05/APG-08) ugyanerre az instance-ra épül.
  */
 import type { AuditRepository, ConversationRepository, TicketRepository } from '@/repositories/interfaces'
+import { recordPrivacyGatewayAudit, summaryFromSurrogate } from '@/domain/privacy/privacy-audit'
 import { ConversationPrivacyResolveAccess } from '@/domain/privacy/resolve-access'
 import { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import { PostgresSurrogateVault } from '@/domain/privacy/surrogate-vault'
@@ -17,44 +18,25 @@ export function createPlatformSurrogateEngine(
     new PostgresSurrogateVault(resolveTenantPrivacyHmacKey),
     {
       async recordUnknownSurrogate(event) {
-        await audit.append({
-          actorType: 'system',
-          actorId: null,
-          agentVersion: null,
+        await recordPrivacyGatewayAudit(audit, {
           action: event.action,
-          targetType: event.scope.type,
-          targetId: event.scope.id,
-          modelUsed: null,
-          inputRef: event.surrogate,
-          outputRef: event.reason,
-          policyDecision: event.reason,
-          metadata: {
-            tenantId: event.tenantId,
-            scopeType: event.scope.type,
-          },
           tenantId: event.tenantId,
-          conversationId: event.scope.type === 'conversation' ? event.scope.id : null,
+          scope: event.scope,
+          summary: summaryFromSurrogate(event.surrogate),
+          reason: event.reason,
+          surrogate: event.surrogate,
         })
       },
       async recordResolveDenied(event) {
-        await audit.append({
+        await recordPrivacyGatewayAudit(audit, {
+          action: event.action,
+          tenantId: event.tenantId,
+          scope: event.scope,
+          summary: summaryFromSurrogate(event.surrogate),
+          reason: event.reason,
+          surrogate: event.surrogate,
           actorType: event.requesterUserId ? 'human' : 'system',
           actorId: event.requesterUserId ?? null,
-          agentVersion: null,
-          action: event.action,
-          targetType: event.scope.type,
-          targetId: event.scope.id,
-          modelUsed: null,
-          inputRef: event.surrogate,
-          outputRef: event.reason,
-          policyDecision: 'denied',
-          metadata: {
-            tenantId: event.tenantId,
-            scopeType: event.scope.type,
-            reason: event.reason,
-          },
-          tenantId: event.tenantId,
-          conversationId: event.scope.type === 'conversation' ? event.scope.id : null,
         })
       },
     },

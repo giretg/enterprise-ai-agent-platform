@@ -35,6 +35,7 @@ import {
 import { LocalWikiHarnessLauncher } from '@/domain/dispatcher/local-wiki-harness-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
 import { createPlatformSurrogateEngine } from '@/domain/privacy/create-surrogate-engine'
+import { allowsExternalRaw } from '@/domain/privacy/privacy-category-policy'
 import { ConsequenceApprovalService } from '@/domain/tool-broker/consequence-approval-service'
 import { WebSearchPolicyService } from '@/domain/web-search/web-search-policy-service'
 import { WebSearchService } from '@/domain/web-search/web-search-service'
@@ -521,12 +522,21 @@ const toolAuthorizer = new AllowlistAuthorizer(
 )
 const routingEngine = new RoutingEngine(repositories.modelRoutingPolicies)
 const budgetEngine = new BudgetEngine(repositories.modelBudgets, repositories.modelCalls)
-// Sensitivity router: a per-agent felmentést a gateway az agentId-ból oldja fel,
-// így a nyolc hívási hely paraméter-lánca változatlan marad.
+// Sensitivity router: a kategória-policy `allow` akcióját a gateway az agentId-ból
+// oldja fel (APG-11). A régi boolean mező csak a resolver legacy overlaye.
 const agentSensitivityPolicy: AgentSensitivityPolicyReader = {
-  async allowsSensitiveExternalModel(agentId: string): Promise<boolean> {
+  async actionForCategory(agentId: string, category: string) {
     const agent = await repositories.agents.findById(agentId)
-    return agent?.allowSensitiveExternalModel ?? false
+    return platformSettingsService.resolvePrivacyCategoryAction({
+      tenantId: agent?.tenantId ?? null,
+      agentId,
+      category,
+      legacyAllowSensitiveExternalModel: agent?.allowSensitiveExternalModel ?? false,
+    })
+  },
+  async allowsSensitiveExternalModel(agentId: string): Promise<boolean> {
+    const action = await agentSensitivityPolicy.actionForCategory!(agentId, 'email')
+    return allowsExternalRaw(action)
   },
 }
 // A keret- és routing-kapu szervezet-helyessége: a futásidejű hívási helyek nem
@@ -791,6 +801,21 @@ const surrogateEngine = createPlatformSurrogateEngine(
   repositories.tickets,
 )
 toolBrokerService.setStructuredPrivacyEngine(surrogateEngine)
+toolBrokerService.setPrivacyModeResolver(({ tenantId, agentId }) =>
+  platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
+)
+modelGateway.setPrivacyEngine(surrogateEngine)
+modelGateway.setPrivacyModeResolver(({ tenantId, agentId }) =>
+  platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
+)
+toolBrokerService.setPrivacyCategoryActionResolver(({ tenantId, agentId, category, legacyAllowSensitiveExternalModel }) =>
+  platformSettingsService.resolvePrivacyCategoryAction({
+    tenantId,
+    agentId,
+    category,
+    legacyAllowSensitiveExternalModel,
+  }),
+)
 const consequenceApprovalService = new ConsequenceApprovalService(
   repositories.consequenceApprovals,
   repositories.conversations,

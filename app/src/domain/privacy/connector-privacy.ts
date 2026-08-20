@@ -144,6 +144,12 @@ export function readConnectorPrivacyFields(config: unknown): ConnectorFieldsPriv
   return parsed.success ? parsed.data : null
 }
 
+export function connectorHasPrivacyMetadata(config: unknown): boolean {
+  const fields = readConnectorPrivacyFields(config)
+  if (fields && Object.values(fields).some((field) => field.privacy === 'tokenize')) return true
+  return privacyCapabilityLevel(readPrivacyDeclaration(config)) !== 'none'
+}
+
 export function readPrivacyDeclaration(raw: unknown): PrivacyCapabilityDeclaration | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const cfg = raw as Record<string, unknown>

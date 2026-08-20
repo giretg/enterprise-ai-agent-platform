@@ -136,6 +136,12 @@ jobs:
           npm run test:surrogate-engine
           npm run test:connector-privacy
           npm run test:structured-output-privacy
+          npm run test:privacy-observe
+          npm run test:privacy-category-policy
+          npm run test:privacy-admin-ui
+          npm run test:prompt-privacy-transform
+          npm run test:gateway-negative
+          npm run test:privacy-latency
           npm run test:tool-arg-resolve
           npm run test:streaming-surrogate-resolve
           npm run test:render-surrogate-resolve

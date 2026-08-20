@@ -13,6 +13,8 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../src/lib/db'
 import { allocateRefSurrogate } from '../src/domain/privacy/allocate-ref-surrogate'
+import { formatSurrogate } from '../src/domain/privacy/surrogate-format'
+import { PostgresSurrogateVault } from '../src/domain/privacy/surrogate-vault'
 
 let failures = 0
 async function check(name: string, fn: () => Promise<void>) {
@@ -143,6 +145,32 @@ async function main() {
       assert.equal(row.encryptedValue, null)
       assert.equal(row.connectorId, null)
       assert.equal(row.sourceId, null)
+    })
+  })
+
+  await check('APG-10: insertRefs N entitást egy tranzakcióban ír, ütköző entitás a meglévőt adja', async () => {
+    await withTenant(async (tenantId) => {
+      const vault = new PostgresSurrogateVault(() => 'test-tenant-hmac-key')
+      const scope = { type: 'conversation' as const, id: randomUUID() }
+      const connectorId = randomUUID()
+      const inputs = Array.from({ length: 20 }, (_, i) => ({
+        tenantId,
+        scope,
+        entityType: 'company',
+        connectorId,
+        sourceId: `crm/company/${i + 1}`,
+        surrogate: formatSurrogate('company', i + 1),
+      }))
+      const first = await vault.insertRefs(inputs)
+      assert.equal(first.length, 20)
+      const again = await vault.insertRefs(inputs)
+      assert.equal(again.length, 20)
+      assert.equal(again[0]?.surrogate, '[[COMPANY_1]]')
+      assert.equal(again[0]?.id, first[0]?.id)
+      const count = await prisma.surrogateMap.count({
+        where: { tenantId, scopeId: scope.id },
+      })
+      assert.equal(count, 20)
     })
   })
 

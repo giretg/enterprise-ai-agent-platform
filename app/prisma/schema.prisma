@@ -839,6 +839,10 @@ model Agent {
   // Biztonsági rendszer-szerep. A Web-Egress kiválasztása és a `web_fetch` kapu
   // kizárólag ezt a perzisztált azonosítót fogadja el, sosem az agent megjelenített nevét.
   systemRole                    AgentSystemRole? @map("system_role")
+  // DEPRECATED (APG-11): a mindent-vagy-semmit kapcsolót a kategória-policy
+  // váltja. Az olvasók a `resolvePrivacyCategoryPolicy` legacy overlayén
+  // keresztül értelmezik, amíg az agentnek nincs explicit overlay-je. Ne olvasd
+  // közvetlenül — a mezőt a migrált viselkedés miatt még nem töröljük.
   // Sensitivity router (§4.7.2): ha true, egyik sensitivity szint sem blokkolja
   // vagy tereli helyi modellre az agent hívását. Az osztályozás és auditálás aktív
   // marad. Csak tenant admin / superadmin írhatja, minden váltás auditált.

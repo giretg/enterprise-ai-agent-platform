@@ -28,6 +28,7 @@ import { SurrogateEngine, type PrivacyAuditSink } from '../src/domain/privacy/su
 import { pseudonymizeStructuredOutput } from '../src/domain/privacy/structured-output-transform'
 import {
   computeSurrogateHmac,
+  insertRefsSequentially,
   SurrogateTakenError,
   verifySurrogateHmac,
   type InsertRefInput,
@@ -225,6 +226,20 @@ class InMemorySurrogateVault implements SurrogateVault {
     }
     this.rows.push(record)
     return record
+  }
+
+  async listByScope(tenantId: string, scope: PrivacyScope): Promise<RefVaultRecord[]> {
+    const hits: RefVaultRecord[] = []
+    for (const row of this.rows) {
+      if (row.tenantId !== tenantId || row.scopeType !== scope.type || row.scopeId !== scope.id) continue
+      const result = this.lookup(row)
+      if (result.status === 'hit') hits.push(result.record)
+    }
+    return hits
+  }
+
+  async insertRefs(inputs: InsertRefInput[]): Promise<RefVaultRecord[]> {
+    return insertRefsSequentially((input) => this.insertRef(input), inputs)
   }
 }
 

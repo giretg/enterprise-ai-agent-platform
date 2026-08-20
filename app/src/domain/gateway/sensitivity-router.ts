@@ -425,7 +425,10 @@ export function sensitivityPolicyFromEnv(env: NodeJS.ProcessEnv = process.env): 
 export function reviewableSensitivityFindings(
   findings: SensitivityFinding[],
   options: {
+    /** @deprecated APG-11: használd a `categoryAllowsExternal` callbackot. */
     allowSensitiveExternalModel?: boolean
+    /** Kategória-policy `allow` — az adott finding nem kér review-t. */
+    categoryAllowsExternal?: (category: string) => boolean
     /** Ha megvan, a hívó már jóváhagyta — nem kérünk újra review-t. */
     sensitivityReviewAccepted?: boolean
   } = {},
@@ -433,6 +436,7 @@ export function reviewableSensitivityFindings(
   if (options.allowSensitiveExternalModel || options.sensitivityReviewAccepted) return []
   const policy = sensitivityPolicyFromEnv()
   return findings.filter((f) => {
+    if (options.categoryAllowsExternal?.(f.category)) return false
     if (f.level === 'forbidden') return true
     if (f.level === 'sensitive') {
       return policy.enforceLocalForSensitive && !policy.localModelAvailable
@@ -465,6 +469,17 @@ const REDACTION_CATEGORY_LABELS: Record<string, string> = {
 }
 
 type RedactionSpan = TextSpan & { category: string }
+
+/** Osztályozó-találat offsettel — a prompt-privacy transzformáció (APG-12) ebből cserél. */
+export type SensitivityMatchSpan = TextSpan & { category: string; value: string }
+
+export function collectSensitivityMatchSpans(text: string): SensitivityMatchSpan[] {
+  if (!text) return []
+  return collectRedactionSpans(text).map((span) => ({
+    ...span,
+    value: text.slice(span.start, span.end),
+  }))
+}
 
 function collectRedactionSpans(text: string): RedactionSpan[] {
   const spans: RedactionSpan[] = []

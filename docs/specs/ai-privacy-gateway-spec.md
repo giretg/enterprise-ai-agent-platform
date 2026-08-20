@@ -8,7 +8,7 @@
 | **Státusz** | koncepció — nem implementált |
 | **Dátum** | 2026-08-19 |
 | **Issue** | #272 (ez a spec), #189 (beolvad, ld. D6) |
-| **Kapcsolódó spec** | `docs/AI-Agent-Platform-Feature-Spec-Sensitivity-Router.md`, `docs/specs/sensitivity-router-redesign-spec.md` |
+| **Kapcsolódó spec** | `docs/AI-Agent-Platform-Feature-Spec-Sensitivity-Router.md`, `docs/specs/sensitivity-router-redesign-spec.md`, **forrásrendszer-szerződés:** [`ai-privacy-source-system-contract.md`](./ai-privacy-source-system-contract.md) |
 | **Érintett kód** | `app/src/domain/gateway/model-gateway.ts`, `app/src/domain/gateway/sensitivity-router.ts`, `app/src/domain/gateway/prompt-cache.ts`, `app/src/domain/tool-broker/`, `app/src/domain/contract-runtime/`, `app/src/domain/agent/chat-tool-loop.ts`, `app/src/domain/channel/` |
 
 **Cél:** a modellek és modellüzemeltetők felé történő érzékeny adatkitettség érdemi csökkentése úgy, hogy az AI agentek használhatósága és üzleti kontextusa a lehető legnagyobb mértékben megmaradjon.
@@ -261,6 +261,8 @@ Ha a felhasználó a forrásalkalmazás jogosultsági modellje szerint nem fér 
 ## 11. Privacy Interface Contract csatlakoztatott rendszerekhez
 
 A platform szabványos privacy interfészt definiál; a connectorok capability-alapon implementálják.
+
+**Forrásrendszer-csapatnak odaadható szerződés** (katalógus API, payload-invariánsok, `resolve`, admin-UI ajánlás): [`ai-privacy-source-system-contract.md`](./ai-privacy-source-system-contract.md). Ez a fejezet a platformoldali összefoglaló; a kanonikus elvárások ott élnek.
 
 ### Elvárt / ajánlott képességek
 

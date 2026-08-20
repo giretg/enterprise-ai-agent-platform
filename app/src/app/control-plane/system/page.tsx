@@ -22,6 +22,8 @@ import {
 } from '@/app/actions/web-search'
 import { getTenantThinkingTraceControls } from '@/app/actions/chat-thinking-trace'
 import { getTenantLanguage } from '@/app/actions/tenant-language'
+import { getPrivacyAdminView } from '@/app/actions/privacy'
+import { PrivacyAdminPanel } from '@/components/privacy/privacy-admin-panel'
 import { readDispatcherRuntime } from '@/lib/dispatcher-runtime'
 import { enabledModelProviders } from '@/lib/model-policy'
 import { DatabaseControlPanel } from './database-control-panel'
@@ -66,6 +68,7 @@ export default async function SystemPage() {
     dailyBudgetRes,
     channelOpsRes,
     channelSetupRes,
+    privacyRes,
   ] = await Promise.all([
     getAuthContext(),
     getDispatcherControls(),
@@ -87,6 +90,7 @@ export default async function SystemPage() {
     getDailyBudgetOverview(),
     getChannelOpsMetrics({ windowDays: 7 }),
     getTelegramChannelSetup(),
+    getPrivacyAdminView({}),
   ])
   // §9.2/§13/4: a platform-globális vezérlőket csak platform-szerep szerkesztheti;
   // a tenant-admin itt read-only nézetet kap (a WRITE-actionök platform-guard alatt).
@@ -218,6 +222,14 @@ export default async function SystemPage() {
                 />
               )
               : errorBox(tenantLanguageRes.error),
+          },
+          {
+            id: 'adatvedelem',
+            label: 'Adatvédelem',
+            description: 'Mit láthat a külső modell — kategóriánként, próba modellhívás nélkül.',
+            content: privacyRes.success
+              ? <PrivacyAdminPanel initial={privacyRes.data} layers={['platform', 'tenant']} />
+              : errorBox(privacyRes.error),
           },
           {
             id: 'ticket-tipusok',

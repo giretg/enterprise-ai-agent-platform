@@ -70,10 +70,31 @@ export interface SurrogateVault {
    * megkülönböztetésére (APG-08). A publikus feloldás továbbra is scope-kötött.
    */
   findHitsBySurrogateInTenant(tenantId: string, surrogate: string): Promise<RefVaultRecord[]>
+  /**
+   * A scope összes érvényes ref-sora — beszélgetés-szintű entitástérkép-cache
+   * hidratálásához (APG-10). Tampered HMAC-ű sorok kimaradnak.
+   */
+  listByScope(tenantId: string, scope: PrivacyScope): Promise<RefVaultRecord[]>
   /** A típus eddig kiosztott legnagyobb sorszáma; üres scope-on 0. */
   maxOrdinal(tenantId: string, scope: PrivacyScope, entityType: string): Promise<number>
   /** HMAC-et a vault képzi. Entitás-ütközésnél a meglévő sort adja vissza. */
   insertRef(input: InsertRefInput): Promise<RefVaultRecord>
+  /**
+   * Fordulónkénti batchelt írás egy tranzakcióban (APG-10). Entitás-ütközésnél a
+   * meglévő sort adja vissza; a surrogate-foglalás miatt be nem került inputok
+   * kimaradnak a listából.
+   */
+  insertRefs(inputs: InsertRefInput[]): Promise<RefVaultRecord[]>
+}
+
+/** Teszt-vaultok és fallback: rekordonkénti insert, a hívó számára mégis egy batch. */
+export async function insertRefsSequentially(
+  insertRef: (input: InsertRefInput) => Promise<RefVaultRecord>,
+  inputs: InsertRefInput[],
+): Promise<RefVaultRecord[]> {
+  const records: RefVaultRecord[] = []
+  for (const input of inputs) records.push(await insertRef(input))
+  return records
 }
 
 const HMAC_VERSION = 'surrogate-hmac-v1'
@@ -243,6 +264,22 @@ export class PostgresSurrogateVault implements SurrogateVault {
     return hits
   }
 
+  async listByScope(tenantId: string, scope: PrivacyScope): Promise<RefVaultRecord[]> {
+    const rows = await prisma.surrogateMap.findMany({
+      where: { tenantId, scopeType: scope.type, scopeId: scope.id },
+      select: REF_SELECT,
+    })
+    const hits: RefVaultRecord[] = []
+    const tenantKey = this.resolveTenantKey(tenantId)
+    for (const row of rows) {
+      const record = toRecord(row)
+      if (!record) continue
+      const verified = authenticate(record, tenantKey)
+      if (verified.status === 'hit') hits.push(verified.record)
+    }
+    return hits
+  }
+
   async maxOrdinal(tenantId: string, scope: PrivacyScope, entityType: string): Promise<number> {
     const rows = await prisma.surrogateMap.findMany({
       where: { tenantId, scopeType: scope.type, scopeId: scope.id, entityType },
@@ -288,4 +325,74 @@ export class PostgresSurrogateVault implements SurrogateVault {
     if (verified.status !== 'hit') throw new Error('vault-sor HMAC-je érvénytelen')
     return verified.record
   }
+
+  async insertRefs(inputs: InsertRefInput[]): Promise<RefVaultRecord[]> {
+    if (inputs.length === 0) return []
+    if (inputs.length === 1) {
+      const only = inputs[0]
+      if (!only) return []
+      return [await this.insertRef(only)]
+    }
+
+    const data = inputs.map((input) => {
+      const fields = hmacFieldsFrom(input)
+      return {
+        tenantId: input.tenantId,
+        scopeType: input.scope.type,
+        scopeId: input.scope.id,
+        entityType: input.entityType,
+        surrogate: input.surrogate,
+        class: 'ref' as const,
+        connectorId: input.connectorId,
+        sourceId: input.sourceId,
+        hmac: computeSurrogateHmac(this.resolveTenantKey(input.tenantId), fields),
+      }
+    })
+
+    return prisma.$transaction(async (tx) => {
+      await tx.surrogateMap.createMany({ data, skipDuplicates: true })
+      const wanted = new Set(
+        inputs.map(
+          (input) =>
+            `${input.tenantId}\0${input.scope.type}\0${input.scope.id}\0${input.entityType}\0${input.connectorId}\0${input.sourceId}`,
+        ),
+      )
+      const found: RefVaultRecord[] = []
+      for (const group of groupInsertsByScope(inputs)) {
+        const rows = await tx.surrogateMap.findMany({
+          where: {
+            tenantId: group.tenantId,
+            scopeType: group.scope.type,
+            scopeId: group.scope.id,
+          },
+          select: REF_SELECT,
+        })
+        const tenantKey = this.resolveTenantKey(group.tenantId)
+        for (const row of rows) {
+          const record = toRecord(row)
+          if (!record) continue
+          const identity = `${record.tenantId}\0${record.scopeType}\0${record.scopeId}\0${record.entityType}\0${record.connectorId}\0${record.sourceId}`
+          if (!wanted.has(identity)) continue
+          const verified = authenticate(record, tenantKey)
+          if (verified.status === 'tampered') {
+            throw new Error('a meglévő vault-sor HMAC-je érvénytelen, új álnév nem allokálható')
+          }
+          if (verified.status === 'hit') found.push(verified.record)
+        }
+      }
+      return found
+    })
+  }
+}
+
+function groupInsertsByScope(inputs: InsertRefInput[]): Array<{
+  tenantId: string
+  scope: PrivacyScope
+}> {
+  const seen = new Map<string, { tenantId: string; scope: PrivacyScope }>()
+  for (const input of inputs) {
+    const key = `${input.tenantId}\0${input.scope.type}\0${input.scope.id}`
+    if (!seen.has(key)) seen.set(key, { tenantId: input.tenantId, scope: input.scope })
+  }
+  return [...seen.values()]
 }

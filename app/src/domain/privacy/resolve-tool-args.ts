@@ -9,8 +9,9 @@
  * Csak a teljes string-érték számít álnévnek (`parseSurrogate`); részstring
  * (pl. path-ba ágyazott álnév) M1-ben szándékosan érintetlen.
  */
+import { addSpanCategory } from '@/domain/privacy/privacy-mode'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
-import { parseSurrogate } from '@/domain/privacy/surrogate-format'
+import { parseSurrogate, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
 
 export class UnknownSurrogateError extends Error {
@@ -38,7 +39,12 @@ export type ResolveToolArgsInput = {
 }
 
 export type ResolveToolArgsResult =
-  | { ok: true; args: unknown; resolvedCount: number }
+  | {
+      ok: true
+      args: unknown
+      resolvedCount: number
+      byCategory: Partial<Record<SurrogateEntityType, number>>
+    }
   | { ok: false; surrogate: string; reason: 'unknown' | 'hmac_invalid' | 'denied' }
 
 export async function resolveToolArgs(input: ResolveToolArgsInput): Promise<ResolveToolArgsResult> {
@@ -46,24 +52,34 @@ export async function resolveToolArgs(input: ResolveToolArgsInput): Promise<Reso
   try {
     copy = structuredClone(input.args)
   } catch {
-    return { ok: true, args: input.args, resolvedCount: 0 }
+    return { ok: true, args: input.args, resolvedCount: 0, byCategory: {} }
   }
 
   const walked = await walk(copy, input)
   if (!walked.ok) return walked
-  return { ok: true, args: copy, resolvedCount: walked.resolvedCount }
+  return {
+    ok: true,
+    args: copy,
+    resolvedCount: walked.resolvedCount,
+    byCategory: walked.byCategory,
+  }
 }
 
-type WalkOk = { ok: true; resolvedCount: number }
+type WalkOk = {
+  ok: true
+  resolvedCount: number
+  byCategory: Partial<Record<SurrogateEntityType, number>>
+}
 
 async function walk(
   value: unknown,
   ctx: ResolveToolArgsInput,
 ): Promise<WalkOk | Extract<ResolveToolArgsResult, { ok: false }>> {
-  if (!value || typeof value !== 'object') return { ok: true, resolvedCount: 0 }
+  if (!value || typeof value !== 'object') return { ok: true, resolvedCount: 0, byCategory: {} }
 
   if (Array.isArray(value)) {
     let resolvedCount = 0
+    let byCategory: Partial<Record<SurrogateEntityType, number>> = {}
     for (let i = 0; i < value.length; i += 1) {
       const child = value[i]
       if (typeof child === 'string') {
@@ -72,18 +88,21 @@ async function walk(
         if (replaced.changed) {
           value[i] = replaced.value
           resolvedCount += 1
+          byCategory = addSpanCategory(byCategory, replaced.entityType)
         }
         continue
       }
       const nested = await walk(child, ctx)
       if (!nested.ok) return nested
       resolvedCount += nested.resolvedCount
+      byCategory = mergeCategories(byCategory, nested.byCategory)
     }
-    return { ok: true, resolvedCount }
+    return { ok: true, resolvedCount, byCategory }
   }
 
   const record = value as Record<string, unknown>
   let resolvedCount = 0
+  let byCategory: Partial<Record<SurrogateEntityType, number>> = {}
   for (const [key, child] of Object.entries(record)) {
     if (typeof child === 'string') {
       const replaced = await replaceIfSurrogate(child, ctx)
@@ -91,14 +110,16 @@ async function walk(
       if (replaced.changed) {
         record[key] = replaced.value
         resolvedCount += 1
+        byCategory = addSpanCategory(byCategory, replaced.entityType)
       }
       continue
     }
     const nested = await walk(child, ctx)
     if (!nested.ok) return nested
     resolvedCount += nested.resolvedCount
+    byCategory = mergeCategories(byCategory, nested.byCategory)
   }
-  return { ok: true, resolvedCount }
+  return { ok: true, resolvedCount, byCategory }
 }
 
 async function replaceIfSurrogate(
@@ -106,10 +127,11 @@ async function replaceIfSurrogate(
   ctx: ResolveToolArgsInput,
 ): Promise<
   | { ok: true; changed: false }
-  | { ok: true; changed: true; value: string }
+  | { ok: true; changed: true; value: string; entityType: SurrogateEntityType }
   | Extract<ResolveToolArgsResult, { ok: false }>
 > {
-  if (!parseSurrogate(value)) return { ok: true, changed: false }
+  const parsed = parseSurrogate(value)
+  if (!parsed) return { ok: true, changed: false }
   const resolved = await ctx.engine.resolveRef({
     tenantId: ctx.tenantId,
     scope: ctx.scope,
@@ -117,5 +139,16 @@ async function replaceIfSurrogate(
     requester: { tenantId: ctx.tenantId, userId: ctx.requesterUserId ?? null },
   })
   if (!resolved.ok) return { ok: false, surrogate: value, reason: resolved.reason }
-  return { ok: true, changed: true, value: resolved.record.sourceId }
+  return { ok: true, changed: true, value: resolved.record.sourceId, entityType: parsed.entityType }
+}
+
+function mergeCategories(
+  left: Partial<Record<SurrogateEntityType, number>>,
+  right: Partial<Record<SurrogateEntityType, number>>,
+): Partial<Record<SurrogateEntityType, number>> {
+  let merged = left
+  for (const [key, count] of Object.entries(right)) {
+    if (typeof count === 'number') merged = addSpanCategory(merged, key as SurrogateEntityType, count)
+  }
+  return merged
 }

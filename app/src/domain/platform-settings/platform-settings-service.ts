@@ -53,6 +53,38 @@ import {
   type GoogleOAuthConfig,
   type GoogleOAuthResolved,
 } from '@/lib/platform-google-oauth-config'
+import {
+  DEFAULT_PRIVACY_GATEWAY_MODE,
+  parsePrivacyGatewayMode,
+  PRIVACY_GATEWAY_AGENT_CONTROLS_KEY,
+  PRIVACY_GATEWAY_CONTROLS_KEY,
+  PRIVACY_GATEWAY_TENANT_CONTROLS_KEY,
+  resolvePrivacyGatewayMode,
+  type PrivacyGatewayMode,
+} from '@/domain/privacy/privacy-mode'
+import { PRIVACY_CATEGORY_POLICY_SET_ACTION, PRIVACY_GATEWAY_MODE_SET_ACTION } from '@/domain/privacy/privacy-audit'
+import {
+  actionForPrivacyCategory,
+  applyCategoryMapPatch,
+  applyCustomCategoryMapPatch,
+  assertPrivacyCategoryPolicyPatch,
+  defaultPrivacyCategoryPolicyDocument,
+  emptyPrivacyCategoryPolicyLayer,
+  INITIAL_PRIVACY_PATTERN_SET_VERSION,
+  layerHasOverlay,
+  parsePrivacyCategoryPolicyDocument,
+  parsePrivacyCategoryPolicyLayer,
+  PRIVACY_CATEGORY_POLICY_AGENT_KEY,
+  PRIVACY_CATEGORY_POLICY_KEY,
+  PRIVACY_CATEGORY_POLICY_TENANT_KEY,
+  resolvePrivacyCategoryPolicy,
+  type PrivacyCategoryAction,
+  type PrivacyCategoryPolicyActor,
+  type PrivacyCategoryPolicyDocument,
+  type PrivacyCategoryPolicyLayer,
+  type PrivacyCategoryPolicyPatch,
+  type ResolvedPrivacyCategoryPolicy,
+} from '@/domain/privacy/privacy-category-policy'
 
 export const DISPATCHER_CONTROLS_KEY = 'dispatcher.controls'
 export const DISPATCHER_LAST_CYCLE_KEY = 'dispatcher.last_cycle'
@@ -213,6 +245,29 @@ type ChatThinkingTraceControls = {
 }
 type ChatThinkingTraceStore = Record<string, Partial<ChatThinkingTraceControls>>
 type EgressAllowlistStore = Record<string, string[]>
+
+export type PrivacyGatewayControls = {
+  mode: PrivacyGatewayMode
+  updatedById: string | null
+  updatedAt: string | null
+}
+
+/** Tenant/agent override: `mode: null` = öröklés a szülő szintről. */
+export type PrivacyGatewayLayerControls = {
+  mode: PrivacyGatewayMode | null
+  updatedById: string | null
+  updatedAt: string | null
+}
+
+type PrivacyGatewayLayerStore = Record<string, Partial<PrivacyGatewayLayerControls>>
+
+const DEFAULT_PRIVACY_GATEWAY_CONTROLS: PrivacyGatewayControls = {
+  mode: DEFAULT_PRIVACY_GATEWAY_MODE,
+  updatedById: null,
+  updatedAt: null,
+}
+
+type PrivacyCategoryPolicyLayerStore = Record<string, PrivacyCategoryPolicyLayer>
 
 /**
  * Host-normalizálás az allowlist-bővítéshez: URL → hostname; port/path levágva; kisbetűs.
@@ -818,6 +873,304 @@ export class PlatformSettingsService {
     })
 
     return next
+  }
+
+  // ── AI Privacy Gateway üzemmód (APG-09, spec §13) ──────────────────────────
+
+  async getPrivacyGatewayControls(): Promise<PrivacyGatewayControls> {
+    const raw = (await this.settings.get(PRIVACY_GATEWAY_CONTROLS_KEY)) as Partial<PrivacyGatewayControls> | null
+    if (!raw || typeof raw !== 'object') return { ...DEFAULT_PRIVACY_GATEWAY_CONTROLS }
+    return {
+      mode: parsePrivacyGatewayMode(raw.mode) ?? DEFAULT_PRIVACY_GATEWAY_MODE,
+      updatedById: typeof raw.updatedById === 'string' ? raw.updatedById : null,
+      updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
+    }
+  }
+
+  async setPrivacyGatewayControls(
+    input: { mode: PrivacyGatewayMode },
+    actorId: string,
+  ): Promise<PrivacyGatewayControls> {
+    const next: PrivacyGatewayControls = {
+      mode: input.mode,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    }
+    await this.settings.set(PRIVACY_GATEWAY_CONTROLS_KEY, next as unknown as Prisma.InputJsonObject, actorId)
+    await this.recordPrivacyGatewayModeSet('platform', null, next.mode, actorId)
+    return next
+  }
+
+  async getTenantPrivacyGatewayControls(tenantId: string): Promise<PrivacyGatewayLayerControls> {
+    return this.readPrivacyLayer(PRIVACY_GATEWAY_TENANT_CONTROLS_KEY, tenantId)
+  }
+
+  async setTenantPrivacyGatewayControls(
+    tenantId: string,
+    input: { mode: PrivacyGatewayMode | null },
+    actorId: string,
+  ): Promise<PrivacyGatewayLayerControls> {
+    const next = await this.writePrivacyLayer(PRIVACY_GATEWAY_TENANT_CONTROLS_KEY, tenantId, input.mode, actorId)
+    await this.recordPrivacyGatewayModeSet('tenant', tenantId, next.mode, actorId)
+    return next
+  }
+
+  async getAgentPrivacyGatewayControls(agentId: string): Promise<PrivacyGatewayLayerControls> {
+    return this.readPrivacyLayer(PRIVACY_GATEWAY_AGENT_CONTROLS_KEY, agentId)
+  }
+
+  async setAgentPrivacyGatewayControls(
+    agentId: string,
+    input: { mode: PrivacyGatewayMode | null },
+    actorId: string,
+  ): Promise<PrivacyGatewayLayerControls> {
+    const next = await this.writePrivacyLayer(PRIVACY_GATEWAY_AGENT_CONTROLS_KEY, agentId, input.mode, actorId)
+    await this.recordPrivacyGatewayModeSet('agent', agentId, next.mode, actorId)
+    return next
+  }
+
+  async resolvePrivacyGatewayMode(input: {
+    tenantId: string | null
+    agentId?: string | null
+  }): Promise<PrivacyGatewayMode> {
+    const platform = (await this.getPrivacyGatewayControls()).mode
+    const tenant = input.tenantId
+      ? (await this.getTenantPrivacyGatewayControls(input.tenantId)).mode
+      : null
+    const agent = input.agentId
+      ? (await this.getAgentPrivacyGatewayControls(input.agentId)).mode
+      : null
+    return resolvePrivacyGatewayMode({ platform, tenant, agent })
+  }
+
+  // ── AI Privacy Gateway kategória-policy (APG-11, spec §2) ─────────────────
+
+  async getPrivacyCategoryPolicy(): Promise<PrivacyCategoryPolicyDocument> {
+    const raw = await this.settings.get(PRIVACY_CATEGORY_POLICY_KEY)
+    if (!raw || typeof raw !== 'object') return defaultPrivacyCategoryPolicyDocument()
+    return parsePrivacyCategoryPolicyDocument(raw)
+  }
+
+  async setPrivacyCategoryPolicy(
+    patch: PrivacyCategoryPolicyPatch,
+    actor: PrivacyCategoryPolicyActor,
+  ): Promise<PrivacyCategoryPolicyDocument> {
+    assertPrivacyCategoryPolicyPatch(patch, actor)
+    const current = await this.getPrivacyCategoryPolicy()
+    const next = this.mergeCategoryPolicyDocument(current, patch, actor.actorId)
+    await this.settings.set(PRIVACY_CATEGORY_POLICY_KEY, next as unknown as Prisma.InputJsonObject, actor.actorId)
+    await this.recordPrivacyCategoryPolicySet('platform', null, next, patch, actor.actorId)
+    return next
+  }
+
+  async getTenantPrivacyCategoryPolicy(tenantId: string): Promise<PrivacyCategoryPolicyLayer> {
+    return this.readCategoryPolicyLayer(PRIVACY_CATEGORY_POLICY_TENANT_KEY, tenantId)
+  }
+
+  async setTenantPrivacyCategoryPolicy(
+    tenantId: string,
+    patch: PrivacyCategoryPolicyPatch,
+    actor: PrivacyCategoryPolicyActor,
+  ): Promise<PrivacyCategoryPolicyLayer> {
+    assertPrivacyCategoryPolicyPatch(patch, actor)
+    const next = await this.writeCategoryPolicyLayer(
+      PRIVACY_CATEGORY_POLICY_TENANT_KEY,
+      tenantId,
+      patch,
+      actor.actorId,
+    )
+    await this.recordPrivacyCategoryPolicySet('tenant', tenantId, next, patch, actor.actorId)
+    return next
+  }
+
+  async getAgentPrivacyCategoryPolicy(agentId: string): Promise<PrivacyCategoryPolicyLayer> {
+    return this.readCategoryPolicyLayer(PRIVACY_CATEGORY_POLICY_AGENT_KEY, agentId)
+  }
+
+  async setAgentPrivacyCategoryPolicy(
+    agentId: string,
+    patch: PrivacyCategoryPolicyPatch,
+    actor: PrivacyCategoryPolicyActor,
+  ): Promise<PrivacyCategoryPolicyLayer> {
+    assertPrivacyCategoryPolicyPatch(patch, actor)
+    const next = await this.writeCategoryPolicyLayer(
+      PRIVACY_CATEGORY_POLICY_AGENT_KEY,
+      agentId,
+      patch,
+      actor.actorId,
+    )
+    await this.recordPrivacyCategoryPolicySet('agent', agentId, next, patch, actor.actorId)
+    return next
+  }
+
+  async resolvePrivacyCategoryPolicy(input: {
+    tenantId?: string | null
+    agentId?: string | null
+    legacyAllowSensitiveExternalModel?: boolean
+  }): Promise<ResolvedPrivacyCategoryPolicy> {
+    const platform = await this.getPrivacyCategoryPolicy()
+    const tenant = input.tenantId ? await this.getTenantPrivacyCategoryPolicy(input.tenantId) : null
+    const agent = input.agentId ? await this.getAgentPrivacyCategoryPolicy(input.agentId) : null
+    return resolvePrivacyCategoryPolicy({
+      platform,
+      tenant,
+      agent,
+      legacyAllowSensitiveExternalModel: input.legacyAllowSensitiveExternalModel,
+    })
+  }
+
+  async resolvePrivacyCategoryAction(input: {
+    tenantId?: string | null
+    agentId?: string | null
+    category: string
+    legacyAllowSensitiveExternalModel?: boolean
+  }): Promise<PrivacyCategoryAction> {
+    const resolved = await this.resolvePrivacyCategoryPolicy(input)
+    return actionForPrivacyCategory(resolved, input.category)
+  }
+
+  private mergeCategoryPolicyDocument(
+    current: PrivacyCategoryPolicyDocument,
+    patch: PrivacyCategoryPolicyPatch,
+    actorId: string,
+  ): PrivacyCategoryPolicyDocument {
+    const categories = applyCategoryMapPatch(current.categories, patch.categories)
+    const custom = applyCustomCategoryMapPatch(current.custom, patch.custom)
+    const bumped =
+      JSON.stringify(categories) !== JSON.stringify(current.categories) ||
+      JSON.stringify(custom) !== JSON.stringify(current.custom)
+    return {
+      categories,
+      custom,
+      patternSetVersion: bumped
+        ? Math.max(current.patternSetVersion, INITIAL_PRIVACY_PATTERN_SET_VERSION) + 1
+        : current.patternSetVersion,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    }
+  }
+
+  private async readCategoryPolicyLayer(
+    key: string,
+    id: string,
+  ): Promise<PrivacyCategoryPolicyLayer> {
+    const raw = (await this.settings.get(key)) as PrivacyCategoryPolicyLayerStore | null
+    const bucket = raw?.[id]
+    if (!bucket || typeof bucket !== 'object') return emptyPrivacyCategoryPolicyLayer()
+    return parsePrivacyCategoryPolicyLayer(bucket)
+  }
+
+  private async writeCategoryPolicyLayer(
+    key: string,
+    id: string,
+    patch: PrivacyCategoryPolicyPatch,
+    actorId: string,
+  ): Promise<PrivacyCategoryPolicyLayer> {
+    const raw = (await this.settings.get(key)) as PrivacyCategoryPolicyLayerStore | null
+    const store: PrivacyCategoryPolicyLayerStore = raw && typeof raw === 'object' ? { ...raw } : {}
+    const current = parsePrivacyCategoryPolicyLayer(store[id])
+    const categories = applyCategoryMapPatch(current.categories, patch.categories)
+    const custom = applyCustomCategoryMapPatch(current.custom, patch.custom)
+    const next: PrivacyCategoryPolicyLayer = {
+      categories,
+      custom,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    }
+    if (!layerHasOverlay(next)) delete store[id]
+    else store[id] = next
+    await this.settings.set(key, store as unknown as Prisma.InputJsonObject, actorId)
+    return next
+  }
+
+  private async recordPrivacyCategoryPolicySet(
+    layer: 'platform' | 'tenant' | 'agent',
+    targetId: string | null,
+    stored: PrivacyCategoryPolicyDocument | PrivacyCategoryPolicyLayer,
+    patch: PrivacyCategoryPolicyPatch,
+    actorId: string,
+  ): Promise<void> {
+    const patternSetVersion =
+      'patternSetVersion' in stored ? stored.patternSetVersion : null
+    const categories = [
+      ...Object.keys(patch.categories ?? stored.categories),
+      ...Object.keys(patch.custom ?? stored.custom),
+    ]
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: PRIVACY_CATEGORY_POLICY_SET_ACTION,
+      targetType: 'platform_setting',
+      targetId,
+      modelUsed: null,
+      inputRef: layer,
+      outputRef: patternSetVersion != null ? `v${patternSetVersion}` : layer,
+      policyDecision: 'category_policy',
+      metadata: {
+        layer,
+        patternSetVersion,
+        categories,
+      },
+      tenantId: layer === 'tenant' ? targetId : null,
+    })
+  }
+
+  private async readPrivacyLayer(
+    key: string,
+    id: string,
+  ): Promise<PrivacyGatewayLayerControls> {
+    const raw = (await this.settings.get(key)) as PrivacyGatewayLayerStore | null
+    const bucket = raw?.[id]
+    if (!bucket || typeof bucket !== 'object') {
+      return { mode: null, updatedById: null, updatedAt: null }
+    }
+    return {
+      mode: parsePrivacyGatewayMode(bucket.mode),
+      updatedById: typeof bucket.updatedById === 'string' ? bucket.updatedById : null,
+      updatedAt: typeof bucket.updatedAt === 'string' ? bucket.updatedAt : null,
+    }
+  }
+
+  private async writePrivacyLayer(
+    key: string,
+    id: string,
+    mode: PrivacyGatewayMode | null,
+    actorId: string,
+  ): Promise<PrivacyGatewayLayerControls> {
+    const raw = (await this.settings.get(key)) as PrivacyGatewayLayerStore | null
+    const store: PrivacyGatewayLayerStore = raw && typeof raw === 'object' ? { ...raw } : {}
+    const next: PrivacyGatewayLayerControls = {
+      mode,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    }
+    if (mode == null) delete store[id]
+    else store[id] = next
+    await this.settings.set(key, store as unknown as Prisma.InputJsonObject, actorId)
+    return next
+  }
+
+  private async recordPrivacyGatewayModeSet(
+    layer: 'platform' | 'tenant' | 'agent',
+    targetId: string | null,
+    mode: PrivacyGatewayMode | null,
+    actorId: string,
+  ): Promise<void> {
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: PRIVACY_GATEWAY_MODE_SET_ACTION,
+      targetType: 'platform_setting',
+      targetId,
+      modelUsed: null,
+      inputRef: layer,
+      outputRef: mode,
+      policyDecision: mode ?? 'inherit',
+      metadata: { layer, mode },
+      tenantId: layer === 'tenant' ? targetId : null,
+    })
   }
 
   async setWebSearchControls(input: { killSwitch: boolean }, actorId: string): Promise<WebSearchControls> {

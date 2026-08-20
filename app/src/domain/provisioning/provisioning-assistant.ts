@@ -313,6 +313,7 @@ export class ProvisioningAssistant {
     docText: string
     providerHint?: string
     allowSensitiveExternalModel?: boolean
+    categoryAllowsExternal?: (category: string) => boolean
     /** Ember jóváhagyta az érzékeny tartalom külső modellre küldését. */
     sensitivityReviewAccepted?: boolean
     reviewedByUserId?: string
@@ -338,6 +339,7 @@ export class ProvisioningAssistant {
     const sensitivity = inspectPromptSensitivity(messages)
     const reviewFindings = reviewableSensitivityFindings(sensitivity.findings, {
       allowSensitiveExternalModel: input.allowSensitiveExternalModel,
+      categoryAllowsExternal: input.categoryAllowsExternal,
     })
     let sensitivityOverride = input.sensitivityOverride
     if (reviewFindings.length > 0) {
@@ -427,6 +429,7 @@ export class ProvisioningAssistant {
     tenantId?: string | null
     conversationId?: string | null
     allowSensitiveExternalModel?: boolean
+    categoryAllowsExternal?: (category: string) => boolean
     sensitivityReviewAccepted?: boolean
     reviewedByUserId?: string
     sensitivityOverride?: SensitivityOverride
@@ -520,6 +523,7 @@ export class ProvisioningAssistant {
       docText,
       providerHint: name,
       allowSensitiveExternalModel: input.allowSensitiveExternalModel,
+      categoryAllowsExternal: input.categoryAllowsExternal,
       sensitivityReviewAccepted: input.sensitivityReviewAccepted,
       reviewedByUserId: input.reviewedByUserId,
       sensitivityOverride: input.sensitivityOverride,

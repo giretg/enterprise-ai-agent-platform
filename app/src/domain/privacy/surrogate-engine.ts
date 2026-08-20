@@ -1,5 +1,5 @@
 /**
- * Surrogate Engine: allokálás és feloldás (APG-02, spec §5; APG-08 §10.5).
+ * Surrogate Engine: allokálás és feloldás (APG-02, spec §5; APG-08 §10.5; APG-10 batch).
  *
  * `(tenantId, scope, entityRef) → surrogate` bijektív a scope-on belül.
  * A sorszámozás entitástípusonként 1-től nő. A feloldás kizárólag vault-találaton
@@ -16,7 +16,6 @@ import {
 } from '@/domain/privacy/resolve-access'
 import { formatSurrogate, parseSurrogate } from '@/domain/privacy/surrogate-format'
 import {
-  SurrogateTakenError,
   type PrivacyScope,
   type RefEntityRef,
   type RefVaultRecord,
@@ -64,6 +63,8 @@ const MAX_ALLOC_ATTEMPTS = 16
 
 export class SurrogateEngine {
   private readonly displayValues = new Map<string, string>()
+  /** Beszélgetés-szintű entitástérkép: a history append-only, a prefix újrahasznosítható. */
+  private readonly scopes = new Map<string, ScopeEntityMap>()
 
   constructor(
     private readonly vault: SurrogateVault,
@@ -91,53 +92,23 @@ export class SurrogateEngine {
   }
 
   async allocateRef(input: AllocateRefInput): Promise<string> {
-    const existing = await this.vault.findByEntity(input.tenantId, input.scope, {
-      entityType: input.entityType,
-      connectorId: input.connectorId,
-      sourceId: input.sourceId,
-    })
-    if (existing.status === 'hit') {
-      if (input.displayValue) {
-        this.rememberDisplayValue(input.tenantId, input.scope, existing.record.surrogate, input.displayValue)
-      }
-      return existing.record.surrogate
-    }
-    if (existing.status === 'tampered') {
-      throw new Error('a meglévő vault-sor HMAC-je érvénytelen, új álnév nem allokálható')
-    }
+    const assigned = await this.allocateRefs([input])
+    const surrogate = assigned[0]
+    if (!surrogate) throw new Error('álnév-allokáció üres eredménnyel tért vissza')
+    return surrogate
+  }
 
-    let nextOrdinal = (await this.vault.maxOrdinal(input.tenantId, input.scope, input.entityType)) + 1
-    for (let attempt = 0; attempt < MAX_ALLOC_ATTEMPTS; attempt += 1) {
-      const surrogate = formatSurrogate(input.entityType, nextOrdinal)
-      try {
-        const record = await this.vault.insertRef({
-          tenantId: input.tenantId,
-          scope: input.scope,
-          entityType: input.entityType,
-          connectorId: input.connectorId,
-          sourceId: input.sourceId,
-          surrogate,
-        })
-        this.rememberAllocatedDisplay(input, record.surrogate)
-        return record.surrogate
-      } catch (error) {
-        if (error instanceof SurrogateTakenError) {
-          nextOrdinal += 1
-          continue
-        }
-        const raced = await this.vault.findByEntity(input.tenantId, input.scope, {
-          entityType: input.entityType,
-          connectorId: input.connectorId,
-          sourceId: input.sourceId,
-        })
-        if (raced.status === 'hit') {
-          this.rememberAllocatedDisplay(input, raced.record.surrogate)
-          return raced.record.surrogate
-        }
-        throw error
-      }
+  /**
+   * Fordulónkénti batchelt allokáció (APG-10): a beszélgetés entitástérképe
+   * memóriában marad, az új entitások egy vault-tranzakcióban íródnak.
+   */
+  async allocateRefs(inputs: AllocateRefInput[]): Promise<string[]> {
+    if (inputs.length === 0) return []
+    const results = new Array<string>(inputs.length)
+    for (const group of groupAllocationsByScope(inputs)) {
+      await this.allocateRefsInScope(group, results)
     }
-    throw new Error('álnév-allokáció: a sorszámfoglalás túl sokszor ütközött')
+    return results
   }
 
   async resolveRef(input: ResolveRefInput): Promise<ResolveRefResult> {
@@ -217,6 +188,147 @@ export class SurrogateEngine {
       this.rememberDisplayValue(input.tenantId, input.scope, surrogate, input.displayValue)
     }
   }
+
+  private async allocateRefsInScope(
+    group: AllocationScopeGroup,
+    results: string[],
+  ): Promise<void> {
+    const cache = await this.hydrate(group.tenantId, group.scope)
+    const uniquePending: AllocateRefInput[] = []
+    const keyToIndexes = new Map<string, number[]>()
+
+    for (const item of group.items) {
+      const key = entityKey(item.input)
+      const cached = cache.byEntity.get(key)
+      if (cached) {
+        this.rememberAllocatedDisplay(item.input, cached.surrogate)
+        results[item.index] = cached.surrogate
+        continue
+      }
+      const indexes = keyToIndexes.get(key)
+      if (indexes) {
+        indexes.push(item.index)
+        continue
+      }
+      keyToIndexes.set(key, [item.index])
+      uniquePending.push(item.input)
+    }
+
+    if (uniquePending.length === 0) return
+
+    const placed = await this.insertNew(cache, group.tenantId, group.scope, uniquePending)
+    for (const input of uniquePending) {
+      const key = entityKey(input)
+      const record = placed.get(key)
+      if (!record) throw new Error('álnév-allokáció: a batchelt írás nem adott rekordot')
+      for (const index of keyToIndexes.get(key) ?? []) {
+        const original = group.items.find((item) => item.index === index)
+        if (original) this.rememberAllocatedDisplay(original.input, record.surrogate)
+        results[index] = record.surrogate
+      }
+    }
+  }
+
+  private async hydrate(tenantId: string, scope: PrivacyScope): Promise<ScopeEntityMap> {
+    const key = scopeKey(tenantId, scope)
+    const existing = this.scopes.get(key)
+    if (existing) return existing
+
+    const cache: ScopeEntityMap = { byEntity: new Map(), maxOrdinal: new Map() }
+    const records = await this.vault.listByScope(tenantId, scope)
+    for (const record of records) {
+      cache.byEntity.set(entityKey(record), record)
+      const parsed = parseSurrogate(record.surrogate)
+      if (parsed) {
+        const prev = cache.maxOrdinal.get(parsed.entityType) ?? 0
+        if (parsed.ordinal > prev) cache.maxOrdinal.set(parsed.entityType, parsed.ordinal)
+      }
+    }
+    this.scopes.set(key, cache)
+    return cache
+  }
+
+  private async insertNew(
+    cache: ScopeEntityMap,
+    tenantId: string,
+    scope: PrivacyScope,
+    inputs: AllocateRefInput[],
+  ): Promise<Map<string, RefVaultRecord>> {
+    const placed = new Map<string, RefVaultRecord>()
+    let remaining = [...inputs]
+    for (let attempt = 0; attempt < MAX_ALLOC_ATTEMPTS && remaining.length > 0; attempt += 1) {
+      const batch: Array<{
+        tenantId: string
+        scope: PrivacyScope
+        entityType: string
+        connectorId: string
+        sourceId: string
+        surrogate: string
+      }> = remaining.map((input) => {
+        const next = (cache.maxOrdinal.get(input.entityType) ?? 0) + 1
+        cache.maxOrdinal.set(input.entityType, next)
+        return {
+          tenantId,
+          scope,
+          entityType: input.entityType,
+          connectorId: input.connectorId,
+          sourceId: input.sourceId,
+          surrogate: formatSurrogate(input.entityType, next),
+        }
+      })
+      const records = await this.vault.insertRefs(batch)
+      const foundKeys = new Set<string>()
+      for (const record of records) {
+        const key = entityKey(record)
+        cache.byEntity.set(key, record)
+        placed.set(key, record)
+        foundKeys.add(key)
+        const parsed = parseSurrogate(record.surrogate)
+        if (parsed) {
+          const max = cache.maxOrdinal.get(parsed.entityType) ?? 0
+          if (parsed.ordinal > max) cache.maxOrdinal.set(parsed.entityType, parsed.ordinal)
+        }
+      }
+      remaining = remaining.filter((input) => !foundKeys.has(entityKey(input)))
+    }
+    if (remaining.length > 0) {
+      throw new Error('álnév-allokáció: a sorszámfoglalás túl sokszor ütközött')
+    }
+    return placed
+  }
+}
+
+type ScopeEntityMap = {
+  byEntity: Map<string, RefVaultRecord>
+  maxOrdinal: Map<string, number>
+}
+
+type AllocationScopeGroup = {
+  tenantId: string
+  scope: PrivacyScope
+  items: Array<{ input: AllocateRefInput; index: number }>
+}
+
+function groupAllocationsByScope(inputs: AllocateRefInput[]): AllocationScopeGroup[] {
+  const groups = new Map<string, AllocationScopeGroup>()
+  inputs.forEach((input, index) => {
+    const key = scopeKey(input.tenantId, input.scope)
+    let group = groups.get(key)
+    if (!group) {
+      group = { tenantId: input.tenantId, scope: input.scope, items: [] }
+      groups.set(key, group)
+    }
+    group.items.push({ input, index })
+  })
+  return [...groups.values()]
+}
+
+function entityKey(entity: RefEntityRef): string {
+  return `${entity.entityType}\0${entity.connectorId}\0${entity.sourceId}`
+}
+
+function scopeKey(tenantId: string, scope: PrivacyScope): string {
+  return `${tenantId}\0${scope.type}\0${scope.id}`
 }
 
 function displayKey(tenantId: string, scope: PrivacyScope, surrogate: string): string {

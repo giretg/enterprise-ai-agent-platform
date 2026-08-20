@@ -1,12 +1,17 @@
 /**
- * Strukturált tool-output pszeudonimizáció (APG-04, spec §7).
+ * Strukturált tool-output pszeudonimizáció (APG-04, spec §7; APG-09 OBSERVE; APG-10 batch).
  *
  * A connector `fields` sémája szerint a `tokenize` string mezők értékét
  * ref-surrogate-ra cseréli. Numerikus/dátum mezőt nem nyúl meg (R6). A bemenetet
  * nem mutálja: a modellnek szánt másolat készül. Tömbökben ugyanaz az
- * `(entityType, sourceId)` ugyanazt az álnevet kapja.
+ * `(entityType, sourceId)` ugyanazt az álnevet kapja. Az allokáció batchelve
+ * megy a vaultba — nem rekordonkénti írás.
+ *
+ * OBSERVE (`apply: false`): a spaneket összegyűjti vault-írás nélkül — a
+ * modellnek szánt adat érintetlen marad.
  */
 import type { ConnectorFieldsPrivacy } from '@/domain/privacy/connector-privacy'
+import type { PrivacySpan } from '@/domain/privacy/privacy-mode'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import type { SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import { isSurrogateEntityType } from '@/domain/privacy/surrogate-format'
@@ -23,20 +28,52 @@ export type StructuredOutputPrivacyInput = {
   scope: PrivacyScope
 }
 
+export type StructuredPrivacyTransformResult = {
+  output: unknown
+  spans: PrivacySpan[]
+}
+
 export async function pseudonymizeStructuredOutput(
   input: StructuredOutputPrivacyInput,
 ): Promise<unknown> {
+  const result = await transformStructuredOutput({ ...input, apply: true })
+  return result.output
+}
+
+export async function transformStructuredOutput(
+  input: StructuredOutputPrivacyInput & { apply: boolean },
+): Promise<StructuredPrivacyTransformResult> {
   const tokenize = tokenizeFields(input.fields)
-  if (!tokenize) return input.output
+  if (!tokenize) return { output: input.output, spans: [] }
 
   let copy: unknown
   try {
     copy = structuredClone(input.output)
   } catch {
-    return input.output
+    return { output: input.output, spans: [] }
   }
-  await walk(copy, tokenize, input)
-  return copy
+  const spans: PrivacySpan[] = []
+  const pending: PendingReplace[] = []
+  collect(copy, tokenize, input, spans, pending)
+  if (pending.length > 0) {
+    const surrogates = await input.engine.allocateRefs(
+      pending.map((slot) => ({
+        tenantId: input.tenantId,
+        scope: input.scope,
+        entityType: slot.entityType,
+        connectorId: input.connectorId,
+        sourceId: slot.sourceId,
+        displayValue: slot.displayValue,
+      })),
+    )
+    for (let i = 0; i < pending.length; i += 1) {
+      const slot = pending[i]
+      const surrogate = surrogates[i]
+      if (!slot || !surrogate) continue
+      slot.record[slot.key] = surrogate
+    }
+  }
+  return { output: copy, spans }
 }
 
 type TokenizeField = {
@@ -74,14 +111,24 @@ function resolveSourceId(
   return missing || resolved.length === 0 ? null : resolved
 }
 
-async function walk(
+type PendingReplace = {
+  record: Record<string, unknown>
+  key: string
+  entityType: SurrogateEntityType
+  sourceId: string
+  displayValue: string
+}
+
+function collect(
   value: unknown,
   tokenize: Record<string, TokenizeField>,
-  ctx: StructuredOutputPrivacyInput,
-): Promise<void> {
+  ctx: StructuredOutputPrivacyInput & { apply: boolean },
+  spans: PrivacySpan[],
+  pending: PendingReplace[],
+): void {
   if (!value || typeof value !== 'object') return
   if (Array.isArray(value)) {
-    for (const item of value) await walk(item, tokenize, ctx)
+    for (const item of value) collect(item, tokenize, ctx, spans, pending)
     return
   }
 
@@ -91,17 +138,19 @@ async function walk(
     if (spec && typeof child === 'string' && child.length > 0) {
       const sourceId = resolveSourceId(spec.sourceIdTemplate, record)
       if (sourceId) {
-        record[key] = await ctx.engine.allocateRef({
-          tenantId: ctx.tenantId,
-          scope: ctx.scope,
-          entityType: spec.entityType,
-          connectorId: ctx.connectorId,
-          sourceId,
-          displayValue: child,
-        })
+        spans.push({ entityType: spec.entityType, field: key })
+        if (ctx.apply) {
+          pending.push({
+            record,
+            key,
+            entityType: spec.entityType,
+            sourceId,
+            displayValue: child,
+          })
+        }
         continue
       }
     }
-    await walk(child, tokenize, ctx)
+    collect(child, tokenize, ctx, spans, pending)
   }
 }

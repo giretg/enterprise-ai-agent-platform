@@ -1940,9 +1940,10 @@ export async function updateAgentInstruction(input: {
 }
 
 /**
- * Sensitivity router per-agent teljes felmentés (§4.7.2). Tenant admin (és a
- * tenantban eljáró superadmin) írhatja. Bekapcsolva minden sensitivity szintet
- * átenged; az osztályozás és az auditálás továbbra is lefut.
+ * Sensitivity router per-agent felmentés — DEPRECATED boolean (APG-11).
+ * A kategória-policy a kanonikus forrás; ez a kapcsoló csak akkor él, ha az
+ * agentnek nincs explicit overlay-je (read-time migráció). Tenant admin
+ * (és a tenantban eljáró superadmin) írhatja.
  */
 export async function updateAgentSensitivityPolicy(input: {
   agentId: string
