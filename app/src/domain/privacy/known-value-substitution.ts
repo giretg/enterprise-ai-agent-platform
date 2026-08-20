@@ -1,10 +1,14 @@
 /**
- * Known-value substitution (spec §8/2) — APG-16 bővíti magyar toldalék-tűréssel.
+ * Known-value substitution (spec §8/2) — APG-16 magyar toldalék-tűrő illesztéssel.
  *
  * APG-13: a hibapolicy itt érvényesül. Strukturált mezőből ismert érték
  * hibája fail-closed; egyéb forrás fail-open + audit.
  */
 import type { PrivacyGatewayMode } from '@/domain/privacy/privacy-mode'
+import {
+  applyKnownValueMatches,
+  findKnownValueMatches,
+} from '@/domain/privacy/known-value-matcher'
 import {
   runPrivacyTransformLayer,
   type PrivacyTransformFailureAudit,
@@ -23,17 +27,13 @@ export type KnownValueSubstitutionResult = {
   failure?: PrivacyTransformFailureAudit
 }
 
-/** Exact match cserék — APG-16 után toldalék-tűrő illesztésre cserélendő. */
+/** Toldalék-tűrő szótár-illesztés (Aho–Corasick, spec §8/2). */
 export function applyKnownValueReplacements(
   text: string,
   replacements: KnownValueReplacement[],
 ): string {
-  let out = text
-  for (const slot of replacements) {
-    if (!slot.needle || !out.includes(slot.needle)) continue
-    out = out.split(slot.needle).join(slot.surrogate)
-  }
-  return out
+  const matches = findKnownValueMatches(text, replacements)
+  return applyKnownValueMatches(text, matches)
 }
 
 /**
@@ -66,15 +66,14 @@ export async function substituteKnownValuesInText(input: {
   mode: PrivacyGatewayMode
 }): Promise<KnownValueSubstitutionResult> {
   const original = input.text
+  const matches = findKnownValueMatches(original, input.replacements)
   const result = await runKnownValueSubstitution({
     text: original,
     fromStructuredField: input.replacements.some((slot) => slot.fromStructuredField),
     mode: input.mode,
-    work: async () => applyKnownValueReplacements(original, input.replacements),
+    work: async () => applyKnownValueMatches(original, matches),
   })
   if (result.failure) return result
-  const appliedCount = input.replacements.filter(
-    (slot) => original.includes(slot.needle) && result.text.includes(slot.surrogate),
-  ).length
+  const appliedCount = new Set(matches.map((m) => m.surrogate)).size
   return { text: result.text, appliedCount }
 }

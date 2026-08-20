@@ -190,6 +190,54 @@ export const FREE_TEXT_EVAL_CASES: FreeTextEvalCase[] = [
     ],
   },
   {
+    id: 'ft-kv-5',
+    description: 'Known-value: kötőjeles toldalék (SPAR-nak)',
+    text: 'Küldjük a SPAR-nak a havi riportot.',
+    spans: [{ start: 9, end: 17, entityType: 'company', value: 'SPAR-nak' }],
+    source: 'known_value',
+    replacements: [
+      { needle: 'SPAR Magyarország Kft.', surrogate: '[[COMPANY_1]]', fromStructuredField: true },
+    ],
+  },
+  {
+    id: 'ft-kv-6',
+    description: 'Known-value: ragozott alak (Sparnál)',
+    text: 'Az egyeztetés Sparnál zajlik holnap.',
+    spans: [{ start: 14, end: 21, entityType: 'company', value: 'Sparnál' }],
+    source: 'known_value',
+    replacements: [
+      { needle: 'SPAR Magyarország Kft.', surrogate: '[[COMPANY_1]]', fromStructuredField: true },
+    ],
+  },
+  {
+    id: 'ft-kv-7',
+    description: 'Known-value: ragozott alak (a Sparban)',
+    text: 'A leltár a Sparban készült.',
+    spans: [{ start: 10, end: 18, entityType: 'company', value: 'Sparban' }],
+    source: 'known_value',
+    replacements: [
+      { needle: 'SPAR Magyarország Kft.', surrogate: '[[COMPANY_1]]', fromStructuredField: true },
+    ],
+  },
+  {
+    id: 'ft-kv-8',
+    description: 'Known-value: instrumental (SPAR-ral)',
+    text: 'Tárgyalás a SPAR-ral a héten.',
+    spans: [{ start: 12, end: 20, entityType: 'company', value: 'SPAR-ral' }],
+    source: 'known_value',
+    replacements: [
+      { needle: 'SPAR Magyarország Kft.', surrogate: '[[COMPANY_1]]', fromStructuredField: true },
+    ],
+  },
+  {
+    id: 'ft-kv-9',
+    description: 'Known-value: személynév ragozva (Kiss Jánosnak)',
+    text: 'Kiss Jánosnak megy ki a szerződés.',
+    spans: [{ start: 0, end: 13, entityType: 'person', value: 'Kiss Jánosnak' }],
+    source: 'known_value',
+    replacements: [{ needle: 'Kiss János', surrogate: '[[PERSON_1]]', fromStructuredField: true }],
+  },
+  {
     id: 'ft-pat-1',
     description: 'Pattern: e-mail cím (sensitivity-router)',
     text: 'Írjon a kovacs.janos@tesco.hu címre a részletekért.',
