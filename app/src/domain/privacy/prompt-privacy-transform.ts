@@ -6,8 +6,10 @@
  * sensitivity-router. Így egy pszeudonimizált e-mail nem billenti `sensitive`-be
  * a beszélgetést (redesign-spec P5).
  *
- * Csak `user` / `assistant` / `tool` szöveget nyúl meg — a `system` prefix
- * közös cache-szegmens (APG-15). A bemenetet nem mutálja.
+ * Alapértelmezetten `user` / `assistant` / `tool` szöveget nyúl meg. A cache-elt
+ * `system` prefix (APG-15) érintetlen; a cache-határ **utáni** `system` üzenetek
+ * (pl. Project memory context adat-blokk, APG-20) ugyanazon a transzformáción
+ * mennek át. A bemenetet nem mutálja.
  */
 import { collectSensitivityMatchSpans } from '@/domain/gateway/sensitivity-router'
 import {
@@ -38,11 +40,31 @@ import {
 /** Stabil vault-identitás a szabad-szöveges scannernek (UUID, nem connector-sor). */
 export const PROMPT_SCANNER_CONNECTOR_ID = '00000000-0000-4000-8000-0000000000e1'
 
-const TRANSFORM_ROLES = new Set(['user', 'assistant', 'tool'])
+const BASE_TRANSFORM_ROLES = new Set(['user', 'assistant', 'tool'])
 
 export type PromptPrivacyMessage = {
   role: string
   content?: string | null
+  cacheBoundary?: boolean
+}
+
+function cacheBoundaryIndex(messages: readonly PromptPrivacyMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.cacheBoundary) return i
+  }
+  return -1
+}
+
+/** APG-15 + APG-20: csak a cache-határ utáni system üzenetek transzformálhatók. */
+function shouldTransformPromptMessage(
+  message: PromptPrivacyMessage,
+  index: number,
+  messages: readonly PromptPrivacyMessage[],
+): boolean {
+  if (BASE_TRANSFORM_ROLES.has(message.role)) return true
+  if (message.role !== 'system') return false
+  const boundary = cacheBoundaryIndex(messages)
+  return boundary >= 0 && index > boundary
 }
 
 export type PromptPrivacyTransformInput<T extends PromptPrivacyMessage> = {
@@ -78,9 +100,9 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
   const knownReplacements = input.engine.listKnownValueReplacements(input.tenantId, input.scope)
   if (knownReplacements.length > 0) {
     const transformed: T[] = []
-    for (const message of messages) {
+    for (const [index, message] of messages.entries()) {
       const text = message.content ?? ''
-      if (!TRANSFORM_ROLES.has(message.role) || !text) {
+      if (!shouldTransformPromptMessage(message, index, messages) || !text) {
         transformed.push(message)
         continue
       }
@@ -138,7 +160,7 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
   let scanFailure: PrivacyTransformFailureAudit | undefined
   try {
     for (const [messageIndex, message] of messages.entries()) {
-      if (!TRANSFORM_ROLES.has(message.role)) continue
+      if (!shouldTransformPromptMessage(message, messageIndex, messages)) continue
       const text = message.content ?? ''
       if (!text) continue
       for (const span of collectSensitivityMatchSpans(text)) {

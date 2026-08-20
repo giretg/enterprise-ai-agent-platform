@@ -22,6 +22,7 @@ import {
   resolvePrivacyCategoryPolicy,
   type PrivacyCategoryAction,
 } from '../src/domain/privacy/privacy-category-policy'
+import { assembleGatewayMessages } from '../src/domain/agent/prompt-assembler'
 import { transformPromptMessages } from '../src/domain/privacy/prompt-privacy-transform'
 import { SurrogateEngine, type PrivacyAuditSink } from '../src/domain/privacy/surrogate-engine'
 import {
@@ -375,6 +376,31 @@ async function main() {
     assert.equal(result.messages[0]?.content?.includes('[[COMPANY_1]]'), true)
   })
 
+  await test('produkciós prompt-út: ragozott known-value (SPAR-nak)', async () => {
+    const engine = makeEngine()
+    const company = 'SPAR Magyarország Kft.'
+    await engine.allocateRef({
+      tenantId: TENANT,
+      scope,
+      entityType: 'company',
+      connectorId: randomUUID(),
+      sourceId: 'crm/company/4821',
+      displayValue: company,
+      displayValueSource: 'structured_field',
+    })
+    const result = await transformPromptMessages({
+      messages: [{ role: 'user', content: 'Küldjük a SPAR-nak a havi riportot.' }],
+      mode: 'enforce',
+      policy: tokenizeEmailPolicy(),
+      engine,
+      tenantId: TENANT,
+      scope,
+    })
+    assert.equal(result.applied, true)
+    assert.equal(result.messages[0]?.content?.includes('SPAR-nak'), false)
+    assert.equal(result.messages[0]?.content?.includes('[[COMPANY_1]]'), true)
+  })
+
   await test('OBSERVE: nem cserél, classify továbbra is sensitive', async () => {
     const result = await transformPromptMessages({
       messages: [{ role: 'user', content: `Írj a ${EMAIL} címre` }],
@@ -495,6 +521,79 @@ async function main() {
     const sent = JSON.stringify(capture.messages)
     assert.equal(sent.includes(EMAIL), false)
     assert.equal(sent.includes(TAJ), true)
+  })
+
+  await test('APG-20: memória-chunk (system, cache-határ után) email → álnév', async () => {
+    const messages = assembleGatewayMessages({
+      stablePreamble: [{ role: 'system', content: 'agent system prompt' }],
+      stablePostamble: [{ role: 'system', content: 'memória capture-policy' }],
+      variableContext: [
+        { role: 'system', content: `Project memory context (projekt: demo):\n- contact: ${EMAIL}` },
+      ],
+      history: [{ role: 'user', content: 'Mi van a memóriában?' }],
+    })
+    const result = await transformPromptMessages({
+      messages,
+      mode: 'enforce',
+      policy: tokenizeEmailPolicy(),
+      engine: makeEngine(),
+      tenantId: TENANT,
+      scope,
+    })
+    const memoryMsg = result.messages.find((m) => m.content?.includes('Project memory context'))
+    assert.ok(memoryMsg, 'memória-blokk megmarad')
+    assert.equal(memoryMsg.content?.includes('[[EMAIL_1]]'), true)
+    assert.equal(memoryMsg.content?.includes(EMAIL), false)
+    assert.equal(result.applied, true)
+  })
+
+  await test('APG-20: stabil system prefix (cache-határig) email → változatlan', async () => {
+    const messages = assembleGatewayMessages({
+      stablePreamble: [{ role: 'system', content: `agent prompt with ${EMAIL}` }],
+      stablePostamble: [{ role: 'system', content: 'memória capture-policy' }],
+      variableContext: [{ role: 'system', content: 'Project memory context: nincs PII' }],
+      history: [{ role: 'user', content: 'kérdés' }],
+    })
+    const result = await transformPromptMessages({
+      messages,
+      mode: 'enforce',
+      policy: tokenizeEmailPolicy(),
+      engine: makeEngine(),
+      tenantId: TENANT,
+      scope,
+    })
+    const stable = result.messages.find((m) => m.content?.includes('agent prompt'))
+    assert.ok(stable)
+    assert.equal(stable.content?.includes(EMAIL), true, 'cache-elt prefix érintetlen')
+    assert.equal(result.applied, false)
+  })
+
+  await test('gateway APG-20: memória-chunk email pszeudonimizálva megy a modellhez', async () => {
+    const capture = { messages: [] as unknown, provider: '', n: 0 }
+    const policy = tokenizeEmailPolicy()
+    const gw = wiredGateway({
+      mode: 'enforce',
+      actionFor: (category) => actionForPrivacyCategory(policy, category),
+      capture,
+    })
+    const messages = assembleGatewayMessages({
+      stablePreamble: [{ role: 'system', content: 'agent system prompt' }],
+      stablePostamble: [{ role: 'system', content: 'memória capture-policy' }],
+      variableContext: [
+        { role: 'system', content: `Project memory context (projekt: demo):\n- contact: ${EMAIL}` },
+      ],
+      history: [{ role: 'user', content: 'Mi van a memóriában?' }],
+    })
+    await gw.call({
+      agentId: AGENT,
+      tenantId: TENANT,
+      conversationId: CONVERSATION,
+      messages,
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+    const sent = JSON.stringify(capture.messages)
+    assert.equal(sent.includes(EMAIL), false, 'nyers e-mail a memória-chunkban kiment volna')
+    assert.equal(sent.includes('[[EMAIL_1]]'), true)
   })
 
   await test('gateway regresszió: forbidden human override továbbra is kimehet', async () => {
