@@ -31,7 +31,9 @@ import {
 import type { ModelGateway } from '../gateway/model-gateway'
 import { StreamingSensitiveTextRedactor } from '../gateway/sensitivity-router'
 import { createWebUiStreamingResolver } from '../privacy/streaming-surrogate-resolver'
-import { createWebUiDisplayLookup, resolveDisplayText } from '../privacy/resolve-display-text'
+import { resolveEgressTextForSurface } from '../privacy/resolve-display-text'
+import type { ResolvedPrivacyEgressMatrix } from '../privacy/privacy-egress-matrix'
+import { resolvePrivacyEgressMatrix } from '../privacy/privacy-egress-matrix'
 import type { SurrogateEngine } from '../privacy/surrogate-engine'
 import type { ConversationService } from '../conversation/conversation-service'
 import {
@@ -632,6 +634,10 @@ export class AgentChatRuntime {
     private agentAccess?: AgentAccessService,
     /** APG-06 — megjelenítési feloldás a web UI streamjén. Hiányában a töredék álnév akkor is bent marad. */
     private surrogateEngine?: SurrogateEngine | null,
+    /** APG-19 — tenant-szintű egress-mátrix (web UI felület). Hiányában platform-alapértelmezés. */
+    private resolvePrivacyEgressMatrix?: (
+      tenantId: string | null,
+    ) => Promise<ResolvedPrivacyEgressMatrix>,
   ) {}
 
   /**
@@ -1328,11 +1334,13 @@ export class AgentChatRuntime {
     }
     const snapshot = new TurnSnapshotFlusher()
 
+    const egressMatrix = await this.loadEgressMatrix(params.tenantId ?? null)
     const displayResolver = createWebUiStreamingResolver({
       engine: this.surrogateEngine,
       tenantId: params.tenantId ?? null,
       conversationId,
       requesterUserId: params.createdById,
+      matrix: egressMatrix,
       emit: async (text) => {
         emit({ type: 'token', chunk: text })
         await this.persistTurnProgress(turn, snapshot.pushToken(text))
@@ -1643,11 +1651,13 @@ export class AgentChatRuntime {
             : {}),
           resolveAssistantDisplay: async (text: string) => {
             let out = ''
+            const egressMatrix = await this.loadEgressMatrix(params.tenantId ?? null)
             const resolver = createWebUiStreamingResolver({
               engine: this.surrogateEngine,
               tenantId: params.tenantId ?? null,
               conversationId,
               requesterUserId: params.createdById,
+              matrix: egressMatrix,
               emit: (chunk) => {
                 out += chunk
               },
@@ -2277,6 +2287,13 @@ export class AgentChatRuntime {
     return views
   }
 
+  private async loadEgressMatrix(tenantId: string | null): Promise<ResolvedPrivacyEgressMatrix> {
+    if (this.resolvePrivacyEgressMatrix) {
+      return this.resolvePrivacyEgressMatrix(tenantId)
+    }
+    return resolvePrivacyEgressMatrix()
+  }
+
   private async resolveWebUiText(
     text: string,
     conversationId: string,
@@ -2284,15 +2301,16 @@ export class AgentChatRuntime {
     requesterUserId?: string | null,
   ): Promise<string> {
     if (!this.surrogateEngine || !tenantId || !text) return text
-    return resolveDisplayText(
+    const matrix = await this.loadEgressMatrix(tenantId)
+    return resolveEgressTextForSurface({
       text,
-      createWebUiDisplayLookup({
-        engine: this.surrogateEngine,
-        tenantId,
-        scope: { type: 'conversation', id: conversationId },
-        requesterUserId,
-      }),
-    )
+      surface: 'web_ui',
+      engine: this.surrogateEngine,
+      tenantId,
+      scope: { type: 'conversation', id: conversationId },
+      requesterUserId,
+      matrix,
+    })
   }
 
   async listSessions(params: {

@@ -48,6 +48,7 @@ import {
   BUDGET_EXHAUSTED_TEXT,
   type ChannelAgentRuntime,
   type ChannelAgentRuntimeResult,
+  type ChannelTurnServiceDeps,
 } from '../src/domain/channel/channel-turn-service'
 import { RecordingChannelTransport } from '../src/domain/channel/channel-outbound-transport'
 import { assertAuditActionRegistered } from '../src/lib/audit/event-catalog'
@@ -98,6 +99,7 @@ function makeHarness(opts?: {
   revokeGrantDuringRuntime?: boolean
   revokeGrantAfterFirstMessage?: boolean
   maxAttempts?: number
+  resolveOutboundText?: ChannelTurnServiceDeps['resolveOutboundText']
 }) {
   let clock = new Date('2026-07-22T10:00:00Z')
   const setClock = (d: Date) => {
@@ -350,6 +352,7 @@ function makeHarness(opts?: {
     tenants: tenants as never,
     isChannelEnabled: async () => opts?.channelEnabled ?? true,
     maxAttempts: opts?.maxAttempts,
+    resolveOutboundText: opts?.resolveOutboundText,
     now: () => clock,
   })
 
@@ -829,6 +832,23 @@ async function main() {
     assert.equal(sentTexts(h.transport).length, 1, 'a visszavonás után a maradék darabok nem mennek ki')
     const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
     assert.equal(completed?.metadata.reason, 'agent_grant_revoked', 'a köztes visszavonás auditált')
+  })
+
+  await test('CT-29 egress-mátrix: a kimenő szöveg a resolveOutboundText-en megy át', async () => {
+    const runtime: ChannelAgentRuntime = {
+      async runTurn() {
+        return { ok: true, text: '[[COMPANY_1]] és [[PERSON_1]]' }
+      },
+    }
+    const h = makeHarness({
+      runtime,
+      resolveOutboundText: async ({ text }) =>
+        text.replace('[[COMPANY_1]]', 'SPAR').replace('[[PERSON_1]]', '[[PERSON_1]]'),
+    })
+    await enqueueAndProcess(h, 'kérdés')
+    const body = sentTexts(h.transport)[0] ?? ''
+    assert.match(body, /SPAR/, 'company feloldódik a kimenő úton')
+    assert.match(body, /\[\[PERSON_1\]\]/, 'person álnév marad')
   })
 
   if (failures > 0) {

@@ -35,6 +35,7 @@ import {
 import { LocalWikiHarnessLauncher } from '@/domain/dispatcher/local-wiki-harness-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
 import { createPlatformSurrogateEngine } from '@/domain/privacy/create-surrogate-engine'
+import { resolveChannelOutboundText } from '@/domain/privacy/resolve-display-text'
 import {
   buildUserInputEntityResolution,
   createConnectorEntityResolver,
@@ -1130,6 +1131,7 @@ const agentChatRuntime = new AgentChatRuntime(
   consequenceApprovalService,
   agentAccessService,
   surrogateEngine,
+  (tenantId) => platformSettingsService.resolvePrivacyEgressMatrix(tenantId),
 )
 // 1:1 agent-chat a csatornán (#74, D8/D9/D10/D11). A worker második munkatípusa: a bejövő
 // Telegram-fordulót a MEGLÉVŐ webes chat-futásidőre képezzük (ugyanabba a beszélgetésbe, így a
@@ -1191,6 +1193,18 @@ const channelTurnService = new ChannelTurnService({
   memberships: repositories.tenantMemberships,
   tenants: repositories.tenants,
   isChannelEnabled: (tenantId) => platformSettingsService.isChannelEnabledForTenant(tenantId),
+  resolveOutboundText: async ({ text, tenantId, conversationId, userId }) => {
+    if (!text) return text
+    const matrix = await platformSettingsService.resolvePrivacyEgressMatrix(tenantId)
+    return resolveChannelOutboundText({
+      text,
+      engine: surrogateEngine,
+      tenantId,
+      conversationId,
+      userId,
+      matrix,
+    })
+  },
 })
 channelTurnServiceRef = channelTurnService
 const wikiRuntime = new WikiAgentRuntime(

@@ -187,6 +187,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'privacy.surrogate.unknown',
   'privacy.gateway.mode.set',
   'privacy.gateway.category_policy.set',
+  'privacy.egress.export_resolved',
   'consequence.approval.pending',
   'consequence.approval.approved',
   'consequence.approval.rejected',

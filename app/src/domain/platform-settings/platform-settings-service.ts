@@ -85,6 +85,13 @@ import {
   type PrivacyCategoryPolicyPatch,
   type ResolvedPrivacyCategoryPolicy,
 } from '@/domain/privacy/privacy-category-policy'
+import {
+  parsePrivacyEgressMatrixLayer,
+  PRIVACY_EGRESS_MATRIX_TENANT_KEY,
+  resolvePrivacyEgressMatrix,
+  type PrivacyEgressMatrixLayer,
+  type ResolvedPrivacyEgressMatrix,
+} from '@/domain/privacy/privacy-egress-matrix'
 
 export const DISPATCHER_CONTROLS_KEY = 'dispatcher.controls'
 export const DISPATCHER_LAST_CYCLE_KEY = 'dispatcher.last_cycle'
@@ -1027,6 +1034,24 @@ export class PlatformSettingsService {
   }): Promise<PrivacyCategoryAction> {
     const resolved = await this.resolvePrivacyCategoryPolicy(input)
     return actionForPrivacyCategory(resolved, input.category)
+  }
+
+  // ── AI Privacy Gateway egress-mátrix (APG-19, spec §10.2) ───────────────────
+
+  async getTenantPrivacyEgressMatrix(tenantId: string): Promise<PrivacyEgressMatrixLayer> {
+    const raw = (await this.settings.get(PRIVACY_EGRESS_MATRIX_TENANT_KEY)) as Record<
+      string,
+      unknown
+    > | null
+    const bucket = raw?.[tenantId]
+    return parsePrivacyEgressMatrixLayer(bucket)
+  }
+
+  async resolvePrivacyEgressMatrix(
+    tenantId?: string | null,
+  ): Promise<ResolvedPrivacyEgressMatrix> {
+    const tenant = tenantId ? await this.getTenantPrivacyEgressMatrix(tenantId) : null
+    return resolvePrivacyEgressMatrix({ tenant })
   }
 
   private mergeCategoryPolicyDocument(

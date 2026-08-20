@@ -1,20 +1,37 @@
 /**
- * Megjelenítési feloldás (APG-06 §10.2, APG-07 §10.3).
+ * Megjelenítési feloldás (APG-06 §10.2, APG-07 §10.3, APG-19 egress-mátrix).
  *
  * Web UI: teljes feloldás a szöveg-node-okban, vault-találaton + a fordulóban
  * rögzített megjelenítési értéken. URL / markdown-link cél / HTML-attribútum /
  * kód: az álnév marad. Ismeretlen álnév változatlan, audit nélkül
  * (az unknown-audit a tool-arg úté, §10.1).
  *
+ * Minden egress-útvonal ugyanazt a `resolveEgressText` + `createEgressDisplayLookup`
+ * párost használja — a csatorna a mátrix szerint korlátozza az entitástípusokat.
+ *
  * `document` a streaminghez: a darab kontextusa a teljes, eddig látott eredeti
  * markdown — a darab önmagában szöveg-node-nak tűnhet, holott egy URL vége.
  */
 import { resolvableTextRanges } from '@/domain/privacy/markdown-surrogate-context'
+import type { AuditRepository } from '@/repositories/interfaces'
+import {
+  allowsEgressResolve,
+  PRIVACY_EGRESS_EXPORT_RESOLVED_ACTION,
+  type PrivacyEgressSurface,
+  type ResolvedPrivacyEgressMatrix,
+  resolvePrivacyEgressMatrix,
+} from '@/domain/privacy/privacy-egress-matrix'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
-import { findEmbeddedSurrogates, parseSurrogate } from '@/domain/privacy/surrogate-format'
+import { findEmbeddedSurrogates, parseSurrogate, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
 
 export type SurrogateDisplayLookup = (surrogate: string) => Promise<string | null>
+
+export type EgressResolveAudit = (event: {
+  surface: PrivacyEgressSurface
+  resolvedCount: number
+  categories: string[]
+}) => void | Promise<void>
 
 export async function resolveDisplayText(
   text: string,
@@ -48,14 +65,46 @@ export async function resolveDisplayText(
   return out
 }
 
-export function createWebUiDisplayLookup(params: {
+export async function resolveEgressText(
+  text: string,
+  lookup: SurrogateDisplayLookup,
+  opts?: {
+    document?: string
+    surface?: PrivacyEgressSurface
+    onResolved?: EgressResolveAudit
+  },
+): Promise<string> {
+  const resolvedCategories: SurrogateEntityType[] = []
+  const auditedLookup: SurrogateDisplayLookup = async (surrogate) => {
+    const parsed = parseSurrogate(surrogate)
+    const value = await lookup(surrogate)
+    if (value != null && parsed) resolvedCategories.push(parsed.entityType)
+    return value
+  }
+  const resolved = await resolveDisplayText(text, auditedLookup, opts?.document)
+  if (opts?.onResolved && opts.surface && resolvedCategories.length > 0) {
+    await opts.onResolved({
+      surface: opts.surface,
+      resolvedCount: resolvedCategories.length,
+      categories: [...new Set(resolvedCategories)],
+    })
+  }
+  return resolved
+}
+
+export function createEgressDisplayLookup(params: {
+  surface: PrivacyEgressSurface
   engine: SurrogateEngine
   tenantId: string
   scope: PrivacyScope
   requesterUserId?: string | null
+  matrix?: ResolvedPrivacyEgressMatrix
 }): SurrogateDisplayLookup {
+  const matrix = params.matrix ?? resolvePrivacyEgressMatrix()
   return async (surrogate) => {
-    if (!parseSurrogate(surrogate)) return null
+    const parsed = parseSurrogate(surrogate)
+    if (!parsed) return null
+    if (!allowsEgressResolve(matrix, params.surface, parsed.entityType)) return null
     const peeked = await params.engine.peekRef({
       tenantId: params.tenantId,
       scope: params.scope,
@@ -65,4 +114,125 @@ export function createWebUiDisplayLookup(params: {
     if (!peeked.ok) return null
     return params.engine.peekDisplayValue(params.tenantId, params.scope, surrogate) ?? null
   }
+}
+
+export function createWebUiDisplayLookup(params: {
+  engine: SurrogateEngine
+  tenantId: string
+  scope: PrivacyScope
+  requesterUserId?: string | null
+  matrix?: ResolvedPrivacyEgressMatrix
+}): SurrogateDisplayLookup {
+  return createEgressDisplayLookup({ ...params, surface: 'web_ui' })
+}
+
+type EgressTextParams = {
+  text: string
+  surface: PrivacyEgressSurface
+  engine: SurrogateEngine
+  tenantId: string
+  scope: PrivacyScope
+  requesterUserId?: string | null
+  matrix?: ResolvedPrivacyEgressMatrix
+  document?: string
+  onResolved?: EgressResolveAudit
+}
+
+/** Közös belépési pont minden egress-útvonalhoz (APG-19 DoD). */
+export async function resolveEgressTextForSurface(params: EgressTextParams): Promise<string> {
+  const matrix = params.matrix ?? resolvePrivacyEgressMatrix()
+  const lookup = createEgressDisplayLookup({
+    surface: params.surface,
+    engine: params.engine,
+    tenantId: params.tenantId,
+    scope: params.scope,
+    requesterUserId: params.requesterUserId,
+    matrix,
+  })
+  return resolveEgressText(params.text, lookup, {
+    document: params.document,
+    surface: params.surface,
+    onResolved: params.onResolved,
+  })
+}
+
+export async function resolveChannelOutboundText(params: {
+  text: string
+  engine: SurrogateEngine
+  tenantId: string
+  conversationId: string
+  userId: string
+  matrix?: ResolvedPrivacyEgressMatrix
+}): Promise<string> {
+  return resolveEgressTextForSurface({
+    text: params.text,
+    surface: 'external_channel',
+    engine: params.engine,
+    tenantId: params.tenantId,
+    scope: { type: 'conversation', id: params.conversationId },
+    requesterUserId: params.userId,
+    matrix: params.matrix,
+  })
+}
+
+/** Riport/export fájl — policy szerinti feloldás + audit (spec §10.2). */
+export async function resolveExportReportEgressText(params: {
+  text: string
+  engine: SurrogateEngine
+  tenantId: string
+  scope: PrivacyScope
+  requesterUserId?: string | null
+  matrix?: ResolvedPrivacyEgressMatrix
+  audit: Pick<AuditRepository, 'append'>
+  actorId: string
+  targetType: string
+  targetId: string
+}): Promise<string> {
+  return resolveEgressTextForSurface({
+    text: params.text,
+    surface: 'export_report',
+    engine: params.engine,
+    tenantId: params.tenantId,
+    scope: params.scope,
+    requesterUserId: params.requesterUserId,
+    matrix: params.matrix,
+    onResolved: async (event) => {
+      await params.audit.append({
+        actorType: 'human',
+        actorId: params.actorId,
+        agentVersion: null,
+        action: PRIVACY_EGRESS_EXPORT_RESOLVED_ACTION,
+        targetType: params.targetType,
+        targetId: params.targetId,
+        modelUsed: null,
+        inputRef: event.categories.join(','),
+        outputRef: `spans:${event.resolvedCount}`,
+        policyDecision: 'applied',
+        tenantId: params.tenantId,
+        metadata: {
+          surface: event.surface,
+          categories: event.categories,
+          resolvedCount: event.resolvedCount,
+        },
+      })
+    },
+  })
+}
+
+/** Platform e-mail értesítés — alapból nem old fel (spec §10.2). */
+export async function resolvePlatformEmailEgressText(params: {
+  text: string
+  engine: SurrogateEngine
+  tenantId: string
+  scope: PrivacyScope
+  matrix?: ResolvedPrivacyEgressMatrix
+}): Promise<string> {
+  return resolveEgressTextForSurface({
+    text: params.text,
+    surface: 'platform_email',
+    engine: params.engine,
+    tenantId: params.tenantId,
+    scope: params.scope,
+    matrix: params.matrix,
+  })
 }

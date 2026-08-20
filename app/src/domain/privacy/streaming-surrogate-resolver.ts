@@ -20,6 +20,7 @@ import {
 } from '@/domain/privacy/resolve-display-text'
 import { isSurrogatePrefix } from '@/domain/privacy/surrogate-format'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
+import type { ResolvedPrivacyEgressMatrix } from '@/domain/privacy/privacy-egress-matrix'
 import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
 
 export class StreamingSurrogateResolver {
@@ -68,6 +69,7 @@ export function createWebUiStreamingResolver(params: {
   tenantId: string | null | undefined
   conversationId: string
   requesterUserId?: string | null
+  matrix?: ResolvedPrivacyEgressMatrix
   emit: (text: string) => void | Promise<void>
 }): StreamingSurrogateResolver {
   const lookup: SurrogateDisplayLookup =
@@ -77,6 +79,7 @@ export function createWebUiStreamingResolver(params: {
           tenantId: params.tenantId,
           scope: { type: 'conversation', id: params.conversationId } satisfies PrivacyScope,
           requesterUserId: params.requesterUserId,
+          matrix: params.matrix,
         })
       : async () => null
   return new StreamingSurrogateResolver(lookup, params.emit)
