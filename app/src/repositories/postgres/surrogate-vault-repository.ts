@@ -12,6 +12,7 @@ import {
   type PrivacyScope,
   type RefEntityRef,
   type RefVaultRecord,
+  type SurrogateDisplayValueRow,
   type SurrogateVault,
   type TenantHmacKeyResolver,
   type ValVaultLookup,
@@ -316,6 +317,51 @@ export class PostgresSurrogateVault implements SurrogateVault {
         }
         return found
       })
+    })
+  }
+
+  async saveDisplayValues(
+    tenantId: string,
+    scope: PrivacyScope,
+    rows: readonly SurrogateDisplayValueRow[],
+  ): Promise<void> {
+    if (rows.length === 0) return
+    await this.run(async () => {
+      await prisma.$transaction(
+        rows.map((row) =>
+          prisma.surrogateMap.updateMany({
+            where: {
+              tenantId,
+              scopeType: scope.type,
+              scopeId: scope.id,
+              surrogate: row.surrogate,
+            },
+            data: { displayValueEnc: row.displayValueEnc },
+          }),
+        ),
+      )
+    })
+  }
+
+  async listDisplayValues(
+    tenantId: string,
+    scope: PrivacyScope,
+  ): Promise<SurrogateDisplayValueRow[]> {
+    return this.run(async () => {
+      const rows = await prisma.surrogateMap.findMany({
+        where: {
+          tenantId,
+          scopeType: scope.type,
+          scopeId: scope.id,
+          displayValueEnc: { not: null },
+        },
+        select: { surrogate: true, displayValueEnc: true },
+      })
+      return rows.flatMap((row) =>
+        row.displayValueEnc
+          ? [{ surrogate: row.surrogate, displayValueEnc: row.displayValueEnc }]
+          : [],
+      )
     })
   }
 

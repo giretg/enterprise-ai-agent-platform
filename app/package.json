@@ -173,6 +173,7 @@
     "test:privacy-latency": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-latency.test.ts",
     "test:privacy-eval": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-eval.test.ts",
     "test:privacy-enforce-failure": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-enforce-failure.test.ts",
+    "test:privacy-end-to-end": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-end-to-end.test.ts",
     "test:known-value-substitution": "tsx scripts/known-value-substitution.test.ts",
     "test:user-input-resolver": "tsx scripts/user-input-resolver.test.ts",
     "test:tool-arg-resolve": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tool-arg-resolve.test.ts",

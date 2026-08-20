@@ -98,7 +98,10 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
   let knownApplied = false
   let knownFailure: PrivacyTransformFailureAudit | undefined
   const knownSpans: PrivacySpan[] = []
-  const knownReplacements = input.engine.listKnownValueReplacements(input.tenantId, input.scope)
+  const knownReplacements = await input.engine.loadKnownValueReplacements(
+    input.tenantId,
+    input.scope,
+  )
   if (knownReplacements.length > 0) {
     const transformed: T[] = []
     for (const [index, message] of messages.entries()) {

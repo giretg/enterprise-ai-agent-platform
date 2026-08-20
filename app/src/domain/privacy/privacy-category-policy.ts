@@ -17,6 +17,8 @@
  * - `secret_key` csak `block` (sosem `tokenize`, sem más)
  * - `pan` / `iban` `allow` csak superadmin + külön megerősítés
  */
+import { SURROGATE_ENTITY_TYPES } from '@/domain/privacy/surrogate-format'
+
 export const PRIVACY_CATEGORY_ACTIONS = ['allow', 'tokenize', 'local_only', 'block'] as const
 export type PrivacyCategoryAction = (typeof PRIVACY_CATEGORY_ACTIONS)[number]
 
@@ -82,6 +84,23 @@ export const LEGACY_SENSITIVE_EXTERNAL_CATEGORIES: readonly PrivacyPolicyCategor
   'secret_key',
 ]
 
+/**
+ * Álnévre csak az a kategória cserélhető, aminek van surrogate-típusa (spec §11).
+ * A TAJ / adószám / kártyaszám / IBAN / titok nincs a névtérben: rájuk a `tokenize`
+ * korábban némán hatástalan volt — az admin „Álnévre cseréljük"-öt választott, a
+ * futásidő pedig ugyanúgy helyi modellre terelt. Mentéskor ezért hibát adunk.
+ */
+export const TOKENIZABLE_PRIVACY_CATEGORIES: readonly PrivacyPolicyCategory[] =
+  PRIVACY_POLICY_CATEGORIES.filter((category) =>
+    (SURROGATE_ENTITY_TYPES as readonly string[]).includes(category),
+  )
+
+export function categorySupportsTokenize(category: string): boolean {
+  const canonical = canonicalPrivacyCategory(category)
+  if (!isPrivacyPolicyCategory(canonical)) return true
+  return (TOKENIZABLE_PRIVACY_CATEGORIES as readonly string[]).includes(canonical)
+}
+
 export const PAN_IBAN_ALLOW_CONFIRMATION = 'ALLOW_PAN_IBAN'
 
 export const INITIAL_PRIVACY_PATTERN_SET_VERSION = 1
@@ -121,6 +140,7 @@ export type PrivacyCategoryPolicyActor = {
 }
 
 export type PrivacyCategoryPolicyCode =
+  | 'tokenize_unsupported_category'
   | 'secret_key_not_block'
   | 'allow_requires_superadmin'
   | 'allow_confirmation_required'
@@ -430,7 +450,13 @@ function assertAction(
       'secret_key',
     )
   }
-
+  if (action === 'tokenize' && !categorySupportsTokenize(canonical)) {
+    throw new PrivacyCategoryPolicyError(
+      'tokenize_unsupported_category',
+      `A(z) ${canonical} adathoz nincs álnév-típus, ezért nem cserélhető álnévre. Válaszd a „Csak helyi modell" vagy a „Tiltva" beállítást.`,
+      canonical,
+    )
+  }
   if ((canonical === 'pan' || canonical === 'iban') && action === 'allow') {
     if (!actor.isSuperadmin) {
       throw new PrivacyCategoryPolicyError(

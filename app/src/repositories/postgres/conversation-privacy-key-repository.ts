@@ -1,5 +1,7 @@
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import {
+  deriveScopeDataKey,
   generateConversationDataKey,
   unwrapConversationDataKey,
   wrapConversationDataKey,
@@ -37,6 +39,40 @@ export class PostgresConversationPrivacyKeyRepository implements ConversationPri
     return unwrapConversationDataKey(tenantId, row.wrappedKey)
   }
 
+  /**
+   * A `conversation` scope-azonosító feladat-ticket futásnál a ticket id-ja, amihez
+   * nincs `Conversation` sor — ilyenkor a kulcssor beszúrása idegen kulcs hibára fut.
+   * Ott determinisztikus scope-kulcsot adunk (l. `deriveScopeDataKey`), különben a
+   * fail-closed szabály az egész modellhívást megállítaná.
+   */
+  async ensureScopeDataKey(tenantId: string, scopeType: string, scopeId: string): Promise<Buffer> {
+    if (scopeType === 'conversation') {
+      try {
+        return await this.ensureDataKey(tenantId, scopeId)
+      } catch (error) {
+        if (!isMissingConversation(error)) throw error
+      }
+    }
+    return deriveScopeDataKey(tenantId, scopeType, scopeId)
+  }
+
+  async getScopeDataKey(
+    tenantId: string,
+    scopeType: string,
+    scopeId: string,
+  ): Promise<Buffer | null> {
+    if (scopeType === 'conversation') {
+      const existing = await this.getDataKey(tenantId, scopeId)
+      if (existing) return existing
+      const conversation = await prisma.conversation
+        .findUnique({ where: { id: scopeId }, select: { id: true } })
+        .catch(() => null)
+      // Létező beszélgetésnél a hiányzó kulcssor szándékos törlés (crypto-shredding).
+      if (conversation) return null
+    }
+    return deriveScopeDataKey(tenantId, scopeType, scopeId)
+  }
+
   async shredKeysForConversations(conversationIds: string[]): Promise<number> {
     if (conversationIds.length === 0) return 0
     const result = await prisma.conversationPrivacyKey.deleteMany({
@@ -44,4 +80,8 @@ export class PostgresConversationPrivacyKeyRepository implements ConversationPri
     })
     return result.count
   }
+}
+
+function isMissingConversation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003'
 }

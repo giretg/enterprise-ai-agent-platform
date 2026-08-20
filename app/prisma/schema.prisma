@@ -3231,6 +3231,10 @@ model SurrogateMap {
   sourceId       String?            @map("source_id")
   /// Csak `val` osztály; `ref` sorban CHECK tiltja. APG-19 tölti.
   encryptedValue String?            @map("encrypted_value")
+  /// Megjelenítési másolat a trusted UI feloldásához, a beszélgetés adatkulcsával
+  /// titkosítva (spec §5 R19). Enélkül a beszélgetés újranyitása után az álnév
+  /// feloldhatatlan lenne. Mindkét osztályon opcionális.
+  displayValueEnc String?           @map("display_value_enc")
   hmac           String
   createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz
 

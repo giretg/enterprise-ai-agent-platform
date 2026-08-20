@@ -2893,4 +2893,11 @@ export interface ConversationPrivacyKeyRepository {
   ensureDataKey(tenantId: string, conversationId: string): Promise<Buffer>
   getDataKey(tenantId: string, conversationId: string): Promise<Buffer | null>
   shredKeysForConversations(conversationIds: string[]): Promise<number>
+  /**
+   * Adatkulcs olyan scope-ra is, amihez nincs `Conversation` sor (feladat-ticket
+   * futás). Opcionális: ahol hiányzik, a hívó az `ensureDataKey`/`getDataKey`
+   * párosra esik vissza.
+   */
+  ensureScopeDataKey?(tenantId: string, scopeType: string, scopeId: string): Promise<Buffer>
+  getScopeDataKey?(tenantId: string, scopeType: string, scopeId: string): Promise<Buffer | null>
 }
