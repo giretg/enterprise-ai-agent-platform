@@ -15,3 +15,8 @@ export function privacyScopeForCall(
   if (ticketId) return { type: 'conversation', id: ticketId }
   return null
 }
+
+/** Debug-trace projection (APG-21): trace-scoped álnév a debugging AI felé. */
+export function privacyScopeForTrace(traceId: string): PrivacyScope {
+  return { type: 'trace', id: traceId }
+}

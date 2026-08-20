@@ -308,6 +308,18 @@ export type DocumentReadResult = {
   hint?: string
 }
 
+/** APG-21 — agent-turn debug trace pszeudonimizált projectionnel (spec §12). */
+export type GetDebugTraceArgs = {
+  agentTurnId: string
+}
+
+export type GetDebugTraceResult = {
+  traceId: string
+  agentTurnId: string
+  conversationId: string
+  projection: Record<string, unknown>
+}
+
 /**
  * Magyar e-hiteles tulajdoni lap strukturált kinyerése egy feltöltött PDF-ből.
  * Chat csatolmány: `documentId` (UUID). Board/ticket workspace: `path` (fájlnév).
@@ -806,6 +818,7 @@ export type ToolBrokerInvokeInput =
       args: TulajdoniLapEgyeztetesArgs
     })
   | (ToolInvokeBase & { tool: 'reconcile_records'; args: ReconcileRecordsArgs })
+  | (ToolInvokeBase & { tool: 'get_debug_trace'; args: GetDebugTraceArgs })
 
 /**
  * Bizalmi osztály MINDEN eszköz-eredményen (issue #97). Determinisztikus, a
@@ -927,6 +940,7 @@ export type ToolBrokerInvokeResult =
         | TulajdoniLapParseResult
         | TulajdoniLapEgyeztetesResult
         | ReconcileRecordsResult
+        | GetDebugTraceResult
       resultMeta: Record<string, unknown>
       latencyMs: number
     }

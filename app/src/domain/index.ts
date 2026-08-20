@@ -58,6 +58,7 @@ import { RecipeService } from '@/domain/recipe/recipe-service'
 import { SkillService } from '@/domain/skill/skill-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { DebugLogExportService } from '@/domain/debug-log/debug-log-export-service'
+import { DebugTraceService } from '@/domain/debug-log/debug-trace-service'
 import { ChannelBotService } from '@/domain/channel/channel-bot-service'
 import { ChannelLinkingService } from '@/domain/channel/channel-linking-service'
 import { ChannelTurnService } from '@/domain/channel/channel-turn-service'
@@ -258,6 +259,11 @@ const debugLogExportService = new DebugLogExportService(
   repositories.tickets,
   repositories.audit,
   repositories.toolBroker,
+)
+const debugTraceService = new DebugTraceService(
+  prisma,
+  repositories.toolBroker,
+  repositories.audit,
 )
 // A `channelBotService` a kimenő átvitel UTÁN épül (a beüzemelő `setWebhook`/`getMe` hívások
 // ugyanazon az egress-őrzött kapun mennek ki) — l. lejjebb, a `telegramOutboundTransport` alatt.
@@ -808,6 +814,7 @@ const surrogateEngine = createPlatformSurrogateEngine(
   repositories.conversationPrivacyKeys,
 )
 toolBrokerService.setStructuredPrivacyEngine(surrogateEngine)
+toolBrokerService.setDebugTraceService(debugTraceService)
 toolBrokerService.setPrivacyModeResolver(({ tenantId, agentId }) =>
   platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
 )
@@ -832,6 +839,13 @@ toolBrokerService.setPrivacyCategoryActionResolver(({ tenantId, agentId, categor
     agentId,
     category,
     legacyAllowSensitiveExternalModel,
+  }),
+)
+toolBrokerService.setPrivacyPolicyResolver(({ tenantId, agentId, legacyAllowSensitiveExternalModel }) =>
+  platformSettingsService.resolvePrivacyCategoryPolicy({
+    tenantId,
+    agentId,
+    legacyAllowSensitiveExternalModel: legacyAllowSensitiveExternalModel ?? undefined,
   }),
 )
 const consequenceApprovalService = new ConsequenceApprovalService(

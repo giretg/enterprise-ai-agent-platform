@@ -335,12 +335,15 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
         : null
     },
   },
-  /**
-   * `reconcile_records` — 2. INCIDENS. A párosítás sorrend-függése (a teljes
-   * egyezés globális elsőbbsége) a `lib/reconcile-records.ts`-ben megoldott; itt
-   * a MÉRT hatás és a részlegesség kikényszerítése a feladat. A kombinatorikus
-   * bemeneti kapu a handlerben fut (a sorszám csak a fájlok beolvasása után ismert).
-   */
+  get_debug_trace: {
+    outputSchema: z.looseObject({
+      traceId: z.string(),
+      agentTurnId: z.string(),
+      conversationId: z.string(),
+      projection: z.record(z.string(), z.unknown()),
+    }),
+  },
+
   reconcile_records: {
     outputSchema: z.looseObject({
       ok: z.boolean(),

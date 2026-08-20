@@ -34,6 +34,7 @@ import type {
   RepoOpenPullRequestResult,
   RepoPrepareResult,
   DocumentReadResult,
+  GetDebugTraceResult,
   TulajdoniLapParseResult,
   TulajdoniLapEgyeztetesResult,
   TicketCreateResult,
@@ -131,6 +132,10 @@ export interface HandlerContext {
     input: Extract<ToolBrokerInvokeInput, { tool: 'document_read' }>,
     actingUserId: string | null,
   ): Promise<DocumentReadResult>
+  getDebugTrace(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'get_debug_trace' }>,
+    actingTenantId: string | null,
+  ): Promise<GetDebugTraceResult>
   tulajdoniLapParse(
     input: Extract<ToolBrokerInvokeInput, { tool: 'tulajdoni_lap_parse' }>,
     actingUserId: string | null,

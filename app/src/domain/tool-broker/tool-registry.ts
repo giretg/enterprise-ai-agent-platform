@@ -1878,6 +1878,28 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capabilityGroup: TOOL_GROUP_INGATLAN,
   }),
 
+  get_debug_trace: descriptor({
+    description:
+      'Agent-turn debug trace lekérése PSZEUDONIMIZÁLT projectionnel a hibakereső AI számára (APG-21). ' +
+      'A trusted zónában nyers log marad; ez az eszköz trace-scoped álnevekkel adja vissza a forduló ' +
+      'üzeneteit, aktivitásait, tool/model hívásait és audit-szeletét. ' +
+      'Csak debugging/support agenteknek — normál user-facing válaszokhoz NE használd.',
+    argsSchema: z.object({
+      agentTurnId: z.string().uuid(),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'get_debug_trace',
+      args: { agentTurnId: strArg(args, 'agentTurnId') },
+    }),
+    trust: 'internal',
+    sideEffecting: false,
+    surfaces: MCP_ONLY,
+    capability: 'get_debug_trace',
+    handlerId: 'get_debug_trace',
+    capabilityGroup: TOOL_GROUP_WORKSPACE,
+  }),
+
   reconcile_records: descriptor({
     description:
       'Két JSON-lista DETERMINISZTIKUS egyeztetése a munkaterületen: kulcsmezők alapján párosít, ' +

@@ -112,6 +112,8 @@ import { resolveEntityNamesInToolArgs } from '@/domain/privacy/resolve-tool-enti
 import type { ConnectorEntityResolver } from '@/domain/privacy/entity-resolve-contract'
 import { connectorSupportsEntityResolution } from '@/domain/privacy/connector-privacy'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
+import type { DebugTraceService } from '@/domain/debug-log/debug-trace-service'
+import type { ResolvedPrivacyCategoryPolicy } from '@/domain/privacy/privacy-category-policy'
 // issue #97 — bizalmi regiszter (tool-nevenkénti TrustClass leképezés).
 import { isSideEffectingTool, resolveTrustClass } from './tool-trust-registry'
 // issue #195 — kikényszerített KIMENETI SZERZŐDÉS a broker határán (WP-1).
@@ -149,8 +151,16 @@ export class ToolBrokerService {
   delegationProcessor: DelegationProcessor | null = null
   playbookTransitioner: PlaybookTicketTransitioner | null = null
   private structuredPrivacyEngine: SurrogateEngine | null = null
+  private debugTraceService: DebugTraceService | null = null
   private privacyModeResolver: PrivacyModeResolver | null = null
   private privacyCategoryActionResolver: PrivacyCategoryActionResolver | null = null
+  private privacyPolicyResolver:
+    | ((input: {
+        tenantId: string | null
+        agentId: string
+        legacyAllowSensitiveExternalModel?: boolean | null
+      }) => Promise<ResolvedPrivacyCategoryPolicy>)
+    | null = null
   private connectorEntityResolverFactory: ConnectorEntityResolverFactory | null = null
 
   /** WP-8: a handlerek felé átadott, `this`-hez kötött broker-képességek. */
@@ -226,6 +236,7 @@ export class ToolBrokerService {
         repoOpenPullRequest(this, input, connector, actingTenantId),
       memoryPropose: (input, actingTenantId) => memoryPropose(this, input, actingTenantId),
       documentRead: (input, actingUserId) => documentRead(this, input, actingUserId),
+      getDebugTrace: (input, actingTenantId) => this.fetchDebugTrace(input, actingTenantId),
       tulajdoniLapParse: (input, actingUserId, extras) =>
         tulajdoniLapParse(this, input, actingUserId, extras),
       tulajdoniLapEgyeztetes: (input, actingUserId, extras) =>
@@ -252,6 +263,10 @@ export class ToolBrokerService {
     this.structuredPrivacyEngine = engine
   }
 
+  setDebugTraceService(service: DebugTraceService | null): void {
+    this.debugTraceService = service
+  }
+
   /**
    * APG-09 — platform → tenant → agent üzemmód. Hiányában ENFORCE (APG-04
    * tesztek viselkedése). Élesben a PlatformSettingsService oldja fel.
@@ -263,6 +278,19 @@ export class ToolBrokerService {
   /** APG-11 — kategória-policy a web_search query-safety guardhoz. */
   setPrivacyCategoryActionResolver(resolver: PrivacyCategoryActionResolver | null): void {
     this.privacyCategoryActionResolver = resolver
+  }
+
+  /** APG-21 — teljes kategória-policy a debug-trace projectionhoz. */
+  setPrivacyPolicyResolver(
+    resolver:
+      | ((input: {
+          tenantId: string | null
+          agentId: string
+          legacyAllowSensitiveExternalModel?: boolean | null
+        }) => Promise<ResolvedPrivacyCategoryPolicy>)
+      | null,
+  ): void {
+    this.privacyPolicyResolver = resolver
   }
 
   /** APG-17 — connector `resolve()` a tool-boundary második védelmi vonalához. */
@@ -585,6 +613,30 @@ export class ToolBrokerService {
       ticketId,
     })
     return { ...input, args } as ToolBrokerInvokeInput
+  }
+
+  /** APG-21 — pszeudonimizált agent-turn trace a debugging AI számára. */
+  async fetchDebugTrace(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'get_debug_trace' }>,
+    actingTenantId: string | null,
+  ): Promise<import('./tool-broker-types').GetDebugTraceResult> {
+    if (!this.debugTraceService || !this.structuredPrivacyEngine || !this.privacyPolicyResolver) {
+      throw new Error('debug_trace_unavailable')
+    }
+    const agent = await this.agents.findById(input.agentId)
+    const mode = await this.resolvePrivacyMode(actingTenantId, input.agentId)
+    const policy = await this.privacyPolicyResolver({
+      tenantId: actingTenantId,
+      agentId: input.agentId,
+      legacyAllowSensitiveExternalModel: agent?.allowSensitiveExternalModel ?? undefined,
+    })
+    return this.debugTraceService.getProjectedTrace({
+      agentTurnId: input.args.agentTurnId,
+      tenantId: actingTenantId,
+      engine: this.structuredPrivacyEngine,
+      mode,
+      policy,
+    })
   }
 
   private async resolvePrivacyMode(
