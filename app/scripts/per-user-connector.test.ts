@@ -148,8 +148,9 @@ function buildAuthorizer(opts: FakeOpts = {}) {
   return { authorizer, grantQueries }
 }
 
-function buildGrantService(initialGrant: ConnectorGrant = grant()) {
+function buildGrantService(initialGrant: ConnectorGrant | null = grant()) {
   let currentGrant: ConnectorGrant | null = initialGrant
+  const created: Array<{ scopes: unknown; tenantId: string | null; connectorId: string; userId: string }> = []
   const auditEvents: unknown[] = []
   const grants = {
     findById: async (id: string) => (currentGrant?.id === id ? currentGrant : null),
@@ -160,8 +161,36 @@ function buildGrantService(initialGrant: ConnectorGrant = grant()) {
     },
     findActiveGrant: async () => (currentGrant?.status === 'active' ? currentGrant : null),
     findByUser: async () => [],
-    create: async () => {
-      throw new Error('not needed')
+    create: async (data: {
+      tenantId: string | null
+      connectorId: string
+      userId: string
+      scopes: unknown
+      tokenRef: string
+      accountLabel?: string | null
+      expiresAt?: Date | null
+    }) => {
+      created.push({
+        scopes: data.scopes,
+        tenantId: data.tenantId,
+        connectorId: data.connectorId,
+        userId: data.userId,
+      })
+      currentGrant = {
+        id: currentGrant?.id ?? 'grant-created',
+        tenantId: data.tenantId,
+        connectorId: data.connectorId,
+        userId: data.userId,
+        status: 'active',
+        scopes: data.scopes as ConnectorGrant['scopes'],
+        tokenRef: data.tokenRef,
+        accountLabel: data.accountLabel ?? null,
+        grantedAt: new Date(),
+        expiresAt: data.expiresAt ?? null,
+        lastRefreshedAt: null,
+        revokedAt: null,
+      } as ConnectorGrant
+      return currentGrant
     },
     revokeAllForUser: async () => 0,
   } as unknown as ConnectorGrantRepository
@@ -171,7 +200,7 @@ function buildGrantService(initialGrant: ConnectorGrant = grant()) {
       return event
     },
   } as unknown as AuditRepository
-  return { service: new ConnectorGrantService(grants, audit), auditEvents }
+  return { service: new ConnectorGrantService(grants, audit), auditEvents, created, getGrant: () => currentGrant }
 }
 
 // ---- §10.1 Funkcionális elfogadás ------------------------------------------
@@ -440,6 +469,7 @@ await test('buildAuthorizationUrl: generikus provider a config.oauth-ot használ
   assert.equal(parsed.searchParams.get('scope'), 'crm.read crm.write')
   // access_type=offline Google-specifikus — más providernél nem kerül bele
   assert.equal(parsed.searchParams.get('access_type'), null)
+  assert.equal(parsed.searchParams.get('include_granted_scopes'), null)
   assert.equal(parsed.searchParams.get('code_challenge_method'), 'S256')
   assert.equal(parsed.searchParams.get('prompt'), 'consent')
   assert.ok(parsed.searchParams.get('redirect_uri')?.endsWith('/api/connectors/oauth/callback'))
@@ -478,6 +508,7 @@ await test('buildAuthorizationUrl: Google/Gmail connector explicit configból ka
   })
   const parsed = new URL(url)
   assert.equal(parsed.searchParams.get('access_type'), 'offline')
+  assert.equal(parsed.searchParams.get('include_granted_scopes'), 'true')
   // a Gmail scope-alias teljes URL-re normalizálódik
   assert.equal(parsed.searchParams.get('scope'), GMAIL_SCOPES.readonly)
 })
@@ -631,6 +662,54 @@ await test('buildAuthorizationUrl: Search Console üres scopesSuggested mellett 
       }),
     /missing scopes/,
   )
+})
+
+await test('completeOAuthCallback: újra-consent uniózza a meglévő grant scope-jait (nem írja felül)', async () => {
+  const prevStub = process.env.CONNECTOR_OAUTH_STUB
+  process.env.CONNECTOR_OAUTH_STUB = 'true'
+  try {
+    const existing = grant({
+      scopes: [GMAIL_SCOPES.readonly, GMAIL_SCOPES.modify],
+    })
+    const { service, created, getGrant } = buildGrantService(existing)
+    const connector = gmailConnector({
+      config: {
+        oauth: {
+          authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+          tokenUrl: 'https://oauth2.googleapis.com/token',
+          clientId: 'gmail-client',
+          scopes: [GMAIL_SCOPES.readonly, GMAIL_SCOPES.modify, GMAIL_SCOPES.send],
+          scopeTransform: 'gmailAlias',
+        },
+      } as unknown as Connector['config'],
+    })
+    const { createOAuthState } = await import('../src/lib/crypto/oauth-state')
+    const { state } = createOAuthState({
+      userId: 'user-Y',
+      connectorId: connector.id,
+      tenantId: 'tenant-A',
+      requestedScopes: [GMAIL_SCOPES.send],
+    })
+    await service.completeOAuthCallback({
+      code: 'stub-auth-code',
+      state,
+      connector,
+      actorId: 'user-Y',
+    })
+    assert.equal(created.length, 1)
+    const scopes = created[0]?.scopes
+    assert.ok(Array.isArray(scopes))
+    assert.ok((scopes as string[]).includes(GMAIL_SCOPES.readonly))
+    assert.ok((scopes as string[]).includes(GMAIL_SCOPES.modify))
+    assert.ok((scopes as string[]).includes(GMAIL_SCOPES.send))
+    assert.deepEqual(
+      [...((getGrant()?.scopes as string[]) ?? [])].sort(),
+      [GMAIL_SCOPES.modify, GMAIL_SCOPES.readonly, GMAIL_SCOPES.send].sort(),
+    )
+  } finally {
+    if (prevStub === undefined) delete process.env.CONNECTOR_OAUTH_STUB
+    else process.env.CONNECTOR_OAUTH_STUB = prevStub
+  }
 })
 
 // ---- Grant token vault / service-invariáns ---------------------------------
