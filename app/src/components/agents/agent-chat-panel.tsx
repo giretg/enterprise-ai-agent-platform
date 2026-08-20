@@ -40,6 +40,8 @@ import {
   persistAgentChatForOAuth,
 } from '@/components/agents/agent-chat-session-store'
 import { ChatMarkdown, TypingIndicator } from '@/components/chat/chat-markdown'
+import { PrivacyHighlightedText } from '@/components/privacy/privacy-highlighted-text'
+import type { PrivacyEntityMarker } from '@/domain/privacy/privacy-observability'
 import {
   chatMessageShowsAgentActivity,
   mergeTurnProgressIntoMessages,
@@ -111,6 +113,7 @@ type ChatMessage = {
    * összefoglaló `detail`-je veszi át a helyét.
    */
   thinking?: Record<string, string>
+  privacyMarkers?: PrivacyEntityMarker[]
 }
 
 /** Spec §8.3 — optimista/reconnect buborék azonosító a fordulóhoz kötve. */
@@ -1282,6 +1285,13 @@ function MessageBubble({
                       {approvalTechnicalDetails}
                     </AdminTechnicalDetails>
                   )}
+                </div>
+              ) : message.privacyMarkers && message.privacyMarkers.length > 0 ? (
+                <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                  <PrivacyHighlightedText
+                    text={message.text}
+                    markers={message.privacyMarkers}
+                  />
                 </div>
               ) : isUser ? (
                 <div className="text-sm [&_a]:text-card [&_a]:underline [&_strong]:text-card">

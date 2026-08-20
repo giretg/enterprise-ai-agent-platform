@@ -3501,6 +3501,13 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
       user.activeTenantId,
     )
     if (conversation.agentId !== agentId) return fail('Conversation agent mismatch')
+    const privacyViews = await services.agentChat.getConversationMessages(
+      conversationId,
+      user.activeTenantId,
+      agentId,
+      user.user.id,
+    )
+    const privacyViewById = new Map(privacyViews.map((view) => [view.id, view]))
 
     const views = []
     for (const message of messages) {
@@ -3537,7 +3544,8 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
       views.push({
         id: message.id,
         role: message.role,
-        text: parsed.text,
+        text: privacyViewById.get(message.id)?.text ?? parsed.text,
+        privacyMarkers: privacyViewById.get(message.id)?.privacyMarkers ?? [],
         attachments,
         createdAt: message.createdAt.toISOString(),
         contentDeletedAt,

@@ -8,6 +8,9 @@
  */
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   GatewaySensitivityError,
@@ -39,7 +42,7 @@ import {
   type VaultLookup,
 } from '../src/domain/privacy/surrogate-vault'
 import { valVaultMethodStubs } from './test-surrogate-vault-val-stubs'
-import { parseSurrogate } from '../src/domain/privacy/surrogate-format'
+import { formatSurrogate, parseSurrogate } from '../src/domain/privacy/surrogate-format'
 import type { AuditRepository, ModelCallRepository } from '../src/repositories/interfaces'
 import type { AuditLog, ModelCall } from '@prisma/client'
 
@@ -212,7 +215,16 @@ class InMemorySurrogateVault implements SurrogateVault {
 
 function makeEngine() {
   const vault = new InMemorySurrogateVault(() => HMAC_KEY)
-  return new SurrogateEngine(vault, new RecordingAudit())
+  const engine = new SurrogateEngine(vault, new RecordingAudit())
+  engine.allocateVals = async (inputs) => {
+    const ordinals = new Map<string, number>()
+    return inputs.map((input) => {
+      const next = (ordinals.get(input.entityType) ?? 0) + 1
+      ordinals.set(input.entityType, next)
+      return formatSurrogate(input.entityType, next)
+    })
+  }
+  return engine
 }
 
 function tokenizeEmailPolicy() {
@@ -374,6 +386,28 @@ async function main() {
     assert.equal(result.applied, true)
     assert.equal(result.messages[0]?.content?.includes(company), false)
     assert.equal(result.messages[0]?.content?.includes('[[COMPANY_1]]'), true)
+  })
+
+  await test('known-value nem töri szét a magasabb prioritású e-mail span domainjét', async () => {
+    const engine = makeEngine()
+    await engine.allocateRef({
+      tenantId: TENANT,
+      scope,
+      entityType: 'company',
+      connectorId: randomUUID(),
+      sourceId: 'crm/company/spar',
+      displayValue: 'SPAR',
+      displayValueSource: 'structured_field',
+    })
+    const result = await transformPromptMessages({
+      messages: [{ role: 'user', content: `Kapcsolat: ${EMAIL}` }],
+      mode: 'enforce',
+      policy: tokenizeEmailPolicy(),
+      engine,
+      tenantId: TENANT,
+      scope,
+    })
+    assert.equal(result.messages[0]?.content, 'Kapcsolat: [[EMAIL_1]]')
   })
 
   await test('produkciós prompt-út: ragozott known-value (SPAR-nak)', async () => {
@@ -617,6 +651,23 @@ async function main() {
     })
     assert.equal(result.provider, 'chatgpt-oauth')
     assert.equal(capture.n, 1)
+  })
+
+  await test('APG-20: bookkeeper beszélgetés-scope-ot visz a gateway.call-ba', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const src = readFileSync(join(root, 'src/domain/agent/bookkeeper-runtime.ts'), 'utf8')
+    assert.match(src, /createConversation\(/)
+    assert.match(src, /conversationId:\s*conversation\.id/)
+    assert.match(src, /assembleGatewayMessages\(/)
+    assert.match(src, /memoryContextSystemMessages/)
+  })
+
+  await test('APG-20: wiki forrásrészlet a cache-határ utáni variableContextben van', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const src = readFileSync(join(root, 'src/domain/agent/wiki-runtime.ts'), 'utf8')
+    assert.match(src, /assembleGatewayMessages\(/)
+    assert.match(src, /Forrásrészletek/)
+    assert.match(src, /variableContext:/)
   })
 
   console.log(`\n${failures === 0 ? 'Minden teszt zöld' : `${failures} teszt elbukott`}`)

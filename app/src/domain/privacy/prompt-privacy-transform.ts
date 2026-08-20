@@ -12,6 +12,7 @@
  * mennek át. A bemenetet nem mutálja.
  */
 import { collectSensitivityMatchSpans } from '@/domain/gateway/sensitivity-router'
+import { applySurrogateReplacements } from '@/domain/privacy/apply-replacements'
 import {
   actionForPrivacyCategory,
   canonicalPrivacyCategory,
@@ -59,11 +60,10 @@ function cacheBoundaryIndex(messages: readonly PromptPrivacyMessage[]): number {
 function shouldTransformPromptMessage(
   message: PromptPrivacyMessage,
   index: number,
-  messages: readonly PromptPrivacyMessage[],
+  boundary: number,
 ): boolean {
   if (BASE_TRANSFORM_ROLES.has(message.role)) return true
   if (message.role !== 'system') return false
-  const boundary = cacheBoundaryIndex(messages)
   return boundary >= 0 && index > boundary
 }
 
@@ -93,6 +93,7 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
   }
 
   const actionOf = resolver(input.policy)
+  const boundary = cacheBoundaryIndex(input.messages)
   let messages = input.messages
   let knownApplied = false
   let knownFailure: PrivacyTransformFailureAudit | undefined
@@ -102,11 +103,17 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
     const transformed: T[] = []
     for (const [index, message] of messages.entries()) {
       const text = message.content ?? ''
-      if (!shouldTransformPromptMessage(message, index, messages) || !text) {
+      if (!shouldTransformPromptMessage(message, index, boundary) || !text) {
         transformed.push(message)
         continue
       }
-      for (const match of findKnownValueMatches(text, knownReplacements)) {
+      const protectedSpans = collectSensitivityMatchSpans(text)
+      for (const match of findKnownValueMatches(text, knownReplacements).filter(
+        (candidate) =>
+          !protectedSpans.some(
+            (span) => candidate.start < span.end && candidate.end > span.start,
+          ),
+      )) {
         const parsed = parseSurrogate(match.surrogate)
         if (parsed) knownSpans.push({ entityType: parsed.entityType, field: 'prompt_known_value' })
       }
@@ -114,6 +121,7 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
         text,
         replacements: knownReplacements,
         mode: input.mode,
+        protectedSpans,
       })
       knownApplied ||= result.appliedCount > 0
       knownFailure ??= result.failure
@@ -160,7 +168,7 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
   let scanFailure: PrivacyTransformFailureAudit | undefined
   try {
     for (const [messageIndex, message] of messages.entries()) {
-      if (!shouldTransformPromptMessage(message, messageIndex, messages)) continue
+      if (!shouldTransformPromptMessage(message, messageIndex, boundary)) continue
       const text = message.content ?? ''
       if (!text) continue
       for (const span of collectSensitivityMatchSpans(text)) {
@@ -211,17 +219,19 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
     return { messages, spans, applied: false, failure: knownFailure ?? entityFailure ?? scanFailure }
   }
 
+  // D2 — szabad szöveges találat VAL-surrogate-ot kap: a nyers e-mail/telefon
+  // titkosítva kerül a vaultba, a `source_id` csak a hash. Ref-sorként a nyers
+  // érték kulcsként, olvashatóan maradna ott, és a beszélgetés törlése
+  // (crypto-shredding) sem érné el — második, örökké élő PII-példány.
   const surrogates = await runPrivacyTransformLayer({
     layer: 'vault',
     work: async () =>
-      input.engine.allocateRefs(
+      input.engine.allocateVals(
         pending.map((slot) => ({
           tenantId: input.tenantId,
           scope: input.scope,
           entityType: slot.entityType,
-          connectorId: PROMPT_SCANNER_CONNECTOR_ID,
-          sourceId: slot.value,
-          displayValue: slot.value,
+          plaintext: slot.value,
         })),
       ),
     onFailOpen: () => [],
@@ -240,7 +250,7 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
     const replacements = byMessage.get(index)
     if (!replacements || replacements.length === 0) return message
     const text = message.content ?? ''
-    return { ...message, content: applyReplacements(text, replacements) }
+    return { ...message, content: applySurrogateReplacements(text, replacements) }
   })
 
   return {
@@ -258,19 +268,4 @@ function resolver(
     return async (category) => policy(category)
   }
   return async (category) => actionForPrivacyCategory(policy, category)
-}
-
-function applyReplacements(
-  text: string,
-  replacements: Array<{ start: number; end: number; surrogate: string }>,
-): string {
-  const sorted = [...replacements].sort((a, b) => b.start - a.start || b.end - a.end)
-  let out = text
-  let cut = out.length
-  for (const slot of sorted) {
-    if (slot.end > cut) continue
-    out = out.slice(0, slot.start) + slot.surrogate + out.slice(slot.end)
-    cut = slot.start
-  }
-  return out
 }

@@ -56,9 +56,46 @@ export function expandStemWithSuffixes(stem: string): string[] {
 const LEGAL_FORM_RE =
   /\b(kft\.?|zrt\.?|bt\.?|nyrt\.?|ev\.?|e\.v\.?|kkt\.?|rt\.?)\s*$/i
 
+/** Jogi forma rövidítések normalizált alakja — csak ezek után nyeljük le a mondatvégi pontot. */
+export const HUNGARIAN_LEGAL_FORM_TOKENS: ReadonlySet<string> = new Set([
+  'kft',
+  'zrt',
+  'bt',
+  'nyrt',
+  'kkt',
+  'rt',
+  'ev',
+])
+
+/**
+ * Köznévvel egybeeső névkezdetek. Ezek NEM lehetnek önálló illesztő tövek:
+ * „Nagy Péter” → `nagy` minden „nagy” melléknevet személynévre cserélne, a
+ * felhasználó pedig értelmezhetetlen, kilyukasztott szöveget kapna vissza.
+ * A teljes név természetesen továbbra is illeszkedik.
+ * (Normalizált — kisbetűs, ékezet nélküli — alakban tároljuk.)
+ */
+const COMMON_WORD_STEMS: ReadonlySet<string> = new Set([
+  // melléknevek / színek
+  'nagy', 'kis', 'kicsi', 'feher', 'fekete', 'zold', 'barna', 'sarga', 'piros',
+  'voros', 'szurke', 'kek', 'uj', 'jo', 'szep', 'hosszu', 'rovid', 'elso',
+  // nép- és nyelvnevek
+  'magyar', 'nemet', 'francia', 'angol', 'olasz', 'orosz', 'lengyel', 'cseh',
+  'szerb', 'horvat', 'torok', 'gorog', 'roman', 'szlovak',
+  // foglalkozásnevek, amelyek gyakori köznevek is
+  'kovacs', 'szabo', 'molnar', 'varga', 'takacs', 'halasz', 'juhasz', 'pasztor',
+  'meszaros', 'biro', 'deak', 'pap', 'papp', 'fazekas', 'asztalos', 'lakatos',
+  'kertesz', 'vadasz', 'kiraly', 'herceg', 'ur',
+  // gyakori földrajzi/általános köznevek
+  'haz', 'kert', 'viz', 'to', 'hegy', 'erdo', 'mezo', 'part', 'var', 'malom',
+  'utca', 'ter', 'ut', 'kozpont', 'iroda', 'raktar', 'bolt',
+])
+
 /**
  * Ismert értékből illesztő szótő(k): teljes név + első jelentős token
  * (pl. „SPAR Magyarország Kft.” → „spar magyarorszag kft”, „spar”).
+ *
+ * Az első token csak akkor lesz ÖNÁLLÓ tő, ha nem esik egybe gyakori köznévvel
+ * — különben a szótár a hétköznapi szavakat is entitásnak látná (l. `COMMON_WORD_STEMS`).
  */
 export function extractMatchingStems(needle: string): string[] {
   const normalized = needle
@@ -79,15 +116,13 @@ export function extractMatchingStems(needle: string): string[] {
   stems.add(folded)
 
   const withoutLegal = normalized.replace(LEGAL_FORM_RE, '').trim()
-  if (withoutLegal && withoutLegal !== normalized) {
-    const wl = normalizeHungarianForMatching(withoutLegal)
-    stems.add(wl)
-    const first = wl.split(/\s+/)[0]
-    if (first && first.length >= 2) stems.add(first)
-  } else {
-    const first = folded.split(/\s+/)[0]
-    if (first && first.length >= 2) stems.add(first)
-  }
+  const base = withoutLegal && withoutLegal !== normalized
+    ? normalizeHungarianForMatching(withoutLegal)
+    : folded
+  if (base !== folded) stems.add(base)
+
+  const first = base.split(/\s+/)[0]
+  if (first && first.length >= 2 && !COMMON_WORD_STEMS.has(first)) stems.add(first)
 
   return [...stems].filter((s) => s.length >= 2)
 }

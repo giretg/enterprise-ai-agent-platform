@@ -46,9 +46,11 @@ export async function runKnownValueSubstitution(input: {
   work: () => Promise<string>
 }): Promise<KnownValueSubstitutionResult> {
   const original = input.text
+  if (input.mode !== 'enforce') {
+    return { text: original, appliedCount: 0 }
+  }
   const result = await runPrivacyTransformLayer({
     layer: 'known_value',
-    mode: input.mode,
     knownValueFromStructuredField: input.fromStructuredField,
     work: input.work,
     onFailOpen: () => original,
@@ -64,9 +66,16 @@ export async function substituteKnownValuesInText(input: {
   text: string
   replacements: KnownValueReplacement[]
   mode: PrivacyGatewayMode
+  /** Magasabb prioritású scanner-spanok (pl. teljes e-mail); ezek belsejében ne illesszünk nevet. */
+  protectedSpans?: ReadonlyArray<{ start: number; end: number }>
 }): Promise<KnownValueSubstitutionResult> {
   const original = input.text
-  const matches = findKnownValueMatches(original, input.replacements)
+  const matches = findKnownValueMatches(original, input.replacements).filter(
+    (match) =>
+      !input.protectedSpans?.some(
+        (span) => match.start < span.end && match.end > span.start,
+      ),
+  )
   const result = await runKnownValueSubstitution({
     text: original,
     fromStructuredField: input.replacements.some((slot) => slot.fromStructuredField),
@@ -74,6 +83,9 @@ export async function substituteKnownValuesInText(input: {
     work: async () => applyKnownValueMatches(original, matches),
   })
   if (result.failure) return result
+  if (input.mode !== 'enforce') {
+    return { text: result.text, appliedCount: 0 }
+  }
   const appliedCount = new Set(matches.map((m) => m.surrogate)).size
   return { text: result.text, appliedCount }
 }

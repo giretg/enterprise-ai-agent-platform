@@ -13,10 +13,8 @@
  * markdown — a darab önmagában szöveg-node-nak tűnhet, holott egy URL vége.
  */
 import { resolvableTextRanges } from '@/domain/privacy/markdown-surrogate-context'
-import type { AuditRepository } from '@/repositories/interfaces'
 import {
   allowsEgressResolve,
-  PRIVACY_EGRESS_EXPORT_RESOLVED_ACTION,
   type PrivacyEgressSurface,
   type ResolvedPrivacyEgressMatrix,
   resolvePrivacyEgressMatrix,
@@ -171,68 +169,6 @@ export async function resolveChannelOutboundText(params: {
     tenantId: params.tenantId,
     scope: { type: 'conversation', id: params.conversationId },
     requesterUserId: params.userId,
-    matrix: params.matrix,
-  })
-}
-
-/** Riport/export fájl — policy szerinti feloldás + audit (spec §10.2). */
-export async function resolveExportReportEgressText(params: {
-  text: string
-  engine: SurrogateEngine
-  tenantId: string
-  scope: PrivacyScope
-  requesterUserId?: string | null
-  matrix?: ResolvedPrivacyEgressMatrix
-  audit: Pick<AuditRepository, 'append'>
-  actorId: string
-  targetType: string
-  targetId: string
-}): Promise<string> {
-  return resolveEgressTextForSurface({
-    text: params.text,
-    surface: 'export_report',
-    engine: params.engine,
-    tenantId: params.tenantId,
-    scope: params.scope,
-    requesterUserId: params.requesterUserId,
-    matrix: params.matrix,
-    onResolved: async (event) => {
-      await params.audit.append({
-        actorType: 'human',
-        actorId: params.actorId,
-        agentVersion: null,
-        action: PRIVACY_EGRESS_EXPORT_RESOLVED_ACTION,
-        targetType: params.targetType,
-        targetId: params.targetId,
-        modelUsed: null,
-        inputRef: event.categories.join(','),
-        outputRef: `spans:${event.resolvedCount}`,
-        policyDecision: 'applied',
-        tenantId: params.tenantId,
-        metadata: {
-          surface: event.surface,
-          categories: event.categories,
-          resolvedCount: event.resolvedCount,
-        },
-      })
-    },
-  })
-}
-
-/** Platform e-mail értesítés — alapból nem old fel (spec §10.2). */
-export async function resolvePlatformEmailEgressText(params: {
-  text: string
-  engine: SurrogateEngine
-  tenantId: string
-  scope: PrivacyScope
-  matrix?: ResolvedPrivacyEgressMatrix
-}): Promise<string> {
-  return resolveEgressTextForSurface({
-    text: params.text,
-    surface: 'platform_email',
-    engine: params.engine,
-    tenantId: params.tenantId,
-    scope: params.scope,
     matrix: params.matrix,
   })
 }

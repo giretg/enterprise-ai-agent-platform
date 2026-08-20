@@ -243,6 +243,7 @@ export const TOOL_GROUP_AGENTS = 'Agent együttműködés'
 export const TOOL_GROUP_HTTP = 'HTTP API'
 export const TOOL_GROUP_WEB = 'Webes kutatás'
 export const TOOL_GROUP_MEMORY = 'Projektmemória'
+export const TOOL_GROUP_PRIVACY = 'Adatvédelmi hibakeresés'
 
 /** A csoportok megjelenítési sorrendje az eszközjog-szerkesztőben. */
 export const TOOL_GROUP_ORDER: readonly string[] = [
@@ -259,6 +260,7 @@ export const TOOL_GROUP_ORDER: readonly string[] = [
   TOOL_GROUP_HTTP,
   TOOL_GROUP_WEB,
   TOOL_GROUP_MEMORY,
+  TOOL_GROUP_PRIVACY,
 ]
 
 const BOTH: readonly ToolSurface[] = ['chat', 'mcp']
@@ -1897,7 +1899,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     surfaces: MCP_ONLY,
     capability: 'get_debug_trace',
     handlerId: 'get_debug_trace',
-    capabilityGroup: TOOL_GROUP_WORKSPACE,
+    capabilityGroup: TOOL_GROUP_PRIVACY,
   }),
 
   reconcile_records: descriptor({

@@ -54,17 +54,16 @@ export function normalizeEntityResolveResponse(response: EntityResolveResponse):
   if (response.status === 'none' || sorted.length === 0) {
     return { status: 'none', candidates: [] }
   }
-  if (response.status === 'ambiguous' || sorted.length > 1) {
-    const top = sorted[0]?.confidence ?? 0
-    const close = sorted.filter((c) => top - c.confidence <= 0.05)
-    if (close.length > 1) return { status: 'ambiguous', candidates: sorted }
-  }
+  if (response.status === 'ambiguous') return { status: 'ambiguous', candidates: sorted }
   const best = sorted[0]
   if (!best) return { status: 'none', candidates: [] }
   if (best.confidence < ENTITY_RESOLVE_AMBIGUOUS_CONFIDENCE) {
     return { status: 'none', candidates: [] }
   }
-  if (best.confidence < ENTITY_RESOLVE_MATCH_CONFIDENCE || sorted.length > 1) {
+  const closeCandidates = sorted.filter(
+    (candidate) => best.confidence - candidate.confidence <= 0.05,
+  )
+  if (best.confidence < ENTITY_RESOLVE_MATCH_CONFIDENCE || closeCandidates.length > 1) {
     return { status: 'ambiguous', candidates: sorted }
   }
   return { status: 'match', candidates: [best] }

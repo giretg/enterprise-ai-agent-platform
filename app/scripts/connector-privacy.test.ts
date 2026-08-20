@@ -20,7 +20,9 @@ import {
 } from '../src/domain/provisioning/connector-config'
 import {
   OSTOROSBOR_CRM_PRIVACY_CAPABILITIES,
+  TOKENIZE_SOURCE_ID_REFERENCE_MESSAGE,
   TOKENIZE_STRING_ONLY_MESSAGE,
+  inspectConnectorPrivacyFields,
   privacyCapabilityAbsentAudit,
   privacyCapabilityChangedAudit,
   privacyCapabilityLevel,
@@ -126,6 +128,58 @@ async function main() {
     assert.equal(config.fields?.company_name.entity_type, 'company')
     assert.equal(config.fields?.revenue.privacy, 'pass')
     assert.equal(privacyCapabilityLevel(config.privacy), 'full')
+  })
+
+  await test('legacy tokenize source_id nélkül továbbra is beolvasható (runtime ENFORCE fail-closed)', () => {
+    const config = normalizeConnectorConfig(
+      baseConfig({
+        fields: {
+          company_name: {
+            type: 'string',
+            privacy: 'tokenize',
+            entity_type: 'company',
+          },
+        },
+      }),
+    )
+    assert.equal(config.fields?.company_name?.privacy, 'tokenize')
+    const inspected = inspectConnectorPrivacyFields(config)
+    assert.equal(inspected.status, 'valid')
+  })
+
+  await test('hibás fields séma inspect-ben invalid, nem absent (fail-closed, nem néma fail-open)', () => {
+    const inspected = inspectConnectorPrivacyFields({
+      fields: {
+        revenue: { type: 'number', privacy: 'tokenize', entity_type: 'company' },
+      },
+    })
+    assert.equal(inspected.status, 'invalid')
+    if (inspected.status === 'invalid') {
+      assert.match(inspected.reason, /tokenize/)
+    }
+  })
+
+  await test('source_id sablon csak létező payload-mezőre hivatkozhat', () => {
+    assert.throws(
+      () =>
+        normalizeConnectorConfig(
+          baseConfig({
+            fields: {
+              company_name: {
+                type: 'string',
+                privacy: 'tokenize',
+                entity_type: 'company',
+                source_id: 'crm/company/{missing_id}',
+              },
+            },
+          }),
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof ConnectorConfigParseError)
+        assert.ok(err.message.includes(TOKENIZE_SOURCE_ID_REFERENCE_MESSAGE))
+        return true
+      },
+    )
   })
 
   await test('CRM sablon capabilitySet-je tartalmazza a privacy-deklarációt és a company mezőt', () => {

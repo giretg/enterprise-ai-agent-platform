@@ -6,10 +6,10 @@ export const debugTraceHandler: ToolHandler = {
   handles(tool) {
     return tool === 'get_debug_trace'
   },
-  async execute({ ctx, input, actingTenantId }: ToolHandlerArgs) {
+  async execute({ ctx, input, actingTenantId, actingUserId }: ToolHandlerArgs) {
     if (input.tool !== 'get_debug_trace') {
       throw new Error(`get_debug_trace handler received ${input.tool}`)
     }
-    return ctx.getDebugTrace(input, actingTenantId)
+    return ctx.getDebugTrace(input, actingTenantId, actingUserId)
   },
 }

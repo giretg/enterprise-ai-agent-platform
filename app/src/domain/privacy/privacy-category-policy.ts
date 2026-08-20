@@ -266,6 +266,21 @@ export function applyCustomCategoryMapPatch(
 export type PrivacyPolicySource = 'default' | 'platform' | 'tenant' | 'agent' | 'legacy'
 export type PrivacyEditorLayer = 'platform' | 'tenant' | 'agent'
 
+export function privacyEditorLayerValue<T>(
+  layer: PrivacyEditorLayer,
+  values: Record<PrivacyEditorLayer, T>,
+): T {
+  return values[layer]
+}
+
+export function privacyEditorLayersThrough(layer: PrivacyEditorLayer): PrivacyEditorLayer[] {
+  return privacyEditorLayerValue(layer, {
+    platform: ['platform'],
+    tenant: ['platform', 'tenant'],
+    agent: ['platform', 'tenant', 'agent'],
+  })
+}
+
 export type PrivacyPolicyEditorRow = {
   category: string
   kind: 'builtin' | 'custom'
@@ -311,18 +326,13 @@ export function buildPrivacyPolicyEditorRows(input: {
   editingLayer: PrivacyEditorLayer
 }): PrivacyPolicyEditorRow[] {
   const resolved = resolvePrivacyCategoryPolicy(input)
-  const editingLayer =
-    input.editingLayer === 'platform'
-      ? input.platform
-      : input.editingLayer === 'tenant'
-        ? input.tenant
-        : input.agent
-  const customLayers =
-    input.editingLayer === 'platform'
-      ? [input.platform]
-      : input.editingLayer === 'tenant'
-        ? [input.platform, input.tenant]
-        : [input.platform, input.tenant, input.agent]
+  const byLayer = {
+    platform: input.platform,
+    tenant: input.tenant,
+    agent: input.agent,
+  }
+  const editingLayer = privacyEditorLayerValue(input.editingLayer, byLayer)
+  const customLayers = privacyEditorLayersThrough(input.editingLayer).map((layer) => byLayer[layer])
   const customKeys = new Set(customLayers.flatMap((layer) => Object.keys(layer?.custom ?? {})))
 
   const builtin: PrivacyPolicyEditorRow[] = PRIVACY_POLICY_CATEGORIES.map((category) => {

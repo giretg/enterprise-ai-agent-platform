@@ -12,16 +12,21 @@
  */
 import type { AuditRepository } from '@/repositories/interfaces'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
-import { readConnectorPrivacyFields } from '@/domain/privacy/connector-privacy'
+import { inspectConnectorPrivacyFields } from '@/domain/privacy/connector-privacy'
 import { recordPrivacyGatewayAudit } from '@/domain/privacy/privacy-audit'
 import type { PrivacyGatewayMode } from '@/domain/privacy/privacy-mode'
 import { summarizePrivacySpans } from '@/domain/privacy/privacy-mode'
 import { privacyScopeForCall } from '@/domain/privacy/privacy-scope'
 import { transformStructuredOutput } from '@/domain/privacy/structured-output-transform'
+import {
+  PrivacyTransformBlockedError,
+  describePrivacyTransformFailure,
+} from '@/domain/privacy/privacy-transform-failure'
 import { privacyTransformDurationMs } from '@/lib/observability/metrics'
 import type { TrustClass } from './tool-broker-types'
 import {
   buildToolOutcomeChannels,
+  validateToolOutput,
   type ToolOutcomeChannels,
   type ToolOutputContract,
 } from './tool-output-contract'
@@ -46,7 +51,19 @@ export type PrivacyAwareOutcomeInput = {
 export async function buildPrivacyAwareOutcomeChannels(
   params: PrivacyAwareOutcomeInput,
 ): Promise<ToolOutcomeChannels> {
-  const modelOutput = await resolveModelOutput(params)
+  const verdict = validateToolOutput({
+    tool: params.tool,
+    output: params.output,
+    contract: params.contract,
+    sideEffecting: params.sideEffecting,
+  })
+  let modelOutput: unknown
+  try {
+    modelOutput = await resolveModelOutput(params)
+  } catch (error) {
+    await auditStructuredPrivacyFailure(params, error)
+    throw error
+  }
   return buildToolOutcomeChannels({
     tool: params.tool,
     trust: params.trust,
@@ -55,21 +72,25 @@ export async function buildPrivacyAwareOutcomeChannels(
     contract: params.contract,
     sideEffecting: params.sideEffecting,
     fullDataRef: params.fullDataRef,
+    validatedVerdict: verdict,
   })
 }
 
 async function resolveModelOutput(params: PrivacyAwareOutcomeInput): Promise<unknown> {
   const mode = params.mode ?? 'enforce'
-  if (mode === 'off') return params.output
-  if (!params.engine) return params.output
   const connector = params.connector
   if (!connector) return params.output
-  const fields = readConnectorPrivacyFields(connector.config)
-  if (!fields) return params.output
+  const inspected = inspectConnectorPrivacyFields(connector.config)
+  if (inspected.status === 'absent') return params.output
+  if (inspected.status === 'invalid') {
+    throw new PrivacyTransformBlockedError(
+      'structured_field',
+      new Error(`Hibás connector privacy deklaráció: ${inspected.reason}`),
+    )
+  }
+  const fields = inspected.fields
   const tenantId = params.actingTenantId ?? connector.tenantId
-  if (!tenantId) return params.output
   const scope = privacyScopeForCall(params.conversationId, params.ticketId)
-  if (!scope) return params.output
 
   const apply = mode === 'enforce'
   const started = Date.now()
@@ -91,7 +112,7 @@ async function resolveModelOutput(params: PrivacyAwareOutcomeInput): Promise<unk
     privacyTransformDurationMs.observe(Date.now() - started)
   }
 
-  if (spans.length > 0 && params.audit) {
+  if (mode !== 'off' && spans.length > 0 && params.audit && tenantId && scope) {
     await recordPrivacyGatewayAudit(params.audit, {
       action: apply ? 'privacy.transform.applied' : 'privacy.transform.observed',
       tenantId,
@@ -102,5 +123,31 @@ async function resolveModelOutput(params: PrivacyAwareOutcomeInput): Promise<unk
     })
   }
 
-  return apply ? output : params.output
+  // OBSERVE/OFF alatt a tokenize mezők nyersek maradnak, de a hard `block`
+  // szerződés akkor is eltávolítja a mezőt a modellcsatornából.
+  return output
+}
+
+async function auditStructuredPrivacyFailure(
+  params: PrivacyAwareOutcomeInput,
+  error: unknown,
+): Promise<void> {
+  if (!params.audit || params.mode === 'off') return
+  const connector = params.connector
+  const tenantId = params.actingTenantId ?? connector?.tenantId
+  const scope = privacyScopeForCall(params.conversationId, params.ticketId)
+  if (!tenantId || !scope) return
+  try {
+    await recordPrivacyGatewayAudit(params.audit, {
+      action: 'privacy.transform.failed',
+      tenantId,
+      scope,
+      summary: { spanCount: 0, categories: [], byCategory: {} },
+      mode: params.mode ?? 'enforce',
+      reason: describePrivacyTransformFailure(error),
+      ticketId: params.ticketId ?? null,
+    })
+  } catch {
+    // A felhasználónak szánt fail-closed hiba ne vesszen el egy másodlagos audit-hiba miatt.
+  }
 }

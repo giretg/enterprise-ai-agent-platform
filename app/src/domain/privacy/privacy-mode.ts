@@ -82,6 +82,19 @@ export function addSpanCategory(
   return { ...byCategory, [entityType]: (byCategory[entityType] ?? 0) + count }
 }
 
+export function mergePrivacySpanCategories(
+  left: Partial<Record<SurrogateEntityType, number>>,
+  right: Partial<Record<SurrogateEntityType, number>>,
+): Partial<Record<SurrogateEntityType, number>> {
+  let merged = left
+  for (const [key, count] of Object.entries(right)) {
+    if (typeof count === 'number') {
+      merged = addSpanCategory(merged, key as SurrogateEntityType, count)
+    }
+  }
+  return merged
+}
+
 export type PrivacyModeResolver = (ctx: {
   tenantId: string | null
   agentId: string

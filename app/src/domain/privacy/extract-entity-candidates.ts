@@ -6,9 +6,8 @@
  */
 import { HUNGARIAN_CASE_SUFFIXES } from '@/domain/privacy/hungarian-suffix-morphs'
 import {
-  foldHungarianChar,
-  isWordBoundaryAfter,
-  isWordBoundaryBefore,
+  hasWordBoundaries,
+  normalizeHungarianForMatching,
 } from '@/domain/privacy/hungarian-text-normalize'
 
 export type EntityCandidateSpan = {
@@ -106,9 +105,6 @@ function pushCandidate(
   out.push({ start, end, matchedText, resolveText })
 }
 
-function hasWordBoundaries(text: string, start: number, end: number): boolean {
-  return isWordBoundaryBefore(text, start) && isWordBoundaryAfter(text, end)
-}
 
 /** Rag levágása resolve-hívás előtt (pl. Sparnak → SPAR). */
 export function stemForResolve(text: string): string {
@@ -134,11 +130,5 @@ export function stemForResolve(text: string): string {
 
 /** Normalizált összehasonlítás duplikált resolve-hívások elkerülésére. */
 export function normalizeResolveQuery(text: string): string {
-  return text
-    .split('')
-    .map((ch) => foldHungarianChar(ch))
-    .join('')
-    .toLowerCase()
-    .replace(/[\s\-–—_]+/g, ' ')
-    .trim()
+  return normalizeHungarianForMatching(text)
 }

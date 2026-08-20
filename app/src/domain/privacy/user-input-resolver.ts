@@ -4,6 +4,7 @@
  * Best-effort: candidate extraction + connector `resolve()`. Sikertelen / többértelmű
  * felismerés → a nyers név marad (fail-open + audit a scanner rétegen).
  */
+import { applySurrogateReplacements } from '@/domain/privacy/apply-replacements'
 import type { PrivacyGatewayMode, PrivacySpan } from '@/domain/privacy/privacy-mode'
 import {
   entityResolveCandidateToRef,
@@ -133,7 +134,7 @@ async function applyResolvedCandidates(
   }
 
   return {
-    text: applyReplacements(original, replacements),
+    text: applySurrogateReplacements(original, replacements),
     applied: true,
     spans,
     resolveAttempts,
@@ -143,19 +144,4 @@ async function applyResolvedCandidates(
 function pickMatch(response: EntityResolveResponse) {
   if (response.status !== 'match') return null
   return response.candidates[0] ?? null
-}
-
-function applyReplacements(
-  text: string,
-  replacements: Array<{ start: number; end: number; surrogate: string }>,
-): string {
-  const sorted = [...replacements].sort((a, b) => b.start - a.start || b.end - a.end)
-  let out = text
-  let cut = out.length
-  for (const slot of sorted) {
-    if (slot.end > cut) continue
-    out = out.slice(0, slot.start) + slot.surrogate + out.slice(slot.end)
-    cut = slot.start
-  }
-  return out
 }

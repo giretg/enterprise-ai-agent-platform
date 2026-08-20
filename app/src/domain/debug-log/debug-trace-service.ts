@@ -9,6 +9,7 @@ import {
   type DebugTraceToolOutput,
 } from '@/domain/privacy/debug-trace-projection'
 import { privacyScopeForCall } from '@/domain/privacy/privacy-scope'
+import type { PrivacyResolveAccess } from '@/domain/privacy/resolve-access'
 
 const DEFAULT_TOOL_CALL_LIMIT = 200
 const DEFAULT_MODEL_CALL_LIMIT = 100
@@ -19,11 +20,19 @@ export class DebugTraceService {
     private prisma: PrismaClient,
     private toolBroker: ToolBrokerRepository,
     private audit: AuditRepository,
+    /**
+     * Feloldási scope-invariáns (spec §10.5 / R14). Ugyanaz a kapu, mint a
+     * vault-feloldásé: a trace a beszélgetés TELJES tartalmát tartalmazza, így
+     * azonos tenant önmagában nem elég — a kérőnek a beszélgetés jogosult
+     * résztvevőjének kell lennie, különben bárki elolvashatná más beszélgetéseit.
+     */
+    private resolveAccess: PrivacyResolveAccess,
   ) {}
 
   async getProjectedTrace(params: {
     agentTurnId: string
     tenantId: string | null
+    requesterUserId: string | null
     engine: SurrogateEngine
     mode: PrivacyGatewayMode
     policy: ResolvedPrivacyCategoryPolicy
@@ -31,6 +40,7 @@ export class DebugTraceService {
     const raw = await this.loadRawTrace({
       agentTurnId: params.agentTurnId,
       tenantId: params.tenantId,
+      requesterUserId: params.requesterUserId,
     })
     return projectDebugTraceToolOutput({
       trace: raw,
@@ -46,11 +56,23 @@ export class DebugTraceService {
   private async loadRawTrace(params: {
     agentTurnId: string
     tenantId: string | null
+    requesterUserId: string | null
   }): Promise<DebugTraceRawBundle & { tenantId: string | null }> {
     const turn = await this.prisma.agentTurn.findUnique({
       where: { id: params.agentTurnId },
     })
-    if (!turn || turn.tenantId !== params.tenantId) {
+    if (!turn || !params.tenantId || turn.tenantId !== params.tenantId) {
+      throw new Error('agent_turn_not_found')
+    }
+
+    const access = await this.resolveAccess.authorize({
+      requester: { tenantId: params.tenantId, userId: params.requesterUserId },
+      claimedTenantId: params.tenantId,
+      scope: { type: 'conversation', id: turn.conversationId },
+    })
+    if (!access.allowed) {
+      // Ugyanaz a hibaüzenet, mint a nem létező fordulóé: a kérő ne tudja
+      // kikövetkeztetni idegen beszélgetések azonosítóit.
       throw new Error('agent_turn_not_found')
     }
 

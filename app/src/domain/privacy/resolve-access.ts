@@ -76,7 +76,7 @@ function authorizeOwnedResource(input: {
   if (input.resourceTenantId !== input.requester.tenantId) {
     return { allowed: false, reason: 'tenant' }
   }
-  if (input.requester.userId && input.requester.userId !== input.ownerId) {
+  if (!input.requester.userId || input.requester.userId !== input.ownerId) {
     return { allowed: false, reason: 'participant' }
   }
   return { allowed: true }

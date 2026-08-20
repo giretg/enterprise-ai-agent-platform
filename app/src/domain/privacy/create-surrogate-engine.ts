@@ -2,12 +2,16 @@
  * Platform Surrogate Engine: Postgres vault + hash-láncolt privacy-audit.
  * A Tool Broker ezt kapja (APG-04); a feloldás (APG-05/APG-08) ugyanerre az instance-ra épül.
  */
-import type { AuditRepository, ConversationRepository, TicketRepository } from '@/repositories/interfaces'
+import type {
+  AuditRepository,
+  ConversationPrivacyKeyRepository,
+  ConversationRepository,
+  TicketRepository,
+} from '@/repositories/interfaces'
 import { recordPrivacyGatewayAudit, summaryFromSurrogate } from '@/domain/privacy/privacy-audit'
 import { ConversationPrivacyResolveAccess } from '@/domain/privacy/resolve-access'
 import { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import type { SurrogateVault } from '@/domain/privacy/surrogate-vault'
-import type { ConversationPrivacyKeyRepository } from '@/repositories/postgres/conversation-privacy-key-repository'
 
 export function createPlatformSurrogateEngine(
   audit: AuditRepository,

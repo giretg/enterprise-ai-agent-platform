@@ -982,16 +982,15 @@ export const setPrivacyGatewayModeSchema = z.object({
   mode: z.union([privacyGatewayModeSchema, z.null()]),
 })
 
-export const dryRunPrivacyTextSchema = z.object({
+const privacyTextPreviewSchema = z.object({
   text: z.string().max(20_000),
   agentId: z.string().uuid().optional(),
 })
 
+export const dryRunPrivacyTextSchema = privacyTextPreviewSchema
+
 /** APG-22 — privacy observability lánc előnézet (modellhívás nélkül). */
-export const previewPrivacyObservabilitySchema = z.object({
-  text: z.string().max(20_000),
-  agentId: z.string().uuid().optional(),
-})
+export const previewPrivacyObservabilitySchema = privacyTextPreviewSchema
 
 /** Tenant kimeneti nyelv — skill/playbook desztilláló és szerző agentek. */
 export const setTenantLanguageSchema = z.object({

@@ -41,7 +41,7 @@ import {
   buildFoldMuveletekFromEltero,
   checkFoldMuveletekCoverage,
   describeInvalidAppliedSource,
-  extractAppliedOwnershipIds,
+  extractAppliedOwnershipWrites,
   hasCompleteHttpApiGetAllProvenance,
   egyeztetesSorok,
   normalizeNyilvantartasRows,
@@ -2260,7 +2260,7 @@ export async function tulajdoniLapEgyeztetes(
   if (coverageAppliedPath && foldPlan) {
     const appliedRaw = await readWorkspaceJson(self, tenantId, workspaceId, coverageAppliedPath)
     assertAppliedSourceIsProposalExtract(coverageAppliedPath, muveletekPath, appliedRaw)
-    coverage = checkFoldMuveletekCoverage(foldPlan, extractAppliedOwnershipIds(appliedRaw))
+    coverage = checkFoldMuveletekCoverage(foldPlan, extractAppliedOwnershipWrites(appliedRaw))
   } else if (coverageAppliedPath) {
     // Nulla eltérés ebben a futásban → nincs tervezett PATCH/DELETE; ne követeljük
     // a korábbi fold_muveletek.json-t (hiányában se dobjuk el a sikeres egyeztetést).
@@ -2379,7 +2379,7 @@ async function runFoldMuveletekCoverageCheck(
   }
   assertAppliedSourceIsProposalExtract(input.appliedPath, input.muveletekPath, appliedRaw)
   const plan = planRaw as FoldMuveletekPlan
-  const coverage = checkFoldMuveletekCoverage(plan, extractAppliedOwnershipIds(appliedRaw))
+  const coverage = checkFoldMuveletekCoverage(plan, extractAppliedOwnershipWrites(appliedRaw))
   return {
     ok: coverage.ok,
     figyelmeztetes: coverage.ok ? null : coverage.message,

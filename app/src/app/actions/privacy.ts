@@ -316,66 +316,56 @@ export async function setPrivacyGatewayModeAction(input: unknown) {
   }
 }
 
-export async function dryRunPrivacyText(input: unknown) {
+async function runPrivacyTextPreview<T>(
+  input: unknown,
+  schema: typeof dryRunPrivacyTextSchema,
+  failMessage: string,
+  build: (
+    text: string,
+    context: NonNullable<Awaited<ReturnType<typeof resolvePrivacyPreviewContext>>>,
+  ) => T,
+): Promise<ActionResult<T>> {
   try {
-    const parsed = dryRunPrivacyTextSchema.parse(input)
-    const access = await resolveEditorAccess({ agentId: parsed.agentId })
-    const settings = services.platformSettings
-    let legacyAllowSensitiveExternalModel = false
-    if (parsed.agentId) {
-      const agent = await repositories.agents.findById(parsed.agentId, access.tenantId)
-      if (!agent) return fail('Az AI-munkatárs nem található.')
-      legacyAllowSensitiveExternalModel = agent.allowSensitiveExternalModel
-    }
-    const [policy, mode] = await Promise.all([
-      settings.resolvePrivacyCategoryPolicy({
-        tenantId: access.tenantId,
-        agentId: parsed.agentId,
-        legacyAllowSensitiveExternalModel,
-      }),
-      settings.resolvePrivacyGatewayMode({
-        tenantId: access.tenantId,
-        agentId: parsed.agentId,
-      }),
-    ])
-    return ok(runPrivacyDryRun({ text: parsed.text, policy, mode }))
+    const parsed = schema.parse(input)
+    const context = await resolvePrivacyPreviewContext(parsed.agentId)
+    if (!context) return fail('Az AI-munkatárs nem található.')
+    return ok(build(parsed.text, context))
   } catch (e) {
-    return privacyFail(e, 'A próba nem futott le.')
+    return privacyFail(e, failMessage)
   }
 }
 
+export async function dryRunPrivacyText(input: unknown) {
+  return runPrivacyTextPreview(input, dryRunPrivacyTextSchema, 'A próba nem futott le.', (text, { policy, mode }) =>
+    runPrivacyDryRun({ text, policy, mode }),
+  )
+}
+
 export async function previewPrivacyObservability(input: unknown): Promise<ActionResult<PrivacyTurnChain>> {
-  try {
-    const parsed = previewPrivacyObservabilitySchema.parse(input)
-    const access = await resolveEditorAccess({ agentId: parsed.agentId })
-    const settings = services.platformSettings
-    let legacyAllowSensitiveExternalModel = false
-    if (parsed.agentId) {
-      const agent = await repositories.agents.findById(parsed.agentId, access.tenantId)
-      if (!agent) return fail('Az AI-munkatárs nem található.')
-      legacyAllowSensitiveExternalModel = agent.allowSensitiveExternalModel
-    }
-    const [policy, mode] = await Promise.all([
-      settings.resolvePrivacyCategoryPolicy({
-        tenantId: access.tenantId,
-        agentId: parsed.agentId,
-        legacyAllowSensitiveExternalModel,
-      }),
-      settings.resolvePrivacyGatewayMode({
-        tenantId: access.tenantId,
-        agentId: parsed.agentId,
-      }),
-    ])
-    return ok(
-      buildPrivacyTurnChain({
-        mode,
-        policy,
-        originalText: parsed.text,
-        llmOutputText: parsed.text,
-        userOutputText: parsed.text,
-      }),
-    )
-  } catch (e) {
-    return privacyFail(e, 'A nyomkövetés nem futott le.')
+  return runPrivacyTextPreview(
+    input,
+    previewPrivacyObservabilitySchema,
+    'A nyomkövetés nem futott le.',
+    (text, { policy, mode }) => buildPrivacyTurnChain({ mode, policy, originalText: text }),
+  )
+}
+
+async function resolvePrivacyPreviewContext(agentId?: string) {
+  const access = await resolveEditorAccess({ agentId })
+  let legacyAllowSensitiveExternalModel = false
+  if (agentId) {
+    const agent = await repositories.agents.findById(agentId, access.tenantId)
+    if (!agent) return null
+    legacyAllowSensitiveExternalModel = agent.allowSensitiveExternalModel
   }
+  const settings = services.platformSettings
+  const [policy, mode] = await Promise.all([
+    settings.resolvePrivacyCategoryPolicy({
+      tenantId: access.tenantId,
+      agentId,
+      legacyAllowSensitiveExternalModel,
+    }),
+    settings.resolvePrivacyGatewayMode({ tenantId: access.tenantId, agentId }),
+  ])
+  return { policy, mode }
 }

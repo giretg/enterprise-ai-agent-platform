@@ -5,9 +5,6 @@
  * Known-value: fail-closed ha strukturált forrásból jön, egyébként fail-open.
  * Scanner / user-input resolver → fail-open + audit, a workflow megy tovább.
  */
-import { Prisma } from '@prisma/client'
-import type { PrivacyGatewayMode } from '@/domain/privacy/privacy-mode'
-
 export type PrivacyTransformLayer =
   | 'structured_field'
   | 'known_value'
@@ -43,25 +40,44 @@ export class PrivacyTransformBlockedError extends Error {
   }
 }
 
-const VAULT_PRISMA_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017'])
-
 export function isVaultUnavailableError(error: unknown): boolean {
-  if (error instanceof VaultUnavailableError) return true
-  if (error instanceof Prisma.PrismaClientKnownRequestError && VAULT_PRISMA_CODES.has(error.code)) {
-    return true
-  }
-  return false
+  return error instanceof VaultUnavailableError
+}
+
+const FAILURE_BEHAVIOR: Record<
+  PrivacyTransformLayer,
+  { policy: PrivacyFailurePolicy; message: string }
+> = {
+  vault: {
+    policy: 'fail_closed',
+    message:
+      'Az álnév-tároló jelenleg nem elérhető. Személyes adat védelme nélkül nem küldünk adatot a modellnek — a hívás megállt.',
+  },
+  structured_field: {
+    policy: 'fail_closed',
+    message:
+      'A jelölt adatmező védelme most nem sikerült, ezért a modellhívás megállt. A nyers adat nem kerülhet külső modellhez. Próbáld újra később, vagy jelezd az üzemeltetőnek.',
+  },
+  known_value: {
+    policy: 'fail_open',
+    message:
+      'A szövegben ismert adat cseréje nem sikerült, ezért a modellhívás megállt. A nyers adat nem kerülhet külső modellhez.',
+  },
+  scanner: {
+    policy: 'fail_open',
+    message:
+      'A szöveges adatok automatikus felismerése most nem sikerült. A hívás megállt, hogy a nyers adat véletlenül se menjen ki.',
+  },
 }
 
 export function failurePolicyForLayer(
   layer: PrivacyTransformLayer,
   opts?: { knownValueFromStructuredField?: boolean },
 ): PrivacyFailurePolicy {
-  if (layer === 'vault' || layer === 'structured_field') return 'fail_closed'
   if (layer === 'known_value') {
     return opts?.knownValueFromStructuredField ? 'fail_closed' : 'fail_open'
   }
-  return 'fail_open'
+  return FAILURE_BEHAVIOR[layer].policy
 }
 
 export function effectiveFailureLayer(
@@ -72,24 +88,7 @@ export function effectiveFailureLayer(
 }
 
 export function privacyTransformBlockedMessage(layer: PrivacyTransformLayer): string {
-  switch (layer) {
-    case 'vault':
-      return (
-        'Az álnév-tároló jelenleg nem elérhető. Személyes adat védelme nélkül nem küldünk adatot a modellnek — a hívás megállt.'
-      )
-    case 'structured_field':
-      return (
-        'A jelölt adatmező védelme most nem sikerült, ezért a modellhívás megállt. A nyers adat nem kerülhet külső modellhez. Próbáld újra később, vagy jelezd az üzemeltetőnek.'
-      )
-    case 'known_value':
-      return (
-        'A szövegben ismert adat cseréje nem sikerült, ezért a modellhívás megállt. A nyers adat nem kerülhet külső modellhez.'
-      )
-    case 'scanner':
-      return (
-        'A szöveges adatok automatikus felismerése most nem sikerült. A hívás megállt, hogy a nyers adat véletlenül se menjen ki.'
-      )
-  }
+  return FAILURE_BEHAVIOR[layer].message
 }
 
 export type PrivacyTransformFailureAudit = {
@@ -111,7 +110,6 @@ export function describePrivacyTransformFailure(error: unknown): string {
  */
 export async function runPrivacyTransformLayer<T>(input: {
   layer: PrivacyTransformLayer
-  mode: PrivacyGatewayMode
   knownValueFromStructuredField?: boolean
   work: () => Promise<T>
   onFailOpen: () => T

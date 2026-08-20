@@ -9,7 +9,7 @@
  * Csak a teljes string-érték számít álnévnek (`parseSurrogate`); részstring
  * (pl. path-ba ágyazott álnév) M1-ben szándékosan érintetlen.
  */
-import { addSpanCategory } from '@/domain/privacy/privacy-mode'
+import { addSpanCategory, mergePrivacySpanCategories } from '@/domain/privacy/privacy-mode'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import { parseSurrogate, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
@@ -95,7 +95,7 @@ async function walk(
       const nested = await walk(child, ctx)
       if (!nested.ok) return nested
       resolvedCount += nested.resolvedCount
-      byCategory = mergeCategories(byCategory, nested.byCategory)
+      byCategory = mergePrivacySpanCategories(byCategory, nested.byCategory)
     }
     return { ok: true, resolvedCount, byCategory }
   }
@@ -117,7 +117,7 @@ async function walk(
     const nested = await walk(child, ctx)
     if (!nested.ok) return nested
     resolvedCount += nested.resolvedCount
-    byCategory = mergeCategories(byCategory, nested.byCategory)
+    byCategory = mergePrivacySpanCategories(byCategory, nested.byCategory)
   }
   return { ok: true, resolvedCount, byCategory }
 }
@@ -140,15 +140,4 @@ async function replaceIfSurrogate(
   })
   if (!resolved.ok) return { ok: false, surrogate: value, reason: resolved.reason }
   return { ok: true, changed: true, value: resolved.record.sourceId, entityType: parsed.entityType }
-}
-
-function mergeCategories(
-  left: Partial<Record<SurrogateEntityType, number>>,
-  right: Partial<Record<SurrogateEntityType, number>>,
-): Partial<Record<SurrogateEntityType, number>> {
-  let merged = left
-  for (const [key, count] of Object.entries(right)) {
-    if (typeof count === 'number') merged = addSpanCategory(merged, key as SurrogateEntityType, count)
-  }
-  return merged
 }

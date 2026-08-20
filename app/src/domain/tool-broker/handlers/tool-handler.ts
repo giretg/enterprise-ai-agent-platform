@@ -135,6 +135,7 @@ export interface HandlerContext {
   getDebugTrace(
     input: Extract<ToolBrokerInvokeInput, { tool: 'get_debug_trace' }>,
     actingTenantId: string | null,
+    actingUserId: string | null,
   ): Promise<GetDebugTraceResult>
   tulajdoniLapParse(
     input: Extract<ToolBrokerInvokeInput, { tool: 'tulajdoni_lap_parse' }>,

@@ -1,8 +1,26 @@
 'use client'
 
 import type { ReactNode } from 'react'
-import type { PrivacyEntityMarker } from '@/domain/privacy/privacy-observability'
-import { markerHighlightClass, markerTooltipText } from '@/domain/privacy/privacy-observability'
+import type {
+  PrivacyEntityMarker,
+  PrivacyTransformStatus,
+} from '@/domain/privacy/privacy-observability'
+import { markerTooltipText } from '@/domain/privacy/privacy-observability'
+
+function markerHighlightClass(status: PrivacyTransformStatus): string {
+  switch (status) {
+    case 'observed':
+      return 'bg-honey/25 text-ink border-b border-honey/60'
+    case 'applied':
+      return 'bg-sage/20 text-ink border-b border-sage/50'
+    case 'blocked':
+      return 'bg-coral/15 text-ink border-b border-coral/50'
+    case 'skipped':
+      return 'bg-night-3 text-ink-soft border-b border-line/60'
+    default:
+      return 'bg-night-3 text-ink-soft'
+  }
+}
 
 export function PrivacyHighlightedText({
   text,

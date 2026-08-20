@@ -37,9 +37,6 @@ export const TOKENIZE_STRING_ONLY_MESSAGE =
 export const TOKENIZE_ENTITY_TYPE_MESSAGE =
   'A tokenize mezőhöz entitástípus kell (company, person, email, phone vagy account).'
 
-export const TOKENIZE_SOURCE_ID_MESSAGE =
-  'A tokenize mezőhöz stabil source_id szükséges, hogy a forrásrendszer törlése átvezethető legyen.'
-
 export const TOKENIZE_SOURCE_ID_REFERENCE_MESSAGE =
   'A source_id sablon csak a payload-sémában deklarált mezőre hivatkozhat.'
 
@@ -75,13 +72,6 @@ export const connectorFieldPrivacySchema = connectorFieldPrivacyObjectSchema.sup
       code: 'custom',
       path: ['entity_type'],
       message: TOKENIZE_ENTITY_TYPE_MESSAGE,
-    })
-  }
-  if (!field.source_id) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['source_id'],
-      message: TOKENIZE_SOURCE_ID_MESSAGE,
     })
   }
 })

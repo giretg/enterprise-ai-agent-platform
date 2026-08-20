@@ -35,6 +35,7 @@ import {
 import { LocalWikiHarnessLauncher } from '@/domain/dispatcher/local-wiki-harness-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
 import { createPlatformSurrogateEngine } from '@/domain/privacy/create-surrogate-engine'
+import { ConversationPrivacyResolveAccess } from '@/domain/privacy/resolve-access'
 import { resolveChannelOutboundText } from '@/domain/privacy/resolve-display-text'
 import {
   buildUserInputEntityResolution,
@@ -264,6 +265,7 @@ const debugTraceService = new DebugTraceService(
   prisma,
   repositories.toolBroker,
   repositories.audit,
+  new ConversationPrivacyResolveAccess(repositories.conversations, repositories.tickets),
 )
 // A `channelBotService` a kimenő átvitel UTÁN épül (a beüzemelő `setWebhook`/`getMe` hívások
 // ugyanazon az egress-őrzött kapun mennek ki) — l. lejjebb, a `telegramOutboundTransport` alatt.
@@ -587,6 +589,7 @@ const bookkeeperRuntime = new BookkeeperAgentRuntime(
   repositories.tickets,
   modelGateway,
   ticketService,
+  conversationService,
   repositories.audit,
   memoryRetrievalService,
 )
@@ -1146,6 +1149,18 @@ const agentChatRuntime = new AgentChatRuntime(
   agentAccessService,
   surrogateEngine,
   (tenantId) => platformSettingsService.resolvePrivacyEgressMatrix(tenantId),
+  async (tenantId, agentId) => {
+    const agent = await repositories.agents.findById(agentId, tenantId)
+    const [mode, policy] = await Promise.all([
+      platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
+      platformSettingsService.resolvePrivacyCategoryPolicy({
+        tenantId,
+        agentId,
+        legacyAllowSensitiveExternalModel: agent?.allowSensitiveExternalModel,
+      }),
+    ])
+    return { mode, policy }
+  },
 )
 // 1:1 agent-chat a csatornán (#74, D8/D9/D10/D11). A worker második munkatípusa: a bejövő
 // Telegram-fordulót a MEGLÉVŐ webes chat-futásidőre képezzük (ugyanabba a beszélgetésbe, így a

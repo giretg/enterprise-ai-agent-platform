@@ -487,6 +487,7 @@ export class ProvisioningService {
 
     const trimmedClientId = input.clientId?.trim()
     let nextConfig: Prisma.InputJsonValue | undefined
+    let versionedCapabilitySet: Prisma.InputJsonValue | undefined
     let authMode: ConnectorConfig['authMode']
     let privacyDeclaration: PrivacyCapabilityDeclaration | null = null
 
@@ -505,6 +506,7 @@ export class ProvisioningService {
       let configMutated = false
 
       const ostorosborEnrichment = enrichOstorosborConnectorConfig(config)
+      versionedCapabilitySet = ostorosborEnrichment.config as unknown as Prisma.InputJsonValue
       privacyDeclaration = ostorosborEnrichment.config.privacy ?? null
       if (ostorosborEnrichment.changed) {
         rawConfig.requestHeaders = ostorosborEnrichment.config.requestHeaders
@@ -612,6 +614,16 @@ export class ProvisioningService {
       authMode,
       secondApproverId: dualControlRequired ? input.approverId ?? null : null,
       ...(nextConfig ? { config: nextConfig } : {}),
+      ...(versionedCapabilitySet
+        ? {
+            initialSpecVersion: {
+              rawSnapshot: draft.connector.config as Prisma.InputJsonValue,
+              rawHash: draft.sourceHash,
+              capabilitySet: versionedCapabilitySet,
+              approvedById: user.userId,
+            },
+          }
+        : {}),
     })
 
     await this.appendAudit(actor, 'provisioning.connector.activate', connector.id, {

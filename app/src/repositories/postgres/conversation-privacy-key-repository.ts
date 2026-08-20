@@ -4,12 +4,7 @@ import {
   unwrapConversationDataKey,
   wrapConversationDataKey,
 } from '@/domain/privacy/conversation-privacy-key-crypto'
-
-export interface ConversationPrivacyKeyRepository {
-  ensureDataKey(tenantId: string, conversationId: string): Promise<Buffer>
-  getDataKey(tenantId: string, conversationId: string): Promise<Buffer | null>
-  shredKeysForConversations(conversationIds: string[]): Promise<number>
-}
+import type { ConversationPrivacyKeyRepository } from '@/repositories/interfaces'
 
 export class PostgresConversationPrivacyKeyRepository implements ConversationPrivacyKeyRepository {
   async ensureDataKey(tenantId: string, conversationId: string): Promise<Buffer> {

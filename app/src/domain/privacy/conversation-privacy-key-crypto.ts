@@ -1,15 +1,11 @@
 /**
  * Per-conversation adatkulcs kezelés (APG-18, spec §6).
  *
- * A nyers adatkulcs tenant-kulccsal envelope-olt formában tárolódik (AES-256-GCM).
- * Beszélgetés törlésekor a kulcs sor törlődik → crypto-shredding.
+ * A nyers adatkulcs tenant-kulccsal envelope-olt formában tárolódik (AES-256-GCM,
+ * l. `aes-gcm-envelope`). Beszélgetés törlésekor a kulcs sor törlődik → crypto-shredding.
  */
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  randomBytes,
-} from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
+import { openAesGcm, sealAesGcm } from '@/domain/privacy/aes-gcm-envelope'
 import { resolveSecret } from '@/lib/crypto/secret-resolver'
 
 const ROOT = resolveSecret(
@@ -26,32 +22,9 @@ export function generateConversationDataKey(): Buffer {
 }
 
 export function wrapConversationDataKey(tenantId: string, dataKey: Buffer): string {
-  const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', tenantValEncryptionKey(tenantId), iv)
-  const ciphertext = Buffer.concat([cipher.update(dataKey), cipher.final()])
-  const tag = cipher.getAuthTag()
-  return [
-    'v1',
-    iv.toString('base64url'),
-    ciphertext.toString('base64url'),
-    tag.toString('base64url'),
-  ].join('.')
+  return sealAesGcm(tenantValEncryptionKey(tenantId), dataKey)
 }
 
 export function unwrapConversationDataKey(tenantId: string, wrapped: string): Buffer {
-  const parts = wrapped.split('.')
-  const [, ivValue, ciphertextValue, tagValue] = parts
-  if (parts[0] !== 'v1' || !ivValue || !ciphertextValue || !tagValue) {
-    throw new Error('conversation_privacy_key: malformed ciphertext')
-  }
-  const decipher = createDecipheriv(
-    'aes-256-gcm',
-    tenantValEncryptionKey(tenantId),
-    Buffer.from(ivValue, 'base64url'),
-  )
-  decipher.setAuthTag(Buffer.from(tagValue, 'base64url'))
-  return Buffer.concat([
-    decipher.update(Buffer.from(ciphertextValue, 'base64url')),
-    decipher.final(),
-  ])
+  return openAesGcm(tenantValEncryptionKey(tenantId), wrapped, 'conversation_privacy_key')
 }

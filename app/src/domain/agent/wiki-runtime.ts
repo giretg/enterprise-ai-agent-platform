@@ -17,6 +17,7 @@ import type { PlaybookService } from '../playbook/playbook-service'
 import type { ConversationService } from '../conversation/conversation-service'
 import { assembleContext, type ContextAssemblyMessage } from '../conversation/context-assembly'
 import { TicketService } from '../ticket/ticket-service'
+import { assembleGatewayMessages } from './prompt-assembler'
 import type { ReportTemplate } from '../report/report-templates'
 import { listAllowedChatTools, runAgentToolLoop, type ChatPlatformToolName } from './chat-tool-loop'
 import {
@@ -659,18 +660,24 @@ export class WikiAgentRuntime {
       agentVersion: params.agentVersion,
       ...params.context,
       tenantId: params.tenantId ?? undefined,
-      messages: [
-        { role: 'system', content: composeSystemPrompt(params.agentDetails.agent) },
-        {
-          role: 'system',
-          content: `${answerInstruction}\n\nForrásrészletek:\n${formatHitsForPrompt(hits)}`,
-        },
-        ...contextMessages,
-        {
-          role: 'user',
-          content: wikiUserPrompt(userPayload),
-        },
-      ],
+      messages: assembleGatewayMessages({
+        stablePreamble: [
+          { role: 'system', content: composeSystemPrompt(params.agentDetails.agent) },
+        ],
+        variableContext: [
+          {
+            role: 'system',
+            content: `${answerInstruction}\n\nForrásrészletek:\n${formatHitsForPrompt(hits)}`,
+          },
+          ...contextMessages,
+        ],
+        history: [
+          {
+            role: 'user',
+            content: wikiUserPrompt(userPayload),
+          },
+        ],
+      }),
       modelConfig: params.modelConfig,
       ...(responseJsonSchema ? { responseJsonSchema } : {}),
     })

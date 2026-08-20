@@ -5,7 +5,8 @@
  * (`company="SPAR"`), a broker a connector-hívás előtt újra megkísérli a feloldást.
  * Siker → source ID megy a connector felé; a beszélgetésben surrogate képződik.
  */
-import { readConnectorPrivacyFields } from '@/domain/privacy/connector-privacy'
+import { inspectConnectorPrivacyFields } from '@/domain/privacy/connector-privacy'
+import { PrivacyTransformBlockedError } from '@/domain/privacy/privacy-transform-failure'
 import {
   entityResolveCandidateToRef,
   looksLikeSourceId,
@@ -13,7 +14,7 @@ import {
   type ConnectorEntityResolver,
 } from '@/domain/privacy/entity-resolve-contract'
 import { stemForResolve } from '@/domain/privacy/extract-entity-candidates'
-import { addSpanCategory } from '@/domain/privacy/privacy-mode'
+import { addSpanCategory, mergePrivacySpanCategories } from '@/domain/privacy/privacy-mode'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import { parseSurrogate, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
@@ -57,7 +58,14 @@ type WalkOk = {
 }
 
 function entityTypeHintsFromConnectorFields(config: unknown): Map<string, SurrogateEntityType> {
-  const fields = readConnectorPrivacyFields(config)
+  const inspected = inspectConnectorPrivacyFields(config)
+  if (inspected.status === 'invalid') {
+    throw new PrivacyTransformBlockedError(
+      'structured_field',
+      new Error(`Hibás connector privacy deklaráció: ${inspected.reason}`),
+    )
+  }
+  const fields = inspected.status === 'valid' ? inspected.fields : null
   const hints = new Map<string, SurrogateEntityType>()
   if (!fields) return hints
   for (const [name, spec] of Object.entries(fields)) {
@@ -94,13 +102,13 @@ async function walk(
         if (replaced.changed) value[i] = replaced.value
         resolvedCount += replaced.state.resolvedCount
         resolveAttempts += replaced.state.resolveAttempts
-        byCategory = mergeCategories(byCategory, replaced.state.byCategory)
+        byCategory = mergePrivacySpanCategories(byCategory, replaced.state.byCategory)
         continue
       }
       const nested = await walk(child, ctx, entityTypesByKey, keyHint)
       resolvedCount += nested.resolvedCount
       resolveAttempts += nested.resolveAttempts
-      byCategory = mergeCategories(byCategory, nested.byCategory)
+      byCategory = mergePrivacySpanCategories(byCategory, nested.byCategory)
     }
     return { resolvedCount, resolveAttempts, byCategory }
   }
@@ -115,13 +123,13 @@ async function walk(
       if (replaced.changed) record[key] = replaced.value
       resolvedCount += replaced.state.resolvedCount
       resolveAttempts += replaced.state.resolveAttempts
-      byCategory = mergeCategories(byCategory, replaced.state.byCategory)
+      byCategory = mergePrivacySpanCategories(byCategory, replaced.state.byCategory)
       continue
     }
     const nested = await walk(child, ctx, entityTypesByKey, key)
     resolvedCount += nested.resolvedCount
     resolveAttempts += nested.resolveAttempts
-    byCategory = mergeCategories(byCategory, nested.byCategory)
+    byCategory = mergePrivacySpanCategories(byCategory, nested.byCategory)
   }
   return { resolvedCount, resolveAttempts, byCategory }
 }
@@ -172,15 +180,4 @@ async function replaceIfEntityName(
       byCategory: addSpanCategory({}, ref.entityType),
     },
   }
-}
-
-function mergeCategories(
-  left: Partial<Record<SurrogateEntityType, number>>,
-  right: Partial<Record<SurrogateEntityType, number>>,
-): Partial<Record<SurrogateEntityType, number>> {
-  let merged = left
-  for (const [key, count] of Object.entries(right)) {
-    if (typeof count === 'number') merged = addSpanCategory(merged, key as SurrogateEntityType, count)
-  }
-  return merged
 }

@@ -2,6 +2,10 @@
  * Known-value szótár-illesztés Aho–Corasick automatával (spec §8/2, APG-16).
  *
  * Determinisztikus, ML-NER nélkül; szóhatár-ellenőrzéssel a hamis pozitívok ellen.
+ *
+ * A magyar rag NEM része a cserélt szakasznak: „a SPAR-nak” → „a [[COMPANY_1]]-nak”.
+ * Az automata a ragozott alakot megtalálja, de az álnév csak a tövet fedi le —
+ * így a feloldott szöveg nyelvtanilag ép marad, nem „a SPAR” ragot vesztett alakja.
  */
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const AhoCorasick = require('aho-corasick') as new () => {
@@ -13,12 +17,21 @@ const AhoCorasick = require('aho-corasick') as new () => {
   ) => void
 }
 
+import { createHash } from 'node:crypto'
 import type { KnownValueReplacement } from '@/domain/privacy/known-value-substitution'
-import { expandStemWithSuffixes, extractMatchingStems } from '@/domain/privacy/hungarian-suffix-morphs'
+import {
+  expandStemWithSuffixes,
+  extractMatchingStems,
+  HUNGARIAN_LEGAL_FORM_TOKENS,
+} from '@/domain/privacy/hungarian-suffix-morphs'
+import {
+  applySurrogateReplacements,
+  type SurrogateReplacement,
+} from '@/domain/privacy/apply-replacements'
 import {
   foldHungarianChar,
-  isWordBoundaryAfter,
-  isWordBoundaryBefore,
+  hasWordBoundaries,
+  isMatchingSeparator,
   normalizeHungarianForMatching,
 } from '@/domain/privacy/hungarian-text-normalize'
 
@@ -31,7 +44,10 @@ export type KnownValueMatch = {
 
 type PatternMeta = {
   surrogate: string
-  slotIndex: number
+  /** A tő hossza a normalizált alakban — eddig tart az álnév, a rag marad. */
+  stemLength: number
+  /** A tő utolsó tokenje jogi forma rövidítés (Kft) → a záró pont hozzátartozik. */
+  legalFormEnd: boolean
 }
 
 type CharMapEntry = {
@@ -47,7 +63,7 @@ export function buildMatchingIndexMap(text: string): { normalized: string; map: 
 
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i] ?? ''
-    if (/[\s\-–—_/.,;:]/.test(ch)) {
+    if (isMatchingSeparator(ch)) {
       if (!lastWasSpace && normalized.length > 0) {
         normalized += ' '
         map.push({ origIndex: i })
@@ -55,11 +71,7 @@ export function buildMatchingIndexMap(text: string): { normalized: string; map: 
       }
       continue
     }
-    const folded = ch
-      .split('')
-      .map((c) => foldHungarianChar(c))
-      .join('')
-    normalized += folded
+    normalized += foldHungarianChar(ch)
     map.push({ origIndex: i })
     lastWasSpace = false
   }
@@ -79,7 +91,6 @@ function trimIndexMap(normalized: string, map: CharMapEntry[]): { normalized: st
 }
 
 function origSpanFromNormSpan(
-  text: string,
   normalized: string,
   map: CharMapEntry[],
   normStart: number,
@@ -95,58 +106,89 @@ function origSpanFromNormSpan(
   const endEntry = map[ne - 1]
   if (!startEntry || !endEntry || startEntry.origIndex < 0 || endEntry.origIndex < 0) return null
 
-  let start = startEntry.origIndex
-  let end = endEntry.origIndex + 1
-  if (text[end] === '.') end += 1
-
-  return { start, end }
+  return { start: startEntry.origIndex, end: endEntry.origIndex + 1 }
 }
 
-function hasWordBoundaries(text: string, start: number, end: number): boolean {
-  return isWordBoundaryBefore(text, start) && isWordBoundaryAfter(text, end)
+function endsWithLegalForm(stem: string): boolean {
+  const lastToken = stem.split(' ').at(-1) ?? ''
+  return HUNGARIAN_LEGAL_FORM_TOKENS.has(lastToken)
 }
+
+/**
+ * Az automata-cache kulcsa a szótár HASH-e, nem a nyers érték: a cache-kulcsban
+ * nem maradhat ott az ügyfélnév, amit épp védeni akarunk. A méret korlátos —
+ * beszélgetésenként más szótár épül, korlát nélkül a folyamat memóriája nőne.
+ */
+const AUTOMATON_CACHE_LIMIT = 64
+const automatonCache = new Map<string, InstanceType<typeof AhoCorasick>>()
 
 function cacheKey(replacements: KnownValueReplacement[]): string {
-  return replacements.map((r) => `${r.needle}\0${r.surrogate}`).join('\n')
+  const hash = createHash('sha256')
+  for (const r of replacements) {
+    hash.update(r.needle ?? '', 'utf8')
+    hash.update('\0')
+    hash.update(r.surrogate ?? '', 'utf8')
+    hash.update('\n')
+  }
+  return hash.digest('hex')
 }
-
-const automatonCache = new Map<string, InstanceType<typeof AhoCorasick>>()
 
 function getAutomaton(replacements: KnownValueReplacement[]): InstanceType<typeof AhoCorasick> {
   const key = cacheKey(replacements)
   const cached = automatonCache.get(key)
-  if (cached) return cached
+  if (cached) {
+    // LRU: a friss találat a sor végére kerül, így a régiek esnek ki előbb.
+    automatonCache.delete(key)
+    automatonCache.set(key, cached)
+    return cached
+  }
   const ac = buildAutomaton(replacements)
   automatonCache.set(key, ac)
+  if (automatonCache.size > AUTOMATON_CACHE_LIMIT) {
+    const oldest = automatonCache.keys().next().value
+    if (oldest !== undefined) automatonCache.delete(oldest)
+  }
   return ac
 }
 
 function buildAutomaton(replacements: KnownValueReplacement[]): InstanceType<typeof AhoCorasick> {
   const ac = new AhoCorasick()
 
-  replacements.forEach((slot, slotIndex) => {
-    if (!slot.needle?.trim()) return
-    const stems = extractMatchingStems(slot.needle)
-    const allPatterns = new Set<string>()
-    for (const stem of stems) {
-      for (const p of expandStemWithSuffixes(stem)) {
-        allPatterns.add(p)
-      }
-      allPatterns.add(normalizeHungarianForMatching(stem))
-    }
-    allPatterns.add(normalizeHungarianForMatching(slot.needle))
+  for (const slot of replacements) {
+    if (!slot.needle?.trim()) continue
+    const stems = new Set(extractMatchingStems(slot.needle))
+    stems.add(normalizeHungarianForMatching(slot.needle))
 
-    for (const pattern of allPatterns) {
-      const normalizedPattern = normalizeHungarianForMatching(pattern)
-      if (normalizedPattern.length < 2) continue
-      const meta: PatternMeta = { surrogate: slot.surrogate, slotIndex }
-      ac.add(normalizedPattern, meta)
+    // Pattern → a leghosszabb tő, amelyből származik (a hosszabb tő pontosabb csere).
+    const patterns = new Map<string, string>()
+    for (const stem of stems) {
+      const normalizedStem = normalizeHungarianForMatching(stem)
+      if (normalizedStem.length < 2) continue
+      for (const pattern of [normalizedStem, ...expandStemWithSuffixes(normalizedStem)]) {
+        const normalizedPattern = normalizeHungarianForMatching(pattern)
+        if (normalizedPattern.length < 2) continue
+        const existing = patterns.get(normalizedPattern)
+        if (!existing || existing.length < normalizedStem.length) {
+          patterns.set(normalizedPattern, normalizedStem)
+        }
+      }
     }
-  })
+
+    for (const [pattern, stem] of patterns) {
+      const meta: PatternMeta = {
+        surrogate: slot.surrogate,
+        stemLength: Math.min(stem.length, pattern.length),
+        legalFormEnd: endsWithLegalForm(stem),
+      }
+      ac.add(pattern, meta)
+    }
+  }
 
   ac.build_fail()
   return ac
 }
+
+type RawMatch = KnownValueMatch & { fullStart: number; fullEnd: number }
 
 /** Találatok az eredeti szövegben; átfedőket a leghosszabb nyeri. */
 export function findKnownValueMatches(
@@ -160,50 +202,65 @@ export function findKnownValueMatches(
   if (!normalized) return []
 
   const ac = getAutomaton(replacements)
-  const raw: KnownValueMatch[] = []
+  const raw: RawMatch[] = []
 
   ac.search(normalized, (matchedWord, data, offset) => {
     const metas = data as PatternMeta[]
     const normStart = offset
     const normEnd = offset + (matchedWord?.length ?? 0)
-    const span = origSpanFromNormSpan(text, normalized, map, normStart, normEnd)
-    if (!span) return
-    if (!hasWordBoundaries(text, span.start, span.end)) return
+
+    // A szóhatárt a TELJES (ragot is fedő) találaton kell nézni: a tőre szűkített
+    // span vége szándékosan szó belsejébe esik, ott a boundary-check mindig bukna.
+    const fullSpan = origSpanFromNormSpan(normalized, map, normStart, normEnd)
+    if (!fullSpan) return
+    if (!hasWordBoundaries(text, fullSpan.start, fullSpan.end)) return
 
     for (const meta of metas) {
+      const stemEnd = Math.min(normEnd, normStart + meta.stemLength)
+      const stemSpan =
+        stemEnd < normEnd
+          ? origSpanFromNormSpan(normalized, map, normStart, stemEnd)
+          : fullSpan
+      if (!stemSpan) continue
+
+      // Csak a jogi forma rövidítés záró pontja tartozik az entitáshoz („Kft.”);
+      // a mondatvégi pont nem nyelhető le, különben eltűnik a mondathatár.
+      const end =
+        stemSpan === fullSpan && meta.legalFormEnd && text[stemSpan.end] === '.'
+          ? stemSpan.end + 1
+          : stemSpan.end
+
       raw.push({
-        start: span.start,
-        end: span.end,
+        start: stemSpan.start,
+        end,
         surrogate: meta.surrogate,
-        matchedText: text.slice(span.start, span.end),
+        matchedText: text.slice(stemSpan.start, end),
+        fullStart: fullSpan.start,
+        fullEnd: fullSpan.end,
       })
     }
   })
 
+  // Az átfedést a TELJES találaton döntjük el, hogy a „SPAR Magyarország Kft.”
+  // verjen a puszta „SPAR”-on — a kibocsátott span viszont a tő marad.
   raw.sort((a, b) => {
-    if (b.end - b.start !== a.end - a.start) return b.end - b.start - (a.end - a.start)
-    return a.start - b.start
+    const lenDiff = b.fullEnd - b.fullStart - (a.fullEnd - a.fullStart)
+    if (lenDiff !== 0) return lenDiff
+    return a.fullStart - b.fullStart
   })
 
-  const chosen: KnownValueMatch[] = []
+  const chosen: RawMatch[] = []
   for (const match of raw) {
-    const overlaps = chosen.some((c) => match.start < c.end && match.end > c.start)
+    const overlaps = chosen.some((c) => match.fullStart < c.fullEnd && match.fullEnd > c.fullStart)
     if (!overlaps) chosen.push(match)
   }
 
-  return chosen.sort((a, b) => a.start - b.start)
+  return chosen
+    .sort((a, b) => a.start - b.start)
+    .map(({ start, end, surrogate, matchedText }) => ({ start, end, surrogate, matchedText }))
 }
 
-/** Illesztett spanok cseréje surrogate-re (balról jobbra, nem-átfedő). */
+/** Illesztett spanok cseréje surrogate-re. */
 export function applyKnownValueMatches(text: string, matches: KnownValueMatch[]): string {
-  if (matches.length === 0) return text
-  let out = ''
-  let cursor = 0
-  for (const match of matches) {
-    out += text.slice(cursor, match.start)
-    out += match.surrogate
-    cursor = match.end
-  }
-  out += text.slice(cursor)
-  return out
+  return applySurrogateReplacements(text, matches satisfies readonly SurrogateReplacement[])
 }

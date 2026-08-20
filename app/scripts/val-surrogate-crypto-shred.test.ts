@@ -137,6 +137,14 @@ async function main() {
         entityType: 'email',
         plaintext: 'teszt@example.com',
       })
+      const stored = await prisma.surrogateMap.findFirst({
+        where: { tenantId, scopeId: conversationId, surrogate },
+      })
+      assert.ok(stored)
+      assert.notEqual(stored.sourceId, 'teszt@example.com')
+      assert.ok(stored.sourceId)
+      assert.equal(stored.sourceId.includes('@'), false)
+      assert.equal(stored.encryptedValue?.includes('teszt@example.com'), false)
       const resolved = await engine.resolveVal({
         tenantId,
         scope,

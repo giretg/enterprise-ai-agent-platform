@@ -14,6 +14,7 @@ import {
   type PrivacyResolveRequester,
   type ResolveDenyReason,
 } from '@/domain/privacy/resolve-access'
+import type { ConversationPrivacyKeyRepository } from '@/repositories/interfaces'
 import { formatSurrogate, parseSurrogate } from '@/domain/privacy/surrogate-format'
 import type { SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import {
@@ -23,7 +24,6 @@ import {
   SurrogateTakenError,
   type SurrogateVault,
 } from '@/domain/privacy/surrogate-vault'
-import type { ConversationPrivacyKeyRepository } from '@/repositories/postgres/conversation-privacy-key-repository'
 import { encryptValSurrogateValue, decryptValSurrogateValue } from '@/domain/privacy/val-surrogate-crypto'
 import { valSurrogateFingerprint } from '@/domain/privacy/val-fingerprint'
 
@@ -76,6 +76,12 @@ export type AllocateValInput = {
   scope: PrivacyScope
   entityType: SurrogateEntityType
   plaintext: string
+  /**
+   * Az az `conversation`, amelynek adatkulcsa titkosítja az értéket. Alapból a
+   * scope maga; `trace` scope-nál (APG-21 debug-trace) a forduló beszélgetése —
+   * így a beszélgetés törlése a trace-hez tartozó másolatot is leshreddeli.
+   */
+  keyConversationId?: string
 }
 
 export type ResolveValInput = {
@@ -83,15 +89,21 @@ export type ResolveValInput = {
   scope: PrivacyScope
   surrogate: string
   requester: PrivacyResolveRequester
+  /** L. `AllocateValInput.keyConversationId` — ugyanaz a kulcs kell a feloldáshoz. */
+  keyConversationId?: string
 }
 
 const MAX_ALLOC_ATTEMPTS = 16
 
+type DisplayValue = { value: string; source: 'structured_field' | 'scanner' }
+
 export class SurrogateEngine {
-  private readonly displayValues = new Map<
-    string,
-    { value: string; source: 'structured_field' | 'scanner' }
-  >()
+  /**
+   * scope-kulcs → (álnév → megjelenítési érték). A beágyazás szándékos: a korábbi
+   * lapos, összefűzött kulcsból az álnevet vissza kellett szeletelni, és a
+   * kulcsformátum bármely változása némán szemetet írt volna a promptba.
+   */
+  private readonly displayValues = new Map<string, Map<string, DisplayValue>>()
   /** Beszélgetés-szintű entitástérkép: a history append-only, a prefix újrahasznosítható. */
   private readonly scopes = new Map<string, ScopeEntityMap>()
 
@@ -110,11 +122,17 @@ export class SurrogateEngine {
     source: 'structured_field' | 'scanner' = 'scanner',
   ): void {
     if (!displayValue) return
-    this.displayValues.set(displayKey(tenantId, scope, surrogate), { value: displayValue, source })
+    const key = scopeKey(tenantId, scope)
+    let byScope = this.displayValues.get(key)
+    if (!byScope) {
+      byScope = new Map()
+      this.displayValues.set(key, byScope)
+    }
+    byScope.set(surrogate, { value: displayValue, source })
   }
 
   peekDisplayValue(tenantId: string, scope: PrivacyScope, surrogate: string): string | undefined {
-    return this.displayValues.get(displayKey(tenantId, scope, surrogate))?.value
+    return this.displayValues.get(scopeKey(tenantId, scope))?.get(surrogate)?.value
   }
 
   /** A beszélgetésben már ismert nyers értékek produkciós known-value cseréi. */
@@ -122,21 +140,13 @@ export class SurrogateEngine {
     tenantId: string,
     scope: PrivacyScope,
   ): Array<{ needle: string; surrogate: string; fromStructuredField: boolean }> {
-    const prefix = `${tenantId}\0${scope.type}\0${scope.id}\0`
-    const replacements: Array<{
-      needle: string
-      surrogate: string
-      fromStructuredField: boolean
-    }> = []
-    for (const [key, stored] of this.displayValues) {
-      if (!key.startsWith(prefix)) continue
-      replacements.push({
-        needle: stored.value,
-        surrogate: key.slice(prefix.length),
-        fromStructuredField: stored.source === 'structured_field',
-      })
-    }
-    return replacements
+    const byScope = this.displayValues.get(scopeKey(tenantId, scope))
+    if (!byScope) return []
+    return [...byScope].map(([surrogate, stored]) => ({
+      needle: stored.value,
+      surrogate,
+      fromStructuredField: stored.source === 'structured_field',
+    }))
   }
 
   /** Vault-lookup unknown-audit nélkül — megjelenítési feloldás, ismételt history-olvasáskor. */
@@ -168,9 +178,46 @@ export class SurrogateEngine {
     return this.lookupRef(input, { auditUnknown: true })
   }
 
+  /**
+   * Szabad szöveges / user-input találatok batch-allokációja (spec §6, D2).
+   *
+   * Fingerprinten dedupál, így ugyanaz az érték egy fordulón belül egyetlen
+   * vault-írást okoz. A nyers érték KIZÁRÓLAG titkosítva kerül a vaultba —
+   * a `source_id` a hash, nem az adat.
+   */
+  async allocateVals(inputs: AllocateValInput[]): Promise<string[]> {
+    if (inputs.length === 0) return []
+    const results = new Array<string>(inputs.length)
+    const byFingerprint = new Map<string, number[]>()
+    inputs.forEach((input, index) => {
+      const key = [
+        input.tenantId,
+        input.scope.type,
+        input.scope.id,
+        input.entityType,
+        valSurrogateFingerprint(input.plaintext),
+      ].join('\0')
+      const indexes = byFingerprint.get(key)
+      if (indexes) indexes.push(index)
+      else byFingerprint.set(key, [index])
+    })
+
+    for (const indexes of byFingerprint.values()) {
+      const first = indexes[0]
+      if (first === undefined) continue
+      const input = inputs[first]
+      if (!input) continue
+      const surrogate = await this.allocateVal(input)
+      for (const index of indexes) results[index] = surrogate
+    }
+    return results
+  }
+
   async allocateVal(input: AllocateValInput): Promise<string> {
-    if (input.scope.type !== 'conversation') {
-      throw new Error('val-surrogate csak conversation scope-on allokálható')
+    const keyConversationId =
+      input.keyConversationId ?? (input.scope.type === 'conversation' ? input.scope.id : null)
+    if (!keyConversationId) {
+      throw new Error('val-surrogate allokációhoz beszélgetés-adatkulcs szükséges')
     }
     if (!this.privacyKeys) {
       throw new Error('val-surrogate allokációhoz privacy key repository szükséges')
@@ -182,9 +229,18 @@ export class SurrogateEngine {
       input.entityType,
       fingerprint,
     )
-    if (existing.status === 'hit') return existing.record.surrogate
+    if (existing.status === 'hit') {
+      this.rememberDisplayValue(
+        input.tenantId,
+        input.scope,
+        existing.record.surrogate,
+        input.plaintext,
+        'scanner',
+      )
+      return existing.record.surrogate
+    }
 
-    const dataKey = await this.privacyKeys.ensureDataKey(input.tenantId, input.scope.id)
+    const dataKey = await this.privacyKeys.ensureDataKey(input.tenantId, keyConversationId)
     const cache = await this.hydrateValOrdinals(input.tenantId, input.scope, input.entityType)
     let surrogate = ''
     for (let attempt = 0; attempt < MAX_ALLOC_ATTEMPTS; attempt += 1) {
@@ -201,6 +257,13 @@ export class SurrogateEngine {
           surrogate,
           encryptedValue,
         })
+        this.rememberDisplayValue(
+          input.tenantId,
+          input.scope,
+          surrogate,
+          input.plaintext,
+          'scanner',
+        )
         return surrogate
       } catch (error) {
         const retry = await this.vault.findValByFingerprint(
@@ -209,7 +272,16 @@ export class SurrogateEngine {
           input.entityType,
           fingerprint,
         )
-        if (retry.status === 'hit') return retry.record.surrogate
+        if (retry.status === 'hit') {
+          this.rememberDisplayValue(
+            input.tenantId,
+            input.scope,
+            retry.record.surrogate,
+            input.plaintext,
+            'scanner',
+          )
+          return retry.record.surrogate
+        }
         if (!(error instanceof SurrogateTakenError)) throw error
       }
     }
@@ -236,10 +308,12 @@ export class SurrogateEngine {
       return { ok: false, reason: 'unknown' }
     }
 
-    if (input.scope.type !== 'conversation' || !this.privacyKeys) {
+    const keyConversationId =
+      input.keyConversationId ?? (input.scope.type === 'conversation' ? input.scope.id : null)
+    if (!keyConversationId || !this.privacyKeys) {
       return { ok: false, reason: 'shredded' }
     }
-    const dataKey = await this.privacyKeys.getDataKey(input.tenantId, input.scope.id)
+    const dataKey = await this.privacyKeys.getDataKey(input.tenantId, keyConversationId)
     if (!dataKey) return { ok: false, reason: 'shredded' }
 
     try {
@@ -492,8 +566,4 @@ function entityKey(entity: RefEntityRef): string {
 
 function scopeKey(tenantId: string, scope: PrivacyScope): string {
   return `${tenantId}\0${scope.type}\0${scope.id}`
-}
-
-function displayKey(tenantId: string, scope: PrivacyScope, surrogate: string): string {
-  return `${tenantId}\0${scope.type}\0${scope.id}\0${surrogate}`
 }

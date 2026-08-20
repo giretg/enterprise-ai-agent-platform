@@ -7,6 +7,10 @@
  * Futtatás: npm run test:privacy-observability-ui
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { renderToStaticMarkup } from 'react-dom/server'
 
 import { OSTOROSBOR_CRM_PRIVACY_FIELDS } from '../src/domain/privacy/connector-privacy'
 import {
@@ -25,6 +29,7 @@ import { buildPrivacyAwareOutcomeChannels } from '../src/domain/tool-broker/tool
 import { resolveToolOutputContract } from '../src/domain/tool-broker/tool-output-contracts'
 import { isSideEffectingTool, resolveTrustClass } from '../src/domain/tool-broker/tool-trust-registry'
 import type { Connector } from '@prisma/client'
+import { PrivacyHighlightedText } from '../src/components/privacy/privacy-highlighted-text'
 
 let failures = 0
 async function test(name: string, fn: () => void | Promise<void>) {
@@ -221,6 +226,34 @@ async function main() {
     assert.equal(markers.length, 1)
     assert.equal(markers[0]?.displayValue, EMAIL)
     assert.equal(markers[0]?.status, 'observed')
+  })
+
+  await test('valós chat-output: feloldott known-value kiemelve, technikai álnév nélkül', () => {
+    const text = `${COMPANY} adatai frissítve.`
+    const markers = buildEntityMarkers({
+      text,
+      policy: resolvePrivacyCategoryPolicy({}),
+      mode: 'enforce',
+      knownValues: [{
+        needle: COMPANY,
+        surrogate: '[[COMPANY_1]]',
+        fromStructuredField: true,
+      }],
+    })
+    assert.equal(markers.length, 1)
+    const html = renderToStaticMarkup(
+      PrivacyHighlightedText({ text, markers }) ?? null,
+    )
+    assert.ok(html.includes(COMPANY))
+    assert.equal(html.includes('[[COMPANY_1]]'), false)
+    assert.ok(html.includes('Cégnév'))
+  })
+
+  await test('APG-22: a chat-felület a kiemelő komponenst használja', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const src = readFileSync(join(root, 'src/components/agents/agent-chat-panel.tsx'), 'utf8')
+    assert.match(src, /PrivacyHighlightedText/)
+    assert.match(src, /privacyMarkers/)
   })
 
   if (failures > 0) {

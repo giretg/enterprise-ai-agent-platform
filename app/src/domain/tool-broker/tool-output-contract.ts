@@ -397,13 +397,17 @@ export function buildToolOutcomeChannels(params: {
   contract: ToolOutputContract | undefined
   sideEffecting: boolean
   fullDataRef?: string | null
+  /** Már lefuttatott nyers-output verdict; privacy után így nincs második validáció. */
+  validatedVerdict?: ToolOutputVerdict
 }): ToolOutcomeChannels {
-  const verdict = validateToolOutput({
-    tool: params.tool,
-    output: params.output,
-    contract: params.contract,
-    sideEffecting: params.sideEffecting,
-  })
+  const verdict =
+    params.validatedVerdict ??
+    validateToolOutput({
+      tool: params.tool,
+      output: params.output,
+      contract: params.contract,
+      sideEffecting: params.sideEffecting,
+    })
   const modelChannel = buildToolModelText({
     tool: params.tool,
     trust: params.trust,

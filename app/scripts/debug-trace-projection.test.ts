@@ -19,6 +19,8 @@ import {
 } from '../src/domain/privacy/debug-trace-projection'
 import { privacyScopeForTrace } from '../src/domain/privacy/privacy-scope'
 import { SurrogateEngine, type PrivacyAuditSink } from '../src/domain/privacy/surrogate-engine'
+import { allowAllPrivacyResolveAccess } from '../src/domain/privacy/resolve-access'
+import type { ConversationPrivacyKeyRepository } from '../src/repositories/interfaces'
 import {
   computeSurrogateHmac,
   insertRefsSequentially,
@@ -28,12 +30,19 @@ import {
   type PrivacyScope,
   type RefEntityRef,
   type RefVaultRecord,
+  type InsertValInput,
+  type ValVaultLookup,
+  type ValVaultRecord,
   type SurrogateHmacFields,
   type SurrogateVault,
   type VaultLookup,
 } from '../src/domain/privacy/surrogate-vault'
-import { valVaultMethodStubs } from './test-surrogate-vault-val-stubs'
 import { parseSurrogate } from '../src/domain/privacy/surrogate-format'
+import { DebugTraceService } from '../src/domain/debug-log/debug-trace-service'
+import {
+  TOOL_GROUP_PRIVACY,
+  TOOL_REGISTRY,
+} from '../src/domain/tool-broker/tool-registry'
 
 let failures = 0
 async function test(name: string, fn: () => void | Promise<void>) {
@@ -73,6 +82,7 @@ class RecordingAudit implements PrivacyAuditSink {
 
 class InMemorySurrogateVault implements SurrogateVault {
   readonly rows: RefVaultRecord[] = []
+  readonly valRows: ValVaultRecord[] = []
 
   constructor(private readonly resolveTenantKey: (tenantId: string) => string) {}
 
@@ -138,6 +148,11 @@ class InMemorySurrogateVault implements SurrogateVault {
       const parsed = parseSurrogate(row.surrogate)
       if (parsed?.entityType === entityType && parsed.ordinal > max) max = parsed.ordinal
     }
+    for (const row of this.valRows) {
+      if (row.tenantId !== tenantId || row.scopeType !== scope.type || row.scopeId !== scope.id) continue
+      const parsed = parseSurrogate(row.surrogate)
+      if (parsed?.entityType === entityType && parsed.ordinal > max) max = parsed.ordinal
+    }
     return max
   }
 
@@ -170,9 +185,107 @@ class InMemorySurrogateVault implements SurrogateVault {
     }, inputs)
   }
 
-  findValByFingerprint = valVaultMethodStubs.findValByFingerprint
-  findValBySurrogate = valVaultMethodStubs.findValBySurrogate
-  insertVal = valVaultMethodStubs.insertVal
+  async findValByFingerprint(
+    tenantId: string,
+    scope: PrivacyScope,
+    entityType: RefVaultRecord['entityType'],
+    fingerprint: string,
+  ): Promise<ValVaultLookup> {
+    const record = this.valRows.find(
+      (row) =>
+        row.tenantId === tenantId &&
+        row.scopeType === scope.type &&
+        row.scopeId === scope.id &&
+        row.entityType === entityType &&
+        row.sourceId === fingerprint,
+    )
+    return record ? { status: 'hit', record } : { status: 'miss' }
+  }
+
+  async findValBySurrogate(
+    tenantId: string,
+    scope: PrivacyScope,
+    surrogate: string,
+  ): Promise<ValVaultLookup> {
+    const record = this.valRows.find(
+      (row) =>
+        row.tenantId === tenantId &&
+        row.scopeType === scope.type &&
+        row.scopeId === scope.id &&
+        row.surrogate === surrogate,
+    )
+    return record ? { status: 'hit', record } : { status: 'miss' }
+  }
+
+  async insertVal(input: InsertValInput): Promise<ValVaultRecord> {
+    if (
+      this.rows.some(
+        (row) =>
+          row.tenantId === input.tenantId &&
+          row.scopeType === input.scope.type &&
+          row.scopeId === input.scope.id &&
+          row.surrogate === input.surrogate,
+      ) ||
+      this.valRows.some(
+        (row) =>
+          row.tenantId === input.tenantId &&
+          row.scopeType === input.scope.type &&
+          row.scopeId === input.scope.id &&
+          row.surrogate === input.surrogate,
+      )
+    ) {
+      throw new SurrogateTakenError(input.surrogate)
+    }
+    const fields = {
+      tenantId: input.tenantId,
+      scopeType: input.scope.type,
+      scopeId: input.scope.id,
+      entityType: input.entityType,
+      surrogate: input.surrogate,
+      class: 'val' as const,
+      connectorId: '' as const,
+      sourceId: input.fingerprint,
+    }
+    const record: ValVaultRecord = {
+      id: randomUUID(),
+      ...fields,
+      encryptedValue: input.encryptedValue,
+      hmac: computeSurrogateHmac(this.resolveTenantKey(input.tenantId), fields),
+    }
+    this.valRows.push(record)
+    return record
+  }
+}
+
+class InMemoryPrivacyKeys implements ConversationPrivacyKeyRepository {
+  private readonly keys = new Map<string, Buffer>()
+
+  async ensureDataKey(_tenantId: string, conversationId: string): Promise<Buffer> {
+    const existing = this.keys.get(conversationId)
+    if (existing) return existing
+    const key = Buffer.alloc(32, 7)
+    this.keys.set(conversationId, key)
+    return key
+  }
+
+  async getDataKey(_tenantId: string, conversationId: string): Promise<Buffer | null> {
+    return this.keys.get(conversationId) ?? null
+  }
+
+  async shredKeysForConversations(conversationIds: string[]): Promise<number> {
+    let count = 0
+    for (const id of conversationIds) count += this.keys.delete(id) ? 1 : 0
+    return count
+  }
+}
+
+function makeEngine(vault = new InMemorySurrogateVault(() => HMAC_KEY)): SurrogateEngine {
+  return new SurrogateEngine(
+    vault,
+    new RecordingAudit(),
+    allowAllPrivacyResolveAccess,
+    new InMemoryPrivacyKeys(),
+  )
 }
 
 function sampleRawTrace() {
@@ -210,7 +323,7 @@ async function main() {
   console.log('APG-21 debug-trace projection\n')
 
   const vault = new InMemorySurrogateVault(() => HMAC_KEY)
-  const engine = new SurrogateEngine(vault, new RecordingAudit())
+  const engine = makeEngine(vault)
   const policy = resolvePrivacyCategoryPolicy({})
   const conversationScope = { type: 'conversation' as const, id: CONVERSATION }
 
@@ -237,13 +350,52 @@ async function main() {
     assert.deepEqual(privacyScopeForTrace(TRACE_A), { type: 'trace', id: TRACE_A })
   })
 
+  await test('get_debug_trace külön adatvédelmi capability-csoportban van', () => {
+    assert.equal(TOOL_REGISTRY.get_debug_trace.capabilityGroup, TOOL_GROUP_PRIVACY)
+  })
+
+  await test('get_debug_trace azonos tenanton belül is elutasítja a nem résztvevő kérőt', async () => {
+    let requesterUserId: string | null | undefined
+    const service = new DebugTraceService(
+      {
+        agentTurn: {
+          findUnique: async () => ({
+            id: TRACE_A,
+            tenantId: TENANT,
+            conversationId: CONVERSATION,
+          }),
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        async authorize(input) {
+          requesterUserId = input.requester.userId
+          return { allowed: false, reason: 'participant' as const }
+        },
+      },
+    )
+    await assert.rejects(
+      () => service.getProjectedTrace({
+        agentTurnId: TRACE_A,
+        tenantId: TENANT,
+        requesterUserId: 'foreign-user',
+        engine,
+        mode: 'enforce',
+        policy,
+      }),
+      /agent_turn_not_found/,
+    )
+    assert.equal(requesterUserId, 'foreign-user')
+  })
+
   await test('projection: nincs nyers entitásérték a kimenetben', async () => {
     const projected = await projectDebugTraceBundle({
       trace: sampleRawTrace(),
       ...projectionInput,
     })
     const leak = findRawEntityLeak(projected, RAW_VALUES)
-    assert.equal(leak, null, `nyers érték kiszivárgott: ${leak}`)
+    assert.equal(leak, null, `nyers érték kiszivárgott: ${leak}; projection=${JSON.stringify(projected)}`)
     assert.match(JSON.stringify(projected), /\[\[COMPANY_1\]\]/)
     assert.match(JSON.stringify(projected), /\[\[EMAIL_1\]\]/)
   })
@@ -260,7 +412,7 @@ async function main() {
   })
 
   await test('projection: külön trace → külön álnév (trace-scope)', async () => {
-    const engineB = new SurrogateEngine(new InMemorySurrogateVault(() => HMAC_KEY), new RecordingAudit())
+    const engineB = makeEngine()
     await engineB.allocateRef({
       tenantId: TENANT,
       scope: conversationScope,
@@ -305,13 +457,13 @@ async function main() {
     assert.equal('partialText' in output.projection, true)
   })
 
-  await test('projection OFF módban: nyers trace marad (gateway ki)', async () => {
+  await test('projection OFF módban is pszeudonimizált marad (debug-AI egress)', async () => {
     const projected = await projectDebugTraceBundle({
       trace: sampleRawTrace(),
       ...projectionInput,
       mode: 'off',
     })
-    assert.match(JSON.stringify(projected), new RegExp(COMPANY.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    assert.equal(findRawEntityLeak(projected, RAW_VALUES), null)
   })
 
   console.log(failures === 0 ? '\nMinden debug-trace projection teszt zöld.' : `\n${failures} teszt elbukott.`)

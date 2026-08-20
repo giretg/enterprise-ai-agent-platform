@@ -253,6 +253,95 @@ export const FREE_TEXT_EVAL_CASES: FreeTextEvalCase[] = [
   },
 ]
 
+/** APG-16 DoD: known-value címkézett minták (független a matcher implementációjától). */
+export const KNOWN_VALUE_EVAL_CASES = FREE_TEXT_EVAL_CASES.filter(
+  (c): c is FreeTextEvalCase & { source: 'known_value' } => c.source === 'known_value',
+)
+
+/** Tipikus tenant-szótár az APG-16 false-positive méréshez. */
+export const KNOWN_VALUE_EVAL_DICTIONARY: Array<{
+  needle: string
+  surrogate: string
+  fromStructuredField: boolean
+}> = [
+  { needle: 'SPAR Magyarország Kft.', surrogate: '[[COMPANY_1]]', fromStructuredField: true },
+  { needle: 'Tesco Globál Áruházak Zrt.', surrogate: '[[COMPANY_2]]', fromStructuredField: true },
+  { needle: 'Lidl Magyarország Bt.', surrogate: '[[COMPANY_3]]', fromStructuredField: true },
+  { needle: 'Kiss János', surrogate: '[[PERSON_1]]', fromStructuredField: true },
+  { needle: 'Nagy Péter', surrogate: '[[PERSON_2]]', fromStructuredField: true },
+  { needle: 'Magyar Telekom', surrogate: '[[COMPANY_4]]', fromStructuredField: true },
+]
+
+/** Nem-védendő szöveg — known-value szótár hamis pozitív detekcióhoz (APG-16 DoD). */
+export type KnownValueFalsePositiveCase = {
+  id: string
+  description: string
+  text: string
+}
+
+export const KNOWN_VALUE_FALSE_POSITIVE_CASES: KnownValueFalsePositiveCase[] = [
+  {
+    id: 'fp-kv-1',
+    description: 'Diszpécser — nem SPAR entitás',
+    text: 'A diszpécser hívta fel a raktárt.',
+  },
+  {
+    id: 'fp-kv-2',
+    description: 'Spartan — spar előtag, de nem szóhatár',
+    text: 'A Spartan futóverseny szombaton indul.',
+  },
+  {
+    id: 'fp-kv-3',
+    description: 'Kissé — Kiss előtag, de nem személynév',
+    text: 'Kissé fáradt volt a csapat a meccs után.',
+  },
+  {
+    id: 'fp-kv-4',
+    description: 'Spárga — spar előtag színként',
+    text: 'A spárga fal újra festésre került.',
+  },
+  {
+    id: 'fp-kv-5',
+    description: 'Általános üzleti mondat',
+    text: 'A bevétel növekedése pozitív trendet mutat.',
+  },
+  {
+    id: 'fp-kv-6',
+    description: 'Dátum és statisztika',
+    text: 'A jelentés 2026. augusztus 20-án készült, 15,3%-os növekedéssel.',
+  },
+  {
+    id: 'fp-kv-7',
+    description: 'Városnév önmagában',
+    text: 'A raktár Budapesten található.',
+  },
+  {
+    id: 'fp-kv-8',
+    description: 'Technikai azonosító',
+    text: 'A kérés azonosítója: REQ-2026-0819.',
+  },
+  {
+    id: 'fp-kv-9',
+    description: 'Iparági általános kifejezés',
+    text: 'A kiskereskedelmi lánc forgalma szezonális.',
+  },
+  {
+    id: 'fp-kv-10',
+    description: 'Felszólítás entitás nélkül',
+    text: 'Kérem ellenőrizze a csatolt dokumentumot.',
+  },
+  {
+    id: 'fp-kv-11',
+    description: 'Köznév „nagy” — nem Nagy Péter személynév',
+    text: 'A nagy raktár hétfőn nyit.',
+  },
+  {
+    id: 'fp-kv-12',
+    description: 'Köznév „magyar” — nem Magyar Telekom cégnév',
+    text: 'A magyar piac idén nőtt.',
+  },
+]
+
 export const FALSE_POSITIVE_EVAL_CASES: FalsePositiveEvalCase[] = [
   {
     id: 'fp-1',

@@ -17,8 +17,10 @@ import {
   type ResolvedPrivacyCategoryPolicy,
 } from '@/domain/privacy/privacy-category-policy'
 import { previewAliasForCategory } from '@/domain/privacy/privacy-dry-run'
+import type { KnownValueReplacement } from '@/domain/privacy/known-value-substitution'
+import { findKnownValueMatches } from '@/domain/privacy/known-value-matcher'
 import type { PrivacyGatewayMode } from '@/domain/privacy/privacy-mode'
-import { isSurrogateEntityType } from '@/domain/privacy/surrogate-format'
+import { isSurrogateEntityType, parseSurrogate } from '@/domain/privacy/surrogate-format'
 import {
   PRIVACY_CHAIN_STAGE_LABELS,
   PRIVACY_TRANSFORM_STATUS_LABELS,
@@ -35,7 +37,7 @@ export type PrivacyEntityMarker = {
   status: PrivacyTransformStatus
   action: PrivacyCategoryAction
   previewAlias: string | null
-  source: 'pattern' | 'structured_field'
+  source: 'pattern' | 'structured_field' | 'known_value'
   field?: string
 }
 
@@ -208,17 +210,53 @@ export function buildEntityMarkers(input: {
   mode: PrivacyGatewayMode
   structuredOutput?: unknown
   connectorFields?: ConnectorFieldsPrivacy
+  knownValues?: KnownValueReplacement[]
 }): PrivacyEntityMarker[] {
   const pattern = buildPatternEntityMarkers(input)
-  if (!input.structuredOutput || !input.connectorFields) return mergeMarkers(pattern)
-  const structured = buildStructuredEntityMarkers({
-    text: input.text,
-    output: input.structuredOutput,
-    fields: input.connectorFields,
-    policy: input.policy,
-    mode: input.mode,
+  const structured =
+    input.structuredOutput && input.connectorFields
+      ? buildStructuredEntityMarkers({
+          text: input.text,
+          output: input.structuredOutput,
+          fields: input.connectorFields,
+          policy: input.policy,
+          mode: input.mode,
+        })
+      : []
+  const known = input.knownValues
+    ? buildKnownValueEntityMarkers({
+        text: input.text,
+        replacements: input.knownValues,
+        policy: input.policy,
+        mode: input.mode,
+      })
+    : []
+  return mergeMarkers([...pattern, ...structured, ...known])
+}
+
+export function buildKnownValueEntityMarkers(input: {
+  text: string
+  replacements: KnownValueReplacement[]
+  policy: ResolvedPrivacyCategoryPolicy
+  mode: PrivacyGatewayMode
+}): PrivacyEntityMarker[] {
+  return findKnownValueMatches(input.text, input.replacements).flatMap((match) => {
+    const parsed = parseSurrogate(match.surrogate)
+    if (!parsed) return []
+    const category = canonicalPrivacyCategory(parsed.entityType)
+    const action = actionForPrivacyCategory(input.policy, category)
+    return [{
+      start: match.start,
+      end: match.end,
+      category,
+      categoryLabel: categoryLabel(category),
+      displayValue: match.matchedText,
+      status: transformStatus(action, input.mode),
+      action,
+      previewAlias: null,
+      source: 'known_value' as const,
+    }]
   })
-  return mergeMarkers([...pattern, ...structured])
 }
 
 export function applyTransformPreview(
@@ -336,19 +374,4 @@ export function buildPrivacyTurnChain(input: PrivacyTurnChainInput): PrivacyTurn
 export function markerTooltipText(marker: PrivacyEntityMarker): string {
   const status = PRIVACY_TRANSFORM_STATUS_LABELS[marker.status]
   return `${marker.categoryLabel} — ${status.label}. ${status.explanation}`
-}
-
-export function markerHighlightClass(status: PrivacyTransformStatus): string {
-  switch (status) {
-    case 'observed':
-      return 'bg-honey/25 text-ink border-b border-honey/60'
-    case 'applied':
-      return 'bg-sage/20 text-ink border-b border-sage/50'
-    case 'blocked':
-      return 'bg-coral/15 text-ink border-b border-coral/50'
-    case 'skipped':
-      return 'bg-night-3 text-ink-soft border-b border-line/60'
-    default:
-      return 'bg-night-3 text-ink-soft'
-  }
 }

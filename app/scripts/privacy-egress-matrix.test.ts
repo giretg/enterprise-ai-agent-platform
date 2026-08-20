@@ -4,6 +4,9 @@
  * Futtatás: npm run test:privacy-egress-matrix
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   allowsEgressResolve,
   DEFAULT_PRIVACY_EGRESS_MATRIX,
@@ -14,7 +17,6 @@ import {
   createEgressDisplayLookup,
   resolveDisplayText,
   resolveEgressText,
-  resolveExportReportEgressText,
 } from '../src/domain/privacy/resolve-display-text'
 import type { SurrogateEngine } from '../src/domain/privacy/surrogate-engine'
 
@@ -156,26 +158,20 @@ async function main() {
     assert.deepEqual(auditEvents[0]!.categories.sort(), ['company'])
   })
 
-  await test('resolveExportReportEgressText auditált eseményt ír', async () => {
-    const audits: Array<{ action: string; inputRef: string | null }> = []
-    await resolveExportReportEgressText({
-      text: `${COMPANY} / ${PERSON}`,
-      engine: stubEngine(),
-      tenantId: TENANT,
-      scope: { type: 'conversation', id: CONV },
-      requesterUserId: USER,
-      audit: {
-        append: async (row) => {
-          audits.push({ action: row.action, inputRef: row.inputRef })
-        },
-      },
-      actorId: USER,
-      targetType: 'conversation',
-      targetId: CONV,
-    })
-    assert.equal(audits.length, 1)
-    assert.equal(audits[0]!.action, 'privacy.egress.export_resolved')
-    assert.equal(audits[0]!.inputRef, 'company')
+  await test('APG-19: a produkciós kimenetek a közös resolveEgressTextForSurface nyelőt hívják', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const chat = readFileSync(join(root, 'src/domain/agent/agent-chat-runtime.ts'), 'utf8')
+    const display = readFileSync(join(root, 'src/domain/privacy/resolve-display-text.ts'), 'utf8')
+    const wiring = readFileSync(join(root, 'src/domain/index.ts'), 'utf8')
+    assert.match(chat, /resolveEgressTextForSurface\(/)
+    assert.match(display, /surface: 'web_ui'/)
+    assert.match(display, /surface: 'external_channel'/)
+    assert.match(wiring, /resolveChannelOutboundText\(/)
+    assert.equal(
+      /function resolvePlatformEmailEgressText|export async function resolvePlatformEmailEgressText/.test(display),
+      false,
+      'ne legyen külön, hívatlan e-mail wrapper — a platform e-mail transport még nincs; a nyelő resolveEgressTextForSurface',
+    )
   })
 
   console.log(failures === 0 ? '\nMinden teszt zöld.' : `\n${failures} hiba.`)

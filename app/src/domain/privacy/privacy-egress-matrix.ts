@@ -7,6 +7,7 @@
  */
 import {
   SURROGATE_ENTITY_TYPES,
+  isSurrogateEntityType,
   type SurrogateEntityType,
 } from '@/domain/privacy/surrogate-format'
 
@@ -38,10 +39,7 @@ export const DEFAULT_PRIVACY_EGRESS_MATRIX: Record<
   model_calls: 'none',
 }
 
-export const PRIVACY_EGRESS_MATRIX_KEY = 'privacy.gateway.egress_matrix'
 export const PRIVACY_EGRESS_MATRIX_TENANT_KEY = 'privacy.gateway.tenant_egress_matrix'
-
-export const PRIVACY_EGRESS_EXPORT_RESOLVED_ACTION = 'privacy.egress.export_resolved' as const
 
 export type PrivacyEgressEntityPatch = Partial<Record<SurrogateEntityType, boolean>>
 export type PrivacyEgressSurfacePatch = Partial<Record<PrivacyEgressSurface, PrivacyEgressEntityPatch>>
@@ -105,8 +103,4 @@ export function parsePrivacyEgressMatrixLayer(raw: unknown): PrivacyEgressMatrix
 
 function isPrivacyEgressSurface(value: string): value is PrivacyEgressSurface {
   return (PRIVACY_EGRESS_SURFACES as readonly string[]).includes(value)
-}
-
-function isSurrogateEntityType(value: string): value is SurrogateEntityType {
-  return (SURROGATE_ENTITY_TYPES as readonly string[]).includes(value)
 }

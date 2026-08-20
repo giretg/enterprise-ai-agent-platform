@@ -813,12 +813,40 @@ export function describeInvalidAppliedSource(raw: unknown): string | null {
  * pathje (vagy a terv maga) korábban a filter ELŐTT bekerült, és silent false OK-ot
  * adott a coverage kapun.
  */
-export function extractAppliedOwnershipIds(raw: unknown): string[] {
+export type AppliedOwnershipAction = 'patch' | 'delete' | 'wildcard'
+
+export type AppliedOwnershipWrite = {
+  ownershipId: string
+  action: AppliedOwnershipAction
+}
+
+function appliedOwnershipAction(muvelet: string): AppliedOwnershipAction | null {
+  if (muvelet === 'DELETE' || muvelet === 'TORLES') return 'delete'
+  if (
+    muvelet === 'PATCH' ||
+    muvelet === 'PUT' ||
+    muvelet === 'UPDATE' ||
+    muvelet === 'MODOSITAS'
+  ) {
+    return 'patch'
+  }
+  return null
+}
+
+/**
+ * Proposal extract / tool-eredmény -> műveletérzékeny Ownership írások.
+ * A régi, puszta id-lista és a művelet nélküli explicit Ownership sor wildcard:
+ * ezek visszafelé kompatibilisek, de egy ismert PATCH többé nem elég DELETE helyett.
+ */
+export function extractAppliedOwnershipWrites(raw: unknown): AppliedOwnershipWrite[] {
   if (Array.isArray(raw)) {
     if (raw.every((x) => typeof x === 'string')) {
-      return [...new Set(raw.map((x) => x.trim()).filter(Boolean))]
+      return [...new Set(raw.map((x) => x.trim()).filter(Boolean))].map((ownershipId) => ({
+        ownershipId,
+        action: 'wildcard',
+      }))
     }
-    const ids: string[] = []
+    const writes: AppliedOwnershipWrite[] = []
     for (const row of raw) {
       if (!row || typeof row !== 'object') continue
       const rec = row as Record<string, unknown>
@@ -841,16 +869,16 @@ export function extractAppliedOwnershipIds(raw: unknown): string[] {
       // (`entityType`) — a terv és az eltérés-lista sorain nincs ilyen mező, így
       // ez nem nyitja vissza a hamis „minden megvan” utat, viszont a puszta
       // id-listát tartalmazó kivonat nem esik ki némán.
-      const applied = muvelet
-        ? APPLIED_OWNERSHIP_WRITE_MUVELETEK.has(muvelet)
-        : entityType != null
-      if (!applied) continue
+      const action = muvelet ? appliedOwnershipAction(muvelet) : entityType != null ? 'wildcard' : null
+      if (!action || (muvelet && !APPLIED_OWNERSHIP_WRITE_MUVELETEK.has(muvelet))) continue
 
       const path = typeof rec.path === 'string' ? rec.path : null
       if (path) {
         const m = /\/ownerships\/([^/?#]+)/.exec(path)
         const fromPath = m?.[1]?.trim()
-        if (fromPath && fromPath !== '{ownershipId}') ids.push(fromPath)
+        if (fromPath && fromPath !== '{ownershipId}') {
+          writes.push({ ownershipId: fromPath, action })
+        }
       }
 
       const id =
@@ -858,9 +886,11 @@ export function extractAppliedOwnershipIds(raw: unknown): string[] {
         (typeof rec.ownershipId === 'string' && rec.ownershipId) ||
         (typeof rec.azonosito === 'string' && rec.azonosito) ||
         null
-      if (id?.trim()) ids.push(id.trim())
+      if (id?.trim()) writes.push({ ownershipId: id.trim(), action })
     }
-    return [...new Set(ids)]
+    const unique = new Map<string, AppliedOwnershipWrite>()
+    for (const write of writes) unique.set(`${write.ownershipId}\0${write.action}`, write)
+    return [...unique.values()]
   }
   if (raw && typeof raw === 'object') {
     const rec = raw as Record<string, unknown>
@@ -868,10 +898,15 @@ export function extractAppliedOwnershipIds(raw: unknown): string[] {
     // `eltero` kimarad: az egyeztető eltérő sorai (azonosito + státusz), nem
     // proposal-alkalmazás — belőle hamis „minden id megvan” OK jönne.
     for (const key of ['items', 'applied', 'rows', 'data']) {
-      if (Array.isArray(rec[key])) return extractAppliedOwnershipIds(rec[key])
+      if (Array.isArray(rec[key])) return extractAppliedOwnershipWrites(rec[key])
     }
   }
   return []
+}
+
+/** Régi hívók számára megmaradó id-kivonat. Coverage-hez az action-aware változatot használd. */
+export function extractAppliedOwnershipIds(raw: unknown): string[] {
+  return [...new Set(extractAppliedOwnershipWrites(raw).map((write) => write.ownershipId))]
 }
 
 /**
@@ -880,21 +915,38 @@ export function extractAppliedOwnershipIds(raw: unknown): string[] {
  */
 export function checkFoldMuveletekCoverage(
   plan: FoldMuveletekPlan,
-  appliedIds: Iterable<string>,
+  appliedWrites: Iterable<string | AppliedOwnershipWrite>,
 ): FoldMuveletekCoverage {
-  const applied = new Set([...appliedIds].map((id) => id.trim()).filter(Boolean))
+  const applied = [...appliedWrites]
+    .map((write): AppliedOwnershipWrite | null => {
+      if (typeof write === 'string') {
+        const ownershipId = write.trim()
+        return ownershipId ? { ownershipId, action: 'wildcard' } : null
+      }
+      const ownershipId = write.ownershipId.trim()
+      return ownershipId ? { ownershipId, action: write.action } : null
+    })
+    .filter((write): write is AppliedOwnershipWrite => write !== null)
+  const appliedIds = new Set(applied.map((write) => write.ownershipId))
   const expectedItems = plan.items.filter(
     (item) => (item.action === 'delete' || item.action === 'patch') && item.ownershipId,
   )
   const expectedIds = new Set(expectedItems.map((item) => item.ownershipId!))
   const missing = expectedItems
-    .filter((item) => !applied.has(item.ownershipId!))
+    .filter(
+      (item) =>
+        !applied.some(
+          (write) =>
+            write.ownershipId === item.ownershipId &&
+            (write.action === 'wildcard' || write.action === item.action),
+        ),
+    )
     .map((item) => ({
       ownershipId: item.ownershipId!,
       nev: item.nev,
       action: item.action,
     }))
-  const extra = [...applied].filter((id) => !expectedIds.has(id))
+  const extra = [...appliedIds].filter((id) => !expectedIds.has(id))
   const ok = missing.length === 0 && extra.length === 0
   const message = ok
     ? `Lefedettség rendben: ${expectedItems.length}/${expectedItems.length} tervezett PATCH/DELETE id a proposalban.`
@@ -905,7 +957,7 @@ export function checkFoldMuveletekCoverage(
         // Egy id sem jött ki: majdnem mindig rossz fájl (terv / eltérés-lista /
         // nem Ownership kivonat), nem 80 kimaradt írás. Ha ezt nem mondjuk ki,
         // az agent újraírja a már meglévő tételeket.
-        missing.length && applied.size === 0
+        missing.length && appliedIds.size === 0
           ? 'Egyetlen alkalmazott Ownership id sem jött ki a megadott fájlból — ' +
             'ellenőrizd, hogy a coverageAppliedPath a Föld proposal tételeinek ' +
             'kivonatára mutat-e (nem a fold_muveletek tervre és nem az ' +
@@ -921,7 +973,7 @@ export function checkFoldMuveletekCoverage(
   return {
     ok,
     expected: expectedItems.length,
-    applied: applied.size,
+    applied: appliedIds.size,
     missing,
     extra,
     message,

@@ -98,7 +98,11 @@ import {
 import { recordCall, recordDenied } from './tool-broker-audit'
 import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
 import { recordPrivacyGatewayAudit } from '@/domain/privacy/privacy-audit'
-import type { PrivacyGatewayMode, PrivacyModeResolver } from '@/domain/privacy/privacy-mode'
+import {
+  mergePrivacySpanCategories,
+  type PrivacyGatewayMode,
+  type PrivacyModeResolver,
+} from '@/domain/privacy/privacy-mode'
 import {
   allowsExternalRaw,
   type PrivacyCategoryActionResolver,
@@ -236,7 +240,8 @@ export class ToolBrokerService {
         repoOpenPullRequest(this, input, connector, actingTenantId),
       memoryPropose: (input, actingTenantId) => memoryPropose(this, input, actingTenantId),
       documentRead: (input, actingUserId) => documentRead(this, input, actingUserId),
-      getDebugTrace: (input, actingTenantId) => this.fetchDebugTrace(input, actingTenantId),
+      getDebugTrace: (input, actingTenantId, actingUserId) =>
+        this.fetchDebugTrace(input, actingTenantId, actingUserId),
       tulajdoniLapParse: (input, actingUserId, extras) =>
         tulajdoniLapParse(this, input, actingUserId, extras),
       tulajdoniLapEgyeztetes: (input, actingUserId, extras) =>
@@ -588,12 +593,7 @@ export class ToolBrokerService {
         })
         args = entityResolved.args
         totalResolved += entityResolved.resolvedCount
-        for (const [key, count] of Object.entries(entityResolved.byCategory)) {
-          if (typeof count === 'number') {
-            const cat = key as keyof typeof byCategory
-            byCategory = { ...byCategory, [cat]: (byCategory[cat] ?? 0) + count }
-          }
-        }
+        byCategory = mergePrivacySpanCategories(byCategory, entityResolved.byCategory)
       }
     }
 
@@ -619,6 +619,7 @@ export class ToolBrokerService {
   async fetchDebugTrace(
     input: Extract<ToolBrokerInvokeInput, { tool: 'get_debug_trace' }>,
     actingTenantId: string | null,
+    actingUserId: string | null,
   ): Promise<import('./tool-broker-types').GetDebugTraceResult> {
     if (!this.debugTraceService || !this.structuredPrivacyEngine || !this.privacyPolicyResolver) {
       throw new Error('debug_trace_unavailable')
@@ -633,6 +634,7 @@ export class ToolBrokerService {
     return this.debugTraceService.getProjectedTrace({
       agentTurnId: input.args.agentTurnId,
       tenantId: actingTenantId,
+      requesterUserId: actingUserId,
       engine: this.structuredPrivacyEngine,
       mode,
       policy,

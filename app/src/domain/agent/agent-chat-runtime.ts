@@ -35,6 +35,12 @@ import { resolveEgressTextForSurface } from '../privacy/resolve-display-text'
 import type { ResolvedPrivacyEgressMatrix } from '../privacy/privacy-egress-matrix'
 import { resolvePrivacyEgressMatrix } from '../privacy/privacy-egress-matrix'
 import type { SurrogateEngine } from '../privacy/surrogate-engine'
+import {
+  buildEntityMarkers,
+  type PrivacyEntityMarker,
+} from '../privacy/privacy-observability'
+import type { ResolvedPrivacyCategoryPolicy } from '../privacy/privacy-category-policy'
+import type { PrivacyGatewayMode } from '../privacy/privacy-mode'
 import type { ConversationService } from '../conversation/conversation-service'
 import {
   assembleContext,
@@ -427,6 +433,7 @@ export type ChatMessageView = {
   text: string
   attachments: ChatAttachmentView[]
   createdAt: Date
+  privacyMarkers?: PrivacyEntityMarker[]
 }
 
 export type ChatSessionView = {
@@ -638,6 +645,14 @@ export class AgentChatRuntime {
     private resolvePrivacyEgressMatrix?: (
       tenantId: string | null,
     ) => Promise<ResolvedPrivacyEgressMatrix>,
+    /** APG-22 — a valós chat-forduló marker-státuszai ugyanabból a runtime policy-ból. */
+    private resolvePrivacyObservability?: (
+      tenantId: string | null,
+      agentId: string,
+    ) => Promise<{
+      mode: PrivacyGatewayMode
+      policy: ResolvedPrivacyCategoryPolicy
+    }>,
   ) {}
 
   /**
@@ -2249,6 +2264,9 @@ export class AgentChatRuntime {
     if (agentId && conversation.agentId !== agentId) {
       throw new Error('Conversation agent mismatch')
     }
+    const privacyContext = this.resolvePrivacyObservability
+      ? await this.resolvePrivacyObservability(tenantId ?? null, conversation.agentId)
+      : null
     const views: ChatMessageView[] = []
 
     for (const message of messages) {
@@ -2275,12 +2293,32 @@ export class AgentChatRuntime {
         })
       }
 
+      const text = await this.resolveWebUiText(
+        parsed.text,
+        conversationId,
+        tenantId,
+        requesterUserId,
+      )
+      const privacyMarkers =
+        privacyContext && this.surrogateEngine && tenantId
+          ? buildEntityMarkers({
+              text,
+              mode: privacyContext.mode,
+              policy: privacyContext.policy,
+              knownValues: this.surrogateEngine.listKnownValueReplacements(
+                tenantId,
+                { type: 'conversation', id: conversationId },
+              ),
+            })
+          : []
+
       views.push({
         id: message.id,
         role: message.role as ChatMessageView['role'],
-        text: await this.resolveWebUiText(parsed.text, conversationId, tenantId, requesterUserId),
+        text,
         attachments,
         createdAt: message.createdAt,
+        privacyMarkers,
       })
     }
 

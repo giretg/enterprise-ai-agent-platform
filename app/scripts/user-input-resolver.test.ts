@@ -16,6 +16,7 @@ import {
 import { extractEntityCandidates, stemForResolve } from '../src/domain/privacy/extract-entity-candidates'
 import { resolveUserInputEntities } from '../src/domain/privacy/user-input-resolver'
 import { resolveEntityNamesInToolArgs } from '../src/domain/privacy/resolve-tool-entity-names'
+import { PrivacyTransformBlockedError } from '../src/domain/privacy/privacy-transform-failure'
 import { SurrogateEngine, type PrivacyAuditSink } from '../src/domain/privacy/surrogate-engine'
 import {
   computeSurrogateHmac,
@@ -245,6 +246,46 @@ async function main() {
     )
     assert.equal(
       normalizeEntityResolveResponse({
+        status: 'match',
+        candidates: [
+          {
+            source_id: 'crm/company/1',
+            entity_type: 'company',
+            display_name: 'SPAR Magyarország Kft.',
+            confidence: 0.96,
+          },
+          {
+            source_id: 'crm/company/2',
+            entity_type: 'company',
+            display_name: 'SPAR Ausztria',
+            confidence: 0.61,
+          },
+        ],
+      }).status,
+      'match',
+    )
+    assert.equal(
+      normalizeEntityResolveResponse({
+        status: 'match',
+        candidates: [
+          {
+            source_id: 'crm/company/1',
+            entity_type: 'company',
+            display_name: 'SPAR Magyarország Kft.',
+            confidence: 0.9,
+          },
+          {
+            source_id: 'crm/company/2',
+            entity_type: 'company',
+            display_name: 'SPAR Ausztria',
+            confidence: 0.88,
+          },
+        ],
+      }).status,
+      'ambiguous',
+    )
+    assert.equal(
+      normalizeEntityResolveResponse({
         status: 'none',
         candidates: [],
       }).status,
@@ -384,6 +425,24 @@ async function main() {
     assert.equal(calls, 2, 'a tool-boundary második resolve-hívást indítja')
     assert.equal(toolResult.resolvedCount, 1)
     assert.deepEqual(toolResult.args, { company: SOURCE_ID })
+  })
+
+  await test('hibás tokenize mező a tool-boundary-n fail-closed, nem néma fail-open', async () => {
+    await assert.rejects(
+      () =>
+        resolveEntityNamesInToolArgs({
+          args: { company: 'SPAR' },
+          engine: {} as SurrogateEngine,
+          tenantId: TENANT,
+          scope: SCOPE,
+          connectorId: CONNECTOR,
+          connectorConfig: {
+            fields: { revenue: { type: 'number', privacy: 'tokenize', entity_type: 'company' } },
+          },
+          resolver: { async resolve() { return { status: 'none', candidates: [] } } },
+        }),
+      (err: unknown) => err instanceof PrivacyTransformBlockedError,
+    )
   })
 
   console.log(failures === 0 ? '\nMinden APG-17 teszt zöld.' : `\n${failures} teszt elbukott.`)
