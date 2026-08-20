@@ -258,6 +258,41 @@ async function main() {
     )
   })
 
+  await test('a CRM-kapcsolat privacy-mezői kiegészítésből is érvényesek (régi connector-sor)', async () => {
+    const { engine } = fixture()
+    const { buildPrivacyAwareOutcomeChannels } = await import(
+      '../src/domain/tool-broker/tool-output-privacy'
+    )
+    // A tárolt config a `fields` deklaráció bevezetése ELŐTT jött létre: csak a
+    // sablonkulcs alapján derül ki, hogy Ostoros CRM.
+    const legacyConfig = {
+      provider: 'ostorosbor-crm',
+      baseUrl: 'https://ostorosbor-crm--e-ai-ab8f1.europe-west4.hosted.app/api/connector/v1',
+      egressHosts: ['ostorosbor-crm--e-ai-ab8f1.europe-west4.hosted.app'],
+      authMode: 'service',
+      auth: { type: 'bearer_token' },
+      proposedTools: [],
+      provenance: { templateKey: 'ostorosbor-crm-sales-delegated' },
+    }
+    const channels = await buildPrivacyAwareOutcomeChannels({
+      tool: 'http_api_call',
+      trust: 'external',
+      output: { rows: [{ id: 4821, company_name: COMPANY, revenue: 1_234_000 }] },
+      contract: undefined,
+      sideEffecting: false,
+      connector: { id: CONNECTOR, tenantId: TENANT, config: legacyConfig },
+      conversationId: CONVERSATION,
+      actingTenantId: TENANT,
+      engine,
+      mode: 'enforce',
+      audit: null,
+    })
+    assert.ok(!channels.modelText.includes(COMPANY), `nyers cégnév ment a modellnek: ${channels.modelText}`)
+    assert.match(channels.modelText, /\[\[COMPANY_1\]\]/)
+    // A munkaterület / downstream ág bitre nyers marad.
+    assert.equal(JSON.stringify(channels.machineData).includes(COMPANY), true)
+  })
+
   await test('OBSERVE előnézet után ENFORCE: a UI a valódi, nem az előnézeti nevet mutatja', async () => {
     const { engine, restart } = fixture()
     // Első forduló OBSERVE-ban: `[[COMPANY_1]]` csak ELŐNÉZET, nincs mögötte vault-sor.
