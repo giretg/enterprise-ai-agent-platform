@@ -22,10 +22,15 @@
  * DT-8: bekötött dok, connector IDEGEN tenantban → tiltott.
  * DT-9: bekötött dok, MEGOSZTOTT (platform, tenantId=null) connector → engedélyezett.
  * DT-10: bekötött dok, de a connector eltűnt → fail-closed.
+ * DT-11: chat/task attachment lista — idegen bélyegű UUID → `Document not found`.
+ * DT-12: chat/task attachment lista — hiányzó UUID → `Document not found`.
  */
 
 import assert from 'node:assert/strict'
-import { decideDocumentTenantAccess } from '../src/lib/document-tenant-access'
+import {
+  assertDocumentsReachableFromTenant,
+  decideDocumentTenantAccess,
+} from '../src/lib/document-tenant-access'
 
 const TENANT_A = 'aaaaaaaa-0000-4000-8000-00000000000a'
 const TENANT_B = 'bbbbbbbb-0000-4000-8000-00000000000b'
@@ -154,8 +159,72 @@ check('DT-10: attached but connector missing → fail-closed', () => {
   )
 })
 
-if (failures > 0) {
-  console.error(`\n${failures} test(s) failed`)
-  process.exit(1)
+async function checkAsync(name: string, fn: () => Promise<void>) {
+  try {
+    await fn()
+    console.log(`  OK  ${name}`)
+  } catch (e) {
+    failures++
+    console.log(`  FAIL ${name}: ${e instanceof Error ? e.message : e}`)
+  }
 }
-console.log('\nAll document-tenant-access tests passed')
+
+async function main() {
+  await checkAsync(
+    'DT-11: attachment bind rejects foreign stamped document UUID',
+    async () => {
+      await assert.rejects(
+        () =>
+          assertDocumentsReachableFromTenant(
+            [
+              {
+                id: 'doc-foreign',
+                uploadedById: 'user-multi',
+                connectorId: null,
+                metadata: { tenantId: TENANT_B },
+              },
+            ],
+            ['doc-foreign'],
+            TENANT_A,
+          ),
+        /Document not found/,
+      )
+    },
+  )
+
+  await checkAsync(
+    'DT-12: attachment bind rejects missing document UUID',
+    async () => {
+      await assert.rejects(
+        () => assertDocumentsReachableFromTenant([], ['doc-missing'], TENANT_A),
+        /Document not found/,
+      )
+    },
+  )
+
+  await checkAsync(
+    'DT-13: attachment bind allows same-tenant stamped document',
+    async () => {
+      await assertDocumentsReachableFromTenant(
+        [
+          {
+            id: 'doc-home',
+            uploadedById: 'user-a',
+            connectorId: null,
+            metadata: { tenantId: TENANT_A },
+          },
+        ],
+        ['doc-home'],
+        TENANT_A,
+      )
+    },
+  )
+
+  if (failures > 0) {
+    console.error(`\n${failures} test(s) failed`)
+    process.exit(1)
+  }
+  console.log('\nAll document-tenant-access tests passed')
+}
+
+void main()

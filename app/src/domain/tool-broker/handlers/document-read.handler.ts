@@ -9,8 +9,8 @@ export const documentReadHandler: ToolHandler = {
   handles(tool) {
     return tool === 'document_read'
   },
-  async execute({ ctx, input, actingUserId }: ToolHandlerArgs) {
+  async execute({ ctx, input, actingUserId, actingTenantId }: ToolHandlerArgs) {
     if (input.tool !== 'document_read') throw new Error(`document_read handler received ${input.tool}`)
-    return ctx.documentRead(input, actingUserId)
+    return ctx.documentRead(input, actingUserId, actingTenantId)
   },
 }

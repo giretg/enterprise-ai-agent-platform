@@ -20,6 +20,7 @@ import { AgentAccessError } from '@/domain/agent-access/agent-access-errors'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import { attachmentPageCount } from '@/lib/document-read'
+import { assertDocumentsReachableFromTenant } from '@/lib/document-tenant-access'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { pollCancelRequested } from '@/lib/cancel-flag-poll'
 import {
@@ -1116,7 +1117,7 @@ export class AgentChatRuntime {
       return { kind: 'conflict', conversationId, activeTurnId: reservation.activeTurnId }
     }
 
-    const attachmentDocs = await this.loadDocuments(attachmentIds)
+    const attachmentDocs = await this.loadDocuments(attachmentIds, params.tenantId ?? null)
     const attachmentBlock = formatAttachmentBlock(attachmentDocs)
     const userFacingText = text || '(csatolmányok)'
 
@@ -1986,7 +1987,7 @@ export class AgentChatRuntime {
       },
     })
 
-    const attachmentDocs = await this.loadDocuments(attachmentIds)
+    const attachmentDocs = await this.loadDocuments(attachmentIds, params.tenantId ?? null)
     const modelConfig = agentDetails.agent.modelConfig as {
       provider: string
       model: string
@@ -2249,9 +2250,13 @@ export class AgentChatRuntime {
     }))
   }
 
-  private async loadDocuments(ids: string[]) {
+  private async loadDocuments(ids: string[], tenantId: string | null) {
     if (ids.length === 0) return []
-    return this.documents.findByIds(ids)
+    const docs = await this.documents.findByIds(ids)
+    // Tenant-határ: idegen dokumentum UUID-ját ne lehessen chat/task csatolmányként
+    // bekötni (workspace-tükrözés + későbbi document_read / ticket-promóció).
+    await assertDocumentsReachableFromTenant(docs, ids, tenantId)
+    return docs
   }
 
   /**

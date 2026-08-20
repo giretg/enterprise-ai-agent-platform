@@ -198,7 +198,8 @@ export class ToolBrokerService {
       repoOpenPullRequest: (input, connector, actingTenantId) =>
         repoOpenPullRequest(this, input, connector, actingTenantId),
       memoryPropose: (input, actingTenantId) => memoryPropose(this, input, actingTenantId),
-      documentRead: (input, actingUserId) => documentRead(this, input, actingUserId),
+      documentRead: (input, actingUserId, actingTenantId) =>
+        documentRead(this, input, actingUserId, actingTenantId ?? null),
       tulajdoniLapParse: (input, actingUserId, extras) =>
         tulajdoniLapParse(this, input, actingUserId, extras),
       tulajdoniLapEgyeztetes: (input, actingUserId, extras) =>

@@ -14,6 +14,7 @@ import type { StepOutcome } from '@/lib/playbook-v2/spec'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { pollCancelRequested } from '@/lib/cancel-flag-poll'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
+import { assertDocumentsReachableFromTenant } from '@/lib/document-tenant-access'
 import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
 import { resolveAddressableColleagues } from '@/domain/agent-access/addressable-colleagues'
 import { buildEffectivePrompt } from '@/lib/playbook-v2/effective-prompt'
@@ -221,7 +222,7 @@ export class GeneralTaskRuntime {
     const modelConfig = agentDetails.agent.modelConfig as ModelConfig
     const agentVersion = agentDetails.agent.currentVersion
 
-    const attachmentDocs = await this.loadDocuments(attachmentIds)
+    const attachmentDocs = await this.loadDocuments(attachmentIds, ticket.tenantId)
     const attachmentBlock = formatAttachmentBlock(attachmentDocs)
     const conversationContext = await this.loadConversationContext(ticket)
     const wsTenant = ticket.tenantId ?? 'global'
@@ -1183,9 +1184,11 @@ export class GeneralTaskRuntime {
     }
   }
 
-  private async loadDocuments(ids: string[]) {
+  private async loadDocuments(ids: string[], tenantId: string | null) {
     if (ids.length === 0) return []
-    return this.documents.findByIds(ids)
+    const docs = await this.documents.findByIds(ids)
+    await assertDocumentsReachableFromTenant(docs, ids, tenantId)
+    return docs
   }
 
   /**

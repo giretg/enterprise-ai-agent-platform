@@ -116,3 +116,26 @@ export async function assertDocumentReachableFromTenant(
     throw new Error('Document not found')
   }
 }
+
+/**
+ * Chat/task csatolmány-kötés: a kliens által küldött `attachmentDocumentIds`
+ * listát tenant-határon kell ellenőrizni. Enélkül egy operátor idegen tenant
+ * dokumentum UUID-ját a saját beszélgetésébe / ticketjébe köthetné (IDOR), majd
+ * a tartalmat workspace-tükrözéssel és `document_read`-del kiolvashatná.
+ *
+ * Minden kért ID-nek léteznie kell ÉS elérhetőnek kell lennie; hiány / idegen
+ * dok → opak `Document not found` (fail-closed, sorrend-stabil).
+ */
+export async function assertDocumentsReachableFromTenant(
+  docs: Array<{ id: string; uploadedById: string; connectorId: string | null; metadata?: unknown }>,
+  requestedIds: string[],
+  actorTenantId: string | null,
+): Promise<void> {
+  if (requestedIds.length === 0) return
+  const byId = new Map(docs.map((doc) => [doc.id, doc]))
+  for (const id of requestedIds) {
+    const doc = byId.get(id)
+    if (!doc) throw new Error('Document not found')
+    await assertDocumentReachableFromTenant(doc, actorTenantId)
+  }
+}

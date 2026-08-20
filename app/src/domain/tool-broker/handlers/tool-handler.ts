@@ -130,6 +130,7 @@ export interface HandlerContext {
   documentRead(
     input: Extract<ToolBrokerInvokeInput, { tool: 'document_read' }>,
     actingUserId: string | null,
+    actingTenantId?: string | null,
   ): Promise<DocumentReadResult>
   tulajdoniLapParse(
     input: Extract<ToolBrokerInvokeInput, { tool: 'tulajdoni_lap_parse' }>,
