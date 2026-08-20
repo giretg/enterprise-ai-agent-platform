@@ -5,10 +5,12 @@ import { useEffect, useMemo, useState, useTransition } from 'react'
 import {
   dryRunPrivacyText,
   getPrivacyAdminView,
+  previewPrivacyObservability,
   setPrivacyCategoryPolicyAction,
   setPrivacyGatewayModeAction,
   type PrivacyAdminView,
 } from '@/app/actions/privacy'
+import { PrivacyObservabilityPanel } from '@/components/privacy/privacy-observability-panel'
 import { Card } from '@/components/ui/shell'
 import {
   PRIVACY_ACTION_LABELS,
@@ -32,6 +34,7 @@ import {
 } from '@/domain/privacy/privacy-category-policy'
 import type { PrivacyGatewayMode } from '@/domain/privacy/privacy-mode'
 import type { PrivacyDryRunResult } from '@/domain/privacy/privacy-dry-run'
+import type { PrivacyTurnChain } from '@/domain/privacy/privacy-observability'
 
 const INHERIT = '__inherit__'
 const ACTIONS: PrivacyCategoryAction[] = ['tokenize', 'local_only', 'block', 'allow']
@@ -69,6 +72,7 @@ export function PrivacyAdminPanel({
   const [customSlug, setCustomSlug] = useState('')
   const [dryText, setDryText] = useState('')
   const [dryResult, setDryResult] = useState<PrivacyDryRunResult | null>(null)
+  const [observabilityChain, setObservabilityChain] = useState<PrivacyTurnChain | null>(null)
   const [hasServerInitial] = useState(() => Boolean(initial))
 
   useEffect(() => {
@@ -184,6 +188,7 @@ export function PrivacyAdminPanel({
   function runDry() {
     setMessage(null)
     setDryResult(null)
+    setObservabilityChain(null)
     startTransition(async () => {
       const res = await dryRunPrivacyText({
         text: dryText,
@@ -191,6 +196,22 @@ export function PrivacyAdminPanel({
       })
       if (res.success) {
         setDryResult(res.data)
+      } else {
+        setMessage({ tone: 'err', text: res.error })
+      }
+    })
+  }
+
+  function runObservabilityPreview() {
+    setMessage(null)
+    setObservabilityChain(null)
+    startTransition(async () => {
+      const res = await previewPrivacyObservability({
+        text: dryText,
+        agentId: view!.agentId ?? agentId,
+      })
+      if (res.success) {
+        setObservabilityChain(res.data)
       } else {
         setMessage({ tone: 'err', text: res.error })
       }
@@ -453,6 +474,14 @@ export function PrivacyAdminPanel({
         >
           {pending ? 'Vizsgálat…' : 'Mit cserélnénk?'}
         </button>
+        <button
+          type="button"
+          disabled={pending || !dryText.trim()}
+          onClick={runObservabilityPreview}
+          className="mt-3 ml-2 rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink-soft hover:bg-night-2 disabled:opacity-40"
+        >
+          {pending ? 'Nyomkövetés…' : 'Lánc megtekintése'}
+        </button>
 
         {dryResult ? (
           <div className="mt-4 space-y-3">
@@ -481,6 +510,11 @@ export function PrivacyAdminPanel({
           </div>
         ) : null}
       </Card>
+
+      <PrivacyObservabilityPanel
+        chain={observabilityChain}
+        showAdminDetails={view.canEditPlatform || view.canEditTenant || view.canEditAgent}
+      />
 
       <Card title="Rövid magyarázatok">
         <dl className="space-y-3">

@@ -19,12 +19,14 @@ import {
   type PrivacyEditorLayer,
 } from '@/domain/privacy/privacy-category-policy'
 import { runPrivacyDryRun } from '@/domain/privacy/privacy-dry-run'
+import { buildPrivacyTurnChain, type PrivacyTurnChain } from '@/domain/privacy/privacy-observability'
 import { prisma } from '@/lib/db'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import {
   dryRunPrivacyTextSchema,
   getPrivacyAdminViewSchema,
+  previewPrivacyObservabilitySchema,
   setPrivacyCategoryPolicySchema,
   setPrivacyGatewayModeSchema,
 } from '@/lib/validators/actions'
@@ -339,5 +341,41 @@ export async function dryRunPrivacyText(input: unknown) {
     return ok(runPrivacyDryRun({ text: parsed.text, policy, mode }))
   } catch (e) {
     return privacyFail(e, 'A próba nem futott le.')
+  }
+}
+
+export async function previewPrivacyObservability(input: unknown): Promise<ActionResult<PrivacyTurnChain>> {
+  try {
+    const parsed = previewPrivacyObservabilitySchema.parse(input)
+    const access = await resolveEditorAccess({ agentId: parsed.agentId })
+    const settings = services.platformSettings
+    let legacyAllowSensitiveExternalModel = false
+    if (parsed.agentId) {
+      const agent = await repositories.agents.findById(parsed.agentId, access.tenantId)
+      if (!agent) return fail('Az AI-munkatárs nem található.')
+      legacyAllowSensitiveExternalModel = agent.allowSensitiveExternalModel
+    }
+    const [policy, mode] = await Promise.all([
+      settings.resolvePrivacyCategoryPolicy({
+        tenantId: access.tenantId,
+        agentId: parsed.agentId,
+        legacyAllowSensitiveExternalModel,
+      }),
+      settings.resolvePrivacyGatewayMode({
+        tenantId: access.tenantId,
+        agentId: parsed.agentId,
+      }),
+    ])
+    return ok(
+      buildPrivacyTurnChain({
+        mode,
+        policy,
+        originalText: parsed.text,
+        llmOutputText: parsed.text,
+        userOutputText: parsed.text,
+      }),
+    )
+  } catch (e) {
+    return privacyFail(e, 'A nyomkövetés nem futott le.')
   }
 }

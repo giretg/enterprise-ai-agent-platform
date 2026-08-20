@@ -168,6 +168,7 @@
     "test:privacy-observe": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-observe.test.ts",
     "test:privacy-category-policy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-category-policy.test.ts",
     "test:privacy-admin-ui": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-admin-ui.test.ts",
+    "test:privacy-observability-ui": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-observability-ui.test.ts",
     "test:prompt-privacy-transform": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-prompt-order.test.ts",
     "test:privacy-latency": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-latency.test.ts",
     "test:privacy-eval": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-eval.test.ts",
