@@ -1705,6 +1705,8 @@ model ConnectorDraft {
   reviewedById                String?                    @map("reviewed_by") @db.Uuid
   secondApproverId            String?                    @map("second_approver_id") @db.Uuid
   sandboxTestOk               Boolean?                   @map("sandbox_test_ok")
+  /// Monotonikus compare-and-set token: az aktiválás csak az ellenőrzött draft-verziót viheti élesbe.
+  revision                    Int                         @default(1)
   createdAt                   DateTime                   @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                   DateTime                   @updatedAt @map("updated_at") @db.Timestamptz
 

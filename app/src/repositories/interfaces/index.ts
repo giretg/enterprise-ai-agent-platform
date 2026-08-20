@@ -2111,12 +2111,15 @@ export interface ConnectorDraftRepository {
    */
   activate(params: {
     draftId: string
+    /** Monotonikus konkurencia-token a service által ellenőrzött draft-verzióhoz. */
+    expectedDraftRevision: number
     secretAlias: string
     authMode: ConnectorAuthMode
     secondApproverId: string | null
     /** Opcionális config-frissítés aktiváláskor (pl. nem-titkos oauth2 clientId). */
     config?: import('@prisma/client').Prisma.InputJsonValue
-  }): Promise<Connector>
+    /** `null`, ha a draft az ellenőrzés és a commit között megváltozott. */
+  }): Promise<Connector | null>
   /** Connector → agent hozzárendelés (agent_connectors). CSAK emberi admin (§8.6). */
   assignToAgent(params: {
     connectorId: string

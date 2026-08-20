@@ -37,6 +37,7 @@ import {
   type ConnectorConfig,
 } from '../src/domain/provisioning/connector-config'
 import { HttpSandboxConnectionTester } from '../src/domain/provisioning/sandbox-connection-tester'
+import { ensureGmailProvisioningDraft } from '../src/lib/seed-gmail-connector'
 import {
   ProvisioningAssistant,
   PROVISIONING_ASSISTANT_ROLE_INSTRUCTION,
@@ -106,6 +107,8 @@ type DraftRow = ConnectorDraftWithConnector
 class FakeDraftRepo implements ConnectorDraftRepository {
   drafts = new Map<string, DraftRow>()
   agentConnectors: Array<{ agentId: string; connectorId: string; accessMode: ConnectorAccessMode }> = []
+  /** Egy párhuzamos config-módosítás által okozott compare-and-set ütközést modellez. */
+  advanceRevisionBeforeNextActivation = false
   private seq = 0
 
   async createDraft(input: CreateConnectorDraftInput): Promise<DraftRow> {
@@ -143,6 +146,7 @@ class FakeDraftRepo implements ConnectorDraftRepository {
       reviewedById: null,
       secondApproverId: null,
       sandboxTestOk: null,
+      revision: 1,
       createdAt: new Date(),
       updatedAt: new Date(),
       connector,
@@ -162,6 +166,7 @@ class FakeDraftRepo implements ConnectorDraftRepository {
   async setValidationResult(draftId: string, result: Prisma.InputJsonValue) {
     const d = this.drafts.get(draftId)!
     d.validationResult = result as Prisma.JsonValue
+    d.revision++
     return d
   }
   async setReview(params: {
@@ -172,21 +177,31 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     const d = this.drafts.get(params.draftId)!
     d.reviewStatus = params.reviewStatus
     d.reviewedById = params.reviewedById
+    d.revision++
     return d
   }
   async setSandboxTestResult(draftId: string, ok: boolean) {
     const d = this.drafts.get(draftId)!
     d.sandboxTestOk = ok
+    d.revision++
     return d
   }
   async activate(params: {
     draftId: string
+    expectedDraftRevision: number
     secretAlias: string
     authMode: ConnectorAuthMode
     secondApproverId: string | null
     config?: Prisma.InputJsonValue
   }) {
     const d = this.drafts.get(params.draftId)!
+    if (this.advanceRevisionBeforeNextActivation) {
+      d.revision++
+      this.advanceRevisionBeforeNextActivation = false
+    }
+    if (d.revision !== params.expectedDraftRevision) {
+      return null
+    }
     d.secondApproverId = params.secondApproverId
     d.connector.lifecycleState = 'active'
     d.connector.secretAlias = params.secretAlias
@@ -228,6 +243,7 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     d.reviewedById = null
     d.secondApproverId = null
     d.sandboxTestOk = null
+    d.revision++
     return d
   }
   async reopen(params: { draftId: string }) {
@@ -237,6 +253,7 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     d.reviewedById = null
     d.secondApproverId = null
     d.sandboxTestOk = null
+    d.revision++
     d.connector.lifecycleState = 'draft'
     return d.connector
   }
@@ -511,6 +528,45 @@ async function run() {
     )
     assert.equal(res.lifecycleState, 'active')
     assert.equal(audit.byAction('provisioning.connector.activate').length, 1)
+  })
+
+  await test('P5-race: közben szerkesztett draft nem aktiválható régi gate-tel', async () => {
+    const { svc, drafts, audit } = makeService()
+    const created = await draftToActivatable(svc)
+    drafts.advanceRevisionBeforeNextActivation = true
+
+    await expectError('DRAFT_CHANGED_DURING_ACTIVATION', () =>
+      svc.activateConnector(
+        { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
+        adminActor,
+      ),
+    )
+
+    assert.equal(drafts.drafts.get(created.draftId)?.connector.lifecycleState, 'draft')
+    assert.equal(audit.byAction('provisioning.connector.activate').length, 0)
+  })
+
+  await test('P5-race: Gmail seed/backfill gate-frissítése is új revíziót kényszerít', async () => {
+    let upsertInput: Record<string, unknown> | undefined
+    await ensureGmailProvisioningDraft(
+      {
+        connectorDraft: {
+          async upsert(input: unknown) {
+            upsertInput = input as unknown as Record<string, unknown>
+            return input as never
+          },
+        },
+      } as never,
+      {
+        tenantId: TENANT,
+        connectorId: 'conn-gmail-seeded',
+        templateKey: 'google-workspace',
+        templateDescriptor: { key: 'google-workspace', version: 1 },
+      },
+    )
+
+    assert.deepEqual((upsertInput?.update as { revision?: unknown }).revision, { increment: 1 })
+    assert.equal((upsertInput?.create as { revision?: unknown }).revision, undefined)
   })
 
   await test('P5-security: tenant-admin nem használhat tetszőleges runtime secret aliast', async () => {
