@@ -13,6 +13,7 @@ import type { PrivacyGatewayMode, PrivacySpanSummary } from '@/domain/privacy/pr
 export const PRIVACY_TRANSFORM_ACTIONS = [
   'privacy.transform.applied',
   'privacy.transform.observed',
+  'privacy.transform.failed',
 ] as const
 export const PRIVACY_RESOLVE_ACTIONS = [
   'privacy.resolve.applied',
@@ -182,6 +183,7 @@ function policyDecisionFor(
 ): string {
   if (action === 'privacy.transform.observed') return 'observed'
   if (action === 'privacy.transform.applied') return 'applied'
+  if (action === 'privacy.transform.failed') return reason ?? 'degraded'
   if (action === 'privacy.resolve.applied') return 'applied'
   if (action === 'privacy.resolve.denied') return reason ?? 'denied'
   if (action === 'privacy.surrogate.unknown') return reason ?? 'unknown'

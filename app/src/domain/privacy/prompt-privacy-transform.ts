@@ -17,6 +17,10 @@ import {
   type ResolvedPrivacyCategoryPolicy,
 } from '@/domain/privacy/privacy-category-policy'
 import type { PrivacyGatewayMode, PrivacySpan } from '@/domain/privacy/privacy-mode'
+import {
+  runPrivacyTransformLayer,
+  type PrivacyTransformFailureAudit,
+} from '@/domain/privacy/privacy-transform-failure'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import { isSurrogateEntityType, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
@@ -44,6 +48,7 @@ export type PromptPrivacyTransformResult<T extends PromptPrivacyMessage> = {
   messages: T[]
   spans: PrivacySpan[]
   applied: boolean
+  failure?: PrivacyTransformFailureAudit
 }
 
 export async function transformPromptMessages<T extends PromptPrivacyMessage>(
@@ -62,21 +67,36 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
     value: string
   }> = []
 
-  for (const [messageIndex, message] of input.messages.entries()) {
-    if (!TRANSFORM_ROLES.has(message.role)) continue
-    const text = message.content ?? ''
-    if (!text) continue
-    for (const span of collectSensitivityMatchSpans(text)) {
-      const category = canonicalPrivacyCategory(span.category)
-      if ((await actionOf(category)) !== 'tokenize') continue
-      if (!isSurrogateEntityType(category)) continue
-      pending.push({
-        messageIndex,
-        start: span.start,
-        end: span.end,
-        entityType: category,
-        value: span.value,
+  let scanFailure: PrivacyTransformFailureAudit | undefined
+  try {
+    for (const [messageIndex, message] of input.messages.entries()) {
+      if (!TRANSFORM_ROLES.has(message.role)) continue
+      const text = message.content ?? ''
+      if (!text) continue
+      for (const span of collectSensitivityMatchSpans(text)) {
+        const category = canonicalPrivacyCategory(span.category)
+        if ((await actionOf(category)) !== 'tokenize') continue
+        if (!isSurrogateEntityType(category)) continue
+        pending.push({
+          messageIndex,
+          start: span.start,
+          end: span.end,
+          entityType: category,
+          value: span.value,
+        })
+      }
+    }
+  } catch (error) {
+    if (input.mode === 'enforce') {
+      const degraded = await runPrivacyTransformLayer({
+        layer: 'scanner',
+        mode: input.mode,
+        work: async () => {
+          throw error
+        },
+        onFailOpen: () => null,
       })
+      scanFailure = degraded.failure
     }
   }
 
@@ -86,23 +106,29 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
   }))
 
   if (pending.length === 0) {
-    return { messages: input.messages, spans, applied: false }
+    return { messages: input.messages, spans, applied: false, failure: scanFailure }
   }
 
   if (input.mode !== 'enforce') {
-    return { messages: input.messages, spans, applied: false }
+    return { messages: input.messages, spans, applied: false, failure: scanFailure }
   }
 
-  const surrogates = await input.engine.allocateRefs(
-    pending.map((slot) => ({
-      tenantId: input.tenantId,
-      scope: input.scope,
-      entityType: slot.entityType,
-      connectorId: PROMPT_SCANNER_CONNECTOR_ID,
-      sourceId: slot.value,
-      displayValue: slot.value,
-    })),
-  )
+  const surrogates = await runPrivacyTransformLayer({
+    layer: 'vault',
+    mode: input.mode,
+    work: async () =>
+      input.engine.allocateRefs(
+        pending.map((slot) => ({
+          tenantId: input.tenantId,
+          scope: input.scope,
+          entityType: slot.entityType,
+          connectorId: PROMPT_SCANNER_CONNECTOR_ID,
+          sourceId: slot.value,
+          displayValue: slot.value,
+        })),
+      ),
+    onFailOpen: () => [],
+  }).then((r) => r.value)
 
   const byMessage = new Map<number, Array<{ start: number; end: number; surrogate: string }>>()
   pending.forEach((slot, index) => {
@@ -120,7 +146,7 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
     return { ...message, content: applyReplacements(text, replacements) }
   })
 
-  return { messages, spans, applied: true }
+  return { messages, spans, applied: true, failure: scanFailure }
 }
 
 function resolver(

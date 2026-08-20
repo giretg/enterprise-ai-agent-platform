@@ -181,6 +181,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // span-szám, scope; denied/unknown ágon az álnév, nem a nyers érték.
   'privacy.transform.applied',
   'privacy.transform.observed',
+  'privacy.transform.failed',
   'privacy.resolve.applied',
   'privacy.resolve.denied',
   'privacy.surrogate.unknown',

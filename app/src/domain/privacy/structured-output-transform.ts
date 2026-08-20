@@ -12,6 +12,7 @@
  */
 import type { ConnectorFieldsPrivacy } from '@/domain/privacy/connector-privacy'
 import type { PrivacySpan } from '@/domain/privacy/privacy-mode'
+import { runPrivacyTransformLayer } from '@/domain/privacy/privacy-transform-failure'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import type { SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import { isSurrogateEntityType } from '@/domain/privacy/surrogate-format'
@@ -55,23 +56,30 @@ export async function transformStructuredOutput(
   const spans: PrivacySpan[] = []
   const pending: PendingReplace[] = []
   collect(copy, tokenize, input, spans, pending)
-  if (pending.length > 0) {
-    const surrogates = await input.engine.allocateRefs(
-      pending.map((slot) => ({
-        tenantId: input.tenantId,
-        scope: input.scope,
-        entityType: slot.entityType,
-        connectorId: input.connectorId,
-        sourceId: slot.sourceId,
-        displayValue: slot.displayValue,
-      })),
-    )
-    for (let i = 0; i < pending.length; i += 1) {
-      const slot = pending[i]
-      const surrogate = surrogates[i]
-      if (!slot || !surrogate) continue
-      slot.record[slot.key] = surrogate
-    }
+  if (pending.length > 0 && input.apply) {
+    await runPrivacyTransformLayer({
+      layer: 'structured_field',
+      mode: 'enforce',
+      work: async () => {
+        const surrogates = await input.engine.allocateRefs(
+          pending.map((slot) => ({
+            tenantId: input.tenantId,
+            scope: input.scope,
+            entityType: slot.entityType,
+            connectorId: input.connectorId,
+            sourceId: slot.sourceId,
+            displayValue: slot.displayValue,
+          })),
+        )
+        for (let i = 0; i < pending.length; i += 1) {
+          const slot = pending[i]
+          const surrogate = surrogates[i]
+          if (!slot || !surrogate) continue
+          slot.record[slot.key] = surrogate
+        }
+      },
+      onFailOpen: () => {},
+    })
   }
   return { output: copy, spans }
 }

@@ -5,6 +5,7 @@ import type { PrivacyGatewayMode, PrivacyModeResolver } from '@/domain/privacy/p
 import { summarizePrivacySpans } from '@/domain/privacy/privacy-mode'
 import { transformPromptMessages } from '@/domain/privacy/prompt-privacy-transform'
 import { privacyScopeForCall } from '@/domain/privacy/privacy-scope'
+import { PrivacyTransformBlockedError } from '@/domain/privacy/privacy-transform-failure'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import type {
   AuditRepository,
@@ -1620,6 +1621,17 @@ export class ModelGateway {
           ticketId: ctx.ticketId ?? null,
         })
       }
+      if (result.failure) {
+        await recordPrivacyGatewayAudit(this.audit, {
+          action: 'privacy.transform.failed',
+          tenantId: ctx.tenantId,
+          scope,
+          summary: summarizePrivacySpans(result.spans),
+          mode,
+          reason: `${result.failure.layer}:${result.failure.reason}`,
+          ticketId: ctx.ticketId ?? null,
+        })
+      }
       return result.messages
     } finally {
       privacyTransformDurationMs.observe(Date.now() - started)
@@ -1653,7 +1665,11 @@ export class ModelGateway {
     sensitivity: SensitivityDecision
     extraAuditMetadata?: Record<string, unknown>
   }): Promise<boolean> {
-    if (input.error instanceof GatewayBudgetError || input.error instanceof GatewaySensitivityError) {
+    if (
+      input.error instanceof GatewayBudgetError ||
+      input.error instanceof GatewaySensitivityError ||
+      input.error instanceof PrivacyTransformBlockedError
+    ) {
       throw input.error
     }
 
