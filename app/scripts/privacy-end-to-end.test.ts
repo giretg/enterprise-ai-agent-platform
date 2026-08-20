@@ -276,7 +276,7 @@ async function main() {
     }
     const channels = await buildPrivacyAwareOutcomeChannels({
       tool: 'http_api_call',
-      trust: 'external',
+      trust: 'external_untrusted',
       output: { rows: [{ id: 4821, company_name: COMPANY, revenue: 1_234_000 }] },
       contract: undefined,
       sideEffecting: false,

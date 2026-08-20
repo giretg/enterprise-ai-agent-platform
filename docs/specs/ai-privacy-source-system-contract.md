@@ -113,7 +113,11 @@ crm/company/{id}     +  { "id": "4821", "company_name": "SPAR Magyarország" }
                     →  crm/company/4821
 ```
 
-Ha a sablon bármely `{mező}`-je hiányzik vagy üres a rekordban, a platform **nem cserél** arra a mezőre. A cégnév nyersen megy az LLM-hez. Ezért a `id` (vagy a sablonban hivatkozott kulcs) **kötelező testvére** minden tokenizálandó mezőnek ugyanabban a JSON-objektumban.
+Ha a sablon bármely `{mező}`-je hiányzik vagy üres a rekordban, a platform ENFORCE módban **fail-closed** módon megállítja a tool-hívást (spec §15): jelölt mező stabil source ID nélkül **nem megy ki nyersen** az LLM-hez. A hívás hibaüzenettel áll meg, az auditba pedig `structured_field:missing_source_id:{mezőnév}` ok kerül — nyers érték nélkül.
+
+Ezért az `id` (vagy a sablonban hivatkozott kulcs) **kötelező testvére** minden tokenizálandó mezőnek ugyanabban a JSON-objektumban. Ha a forrásrendszer nem tud stabil ID-t adni egy mezőhöz, azt a mezőt ne `tokenize`-ként jelölje: a hiányzó ID nem „csendes kihagyás", hanem leálló hívás.
+
+> OBSERVE módban nincs leállás: a rendszer csak mér, a válasz nyersen megy tovább — a hiányzó testvérmező itt még nem okoz hibát, de a fedettség-riportban látszik.
 
 ### 5.4 Tool-API-k ID-val dolgozzanak
 
