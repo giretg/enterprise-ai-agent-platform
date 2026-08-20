@@ -143,6 +143,7 @@ jobs:
           npm run test:gateway-negative
           npm run test:privacy-latency
           npm run test:privacy-enforce-failure
+          npm run test:privacy-eval
           npm run test:tool-arg-resolve
           npm run test:streaming-surrogate-resolve
           npm run test:render-surrogate-resolve
