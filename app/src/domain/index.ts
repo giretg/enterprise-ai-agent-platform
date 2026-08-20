@@ -35,6 +35,10 @@ import {
 import { LocalWikiHarnessLauncher } from '@/domain/dispatcher/local-wiki-harness-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
 import { createPlatformSurrogateEngine } from '@/domain/privacy/create-surrogate-engine'
+import {
+  buildUserInputEntityResolution,
+  createConnectorEntityResolver,
+} from '@/domain/privacy/entity-resolution-runtime'
 import { allowsExternalRaw } from '@/domain/privacy/privacy-category-policy'
 import { ConsequenceApprovalService } from '@/domain/tool-broker/consequence-approval-service'
 import { WebSearchPolicyService } from '@/domain/web-search/web-search-policy-service'
@@ -799,15 +803,27 @@ const surrogateEngine = createPlatformSurrogateEngine(
   repositories.audit,
   repositories.conversations,
   repositories.tickets,
+  repositories.surrogateVault,
 )
 toolBrokerService.setStructuredPrivacyEngine(surrogateEngine)
 toolBrokerService.setPrivacyModeResolver(({ tenantId, agentId }) =>
   platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
 )
+toolBrokerService.setConnectorEntityResolverFactory(async ({ connector, agentSecretAlias, actingUserId, agentId }) =>
+  createConnectorEntityResolver({
+    binding: { connector, agentSecretAlias: agentSecretAlias ?? null },
+    actingUserId,
+    agentId,
+  }),
+)
 modelGateway.setPrivacyEngine(surrogateEngine)
 modelGateway.setPrivacyModeResolver(({ tenantId, agentId }) =>
   platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
 )
+modelGateway.setEntityResolutionProvider(async ({ agentId }) => {
+  const bindings = await repositories.toolBroker.findConnectorsForAgent(agentId)
+  return buildUserInputEntityResolution({ bindings, agentId })
+})
 toolBrokerService.setPrivacyCategoryActionResolver(({ tenantId, agentId, category, legacyAllowSensitiveExternalModel }) =>
   platformSettingsService.resolvePrivacyCategoryAction({
     tenantId,

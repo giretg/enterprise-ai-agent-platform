@@ -37,6 +37,14 @@ export const TOKENIZE_STRING_ONLY_MESSAGE =
 export const TOKENIZE_ENTITY_TYPE_MESSAGE =
   'A tokenize mezőhöz entitástípus kell (company, person, email, phone vagy account).'
 
+export const TOKENIZE_SOURCE_ID_MESSAGE =
+  'A tokenize mezőhöz stabil source_id szükséges, hogy a forrásrendszer törlése átvezethető legyen.'
+
+export const TOKENIZE_SOURCE_ID_REFERENCE_MESSAGE =
+  'A source_id sablon csak a payload-sémában deklarált mezőre hivatkozhat.'
+
+const SOURCE_ID_PLACEHOLDER = /\{([A-Za-z0-9_]+)\}/g
+
 export const privacyCapabilityDeclarationSchema = z.object({
   structured_field_privacy: z.boolean(),
   stable_entity_ids: z.boolean(),
@@ -69,10 +77,34 @@ export const connectorFieldPrivacySchema = connectorFieldPrivacyObjectSchema.sup
       message: TOKENIZE_ENTITY_TYPE_MESSAGE,
     })
   }
+  if (!field.source_id) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['source_id'],
+      message: TOKENIZE_SOURCE_ID_MESSAGE,
+    })
+  }
 })
 export type ConnectorFieldPrivacy = z.infer<typeof connectorFieldPrivacySchema>
 
-export const connectorFieldsPrivacySchema = z.record(z.string().min(1), connectorFieldPrivacySchema)
+export const connectorFieldsPrivacySchema = z
+  .record(z.string().min(1), connectorFieldPrivacySchema)
+  .superRefine((fields, ctx) => {
+    const fieldNames = new Set(Object.keys(fields))
+    for (const [fieldName, field] of Object.entries(fields)) {
+      if (field.privacy !== 'tokenize' || !field.source_id) continue
+      for (const match of field.source_id.matchAll(SOURCE_ID_PLACEHOLDER)) {
+        const referenced = match[1]
+        if (referenced && !fieldNames.has(referenced)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [fieldName, 'source_id'],
+            message: `${TOKENIZE_SOURCE_ID_REFERENCE_MESSAGE} Hiányzó mező: ${referenced}.`,
+          })
+        }
+      }
+    }
+  })
 export type ConnectorFieldsPrivacy = z.infer<typeof connectorFieldsPrivacySchema>
 
 /** M1 referencia: saját CRM + `company` entitástípus (D5). */
@@ -88,6 +120,10 @@ export const OSTOROSBOR_CRM_PRIVACY_CAPABILITIES: PrivacyCapabilityDeclaration =
 }
 
 export const OSTOROSBOR_CRM_PRIVACY_FIELDS: ConnectorFieldsPrivacy = {
+  id: {
+    type: 'integer',
+    privacy: 'pass',
+  },
   company_name: {
     type: 'string',
     privacy: 'tokenize',
@@ -139,15 +175,51 @@ export function privacyDeclarationsEqual(
 
 /** Mezőszintű privacy-séma a connector `config.fields`-jéből. Hibás alak → nincs transzformáció. */
 export function readConnectorPrivacyFields(config: unknown): ConnectorFieldsPrivacy | null {
-  if (!config || typeof config !== 'object' || Array.isArray(config)) return null
-  const parsed = connectorFieldsPrivacySchema.safeParse((config as Record<string, unknown>).fields)
-  return parsed.success ? parsed.data : null
+  const inspected = inspectConnectorPrivacyFields(config)
+  return inspected.status === 'valid' ? inspected.fields : null
+}
+
+export type ConnectorPrivacyFieldsInspection =
+  | { status: 'absent' }
+  | { status: 'valid'; fields: ConnectorFieldsPrivacy }
+  | { status: 'invalid'; reason: string }
+
+/** A runtime különbséget tesz hiányzó és hibás deklaráció között: a hibás fail-closed. */
+export function inspectConnectorPrivacyFields(config: unknown): ConnectorPrivacyFieldsInspection {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return { status: 'absent' }
+  const fields = (config as Record<string, unknown>).fields
+  if (fields === undefined) return { status: 'absent' }
+  const parsed = connectorFieldsPrivacySchema.safeParse(fields)
+  if (parsed.success) return { status: 'valid', fields: parsed.data }
+  return {
+    status: 'invalid',
+    reason: parsed.error.issues
+      .slice(0, 5)
+      .map((issue) => `${issue.path.join('.') || '(gyökér)'}: ${issue.message}`)
+      .join('; '),
+  }
 }
 
 export function connectorHasPrivacyMetadata(config: unknown): boolean {
   const fields = readConnectorPrivacyFields(config)
   if (fields && Object.values(fields).some((field) => field.privacy === 'tokenize')) return true
   return privacyCapabilityLevel(readPrivacyDeclaration(config)) !== 'none'
+}
+
+/** APG-17 — a connector deklarálja-e az entity_resolution képességet. */
+export function connectorSupportsEntityResolution(config: unknown): boolean {
+  return readPrivacyDeclaration(config)?.entity_resolution === true
+}
+
+/** APG-17 — a forrásrendszer `POST /privacy/resolve` útvonala (forrás §6.3). */
+export function readEntityResolvePath(config: unknown): string {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return '/privacy/resolve'
+  const privacy = (config as Record<string, unknown>).privacy
+  if (privacy && typeof privacy === 'object' && !Array.isArray(privacy)) {
+    const path = (privacy as Record<string, unknown>).resolve_path
+    if (typeof path === 'string' && path.trim().startsWith('/')) return path.trim()
+  }
+  return '/privacy/resolve'
 }
 
 export function readPrivacyDeclaration(raw: unknown): PrivacyCapabilityDeclaration | null {

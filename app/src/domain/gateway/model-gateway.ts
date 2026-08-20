@@ -4,8 +4,12 @@ import { recordPrivacyGatewayAudit } from '@/domain/privacy/privacy-audit'
 import type { PrivacyGatewayMode, PrivacyModeResolver } from '@/domain/privacy/privacy-mode'
 import { summarizePrivacySpans } from '@/domain/privacy/privacy-mode'
 import { transformPromptMessages } from '@/domain/privacy/prompt-privacy-transform'
+import type { UserInputEntityResolution } from '@/domain/privacy/user-input-resolver'
 import { privacyScopeForCall } from '@/domain/privacy/privacy-scope'
-import { PrivacyTransformBlockedError } from '@/domain/privacy/privacy-transform-failure'
+import {
+  PrivacyTransformBlockedError,
+  describePrivacyTransformFailure,
+} from '@/domain/privacy/privacy-transform-failure'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import type {
   AuditRepository,
@@ -1018,6 +1022,11 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   throw lastError
 }
 
+export type EntityResolutionProvider = (ctx: {
+  agentId: string
+  tenantId: string
+}) => Promise<UserInputEntityResolution | null>
+
 export class ModelGateway {
   constructor(
     private audit: AuditRepository,
@@ -1045,6 +1054,7 @@ export class ModelGateway {
    */
   private privacyEngine: SurrogateEngine | null = null
   private privacyModeResolver: PrivacyModeResolver | null = null
+  private entityResolutionProvider: EntityResolutionProvider | null = null
 
   setPrivacyEngine(engine: SurrogateEngine | null): void {
     this.privacyEngine = engine
@@ -1052,6 +1062,11 @@ export class ModelGateway {
 
   setPrivacyModeResolver(resolver: PrivacyModeResolver | null): void {
     this.privacyModeResolver = resolver
+  }
+
+  /** APG-17 — prompt előtti connector `resolve()` (best-effort). */
+  setEntityResolutionProvider(provider: EntityResolutionProvider | null): void {
+    this.entityResolutionProvider = provider
   }
 
   /**
@@ -1598,6 +1613,10 @@ export class ModelGateway {
     const policyReader = this.agentSensitivityPolicy
     const started = Date.now()
     try {
+      const entityResolution =
+        this.entityResolutionProvider && ctx.tenantId
+          ? await this.entityResolutionProvider({ agentId: ctx.agentId, tenantId: ctx.tenantId })
+          : null
       const result = await transformPromptMessages({
         messages: ctx.messages,
         mode,
@@ -1610,6 +1629,7 @@ export class ModelGateway {
         engine: this.privacyEngine,
         tenantId: ctx.tenantId,
         scope,
+        entityResolution: entityResolution ?? undefined,
       })
       if (result.spans.length > 0) {
         await recordPrivacyGatewayAudit(this.audit, {
@@ -1633,6 +1653,23 @@ export class ModelGateway {
         })
       }
       return result.messages
+    } catch (error) {
+      if (error instanceof PrivacyTransformBlockedError) {
+        try {
+          await recordPrivacyGatewayAudit(this.audit, {
+            action: 'privacy.transform.failed',
+            tenantId: ctx.tenantId,
+            scope,
+            summary: { spanCount: 0, categories: [], byCategory: {} },
+            mode,
+            reason: `${error.layer}:${describePrivacyTransformFailure(error.cause ?? error)}`,
+            ticketId: ctx.ticketId ?? null,
+          })
+        } catch {
+          // A felhasználói fail-closed hiba maradjon az elsődleges akkor is, ha az audit DB is áll.
+        }
+      }
+      throw error
     } finally {
       privacyTransformDurationMs.observe(Date.now() - started)
     }

@@ -1,4 +1,5 @@
 import type {
+  Connector,
   Prisma,
 } from '@prisma/client'
 
@@ -107,6 +108,9 @@ import {
   resolveToolArgs,
   UnknownSurrogateError,
 } from '@/domain/privacy/resolve-tool-args'
+import { resolveEntityNamesInToolArgs } from '@/domain/privacy/resolve-tool-entity-names'
+import type { ConnectorEntityResolver } from '@/domain/privacy/entity-resolve-contract'
+import { connectorSupportsEntityResolution } from '@/domain/privacy/connector-privacy'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 // issue #97 — bizalmi regiszter (tool-nevenkénti TrustClass leképezés).
 import { isSideEffectingTool, resolveTrustClass } from './tool-trust-registry'
@@ -134,12 +138,20 @@ export {
 // A tenant-elérhetőségi invariáns közös modulból jön; re-export a visszafelé
 // kompatibilitásért (a tool-broker-tenant-isolation.test.ts innen importál).
 export { isAgentReachableFromTenant, filterAgentsByTenant } from '@/lib/tenant-reachability'
+export type ConnectorEntityResolverFactory = (input: {
+  connector: Connector
+  agentSecretAlias?: string | null
+  actingUserId?: string | null
+  agentId: string
+}) => Promise<ConnectorEntityResolver | null>
+
 export class ToolBrokerService {
   delegationProcessor: DelegationProcessor | null = null
   playbookTransitioner: PlaybookTicketTransitioner | null = null
   private structuredPrivacyEngine: SurrogateEngine | null = null
   private privacyModeResolver: PrivacyModeResolver | null = null
   private privacyCategoryActionResolver: PrivacyCategoryActionResolver | null = null
+  private connectorEntityResolverFactory: ConnectorEntityResolverFactory | null = null
 
   /** WP-8: a handlerek felé átadott, `this`-hez kötött broker-képességek. */
   private readonly handlerContext: HandlerContext
@@ -253,6 +265,11 @@ export class ToolBrokerService {
     this.privacyCategoryActionResolver = resolver
   }
 
+  /** APG-17 — connector `resolve()` a tool-boundary második védelmi vonalához. */
+  setConnectorEntityResolverFactory(factory: ConnectorEntityResolverFactory | null): void {
+    this.connectorEntityResolverFactory = factory
+  }
+
   async invoke(input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> {
     const startedAt = Date.now()
     const ticketId = input.tool === 'board_write' ? input.args.ticketId : input.ticketId ?? null
@@ -361,6 +378,7 @@ export class ToolBrokerService {
         actingTenantId,
         authorization.connector?.tenantId ?? null,
         actingUserId,
+        authorization.connector ?? null,
       )
       assertToolInputWithinLimits(executionInput.tool, executionInput.args, contract)
 
@@ -489,14 +507,16 @@ export class ToolBrokerService {
   }
 
   /**
-   * APG-05 §10.1 — álnév → source ID a connector-argumentumban. Az eredeti
-   * `input` (surrogate-alak) érintetlen marad az audit / `argsMeta` számára.
+   * APG-05 §10.1 + APG-17 §9 — álnév → source ID, majd nyers név → source ID
+   * a connector-hívás előtt. Az eredeti `input` (surrogate-alak) érintetlen marad
+   * az audit / `argsMeta` számára.
    */
   private async resolveInvokeArgs(
     input: ToolBrokerInvokeInput,
     actingTenantId: string | null,
     connectorTenantId: string | null,
     actingUserId: string | null,
+    connector: Connector | null,
   ): Promise<ToolBrokerInvokeInput> {
     if (!this.structuredPrivacyEngine) return input
     const tenantId = actingTenantId ?? connectorTenantId
@@ -513,22 +533,58 @@ export class ToolBrokerService {
       requesterUserId: actingUserId,
     })
     if (!resolved.ok) throw new UnknownSurrogateError(resolved.surrogate, resolved.reason)
-    if (resolved.resolvedCount === 0) return input
+
+    let args = resolved.args
+    let totalResolved = resolved.resolvedCount
+    let byCategory = resolved.byCategory
+
+    if (
+      connector &&
+      connectorSupportsEntityResolution(connector.config) &&
+      this.connectorEntityResolverFactory
+    ) {
+      const entityResolver = await this.connectorEntityResolverFactory({
+        connector,
+        actingUserId,
+        agentId: input.agentId,
+      })
+      if (entityResolver) {
+        const entityResolved = await resolveEntityNamesInToolArgs({
+          args,
+          engine: this.structuredPrivacyEngine,
+          tenantId,
+          scope,
+          connectorId: connector.id,
+          connectorConfig: connector.config,
+          resolver: entityResolver,
+        })
+        args = entityResolved.args
+        totalResolved += entityResolved.resolvedCount
+        for (const [key, count] of Object.entries(entityResolved.byCategory)) {
+          if (typeof count === 'number') {
+            const cat = key as keyof typeof byCategory
+            byCategory = { ...byCategory, [cat]: (byCategory[cat] ?? 0) + count }
+          }
+        }
+      }
+    }
+
+    if (totalResolved === 0) return input
     await recordPrivacyGatewayAudit(this.audit, {
       action: 'privacy.resolve.applied',
       tenantId,
       scope,
       summary: {
-        spanCount: resolved.resolvedCount,
-        categories: (Object.keys(resolved.byCategory) as Array<keyof typeof resolved.byCategory>).sort(),
-        byCategory: resolved.byCategory,
+        spanCount: totalResolved,
+        categories: (Object.keys(byCategory) as Array<keyof typeof byCategory>).sort(),
+        byCategory,
       },
       mode: await this.resolvePrivacyMode(tenantId, input.agentId),
       actorType: actingUserId ? 'human' : 'system',
       actorId: actingUserId,
       ticketId,
     })
-    return { ...input, args: resolved.args } as ToolBrokerInvokeInput
+    return { ...input, args } as ToolBrokerInvokeInput
   }
 
   private async resolvePrivacyMode(
