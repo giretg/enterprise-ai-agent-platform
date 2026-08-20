@@ -15,12 +15,17 @@ import {
   type ResolveDenyReason,
 } from '@/domain/privacy/resolve-access'
 import { formatSurrogate, parseSurrogate } from '@/domain/privacy/surrogate-format'
+import type { SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import {
   type PrivacyScope,
   type RefEntityRef,
   type RefVaultRecord,
+  SurrogateTakenError,
   type SurrogateVault,
 } from '@/domain/privacy/surrogate-vault'
+import type { ConversationPrivacyKeyRepository } from '@/repositories/postgres/conversation-privacy-key-repository'
+import { encryptValSurrogateValue, decryptValSurrogateValue } from '@/domain/privacy/val-surrogate-crypto'
+import { valSurrogateFingerprint } from '@/domain/privacy/val-fingerprint'
 
 export type PrivacyAuditSink = {
   recordUnknownSurrogate(event: {
@@ -45,6 +50,8 @@ export type AllocateRefInput = {
   scope: PrivacyScope
   /** Megjelenítési érték a trusted UI-hoz — a vault ref-rekord NEM tárolja (spec §6). */
   displayValue?: string
+  /** A known-value fail-policyhoz: csak explicit strukturált mező kap hard forrásjelölést. */
+  displayValueSource?: 'structured_field' | 'scanner'
 } & RefEntityRef
 
 export type ResolveRefInput = {
@@ -59,10 +66,32 @@ export type ResolveRefResult =
   | { ok: false; reason: 'unknown' | 'hmac_invalid' }
   | { ok: false; reason: 'denied'; denyReason: ResolveDenyReason }
 
+export type ResolveValResult =
+  | { ok: true; value: string }
+  | { ok: false; reason: 'unknown' | 'hmac_invalid' | 'shredded' }
+  | { ok: false; reason: 'denied'; denyReason: ResolveDenyReason }
+
+export type AllocateValInput = {
+  tenantId: string
+  scope: PrivacyScope
+  entityType: SurrogateEntityType
+  plaintext: string
+}
+
+export type ResolveValInput = {
+  tenantId: string
+  scope: PrivacyScope
+  surrogate: string
+  requester: PrivacyResolveRequester
+}
+
 const MAX_ALLOC_ATTEMPTS = 16
 
 export class SurrogateEngine {
-  private readonly displayValues = new Map<string, string>()
+  private readonly displayValues = new Map<
+    string,
+    { value: string; source: 'structured_field' | 'scanner' }
+  >()
   /** Beszélgetés-szintű entitástérkép: a history append-only, a prefix újrahasznosítható. */
   private readonly scopes = new Map<string, ScopeEntityMap>()
 
@@ -70,6 +99,7 @@ export class SurrogateEngine {
     private readonly vault: SurrogateVault,
     private readonly audit: PrivacyAuditSink,
     private readonly access: PrivacyResolveAccess = allowAllPrivacyResolveAccess,
+    private readonly privacyKeys?: ConversationPrivacyKeyRepository,
   ) {}
 
   rememberDisplayValue(
@@ -77,13 +107,36 @@ export class SurrogateEngine {
     scope: PrivacyScope,
     surrogate: string,
     displayValue: string,
+    source: 'structured_field' | 'scanner' = 'scanner',
   ): void {
     if (!displayValue) return
-    this.displayValues.set(displayKey(tenantId, scope, surrogate), displayValue)
+    this.displayValues.set(displayKey(tenantId, scope, surrogate), { value: displayValue, source })
   }
 
   peekDisplayValue(tenantId: string, scope: PrivacyScope, surrogate: string): string | undefined {
-    return this.displayValues.get(displayKey(tenantId, scope, surrogate))
+    return this.displayValues.get(displayKey(tenantId, scope, surrogate))?.value
+  }
+
+  /** A beszélgetésben már ismert nyers értékek produkciós known-value cseréi. */
+  listKnownValueReplacements(
+    tenantId: string,
+    scope: PrivacyScope,
+  ): Array<{ needle: string; surrogate: string; fromStructuredField: boolean }> {
+    const prefix = `${tenantId}\0${scope.type}\0${scope.id}\0`
+    const replacements: Array<{
+      needle: string
+      surrogate: string
+      fromStructuredField: boolean
+    }> = []
+    for (const [key, stored] of this.displayValues) {
+      if (!key.startsWith(prefix)) continue
+      replacements.push({
+        needle: stored.value,
+        surrogate: key.slice(prefix.length),
+        fromStructuredField: stored.source === 'structured_field',
+      })
+    }
+    return replacements
   }
 
   /** Vault-lookup unknown-audit nélkül — megjelenítési feloldás, ismételt history-olvasáskor. */
@@ -115,6 +168,108 @@ export class SurrogateEngine {
     return this.lookupRef(input, { auditUnknown: true })
   }
 
+  async allocateVal(input: AllocateValInput): Promise<string> {
+    if (input.scope.type !== 'conversation') {
+      throw new Error('val-surrogate csak conversation scope-on allokálható')
+    }
+    if (!this.privacyKeys) {
+      throw new Error('val-surrogate allokációhoz privacy key repository szükséges')
+    }
+    const fingerprint = valSurrogateFingerprint(input.plaintext)
+    const existing = await this.vault.findValByFingerprint(
+      input.tenantId,
+      input.scope,
+      input.entityType,
+      fingerprint,
+    )
+    if (existing.status === 'hit') return existing.record.surrogate
+
+    const dataKey = await this.privacyKeys.ensureDataKey(input.tenantId, input.scope.id)
+    const cache = await this.hydrateValOrdinals(input.tenantId, input.scope, input.entityType)
+    let surrogate = ''
+    for (let attempt = 0; attempt < MAX_ALLOC_ATTEMPTS; attempt += 1) {
+      const next = cache.maxOrdinal + 1
+      cache.maxOrdinal = next
+      surrogate = formatSurrogate(input.entityType, next)
+      try {
+        const encryptedValue = encryptValSurrogateValue(input.tenantId, dataKey, input.plaintext)
+        await this.vault.insertVal({
+          tenantId: input.tenantId,
+          scope: input.scope,
+          entityType: input.entityType,
+          fingerprint,
+          surrogate,
+          encryptedValue,
+        })
+        return surrogate
+      } catch (error) {
+        const retry = await this.vault.findValByFingerprint(
+          input.tenantId,
+          input.scope,
+          input.entityType,
+          fingerprint,
+        )
+        if (retry.status === 'hit') return retry.record.surrogate
+        if (!(error instanceof SurrogateTakenError)) throw error
+      }
+    }
+    throw new Error('val-surrogate allokáció: a sorszámfoglalás túl sokszor ütközött')
+  }
+
+  async resolveVal(input: ResolveValInput): Promise<ResolveValResult> {
+    const parsed = parseSurrogate(input.surrogate)
+    if (!parsed) return { ok: false, reason: 'unknown' }
+
+    const denied = await this.denyIfOutOfScope(input)
+    if (denied) return denied
+
+    const lookup = await this.vault.findValBySurrogate(input.tenantId, input.scope, input.surrogate)
+    if (lookup.status === 'tampered') return { ok: false, reason: 'hmac_invalid' }
+    if (lookup.status === 'miss') {
+      await this.audit.recordUnknownSurrogate({
+        action: 'privacy.surrogate.unknown',
+        tenantId: input.tenantId,
+        scope: input.scope,
+        surrogate: input.surrogate,
+        reason: 'unknown',
+      })
+      return { ok: false, reason: 'unknown' }
+    }
+
+    if (input.scope.type !== 'conversation' || !this.privacyKeys) {
+      return { ok: false, reason: 'shredded' }
+    }
+    const dataKey = await this.privacyKeys.getDataKey(input.tenantId, input.scope.id)
+    if (!dataKey) return { ok: false, reason: 'shredded' }
+
+    try {
+      const value = decryptValSurrogateValue(
+        input.tenantId,
+        dataKey,
+        lookup.record.encryptedValue,
+      )
+      return { ok: true, value }
+    } catch {
+      return { ok: false, reason: 'shredded' }
+    }
+  }
+
+  private valOrdinalCache = new Map<string, { maxOrdinal: number }>()
+
+  private async hydrateValOrdinals(
+    tenantId: string,
+    scope: PrivacyScope,
+    entityType: SurrogateEntityType,
+  ): Promise<{ maxOrdinal: number }> {
+    const key = `${tenantId}\0${scope.type}\0${scope.id}\0${entityType}\0val`
+    const cached = this.valOrdinalCache.get(key)
+    if (cached) return cached
+    const maxOrdinal = await this.vault.maxOrdinal(tenantId, scope, entityType)
+    const next = { maxOrdinal }
+    this.valOrdinalCache.set(key, next)
+    return next
+  }
+
   private async lookupRef(
     input: ResolveRefInput,
     opts: { auditUnknown: boolean },
@@ -144,7 +299,9 @@ export class SurrogateEngine {
     return { ok: false, reason }
   }
 
-  private async denyIfOutOfScope(input: ResolveRefInput): Promise<Extract<ResolveRefResult, { reason: 'denied' }> | null> {
+  private async denyIfOutOfScope(
+    input: ResolveRefInput | ResolveValInput,
+  ): Promise<Extract<ResolveRefResult, { reason: 'denied' }> | null> {
     if (input.requester.tenantId !== input.tenantId) {
       return this.deny(input, 'tenant')
     }
@@ -169,7 +326,7 @@ export class SurrogateEngine {
   }
 
   private async deny(
-    input: ResolveRefInput,
+    input: ResolveRefInput | ResolveValInput,
     reason: ResolveDenyReason,
   ): Promise<Extract<ResolveRefResult, { reason: 'denied' }>> {
     await this.audit.recordResolveDenied({
@@ -185,7 +342,13 @@ export class SurrogateEngine {
 
   private rememberAllocatedDisplay(input: AllocateRefInput, surrogate: string): void {
     if (input.displayValue) {
-      this.rememberDisplayValue(input.tenantId, input.scope, surrogate, input.displayValue)
+      this.rememberDisplayValue(
+        input.tenantId,
+        input.scope,
+        surrogate,
+        input.displayValue,
+        input.displayValueSource,
+      )
     }
   }
 
@@ -260,7 +423,7 @@ export class SurrogateEngine {
       const batch: Array<{
         tenantId: string
         scope: PrivacyScope
-        entityType: string
+        entityType: SurrogateEntityType
         connectorId: string
         sourceId: string
         surrogate: string

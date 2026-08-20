@@ -28,6 +28,7 @@ import {
   type SurrogateVault,
   type VaultLookup,
 } from '../src/domain/privacy/surrogate-vault'
+import { valVaultMethodStubs } from './test-surrogate-vault-val-stubs'
 
 let failures = 0
 async function test(name: string, fn: () => void | Promise<void>) {
@@ -135,6 +136,10 @@ class InMemorySurrogateVault implements SurrogateVault {
     for (const input of inputs) records.push(await this.insertRef(input))
     return records
   }
+
+  findValByFingerprint = valVaultMethodStubs.findValByFingerprint
+  findValBySurrogate = valVaultMethodStubs.findValBySurrogate
+  insertVal = valVaultMethodStubs.insertVal
 }
 
 class FailingVault extends InMemorySurrogateVault {

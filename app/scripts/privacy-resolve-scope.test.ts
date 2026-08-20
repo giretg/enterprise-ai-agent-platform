@@ -17,6 +17,9 @@ import { createPlatformSurrogateEngine } from '../src/domain/privacy/create-surr
 import { PostgresAuditRepository } from '../src/repositories/postgres/audit-repository'
 import { PostgresConversationRepository } from '../src/repositories/postgres/conversation-repository'
 import { PostgresTicketRepository } from '../src/repositories/postgres/ticket-repository'
+import { PostgresSurrogateVault } from '../src/repositories/postgres/surrogate-vault-repository'
+import { PostgresConversationPrivacyKeyRepository } from '../src/repositories/postgres/conversation-privacy-key-repository'
+import { resolveTenantPrivacyHmacKey } from '../src/domain/privacy/tenant-hmac-key'
 
 let failures = 0
 async function check(name: string, fn: () => Promise<void>) {
@@ -108,6 +111,8 @@ async function withWorld(fn: (world: World) => Promise<void>) {
     new PostgresAuditRepository(),
     new PostgresConversationRepository(),
     new PostgresTicketRepository(),
+    new PostgresSurrogateVault(resolveTenantPrivacyHmacKey),
+    new PostgresConversationPrivacyKeyRepository(),
   )
 
   try {
@@ -260,6 +265,29 @@ async function main() {
       assert.equal(events[0]?.action, 'privacy.resolve.denied')
       assert.equal(events[0]?.actorId, world.otherA)
       assert.equal(events[0]?.outputRef, 'participant')
+      assertNoRawSecret(events[0])
+    })
+  })
+
+  await check('hiányzó requester userId nem kerüli meg a résztvevő-kaput', async () => {
+    await withWorld(async (world) => {
+      const surrogate = await allocateIn(world, world.tenantA, world.convA)
+      const since = new Date(Date.now() - 1000)
+      const resolved = await world.engine.resolveRef({
+        tenantId: world.tenantA,
+        scope: { type: 'conversation', id: world.convA },
+        surrogate,
+        requester: { tenantId: world.tenantA, userId: null },
+      })
+      assert.equal(resolved.ok, false)
+      if (resolved.ok) return
+      assert.equal(resolved.reason, 'denied')
+      if (resolved.reason === 'denied') assert.equal(resolved.denyReason, 'participant')
+
+      const events = await deniedAudits(world.tenantA, since)
+      assert.equal(events.length, 1)
+      assert.equal(events[0]?.outputRef, 'participant')
+      assert.equal(events[0]?.actorId, null)
       assertNoRawSecret(events[0])
     })
   })

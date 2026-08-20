@@ -37,6 +37,7 @@ import {
   type SurrogateVault,
   type VaultLookup,
 } from '../src/domain/privacy/surrogate-vault'
+import { valVaultMethodStubs } from './test-surrogate-vault-val-stubs'
 import { parseSurrogate } from '../src/domain/privacy/surrogate-format'
 import type { AuditRepository, ModelCallRepository } from '../src/repositories/interfaces'
 import type { AuditLog, ModelCall } from '@prisma/client'
@@ -202,6 +203,10 @@ class InMemorySurrogateVault implements SurrogateVault {
   async insertRefs(inputs: InsertRefInput[]): Promise<RefVaultRecord[]> {
     return insertRefsSequentially((input) => this.insertRef(input), inputs)
   }
+
+  findValByFingerprint = valVaultMethodStubs.findValByFingerprint
+  findValBySurrogate = valVaultMethodStubs.findValBySurrogate
+  insertVal = valVaultMethodStubs.insertVal
 }
 
 function makeEngine() {
@@ -343,6 +348,31 @@ async function main() {
     assert.equal(original[0]?.content?.includes(EMAIL), true, 'a nyers üzenetet nem szabad mutálni')
     const decision = classifyPrompt(result.messages)
     assert.equal(decision.level, 'clean')
+  })
+
+  await test('produkciós prompt-út known-value cserét végez a strukturált mező értékén', async () => {
+    const engine = makeEngine()
+    const company = 'SPAR Magyarország Kereskedelmi Kft.'
+    await engine.allocateRef({
+      tenantId: TENANT,
+      scope,
+      entityType: 'company',
+      connectorId: randomUUID(),
+      sourceId: 'crm/company/4821',
+      displayValue: company,
+      displayValueSource: 'structured_field',
+    })
+    const result = await transformPromptMessages({
+      messages: [{ role: 'user', content: `Készíts riportot erről: ${company}` }],
+      mode: 'enforce',
+      policy: tokenizeEmailPolicy(),
+      engine,
+      tenantId: TENANT,
+      scope,
+    })
+    assert.equal(result.applied, true)
+    assert.equal(result.messages[0]?.content?.includes(company), false)
+    assert.equal(result.messages[0]?.content?.includes('[[COMPANY_1]]'), true)
   })
 
   await test('OBSERVE: nem cserél, classify továbbra is sensitive', async () => {

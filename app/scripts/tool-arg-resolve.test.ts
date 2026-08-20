@@ -26,6 +26,7 @@ import {
   type SurrogateVault,
   type VaultLookup,
 } from '../src/domain/privacy/surrogate-vault'
+import { valVaultMethodStubs } from './test-surrogate-vault-val-stubs'
 import { parseSurrogate } from '../src/domain/privacy/surrogate-format'
 import type {
   AgentRepository,
@@ -206,6 +207,10 @@ class InMemorySurrogateVault implements SurrogateVault {
   async insertRefs(inputs: InsertRefInput[]): Promise<RefVaultRecord[]> {
     return insertRefsSequentially((input) => this.insertRef(input), inputs)
   }
+
+  findValByFingerprint = valVaultMethodStubs.findValByFingerprint
+  findValBySurrogate = valVaultMethodStubs.findValBySurrogate
+  insertVal = valVaultMethodStubs.insertVal
 }
 
 function engine() {

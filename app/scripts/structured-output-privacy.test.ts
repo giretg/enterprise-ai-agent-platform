@@ -14,6 +14,10 @@ import type { Connector, Ticket } from '@prisma/client'
 
 import { ToolBrokerService, type Authorizer } from '../src/domain/tool-broker/tool-broker-service'
 import {
+  PrivacyTransformBlockedError,
+  VaultUnavailableError,
+} from '../src/domain/privacy/privacy-transform-failure'
+import {
   buildToolOutcomeChannels,
   validateToolOutput,
 } from '../src/domain/tool-broker/tool-output-contract'
@@ -39,6 +43,7 @@ import {
   type SurrogateVault,
   type VaultLookup,
 } from '../src/domain/privacy/surrogate-vault'
+import { valVaultMethodStubs } from './test-surrogate-vault-val-stubs'
 import { parseSurrogate } from '../src/domain/privacy/surrogate-format'
 import type {
   AgentRepository,
@@ -241,6 +246,10 @@ class InMemorySurrogateVault implements SurrogateVault {
   async insertRefs(inputs: InsertRefInput[]): Promise<RefVaultRecord[]> {
     return insertRefsSequentially((input) => this.insertRef(input), inputs)
   }
+
+  findValByFingerprint = valVaultMethodStubs.findValByFingerprint
+  findValBySurrogate = valVaultMethodStubs.findValBySurrogate
+  insertVal = valVaultMethodStubs.insertVal
 }
 
 function engine() {
@@ -410,6 +419,156 @@ async function main() {
     assert.equal(transformed.body[0]?.revenue, 10)
     assert.equal(transformed.body[1]?.revenue, 20)
     assert.equal(output.body[0]?.company_name, COMPANY)
+  })
+
+  await test('block mező nem kerül a modelTextbe, a machineData nyers marad', async () => {
+    const { engine: eng } = engine()
+    const raw = {
+      ok: true,
+      status: 200,
+      body: { id: 4821, company_name: COMPANY, api_secret: 'top-secret' },
+    }
+    const channels = await buildPrivacyAwareOutcomeChannels({
+      tool: 'http_api_get',
+      trust: 'external_untrusted',
+      output: raw,
+      contract: resolveToolOutputContract('http_api_get'),
+      sideEffecting: false,
+      connector: {
+        id: CONNECTOR,
+        tenantId: TENANT,
+        config: {
+          fields: {
+            id: { type: 'integer', privacy: 'pass' },
+            company_name: OSTOROSBOR_CRM_PRIVACY_FIELDS.company_name!,
+            api_secret: { type: 'string', privacy: 'block' },
+          },
+        },
+      },
+      conversationId: CONVERSATION,
+      actingTenantId: TENANT,
+      engine: eng,
+    })
+    assert.equal(channels.modelText.includes('top-secret'), false)
+    assert.equal(JSON.stringify(channels.machineData).includes('top-secret'), true)
+  })
+
+  await test('block mező privacy engine nélkül sem jut a modellcsatornába', async () => {
+    const raw = { ok: true, status: 200, body: { api_secret: 'top-secret', status: 'ok' } }
+    const channels = await buildPrivacyAwareOutcomeChannels({
+      tool: 'http_api_get',
+      trust: 'external_untrusted',
+      output: raw,
+      contract: resolveToolOutputContract('http_api_get'),
+      sideEffecting: false,
+      connector: {
+        id: CONNECTOR,
+        tenantId: TENANT,
+        config: { fields: { api_secret: { type: 'string', privacy: 'block' } } },
+      },
+      conversationId: CONVERSATION,
+      actingTenantId: TENANT,
+      engine: null,
+    })
+    assert.equal(channels.modelText.includes('top-secret'), false)
+    assert.equal(JSON.stringify(channels.machineData).includes('top-secret'), true)
+  })
+
+  await test('hiányzó runtime source_id fail-closed, nem engedi ki a nyers mezőt', async () => {
+    const { engine: eng } = engine()
+    await assert.rejects(
+      () =>
+        pseudonymizeStructuredOutput({
+          output: { company_name: COMPANY },
+          fields: {
+            company_name: {
+              type: 'string',
+              privacy: 'tokenize',
+              entity_type: 'company',
+              source_id: 'crm/company/{id}',
+            },
+            id: { type: 'integer', privacy: 'pass' },
+          },
+          engine: eng,
+          tenantId: TENANT,
+          connectorId: CONNECTOR,
+          scope: { type: 'conversation', id: CONVERSATION },
+        }),
+      PrivacyTransformBlockedError,
+    )
+  })
+
+  await test('nem klónozható védett output fail-closed', async () => {
+    const { engine: eng } = engine()
+    await assert.rejects(
+      () =>
+        pseudonymizeStructuredOutput({
+          output: { id: 4821, company_name: COMPANY, fn: () => undefined },
+          fields: CRM_FIELDS,
+          engine: eng,
+          tenantId: TENANT,
+          connectorId: CONNECTOR,
+          scope: { type: 'conversation', id: CONVERSATION },
+        }),
+      PrivacyTransformBlockedError,
+    )
+  })
+
+  await test('contract-hiba privacy allokáció előtt bukik el', async () => {
+    const { engine: eng } = engine()
+    let allocations = 0
+    const original = eng.allocateRefs.bind(eng)
+    eng.allocateRefs = async (inputs) => {
+      allocations += 1
+      return original(inputs)
+    }
+    await assert.rejects(
+      () =>
+        buildPrivacyAwareOutcomeChannels({
+          tool: 'http_api_get',
+          trust: 'external_untrusted',
+          output: { ok: true, status: 'not-a-number', body: { id: 4821, company_name: COMPANY } },
+          contract: resolveToolOutputContract('http_api_get'),
+          sideEffecting: false,
+          connector: crmConnector(),
+          conversationId: CONVERSATION,
+          actingTenantId: TENANT,
+          engine: eng,
+        }),
+      /kimeneti szerződés/,
+    )
+    assert.equal(allocations, 0)
+  })
+
+  await test('fail-closed strukturált hiba privacy.transform.failed auditot ír', async () => {
+    const { engine: eng } = engine()
+    eng.allocateRefs = async () => {
+      throw new VaultUnavailableError()
+    }
+    const events: Array<Record<string, unknown>> = []
+    const audit = {
+      append: async (event: Record<string, unknown>) => {
+        events.push(event)
+        return event
+      },
+    } as unknown as AuditRepository
+    await assert.rejects(
+      () =>
+        buildPrivacyAwareOutcomeChannels({
+          tool: 'http_api_get',
+          trust: 'external_untrusted',
+          output: RAW_GET,
+          contract: resolveToolOutputContract('http_api_get'),
+          sideEffecting: false,
+          connector: crmConnector(),
+          conversationId: CONVERSATION,
+          actingTenantId: TENANT,
+          engine: eng,
+          audit,
+        }),
+      PrivacyTransformBlockedError,
+    )
+    assert.equal(events.some((event) => event.action === 'privacy.transform.failed'), true)
   })
 
   await test('privacy mezők nélkül a kimenet érintetlen', async () => {

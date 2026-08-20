@@ -6,16 +6,18 @@ import type { AuditRepository, ConversationRepository, TicketRepository } from '
 import { recordPrivacyGatewayAudit, summaryFromSurrogate } from '@/domain/privacy/privacy-audit'
 import { ConversationPrivacyResolveAccess } from '@/domain/privacy/resolve-access'
 import { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
-import { PostgresSurrogateVault } from '@/domain/privacy/surrogate-vault'
-import { resolveTenantPrivacyHmacKey } from '@/domain/privacy/tenant-hmac-key'
+import type { SurrogateVault } from '@/domain/privacy/surrogate-vault'
+import type { ConversationPrivacyKeyRepository } from '@/repositories/postgres/conversation-privacy-key-repository'
 
 export function createPlatformSurrogateEngine(
   audit: AuditRepository,
   conversations: ConversationRepository,
   tickets: TicketRepository,
+  vault: SurrogateVault,
+  privacyKeys: ConversationPrivacyKeyRepository,
 ): SurrogateEngine {
   return new SurrogateEngine(
-    new PostgresSurrogateVault(resolveTenantPrivacyHmacKey),
+    vault,
     {
       async recordUnknownSurrogate(event) {
         await recordPrivacyGatewayAudit(audit, {
@@ -41,5 +43,6 @@ export function createPlatformSurrogateEngine(
       },
     },
     new ConversationPrivacyResolveAccess(conversations, tickets),
+    privacyKeys,
   )
 }

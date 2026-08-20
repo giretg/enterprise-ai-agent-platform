@@ -28,6 +28,7 @@ import {
   type SurrogateVault,
   type VaultLookup,
 } from '../src/domain/privacy/surrogate-vault'
+import { valVaultMethodStubs } from './test-surrogate-vault-val-stubs'
 import { parseSurrogate } from '../src/domain/privacy/surrogate-format'
 import { buildPrivacyAwareOutcomeChannels } from '../src/domain/tool-broker/tool-output-privacy'
 import { privacyTransformDurationMs, registry } from '../src/lib/observability/metrics'
@@ -213,6 +214,10 @@ class InMemorySurrogateVault implements SurrogateVault {
     this.bySurrogate.set(surrogateKey, record)
     return record
   }
+
+  findValByFingerprint = valVaultMethodStubs.findValByFingerprint
+  findValBySurrogate = valVaultMethodStubs.findValBySurrogate
+  insertVal = valVaultMethodStubs.insertVal
 }
 
 class CountingVault implements SurrogateVault {
@@ -271,6 +276,10 @@ class CountingVault implements SurrogateVault {
     this.insertRefsRows += inputs.length
     return this.inner.insertRefs(inputs)
   }
+
+  findValByFingerprint = valVaultMethodStubs.findValByFingerprint
+  findValBySurrogate = valVaultMethodStubs.findValBySurrogate
+  insertVal = valVaultMethodStubs.insertVal
 }
 
 function setup() {

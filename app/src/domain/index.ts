@@ -804,6 +804,7 @@ const surrogateEngine = createPlatformSurrogateEngine(
   repositories.conversations,
   repositories.tickets,
   repositories.surrogateVault,
+  repositories.conversationPrivacyKeys,
 )
 toolBrokerService.setStructuredPrivacyEngine(surrogateEngine)
 toolBrokerService.setPrivacyModeResolver(({ tenantId, agentId }) =>

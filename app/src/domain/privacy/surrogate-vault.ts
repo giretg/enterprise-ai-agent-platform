@@ -1,23 +1,14 @@
 /**
- * Surrogate vault: repository-interface + Postgres adapter (APG-02, spec §5–§6).
- *
- * A HMAC tenant-kulccsal hitelesíti a vault-rekordot, és **nem** kerül az álnév
- * szövegébe. Feloldás csak vault-találaton + érvényes HMAC-en: a modell által
- * kitalált `[[COMPANY_99]]` definíció szerint feloldhatatlan.
+ * Surrogate vault domain contract (APG-02, spec §5–§6).
+ * A konkrét perzisztencia-adapter a repositories rétegben él.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import { Prisma } from '@prisma/client'
-import { prisma } from '@/lib/db'
-import { allocateRefSurrogate } from '@/domain/privacy/allocate-ref-surrogate'
-import { parseSurrogate } from '@/domain/privacy/surrogate-format'
+import type { SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 
-export type PrivacyScope = {
-  type: 'conversation' | 'trace'
-  id: string
-}
+export type PrivacyScope = { type: 'conversation' | 'trace'; id: string }
 
 export type RefEntityRef = {
-  entityType: string
+  entityType: SurrogateEntityType
   connectorId: string
   sourceId: string
 }
@@ -28,16 +19,32 @@ export type SurrogateHmacFields = {
   tenantId: string
   scopeType: PrivacyScope['type']
   scopeId: string
-  entityType: string
+  entityType: SurrogateEntityType
   surrogate: string
   class: 'ref'
   connectorId: string
   sourceId: string
 }
 
-export type RefVaultRecord = SurrogateHmacFields & {
+export type AnySurrogateHmacFields = SurrogateHmacFields | ValSurrogateHmacFields
+
+export type RefVaultRecord = SurrogateHmacFields & { id: string; hmac: string }
+
+export type ValSurrogateHmacFields = {
+  tenantId: string
+  scopeType: PrivacyScope['type']
+  scopeId: string
+  entityType: SurrogateEntityType
+  surrogate: string
+  class: 'val'
+  connectorId: ''
+  sourceId: string
+}
+
+export type ValVaultRecord = ValSurrogateHmacFields & {
   id: string
   hmac: string
+  encryptedValue: string
 }
 
 export type VaultLookup =
@@ -45,16 +52,29 @@ export type VaultLookup =
   | { status: 'miss' }
   | { status: 'tampered' }
 
+export type ValVaultLookup =
+  | { status: 'hit'; record: ValVaultRecord }
+  | { status: 'miss' }
+  | { status: 'tampered' }
+
 export type InsertRefInput = {
   tenantId: string
   scope: PrivacyScope
-  entityType: string
+  entityType: SurrogateEntityType
   connectorId: string
   sourceId: string
   surrogate: string
 }
 
-/** Az álnév stringet a scope-on belül már más entitás viseli — az engine új sorszámmal próbál. */
+export type InsertValInput = {
+  tenantId: string
+  scope: PrivacyScope
+  entityType: SurrogateEntityType
+  fingerprint: string
+  surrogate: string
+  encryptedValue: string
+}
+
 export class SurrogateTakenError extends Error {
   constructor(surrogate: string) {
     super(`az álnév foglalt a scope-on belül: ${surrogate}`)
@@ -65,29 +85,29 @@ export class SurrogateTakenError extends Error {
 export interface SurrogateVault {
   findByEntity(tenantId: string, scope: PrivacyScope, entity: RefEntityRef): Promise<VaultLookup>
   findBySurrogate(tenantId: string, scope: PrivacyScope, surrogate: string): Promise<VaultLookup>
-  /**
-   * Tenant-szintű, scope nélküli keresés — csak a cross-conversation deny
-   * megkülönböztetésére (APG-08). A publikus feloldás továbbra is scope-kötött.
-   */
   findHitsBySurrogateInTenant(tenantId: string, surrogate: string): Promise<RefVaultRecord[]>
-  /**
-   * A scope összes érvényes ref-sora — beszélgetés-szintű entitástérkép-cache
-   * hidratálásához (APG-10). Tampered HMAC-ű sorok kimaradnak.
-   */
   listByScope(tenantId: string, scope: PrivacyScope): Promise<RefVaultRecord[]>
-  /** A típus eddig kiosztott legnagyobb sorszáma; üres scope-on 0. */
-  maxOrdinal(tenantId: string, scope: PrivacyScope, entityType: string): Promise<number>
-  /** HMAC-et a vault képzi. Entitás-ütközésnél a meglévő sort adja vissza. */
+  maxOrdinal(
+    tenantId: string,
+    scope: PrivacyScope,
+    entityType: SurrogateEntityType,
+  ): Promise<number>
   insertRef(input: InsertRefInput): Promise<RefVaultRecord>
-  /**
-   * Fordulónkénti batchelt írás egy tranzakcióban (APG-10). Entitás-ütközésnél a
-   * meglévő sort adja vissza; a surrogate-foglalás miatt be nem került inputok
-   * kimaradnak a listából.
-   */
   insertRefs(inputs: InsertRefInput[]): Promise<RefVaultRecord[]>
+  findValByFingerprint(
+    tenantId: string,
+    scope: PrivacyScope,
+    entityType: SurrogateEntityType,
+    fingerprint: string,
+  ): Promise<ValVaultLookup>
+  findValBySurrogate(
+    tenantId: string,
+    scope: PrivacyScope,
+    surrogate: string,
+  ): Promise<ValVaultLookup>
+  insertVal(input: InsertValInput): Promise<ValVaultRecord>
 }
 
-/** Teszt-vaultok és fallback: rekordonkénti insert, a hívó számára mégis egy batch. */
 export async function insertRefsSequentially(
   insertRef: (input: InsertRefInput) => Promise<RefVaultRecord>,
   inputs: InsertRefInput[],
@@ -99,7 +119,7 @@ export async function insertRefsSequentially(
 
 const HMAC_VERSION = 'surrogate-hmac-v1'
 
-export function canonicalSurrogateHmacPayload(fields: SurrogateHmacFields): string {
+export function canonicalSurrogateHmacPayload(fields: AnySurrogateHmacFields): string {
   return [
     HMAC_VERSION,
     fields.tenantId,
@@ -113,13 +133,13 @@ export function canonicalSurrogateHmacPayload(fields: SurrogateHmacFields): stri
   ].join('\n')
 }
 
-export function computeSurrogateHmac(tenantKey: string, fields: SurrogateHmacFields): string {
+export function computeSurrogateHmac(tenantKey: string, fields: AnySurrogateHmacFields): string {
   return createHmac('sha256', tenantKey).update(canonicalSurrogateHmacPayload(fields)).digest('hex')
 }
 
 export function verifySurrogateHmac(
   tenantKey: string,
-  fields: SurrogateHmacFields,
+  fields: AnySurrogateHmacFields,
   hmac: string,
 ): boolean {
   const expected = Buffer.from(computeSurrogateHmac(tenantKey, fields), 'utf8')
@@ -128,7 +148,7 @@ export function verifySurrogateHmac(
   return timingSafeEqual(expected, actual)
 }
 
-function hmacFieldsFrom(input: InsertRefInput): SurrogateHmacFields {
+export function hmacFieldsFromInsert(input: InsertRefInput): SurrogateHmacFields {
   return {
     tenantId: input.tenantId,
     scopeType: input.scope.type,
@@ -141,7 +161,7 @@ function hmacFieldsFrom(input: InsertRefInput): SurrogateHmacFields {
   }
 }
 
-function hmacFieldsOf(record: RefVaultRecord): SurrogateHmacFields {
+export function hmacFieldsFromRecord(record: RefVaultRecord): SurrogateHmacFields {
   return {
     tenantId: record.tenantId,
     scopeType: record.scopeType,
@@ -154,245 +174,48 @@ function hmacFieldsOf(record: RefVaultRecord): SurrogateHmacFields {
   }
 }
 
-function authenticate(record: RefVaultRecord, tenantKey: string): VaultLookup {
-  if (!verifySurrogateHmac(tenantKey, hmacFieldsOf(record), record.hmac)) {
+export function hmacFieldsFromValInsert(input: InsertValInput): ValSurrogateHmacFields {
+  return {
+    tenantId: input.tenantId,
+    scopeType: input.scope.type,
+    scopeId: input.scope.id,
+    entityType: input.entityType,
+    surrogate: input.surrogate,
+    class: 'val',
+    connectorId: '',
+    sourceId: input.fingerprint,
+  }
+}
+
+export function hmacFieldsFromValRecord(record: ValVaultRecord): ValSurrogateHmacFields {
+  return {
+    tenantId: record.tenantId,
+    scopeType: record.scopeType,
+    scopeId: record.scopeId,
+    entityType: record.entityType,
+    surrogate: record.surrogate,
+    class: record.class,
+    connectorId: record.connectorId,
+    sourceId: record.sourceId,
+  }
+}
+
+export function authenticateRefVaultRecord(
+  record: RefVaultRecord,
+  tenantKey: string,
+): VaultLookup {
+  if (!verifySurrogateHmac(tenantKey, hmacFieldsFromRecord(record), record.hmac)) {
     return { status: 'tampered' }
   }
   return { status: 'hit', record }
 }
 
-function isUniqueCollision(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'
-}
-
-function toRecord(row: {
-  id: string
-  tenantId: string
-  scopeType: 'conversation' | 'trace'
-  scopeId: string
-  entityType: string
-  surrogate: string
-  class: 'ref' | 'val'
-  connectorId: string | null
-  sourceId: string | null
-  hmac: string
-}): RefVaultRecord | null {
-  if (row.class !== 'ref' || !row.connectorId || !row.sourceId) return null
-  return {
-    id: row.id,
-    tenantId: row.tenantId,
-    scopeType: row.scopeType,
-    scopeId: row.scopeId,
-    entityType: row.entityType,
-    surrogate: row.surrogate,
-    class: 'ref',
-    connectorId: row.connectorId,
-    sourceId: row.sourceId,
-    hmac: row.hmac,
+export function authenticateValVaultRecord(
+  record: ValVaultRecord,
+  tenantKey: string,
+): ValVaultLookup {
+  if (!verifySurrogateHmac(tenantKey, hmacFieldsFromValRecord(record), record.hmac)) {
+    return { status: 'tampered' }
   }
-}
-
-const REF_SELECT = {
-  id: true,
-  tenantId: true,
-  scopeType: true,
-  scopeId: true,
-  entityType: true,
-  surrogate: true,
-  class: true,
-  connectorId: true,
-  sourceId: true,
-  hmac: true,
-} as const
-
-export class PostgresSurrogateVault implements SurrogateVault {
-  constructor(private readonly resolveTenantKey: TenantHmacKeyResolver) {}
-
-  async findByEntity(
-    tenantId: string,
-    scope: PrivacyScope,
-    entity: RefEntityRef,
-  ): Promise<VaultLookup> {
-    const row = await prisma.surrogateMap.findFirst({
-      where: {
-        tenantId,
-        scopeType: scope.type,
-        scopeId: scope.id,
-        entityType: entity.entityType,
-        connectorId: entity.connectorId,
-        sourceId: entity.sourceId,
-      },
-      select: REF_SELECT,
-    })
-    const record = row ? toRecord(row) : null
-    if (!record) return { status: 'miss' }
-    return authenticate(record, this.resolveTenantKey(tenantId))
-  }
-
-  async findBySurrogate(
-    tenantId: string,
-    scope: PrivacyScope,
-    surrogate: string,
-  ): Promise<VaultLookup> {
-    const row = await prisma.surrogateMap.findFirst({
-      where: {
-        tenantId,
-        scopeType: scope.type,
-        scopeId: scope.id,
-        surrogate,
-      },
-      select: REF_SELECT,
-    })
-    const record = row ? toRecord(row) : null
-    if (!record) return { status: 'miss' }
-    return authenticate(record, this.resolveTenantKey(tenantId))
-  }
-
-  async findHitsBySurrogateInTenant(tenantId: string, surrogate: string): Promise<RefVaultRecord[]> {
-    const rows = await prisma.surrogateMap.findMany({
-      where: { tenantId, surrogate },
-      select: REF_SELECT,
-    })
-    const hits: RefVaultRecord[] = []
-    const tenantKey = this.resolveTenantKey(tenantId)
-    for (const row of rows) {
-      const record = toRecord(row)
-      if (!record) continue
-      const verified = authenticate(record, tenantKey)
-      if (verified.status === 'hit') hits.push(verified.record)
-    }
-    return hits
-  }
-
-  async listByScope(tenantId: string, scope: PrivacyScope): Promise<RefVaultRecord[]> {
-    const rows = await prisma.surrogateMap.findMany({
-      where: { tenantId, scopeType: scope.type, scopeId: scope.id },
-      select: REF_SELECT,
-    })
-    const hits: RefVaultRecord[] = []
-    const tenantKey = this.resolveTenantKey(tenantId)
-    for (const row of rows) {
-      const record = toRecord(row)
-      if (!record) continue
-      const verified = authenticate(record, tenantKey)
-      if (verified.status === 'hit') hits.push(verified.record)
-    }
-    return hits
-  }
-
-  async maxOrdinal(tenantId: string, scope: PrivacyScope, entityType: string): Promise<number> {
-    const rows = await prisma.surrogateMap.findMany({
-      where: { tenantId, scopeType: scope.type, scopeId: scope.id, entityType },
-      select: { surrogate: true },
-    })
-    let max = 0
-    for (const row of rows) {
-      const parsed = parseSurrogate(row.surrogate)
-      if (parsed && parsed.entityType === entityType && parsed.ordinal > max) {
-        max = parsed.ordinal
-      }
-    }
-    return max
-  }
-
-  async insertRef(input: InsertRefInput): Promise<RefVaultRecord> {
-    const fields = hmacFieldsFrom(input)
-    const hmac = computeSurrogateHmac(this.resolveTenantKey(input.tenantId), fields)
-    let allocated
-    try {
-      allocated = await allocateRefSurrogate({
-        tenantId: input.tenantId,
-        scopeType: input.scope.type,
-        scopeId: input.scope.id,
-        entityType: input.entityType,
-        surrogate: input.surrogate,
-        connectorId: input.connectorId,
-        sourceId: input.sourceId,
-        hmac,
-      })
-    } catch (error) {
-      if (isUniqueCollision(error)) throw new SurrogateTakenError(input.surrogate)
-      throw error
-    }
-
-    const row = await prisma.surrogateMap.findUnique({
-      where: { id: allocated.id },
-      select: REF_SELECT,
-    })
-    const record = row ? toRecord(row) : null
-    if (!record) throw new Error('vault-sor allokáció után nem olvasható')
-    const verified = authenticate(record, this.resolveTenantKey(input.tenantId))
-    if (verified.status !== 'hit') throw new Error('vault-sor HMAC-je érvénytelen')
-    return verified.record
-  }
-
-  async insertRefs(inputs: InsertRefInput[]): Promise<RefVaultRecord[]> {
-    if (inputs.length === 0) return []
-    if (inputs.length === 1) {
-      const only = inputs[0]
-      if (!only) return []
-      return [await this.insertRef(only)]
-    }
-
-    const data = inputs.map((input) => {
-      const fields = hmacFieldsFrom(input)
-      return {
-        tenantId: input.tenantId,
-        scopeType: input.scope.type,
-        scopeId: input.scope.id,
-        entityType: input.entityType,
-        surrogate: input.surrogate,
-        class: 'ref' as const,
-        connectorId: input.connectorId,
-        sourceId: input.sourceId,
-        hmac: computeSurrogateHmac(this.resolveTenantKey(input.tenantId), fields),
-      }
-    })
-
-    return prisma.$transaction(async (tx) => {
-      await tx.surrogateMap.createMany({ data, skipDuplicates: true })
-      const wanted = new Set(
-        inputs.map(
-          (input) =>
-            `${input.tenantId}\0${input.scope.type}\0${input.scope.id}\0${input.entityType}\0${input.connectorId}\0${input.sourceId}`,
-        ),
-      )
-      const found: RefVaultRecord[] = []
-      for (const group of groupInsertsByScope(inputs)) {
-        const rows = await tx.surrogateMap.findMany({
-          where: {
-            tenantId: group.tenantId,
-            scopeType: group.scope.type,
-            scopeId: group.scope.id,
-          },
-          select: REF_SELECT,
-        })
-        const tenantKey = this.resolveTenantKey(group.tenantId)
-        for (const row of rows) {
-          const record = toRecord(row)
-          if (!record) continue
-          const identity = `${record.tenantId}\0${record.scopeType}\0${record.scopeId}\0${record.entityType}\0${record.connectorId}\0${record.sourceId}`
-          if (!wanted.has(identity)) continue
-          const verified = authenticate(record, tenantKey)
-          if (verified.status === 'tampered') {
-            throw new Error('a meglévő vault-sor HMAC-je érvénytelen, új álnév nem allokálható')
-          }
-          if (verified.status === 'hit') found.push(verified.record)
-        }
-      }
-      return found
-    })
-  }
-}
-
-function groupInsertsByScope(inputs: InsertRefInput[]): Array<{
-  tenantId: string
-  scope: PrivacyScope
-}> {
-  const seen = new Map<string, { tenantId: string; scope: PrivacyScope }>()
-  for (const input of inputs) {
-    const key = `${input.tenantId}\0${input.scope.type}\0${input.scope.id}`
-    if (!seen.has(key)) seen.set(key, { tenantId: input.tenantId, scope: input.scope })
-  }
-  return [...seen.values()]
+  return { status: 'hit', record }
 }

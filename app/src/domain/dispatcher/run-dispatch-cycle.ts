@@ -1,5 +1,6 @@
 import { services } from '@/domain'
 import { reclaimStaleAgentTurns } from '@/domain/agent/agent-turn-watchdog'
+import { gcShreddedConversationSurrogateMappings } from '@/domain/privacy/surrogate-vault-gc'
 import { ensureActiveDatabaseMode } from '@/lib/db'
 import { repositories } from '@/repositories/postgres'
 
@@ -14,6 +15,8 @@ const CONVERSATION_RETENTION_SWEEP_LIMIT = positiveIntEnv(
   process.env.CONVERSATION_RETENTION_SWEEP_LIMIT,
   100,
 )
+
+const SURROGATE_VAULT_GC_LIMIT = positiveIntEnv(process.env.SURROGATE_VAULT_GC_LIMIT, 100)
 
 /** Elgépelt/üres env-érték ne buktassa a takarítást — ilyenkor a beépített alapérték áll. */
 function positiveIntEnv(raw: string | undefined, fallback: number): number {
@@ -39,6 +42,8 @@ export type DispatchCycleSummary = {
    * kiürített üzenet darabszáma.
    */
   conversationRetention: { sweptConversations: number; deletedMessages: number }
+  /** Val-surrogate mapping GC (APG-18): lejárt, kulcs nélküli beszélgetések sorainak törlése. */
+  surrogateVaultGc: { deletedMappings: number; conversationIds: string[] }
   materializedScheduledTasks: number
   monitorSweep: { ran: boolean; escalated: number; openedTickets: number }
   workspacePurge: { purgedTickets: number; deletedObjects: number }
@@ -67,6 +72,7 @@ const EMPTY_SUMMARY: DispatchCycleSummary = {
   reclaimedAgentTurns: 0,
   channelTurns: { reclaimed: 0, processed: 0 },
   conversationRetention: { sweptConversations: 0, deletedMessages: 0 },
+  surrogateVaultGc: { deletedMappings: 0, conversationIds: [] },
   materializedScheduledTasks: 0,
   monitorSweep: { ran: false, escalated: 0, openedTickets: 0 },
   workspacePurge: { purgedTickets: 0, deletedObjects: 0 },
@@ -172,6 +178,24 @@ export async function runDispatchCycle(
       )
     }
 
+    // Val-surrogate mapping GC (APG-18): a crypto-shredding után maradt sorok fizikai törlése.
+    let surrogateVaultGc: DispatchCycleSummary['surrogateVaultGc'] = {
+      deletedMappings: 0,
+      conversationIds: [],
+    }
+    try {
+      const gc = await gcShreddedConversationSurrogateMappings(SURROGATE_VAULT_GC_LIMIT)
+      surrogateVaultGc = {
+        deletedMappings: gc.deletedCount,
+        conversationIds: gc.conversationIds,
+      }
+    } catch (error) {
+      console.error(
+        '[dispatch-cycle] surrogate-vault gc error:',
+        error instanceof Error ? error.message : error,
+      )
+    }
+
     const materialized = await services.scheduledTasks.materializeDue(new Date(), batchLimit)
     const materializedScheduledTasks = materialized.filter((r) => r.status === 'materialized').length
 
@@ -247,6 +271,7 @@ export async function runDispatchCycle(
       reclaimedAgentTurns,
       channelTurns,
       conversationRetention,
+      surrogateVaultGc,
       materializedScheduledTasks,
       monitorSweep,
       workspacePurge,

@@ -718,6 +718,7 @@ model Tenant {
   memberships       TenantMembership[]
   agentAccessGrants AgentAccessGrant[]
   surrogateMaps     SurrogateMap[]
+  conversationPrivacyKeys ConversationPrivacyKey[]
 
   @@index([status])
   @@map("tenants")
@@ -1961,6 +1962,7 @@ model Conversation {
   agentTurns           AgentTurn[]
   channelSessions      ChannelSession[]
   consequenceApprovals ConsequenceApproval[]
+  privacyKey           ConversationPrivacyKey?
 
   @@index([tenantId, agentId, lastMessageAt])
   @@index([tenantId, createdById])
@@ -1968,6 +1970,21 @@ model Conversation {
   @@index([channel, channelExternalId])
   @@index([continuedFromTicketId])
   @@map("conversations")
+}
+
+/// Per-conversation adatkulcs val-surrogate titkosításhoz (APG-18, spec §6).
+/// Retention-járatkor törlődik → crypto-shredding. Legal hold alatt megmarad.
+model ConversationPrivacyKey {
+  conversationId String   @id @map("conversation_id") @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  wrappedKey     String   @map("wrapped_key")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("conversation_privacy_keys")
 }
 
 /// Következmény-kapu pending jóváhagyás — a blokkolt mellékhatásos tool teljes

@@ -196,6 +196,18 @@ class InMemorySurrogateVault implements SurrogateVault {
   async insertRefs(inputs: InsertRefInput[]): Promise<RefVaultRecord[]> {
     return insertRefsSequentially((input) => this.insertRef(input), inputs)
   }
+
+  async findValByFingerprint(): Promise<import('@/domain/privacy/surrogate-vault').ValVaultLookup> {
+    return { status: 'miss' }
+  }
+
+  async findValBySurrogate(): Promise<import('@/domain/privacy/surrogate-vault').ValVaultLookup> {
+    return { status: 'miss' }
+  }
+
+  async insertVal(): Promise<import('@/domain/privacy/surrogate-vault').ValVaultRecord> {
+    throw new Error('val vault stub')
+  }
 }
 
 function setup() {
