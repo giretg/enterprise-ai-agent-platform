@@ -93,6 +93,7 @@ async function resolveModelOutput(params: PrivacyAwareOutcomeInput): Promise<unk
   const scope = privacyScopeForCall(params.conversationId, params.ticketId)
 
   const apply = mode === 'enforce'
+  const registerObserved = mode === 'observe'
   const started = Date.now()
   let output: unknown = params.output
   let spans: Awaited<ReturnType<typeof transformStructuredOutput>>['spans'] = []
@@ -105,6 +106,7 @@ async function resolveModelOutput(params: PrivacyAwareOutcomeInput): Promise<unk
       connectorId: connector.id,
       scope,
       apply,
+      registerObserved,
     })
     output = transformed.output
     spans = transformed.spans

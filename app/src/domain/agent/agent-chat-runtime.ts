@@ -41,6 +41,7 @@ import {
 } from '../privacy/privacy-observability'
 import type { ResolvedPrivacyCategoryPolicy } from '../privacy/privacy-category-policy'
 import type { PrivacyGatewayMode } from '../privacy/privacy-mode'
+import type { ChatPrivacyMarkerContext } from '@/lib/privacy-chat-markers'
 import type { ConversationService } from '../conversation/conversation-service'
 import {
   assembleContext,
@@ -2323,6 +2324,32 @@ export class AgentChatRuntime {
     }
 
     return views
+  }
+
+  /** APG-22 — élő chat UI: policy + beszélgetés-scoped known-value szótár. */
+  async getPrivacyMarkerContext(input: {
+    conversationId?: string | null
+    tenantId?: string | null
+    agentId: string
+  }): Promise<ChatPrivacyMarkerContext | null> {
+    const privacyContext = this.resolvePrivacyObservability
+      ? await this.resolvePrivacyObservability(input.tenantId ?? null, input.agentId)
+      : null
+    if (!privacyContext) return null
+
+    const knownValues =
+      this.surrogateEngine && input.tenantId && input.conversationId
+        ? this.surrogateEngine.listKnownValueReplacements(input.tenantId, {
+            type: 'conversation',
+            id: input.conversationId,
+          })
+        : []
+
+    return {
+      mode: privacyContext.mode,
+      policy: privacyContext.policy,
+      knownValues,
+    }
   }
 
   private async loadEgressMatrix(tenantId: string | null): Promise<ResolvedPrivacyEgressMatrix> {

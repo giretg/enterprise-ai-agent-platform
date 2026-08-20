@@ -254,6 +254,52 @@ async function main() {
     const src = readFileSync(join(root, 'src/components/agents/agent-chat-panel.tsx'), 'utf8')
     assert.match(src, /PrivacyHighlightedText/)
     assert.match(src, /privacyMarkers/)
+    assert.match(src, /PrivacyObservedText/)
+    assert.match(src, /privacyContext/)
+  })
+
+  await test('OBSERVE: strukturált mező preview szótárba kerül vault nélkül', async () => {
+    const { SurrogateEngine } = await import('../src/domain/privacy/surrogate-engine')
+    const engine = new SurrogateEngine(
+      { findRef: async () => ({ status: 'miss' }), insertRef: async () => {}, findValByFingerprint: async () => ({ status: 'miss' }), insertVal: async () => {} } as never,
+      { append: async () => {} } as never,
+    )
+    const policy = resolvePrivacyCategoryPolicy({
+      platform: {
+        categories: { company: 'tokenize' },
+        custom: {},
+        updatedById: null,
+        updatedAt: null,
+        patternSetVersion: 1,
+      },
+    })
+    const rawResult = {
+      company_name: COMPANY,
+      id: 1,
+    }
+    const { transformStructuredOutput } = await import('../src/domain/privacy/structured-output-transform')
+    await transformStructuredOutput({
+      output: rawResult,
+      fields: CRM_FIELDS,
+      engine,
+      tenantId: TENANT,
+      connectorId: CONNECTOR,
+      scope: { type: 'conversation', id: 'conv-observe-ui' },
+      apply: false,
+      registerObserved: true,
+    })
+    const observeText = `Riport: ${COMPANY} és spar_rendeles.html`
+    const markers = buildEntityMarkers({
+      text: observeText,
+      policy,
+      mode: 'observe',
+      knownValues: engine.listKnownValueReplacements(TENANT, { type: 'conversation', id: 'conv-observe-ui' }),
+    })
+    assert.ok(markers.some((m) => m.displayValue === COMPANY))
+    assert.ok(
+      markers.some((m) => observeText.slice(m.start, m.end).toLowerCase() === 'spar'),
+      'a szótár első tokenje illeszkedjen a fájlnévben is',
+    )
   })
 
   if (failures > 0) {

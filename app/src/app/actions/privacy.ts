@@ -25,12 +25,14 @@ import { fail, ok, type ActionResult } from '@/lib/result'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import {
   dryRunPrivacyTextSchema,
+  getChatPrivacyMarkerContextSchema,
   getPrivacyAdminViewSchema,
   previewPrivacyObservabilitySchema,
   setPrivacyCategoryPolicySchema,
   setPrivacyGatewayModeSchema,
 } from '@/lib/validators/actions'
 import { repositories } from '@/repositories/postgres'
+import type { ChatPrivacyMarkerContext } from '@/lib/privacy-chat-markers'
 
 export type PrivacyAdminView = {
   layer: PrivacyEditorLayer
@@ -348,6 +350,26 @@ export async function previewPrivacyObservability(input: unknown): Promise<Actio
     'A nyomkövetés nem futott le.',
     (text, { policy, mode }) => buildPrivacyTurnChain({ mode, policy, originalText: text }),
   )
+}
+
+/** APG-22 — chat UI privacy-kiemelés: üzemmód, policy, known-value szótár. */
+export async function getChatPrivacyMarkerContext(
+  input: unknown,
+): Promise<ActionResult<ChatPrivacyMarkerContext | null>> {
+  try {
+    const user = await requireTenantRole('viewer')
+    const parsed = getChatPrivacyMarkerContextSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
+    if (!agent) return fail('Az AI-munkatárs nem található.')
+    const context = await services.agentChat.getPrivacyMarkerContext({
+      agentId: parsed.agentId,
+      tenantId: user.activeTenantId,
+      conversationId: parsed.conversationId ?? null,
+    })
+    return ok(context)
+  } catch (e) {
+    return privacyFail(e, 'Nem sikerült betölteni az adatvédelmi kontextust.')
+  }
 }
 
 async function resolvePrivacyPreviewContext(agentId?: string) {

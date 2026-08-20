@@ -42,6 +42,12 @@ import {
 import { ChatMarkdown, TypingIndicator } from '@/components/chat/chat-markdown'
 import { PrivacyHighlightedText } from '@/components/privacy/privacy-highlighted-text'
 import type { PrivacyEntityMarker } from '@/domain/privacy/privacy-observability'
+import { getChatPrivacyMarkerContext } from '@/app/actions/privacy'
+import {
+  buildChatPrivacyMarkers,
+  privacyHighlightEnabled,
+  type ChatPrivacyMarkerContext,
+} from '@/lib/privacy-chat-markers'
 import {
   chatMessageShowsAgentActivity,
   mergeTurnProgressIntoMessages,
@@ -490,15 +496,36 @@ function activityDisplayTitle(activity: AgentActivity): string {
   return activity.title
 }
 
+function PrivacyObservedText({
+  text,
+  privacyContext,
+  className,
+}: {
+  text: string
+  privacyContext: ChatPrivacyMarkerContext | null
+  className?: string
+}) {
+  const markers = useMemo(
+    () => buildChatPrivacyMarkers(text, privacyContext),
+    [text, privacyContext],
+  )
+  if (!privacyHighlightEnabled(privacyContext) || markers.length === 0) {
+    return <span className={className}>{text}</span>
+  }
+  return <PrivacyHighlightedText text={text} markers={markers} className={className} />
+}
+
 function AgentActivityRow({
   activity,
   thinking,
   prominent = false,
+  privacyContext,
 }: {
   activity: AgentActivity
   thinking?: Record<string, string>
   /** Collapsed preview of the running step — stronger motion + wash. */
   prominent?: boolean
+  privacyContext: ChatPrivacyMarkerContext | null
 }) {
   const liveThinking = activityLiveThinking(activity, thinking)
   const running = activity.status === 'running'
@@ -534,7 +561,7 @@ function AgentActivityRow({
             className="mt-0.5 line-clamp-3 whitespace-pre-wrap text-[11px] italic text-ink-faint"
             aria-live="polite"
           >
-            {liveThinking}
+            <PrivacyObservedText text={liveThinking} privacyContext={privacyContext} />
           </p>
         ) : (
           (activity.detail || activity.archivePath) && (
@@ -544,8 +571,15 @@ function AgentActivityRow({
               }`}
               title={activity.archivePath ?? activity.detail}
             >
-              {activity.detail}
-              {activity.archivePath ? ` · ${activity.archivePath}` : ''}
+              {activity.detail ? (
+                <PrivacyObservedText text={activity.detail} privacyContext={privacyContext} />
+              ) : null}
+              {activity.archivePath ? (
+                <>
+                  {activity.detail ? ' · ' : null}
+                  <PrivacyObservedText text={activity.archivePath} privacyContext={privacyContext} />
+                </>
+              ) : null}
             </p>
           )
         )}
@@ -558,11 +592,13 @@ function AgentActivityPanel({
   activities,
   thinking,
   separated,
+  privacyContext,
 }: {
   activities: AgentActivity[]
   thinking?: Record<string, string>
   /** Követi-e válaszszöveg — csak akkor kell elválasztó vonal. */
   separated: boolean
+  privacyContext: ChatPrivacyMarkerContext | null
 }) {
   // Alapból zárt — a teljes lista csak kattintásra nyílik; stream közben sem
   // erőltetjük ki a nyitást, hogy a user választása megmaradjon.
@@ -583,7 +619,14 @@ function AgentActivityPanel({
     <details
       open={open}
       onToggle={(event) => setOpen(event.currentTarget.open)}
-      className={`text-xs text-ink-soft ${
+      onClick={(event) => {
+        if (!open) return
+        // A summary natív toggle-je zárja a panelt; a lista bármely pontján
+        // ugyanazt várjuk — különben a nagy dobozban keresni kell az „elrejt”-et.
+        if ((event.target as HTMLElement).closest('summary')) return
+        setOpen(false)
+      }}
+      className={`text-xs text-ink-soft ${open ? 'cursor-pointer' : ''} ${
         separated ? 'mb-3 border-b border-line pb-2' : ''
       }`}
     >
@@ -611,12 +654,19 @@ function AgentActivityPanel({
 
       {open ? (
         <div className="mt-2 space-y-1.5 border-t border-line/70 pt-2">
+          {privacyContext?.mode === 'observe' ? (
+            <p className="rounded-md border border-honey/35 bg-honey/10 px-2 py-1 text-[10px] leading-relaxed text-ink-soft">
+              Megfigyelés: a sárga kiemelés jelzi, mit cseréltünk volna álnévre. A modell még a
+              valódi adatot kapta.
+            </p>
+          ) : null}
           {activities.map((activity) => (
             <AgentActivityRow
               key={activity.id}
               activity={activity}
               thinking={thinking}
               prominent={activity.status === 'running'}
+              privacyContext={privacyContext}
             />
           ))}
         </div>
@@ -624,11 +674,20 @@ function AgentActivityPanel({
         <div className="mt-1.5 pl-4">
           <p className="truncate text-[11px] text-ink-faint" title={headerHint}>
             {activityDisplayTitle(latest)}
-            {activityLiveThinking(latest, thinking)
-              ? ` — ${activityLiveThinking(latest, thinking)}`
-              : latest.detail
-                ? ` — ${latest.detail}`
-                : ''}
+            {activityLiveThinking(latest, thinking) ? (
+              <>
+                {' — '}
+                <PrivacyObservedText
+                  text={activityLiveThinking(latest, thinking)!}
+                  privacyContext={privacyContext}
+                />
+              </>
+            ) : latest.detail ? (
+              <>
+                {' — '}
+                <PrivacyObservedText text={latest.detail} privacyContext={privacyContext} />
+              </>
+            ) : null}
           </p>
         </div>
       ) : null}
@@ -1180,6 +1239,7 @@ function MessageBubble({
   workspaceFilePaths,
   onOauthRedirect,
   isAdmin,
+  privacyContext,
 }: {
   message: ChatMessage
   isBusy: boolean
@@ -1203,6 +1263,7 @@ function MessageBubble({
   workspaceFilePaths: string[]
   onOauthRedirect?: () => void
   isAdmin: boolean
+  privacyContext: ChatPrivacyMarkerContext | null
 }) {
   const isUser = message.role === 'user'
   const isDeleted = Boolean(message.contentDeletedAt)
@@ -1212,6 +1273,10 @@ function MessageBubble({
   const approvalTechnicalDetails = isApprovalBubble
     ? extractApprovalContinuationTechnicalDetails(message.text)
     : null
+  const privacyMarkers = useMemo(() => {
+    if (message.privacyMarkers && message.privacyMarkers.length > 0) return message.privacyMarkers
+    return buildChatPrivacyMarkers(message.text, privacyContext)
+  }, [message.privacyMarkers, message.text, privacyContext])
 
   return (
     <div
@@ -1268,6 +1333,7 @@ function MessageBubble({
                 activities={message.activities}
                 thinking={message.thinking}
                 separated={Boolean(message.text)}
+                privacyContext={privacyContext}
               />
             )}
             {!isUser && message.memoryCandidates && message.memoryCandidates.length > 0 && (
@@ -1286,11 +1352,11 @@ function MessageBubble({
                     </AdminTechnicalDetails>
                   )}
                 </div>
-              ) : message.privacyMarkers && message.privacyMarkers.length > 0 ? (
+              ) : privacyMarkers.length > 0 ? (
                 <div className="whitespace-pre-wrap text-sm leading-relaxed">
                   <PrivacyHighlightedText
                     text={message.text}
-                    markers={message.privacyMarkers}
+                    markers={privacyMarkers}
                   />
                 </div>
               ) : isUser ? (
@@ -1480,6 +1546,7 @@ export function AgentChatPanel({
    * sima beszélgetés folyt.
    */
   const [composerMode, setComposerMode] = useState<'chat' | 'task'>('chat')
+  const [privacyContext, setPrivacyContext] = useState<ChatPrivacyMarkerContext | null>(null)
   const [composerPanel, setComposerPanel] = useState<'skill' | 'process' | null>(null)
   const [pending, startTransition] = useTransition()
   const [ticketPending, startTicketTransition] = useTransition()
@@ -2073,6 +2140,13 @@ export function AgentChatPanel({
         setStatusMessage(res.error)
         return false
       }
+      const privacyRes = await getChatPrivacyMarkerContext({
+        agentId: agent.id,
+        conversationId: convId,
+      })
+      if (privacyRes.success) {
+        setPrivacyContext(privacyRes.data)
+      }
       setConversationId(convId)
       setConversationStatus(res.data.conversation.status)
       setContinuedFromTicket(res.data.continuedFromTicket ?? null)
@@ -2411,6 +2485,16 @@ export function AgentChatPanel({
     // Csak nyitáskor / initialConversationId változáskor.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialConversationId])
+
+  useEffect(() => {
+    if (!open) return
+    void getChatPrivacyMarkerContext({
+      agentId: agent.id,
+      conversationId,
+    }).then((res) => {
+      if (res.success) setPrivacyContext(res.data)
+    })
+  }, [open, agent.id, conversationId])
 
   // A Stop a FUTÓ FORDULÓ azonosítójára hivatkozik (#65). Amíg nincs turnId — a
   // `turn` esemény a stream legelső eseménye —, nincs mit megállítani.
@@ -3360,6 +3444,7 @@ export function AgentChatPanel({
                       }
                       workspaceFilePaths={workspaceFilePaths}
                       isAdmin={isAdmin}
+                      privacyContext={privacyContext}
                     />
                   ))}
                   {isAgentTyping &&

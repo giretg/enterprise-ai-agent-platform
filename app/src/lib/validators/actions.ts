@@ -992,6 +992,11 @@ export const dryRunPrivacyTextSchema = privacyTextPreviewSchema
 /** APG-22 — privacy observability lánc előnézet (modellhívás nélkül). */
 export const previewPrivacyObservabilitySchema = privacyTextPreviewSchema
 
+export const getChatPrivacyMarkerContextSchema = z.object({
+  agentId: z.string().uuid(),
+  conversationId: z.string().uuid().nullable().optional(),
+})
+
 /** Tenant kimeneti nyelv — skill/playbook desztilláló és szerző agentek. */
 export const setTenantLanguageSchema = z.object({
   language: z.enum(['hu', 'en']),

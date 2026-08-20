@@ -11,7 +11,9 @@
  * modellnek szánt adat érintetlen marad.
  */
 import type { ConnectorFieldsPrivacy } from '@/domain/privacy/connector-privacy'
+import { canonicalPrivacyCategory } from '@/domain/privacy/privacy-category-policy'
 import type { PrivacySpan } from '@/domain/privacy/privacy-mode'
+import { previewAliasForCategory } from '@/domain/privacy/privacy-dry-run'
 import { runPrivacyTransformLayer } from '@/domain/privacy/privacy-transform-failure'
 import { VaultUnavailableError } from '@/domain/privacy/privacy-transform-failure'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
@@ -43,7 +45,7 @@ export async function pseudonymizeStructuredOutput(
 }
 
 export async function transformStructuredOutput(
-  input: StructuredOutputPrivacyInput & { apply: boolean },
+  input: StructuredOutputPrivacyInput & { apply: boolean; registerObserved?: boolean },
 ): Promise<StructuredPrivacyTransformResult> {
   const actions = privacyFields(input.fields)
   if (!actions) return { output: input.output, spans: [] }
@@ -55,6 +57,21 @@ export async function transformStructuredOutput(
       const spans: PrivacySpan[] = []
       const pending: PendingReplace[] = []
       collect(copy, actions, input, spans, pending)
+      if (
+        input.registerObserved &&
+        !input.apply &&
+        input.engine &&
+        input.tenantId &&
+        input.scope
+      ) {
+        registerObservedStructuredFields(copy, actions, {
+          engine: input.engine,
+          tenantId: input.tenantId,
+          scope: input.scope,
+          ordinals: new Map(),
+          seen: new Set(),
+        })
+      }
       if (pending.length > 0 && input.apply) {
         if (!input.engine) throw new VaultUnavailableError()
         if (!input.tenantId || !input.connectorId || !input.scope) {
@@ -143,6 +160,48 @@ type PendingReplace = {
   entityType: SurrogateEntityType
   sourceId: string
   displayValue: string
+}
+
+function registerObservedStructuredFields(
+  value: unknown,
+  fields: StructuredPrivacyFields,
+  ctx: {
+    engine: SurrogateEngine
+    tenantId: string
+    scope: PrivacyScope
+    ordinals: Map<string, number>
+    seen: Set<string>
+  },
+): void {
+  if (!value || typeof value !== 'object') return
+  if (Array.isArray(value)) {
+    for (const item of value) registerObservedStructuredFields(item, fields, ctx)
+    return
+  }
+
+  const record = value as Record<string, unknown>
+  for (const [key, child] of Object.entries(record)) {
+    const spec = fields.tokenize[key]
+    if (spec && typeof child === 'string' && child.length > 0) {
+      const category = canonicalPrivacyCategory(spec.entityType)
+      const dedupeKey = `${category}\0${child}`
+      if (!ctx.seen.has(dedupeKey)) {
+        ctx.seen.add(dedupeKey)
+        const next = (ctx.ordinals.get(category) ?? 0) + 1
+        ctx.ordinals.set(category, next)
+        const previewAlias = previewAliasForCategory(category, next)
+        ctx.engine.rememberDisplayValue(
+          ctx.tenantId,
+          ctx.scope,
+          previewAlias,
+          child,
+          'structured_field',
+        )
+      }
+      continue
+    }
+    registerObservedStructuredFields(child, fields, ctx)
+  }
 }
 
 function collect(
