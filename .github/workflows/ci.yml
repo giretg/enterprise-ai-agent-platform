@@ -136,6 +136,7 @@ jobs:
           npm run test:prompt-cache
           npm run test:surrogate-engine
           npm run test:connector-privacy
+          npm run test:privacy-catalog-sync
           npm run test:structured-output-privacy
           npm run test:known-value-substitution
           npm run test:user-input-resolver
@@ -150,6 +151,7 @@ jobs:
           npm run test:gateway-negative
           npm run test:privacy-latency
           npm run test:privacy-enforce-failure
+          npm run test:privacy-end-to-end
           npm run test:privacy-eval
           npm run test:tool-arg-resolve
           npm run test:streaming-surrogate-resolve

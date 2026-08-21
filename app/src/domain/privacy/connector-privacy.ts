@@ -388,6 +388,21 @@ export function connectorSupportsEntityResolution(config: unknown): boolean {
   return readPrivacyDeclaration(config)?.entity_resolution === true
 }
 
+export const DEFAULT_PRIVACY_CATALOG_PATH = '/privacy/catalog'
+
+/** A forrás katalógus-végpontja. Felülírható a `privacy.catalog_path` kulccsal. */
+export function readPrivacyCatalogPath(config: unknown): string {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    return DEFAULT_PRIVACY_CATALOG_PATH
+  }
+  const privacy = (config as Record<string, unknown>).privacy
+  if (privacy && typeof privacy === 'object' && !Array.isArray(privacy)) {
+    const path = (privacy as Record<string, unknown>).catalog_path
+    if (typeof path === 'string' && path.trim().startsWith('/')) return path.trim()
+  }
+  return DEFAULT_PRIVACY_CATALOG_PATH
+}
+
 export function readEntityResolvePath(config: unknown): string {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return '/privacy/resolve'
   const privacy = (config as Record<string, unknown>).privacy

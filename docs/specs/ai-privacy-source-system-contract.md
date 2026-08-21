@@ -187,7 +187,19 @@ A tokenizálást **egyik sem** végzi. A katalógus megmondja a *szabályt*, a p
 
 ### 6.1 Katalógus — `GET /privacy/catalog`
 
-Verziózott, cache-elhető, auth ugyanaz, mint a connector API-n (Bearer + acting user). A platform ezt olvassa be a connector `config.fields` + `config.privacy` + `config.entity_types` + `config.unlisted_default` mezőibe. Amíg a platform automatikus szinkronja nincs meg, ugyanez a JSON kézzel is bemásolható a connector-konfigba — a séma azonos, és a connector-config a katalógus mind a négy kulcsát (plusz a `catalog_version`-t) változatlanul megtartja.
+Verziózott, cache-elhető, auth ugyanaz, mint a connector API-n (Bearer + acting user). A platform ezt olvassa be a connector `config.fields` + `config.privacy` + `config.entity_types` + `config.unlisted_default` mezőibe. Ugyanez a JSON kézzel is bemásolható a connector-konfigba — a séma azonos, és a connector-config a katalógus mind a négy kulcsát (plusz a `catalog_version`-t) változatlanul megtartja.
+
+**Platformoldali szinkron (automatikus).** A platform magától lekéri a katalógust:
+
+| Mikor | Mi történik |
+|---|---|
+| Kapcsolat aktiválásakor | Best-effort lekérés; a hibája nem akadályozza az aktiválást, de auditálva van. |
+| Ütemezetten | `npm run privacy:catalog-sync` (Cloud Scheduler → job). `--dry-run` csak riportol, `--connector <id>` egy kapcsolatra fut. |
+
+- **Fail-closed:** ha a katalógus elérhetetlen, sémasértő, vagy a mentési invariánsokba ütközik (`tokenize` numerikus mezőn, `reversible: false` típuson, ismeretlen `source_id` hivatkozás), a platform a KORÁBBI, érvényes jelölést tartja meg. Rossz publikálás nem tudja „kikapcsolni" a tokenizálást.
+- **Audit:** `privacy.catalog.sync.applied` (katalógusverzió + emberi nyelvű változáslista + D5 figyelmeztetések) vagy `privacy.catalog.sync.failed` (ok + részlet). Változatlan katalógus nem termel auditbejegyzést.
+- A katalógus-végpont a platform saját, szerződéses hívása, ezért `restrictToEndpoints` melletti kapcsolaton is elérhető — az endpoint-allowlist a modell által indított hívásokat korlátozza.
+- Önfrissítő (`self_updating`) kapcsolatnál a futásidejű képességek a jóváhagyott OpenAPI-snapshotból jönnek, a **mezőjelölés viszont a friss katalógusból**: a jelölés nem képesség, csak azt mondja meg, mit kell álnévre cserélni.
 
 ```json
 {

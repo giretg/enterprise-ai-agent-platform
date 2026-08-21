@@ -106,6 +106,12 @@ export interface ProvisioningDeps {
    * kell, nem tenant-szintű creds. Hiányzó resolver = nincs beállítva (fail-closed).
    */
   resolvePlatformGoogleOAuth?: () => Promise<{ configured: boolean }>
+  /**
+   * Aktiválás után a forrás privacy-katalógusának behúzása (issue #320). Best-effort:
+   * a hibája nem bukhatja el az aktiválást, de a kimenete auditálva van. Enélkül az új
+   * kapcsolat a kézzel bemásolt (vagy hiányzó) mezőjelöléssel indulna.
+   */
+  syncPrivacyCatalog?: (connectorId: string, actorId: string | null) => Promise<void>
 }
 
 function sha256Hex(content: string): string {
@@ -642,6 +648,15 @@ export class ProvisioningService {
         draft_id: draft.id,
         policyDecision: 'allowed',
       })
+    }
+
+    // A jelölés kanonikus helye a forrásrendszer: aktiváláskor mindjárt a friss
+    // katalógust húzzuk be. Best-effort — egy nem válaszoló forrás nem akadályozhatja
+    // meg az aktiválást, a hiba a `privacy.catalog.sync.failed` auditban látszik.
+    try {
+      await this.deps.syncPrivacyCatalog?.(connector.id, user.userId)
+    } catch {
+      // szándékosan elnyelve: a szinkron a saját auditját írja
     }
 
     return { connectorId: connector.id, lifecycleState: 'active' }
