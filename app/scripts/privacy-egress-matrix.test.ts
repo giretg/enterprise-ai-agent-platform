@@ -134,7 +134,7 @@ async function main() {
 
   await test('tenant overlay parse: csak false értékek', () => {
     const layer = parsePrivacyEgressMatrixLayer({
-      external_channel: { company: false, person: true, bogus: false },
+      external_channel: { company: false, person: true, 'Bad-Type': false },
       not_a_surface: { company: false },
     })
     assert.deepEqual(layer, { external_channel: { company: false } })

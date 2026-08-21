@@ -230,16 +230,31 @@ async function main() {
     }
   })
 
-  await test('vault elérhetetlen: prompt scanner ENFORCE → fail-closed', async () => {
+  await test('entity resolve: vault elérhetetlen ENFORCE → fail-closed', async () => {
     const eng = engine(new FailingVault(() => HMAC_KEY))
     try {
       await transformPromptMessages({
-        messages: [{ role: 'user', content: `Írd meg a ${EMAIL} címre.` }],
+        messages: [{ role: 'user', content: `Keresd meg a ${COMPANY} cég adatait.` }],
         mode: 'enforce',
-        policy: async () => 'tokenize' as const,
         engine: eng,
         tenantId: TENANT,
         scope: SCOPE,
+        entityResolution: {
+          connectorId: CONNECTOR,
+          resolver: {
+            resolve: async () => ({
+              status: 'match' as const,
+              candidates: [
+                {
+                  source_id: 'crm/company/1',
+                  entity_type: 'company',
+                  display_name: COMPANY,
+                  confidence: 0.95,
+                },
+              ],
+            }),
+          },
+        },
       })
       assert.fail('dobás kellett')
     } catch (error) {
@@ -247,22 +262,18 @@ async function main() {
     }
   })
 
-  await test('scanner: policy hiba injektálva → fail-open, nyers szöveg marad', async () => {
+  await test('prompt: vak regex-scanner kivezetve (#320 D6) — nyers e-mail marad', async () => {
     const eng = engine()
     const result = await transformPromptMessages({
       messages: [{ role: 'user', content: `Küldd a ${EMAIL} címre.` }],
       mode: 'enforce',
-      policy: async () => {
-        throw new Error('inject-scanner-policy')
-      },
       engine: eng,
       tenantId: TENANT,
       scope: SCOPE,
     })
     assert.equal(result.applied, false)
     assert.equal(result.messages[0]?.content?.includes(EMAIL), true)
-    assert.equal(result.failure?.layer, 'scanner')
-    assert.equal(result.failure?.policy, 'fail_open')
+    assert.equal(result.failure, undefined)
   })
 
   await test('known-value: strukturált forrás hiba → fail-closed', async () => {

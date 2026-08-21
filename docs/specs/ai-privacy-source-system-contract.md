@@ -4,9 +4,9 @@
 
 | | |
 |---|---|
-| **Verzió** | v0.1 |
-| **Státusz** | szerződés-tervezet — odaadható forrásrendszer-csapatnak |
-| **Dátum** | 2026-08-20 |
+| **Verzió** | v0.2 |
+| **Státusz** | szerződés — odaadható forrásrendszer-csapatnak |
+| **Dátum** | 2026-08-21 |
 | **Célközönség** | CRM / ERP / egyéb forrásrendszer termék- és fejlesztőcsapata |
 | **Szülő spec** | [`ai-privacy-gateway-spec.md`](./ai-privacy-gateway-spec.md) (platformoldali mechanika) |
 | **Referenciaimplementáció** | saját CRM connector (`ostorosbor-crm-*`) + `company` entitástípus |
@@ -17,7 +17,7 @@ Ez a dokumentum **önállóan olvasható**. Nem kell ismerni a platform vaultjá
 
 ## 1. Egy mondatban
 
-A forrásrendszer **nem tokenizál**. Megjelöli, mely mezők azonosítók, stabil belső ID-t ad melléjük, és a tool-API-jait ID-val is el lehet érni. A csere (`SPAR Magyarország` → `[[COMPANY_1]]`) a platformon történik, közvetlenül az LLM-hívás előtt.
+A forrásrendszer **nem tokenizál**. Megjelöli, mely mezők azonosítók, stabil belső ID-t ad melléjük, és a tool-API-jait ID-val is el lehet érni. A csere (`SPAR Magyarország` → `[[COMPANY@S1_1]]`, vagy legacy `[[COMPANY_1]]`) a platformon történik, közvetlenül az LLM-hívás előtt.
 
 > A pszeudonimizáció azt szabályozza, hogy az **LLM** mit lát. A forrásrendszer saját felhasználói továbbra is a valódi adatot látják. A forrásrendszer access controlját a privacy réteg nem másolja le.
 
@@ -64,17 +64,32 @@ A forrásrendszer a connector capability-deklarációban közli, mit tud. Hiány
 
 ## 5. Domain-szabályok
 
-### 5.1 Entitástípusok
+### 5.1 Entitástípusok — forrás-definiált névtér
 
-A platform ezeket ismeri. Új típus felvétele platformoldali változás; a forrásrendszer ne találjon ki saját címkéket.
+**A forrás definiálja a típusokat; a platform nem tart zárt listát.** Minden entitástípus egy slug: `^[a-z][a-z0-9_]{0,31}$` (pl. `company`, `ingatlan`, `szerzodes`).
 
-| `entity_type` | Példa mező | LLM-álnév (csak a platform képzi) |
+A katalógus `entity_types` szekciójában minden, a mezőkben hivatkozott típusra nyilatkoznotok kell:
+
+```json
+"entity_types": {
+  "company":  { "label": "Cég",       "reversible": true  },
+  "ingatlan": { "label": "Ingatlan",  "reversible": true  }
+}
+```
+
+A platform az LLM felé a `label`-t adja legendában; a slug csak belső kulcs.
+
+**Alapértelmezett seed (legacy):** ha egy forrás nem nyilatkozik `entity_types`-ről, a platform az alábbi öt típust feltételezi — így a meglévő connectorok változatlanul működnek:
+
+| `entity_type` | Példa mező | LLM-álnév (a platform képzi) |
 |---|---|---|
-| `company` | `company_name`, `legal_name` | `[[COMPANY_1]]` |
-| `person` | `contact_name`, `full_name` | `[[PERSON_2]]` |
-| `email` | `email`, `billing_email` | `[[EMAIL_3]]` |
-| `phone` | `phone`, `mobile` | `[[PHONE_1]]` |
-| `account` | `iban` megjelenített forma, ügyfélszám szövegesen | `[[ACCOUNT_1]]` |
+| `company` | `company_name`, `legal_name` | `[[COMPANY@S1_1]]` |
+| `person` | `contact_name`, `full_name` | `[[PERSON@S1_2]]` |
+| `email` | `email`, `billing_email` | `[[EMAIL@S1_3]]` |
+| `phone` | `phone`, `mobile` | `[[PHONE@S1_1]]` |
+| `account` | IBAN megjelenített forma, ügyfélszám szövegesen | `[[ACCOUNT@S1_1]]` |
+
+**Forrásbélyeg:** ha ugyanaz a típus több connectorból jön, az álnév megkülönbözteti a forrást: `[[TÍPUS@S{n}_sorszám]]`. A `@S{n}` a tenanton belüli, monoton forrás-sorszám — **nem** a connector neve. A régi, bélyeg nélküli `[[COMPANY_1]]` továbbra is parse-olható (visszafelé kompatibilitás).
 
 ### 5.2 Mezőakció
 
@@ -119,7 +134,20 @@ Ezért az `id` (vagy a sablonban hivatkozott kulcs) **kötelező testvére** min
 
 > OBSERVE módban nincs leállás: a rendszer csak mér, a válasz nyersen megy tovább — a hiányzó testvérmező itt még nem okoz hibát, de a fedettség-riportban látszik.
 
-### 5.4 Tool-API-k ID-val dolgozzanak
+### 5.4 `reversible` — az egyetlen platform-invariáns
+
+Minden `entity_types` bejegyzéshez kötelező a `reversible` boolean:
+
+| `reversible` | Jelentés |
+|---|---|
+| `true` | Az álnév visszafordítható a trusted UI-n és az egress-felületeken (policy szerint). |
+| `false` | Az érték **nem** fordítható vissza — tipikusan titok, kulcs, hash. |
+
+**Kemény szabály (a platform mentéskor elutasítja):** `reversible: false` + mezőn `privacy: tokenize` → hiba, magyar üzenettel. Titok tokenizálása értelmetlen és tiltott.
+
+A platform **nem értelmezi** a `label` szövegét, nem osztályozza, nem menti policy-ként — csak továbbadja a modellnek.
+
+### 5.5 Tool-API-k ID-val dolgozzanak
 
 Amikor a modell `get_revenue(company="[[COMPANY_1]]")`-et hív, a platform a connector-hívás **előtt** kicseréli az argumentumot a source ID-ra. A forrásrendszer tehát ezt kapja:
 
@@ -163,9 +191,15 @@ Verziózott, cache-elhető, auth ugyanaz, mint a connector API-n (Bearer + actin
 
 ```json
 {
-  "catalog_version": 3,
-  "updated_at": "2026-08-20T08:00:00Z",
+  "catalog_version": 4,
+  "updated_at": "2026-08-21T08:00:00Z",
   "system": "crm",
+  "entity_types": {
+    "company":  { "label": "Cég",       "reversible": true  },
+    "ingatlan": { "label": "Ingatlan",  "reversible": true  },
+    "api_key":  { "label": "API-kulcs", "reversible": false }
+  },
+  "unlisted_default": "block",
   "privacy": {
     "structured_field_privacy": true,
     "stable_entity_ids": true,
@@ -179,6 +213,12 @@ Verziózott, cache-elhető, auth ugyanaz, mint a connector API-n (Bearer + actin
       "entity_type": "company",
       "source_id": "crm/company/{id}"
     },
+    "hrsz": {
+      "type": "string",
+      "privacy": "tokenize",
+      "entity_type": "ingatlan",
+      "source_id": "crm/ingatlan/{id}"
+    },
     "name": {
       "type": "string",
       "privacy": "tokenize",
@@ -190,6 +230,10 @@ Verziózott, cache-elhető, auth ugyanaz, mint a connector API-n (Bearer + actin
       "privacy": "tokenize",
       "entity_type": "email",
       "source_id": "crm/email/{id}"
+    },
+    "api_key": {
+      "type": "string",
+      "privacy": "block"
     },
     "revenue": {
       "type": "number",
@@ -212,6 +256,15 @@ Verziózott, cache-elhető, auth ugyanaz, mint a connector API-n (Bearer + actin
 }
 ```
 
+**Új v0.2 elemek:**
+
+| Mező | Szerep |
+|---|---|
+| `entity_types` | A forrás definiálja a teljes entitás-névteret (`label` + `reversible`). |
+| `unlisted_default` | Mi történjen a katalógusban **nem szereplő** mezőkkel: `pass`, `block`, vagy `tokenize` (utóbbi csak ha van default entity type — ajánlott: `block`). Korábban minden nem jelölt mező némán `pass` volt. |
+
+**Nyilatkozat-felülvizsgálat (D5):** a katalógus elfogadásakor a `pass`-nak jelölt string mezők mintaértékein titok-heurisztika fut (pl. `-----BEGIN`, magas entrópia, `sk-…`). Találat esetén **figyelmeztetés** az adminnak — nem szűrés, nem automatikus policy.
+
 **Mezőszelektor v1:** JSON-objektumkulcs, bármely mélységben. A platform a tool-választ bejárja; ha egy objektumban van `company_name` string és a sablon `{id}`-je kitöltött, cserél. Emiatt a tokenizálandó kulcsnevek legyenek **egyértelműek**: ha a cégnek és a kapcsolattartónak is `name` mezője van, a kapcsolattartót hívjátok `contact_name`-nek, vagy a cégét `company_name`-nek. Útvonal-szelektor (`$.accounts[*].legal_name`) későbbi bővítés.
 
 **Opcionális katalógusmezők** (a platform figyelmen kívül hagyhatja, amíg a matching capability `false`):
@@ -228,6 +281,8 @@ Verziózott, cache-elhető, auth ugyanaz, mint a connector API-n (Bearer + actin
 - `tokenize` + nem-string típus → elutasít, magyar hibával.
 - `tokenize` entity_type nélkül → elutasít.
 - `tokenize` `source_id` nélkül → elutasít (különben val-surrogate keletkezne, ami a forrásrendszer törlését nem viszi át).
+- `entity_type` slug érvénytelen vagy hiányzik a katalógus `entity_types`-ből → elutasít.
+- `reversible: false` + `tokenize` ugyanarra a típusra → elutasít (lásd §5.4).
 - `source_id` sablon `{mező}` hivatkozása, amely nincs a payload-sémában → elutasít.
 - `secret` / `password` / `api_key` jellegű mezőn `tokenize` → elutasít.
 
@@ -606,3 +661,4 @@ Ezek a [`ai-privacy-gateway-spec.md`](./ai-privacy-gateway-spec.md) tárgyai. Ha
 | Verzió | Dátum | Változás |
 |---|---|---|
 | v0.1 | 2026-08-20 | Első szerződés-tervezet a szülő spec §4 / §7 / §9 / §11 alapján; UI-ajánlással. |
+| v0.2 | 2026-08-21 | Nyitott entitás-névtér (#320): `entity_types`, `unlisted_default`, `reversible`, forrásbélyeg az álnévben; katalógus v2 séma; §5.1/§5.4/§6.1 frissítve. |

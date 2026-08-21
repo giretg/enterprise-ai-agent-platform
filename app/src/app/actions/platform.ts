@@ -1532,8 +1532,9 @@ export async function createHttpApiConnectorForAgent(input: {
     // oauth2_delegated: a connector user_delegated — a felhasználó adja a
     // hozzájárulást (authorization-code consent), az agent az ő tokenjével jár el.
     const isDelegated = parsed.authScheme === 'oauth2_delegated'
+    const { withConnectorPrivacySlot } = await import('@/lib/privacy-slot')
     const connector = await prisma.connector.create({
-      data: {
+      data: await withConnectorPrivacySlot(prisma, {
         type: 'http_api',
         name: parsed.name,
         authMode: isDelegated ? 'user_delegated' : 'service',
@@ -1541,7 +1542,7 @@ export async function createHttpApiConnectorForAgent(input: {
         config: config as Prisma.InputJsonValue,
         secretAlias: null,
         tenantId: user.activeTenantId ?? null,
-      },
+      }),
     })
 
     const { saveConnectorApiKey, buildConnectorSecretRef } = await import(

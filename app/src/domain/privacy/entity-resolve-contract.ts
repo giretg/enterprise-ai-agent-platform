@@ -1,22 +1,18 @@
 /**
- * Connector entity resolution szerződés (APG-17, spec §9 / §11; forrás §6.3).
- *
- * A platform candidate extractiont végez; a tényleges feloldást a connector
- * `resolve(text, entity_type?)` adja — pontosan három kimenet: match / ambiguous / none.
+ * Connector entity resolution szerződés (APG-17, spec §9 / §11; forrás §6.3, issue #320).
  */
 import { z } from 'zod'
-import { SURROGATE_ENTITY_TYPES, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
+import { ENTITY_TYPE_SLUG_RE, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 
 export const ENTITY_RESOLVE_STATUSES = ['match', 'ambiguous', 'none'] as const
 export type EntityResolveStatus = (typeof ENTITY_RESOLVE_STATUSES)[number]
 
-/** Ajánlott platform-küszöb (forrás §6.3): ≥0.85 egyértelmű találat. */
 export const ENTITY_RESOLVE_MATCH_CONFIDENCE = 0.85
 export const ENTITY_RESOLVE_AMBIGUOUS_CONFIDENCE = 0.5
 
 export const entityResolveCandidateSchema = z.object({
   source_id: z.string().min(1),
-  entity_type: z.enum(SURROGATE_ENTITY_TYPES),
+  entity_type: z.string().regex(ENTITY_TYPE_SLUG_RE),
   display_name: z.string().min(1),
   aliases: z.array(z.string()).optional(),
   confidence: z.number().min(0).max(1),
@@ -38,17 +34,12 @@ export type ConnectorEntityResolver = {
   resolve(input: EntityResolveRequest): Promise<EntityResolveResponse>
 }
 
-/** A connector nyers válaszának normalizálása — érvénytelen alak → none (fail-open). */
 export function parseEntityResolveResponse(raw: unknown): EntityResolveResponse {
   const parsed = entityResolveResponseSchema.safeParse(raw)
   if (!parsed.success) return { status: 'none', candidates: [] }
   return normalizeEntityResolveResponse(parsed.data)
 }
 
-/**
- * Biztonsági háló: ha a connector `match`-et ad, de a confidence alacsony,
- * ambiguous-ra esik vissza; több közeli találat is ambiguous.
- */
 export function normalizeEntityResolveResponse(response: EntityResolveResponse): EntityResolveResponse {
   const sorted = [...response.candidates].sort((a, b) => b.confidence - a.confidence)
   if (response.status === 'none' || sorted.length === 0) {
@@ -81,7 +72,6 @@ export function entityResolveCandidateToRef(
   }
 }
 
-/** Már feloldott source ID — ne kérdezzük újra a connectort. */
 export const SOURCE_ID_SHAPE_RE = /^[a-z][a-z0-9_]*\/[a-z][a-z0-9_]*\/.+/i
 
 export function looksLikeSourceId(value: string): boolean {

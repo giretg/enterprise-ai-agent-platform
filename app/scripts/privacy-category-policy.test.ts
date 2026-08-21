@@ -3,7 +3,7 @@
  * hierarchia, kemény invariánsok, a mai kapcsoló migrációja.
  *
  * DoD: a ma allowSensitiveExternalModel=true agentek viselkedése nem változik;
- * secret_key: tokenize mentése elbukik; pan: allow superadmin nélkül elbukik.
+ * secret_key: tokenize mentése elbukik; pan: allow megerősítés nélkül elbukik (#320 D9).
  *
  * Futtatás: npm run test:privacy-category-policy
  */
@@ -140,19 +140,14 @@ async function main() {
     )
   })
 
-  await test('pan: allow superadmin nélkül elbukik', () => {
-    assert.throws(
-      () =>
-        assertPrivacyCategoryPolicyPatch(
-          { categories: { pan: 'allow' } },
-          { ...TENANT_ADMIN, confirmation: PAN_IBAN_ALLOW_CONFIRMATION },
-        ),
-      (err: unknown) =>
-        err instanceof PrivacyCategoryPolicyError && err.code === 'allow_requires_superadmin',
+  await test('pan: allow tenant adminnál megerősítéssel átmegy (#320 D9)', () => {
+    assertPrivacyCategoryPolicyPatch(
+      { categories: { pan: 'allow' } },
+      { ...TENANT_ADMIN, confirmation: PAN_IBAN_ALLOW_CONFIRMATION },
     )
   })
 
-  await test('pan: allow superadminnál megerősítés nélkül elbukik', () => {
+  await test('pan: allow megerősítés nélkül elbukik', () => {
     assert.throws(
       () =>
         assertPrivacyCategoryPolicyPatch(
@@ -164,7 +159,7 @@ async function main() {
     )
   })
 
-  await test('pan/iban allow superadmin + ALLOW_PAN_IBAN megerősítéssel átmegy', () => {
+  await test('pan/iban allow ALLOW_PAN_IBAN megerősítéssel átmegy', () => {
     assertPrivacyCategoryPolicyPatch(
       { categories: { pan: 'allow', iban: 'allow', email: 'tokenize' } },
       SUPERADMIN,
@@ -254,10 +249,13 @@ async function main() {
     await assert.rejects(
       () => svc.setPrivacyCategoryPolicy({ categories: { pan: 'allow' } }, TENANT_ADMIN),
       (err: unknown) =>
-        err instanceof PrivacyCategoryPolicyError && err.code === 'allow_requires_superadmin',
+        err instanceof PrivacyCategoryPolicyError && err.code === 'allow_confirmation_required',
     )
 
-    await svc.setPrivacyCategoryPolicy({ categories: { pan: 'allow' } }, SUPERADMIN)
+    await svc.setPrivacyCategoryPolicy(
+      { categories: { pan: 'allow' } },
+      { ...TENANT_ADMIN, confirmation: PAN_IBAN_ALLOW_CONFIRMATION },
+    )
     const panAllowed = await svc.resolvePrivacyCategoryPolicy({ tenantId: TENANT })
     assert.equal(panAllowed.categories.pan, 'allow')
 

@@ -8,6 +8,7 @@
 import type { Connector, Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { upsertConnectorByTypeName } from '@/lib/connector-upsert'
+import { withConnectorPrivacySlot } from '@/lib/privacy-slot'
 import {
   DEFAULT_WEB_SEARCH_CONFIG,
   parseWebSearchConfig,
@@ -123,7 +124,7 @@ export async function ensureTenantWebSearchConnector(
   const config = defaultTenantWebSearchConfig(configOverrides)
 
   return prisma.connector.create({
-    data: {
+    data: await withConnectorPrivacySlot(prisma, {
       type: 'web_search',
       name: TENANT_WEB_SEARCH_CONNECTOR_NAME,
       authMode: 'agent_owned',
@@ -133,7 +134,7 @@ export async function ensureTenantWebSearchConnector(
       version: 1,
       config: config as unknown as Prisma.InputJsonValue,
       lifecycleState: 'active',
-    },
+    }),
   })
 }
 

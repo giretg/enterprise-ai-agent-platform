@@ -12,25 +12,14 @@
  * mennek át. A bemenetet nem mutálja.
  */
 import { collectSensitivityMatchSpans } from '@/domain/gateway/sensitivity-router'
-import { applySurrogateReplacements } from '@/domain/privacy/apply-replacements'
-import {
-  actionForPrivacyCategory,
-  canonicalPrivacyCategory,
-  type PrivacyCategoryAction,
-  type ResolvedPrivacyCategoryPolicy,
-} from '@/domain/privacy/privacy-category-policy'
+import type { ResolvedPrivacyCategoryPolicy } from '@/domain/privacy/privacy-category-policy'
 import type { PrivacyGatewayMode, PrivacySpan } from '@/domain/privacy/privacy-mode'
 import { substituteKnownValuesInText } from '@/domain/privacy/known-value-substitution'
 import { findKnownValueMatches } from '@/domain/privacy/known-value-matcher'
-import {
-  runPrivacyTransformLayer,
-  type PrivacyTransformFailureAudit,
-} from '@/domain/privacy/privacy-transform-failure'
+import type { PrivacyTransformFailureAudit } from '@/domain/privacy/privacy-transform-failure'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import {
-  isSurrogateEntityType,
   parseSurrogate,
-  type SurrogateEntityType,
 } from '@/domain/privacy/surrogate-format'
 import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
 import {
@@ -70,11 +59,11 @@ function shouldTransformPromptMessage(
 export type PromptPrivacyTransformInput<T extends PromptPrivacyMessage> = {
   messages: T[]
   mode: PrivacyGatewayMode
-  policy: ResolvedPrivacyCategoryPolicy | ((category: string) => PrivacyCategoryAction | Promise<PrivacyCategoryAction>)
+  /** Megmaradt a hívói kompatibilitásért; a vak regex-tokenizálás kivezetve (#320 D6). */
+  policy?: ResolvedPrivacyCategoryPolicy
   engine: SurrogateEngine
   tenantId: string
   scope: PrivacyScope
-  /** APG-17 — connector `resolve()` a user üzenetekben (best-effort). */
   entityResolution?: UserInputEntityResolution
 }
 
@@ -92,7 +81,6 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
     return { messages: input.messages, spans: [], applied: false }
   }
 
-  const actionOf = resolver(input.policy)
   const boundary = cacheBoundaryIndex(input.messages)
   let messages = input.messages
   let knownApplied = false
@@ -160,115 +148,12 @@ export async function transformPromptMessages<T extends PromptPrivacyMessage>(
     messages = transformed
   }
 
-  const pending: Array<{
-    messageIndex: number
-    start: number
-    end: number
-    entityType: SurrogateEntityType
-    value: string
-  }> = []
-
-  let scanFailure: PrivacyTransformFailureAudit | undefined
-  try {
-    for (const [messageIndex, message] of messages.entries()) {
-      if (!shouldTransformPromptMessage(message, messageIndex, boundary)) continue
-      const text = message.content ?? ''
-      if (!text) continue
-      for (const span of collectSensitivityMatchSpans(text)) {
-        const category = canonicalPrivacyCategory(span.category)
-        if ((await actionOf(category)) !== 'tokenize') continue
-        if (!isSurrogateEntityType(category)) continue
-        pending.push({
-          messageIndex,
-          start: span.start,
-          end: span.end,
-          entityType: category,
-          value: span.value,
-        })
-      }
-    }
-  } catch (error) {
-    if (input.mode === 'enforce') {
-      const degraded = await runPrivacyTransformLayer({
-        layer: 'scanner',
-        work: async () => {
-          throw error
-        },
-        onFailOpen: () => null,
-      })
-      scanFailure = degraded.failure
-    }
-  }
-
-  const spans: PrivacySpan[] = [
-    ...knownSpans,
-    ...entitySpans,
-    ...pending.map((slot) => ({
-      entityType: slot.entityType,
-      field: 'prompt',
-    })),
-  ]
-
-  if (pending.length === 0) {
-    return {
-      messages,
-      spans,
-      applied: knownApplied || entityApplied,
-      failure: knownFailure ?? entityFailure ?? scanFailure,
-    }
-  }
-
-  if (input.mode !== 'enforce') {
-    return { messages, spans, applied: false, failure: knownFailure ?? entityFailure ?? scanFailure }
-  }
-
-  // D2 — szabad szöveges találat VAL-surrogate-ot kap: a nyers e-mail/telefon
-  // titkosítva kerül a vaultba, a `source_id` csak a hash. Ref-sorként a nyers
-  // érték kulcsként, olvashatóan maradna ott, és a beszélgetés törlése
-  // (crypto-shredding) sem érné el — második, örökké élő PII-példány.
-  const surrogates = await runPrivacyTransformLayer({
-    layer: 'vault',
-    work: async () =>
-      input.engine.allocateVals(
-        pending.map((slot) => ({
-          tenantId: input.tenantId,
-          scope: input.scope,
-          entityType: slot.entityType,
-          plaintext: slot.value,
-        })),
-      ),
-    onFailOpen: () => [],
-  }).then((r) => r.value)
-
-  const byMessage = new Map<number, Array<{ start: number; end: number; surrogate: string }>>()
-  pending.forEach((slot, index) => {
-    const surrogate = surrogates[index]
-    if (!surrogate) return
-    const list = byMessage.get(slot.messageIndex) ?? []
-    list.push({ start: slot.start, end: slot.end, surrogate })
-    byMessage.set(slot.messageIndex, list)
-  })
-
-  const resolvedMessages = messages.map((message, index) => {
-    const replacements = byMessage.get(index)
-    if (!replacements || replacements.length === 0) return message
-    const text = message.content ?? ''
-    return { ...message, content: applySurrogateReplacements(text, replacements) }
-  })
+  const spans: PrivacySpan[] = [...knownSpans, ...entitySpans]
 
   return {
-    messages: resolvedMessages,
+    messages,
     spans,
-    applied: true,
-    failure: knownFailure ?? entityFailure ?? scanFailure,
+    applied: knownApplied || entityApplied,
+    failure: knownFailure ?? entityFailure,
   }
-}
-
-function resolver(
-  policy: ResolvedPrivacyCategoryPolicy | ((category: string) => PrivacyCategoryAction | Promise<PrivacyCategoryAction>),
-): (category: string) => Promise<PrivacyCategoryAction> {
-  if (typeof policy === 'function') {
-    return async (category) => policy(category)
-  }
-  return async (category) => actionForPrivacyCategory(policy, category)
 }

@@ -15,7 +15,7 @@ import {
   type ResolveDenyReason,
 } from '@/domain/privacy/resolve-access'
 import type { ConversationPrivacyKeyRepository } from '@/repositories/interfaces'
-import { formatSurrogate, parseSurrogate } from '@/domain/privacy/surrogate-format'
+import { formatSurrogate, parseSurrogate, surrogateOrdinalKey } from '@/domain/privacy/surrogate-format'
 import type { SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import {
   type PrivacyScope,
@@ -52,10 +52,10 @@ export type PrivacyAuditSink = {
 export type AllocateRefInput = {
   tenantId: string
   scope: PrivacyScope
-  /** Megjelenítési érték a trusted UI-hoz — a vault ref-rekord NEM tárolja (spec §6). */
   displayValue?: string
-  /** A known-value fail-policyhoz: csak explicit strukturált mező kap hard forrásjelölést. */
   displayValueSource?: 'structured_field' | 'scanner'
+  /** Forrásbélyeg, pl. `S2` — issue #320 D3. */
+  sourceSlot?: string | null
 } & RefEntityRef
 
 export type ResolveRefInput = {
@@ -666,8 +666,9 @@ export class SurrogateEngine {
       cache.byEntity.set(entityKey(record), record)
       const parsed = parseSurrogate(record.surrogate)
       if (parsed) {
-        const prev = cache.maxOrdinal.get(parsed.entityType) ?? 0
-        if (parsed.ordinal > prev) cache.maxOrdinal.set(parsed.entityType, parsed.ordinal)
+        const ordinalKey = surrogateOrdinalKey(parsed.entityType, parsed.sourceSlot)
+        const prev = cache.maxOrdinal.get(ordinalKey) ?? 0
+        if (parsed.ordinal > prev) cache.maxOrdinal.set(ordinalKey, parsed.ordinal)
       }
     }
     this.scopes.set(key, cache)
@@ -691,15 +692,16 @@ export class SurrogateEngine {
         sourceId: string
         surrogate: string
       }> = remaining.map((input) => {
-        const next = (cache.maxOrdinal.get(input.entityType) ?? 0) + 1
-        cache.maxOrdinal.set(input.entityType, next)
+        const ordinalKey = surrogateOrdinalKey(input.entityType, input.sourceSlot)
+        const next = (cache.maxOrdinal.get(ordinalKey) ?? 0) + 1
+        cache.maxOrdinal.set(ordinalKey, next)
         return {
           tenantId,
           scope,
           entityType: input.entityType,
           connectorId: input.connectorId,
           sourceId: input.sourceId,
-          surrogate: formatSurrogate(input.entityType, next),
+          surrogate: formatSurrogate(input.entityType, next, input.sourceSlot),
         }
       })
       const records = await this.vault.insertRefs(batch)
@@ -711,8 +713,9 @@ export class SurrogateEngine {
         foundKeys.add(key)
         const parsed = parseSurrogate(record.surrogate)
         if (parsed) {
-          const max = cache.maxOrdinal.get(parsed.entityType) ?? 0
-          if (parsed.ordinal > max) cache.maxOrdinal.set(parsed.entityType, parsed.ordinal)
+          const ordinalKey = surrogateOrdinalKey(parsed.entityType, parsed.sourceSlot)
+          const max = cache.maxOrdinal.get(ordinalKey) ?? 0
+          if (parsed.ordinal > max) cache.maxOrdinal.set(ordinalKey, parsed.ordinal)
         }
       }
       remaining = remaining.filter((input) => !foundKeys.has(entityKey(input)))

@@ -73,8 +73,9 @@ async function main() {
     where: { type: 'gmail', authMode: 'user_delegated' },
   })
   if (!gmailConnector) {
+    const { withConnectorPrivacySlot } = await import('../src/lib/privacy-slot')
     gmailConnector = await prisma.connector.create({
-      data: {
+      data: await withConnectorPrivacySlot(prisma, {
         name: 'Gmail (S7 live)',
         type: 'gmail',
         authMode: 'user_delegated',
@@ -96,7 +97,7 @@ async function main() {
           },
         },
         secretAlias: 'secret://gmail/oauth-client',
-      },
+      }),
     })
   }
 

@@ -970,14 +970,13 @@ export class PlatformSettingsService {
     tenantId: string | null
     agentId?: string | null
   }): Promise<PrivacyGatewayMode> {
-    const platform = (await this.getPrivacyGatewayControls()).mode
     const tenant = input.tenantId
       ? (await this.getTenantPrivacyGatewayControls(input.tenantId)).mode
       : null
     const agent = input.agentId
       ? (await this.getAgentPrivacyGatewayControls(input.agentId)).mode
       : null
-    return resolvePrivacyGatewayMode({ platform, tenant, agent })
+    return resolvePrivacyGatewayMode({ tenant, agent })
   }
 
   // ── Sensitivity-router réteg (TAJ / adószám / kártya) — külön a tokenizálástól ──
@@ -1048,14 +1047,13 @@ export class PlatformSettingsService {
     tenantId: string | null
     agentId?: string | null
   }): Promise<SensitivityLayerMode> {
-    const platform = (await this.getSensitivityLayerControls()).mode
     const tenant = input.tenantId
       ? (await this.getTenantSensitivityLayerControls(input.tenantId)).mode
       : null
     const agent = input.agentId
       ? (await this.getAgentSensitivityLayerControls(input.agentId)).mode
       : null
-    return resolveSensitivityLayerMode({ platform, tenant, agent })
+    return resolveSensitivityLayerMode({ tenant, agent })
   }
 
   // ── AI Privacy Gateway kategória-policy (APG-11, spec §2) ─────────────────

@@ -347,7 +347,7 @@ async function main() {
 
   const scope: PrivacyScope = { type: 'conversation', id: CONVERSATION }
 
-  await test('ENFORCE + email tokenize: álnév, classify clean', async () => {
+  await test('D6: szabad szöveges e-mail nem kap automatikus álnevet (forrás felel)', async () => {
     const original = [{ role: 'user' as const, content: `Írj a ${EMAIL} címre` }]
     const result = await transformPromptMessages({
       messages: original,
@@ -357,12 +357,11 @@ async function main() {
       tenantId: TENANT,
       scope,
     })
-    assert.equal(result.applied, true)
-    assert.equal(result.messages[0]?.content?.includes('[[EMAIL_1]]'), true)
-    assert.equal(result.messages[0]?.content?.includes(EMAIL), false)
+    assert.equal(result.applied, false)
+    assert.equal(result.messages[0]?.content?.includes(EMAIL), true)
     assert.equal(original[0]?.content?.includes(EMAIL), true, 'a nyers üzenetet nem szabad mutálni')
     const decision = classifyPrompt(result.messages)
-    assert.equal(decision.level, 'clean')
+    assert.equal(decision.level, 'sensitive')
   })
 
   await test('produkciós prompt-út known-value cserét végez a strukturált mező értékén', async () => {
@@ -390,7 +389,7 @@ async function main() {
     assert.equal(result.messages[0]?.content?.includes('[[COMPANY_1]]'), true)
   })
 
-  await test('known-value nem töri szét a magasabb prioritású e-mail span domainjét', async () => {
+  await test('known-value nem cserél e-mail címet, ha nincs strukturált jelölés', async () => {
     const engine = makeEngine()
     await engine.allocateRef({
       tenantId: TENANT,
@@ -409,7 +408,7 @@ async function main() {
       tenantId: TENANT,
       scope,
     })
-    assert.equal(result.messages[0]?.content, 'Kapcsolat: [[EMAIL_1]]')
+    assert.equal(result.messages[0]?.content, `Kapcsolat: ${EMAIL}`)
   })
 
   await test('produkciós prompt-út: ragozott known-value (SPAR-nak)', async () => {
@@ -447,12 +446,12 @@ async function main() {
       scope,
     })
     assert.equal(result.applied, false)
-    assert.equal(result.spans.length > 0, true)
+    assert.equal(result.spans.length, 0)
     assert.equal(result.messages[0]?.content?.includes(EMAIL), true)
     assert.equal(classifyPrompt(result.messages).level, 'sensitive')
   })
 
-  await test('email tokenize után a PAN a maradékon forbidden marad', async () => {
+  await test('szabad szöveges e-mail + PAN: mindkettő nyers marad, classify forbidden', async () => {
     const result = await transformPromptMessages({
       messages: [{ role: 'user', content: `Írj a ${EMAIL} címre, kártya: ${PAN}` }],
       mode: 'enforce',
@@ -461,12 +460,12 @@ async function main() {
       tenantId: TENANT,
       scope,
     })
-    assert.equal(result.messages[0]?.content?.includes(EMAIL), false)
+    assert.equal(result.messages[0]?.content?.includes(EMAIL), true)
     assert.equal(result.messages[0]?.content?.includes(PAN), true)
     assert.equal(classifyPrompt(result.messages).level, 'forbidden')
   })
 
-  await test('gateway: pszeudonimizált e-mail → clean, külső modell, nyers cím nincs kint', async () => {
+  await test('gateway: nyers e-mail → sensitivity local_only / fail-closed', async () => {
     const capture = { messages: [] as unknown, provider: '', n: 0 }
     const policy = tokenizeEmailPolicy()
     const gw = wiredGateway({
@@ -479,19 +478,18 @@ async function main() {
       { role: 'assistant' as const, content: 'Rendben.' },
       { role: 'user' as const, content: 'Küldd el, köszi.' },
     ]
-    const result = await gw.call({
-      agentId: AGENT,
-      tenantId: TENANT,
-      conversationId: CONVERSATION,
-      messages: original,
-      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
-    })
-    assert.equal(result.provider, 'chatgpt-oauth')
-    assert.equal(capture.n, 1)
-    assert.equal(capture.provider, 'chatgpt-oauth')
-    const sent = JSON.stringify(capture.messages)
-    assert.equal(sent.includes(EMAIL), false, 'nyers e-mail kiment a providerhez')
-    assert.equal(sent.includes('[[EMAIL_1]]'), true)
+    await assert.rejects(
+      () =>
+        gw.call({
+          agentId: AGENT,
+          tenantId: TENANT,
+          conversationId: CONVERSATION,
+          messages: original,
+          modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+        }),
+      (err: unknown) => err instanceof Error && /helyi modell|sensitivity/i.test(err.message),
+    )
+    assert.equal(capture.n, 0)
     assert.equal(original[0]?.content.includes(EMAIL), true, 'a hívó nyers előzménye megmarad')
   })
 
@@ -621,7 +619,7 @@ async function main() {
     assert.equal(capture.n, 0)
   })
 
-  await test('gateway regresszió: sensitive TAJ helyi modellre kényszerül, e-mail tokenize mellett is', async () => {
+  await test('gateway regresszió: sensitive TAJ helyi modellre kényszerül (e-mail nyers marad)', async () => {
     const capture = { messages: [] as unknown, provider: '', n: 0 }
     const policy = tokenizeEmailPolicy()
     const gw = wiredGateway({
@@ -640,11 +638,11 @@ async function main() {
     assert.equal(result.provider, 'ollama')
     assert.equal(capture.provider, 'ollama')
     const sent = JSON.stringify(capture.messages)
-    assert.equal(sent.includes(EMAIL), false)
+    assert.equal(sent.includes(EMAIL), true)
     assert.equal(sent.includes(TAJ), true)
   })
 
-  await test('APG-20: memória-chunk (system, cache-határ után) email → álnév', async () => {
+  await test('APG-20: memória-chunk email nyers marad known-value nélkül (D6)', async () => {
     const messages = assembleGatewayMessages({
       stablePreamble: [{ role: 'system', content: 'agent system prompt' }],
       stablePostamble: [{ role: 'system', content: 'memória capture-policy' }],
@@ -663,9 +661,8 @@ async function main() {
     })
     const memoryMsg = result.messages.find((m) => m.content?.includes('Project memory context'))
     assert.ok(memoryMsg, 'memória-blokk megmarad')
-    assert.equal(memoryMsg.content?.includes('[[EMAIL_1]]'), true)
-    assert.equal(memoryMsg.content?.includes(EMAIL), false)
-    assert.equal(result.applied, true)
+    assert.equal(memoryMsg.content?.includes(EMAIL), true)
+    assert.equal(result.applied, false)
   })
 
   await test('APG-20: stabil system prefix (cache-határig) email → változatlan', async () => {
@@ -689,7 +686,7 @@ async function main() {
     assert.equal(result.applied, false)
   })
 
-  await test('gateway APG-20: memória-chunk email pszeudonimizálva megy a modellhez', async () => {
+  await test('gateway APG-20: memória-chunk system email nem tokenizálódik (D6)', async () => {
     const capture = { messages: [] as unknown, provider: '', n: 0 }
     const policy = tokenizeEmailPolicy()
     const gw = wiredGateway({
@@ -713,8 +710,8 @@ async function main() {
       modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
     })
     const sent = JSON.stringify(capture.messages)
-    assert.equal(sent.includes(EMAIL), false, 'nyers e-mail a memória-chunkban kiment volna')
-    assert.equal(sent.includes('[[EMAIL_1]]'), true)
+    assert.equal(sent.includes(EMAIL), true, 'system memória-chunk known-value nélkül nyers marad')
+    assert.equal(sent.includes('[[EMAIL_1]]'), false)
   })
 
   await test('gateway regresszió: forbidden human override továbbra is kimehet', async () => {

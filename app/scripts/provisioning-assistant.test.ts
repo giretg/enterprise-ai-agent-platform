@@ -130,6 +130,7 @@ class FakeDraftRepo implements ConnectorDraftRepository {
       activeSpecVersionId: null,
       consequenceBoundary: null,
       tenantId: input.tenantId,
+      privacySlot: this.seq,
       createdAt: new Date(),
     }
     const row = {

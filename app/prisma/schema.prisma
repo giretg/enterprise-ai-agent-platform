@@ -1659,6 +1659,9 @@ model Connector {
   /// issue #220 — opcionális UI címke / admin-javaslat (NEM kapcsolja a kaput).
   consequenceBoundary ConsequenceBoundary? @map("consequence_boundary")
 
+  /// issue #320 — tenanton belüli monoton forrás-sorszám (S1, S2, …); soha nem újrahasznált.
+  privacySlot Int @map("privacy_slot")
+
   agentConnectors    AgentConnector[]
   toolCalls          ToolCall[]
   documents          Document[]
@@ -1671,6 +1674,7 @@ model Connector {
   // §4.2: tenant-scope egyediség — a régi @@unique([type, name]) cross-tenant
   // névütközést okozott (két tenant nem használhatta ugyanazt a connector-nevet).
   @@unique([tenantId, type, name])
+  @@unique([tenantId, privacySlot], map: "connectors_tenant_privacy_slot_key")
   @@map("connectors")
 }
 

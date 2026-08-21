@@ -320,29 +320,23 @@ export async function setPrivacyGatewayModeAction(input: unknown) {
     const parsed = setPrivacyGatewayModeSchema.parse(input)
     const access = await resolveEditorAccess(parsed)
     if (parsed.layer === 'platform') {
-      await requirePlatformRole('superadmin')
-      if (parsed.mode == null) return fail('A platform üzemmódja nem lehet üres.')
-      await services.platformSettings.setPrivacyGatewayControls(
+      return fail('A platform szintű adatvédelmi üzemmód megszűnt. Állítsd a szervezet vagy az AI-munkatárs szintjén.')
+    }
+    await requireTenantRole('admin')
+    if (parsed.layer === 'tenant') {
+      if (!access.tenantId) return fail('Nincs aktív szervezet.')
+      await services.platformSettings.setTenantPrivacyGatewayControls(
+        access.tenantId,
         { mode: parsed.mode },
         access.ctx.user.id,
       )
     } else {
-      await requireTenantRole('admin')
-      if (parsed.layer === 'tenant') {
-        if (!access.tenantId) return fail('Nincs aktív szervezet.')
-        await services.platformSettings.setTenantPrivacyGatewayControls(
-          access.tenantId,
-          { mode: parsed.mode },
-          access.ctx.user.id,
-        )
-      } else {
-        if (!parsed.agentId) return fail('Az AI-munkatárs azonosítója hiányzik.')
-        await services.platformSettings.setAgentPrivacyGatewayControls(
-          parsed.agentId,
-          { mode: parsed.mode },
-          access.ctx.user.id,
-        )
-      }
+      if (!parsed.agentId) return fail('Az AI-munkatárs azonosítója hiányzik.')
+      await services.platformSettings.setAgentPrivacyGatewayControls(
+        parsed.agentId,
+        { mode: parsed.mode },
+        access.ctx.user.id,
+      )
     }
 
     const view = await loadPrivacyAdminView({
@@ -365,29 +359,23 @@ export async function setSensitivityLayerModeAction(input: unknown) {
     const parsed = setSensitivityLayerModeSchema.parse(input)
     const access = await resolveEditorAccess(parsed)
     if (parsed.layer === 'platform') {
-      await requirePlatformRole('superadmin')
-      if (parsed.mode == null) return fail('A platform üzemmódja nem lehet üres.')
-      await services.platformSettings.setSensitivityLayerControls(
+      return fail('A platform szintű mintaszűrő üzemmód megszűnt. Állítsd a szervezet vagy az AI-munkatárs szintjén.')
+    }
+    await requireTenantRole('admin')
+    if (parsed.layer === 'tenant') {
+      if (!access.tenantId) return fail('Nincs aktív szervezet.')
+      await services.platformSettings.setTenantSensitivityLayerControls(
+        access.tenantId,
         { mode: parsed.mode },
         access.ctx.user.id,
       )
     } else {
-      await requireTenantRole('admin')
-      if (parsed.layer === 'tenant') {
-        if (!access.tenantId) return fail('Nincs aktív szervezet.')
-        await services.platformSettings.setTenantSensitivityLayerControls(
-          access.tenantId,
-          { mode: parsed.mode },
-          access.ctx.user.id,
-        )
-      } else {
-        if (!parsed.agentId) return fail('Az AI-munkatárs azonosítója hiányzik.')
-        await services.platformSettings.setAgentSensitivityLayerControls(
-          parsed.agentId,
-          { mode: parsed.mode },
-          access.ctx.user.id,
-        )
-      }
+      if (!parsed.agentId) return fail('Az AI-munkatárs azonosítója hiányzik.')
+      await services.platformSettings.setAgentSensitivityLayerControls(
+        parsed.agentId,
+        { mode: parsed.mode },
+        access.ctx.user.id,
+      )
     }
 
     const view = await loadPrivacyAdminView({

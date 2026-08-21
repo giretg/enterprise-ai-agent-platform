@@ -97,6 +97,7 @@ export interface SurrogateVault {
     tenantId: string,
     scope: PrivacyScope,
     entityType: SurrogateEntityType,
+    sourceSlot?: string | null,
   ): Promise<number>
   insertRef(input: InsertRefInput): Promise<RefVaultRecord>
   insertRefs(inputs: InsertRefInput[]): Promise<RefVaultRecord[]>

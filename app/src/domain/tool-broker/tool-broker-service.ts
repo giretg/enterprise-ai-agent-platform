@@ -103,6 +103,8 @@ import {
   type PrivacyGatewayMode,
   type PrivacyModeResolver,
 } from '@/domain/privacy/privacy-mode'
+import type { SensitivityModeResolver } from '@/domain/gateway/sensitivity-mode'
+import { sensitivityLayerSkipsEnforcement } from '@/domain/gateway/sensitivity-mode'
 import {
   allowsExternalRaw,
   type PrivacyCategoryActionResolver,
@@ -158,6 +160,7 @@ export class ToolBrokerService {
   private structuredPrivacyEngine: SurrogateEngine | null = null
   private debugTraceService: DebugTraceService | null = null
   private privacyModeResolver: PrivacyModeResolver | null = null
+  private sensitivityModeResolver: SensitivityModeResolver | null = null
   private privacyCategoryActionResolver: PrivacyCategoryActionResolver | null = null
   private privacyPolicyResolver:
     | ((input: {
@@ -280,6 +283,10 @@ export class ToolBrokerService {
    */
   setPrivacyModeResolver(resolver: PrivacyModeResolver | null): void {
     this.privacyModeResolver = resolver
+  }
+
+  setSensitivityModeResolver(resolver: SensitivityModeResolver | null): void {
+    this.sensitivityModeResolver = resolver
   }
 
   /** APG-11 — kategória-policy a web_search query-safety guardhoz. */
@@ -659,6 +666,10 @@ export class ToolBrokerService {
     query: string,
     legacyAllowSensitiveExternalModel: boolean,
   ): Promise<boolean> {
+    const mode = this.sensitivityModeResolver
+      ? await this.sensitivityModeResolver({ tenantId, agentId })
+      : 'enforce'
+    if (sensitivityLayerSkipsEnforcement(mode)) return true
     if (!this.privacyCategoryActionResolver) return legacyAllowSensitiveExternalModel
     const safety = this.webSearchPolicy.classifyQuery(query)
     if (!safety.blocked) return false

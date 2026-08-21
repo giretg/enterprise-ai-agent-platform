@@ -1,16 +1,8 @@
 /**
- * Privacy Gateway üzemmód és kill-switch hierarchia (APG-09, spec §13).
+ * Privacy Gateway üzemmód (APG-09, spec §13, issue #320 D9).
  *
- * platform master → tenant default → agent override. A beállított szintek
- * legszigorúbbika érvényesül (OFF < OBSERVE < ENFORCE): bármelyik lefelé
- * kapcsolhat, egyik sem oldhatja fel a szülő tiltását.
- *
- * Ebben a jegyben OFF és OBSERVE a rollout-alap; az ENFORCE érték tárolható
- * és érvényesül (APG-04 út). Az admin UI: APG-14. Platform-alapértelmezés: OBSERVE.
- *
- * A TAJ / adószám / kártya mintaszűrő **nem** ez a réteg — lásd
- * `domain/gateway/sensitivity-mode.ts`. Az OBSERVE itt csak az álnévcserét
- * némítja, a mintaszűrőt nem.
+ * Tenant default → agent override. Egyszerű felülírás: az agent értéke nyer,
+ * ha van; különben a tenant; különben az új tenant kezdőérték (OBSERVE).
  */
 import type { SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 
@@ -19,20 +11,11 @@ export type PrivacyGatewayMode = (typeof PRIVACY_GATEWAY_MODES)[number]
 
 export const DEFAULT_PRIVACY_GATEWAY_MODE: PrivacyGatewayMode = 'observe'
 
-/** PlatformSetting kulcs: `{ mode, updatedById?, updatedAt? }`. */
+/** @deprecated Platform-szint megszűnt (#320). Csak migráció olvassa. */
 export const PRIVACY_GATEWAY_CONTROLS_KEY = 'privacy.gateway.controls'
 
-/** Tenant-bucket: `{ [tenantId]: { mode | null, updatedById?, updatedAt? } }`. */
 export const PRIVACY_GATEWAY_TENANT_CONTROLS_KEY = 'privacy.gateway.tenant_controls'
-
-/** Agent-bucket: `{ [agentId]: { mode | null, updatedById?, updatedAt? } }`. */
 export const PRIVACY_GATEWAY_AGENT_CONTROLS_KEY = 'privacy.gateway.agent_controls'
-
-const RANK: Record<PrivacyGatewayMode, number> = {
-  off: 0,
-  observe: 1,
-  enforce: 2,
-}
 
 export function isPrivacyGatewayMode(value: unknown): value is PrivacyGatewayMode {
   return value === 'off' || value === 'observe' || value === 'enforce'
@@ -42,20 +25,16 @@ export function parsePrivacyGatewayMode(raw: unknown): PrivacyGatewayMode | null
   return isPrivacyGatewayMode(raw) ? raw : null
 }
 
-/**
- * Összevonás: a beállított szintek **legszigorúbbika** (OFF < OBSERVE < ENFORCE).
- * Bármelyik szint lefelé kapcsolhat; egyik sem oldhatja fel a szülő tiltását.
- * Hiányzó platform → OBSERVE (rollout-alap, nem ENFORCE).
- */
+/** Felülírás-lánc: agent → tenant → default (OBSERVE). */
 export function resolvePrivacyGatewayMode(layers: {
   platform?: PrivacyGatewayMode | null
   tenant?: PrivacyGatewayMode | null
   agent?: PrivacyGatewayMode | null
 }): PrivacyGatewayMode {
-  const modes: PrivacyGatewayMode[] = [layers.platform ?? DEFAULT_PRIVACY_GATEWAY_MODE]
-  if (layers.tenant) modes.push(layers.tenant)
-  if (layers.agent) modes.push(layers.agent)
-  return modes.reduce((strictest, next) => (RANK[next] < RANK[strictest] ? next : strictest))
+  if (layers.agent) return layers.agent
+  if (layers.tenant) return layers.tenant
+  if (layers.platform) return layers.platform
+  return DEFAULT_PRIVACY_GATEWAY_MODE
 }
 
 export type PrivacySpan = {
@@ -74,7 +53,7 @@ export function summarizePrivacySpans(spans: readonly PrivacySpan[]): PrivacySpa
   for (const span of spans) {
     byCategory[span.entityType] = (byCategory[span.entityType] ?? 0) + 1
   }
-  const categories = (Object.keys(byCategory) as SurrogateEntityType[]).sort()
+  const categories = Object.keys(byCategory).sort()
   return { spanCount: spans.length, categories, byCategory }
 }
 
@@ -93,7 +72,7 @@ export function mergePrivacySpanCategories(
   let merged = left
   for (const [key, count] of Object.entries(right)) {
     if (typeof count === 'number') {
-      merged = addSpanCategory(merged, key as SurrogateEntityType, count)
+      merged = addSpanCategory(merged, key, count)
     }
   }
   return merged

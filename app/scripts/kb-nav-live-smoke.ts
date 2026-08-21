@@ -38,12 +38,23 @@ async function main() {
   let failures = 0
 
   try {
+    const { withConnectorPrivacySlot } = await import('../src/lib/privacy-slot')
     // Két connector (scope-izoláció), egy published + egy draft artifact.
     await prisma.connector.create({
-      data: { id: connectorId, type: 'knowledge_base', name: `kb-nav-smoke-${connectorId}`, scope: 'single' },
+      data: await withConnectorPrivacySlot(prisma, {
+        id: connectorId,
+        type: 'knowledge_base',
+        name: `kb-nav-smoke-${connectorId}`,
+        scope: 'single',
+      }),
     })
     await prisma.connector.create({
-      data: { id: otherConnectorId, type: 'knowledge_base', name: `kb-nav-smoke-other-${otherConnectorId}`, scope: 'single' },
+      data: await withConnectorPrivacySlot(prisma, {
+        id: otherConnectorId,
+        type: 'knowledge_base',
+        name: `kb-nav-smoke-other-${otherConnectorId}`,
+        scope: 'single',
+      }),
     })
     await prisma.knowledgeArtifact.create({
       data: {

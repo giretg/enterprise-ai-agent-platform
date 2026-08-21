@@ -37,6 +37,8 @@ import type {
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { evaluateTenantOperationGate } from '@/lib/tenant-operation-gate'
 import { classifyPrompt } from '@/domain/gateway/sensitivity-router'
+import type { SensitivityModeResolver } from '@/domain/gateway/sensitivity-mode'
+import { sensitivityLayerSkipsEnforcement } from '@/domain/gateway/sensitivity-mode'
 import type {
   AuditRepository,
   ChannelAgentGrantRepository,
@@ -208,6 +210,7 @@ export type ChannelTurnServiceDeps = {
     conversationId: string
     userId: string
   }) => Promise<string>
+  resolveSensitivityLayerMode?: SensitivityModeResolver
 }
 
 export type ProcessTurnOutcome =
@@ -461,12 +464,17 @@ export class ChannelTurnService {
     }
 
     // Érzékenységi kapu a KIMENŐ szövegen (D10): sensitive/forbidden → BLOKK (nem terelés).
-    // A nyers választ a futásidő már a hiteles tárba írta (web-láthatóság); Telegramra CSAK a
-    // blokk megy — a nyers szöveg egyetlen kimenő hívásban sem szerepel.
-    // A `classifyPrompt` az `assistant`/`user`/`tool` szerepű üzeneteket nézi — a kimenő
-    // agent-válasz itt `assistant`-ként osztályozódik (formátum-alapú detektor, D10).
-    const sensitivity = classifyPrompt([{ role: 'assistant', content: result.text }])
-    if (sensitivity.level !== 'clean') {
+    const sensitivityMode = this.deps.resolveSensitivityLayerMode
+      ? await this.deps.resolveSensitivityLayerMode({
+          tenantId: identity.tenantId,
+          agentId: agent.id,
+        })
+      : 'enforce'
+    const skipSensitivityGate = sensitivityLayerSkipsEnforcement(sensitivityMode)
+    const sensitivity = skipSensitivityGate
+      ? { level: 'clean' as const, matchedCategory: undefined, findings: [] }
+      : classifyPrompt([{ role: 'assistant', content: result.text }])
+    if (!skipSensitivityGate && sensitivity.level !== 'clean') {
       await this.sendToThread(session, `${label}\n\n${SENSITIVITY_BLOCK_TEXT}`)
       await this.deps.audit.append({
         actorType: 'system',

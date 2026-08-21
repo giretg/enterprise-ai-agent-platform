@@ -34,6 +34,7 @@ import {
   actionForPrivacyCategory,
   allowsExternalRaw,
 } from '@/domain/privacy/privacy-category-policy'
+import { sensitivityLayerSkipsEnforcement } from '@/domain/gateway/sensitivity-mode'
 
 async function categoryAllowsExternalForAgent(
   agentId: string,
@@ -46,6 +47,14 @@ async function categoryAllowsExternalForAgent(
     legacyAllowSensitiveExternalModel,
   })
   return (category: string) => allowsExternalRaw(actionForPrivacyCategory(resolved, category))
+}
+
+async function skipsProvisioningSensitivityReview(
+  tenantId: string | null,
+  agentId: string,
+): Promise<boolean> {
+  const mode = await services.platformSettings.resolveSensitivityLayerMode({ tenantId, agentId })
+  return sensitivityLayerSkipsEnforcement(mode)
 }
 
 /**
@@ -458,6 +467,10 @@ export async function draftConfigFromApiDoc(input: unknown) {
       ),
       sensitivityReviewAccepted,
       reviewedByUserId: sensitivityReviewAccepted ? user.user.id : undefined,
+      skipSensitivityReview: await skipsProvisioningSensitivityReview(
+        user.activeTenantId,
+        assistant.id,
+      ),
     })
     if (!result.ok && result.error === 'SENSITIVITY_REVIEW_REQUIRED') {
       return ok({
@@ -590,6 +603,7 @@ export async function discoverConnectorFromName(input: unknown) {
       user.activeTenantId,
       egressAgent.allowSensitiveExternalModel,
     )
+    if (!(await skipsProvisioningSensitivityReview(user.activeTenantId, egressAgent.id))) {
     const reviewFindings = reviewableSensitivityFindings(sensitivity.findings, {
       categoryAllowsExternal,
       sensitivityReviewAccepted,
@@ -603,6 +617,7 @@ export async function discoverConnectorFromName(input: unknown) {
           findings: reviewFindings,
         },
       })
+    }
     }
 
     const result = await services.provisioningAssistant.discoverConfigFromName({

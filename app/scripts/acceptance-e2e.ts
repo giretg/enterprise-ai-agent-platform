@@ -3909,8 +3909,9 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
       fail('Tenant-scope grant', JSON.stringify(tenantSearch))
     }
 
+    const { withConnectorPrivacySlot } = await import('../src/lib/privacy-slot')
     const ownTenantConnector = await prisma.connector.create({
-      data: {
+      data: await withConnectorPrivacySlot(prisma, {
         type: 'gmail',
         name: `Acceptance PUC own tenant ${randomUUID()}`,
         authMode: 'user_delegated',
@@ -3930,10 +3931,10 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
             scopeTransform: 'gmailAlias',
           },
         },
-      },
+      }),
     })
     const otherTenantConnector = await prisma.connector.create({
-      data: {
+      data: await withConnectorPrivacySlot(prisma, {
         type: 'gmail',
         name: `Acceptance PUC other tenant ${randomUUID()}`,
         authMode: 'user_delegated',
@@ -3953,7 +3954,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
             scopeTransform: 'gmailAlias',
           },
         },
-      },
+      }),
     })
     const previousDevAuth = {
       id: process.env.DEV_AUTH_USER_ID,

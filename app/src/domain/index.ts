@@ -821,6 +821,9 @@ toolBrokerService.setDebugTraceService(debugTraceService)
 toolBrokerService.setPrivacyModeResolver(({ tenantId, agentId }) =>
   platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
 )
+toolBrokerService.setSensitivityModeResolver(({ tenantId, agentId }) =>
+  platformSettingsService.resolveSensitivityLayerMode({ tenantId, agentId }),
+)
 toolBrokerService.setConnectorEntityResolverFactory(async ({ connector, agentSecretAlias, actingUserId, agentId }) =>
   createConnectorEntityResolver({
     binding: { connector, agentSecretAlias: agentSecretAlias ?? null },
@@ -1237,6 +1240,8 @@ const channelTurnService = new ChannelTurnService({
       matrix,
     })
   },
+  resolveSensitivityLayerMode: ({ tenantId, agentId }) =>
+    platformSettingsService.resolveSensitivityLayerMode({ tenantId, agentId }),
 })
 channelTurnServiceRef = channelTurnService
 const wikiRuntime = new WikiAgentRuntime(

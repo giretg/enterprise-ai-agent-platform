@@ -365,17 +365,17 @@ async function main() {
     assert.equal(resolvePrivacyGatewayMode({ platform: 'observe', tenant: 'off' }), 'off')
   })
 
-  await test('platform plafon: agent nem léphet ENFORCE-ba OBSERVE alatt', () => {
+  await test('felülírás-lánc: agent nyer a tenant felett', () => {
     assert.equal(
       resolvePrivacyGatewayMode({ platform: 'observe', tenant: 'enforce', agent: 'enforce' }),
-      'observe',
+      'enforce',
     )
   })
 
-  await test('platform OFF mindent elzár; agent OFF platform ENFORCE mellett él', () => {
+  await test('platform szint figyelmen kívül hagyva; agent OFF mindig él', () => {
     assert.equal(
       resolvePrivacyGatewayMode({ platform: 'off', tenant: 'observe', agent: 'enforce' }),
-      'off',
+      'enforce',
     )
     assert.equal(
       resolvePrivacyGatewayMode({ platform: 'enforce', agent: 'off' }),
@@ -383,15 +383,15 @@ async function main() {
     )
   })
 
-  await test('mintaszűrő alapértelmezés ENFORCE; agent lefelé kapcsolhat', () => {
+  await test('mintaszűrő alapértelmezés ENFORCE; agent felülírhat', () => {
     assert.equal(DEFAULT_SENSITIVITY_LAYER_MODE, 'enforce')
     assert.equal(resolveSensitivityLayerMode({}), 'enforce')
     assert.equal(resolveSensitivityLayerMode({ platform: 'enforce', agent: 'observe' }), 'observe')
     assert.equal(resolveSensitivityLayerMode({ platform: 'enforce', agent: 'off' }), 'off')
     assert.equal(
       resolveSensitivityLayerMode({ platform: 'observe', tenant: 'enforce', agent: 'enforce' }),
-      'observe',
-      'a szülő megfigyelése plafon: az agent nem szigoríthat',
+      'enforce',
+      'agent felülírja a tenant és platform értékét',
     )
   })
 
@@ -603,23 +603,21 @@ async function main() {
     for (const event of events) assertNoRaw(event, String(event.action))
   })
 
-  await test('PlatformSetting hierarchia: default observe, tenant off, agent inherit', async () => {
+  await test('PlatformSetting hierarchia: tenant off, agent enforce nyer', async () => {
     const { svc, events } = inMemorySettings()
     assert.equal(await svc.resolvePrivacyGatewayMode({ tenantId: TENANT, agentId: AGENT }), 'observe')
 
-    await svc.setPrivacyGatewayControls({ mode: 'observe' }, 'admin-1')
     await svc.setTenantPrivacyGatewayControls(TENANT, { mode: 'off' }, 'admin-1')
     assert.equal(await svc.resolvePrivacyGatewayMode({ tenantId: TENANT, agentId: AGENT }), 'off')
 
     await svc.setAgentPrivacyGatewayControls(AGENT, { mode: 'enforce' }, 'admin-1')
     assert.equal(
       await svc.resolvePrivacyGatewayMode({ tenantId: TENANT, agentId: AGENT }),
-      'off',
-      'platform observe + tenant off plafonja alatt az agent ENFORCE nem él',
+      'enforce',
+      'agent felülírja a tenant off értékét',
     )
 
     await svc.setTenantPrivacyGatewayControls(TENANT, { mode: null }, 'admin-1')
-    await svc.setPrivacyGatewayControls({ mode: 'enforce' }, 'admin-1')
     assert.equal(await svc.resolvePrivacyGatewayMode({ tenantId: TENANT, agentId: AGENT }), 'enforce')
 
     await svc.setAgentPrivacyGatewayControls(AGENT, { mode: 'off' }, 'admin-1')
@@ -629,7 +627,7 @@ async function main() {
     assertNoRaw(events, 'mode.set')
   })
 
-  await test('mintaszűrő PlatformSetting: default enforce, agent observe dial-down', async () => {
+  await test('mintaszűrő PlatformSetting: agent observe a tenant off felett', async () => {
     const { svc, events } = inMemorySettings()
     assert.equal(
       await svc.resolveSensitivityLayerMode({ tenantId: TENANT, agentId: AGENT }),
@@ -645,7 +643,8 @@ async function main() {
     await svc.setTenantSensitivityLayerControls(TENANT, { mode: 'off' }, 'admin-1')
     assert.equal(
       await svc.resolveSensitivityLayerMode({ tenantId: TENANT, agentId: AGENT }),
-      'off',
+      'observe',
+      'agent observe felülírja a tenant off értékét',
     )
 
     assert.equal(events.every((e) => e.action === 'sensitivity.layer.mode.set'), true)

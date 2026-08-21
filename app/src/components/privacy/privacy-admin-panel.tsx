@@ -45,7 +45,7 @@ import type { PrivacyTurnChain } from '@/domain/privacy/privacy-observability'
 const INHERIT = '__inherit__'
 const ACTIONS: PrivacyCategoryAction[] = ['tokenize', 'local_only', 'block', 'allow']
 const AGENT_LAYERS: PrivacyEditorLayer[] = ['agent']
-const SYSTEM_LAYERS: PrivacyEditorLayer[] = ['platform', 'tenant']
+const SYSTEM_LAYERS: PrivacyEditorLayer[] = ['tenant']
 
 function canEditLayer(view: PrivacyAdminView, layer: PrivacyEditorLayer): boolean {
   if (layer === 'platform') return view.canEditPlatform

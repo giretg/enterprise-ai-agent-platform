@@ -32,6 +32,7 @@ export type StructuredOutputPrivacyInput = {
   engine?: SurrogateEngine | null
   tenantId?: string | null
   connectorId?: string | null
+  sourceSlot?: string | null
   scope?: PrivacyScope | null
 }
 
@@ -90,6 +91,7 @@ export async function transformStructuredOutput(
             entityType: slot.entityType,
             connectorId,
             sourceId: slot.sourceId,
+            sourceSlot: input.sourceSlot ?? null,
             displayValue: slot.displayValue,
             displayValueSource: 'structured_field',
           })),

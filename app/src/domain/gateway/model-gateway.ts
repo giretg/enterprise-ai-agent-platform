@@ -1080,16 +1080,20 @@ export class ModelGateway {
     this.entityResolutionProvider = provider
   }
 
+  private async categoryActionForCall(agentId: string, category?: string): Promise<PrivacyCategoryAction | null> {
+    if (!this.agentSensitivityPolicy?.actionForCategory || !category) return null
+    return this.agentSensitivityPolicy.actionForCategory(agentId, category)
+  }
+
   /**
-   * APG-11: a kategória `allow` akciója engedi a nyers értéket külső modellre.
    * Ha a reader csak a régi boolean seamet implementálja, az minden kategóriára
    * `allow`-t jelent (a mai mindent-vagy-semmit felmentés).
    */
   private async categoryAllowsExternalRaw(agentId: string, category?: string): Promise<boolean> {
     if (!this.agentSensitivityPolicy) return false
     if (this.agentSensitivityPolicy.actionForCategory) {
-      const action = await this.agentSensitivityPolicy.actionForCategory(agentId, category ?? '')
-      return allowsExternalRaw(action)
+      const action = await this.categoryActionForCall(agentId, category)
+      return action != null && allowsExternalRaw(action)
     }
     return this.agentSensitivityPolicy.allowsSensitiveExternalModel(agentId)
   }
@@ -1282,6 +1286,26 @@ export class ModelGateway {
     const category = ctx.sensitivity.matchedCategory
 
     if (await this.allowsAgentSensitivityBypass(ctx)) return 'external'
+
+    const categoryAction = await this.categoryActionForCall(ctx.agentId, category)
+    if (categoryAction === 'block') {
+      const targetType = ctx.ticketId ? 'ticket' : ctx.conversationId ? 'conversation' : 'agent'
+      const targetId = ctx.ticketId ?? ctx.conversationId ?? ctx.agentId
+      await this.audit.append({
+        actorType: 'agent',
+        actorId: ctx.agentId,
+        agentVersion: ctx.agentVersion,
+        action: 'model.call.denied',
+        targetType,
+        targetId,
+        modelUsed: ctx.modelUsed,
+        inputRef: `sensitivity:${category}`,
+        outputRef: 'blocked',
+        policyDecision: 'sensitivity_block',
+        metadata: { reason: 'category_policy_block', category },
+      })
+      throw new GatewayBudgetError(formatSensitivityBlockMessage(category))
+    }
 
     const localUsable =
       this.sensitivityPolicy.localModelAvailable &&
@@ -1708,7 +1732,6 @@ export class ModelGateway {
       }))
     if (mode === 'off') return ctx.messages
 
-    const policyReader = this.agentSensitivityPolicy
     const started = Date.now()
     try {
       const entityResolution =
@@ -1718,12 +1741,6 @@ export class ModelGateway {
       const result = await transformPromptMessages({
         messages: ctx.messages,
         mode,
-        policy: async (category) => {
-          if (policyReader?.actionForCategory) {
-            return policyReader.actionForCategory(ctx.agentId, category)
-          }
-          return 'local_only'
-        },
         engine: this.privacyEngine,
         tenantId: ctx.tenantId,
         scope,

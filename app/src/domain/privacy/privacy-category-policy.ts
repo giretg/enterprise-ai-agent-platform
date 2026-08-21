@@ -17,7 +17,7 @@
  * - `secret_key` csak `block` (sosem `tokenize`, sem más)
  * - `pan` / `iban` `allow` csak superadmin + külön megerősítés
  */
-import { SURROGATE_ENTITY_TYPES } from '@/domain/privacy/surrogate-format'
+import { DEFAULT_SURROGATE_ENTITY_TYPES } from '@/domain/privacy/surrogate-format'
 
 export const PRIVACY_CATEGORY_ACTIONS = ['allow', 'tokenize', 'local_only', 'block'] as const
 export type PrivacyCategoryAction = (typeof PRIVACY_CATEGORY_ACTIONS)[number]
@@ -92,7 +92,7 @@ export const LEGACY_SENSITIVE_EXTERNAL_CATEGORIES: readonly PrivacyPolicyCategor
  */
 export const TOKENIZABLE_PRIVACY_CATEGORIES: readonly PrivacyPolicyCategory[] =
   PRIVACY_POLICY_CATEGORIES.filter((category) =>
-    (SURROGATE_ENTITY_TYPES as readonly string[]).includes(category),
+    (DEFAULT_SURROGATE_ENTITY_TYPES as readonly string[]).includes(category),
   )
 
 /** A sensitivity-router mintaszűrője — nincs álnév-típus, nem a tokenizáló réteg. */
@@ -398,8 +398,8 @@ export function buildPrivacyPolicyEditorRows(input: {
 
 /**
  * Mentési invariánsok a patchen (nem a merged eredményen).
- * `secret_key` bármely nem-`block` érték elbukik; `pan`/`iban` `allow` superadmin +
- * `ALLOW_PAN_IBAN` megerősítés nélkül elbukik.
+ * `secret_key` bármely nem-`block` érték elbukik; `pan`/`iban` `allow`
+ * `ALLOW_PAN_IBAN` megerősítés nélkül elbukik (#320 D9).
  */
 export function assertPrivacyCategoryPolicyPatch(
   patch: PrivacyCategoryPolicyPatch,
@@ -472,13 +472,6 @@ function assertAction(
     )
   }
   if ((canonical === 'pan' || canonical === 'iban') && action === 'allow') {
-    if (!actor.isSuperadmin) {
-      throw new PrivacyCategoryPolicyError(
-        'allow_requires_superadmin',
-        `A(z) ${canonical} allow értéke csak superadmin állíthatja.`,
-        canonical,
-      )
-    }
     if (actor.confirmation !== PAN_IBAN_ALLOW_CONFIRMATION) {
       throw new PrivacyCategoryPolicyError(
         'allow_confirmation_required',

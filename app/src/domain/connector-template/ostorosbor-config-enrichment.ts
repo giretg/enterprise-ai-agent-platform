@@ -131,6 +131,7 @@ export function enrichOstorosborPrivacy(config: ConnectorConfig): {
   config: ConnectorConfig
   changed: boolean
 } {
+  /** @deprecated issue #320 — preferált: OSTOROSBOR_CRM_PRIVACY_CATALOG import a katalógusból. */
   if (!isOstorosborConnectorApi(config)) {
     return { config, changed: false }
   }

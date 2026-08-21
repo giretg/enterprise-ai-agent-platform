@@ -1,4 +1,5 @@
 import type { Connector, Prisma, PrismaClient } from '@prisma/client'
+import type { ConnectorCreateWithoutSlot } from '@/lib/privacy-slot'
 
 type ConnectorDb = Pick<PrismaClient, 'connector'>
 
@@ -15,7 +16,7 @@ type ConnectorDb = Pick<PrismaClient, 'connector'>
 export async function upsertConnectorByTypeName(
   db: ConnectorDb,
   args: {
-    create: Prisma.ConnectorUncheckedCreateInput
+    create: ConnectorCreateWithoutSlot
     update?: Prisma.ConnectorUncheckedUpdateInput
   },
 ): Promise<Connector> {
@@ -27,5 +28,7 @@ export async function upsertConnectorByTypeName(
     if (args.update) return db.connector.update({ where: { id: existing.id }, data: args.update })
     return existing
   }
-  return db.connector.create({ data: args.create })
+  const { withConnectorPrivacySlot } = await import('@/lib/privacy-slot')
+  const create = await withConnectorPrivacySlot(db, args.create)
+  return db.connector.create({ data: create })
 }

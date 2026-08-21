@@ -9,6 +9,7 @@ import type {
 import { Prisma } from '@prisma/client'
 import { isConnectorAssignableToAgent } from '@/domain/connector-self-update/pinned-runtime-config'
 import { prisma } from '@/lib/db'
+import { withConnectorPrivacySlot } from '@/lib/privacy-slot'
 import type {
   ConnectorDraftRepository,
   ConnectorDraftWithConnector,
@@ -26,7 +27,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
   async createDraft(input: CreateConnectorDraftInput): Promise<ConnectorDraftWithConnector> {
     return prisma.$transaction(async (tx) => {
       const connector = await tx.connector.create({
-        data: {
+        data: await withConnectorPrivacySlot(tx, {
           type: input.connectorType ?? 'http_api',
           name: input.name,
           authMode: input.authMode,
@@ -35,7 +36,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
           config: input.config,
           lifecycleState: 'draft',
           tenantId: input.tenantId,
-        },
+        }),
       })
 
       const draft = await tx.connectorDraft.create({

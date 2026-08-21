@@ -242,18 +242,37 @@ async function main() {
   })
 
   await check('parszolás: a spec példái visszaadják a típust és a sorszámot', () => {
-    assert.deepEqual(parseSurrogate('[[COMPANY_1]]'), { entityType: 'company', ordinal: 1 })
-    assert.deepEqual(parseSurrogate('[[PERSON_2]]'), { entityType: 'person', ordinal: 2 })
-    assert.deepEqual(parseSurrogate('[[EMAIL_3]]'), { entityType: 'email', ordinal: 3 })
+    assert.deepEqual(parseSurrogate('[[COMPANY_1]]'), {
+      entityType: 'company',
+      ordinal: 1,
+      sourceSlot: undefined,
+    })
+    assert.deepEqual(parseSurrogate('[[PERSON_2]]'), {
+      entityType: 'person',
+      ordinal: 2,
+      sourceSlot: undefined,
+    })
+    assert.deepEqual(parseSurrogate('[[EMAIL_3]]'), {
+      entityType: 'email',
+      ordinal: 3,
+      sourceSlot: undefined,
+    })
     assert.equal(parseSurrogate('[[COMPANY_01]]'), null)
     assert.equal(parseSurrogate('[[COMPANY_0]]'), null)
     assert.equal(parseSurrogate('[[company_1]]'), null)
-    assert.equal(parseSurrogate('[[FOO_1]]'), null)
+    assert.deepEqual(parseSurrogate('[[FOO_1]]'), {
+      entityType: 'foo',
+      ordinal: 1,
+      sourceSlot: undefined,
+    })
+    assert.equal(parseSurrogate('[[COMPANY@BAD_1]]'), null)
     assert.equal(parseSurrogate('prefix[[COMPANY_1]]'), null)
   })
 
   await check('típus-névtér: ismeretlen entitástípus nem formázható', () => {
-    assert.throws(() => formatSurrogate('iban', 1), UnknownEntityTypeError)
+    assert.throws(() => formatSurrogate('INVALID', 1), UnknownEntityTypeError)
+    assert.throws(() => formatSurrogate('bad-slug!', 1), UnknownEntityTypeError)
+    assert.equal(formatSurrogate('ingatlan', 1, 'S1'), '[[INGATLAN@S1_1]]')
   })
 
   await check('HMAC: ismert payload + tenant-kulcs a rögzített kivonatot adja', () => {

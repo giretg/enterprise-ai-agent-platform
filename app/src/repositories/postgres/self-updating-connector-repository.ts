@@ -11,6 +11,7 @@ import {
 } from '@/domain/connector-self-update/self-update-service'
 import { tenantSelfUpdateAutoApproveEnabled } from '@/domain/connector-self-update/tenant-settings'
 import { appendAuditInTransaction } from './audit-repository'
+import { withConnectorPrivacySlot } from '@/lib/privacy-slot'
 
 type TransactionAuditInput = Parameters<typeof appendAuditInTransaction>[1]
 
@@ -111,7 +112,7 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
   }): Promise<SelfUpdatingContext> {
     const row = await prisma.$transaction(async (tx) => {
       const created = await tx.connector.create({
-        data: {
+        data: await withConnectorPrivacySlot(tx, {
           ...(input.connectorId ? { id: input.connectorId } : {}),
           tenantId: input.tenantId,
           name: input.name,
@@ -130,7 +131,7 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
               createdById: input.createdById,
             },
           },
-        },
+        }),
         include: { specSource: true },
       })
       await appendAuditInTransaction(tx, connectorAudit({

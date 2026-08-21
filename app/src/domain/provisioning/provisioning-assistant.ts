@@ -317,6 +317,8 @@ export class ProvisioningAssistant {
     /** Ember jóváhagyta az érzékeny tartalom külső modellre küldését. */
     sensitivityReviewAccepted?: boolean
     reviewedByUserId?: string
+    /** Ha true, a mintaszűrő emberi review-ja kihagyható (sensitivity.layer off/observe). */
+    skipSensitivityReview?: boolean
     sensitivityOverride?: SensitivityOverride
   }): Promise<DraftConfigResult> {
     if (!input.docText?.trim()) {
@@ -337,26 +339,28 @@ export class ProvisioningAssistant {
     })
 
     const sensitivity = inspectPromptSensitivity(messages)
-    const reviewFindings = reviewableSensitivityFindings(sensitivity.findings, {
-      allowSensitiveExternalModel: input.allowSensitiveExternalModel,
-      categoryAllowsExternal: input.categoryAllowsExternal,
-    })
     let sensitivityOverride = input.sensitivityOverride
-    if (reviewFindings.length > 0) {
-      if (input.sensitivityReviewAccepted && input.reviewedByUserId) {
-        sensitivityOverride = {
-          reviewedByUserId: input.reviewedByUserId,
-          allowedForbiddenCategories: [...new Set(reviewFindings.map((f) => f.category))],
-          reason: 'Provisioning sensitivity review accepted by admin',
-        }
-      } else {
-        return {
-          ok: false,
-          error: 'SENSITIVITY_REVIEW_REQUIRED',
-          detail: 'sensitive content requires human review',
-          level: sensitivity.level,
-          matchedCategory: sensitivity.matchedCategory,
-          findings: reviewFindings,
+    if (!input.skipSensitivityReview) {
+      const reviewFindings = reviewableSensitivityFindings(sensitivity.findings, {
+        allowSensitiveExternalModel: input.allowSensitiveExternalModel,
+        categoryAllowsExternal: input.categoryAllowsExternal,
+      })
+      if (reviewFindings.length > 0) {
+        if (input.sensitivityReviewAccepted && input.reviewedByUserId) {
+          sensitivityOverride = {
+            reviewedByUserId: input.reviewedByUserId,
+            allowedForbiddenCategories: [...new Set(reviewFindings.map((f) => f.category))],
+            reason: 'Provisioning sensitivity review accepted by admin',
+          }
+        } else {
+          return {
+            ok: false,
+            error: 'SENSITIVITY_REVIEW_REQUIRED',
+            detail: 'sensitive content requires human review',
+            level: sensitivity.level,
+            matchedCategory: sensitivity.matchedCategory,
+            findings: reviewFindings,
+          }
         }
       }
     }

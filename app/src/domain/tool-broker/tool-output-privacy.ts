@@ -13,6 +13,7 @@
 import type { AuditRepository } from '@/repositories/interfaces'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import { inspectConnectorPrivacyFields } from '@/domain/privacy/connector-privacy'
+import { formatPrivacySourceSlot } from '@/domain/privacy/surrogate-format'
 import { effectiveConnectorRuntimeConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 import { recordPrivacyGatewayAudit } from '@/domain/privacy/privacy-audit'
 import type { PrivacyGatewayMode } from '@/domain/privacy/privacy-mode'
@@ -39,7 +40,7 @@ export type PrivacyAwareOutcomeInput = {
   contract: ToolOutputContract | undefined
   sideEffecting: boolean
   fullDataRef?: string | null
-  connector?: { id: string; tenantId: string | null; config: unknown } | null
+  connector?: { id: string; tenantId: string | null; config: unknown; privacySlot?: number } | null
   conversationId?: string | null
   ticketId?: string | null
   actingTenantId?: string | null
@@ -108,6 +109,10 @@ async function resolveModelOutput(params: PrivacyAwareOutcomeInput): Promise<unk
       engine: params.engine,
       tenantId,
       connectorId: connector.id,
+      sourceSlot:
+        typeof connector.privacySlot === 'number'
+          ? formatPrivacySourceSlot(connector.privacySlot)
+          : null,
       scope,
       apply,
       registerObserved,

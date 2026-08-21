@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client'
-import { isSurrogateEntityType, parseSurrogate, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
+import { isEntityTypeSlug, parseSurrogate, surrogateOrdinalKey, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import {
   authenticateRefVaultRecord,
   authenticateValVaultRecord,
@@ -72,12 +72,7 @@ function toRefRecord(row: {
   sourceId: string | null
   hmac: string
 }): RefVaultRecord | null {
-  if (
-    row.class !== 'ref' ||
-    !row.connectorId ||
-    !row.sourceId ||
-    !isSurrogateEntityType(row.entityType)
-  ) {
+  if (row.class !== 'ref' || !row.connectorId || !row.sourceId || !isEntityTypeSlug(row.entityType)) {
     return null
   }
   return {
@@ -112,7 +107,7 @@ function toValRecord(row: {
     row.connectorId != null ||
     !row.sourceId ||
     !row.encryptedValue ||
-    !isSurrogateEntityType(row.entityType)
+    !isEntityTypeSlug(row.entityType)
   ) {
     return null
   }
@@ -210,6 +205,7 @@ export class PostgresSurrogateVault implements SurrogateVault {
     tenantId: string,
     scope: PrivacyScope,
     entityType: SurrogateEntityType,
+    sourceSlot?: string | null,
   ): Promise<number> {
     return this.run(async () => {
       const rows = await prisma.surrogateMap.findMany({
@@ -219,7 +215,9 @@ export class PostgresSurrogateVault implements SurrogateVault {
       let max = 0
       for (const row of rows) {
         const parsed = parseSurrogate(row.surrogate)
-        if (parsed?.entityType === entityType && parsed.ordinal > max) max = parsed.ordinal
+        if (!parsed || parsed.entityType !== entityType) continue
+        if ((parsed.sourceSlot ?? '') !== (sourceSlot ?? '')) continue
+        if (parsed.ordinal > max) max = parsed.ordinal
       }
       return max
     })
