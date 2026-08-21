@@ -15,6 +15,13 @@ function formatTokens(n: number): string {
   return Math.round(n).toLocaleString('hu-HU')
 }
 
+/** A `costEstimate` EUR-ban van (model-gateway); arányos megtakarítás, nem új tarifa. */
+function formatCostEur(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0 €'
+  if (n < 0.01) return `${n.toFixed(4)} €`
+  return `${n.toLocaleString('hu-HU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`
+}
+
 function patternTitle(kind: EfficiencyPatternKind): string {
   switch (kind) {
     case 'repeated_reread':
@@ -68,33 +75,40 @@ export function EfficiencyAdvisorPanel({
           Elemezhető futás: {card.analyzableRuns}. Legalább három kell a megbízható mintához.
         </p>
       ) : (
-        <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-          <div>
-            <dt className="text-xs text-ink-faint">Belépő kontextus</dt>
-            <dd className="font-medium text-ink">{formatTokens(card.breakdown.entryContext)} token</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-ink-faint">Ismételt kontextus</dt>
-            <dd className="font-medium text-ink">{formatTokens(card.breakdown.repeatedContext)} token</dd>
-            {card.breakdown.rereadTokensAnnotation > 0 ? (
-              <p className="text-xs text-ink-faint">
-                ebből ~{formatTokens(card.breakdown.rereadTokensAnnotation)} újraolvasás (becslés)
-              </p>
-            ) : null}
-          </div>
-          <div>
-            <dt className="text-xs text-ink-faint">Válasz</dt>
-            <dd className="font-medium text-ink">{formatTokens(card.breakdown.completion)} token</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-ink-faint">Cache-ből</dt>
-            <dd className="font-medium text-ink">
-              {card.cacheDataStatus === 'missing'
-                ? 'nincs adat'
-                : `${formatTokens(card.breakdown.cached)} token`}
-            </dd>
-          </div>
-        </dl>
+        <>
+          <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            <div>
+              <dt className="text-xs text-ink-faint">Belépő kontextus</dt>
+              <dd className="font-medium text-ink">{formatTokens(card.breakdown.entryContext)} token</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-ink-faint">Ismételt kontextus</dt>
+              <dd className="font-medium text-ink">{formatTokens(card.breakdown.repeatedContext)} token</dd>
+              {card.breakdown.rereadTokensAnnotation > 0 ? (
+                <p className="text-xs text-ink-faint">
+                  ebből ~{formatTokens(card.breakdown.rereadTokensAnnotation)} újraolvasás (becslés)
+                </p>
+              ) : null}
+            </div>
+            <div>
+              <dt className="text-xs text-ink-faint">Válasz</dt>
+              <dd className="font-medium text-ink">{formatTokens(card.breakdown.completion)} token</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-ink-faint">Cache-ből (ebből)</dt>
+              <dd className="font-medium text-ink">
+                {card.cacheDataStatus === 'missing'
+                  ? 'nincs adat'
+                  : `${formatTokens(card.breakdown.cached)} token`}
+              </dd>
+            </div>
+          </dl>
+          {card.breakdown.costEstimate > 0 ? (
+            <p className="mt-2 text-xs text-ink-faint">
+              Ablakbeli költség (costEstimate): {formatCostEur(card.breakdown.costEstimate)}
+            </p>
+          ) : null}
+        </>
       )}
 
       {card.coarseOnly ? (
@@ -117,7 +131,11 @@ export function EfficiencyAdvisorPanel({
               {pattern.savingsTokens ? (
                 <p className="mt-2 text-xs text-ink-faint">
                   Becsült megtakarítás: {formatTokens(pattern.savingsTokens.low)}–
-                  {formatTokens(pattern.savingsTokens.high)} token.
+                  {formatTokens(pattern.savingsTokens.high)} token
+                  {pattern.savingsTokens.costHigh > 0
+                    ? ` (~${formatCostEur(pattern.savingsTokens.costLow)}–${formatCostEur(pattern.savingsTokens.costHigh)})`
+                    : ''}
+                  .
                 </p>
               ) : null}
               {typeof pattern.metric.toolName === 'string' && pattern.metric.toolName ? (
