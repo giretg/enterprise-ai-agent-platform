@@ -137,6 +137,7 @@
     "test:loop-stop": "tsx scripts/loop-stop-decision.test.ts",
     "test:turn-cost": "tsx scripts/turn-cost-signals.test.ts",
     "test:efficiency-advisor": "tsx scripts/efficiency-advisor.test.ts",
+    "test:efficiency-advisor-apply": "tsx scripts/efficiency-advisor-apply.test.ts",
     "test:turn-continuation": "tsx scripts/turn-continuation.test.ts",
     "test:agent-ask-deadline": "tsx scripts/agent-ask-deadline.test.ts",
     "test:skill-runtime-followup": "tsx scripts/skill-runtime-hints-followup.test.ts",

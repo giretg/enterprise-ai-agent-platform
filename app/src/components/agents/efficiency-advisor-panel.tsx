@@ -1,13 +1,16 @@
 'use client'
 
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { applyEfficiencyHint } from '@/app/actions/efficiency-advisor'
 import { Card } from '@/components/ui/shell'
 import {
+  describeEfficiencyHint,
   describeEfficiencyPattern,
   describeEfficiencyStatus,
   type EfficiencyAdvisorView,
+  type EfficiencyHintKind,
   type EfficiencyPatternKind,
 } from '@/domain/agent/efficiency-advisor'
 
@@ -28,6 +31,10 @@ function patternTitle(kind: EfficiencyPatternKind): string {
   }
 }
 
+function linkLabel(link: 'prompt_cache' | 'tool_narrowing'): string {
+  return link === 'prompt_cache' ? 'Gondolkodási motor megnyitása' : 'Kapcsolatok megnyitása'
+}
+
 export function EfficiencyAdvisorPanel({
   view,
   agentId,
@@ -38,12 +45,12 @@ export function EfficiencyAdvisorPanel({
   canApply: boolean
 }) {
   const router = useRouter()
-  const [pendingKind, setPendingKind] = useState<EfficiencyPatternKind | null>(null)
+  const [pendingKind, setPendingKind] = useState<EfficiencyHintKind | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
   const { card, applied } = view
-  const submit = (kind: 'repeated_reread' | 'context_bloat', revert: boolean) => {
+  const submit = (kind: EfficiencyHintKind, revert: boolean) => {
     startTransition(async () => {
       setError(null)
       setPendingKind(kind)
@@ -105,11 +112,7 @@ export function EfficiencyAdvisorPanel({
 
       <ul className="mt-4 space-y-3">
         {card.patterns.map((pattern) => {
-          const isApplied = Boolean(applied[pattern.kind])
-          const canToggle =
-            canApply &&
-            pattern.suggestion.applicable &&
-            (pattern.kind === 'repeated_reread' || pattern.kind === 'context_bloat')
+          const hintKinds = pattern.suggestion.hintKinds ?? []
           return (
             <li key={pattern.kind} className="rounded-lg border border-line bg-night-2 px-3 py-3">
               <p className="text-sm font-medium text-ink">{patternTitle(pattern.kind)}</p>
@@ -123,28 +126,36 @@ export function EfficiencyAdvisorPanel({
               {typeof pattern.metric.toolName === 'string' && pattern.metric.toolName ? (
                 <p className="mt-1 text-xs text-ink-faint">Eszköz: {pattern.metric.toolName}</p>
               ) : null}
-              {canToggle ? (
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() =>
-                    submit(pattern.kind as 'repeated_reread' | 'context_bloat', isApplied)
-                  }
-                  className="mt-3 rounded-md border border-line bg-panel px-3 py-1.5 text-sm text-ink hover:border-coral disabled:opacity-50"
-                >
-                  {pendingKind === pattern.kind
-                    ? 'Mentés…'
-                    : isApplied
-                      ? 'Visszavonás'
-                      : 'Alkalmazom'}
-                </button>
-              ) : pattern.suggestion.link === 'prompt_cache' ? (
+
+              {canApply && pattern.suggestion.applicable && hintKinds.length > 0 ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {hintKinds.map((hint) => {
+                    const isApplied = Boolean(applied[hint])
+                    return (
+                      <button
+                        key={hint}
+                        type="button"
+                        disabled={pending}
+                        onClick={() => submit(hint, isApplied)}
+                        className="rounded-md border border-line bg-panel px-3 py-1.5 text-sm text-ink hover:border-coral disabled:opacity-50"
+                      >
+                        {pendingKind === hint
+                          ? 'Mentés…'
+                          : isApplied
+                            ? `Visszavonás: ${describeEfficiencyHint(hint)}`
+                            : `Alkalmazom: ${describeEfficiencyHint(hint)}`}
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : !pattern.suggestion.applicable && pattern.suggestion.href ? (
                 <p className="mt-2 text-xs text-ink-faint">
-                  Itt nincs kapcsoló — a prompt-cache specet kell megnézni.
-                </p>
-              ) : pattern.suggestion.link === 'tool_narrowing' ? (
-                <p className="mt-2 text-xs text-ink-faint">
-                  Itt nincs kapcsoló — a hívást (végpont, mezőlista) kell szűkíteni.
+                  Itt nincs kapcsoló.{' '}
+                  <Link href={pattern.suggestion.href} className="underline hover:text-ink">
+                    {pattern.suggestion.link
+                      ? linkLabel(pattern.suggestion.link)
+                      : 'Kapcsolódó felület'}
+                  </Link>
                 </p>
               ) : null}
             </li>
@@ -153,6 +164,11 @@ export function EfficiencyAdvisorPanel({
       </ul>
 
       {error ? <p className="mt-3 text-sm text-coral">{error}</p> : null}
+      {!canApply ? (
+        <p className="mt-3 text-xs text-ink-faint">
+          A javaslatok alkalmazásához tenant admin jogosultság kell.
+        </p>
+      ) : null}
     </Card>
   )
 }

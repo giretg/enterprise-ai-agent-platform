@@ -84,6 +84,21 @@ export const EFFICIENCY_ADVISOR_APPLIED_LIMITS = {
   maxToolCalls: 30,
 } as const
 
+/**
+ * A három alkalmazható kapcsoló (EFF-12). Nem minta-azonosító: egy mintához
+ * több kapcsoló is tartozhat (pl. ismétlődő visszaolvasás → forrás-keret + eszköz-büdzsé).
+ */
+export type EfficiencyHintKind =
+  | 'stricter_compaction'
+  | 'narrower_source_frame'
+  | 'narrower_tool_budget'
+
+export const EFFICIENCY_HINT_KINDS: readonly EfficiencyHintKind[] = [
+  'stricter_compaction',
+  'narrower_source_frame',
+  'narrower_tool_budget',
+] as const
+
 const MIN_ANALYZABLE_RUNS = 3
 const MIN_RUNS_FOR_PATTERN = 2
 
@@ -97,8 +112,12 @@ export type EfficiencyPatternKind =
 
 export type EfficiencySuggestion = {
   applicable: boolean
+  /** Melyik kapcsoló(ka)t lehet alkalmazni ehhez a mintához. */
+  hintKinds?: EfficiencyHintKind[]
   modelConfigPatch?: Record<string, number>
   link?: 'prompt_cache' | 'tool_narrowing'
+  /** Felületi link, ha nincs kapcsoló (cache / eszköz-szűkítés). */
+  href?: string
 }
 
 export type EfficiencySavingsBand = {
@@ -142,7 +161,8 @@ export type EfficiencyCard = {
 
 export type EfficiencyAdvisorView = {
   card: EfficiencyCard
-  applied: Partial<Record<EfficiencyPatternKind, boolean>>
+  /** Melyik alkalmazható kapcsolók vannak már beírva a modelConfig-ba. */
+  applied: Partial<Record<EfficiencyHintKind, boolean>>
 }
 
 export function resolveEfficiencyAdvisorThresholds(
@@ -389,27 +409,153 @@ function savingsBand(wastedTokens: number, capTokens: number): EfficiencySavings
 }
 
 function suggestionFor(kind: EfficiencyPatternKind): EfficiencySuggestion {
-  const patch = efficiencyHintPatch(kind)
-  if (patch) return { applicable: true, modelConfigPatch: patch }
-  if (kind === 'oversized_tool_result') return { applicable: false, link: 'tool_narrowing' }
-  return { applicable: false, link: 'prompt_cache' }
+  const hintKinds = hintsForPattern(kind)
+  if (hintKinds.length > 0) {
+    const patch: Record<string, number> = {}
+    for (const hint of hintKinds) {
+      Object.assign(patch, efficiencyHintPatch(hint))
+    }
+    return { applicable: true, hintKinds, modelConfigPatch: patch }
+  }
+  if (kind === 'oversized_tool_result') {
+    return {
+      applicable: false,
+      link: 'tool_narrowing',
+      // Az agent kapcsolatai / eszközei — ott lehet szűkíteni a hívást.
+      href: '?section=kapcsolatok',
+    }
+  }
+  return {
+    applicable: false,
+    link: 'prompt_cache',
+    // A modell/prompt-cache a „Gondolkodási motor” szekcióban állítható.
+    href: '?section=motor',
+  }
 }
 
-export function efficiencyHintPatch(kind: EfficiencyPatternKind): Record<string, number> | null {
+/** Melyik kapcsoló(ka)t ajánlja a minta. */
+export function hintsForPattern(kind: EfficiencyPatternKind): EfficiencyHintKind[] {
   switch (kind) {
-    case 'repeated_reread':
-      return {
-        sourceIngestFactor: EFFICIENCY_ADVISOR_APPLIED_LIMITS.sourceIngestFactor,
-        sourceIngestMinChars: EFFICIENCY_ADVISOR_APPLIED_LIMITS.sourceIngestMinChars,
-        maxToolCalls: EFFICIENCY_ADVISOR_APPLIED_LIMITS.maxToolCalls,
-      }
     case 'context_bloat':
+      return ['stricter_compaction']
+    case 'repeated_reread':
+      // Újraolvasás + elszaladó körök: forrás-keret és eszköz-büdzsé.
+      return ['narrower_source_frame', 'narrower_tool_budget']
+    default:
+      return []
+  }
+}
+
+export function efficiencyHintPatch(kind: EfficiencyHintKind): Record<string, number> {
+  switch (kind) {
+    case 'stricter_compaction':
       return {
         maxToolResultChars: EFFICIENCY_ADVISOR_APPLIED_LIMITS.maxToolResultChars,
         keepRecentToolResults: EFFICIENCY_ADVISOR_APPLIED_LIMITS.keepRecentToolResults,
       }
-    default:
-      return null
+    case 'narrower_source_frame':
+      return {
+        sourceIngestFactor: EFFICIENCY_ADVISOR_APPLIED_LIMITS.sourceIngestFactor,
+        sourceIngestMinChars: EFFICIENCY_ADVISOR_APPLIED_LIMITS.sourceIngestMinChars,
+      }
+    case 'narrower_tool_budget':
+      return {
+        maxToolCalls: EFFICIENCY_ADVISOR_APPLIED_LIMITS.maxToolCalls,
+      }
+  }
+}
+
+export function describeEfficiencyHint(kind: EfficiencyHintKind): string {
+  switch (kind) {
+    case 'stricter_compaction':
+      return 'Szigorúbb tömörítés'
+    case 'narrower_source_frame':
+      return 'Szűkebb forrás-keret'
+    case 'narrower_tool_budget':
+      return 'Szűkebb eszköz-büdzsé'
+  }
+}
+
+function asConfigRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {}
+}
+
+function previousConfigValue(config: Record<string, unknown>, key: string): number | null {
+  const raw = config[key]
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null
+}
+
+export type EfficiencyHintApplyResult = {
+  modelConfig: Record<string, unknown>
+  previous: Record<string, number | null>
+  next: Record<string, number | null>
+  reverted: boolean
+}
+
+/**
+ * Tiszta apply/revert a `modelConfig`-ra (EFF-12). Az undo-pillanatképet a
+ * `efficiencyAdvisorUndo` kulcs alatt tárolja hint-kind szerint, hogy egy
+ * kattintással visszaállítható legyen.
+ */
+export function applyEfficiencyHintToModelConfig(input: {
+  modelConfig: unknown
+  kind: EfficiencyHintKind
+  revert?: boolean
+  undoKey?: string
+}): EfficiencyHintApplyResult {
+  const undoKey = input.undoKey ?? 'efficiencyAdvisorUndo'
+  const patch = efficiencyHintPatch(input.kind)
+  const current = asConfigRecord(input.modelConfig)
+  const undoMap = asConfigRecord(current[undoKey])
+  const nextConfig = { ...current }
+  let previous: Record<string, number | null> = {}
+  let next: Record<string, number | null> = {}
+
+  if (input.revert) {
+    const snapshot = asConfigRecord(undoMap[input.kind])
+    previous = Object.fromEntries(
+      Object.keys(patch).map((key) => [key, previousConfigValue(current, key)]),
+    )
+    next = {}
+    for (const key of Object.keys(patch)) {
+      const restored = snapshot[key]
+      if (restored === null || restored === undefined) {
+        delete nextConfig[key]
+        next[key] = null
+      } else if (typeof restored === 'number' && Number.isFinite(restored)) {
+        nextConfig[key] = restored
+        next[key] = restored
+      } else {
+        delete nextConfig[key]
+        next[key] = null
+      }
+    }
+    delete undoMap[input.kind]
+  } else {
+    const existing = asConfigRecord(undoMap[input.kind])
+    const snapshot: Record<string, number | null> = { ...existing } as Record<
+      string,
+      number | null
+    >
+    next = { ...patch }
+    for (const [key, value] of Object.entries(patch)) {
+      if (!(key in snapshot)) snapshot[key] = previousConfigValue(current, key)
+      nextConfig[key] = value
+    }
+    previous = snapshot
+    undoMap[input.kind] = snapshot
+  }
+
+  if (Object.keys(undoMap).length === 0) delete nextConfig[undoKey]
+  else nextConfig[undoKey] = undoMap
+
+  return {
+    modelConfig: nextConfig,
+    previous,
+    next,
+    reverted: Boolean(input.revert),
   }
 }
 
