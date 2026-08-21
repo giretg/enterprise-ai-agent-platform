@@ -206,8 +206,11 @@ function resolveGrantedScopes(params: {
 
   const normalize = scopeNormalizerFor(params.connector)
   const grantedScopes = [...new Set(params.responseScope.split(' ').map(normalize).filter(Boolean))]
-  const expected = new Set(expectedScopes)
-  const unexpected = grantedScopes.filter((scope) => !expected.has(scope))
+  // A connector config a felső korlát — Google include_granted_scopes visszahozhat
+  // korábban megadott, a mostani kérésben nem ismételt scope-ot; azt elfogadjuk,
+  // de configon kívüli scope-ot továbbra is elutasítunk.
+  const configured = new Set(readOAuthConfig(params.connector).scopes.map(normalize))
+  const unexpected = grantedScopes.filter((scope) => !configured.has(scope))
   if (unexpected.length > 0) {
     throw new Error(`OAuth provider returned unrequested scope: ${unexpected.join(', ')}`)
   }
@@ -432,6 +435,11 @@ export class ConnectorGrantService {
     for (const [key, value] of Object.entries(oauth.offlineParams)) {
       url.searchParams.set(key, value)
     }
+    // Google incremental auth: a korábban megadott scope-ok is a tokenben maradnak,
+    // ha a consent csak a hiányzó scope-ot kéri (különben a DB unió hazudna a tokenről).
+    if (isGoogleConnector(params.connector) && !url.searchParams.has('include_granted_scopes')) {
+      url.searchParams.set('include_granted_scopes', 'true')
+    }
     url.searchParams.set('prompt', 'consent')
     url.searchParams.set('state', state)
     url.searchParams.set('code_challenge', pkceChallenge(codeVerifier))
@@ -468,22 +476,38 @@ export class ConnectorGrantService {
       requestedScopes: statePayload.requestedScopes,
     })
 
+    // Meglévő aktív grant scope-jait uniózzuk — a least-privilege újra-consent
+    // ne törölje a korábban megadott jogosultságokat a DB-ből.
+    const existing = await this.grants.findActiveGrant({
+      tenantId: statePayload.tenantId,
+      connectorId: params.connector.id,
+      userId: statePayload.userId,
+    })
+    const normalize = scopeNormalizerFor(params.connector)
+    const mergedScopes = [
+      ...new Set([
+        ...parseDelegatedGrantScopes(existing?.scopes).map(normalize),
+        ...(tokens.scopes ?? []).map(normalize),
+      ]),
+    ]
+    const tokensToStore: ConnectorGrantTokens = { ...tokens, scopes: mergedScopes }
+
     const tokenRef = buildGrantTokenRef({
       tenantId: statePayload.tenantId,
       userId: statePayload.userId,
       connectorId: params.connector.id,
     })
     const store = createGrantTokenStore(tokenRef)
-    await store.save(tokens)
+    await store.save(tokensToStore)
 
     const grant = await this.grants.create({
       tenantId: statePayload.tenantId,
       connectorId: params.connector.id,
       userId: statePayload.userId,
-      scopes: (tokens.scopes ?? []) as Prisma.JsonValue,
+      scopes: mergedScopes as Prisma.JsonValue,
       tokenRef,
-      accountLabel: tokens.accountEmail ?? null,
-      expiresAt: tokens.expiresAt ? new Date(tokens.expiresAt) : null,
+      accountLabel: tokensToStore.accountEmail ?? null,
+      expiresAt: tokensToStore.expiresAt ? new Date(tokensToStore.expiresAt) : null,
     })
 
     await this.audit.append({
@@ -495,12 +519,12 @@ export class ConnectorGrantService {
       targetId: grant.id,
       modelUsed: null,
       inputRef: params.connector.id,
-      outputRef: tokens.accountEmail ?? 'connected',
+      outputRef: tokensToStore.accountEmail ?? 'connected',
       policyDecision: 'allowed',
       metadata: {
         connector: params.connector.name,
-        scopes: tokens.scopes ?? [],
-        account_label: tokens.accountEmail ?? null,
+        scopes: mergedScopes,
+        account_label: tokensToStore.accountEmail ?? null,
       } as Prisma.JsonValue,
     })
 

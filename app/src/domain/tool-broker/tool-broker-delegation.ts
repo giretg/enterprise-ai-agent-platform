@@ -21,6 +21,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFile as nodeReadFile } from 'node:fs/promises'
 import nodePath from 'node:path'
 import { prisma } from '@/lib/db'
+import { isDocumentReachableFromTenant } from '@/lib/document-tenant-access'
 import { loadPdfParse } from '@/lib/pdf-parse'
 import {
   buildTulajdoniLapHandoff,
@@ -1742,17 +1743,18 @@ async function resolveMemoryProjectKey(
 
 /**
  * document_read — csatolmány oldal/keresés. Capability-only auth a brokerben;
- * itt a Document hozzáférés (uploader / beszélgetés-csatolmány / ticket / KB).
+ * itt a Document hozzáférés (uploader+tenant / beszélgetés-csatolmány / ticket / KB).
  */
 export async function documentRead(
   self: ToolBrokerService,
   input: Extract<ToolBrokerInvokeInput, { tool: 'document_read' }>,
   actingUserId: string | null,
+  actingTenantId: string | null = null,
 ): Promise<DocumentReadResult> {
   const doc = await prisma.document.findUnique({ where: { id: input.args.documentId } })
   if (!doc) throw new Error('document_not_found')
 
-  const allowed = await canAccessDocument(self, input, doc, actingUserId)
+  const allowed = await canAccessDocument(self, input, doc, actingUserId, actingTenantId)
   if (!allowed) throw new Error('document_access_denied')
 
   const blocks = blocksFromDocument(doc.metadata, doc.extractedText)
@@ -1768,25 +1770,36 @@ export async function documentRead(
 }
 
 /**
- * Csatolmány-hozzáférés: uploader / beszélgetés / ticket / KB-connector út.
+ * Csatolmány-hozzáférés: uploader+tenant / beszélgetés / ticket / KB-connector út.
  *
  * A bemenet szándékosan SZŰK (nem a teljes invoke-input), hogy több tool
  * használhassa ugyanazt a kaput — ma a `document_read` és a
  * `tulajdoni_lap_parse`. Így egy új olvasó-tool sem nyithat kerülőutat.
+ *
+ * Az uploader-egyezés ÖNMAGÁBAN nem elég: egy több tenanthoz tartozó feltöltő
+ * ne olvashassa ki a másik tenantban bélyegzett doksiját az aktuális
+ * tenant-kontextusból (DT-3, l. document-tenant-access).
  */
 async function canAccessDocument(
   self: ToolBrokerService,
   input: { agentId: string; conversationId?: string | null; ticketId?: string | null },
   doc: Document,
   actingUserId: string | null,
+  actingTenantId: string | null,
 ): Promise<boolean> {
-  if (actingUserId && doc.uploadedById === actingUserId) return true
+  // Tenant-határ minden csatolmány-úton: egy beszélgetésbe / ticketbe korábban
+  // (hibásan) bekötött idegen dok ne adjon document_read jogosultságot.
+  const reachable = await isDocumentReachableFromTenant(doc, actingTenantId)
 
-  if (input.conversationId) {
+  if (actingUserId && doc.uploadedById === actingUserId && reachable) {
+    return true
+  }
+
+  if (reachable && input.conversationId) {
     if (await conversationReferencesDocument(input.conversationId, doc.id)) return true
   }
 
-  if (input.ticketId) {
+  if (reachable && input.ticketId) {
     if (await ticketReferencesDocument(input.ticketId, doc.id)) return true
   }
 
@@ -1862,7 +1875,13 @@ export async function tulajdoniLapParse(
     const doc = await prisma.document.findUnique({ where: { id: source.documentId } })
     if (!doc) throw new Error('document_not_found')
 
-    const allowed = await canAccessDocument(self, input, doc, actingUserId)
+    const allowed = await canAccessDocument(
+      self,
+      input,
+      doc,
+      actingUserId,
+      extras?.actingTenantId ?? null,
+    )
     if (!allowed) throw new Error('document_access_denied')
 
     pages = pagesFromDocumentExtraction(doc.metadata, doc.extractedText)
@@ -1972,7 +1991,13 @@ async function loadTulajdoniLapPages(
     const doc = await prisma.document.findUnique({ where: { id: source.documentId } })
     if (!doc) throw new Error('document_not_found')
 
-    const allowed = await canAccessDocument(self, input, doc, actingUserId)
+    const allowed = await canAccessDocument(
+      self,
+      input,
+      doc,
+      actingUserId,
+      extras?.actingTenantId ?? null,
+    )
     if (!allowed) throw new Error('document_access_denied')
 
     let pages = pagesFromDocumentExtraction(doc.metadata, doc.extractedText)

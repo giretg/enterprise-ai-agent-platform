@@ -24,6 +24,7 @@ import {
 import { loadAgentDelegatedConnectors } from '@/lib/agent-delegated-connectors-server'
 import {
   isDelegatedOAuthStubEnabled,
+  parseDelegatedGrantScopes,
   resolveGrantOAuthScopes,
 } from '@/domain/connector-grant/delegated-oauth-registry'
 import { toGoogleOAuthPublicView } from '@/lib/platform-google-oauth-config'
@@ -191,7 +192,25 @@ export async function startConnectorOAuth(input: {
           toolName,
         })
       : scopes
-    const effectiveScopes = requestedScopes && requestedScopes.length > 0 ? requestedScopes : undefined
+    // Least-privilege tool-scope + már megadott grant uniója: különben a
+    // gmail_send kártya [send]-only OAuth-ja felülírná a korábbi readonly/modify-t.
+    // Csak a connector configjában még érvényes scope-okat tartjuk meg.
+    const existingGrant = await repositories.connectorGrants.findActiveGrant({
+      tenantId: connector.tenantId ?? ctx.activeTenantId,
+      connectorId: connector.id,
+      userId: ctx.user.id,
+    })
+    const configured = new Set(
+      resolveGrantOAuthScopes({
+        connectorType: connector.type,
+        config: connector.config,
+      }),
+    )
+    const existingScopes = parseDelegatedGrantScopes(existingGrant?.scopes).filter((scope) =>
+      configured.has(scope),
+    )
+    const mergedRequested = [...new Set([...(requestedScopes ?? []), ...existingScopes])]
+    const effectiveScopes = mergedRequested.length > 0 ? mergedRequested : undefined
 
     if (isDelegatedOAuthStubEnabled()) {
       const { createOAuthState } = await import('@/lib/crypto/oauth-state')
@@ -251,17 +270,22 @@ export async function revokeConnectorGrant(input: { grantId: string }) {
   }
 }
 
+function assertTicketTenantScope(
+  ticket: { tenantId: string | null },
+  activeTenantId: string,
+): void {
+  if (ticket.tenantId !== activeTenantId) {
+    throw new Error('Ticket not found')
+  }
+}
+
 export async function approveGmailSend(input: { ticketId: string; draftId: string }) {
   try {
     const user = await requireTenantRole('approver')
     const parsed = approveGmailSendSchema.parse(input)
     const ticket = await prisma.ticket.findUnique({ where: { id: parsed.ticketId } })
     if (!ticket) return fail('Ticket not found')
-
-    const payload =
-      typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
-        ? { ...(ticket.payload as Record<string, unknown>) }
-        : {}
+    assertTicketTenantScope(ticket, user.activeTenantId)
 
     await services.tickets.transition({
       ticketId: ticket.id,
@@ -269,6 +293,15 @@ export async function approveGmailSend(input: { ticketId: string; draftId: strin
       actor: { type: 'human', userId: user.user.id, role: user.activeTenantRole },
       note: `Gmail küldés jóváhagyva: ${parsed.draftId}`,
     })
+
+    // A transition frissítheti a payloadot (pl. transitionNote) — ne a stale
+    // előolvasással írjuk felül, különben elveszik a transition mellékhatása.
+    const fresh = await prisma.ticket.findUnique({ where: { id: ticket.id } })
+    if (!fresh) return fail('Ticket not found')
+    const payload =
+      typeof fresh.payload === 'object' && fresh.payload !== null && !Array.isArray(fresh.payload)
+        ? { ...(fresh.payload as Record<string, unknown>) }
+        : {}
 
     await prisma.ticket.update({
       where: { id: ticket.id },
@@ -290,6 +323,7 @@ export async function authorizeTicketRunAs(input: { ticketId: string }) {
 
     const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } })
     if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
     if (ticket.assigneeType !== 'agent') return fail('Run-as can only be authorized for agent tickets')
     if (!['backlog', 'ready', 'in_progress'].includes(ticket.state)) {
       return fail('Run-as can only be authorized before the ticket is closed')
@@ -334,6 +368,7 @@ export async function revokeTicketRunAs(input: { ticketId: string }) {
 
     const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } })
     if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
 
     const payload =
       typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)

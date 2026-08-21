@@ -131,6 +131,7 @@ export interface HandlerContext {
   documentRead(
     input: Extract<ToolBrokerInvokeInput, { tool: 'document_read' }>,
     actingUserId: string | null,
+    actingTenantId?: string | null,
   ): Promise<DocumentReadResult>
   getDebugTrace(
     input: Extract<ToolBrokerInvokeInput, { tool: 'get_debug_trace' }>,

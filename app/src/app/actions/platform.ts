@@ -44,7 +44,7 @@ import { resolveBoardDateRange } from '@/lib/board-date-range'
 import { BOARD_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
-import { assertDocumentReachableFromTenant } from '@/lib/document-tenant-access'
+import { assertDocumentReachableFromTenant, assertDocumentsReachableFromTenant } from '@/lib/document-tenant-access'
 import { shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
 import {
   buildTaskOnlyTaskPrompt,
@@ -3405,12 +3405,17 @@ export async function createScheduledAgentTask(input: {
       if (isAgentAccessError(error)) return fail(error.message)
       throw error
     }
+    const attachmentIds = [...new Set(parsed.attachmentDocumentIds ?? [])]
+    if (attachmentIds.length > 0) {
+      const documents = await repositories.documents.findByIds(attachmentIds)
+      await assertDocumentsReachableFromTenant(documents, attachmentIds, user.activeTenantId)
+    }
     const scheduledTask = await services.scheduledTasks.createAgentTask({
       agentId: parsed.agentId,
       title: parsed.title,
       content: parsed.content,
       conversationId: parsed.conversationId,
-      attachmentDocumentIds: parsed.attachmentDocumentIds,
+      attachmentDocumentIds: attachmentIds,
       nextRunAt: new Date(parsed.nextRunAt),
       recurrence: parsed.recurrence,
       maxRuns: parsed.maxRuns,

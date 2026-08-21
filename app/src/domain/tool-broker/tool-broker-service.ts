@@ -239,7 +239,8 @@ export class ToolBrokerService {
       repoOpenPullRequest: (input, connector, actingTenantId) =>
         repoOpenPullRequest(this, input, connector, actingTenantId),
       memoryPropose: (input, actingTenantId) => memoryPropose(this, input, actingTenantId),
-      documentRead: (input, actingUserId) => documentRead(this, input, actingUserId),
+      documentRead: (input, actingUserId, actingTenantId) =>
+        documentRead(this, input, actingUserId, actingTenantId ?? null),
       getDebugTrace: (input, actingTenantId, actingUserId) =>
         this.fetchDebugTrace(input, actingTenantId, actingUserId),
       tulajdoniLapParse: (input, actingUserId, extras) =>
