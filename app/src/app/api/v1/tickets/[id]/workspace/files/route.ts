@@ -108,6 +108,26 @@ export async function GET(
         })
       }
 
+      if (isHtmlWorkspaceFile(safePath)) {
+        const buf = await storage.read(tenantId, ticketId, safePath)
+        if (!buf) return jsonError('File not found', 404)
+        const html = await resolveInlineWorkspaceHtml({
+          html: buf.toString('utf8'),
+          tenantId: user.activeTenantId,
+          ticketId,
+          requesterUserId: user.user.id,
+          surface: 'export_report',
+        })
+        const body = Buffer.from(html, 'utf8')
+        return new NextResponse(body, {
+          headers: {
+            'content-type': INLINE_HTML_CONTENT_TYPE,
+            'content-disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+            'content-length': String(body.length),
+          },
+        })
+      }
+
       const result = await storage.streamToClient(tenantId, ticketId, safePath)
       if (!result) return jsonError('File not found', 404)
       return new NextResponse(result.stream, {

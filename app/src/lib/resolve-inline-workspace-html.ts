@@ -12,6 +12,8 @@ export async function resolveInlineWorkspaceHtml(params: {
   conversationId?: string | null
   ticketId?: string | null
   requesterUserId: string
+  /** Megnyitás (preview): web_ui (alapértelmezett); letöltés: export_report. */
+  surface?: 'web_ui' | 'export_report'
 }): Promise<string> {
   if (!containsEmbeddedSurrogate(params.html)) return params.html
   return resolveHtmlEgressForViewer({
@@ -21,6 +23,6 @@ export async function resolveInlineWorkspaceHtml(params: {
     conversationId: params.conversationId,
     ticketId: params.ticketId,
     requesterUserId: params.requesterUserId,
-    surface: 'web_ui',
+    surface: params.surface ?? 'web_ui',
   })
 }
