@@ -72,15 +72,18 @@ export const PRIVACY_CATEGORY_LABELS: Record<string, { label: string; explanatio
   },
   email: {
     label: 'E-mail-cím',
-    explanation: 'Begépelt szövegben felismert cím — routing, nem forrás-entitás.',
+    explanation:
+      'Begépelt szövegben felismert cím. Álnévre cserélhető, vagy helyi modellre terelhető.',
   },
   phone: {
     label: 'Telefonszám',
-    explanation: 'Begépelt szövegben felismert szám — routing, nem forrás-entitás.',
+    explanation:
+      'Begépelt szövegben felismert szám. Álnévre cserélhető, vagy helyi modellre terelhető.',
   },
   account: {
     label: 'Ügyfél- vagy fiókazonosító',
-    explanation: 'Begépelt szövegben felismert azonosító-minta — routing, nem forrás-entitás.',
+    explanation:
+      'Begépelt szövegben felismert azonosító-minta. Álnévre cserélhető, vagy helyi modellre terelhető.',
   },
   taj: {
     label: 'TAJ-szám',

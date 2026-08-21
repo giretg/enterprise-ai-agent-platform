@@ -1741,6 +1741,12 @@ export class ModelGateway {
       const result = await transformPromptMessages({
         messages: ctx.messages,
         mode,
+        // A szabad szöveges minta-réteg (e-mail/telefon/bankszámla) az agent
+        // overlay-jel feloldott kategória-akciót követi. Reader nélkül
+        // `local_only`: nem álnevesítünk, a routing dönt — nyers érték így sem
+        // megy külső modellhez.
+        policy: async (category) =>
+          (await this.categoryActionForCall(ctx.agentId, category)) ?? 'local_only',
         engine: this.privacyEngine,
         tenantId: ctx.tenantId,
         scope,
