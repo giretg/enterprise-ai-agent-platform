@@ -9,6 +9,7 @@ import {
   SurrogateTakenError,
   type InsertRefInput,
   type InsertValInput,
+  type ObservePreviewRow,
   type PrivacyScope,
   type RefEntityRef,
   type RefVaultRecord,
@@ -360,6 +361,68 @@ export class PostgresSurrogateVault implements SurrogateVault {
           ? [{ surrogate: row.surrogate, displayValueEnc: row.displayValueEnc }]
           : [],
       )
+    })
+  }
+
+  async saveObservePreviews(
+    tenantId: string,
+    scope: PrivacyScope,
+    rows: readonly ObservePreviewRow[],
+  ): Promise<void> {
+    if (rows.length === 0 || scope.type !== 'conversation') return
+    await this.run(async () => {
+      await prisma.$transaction(
+        rows.map((row) =>
+          prisma.conversationObserveEntity.upsert({
+            where: {
+              conversationId_entityType_valueFingerprint: {
+                conversationId: scope.id,
+                entityType: row.entityType,
+                valueFingerprint: row.valueFingerprint,
+              },
+            },
+            create: {
+              conversationId: scope.id,
+              tenantId,
+              entityType: row.entityType,
+              valueFingerprint: row.valueFingerprint,
+              previewOrdinal: row.previewOrdinal,
+              displayValueEnc: row.displayValueEnc,
+            },
+            update: {
+              previewOrdinal: row.previewOrdinal,
+              displayValueEnc: row.displayValueEnc,
+            },
+          }),
+        ),
+      )
+    })
+  }
+
+  async listObservePreviews(
+    tenantId: string,
+    scope: PrivacyScope,
+  ): Promise<ObservePreviewRow[]> {
+    if (scope.type !== 'conversation') return []
+    return this.run(async () => {
+      const rows = await prisma.conversationObserveEntity.findMany({
+        where: {
+          tenantId,
+          conversationId: scope.id,
+        },
+        select: {
+          entityType: true,
+          valueFingerprint: true,
+          previewOrdinal: true,
+          displayValueEnc: true,
+        },
+      })
+      return rows.map((row) => ({
+        entityType: row.entityType as SurrogateEntityType,
+        valueFingerprint: row.valueFingerprint,
+        previewOrdinal: row.previewOrdinal,
+        displayValueEnc: row.displayValueEnc,
+      }))
     })
   }
 

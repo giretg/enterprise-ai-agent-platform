@@ -88,6 +88,14 @@ export type SurrogateDisplayValueRow = {
   displayValueEnc: string
 }
 
+/** OBSERVE UI-előnézet sor — vault-sor nélkül, fingerprint alapú deduplikáció. */
+export type ObservePreviewRow = {
+  entityType: SurrogateEntityType
+  valueFingerprint: string
+  previewOrdinal: number
+  displayValueEnc: string
+}
+
 export interface SurrogateVault {
   findByEntity(tenantId: string, scope: PrivacyScope, entity: RefEntityRef): Promise<VaultLookup>
   findBySurrogate(tenantId: string, scope: PrivacyScope, surrogate: string): Promise<VaultLookup>
@@ -127,6 +135,16 @@ export interface SurrogateVault {
     tenantId: string,
     scope: PrivacyScope,
   ): Promise<SurrogateDisplayValueRow[]>
+  /** OBSERVE mód UI-előnézet perzisztencia (APG-22) — csak conversation scope. */
+  saveObservePreviews?(
+    tenantId: string,
+    scope: PrivacyScope,
+    rows: readonly ObservePreviewRow[],
+  ): Promise<void>
+  listObservePreviews?(
+    tenantId: string,
+    scope: PrivacyScope,
+  ): Promise<ObservePreviewRow[]>
 }
 
 export async function insertRefsSequentially(

@@ -13,7 +13,6 @@
 import type { ConnectorFieldsPrivacy } from '@/domain/privacy/connector-privacy'
 import { canonicalPrivacyCategory } from '@/domain/privacy/privacy-category-policy'
 import type { PrivacySpan } from '@/domain/privacy/privacy-mode'
-import { previewAliasForCategory } from '@/domain/privacy/privacy-dry-run'
 import {
   PrivacyFieldDiagnosticError,
   runPrivacyTransformLayer,
@@ -194,15 +193,12 @@ function registerObservedStructuredFields(
         ctx.seen.add(dedupeKey)
         const next = (ctx.ordinals.get(category) ?? 0) + 1
         ctx.ordinals.set(category, next)
-        const previewAlias = previewAliasForCategory(category, next)
-        // OBSERVE: csak előnézet, vault-sor nélkül — perzisztálni tilos.
-        ctx.engine.rememberDisplayValue(
+        ctx.engine.rememberObservePreview(
           ctx.tenantId,
           ctx.scope,
-          previewAlias,
+          spec.entityType,
           child,
-          'observe_preview',
-          { persist: false },
+          next,
         )
       }
       continue

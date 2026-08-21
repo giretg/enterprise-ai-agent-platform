@@ -28,6 +28,12 @@ import {
   decryptSurrogateDisplayValue,
   encryptSurrogateDisplayValue,
 } from '@/domain/privacy/display-value-crypto'
+import {
+  decryptObservePreviewValue,
+  encryptObservePreviewValue,
+} from '@/domain/privacy/observe-preview-crypto'
+import { previewAliasForCategory } from '@/domain/privacy/privacy-dry-run'
+import { canonicalPrivacyCategory } from '@/domain/privacy/privacy-category-policy'
 import { encryptValSurrogateValue, decryptValSurrogateValue } from '@/domain/privacy/val-surrogate-crypto'
 import { valSurrogateFingerprint } from '@/domain/privacy/val-fingerprint'
 
@@ -127,6 +133,20 @@ export class SurrogateEngine {
   private readonly displayHydration = new Map<string, { at: number; work: Promise<void> }>()
   /** Még nem perzisztált megjelenítési értékek scope-onként. */
   private readonly pendingDisplayWrites = new Map<string, Set<string>>()
+  /** OBSERVE UI-előnézet: fingerprint → sor adatok, még nem perzisztált. */
+  private readonly pendingObserveWrites = new Map<
+    string,
+    Map<
+      string,
+      {
+        entityType: SurrogateEntityType
+        fingerprint: string
+        displayValue: string
+        previewOrdinal: number
+      }
+    >
+  >()
+  private readonly observeHydration = new Map<string, { at: number; work: Promise<void> }>()
 
   constructor(
     private readonly vault: SurrogateVault,
@@ -163,6 +183,86 @@ export class SurrogateEngine {
       this.pendingDisplayWrites.set(key, pending)
     }
     pending.add(surrogate)
+  }
+
+  /**
+   * OBSERVE strukturált mező előnézet: memóriában + perzisztálva a chat UI-hoz.
+   * A preview-álnevek nem kerülnek vaultba; a nyers érték külön táblában él.
+   */
+  rememberObservePreview(
+    tenantId: string,
+    scope: PrivacyScope,
+    entityType: SurrogateEntityType,
+    displayValue: string,
+    previewOrdinal: number,
+  ): void {
+    if (!displayValue) return
+    const category = canonicalPrivacyCategory(entityType)
+    const previewAlias = previewAliasForCategory(category, previewOrdinal)
+    this.rememberDisplayValue(
+      tenantId,
+      scope,
+      previewAlias,
+      displayValue,
+      'observe_preview',
+      { persist: false },
+    )
+    if (scope.type !== 'conversation') return
+    const key = scopeKey(tenantId, scope)
+    let pending = this.pendingObserveWrites.get(key)
+    if (!pending) {
+      pending = new Map()
+      this.pendingObserveWrites.set(key, pending)
+    }
+    const fingerprint = valSurrogateFingerprint(displayValue)
+    pending.set(`${entityType}\0${fingerprint}`, {
+      entityType,
+      fingerprint,
+      displayValue,
+      previewOrdinal,
+    })
+  }
+
+  /** OBSERVE tool-output után: UI-előnézet perzisztálása (APG-22). */
+  async flushObservePreviews(tenantId: string, scope: PrivacyScope): Promise<void> {
+    if (scope.type !== 'conversation') return
+    if (!this.vault.saveObservePreviews || !this.privacyKeys) return
+    const key = scopeKey(tenantId, scope)
+    const pending = this.pendingObserveWrites.get(key)
+    if (!pending || pending.size === 0) return
+    const rows = [...pending.values()]
+    pending.clear()
+    try {
+      const dataKey = await this.scopeDataKey(tenantId, scope, { create: true })
+      if (!dataKey) return
+      await this.vault.saveObservePreviews(
+        tenantId,
+        scope,
+        rows.map((row) => ({
+          entityType: row.entityType,
+          valueFingerprint: row.fingerprint,
+          previewOrdinal: row.previewOrdinal,
+          displayValueEnc: encryptObservePreviewValue({
+            tenantId,
+            dataKey,
+            scope,
+            entityType: row.entityType,
+            fingerprint: row.fingerprint,
+            value: row.displayValue,
+          }),
+        })),
+      )
+      this.observeHydration.delete(key)
+    } catch {
+      let pendingMap = this.pendingObserveWrites.get(key)
+      if (!pendingMap) {
+        pendingMap = new Map()
+        this.pendingObserveWrites.set(key, pendingMap)
+      }
+      for (const row of rows) {
+        pendingMap.set(`${row.entityType}\0${row.fingerprint}`, row)
+      }
+    }
   }
 
   /**
@@ -206,6 +306,48 @@ export class SurrogateEngine {
       this.displayHydration.delete(key)
     })
     this.displayHydration.set(key, { at: Date.now(), work })
+    return work
+  }
+
+  private async hydrateObservePreviews(
+    tenantId: string,
+    scope: PrivacyScope,
+    opts?: { force?: boolean },
+  ): Promise<void> {
+    if (!this.vault.listObservePreviews || scope.type !== 'conversation') return
+    const key = scopeKey(tenantId, scope)
+    const running = this.observeHydration.get(key)
+    if (running && !opts?.force && Date.now() - running.at < DISPLAY_HYDRATION_TTL_MS) {
+      return running.work
+    }
+    const work = (async () => {
+      const dataKey = await this.scopeDataKey(tenantId, scope, { create: false })
+      if (!dataKey) return
+      const rows = await this.vault.listObservePreviews!(tenantId, scope)
+      let byScope = this.displayValues.get(key)
+      if (!byScope) {
+        byScope = new Map()
+        this.displayValues.set(key, byScope)
+      }
+      for (const row of rows) {
+        const category = canonicalPrivacyCategory(row.entityType)
+        const previewAlias = previewAliasForCategory(category, row.previewOrdinal)
+        if (byScope.has(previewAlias)) continue
+        const value = decryptObservePreviewValue({
+          tenantId,
+          dataKey,
+          scope,
+          entityType: row.entityType,
+          fingerprint: row.valueFingerprint,
+          encrypted: row.displayValueEnc,
+        })
+        if (!value) continue
+        byScope.set(previewAlias, { value, source: 'observe_preview' })
+      }
+    })().catch(() => {
+      this.observeHydration.delete(key)
+    })
+    this.observeHydration.set(key, { at: Date.now(), work })
     return work
   }
 
@@ -302,6 +444,9 @@ export class SurrogateEngine {
     opts?: { includeObservePreviews?: boolean },
   ): Promise<Array<{ needle: string; surrogate: string; fromStructuredField: boolean }>> {
     await this.hydrateDisplayValues(tenantId, scope)
+    if (opts?.includeObservePreviews) {
+      await this.hydrateObservePreviews(tenantId, scope)
+    }
     return this.listKnownValueReplacements(tenantId, scope, opts)
   }
 

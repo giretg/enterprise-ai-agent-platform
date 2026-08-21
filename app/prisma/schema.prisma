@@ -719,6 +719,7 @@ model Tenant {
   agentAccessGrants AgentAccessGrant[]
   surrogateMaps     SurrogateMap[]
   conversationPrivacyKeys ConversationPrivacyKey[]
+  conversationObserveEntities ConversationObserveEntity[]
 
   @@index([status])
   @@map("tenants")
@@ -1967,6 +1968,7 @@ model Conversation {
   channelSessions      ChannelSession[]
   consequenceApprovals ConsequenceApproval[]
   privacyKey           ConversationPrivacyKey?
+  observeEntities      ConversationObserveEntity[]
 
   @@index([tenantId, agentId, lastMessageAt])
   @@index([tenantId, createdById])
@@ -1989,6 +1991,26 @@ model ConversationPrivacyKey {
 
   @@index([tenantId])
   @@map("conversation_privacy_keys")
+}
+
+/// OBSERVE mód UI-előnézet: megfigyelt entitásértékek a chat kiemeléshez (APG-22).
+/// Külön a surrogate_map vaulttól — preview-álnev ütközés és prompt known-value
+/// szennyezés nélkül. A beszélgetés törlésekor crypto-shreddinggel eltűnik.
+model ConversationObserveEntity {
+  conversationId   String   @map("conversation_id") @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+  entityType       String   @map("entity_type")
+  valueFingerprint String   @map("value_fingerprint")
+  previewOrdinal   Int      @map("preview_ordinal")
+  displayValueEnc  String   @map("display_value_enc")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, entityType, valueFingerprint])
+  @@index([tenantId])
+  @@map("conversation_observe_entities")
 }
 
 /// Következmény-kapu pending jóváhagyás — a blokkolt mellékhatásos tool teljes

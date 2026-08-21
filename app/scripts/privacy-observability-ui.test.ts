@@ -258,6 +258,60 @@ async function main() {
     assert.match(src, /privacyContext/)
   })
 
+  await test('OBSERVE: strukturált mező preview perzisztál és újratöltés után is kiemelhető', async () => {
+    const { InMemorySurrogateVault, InMemoryPrivacyKeyRepository } = await import(
+      './test-in-memory-surrogate-vault'
+    )
+    const vault = new InMemorySurrogateVault()
+    const privacyKeys = new InMemoryPrivacyKeyRepository()
+    const { SurrogateEngine } = await import('../src/domain/privacy/surrogate-engine')
+    const engine = new SurrogateEngine(
+      vault,
+      { append: async () => {} } as never,
+      undefined,
+      privacyKeys,
+    )
+    const policy = resolvePrivacyCategoryPolicy({
+      platform: {
+        categories: { company: 'tokenize' },
+        custom: {},
+        updatedById: null,
+        updatedAt: null,
+        patternSetVersion: 1,
+      },
+    })
+    const scope = { type: 'conversation' as const, id: 'conv-observe-persist' }
+    const { transformStructuredOutput } = await import('../src/domain/privacy/structured-output-transform')
+    await transformStructuredOutput({
+      output: { company_name: COMPANY, id: 1 },
+      fields: CRM_FIELDS,
+      engine,
+      tenantId: TENANT,
+      connectorId: CONNECTOR,
+      scope,
+      apply: false,
+      registerObserved: true,
+    })
+    await engine.flushObservePreviews(TENANT, scope)
+
+    const reloaded = new SurrogateEngine(
+      vault,
+      { append: async () => {} } as never,
+      undefined,
+      privacyKeys,
+    )
+    const observeText = `Riport: ${COMPANY}`
+    const markers = buildEntityMarkers({
+      text: observeText,
+      policy,
+      mode: 'observe',
+      knownValues: await reloaded.loadKnownValueReplacements(TENANT, scope, {
+        includeObservePreviews: true,
+      }),
+    })
+    assert.ok(markers.some((m) => m.displayValue === COMPANY))
+  })
+
   await test('OBSERVE: strukturált mező preview szótárba kerül vault nélkül', async () => {
     const { SurrogateEngine } = await import('../src/domain/privacy/surrogate-engine')
     const engine = new SurrogateEngine(

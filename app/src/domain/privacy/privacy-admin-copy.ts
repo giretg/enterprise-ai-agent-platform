@@ -45,7 +45,8 @@ export const PRIVACY_GLOSSARY: readonly PrivacyGlossaryTerm[] = [
   {
     id: 'enforce',
     term: 'Érvényesítés (ENFORCE)',
-    explanation: 'A modell csak az álneveket kapja; a valódi adat a platformon marad.',
+    explanation:
+      'A védelem fut. Álnévnél a modell csak a helyettesítőt kapja; mintaszűrőnél a találat megállítja vagy helyi modellre tereli a hívást.',
   },
   {
     id: 'off',
@@ -56,30 +57,30 @@ export const PRIVACY_GLOSSARY: readonly PrivacyGlossaryTerm[] = [
     id: 'scanner',
     term: 'Mintaszűrő',
     explanation:
-      'A régi réteg: TAJ, adószám, bankkártya, IBAN és titok mintáját keresi a teljes szövegben. Nem álnevez, hanem terel vagy megállít. Külön kapcsolható a tokenizálástól.',
+      'TAJ, adószám, bankkártya, IBAN és titok mintáját keresi a szövegben. Nem álnevez, hanem terel vagy megállít. Külön kapcsolható az álnév-rétegtől.',
   },
 ]
 
 export const PRIVACY_CATEGORY_LABELS: Record<string, { label: string; explanation: string }> = {
   company: {
     label: 'Cégnév',
-    explanation: 'Cégek, üzletek, szervezetek neve, ahogy a forrásrendszer vagy a szöveg említi.',
+    explanation: 'Forrás-katalógus: a kapcsolat jelöli meg, mely mező tokenizálódik.',
   },
   person: {
     label: 'Személynév',
-    explanation: 'Emberek neve — ügyfél, munkatárs, kapcsolattartó.',
+    explanation: 'Forrás-katalógus: a kapcsolat jelöli meg, mely mező tokenizálódik.',
   },
   email: {
     label: 'E-mail-cím',
-    explanation: 'Elektronikus levelezési cím, például anna@pelda.hu.',
+    explanation: 'Begépelt szövegben felismert cím — routing, nem forrás-entitás.',
   },
   phone: {
     label: 'Telefonszám',
-    explanation: 'Hívható szám, mobil vagy vezetékes.',
+    explanation: 'Begépelt szövegben felismert szám — routing, nem forrás-entitás.',
   },
   account: {
     label: 'Ügyfél- vagy fiókazonosító',
-    explanation: 'Belső azonosító, amivel a forrásrendszer egy ügyfelet vagy fiókot megjelöl.',
+    explanation: 'Begépelt szövegben felismert azonosító-minta — routing, nem forrás-entitás.',
   },
   taj: {
     label: 'TAJ-szám',
@@ -146,15 +147,15 @@ export const PRIVACY_MODE_LABELS: Record<
 > = {
   off: {
     label: 'Kikapcsolva',
-    explanation: 'A védelem nem fut: a modell a nyers adatot kapja.',
+    explanation: 'A védelem nem fut: a modell a nyers nevet és azonosítót kapja.',
   },
   observe: {
     label: 'Megfigyelés',
     explanation:
-      'A rendszer feljegyzi, mit cserélt volna, de a modellnek még a valódi adat megy.',
+      'Feljegyezzük, mit cseréltünk volna álnévre, de a modellnek még a valódi adat megy.',
   },
   enforce: {
-    label: 'Érvényesítés',
+    label: 'Álnévre cserél',
     explanation: 'A modell csak az álneveket kapja; a valódi adat a platformon marad.',
   },
 }
@@ -173,25 +174,43 @@ export const SENSITIVITY_MODE_LABELS: Record<
       'Feljegyezzük, mit tiltott vagy helyi modellre terelt volna a szűrő, de a hívás megy tovább.',
   },
   enforce: {
-    label: 'Érvényesítés',
+    label: 'Szigorú (blokkoló)',
     explanation:
       'Érzékeny találatnál helyi modell kell; ha nincs, a hívás megáll. Tiltott mintánál (kártya, titok) mindig megáll.',
   },
 }
 
+export const PRIVACY_PAGE_INTRO =
+  'Két külön védelem, egymástól függetlenül. A cégnév és személynév álneveit a forrásrendszer-kapcsolat katalógusa határozza meg — nem itt. Az e-mail, telefon és fiókazonosító szabad szövegben felismert mintáinál itt állíthatod a viselkedést. A mintaszűrő a TAJ-t, adószámot, kártyát és titkot kezeli. Az egyik megfigyelése vagy kikapcsolása nem nyúl a másikhoz.'
+
+export const ALIAS_LAYER_INTRO =
+  'A kapcsolat privacy-katalógusa mondja meg, mely mezők (cégnév, személy, egyedi típusok) kapnak álnevet — a Kapcsolatok oldalon. Itt csak az üzemmódot és a szabad szövegben felismert e-mail / telefon / fiókazonosító szabályait állítod. A TAJ, adószám és kártya nem ide tartozik.'
+
 export const SENSITIVITY_LAYER_INTRO =
-  'Ez a mintaszűrő a begépelt szövegben és a tool-válaszokban keresi a TAJ-t, adószámot, bankkártyát, IBAN-t és titkokat. Nem cserél álnévre — vagy továbbengedi, vagy helyi modellre tereli, vagy megállítja a hívást. Külön él a fenti álnév-rétegtől: a Megfigyelés ott nem kapcsolja ki ezt a szűrőt.'
+  'TAJ, adószám, bankkártya, IBAN és titok a begépelt szövegben és a tool-válaszokban. Nincs álnév: vagy továbbengedi, vagy helyi modellre tereli, vagy megállítja a hívást. Ettől az álnév-üzemmódtól függetlenül kapcsolható.'
+
+export const ALIAS_RULES_INTRO =
+  'Az üzemmód a réteg főkapcsolója. Az alábbi sorok csak a begépelt szövegben felismert mintákra vonatkoznak: mehet a modellnek, csak helyi modell, vagy tiltva. Cégnév és személynév itt nem szerepel — azt a kapcsolat katalógusa szabályozza.'
+
+export const SCANNER_RULES_INTRO =
+  'Az üzemmód dönti el, hogy a szabályok érvényesülnek-e, vagy csak feljegyzés / ki van kapcsolva. Itt adatfajtánként szigoríthatsz vagy engedhetsz. Álnév ezekre nincs.'
+
+export const PRIVACY_MODE_CONTROL_LABEL = 'Üzemmód'
+export const PRIVACY_RULES_HEADING = 'Adatfajtánként'
+export const PRIVACY_LAYER_TABS_LABEL = 'Melyik szint adatfajta-szabályait szerkeszted?'
+export const PRIVACY_MODE_PLATFORM_RETIRED =
+  'Az üzemmód a szervezetnél és az AI-munkatársnál állítható. A platform itt csak az adatfajta-szabályok alapját adja.'
 
 export const PRIVACY_INHERIT_LABEL = 'Öröklés'
 export const PRIVACY_INHERIT_EXPLANATION =
-  'A fölötte lévő szint szabálya marad érvényben — itt nincs külön felülírás.'
+  'Öröklésnél a fölötte lévő szint szabálya marad. Amit itt beállítasz, az csak ezen a szinten írja felül.'
 
 export const PRIVACY_CONNECTORS_HREF = CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connections
 
 export const PRIVACY_EMPTY_CONNECTOR_STATE = {
   title: 'Először egy kapcsolatot kell megjelölni',
   body:
-    'Még nincs olyan forrásrendszer-kapcsolat, ami megmondaná, mely cégneveket vagy személyes adatokat kell álnévre cserélni. A Kapcsolatok oldalon állíts be egy CRM-et vagy más forrást, és jelöld meg a védendő mezőket. Addig a szabályok menthetők, a próba pedig csak a begépelt szövegben felismert mintákra (e-mail, TAJ, bankkártya) működik.',
+    'A cégnév és személynév álneve csak akkor képződik, ha a forrásrendszer-kapcsolat privacy-katalógusa megjelöli a mezőket. A Kapcsolatok oldalon állíts be egy CRM-et vagy más forrást. Addig az e-mail / telefon szabályok menthetők, a próba pedig a begépelt mintákra (e-mail, TAJ, bankkártya) működik.',
   cta: 'Ugrás a kapcsolatok beállításához',
   href: PRIVACY_CONNECTORS_HREF,
 } as const

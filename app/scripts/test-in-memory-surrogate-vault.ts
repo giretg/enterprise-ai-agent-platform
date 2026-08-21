@@ -19,6 +19,7 @@ import {
   type PrivacyScope,
   type RefEntityRef,
   type RefVaultRecord,
+  type ObservePreviewRow,
   type SurrogateDisplayValueRow,
   type SurrogateVault,
   type TenantHmacKeyResolver,
@@ -35,6 +36,7 @@ export class InMemorySurrogateVault implements SurrogateVault {
   readonly refs: RefVaultRecord[] = []
   readonly vals: ValVaultRecord[] = []
   private readonly displayValues = new Map<string, Map<string, string>>()
+  private readonly observePreviews = new Map<string, ObservePreviewRow[]>()
 
   constructor(private readonly resolveTenantKey: TenantHmacKeyResolver = () => 'test-tenant-key') {}
 
@@ -204,6 +206,29 @@ export class InMemorySurrogateVault implements SurrogateVault {
     const bucket = this.displayValues.get(scopeKey(tenantId, scope))
     if (!bucket) return []
     return [...bucket].map(([surrogate, displayValueEnc]) => ({ surrogate, displayValueEnc }))
+  }
+
+  async saveObservePreviews(
+    _tenantId: string,
+    scope: PrivacyScope,
+    rows: readonly ObservePreviewRow[],
+  ): Promise<void> {
+    const key = scopeKey(_tenantId, scope)
+    const existing = this.observePreviews.get(key) ?? []
+    const merged = new Map(
+      existing.map((row) => [`${row.entityType}\0${row.valueFingerprint}`, row] as const),
+    )
+    for (const row of rows) {
+      merged.set(`${row.entityType}\0${row.valueFingerprint}`, row)
+    }
+    this.observePreviews.set(key, [...merged.values()])
+  }
+
+  async listObservePreviews(
+    tenantId: string,
+    scope: PrivacyScope,
+  ): Promise<ObservePreviewRow[]> {
+    return this.observePreviews.get(scopeKey(tenantId, scope)) ?? []
   }
 
   private taken(tenantId: string, scope: PrivacyScope, surrogate: string): boolean {

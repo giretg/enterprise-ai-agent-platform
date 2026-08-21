@@ -123,6 +123,10 @@ async function resolveModelOutput(params: PrivacyAwareOutcomeInput): Promise<unk
     privacyTransformDurationMs.observe(Date.now() - started)
   }
 
+  if (registerObserved && params.engine && tenantId && scope) {
+    await params.engine.flushObservePreviews(tenantId, scope)
+  }
+
   if (mode !== 'off' && spans.length > 0 && params.audit && tenantId && scope) {
     await recordPrivacyGatewayAudit(params.audit, {
       action: apply ? 'privacy.transform.applied' : 'privacy.transform.observed',

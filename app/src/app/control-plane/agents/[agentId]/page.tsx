@@ -554,7 +554,7 @@ export default async function AgentDetailPage({
     {
       id: 'mukodes',
       label: 'Működés és hozzáférés',
-      description: 'Ki látja az agentet, mit cserélünk álnévre, mit szűr a mintaszűrő, és milyen életciklus-állapotban van.',
+      description: 'Ki látja az agentet, hogyan védjük a neveket és a titkos mintákat, és milyen életciklus-állapotban van.',
       content: (
         <div className="space-y-6">
           {privacyRes.success ? (

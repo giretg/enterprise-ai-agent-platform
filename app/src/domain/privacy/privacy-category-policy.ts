@@ -104,6 +104,46 @@ export const SENSITIVITY_SCANNER_CATEGORIES: readonly PrivacyPolicyCategory[] = 
   'secret_key',
 ]
 
+/**
+ * #320: cég és személy csak a forrás privacy-katalógusából tokenizálódik;
+ * platform policy-sor nincs hozzájuk az admin UI-ban.
+ */
+export const SOURCE_CATALOG_PRIVACY_CATEGORIES: readonly PrivacyPolicyCategory[] = [
+  'company',
+  'person',
+]
+
+/** Szabad szövegben felismert minták — routing-policy, nem forrás-entitás tokenizálás. */
+export const FREE_TEXT_PATTERN_PRIVACY_CATEGORIES: readonly PrivacyPolicyCategory[] = [
+  'email',
+  'phone',
+  'account',
+]
+
+export function isSourceCatalogPrivacyCategory(category: string): boolean {
+  const canonical = canonicalPrivacyCategory(category)
+  return (SOURCE_CATALOG_PRIVACY_CATEGORIES as readonly string[]).includes(canonical)
+}
+
+export function isFreeTextPatternPrivacyCategory(category: string): boolean {
+  const canonical = canonicalPrivacyCategory(category)
+  return (FREE_TEXT_PATTERN_PRIVACY_CATEGORIES as readonly string[]).includes(canonical)
+}
+
+/** Megjelenik az „Álnevek → Adatfajtánként” szerkesztőben? */
+export function isAliasPolicyEditorCategory(category: string): boolean {
+  if (isSourceCatalogPrivacyCategory(category)) return false
+  if (isSensitivityScannerCategory(category)) return false
+  return true
+}
+
+/** „Álnévre cseréljük” választható-e a szerkesztőben (#320 D6 után csak egyedi slug). */
+export function categoryAllowsAliasTokenizeAction(category: string): boolean {
+  if (isSourceCatalogPrivacyCategory(category)) return false
+  if (isFreeTextPatternPrivacyCategory(category)) return false
+  return categorySupportsTokenize(category)
+}
+
 export function categorySupportsTokenize(category: string): boolean {
   const canonical = canonicalPrivacyCategory(category)
   if (!isPrivacyPolicyCategory(canonical)) return true

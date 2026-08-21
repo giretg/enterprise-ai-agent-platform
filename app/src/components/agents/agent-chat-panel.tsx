@@ -1352,16 +1352,13 @@ function MessageBubble({
                     </AdminTechnicalDetails>
                   )}
                 </div>
-              ) : privacyMarkers.length > 0 ? (
-                <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                  <PrivacyHighlightedText
-                    text={message.text}
-                    markers={privacyMarkers}
-                  />
-                </div>
               ) : isUser ? (
                 <div className="text-sm [&_a]:text-card [&_a]:underline [&_strong]:text-card">
-                  <ChatMarkdown content={message.text} variant="user" />
+                  <ChatMarkdown
+                    content={message.text}
+                    variant="user"
+                    privacyMarkers={privacyMarkers}
+                  />
                 </div>
               ) : (
                 <ChatMarkdown
@@ -1369,6 +1366,7 @@ function MessageBubble({
                   variant="agent"
                   workspaceBaseUrl={workspaceBaseUrl}
                   workspaceFilePaths={workspaceFilePaths}
+                  privacyMarkers={privacyMarkers}
                 />
               ))}
             {!isUser && message.consequenceApprovals && message.consequenceApprovals.length > 0 && (

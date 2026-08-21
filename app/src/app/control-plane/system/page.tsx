@@ -226,7 +226,7 @@ export default async function SystemPage() {
           {
             id: 'adatvedelem',
             label: 'Adatvédelem',
-            description: 'Álnevek és mintaszűrő (TAJ, adószám, kártya) — két külön réteg, próba modellhívás nélkül.',
+            description: 'Két külön védelem: álnevek a nevekre, mintaszűrő a TAJ-ra és kártyára. Próba modellhívás nélkül.',
             content: privacyRes.success
               ? <PrivacyAdminPanel initial={privacyRes.data} layers={['platform', 'tenant']} />
               : errorBox(privacyRes.error),

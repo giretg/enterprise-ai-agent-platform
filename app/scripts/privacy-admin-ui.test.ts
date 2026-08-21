@@ -12,15 +12,22 @@ import { OSTOROSBOR_CRM_PRIVACY_FIELDS } from '../src/domain/privacy/connector-p
 import { connectorHasPrivacyMetadata } from '../src/domain/privacy/connector-privacy'
 import { connectorRowHasPrivacyMetadata } from '../src/domain/privacy/connector-privacy-runtime'
 import {
+  ALIAS_LAYER_INTRO,
   PRIVACY_EMPTY_CONNECTOR_STATE,
   PRIVACY_GLOSSARY,
+  PRIVACY_MODE_LABELS,
+  PRIVACY_PAGE_INTRO,
+  SENSITIVITY_LAYER_INTRO,
+  SENSITIVITY_MODE_LABELS,
   inheritedFromLabel,
   privacyConnectorEmptyState,
 } from '../src/domain/privacy/privacy-admin-copy'
 import {
   buildPrivacyPolicyEditorRows,
   DEFAULT_PRIVACY_CATEGORY_POLICY,
+  isAliasPolicyEditorCategory,
   isSensitivityScannerCategory,
+  isSourceCatalogPrivacyCategory,
   resolvePrivacyCategoryPolicy,
 } from '../src/domain/privacy/privacy-category-policy'
 import { previewAliasForCategory, runPrivacyDryRun } from '../src/domain/privacy/privacy-dry-run'
@@ -154,6 +161,9 @@ async function main() {
     assert.equal(company?.source, 'default')
     assert.equal(inheritedFromLabel(phone!.source), 'örökölt (platform)')
     assert.equal(inheritedFromLabel(company!.source), 'örökölt (alapértelmezés)')
+    assert.equal(isSourceCatalogPrivacyCategory('company'), true)
+    assert.equal(isAliasPolicyEditorCategory('company'), false)
+    assert.equal(isAliasPolicyEditorCategory('email'), true)
   })
 
   await test('öröklés: agent rétegen a tenant telefon-szabálya látszik örököltnek', () => {
@@ -186,7 +196,7 @@ async function main() {
     assert.equal(empty.ready.length, 0)
     assert.equal(empty.title, PRIVACY_EMPTY_CONNECTOR_STATE.title)
     assert.ok(empty.body?.includes('Kapcsolatok'))
-    assert.ok(empty.body?.includes('védendő'))
+    assert.ok(empty.body?.includes('katalógus'))
     assert.ok(empty.cta)
     assert.ok(empty.href)
   })
@@ -275,6 +285,27 @@ async function main() {
     const byId = Object.fromEntries(PRIVACY_GLOSSARY.map((term) => [term.id, term]))
     assert.ok(byId.scanner?.term.includes('Mintaszűrő'))
     assert.ok(byId.scanner?.explanation.includes('Külön'))
+  })
+
+  await test('a két réteg introja külön témát ír, és a függetlenséget kimondja', () => {
+    assert.ok(PRIVACY_PAGE_INTRO.includes('független'))
+    assert.ok(PRIVACY_PAGE_INTRO.includes('nem nyúl a másikhoz'))
+    assert.ok(PRIVACY_PAGE_INTRO.includes('katalógusa'))
+    assert.ok(ALIAS_LAYER_INTRO.includes('TAJ'))
+    assert.ok(ALIAS_LAYER_INTRO.includes('Kapcsolat'))
+    assert.ok(SENSITIVITY_LAYER_INTRO.includes('független'))
+    assert.ok(SENSITIVITY_LAYER_INTRO.includes('Nincs álnév'))
+    assert.notEqual(PRIVACY_MODE_LABELS.enforce.label, SENSITIVITY_MODE_LABELS.enforce.label)
+    assert.ok(PRIVACY_MODE_LABELS.enforce.label.includes('Álnév'))
+    assert.ok(SENSITIVITY_MODE_LABELS.enforce.label.includes('Szigorú'))
+  })
+
+  await test('forrás-katalógus kategóriák nincsenek az alias szerkesztőben', () => {
+    const rows = buildPrivacyPolicyEditorRows({ editingLayer: 'agent' })
+    const visible = rows.filter((row) => isAliasPolicyEditorCategory(row.category))
+    assert.equal(visible.some((row) => row.category === 'company'), false)
+    assert.equal(visible.some((row) => row.category === 'person'), false)
+    assert.equal(visible.some((row) => row.category === 'email'), true)
   })
 
   if (failures > 0) {

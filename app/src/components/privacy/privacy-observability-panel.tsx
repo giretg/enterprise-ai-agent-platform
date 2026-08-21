@@ -6,7 +6,6 @@ import { PrivacyHighlightedText } from '@/components/privacy/privacy-highlighted
 import type { PrivacyTurnChain } from '@/domain/privacy/privacy-observability'
 import {
   PRIVACY_OBSERVABILITY_ADMIN_HINT,
-  PRIVACY_OBSERVABILITY_EMPTY,
   PRIVACY_OBSERVABILITY_INTRO,
 } from '@/domain/privacy/privacy-observability-copy'
 
@@ -23,16 +22,7 @@ export function PrivacyObservabilityPanel({
     return chain.stages.find((stage) => stage.id === activeStageId) ?? chain.stages[0] ?? null
   }, [activeStageId, chain])
 
-  if (!chain || chain.empty) {
-    return (
-      <Card title="Adatvédelem — nyomkövetés">
-        <div className="space-y-3">
-          <p className="text-sm font-medium text-ink">{PRIVACY_OBSERVABILITY_EMPTY.title}</p>
-          <p className="text-sm leading-relaxed text-ink-soft">{PRIVACY_OBSERVABILITY_EMPTY.body}</p>
-        </div>
-      </Card>
-    )
-  }
+  if (!chain || chain.empty) return null
 
   return (
     <Card title="Adatvédelem — nyomkövetés">

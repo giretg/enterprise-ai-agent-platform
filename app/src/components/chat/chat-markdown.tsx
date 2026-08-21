@@ -1,26 +1,43 @@
 'use client'
 
 import Link from 'next/link'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import rehypeRaw from 'rehype-raw'
 import type { Components } from 'react-markdown'
 import {
   HtmlPreviewModal,
   type HtmlPreviewTarget,
 } from '@/components/workspace/html-preview-modal'
+import type { PrivacyEntityMarker } from '@/domain/privacy/privacy-observability'
 import { containsEmbeddedSurrogate } from '@/domain/privacy/surrogate-format'
 import {
   isSafeMarkdownImageSrc,
   isSafeMarkdownLinkHref,
   unresolvedSurrogateHint,
 } from '@/lib/markdown-url-policy'
+import { injectPrivacyHighlights } from '@/lib/privacy-markdown-highlights'
 import {
   linkWorkspaceFileReferences,
   workspaceFileLink,
   workspaceFileLinkForReference,
   workspaceHtmlPreviewFromLink,
 } from '@/lib/workspace-file-visibility'
+
+function privacyMarkClass(className?: string): string {
+  switch (className) {
+    case 'privacy-applied':
+      return 'rounded-sm bg-sage/20 px-0.5 text-ink border-b border-sage/50'
+    case 'privacy-blocked':
+      return 'rounded-sm bg-coral/15 px-0.5 text-ink border-b border-coral/50'
+    case 'privacy-skipped':
+      return 'rounded-sm bg-night-3 px-0.5 text-ink-soft border-b border-line/60'
+    case 'privacy-observed':
+    default:
+      return 'rounded-sm bg-honey/25 px-0.5 text-ink border-b border-honey/60'
+  }
+}
 
 function MarkdownLink({
   href,
@@ -201,6 +218,11 @@ function agentComponentsFor(
   },
   img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
   hr: () => <hr className="my-3 border-line" />,
+  mark: ({ className, children, title }) => (
+    <mark className={privacyMarkClass(className ?? undefined)} title={title ?? undefined}>
+      {children}
+    </mark>
+  ),
   }
 }
 
@@ -231,20 +253,48 @@ export function ChatMarkdown({
   variant,
   workspaceBaseUrl,
   workspaceFilePaths = [],
+  privacyMarkers = [],
 }: {
   content: string
   variant: 'user' | 'agent'
   /** A beszélgetés/ticket saját, hitelesített workspace-fájl route-ja. */
   workspaceBaseUrl?: string
   workspaceFilePaths?: string[]
+  privacyMarkers?: readonly PrivacyEntityMarker[]
 }) {
   const [htmlPreview, setHtmlPreview] = useState<HtmlPreviewTarget | null>(null)
+  const linkedContent = useMemo(
+    () =>
+      workspaceBaseUrl
+        ? linkWorkspaceFileReferences(content, workspaceFilePaths, workspaceBaseUrl)
+        : content,
+    [content, workspaceBaseUrl, workspaceFilePaths],
+  )
+  const renderedContent = useMemo(
+    () =>
+      privacyMarkers.length > 0
+        ? injectPrivacyHighlights(linkedContent, privacyMarkers)
+        : linkedContent,
+    [linkedContent, privacyMarkers],
+  )
+  const rehypePlugins = privacyMarkers.length > 0 ? [rehypeRaw] : []
 
   if (variant === 'user') {
     return (
       <div className="chat-markdown chat-markdown--user text-sm">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={userComponents}>
-          {content}
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={rehypePlugins}
+          components={{
+            ...userComponents,
+            mark: ({ className, children, title }) => (
+              <mark className={privacyMarkClass(className ?? undefined)} title={title ?? undefined}>
+                {children}
+              </mark>
+            ),
+          }}
+        >
+          {renderedContent}
         </ReactMarkdown>
       </div>
     )
@@ -255,11 +305,10 @@ export function ChatMarkdown({
       <div className="chat-markdown chat-markdown--agent text-sm text-ink-soft">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
+          rehypePlugins={rehypePlugins}
           components={agentComponentsFor(workspaceBaseUrl, workspaceFilePaths, setHtmlPreview)}
         >
-          {workspaceBaseUrl
-            ? linkWorkspaceFileReferences(content, workspaceFilePaths, workspaceBaseUrl)
-            : content}
+          {renderedContent}
         </ReactMarkdown>
       </div>
       {htmlPreview && (
