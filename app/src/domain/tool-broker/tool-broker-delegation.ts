@@ -84,8 +84,7 @@ import {
   parseHttpApiConfig,
   resolveConnectorApiKey,
 } from '@/domain/connector/http-api-client'
-import { enrichOstorosborConnectorConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
-import { normalizeConnectorConfig } from '@/domain/provisioning/connector-config'
+import { effectiveConnectorRuntimeConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 
 import {
   type WebSearchResult,
@@ -165,11 +164,7 @@ import type { ToolBrokerService } from './tool-broker-service'
 const AGENT_ANSWER_COMPLETION_STATES = new Set<string>(['done', 'awaiting_human'])
 
 function resolveHttpApiConnectorConfig(raw: unknown): unknown {
-  try {
-    return enrichOstorosborConnectorConfig(normalizeConnectorConfig(raw)).config
-  } catch {
-    return raw
-  }
+  return effectiveConnectorRuntimeConfig(raw)
 }
 
 export async function executeHttpApiTool(self: ToolBrokerService,

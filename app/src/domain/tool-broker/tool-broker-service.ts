@@ -114,6 +114,7 @@ import {
 } from '@/domain/privacy/resolve-tool-args'
 import { resolveEntityNamesInToolArgs } from '@/domain/privacy/resolve-tool-entity-names'
 import type { ConnectorEntityResolver } from '@/domain/privacy/entity-resolve-contract'
+import { effectiveConnectorRuntimeConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 import { connectorSupportsEntityResolution } from '@/domain/privacy/connector-privacy'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import type { DebugTraceService } from '@/domain/debug-log/debug-trace-service'
@@ -574,7 +575,7 @@ export class ToolBrokerService {
 
     if (
       connector &&
-      connectorSupportsEntityResolution(connector.config) &&
+      connectorSupportsEntityResolution(effectiveConnectorRuntimeConfig(connector.config)) &&
       this.connectorEntityResolverFactory
     ) {
       const entityResolver = await this.connectorEntityResolverFactory({
@@ -589,7 +590,7 @@ export class ToolBrokerService {
           tenantId,
           scope,
           connectorId: connector.id,
-          connectorConfig: connector.config,
+          connectorConfig: effectiveConnectorRuntimeConfig(connector.config),
           resolver: entityResolver,
         })
         args = entityResolved.args

@@ -1,6 +1,6 @@
 import type { Prisma } from '@prisma/client'
 import { parseCapabilitySet } from './capability-set'
-import { enrichOstorosborTraceHeaders } from '@/domain/connector-template/ostorosbor-config-enrichment'
+import { enrichOstorosborConnectorConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 
 /**
  * A3 broker-kapu: fixed connectornál a meglévő config marad; self_updating módban
@@ -15,7 +15,7 @@ export function pinnedRuntimeConfig(
   if (connectorMode === 'fixed') return fixedConfig as Prisma.JsonValue
   const set = parseCapabilitySet(activeCapabilitySet)
   if (!set) return null
-  const runtimeConfig = enrichOstorosborTraceHeaders(set).config
+  const runtimeConfig = enrichOstorosborConnectorConfig(set).config
   return { ...runtimeConfig, restrictToEndpoints: true, selfUpdatingPinned: true } as Prisma.JsonValue
 }
 

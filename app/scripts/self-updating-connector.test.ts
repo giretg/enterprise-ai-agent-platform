@@ -451,6 +451,8 @@ async function run() {
       'X-Acting-User': '{{actingUser.email}}',
       'X-Connector-Call-Id': '{{call.id}}',
     })
+    assert.equal((pinned.fields as Record<string, unknown> | undefined)?.company_name !== undefined, true)
+    assert.equal((pinned.privacy as Record<string, unknown> | undefined)?.structured_field_privacy, true)
     const calls: RequestInit[] = []
     const originalFetch = globalThis.fetch
     globalThis.fetch = async (_input, init) => {

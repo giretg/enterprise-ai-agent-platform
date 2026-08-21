@@ -64,8 +64,7 @@ import {
   buildHttpApiEfficiencyGuidance,
   formatHttpApiEndpointCatalogSuffix,
 } from '@/domain/connector/http-api-prompt'
-import { enrichOstorosborConnectorConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
-import { normalizeConnectorConfig } from '@/domain/provisioning/connector-config'
+import { effectiveConnectorRuntimeConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 import type { ToolName } from '@/domain/tool-broker/tool-broker-types'
 // issue #194 — a chat-vetület KIZÁRÓLAG a kanonikus tool-regiszterből képződik.
 import {
@@ -3048,11 +3047,7 @@ function endpointCatalogSuffix(endpoint: unknown): string {
  */
 /** Ugyanaz a feloldás, mint a tool-broker invoke úton — enrichment (risk:read report POST) a kapun is. */
 function resolveHttpApiConfigForGate(raw: unknown): unknown {
-  try {
-    return enrichOstorosborConnectorConfig(normalizeConnectorConfig(raw)).config
-  } catch {
-    return raw
-  }
+  return effectiveConnectorRuntimeConfig(raw)
 }
 
 async function loadHttpApiConnectorsForGate(

@@ -28,6 +28,7 @@ import {
   OSTOROSBOR_CRM_PRIVACY_FIELDS,
   readConnectorPrivacyFields,
 } from '../src/domain/privacy/connector-privacy'
+import { pinnedRuntimeConfig } from '../src/domain/connector-self-update/pinned-runtime-config'
 import { SurrogateEngine, type PrivacyAuditSink } from '../src/domain/privacy/surrogate-engine'
 import { pseudonymizeStructuredOutput } from '../src/domain/privacy/structured-output-transform'
 import {
@@ -389,6 +390,39 @@ async function main() {
     assert.deepEqual(channels.machineData, snapshot)
     assert.equal(JSON.stringify(channels.machineData), JSON.stringify(snapshot))
     assert.deepEqual(RAW_GET, snapshot)
+  })
+
+  await test('ENFORCE: self_updating snapshot runtime config (fields nélkül) is tokenizál', async () => {
+    const { engine: eng } = engine()
+    const snapshot = pinnedRuntimeConfig('self_updating', {}, {
+      provider: 'ostoros-crm-autorefresh',
+      baseUrl: 'https://ostorosbor-crm--e-ai-ab8f1.europe-west4.hosted.app/api/connector/v1',
+      egressHosts: ['ostorosbor-crm--e-ai-ab8f1.europe-west4.hosted.app'],
+      authMode: 'service',
+      auth: { type: 'bearer_token' },
+      scopesSuggested: [],
+      proposedTools: [{ name: 'listAccounts', method: 'GET', path: '/accounts', access: 'read' }],
+    })
+    assert.ok(snapshot)
+    const channels = await buildPrivacyAwareOutcomeChannels({
+      tool: 'http_api_get',
+      trust: resolveTrustClass('http_api_get'),
+      output: RAW_GET,
+      contract: resolveToolOutputContract('http_api_get'),
+      sideEffecting: isSideEffectingTool('http_api_get'),
+      connector: {
+        id: CONNECTOR,
+        tenantId: TENANT,
+        config: snapshot,
+      },
+      conversationId: CONVERSATION,
+      actingTenantId: TENANT,
+      engine: eng,
+      mode: 'enforce',
+    })
+    assert.equal(channels.modelText.includes(COMPANY), false)
+    assert.match(channels.modelText, /\[\[COMPANY_1\]\]/)
+    assert.equal(JSON.stringify(channels.machineData).includes(COMPANY), true)
   })
 
   await test('tömb: ugyanaz az entitás ugyanazt az álnevet kapja a válaszon belül', async () => {

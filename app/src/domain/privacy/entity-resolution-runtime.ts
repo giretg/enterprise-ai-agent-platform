@@ -85,5 +85,3 @@ export async function buildUserInputEntityResolution(input: {
     entityTypeHint: 'company',
   }
 }
-
-
