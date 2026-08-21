@@ -75,6 +75,7 @@ jobs:
           npm run test:list-pagination
           npm run test:playbook-v2-registry
           npm run test:playbook-process-def
+          npm run test:chat-process-attachment-access
           npm run test:iam-policy
           npm run test:control-plane-nav
           npm run test:agent-access-graph

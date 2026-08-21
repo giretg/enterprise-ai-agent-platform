@@ -675,10 +675,10 @@ async function main() {
       mimeType: 'application/pdf',
     }
     const filled = applyChatTriggerAttachments({}, ['pdf_path', 'ceg'], [pdf])
-    assert.deepEqual(filled, { pdf_path: '043_15 2026.07.16.pdf' })
+    assert.deepEqual(filled, { pdf_path: '043_15 2026.07.16.pdf.txt' })
 
     const withId = applyChatTriggerAttachments({}, ['pdf_path', 'documentId'], [pdf])
-    assert.equal(withId.pdf_path, '043_15 2026.07.16.pdf')
+    assert.equal(withId.pdf_path, '043_15 2026.07.16.pdf.txt')
     assert.equal(withId.documentId, pdf.id)
 
     const explicitWins = applyChatTriggerAttachments(

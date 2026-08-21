@@ -21,6 +21,7 @@ import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import { attachmentPageCount } from '@/lib/document-read'
 import { assertDocumentsReachableFromTenant } from '@/lib/document-tenant-access'
+import { chatAttachmentWorkspacePath } from '@/lib/attachment-workspace'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { pollCancelRequested } from '@/lib/cancel-flag-poll'
 import {
@@ -2222,7 +2223,7 @@ export class AgentChatRuntime {
     const system =
       'Egy folyamatindító mezőkitöltő vagy. A felhasználó üzenetéből és a csatolt fájlokból told ki a felsorolt mezőket. ' +
       'KIZÁRÓLAG egy JSON objektumot adj vissza (semmi mást, se magyarázatot, se kódblokkot), ' +
-      'aminek a kulcsai a felsorolt mezőnevek. Fájl-szerű mezőhöz (pdf_path, path, file) a csatolmány fájlneve kell; documentId-hez a UUID. ' +
+      'aminek a kulcsai a felsorolt mezőnevek. Fájl-szerű mezőhöz (pdf_path, path, file) a workspace-tükrözött fájlnév kell (PDF/Office esetén „fájl.pdf.txt”); documentId-hez a UUID. ' +
       'Ha egy mezőt nem tudsz kinyerni, hagyd ki a kulcsot.'
     const attachmentLines =
       params.attachments.length > 0
@@ -2447,7 +2448,7 @@ export class AgentChatRuntime {
         if (/\.(xlsx|xlsm|docx|pdf)$/i.test(doc.filename)) {
           // Az eltárolt szöveg a kinyert tartalom, nem az eredeti bináris —
           // .txt-ként tesszük elérhetővé, hogy az olvasás ne sérült fájlt kapjon.
-          targetPath = `${doc.filename}.txt`
+          targetPath = chatAttachmentWorkspacePath(doc.filename)
         }
         bytes = Buffer.from(text, 'utf8')
       }
