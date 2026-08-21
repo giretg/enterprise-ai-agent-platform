@@ -5,7 +5,10 @@
  * megy ki a tartalom, hogy a modell követni tudja az eseményláncot anélkül, hogy
  * nyers entitásértéket kapna.
  */
-import { collectSensitivityMatchSpans } from '@/domain/gateway/sensitivity-router'
+import {
+  collectSensitivityMatchSpans,
+  redactionMarkerForCategory,
+} from '@/domain/gateway/sensitivity-router'
 import { applySurrogateReplacements } from '@/domain/privacy/apply-replacements'
 import {
   actionForPrivacyCategory,
@@ -189,37 +192,62 @@ async function transformDebugTracePatterns(input: {
   policy: ResolvedPrivacyCategoryPolicy
   engine: SurrogateEngine
 }): Promise<string> {
+  // A debug-trace a hibakereső (külső) modellhez megy: minden kategória, amit a
+  // policy NEM `allow`-ol, védelmet kap. Amelynek van álnév-típusa, azt
+  // pszeudonimizáljuk (feloldható a trusted zónában); amelynek nincs
+  // (PAN/IBAN/titok/TAJ/adószám), azt visszafordíthatatlanul redaktáljuk. A
+  // `block` kategória a legszigorúbb — korábban kimaradt a `tokenize`/`local_only`
+  // szűrőből, és a nyers kártyaszám/IBAN/titok nyersen ment ki a modellhez.
   const pending: Array<{ start: number; end: number; entityType: SurrogateEntityType; value: string }> = []
+  const redactions: Array<{ start: number; end: number; surrogate: string }> = []
   for (const span of collectSensitivityMatchSpans(input.text)) {
     const category = canonicalPrivacyCategory(span.category)
     const action = actionForPrivacyCategory(input.policy, category)
-    // Debug-trace LLM egress: a local_only kategóriák is pszeudonimizálódnak, nem nyersen mennek ki.
-    if (action !== 'tokenize' && action !== 'local_only') continue
-    if (!isSurrogateEntityType(category)) continue
-    pending.push({
-      start: span.start,
-      end: span.end,
-      entityType: category,
-      value: span.value,
-    })
+    // `allow` — az admin kifejezetten engedi a nyers külső egresst ezen a kategórián.
+    if (action === 'allow') continue
+    if (isSurrogateEntityType(category)) {
+      pending.push({
+        start: span.start,
+        end: span.end,
+        entityType: category,
+        value: span.value,
+      })
+    } else {
+      // A redakciós címke a NYERS `span.category`-ra kulcsolódik (a policy-döntés
+      // a kanonikusra) — a `REDACTION_CATEGORY_LABELS` a `card_broad`/`pan` nyers
+      // alakot ismeri, és a kimenő content-guard is így címkéz. A redakció
+      // kategória-szintű, nem entitás-szintű: két külön PAN azonos jelölőt kap
+      // (nem feloldható, nem is kell — ezek a legszigorúbb, nyersen tiltott adatok).
+      redactions.push({
+        start: span.start,
+        end: span.end,
+        surrogate: redactionMarkerForCategory(span.category),
+      })
+    }
   }
 
-  if (pending.length === 0) return input.text
+  if (pending.length === 0 && redactions.length === 0) return input.text
 
-  const surrogates = await runPrivacyTransformLayer({
-    layer: 'vault',
-    work: async () =>
-      allocateTraceSurrogates(
-        input,
-        pending.map((slot) => ({ entityType: slot.entityType, sourceId: null, value: slot.value })),
-      ),
-    onFailOpen: () => [],
-  }).then((result) => result.value)
+  let surrogates: Array<string | undefined> = []
+  if (pending.length > 0) {
+    surrogates = await runPrivacyTransformLayer({
+      layer: 'vault',
+      work: async () =>
+        allocateTraceSurrogates(
+          input,
+          pending.map((slot) => ({ entityType: slot.entityType, sourceId: null, value: slot.value })),
+        ),
+      onFailOpen: () => [],
+    }).then((result) => result.value)
+  }
 
-  const replacements = pending.flatMap((slot, index) => {
-    const surrogate = surrogates[index]
-    return surrogate ? [{ start: slot.start, end: slot.end, surrogate }] : []
-  })
+  const replacements = [
+    ...pending.flatMap((slot, index) => {
+      const surrogate = surrogates[index]
+      return surrogate ? [{ start: slot.start, end: slot.end, surrogate }] : []
+    }),
+    ...redactions,
+  ]
   return applySurrogateReplacements(input.text, replacements)
 }
 

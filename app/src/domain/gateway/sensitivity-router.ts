@@ -564,6 +564,17 @@ function collectRedactionSpans(text: string): RedactionSpan[] {
   return spans
 }
 
+/**
+ * Visszafordíthatatlan redakciós jelölő egy érzékeny kategóriához. Ott használjuk,
+ * ahol a nyers érték nem cserélhető feloldható álnévre (nincs surrogate-típusa: pl.
+ * PAN/IBAN/titok/TAJ/adószám), de nyersen SEM hagyható a külső modell felé menő
+ * tartalomban. Ugyanaz a jelölő, mint a kimenő content-guardé — így a naplók és a
+ * debug-trace egységesen olvashatók.
+ */
+export function redactionMarkerForCategory(category: string): string {
+  return `«redaktált:${REDACTION_CATEGORY_LABELS[category] ?? category}»`
+}
+
 export function redactSensitiveText(text: string): { text: string; redactedCount: number } {
   if (!text) return { text, redactedCount: 0 }
 
@@ -587,7 +598,7 @@ export function redactSensitiveText(text: string): { text: string; redactedCount
   let cursor = 0
   for (const span of merged) {
     out += text.slice(cursor, span.start)
-    out += `«redaktált:${REDACTION_CATEGORY_LABELS[span.category] ?? span.category}»`
+    out += redactionMarkerForCategory(span.category)
     cursor = span.end
   }
   out += text.slice(cursor)
