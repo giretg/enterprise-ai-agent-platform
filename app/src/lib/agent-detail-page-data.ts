@@ -420,6 +420,7 @@ export async function loadAgentDetailPageData(
     efficiencyAdvisor = await loadEfficiencyAdvisorCard({
       agentId,
       tenantId: ctx.activeTenantId,
+      range: '30d',
     })
   } catch (e) {
     logger.warn(

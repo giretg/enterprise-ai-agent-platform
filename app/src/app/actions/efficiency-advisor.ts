@@ -2,9 +2,23 @@
 
 import type { Prisma } from '@prisma/client'
 import { requireTenantRole } from '@/auth/tenant-context'
-import { efficiencyHintPatch, type EfficiencyPatternKind } from '@/domain/agent/efficiency-advisor'
-import { EFFICIENCY_ADVISOR_UNDO_KEY } from '@/domain/agent/efficiency-advisor-query'
-import { applyEfficiencyHintSchema } from '@/lib/validators/actions'
+import { services } from '@/domain'
+import {
+  efficiencyHintPatch,
+  EFFICIENCY_ADVISOR_DEFAULT_RANGE,
+  parseEfficiencyAdvisorRange,
+  type EfficiencyAdvisorRange,
+  type EfficiencyPatternKind,
+} from '@/domain/agent/efficiency-advisor'
+import {
+  EFFICIENCY_ADVISOR_UNDO_KEY,
+  loadEfficiencyAdvisorCard,
+} from '@/domain/agent/efficiency-advisor-query'
+import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
+import {
+  applyEfficiencyHintSchema,
+  getEfficiencyAdvisorCardSchema,
+} from '@/lib/validators/actions'
 import { fail, ok } from '@/lib/result'
 import { repositories } from '@/repositories/postgres'
 
@@ -17,6 +31,41 @@ function asRecord(value: unknown): Record<string, unknown> {
 function previousValue(config: Record<string, unknown>, key: string): number | null {
   const raw = config[key]
   return typeof raw === 'number' && Number.isFinite(raw) ? raw : null
+}
+
+/**
+ * EFF-10 — hatékonysági kártya betöltése.
+ * Megtekintés: ugyanaz a `view` gráf-szabály, mint az agent adatlapé (#142).
+ */
+export async function getEfficiencyAdvisorCard(input: {
+  agentId: string
+  range?: EfficiencyAdvisorRange
+}) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const parsed = getEfficiencyAdvisorCardSchema.parse(input)
+    const range = parseEfficiencyAdvisorRange(parsed.range ?? EFFICIENCY_ADVISOR_DEFAULT_RANGE)
+
+    const subject = tenantUserSubject(user)
+    if (!subject) return fail('Agent not found')
+
+    const decision = await services.agentAccess.canAccessAgent(subject, parsed.agentId, 'view', {
+      subjectIsTenantAdmin: isTenantAdmin(user),
+    })
+    if (!decision.allowed) return fail('Agent not found')
+
+    const detail = await repositories.agents.findByIdForDisplay(parsed.agentId, user.activeTenantId)
+    if (!detail) return fail('Agent not found')
+
+    const view = await loadEfficiencyAdvisorCard({
+      agentId: parsed.agentId,
+      tenantId: user.activeTenantId,
+      range,
+    })
+    return ok(view)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'A hatékonysági kártya nem tölthető be')
+  }
 }
 
 export async function applyEfficiencyHint(input: {
@@ -50,7 +99,10 @@ export async function applyEfficiencyHint(input: {
       nextMeta = null
     } else {
       const existing = asRecord(undoMap[parsed.kind])
-      const snapshot: Record<string, number | null> = { ...existing } as Record<string, number | null>
+      const snapshot: Record<string, number | null> = { ...existing } as Record<
+        string,
+        number | null
+      >
       for (const [key, value] of Object.entries(patch)) {
         if (!(key in snapshot)) snapshot[key] = previousValue(current, key)
         next[key] = value

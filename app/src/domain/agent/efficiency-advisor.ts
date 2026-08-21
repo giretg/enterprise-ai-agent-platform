@@ -160,9 +160,48 @@ export type EfficiencyCard = {
   cacheDataStatus: EfficiencyCacheDataStatus
 }
 
+/** Időablak — a governance Range mintája (EFF-10). */
+export type EfficiencyAdvisorRange = 'today' | '7d' | '30d' | 'all'
+
+export const EFFICIENCY_ADVISOR_DEFAULT_RANGE: EfficiencyAdvisorRange = '30d'
+
+export const EFFICIENCY_ADVISOR_RANGE_LABELS: Record<EfficiencyAdvisorRange, string> = {
+  today: 'Ma',
+  '7d': '7 nap',
+  '30d': '30 nap',
+  all: 'Összes',
+}
+
+export function parseEfficiencyAdvisorRange(raw: unknown): EfficiencyAdvisorRange {
+  if (raw === 'today' || raw === '7d' || raw === '30d' || raw === 'all') return raw
+  return EFFICIENCY_ADVISOR_DEFAULT_RANGE
+}
+
+/** Governance `rangeToSince` mintája — `all` → nincs alsó határ. */
+export function efficiencyAdvisorRangeToSince(
+  range: EfficiencyAdvisorRange,
+  now: Date = new Date(),
+): Date | undefined {
+  switch (range) {
+    case 'all':
+      return undefined
+    case '7d':
+      return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+    case '30d':
+      return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+    case 'today': {
+      const startOfDay = new Date(now)
+      startOfDay.setHours(0, 0, 0, 0)
+      return startOfDay
+    }
+  }
+}
+
 export type EfficiencyAdvisorView = {
   card: EfficiencyCard
   applied: Partial<Record<EfficiencyPatternKind, boolean>>
+  /** A kártyához tartozó időablak (EFF-10). */
+  range: EfficiencyAdvisorRange
 }
 
 export function resolveEfficiencyAdvisorThresholds(
