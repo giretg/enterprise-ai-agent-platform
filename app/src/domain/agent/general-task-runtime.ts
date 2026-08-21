@@ -405,7 +405,6 @@ export class GeneralTaskRuntime {
         agentVersion,
         context: {
           ticketId: ticket.id,
-          ...(ticket.conversationId ? { conversationId: ticket.conversationId } : {}),
           ...(ticket.tenantId ? { tenantId: ticket.tenantId } : {}),
         },
         mode: 'task',
