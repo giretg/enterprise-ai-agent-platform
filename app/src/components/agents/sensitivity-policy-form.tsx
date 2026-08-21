@@ -5,8 +5,8 @@ import { useState, useTransition } from 'react'
 import { updateAgentSensitivityPolicy } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
 
-// Sensitivity router per-agent felmentése (§4.7.2). Tenant admin és superadmin
-// állíthatja. Bekapcsolva egyik sensitivity kategória sem blokkol modellhívást.
+// Sensitivity router per-agent felmentése (§4.7.2). A kategória-policy
+// szerkesztő (APG-14, PrivacyAdminPanel) váltotta fel a fő felületeken.
 export function SensitivityPolicyForm({
   agentId,
   allowSensitiveExternalModel,
@@ -45,6 +45,7 @@ export function SensitivityPolicyForm({
         <strong>érzékeny</strong> adatot talál (email-cím, TAJ-szám, adószám), a hívást
         helyi modellre tereli. Ahol nincs telepítve helyi modell, ott a hívás blokkolódik.
         Egy email-lel dolgozó agent enélkül a felmentés nélkül nem tud működni.
+        A kapcsoló a kategória-policyre képződik le; kategóriánkénti szerkesztő később jön.
       </p>
 
       {canEdit ? (

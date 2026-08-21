@@ -1,4 +1,5 @@
 import type {
+  Connector,
   Prisma,
 } from '@prisma/client'
 
@@ -96,15 +97,36 @@ import {
 // WP-8 — az audit/telemetria choke-point külön modulban (tool-broker-audit.ts).
 import { recordCall, recordDenied } from './tool-broker-audit'
 import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
+import { recordPrivacyGatewayAudit } from '@/domain/privacy/privacy-audit'
+import {
+  mergePrivacySpanCategories,
+  type PrivacyGatewayMode,
+  type PrivacyModeResolver,
+} from '@/domain/privacy/privacy-mode'
+import {
+  allowsExternalRaw,
+  type PrivacyCategoryActionResolver,
+} from '@/domain/privacy/privacy-category-policy'
+import { privacyScopeForCall } from '@/domain/privacy/privacy-scope'
+import {
+  resolveToolArgs,
+  UnknownSurrogateError,
+} from '@/domain/privacy/resolve-tool-args'
+import { resolveEntityNamesInToolArgs } from '@/domain/privacy/resolve-tool-entity-names'
+import type { ConnectorEntityResolver } from '@/domain/privacy/entity-resolve-contract'
+import { connectorSupportsEntityResolution } from '@/domain/privacy/connector-privacy'
+import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
+import type { DebugTraceService } from '@/domain/debug-log/debug-trace-service'
+import type { ResolvedPrivacyCategoryPolicy } from '@/domain/privacy/privacy-category-policy'
 // issue #97 — bizalmi regiszter (tool-nevenkénti TrustClass leképezés).
 import { isSideEffectingTool, resolveTrustClass } from './tool-trust-registry'
 // issue #195 — kikényszerített KIMENETI SZERZŐDÉS a broker határán (WP-1).
 import {
   assertToolInputWithinLimits,
-  buildToolOutcomeChannels,
   ToolContractError,
 } from './tool-output-contract'
 import { resolveToolOutputContract } from './tool-output-contracts'
+import { buildPrivacyAwareOutcomeChannels } from './tool-output-privacy'
 export { AllowlistAuthorizer } from './tool-broker-authorizer'
 export type {
   Authorizer,
@@ -122,9 +144,28 @@ export {
 // A tenant-elérhetőségi invariáns közös modulból jön; re-export a visszafelé
 // kompatibilitásért (a tool-broker-tenant-isolation.test.ts innen importál).
 export { isAgentReachableFromTenant, filterAgentsByTenant } from '@/lib/tenant-reachability'
+export type ConnectorEntityResolverFactory = (input: {
+  connector: Connector
+  agentSecretAlias?: string | null
+  actingUserId?: string | null
+  agentId: string
+}) => Promise<ConnectorEntityResolver | null>
+
 export class ToolBrokerService {
   delegationProcessor: DelegationProcessor | null = null
   playbookTransitioner: PlaybookTicketTransitioner | null = null
+  private structuredPrivacyEngine: SurrogateEngine | null = null
+  private debugTraceService: DebugTraceService | null = null
+  private privacyModeResolver: PrivacyModeResolver | null = null
+  private privacyCategoryActionResolver: PrivacyCategoryActionResolver | null = null
+  private privacyPolicyResolver:
+    | ((input: {
+        tenantId: string | null
+        agentId: string
+        legacyAllowSensitiveExternalModel?: boolean | null
+      }) => Promise<ResolvedPrivacyCategoryPolicy>)
+    | null = null
+  private connectorEntityResolverFactory: ConnectorEntityResolverFactory | null = null
 
   /** WP-8: a handlerek felé átadott, `this`-hez kötött broker-képességek. */
   private readonly handlerContext: HandlerContext
@@ -200,6 +241,8 @@ export class ToolBrokerService {
       memoryPropose: (input, actingTenantId) => memoryPropose(this, input, actingTenantId),
       documentRead: (input, actingUserId, actingTenantId) =>
         documentRead(this, input, actingUserId, actingTenantId ?? null),
+      getDebugTrace: (input, actingTenantId, actingUserId) =>
+        this.fetchDebugTrace(input, actingTenantId, actingUserId),
       tulajdoniLapParse: (input, actingUserId, extras) =>
         tulajdoniLapParse(this, input, actingUserId, extras),
       tulajdoniLapEgyeztetes: (input, actingUserId, extras) =>
@@ -215,6 +258,50 @@ export class ToolBrokerService {
   /** A folyamat-ticketek állapotváltását a Playbook state machine-hez köti (l. board_write). */
   setPlaybookTransitioner(transitioner: PlaybookTicketTransitioner | null): void {
     this.playbookTransitioner = transitioner
+  }
+
+  /**
+   * APG-04/APG-05 — strukturált tool-output pszeudonimizáció a `modelText` csatornán,
+   * és tool-argumentum feloldás a connector-hívás előtt. Hiányában mindkét ág
+   * érintetlen (a meglévő hívások viselkedése nem változik).
+   */
+  setStructuredPrivacyEngine(engine: SurrogateEngine | null): void {
+    this.structuredPrivacyEngine = engine
+  }
+
+  setDebugTraceService(service: DebugTraceService | null): void {
+    this.debugTraceService = service
+  }
+
+  /**
+   * APG-09 — platform → tenant → agent üzemmód. Hiányában ENFORCE (APG-04
+   * tesztek viselkedése). Élesben a PlatformSettingsService oldja fel.
+   */
+  setPrivacyModeResolver(resolver: PrivacyModeResolver | null): void {
+    this.privacyModeResolver = resolver
+  }
+
+  /** APG-11 — kategória-policy a web_search query-safety guardhoz. */
+  setPrivacyCategoryActionResolver(resolver: PrivacyCategoryActionResolver | null): void {
+    this.privacyCategoryActionResolver = resolver
+  }
+
+  /** APG-21 — teljes kategória-policy a debug-trace projectionhoz. */
+  setPrivacyPolicyResolver(
+    resolver:
+      | ((input: {
+          tenantId: string | null
+          agentId: string
+          legacyAllowSensitiveExternalModel?: boolean | null
+        }) => Promise<ResolvedPrivacyCategoryPolicy>)
+      | null,
+  ): void {
+    this.privacyPolicyResolver = resolver
+  }
+
+  /** APG-17 — connector `resolve()` a tool-boundary második védelmi vonalához. */
+  setConnectorEntityResolverFactory(factory: ConnectorEntityResolverFactory | null): void {
+    this.connectorEntityResolverFactory = factory
   }
 
   async invoke(input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> {
@@ -290,7 +377,12 @@ export class ToolBrokerService {
         enabled,
         scopedQueryCount,
         agentDayQueryCount,
-        bypassSensitivity: agent?.allowSensitiveExternalModel ?? false,
+        bypassSensitivity: await this.webSearchBypassSensitivity(
+          actingTenantId,
+          input.agentId,
+          input.args.query,
+          agent?.allowSensitiveExternalModel ?? false,
+        ),
       })
       if (!decision.allowed) {
         return recordDenied(this, 
@@ -312,10 +404,20 @@ export class ToolBrokerService {
     const contract = resolveToolOutputContract(input.tool)
 
     try {
-      assertToolInputWithinLimits(input.tool, input.args, contract)
+      // APG-05 §10.1 — feloldás az authorizer/kapuk UTÁN, a connector-hívás ELŐTT.
+      // A nyers source ID csak a végrehajtott argumentumba kerül; a `recordCall`
+      // az eredeti `input.args`-ot (surrogate-alak) naplózza.
+      const executionInput = await this.resolveInvokeArgs(
+        input,
+        actingTenantId,
+        authorization.connector?.tenantId ?? null,
+        actingUserId,
+        authorization.connector ?? null,
+      )
+      assertToolInputWithinLimits(executionInput.tool, executionInput.args, contract)
 
       const result = await this.executeTool(
-        input,
+        executionInput,
         authorization,
         actingTenantId,
         actingUserId,
@@ -327,12 +429,20 @@ export class ToolBrokerService {
       // issue #195 D1–D6 — a KIMENETI SZERZŐDÉS KAPUJA + a kétcsatornás eredmény.
       // Szándékosan az audit- és a `ToolCall`-rögzítés ELŐTT fut: séma-sértés →
       // `ToolContractError` (`failed`), és a hibás eredmény nem kerül be sikerként.
-      const channels = buildToolOutcomeChannels({
+      // APG-04: a pszeudonimizáció a szerződés-validáció UTÁN, csak a `modelText` ágon.
+      const channels = await buildPrivacyAwareOutcomeChannels({
         tool: input.tool,
         trust,
         output: result,
         contract,
         sideEffecting: isSideEffectingTool(input.tool),
+        connector: authorization.connector,
+        conversationId: input.conversationId,
+        ticketId,
+        actingTenantId,
+        engine: this.structuredPrivacyEngine,
+        mode: await this.resolvePrivacyMode(actingTenantId, input.agentId),
+        audit: this.audit,
       })
       const { outcome, outcomeReason, effect, modelText, machineData } = channels
 
@@ -403,13 +513,20 @@ export class ToolBrokerService {
       // továbbengedés: az audit-sor megmondja, MELYIK szerződés bukott
       // (séma / bemeneti méret / munkamennyiség).
       const contractViolation = e instanceof ToolContractError ? e.code : null
+      const unknownSurrogate = e instanceof UnknownSurrogateError
+      const privacyDecision =
+        unknownSurrogate && e.reason === 'denied'
+          ? 'privacy.resolve.denied'
+          : unknownSurrogate
+            ? 'privacy.surrogate.unknown'
+            : null
       await recordCall(this, {
         input,
         ticketId,
         connectorId: authorization.connector?.id ?? null,
         status: 'error',
         latencyMs,
-        policyDecision: contractViolation ?? 'error',
+        policyDecision: contractViolation ?? privacyDecision ?? 'error',
         resultMeta: {
           error: message,
           outcome: 'failed',
@@ -421,6 +538,134 @@ export class ToolBrokerService {
       })
       throw e
     }
+  }
+
+  /**
+   * APG-05 §10.1 + APG-17 §9 — álnév → source ID, majd nyers név → source ID
+   * a connector-hívás előtt. Az eredeti `input` (surrogate-alak) érintetlen marad
+   * az audit / `argsMeta` számára.
+   */
+  private async resolveInvokeArgs(
+    input: ToolBrokerInvokeInput,
+    actingTenantId: string | null,
+    connectorTenantId: string | null,
+    actingUserId: string | null,
+    connector: Connector | null,
+  ): Promise<ToolBrokerInvokeInput> {
+    if (!this.structuredPrivacyEngine) return input
+    const tenantId = actingTenantId ?? connectorTenantId
+    if (!tenantId) return input
+    const ticketId = input.tool === 'board_write' ? input.args.ticketId : input.ticketId ?? null
+    const scope = privacyScopeForCall(input.conversationId, ticketId)
+    if (!scope) return input
+
+    const resolved = await resolveToolArgs({
+      args: input.args,
+      engine: this.structuredPrivacyEngine,
+      tenantId,
+      scope,
+      requesterUserId: actingUserId,
+    })
+    if (!resolved.ok) throw new UnknownSurrogateError(resolved.surrogate, resolved.reason)
+
+    let args = resolved.args
+    let totalResolved = resolved.resolvedCount
+    let byCategory = resolved.byCategory
+
+    if (
+      connector &&
+      connectorSupportsEntityResolution(connector.config) &&
+      this.connectorEntityResolverFactory
+    ) {
+      const entityResolver = await this.connectorEntityResolverFactory({
+        connector,
+        actingUserId,
+        agentId: input.agentId,
+      })
+      if (entityResolver) {
+        const entityResolved = await resolveEntityNamesInToolArgs({
+          args,
+          engine: this.structuredPrivacyEngine,
+          tenantId,
+          scope,
+          connectorId: connector.id,
+          connectorConfig: connector.config,
+          resolver: entityResolver,
+        })
+        args = entityResolved.args
+        totalResolved += entityResolved.resolvedCount
+        byCategory = mergePrivacySpanCategories(byCategory, entityResolved.byCategory)
+      }
+    }
+
+    if (totalResolved === 0) return input
+    await recordPrivacyGatewayAudit(this.audit, {
+      action: 'privacy.resolve.applied',
+      tenantId,
+      scope,
+      summary: {
+        spanCount: totalResolved,
+        categories: (Object.keys(byCategory) as Array<keyof typeof byCategory>).sort(),
+        byCategory,
+      },
+      mode: await this.resolvePrivacyMode(tenantId, input.agentId),
+      actorType: actingUserId ? 'human' : 'system',
+      actorId: actingUserId,
+      ticketId,
+    })
+    return { ...input, args } as ToolBrokerInvokeInput
+  }
+
+  /** APG-21 — pszeudonimizált agent-turn trace a debugging AI számára. */
+  async fetchDebugTrace(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'get_debug_trace' }>,
+    actingTenantId: string | null,
+    actingUserId: string | null,
+  ): Promise<import('./tool-broker-types').GetDebugTraceResult> {
+    if (!this.debugTraceService || !this.structuredPrivacyEngine || !this.privacyPolicyResolver) {
+      throw new Error('debug_trace_unavailable')
+    }
+    const agent = await this.agents.findById(input.agentId)
+    const mode = await this.resolvePrivacyMode(actingTenantId, input.agentId)
+    const policy = await this.privacyPolicyResolver({
+      tenantId: actingTenantId,
+      agentId: input.agentId,
+      legacyAllowSensitiveExternalModel: agent?.allowSensitiveExternalModel ?? undefined,
+    })
+    return this.debugTraceService.getProjectedTrace({
+      agentTurnId: input.args.agentTurnId,
+      tenantId: actingTenantId,
+      requesterUserId: actingUserId,
+      engine: this.structuredPrivacyEngine,
+      mode,
+      policy,
+    })
+  }
+
+  private async resolvePrivacyMode(
+    tenantId: string | null,
+    agentId: string,
+  ): Promise<PrivacyGatewayMode> {
+    if (!this.privacyModeResolver) return 'enforce'
+    return this.privacyModeResolver({ tenantId, agentId })
+  }
+
+  private async webSearchBypassSensitivity(
+    tenantId: string | null,
+    agentId: string,
+    query: string,
+    legacyAllowSensitiveExternalModel: boolean,
+  ): Promise<boolean> {
+    if (!this.privacyCategoryActionResolver) return legacyAllowSensitiveExternalModel
+    const safety = this.webSearchPolicy.classifyQuery(query)
+    if (!safety.blocked) return false
+    const action = await this.privacyCategoryActionResolver({
+      tenantId,
+      agentId,
+      category: safety.category ?? '',
+      legacyAllowSensitiveExternalModel,
+    })
+    return allowsExternalRaw(action)
   }
 
   private async executeTool(

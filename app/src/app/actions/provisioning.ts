@@ -29,8 +29,24 @@ import { selectActiveTenantWebEgress } from '@/domain/agent-access/tenant-web-eg
 import {
   inspectPromptSensitivity,
   reviewableSensitivityFindings,
-  type SensitivityFinding,
 } from '@/domain/gateway/sensitivity-router'
+import {
+  actionForPrivacyCategory,
+  allowsExternalRaw,
+} from '@/domain/privacy/privacy-category-policy'
+
+async function categoryAllowsExternalForAgent(
+  agentId: string,
+  tenantId: string | null,
+  legacyAllowSensitiveExternalModel: boolean,
+) {
+  const resolved = await services.platformSettings.resolvePrivacyCategoryPolicy({
+    tenantId,
+    agentId,
+    legacyAllowSensitiveExternalModel,
+  })
+  return (category: string) => allowsExternalRaw(actionForPrivacyCategory(resolved, category))
+}
 
 /**
  * Server actions a Provisioning Assistant (Connector Onboarding) admin-felülethez
@@ -435,6 +451,11 @@ export async function draftConfigFromApiDoc(input: unknown) {
       docText,
       providerHint,
       allowSensitiveExternalModel: assistant.allowSensitiveExternalModel,
+      categoryAllowsExternal: await categoryAllowsExternalForAgent(
+        assistant.id,
+        user.activeTenantId,
+        assistant.allowSensitiveExternalModel,
+      ),
       sensitivityReviewAccepted,
       reviewedByUserId: sensitivityReviewAccepted ? user.user.id : undefined,
     })
@@ -564,9 +585,13 @@ export async function discoverConnectorFromName(input: unknown) {
 
     // Érzékenységi kapu a connector-névre (mint a docText-re a kézi úton).
     const sensitivity = inspectPromptSensitivity([{ role: 'user', content: connectorName }])
-    const sensitivityBypassEnabled = egressAgent.allowSensitiveExternalModel
+    const categoryAllowsExternal = await categoryAllowsExternalForAgent(
+      egressAgent.id,
+      user.activeTenantId,
+      egressAgent.allowSensitiveExternalModel,
+    )
     const reviewFindings = reviewableSensitivityFindings(sensitivity.findings, {
-      allowSensitiveExternalModel: sensitivityBypassEnabled,
+      categoryAllowsExternal,
       sensitivityReviewAccepted,
     })
     if (reviewFindings.length > 0) {
@@ -587,7 +612,8 @@ export async function discoverConnectorFromName(input: unknown) {
       egressRoleAgentVersion: egressAgent.currentVersion,
       agentModelConfig: egressAgent.modelConfig,
       tenantId: user.activeTenantId,
-      allowSensitiveExternalModel: sensitivityBypassEnabled,
+      allowSensitiveExternalModel: egressAgent.allowSensitiveExternalModel,
+      categoryAllowsExternal,
       sensitivityReviewAccepted,
       reviewedByUserId: sensitivityReviewAccepted ? user.user.id : undefined,
     })

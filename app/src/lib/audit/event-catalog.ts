@@ -152,7 +152,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'model.call.denied',
   'model.call.sensitivity_override',
   // Az agent teljes felmentést kapott a sensitivity-router blokkolása/reroute-ja alól
-  // (agents.allow_sensitive_external_model); az osztályozási auditnyom megmarad.
+  // (kategória-policy `allow`, APG-11; a régi boolean overlay deprecated).
+  // Az osztályozási auditnyom megmarad.
   'model.call.sensitivity_agent_bypass',
   // Napi model-keret (összesített tenant + per-agent) átállítása a tenant admin felületről.
   'model.budget_changed',
@@ -174,6 +175,19 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'tool.authorize_denied_orchestrator',
   'tool.call',
   'tool.call.denied',
+
+  // AI Privacy Gateway (APG-09 §13/§15; APG-08 §10.5; APG-02 unknown-álnév).
+  // A payload soha nem tartalmazza a nyers entitásértéket — kategória, akció,
+  // span-szám, scope; denied/unknown ágon az álnév, nem a nyers érték.
+  'privacy.transform.applied',
+  'privacy.transform.observed',
+  'privacy.transform.failed',
+  'privacy.resolve.applied',
+  'privacy.resolve.denied',
+  'privacy.surrogate.unknown',
+  'privacy.gateway.mode.set',
+  'privacy.gateway.category_policy.set',
+  'privacy.egress.export_resolved',
   'consequence.approval.pending',
   'consequence.approval.approved',
   'consequence.approval.rejected',

@@ -24,6 +24,7 @@ import { memoryProposeHandler } from './memory.handler'
 import { documentReadHandler } from './document-read.handler'
 import { tulajdoniLapEgyeztetesHandler, tulajdoniLapHandler } from './tulajdoni-lap.handler'
 import { reconcileRecordsHandler } from './reconcile-records.handler'
+import { debugTraceHandler } from './debug-trace.handler'
 
 export const TOOL_HANDLERS: readonly ToolHandler[] = [
   kbHandler,
@@ -44,6 +45,7 @@ export const TOOL_HANDLERS: readonly ToolHandler[] = [
   tulajdoniLapHandler,
   tulajdoniLapEgyeztetesHandler,
   reconcileRecordsHandler,
+  debugTraceHandler,
 ]
 
 export function resolveToolHandler(tool: string): ToolHandler | undefined {

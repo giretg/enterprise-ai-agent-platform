@@ -20,7 +20,7 @@ import { AssignExistingConnectorForm } from '@/components/agents/assign-existing
 import { ModelSelectField } from '@/components/agents/model-select-field'
 import { ModelTypeSelectField } from '@/components/agents/model-type-select-field'
 import { OperatorVisibilityForm } from '@/components/agents/operator-visibility-form'
-import { SensitivityPolicyForm } from '@/components/agents/sensitivity-policy-form'
+import { PrivacyAdminPanel } from '@/components/privacy/privacy-admin-panel'
 import { TaskOnlyForm } from '@/components/agents/task-only-form'
 import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
 import { Card } from '@/components/ui/shell'
@@ -720,12 +720,7 @@ export function CreateAgentWizard({
 
           {step === 'operation' && createdAgentId ? (
             <div className="space-y-6">
-              <SensitivityPolicyForm
-                agentId={createdAgentId}
-                allowSensitiveExternalModel={
-                  continuation?.allowSensitiveExternalModel ?? false
-                }
-              />
+              <PrivacyAdminPanel agentId={createdAgentId} layers={['agent']} />
               <OperatorVisibilityForm
                 agentId={createdAgentId}
                 hiddenFromOperators={continuation?.hiddenFromOperators ?? false}

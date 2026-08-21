@@ -391,6 +391,10 @@ export class PostgresConversationRepository implements ConversationRepository {
         data: { contentRef: null, contentDeletedAt: now },
       })
 
+      await tx.conversationPrivacyKey.deleteMany({
+        where: { conversationId: { in: conversationIds } },
+      })
+
       return {
         sweptCount: conversations.length,
         deletedCount: result.count,

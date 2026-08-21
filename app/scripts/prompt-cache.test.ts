@@ -12,8 +12,10 @@
 import assert from 'node:assert/strict'
 import { assembleGatewayMessages, type PromptSegments } from '../src/domain/agent/prompt-assembler'
 import {
+  CachedPrefixSurrogateInvariantError,
   MAX_CACHE_BREAKPOINTS,
   extractPromptCacheUsage,
+  findSurrogatesInCachedPrefix,
   promptCachePolicyFromEnv,
   resolveCacheBreakpoints,
 } from '../src/domain/gateway/prompt-cache'
@@ -191,6 +193,45 @@ async function main() {
       { role: 'system', content: 'valódi határ', cacheBoundary: true },
     ]
     assert.deepEqual(resolveCacheBreakpoints(messages, policy), [2])
+  })
+
+  await check('APG-15: a cache-elt prefix nem tartalmaz álnevet (assembler fixture)', () => {
+    const policy = promptCachePolicyFromEnv({ GATEWAY_PROMPT_CACHE_MIN_TOKENS: '0' })
+    const messages = assembleGatewayMessages(fixture('A'))
+    const breakpoints = resolveCacheBreakpoints(messages, policy)
+    assert.deepEqual(findSurrogatesInCachedPrefix(messages, breakpoints), [])
+  })
+
+  await check('APG-15: álnév a stabil zónában → invariant hibát dob', () => {
+    const policy = promptCachePolicyFromEnv({ GATEWAY_PROMPT_CACHE_MIN_TOKENS: '0' })
+    const messages = assembleGatewayMessages(fixture('A'))
+    messages[1] = { role: 'system', content: 'org roster [[EMAIL_1]]' }
+    assert.throws(
+      () => resolveCacheBreakpoints(messages, policy),
+      CachedPrefixSurrogateInvariantError,
+    )
+  })
+
+  await check('APG-15: álnév a határ után (history) → prefix tiszta marad', () => {
+    const policy = promptCachePolicyFromEnv({ GATEWAY_PROMPT_CACHE_MIN_TOKENS: '0' })
+    const messages = assembleGatewayMessages(fixture('A'))
+    const historyIndex = messages.length - 2
+    messages[historyIndex] = { role: 'user', content: 'Írj a [[EMAIL_1]] címre' }
+    const breakpoints = resolveCacheBreakpoints(messages, policy)
+    assert.deepEqual(findSurrogatesInCachedPrefix(messages, breakpoints), [])
+  })
+
+  await check('APG-15: skill-szöveg [[COMPANY_1]] a változó zónában, prefix tiszta', () => {
+    const policy = promptCachePolicyFromEnv({ GATEWAY_PROMPT_CACHE_MIN_TOKENS: '0' })
+    const segments = fixture('A')
+    segments.variableContext!.push({
+      role: 'system',
+      content: 'Skill példa: a [[COMPANY_1]] helyettesítő csak dokumentáció.',
+    })
+    const messages = assembleGatewayMessages(segments)
+    const breakpoints = resolveCacheBreakpoints(messages, policy)
+    assert.deepEqual(findSurrogatesInCachedPrefix(messages, breakpoints), [])
+    assert.equal(messages.some((m) => m.content?.includes('[[COMPANY_1]]')), true)
   })
 
   await check('openrouter: a jelölt üzenet cache_control-lal megy ki, a többi sima szöveg', async () => {

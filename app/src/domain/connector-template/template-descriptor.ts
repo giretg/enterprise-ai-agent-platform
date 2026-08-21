@@ -1,5 +1,9 @@
 import { z } from 'zod'
 import { HTTP_METHODS } from '@/domain/provisioning/connector-config'
+import {
+  connectorFieldsPrivacySchema,
+  privacyCapabilityDeclarationSchema,
+} from '@/domain/privacy/connector-privacy'
 
 export const connectorTemplateKeySchema = z
   .string()
@@ -85,6 +89,12 @@ export const templateDescriptorSchema = z.object({
   /** Minden hívásra injektált sablonfejlécek (pl. CRM audit/trace fejlécek). */
   requestHeaders: z.record(z.string(), z.string()).optional(),
   instanceFields: z.array(instanceFieldSchema).default([]),
+  /**
+   * Privacy interface contract (spec §11) — materializáláskor a connector configba kerül.
+   */
+  privacy: privacyCapabilityDeclarationSchema.optional(),
+  /** Mezőszintű privacy metadata (spec §7). */
+  fields: connectorFieldsPrivacySchema.optional(),
   /**
    * issue #220 — opcionális következmény-határ címke. Materializáláskor a
    * Connector.consequenceBoundary-re másolható; NEM kapcsolja a kaput.

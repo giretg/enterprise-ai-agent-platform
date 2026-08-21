@@ -113,12 +113,39 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
     authMode: ConnectorAuthMode
     secondApproverId: string | null
     config?: Prisma.InputJsonValue
+    initialSpecVersion?: {
+      rawSnapshot: Prisma.InputJsonValue
+      rawHash: string
+      capabilitySet: Prisma.InputJsonValue
+      approvedById: string
+    }
   }): Promise<Connector> {
     return prisma.$transaction(async (tx) => {
       const draft = await tx.connectorDraft.update({
         where: { id: params.draftId },
         data: { secondApproverId: params.secondApproverId },
       })
+      const latestSpecVersion = params.initialSpecVersion
+        ? await tx.connectorSpecVersion.aggregate({
+            where: { connectorId: draft.connectorId },
+            _max: { versionNo: true },
+          })
+        : null
+      const initialVersion = params.initialSpecVersion
+        ? await tx.connectorSpecVersion.create({
+            data: {
+              tenantId: draft.tenantId,
+              connectorId: draft.connectorId,
+              versionNo: (latestSpecVersion?._max.versionNo ?? 0) + 1,
+              rawSnapshot: params.initialSpecVersion.rawSnapshot,
+              rawHash: params.initialSpecVersion.rawHash,
+              capabilitySet: params.initialSpecVersion.capabilitySet,
+              status: 'approved',
+              approvedById: params.initialSpecVersion.approvedById,
+              approvedAt: new Date(),
+            },
+          })
+        : null
       return tx.connector.update({
         where: { id: draft.connectorId },
         data: {
@@ -126,6 +153,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
           secretAlias: params.secretAlias,
           authMode: params.authMode,
           ...(params.config !== undefined ? { config: params.config } : {}),
+          ...(initialVersion ? { activeSpecVersionId: initialVersion.id } : {}),
         },
       })
     })

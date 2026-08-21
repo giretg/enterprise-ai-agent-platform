@@ -818,6 +818,60 @@ async function main() {
     )
   })
 
+  await check('APG-11: actionForCategory allow boolean false mellett is külsőre enged', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+    const externalCalls = { n: 0 }
+    const providers = new Map<string, ModelProvider>([
+      ['chatgpt-oauth', { name: 'chatgpt-oauth', async chat() { externalCalls.n++; return { content: 'külső', latencyMs: 1 } } }],
+    ])
+    const gw = new ModelGateway(
+      auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 },
+      undefined, undefined,
+      { enforceLocalForSensitive: true, localProvider: 'ollama', localModel: 'gemma-local', localModelAvailable: false },
+      undefined,
+      {
+        async allowsSensitiveExternalModel() { return false },
+        async actionForCategory() { return 'allow' },
+      },
+    )
+    const result = await gw.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'Írj a szilagyi.tamas@tmdminformatika.hu címre' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+    assert.equal(result.provider, 'chatgpt-oauth')
+    assert.equal(externalCalls.n, 1)
+  })
+
+  await check('APG-11: actionForCategory block a boolean true felmentést is felülírja', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+    const externalCalls = { n: 0 }
+    const providers = new Map<string, ModelProvider>([
+      ['chatgpt-oauth', { name: 'chatgpt-oauth', async chat() { externalCalls.n++; return { content: 'külső', latencyMs: 1 } } }],
+    ])
+    const gw = new ModelGateway(
+      auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 },
+      undefined, undefined,
+      { enforceLocalForSensitive: true, localProvider: 'ollama', localModel: 'gemma-local', localModelAvailable: false },
+      undefined,
+      {
+        async allowsSensitiveExternalModel() { return true },
+        async actionForCategory() { return 'block' },
+      },
+    )
+    await assert.rejects(
+      () => gw.call({
+        agentId: TEST_AGENT_ID,
+        messages: [{ role: 'user', content: 'A kártyám: 4111111111111111' }],
+        modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+      }),
+      (e: unknown) => e instanceof GatewayBudgetError,
+    )
+    assert.equal(externalCalls.n, 0)
+  })
+
   await check('MG-N8: lokális modell elérhetőnek jelölve, de a hívás elhal → GatewaySensitivityError', async () => {
     const { repo: auditRepo } = makeAuditRepo()
     const { repo: modelCallRepo } = makeModelCallRepo(0)

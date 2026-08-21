@@ -21,6 +21,12 @@ import {
 } from '@/domain/connector-template/gmail-connector-config'
 import { enrichOstorosborConnectorConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 import {
+  privacyCapabilityAbsentAudit,
+  privacyCapabilityAuditMetadata,
+  privacyCapabilityChangedAudit,
+  type PrivacyCapabilityDeclaration,
+} from '@/domain/privacy/connector-privacy'
+import {
   normalizeConnectorConfig,
   ConnectorConfigParseError,
   type ConnectorConfig,
@@ -481,7 +487,9 @@ export class ProvisioningService {
 
     const trimmedClientId = input.clientId?.trim()
     let nextConfig: Prisma.InputJsonValue | undefined
+    let versionedCapabilitySet: Prisma.InputJsonValue | undefined
     let authMode: ConnectorConfig['authMode']
+    let privacyDeclaration: PrivacyCapabilityDeclaration | null = null
 
     if (isGmail) {
       parseGmailStoredConfig(draft.connector.config)
@@ -498,8 +506,12 @@ export class ProvisioningService {
       let configMutated = false
 
       const ostorosborEnrichment = enrichOstorosborConnectorConfig(config)
+      versionedCapabilitySet = ostorosborEnrichment.config as unknown as Prisma.InputJsonValue
+      privacyDeclaration = ostorosborEnrichment.config.privacy ?? null
       if (ostorosborEnrichment.changed) {
         rawConfig.requestHeaders = ostorosborEnrichment.config.requestHeaders
+        if (ostorosborEnrichment.config.privacy) rawConfig.privacy = ostorosborEnrichment.config.privacy
+        if (ostorosborEnrichment.config.fields) rawConfig.fields = ostorosborEnrichment.config.fields
         configMutated = true
       }
       const actingEmail =
@@ -602,6 +614,16 @@ export class ProvisioningService {
       authMode,
       secondApproverId: dualControlRequired ? input.approverId ?? null : null,
       ...(nextConfig ? { config: nextConfig } : {}),
+      ...(versionedCapabilitySet
+        ? {
+            initialSpecVersion: {
+              rawSnapshot: draft.connector.config as Prisma.InputJsonValue,
+              rawHash: draft.sourceHash,
+              capabilitySet: versionedCapabilitySet,
+              approvedById: user.userId,
+            },
+          }
+        : {}),
     })
 
     await this.appendAudit(actor, 'provisioning.connector.activate', connector.id, {
@@ -610,8 +632,17 @@ export class ProvisioningService {
       criticality,
       approver_id: dualControlRequired ? input.approverId : null,
       validation_status: validation.status,
+      ...privacyCapabilityAuditMetadata(privacyDeclaration),
       policyDecision: 'allowed',
     })
+    const absent = privacyCapabilityAbsentAudit(privacyDeclaration)
+    if (absent) {
+      await this.appendAudit(actor, absent.action, connector.id, {
+        ...absent.metadata,
+        draft_id: draft.id,
+        policyDecision: 'allowed',
+      })
+    }
 
     return { connectorId: connector.id, lifecycleState: 'active' }
   }
@@ -761,6 +792,14 @@ export class ProvisioningService {
       ? normalizeSourceHash(config.provenance.sourceHash)
       : sha256Hex(JSON.stringify(config))
 
+    const previousPrivacy = (() => {
+      try {
+        return normalizeConnectorConfig(draft.connector.config).privacy ?? null
+      } catch {
+        return null
+      }
+    })()
+
     await this.deps.drafts.updateDraftConfig({
       draftId: draft.id,
       config: configToJson(config),
@@ -774,8 +813,20 @@ export class ProvisioningService {
       connector_id: draft.connectorId,
       source_hash: sourceHash,
       gate_reset: true,
+      ...privacyCapabilityAuditMetadata(config.privacy),
       policyDecision: 'allowed',
     })
+    const privacyChanged = privacyCapabilityChangedAudit({
+      previous: previousPrivacy,
+      next: config.privacy ?? null,
+    })
+    if (privacyChanged) {
+      await this.appendAudit(actor, privacyChanged.action, draft.connectorId, {
+        ...privacyChanged.metadata,
+        draft_id: draft.id,
+        policyDecision: 'allowed',
+      })
+    }
 
     return { draftId: draft.id, lifecycleState: 'draft', config }
   }
@@ -1262,7 +1313,7 @@ function parseStoredConfig(
 /** Best-effort: listázáshoz a hibás config se bukassa meg az egész oldalt. */
 function safeParseStoredConfig(raw: unknown): ConnectorConfig | null {
   try {
-    return normalizeConnectorConfig(raw)
+    return enrichOstorosborConnectorConfig(normalizeConnectorConfig(raw)).config
   } catch {
     return null
   }

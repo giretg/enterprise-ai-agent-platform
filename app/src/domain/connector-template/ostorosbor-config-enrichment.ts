@@ -1,10 +1,16 @@
-import type { ConnectorConfig, ProposedTool } from '@/domain/provisioning/connector-config'
+import {
+  normalizeConnectorConfig,
+  type ConnectorConfig,
+  type ProposedTool,
+} from '@/domain/provisioning/connector-config'
+import {
+  OSTOROSBOR_CRM_PRIVACY_CAPABILITIES,
+  OSTOROSBOR_CRM_PRIVACY_FIELDS,
+  OSTOROSBOR_CRM_TEMPLATE_KEYS,
+} from '@/domain/privacy/connector-privacy'
 import { OSTOROSBOR_CRM_REQUEST_HEADERS } from './custom-template-seeds'
 
-export const OSTOROSBOR_TEMPLATE_KEYS = new Set([
-  'ostorosbor-crm-sales-delegated',
-  'ostorosbor-crm-service-insight',
-])
+export const OSTOROSBOR_TEMPLATE_KEYS = OSTOROSBOR_CRM_TEMPLATE_KEYS
 
 /** Ostoros connector API path — report query/export POST-ok itt olvasók. */
 const OSTOROSBOR_CONNECTOR_API_SUFFIX = /\/api\/connector\/v1\/?$/i
@@ -121,6 +127,42 @@ export function enrichOstorosborTraceHeaders(config: ConnectorConfig): {
   }
 }
 
+export function enrichOstorosborPrivacy(config: ConnectorConfig): {
+  config: ConnectorConfig
+  changed: boolean
+} {
+  if (!isOstorosborConnectorApi(config)) {
+    return { config, changed: false }
+  }
+
+  let changed = false
+  let next = config
+  if (!next.privacy) {
+    next = { ...next, privacy: { ...OSTOROSBOR_CRM_PRIVACY_CAPABILITIES } }
+    changed = true
+  }
+  if (!next.fields) {
+    next = { ...next, fields: { ...OSTOROSBOR_CRM_PRIVACY_FIELDS } }
+    changed = true
+  }
+  return { config: next, changed }
+}
+
+/**
+ * A futásidő által LÁTOTT connector-config: normalizált + kiegészített. A tárolt
+ * sor a kiegészítés bevezetése előtt is létrejöhetett, ezért a privacy-rétegnek
+ * ugyanezt kell néznie, mint a tool-hívásnak — különben egy régebbi CRM-kapcsolat
+ * hívható, de a mezői némán tokenizálatlanul mennek ki a modellhez.
+ * Nem értelmezhető (nem http_api) config esetén a nyers érték megy tovább.
+ */
+export function effectiveConnectorRuntimeConfig(raw: unknown): unknown {
+  try {
+    return enrichOstorosborConnectorConfig(normalizeConnectorConfig(raw)).config
+  } catch {
+    return raw
+  }
+}
+
 export function enrichOstorosborConnectorConfig(config: ConnectorConfig): {
   config: ConnectorConfig
   changed: boolean
@@ -137,6 +179,12 @@ export function enrichOstorosborConnectorConfig(config: ConnectorConfig): {
   const reports = enrichOstorosborReadPostReports(next)
   if (reports.changed) {
     next = reports.config
+    changed = true
+  }
+
+  const privacy = enrichOstorosborPrivacy(next)
+  if (privacy.changed) {
+    next = privacy.config
     changed = true
   }
 

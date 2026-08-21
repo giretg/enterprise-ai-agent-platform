@@ -198,6 +198,16 @@ export type ChannelTurnServiceDeps = {
   maxAttempts?: number
   /** Ennyi ideje `running` állapotú sor elavultnak számít (elszállt worker) — visszavehető. */
   staleRunningMs?: number
+  /**
+   * APG-19 egress-mátrix: a kimenő csatorna-szöveg feloldása a küldés előtt.
+   * Hiányában a nyers (álneves) szöveg megy ki — csak tesztben / régi wiringban.
+   */
+  resolveOutboundText?: (input: {
+    text: string
+    tenantId: string
+    conversationId: string
+    userId: string
+  }) => Promise<string>
 }
 
 export type ProcessTurnOutcome =
@@ -482,8 +492,16 @@ export class ChannelTurnService {
       return 'blocked_sensitive'
     }
 
-    // Tiszta válasz (a futásidő már perzisztálta, web-láthatóság): címkézett, darabolt kiküldés.
-    const chunks = chunkOutboundText(result.text, this.chunkLimit)
+    // Tiszta válasz (a futásidő már perzisztálta, web-láthatóság): egress-mátrix, majd címkézett darabolt kiküldés.
+    const outboundText = this.deps.resolveOutboundText
+      ? await this.deps.resolveOutboundText({
+          text: result.text,
+          tenantId: identity.tenantId!,
+          conversationId,
+          userId: identity.userId,
+        })
+      : result.text
+    const chunks = chunkOutboundText(outboundText, this.chunkLimit)
     const delivered = await this.sendLabeled(
       session,
       label,

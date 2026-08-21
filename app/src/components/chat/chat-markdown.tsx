@@ -9,6 +9,12 @@ import {
   HtmlPreviewModal,
   type HtmlPreviewTarget,
 } from '@/components/workspace/html-preview-modal'
+import { containsEmbeddedSurrogate } from '@/domain/privacy/surrogate-format'
+import {
+  isSafeMarkdownImageSrc,
+  isSafeMarkdownLinkHref,
+  unresolvedSurrogateHint,
+} from '@/lib/markdown-url-policy'
 import {
   linkWorkspaceFileReferences,
   workspaceFileLink,
@@ -29,13 +35,27 @@ function MarkdownLink({
   forceExternal?: boolean
   onOpenHtml?: (target: HtmlPreviewTarget) => void
 }) {
+  const unresolved = containsEmbeddedSurrogate(href ?? '')
+  const title = unresolved ? unresolvedSurrogateHint : undefined
+  const markedClass = unresolved ? `${className ?? ''} decoration-wavy`.trim() : className
+
+  if (!isSafeMarkdownLinkHref(href)) {
+    return (
+      <span className={markedClass} title={title} data-privacy-unresolved={unresolved || undefined}>
+        {children}
+      </span>
+    )
+  }
+
   const htmlPreview = href ? workspaceHtmlPreviewFromLink(href) : null
 
   if (htmlPreview && onOpenHtml) {
     return (
       <a
         href={href}
-        className={className}
+        className={markedClass}
+        title={title}
+        data-privacy-unresolved={unresolved || undefined}
         onClick={(event) => {
           event.preventDefault()
           onOpenHtml(htmlPreview)
@@ -48,16 +68,51 @@ function MarkdownLink({
 
   if (href?.startsWith('/') && !forceExternal) {
     return (
-      <Link href={href} className={className}>
+      <Link
+        href={href}
+        className={markedClass}
+        title={title}
+        data-privacy-unresolved={unresolved || undefined}
+      >
         {children}
       </Link>
     )
   }
   return (
-    <a href={href} target="_blank" rel="noopener noreferrer" className={className}>
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={markedClass}
+      title={title}
+      data-privacy-unresolved={unresolved || undefined}
+    >
       {children}
     </a>
   )
+}
+
+function markdownImageSrc(src: string | Blob | undefined): string | undefined {
+  return typeof src === 'string' ? src : undefined
+}
+
+function MarkdownImage({ src, alt }: { src?: string | Blob; alt?: string }) {
+  const href = markdownImageSrc(src)
+  const unresolved = containsEmbeddedSurrogate(href ?? '')
+  if (!isSafeMarkdownImageSrc(href)) {
+    return (
+      <span
+        role="img"
+        aria-label={unresolved ? unresolvedSurrogateHint : alt || 'Blokkolt külső kép'}
+        title={unresolved ? unresolvedSurrogateHint : 'Külső kép nem tölthető be'}
+        data-privacy-unresolved={unresolved || undefined}
+        className="inline rounded bg-night-2 px-1.5 py-0.5 text-xs text-ink-faint"
+      >
+        {unresolved ? unresolvedSurrogateHint : alt || 'kép'}
+      </span>
+    )
+  }
+  return <img src={href} alt={alt ?? ''} />
 }
 
 const linkClassName =
@@ -86,9 +141,17 @@ function agentComponentsFor(
   ),
   code: ({ className, children }) => {
     const isBlock = className?.includes('language-')
+    const unresolved = containsEmbeddedSurrogate(String(children))
+    const unresolvedProps = {
+      title: unresolved ? unresolvedSurrogateHint : undefined,
+      'data-privacy-unresolved': unresolved || undefined,
+    }
     if (isBlock) {
       return (
-        <code className="my-2 block overflow-x-auto rounded-lg bg-night-2 px-3 py-2 font-mono text-xs">
+        <code
+          className="my-2 block overflow-x-auto rounded-lg bg-night-2 px-3 py-2 font-mono text-xs"
+          {...unresolvedProps}
+        >
           {children}
         </code>
       )
@@ -107,7 +170,12 @@ function agentComponentsFor(
       )
     }
     return (
-      <code className="rounded bg-night-2 px-1.5 py-0.5 font-mono text-[0.85em]">{children}</code>
+      <code
+        className="rounded bg-night-2 px-1.5 py-0.5 font-mono text-[0.85em]"
+        {...unresolvedProps}
+      >
+        {children}
+      </code>
     )
   },
   pre: ({ children }) => (
@@ -131,12 +199,31 @@ function agentComponentsFor(
       </MarkdownLink>
     )
   },
+  img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
   hr: () => <hr className="my-3 border-line" />,
   }
 }
 
 const userComponents: Components = {
   p: ({ children }) => <p className="leading-relaxed">{children}</p>,
+  a: ({ href, children }) => (
+    <MarkdownLink href={href} className={linkClassName}>
+      {children}
+    </MarkdownLink>
+  ),
+  img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
+  code: ({ className, children }) => {
+    const unresolved = containsEmbeddedSurrogate(String(children))
+    return (
+      <code
+        className={className}
+        title={unresolved ? unresolvedSurrogateHint : undefined}
+        data-privacy-unresolved={unresolved || undefined}
+      >
+        {children}
+      </code>
+    )
+  },
 }
 
 export function ChatMarkdown({

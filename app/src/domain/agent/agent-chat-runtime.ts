@@ -31,6 +31,18 @@ import {
 } from '@/lib/playbook-v2/trigger-input'
 import type { ModelGateway } from '../gateway/model-gateway'
 import { StreamingSensitiveTextRedactor } from '../gateway/sensitivity-router'
+import { createWebUiStreamingResolver } from '../privacy/streaming-surrogate-resolver'
+import { resolveEgressTextForSurface } from '../privacy/resolve-display-text'
+import type { ResolvedPrivacyEgressMatrix } from '../privacy/privacy-egress-matrix'
+import { resolvePrivacyEgressMatrix } from '../privacy/privacy-egress-matrix'
+import type { SurrogateEngine } from '../privacy/surrogate-engine'
+import {
+  buildEntityMarkers,
+  type PrivacyEntityMarker,
+} from '../privacy/privacy-observability'
+import type { ResolvedPrivacyCategoryPolicy } from '../privacy/privacy-category-policy'
+import type { PrivacyGatewayMode } from '../privacy/privacy-mode'
+import type { ChatPrivacyMarkerContext } from '@/lib/privacy-chat-markers'
 import type { ConversationService } from '../conversation/conversation-service'
 import {
   assembleContext,
@@ -423,6 +435,7 @@ export type ChatMessageView = {
   text: string
   attachments: ChatAttachmentView[]
   createdAt: Date
+  privacyMarkers?: PrivacyEntityMarker[]
 }
 
 export type ChatSessionView = {
@@ -628,6 +641,20 @@ export class AgentChatRuntime {
      * Ha nincs bekötve, a roster ÜRES (fail-closed) — nem a teljes agent-lista.
      */
     private agentAccess?: AgentAccessService,
+    /** APG-06 — megjelenítési feloldás a web UI streamjén. Hiányában a töredék álnév akkor is bent marad. */
+    private surrogateEngine?: SurrogateEngine | null,
+    /** APG-19 — tenant-szintű egress-mátrix (web UI felület). Hiányában platform-alapértelmezés. */
+    private resolvePrivacyEgressMatrix?: (
+      tenantId: string | null,
+    ) => Promise<ResolvedPrivacyEgressMatrix>,
+    /** APG-22 — a valós chat-forduló marker-státuszai ugyanabból a runtime policy-ból. */
+    private resolvePrivacyObservability?: (
+      tenantId: string | null,
+      agentId: string,
+    ) => Promise<{
+      mode: PrivacyGatewayMode
+      policy: ResolvedPrivacyCategoryPolicy
+    }>,
   ) {}
 
   /**
@@ -1324,9 +1351,23 @@ export class AgentChatRuntime {
     }
     const snapshot = new TurnSnapshotFlusher()
 
+    const egressMatrix = await this.loadEgressMatrix(params.tenantId ?? null)
+    const displayResolver = createWebUiStreamingResolver({
+      engine: this.surrogateEngine,
+      tenantId: params.tenantId ?? null,
+      conversationId,
+      requesterUserId: params.createdById,
+      matrix: egressMatrix,
+      emit: async (text) => {
+        emit({ type: 'token', chunk: text })
+        await this.persistTurnProgress(turn, snapshot.pushToken(text))
+      },
+    })
     const emitToken = async (chunk: string) => {
-      emit({ type: 'token', chunk })
-      await this.persistTurnProgress(turn, snapshot.pushToken(chunk))
+      await displayResolver.push(chunk)
+    }
+    const finishDisplay = async () => {
+      await displayResolver.finish()
     }
     const emitActivity = async (activity: ToolLoopActivityEvent) => {
       const flush = snapshot.pushActivity(activity)
@@ -1345,25 +1386,29 @@ export class AgentChatRuntime {
       turn.completedReply = prepared.text
       for (const chunk of chunkForStreaming(prepared.text)) {
         await refreshCancelFromDb()
-        const cancelledId = await this.cancelTurnIfRequested(turn, isCancelRequestedNow())
-        if (cancelledId) {
-          messageId = cancelledId
-          outcome = {
-            status: 'cancelled',
-            reason: 'cancelled',
-            assistantMessageId: cancelledId,
+        if (isCancelRequestedNow()) {
+          await finishDisplay()
+          const cancelledId = await this.cancelTurnIfRequested(turn, true)
+          if (cancelledId) {
+            messageId = cancelledId
+            outcome = {
+              status: 'cancelled',
+              reason: 'cancelled',
+              assistantMessageId: cancelledId,
+            }
+            emit({
+              type: 'done',
+              conversationId,
+              messageId: cancelledId,
+              reason: 'cancelled',
+            })
+            return
           }
-          emit({
-            type: 'done',
-            conversationId,
-            messageId: cancelledId,
-            reason: 'cancelled',
-          })
-          return
         }
         await emitToken(chunk)
         await new Promise<void>((r) => setTimeout(r, 12))
       }
+      await finishDisplay()
       const persistedId = await this.finalizeAgentTurn(turn, prepared.text, {
         ticketRefId: prepared.ticketRefId ?? null,
       })
@@ -1621,6 +1666,23 @@ export class AgentChatRuntime {
                   emit({ type: 'thinking', turnId, delta }),
               }
             : {}),
+          resolveAssistantDisplay: async (text: string) => {
+            let out = ''
+            const egressMatrix = await this.loadEgressMatrix(params.tenantId ?? null)
+            const resolver = createWebUiStreamingResolver({
+              engine: this.surrogateEngine,
+              tenantId: params.tenantId ?? null,
+              conversationId,
+              requesterUserId: params.createdById,
+              matrix: egressMatrix,
+              emit: (chunk) => {
+                out += chunk
+              },
+            })
+            await resolver.push(text)
+            await resolver.finish()
+            return out
+          },
           onMemoryCandidate: (candidate) => emit({ type: 'memory_candidate', candidate }),
           // Folytatás: a külső tartalom envelope továbbra is releváns a modellnek,
           // de a consequence gate már risk-class (nem taint) alapú — initialTainted
@@ -1646,6 +1708,7 @@ export class AgentChatRuntime {
         if (!result.ok) {
           if (result.error instanceof AgentToolLoopCancelledError) {
             await refreshCancelFromDb()
+            await finishDisplay()
             const cancelledId = await this.cancelTurnIfRequested(turn, true)
             messageId = cancelledId
             outcome = {
@@ -1666,6 +1729,7 @@ export class AgentChatRuntime {
           const message = result.error instanceof Error ? result.error.message : 'Tool loop failed'
           outcome = { status: 'failed', reason: 'error', error: message }
           emit({ type: 'error', message })
+          await finishDisplay()
           await this.persistFailedTurn(turn, message, snapshot.partialText)
           return
         }
@@ -1684,25 +1748,31 @@ export class AgentChatRuntime {
         turn.completedReply = reply
         for (const chunk of chunkForStreaming(reply)) {
           await refreshCancelFromDb()
-          const cancelledId = await this.cancelTurnIfRequested(turn, isCancelRequestedNow())
-          if (cancelledId) {
-            messageId = cancelledId
-            outcome = {
-              status: 'cancelled',
-              reason: 'cancelled',
-              assistantMessageId: cancelledId,
+          if (isCancelRequestedNow()) {
+            await finishDisplay()
+            const cancelledId = await this.cancelTurnIfRequested(turn, true)
+            if (cancelledId) {
+              messageId = cancelledId
+              outcome = {
+                status: 'cancelled',
+                reason: 'cancelled',
+                assistantMessageId: cancelledId,
+              }
+              emit({
+                type: 'done',
+                conversationId,
+                messageId: cancelledId,
+                reason: 'cancelled',
+              })
+              return
             }
-            emit({
-              type: 'done',
-              conversationId,
-              messageId: cancelledId,
-              reason: 'cancelled',
-            })
-            return
           }
           await emitToken(chunk)
           await new Promise<void>((r) => setTimeout(r, 12))
         }
+        await finishDisplay()
+        reply = snapshot.partialText
+        turn.completedReply = reply
       } else {
         // Chat "thinking-trace" (tool nélküli ág): a reasoning-summary deltákat
         // közös stateful tartalom-őr (D5) mögött gyűjtjük, és a következő token
@@ -1728,36 +1798,38 @@ export class AgentChatRuntime {
           modelConfig,
           ...(onReasoningDelta ? { onReasoningDelta } : {}),
         }
-        let accumulated = ''
         for await (const chunk of this.gateway.callStream(gatewayInput)) {
           await refreshCancelFromDb()
-          const cancelledId = await this.cancelTurnIfRequested(turn, isCancelRequestedNow())
-          if (cancelledId) {
-            messageId = cancelledId
-            outcome = {
-              status: 'cancelled',
-              reason: 'cancelled',
-              assistantMessageId: cancelledId,
+          if (isCancelRequestedNow()) {
+            await finishDisplay()
+            const cancelledId = await this.cancelTurnIfRequested(turn, true)
+            if (cancelledId) {
+              messageId = cancelledId
+              outcome = {
+                status: 'cancelled',
+                reason: 'cancelled',
+                assistantMessageId: cancelledId,
+              }
+              emit({
+                type: 'done',
+                conversationId,
+                messageId: cancelledId,
+                reason: 'cancelled',
+              })
+              return
             }
-            emit({
-              type: 'done',
-              conversationId,
-              messageId: cancelledId,
-              reason: 'cancelled',
-            })
-            return
           }
           while (pendingThinking.length > 0) {
             emit({ type: 'thinking', turnId: 'reasoning-0', delta: pendingThinking.shift()! })
           }
-          accumulated += chunk
           await emitToken(chunk)
         }
         reasoningRedactor.finish()
         while (pendingThinking.length > 0) {
           emit({ type: 'thinking', turnId: 'reasoning-0', delta: pendingThinking.shift()! })
         }
-        reply = accumulated
+        await finishDisplay()
+        reply = snapshot.partialText
         turn.completedReply = reply
       }
 
@@ -1781,6 +1853,7 @@ export class AgentChatRuntime {
       // Az SSE `error` esemény múlékony: aki nem nézi épp a képernyőt, vagy
       // újratölt, annak nyoma sem marad. A lezáró üzenet a beszélgetésbe kerül,
       // így a leállás oka utólag is látszik (a watchdog-lezárás mintájára).
+      await finishDisplay()
       await this.persistFailedTurn(turn, message, snapshot.partialText)
     } finally {
       // Terminális teljes részszöveg (§5.3): completedReply, vagy ami a flusherben
@@ -2184,6 +2257,7 @@ export class AgentChatRuntime {
     conversationId: string,
     tenantId?: string | null,
     agentId?: string,
+    requesterUserId?: string | null,
   ): Promise<ChatMessageView[]> {
     const { conversation, messages } = await this.conversations.getConversation(
       conversationId,
@@ -2192,6 +2266,9 @@ export class AgentChatRuntime {
     if (agentId && conversation.agentId !== agentId) {
       throw new Error('Conversation agent mismatch')
     }
+    const privacyContext = this.resolvePrivacyObservability
+      ? await this.resolvePrivacyObservability(tenantId ?? null, conversation.agentId)
+      : null
     const views: ChatMessageView[] = []
 
     for (const message of messages) {
@@ -2218,16 +2295,88 @@ export class AgentChatRuntime {
         })
       }
 
+      const text = await this.resolveWebUiText(
+        parsed.text,
+        conversationId,
+        tenantId,
+        requesterUserId,
+      )
+      const privacyMarkers =
+        privacyContext && this.surrogateEngine && tenantId
+          ? buildEntityMarkers({
+              text,
+              mode: privacyContext.mode,
+              policy: privacyContext.policy,
+              knownValues: await this.surrogateEngine.loadKnownValueReplacements(
+                tenantId,
+                { type: 'conversation', id: conversationId },
+              ),
+            })
+          : []
+
       views.push({
         id: message.id,
         role: message.role as ChatMessageView['role'],
-        text: parsed.text,
+        text,
         attachments,
         createdAt: message.createdAt,
+        privacyMarkers,
       })
     }
 
     return views
+  }
+
+  /** APG-22 — élő chat UI: policy + beszélgetés-scoped known-value szótár. */
+  async getPrivacyMarkerContext(input: {
+    conversationId?: string | null
+    tenantId?: string | null
+    agentId: string
+  }): Promise<ChatPrivacyMarkerContext | null> {
+    const privacyContext = this.resolvePrivacyObservability
+      ? await this.resolvePrivacyObservability(input.tenantId ?? null, input.agentId)
+      : null
+    if (!privacyContext) return null
+
+    const knownValues =
+      this.surrogateEngine && input.tenantId && input.conversationId
+        ? await this.surrogateEngine.loadKnownValueReplacements(input.tenantId, {
+            type: 'conversation',
+            id: input.conversationId,
+          })
+        : []
+
+    return {
+      mode: privacyContext.mode,
+      policy: privacyContext.policy,
+      knownValues,
+    }
+  }
+
+  private async loadEgressMatrix(tenantId: string | null): Promise<ResolvedPrivacyEgressMatrix> {
+    if (this.resolvePrivacyEgressMatrix) {
+      return this.resolvePrivacyEgressMatrix(tenantId)
+    }
+    return resolvePrivacyEgressMatrix()
+  }
+
+  private async resolveWebUiText(
+    text: string,
+    conversationId: string,
+    tenantId?: string | null,
+    requesterUserId?: string | null,
+  ): Promise<string> {
+    if (!this.surrogateEngine || !tenantId || !text) return text
+    const matrix = await this.loadEgressMatrix(tenantId)
+    return resolveEgressTextForSurface({
+      text,
+      surface: 'web_ui',
+      engine: this.surrogateEngine,
+      tenantId,
+      scope: { type: 'conversation', id: conversationId },
+      requesterUserId,
+      matrix,
+    })
   }
 
   async listSessions(params: {

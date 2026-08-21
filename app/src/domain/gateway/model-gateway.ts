@@ -1,4 +1,16 @@
 import { Prisma, type ModelCallStatus } from '@prisma/client'
+import { allowsExternalRaw, type PrivacyCategoryAction } from '@/domain/privacy/privacy-category-policy'
+import { recordPrivacyGatewayAudit } from '@/domain/privacy/privacy-audit'
+import type { PrivacyGatewayMode, PrivacyModeResolver } from '@/domain/privacy/privacy-mode'
+import { summarizePrivacySpans } from '@/domain/privacy/privacy-mode'
+import { transformPromptMessages } from '@/domain/privacy/prompt-privacy-transform'
+import type { UserInputEntityResolution } from '@/domain/privacy/user-input-resolver'
+import { privacyScopeForCall } from '@/domain/privacy/privacy-scope'
+import {
+  PrivacyTransformBlockedError,
+  describePrivacyTransformFailure,
+} from '@/domain/privacy/privacy-transform-failure'
+import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import type {
   AuditRepository,
   ModelCallRepository,
@@ -55,6 +67,7 @@ import {
   modelCallLatencyMs,
   modelFallbackTotal,
   modelPromptCacheTokensTotal,
+  privacyTransformDurationMs,
 } from '@/lib/observability'
 
 /** OpenRouter / Ollama stb. provider fetch timeout (ms). Default: 120s. */
@@ -132,13 +145,18 @@ export class GatewaySensitivityError extends Error {
 }
 
 /**
- * Per-agent felülbírálás olvasása (§ sensitivity router). Azért interface és nem
- * hívási paraméter, mert a gateway-nek nyolc hívási helye van, és mindegyik
- * átadja már az `agentId`-t — így a bővítés egy seamre korlátozódik.
+ * Per-agent felülbírálás olvasása (§ sensitivity router, APG-11 kategória-policy).
+ * Azért interface és nem hívási paraméter, mert a gateway-nek nyolc hívási helye van,
+ * és mindegyik átadja már az `agentId`-t — így a bővítés egy seamre korlátozódik.
  */
 export interface AgentSensitivityPolicyReader {
-  /** Igaz, ha az agent `sensitive` tartalmat is küldhet külső modellnek. */
+  /**
+   * @deprecated APG-11: a kategória-policy `allow` akciója a döntés.
+   * Teszt-seam és visszaesés, ha `actionForCategory` nincs.
+   */
   allowsSensitiveExternalModel(agentId: string): Promise<boolean>
+  /** Kategóriánkénti akció. Ha megvan, a boolean felmentést felülírja. */
+  actionForCategory?(agentId: string, category: string): Promise<PrivacyCategoryAction>
 }
 
 /**
@@ -1004,6 +1022,11 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   throw lastError
 }
 
+export type EntityResolutionProvider = (ctx: {
+  agentId: string
+  tenantId: string
+}) => Promise<UserInputEntityResolution | null>
+
 export class ModelGateway {
   constructor(
     private audit: AuditRepository,
@@ -1026,9 +1049,43 @@ export class ModelGateway {
   ) {}
 
   /**
-   * Ellenőrzi és auditálja az agent teljes sensitivity-router felmentését.
-   * Bekapcsolva sem a `sensitive`, sem a `forbidden` osztály nem akadályozza
-   * a modellhívást; az osztályozás és az auditnyom ettől még megmarad.
+   * APG-12 — prompt-privacy transzformáció a classify előtt. Hiányában a mai
+   * sorrend marad (osztályozó a nyers üzeneteken).
+   */
+  private privacyEngine: SurrogateEngine | null = null
+  private privacyModeResolver: PrivacyModeResolver | null = null
+  private entityResolutionProvider: EntityResolutionProvider | null = null
+
+  setPrivacyEngine(engine: SurrogateEngine | null): void {
+    this.privacyEngine = engine
+  }
+
+  setPrivacyModeResolver(resolver: PrivacyModeResolver | null): void {
+    this.privacyModeResolver = resolver
+  }
+
+  /** APG-17 — prompt előtti connector `resolve()` (best-effort). */
+  setEntityResolutionProvider(provider: EntityResolutionProvider | null): void {
+    this.entityResolutionProvider = provider
+  }
+
+  /**
+   * APG-11: a kategória `allow` akciója engedi a nyers értéket külső modellre.
+   * Ha a reader csak a régi boolean seamet implementálja, az minden kategóriára
+   * `allow`-t jelent (a mai mindent-vagy-semmit felmentés).
+   */
+  private async categoryAllowsExternalRaw(agentId: string, category?: string): Promise<boolean> {
+    if (!this.agentSensitivityPolicy) return false
+    if (this.agentSensitivityPolicy.actionForCategory) {
+      const action = await this.agentSensitivityPolicy.actionForCategory(agentId, category ?? '')
+      return allowsExternalRaw(action)
+    }
+    return this.agentSensitivityPolicy.allowsSensitiveExternalModel(agentId)
+  }
+
+  /**
+   * Ellenőrzi és auditálja az agent kategória-policy `allow` felmentését.
+   * A nyers érték kimehet; az osztályozás és az auditnyom ettől még megmarad.
    */
   private async allowsAgentSensitivityBypass(ctx: {
     agentId: string
@@ -1038,7 +1095,7 @@ export class ModelGateway {
     modelUsed: string
     sensitivity: SensitivityDecision
   }): Promise<boolean> {
-    const bypass = await this.agentSensitivityPolicy?.allowsSensitiveExternalModel(ctx.agentId)
+    const bypass = await this.categoryAllowsExternalRaw(ctx.agentId, ctx.sensitivity.matchedCategory)
     if (!bypass) return false
 
     const targetType = ctx.ticketId ? 'ticket' : ctx.conversationId ? 'conversation' : 'agent'
@@ -1398,6 +1455,7 @@ export class ModelGateway {
     chain: FallbackCandidate[]
     attemptGroupId: string
     prompt: string
+    messages: GatewayMessage[]
     targetType: 'ticket' | 'conversation' | 'agent'
     targetId: string
   }> {
@@ -1407,7 +1465,14 @@ export class ModelGateway {
     // eshetünk vissza a „minden tenant kerete érvényes" állapotba.
     const tenantId = await this.resolveTenantId(params.agentId, params.tenantId)
 
-    const sensitivity = classifyPrompt(params.messages)
+    const messages = await this.applyPromptPrivacyTransform({
+      agentId: params.agentId,
+      tenantId,
+      ticketId: params.ticketId,
+      conversationId: params.conversationId,
+      messages: params.messages,
+    })
+    const sensitivity = classifyPrompt(messages)
     await this.enforceForbiddenSensitivityPolicy({
       agentId: params.agentId,
       agentVersion,
@@ -1513,11 +1578,100 @@ export class ModelGateway {
       forcedLocal,
       chain,
       attemptGroupId: crypto.randomUUID(),
-      prompt: params.messages
+      prompt: messages
         .map((m) => `${m.role.toUpperCase()}: ${messageText(m)}`)
         .join('\n\n'),
+      messages,
       targetType,
       targetId,
+    }
+  }
+
+  /**
+   * Spec §2 sorrend: privacy transform a classify előtt. OBSERVE/OFF vagy hiányzó
+   * engine/scope esetén a nyers üzenetek mennek tovább — a mai viselkedés.
+   */
+  private async applyPromptPrivacyTransform(ctx: {
+    agentId: string
+    tenantId: string | null
+    ticketId?: string
+    conversationId?: string
+    messages: GatewayMessage[]
+  }): Promise<GatewayMessage[]> {
+    if (!this.privacyEngine || !this.privacyModeResolver || !ctx.tenantId) {
+      return ctx.messages
+    }
+    const scope = privacyScopeForCall(ctx.conversationId, ctx.ticketId)
+    if (!scope) return ctx.messages
+
+    const mode: PrivacyGatewayMode = await this.privacyModeResolver({
+      tenantId: ctx.tenantId,
+      agentId: ctx.agentId,
+    })
+    if (mode === 'off') return ctx.messages
+
+    const policyReader = this.agentSensitivityPolicy
+    const started = Date.now()
+    try {
+      const entityResolution =
+        this.entityResolutionProvider && ctx.tenantId
+          ? await this.entityResolutionProvider({ agentId: ctx.agentId, tenantId: ctx.tenantId })
+          : null
+      const result = await transformPromptMessages({
+        messages: ctx.messages,
+        mode,
+        policy: async (category) => {
+          if (policyReader?.actionForCategory) {
+            return policyReader.actionForCategory(ctx.agentId, category)
+          }
+          return 'local_only'
+        },
+        engine: this.privacyEngine,
+        tenantId: ctx.tenantId,
+        scope,
+        entityResolution: entityResolution ?? undefined,
+      })
+      if (result.spans.length > 0) {
+        await recordPrivacyGatewayAudit(this.audit, {
+          action: result.applied ? 'privacy.transform.applied' : 'privacy.transform.observed',
+          tenantId: ctx.tenantId,
+          scope,
+          summary: summarizePrivacySpans(result.spans),
+          mode,
+          ticketId: ctx.ticketId ?? null,
+        })
+      }
+      if (result.failure) {
+        await recordPrivacyGatewayAudit(this.audit, {
+          action: 'privacy.transform.failed',
+          tenantId: ctx.tenantId,
+          scope,
+          summary: summarizePrivacySpans(result.spans),
+          mode,
+          reason: `${result.failure.layer}:${result.failure.reason}`,
+          ticketId: ctx.ticketId ?? null,
+        })
+      }
+      return result.messages
+    } catch (error) {
+      if (error instanceof PrivacyTransformBlockedError) {
+        try {
+          await recordPrivacyGatewayAudit(this.audit, {
+            action: 'privacy.transform.failed',
+            tenantId: ctx.tenantId,
+            scope,
+            summary: { spanCount: 0, categories: [], byCategory: {} },
+            mode,
+            reason: `${error.layer}:${describePrivacyTransformFailure(error.cause ?? error)}`,
+            ticketId: ctx.ticketId ?? null,
+          })
+        } catch {
+          // A felhasználói fail-closed hiba maradjon az elsődleges akkor is, ha az audit DB is áll.
+        }
+      }
+      throw error
+    } finally {
+      privacyTransformDurationMs.observe(Date.now() - started)
     }
   }
 
@@ -1548,7 +1702,11 @@ export class ModelGateway {
     sensitivity: SensitivityDecision
     extraAuditMetadata?: Record<string, unknown>
   }): Promise<boolean> {
-    if (input.error instanceof GatewayBudgetError || input.error instanceof GatewaySensitivityError) {
+    if (
+      input.error instanceof GatewayBudgetError ||
+      input.error instanceof GatewaySensitivityError ||
+      input.error instanceof PrivacyTransformBlockedError
+    ) {
       throw input.error
     }
 
@@ -1786,7 +1944,7 @@ export class ModelGateway {
           provider.chat({
             agentId: params.agentId,
             ticketId: params.ticketId,
-            messages: params.messages,
+            messages: prep.messages,
             modelConfig: attemptConfig,
             tools: params.tools,
             responseJsonSchema: params.responseJsonSchema,
@@ -1968,7 +2126,7 @@ export class ModelGateway {
             provider.chat({
               agentId: params.agentId,
               ticketId: params.ticketId,
-              messages: params.messages,
+              messages: prep.messages,
               modelConfig: attemptConfig,
               onReasoningDelta: params.onReasoningDelta,
             }),
@@ -2031,7 +2189,7 @@ export class ModelGateway {
         for await (const chunk of provider.chatStream({
           agentId: params.agentId,
           ticketId: params.ticketId,
-          messages: params.messages,
+          messages: prep.messages,
           modelConfig: attemptConfig,
           onReasoningDelta: params.onReasoningDelta,
           onUsage: (usage) => {

@@ -34,6 +34,14 @@ import {
 } from '@/domain/dispatcher/docker-local-harness-launcher'
 import { LocalWikiHarnessLauncher } from '@/domain/dispatcher/local-wiki-harness-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
+import { createPlatformSurrogateEngine } from '@/domain/privacy/create-surrogate-engine'
+import { ConversationPrivacyResolveAccess } from '@/domain/privacy/resolve-access'
+import { resolveChannelOutboundText } from '@/domain/privacy/resolve-display-text'
+import {
+  buildUserInputEntityResolution,
+  createConnectorEntityResolver,
+} from '@/domain/privacy/entity-resolution-runtime'
+import { allowsExternalRaw } from '@/domain/privacy/privacy-category-policy'
 import { ConsequenceApprovalService } from '@/domain/tool-broker/consequence-approval-service'
 import { WebSearchPolicyService } from '@/domain/web-search/web-search-policy-service'
 import { WebSearchService } from '@/domain/web-search/web-search-service'
@@ -51,6 +59,7 @@ import { RecipeService } from '@/domain/recipe/recipe-service'
 import { SkillService } from '@/domain/skill/skill-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { DebugLogExportService } from '@/domain/debug-log/debug-log-export-service'
+import { DebugTraceService } from '@/domain/debug-log/debug-trace-service'
 import { ChannelBotService } from '@/domain/channel/channel-bot-service'
 import { ChannelLinkingService } from '@/domain/channel/channel-linking-service'
 import { ChannelTurnService } from '@/domain/channel/channel-turn-service'
@@ -251,6 +260,12 @@ const debugLogExportService = new DebugLogExportService(
   repositories.tickets,
   repositories.audit,
   repositories.toolBroker,
+)
+const debugTraceService = new DebugTraceService(
+  prisma,
+  repositories.toolBroker,
+  repositories.audit,
+  new ConversationPrivacyResolveAccess(repositories.conversations, repositories.tickets),
 )
 // A `channelBotService` a kimenő átvitel UTÁN épül (a beüzemelő `setWebhook`/`getMe` hívások
 // ugyanazon az egress-őrzött kapun mennek ki) — l. lejjebb, a `telegramOutboundTransport` alatt.
@@ -520,12 +535,21 @@ const toolAuthorizer = new AllowlistAuthorizer(
 )
 const routingEngine = new RoutingEngine(repositories.modelRoutingPolicies)
 const budgetEngine = new BudgetEngine(repositories.modelBudgets, repositories.modelCalls)
-// Sensitivity router: a per-agent felmentést a gateway az agentId-ból oldja fel,
-// így a nyolc hívási hely paraméter-lánca változatlan marad.
+// Sensitivity router: a kategória-policy `allow` akcióját a gateway az agentId-ból
+// oldja fel (APG-11). A régi boolean mező csak a resolver legacy overlaye.
 const agentSensitivityPolicy: AgentSensitivityPolicyReader = {
-  async allowsSensitiveExternalModel(agentId: string): Promise<boolean> {
+  async actionForCategory(agentId: string, category: string) {
     const agent = await repositories.agents.findById(agentId)
-    return agent?.allowSensitiveExternalModel ?? false
+    return platformSettingsService.resolvePrivacyCategoryAction({
+      tenantId: agent?.tenantId ?? null,
+      agentId,
+      category,
+      legacyAllowSensitiveExternalModel: agent?.allowSensitiveExternalModel ?? false,
+    })
+  },
+  async allowsSensitiveExternalModel(agentId: string): Promise<boolean> {
+    const action = await agentSensitivityPolicy.actionForCategory!(agentId, 'email')
+    return allowsExternalRaw(action)
   },
 }
 // A keret- és routing-kapu szervezet-helyessége: a futásidejű hívási helyek nem
@@ -565,6 +589,7 @@ const bookkeeperRuntime = new BookkeeperAgentRuntime(
   repositories.tickets,
   modelGateway,
   ticketService,
+  conversationService,
   repositories.audit,
   memoryRetrievalService,
 )
@@ -783,6 +808,48 @@ const toolBrokerService = new ToolBrokerService(
       },
       { agentId, url, sourceType },
     ),
+)
+const surrogateEngine = createPlatformSurrogateEngine(
+  repositories.audit,
+  repositories.conversations,
+  repositories.tickets,
+  repositories.surrogateVault,
+  repositories.conversationPrivacyKeys,
+)
+toolBrokerService.setStructuredPrivacyEngine(surrogateEngine)
+toolBrokerService.setDebugTraceService(debugTraceService)
+toolBrokerService.setPrivacyModeResolver(({ tenantId, agentId }) =>
+  platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
+)
+toolBrokerService.setConnectorEntityResolverFactory(async ({ connector, agentSecretAlias, actingUserId, agentId }) =>
+  createConnectorEntityResolver({
+    binding: { connector, agentSecretAlias: agentSecretAlias ?? null },
+    actingUserId,
+    agentId,
+  }),
+)
+modelGateway.setPrivacyEngine(surrogateEngine)
+modelGateway.setPrivacyModeResolver(({ tenantId, agentId }) =>
+  platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
+)
+modelGateway.setEntityResolutionProvider(async ({ agentId }) => {
+  const bindings = await repositories.toolBroker.findConnectorsForAgent(agentId)
+  return buildUserInputEntityResolution({ bindings, agentId })
+})
+toolBrokerService.setPrivacyCategoryActionResolver(({ tenantId, agentId, category, legacyAllowSensitiveExternalModel }) =>
+  platformSettingsService.resolvePrivacyCategoryAction({
+    tenantId,
+    agentId,
+    category,
+    legacyAllowSensitiveExternalModel,
+  }),
+)
+toolBrokerService.setPrivacyPolicyResolver(({ tenantId, agentId, legacyAllowSensitiveExternalModel }) =>
+  platformSettingsService.resolvePrivacyCategoryPolicy({
+    tenantId,
+    agentId,
+    legacyAllowSensitiveExternalModel: legacyAllowSensitiveExternalModel ?? undefined,
+  }),
 )
 const consequenceApprovalService = new ConsequenceApprovalService(
   repositories.consequenceApprovals,
@@ -1080,6 +1147,20 @@ const agentChatRuntime = new AgentChatRuntime(
   repositories.agentTurns,
   consequenceApprovalService,
   agentAccessService,
+  surrogateEngine,
+  (tenantId) => platformSettingsService.resolvePrivacyEgressMatrix(tenantId),
+  async (tenantId, agentId) => {
+    const agent = await repositories.agents.findById(agentId, tenantId)
+    const [mode, policy] = await Promise.all([
+      platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
+      platformSettingsService.resolvePrivacyCategoryPolicy({
+        tenantId,
+        agentId,
+        legacyAllowSensitiveExternalModel: agent?.allowSensitiveExternalModel,
+      }),
+    ])
+    return { mode, policy }
+  },
 )
 // 1:1 agent-chat a csatornán (#74, D8/D9/D10/D11). A worker második munkatípusa: a bejövő
 // Telegram-fordulót a MEGLÉVŐ webes chat-futásidőre képezzük (ugyanabba a beszélgetésbe, így a
@@ -1141,6 +1222,18 @@ const channelTurnService = new ChannelTurnService({
   memberships: repositories.tenantMemberships,
   tenants: repositories.tenants,
   isChannelEnabled: (tenantId) => platformSettingsService.isChannelEnabledForTenant(tenantId),
+  resolveOutboundText: async ({ text, tenantId, conversationId, userId }) => {
+    if (!text) return text
+    const matrix = await platformSettingsService.resolvePrivacyEgressMatrix(tenantId)
+    return resolveChannelOutboundText({
+      text,
+      engine: surrogateEngine,
+      tenantId,
+      conversationId,
+      userId,
+      matrix,
+    })
+  },
 })
 channelTurnServiceRef = channelTurnService
 const wikiRuntime = new WikiAgentRuntime(

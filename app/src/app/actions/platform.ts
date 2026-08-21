@@ -1940,9 +1940,10 @@ export async function updateAgentInstruction(input: {
 }
 
 /**
- * Sensitivity router per-agent teljes felmentés (§4.7.2). Tenant admin (és a
- * tenantban eljáró superadmin) írhatja. Bekapcsolva minden sensitivity szintet
- * átenged; az osztályozás és az auditálás továbbra is lefut.
+ * Sensitivity router per-agent felmentés — DEPRECATED boolean (APG-11).
+ * A kategória-policy a kanonikus forrás; ez a kapcsoló csak akkor él, ha az
+ * agentnek nincs explicit overlay-je (read-time migráció). Tenant admin
+ * (és a tenantban eljáró superadmin) írhatja.
  */
 export async function updateAgentSensitivityPolicy(input: {
   agentId: string
@@ -3505,6 +3506,13 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
       user.activeTenantId,
     )
     if (conversation.agentId !== agentId) return fail('Conversation agent mismatch')
+    const privacyViews = await services.agentChat.getConversationMessages(
+      conversationId,
+      user.activeTenantId,
+      agentId,
+      user.user.id,
+    )
+    const privacyViewById = new Map(privacyViews.map((view) => [view.id, view]))
 
     const views = []
     for (const message of messages) {
@@ -3541,7 +3549,8 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
       views.push({
         id: message.id,
         role: message.role,
-        text: parsed.text,
+        text: privacyViewById.get(message.id)?.text ?? parsed.text,
+        privacyMarkers: privacyViewById.get(message.id)?.privacyMarkers ?? [],
         attachments,
         createdAt: message.createdAt.toISOString(),
         contentDeletedAt,

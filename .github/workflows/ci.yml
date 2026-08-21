@@ -133,6 +133,26 @@ jobs:
           npm run test:debug-log-export
           npm run test:prompt-assembler
           npm run test:prompt-cache
+          npm run test:surrogate-engine
+          npm run test:connector-privacy
+          npm run test:structured-output-privacy
+          npm run test:known-value-substitution
+          npm run test:user-input-resolver
+          npm run test:privacy-egress-matrix
+          npm run test:debug-trace-projection
+          npm run test:val-surrogate-crypto-shred
+          npm run test:privacy-observability-ui
+          npm run test:privacy-observe
+          npm run test:privacy-category-policy
+          npm run test:privacy-admin-ui
+          npm run test:prompt-privacy-transform
+          npm run test:gateway-negative
+          npm run test:privacy-latency
+          npm run test:privacy-enforce-failure
+          npm run test:privacy-eval
+          npm run test:tool-arg-resolve
+          npm run test:streaming-surrogate-resolve
+          npm run test:render-surrogate-resolve
 
       # Prompt-eval A fázis — piros vonalak (issue #35). SZÁNDÉKOSAN külön lépés:
       # ez biztonsági kapu, nem funkcionális teszt. Ha elbukik, egy prompt-módosítás
@@ -201,6 +221,18 @@ jobs:
       # csak valódi Postgres ellen lehet bizonyítani.
       - name: Agent-hozzáférési gráf DB-invariánsok
         run: npm run test:agent-access-grant-db
+
+      # AI Privacy Gateway APG-01: a surrogate_map bijektivitását (unique +
+      # párhuzamos allokáció → újraolvasás, nem duplikátum) csak valódi Postgres
+      # ellen lehet bizonyítani.
+      - name: Privacy surrogate_map DB-invariánsok
+        run: npm run test:surrogate-map
+
+      # AI Privacy Gateway APG-08: a feloldási scope-invariáns (tenant +
+      # conversation + résztvevő) és a privacy.resolve.denied audit csak
+      # valódi Postgres + hash-láncolt audit ellen bizonyítható.
+      - name: Privacy feloldási scope-invariáns
+        run: npm run test:privacy-resolve-scope
 
   security-scan:
     name: Titok-szkennelés + CodeQL

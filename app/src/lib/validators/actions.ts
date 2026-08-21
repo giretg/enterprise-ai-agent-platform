@@ -957,6 +957,46 @@ export const setTenantThinkingTraceControlsSchema = z.object({
   enabled: z.boolean(),
 })
 
+const privacyCategoryActionSchema = z.enum(['allow', 'tokenize', 'local_only', 'block'])
+const privacyOverlayValueSchema = z.union([privacyCategoryActionSchema, z.null()])
+const privacyEditorLayerSchema = z.enum(['platform', 'tenant', 'agent'])
+const privacyGatewayModeSchema = z.enum(['off', 'observe', 'enforce'])
+
+/** APG-14 — kategória-policy szerkesztő + dry-run. */
+export const getPrivacyAdminViewSchema = z.object({
+  agentId: z.string().uuid().optional(),
+  layer: privacyEditorLayerSchema.optional(),
+})
+
+export const setPrivacyCategoryPolicySchema = z.object({
+  layer: privacyEditorLayerSchema,
+  agentId: z.string().uuid().optional(),
+  categories: z.record(z.string().min(1).max(64), privacyOverlayValueSchema).optional(),
+  custom: z.record(z.string().min(1).max(64), privacyOverlayValueSchema).optional(),
+  confirmation: z.string().max(64).optional(),
+})
+
+export const setPrivacyGatewayModeSchema = z.object({
+  layer: privacyEditorLayerSchema,
+  agentId: z.string().uuid().optional(),
+  mode: z.union([privacyGatewayModeSchema, z.null()]),
+})
+
+const privacyTextPreviewSchema = z.object({
+  text: z.string().max(20_000),
+  agentId: z.string().uuid().optional(),
+})
+
+export const dryRunPrivacyTextSchema = privacyTextPreviewSchema
+
+/** APG-22 — privacy observability lánc előnézet (modellhívás nélkül). */
+export const previewPrivacyObservabilitySchema = privacyTextPreviewSchema
+
+export const getChatPrivacyMarkerContextSchema = z.object({
+  agentId: z.string().uuid(),
+  conversationId: z.string().uuid().nullable().optional(),
+})
+
 /** Tenant kimeneti nyelv — skill/playbook desztilláló és szerző agentek. */
 export const setTenantLanguageSchema = z.object({
   language: z.enum(['hu', 'en']),

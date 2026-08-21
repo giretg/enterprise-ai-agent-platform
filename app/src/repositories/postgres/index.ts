@@ -50,6 +50,9 @@ import { PostgresConnectorDraftRepository } from './connector-draft-repository'
 import { PostgresConnectorTemplateRepository } from './connector-template-repository'
 import { PostgresMonitorRepository } from './monitor-repository'
 import { PostgresPlatformSettingsRepository } from './platform-settings-repository'
+import { PostgresSurrogateVault } from './surrogate-vault-repository'
+import { PostgresConversationPrivacyKeyRepository } from './conversation-privacy-key-repository'
+import { resolveTenantPrivacyHmacKey } from '@/domain/privacy/tenant-hmac-key'
 import { PostgresRoleTemplateRepository } from './role-template-repository'
 import {
   PostgresUserRepository,
@@ -108,6 +111,8 @@ export const repositories = {
   connectorTemplates: new PostgresConnectorTemplateRepository(),
   monitors: new PostgresMonitorRepository(),
   platformSettings: new PostgresPlatformSettingsRepository(),
+  surrogateVault: new PostgresSurrogateVault(resolveTenantPrivacyHmacKey),
+  conversationPrivacyKeys: new PostgresConversationPrivacyKeyRepository(),
   knowledgeArtifacts: new PostgresKnowledgeArtifactRepository(),
   knowledgeChunks: new PostgresKnowledgeChunkRepository(),
   memoryChunks: new PostgresMemoryChunkRepository(),

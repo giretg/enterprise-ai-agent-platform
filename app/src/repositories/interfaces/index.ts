@@ -2084,6 +2084,11 @@ export interface ConnectorTemplateRepository {
   upsertBuiltin(input: NewTemplateVersion): Promise<ConnectorTemplate>
 }
 
+export interface ConnectorRepository {
+  findWorkspaceConnector(tenantId: string | null): Promise<Connector | null>
+  listActiveForPrivacy(tenantId: string | null): Promise<Array<Pick<Connector, 'id' | 'name' | 'config'>>>
+}
+
 /**
  * A provisioning draft-réteg repository-ja. KEMÉNY PADLÓ (CR-MVP-002, §6.2):
  * ezen az úton csak a `connectors (lifecycle_state IN draft,validated)` + a
@@ -2116,6 +2121,13 @@ export interface ConnectorDraftRepository {
     secondApproverId: string | null
     /** Opcionális config-frissítés aktiváláskor (pl. nem-titkos oauth2 clientId). */
     config?: import('@prisma/client').Prisma.InputJsonValue
+    /** Aktiváláskor létrejövő append-only capability baseline. */
+    initialSpecVersion?: {
+      rawSnapshot: import('@prisma/client').Prisma.InputJsonValue
+      rawHash: string
+      capabilitySet: import('@prisma/client').Prisma.InputJsonValue
+      approvedById: string
+    }
   }): Promise<Connector>
   /** Connector → agent hozzárendelés (agent_connectors). CSAK emberi admin (§8.6). */
   assignToAgent(params: {
@@ -2870,4 +2882,22 @@ export interface AgentAccessGrantRepository {
   deleteEdge(
     key: AgentAccessGrantKey & { buildAudit: AgentAccessAuditBuilder },
   ): Promise<AgentAccessGrantDeleteResult>
+}
+
+/**
+ * Per-conversation privacy adatkulcs (APG-18, spec §6). A beszélgetés törlésekor
+ * a kulcssor eltűnik — ettől válik visszafejthetetlenné a val-surrogate
+ * értékmásolat (crypto-shredding). A domain csak ezen a porton át éri el.
+ */
+export interface ConversationPrivacyKeyRepository {
+  ensureDataKey(tenantId: string, conversationId: string): Promise<Buffer>
+  getDataKey(tenantId: string, conversationId: string): Promise<Buffer | null>
+  shredKeysForConversations(conversationIds: string[]): Promise<number>
+  /**
+   * Adatkulcs olyan scope-ra is, amihez nincs `Conversation` sor (feladat-ticket
+   * futás). Opcionális: ahol hiányzik, a hívó az `ensureDataKey`/`getDataKey`
+   * párosra esik vissza.
+   */
+  ensureScopeDataKey?(tenantId: string, scopeType: string, scopeId: string): Promise<Buffer>
+  getScopeDataKey?(tenantId: string, scopeType: string, scopeId: string): Promise<Buffer | null>
 }

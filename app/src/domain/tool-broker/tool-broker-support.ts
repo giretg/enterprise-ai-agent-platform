@@ -822,6 +822,13 @@ export function argsMeta(
     }
   }
 
+  if (input.tool === 'get_debug_trace') {
+    return {
+      ...base,
+      agentTurnId: input.args.agentTurnId,
+    }
+  }
+
   return {
     ...base,
     ticketId: input.args.ticketId,

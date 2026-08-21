@@ -717,6 +717,8 @@ model Tenant {
   createdBy         User?              @relation("TenantCreatedBy", fields: [createdById], references: [id])
   memberships       TenantMembership[]
   agentAccessGrants AgentAccessGrant[]
+  surrogateMaps     SurrogateMap[]
+  conversationPrivacyKeys ConversationPrivacyKey[]
 
   @@index([status])
   @@map("tenants")
@@ -838,6 +840,10 @@ model Agent {
   // Biztonsági rendszer-szerep. A Web-Egress kiválasztása és a `web_fetch` kapu
   // kizárólag ezt a perzisztált azonosítót fogadja el, sosem az agent megjelenített nevét.
   systemRole                    AgentSystemRole? @map("system_role")
+  // DEPRECATED (APG-11): a mindent-vagy-semmit kapcsolót a kategória-policy
+  // váltja. Az olvasók a `resolvePrivacyCategoryPolicy` legacy overlayén
+  // keresztül értelmezik, amíg az agentnek nincs explicit overlay-je. Ne olvasd
+  // közvetlenül — a mezőt a migrált viselkedés miatt még nem töröljük.
   // Sensitivity router (§4.7.2): ha true, egyik sensitivity szint sem blokkolja
   // vagy tereli helyi modellre az agent hívását. Az osztályozás és auditálás aktív
   // marad. Csak tenant admin / superadmin írhatja, minden váltás auditált.
@@ -1956,6 +1962,7 @@ model Conversation {
   agentTurns           AgentTurn[]
   channelSessions      ChannelSession[]
   consequenceApprovals ConsequenceApproval[]
+  privacyKey           ConversationPrivacyKey?
 
   @@index([tenantId, agentId, lastMessageAt])
   @@index([tenantId, createdById])
@@ -1963,6 +1970,21 @@ model Conversation {
   @@index([channel, channelExternalId])
   @@index([continuedFromTicketId])
   @@map("conversations")
+}
+
+/// Per-conversation adatkulcs val-surrogate titkosításhoz (APG-18, spec §6).
+/// Retention-járatkor törlődik → crypto-shredding. Legal hold alatt megmarad.
+model ConversationPrivacyKey {
+  conversationId String   @id @map("conversation_id") @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  wrappedKey     String   @map("wrapped_key")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("conversation_privacy_keys")
 }
 
 /// Következmény-kapu pending jóváhagyás — a blokkolt mellékhatásos tool teljes
@@ -3174,6 +3196,54 @@ model EvalRun {
   memoryVersion MemoryVersion? @relation(fields: [memoryVersionId], references: [id])
 
   @@map("eval_runs")
+}
+
+// ── AI Privacy Gateway (spec §5–§6, D2) ──────────────────────────────────────
+
+enum SurrogateScopeType {
+  conversation
+  trace
+
+  @@map("surrogate_scope_type")
+}
+
+/// `ref` = csak forráshivatkozás, nyers érték nélkül. `val` mezői APG-19-ig üresek.
+enum SurrogateClass {
+  ref
+  val
+
+  @@map("surrogate_class")
+}
+
+/// Perzisztens álnév-leképezés (tenant + scope + entitás ↔ surrogate). Bijektív
+/// a unique kényszerekkel: egy álnév egy entitáshoz tartozik a scope-on belül,
+/// és egy entitás egy álnevet kap — párhuzamos fordulóknál is.
+model SurrogateMap {
+  id             String             @id @default(uuid()) @db.Uuid
+  tenantId       String             @map("tenant_id") @db.Uuid
+  scopeType      SurrogateScopeType @map("scope_type")
+  scopeId        String             @map("scope_id")
+  entityType     String             @map("entity_type")
+  /// Típusos álnév, pl. `[[COMPANY_1]]`. A HMAC NEM része a szövegnek.
+  surrogate      String
+  class          SurrogateClass
+  connectorId    String?            @map("connector_id") @db.Uuid
+  sourceId       String?            @map("source_id")
+  /// Csak `val` osztály; `ref` sorban CHECK tiltja. APG-19 tölti.
+  encryptedValue String?            @map("encrypted_value")
+  /// Megjelenítési másolat a trusted UI feloldásához, a beszélgetés adatkulcsával
+  /// titkosítva (spec §5 R19). Enélkül a beszélgetés újranyitása után az álnév
+  /// feloldhatatlan lenne. Mindkét osztályon opcionális.
+  displayValueEnc String?           @map("display_value_enc")
+  hmac           String
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, scopeType, scopeId, surrogate], map: "surrogate_map_scope_surrogate_key")
+  @@unique([tenantId, scopeType, scopeId, entityType, connectorId, sourceId], map: "surrogate_map_entity_identity_key")
+  @@index([scopeType, scopeId], map: "surrogate_map_scope_idx")
+  @@map("surrogate_map")
 }
 
 /// Globális, runtime-állítható platform-beállítások (kulcs-érték). Pl. a dispatcher

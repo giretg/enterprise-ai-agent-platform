@@ -886,6 +886,11 @@ export async function runAgentToolLoop(params: {
    * nincs megadva (D7 kikapcsolva vagy tool nélküli ág), reasoning sem generálódik.
    */
   onReasoning?: (turnId: string, delta: string) => void
+  /**
+   * APG-06 — a felhasználónak szánt végső asszisztens-szöveg megjelenítési
+   * feloldása. A modell-előzmény (messages) surrogate-alakú marad.
+   */
+  resolveAssistantDisplay?: (text: string) => Promise<string>
   /** WP-5 — sikeres `memory_propose` hívás után a chat-kártyához (§6.2). */
   onMemoryCandidate?: (event: ToolLoopMemoryCandidateEvent) => void | Promise<void>
   /**
@@ -1486,6 +1491,11 @@ export async function runAgentToolLoop(params: {
       limits: guardLimits,
     })
 
+  const displayForUi = async (text: string): Promise<string> => {
+    if (!params.resolveAssistantDisplay) return text
+    return params.resolveAssistantDisplay(text)
+  }
+
   // A kör-limitet is a döntéshozó tartja számon (spec §7: „egyetlen, tesztelhető
   // döntéshozó"). A `for` szándékosan határtalan — ha itt is `turn < maxTurns`
   // állna, a `max_turns_exhausted` ág sosem futna le, és a limit két helyen élne.
@@ -1616,7 +1626,7 @@ export async function runAgentToolLoop(params: {
             continue
           }
           return {
-            content: STUCK_THINKING_FALLBACK_MESSAGE,
+            content: await displayForUi(STUCK_THINKING_FALLBACK_MESSAGE),
             toolCallCount,
             deniedCount,
             status: 'completed',
@@ -1624,7 +1634,7 @@ export async function runAgentToolLoop(params: {
           }
         }
         return {
-          content: cleaned,
+          content: await displayForUi(cleaned),
           toolCallCount,
           deniedCount,
           status: 'completed',
@@ -1640,7 +1650,7 @@ export async function runAgentToolLoop(params: {
         continue
       }
       return {
-        content: content.trim() || 'Nem kaptam választ a modelltől.',
+        content: await displayForUi(content.trim() || 'Nem kaptam választ a modelltől.'),
         toolCallCount,
         deniedCount,
         status: 'completed',
@@ -2968,7 +2978,9 @@ export async function runAgentToolLoop(params: {
   // A részeredmény MEGŐRZŐDIK; a leállás okát hétköznapi nyelvű jelölés kíséri.
   const body = stripped || (stopNotice ? '' : TOOL_LOOP_EXHAUSTED_MESSAGE)
   return {
-    content: stopNotice ? [body, stopNotice].filter(Boolean).join('\n\n---\n\n') : body,
+    content: await displayForUi(
+      stopNotice ? [body, stopNotice].filter(Boolean).join('\n\n---\n\n') : body,
+    ),
     toolCallCount,
     deniedCount,
     status: 'exhausted',

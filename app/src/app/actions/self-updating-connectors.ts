@@ -58,6 +58,11 @@ function capabilitiesFromSet(value: unknown) {
   }))
 }
 
+function privacyFromSet(value: unknown) {
+  const set = parseCapabilitySet(value)
+  return set?.privacy ?? null
+}
+
 export async function listSelfUpdatingConnectors() {
   try {
     const ctx = await requireTenantRole('operator')
@@ -86,6 +91,10 @@ export async function listSelfUpdatingConnectors() {
         autoApproveEnabled: context.source.autoApprovePolicy?.enabled === true,
         lastSyncedAt: context.source.lastSyncedAt?.toISOString() ?? null,
         activeSpecVersionId: context.connector.activeSpecVersionId,
+        privacy: privacyFromSet(
+          versions.find((version) => version.id === context.connector.activeSpecVersionId)?.capabilitySet
+            ?? versions.find((version) => version.status === 'proposed')?.capabilitySet,
+        ),
         versions: versions.map((version) => {
           const includeCapabilities =
             version.id === context.connector.activeSpecVersionId || version.status === 'proposed'
@@ -95,6 +104,7 @@ export async function listSelfUpdatingConnectors() {
             status: version.status,
             diffSummary: version.diffSummary,
             capabilities: includeCapabilities ? capabilitiesFromSet(version.capabilitySet) : [],
+            privacy: includeCapabilities ? privacyFromSet(version.capabilitySet) : null,
             fetchedAt: version.fetchedAt.toISOString(),
             approvedAt: version.approvedAt?.toISOString() ?? null,
             approvedByName: version.approvedById ? approverNames.get(version.approvedById) ?? 'Ismeretlen kolléga' : 'Automatikus szabály',

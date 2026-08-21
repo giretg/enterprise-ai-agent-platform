@@ -335,4 +335,16 @@ export const contractRepairCostEur = registry.counter(
   'Estimated EUR cost of contract repair model calls',
 )
 
+// ── AI Privacy Gateway APG-10 / spec §15 — transzformáció a kritikus úton ──
+
+/**
+ * Privacy-transzformáció időtartama ms-ben (pszeudonimizáció a kimenő határon).
+ * SLO: p95 ≤ 50 ms / 100 KB szöveg; a teljes forduló-overhead p95 ≤ 80 ms.
+ */
+export const privacyTransformDurationMs = registry.histogram(
+  'privacy_transform_duration_ms',
+  'Privacy gateway transform duration in milliseconds',
+  [5, 10, 25, 50, 80, 100, 250, 500, 1000],
+)
+
 export { Counter, Histogram, Gauge, Registry }

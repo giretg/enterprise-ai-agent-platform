@@ -18,7 +18,8 @@ import { AgentDelegatedConnectorsBar } from '@/components/agents/agent-delegated
 import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdatePersonaForm } from '@/components/agents/update-persona-form'
-import { SensitivityPolicyForm } from '@/components/agents/sensitivity-policy-form'
+import { PrivacyAdminPanel } from '@/components/privacy/privacy-admin-panel'
+import { getPrivacyAdminView } from '@/app/actions/privacy'
 import { OperatorVisibilityForm } from '@/components/agents/operator-visibility-form'
 import { TaskOnlyForm } from '@/components/agents/task-only-form'
 import { AgentTaskButton } from '@/components/agents/agent-task-button'
@@ -177,8 +178,12 @@ export default async function AgentDetailPage({
   }
 
   let loaded
+  let privacyRes
   try {
-    loaded = await loadAgentDetailPageData(agentId, tenantCtx)
+    ;[loaded, privacyRes] = await Promise.all([
+      loadAgentDetailPageData(agentId, tenantCtx),
+      getPrivacyAdminView({ agentId, layer: 'agent' }),
+    ])
   } catch (e) {
     if (isAgentDetailLoadError(e) && e.code === 'WRONG_TENANT' && e.meta.agentTenantId) {
       const tenant = await repositories.tenants.findById(e.meta.agentTenantId)
@@ -533,14 +538,18 @@ export default async function AgentDetailPage({
     {
       id: 'mukodes',
       label: 'Működés és hozzáférés',
-      description: 'Ki látja az agentet, mit kezelhet, és milyen életciklus-állapotban van.',
+      description: 'Ki látja az agentet, mit láthat a külső modell, és milyen életciklus-állapotban van.',
       content: (
         <div className="space-y-6">
-          <SensitivityPolicyForm
-            agentId={agent.id}
-            allowSensitiveExternalModel={agent.allowSensitiveExternalModel}
-            canEdit={isAdmin}
-          />
+          {privacyRes.success ? (
+            <PrivacyAdminPanel
+              initial={privacyRes.data}
+              agentId={agent.id}
+              layers={['agent']}
+            />
+          ) : (
+            <p className="text-sm text-coral">{privacyRes.error}</p>
+          )}
           {isAdmin ? (
             <OperatorVisibilityForm
               agentId={agent.id}

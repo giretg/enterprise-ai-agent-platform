@@ -1,3 +1,8 @@
+import {
+  findEmbeddedSurrogates,
+  type EmbeddedSurrogate,
+} from '@/domain/privacy/surrogate-format'
+
 /**
  * Prompt-cache — a stabil prefix cache-határának (`cache_control`) kezelése.
  *
@@ -85,6 +90,47 @@ export function estimatePromptTokens(chars: number): number {
   return Math.ceil(chars / 4)
 }
 
+/** APG-15 / R7: conversation-scoped álnév a megosztott, cache-elt prefixben. */
+export class CachedPrefixSurrogateInvariantError extends Error {
+  readonly surrogates: readonly string[]
+
+  constructor(surrogates: readonly string[]) {
+    super(
+      `A cache-elt prefix nem tartalmazhat álnevet (APG-15): ${[...new Set(surrogates)].join(', ')}`,
+    )
+    this.name = 'CachedPrefixSurrogateInvariantError'
+    this.surrogates = surrogates
+  }
+}
+
+/**
+ * A cache-breakpoint(ok) által lefedett prefix szövegében talált típusos álnevek.
+ * Üres breakpoint-lista esetén nincs explicit cache-határ → nincs ellenőrzendő szegmens.
+ */
+export function findSurrogatesInCachedPrefix(
+  messages: readonly CacheBoundaryCandidate[],
+  breakpoints: readonly number[],
+): EmbeddedSurrogate[] {
+  if (breakpoints.length === 0) return []
+  const endIndex = Math.max(...breakpoints)
+  let prefixText = ''
+  for (let index = 0; index <= endIndex; index++) {
+    const content = messages[index]?.content
+    if (typeof content === 'string') prefixText += content
+  }
+  return findEmbeddedSurrogates(prefixText).filter((match) => match.parsed != null)
+}
+
+/** APG-15: a cache-elt prefixben nincs `[[TYPE_N]]` álnév — red-line invariáns. */
+export function assertCachedPrefixSurrogateInvariant(
+  messages: readonly CacheBoundaryCandidate[],
+  breakpoints: readonly number[],
+): void {
+  const matches = findSurrogatesInCachedPrefix(messages, breakpoints)
+  if (matches.length === 0) return
+  throw new CachedPrefixSurrogateInvariantError(matches.map((match) => match.text))
+}
+
 /**
  * Megadja, mely üzenet-indexekre kerüljön `cache_control`. Csak megjelölt
  * (`cacheBoundary`), nem üres system/user üzenet jöhet szóba, és csak ha az
@@ -111,7 +157,9 @@ export function resolveCacheBreakpoints(
   }
 
   // Plafon fölött a leghosszabb (leginkább megtérülő) prefixeket tartjuk meg.
-  return breakpoints.slice(-MAX_CACHE_BREAKPOINTS)
+  const resolved = breakpoints.slice(-MAX_CACHE_BREAKPOINTS)
+  assertCachedPrefixSurrogateInvariant(messages, resolved)
+  return resolved
 }
 
 export function cacheControlPayload(policy: PromptCachePolicy): CacheControlPayload {

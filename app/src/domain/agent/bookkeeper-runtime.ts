@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db'
 import type { AgentRepository, AuditRepository, DocumentRepository, TicketRepository } from '@/repositories/interfaces'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { buildMemoryRetrievalQuery } from '../conversation/context-assembly'
+import type { ConversationService } from '../conversation/conversation-service'
 import {
   buildMemoryRetrievalRequest,
   loadProjectMemoryContext,
@@ -11,10 +12,11 @@ import {
 import type { MemoryRetrievalService } from '../memory/memory-retrieval-service'
 import type { ModelGateway } from '../gateway/model-gateway'
 import { TicketService } from '../ticket/ticket-service'
+import { assembleGatewayMessages } from './prompt-assembler'
 
-// Bookkeeper (számla-feldolgozás) ad-hoc, ticket-mentes, egyszeri elemzés —
-// nincs Folyamat-definíció, ezért mindig a per-tenant+agent `__general__`
-// projekt-scope (§2.1 default szentinel).
+// Bookkeeper (számla-feldolgozás) ad-hoc, egyszeri elemzés — nincs Folyamat-definíció,
+// ezért mindig a per-tenant+agent `__general__` projekt-scope (§2.1 default szentinel).
+// A beszélgetés a privacy-scope + val-surrogate adatkulcs miatt kell (APG-18/20).
 const BOOKKEEPER_PROJECT_KEY = '__general__'
 
 const llmString = z
@@ -53,6 +55,7 @@ export class BookkeeperAgentRuntime {
     private tickets: TicketRepository,
     private gateway: ModelGateway,
     private ticketService: TicketService,
+    private conversations: ConversationService,
     private audit?: AuditRepository,
     private memoryRetrieval?: MemoryRetrievalService,
   ) {}
@@ -79,6 +82,15 @@ export class BookkeeperAgentRuntime {
         temperature?: number
       }
 
+      const tenantId = agentDetails.agent.tenantId
+      const conversation = await this.conversations.createConversation({
+        agentId,
+        createdById,
+        tenantId,
+        title: `Számla: ${document.filename}`,
+        projectKey: BOOKKEEPER_PROJECT_KEY,
+      })
+
       const memoryContext =
         this.memoryRetrieval && this.audit
           ? await loadProjectMemoryContext({
@@ -86,11 +98,12 @@ export class BookkeeperAgentRuntime {
               audit: this.audit,
               actorId: agentId,
               agentVersion: agentDetails.agent.currentVersion,
-              tenantId: agentDetails.agent.tenantId,
+              tenantId,
+              conversationId: conversation.id,
               request: buildMemoryRetrievalRequest({
                 agentId,
                 memoryId: agentDetails.agent.memoryId,
-                tenantId: agentDetails.agent.tenantId,
+                tenantId,
                 projectKey: BOOKKEEPER_PROJECT_KEY,
                 query: buildMemoryRetrievalQuery({
                   queryKind: 'task',
@@ -103,11 +116,19 @@ export class BookkeeperAgentRuntime {
             })
           : { block: null }
 
+      // APG-20: a memória-chunk a cache-határ UTÁN van (assembleGatewayMessages),
+      // és a gateway csak conversation/ticket scope-pal futtatja a privacy
+      // transzformációt. Scope nélkül a számla + memória nyersen menne a modellhez.
       const { content } = await this.gateway.call({
         agentId,
-        messages: [
-          { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
-          ...memoryContextSystemMessages(memoryContext.block),
+        tenantId: tenantId ?? undefined,
+        conversationId: conversation.id,
+        messages: assembleGatewayMessages({
+          stablePreamble: [
+            { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
+          ],
+          variableContext: [
+            ...memoryContextSystemMessages(memoryContext.block),
           {
             role: 'user',
             content: `Elemezd az alábbi számlát és adj vissza CSAK valid JSON-t, semmi mást:
@@ -128,7 +149,8 @@ export class BookkeeperAgentRuntime {
 Dokumentum:
 ${document.extractedText}`,
           },
-        ],
+          ],
+        }),
         modelConfig,
       })
 
@@ -144,6 +166,8 @@ ${document.extractedText}`,
         assigneeType: 'human',
         assigneeId: null,
         agentId,
+        tenantId,
+        conversationId: conversation.id,
         payload: {
           proposal: parsed,
           sourceFileName: document.filename,

@@ -34,6 +34,7 @@ const SUMMARY: DispatchCycleSummary = {
   reclaimedAgentTurns: 0,
   channelTurns: { reclaimed: 0, processed: 2 },
   conversationRetention: { sweptConversations: 0, deletedMessages: 0 },
+  surrogateVaultGc: { deletedMappings: 0, conversationIds: [] },
   materializedScheduledTasks: 3,
   monitorSweep: { ran: true, escalated: 0, openedTickets: 0 },
   workspacePurge: { purgedTickets: 0, deletedObjects: 0 },

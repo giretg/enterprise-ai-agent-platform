@@ -389,23 +389,32 @@ export function buildToolOutcomeChannels(params: {
   trust: TrustClass
   /** A handler nyers kimenete. Ez lesz a `machineData` — változatlanul. */
   output: unknown
+  /**
+   * APG-04 — a modellnek szánt JSON törzs. Ha meg van adva, a `modelText` ebből
+   * készül; a szerződés-validáció és a `machineData` továbbra is a nyers `output`.
+   */
+  modelOutput?: unknown
   contract: ToolOutputContract | undefined
   sideEffecting: boolean
   fullDataRef?: string | null
+  /** Már lefuttatott nyers-output verdict; privacy után így nincs második validáció. */
+  validatedVerdict?: ToolOutputVerdict
 }): ToolOutcomeChannels {
-  const verdict = validateToolOutput({
-    tool: params.tool,
-    output: params.output,
-    contract: params.contract,
-    sideEffecting: params.sideEffecting,
-  })
+  const verdict =
+    params.validatedVerdict ??
+    validateToolOutput({
+      tool: params.tool,
+      output: params.output,
+      contract: params.contract,
+      sideEffecting: params.sideEffecting,
+    })
   const modelChannel = buildToolModelText({
     tool: params.tool,
     trust: params.trust,
     outcome: verdict.outcome,
     reason: verdict.reason,
     effect: verdict.effect,
-    machineData: params.output,
+    machineData: params.modelOutput ?? params.output,
     maxModelBytes: params.contract?.maxModelBytes,
     fullDataRef: params.fullDataRef,
   })

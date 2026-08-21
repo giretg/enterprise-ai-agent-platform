@@ -92,6 +92,9 @@ kitalált álnév elutasítására. A modul még nincs behuzalozva sehova.
 
 **Mérföldkő:** M1 · **Prioritás:** Magas · **Függés:** APG-00
 
+**Forrásrendszer-oldali szerződés** (CRM/ERP fejlesztőnek, UI-ajánlással):
+[`ai-privacy-source-system-contract.md`](./ai-privacy-source-system-contract.md).
+
 **Feladat:**
 - A connector `config` mezőséma bővítése (spec §7):
   `{"company_name": {"privacy": "tokenize", "entity_type": "company", "source_id": "crm/company/4821"}}`.

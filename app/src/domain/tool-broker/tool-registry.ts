@@ -243,6 +243,7 @@ export const TOOL_GROUP_AGENTS = 'Agent együttműködés'
 export const TOOL_GROUP_HTTP = 'HTTP API'
 export const TOOL_GROUP_WEB = 'Webes kutatás'
 export const TOOL_GROUP_MEMORY = 'Projektmemória'
+export const TOOL_GROUP_PRIVACY = 'Adatvédelmi hibakeresés'
 
 /** A csoportok megjelenítési sorrendje az eszközjog-szerkesztőben. */
 export const TOOL_GROUP_ORDER: readonly string[] = [
@@ -259,6 +260,7 @@ export const TOOL_GROUP_ORDER: readonly string[] = [
   TOOL_GROUP_HTTP,
   TOOL_GROUP_WEB,
   TOOL_GROUP_MEMORY,
+  TOOL_GROUP_PRIVACY,
 ]
 
 const BOTH: readonly ToolSurface[] = ['chat', 'mcp']
@@ -1876,6 +1878,28 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'tulajdoni_lap_egyeztetes',
     handlerId: 'tulajdoni_lap_egyeztetes',
     capabilityGroup: TOOL_GROUP_INGATLAN,
+  }),
+
+  get_debug_trace: descriptor({
+    description:
+      'Agent-turn debug trace lekérése PSZEUDONIMIZÁLT projectionnel a hibakereső AI számára (APG-21). ' +
+      'A trusted zónában nyers log marad; ez az eszköz trace-scoped álnevekkel adja vissza a forduló ' +
+      'üzeneteit, aktivitásait, tool/model hívásait és audit-szeletét. ' +
+      'Csak debugging/support agenteknek — normál user-facing válaszokhoz NE használd.',
+    argsSchema: z.object({
+      agentTurnId: z.string().uuid(),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'get_debug_trace',
+      args: { agentTurnId: strArg(args, 'agentTurnId') },
+    }),
+    trust: 'internal',
+    sideEffecting: false,
+    surfaces: MCP_ONLY,
+    capability: 'get_debug_trace',
+    handlerId: 'get_debug_trace',
+    capabilityGroup: TOOL_GROUP_PRIVACY,
   }),
 
   reconcile_records: descriptor({

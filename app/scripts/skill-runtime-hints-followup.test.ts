@@ -28,6 +28,7 @@ import {
   describeInvalidAppliedSource,
   egyeztetesSorok,
   extractAppliedOwnershipIds,
+  extractAppliedOwnershipWrites,
   hasCompleteHttpApiGetAllProvenance,
   matchStrength,
   normalizeNyilvantartasRows,
@@ -598,6 +599,26 @@ test('coverage extract: CREATE / Partner / itemId nem lesz extra', () => {
   })
   assert.deepEqual(applied.sort(), ['own-a', 'own-sibling'])
   assert.equal(checkFoldMuveletekCoverage(plan, applied).ok, true)
+})
+
+test('coverage: PATCH nem teljesíthet kötelező DELETE műveletet', () => {
+  const plan = buildFoldMuveletekFromEltero({
+    parcelId: 'parcel-1',
+    eltero: [
+      {
+        nev: 'Anna',
+        statusz: 'Törlés szükséges',
+        hanyadLap: null,
+        azonosito: 'own-sibling',
+      },
+    ],
+  })
+  const patchOnly = extractAppliedOwnershipWrites([
+    { entityType: 'Ownership', entityId: 'own-sibling', muvelet: 'PATCH' },
+  ])
+  const result = checkFoldMuveletekCoverage(plan, patchOnly)
+  assert.equal(result.ok, false)
+  assert.equal(result.missing[0]?.action, 'delete')
 })
 
 test('coverage extract: fold_muveletek terv NEM számít alkalmazottnak (false OK)', () => {

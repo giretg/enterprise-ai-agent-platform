@@ -105,6 +105,10 @@ type DraftRow = ConnectorDraftWithConnector
 
 class FakeDraftRepo implements ConnectorDraftRepository {
   drafts = new Map<string, DraftRow>()
+  initialSpecVersions = new Map<
+    string,
+    NonNullable<Parameters<ConnectorDraftRepository['activate']>[0]['initialSpecVersion']>
+  >()
   agentConnectors: Array<{ agentId: string; connectorId: string; accessMode: ConnectorAccessMode }> = []
   private seq = 0
 
@@ -185,6 +189,12 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     authMode: ConnectorAuthMode
     secondApproverId: string | null
     config?: Prisma.InputJsonValue
+    initialSpecVersion?: {
+      rawSnapshot: Prisma.InputJsonValue
+      rawHash: string
+      capabilitySet: Prisma.InputJsonValue
+      approvedById: string
+    }
   }) {
     const d = this.drafts.get(params.draftId)!
     d.secondApproverId = params.secondApproverId
@@ -193,6 +203,10 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     d.connector.authMode = params.authMode
     if (params.config !== undefined) {
       d.connector.config = params.config as Prisma.JsonValue
+    }
+    if (params.initialSpecVersion) {
+      d.connector.activeSpecVersionId = crypto.randomUUID()
+      this.initialSpecVersions.set(d.connectorId, params.initialSpecVersion)
     }
     return d.connector
   }
@@ -373,9 +387,10 @@ function makeService(opts?: {
 async function draftToActivatable(
   svc: ProvisioningService,
   actor: ProvisioningActor = adminActor,
+  generatedConfig: Record<string, unknown> = cleanConfig(),
 ) {
   const created = await svc.createConnectorDraft(
-    { name: 'Acme CRM', sourceType: 'api_doc', sourceContent: 'API docs...', generatedConfig: cleanConfig() },
+    { name: 'Acme CRM', sourceType: 'api_doc', sourceContent: 'API docs...', generatedConfig },
     actor,
   )
   await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
@@ -503,14 +518,34 @@ async function run() {
 
   // P5: aktiválás csak approved + nem-failed + sikeres sandbox + secret-alias mellett
   await test('P5: activateConnector teljes előfeltétellel → active', async () => {
-    const { svc, audit } = makeService()
+    const { svc, audit, drafts } = makeService()
     const created = await draftToActivatable(svc)
     const res = await svc.activateConnector(
       { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
       adminActor,
     )
     assert.equal(res.lifecycleState, 'active')
+    assert.ok(drafts.drafts.get(created.draftId)?.connector.activeSpecVersionId)
     assert.equal(audit.byAction('provisioning.connector.activate').length, 1)
+  })
+
+  await test('P5/APG-03: CRM privacy capability append-only spec-verzióba kerül', async () => {
+    const { svc, drafts } = makeService()
+    const created = await draftToActivatable(svc, adminActor, {
+      ...cleanConfig(),
+      provider: 'ostorosbor-crm-sales-delegated',
+    })
+    await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
+      adminActor,
+    )
+    const stored = drafts.drafts.get(created.draftId)!
+    const version = drafts.initialSpecVersions.get(stored.connectorId)
+    assert.ok(version)
+    const capabilitySet = version.capabilitySet as Record<string, unknown>
+    const privacy = capabilitySet.privacy as Record<string, unknown>
+    assert.equal(privacy.structured_field_privacy, true)
+    assert.equal(privacy.stable_entity_ids, true)
   })
 
   await test('P5-security: tenant-admin nem használhat tetszőleges runtime secret aliast', async () => {

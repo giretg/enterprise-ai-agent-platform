@@ -47,6 +47,8 @@ export function materializeConnectorConfig(
     ...(descriptor.rateLimit ? { rateLimit: descriptor.rateLimit } : {}),
     proposedTools: chooseEndpoints(descriptor, chosen.selectedEndpoints),
     ...(descriptor.requestHeaders ? { requestHeaders: { ...descriptor.requestHeaders } } : {}),
+    ...(descriptor.privacy ? { privacy: descriptor.privacy } : {}),
+    ...(descriptor.fields ? { fields: descriptor.fields } : {}),
     provenance: {
       templateKey: provenance?.templateKey ?? descriptor.key,
       templateVersion: provenance?.templateVersion ?? 1,
