@@ -1,11 +1,12 @@
 /**
- * issue #237 — a hatékonysági tanácsadó detektor tesztje.
+ * issue #237 / EFF-05 — a hatékonysági tanácsadó detektor tesztje.
  * Futtatás: npm run test:efficiency-advisor
  *
  * A mérce a MÉRT eset (2026-07-29): 149 eszközhívásból 132 újraolvasás, 40 kör,
- * monoton növő prompt. Az elfogadási feltétel kétirányú: ez az alak kiváltja
- * az újraolvasás és a kontextus-hízás mintát; egy normál, 3–5 eszközhívásos,
- * 2 modellhívásos futás viszont NEM.
+ * monoton növő prompt (21k → 154k). Az elfogadási feltétel kétirányú: ez az alak
+ * kiváltja az újraolvasás és a kontextus-hízás mintát; egy normál, 3–5 eszközhívásos,
+ * 2 modellhívásos futás viszont NEM. A hízás mérőszáma arány-alapú
+ * (`sum − n×első` / összeg), nem az abszolút hívásszámtól függ.
  */
 import assert from 'node:assert/strict'
 import {
@@ -105,6 +106,13 @@ async function main() {
     const kinds = card.patterns.map((p) => p.kind)
     assert.ok(kinds.includes('repeated_reread'), `hiányzik az újraolvasás: ${kinds.join(',')}`)
     assert.ok(kinds.includes('context_bloat'), `hiányzik a hízás: ${kinds.join(',')}`)
+    const bloat = card.patterns.find((p) => p.kind === 'context_bloat')
+    assert.ok(bloat)
+    // 21k → ~154k, 40 hívás: ismételt = sum − n×első, arány > 0.6
+    assert.equal(bloat?.metric.firstPrompt, 21_000)
+    assert.ok((bloat?.metric.lastPrompt as number) >= 150_000)
+    assert.equal(bloat?.metric.modelCalls, 40 * 3)
+    assert.ok((bloat?.metric.repeatedShare as number) > 0.6)
     for (const pattern of card.patterns) {
       if (!pattern.savingsTokens) continue
       assert.ok(
@@ -112,6 +120,126 @@ async function main() {
         `${pattern.kind} sávja (${pattern.savingsTokens.high}) nagyobb a költségnél (${card.breakdown.total})`,
       )
     }
+  })
+
+  await check('EFF-05: 21k→154k monoton növekedés kiváltja a kontextus-hízást', () => {
+    // Mért alak: 24 eszközhívásos feladatnál 21k → 154k; itt 40 körös monoton sor.
+    const bloatOnly = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: Array.from({ length: 40 }, (_, i) =>
+        modelCall({
+          createdAt: i,
+          promptTokens: 21_000 + i * 3_400,
+          completionTokens: 100,
+          cachedPromptTokens: 0,
+        }),
+      ),
+      toolCalls: [],
+    })
+    const card = evaluateEfficiencyAdvisor([bloatOnly('a'), bloatOnly('b'), bloatOnly('c')])
+    const bloat = card.patterns.find((p) => p.kind === 'context_bloat')
+    assert.ok(bloat, 'a 21k→154k alaknak kontextus-hízást kell adnia')
+    const first = 21_000
+    const n = 40
+    const sum = Array.from({ length: n }, (_, i) => first + i * 3_400).reduce((a, b) => a + b, 0)
+    const growth = sum - n * first
+    assert.equal(bloat?.metric.repeatedContext, growth * 3)
+    assert.equal(Number(bloat?.metric.repeatedShare), Number((growth / sum).toFixed(4)))
+    assert.equal(bloat?.metric.firstPrompt, first)
+    assert.equal(bloat?.metric.lastPrompt, first + 39 * 3_400)
+  })
+
+  await check('EFF-05: 2 modellhívásos futás nem vált ki kontextus-hízást', () => {
+    // Még ha a két hívás között brutális a ugrás is — a tömörítésnek még nem
+    // kellett volna dolgoznia (minModelCallsForBloat = 4).
+    const twoShot = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: [
+        modelCall({ createdAt: 1, promptTokens: 21_000 }),
+        modelCall({ createdAt: 2, promptTokens: 154_000 }),
+      ],
+      toolCalls: [],
+    })
+    const card = evaluateEfficiencyAdvisor([twoShot('a'), twoShot('b'), twoShot('c')])
+    assert.equal(card.patterns.some((p) => p.kind === 'context_bloat'), false)
+  })
+
+  await check('EFF-05: a mérőszám arány-alapú — abszolút token-skála nem dönt', () => {
+    // Ugyanaz a növekedési arány kisebb abszolút számokkal is mintát ad.
+    const scaled = (id: string, scale: number): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: Array.from({ length: 8 }, (_, i) =>
+        modelCall({
+          createdAt: i,
+          promptTokens: Math.round((2_000 + i * 1_500) * scale),
+        }),
+      ),
+      toolCalls: [],
+    })
+    const small = evaluateEfficiencyAdvisor([scaled('a', 1), scaled('b', 1), scaled('c', 1)])
+    const large = evaluateEfficiencyAdvisor([scaled('a', 10), scaled('b', 10), scaled('c', 10)])
+    const smallBloat = small.patterns.find((p) => p.kind === 'context_bloat')
+    const largeBloat = large.patterns.find((p) => p.kind === 'context_bloat')
+    assert.ok(smallBloat, 'kis abszolút értékkel is kell a minta (arány)')
+    assert.ok(largeBloat, 'nagy abszolút értékkel is kell a minta (arány)')
+    assert.equal(smallBloat?.metric.repeatedShare, largeBloat?.metric.repeatedShare)
+    assert.equal(smallBloat?.metric.modelCalls, largeBloat?.metric.modelCalls)
+  })
+
+  await check('EFF-05: nem monoton prompt-sorozat nem hízás (még magas aránynál sem)', () => {
+    const jagged = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: [
+        modelCall({ createdAt: 1, promptTokens: 5_000 }),
+        modelCall({ createdAt: 2, promptTokens: 40_000 }),
+        modelCall({ createdAt: 3, promptTokens: 10_000 }),
+        modelCall({ createdAt: 4, promptTokens: 80_000 }),
+        modelCall({ createdAt: 5, promptTokens: 90_000 }),
+      ],
+      toolCalls: [],
+    })
+    const card = evaluateEfficiencyAdvisor([jagged('a'), jagged('b'), jagged('c')])
+    assert.equal(card.patterns.some((p) => p.kind === 'context_bloat'), false)
+  })
+
+  await check('EFF-05: ModelCall sorok createdAt szerint rendeződnek a monotonitás előtt', () => {
+    // Fordított beszúrási sorrend — a detektornak createdAt szerint kell rendeznie.
+    const shuffled = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: [
+        modelCall({ createdAt: 4, promptTokens: 20_000 }),
+        modelCall({ createdAt: 1, promptTokens: 4_000 }),
+        modelCall({ createdAt: 3, promptTokens: 14_000 }),
+        modelCall({ createdAt: 2, promptTokens: 9_000 }),
+        modelCall({ createdAt: 5, promptTokens: 26_000 }),
+        modelCall({ createdAt: 6, promptTokens: 32_000 }),
+      ],
+      toolCalls: [],
+    })
+    const card = evaluateEfficiencyAdvisor([shuffled('a'), shuffled('b'), shuffled('c')])
+    const bloat = card.patterns.find((p) => p.kind === 'context_bloat')
+    assert.ok(bloat, 'createdAt-rendezés után monoton növekedésnek kell lennie')
+    assert.equal(bloat?.metric.firstPrompt, 4_000)
+    assert.equal(bloat?.metric.lastPrompt, 32_000)
+  })
+
+  await check('EFF-05: lapos (nem növekvő) sok hívás nem hízás — a formula nem a sum−első', () => {
+    // Régi hibás mérőszám (sum−első) itt 0.8 arányt adna; a helyes sum−n×első = 0.
+    const flat = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: Array.from({ length: 10 }, (_, i) =>
+        modelCall({ createdAt: i, promptTokens: 8_000 }),
+      ),
+      toolCalls: [],
+    })
+    const card = evaluateEfficiencyAdvisor([flat('a'), flat('b'), flat('c')])
+    assert.equal(card.patterns.some((p) => p.kind === 'context_bloat'), false)
   })
 
   await check('normál, 3–5 eszközhívásos, 2 modellhívásos futás nem vált ki mintát', () => {
