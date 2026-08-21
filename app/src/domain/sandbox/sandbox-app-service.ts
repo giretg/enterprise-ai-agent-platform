@@ -7,6 +7,8 @@ import type {
   SandboxAppWithLatestVersion,
   TicketRepository,
 } from '@/repositories/interfaces'
+import { resolveHtmlEgressForViewer } from '@/domain/privacy/resolve-html-egress'
+import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import type { ArtifactStore } from './artifact-store'
 import { ArtifactStoreError } from './artifact-store'
 import { SandboxAppError } from './errors'
@@ -190,6 +192,8 @@ function resolveActorFields(actor: Actor) {
 }
 
 export class SandboxAppService {
+  private surrogateEngine: SurrogateEngine | null = null
+
   constructor(
     private sandboxApps: SandboxAppRepository,
     private tickets: TicketRepository,
@@ -197,6 +201,11 @@ export class SandboxAppService {
     private audit: AuditRepository,
     private artifacts: ArtifactStore,
   ) {}
+
+  /** Privacy gateway — megjelenítési feloldás preview/export HTML-hez. */
+  setSurrogateEngine(engine: SurrogateEngine | null): void {
+    this.surrogateEngine = engine
+  }
 
   // ── Általános App Registry API (Feature-spec §4) ──────────────────────────
 
@@ -769,6 +778,7 @@ export class SandboxAppService {
       version: version.version,
       contentHash: version.contentHash,
       expiresAt,
+      requesterUserId: actor.userId ?? null,
     })
 
     const af = resolveActorFields(actor)
@@ -797,6 +807,8 @@ export class SandboxAppService {
    * A cookieless preview route hívja: aláírt token alapján visszaadja a HTML-t,
    * platform-session NÉLKÜL. A token tenantId-ja és contentHash-e kötelezően
    * egyezik a tárolt verzióval (tenant-izoláció + integritás); eltérés → not found.
+   * Ha a tokenben van requester (`u`), a HTML szöveg-node álnevei feloldódnak
+   * (web_ui), a tárolt artifact továbbra is tokenizált marad.
    */
   async servePreviewByToken(token: string): Promise<{ html: string; contentHash: string }> {
     const payload = verifyPreviewToken(token)
@@ -809,7 +821,39 @@ export class SandboxAppService {
       throw new SandboxAppError('APP_NOT_FOUND_OR_FORBIDDEN', 'Preview not available')
     }
     const html = await this.artifacts.get(version.artifactRef)
-    return { html, contentHash: version.contentHash }
+    const app = await this.sandboxApps.findById(payload.a)
+    const resolved = await resolveHtmlEgressForViewer({
+      html,
+      engine: this.surrogateEngine,
+      tenantId: payload.t,
+      conversationId: app?.createdFromConversationId ?? null,
+      ticketId: version.sourceTicketId ?? app?.createdFromTicketId ?? null,
+      requesterUserId: payload.u ?? null,
+      surface: 'web_ui',
+    })
+    return { html: resolved, contentHash: version.contentHash }
+  }
+
+  /**
+   * Export / Letöltés: a tárolt HTML álneveinek feloldása a megnyitó felhasználó
+   * számára (export_report mátrix). Az artifact a vaultban tokenizált marad.
+   */
+  async resolveHtmlForViewerExport(params: {
+    html: string
+    tenantId: string | null
+    conversationId?: string | null
+    ticketId?: string | null
+    requesterUserId: string
+  }): Promise<string> {
+    return resolveHtmlEgressForViewer({
+      html: params.html,
+      engine: this.surrogateEngine,
+      tenantId: params.tenantId,
+      conversationId: params.conversationId,
+      ticketId: params.ticketId,
+      requesterUserId: params.requesterUserId,
+      surface: 'export_report',
+    })
   }
 
   // ── Belső segédek ─────────────────────────────────────────────────────────

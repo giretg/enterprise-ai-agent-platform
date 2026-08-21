@@ -2,12 +2,14 @@
  * Rövid életű, aláírt preview token (Feature-spec — App Registry §4.5, §6.1).
  *
  * A token NEM hordoz platform sessiont — kizárólag a
- * `tenantId + appId + version + contentHash` kombinációra érvényes, HMAC-SHA256-tal
- * aláírva, lejárattal. Így a preview origin cookie/token nélkül, csak a token alapján
- * szolgálhat ki artefaktot, és a tartalom megváltozása (contentHash eltérés) érvényteleníti.
+ * `tenantId + appId + version + contentHash` (+ opcionális requester user)
+ * kombinációra érvényes, HMAC-SHA256-tal aláírva, lejárattal. Így a preview
+ * origin cookie/token nélkül, csak a token alapján szolgálhat ki artefaktot, és
+ * a tartalom megváltozása (contentHash eltérés) érvényteleníti.
  *
  * Az aláírás-minta az oauth-state.ts-ével konzisztens (createHmac + base64url +
- * timingSafeEqual).
+ * timingSafeEqual). A `u` mező a megjelenítési álnév-feloldáshoz kell
+ * (APG-08 participant), nem session-cookie pótlék.
  */
 import { createHmac, timingSafeEqual } from 'crypto'
 import { resolveSecret } from '@/lib/crypto/secret-resolver'
@@ -30,6 +32,11 @@ export type PreviewTokenPayload = {
   h: string
   /** lejárat epoch ms */
   exp: number
+  /**
+   * Opcionális requester userId — HTML álnév-feloldáshoz a cookieless
+   * preview route-on (APG-08). Hiányzik → a HTML feloldatlanul megy ki.
+   */
+  u?: string
 }
 
 export class PreviewTokenError extends Error {
@@ -49,6 +56,7 @@ export function signPreviewToken(params: {
   version: number
   contentHash: string
   expiresAt: number
+  requesterUserId?: string | null
 }): string {
   const payload: PreviewTokenPayload = {
     t: params.tenantId,
@@ -56,6 +64,7 @@ export function signPreviewToken(params: {
     v: params.version,
     h: params.contentHash,
     exp: params.expiresAt,
+    ...(params.requesterUserId ? { u: params.requesterUserId } : {}),
   }
   const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')
   return `${encoded}.${sign(encoded)}`
@@ -80,6 +89,9 @@ export function verifyPreviewToken(token: string, now = Date.now()): PreviewToke
 
   if (typeof payload.exp !== 'number' || payload.exp < now) {
     throw new PreviewTokenError('preview token expired')
+  }
+  if (payload.u != null && (typeof payload.u !== 'string' || !payload.u)) {
+    throw new PreviewTokenError('preview token requester invalid')
   }
   return payload
 }
