@@ -172,8 +172,12 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     })
   }
 
-  async createToolCall(data: Omit<ToolCall, 'id' | 'createdAt'>): Promise<ToolCall> {
-    return prisma.toolCall.create({ data: data as Prisma.ToolCallUncheckedCreateInput })
+  async createToolCall(
+    data: Omit<ToolCall, 'id' | 'createdAt' | 'agentTurnId'> & { agentTurnId?: string | null },
+  ): Promise<ToolCall> {
+    return prisma.toolCall.create({
+      data: { ...data, agentTurnId: data.agentTurnId ?? null } as Prisma.ToolCallUncheckedCreateInput,
+    })
   }
 
   async getToolSummary(since?: Date): Promise<{ calls: number; denied: number; errors: number }> {

@@ -10,7 +10,7 @@ import {
 } from '@/auth/tenant-context'
 import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
-import { connectorHasPrivacyMetadata } from '@/domain/privacy/connector-privacy'
+import { connectorRowHasPrivacyMetadata } from '@/domain/privacy/connector-privacy-runtime'
 import { privacyConnectorEmptyState } from '@/domain/privacy/privacy-admin-copy'
 import {
   PrivacyCategoryPolicyError,
@@ -30,6 +30,7 @@ import {
   previewPrivacyObservabilitySchema,
   setPrivacyCategoryPolicySchema,
   setPrivacyGatewayModeSchema,
+  setSensitivityLayerModeSchema,
 } from '@/lib/validators/actions'
 import { repositories } from '@/repositories/postgres'
 import type { ChatPrivacyMarkerContext } from '@/lib/privacy-chat-markers'
@@ -46,6 +47,10 @@ export type PrivacyAdminView = {
   tenantMode: 'off' | 'observe' | 'enforce' | null
   agentMode: 'off' | 'observe' | 'enforce' | null
   resolvedMode: 'off' | 'observe' | 'enforce'
+  platformSensitivityMode: 'off' | 'observe' | 'enforce'
+  tenantSensitivityMode: 'off' | 'observe' | 'enforce' | null
+  agentSensitivityMode: 'off' | 'observe' | 'enforce' | null
+  resolvedSensitivityMode: 'off' | 'observe' | 'enforce'
   platformPolicy: Awaited<ReturnType<typeof services.platformSettings.getPrivacyCategoryPolicy>>
   tenantPolicy: Awaited<ReturnType<typeof services.platformSettings.getTenantPrivacyCategoryPolicy>>
   agentPolicy: Awaited<ReturnType<typeof services.platformSettings.getAgentPrivacyCategoryPolicy>>
@@ -85,14 +90,24 @@ async function listPrivacyConnectors(tenantId: string | null) {
       lifecycleState: 'active',
       ...(tenantId ? { OR: [{ tenantId: null }, { tenantId }] } : { tenantId: null }),
     },
-    select: { id: true, name: true, config: true },
+    select: {
+      id: true,
+      name: true,
+      config: true,
+      connectorMode: true,
+      activeSpecVersion: { select: { capabilitySet: true } },
+    },
     orderBy: { name: 'asc' },
     take: 200,
   })
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
-    hasPrivacyMetadata: connectorHasPrivacyMetadata(row.config),
+    hasPrivacyMetadata: connectorRowHasPrivacyMetadata({
+      connectorMode: row.connectorMode,
+      config: row.config,
+      capabilitySet: row.activeSpecVersion?.capabilitySet,
+    }),
   }))
 }
 
@@ -113,8 +128,18 @@ async function loadPrivacyAdminView(input: {
     legacyAllowSensitiveExternalModel = agent.allowSensitiveExternalModel
   }
 
-  const [platformPolicy, tenantPolicy, agentPolicy, platformMode, tenantMode, agentMode, connectors] =
-    await Promise.all([
+  const [
+    platformPolicy,
+    tenantPolicy,
+    agentPolicy,
+    platformMode,
+    tenantMode,
+    agentMode,
+    platformSensitivity,
+    tenantSensitivity,
+    agentSensitivity,
+    connectors,
+  ] = await Promise.all([
       settings.getPrivacyCategoryPolicy(),
       input.tenantId
         ? settings.getTenantPrivacyCategoryPolicy(input.tenantId)
@@ -129,6 +154,13 @@ async function loadPrivacyAdminView(input: {
       input.agentId
         ? settings.getAgentPrivacyGatewayControls(input.agentId)
         : Promise.resolve({ mode: null, updatedById: null, updatedAt: null }),
+      settings.getSensitivityLayerControls(),
+      input.tenantId
+        ? settings.getTenantSensitivityLayerControls(input.tenantId)
+        : Promise.resolve({ mode: null, updatedById: null, updatedAt: null }),
+      input.agentId
+        ? settings.getAgentSensitivityLayerControls(input.agentId)
+        : Promise.resolve({ mode: null, updatedById: null, updatedAt: null }),
       listPrivacyConnectors(input.tenantId),
     ])
 
@@ -137,10 +169,16 @@ async function loadPrivacyAdminView(input: {
     agentId: input.agentId,
     legacyAllowSensitiveExternalModel,
   })
-  const resolvedMode = await settings.resolvePrivacyGatewayMode({
-    tenantId: input.tenantId,
-    agentId: input.agentId,
-  })
+  const [resolvedMode, resolvedSensitivityMode] = await Promise.all([
+    settings.resolvePrivacyGatewayMode({
+      tenantId: input.tenantId,
+      agentId: input.agentId,
+    }),
+    settings.resolveSensitivityLayerMode({
+      tenantId: input.tenantId,
+      agentId: input.agentId,
+    }),
+  ])
 
   return {
     layer: input.layer,
@@ -154,6 +192,10 @@ async function loadPrivacyAdminView(input: {
     tenantMode: tenantMode.mode,
     agentMode: agentMode.mode,
     resolvedMode,
+    platformSensitivityMode: platformSensitivity.mode,
+    tenantSensitivityMode: tenantSensitivity.mode,
+    agentSensitivityMode: agentSensitivity.mode,
+    resolvedSensitivityMode,
     platformPolicy,
     tenantPolicy,
     agentPolicy,
@@ -315,6 +357,51 @@ export async function setPrivacyGatewayModeAction(input: unknown) {
     return ok(view)
   } catch (e) {
     return privacyFail(e, 'Nem sikerült menteni az üzemmódot.')
+  }
+}
+
+export async function setSensitivityLayerModeAction(input: unknown) {
+  try {
+    const parsed = setSensitivityLayerModeSchema.parse(input)
+    const access = await resolveEditorAccess(parsed)
+    if (parsed.layer === 'platform') {
+      await requirePlatformRole('superadmin')
+      if (parsed.mode == null) return fail('A platform üzemmódja nem lehet üres.')
+      await services.platformSettings.setSensitivityLayerControls(
+        { mode: parsed.mode },
+        access.ctx.user.id,
+      )
+    } else {
+      await requireTenantRole('admin')
+      if (parsed.layer === 'tenant') {
+        if (!access.tenantId) return fail('Nincs aktív szervezet.')
+        await services.platformSettings.setTenantSensitivityLayerControls(
+          access.tenantId,
+          { mode: parsed.mode },
+          access.ctx.user.id,
+        )
+      } else {
+        if (!parsed.agentId) return fail('Az AI-munkatárs azonosítója hiányzik.')
+        await services.platformSettings.setAgentSensitivityLayerControls(
+          parsed.agentId,
+          { mode: parsed.mode },
+          access.ctx.user.id,
+        )
+      }
+    }
+
+    const view = await loadPrivacyAdminView({
+      layer: parsed.layer,
+      tenantId: access.tenantId,
+      agentId: parsed.agentId ?? null,
+      canEditPlatform: access.canEditPlatform,
+      canEditTenant: access.canEditTenant,
+      canEditAgent: access.canEditAgent,
+      superadmin: access.superadmin,
+    })
+    return ok(view)
+  } catch (e) {
+    return privacyFail(e, 'Nem sikerült menteni a mintaszűrő üzemmódját.')
   }
 }
 

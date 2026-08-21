@@ -14,6 +14,7 @@ import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler
 import {
   compactToolResultHistory,
   describeContextCompaction,
+  DEFAULT_CONTEXT_COMPACTION_LIMITS,
   readBackPerTurnBudget,
   resolveContextCompactionLimits,
   TOOL_RESULT_READ_TOOL_NAME,
@@ -81,6 +82,7 @@ import {
   mergeSkillRuntimeHints,
   resolveLoopGuardLimits,
   resolveSourceIngestLimits,
+  SOURCE_INGEST_DEFAULTS,
   sourceIngestBudget,
   toolCallSourceKey,
   trackTurnProgress,
@@ -1184,7 +1186,11 @@ export async function runAgentToolLoop(params: {
   // tool-eredményeket a hívás ELŐTT kiszervezzük az archívumba. A tartalom
   // megmarad (`archivedToolResults` + workspace-fájl), a modell a
   // `tool_result_read` eszközzel bármikor visszakérheti.
-  const compactionLimits = params.contextCompaction ?? resolveContextCompactionLimits()
+  const compactionLimits = params.contextCompaction ?? resolveContextCompactionLimits(
+    process.env,
+    DEFAULT_CONTEXT_COMPACTION_LIMITS,
+    params.modelConfig as unknown as Record<string, unknown>,
+  )
   const compactContext = async (turn: number): Promise<void> => {
     const result = compactToolResultHistory(messages, {
       limits: compactionLimits,
@@ -1373,7 +1379,11 @@ export async function runAgentToolLoop(params: {
   // limit → más szelet), ezért sem az ismétlés-őr, sem a tartalom-ujjlenyomat nem
   // fogta meg. A fék ezért tartalomfüggetlen és TOOL-FÜGGETLEN: forrásonként
   // (fájl, dokumentum, archívum, oldal) számoljuk a behozott karaktereket.
-  const sourceIngestLimits = resolveSourceIngestLimits()
+  const sourceIngestLimits = resolveSourceIngestLimits(
+    process.env,
+    SOURCE_INGEST_DEFAULTS,
+    params.modelConfig as unknown as Record<string, unknown>,
+  )
   /** Forrás-kulcs → a futás alatt eddig ebből behozott karakterek. */
   const ingestedCharsBySource = new Map<string, number>()
   /** Az aktuális körben archívumból visszaolvasott karakterek (kör elején nullázva). */
@@ -1447,11 +1457,20 @@ export async function runAgentToolLoop(params: {
         agentId: params.agentId,
         ticketId: params.context.ticketId ?? null,
         conversationId: params.context.conversationId ?? null,
+        agentTurnId: params.context.agentTurnId ?? null,
         connectorId: null,
         toolName: input.toolName,
         status: input.status,
         argsMeta: input.argsMeta as Prisma.JsonValue,
-        resultMeta: (input.resultMeta ?? {}) as Prisma.JsonValue,
+        resultMeta: {
+          ...(input.resultMeta ?? {}),
+          result_chars:
+            typeof input.resultMeta?.result_chars === 'number'
+              ? input.resultMeta.result_chars
+              : typeof input.argsMeta.returned_chars === 'number'
+                ? input.argsMeta.returned_chars
+                : 0,
+        } as Prisma.JsonValue,
         latencyMs: Math.max(now() - input.startedAt, 0),
         // A broker-alapú hívásoktól ez a jelölés különbözteti meg: a sor a loop
         // saját eszközéről szól, nem policy-döntés eredménye.

@@ -291,6 +291,7 @@ function wiredGateway(input: {
   actionFor: (category: string) => PrivacyCategoryAction
   capture: { messages: unknown; provider: string; n: number }
   localAvailable?: boolean
+  sensitivityMode?: 'off' | 'observe' | 'enforce'
 }) {
   const { repo: auditRepo } = makeAuditRepo()
   const providers = new Map<string, ModelProvider>([
@@ -337,6 +338,7 @@ function wiredGateway(input: {
   )
   gw.setPrivacyEngine(makeEngine())
   gw.setPrivacyModeResolver(async () => input.mode)
+  gw.setSensitivityModeResolver(async () => input.sensitivityMode ?? 'enforce')
   return gw
 }
 
@@ -491,6 +493,91 @@ async function main() {
     assert.equal(sent.includes(EMAIL), false, 'nyers e-mail kiment a providerhez')
     assert.equal(sent.includes('[[EMAIL_1]]'), true)
     assert.equal(original[0]?.content.includes(EMAIL), true, 'a hívó nyers előzménye megmarad')
+  })
+
+  await test('privacy OBSERVE + sensitivity ENFORCE: e-mail / adószám továbbra is fail-closed', async () => {
+    const capture = { messages: [] as unknown, provider: '', n: 0 }
+    const gw = wiredGateway({
+      mode: 'observe',
+      sensitivityMode: 'enforce',
+      actionFor: (category) => actionForPrivacyCategory(resolvePrivacyCategoryPolicy({}), category),
+      capture,
+    })
+    await assert.rejects(
+      () =>
+        gw.call({
+          agentId: AGENT,
+          tenantId: TENANT,
+          conversationId: CONVERSATION,
+          messages: [{ role: 'user', content: `Írj a ${EMAIL} címre, adószám: 12345678-1-42` }],
+          modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+        }),
+      (err: unknown) => err instanceof Error && /helyi modell|sensitivity/i.test(err.message),
+    )
+    assert.equal(capture.n, 0)
+  })
+
+  await test('sensitivity OBSERVE: a mintaszűrő nem állítja meg a hívást', async () => {
+    const capture = { messages: [] as unknown, provider: '', n: 0 }
+    const gw = wiredGateway({
+      mode: 'enforce',
+      sensitivityMode: 'observe',
+      actionFor: (category) => actionForPrivacyCategory(resolvePrivacyCategoryPolicy({}), category),
+      capture,
+    })
+    const result = await gw.call({
+      agentId: AGENT,
+      tenantId: TENANT,
+      conversationId: CONVERSATION,
+      messages: [{ role: 'user', content: `Írj a ${EMAIL} címre, adószám: 12345678-1-42` }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+    assert.equal(result.provider, 'chatgpt-oauth')
+    assert.equal(capture.n, 1)
+    const sent = JSON.stringify(capture.messages)
+    assert.equal(sent.includes(EMAIL), true, 'tokenize nincs e-mailre default local_only mellett')
+    assert.equal(sent.includes('12345678-1-42'), true)
+  })
+
+  await test('sensitivity OBSERVE: forbidden (PAN) sem állítja meg a hívást', async () => {
+    const capture = { messages: [] as unknown, provider: '', n: 0 }
+    const gw = wiredGateway({
+      mode: 'observe',
+      sensitivityMode: 'observe',
+      actionFor: (category) => actionForPrivacyCategory(resolvePrivacyCategoryPolicy({}), category),
+      capture,
+    })
+    const result = await gw.call({
+      agentId: AGENT,
+      tenantId: TENANT,
+      conversationId: CONVERSATION,
+      messages: [{ role: 'user', content: `A kártyám: ${PAN}` }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+    assert.equal(result.provider, 'chatgpt-oauth')
+    assert.equal(capture.n, 1)
+  })
+
+  await test('privacy OBSERVE + sensitivity ENFORCE: PAN továbbra is tilt', async () => {
+    const capture = { messages: [] as unknown, provider: '', n: 0 }
+    const gw = wiredGateway({
+      mode: 'observe',
+      sensitivityMode: 'enforce',
+      actionFor: (category) => actionForPrivacyCategory(resolvePrivacyCategoryPolicy({}), category),
+      capture,
+    })
+    await assert.rejects(
+      () =>
+        gw.call({
+          agentId: AGENT,
+          tenantId: TENANT,
+          conversationId: CONVERSATION,
+          messages: [{ role: 'user', content: `A kártyám: ${PAN}` }],
+          modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+        }),
+      (err: unknown) => err instanceof Error,
+    )
+    assert.equal(capture.n, 0)
   })
 
   await test('gateway regresszió: default email local_only továbbra is helyi-kényszer / fail-closed', async () => {

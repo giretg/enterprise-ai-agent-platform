@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 
 import { OSTOROSBOR_CRM_PRIVACY_FIELDS } from '../src/domain/privacy/connector-privacy'
 import { connectorHasPrivacyMetadata } from '../src/domain/privacy/connector-privacy'
+import { connectorRowHasPrivacyMetadata } from '../src/domain/privacy/connector-privacy-runtime'
 import {
   PRIVACY_EMPTY_CONNECTOR_STATE,
   PRIVACY_GLOSSARY,
@@ -19,6 +20,7 @@ import {
 import {
   buildPrivacyPolicyEditorRows,
   DEFAULT_PRIVACY_CATEGORY_POLICY,
+  isSensitivityScannerCategory,
   resolvePrivacyCategoryPolicy,
 } from '../src/domain/privacy/privacy-category-policy'
 import { previewAliasForCategory, runPrivacyDryRun } from '../src/domain/privacy/privacy-dry-run'
@@ -189,6 +191,44 @@ async function main() {
     assert.ok(empty.href)
   })
 
+  await test('önfrissítő CRM: a pinned snapshot privacy-kész, az üres tárolt config nem', () => {
+    const stored = {}
+    const capabilitySet = {
+      provider: 'ostoros-crm-autorefresh',
+      baseUrl: 'https://ostorosbor-crm--e-ai-ab8f1.europe-west4.hosted.app/api/connector/v1',
+      egressHosts: ['ostorosbor-crm--e-ai-ab8f1.europe-west4.hosted.app'],
+      authMode: 'service' as const,
+      auth: { type: 'bearer_token' as const },
+      scopesSuggested: [] as string[],
+      proposedTools: [{ name: 'listAccounts', method: 'GET' as const, path: '/accounts', access: 'read' as const }],
+    }
+    assert.equal(
+      connectorRowHasPrivacyMetadata({ connectorMode: 'self_updating', config: stored }),
+      false,
+    )
+    assert.equal(
+      connectorRowHasPrivacyMetadata({
+        connectorMode: 'self_updating',
+        config: stored,
+        capabilitySet,
+      }),
+      true,
+    )
+    const ready = privacyConnectorEmptyState([
+      {
+        id: 'crm',
+        name: 'Ostoros CRM Autorefresh',
+        hasPrivacyMetadata: connectorRowHasPrivacyMetadata({
+          connectorMode: 'self_updating',
+          config: stored,
+          capabilitySet,
+        }),
+      },
+    ])
+    assert.equal(ready.kind, 'ready')
+    assert.equal(ready.ready[0]?.name, 'Ostoros CRM Autorefresh')
+  })
+
   await test('üres állapot: privacy-metadata-s CRM kapcsolat késznek számít', () => {
     assert.equal(
       connectorHasPrivacyMetadata({
@@ -222,6 +262,19 @@ async function main() {
     for (const term of PRIVACY_GLOSSARY) {
       assertNoJargonDump(term.explanation)
     }
+  })
+
+  await test('mintaszűrő kategóriák külön vannak a tokenizálhatóktól', () => {
+    assert.equal(isSensitivityScannerCategory('taj'), true)
+    assert.equal(isSensitivityScannerCategory('adoszam'), true)
+    assert.equal(isSensitivityScannerCategory('pan'), true)
+    assert.equal(isSensitivityScannerCategory('iban'), true)
+    assert.equal(isSensitivityScannerCategory('secret_key'), true)
+    assert.equal(isSensitivityScannerCategory('company'), false)
+    assert.equal(isSensitivityScannerCategory('email'), false)
+    const byId = Object.fromEntries(PRIVACY_GLOSSARY.map((term) => [term.id, term]))
+    assert.ok(byId.scanner?.term.includes('Mintaszűrő'))
+    assert.ok(byId.scanner?.explanation.includes('Külön'))
   })
 
   if (failures > 0) {

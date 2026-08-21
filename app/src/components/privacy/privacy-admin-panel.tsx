@@ -8,6 +8,7 @@ import {
   previewPrivacyObservability,
   setPrivacyCategoryPolicyAction,
   setPrivacyGatewayModeAction,
+  setSensitivityLayerModeAction,
   type PrivacyAdminView,
 } from '@/app/actions/privacy'
 import { PrivacyObservabilityPanel } from '@/components/privacy/privacy-observability-panel'
@@ -25,13 +26,17 @@ import {
   PRIVACY_MODE_LABELS,
   PRIVACY_PAN_IBAN_CONFIRM_HINT,
   PRIVACY_SOURCE_LABELS,
+  SENSITIVITY_LAYER_INTRO,
+  SENSITIVITY_MODE_LABELS,
   inheritedFromLabel,
 } from '@/domain/privacy/privacy-admin-copy'
 import {
   buildPrivacyPolicyEditorRows,
   categorySupportsTokenize,
+  isSensitivityScannerCategory,
   type PrivacyCategoryAction,
   type PrivacyEditorLayer,
+  type PrivacyPolicyEditorRow,
 } from '@/domain/privacy/privacy-category-policy'
 import type { PrivacyGatewayMode } from '@/domain/privacy/privacy-mode'
 import type { PrivacyDryRunResult } from '@/domain/privacy/privacy-dry-run'
@@ -107,7 +112,7 @@ export function PrivacyAdminPanel({
 
   if (!view) {
     return (
-      <Card title="Mit láthat a külső modell">
+      <Card title="Álnevek és mintaszűrő">
         <p className="text-sm text-ink-faint">{message?.text ?? 'Betöltés…'}</p>
       </Card>
     )
@@ -179,6 +184,23 @@ export function PrivacyAdminPanel({
     })
   }
 
+  function saveSensitivityMode(target: PrivacyEditorLayer, mode: PrivacyGatewayMode | typeof INHERIT) {
+    setMessage(null)
+    startTransition(async () => {
+      const res = await setSensitivityLayerModeAction({
+        layer: target,
+        agentId: view!.agentId ?? agentId,
+        mode: mode === INHERIT ? null : mode,
+      })
+      if (res.success) {
+        applyView(res.data)
+        setMessage({ tone: 'ok', text: 'Mintaszűrő üzemmód mentve.' })
+      } else {
+        setMessage({ tone: 'err', text: res.error })
+      }
+    })
+  }
+
   function addCustom() {
     const slug = customSlug.trim().toLowerCase()
     if (!slug) return
@@ -220,16 +242,18 @@ export function PrivacyAdminPanel({
   }
 
   const modeHelp = PRIVACY_MODE_LABELS[view.resolvedMode]
+  const sensitivityHelp = SENSITIVITY_MODE_LABELS[view.resolvedSensitivityMode]
+  const tokenizeRows = rows.filter((row) => !isSensitivityScannerCategory(row.category))
+  const scannerRows = rows.filter((row) => isSensitivityScannerCategory(row.category))
 
   return (
     <div className="space-y-6">
-      <Card title="Mit láthat a külső modell">
+      <Card title="Álnevek — mit cserélünk a modell előtt">
         <div className="space-y-4">
           <p className="text-sm leading-relaxed text-ink-soft">
-            Mielőtt egy külső AI-modell megkapná az adatot, a platform eldönti: mehet nyersen,
-            álnévre cseréljük, csak helyi modellnek adjuk, vagy megállítjuk. A szabályok
-            a platformról a szervezetre, onnan az AI-munkatársra öröklődnek — a későbbi
-            szint felülírhatja a korábbit.
+            Cégnév, személy, e-mail, telefon, ügyfélazonosító: álnévre cserélhető, ha a
+            forrásrendszer megjelöli, vagy a begépelt szövegben felismerhető. Ez a réteg
+            nem foglalkozik TAJ-jal, adószámmal, kártyával — arra a lenti mintaszűrő való.
           </p>
 
           <div className="rounded-lg border border-line bg-night-2 px-3 py-3">
@@ -300,6 +324,47 @@ export function PrivacyAdminPanel({
         </div>
       </Card>
 
+      <Card title="Mintaszűrő — TAJ, adószám, kártya, titok">
+        <div className="space-y-4">
+          <p className="text-sm leading-relaxed text-ink-soft">{SENSITIVITY_LAYER_INTRO}</p>
+
+          <div className="rounded-lg border border-line bg-night-2 px-3 py-3">
+            <p className="text-sm font-medium text-ink">Most: {sensitivityHelp.label}</p>
+            <p className="mt-1 text-xs leading-relaxed text-ink-faint">{sensitivityHelp.explanation}</p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            {visibleLayers.includes('platform') ? (
+              <ModeSelect
+                label="Platform"
+                value={view.platformSensitivityMode}
+                allowInherit={false}
+                disabled={!view.canEditPlatform || pending}
+                onChange={(value) => saveSensitivityMode('platform', value)}
+              />
+            ) : null}
+            {visibleLayers.includes('tenant') ? (
+              <ModeSelect
+                label="Szervezet"
+                value={view.tenantSensitivityMode ?? INHERIT}
+                allowInherit
+                disabled={!view.canEditTenant || pending}
+                onChange={(value) => saveSensitivityMode('tenant', value)}
+              />
+            ) : null}
+            {visibleLayers.includes('agent') ? (
+              <ModeSelect
+                label="Ez az AI-munkatárs"
+                value={view.agentSensitivityMode ?? INHERIT}
+                allowInherit
+                disabled={!view.canEditAgent || pending}
+                onChange={(value) => saveSensitivityMode('agent', value)}
+              />
+            ) : null}
+          </div>
+        </div>
+      </Card>
+
       <Card title="Forrásrendszerek, amik megmondják a védendő adatot">
         {view.emptyState.kind === 'empty' ? (
           <div className="space-y-3">
@@ -326,86 +391,18 @@ export function PrivacyAdminPanel({
         )}
       </Card>
 
-      <Card title={`Szabályok — ${PRIVACY_LAYER_LABELS[layer]}`}>
+      <Card title={`Álnév-szabályok — ${PRIVACY_LAYER_LABELS[layer]}`}>
         <p className="mb-4 text-xs leading-relaxed text-ink-faint">
           {PRIVACY_INHERIT_EXPLANATION} A „itt felülírva” jelzés azt mutatja, hogy ezen a
-          szinten külön szabály van.
+          szinten külön szabály van. Ezekre az adatfajtákra választható az álnév.
         </p>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[36rem] text-sm">
-            <thead>
-              <tr className="border-b border-line/50 text-left text-xs text-ink-faint">
-                <th className="py-2 pr-3 font-medium">Adatfajta</th>
-                <th className="py-2 pr-3 font-medium">Mi történik</th>
-                <th className="py-2 font-medium">Honnan jön</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => {
-                const copy = PRIVACY_CATEGORY_LABELS[row.category] ?? {
-                  label: row.category,
-                  explanation: 'Szervezeti, egyedi minta.',
-                }
-                const lockedSecret = row.category === 'secret_key'
-                const current = row.overlayAction ?? INHERIT
-                return (
-                  <tr key={row.category} className="border-b border-line/30 align-top last:border-0">
-                    <td className="py-3 pr-3">
-                      <p className="font-medium text-ink">{copy.label}</p>
-                      <p className="mt-0.5 text-xs leading-relaxed text-ink-faint">{copy.explanation}</p>
-                    </td>
-                    <td className="py-3 pr-3">
-                      <select
-                        className={selectClassName()}
-                        disabled={!editable || pending || lockedSecret}
-                        value={lockedSecret ? 'block' : current}
-                        onChange={(event) =>
-                          saveCategory(
-                            row.category,
-                            event.currentTarget.value as PrivacyCategoryAction | typeof INHERIT,
-                            row.kind,
-                          )
-                        }
-                      >
-                        <option value={INHERIT}>{PRIVACY_INHERIT_LABEL}</option>
-                        {ACTIONS.filter((action) => {
-                          if (lockedSecret) return action === 'block'
-                          // Álnevet csak a surrogate-névtér kategóriái kaphatnak;
-                          // máshol a választás némán hatástalan lenne.
-                          if (action === 'tokenize' && !categorySupportsTokenize(row.category)) {
-                            return false
-                          }
-                          if (
-                            (row.category === 'pan' || row.category === 'iban') &&
-                            action === 'allow' &&
-                            !view.isSuperadmin
-                          ) {
-                            return false
-                          }
-                          return true
-                        }).map((action) => (
-                          <option key={action} value={action}>
-                            {PRIVACY_ACTION_LABELS[action].label}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="mt-1 text-xs text-ink-faint">
-                        {PRIVACY_ACTION_LABELS[row.resolvedAction].explanation}
-                      </p>
-                    </td>
-                    <td className="py-3">
-                      <p className="text-xs text-ink-soft">
-                        {row.inherited
-                          ? inheritedFromLabel(row.source)
-                          : `itt felülírva · érvényes: ${PRIVACY_SOURCE_LABELS[row.source]}`}
-                      </p>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+        <CategoryPolicyTable
+          rows={tokenizeRows}
+          editable={editable}
+          pending={pending}
+          isSuperadmin={view.isSuperadmin}
+          onSave={saveCategory}
+        />
 
         {editable ? (
           <div className="mt-4 flex flex-wrap items-end gap-2">
@@ -430,6 +427,20 @@ export function PrivacyAdminPanel({
         ) : (
           <p className="mt-3 text-xs text-ink-faint">A szabályokat csak admin módosíthatja.</p>
         )}
+      </Card>
+
+      <Card title={`Mintaszűrő-szabályok — ${PRIVACY_LAYER_LABELS[layer]}`}>
+        <p className="mb-4 text-xs leading-relaxed text-ink-faint">
+          TAJ, adószám, kártya, IBAN, titok: nincs álnév. A fenti mintaszűrő üzemmód
+          dönti el, hogy a szabály érvényesül-e, vagy csak feljegyzés / ki van kapcsolva.
+        </p>
+        <CategoryPolicyTable
+          rows={scannerRows}
+          editable={editable}
+          pending={pending}
+          isSuperadmin={view.isSuperadmin}
+          onSave={saveCategory}
+        />
 
         {confirmCategory ? (
           <div className="mt-4 space-y-2 rounded-lg border border-coral/35 bg-coral/10 p-3">
@@ -541,6 +552,96 @@ export function PrivacyAdminPanel({
         </p>
       ) : null}
       {pending ? <p className="text-xs text-ink-faint">Mentés…</p> : null}
+    </div>
+  )
+}
+
+function CategoryPolicyTable({
+  rows,
+  editable,
+  pending,
+  isSuperadmin,
+  onSave,
+}: {
+  rows: PrivacyPolicyEditorRow[]
+  editable: boolean
+  pending: boolean
+  isSuperadmin: boolean
+  onSave: (category: string, action: PrivacyCategoryAction | typeof INHERIT, kind: 'builtin' | 'custom') => void
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[36rem] text-sm">
+        <thead>
+          <tr className="border-b border-line/50 text-left text-xs text-ink-faint">
+            <th className="py-2 pr-3 font-medium">Adatfajta</th>
+            <th className="py-2 pr-3 font-medium">Mi történik</th>
+            <th className="py-2 font-medium">Honnan jön</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const copy = PRIVACY_CATEGORY_LABELS[row.category] ?? {
+              label: row.category,
+              explanation: 'Szervezeti, egyedi minta.',
+            }
+            const lockedSecret = row.category === 'secret_key'
+            const current = row.overlayAction ?? INHERIT
+            return (
+              <tr key={row.category} className="border-b border-line/30 align-top last:border-0">
+                <td className="py-3 pr-3">
+                  <p className="font-medium text-ink">{copy.label}</p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-ink-faint">{copy.explanation}</p>
+                </td>
+                <td className="py-3 pr-3">
+                  <select
+                    className={selectClassName()}
+                    disabled={!editable || pending || lockedSecret}
+                    value={lockedSecret ? 'block' : current}
+                    onChange={(event) =>
+                      onSave(
+                        row.category,
+                        event.currentTarget.value as PrivacyCategoryAction | typeof INHERIT,
+                        row.kind,
+                      )
+                    }
+                  >
+                    <option value={INHERIT}>{PRIVACY_INHERIT_LABEL}</option>
+                    {ACTIONS.filter((action) => {
+                      if (lockedSecret) return action === 'block'
+                      if (action === 'tokenize' && !categorySupportsTokenize(row.category)) {
+                        return false
+                      }
+                      if (
+                        (row.category === 'pan' || row.category === 'iban') &&
+                        action === 'allow' &&
+                        !isSuperadmin
+                      ) {
+                        return false
+                      }
+                      return true
+                    }).map((action) => (
+                      <option key={action} value={action}>
+                        {PRIVACY_ACTION_LABELS[action].label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-ink-faint">
+                    {PRIVACY_ACTION_LABELS[row.resolvedAction].explanation}
+                  </p>
+                </td>
+                <td className="py-3">
+                  <p className="text-xs text-ink-soft">
+                    {row.inherited
+                      ? inheritedFromLabel(row.source)
+                      : `itt felülírva · érvényes: ${PRIVACY_SOURCE_LABELS[row.source]}`}
+                  </p>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }

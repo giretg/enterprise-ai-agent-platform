@@ -116,6 +116,7 @@ export async function recordCall(
     agentId: params.input.agentId,
     ticketId: params.ticketId,
     conversationId: params.input.conversationId ?? null,
+    agentTurnId: params.input.agentTurnId ?? null,
     connectorId: params.connectorId,
     toolName: params.input.tool,
     status: params.status,

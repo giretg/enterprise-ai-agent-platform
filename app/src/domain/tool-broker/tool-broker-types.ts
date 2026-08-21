@@ -744,6 +744,11 @@ export type ToolInvokeBase = {
   agentVersion: number
   ticketId?: string
   conversationId?: string
+  /**
+   * issue #237 — melyik chat-forduló hívta. A `ToolCall.agentTurnId` ebből
+   * töltődik; ticket/task úton üresen marad.
+   */
+  agentTurnId?: string
   actingUserId?: string
   /**
    * Az `actingUserId` csak megbízható, szerveroldali futás-kontektsusból

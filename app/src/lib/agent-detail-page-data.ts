@@ -20,6 +20,10 @@ import {
   classifyAgentDetailLookup,
 } from '@/lib/agent-detail-access'
 import { logger } from '@/lib/observability/logger'
+import {
+  loadEfficiencyAdvisorCard,
+} from '@/domain/agent/efficiency-advisor-query'
+import type { EfficiencyAdvisorView } from '@/domain/agent/efficiency-advisor'
 
 const DEFAULT_MEMORY_PROJECT_KEY = '__general__'
 
@@ -90,6 +94,7 @@ export type AgentDetailPageData = {
     initialOverview: AgentDetailMemoryOverview
   } | null
   knowledgeBase: AgentDetailKbInitial | null
+  efficiencyAdvisor: EfficiencyAdvisorView | null
   /** Másodlagos panelek (memória/KB/governance) hibája — az agent ettől még megjelenik. */
   secondaryError: string | null
 }
@@ -340,6 +345,7 @@ export async function loadAgentDetailPageData(
   let assignableSkills: AgentDetailAssignableSkill[] = []
   let memoryPanel: AgentDetailPageData['memoryPanel'] = null
   let knowledgeBase: AgentDetailPageData['knowledgeBase'] = null
+  let efficiencyAdvisor: EfficiencyAdvisorView | null = null
   let secondaryError: string | null = null
 
   try {
@@ -410,6 +416,23 @@ export async function loadAgentDetailPageData(
     )
   }
 
+  try {
+    efficiencyAdvisor = await loadEfficiencyAdvisorCard({
+      agentId,
+      tenantId: ctx.activeTenantId,
+    })
+  } catch (e) {
+    logger.warn(
+      {
+        event: 'agent_detail.efficiency_advisor_failed',
+        agentId,
+        tenantId: ctx.activeTenantId,
+        error: e instanceof Error ? e.message : String(e),
+      },
+      'Efficiency advisor card failed; rendering agent detail without it',
+    )
+  }
+
   return {
     isAdmin,
     canManageKb,
@@ -430,6 +453,7 @@ export async function loadAgentDetailPageData(
     assignableSkills,
     memoryPanel,
     knowledgeBase,
+    efficiencyAdvisor,
     secondaryError,
   }
 }

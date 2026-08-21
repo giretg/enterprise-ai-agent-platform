@@ -25,6 +25,10 @@ import {
   DEFAULT_PRIVACY_GATEWAY_MODE,
   resolvePrivacyGatewayMode,
 } from '../src/domain/privacy/privacy-mode'
+import {
+  DEFAULT_SENSITIVITY_LAYER_MODE,
+  resolveSensitivityLayerMode,
+} from '../src/domain/gateway/sensitivity-mode'
 import { PlatformSettingsService } from '../src/domain/platform-settings/platform-settings-service'
 import { SurrogateEngine, type PrivacyAuditSink } from '../src/domain/privacy/surrogate-engine'
 import {
@@ -379,6 +383,18 @@ async function main() {
     )
   })
 
+  await test('mintaszűrő alapértelmezés ENFORCE; agent lefelé kapcsolhat', () => {
+    assert.equal(DEFAULT_SENSITIVITY_LAYER_MODE, 'enforce')
+    assert.equal(resolveSensitivityLayerMode({}), 'enforce')
+    assert.equal(resolveSensitivityLayerMode({ platform: 'enforce', agent: 'observe' }), 'observe')
+    assert.equal(resolveSensitivityLayerMode({ platform: 'enforce', agent: 'off' }), 'off')
+    assert.equal(
+      resolveSensitivityLayerMode({ platform: 'observe', tenant: 'enforce', agent: 'enforce' }),
+      'observe',
+      'a szülő megfigyelése plafon: az agent nem szigoríthat',
+    )
+  })
+
   await test('audit-builder eldobja a nyers értéket és az extra kulcsokat', () => {
     const metadata = buildPrivacyAuditMetadata({
       categories: ['company'],
@@ -611,6 +627,29 @@ async function main() {
 
     assert.equal(events.every((e) => e.action === 'privacy.gateway.mode.set'), true)
     assertNoRaw(events, 'mode.set')
+  })
+
+  await test('mintaszűrő PlatformSetting: default enforce, agent observe dial-down', async () => {
+    const { svc, events } = inMemorySettings()
+    assert.equal(
+      await svc.resolveSensitivityLayerMode({ tenantId: TENANT, agentId: AGENT }),
+      'enforce',
+    )
+
+    await svc.setAgentSensitivityLayerControls(AGENT, { mode: 'observe' }, 'admin-1')
+    assert.equal(
+      await svc.resolveSensitivityLayerMode({ tenantId: TENANT, agentId: AGENT }),
+      'observe',
+    )
+
+    await svc.setTenantSensitivityLayerControls(TENANT, { mode: 'off' }, 'admin-1')
+    assert.equal(
+      await svc.resolveSensitivityLayerMode({ tenantId: TENANT, agentId: AGENT }),
+      'off',
+    )
+
+    assert.equal(events.every((e) => e.action === 'sensitivity.layer.mode.set'), true)
+    assertNoRaw(events, 'sensitivity.mode.set')
   })
 
   if (failures > 0) {

@@ -2,6 +2,12 @@ import { Prisma, type ModelCallStatus } from '@prisma/client'
 import { allowsExternalRaw, type PrivacyCategoryAction } from '@/domain/privacy/privacy-category-policy'
 import { recordPrivacyGatewayAudit } from '@/domain/privacy/privacy-audit'
 import type { PrivacyGatewayMode, PrivacyModeResolver } from '@/domain/privacy/privacy-mode'
+import {
+  sensitivityLayerAuditsObservation,
+  sensitivityLayerSkipsEnforcement,
+  type SensitivityLayerMode,
+  type SensitivityModeResolver,
+} from '@/domain/gateway/sensitivity-mode'
 import { summarizePrivacySpans } from '@/domain/privacy/privacy-mode'
 import { transformPromptMessages } from '@/domain/privacy/prompt-privacy-transform'
 import type { UserInputEntityResolution } from '@/domain/privacy/user-input-resolver'
@@ -1054,6 +1060,7 @@ export class ModelGateway {
    */
   private privacyEngine: SurrogateEngine | null = null
   private privacyModeResolver: PrivacyModeResolver | null = null
+  private sensitivityModeResolver: SensitivityModeResolver | null = null
   private entityResolutionProvider: EntityResolutionProvider | null = null
 
   setPrivacyEngine(engine: SurrogateEngine | null): void {
@@ -1062,6 +1069,10 @@ export class ModelGateway {
 
   setPrivacyModeResolver(resolver: PrivacyModeResolver | null): void {
     this.privacyModeResolver = resolver
+  }
+
+  setSensitivityModeResolver(resolver: SensitivityModeResolver | null): void {
+    this.sensitivityModeResolver = resolver
   }
 
   /** APG-17 — prompt előtti connector `resolve()` (best-effort). */
@@ -1141,6 +1152,54 @@ export class ModelGateway {
     }
   }
 
+  private async resolvePrivacyGatewayModeForCall(
+    tenantId: string | null,
+    agentId: string,
+  ): Promise<PrivacyGatewayMode | null> {
+    if (!this.privacyModeResolver || !tenantId) return null
+    return this.privacyModeResolver({ tenantId, agentId })
+  }
+
+  private async resolveSensitivityLayerModeForCall(
+    tenantId: string | null,
+    agentId: string,
+  ): Promise<SensitivityLayerMode | null> {
+    if (!this.sensitivityModeResolver || !tenantId) return null
+    return this.sensitivityModeResolver({ tenantId, agentId })
+  }
+
+  private async recordSensitivityObserved(ctx: {
+    agentId: string
+    agentVersion: number | null
+    ticketId?: string
+    conversationId?: string
+    modelUsed: string
+    sensitivity: SensitivityDecision
+    wouldHave: 'block' | 'local'
+  }): Promise<void> {
+    const category = ctx.sensitivity.matchedCategory
+    const targetType = ctx.ticketId ? 'ticket' : ctx.conversationId ? 'conversation' : 'agent'
+    const targetId = ctx.ticketId ?? ctx.conversationId ?? ctx.agentId
+    await this.audit.append({
+      actorType: 'agent',
+      actorId: ctx.agentId,
+      agentVersion: ctx.agentVersion,
+      action: 'model.call.sensitivity_observed',
+      targetType,
+      targetId,
+      modelUsed: ctx.modelUsed,
+      inputRef: `sensitivity:${category}`,
+      outputRef: 'observed',
+      policyDecision: 'observed',
+      metadata: {
+        reason: 'sensitivity_layer_skip_enforcement',
+        category,
+        level: ctx.sensitivity.level,
+        wouldHave: ctx.wouldHave,
+      },
+    })
+  }
+
   /** Közös forbidden preflight a normál és a streaming modellhíváshoz. */
   private async enforceForbiddenSensitivityPolicy(ctx: {
     agentId: string
@@ -1150,8 +1209,17 @@ export class ModelGateway {
     modelUsed: string
     sensitivity: SensitivityDecision
     sensitivityOverride?: SensitivityOverride
+    observeOnly?: boolean
+    auditObservation?: boolean
   }): Promise<void> {
     if (ctx.sensitivity.level !== 'forbidden') return
+
+    if (ctx.observeOnly) {
+      if (ctx.auditObservation) {
+        await this.recordSensitivityObserved({ ...ctx, wouldHave: 'block' })
+      }
+      return
+    }
 
     if (await this.allowsAgentSensitivityBypass(ctx)) return
 
@@ -1283,8 +1351,25 @@ export class ModelGateway {
     resolvedConfig: ModelConfig
     sensitivity: SensitivityDecision
     sensitivityOverride?: SensitivityOverride
+    observeOnly?: boolean
+    auditObservation?: boolean
   }): Promise<{ resolvedConfig: ModelConfig; forcedLocal: boolean }> {
     if (ctx.sensitivity.level !== 'sensitive' || !this.sensitivityPolicy.enforceLocalForSensitive) {
+      return { resolvedConfig: ctx.resolvedConfig, forcedLocal: false }
+    }
+
+    if (ctx.observeOnly) {
+      if (ctx.auditObservation) {
+        await this.recordSensitivityObserved({
+          agentId: ctx.agentId,
+          agentVersion: ctx.agentVersion,
+          ticketId: ctx.ticketId,
+          conversationId: ctx.conversationId,
+          modelUsed: ctx.resolvedConfig.model,
+          sensitivity: ctx.sensitivity,
+          wouldHave: 'local',
+        })
+      }
       return { resolvedConfig: ctx.resolvedConfig, forcedLocal: false }
     }
 
@@ -1465,12 +1550,18 @@ export class ModelGateway {
     // eshetünk vissza a „minden tenant kerete érvényes" állapotba.
     const tenantId = await this.resolveTenantId(params.agentId, params.tenantId)
 
+    const privacyMode = await this.resolvePrivacyGatewayModeForCall(tenantId, params.agentId)
+    const sensitivityMode = await this.resolveSensitivityLayerModeForCall(tenantId, params.agentId)
+    const skipSensitivity = sensitivityLayerSkipsEnforcement(sensitivityMode)
+    const auditSensitivity = sensitivityLayerAuditsObservation(sensitivityMode)
+
     const messages = await this.applyPromptPrivacyTransform({
       agentId: params.agentId,
       tenantId,
       ticketId: params.ticketId,
       conversationId: params.conversationId,
       messages: params.messages,
+      mode: privacyMode,
     })
     const sensitivity = classifyPrompt(messages)
     await this.enforceForbiddenSensitivityPolicy({
@@ -1481,6 +1572,8 @@ export class ModelGateway {
       modelUsed: params.modelConfig.model,
       sensitivity,
       sensitivityOverride: params.sensitivityOverride,
+      observeOnly: skipSensitivity,
+      auditObservation: auditSensitivity,
     })
 
     let resolvedConfig = { ...params.modelConfig }
@@ -1503,6 +1596,8 @@ export class ModelGateway {
       resolvedConfig,
       sensitivity,
       sensitivityOverride: params.sensitivityOverride,
+      observeOnly: skipSensitivity,
+      auditObservation: auditSensitivity,
     })
     resolvedConfig = sensitivityRouting.resolvedConfig
     const forcedLocal = sensitivityRouting.forcedLocal
@@ -1597,6 +1692,7 @@ export class ModelGateway {
     ticketId?: string
     conversationId?: string
     messages: GatewayMessage[]
+    mode?: PrivacyGatewayMode | null
   }): Promise<GatewayMessage[]> {
     if (!this.privacyEngine || !this.privacyModeResolver || !ctx.tenantId) {
       return ctx.messages
@@ -1604,10 +1700,12 @@ export class ModelGateway {
     const scope = privacyScopeForCall(ctx.conversationId, ctx.ticketId)
     if (!scope) return ctx.messages
 
-    const mode: PrivacyGatewayMode = await this.privacyModeResolver({
-      tenantId: ctx.tenantId,
-      agentId: ctx.agentId,
-    })
+    const mode: PrivacyGatewayMode =
+      ctx.mode ??
+      (await this.privacyModeResolver({
+        tenantId: ctx.tenantId,
+        agentId: ctx.agentId,
+      }))
     if (mode === 'off') return ctx.messages
 
     const policyReader = this.agentSensitivityPolicy

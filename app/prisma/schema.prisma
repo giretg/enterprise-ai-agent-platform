@@ -2104,6 +2104,8 @@ model AgentTurn {
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   // issue #180 WP-2 — a fordulóhoz kötött modellhívások (per-forduló költség).
   modelCalls   ModelCall[]
+  // issue #237 — a fordulóhoz kötött eszközhívások (hatékonysági tanácsadó).
+  toolCalls    ToolCall[]
 
   @@index([conversationId, status])
   @@index([status, heartbeatAt])
@@ -2796,6 +2798,10 @@ model ToolCall {
   agentId        String         @map("agent_id") @db.Uuid
   ticketId       String?        @map("ticket_id") @db.Uuid
   conversationId String?        @map("conversation_id") @db.Uuid
+  // issue #237 — MELYIK FORDULÓ hívta. E nélkül a chat-futás eszközhívásait
+  // csak időbélyeg-illesztéssel lehetne a fordulóhoz rendelni. Nullable: a
+  // ticket/task úton és a bevezetés előtti rekordokon nincs forduló-rekord.
+  agentTurnId    String?        @map("agent_turn_id") @db.Uuid
   connectorId    String?        @map("connector_id") @db.Uuid
   toolName       String         @map("tool_name")
   status         ToolCallStatus
@@ -2821,6 +2827,7 @@ model ToolCall {
   ticket       Ticket?       @relation(fields: [ticketId], references: [id])
   conversation Conversation? @relation(fields: [conversationId], references: [id])
   connector    Connector?    @relation(fields: [connectorId], references: [id])
+  agentTurn    AgentTurn?    @relation(fields: [agentTurnId], references: [id], onDelete: SetNull)
 
   @@index([trustClass, createdAt])
   // issue #195 — „melyik eszköz ad a leggyakrabban empty/partial/failed eredményt?"
@@ -2829,6 +2836,7 @@ model ToolCall {
   @@index([agentId, createdAt])
   @@index([ticketId])
   @@index([conversationId])
+  @@index([agentTurnId])
   @@map("tool_calls")
 }
 
