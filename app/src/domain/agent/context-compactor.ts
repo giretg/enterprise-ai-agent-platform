@@ -74,9 +74,10 @@ function readConfigNumber(source: Record<string, unknown> | null | undefined, ke
  * `AGENT_CONTEXT_KEEP_RECENT_TOOL_RESULTS`, `AGENT_CONTEXT_MAX_TOOL_RESULT_CHARS`,
  * `AGENT_CONTEXT_MIN_EVICTABLE_CHARS`. Érvénytelen érték → alapérték.
  *
- * issue #237 — opcionális `modelConfig` overlay a `resolveLoopGuardLimits` mintájára:
- * precedencia modelConfig → env → default, de csak SZIGORÍTANI tud (kisebb keret /
- * kevesebb védett eredmény). Kikapcsolni vagy lazítani nem.
+ * EFF-11 (#316 / #237) — opcionális `modelConfig` overlay a
+ * `resolveLoopGuardLimits` mintájára: precedencia modelConfig → env → default,
+ * de csak SZIGORÍTANI tud (kisebb keret / kevesebb védett eredmény). Kikapcsolni
+ * vagy lazítani nem. Overlay nélkül az eredmény bájtra azonos az env/defaulttel.
  */
 export function resolveContextCompactionLimits(
   env: NodeJS.ProcessEnv = process.env,

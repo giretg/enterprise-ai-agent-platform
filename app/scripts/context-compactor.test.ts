@@ -344,6 +344,140 @@ async function main() {
     assert.equal(limits.minEvictableChars, DEFAULT_CONTEXT_COMPACTION_LIMITS.minEvictableChars)
   })
 
+  // ── EFF-11 (#316) — modelConfig overlay: modelConfig → env → default ───────
+  // A tömörítés és a forrás-keret per-agent kapcsolója: szigorítani szabad,
+  // kikapcsolni / lazítani nem. Overlay nélkül a mai (env/default) eredmény
+  // bájtra ugyanaz marad.
+  await check('EFF-11: tömörítés — precedencia modelConfig → env → default', () => {
+    const cleanEnv = {} as NodeJS.ProcessEnv
+    const fromDefault = resolveContextCompactionLimits(cleanEnv)
+    assert.deepEqual(fromDefault, DEFAULT_CONTEXT_COMPACTION_LIMITS)
+
+    const envOnly = {
+      AGENT_CONTEXT_KEEP_RECENT_TOOL_RESULTS: '3',
+      AGENT_CONTEXT_MAX_TOOL_RESULT_CHARS: '40000',
+    } as unknown as NodeJS.ProcessEnv
+    const fromEnv = resolveContextCompactionLimits(envOnly)
+    assert.equal(fromEnv.keepRecentToolResults, 3)
+    assert.equal(fromEnv.maxToolResultChars, 40_000)
+
+    const fromConfig = resolveContextCompactionLimits(envOnly, DEFAULT_CONTEXT_COMPACTION_LIMITS, {
+      keepRecentToolResults: 2,
+      maxToolResultChars: 20_000,
+    })
+    assert.equal(fromConfig.keepRecentToolResults, 2, 'modelConfig szigorít az env fölött')
+    assert.equal(fromConfig.maxToolResultChars, 20_000)
+  })
+
+  await check('EFF-11: tömörítés — szigoríthat, lazítani/kikapcsolni nem', () => {
+    const env = {
+      AGENT_CONTEXT_KEEP_RECENT_TOOL_RESULTS: '4',
+      AGENT_CONTEXT_MAX_TOOL_RESULT_CHARS: '60000',
+    } as unknown as NodeJS.ProcessEnv
+    const baseline = resolveContextCompactionLimits(env)
+
+    const tighter = resolveContextCompactionLimits(env, DEFAULT_CONTEXT_COMPACTION_LIMITS, {
+      keepRecentToolResults: 2,
+      maxToolResultChars: 30_000,
+    })
+    assert.equal(tighter.keepRecentToolResults, 2)
+    assert.equal(tighter.maxToolResultChars, 30_000)
+
+    const looser = resolveContextCompactionLimits(env, DEFAULT_CONTEXT_COMPACTION_LIMITS, {
+      keepRecentToolResults: 99,
+      maxToolResultChars: 5_000_000,
+    })
+    assert.deepEqual(looser, baseline, 'lazító overlay nem érvényesül')
+
+    const off = resolveContextCompactionLimits(env, DEFAULT_CONTEXT_COMPACTION_LIMITS, {
+      keepRecentToolResults: 0,
+      maxToolResultChars: 0,
+    })
+    assert.deepEqual(off, baseline, 'kikapcsoló overlay nem érvényesül')
+  })
+
+  await check('EFF-11: tömörítés — overlay nélkül bájtra ugyanaz', () => {
+    const env = {
+      AGENT_CONTEXT_KEEP_RECENT_TOOL_RESULTS: '3',
+      AGENT_CONTEXT_MAX_TOOL_RESULT_CHARS: '45000',
+      AGENT_CONTEXT_MIN_EVICTABLE_CHARS: '800',
+    } as unknown as NodeJS.ProcessEnv
+    const without = resolveContextCompactionLimits(env)
+    const withUndefined = resolveContextCompactionLimits(env, DEFAULT_CONTEXT_COMPACTION_LIMITS, undefined)
+    const withNull = resolveContextCompactionLimits(env, DEFAULT_CONTEXT_COMPACTION_LIMITS, null)
+    const withEmpty = resolveContextCompactionLimits(env, DEFAULT_CONTEXT_COMPACTION_LIMITS, {})
+    assert.equal(JSON.stringify(withUndefined), JSON.stringify(without))
+    assert.equal(JSON.stringify(withNull), JSON.stringify(without))
+    assert.equal(JSON.stringify(withEmpty), JSON.stringify(without))
+  })
+
+  await check('EFF-11: forrás-keret — precedencia modelConfig → env → default', () => {
+    const cleanEnv = {} as NodeJS.ProcessEnv
+    assert.deepEqual(resolveSourceIngestLimits(cleanEnv), SOURCE_INGEST_DEFAULTS)
+
+    const envOnly = {
+      AGENT_SOURCE_INGEST_FACTOR: '3',
+      AGENT_SOURCE_INGEST_MIN_CHARS: '24000',
+    } as unknown as NodeJS.ProcessEnv
+    const fromEnv = resolveSourceIngestLimits(envOnly)
+    assert.equal(fromEnv.factor, 3)
+    assert.equal(fromEnv.minChars, 24_000)
+
+    const fromConfig = resolveSourceIngestLimits(envOnly, SOURCE_INGEST_DEFAULTS, {
+      sourceIngestFactor: 1,
+      sourceIngestMinChars: 12_000,
+    })
+    assert.equal(fromConfig.factor, 1, 'modelConfig szigorít az env fölött')
+    assert.equal(fromConfig.minChars, 12_000)
+  })
+
+  await check('EFF-11: forrás-keret — szigoríthat, lazítani/kikapcsolni nem', () => {
+    const env = {
+      AGENT_SOURCE_INGEST_FACTOR: '2',
+      AGENT_SOURCE_INGEST_MIN_CHARS: '20000',
+    } as unknown as NodeJS.ProcessEnv
+    const baseline = resolveSourceIngestLimits(env)
+
+    const tighter = resolveSourceIngestLimits(env, SOURCE_INGEST_DEFAULTS, {
+      sourceIngestFactor: 1,
+      sourceIngestMinChars: 12_000,
+    })
+    assert.equal(tighter.factor, 1)
+    assert.equal(tighter.minChars, 12_000)
+
+    const looser = resolveSourceIngestLimits(env, SOURCE_INGEST_DEFAULTS, {
+      sourceIngestFactor: 10,
+      sourceIngestMinChars: 999_999,
+    })
+    assert.deepEqual(looser, baseline)
+
+    const off = resolveSourceIngestLimits(env, SOURCE_INGEST_DEFAULTS, {
+      sourceIngestFactor: 0,
+      sourceIngestMinChars: 0,
+    })
+    assert.deepEqual(off, baseline)
+  })
+
+  await check('EFF-11: forrás-keret — overlay nélkül bájtra ugyanaz', () => {
+    const env = {
+      AGENT_SOURCE_INGEST_FACTOR: '2.5',
+      AGENT_SOURCE_INGEST_MIN_CHARS: '15000',
+    } as unknown as NodeJS.ProcessEnv
+    const without = resolveSourceIngestLimits(env)
+    assert.equal(
+      JSON.stringify(resolveSourceIngestLimits(env, SOURCE_INGEST_DEFAULTS, undefined)),
+      JSON.stringify(without),
+    )
+    assert.equal(
+      JSON.stringify(resolveSourceIngestLimits(env, SOURCE_INGEST_DEFAULTS, null)),
+      JSON.stringify(without),
+    )
+    assert.equal(
+      JSON.stringify(resolveSourceIngestLimits(env, SOURCE_INGEST_DEFAULTS, {})),
+      JSON.stringify(without),
+    )
+  })
+
   console.log('\n🧪 Bekötés a tool-loopba\n')
 
   /**
