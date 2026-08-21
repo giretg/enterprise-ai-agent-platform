@@ -95,7 +95,13 @@ export type ResolveValInput = {
 
 const MAX_ALLOC_ATTEMPTS = 16
 
-type DisplayValue = { value: string; source: 'structured_field' | 'scanner' }
+/**
+ * `observe_preview`: OBSERVE mód UI-kiemeléshez, vault nélkül. Nem kerülhet a
+ * prompt known-value szótárába — különben ENFORCE-ra váltáskor a modell
+ * nem-létező álneveket kapna, vagy egy későbbi valódi allokációval összekeveredne.
+ */
+type DisplayValueSource = 'structured_field' | 'scanner' | 'observe_preview'
+type DisplayValue = { value: string; source: DisplayValueSource }
 
 export class SurrogateEngine {
   /**
@@ -119,7 +125,7 @@ export class SurrogateEngine {
     scope: PrivacyScope,
     surrogate: string,
     displayValue: string,
-    source: 'structured_field' | 'scanner' = 'scanner',
+    source: DisplayValueSource = 'scanner',
   ): void {
     if (!displayValue) return
     const key = scopeKey(tenantId, scope)
@@ -135,18 +141,30 @@ export class SurrogateEngine {
     return this.displayValues.get(scopeKey(tenantId, scope))?.get(surrogate)?.value
   }
 
-  /** A beszélgetésben már ismert nyers értékek produkciós known-value cseréi. */
+  /**
+   * A beszélgetésben már ismert nyers értékek produkciós known-value cseréi.
+   *
+   * Alapból kizárja az OBSERVE preview bejegyzéseket: azok vault nélkül, UI-kiemeléshez
+   * készültek. Ha a prompt-transzformáció (ENFORCE) felvenné őket, a modell
+   * nem-allokált `[[COMPANY_n]]` álneveket kapna — tool-arg feloldás ismeretlen
+   * álnévre bukik, vagy egy későbbi valódi vault-allokációval összekeveredik.
+   */
   listKnownValueReplacements(
     tenantId: string,
     scope: PrivacyScope,
+    opts?: { includeObservePreviews?: boolean },
   ): Array<{ needle: string; surrogate: string; fromStructuredField: boolean }> {
     const byScope = this.displayValues.get(scopeKey(tenantId, scope))
     if (!byScope) return []
-    return [...byScope].map(([surrogate, stored]) => ({
-      needle: stored.value,
-      surrogate,
-      fromStructuredField: stored.source === 'structured_field',
-    }))
+    return [...byScope]
+      .filter(([, stored]) =>
+        opts?.includeObservePreviews ? true : stored.source !== 'observe_preview',
+      )
+      .map(([surrogate, stored]) => ({
+        needle: stored.value,
+        surrogate,
+        fromStructuredField: stored.source === 'structured_field',
+      }))
   }
 
   /** Vault-lookup unknown-audit nélkül — megjelenítési feloldás, ismételt history-olvasáskor. */

@@ -195,7 +195,7 @@ function registerObservedStructuredFields(
           ctx.scope,
           previewAlias,
           child,
-          'structured_field',
+          'observe_preview',
         )
       }
       continue

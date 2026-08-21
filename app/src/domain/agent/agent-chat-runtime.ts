@@ -2309,6 +2309,7 @@ export class AgentChatRuntime {
               knownValues: this.surrogateEngine.listKnownValueReplacements(
                 tenantId,
                 { type: 'conversation', id: conversationId },
+                { includeObservePreviews: true },
               ),
             })
           : []
@@ -2339,10 +2340,14 @@ export class AgentChatRuntime {
 
     const knownValues =
       this.surrogateEngine && input.tenantId && input.conversationId
-        ? this.surrogateEngine.listKnownValueReplacements(input.tenantId, {
-            type: 'conversation',
-            id: input.conversationId,
-          })
+        ? this.surrogateEngine.listKnownValueReplacements(
+            input.tenantId,
+            {
+              type: 'conversation',
+              id: input.conversationId,
+            },
+            { includeObservePreviews: true },
+          )
         : []
 
     return {
