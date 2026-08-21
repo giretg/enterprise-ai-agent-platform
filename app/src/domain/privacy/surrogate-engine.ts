@@ -102,7 +102,13 @@ const MAX_ALLOC_ATTEMPTS = 16
 /** A betöltött megjelenítési szótár frissessége (multi-instance futás miatt). */
 const DISPLAY_HYDRATION_TTL_MS = 10_000
 
-type DisplayValue = { value: string; source: 'structured_field' | 'scanner' }
+/**
+ * `observe_preview`: OBSERVE mód UI-kiemeléshez, vault nélkül. Nem kerülhet a
+ * prompt known-value szótárába — különben ENFORCE-ra váltáskor a modell
+ * nem-létező álneveket kapna, vagy egy későbbi valódi allokációval összekeveredne.
+ */
+type DisplayValueSource = 'structured_field' | 'scanner' | 'observe_preview'
+type DisplayValue = { value: string; source: DisplayValueSource }
 
 export class SurrogateEngine {
   /**
@@ -134,7 +140,7 @@ export class SurrogateEngine {
     scope: PrivacyScope,
     surrogate: string,
     displayValue: string,
-    source: 'structured_field' | 'scanner' = 'scanner',
+    source: DisplayValueSource = 'scanner',
     /**
      * OBSERVE módban az álnév csak ELŐNÉZET (nincs mögötte vault-sor), ezért nem
      * perzisztálható: a `[[COMPANY_1]]` előnézet ütközne egy később, ENFORCE-ban
@@ -218,7 +224,7 @@ export class SurrogateEngine {
       if (!dataKey) return
       const rows = surrogates.flatMap((surrogate) => {
         const stored = byScope.get(surrogate)
-        if (!stored) return []
+        if (!stored || stored.source === 'observe_preview') return []
         return [
           {
             surrogate,
@@ -293,27 +299,40 @@ export class SurrogateEngine {
   async loadKnownValueReplacements(
     tenantId: string,
     scope: PrivacyScope,
+    opts?: { includeObservePreviews?: boolean },
   ): Promise<Array<{ needle: string; surrogate: string; fromStructuredField: boolean }>> {
     await this.hydrateDisplayValues(tenantId, scope)
-    return this.listKnownValueReplacements(tenantId, scope)
+    return this.listKnownValueReplacements(tenantId, scope, opts)
   }
 
   peekDisplayValue(tenantId: string, scope: PrivacyScope, surrogate: string): string | undefined {
     return this.displayValues.get(scopeKey(tenantId, scope))?.get(surrogate)?.value
   }
 
-  /** A beszélgetésben már ismert nyers értékek produkciós known-value cseréi. */
+  /**
+   * A beszélgetésben már ismert nyers értékek produkciós known-value cseréi.
+   *
+   * Alapból kizárja az OBSERVE preview bejegyzéseket: azok vault nélkül, UI-kiemeléshez
+   * készültek. Ha a prompt-transzformáció (ENFORCE) felvenné őket, a modell
+   * nem-allokált `[[COMPANY_n]]` álneveket kapna — tool-arg feloldás ismeretlen
+   * álnévre bukik, vagy egy későbbi valódi vault-allokációval összekeveredik.
+   */
   listKnownValueReplacements(
     tenantId: string,
     scope: PrivacyScope,
+    opts?: { includeObservePreviews?: boolean },
   ): Array<{ needle: string; surrogate: string; fromStructuredField: boolean }> {
     const byScope = this.displayValues.get(scopeKey(tenantId, scope))
     if (!byScope) return []
-    return [...byScope].map(([surrogate, stored]) => ({
-      needle: stored.value,
-      surrogate,
-      fromStructuredField: stored.source === 'structured_field',
-    }))
+    return [...byScope]
+      .filter(([, stored]) =>
+        opts?.includeObservePreviews ? true : stored.source !== 'observe_preview',
+      )
+      .map(([surrogate, stored]) => ({
+        needle: stored.value,
+        surrogate,
+        fromStructuredField: stored.source === 'structured_field',
+      }))
   }
 
   /** Vault-lookup unknown-audit nélkül — megjelenítési feloldás, ismételt history-olvasáskor. */

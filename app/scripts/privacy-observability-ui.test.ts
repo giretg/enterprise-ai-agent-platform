@@ -293,13 +293,60 @@ async function main() {
       text: observeText,
       policy,
       mode: 'observe',
-      knownValues: engine.listKnownValueReplacements(TENANT, { type: 'conversation', id: 'conv-observe-ui' }),
+      knownValues: engine.listKnownValueReplacements(
+        TENANT,
+        { type: 'conversation', id: 'conv-observe-ui' },
+        { includeObservePreviews: true },
+      ),
     })
     assert.ok(markers.some((m) => m.displayValue === COMPANY))
     assert.ok(
       markers.some((m) => observeText.slice(m.start, m.end).toLowerCase() === 'spar'),
       'a szótár első tokenje illeszkedjen a fájlnévben is',
     )
+    assert.deepEqual(
+      engine.listKnownValueReplacements(TENANT, { type: 'conversation', id: 'conv-observe-ui' }),
+      [],
+      'OBSERVE preview ne kerüljön a prompt known-value szótárába',
+    )
+  })
+
+  await test('OBSERVE preview után ENFORCE known-value ne cseréljen vault nélküli álnévre', async () => {
+    const { SurrogateEngine } = await import('../src/domain/privacy/surrogate-engine')
+    const engine = new SurrogateEngine(
+      {
+        findRef: async () => ({ status: 'miss' }),
+        insertRef: async () => {},
+        findValByFingerprint: async () => ({ status: 'miss' }),
+        insertVal: async () => {},
+      } as never,
+      { append: async () => {} } as never,
+    )
+    const { transformStructuredOutput } = await import('../src/domain/privacy/structured-output-transform')
+    await transformStructuredOutput({
+      output: { company_name: COMPANY, id: 1 },
+      fields: CRM_FIELDS,
+      engine,
+      tenantId: TENANT,
+      connectorId: CONNECTOR,
+      scope: { type: 'conversation', id: 'conv-observe-then-enforce' },
+      apply: false,
+      registerObserved: true,
+    })
+
+    const { substituteKnownValuesInText } = await import('../src/domain/privacy/known-value-substitution')
+    const text = `Frissítsd a(z) ${COMPANY} rekordot`
+    const result = await substituteKnownValuesInText({
+      text,
+      replacements: engine.listKnownValueReplacements(TENANT, {
+        type: 'conversation',
+        id: 'conv-observe-then-enforce',
+      }),
+      mode: 'enforce',
+    })
+    assert.equal(result.text, text)
+    assert.equal(result.appliedCount, 0)
+    assert.equal(result.text.includes('[[COMPANY_'), false)
   })
 
   if (failures > 0) {
