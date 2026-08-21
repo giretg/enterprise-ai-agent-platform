@@ -87,6 +87,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // Tenant admin: feladatkör-korlátozás ki/bekapcsolása (#199). UI-egyszerűsítés,
   // nem jogosultsági korlát — az agent képességei változatlanok.
   'agent.task_only',
+  'agent.efficiency_hint_applied',
+  'agent.efficiency_hint_reverted',
   'agent.version',
   'behavior_profile.created',
   'capability.update',
@@ -155,6 +157,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // (kategória-policy `allow`, APG-11; a régi boolean overlay deprecated).
   // Az osztályozási auditnyom megmarad.
   'model.call.sensitivity_agent_bypass',
+  // A mintaszűrő réteg (külön a tokenizálás OBSERVE-jától) feljegyezte, mit
+  // tiltott / terelt volna, de a hívás ment.
+  'model.call.sensitivity_observed',
+  'sensitivity.layer.mode.set',
   // Napi model-keret (összesített tenant + per-agent) átállítása a tenant admin felületről.
   'model.budget_changed',
   'model.fallback_chain.set',

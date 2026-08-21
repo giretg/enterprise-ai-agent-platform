@@ -7,6 +7,10 @@
  *
  * Ebben a jegyben OFF és OBSERVE a rollout-alap; az ENFORCE érték tárolható
  * és érvényesül (APG-04 út). Az admin UI: APG-14. Platform-alapértelmezés: OBSERVE.
+ *
+ * A TAJ / adószám / kártya mintaszűrő **nem** ez a réteg — lásd
+ * `domain/gateway/sensitivity-mode.ts`. Az OBSERVE itt csak az álnévcserét
+ * némítja, a mintaszűrőt nem.
  */
 import type { SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 

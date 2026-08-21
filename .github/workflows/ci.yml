@@ -96,6 +96,7 @@ jobs:
           npm run test:tool-loop
           npm run test:connector-grant-needed
           npm run test:turn-cost
+          npm run test:efficiency-advisor
           npm run test:http-api
           npm run test:decode-github-contents
           npm run test:stuck-final-answer

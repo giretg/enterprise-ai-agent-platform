@@ -832,6 +832,9 @@ modelGateway.setPrivacyEngine(surrogateEngine)
 modelGateway.setPrivacyModeResolver(({ tenantId, agentId }) =>
   platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
 )
+modelGateway.setSensitivityModeResolver(({ tenantId, agentId }) =>
+  platformSettingsService.resolveSensitivityLayerMode({ tenantId, agentId }),
+)
 modelGateway.setEntityResolutionProvider(async ({ agentId }) => {
   const bindings = await repositories.toolBroker.findConnectorsForAgent(agentId)
   return buildUserInputEntityResolution({ bindings, agentId })

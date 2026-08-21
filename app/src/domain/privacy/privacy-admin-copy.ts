@@ -52,6 +52,12 @@ export const PRIVACY_GLOSSARY: readonly PrivacyGlossaryTerm[] = [
     term: 'Kikapcsolva (OFF)',
     explanation: 'A védelem nem fut: a modell a begépelt és a kapcsolatokból jövő adatot nyersen kapja.',
   },
+  {
+    id: 'scanner',
+    term: 'Mintaszűrő',
+    explanation:
+      'A régi réteg: TAJ, adószám, bankkártya, IBAN és titok mintáját keresi a teljes szövegben. Nem álnevez, hanem terel vagy megállít. Külön kapcsolható a tokenizálástól.',
+  },
 ]
 
 export const PRIVACY_CATEGORY_LABELS: Record<string, { label: string; explanation: string }> = {
@@ -152,6 +158,29 @@ export const PRIVACY_MODE_LABELS: Record<
     explanation: 'A modell csak az álneveket kapja; a valódi adat a platformon marad.',
   },
 }
+
+export const SENSITIVITY_MODE_LABELS: Record<
+  PrivacyGatewayMode,
+  { label: string; explanation: string }
+> = {
+  off: {
+    label: 'Kikapcsolva',
+    explanation: 'A mintaszűrő nem állítja meg a hívást. TAJ, adószám, kártya mehet a külső modellnek.',
+  },
+  observe: {
+    label: 'Megfigyelés',
+    explanation:
+      'Feljegyezzük, mit tiltott vagy helyi modellre terelt volna a szűrő, de a hívás megy tovább.',
+  },
+  enforce: {
+    label: 'Érvényesítés',
+    explanation:
+      'Érzékeny találatnál helyi modell kell; ha nincs, a hívás megáll. Tiltott mintánál (kártya, titok) mindig megáll.',
+  },
+}
+
+export const SENSITIVITY_LAYER_INTRO =
+  'Ez a mintaszűrő a begépelt szövegben és a tool-válaszokban keresi a TAJ-t, adószámot, bankkártyát, IBAN-t és titkokat. Nem cserél álnévre — vagy továbbengedi, vagy helyi modellre tereli, vagy megállítja a hívást. Külön él a fenti álnév-rétegtől: a Megfigyelés ott nem kapcsolja ki ezt a szűrőt.'
 
 export const PRIVACY_INHERIT_LABEL = 'Öröklés'
 export const PRIVACY_INHERIT_EXPLANATION =

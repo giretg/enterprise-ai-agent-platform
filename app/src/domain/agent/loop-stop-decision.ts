@@ -185,16 +185,21 @@ export const SOURCE_INGEST_DEFAULTS: SourceIngestLimits = {
  * Env-felülbírálás: `AGENT_SOURCE_INGEST_FACTOR`,
  * `AGENT_SOURCE_INGEST_MIN_CHARS`, `AGENT_SOURCE_INGEST_UNKNOWN_CHARS`.
  * Érvénytelen vagy védelmet kikapcsoló érték → alapérték.
+ *
+ * issue #237 — opcionális `modelConfig` overlay: precedencia modelConfig → env →
+ * default, de csak SZIGORÍTANI tud (kisebb faktor / kisebb minimum). A 0-s vagy
+ * lazító érték nem érvényes — a védelem nem némítható.
  */
 export function resolveSourceIngestLimits(
   env: NodeJS.ProcessEnv = process.env,
   fallback: SourceIngestLimits = SOURCE_INGEST_DEFAULTS,
+  modelConfig?: Record<string, unknown> | null,
 ): SourceIngestLimits {
   const num = (raw: string | undefined, min: number, fb: number): number => {
     const parsed = Number(raw)
     return Number.isFinite(parsed) && parsed >= min ? parsed : fb
   }
-  return {
+  const fromEnv: SourceIngestLimits = {
     factor: num(env.AGENT_SOURCE_INGEST_FACTOR, 1, fallback.factor),
     minChars: num(env.AGENT_SOURCE_INGEST_MIN_CHARS, 1_000, fallback.minChars),
     unknownSourceChars: num(
@@ -202,6 +207,31 @@ export function resolveSourceIngestLimits(
       10_000,
       fallback.unknownSourceChars,
     ),
+  }
+  const cfg = modelConfig ?? {}
+  const factor =
+    typeof cfg.sourceIngestFactor === 'number' && Number.isFinite(cfg.sourceIngestFactor)
+      ? cfg.sourceIngestFactor
+      : undefined
+  const minChars =
+    typeof cfg.sourceIngestMinChars === 'number' && Number.isFinite(cfg.sourceIngestMinChars)
+      ? cfg.sourceIngestMinChars
+      : undefined
+  const unknown =
+    typeof cfg.sourceIngestUnknownChars === 'number' && Number.isFinite(cfg.sourceIngestUnknownChars)
+      ? cfg.sourceIngestUnknownChars
+      : undefined
+  return {
+    factor:
+      factor !== undefined && factor >= 1 && factor <= fromEnv.factor ? factor : fromEnv.factor,
+    minChars:
+      minChars !== undefined && minChars >= 1_000 && minChars <= fromEnv.minChars
+        ? Math.round(minChars)
+        : fromEnv.minChars,
+    unknownSourceChars:
+      unknown !== undefined && unknown >= 10_000 && unknown <= fromEnv.unknownSourceChars
+        ? Math.round(unknown)
+        : fromEnv.unknownSourceChars,
   }
 }
 

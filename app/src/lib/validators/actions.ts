@@ -739,6 +739,12 @@ export const updateAgentTaskOnlySchema = z.object({
   taskOnly: z.boolean(),
 })
 
+export const applyEfficiencyHintSchema = z.object({
+  agentId: z.string().uuid(),
+  kind: z.enum(['repeated_reread', 'context_bloat']),
+  revert: z.boolean().optional(),
+})
+
 export const updateAgentPersonaSchema = z
   .object({
     agentId: z.string().uuid(),
@@ -981,6 +987,8 @@ export const setPrivacyGatewayModeSchema = z.object({
   agentId: z.string().uuid().optional(),
   mode: z.union([privacyGatewayModeSchema, z.null()]),
 })
+
+export const setSensitivityLayerModeSchema = setPrivacyGatewayModeSchema
 
 const privacyTextPreviewSchema = z.object({
   text: z.string().max(20_000),

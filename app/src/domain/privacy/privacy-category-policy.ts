@@ -95,10 +95,24 @@ export const TOKENIZABLE_PRIVACY_CATEGORIES: readonly PrivacyPolicyCategory[] =
     (SURROGATE_ENTITY_TYPES as readonly string[]).includes(category),
   )
 
+/** A sensitivity-router mintaszűrője — nincs álnév-típus, nem a tokenizáló réteg. */
+export const SENSITIVITY_SCANNER_CATEGORIES: readonly PrivacyPolicyCategory[] = [
+  'taj',
+  'adoszam',
+  'pan',
+  'iban',
+  'secret_key',
+]
+
 export function categorySupportsTokenize(category: string): boolean {
   const canonical = canonicalPrivacyCategory(category)
   if (!isPrivacyPolicyCategory(canonical)) return true
   return (TOKENIZABLE_PRIVACY_CATEGORIES as readonly string[]).includes(canonical)
+}
+
+export function isSensitivityScannerCategory(category: string): boolean {
+  const canonical = canonicalPrivacyCategory(category)
+  return (SENSITIVITY_SCANNER_CATEGORIES as readonly string[]).includes(canonical)
 }
 
 export const PAN_IBAN_ALLOW_CONFIRMATION = 'ALLOW_PAN_IBAN'

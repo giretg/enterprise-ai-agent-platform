@@ -690,12 +690,12 @@ export async function dispatchBoardTicket(input: { ticketId: string }) {
     const ticket = await repositories.tickets.findById(ticketId)
     if (!ticket) return fail('Ticket not found')
     assertTicketTenantScope(ticket, user.activeTenantId)
-    if (ticket.assigneeType !== 'agent' || !ticket.assigneeId) {
+    if (ticket.assigneeType !== 'agent' || !ticket.agentId) {
       return fail('Ticket is not assigned to an agent')
     }
     if (ticket.state !== 'ready') return fail('Ticket is not in ready state')
 
-    const dispatchOutcome = await runAgentTicketDispatch(ticketId, ticket.assigneeId, {
+    const dispatchOutcome = await runAgentTicketDispatch(ticketId, ticket.agentId, {
       bypassDispatcherEnabledCheck: true,
     })
     if (dispatchOutcome.error) return fail(dispatchOutcome.error)
@@ -708,7 +708,7 @@ export async function dispatchBoardTicket(input: { ticketId: string }) {
       targetType: 'ticket',
       targetId: ticketId,
       modelUsed: null,
-      inputRef: ticket.assigneeId,
+      inputRef: ticket.agentId,
       outputRef: dispatchOutcome.warning ? 'warning' : 'started',
       policyDecision: 'allowed',
       metadata: { warning: dispatchOutcome.warning ?? null },

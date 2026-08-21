@@ -22,6 +22,7 @@ import { PrivacyAdminPanel } from '@/components/privacy/privacy-admin-panel'
 import { getPrivacyAdminView } from '@/app/actions/privacy'
 import { OperatorVisibilityForm } from '@/components/agents/operator-visibility-form'
 import { TaskOnlyForm } from '@/components/agents/task-only-form'
+import { EfficiencyAdvisorPanel } from '@/components/agents/efficiency-advisor-panel'
 import { AgentTaskButton } from '@/components/agents/agent-task-button'
 import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
@@ -227,6 +228,7 @@ export default async function AgentDetailPage({
     assignableSkills,
     memoryPanel,
     knowledgeBase,
+    efficiencyAdvisor,
     secondaryError,
   } = loaded
 
@@ -299,6 +301,20 @@ export default async function AgentDetailPage({
             />
           }
         />
+      ),
+    },
+    {
+      id: 'hatekonysag',
+      label: 'Hatékonyság',
+      description: 'Mire megy el a token, és mit lehetne olcsóbban csinálni.',
+      content: efficiencyAdvisor ? (
+        <EfficiencyAdvisorPanel
+          view={efficiencyAdvisor}
+          agentId={agent.id}
+          canApply={isAdmin}
+        />
+      ) : (
+        <p className="text-sm text-ink-faint">A hatékonysági kártya most nem érhető el.</p>
       ),
     },
     {
@@ -538,7 +554,7 @@ export default async function AgentDetailPage({
     {
       id: 'mukodes',
       label: 'Működés és hozzáférés',
-      description: 'Ki látja az agentet, mit láthat a külső modell, és milyen életciklus-állapotban van.',
+      description: 'Ki látja az agentet, mit cserélünk álnévre, mit szűr a mintaszűrő, és milyen életciklus-állapotban van.',
       content: (
         <div className="space-y-6">
           {privacyRes.success ? (

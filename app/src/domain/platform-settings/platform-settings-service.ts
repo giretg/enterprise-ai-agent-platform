@@ -64,6 +64,16 @@ import {
 } from '@/domain/privacy/privacy-mode'
 import { PRIVACY_CATEGORY_POLICY_SET_ACTION, PRIVACY_GATEWAY_MODE_SET_ACTION } from '@/domain/privacy/privacy-audit'
 import {
+  DEFAULT_SENSITIVITY_LAYER_MODE,
+  parseSensitivityLayerMode,
+  SENSITIVITY_LAYER_AGENT_CONTROLS_KEY,
+  SENSITIVITY_LAYER_CONTROLS_KEY,
+  SENSITIVITY_LAYER_MODE_SET_ACTION,
+  SENSITIVITY_LAYER_TENANT_CONTROLS_KEY,
+  resolveSensitivityLayerMode,
+  type SensitivityLayerMode,
+} from '@/domain/gateway/sensitivity-mode'
+import {
   actionForPrivacyCategory,
   applyCategoryMapPatch,
   applyCustomCategoryMapPatch,
@@ -270,6 +280,26 @@ type PrivacyGatewayLayerStore = Record<string, Partial<PrivacyGatewayLayerContro
 
 const DEFAULT_PRIVACY_GATEWAY_CONTROLS: PrivacyGatewayControls = {
   mode: DEFAULT_PRIVACY_GATEWAY_MODE,
+  updatedById: null,
+  updatedAt: null,
+}
+
+export type SensitivityLayerControls = {
+  mode: SensitivityLayerMode
+  updatedById: string | null
+  updatedAt: string | null
+}
+
+export type SensitivityLayerOverride = {
+  mode: SensitivityLayerMode | null
+  updatedById: string | null
+  updatedAt: string | null
+}
+
+type SensitivityLayerStore = Record<string, Partial<SensitivityLayerOverride>>
+
+const DEFAULT_SENSITIVITY_LAYER_CONTROLS: SensitivityLayerControls = {
+  mode: DEFAULT_SENSITIVITY_LAYER_MODE,
   updatedById: null,
   updatedAt: null,
 }
@@ -950,6 +980,84 @@ export class PlatformSettingsService {
     return resolvePrivacyGatewayMode({ platform, tenant, agent })
   }
 
+  // ── Sensitivity-router réteg (TAJ / adószám / kártya) — külön a tokenizálástól ──
+
+  async getSensitivityLayerControls(): Promise<SensitivityLayerControls> {
+    const raw = (await this.settings.get(SENSITIVITY_LAYER_CONTROLS_KEY)) as Partial<SensitivityLayerControls> | null
+    if (!raw || typeof raw !== 'object') return { ...DEFAULT_SENSITIVITY_LAYER_CONTROLS }
+    return {
+      mode: parseSensitivityLayerMode(raw.mode) ?? DEFAULT_SENSITIVITY_LAYER_MODE,
+      updatedById: typeof raw.updatedById === 'string' ? raw.updatedById : null,
+      updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
+    }
+  }
+
+  async setSensitivityLayerControls(
+    input: { mode: SensitivityLayerMode },
+    actorId: string,
+  ): Promise<SensitivityLayerControls> {
+    const next: SensitivityLayerControls = {
+      mode: input.mode,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    }
+    await this.settings.set(SENSITIVITY_LAYER_CONTROLS_KEY, next as unknown as Prisma.InputJsonObject, actorId)
+    await this.recordSensitivityLayerModeSet('platform', null, next.mode, actorId)
+    return next
+  }
+
+  async getTenantSensitivityLayerControls(tenantId: string): Promise<SensitivityLayerOverride> {
+    return this.readSensitivityLayer(SENSITIVITY_LAYER_TENANT_CONTROLS_KEY, tenantId)
+  }
+
+  async setTenantSensitivityLayerControls(
+    tenantId: string,
+    input: { mode: SensitivityLayerMode | null },
+    actorId: string,
+  ): Promise<SensitivityLayerOverride> {
+    const next = await this.writeSensitivityLayer(
+      SENSITIVITY_LAYER_TENANT_CONTROLS_KEY,
+      tenantId,
+      input.mode,
+      actorId,
+    )
+    await this.recordSensitivityLayerModeSet('tenant', tenantId, next.mode, actorId)
+    return next
+  }
+
+  async getAgentSensitivityLayerControls(agentId: string): Promise<SensitivityLayerOverride> {
+    return this.readSensitivityLayer(SENSITIVITY_LAYER_AGENT_CONTROLS_KEY, agentId)
+  }
+
+  async setAgentSensitivityLayerControls(
+    agentId: string,
+    input: { mode: SensitivityLayerMode | null },
+    actorId: string,
+  ): Promise<SensitivityLayerOverride> {
+    const next = await this.writeSensitivityLayer(
+      SENSITIVITY_LAYER_AGENT_CONTROLS_KEY,
+      agentId,
+      input.mode,
+      actorId,
+    )
+    await this.recordSensitivityLayerModeSet('agent', agentId, next.mode, actorId)
+    return next
+  }
+
+  async resolveSensitivityLayerMode(input: {
+    tenantId: string | null
+    agentId?: string | null
+  }): Promise<SensitivityLayerMode> {
+    const platform = (await this.getSensitivityLayerControls()).mode
+    const tenant = input.tenantId
+      ? (await this.getTenantSensitivityLayerControls(input.tenantId)).mode
+      : null
+    const agent = input.agentId
+      ? (await this.getAgentSensitivityLayerControls(input.agentId)).mode
+      : null
+    return resolveSensitivityLayerMode({ platform, tenant, agent })
+  }
+
   // ── AI Privacy Gateway kategória-policy (APG-11, spec §2) ─────────────────
 
   async getPrivacyCategoryPolicy(): Promise<PrivacyCategoryPolicyDocument> {
@@ -1187,6 +1295,60 @@ export class PlatformSettingsService {
       actorId,
       agentVersion: null,
       action: PRIVACY_GATEWAY_MODE_SET_ACTION,
+      targetType: 'platform_setting',
+      targetId,
+      modelUsed: null,
+      inputRef: layer,
+      outputRef: mode,
+      policyDecision: mode ?? 'inherit',
+      metadata: { layer, mode },
+      tenantId: layer === 'tenant' ? targetId : null,
+    })
+  }
+
+  private async readSensitivityLayer(key: string, id: string): Promise<SensitivityLayerOverride> {
+    const raw = (await this.settings.get(key)) as SensitivityLayerStore | null
+    const bucket = raw?.[id]
+    if (!bucket || typeof bucket !== 'object') {
+      return { mode: null, updatedById: null, updatedAt: null }
+    }
+    return {
+      mode: parseSensitivityLayerMode(bucket.mode),
+      updatedById: typeof bucket.updatedById === 'string' ? bucket.updatedById : null,
+      updatedAt: typeof bucket.updatedAt === 'string' ? bucket.updatedAt : null,
+    }
+  }
+
+  private async writeSensitivityLayer(
+    key: string,
+    id: string,
+    mode: SensitivityLayerMode | null,
+    actorId: string,
+  ): Promise<SensitivityLayerOverride> {
+    const raw = (await this.settings.get(key)) as SensitivityLayerStore | null
+    const store: SensitivityLayerStore = raw && typeof raw === 'object' ? { ...raw } : {}
+    const next: SensitivityLayerOverride = {
+      mode,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    }
+    if (mode == null) delete store[id]
+    else store[id] = next
+    await this.settings.set(key, store as unknown as Prisma.InputJsonObject, actorId)
+    return next
+  }
+
+  private async recordSensitivityLayerModeSet(
+    layer: 'platform' | 'tenant' | 'agent',
+    targetId: string | null,
+    mode: SensitivityLayerMode | null,
+    actorId: string,
+  ): Promise<void> {
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: SENSITIVITY_LAYER_MODE_SET_ACTION,
       targetType: 'platform_setting',
       targetId,
       modelUsed: null,

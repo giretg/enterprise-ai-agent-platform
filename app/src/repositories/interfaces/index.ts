@@ -1233,7 +1233,9 @@ export interface ToolBrokerRepository {
     connectorIds: string[],
     opts?: { excludeIds?: string[]; take?: number },
   ): Promise<{ id: string; filename: string; extractedText: string | null }[]>
-  createToolCall(data: Omit<ToolCall, 'id' | 'createdAt'>): Promise<ToolCall>
+  createToolCall(
+    data: Omit<ToolCall, 'id' | 'createdAt' | 'agentTurnId'> & { agentTurnId?: string | null },
+  ): Promise<ToolCall>
   getToolSummary(since?: Date): Promise<{ calls: number; denied: number; errors: number }>
   /** Tool-call counts keyed by ticket id for the governance per-ticket breakdown (§11). */
   getToolCallCountsByTicket(since?: Date): Promise<Record<string, number>>

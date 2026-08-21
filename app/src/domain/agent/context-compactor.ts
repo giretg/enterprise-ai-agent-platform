@@ -63,20 +63,31 @@ export const DEFAULT_CONTEXT_COMPACTION_LIMITS: ContextCompactionLimits = {
   minEvictableChars: 1_000,
 }
 
+function readConfigNumber(source: Record<string, unknown> | null | undefined, key: string): number | undefined {
+  if (!source) return undefined
+  const raw = source[key]
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : undefined
+}
+
 /**
  * Env-felülbírálás:
  * `AGENT_CONTEXT_KEEP_RECENT_TOOL_RESULTS`, `AGENT_CONTEXT_MAX_TOOL_RESULT_CHARS`,
  * `AGENT_CONTEXT_MIN_EVICTABLE_CHARS`. Érvénytelen érték → alapérték.
+ *
+ * issue #237 — opcionális `modelConfig` overlay a `resolveLoopGuardLimits` mintájára:
+ * precedencia modelConfig → env → default, de csak SZIGORÍTANI tud (kisebb keret /
+ * kevesebb védett eredmény). Kikapcsolni vagy lazítani nem.
  */
 export function resolveContextCompactionLimits(
   env: NodeJS.ProcessEnv = process.env,
   fallback: ContextCompactionLimits = DEFAULT_CONTEXT_COMPACTION_LIMITS,
+  modelConfig?: Record<string, unknown> | null,
 ): ContextCompactionLimits {
   const intOr = (raw: string | undefined, min: number, fb: number): number => {
     const parsed = Number.parseInt(raw ?? '', 10)
     return Number.isFinite(parsed) && parsed >= min ? parsed : fb
   }
-  return {
+  const fromEnv: ContextCompactionLimits = {
     keepRecentToolResults: intOr(
       env.AGENT_CONTEXT_KEEP_RECENT_TOOL_RESULTS,
       1,
@@ -92,6 +103,23 @@ export function resolveContextCompactionLimits(
       100,
       fallback.minEvictableChars,
     ),
+  }
+  const keepRecent = readConfigNumber(modelConfig, 'keepRecentToolResults')
+  const maxChars = readConfigNumber(modelConfig, 'maxToolResultChars')
+  const minEvict = readConfigNumber(modelConfig, 'minEvictableChars')
+  return {
+    keepRecentToolResults:
+      keepRecent !== undefined && keepRecent >= 1 && keepRecent <= fromEnv.keepRecentToolResults
+        ? Math.round(keepRecent)
+        : fromEnv.keepRecentToolResults,
+    maxToolResultChars:
+      maxChars !== undefined && maxChars >= 1_000 && maxChars <= fromEnv.maxToolResultChars
+        ? Math.round(maxChars)
+        : fromEnv.maxToolResultChars,
+    minEvictableChars:
+      minEvict !== undefined && minEvict >= 100 && minEvict <= fromEnv.minEvictableChars
+        ? Math.round(minEvict)
+        : fromEnv.minEvictableChars,
   }
 }
 

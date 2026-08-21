@@ -453,6 +453,8 @@ export class ToolBrokerService {
         outcome,
         outcome_reason: outcomeReason,
         effect,
+        // issue #237 — a modell csatornájára kerülő nyers hasznos teher hossza.
+        result_chars: modelText.length,
       }
 
       await recordCall(this, {
