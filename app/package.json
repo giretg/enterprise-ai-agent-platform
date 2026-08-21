@@ -141,7 +141,7 @@
     "test:agent-turn-cancel": "tsx scripts/agent-turn-cancel.test.ts",
     "test:agent-turn-access": "tsx scripts/agent-turn-access.test.ts",
     "test:pdf-read-policy": "tsx scripts/pdf-read-policy.test.ts",
-    "test:tulajdoni-lap": "tsx scripts/tulajdoni-lap.test.ts && tsx scripts/tulajdoni-lap-source.test.ts && tsx scripts/tulajdoni-lap-pages.test.ts",
+    "test:tulajdoni-lap": "tsx scripts/tulajdoni-lap.test.ts && tsx scripts/tulajdoni-lap-source.test.ts && tsx scripts/tulajdoni-lap-pages.test.ts && tsx scripts/tulajdoni-workspace-access-mode.test.ts",
     "test:xlsx-range-delete": "tsx scripts/xlsx-range-and-delete-confirm.test.ts",
     "test:file-search-safe": "tsx scripts/file-search-safe-pattern.test.ts",
     "test:workspace-io-performance": "tsx scripts/workspace-io-performance.test.ts",
