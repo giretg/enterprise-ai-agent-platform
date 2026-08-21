@@ -18,19 +18,28 @@ import { resolveDisplayText } from '@/domain/privacy/resolve-display-text'
 import { StreamingSurrogateResolver } from '@/domain/privacy/streaming-surrogate-resolver'
 import { transformStructuredOutput } from '@/domain/privacy/structured-output-transform'
 import {
+  authenticateValVaultRecord,
   computeSurrogateHmac,
+  hmacFieldsFromValInsert,
   insertRefsSequentially,
   SurrogateTakenError,
   verifySurrogateHmac,
   type InsertRefInput,
+  type InsertValInput,
   type PrivacyScope,
   type RefEntityRef,
   type RefVaultRecord,
   type SurrogateHmacFields,
   type SurrogateVault,
+  type ValVaultLookup,
+  type ValVaultRecord,
   type VaultLookup,
 } from '@/domain/privacy/surrogate-vault'
-import { parseSurrogate, findEmbeddedSurrogates } from '@/domain/privacy/surrogate-format'
+import {
+  parseSurrogate,
+  findEmbeddedSurrogates,
+  type SurrogateEntityType,
+} from '@/domain/privacy/surrogate-format'
 import { buildPrivacyAwareOutcomeChannels } from '@/domain/tool-broker/tool-output-privacy'
 import { substituteKnownValuesInText } from '@/domain/privacy/known-value-substitution'
 
@@ -197,22 +206,97 @@ class InMemorySurrogateVault implements SurrogateVault {
     return insertRefsSequentially((input) => this.insertRef(input), inputs)
   }
 
-  async findValByFingerprint(): Promise<import('@/domain/privacy/surrogate-vault').ValVaultLookup> {
-    return { status: 'miss' }
+  /**
+   * A szabad szöveges találat val-surrogate-ot kap (spec §6, D2) — a korábbi
+   * dobó stub miatt a free-text recall metrika mérés helyett kivétellel állt le.
+   */
+  readonly valRows: ValVaultRecord[] = []
+
+  private lookupVal(row: ValVaultRecord | undefined): ValVaultLookup {
+    if (!row) return { status: 'miss' }
+    return authenticateValVaultRecord(row, this.resolveTenantKey(row.tenantId))
   }
 
-  async findValBySurrogate(): Promise<import('@/domain/privacy/surrogate-vault').ValVaultLookup> {
-    return { status: 'miss' }
+  async findValByFingerprint(
+    tenantId: string,
+    scope: PrivacyScope,
+    entityType: SurrogateEntityType,
+    fingerprint: string,
+  ): Promise<ValVaultLookup> {
+    return this.lookupVal(
+      this.valRows.find(
+        (row) =>
+          row.tenantId === tenantId &&
+          row.scopeType === scope.type &&
+          row.scopeId === scope.id &&
+          row.entityType === entityType &&
+          row.sourceId === fingerprint,
+      ),
+    )
   }
 
-  async insertVal(): Promise<import('@/domain/privacy/surrogate-vault').ValVaultRecord> {
-    throw new Error('val vault stub')
+  async findValBySurrogate(
+    tenantId: string,
+    scope: PrivacyScope,
+    surrogate: string,
+  ): Promise<ValVaultLookup> {
+    return this.lookupVal(
+      this.valRows.find(
+        (row) =>
+          row.tenantId === tenantId &&
+          row.scopeType === scope.type &&
+          row.scopeId === scope.id &&
+          row.surrogate === surrogate,
+      ),
+    )
+  }
+
+  async insertVal(input: InsertValInput): Promise<ValVaultRecord> {
+    const taken = [...this.rows, ...this.valRows].some(
+      (row) =>
+        row.tenantId === input.tenantId &&
+        row.scopeType === input.scope.type &&
+        row.scopeId === input.scope.id &&
+        row.surrogate === input.surrogate,
+    )
+    if (taken) throw new SurrogateTakenError(input.surrogate)
+    const fields = hmacFieldsFromValInsert(input)
+    const record: ValVaultRecord = {
+      ...fields,
+      id: randomUUID(),
+      encryptedValue: input.encryptedValue,
+      hmac: computeSurrogateHmac(this.resolveTenantKey(input.tenantId), fields),
+    }
+    this.valRows.push(record)
+    return record
+  }
+}
+
+/** Eval-futtatáshoz elég a memóriában tartott beszélgetés-adatkulcs. */
+class InMemoryEvalPrivacyKeys {
+  private readonly keys = new Map<string, Buffer>()
+
+  async ensureDataKey(tenantId: string, conversationId: string): Promise<Buffer> {
+    const key = `${tenantId}\0${conversationId}`
+    const existing = this.keys.get(key)
+    if (existing) return existing
+    const created = Buffer.alloc(32, 11)
+    this.keys.set(key, created)
+    return created
+  }
+
+  async getDataKey(tenantId: string, conversationId: string): Promise<Buffer | null> {
+    return this.keys.get(`${tenantId}\0${conversationId}`) ?? null
+  }
+
+  async shredKeysForConversations(): Promise<number> {
+    return 0
   }
 }
 
 function setup() {
   const vault = new InMemorySurrogateVault(() => HMAC_KEY)
-  const engine = new SurrogateEngine(vault, new SilentAudit())
+  const engine = new SurrogateEngine(vault, new SilentAudit(), undefined, new InMemoryEvalPrivacyKeys())
   const scope: PrivacyScope = { type: 'conversation', id: CONVERSATION }
   return { vault, engine, scope }
 }
@@ -281,7 +365,9 @@ const PRIVACY_EVAL_POLICY = resolvePrivacyCategoryPolicy({
   platform: {
     categories: {
       email: 'tokenize',
-      adoszam: 'tokenize',
+      // Az adószámhoz nincs surrogate-típus (spec §11) — `tokenize` helyett a
+      // policy `local_only`-ra tereli, ezt méri az eval is.
+      adoszam: 'local_only',
     },
     custom: {},
     patternSetVersion: 1,

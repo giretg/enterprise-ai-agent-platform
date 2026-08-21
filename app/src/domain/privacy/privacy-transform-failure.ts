@@ -40,6 +40,26 @@ export class PrivacyTransformBlockedError extends Error {
   }
 }
 
+/**
+ * Diagnosztizálható privacy-hiba: az auditban NÉV szerint megmondja, melyik mezőn
+ * és miért állt meg a transzformáció. Csak séma-információt hordoz (mezőnév,
+ * hibaosztály) — nyers értéket soha.
+ *
+ * Enélkül az üzemeltető annyit lát, hogy „structured_field", és nem derül ki,
+ * hogy például a forrásrendszer `id` testvérmezője hiányzik a rekordból.
+ */
+export class PrivacyFieldDiagnosticError extends Error {
+  readonly code: string
+  readonly field: string
+
+  constructor(code: string, field: string, message: string) {
+    super(message)
+    this.name = 'PrivacyFieldDiagnosticError'
+    this.code = code
+    this.field = field
+  }
+}
+
 export function isVaultUnavailableError(error: unknown): boolean {
   return error instanceof VaultUnavailableError
 }
@@ -98,7 +118,17 @@ export type PrivacyTransformFailureAudit = {
 }
 
 export function describePrivacyTransformFailure(error: unknown): string {
-  if (error instanceof PrivacyTransformBlockedError) return error.layer
+  if (error instanceof PrivacyFieldDiagnosticError) {
+    return `${error.code}:${error.field}`
+  }
+  if (error instanceof PrivacyTransformBlockedError) {
+    // A kiváltó ok részletesebb, mint a réteg neve — az auditba az kerüljön.
+    const cause = error.cause
+    if (cause instanceof PrivacyFieldDiagnosticError) {
+      return `${error.layer}:${cause.code}:${cause.field}`
+    }
+    return error.layer
+  }
   if (error instanceof VaultUnavailableError) return 'vault_unavailable'
   if (error instanceof Error) return error.name
   return 'unknown'

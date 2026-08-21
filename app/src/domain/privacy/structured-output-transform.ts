@@ -14,7 +14,10 @@ import type { ConnectorFieldsPrivacy } from '@/domain/privacy/connector-privacy'
 import { canonicalPrivacyCategory } from '@/domain/privacy/privacy-category-policy'
 import type { PrivacySpan } from '@/domain/privacy/privacy-mode'
 import { previewAliasForCategory } from '@/domain/privacy/privacy-dry-run'
-import { runPrivacyTransformLayer } from '@/domain/privacy/privacy-transform-failure'
+import {
+  PrivacyFieldDiagnosticError,
+  runPrivacyTransformLayer,
+} from '@/domain/privacy/privacy-transform-failure'
 import { VaultUnavailableError } from '@/domain/privacy/privacy-transform-failure'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import type { SurrogateEntityType } from '@/domain/privacy/surrogate-format'
@@ -190,12 +193,14 @@ function registerObservedStructuredFields(
         const next = (ctx.ordinals.get(category) ?? 0) + 1
         ctx.ordinals.set(category, next)
         const previewAlias = previewAliasForCategory(category, next)
+        // OBSERVE: csak előnézet, vault-sor nélkül — perzisztálni tilos.
         ctx.engine.rememberDisplayValue(
           ctx.tenantId,
           ctx.scope,
           previewAlias,
           child,
           'observe_preview',
+          { persist: false },
         )
       }
       continue
@@ -226,12 +231,25 @@ function collect(
     const spec = fields.tokenize[key]
     if (spec && typeof child === 'string' && child.length > 0) {
       const sourceId = resolveSourceId(spec.sourceIdTemplate, record)
+      // Fail-closed (spec §15): jelölt mező stabil source_id nélkül nem mehet ki
+      // nyersen. A hibaokot mezőnév szerint visszük az auditba — a forrásrendszer
+      // hiányzó testvérmezője (pl. `id`) másképp nem derül ki az üzemeltetőnek.
       if (!sourceId && ctx.apply) {
-        throw new Error(`A(z) ${key} mező source_id értéke nem oldható fel a payloadból.`)
+        throw new PrivacyFieldDiagnosticError(
+          'missing_source_id',
+          key,
+          `A(z) ${key} mező source_id értéke (${spec.sourceIdTemplate ?? '‹nincs sablon›'}) nem oldható fel a rekordból.`,
+        )
       }
       spans.push({ entityType: spec.entityType, field: key })
       if (ctx.apply) {
-        if (!sourceId) throw new Error(`A(z) ${key} mező stabil source_id értéke hiányzik.`)
+        if (!sourceId) {
+          throw new PrivacyFieldDiagnosticError(
+            'missing_source_id',
+            key,
+            `A(z) ${key} mező stabil source_id értéke hiányzik.`,
+          )
+        }
         pending.push({
           record,
           key,

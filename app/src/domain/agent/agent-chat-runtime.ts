@@ -2306,7 +2306,7 @@ export class AgentChatRuntime {
               text,
               mode: privacyContext.mode,
               policy: privacyContext.policy,
-              knownValues: this.surrogateEngine.listKnownValueReplacements(
+              knownValues: await this.surrogateEngine.loadKnownValueReplacements(
                 tenantId,
                 { type: 'conversation', id: conversationId },
                 { includeObservePreviews: true },
@@ -2340,7 +2340,7 @@ export class AgentChatRuntime {
 
     const knownValues =
       this.surrogateEngine && input.tenantId && input.conversationId
-        ? this.surrogateEngine.listKnownValueReplacements(
+        ? await this.surrogateEngine.loadKnownValueReplacements(
             input.tenantId,
             {
               type: 'conversation',

@@ -1,4 +1,8 @@
-import type { ConnectorConfig, ProposedTool } from '@/domain/provisioning/connector-config'
+import {
+  normalizeConnectorConfig,
+  type ConnectorConfig,
+  type ProposedTool,
+} from '@/domain/provisioning/connector-config'
 import {
   OSTOROSBOR_CRM_PRIVACY_CAPABILITIES,
   OSTOROSBOR_CRM_PRIVACY_FIELDS,
@@ -142,6 +146,21 @@ export function enrichOstorosborPrivacy(config: ConnectorConfig): {
     changed = true
   }
   return { config: next, changed }
+}
+
+/**
+ * A futásidő által LÁTOTT connector-config: normalizált + kiegészített. A tárolt
+ * sor a kiegészítés bevezetése előtt is létrejöhetett, ezért a privacy-rétegnek
+ * ugyanezt kell néznie, mint a tool-hívásnak — különben egy régebbi CRM-kapcsolat
+ * hívható, de a mezői némán tokenizálatlanul mennek ki a modellhez.
+ * Nem értelmezhető (nem http_api) config esetén a nyers érték megy tovább.
+ */
+export function effectiveConnectorRuntimeConfig(raw: unknown): unknown {
+  try {
+    return enrichOstorosborConnectorConfig(normalizeConnectorConfig(raw)).config
+  } catch {
+    return raw
+  }
 }
 
 export function enrichOstorosborConnectorConfig(config: ConnectorConfig): {

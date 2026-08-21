@@ -13,6 +13,7 @@
 import type { AuditRepository } from '@/repositories/interfaces'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import { inspectConnectorPrivacyFields } from '@/domain/privacy/connector-privacy'
+import { effectiveConnectorRuntimeConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 import { recordPrivacyGatewayAudit } from '@/domain/privacy/privacy-audit'
 import type { PrivacyGatewayMode } from '@/domain/privacy/privacy-mode'
 import { summarizePrivacySpans } from '@/domain/privacy/privacy-mode'
@@ -80,7 +81,10 @@ async function resolveModelOutput(params: PrivacyAwareOutcomeInput): Promise<unk
   const mode = params.mode ?? 'enforce'
   const connector = params.connector
   if (!connector) return params.output
-  const inspected = inspectConnectorPrivacyFields(connector.config)
+  // A tool-hívás a kiegészített configot használja; a privacy-rétegnek ugyanazt
+  // kell látnia, különben egy korábban létrehozott CRM-kapcsolat mezői némán
+  // tokenizálatlanul mennének ki a modellhez.
+  const inspected = inspectConnectorPrivacyFields(effectiveConnectorRuntimeConfig(connector.config))
   if (inspected.status === 'absent') return params.output
   if (inspected.status === 'invalid') {
     throw new PrivacyTransformBlockedError(

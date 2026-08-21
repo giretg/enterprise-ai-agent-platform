@@ -169,6 +169,40 @@ async function main() {
     assert.equal(failurePolicyForLayer('vault'), 'fail_closed')
   })
 
+  await test('a hiányzó source_id az auditban mezőnév szerint azonosítható', async () => {
+    const { describePrivacyTransformFailure, PrivacyFieldDiagnosticError, PrivacyTransformBlockedError } =
+      await import('../src/domain/privacy/privacy-transform-failure')
+    const { transformStructuredOutput } = await import(
+      '../src/domain/privacy/structured-output-transform'
+    )
+    const { OSTOROSBOR_CRM_PRIVACY_FIELDS } = await import('../src/domain/privacy/connector-privacy')
+
+    let caught: unknown
+    try {
+      await transformStructuredOutput({
+        // A CRM rekordból hiányzik az `id` — a `crm/company/{id}` sablon nem oldható fel.
+        output: { rows: [{ company_name: 'SPAR Magyarország Kft.', revenue: 1_000 }] },
+        fields: OSTOROSBOR_CRM_PRIVACY_FIELDS,
+        engine: null,
+        tenantId: 'tenant-1',
+        connectorId: 'connector-1',
+        scope: { type: 'conversation', id: 'conv-1' },
+        apply: true,
+      })
+    } catch (error) {
+      caught = error
+    }
+    assert.ok(caught instanceof PrivacyTransformBlockedError, 'fail-closed hibát vártunk')
+    assert.ok(
+      (caught as PrivacyTransformBlockedError).cause instanceof PrivacyFieldDiagnosticError,
+      'a kiváltó ok diagnosztikus hiba kell legyen',
+    )
+    // Az audit-ok mezőnév szerint azonosít, nyers érték nélkül.
+    const reason = describePrivacyTransformFailure(caught)
+    assert.equal(reason, 'structured_field:missing_source_id:company_name')
+    assert.ok(!reason.includes('SPAR'), 'nyers érték nem kerülhet az audit-okba')
+  })
+
   await test('policy: known-value strukturált forrás → fail-closed, egyéb → fail-open', () => {
     assert.equal(failurePolicyForLayer('known_value', { knownValueFromStructuredField: true }), 'fail_closed')
     assert.equal(failurePolicyForLayer('known_value', { knownValueFromStructuredField: false }), 'fail_open')

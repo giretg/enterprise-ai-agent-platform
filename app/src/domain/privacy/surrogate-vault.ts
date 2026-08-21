@@ -82,6 +82,12 @@ export class SurrogateTakenError extends Error {
   }
 }
 
+/** Álnév → titkosított megjelenítési érték (spec §5 R19). */
+export type SurrogateDisplayValueRow = {
+  surrogate: string
+  displayValueEnc: string
+}
+
 export interface SurrogateVault {
   findByEntity(tenantId: string, scope: PrivacyScope, entity: RefEntityRef): Promise<VaultLookup>
   findBySurrogate(tenantId: string, scope: PrivacyScope, surrogate: string): Promise<VaultLookup>
@@ -106,6 +112,20 @@ export interface SurrogateVault {
     surrogate: string,
   ): Promise<ValVaultLookup>
   insertVal(input: InsertValInput): Promise<ValVaultRecord>
+  /**
+   * Megjelenítési értékek perzisztálása (spec §5 R19). Opcionális: a régebbi
+   * adapterek és a tesztduplikátumok memóriában maradnak, a hívó ezt tolerálja.
+   */
+  saveDisplayValues?(
+    tenantId: string,
+    scope: PrivacyScope,
+    rows: readonly SurrogateDisplayValueRow[],
+  ): Promise<void>
+  /** Egy scope összes eltárolt megjelenítési értéke — a beszélgetés újranyitásához. */
+  listDisplayValues?(
+    tenantId: string,
+    scope: PrivacyScope,
+  ): Promise<SurrogateDisplayValueRow[]>
 }
 
 export async function insertRefsSequentially(
