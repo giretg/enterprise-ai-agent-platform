@@ -321,7 +321,12 @@ async function main() {
   console.log('privacy latency-budget (APG-10)\n')
 
   const transformSrc = readFileSync(join(root, 'src/domain/privacy/structured-output-transform.ts'), 'utf8')
-  const vaultSrc = readFileSync(join(root, 'src/domain/privacy/surrogate-vault.ts'), 'utf8')
+  // A batchelt írás a Postgres ADAPTERBEN van, nem a domain-szerződésben — a
+  // korábbi assert a szerződésfájlt olvasta, ezért mindig elbukott.
+  const vaultSrc = readFileSync(
+    join(root, 'src/repositories/postgres/surrogate-vault-repository.ts'),
+    'utf8',
+  )
   const metricsSrc = readFileSync(join(root, 'src/lib/observability/metrics.ts'), 'utf8')
   const { payload, bytes } = syntheticCrmList(TARGET_BYTES)
 

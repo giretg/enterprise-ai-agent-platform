@@ -28,3 +28,16 @@ export function wrapConversationDataKey(tenantId: string, dataKey: Buffer): stri
 export function unwrapConversationDataKey(tenantId: string, wrapped: string): Buffer {
   return openAesGcm(tenantValEncryptionKey(tenantId), wrapped, 'conversation_privacy_key')
 }
+
+/**
+ * Tartalék adatkulcs olyan scope-ra, amihez nincs `Conversation` sor (feladat-ticket
+ * futás: a scope a ticket azonosítója). Determinisztikusan származtatott, ezért NEM
+ * ad crypto-shreddinget — a titkosított másolat a `surrogate_map` sor törlésével
+ * tűnik el. A korábbi viselkedés ennél rosszabb volt: a val-allokáció idegen kulcs
+ * hibára futott, és a fail-closed szabály miatt a teljes modellhívás megállt.
+ */
+export function deriveScopeDataKey(tenantId: string, scopeType: string, scopeId: string): Buffer {
+  return createHash('sha256')
+    .update(`${ROOT}:${tenantId}:scope-data-key-v1:${scopeType}:${scopeId}`)
+    .digest()
+}

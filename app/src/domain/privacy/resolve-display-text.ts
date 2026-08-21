@@ -110,7 +110,9 @@ export function createEgressDisplayLookup(params: {
       requester: { tenantId: params.tenantId, userId: params.requesterUserId ?? null },
     })
     if (!peeked.ok) return null
-    return params.engine.peekDisplayValue(params.tenantId, params.scope, surrogate) ?? null
+    // A megjelenítési érték a vaultból is betöltődik (spec §5 R19): újraindítás vagy
+    // másik szerverpéldány után is a valódi nevet látja a felhasználó, nem az álnevet.
+    return (await params.engine.resolveDisplayValue(params.tenantId, params.scope, surrogate)) ?? null
   }
 }
 

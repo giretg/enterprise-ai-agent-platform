@@ -29,6 +29,7 @@ import {
 } from '@/domain/privacy/privacy-admin-copy'
 import {
   buildPrivacyPolicyEditorRows,
+  categorySupportsTokenize,
   type PrivacyCategoryAction,
   type PrivacyEditorLayer,
 } from '@/domain/privacy/privacy-category-policy'
@@ -369,6 +370,11 @@ export function PrivacyAdminPanel({
                         <option value={INHERIT}>{PRIVACY_INHERIT_LABEL}</option>
                         {ACTIONS.filter((action) => {
                           if (lockedSecret) return action === 'block'
+                          // Álnevet csak a surrogate-névtér kategóriái kaphatnak;
+                          // máshol a választás némán hatástalan lenne.
+                          if (action === 'tokenize' && !categorySupportsTokenize(row.category)) {
+                            return false
+                          }
                           if (
                             (row.category === 'pan' || row.category === 'iban') &&
                             action === 'allow' &&

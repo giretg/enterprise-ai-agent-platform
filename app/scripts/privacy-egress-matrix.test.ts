@@ -52,6 +52,9 @@ function stubEngine(): SurrogateEngine {
     peekDisplayValue(_tenantId: string, _scope: unknown, surrogate: string) {
       return DISPLAY[surrogate]
     },
+    async resolveDisplayValue(_tenantId: string, _scope: unknown, surrogate: string) {
+      return DISPLAY[surrogate]
+    },
   } as unknown as SurrogateEngine
 }
 

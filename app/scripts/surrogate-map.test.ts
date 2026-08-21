@@ -211,6 +211,55 @@ async function main() {
     })
   })
 
+  await check(
+    'megjelenítési érték perzisztál és a beszélgetés kulcsával fejthető vissza (spec §5 R19)',
+    async () => {
+      await withTenant(async (tenantId) => {
+        const vault = new PostgresSurrogateVault(() => 'test-tenant-hmac-key')
+        const scope = { type: 'conversation' as const, id: randomUUID() }
+        const surrogate = '[[COMPANY_1]]'
+        await vault.insertRef(
+          refInput(tenantId, { scopeId: scope.id, sourceId: 'crm/company/4821' }),
+        )
+
+        const { encryptSurrogateDisplayValue, decryptSurrogateDisplayValue } = await import(
+          '../src/domain/privacy/display-value-crypto'
+        )
+        const dataKey = Buffer.alloc(32, 5)
+        const displayValueEnc = encryptSurrogateDisplayValue({
+          tenantId,
+          dataKey,
+          scope,
+          surrogate,
+          payload: { value: 'SPAR Magyarország Kft.', source: 'structured_field' },
+        })
+        await vault.saveDisplayValues(tenantId, scope, [{ surrogate, displayValueEnc }])
+
+        const stored = await vault.listDisplayValues(tenantId, scope)
+        assert.equal(stored.length, 1)
+        const payload = decryptSurrogateDisplayValue({
+          tenantId,
+          dataKey,
+          scope,
+          surrogate,
+          encrypted: stored[0]!.displayValueEnc,
+        })
+        assert.equal(payload?.value, 'SPAR Magyarország Kft.')
+        assert.equal(payload?.source, 'structured_field')
+
+        // Másik beszélgetés kulcsával nem fejthető vissza (scope-hoz kötött kulcs).
+        const foreign = decryptSurrogateDisplayValue({
+          tenantId,
+          dataKey,
+          scope: { type: 'conversation', id: randomUUID() },
+          surrogate,
+          encrypted: stored[0]!.displayValueEnc,
+        })
+        assert.equal(foreign, null)
+      })
+    },
+  )
+
   console.log(failures === 0 ? '\nMinden surrogate_map teszt zöld.' : `\n${failures} teszt elbukott.`)
   process.exitCode = failures === 0 ? 0 : 1
 }

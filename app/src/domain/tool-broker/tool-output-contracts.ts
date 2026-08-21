@@ -342,6 +342,18 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
       conversationId: z.string(),
       projection: z.record(z.string(), z.unknown()),
     }),
+    /**
+     * D3 — a projekció lehet üres (nincs mit megmutatni a debug AI-nak); ezt a
+     * tool mondja meg, nem a heurisztika. Enélkül a debugoló azt hinné, hogy a
+     * trace lekérése sikerült, csak épp semmit nem tartalmaz.
+     */
+    emptiness: (output) => {
+      const projection = (output as { projection?: Record<string, unknown> } | null)?.projection
+      if (!projection || Object.keys(projection).length === 0) {
+        return 'ehhez a fordulóhoz nincs megjeleníthető debug-trace'
+      }
+      return null
+    },
   },
 
   /**

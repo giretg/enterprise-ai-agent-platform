@@ -129,6 +129,8 @@ Indok: az opaque karakterlánc (a) elveszíti az entitás típusát a modell sz�
 
 **Perzisztencia (R19).** A leképezés **perzisztens**, nem futásidejű memória. Enélkül a ticket-retry, az agent-turn resilience újrafuttatás és a beszélgetés újranyitása után az előzményben lévő korábbi álnevek feloldhatatlanná válnának. A mapping élettartamát a §6 retention szabályozza.
 
+Ez a **megjelenítési értékre is vonatkozik**: a `surrogate_map.display_value_enc` oszlop a beszélgetés adatkulcsával titkosított értékmásolatot tart (a kulcs a scope-hoz és az álnévhez kötött, más sorba átmásolva nem fejthető vissza). Enélkül a feloldás csak addig működik, amíg ugyanaz a szerverpéldány él: újranyitáskor vagy második példányon a felhasználó `[[COMPANY_1]]`-et látna a cégnév helyett, és a következő fordulóban ugyanaz a név **nyersen** menne ki, mert az ismert-érték szótár üres. A törlési jog nem sérül: a másolat a beszélgetés adatkulcsával együtt shreddelődik (§6).
+
 ## 6. Vault, kulcskezelés, retention
 
 **Kétféle surrogate-osztály (R2, D2).** A naiv „vault = értékmásolat" modell egy **második PII-példányt** hozna létre. Helyette:
@@ -140,7 +142,7 @@ Indok: az opaque karakterlánc (a) elveszíti az entitás típusát a modell sz�
 
 A ref-surrogate feloldása a forrásból (vagy a fordulón belül még meglévő nyers tool-válaszból) történik → nem növeli a PII-felületet, és a **forrásoldali törlés automatikusan átüt** a feloldáson (GDPR törlési jog).
 
-**Kulcskezelés.** Első verzióban platformoldali vault/KMS, tenantonkénti erős izolációval; per-conversation adatkulcs a val-surrogate-okhoz. Későbbi enterprise opció: ügyfél- vagy forrásoldali kulcskezelés (BYOK).
+**Kulcskezelés.** Első verzióban platformoldali vault/KMS, tenantonkénti erős izolációval; per-conversation adatkulcs a val-surrogate-okhoz. Feladat-ticket futásnál (nincs `Conversation` sor, a scope a ticket azonosítója) a platform determinisztikusan származtatott scope-kulcsot használ: ott a törlés a mapping sor törlése, nem crypto-shredding. A korábbi viselkedés ennél rosszabb volt — a kulcssor beszúrása idegen kulcs hibára futott, és a fail-closed szabály miatt a **teljes modellhívás megállt**. Későbbi enterprise opció: ügyfél- vagy forrásoldali kulcskezelés (BYOK).
 
 **Retention és törlés (R15).** A meglévő sémára kötve, új retention-fogalom bevezetése nélkül:
 
@@ -180,7 +182,9 @@ Három egymásra épülő szint:
 
 1. **Schema-based:** strukturált mezőknél determinisztikus (§7).
 2. **Known-value substitution:** ha egy strukturált mezőből már ismert egy védett érték, ugyanazon adatcsomag szabad szövegében is lecserélhető.
-3. **Privacy scanner:** e-mail, note, dokumentumszöveg stb. esetén best-effort felismerés a meglévő determinisztikus mintakészletre építve (e-mail, telefon, IBAN, PAN, TAJ, adószám) + tenant-egyedi minták.
+3. **Privacy scanner:** e-mail, note, dokumentumszöveg stb. esetén best-effort felismerés a meglévő determinisztikus mintakészletre építve (e-mail, telefon, bankszámlaszám, IBAN, PAN, TAJ, adószám) + tenant-egyedi minták.
+
+**Álnévre cserélhető kategóriák.** A `tokenize` akció csak a surrogate-névtér kategóriáin (§11: `company`, `person`, `email`, `phone`, `account`) értelmes; TAJ / adószám / kártyaszám / IBAN / titok esetén nincs álnév-típus, ezért ott a policy mentése hibát ad (`local_only` vagy `block` a helyes választás). A `phone` és `account` felismerése kizárólag a privacy-transzformáció találati halmazába kerül, az osztályozó szintjét (`clean` / `sensitive` / `forbidden`) nem mozdítja — különben minden telefonszámot tartalmazó beszélgetés helyi modellre kényszerülne.
 
 **Magyar nyelvi illesztés (R11, D4-hez kapcsolódóan).** A 2. szint nem lehet exact match: magyarul az entitásnév ragozódik (*SPAR-nak, SPAR-ral, Sparnál, a Sparban*). A v1 illesztés:
 

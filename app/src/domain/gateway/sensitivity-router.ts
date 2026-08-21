@@ -84,6 +84,33 @@ const COMMON_SECRET_VALUE_RE =
 /** Email address (basic RFC-5322 local@domain). */
 const EMAIL_RE = /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/
 
+/**
+ * Magyar (és nemzetközi) telefonszám. Az osztályozó SZINTJÉT nem érinti — ez a
+ * minta kizárólag a privacy-transzformáció (APG-12) találati halmazába kerül,
+ * mert a `phone` kategória alapértelmezett akciója `tokenize`. Ha a `sensitive`
+ * szintre is beszámítana, minden telefonszámot tartalmazó beszélgetés helyi
+ * modellre kényszerülne — pont az a UX-csapda, amit a #272 megszüntet.
+ */
+const PHONE_RE =
+  /(?<![0-9A-Za-z])(?:\+36|0036|06)[ \t.\-/]?(?:\(?[1-9][0-9]?\)?)[ \t.\-/]?[0-9]{3}[ \t.\-/]?[0-9]{2}[ \t.\-/]?[0-9]{2}(?![0-9])|(?<![0-9A-Za-z+])\+(?!36)[1-9][0-9]{0,2}[ \t.\-/]?(?:[0-9][ \t.\-/]?){6,12}[0-9](?![0-9])/g
+
+/**
+ * Magyar bankszámlaszám: 2×8 vagy 3×8 számjegy kötőjellel (GIRO alak).
+ * Az adószám (8-1-2) és a TAJ (3-3-3) alakja ettől eltér, így nem ütközik.
+ */
+const ACCOUNT_RE = /\b[0-9]{8}-[0-9]{8}(?:-[0-9]{8})?\b/g
+
+/**
+ * Csak a privacy-transzformáció találatai (a redakció és az osztályozó szint
+ * változatlan marad). A `phone`/`account` a surrogate-névtér tagja (§11), és a
+ * kategória-policy alapból `tokenize`-t ír elő rájuk — felismerés nélkül a
+ * policy üres ígéret volt: ENFORCE-ban sem cserélődött semmi.
+ */
+const PRIVACY_ENTITY_PATTERNS: Array<{ re: RegExp; category: string }> = [
+  { re: ACCOUNT_RE, category: 'account' },
+  { re: PHONE_RE, category: 'phone' },
+]
+
 /** Hungarian personal name patterns: two uppercase-starting words. Very broad, used as soft signal. */
 // Not used as forbidden — only contributes to "sensitive" tier.
 
@@ -475,7 +502,18 @@ export type SensitivityMatchSpan = TextSpan & { category: string; value: string 
 
 export function collectSensitivityMatchSpans(text: string): SensitivityMatchSpan[] {
   if (!text) return []
-  return collectRedactionSpans(text).map((span) => ({
+  const spans = collectRedactionSpans(text)
+  // A privacy-entitások (telefon, bankszámla) csak akkor kerülnek be, ha nem
+  // lógnak bele egy erősebb találatba (IBAN, PAN, titok) — átfedő spanoknál a
+  // csere offsetjei csúsznának el, és maszkolatlan részlet menne ki.
+  for (const { re, category } of PRIVACY_ENTITY_PATTERNS) {
+    for (const span of collectTextSpans(text, re)) {
+      if (isWithinSpan(span.start, span.end, spans)) continue
+      if (spans.some((other) => span.start < other.end && span.end > other.start)) continue
+      spans.push({ ...span, category })
+    }
+  }
+  return spans.map((span) => ({
     ...span,
     value: text.slice(span.start, span.end),
   }))

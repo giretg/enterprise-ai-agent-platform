@@ -24,6 +24,10 @@ import {
   SurrogateTakenError,
   type SurrogateVault,
 } from '@/domain/privacy/surrogate-vault'
+import {
+  decryptSurrogateDisplayValue,
+  encryptSurrogateDisplayValue,
+} from '@/domain/privacy/display-value-crypto'
 import { encryptValSurrogateValue, decryptValSurrogateValue } from '@/domain/privacy/val-surrogate-crypto'
 import { valSurrogateFingerprint } from '@/domain/privacy/val-fingerprint'
 
@@ -95,6 +99,9 @@ export type ResolveValInput = {
 
 const MAX_ALLOC_ATTEMPTS = 16
 
+/** A betöltött megjelenítési szótár frissessége (multi-instance futás miatt). */
+const DISPLAY_HYDRATION_TTL_MS = 10_000
+
 type DisplayValue = { value: string; source: 'structured_field' | 'scanner' }
 
 export class SurrogateEngine {
@@ -106,6 +113,14 @@ export class SurrogateEngine {
   private readonly displayValues = new Map<string, Map<string, DisplayValue>>()
   /** Beszélgetés-szintű entitástérkép: a history append-only, a prefix újrahasznosítható. */
   private readonly scopes = new Map<string, ScopeEntityMap>()
+  /**
+   * Scope-onkénti betöltés a vaultból (spec §5 R19). A találat nem cache-elhető
+   * örökre: több szerverpéldánynál a másik példány fordulója új álnevet írhat,
+   * és egy elavult cache-ből nyers név menne ki a modellhez.
+   */
+  private readonly displayHydration = new Map<string, { at: number; work: Promise<void> }>()
+  /** Még nem perzisztált megjelenítési értékek scope-onként. */
+  private readonly pendingDisplayWrites = new Map<string, Set<string>>()
 
   constructor(
     private readonly vault: SurrogateVault,
@@ -120,6 +135,12 @@ export class SurrogateEngine {
     surrogate: string,
     displayValue: string,
     source: 'structured_field' | 'scanner' = 'scanner',
+    /**
+     * OBSERVE módban az álnév csak ELŐNÉZET (nincs mögötte vault-sor), ezért nem
+     * perzisztálható: a `[[COMPANY_1]]` előnézet ütközne egy később, ENFORCE-ban
+     * ténylegesen kiosztott `[[COMPANY_1]]` sorral, és rossz nevet írna rá.
+     */
+    opts?: { persist?: boolean },
   ): void {
     if (!displayValue) return
     const key = scopeKey(tenantId, scope)
@@ -129,6 +150,152 @@ export class SurrogateEngine {
       this.displayValues.set(key, byScope)
     }
     byScope.set(surrogate, { value: displayValue, source })
+    if (opts?.persist === false) return
+    let pending = this.pendingDisplayWrites.get(key)
+    if (!pending) {
+      pending = new Set()
+      this.pendingDisplayWrites.set(key, pending)
+    }
+    pending.add(surrogate)
+  }
+
+  /**
+   * A beszélgetés eltárolt megjelenítési értékei (spec §5 R19). A memóriában lévő,
+   * frissebb bejegyzés győz; a vaultból csak a hiányzókat tölti be.
+   */
+  private async hydrateDisplayValues(
+    tenantId: string,
+    scope: PrivacyScope,
+    opts?: { force?: boolean },
+  ): Promise<void> {
+    if (!this.vault.listDisplayValues) return
+    const key = scopeKey(tenantId, scope)
+    const running = this.displayHydration.get(key)
+    if (running && !opts?.force && Date.now() - running.at < DISPLAY_HYDRATION_TTL_MS) {
+      return running.work
+    }
+    const work = (async () => {
+      const dataKey = await this.scopeDataKey(tenantId, scope, { create: false })
+      if (!dataKey) return
+      const rows = await this.vault.listDisplayValues!(tenantId, scope)
+      let byScope = this.displayValues.get(key)
+      if (!byScope) {
+        byScope = new Map()
+        this.displayValues.set(key, byScope)
+      }
+      for (const row of rows) {
+        if (byScope.has(row.surrogate)) continue
+        const payload = decryptSurrogateDisplayValue({
+          tenantId,
+          dataKey,
+          scope,
+          surrogate: row.surrogate,
+          encrypted: row.displayValueEnc,
+        })
+        if (payload) byScope.set(row.surrogate, { value: payload.value, source: payload.source })
+      }
+    })().catch(() => {
+      // Best-effort: a megjelenítési feloldás hiánya nem állíthatja meg a fordulót,
+      // és a következő hívás újra próbálkozhat.
+      this.displayHydration.delete(key)
+    })
+    this.displayHydration.set(key, { at: Date.now(), work })
+    return work
+  }
+
+  /** Best-effort kiírás: a hiánya nem állítja meg a fordulót, csak a későbbi feloldást rontaná. */
+  private async flushDisplayValues(tenantId: string, scope: PrivacyScope): Promise<void> {
+    if (!this.vault.saveDisplayValues) return
+    const key = scopeKey(tenantId, scope)
+    const pending = this.pendingDisplayWrites.get(key)
+    if (!pending || pending.size === 0) return
+    const byScope = this.displayValues.get(key)
+    if (!byScope) return
+    const surrogates = [...pending]
+    pending.clear()
+    try {
+      const dataKey = await this.scopeDataKey(tenantId, scope, { create: true })
+      if (!dataKey) return
+      const rows = surrogates.flatMap((surrogate) => {
+        const stored = byScope.get(surrogate)
+        if (!stored) return []
+        return [
+          {
+            surrogate,
+            displayValueEnc: encryptSurrogateDisplayValue({
+              tenantId,
+              dataKey,
+              scope,
+              surrogate,
+              payload: { value: stored.value, source: stored.source },
+            }),
+          },
+        ]
+      })
+      await this.vault.saveDisplayValues!(tenantId, scope, rows)
+    } catch {
+      for (const surrogate of surrogates) pending.add(surrogate)
+    }
+  }
+
+  private async scopeDataKey(
+    tenantId: string,
+    scope: PrivacyScope,
+    opts: { create: boolean },
+  ): Promise<Buffer | null> {
+    const keys = this.privacyKeys
+    if (!keys) return null
+    if (opts.create) {
+      if (keys.ensureScopeDataKey) return keys.ensureScopeDataKey(tenantId, scope.type, scope.id)
+      if (scope.type !== 'conversation') return null
+      return keys.ensureDataKey(tenantId, scope.id)
+    }
+    if (keys.getScopeDataKey) return keys.getScopeDataKey(tenantId, scope.type, scope.id)
+    if (scope.type !== 'conversation') return null
+    return keys.getDataKey(tenantId, scope.id)
+  }
+
+  /**
+   * Val-surrogate adatkulcs. `keyConversationId` (APG-21 trace) elsőbbséget élvez;
+   * egyébként a scope maga adja a kulcsot — feladat-ticket futásnál is, ahol nincs
+   * `Conversation` sor (l. `ensureScopeDataKey`).
+   */
+  private async valDataKey(
+    tenantId: string,
+    scope: PrivacyScope,
+    keyConversationId: string | undefined,
+    opts: { create: boolean },
+  ): Promise<Buffer | null> {
+    if (keyConversationId) {
+      return this.scopeDataKey(tenantId, { type: 'conversation', id: keyConversationId }, opts)
+    }
+    return this.scopeDataKey(tenantId, scope, opts)
+  }
+
+  /** Feloldás megjelenítéshez — a vaultból is betölti a scope értékeit. */
+  async resolveDisplayValue(
+    tenantId: string,
+    scope: PrivacyScope,
+    surrogate: string,
+  ): Promise<string | undefined> {
+    const cached = this.peekDisplayValue(tenantId, scope, surrogate)
+    if (cached !== undefined) return cached
+    await this.hydrateDisplayValues(tenantId, scope)
+    const loaded = this.peekDisplayValue(tenantId, scope, surrogate)
+    if (loaded !== undefined) return loaded
+    // A hívó előbb vault-találatot kapott az álnévre, tehát a sor létezik: ha a
+    // megjelenítési érték hiányzik, a betöltés elavult (másik példány írta).
+    await this.hydrateDisplayValues(tenantId, scope, { force: true })
+    return this.peekDisplayValue(tenantId, scope, surrogate)
+  }
+
+  /** Ismert-érték szótár a scope perzisztált értékeivel együtt (APG-16). */
+  async loadKnownValueReplacements(
+    tenantId: string,
+    scope: PrivacyScope,
+  ): Promise<Array<{ needle: string; surrogate: string; fromStructuredField: boolean }>> {
+    await this.hydrateDisplayValues(tenantId, scope)
+    return this.listKnownValueReplacements(tenantId, scope)
   }
 
   peekDisplayValue(tenantId: string, scope: PrivacyScope, surrogate: string): string | undefined {
@@ -170,6 +337,9 @@ export class SurrogateEngine {
     const results = new Array<string>(inputs.length)
     for (const group of groupAllocationsByScope(inputs)) {
       await this.allocateRefsInScope(group, results)
+      // A megjelenítési érték a sorokkal együtt perzisztálódik: enélkül a
+      // beszélgetés újranyitásakor az álnév feloldhatatlan maradna (spec §5 R19).
+      await this.flushDisplayValues(group.tenantId, group.scope)
     }
     return results
   }
@@ -210,15 +380,12 @@ export class SurrogateEngine {
       const surrogate = await this.allocateVal(input)
       for (const index of indexes) results[index] = surrogate
     }
+    const scoped = inputs[0]
+    if (scoped) await this.flushDisplayValues(scoped.tenantId, scoped.scope)
     return results
   }
 
   async allocateVal(input: AllocateValInput): Promise<string> {
-    const keyConversationId =
-      input.keyConversationId ?? (input.scope.type === 'conversation' ? input.scope.id : null)
-    if (!keyConversationId) {
-      throw new Error('val-surrogate allokációhoz beszélgetés-adatkulcs szükséges')
-    }
     if (!this.privacyKeys) {
       throw new Error('val-surrogate allokációhoz privacy key repository szükséges')
     }
@@ -240,7 +407,12 @@ export class SurrogateEngine {
       return existing.record.surrogate
     }
 
-    const dataKey = await this.privacyKeys.ensureDataKey(input.tenantId, keyConversationId)
+    const dataKey = await this.valDataKey(input.tenantId, input.scope, input.keyConversationId, {
+      create: true,
+    })
+    if (!dataKey) {
+      throw new Error('val-surrogate allokációhoz beszélgetés-adatkulcs szükséges')
+    }
     const cache = await this.hydrateValOrdinals(input.tenantId, input.scope, input.entityType)
     let surrogate = ''
     for (let attempt = 0; attempt < MAX_ALLOC_ATTEMPTS; attempt += 1) {
@@ -308,12 +480,10 @@ export class SurrogateEngine {
       return { ok: false, reason: 'unknown' }
     }
 
-    const keyConversationId =
-      input.keyConversationId ?? (input.scope.type === 'conversation' ? input.scope.id : null)
-    if (!keyConversationId || !this.privacyKeys) {
-      return { ok: false, reason: 'shredded' }
-    }
-    const dataKey = await this.privacyKeys.getDataKey(input.tenantId, keyConversationId)
+    if (!this.privacyKeys) return { ok: false, reason: 'shredded' }
+    const dataKey = await this.valDataKey(input.tenantId, input.scope, input.keyConversationId, {
+      create: false,
+    })
     if (!dataKey) return { ok: false, reason: 'shredded' }
 
     try {

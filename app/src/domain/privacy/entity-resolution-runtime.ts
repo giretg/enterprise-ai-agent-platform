@@ -1,8 +1,7 @@
 /**
  * APG-17 runtime segéd — agent connector-kötésből entity resolution kontextus.
  */
-import { enrichOstorosborConnectorConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
-import { normalizeConnectorConfig } from '@/domain/provisioning/connector-config'
+import { effectiveConnectorRuntimeConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 import { resolveConnectorApiKey } from '@/domain/connector/http-api-client'
 import { connectorSupportsEntityResolution } from '@/domain/privacy/connector-privacy'
 import { createHttpConnectorEntityResolver } from '@/domain/privacy/http-connector-entity-resolver'
@@ -24,7 +23,7 @@ export function pickEntityResolutionBinding(
   bindings: AgentConnectorBinding[],
 ): AgentConnectorBinding | null {
   for (const binding of bindings) {
-    const config = resolveConnectorRuntimeConfig(binding.connector.config)
+    const config = effectiveConnectorRuntimeConfig(binding.connector.config)
     if (connectorSupportsEntityResolution(config) && binding.connector.type === 'http_api') {
       return binding
     }
@@ -38,7 +37,7 @@ export async function createConnectorEntityResolver(input: {
   agentId: string
 }): Promise<ConnectorEntityResolver | null> {
   if (input.binding.connector.type !== 'http_api') return null
-  const config = resolveConnectorRuntimeConfig(input.binding.connector.config)
+  const config = effectiveConnectorRuntimeConfig(input.binding.connector.config)
   if (!connectorSupportsEntityResolution(config)) return null
 
   const effectiveAlias = input.binding.agentSecretAlias ?? input.binding.connector.secretAlias
@@ -87,10 +86,4 @@ export async function buildUserInputEntityResolution(input: {
   }
 }
 
-function resolveConnectorRuntimeConfig(raw: unknown): unknown {
-  try {
-    return enrichOstorosborConnectorConfig(normalizeConnectorConfig(raw)).config
-  } catch {
-    return raw
-  }
-}
+
