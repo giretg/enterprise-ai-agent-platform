@@ -12,7 +12,10 @@
  */
 import type { AuditRepository } from '@/repositories/interfaces'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
-import { inspectConnectorPrivacyFields } from '@/domain/privacy/connector-privacy'
+import {
+  inspectConnectorPrivacyFields,
+  readConnectorUnlistedDefault,
+} from '@/domain/privacy/connector-privacy'
 import { formatPrivacySourceSlot } from '@/domain/privacy/surrogate-format'
 import { effectiveConnectorRuntimeConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 import { recordPrivacyGatewayAudit } from '@/domain/privacy/privacy-audit'
@@ -85,7 +88,8 @@ async function resolveModelOutput(params: PrivacyAwareOutcomeInput): Promise<unk
   // A tool-hívás a kiegészített configot használja; a privacy-rétegnek ugyanazt
   // kell látnia, különben egy korábban létrehozott CRM-kapcsolat mezői némán
   // tokenizálatlanul mennének ki a modellhez.
-  const inspected = inspectConnectorPrivacyFields(effectiveConnectorRuntimeConfig(connector.config))
+  const runtimeConfig = effectiveConnectorRuntimeConfig(connector.config)
+  const inspected = inspectConnectorPrivacyFields(runtimeConfig)
   if (inspected.status === 'absent') return params.output
   if (inspected.status === 'invalid') {
     throw new PrivacyTransformBlockedError(
@@ -106,6 +110,7 @@ async function resolveModelOutput(params: PrivacyAwareOutcomeInput): Promise<unk
     const transformed = await transformStructuredOutput({
       output: params.output,
       fields,
+      unlistedDefault: readConnectorUnlistedDefault(runtimeConfig),
       engine: params.engine,
       tenantId,
       connectorId: connector.id,
@@ -139,7 +144,8 @@ async function resolveModelOutput(params: PrivacyAwareOutcomeInput): Promise<unk
   }
 
   // OBSERVE/OFF alatt a tokenize mezők nyersek maradnak, de a hard `block`
-  // szerződés akkor is eltávolítja a mezőt a modellcsatornából.
+  // szerződés (és a forrás `unlisted_default: block` deklarációja) akkor is
+  // eltávolítja a mezőt a modellcsatornából.
   return output
 }
 

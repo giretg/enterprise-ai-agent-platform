@@ -2,6 +2,10 @@
  * Ostoros CRM próba: jó adatot ad-e a CRM ahhoz, hogy a privacy-gateway
  * tokenizálni tudjon (#272).
  *
+ * A jelölést a FORRÁS katalógusa adja (`GET /privacy/catalog`); a platform nem
+ * találja ki, mit kell tokenizálni. Ha a CRM nem ad katalógust, a próba ezt
+ * hibaként jelzi, és csak összehasonlításként méri a referencia-katalógussal.
+ *
  * Nem elég, hogy a CRM válaszol: a tokenizáció NÉMÁN kimarad, ha
  *  - a válaszban nincs egyetlen deklarált `tokenize` mező sem (más a mezőnév),
  *  - a `source_id` sablon testvérmezője (`id`) hiányzik vagy üres (spec §5.3),
@@ -20,7 +24,11 @@ import { randomUUID } from 'node:crypto'
 
 import {
   OSTOROSBOR_CRM_PRIVACY_FIELDS,
+  parsePrivacyCatalogV2,
+  privacyCatalogToConnectorConfigPatch,
+  reviewPrivacyCatalogDeclarations,
   type ConnectorFieldsPrivacy,
+  type PrivacyUnlistedDefault,
 } from '../src/domain/privacy/connector-privacy'
 import { SurrogateEngine } from '../src/domain/privacy/surrogate-engine'
 import { transformStructuredOutput } from '../src/domain/privacy/structured-output-transform'
@@ -78,6 +86,7 @@ function preview(value: unknown): string {
 function auditRecords(
   records: Record<string, unknown>[],
   fields: ConnectorFieldsPrivacy,
+  unlistedDefault: PrivacyUnlistedDefault,
 ): Finding[] {
   const findings: Finding[] = []
   const declaredTokenize = Object.entries(fields).filter(([, f]) => f.privacy === 'tokenize')
@@ -144,10 +153,17 @@ function auditRecords(
   })
   if (undeclared.length > 0) {
     const sample = records.find((r) => typeof r[undeclared[0]] === 'string')
-    findings.push({
-      level: 'warn',
-      text: `jelöletlen, védendőnek látszó mező: ${undeclared.join(', ')} — nyersen megy a modellhez (pl. ${undeclared[0]}=${preview(sample?.[undeclared[0]])})`,
-    })
+    findings.push(
+      unlistedDefault === 'block'
+        ? {
+            level: 'ok',
+            text: `jelöletlen, védendőnek látszó mező: ${undeclared.join(', ')} — a katalógus \`unlisted_default: block\` beállítása miatt NEM megy ki a modellhez`,
+          }
+        : {
+            level: 'warn',
+            text: `jelöletlen, védendőnek látszó mező: ${undeclared.join(', ')} — nyersen megy a modellhez (pl. ${undeclared[0]}=${preview(sample?.[undeclared[0]])}); \`unlisted_default: block\` deklarálásával kizárható`,
+          },
+    )
   }
 
   return findings
@@ -157,6 +173,7 @@ function auditRecords(
 async function transformProbe(
   records: Record<string, unknown>[],
   fields: ConnectorFieldsPrivacy,
+  unlistedDefault: PrivacyUnlistedDefault,
 ): Promise<Finding[]> {
   const scope: PrivacyScope = { type: 'conversation', id: randomUUID() }
   const engine = new SurrogateEngine(new InMemorySurrogateVault(), {
@@ -169,6 +186,7 @@ async function transformProbe(
     const result = await transformStructuredOutput({
       output: { rows: records },
       fields,
+      unlistedDefault,
       engine,
       tenantId: randomUUID(),
       connectorId: randomUUID(),
@@ -210,6 +228,88 @@ async function transformProbe(
   return findings
 }
 
+type SourceCatalog = {
+  fields: ConnectorFieldsPrivacy
+  unlistedDefault: PrivacyUnlistedDefault
+  findings: Finding[]
+  fromSource: boolean
+}
+
+/** D5 — a `pass`-ra jelölt string mezők élő mintaértékein futó titok-heurisztika. */
+function reviewPassDeclarations(
+  records: Record<string, unknown>[],
+  fields: ConnectorFieldsPrivacy,
+): Finding[] {
+  return reviewPrivacyCatalogDeclarations({ fields }, records).map((warning) => ({
+    level: 'warn' as const,
+    text: `${warning.field}: ${warning.reason} — \`pass\` jelölésű mezőben titoknak látszó érték, a katalógusban felülvizsgálandó`,
+  }))
+}
+
+/**
+ * A jelölés kanonikus helye a forrásrendszer (forrás-szerződés §2 / §6.1).
+ * A próba ezért a CRM saját katalógusát kéri le; a platform referencia-katalógusa
+ * csak akkor lép be, ha a forrás nem nyilatkozik — és akkor is hibaként jelezve,
+ * mert így éles úton sem a forrás leírásából jönne a tokenizálandó mezők listája.
+ */
+async function loadSourceCatalog(baseUrl: string, headers: Record<string, string>): Promise<SourceCatalog> {
+  const fallback = (findings: Finding[]): SourceCatalog => ({
+    fields: OSTOROSBOR_CRM_PRIVACY_FIELDS,
+    unlistedDefault: 'pass',
+    findings,
+    fromSource: false,
+  })
+  let response: Response
+  try {
+    response = await fetch(`${baseUrl}/privacy/catalog`, { headers })
+  } catch (error) {
+    return fallback([
+      {
+        level: 'error',
+        text: `GET /privacy/catalog nem érhető el (${error instanceof Error ? error.message : error}) — a mezőjelölés nem a forrásból jön; a próba a platform referencia-katalógusával mér tovább`,
+      },
+    ])
+  }
+  if (!response.ok) {
+    return fallback([
+      {
+        level: 'error',
+        text: `GET /privacy/catalog → HTTP ${response.status} — a forrás nem publikál katalógust; a próba a platform referencia-katalógusával mér tovább`,
+      },
+    ])
+  }
+  let raw: unknown
+  try {
+    raw = await response.json()
+  } catch {
+    return fallback([{ level: 'error', text: 'GET /privacy/catalog válasza nem JSON' }])
+  }
+  const catalog = parsePrivacyCatalogV2(raw)
+  if (!catalog) {
+    return fallback([
+      {
+        level: 'error',
+        text: 'GET /privacy/catalog válasza nem felel meg a katalógus-sémának (entity_types / fields / tokenize szabályok) — a platform nem veheti át a jelölést',
+      },
+    ])
+  }
+  const patch = privacyCatalogToConnectorConfigPatch(catalog)
+  const findings: Finding[] = [
+    {
+      level: 'ok',
+      text: `katalógus v${patch.catalog_version} a forrásból: ${
+        Object.entries(patch.fields).filter(([, f]) => f.privacy === 'tokenize').length
+      } tokenize mező, unlisted_default: ${patch.unlisted_default ?? 'pass'}`,
+    },
+  ]
+  return {
+    fields: patch.fields,
+    unlistedDefault: patch.unlisted_default ?? 'pass',
+    findings,
+    fromSource: true,
+  }
+}
+
 async function main() {
   if (!HOST || !API_KEY) {
     console.error(
@@ -222,18 +322,31 @@ async function main() {
   console.log(`Ostoros CRM privacy-próba — ${baseUrl}`)
   console.log(SHOW_VALUES ? '(nyers minták BE)\n' : '(nyers értékek elrejtve; --show-values kapcsolóval láthatók)\n')
 
+  const authHeaders = {
+    Authorization: `Bearer ${API_KEY}`,
+    Accept: 'application/json',
+    ...(ACTING_USER ? { 'X-Acting-User': ACTING_USER } : {}),
+  }
+
   let hardFailure = false
+
+  console.log('── GET /privacy/catalog')
+  const catalog = await loadSourceCatalog(baseUrl, {
+    ...authHeaders,
+    'X-Connector-Call-Id': randomUUID(),
+  })
+  for (const finding of catalog.findings) {
+    console.log(`${icon(finding.level)} ${finding.text}`)
+    if (finding.level === 'error') hardFailure = true
+  }
+  console.log()
+
   for (const endpoint of READ_ENDPOINTS) {
     console.log(`── GET ${endpoint}`)
     let response: Response
     try {
       response = await fetch(`${baseUrl}${endpoint}`, {
-        headers: {
-          Authorization: `Bearer ${API_KEY}`,
-          Accept: 'application/json',
-          ...(ACTING_USER ? { 'X-Acting-User': ACTING_USER } : {}),
-          'X-Connector-Call-Id': randomUUID(),
-        },
+        headers: { ...authHeaders, 'X-Connector-Call-Id': randomUUID() },
       })
     } catch (error) {
       console.log(`${icon('error')} nem érhető el: ${error instanceof Error ? error.message : error}`)
@@ -260,8 +373,9 @@ async function main() {
       continue
     }
     const findings = [
-      ...auditRecords(records, OSTOROSBOR_CRM_PRIVACY_FIELDS),
-      ...(await transformProbe(records, OSTOROSBOR_CRM_PRIVACY_FIELDS)),
+      ...auditRecords(records, catalog.fields, catalog.unlistedDefault),
+      ...reviewPassDeclarations(records, catalog.fields),
+      ...(await transformProbe(records, catalog.fields, catalog.unlistedDefault)),
     ]
     for (const finding of findings) {
       console.log(`${icon(finding.level)} ${finding.text}`)
@@ -275,6 +389,11 @@ async function main() {
       ? 'Eredmény: a CRM válasza NEM elég a tokenizációhoz — a fenti ✗ sorok a némán kimaradó okok.'
       : 'Eredmény: a CRM válasza alkalmas a tokenizációra.',
   )
+  if (!catalog.fromSource) {
+    console.log(
+      'Figyelem: a fenti mérés a platform referencia-katalógusával készült, nem a forrás deklarációjából.',
+    )
+  }
   process.exit(hardFailure ? 1 : 0)
 }
 

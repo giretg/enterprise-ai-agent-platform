@@ -18,11 +18,20 @@ import {
   normalizeConnectorConfig,
   type ConnectorConfig,
 } from '../src/domain/provisioning/connector-config'
+import { effectiveConnectorRuntimeConfig } from '../src/domain/connector-template/ostorosbor-config-enrichment'
+import { entityTypeHintFromConnectorConfig } from '../src/domain/privacy/entity-resolution-runtime'
 import {
   OSTOROSBOR_CRM_PRIVACY_CAPABILITIES,
+  OSTOROSBOR_CRM_PRIVACY_CATALOG,
+  TOKENIZE_IRREVERSIBLE_MESSAGE,
   TOKENIZE_SOURCE_ID_REFERENCE_MESSAGE,
   TOKENIZE_STRING_ONLY_MESSAGE,
   inspectConnectorPrivacyFields,
+  parsePrivacyCatalogV2,
+  privacyCatalogToConnectorConfigPatch,
+  readConnectorEntityTypes,
+  readConnectorPrivacyFields,
+  readConnectorUnlistedDefault,
   privacyCapabilityAbsentAudit,
   privacyCapabilityChangedAudit,
   privacyCapabilityLevel,
@@ -180,6 +189,131 @@ async function main() {
         return true
       },
     )
+  })
+
+  await test('a forrás entitástípus-névtere és unlisted_default-ja túléli a normalizálást', () => {
+    const config = normalizeConnectorConfig(
+      baseConfig({
+        entity_types: {
+          ingatlan: { label: 'Ingatlan', reversible: true },
+        },
+        unlisted_default: 'block',
+        catalog_version: 4,
+        fields: {
+          id: { type: 'integer', privacy: 'pass' },
+          hrsz: {
+            type: 'string',
+            privacy: 'tokenize',
+            entity_type: 'ingatlan',
+            source_id: 'crm/ingatlan/{id}',
+          },
+        },
+      } as Partial<ConnectorConfig>),
+    )
+    assert.equal(config.entity_types?.ingatlan?.label, 'Ingatlan')
+    assert.equal(config.unlisted_default, 'block')
+    assert.equal(config.catalog_version, 4)
+
+    // futásidőben ugyanezt kell látni — enélkül a forrás-egyedi típus és a
+    // jelöletlen mezők kizárása némán elveszne
+    const runtime = effectiveConnectorRuntimeConfig(config)
+    assert.equal(readConnectorEntityTypes(runtime).ingatlan?.label, 'Ingatlan')
+    assert.equal(readConnectorUnlistedDefault(runtime), 'block')
+    assert.equal(readConnectorPrivacyFields(runtime)?.hrsz?.entity_type, 'ingatlan')
+  })
+
+  await test('reversible: false típusra tett tokenize mentéskor elbukik és futásidőben is invalid', () => {
+    const raw = baseConfig({
+      entity_types: {
+        api_kulcs: { label: 'API-kulcs', reversible: false },
+      },
+      fields: {
+        id: { type: 'integer', privacy: 'pass' },
+        api_key: {
+          type: 'string',
+          privacy: 'tokenize',
+          entity_type: 'api_kulcs',
+          source_id: 'crm/api_kulcs/{id}',
+        },
+      },
+    } as Partial<ConnectorConfig>)
+
+    assert.throws(
+      () => normalizeConnectorConfig(raw),
+      (err: unknown) => {
+        assert.ok(err instanceof ConnectorConfigParseError)
+        assert.ok(err.message.includes(TOKENIZE_IRREVERSIBLE_MESSAGE), err.message)
+        return true
+      },
+    )
+    // fail-closed: ha egy ilyen sor mégis a DB-ben van, a futásidő nem tokenizál némán
+    const inspected = inspectConnectorPrivacyFields(effectiveConnectorRuntimeConfig(raw))
+    assert.equal(inspected.status, 'invalid')
+  })
+
+  await test('a forrás katalógusa bemásolható a connector-configba (séma-azonosság)', () => {
+    const catalog = parsePrivacyCatalogV2(OSTOROSBOR_CRM_PRIVACY_CATALOG)
+    assert.ok(catalog)
+    const patch = privacyCatalogToConnectorConfigPatch(catalog)
+    const config = normalizeConnectorConfig(baseConfig(patch as Partial<ConnectorConfig>))
+    assert.equal(config.fields?.company_name.entity_type, 'company')
+    assert.equal(config.entity_types?.company?.reversible, true)
+    assert.equal(config.unlisted_default, 'pass')
+    assert.equal(config.catalog_version, OSTOROSBOR_CRM_PRIVACY_CATALOG.catalog_version)
+  })
+
+  await test('idegen forrás nem örökli a CRM mezőjelölését az útvonal-végződés miatt', () => {
+    const foreign = normalizeConnectorConfig(
+      baseConfig({
+        provider: 'masik-rendszer',
+        baseUrl: 'https://masik.example/api/connector/v1',
+        egressHosts: ['masik.example'],
+      }),
+    )
+    const runtime = effectiveConnectorRuntimeConfig(foreign)
+    assert.equal(inspectConnectorPrivacyFields(runtime).status, 'absent')
+    assert.equal(readConnectorPrivacyFields(runtime), null)
+  })
+
+  await test('a resolve entitástípus-tippje a deklarációból jön, nem platform-találgatásból', () => {
+    const ingatlan = normalizeConnectorConfig(
+      baseConfig({
+        entity_types: { ingatlan: { label: 'Ingatlan', reversible: true } },
+        fields: {
+          id: { type: 'integer', privacy: 'pass' },
+          hrsz: {
+            type: 'string',
+            privacy: 'tokenize',
+            entity_type: 'ingatlan',
+            source_id: 'crm/ingatlan/{id}',
+          },
+        },
+      } as Partial<ConnectorConfig>),
+    )
+    assert.equal(entityTypeHintFromConnectorConfig(ingatlan), 'ingatlan')
+
+    // több deklarált típusnál a forrás dönt: nem küldünk félrevezető tippet
+    const multi = normalizeConnectorConfig(
+      baseConfig({
+        fields: {
+          id: { type: 'integer', privacy: 'pass' },
+          company_name: {
+            type: 'string',
+            privacy: 'tokenize',
+            entity_type: 'company',
+            source_id: 'crm/company/{id}',
+          },
+          contact_name: {
+            type: 'string',
+            privacy: 'tokenize',
+            entity_type: 'person',
+            source_id: 'crm/person/{id}',
+          },
+        },
+      }),
+    )
+    assert.equal(entityTypeHintFromConnectorConfig(multi), undefined)
+    assert.equal(entityTypeHintFromConnectorConfig(normalizeConnectorConfig(baseConfig())), undefined)
   })
 
   await test('CRM sablon capabilitySet-je tartalmazza a privacy-deklarációt és a company mezőt', () => {

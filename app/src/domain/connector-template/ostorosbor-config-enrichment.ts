@@ -127,12 +127,23 @@ export function enrichOstorosborTraceHeaders(config: ConnectorConfig): {
   }
 }
 
+/**
+ * Legacy-kiegészítés: a saját CRM sablonjaiból SZÁRMAZÓ, még privacy-deklaráció
+ * nélkül létrejött kapcsolatok megkapják a referencia-katalógust.
+ *
+ * Szándékosan SZŰKEBB, mint a többi Ostoros-kiegészítés: csak a sablonkulcs vagy
+ * a platform által ismert CRM-host számít, a `/api/connector/v1` útvonal-végződés
+ * NEM. Enélkül minden hasonló útvonalú, idegen forrásrendszer örökölte a CRM
+ * mezőjelölését — a platform olyan mezőket tokenizált (és olyanokat engedett át),
+ * amiket az adott forrás soha nem deklarált.
+ *
+ * @deprecated issue #320 — preferált: a forrás `GET /privacy/catalog` katalógusa.
+ */
 export function enrichOstorosborPrivacy(config: ConnectorConfig): {
   config: ConnectorConfig
   changed: boolean
 } {
-  /** @deprecated issue #320 — preferált: OSTOROSBOR_CRM_PRIVACY_CATALOG import a katalógusból. */
-  if (!isOstorosborConnectorApi(config)) {
+  if (!isTrustedOstorosborCrm(config)) {
     return { config, changed: false }
   }
 
