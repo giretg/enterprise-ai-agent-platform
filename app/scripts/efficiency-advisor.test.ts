@@ -1,11 +1,12 @@
 /**
- * issue #237 — a hatékonysági tanácsadó detektor tesztje.
+ * issue #237 / EFF-04 — a hatékonysági tanácsadó detektor tesztje.
  * Futtatás: npm run test:efficiency-advisor
  *
  * A mérce a MÉRT eset (2026-07-29): 149 eszközhívásból 132 újraolvasás, 40 kör,
  * monoton növő prompt. Az elfogadási feltétel kétirányú: ez az alak kiváltja
  * az újraolvasás és a kontextus-hízás mintát; egy normál, 3–5 eszközhívásos,
- * 2 modellhívásos futás viszont NEM.
+ * 2 modellhívásos futás viszont NEM. A fékbe futott (blocked) sorok és a
+ * toolCallSourceKey-ismétlések is beleszámítanak az újraolvasási arányba.
  */
 import assert from 'node:assert/strict'
 import {
@@ -105,6 +106,20 @@ async function main() {
     const kinds = card.patterns.map((p) => p.kind)
     assert.ok(kinds.includes('repeated_reread'), `hiányzik az újraolvasás: ${kinds.join(',')}`)
     assert.ok(kinds.includes('context_bloat'), `hiányzik a hízás: ${kinds.join(',')}`)
+    const reread = card.patterns.find((p) => p.kind === 'repeated_reread')
+    assert.ok(reread)
+    // 3 futás × 132 újraolvasás / 149 olvasó — a merge összeadja a darabszámokat,
+    // az arányt átlagolja.
+    assert.equal(reread?.metric.rereadCalls, 132 * 3)
+    assert.equal(reread?.metric.readCalls, 149 * 3)
+    assert.equal(Number(reread?.metric.rereadRatio), Number((132 / 149).toFixed(4)))
+    assert.ok(typeof reread?.metric.rereadChars === 'number' && (reread.metric.rereadChars as number) > 0)
+    assert.ok(typeof reread?.metric.rereadTokens === 'number' && (reread.metric.rereadTokens as number) > 0)
+    // ~4 karakter/token — ugyanaz a becslés, mint a turn-cost-signals.ts
+    assert.equal(
+      reread?.metric.rereadTokens,
+      Math.round((reread?.metric.rereadChars as number) / 4),
+    )
     for (const pattern of card.patterns) {
       if (!pattern.savingsTokens) continue
       assert.ok(
@@ -199,6 +214,93 @@ async function main() {
     const reread = card.patterns.find((p) => p.kind === 'repeated_reread')
     assert.ok(reread, 'a blocked soroknak mintát kell kiváltaniuk')
     assert.equal(reread?.metric.rereadCalls, 18)
+  })
+
+  await check('forrás-kulcs ismétlés (toolCallSourceKey) újraolvasásnak számít flagek nélkül is', () => {
+    // EFF-04 (b): ugyanaz a path a futáson belül többször → 2..n újraolvasás.
+    // A kulcs a loop-stop-decision toolCallSourceKey szabálya (path / documentId / …).
+    const dupRun = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: [modelCall({ createdAt: 1, promptTokens: 1_200 })],
+      toolCalls: Array.from({ length: 8 }, () => ({
+        toolName: 'file_read',
+        argsMeta: { path: 'ugyanaz.json' },
+        resultMeta: { result_chars: 4_000 },
+      })),
+    })
+    const card = evaluateEfficiencyAdvisor([dupRun('a'), dupRun('b'), dupRun('c')])
+    const reread = card.patterns.find((p) => p.kind === 'repeated_reread')
+    assert.ok(reread, 'az ismételt forrás-kulcsnak mintát kell kiváltania')
+    // futásonként: 1 első olvasás + 7 újraolvasás → 7/8 = 0.875
+    assert.equal(reread?.metric.rereadCalls, 7 * 3)
+    assert.equal(reread?.metric.readCalls, 8 * 3)
+    assert.equal(Number(reread?.metric.rereadRatio), 0.875)
+    assert.equal(reread?.metric.rereadChars, 7 * 4_000 * 3)
+    assert.equal(reread?.metric.rereadTokens, Math.round((7 * 4_000 * 3) / 4))
+  })
+
+  await check('documentId / url / pageId / id forrás-kulcsok ismétlése is számít', () => {
+    const keyed = (
+      id: string,
+      toolName: string,
+      field: 'documentId' | 'url' | 'pageId' | 'id',
+      value: string,
+    ): EfficiencyRun => ({
+      id,
+      kind: 'ticket',
+      modelCalls: [modelCall({ createdAt: 1, promptTokens: 900 })],
+      toolCalls: Array.from({ length: 6 }, () => ({
+        toolName,
+        argsMeta: { [field]: value },
+        resultMeta: { result_chars: 2_000 },
+      })),
+    })
+    const runs = [
+      keyed('a', 'kb_get', 'documentId', 'doc-1'),
+      keyed('b', 'web_fetch', 'url', 'https://example.com/a'),
+      keyed('c', 'notion_get', 'pageId', 'page-9'),
+      keyed('d', 'crm_get', 'id', 'rec-42'),
+    ]
+    // Négy futás, mindegyikben 5/6 újraolvasás — a minta-méret kapu (≥2) teljesül.
+    const card = evaluateEfficiencyAdvisor(runs)
+    const reread = card.patterns.find((p) => p.kind === 'repeated_reread')
+    assert.ok(reread, 'a toolCallSourceKey mezők ismétlésének mintát kell adnia')
+    assert.equal(reread?.metric.rereadCalls, 5 * 4)
+    assert.equal(reread?.metric.readCalls, 6 * 4)
+  })
+
+  await check('fékbe futott sor után ugyanaz a forrás-kulcs továbbra is (b) szerint számít', () => {
+    // Korábban a blocked/redundant early-return nem írta a seen mapet — a következő
+    // azonos kulcsú olvasás elveszett volna a (b) ágon.
+    const mixed = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: [modelCall({ createdAt: 1, promptTokens: 800 })],
+      toolCalls: [
+        {
+          toolName: 'tool_result_read',
+          argsMeta: { path: '.tool-results/shared.json' },
+          resultMeta: { blocked: true, result_chars: 0 },
+        },
+        {
+          toolName: 'tool_result_read',
+          argsMeta: { path: '.tool-results/shared.json', returned_chars: 3_000 },
+          resultMeta: { result_chars: 3_000 },
+        },
+        ...Array.from({ length: 5 }, () => ({
+          toolName: 'tool_result_read',
+          argsMeta: { path: '.tool-results/shared.json', returned_chars: 3_000 },
+          resultMeta: { result_chars: 3_000 },
+        })),
+      ],
+    })
+    const card = evaluateEfficiencyAdvisor([mixed('a'), mixed('b'), mixed('c')])
+    const reread = card.patterns.find((p) => p.kind === 'repeated_reread')
+    assert.ok(reread)
+    // futásonként: 1 blocked (a) + 6 ismétlés (b, prior≥1) = 7 újraolvasás / 7 olvasó
+    assert.equal(reread?.metric.rereadCalls, 7 * 3)
+    assert.equal(reread?.metric.readCalls, 7 * 3)
   })
 
   await check('küszöb-feloldás: érvénytelen vagy elnémító env az alapértékre esik vissza', () => {

@@ -238,16 +238,27 @@ function isReaderCall(tool: EfficiencyRunToolCall): boolean {
   return sourceKeyOf(tool) !== null
 }
 
+/**
+ * Újraolvasás: (a) `tool_result_read` `redundant`/`blocked` metaadatával, vagy
+ * (b) ugyanaz a `toolCallSourceKey` már szerepelt a futásban. A forrás-kulcsot
+ * mindig nyilvántartjuk — a fékbe futott sorok sem „veszítik el" a kulcsot a
+ * későbbi (b) egyezés elől.
+ */
 function isRereadCall(tool: EfficiencyRunToolCall, seen: Map<string, number>): boolean {
   const result = asRecord(tool.resultMeta)
-  if (tool.toolName === 'tool_result_read' && (boolField(result, 'redundant') || boolField(result, 'blocked'))) {
-    return true
-  }
+  const flagged =
+    tool.toolName === 'tool_result_read' &&
+    (boolField(result, 'redundant') || boolField(result, 'blocked'))
+
   const key = sourceKeyOf(tool)
-  if (!key) return false
-  const prior = seen.get(key) ?? 0
-  seen.set(key, prior + 1)
-  return prior >= 1
+  let duplicate = false
+  if (key) {
+    const prior = seen.get(key) ?? 0
+    seen.set(key, prior + 1)
+    duplicate = prior >= 1
+  }
+
+  return flagged || duplicate
 }
 
 function detectRun(
@@ -289,6 +300,8 @@ function detectRun(
         rereadRatio: Number(rereadRatio.toFixed(4)),
         rereadCalls,
         readCalls,
+        rereadChars,
+        rereadTokens: rereadTokensAnnotation,
       },
     })
   }
