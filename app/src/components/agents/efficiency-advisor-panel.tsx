@@ -113,7 +113,9 @@ export function EfficiencyAdvisorPanel({
           return (
             <li key={pattern.kind} className="rounded-lg border border-line bg-night-2 px-3 py-3">
               <p className="text-sm font-medium text-ink">{patternTitle(pattern.kind)}</p>
-              <p className="mt-1 text-sm text-ink-soft">{describeEfficiencyPattern(pattern.kind)}</p>
+              <p className="mt-1 text-sm text-ink-soft">
+                {describeEfficiencyPattern(pattern.kind, pattern.metric)}
+              </p>
               {pattern.savingsTokens ? (
                 <p className="mt-2 text-xs text-ink-faint">
                   Becsült megtakarítás: {formatTokens(pattern.savingsTokens.low)}–

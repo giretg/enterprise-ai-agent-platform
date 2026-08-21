@@ -309,36 +309,63 @@ function detectRun(
     })
   }
 
-  const oversizedByTool = new Map<string, { count: number; chars: number }>()
+  // EFF-06: ugyanaz az eszköz (opcionálisan ugyanaz a forrás-kulcs) többször
+  // ad a TOOL_RESULT_INLINE_LIMIT (12 000 kar) fölötti eredményt. Az egyszeri
+  // nagy kimenet nem minta — a küszöb (≥ oversizedRepeatCount) a döntő.
+  const oversizedByTool = new Map<
+    string,
+    { count: number; chars: number; sourceCounts: Map<string, number> }
+  >()
   for (const tool of run.toolCalls) {
     const chars = resultChars(tool)
     if (chars <= OVERSIZED_TOOL_RESULT_CHARS) continue
-    const key = `${tool.toolName}\0${sourceKeyOf(tool) ?? ''}`
-    const prev = oversizedByTool.get(key) ?? { count: 0, chars: 0 }
+    const prev = oversizedByTool.get(tool.toolName) ?? {
+      count: 0,
+      chars: 0,
+      sourceCounts: new Map<string, number>(),
+    }
     prev.count += 1
     prev.chars += chars
-    oversizedByTool.set(key, prev)
+    const source = sourceKeyOf(tool)
+    if (source) {
+      prev.sourceCounts.set(source, (prev.sourceCounts.get(source) ?? 0) + 1)
+    }
+    oversizedByTool.set(tool.toolName, prev)
   }
   let oversizedHits = 0
   let oversizedChars = 0
   let oversizedTool = ''
-  for (const [key, row] of oversizedByTool) {
+  let oversizedSourceKey = ''
+  for (const [toolName, row] of oversizedByTool) {
     if (row.count < thresholds.oversizedRepeatCount) continue
     if (row.chars > oversizedChars) {
       oversizedHits = row.count
       oversizedChars = row.chars
-      oversizedTool = key.split('\0')[0] ?? ''
+      oversizedTool = toolName
+      // Opcionális forrás-kulcs: ha egyetlen kulcs eléri a küszöböt, a javaslat
+      // ezt is megnevezheti (spec: „opcionálisan ugyanaz a forrás-kulcs").
+      let bestSource = ''
+      let bestSourceCount = 0
+      for (const [source, count] of row.sourceCounts) {
+        if (count >= thresholds.oversizedRepeatCount && count > bestSourceCount) {
+          bestSource = source
+          bestSourceCount = count
+        }
+      }
+      oversizedSourceKey = bestSource
     }
   }
   if (oversizedHits >= thresholds.oversizedRepeatCount) {
+    const metric: Record<string, number | string> = {
+      toolName: oversizedTool,
+      repeats: oversizedHits,
+      resultChars: oversizedChars,
+    }
+    if (oversizedSourceKey) metric.sourceKey = oversizedSourceKey
     findings.push({
       kind: 'oversized_tool_result',
       wastedTokens: Math.round(oversizedChars / CHARS_PER_TOKEN),
-      metric: {
-        toolName: oversizedTool,
-        repeats: oversizedHits,
-        resultChars: oversizedChars,
-      },
+      metric,
     })
   }
 
@@ -550,15 +577,28 @@ export function evaluateEfficiencyAdvisor(
   }
 }
 
-/** Közérthető magyarázat a kártyára (magyarázat-kulcs → szöveg). */
-export function describeEfficiencyPattern(kind: EfficiencyPatternKind): string {
+/**
+ * Közérthető magyarázat a kártyára (magyarázat-kulcs → szöveg).
+ * A túlméretezett kimenetnél a `metric.toolName` bekerül a szövegbe, hogy a
+ * javaslat konkrét legyen — kapcsolót ehhez a mintához nem ajánlunk.
+ */
+export function describeEfficiencyPattern(
+  kind: EfficiencyPatternKind,
+  metric?: Record<string, number | string>,
+): string {
   switch (kind) {
     case 'repeated_reread':
       return 'Ez az agent a tokenjei nagy részét ugyanannak a forrásnak az újraolvasására költi. Kapcsold szűkebbre a forrás-keretet ennél az agentnél, hogy egyszer végigolvassa, és utána a kivonatból dolgozzon.'
     case 'context_bloat':
       return 'Minden körben újraküldi a teljes eddigi előzményt, ezért a prompt körönként nő. Kapcsold szigorúbbra a kontextus-tömörítést ennél az agentnél.'
-    case 'oversized_tool_result':
-      return 'Ugyanaz az eszköz ismételten túl nagy választ hoz be. Szűkítsd a hívást (aggregált végpont, szűkebb mezőlista), vagy emeld ki a lényeget a munkaterületre.'
+    case 'oversized_tool_result': {
+      const tool =
+        typeof metric?.toolName === 'string' && metric.toolName.trim()
+          ? metric.toolName.trim()
+          : null
+      const subject = tool ? `A(z) „${tool}" eszköz` : 'Ugyanaz az eszköz'
+      return `${subject} ismételten túl nagy választ hoz be (a ${OVERSIZED_TOOL_RESULT_CHARS.toLocaleString('hu-HU')} karakteres limit fölött). Szűkítsd a hívást (aggregált végpont, szűkebb mezőlista, tool_result_extract) — ehhez a mintához nincs kapcsoló.`
+    }
     case 'cache_prefix_break':
       return 'A prompt-cache alig fog ennél az agentnél: a stabil előtag sorrendje vagy a modell váltakozása miatt a gyorsítótár nem használódik. Ez nem kapcsoló — a prompt-cache beállításait kell ellenőrizni.'
   }
