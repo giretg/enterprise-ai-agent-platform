@@ -457,6 +457,67 @@ async function main() {
     assert.equal('partialText' in output.projection, true)
   })
 
+  await test('projection: a nem-tokenizálható érzékeny adat (PAN/IBAN/titok/TAJ) redaktálva megy ki, nem nyersen', async () => {
+    const PAN = '4111 1111 1111 1111' // Luhn-valid teszt-kártyaszám
+    const IBAN = 'HU42117730161111101800000000'
+    const SECRET_VALUE = 'sk-abcdefghijklmnopqrstuvwxyz012345'
+    const TAJ = '123-456-789'
+    const projected = await projectDebugTraceBundle({
+      trace: {
+        traceId: TRACE_A,
+        agentTurnId: TRACE_A,
+        conversationId: CONVERSATION,
+        detail: `Kártya: ${PAN}, IBAN: ${IBAN}, api_key: ${SECRET_VALUE}, TAJ: ${TAJ}`,
+      },
+      ...projectionInput,
+    })
+    const serialized = JSON.stringify(projected)
+    for (const raw of [PAN, '4111111111111111', IBAN, SECRET_VALUE, TAJ]) {
+      assert.equal(
+        serialized.includes(raw),
+        false,
+        `nyers érzékeny érték kiszivárgott a debug-trace-be: ${raw}; projection=${serialized}`,
+      )
+    }
+    assert.match(serialized, /«redaktált:/)
+  })
+
+  await test('projection: `block`-ra állított álnév-kategória is pszeudonimizálódik (nem marad nyers)', async () => {
+    // Ha az admin egy álnév-típusú kategóriát (itt: `phone`) a legszigorúbb
+    // `block`-ra állítja, a debug-trace-nek is védenie kell — korábban a `block`
+    // kimaradt a `tokenize`/`local_only` szűrőből, és a nyers telefonszám kiment.
+    const PHONE = '+36 30 123 4567'
+    const blockPolicy = resolvePrivacyCategoryPolicy({
+      platform: {
+        categories: { phone: 'block' },
+        custom: {},
+        updatedById: null,
+        updatedAt: null,
+        patternSetVersion: 1,
+      },
+    })
+    const engineC = makeEngine()
+    const projected = await projectDebugTraceBundle({
+      trace: {
+        traceId: TRACE_A,
+        agentTurnId: TRACE_A,
+        conversationId: CONVERSATION,
+        // Ugyanaz a szám kétszer — a DoD második fele: trace-en belüli konzisztencia.
+        detail: `Hívd vissza a ${PHONE} számon.`,
+        note: `A ${PHONE} elérhető.`,
+      },
+      ...projectionInput,
+      policy: blockPolicy,
+      engine: engineC,
+      knownValueScope: null,
+    })
+    const serialized = JSON.stringify(projected)
+    assert.equal(serialized.includes(PHONE), false, `nyers telefonszám kiszivárgott: ${serialized}`)
+    const aliases = serialized.match(/\[\[PHONE_\d+\]\]/g) ?? []
+    assert.ok(aliases.length >= 2, 'a telefonszám mindkét előfordulása álnevet kap')
+    assert.equal(new Set(aliases).size, 1, 'ugyanaz az entitás ugyanazt az álnevet kapja a trace-en belül')
+  })
+
   await test('projection OFF módban is pszeudonimizált marad (debug-AI egress)', async () => {
     const projected = await projectDebugTraceBundle({
       trace: sampleRawTrace(),
