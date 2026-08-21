@@ -1,11 +1,16 @@
 /**
- * issue #237 — a hatékonysági tanácsadó detektor tesztje.
+ * issue #237 / EFF-07 — a hatékonysági tanácsadó detektor tesztje.
  * Futtatás: npm run test:efficiency-advisor
  *
  * A mérce a MÉRT eset (2026-07-29): 149 eszközhívásból 132 újraolvasás, 40 kör,
  * monoton növő prompt. Az elfogadási feltétel kétirányú: ez az alak kiváltja
  * az újraolvasás és a kontextus-hízás mintát; egy normál, 3–5 eszközhívásos,
  * 2 modellhívásos futás viszont NEM.
+ *
+ * EFF-07 DoD: csupa null cachedPromptTokens → nincs minta és nincs sáv
+ * (`cacheDataStatus: missing`); 0-ás értékek mellett viszont van minta + sáv
+ * (`available`). A két eset a kimenetben megkülönböztethető. Az arány csak
+ * nem-null sorokon, azonos modell felé menő hívásokon számít.
  */
 import assert from 'node:assert/strict'
 import {
@@ -14,6 +19,7 @@ import {
 } from '../src/domain/agent/context-compactor'
 import {
   EFFICIENCY_ADVISOR_THRESHOLDS,
+  describeEfficiencyCacheDataStatus,
   describeEfficiencyPattern,
   describeEfficiencyStatus,
   evaluateEfficiencyAdvisor,
@@ -135,6 +141,8 @@ async function main() {
   })
 
   await check('cache: csupa null nem mintázat, 0-ás értékek mellett viszont az', () => {
+    // EFF-07 DoD: null ≠ 0. Csupa null → missing, nincs minta, nincs sáv.
+    // 0-ás cachedPromptTokens → available, van cache_prefix_break + savingsTokens.
     const nullRun = (id: string): EfficiencyRun => ({
       id,
       kind: 'turn',
@@ -154,13 +162,113 @@ async function main() {
     const missing = evaluateEfficiencyAdvisor([nullRun('a'), nullRun('b'), nullRun('c')])
     assert.equal(missing.cacheDataStatus, 'missing')
     assert.equal(missing.patterns.some((p) => p.kind === 'cache_prefix_break'), false)
-    assert.equal(missing.patterns.every((p) => p.savingsTokens !== null || p.kind !== 'cache_prefix_break'), true)
+    assert.equal(
+      missing.patterns.every((p) => p.kind !== 'cache_prefix_break' || p.savingsTokens === null),
+      true,
+      'csupa nullnál a cache-mintához nem szabad sávot adni',
+    )
+    assert.ok(
+      describeEfficiencyCacheDataStatus(missing.cacheDataStatus).includes('nem ad cache-adatot'),
+    )
 
     const broken = evaluateEfficiencyAdvisor([zeroRun('a'), zeroRun('b'), zeroRun('c')])
     assert.equal(broken.cacheDataStatus, 'available')
+    assert.notEqual(broken.cacheDataStatus, missing.cacheDataStatus, 'null és 0 megkülönböztethető')
     assert.ok(broken.patterns.some((p) => p.kind === 'cache_prefix_break'))
     const cache = broken.patterns.find((p) => p.kind === 'cache_prefix_break')
     assert.ok(cache?.savingsTokens, '0-ás cache-nél kell megtakarítás-sáv')
+    assert.equal(cache?.metric.hitRatio, 0)
+    assert.equal(cache?.metric.model, 'gpt-5.4')
+    assert.equal(cache?.suggestion.applicable, false)
+    assert.equal(cache?.suggestion.link, 'prompt_cache')
+    assert.ok(describeEfficiencyPattern('cache_prefix_break', cache?.metric).includes('gpt-5.4'))
+  })
+
+  await check('cache: vegyes modellek külön csoport — a 10-es küszöb modellcsoportonként', () => {
+    // 6+6 hívás két modellre, mind 0 cache → összességében 12, de azonos modellből csak 6.
+    const mixed = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: [
+        ...Array.from({ length: 6 }, (_, i) =>
+          modelCall({
+            createdAt: i,
+            promptTokens: 4_000,
+            cachedPromptTokens: 0,
+            model: 'gpt-5.4',
+          }),
+        ),
+        ...Array.from({ length: 6 }, (_, i) =>
+          modelCall({
+            createdAt: 100 + i,
+            promptTokens: 4_000,
+            cachedPromptTokens: 0,
+            model: 'claude-sonnet',
+          }),
+        ),
+      ],
+      toolCalls: [],
+    })
+    const card = evaluateEfficiencyAdvisor([mixed('a'), mixed('b'), mixed('c')])
+    assert.equal(card.cacheDataStatus, 'available')
+    assert.equal(
+      card.patterns.some((p) => p.kind === 'cache_prefix_break'),
+      false,
+      'különböző modellek nem adhatók össze a minCacheCalls küszöbhöz',
+    )
+  })
+
+  await check('cache: magas találati arány nem mintázat', () => {
+    const warm = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: Array.from({ length: 12 }, (_, i) =>
+        modelCall({
+          createdAt: i,
+          promptTokens: 4_000,
+          cachedPromptTokens: 3_200,
+          model: 'gpt-5.4',
+        }),
+      ),
+      toolCalls: [],
+    })
+    const card = evaluateEfficiencyAdvisor([warm('a'), warm('b'), warm('c')])
+    assert.equal(card.cacheDataStatus, 'available')
+    assert.equal(card.patterns.some((p) => p.kind === 'cache_prefix_break'), false)
+  })
+
+  await check('cache: null sorok kimaradnak az arányból, a 0-ások benne maradnak', () => {
+    // 10 db 0-ás + 5 db null ugyanarra a modellre → a 10 nem-null 0% arány → minta.
+    const partial = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: [
+        ...Array.from({ length: 10 }, (_, i) =>
+          modelCall({
+            createdAt: i,
+            promptTokens: 5_000,
+            cachedPromptTokens: 0,
+            model: 'gpt-5.4',
+          }),
+        ),
+        ...Array.from({ length: 5 }, (_, i) =>
+          modelCall({
+            createdAt: 50 + i,
+            promptTokens: 5_000,
+            cachedPromptTokens: null,
+            model: 'gpt-5.4',
+          }),
+        ),
+      ],
+      toolCalls: [],
+    })
+    const card = evaluateEfficiencyAdvisor([partial('a'), partial('b'), partial('c')])
+    assert.equal(card.cacheDataStatus, 'available')
+    const cache = card.patterns.find((p) => p.kind === 'cache_prefix_break')
+    assert.ok(cache, 'a nem-null 0-ásoknak mintát kell adniuk')
+    assert.equal(cache?.metric.cacheCalls, 10 * 3)
+    assert.equal(cache?.metric.hitRatio, 0)
+    assert.ok(cache?.savingsTokens, 'mérhető cache-adat mellett kell sáv')
   })
 
   await check('nincs kettős könyvelés: a szeletek összege a ModelCall token-összeg', () => {
