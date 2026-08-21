@@ -43,6 +43,13 @@ export function EfficiencyAdvisorPanel({
   const [pending, startTransition] = useTransition()
 
   const { card, applied } = view
+  // Alkalmazott, de a mostani ablakban MÁR NEM látszó javaslatok. A minta 30 nap
+  // után kiesik a vizsgált futásokból, a `modelConfig` felülbírálás viszont
+  // marad — enélkül a felelős ott ragadna egy beállítással, amit ugyanazon a
+  // felületen nem tudna visszavonni (EFF-12: „egy kattintással visszaállítható").
+  const appliedWithoutPattern = (['repeated_reread', 'context_bloat'] as const).filter(
+    (kind) => applied[kind] && !card.patterns.some((pattern) => pattern.kind === kind),
+  )
   const submit = (kind: 'repeated_reread' | 'context_bloat', revert: boolean) => {
     startTransition(async () => {
       setError(null)
@@ -151,6 +158,32 @@ export function EfficiencyAdvisorPanel({
           )
         })}
       </ul>
+
+      {appliedWithoutPattern.length > 0 ? (
+        <div className="mt-4 rounded-lg border border-line bg-night-2 px-3 py-3">
+          <p className="text-sm font-medium text-ink">Alkalmazott javaslatok</p>
+          <p className="mt-1 text-xs text-ink-faint">
+            Ez a beállítás él ennél az agentnél, de a vizsgált futásokban már nem látszik a minta.
+          </p>
+          <ul className="mt-2 space-y-2">
+            {appliedWithoutPattern.map((kind) => (
+              <li key={kind} className="flex flex-wrap items-center gap-3">
+                <span className="text-sm text-ink-soft">{patternTitle(kind)}</span>
+                {canApply ? (
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => submit(kind, true)}
+                    className="rounded-md border border-line bg-panel px-3 py-1.5 text-sm text-ink hover:border-coral disabled:opacity-50"
+                  >
+                    {pendingKind === kind ? 'Mentés…' : 'Visszavonás'}
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {error ? <p className="mt-3 text-sm text-coral">{error}</p> : null}
     </Card>

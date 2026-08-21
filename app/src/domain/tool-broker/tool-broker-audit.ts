@@ -97,6 +97,12 @@ export async function recordCall(
     connector_type: connectorType,
     access_mode: accessMode,
   }
+  // issue #237 (EFF-02) — egységes `result_chars` MINDEN ágon. A sikeres ág a
+  // valódi hosszat adja át (a modell csatornájára kikerült nyers hasznos teher);
+  // a `denied` / `error` ág nem küld payloadot, ott a helyes érték 0. Így a
+  // „melyik eszköz hoz be ismételten túl sokat?" elemzésnek nem kell hiányzó
+  // mezőt kezelnie, és egy új hívó sem felejtheti el a mérőszámot.
+  const resultMeta = { result_chars: 0, ...params.resultMeta }
   const metadata = {
     tool: params.input.tool,
     status: params.status,
@@ -107,7 +113,7 @@ export async function recordCall(
     outcome,
     effect: effectSummary,
     argsMeta: sanitizedArgsMeta,
-    resultMeta: params.resultMeta,
+    resultMeta,
     acting_user_id: params.actingUserId ?? params.input.actingUserId ?? null,
     grant_id: params.grantId ?? null,
   }
@@ -121,7 +127,7 @@ export async function recordCall(
     toolName: params.input.tool,
     status: params.status,
     argsMeta: sanitizedArgsMeta as Prisma.JsonValue,
-    resultMeta: params.resultMeta as Prisma.JsonValue,
+    resultMeta: resultMeta as Prisma.JsonValue,
     latencyMs: params.latencyMs,
     policyDecision: params.policyDecision,
     trustClass,

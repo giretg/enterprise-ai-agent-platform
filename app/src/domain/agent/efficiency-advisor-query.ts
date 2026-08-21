@@ -8,11 +8,13 @@
 import type { Prisma } from '@prisma/client'
 import {
   evaluateEfficiencyAdvisor,
+  resolveEfficiencyAdvisorThresholds,
   type EfficiencyAdvisorView,
   type EfficiencyPatternKind,
   type EfficiencyRun,
   type EfficiencyRunKind,
 } from '@/domain/agent/efficiency-advisor'
+import { SIDE_EFFECTING_TOOLS } from '@/domain/tool-broker/tool-trust-registry'
 import { prisma } from '@/lib/db'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 
@@ -38,6 +40,17 @@ function runKeyOf(row: {
 
 function runKeyString(key: RunKey): string {
   return `${key.kind}:${key.id}`
+}
+
+/**
+ * Mutáló-e a tool? SZÁNDÉKOSAN a nyers regisztert nézzük, nem az
+ * `isSideEffectingTool()` fail-safe-jét: ott az ismeretlen név `true`-t ad (a
+ * jóváhagyás-kapunak ez a helyes óvatosság), itt viszont az ismeretlen nevek
+ * épp a loop saját OLVASÓ eszközei (`tool_result_read`), és a fail-safe kiejtené
+ * őket az újraolvasás-elemzésből — vagyis pont a mért incidens mintáját.
+ */
+function isMutatingTool(toolName: string): boolean {
+  return (SIDE_EFFECTING_TOOLS as Record<string, boolean | undefined>)[toolName] === true
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -150,6 +163,7 @@ export async function loadEfficiencyAdvisorCard(input: {
     const list = toolsByRun.get(id) ?? []
     list.push({
       toolName: row.toolName,
+      sideEffecting: isMutatingTool(row.toolName),
       argsMeta: asRecord(row.argsMeta),
       resultMeta: row.resultMeta ? asRecord(row.resultMeta) : null,
     })
@@ -164,7 +178,9 @@ export async function loadEfficiencyAdvisorCard(input: {
   }))
 
   return {
-    card: evaluateEfficiencyAdvisor(runs),
+    // A küszöbök env-ből hangolhatók (EFF-03) — a default konstans átadása itt
+    // csendben kilőtte volna az összes `EFFICIENCY_ADVISOR_*` hangolást.
+    card: evaluateEfficiencyAdvisor(runs, resolveEfficiencyAdvisorThresholds(process.env)),
     applied: appliedFromModelConfig(agent.modelConfig),
   }
 }
