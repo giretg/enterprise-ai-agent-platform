@@ -347,6 +347,7 @@ async function main() {
     assert.equal(result.text, text)
     assert.equal(result.appliedCount, 0)
     assert.equal(result.text.includes('[[COMPANY_'), false)
+  })
 
   if (failures > 0) {
     console.error(`\n${failures} teszt elbukott`)
