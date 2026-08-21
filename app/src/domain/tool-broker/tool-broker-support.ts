@@ -848,7 +848,29 @@ function isWebSearchResult(value: unknown): value is WebSearchResult {
   )
 }
 
+/**
+ * EFF-02 — a modell csatornájára kerülő **nyers** hasznos teher karakter-hossza
+ * (ugyanaz a `JSON.stringify(machineData)` méret, amit a tool-loop az
+ * archiválási küszöbhöz használ). Nem a becsomagolt `modelText`, és sosem
+ * szövegrészlet — csak a szám.
+ */
+export function rawResultChars(result: unknown): number {
+  try {
+    const encoded = JSON.stringify(result)
+    return typeof encoded === 'string' ? encoded.length : 0
+  } catch {
+    return String(result).length
+  }
+}
+
 export function resultMeta(result: ToolExecutionResult): Record<string, unknown> {
+  return {
+    ...resultMetaFields(result),
+    result_chars: rawResultChars(result),
+  }
+}
+
+function resultMetaFields(result: ToolExecutionResult): Record<string, unknown> {
   // 'in' nem szűri ki a Record<string, string> alakú eredménytípusokat (pl.
   // GmailGetMessageResult), ezért explicit type predicate kell a biztos narrowinghoz.
   if (isWebSearchResult(result)) {
