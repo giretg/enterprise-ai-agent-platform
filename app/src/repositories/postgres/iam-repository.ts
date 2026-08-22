@@ -294,6 +294,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Array<{
     minRole: 'admin',
     description: 'Memóriaelem végleges (hard) törlésének jóváhagyása',
   },
+  {
+    permissionKey: 'analysis.run',
+    minRole: 'admin',
+    description: 'Futás-elemző agent elérése és elemzés indítása',
+  },
 ]
 
 export async function ensureDefaultRolePermissions(

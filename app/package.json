@@ -167,6 +167,7 @@
     "test:default-user-agent-grants": "tsx scripts/default-user-agent-grants.test.ts",
     "test:default-user-agent-grants-db": "tsx scripts/default-user-agent-grants-db.test.ts",
     "test:run-analyst-materialization-db": "tsx scripts/run-analyst-materialization-db.test.ts",
+    "test:run-analyst-role": "tsx scripts/run-analyst-role.test.ts",
     "test:surrogate-map": "tsx scripts/surrogate-map.test.ts",
     "test:surrogate-format": "tsx scripts/surrogate-format.test.ts",
     "test:val-surrogate-crypto-shred": "tsx scripts/val-surrogate-crypto-shred.test.ts",

@@ -1,5 +1,5 @@
 /**
- * Tenantonkénti Futás-elemző materializáció (spec #343, RA-01 / issue #345).
+ * Tenantonkénti Futás-elemző materializáció (spec #343, RA-01 / #345, RA-02 / #346).
  *
  * A Web-Egress mintájára: minden tenant SAJÁT Futás-elemző példányt kap, normál
  * tenant-agentként. Provisioningkor `inboundRestricted` és `outboundRestricted` is
@@ -8,8 +8,19 @@
  */
 import type { Agent } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
-import { prisma } from '@/lib/db'
-import { RUN_ANALYST_ROLE_TEMPLATE } from '@/domain/agents/run-analyst-role'
+import { configPrisma, prisma } from '@/lib/db'
+import {
+  RUN_ANALYST_PRIVACY_CATEGORY_POLICY,
+  RUN_ANALYST_ROLE_CAPABILITIES,
+  RUN_ANALYST_ROLE_TEMPLATE,
+} from '@/domain/agents/run-analyst-role'
+import {
+  applyCategoryMapPatch,
+  layerHasOverlay,
+  parsePrivacyCategoryPolicyLayer,
+  PRIVACY_CATEGORY_POLICY_AGENT_KEY,
+  type PrivacyPolicyCategory,
+} from '@/domain/privacy/privacy-category-policy'
 
 /** A tenant Futás-elemző agentje, ha már létezik. */
 export async function findTenantRunAnalystAgent(tenantId: string): Promise<Agent | null> {
@@ -78,6 +89,61 @@ export async function materializeRunAnalystAdminGrants(params: {
   return { grantsCreated: rows.length }
 }
 
+async function ensureCapabilities(agentId: string): Promise<void> {
+  for (const toolName of RUN_ANALYST_ROLE_CAPABILITIES) {
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId, toolName } },
+      create: { agentId, toolName, allowed: true },
+      update: { allowed: true },
+    })
+  }
+}
+
+/**
+ * Agent-szintű kategória-policy alapérték (#346). Idempotens: hiányzó scanner-
+ * kategóriákat pótolja; a már beállított overlay-értékeket nem írja felül.
+ */
+export async function ensureRunAnalystPrivacyCategoryPolicy(
+  agentId: string,
+  actorId: string,
+): Promise<void> {
+  const row = await configPrisma.platformSetting.findUnique({
+    where: { key: PRIVACY_CATEGORY_POLICY_AGENT_KEY },
+  })
+  const raw = row?.value
+  const store: Record<string, unknown> =
+    raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...(raw as Record<string, unknown>) } : {}
+  const current = parsePrivacyCategoryPolicyLayer(store[agentId])
+
+  const patch: Partial<Record<PrivacyPolicyCategory, typeof current.categories[PrivacyPolicyCategory]>> =
+    {}
+  for (const [category, action] of Object.entries(RUN_ANALYST_PRIVACY_CATEGORY_POLICY)) {
+    if (current.categories[category as PrivacyPolicyCategory] === undefined) {
+      patch[category as PrivacyPolicyCategory] = action
+    }
+  }
+  if (Object.keys(patch).length === 0) return
+
+  const categories = applyCategoryMapPatch(current.categories, patch)
+  const custom = { ...current.custom }
+  const next = {
+    categories,
+    custom,
+    updatedById: actorId,
+    updatedAt: new Date().toISOString(),
+  }
+  if (!layerHasOverlay(next)) {
+    delete store[agentId]
+  } else {
+    store[agentId] = next
+  }
+  await configPrisma.platformSetting.upsert({
+    where: { key: PRIVACY_CATEGORY_POLICY_AGENT_KEY },
+    create: { key: PRIVACY_CATEGORY_POLICY_AGENT_KEY, value: store, updatedById: actorId },
+    update: { value: store, updatedById: actorId },
+  })
+}
+
 /**
  * Idempotens materializáció. Létrehozza (vagy meglévőnél csak az admin grantokat
  * pótolja) a tenant Futás-elemző agentjét.
@@ -93,6 +159,8 @@ export async function ensureTenantRunAnalystAgent(params: {
 }): Promise<Agent> {
   const existing = await findTenantRunAnalystAgent(params.tenantId)
   if (existing) {
+    await ensureCapabilities(existing.id)
+    await ensureRunAnalystPrivacyCategoryPolicy(existing.id, params.approvedById)
     await materializeRunAnalystAdminGrants({
       tenantId: params.tenantId,
       actorUserId: params.approvedById,
@@ -133,6 +201,7 @@ export async function ensureTenantRunAnalystAgent(params: {
       inboundRestricted: true,
       outboundRestricted: true,
       hiddenFromOperators: true,
+      allowSensitiveExternalModel: false,
       currentVersion: 1,
       currentRoleInstructionVersion: 1,
       currentBehaviorProfileVersion: 1,
@@ -153,6 +222,8 @@ export async function ensureTenantRunAnalystAgent(params: {
     },
   })
 
+  await ensureCapabilities(agent.id)
+  await ensureRunAnalystPrivacyCategoryPolicy(agent.id, params.approvedById)
   await materializeRunAnalystAdminGrants({
     tenantId: params.tenantId,
     actorUserId: params.approvedById,

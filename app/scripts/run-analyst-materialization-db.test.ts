@@ -11,8 +11,26 @@ import {
   findTenantRunAnalystAgent,
   materializeRunAnalystAdminGrants,
 } from '../src/domain/agent-access/run-analyst-materialization'
+import { RUN_ANALYST_ROLE_CAPABILITIES } from '../src/domain/agents/run-analyst-role'
 import { materializeDefaultUserAgentGrants } from '../src/domain/agent-access/default-user-agent-grants'
 import { isAdminOnlyGraphNode, receivesDefaultUserAgentGrants } from '../src/lib/platform-agent-registry'
+import {
+  allowsExternalRaw,
+  parsePrivacyCategoryPolicyLayer,
+  PRIVACY_CATEGORY_POLICY_AGENT_KEY,
+  resolvePrivacyCategoryPolicy,
+} from '../src/domain/privacy/privacy-category-policy'
+import { configPrisma } from '../src/lib/db'
+import {
+  AllowlistAuthorizer,
+  type ActingUserLookup,
+  type RoleTemplateLookup,
+} from '../src/domain/tool-broker/tool-broker-service'
+import type {
+  AgentRepository,
+  ConnectorGrantRepository,
+  ToolBrokerRepository,
+} from '../src/repositories/interfaces'
 
 let failures = 0
 
@@ -80,6 +98,30 @@ async function main() {
     assert.equal(agent.hiddenFromOperators, true)
     assert.equal(agent.inboundRestricted, true)
     assert.equal(agent.outboundRestricted, true)
+    assert.equal(agent.allowSensitiveExternalModel, false)
+
+    const caps = await prisma.capability.findMany({
+      where: { agentId: agent.id, allowed: true },
+      orderBy: { toolName: 'asc' },
+    })
+    assert.deepEqual(
+      caps.map((c) => c.toolName),
+      [...RUN_ANALYST_ROLE_CAPABILITIES].sort(),
+    )
+
+    const policyRow = await configPrisma.platformSetting.findUnique({
+      where: { key: PRIVACY_CATEGORY_POLICY_AGENT_KEY },
+    })
+    const store = policyRow?.value as Record<string, unknown> | null
+    const agentLayer = parsePrivacyCategoryPolicyLayer(store?.[agent.id])
+    const resolved = resolvePrivacyCategoryPolicy({
+      agent: agentLayer,
+      legacyAllowSensitiveExternalModel: true,
+    })
+    assert.equal(resolved.legacyToggleApplied, false)
+    assert.equal(allowsExternalRaw(resolved.categories.pan), false)
+    assert.equal(allowsExternalRaw(resolved.categories.iban), false)
+    assert.equal(allowsExternalRaw(resolved.categories.secret_key), false)
 
     const again = await ensureTenantRunAnalystAgent({
       tenantId: s.tenant.id,
@@ -179,6 +221,44 @@ async function main() {
     })
     assert.equal(grant.canView, true)
     assert.equal(grant.canAddress, true)
+  })
+
+  await check('kimenő tool (web_search) capability nélkül → capability_not_allowed', async () => {
+    const s = await seedTenant()
+    const agent = await ensureTenantRunAnalystAgent({
+      tenantId: s.tenant.id,
+      approvedById: s.admin.id,
+    })
+    const allowed = new Set(
+      (await prisma.capability.findMany({ where: { agentId: agent.id, allowed: true } })).map(
+        (c) => c.toolName,
+      ),
+    )
+    const tools = {
+      findCapability: async (_agentId: string, tool: string) =>
+        allowed.has(tool) ? { allowed: true } : null,
+      findConnectorForAgent: async () => null,
+    } as unknown as ToolBrokerRepository
+    const agents = {
+      findById: async () => agent,
+    } as unknown as AgentRepository
+    const grants = { findActiveGrant: async () => null } as unknown as ConnectorGrantRepository
+    const lookupActingUser: ActingUserLookup = async () => ({ status: 'active' })
+    const lookupRoleTemplate: RoleTemplateLookup = async () => ({ toolAccessAllowed: true })
+    const authorizer = new AllowlistAuthorizer(
+      tools,
+      agents,
+      grants,
+      lookupActingUser,
+      lookupRoleTemplate,
+    )
+    const denied = await authorizer.authorize({
+      agentId: agent.id,
+      tool: 'web_search',
+      tenantId: s.tenant.id,
+    })
+    assert.equal(denied.allowed, false)
+    if (!denied.allowed) assert.equal(denied.reason, 'capability_not_allowed')
   })
 
   console.log(failures === 0 ? '\nMinden DB-regresszió zöld.' : `\n${failures} teszt elbukott.`)
