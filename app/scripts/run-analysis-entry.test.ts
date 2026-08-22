@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import {
   buildRunAnalysisAgentHref,
   buildRunAnalysisPrefill,
-} from '../src/lib/run-analysis-entry'
+} from '../src/lib/run-analysis-shared'
 
 assert.match(
   buildRunAnalysisPrefill({ kind: 'ticket', ticketId: 't-1', title: 'Hiba a lépésben' }),

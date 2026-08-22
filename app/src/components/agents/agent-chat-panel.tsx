@@ -49,7 +49,7 @@ import {
   buildRunAnalysisAgentHref,
   buildRunAnalysisPrefill,
   type RunAnalysisEntry,
-} from '@/lib/run-analysis-entry'
+} from '@/lib/run-analysis-shared'
 import { getChatPrivacyMarkerContext } from '@/app/actions/privacy'
 import {
   buildChatPrivacyMarkers,

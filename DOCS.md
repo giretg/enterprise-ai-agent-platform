@@ -329,6 +329,14 @@ Utólagos, olvasás-oldali kártya az agent adatlapján (`/control-plane/agents/
 
 Három állapot, mind kimondva: *rendben* / *van megállapítás* / *nincs elég adat*. Ablak: 30 nap vagy a legutóbbi 20 futás. Spec: `docs/specs/AI-Agent-Platform-Feature-Spec-Efficiency-Advisor.md`. Teszt: `npm run test:efficiency-advisor`.
 
+### 4.16 Futás-elemző agent
+
+**Fájlok:** `src/domain/run-analysis/` (`run-index-service.ts`, `run-trace-service.ts`, `run-stats-service.ts`), `src/domain/agent-access/run-analyst-materialization.ts`, `src/domain/agents/run-analyst-role.ts`, `src/lib/run-analysis-entry.ts`, `src/components/run-analysis/run-analysis-button.tsx`, skill: `docs/skills/futas-elemzes.SKILL.md`
+
+Tenant-szintű **beszélgethető elemző agent** (`systemRole: run_analyst`), csak tenant adminnak (`analysis.run`). Három olvasó tool: `run_index` (futás-fejlécek), `run_stats` (aggregátumok, ismétlődő forrás-kulcsok), `run_trace` (lapozott idővonal + folyamat-nézet slot-gap-pel). Egy író jog: `ticket_create`. Kimenő egress nincs. A beszélgetés-, ticket- és folyamat-felületen **Elemezd** gomb navigál az elemző chathez előre kitöltött üzenettel (`?openChat=1&prefill=…`).
+
+Javasol, nem alkalmaz — playbook → Playbook Author, skill → propose/review, memória → tanulási ticket, kapcsolók → [#304](https://github.com/giretg/enterprise-ai-agent-platform/issues/304) Hatékonysági tanácsadó **Alkalmazom** gomb. Spec: `docs/specs/AI-Agent-Platform-Feature-Spec-Run-Analyst.md`. Lezáró teszt: `npm run test:run-analyst-verification`.
+
 ---
 
 ## 5. Repository réteg

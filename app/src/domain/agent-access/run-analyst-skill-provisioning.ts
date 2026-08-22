@@ -1,3 +1,5 @@
+import 'server-only'
+
 /**
  * Globális „Futás-elemzés" skill + Futás-elemző hozzárendelés (RA-07 / #351).
  *

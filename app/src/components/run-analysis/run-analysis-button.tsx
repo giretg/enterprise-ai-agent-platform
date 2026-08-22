@@ -3,7 +3,7 @@ import {
   buildRunAnalysisAgentHref,
   buildRunAnalysisPrefill,
   type RunAnalysisScope,
-} from '@/lib/run-analysis-entry'
+} from '@/lib/run-analysis-shared'
 
 const DEFAULT_CLASS =
   'rounded-full border border-honey/35 bg-honey/10 px-4 py-2.5 text-sm font-semibold text-honey transition-colors hover:bg-honey/20'

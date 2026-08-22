@@ -173,6 +173,7 @@
     "test:run-index": "tsx scripts/run-index.test.ts",
     "test:run-trace": "tsx scripts/run-trace.test.ts",
     "test:run-stats": "tsx scripts/run-stats.test.ts",
+    "test:run-analyst-verification": "tsx scripts/run-analyst-verification.test.ts",
     "test:surrogate-map": "tsx scripts/surrogate-map.test.ts",
     "test:surrogate-format": "tsx scripts/surrogate-format.test.ts",
     "test:val-surrogate-crypto-shred": "tsx scripts/val-surrogate-crypto-shred.test.ts",

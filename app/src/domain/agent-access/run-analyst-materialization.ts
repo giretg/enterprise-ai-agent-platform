@@ -1,3 +1,5 @@
+import 'server-only'
+
 /**
  * Tenantonkénti Futás-elemző materializáció (spec #343, RA-01 / #345, RA-02 / #346).
  *
@@ -15,7 +17,6 @@ import {
   RUN_ANALYST_ROLE_TEMPLATE,
   mergeRunAnalystLoopGuardModelConfig,
 } from '@/domain/agents/run-analyst-role'
-import { ensureRunAnalystAnalysisSkill } from '@/domain/agent-access/run-analyst-skill-provisioning'
 import {
   applyCategoryMapPatch,
   layerHasOverlay,
@@ -113,6 +114,7 @@ async function ensureLoopGuardModelConfig(agentId: string): Promise<void> {
 }
 
 async function ensureRunAnalystSkill(agentId: string, actorId: string): Promise<void> {
+  const { ensureRunAnalystAnalysisSkill } = await import('./run-analyst-skill-provisioning')
   await ensureRunAnalystAnalysisSkill({ agentId, actorId })
 }
 
