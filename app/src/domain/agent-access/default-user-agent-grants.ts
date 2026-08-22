@@ -3,13 +3,15 @@
  *
  * ÜZLETI MODELL: egy kolléga vagy láthat / megszólíthat egy agentet, vagy nem.
  * Nincs „alapból mindenkié” UI-állapot. A kiindulás: a tenant minden (pending/active)
- * tagja mindkét jogot megkapja minden normál tenant-agentre; az admin ezután pipával
- * vesz el. A Web-Egress user→agent irányban tilos, ezért kimarad.
+ * tagja mindkét jogot megkapja minden normál (`systemRole: null`) tenant-agentre; az
+ * admin ezután pipával vesz el. Rendszer-szerepű agentek (Web-Egress, Futás-elemző, …)
+ * deny-by-default kimaradnak — hozzáférésüket a saját materializációjuk adja explicit
+ * grantokkal. Kivétel csak a `DEFAULT_GRANTABLE_SYSTEM_ROLES` allowlistben nevesíthető.
  */
 import { randomUUID } from 'node:crypto'
 import { prisma } from '@/lib/db'
 import { AGENT_ACCESS_SUBJECT_MEMBERSHIP_STATUSES } from '@/lib/agent-access-graph'
-import { WEB_EGRESS_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
+import { DEFAULT_GRANTABLE_SYSTEM_ROLES } from '@/lib/platform-agent-registry'
 import { appendAuditInTransaction } from '@/repositories/postgres/audit-repository'
 
 export type MaterializeDefaultGrantsResult = {
@@ -18,10 +20,19 @@ export type MaterializeDefaultGrantsResult = {
 }
 
 function grantableAgentWhere(tenantId: string, agentId?: string) {
-  return {
+  const base = {
     tenantId,
     ...(agentId ? { id: agentId } : {}),
-    OR: [{ systemRole: null }, { systemRole: { not: WEB_EGRESS_SYSTEM_ROLE } }],
+  }
+  if (DEFAULT_GRANTABLE_SYSTEM_ROLES.length === 0) {
+    return { ...base, systemRole: null }
+  }
+  return {
+    ...base,
+    OR: [
+      { systemRole: null },
+      { systemRole: { in: [...DEFAULT_GRANTABLE_SYSTEM_ROLES] } },
+    ],
   }
 }
 

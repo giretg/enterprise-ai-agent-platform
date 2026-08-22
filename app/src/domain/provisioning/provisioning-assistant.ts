@@ -148,6 +148,8 @@ export type DraftConfigResult =
 
 const SUPPORTED_PROVISIONING_PROVIDERS = new Set([
   'chatgpt-oauth',
+  'claude-code-oauth',
+  'grok-cli-oauth',
   'gemini',
   'ollama',
   'openrouter',

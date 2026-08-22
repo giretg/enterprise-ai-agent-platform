@@ -38,7 +38,21 @@ import {
   stubChatStream,
   type ChatGptOAuthConcurrencyDiagnostic,
 } from './chatgpt-oauth-bridge'
+import {
+  callClaudeCodeOAuth,
+  callClaudeCodeOAuthStream,
+  createClaudeCodeTokenStoreFromEnv,
+  ensureFreshClaudeCodeTokens,
+  resolveClaudeThinkingBudget,
+} from './claude-code-oauth-bridge'
 import { GeminiProvider } from './gemini-provider'
+import {
+  callGrokCliOAuth,
+  callGrokCliOAuthStream,
+  createGrokCliTokenStoreFromEnv,
+  ensureFreshGrokCliTokens,
+  resolveGrokReasoningEffort,
+} from './grok-cli-oauth-bridge'
 import { createTokenStoreFromEnv, ensureFreshTokens } from './oauth-token-store'
 import {
   classifyPrompt,
@@ -201,8 +215,9 @@ export type ModelConfig = {
   model: string
   /**
    * Ortogonális gondolkodási profil (luna / terra / sol).
-   * A ChatGPT OAuth ágon `reasoningEffort`-re mapelődik; más providernél
-   * jelenleg no-op, de a konfigban megőrződik.
+   * ChatGPT OAuth: `reasoningEffort`; Claude Code: thinking budget;
+   * Grok CLI: `reasoning.effort`. Más providernél jelenleg no-op, de a
+   * konfigban megőrződik.
    */
   modelType?: 'luna' | 'terra' | 'sol'
   temperature?: number
@@ -681,6 +696,157 @@ export class ChatGptOAuthProvider implements ModelProvider {
   }
 }
 
+function isClaudeCodeStubConfigured(): boolean {
+  return process.env.CLAUDE_CODE_OAUTH_STUB === 'true'
+}
+
+function isGrokCliStubConfigured(): boolean {
+  return process.env.GROK_CLI_OAUTH_STUB === 'true'
+}
+
+/**
+ * Claude Code előfizetéses OAuth (Pro/Max) — `claude auth login` / `claude setup-token`.
+ * Nem Anthropic API-kulcs: a CLI session tokenjével hívjuk a Messages API-t.
+ */
+export class ClaudeCodeOAuthProvider implements ModelProvider {
+  readonly name = 'claude-code-oauth'
+  readonly supportsStructuredOutput = true
+
+  async chat(input: {
+    agentId: string
+    ticketId?: string
+    messages: GatewayMessage[]
+    modelConfig: ModelConfig
+    tools?: ToolDefinition[]
+    responseJsonSchema?: Record<string, unknown>
+    onReasoningDelta?: (delta: string) => void
+  }): Promise<ModelProviderResult> {
+    if (isClaudeCodeStubConfigured()) {
+      return stubWikiAnswer(input.messages)
+    }
+    if (!createClaudeCodeTokenStoreFromEnv()) {
+      throw new Error(
+        'Claude Code OAuth provider is not configured (CLAUDE_CODE_OAUTH_EMBEDDED=true vagy CLAUDE_CODE_OAUTH_TOKEN)',
+      )
+    }
+    const started = Date.now()
+    const tokens = await ensureFreshClaudeCodeTokens()
+    const result = await callClaudeCodeOAuth({
+      tokens,
+      messages: input.messages,
+      model: input.modelConfig.model,
+      tools: input.tools,
+      maxTokens: input.modelConfig.maxTokens,
+      thinkingBudget: input.onReasoningDelta
+        ? resolveClaudeThinkingBudget(input.modelConfig.modelType)
+        : null,
+      onReasoningDelta: input.onReasoningDelta,
+    })
+    return {
+      content: result.content,
+      toolCalls: result.toolCalls,
+      usage: result.usage,
+      latencyMs: Date.now() - started,
+      model: result.model,
+    }
+  }
+
+  async *chatStream(input: {
+    agentId: string
+    ticketId?: string
+    messages: GatewayMessage[]
+    modelConfig: ModelConfig
+    onReasoningDelta?: (delta: string) => void
+    onUsage?: (usage: ModelProviderUsage) => void
+  }): AsyncGenerator<string, void, unknown> {
+    if (isClaudeCodeStubConfigured()) {
+      const result = stubWikiAnswer(input.messages)
+      yield* stubChatStream(result.content)
+      return
+    }
+    const tokens = await ensureFreshClaudeCodeTokens()
+    yield* callClaudeCodeOAuthStream({
+      tokens,
+      messages: input.messages,
+      model: input.modelConfig.model,
+      thinkingBudget: input.onReasoningDelta
+        ? resolveClaudeThinkingBudget(input.modelConfig.modelType)
+        : null,
+      onReasoningDelta: input.onReasoningDelta,
+    })
+  }
+}
+
+/**
+ * Grok CLI előfizetéses OAuth (SuperGrok / X Premium+) — `grok login`.
+ * Nem xAI API-kulcs: a ~/.grok/auth.json session tokenjével a CLI chat-proxyt hívjuk.
+ */
+export class GrokCliOAuthProvider implements ModelProvider {
+  readonly name = 'grok-cli-oauth'
+  readonly supportsStructuredOutput = true
+
+  async chat(input: {
+    agentId: string
+    ticketId?: string
+    messages: GatewayMessage[]
+    modelConfig: ModelConfig
+    tools?: ToolDefinition[]
+    responseJsonSchema?: Record<string, unknown>
+    onReasoningDelta?: (delta: string) => void
+  }): Promise<ModelProviderResult> {
+    if (isGrokCliStubConfigured()) {
+      return stubWikiAnswer(input.messages)
+    }
+    if (!createGrokCliTokenStoreFromEnv()) {
+      throw new Error(
+        'Grok CLI OAuth provider is not configured (GROK_CLI_OAUTH_EMBEDDED=true és `grok login`)',
+      )
+    }
+    const started = Date.now()
+    const tokens = await ensureFreshGrokCliTokens()
+    const result = await callGrokCliOAuth({
+      tokens,
+      messages: input.messages,
+      model: input.modelConfig.model,
+      tools: input.tools,
+      maxTokens: input.modelConfig.maxTokens,
+      temperature: input.modelConfig.temperature,
+      reasoningEffort: resolveGrokReasoningEffort(input.modelConfig.modelType),
+      onReasoningDelta: input.onReasoningDelta,
+    })
+    return {
+      content: result.content,
+      toolCalls: result.toolCalls,
+      usage: result.usage,
+      latencyMs: Date.now() - started,
+      model: result.model,
+    }
+  }
+
+  async *chatStream(input: {
+    agentId: string
+    ticketId?: string
+    messages: GatewayMessage[]
+    modelConfig: ModelConfig
+    onReasoningDelta?: (delta: string) => void
+    onUsage?: (usage: ModelProviderUsage) => void
+  }): AsyncGenerator<string, void, unknown> {
+    if (isGrokCliStubConfigured()) {
+      const result = stubWikiAnswer(input.messages)
+      yield* stubChatStream(result.content)
+      return
+    }
+    const tokens = await ensureFreshGrokCliTokens()
+    yield* callGrokCliOAuthStream({
+      tokens,
+      messages: input.messages,
+      model: input.modelConfig.model,
+      reasoningEffort: resolveGrokReasoningEffort(input.modelConfig.modelType),
+      onReasoningDelta: input.onReasoningDelta,
+    })
+  }
+}
+
 /**
  * OpenAI-kompatibilis provider helyi/önálló modellekhez (pl. Ollama-n futó
  * Gemma, vagy llama.cpp `llama-server`). A `modelConfig.provider` ezt választja
@@ -932,6 +1098,8 @@ export class OpenAiCompatibleProvider implements ModelProvider {
 export function createDefaultProviders(): Map<string, ModelProvider> {
   const providers: ModelProvider[] = [
     new ChatGptOAuthProvider(),
+    new ClaudeCodeOAuthProvider(),
+    new GrokCliOAuthProvider(),
     new GeminiProvider(),
     // Helyi Gemma Ollama-n keresztül (OpenAI-kompatibilis /v1).
     new OpenAiCompatibleProvider('ollama', 'OLLAMA_BASE_URL', 'http://localhost:11434/v1', 'OLLAMA_API_KEY'),

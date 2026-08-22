@@ -23,6 +23,7 @@ import {
   createPreapprovedRunBudget,
   evaluateHttpApiRequestGate,
   evaluateHttpApiWriteGrant,
+  httpApiRequestArgsError,
   httpApiWriteGrantDeniedMessage,
   requiresConsequenceApproval,
 } from '../src/domain/tool-broker/consequence-gate-policy'
@@ -324,6 +325,56 @@ async function main() {
       ).reason,
       'http_api_write_or_danger',
     )
+  })
+
+  await test('(h2) http_api_request: üres path → nem kapu, azonnali args-hiba', () => {
+    const connectors = [{ id: 'conn-1', config: sampleHttpConfig, accessMode: 'write' as const }]
+    const gate = evaluateHttpApiRequestGate(
+      { connectorId: 'conn-1', method: 'POST', path: '' },
+      connectors,
+    )
+    assert.equal(gate.required, false)
+    assert.equal(gate.reason, 'http_api_malformed')
+    const err = httpApiRequestArgsError({ method: 'POST', path: '' }, connectors)
+    assert.ok(err)
+    assert.match(err!, /path kötelező/)
+  })
+
+  await test('loop: http_api_request üres path → DENIED, nincs jóváhagyási kártya', async () => {
+    const gw: GatewayCallArgs[] = []
+    let approvals = 0
+    const { result, gated, invoked } = await runLoop(
+      [
+        {
+          toolCalls: [
+            { id: 'c1', name: 'http_api_request', input: { method: 'POST', path: '' } },
+          ],
+        },
+        { content: 'kész' },
+      ],
+      ['http_api_request'],
+      gw,
+      {
+        createConsequenceApproval: async () => {
+          approvals += 1
+          return {
+            approvalId: 'should-not-create',
+            toolName: 'http_api_request',
+            summary: 'nope',
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          }
+        },
+      },
+    )
+    assert.equal(approvals, 0, 'nem nyithat consequence-approvalt')
+    assert.equal(gated.length, 0, 'nem recordConsequenceGateBlock')
+    assert.equal(invoked.length, 0, 'broker.invoke nem fut')
+    assert.equal(result.deniedCount, 1)
+    const toolMsg = gw
+      .flatMap((c) => c.messages)
+      .find((m) => m.role === 'tool' && m.toolCallId === 'c1')
+    assert.match(toolMsg!.content ?? '', /path kötelező/)
+    assert.doesNotMatch(toolMsg!.content ?? '', /JÓVÁHAGYÁS SZÜKSÉGES/)
   })
 
   await test('(i) http_api_request: GET/HEAD soha nem auto (írás-kijátszás ellen)', async () => {

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { ToolName } from '@/domain/tool-broker/tool-broker-types'
 import { TOOL_NAMES, TOOL_REGISTRY } from '@/domain/tool-broker/tool-registry'
 import { githubRepositoryAccessSchema } from '@/domain/connector/github-repository-access-schema'
+import { MODEL_PROVIDER_IDS } from '@/lib/model-providers'
 
 export const ticketFilterSchema = z.object({
   state: z
@@ -178,7 +179,7 @@ export const listTicketCommentsSchema = z.object({
   ticketId: z.string().uuid(),
 })
 
-const modelProviderSchema = z.enum(['chatgpt-oauth', 'gemini', 'ollama', 'openrouter'])
+const modelProviderSchema = z.enum(MODEL_PROVIDER_IDS)
 const modelTypeSchema = z.enum(['luna', 'terra', 'sol'])
 
 export const modelPolicyEntrySchema = z.object({

@@ -53,6 +53,7 @@ import {
   consumePreapprovedBudget,
   createPreapprovedRunBudget,
   evaluateHttpApiWriteGrant,
+  httpApiRequestArgsError,
   httpApiWriteGrantDeniedMessage,
   requiresConsequenceApproval,
   summarizePreapprovedBudget,
@@ -2425,6 +2426,22 @@ export async function runAgentToolLoop(params: {
           'args' in invokeInput && invokeInput.args && typeof invokeInput.args === 'object'
             ? (invokeInput.args as Record<string, unknown>)
             : (call.input as Record<string, unknown>)
+        if (toolName === 'http_api_request') {
+          const argsError = httpApiRequestArgsError(gateArgs, httpApiGateConnectors)
+          if (argsError) {
+            deniedCount += 1
+            noteBarrenToolResult()
+            pushToolResult(call, argsError, 'barren')
+            await emitActivity({
+              id: `tool-${call.id}`,
+              kind: 'tool',
+              title: call.name,
+              detail: 'hibás HTTP API hívás — path vagy connectorId hiányzik',
+              status: 'skipped',
+            })
+            continue
+          }
+        }
         const gate = requiresConsequenceApproval(
           toolName,
           gateArgs,

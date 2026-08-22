@@ -330,7 +330,7 @@ export class PlaybookAuthorAgent {
   }
 }
 
-const SUPPORTED_AUTHOR_PROVIDERS = new Set(['chatgpt-oauth', 'gemini', 'ollama', 'openrouter'])
+const SUPPORTED_AUTHOR_PROVIDERS = new Set(['chatgpt-oauth', 'claude-code-oauth', 'grok-cli-oauth', 'gemini', 'ollama', 'openrouter'])
 
 /** A Playbook Author agent Registry-beli modelConfig-jából (vagy sablon fallback). */
 export function resolvePlaybookAuthorModelConfig(agentModelConfig: unknown): ModelConfig {

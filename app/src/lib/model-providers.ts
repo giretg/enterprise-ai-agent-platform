@@ -59,6 +59,39 @@ export const CHATGPT_OAUTH_MODELS: ModelOption[] = [
   },
 ]
 
+/** Claude Code előfizetés (Pro/Max) — `claude auth login`, nem API-kulcs. */
+export const CLAUDE_CODE_OAUTH_MODELS: ModelOption[] = [
+  {
+    id: 'claude-sonnet-4-6',
+    label: 'Claude Sonnet 4.6',
+    description: 'Claude Code előfizetés — kiegyensúlyozott agent-munkához.',
+  },
+  {
+    id: 'claude-opus-4-6',
+    label: 'Claude Opus 4.6',
+    description: 'Claude Code előfizetés — mélyebb érvelés, összetett feladatok.',
+  },
+  {
+    id: 'claude-haiku-4-5',
+    label: 'Claude Haiku 4.5',
+    description: 'Claude Code előfizetés — gyors, olcsóbb kvótájú modell.',
+  },
+]
+
+/** Grok CLI előfizetés (SuperGrok / X Premium+) — `grok login`, nem xAI API-kulcs. */
+export const GROK_CLI_OAUTH_MODELS: ModelOption[] = [
+  {
+    id: 'grok-4.6',
+    label: 'Grok 4.6',
+    description: 'Grok CLI előfizetés — flagship, 500K context, reasoning.',
+  },
+  {
+    id: 'grok-4.5',
+    label: 'Grok 4.5',
+    description: 'Grok CLI előfizetés — előző flagship, ha a fiók arra van jogosítva.',
+  },
+]
+
 /** Szöveges generálásra ajánlott Gemini modellek (ai.google.dev, 2026-06). */
 export const GEMINI_TEXT_MODELS: ModelOption[] = [
   {
@@ -126,13 +159,38 @@ export const OPENROUTER_TEXT_MODELS: ModelOption[] = [
   },
 ]
 
+export const MODEL_PROVIDER_IDS = [
+  'chatgpt-oauth',
+  'claude-code-oauth',
+  'grok-cli-oauth',
+  'gemini',
+  'ollama',
+  'openrouter',
+] as const
+
+export type ModelProviderId = (typeof MODEL_PROVIDER_IDS)[number]
+
 export const MODEL_PROVIDERS: ModelProviderOption[] = [
   {
     value: 'chatgpt-oauth',
     label: 'ChatGPT OAuth (felhő)',
     defaultModel: 'chatgpt-oauth-default',
-    hint: 'A Model Gateway szerveroldali ChatGPT OAuth mediációja (gpt-5.5).',
+    hint: 'A Model Gateway szerveroldali ChatGPT OAuth mediációja (gpt-5.5). Codex CLI belépés: ~/.codex/auth.json.',
     models: CHATGPT_OAUTH_MODELS,
+  },
+  {
+    value: 'claude-code-oauth',
+    label: 'Claude Code OAuth (előfizetés)',
+    defaultModel: 'claude-sonnet-4-6',
+    hint: 'Claude Pro/Max előfizetés a Claude Code CLI belépésével (`claude auth login` vagy `claude setup-token`). Nem API-kulcs.',
+    models: CLAUDE_CODE_OAUTH_MODELS,
+  },
+  {
+    value: 'grok-cli-oauth',
+    label: 'Grok CLI OAuth (előfizetés)',
+    defaultModel: 'grok-4.6',
+    hint: 'SuperGrok / X Premium+ a Grok CLI belépésével (`grok login`). Token: ~/.grok/auth.json. Nem xAI API-kulcs.',
+    models: GROK_CLI_OAUTH_MODELS,
   },
   {
     value: 'gemini',

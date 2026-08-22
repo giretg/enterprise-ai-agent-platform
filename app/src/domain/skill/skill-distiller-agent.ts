@@ -116,7 +116,7 @@ const DEFAULT_DISTILLER_MODEL_CONFIG: ModelConfig = {
   temperature: 0,
 }
 
-const SUPPORTED_DISTILLER_PROVIDERS = new Set(['chatgpt-oauth', 'gemini', 'ollama', 'openrouter'])
+const SUPPORTED_DISTILLER_PROVIDERS = new Set(['chatgpt-oauth', 'claude-code-oauth', 'grok-cli-oauth', 'gemini', 'ollama', 'openrouter'])
 
 /** A desztilláló modell-konfigurációja az agent Registry-beli configból (vagy fallback). */
 export function resolveSkillDistillerModelConfig(agentModelConfig: unknown): ModelConfig {

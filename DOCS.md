@@ -198,7 +198,7 @@ Számlafeldolgozó és könyvelési egyeztetési agent. Dokumentumok szövegét 
 
 Minden LLM-hívás egyetlen ponton megy át. Felelőssége:
 
-- **Provider routing**: `chatgpt-oauth`, `gemini`, `ollama`, `openrouter`
+- **Provider routing**: `chatgpt-oauth`, `claude-code-oauth`, `grok-cli-oauth`, `gemini`, `ollama`, `openrouter`
 - **Per-ticket guardrail**: `GATEWAY_MAX_CALLS_PER_TICKET` (alapértelmezés: 30) — egy elszabaduló loop nem fogyaszthatja el a napi budgetet
 - **Prompt-cache határ**: a prompt-assembler által megjelölt stabil prefix végére a Gateway `cache_control` breakpointot tesz azoknál a providereknél, amelyek explicit cache-API-t várnak (OpenRouter → Anthropic modellek). A többinél az automatikus prefix-cache él, ott a jelölés no-op. Ld. `docs/specs/AI-Agent-Platform-Feature-Spec-Prompt-Cache-Control-Breakpoints.md`
 - **Teljes naplózás**: minden hívás `ModelCall` rekordot kap (provider, model, tokens, cost, latency, status)
@@ -209,6 +209,8 @@ Minden LLM-hívás egyetlen ponton megy át. Felelőssége:
 | Provider | Konfig | Megjegyzés |
 |---|---|---|
 | `chatgpt-oauth` | Szerver-oldali ChatGPT OAuth bridge | Alapértelmezett (gpt-5.5) |
+| `claude-code-oauth` | Claude Code CLI előfizetés (Pro/Max) | `claude auth login` / `claude setup-token` |
+| `grok-cli-oauth` | Grok CLI előfizetés (SuperGrok / X Premium+) | `grok login` → `~/.grok/auth.json` |
 | `gemini` | `GEMINI_API_KEY` | Google AI Studio; ajánlott modellek: Gemini 3.5 Flash, 2.5 Pro |
 | `ollama` | `OLLAMA_BASE_URL` | Helyi Gemma (Goose GGUF import) |
 | `openrouter` | `OPENROUTER_API_KEY` | Kísérleti; adminból allowlist szükséges |
@@ -608,6 +610,8 @@ Agent prompt → ModelGateway.call(config, messages, ticketId?)
   1. Per-ticket guardrail ellenőrzés (call count ≤ GATEWAY_MAX_CALLS_PER_TICKET)
   2. Provider dispatch:
      - "chatgpt-oauth"  → ChatGPT OAuth bridge
+     - "claude-code-oauth" → Claude Code előfizetéses OAuth (CLI login)
+     - "grok-cli-oauth" → Grok CLI előfizetéses OAuth (`grok login`)
      - "gemini"         → GeminiProvider (@google/genai)
      - "ollama"         → Ollama local endpoint
      - "openrouter"     → OpenAI-kompatibilis OpenRouter API
@@ -624,6 +628,18 @@ A `DEFAULT_MAX_CALLS_PER_TICKET = 30` egy biztonsági plafon a Goose `--max-turn
 **Fájl:** `src/domain/gateway/chatgpt-oauth-bridge.ts`
 
 Szerver-oldali OAuth flow, amely a felhasználó ChatGPT előfizetését használja — nem API kulcsot, hanem OAuth tokent. A tokenek a `oauth_token_store`-ban tárolódnak (Secret Manager alias).
+
+### Claude Code OAuth Bridge
+
+**Fájl:** `src/domain/gateway/claude-code-oauth-bridge.ts`
+
+Ugyanaz a minta, mint a ChatGPT OAuth: a `claude auth login` (vagy `claude setup-token`) session tokenjével hívjuk az Anthropic Messages API-t. Lokálisan `CLAUDE_CODE_OAUTH_EMBEDDED=true`; a token a macOS Keychainben vagy a `~/.claude/.credentials.json`-ban van.
+
+### Grok CLI OAuth Bridge
+
+**Fájl:** `src/domain/gateway/grok-cli-oauth-bridge.ts`
+
+A `grok login` SuperGrok / X Premium+ sessionjét olvassa a `~/.grok/auth.json`-ból, és a CLI chat-proxyt hívja — nem az xAI API-kulcsos számlát. Lokálisan `GROK_CLI_OAUTH_EMBEDDED=true`.
 
 ---
 

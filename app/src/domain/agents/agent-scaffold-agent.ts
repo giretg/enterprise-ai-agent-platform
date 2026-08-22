@@ -50,7 +50,7 @@ OUTPUT: a single JSON object only (no prose, no markdown fences) matching this s
   "roleInstruction": string,
   "behaviorProfile": string,
   "modelConfig": {
-    "provider": "chatgpt-oauth" | "gemini" | "ollama" | "openrouter",
+    "provider": "chatgpt-oauth" | "claude-code-oauth" | "grok-cli-oauth" | "gemini" | "ollama" | "openrouter",
     "model": string,
     "modelType"?: "luna" | "terra" | "sol",
     "temperature"?: number
@@ -78,7 +78,7 @@ const agentScaffoldDraftSchema = z.object({
   roleInstruction: z.string().trim().min(1).max(8000),
   behaviorProfile: z.string().trim().min(1).max(8000),
   modelConfig: z.object({
-    provider: z.enum(['chatgpt-oauth', 'gemini', 'ollama', 'openrouter']),
+    provider: z.enum(['chatgpt-oauth', 'claude-code-oauth', 'grok-cli-oauth', 'gemini', 'ollama', 'openrouter']),
     model: z.string().trim().min(1).max(200),
     modelType: z.enum(['luna', 'terra', 'sol']).optional(),
     temperature: z.number().min(0).max(2).optional(),

@@ -16,6 +16,7 @@ import type {
   TicketRepository,
 } from '@/repositories/interfaces'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
+import { httpApiRequestArgsError } from '@/domain/tool-broker/consequence-gate-policy'
 import { envelopeToolResultForModel } from './tool-result-envelope'
 import { describeOutcomeForUi, type SettledToolOutcome } from './tool-output-contract'
 import type { ToolBrokerInvokeInput } from './tool-broker-types'
@@ -219,6 +220,14 @@ export class ConsequenceApprovalService {
     const ticketId = input.invoke.ticketId ?? null
     if (!conversationId && !ticketId) {
       throw new Error('consequence_approval_requires_conversation_or_ticket')
+    }
+    if (input.invoke.tool === 'http_api_request') {
+      const malformed = httpApiRequestArgsError(
+        (input.invoke.args ?? {}) as Record<string, unknown>,
+      )
+      if (malformed) {
+        throw new Error('consequence_approval_malformed_http_api_request')
+      }
     }
     // Kártya-dedup: ugyanaz a még el nem döntött művelet ne kapjon második
     // kártyát. Folytatás után a modell a checkpointból újraszámolja a hátralévő
@@ -439,6 +448,37 @@ export class ConsequenceApprovalService {
     row: ConsequenceApproval,
     actor: ConsequenceApprovalActor,
   ): Promise<ConsequenceApprovalResult> {
+    if (row.toolName === 'http_api_request') {
+      const malformed = httpApiRequestArgsError((row.args ?? {}) as Record<string, unknown>)
+      if (malformed) {
+        const reason = 'approval_stored_malformed_request'
+        await this.approvals.casUpdateStatus(row.id, 'approved', {
+          status: 'approved',
+          resultMeta: { denied: true, reason, failed: true },
+        })
+        const auditTarget = this.auditTargetFor(row)
+        await this.audit.append({
+          actorType: 'human',
+          actorId: actor.id,
+          agentVersion: row.agentVersion,
+          action: 'consequence.approval.approved',
+          targetType: auditTarget.type,
+          targetId: auditTarget.id,
+          modelUsed: null,
+          inputRef: row.toolName,
+          outputRef: row.id,
+          policyDecision: 'invoke_error',
+          metadata: {
+            approval_id: row.id,
+            tool: row.toolName,
+            denied: true,
+            reason,
+          },
+        })
+        return { ok: false, reason }
+      }
+    }
+
     const invokeInput = {
       agentId: row.agentId,
       agentVersion: row.agentVersion,

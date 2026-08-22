@@ -32,6 +32,7 @@ export const ALWAYS_CONSEQUENCE_GATED_TOOLS: ReadonlySet<string> = new Set<ToolN
 
 export type ConsequenceGateReason =
   | 'high_risk_tool'
+  | 'http_api_malformed'
   | 'http_api_not_allowlisted'
   | 'http_api_write_or_danger'
   | 'unknown_tool'
@@ -127,6 +128,36 @@ export function httpApiWriteGrantDeniedMessage(reason: string, connectorId: stri
   )
 }
 
+/**
+ * Hibás `http_api_request` args — azonnali DENIED a modellnek, NEM jóváhagyási kártya.
+ * Üres path-cel a kapu korábban „nem allowlistelt" jóváhagyást nyitott, ami jóváhagyás
+ * után is elbukott (`endpoint not allowed: POST `).
+ */
+export function httpApiRequestArgsError(
+  args: Record<string, unknown>,
+  connectors: HttpApiGateConnector[] = [],
+): string | null {
+  const path = typeof args.path === 'string' ? args.path.trim() : ''
+  if (!path) {
+    return (
+      'DENIED: http_api_request — a path kötelező (pl. "/reports/query"). ' +
+      'A hívás hibás volt, ezért NEM kértünk emberi jóváhagyást. ' +
+      'Hívd újra kitöltött path-cel és body-val; aggregált riporthoz előbb nézd meg a /reports/metadata-t. ' +
+      'NE kérd a felhasználót jóváhagyásra, amíg a tool-hívás helyes.'
+    )
+  }
+  if (connectors.length > 1) {
+    const connectorId = args.connectorId
+    if (typeof connectorId !== 'string' || !connectorId.trim()) {
+      return (
+        'DENIED: http_api_request — connectorId kötelező, mert több HTTP API-kapcsolat van hozzárendelve. ' +
+        'Add meg a connectorId-t, majd próbáld újra. NE kérd a felhasználót jóváhagyásra hibás hívással.'
+      )
+    }
+  }
+  return null
+}
+
 export function evaluateHttpApiRequestGate(
   args: Record<string, unknown>,
   connectors: HttpApiGateConnector[],
@@ -134,9 +165,9 @@ export function evaluateHttpApiRequestGate(
   now: Date = new Date(),
 ): ConsequenceGateDecision {
   const method = String(args.method ?? 'POST').toUpperCase()
-  const path = typeof args.path === 'string' ? args.path : ''
+  const path = typeof args.path === 'string' ? args.path.trim() : ''
   if (!path) {
-    return { required: true, reason: 'http_api_not_allowlisted' }
+    return { required: false, reason: 'http_api_malformed' }
   }
 
   // http_api_request írási tool: GET/HEAD nem lehet „read → auto". A wire-leképezés
@@ -263,6 +294,8 @@ function findHttpApiEndpoint(
 
 export function consequenceGateReasonForModel(reason: ConsequenceGateReason | undefined): string {
   switch (reason) {
+    case 'http_api_malformed':
+      return 'a HTTP API hívás paraméterei hibásak (pl. hiányzó path)'
     case 'http_api_not_allowlisted':
       return 'a hívott HTTP végpont nincs a connector engedélyezett listáján'
     case 'http_api_write_or_danger':

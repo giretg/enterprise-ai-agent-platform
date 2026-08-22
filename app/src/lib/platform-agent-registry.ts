@@ -29,6 +29,20 @@
 /** A Web-Egress perzisztált rendszer-szerepazonosítója. */
 export const WEB_EGRESS_SYSTEM_ROLE = 'web_egress' as const
 
+/**
+ * Rendszer-szerepek, amelyek kiinduló user→agent grantot kapnak a
+ * `materializeDefaultUserAgentGrants` során. Alapértelmezés: üres (deny-by-default).
+ * Kivételt csak itt nevesíts — ne tagadással egyetlen szerepre.
+ */
+export const DEFAULT_GRANTABLE_SYSTEM_ROLES: readonly string[] = []
+
+/** True, ha az agent megkapja a tenant tagok kiinduló user→agent grantjait. */
+export function receivesDefaultUserAgentGrants(agent: { systemRole?: string | null }): boolean {
+  const role = agent.systemRole ?? null
+  if (role === null) return true
+  return DEFAULT_GRANTABLE_SYSTEM_ROLES.includes(role)
+}
+
 /** A dedikált-panel varázslók kanonikus Registry-nevei. */
 export const PLAYBOOK_AUTHOR_AGENT_NAME = 'Playbook Author' as const
 export const PROVISIONING_ASSISTANT_AGENT_NAME = 'Provisioning Assistant' as const

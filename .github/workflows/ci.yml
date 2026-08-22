@@ -79,6 +79,7 @@ jobs:
           npm run test:iam-policy
           npm run test:control-plane-nav
           npm run test:agent-access-graph
+          npm run test:default-user-agent-grants
           npm run test:memory-approval
           npm run test:training-tenant
           npm run test:memory-conflicts
@@ -152,6 +153,9 @@ jobs:
           npm run test:privacy-markdown-highlights
           npm run test:prompt-privacy-transform
           npm run test:gateway-negative
+          npm run test:claude-code-oauth-bridge
+          npm run test:grok-cli-oauth-bridge
+          npm run test:subscription-oauth-runtime-safety
           npm run test:privacy-latency
           npm run test:privacy-enforce-failure
           npm run test:privacy-end-to-end
@@ -227,6 +231,9 @@ jobs:
       # csak valódi Postgres ellen lehet bizonyítani.
       - name: Agent-hozzáférési gráf DB-invariánsok
         run: npm run test:agent-access-grant-db
+
+      - name: Default user→agent grant DB-regresszió (#344)
+        run: npm run test:default-user-agent-grants-db
 
       # AI Privacy Gateway APG-01: a surrogate_map bijektivitását (unique +
       # párhuzamos allokáció → újraolvasás, nem duplikátum) csak valódi Postgres

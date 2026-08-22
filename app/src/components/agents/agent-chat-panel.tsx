@@ -922,6 +922,11 @@ function formatConsequenceApprovalError(error: string): string {
       return 'A művelethez a saját felhasználói hozzáférésed kell — jelentkezz be újra.'
     case 'acting_user_suspended':
       return 'A felhasználói hozzáférésed fel van függesztve.'
+    case 'approval_stored_malformed_request':
+      return (
+        'Ez a jóváhagyás hibás API-hívással lett elmentve (pl. üres path), ezért nem futtatható le. ' +
+        'Írd meg az agentnek, hogy próbálja újra a helyes végponttal — új kéréshez új gomb jelenik meg.'
+      )
     default:
       return error
   }
