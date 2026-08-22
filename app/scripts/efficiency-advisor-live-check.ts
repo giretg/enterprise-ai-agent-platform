@@ -17,6 +17,7 @@ async function main() {
 
   const rows = []
   for (const agent of agents) {
+    if (!agent.tenantId) continue
     const modelCalls = await prisma.modelCall.count({
       where: { agentId: agent.id, createdAt: { gte: since } },
     })
