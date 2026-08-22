@@ -338,6 +338,90 @@ async function main() {
     assert.equal(readConnectorPrivacyFields({}), null)
   })
 
+  await test('unlisted_default: block — a katalógusban nem jelölt skalár mező nem megy ki a modellhez', async () => {
+    const { engine: eng, scope } = engine()
+    const transformed = await pseudonymizeStructuredOutput({
+      output: {
+        id: 4821,
+        company_name: COMPANY,
+        revenue: 1_200_000,
+        // a katalógus nem ismeri: `unlisted_default: block` mellett kiesik
+        internal_note: 'kapcsolattartó: Kovács Anna, +36 30 123 4567',
+      },
+      fields: OSTOROSBOR_CRM_PRIVACY_FIELDS,
+      unlistedDefault: 'block',
+      engine: eng,
+      tenantId: TENANT,
+      connectorId: CONNECTOR,
+      scope,
+    })
+    assert.deepEqual(transformed, {
+      id: 4821,
+      company_name: '[[COMPANY_1]]',
+      revenue: 1_200_000,
+    })
+  })
+
+  await test('unlisted_default: block — a beágyazott objektumot bejárja, a benne jelölt mezőt cseréli', async () => {
+    const { engine: eng, scope } = engine()
+    const transformed = await pseudonymizeStructuredOutput({
+      output: {
+        id: 100,
+        // maga a kulcs jelöletlen, de a mezőszelektor kulcsnév-alapú: a benne
+        // lévő `company_name` deklarált, tehát a konténer nem eshet ki
+        account: { id: 4821, company_name: COMPANY, secret_note: 'belső' },
+      },
+      fields: OSTOROSBOR_CRM_PRIVACY_FIELDS,
+      unlistedDefault: 'block',
+      engine: eng,
+      tenantId: TENANT,
+      connectorId: CONNECTOR,
+      scope,
+    })
+    assert.deepEqual(transformed, {
+      id: 100,
+      account: { id: 4821, company_name: '[[COMPANY_1]]' },
+    })
+  })
+
+  await test('unlisted_default: pass (alapértelmezés) nem változtat a mai viselkedésen', async () => {
+    const { engine: eng, scope } = engine()
+    const transformed = await pseudonymizeStructuredOutput({
+      output: { id: 4821, company_name: COMPANY, internal_note: 'megjegyzés' },
+      fields: OSTOROSBOR_CRM_PRIVACY_FIELDS,
+      engine: eng,
+      tenantId: TENANT,
+      connectorId: CONNECTOR,
+      scope,
+    })
+    assert.deepEqual(transformed, {
+      id: 4821,
+      company_name: '[[COMPANY_1]]',
+      internal_note: 'megjegyzés',
+    })
+  })
+
+  await test('a source_id testvérmezője a kivágás ELŐTT olvasódik (block/jelöletlen `id` sem állítja meg a hívást)', async () => {
+    const { engine: eng, scope } = engine()
+    const transformed = await pseudonymizeStructuredOutput({
+      output: { id: 4821, company_name: COMPANY },
+      fields: {
+        id: { type: 'integer' as const, privacy: 'block' as const },
+        company_name: {
+          type: 'string' as const,
+          privacy: 'tokenize' as const,
+          entity_type: 'company' as const,
+          source_id: 'crm/company/{id}',
+        },
+      },
+      engine: eng,
+      tenantId: TENANT,
+      connectorId: CONNECTOR,
+      scope,
+    })
+    assert.deepEqual(transformed, { company_name: '[[COMPANY_1]]' })
+  })
+
   await test('R6: e-mail formátumú séma a nyers értéket elfogadja, az álnevet nem', async () => {
     const { engine: eng, scope } = engine()
     const emailSchema = z.object({ email: z.string().email() })

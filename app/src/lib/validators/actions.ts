@@ -974,6 +974,13 @@ export const getPrivacyAdminViewSchema = z.object({
   layer: privacyEditorLayerSchema.optional(),
 })
 
+/** #320 — „Szinkron most": a forrás privacy-katalógusának behúzása egy kapcsolatra. */
+export const syncConnectorPrivacyCatalogSchema = z.object({
+  connectorId: z.string().uuid(),
+  agentId: z.string().uuid().optional(),
+  layer: privacyEditorLayerSchema.optional(),
+})
+
 export const setPrivacyCategoryPolicySchema = z.object({
   layer: privacyEditorLayerSchema,
   agentId: z.string().uuid().optional(),

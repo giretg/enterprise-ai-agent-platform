@@ -13,6 +13,7 @@ import { applySurrogateReplacements } from '@/domain/privacy/apply-replacements'
 import {
   actionForPrivacyCategory,
   canonicalPrivacyCategory,
+  categorySupportsTokenize,
   type ResolvedPrivacyCategoryPolicy,
 } from '@/domain/privacy/privacy-category-policy'
 import type { PrivacyGatewayMode } from '@/domain/privacy/privacy-mode'
@@ -22,7 +23,7 @@ import {
 } from '@/domain/privacy/prompt-privacy-transform'
 import { runPrivacyTransformLayer } from '@/domain/privacy/privacy-transform-failure'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
-import { isSurrogateEntityType, parseSurrogate, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
+import { parseSurrogate, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
 import { privacyScopeForTrace } from '@/domain/privacy/privacy-scope'
 
@@ -205,7 +206,13 @@ async function transformDebugTracePatterns(input: {
     const action = actionForPrivacyCategory(input.policy, category)
     // `allow` — az admin kifejezetten engedi a nyers külső egresst ezen a kategórián.
     if (action === 'allow') continue
-    if (isSurrogateEntityType(category)) {
+    // A névtér #320 óta NYITOTT (`isSurrogateEntityType` minden érvényes slugra
+    // igaz), ezért az álnév-képesség kérdését a kategória-policy dönti el: a
+    // PAN/IBAN/titok/TAJ/adószám kategóriáknak nincs álnév-típusuk, azok
+    // redakciót kapnak. A nyitott névtérre váltás óta ezek némán álnevet
+    // kaptak — vagyis feloldható surrogate-ként mentek ki a külső hibakereső
+    // modellhez, és bekerültek a vaultba.
+    if (categorySupportsTokenize(category)) {
       pending.push({
         start: span.start,
         end: span.end,

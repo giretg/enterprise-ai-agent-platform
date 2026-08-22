@@ -1774,6 +1774,11 @@ export async function documentRead(
  * Az uploader-egyezés ÖNMAGÁBAN nem elég: egy több tenanthoz tartozó feltöltő
  * ne olvashassa ki a másik tenantban bélyegzett doksiját az aktuális
  * tenant-kontextusból (DT-3, l. document-tenant-access).
+ *
+ * Chat→Folyamat / board-task futásnál gyakran NINCS actingUser (nincs run-as),
+ * ezért az `actingTenantId` null. Ilyenkor a ticket / beszélgetés saját
+ * tenantId-je a dokumentum-határ — enélkül a ticketre kötött csatolmány
+ * `document_access_denied`-re bukik, pedig a ticket explicit hivatkozik rá.
  */
 async function canAccessDocument(
   self: ToolBrokerService,
@@ -1782,20 +1787,26 @@ async function canAccessDocument(
   actingUserId: string | null,
   actingTenantId: string | null,
 ): Promise<boolean> {
-  // Tenant-határ minden csatolmány-úton: egy beszélgetésbe / ticketbe korábban
-  // (hibásan) bekötött idegen dok ne adjon document_read jogosultságot.
-  const reachable = await isDocumentReachableFromTenant(doc, actingTenantId)
-
-  if (actingUserId && doc.uploadedById === actingUserId && reachable) {
+  if (
+    actingUserId &&
+    doc.uploadedById === actingUserId &&
+    (await isDocumentReachableFromTenant(doc, actingTenantId))
+  ) {
     return true
   }
 
-  if (reachable && input.conversationId) {
-    if (await conversationReferencesDocument(input.conversationId, doc.id)) return true
+  if (input.conversationId && (await conversationReferencesDocument(input.conversationId, doc.id))) {
+    const conversationTenantId = await resolveConversationTenantId(input.conversationId)
+    if (await isDocumentReachableFromTenant(doc, conversationTenantId ?? actingTenantId)) {
+      return true
+    }
   }
 
-  if (reachable && input.ticketId) {
-    if (await ticketReferencesDocument(input.ticketId, doc.id)) return true
+  if (input.ticketId && (await ticketReferencesDocument(input.ticketId, doc.id))) {
+    const ticketTenantId = await resolveTicketTenantId(input.ticketId)
+    if (await isDocumentReachableFromTenant(doc, ticketTenantId ?? actingTenantId)) {
+      return true
+    }
   }
 
   if (doc.connectorId) {
@@ -1810,6 +1821,22 @@ async function canAccessDocument(
   }
 
   return false
+}
+
+async function resolveTicketTenantId(ticketId: string): Promise<string | null> {
+  const ticket = await prisma.ticket.findUnique({
+    where: { id: ticketId },
+    select: { tenantId: true },
+  })
+  return ticket?.tenantId ?? null
+}
+
+async function resolveConversationTenantId(conversationId: string): Promise<string | null> {
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    select: { tenantId: true },
+  })
+  return conversation?.tenantId ?? null
 }
 
 async function conversationReferencesDocument(

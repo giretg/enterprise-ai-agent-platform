@@ -75,6 +75,7 @@ jobs:
           npm run test:list-pagination
           npm run test:playbook-v2-registry
           npm run test:playbook-process-def
+          npm run test:chat-process-attachment-access
           npm run test:iam-policy
           npm run test:control-plane-nav
           npm run test:agent-access-graph
@@ -136,6 +137,7 @@ jobs:
           npm run test:prompt-cache
           npm run test:surrogate-engine
           npm run test:connector-privacy
+          npm run test:privacy-catalog-sync
           npm run test:structured-output-privacy
           npm run test:known-value-substitution
           npm run test:user-input-resolver
@@ -150,6 +152,7 @@ jobs:
           npm run test:gateway-negative
           npm run test:privacy-latency
           npm run test:privacy-enforce-failure
+          npm run test:privacy-end-to-end
           npm run test:privacy-eval
           npm run test:tool-arg-resolve
           npm run test:streaming-surrogate-resolve

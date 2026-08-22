@@ -126,6 +126,30 @@ function validateFieldAgainstEntityTypes(
 export const connectorFieldPrivacySchema = connectorFieldPrivacyObjectSchema
 export type ConnectorFieldPrivacy = z.infer<typeof connectorFieldPrivacySchema>
 
+/**
+ * `reversible: false` + `privacy: tokenize` → tilos (forrás-szerződés §5.4).
+ * Külön exportálva, mert a connector-config séma a mezőket a névtér ISMERETE
+ * NÉLKÜL parse-olja (a `fields` és az `entity_types` testvérkulcsok), a névtér
+ * elleni ellenőrzés csak a teljes config szintjén futtatható.
+ */
+export function refineTokenizeReversibility(
+  fields: Record<string, ConnectorFieldPrivacy>,
+  entityTypes: Record<string, PrivacyEntityTypeDeclaration>,
+  ctx: z.RefinementCtx,
+  pathPrefix: (string | number)[] = [],
+): void {
+  for (const [fieldName, field] of Object.entries(fields)) {
+    if (field.privacy !== 'tokenize' || !field.entity_type) continue
+    if (entityTypes[field.entity_type]?.reversible === false) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [...pathPrefix, fieldName, 'entity_type'],
+        message: TOKENIZE_IRREVERSIBLE_MESSAGE,
+      })
+    }
+  }
+}
+
 export function buildConnectorFieldsPrivacySchema(
   entityTypes?: Record<string, PrivacyEntityTypeDeclaration>,
 ) {
@@ -186,17 +210,27 @@ const SECRET_HEURISTICS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /^[A-Za-z0-9+/=]{40,}$/, reason: 'magas entrópia / base64-szerű érték' },
 ]
 
-/** D5 — pass string mezők mintaértékein figyelmeztetés (nem szűr, nem blokkol). */
+/**
+ * D5 — `pass`-ra jelölt string mezők MINTAÉRTÉKEIN futó titok-heurisztika
+ * (nem szűr, nem blokkol, csak figyelmeztet az adminnak).
+ *
+ * Minta nélkül nincs mit vizsgálni: a katalógus csak típust és akciót közöl,
+ * értéket nem. A hívó ezért a forrás valódi válaszrekordjait adja át.
+ */
 export function reviewPrivacyCatalogDeclarations(
   catalog: Pick<PrivacyCatalogV2, 'fields' | 'entity_types'>,
+  samples: ReadonlyArray<Record<string, unknown>> = [],
 ): PrivacyCatalogReviewWarning[] {
   const warnings: PrivacyCatalogReviewWarning[] = []
   for (const [fieldName, field] of Object.entries(catalog.fields)) {
     if (field.privacy !== 'pass' || field.type !== 'string') continue
-    for (const heuristic of SECRET_HEURISTICS) {
-      warnings.push({ field: fieldName, reason: heuristic.reason })
-      break
-    }
+    const values = samples
+      .map((sample) => sample[fieldName])
+      .filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+    const hit = SECRET_HEURISTICS.find((heuristic) =>
+      values.some((value) => heuristic.pattern.test(value.trim())),
+    )
+    if (hit) warnings.push({ field: fieldName, reason: hit.reason })
   }
   return warnings
 }
@@ -204,6 +238,30 @@ export function reviewPrivacyCatalogDeclarations(
 export function parsePrivacyCatalogV2(raw: unknown): PrivacyCatalogV2 | null {
   const parsed = privacyCatalogV2Schema.safeParse(raw)
   return parsed.success ? parsed.data : null
+}
+
+export type ConnectorPrivacyConfigPatch = {
+  catalog_version: number
+  privacy?: PrivacyCapabilityDeclaration
+  entity_types?: Record<string, PrivacyEntityTypeDeclaration>
+  unlisted_default?: PrivacyUnlistedDefault
+  fields: ConnectorFieldsPrivacy
+}
+
+/**
+ * Forrás-katalógus (`GET /privacy/catalog`) → connector-config privacy szelet.
+ * A platform nem talál ki mezőjelölést: amit a forrás nem deklarál, az nincs.
+ */
+export function privacyCatalogToConnectorConfigPatch(
+  catalog: PrivacyCatalogV2,
+): ConnectorPrivacyConfigPatch {
+  return {
+    catalog_version: catalog.catalog_version,
+    ...(catalog.privacy ? { privacy: catalog.privacy } : {}),
+    ...(catalog.entity_types ? { entity_types: catalog.entity_types } : {}),
+    ...(catalog.unlisted_default ? { unlisted_default: catalog.unlisted_default } : {}),
+    fields: catalog.fields,
+  }
 }
 
 export function readConnectorEntityTypes(config: unknown): Record<string, PrivacyEntityTypeDeclaration> {
@@ -328,6 +386,21 @@ export function connectorHasPrivacyMetadata(config: unknown): boolean {
 
 export function connectorSupportsEntityResolution(config: unknown): boolean {
   return readPrivacyDeclaration(config)?.entity_resolution === true
+}
+
+export const DEFAULT_PRIVACY_CATALOG_PATH = '/privacy/catalog'
+
+/** A forrás katalógus-végpontja. Felülírható a `privacy.catalog_path` kulccsal. */
+export function readPrivacyCatalogPath(config: unknown): string {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    return DEFAULT_PRIVACY_CATALOG_PATH
+  }
+  const privacy = (config as Record<string, unknown>).privacy
+  if (privacy && typeof privacy === 'object' && !Array.isArray(privacy)) {
+    const path = (privacy as Record<string, unknown>).catalog_path
+    if (typeof path === 'string' && path.trim().startsWith('/')) return path.trim()
+  }
+  return DEFAULT_PRIVACY_CATALOG_PATH
 }
 
 export function readEntityResolvePath(config: unknown): string {

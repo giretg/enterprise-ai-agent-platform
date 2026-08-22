@@ -15,6 +15,7 @@ import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { pollCancelRequested } from '@/lib/cancel-flag-poll'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
 import { assertDocumentsReachableFromTenant } from '@/lib/document-tenant-access'
+import { chatAttachmentWorkspacePath } from '@/lib/attachment-workspace'
 import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
 import { resolveAddressableColleagues } from '@/domain/agent-access/addressable-colleagues'
 import { buildEffectivePrompt } from '@/lib/playbook-v2/effective-prompt'
@@ -119,6 +120,9 @@ function safeToolResultName(value: string): string {
   const cleaned = value.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '')
   return cleaned.slice(0, 80) || 'tool-result'
 }
+
+/** Chat-csatolmány extractedText képjelölője — l. agent-chat-runtime. */
+const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
 
 function clipText(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value
@@ -226,6 +230,10 @@ export class GeneralTaskRuntime {
     const attachmentBlock = formatAttachmentBlock(attachmentDocs)
     const conversationContext = await this.loadConversationContext(ticket)
     const wsTenant = ticket.tenantId ?? 'global'
+    // Chat→Folyamat / board-promóció: a Document extraction a ticket
+    // munkaterületére kerül, hogy a `pdf_path` / `path` rések és a fájl-toolok
+    // is megtalálják (a chat-runtime ugyanezt teszi a beszélgetés workspace-én).
+    await this.materializeDocumentsToTicketWorkspace(wsTenant, ticket.id, attachmentDocs)
     const workspaceFiles = await this.workspaceStorage
       .listUserFacing(wsTenant, ticket.id)
       .catch(() => [] as string[])
@@ -1189,6 +1197,50 @@ export class GeneralTaskRuntime {
     const docs = await this.documents.findByIds(ids)
     await assertDocumentsReachableFromTenant(docs, ids, tenantId)
     return docs
+  }
+
+  /**
+   * Ticket bemeneti csatolmányok tükrözése a ticket workspace-re.
+   * PDF/Office → `fájl.pdf.txt` (kinyert szöveg); kép → eredeti bájtok.
+   */
+  private async materializeDocumentsToTicketWorkspace(
+    tenantId: string,
+    ticketId: string,
+    docs: Array<{ filename: string; extractedText: string | null }>,
+  ): Promise<void> {
+    const MAX_BYTES = 5 * 1024 * 1024
+    let existing: Set<string>
+    try {
+      existing = new Set(await this.workspaceStorage.list(tenantId, ticketId))
+    } catch {
+      existing = new Set()
+    }
+
+    for (const doc of docs) {
+      const text = doc.extractedText
+      if (!text) continue
+
+      let targetPath = chatAttachmentWorkspacePath(doc.filename)
+      let bytes: Buffer
+
+      const imageMatch = text.match(IMAGE_MARKER)
+      if (imageMatch?.[2] && imageMatch[3]) {
+        targetPath = doc.filename
+        bytes = Buffer.from(imageMatch[3], 'base64')
+      } else {
+        bytes = Buffer.from(text, 'utf8')
+      }
+
+      if (existing.has(targetPath) || bytes.length > MAX_BYTES) continue
+
+      try {
+        await this.workspaceStorage.write(tenantId, ticketId, targetPath, bytes)
+        await this.workspaceStorage.setFileAudience(tenantId, ticketId, targetPath, 'user')
+        existing.add(targetPath)
+      } catch {
+        // Egy fájl kiírási hibája ne akassza meg a ticket futását.
+      }
+    }
   }
 
   /**

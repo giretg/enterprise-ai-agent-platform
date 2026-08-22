@@ -3,9 +3,13 @@
  */
 import { effectiveConnectorRuntimeConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 import { resolveConnectorApiKey } from '@/domain/connector/http-api-client'
-import { connectorSupportsEntityResolution } from '@/domain/privacy/connector-privacy'
+import {
+  connectorSupportsEntityResolution,
+  readConnectorPrivacyFields,
+} from '@/domain/privacy/connector-privacy'
 import { createHttpConnectorEntityResolver } from '@/domain/privacy/http-connector-entity-resolver'
 import type { ConnectorEntityResolver } from '@/domain/privacy/entity-resolve-contract'
+import type { SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import type { UserInputEntityResolution } from '@/domain/privacy/user-input-resolver'
 import { prisma } from '@/lib/db'
 
@@ -66,6 +70,21 @@ export async function createConnectorEntityResolver(input: {
   })
 }
 
+/**
+ * A `resolve()` hívás entitástípus-tippje a forrás deklarációjából jön, nem
+ * platform-találgatásból: ha a katalógus pontosan egy tokenizálandó típust
+ * jelöl, azt küldjük; több típusnál a forrás dönt (nincs tipp).
+ */
+export function entityTypeHintFromConnectorConfig(config: unknown): SurrogateEntityType | undefined {
+  const fields = readConnectorPrivacyFields(config)
+  if (!fields) return undefined
+  const declared = new Set<SurrogateEntityType>()
+  for (const field of Object.values(fields)) {
+    if (field.privacy === 'tokenize' && field.entity_type) declared.add(field.entity_type)
+  }
+  return declared.size === 1 ? [...declared][0] : undefined
+}
+
 export async function buildUserInputEntityResolution(input: {
   bindings: AgentConnectorBinding[]
   agentId: string
@@ -79,9 +98,12 @@ export async function buildUserInputEntityResolution(input: {
     agentId: input.agentId,
   })
   if (!resolver) return null
+  const entityTypeHint = entityTypeHintFromConnectorConfig(
+    effectiveConnectorRuntimeConfig(binding.connector.config),
+  )
   return {
     connectorId: binding.connector.id,
     resolver,
-    entityTypeHint: 'company',
+    ...(entityTypeHint ? { entityTypeHint } : {}),
   }
 }

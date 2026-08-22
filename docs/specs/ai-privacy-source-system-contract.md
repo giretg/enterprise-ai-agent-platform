@@ -187,7 +187,20 @@ A tokenizálást **egyik sem** végzi. A katalógus megmondja a *szabályt*, a p
 
 ### 6.1 Katalógus — `GET /privacy/catalog`
 
-Verziózott, cache-elhető, auth ugyanaz, mint a connector API-n (Bearer + acting user). A platform ezt olvassa be a connector `config.fields` + `config.privacy` mezőibe. Amíg a platform automatikus szinkronja nincs meg, ugyanez a JSON kézzel is bemásolható a connector-konfigba — a séma azonos.
+Verziózott, cache-elhető, auth ugyanaz, mint a connector API-n (Bearer + acting user). A platform ezt olvassa be a connector `config.fields` + `config.privacy` + `config.entity_types` + `config.unlisted_default` mezőibe. Ugyanez a JSON kézzel is bemásolható a connector-konfigba — a séma azonos, és a connector-config a katalógus mind a négy kulcsát (plusz a `catalog_version`-t) változatlanul megtartja.
+
+**Platformoldali szinkron (automatikus).** A platform magától lekéri a katalógust:
+
+| Mikor | Mi történik |
+|---|---|
+| Kapcsolat aktiválásakor | Best-effort lekérés; a hibája nem akadályozza az aktiválást, de auditálva van. |
+| Admin felületről | Adatvédelem oldal → „Honnan tudja a rendszer a neveket?" → **Szinkron most** az adott kapcsolatnál (szervezeti admin a saját kapcsolatára, platform-admin a közösre). |
+| Ütemezetten | `npm run privacy:catalog-sync` (Cloud Scheduler → job). `--dry-run` csak riportol, `--connector <id>` egy kapcsolatra fut. |
+
+- **Fail-closed:** ha a katalógus elérhetetlen, sémasértő, vagy a mentési invariánsokba ütközik (`tokenize` numerikus mezőn, `reversible: false` típuson, ismeretlen `source_id` hivatkozás), a platform a KORÁBBI, érvényes jelölést tartja meg. Rossz publikálás nem tudja „kikapcsolni" a tokenizálást.
+- **Audit:** `privacy.catalog.sync.applied` (katalógusverzió + emberi nyelvű változáslista + D5 figyelmeztetések) vagy `privacy.catalog.sync.failed` (ok + részlet). Változatlan katalógus nem termel auditbejegyzést.
+- A katalógus-végpont a platform saját, szerződéses hívása, ezért `restrictToEndpoints` melletti kapcsolaton is elérhető — az endpoint-allowlist a modell által indított hívásokat korlátozza.
+- Önfrissítő (`self_updating`) kapcsolatnál a futásidejű képességek a jóváhagyott OpenAPI-snapshotból jönnek, a **mezőjelölés viszont a friss katalógusból**: a jelölés nem képesség, csak azt mondja meg, mit kell álnévre cserélni.
 
 ```json
 {
@@ -263,7 +276,9 @@ Verziózott, cache-elhető, auth ugyanaz, mint a connector API-n (Bearer + actin
 | `entity_types` | A forrás definiálja a teljes entitás-névteret (`label` + `reversible`). |
 | `unlisted_default` | Mi történjen a katalógusban **nem szereplő** mezőkkel: `pass`, `block`, vagy `tokenize` (utóbbi csak ha van default entity type — ajánlott: `block`). Korábban minden nem jelölt mező némán `pass` volt. |
 
-**Nyilatkozat-felülvizsgálat (D5):** a katalógus elfogadásakor a `pass`-nak jelölt string mezők mintaértékein titok-heurisztika fut (pl. `-----BEGIN`, magas entrópia, `sk-…`). Találat esetén **figyelmeztetés** az adminnak — nem szűrés, nem automatikus policy.
+**`unlisted_default: block` — platformoldali szemantika:** a platform a tool-válasz **skalár leveleit** dobja el, ha a kulcsuk nincs a katalógusban; a beágyazott objektumokat és tömböket **bejárja**, nem vágja ki. A mezőszelektor v1 kulcsnév-alapú (lásd lentebb), ezért egy jelöletlen konténer belsejében is lehet deklarált, cserélendő mező — a konténer eldobása ezeket is elvinné. A kivágás a `tokenize` lépés UTÁN fut, így a `source_id` sablon testvérmezője (`id`) akkor is feloldható, ha maga az `id` jelöletlen vagy `block`.
+
+**Nyilatkozat-felülvizsgálat (D5):** a katalógus elfogadásakor a `pass`-nak jelölt string mezők mintaértékein titok-heurisztika fut (pl. `-----BEGIN`, magas entrópia, `sk-…`). Találat esetén **figyelmeztetés** az adminnak — nem szűrés, nem automatikus policy. A platform oldalán ezt a `npm run probe:crm-privacy` próba futtatja a forrás ÉLES válaszrekordjain (minta nélkül nincs mit vizsgálni: a katalógus csak típust és akciót közöl, értéket nem).
 
 **Mezőszelektor v1:** JSON-objektumkulcs, bármely mélységben. A platform a tool-választ bejárja; ha egy objektumban van `company_name` string és a sablon `{id}`-je kitöltött, cserél. Emiatt a tokenizálandó kulcsnevek legyenek **egyértelműek**: ha a cégnek és a kapcsolattartónak is `name` mezője van, a kapcsolattartót hívjátok `contact_name`-nek, vagy a cégét `company_name`-nek. Útvonal-szelektor (`$.accounts[*].legal_name`) későbbi bővítés.
 

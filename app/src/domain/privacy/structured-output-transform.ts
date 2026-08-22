@@ -10,7 +10,10 @@
  * OBSERVE (`apply: false`): a spaneket összegyűjti vault-írás nélkül — a
  * modellnek szánt adat érintetlen marad.
  */
-import type { ConnectorFieldsPrivacy } from '@/domain/privacy/connector-privacy'
+import type {
+  ConnectorFieldsPrivacy,
+  PrivacyUnlistedDefault,
+} from '@/domain/privacy/connector-privacy'
 import { canonicalPrivacyCategory } from '@/domain/privacy/privacy-category-policy'
 import type { PrivacySpan } from '@/domain/privacy/privacy-mode'
 import {
@@ -28,6 +31,12 @@ const PLACEHOLDER = /\{([A-Za-z0-9_]+)\}/g
 export type StructuredOutputPrivacyInput = {
   output: unknown
   fields: ConnectorFieldsPrivacy | undefined
+  /**
+   * Mi történjen a katalógusban NEM jelölt mezőkkel (forrás-szerződés §6.1).
+   * `block` esetén a jelöletlen skalár levél nem megy ki a modellcsatornán.
+   * Hiányában `pass` — a mai viselkedés.
+   */
+  unlistedDefault?: PrivacyUnlistedDefault
   engine?: SurrogateEngine | null
   tenantId?: string | null
   connectorId?: string | null
@@ -50,7 +59,7 @@ export async function pseudonymizeStructuredOutput(
 export async function transformStructuredOutput(
   input: StructuredOutputPrivacyInput & { apply: boolean; registerObserved?: boolean },
 ): Promise<StructuredPrivacyTransformResult> {
-  const actions = privacyFields(input.fields)
+  const actions = privacyFields(input.fields, input.unlistedDefault ?? 'pass')
   if (!actions) return { output: input.output, spans: [] }
 
   return runPrivacyTransformLayer({
@@ -119,14 +128,19 @@ type TokenizeField = {
 type StructuredPrivacyFields = {
   tokenize: Record<string, TokenizeField>
   blocked: Set<string>
+  /** A katalógusban deklarált kulcsok — az `unlistedDefault: block` ehhez képest szűr. */
+  declared: Set<string>
+  unlistedDefault: PrivacyUnlistedDefault
 }
 
 function privacyFields(
   fields: ConnectorFieldsPrivacy | undefined,
+  unlistedDefault: PrivacyUnlistedDefault,
 ): StructuredPrivacyFields | null {
   if (!fields) return null
   const tokenize: Record<string, TokenizeField> = {}
   const blocked = new Set<string>()
+  const declared = new Set<string>(Object.keys(fields))
   for (const [name, spec] of Object.entries(fields)) {
     if (spec.privacy === 'block') {
       blocked.add(name)
@@ -138,7 +152,9 @@ function privacyFields(
     }
     tokenize[name] = { entityType: spec.entity_type, sourceIdTemplate: spec.source_id }
   }
-  return Object.keys(tokenize).length > 0 || blocked.size > 0 ? { tokenize, blocked } : null
+  const hasWork =
+    Object.keys(tokenize).length > 0 || blocked.size > 0 || unlistedDefault === 'block'
+  return hasWork ? { tokenize, blocked, declared, unlistedDefault } : null
 }
 
 function resolveSourceId(
@@ -221,43 +237,54 @@ function collect(
   }
 
   const record = value as Record<string, unknown>
+
+  // 1. Jelölt mezők — a source_id testvérmezőjét (pl. `id`) MÉG a kivágás előtt
+  // olvassuk: egy `block`-ra jelölt vagy jelöletlen `id` különben fail-closed
+  // hibával megállítaná a hívást, holott a forrás megadta az azonosítót.
+  for (const [key, child] of Object.entries(record)) {
+    const spec = fields.tokenize[key]
+    if (!spec || typeof child !== 'string' || child.length === 0) continue
+    const sourceId = resolveSourceId(spec.sourceIdTemplate, record)
+    // Fail-closed (spec §15): jelölt mező stabil source_id nélkül nem mehet ki
+    // nyersen. A hibaokot mezőnév szerint visszük az auditba — a forrásrendszer
+    // hiányzó testvérmezője (pl. `id`) másképp nem derül ki az üzemeltetőnek.
+    if (!sourceId && ctx.apply) {
+      throw new PrivacyFieldDiagnosticError(
+        'missing_source_id',
+        key,
+        `A(z) ${key} mező source_id értéke (${spec.sourceIdTemplate ?? '‹nincs sablon›'}) nem oldható fel a rekordból.`,
+      )
+    }
+    spans.push({ entityType: spec.entityType, field: key })
+    if (!ctx.apply) continue
+    if (!sourceId) {
+      throw new PrivacyFieldDiagnosticError(
+        'missing_source_id',
+        key,
+        `A(z) ${key} mező stabil source_id értéke hiányzik.`,
+      )
+    }
+    pending.push({ record, key, entityType: spec.entityType, sourceId, displayValue: child })
+  }
+
+  // 2. Kivágás: explicit `block`, illetve `unlisted_default: block` esetén minden
+  // jelöletlen skalár levél. A konténereket megtartjuk — a mezőszelektor v1
+  // kulcsnév-alapú (bármely mélységben), így egy jelöletlen objektum belsejében
+  // is lehet deklarált mező, amit a katalógus szerint cserélni kell.
   for (const [key, child] of Object.entries(record)) {
     if (fields.blocked.has(key)) {
       delete record[key]
       continue
     }
-    const spec = fields.tokenize[key]
-    if (spec && typeof child === 'string' && child.length > 0) {
-      const sourceId = resolveSourceId(spec.sourceIdTemplate, record)
-      // Fail-closed (spec §15): jelölt mező stabil source_id nélkül nem mehet ki
-      // nyersen. A hibaokot mezőnév szerint visszük az auditba — a forrásrendszer
-      // hiányzó testvérmezője (pl. `id`) másképp nem derül ki az üzemeltetőnek.
-      if (!sourceId && ctx.apply) {
-        throw new PrivacyFieldDiagnosticError(
-          'missing_source_id',
-          key,
-          `A(z) ${key} mező source_id értéke (${spec.sourceIdTemplate ?? '‹nincs sablon›'}) nem oldható fel a rekordból.`,
-        )
-      }
-      spans.push({ entityType: spec.entityType, field: key })
-      if (ctx.apply) {
-        if (!sourceId) {
-          throw new PrivacyFieldDiagnosticError(
-            'missing_source_id',
-            key,
-            `A(z) ${key} mező stabil source_id értéke hiányzik.`,
-          )
-        }
-        pending.push({
-          record,
-          key,
-          entityType: spec.entityType,
-          sourceId,
-          displayValue: child,
-        })
-      }
-      continue
-    }
+    if (fields.unlistedDefault !== 'block') continue
+    if (fields.declared.has(key)) continue
+    if (child !== null && typeof child === 'object') continue
+    delete record[key]
+  }
+
+  // 3. Rekurzió a megmaradt beágyazott értékekre.
+  for (const [key, child] of Object.entries(record)) {
+    if (fields.tokenize[key] && typeof child === 'string') continue
     collect(child, fields, ctx, spans, pending)
   }
 }

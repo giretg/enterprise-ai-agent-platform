@@ -16,7 +16,31 @@ export function pinnedRuntimeConfig(
   const set = parseCapabilitySet(activeCapabilitySet)
   if (!set) return null
   const runtimeConfig = enrichOstorosborConnectorConfig(set).config
-  return { ...runtimeConfig, restrictToEndpoints: true, selfUpdatingPinned: true } as Prisma.JsonValue
+  return {
+    ...runtimeConfig,
+    ...privacyDeclarationFromConfig(fixedConfig),
+    restrictToEndpoints: true,
+    selfUpdatingPinned: true,
+  } as Prisma.JsonValue
+}
+
+/**
+ * A forrás privacy-katalógusa (issue #320) a `connectors.config`-ba szinkronizálódik,
+ * a rögzített capability-snapshot viszont a jóváhagyott spec-verzióból jön. A
+ * mezőjelölés NEM képesség: nem tágít hívási felületet, csak azt mondja meg, mit
+ * kell álnévre cserélni. Ezért a frissebb jelölés a pinned configra is ráíródik —
+ * enélkül egy önfrissítő kapcsolat a hónapokkal korábbi snapshot jelölésével
+ * tokenizálna, a friss katalógus mezői pedig nyersen mennének a modellhez.
+ * Az endpoint-allowlist és minden más továbbra is a snapshotból származik.
+ */
+function privacyDeclarationFromConfig(fixedConfig: unknown): Record<string, unknown> {
+  if (!fixedConfig || typeof fixedConfig !== 'object' || Array.isArray(fixedConfig)) return {}
+  const config = fixedConfig as Record<string, unknown>
+  const slice: Record<string, unknown> = {}
+  for (const key of ['fields', 'privacy', 'entity_types', 'unlisted_default', 'catalog_version']) {
+    if (config[key] !== undefined) slice[key] = config[key]
+  }
+  return slice
 }
 
 /**

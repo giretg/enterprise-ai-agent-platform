@@ -832,6 +832,7 @@ toolBrokerService.setConnectorEntityResolverFactory(async ({ connector, agentSec
   }),
 )
 modelGateway.setPrivacyEngine(surrogateEngine)
+sandboxAppService.setSurrogateEngine(surrogateEngine)
 modelGateway.setPrivacyModeResolver(({ tenantId, agentId }) =>
   platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
 )
@@ -952,6 +953,14 @@ const provisioningService = new ProvisioningService({
   resolvePlatformGoogleOAuth: async () => {
     const resolved = await platformSettingsService.getGoogleOAuthConfig()
     return { configured: Boolean(resolved) }
+  },
+  // issue #320: aktiváláskor a forrás `GET /privacy/catalog` katalógusa a
+  // connector-configba kerül, hogy a mezőjelölés ne kézi másolással éljen.
+  syncPrivacyCatalog: async (connectorId, actorId) => {
+    const { syncPrivacyCatalogForConnector } = await import(
+      '@/domain/privacy/privacy-catalog-sync-service'
+    )
+    await syncPrivacyCatalogForConnector(connectorId, { id: actorId, type: 'human' })
   },
   // F2-P-F: az agent-aktor draft-jogai deny-by-default a Capability táblából (§6.1/§9).
   resolveAgentCapabilities: async (agentId) => {
@@ -1410,4 +1419,5 @@ export const services = {
   webSearch: webSearchService,
   webSearchPolicy: webSearchPolicyService,
   webFetch: webFetchService,
+  surrogateEngine,
 }

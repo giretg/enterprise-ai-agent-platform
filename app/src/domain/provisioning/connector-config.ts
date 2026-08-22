@@ -8,8 +8,12 @@
 import { z } from 'zod'
 import { githubRepositoryAccessSchema } from '@/domain/connector/github-repository-access-schema'
 import {
+  PRIVACY_UNLISTED_DEFAULTS,
   connectorFieldsPrivacySchema,
   privacyCapabilityDeclarationSchema,
+  privacyEntityTypesSchema,
+  readConnectorEntityTypes,
+  refineTokenizeReversibility,
 } from '@/domain/privacy/connector-privacy'
 
 export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
@@ -123,7 +127,7 @@ export const connectorAuthSchema = z.object({
 })
 export type ConnectorAuth = z.infer<typeof connectorAuthSchema>
 
-export const connectorConfigSchema = z.object({
+const connectorConfigObjectSchema = z.object({
   /** Az extractor szemantikai verziója; ugyanaz a nyers spec új capability-t adhat. */
   capabilitySchemaVersion: z.number().int().positive().optional(),
   provider: z.string().min(1),
@@ -158,6 +162,21 @@ export const connectorConfigSchema = z.object({
    * mezőre érvényes — numerikus/dátum mentéskor elbukik (R6).
    */
   fields: connectorFieldsPrivacySchema.optional(),
+  /**
+   * A forrás által definiált entitástípus-névtér (forrás-szerződés §5.1, issue #320).
+   * A katalógus (`GET /privacy/catalog`) ugyanezzel a kulccsal érkezik, ezért a
+   * bemásolt/importált katalógus itt VÁLTOZATLANUL átmegy — enélkül a Zod némán
+   * eldobná, és a futásidő az öt alapértelmezett típusra esne vissza (`reversible`
+   * invariáns kikapcsolva, forrás-egyedi típusok elveszve).
+   */
+  entity_types: privacyEntityTypesSchema.optional(),
+  /**
+   * Mi történjen a katalógusban NEM szereplő mezőkkel (forrás-szerződés §6.1).
+   * Hiányában `pass` — a jelöletlen mező érintetlenül megy a modellhez.
+   */
+  unlisted_default: z.enum(PRIVACY_UNLISTED_DEFAULTS).optional(),
+  /** A forrás katalógusverziója (monoton nő); a platform csak auditál vele. */
+  catalog_version: z.number().int().positive().optional(),
   provenance: z
     .object({
       sourceHash: z.string().optional(),
@@ -170,6 +189,16 @@ export const connectorConfigSchema = z.object({
     })
     .optional(),
 })
+/**
+ * A mezőjelölést a forrás névterével együtt kell validálni: a `fields` séma
+ * önmagában nem látja az `entity_types` testvérkulcsot, így a `reversible: false`
+ * + `tokenize` tiltás (§5.4) csak itt kényszeríthető ki.
+ */
+export const connectorConfigSchema = connectorConfigObjectSchema.superRefine((cfg, ctx) => {
+  if (!cfg.fields) return
+  refineTokenizeReversibility(cfg.fields, readConnectorEntityTypes(cfg), ctx, ['fields'])
+})
+
 export type ConnectorConfig = z.infer<typeof connectorConfigSchema>
 
 export class ConnectorConfigParseError extends Error {

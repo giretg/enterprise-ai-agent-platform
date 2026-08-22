@@ -72,15 +72,18 @@ export const PRIVACY_CATEGORY_LABELS: Record<string, { label: string; explanatio
   },
   email: {
     label: 'E-mail-cím',
-    explanation: 'Begépelt szövegben felismert cím — routing, nem forrás-entitás.',
+    explanation:
+      'Begépelt szövegben felismert cím. Álnévre cserélhető, vagy helyi modellre terelhető.',
   },
   phone: {
     label: 'Telefonszám',
-    explanation: 'Begépelt szövegben felismert szám — routing, nem forrás-entitás.',
+    explanation:
+      'Begépelt szövegben felismert szám. Álnévre cserélhető, vagy helyi modellre terelhető.',
   },
   account: {
     label: 'Ügyfél- vagy fiókazonosító',
-    explanation: 'Begépelt szövegben felismert azonosító-minta — routing, nem forrás-entitás.',
+    explanation:
+      'Begépelt szövegben felismert azonosító-minta. Álnévre cserélhető, vagy helyi modellre terelhető.',
   },
   taj: {
     label: 'TAJ-szám',
@@ -239,6 +242,10 @@ export type PrivacyConnectorRow = {
   id: string
   name: string
   hasPrivacyMetadata: boolean
+  /** A forrásból átvett katalógus verziója (`config.catalog_version`), ha van. */
+  catalogVersion?: number | null
+  /** Lekérhető-e a forrás katalógusa (csak `http_api` kapcsolatnál). */
+  canSync?: boolean
 }
 
 export function privacyConnectorEmptyState(connectors: readonly PrivacyConnectorRow[]): {
@@ -264,4 +271,47 @@ export function privacyConnectorEmptyState(connectors: readonly PrivacyConnector
     href: PRIVACY_EMPTY_CONNECTOR_STATE.href,
     ready: [],
   }
+}
+
+/** A „Szinkron most" gomb kimenete, admin-nyelven (issue #320). */
+export type PrivacyCatalogSyncMessageInput =
+  | { status: 'applied'; catalogVersion: number; changes: string[]; warnings?: string[] }
+  | { status: 'no_change'; catalogVersion: number }
+  | { status: 'failed'; reason: string; detail: string }
+
+export const PRIVACY_CATALOG_SYNC_LABEL = 'Szinkron most'
+
+export const PRIVACY_CATALOG_SYNC_HINT =
+  'A védendő mezők listáját a forrásrendszer tartja karban. A szinkron ezt a listát hozza át — kézi másolás nélkül, és csak akkor, ha a forrás nyilatkozata érvényes.'
+
+const SYNC_FAIL_REASONS: Record<string, string> = {
+  not_http_api: 'Ez a kapcsolat nem API-kapcsolat, nincs honnan katalógust kérni.',
+  unreachable: 'A forrásrendszer nem válaszolt.',
+  http_error: 'A forrásrendszer nem adta ki a katalógust.',
+  invalid_catalog: 'A forrás katalógusa nem felel meg a szerződésnek.',
+  invalid_config: 'A forrás katalógusa a platform adatvédelmi szabályába ütközik.',
+}
+
+export function privacyCatalogSyncMessage(input: PrivacyCatalogSyncMessageInput): {
+  tone: 'ok' | 'warn' | 'err'
+  text: string
+} {
+  if (input.status === 'no_change') {
+    return {
+      tone: 'ok',
+      text: `A forrás jelölése változatlan (katalógus v${input.catalogVersion}) — nincs teendő.`,
+    }
+  }
+  if (input.status === 'applied') {
+    const head = `Frissítettük a forrás jelölését (katalógus v${input.catalogVersion}), ${input.changes.length} változás:`
+    const list = input.changes.slice(0, 5).join(' · ')
+    const more = input.changes.length > 5 ? ` … és további ${input.changes.length - 5}.` : ''
+    const warnings = input.warnings?.length
+      ? ` Ellenőrizd: ${input.warnings.join(' · ')}`
+      : ''
+    return { tone: input.warnings?.length ? 'warn' : 'ok', text: `${head} ${list}${more}${warnings}` }
+  }
+  const reason = SYNC_FAIL_REASONS[input.reason] ?? 'A szinkron nem sikerült.'
+  // Fail-closed: rossz vagy elérhetetlen katalógustól nem eshet szét a tokenizálás.
+  return { tone: 'err', text: `${reason} A korábbi jelölés érvényben marad. (${input.detail})` }
 }

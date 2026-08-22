@@ -113,7 +113,11 @@ export const SOURCE_CATALOG_PRIVACY_CATEGORIES: readonly PrivacyPolicyCategory[]
   'person',
 ]
 
-/** Szabad szövegben felismert minták — routing-policy, nem forrás-entitás tokenizálás. */
+/**
+ * Szabad szövegben felismert minták. Nem forrás-entitások (nincs mögöttük
+ * stabil source_id), de van álnév-típusuk, ezért a policy `tokenize` döntése
+ * VAL-álnevet ad rájuk a prompt-rétegben; `local_only` esetén a routing véd.
+ */
 export const FREE_TEXT_PATTERN_PRIVACY_CATEGORIES: readonly PrivacyPolicyCategory[] = [
   'email',
   'phone',
@@ -137,10 +141,16 @@ export function isAliasPolicyEditorCategory(category: string): boolean {
   return true
 }
 
-/** „Álnévre cseréljük” választható-e a szerkesztőben (#320 D6 után csak egyedi slug). */
+/**
+ * „Álnévre cseréljük” választható-e a szerkesztőben.
+ *
+ * A forrás-katalógus kategóriái (cég, személy) SOHA: azok jelölése a
+ * forrásrendszerben él, stabil `source_id` mellett (#320 D6). A szabad
+ * szöveges minták (e-mail, telefon, bankszámla) viszont igen: van álnév-
+ * típusuk és megbízható mintájuk, és a prompt-réteg VAL-álnévre cseréli őket.
+ */
 export function categoryAllowsAliasTokenizeAction(category: string): boolean {
   if (isSourceCatalogPrivacyCategory(category)) return false
-  if (isFreeTextPatternPrivacyCategory(category)) return false
   return categorySupportsTokenize(category)
 }
 
