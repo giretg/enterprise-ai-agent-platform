@@ -1,14 +1,14 @@
-/** RA-04 — `run_trace` tool bemenet/kimenet típusai (chat / ticket ág). */
+/** RA-04 / RA-05 — `run_trace` tool bemenet/kimenet típusai. */
 
 import type { RunIndexGrain } from './run-index-types'
 
-/** Chat/ticket ág — a folyamat-nézet (RA-05) külön `grain: 'process'`. */
-export type RunTraceGrain = Extract<RunIndexGrain, 'turn' | 'ticket'>
+export type RunTraceGrain = RunIndexGrain
 
 export type RunTraceView = 'summary' | 'detail'
 
-export type RunTraceArgs = {
-  grain: RunTraceGrain
+/** Chat/ticket ág — lapozott idővonal. */
+export type RunTraceTimelineArgs = {
+  grain: Extract<RunTraceGrain, 'turn' | 'ticket'>
   runId: string
   /** Alapértelmezés: `summary` — fejléc-összefoglaló; `detail` lapozott idővonal. */
   view?: RunTraceView
@@ -26,6 +26,14 @@ export type RunTraceArgs = {
   status?: string
   outcome?: string
 }
+
+/** Folyamat ág (RA-05) — lépés be-/kimenet, átadási élek, playbook-spec. */
+export type RunTraceProcessArgs = {
+  grain: 'process'
+  runId: string
+}
+
+export type RunTraceArgs = RunTraceTimelineArgs | RunTraceProcessArgs
 
 export type RunTraceToolAgg = {
   toolName: string
@@ -50,7 +58,7 @@ export type RunTraceNonOkCall = {
 
 export type RunTraceSummary = {
   runId: string
-  grain: RunTraceGrain
+  grain: Extract<RunTraceGrain, 'turn' | 'ticket'>
   agentId: string
   agentName: string
   conversationId: string | null
@@ -159,14 +167,14 @@ export type RunTraceFilters = {
 export type RunTraceSummaryResult = {
   view: 'summary'
   runId: string
-  grain: RunTraceGrain
+  grain: Extract<RunTraceGrain, 'turn' | 'ticket'>
   summary: RunTraceSummary
 }
 
 export type RunTraceDetailResult = {
   view: 'detail'
   runId: string
-  grain: RunTraceGrain
+  grain: Extract<RunTraceGrain, 'turn' | 'ticket'>
   entries: RunTraceTimelineEntry[]
   returnedCount: number
   limit: number
@@ -176,4 +184,102 @@ export type RunTraceDetailResult = {
   filters: RunTraceFilters
 }
 
-export type RunTraceResult = RunTraceSummaryResult | RunTraceDetailResult
+/** RA-05 — playbook-verzió spec vetülete a folyamat-nézethez. */
+export type RunTracePlaybookInputSlot = {
+  name: string
+  type: string
+  required: boolean
+  source: 'config' | 'trigger' | 'step'
+  description?: string
+}
+
+export type RunTracePlaybookStepSpec = {
+  id: string
+  name: string
+  instructionTemplate?: string
+  inputSlots?: RunTracePlaybookInputSlot[]
+}
+
+export type RunTracePlaybookGateSpec = {
+  id: string
+  type: string
+  criticality?: string
+  blocking: boolean
+}
+
+export type RunTracePlaybookSpec = {
+  playbookVersionId: string
+  contentHash: string
+  criticality?: string
+  steps: RunTracePlaybookStepSpec[]
+  gates: RunTracePlaybookGateSpec[]
+}
+
+export type RunTraceProcessInstance = {
+  id: string
+  processType: string
+  status: string
+  triggerType: string | null
+  startedByType: string
+  startedByUserId: string | null
+  startedByAgentId: string | null
+  inputPayload: unknown
+  outputPayload: unknown
+  rootTicketId: string | null
+  conversationId: string | null
+  startedAt: string
+  completedAt: string | null
+  failedAt: string | null
+}
+
+export type RunTraceProcessStep = {
+  stepId: string
+  stepName: string
+  status: string
+  assignedRole: string
+  assignedAgentId: string | null
+  assignedUserId: string | null
+  ticketId: string | null
+  resultPayload: unknown
+  startedAt: string | null
+  completedAt: string | null
+  failedAt: string | null
+}
+
+export type RunTraceDelegationEdge = {
+  id: string
+  fromStepId: string
+  toStepId: string
+  fromActorType: string
+  fromAgentId: string | null
+  fromUserId: string | null
+  toActorType: string
+  toAgentId: string | null
+  toUserId: string | null
+  status: string
+  createdAt: string
+  deliveredAt: string | null
+  acceptedAt: string | null
+  doneAt: string | null
+  failedAt: string | null
+  metadata: unknown
+}
+
+/** Lépés-szintű hiányzó kötelező input-slot (playbook vs. tényleges átadás). */
+export type RunTraceStepSlotGap = {
+  stepId: string
+  missingRequiredSlots: string[]
+}
+
+export type RunTraceProcessResult = {
+  view: 'process'
+  runId: string
+  grain: 'process'
+  process: RunTraceProcessInstance
+  steps: RunTraceProcessStep[]
+  delegations: RunTraceDelegationEdge[]
+  playbookSpec: RunTracePlaybookSpec
+  slotGaps: RunTraceStepSlotGap[]
+}
+
+export type RunTraceResult = RunTraceSummaryResult | RunTraceDetailResult | RunTraceProcessResult

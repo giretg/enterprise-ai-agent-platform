@@ -1,5 +1,5 @@
 /**
- * RA-04 — `run_trace` tool (lapozott idővonal, chat/ticket ág).
+ * RA-04 / RA-05 — `run_trace` tool (lapozott idővonal, chat/ticket + folyamat-nézet).
  * Futtatás: npm run test:run-trace
  */
 import assert from 'node:assert/strict'
@@ -7,6 +7,14 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import {
+  analyzeProcessSlotGaps,
+  buildProcessTraceView,
+  mapDelegationEdge,
+  mapProcessInstance,
+  mapProcessStep,
+  projectPlaybookSpecForTrace,
+} from '../src/domain/run-analysis/run-trace-process'
 import {
   RUN_TRACE_MAX_OUTPUT_CHARS,
   RUN_TRACE_NOT_FOUND,
@@ -18,6 +26,7 @@ import {
   buildTraceSummary,
   estimateTraceOutputChars,
 } from '../src/domain/run-analysis/run-trace-service'
+import { PLAYBOOK_SCHEMA_VERSION } from '../src/lib/playbook-v2/spec'
 import {
   TOOL_GROUP_ANALYSIS,
   TOOL_REGISTRY,
@@ -111,7 +120,7 @@ function syntheticTurnRun(toolCallCount: number) {
 }
 
 async function main() {
-  console.log('=== RA-04 run_trace ===')
+  console.log('=== RA-04 / RA-05 run_trace ===')
 
   await test('RunTraceNotFoundError: run_not_found üzenet', () => {
     const err = new RunTraceNotFoundError()
@@ -127,6 +136,11 @@ async function main() {
     assert.equal(d.handlerId, 'run_trace')
     assert.equal(TOOL_TRUST_REGISTRY.run_trace, 'external_untrusted')
     assert.equal(SIDE_EFFECTING_TOOLS.run_trace, false)
+    const parsed = d.argsSchema.safeParse({ grain: 'process', runId: '00000000-0000-4000-8000-000000000001' })
+    assert.equal(parsed.success, true)
+    if (parsed.success) {
+      assert.equal((parsed.data as { grain: string }).grain, 'process')
+    }
   })
 
   await test('150 eszközhívás: summary belefér a méret-korlátba', () => {
@@ -205,6 +219,221 @@ async function main() {
     assert.match(src, /RUN_ANALYST_SYSTEM_ROLE/)
     assert.match(src, /analysis\.run_trace/)
     assert.match(src, /RunIndexNotFoundError/)
+    assert.match(src, /loadProcessRun/)
+  })
+
+  await test('RA-05 DoD: hibás átadás — step2 kimenet nem tölti step3 kötelező slotját', () => {
+    const playbookSpecRaw = {
+      schemaVersion: PLAYBOOK_SCHEMA_VERSION,
+      key: 'delegation-test',
+      name: 'Delegáció teszt',
+      processType: 'delegation_test',
+      entryStepId: 'step-1',
+      roles: [{ key: 'analyst', type: 'agent_role' }],
+      steps: [
+        {
+          id: 'step-1',
+          name: 'Gyűjtés',
+          ticketType: 'agent_task',
+          assignedRole: 'analyst',
+          instructionTemplate: 'Gyűjtsd össze: {{topic}}',
+          inputSlots: [
+            { name: 'topic', type: 'string', required: true, source: 'trigger' },
+          ],
+        },
+        {
+          id: 'step-2',
+          name: 'Feldolgozás',
+          ticketType: 'agent_task',
+          assignedRole: 'analyst',
+          instructionTemplate: 'Dolgozd fel: {{topic}}',
+          inputSlots: [
+            { name: 'topic', type: 'string', required: true, source: 'step' },
+          ],
+        },
+        {
+          id: 'step-3',
+          name: 'Összegzés',
+          ticketType: 'agent_task',
+          assignedRole: 'analyst',
+          instructionTemplate: 'Foglald össze: {{summary}}',
+          inputSlots: [
+            { name: 'summary', type: 'string', required: true, source: 'step' },
+          ],
+        },
+      ],
+      gates: [
+        { id: 'gate-1', type: 'human_approval', blocking: true, criticality: 'L2' },
+      ],
+      transitions: [
+        { fromStepId: 'step-1', toStepId: 'step-2', trigger: 'done' },
+        { fromStepId: 'step-2', toStepId: 'step-3', trigger: 'done' },
+      ],
+    }
+
+    const playbookSpec = projectPlaybookSpecForTrace({
+      playbookVersionId: 'pv-1',
+      contentHash: 'hash-abc',
+      spec: playbookSpecRaw,
+    })
+
+    const base = Date.parse('2026-08-01T10:00:00Z')
+    const process = mapProcessInstance({
+      id: 'proc-1',
+      processType: 'delegation_test',
+      status: 'blocked',
+      triggerType: 'manual',
+      startedByType: 'user',
+      startedByUserId: 'user-1',
+      startedByAgentId: null,
+      inputPayload: { topic: 'Q3 riport' },
+      outputPayload: {},
+      rootTicketId: 'ticket-1',
+      conversationId: 'conv-1',
+      startedAt: new Date(base),
+      completedAt: null,
+      failedAt: null,
+    })
+
+    const steps = [
+      mapProcessStep({
+        stepId: 'step-1',
+        stepName: 'Gyűjtés',
+        status: 'completed',
+        assignedRole: 'analyst',
+        assignedAgentId: 'agent-a',
+        assignedUserId: null,
+        ticketId: 'ticket-1',
+        resultPayload: { topic: 'Q3 riport', raw_data: '...' },
+        startedAt: new Date(base),
+        completedAt: new Date(base + 60_000),
+        failedAt: null,
+      }),
+      mapProcessStep({
+        stepId: 'step-2',
+        stepName: 'Feldolgozás',
+        status: 'completed',
+        assignedRole: 'analyst',
+        assignedAgentId: 'agent-b',
+        assignedUserId: null,
+        ticketId: 'ticket-2',
+        // HIBA: nem adja át a `summary` slotot a következő lépésnek
+        resultPayload: { topic: 'Q3 riport', partial_notes: 'félkész' },
+        startedAt: new Date(base + 120_000),
+        completedAt: new Date(base + 180_000),
+        failedAt: null,
+      }),
+      mapProcessStep({
+        stepId: 'step-3',
+        stepName: 'Összegzés',
+        status: 'blocked',
+        assignedRole: 'analyst',
+        assignedAgentId: 'agent-c',
+        assignedUserId: null,
+        ticketId: 'ticket-3',
+        resultPayload: {},
+        startedAt: new Date(base + 240_000),
+        completedAt: null,
+        failedAt: null,
+      }),
+    ]
+
+    const delegations = [
+      mapDelegationEdge({
+        id: 'edge-1-2',
+        fromStepId: 'step-1',
+        toStepId: 'step-2',
+        fromActorType: 'agent',
+        fromAgentId: 'agent-a',
+        fromUserId: null,
+        toActorType: 'agent',
+        toAgentId: 'agent-b',
+        toUserId: null,
+        status: 'done',
+        createdAt: new Date(base + 65_000),
+        deliveredAt: new Date(base + 66_000),
+        acceptedAt: new Date(base + 67_000),
+        doneAt: new Date(base + 68_000),
+        failedAt: null,
+        metadata: {},
+      }),
+      mapDelegationEdge({
+        id: 'edge-2-3',
+        fromStepId: 'step-2',
+        toStepId: 'step-3',
+        fromActorType: 'agent',
+        fromAgentId: 'agent-b',
+        fromUserId: null,
+        toActorType: 'agent',
+        toAgentId: 'agent-c',
+        toUserId: null,
+        status: 'delivered',
+        createdAt: new Date(base + 185_000),
+        deliveredAt: new Date(base + 186_000),
+        acceptedAt: null,
+        doneAt: null,
+        failedAt: null,
+        metadata: { missingSlots: ['summary'] },
+      }),
+    ]
+
+    const view = buildProcessTraceView({
+      process,
+      steps,
+      delegations,
+      playbookSpec,
+      entryStepId: 'step-1',
+      transitions: playbookSpecRaw.transitions,
+      processInput: { topic: 'Q3 riport' },
+    })
+
+    assert.equal(view.view, 'process')
+    assert.equal(view.grain, 'process')
+    assert.equal(view.steps.length, 3)
+
+    const step2 = view.steps.find((s) => s.stepId === 'step-2')!
+    const step3 = view.steps.find((s) => s.stepId === 'step-3')!
+    assert.ok(step2.resultPayload && typeof step2.resultPayload === 'object')
+    assert.ok(!('summary' in (step2.resultPayload as Record<string, unknown>)))
+
+    const edge23 = view.delegations.find((e) => e.fromStepId === 'step-2' && e.toStepId === 'step-3')!
+    assert.equal(edge23.fromAgentId, 'agent-b')
+    assert.equal(edge23.toAgentId, 'agent-c')
+
+    const step3Spec = view.playbookSpec.steps.find((s) => s.id === 'step-3')!
+    const summarySlot = step3Spec.inputSlots?.find((s) => s.name === 'summary')
+    assert.ok(summarySlot)
+    assert.equal(summarySlot.required, true)
+    assert.equal(summarySlot.source, 'step')
+
+    const gap = view.slotGaps.find((g) => g.stepId === 'step-3')
+    assert.ok(gap)
+    assert.deepEqual(gap.missingRequiredSlots, ['summary'])
+  })
+
+  await test('analyzeProcessSlotGaps: üres előző kimenet → hiányzó step-forrású slot', () => {
+    const gaps = analyzeProcessSlotGaps({
+      playbookSteps: [
+        {
+          id: 's1',
+          name: 'A',
+          inputSlots: [{ name: 'x', type: 'string', required: true, source: 'trigger' }],
+        },
+        {
+          id: 's2',
+          name: 'B',
+          inputSlots: [{ name: 'y', type: 'string', required: true, source: 'step' }],
+        },
+      ],
+      stepInstances: [
+        { stepId: 's1', resultPayload: { x: 'ok' } },
+        { stepId: 's2', resultPayload: {} },
+      ],
+      processInput: { x: 'ok' },
+      entryStepId: 's1',
+      transitions: [{ fromStepId: 's1', toStepId: 's2' }],
+    })
+    assert.deepEqual(gaps, [{ stepId: 's2', missingRequiredSlots: ['y'] }])
   })
 
   if (failures > 0) {

@@ -378,12 +378,13 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
 
   run_trace: {
     outputSchema: z.looseObject({
-      view: z.enum(['summary', 'detail']),
+      view: z.enum(['summary', 'detail', 'process']),
       runId: z.string(),
-      grain: z.enum(['turn', 'ticket']),
+      grain: z.enum(['turn', 'ticket', 'process']),
     }),
     partial: (output) => {
       const view = (output as { view?: string } | null)?.view
+      if (view === 'process') return null
       if (view === 'detail') {
         const truncated = (output as { truncated?: boolean } | null)?.truncated === true
         return truncated

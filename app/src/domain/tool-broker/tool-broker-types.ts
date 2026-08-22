@@ -374,11 +374,11 @@ export type RunIndexResult = {
   }
 }
 
-/** RA-04 — lapozott futás-idővonal (Run Analyst `run_trace`, chat/ticket ág). */
-export type RunTraceGrain = 'turn' | 'ticket'
+/** RA-04 / RA-05 — lapozott futás-idővonal és folyamat-nézet (Run Analyst `run_trace`). */
+export type RunTraceGrain = 'turn' | 'ticket' | 'process'
 
-export type RunTraceArgs = {
-  grain: RunTraceGrain
+export type RunTraceTimelineArgs = {
+  grain: Extract<RunTraceGrain, 'turn' | 'ticket'>
   runId: string
   view?: 'summary' | 'detail'
   limit?: number
@@ -392,9 +392,16 @@ export type RunTraceArgs = {
   outcome?: string
 }
 
+export type RunTraceProcessArgs = {
+  grain: 'process'
+  runId: string
+}
+
+export type RunTraceArgs = RunTraceTimelineArgs | RunTraceProcessArgs
+
 export type RunTraceSummary = {
   runId: string
-  grain: RunTraceGrain
+  grain: Extract<RunTraceGrain, 'turn' | 'ticket'>
   agentId: string
   agentName: string
   conversationId: string | null
@@ -424,12 +431,23 @@ export type RunTraceSummary = {
 
 export type RunTraceTimelineEntry = Record<string, unknown> & { kind: string; seq: number; at: string }
 
+export type RunTraceProcessResult = {
+  view: 'process'
+  runId: string
+  grain: 'process'
+  process: Record<string, unknown>
+  steps: Array<Record<string, unknown>>
+  delegations: Array<Record<string, unknown>>
+  playbookSpec: Record<string, unknown>
+  slotGaps: Array<{ stepId: string; missingRequiredSlots: string[] }>
+}
+
 export type RunTraceResult =
-  | { view: 'summary'; runId: string; grain: RunTraceGrain; summary: RunTraceSummary }
+  | { view: 'summary'; runId: string; grain: Extract<RunTraceGrain, 'turn' | 'ticket'>; summary: RunTraceSummary }
   | {
       view: 'detail'
       runId: string
-      grain: RunTraceGrain
+      grain: Extract<RunTraceGrain, 'turn' | 'ticket'>
       entries: RunTraceTimelineEntry[]
       returnedCount: number
       limit: number
@@ -446,6 +464,7 @@ export type RunTraceResult =
         outcome: string | null
       }
     }
+  | RunTraceProcessResult
 
 /**
  * Magyar e-hiteles tulajdoni lap strukturált kinyerése egy feltöltött PDF-ből.

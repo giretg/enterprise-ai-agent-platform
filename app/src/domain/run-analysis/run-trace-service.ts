@@ -1,5 +1,5 @@
 /**
- * RA-04 — `run_trace`: lapozott idővonal (chat / ticket ág) a Futás-elemzőnek.
+ * RA-04 / RA-05 — `run_trace`: lapozott idővonal (chat/ticket) és folyamat-nézet.
  *
  * Alapból fejléc-összefoglaló; részletek lapozással és szűréssel. Nyers DB-olvasás
  * (nem debug-log-export vetület); tenant-szűrés és önelemzés-kizárás RA-03 szerint.
@@ -12,15 +12,23 @@ import {
   RUN_INDEX_NOT_FOUND,
   RunIndexNotFoundError,
 } from './run-index-service'
+import {
+  buildProcessTraceView,
+  mapDelegationEdge,
+  mapProcessInstance,
+  mapProcessStep,
+  projectPlaybookSpecForTrace,
+} from './run-trace-process'
 import type {
   RunTraceArgs,
   RunTraceDetailResult,
   RunTraceFilters,
-  RunTraceGrain,
   RunTraceNonOkCall,
+  RunTraceProcessResult,
   RunTraceResult,
   RunTraceSummary,
   RunTraceSummaryResult,
+  RunTraceTimelineArgs,
   RunTraceTimelineEntry,
   RunTraceTokenPoint,
   RunTraceToolAgg,
@@ -307,7 +315,7 @@ export function buildTimeline(run: LoadedRun): RunTraceTimelineEntry[] {
 
 export function applyTraceFilters(
   entries: RunTraceTimelineEntry[],
-  args: RunTraceArgs,
+  args: RunTraceTimelineArgs,
 ): RunTraceTimelineEntry[] {
   const since = parseIsoDate(args.since, 'since')
   const until = parseIsoDate(args.until, 'until')
@@ -385,7 +393,7 @@ export function estimateTraceOutputChars(result: RunTraceResult): number {
   }
 }
 
-export function buildTraceFilters(args: RunTraceArgs): RunTraceFilters {
+export function buildTraceFilters(args: RunTraceTimelineArgs): RunTraceFilters {
   const since = parseIsoDate(args.since, 'since')
   const until = parseIsoDate(args.until, 'until')
   return {
@@ -435,10 +443,16 @@ export class RunTraceService {
     args: RunTraceArgs
   }): Promise<RunTraceResult> {
     const { tenantId, args } = input
+    const runAnalystIds = await this.runAnalystAgentIds(tenantId)
+
+    if (args.grain === 'process') {
+      const result = await this.loadProcessRun(tenantId, args.runId, runAnalystIds)
+      await this.auditProcessTrace(input, args, result)
+      return result
+    }
+
     const view: RunTraceView = args.view ?? 'summary'
     const limit = resolvePageLimit(args.limit)
-    const offset = Math.max(0, args.offset ?? 0)
-    const runAnalystIds = await this.runAnalystAgentIds(tenantId)
 
     const run =
       args.grain === 'turn'
@@ -448,7 +462,7 @@ export class RunTraceService {
     const timeline = applyTraceFilters(buildTimeline(run), args)
     const filters = buildTraceFilters(args)
 
-    let result: RunTraceResult
+    let result: RunTraceSummaryResult | RunTraceDetailResult
     if (view === 'summary') {
       const summary = buildTraceSummary(run)
       result = { view: 'summary', runId: run.runId, grain: run.grain, summary }
@@ -456,6 +470,7 @@ export class RunTraceService {
         throw new Error('run_trace_output_too_large')
       }
     } else {
+      const offset = Math.max(0, args.offset ?? 0)
       const page = toListPage(timeline, limit, offset)
       result = {
         view: 'detail',
@@ -490,12 +505,89 @@ export class RunTraceService {
         returnedCount: view === 'detail' ? (result as RunTraceDetailResult).returnedCount : 1,
         truncated: view === 'detail' ? (result as RunTraceDetailResult).truncated : false,
         limit: view === 'detail' ? limit : null,
-        offset: view === 'detail' ? offset : null,
+        offset: view === 'detail' ? (result as RunTraceDetailResult).offset : null,
         filters,
       },
     })
 
     return result
+  }
+
+  private async auditProcessTrace(
+    input: {
+      tenantId: string
+      requesterAgentId: string
+      requesterAgentVersion: number
+    },
+    args: Extract<RunTraceArgs, { grain: 'process' }>,
+    result: RunTraceProcessResult,
+  ): Promise<void> {
+    await this.audit.append({
+      actorType: 'agent',
+      actorId: input.requesterAgentId,
+      agentVersion: input.requesterAgentVersion,
+      action: 'analysis.run_trace',
+      targetType: 'tenant',
+      targetId: input.tenantId,
+      tenantId: input.tenantId,
+      modelUsed: null,
+      inputRef: `process:${args.runId}`,
+      outputRef: String(result.steps.length),
+      policyDecision: 'allowed',
+      metadata: {
+        grain: 'process',
+        runId: args.runId,
+        view: 'process',
+        stepCount: result.steps.length,
+        delegationCount: result.delegations.length,
+        slotGapCount: result.slotGaps.length,
+      },
+    })
+  }
+
+  private async loadProcessRun(
+    tenantId: string,
+    runId: string,
+    runAnalystIds: string[],
+  ): Promise<RunTraceProcessResult> {
+    const process = await this.prisma.processInstance.findFirst({
+      where: { id: runId, tenantId },
+      include: {
+        steps: { orderBy: { startedAt: 'asc' } },
+        delegations: { orderBy: { createdAt: 'asc' } },
+        playbookVersion: { select: { id: true, contentHash: true, spec: true } },
+      },
+    })
+    if (!process) throw new RunIndexNotFoundError()
+    if (process.startedByAgentId && runAnalystIds.includes(process.startedByAgentId)) {
+      throw new RunIndexNotFoundError()
+    }
+
+    const spec = projectPlaybookSpecForTrace({
+      playbookVersionId: process.playbookVersion.id,
+      contentHash: process.playbookContentHash,
+      spec: process.playbookVersion.spec,
+    })
+
+    const parsedSpec = process.playbookVersion.spec as {
+      entryStepId?: string
+      transitions?: Array<{ fromStepId: string; toStepId: string }>
+    }
+
+    const processInput =
+      process.inputPayload && typeof process.inputPayload === 'object' && !Array.isArray(process.inputPayload)
+        ? (process.inputPayload as Record<string, unknown>)
+        : {}
+
+    return buildProcessTraceView({
+      process: mapProcessInstance(process),
+      steps: process.steps.map(mapProcessStep),
+      delegations: process.delegations.map(mapDelegationEdge),
+      playbookSpec: spec,
+      entryStepId: parsedSpec.entryStepId ?? spec.steps[0]?.id ?? '',
+      transitions: parsedSpec.transitions ?? [],
+      processInput,
+    })
   }
 
   private async loadTurnRun(
@@ -767,4 +859,4 @@ function mapToolCall(row: {
   }
 }
 
-export type { RunTraceGrain, RunTraceView, RunTraceResult, RunTraceSummaryResult, RunTraceDetailResult }
+export type { RunTraceGrain, RunTraceView, RunTraceResult, RunTraceSummaryResult, RunTraceDetailResult, RunTraceProcessResult } from './run-trace-types'

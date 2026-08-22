@@ -89,8 +89,15 @@ export type ChatTriggerAttachment = {
 const FILE_LIKE_SLOT_RE = /(pdf|file|path|document|csatol|fajl|filename)/i
 const DOCUMENT_ID_SLOT_RE = /^(documentId|document_id|doc_id|document)$/i
 
-function isFileLikeSlot(name: string): boolean {
+/** Trigger-rés neve alapján — a chat UI és a csatolmány-feltöltés ugyanezt használja. */
+export function isFileLikeSlot(name: string): boolean {
   return FILE_LIKE_SLOT_RE.test(name)
+}
+
+export function processRequiresFileAttachment(
+  slots: Array<{ name: string; required: boolean }>,
+): boolean {
+  return slots.some((slot) => slot.required && isFileLikeSlot(slot.name))
 }
 
 function isPdfAttachment(attachment: ChatTriggerAttachment): boolean {

@@ -22,6 +22,7 @@ import {
 import { distillSkillFromConversationAction, getAgentSkillsAction } from '@/app/actions/skills'
 import { exportConversationDebugLog } from '@/app/actions/debug-log'
 import { listChatTriggerableProcessDefinitions } from '@/app/actions/process'
+import { isFileLikeSlot, processRequiresFileAttachment } from '@/lib/playbook-v2/trigger-input'
 import { listAgentDelegatedConnectors } from '@/app/actions/connector-grants'
 import { ConnectorGrantNeededPanel } from '@/components/connectors/connector-grant-needed-panel'
 import type { ConnectorGrantNeededView } from '@/components/connectors/connector-grant-needed-panel'
@@ -1548,9 +1549,9 @@ export function AgentChatPanel({
    * feladat-specifikus mezők (ütemezés, run-as) akkor is látszottak, amikor
    * sima beszélgetés folyt.
    */
-  const [composerMode, setComposerMode] = useState<'chat' | 'task'>('chat')
+  const [composerMode, setComposerMode] = useState<'chat' | 'task' | 'process'>('chat')
   const [privacyContext, setPrivacyContext] = useState<ChatPrivacyMarkerContext | null>(null)
-  const [composerPanel, setComposerPanel] = useState<'skill' | 'process' | null>(null)
+  const [composerPanel, setComposerPanel] = useState<'skill' | null>(null)
   const [pending, startTransition] = useTransition()
   const [ticketPending, startTicketTransition] = useTransition()
   const [archivePending, startArchiveTransition] = useTransition()
@@ -1882,13 +1883,6 @@ export function AgentChatPanel({
     })
   }
 
-  const canSubmit =
-    conversationStatus !== 'archived' &&
-    (input.trim().length > 0 || pendingAttachments.length > 0) &&
-    !pending &&
-    !ticketPending &&
-    !isAgentTyping &&
-    canStartThinkingTraceStream(thinkingTraceControls)
   const controlsBusy =
     pending || ticketPending || archivePending || distillPending || debugLogPending || isAgentTyping
 
@@ -1954,14 +1948,17 @@ export function AgentChatPanel({
    * Módváltáskor a feladat-specifikus beállítások nem maradhatnak élve
    * láthatatlanul: a rejtett ütemezés a küldés jelentését változtatná meg.
    */
-  const switchComposerMode = useCallback((next: 'chat' | 'task') => {
+  const switchComposerMode = useCallback((next: 'chat' | 'task' | 'process') => {
     setComposerMode(next)
     setComposerPanel(null)
-    if (next === 'chat') {
+    if (next !== 'task') {
       setTicketExecuteAfter('')
       setTicketRecurrence('none')
       setTicketMaxRuns('')
       setTicketAuthorizeRunAs(false)
+    }
+    if (next !== 'process') {
+      setSelectedProcessDefId(null)
     }
   }, [])
 
@@ -1969,6 +1966,28 @@ export function AgentChatPanel({
     () => chatProcessDefs.find((def) => def.id === selectedProcessDefId) ?? null,
     [chatProcessDefs, selectedProcessDefId],
   )
+
+  const processMissingFileAttachment = useMemo(() => {
+    if (composerMode !== 'process' || !selectedProcessDef) return false
+    if (pendingAttachments.length > 0) return false
+    return processRequiresFileAttachment(selectedProcessDef.slots)
+  }, [composerMode, pendingAttachments.length, selectedProcessDef])
+
+  const hasComposerContent =
+    input.trim().length > 0 ||
+    pendingAttachments.length > 0 ||
+    (composerMode === 'process' &&
+      selectedProcessDef !== null &&
+      selectedProcessDef.slots.filter((slot) => slot.required).length === 0)
+
+  const canSubmit =
+    conversationStatus !== 'archived' &&
+    hasComposerContent &&
+    !pending &&
+    !ticketPending &&
+    !isAgentTyping &&
+    canStartThinkingTraceStream(thinkingTraceControls) &&
+    (composerMode !== 'process' || (selectedProcessDefId !== null && !processMissingFileAttachment))
 
   const handleDeleteMessageContent = useCallback(
     (messageId: string) => {
@@ -2652,7 +2671,8 @@ export function AgentChatPanel({
             content: text,
             conversationId: conversationId ?? undefined,
             attachmentDocumentIds: documentIds,
-            processDefinitionId: selectedProcessDefId ?? undefined,
+            processDefinitionId:
+              composerMode === 'process' ? (selectedProcessDefId ?? undefined) : undefined,
             ...(options.consequenceApprovalIds?.length
               ? { consequenceApprovalIds: options.consequenceApprovalIds }
               : {}),
@@ -3353,6 +3373,15 @@ export function AgentChatPanel({
                         title: 'Üzenetből feladat',
                         hint: 'Válts „Feladat” módra, ha a táblára kell kerülnie — akár időzítve.',
                       },
+                      ...(chatProcessDefs.length > 0
+                        ? [
+                            {
+                              icon: '▶',
+                              title: 'Folyamat indítása',
+                              hint: 'Válts „Folyamat” módra, válassz folyamatot, majd küldj üzenetet vagy csatolj fájlt.',
+                            },
+                          ]
+                        : []),
                     ].map((tip) => (
                       <li
                         key={tip.title}
@@ -3549,12 +3578,21 @@ export function AgentChatPanel({
             >
               {(
                 [
-                  { value: 'chat', label: 'Beszélgetés', hint: 'Az agent most válaszol.' },
+                  { value: 'chat' as const, label: 'Beszélgetés', hint: 'Az agent most válaszol.' },
                   {
-                    value: 'task',
+                    value: 'task' as const,
                     label: 'Feladat',
                     hint: 'Az üzenetből feladat lesz a táblán — akár időzítve.',
                   },
+                  ...(chatProcessDefs.length > 0
+                    ? [
+                        {
+                          value: 'process' as const,
+                          label: 'Folyamat',
+                          hint: 'Chatből indítható folyamat — a következő üzenet elindítja.',
+                        },
+                      ]
+                    : []),
                 ] as const
               ).map((option) => (
                 <button
@@ -3627,88 +3665,76 @@ export function AgentChatPanel({
               </div>
             )}
 
-            {chatProcessDefs.length > 0 && (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setComposerPanel((p) => (p === 'process' ? null : 'process'))}
-                  disabled={composerDisabled}
-                  aria-expanded={composerPanel === 'process'}
-                  className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors disabled:opacity-40 ${
-                    selectedProcessDef
-                      ? 'border-sage/50 bg-sage/10 text-sage'
-                      : composerPanel === 'process'
-                        ? 'border-coral/40 bg-coral/10 text-coral-deep'
-                        : 'border-line bg-card text-ink-soft hover:border-coral/30 hover:text-coral-deep'
-                  }`}
-                >
-                  <span aria-hidden>▶</span>
-                  <span className="max-w-[12rem] truncate">
-                    {selectedProcessDef ? selectedProcessDef.name : 'Folyamat'}
-                  </span>
-                </button>
-                {selectedProcessDef && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedProcessDefId(null)}
-                    className="ml-1 rounded-full px-1 text-xs text-ink-faint hover:text-coral-deep"
-                    aria-label="Folyamat kiválasztásának törlése"
-                    title="Mégsem indítok folyamatot"
-                  >
-                    ✕
-                  </button>
-                )}
-                {composerPanel === 'process' && (
-                  <>
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      aria-hidden
-                      className="fixed inset-0 z-30 cursor-default"
-                      onClick={() => setComposerPanel(null)}
-                    />
-                    <div className="absolute bottom-full left-0 z-40 mb-1.5 max-h-64 w-[min(20rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-line bg-card p-1 shadow-xl">
-                      <p className="px-3 py-2 text-[11px] leading-snug text-ink-faint">
-                        Folyamatot választva a következő üzeneted nem sima választ kap: azt a
-                        folyamatot indítja el.
-                      </p>
-                      {chatProcessDefs.map((def) => (
-                        <button
-                          key={def.id}
-                          type="button"
-                          onClick={() => {
-                            setSelectedProcessDefId(def.id)
-                            setComposerPanel(null)
-                          }}
-                          className="flex w-full flex-col rounded-lg px-3 py-2 text-left transition-colors hover:bg-night-2"
-                        >
-                          <span className="text-xs font-semibold text-ink">{def.name}</span>
-                          {def.description && (
-                            <span className="line-clamp-2 text-[11px] leading-snug text-ink-faint">
-                              {def.description}
-                            </span>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
           </div>
 
-          {selectedProcessDef && (
-            <p className="mb-2 rounded-lg border border-sage/30 bg-sage/5 px-3 py-2 text-xs text-ink-soft">
-              {(() => {
-                const requiredSlots = selectedProcessDef.slots.filter((slot) => slot.required)
-                if (requiredSlots.length === 0) {
-                  return `A(z) „${selectedProcessDef.name}” folyamat indul a következő üzeneteddel.`
-                }
-                return `A(z) „${selectedProcessDef.name}” folyamat indul. Add meg üzenetben: ${requiredSlots
-                  .map((slot) => (slot.description ? `${slot.name} (${slot.description})` : slot.name))
-                  .join(', ')}`
-              })()}
-            </p>
+          {composerMode === 'process' && chatProcessDefs.length > 0 && (
+            <div className="mb-2 rounded-xl border border-sage/35 bg-sage/5 px-3 py-2.5">
+              <p className="text-[11px] leading-snug text-ink-soft">
+                Válassz folyamatot — a következő üzeneted vagy csatolmányod indítja el.
+              </p>
+              <div className="mt-2 flex max-h-40 flex-col gap-1 overflow-y-auto">
+                {chatProcessDefs.map((def) => {
+                  const selected = def.id === selectedProcessDefId
+                  return (
+                    <button
+                      key={def.id}
+                      type="button"
+                      onClick={() => setSelectedProcessDefId(selected ? null : def.id)}
+                      disabled={composerDisabled}
+                      className={`flex w-full flex-col rounded-lg px-3 py-2 text-left transition-colors disabled:opacity-40 ${
+                        selected
+                          ? 'border border-sage/50 bg-sage/15 ring-1 ring-sage/30'
+                          : 'border border-transparent hover:bg-card'
+                      }`}
+                    >
+                      <span className="text-xs font-semibold text-ink">{def.name}</span>
+                      {def.description && (
+                        <span className="line-clamp-2 text-[11px] leading-snug text-ink-faint">
+                          {def.description}
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+
+              {selectedProcessDef && (
+                <p className="mt-2 rounded-lg border border-sage/30 bg-card/80 px-3 py-2 text-xs text-ink-soft">
+                  {(() => {
+                    const requiredSlots = selectedProcessDef.slots.filter((slot) => slot.required)
+                    const requiredFileSlots = requiredSlots.filter((slot) => isFileLikeSlot(slot.name))
+                    const requiredTextSlots = requiredSlots.filter((slot) => !isFileLikeSlot(slot.name))
+
+                    if (requiredSlots.length === 0) {
+                      return `A(z) „${selectedProcessDef.name}” folyamat indul a következő üzeneteddel.`
+                    }
+
+                    const parts: string[] = []
+                    if (requiredFileSlots.length > 0) {
+                      parts.push(
+                        processMissingFileAttachment
+                          ? `Csatolj fájlt a 📎 gombbal: ${requiredFileSlots
+                              .map((slot) =>
+                                slot.description ? `${slot.name} (${slot.description})` : slot.name,
+                              )
+                              .join(', ')}`
+                          : `Fájl csatolva — ${requiredFileSlots.map((slot) => slot.name).join(', ')}`,
+                      )
+                    }
+                    if (requiredTextSlots.length > 0) {
+                      parts.push(
+                        `Add meg üzenetben: ${requiredTextSlots
+                          .map((slot) =>
+                            slot.description ? `${slot.name} (${slot.description})` : slot.name,
+                          )
+                          .join(', ')}`,
+                      )
+                    }
+                    return `A(z) „${selectedProcessDef.name}” folyamat indul. ${parts.join(' · ')}`
+                  })()}
+                </p>
+              )}
+            </div>
           )}
 
           {composerMode === 'task' && (
@@ -3830,7 +3856,11 @@ export function AgentChatPanel({
               placeholder={
                 composerMode === 'task'
                   ? 'Mi legyen a feladat? Írd le egy mondatban…'
-                  : `Üzenet ${persona.nickname} részére…`
+                  : composerMode === 'process'
+                    ? selectedProcessDef
+                      ? 'Üzenet vagy csatolmány a folyamathoz…'
+                      : 'Előbb válassz folyamatot fent…'
+                    : `Üzenet ${persona.nickname} részére…`
               }
               disabled={composerDisabled}
               className="max-h-36 min-h-[44px] flex-1 resize-none bg-transparent px-1 py-2.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none disabled:opacity-50"
@@ -3863,6 +3893,27 @@ export function AgentChatPanel({
                   <>
                     <span className="sm:hidden">Feladat</span>
                     <span className="hidden sm:inline">Feladat létrehozása</span>
+                  </>
+                )}
+              </button>
+            ) : composerMode === 'process' ? (
+              <button
+                type="button"
+                onClick={handleSend}
+                disabled={!canSubmit}
+                title={
+                  processMissingFileAttachment
+                    ? 'A folyamathoz fájl csatolása kötelező'
+                    : !selectedProcessDefId
+                      ? 'Válassz folyamatot'
+                      : 'Folyamat indítása'
+                }
+                className="shrink-0 rounded-xl bg-sage px-4 py-2.5 text-sm font-semibold text-card shadow-[0_8px_20px_-10px_rgba(72,120,88,0.8)] transition-transform hover:-translate-y-0.5 disabled:opacity-40"
+              >
+                {pending ? '…' : (
+                  <>
+                    <span className="sm:hidden">Indítás</span>
+                    <span className="hidden sm:inline">Folyamat indítása</span>
                   </>
                 )}
               </button>

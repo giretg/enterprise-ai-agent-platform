@@ -1,6 +1,6 @@
 import type { ToolHandler, ToolHandlerArgs } from './tool-handler'
 
-/** RA-04 — lapozott futás-idővonal a Futás-elemzőnek (chat / ticket ág). */
+/** RA-04 / RA-05 — lapozott futás-idővonal és folyamat-nézet a Futás-elemzőnek. */
 export const runTraceHandler: ToolHandler = {
   id: 'run_trace',
   handles(tool) {

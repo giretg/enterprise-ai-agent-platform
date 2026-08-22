@@ -687,7 +687,7 @@ export class ToolBrokerService {
     })
   }
 
-  /** RA-04 — lapozott idővonal a Futás-elemző `run_trace` tooljához (chat/ticket ág). */
+  /** RA-04 / RA-05 — idővonal (chat/ticket) és folyamat-nézet a Futás-elemző `run_trace` tooljához. */
   async fetchRunTrace(
     input: Extract<ToolBrokerInvokeInput, { tool: 'run_trace' }>,
     actingTenantId: string | null,
