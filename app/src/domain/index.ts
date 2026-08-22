@@ -832,6 +832,7 @@ toolBrokerService.setConnectorEntityResolverFactory(async ({ connector, agentSec
   }),
 )
 modelGateway.setPrivacyEngine(surrogateEngine)
+sandboxAppService.setSurrogateEngine(surrogateEngine)
 modelGateway.setPrivacyModeResolver(({ tenantId, agentId }) =>
   platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
 )
@@ -1418,4 +1419,5 @@ export const services = {
   webSearch: webSearchService,
   webSearchPolicy: webSearchPolicyService,
   webFetch: webFetchService,
+  surrogateEngine,
 }

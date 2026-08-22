@@ -1,4 +1,5 @@
 import { extractLoose } from '@/domain/contract-runtime/extract'
+import { chatAttachmentWorkspacePath } from '@/lib/attachment-workspace'
 
 function jsonObject(value: unknown): Record<string, unknown> {
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -111,7 +112,9 @@ function pickAttachmentForSlot(
 }
 
 function attachmentValueForSlot(slotName: string, attachment: ChatTriggerAttachment): string {
-  return DOCUMENT_ID_SLOT_RE.test(slotName) ? attachment.id : attachment.filename
+  return DOCUMENT_ID_SLOT_RE.test(slotName)
+    ? attachment.id
+    : chatAttachmentWorkspacePath(attachment.filename)
 }
 
 /**
@@ -122,7 +125,8 @@ function attachmentValueForSlot(slotName: string, attachment: ChatTriggerAttachm
  * `pdf_path: …`-t — a feltöltött dokumentumot a résbe kell tenni.
  *
  * `documentId` / `document_id` → Document UUID; minden más fájl-szerű név
- * (`pdf_path`, `path`, `file`, …) → eredeti fájlnév.
+ * (`pdf_path`, `path`, `file`, …) → a workspace-tükrözött fájlnév
+ * (PDF/Office esetén `fájl.pdf.txt`, l. `chatAttachmentWorkspacePath`).
  */
 export function applyChatTriggerAttachments(
   payload: Record<string, unknown>,

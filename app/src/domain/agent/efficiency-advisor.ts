@@ -238,16 +238,50 @@ function isReaderCall(tool: EfficiencyRunToolCall): boolean {
   return sourceKeyOf(tool) !== null
 }
 
+/**
+ * Újraolvasás: (a) `tool_result_read` `redundant`/`blocked` metaadatával, vagy
+ * (b) ugyanaz a `toolCallSourceKey` már szerepelt a futásban. A forrás-kulcsot
+ * mindig nyilvántartjuk — a fékbe futott sorok sem „veszítik el" a kulcsot a
+ * későbbi (b) egyezés elől.
+ */
 function isRereadCall(tool: EfficiencyRunToolCall, seen: Map<string, number>): boolean {
   const result = asRecord(tool.resultMeta)
-  if (tool.toolName === 'tool_result_read' && (boolField(result, 'redundant') || boolField(result, 'blocked'))) {
-    return true
-  }
+  const flagged =
+    tool.toolName === 'tool_result_read' &&
+    (boolField(result, 'redundant') || boolField(result, 'blocked'))
+
   const key = sourceKeyOf(tool)
-  if (!key) return false
-  const prior = seen.get(key) ?? 0
-  seen.set(key, prior + 1)
-  return prior >= 1
+  let duplicate = false
+  if (key) {
+    const prior = seen.get(key) ?? 0
+    seen.set(key, prior + 1)
+    duplicate = prior >= 1
+  }
+
+  return flagged || duplicate
+}
+
+/**
+ * EFF-05: a promptTokens sorozat monoton nem-csökkenő (createdAt szerint rendezve).
+ * A hízás mintája a „minden körben újraküldjük + nő" alakot keresi; egy visszaesés
+ * más dinamikát jelez (pl. tömörítés már dolgozott, vagy más feladat-szakasz).
+ */
+function isMonotonicPromptGrowth(promptTokensSeries: number[]): boolean {
+  for (let i = 1; i < promptTokensSeries.length; i++) {
+    if (promptTokensSeries[i]! < promptTokensSeries[i - 1]!) return false
+  }
+  return promptTokensSeries.length > 0
+}
+
+/**
+ * EFF-05 mérőszám: ismételt (növekedett) kontextus =
+ * `sum(promptTokens) − n × promptTokens(első hívás)`.
+ * Ez a baseline első prompt n-szeri újraküldése fölötti többlet — arányban mérünk,
+ * nem abszolút hívásszámban.
+ */
+function repeatedContextGrowth(promptSum: number, callCount: number, firstPrompt: number): number {
+  if (callCount <= 0) return 0
+  return Math.max(promptSum - callCount * firstPrompt, 0)
 }
 
 function detectRun(
@@ -255,10 +289,14 @@ function detectRun(
   thresholds: EfficiencyAdvisorThresholds,
 ): { findings: RunFinding[]; breakdown: EfficiencyTokenBreakdown; cacheRows: 'none' | 'all_null' | 'has_values' } {
   const modelCalls = [...run.modelCalls].sort((a, b) => modelCallTime(a) - modelCallTime(b))
-  const promptTokens = modelCalls.reduce((sum, call) => sum + Math.max(call.promptTokens, 0), 0)
+  const promptSeries = modelCalls.map((call) => Math.max(call.promptTokens, 0))
+  const promptTokens = promptSeries.reduce((sum, tokens) => sum + tokens, 0)
   const completion = modelCalls.reduce((sum, call) => sum + Math.max(call.completionTokens, 0), 0)
-  const entryContext = modelCalls.length > 0 ? Math.max(modelCalls[0]!.promptTokens, 0) : 0
+  const entryContext = promptSeries.length > 0 ? promptSeries[0]! : 0
+  // Token-bontás (EFF-08): a többi hívás teljes prompt-tömege = sum − első.
   const repeatedContext = Math.max(promptTokens - entryContext, 0)
+  // Detektor-mérőszám (EFF-05): a baseline fölötti növekedés = sum − n×első.
+  const contextGrowth = repeatedContextGrowth(promptTokens, modelCalls.length, entryContext)
   const cached = modelCalls.reduce(
     (sum, call) => sum + (call.cachedPromptTokens == null ? 0 : Math.max(call.cachedPromptTokens, 0)),
     0,
@@ -289,22 +327,28 @@ function detectRun(
         rereadRatio: Number(rereadRatio.toFixed(4)),
         rereadCalls,
         readCalls,
+        rereadChars,
+        rereadTokens: rereadTokensAnnotation,
       },
     })
   }
 
-  const repeatedShare = promptTokens > 0 ? repeatedContext / promptTokens : 0
+  const repeatedShare = promptTokens > 0 ? contextGrowth / promptTokens : 0
+  const monotonic = isMonotonicPromptGrowth(promptSeries)
   if (
     modelCalls.length >= thresholds.minModelCallsForBloat &&
+    monotonic &&
     repeatedShare > thresholds.repeatedContextShare
   ) {
     findings.push({
       kind: 'context_bloat',
-      wastedTokens: repeatedContext,
+      wastedTokens: contextGrowth,
       metric: {
         repeatedShare: Number(repeatedShare.toFixed(4)),
         modelCalls: modelCalls.length,
-        repeatedContext,
+        repeatedContext: contextGrowth,
+        firstPrompt: entryContext,
+        lastPrompt: promptSeries[promptSeries.length - 1] ?? 0,
       },
     })
   }
@@ -450,11 +494,24 @@ function mergeMetrics(
       if (typeof value === 'number') numericKeys.add(key)
     }
   }
+  const averageKey = (key: string): boolean =>
+    key.endsWith('Ratio') ||
+    key.endsWith('Share') ||
+    key === 'firstPrompt' ||
+    key === 'lastPrompt'
   for (const key of numericKeys) {
     const values = rows.map((row) => row[key]).filter((value): value is number => typeof value === 'number')
     if (values.length === 0) continue
     const sum = values.reduce((acc, value) => acc + value, 0)
-    out[key] = key.endsWith('Ratio') || key.endsWith('Share') ? Number((sum / values.length).toFixed(4)) : sum
+    if (!averageKey(key)) {
+      out[key] = sum
+      continue
+    }
+    const avg = sum / values.length
+    out[key] =
+      key === 'firstPrompt' || key === 'lastPrompt'
+        ? Math.round(avg)
+        : Number(avg.toFixed(4))
   }
   for (const row of rows) {
     for (const [key, value] of Object.entries(row)) {

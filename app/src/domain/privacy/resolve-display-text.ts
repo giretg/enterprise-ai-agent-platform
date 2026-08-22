@@ -11,8 +11,15 @@
  *
  * `document` a streaminghez: a darab kontextusa a teljes, eddig látott eredeti
  * markdown — a darab önmagában szöveg-node-nak tűnhet, holott egy URL vége.
+ *
+ * Mini-app / workspace HTML: `contentKind: 'html'` — ugyanaz a szöveg-node
+ * szabály, HTML parserrel (script/style/attribútum kimarad).
  */
-import { resolvableTextRanges } from '@/domain/privacy/markdown-surrogate-context'
+import { resolvableHtmlTextRanges } from '@/domain/privacy/html-surrogate-context'
+import {
+  resolvableTextRanges,
+  type TextRange,
+} from '@/domain/privacy/markdown-surrogate-context'
 import {
   allowsEgressResolve,
   type PrivacyEgressSurface,
@@ -25,6 +32,8 @@ import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
 
 export type SurrogateDisplayLookup = (surrogate: string) => Promise<string | null>
 
+export type EgressContentKind = 'markdown' | 'html'
+
 export type EgressResolveAudit = (event: {
   surface: PrivacyEgressSurface
   resolvedCount: number
@@ -36,13 +45,30 @@ export async function resolveDisplayText(
   lookup: SurrogateDisplayLookup,
   document?: string,
 ): Promise<string> {
+  return resolveDisplayTextInKind(text, lookup, 'markdown', document)
+}
+
+/** Mini-app / workspace HTML megjelenítési feloldás (szöveg-node only). */
+export async function resolveHtmlDisplayText(
+  html: string,
+  lookup: SurrogateDisplayLookup,
+): Promise<string> {
+  return resolveDisplayTextInKind(html, lookup, 'html')
+}
+
+async function resolveDisplayTextInKind(
+  text: string,
+  lookup: SurrogateDisplayLookup,
+  kind: EgressContentKind,
+  document?: string,
+): Promise<string> {
   if (!text) return text
   const matches = findEmbeddedSurrogates(text)
   if (matches.length === 0) return text
 
   const source = document ?? text
   const origin = document != null && document.endsWith(text) ? document.length - text.length : 0
-  const ranges = resolvableTextRanges(source)
+  const ranges = rangesForKind(source, kind)
 
   let out = ''
   let cursor = 0
@@ -63,6 +89,10 @@ export async function resolveDisplayText(
   return out
 }
 
+function rangesForKind(source: string, kind: EgressContentKind): TextRange[] {
+  return kind === 'html' ? resolvableHtmlTextRanges(source) : resolvableTextRanges(source)
+}
+
 export async function resolveEgressText(
   text: string,
   lookup: SurrogateDisplayLookup,
@@ -70,6 +100,7 @@ export async function resolveEgressText(
     document?: string
     surface?: PrivacyEgressSurface
     onResolved?: EgressResolveAudit
+    contentKind?: EgressContentKind
   },
 ): Promise<string> {
   const resolvedCategories: SurrogateEntityType[] = []
@@ -79,7 +110,8 @@ export async function resolveEgressText(
     if (value != null && parsed) resolvedCategories.push(parsed.entityType)
     return value
   }
-  const resolved = await resolveDisplayText(text, auditedLookup, opts?.document)
+  const kind = opts?.contentKind ?? 'markdown'
+  const resolved = await resolveDisplayTextInKind(text, auditedLookup, kind, opts?.document)
   if (opts?.onResolved && opts.surface && resolvedCategories.length > 0) {
     await opts.onResolved({
       surface: opts.surface,
@@ -135,6 +167,7 @@ type EgressTextParams = {
   requesterUserId?: string | null
   matrix?: ResolvedPrivacyEgressMatrix
   document?: string
+  contentKind?: EgressContentKind
   onResolved?: EgressResolveAudit
 }
 
@@ -152,6 +185,7 @@ export async function resolveEgressTextForSurface(params: EgressTextParams): Pro
   return resolveEgressText(params.text, lookup, {
     document: params.document,
     surface: params.surface,
+    contentKind: params.contentKind,
     onResolved: params.onResolved,
   })
 }

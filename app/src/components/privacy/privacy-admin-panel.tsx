@@ -9,6 +9,7 @@ import {
   setPrivacyCategoryPolicyAction,
   setPrivacyGatewayModeAction,
   setSensitivityLayerModeAction,
+  syncConnectorPrivacyCatalogAction,
   type PrivacyAdminView,
 } from '@/app/actions/privacy'
 import { PrivacyObservabilityPanel } from '@/components/privacy/privacy-observability-panel'
@@ -18,6 +19,8 @@ import {
   ALIAS_LAYER_INTRO,
   ALIAS_RULES_INTRO,
   PRIVACY_ACTION_LABELS,
+  PRIVACY_CATALOG_SYNC_HINT,
+  PRIVACY_CATALOG_SYNC_LABEL,
   PRIVACY_CATEGORY_LABELS,
   PRIVACY_DRY_RUN_INTRO,
   PRIVACY_DRY_RUN_NO_HITS,
@@ -38,6 +41,7 @@ import {
   SENSITIVITY_LAYER_INTRO,
   SENSITIVITY_MODE_LABELS,
   inheritedFromLabel,
+  privacyCatalogSyncMessage,
 } from '@/domain/privacy/privacy-admin-copy'
 import {
   buildPrivacyPolicyEditorRows,
@@ -116,6 +120,10 @@ export function PrivacyAdminPanel({
   const [dryText, setDryText] = useState('')
   const [dryResult, setDryResult] = useState<PrivacyDryRunResult | null>(null)
   const [observabilityChain, setObservabilityChain] = useState<PrivacyTurnChain | null>(null)
+  const [syncingConnectorId, setSyncingConnectorId] = useState<string | null>(null)
+  const [syncMessage, setSyncMessage] = useState<{ tone: 'ok' | 'warn' | 'err'; text: string } | null>(
+    null,
+  )
   const [hasServerInitial] = useState(() => Boolean(initial))
 
   useEffect(() => {
@@ -156,11 +164,38 @@ export function PrivacyAdminPanel({
   }
 
   const editable = canEditLayer(view, layer)
+  // A kapcsolat configját szervezeti admin (saját kapcsolat) vagy platform-admin
+  // írhatja — a szerver-oldali action ezt újra ellenőrzi.
+  const canSyncCatalog = view.canEditTenant || view.canEditPlatform
 
   function applyView(next: PrivacyAdminView) {
     setView(next)
     setConfirmCategory(null)
     setConfirmText('')
+  }
+
+  /**
+   * A jelölést a forrásrendszer tartja karban; ez a gomb a rendszeres szinkron
+   * kézi kiváltása. Fail-closed: hibás katalógustól a korábbi jelölés marad —
+   * a válasz outcome-ja mondja meg, mi történt.
+   */
+  function syncConnectorCatalog(connectorId: string) {
+    setSyncMessage(null)
+    setSyncingConnectorId(connectorId)
+    startTransition(async () => {
+      const res = await syncConnectorPrivacyCatalogAction({
+        connectorId,
+        layer,
+        agentId: view!.agentId ?? agentId,
+      })
+      setSyncingConnectorId(null)
+      if (res.success) {
+        applyView(res.data.view)
+        setSyncMessage(privacyCatalogSyncMessage(res.data.outcome))
+      } else {
+        setSyncMessage({ tone: 'err', text: res.error })
+      }
+    })
   }
 
   function saveCategory(category: string, action: PrivacyCategoryAction | typeof INHERIT, kind: 'builtin' | 'custom') {
@@ -377,7 +412,8 @@ export function PrivacyAdminPanel({
             <h3 className="mb-3 font-display text-base font-semibold tracking-tight text-ink">
               Honnan tudja a rendszer a neveket?
             </h3>
-            {view.emptyState.kind === 'empty' ? (
+            <p className="mb-3 text-xs leading-relaxed text-ink-faint">{PRIVACY_CATALOG_SYNC_HINT}</p>
+            {view.connectors.length === 0 ? (
               <div className="space-y-3">
                 <p className="text-sm font-medium text-ink">{view.emptyState.title}</p>
                 <p className="text-sm leading-relaxed text-ink-soft">{view.emptyState.body}</p>
@@ -391,14 +427,57 @@ export function PrivacyAdminPanel({
                 ) : null}
               </div>
             ) : (
-              <ul className="space-y-2 text-sm">
-                {view.emptyState.ready.map((row) => (
-                  <li key={row.id} className="rounded-lg border border-line bg-night-2 px-3 py-2">
-                    {row.name}
-                    <span className="ml-2 text-xs text-ink-faint">védendő mezők megjelölve</span>
-                  </li>
-                ))}
-              </ul>
+              <div className="space-y-3">
+                <ul className="space-y-2 text-sm">
+                  {view.connectors.map((row) => (
+                    <li
+                      key={row.id}
+                      className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-line bg-night-2 px-3 py-2"
+                    >
+                      <span className="text-ink">{row.name}</span>
+                      {row.hasPrivacyMetadata ? (
+                        <Badge tone="success">védendő mezők megjelölve</Badge>
+                      ) : (
+                        <Badge tone="warning">nincs megjelölt mező</Badge>
+                      )}
+                      {typeof row.catalogVersion === 'number' ? (
+                        <span className="text-xs text-ink-faint">katalógus v{row.catalogVersion}</span>
+                      ) : null}
+                      {canSyncCatalog && row.canSync ? (
+                        <button
+                          type="button"
+                          className="ml-auto rounded-full border border-accent/50 px-3 py-1 text-xs font-medium text-accent hover:bg-accent/10 disabled:opacity-50"
+                          disabled={pending}
+                          onClick={() => syncConnectorCatalog(row.id)}
+                        >
+                          {syncingConnectorId === row.id ? 'Szinkron…' : PRIVACY_CATALOG_SYNC_LABEL}
+                        </button>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+                {syncMessage ? (
+                  <p
+                    className={
+                      syncMessage.tone === 'err'
+                        ? 'text-sm text-coral'
+                        : syncMessage.tone === 'warn'
+                          ? 'text-sm text-honey'
+                          : 'text-sm text-sage'
+                    }
+                  >
+                    {syncMessage.text}
+                  </p>
+                ) : null}
+                {view.emptyState.kind === 'empty' && view.emptyState.href && view.emptyState.cta ? (
+                  <Link
+                    href={view.emptyState.href}
+                    className="inline-flex rounded-full border border-accent/50 px-4 py-2 text-sm font-medium text-accent hover:bg-accent/10"
+                  >
+                    {view.emptyState.cta}
+                  </Link>
+                ) : null}
+              </div>
             )}
           </div>
         </div>

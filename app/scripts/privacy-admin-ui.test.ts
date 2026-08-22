@@ -20,8 +20,10 @@ import {
   SENSITIVITY_LAYER_INTRO,
   SENSITIVITY_MODE_LABELS,
   inheritedFromLabel,
+  privacyCatalogSyncMessage,
   privacyConnectorEmptyState,
 } from '../src/domain/privacy/privacy-admin-copy'
+import type { PrivacyCatalogSyncFailReason } from '../src/domain/privacy/privacy-catalog-sync'
 import {
   buildPrivacyPolicyEditorRows,
   DEFAULT_PRIVACY_CATEGORY_POLICY,
@@ -186,6 +188,58 @@ async function main() {
     assert.equal(phone?.inherited, true)
     assert.equal(phone?.source, 'tenant')
     assert.equal(phone?.overlayAction, null)
+  })
+
+  await test('„Szinkron most" — sikeres szinkron megmondja a verziót és a változásokat', () => {
+    const message = privacyCatalogSyncMessage({
+      status: 'applied',
+      catalogVersion: 7,
+      changes: ['mező hozzáadva: hrsz → tokenize/ingatlan', 'jelöletlen mezők: pass → block'],
+    })
+    assert.equal(message.tone, 'ok')
+    assert.match(message.text, /katalógus v7/)
+    assert.match(message.text, /2 változás/)
+    assert.match(message.text, /hrsz/)
+  })
+
+  await test('„Szinkron most" — a D5 figyelmeztetés látszik, és sárgára vált', () => {
+    const message = privacyCatalogSyncMessage({
+      status: 'applied',
+      catalogVersion: 7,
+      changes: ['mező módosult: token — pass → pass'],
+      warnings: ['token: API-kulcs minta (sk-…)'],
+    })
+    assert.equal(message.tone, 'warn')
+    assert.match(message.text, /Ellenőrizd/)
+    assert.match(message.text, /API-kulcs minta/)
+  })
+
+  await test('„Szinkron most" — változatlan katalógus nem ijesztget', () => {
+    const message = privacyCatalogSyncMessage({ status: 'no_change', catalogVersion: 4 })
+    assert.equal(message.tone, 'ok')
+    assert.match(message.text, /változatlan/)
+    assert.match(message.text, /nincs teendő/)
+  })
+
+  await test('„Szinkron most" — minden hibaokra magyar mondat van, és kimondja, hogy a régi jelölés marad', () => {
+    const reasons: PrivacyCatalogSyncFailReason[] = [
+      'not_http_api',
+      'unreachable',
+      'http_error',
+      'invalid_catalog',
+      'invalid_config',
+    ]
+    for (const reason of reasons) {
+      const message = privacyCatalogSyncMessage({ status: 'failed', reason, detail: 'részlet' })
+      assert.equal(message.tone, 'err')
+      assert.doesNotMatch(message.text, /^A szinkron nem sikerült/, `hiányzó magyar szöveg: ${reason}`)
+      assert.doesNotMatch(message.text, new RegExp(reason), `nyers hibakód szivárog: ${reason}`)
+      assert.match(
+        message.text,
+        /A korábbi jelölés érvényben marad/,
+        `a fail-closed ígéret hiányzik: ${reason}`,
+      )
+    }
   })
 
   await test('üres állapot: nincs privacy-metadata-s connector — közérthető teendő, nem üres táblázat', () => {

@@ -95,8 +95,12 @@ class FakeTickets implements Partial<TicketRepository> {
 }
 
 class FakeConversations implements Partial<ConversationRepository> {
-  async findById(): Promise<Conversation | null> {
-    return null
+  async findById(id: string): Promise<Conversation | null> {
+    return {
+      id,
+      tenantId: 'tenant-A',
+      createdById: 'user-A',
+    } as Conversation
   }
 }
 
@@ -287,14 +291,15 @@ const GOOD_HTML = '<!doctype html><html><body><h1>Riport</h1><p>Helló</p></body
 function buildService() {
   const apps = new FakeSandboxApps()
   const audit = new FakeAudit()
+  const artifacts = new FakeArtifactStore()
   const service = new SandboxAppService(
     apps,
     new FakeTickets() as unknown as TicketRepository,
     new FakeConversations() as unknown as ConversationRepository,
     audit,
-    new FakeArtifactStore(),
+    artifacts,
   )
-  return { service, apps, audit }
+  return { service, apps, audit, artifacts }
 }
 
 // ---- Tesztek ----------------------------------------------------------------
@@ -461,9 +466,42 @@ async function main() {
     assert.ok((await audit.findMany({ action: 'sandbox_app.preview' })).length === 1)
 
     const token = decodeURIComponent(previewUrl.split('t=')[1])
+    const payload = verifyPreviewToken(token)
+    assert.equal(payload.u, ACTOR_A.userId, 'preview token hordozza a requestert a HTML-feloldáshoz')
     const served = await service.servePreviewByToken(token)
     assert.equal(served.html, GOOD_HTML)
     assert.equal(served.contentHash, contentHash)
+  })
+
+  await test('preview HTML álnév-feloldás szöveg-node-ban (artifact tokenizált marad)', async () => {
+    const { service, apps, artifacts } = buildService()
+    const SUR = '[[COMPANY@S15_1]]'
+    const html = `<!doctype html><html><body><h1>${SUR}</h1><img alt="${SUR}"></body></html>`
+    const a = await service.createSandboxApp(
+      { name: 'Resolve preview', criticality: 'L1', createdFromConversationId: 'conv-1' },
+      ACTOR_A,
+    )
+    await service.upsertSandboxAppVersion(
+      { appId: a.appId, html, changeSummary: 'v1', activate: true },
+      ACTOR_A,
+    )
+    service.setSurrogateEngine({
+      async peekRef() {
+        return { ok: true, record: {} as never }
+      },
+      async resolveDisplayValue() {
+        return 'SPAR'
+      },
+    } as never)
+    const { previewUrl } = await service.getSandboxAppPreviewUrl({ appId: a.appId }, ACTOR_A)
+    const token = decodeURIComponent(previewUrl.split('t=')[1]!)
+    const served = await service.servePreviewByToken(token)
+    assert.equal(served.html.includes('<h1>SPAR</h1>'), true)
+    assert.equal(served.html.includes(`alt="${SUR}"`), true, 'attribútum ne oldódjon')
+    const ver = await apps.getVersion(a.appId, 1)
+    assert.ok(ver)
+    const stored = await artifacts.get(ver.artifactRef)
+    assert.equal(stored.includes(SUR), true, 'tárolt artifact maradjon tokenizált')
   })
 
   await test('preview token: lejárt token → PreviewTokenError', () => {

@@ -194,6 +194,7 @@ Verziózott, cache-elhető, auth ugyanaz, mint a connector API-n (Bearer + actin
 | Mikor | Mi történik |
 |---|---|
 | Kapcsolat aktiválásakor | Best-effort lekérés; a hibája nem akadályozza az aktiválást, de auditálva van. |
+| Admin felületről | Adatvédelem oldal → „Honnan tudja a rendszer a neveket?" → **Szinkron most** az adott kapcsolatnál (szervezeti admin a saját kapcsolatára, platform-admin a közösre). |
 | Ütemezetten | `npm run privacy:catalog-sync` (Cloud Scheduler → job). `--dry-run` csak riportol, `--connector <id>` egy kapcsolatra fut. |
 
 - **Fail-closed:** ha a katalógus elérhetetlen, sémasértő, vagy a mentési invariánsokba ütközik (`tokenize` numerikus mezőn, `reversible: false` típuson, ismeretlen `source_id` hivatkozás), a platform a KORÁBBI, érvényes jelölést tartja meg. Rossz publikálás nem tudja „kikapcsolni" a tokenizálást.

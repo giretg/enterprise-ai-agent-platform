@@ -455,13 +455,13 @@ export class ToolBrokerService {
       const { outcome, outcomeReason, effect, modelText, machineData } = channels
 
       const latencyMs = Date.now() - startedAt
+      // EFF-02 — a `resultMeta()` minden ágon egységes `result_chars`-ot ad
+      // (nyers JSON-hossz, nem a becsomagolt modelText).
       const meta = {
         ...resultMeta(result),
         outcome,
         outcome_reason: outcomeReason,
         effect,
-        // issue #237 — a modell csatornájára kerülő nyers hasznos teher hossza.
-        result_chars: modelText.length,
       }
 
       await recordCall(this, {
@@ -540,6 +540,7 @@ export class ToolBrokerService {
         resultMeta: {
           error: message,
           outcome: 'failed',
+          result_chars: 0,
           ...(contractViolation ? { contract_violation: contractViolation } : {}),
         },
         actingUserId,
@@ -821,7 +822,7 @@ export class ToolBrokerService {
       status: 'denied',
       latencyMs: Date.now() - startedAt,
       policyDecision: 'consequence_gate_risk',
-      resultMeta: { denied: true, reason: 'risk_requires_approval' },
+      resultMeta: { denied: true, reason: 'risk_requires_approval', result_chars: 0 },
       trustClass: resolveTrustClass(input.tool),
     })
   }

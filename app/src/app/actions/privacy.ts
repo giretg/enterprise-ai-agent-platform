@@ -11,7 +11,11 @@ import {
 import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
 import { connectorRowHasPrivacyMetadata } from '@/domain/privacy/connector-privacy-runtime'
-import { privacyConnectorEmptyState } from '@/domain/privacy/privacy-admin-copy'
+import {
+  privacyConnectorEmptyState,
+  type PrivacyCatalogSyncMessageInput,
+  type PrivacyConnectorRow,
+} from '@/domain/privacy/privacy-admin-copy'
 import {
   PrivacyCategoryPolicyError,
   buildPrivacyPolicyEditorRows,
@@ -31,6 +35,7 @@ import {
   setPrivacyCategoryPolicySchema,
   setPrivacyGatewayModeSchema,
   setSensitivityLayerModeSchema,
+  syncConnectorPrivacyCatalogSchema,
 } from '@/lib/validators/actions'
 import { repositories } from '@/repositories/postgres'
 import type { ChatPrivacyMarkerContext } from '@/lib/privacy-chat-markers'
@@ -56,6 +61,8 @@ export type PrivacyAdminView = {
   agentPolicy: Awaited<ReturnType<typeof services.platformSettings.getAgentPrivacyCategoryPolicy>>
   resolvedPolicy: Awaited<ReturnType<typeof services.platformSettings.resolvePrivacyCategoryPolicy>>
   rows: ReturnType<typeof buildPrivacyPolicyEditorRows>
+  /** A kapcsolatok jelölés-állapota + szinkronizálhatóság (issue #320). */
+  connectors: PrivacyConnectorRow[]
   emptyState: ReturnType<typeof privacyConnectorEmptyState>
   legacyAllowSensitiveExternalModel: boolean
 }
@@ -93,6 +100,7 @@ async function listPrivacyConnectors(tenantId: string | null) {
     select: {
       id: true,
       name: true,
+      type: true,
       config: true,
       connectorMode: true,
       activeSpecVersion: { select: { capabilitySet: true } },
@@ -108,7 +116,16 @@ async function listPrivacyConnectors(tenantId: string | null) {
       config: row.config,
       capabilitySet: row.activeSpecVersion?.capabilitySet,
     }),
+    catalogVersion: readCatalogVersion(row.config),
+    canSync: row.type === 'http_api',
   }))
+}
+
+/** A tárolt configba szinkronizált katalógusverzió (ha a forrás adott ilyet). */
+function readCatalogVersion(config: unknown): number | null {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return null
+  const value = (config as Record<string, unknown>).catalog_version
+  return typeof value === 'number' && Number.isInteger(value) ? value : null
 }
 
 async function loadPrivacyAdminView(input: {
@@ -207,6 +224,7 @@ async function loadPrivacyAdminView(input: {
       legacyAllowSensitiveExternalModel,
       editingLayer: input.layer,
     }),
+    connectors,
     emptyState: privacyConnectorEmptyState(connectors),
     legacyAllowSensitiveExternalModel,
   }
@@ -312,6 +330,73 @@ export async function setPrivacyCategoryPolicyAction(input: unknown) {
     return ok(view)
   } catch (e) {
     return privacyFail(e, 'Nem sikerült menteni a kategória-szabályt.')
+  }
+}
+
+/**
+ * „Szinkron most" — a forrás `GET /privacy/catalog` katalógusának behúzása egy
+ * kapcsolatra (issue #320). A jelölés kanonikus helye a forrásrendszer; ez a
+ * gomb a rendszeres (aktiváláskori + ütemezett) szinkron kézi kiváltása, ha az
+ * admin most publikált új jelölést és nem akarja megvárni a következő futást.
+ *
+ * Fail-closed: érvénytelen vagy elérhetetlen katalógustól a korábbi jelölés
+ * marad érvényben — a hívás outcome-ja megmondja, miért.
+ */
+export async function syncConnectorPrivacyCatalogAction(input: unknown) {
+  try {
+    const parsed = syncConnectorPrivacyCatalogSchema.parse(input)
+    const access = await resolveEditorAccess(parsed)
+
+    const connector = await prisma.connector.findUnique({
+      where: { id: parsed.connectorId },
+      select: { id: true, tenantId: true, lifecycleState: true },
+    })
+    if (!connector || connector.lifecycleState !== 'active') {
+      return fail('A kapcsolat nem található, vagy nem aktív.')
+    }
+    // Tenant-határ: a közös (platform-scope) kapcsolat configját tenant-admin nem
+    // írhatja — az minden szervezetre hatna.
+    if (connector.tenantId === null) {
+      await requirePlatformRole('superadmin')
+    } else {
+      if (connector.tenantId !== access.tenantId && !access.superadmin) {
+        return fail('Ez a kapcsolat nem ehhez a szervezethez tartozik.')
+      }
+      await requireTenantRole('admin')
+    }
+
+    const { syncPrivacyCatalogForConnector } = await import(
+      '@/domain/privacy/privacy-catalog-sync-service'
+    )
+    const result = await syncPrivacyCatalogForConnector(parsed.connectorId, {
+      id: access.ctx.user.id,
+      type: 'human',
+    })
+    // A böngészőnek csak a visszajelzés kell; a teljes új config nem megy ki.
+    const outcome: PrivacyCatalogSyncMessageInput =
+      result.status === 'applied'
+        ? {
+            status: 'applied',
+            catalogVersion: result.catalogVersion,
+            changes: result.changes,
+            warnings: result.warnings,
+          }
+        : result.status === 'no_change'
+          ? { status: 'no_change', catalogVersion: result.catalogVersion }
+          : { status: 'failed', reason: result.reason, detail: result.detail }
+
+    const view = await loadPrivacyAdminView({
+      layer: access.layer,
+      tenantId: access.tenantId,
+      agentId: parsed.agentId ?? null,
+      canEditPlatform: access.canEditPlatform,
+      canEditTenant: access.canEditTenant,
+      canEditAgent: access.canEditAgent,
+      superadmin: access.superadmin,
+    })
+    return ok({ outcome, view })
+  } catch (e) {
+    return privacyFail(e, 'A katalógus-szinkron nem futott le.')
   }
 }
 
