@@ -165,11 +165,17 @@ async function main() {
     const root = join(dirname(fileURLToPath(import.meta.url)), '..')
     const chat = readFileSync(join(root, 'src/domain/agent/agent-chat-runtime.ts'), 'utf8')
     const display = readFileSync(join(root, 'src/domain/privacy/resolve-display-text.ts'), 'utf8')
+    const htmlEgress = readFileSync(join(root, 'src/domain/privacy/resolve-html-egress.ts'), 'utf8')
+    const sandbox = readFileSync(join(root, 'src/domain/sandbox/sandbox-app-service.ts'), 'utf8')
     const wiring = readFileSync(join(root, 'src/domain/index.ts'), 'utf8')
     assert.match(chat, /resolveEgressTextForSurface\(/)
     assert.match(display, /surface: 'web_ui'/)
     assert.match(display, /surface: 'external_channel'/)
+    assert.match(htmlEgress, /resolveEgressTextForSurface\(/)
+    assert.match(htmlEgress, /contentKind: 'html'/)
+    assert.match(sandbox, /resolveHtmlEgressForViewer\(/)
     assert.match(wiring, /resolveChannelOutboundText\(/)
+    assert.match(wiring, /sandboxAppService\.setSurrogateEngine\(/)
     assert.equal(
       /function resolvePlatformEmailEgressText|export async function resolvePlatformEmailEgressText/.test(display),
       false,

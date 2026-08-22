@@ -231,6 +231,49 @@ async function main() {
     assert.equal(createdCalls[1].trustClass, 'external_untrusted')
   })
 
+  await test('EFF-01: recordCall az input.agentTurnId-t a ToolCall sorra írja', async () => {
+    const createdCalls: Array<Record<string, unknown>> = []
+    const fakeSelf = {
+      tools: {
+        createToolCall: async (data: Record<string, unknown>) => {
+          createdCalls.push(data)
+          return { id: 'tc-turn', createdAt: new Date(), ...data }
+        },
+      },
+      audit: {
+        append: async (data: Record<string, unknown>) => ({
+          id: 'a-turn',
+          seq: 1,
+          hash: 'h',
+          prevHash: 'genesis',
+          createdAt: new Date(),
+          ...data,
+        }),
+      },
+    } as unknown as ToolBrokerService
+
+    await recordCall(fakeSelf, {
+      input: {
+        agentId: 'agent-1',
+        agentVersion: 1,
+        conversationId: 'conv-1',
+        agentTurnId: 'turn-eff-01',
+        tool: 'file_read',
+        args: { path: 'a.txt' },
+      } as ToolBrokerInvokeInput,
+      ticketId: null,
+      connectorId: null,
+      status: 'ok',
+      latencyMs: 1,
+      policyDecision: 'allowed',
+      resultMeta: {},
+    })
+
+    assert.equal(createdCalls[0].agentTurnId, 'turn-eff-01')
+    assert.equal(createdCalls[0].conversationId, 'conv-1')
+    assert.equal(createdCalls[0].ticketId, null)
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt elbukott.`)
     process.exit(1)
