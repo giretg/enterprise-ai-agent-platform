@@ -919,8 +919,9 @@ export async function runAgentToolLoop(params: {
   /** Kooperatív leállítás (pl. chat Stop) — kör- és tool-hívás-határon ellenőrizve. */
   shouldCancel?: () => boolean
   /**
-   * Kontextus-tömörítés küszöbei (default: `resolveContextCompactionLimits()`).
-   * Hosszú, sok tool-hívásos futásnál ez tartja korlátok között a promptot.
+   * Kontextus-tömörítés küszöbei (default: `resolveContextCompactionLimits`
+   * az agent `modelConfig`-jával — EFF-11). Hosszú, sok tool-hívásos futásnál
+   * ez tartja korlátok között a promptot.
    */
   contextCompaction?: ContextCompactionLimits
   /** Tesztelhetőség: injektálható óra a faliórai korláthoz (default `Date.now`). */

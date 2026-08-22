@@ -149,6 +149,7 @@ jobs:
           npm run test:privacy-observe
           npm run test:privacy-category-policy
           npm run test:privacy-admin-ui
+          npm run test:privacy-markdown-highlights
           npm run test:prompt-privacy-transform
           npm run test:gateway-negative
           npm run test:privacy-latency

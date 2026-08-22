@@ -745,6 +745,12 @@ export const applyEfficiencyHintSchema = z.object({
   revert: z.boolean().optional(),
 })
 
+/** EFF-10 — hatékonysági kártya betöltése (governance Range mintája). */
+export const getEfficiencyAdvisorCardSchema = z.object({
+  agentId: z.string().uuid(),
+  range: z.enum(['today', '7d', '30d', 'all']).optional(),
+})
+
 export const updateAgentPersonaSchema = z
   .object({
     agentId: z.string().uuid(),

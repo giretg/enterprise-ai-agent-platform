@@ -440,7 +440,7 @@ function ChatHeaderMenu({
           />
           <div
             role="menu"
-            className="absolute right-0 z-40 mt-1.5 w-64 overflow-hidden rounded-xl border border-line bg-card p-1 shadow-xl"
+            className="absolute right-0 z-40 mt-1.5 w-[min(16rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-line bg-card p-1 shadow-xl"
             onClick={() => setOpen(false)}
           >
             {children}
@@ -3105,7 +3105,7 @@ export function AgentChatPanel({
     <div
       className={
         inSessionGrid
-          ? `pointer-events-auto relative flex h-[calc(100dvh-1.5rem)] min-h-[36rem] w-full flex-col overflow-hidden rounded-2xl border border-line bg-card shadow-2xl sm:h-full sm:min-h-0 ${
+          ? `pointer-events-auto relative flex h-[calc(100dvh-1.5rem)] min-h-0 w-full flex-col overflow-hidden rounded-2xl border border-line bg-card shadow-2xl sm:h-full sm:min-h-0 ${
               minimized ? 'hidden' : ''
             }`
           : `fixed inset-0 z-[200] flex items-end justify-center sm:items-center sm:p-6 lg:p-4 ${
@@ -3287,13 +3287,13 @@ export function AgentChatPanel({
             <button
               type="button"
               aria-label="Előzmények bezárása"
-              className="absolute inset-0 z-10 bg-ink/20 sm:hidden"
+              className="absolute inset-0 z-10 bg-ink/40 sm:hidden"
               onClick={() => setSessionsOpen(false)}
             />
           )}
 
           <div
-            className={`absolute inset-y-0 left-0 z-20 w-[min(88vw,17rem)] border-r border-line shadow-xl transition-transform sm:static sm:z-0 sm:w-56 sm:shrink-0 sm:translate-x-0 sm:shadow-none lg:w-64 xl:w-72 ${
+            className={`absolute inset-y-0 left-0 z-20 w-[min(88vw,17rem)] border-r border-line bg-night shadow-xl transition-transform sm:static sm:z-0 sm:w-56 sm:shrink-0 sm:translate-x-0 sm:shadow-none lg:w-64 xl:w-72 ${
               sessionsOpen ? 'translate-x-0' : '-translate-x-full sm:translate-x-0'
             }`}
           >
@@ -3464,7 +3464,7 @@ export function AgentChatPanel({
               />
             )}
 
-            <div className="shrink-0 border-t border-line bg-night/40 px-4 py-3 sm:px-5 sm:py-4">
+            <div className="shrink-0 border-t border-line bg-night px-3 py-3 sm:px-5 sm:py-4">
               {conversationStatus === 'archived' && (
                 <p className="mb-2 rounded-lg border border-line bg-night-2 px-3 py-2 text-xs text-ink-faint">
                   Ez a szál archivált: elolvasható, de új üzenet nem fűzhető hozzá.
@@ -3595,7 +3595,7 @@ export function AgentChatPanel({
                       className="fixed inset-0 z-30 cursor-default"
                       onClick={() => setComposerPanel(null)}
                     />
-                    <div className="absolute bottom-full left-0 z-40 mb-1.5 max-h-64 w-80 overflow-y-auto rounded-xl border border-line bg-card p-1 shadow-xl">
+                    <div className="absolute bottom-full left-0 z-40 mb-1.5 max-h-64 w-[min(20rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-line bg-card p-1 shadow-xl">
                       <p className="px-3 py-2 text-[11px] leading-snug text-ink-faint">
                         A kiválasztott skill neve bekerül az üzenetbe — ugyanaz, mintha
                         <span className="font-semibold"> / </span>jellel írnád be.
@@ -3662,7 +3662,7 @@ export function AgentChatPanel({
                       className="fixed inset-0 z-30 cursor-default"
                       onClick={() => setComposerPanel(null)}
                     />
-                    <div className="absolute bottom-full left-0 z-40 mb-1.5 max-h-64 w-80 overflow-y-auto rounded-xl border border-line bg-card p-1 shadow-xl">
+                    <div className="absolute bottom-full left-0 z-40 mb-1.5 max-h-64 w-[min(20rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-line bg-card p-1 shadow-xl">
                       <p className="px-3 py-2 text-[11px] leading-snug text-ink-faint">
                         Folyamatot választva a következő üzeneted nem sima választ kap: azt a
                         folyamatot indítja el.
@@ -3854,7 +3854,12 @@ export function AgentChatPanel({
                 }
                 className="shrink-0 rounded-xl bg-honey px-4 py-2.5 text-sm font-semibold text-card shadow-[0_8px_20px_-10px_rgba(176,125,36,0.8)] transition-transform hover:-translate-y-0.5 disabled:opacity-40"
               >
-                {ticketPending ? '…' : ticketExecuteAfter ? 'Ütemezés' : 'Feladat létrehozása'}
+                {ticketPending ? '…' : ticketExecuteAfter ? 'Ütemezés' : (
+                  <>
+                    <span className="sm:hidden">Feladat</span>
+                    <span className="hidden sm:inline">Feladat létrehozása</span>
+                  </>
+                )}
               </button>
             ) : (
               <button
