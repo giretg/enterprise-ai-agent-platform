@@ -284,6 +284,47 @@ function repeatedContextGrowth(promptSum: number, callCount: number, firstPrompt
   return Math.max(promptSum - callCount * firstPrompt, 0)
 }
 
+/**
+ * EFF-07: cache-prefix törés egy futáson belül.
+ * Csak nem-`null` `cachedPromptTokens` sorok; arány modellcsoportonként.
+ * Ha egyetlen modellcsoport sem éri el a `minCacheCalls` küszöböt, nincs minta.
+ */
+function detectCachePrefixBreak(
+  cacheRows: EfficiencyRunModelCall[],
+  thresholds: EfficiencyAdvisorThresholds,
+): RunFinding | null {
+  const byModel = new Map<string, EfficiencyRunModelCall[]>()
+  for (const call of cacheRows) {
+    const model = typeof call.model === 'string' && call.model.trim() ? call.model.trim() : ''
+    const list = byModel.get(model) ?? []
+    list.push(call)
+    byModel.set(model, list)
+  }
+
+  let best: RunFinding | null = null
+  for (const [model, rows] of byModel) {
+    if (rows.length < thresholds.minCacheCalls) continue
+    const cachePrompt = rows.reduce((sum, call) => sum + Math.max(call.promptTokens, 0), 0)
+    const cacheHit = rows.reduce((sum, call) => sum + Math.max(call.cachedPromptTokens ?? 0, 0), 0)
+    const hitRatio = cachePrompt > 0 ? cacheHit / cachePrompt : 0
+    if (hitRatio >= thresholds.cacheHitRatio) continue
+    const wastedTokens = Math.max(cachePrompt - cacheHit, 0)
+    const candidate: RunFinding = {
+      kind: 'cache_prefix_break',
+      wastedTokens,
+      metric: {
+        hitRatio: Number(hitRatio.toFixed(4)),
+        cacheCalls: rows.length,
+        cachedTokens: cacheHit,
+        promptTokens: cachePrompt,
+        model,
+      },
+    }
+    if (!best || candidate.wastedTokens > best.wastedTokens) best = candidate
+  }
+  return best
+}
+
 function detectRun(
   run: EfficiencyRun,
   thresholds: EfficiencyAdvisorThresholds,
@@ -413,31 +454,19 @@ function detectRun(
     })
   }
 
+  // EFF-07: null ≠ 0. A cache-találati arány csak a nem-`null` sorokon:
+  // sum(cachedPromptTokens) / sum(promptTokens). Csupa null → „nincs adat"
+  // (nem megállapítás). A 0 viszont valódi „nincs találat". Az arányt azonos
+  // modell felé menő hívásokon mérjük — a cache modell-specifikus.
   const cacheRows = modelCalls.filter((call) => call.cachedPromptTokens !== null)
-  const nullRows = modelCalls.filter((call) => call.cachedPromptTokens === null)
   let cacheStatus: 'none' | 'all_null' | 'has_values' = 'none'
   if (modelCalls.length === 0) cacheStatus = 'none'
   else if (cacheRows.length === 0) cacheStatus = 'all_null'
   else cacheStatus = 'has_values'
 
-  if (cacheRows.length >= thresholds.minCacheCalls) {
-    const cachePrompt = cacheRows.reduce((sum, call) => sum + Math.max(call.promptTokens, 0), 0)
-    const cacheHit = cacheRows.reduce((sum, call) => sum + Math.max(call.cachedPromptTokens ?? 0, 0), 0)
-    const hitRatio = cachePrompt > 0 ? cacheHit / cachePrompt : 0
-    if (hitRatio < thresholds.cacheHitRatio) {
-      findings.push({
-        kind: 'cache_prefix_break',
-        wastedTokens: Math.max(cachePrompt - cacheHit, 0),
-        metric: {
-          hitRatio: Number(hitRatio.toFixed(4)),
-          cacheCalls: cacheRows.length,
-          model: modelCalls[0]?.model ?? '',
-        },
-      })
-    }
-  }
+  const cacheFinding = detectCachePrefixBreak(cacheRows, thresholds)
+  if (cacheFinding) findings.push(cacheFinding)
 
-  void nullRows
   return {
     findings,
     breakdown: {
@@ -656,8 +685,27 @@ export function describeEfficiencyPattern(
       const subject = tool ? `A(z) „${tool}" eszköz` : 'Ugyanaz az eszköz'
       return `${subject} ismételten túl nagy választ hoz be (a ${OVERSIZED_TOOL_RESULT_CHARS.toLocaleString('hu-HU')} karakteres limit fölött). Szűkítsd a hívást (aggregált végpont, szűkebb mezőlista, tool_result_extract) — ehhez a mintához nincs kapcsoló.`
     }
-    case 'cache_prefix_break':
-      return 'A prompt-cache alig fog ennél az agentnél: a stabil előtag sorrendje vagy a modell váltakozása miatt a gyorsítótár nem használódik. Ez nem kapcsoló — a prompt-cache beállításait kell ellenőrizni.'
+    case 'cache_prefix_break': {
+      const model =
+        typeof metric?.model === 'string' && metric.model.trim() ? metric.model.trim() : null
+      const modelPart = model ? ` A(z) „${model}" modell felé menő hívásokon` : ''
+      return `A prompt-cache alig fog ennél az agentnél.${modelPart} a stabil előtag sorrendje vagy a modell váltakozása miatt a gyorsítótár nem használódik. Ez nem kapcsoló — a prompt-cache beállításait kell ellenőrizni.`
+    }
+  }
+}
+
+/**
+ * EFF-07: a „nincs cache-adat" és a „van adat, de 0 találat" megkülönböztetése.
+ * A hiány nem megállapítás, és nem számít bele a megtakarítás-becslésbe.
+ */
+export function describeEfficiencyCacheDataStatus(status: EfficiencyCacheDataStatus): string {
+  switch (status) {
+    case 'missing':
+      return 'A provider nem ad cache-adatot ezekhez a hívásokhoz — ez nem megállapítás, és nem számít bele a megtakarítás-becslésbe.'
+    case 'available':
+      return 'A provider cache-adatot adott; a találati arány a nem-null sorokból számolódik.'
+    case 'mixed':
+      return 'Egyes hívásoknál van cache-adat, másoknál nincs — az arányt csak a nem-null sorokból számoljuk.'
   }
 }
 

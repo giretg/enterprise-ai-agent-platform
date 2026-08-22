@@ -5,6 +5,7 @@ import { useState, useTransition } from 'react'
 import { applyEfficiencyHint } from '@/app/actions/efficiency-advisor'
 import { Card } from '@/components/ui/shell'
 import {
+  describeEfficiencyCacheDataStatus,
   describeEfficiencyPattern,
   describeEfficiencyStatus,
   type EfficiencyAdvisorView,
@@ -93,6 +94,11 @@ export function EfficiencyAdvisorPanel({
                 ? 'nincs adat'
                 : `${formatTokens(card.breakdown.cached)} token`}
             </dd>
+            {card.cacheDataStatus === 'missing' || card.cacheDataStatus === 'mixed' ? (
+              <p className="text-xs text-ink-faint">
+                {describeEfficiencyCacheDataStatus(card.cacheDataStatus)}
+              </p>
+            ) : null}
           </div>
         </dl>
       )}
