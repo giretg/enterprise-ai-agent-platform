@@ -29,7 +29,9 @@ import {
   describeEfficiencyCacheDataStatus,
   describeEfficiencyPattern,
   describeEfficiencyStatus,
+  efficiencyAdvisorRangeToSince,
   evaluateEfficiencyAdvisor,
+  parseEfficiencyAdvisorRange,
   resolveEfficiencyAdvisorThresholds,
   savingsBand,
   type EfficiencyRun,
@@ -806,6 +808,27 @@ async function main() {
     })
     assert.equal(ingestOff.factor, SOURCE_INGEST_DEFAULTS.factor)
     assert.equal(ingestOff.minChars, SOURCE_INGEST_DEFAULTS.minChars)
+  })
+
+  await check('EFF-10: időablak Range (today/7d/30d/all) feloldás', () => {
+    assert.equal(parseEfficiencyAdvisorRange('7d'), '7d')
+    assert.equal(parseEfficiencyAdvisorRange('bogus'), '30d')
+    assert.equal(efficiencyAdvisorRangeToSince('all'), undefined)
+    const now = new Date('2026-08-21T15:00:00.000Z')
+    const week = efficiencyAdvisorRangeToSince('7d', now)
+    assert.ok(week)
+    assert.equal(week!.getTime(), now.getTime() - 7 * 24 * 60 * 60 * 1000)
+    const today = efficiencyAdvisorRangeToSince('today', now)!
+    assert.equal(today.getHours(), 0)
+    assert.equal(today.getMinutes(), 0)
+  })
+
+  await check('EFF-10: a három állapot kimondott magyar szöveggel jelenik meg', () => {
+    assert.match(describeEfficiencyStatus('ok'), /rendben/i)
+    assert.match(describeEfficiencyStatus('findings'), /pazarló/i)
+    assert.match(describeEfficiencyStatus('insufficient_data'), /nincs elég adat/i)
+    assert.match(describeEfficiencyPattern('repeated_reread'), /újraolvas/)
+    assert.doesNotMatch(describeEfficiencyPattern('context_bloat'), /promptTokens|ModelCall/)
   })
 
   if (failures > 0) {

@@ -1,11 +1,11 @@
 /**
- * issue #237 / EFF-09 — a hatékonysági detektor korlátos, tenant-szűrt adatútja.
+ * issue #237 / EFF-09–EFF-10 — a hatékonysági detektor korlátos, tenant-szűrt adatútja.
  *
  * A detektor tiszta; ide tartozik a futás-lista DB-oldali groupBy/aggregációja,
  * a részletes sorok indexelt, felső korlátos lekérdezése, és a normalizált
  * bemenet (`EfficiencyRun[]`) előállítása.
  *
- * Ablak: 30 nap vagy a legutóbbi 20 futás, amelyik szűkebb.
+ * Ablak: a választott időtartam **vagy** a legutóbbi 20 futás, amelyik szűkebb.
  * Grain: chat → AgentTurn; task → Ticket; agentTurnId nélküli régebbi sorok →
  * Conversation (durvább bontás, a kimenet jelzi).
  *
@@ -13,7 +13,11 @@
  * Perf: docs/perf/github-issues/003-paginate-unbounded-lists.md
  */
 import {
+  EFFICIENCY_ADVISOR_DEFAULT_RANGE,
   evaluateEfficiencyAdvisor,
+  efficiencyAdvisorRangeToSince,
+  parseEfficiencyAdvisorRange,
+  type EfficiencyAdvisorRange,
   type EfficiencyAdvisorView,
   type EfficiencyPatternKind,
   type EfficiencyRun,
@@ -33,6 +37,14 @@ export const EFFICIENCY_ADVISOR_MAX_TOOL_ROWS = 4_000
 
 export const EFFICIENCY_ADVISOR_UNDO_KEY = 'efficiencyAdvisorUndo'
 
+export {
+  EFFICIENCY_ADVISOR_DEFAULT_RANGE,
+  EFFICIENCY_ADVISOR_RANGE_LABELS,
+  efficiencyAdvisorRangeToSince,
+  parseEfficiencyAdvisorRange,
+} from '@/domain/agent/efficiency-advisor'
+export type { EfficiencyAdvisorRange }
+
 export type EfficiencyRunKey = { kind: EfficiencyRunKind; id: string }
 
 export type EfficiencyRunCandidate = EfficiencyRunKey & { latest: Date }
@@ -44,7 +56,7 @@ export type EfficiencyRunsQueryResult = {
   runs: EfficiencyRun[]
   /** True, ha a kiválasztott futások között van beszélgetés-szintű (agentTurnId nélküli) grain. */
   coarseGranularity: boolean
-  since: Date
+  since: Date | undefined
   maxRuns: number
 }
 
@@ -197,8 +209,11 @@ export function assembleEfficiencyRuns(input: {
   })
 }
 
-async function listRunCandidatesFromDb(agentId: string, since: Date): Promise<EfficiencyRunCandidate[]> {
-  const baseWhere = { agentId, createdAt: { gte: since } } as const
+async function listRunCandidatesFromDb(
+  agentId: string,
+  since: Date | undefined,
+): Promise<EfficiencyRunCandidate[]> {
+  const baseWhere = since ? { agentId, createdAt: { gte: since } } : { agentId }
 
   // Három grain, mind DB-oldali groupBy + orderBy + take — nagy forgalomnál sem
   // töltünk be korlátlan csoportot. Per grain max MAX_RUNS, aztán összevonva újra vágunk.
@@ -249,9 +264,11 @@ async function listRunCandidatesFromDb(agentId: string, since: Date): Promise<Ef
 
 async function loadRunsForAgent(
   agentId: string,
-  now: Date = new Date(),
+  options?: { now?: Date; range?: EfficiencyAdvisorRange },
 ): Promise<EfficiencyRunsQueryResult> {
-  const since = new Date(now.getTime() - EFFICIENCY_ADVISOR_WINDOW_DAYS * 24 * 60 * 60 * 1000)
+  const now = options?.now ?? new Date()
+  const range = options?.range ?? EFFICIENCY_ADVISOR_DEFAULT_RANGE
+  const since = efficiencyAdvisorRangeToSince(range, now)
   const candidates = await listRunCandidatesFromDb(agentId, since)
   const selected = selectRecentRunCandidates(candidates, EFFICIENCY_ADVISOR_MAX_RUNS)
 
@@ -265,11 +282,9 @@ async function loadRunsForAgent(
   }
 
   const orFilter = buildSelectedRunsOrFilter(selected)
-  const detailWhere = {
-    agentId,
-    createdAt: { gte: since },
-    OR: orFilter,
-  }
+  const detailWhere = since
+    ? { agentId, createdAt: { gte: since }, OR: orFilter }
+    : { agentId, OR: orFilter }
 
   // Részletes sorok CSAK a kiválasztott futásokra — indexelt OR + take felső korlát.
   const [modelRows, toolRows] = await Promise.all([
@@ -324,6 +339,7 @@ export async function collectEfficiencyRuns(input: {
   agentId: string
   tenantId: string
   now?: Date
+  range?: EfficiencyAdvisorRange
 }): Promise<EfficiencyRunsQueryResult> {
   const agent = await prisma.agent.findUnique({
     where: { id: input.agentId },
@@ -332,13 +348,15 @@ export async function collectEfficiencyRuns(input: {
   if (!agent || !isAgentReachableFromTenant(agent.tenantId, input.tenantId)) {
     throw new Error('Agent not found')
   }
-  return loadRunsForAgent(input.agentId, input.now)
+  return loadRunsForAgent(input.agentId, { now: input.now, range: input.range })
 }
 
 export async function loadEfficiencyAdvisorCard(input: {
   agentId: string
   tenantId: string
+  range?: EfficiencyAdvisorRange
 }): Promise<EfficiencyAdvisorView> {
+  const range = parseEfficiencyAdvisorRange(input.range)
   const agent = await prisma.agent.findUnique({
     where: { id: input.agentId },
     select: { id: true, tenantId: true, modelConfig: true },
@@ -347,10 +365,11 @@ export async function loadEfficiencyAdvisorCard(input: {
     throw new Error('Agent not found')
   }
 
-  const { runs } = await loadRunsForAgent(input.agentId)
+  const { runs } = await loadRunsForAgent(input.agentId, { range })
 
   return {
     card: evaluateEfficiencyAdvisor(runs),
     applied: appliedFromModelConfig(agent.modelConfig),
+    range,
   }
 }
