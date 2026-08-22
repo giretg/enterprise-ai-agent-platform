@@ -1,7 +1,7 @@
 # Enterprise AI Agent Platform — Szoftver Dokumentáció
 
 **Verzió:** 1.0
-**Utolsó frissítés:** 2026-06-20
+**Utolsó frissítés:** 2026-08-22
 **Projekt:** Excellence Pay KFT — Kontrollált Enterprise AI Agent Platform
 **Stack:** Next.js 16 · React 19 · TypeScript · PostgreSQL (Prisma) · Clerk · GCP
 
@@ -105,7 +105,7 @@ enterprise-ai-agent-platform/
 │   │   │   ├── control-plane/    # Admin UI (agents, board, audit, stb.)
 │   │   │   └── sandbox/          # Sandbox UI (wiki chat, proposals)
 │   │   ├── domain/               # Üzleti logika (services)
-│   │   │   ├── agent/            # AgentChatRuntime, WikiRuntime, stb.
+│   │   │   ├── agent/            # AgentChatRuntime, WikiRuntime, hatékonysági tanácsadó
 │   │   │   ├── audit/            # AuditChainService (hash-lánc)
 │   │   │   ├── connector-grant/  # Per-user OAuth grant kezelés
 │   │   │   ├── dispatcher/       # DispatcherService + HarnessLauncher-ek
@@ -318,6 +318,14 @@ Key-value store a platform szintű beállításokhoz (pl. `dispatch_enabled`, `d
 **Fájl:** `src/domain/conversation/conversation-service.ts`
 
 Tenant-izolált, GDPR-törölhető conversation thread kezelés. A conversation a ticket mellett first-class entitás: saját tároló, retenció-policy és kontextus-rehydration.
+
+### 4.15 Hatékonysági tanácsadó
+
+**Fájlok:** `src/domain/agent/efficiency-advisor.ts` (tiszta detektor), `src/domain/agent/efficiency-advisor-query.ts` (korlátos, tenant-szűrt lekérdezés), `src/components/agents/efficiency-advisor-panel.tsx` (adatlap-szekció)
+
+Utólagos, olvasás-oldali kártya az agent adatlapján (`/control-plane/agents/[agentId]` → **Hatékonyság**). A már perzisztált `ModelCall` / `ToolCall` sorokból felismeri a pazarló mintákat (ismétlődő visszaolvasás, kontextus-hízás, túlméretezett eszköz-kimenet, cache-prefix törés), és ahol van kapcsoló, tenant admin egy kattintással alkalmazhatja / visszavonhatja (`agent.efficiency_hint_applied` / `_reverted` audit). Nem fut a futás közben, nem mutat prompt- vagy eszköz-tartalmat.
+
+Három állapot, mind kimondva: *rendben* / *van megállapítás* / *nincs elég adat*. Ablak: 30 nap vagy a legutóbbi 20 futás. Spec: `docs/specs/AI-Agent-Platform-Feature-Spec-Efficiency-Advisor.md`. Teszt: `npm run test:efficiency-advisor`.
 
 ---
 
@@ -916,7 +924,7 @@ Az agent képes egyszerű, egyfájlos HTML alkalmazásokat generálni (A0 szint)
 | `/control-plane` | `page.tsx` | Dashboard (ticket stats, agent kártyák) |
 | `/control-plane/board` | `board/page.tsx` | Kanban board |
 | `/control-plane/agents` | `agents/page.tsx` | Agent registry |
-| `/control-plane/agents/[id]` | `agents/[agentId]/page.tsx` | Agent részletek + chat |
+| `/control-plane/agents/[id]` | `agents/[agentId]/page.tsx` | Agent részletek + chat + Hatékonyság szekció |
 | `/control-plane/agents/new` | `agents/new/page.tsx` | Új agent varázsló (provisioning-javaslat → átnézés; eszközök, skillek, kapcsolatok; kitérők új ablakban) |
 | `/control-plane/agent-access` | `agent-access/page.tsx` | Kapcsolatok — ki kivel dolgozhat (admin) |
 | `/control-plane/audit` | `audit/page.tsx` | Audit lánc néző |
@@ -971,6 +979,13 @@ Az agent képes egyszerű, egyfájlos HTML alkalmazásokat generálni (A0 szint)
 | `DEV_USER_ID` | — | Dev auth: felhasználó ID (Clerk nélkül) |
 | `DEV_USER_ROLE` | `admin` | Dev auth: felhasználó szerepköre |
 | `AUTH_PROVIDER` | auto | `clerk` / `dev` |
+| `EFFICIENCY_ADVISOR_REREAD_RATIO` | `0.3` | Újraolvasási arány küszöbe (0–1; érvénytelen / elnémító érték az alapértékre esik) |
+| `EFFICIENCY_ADVISOR_MIN_READ_CALLS` | `6` | Ennél kevesebb olvasó hívásból az arány nem mintázat |
+| `EFFICIENCY_ADVISOR_REPEATED_CONTEXT_SHARE` | `0.6` | Ismételt kontextus hányad-küszöbe |
+| `EFFICIENCY_ADVISOR_MIN_MODEL_CALLS` | `4` | Ennél kevesebb modellhívásból a hízás nem mintázat |
+| `EFFICIENCY_ADVISOR_OVERSIZED_REPEAT` | `3` | Ismételt túlméretezett eszköz-kimenet küszöbe |
+| `EFFICIENCY_ADVISOR_CACHE_HIT_RATIO` | `0.2` | Cache-találati arány küszöbe (`null` ≠ 0) |
+| `EFFICIENCY_ADVISOR_MIN_CACHE_CALLS` | `10` | Ennél kevesebb nem-`null` cache-sorból az arány nem mintázat |
 
 ### Cloud Run Job (harness)
 
@@ -1008,7 +1023,7 @@ Az agent képes egyszerű, egyfájlos HTML alkalmazásokat generálni (A0 szint)
 | `TicketTransition` | Állapotátmenet napló |
 | `AuditLog` | Hash-láncos audit bejegyzések |
 | `ModelCall` | LLM hívás naplók (cost, tokens, latency) |
-| `ToolCall` | Tool Broker hívás naplók |
+| `ToolCall` | Tool Broker hívás naplók (`agentTurnId` a per-futás elemzéshez; `resultMeta.result_chars` a kimenet hossza) |
 | `Connector` | Rendszer connectorok (ERP, Gmail, stb.) |
 | `ConnectorGrant` | Per-user OAuth grantok |
 | `Conversation` | Chat session (tenant-izolált) |
