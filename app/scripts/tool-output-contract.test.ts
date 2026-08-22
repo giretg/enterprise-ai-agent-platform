@@ -237,6 +237,16 @@ async function main() {
     // …és az audit-sor is hordozza a kimenetelt (WP-6).
     assert.equal(calls.at(-1)?.outcome, 'empty')
     assert.equal(calls.at(-1)?.resultMeta?.outcome, 'empty')
+    // EFF-02 — ok ágon egységes result_chars (szám, nyers teher hossza).
+    assert.equal(typeof calls.at(-1)?.resultMeta?.result_chars, 'number')
+    assert.equal(
+      calls.at(-1)?.resultMeta?.result_chars,
+      JSON.stringify({ path: 'egyeztetes.xlsx', rowsAppended: 0 }).length,
+    )
+    assert.ok(
+      (calls.at(-1)?.resultMeta?.result_chars as number) < result.modelText.length,
+      'result_chars a nyers teher, nem a becsomagolt modelText',
+    )
   })
 
   await test('1. incidens: valódi sorokkal ugyanez a hívás `ok`', async () => {
@@ -663,6 +673,8 @@ async function main() {
     assert.equal(recorded?.status, 'error', 'a hívás NEM kerülhet be sikerként')
     assert.equal(recorded?.outcome, 'failed')
     assert.equal(recorded?.resultMeta?.contract_violation, 'output_schema_violation')
+    // EFF-02 — error ágon is ott a result_chars (nincs hasznos teher → 0).
+    assert.equal(recorded?.resultMeta?.result_chars, 0)
   })
 
   await test('D2: a szerződés NEM alakítja át a kimenetet (ismeretlen mező átmegy)', async () => {
@@ -690,7 +702,7 @@ async function main() {
   })
 
   await test('D1: az elutasított hívás kimenetele `failed`', async () => {
-    const { broker } = makeBroker(fakeFileEditor({}))
+    const { broker, calls } = makeBroker(fakeFileEditor({}))
     // A `board_write` a keretben nézi a ticket gazdáját — ismeretlen ticket → deny.
     const result = await broker.invoke({
       agentId: AGENT,
@@ -701,6 +713,39 @@ async function main() {
     assert.equal(result.denied, true)
     if (!result.denied) return
     assert.equal(result.outcome, 'failed')
+    // EFF-02 — denied ágon is ott a result_chars.
+    assert.equal(calls.at(-1)?.resultMeta?.result_chars, 0)
+  })
+
+  await test('EFF-02: resultMeta() minden ágon egységes result_chars számot ad', async () => {
+    const { rawResultChars, resultMeta } = await import(
+      '../src/domain/tool-broker/tool-broker-support'
+    )
+    const samples: unknown[] = [
+      { path: 'a.txt', bytesWritten: 4 },
+      { path: 'a.txt', totalLines: 10, content: 'x'.repeat(100) },
+      { hits: [{ path: 'p', snippet: 's' }], okfHitCount: 1 },
+      { pages: [{ path: 'x' }] },
+      { found: true, path: 'docs/a.md', text: 'hello' },
+      { count: 3, query: 'foo' },
+      { users: [{ role: 'admin' }] },
+      { draftId: 'd1' },
+      { messageId: 'm1' },
+      { previewUrl: 'https://x', contentHash: 'abc' },
+      {},
+    ]
+    for (const sample of samples) {
+      const meta = resultMeta(sample as never)
+      assert.equal(typeof meta.result_chars, 'number')
+      assert.equal(meta.result_chars, rawResultChars(sample))
+      assert.equal(meta.result_chars, JSON.stringify(sample).length)
+      // A mező soha nem tartalmaz eredmény-szöveget — csak a hosszt.
+      assert.equal(typeof meta.result_chars, 'number')
+      for (const value of Object.values(meta)) {
+        if (value === meta.result_chars) continue
+        assert.notEqual(value, sample)
+      }
+    }
   })
 
   await test('a fail-safe mellékhatás-szabály ismeretlen toolra is érvényes', () => {

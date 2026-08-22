@@ -35,7 +35,7 @@ export async function recordDenied(
     status: 'denied',
     latencyMs,
     policyDecision: reason,
-    resultMeta: { denied: true, reason },
+    resultMeta: { denied: true, reason, result_chars: 0 },
     actingUserId,
     grantId,
   })
@@ -97,12 +97,16 @@ export async function recordCall(
     connector_type: connectorType,
     access_mode: accessMode,
   }
-  // issue #237 (EFF-02) — egységes `result_chars` MINDEN ágon. A sikeres ág a
-  // valódi hosszat adja át (a modell csatornájára kikerült nyers hasznos teher);
-  // a `denied` / `error` ág nem küld payloadot, ott a helyes érték 0. Így a
-  // „melyik eszköz hoz be ismételten túl sokat?" elemzésnek nem kell hiányzó
-  // mezőt kezelnie, és egy új hívó sem felejtheti el a mérőszámot.
-  const resultMeta = { result_chars: 0, ...params.resultMeta }
+  // EFF-02 — minden ToolCall soron legyen `result_chars` (szám, sosem szöveg).
+  // Hiányzó / érvénytelen érték → 0 (denied/error ágak, régi hívók).
+  const resultCharsRaw = params.resultMeta.result_chars
+  const resultMetaWithChars: Record<string, unknown> = {
+    ...params.resultMeta,
+    result_chars:
+      typeof resultCharsRaw === 'number' && Number.isFinite(resultCharsRaw)
+        ? resultCharsRaw
+        : 0,
+  }
   const metadata = {
     tool: params.input.tool,
     status: params.status,
@@ -113,7 +117,7 @@ export async function recordCall(
     outcome,
     effect: effectSummary,
     argsMeta: sanitizedArgsMeta,
-    resultMeta,
+    resultMeta: resultMetaWithChars,
     acting_user_id: params.actingUserId ?? params.input.actingUserId ?? null,
     grant_id: params.grantId ?? null,
   }
@@ -127,7 +131,7 @@ export async function recordCall(
     toolName: params.input.tool,
     status: params.status,
     argsMeta: sanitizedArgsMeta as Prisma.JsonValue,
-    resultMeta: resultMeta as Prisma.JsonValue,
+    resultMeta: resultMetaWithChars as Prisma.JsonValue,
     latencyMs: params.latencyMs,
     policyDecision: params.policyDecision,
     trustClass,

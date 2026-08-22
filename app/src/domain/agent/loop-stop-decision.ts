@@ -186,9 +186,10 @@ export const SOURCE_INGEST_DEFAULTS: SourceIngestLimits = {
  * `AGENT_SOURCE_INGEST_MIN_CHARS`, `AGENT_SOURCE_INGEST_UNKNOWN_CHARS`.
  * Érvénytelen vagy védelmet kikapcsoló érték → alapérték.
  *
- * issue #237 — opcionális `modelConfig` overlay: precedencia modelConfig → env →
- * default, de csak SZIGORÍTANI tud (kisebb faktor / kisebb minimum). A 0-s vagy
- * lazító érték nem érvényes — a védelem nem némítható.
+ * EFF-11 (#316 / #237) — opcionális `modelConfig` overlay: precedencia
+ * modelConfig → env → default, de csak SZIGORÍTANI tud (kisebb faktor / kisebb
+ * minimum). A 0-s vagy lazító érték nem érvényes — a védelem nem némítható.
+ * Overlay nélkül az eredmény bájtra azonos az env/defaulttel.
  */
 export function resolveSourceIngestLimits(
   env: NodeJS.ProcessEnv = process.env,

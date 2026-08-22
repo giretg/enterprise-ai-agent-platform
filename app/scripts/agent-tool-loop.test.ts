@@ -139,6 +139,8 @@ type RecordedToolCall = {
   resultMeta: Record<string, unknown> | null
   conversationId: string | null
   ticketId: string | null
+  /** issue #237 / EFF-01 — chat-forduló kötés; ticket-ágon null. */
+  agentTurnId: string | null
 }
 
 function fakeToolCapsRecording(record: RecordedToolCall[]): ToolBrokerRepository {
@@ -261,6 +263,8 @@ async function main() {
     assert.equal(brokerCalls.length, 1)
     assert.equal(brokerCalls[0].ticketId, 'ticket-1')
     assert.equal(brokerCalls[0].conversationId, undefined)
+    // EFF-01: ticket/task-ágon nincs forduló-rekord — agentTurnId üresen marad.
+    assert.equal(brokerCalls[0].agentTurnId, undefined)
     assert.equal(brokerCalls[0].tool, 'file_read')
     // a gateway is ticketId kontextust kapott (guardrail / audit célból)
     assert.equal(gwCalls[0].ticketId, 'ticket-1')
@@ -905,9 +909,41 @@ async function main() {
     assert.equal(reads[0].status, 'ok')
     assert.equal(reads[0].policyDecision, 'internal')
     assert.equal(reads[0].conversationId, 'conv-180')
+    // EFF-01 / issue #237 — belső hívás is a saját fordulóhoz köt.
+    assert.equal(reads[0].agentTurnId, 'turn-180')
     assert.equal(reads[0].argsMeta.path, archivePath)
     assert.equal(reads[0].argsMeta.returned_chars, archiveContent.length)
     assert.equal(reads[0].argsMeta.total_chars, archiveContent.length)
+  })
+
+  await check('EFF-01: broker-út tool-hívása megkapja az agentTurnId-t', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          { toolCalls: [{ id: 'c1', name: 'file_read', input: { path: 'a.txt' } }] },
+          { content: 'Kész.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker(brokerCalls),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-eff-01', agentTurnId: 'turn-eff-01' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'olvasd' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['file_read'],
+    })
+
+    assert.equal(result.content, 'Kész.')
+    assert.equal(brokerCalls.length, 1)
+    assert.equal(brokerCalls[0].tool, 'file_read')
+    assert.equal(brokerCalls[0].conversationId, 'conv-eff-01')
+    assert.equal(brokerCalls[0].agentTurnId, 'turn-eff-01')
+    assert.equal(brokerCalls[0].ticketId, undefined)
   })
 
   await check('WP-3: hiányzó archívum és a fékbe futott visszaolvasás is naplózódik', async () => {
