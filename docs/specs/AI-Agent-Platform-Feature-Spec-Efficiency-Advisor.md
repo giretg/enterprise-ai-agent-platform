@@ -1,6 +1,20 @@
 # AI Agent Platform — Feature Spec: Hatékonysági tanácsadó (pazarló futás-minták felismerése)
 
 > Forrás: [#237](https://github.com/giretg/enterprise-ai-agent-platform/issues/237) — „Hatékonysági tanácsadó: pazarló futás-minták felismerése és közérthető javaslat (token/költség)".
+> Spec-issue: [#304](https://github.com/giretg/enterprise-ai-agent-platform/issues/304) · jegybontás: [`efficiency-advisor-tickets.md`](./efficiency-advisor-tickets.md).
+>
+> **Állapot:** **v1 implementálva és a mért eseten ellenőrizve (2026-08-22, EFF-13 / #318).** A detektor, a korlátos lekérdezés, a Hatékonyság szekció és az Alkalmazom/visszavonás a mainen van (#321). A #237 / #304 lezárása az EFF-13 kereszthivatkozásával.
+
+## Implementációs állapot (2026-08-22)
+
+**Összefoglaló:** a v1 kártya szállítva. Az EFF-13 ellenőrzés a 2026-07-29-i incidens alakján (fixture) és a 30 napos éles ablakon lefutott; a részletes számok a jegybontásban vannak.
+
+| Szelet | Hol | Állapot |
+| --- | --- | --- |
+| EFF-00 — spec + jegybontás a mainen | #305 / #322 | ✅ |
+| EFF-01…EFF-12 — séma, detektor, adat-út, UI, Alkalmazom | #321 | ✅ a mainen |
+| EFF-13 — ellenőrzés a mért eseten + dokumentáció | #318 | ✅ lásd a jegybontás ellenőrzés-szakaszát |
+| Ismert utólagos javítás | #339 | nyitott (hamis riasztás / néma küszöb) |
 
 ## Problem Statement
 

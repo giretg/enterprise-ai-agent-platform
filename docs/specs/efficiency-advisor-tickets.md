@@ -283,6 +283,8 @@ ugyanazon a felületen elérhető és szintén auditált.
 ## EFF-13 — Ellenőrzés a mért eseten + dokumentáció
 
 **Mérföldkő:** M5 · **Prioritás:** Közepes · **Függés:** EFF-10, EFF-12
+**Állapot:** ellenőrizve 2026-08-22-én (`npm run test:efficiency-advisor` zöld; éles 30 napos ablak
+a `scripts/efficiency-advisor-live-check.ts`-sel).
 
 **Feladat:**
 - A teljes lánc ellenőrzése a 2026-07-29-i incidens adatain: a kártya kimutatja az ismétlődő
@@ -295,28 +297,74 @@ ugyanazon a felületen elérhető és szintén auditált.
 **DoD:** az ellenőrzés eredménye a jegyben dokumentálva (mit mutatott a kártya, mire); a spec és
 a jegybontás a mainen naprakész.
 
+### Ellenőrzés (2026-08-22)
+
+A 2026-07-29-i Novaj-egyeztetés **alakja** a teszt-fixture (`incidentRun` a
+`scripts/efficiency-advisor.test.ts`-ben): 149 eszközhívás / 132 újraolvasás / 40 kör /
+21k→154k prompt. Az eredeti sorok `agentTurnId` nélkül születtek, ezért a lánc a normalizált
+bemeneten ellenőrizhető — ez a spec Testing Decisions hivatalos mércéje.
+
+**1. Mért incidens alak — 3 azonos futás → `findings`**
+
+A kártya szövege: *„A vizsgált futásokban ismétlődő pazarló mintát találtunk."*
+
+| | |
+| --- | --- |
+| Elemezhető futás | 3 |
+| Token-bontás | belépő 63 000 · ismételt 10 413 000 · válasz 48 000 · **összesen 10 524 000** |
+| Költség (`costEstimate`) | 9,60 |
+| Ismétlődő visszaolvasás | arány **0,8859** (396 / 447 olvasó hívás); sáv 1 500 000–3 000 000 token; Alkalmazom van |
+| Kontextus-hízás | ismételt hányad **0,994**; sáv 5 206 500–10 413 000 token; Alkalmazom van |
+| Túlméretezett kimenet | `tool_result_read`, 300 ismétlés (a fixture 40k-karakteres újraolvasásaiból); nincs gomb |
+| Cache-prefix törés | találati arány 0 (a fixture `cachedPromptTokens: 0`); nincs gomb |
+| Sáv-korlát | minden minta `high` ≤ 10 524 000 |
+
+**2. Egészséges ellenpélda — 3 normál futás (3–5 eszköz, 2 modellhívás) → `ok`**
+
+A kártya szövege: *„Ez az agent a vizsgált futások alapján rendben van: nincs ismétlődő pazarló minta."*
+Minták: üres. Token-összeg 15 150. Ez a spec hivatalos kétirányú mércéjének a negatív ága.
+
+**3. Éles 30 napos ablak (2026-08-22)**
+
+`npx tsx scripts/efficiency-advisor-live-check.ts` — csak agent-név, státusz, mérőszám.
+
+| Agent | Futás | Státusz | Amit a kártya mutat |
+| --- | --- | --- | --- |
+| LACI | 20 | *van megállapítás* | kontextus-hízás + ismétlődő visszaolvasás + túlméretezett kimenet; sáv a 7 942 900 tokenes ablak alatt. Ez a flotta legközelebbi élő megfelelője a 2026-07-29-i alaknak. |
+| Réka | 20 | *van megállapítás* | kontextus-hízás + ismétlődő visszaolvasás; sáv a 3 924 485 alatt |
+| Ákos | 20 | *van megállapítás* | csak kontextus-hízás |
+| Kati | 9 | *van megállapítás* | csak kontextus-hízás |
+| Péter (Ostoros Föld támogató) | 6 | *van megállapítás* | csak kontextus-hízás |
+| Marika | 4 | *van megállapítás* | csak kontextus-hízás |
+| Playbook Author, Provisioning Assistant, többi csendes agent | 0–2 | *nincs elég adat* | a kártya kimondja, hogy legalább három elemezhető futás kell |
+
+A jelenlegi 30 napos éles ablakban **nincs** ≥3 elemezhető futású agent `ok` státusszal: a forgalmas
+agentek mind legalább kontextus-hízást mutatnak (a tool-loop újraküldi az előzményt), a csendeseknél
+nincs elég adat. A *rendben* állapotot ezért a spec hivatalos egészséges fixture-je igazolja; a
+flotta-szintű hamis-riasztás kérdés a #339 tárgya.
+
 ---
 
 ## Létrehozott jegyek
 
 A jegyek 2026-08-21-én létrejöttek; a szkript idempotens újrafuttatása duplikátumot hozna, ezért csak új jegyhez használd.
 
-| Jegy | Issue | Mérföldkő |
-| --- | --- | --- |
-| EFF-00 — Spec a main-re + címkék, mérföldkő | #305 | M0 |
-| EFF-01 — `ToolCall.agentTurnId`: séma, migráció, bekötés | #306 | M1 |
-| EFF-02 — Egységes `result_chars` a tool-eredmény metaadatban | #307 | M1 |
-| EFF-03 — `efficiency-advisor.ts` váz: típusok, küszöbök, minta-méret kapu | #308 | M2 |
-| EFF-04 — Detektor 1: ismétlődő visszaolvasás | #309 | M2 |
-| EFF-05 — Detektor 2: kontextus-hízás | #310 | M2 |
-| EFF-06 — Detektor 3: túlméretezett eszköz-kimenet | #311 | M2 |
-| EFF-07 — Detektor 4: cache-prefix törés (`null` ≠ 0) | #312 | M2 |
-| EFF-08 — Token-bontás és megtakarítás-sáv | #313 | M2 |
-| EFF-09 — Futás-összegyűjtő lekérdezés (korlátos, tenant-szűrt) | #314 | M3 |
-| EFF-10 — „Hatékonyság" szekció az agent adatlapon | #315 | M3 |
-| EFF-11 — `modelConfig`-overlay a tömörítés és a forrás-keret küszöbeire | #316 | M4 |
-| EFF-12 — „Alkalmazom" gomb: per-agent felülbírálás, audit, visszavonás | #317 | M4 |
-| EFF-13 — Ellenőrzés a mért eseten + dokumentáció | #318 | M5 |
+| Jegy | Issue | Mérföldkő | Állapot |
+| --- | --- | --- | --- |
+| EFF-00 — Spec a main-re + címkék, mérföldkő | #305 | M0 | a mainen (#322) |
+| EFF-01 — `ToolCall.agentTurnId`: séma, migráció, bekötés | #306 | M1 | a mainen (#321, #323) |
+| EFF-02 — Egységes `result_chars` a tool-eredmény metaadatban | #307 | M1 | a mainen (#321) |
+| EFF-03 — `efficiency-advisor.ts` váz: típusok, küszöbök, minta-méret kapu | #308 | M2 | a mainen (#321) |
+| EFF-04 — Detektor 1: ismétlődő visszaolvasás | #309 | M2 | a mainen (#321) |
+| EFF-05 — Detektor 2: kontextus-hízás | #310 | M2 | a mainen (#321) |
+| EFF-06 — Detektor 3: túlméretezett eszköz-kimenet | #311 | M2 | a mainen (#321) |
+| EFF-07 — Detektor 4: cache-prefix törés (`null` ≠ 0) | #312 | M2 | a mainen (#321) |
+| EFF-08 — Token-bontás és megtakarítás-sáv | #313 | M2 | a mainen (#321) |
+| EFF-09 — Futás-összegyűjtő lekérdezés (korlátos, tenant-szűrt) | #314 | M3 | a mainen (#321) |
+| EFF-10 — „Hatékonyság" szekció az agent adatlapon | #315 | M3 | a mainen (#321) |
+| EFF-11 — `modelConfig`-overlay a tömörítés és a forrás-keret küszöbeire | #316 | M4 | a mainen (#321) |
+| EFF-12 — „Alkalmazom" gomb: per-agent felülbírálás, audit, visszavonás | #317 | M4 | a mainen (#321) |
+| EFF-13 — Ellenőrzés a mért eseten + dokumentáció | #318 | M5 | ellenőrizve 2026-08-22 |
 
 ---
 
