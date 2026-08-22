@@ -35,7 +35,7 @@ export async function recordDenied(
     status: 'denied',
     latencyMs,
     policyDecision: reason,
-    resultMeta: { denied: true, reason },
+    resultMeta: { denied: true, reason, result_chars: 0 },
     actingUserId,
     grantId,
   })
@@ -97,6 +97,16 @@ export async function recordCall(
     connector_type: connectorType,
     access_mode: accessMode,
   }
+  // EFF-02 — minden ToolCall soron legyen `result_chars` (szám, sosem szöveg).
+  // Hiányzó / érvénytelen érték → 0 (denied/error ágak, régi hívók).
+  const resultCharsRaw = params.resultMeta.result_chars
+  const resultMetaWithChars: Record<string, unknown> = {
+    ...params.resultMeta,
+    result_chars:
+      typeof resultCharsRaw === 'number' && Number.isFinite(resultCharsRaw)
+        ? resultCharsRaw
+        : 0,
+  }
   const metadata = {
     tool: params.input.tool,
     status: params.status,
@@ -107,7 +117,7 @@ export async function recordCall(
     outcome,
     effect: effectSummary,
     argsMeta: sanitizedArgsMeta,
-    resultMeta: params.resultMeta,
+    resultMeta: resultMetaWithChars,
     acting_user_id: params.actingUserId ?? params.input.actingUserId ?? null,
     grant_id: params.grantId ?? null,
   }
@@ -121,7 +131,7 @@ export async function recordCall(
     toolName: params.input.tool,
     status: params.status,
     argsMeta: sanitizedArgsMeta as Prisma.JsonValue,
-    resultMeta: params.resultMeta as Prisma.JsonValue,
+    resultMeta: resultMetaWithChars as Prisma.JsonValue,
     latencyMs: params.latencyMs,
     policyDecision: params.policyDecision,
     trustClass,
