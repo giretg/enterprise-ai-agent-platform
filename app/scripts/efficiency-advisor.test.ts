@@ -780,34 +780,55 @@ async function main() {
     assert.equal(card.patterns.some((p) => p.kind === 'oversized_tool_result'), false)
   })
 
-  await check('modelConfig overlay szigoríthat, kikapcsolni nem tud', () => {
-    const tighter = resolveContextCompactionLimits(process.env, DEFAULT_CONTEXT_COMPACTION_LIMITS, {
-      maxToolResultChars: 20_000,
-      keepRecentToolResults: 2,
-    })
-    assert.equal(tighter.maxToolResultChars, 20_000)
-    assert.equal(tighter.keepRecentToolResults, 2)
+  // EFF-11 (#316) — a javaslat alkalmazási útja: modelConfig → env → default.
+  // A részletes DoD a context-compactor tesztekben él; itt a tanácsadó
+  // alkalmazható kapcsolóinak (maxToolResultChars / keepRecentToolResults /
+  // sourceIngestFactor / sourceIngestMinChars) szerződését őrizzük.
+  await check('EFF-11: alkalmazható kapcsolók — modelConfig → env → default, szigorítás only', () => {
+    const compactionEnv = {
+      AGENT_CONTEXT_KEEP_RECENT_TOOL_RESULTS: '4',
+      AGENT_CONTEXT_MAX_TOOL_RESULT_CHARS: '60000',
+    } as unknown as NodeJS.ProcessEnv
+    const compactionBaseline = resolveContextCompactionLimits(compactionEnv)
+    assert.equal(
+      JSON.stringify(resolveContextCompactionLimits(compactionEnv, DEFAULT_CONTEXT_COMPACTION_LIMITS, {})),
+      JSON.stringify(compactionBaseline),
+      'üres overlay = mai viselkedés',
+    )
+    const compactionApplied = resolveContextCompactionLimits(
+      compactionEnv,
+      DEFAULT_CONTEXT_COMPACTION_LIMITS,
+      { maxToolResultChars: 20_000, keepRecentToolResults: 2 },
+    )
+    assert.equal(compactionApplied.maxToolResultChars, 20_000)
+    assert.equal(compactionApplied.keepRecentToolResults, 2)
+    assert.deepEqual(
+      resolveContextCompactionLimits(compactionEnv, DEFAULT_CONTEXT_COMPACTION_LIMITS, {
+        maxToolResultChars: 5_000_000,
+        keepRecentToolResults: 0,
+      }),
+      compactionBaseline,
+      'lazítás / kikapcsolás nem érvényesül',
+    )
 
-    const looser = resolveContextCompactionLimits(process.env, DEFAULT_CONTEXT_COMPACTION_LIMITS, {
-      maxToolResultChars: 5_000_000,
-      keepRecentToolResults: 0,
-    })
-    assert.equal(looser.maxToolResultChars, DEFAULT_CONTEXT_COMPACTION_LIMITS.maxToolResultChars)
-    assert.equal(looser.keepRecentToolResults, DEFAULT_CONTEXT_COMPACTION_LIMITS.keepRecentToolResults)
-
-    const ingest = resolveSourceIngestLimits(process.env, SOURCE_INGEST_DEFAULTS, {
+    const ingestEnv = {
+      AGENT_SOURCE_INGEST_FACTOR: '2',
+      AGENT_SOURCE_INGEST_MIN_CHARS: '20000',
+    } as unknown as NodeJS.ProcessEnv
+    const ingestBaseline = resolveSourceIngestLimits(ingestEnv)
+    const ingestApplied = resolveSourceIngestLimits(ingestEnv, SOURCE_INGEST_DEFAULTS, {
       sourceIngestFactor: 1,
       sourceIngestMinChars: 6_000,
     })
-    assert.equal(ingest.factor, 1)
-    assert.equal(ingest.minChars, 6_000)
-
-    const ingestOff = resolveSourceIngestLimits(process.env, SOURCE_INGEST_DEFAULTS, {
-      sourceIngestFactor: 0,
-      sourceIngestMinChars: 0,
-    })
-    assert.equal(ingestOff.factor, SOURCE_INGEST_DEFAULTS.factor)
-    assert.equal(ingestOff.minChars, SOURCE_INGEST_DEFAULTS.minChars)
+    assert.equal(ingestApplied.factor, 1)
+    assert.equal(ingestApplied.minChars, 6_000)
+    assert.deepEqual(
+      resolveSourceIngestLimits(ingestEnv, SOURCE_INGEST_DEFAULTS, {
+        sourceIngestFactor: 0,
+        sourceIngestMinChars: 0,
+      }),
+      ingestBaseline,
+    )
   })
 
   await check('EFF-10: időablak Range (today/7d/30d/all) feloldás', () => {
