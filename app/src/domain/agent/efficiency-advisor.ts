@@ -37,6 +37,14 @@ export type EfficiencyRunModelCall = {
 
 export type EfficiencyRunToolCall = {
   toolName: string
+  /**
+   * Mutáló-e a hívás (írás / küldés). Az újraolvasás-detektor CSAK olvasó
+   * hívásokat néz: e nélkül egy ugyanabba a fájlba hétszer író agent
+   * (`file_write`, `xlsx_append_rows` ugyanarra a path-ra) „ismétlődő
+   * visszaolvasásnak" látszana, holott minden írás új munkát végzett.
+   * Hiányzó érték = olvasó (a loop saját eszközei, pl. `tool_result_read`).
+   */
+  sideEffecting?: boolean
   argsMeta?: Record<string, unknown> | null
   resultMeta?: Record<string, unknown> | null
 }
@@ -323,6 +331,7 @@ function sourceKeyOf(tool: EfficiencyRunToolCall): string | null {
 
 function isReaderCall(tool: EfficiencyRunToolCall): boolean {
   if (tool.toolName === 'tool_result_read') return true
+  if (tool.sideEffecting === true) return false
   return sourceKeyOf(tool) !== null
 }
 
@@ -373,50 +382,27 @@ function repeatedContextGrowth(promptSum: number, callCount: number, firstPrompt
 }
 
 /**
- * EFF-07: cache-prefix törés egy futáson belül.
- * Csak nem-`null` `cachedPromptTokens` sorok; arány modellcsoportonként.
- * Ha egyetlen modellcsoport sem éri el a `minCacheCalls` küszöböt, nincs minta.
- */
-function detectCachePrefixBreak(
-  cacheRows: EfficiencyRunModelCall[],
-  thresholds: EfficiencyAdvisorThresholds,
-): RunFinding | null {
-  const byModel = new Map<string, EfficiencyRunModelCall[]>()
-  for (const call of cacheRows) {
-    const model = typeof call.model === 'string' && call.model.trim() ? call.model.trim() : ''
-    const list = byModel.get(model) ?? []
-    list.push(call)
-    byModel.set(model, list)
-  }
-
-  let best: RunFinding | null = null
-  for (const [model, rows] of byModel) {
-    if (rows.length < thresholds.minCacheCalls) continue
-    const cachePrompt = rows.reduce((sum, call) => sum + Math.max(call.promptTokens, 0), 0)
-    const cacheHit = rows.reduce((sum, call) => sum + Math.max(call.cachedPromptTokens ?? 0, 0), 0)
-    const hitRatio = cachePrompt > 0 ? cacheHit / cachePrompt : 0
-    if (hitRatio >= thresholds.cacheHitRatio) continue
-    const wastedTokens = Math.max(cachePrompt - cacheHit, 0)
-    const candidate: RunFinding = {
-      kind: 'cache_prefix_break',
-      wastedTokens,
-      metric: {
-        hitRatio: Number(hitRatio.toFixed(4)),
-        cacheCalls: rows.length,
-        cachedTokens: cacheHit,
-        promptTokens: cachePrompt,
-        model,
-      },
-    }
-    if (!best || candidate.wastedTokens > best.wastedTokens) best = candidate
-  }
-  return best
+ * EFF-07 / #237: a cache-prefix törés NEM futás-szinten dől el. A prompt-cache
+ * a stabil előtag AGENT-szintű tulajdonsága, nem egy futásé, és egy tipikus
+ * futásban 2–4 modellhívás van — futás-szintű kapuval a `minCacheCalls` küszöb
+ * sosem teljesülne, vagyis a leggyakoribb valós eset kimutathatatlan maradna.
+ * `detectRun` ezért csak a nyers számvitelt készíti el; a döntés az
+ * `evaluateEfficiencyAdvisor`-ban, az ablak ÖSSZES hívására, modellenként.
+ */type RunCacheStats = {
+  /** Nem-`null` `cachedPromptTokens`-ű modellhívások száma a futásban. */
+  rows: number
+  /** Ugyanezen sorok prompt-token összege (az arány nevezője). */
+  promptTokens: number
+  /** Ugyanezen sorok cache-ből kiszolgált token összege (az arány számlálója). */
+  hitTokens: number
+  /** `null` cache-adatú modellhívések száma — ez „nincs adat", nem „nincs találat". */
+  nullRows: number
 }
 
 function detectRun(
   run: EfficiencyRun,
   thresholds: EfficiencyAdvisorThresholds,
-): { findings: RunFinding[]; breakdown: EfficiencyTokenBreakdown; cacheRows: 'none' | 'all_null' | 'has_values' } {
+): { findings: RunFinding[]; breakdown: EfficiencyTokenBreakdown; cache: RunCacheStats } {
   const modelCalls = [...run.modelCalls].sort((a, b) => modelCallTime(a) - modelCallTime(b))
   const modelBreakdown = buildModelCallTokenBreakdown(modelCalls)
   const promptTokens = modelBreakdown.entryContext + modelBreakdown.repeatedContext
@@ -430,9 +416,9 @@ function detectRun(
   let rereadCalls = 0
   let rereadChars = 0
   for (const tool of run.toolCalls) {
-    const reread = isRereadCall(tool, seenSources)
-    if (isReaderCall(tool)) readCalls += 1
-    if (reread) {
+    if (!isReaderCall(tool)) continue
+    readCalls += 1
+    if (isRereadCall(tool, seenSources)) {
       rereadCalls += 1
       rereadChars += Math.max(resultChars(tool), 0)
     }
@@ -536,18 +522,15 @@ function detectRun(
     })
   }
 
-  // EFF-07: null ≠ 0. A cache-találati arány csak a nem-`null` sorokon:
-  // sum(cachedPromptTokens) / sum(promptTokens). Csupa null → „nincs adat"
-  // (nem megállapítás). A 0 viszont valódi „nincs találat". Az arányt azonos
-  // modell felé menő hívásokon mérjük — a cache modell-specifikus.
+  // EFF-07: null ≠ 0. Itt csak a nyers számvitel készül el (lásd a
+  // `RunCacheStats` dokumentációját) — a minta-döntés az ablak szintjén van.
   const cacheRows = modelCalls.filter((call) => call.cachedPromptTokens !== null)
-  let cacheStatus: 'none' | 'all_null' | 'has_values' = 'none'
-  if (modelCalls.length === 0) cacheStatus = 'none'
-  else if (cacheRows.length === 0) cacheStatus = 'all_null'
-  else cacheStatus = 'has_values'
-
-  const cacheFinding = detectCachePrefixBreak(cacheRows, thresholds)
-  if (cacheFinding) findings.push(cacheFinding)
+  const cache: RunCacheStats = {
+    rows: cacheRows.length,
+    promptTokens: cacheRows.reduce((sum, call) => sum + Math.max(call.promptTokens, 0), 0),
+    hitTokens: cacheRows.reduce((sum, call) => sum + Math.max(call.cachedPromptTokens ?? 0, 0), 0),
+    nullRows: modelCalls.length - cacheRows.length,
+  }
 
   return {
     findings,
@@ -560,7 +543,7 @@ function detectRun(
       total: modelBreakdown.total,
       costEstimate,
     },
-    cacheRows: cacheStatus,
+    cache,
   }
 }
 
@@ -655,6 +638,10 @@ const PATTERN_ORDER: EfficiencyPatternKind[] = [
 /**
  * Futás-halmaz → hatékonysági kártya. A minták csak akkor jelennek meg, ha
  * legalább 3 elemezhető futás van, és a minta legalább kettőben előfordul.
+ *
+ * KIVÉTEL a cache-prefix törés: az a stabil előtag agent-szintű tulajdonsága,
+ * nem egy futásé, ezért az ablak ÖSSZES nem-`null` cache-adatú hívására dől el,
+ * a `minCacheCalls` küszöbbel mint minta-méret kapuval.
  */
 export function evaluateEfficiencyAdvisor(
   runs: EfficiencyRun[],
@@ -706,16 +693,13 @@ export function evaluateEfficiencyAdvisor(
     }
   }, emptyBreakdown)
 
-  const cacheStatuses = perRun.map((row) => row.cacheRows)
-  const hasValues = cacheStatuses.some((status) => status === 'has_values')
-  const allNull = cacheStatuses.every((status) => status === 'all_null' || status === 'none')
-  const cacheDataStatus: EfficiencyCacheDataStatus = hasValues
-    ? cacheStatuses.some((status) => status === 'all_null')
-      ? 'mixed'
-      : 'available'
-    : allNull
-      ? 'missing'
-      : 'missing'
+  // `null` ≠ 0: a „provider nem ad cache-adatot" eset NEM megállapítás. Csak a
+  // nem-`null` sorokból számolunk arányt, és ha egyáltalán nincs ilyen sor, a
+  // kártya „nincs adat"-ot mond — nem „nincs cache-találat"-ot.
+  const cacheRowsTotal = perRun.reduce((sum, row) => sum + row.cache.rows, 0)
+  const cacheNullTotal = perRun.reduce((sum, row) => sum + row.cache.nullRows, 0)
+  const cacheDataStatus: EfficiencyCacheDataStatus =
+    cacheRowsTotal === 0 ? 'missing' : cacheNullTotal > 0 ? 'mixed' : 'available'
 
   const byKind = new Map<EfficiencyPatternKind, RunFinding[]>()
   for (const row of perRun) {
@@ -728,9 +712,9 @@ export function evaluateEfficiencyAdvisor(
 
   const patterns: EfficiencyPattern[] = []
   for (const kind of PATTERN_ORDER) {
+    if (kind === 'cache_prefix_break') continue
     const hits = byKind.get(kind) ?? []
     if (hits.length < MIN_RUNS_FOR_PATTERN) continue
-    if (kind === 'cache_prefix_break' && cacheDataStatus === 'missing') continue
     const wasted = hits.reduce((sum, hit) => sum + hit.wastedTokens, 0)
     patterns.push({
       kind,
@@ -739,6 +723,44 @@ export function evaluateEfficiencyAdvisor(
       savingsTokens: savingsBand(wasted, breakdown.total, breakdown.costEstimate),
       suggestion: suggestionFor(kind),
     })
+  }
+
+  // Cache-prefix törés: az ablak ÖSSZES nem-`null` hívására, modellenként,
+  // nem futásonként (lásd a `RunCacheStats` indoklását). A minta-méret kaput
+  // itt a `minCacheCalls` küszöb adja, nem a „legalább két futásban" szabály.
+  {
+    const byModel = new Map<string, { rows: number; promptTokens: number; hitTokens: number }>()
+    for (const call of analyzable.flatMap((run) => run.modelCalls)) {
+      if (call.cachedPromptTokens === null) continue
+      const model =
+        typeof call.model === 'string' && call.model.trim() ? call.model.trim() : ''
+      const prev = byModel.get(model) ?? { rows: 0, promptTokens: 0, hitTokens: 0 }
+      prev.rows += 1
+      prev.promptTokens += Math.max(call.promptTokens, 0)
+      prev.hitTokens += Math.max(call.cachedPromptTokens ?? 0, 0)
+      byModel.set(model, prev)
+    }
+    let worst: { model: string; rows: number; ratio: number; wasted: number } | null = null
+    for (const [model, agg] of byModel) {
+      if (agg.rows < thresholds.minCacheCalls) continue
+      const ratio = agg.promptTokens > 0 ? agg.hitTokens / agg.promptTokens : 0
+      if (ratio >= thresholds.cacheHitRatio) continue
+      const wasted = Math.max(agg.promptTokens - agg.hitTokens, 0)
+      if (!worst || wasted > worst.wasted) worst = { model, rows: agg.rows, ratio, wasted }
+    }
+    if (worst && cacheDataStatus !== 'missing') {
+      patterns.push({
+        kind: 'cache_prefix_break',
+        explanationKey: 'cache_prefix_break',
+        metric: {
+          hitRatio: Number(worst.ratio.toFixed(4)),
+          cacheCalls: worst.rows,
+          model: worst.model,
+        },
+        savingsTokens: savingsBand(worst.wasted, breakdown.total, breakdown.costEstimate),
+        suggestion: suggestionFor('cache_prefix_break'),
+      })
+    }
   }
 
   // Determinisztikus rendezés: becsült megtakarítás (token high) szerint,

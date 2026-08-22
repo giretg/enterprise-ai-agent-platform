@@ -362,10 +362,12 @@ async function main() {
     })
     const card = evaluateEfficiencyAdvisor([mixed('a'), mixed('b'), mixed('c')])
     assert.equal(card.cacheDataStatus, 'available')
+    const cache = card.patterns.find((p) => p.kind === 'cache_prefix_break')
+    assert.ok(cache, 'mindkét modellcsoport önállóan (18 hívással) túllépi a küszöböt')
     assert.equal(
-      card.patterns.some((p) => p.kind === 'cache_prefix_break'),
-      false,
-      'különböző modellek nem adhatók össze a minCacheCalls küszöbhöz',
+      cache?.metric.cacheCalls,
+      18,
+      'a különböző modellek NEM adódnak össze: modellenként 18, nem 36',
     )
   })
 
@@ -414,7 +416,10 @@ async function main() {
       toolCalls: [],
     })
     const card = evaluateEfficiencyAdvisor([partial('a'), partial('b'), partial('c')])
-    assert.equal(card.cacheDataStatus, 'available')
+    // Sor-szintű szemantika (#237): a null sorok „nincs adat"-ot jelentenek,
+    // nem hiányzó találatot — ezért az állapot mixed, az arány csak a
+    // nem-null 0-ásokból számolódik.
+    assert.equal(card.cacheDataStatus, 'mixed')
     const cache = card.patterns.find((p) => p.kind === 'cache_prefix_break')
     assert.ok(cache, 'a nem-null 0-ásoknak mintát kell adniuk')
     assert.equal(cache?.metric.cacheCalls, 10 * 3)
@@ -694,6 +699,77 @@ async function main() {
     const text = describeEfficiencyPattern('oversized_tool_result', oversized?.metric)
     assert.ok(text.includes('http_api_get'), `a magyarázatnak tartalmaznia kell az eszköznevet: ${text}`)
     assert.ok(text.includes('nincs kapcsoló') || text.includes('tool_result_extract'), text)
+  })
+
+  await check('ugyanabba a fájlba író hívás NEM újraolvasás (false positive kapu)', () => {
+    const writerRun = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: [modelCall({ createdAt: 1, promptTokens: 1_500 })],
+      toolCalls: [
+        { toolName: 'file_read', argsMeta: { path: 'forras.xlsx' }, resultMeta: { result_chars: 900 } },
+        ...Array.from({ length: 8 }, () => ({
+          toolName: 'xlsx_append_rows',
+          sideEffecting: true,
+          argsMeta: { path: 'riport.xlsx' },
+          resultMeta: { result_chars: 120 },
+        })),
+      ],
+    })
+    const card = evaluateEfficiencyAdvisor([writerRun('a'), writerRun('b'), writerRun('c')])
+    assert.equal(
+      card.patterns.some((p) => p.kind === 'repeated_reread'),
+      false,
+      'a nyolcszor ugyanabba a fájlba írás nem lehet „ismétlődő visszaolvasás"',
+    )
+    assert.equal(card.status, 'ok')
+  })
+
+  await check('cache-prefix törés rövid futásoknál is látszik (agent-szintű összesítés)', () => {
+    // Tipikus alak: futásonként 2 modellhívás — futás-szintű kapuval a 10-es
+    // `minCacheCalls` küszöb SOSEM teljesülne, pedig a cache-találat 0%.
+    const shortRun = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: [
+        modelCall({ createdAt: 1, promptTokens: 5_000, cachedPromptTokens: 0 }),
+        modelCall({ createdAt: 2, promptTokens: 5_200, cachedPromptTokens: 0 }),
+      ],
+      toolCalls: [],
+    })
+    const runs = Array.from({ length: 6 }, (_, i) => shortRun(`r${i}`))
+    const card = evaluateEfficiencyAdvisor(runs)
+    const cache = card.patterns.find((p) => p.kind === 'cache_prefix_break')
+    assert.ok(cache, 'a 12 nem-null hívásnak ki kell váltania a cache-mintát')
+    assert.equal(cache?.metric.cacheCalls, 12)
+    assert.equal(cache?.suggestion.applicable, false)
+
+    // Kevés hívás → a küszöb alatt marad, nincs állítás.
+    const few = evaluateEfficiencyAdvisor(runs.slice(0, 3))
+    assert.equal(
+      few.patterns.some((p) => p.kind === 'cache_prefix_break'),
+      false,
+      '6 hívásból (a `minCacheCalls` alatt) nem szabad cache-állítást tenni',
+    )
+  })
+
+  await check('vegyes cache-adat: a null sorok „mixed" állapotot adnak, nem találat-hiányt', () => {
+    const mixedRun = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: [
+        modelCall({ createdAt: 1, promptTokens: 4_000, cachedPromptTokens: null }),
+        modelCall({ createdAt: 2, promptTokens: 4_000, cachedPromptTokens: 3_600 }),
+      ],
+      toolCalls: [],
+    })
+    const card = evaluateEfficiencyAdvisor([mixedRun('a'), mixedRun('b'), mixedRun('c')])
+    assert.equal(card.cacheDataStatus, 'mixed')
+    assert.equal(
+      card.patterns.some((p) => p.kind === 'cache_prefix_break'),
+      false,
+      '90%-os találati arány mellett nincs cache-minta',
+    )
   })
 
   await check('egyszeri nagy eszköz-kimenet NEM vált ki mintát', () => {

@@ -15,6 +15,7 @@
 import {
   EFFICIENCY_ADVISOR_DEFAULT_RANGE,
   evaluateEfficiencyAdvisor,
+  resolveEfficiencyAdvisorThresholds,
   efficiencyAdvisorRangeToSince,
   parseEfficiencyAdvisorRange,
   type EfficiencyAdvisorRange,
@@ -25,6 +26,7 @@ import {
   type EfficiencyRunModelCall,
   type EfficiencyRunToolCall,
 } from '@/domain/agent/efficiency-advisor'
+import { SIDE_EFFECTING_TOOLS } from '@/domain/tool-broker/tool-trust-registry'
 import { prisma } from '@/lib/db'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 
@@ -143,6 +145,17 @@ export function buildSelectedRunsOrFilter(
   return or
 }
 
+/**
+ * Mutáló-e a tool? SZÁNDÉKOSAN a nyers regisztert nézzük, nem az
+ * `isSideEffectingTool()` fail-safe-jét: ott az ismeretlen név `true`-t ad (a
+ * jóváhagyás-kapunak ez a helyes óvatosság), itt viszont az ismeretlen nevek
+ * épp a loop saját OLVASÓ eszközei (`tool_result_read`), és a fail-safe kiejtené
+ * őket az újraolvasás-elemzésből — vagyis pont a mért incidens mintáját.
+ */
+function isMutatingTool(toolName: string): boolean {
+  return (SIDE_EFFECTING_TOOLS as Record<string, boolean | undefined>)[toolName] === true
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -189,6 +202,7 @@ export function assembleEfficiencyRuns(input: {
     const list = toolsByRun.get(id) ?? []
     list.push({
       toolName: row.toolName,
+      sideEffecting: isMutatingTool(row.toolName),
       argsMeta: asRecord(row.argsMeta),
       resultMeta: row.resultMeta ? asRecord(row.resultMeta) : null,
     })
@@ -368,7 +382,9 @@ export async function loadEfficiencyAdvisorCard(input: {
   const { runs } = await loadRunsForAgent(input.agentId, { range })
 
   return {
-    card: evaluateEfficiencyAdvisor(runs),
+    // A küszöbök env-ből hangolhatók (EFF-03) — a default konstans átadása itt
+    // csendben kilőtte volna az összes `EFFICIENCY_ADVISOR_*` hangolást.
+    card: evaluateEfficiencyAdvisor(runs, resolveEfficiencyAdvisorThresholds(process.env)),
     applied: appliedFromModelConfig(agent.modelConfig),
     range,
   }
