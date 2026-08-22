@@ -100,7 +100,7 @@ export function AgentChatSessionSidebar({
 
   return (
     <aside
-      className={`flex h-full w-full flex-col bg-night/40 ${className}`}
+      className={`flex h-full w-full flex-col bg-night ${className}`}
       aria-label="Korábbi beszélgetések"
     >
       <div className="shrink-0 space-y-2 px-3 py-3">

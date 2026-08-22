@@ -98,6 +98,7 @@ jobs:
           npm run test:connector-grant-needed
           npm run test:turn-cost
           npm run test:efficiency-advisor
+          npm run test:efficiency-advisor-apply
           npm run test:http-api
           npm run test:decode-github-contents
           npm run test:stuck-final-answer
@@ -148,6 +149,7 @@ jobs:
           npm run test:privacy-observe
           npm run test:privacy-category-policy
           npm run test:privacy-admin-ui
+          npm run test:privacy-markdown-highlights
           npm run test:prompt-privacy-transform
           npm run test:gateway-negative
           npm run test:privacy-latency

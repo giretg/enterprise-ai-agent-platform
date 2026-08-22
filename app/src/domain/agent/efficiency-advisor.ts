@@ -37,6 +37,14 @@ export type EfficiencyRunModelCall = {
 
 export type EfficiencyRunToolCall = {
   toolName: string
+  /**
+   * Mutáló-e a hívás (írás / küldés). Az újraolvasás-detektor CSAK olvasó
+   * hívásokat néz: e nélkül egy ugyanabba a fájlba hétszer író agent
+   * (`file_write`, `xlsx_append_rows` ugyanarra a path-ra) „ismétlődő
+   * visszaolvasásnak" látszana, holott minden írás új munkát végzett.
+   * Hiányzó érték = olvasó (a loop saját eszközei, pl. `tool_result_read`).
+   */
+  sideEffecting?: boolean
   argsMeta?: Record<string, unknown> | null
   resultMeta?: Record<string, unknown> | null
 }
@@ -84,6 +92,21 @@ export const EFFICIENCY_ADVISOR_APPLIED_LIMITS = {
   maxToolCalls: 30,
 } as const
 
+/**
+ * A három alkalmazható kapcsoló (EFF-12). Nem minta-azonosító: egy mintához
+ * több kapcsoló is tartozhat (pl. ismétlődő visszaolvasás → forrás-keret + eszköz-büdzsé).
+ */
+export type EfficiencyHintKind =
+  | 'stricter_compaction'
+  | 'narrower_source_frame'
+  | 'narrower_tool_budget'
+
+export const EFFICIENCY_HINT_KINDS: readonly EfficiencyHintKind[] = [
+  'stricter_compaction',
+  'narrower_source_frame',
+  'narrower_tool_budget',
+] as const
+
 const MIN_ANALYZABLE_RUNS = 3
 const MIN_RUNS_FOR_PATTERN = 2
 
@@ -97,15 +120,26 @@ export type EfficiencyPatternKind =
 
 export type EfficiencySuggestion = {
   applicable: boolean
+  /** Melyik kapcsoló(ka)t lehet alkalmazni ehhez a mintához. */
+  hintKinds?: EfficiencyHintKind[]
   modelConfigPatch?: Record<string, number>
   link?: 'prompt_cache' | 'tool_narrowing'
+  /** Felületi link, ha nincs kapcsoló (cache / eszköz-szűkítés). */
+  href?: string
 }
 
 export type EfficiencySavingsBand = {
   /** Alsó becslés (a pazarolt token fele). */
   low: number
-  /** Felső becslés (a pazarolt token teljes megszűnése), az ablak költségére vágva. */
+  /** Felső becslés (a pazarolt token teljes megszűnése), az ablak token-összegére vágva. */
   high: number
+  /**
+   * Pénzérték alsó/felső: a meglévő `costEstimate` arányos része
+   * (`high/total × costEstimate`), nem újraszámolt tarifa. A felső soha nem
+   * nagyobb az ablakbeli `costEstimate` összegnél.
+   */
+  costLow: number
+  costHigh: number
 }
 
 export type EfficiencyPattern = {
@@ -116,15 +150,28 @@ export type EfficiencyPattern = {
   suggestion: EfficiencySuggestion
 }
 
+/**
+ * „Hova megy a token" — kizárólag `ModelCall` sorokból.
+ * Szeletek (összegük = prompt+completion): `entryContext` + `repeatedContext` + `completion`.
+ * Annotációk (nem szeletek): `cached`, `rereadTokensAnnotation`.
+ */
 export type EfficiencyTokenBreakdown = {
+  /** Futásonként az első hívás `promptTokens`-e (összesítve). */
   entryContext: number
+  /** A többi hívás prompt-tömege (= sum(prompt) − belépő). */
   repeatedContext: number
+  /** `completionTokens` összeg. */
   completion: number
   /** Annotáció: a prompt-tokenekből cache-ből kiszolgált rész, NEM szelet. */
   cached: number
-  /** Annotáció: újraolvasásra becsült token, NEM szelet. */
+  /**
+   * Annotáció: újraolvasásra becsült token (~4 kar/token), NEM szelet —
+   * az „ismételt kontextus" alatti „ebből" megjegyzés forrása.
+   */
   rereadTokensAnnotation: number
+  /** Szeletek összege (= ModelCall prompt+completion token-összeg). */
   total: number
+  /** Ablakbeli `costEstimate` összeg — a pénzérték forrása. */
   costEstimate: number
 }
 
@@ -140,9 +187,49 @@ export type EfficiencyCard = {
   cacheDataStatus: EfficiencyCacheDataStatus
 }
 
+/** Időablak — a governance Range mintája (EFF-10). */
+export type EfficiencyAdvisorRange = 'today' | '7d' | '30d' | 'all'
+
+export const EFFICIENCY_ADVISOR_DEFAULT_RANGE: EfficiencyAdvisorRange = '30d'
+
+export const EFFICIENCY_ADVISOR_RANGE_LABELS: Record<EfficiencyAdvisorRange, string> = {
+  today: 'Ma',
+  '7d': '7 nap',
+  '30d': '30 nap',
+  all: 'Összes',
+}
+
+export function parseEfficiencyAdvisorRange(raw: unknown): EfficiencyAdvisorRange {
+  if (raw === 'today' || raw === '7d' || raw === '30d' || raw === 'all') return raw
+  return EFFICIENCY_ADVISOR_DEFAULT_RANGE
+}
+
+/** Governance `rangeToSince` mintája — `all` → nincs alsó határ. */
+export function efficiencyAdvisorRangeToSince(
+  range: EfficiencyAdvisorRange,
+  now: Date = new Date(),
+): Date | undefined {
+  switch (range) {
+    case 'all':
+      return undefined
+    case '7d':
+      return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+    case '30d':
+      return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+    case 'today': {
+      const startOfDay = new Date(now)
+      startOfDay.setHours(0, 0, 0, 0)
+      return startOfDay
+    }
+  }
+}
+
 export type EfficiencyAdvisorView = {
   card: EfficiencyCard
-  applied: Partial<Record<EfficiencyPatternKind, boolean>>
+  /** Melyik alkalmazható kapcsolók vannak már beírva a modelConfig-ba. */
+  applied: Partial<Record<EfficiencyHintKind, boolean>>
+  /** A kártyához tartozó időablak (EFF-10). */
+  range: EfficiencyAdvisorRange
 }
 
 export function resolveEfficiencyAdvisorThresholds(
@@ -215,6 +302,35 @@ function modelCallTime(call: EfficiencyRunModelCall): number {
   return Number.isFinite(parsed) ? parsed : Number(call.createdAt) || 0
 }
 
+/**
+ * EFF-08: token-bontás egy futás `ModelCall` soraiból.
+ * Belépő = első hívás promptja; ismételt = a többi hívás prompt-tömege;
+ * válasz = completion; cache = annotáció (nem szelet). Az újraolvasás-becslés
+ * külön kerül a hívótól — itt csak a ModelCall-szeletek élnek.
+ */
+export function buildModelCallTokenBreakdown(
+  modelCallsInput: EfficiencyRunModelCall[],
+): Omit<EfficiencyTokenBreakdown, 'rereadTokensAnnotation'> {
+  const modelCalls = [...modelCallsInput].sort((a, b) => modelCallTime(a) - modelCallTime(b))
+  const promptTokens = modelCalls.reduce((sum, call) => sum + Math.max(call.promptTokens, 0), 0)
+  const completion = modelCalls.reduce((sum, call) => sum + Math.max(call.completionTokens, 0), 0)
+  const entryContext = modelCalls.length > 0 ? Math.max(modelCalls[0]!.promptTokens, 0) : 0
+  const repeatedContext = Math.max(promptTokens - entryContext, 0)
+  const cached = modelCalls.reduce(
+    (sum, call) => sum + (call.cachedPromptTokens == null ? 0 : Math.max(call.cachedPromptTokens, 0)),
+    0,
+  )
+  const costEstimate = modelCalls.reduce((sum, call) => sum + Math.max(call.costEstimate, 0), 0)
+  return {
+    entryContext,
+    repeatedContext,
+    completion,
+    cached,
+    total: entryContext + repeatedContext + completion,
+    costEstimate,
+  }
+}
+
 function resultChars(tool: EfficiencyRunToolCall): number {
   const result = asRecord(tool.resultMeta)
   const args = asRecord(tool.argsMeta)
@@ -235,48 +351,100 @@ function sourceKeyOf(tool: EfficiencyRunToolCall): string | null {
 
 function isReaderCall(tool: EfficiencyRunToolCall): boolean {
   if (tool.toolName === 'tool_result_read') return true
+  if (tool.sideEffecting === true) return false
   return sourceKeyOf(tool) !== null
 }
 
+/**
+ * Újraolvasás: (a) `tool_result_read` `redundant`/`blocked` metaadatával, vagy
+ * (b) ugyanaz a `toolCallSourceKey` már szerepelt a futásban. A forrás-kulcsot
+ * mindig nyilvántartjuk — a fékbe futott sorok sem „veszítik el" a kulcsot a
+ * későbbi (b) egyezés elől.
+ */
 function isRereadCall(tool: EfficiencyRunToolCall, seen: Map<string, number>): boolean {
   const result = asRecord(tool.resultMeta)
-  if (tool.toolName === 'tool_result_read' && (boolField(result, 'redundant') || boolField(result, 'blocked'))) {
-    return true
-  }
+  const flagged =
+    tool.toolName === 'tool_result_read' &&
+    (boolField(result, 'redundant') || boolField(result, 'blocked'))
+
   const key = sourceKeyOf(tool)
-  if (!key) return false
-  const prior = seen.get(key) ?? 0
-  seen.set(key, prior + 1)
-  return prior >= 1
+  let duplicate = false
+  if (key) {
+    const prior = seen.get(key) ?? 0
+    seen.set(key, prior + 1)
+    duplicate = prior >= 1
+  }
+
+  return flagged || duplicate
+}
+
+/**
+ * EFF-05: a promptTokens sorozat monoton nem-csökkenő (createdAt szerint rendezve).
+ * A hízás mintája a „minden körben újraküldjük + nő" alakot keresi; egy visszaesés
+ * más dinamikát jelez (pl. tömörítés már dolgozott, vagy más feladat-szakasz).
+ */
+function isMonotonicPromptGrowth(promptTokensSeries: number[]): boolean {
+  for (let i = 1; i < promptTokensSeries.length; i++) {
+    if (promptTokensSeries[i]! < promptTokensSeries[i - 1]!) return false
+  }
+  return promptTokensSeries.length > 0
+}
+
+/**
+ * EFF-05 mérőszám: ismételt (növekedett) kontextus =
+ * `sum(promptTokens) − n × promptTokens(első hívás)`.
+ * Ez a baseline első prompt n-szeri újraküldése fölötti többlet — arányban mérünk,
+ * nem abszolút hívásszámban.
+ */
+function repeatedContextGrowth(promptSum: number, callCount: number, firstPrompt: number): number {
+  if (callCount <= 0) return 0
+  return Math.max(promptSum - callCount * firstPrompt, 0)
+}
+
+/**
+ * EFF-07 / #237: a cache-prefix törés NEM futás-szinten dől el. A prompt-cache
+ * a stabil előtag AGENT-szintű tulajdonsága, nem egy futásé, és egy tipikus
+ * futásban 2–4 modellhívás van — futás-szintű kapuval a `minCacheCalls` küszöb
+ * sosem teljesülne, vagyis a leggyakoribb valós eset kimutathatatlan maradna.
+ * `detectRun` ezért csak a nyers számvitelt készíti el; a döntés az
+ * `evaluateEfficiencyAdvisor`-ban, az ablak ÖSSZES hívására, modellenként.
+ */
+type RunCacheStats = {
+  /** Nem-`null` `cachedPromptTokens`-ű modellhívások száma a futásban. */
+  rows: number
+  /** Ugyanezen sorok prompt-token összege (az arány nevezője). */
+  promptTokens: number
+  /** Ugyanezen sorok cache-ből kiszolgált token összege (az arány számlálója). */
+  hitTokens: number
+  /** `null` cache-adatú modellhívések száma — ez „nincs adat", nem „nincs találat". */
+  nullRows: number
 }
 
 function detectRun(
   run: EfficiencyRun,
   thresholds: EfficiencyAdvisorThresholds,
-): { findings: RunFinding[]; breakdown: EfficiencyTokenBreakdown; cacheRows: 'none' | 'all_null' | 'has_values' } {
+): { findings: RunFinding[]; breakdown: EfficiencyTokenBreakdown; cache: RunCacheStats } {
   const modelCalls = [...run.modelCalls].sort((a, b) => modelCallTime(a) - modelCallTime(b))
-  const promptTokens = modelCalls.reduce((sum, call) => sum + Math.max(call.promptTokens, 0), 0)
-  const completion = modelCalls.reduce((sum, call) => sum + Math.max(call.completionTokens, 0), 0)
-  const entryContext = modelCalls.length > 0 ? Math.max(modelCalls[0]!.promptTokens, 0) : 0
-  const repeatedContext = Math.max(promptTokens - entryContext, 0)
-  const cached = modelCalls.reduce(
-    (sum, call) => sum + (call.cachedPromptTokens == null ? 0 : Math.max(call.cachedPromptTokens, 0)),
-    0,
-  )
-  const costEstimate = modelCalls.reduce((sum, call) => sum + Math.max(call.costEstimate, 0), 0)
+  const modelBreakdown = buildModelCallTokenBreakdown(modelCalls)
+  const promptTokens = modelBreakdown.entryContext + modelBreakdown.repeatedContext
+  const { entryContext, repeatedContext, completion, cached, costEstimate } = modelBreakdown
+  const promptSeries = modelCalls.map((call) => Math.max(call.promptTokens, 0))
+  // Detektor-mérőszám (EFF-05): a baseline fölötti növekedés = sum − n×első.
+  const contextGrowth = repeatedContextGrowth(promptTokens, modelCalls.length, entryContext)
 
   const seenSources = new Map<string, number>()
   let readCalls = 0
   let rereadCalls = 0
   let rereadChars = 0
   for (const tool of run.toolCalls) {
-    const reread = isRereadCall(tool, seenSources)
-    if (isReaderCall(tool)) readCalls += 1
-    if (reread) {
+    if (!isReaderCall(tool)) continue
+    readCalls += 1
+    if (isRereadCall(tool, seenSources)) {
       rereadCalls += 1
       rereadChars += Math.max(resultChars(tool), 0)
     }
   }
+  // Annotáció az ismételt kontextus alá — nem kerül a szeletek közé.
   const rereadTokensAnnotation = Math.round(rereadChars / CHARS_PER_TOKEN)
 
   const findings: RunFinding[] = []
@@ -289,84 +457,102 @@ function detectRun(
         rereadRatio: Number(rereadRatio.toFixed(4)),
         rereadCalls,
         readCalls,
+        rereadChars,
+        rereadTokens: rereadTokensAnnotation,
       },
     })
   }
 
-  const repeatedShare = promptTokens > 0 ? repeatedContext / promptTokens : 0
+  const repeatedShare = promptTokens > 0 ? contextGrowth / promptTokens : 0
+  const monotonic = isMonotonicPromptGrowth(promptSeries)
   if (
     modelCalls.length >= thresholds.minModelCallsForBloat &&
+    monotonic &&
     repeatedShare > thresholds.repeatedContextShare
   ) {
     findings.push({
       kind: 'context_bloat',
-      wastedTokens: repeatedContext,
+      wastedTokens: contextGrowth,
       metric: {
         repeatedShare: Number(repeatedShare.toFixed(4)),
         modelCalls: modelCalls.length,
-        repeatedContext,
+        repeatedContext: contextGrowth,
+        firstPrompt: entryContext,
+        lastPrompt: promptSeries[promptSeries.length - 1] ?? 0,
       },
     })
   }
 
-  const oversizedByTool = new Map<string, { count: number; chars: number }>()
+  // EFF-06: ugyanaz az eszköz (opcionálisan ugyanaz a forrás-kulcs) többször
+  // ad a TOOL_RESULT_INLINE_LIMIT (12 000 kar) fölötti eredményt. Az egyszeri
+  // nagy kimenet nem minta — a küszöb (≥ oversizedRepeatCount) a döntő.
+  const oversizedByTool = new Map<
+    string,
+    { count: number; chars: number; sourceCounts: Map<string, number> }
+  >()
   for (const tool of run.toolCalls) {
     const chars = resultChars(tool)
     if (chars <= OVERSIZED_TOOL_RESULT_CHARS) continue
-    const key = `${tool.toolName}\0${sourceKeyOf(tool) ?? ''}`
-    const prev = oversizedByTool.get(key) ?? { count: 0, chars: 0 }
+    const prev = oversizedByTool.get(tool.toolName) ?? {
+      count: 0,
+      chars: 0,
+      sourceCounts: new Map<string, number>(),
+    }
     prev.count += 1
     prev.chars += chars
-    oversizedByTool.set(key, prev)
+    const source = sourceKeyOf(tool)
+    if (source) {
+      prev.sourceCounts.set(source, (prev.sourceCounts.get(source) ?? 0) + 1)
+    }
+    oversizedByTool.set(tool.toolName, prev)
   }
   let oversizedHits = 0
   let oversizedChars = 0
   let oversizedTool = ''
-  for (const [key, row] of oversizedByTool) {
+  let oversizedSourceKey = ''
+  for (const [toolName, row] of oversizedByTool) {
     if (row.count < thresholds.oversizedRepeatCount) continue
     if (row.chars > oversizedChars) {
       oversizedHits = row.count
       oversizedChars = row.chars
-      oversizedTool = key.split('\0')[0] ?? ''
+      oversizedTool = toolName
+      // Opcionális forrás-kulcs: ha egyetlen kulcs eléri a küszöböt, a javaslat
+      // ezt is megnevezheti (spec: „opcionálisan ugyanaz a forrás-kulcs").
+      let bestSource = ''
+      let bestSourceCount = 0
+      for (const [source, count] of row.sourceCounts) {
+        if (count >= thresholds.oversizedRepeatCount && count > bestSourceCount) {
+          bestSource = source
+          bestSourceCount = count
+        }
+      }
+      oversizedSourceKey = bestSource
     }
   }
   if (oversizedHits >= thresholds.oversizedRepeatCount) {
+    const metric: Record<string, number | string> = {
+      toolName: oversizedTool,
+      repeats: oversizedHits,
+      resultChars: oversizedChars,
+    }
+    if (oversizedSourceKey) metric.sourceKey = oversizedSourceKey
     findings.push({
       kind: 'oversized_tool_result',
       wastedTokens: Math.round(oversizedChars / CHARS_PER_TOKEN),
-      metric: {
-        toolName: oversizedTool,
-        repeats: oversizedHits,
-        resultChars: oversizedChars,
-      },
+      metric,
     })
   }
 
+  // EFF-07: null ≠ 0. Itt csak a nyers számvitel készül el (lásd a
+  // `RunCacheStats` dokumentációját) — a minta-döntés az ablak szintjén van.
   const cacheRows = modelCalls.filter((call) => call.cachedPromptTokens !== null)
-  const nullRows = modelCalls.filter((call) => call.cachedPromptTokens === null)
-  let cacheStatus: 'none' | 'all_null' | 'has_values' = 'none'
-  if (modelCalls.length === 0) cacheStatus = 'none'
-  else if (cacheRows.length === 0) cacheStatus = 'all_null'
-  else cacheStatus = 'has_values'
-
-  if (cacheRows.length >= thresholds.minCacheCalls) {
-    const cachePrompt = cacheRows.reduce((sum, call) => sum + Math.max(call.promptTokens, 0), 0)
-    const cacheHit = cacheRows.reduce((sum, call) => sum + Math.max(call.cachedPromptTokens ?? 0, 0), 0)
-    const hitRatio = cachePrompt > 0 ? cacheHit / cachePrompt : 0
-    if (hitRatio < thresholds.cacheHitRatio) {
-      findings.push({
-        kind: 'cache_prefix_break',
-        wastedTokens: Math.max(cachePrompt - cacheHit, 0),
-        metric: {
-          hitRatio: Number(hitRatio.toFixed(4)),
-          cacheCalls: cacheRows.length,
-          model: modelCalls[0]?.model ?? '',
-        },
-      })
-    }
+  const cache: RunCacheStats = {
+    rows: cacheRows.length,
+    promptTokens: cacheRows.reduce((sum, call) => sum + Math.max(call.promptTokens, 0), 0),
+    hitTokens: cacheRows.reduce((sum, call) => sum + Math.max(call.cachedPromptTokens ?? 0, 0), 0),
+    nullRows: modelCalls.length - cacheRows.length,
   }
 
-  void nullRows
   return {
     findings,
     breakdown: {
@@ -375,41 +561,180 @@ function detectRun(
       completion,
       cached,
       rereadTokensAnnotation,
-      total: entryContext + repeatedContext + completion,
+      total: modelBreakdown.total,
       costEstimate,
     },
-    cacheRows: cacheStatus,
+    cache,
   }
 }
 
-function savingsBand(wastedTokens: number, capTokens: number): EfficiencySavingsBand | null {
+/**
+ * Megtakarítás-sáv: felső = a mérten pazarolt token teljes megszűnése (ablak
+ * token-összegére vágva), alsó = ennek a fele. Pénzérték = ugyanennek az
+ * aránynak a `costEstimate` része — soha nem nagyobb az ablak költségénél.
+ */
+export function savingsBand(
+  wastedTokens: number,
+  capTokens: number,
+  capCost: number,
+): EfficiencySavingsBand | null {
   if (wastedTokens <= 0 || capTokens <= 0) return null
   const high = Math.min(wastedTokens, capTokens)
-  return { low: Math.floor(high / 2), high }
+  const low = Math.floor(high / 2)
+  const rawCostHigh = capCost > 0 ? (high / capTokens) * capCost : 0
+  const costHigh = Math.min(rawCostHigh, Math.max(capCost, 0))
+  const costLow = costHigh / 2
+  return { low, high, costLow, costHigh }
 }
 
 function suggestionFor(kind: EfficiencyPatternKind): EfficiencySuggestion {
-  const patch = efficiencyHintPatch(kind)
-  if (patch) return { applicable: true, modelConfigPatch: patch }
-  if (kind === 'oversized_tool_result') return { applicable: false, link: 'tool_narrowing' }
-  return { applicable: false, link: 'prompt_cache' }
+  const hintKinds = hintsForPattern(kind)
+  if (hintKinds.length > 0) {
+    const patch: Record<string, number> = {}
+    for (const hint of hintKinds) {
+      Object.assign(patch, efficiencyHintPatch(hint))
+    }
+    return { applicable: true, hintKinds, modelConfigPatch: patch }
+  }
+  if (kind === 'oversized_tool_result') {
+    return {
+      applicable: false,
+      link: 'tool_narrowing',
+      // Az agent kapcsolatai / eszközei — ott lehet szűkíteni a hívást.
+      href: '?section=kapcsolatok',
+    }
+  }
+  return {
+    applicable: false,
+    link: 'prompt_cache',
+    // A modell/prompt-cache a „Gondolkodási motor” szekcióban állítható.
+    href: '?section=motor',
+  }
 }
 
-export function efficiencyHintPatch(kind: EfficiencyPatternKind): Record<string, number> | null {
+/** Melyik kapcsoló(ka)t ajánlja a minta. */
+export function hintsForPattern(kind: EfficiencyPatternKind): EfficiencyHintKind[] {
   switch (kind) {
-    case 'repeated_reread':
-      return {
-        sourceIngestFactor: EFFICIENCY_ADVISOR_APPLIED_LIMITS.sourceIngestFactor,
-        sourceIngestMinChars: EFFICIENCY_ADVISOR_APPLIED_LIMITS.sourceIngestMinChars,
-        maxToolCalls: EFFICIENCY_ADVISOR_APPLIED_LIMITS.maxToolCalls,
-      }
     case 'context_bloat':
+      return ['stricter_compaction']
+    case 'repeated_reread':
+      // Újraolvasás + elszaladó körök: forrás-keret és eszköz-büdzsé.
+      return ['narrower_source_frame', 'narrower_tool_budget']
+    default:
+      return []
+  }
+}
+
+export function efficiencyHintPatch(kind: EfficiencyHintKind): Record<string, number> {
+  switch (kind) {
+    case 'stricter_compaction':
       return {
         maxToolResultChars: EFFICIENCY_ADVISOR_APPLIED_LIMITS.maxToolResultChars,
         keepRecentToolResults: EFFICIENCY_ADVISOR_APPLIED_LIMITS.keepRecentToolResults,
       }
-    default:
-      return null
+    case 'narrower_source_frame':
+      return {
+        sourceIngestFactor: EFFICIENCY_ADVISOR_APPLIED_LIMITS.sourceIngestFactor,
+        sourceIngestMinChars: EFFICIENCY_ADVISOR_APPLIED_LIMITS.sourceIngestMinChars,
+      }
+    case 'narrower_tool_budget':
+      return {
+        maxToolCalls: EFFICIENCY_ADVISOR_APPLIED_LIMITS.maxToolCalls,
+      }
+  }
+}
+
+export function describeEfficiencyHint(kind: EfficiencyHintKind): string {
+  switch (kind) {
+    case 'stricter_compaction':
+      return 'Szigorúbb tömörítés'
+    case 'narrower_source_frame':
+      return 'Szűkebb forrás-keret'
+    case 'narrower_tool_budget':
+      return 'Szűkebb eszköz-büdzsé'
+  }
+}
+
+function asConfigRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {}
+}
+
+function previousConfigValue(config: Record<string, unknown>, key: string): number | null {
+  const raw = config[key]
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null
+}
+
+export type EfficiencyHintApplyResult = {
+  modelConfig: Record<string, unknown>
+  previous: Record<string, number | null>
+  next: Record<string, number | null>
+  reverted: boolean
+}
+
+/**
+ * Tiszta apply/revert a `modelConfig`-ra (EFF-12). Az undo-pillanatképet a
+ * `efficiencyAdvisorUndo` kulcs alatt tárolja hint-kind szerint, hogy egy
+ * kattintással visszaállítható legyen.
+ */
+export function applyEfficiencyHintToModelConfig(input: {
+  modelConfig: unknown
+  kind: EfficiencyHintKind
+  revert?: boolean
+  undoKey?: string
+}): EfficiencyHintApplyResult {
+  const undoKey = input.undoKey ?? 'efficiencyAdvisorUndo'
+  const patch = efficiencyHintPatch(input.kind)
+  const current = asConfigRecord(input.modelConfig)
+  const undoMap = asConfigRecord(current[undoKey])
+  const nextConfig = { ...current }
+  let previous: Record<string, number | null> = {}
+  let next: Record<string, number | null> = {}
+
+  if (input.revert) {
+    const snapshot = asConfigRecord(undoMap[input.kind])
+    previous = Object.fromEntries(
+      Object.keys(patch).map((key) => [key, previousConfigValue(current, key)]),
+    )
+    next = {}
+    for (const key of Object.keys(patch)) {
+      const restored = snapshot[key]
+      if (restored === null || restored === undefined) {
+        delete nextConfig[key]
+        next[key] = null
+      } else if (typeof restored === 'number' && Number.isFinite(restored)) {
+        nextConfig[key] = restored
+        next[key] = restored
+      } else {
+        delete nextConfig[key]
+        next[key] = null
+      }
+    }
+    delete undoMap[input.kind]
+  } else {
+    const existing = asConfigRecord(undoMap[input.kind])
+    const snapshot: Record<string, number | null> = { ...existing } as Record<
+      string,
+      number | null
+    >
+    next = { ...patch }
+    for (const [key, value] of Object.entries(patch)) {
+      if (!(key in snapshot)) snapshot[key] = previousConfigValue(current, key)
+      nextConfig[key] = value
+    }
+    previous = snapshot
+    undoMap[input.kind] = snapshot
+  }
+
+  if (Object.keys(undoMap).length === 0) delete nextConfig[undoKey]
+  else nextConfig[undoKey] = undoMap
+
+  return {
+    modelConfig: nextConfig,
+    previous,
+    next,
+    reverted: Boolean(input.revert),
   }
 }
 
@@ -423,11 +748,24 @@ function mergeMetrics(
       if (typeof value === 'number') numericKeys.add(key)
     }
   }
+  const averageKey = (key: string): boolean =>
+    key.endsWith('Ratio') ||
+    key.endsWith('Share') ||
+    key === 'firstPrompt' ||
+    key === 'lastPrompt'
   for (const key of numericKeys) {
     const values = rows.map((row) => row[key]).filter((value): value is number => typeof value === 'number')
     if (values.length === 0) continue
     const sum = values.reduce((acc, value) => acc + value, 0)
-    out[key] = key.endsWith('Ratio') || key.endsWith('Share') ? Number((sum / values.length).toFixed(4)) : sum
+    if (!averageKey(key)) {
+      out[key] = sum
+      continue
+    }
+    const avg = sum / values.length
+    out[key] =
+      key === 'firstPrompt' || key === 'lastPrompt'
+        ? Math.round(avg)
+        : Number(avg.toFixed(4))
   }
   for (const row of rows) {
     for (const [key, value] of Object.entries(row)) {
@@ -447,6 +785,10 @@ const PATTERN_ORDER: EfficiencyPatternKind[] = [
 /**
  * Futás-halmaz → hatékonysági kártya. A minták csak akkor jelennek meg, ha
  * legalább 3 elemezhető futás van, és a minta legalább kettőben előfordul.
+ *
+ * KIVÉTEL a cache-prefix törés: az a stabil előtag agent-szintű tulajdonsága,
+ * nem egy futásé, ezért az ablak ÖSSZES nem-`null` cache-adatú hívására dől el,
+ * a `minCacheCalls` küszöbbel mint minta-méret kapuval.
  */
 export function evaluateEfficiencyAdvisor(
   runs: EfficiencyRun[],
@@ -498,16 +840,13 @@ export function evaluateEfficiencyAdvisor(
     }
   }, emptyBreakdown)
 
-  const cacheStatuses = perRun.map((row) => row.cacheRows)
-  const hasValues = cacheStatuses.some((status) => status === 'has_values')
-  const allNull = cacheStatuses.every((status) => status === 'all_null' || status === 'none')
-  const cacheDataStatus: EfficiencyCacheDataStatus = hasValues
-    ? cacheStatuses.some((status) => status === 'all_null')
-      ? 'mixed'
-      : 'available'
-    : allNull
-      ? 'missing'
-      : 'missing'
+  // `null` ≠ 0: a „provider nem ad cache-adatot" eset NEM megállapítás. Csak a
+  // nem-`null` sorokból számolunk arányt, és ha egyáltalán nincs ilyen sor, a
+  // kártya „nincs adat"-ot mond — nem „nincs cache-találat"-ot.
+  const cacheRowsTotal = perRun.reduce((sum, row) => sum + row.cache.rows, 0)
+  const cacheNullTotal = perRun.reduce((sum, row) => sum + row.cache.nullRows, 0)
+  const cacheDataStatus: EfficiencyCacheDataStatus =
+    cacheRowsTotal === 0 ? 'missing' : cacheNullTotal > 0 ? 'mixed' : 'available'
 
   const byKind = new Map<EfficiencyPatternKind, RunFinding[]>()
   for (const row of perRun) {
@@ -520,23 +859,66 @@ export function evaluateEfficiencyAdvisor(
 
   const patterns: EfficiencyPattern[] = []
   for (const kind of PATTERN_ORDER) {
+    if (kind === 'cache_prefix_break') continue
     const hits = byKind.get(kind) ?? []
     if (hits.length < MIN_RUNS_FOR_PATTERN) continue
-    if (kind === 'cache_prefix_break' && cacheDataStatus === 'missing') continue
     const wasted = hits.reduce((sum, hit) => sum + hit.wastedTokens, 0)
     patterns.push({
       kind,
       explanationKey: kind,
       metric: mergeMetrics(hits.map((hit) => hit.metric)),
-      savingsTokens: savingsBand(wasted, breakdown.total),
+      savingsTokens: savingsBand(wasted, breakdown.total, breakdown.costEstimate),
       suggestion: suggestionFor(kind),
     })
   }
 
+  // Cache-prefix törés: az ablak ÖSSZES nem-`null` hívására, modellenként,
+  // nem futásonként (lásd a `RunCacheStats` indoklását). A minta-méret kaput
+  // itt a `minCacheCalls` küszöb adja, nem a „legalább két futásban" szabály.
+  {
+    const byModel = new Map<string, { rows: number; promptTokens: number; hitTokens: number }>()
+    for (const call of analyzable.flatMap((run) => run.modelCalls)) {
+      if (call.cachedPromptTokens === null) continue
+      const model =
+        typeof call.model === 'string' && call.model.trim() ? call.model.trim() : ''
+      const prev = byModel.get(model) ?? { rows: 0, promptTokens: 0, hitTokens: 0 }
+      prev.rows += 1
+      prev.promptTokens += Math.max(call.promptTokens, 0)
+      prev.hitTokens += Math.max(call.cachedPromptTokens ?? 0, 0)
+      byModel.set(model, prev)
+    }
+    let worst: { model: string; rows: number; ratio: number; wasted: number } | null = null
+    for (const [model, agg] of byModel) {
+      if (agg.rows < thresholds.minCacheCalls) continue
+      const ratio = agg.promptTokens > 0 ? agg.hitTokens / agg.promptTokens : 0
+      if (ratio >= thresholds.cacheHitRatio) continue
+      const wasted = Math.max(agg.promptTokens - agg.hitTokens, 0)
+      if (!worst || wasted > worst.wasted) worst = { model, rows: agg.rows, ratio, wasted }
+    }
+    if (worst && cacheDataStatus !== 'missing') {
+      patterns.push({
+        kind: 'cache_prefix_break',
+        explanationKey: 'cache_prefix_break',
+        metric: {
+          hitRatio: Number(worst.ratio.toFixed(4)),
+          cacheCalls: worst.rows,
+          model: worst.model,
+        },
+        savingsTokens: savingsBand(worst.wasted, breakdown.total, breakdown.costEstimate),
+        suggestion: suggestionFor('cache_prefix_break'),
+      })
+    }
+  }
+
+  // Determinisztikus rendezés: becsült megtakarítás (token high) szerint,
+  // döntetlennél a stabil PATTERN_ORDER — azonos bemenet → azonos kártya.
   patterns.sort((a, b) => {
     const aHigh = a.savingsTokens?.high ?? 0
     const bHigh = b.savingsTokens?.high ?? 0
     if (bHigh !== aHigh) return bHigh - aHigh
+    const aCost = a.savingsTokens?.costHigh ?? 0
+    const bCost = b.savingsTokens?.costHigh ?? 0
+    if (bCost !== aCost) return bCost - aCost
     return PATTERN_ORDER.indexOf(a.kind) - PATTERN_ORDER.indexOf(b.kind)
   })
 
@@ -550,17 +932,49 @@ export function evaluateEfficiencyAdvisor(
   }
 }
 
-/** Közérthető magyarázat a kártyára (magyarázat-kulcs → szöveg). */
-export function describeEfficiencyPattern(kind: EfficiencyPatternKind): string {
+/**
+ * Közérthető magyarázat a kártyára (magyarázat-kulcs → szöveg).
+ * A túlméretezett kimenetnél a `metric.toolName` bekerül a szövegbe, hogy a
+ * javaslat konkrét legyen — kapcsolót ehhez a mintához nem ajánlunk.
+ */
+export function describeEfficiencyPattern(
+  kind: EfficiencyPatternKind,
+  metric?: Record<string, number | string>,
+): string {
   switch (kind) {
     case 'repeated_reread':
       return 'Ez az agent a tokenjei nagy részét ugyanannak a forrásnak az újraolvasására költi. Kapcsold szűkebbre a forrás-keretet ennél az agentnél, hogy egyszer végigolvassa, és utána a kivonatból dolgozzon.'
     case 'context_bloat':
       return 'Minden körben újraküldi a teljes eddigi előzményt, ezért a prompt körönként nő. Kapcsold szigorúbbra a kontextus-tömörítést ennél az agentnél.'
-    case 'oversized_tool_result':
-      return 'Ugyanaz az eszköz ismételten túl nagy választ hoz be. Szűkítsd a hívást (aggregált végpont, szűkebb mezőlista), vagy emeld ki a lényeget a munkaterületre.'
-    case 'cache_prefix_break':
-      return 'A prompt-cache alig fog ennél az agentnél: a stabil előtag sorrendje vagy a modell váltakozása miatt a gyorsítótár nem használódik. Ez nem kapcsoló — a prompt-cache beállításait kell ellenőrizni.'
+    case 'oversized_tool_result': {
+      const tool =
+        typeof metric?.toolName === 'string' && metric.toolName.trim()
+          ? metric.toolName.trim()
+          : null
+      const subject = tool ? `A(z) „${tool}" eszköz` : 'Ugyanaz az eszköz'
+      return `${subject} ismételten túl nagy választ hoz be (a ${OVERSIZED_TOOL_RESULT_CHARS.toLocaleString('hu-HU')} karakteres limit fölött). Szűkítsd a hívást (aggregált végpont, szűkebb mezőlista, tool_result_extract) — ehhez a mintához nincs kapcsoló.`
+    }
+    case 'cache_prefix_break': {
+      const model =
+        typeof metric?.model === 'string' && metric.model.trim() ? metric.model.trim() : null
+      const modelPart = model ? ` A(z) „${model}" modell felé menő hívásokon` : ''
+      return `A prompt-cache alig fog ennél az agentnél.${modelPart} a stabil előtag sorrendje vagy a modell váltakozása miatt a gyorsítótár nem használódik. Ez nem kapcsoló — a prompt-cache beállításait kell ellenőrizni.`
+    }
+  }
+}
+
+/**
+ * EFF-07: a „nincs cache-adat" és a „van adat, de 0 találat" megkülönböztetése.
+ * A hiány nem megállapítás, és nem számít bele a megtakarítás-becslésbe.
+ */
+export function describeEfficiencyCacheDataStatus(status: EfficiencyCacheDataStatus): string {
+  switch (status) {
+    case 'missing':
+      return 'A provider nem ad cache-adatot ezekhez a hívásokhoz — ez nem megállapítás, és nem számít bele a megtakarítás-becslésbe.'
+    case 'available':
+      return 'A provider cache-adatot adott; a találati arány a nem-null sorokból számolódik.'
+    case 'mixed':
+      return 'Egyes hívásoknál van cache-adat, másoknál nincs — az arányt csak a nem-null sorokból számoljuk.'
   }
 }
 
