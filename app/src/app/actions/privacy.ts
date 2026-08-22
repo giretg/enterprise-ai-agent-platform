@@ -74,9 +74,6 @@ function privacyFail(e: unknown, fallback: string): ActionResult<never> {
         'A jelszót, kulcsot vagy belépési tokent nem lehet álnévre cserélni vagy kiengedni — mindig tiltva marad.',
       )
     }
-    if (e.code === 'allow_requires_superadmin') {
-      return fail('Bankkártyaszám vagy IBAN külső modellnek küldését csak platform-admin engedélyezheti.')
-    }
     if (e.code === 'allow_confirmation_required') {
       return fail('Bankkártyaszám vagy IBAN külső modellnek küldéséhez írd be: ALLOW_PAN_IBAN')
     }
@@ -301,7 +298,6 @@ export async function setPrivacyCategoryPolicyAction(input: unknown) {
 
     const actor = {
       actorId: access.ctx.user.id,
-      isSuperadmin: access.superadmin,
       confirmation: parsed.confirmation,
     }
     const patch: PrivacyCategoryPolicyPatch = {

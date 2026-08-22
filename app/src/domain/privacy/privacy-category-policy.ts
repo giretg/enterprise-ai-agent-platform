@@ -15,7 +15,10 @@
  *
  * Kemény invariánsok mentéskor:
  * - `secret_key` csak `block` (sosem `tokenize`, sem más)
- * - `pan` / `iban` `allow` csak superadmin + külön megerősítés
+ * - `pan` / `iban` `allow` külön, gépelt megerősítéshez kötött (`ALLOW_PAN_IBAN`).
+ *   Figyelem: #320 D9 óta ez NEM superadmin-jog — a platform-szint megszűnésével
+ *   tenant-admin hatáskörbe került (tudatosan vállalt döntés). A visszatartó kontroll
+ *   a gépelt megerősítés + a részletes audit-esemény (lásd `recordPrivacyCategoryPolicySet`).
  */
 import { DEFAULT_SURROGATE_ENTITY_TYPES } from '@/domain/privacy/surrogate-format'
 
@@ -198,15 +201,17 @@ export type ResolvedPrivacyCategoryPolicy = {
 
 export type PrivacyCategoryPolicyActor = {
   actorId: string
-  isSuperadmin: boolean
-  /** `ALLOW_PAN_IBAN` — kötelező, ha a patch `pan` vagy `iban` `allow`-t tartalmaz. */
+  /**
+   * `ALLOW_PAN_IBAN` — kötelező, ha a patch `pan` vagy `iban` `allow`-t tartalmaz.
+   * #320 D9 óta ez az EGYETLEN mentés-szintű kapu a nyers PAN/IBAN kiengedéséhez
+   * (a superadmin-jog megszűnt); a réteg-jogosultságot a hívó action dönti el.
+   */
   confirmation?: string
 }
 
 export type PrivacyCategoryPolicyCode =
   | 'tokenize_unsupported_category'
   | 'secret_key_not_block'
-  | 'allow_requires_superadmin'
   | 'allow_confirmation_required'
   | 'invalid_action'
   | 'invalid_category'
@@ -453,7 +458,7 @@ export function buildPrivacyPolicyEditorRows(input: {
  */
 export function assertPrivacyCategoryPolicyPatch(
   patch: PrivacyCategoryPolicyPatch,
-  actor: Pick<PrivacyCategoryPolicyActor, 'isSuperadmin' | 'confirmation'>,
+  actor: Pick<PrivacyCategoryPolicyActor, 'confirmation'>,
 ): void {
   const categories = patch.categories ?? {}
   for (const [key, action] of Object.entries(categories)) {
@@ -496,7 +501,7 @@ function assertCustomSlug(key: string): void {
 function assertAction(
   category: string,
   action: unknown,
-  actor: Pick<PrivacyCategoryPolicyActor, 'isSuperadmin' | 'confirmation'>,
+  actor: Pick<PrivacyCategoryPolicyActor, 'confirmation'>,
 ): void {
   if (!isPrivacyCategoryAction(action)) {
     throw new PrivacyCategoryPolicyError(

@@ -1223,10 +1223,32 @@ export class PlatformSettingsService {
   ): Promise<void> {
     const patternSetVersion =
       'patternSetVersion' in stored ? stored.patternSetVersion : null
+    // `categories`: csak a nevek — visszafelé-kompatibilis marad a régebbi
+    // audit-fogyasztókkal (az `actions` az új, érték-hordozó mező; a nevek annak
+    // kulcs-részhalmaza, ezért látszólag redundáns, de a séma-stabilitásért marad).
     const categories = [
       ...Object.keys(patch.categories ?? stored.categories),
       ...Object.keys(patch.custom ?? stored.custom),
     ]
+    // A patch a tényleges változás — az auditba a MEGVÁLASZTOTT akció is bekerül,
+    // nem csak az érintett kategória neve. `null` = az overlay törlése (öröklés).
+    // A `rawEgressEnabled` külön kiemeli, mely kategóriákra kapcsoltak be NYERS
+    // (`allow`) külső-modell-átadást — ez az a magas kockázatú lépés (pl. PAN/IBAN),
+    // amelynél #320 D9 a visszatartó kontrollként épp az audit-eseményre támaszkodik.
+    // Így a SIEM/megfelelőségi lekérdezés meg tudja különböztetni a szigorítást a
+    // nyers adat kiengedésétől.
+    const patchEntries: Array<[string, PrivacyCategoryAction | null]> = [
+      ...Object.entries(patch.categories ?? {}),
+      ...Object.entries(patch.custom ?? {}),
+    ]
+    const actions: Record<string, PrivacyCategoryAction | 'inherit'> = {}
+    for (const [key, action] of patchEntries) {
+      actions[key] = action ?? 'inherit'
+    }
+    const rawEgressEnabled = patchEntries
+      .filter(([, action]) => action === 'allow')
+      .map(([key]) => key)
+      .sort()
     await this.audit.append({
       actorType: 'human',
       actorId,
@@ -1237,11 +1259,13 @@ export class PlatformSettingsService {
       modelUsed: null,
       inputRef: layer,
       outputRef: patternSetVersion != null ? `v${patternSetVersion}` : layer,
-      policyDecision: 'category_policy',
+      policyDecision: rawEgressEnabled.length > 0 ? 'category_policy_raw_egress' : 'category_policy',
       metadata: {
         layer,
         patternSetVersion,
         categories,
+        actions,
+        rawEgressEnabled,
       },
       tenantId: layer === 'tenant' ? targetId : null,
     })
