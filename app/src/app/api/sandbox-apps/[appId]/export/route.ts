@@ -28,7 +28,15 @@ export async function GET(
       Number.isFinite(versionNumber) ? versionNumber : undefined,
     )
 
-    return new NextResponse(version.htmlContent, {
+    const html = await services.sandboxApps.resolveHtmlForViewerExport({
+      html: version.htmlContent,
+      tenantId: app.tenantId,
+      conversationId: app.createdFromConversationId,
+      ticketId: version.sourceTicketId ?? app.createdFromTicketId,
+      requesterUserId: user.user.id,
+    })
+
+    return new NextResponse(html, {
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
         'Content-Disposition': `attachment; filename="${safeDownloadName(app.name)}"`,

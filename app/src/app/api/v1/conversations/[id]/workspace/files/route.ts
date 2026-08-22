@@ -10,6 +10,7 @@ import {
   INLINE_HTML_CONTENT_TYPE,
   inlineHtmlPreviewSecurityHeaders,
 } from '@/lib/workspace-inline-html-headers'
+import { resolveInlineWorkspaceHtml } from '@/lib/resolve-inline-workspace-html'
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ success: false, error: message }, { status })
@@ -80,17 +81,57 @@ export async function GET(
         })
       }
 
+      const filename = safePath.split('/').pop() ?? safePath
+
+      if (inline) {
+        const buf = await storage.read(tenantId, conversationId, safePath)
+        if (!buf) return jsonError('File not found', 404)
+        const html = await resolveInlineWorkspaceHtml({
+          html: buf.toString('utf8'),
+          tenantId: user.activeTenantId,
+          conversationId,
+          requesterUserId: user.user.id,
+        })
+        const body = Buffer.from(html, 'utf8')
+        return new NextResponse(body, {
+          headers: {
+            'content-type': INLINE_HTML_CONTENT_TYPE,
+            'content-disposition': `inline; filename="${encodeURIComponent(filename)}"`,
+            // Az agent/felhasználó által készített HTML ugyanazon az originen
+            // érkezik: opak sandboxba zárjuk (nincs script és nincs KÜLSŐ egress,
+            // pl. kép-beacon), l. workspace-inline-html-headers.
+            ...inlineHtmlPreviewSecurityHeaders(),
+            'content-length': String(body.length),
+          },
+        })
+      }
+
+      if (isHtmlWorkspaceFile(safePath)) {
+        const buf = await storage.read(tenantId, conversationId, safePath)
+        if (!buf) return jsonError('File not found', 404)
+        const html = await resolveInlineWorkspaceHtml({
+          html: buf.toString('utf8'),
+          tenantId: user.activeTenantId,
+          conversationId,
+          requesterUserId: user.user.id,
+          surface: 'export_report',
+        })
+        const body = Buffer.from(html, 'utf8')
+        return new NextResponse(body, {
+          headers: {
+            'content-type': INLINE_HTML_CONTENT_TYPE,
+            'content-disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+            'content-length': String(body.length),
+          },
+        })
+      }
+
       const result = await storage.streamToClient(tenantId, conversationId, safePath)
       if (!result) return jsonError('File not found', 404)
-      const filename = safePath.split('/').pop() ?? safePath
       return new NextResponse(result.stream, {
         headers: {
-          'content-type': inline ? INLINE_HTML_CONTENT_TYPE : result.contentType,
-          'content-disposition': `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(filename)}"`,
-          // Az agent/felhasználó által készített HTML ugyanazon az originen
-          // érkezik: opak sandboxba zárjuk (nincs script és nincs KÜLSŐ egress,
-          // pl. kép-beacon), l. workspace-inline-html-headers.
-          ...(inline ? inlineHtmlPreviewSecurityHeaders() : {}),
+          'content-type': result.contentType,
+          'content-disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
           ...(result.size > 0 ? { 'content-length': String(result.size) } : {}),
         },
       })
