@@ -741,7 +741,7 @@ export const updateAgentTaskOnlySchema = z.object({
 
 export const applyEfficiencyHintSchema = z.object({
   agentId: z.string().uuid(),
-  kind: z.enum(['repeated_reread', 'context_bloat']),
+  kind: z.enum(['stricter_compaction', 'narrower_source_frame', 'narrower_tool_budget']),
   revert: z.boolean().optional(),
 })
 

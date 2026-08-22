@@ -165,7 +165,13 @@ export default async function AgentDetailPage({
   searchParams,
 }: {
   params: Promise<{ agentId: string }>
-  searchParams: Promise<{ conversation?: string; openChat?: string; granted?: string }>
+  searchParams: Promise<{
+    conversation?: string
+    openChat?: string
+    granted?: string
+    /** EFF-12: hatékonysági link → szekció (pl. motor, kapcsolatok). */
+    section?: string
+  }>
 }) {
   const { agentId } = await params
   const query = await searchParams
@@ -743,7 +749,11 @@ export default async function AgentDetailPage({
         }
       />
 
-      <SettingsSectionShell ariaLabel="Agent témák" sections={agentSections} />
+      <SettingsSectionShell
+        ariaLabel="Agent témák"
+        sections={agentSections}
+        initialId={query.section}
+      />
     </div>
   )
 }

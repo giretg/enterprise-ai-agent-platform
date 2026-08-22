@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useState, useTransition } from 'react'
 import {
   applyEfficiencyHint,
@@ -8,12 +9,14 @@ import {
 import { Card } from '@/components/ui/shell'
 import {
   describeEfficiencyCacheDataStatus,
+  describeEfficiencyHint,
   describeEfficiencyPattern,
   describeEfficiencyStatus,
   EFFICIENCY_ADVISOR_DEFAULT_RANGE,
   EFFICIENCY_ADVISOR_RANGE_LABELS,
   type EfficiencyAdvisorRange,
   type EfficiencyAdvisorView,
+  type EfficiencyHintKind,
   type EfficiencyPattern,
   type EfficiencyPatternKind,
 } from '@/domain/agent/efficiency-advisor'
@@ -41,6 +44,10 @@ function patternTitle(kind: EfficiencyPatternKind): string {
     case 'cache_prefix_break':
       return 'A gyorsítótár alig fog'
   }
+}
+
+function linkLabel(link: 'prompt_cache' | 'tool_narrowing'): string {
+  return link === 'prompt_cache' ? 'Gondolkodási motor megnyitása' : 'Kapcsolatok megnyitása'
 }
 
 /** Csak számok, eszköznevek, darabszámok — tartalom soha (EFF-10 DoD). */
@@ -203,17 +210,17 @@ export function EfficiencyAdvisorPanel({
   const [range, setRange] = useState<EfficiencyAdvisorRange>(
     initialView.range ?? EFFICIENCY_ADVISOR_DEFAULT_RANGE,
   )
-  const [pendingKind, setPendingKind] = useState<EfficiencyPatternKind | null>(null)
+  const [pendingKind, setPendingKind] = useState<EfficiencyHintKind | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
   const { card, applied } = view
-  // Alkalmazott, de a mostani ablakban MÁR NEM látszó javaslatok. A minta 30 nap
-  // után kiesik a vizsgált futásokból, a `modelConfig` felülbírálás viszont
-  // marad — enélkül a felelős ott ragadna egy beállítással, amit ugyanazon a
-  // felületen nem tudna visszavonni (EFF-12: „egy kattintással visszaállítható").
-  const appliedWithoutPattern = (['repeated_reread', 'context_bloat'] as const).filter(
-    (kind) => applied[kind] && !card.patterns.some((pattern) => pattern.kind === kind),
+
+  const visibleHintKinds = new Set(
+    card.patterns.flatMap((pattern) => pattern.suggestion.hintKinds ?? []),
+  )
+  const appliedWithoutPattern = (Object.keys(applied) as EfficiencyHintKind[]).filter(
+    (kind) => applied[kind] && !visibleHintKinds.has(kind),
   )
 
   const switchRange = (next: EfficiencyAdvisorRange) => {
@@ -227,7 +234,7 @@ export function EfficiencyAdvisorPanel({
     })
   }
 
-  const submit = (kind: 'repeated_reread' | 'context_bloat', revert: boolean) => {
+  const submit = (kind: EfficiencyHintKind, revert: boolean) => {
     startTransition(async () => {
       setError(null)
       setPendingKind(kind)
@@ -288,16 +295,14 @@ export function EfficiencyAdvisorPanel({
       {card.status === 'findings' ? (
         <ul className="mt-4 space-y-3">
           {card.patterns.map((pattern) => {
-            const isApplied = Boolean(applied[pattern.kind])
-            const canToggle =
-              canApply &&
-              pattern.suggestion.applicable &&
-              (pattern.kind === 'repeated_reread' || pattern.kind === 'context_bloat')
+            const hintKinds = pattern.suggestion.hintKinds ?? []
             const metricLines = patternMetricLines(pattern)
             return (
               <li key={pattern.kind} className="rounded-lg border border-line bg-night-2 px-3 py-3">
                 <p className="text-sm font-medium text-ink">{patternTitle(pattern.kind)}</p>
-                <p className="mt-1 text-sm text-ink-soft">{describeEfficiencyPattern(pattern.kind)}</p>
+                <p className="mt-1 text-sm text-ink-soft">
+                  {describeEfficiencyPattern(pattern.kind, pattern.metric)}
+                </p>
                 {metricLines.length > 0 ? (
                   <ul className="mt-2 space-y-0.5 text-xs text-ink-faint">
                     {metricLines.map((line) => (
@@ -312,21 +317,37 @@ export function EfficiencyAdvisorPanel({
                     total={card.breakdown.total}
                   />
                 ) : null}
-                {canToggle ? (
-                  <button
-                    type="button"
-                    disabled={pending}
-                    onClick={() =>
-                      submit(pattern.kind as 'repeated_reread' | 'context_bloat', isApplied)
-                    }
-                    className="mt-3 rounded-md border border-line bg-panel px-3 py-1.5 text-sm text-ink hover:border-coral disabled:opacity-50"
-                  >
-                    {pendingKind === pattern.kind
-                      ? 'Mentés…'
-                      : isApplied
-                        ? 'Visszavonás'
-                        : 'Alkalmazom'}
-                  </button>
+
+                {canApply && pattern.suggestion.applicable && hintKinds.length > 0 ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {hintKinds.map((hint) => {
+                      const isApplied = Boolean(applied[hint])
+                      return (
+                        <button
+                          key={hint}
+                          type="button"
+                          disabled={pending}
+                          onClick={() => submit(hint, isApplied)}
+                          className="rounded-md border border-line bg-panel px-3 py-1.5 text-sm text-ink hover:border-coral disabled:opacity-50"
+                        >
+                          {pendingKind === hint
+                            ? 'Mentés…'
+                            : isApplied
+                              ? `Visszavonás: ${describeEfficiencyHint(hint)}`
+                              : `Alkalmazom: ${describeEfficiencyHint(hint)}`}
+                        </button>
+                      )
+                    })}
+                  </div>
+                ) : !pattern.suggestion.applicable && pattern.suggestion.href ? (
+                  <p className="mt-2 text-xs text-ink-faint">
+                    Itt nincs kapcsoló.{' '}
+                    <Link href={pattern.suggestion.href} className="underline hover:text-ink">
+                      {pattern.suggestion.link
+                        ? linkLabel(pattern.suggestion.link)
+                        : 'Kapcsolódó felület'}
+                    </Link>
+                  </p>
                 ) : pattern.suggestion.link === 'prompt_cache' ? (
                   <p className="mt-2 text-xs text-ink-faint">
                     Itt nincs kapcsoló — a prompt-cache beállításokat kell megnézni.
@@ -351,7 +372,7 @@ export function EfficiencyAdvisorPanel({
           <ul className="mt-2 space-y-2">
             {appliedWithoutPattern.map((kind) => (
               <li key={kind} className="flex flex-wrap items-center gap-3">
-                <span className="text-sm text-ink-soft">{patternTitle(kind)}</span>
+                <span className="text-sm text-ink-soft">{describeEfficiencyHint(kind)}</span>
                 {canApply ? (
                   <button
                     type="button"
@@ -373,6 +394,11 @@ export function EfficiencyAdvisorPanel({
       ) : null}
 
       {error ? <p className="mt-3 text-sm text-coral">{error}</p> : null}
+      {!canApply ? (
+        <p className="mt-3 text-xs text-ink-faint">
+          A javaslatok alkalmazásához tenant admin jogosultság kell.
+        </p>
+      ) : null}
     </Card>
   )
 }

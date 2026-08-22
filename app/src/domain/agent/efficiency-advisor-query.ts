@@ -20,7 +20,7 @@ import {
   parseEfficiencyAdvisorRange,
   type EfficiencyAdvisorRange,
   type EfficiencyAdvisorView,
-  type EfficiencyPatternKind,
+  type EfficiencyHintKind,
   type EfficiencyRun,
   type EfficiencyRunKind,
   type EfficiencyRunModelCall,
@@ -162,10 +162,10 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {}
 }
 
-function appliedFromModelConfig(modelConfig: unknown): Partial<Record<EfficiencyPatternKind, boolean>> {
+function appliedFromModelConfig(modelConfig: unknown): Partial<Record<EfficiencyHintKind, boolean>> {
   const undo = asRecord(asRecord(modelConfig)[EFFICIENCY_ADVISOR_UNDO_KEY])
-  const applied: Partial<Record<EfficiencyPatternKind, boolean>> = {}
-  for (const kind of Object.keys(undo) as EfficiencyPatternKind[]) {
+  const applied: Partial<Record<EfficiencyHintKind, boolean>> = {}
+  for (const kind of Object.keys(undo) as EfficiencyHintKind[]) {
     applied[kind] = true
   }
   return applied
