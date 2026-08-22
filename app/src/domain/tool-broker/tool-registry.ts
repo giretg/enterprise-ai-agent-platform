@@ -244,6 +244,7 @@ export const TOOL_GROUP_HTTP = 'HTTP API'
 export const TOOL_GROUP_WEB = 'Webes kutatás'
 export const TOOL_GROUP_MEMORY = 'Projektmemória'
 export const TOOL_GROUP_PRIVACY = 'Adatvédelmi hibakeresés'
+export const TOOL_GROUP_ANALYSIS = 'Futás-elemzés'
 
 /** A csoportok megjelenítési sorrendje az eszközjog-szerkesztőben. */
 export const TOOL_GROUP_ORDER: readonly string[] = [
@@ -260,6 +261,7 @@ export const TOOL_GROUP_ORDER: readonly string[] = [
   TOOL_GROUP_HTTP,
   TOOL_GROUP_WEB,
   TOOL_GROUP_MEMORY,
+  TOOL_GROUP_ANALYSIS,
   TOOL_GROUP_PRIVACY,
 ]
 
@@ -1900,6 +1902,59 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'get_debug_trace',
     handlerId: 'get_debug_trace',
     capabilityGroup: TOOL_GROUP_PRIVACY,
+  }),
+
+  run_index: descriptor({
+    description:
+      'Futás-fejlécek lekérése szkóp alapján — a futás-elemzés első lépése. ' +
+      'Bemenet: agent-név vagy -azonosító, beszélgetés/ticket/folyamat/playbook-verzió azonosító, időablak, darabszám. ' +
+      'Kimenet futásonként EGY fejléc: mikor, melyik agent, szemcse (turn/ticket/process), körök, eszközhívások, megtagadások, token/költség, végállapot. ' +
+      'Több futás egyszerre is kérhető explicit azonosítókkal. A válasz korlátozott; ha `truncated: true`, lapozz szűkebb szkóppal vagy kisebb limitet kérj.',
+    argsSchema: z.object({
+      agentId: z.string().uuid().optional(),
+      agentQuery: z.string().max(200).optional(),
+      conversationId: z.string().uuid().optional(),
+      ticketId: z.string().uuid().optional(),
+      processInstanceId: z.string().uuid().optional(),
+      playbookVersionId: z.string().uuid().optional(),
+      since: z.string().optional(),
+      until: z.string().optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+      agentTurnIds: z.array(z.string().uuid()).max(50).optional(),
+      ticketIds: z.array(z.string().uuid()).max(50).optional(),
+      processInstanceIds: z.array(z.string().uuid()).max(50).optional(),
+    }),
+    toInvokeInput: (args, ctx) => {
+      const uuidList = (key: string): string[] | undefined => {
+        const raw = args[key]
+        if (!Array.isArray(raw)) return undefined
+        return raw.filter((v): v is string => typeof v === 'string' && v.length > 0)
+      }
+      return {
+        ...ctx,
+        tool: 'run_index',
+        args: {
+          agentId: strArg(args, 'agentId') || undefined,
+          agentQuery: strArg(args, 'agentQuery') || undefined,
+          conversationId: strArg(args, 'conversationId') || undefined,
+          ticketId: strArg(args, 'ticketId') || undefined,
+          processInstanceId: strArg(args, 'processInstanceId') || undefined,
+          playbookVersionId: strArg(args, 'playbookVersionId') || undefined,
+          since: strArg(args, 'since') || undefined,
+          until: strArg(args, 'until') || undefined,
+          limit: numArg(args, 'limit') || undefined,
+          agentTurnIds: uuidList('agentTurnIds'),
+          ticketIds: uuidList('ticketIds'),
+          processInstanceIds: uuidList('processInstanceIds'),
+        },
+      }
+    },
+    trust: 'external_untrusted',
+    sideEffecting: false,
+    surfaces: CHAT_ONLY,
+    capability: 'run_index',
+    handlerId: 'run_index',
+    capabilityGroup: TOOL_GROUP_ANALYSIS,
   }),
 
   reconcile_records: descriptor({

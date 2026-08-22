@@ -356,6 +356,26 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
     },
   },
 
+  run_index: {
+    outputSchema: z.looseObject({
+      runs: z.array(z.looseObject({ runId: z.string(), grain: z.string() })),
+      returnedCount: z.number(),
+      limit: z.number(),
+      truncated: z.boolean(),
+      scope: z.record(z.string(), z.unknown()),
+    }),
+    emptiness: (output) => {
+      const count = (output as { returnedCount?: number } | null)?.returnedCount ?? 0
+      return count === 0 ? 'a megadott szkópban nem található futás' : null
+    },
+    partial: (output) => {
+      const truncated = (output as { truncated?: boolean } | null)?.truncated === true
+      return truncated
+        ? 'több futás illeszkedik a szkópra, mint amennyit visszaadtunk — szűkítsd a szkópot vagy kérj kisebb limitet'
+        : null
+    },
+  },
+
   /**
    * `reconcile_records` — 2. INCIDENS. A párosítás sorrend-függése (a teljes
    * egyezés globális elsőbbsége) a `lib/reconcile-records.ts`-ben megoldott; itt

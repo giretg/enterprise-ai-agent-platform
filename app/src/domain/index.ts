@@ -60,6 +60,7 @@ import { SkillService } from '@/domain/skill/skill-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { DebugLogExportService } from '@/domain/debug-log/debug-log-export-service'
 import { DebugTraceService } from '@/domain/debug-log/debug-trace-service'
+import { RunIndexService } from '@/domain/run-analysis/run-index-service'
 import { ChannelBotService } from '@/domain/channel/channel-bot-service'
 import { ChannelLinkingService } from '@/domain/channel/channel-linking-service'
 import { ChannelTurnService } from '@/domain/channel/channel-turn-service'
@@ -267,6 +268,7 @@ const debugTraceService = new DebugTraceService(
   repositories.audit,
   new ConversationPrivacyResolveAccess(repositories.conversations, repositories.tickets),
 )
+const runIndexService = new RunIndexService(prisma, repositories.audit)
 // A `channelBotService` a kimenő átvitel UTÁN épül (a beüzemelő `setWebhook`/`getMe` hívások
 // ugyanazon az egress-őrzött kapun mennek ki) — l. lejjebb, a `telegramOutboundTransport` alatt.
 // A chat-futásidőt a linking-szolgáltatás egy sink-en át éri el (a bekötött üzenet forduló-sorba
@@ -818,6 +820,7 @@ const surrogateEngine = createPlatformSurrogateEngine(
 )
 toolBrokerService.setStructuredPrivacyEngine(surrogateEngine)
 toolBrokerService.setDebugTraceService(debugTraceService)
+toolBrokerService.setRunIndexService(runIndexService)
 toolBrokerService.setPrivacyModeResolver(({ tenantId, agentId }) =>
   platformSettingsService.resolvePrivacyGatewayMode({ tenantId, agentId }),
 )

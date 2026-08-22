@@ -320,6 +320,60 @@ export type GetDebugTraceResult = {
   projection: Record<string, unknown>
 }
 
+/** RA-03 — futás-fejlécek szkóp-feloldással (Run Analyst `run_index`). */
+export type RunIndexArgs = {
+  agentId?: string
+  agentQuery?: string
+  conversationId?: string
+  ticketId?: string
+  processInstanceId?: string
+  playbookVersionId?: string
+  since?: string
+  until?: string
+  limit?: number
+  agentTurnIds?: string[]
+  ticketIds?: string[]
+  processInstanceIds?: string[]
+}
+
+export type RunIndexHeader = {
+  runId: string
+  grain: 'turn' | 'ticket' | 'process'
+  agentId: string
+  agentName: string
+  startedAt: string
+  finishedAt: string | null
+  conversationId: string | null
+  ticketId: string | null
+  processInstanceId: string | null
+  turnCount: number
+  toolCallCount: number
+  deniedCount: number
+  promptTokens: number
+  completionTokens: number
+  cachedPromptTokens: number
+  costEstimate: number
+  status: string
+  stopReason: string | null
+}
+
+export type RunIndexResult = {
+  runs: RunIndexHeader[]
+  returnedCount: number
+  limit: number
+  truncated: boolean
+  scope: {
+    agentId: string | null
+    agentQuery: string | null
+    conversationId: string | null
+    ticketId: string | null
+    processInstanceId: string | null
+    playbookVersionId: string | null
+    since: string | null
+    until: string | null
+  }
+}
+
 /**
  * Magyar e-hiteles tulajdoni lap strukturált kinyerése egy feltöltött PDF-ből.
  * Chat csatolmány: `documentId` (UUID). Board/ticket workspace: `path` (fájlnév).
@@ -824,6 +878,7 @@ export type ToolBrokerInvokeInput =
     })
   | (ToolInvokeBase & { tool: 'reconcile_records'; args: ReconcileRecordsArgs })
   | (ToolInvokeBase & { tool: 'get_debug_trace'; args: GetDebugTraceArgs })
+  | (ToolInvokeBase & { tool: 'run_index'; args: RunIndexArgs })
 
 /**
  * Bizalmi osztály MINDEN eszköz-eredményen (issue #97). Determinisztikus, a
@@ -946,6 +1001,7 @@ export type ToolBrokerInvokeResult =
         | TulajdoniLapEgyeztetesResult
         | ReconcileRecordsResult
         | GetDebugTraceResult
+        | RunIndexResult
       resultMeta: Record<string, unknown>
       latencyMs: number
     }

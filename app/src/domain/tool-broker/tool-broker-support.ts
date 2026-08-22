@@ -829,6 +829,24 @@ export function argsMeta(
     }
   }
 
+  if (input.tool === 'run_index') {
+    return {
+      ...base,
+      agentId: input.args.agentId ?? null,
+      agentQuery: input.args.agentQuery ?? null,
+      conversationId: input.args.conversationId ?? null,
+      ticketId: input.args.ticketId ?? null,
+      processInstanceId: input.args.processInstanceId ?? null,
+      playbookVersionId: input.args.playbookVersionId ?? null,
+      since: input.args.since ?? null,
+      until: input.args.until ?? null,
+      limit: input.args.limit ?? null,
+      agentTurnIdCount: input.args.agentTurnIds?.length ?? 0,
+      ticketIdCount: input.args.ticketIds?.length ?? 0,
+      processInstanceIdCount: input.args.processInstanceIds?.length ?? 0,
+    }
+  }
+
   return {
     ...base,
     ticketId: input.args.ticketId,

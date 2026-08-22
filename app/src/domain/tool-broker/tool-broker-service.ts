@@ -120,6 +120,7 @@ import { effectiveConnectorRuntimeConfig } from '@/domain/connector-template/ost
 import { connectorSupportsEntityResolution } from '@/domain/privacy/connector-privacy'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
 import type { DebugTraceService } from '@/domain/debug-log/debug-trace-service'
+import type { RunIndexService } from '@/domain/run-analysis/run-index-service'
 import type { ResolvedPrivacyCategoryPolicy } from '@/domain/privacy/privacy-category-policy'
 // issue #97 — bizalmi regiszter (tool-nevenkénti TrustClass leképezés).
 import { isSideEffectingTool, resolveTrustClass } from './tool-trust-registry'
@@ -159,6 +160,7 @@ export class ToolBrokerService {
   playbookTransitioner: PlaybookTicketTransitioner | null = null
   private structuredPrivacyEngine: SurrogateEngine | null = null
   private debugTraceService: DebugTraceService | null = null
+  private runIndexService: RunIndexService | null = null
   private privacyModeResolver: PrivacyModeResolver | null = null
   private sensitivityModeResolver: SensitivityModeResolver | null = null
   private privacyCategoryActionResolver: PrivacyCategoryActionResolver | null = null
@@ -247,6 +249,8 @@ export class ToolBrokerService {
         documentRead(this, input, actingUserId, actingTenantId ?? null),
       getDebugTrace: (input, actingTenantId, actingUserId) =>
         this.fetchDebugTrace(input, actingTenantId, actingUserId),
+      runIndex: (input, actingTenantId, actingUserId) =>
+        this.fetchRunIndex(input, actingTenantId, actingUserId),
       tulajdoniLapParse: (input, actingUserId, extras) =>
         tulajdoniLapParse(this, input, actingUserId, extras),
       tulajdoniLapEgyeztetes: (input, actingUserId, extras) =>
@@ -275,6 +279,10 @@ export class ToolBrokerService {
 
   setDebugTraceService(service: DebugTraceService | null): void {
     this.debugTraceService = service
+  }
+
+  setRunIndexService(service: RunIndexService | null): void {
+    this.runIndexService = service
   }
 
   /**
@@ -650,6 +658,24 @@ export class ToolBrokerService {
       engine: this.structuredPrivacyEngine,
       mode,
       policy,
+    })
+  }
+
+  /** RA-03 — futás-fejlécek a Futás-elemző `run_index` tooljához. */
+  async fetchRunIndex(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'run_index' }>,
+    actingTenantId: string | null,
+    actingUserId: string | null,
+  ): Promise<import('./tool-broker-types').RunIndexResult> {
+    if (!this.runIndexService || !actingTenantId) {
+      throw new Error('run_not_found')
+    }
+    return this.runIndexService.query({
+      tenantId: actingTenantId,
+      requesterAgentId: input.agentId,
+      requesterAgentVersion: input.agentVersion,
+      actingUserId,
+      args: input.args,
     })
   }
 
