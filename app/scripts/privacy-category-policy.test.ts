@@ -36,15 +36,15 @@ async function test(name: string, fn: () => void | Promise<void>) {
 const TENANT = 'aaaaaaaa-0000-4000-8000-000000000001'
 const AGENT = 'bbbbbbbb-0000-4000-8000-000000000002'
 
-const SUPERADMIN: PrivacyCategoryPolicyActor = {
+// #320 D9 óta a mentés-szintű kapu csak a gépelt megerősítés; a superadmin-jog
+// megszűnt, ezért a teszt-aktorok sem hordoznak `isSuperadmin`-t.
+const WITH_CONFIRMATION: PrivacyCategoryPolicyActor = {
   actorId: 'super-1',
-  isSuperadmin: true,
   confirmation: PAN_IBAN_ALLOW_CONFIRMATION,
 }
 
 const TENANT_ADMIN: PrivacyCategoryPolicyActor = {
   actorId: 'admin-1',
-  isSuperadmin: false,
 }
 
 function inMemorySettings() {
@@ -134,7 +134,7 @@ async function main() {
         err instanceof PrivacyCategoryPolicyError && err.code === 'secret_key_not_block',
     )
     assert.throws(
-      () => assertPrivacyCategoryPolicyPatch({ categories: { secret_key: 'allow' } }, SUPERADMIN),
+      () => assertPrivacyCategoryPolicyPatch({ categories: { secret_key: 'allow' } }, WITH_CONFIRMATION),
       (err: unknown) =>
         err instanceof PrivacyCategoryPolicyError && err.code === 'secret_key_not_block',
     )
@@ -152,7 +152,7 @@ async function main() {
       () =>
         assertPrivacyCategoryPolicyPatch(
           { categories: { pan: 'allow' } },
-          { isSuperadmin: true },
+          {},
         ),
       (err: unknown) =>
         err instanceof PrivacyCategoryPolicyError && err.code === 'allow_confirmation_required',
@@ -162,7 +162,7 @@ async function main() {
   await test('pan/iban allow ALLOW_PAN_IBAN megerősítéssel átmegy', () => {
     assertPrivacyCategoryPolicyPatch(
       { categories: { pan: 'allow', iban: 'allow', email: 'tokenize' } },
-      SUPERADMIN,
+      WITH_CONFIRMATION,
     )
   })
 
@@ -265,6 +265,46 @@ async function main() {
       policyEvents.some((e) => (e.metadata as { patternSetVersion?: number }).patternSetVersion === 2),
       true,
     )
+  })
+
+  await test('audit: a policy-esemény rögzíti a megválasztott akciót és a nyers-egress bekapcsolását', async () => {
+    const { svc, events } = inMemorySettings()
+
+    // (1) Szigorítás: pan block marad → nincs nyers-egress jelzés.
+    await svc.setTenantPrivacyCategoryPolicy(
+      TENANT,
+      { categories: { phone: 'local_only' } },
+      TENANT_ADMIN,
+    )
+    // (2) Nyers PAN kiengedése külső modellre (tenant-admin + megerősítés, #320 D9).
+    await svc.setTenantPrivacyCategoryPolicy(
+      TENANT,
+      { categories: { pan: 'allow' } },
+      { ...TENANT_ADMIN, confirmation: PAN_IBAN_ALLOW_CONFIRMATION },
+    )
+
+    const setEvents = events.filter((e) => e.action === 'privacy.gateway.category_policy.set')
+    assert.equal(setEvents.length, 2)
+
+    const tighten = setEvents[0]!
+    assert.deepEqual((tighten.metadata as { actions: unknown }).actions, { phone: 'local_only' })
+    assert.deepEqual((tighten.metadata as { rawEgressEnabled: unknown }).rawEgressEnabled, [])
+    assert.equal(tighten.policyDecision, 'category_policy')
+
+    const rawEgress = setEvents[1]!
+    assert.deepEqual((rawEgress.metadata as { actions: unknown }).actions, { pan: 'allow' })
+    assert.deepEqual((rawEgress.metadata as { rawEgressEnabled: unknown }).rawEgressEnabled, ['pan'])
+    // Külön policyDecision → SIEM/megfelelőség szűrni tud a nyers kiengedésre.
+    assert.equal(rawEgress.policyDecision, 'category_policy_raw_egress')
+    assert.equal(rawEgress.tenantId, TENANT)
+  })
+
+  await test('audit: a null overlay (öröklésre visszaállítás) `inherit`-ként naplózódik', async () => {
+    const { svc, events } = inMemorySettings()
+    await svc.setAgentPrivacyCategoryPolicy(AGENT, { categories: { email: null } }, TENANT_ADMIN)
+    const setEvent = events.find((e) => e.action === 'privacy.gateway.category_policy.set')!
+    assert.deepEqual((setEvent.metadata as { actions: unknown }).actions, { email: 'inherit' })
+    assert.deepEqual((setEvent.metadata as { rawEgressEnabled: unknown }).rawEgressEnabled, [])
   })
 
   await test('tenant-egyedi minta overlay', async () => {
