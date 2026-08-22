@@ -104,8 +104,15 @@ export type EfficiencySuggestion = {
 export type EfficiencySavingsBand = {
   /** Alsó becslés (a pazarolt token fele). */
   low: number
-  /** Felső becslés (a pazarolt token teljes megszűnése), az ablak költségére vágva. */
+  /** Felső becslés (a pazarolt token teljes megszűnése), az ablak token-összegére vágva. */
   high: number
+  /**
+   * Pénzérték alsó/felső: a meglévő `costEstimate` arányos része
+   * (`high/total × costEstimate`), nem újraszámolt tarifa. A felső soha nem
+   * nagyobb az ablakbeli `costEstimate` összegnél.
+   */
+  costLow: number
+  costHigh: number
 }
 
 export type EfficiencyPattern = {
@@ -116,15 +123,28 @@ export type EfficiencyPattern = {
   suggestion: EfficiencySuggestion
 }
 
+/**
+ * „Hova megy a token" — kizárólag `ModelCall` sorokból.
+ * Szeletek (összegük = prompt+completion): `entryContext` + `repeatedContext` + `completion`.
+ * Annotációk (nem szeletek): `cached`, `rereadTokensAnnotation`.
+ */
 export type EfficiencyTokenBreakdown = {
+  /** Futásonként az első hívás `promptTokens`-e (összesítve). */
   entryContext: number
+  /** A többi hívás prompt-tömege (= sum(prompt) − belépő). */
   repeatedContext: number
+  /** `completionTokens` összeg. */
   completion: number
   /** Annotáció: a prompt-tokenekből cache-ből kiszolgált rész, NEM szelet. */
   cached: number
-  /** Annotáció: újraolvasásra becsült token, NEM szelet. */
+  /**
+   * Annotáció: újraolvasásra becsült token (~4 kar/token), NEM szelet —
+   * az „ismételt kontextus" alatti „ebből" megjegyzés forrása.
+   */
   rereadTokensAnnotation: number
+  /** Szeletek összege (= ModelCall prompt+completion token-összeg). */
   total: number
+  /** Ablakbeli `costEstimate` összeg — a pénzérték forrása. */
   costEstimate: number
 }
 
@@ -213,6 +233,35 @@ function modelCallTime(call: EfficiencyRunModelCall): number {
   if (call.createdAt instanceof Date) return call.createdAt.getTime()
   const parsed = new Date(call.createdAt).getTime()
   return Number.isFinite(parsed) ? parsed : Number(call.createdAt) || 0
+}
+
+/**
+ * EFF-08: token-bontás egy futás `ModelCall` soraiból.
+ * Belépő = első hívás promptja; ismételt = a többi hívás prompt-tömege;
+ * válasz = completion; cache = annotáció (nem szelet). Az újraolvasás-becslés
+ * külön kerül a hívótól — itt csak a ModelCall-szeletek élnek.
+ */
+export function buildModelCallTokenBreakdown(
+  modelCallsInput: EfficiencyRunModelCall[],
+): Omit<EfficiencyTokenBreakdown, 'rereadTokensAnnotation'> {
+  const modelCalls = [...modelCallsInput].sort((a, b) => modelCallTime(a) - modelCallTime(b))
+  const promptTokens = modelCalls.reduce((sum, call) => sum + Math.max(call.promptTokens, 0), 0)
+  const completion = modelCalls.reduce((sum, call) => sum + Math.max(call.completionTokens, 0), 0)
+  const entryContext = modelCalls.length > 0 ? Math.max(modelCalls[0]!.promptTokens, 0) : 0
+  const repeatedContext = Math.max(promptTokens - entryContext, 0)
+  const cached = modelCalls.reduce(
+    (sum, call) => sum + (call.cachedPromptTokens == null ? 0 : Math.max(call.cachedPromptTokens, 0)),
+    0,
+  )
+  const costEstimate = modelCalls.reduce((sum, call) => sum + Math.max(call.costEstimate, 0), 0)
+  return {
+    entryContext,
+    repeatedContext,
+    completion,
+    cached,
+    total: entryContext + repeatedContext + completion,
+    costEstimate,
+  }
 }
 
 function resultChars(tool: EfficiencyRunToolCall): number {
@@ -330,19 +379,12 @@ function detectRun(
   thresholds: EfficiencyAdvisorThresholds,
 ): { findings: RunFinding[]; breakdown: EfficiencyTokenBreakdown; cacheRows: 'none' | 'all_null' | 'has_values' } {
   const modelCalls = [...run.modelCalls].sort((a, b) => modelCallTime(a) - modelCallTime(b))
+  const modelBreakdown = buildModelCallTokenBreakdown(modelCalls)
+  const promptTokens = modelBreakdown.entryContext + modelBreakdown.repeatedContext
+  const { entryContext, repeatedContext, completion, cached, costEstimate } = modelBreakdown
   const promptSeries = modelCalls.map((call) => Math.max(call.promptTokens, 0))
-  const promptTokens = promptSeries.reduce((sum, tokens) => sum + tokens, 0)
-  const completion = modelCalls.reduce((sum, call) => sum + Math.max(call.completionTokens, 0), 0)
-  const entryContext = promptSeries.length > 0 ? promptSeries[0]! : 0
-  // Token-bontás (EFF-08): a többi hívás teljes prompt-tömege = sum − első.
-  const repeatedContext = Math.max(promptTokens - entryContext, 0)
   // Detektor-mérőszám (EFF-05): a baseline fölötti növekedés = sum − n×első.
   const contextGrowth = repeatedContextGrowth(promptTokens, modelCalls.length, entryContext)
-  const cached = modelCalls.reduce(
-    (sum, call) => sum + (call.cachedPromptTokens == null ? 0 : Math.max(call.cachedPromptTokens, 0)),
-    0,
-  )
-  const costEstimate = modelCalls.reduce((sum, call) => sum + Math.max(call.costEstimate, 0), 0)
 
   const seenSources = new Map<string, number>()
   let readCalls = 0
@@ -356,6 +398,7 @@ function detectRun(
       rereadChars += Math.max(resultChars(tool), 0)
     }
   }
+  // Annotáció az ismételt kontextus alá — nem kerül a szeletek közé.
   const rereadTokensAnnotation = Math.round(rereadChars / CHARS_PER_TOKEN)
 
   const findings: RunFinding[] = []
@@ -475,17 +518,30 @@ function detectRun(
       completion,
       cached,
       rereadTokensAnnotation,
-      total: entryContext + repeatedContext + completion,
+      total: modelBreakdown.total,
       costEstimate,
     },
     cacheRows: cacheStatus,
   }
 }
 
-function savingsBand(wastedTokens: number, capTokens: number): EfficiencySavingsBand | null {
+/**
+ * Megtakarítás-sáv: felső = a mérten pazarolt token teljes megszűnése (ablak
+ * token-összegére vágva), alsó = ennek a fele. Pénzérték = ugyanennek az
+ * aránynak a `costEstimate` része — soha nem nagyobb az ablak költségénél.
+ */
+export function savingsBand(
+  wastedTokens: number,
+  capTokens: number,
+  capCost: number,
+): EfficiencySavingsBand | null {
   if (wastedTokens <= 0 || capTokens <= 0) return null
   const high = Math.min(wastedTokens, capTokens)
-  return { low: Math.floor(high / 2), high }
+  const low = Math.floor(high / 2)
+  const rawCostHigh = capCost > 0 ? (high / capTokens) * capCost : 0
+  const costHigh = Math.min(rawCostHigh, Math.max(capCost, 0))
+  const costLow = costHigh / 2
+  return { low, high, costLow, costHigh }
 }
 
 function suggestionFor(kind: EfficiencyPatternKind): EfficiencySuggestion {
@@ -641,15 +697,20 @@ export function evaluateEfficiencyAdvisor(
       kind,
       explanationKey: kind,
       metric: mergeMetrics(hits.map((hit) => hit.metric)),
-      savingsTokens: savingsBand(wasted, breakdown.total),
+      savingsTokens: savingsBand(wasted, breakdown.total, breakdown.costEstimate),
       suggestion: suggestionFor(kind),
     })
   }
 
+  // Determinisztikus rendezés: becsült megtakarítás (token high) szerint,
+  // döntetlennél a stabil PATTERN_ORDER — azonos bemenet → azonos kártya.
   patterns.sort((a, b) => {
     const aHigh = a.savingsTokens?.high ?? 0
     const bHigh = b.savingsTokens?.high ?? 0
     if (bHigh !== aHigh) return bHigh - aHigh
+    const aCost = a.savingsTokens?.costHigh ?? 0
+    const bCost = b.savingsTokens?.costHigh ?? 0
+    if (bCost !== aCost) return bCost - aCost
     return PATTERN_ORDER.indexOf(a.kind) - PATTERN_ORDER.indexOf(b.kind)
   })
 

@@ -25,11 +25,13 @@ import {
 } from '../src/domain/agent/context-compactor'
 import {
   EFFICIENCY_ADVISOR_THRESHOLDS,
+  buildModelCallTokenBreakdown,
   describeEfficiencyCacheDataStatus,
   describeEfficiencyPattern,
   describeEfficiencyStatus,
   evaluateEfficiencyAdvisor,
   resolveEfficiencyAdvisorThresholds,
+  savingsBand,
   type EfficiencyRun,
   type EfficiencyRunModelCall,
   type EfficiencyRunToolCall,
@@ -432,6 +434,68 @@ async function main() {
     assert.ok(card.breakdown.cached >= 0)
   })
 
+  await check('EFF-08: buildModelCallTokenBreakdown csak ModelCall-ból, cache nem szelet', () => {
+    const calls = [
+      modelCall({ createdAt: 1, promptTokens: 1_000, completionTokens: 100, cachedPromptTokens: 400, costEstimate: 0.1 }),
+      modelCall({ createdAt: 2, promptTokens: 3_000, completionTokens: 200, cachedPromptTokens: 500, costEstimate: 0.2 }),
+      modelCall({ createdAt: 3, promptTokens: 5_000, completionTokens: 50, cachedPromptTokens: null, costEstimate: 0.05 }),
+    ]
+    const b = buildModelCallTokenBreakdown(calls)
+    assert.equal(b.entryContext, 1_000)
+    assert.equal(b.repeatedContext, 8_000)
+    assert.equal(b.completion, 350)
+    assert.equal(b.cached, 900)
+    assert.equal(b.total, 1_000 + 8_000 + 350)
+    assert.ok(Math.abs(b.costEstimate - 0.35) < 1e-9)
+    // A cache a prompt része, nem adódik a totalhoz.
+    assert.notEqual(b.total, b.total + b.cached)
+  })
+
+  await check('EFF-08: újraolvasás-becslés annotáció, nem növeli a szeletek összegét', () => {
+    const heavy = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: [
+        modelCall({ createdAt: 1, promptTokens: 2_000, completionTokens: 100, costEstimate: 1 }),
+        modelCall({ createdAt: 2, promptTokens: 6_000, completionTokens: 100, costEstimate: 2 }),
+      ],
+      toolCalls: Array.from({ length: 8 }, () => ({
+        toolName: 'tool_result_read',
+        argsMeta: { path: '.tool-results/a.json', returned_chars: 40_000 },
+        resultMeta: { redundant: true, result_chars: 40_000 },
+      })),
+    })
+    const card = evaluateEfficiencyAdvisor([heavy('a'), heavy('b'), heavy('c')])
+    const modelTotal = 3 * (2_000 + 6_000 + 100 + 100)
+    assert.equal(card.breakdown.total, modelTotal)
+    assert.equal(
+      card.breakdown.entryContext + card.breakdown.repeatedContext + card.breakdown.completion,
+      card.breakdown.total,
+    )
+    assert.ok(card.breakdown.rereadTokensAnnotation > 0)
+    // Ha a reread szelet lenne, a total nagyobb lenne a ModelCall összegnél.
+    assert.ok(card.breakdown.rereadTokensAnnotation + card.breakdown.total > card.breakdown.total)
+  })
+
+  await check('EFF-08: megtakarítás-sáv fele–teljes, költség a costEstimate-ből, korlátolt', () => {
+    const band = savingsBand(1_000, 800, 4)
+    assert.ok(band)
+    assert.equal(band!.high, 800)
+    assert.equal(band!.low, 400)
+    assert.equal(band!.costHigh, 4)
+    assert.equal(band!.costLow, 2)
+
+    const proportional = savingsBand(100, 1_000, 10)
+    assert.ok(proportional)
+    assert.equal(proportional!.high, 100)
+    assert.equal(proportional!.low, 50)
+    assert.ok(Math.abs(proportional!.costHigh - 1) < 1e-9)
+    assert.ok(Math.abs(proportional!.costLow - 0.5) < 1e-9)
+
+    assert.equal(savingsBand(0, 100, 1), null)
+    assert.equal(savingsBand(50, 0, 1), null)
+  })
+
   await check('fékbe futott (blocked) visszaolvasás beleszámít az arányba', () => {
     const blockedRun = (id: string): EfficiencyRun => ({
       id,
@@ -571,17 +635,36 @@ async function main() {
     const highs = first.patterns.map((p) => p.savingsTokens?.high ?? 0)
     const sorted = [...highs].sort((a, b) => b - a)
     assert.deepEqual(highs, sorted)
+    // Második hívás más sorrendű bemenettel is ugyanazt adja (futás-id nem befolyásol).
+    const shuffled = evaluateEfficiencyAdvisor([incidentRun('b'), incidentRun('c'), incidentRun('a')])
+    assert.deepEqual(
+      shuffled.patterns.map((p) => p.kind),
+      first.patterns.map((p) => p.kind),
+    )
+    assert.deepEqual(
+      shuffled.patterns.map((p) => p.savingsTokens),
+      first.patterns.map((p) => p.savingsTokens),
+    )
     for (const pattern of first.patterns) {
       assert.ok(describeEfficiencyPattern(pattern.kind, pattern.metric).length > 40)
     }
   })
 
-  await check('sáv-korlát: a felső vég soha nem haladja meg az ablak token-összegét', () => {
+  await check('sáv-korlát: a felső vég soha nem haladja meg az ablak token- és költség-összegét', () => {
     const card = evaluateEfficiencyAdvisor([incidentRun('a'), incidentRun('b'), incidentRun('c')])
+    assert.ok(card.breakdown.costEstimate > 0)
     for (const pattern of card.patterns) {
       if (!pattern.savingsTokens) continue
       assert.ok(pattern.savingsTokens.high <= card.breakdown.total)
       assert.ok(pattern.savingsTokens.low <= pattern.savingsTokens.high)
+      assert.ok(pattern.savingsTokens.costHigh <= card.breakdown.costEstimate + 1e-9)
+      assert.ok(pattern.savingsTokens.costLow <= pattern.savingsTokens.costHigh + 1e-9)
+      // Pénzérték arányos a token-sávval a costEstimate-ből (nem új tarifa).
+      const expectedCost =
+        card.breakdown.total > 0
+          ? (pattern.savingsTokens.high / card.breakdown.total) * card.breakdown.costEstimate
+          : 0
+      assert.ok(Math.abs(pattern.savingsTokens.costHigh - expectedCost) < 1e-9)
     }
   })
 
