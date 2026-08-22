@@ -1,5 +1,5 @@
 /**
- * issue #237 / EFF-04–05 — a hatékonysági tanácsadó detektor tesztje.
+ * issue #237 / EFF-04–06 — a hatékonysági tanácsadó detektor tesztje.
  * Futtatás: npm run test:efficiency-advisor
  *
  * A mérce a MÉRT eset (2026-07-29): 149 eszközhívásból 132 újraolvasás, 40 kör,
@@ -8,6 +8,10 @@
  * 2 modellhívásos futás viszont NEM. A fékbe futott (blocked) sorok és a
  * toolCallSourceKey-ismétlések is beleszámítanak az újraolvasási arányba.
  * A hízás mérőszáma arány-alapú (`sum − n×első` / összeg), nem az abszolút hívásszámtól függ.
+ *
+ * EFF-06 DoD: ismétlődő túlméretezett eszköz-kimenet mintát ad (eszköznévvel),
+ * egyszeri nagy kimenet nem; a detektor nem javasol kapcsolót, csak a hívás
+ * szűkítését nevezi meg (`tool_narrowing`).
  */
 import assert from 'node:assert/strict'
 import {
@@ -460,7 +464,7 @@ async function main() {
     const sorted = [...highs].sort((a, b) => b - a)
     assert.deepEqual(highs, sorted)
     for (const pattern of first.patterns) {
-      assert.ok(describeEfficiencyPattern(pattern.kind).length > 40)
+      assert.ok(describeEfficiencyPattern(pattern.kind, pattern.metric).length > 40)
     }
   })
 
@@ -474,6 +478,7 @@ async function main() {
   })
 
   await check('túlméretezett eszköz-kimenet ismétlődése eszköznévvel jelenik meg', () => {
+    // EFF-06: ugyanaz az eszköz ≥3× a 12k limit fölött → minta + toolName.
     const fat = (id: string): EfficiencyRun => ({
       id,
       kind: 'ticket',
@@ -488,8 +493,98 @@ async function main() {
     const oversized = card.patterns.find((p) => p.kind === 'oversized_tool_result')
     assert.ok(oversized)
     assert.equal(oversized?.metric.toolName, 'http_api_get')
+    assert.equal(oversized?.metric.repeats, 4 * 3)
+    assert.equal(oversized?.metric.sourceKey, 'http_api_get:path:/rows')
     assert.equal(oversized?.suggestion.applicable, false)
     assert.equal(oversized?.suggestion.link, 'tool_narrowing')
+    assert.equal(oversized?.suggestion.modelConfigPatch, undefined)
+    const text = describeEfficiencyPattern('oversized_tool_result', oversized?.metric)
+    assert.ok(text.includes('http_api_get'), `a magyarázatnak tartalmaznia kell az eszköznevet: ${text}`)
+    assert.ok(text.includes('nincs kapcsoló') || text.includes('tool_result_extract'), text)
+  })
+
+  await check('egyszeri nagy eszköz-kimenet NEM vált ki mintát', () => {
+    // DoD: egyetlen (vagy a küszöb alatti) túlméretezett hívás / futás → nincs minta.
+    const once = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: [modelCall({ createdAt: 1, promptTokens: 1_000, cachedPromptTokens: 400 })],
+      toolCalls: [
+        {
+          toolName: 'http_api_get',
+          argsMeta: { path: '/huge' },
+          resultMeta: { result_chars: 250_000 },
+        },
+        {
+          toolName: 'file_read',
+          argsMeta: { path: 'kis.json' },
+          resultMeta: { result_chars: 800 },
+        },
+      ],
+    })
+    const card = evaluateEfficiencyAdvisor([once('a'), once('b'), once('c')])
+    assert.equal(
+      card.patterns.some((p) => p.kind === 'oversized_tool_result'),
+      false,
+      'egyszeri nagy kimenetből nem szabad oversized_tool_result mintát adni',
+    )
+  })
+
+  await check('két túlméretezett hívás (küszöb alatt) sem mintázat', () => {
+    // oversizedRepeatCount alapértelmezés = 3; 2 ismétlés még nem elég.
+    const twice = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'ticket',
+      modelCalls: [modelCall({ createdAt: 1, promptTokens: 900, cachedPromptTokens: 300 })],
+      toolCalls: Array.from({ length: 2 }, () => ({
+        toolName: 'http_api_get',
+        argsMeta: { path: '/rows' },
+        resultMeta: { result_chars: 80_000 },
+      })),
+    })
+    const card = evaluateEfficiencyAdvisor([twice('a'), twice('b'), twice('c')])
+    assert.equal(card.patterns.some((p) => p.kind === 'oversized_tool_result'), false)
+  })
+
+  await check('ugyanaz az eszköz különböző forrás-kulcsokkal is összeadódik', () => {
+    // Spec: „ugyanaz az eszköz (opcionálisan ugyanaz a forrás-kulcs)" — a tool-szintű
+    // ismétlés is elég; a forrás-kulcs csak akkor kerül a metricbe, ha önmagában eléri a küszöböt.
+    const mixedSources = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'ticket',
+      modelCalls: [modelCall({ createdAt: 1, promptTokens: 700, cachedPromptTokens: 200 })],
+      toolCalls: [
+        { toolName: 'http_api_get', argsMeta: { path: '/a' }, resultMeta: { result_chars: 40_000 } },
+        { toolName: 'http_api_get', argsMeta: { path: '/b' }, resultMeta: { result_chars: 40_000 } },
+        { toolName: 'http_api_get', argsMeta: { path: '/c' }, resultMeta: { result_chars: 40_000 } },
+      ],
+    })
+    const card = evaluateEfficiencyAdvisor([
+      mixedSources('a'),
+      mixedSources('b'),
+      mixedSources('c'),
+    ])
+    const oversized = card.patterns.find((p) => p.kind === 'oversized_tool_result')
+    assert.ok(oversized, 'tool-szintű ismétlésnek mintát kell adnia')
+    assert.equal(oversized?.metric.toolName, 'http_api_get')
+    assert.equal(oversized?.metric.repeats, 3 * 3)
+    assert.equal(oversized?.metric.sourceKey, undefined)
+    assert.equal(oversized?.suggestion.applicable, false)
+  })
+
+  await check('pontosan a limit (12 000) NEM számít túlméretezettnek — csak a fölötti', () => {
+    const atLimit = (id: string): EfficiencyRun => ({
+      id,
+      kind: 'turn',
+      modelCalls: [modelCall({ createdAt: 1, promptTokens: 500, cachedPromptTokens: 100 })],
+      toolCalls: Array.from({ length: 4 }, () => ({
+        toolName: 'http_api_get',
+        argsMeta: { path: '/edge' },
+        resultMeta: { result_chars: 12_000 },
+      })),
+    })
+    const card = evaluateEfficiencyAdvisor([atLimit('a'), atLimit('b'), atLimit('c')])
+    assert.equal(card.patterns.some((p) => p.kind === 'oversized_tool_result'), false)
   })
 
   await check('modelConfig overlay szigoríthat, kikapcsolni nem tud', () => {
