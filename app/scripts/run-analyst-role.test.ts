@@ -7,11 +7,14 @@ import assert from 'node:assert/strict'
 import type { Agent } from '@prisma/client'
 import {
   RUN_ANALYST_FORBIDDEN_TOOLS,
+  RUN_ANALYST_LOOP_GUARD_OVERRIDES,
   RUN_ANALYST_PRIVACY_CATEGORY_POLICY,
   RUN_ANALYST_ROLE_CAPABILITIES,
   RUN_ANALYST_ROLE_TEMPLATE,
+  mergeRunAnalystLoopGuardModelConfig,
   runAnalystCapabilitiesAreDisjointFromForbidden,
 } from '../src/domain/agents/run-analyst-role'
+import { resolveLoopGuardLimits } from '../src/domain/agent/loop-stop-decision'
 import { DEFAULT_ROLE_PERMISSIONS } from '../src/repositories/postgres/iam-repository'
 import {
   allowsExternalRaw,
@@ -130,6 +133,16 @@ async function main() {
     const entry = DEFAULT_ROLE_PERMISSIONS.find((p) => p.permissionKey === 'analysis.run')
     assert.ok(entry)
     assert.equal(entry!.minRole, 'admin')
+  })
+
+  await test('loop-guard modelConfig: ≥150 tool hívás task módban (#351)', () => {
+    const limits = resolveLoopGuardLimits(
+      mergeRunAnalystLoopGuardModelConfig(RUN_ANALYST_ROLE_TEMPLATE.modelConfig),
+      40,
+      'task',
+    )
+    assert.ok(limits.maxToolCalls >= 150)
+    assert.equal(limits.maxToolCalls, RUN_ANALYST_LOOP_GUARD_OVERRIDES.maxToolCalls)
   })
 
   if (failures > 0) {

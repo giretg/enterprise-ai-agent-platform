@@ -169,6 +169,8 @@ export default async function AgentDetailPage({
     conversation?: string
     openChat?: string
     granted?: string
+    /** RA-08: Futás-elemző — szerkeszthető első üzenet a chat composerben. */
+    prefill?: string
     /** EFF-12: hatékonysági link → szekció (pl. motor, kapcsolatok). */
     section?: string
   }>
@@ -241,6 +243,7 @@ export default async function AgentDetailPage({
   const openChat = query.openChat === '1' || Boolean(query.conversation)
   const initialConversationId = query.conversation ?? null
   const resumeAfterGrant = query.granted === '1'
+  const initialPrefill = query.prefill?.trim() ? query.prefill : null
 
   const assignedConnectorIds = new Set(
     governance?.connectors.map((item) => item.connector.id) ?? [],
@@ -711,6 +714,7 @@ export default async function AgentDetailPage({
                 initialConversationId={initialConversationId}
                 autoOpen={openChat}
                 resumeAfterGrant={resumeAfterGrant}
+                initialPrefill={initialPrefill}
               />
             )}
             <AgentMiniAppsLink agentId={agent.id} />

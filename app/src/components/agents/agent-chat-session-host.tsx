@@ -55,6 +55,7 @@ export function AgentChatSessionHost() {
           canDistillSkill={session.canDistillSkill}
           initialConversationId={session.initialConversationId}
           resumeAfterGrant={session.resumeAfterGrant}
+          initialPrefill={session.initialPrefill}
           restoreSignal={session.restoreSignal}
           tileTarget={tileTarget}
         />

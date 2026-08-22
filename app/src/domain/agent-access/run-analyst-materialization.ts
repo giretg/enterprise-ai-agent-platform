@@ -13,7 +13,9 @@ import {
   RUN_ANALYST_PRIVACY_CATEGORY_POLICY,
   RUN_ANALYST_ROLE_CAPABILITIES,
   RUN_ANALYST_ROLE_TEMPLATE,
+  mergeRunAnalystLoopGuardModelConfig,
 } from '@/domain/agents/run-analyst-role'
+import { ensureRunAnalystAnalysisSkill } from '@/domain/agent-access/run-analyst-skill-provisioning'
 import {
   applyCategoryMapPatch,
   layerHasOverlay,
@@ -89,6 +91,31 @@ export async function materializeRunAnalystAdminGrants(params: {
   return { grantsCreated: rows.length }
 }
 
+async function ensureLoopGuardModelConfig(agentId: string): Promise<void> {
+  const row = await prisma.agent.findUnique({
+    where: { id: agentId },
+    select: { modelConfig: true },
+  })
+  if (!row) return
+  const next = mergeRunAnalystLoopGuardModelConfig(row.modelConfig)
+  const prev = row.modelConfig
+  const unchanged =
+    prev &&
+    typeof prev === 'object' &&
+    !Array.isArray(prev) &&
+    (prev as Record<string, unknown>).maxToolCalls === next.maxToolCalls &&
+    (prev as Record<string, unknown>).maxToolWallClockMs === next.maxToolWallClockMs
+  if (unchanged) return
+  await prisma.agent.update({
+    where: { id: agentId },
+    data: { modelConfig: next },
+  })
+}
+
+async function ensureRunAnalystSkill(agentId: string, actorId: string): Promise<void> {
+  await ensureRunAnalystAnalysisSkill({ agentId, actorId })
+}
+
 async function ensureCapabilities(agentId: string): Promise<void> {
   for (const toolName of RUN_ANALYST_ROLE_CAPABILITIES) {
     await prisma.capability.upsert({
@@ -160,6 +187,8 @@ export async function ensureTenantRunAnalystAgent(params: {
   const existing = await findTenantRunAnalystAgent(params.tenantId)
   if (existing) {
     await ensureCapabilities(existing.id)
+    await ensureLoopGuardModelConfig(existing.id)
+    await ensureRunAnalystSkill(existing.id, params.approvedById)
     await ensureRunAnalystPrivacyCategoryPolicy(existing.id, params.approvedById)
     await materializeRunAnalystAdminGrants({
       tenantId: params.tenantId,
@@ -223,6 +252,7 @@ export async function ensureTenantRunAnalystAgent(params: {
   })
 
   await ensureCapabilities(agent.id)
+  await ensureRunAnalystSkill(agent.id, params.approvedById)
   await ensureRunAnalystPrivacyCategoryPolicy(agent.id, params.approvedById)
   await materializeRunAnalystAdminGrants({
     tenantId: params.tenantId,

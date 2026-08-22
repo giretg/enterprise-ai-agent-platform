@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useTransition, type ReactNode } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import {
@@ -21,6 +22,7 @@ import {
 } from '@/app/actions/platform'
 import { distillSkillFromConversationAction, getAgentSkillsAction } from '@/app/actions/skills'
 import { exportConversationDebugLog } from '@/app/actions/debug-log'
+import { getRunAnalysisEntry } from '@/app/actions/run-analysis'
 import { listChatTriggerableProcessDefinitions } from '@/app/actions/process'
 import { isFileLikeSlot, processRequiresFileAttachment } from '@/lib/playbook-v2/trigger-input'
 import { listAgentDelegatedConnectors } from '@/app/actions/connector-grants'
@@ -43,6 +45,11 @@ import {
 import { ChatMarkdown, TypingIndicator } from '@/components/chat/chat-markdown'
 import { PrivacyHighlightedText } from '@/components/privacy/privacy-highlighted-text'
 import type { PrivacyEntityMarker } from '@/domain/privacy/privacy-observability'
+import {
+  buildRunAnalysisAgentHref,
+  buildRunAnalysisPrefill,
+  type RunAnalysisEntry,
+} from '@/lib/run-analysis-entry'
 import { getChatPrivacyMarkerContext } from '@/app/actions/privacy'
 import {
   buildChatPrivacyMarkers,
@@ -375,6 +382,15 @@ function stripGrantedQueryFromUrl() {
   const url = new URL(window.location.href)
   if (!url.searchParams.has('granted')) return
   url.searchParams.delete('granted')
+  const search = url.searchParams.toString()
+  window.history.replaceState({}, '', `${url.pathname}${search ? `?${search}` : ''}${url.hash}`)
+}
+
+function stripPrefillQueryFromUrl() {
+  if (typeof window === 'undefined') return
+  const url = new URL(window.location.href)
+  if (!url.searchParams.has('prefill')) return
+  url.searchParams.delete('prefill')
   const search = url.searchParams.toString()
   window.history.replaceState({}, '', `${url.pathname}${search ? `?${search}` : ''}${url.hash}`)
 }
@@ -1483,6 +1499,7 @@ export function AgentChatPanel({
   canDistillSkill = false,
   initialConversationId = null,
   resumeAfterGrant = false,
+  initialPrefill = null,
   restoreSignal = 0,
   tileTarget = null,
 }: {
@@ -1495,12 +1512,15 @@ export function AgentChatPanel({
   initialConversationId?: string | null
   /** OAuth-grant után a szerveroldali folytatás-forduló. */
   resumeAfterGrant?: boolean
+  /** RA-08: deep-link — szerkeszthető első üzenet a composerben (nem auto-send). */
+  initialPrefill?: string | null
   /** Növekvő jel: újboli megnyitáskor leveszi a tálcáról. */
   restoreSignal?: number
   /** A közös session-host célpontja: itt a megnyitott panelek reszponzív rácsba kerülnek. */
   tileTarget?: HTMLElement | null
 }) {
   const persona = personaFor(agent.name, agent)
+  const router = useRouter()
   const dockId = useId()
   const [input, setInput] = useState('')
   const [conversationId, setConversationId] = useState<string | null>(null)
@@ -1551,6 +1571,7 @@ export function AgentChatPanel({
    */
   const [composerMode, setComposerMode] = useState<'chat' | 'task' | 'process'>('chat')
   const [privacyContext, setPrivacyContext] = useState<ChatPrivacyMarkerContext | null>(null)
+  const [runAnalysisEntry, setRunAnalysisEntry] = useState<RunAnalysisEntry | null>(null)
   const [composerPanel, setComposerPanel] = useState<'skill' | null>(null)
   const [pending, startTransition] = useTransition()
   const [ticketPending, startTicketTransition] = useTransition()
@@ -1575,6 +1596,7 @@ export function AgentChatPanel({
    */
   const pendingConsequenceContinuationRef = useRef<string[] | null>(null)
   const grantResumeStartedRef = useRef(false)
+  const prefillAppliedRef = useRef(false)
   const startAgentTurnRef = useRef<
     | ((options: {
         text: string
@@ -2155,6 +2177,22 @@ export function AgentChatPanel({
     })
   }, [canDistillSkill, controlsBusy, conversationId])
 
+  const handleAnalyzeConversation = useCallback(() => {
+    if (!conversationId || !runAnalysisEntry?.canRunAnalysis || !runAnalysisEntry.runAnalystAgentId) {
+      return
+    }
+    const sessionTitle = sessions.find((session) => session.id === conversationId)?.title
+    const href = buildRunAnalysisAgentHref(
+      runAnalysisEntry.runAnalystAgentId,
+      buildRunAnalysisPrefill({
+        kind: 'conversation',
+        conversationId,
+        title: sessionTitle,
+      }),
+    )
+    router.push(href)
+  }, [conversationId, runAnalysisEntry, router, sessions])
+
   const reloadConversationMessages = useCallback(
     async (convId: string) => {
       const res = await loadAgentChatMessages({ conversationId: convId, agentId: agent.id })
@@ -2517,6 +2555,28 @@ export function AgentChatPanel({
       if (res.success) setPrivacyContext(res.data)
     })
   }, [open, agent.id, conversationId])
+
+  useEffect(() => {
+    if (!open) return
+    void getRunAnalysisEntry().then((res) => {
+      if (res.success) setRunAnalysisEntry(res.data)
+    })
+  }, [open])
+
+  // RA-08: deep-link prefill — szerkeszthető szöveg a composerben, nem auto-send.
+  useEffect(() => {
+    if (resumeAfterGrant) grantResumeStartedRef.current = false
+    if (initialPrefill) prefillAppliedRef.current = false
+  }, [resumeAfterGrant, initialPrefill, restoreSignal])
+
+  useEffect(() => {
+    if (!open || !initialPrefill?.trim()) return
+    if (prefillAppliedRef.current) return
+    if (initialConversationId && conversationId !== initialConversationId) return
+    prefillAppliedRef.current = true
+    setInput(initialPrefill)
+    stripPrefillQueryFromUrl()
+  }, [open, initialPrefill, initialConversationId, conversationId])
 
   // A Stop a FUTÓ FORDULÓ azonosítójára hivatkozik (#65). Amíg nincs turnId — a
   // `turn` esemény a stream legelső eseménye —, nincs mit megállítani.
@@ -2983,10 +3043,6 @@ export function AgentChatPanel({
     })
   }, [isAgentTyping, conversationStatus])
 
-  useEffect(() => {
-    if (resumeAfterGrant) grantResumeStartedRef.current = false
-  }, [resumeAfterGrant, restoreSignal])
-
   /**
    * OAuth-grant után (`?granted=1`): a beszélgetés betöltődése után egy
    * folytatás-forduló indul. A zászló a session-store-ban él, hogy a URL
@@ -3210,6 +3266,14 @@ export function AgentChatPanel({
 
           {conversationId && (
             <ChatHeaderMenu>
+              {runAnalysisEntry?.canRunAnalysis && runAnalysisEntry.runAnalystAgentId ? (
+                <ChatMenuItem
+                  title="Elemezd"
+                  hint="Futás-elemző megnyitása ezzel a beszélgetéssel kitöltve."
+                  onClick={handleAnalyzeConversation}
+                  disabled={controlsBusy}
+                />
+              ) : null}
               <ChatMenuItem
                 title={ticketPending ? 'Elemzés…' : 'Feladat készítése a szálból'}
                 hint="A beszélgetésből AI-feladat lesz a Kanban táblán."
@@ -3952,6 +4016,7 @@ export function AgentChatButton({
   initialConversationId = null,
   autoOpen = false,
   resumeAfterGrant = false,
+  initialPrefill = null,
 }: {
   agent: ChatAgent
   className?: string
@@ -3961,6 +4026,7 @@ export function AgentChatButton({
   initialConversationId?: string | null
   autoOpen?: boolean
   resumeAfterGrant?: boolean
+  initialPrefill?: string | null
 }) {
   useEffect(() => {
     if (!autoOpen) return
@@ -3968,11 +4034,12 @@ export function AgentChatButton({
       agent,
       canDistillSkill,
       initialConversationId,
+      initialPrefill,
       ...(resumeAfterGrant ? { resumeAfterGrant: true } : {}),
     })
     // Szándékos: autoOpen / deep-link változáskor nyissa (vagy hozza elő) a panelt.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoOpen, agent.id, initialConversationId, canDistillSkill, resumeAfterGrant])
+  }, [autoOpen, agent.id, initialConversationId, initialPrefill, canDistillSkill, resumeAfterGrant])
 
   return (
     <button
@@ -3984,6 +4051,7 @@ export function AgentChatButton({
           agent,
           canDistillSkill,
           initialConversationId,
+          initialPrefill,
         })
       }}
       className={

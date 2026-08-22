@@ -34,12 +34,13 @@ assert.deepEqual(
   'több agent chat egyszerre nyitva',
 )
 
-openAgentChat({ agent: agentA, initialConversationId: 'conv-1', resumeAfterGrant: true })
+openAgentChat({ agent: agentA, initialConversationId: 'conv-1', resumeAfterGrant: true, initialPrefill: 'Elemezd ezt.' })
 const revived = getAgentChatSessions().find((s) => s.id === 'agent-a')
 assert.equal(getAgentChatSessions().length, 2, 'nem nyit második ablakot ugyanarra az agentre')
 assert.equal(revived?.restoreSignal, 1)
 assert.equal(revived?.initialConversationId, 'conv-1')
 assert.equal(revived?.resumeAfterGrant, true)
+assert.equal(revived?.initialPrefill, 'Elemezd ezt.')
 
 clearAgentChatResumeAfterGrant('agent-a')
 assert.equal(getAgentChatSessions().find((s) => s.id === 'agent-a')?.resumeAfterGrant, false)

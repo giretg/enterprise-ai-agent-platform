@@ -168,6 +168,8 @@
     "test:default-user-agent-grants-db": "tsx scripts/default-user-agent-grants-db.test.ts",
     "test:run-analyst-materialization-db": "tsx scripts/run-analyst-materialization-db.test.ts",
     "test:run-analyst-role": "tsx scripts/run-analyst-role.test.ts",
+    "test:run-analyst-skill": "tsx scripts/run-analyst-skill.test.ts",
+    "test:run-analysis-entry": "tsx scripts/run-analysis-entry.test.ts",
     "test:run-index": "tsx scripts/run-index.test.ts",
     "test:run-trace": "tsx scripts/run-trace.test.ts",
     "test:run-stats": "tsx scripts/run-stats.test.ts",

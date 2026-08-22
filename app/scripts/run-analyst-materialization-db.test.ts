@@ -12,6 +12,7 @@ import {
   materializeRunAnalystAdminGrants,
 } from '../src/domain/agent-access/run-analyst-materialization'
 import { RUN_ANALYST_ROLE_CAPABILITIES } from '../src/domain/agents/run-analyst-role'
+import { RUN_ANALYSIS_SKILL_NAME } from '../src/domain/agent-access/run-analyst-skill-provisioning'
 import { materializeDefaultUserAgentGrants } from '../src/domain/agent-access/default-user-agent-grants'
 import { isAdminOnlyGraphNode, receivesDefaultUserAgentGrants } from '../src/lib/platform-agent-registry'
 import {
@@ -139,6 +140,26 @@ async function main() {
     })
     assert.equal(memory.versions.length, 1)
     assert.equal(memory.currentVersionId, memory.versions[0]!.id)
+
+    const modelConfig = agent.modelConfig as Record<string, unknown>
+    assert.ok(typeof modelConfig.maxToolCalls === 'number' && modelConfig.maxToolCalls >= 150)
+    assert.ok(typeof modelConfig.maxToolWallClockMs === 'number')
+
+    const skillAssignment = await prisma.agentSkill.findFirst({
+      where: {
+        agentId: agent.id,
+        enabled: true,
+        skillVersion: {
+          status: 'active',
+          skill: { name: RUN_ANALYSIS_SKILL_NAME },
+        },
+      },
+      include: { skillVersion: { include: { skill: true } } },
+    })
+    assert.ok(skillAssignment, 'futas-elemzes skill hozzárendelve')
+    assert.equal(skillAssignment!.skillVersion.skill.name, RUN_ANALYSIS_SKILL_NAME)
+    const hints = skillAssignment!.skillVersion.content as { runtimeHints?: { preferredMode?: string } }
+    assert.equal(hints.runtimeHints?.preferredMode, 'task')
   })
 
   await check('admin grantok: canView + canAddress; operator nem kap', async () => {

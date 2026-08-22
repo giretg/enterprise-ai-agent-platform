@@ -12,6 +12,7 @@ import { PROCESS_STATUS_CLASS } from '@/lib/process-labels'
 import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
 import { TicketThread, type TicketThreadComment } from '@/components/tickets/ticket-thread'
 import { PlaybookFlowGraph, type TraceStatus, type TraceOverlay } from '@/components/playbooks/playbook-flow-graph'
+import { RunAnalysisButton } from '@/components/run-analysis/run-analysis-button'
 
 export type ProcessStepView = {
   id: string
@@ -116,7 +117,17 @@ function Pill({ tone, children }: { tone: string; children: React.ReactNode }) {
   return <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${tone}`}>{children}</span>
 }
 
-export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; canAct: boolean }) {
+export function ProcessDetailView({
+  data,
+  canAct,
+  canRunAnalysis = false,
+  runAnalystAgentId = null,
+}: {
+  data: ProcessDetailData
+  canAct: boolean
+  canRunAnalysis?: boolean
+  runAnalystAgentId?: string | null
+}) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
@@ -244,6 +255,17 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
               Folyamat visszavonása
             </button>
           )}
+          {canRunAnalysis && runAnalystAgentId ? (
+            <RunAnalysisButton
+              runAnalystAgentId={runAnalystAgentId}
+              scope={{
+                kind: 'process',
+                processInstanceId: data.process.id,
+                processType: data.process.processType,
+              }}
+              className="rounded-lg border border-honey/35 bg-honey/10 px-3 py-1.5 text-sm font-semibold text-honey transition-colors hover:bg-honey/20"
+            />
+          ) : null}
         </div>
         <p className="mt-2 text-xs text-ink-soft">
           Indítva: {new Date(data.process.startedAt).toLocaleString('hu-HU')} ({data.process.startedByType})

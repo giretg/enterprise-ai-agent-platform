@@ -13,6 +13,7 @@ import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
 import { ProposalCard } from '@/components/tickets/proposal-card'
 import { Badge, Card } from '@/components/ui/shell'
 import { ProcessBadge } from '@/components/processes/process-badge'
+import { RunAnalysisButton } from '@/components/run-analysis/run-analysis-button'
 import {
   TICKET_STATE_HINTS,
   TICKET_STATE_LABELS,
@@ -505,12 +506,16 @@ export function TicketMeta({
   canDispatch = false,
   canDelete = false,
   isAdminDelete = false,
+  canRunAnalysis = false,
+  runAnalystAgentId = null,
 }: {
   ticket: TicketView
   isAdmin?: boolean
   canDispatch?: boolean
   canDelete?: boolean
   isAdminDelete?: boolean
+  canRunAnalysis?: boolean
+  runAnalystAgentId?: string | null
 }) {
   const router = useRouter()
   const dispatchTicket = useTicketDispatch()
@@ -693,6 +698,12 @@ export function TicketMeta({
                 >
                   {discussPending ? 'Megnyitás…' : 'Megbeszélés'}
                 </button>
+              ) : null}
+              {canRunAnalysis && runAnalystAgentId ? (
+                <RunAnalysisButton
+                  runAnalystAgentId={runAnalystAgentId}
+                  scope={{ kind: 'ticket', ticketId: ticket.id, title: ticket.title }}
+                />
               ) : null}
               {canDelete && (
                 <button

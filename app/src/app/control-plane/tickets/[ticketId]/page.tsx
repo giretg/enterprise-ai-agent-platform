@@ -18,6 +18,7 @@ import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
 import { TicketHistory } from '@/components/tickets/ticket-history'
 import { TicketActivityHistory } from '@/components/tickets/ticket-activity-history'
 import { canDeleteBoardTicket } from '@/lib/ticket-display'
+import { resolveRunAnalysisEntry } from '@/lib/run-analysis-entry'
 
 export default async function TicketDetailPage({
   params,
@@ -34,6 +35,13 @@ export default async function TicketDetailPage({
     listProcessDefinitions({ status: 'active' }),
     getTicketTransitions({ id: ticketId }),
   ])
+  const runAnalysisEntry =
+    ctx?.activeTenantId && ctx.activeTenantRole
+      ? await resolveRunAnalysisEntry({
+          tenantId: ctx.activeTenantId,
+          role: ctx.activeTenantRole,
+        })
+      : { canRunAnalysis: false, runAnalystAgentId: null }
   // Fetched last so its state can never be older than the history above.
   const res = await getTicket({ id: ticketId })
   if (!res.success) notFound()
@@ -75,6 +83,8 @@ export default async function TicketDetailPage({
         canDispatch={canManageRunAs}
         canDelete={deleteInfo.allowed}
         isAdminDelete={deleteInfo.isAdminDelete}
+        canRunAnalysis={runAnalysisEntry.canRunAnalysis}
+        runAnalystAgentId={runAnalysisEntry.runAnalystAgentId}
       />
 
       {/* Fő sáv: primer akció (jóváhagyás) → kontextus (szál) → aktivitás.

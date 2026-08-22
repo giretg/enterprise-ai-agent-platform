@@ -16,6 +16,8 @@ export type AgentChatSession = {
   initialConversationId: string | null
   /** OAuth-grant után a chat-forduló automatikus folytatása. */
   resumeAfterGrant: boolean
+  /** RA-08: deep-link / Elemezd gomb — szerkeszthető első üzenet (nem auto-send). */
+  initialPrefill: string | null
   /** Növelve: a panel visszaáll a tálcáról / előtérbe jön. */
   restoreSignal: number
 }
@@ -49,6 +51,7 @@ export function openAgentChat(input: {
   canDistillSkill?: boolean
   initialConversationId?: string | null
   resumeAfterGrant?: boolean
+  initialPrefill?: string | null
 }): string {
   const existing = sessions.find((session) => session.agent.id === input.agent.id)
   if (existing) {
@@ -66,6 +69,8 @@ export function openAgentChat(input: {
               input.resumeAfterGrant !== undefined
                 ? input.resumeAfterGrant
                 : session.resumeAfterGrant,
+            initialPrefill:
+              input.initialPrefill !== undefined ? input.initialPrefill : session.initialPrefill,
             restoreSignal: session.restoreSignal + 1,
           }
         : session,
@@ -83,6 +88,7 @@ export function openAgentChat(input: {
       canDistillSkill: input.canDistillSkill ?? false,
       initialConversationId: input.initialConversationId ?? null,
       resumeAfterGrant: input.resumeAfterGrant ?? false,
+      initialPrefill: input.initialPrefill ?? null,
       restoreSignal: 0,
     },
   ]
