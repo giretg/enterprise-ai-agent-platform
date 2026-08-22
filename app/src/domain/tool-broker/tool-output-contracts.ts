@@ -398,6 +398,43 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
     },
   },
 
+  run_stats: {
+    outputSchema: z.looseObject({
+      runCount: z.number(),
+      toolOutcomeMatrix: z.array(z.looseObject({ toolName: z.string(), totalCalls: z.number() })),
+      latencyByTool: z.array(z.looseObject({ toolName: z.string(), count: z.number() })),
+      promptCache: z.looseObject({
+        measuredCalls: z.number(),
+        unmeasuredCalls: z.number(),
+        hitRatio: z.number().nullable(),
+      }),
+      repeatedSourceKeys: z.array(
+        z.looseObject({ sourceKey: z.string(), rereadCount: z.number(), readCount: z.number() }),
+      ),
+      denialReasons: z.array(z.looseObject({ policyDecision: z.string(), count: z.number() })),
+      skillLoads: z.array(z.looseObject({ action: z.string(), count: z.number() })),
+      totals: z.looseObject({ toolCallCount: z.number(), modelCallCount: z.number() }),
+    }),
+    emptiness: (output) => {
+      const toolCalls = (output as { totals?: { toolCallCount?: number } } | null)?.totals
+        ?.toolCallCount
+      return toolCalls === 0 ? 'a megadott szkópban nincs eszközhívás az aggregáláshoz' : null
+    },
+    partial: (output) => {
+      const truncated = (output as { truncated?: boolean } | null)?.truncated === true
+      const sourceTruncated =
+        (output as { repeatedSourceKeysTruncated?: boolean } | null)?.repeatedSourceKeysTruncated ===
+        true
+      if (truncated) {
+        return 'több futás illeszkedik a szkópra, mint amennyit az aggregátum figyelembe vett — szűkítsd a szkópot'
+      }
+      if (sourceTruncated) {
+        return 'több eszközhívás van a szkópban, mint amennyit a forrás-kulcs mintavétel feldolgozott — szűkítsd a szkópot'
+      }
+      return null
+    },
+  },
+
   /**
    * `reconcile_records` — 2. INCIDENS. A párosítás sorrend-függése (a teljes
    * egyezés globális elsőbbsége) a `lib/reconcile-records.ts`-ben megoldott; itt

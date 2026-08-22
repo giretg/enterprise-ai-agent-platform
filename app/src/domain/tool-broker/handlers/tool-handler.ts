@@ -37,6 +37,7 @@ import type {
   GetDebugTraceResult,
   RunIndexResult,
   RunTraceResult,
+  RunStatsResult,
   TulajdoniLapParseResult,
   TulajdoniLapEgyeztetesResult,
   TicketCreateResult,
@@ -150,6 +151,11 @@ export interface HandlerContext {
     actingTenantId: string | null,
     actingUserId: string | null,
   ): Promise<RunTraceResult>
+  runStats(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'run_stats' }>,
+    actingTenantId: string | null,
+    actingUserId: string | null,
+  ): Promise<RunStatsResult>
   tulajdoniLapParse(
     input: Extract<ToolBrokerInvokeInput, { tool: 'tulajdoni_lap_parse' }>,
     actingUserId: string | null,

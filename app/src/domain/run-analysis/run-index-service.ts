@@ -86,13 +86,16 @@ export class RunIndexService {
     return rows.map((row) => row.id)
   }
 
-  async query(input: {
+  /** RA-03 / RA-06 — szkóp-feloldás futás-listához és aggregátumokhoz. */
+  async resolveScope(input: {
     tenantId: string
-    requesterAgentId: string
-    requesterAgentVersion: number
-    actingUserId: string | null
     args: RunIndexArgs
-  }): Promise<RunIndexResult> {
+  }): Promise<{
+    scope: RunIndexScopeSummary
+    candidates: RunIndexCandidate[]
+    limit: number
+    truncated: boolean
+  }> {
     const tenantId = input.tenantId
     const args = input.args
     const limit = resolveLimit(args.limit)
@@ -145,6 +148,22 @@ export class RunIndexService {
       selected = page.selected
       truncated = page.truncated
     }
+
+    return { scope, candidates: selected, limit, truncated }
+  }
+
+  async query(input: {
+    tenantId: string
+    requesterAgentId: string
+    requesterAgentVersion: number
+    actingUserId: string | null
+    args: RunIndexArgs
+  }): Promise<RunIndexResult> {
+    const tenantId = input.tenantId
+    const { scope, candidates: selected, limit, truncated } = await this.resolveScope({
+      tenantId,
+      args: input.args,
+    })
 
     const runs = await this.buildHeaders(tenantId, selected)
 

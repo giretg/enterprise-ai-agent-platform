@@ -12,6 +12,7 @@ import type {
   ConnectorGrant,
   TicketState,
 } from '@prisma/client'
+import type { RunStatsArgs, RunStatsResult } from '@/domain/run-analysis/run-stats-types'
 import type { SettledToolOutcome, ToolEffectSummary } from './tool-output-contract'
 import type { AgentCatalogEntry } from '@/lib/agent-catalog'
 import type { TulajdoniLapNezet, TulajdoniLapView } from '@/lib/tulajdoni-lap'
@@ -465,6 +466,20 @@ export type RunTraceResult =
       }
     }
   | RunTraceProcessResult
+
+/** RA-06 — futás-aggregátumok szkóp alapján (Run Analyst `run_stats`). */
+export type {
+  RunStatsArgs,
+  RunStatsDenialReason,
+  RunStatsLatencyRow,
+  RunStatsOutcomeCell,
+  RunStatsOutcomeLabel,
+  RunStatsPromptCache,
+  RunStatsRepeatedSourceKey,
+  RunStatsResult,
+  RunStatsSkillLoad,
+  RunStatsToolOutcomeRow,
+} from '@/domain/run-analysis/run-stats-types'
 
 /**
  * Magyar e-hiteles tulajdoni lap strukturált kinyerése egy feltöltött PDF-ből.
@@ -972,6 +987,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'get_debug_trace'; args: GetDebugTraceArgs })
   | (ToolInvokeBase & { tool: 'run_index'; args: RunIndexArgs })
   | (ToolInvokeBase & { tool: 'run_trace'; args: RunTraceArgs })
+  | (ToolInvokeBase & { tool: 'run_stats'; args: RunStatsArgs })
 
 /**
  * Bizalmi osztály MINDEN eszköz-eredményen (issue #97). Determinisztikus, a
@@ -1096,6 +1112,7 @@ export type ToolBrokerInvokeResult =
         | GetDebugTraceResult
         | RunIndexResult
         | RunTraceResult
+        | RunStatsResult
       resultMeta: Record<string, unknown>
       latencyMs: number
     }

@@ -2010,6 +2010,61 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capabilityGroup: TOOL_GROUP_ANALYSIS,
   }),
 
+  run_stats: descriptor({
+    description:
+      'Futás-aggregátumok szkóp alapján — a futás-elemzés összefoglaló lépése. ' +
+      'Bemenet megegyezik a `run_index` szkópjával (agent, beszélgetés/ticket/folyamat, időablak, explicit futás-azonosítók). ' +
+      'Kimenet: eszköz × kimenetel mátrix (`ok` / `empty` / `partial` / `failed` / `denied`), latency-eloszlás eszközönként, ' +
+      'prompt-cache találati arány (csak nem-`null` cache-adatú modellhívásokra), ismétlődő forrás-kulcsok, ' +
+      'megtagadás-okok (`policyDecision`), skill-betöltések audit-eseményekből. ' +
+      'Gyanús pontokra fúrj le `run_trace`-szel.',
+    argsSchema: z.object({
+      agentId: z.string().uuid().optional(),
+      agentQuery: z.string().max(200).optional(),
+      conversationId: z.string().uuid().optional(),
+      ticketId: z.string().uuid().optional(),
+      processInstanceId: z.string().uuid().optional(),
+      playbookVersionId: z.string().uuid().optional(),
+      since: z.string().optional(),
+      until: z.string().optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+      agentTurnIds: z.array(z.string().uuid()).max(50).optional(),
+      ticketIds: z.array(z.string().uuid()).max(50).optional(),
+      processInstanceIds: z.array(z.string().uuid()).max(50).optional(),
+    }),
+    toInvokeInput: (args, ctx) => {
+      const uuidList = (key: string): string[] | undefined => {
+        const raw = args[key]
+        if (!Array.isArray(raw)) return undefined
+        return raw.filter((v): v is string => typeof v === 'string' && v.length > 0)
+      }
+      return {
+        ...ctx,
+        tool: 'run_stats',
+        args: {
+          agentId: strArg(args, 'agentId') || undefined,
+          agentQuery: strArg(args, 'agentQuery') || undefined,
+          conversationId: strArg(args, 'conversationId') || undefined,
+          ticketId: strArg(args, 'ticketId') || undefined,
+          processInstanceId: strArg(args, 'processInstanceId') || undefined,
+          playbookVersionId: strArg(args, 'playbookVersionId') || undefined,
+          since: strArg(args, 'since') || undefined,
+          until: strArg(args, 'until') || undefined,
+          limit: numArg(args, 'limit') || undefined,
+          agentTurnIds: uuidList('agentTurnIds'),
+          ticketIds: uuidList('ticketIds'),
+          processInstanceIds: uuidList('processInstanceIds'),
+        },
+      }
+    },
+    trust: 'external_untrusted',
+    sideEffecting: false,
+    surfaces: CHAT_ONLY,
+    capability: 'run_stats',
+    handlerId: 'run_stats',
+    capabilityGroup: TOOL_GROUP_ANALYSIS,
+  }),
+
   reconcile_records: descriptor({
     description:
       'Két JSON-lista DETERMINISZTIKUS egyeztetése a munkaterületen: kulcsmezők alapján párosít, ' +
