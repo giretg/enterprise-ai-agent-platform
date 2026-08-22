@@ -1255,6 +1255,8 @@ export interface ToolBrokerRepository {
    *  következő forduló promptja a nyers agent-szöveg mellett strukturáltan is
    *  lássa, mit hívott és milyen eredménnyel (pl. melyik fájlt szerkesztette). */
   listToolCallsForConversation(conversationId: string, limit?: number): Promise<ToolCall[]>
+  /** Ticket-futás: contract repair és diagnosztika — az adott ticket eszközhívásai. */
+  listToolCallsForTicket(ticketId: string, limit?: number): Promise<ToolCall[]>
 }
 
 export type RecipeWithVersions = Recipe & { versions: RecipeVersion[] }

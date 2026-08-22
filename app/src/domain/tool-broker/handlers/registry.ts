@@ -26,6 +26,7 @@ import { tulajdoniLapEgyeztetesHandler, tulajdoniLapHandler } from './tulajdoni-
 import { reconcileRecordsHandler } from './reconcile-records.handler'
 import { debugTraceHandler } from './debug-trace.handler'
 import { runIndexHandler } from './run-index.handler'
+import { runTraceHandler } from './run-trace.handler'
 
 export const TOOL_HANDLERS: readonly ToolHandler[] = [
   kbHandler,
@@ -48,6 +49,7 @@ export const TOOL_HANDLERS: readonly ToolHandler[] = [
   reconcileRecordsHandler,
   debugTraceHandler,
   runIndexHandler,
+  runTraceHandler,
 ]
 
 export function resolveToolHandler(tool: string): ToolHandler | undefined {

@@ -24,6 +24,7 @@ import { isRunAsAuthorized } from '@/lib/run-as-payload'
 import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
 import { readStepOutcome } from '@/lib/playbook-v2/process-step-payload'
 import { readTicketCallCapMessageFromPayload } from '@/lib/ticket-call-cap'
+import { ChatMarkdown } from '@/components/chat/chat-markdown'
 
 type TicketView = {
   id: string
@@ -771,9 +772,7 @@ export function TicketMeta({
               <p className="mb-1 text-xs font-semibold uppercase tracking-[0.14em] text-ink-faint">
                 Az AI munkatárs eredeti válasza
               </p>
-              <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">
-                {contractReview.answer}
-              </p>
+              <ChatMarkdown content={contractReview.answer} variant="agent" />
             </div>
           )}
         </Card>

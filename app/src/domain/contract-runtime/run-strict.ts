@@ -12,6 +12,11 @@ import { formatContractErrors } from './format-errors'
 import { validateAgainstContract } from './validate'
 import { contractToJsonSchema } from './compile'
 import {
+  enrichCandidateFromEvidence,
+  formatRepairEvidenceForPrompt,
+  type ContractRepairToolEvidence,
+} from './repair-evidence'
+import {
   DEFAULT_REPAIR_ATTEMPTS,
   HARD_MAX_REPAIR_ATTEMPTS,
   type CompiledContract,
@@ -54,6 +59,11 @@ export type RunStrictContractInput = {
   criticality?: CriticalityLevel
   /** Lépésszintű felülbírálás; a kritikusság és a kemény 2-es korlát szűkíti. */
   maxRepairAttempts?: number
+  /**
+   * Auditált eszköz-hívás metaadat (args/effect, nyers tartalom nélkül).
+   * Determinisztikus kitöltés és okosabb modell-javítás — domain-specifikus kód nélkül.
+   */
+  repairEvidence?: ContractRepairToolEvidence[]
 }
 
 /**
@@ -91,31 +101,55 @@ function buildRepairMessages(input: {
   rawContent: string
   errorText: string
   fieldNames: string[]
+  toolEvidenceText?: string | null
 }): GatewayMessage[] {
+  const evidenceRules = input.toolEvidenceText
+    ? [
+        'Az auditált eszköz-hívások metaadatai is forrás — onnan másold át az értékeket, ha egyértelműen illeszkednek a várt mezőhöz.',
+        'Például egy `kimenet` vagy `target` mező gyakran path-szerű contract-mező kitöltésére való.',
+      ]
+    : []
+
+  const userBlocks = [
+    'Az agent eredeti válasza:',
+    '---',
+    input.rawContent,
+    '---',
+  ]
+  if (input.toolEvidenceText) {
+    userBlocks.push(
+      '',
+      'Auditált eszköz-hívás metaadat (nyers tartalom nélkül):',
+      '---',
+      input.toolEvidenceText,
+      '---',
+    )
+  }
+  userBlocks.push(
+    '',
+    'A szerkezet ellenőrzése ezeket a hibákat találta:',
+    input.errorText,
+    '',
+    input.toolEvidenceText
+      ? 'Javítsd a JSON-t a válasz ÉS az eszköz-meta alapján — ne találj ki olyan értéket, ami sehol sincs.'
+      : 'Javítsd a JSON-t úgy, hogy ezek a hibák megszűnjenek — de ne találj ki hiányzó értéket.',
+  )
+
   return [
     {
       role: 'system',
       content: [
-        'A feladatod: a megadott agent-válaszból kinyerni a kért szerkezetet érvényes JSON objektumként.',
-        'NE találj ki adatot. Ha egy mező nem nyerhető ki egyértelműen a válaszból, hagyd ki vagy hagyd üresen.',
-        'Ne kutass, ne hívj eszközt — csak formázás.',
+        'A feladatod: a megadott agent-válaszból és (ha van) auditált eszköz-metaadatból kinyerni a kért szerkezetet érvényes JSON objektumként.',
+        'NE találj ki adatot. Ha egy mező nem nyerhető ki egyértelműen a forrásokból, hagyd ki vagy hagyd üresen.',
+        ...evidenceRules,
+        'Ne kutass, ne hívj eszközt — csak formázás és kinyerés a megadott szövegekből.',
         'Csak JSON objektumot adj vissza, magyarázat nélkül.',
         `Várt mezők: ${input.fieldNames.join(', ')}.`,
       ].join('\n'),
     },
     {
       role: 'user',
-      content: [
-        'Az agent eredeti válasza:',
-        '---',
-        input.rawContent,
-        '---',
-        '',
-        'A szerkezet ellenőrzése ezeket a hibákat találta:',
-        input.errorText,
-        '',
-        'Javítsd a JSON-t úgy, hogy ezek a hibák megszűnjenek — de ne találj ki hiányzó értéket.',
-      ].join('\n'),
+      content: userBlocks.join('\n'),
     },
   ]
 }
@@ -131,7 +165,12 @@ export async function runStrictContract(
   const maxAttempts = resolveRepairAttempts(input.criticality, input.maxRepairAttempts)
   let repairAttempts = 0
   let repairCostEstimate = 0
-  let candidate = parseCandidate(input.rawContent)
+  const repairEvidence = input.repairEvidence ?? []
+  const toolEvidenceText = formatRepairEvidenceForPrompt(repairEvidence)
+  let candidate: unknown = parseCandidate(input.rawContent)
+  if (repairEvidence.length > 0) {
+    candidate = enrichCandidateFromEvidence(input.contract, candidate, repairEvidence)
+  }
   let validated = validateAgainstContract(input.contract, candidate)
 
   let lastErrors = validated.ok ? [] : validated.errors
@@ -154,6 +193,7 @@ export async function runStrictContract(
         rawContent: input.rawContent,
         errorText,
         fieldNames: input.contract.fieldNames,
+        toolEvidenceText,
       })
 
       const responseJsonSchema = contractToJsonSchema(input.contract)

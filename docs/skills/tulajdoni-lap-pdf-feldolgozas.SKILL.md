@@ -73,17 +73,30 @@ listát. Adj `blocked` státuszt, idézd röviden a `figyelmeztetes` okát, és 
 teljes másolatot, ha szemle vagy ismeretlen típus érkezett. A létrejött fájlt ne
 add tovább Föld-frissítésre kész adatként.
 
-## 3. Átadás
+## 3. Átadás (KÖTELEZŐ JSON blokk)
 
-A végső válasz legyen rövid és gépileg is könnyen továbbadható:
+A folyamat-lépés **output contract**-ja miatt a válaszod **végén kötelezően**
+legyen egy érvényes JSON objektum — csak szöveges összefoglaló NEM elég.
 
-- `status`: `ready` vagy `blocked`
-- `feldolgozottLapPath`: a létrehozott JSON path-ja
-- `ingatlan`: `meta.ingatlanMegnevezes`
-- `kelt`: `meta.kelt`
-- `tulajdonosDb`: `osszesites.egyediTulajdonos`
-- `hanyadEllenorzes`: az összeg és az érvényesség
-- `szeljegyDb`: `osszesites.szeljegyDb`
+A `tulajdoni_lap_parse` válaszából a `kimenet` mező értékét **szó szerint** másold
+át `feldolgozottLapPath`-ként. Ha a tool `kimenet: "feldolgozott-tulajdoni-lap-043-15.json"`,
+akkor a záró JSON-ban pontosan ez szerepeljen:
+
+```json
+{
+  "status": "ready",
+  "feldolgozottLapPath": "feldolgozott-tulajdoni-lap-043-15.json",
+  "ingatlan": "Külterület, 43/15 helyrajzi szám",
+  "kelt": "2026.07.16",
+  "tulajdonosDb": 182,
+  "hanyadEllenorzes": "1/1 (100%) — érvényes",
+  "szeljegyDb": 4
+}
+```
+
+A JSON lehet a válasz utolsó blokkja (```json … ``` vagy nyers objektum). A
+markdown összefoglaló ELŐTTE lehet, de a JSON **kötelező** és tartalmazza a
+`feldolgozottLapPath` mezőt.
 
 Ne sorold fel a teljes tulajdonosi listát a válaszban. A következő agentnek a
 `feldolgozottLapPath` értéket add át, ne a PDF teljes szövegét.
@@ -96,9 +109,11 @@ Ne sorold fel a teljes tulajdonosi listát a válaszban. A következő agentnek 
 - ownership, partner vagy proposal módosítása
 - kézi javítás érvénytelen hányadösszeg mellett
 - a teljes tulajdonosi lista bemásolása az agent válaszába
+- **csak szöveges „kész” válasz JSON `feldolgozottLapPath` nélkül** — a folyamat
+  emberi felülvizsgálatra áll meg
 
 # Folytatás
 
 Ha a handoff fájl már sikeresen elkészült és a korábbi eredményben `ready`
 státusz szerepel, ne parse-old újra a PDF-et. Add át a meglévő
-`feldolgozottLapPath` értéket a következő folyamatlépésnek.
+`feldolgozottLapPath` értéket a következő folyamatlépésnek — JSON blokkban.

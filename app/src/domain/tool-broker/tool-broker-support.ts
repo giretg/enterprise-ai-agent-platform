@@ -847,6 +847,22 @@ export function argsMeta(
     }
   }
 
+  if (input.tool === 'run_trace') {
+    return {
+      ...base,
+      grain: input.args.grain,
+      runId: input.args.runId,
+      view: input.args.view ?? 'summary',
+      since: input.args.since ?? null,
+      until: input.args.until ?? null,
+      limit: input.args.limit ?? null,
+      offset: input.args.offset ?? null,
+      toolName: input.args.toolName ?? null,
+      status: input.args.status ?? null,
+      outcome: input.args.outcome ?? null,
+    }
+  }
+
   return {
     ...base,
     ticketId: input.args.ticketId,
@@ -1027,6 +1043,39 @@ function resultMetaFields(result: ToolExecutionResult): Record<string, unknown> 
       requesterAgentId: ask.requesterAgentId,
       completed: ask.completed ?? false,
       hasAnswer: typeof ask.answer === 'string' && ask.answer.length > 0,
+    }
+  }
+
+  if ('view' in result && 'grain' in result && 'runId' in result) {
+    const trace = result as {
+      view: 'summary' | 'detail'
+      grain: string
+      runId: string
+      summary?: { toolCallCount?: number }
+      returnedCount?: number
+      truncated?: boolean
+    }
+    if (trace.view === 'summary') {
+      return {
+        grain: trace.grain,
+        runId: trace.runId,
+        view: trace.view,
+        toolCallCount: trace.summary?.toolCallCount ?? 0,
+      }
+    }
+    return {
+      grain: trace.grain,
+      runId: trace.runId,
+      view: trace.view,
+      returnedCount: trace.returnedCount ?? 0,
+      truncated: trace.truncated === true,
+    }
+  }
+
+  if ('runs' in result && 'returnedCount' in result && 'scope' in result) {
+    return {
+      returnedCount: (result as { returnedCount: number }).returnedCount,
+      truncated: (result as { truncated?: boolean }).truncated === true,
     }
   }
 

@@ -19,6 +19,8 @@ import {
   extractLoose,
   validateAgainstContract,
   runStrictContract,
+  buildRepairEvidenceFromToolCall,
+  enrichCandidateFromEvidence,
   type ContractField,
   type CompiledContract,
 } from '../src/domain/contract-runtime'
@@ -856,6 +858,100 @@ async function main() {
       ],
     })
     assert.equal(parsed.success, false)
+  })
+
+  await check('CR-5a: eszköz-meta determinisztikusan kitölti a hiányzó *Path mezőt', () => {
+    const contract = compileContract({
+      fields: [{ name: 'feldolgozottLapPath', type: 'string', required: true }],
+    })
+    const evidence = [
+      buildRepairEvidenceFromToolCall({
+        toolName: 'tulajdoni_lap_parse',
+        status: 'ok',
+        outcome: 'ok',
+        argsMeta: { kimenet: 'feldolgozott-tulajdoni-lap-043-15.json' },
+        effectSummary: { target: 'feldolgozott-tulajdoni-lap-043-15.json', unit: 'rekord', amount: 182 },
+      }),
+    ]!
+    const enriched = enrichCandidateFromEvidence(contract, {}, evidence)
+    assert.equal(enriched.feldolgozottLapPath, 'feldolgozott-tulajdoni-lap-043-15.json')
+    const validated = validateAgainstContract(contract, enriched)
+    assert.equal(validated.ok, true)
+  })
+
+  await check('CR-5b: repairEvidence → első validáció siker, nincs modellhívás', async () => {
+    let chatCalls = 0
+    const contract = compileContract({
+      fields: [{ name: 'feldolgozottLapPath', type: 'string', required: true }],
+    })
+    const evidence = [
+      buildRepairEvidenceFromToolCall({
+        toolName: 'tulajdoni_lap_parse',
+        status: 'ok',
+        outcome: 'ok',
+        argsMeta: { kimenet: 'handoff.json' },
+      }),
+    ]!
+    const result = await runStrictContract({
+      gateway: {
+        async call() {
+          chatCalls++
+          return { content: '{}' }
+        },
+      },
+      contract,
+      rawContent:
+        'A feldolgozás sikeres.\n\n**Státusz:** ready\n\nA handoff fájl elkészült.',
+      modelConfig: baseModel,
+      structuringModel: { provider: 'stub', model: 'stub-cheap' },
+      agentId: TEST_AGENT_ID,
+      repairEvidence: evidence,
+    })
+    assert.equal(result.ok, true)
+    if (result.ok) {
+      assert.equal(result.value.feldolgozottLapPath, 'handoff.json')
+      assert.equal(result.repairAttempts, 0)
+    }
+    assert.equal(chatCalls, 0)
+  })
+
+  await check('CR-5c: repair prompt tartalmazza az eszköz-meta blokkot', async () => {
+    let lastUserContent = ''
+    const provider: ModelProvider = {
+      name: 'stub',
+      async chat(input) {
+        const user = [...input.messages].reverse().find((m) => m.role === 'user')
+        lastUserContent = typeof user?.content === 'string' ? user.content : ''
+        return {
+          content: '{"vendor":"Acme Kft"}',
+          usage: { promptTokens: 1, completionTokens: 1 },
+          latencyMs: 1,
+        }
+      },
+    }
+    const contract = compileContract({
+      fields: [{ name: 'vendor', type: 'string', required: true }],
+    })
+    const evidence = [
+      buildRepairEvidenceFromToolCall({
+        toolName: 'xlsx_create',
+        status: 'ok',
+        outcome: 'ok',
+        effectSummary: { target: 'riport.xlsx', unit: 'sor', amount: 10 },
+      }),
+    ]!
+    const result = await runStrictContract({
+      gateway: makeGateway(provider),
+      contract,
+      rawContent: 'A beszállító: Acme Kft.',
+      modelConfig: baseModel,
+      structuringModel: { provider: 'stub', model: 'stub-cheap' },
+      agentId: TEST_AGENT_ID,
+      repairEvidence: evidence,
+    })
+    assert.equal(result.ok, true)
+    assert.ok(lastUserContent.includes('Auditált eszköz-hívás metaadat'))
+    assert.ok(lastUserContent.includes('riport.xlsx'))
   })
 
   console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'}: ${failures} failure(s)`)

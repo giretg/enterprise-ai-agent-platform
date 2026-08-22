@@ -1957,6 +1957,54 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capabilityGroup: TOOL_GROUP_ANALYSIS,
   }),
 
+  run_trace: descriptor({
+    description:
+      'Egy futás idővonala — a futás-elemzés lefúrási lépése (chat/ticket ág). ' +
+      'Bemenet: `grain` (`turn` vagy `ticket`) és `runId`. Alapból `summary`: körök, eszközhívások eszköznév×kimenetel szerint, ' +
+      'token-görbe, nem-ok hívások listája. `view: "detail"` lapozott idővonal: ModelCall, ToolCall, üzenetek, aktivitások, ' +
+      'ticket-átmenetek/kommentek, audit-szelet. Szűrés: időablak, eszköznév, status, outcome, lépés-tartomány. ' +
+      'Ha `truncated: true`, lapozz `offset`-tel vagy szűkítsd a tartományt.',
+    argsSchema: z.object({
+      grain: z.enum(['turn', 'ticket']),
+      runId: z.string().uuid(),
+      view: z.enum(['summary', 'detail']).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+      offset: z.number().int().min(0).optional(),
+      since: z.string().optional(),
+      until: z.string().optional(),
+      stepFrom: z.number().int().min(0).optional(),
+      stepTo: z.number().int().min(0).optional(),
+      toolName: z.string().max(200).optional(),
+      status: z.string().max(100).optional(),
+      outcome: z.string().max(50).optional(),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'run_trace',
+      args: {
+        grain: args.grain === 'ticket' ? 'ticket' : 'turn',
+        runId: strArg(args, 'runId'),
+        view:
+          args.view === 'detail' ? 'detail' : args.view === 'summary' ? 'summary' : undefined,
+        limit: numArg(args, 'limit') || undefined,
+        offset: numArg(args, 'offset') || undefined,
+        since: strArg(args, 'since') || undefined,
+        until: strArg(args, 'until') || undefined,
+        stepFrom: numArg(args, 'stepFrom') ?? undefined,
+        stepTo: numArg(args, 'stepTo') ?? undefined,
+        toolName: strArg(args, 'toolName') || undefined,
+        status: strArg(args, 'status') || undefined,
+        outcome: strArg(args, 'outcome') || undefined,
+      },
+    }),
+    trust: 'external_untrusted',
+    sideEffecting: false,
+    surfaces: CHAT_ONLY,
+    capability: 'run_trace',
+    handlerId: 'run_trace',
+    capabilityGroup: TOOL_GROUP_ANALYSIS,
+  }),
+
   reconcile_records: descriptor({
     description:
       'Két JSON-lista DETERMINISZTIKUS egyeztetése a munkaterületen: kulcsmezők alapján párosít, ' +

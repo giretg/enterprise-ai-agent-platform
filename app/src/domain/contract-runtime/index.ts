@@ -31,6 +31,14 @@ export {
   type RunStrictContractInput,
 } from './run-strict'
 export {
+  buildRepairEvidenceFromToolCall,
+  buildRepairEvidenceFromToolCalls,
+  enrichCandidateFromEvidence,
+  formatRepairEvidenceForPrompt,
+  resolveFieldFromEvidence,
+  type ContractRepairToolEvidence,
+} from './repair-evidence'
+export {
   STRUCTURING_MODEL_SETTING_KEY,
   structuringModelSchema,
   parseStructuringModelSetting,

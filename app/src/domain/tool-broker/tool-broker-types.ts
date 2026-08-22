@@ -374,6 +374,79 @@ export type RunIndexResult = {
   }
 }
 
+/** RA-04 — lapozott futás-idővonal (Run Analyst `run_trace`, chat/ticket ág). */
+export type RunTraceGrain = 'turn' | 'ticket'
+
+export type RunTraceArgs = {
+  grain: RunTraceGrain
+  runId: string
+  view?: 'summary' | 'detail'
+  limit?: number
+  offset?: number
+  since?: string
+  until?: string
+  stepFrom?: number
+  stepTo?: number
+  toolName?: string
+  status?: string
+  outcome?: string
+}
+
+export type RunTraceSummary = {
+  runId: string
+  grain: RunTraceGrain
+  agentId: string
+  agentName: string
+  conversationId: string | null
+  ticketId: string | null
+  startedAt: string
+  finishedAt: string | null
+  status: string
+  turnCount: number
+  deniedCount: number
+  toolCallCount: number
+  toolCallsByToolAndOutcome: Array<{ toolName: string; outcome: string | null; count: number }>
+  tokenCurve: Array<{
+    at: string
+    promptTokens: number
+    completionTokens: number
+    cachedPromptTokens: number | null
+  }>
+  nonOkToolCalls: Array<{
+    id: string
+    toolName: string
+    status: string
+    outcome: string | null
+    createdAt: string
+  }>
+  nonOkToolCallsTruncated: boolean
+}
+
+export type RunTraceTimelineEntry = Record<string, unknown> & { kind: string; seq: number; at: string }
+
+export type RunTraceResult =
+  | { view: 'summary'; runId: string; grain: RunTraceGrain; summary: RunTraceSummary }
+  | {
+      view: 'detail'
+      runId: string
+      grain: RunTraceGrain
+      entries: RunTraceTimelineEntry[]
+      returnedCount: number
+      limit: number
+      offset: number
+      totalCount: number
+      truncated: boolean
+      filters: {
+        since: string | null
+        until: string | null
+        stepFrom: number | null
+        stepTo: number | null
+        toolName: string | null
+        status: string | null
+        outcome: string | null
+      }
+    }
+
 /**
  * Magyar e-hiteles tulajdoni lap strukturált kinyerése egy feltöltött PDF-ből.
  * Chat csatolmány: `documentId` (UUID). Board/ticket workspace: `path` (fájlnév).
@@ -879,6 +952,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'reconcile_records'; args: ReconcileRecordsArgs })
   | (ToolInvokeBase & { tool: 'get_debug_trace'; args: GetDebugTraceArgs })
   | (ToolInvokeBase & { tool: 'run_index'; args: RunIndexArgs })
+  | (ToolInvokeBase & { tool: 'run_trace'; args: RunTraceArgs })
 
 /**
  * Bizalmi osztály MINDEN eszköz-eredményen (issue #97). Determinisztikus, a
@@ -1002,6 +1076,7 @@ export type ToolBrokerInvokeResult =
         | ReconcileRecordsResult
         | GetDebugTraceResult
         | RunIndexResult
+        | RunTraceResult
       resultMeta: Record<string, unknown>
       latencyMs: number
     }

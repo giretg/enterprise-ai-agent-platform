@@ -41,6 +41,7 @@ import {
   toStructuringModelConfig,
   classifyContractOutcome,
   buildContractEvaluateAuditMetadata,
+  buildRepairEvidenceFromToolCalls,
   type ContractField,
   type CriticalityLevel,
   type StructuringModelSetting,
@@ -816,6 +817,8 @@ export class GeneralTaskRuntime {
         (await this.getStructuringModel?.()) ?? structuringModelFromEnv(),
         modelConfig,
       )
+      const toolCallsForRepair = await this.toolCaps.listToolCallsForTicket(ticket.id)
+      const repairEvidence = buildRepairEvidenceFromToolCalls(toolCallsForRepair)
       const strict = await runStrictContract({
         gateway: this.gateway,
         contract,
@@ -828,6 +831,7 @@ export class GeneralTaskRuntime {
         tenantId: ticket.tenantId ?? undefined,
         criticality: processStep.criticality,
         maxRepairAttempts: processStep.maxRepairAttempts,
+        repairEvidence,
       })
       if (strict.ok) {
         structuredOutput = strict.value

@@ -376,6 +376,27 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
     },
   },
 
+  run_trace: {
+    outputSchema: z.looseObject({
+      view: z.enum(['summary', 'detail']),
+      runId: z.string(),
+      grain: z.enum(['turn', 'ticket']),
+    }),
+    partial: (output) => {
+      const view = (output as { view?: string } | null)?.view
+      if (view === 'detail') {
+        const truncated = (output as { truncated?: boolean } | null)?.truncated === true
+        return truncated
+          ? 'több idővonal-sor illeszkedik a szűrőre, mint amennyit visszaadtunk — lapozz offset-tel vagy szűkítsd a tartományt'
+          : null
+      }
+      const summary = (output as { summary?: { nonOkToolCallsTruncated?: boolean } } | null)?.summary
+      return summary?.nonOkToolCallsTruncated === true
+        ? 'több nem-ok eszközhívás van, mint amennyit az összefoglaló felsorol — kérj detail nézetet szűréssel'
+        : null
+    },
+  },
+
   /**
    * `reconcile_records` — 2. INCIDENS. A párosítás sorrend-függése (a teljes
    * egyezés globális elsőbbsége) a `lib/reconcile-records.ts`-ben megoldott; itt
