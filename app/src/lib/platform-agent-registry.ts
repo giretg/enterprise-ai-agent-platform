@@ -29,6 +29,9 @@
 /** A Web-Egress perzisztált rendszer-szerepazonosítója. */
 export const WEB_EGRESS_SYSTEM_ROLE = 'web_egress' as const
 
+/** A Futás-elemző perzisztált rendszer-szerepazonosítója. */
+export const RUN_ANALYST_SYSTEM_ROLE = 'run_analyst' as const
+
 /**
  * Rendszer-szerepek, amelyek kiinduló user→agent grantot kapnak a
  * `materializeDefaultUserAgentGrants` során. Alapértelmezés: üres (deny-by-default).
@@ -90,9 +93,18 @@ export function isWebEgressAgent(agent: { systemRole?: string | null }): boolean
 }
 
 /**
- * True, ha az agent CSAK admin/kormányzási felületen látszik. Ma ez a Web-Egress; az
- * org-ábra és az admin kormányzási felület megkapja, az operátori felületek nem.
+ * True, ha az agent Futás-elemző. A rendszer-szerep szándékosan NEM az agent nevéből
+ * következik: a név szerkeszthető UI-adat lenne egy biztonsági kapun.
+ */
+export function isRunAnalystAgent(agent: { systemRole?: string | null }): boolean {
+  return agent.systemRole === RUN_ANALYST_SYSTEM_ROLE
+}
+
+/**
+ * True, ha az agent CSAK admin/kormányzási felületen látszik. Ma ez a Web-Egress és a
+ * Futás-elemző; az org-ábra és az admin kormányzási felület megkapja, az operátori
+ * felületek nem.
  */
 export function isAdminOnlyGraphNode(agent: { systemRole?: string | null }): boolean {
-  return isWebEgressAgent(agent)
+  return isWebEgressAgent(agent) || isRunAnalystAgent(agent)
 }

@@ -7,6 +7,7 @@ import type {
 } from '@/repositories/interfaces'
 import { ensureTenantWebSearchConnector } from '@/domain/web-search/web-search-connector-service'
 import { ensureTenantWebEgressAgent } from '@/domain/agent-access/web-egress-materialization'
+import { ensureTenantRunAnalystAgent } from '@/domain/agent-access/run-analyst-materialization'
 import {
   TENANT_AUDIT_ACTIONS,
   checkLastTenantAdminLock,
@@ -111,6 +112,30 @@ export class TenantService {
         outputRef: error instanceof Error ? error.message.slice(0, 200) : 'failed',
         policyDecision: 'degraded',
         metadata: { tenantId: tenant.id, step: 'web_egress_materialization' },
+        tenantId: tenant.id,
+      })
+    }
+
+    // #345 — a Futás-elemző TENANTONKÉNT materializált, normál tenant-agent. Admin-only
+    // grantokkal érhető el; fail-soft mint a Web-Egress.
+    try {
+      await ensureTenantRunAnalystAgent({
+        tenantId: tenant.id,
+        approvedById: params.createdById,
+      })
+    } catch (error) {
+      await this.audit.append({
+        actorType: 'system',
+        actorId: 'tenant-provisioning',
+        agentVersion: null,
+        action: TENANT_AUDIT_ACTIONS.create,
+        targetType: 'tenant',
+        targetId: tenant.id,
+        modelUsed: null,
+        inputRef: 'run_analyst_materialization',
+        outputRef: error instanceof Error ? error.message.slice(0, 200) : 'failed',
+        policyDecision: 'degraded',
+        metadata: { tenantId: tenant.id, step: 'run_analyst_materialization' },
         tenantId: tenant.id,
       })
     }

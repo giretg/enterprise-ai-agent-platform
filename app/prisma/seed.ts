@@ -11,6 +11,7 @@ import {
 } from '../src/domain/provisioning/provisioning-assistant'
 import { PLAYBOOK_AUTHOR_TEMPLATE } from '../src/domain/playbook/playbook-author-agent'
 import { ensureTenantWebEgressAgent } from '../src/domain/agent-access/web-egress-materialization'
+import { ensureTenantRunAnalystAgent } from '../src/domain/agent-access/run-analyst-materialization'
 import {
   WEB_EGRESS_ROLE_TEMPLATE,
   WEB_EGRESS_TOOL_CAPABILITIES,
@@ -370,6 +371,16 @@ async function backfillTenantWebEgressAgents(adminId: string) {
   })
   for (const tenant of tenants) {
     await ensureTenantWebEgressAgent({ tenantId: tenant.id, approvedById: adminId })
+  }
+}
+
+async function backfillTenantRunAnalystAgents(adminId: string) {
+  const tenants = await prisma.tenant.findMany({
+    where: { status: { in: ['active', 'suspended', 'offboarding'] } },
+    select: { id: true },
+  })
+  for (const tenant of tenants) {
+    await ensureTenantRunAnalystAgent({ tenantId: tenant.id, approvedById: adminId })
   }
 }
 
@@ -1629,6 +1640,8 @@ async function main() {
   await ensureStarterStepTemplates(prisma)
   // #142 — minden tenant SAJÁT Web-Egress példányt kap (mindkét irányban zárva).
   await backfillTenantWebEgressAgents(admin.id)
+  // #345 — minden tenant SAJÁT Futás-elemző példányt kap (admin-only grantokkal).
+  await backfillTenantRunAnalystAgents(admin.id)
   const backfilled = await ensureAllTenantsHaveWebSearchConnector()
   if (backfilled > 0) {
     console.log(`  Web Search tenant connectors backfilled: ${backfilled}`)

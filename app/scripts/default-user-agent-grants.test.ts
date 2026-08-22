@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict'
 import {
   DEFAULT_GRANTABLE_SYSTEM_ROLES,
+  RUN_ANALYST_SYSTEM_ROLE,
   WEB_EGRESS_SYSTEM_ROLE,
   receivesDefaultUserAgentGrants,
 } from '../src/lib/platform-agent-registry'
@@ -37,8 +38,8 @@ test('web_egress nem kap kiinduló user→agent grantot', () => {
   assert.equal(receivesDefaultUserAgentGrants({ systemRole: WEB_EGRESS_SYSTEM_ROLE }), false)
 })
 
-test('egy tetszőleges jövőbeli rendszer-szerep (run_analyst) nem grantolható', () => {
-  assert.equal(receivesDefaultUserAgentGrants({ systemRole: 'run_analyst' }), false)
+test('egy tetszőleges (nem allowlist-elt) rendszer-szerep (run_analyst) nem grantolható', () => {
+  assert.equal(receivesDefaultUserAgentGrants({ systemRole: RUN_ANALYST_SYSTEM_ROLE }), false)
 })
 
 console.log(failures === 0 ? '\nMinden teszt zöld.' : `\n${failures} teszt elbukott.`)

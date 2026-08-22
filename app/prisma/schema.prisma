@@ -91,6 +91,7 @@ enum AgentRole {
  */
 enum AgentSystemRole {
   web_egress
+  run_analyst
 
   @@map("agent_system_role")
 }
