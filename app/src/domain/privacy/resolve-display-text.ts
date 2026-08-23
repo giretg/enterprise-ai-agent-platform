@@ -13,7 +13,10 @@
  * markdown — a darab önmagában szöveg-node-nak tűnhet, holott egy URL vége.
  *
  * Mini-app / workspace HTML: `contentKind: 'html'` — ugyanaz a szöveg-node
- * szabály, HTML parserrel (script/style/attribútum kimarad).
+ * szabály, HTML parserrel (script/style/attribútum kimarad). A vaultból jövő
+ * megjelenítési értéket HTML-escapelve írjuk be: CRM/név mezőkben lévő
+ * `<` / `>` / `&` különben `text/html` válaszban XSS-t nyitna a bejelentkezett
+ * platform-origón (sandbox preview, workspace HTML, export).
  */
 import { resolvableHtmlTextRanges } from '@/domain/privacy/html-surrogate-context'
 import {
@@ -39,6 +42,15 @@ export type EgressResolveAudit = (event: {
   resolvedCount: number
   categories: string[]
 }) => void | Promise<void>
+
+/** Vault / CRM megjelenítési érték → biztonságos HTML szöveg-node tartalom. */
+export function escapeHtmlTextContent(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
 
 export async function resolveDisplayText(
   text: string,
@@ -79,7 +91,9 @@ async function resolveDisplayTextInKind(
     const inTextNode = ranges.some((range) => range.start <= absStart && absEnd <= range.end)
     if (match.parsed && inTextNode) {
       const resolved = await lookup(match.text)
-      out += resolved ?? match.text
+      const value = resolved ?? match.text
+      // HTML egress: a megjelenítési érték külső/CRM adat — escape nélkül tagot zárhat.
+      out += kind === 'html' ? escapeHtmlTextContent(value) : value
     } else {
       out += match.text
     }
