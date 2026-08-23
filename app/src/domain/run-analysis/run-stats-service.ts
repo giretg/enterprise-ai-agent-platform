@@ -9,10 +9,12 @@ import type { AuditRepository } from '@/repositories/interfaces'
 import { toolCallSourceKey } from '@/domain/agent/loop-stop-decision'
 import type { RunIndexCandidate } from './run-index-types'
 import {
-  RUN_INDEX_NOT_FOUND,
-  RunIndexNotFoundError,
-  RunIndexService,
-} from './run-index-service'
+  appendRunAnalysisAudit,
+  buildScopedCallFilter,
+  loadProcessTicketIndex,
+  type RunAnalysisRequester,
+} from './run-scope'
+import { RunIndexService } from './run-index-service'
 import type {
   RunStatsArgs,
   RunStatsDenialReason,
@@ -253,22 +255,25 @@ export function computeRepeatedSourceKeys(rows: SourceKeyToolRow[]): {
   return { keys: keys.slice(0, MAX_STATS_REPEATED_KEYS), truncated }
 }
 
-export function buildPromptCacheStats(rows: Array<{ promptTokens: number; cachedPromptTokens: number | null }>): RunStatsPromptCache {
-  let measuredCalls = 0
-  let unmeasuredCalls = 0
-  let promptTokens = 0
-  let cachedPromptTokens = 0
+export const EMPTY_PROMPT_CACHE: RunStatsPromptCache = {
+  measuredCalls: 0,
+  unmeasuredCalls: 0,
+  promptTokens: 0,
+  cachedPromptTokens: 0,
+  hitRatio: null,
+}
 
-  for (const row of rows) {
-    if (row.cachedPromptTokens == null) {
-      unmeasuredCalls += 1
-      continue
-    }
-    measuredCalls += 1
-    promptTokens += row.promptTokens
-    cachedPromptTokens += row.cachedPromptTokens
-  }
-
+/**
+ * Cache-találati arány a MÉRT hívásokból. Csak összegekből dolgozik, hogy a
+ * hívó DB-oldali aggregátumot adhasson át — a modellhívás-sorokat sosem töltjük be.
+ */
+export function buildPromptCacheStats(totals: {
+  measuredCalls: number
+  unmeasuredCalls: number
+  promptTokens: number
+  cachedPromptTokens: number
+}): RunStatsPromptCache {
+  const { measuredCalls, unmeasuredCalls, promptTokens, cachedPromptTokens } = totals
   return {
     measuredCalls,
     unmeasuredCalls,
@@ -279,48 +284,6 @@ export function buildPromptCacheStats(rows: Array<{ promptTokens: number; cached
   }
 }
 
-async function loadProcessTicketIds(
-  prisma: PrismaClient,
-  processIds: string[],
-): Promise<Map<string, string[]>> {
-  if (!processIds.length) return new Map()
-  const rows = await prisma.ticket.findMany({
-    where: { processInstanceId: { in: processIds } },
-    select: { id: true, processInstanceId: true },
-  })
-  return rows.reduce<Map<string, string[]>>((acc, row) => {
-    if (!row.processInstanceId) return acc
-    const list = acc.get(row.processInstanceId) ?? []
-    list.push(row.id)
-    acc.set(row.processInstanceId, list)
-    return acc
-  }, new Map())
-}
-
-function buildScopedOrFilter(input: {
-  turnIds: string[]
-  ticketIds: string[]
-}): Prisma.ToolCallWhereInput | null {
-  const parts: Prisma.ToolCallWhereInput[] = []
-  if (input.turnIds.length) parts.push({ agentTurnId: { in: input.turnIds } })
-  if (input.ticketIds.length) parts.push({ ticketId: { in: input.ticketIds } })
-  if (parts.length === 0) return null
-  if (parts.length === 1) return parts[0]!
-  return { OR: parts }
-}
-
-function buildModelScopedOrFilter(input: {
-  turnIds: string[]
-  ticketIds: string[]
-}): Prisma.ModelCallWhereInput | null {
-  const parts: Prisma.ModelCallWhereInput[] = []
-  if (input.turnIds.length) parts.push({ agentTurnId: { in: input.turnIds } })
-  if (input.ticketIds.length) parts.push({ ticketId: { in: input.ticketIds } })
-  if (parts.length === 0) return null
-  if (parts.length === 1) return parts[0]!
-  return { OR: parts }
-}
-
 export class RunStatsService {
   constructor(
     private prisma: PrismaClient,
@@ -328,13 +291,7 @@ export class RunStatsService {
     private runIndexService: RunIndexService,
   ) {}
 
-  async query(input: {
-    tenantId: string
-    requesterAgentId: string
-    requesterAgentVersion: number
-    actingUserId: string | null
-    args: RunStatsArgs
-  }): Promise<RunStatsResult> {
+  async query(input: RunAnalysisRequester & { args: RunStatsArgs }): Promise<RunStatsResult> {
     const { tenantId, args } = input
     const { scope, candidates, limit, truncated } = await this.runIndexService.resolveScope({
       tenantId,
@@ -342,8 +299,9 @@ export class RunStatsService {
     })
 
     const scopeIds = await this.resolveScopeIds(tenantId, candidates)
-    const toolWhere = buildScopedOrFilter(scopeIds)
-    const modelWhere = buildModelScopedOrFilter(scopeIds)
+    const scopeFilter = buildScopedCallFilter(scopeIds)
+    const toolWhere: Prisma.ToolCallWhereInput | null = scopeFilter
+    const modelWhere: Prisma.ModelCallWhereInput | null = scopeFilter
 
     const emptyResult = (): RunStatsResult => ({
       scope,
@@ -377,7 +335,7 @@ export class RunStatsService {
       latencySample,
       sourceKeySample,
       denialGroups,
-      modelCalls,
+      promptCache,
       toolCallTotal,
       modelCallTotal,
       skillAuditRows,
@@ -420,11 +378,8 @@ export class RunStatsService {
           })
         : Promise.resolve([]),
       modelWhere
-        ? this.prisma.modelCall.findMany({
-            where: { agent: { tenantId }, ...modelWhere },
-            select: { promptTokens: true, cachedPromptTokens: true },
-          })
-        : Promise.resolve([]),
+        ? this.loadPromptCacheStats(tenantId, modelWhere)
+        : Promise.resolve(EMPTY_PROMPT_CACHE),
       toolWhere
         ? this.prisma.toolCall.count({ where: { agent: { tenantId }, ...toolWhere } })
         : Promise.resolve(0),
@@ -472,7 +427,7 @@ export class RunStatsService {
       truncated,
       toolOutcomeMatrix,
       latencyByTool: buildLatencyByTool(latencyRows),
-      promptCache: buildPromptCacheStats(modelCalls),
+      promptCache,
       repeatedSourceKeys,
       repeatedSourceKeysTruncated: sourceKeyTruncated || repeatedKeysTruncated,
       denialReasons,
@@ -487,6 +442,28 @@ export class RunStatsService {
     return result
   }
 
+  /** Cache-arány DB-oldali aggregációval: mért hívások összegei + mérettelenek darabszáma. */
+  private async loadPromptCacheStats(
+    tenantId: string,
+    modelWhere: Prisma.ModelCallWhereInput,
+  ): Promise<RunStatsPromptCache> {
+    const where = { agent: { tenantId }, ...modelWhere }
+    const [measured, unmeasuredCalls] = await Promise.all([
+      this.prisma.modelCall.aggregate({
+        where: { ...where, cachedPromptTokens: { not: null } },
+        _count: { _all: true },
+        _sum: { promptTokens: true, cachedPromptTokens: true },
+      }),
+      this.prisma.modelCall.count({ where: { ...where, cachedPromptTokens: null } }),
+    ])
+    return buildPromptCacheStats({
+      measuredCalls: measured._count._all,
+      unmeasuredCalls,
+      promptTokens: measured._sum.promptTokens ?? 0,
+      cachedPromptTokens: measured._sum.cachedPromptTokens ?? 0,
+    })
+  }
+
   private async resolveScopeIds(
     tenantId: string,
     candidates: RunIndexCandidate[],
@@ -495,8 +472,8 @@ export class RunStatsService {
     const ticketIds = candidates.filter((c) => c.grain === 'ticket').map((c) => c.id)
     const processIds = candidates.filter((c) => c.grain === 'process').map((c) => c.id)
 
-    const processTicketMap = await loadProcessTicketIds(this.prisma, processIds)
-    const processTicketIds = processIds.flatMap((id) => processTicketMap.get(id) ?? [])
+    const processTickets = await loadProcessTicketIndex(this.prisma, processIds)
+    const processTicketIds = processIds.flatMap((id) => processTickets.byProcess.get(id) ?? [])
     const allTicketIds = [...new Set([...ticketIds, ...processTicketIds])]
 
     const [turnRows, ticketRows] = await Promise.all([
@@ -596,26 +573,13 @@ export class RunStatsService {
   }
 
   private async auditQuery(
-    input: {
-      tenantId: string
-      requesterAgentId: string
-      requesterAgentVersion: number
-      args: RunStatsArgs
-    },
+    requester: RunAnalysisRequester,
     result: RunStatsResult,
   ): Promise<void> {
-    await this.audit.append({
-      actorType: 'agent',
-      actorId: input.requesterAgentId,
-      agentVersion: input.requesterAgentVersion,
+    await appendRunAnalysisAudit(this.audit, requester, {
       action: 'analysis.run_stats',
-      targetType: 'tenant',
-      targetId: input.tenantId,
-      tenantId: input.tenantId,
-      modelUsed: null,
       inputRef: null,
       outputRef: String(result.totals.toolCallCount),
-      policyDecision: 'allowed',
       metadata: {
         scope: result.scope,
         runCount: result.runCount,

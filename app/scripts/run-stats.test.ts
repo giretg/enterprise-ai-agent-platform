@@ -59,17 +59,24 @@ async function main() {
   })
 
   await test('buildPromptCacheStats: null cache ≠ nincs találat', () => {
-    const stats = buildPromptCacheStats([
-      { promptTokens: 1000, cachedPromptTokens: 400 },
-      { promptTokens: 800, cachedPromptTokens: null },
-    ])
+    const stats = buildPromptCacheStats({
+      measuredCalls: 1,
+      unmeasuredCalls: 1,
+      promptTokens: 1000,
+      cachedPromptTokens: 400,
+    })
     assert.equal(stats.measuredCalls, 1)
     assert.equal(stats.unmeasuredCalls, 1)
     assert.equal(stats.hitRatio, 0.4)
   })
 
   await test('buildPromptCacheStats: nincs mért sor → hitRatio null', () => {
-    const stats = buildPromptCacheStats([{ promptTokens: 500, cachedPromptTokens: null }])
+    const stats = buildPromptCacheStats({
+      measuredCalls: 0,
+      unmeasuredCalls: 1,
+      promptTokens: 0,
+      cachedPromptTokens: 0,
+    })
     assert.equal(stats.hitRatio, null)
   })
 

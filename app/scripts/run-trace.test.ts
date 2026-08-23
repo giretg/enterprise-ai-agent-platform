@@ -8,23 +8,28 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  MAX_PROCESS_PAYLOAD_CHARS,
   analyzeProcessSlotGaps,
   buildProcessTraceView,
+  truncatePayload,
   mapDelegationEdge,
   mapProcessInstance,
   mapProcessStep,
   projectPlaybookSpecForTrace,
 } from '../src/domain/run-analysis/run-trace-process'
 import {
+  MAX_TRACE_SUMMARY_NON_OK,
   RUN_TRACE_MAX_OUTPUT_CHARS,
   RUN_TRACE_NOT_FOUND,
   RunTraceNotFoundError,
-  aggregateToolCallsByToolAndOutcome,
-  applyTraceFilters,
+  applyActivityStepRange,
   buildTimeline,
   buildTokenCurve,
   buildTraceSummary,
+  enforceSummaryBudget,
   estimateTraceOutputChars,
+  planTraceFilters,
+  sortToolOutcomeGroups,
 } from '../src/domain/run-analysis/run-trace-service'
 import { PLAYBOOK_SCHEMA_VERSION } from '../src/lib/playbook-v2/spec'
 import {
@@ -119,6 +124,43 @@ function syntheticTurnRun(toolCallCount: number) {
   }
 }
 
+/** A szintetikus futásból ugyanaz a bemenet, amit élesben a DB-aggregátumok adnak. */
+function summaryInputFrom(run: ReturnType<typeof syntheticTurnRun>) {
+  const groups = new Map<string, { toolName: string; outcome: string | null; count: number }>()
+  for (const call of run.toolCalls) {
+    const key = `${call.toolName}\u0000${call.outcome ?? ''}`
+    const existing = groups.get(key)
+    if (existing) existing.count += 1
+    else groups.set(key, { toolName: call.toolName, outcome: call.outcome, count: 1 })
+  }
+  const nonOk = run.toolCalls
+    .filter((c) => c.status !== 'ok' || (c.outcome != null && c.outcome !== 'ok'))
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+  return {
+    header: {
+      runId: run.runId,
+      grain: run.grain,
+      agentId: run.agentId,
+      agentName: run.agentName,
+      conversationId: run.conversationId,
+      ticketId: run.ticketId,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      status: run.status,
+      turnCount: run.turnCount,
+      deniedCount: run.deniedCount,
+    },
+    toolCallCount: run.toolCalls.length,
+    modelCallCount: run.modelCalls.length,
+    toolOutcomeGroups: [...groups.values()],
+    toolOutcomeGroupsTruncated: false,
+    tokenCurveSample: run.modelCalls,
+    tokenCurveTruncated: false,
+    nonOkToolCalls: nonOk.slice(0, MAX_TRACE_SUMMARY_NON_OK),
+    nonOkToolCallCount: nonOk.length,
+  }
+}
+
 async function main() {
   console.log('=== RA-04 / RA-05 run_trace ===')
 
@@ -145,7 +187,7 @@ async function main() {
 
   await test('150 eszközhívás: summary belefér a méret-korlátba', () => {
     const run = syntheticTurnRun(150)
-    const summary = buildTraceSummary(run)
+    const summary = buildTraceSummary(summaryInputFrom(run))
     assert.equal(summary.toolCallCount, 150)
     assert.equal(summary.turnCount, 40)
     const result = { view: 'summary' as const, runId: run.runId, grain: run.grain, summary }
@@ -172,24 +214,55 @@ async function main() {
     assert.equal(seenToolCalls, 150)
   })
 
-  await test('aggregateToolCallsByToolAndOutcome: eszköznév × kimenetel', () => {
-    const agg = aggregateToolCallsByToolAndOutcome([
-      { toolName: 'file_read', outcome: 'ok' },
-      { toolName: 'file_read', outcome: 'ok' },
-      { toolName: 'file_read', outcome: 'empty' },
-      { toolName: 'kb_search', outcome: 'ok' },
+  await test('sortToolOutcomeGroups: gyakoriság, majd eszköznév szerint', () => {
+    const agg = sortToolOutcomeGroups([
+      { toolName: 'kb_search', outcome: 'ok', count: 1 },
+      { toolName: 'file_read', outcome: 'ok', count: 2 },
+      { toolName: 'file_read', outcome: 'empty', count: 1 },
     ])
-    assert.equal(agg.find((r) => r.toolName === 'file_read' && r.outcome === 'ok')?.count, 2)
+    assert.equal(agg[0]!.toolName, 'file_read')
+    assert.equal(agg[0]!.count, 2)
     assert.equal(agg.find((r) => r.toolName === 'file_read' && r.outcome === 'empty')?.count, 1)
   })
 
-  await test('applyTraceFilters: eszköznév és outcome szűrés', () => {
+  await test('planTraceFilters: az eszköz-szűrők a DB where-be mennek', () => {
+    const plan = planTraceFilters({
+      grain: 'turn',
+      runId: 'x',
+      toolName: 'file_read',
+      outcome: 'failed',
+      since: '2026-08-01T10:00:00Z',
+    })
+    assert.equal(plan.toolWhere.toolName, 'file_read')
+    assert.equal(plan.toolWhere.outcome, 'failed')
+    assert.ok(plan.timeWhere?.gte instanceof Date)
+    // Eszköz-szűrésnél a nem-eszköz források le sem kérdeződnek.
+    assert.equal(plan.sources.modelCalls, false)
+    assert.equal(plan.sources.messages, false)
+    assert.equal(plan.sources.audit, false)
+    assert.equal(plan.sources.toolCalls, true)
+  })
+
+  await test('applyActivityStepRange: csak az aktivitásokat szűri', () => {
     const run = syntheticTurnRun(20)
     const timeline = buildTimeline(run)
-    const filtered = applyTraceFilters(timeline, { grain: 'turn', runId: 'x', toolName: 'file_read' })
-    assert.ok(filtered.every((e) => e.kind !== 'tool_call' || e.toolName === 'file_read'))
-    const nonOk = applyTraceFilters(timeline, { grain: 'turn', runId: 'x', outcome: 'failed' })
-    assert.ok(nonOk.every((e) => e.kind !== 'tool_call' || e.outcome === 'failed'))
+    const plan = planTraceFilters({ grain: 'turn', runId: 'x', stepFrom: 5 })
+    const filtered = applyActivityStepRange(timeline, plan)
+    assert.ok(filtered.every((e) => e.kind !== 'activity' || e.stepIndex >= 5))
+    assert.equal(
+      filtered.filter((e) => e.kind === 'tool_call').length,
+      timeline.filter((e) => e.kind === 'tool_call').length,
+    )
+  })
+
+  await test('enforceSummaryBudget: az összefoglaló szűkül, de sosem hibázik el', () => {
+    const run = syntheticTurnRun(150)
+    const summary = buildTraceSummary(summaryInputFrom(run))
+    const degraded = enforceSummaryBudget(summary, 500)
+    assert.ok(degraded.degradedFields.length > 0)
+    assert.deepEqual(degraded.tokenCurve, [])
+    assert.equal(degraded.runId, summary.runId)
+    assert.equal(degraded.toolCallCount, summary.toolCallCount)
   })
 
   await test('buildTokenCurve: modellhívások időrendben', () => {
@@ -377,7 +450,7 @@ async function main() {
       }),
     ]
 
-    const view = buildProcessTraceView({
+    const viewArgs = {
       process,
       steps,
       delegations,
@@ -385,11 +458,14 @@ async function main() {
       entryStepId: 'step-1',
       transitions: playbookSpecRaw.transitions,
       processInput: { topic: 'Q3 riport' },
-    })
+    }
+    const view = buildProcessTraceView({ ...viewArgs, view: 'detail' })
 
     assert.equal(view.view, 'process')
     assert.equal(view.grain, 'process')
+    assert.equal(view.detail, 'detail')
     assert.equal(view.steps.length, 3)
+    assert.equal(view.stepCount, 3)
 
     const step2 = view.steps.find((s) => s.stepId === 'step-2')!
     const step3 = view.steps.find((s) => s.stepId === 'step-3')!
@@ -409,6 +485,46 @@ async function main() {
     const gap = view.slotGaps.find((g) => g.stepId === 'step-3')
     assert.ok(gap)
     assert.deepEqual(gap.missingRequiredSlots, ['summary'])
+
+    // A slotGaps az ALAPNÉZETBEN is teljes — a hibás átadás egy hívásból megnevezhető,
+    // miközben a nyers payloadok nem terhelik a választ.
+    const summaryView = buildProcessTraceView(viewArgs)
+    assert.equal(summaryView.detail, 'summary')
+    assert.deepEqual(
+      summaryView.slotGaps.find((g) => g.stepId === 'step-3')?.missingRequiredSlots,
+      ['summary'],
+    )
+    const omitted = summaryView.steps.find((s) => s.stepId === 'step-2')!.resultPayload as Record<
+      string,
+      unknown
+    >
+    assert.equal(omitted.omitted, true)
+    assert.equal(typeof omitted.totalChars, 'number')
+
+    // A detail-ág lapozott: egy lépés lapon, a többi a következő lapon.
+    const firstPage = buildProcessTraceView({ ...viewArgs, view: 'detail', limit: 1, offset: 0 })
+    assert.equal(firstPage.returnedStepCount, 1)
+    assert.equal(firstPage.stepCount, 3)
+    assert.equal(firstPage.truncated, true)
+    assert.equal(firstPage.steps[0]!.stepId, 'step-1')
+    // A lapon csak az őt érintő átadási élek jönnek.
+    assert.ok(firstPage.delegations.every((e) => e.fromStepId === 'step-1' || e.toStepId === 'step-1'))
+
+    const lastPage = buildProcessTraceView({ ...viewArgs, view: 'detail', limit: 1, offset: 2 })
+    assert.equal(lastPage.steps[0]!.stepId, 'step-3')
+    assert.equal(lastPage.truncated, false)
+  })
+
+  await test('truncatePayload: a méret-korlát fölötti payload láthatóan csonkolódik', () => {
+    const small = truncatePayload({ a: 'x' })
+    assert.equal(small.truncated, false)
+
+    const big = truncatePayload({ blob: 'x'.repeat(MAX_PROCESS_PAYLOAD_CHARS + 100) })
+    assert.equal(big.truncated, true)
+    const marker = big.value as Record<string, unknown>
+    assert.equal(marker.truncated, true)
+    assert.ok((marker.totalChars as number) > MAX_PROCESS_PAYLOAD_CHARS)
+    assert.equal((marker.preview as string).length, MAX_PROCESS_PAYLOAD_CHARS)
   })
 
   await test('analyzeProcessSlotGaps: üres előző kimenet → hiányzó step-forrású slot', () => {

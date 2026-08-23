@@ -8,13 +8,13 @@ import 'server-only'
  */
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { RUN_ANALYSIS_SKILL_NAME } from '@/domain/agents/run-analyst-role'
 import { computeSkillContentHash } from '@/lib/skill/skill-content'
 import { signSkillVersion } from '@/lib/crypto/hash-chain'
 import { parseSkillMd } from '@/lib/skill/skill-md-adapter'
 import { validateSkill } from '@/lib/skill/skill-validator'
 import { PostgresSkillRepository } from '@/repositories/postgres/skill-repository'
 
-export const RUN_ANALYSIS_SKILL_NAME = 'futas-elemzes' as const
 
 const SKILL_MD_PATH = resolve(
   __dirname,

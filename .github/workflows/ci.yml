@@ -80,6 +80,12 @@ jobs:
           npm run test:control-plane-nav
           npm run test:agent-access-graph
           npm run test:default-user-agent-grants
+          npm run test:run-index
+          npm run test:run-trace
+          npm run test:run-stats
+          npm run test:run-analyst-role
+          npm run test:run-analyst-skill
+          npm run test:run-analysis-entry
           npm run test:memory-approval
           npm run test:training-tenant
           npm run test:memory-conflicts
@@ -234,6 +240,15 @@ jobs:
 
       - name: Default user→agent grant DB-regresszió (#344)
         run: npm run test:default-user-agent-grants-db
+
+      # Futás-elemző (#343): a tenantonként EGY példány kényszerét, az admin-only
+      # grantokat és a tenant-izolációt (idegen azonosító → `run_not_found`) csak
+      # valódi Postgres ellen lehet bizonyítani.
+      - name: Futás-elemző materializáció DB-invariánsok (#345)
+        run: npm run test:run-analyst-materialization-db
+
+      - name: Futás-elemző záró-ellenőrzés (#353)
+        run: npm run test:run-analyst-verification
 
       # AI Privacy Gateway APG-01: a surrogate_map bijektivitását (unique +
       # párhuzamos allokáció → újraolvasás, nem duplikátum) csak valódi Postgres

@@ -75,6 +75,9 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent_access.restriction.update',
   // Tenant user↔agent kiinduló jogmátrix (minden tag látja/megszólíthatja a tenant agenteket).
   'agent_access.default_grants.materialize',
+  // Futás-elemző (#343): admin-only user→agent grantok materializálása. Ez adja a
+  // hozzáférést a tenant TELJES napló-forgalmához, ezért külön nyoma van.
+  'agent_access.run_analyst_admin_grants.materialize',
   // Tenant admin: agent elrejtése / megjelenítése az operátorok listájából.
   'agent.operator_visibility',
   'agent.persona',

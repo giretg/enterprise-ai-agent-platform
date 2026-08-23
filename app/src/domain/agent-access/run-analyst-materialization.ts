@@ -8,9 +8,10 @@ import 'server-only'
  * true — alapból senki nem éri el. A tenant adminok explicit user→agent grantot
  * kapnak (canView + canAddress); operator/approver/viewer nem.
  */
-import type { Agent } from '@prisma/client'
+import type { Agent, Prisma } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
 import { configPrisma, prisma } from '@/lib/db'
+import { appendAuditInTransaction } from '@/repositories/postgres/audit-repository'
 import {
   RUN_ANALYST_PRIVACY_CATEGORY_POLICY,
   RUN_ANALYST_ROLE_CAPABILITIES,
@@ -88,7 +89,29 @@ export async function materializeRunAnalystAdminGrants(params: {
 
   if (rows.length === 0) return { grantsCreated: 0 }
 
-  await prisma.agentAccessGrant.createMany({ data: rows, skipDuplicates: true })
+  // Hozzáférés-adás auditálva — ugyanúgy, mint a normál grant-úton. E nélkül nem
+  // lenne nyoma, ki és mikor kapott hozzáférést a tenant teljes napló-forgalmához.
+  await prisma.$transaction(async (tx) => {
+    await tx.agentAccessGrant.createMany({ data: rows, skipDuplicates: true })
+    await appendAuditInTransaction(tx, {
+      actorType: 'human',
+      actorId: params.actorUserId,
+      agentVersion: null,
+      action: 'agent_access.run_analyst_admin_grants.materialize',
+      targetType: 'agent',
+      targetId: agent.id,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'materialized',
+      tenantId: params.tenantId,
+      metadata: {
+        grantsCreated: rows.length,
+        subjectUserIds: rows.map((row) => row.subjectUserId),
+        scopedToUserId: params.userId ?? null,
+      },
+    })
+  })
   return { grantsCreated: rows.length }
 }
 
@@ -168,8 +191,12 @@ export async function ensureRunAnalystPrivacyCategoryPolicy(
   }
   await configPrisma.platformSetting.upsert({
     where: { key: PRIVACY_CATEGORY_POLICY_AGENT_KEY },
-    create: { key: PRIVACY_CATEGORY_POLICY_AGENT_KEY, value: store, updatedById: actorId },
-    update: { value: store, updatedById: actorId },
+    create: {
+      key: PRIVACY_CATEGORY_POLICY_AGENT_KEY,
+      value: store as Prisma.InputJsonValue,
+      updatedById: actorId,
+    },
+    update: { value: store as Prisma.InputJsonValue, updatedById: actorId },
   })
 }
 

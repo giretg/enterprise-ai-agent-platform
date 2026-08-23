@@ -872,7 +872,7 @@ async function main() {
         argsMeta: { kimenet: 'feldolgozott-tulajdoni-lap-043-15.json' },
         effectSummary: { target: 'feldolgozott-tulajdoni-lap-043-15.json', unit: 'rekord', amount: 182 },
       }),
-    ]!
+    ].filter((row): row is NonNullable<typeof row> => row !== null)
     const enriched = enrichCandidateFromEvidence(contract, {}, evidence)
     assert.equal(enriched.feldolgozottLapPath, 'feldolgozott-tulajdoni-lap-043-15.json')
     const validated = validateAgainstContract(contract, enriched)
@@ -891,7 +891,7 @@ async function main() {
         outcome: 'ok',
         argsMeta: { kimenet: 'handoff.json' },
       }),
-    ]!
+    ].filter((row): row is NonNullable<typeof row> => row !== null)
     const result = await runStrictContract({
       gateway: {
         async call() {
@@ -939,7 +939,7 @@ async function main() {
         outcome: 'ok',
         effectSummary: { target: 'riport.xlsx', unit: 'sor', amount: 10 },
       }),
-    ]!
+    ].filter((row): row is NonNullable<typeof row> => row !== null)
     const result = await runStrictContract({
       gateway: makeGateway(provider),
       contract,

@@ -8,31 +8,31 @@
  * deny-by-default kimaradnak — hozzáférésüket a saját materializációjuk adja explicit
  * grantokkal. Kivétel csak a `DEFAULT_GRANTABLE_SYSTEM_ROLES` allowlistben nevesíthető.
  */
+import type { AgentSystemRole, Prisma } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '@/lib/db'
 import { AGENT_ACCESS_SUBJECT_MEMBERSHIP_STATUSES } from '@/lib/agent-access-graph'
 import { DEFAULT_GRANTABLE_SYSTEM_ROLES } from '@/lib/platform-agent-registry'
+import { logger } from '@/lib/observability/logger'
 import { appendAuditInTransaction } from '@/repositories/postgres/audit-repository'
+import { materializeRunAnalystAdminGrants } from './run-analyst-materialization'
 
 export type MaterializeDefaultGrantsResult = {
   agentsRestricted: number
   grantsCreated: number
 }
 
-function grantableAgentWhere(tenantId: string, agentId?: string) {
-  const base = {
+/**
+ * Grantolható agentek: minden normál (`systemRole: null`) agent, plusz ami az
+ * allowlistben nevesítve van. Üres allowlistnél az `in: []` ág semmire nem
+ * illeszkedik — a szabálynak így EGY alakja van, nem kettő.
+ */
+function grantableAgentWhere(tenantId: string, agentId?: string): Prisma.AgentWhereInput {
+  const grantable = DEFAULT_GRANTABLE_SYSTEM_ROLES as readonly AgentSystemRole[]
+  return {
     tenantId,
     ...(agentId ? { id: agentId } : {}),
-  }
-  if (DEFAULT_GRANTABLE_SYSTEM_ROLES.length === 0) {
-    return { ...base, systemRole: null }
-  }
-  return {
-    ...base,
-    OR: [
-      { systemRole: null },
-      { systemRole: { in: [...DEFAULT_GRANTABLE_SYSTEM_ROLES] } },
-    ],
+    OR: [{ systemRole: null }, { systemRole: { in: [...grantable] } }],
   }
 }
 
@@ -68,9 +68,7 @@ export async function materializeDefaultUserAgentGrants(params: {
   ])
 
   if (agents.length === 0 || members.length === 0) {
-    if (userId) {
-      await materializeRunAnalystAdminGrantsForUser({ tenantId, actorUserId, userId }).catch(() => {})
-    }
+    await backfillRunAnalystAdminGrants({ tenantId, actorUserId, userId })
     return { agentsRestricted: 0, grantsCreated: 0 }
   }
 
@@ -121,9 +119,7 @@ export async function materializeDefaultUserAgentGrants(params: {
   }
 
   if (toRestrict.length === 0 && rows.length === 0) {
-    if (userId) {
-      await materializeRunAnalystAdminGrantsForUser({ tenantId, actorUserId, userId }).catch(() => {})
-    }
+    await backfillRunAnalystAdminGrants({ tenantId, actorUserId, userId })
     return { agentsRestricted: 0, grantsCreated: 0 }
   }
 
@@ -161,13 +157,7 @@ export async function materializeDefaultUserAgentGrants(params: {
     { timeout: 60_000 },
   )
 
-  if (userId) {
-    try {
-      await materializeRunAnalystAdminGrantsForUser({ tenantId, actorUserId, userId })
-    } catch {
-      // A tagság már aktív; az admin grant backfill pótolhatja.
-    }
-  }
+  await backfillRunAnalystAdminGrants({ tenantId, actorUserId, userId })
 
   return { agentsRestricted: toRestrict.length, grantsCreated: rows.length }
 }
@@ -175,12 +165,31 @@ export async function materializeDefaultUserAgentGrants(params: {
 /**
  * Új tenant-tag (különösen admin) Futás-elemző grantjainak pótlása. A rendszer-szerepű
  * agent kimarad a default grant mátrixból — az admin grantokat a materializáció adja.
+ *
+ * Fail-soft: a tagság ekkor már aktív, ezért a hiba nem buktatja a hívót. De NEM
+ * néma — ha ez elmarad, az új admin nem éri el a Futás-elemzőt, és e nélkül a sor
+ * nélkül senki nem tudná, miért.
  */
-async function materializeRunAnalystAdminGrantsForUser(params: {
+async function backfillRunAnalystAdminGrants(params: {
   tenantId: string
   actorUserId: string
-  userId: string
+  userId?: string
 }): Promise<void> {
-  const { materializeRunAnalystAdminGrants } = await import('./run-analyst-materialization')
-  await materializeRunAnalystAdminGrants(params)
+  if (!params.userId) return
+  try {
+    await materializeRunAnalystAdminGrants({
+      tenantId: params.tenantId,
+      actorUserId: params.actorUserId,
+      userId: params.userId,
+    })
+  } catch (error) {
+    logger.warn(
+      {
+        tenantId: params.tenantId,
+        userId: params.userId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'run_analyst.admin_grant_backfill_failed',
+    )
+  }
 }

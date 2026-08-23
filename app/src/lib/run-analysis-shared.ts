@@ -26,6 +26,11 @@ export function buildRunAnalysisAgentHref(agentId: string, prefill: string): str
   return `/control-plane/agents/${agentId}?${params.toString()}`
 }
 
+/** A teljes „Elemezd" útvonal egy szkópból — minden belépési pont ezt hívja. */
+export function buildRunAnalysisHref(agentId: string, scope: RunAnalysisScope): string {
+  return buildRunAnalysisAgentHref(agentId, buildRunAnalysisPrefill(scope))
+}
+
 export type RunAnalysisEntry = {
   canRunAnalysis: boolean
   runAnalystAgentId: string | null

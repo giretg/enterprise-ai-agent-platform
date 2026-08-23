@@ -121,25 +121,37 @@ function buildIncidentTraceRun() {
     status: 'ok',
     createdAt: new Date(base + i * 2_000),
   }))
+  // Ugyanaz a bemenet, amit élesben a DB-oldali aggregátumok adnak a summarynak.
+  const groups = new Map<string, { toolName: string; outcome: string | null; count: number }>()
+  for (const call of toolCalls) {
+    const key = `${call.toolName}\u0000${call.outcome}`
+    const existing = groups.get(key)
+    if (existing) existing.count += 1
+    else groups.set(key, { toolName: call.toolName, outcome: call.outcome, count: 1 })
+  }
+
   return {
-    grain: 'turn' as const,
-    runId: 'turn-incident',
-    agentId: 'agent-laci',
-    agentName: 'LACI',
-    conversationId: 'conv-3aae080f',
-    ticketId: null,
-    startedAt: new Date(base),
-    finishedAt: new Date(base + 3600_000),
-    status: 'failed',
-    turnCount: 40,
-    deniedCount: 0,
-    modelCalls,
-    toolCalls,
-    activities: [],
-    messages: [],
-    transitions: [],
-    comments: [],
-    audit: [],
+    header: {
+      runId: 'turn-incident',
+      grain: 'turn' as const,
+      agentId: 'agent-laci',
+      agentName: 'LACI',
+      conversationId: 'conv-3aae080f',
+      ticketId: null,
+      startedAt: new Date(base),
+      finishedAt: new Date(base + 3600_000),
+      status: 'failed',
+      turnCount: 40,
+      deniedCount: 0,
+    },
+    toolCallCount: toolCalls.length,
+    modelCallCount: modelCalls.length,
+    toolOutcomeGroups: [...groups.values()],
+    toolOutcomeGroupsTruncated: false,
+    tokenCurveSample: modelCalls,
+    tokenCurveTruncated: false,
+    nonOkToolCalls: [],
+    nonOkToolCallCount: 0,
   }
 }
 
@@ -391,6 +403,8 @@ async function seedTenantIsolationFixture() {
     worker,
     conversation,
     ticket,
+    playbook,
+    playbookVersion,
     process,
     agentTurn,
     runAnalystA,
@@ -400,6 +414,9 @@ async function seedTenantIsolationFixture() {
 }
 
 async function cleanupIsolationFixture(f: Awaited<ReturnType<typeof seedTenantIsolationFixture>>) {
+  const agentIds = [f.worker.id, f.runAnalystA.id, f.runAnalystB.id]
+  await prisma.modelCall.deleteMany({ where: { agentId: { in: agentIds } } })
+  await prisma.toolCall.deleteMany({ where: { agentId: { in: agentIds } } })
   await prisma.agentTurn.deleteMany({ where: { conversationId: f.conversation.id } })
   await prisma.processInstance.deleteMany({ where: { tenantId: f.tenantA.id } })
   await prisma.playbookVersionV2.deleteMany({ where: { playbookId: f.process.playbookId } })
@@ -758,6 +775,152 @@ async function main() {
         args: { grain: 'turn', runId: f.agentTurn.id, view: 'summary' },
       })
       assert.ok(audit.entries.some((e) => e.action === 'analysis.run_trace'))
+
+      // US15: az audit-sorból ki kell derülnie, KI kérte az elemzést. Az `actorId`
+      // maga az elemző agent, ezért az emberi kérő a metadatában van.
+      const indexEntry = audit.entries.find((e) => e.action === 'analysis.run_index')!
+      assert.equal(
+        (indexEntry.metadata as { requestedByUserId?: string | null }).requestedByUserId,
+        f.adminA.id,
+      )
+      const statsEntry = audit.entries.find((e) => e.action === 'analysis.run_stats')!
+      assert.equal(
+        (statsEntry.metadata as { requestedByUserId?: string | null }).requestedByUserId,
+        null,
+      )
+    } finally {
+      await cleanupIsolationFixture(f)
+    }
+  })
+
+  await check('önelemzés: az elemző indította folyamat-futás nem kerül a run_index-be', async () => {
+    const f = await seedTenantIsolationFixture()
+    try {
+      const analystProcess = await prisma.processInstance.create({
+        data: {
+          tenantId: f.tenantA.id,
+          processType: 'ra_iso',
+          status: 'created',
+          playbookId: f.playbook.id,
+          playbookVersionId: f.playbookVersion.id,
+          playbookRef: f.playbook.key,
+          playbookContentHash: f.playbookVersion.contentHash,
+          startedByType: 'agent',
+          startedByAgentId: f.runAnalystA.id,
+        },
+      })
+
+      const index = new RunIndexService(prisma, new CapturingAudit())
+      const result = await index.query({
+        tenantId: f.tenantA.id,
+        requesterAgentId: f.runAnalystA.id,
+        requesterAgentVersion: 1,
+        actingUserId: f.adminA.id,
+        args: { playbookVersionId: f.playbookVersion.id, limit: 50 },
+      })
+
+      const ids = result.runs.map((run) => run.runId)
+      assert.ok(!ids.includes(analystProcess.id), 'az elemző saját folyamat-futása kizárva')
+      // A NEM az elemző által indított folyamat viszont bent marad (a `notIn`
+      // önmagában kizárná a NULL indítójú sorokat is).
+      assert.ok(ids.includes(f.process.id), 'idegen indítójú folyamat-futás megmarad')
+
+      await prisma.processInstance.delete({ where: { id: analystProcess.id } })
+    } finally {
+      await cleanupIsolationFixture(f)
+    }
+  })
+
+  await check('run_trace: DB-oldali összefoglaló és lapozott idővonal 60 eszközhíváson', async () => {
+    const f = await seedTenantIsolationFixture()
+    try {
+      const base = Date.now() - 600_000
+      await prisma.toolCall.createMany({
+        data: Array.from({ length: 60 }, (_, i) => ({
+          agentId: f.worker.id,
+          conversationId: f.conversation.id,
+          agentTurnId: f.agentTurn.id,
+          toolName: i % 2 === 0 ? 'file_read' : 'kb_search',
+          status: (i % 20 === 0 ? 'error' : 'ok') as 'error' | 'ok',
+          outcome: (i % 20 === 0 ? 'failed' : 'ok') as 'failed' | 'ok',
+          latencyMs: 10 + i,
+          argsMeta: { path: `f-${i}.json` },
+          createdAt: new Date(base + i * 1_000),
+        })),
+      })
+      await prisma.modelCall.createMany({
+        data: Array.from({ length: 10 }, (_, i) => ({
+          agentId: f.worker.id,
+          conversationId: f.conversation.id,
+          agentTurnId: f.agentTurn.id,
+          provider: 'stub',
+          model: 'stub',
+          promptTokens: 1_000 + i * 100,
+          completionTokens: 50,
+          cachedPromptTokens: null,
+          costEstimate: 0,
+          latencyMs: 100,
+          createdAt: new Date(base + i * 5_000),
+        })),
+      })
+
+      const trace = new RunTraceService(prisma, new CapturingAudit())
+      const requester = {
+        tenantId: f.tenantA.id,
+        requesterAgentId: f.runAnalystA.id,
+        requesterAgentVersion: 1,
+        actingUserId: f.adminA.id,
+      }
+
+      const summary = await trace.query({
+        ...requester,
+        args: { grain: 'turn' as const, runId: f.agentTurn.id, view: 'summary' as const },
+      })
+      assert.equal(summary.view, 'summary')
+      if (summary.view !== 'summary') throw new Error('summary várt')
+      assert.equal(summary.summary.toolCallCount, 60)
+      assert.equal(summary.summary.modelCallCount, 10)
+      assert.equal(summary.summary.nonOkToolCalls.length, 3)
+      assert.deepEqual(summary.summary.degradedFields, [])
+
+      // A teljes idővonal lapozással végigjárható, és nincs átfedés/kimaradás.
+      const seen = new Set<string>()
+      let offset = 0
+      let total = 0
+      for (let page = 0; page < 10; page += 1) {
+        const detail = await trace.query({
+          ...requester,
+          args: {
+            grain: 'turn' as const,
+            runId: f.agentTurn.id,
+            view: 'detail' as const,
+            limit: 25,
+            offset,
+          },
+        })
+        if (detail.view !== 'detail') throw new Error('detail várt')
+        total = detail.totalCount
+        for (const entry of detail.entries) seen.add(`${entry.kind}:${entry.seq}`)
+        offset += detail.entries.length
+        if (!detail.truncated || detail.entries.length === 0) break
+      }
+      assert.equal(seen.size, total, 'minden idővonal-elem pontosan egyszer jött vissza')
+      assert.ok(total >= 70, `70 sor + üzenetek vártak, kapott: ${total}`)
+
+      // Eszköz-szűrés a DB where-be megy: csak tool_call jön vissza.
+      const filtered = await trace.query({
+        ...requester,
+        args: {
+          grain: 'turn' as const,
+          runId: f.agentTurn.id,
+          view: 'detail' as const,
+          toolName: 'kb_search',
+          limit: 200,
+        },
+      })
+      if (filtered.view !== 'detail') throw new Error('detail várt')
+      assert.equal(filtered.totalCount, 30)
+      assert.ok(filtered.entries.every((e) => e.kind === 'tool_call'))
     } finally {
       await cleanupIsolationFixture(f)
     }

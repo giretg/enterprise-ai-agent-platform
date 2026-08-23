@@ -6,6 +6,9 @@
  * manipulálható naplótartalom; kifelé menő eszköz a legjobb kiszivárogtató csatorna
  * lenne.
  */
+
+/** A Futás-elemző „Futás-elemzés" skilljének kanonikus neve (RA-07 / #351). */
+export const RUN_ANALYSIS_SKILL_NAME = 'futas-elemzes' as const
 import type { ModelConfig } from '@/domain/gateway/model-gateway'
 import {
   DEFAULT_PRIVACY_CATEGORY_POLICY,

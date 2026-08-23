@@ -12,7 +12,20 @@ import type {
   ConnectorGrant,
   TicketState,
 } from '@prisma/client'
+import type {
+  RunIndexArgs,
+  RunIndexHeader,
+  RunIndexResult,
+} from '@/domain/run-analysis/run-index-types'
 import type { RunStatsArgs, RunStatsResult } from '@/domain/run-analysis/run-stats-types'
+import type {
+  RunTraceArgs,
+  RunTraceGrain,
+  RunTraceProcessResult,
+  RunTraceResult,
+  RunTraceSummary,
+  RunTraceTimelineEntry,
+} from '@/domain/run-analysis/run-trace-types'
 import type { SettledToolOutcome, ToolEffectSummary } from './tool-output-contract'
 import type { AgentCatalogEntry } from '@/lib/agent-catalog'
 import type { TulajdoniLapNezet, TulajdoniLapView } from '@/lib/tulajdoni-lap'
@@ -321,151 +334,23 @@ export type GetDebugTraceResult = {
   projection: Record<string, unknown>
 }
 
-/** RA-03 — futás-fejlécek szkóp-feloldással (Run Analyst `run_index`). */
-export type RunIndexArgs = {
-  agentId?: string
-  agentQuery?: string
-  conversationId?: string
-  ticketId?: string
-  processInstanceId?: string
-  playbookVersionId?: string
-  since?: string
-  until?: string
-  limit?: number
-  agentTurnIds?: string[]
-  ticketIds?: string[]
-  processInstanceIds?: string[]
+/**
+ * RA-03 … RA-06 — a Futás-elemző három olvasó toolja. A bemenet/kimenet KANONIKUS
+ * alakja a `src/domain/run-analysis/*-types.ts` fájlokban él; itt csak
+ * re-exportáljuk, hogy a broker publikus felülete egyben maradjon. Külön másolat
+ * elcsúszna a valóditól (a folyamat-nézet lapozása épp így maradt volna ki).
+ */
+export type {
+  RunIndexArgs,
+  RunIndexHeader,
+  RunIndexResult,
+  RunTraceArgs,
+  RunTraceGrain,
+  RunTraceProcessResult,
+  RunTraceResult,
+  RunTraceSummary,
+  RunTraceTimelineEntry,
 }
-
-export type RunIndexHeader = {
-  runId: string
-  grain: 'turn' | 'ticket' | 'process'
-  agentId: string
-  agentName: string
-  startedAt: string
-  finishedAt: string | null
-  conversationId: string | null
-  ticketId: string | null
-  processInstanceId: string | null
-  turnCount: number
-  toolCallCount: number
-  deniedCount: number
-  promptTokens: number
-  completionTokens: number
-  cachedPromptTokens: number
-  costEstimate: number
-  status: string
-  stopReason: string | null
-}
-
-export type RunIndexResult = {
-  runs: RunIndexHeader[]
-  returnedCount: number
-  limit: number
-  truncated: boolean
-  scope: {
-    agentId: string | null
-    agentQuery: string | null
-    conversationId: string | null
-    ticketId: string | null
-    processInstanceId: string | null
-    playbookVersionId: string | null
-    since: string | null
-    until: string | null
-  }
-}
-
-/** RA-04 / RA-05 — lapozott futás-idővonal és folyamat-nézet (Run Analyst `run_trace`). */
-export type RunTraceGrain = 'turn' | 'ticket' | 'process'
-
-export type RunTraceTimelineArgs = {
-  grain: Extract<RunTraceGrain, 'turn' | 'ticket'>
-  runId: string
-  view?: 'summary' | 'detail'
-  limit?: number
-  offset?: number
-  since?: string
-  until?: string
-  stepFrom?: number
-  stepTo?: number
-  toolName?: string
-  status?: string
-  outcome?: string
-}
-
-export type RunTraceProcessArgs = {
-  grain: 'process'
-  runId: string
-}
-
-export type RunTraceArgs = RunTraceTimelineArgs | RunTraceProcessArgs
-
-export type RunTraceSummary = {
-  runId: string
-  grain: Extract<RunTraceGrain, 'turn' | 'ticket'>
-  agentId: string
-  agentName: string
-  conversationId: string | null
-  ticketId: string | null
-  startedAt: string
-  finishedAt: string | null
-  status: string
-  turnCount: number
-  deniedCount: number
-  toolCallCount: number
-  toolCallsByToolAndOutcome: Array<{ toolName: string; outcome: string | null; count: number }>
-  tokenCurve: Array<{
-    at: string
-    promptTokens: number
-    completionTokens: number
-    cachedPromptTokens: number | null
-  }>
-  nonOkToolCalls: Array<{
-    id: string
-    toolName: string
-    status: string
-    outcome: string | null
-    createdAt: string
-  }>
-  nonOkToolCallsTruncated: boolean
-}
-
-export type RunTraceTimelineEntry = Record<string, unknown> & { kind: string; seq: number; at: string }
-
-export type RunTraceProcessResult = {
-  view: 'process'
-  runId: string
-  grain: 'process'
-  process: Record<string, unknown>
-  steps: Array<Record<string, unknown>>
-  delegations: Array<Record<string, unknown>>
-  playbookSpec: Record<string, unknown>
-  slotGaps: Array<{ stepId: string; missingRequiredSlots: string[] }>
-}
-
-export type RunTraceResult =
-  | { view: 'summary'; runId: string; grain: Extract<RunTraceGrain, 'turn' | 'ticket'>; summary: RunTraceSummary }
-  | {
-      view: 'detail'
-      runId: string
-      grain: Extract<RunTraceGrain, 'turn' | 'ticket'>
-      entries: RunTraceTimelineEntry[]
-      returnedCount: number
-      limit: number
-      offset: number
-      totalCount: number
-      truncated: boolean
-      filters: {
-        since: string | null
-        until: string | null
-        stepFrom: number | null
-        stepTo: number | null
-        toolName: string | null
-        status: string | null
-        outcome: string | null
-      }
-    }
-  | RunTraceProcessResult
 
 /** RA-06 — futás-aggregátumok szkóp alapján (Run Analyst `run_stats`). */
 export type {

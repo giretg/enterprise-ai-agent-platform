@@ -10,6 +10,11 @@ import type { AuditRepository } from '@/repositories/interfaces'
 import { scoreAgentForCatalogQuery } from '@/lib/agent-catalog'
 import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, toListPage } from '@/lib/list-pagination'
 import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
+import {
+  appendRunAnalysisAudit,
+  loadProcessTicketIndex,
+  type RunAnalysisRequester,
+} from './run-scope'
 import type {
   RunIndexArgs,
   RunIndexCandidate,
@@ -60,16 +65,63 @@ function resolveLimit(raw: number | undefined): number {
   return Math.min(Math.max(1, n), MAX_LIST_LIMIT)
 }
 
+/**
+ * Önelemzés-kizárás egy NULLOZHATÓ agent-mezőre. A puszta `notIn` SQL-ben kizárná
+ * a NULL sorokat is (`NULL NOT IN (…)` sosem igaz) — vagyis a gazdátlan ticketek és
+ * a nem agent által indított folyamatok némán eltűnnének a listából. Ezért explicit
+ * `IS NULL OR NOT IN`.
+ */
+function excludeAnalystAgent<F extends string>(
+  field: F,
+  runAnalystIds: string[],
+): Record<string, unknown> {
+  if (runAnalystIds.length === 0) return {}
+  return {
+    OR: [{ [field]: null }, { [field]: { notIn: runAnalystIds } }],
+  }
+}
+
+/** Az `AgentTurn.agentId` nem nullozható — ott elég az egyszerű `notIn`. */
 function runAnalystExclusionAgentIds(runAnalystIds: string[]) {
   if (runAnalystIds.length === 0) return {}
   return { agentId: { notIn: runAnalystIds } }
 }
+
+/** Egy futás-listához legfeljebb ennyi agentet nézünk át névre kereséskor. */
+export const MAX_AGENT_MATCH_CANDIDATES = 200
+/** Prefilter-találat nélküli tartalék pásztázás felső korlátja. */
+export const MAX_AGENT_SCAN = 500
 
 type TokenAgg = {
   promptTokens: number
   completionTokens: number
   cachedPromptTokens: number
   costEstimate: number
+}
+
+/** Prisma `_sum` (nullozható, `costEstimate` Decimal) → sima számok. */
+function tokenAggOf(sum: {
+  promptTokens: number | null
+  completionTokens: number | null
+  cachedPromptTokens: number | null
+  costEstimate: unknown
+}): TokenAgg {
+  return {
+    promptTokens: sum.promptTokens ?? 0,
+    completionTokens: sum.completionTokens ?? 0,
+    cachedPromptTokens: sum.cachedPromptTokens ?? 0,
+    costEstimate: sum.costEstimate == null ? 0 : Number(sum.costEstimate),
+  }
+}
+
+function addTokenAgg(prev: TokenAgg | undefined, next: TokenAgg): TokenAgg {
+  if (!prev) return next
+  return {
+    promptTokens: prev.promptTokens + next.promptTokens,
+    completionTokens: prev.completionTokens + next.completionTokens,
+    cachedPromptTokens: prev.cachedPromptTokens + next.cachedPromptTokens,
+    costEstimate: prev.costEstimate + next.costEstimate,
+  }
 }
 
 export class RunIndexService {
@@ -152,13 +204,7 @@ export class RunIndexService {
     return { scope, candidates: selected, limit, truncated }
   }
 
-  async query(input: {
-    tenantId: string
-    requesterAgentId: string
-    requesterAgentVersion: number
-    actingUserId: string | null
-    args: RunIndexArgs
-  }): Promise<RunIndexResult> {
+  async query(input: RunAnalysisRequester & { args: RunIndexArgs }): Promise<RunIndexResult> {
     const tenantId = input.tenantId
     const { scope, candidates: selected, limit, truncated } = await this.resolveScope({
       tenantId,
@@ -175,18 +221,10 @@ export class RunIndexService {
       scope,
     }
 
-    await this.audit.append({
-      actorType: 'agent',
-      actorId: input.requesterAgentId,
-      agentVersion: input.requesterAgentVersion,
+    await appendRunAnalysisAudit(this.audit, input, {
       action: 'analysis.run_index',
-      targetType: 'tenant',
-      targetId: tenantId,
-      tenantId,
-      modelUsed: null,
       inputRef: null,
       outputRef: String(result.returnedCount),
-      policyDecision: 'allowed',
       metadata: {
         scope,
         returnedCount: result.returnedCount,
@@ -215,27 +253,60 @@ export class RunIndexService {
     const query = args.agentQuery?.trim()
     if (!query) return undefined
 
-    const agents = await this.prisma.agent.findMany({
-      where: {
-        tenantId,
-        id: runAnalystIds.length ? { notIn: runAnalystIds } : undefined,
-      },
-      select: {
-        id: true,
-        name: true,
-        roleInstruction: true,
-        status: true,
-        personaNickname: true,
-        personaGreeting: true,
-        personaTrait: true,
-      },
-    })
+    const agents = await this.findAgentMatchCandidates(tenantId, query, runAnalystIds)
     const scored = agents
       .map((agent) => ({ agent, score: scoreAgentForCatalogQuery(agent, query) }))
       .filter((row) => row.score > 0)
       .sort((a, b) => b.score - a.score)
     if (scored.length === 0) throw new RunIndexNotFoundError()
     return scored[0]!.agent.id
+  }
+
+  /**
+   * Agent-jelöltek névre kereséshez. Először DB-oldali `contains` előszűrés (a
+   * tipikus eset), és csak ha az üres — mert a pontozó ékezet- és
+   * személyiség-normalizálva is talál —, akkor egy FELSŐ KORLÁTOS pásztázás.
+   * A tenant teljes agent-listáját sosem húzzuk be.
+   */
+  private async findAgentMatchCandidates(
+    tenantId: string,
+    query: string,
+    runAnalystIds: string[],
+  ) {
+    const select = {
+      id: true,
+      name: true,
+      roleInstruction: true,
+      status: true,
+      personaNickname: true,
+      personaGreeting: true,
+      personaTrait: true,
+    }
+    const base = {
+      tenantId,
+      ...(runAnalystIds.length ? { id: { notIn: runAnalystIds } } : {}),
+    }
+
+    const terms = [query, ...query.split(/\s+/).filter((t) => t.length >= 2)]
+    const contains = terms.flatMap((term) => [
+      { name: { contains: term, mode: 'insensitive' as const } },
+      { personaNickname: { contains: term, mode: 'insensitive' as const } },
+      { roleInstruction: { contains: term, mode: 'insensitive' as const } },
+    ])
+
+    const prefiltered = await this.prisma.agent.findMany({
+      where: { ...base, OR: contains },
+      select,
+      take: MAX_AGENT_MATCH_CANDIDATES,
+    })
+    if (prefiltered.length > 0) return prefiltered
+
+    return this.prisma.agent.findMany({
+      where: base,
+      select,
+      orderBy: { createdAt: 'desc' },
+      take: MAX_AGENT_SCAN,
+    })
   }
 
   private async validateScopeAnchors(tenantId: string, args: RunIndexArgs): Promise<void> {
@@ -311,9 +382,9 @@ export class RunIndexService {
         where: {
           id: { in: args.ticketIds },
           tenantId,
-          ...analystFilter,
+          ...excludeAnalystAgent('agentId', runAnalystIds),
         },
-        select: { id: true, createdAt: true, updatedAt: true },
+        select: { id: true, createdAt: true },
       })
       if (tickets.length !== args.ticketIds.length) throw new RunIndexNotFoundError()
       for (const ticket of tickets) {
@@ -327,7 +398,11 @@ export class RunIndexService {
 
     if (args.processInstanceIds?.length) {
       const processes = await this.prisma.processInstance.findMany({
-        where: { id: { in: args.processInstanceIds }, tenantId },
+        where: {
+          id: { in: args.processInstanceIds },
+          tenantId,
+          ...excludeAnalystAgent('startedByAgentId', runAnalystIds),
+        },
         select: { id: true, startedAt: true },
       })
       if (processes.length !== args.processInstanceIds.length) throw new RunIndexNotFoundError()
@@ -373,7 +448,7 @@ export class RunIndexService {
 
     const ticketWhere = {
       tenantId,
-      ...analystFilter,
+      ...excludeAnalystAgent('agentId', runAnalystIds),
       ...(filters.agentId ? { agentId: filters.agentId } : {}),
       ...(filters.conversationId ? { conversationId: filters.conversationId } : {}),
       ...(filters.ticketId ? { id: filters.ticketId } : {}),
@@ -382,6 +457,7 @@ export class RunIndexService {
 
     const processWhere = {
       tenantId,
+      ...excludeAnalystAgent('startedByAgentId', runAnalystIds),
       ...(filters.processInstanceId ? { id: filters.processInstanceId } : {}),
       ...(filters.playbookVersionId ? { playbookVersionId: filters.playbookVersionId } : {}),
       ...(timeFilter ? { startedAt: timeFilter } : {}),
@@ -435,6 +511,11 @@ export class RunIndexService {
     return candidates
   }
 
+  /**
+   * Fejlécek a kiválasztott futásokhoz. A token- és eszközhívás-számok DB-oldali
+   * aggregációval (`groupBy` + `_sum`) készülnek — a modellhívás-sorokat sosem
+   * húzzuk be futásonként (003-paginate-unbounded-lists).
+   */
   private async buildHeaders(
     tenantId: string,
     selected: RunIndexCandidate[],
@@ -443,25 +524,54 @@ export class RunIndexService {
     const ticketIds = selected.filter((s) => s.grain === 'ticket').map((s) => s.id)
     const processIds = selected.filter((s) => s.grain === 'process').map((s) => s.id)
 
-    const [turns, tickets, processes] = await Promise.all([
+    const [turns, tickets, processes, processTickets] = await Promise.all([
       turnIds.length
         ? this.prisma.agentTurn.findMany({
             where: { id: { in: turnIds }, tenantId },
+            select: {
+              id: true,
+              agentId: true,
+              conversationId: true,
+              status: true,
+              startedAt: true,
+              finishedAt: true,
+              turnCount: true,
+              toolCallCount: true,
+              deniedCount: true,
+              reason: true,
+              error: true,
+            },
           })
         : Promise.resolve([]),
       ticketIds.length
         ? this.prisma.ticket.findMany({
             where: { id: { in: ticketIds }, tenantId },
+            select: {
+              id: true,
+              agentId: true,
+              conversationId: true,
+              processInstanceId: true,
+              state: true,
+              createdAt: true,
+              updatedAt: true,
+            },
           })
         : Promise.resolve([]),
       processIds.length
         ? this.prisma.processInstance.findMany({
             where: { id: { in: processIds }, tenantId },
-            include: {
+            select: {
+              id: true,
+              status: true,
+              startedAt: true,
+              completedAt: true,
+              failedAt: true,
+              startedByAgentId: true,
               steps: { select: { status: true } },
             },
           })
         : Promise.resolve([]),
+      loadProcessTicketIndex(this.prisma, processIds),
     ])
 
     const agentIds = [
@@ -482,135 +592,71 @@ export class RunIndexService {
     const ticketMap = new Map(tickets.map((t) => [t.id, t]))
     const processMap = new Map(processes.map((p) => [p.id, p]))
 
-    const [turnTokens, ticketTokens, processTokens] = await Promise.all([
-      turnIds.length
-        ? this.prisma.modelCall.findMany({
-            where: { agentTurnId: { in: turnIds } },
-            select: {
-              agentTurnId: true,
-              promptTokens: true,
-              completionTokens: true,
-              cachedPromptTokens: true,
-              costEstimate: true,
-            },
-          })
-        : Promise.resolve([]),
-      ticketIds.length
-        ? this.prisma.modelCall.findMany({
-            where: { ticketId: { in: ticketIds } },
-            select: {
-              ticketId: true,
-              promptTokens: true,
-              completionTokens: true,
-              cachedPromptTokens: true,
-              costEstimate: true,
-            },
-          })
-        : Promise.resolve([]),
-      processIds.length
-        ? this.prisma.ticket.findMany({
-            where: { processInstanceId: { in: processIds } },
-            select: { processInstanceId: true, id: true },
-          }).then(async (procTickets) => {
-            const ids = procTickets.map((t) => t.id)
-            if (!ids.length) return []
-            return this.prisma.modelCall.findMany({
-              where: { ticketId: { in: ids } },
-              select: {
-                ticketId: true,
+    // A folyamat token-számához a hozzá tartozó ticketek modellhívásai kellenek.
+    const processTicketIdList = [...processTickets.processByTicket.keys()]
+    const ticketTokenIds = [...new Set([...ticketIds, ...processTicketIdList])]
+
+    const [turnTokenGroups, ticketTokenGroups, toolCountsByTurn, toolCountsByTicket] =
+      await Promise.all([
+        turnIds.length
+          ? this.prisma.modelCall.groupBy({
+              by: ['agentTurnId'],
+              where: { agentTurnId: { in: turnIds } },
+              _sum: {
                 promptTokens: true,
                 completionTokens: true,
                 cachedPromptTokens: true,
                 costEstimate: true,
               },
             })
-          })
-        : Promise.resolve([]),
-    ])
+          : Promise.resolve([]),
+        ticketTokenIds.length
+          ? this.prisma.modelCall.groupBy({
+              by: ['ticketId'],
+              where: { ticketId: { in: ticketTokenIds } },
+              _sum: {
+                promptTokens: true,
+                completionTokens: true,
+                cachedPromptTokens: true,
+                costEstimate: true,
+              },
+            })
+          : Promise.resolve([]),
+        turnIds.length
+          ? this.prisma.toolCall.groupBy({
+              by: ['agentTurnId'],
+              where: { agentTurnId: { in: turnIds } },
+              _count: { _all: true },
+            })
+          : Promise.resolve([]),
+        ticketTokenIds.length
+          ? this.prisma.toolCall.groupBy({
+              by: ['ticketId'],
+              where: { ticketId: { in: ticketTokenIds } },
+              _count: { _all: true },
+            })
+          : Promise.resolve([]),
+      ])
 
     const tokensByTurn = new Map<string, TokenAgg>()
-    for (const row of turnTokens) {
+    for (const row of turnTokenGroups) {
       if (!row.agentTurnId) continue
-      const prev = tokensByTurn.get(row.agentTurnId) ?? {
-        promptTokens: 0,
-        completionTokens: 0,
-        cachedPromptTokens: 0,
-        costEstimate: 0,
-      }
-      tokensByTurn.set(row.agentTurnId, {
-        promptTokens: prev.promptTokens + row.promptTokens,
-        completionTokens: prev.completionTokens + row.completionTokens,
-        cachedPromptTokens: prev.cachedPromptTokens + (row.cachedPromptTokens ?? 0),
-        costEstimate: prev.costEstimate + Number(row.costEstimate),
-      })
+      tokensByTurn.set(row.agentTurnId, tokenAggOf(row._sum))
     }
 
     const tokensByTicket = new Map<string, TokenAgg>()
-    for (const row of ticketTokens) {
+    for (const row of ticketTokenGroups) {
       if (!row.ticketId) continue
-      const prev = tokensByTicket.get(row.ticketId) ?? {
-        promptTokens: 0,
-        completionTokens: 0,
-        cachedPromptTokens: 0,
-        costEstimate: 0,
-      }
-      tokensByTicket.set(row.ticketId, {
-        promptTokens: prev.promptTokens + row.promptTokens,
-        completionTokens: prev.completionTokens + row.completionTokens,
-        cachedPromptTokens: prev.cachedPromptTokens + (row.cachedPromptTokens ?? 0),
-        costEstimate: prev.costEstimate + Number(row.costEstimate),
-      })
+      tokensByTicket.set(row.ticketId, tokenAggOf(row._sum))
     }
 
-    const processTicketIds = processIds.length
-      ? (
-          await this.prisma.ticket.findMany({
-            where: { processInstanceId: { in: processIds } },
-            select: { id: true, processInstanceId: true },
-          })
-        ).reduce<Map<string, string[]>>((acc, row) => {
-          if (!row.processInstanceId) return acc
-          const list = acc.get(row.processInstanceId) ?? []
-          list.push(row.id)
-          acc.set(row.processInstanceId, list)
-          return acc
-        }, new Map())
-      : new Map<string, string[]>()
-
+    // Ticket → folyamat irányban összegzünk: nincs futás × ticket kereszt-járás.
     const tokensByProcess = new Map<string, TokenAgg>()
-    for (const row of processTokens) {
-      if (!row.ticketId) continue
-      for (const [processId, tids] of processTicketIds) {
-        if (!tids.includes(row.ticketId)) continue
-        const prev = tokensByProcess.get(processId) ?? {
-          promptTokens: 0,
-          completionTokens: 0,
-          cachedPromptTokens: 0,
-          costEstimate: 0,
-        }
-        tokensByProcess.set(processId, {
-          promptTokens: prev.promptTokens + row.promptTokens,
-          completionTokens: prev.completionTokens + row.completionTokens,
-          cachedPromptTokens: prev.cachedPromptTokens + (row.cachedPromptTokens ?? 0),
-          costEstimate: prev.costEstimate + Number(row.costEstimate),
-        })
-      }
+    for (const [ticketId, tokens] of tokensByTicket) {
+      const processId = processTickets.processByTicket.get(ticketId)
+      if (!processId) continue
+      tokensByProcess.set(processId, addTokenAgg(tokensByProcess.get(processId), tokens))
     }
-
-    const toolCountsByTurn = turnIds.length
-      ? await this.prisma.toolCall.groupBy({
-          by: ['agentTurnId'],
-          where: { agentTurnId: { in: turnIds } },
-          _count: { _all: true },
-        })
-      : []
-    const toolCountsByTicket = ticketIds.length
-      ? await this.prisma.toolCall.groupBy({
-          by: ['ticketId'],
-          where: { ticketId: { in: ticketIds } },
-          _count: { _all: true },
-        })
-      : []
 
     const toolCountTurnMap = new Map(
       toolCountsByTurn.map((r) => [r.agentTurnId, r._count._all]),
@@ -657,7 +703,7 @@ export class RunIndexService {
             : '',
           tokensByProcess.get(candidate.id),
           toolCountTicketMap,
-          processTicketIds.get(candidate.id) ?? [],
+          processTickets.byProcess.get(candidate.id) ?? [],
         ),
       )
     }

@@ -11,6 +11,7 @@ import { parseSkillMd } from '../src/lib/skill/skill-md-adapter'
 import { validateSkill } from '../src/lib/skill/skill-validator'
 import { skillAllowsAttachments } from '../src/lib/skill/skill-content'
 import {
+  RUN_ANALYSIS_SKILL_NAME,
   RUN_ANALYST_LOOP_GUARD_OVERRIDES,
   RUN_ANALYST_ROLE_TEMPLATE,
   mergeRunAnalystLoopGuardModelConfig,
@@ -20,7 +21,6 @@ import {
   shouldPromoteSkillRunToTask,
   buildSkillTaskPromotionMessage,
 } from '../src/domain/agent/skill-task-promotion'
-import { RUN_ANALYSIS_SKILL_NAME } from '../src/domain/agent-access/run-analyst-skill-provisioning'
 
 let failures = 0
 

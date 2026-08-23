@@ -1,9 +1,5 @@
 import Link from 'next/link'
-import {
-  buildRunAnalysisAgentHref,
-  buildRunAnalysisPrefill,
-  type RunAnalysisScope,
-} from '@/lib/run-analysis-shared'
+import { buildRunAnalysisHref, type RunAnalysisScope } from '@/lib/run-analysis-shared'
 
 const DEFAULT_CLASS =
   'rounded-full border border-honey/35 bg-honey/10 px-4 py-2.5 text-sm font-semibold text-honey transition-colors hover:bg-honey/20'
@@ -16,16 +12,17 @@ export function RunAnalysisButton({
   runAnalystAgentId,
   scope,
   className = DEFAULT_CLASS,
-  title = 'Futás-elemző megnyitása előre kitöltött kéréssel',
 }: {
   runAnalystAgentId: string
   scope: RunAnalysisScope
   className?: string
-  title?: string
 }) {
-  const href = buildRunAnalysisAgentHref(runAnalystAgentId, buildRunAnalysisPrefill(scope))
   return (
-    <Link href={href} className={className} title={title}>
+    <Link
+      href={buildRunAnalysisHref(runAnalystAgentId, scope)}
+      className={className}
+      title="Futás-elemző megnyitása előre kitöltött kéréssel"
+    >
       Elemezd
     </Link>
   )

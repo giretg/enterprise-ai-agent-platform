@@ -107,6 +107,13 @@ function numArg(args: Record<string, unknown>, key: string): number | undefined 
   return typeof args[key] === 'number' ? args[key] : undefined
 }
 
+/** UUID-lista argumentum — a `run_index` és a `run_stats` szkópja ugyanezt használja. */
+function uuidListArg(args: Record<string, unknown>, key: string): string[] | undefined {
+  const raw = args[key]
+  if (!Array.isArray(raw)) return undefined
+  return raw.filter((v): v is string => typeof v === 'string' && v.length > 0)
+}
+
 function boolArg(args: Record<string, unknown>, key: string): boolean | undefined {
   return typeof args[key] === 'boolean' ? args[key] : undefined
 }
@@ -1925,11 +1932,6 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       processInstanceIds: z.array(z.string().uuid()).max(50).optional(),
     }),
     toInvokeInput: (args, ctx) => {
-      const uuidList = (key: string): string[] | undefined => {
-        const raw = args[key]
-        if (!Array.isArray(raw)) return undefined
-        return raw.filter((v): v is string => typeof v === 'string' && v.length > 0)
-      }
       return {
         ...ctx,
         tool: 'run_index',
@@ -1943,9 +1945,9 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
           since: strArg(args, 'since') || undefined,
           until: strArg(args, 'until') || undefined,
           limit: numArg(args, 'limit') || undefined,
-          agentTurnIds: uuidList('agentTurnIds'),
-          ticketIds: uuidList('ticketIds'),
-          processInstanceIds: uuidList('processInstanceIds'),
+          agentTurnIds: uuidListArg(args, 'agentTurnIds'),
+          ticketIds: uuidListArg(args, 'ticketIds'),
+          processInstanceIds: uuidListArg(args, 'processInstanceIds'),
         },
       }
     },
@@ -1963,8 +1965,10 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       'Bemenet: `grain` (`turn`, `ticket` vagy `process`) és `runId`. ' +
       'Chat/ticket ág: alapból `summary` (körök, eszközhívások, token-görbe, nem-ok hívások); ' +
       '`view: "detail"` lapozott idővonal (ModelCall, ToolCall, üzenetek, aktivitások, ticket-átmenetek, audit). ' +
-      'Folyamat ág (`grain: "process"`): ProcessInstance, lépések resultPayload-dal, DelegationEdge sorok, ' +
-      'playbook-spec (instructionTemplate, inputSlots, gate-ek, kritikusság) és slot-gap elemzés. ' +
+      'Folyamat ág (`grain: "process"`): alapból `summary` — a lépések és átadási élek FEJLÉCE nyers ' +
+      'payload nélkül, de a `slotGaps` teljes (ez nevezi meg lépés- és slot-szinten a hibás átadást). ' +
+      '`view: "detail"` a lapozott lépések nyers be-/kimenetével és a lapot érintő DelegationEdge sorokkal; ' +
+      'a playbook-spec (instructionTemplate, inputSlots, gate-ek, kritikusság) mindkét nézetben jön. ' +
       'Egy lépés ticket futása a `ticketId`-n át tovább fúrható (`grain: "ticket"`).',
     argsSchema: z.object({
       grain: z.enum(['turn', 'ticket', 'process']),
@@ -1985,7 +1989,14 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       tool: 'run_trace',
       args:
         args.grain === 'process'
-          ? { grain: 'process', runId: strArg(args, 'runId') }
+          ? {
+              grain: 'process',
+              runId: strArg(args, 'runId'),
+              view:
+                args.view === 'detail' ? 'detail' : args.view === 'summary' ? 'summary' : undefined,
+              limit: numArg(args, 'limit') || undefined,
+              offset: numArg(args, 'offset') || undefined,
+            }
           : {
               grain: args.grain === 'ticket' ? 'ticket' : 'turn',
               runId: strArg(args, 'runId'),
@@ -2033,11 +2044,6 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       processInstanceIds: z.array(z.string().uuid()).max(50).optional(),
     }),
     toInvokeInput: (args, ctx) => {
-      const uuidList = (key: string): string[] | undefined => {
-        const raw = args[key]
-        if (!Array.isArray(raw)) return undefined
-        return raw.filter((v): v is string => typeof v === 'string' && v.length > 0)
-      }
       return {
         ...ctx,
         tool: 'run_stats',
@@ -2051,9 +2057,9 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
           since: strArg(args, 'since') || undefined,
           until: strArg(args, 'until') || undefined,
           limit: numArg(args, 'limit') || undefined,
-          agentTurnIds: uuidList('agentTurnIds'),
-          ticketIds: uuidList('ticketIds'),
-          processInstanceIds: uuidList('processInstanceIds'),
+          agentTurnIds: uuidListArg(args, 'agentTurnIds'),
+          ticketIds: uuidListArg(args, 'ticketIds'),
+          processInstanceIds: uuidListArg(args, 'processInstanceIds'),
         },
       }
     },

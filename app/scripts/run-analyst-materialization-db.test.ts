@@ -4,6 +4,7 @@
  * Futtatás: npm run test:run-analyst-materialization-db
  */
 import assert from 'node:assert/strict'
+import { RUN_ANALYSIS_SKILL_NAME } from '../src/domain/agents/run-analyst-role'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../src/lib/db'
 import {
@@ -12,7 +13,6 @@ import {
   materializeRunAnalystAdminGrants,
 } from '../src/domain/agent-access/run-analyst-materialization'
 import { RUN_ANALYST_ROLE_CAPABILITIES } from '../src/domain/agents/run-analyst-role'
-import { RUN_ANALYSIS_SKILL_NAME } from '../src/domain/agent-access/run-analyst-skill-provisioning'
 import { materializeDefaultUserAgentGrants } from '../src/domain/agent-access/default-user-agent-grants'
 import { isAdminOnlyGraphNode, receivesDefaultUserAgentGrants } from '../src/lib/platform-agent-registry'
 import {
@@ -35,7 +35,7 @@ import type {
 
 let failures = 0
 
-async function check(name: string, fn: () => Promise<void>) {
+async function check(name: string, fn: () => void | Promise<void>) {
   try {
     await fn()
     console.log(`  OK  ${name}`)

@@ -14,7 +14,52 @@ import type {
   RunTraceProcessResult,
   RunTraceProcessStep,
   RunTraceStepSlotGap,
+  RunTraceTruncatedPayload,
+  RunTraceView,
 } from './run-trace-types'
+
+/** Egy nyers payload (folyamat be-/kimenet, lépés-eredmény, él-metaadat) felső mérete. */
+export const MAX_PROCESS_PAYLOAD_CHARS = 4_000
+/** Egy `instructionTemplate` felső mérete a spec-vetületben. */
+export const MAX_INSTRUCTION_TEMPLATE_CHARS = 2_000
+/** Lépés-lap alapmérete és plafonja a `detail` folyamat-nézetben. */
+export const DEFAULT_PROCESS_PAGE_LIMIT = 50
+export const MAX_PROCESS_PAGE_LIMIT = 200
+
+/**
+ * Nyers payload méret-korlátozása. A csonkolás LÁTHATÓ: a hívó `truncated: true`-t
+ * és az eredeti méretet kapja, nem egy csendben megvágott objektumot.
+ */
+export function truncatePayload(
+  value: unknown,
+  maxChars = MAX_PROCESS_PAYLOAD_CHARS,
+): { value: unknown | RunTraceTruncatedPayload; truncated: boolean } {
+  if (value == null) return { value, truncated: false }
+  let serialized: string
+  try {
+    serialized = JSON.stringify(value) ?? ''
+  } catch {
+    return {
+      value: { truncated: true, totalChars: 0, preview: '[nem szerializálható]' },
+      truncated: true,
+    }
+  }
+  if (serialized.length <= maxChars) return { value, truncated: false }
+  return {
+    value: {
+      truncated: true,
+      totalChars: serialized.length,
+      preview: serialized.slice(0, maxChars),
+    },
+    truncated: true,
+  }
+}
+
+function truncateText(value: string | undefined, maxChars: number): string | undefined {
+  if (value == null) return value
+  if (value.length <= maxChars) return value
+  return `${value.slice(0, maxChars)}… [csonkolva, teljes hossz: ${value.length}]`
+}
 
 export function projectPlaybookSpecForTrace(input: {
   playbookVersionId: string
@@ -40,7 +85,7 @@ function projectStepSpec(step: PlaybookSpecV2['steps'][number]): RunTracePlayboo
   return {
     id: step.id,
     name: step.name,
-    instructionTemplate: step.instructionTemplate,
+    instructionTemplate: truncateText(step.instructionTemplate, MAX_INSTRUCTION_TEMPLATE_CHARS),
     inputSlots: step.inputSlots?.map((slot) => ({
       name: slot.name,
       type: slot.type,
@@ -238,6 +283,14 @@ function topologicalStepOrder(
   return order
 }
 
+/**
+ * Folyamat-nézet felépítése.
+ *
+ * A `slotGaps` MINDIG a teljes lépéssoron, a NYERS payloadokból számolódik — ez a
+ * spec fő használati esete (a hibás átadás lépés- és slot-szintű megnevezése), ezért
+ * nem eshet ki lapozás miatt. A nyers be-/kimenet viszont lapozott és méret-korlátos:
+ * `summary` (alap) payload nélküli fejlécek, `detail` a kért lap nyers payloaddal.
+ */
 export function buildProcessTraceView(input: {
   process: RunTraceProcessInstance
   steps: RunTraceProcessStep[]
@@ -246,6 +299,9 @@ export function buildProcessTraceView(input: {
   entryStepId: string
   transitions: Array<{ fromStepId: string; toStepId: string }>
   processInput: Record<string, unknown>
+  view?: RunTraceView
+  limit?: number
+  offset?: number
 }): RunTraceProcessResult {
   const slotGaps = analyzeProcessSlotGaps({
     playbookSteps: input.playbookSpec.steps,
@@ -255,14 +311,87 @@ export function buildProcessTraceView(input: {
     transitions: input.transitions,
   })
 
+  const detail: RunTraceView = input.view === 'detail' ? 'detail' : 'summary'
+  const limit = Math.min(Math.max(1, input.limit ?? DEFAULT_PROCESS_PAGE_LIMIT), MAX_PROCESS_PAGE_LIMIT)
+  const offset = Math.max(0, input.offset ?? 0)
+
+  const stepCount = input.steps.length
+  const delegationCount = input.delegations.length
+  const truncatedFields: string[] = []
+
+  const pagedSteps = detail === 'detail' ? input.steps.slice(offset, offset + limit) : input.steps
+  const pagedStepIds = new Set(pagedSteps.map((step) => step.stepId))
+  const pagedDelegations =
+    detail === 'detail'
+      ? input.delegations.filter(
+          (edge) => pagedStepIds.has(edge.fromStepId) || pagedStepIds.has(edge.toStepId),
+        )
+      : input.delegations
+
+  const process = projectPayloads(
+    input.process,
+    detail,
+    ['inputPayload', 'outputPayload'],
+    'process',
+    truncatedFields,
+  )
+  const steps = pagedSteps.map((step, index) =>
+    projectPayloads(step, detail, ['resultPayload'], `steps[${offset + index}]`, truncatedFields),
+  )
+  const delegations = pagedDelegations.map((edge, index) =>
+    projectPayloads(edge, detail, ['metadata'], `delegations[${index}]`, truncatedFields),
+  )
+
   return {
     view: 'process',
     runId: input.process.id,
     grain: 'process',
-    process: input.process,
-    steps: input.steps,
-    delegations: input.delegations,
+    detail,
+    process,
+    steps,
+    delegations,
     playbookSpec: input.playbookSpec,
     slotGaps,
+    stepCount,
+    delegationCount,
+    returnedStepCount: steps.length,
+    limit,
+    offset: detail === 'detail' ? offset : 0,
+    truncated: detail === 'detail' ? offset + steps.length < stepCount : false,
+    truncatedFields,
+  }
+}
+
+/**
+ * `summary`: a nyers payload-mezők helyére a méretük kerül (`omitted`), hogy a
+ * fejléc-nézet garantáltan kicsi legyen. `detail`: a nyers érték, méret-korláttal.
+ */
+function projectPayloads<T extends Record<string, unknown>>(
+  row: T,
+  detail: RunTraceView,
+  payloadKeys: Array<keyof T & string>,
+  path: string,
+  truncatedFields: string[],
+): T {
+  const next = { ...row }
+  for (const key of payloadKeys) {
+    const raw = next[key]
+    if (raw == null) continue
+    if (detail === 'summary') {
+      next[key] = { omitted: true, totalChars: safeLength(raw) } as T[keyof T & string]
+      continue
+    }
+    const { value, truncated } = truncatePayload(raw)
+    next[key] = value as T[keyof T & string]
+    if (truncated) truncatedFields.push(`${path}.${key}`)
+  }
+  return next
+}
+
+function safeLength(value: unknown): number {
+  try {
+    return (JSON.stringify(value) ?? '').length
+  } catch {
+    return 0
   }
 }

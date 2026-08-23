@@ -46,8 +46,7 @@ import { ChatMarkdown, TypingIndicator } from '@/components/chat/chat-markdown'
 import { PrivacyHighlightedText } from '@/components/privacy/privacy-highlighted-text'
 import type { PrivacyEntityMarker } from '@/domain/privacy/privacy-observability'
 import {
-  buildRunAnalysisAgentHref,
-  buildRunAnalysisPrefill,
+  buildRunAnalysisHref,
   type RunAnalysisEntry,
 } from '@/lib/run-analysis-shared'
 import { getChatPrivacyMarkerContext } from '@/app/actions/privacy'
@@ -2182,15 +2181,13 @@ export function AgentChatPanel({
       return
     }
     const sessionTitle = sessions.find((session) => session.id === conversationId)?.title
-    const href = buildRunAnalysisAgentHref(
-      runAnalysisEntry.runAnalystAgentId,
-      buildRunAnalysisPrefill({
+    router.push(
+      buildRunAnalysisHref(runAnalysisEntry.runAnalystAgentId, {
         kind: 'conversation',
         conversationId,
         title: sessionTitle,
       }),
     )
-    router.push(href)
   }, [conversationId, runAnalysisEntry, router, sessions])
 
   const reloadConversationMessages = useCallback(

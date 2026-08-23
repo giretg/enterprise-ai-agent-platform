@@ -1077,6 +1077,10 @@ export interface AuditRepository {
     ticketId?: string
     conversationId?: string
     since?: Date
+    /** Időablak felső határa (inkluzív) — DB-oldali szűrés JS-utószűrés helyett. */
+    until?: Date
+    /** `desc` (alap): legfrissebb N. `asc`: legrégebbi N — idővonal-lapozáshoz. */
+    order?: 'asc' | 'desc'
     limit?: number
   }): Promise<AuditLog[]>
   /**

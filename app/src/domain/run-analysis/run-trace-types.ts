@@ -31,6 +31,15 @@ export type RunTraceTimelineArgs = {
 export type RunTraceProcessArgs = {
   grain: 'process'
   runId: string
+  /**
+   * Alapértelmezés: `summary` — lépés- és él-fejlécek NYERS PAYLOAD NÉLKÜL, a
+   * `slotGaps` viszont teljes (ez nevezi meg a hibás átadást lépés- és slot-szinten).
+   * `detail`: lapozott lépések nyers be-/kimenettel és a hozzájuk tartozó élekkel.
+   */
+  view?: RunTraceView
+  /** Lapméret a `detail` nézetben (alap: 50, plafon: 200). */
+  limit?: number
+  offset?: number
 }
 
 export type RunTraceArgs = RunTraceTimelineArgs | RunTraceProcessArgs
@@ -69,11 +78,26 @@ export type RunTraceSummary = {
   turnCount: number
   deniedCount: number
   toolCallCount: number
+  modelCallCount: number
   toolCallsByToolAndOutcome: RunTraceToolAgg[]
+  /** True, ha több (eszköz, kimenetel) pár van, mint amennyit visszaadunk. */
+  toolCallsByToolAndOutcomeTruncated: boolean
+  /**
+   * Token-görbe. Hosszú futásnál MINTA: az eleje és a vége, hogy a kontextus-hízás
+   * iránya látszódjon — a kihagyott szakaszt a `tokenCurveTruncated` jelzi.
+   */
   tokenCurve: RunTraceTokenPoint[]
+  tokenCurveTruncated: boolean
+  /** A görbe teljes pontszáma (modellhívások száma) csonkolás előtt. */
+  tokenCurveTotalPoints: number
   nonOkToolCalls: RunTraceNonOkCall[]
   /** True, ha több nem-ok hívás lenne, mint amennyit az összefoglaló visszaad. */
   nonOkToolCallsTruncated: boolean
+  /**
+   * Méret-korlát miatt elhagyott mezők nevei. Üres tömb a normál eset; ha nem üres,
+   * az összefoglaló SZŰKÍTVE, de MINDIG visszatér — soha nem hibázik el mérettől.
+   */
+  degradedFields: string[]
 }
 
 export type RunTraceTimelineEntry =
@@ -180,6 +204,11 @@ export type RunTraceDetailResult = {
   limit: number
   offset: number
   totalCount: number
+  /**
+   * False, ha valamelyik korlátos forrás (audit-szelet, aktivitás-fordulók)
+   * elérte a plafonját — ilyenkor a `totalCount` alsó becslés.
+   */
+  totalCountExact: boolean
   truncated: boolean
   filters: RunTraceFilters
 }
@@ -271,15 +300,35 @@ export type RunTraceStepSlotGap = {
   missingRequiredSlots: string[]
 }
 
+/** Méret-korlátot túllépő nyers payload helyére kerülő jelzés. */
+export type RunTraceTruncatedPayload = {
+  truncated: true
+  totalChars: number
+  preview: string
+}
+
 export type RunTraceProcessResult = {
   view: 'process'
   runId: string
   grain: 'process'
+  /** `summary` (alap): payload nélküli fejlécek; `detail`: lapozott, nyers payloaddal. */
+  detail: RunTraceView
   process: RunTraceProcessInstance
+  /** `summary`-ban MINDEN lépés fejléce; `detail`-ben a kért lap. */
   steps: RunTraceProcessStep[]
+  /** `detail`-ben csak a lapon lévő lépéseket érintő élek. */
   delegations: RunTraceDelegationEdge[]
   playbookSpec: RunTracePlaybookSpec
   slotGaps: RunTraceStepSlotGap[]
+  stepCount: number
+  delegationCount: number
+  returnedStepCount: number
+  limit: number
+  offset: number
+  /** True, ha a lap után még van lépés. */
+  truncated: boolean
+  /** Méret-korlát miatt csonkolt mezők (pl. `steps[2].resultPayload`). */
+  truncatedFields: string[]
 }
 
 export type RunTraceResult = RunTraceSummaryResult | RunTraceDetailResult | RunTraceProcessResult

@@ -86,6 +86,8 @@ export class PostgresAuditRepository implements AuditRepository {
     ticketId?: string
     conversationId?: string
     since?: Date
+    until?: Date
+    order?: 'asc' | 'desc'
     limit?: number
   }): Promise<AuditLog[]> {
     return prisma.auditLog.findMany({
@@ -100,9 +102,16 @@ export class PostgresAuditRepository implements AuditRepository {
         ...(filter?.tenantId ? { tenantId: filter.tenantId } : {}),
         ...(filter?.ticketId ? { ticketId: filter.ticketId } : {}),
         ...(filter?.conversationId ? { conversationId: filter.conversationId } : {}),
-        ...(filter?.since ? { createdAt: { gte: filter.since } } : {}),
+        ...(filter?.since || filter?.until
+          ? {
+              createdAt: {
+                ...(filter?.since ? { gte: filter.since } : {}),
+                ...(filter?.until ? { lte: filter.until } : {}),
+              },
+            }
+          : {}),
       },
-      orderBy: { seq: 'desc' },
+      orderBy: { seq: filter?.order ?? 'desc' },
       take: filter?.limit ?? 100,
     })
   }

@@ -848,18 +848,29 @@ export function argsMeta(
   }
 
   if (input.tool === 'run_trace') {
+    const args = input.args
+    if (args.grain === 'process') {
+      return {
+        ...base,
+        grain: 'process',
+        runId: args.runId,
+        view: args.view ?? 'summary',
+        limit: args.limit ?? null,
+        offset: args.offset ?? null,
+      }
+    }
     return {
       ...base,
-      grain: input.args.grain,
-      runId: input.args.runId,
-      view: input.args.view ?? 'summary',
-      since: input.args.since ?? null,
-      until: input.args.until ?? null,
-      limit: input.args.limit ?? null,
-      offset: input.args.offset ?? null,
-      toolName: input.args.toolName ?? null,
-      status: input.args.status ?? null,
-      outcome: input.args.outcome ?? null,
+      grain: args.grain,
+      runId: args.runId,
+      view: args.view ?? 'summary',
+      since: args.since ?? null,
+      until: args.until ?? null,
+      limit: args.limit ?? null,
+      offset: args.offset ?? null,
+      toolName: args.toolName ?? null,
+      status: args.status ?? null,
+      outcome: args.outcome ?? null,
     }
   }
 
