@@ -77,6 +77,18 @@ async function main() {
     assert.equal(out, `<div title='say > ${SUR}' data-x="a>b">SPAR</div>`)
   })
 
+  await test('vault megjelenítési érték HTML-escapelve kerül a szöveg-node-ba (XSS)', async () => {
+    const evil = `Evil</h1><img src=x onerror="alert(1)"> & Co`
+    const evilLookup = async (surrogate: string) => (surrogate === SUR ? evil : null)
+    const out = await resolveHtmlDisplayText(`<h1>Riport — ${SUR}</h1>`, evilLookup)
+    assert.equal(
+      out,
+      '<h1>Riport — Evil&lt;/h1&gt;&lt;img src=x onerror=&quot;alert(1)&quot;&gt; &amp; Co</h1>',
+    )
+    assert.equal(out.includes('</h1><img'), false)
+    assert.equal(out.includes('onerror="alert'), false)
+  })
+
   await test('resolvableHtmlTextRanges: üres HTML', () => {
     assert.deepEqual(resolvableHtmlTextRanges(''), [])
   })
