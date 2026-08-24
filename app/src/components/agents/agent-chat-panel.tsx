@@ -62,6 +62,10 @@ import {
 } from '@/lib/chat-turn-progress'
 import { AGENT_TURN_RECONNECT_POLL_DEFAULT_MS } from '@/domain/agent/agent-turn-reconnect'
 import {
+  assessChatTurnLiveness,
+  describeChatTurnLiveness,
+} from '@/domain/agent/chat-turn-liveness'
+import {
   decideChatStreamRecovery,
   resolveChatStreamConflict,
   STREAM_RECOVERED_MESSAGE,
@@ -78,6 +82,13 @@ import {
   type ConversationFilesPanelHandle,
 } from '@/components/chat/conversation-files-panel'
 import { personaFor } from '@/lib/agent-persona'
+import { recordLastAgentChatForCurrentTenant } from '@/lib/last-agent-chat'
+import { conversationIdToResume } from '@/lib/resume-last-agent-conversation'
+import { LoadingState } from '@/components/ui/spinner'
+import {
+  clearWorkspaceChatChrome,
+  registerWorkspaceChatChrome,
+} from '@/lib/agent-workspace-chat-chrome'
 import {
   appendThinkingDelta,
   canStartThinkingTraceStream,
@@ -134,7 +145,7 @@ function agentBubbleIdForTurn(turnId: string): string {
   return `turn-agent-${turnId}`
 }
 
-type ScheduledTaskRecurrence = 'none' | 'daily' | 'weekly' | 'monthly'
+type ScheduledTaskRecurrence = 'none' | 'hourly' | 'daily' | 'weekly' | 'monthly'
 
 type ChatProcessDefinition = {
   id: string
@@ -609,24 +620,32 @@ function AgentActivityPanel({
   thinking,
   separated,
   privacyContext,
+  stalled = false,
+  stallDetail,
 }: {
   activities: AgentActivity[]
   thinking?: Record<string, string>
   /** Követi-e válaszszöveg — csak akkor kell elválasztó vonal. */
   separated: boolean
   privacyContext: ChatPrivacyMarkerContext | null
+  /** Heartbeat elmaradt — a lépés „running", de a futás valószínűleg elhalt. */
+  stalled?: boolean
+  stallDetail?: string | null
 }) {
   // Alapból zárt — a teljes lista csak kattintásra nyílik; stream közben sem
   // erőltetjük ki a nyitást, hogy a user választása megmaradjon.
   const [open, setOpen] = useState(false)
   const running = activities.find((activity) => activity.status === 'running')
+  const activelyWorking = running && !stalled
   const latest = running ?? activities[activities.length - 1]
   const hasError = activities.some((activity) => activity.status === 'error')
-  const headerHint = running
-    ? `${activityDisplayTitle(running)} fut`
-    : hasError
-      ? 'Műveletek hibával'
-      : 'Műveletek kész'
+  const headerHint = stalled
+    ? stallDetail ?? 'Nincs friss életjel — a válasz valószínűleg elhalt.'
+    : activelyWorking
+      ? `${activityDisplayTitle(running!)} fut`
+      : hasError
+        ? 'Műveletek hibával'
+        : 'Műveletek kész'
 
   // A panel a válasz-buborékon BELÜL él, ezért nem kap saját keretet: a
   // "doboz a dobozban" hatás volt a régi elrendezés legzavaróbb eleme. A
@@ -649,16 +668,24 @@ function AgentActivityPanel({
       <summary className="flex cursor-pointer list-none items-center gap-2">
         <span
           className={`shrink-0 rounded-full ${
-            running
+            activelyWorking
               ? 'h-2 w-2 animate-pulse bg-sky'
-              : hasError
+              : stalled
                 ? 'h-2 w-2 bg-coral'
-                : 'h-2 w-2 bg-sage'
+                : hasError
+                  ? 'h-2 w-2 bg-coral'
+                  : 'h-2 w-2 bg-sage'
           }`}
           aria-hidden
         />
         <span className="min-w-0 flex-1 truncate font-medium text-ink">
-          {running ? 'Éppen dolgozik' : hasError ? 'Elakadt egy lépésnél' : 'Kész'}
+          {activelyWorking
+            ? 'Éppen dolgozik'
+            : stalled
+              ? 'Úgy tűnik megállt'
+              : hasError
+                ? 'Elakadt egy lépésnél'
+                : 'Kész'}
           <span className="ml-1.5 font-normal text-ink-faint">
             · {activities.length} lépés
           </span>
@@ -681,7 +708,7 @@ function AgentActivityPanel({
               key={activity.id}
               activity={activity}
               thinking={thinking}
-              prominent={activity.status === 'running'}
+              prominent={activity.status === 'running' && !stalled}
               privacyContext={privacyContext}
             />
           ))}
@@ -1261,6 +1288,8 @@ function MessageBubble({
   onOauthRedirect,
   isAdmin,
   privacyContext,
+  activityStalled = false,
+  activityStallDetail,
 }: {
   message: ChatMessage
   isBusy: boolean
@@ -1285,6 +1314,8 @@ function MessageBubble({
   onOauthRedirect?: () => void
   isAdmin: boolean
   privacyContext: ChatPrivacyMarkerContext | null
+  activityStalled?: boolean
+  activityStallDetail?: string | null
 }) {
   const isUser = message.role === 'user'
   const isDeleted = Boolean(message.contentDeletedAt)
@@ -1355,6 +1386,8 @@ function MessageBubble({
                 thinking={message.thinking}
                 separated={Boolean(message.text)}
                 privacyContext={privacyContext}
+                stalled={activityStalled}
+                stallDetail={activityStallDetail}
               />
             )}
             {!isUser && message.memoryCandidates && message.memoryCandidates.length > 0 && (
@@ -1501,6 +1534,7 @@ export function AgentChatPanel({
   initialPrefill = null,
   restoreSignal = 0,
   tileTarget = null,
+  embedded = false,
 }: {
   agent: ChatAgent
   open: boolean
@@ -1517,6 +1551,8 @@ export function AgentChatPanel({
   restoreSignal?: number
   /** A közös session-host célpontja: itt a megnyitott panelek reszponzív rácsba kerülnek. */
   tileTarget?: HTMLElement | null
+  /** Agent-sáv munkaterület: inline chat, nem lebegő ablak. */
+  embedded?: boolean
 }) {
   const persona = personaFor(agent.name, agent)
   const router = useRouter()
@@ -1531,11 +1567,20 @@ export function AgentChatPanel({
   const [lastTicketId, setLastTicketId] = useState<string | null>(null)
   const [ticketExecuteAfter, setTicketExecuteAfter] = useState('')
   const [ticketRecurrence, setTicketRecurrence] = useState<ScheduledTaskRecurrence>('none')
+  const [ticketIntervalHours, setTicketIntervalHours] = useState('1')
   const [ticketMaxRuns, setTicketMaxRuns] = useState('')
   const [ticketAuthorizeRunAs, setTicketAuthorizeRunAs] = useState(false)
   const [isAgentTyping, setIsAgentTyping] = useState(false)
   const [stopPending, setStopPending] = useState(false)
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null)
+  const [activeTurnStalled, setActiveTurnStalled] = useState(false)
+  const [activeTurnStallDetail, setActiveTurnStallDetail] = useState<string | null>(null)
+  const clearActiveTurnState = useCallback(() => {
+    setIsAgentTyping(false)
+    setActiveTurnId(null)
+    setActiveTurnStalled(false)
+    setActiveTurnStallDetail(null)
+  }, [])
   const [runningConversationIds, setRunningConversationIds] = useState<string[]>([])
   const [sessions, setSessions] = useState<ChatSession[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(false)
@@ -1594,6 +1639,10 @@ export function AgentChatPanel({
    * a folytatás (különben a gomb eltűnik, Excel/munkafájl soha nem készül el).
    */
   const pendingConsequenceContinuationRef = useRef<string[] | null>(null)
+  /** Új beszélgetés gomb: ne töltsük vissza azonnal a legutóbbi szálat. */
+  const [userStartedNew, setUserStartedNew] = useState(false)
+  /** In-flight szálbetöltés — Új beszélgetés közben a válasz ne írja vissza a régi szálat. */
+  const sessionLoadGenRef = useRef(0)
   const grantResumeStartedRef = useRef(false)
   const prefillAppliedRef = useRef(false)
   const startAgentTurnRef = useRef<
@@ -1690,11 +1739,27 @@ export function AgentChatPanel({
           active: boolean
           turn: {
             id: string
+            status?: string
             partialText?: string
             activities?: unknown
+            heartbeatAt?: string
+            startedAt?: string
+            cancelRequested?: boolean
           } | null
         }
         if (!data.active || !data.turn || cancelled) return
+        const liveness = assessChatTurnLiveness({
+          status: data.turn.status ?? 'running',
+          cancelRequested: data.turn.cancelRequested,
+          heartbeatAt: data.turn.heartbeatAt,
+          startedAt: data.turn.startedAt,
+          activities: data.turn.activities,
+        })
+        const stalled = liveness.kind === 'stalled'
+        setActiveTurnStalled(stalled)
+        setActiveTurnStallDetail(
+          stalled ? describeChatTurnLiveness(liveness).detail : null,
+        )
         const activities = Array.isArray(data.turn.activities)
           ? (data.turn.activities as ChatTurnActivity[])
           : []
@@ -1837,6 +1902,8 @@ export function AgentChatPanel({
 
   const startNewSession = useCallback(() => {
     if (isAgentTyping) return
+    setUserStartedNew(true)
+    sessionLoadGenRef.current += 1
     pendingConsequenceContinuationRef.current = null
     setConversationId(null)
     setMessages([])
@@ -1849,6 +1916,20 @@ export function AgentChatPanel({
     setSessionsOpen(false)
     setSelectedProcessDefId(null)
   }, [isAgentTyping])
+
+  const handleDetach = useCallback(() => {
+    openAgentChat({
+      agent: {
+        id: agent.id,
+        name: agent.name,
+        status: agent.status,
+        avatarUrl: agent.avatarUrl,
+        personaNickname: agent.personaNickname,
+      },
+      canDistillSkill,
+      initialConversationId: conversationId,
+    })
+  }, [agent, canDistillSkill, conversationId])
 
   useEffect(() => {
     if (open) {
@@ -1870,7 +1951,7 @@ export function AgentChatPanel({
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key !== 'Escape' || !open || minimized) return
+      if (e.key !== 'Escape' || !open || minimized || embedded) return
       onClose()
     }
     window.addEventListener('keydown', onKeyDown)
@@ -1881,6 +1962,7 @@ export function AgentChatPanel({
     setInput('')
     setTicketExecuteAfter('')
     setTicketRecurrence('none')
+    setTicketIntervalHours('1')
     setTicketMaxRuns('')
     setTicketAuthorizeRunAs(false)
     pendingAttachments.forEach((a) => {
@@ -1904,8 +1986,9 @@ export function AgentChatPanel({
     })
   }
 
+  const turnBlocksComposer = isAgentTyping && !activeTurnStalled
   const controlsBusy =
-    pending || ticketPending || archivePending || distillPending || debugLogPending || isAgentTyping
+    pending || ticketPending || archivePending || distillPending || debugLogPending || turnBlocksComposer
 
   useEffect(() => {
     if (!open) return
@@ -1975,6 +2058,7 @@ export function AgentChatPanel({
     if (next !== 'task') {
       setTicketExecuteAfter('')
       setTicketRecurrence('none')
+      setTicketIntervalHours('1')
       setTicketMaxRuns('')
       setTicketAuthorizeRunAs(false)
     }
@@ -2189,6 +2273,27 @@ export function AgentChatPanel({
       }),
     )
   }, [conversationId, runAnalysisEntry, router, sessions])
+
+  useEffect(() => {
+    if (!embedded || !open) return
+    registerWorkspaceChatChrome({
+      startNewChat: startNewSession,
+      toggleHistory: () => setSessionsOpen((open) => !open),
+      detach: handleDetach,
+      hasSavedConversation: Boolean(conversationId),
+      analyzeDisabled: controlsBusy,
+      analyze: handleAnalyzeConversation,
+    })
+    return () => clearWorkspaceChatChrome()
+  }, [
+    embedded,
+    open,
+    startNewSession,
+    handleDetach,
+    conversationId,
+    handleAnalyzeConversation,
+    controlsBusy,
+  ])
 
   const reloadConversationMessages = useCallback(
     async (convId: string) => {
@@ -2416,17 +2521,27 @@ export function AgentChatPanel({
           active: boolean
           turn: {
             id: string
+            status?: string
             partialText: string
             activities: unknown
             userMessageId: string | null
+            heartbeatAt?: string
+            startedAt?: string
+            cancelRequested?: boolean
           } | null
         }
         if (!data.active || !data.turn) return false
 
-        streamAbortRef.current?.abort()
-        const abortController = new AbortController()
-        streamAbortRef.current = abortController
-        streamConversationIdRef.current = convId
+        const liveness = assessChatTurnLiveness({
+          status: data.turn.status ?? 'running',
+          cancelRequested: data.turn.cancelRequested,
+          heartbeatAt: data.turn.heartbeatAt,
+          startedAt: data.turn.startedAt,
+          activities: data.turn.activities,
+        })
+        const stalled = liveness.kind === 'stalled'
+        setActiveTurnStalled(stalled)
+        setActiveTurnStallDetail(stalled ? describeChatTurnLiveness(liveness).detail : null)
 
         const agentMessageId = agentBubbleIdForTurn(data.turn.id)
         const activities = Array.isArray(data.turn.activities)
@@ -2434,9 +2549,52 @@ export function AgentChatPanel({
           : []
 
         setActiveTurnId(data.turn.id)
-        setIsAgentTyping(true)
         setStopPending(false)
-        markConversationRunning(convId, true)
+        if (stalled) {
+          setIsAgentTyping(false)
+          markConversationRunning(convId, false)
+        } else {
+          streamAbortRef.current?.abort()
+          const abortController = new AbortController()
+          streamAbortRef.current = abortController
+          streamConversationIdRef.current = convId
+          setIsAgentTyping(true)
+          markConversationRunning(convId, true)
+          setMessages((prev) => {
+            const withoutOptimistic = prev.filter((m) => m.id !== agentMessageId)
+            const last = withoutOptimistic[withoutOptimistic.length - 1]
+            if (last?.role === 'agent' && !last.text.trim() && !chatMessageShowsAgentActivity(last)) {
+              return withoutOptimistic.map((m, i) =>
+                i === withoutOptimistic.length - 1
+                  ? {
+                      ...m,
+                      id: agentMessageId,
+                      text: data.turn!.partialText ?? '',
+                      activities,
+                    }
+                  : m,
+              )
+            }
+            return [
+              ...withoutOptimistic,
+              {
+                id: agentMessageId,
+                role: 'agent' as const,
+                text: data.turn!.partialText ?? '',
+                attachments: [],
+                createdAt: new Date().toISOString(),
+                activities,
+              },
+            ]
+          })
+          void consumeReattachStream({
+            turnId: data.turn.id,
+            conversationId: convId,
+            agentMessageId,
+            signal: abortController.signal,
+          })
+          return true
+        }
         setMessages((prev) => {
           const withoutOptimistic = prev.filter((m) => m.id !== agentMessageId)
           const last = withoutOptimistic[withoutOptimistic.length - 1]
@@ -2464,13 +2622,6 @@ export function AgentChatPanel({
             },
           ]
         })
-
-        void consumeReattachStream({
-          turnId: data.turn.id,
-          conversationId: convId,
-          agentMessageId,
-          signal: abortController.signal,
-        })
         return true
       } catch {
         return false
@@ -2495,10 +2646,11 @@ export function AgentChatPanel({
       // flushelná a régi approval-id-kat az új beszélgetésre.
       streamAbortRef.current?.abort()
       pendingConsequenceContinuationRef.current = null
-      setIsAgentTyping(false)
+      clearActiveTurnState()
       setStopPending(false)
-      setActiveTurnId(null)
 
+      const loadGen = sessionLoadGenRef.current
+      setUserStartedNew(false)
       setConversationId(id)
       setStatusMessage(null)
       setLastTicketId(null)
@@ -2509,6 +2661,7 @@ export function AgentChatPanel({
       setConversationStatus(sessions.find((session) => session.id === id)?.status ?? 'active')
 
       const res = await loadAgentChatMessages({ conversationId: id, agentId: agent.id })
+      if (loadGen !== sessionLoadGenRef.current) return
       if (res.success) {
         setConversationStatus(res.data.conversation.status)
         setContinuedFromTicket(res.data.continuedFromTicket ?? null)
@@ -2531,6 +2684,39 @@ export function AgentChatPanel({
     },
     [agent.id, conversationId, isAgentTyping, reattachToConversation, sessions],
   )
+
+  // Beszélgetés gomb / munkaterület: a legutóbbi aktív szálat folytatjuk, nem üres újat.
+  useEffect(() => {
+    if (!open) return
+    const resumeId = conversationIdToResume({
+      open,
+      initialConversationId,
+      currentConversationId: conversationId,
+      userStartedNew,
+      sessionsLoading,
+      sessionsFilter,
+      sessions,
+    })
+    if (!resumeId) return
+    // Szándékos: a session-lista betöltése után aszinkron folytatjuk a legutóbbi szálat.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void selectSession(resumeId)
+  }, [
+    open,
+    initialConversationId,
+    conversationId,
+    userStartedNew,
+    sessionsLoading,
+    sessionsFilter,
+    sessions,
+    selectSession,
+  ])
+
+  useEffect(() => {
+    // Agentváltáskor a következő nyitás megint a legutóbbi szálat hozza, ne az üres újat.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setUserStartedNew(false)
+  }, [agent.id])
 
   // Deep-link: panel nyitáskor betölti az initialConversationId-t és reattach-el.
   useEffect(() => {
@@ -2654,6 +2840,8 @@ export function AgentChatPanel({
     setMessages((prev) => [...prev, optimisticUserMessage, optimisticAgentMessage])
     setStatusMessage(null)
     setLastTicketId(null)
+    setActiveTurnStalled(false)
+    setActiveTurnStallDetail(null)
     setIsAgentTyping(true)
     streamConversationIdRef.current = conversationId
     if (conversationId) markConversationRunning(conversationId, true)
@@ -3009,6 +3197,7 @@ export function AgentChatPanel({
     const text = input.trim()
     const localAttachments = [...pendingAttachments]
     resetComposer()
+    void recordLastAgentChatForCurrentTenant(agent.id)
     startAgentTurn({ text, attachments: localAttachments })
   }
 
@@ -3129,6 +3318,7 @@ export function AgentChatPanel({
             attachmentDocumentIds: documentIds,
             nextRunAt: executeAfterIso,
             recurrence: ticketRecurrence,
+            intervalHours: ticketRecurrence === 'hourly' ? Number(ticketIntervalHours) || 1 : undefined,
             maxRuns: ticketRecurrence === 'none' ? null : maxRuns,
             authorizeRunAs: ticketAuthorizeRunAs,
           })
@@ -3136,11 +3326,12 @@ export function AgentChatPanel({
             setStatusMessage(res.error)
             return
           }
+          setLastTicketId(res.data.ticketId)
           resetComposer()
           setStatusMessage(
             ticketRecurrence === 'none'
-              ? 'Ütemezett task létrehozva — a worker a megadott időpontban feladatot készít belőle.'
-              : 'Ismétlődő ütemezett task létrehozva.',
+              ? 'Ütemezett feladat a táblán — a dispatcher a megadott időpontban indítja.'
+              : 'Rendszeres feladat a táblán — a dispatcher a gyakoriság szerint indítja.',
           )
           return
         }
@@ -3177,18 +3368,20 @@ export function AgentChatPanel({
 
   if (!open || !mounted) return null
 
-  const inSessionGrid = tileTarget !== null
+  const inSessionGrid = embedded || tileTarget !== null
 
-  return createPortal(
+  const panel = (
     <div
       className={
-        inSessionGrid
-          ? `pointer-events-auto relative flex h-[calc(100dvh-1.5rem)] min-h-0 w-full flex-col overflow-hidden rounded-2xl border border-line bg-card shadow-2xl sm:h-full sm:min-h-0 ${
-              minimized ? 'hidden' : ''
-            }`
-          : `fixed inset-0 z-[200] flex items-end justify-center sm:items-center sm:p-6 lg:p-4 ${
-              minimized ? 'pointer-events-none invisible' : ''
-            }`
+        embedded
+          ? 'flex h-full min-h-0 w-full flex-col overflow-hidden'
+          : inSessionGrid
+            ? `pointer-events-auto relative flex h-[calc(100dvh-1.5rem)] min-h-0 w-full flex-col overflow-hidden rounded-2xl border border-line bg-card shadow-2xl sm:h-full sm:min-h-0 ${
+                minimized ? 'hidden' : ''
+              }`
+            : `fixed inset-0 z-[200] flex items-end justify-center sm:items-center sm:p-6 lg:p-4 ${
+                minimized ? 'pointer-events-none invisible' : ''
+              }`
       }
       aria-hidden={minimized}
       {...(minimized ? { inert: true } : {})}
@@ -3203,15 +3396,18 @@ export function AgentChatPanel({
         />
       ) : null}
       <div
-        role="dialog"
-        aria-modal={inSessionGrid ? false : !minimized}
+        role={embedded ? undefined : 'dialog'}
+        aria-modal={embedded ? undefined : inSessionGrid ? false : !minimized}
         aria-labelledby="agent-chat-title"
         className={
-          inSessionGrid
-            ? 'flex h-full min-h-0 w-full flex-col'
-            : 'relative z-[1] flex h-[100dvh] w-full flex-col overflow-hidden border border-line bg-card shadow-2xl sm:h-[min(calc(100dvh-3rem),calc(100vh-3rem))] sm:max-w-[min(calc(100vw-3rem),100rem)] sm:rounded-2xl lg:h-[min(calc(100dvh-2rem),calc(100vh-2rem))] lg:max-w-[min(calc(100vw-2rem),120rem)]'
+          embedded
+            ? 'flex h-full min-h-0 w-full flex-col overflow-hidden'
+            : inSessionGrid
+              ? 'flex h-full min-h-0 w-full flex-col'
+              : 'relative z-[1] flex h-[100dvh] w-full flex-col overflow-hidden border border-line bg-card shadow-2xl sm:h-[min(calc(100dvh-3rem),calc(100vh-3rem))] sm:max-w-[min(calc(100vw-3rem),100rem)] sm:rounded-2xl lg:h-[min(calc(100dvh-2rem),calc(100vh-2rem))] lg:max-w-[min(calc(100vw-2rem),120rem)]'
         }
       >
+        {!embedded ? (
         <header className="flex shrink-0 items-center gap-2.5 border-b border-line bg-card px-3 py-2.5 sm:gap-3 sm:px-4">
           <button
             type="button"
@@ -3239,7 +3435,12 @@ export function AgentChatPanel({
               </h2>
               {/* Egyetlen állapotjelző a szál helyzetéről — a régi „aktív szál”
                   chip nem árulta el a lényeget: dolgozik-e éppen az agent. */}
-              {isAgentTyping ? (
+              {activeTurnStalled ? (
+                <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-coral/40 bg-coral/10 px-2 py-0.5 text-[10px] font-semibold text-coral-deep">
+                  <span className="h-1.5 w-1.5 rounded-full bg-coral" aria-hidden />
+                  úgy tűnik megállt
+                </span>
+              ) : isAgentTyping ? (
                 <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-sky/40 bg-sky/10 px-2 py-0.5 text-[10px] font-semibold text-sky">
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky" aria-hidden />
                   dolgozik
@@ -3352,6 +3553,7 @@ export function AgentChatPanel({
             </button>
           </div>
         </header>
+        ) : null}
 
         {continuedFromTicket && (
           <div className="shrink-0 border-b border-sky/25 bg-sky/8 px-3 py-2 sm:px-4">
@@ -3368,41 +3570,32 @@ export function AgentChatPanel({
           </div>
         )}
 
-        <div className="relative flex min-h-0 flex-1">
+        <div
+          className={`relative flex min-h-0 flex-1 overflow-hidden${embedded ? '' : ' sm:flex-row-reverse'}`}
+        >
           {sessionsOpen && (
             <button
               type="button"
               aria-label="Előzmények bezárása"
-              className="absolute inset-0 z-10 bg-ink/40 sm:hidden"
+              className={`absolute inset-0 z-10 bg-ink/40 ${embedded ? '' : 'sm:hidden'}`}
               onClick={() => setSessionsOpen(false)}
             />
           )}
 
-          <div
-            className={`absolute inset-y-0 left-0 z-20 w-[min(88vw,17rem)] border-r border-line bg-night shadow-xl transition-transform sm:static sm:z-0 sm:w-56 sm:shrink-0 sm:translate-x-0 sm:shadow-none lg:w-64 xl:w-72 ${
-              sessionsOpen ? 'translate-x-0' : '-translate-x-full sm:translate-x-0'
-            }`}
-          >
-            <AgentChatSessionSidebar
-              sessions={sessions}
-              activeConversationId={conversationId}
-              runningConversationIds={runningConversationIds}
-              statusFilter={sessionsFilter}
-              loading={sessionsLoading}
-              loadingMore={sessionsLoadingMore}
-              hasMore={sessionsHasMore}
-              isBusy={controlsBusy}
-              onSelect={selectSession}
-              onNewChat={startNewSession}
-              onLoadMore={loadMoreSessions}
-              onStatusFilterChange={setSessionsFilter}
-              className="h-full"
-            />
-          </div>
-
-          <div className="flex min-w-0 flex-1 flex-col">
-            <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <div
+              ref={scrollRef}
+              className={`flex-1 overflow-y-auto ${embedded ? 'px-6 py-5' : 'px-4 py-5 sm:px-6'}`}
+            >
               {messages.length === 0 && ticketDiscussionHistory.length === 0 && !isAgentTyping ? (
+                !userStartedNew &&
+                !statusMessage &&
+                (sessionsLoading || Boolean(conversationId)) ? (
+                  <LoadingState
+                    label="Előző beszélgetés betöltése…"
+                    className="h-full min-h-[200px]"
+                  />
+                ) : (
                 <div className="mx-auto flex h-full min-h-[200px] max-w-md flex-col items-center justify-center text-center">
                   <span className="text-4xl" aria-hidden>
                     {persona.emoji}
@@ -3461,8 +3654,9 @@ export function AgentChatPanel({
                     ))}
                   </ul>
                 </div>
+                )
               ) : (
-                <div className="mx-auto max-w-5xl">
+                <div className={embedded ? 'mx-auto max-w-[860px]' : 'mx-auto max-w-5xl'}>
                   {ticketDiscussionHistory.length > 0 && (
                     <div className="mb-6 space-y-3 border-b border-line pb-5">
                       <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
@@ -3519,6 +3713,12 @@ export function AgentChatPanel({
                       agentAvatarUrl={agent.avatarUrl}
                       agentStatus={agent.status}
                       personaNickname={agent.personaNickname}
+                      activityStalled={
+                        activeTurnStalled &&
+                        activeTurnId != null &&
+                        message.id === agentBubbleIdForTurn(activeTurnId)
+                      }
+                      activityStallDetail={activeTurnStallDetail}
                       onDeleteContent={handleDeleteMessageContent}
                       onOpenTask={handleMinimize}
                       onMemoryCandidateUpdate={handleMemoryCandidateUpdate}
@@ -3559,7 +3759,13 @@ export function AgentChatPanel({
               />
             )}
 
-            <div className="shrink-0 border-t border-line bg-night px-3 py-3 sm:px-5 sm:py-4">
+            <div
+              className={
+                embedded
+                  ? 'shrink-0 bg-transparent px-6 pb-5 pt-0'
+                  : 'shrink-0 border-t border-line bg-night px-3 py-3 sm:px-5 sm:py-4'
+              }
+            >
               {conversationStatus === 'archived' && (
                 <p className="mb-2 rounded-lg border border-line bg-night-2 px-3 py-2 text-xs text-ink-faint">
                   Ez a szál archivált: elolvasható, de új üzenet nem fűzhető hozzá.
@@ -3631,6 +3837,7 @@ export function AgentChatPanel({
             ütemezés/run-as mezők akkor is ott sorakoztak, amikor a user csak
             beszélgetni akart, a „Feladat” gomb pedig a „Küldés”-sel versengett.
           */}
+          {!embedded ? (
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <div
               className="inline-flex rounded-lg border border-line bg-night-2 p-0.5"
@@ -3727,6 +3934,7 @@ export function AgentChatPanel({
             )}
 
           </div>
+          ) : null}
 
           {composerMode === 'process' && chatProcessDefs.length > 0 && (
             <div className="mb-2 rounded-xl border border-sage/35 bg-sage/5 px-3 py-2.5">
@@ -3832,11 +4040,26 @@ export function AgentChatPanel({
                         className="rounded-lg border border-line bg-card px-2 py-1.5 text-xs text-ink"
                       >
                         <option value="none">egyszer fusson</option>
+                        <option value="hourly">meghatározott óránként</option>
                         <option value="daily">naponta</option>
                         <option value="weekly">hetente</option>
                         <option value="monthly">havonta</option>
                       </select>
                     </label>
+                    {ticketRecurrence === 'hourly' && (
+                      <label className="flex flex-col gap-1">
+                        <span className="font-semibold text-ink">Hány óránként</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={168}
+                          value={ticketIntervalHours}
+                          onChange={(e) => setTicketIntervalHours(e.target.value)}
+                          disabled={composerDisabled}
+                          className="w-20 rounded-lg border border-line bg-card px-2 py-1.5 text-xs text-ink"
+                        />
+                      </label>
+                    )}
                     {ticketRecurrence !== 'none' && (
                       <label className="flex flex-col gap-1">
                         <span className="font-semibold text-ink">Legfeljebb</span>
@@ -3875,7 +4098,11 @@ export function AgentChatPanel({
             </div>
           )}
 
-          <div className="relative flex items-end gap-2 rounded-2xl border border-line bg-card p-2 shadow-sm focus-within:border-coral/40 focus-within:ring-2 focus-within:ring-coral/15">
+          <div
+            className={`relative flex items-end gap-2 rounded-2xl border border-line p-2 shadow-sm focus-within:border-coral/40 focus-within:ring-2 focus-within:ring-coral/15 ${
+              embedded ? 'bg-paper' : 'bg-card'
+            }`}
+          >
             <SkillSlashMenu
               autocomplete={slash}
               emptyLabel="Ehhez az AI munkatárshoz nincs engedélyezett skill hozzárendelve."
@@ -3921,14 +4148,16 @@ export function AgentChatPanel({
                     ? selectedProcessDef
                       ? 'Üzenet vagy csatolmány a folyamathoz…'
                       : 'Előbb válassz folyamatot fent…'
-                    : `Üzenet ${persona.nickname} részére…`
+                    : embedded
+                      ? `Üzenet ${persona.nickname} részére… (Shift+Enter = új sor)`
+                      : `Üzenet ${persona.nickname} részére…`
               }
               disabled={composerDisabled}
               className="max-h-36 min-h-[44px] flex-1 resize-none bg-transparent px-1 py-2.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none disabled:opacity-50"
             />
 
             {/* Egyetlen elsődleges gomb: a jelentését a fenti mód-választó adja. */}
-            {isAgentTyping ? (
+            {turnBlocksComposer ? (
               <button
                 type="button"
                 onClick={handleStop}
@@ -3991,17 +4220,49 @@ export function AgentChatPanel({
             )}
           </div>
 
+          {!embedded ? (
           <p className="mt-1.5 px-1 text-[11px] text-ink-faint">
             Enter küld · Shift+Enter új sor
             {agentSkills.length > 0 ? ' · / jellel skillt indítasz' : ''}
           </p>
+          ) : null}
             </div>
+          </div>
+
+          <div
+            className={`absolute inset-y-0 right-0 z-20 w-[min(88vw,17rem)] border-l border-line bg-night shadow-xl transition-transform duration-200 ease-out ${
+              embedded
+                ? sessionsOpen
+                  ? 'translate-x-0'
+                  : 'translate-x-full'
+                : `sm:static sm:z-0 sm:w-56 sm:shrink-0 sm:translate-x-0 sm:shadow-none lg:w-64 xl:w-72 ${
+                    sessionsOpen ? 'translate-x-0' : 'translate-x-full sm:translate-x-0'
+                  }`
+            }`}
+          >
+            <AgentChatSessionSidebar
+              sessions={sessions}
+              activeConversationId={conversationId}
+              runningConversationIds={runningConversationIds}
+              statusFilter={sessionsFilter}
+              loading={sessionsLoading}
+              loadingMore={sessionsLoadingMore}
+              hasMore={sessionsHasMore}
+              isBusy={controlsBusy}
+              onSelect={selectSession}
+              onNewChat={startNewSession}
+              onLoadMore={loadMoreSessions}
+              onStatusFilterChange={setSessionsFilter}
+              className="h-full"
+            />
           </div>
         </div>
       </div>
-    </div>,
-    tileTarget ?? document.body,
+    </div>
   )
+
+  if (embedded) return panel
+  return createPortal(panel, tileTarget ?? document.body)
 }
 
 export function AgentChatButton({

@@ -10,9 +10,9 @@
 <style>
 /* ============================================================================
    DESIGN TOKENEK — 1:1 az app/src/app/globals.css @theme blokkjából.
-   A fejlesztő NEM ezt a CSS-t viszi át: a Tailwind osztályok (bg-card, text-ink,
+   A fejlesztő NEM ezt a CSS-t viszi át: a Tailwind-osztályok (bg-card, text-ink,
    border-line, .atelier-card …) már léteznek. Ez a fájl csak azért duplikálja
-   őket, hogy a mockup buildeletlenül, dupla kattintással megnyíljon.
+   őket, hogy a mockup build nélkül, dupla kattintással megnyíljon.
    ========================================================================== */
 :root{
   --font-sans:'Hanken Grotesk',system-ui,-apple-system,sans-serif;
@@ -27,7 +27,6 @@
 
   --rail-w:336px; --rail-w-collapsed:76px; --header-h:64px;
 }
-
 *{box-sizing:border-box}
 html,body{height:100%}
 body{
@@ -40,8 +39,8 @@ body{
 }
 .font-display{font-family:var(--font-display);font-optical-sizing:auto;letter-spacing:-.012em}
 button{font:inherit;color:inherit;cursor:pointer}
+[hidden]{display:none!important}
 ::selection{background:rgba(178,58,85,.18);color:var(--coral-deep)}
-
 .atelier-card{
   background:linear-gradient(168deg,var(--card),var(--card-2));
   border:1px solid var(--line); border-radius:1.25rem;
@@ -52,91 +51,66 @@ button{font:inherit;color:inherit;cursor:pointer}
 
 /* ── App váz ───────────────────────────────────────────────────────────── */
 .app{display:flex;flex-direction:column;height:100vh}
-
 header.top{
   height:var(--header-h);flex:0 0 auto;display:flex;align-items:center;gap:18px;
   padding:0 18px;border-bottom:1px solid var(--line);
   background:rgba(248,242,230,.82);backdrop-filter:blur(14px);position:relative;z-index:30;
 }
 .brand{display:flex;align-items:center;gap:10px;flex:0 0 auto}
-.brand .mark{
-  width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-size:19px;
-  background:linear-gradient(150deg,#8c2840,#b07d24);color:#fff;
-  box-shadow:0 8px 18px -10px rgba(140,40,64,.8)
-}
+.brand .mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-size:19px;
+  background:linear-gradient(150deg,#8c2840,#b07d24);color:#fff;box-shadow:0 8px 18px -10px rgba(140,40,64,.8)}
 .brand b{font-family:var(--font-display);font-size:19px;letter-spacing:-.02em;line-height:1}
 .brand span{display:block;font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-faint);margin-top:2px}
-
 nav.main{display:flex;align-items:center;gap:2px;margin-left:8px}
-nav.main button{
-  border:0;background:transparent;padding:9px 13px;border-radius:10px;font-size:14px;font-weight:600;
-  color:var(--ink-soft);display:flex;align-items:center;gap:6px
-}
+nav.main button{border:0;background:transparent;padding:9px 13px;border-radius:10px;font-size:14px;font-weight:600;
+  color:var(--ink-soft);display:flex;align-items:center;gap:6px}
 nav.main button:hover{background:rgba(232,220,196,.55);color:var(--ink)}
 nav.main button .chev{font-size:10px;opacity:.55}
 .header-right{margin-left:auto;display:flex;align-items:center;gap:10px}
-.pill{
-  display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--card);
-  border-radius:999px;padding:6px 12px;font-size:12.5px;font-weight:600;color:var(--ink-soft)
-}
+.pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--card);
+  border-radius:999px;padding:6px 12px;font-size:12.5px;font-weight:600;color:var(--ink-soft)}
 .pill .num{background:rgba(77,134,166,.14);color:var(--sky);border-radius:999px;padding:1px 8px;font-size:11.5px}
 .seg{display:inline-flex;background:var(--night-2);border:1px solid var(--line);border-radius:999px;padding:3px}
 .seg button{border:0;background:transparent;border-radius:999px;padding:5px 12px;font-size:12.5px;font-weight:600;color:var(--ink-faint)}
 .seg button[aria-pressed="true"]{background:var(--card);color:var(--coral-deep);box-shadow:0 1px 2px rgba(70,45,30,.12)}
 .avatar-me{width:34px;height:34px;border-radius:999px;background:linear-gradient(150deg,#7d5fae,#4d86a6);color:#fff;display:grid;place-items:center;font-weight:700;font-size:13px}
-
 .body{flex:1 1 auto;display:flex;min-height:0}
 
 /* ── BAL SÁV: az agent-rail ────────────────────────────────────────────── */
-.rail{
-  width:var(--rail-w);flex:0 0 var(--rail-w);display:flex;flex-direction:column;min-height:0;
+.rail{width:var(--rail-w);flex:0 0 var(--rail-w);display:flex;flex-direction:column;min-height:0;
   border-right:1px solid var(--line);background:rgba(255,253,248,.66);backdrop-filter:blur(8px);
-  transition:flex-basis .22s ease,width .22s ease;
-}
+  transition:flex-basis .22s ease,width .22s ease}
 .rail.collapsed{width:var(--rail-w-collapsed);flex-basis:var(--rail-w-collapsed)}
 .rail-head{padding:14px 14px 10px;flex:0 0 auto}
 .rail-title{display:flex;align-items:center;gap:8px;margin:0 0 10px}
 .rail-title h2{font-family:var(--font-display);font-size:16px;margin:0;font-weight:700}
 .rail-title .count{font-size:11.5px;color:var(--ink-faint);font-weight:600}
-.icon-btn{
-  border:1px solid var(--line);background:var(--card);border-radius:9px;width:30px;height:30px;
-  display:grid;place-items:center;font-size:13px;color:var(--ink-soft)
-}
+.icon-btn{border:1px solid var(--line);background:var(--card);border-radius:9px;width:30px;height:30px;
+  display:grid;place-items:center;font-size:13px;color:var(--ink-soft)}
 .icon-btn:hover{background:var(--card-2);color:var(--ink)}
-.rail-search{
-  width:100%;border:1px solid var(--line);background:var(--paper);border-radius:10px;
-  padding:8px 11px 8px 30px;font:inherit;font-size:13px;color:var(--ink)
-}
+.rail-search{width:100%;border:1px solid var(--line);background:var(--paper);border-radius:10px;
+  padding:8px 11px 8px 30px;font:inherit;font-size:13px;color:var(--ink)}
 .rail-search::placeholder{color:var(--ink-faint)}
 .search-wrap{position:relative;margin-bottom:10px}
 .search-wrap .mag{position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:12px;opacity:.5}
 .chips{display:flex;gap:6px;flex-wrap:wrap}
-.chip{
-  border:1px solid var(--line);background:var(--card);border-radius:999px;padding:4px 10px;
-  font-size:11.5px;font-weight:600;color:var(--ink-soft)
-}
+.chip{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:4px 10px;
+  font-size:11.5px;font-weight:600;color:var(--ink-soft)}
 .chip[aria-pressed="true"]{background:var(--coral);border-color:var(--coral);color:#fff}
 .chip .dot{display:inline-block;width:6px;height:6px;border-radius:999px;margin-right:5px;vertical-align:middle}
-
 .rail-list{flex:1 1 auto;overflow-y:auto;padding:6px 12px 16px;display:flex;flex-direction:column;gap:9px;scrollbar-width:thin}
 .rail-foot{flex:0 0 auto;padding:10px 12px;border-top:1px solid var(--line);display:flex;gap:8px}
-.btn-ghost{
-  flex:1;border:1px dashed var(--line);background:transparent;border-radius:10px;padding:9px;
-  font-size:12.5px;font-weight:600;color:var(--ink-soft)
-}
+.btn-ghost{flex:1;border:1px dashed var(--line);background:transparent;border-radius:10px;padding:9px;
+  font-size:12.5px;font-weight:600;color:var(--ink-soft)}
 .btn-ghost:hover{background:var(--card);border-style:solid;color:var(--ink)}
 
 /* ── Agent-kártya a sávban ─────────────────────────────────────────────── */
-.agent{
-  position:relative;text-align:left;width:100%;border:1px solid var(--line);border-radius:16px;
+.agent{position:relative;text-align:left;width:100%;border:1px solid var(--line);border-radius:16px;
   background:linear-gradient(168deg,var(--card),var(--card-2));padding:11px 11px 10px;
-  box-shadow:0 1px 2px -1px rgba(70,45,30,.08);transition:transform .12s ease,box-shadow .18s ease,border-color .18s ease;
-}
+  box-shadow:0 1px 2px -1px rgba(70,45,30,.08);transition:transform .12s ease,box-shadow .18s ease,border-color .18s ease}
 .agent:hover{transform:translateY(-1px);box-shadow:0 10px 22px -18px rgba(90,55,35,.55);border-color:#dbcaa9}
 .agent.active{border-color:var(--coral);box-shadow:0 0 0 1px var(--coral) inset,0 14px 28px -22px rgba(140,40,64,.6)}
-.agent.active::before{
-  content:"";position:absolute;left:-12px;top:16px;bottom:16px;width:3px;border-radius:0 3px 3px 0;background:var(--coral)
-}
+.agent.active::before{content:"";position:absolute;left:-12px;top:16px;bottom:16px;width:3px;border-radius:0 3px 3px 0;background:var(--coral)}
 .agent-top{display:flex;gap:10px;align-items:flex-start}
 .av{position:relative;flex:0 0 auto;width:42px;height:42px;border-radius:13px;display:grid;place-items:center;font-size:19px;color:#fff}
 .av .soul{position:absolute;right:-2px;bottom:-2px;width:11px;height:11px;border-radius:999px;border:2px solid var(--card)}
@@ -154,7 +128,7 @@ nav.main button .chev{font-size:10px;opacity:.55}
 .bar{margin-top:7px;height:4px;border-radius:999px;background:rgba(214,196,164,.5);overflow:hidden}
 .bar i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--sky),var(--grape));transition:width .8s linear}
 .badges{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
-.badge{border-radius:999px;padding:2.5px 8px;font-size:10.5px;font-weight:700;letter-spacing:.01em}
+.badge{border-radius:999px;padding:2.5px 8px;font-size:10.5px;font-weight:700}
 .b-wait{background:rgba(176,125,36,.16);color:#8a6013}
 .b-new{background:rgba(178,58,85,.14);color:var(--coral-deep)}
 .b-err{background:rgba(178,58,85,.18);color:var(--coral-deep)}
@@ -165,20 +139,16 @@ nav.main button .chev{font-size:10px;opacity:.55}
 .acts button.primary:hover{background:var(--coral-deep);border-color:var(--coral-deep)}
 .acts button:hover{background:var(--card-2);color:var(--ink)}
 .acts button.more{flex:0 0 34px}
-
-/* ikon-mód (összecsukott sáv) */
 .rail.collapsed .rail-head,.rail.collapsed .agent-id,.rail.collapsed .state,
-.rail.collapsed .bar,.rail.collapsed .badges,.rail.collapsed .acts,.rail.collapsed .rail-foot .lbl-txt{display:none}
+.rail.collapsed .bar,.rail.collapsed .badges,.rail.collapsed .acts,.rail.collapsed .lbl-txt{display:none}
 .rail.collapsed .rail-list{align-items:center;padding:12px 8px}
 .rail.collapsed .agent{width:52px;padding:6px;border-radius:14px}
 .rail.collapsed .agent-top{justify-content:center}
 
 /* ── JOBB OLDAL: workspace ─────────────────────────────────────────────── */
 .work{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;min-height:0}
-.work-head{
-  flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--line);
-  background:rgba(255,253,248,.55);backdrop-filter:blur(6px)
-}
+.work-head{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--line);
+  background:rgba(255,253,248,.55);backdrop-filter:blur(6px)}
 .work-head .av{width:38px;height:38px;border-radius:12px;font-size:17px}
 .work-id .nm{font-family:var(--font-display);font-size:17px;font-weight:700;line-height:1.15}
 .work-id .sub{font-size:11.5px;color:var(--ink-faint);margin-top:1px}
@@ -186,21 +156,15 @@ nav.main button .chev{font-size:10px;opacity:.55}
 .tabs button{border:0;background:transparent;border-radius:9px;padding:7px 13px;font-size:13px;font-weight:600;color:var(--ink-faint)}
 .tabs button[aria-selected="true"]{background:var(--card);color:var(--coral-deep);box-shadow:0 1px 2px rgba(70,45,30,.12)}
 .work-head .right{margin-left:auto;display:flex;gap:8px;align-items:center}
-
 .work-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:20px 24px 26px}
 .pane{display:none;animation:rise .4s cubic-bezier(.22,1,.36,1) both}
 .pane.on{display:block}
 @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-
-/* üres állapot */
 .empty{max-width:640px;margin:8vh auto 0;text-align:center}
 .empty .big{font-family:var(--font-display);font-size:34px;font-weight:900;letter-spacing:-.02em;margin:0 0 10px}
 .empty p{color:var(--ink-soft);font-size:15px;line-height:1.6;margin:0 auto 22px;max-width:52ch}
-.empty .hintbox{text-align:left;padding:16px 18px;border-radius:16px}
+.empty .hintbox{text-align:left;padding:16px 18px}
 .empty .hintbox h4{margin:0 0 8px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-faint)}
-.empty .hintbox li{font-size:13.5px;color:var(--ink-soft);margin:5px 0}
-
-/* chat */
 .chat{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
 .msg{display:flex;gap:10px;align-items:flex-start}
 .msg .who{flex:0 0 auto;width:30px;height:30px;border-radius:10px;display:grid;place-items:center;font-size:13px;color:#fff}
@@ -209,35 +173,25 @@ nav.main button .chev{font-size:10px;opacity:.55}
 .msg.u{flex-direction:row-reverse}
 .msg.u .bub{background:rgba(178,58,85,.10);border:1px solid rgba(178,58,85,.22)}
 .msg.u .who{background:linear-gradient(150deg,#7d5fae,#4d86a6)}
-.trace{
-  border-left:2px solid rgba(77,134,166,.35);padding:6px 0 6px 12px;margin:4px 0 0;font-family:var(--font-mono);
-  font-size:11.5px;color:var(--ink-faint);display:flex;flex-direction:column;gap:3px
-}
-.gate{
-  border:1px solid rgba(176,125,36,.45);background:rgba(176,125,36,.09);border-radius:14px;padding:13px 15px;
-}
+.trace{border-left:2px solid rgba(77,134,166,.35);padding:6px 0 6px 12px;margin:4px 0 0;font-family:var(--font-mono);
+  font-size:11.5px;color:var(--ink-faint);display:flex;flex-direction:column;gap:3px}
+.gate{border:1px solid rgba(176,125,36,.45);background:rgba(176,125,36,.09);border-radius:14px;padding:13px 15px}
 .gate h5{margin:0 0 4px;font-size:13.5px}
 .gate p{margin:0 0 10px;font-size:12.5px;color:var(--ink-soft);line-height:1.55}
 .gate .row{display:flex;gap:8px}
 .gate button{border-radius:9px;padding:7px 14px;font-size:12.5px;font-weight:700;border:1px solid var(--line);background:var(--card)}
 .gate button.ok{background:var(--sage);border-color:var(--sage);color:#fff}
-.composer{
-  position:sticky;bottom:0;margin-top:6px;padding:10px;border-radius:16px;border:1px solid var(--line);
-  background:var(--paper);display:flex;gap:9px;align-items:flex-end;box-shadow:0 -8px 20px -22px rgba(90,55,35,.6)
-}
+.composer{position:sticky;bottom:0;margin-top:6px;padding:10px;border-radius:16px;border:1px solid var(--line);
+  background:var(--paper);display:flex;gap:9px;align-items:flex-end;box-shadow:0 -8px 20px -22px rgba(90,55,35,.6)}
 .composer textarea{flex:1;border:0;outline:0;resize:none;font:inherit;font-size:14px;background:transparent;min-height:44px;color:var(--ink)}
 .send{border:0;background:var(--coral);color:#fff;border-radius:11px;padding:10px 18px;font-weight:700;font-size:13.5px}
-
-/* feladat / mini-app / adatlap panelek */
 .grid2{display:grid;grid-template-columns:1.35fr .9fr;gap:16px;align-items:start;max-width:1080px}
-.card{padding:16px 18px;border-radius:16px}
+.card{padding:16px 18px}
 .card h3{font-family:var(--font-display);font-size:16px;margin:0 0 4px}
 .card .lead{font-size:12.5px;color:var(--ink-faint);margin:0 0 14px;line-height:1.5}
 label.f{display:block;font-size:12px;font-weight:700;color:var(--ink-soft);margin:12px 0 5px}
-.f-in,.f-ta,select.f-in{
-  width:100%;border:1px solid var(--line);background:var(--paper);border-radius:11px;padding:9px 11px;
-  font:inherit;font-size:13.5px;color:var(--ink)
-}
+.f-in,.f-ta,select.f-in{width:100%;border:1px solid var(--line);background:var(--paper);border-radius:11px;padding:9px 11px;
+  font:inherit;font-size:13.5px;color:var(--ink)}
 .f-ta{min-height:96px;resize:vertical}
 .hint{font-size:11.5px;color:var(--ink-faint);margin-top:5px;line-height:1.5}
 .btn{border:1px solid var(--line);background:var(--card);border-radius:11px;padding:9px 16px;font-size:13px;font-weight:700;color:var(--ink-soft)}
@@ -254,7 +208,7 @@ label.f{display:block;font-size:12px;font-weight:700;color:var(--ink-soft);margi
 .steps .todo .k{background:#c9baa4}
 .steps .t{margin-left:auto;font-family:var(--font-mono);font-size:10.5px;color:var(--ink-faint)}
 .applist{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;max-width:1080px}
-.app-t{padding:14px 15px;border-radius:15px;text-align:left}
+.app-t{padding:14px 15px;text-align:left}
 .app-t .ic{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:16px;background:rgba(125,95,174,.14);margin-bottom:9px}
 .app-t b{font-size:14px;display:block}
 .app-t small{color:var(--ink-faint);font-size:11.5px;display:block;margin-top:3px;line-height:1.45}
@@ -263,17 +217,13 @@ label.f{display:block;font-size:12px;font-weight:700;color:var(--ink-soft);margi
 .kv dd{margin:0}
 
 /* ── MODAL réteg (minden header-menü ide nyílik) ───────────────────────── */
-.scrim{
-  position:fixed;inset:0;background:rgba(44,30,23,.34);backdrop-filter:blur(3px);z-index:100;
-  display:none;align-items:center;justify-content:center;padding:28px;
-}
+.scrim{position:fixed;inset:0;background:rgba(44,30,23,.34);backdrop-filter:blur(3px);z-index:100;
+  display:none;align-items:center;justify-content:center;padding:28px}
 .scrim.on{display:flex;animation:fade .18s ease both}
 @keyframes fade{from{opacity:0}to{opacity:1}}
-.modal{
-  background:linear-gradient(168deg,var(--card),var(--card-2));border:1px solid var(--line);border-radius:20px;
+.modal{background:linear-gradient(168deg,var(--card),var(--card-2));border:1px solid var(--line);border-radius:20px;
   box-shadow:0 40px 90px -50px rgba(60,35,20,.75);width:100%;max-height:100%;display:flex;flex-direction:column;
-  animation:pop .22s cubic-bezier(.22,1,.36,1) both
-}
+  animation:pop .22s cubic-bezier(.22,1,.36,1) both}
 @keyframes pop{from{opacity:0;transform:translateY(14px) scale(.985)}to{opacity:1;transform:none}}
 .modal.sz-s{max-width:520px}
 .modal.sz-m{max-width:860px}
@@ -285,22 +235,14 @@ label.f{display:block;font-size:12px;font-weight:700;color:var(--ink-soft);margi
 .modal-head .x{margin-left:auto}
 .modal-body{padding:18px 20px 22px;overflow:auto;flex:1 1 auto}
 .modal-foot{padding:12px 20px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;flex:0 0 auto}
-
-/* header legördülő (menü → tétel-lista) */
-.menu{
-  position:absolute;top:calc(var(--header-h) - 8px);border:1px solid var(--line);border-radius:14px;padding:6px;
-  background:var(--card);box-shadow:0 26px 50px -32px rgba(70,45,30,.6);min-width:250px;z-index:40;display:none
-}
+.menu{position:absolute;top:calc(var(--header-h) - 8px);border:1px solid var(--line);border-radius:14px;padding:6px;
+  background:var(--card);box-shadow:0 26px 50px -32px rgba(70,45,30,.6);min-width:250px;z-index:40;display:none}
 .menu.on{display:block;animation:pop .14s ease both}
-.menu button{
-  display:flex;width:100%;align-items:center;gap:9px;border:0;background:transparent;border-radius:9px;
-  padding:8px 10px;font-size:13.5px;font-weight:600;color:var(--ink-soft);text-align:left
-}
+.menu button{display:flex;width:100%;align-items:center;gap:9px;border:0;background:transparent;border-radius:9px;
+  padding:8px 10px;font-size:13.5px;font-weight:600;color:var(--ink-soft);text-align:left}
 .menu button:hover{background:var(--night-2);color:var(--ink)}
 .menu .sect{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);padding:9px 10px 4px}
 .menu .tag{margin-left:auto;font-size:10px;color:var(--ink-faint);font-family:var(--font-mono);border:1px solid var(--line);border-radius:6px;padding:1px 5px}
-
-/* fejlesztői jegyzet */
 .devnote{border-left:3px solid var(--sky);background:rgba(77,134,166,.07);border-radius:0 12px 12px 0;padding:11px 14px;font-size:12.5px;line-height:1.6;color:var(--ink-soft);margin:14px 0}
 .devnote b{color:var(--ink)}
 code{font-family:var(--font-mono);font-size:12px;background:rgba(214,196,164,.35);border-radius:5px;padding:1px 5px}
@@ -309,14 +251,10 @@ code{font-family:var(--font-mono);font-size:12px;background:rgba(214,196,164,.35
 table.spec{width:100%;border-collapse:collapse;font-size:12.5px;margin:8px 0 14px}
 table.spec th,table.spec td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
 table.spec th{background:rgba(241,232,214,.6);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint)}
-
-.fab{
-  position:fixed;right:18px;bottom:18px;z-index:60;border:1px solid var(--line);background:var(--card);
+.fab{position:fixed;right:18px;bottom:18px;z-index:60;border:1px solid var(--line);background:var(--card);
   border-radius:999px;padding:10px 16px;font-size:12.5px;font-weight:700;color:var(--ink-soft);
-  box-shadow:0 18px 34px -24px rgba(70,45,30,.7)
-}
+  box-shadow:0 18px 34px -24px rgba(70,45,30,.7)}
 .fab:hover{color:var(--ink);background:var(--card-2)}
-
 @media (max-width:1080px){
   .grid2{grid-template-columns:1fr}
   .rail{position:absolute;left:0;top:var(--header-h);bottom:0;z-index:50;box-shadow:0 20px 50px -30px rgba(70,45,30,.7)}
@@ -324,3 +262,557 @@ table.spec th{background:rgba(241,232,214,.6);font-size:11px;letter-spacing:.06e
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
+<body>
+<div class="app">
+
+  <!-- ══ HEADER — minden menüpont MODAL-t nyit, nincs többé „Munkatársak" ══ -->
+  <header class="top">
+    <div class="brand">
+      <div class="mark">🍷</div>
+      <div><b>E-AI</b><span>Control Plane</span></div>
+    </div>
+
+    <nav class="main" aria-label="Fő navigáció">
+      <button data-open="dash">Dashboard</button>
+      <button data-open="board">Board</button>
+      <button data-menu="auto">Automatizálás <span class="chev">▾</span></button>
+      <button data-menu="admin">Adminisztráció <span class="chev">▾</span></button>
+    </nav>
+
+    <div class="header-right">
+      <div class="seg" role="group" aria-label="Csapat üzemmód">
+        <button aria-pressed="true">Üresjárat</button>
+        <button aria-pressed="false">Normál</button>
+      </div>
+      <button class="pill" data-open="runs">Futások <span class="num">3</span></button>
+      <button class="pill">🖥 Ostorosbor ▾</button>
+      <div class="avatar-me">G</div>
+    </div>
+
+    <div class="menu" id="menu-auto" style="left:250px">
+      <div class="sect">Automatizálás</div>
+      <button data-open="playbooks">📘 Playbookok <span class="tag">L</span></button>
+      <button data-open="steps">🧩 Lépés-sablonok <span class="tag">L</span></button>
+      <button data-open="processes">🔁 Folyamatok <span class="tag">L</span></button>
+      <button data-open="sched">⏰ Ütemezés <span class="tag">M</span></button>
+      <button data-open="monitors">📡 Monitorok <span class="tag">M</span></button>
+    </div>
+    <div class="menu" id="menu-admin" style="left:378px">
+      <div class="sect">Napi munka</div>
+      <button data-open="account">👤 Fiókom <span class="tag">M</span></button>
+      <button data-open="connectors">🔌 Fiókok / connectorok <span class="tag">L</span></button>
+      <div class="sect">Adminisztráció</div>
+      <button data-open="iam">🛡 IAM <span class="tag">L</span></button>
+      <button data-open="menuaccess">👁 Menü-hozzáférés <span class="tag">M</span></button>
+      <button data-open="governance">⚖️ Governance <span class="tag">L</span></button>
+      <button data-open="audit">📜 Audit <span class="tag">full</span></button>
+      <div class="sect">Platform</div>
+      <button data-open="tenants">🏢 Platform · Tenantok <span class="tag">L</span></button>
+      <button data-open="psettings">⚙️ Platform · Beállítások <span class="tag">L</span></button>
+    </div>
+  </header>
+
+  <div class="body">
+
+    <!-- ══ BAL SÁV — állandó, minden navigációt túlél ═══════════════════ -->
+    <aside class="rail" id="rail" aria-label="Munkatársak">
+      <div class="rail-head">
+        <div class="rail-title">
+          <h2>Csapat</h2>
+          <span class="count" id="railCount"></span>
+          <button class="icon-btn" id="railToggle" style="margin-left:auto" title="Sáv összecsukása">⟨</button>
+        </div>
+        <div class="search-wrap">
+          <span class="mag">🔍</span>
+          <input class="rail-search" id="railSearch" placeholder="Munkatárs keresése…" />
+        </div>
+        <div class="chips" id="railFilters">
+          <button class="chip" data-filter="all" aria-pressed="true">Mind</button>
+          <button class="chip" data-filter="busy" aria-pressed="false"><span class="dot" style="background:var(--sky)"></span>Dolgozik</button>
+          <button class="chip" data-filter="wait" aria-pressed="false"><span class="dot" style="background:var(--honey)"></span>Vár rám</button>
+          <button class="chip" data-filter="idle" aria-pressed="false"><span class="dot" style="background:var(--sage)"></span>Szabad</button>
+        </div>
+      </div>
+
+      <div class="rail-list" id="railList" role="listbox" aria-label="Munkatárs-kártyák"></div>
+
+      <div class="rail-foot">
+        <button class="btn-ghost" data-open="newagent"><span class="lbl-txt">+ Új munkatárs</span></button>
+        <button class="btn-ghost" data-open="team" style="flex:0 0 40px" title="Csapat-beállítások">⚙︎</button>
+      </div>
+    </aside>
+
+    <!-- ══ JOBB OLDAL — a kiválasztott munkatárs munkaterülete ══════════ -->
+    <main class="work">
+      <div class="work-head" id="workHead" hidden>
+        <div class="av" id="whAv"></div>
+        <div class="work-id">
+          <div class="nm" id="whName"></div>
+          <div class="sub" id="whSub"></div>
+        </div>
+        <div class="tabs" role="tablist" id="workTabs">
+          <button role="tab" aria-selected="true" data-tab="chat">Beszélgetés</button>
+          <button role="tab" aria-selected="false" data-tab="apps">Mini-appok</button>
+          <button role="tab" aria-selected="false" data-tab="profile">Adatlap</button>
+        </div>
+        <div class="right">
+          <button class="icon-btn" title="Új beszélgetés">＋</button>
+          <button class="icon-btn" title="Előzmények">🕘</button>
+          <button class="icon-btn" title="Megnyitás külön ablakban">⧉</button>
+        </div>
+      </div>
+
+      <div class="work-body" id="workBody">
+
+        <section class="pane on" id="pane-empty">
+          <div class="empty">
+            <h1 class="big font-display">Kire van most szükséged?</h1>
+            <p>A bal oldali sávban ott ül az egész csapat — akárhová navigálsz az appban, ők végig
+               látszanak. Válassz valakit, és itt, jobb oldalon nyílik meg vele a munka.</p>
+            <div class="atelier-card hintbox">
+              <h4>Így működik ez a képernyő</h4>
+              <ul class="speclist" style="padding-left:18px">
+                <li><b>Bal oldal = a csapat.</b> A kártyán látod, ki mit csinál épp; onnan indítasz beszélgetést vagy feladatot.</li>
+                <li><b>Jobb oldal = a munka.</b> Amire kattintasz, az tölti ki: beszélgetés, feladat, mini-appok, adatlap.</li>
+                <li><b>A felső menük ablakban nyílnak.</b> Ha becsukod, pontosan ott folytatod, ahol abbahagytad — a beszélgetés nem vész el.</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section class="pane" id="pane-chat">
+          <div class="chat">
+            <div class="msg a"><div class="who" id="chatAv"></div><div>
+              <div class="bub">Szia! Nézem az ostorosi 0184/12 hrsz tulajdoni lapját. Kérsz kivonatot a terhekről is?</div>
+              <div class="trace"><span>▸ tulajdoni_lap_parse · 4,1 mp</span><span>▸ workspace_write · kivonat.xlsx</span></div>
+            </div></div>
+            <div class="msg u"><div class="who">G</div><div class="bub">Igen, és a széljegyeket is emeld ki külön.</div></div>
+            <div class="msg a"><div class="who" id="chatAv2"></div><div>
+              <div class="bub">Rendben. Három széljegy van, ebből egy még folyamatban. Az Excelt frissítettem.</div>
+              <div class="gate" style="margin-top:10px">
+                <h5>⚠︎ Jóváhagyás kell egy külső írás előtt</h5>
+                <p>A munkatárs 12 sort írna a Ostorosbor CRM-be (<code>crm.records.update</code>). Ez a valós rendszert módosítja, ezért engedélyt kér.</p>
+                <div class="row"><button class="ok">Jóváhagyom</button><button>Megnézem előbb</button><button>Elutasítom</button></div>
+              </div>
+            </div></div>
+            <div class="msg a"><div class="who" id="chatAv3"></div><div class="bub">
+              <span class="badge b-mut" style="font-family:var(--font-mono)">gépel…</span>
+            </div></div>
+            <div class="composer">
+              <textarea id="composerInput" placeholder="Írj a munkatársnak… (Shift+Enter = új sor)"></textarea>
+              <button class="icon-btn" title="Csatolmány">📎</button>
+              <button class="send">Küldés</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="pane" id="pane-task">
+          <div class="grid2">
+            <div class="atelier-card card">
+              <h3>Indítás</h3>
+              <p class="lead">A kötött munkatársnál a munkamenet a skillben van — paraméterek és csatolmány, szabad szöveg nélkül.</p>
+              <label class="f" for="t1">Mit csináljon?</label>
+              <textarea class="f-ta" id="t1">Készíts kimutatást az elmúlt havi ostorosi földterület-mozgásokról, és tedd a Munkaterületre Excelben.</textarea>
+              <label class="f" for="t2">Meddig legyen kész?</label>
+              <select class="f-in" id="t2"><option>Amint tud</option><option>Ma 17:00-ig</option><option>Holnap reggelre</option></select>
+              <label class="f">Mit tehet meg engedélykérés nélkül?</label>
+              <div class="chips" style="margin-top:2px">
+                <button class="chip" aria-pressed="true">Olvasás</button>
+                <button class="chip" aria-pressed="true">Fájl a Munkaterületre</button>
+                <button class="chip" aria-pressed="false">Külső rendszerbe írás</button>
+                <button class="chip" aria-pressed="false">E-mail küldése</button>
+              </div>
+              <p class="hint">Ami nincs bekapcsolva, az előtt megáll és rákérdez. Futás közben is módosíthatod.</p>
+              <div style="display:flex;gap:8px;margin-top:16px">
+                <button class="btn primary">Indítás</button>
+                <button class="btn">Próbafutás (nem ír sehová)</button>
+              </div>
+            </div>
+            <div class="atelier-card card">
+              <h3>Most fut</h3>
+              <p class="lead">Havi földmozgás-kimutatás · 2 perce indult</p>
+              <ol class="steps">
+                <li class="done"><span class="k"></span>Adatok lekérése a CRM-ből<span class="t">18 mp</span></li>
+                <li class="done"><span class="k"></span>Tulajdoni lapok párosítása<span class="t">44 mp</span></li>
+                <li class="run"><span class="k"></span>Excel összeállítása<span class="t">fut…</span></li>
+                <li class="todo"><span class="k"></span>Ellenőrzés és összefoglaló<span class="t">—</span></li>
+              </ol>
+              <div class="rule" style="margin:14px 0"></div>
+              <dl class="kv">
+                <dt>Költség eddig</dt><dd>142 Ft (0,9% a napi keretből)</dd>
+                <dt>Munkaterület</dt><dd>foldmozgas-2026-08.xlsx</dd>
+              </dl>
+              <div style="display:flex;gap:8px;margin-top:14px">
+                <button class="btn">Megállítás</button>
+                <button class="btn" data-open="runs">Részletes napló</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="pane" id="pane-apps">
+          <div class="applist">
+            <button class="atelier-card app-t"><div class="ic">📄</div><b>Tulajdoni lap kivonatoló</b><small>PDF-ből strukturált táblázat, tulajdonosokkal és terhekkel.</small></button>
+            <button class="atelier-card app-t"><div class="ic">📊</div><b>Havi földmozgás riport</b><small>CRM + tulajdoni lapok összevetése egy Excelben.</small></button>
+            <button class="atelier-card app-t"><div class="ic">✉️</div><b>Ügyfél-válasz vázlat</b><small>Beérkező levélre válasz-tervezet, küldés előtt jóváhagyással.</small></button>
+            <button class="atelier-card app-t" style="border-style:dashed;background:transparent"><div class="ic">＋</div><b>Új mini-app</b><small>Mondd el a munkatársnak, mire van szükséged — ő megépíti.</small></button>
+          </div>
+        </section>
+
+        <section class="pane" id="pane-profile">
+          <div class="grid2">
+            <div class="atelier-card card">
+              <h3>Mivel bízták meg</h3>
+              <p class="lead">Ez a munkatárs „munkaköri leírása". Mentéskor új verzió készül, a régi megmarad.</p>
+              <textarea class="f-ta" style="min-height:150px">Te egy földnyilvántartási ügyintéző vagy, feladatod tulajdonlapok elemzése, professzionális értelmezése, pontos kivonatolása.</textarea>
+              <div style="display:flex;gap:8px;margin-top:12px"><button class="btn primary">Mentés új verzióként</button><button class="btn">Verziók</button></div>
+            </div>
+            <div class="atelier-card card">
+              <h3>Munkakörnyezet</h3>
+              <dl class="kv" style="margin-bottom:12px">
+                <dt>Agy</dt><dd>Grok 4.5 · Luna</dd>
+                <dt>Állapot</dt><dd>aktív</dd>
+                <dt>Eszközök</dt><dd>12 engedélyezve</dd>
+                <dt>Kapcsolatok</dt><dd>Réka, Ákos</dd>
+              </dl>
+              <div class="rule" style="margin:12px 0"></div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px">
+                <button class="btn" data-open="skills">Skillek</button>
+                <button class="btn" data-open="training">Tanítás</button>
+                <button class="btn" data-open="access">Kapcsolatok</button>
+                <button class="btn" data-open="memory">Memória</button>
+              </div>
+              <p class="hint" style="margin-top:12px">Ezek is ablakban nyílnak — a beszélgetés a háttérben él tovább.</p>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ══ MODAL RÉTEG ═══════════════════════════════════════════════════════ -->
+<div class="scrim" id="scrim" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+  <div class="modal sz-m" id="modal">
+    <div class="modal-head">
+      <div>
+        <div class="eyebrow" id="mEyebrow">Menü</div>
+        <h3 id="mTitle">Cím</h3>
+      </div>
+      <button class="icon-btn x" id="mClose" aria-label="Bezárás">✕</button>
+    </div>
+    <div class="modal-body" id="mBody"></div>
+    <div class="modal-foot" id="mFoot"></div>
+  </div>
+</div>
+
+<button class="fab" data-open="handoff">📐 Fejlesztői átadó</button>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════════════
+   MOCK ADAT — a látványterv csak demonstrál. Éles kódban ez az Agent-modell +
+   a futás-állapot (activeRuns) összefésült vetülete. Lásd: Fejlesztői átadó.
+   ═══════════════════════════════════════════════════════════════════════ */
+const AGENTS = [
+  { id:'marika', name:'Marika', role:'Földnyilvántartási ügyintéző', emoji:'✨',
+    grad:'linear-gradient(150deg,#5d8a4f,#4d86a6)', status:'busy',
+    activity:'Tulajdoni lap kivonatolása', since:'2 perce', progress:62,
+    badges:[['b-wait','1 jóváhagyás vár']] },
+  { id:'agi', name:'Ági', role:'Ostoros Föld program asszisztens', emoji:'🤖',
+    grad:'linear-gradient(150deg,#4d86a6,#7d5fae)', status:'wait',
+    activity:'Kérdést tett fel neked', since:'6 perce', progress:0, taskOnly:true,
+    badges:[['b-wait','Válaszra vár'],['b-mut','csak indítás']] },
+  { id:'reka', name:'Réka', role:'CRM asszisztens · riportok', emoji:'📊',
+    grad:'linear-gradient(150deg,#b07d24,#5d8a4f)', status:'busy',
+    activity:'Havi riport összeállítása', since:'11 perce', progress:34, badges:[] },
+  { id:'akos', name:'Ákos', role:'CRM fejlesztő-támogatás', emoji:'🛠',
+    grad:'linear-gradient(150deg,#7d5fae,#c25f7d)', status:'idle',
+    activity:'Feladatra vár', since:'', progress:0, badges:[] },
+  { id:'laci', name:'Laci', role:'Beszerzés és számlák', emoji:'🧾',
+    grad:'linear-gradient(150deg,#b23a55,#b07d24)', status:'idle',
+    activity:'Feladatra vár', since:'', progress:0, badges:[['b-new','2 új üzenet']] },
+  { id:'dora', name:'Dóra', role:'Ügyfélkapcsolat · e-mail', emoji:'✉️',
+    grad:'linear-gradient(150deg,#4d86a6,#5d8a4f)', status:'off',
+    activity:'Szünetel — elfogyott a napi keret', since:'', progress:0, badges:[['b-err','leállítva']] },
+];
+
+const STATE = { selected:null, tab:'chat', filter:'all', q:'' };
+const $  = (s,r=document)=>r.querySelector(s);
+const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+const statusLabel = a => ({busy:'Dolgozik', wait:'Vár rád', idle:'Szabad', off:'Szünetel'}[a.status]);
+
+/* ── Bal sáv renderelése ───────────────────────────────────────────────── */
+function renderRail(){
+  const list = $('#railList');
+  const items = AGENTS.filter(a=>{
+    const okF = STATE.filter==='all' || STATE.filter===a.status;
+    const okQ = !STATE.q || (a.name+' '+a.role).toLowerCase().includes(STATE.q.toLowerCase());
+    return okF && okQ;
+  });
+  list.innerHTML = items.map(a=>`
+    <div class="agent ${STATE.selected===a.id?'active':''}" data-agent="${a.id}" role="option"
+         tabindex="0" aria-selected="${STATE.selected===a.id}" title="${a.name} — ${a.role}">
+      <div class="agent-top">
+        <div class="av" style="background:${a.grad}">${a.emoji}<span class="soul ${a.status}"></span></div>
+        <div class="agent-id">
+          <div class="nm">${a.name}</div>
+          <div class="role">${a.role}</div>
+        </div>
+      </div>
+      <div class="state"><span class="lbl">${statusLabel(a)}</span>
+        <span>· ${a.activity}</span>${a.since?`<span class="tm">${a.since}</span>`:''}</div>
+      ${a.progress?`<div class="bar"><i style="width:${a.progress}%"></i></div>`:''}
+      ${a.badges.length?`<div class="badges">${a.badges.map(b=>`<span class="badge ${b[0]}">${b[1]}</span>`).join('')}</div>`:''}
+      <div class="acts">
+        ${a.taskOnly
+          ? `<button class="primary" data-act="task" data-agent="${a.id}">Indítás</button>`
+          : `<button class="primary" data-act="chat" data-agent="${a.id}">Beszélgetés</button>
+             <button data-act="board" data-agent="${a.id}">Táblára</button>`}
+        <button class="more" data-act="more" data-agent="${a.id}" title="További műveletek">⋯</button>
+      </div>
+    </div>`).join('') || '<p class="hint" style="padding:14px">Nincs találat erre a szűrésre.</p>';
+
+  const busy = AGENTS.filter(a=>a.status==='busy').length;
+  $('#railCount').textContent = `${AGENTS.length} munkatárs · ${busy} dolgozik`;
+}
+
+/* ── Jobb oldali munkaterület ──────────────────────────────────────────── */
+function renderWorkTabs(a){
+  const items = a.taskOnly
+    ? [['task','Indítás'],['apps','Mini-appok'],['profile','Adatlap']]
+    : [['chat','Beszélgetés'],['apps','Mini-appok'],['profile','Adatlap']];
+  $('#workTabs').innerHTML = items.map(([k,l]) =>
+    `<button role="tab" aria-selected="${STATE.tab===k}" data-tab="${k}">${l}</button>`).join('');
+}
+function selectAgent(id, tab){
+  const a = AGENTS.find(x=>x.id===id);
+  STATE.selected = id;
+  const fallback = a.taskOnly ? 'task' : 'chat';
+  const next = tab || fallback;
+  STATE.tab = (a.taskOnly && next==='chat') || (!a.taskOnly && next==='task') ? fallback : next;
+  $('#workHead').hidden = false;
+  $('#whAv').style.background = a.grad; $('#whAv').textContent = a.emoji;
+  $('#whName').textContent = a.name;
+  $('#whSub').textContent = `${a.role} · ${statusLabel(a)}${a.since?' · '+a.since:''}`;
+  ['#chatAv','#chatAv2','#chatAv3'].forEach(s=>{const e=$(s); if(e){e.style.background=a.grad; e.textContent=a.emoji;}});
+  const ph = $('#composerInput'); if(ph) ph.placeholder = `Üzenet ${a.name} részére… (Shift+Enter = új sor)`;
+  renderWorkTabs(a);
+  showTab(STATE.tab);
+  renderRail();
+  history.replaceState(null,'',`#/agent/${id}/${STATE.tab}`);
+}
+function showTab(tab){
+  STATE.tab = tab;
+  $$('#workTabs button').forEach(b=>b.setAttribute('aria-selected', String(b.dataset.tab===tab)));
+  $$('.pane').forEach(p=>p.classList.remove('on'));
+  $('#pane-'+tab).classList.add('on');
+  if(STATE.selected) history.replaceState(null,'',`#/agent/${STATE.selected}/${tab}`);
+}
+
+/* ── MODAL — minden header-menüpont és minden „mellék-képernyő" ide nyílik ─ */
+const box = (t,h='52vh') => `<div class="soft" style="height:${h};display:grid;place-items:center;color:var(--ink-faint)">${t}</div>`;
+const PANELS = {
+  dash:{t:'Dashboard',e:'Áttekintés',sz:'sz-l',b:box('Dashboard — mutatók, napi keret, friss futások')},
+  board:{t:'Board',e:'Munkatábla',sz:'sz-full',b:
+    '<p class="hint">A Board a legnagyobb felület, ezért teljes képernyős ablakban nyílik (<code>sz-full</code>). Bezárás után változatlanul ott folytatod, ahol a jobb oldalon abbahagytad.</p>'+box('Board — Kanban oszlopok helye','62vh')},
+  runs:{t:'Futások',e:'Áttekintés',sz:'sz-l',b:`
+    <p class="hint" style="margin-bottom:12px">Minden most futó és a mai befejezett munka egy helyen. Kattints egy sorra a részletes naplóért.</p>
+    <table class="spec"><tr><th>Munkatárs</th><th>Feladat</th><th>Állapot</th><th>Költség</th><th>Indult</th></tr>
+    <tr><td>Marika</td><td>Tulajdoni lap kivonatolás</td><td>fut · jóváhagyásra vár</td><td>142 Ft</td><td>2 perce</td></tr>
+    <tr><td>Réka</td><td>Havi CRM riport</td><td>fut</td><td>388 Ft</td><td>11 perce</td></tr>
+    <tr><td>Laci</td><td>Számla-egyeztetés</td><td>kész</td><td>96 Ft</td><td>1 órája</td></tr></table>
+    <div class="devnote"><b>Fejlesztő:</b> ez a meglévő <code>active-runs-panel.tsx</code> tartalma változatlanul — csak a hordozója lesz modal.</div>`},
+  playbooks:{t:'Playbookok',e:'Automatizálás',sz:'sz-l',b:box('Playbook-lista + Canvas')},
+  steps:{t:'Lépés-sablonok',e:'Automatizálás',sz:'sz-l',b:box('StepTemplate katalógus')},
+  processes:{t:'Folyamatok',e:'Automatizálás',sz:'sz-l',b:box('Folyamat-futások')},
+  sched:{t:'Ütemezés',e:'Automatizálás',sz:'sz-m',b:box('Ütemezett feladatok','40vh')},
+  monitors:{t:'Monitorok',e:'Automatizálás',sz:'sz-m',b:box('Proaktív monitorok','40vh')},
+  account:{t:'Fiókom',e:'Adminisztráció',sz:'sz-m',b:box('Saját OAuth-kötések','36vh')},
+  connectors:{t:'Fiókok / connectorok',e:'Adminisztráció',sz:'sz-l',b:box('Connector-lista')},
+  iam:{t:'IAM',e:'Adminisztráció',sz:'sz-l',b:box('Felhasználók és szerepek')},
+  menuaccess:{t:'Menü-hozzáférés',e:'Adminisztráció',sz:'sz-m',b:box('Szerepenkénti menü-láthatóság','40vh')},
+  governance:{t:'Governance',e:'Adminisztráció',sz:'sz-l',b:box('Jóváhagyások, policy-k')},
+  audit:{t:'Audit',e:'Adminisztráció',sz:'sz-full',b:box('Audit-napló (hosszú tábla → teljes képernyő)','70vh')},
+  tenants:{t:'Platform · Tenantok',e:'Platform',sz:'sz-l',b:box('Tenant-lista')},
+  psettings:{t:'Platform · Beállítások',e:'Platform',sz:'sz-l',b:box('Platform-beállítások')},
+  newagent:{t:'Új munkatárs felvétele',e:'Csapat',sz:'sz-m',b:`
+    <p class="hint" style="margin-bottom:14px">A varázsló végigkérdezi, mire kell az új munkatárs — a nevét és a stílusát ő maga javasolja.</p>
+    <label class="f">Miben segítsen?</label><textarea class="f-ta" placeholder="Pl. bejövő számlák egyeztetése a szállítói listával"></textarea>
+    <label class="f">Hozzáférés</label><select class="f-in"><option>Csak olvasás</option><option>Olvasás + fájlok</option><option>Külső írás jóváhagyással</option></select>`,
+    f:'<button class="btn" data-close>Mégse</button><button class="btn primary">Tovább</button>'},
+  team:{t:'Csapat-beállítások',e:'Csapat',sz:'sz-m',b:box('Sorrend, rejtett munkatársak, alapértelmezett üzemmód','36vh')},
+  skills:{t:'Skillek',e:'Munkatárs',sz:'sz-m',b:box('Skill-katalógus és kötések','38vh')},
+  training:{t:'Tanítás',e:'Munkatárs',sz:'sz-l',b:box('Tanítási anyagok, memória-verziók','50vh')},
+  access:{t:'Kapcsolatok',e:'Munkatárs',sz:'sz-l',b:box('Agent-hozzáférési gráf','50vh')},
+  memory:{t:'Memória',e:'Munkatárs',sz:'sz-m',b:box('Tartós agent-memória','38vh')},
+  more:{t:'További műveletek',e:'Munkatárs',sz:'sz-s',b:`
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <button class="btn" style="text-align:left">🧩 Mini-appok</button>
+      <button class="btn" style="text-align:left">📇 Adatlap</button>
+      <button class="btn" style="text-align:left">🎓 Tanítás</button>
+      <button class="btn" style="text-align:left">🔗 Kapcsolatok</button>
+      <button class="btn" style="text-align:left">⏸ Szüneteltetés</button>
+      <button class="btn" style="text-align:left;color:var(--coral-deep)">🗑 Elbocsátás</button>
+    </div>`},
+};
+
+/* ── FEJLESZTŐI ÁTADÓ — ez a modal a specifikáció, nem dísz ─────────────── */
+PANELS.handoff = {t:'Fejlesztői átadó — agent-sáv shell', e:'Látványterv v1 · 2026-08-23', sz:'sz-full', b:`
+<div style="max-width:900px">
+  <h4 style="font-family:var(--font-display);font-size:17px;margin:0 0 6px">1. Mit vált ki ez</h4>
+  <ul class="speclist">
+    <li>A <b>„Munkatársak" header-menü megszűnik</b> (<code>staff</code> csoport a <code>CONTROL_PLANE_NAV_CATALOG</code>-ban): a munkatárs-lista lesz az app alaphelyzete, nem egy aloldal.</li>
+    <li>A <code>/control-plane/agents</code> lista-oldal beolvad a bal sávba. A <code>/control-plane/agents/[id]</code> adatlap megmarad mély-linknek, de a napi útvonal a sáv.</li>
+    <li>A lebegő chat-dokk (<code>agent-chat-dock.tsx</code>, <code>agent-chat-session-host.tsx</code>) szerepét a jobb oldali munkaterület veszi át. A dokk mint „több beszélgetés egyszerre" megmaradhat másodlagos módként (⧉ gomb = kiszakítás külön ablakba).</li>
+  </ul>
+
+  <h4 style="font-family:var(--font-display);font-size:17px;margin:18px 0 6px">2. Komponens-fa</h4>
+  <table class="spec">
+    <tr><th>Új komponens</th><th>Hol</th><th>Felelősség</th></tr>
+    <tr><td><code>AgentRail</code></td><td>components/agents/agent-rail.tsx</td><td>Bal sáv: keresés, szűrő-chipek, kártya-lista, összecsukás. A <code>ControlPlaneShell</code>-ben ül, NEM az oldal alatt — így minden navigációt túlél.</td></tr>
+    <tr><td><code>AgentRailCard</code></td><td>…/agent-rail-card.tsx</td><td>Egy munkatárs: avatar + soul-pötty, státusz-sor, haladás-sáv, jelvények, 3 gomb.</td></tr>
+    <tr><td><code>AgentWorkspace</code></td><td>…/agent-workspace.tsx</td><td>Jobb oldal: fejléc + tab-sor. Kötött agent: Indítás / mini-appok / adatlap. Beszélgetős: chat / mini-appok / adatlap.</td></tr>
+    <tr><td><code>useAgentRailState</code></td><td>…/agent-rail-store.ts</td><td>Kiválasztott agent, aktív tab, szűrő, sáv-összecsukás. Mintája a meglévő <code>agent-chat-session-store.ts</code> (useSyncExternalStore).</td></tr>
+    <tr><td><code>RouteModalHost</code></td><td>components/ui/route-modal.tsx</td><td>A header-menük tartalmát fogadó modal-hordozó, méret-változatokkal.</td></tr>
+  </table>
+  <div class="devnote"><b>Fontos:</b> a <code>ControlPlaneShell</code> már ma is kliens-komponens és a layoutban ül — a sáv oda kerül, a <code>{children}</code> mellé, és a <code>work-body</code> lesz a children helye. A <code>navItems</code> prop marad, csak a menü-kattintás nem <code>&lt;Link&gt;</code>, hanem modal-nyitás.</div>
+
+  <h4 style="font-family:var(--font-display);font-size:17px;margin:18px 0 6px">3. Útvonal-modell (a mély-link nem veszhet el)</h4>
+  <table class="spec">
+    <tr><th>Amit a felhasználó csinál</th><th>URL</th><th>Megjelenés</th></tr>
+    <tr><td>Megnyit egy munkatársat</td><td><code>/control-plane/a/marika/chat</code></td><td>Bal sáv + jobb oldali chat</td></tr>
+    <tr><td>Indítás-fül (kötött agent)</td><td><code>/control-plane/a/agi/task</code></td><td>Jobb oldal vált, a sáv nem</td></tr>
+    <tr><td>Header-menüpont</td><td><code>?panel=iam</code> query-param a jelenlegi URL-en</td><td>Modal nyílik a shell fölé</td></tr>
+    <tr><td>Megosztott link modalra</td><td><code>/control-plane/a/marika/chat?panel=audit</code></td><td>Ugyanaz a nézet + nyitott modal</td></tr>
+  </table>
+  <ul class="speclist">
+    <li>A <b>panel query-paramból</b> jön, nem külön route-ból: így a háttér (chat, futó stream) garantáltan nem mountol újra.</li>
+    <li>A régi <code>/control-plane/iam</code> stb. útvonalak <b>maradnak</b> teljes oldalként — a modal ugyanazt a komponenst rendereli. Ez a menekülő-út, ha valakinek külön fül kell, és ez tartja meg a mély-linkeket.</li>
+    <li>ESC / kattintás a háttérre / ✕ = <code>router.replace</code> a panel-param nélkül. A böngésző „vissza" gombja is zárja a modalt.</li>
+  </ul>
+
+  <h4 style="font-family:var(--font-display);font-size:17px;margin:18px 0 6px">4. Modal méret-skála</h4>
+  <table class="spec">
+    <tr><th>Méret</th><th>Szélesség</th><th>Mire</th></tr>
+    <tr><td><code>sz-s</code></td><td>520px</td><td>Megerősítés, rövid menü (⋯)</td></tr>
+    <tr><td><code>sz-m</code></td><td>860px</td><td>Űrlap, beállítás (Fiókom, Ütemezés)</td></tr>
+    <tr><td><code>sz-l</code></td><td>1180px, 88vh</td><td>Lista + részletek (IAM, Playbookok, Futások)</td></tr>
+    <tr><td><code>sz-full</code></td><td>teljes képernyő</td><td>Board, Audit — ami táblázatban széles</td></tr>
+  </table>
+  <ul class="speclist">
+    <li><b>Egyszerre egy modal.</b> Ha egy modalból másikat nyitnál, a régi bezárul (kivéve a megerősítő <code>sz-s</code>-t, ami rátehető).</li>
+    <li>Fókusz-csapda + <code>aria-modal</code> + a megnyitó gombra visszatérő fókusz. A háttér <code>inert</code>.</li>
+    <li>Mentetlen szerkesztés esetén a bezárás rákérdez („Elvesznek a módosítások?").</li>
+  </ul>
+
+  <h4 style="font-family:var(--font-display);font-size:17px;margin:18px 0 6px">5. A kártya élő állapota</h4>
+  <table class="spec">
+    <tr><th>Állapot</th><th>Pötty</th><th>Kártya-szöveg</th><th>Forrás</th></tr>
+    <tr><td>Dolgozik</td><td>kék, lüktet</td><td>épp futó lépés neve + eltelt idő + haladás-sáv</td><td>agent-turn / run rekord</td></tr>
+    <tr><td>Vár rád</td><td>arany, lassan lüktet</td><td>„Jóváhagyásra vár" / „Kérdést tett fel"</td><td>következmény-kapu, needs_info ticket</td></tr>
+    <tr><td>Szabad</td><td>zöld</td><td>„Feladatra vár"</td><td>—</td></tr>
+    <tr><td>Szünetel</td><td>szürke</td><td>ok megnevezve (keret elfogyott, felfüggesztve)</td><td>keret-kapu, lifecycle</td></tr>
+  </table>
+  <div class="devnote"><b>Adat-út:</b> egy <code>/api/agents/rail-state</code> végpont (tenant-szűrt) + SSE vagy 5 mp-es poll. A haladás-sáv csak akkor jelenjen meg, ha van valós lépés-szám — becsült százalék helyett inkább semmit. A „Vár rád" a legfontosabb állapot: ez vezérli a rendezést (vár rád → dolgozik → szabad → szünetel).</div>
+
+  <h4 style="font-family:var(--font-display);font-size:17px;margin:18px 0 6px">6. Reszponzív / a11y</h4>
+  <ul class="speclist">
+    <li>&lt;1080px: a sáv fölé-csúszó fiók (hamburger a fejlécben), a munkaterület teljes szélességű.</li>
+    <li>Összecsukott sáv (76px): csak avatar + pötty; tooltip a névvel. A választás megmarad.</li>
+    <li>A kártya <code>role="option"</code> egy <code>role="listbox"</code>-ban; nyilakkal léptethető, Enter = megnyitás. A kártyán belüli gombok nem ágyazódnak egymásba (a kártya <code>div</code>, nem <code>button</code>).</li>
+    <li><code>prefers-reduced-motion</code>: minden lüktetés kikapcsol, a státusz szövegből is olvasható.</li>
+  </ul>
+
+  <h4 style="font-family:var(--font-display);font-size:17px;margin:18px 0 6px">7. Nyitott kérdések a fejlesztés előtt</h4>
+  <ul class="speclist">
+    <li>Több beszélgetés <b>egyszerre</b>: a jobb oldal egy agentet mutat. Kell-e „kiszakítás" (⧉) 2–3 párhuzamos ablakhoz, vagy elég az agentek közti gyors váltás?</li>
+    <li>Sok munkatárs (20+): kell-e csoportosítás (osztály / projekt szerint), vagy elég a keresés + szűrő?</li>
+    <li>A Board mint <code>sz-full</code> modal: nem lenne-e mégis jobb neki saját teljes oldal, sáv nélkül?</li>
+    <li>Az operátor-szerep, aki csak 1–2 agenthez fér hozzá: kell-e neki egyáltalán sáv, vagy induljon egyből chatben?</li>
+  </ul>
+</div>`};
+
+/* ── Modal-vezérlés ────────────────────────────────────────────────────── */
+let lastFocus = null;
+function openPanel(key){
+  const p = PANELS[key]; if(!p) return;
+  lastFocus = document.activeElement;
+  $('#modal').className = 'modal ' + (p.sz||'sz-m');
+  $('#mEyebrow').textContent = p.e || 'Menü';
+  $('#mTitle').textContent = p.t;
+  $('#mBody').innerHTML = p.b;
+  $('#mFoot').innerHTML = p.f || '<button class="btn" data-close>Bezárás</button>';
+  $('#scrim').classList.add('on');
+  closeMenus();
+  $('#mClose').focus();
+}
+function closePanel(){
+  $('#scrim').classList.remove('on');
+  if(lastFocus && lastFocus.focus) lastFocus.focus();
+}
+function closeMenus(){ $$('.menu').forEach(m=>m.classList.remove('on')); }
+
+/* ── Eseménykötés ──────────────────────────────────────────────────────── */
+document.addEventListener('click', e=>{
+  const menuBtn = e.target.closest('[data-menu]');
+  if(menuBtn){
+    const id = 'menu-'+menuBtn.dataset.menu;
+    const el = $('#'+id); const wasOn = el.classList.contains('on');
+    closeMenus(); if(!wasOn) el.classList.add('on');
+    e.stopPropagation(); return;
+  }
+  const openBtn = e.target.closest('[data-open]');
+  if(openBtn){ openPanel(openBtn.dataset.open); return; }
+  if(e.target.closest('[data-close]') || e.target.id==='mClose'){ closePanel(); return; }
+  if(e.target.id==='scrim'){ closePanel(); return; }
+
+  const act = e.target.closest('[data-act]');
+  if(act){
+    const {act:kind, agent} = act.dataset;
+    if(kind==='more') openPanel('more');
+    else if(kind==='board'){ selectAgent(agent); openPanel('board'); }
+    else selectAgent(agent, kind);
+    e.stopPropagation(); return;
+  }
+  const card = e.target.closest('[data-agent]');
+  if(card){ selectAgent(card.dataset.agent); return; }
+
+  const tab = e.target.closest('#workTabs button');
+  if(tab){ showTab(tab.dataset.tab); return; }
+
+  const chip = e.target.closest('#railFilters .chip');
+  if(chip){
+    STATE.filter = chip.dataset.filter;
+    $$('#railFilters .chip').forEach(c=>c.setAttribute('aria-pressed', String(c===chip)));
+    renderRail(); return;
+  }
+  const anyChip = e.target.closest('.chip');
+  if(anyChip){ anyChip.setAttribute('aria-pressed', anyChip.getAttribute('aria-pressed')==='true'?'false':'true'); return; }
+  const seg = e.target.closest('.seg button');
+  if(seg){ $$('.seg button', seg.parentElement).forEach(b=>b.setAttribute('aria-pressed', String(b===seg))); return; }
+  closeMenus();
+});
+
+document.addEventListener('keydown', e=>{
+  if(e.key==='Escape'){ closePanel(); closeMenus(); }
+  if(e.key==='Enter' && e.target.classList?.contains('agent')) selectAgent(e.target.dataset.agent,'chat');
+});
+
+$('#railSearch').addEventListener('input', e=>{ STATE.q = e.target.value; renderRail(); });
+$('#railToggle').addEventListener('click', ()=>{
+  const r = $('#rail'); r.classList.toggle('collapsed');
+  $('#railToggle').textContent = r.classList.contains('collapsed') ? '⟩' : '⟨';
+});
+
+/* Élő aktivitás — a haladás-sáv lassan kúszik, hogy a sáv „éljen" */
+setInterval(()=>{
+  let changed = false;
+  AGENTS.forEach(a=>{ if(a.status==='busy' && a.progress<96){ a.progress += 1; changed = true; } });
+  if(changed) renderRail();
+}, 1400);
+
+renderRail();
+</script>
+</body>
+</html>

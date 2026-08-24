@@ -1,12 +1,15 @@
 'use client'
 
 import Link from 'next/link'
-import { useState, type ReactNode } from 'react'
+import { useSearchParams } from 'next/navigation'
+import { useCallback, useState, type ReactNode } from 'react'
 import { ShellAuth } from '@/components/auth/shell-auth'
-import { isClerkUiEnabled } from '@/lib/clerk-config'
+import { useClerkEnabled } from '@/components/auth/providers'
+import { rememberPanelOpener } from '@/components/ui/route-modal'
+import { openControlPlanePanel, useControlPlanePanelKey } from '@/lib/control-plane-panel-store'
 
-export type NavLeaf = { href: string; label: string; exact?: boolean }
-export type NavGroup = { label: string; children: NavLeaf[] }
+export type NavLeaf = { key?: string; href: string; label: string; exact?: boolean }
+export type NavGroup = { key?: string; label: string; children: NavLeaf[] }
 export type NavEntry = NavLeaf | NavGroup
 
 const isGroup = (entry: NavEntry): entry is NavGroup => 'children' in entry
@@ -27,6 +30,8 @@ export function AppShell({
   switchLink,
   pathname,
   headerExtra,
+  navMode = 'link',
+  layout = 'default',
 }: {
   appName: string
   appSubtitle: string
@@ -37,6 +42,10 @@ export function AppShell({
   pathname: string
   /** Fejléc-slot a bal/jobb szélen (pl. tenant-switcher). */
   headerExtra?: ReactNode
+  /** Control Plane: header menük modalban nyílnak (?panel=). */
+  navMode?: 'link' | 'modal'
+  /** `rail`: sáv + munkaterület elrendezés, nincs max-width a main-en. */
+  layout?: 'default' | 'rail'
 }) {
   // The estate's two cellars: the tasting room (control plane) and the
   // working press-house (sandbox). Each keeps a warm monogram & tone.
@@ -53,16 +62,110 @@ export function AppShell({
   const isGroupActive = (group: NavGroup) =>
     group.children.some((child) => isActive(child.href, child.exact))
 
-  const clerkEnabled = isClerkUiEnabled()
+  const clerkEnabled = useClerkEnabled()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [openGroup, setOpenGroup] = useState<string | null>(null)
+  const searchParams = useSearchParams()
+  const storePanel = useControlPlanePanelKey()
+  const activePanel = storePanel ?? searchParams.get('panel')
+
+  const openNavPanel = useCallback(
+    (key: string, opener?: HTMLElement | null) => {
+      rememberPanelOpener(opener ?? null)
+      openControlPlanePanel(key)
+    },
+    [],
+  )
+
+  const renderNavLeaf = (child: NavLeaf, childActive: boolean, onPick: () => void, compact = false) => {
+    const panelKey = child.key
+    const baseClass = compact
+      ? linkClass(childActive)
+      : `block rounded-xl px-3 py-2 text-sm font-medium tracking-wide transition-colors ${
+          childActive ? 'bg-coral/10 text-coral-deep' : 'text-ink-soft hover:bg-coral/8 hover:text-ink'
+        }`
+    if (navMode === 'modal' && panelKey) {
+      const panelActive = activePanel === panelKey
+      return (
+        <button
+          key={child.href}
+          type="button"
+          role="menuitem"
+          onClick={(e) => {
+            openNavPanel(panelKey, e.currentTarget)
+            onPick()
+          }}
+          className={`${baseClass} ${compact ? 'block w-full text-left' : 'w-full text-left'}`}
+        >
+          {child.label}
+          {(panelActive || childActive) && compact ? (
+            <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
+          ) : null}
+        </button>
+      )
+    }
+    return (
+      <Link
+        key={child.href}
+        href={child.href}
+        role={compact ? 'menuitem' : undefined}
+        onClick={onPick}
+        className={`${baseClass} ${compact ? 'block' : linkClass(childActive)}`}
+      >
+        {child.label}
+        {childActive && compact ? (
+          <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
+        ) : null}
+      </Link>
+    )
+  }
+
+  const renderTopLeaf = (item: NavLeaf) => {
+    const active = isActive(item.href, item.exact)
+    if (navMode === 'modal' && item.key) {
+      const panelActive = activePanel === item.key
+      return (
+        <button
+          key={item.href}
+          type="button"
+          onClick={(e) => openNavPanel(item.key!, e.currentTarget)}
+          className={linkClass(panelActive || active)}
+        >
+          {item.label}
+          {(panelActive || active) && (
+            <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
+          )}
+        </button>
+      )
+    }
+    return (
+      <Link key={item.href} href={item.href} className={linkClass(active)}>
+        {item.label}
+        {active && (
+          <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
+        )}
+      </Link>
+    )
+  }
+
+  const railLayout = layout === 'rail'
 
   return (
-    <div className="min-h-screen text-ink">
-      <div className="border-b border-honey/25 bg-honey/8 px-4 py-2 text-center text-[11px] font-medium uppercase tracking-[0.18em] text-honey">
+    <div
+      className={
+        railLayout
+          ? 'flex h-dvh flex-col overflow-hidden text-ink'
+          : 'min-h-screen text-ink'
+      }
+    >
+      <div className="shrink-0 border-b border-honey/25 bg-honey/8 px-4 py-2 text-center text-[11px] font-medium uppercase tracking-[0.18em] text-honey">
         Excellence Enterprise AI Platform
       </div>
-      <header className="sticky top-0 z-20 border-b border-line bg-night/80 backdrop-blur-xl">
+      <header
+        className={`z-20 shrink-0 border-b border-line bg-night/80 backdrop-blur-xl ${
+          railLayout ? '' : 'sticky top-0'
+        }`}
+      >
         <div className="mx-auto max-w-7xl px-4 py-3.5 sm:px-5">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
@@ -130,21 +233,7 @@ export function AppShell({
                           >
                             {item.children.map((child) => {
                               const childActive = isActive(child.href, child.exact)
-                              return (
-                                <Link
-                                  key={child.href}
-                                  href={child.href}
-                                  role="menuitem"
-                                  onClick={() => setOpenGroup(null)}
-                                  className={`block rounded-xl px-3 py-2 text-sm font-medium tracking-wide transition-colors ${
-                                    childActive
-                                      ? 'bg-coral/10 text-coral-deep'
-                                      : 'text-ink-soft hover:bg-coral/8 hover:text-ink'
-                                  }`}
-                                >
-                                  {child.label}
-                                </Link>
-                              )
+                              return renderNavLeaf(child, childActive, () => setOpenGroup(null), false)
                             })}
                           </div>
                         </>
@@ -152,15 +241,7 @@ export function AppShell({
                     </div>
                   )
                 }
-                const active = isActive(item.href, item.exact)
-                return (
-                  <Link key={item.href} href={item.href} className={linkClass(active)}>
-                    {item.label}
-                    {active && (
-                      <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
-                    )}
-                  </Link>
-                )
+                return renderTopLeaf(item)
               })}
             </nav>
 
@@ -208,37 +289,12 @@ export function AppShell({
                     </p>
                     {item.children.map((child) => {
                       const childActive = isActive(child.href, child.exact)
-                      return (
-                        <Link
-                          key={child.href}
-                          href={child.href}
-                          onClick={() => setMobileMenuOpen(false)}
-                          className={`${linkClass(childActive)} block`}
-                        >
-                          {child.label}
-                          {childActive && (
-                            <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
-                          )}
-                        </Link>
-                      )
+                      return renderNavLeaf(child, childActive, () => setMobileMenuOpen(false), true)
                     })}
                   </div>
                 )
               }
-              const active = isActive(item.href, item.exact)
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={() => setMobileMenuOpen(false)}
-                  className={`${linkClass(active)} block`}
-                >
-                  {item.label}
-                  {active && (
-                    <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
-                  )}
-                </Link>
-              )
+              return renderTopLeaf(item)
             })}
             {switchLink && (
               <Link
@@ -252,7 +308,15 @@ export function AppShell({
           </nav>
         </div>
       </header>
-      <main className="mx-auto max-w-7xl px-5 py-9">{children}</main>
+      <main
+        className={
+          railLayout
+            ? 'flex min-h-0 flex-1 flex-col overflow-hidden'
+            : 'mx-auto max-w-7xl px-5 py-9'
+        }
+      >
+        {children}
+      </main>
     </div>
   )
 }

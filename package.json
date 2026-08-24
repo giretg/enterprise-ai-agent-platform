@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "npm run dev --prefix app",
+    "dev:local-auth": "npm run dev:local-auth --prefix app",
     "build": "npm ci --prefix app && npm run build --prefix app",
     "start": "npm run start --prefix app",
     "db:push": "npm run db:push --prefix app",

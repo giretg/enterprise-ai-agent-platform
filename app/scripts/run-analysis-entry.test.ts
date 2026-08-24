@@ -45,8 +45,8 @@ assert.match(
 const href = buildRunAnalysisAgentHref('agent-ra', 'Elemezd a ticketet.')
 assert.equal(
   href,
-  '/control-plane/agents/agent-ra?openChat=1&prefill=Elemezd+a+ticketet.',
-  'href openChat + prefill query param',
+  '/control-plane/agents/agent-ra/chat?prefill=Elemezd+a+ticketet.',
+  'href workspace chat + prefill query param',
 )
 
 console.log('run-analysis-entry.test.ts: ok')

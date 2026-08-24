@@ -12,7 +12,7 @@ const RECENT_PROCESS_LIMIT = 20
 export default async function BoardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ from?: string; to?: string; view?: string }>
+  searchParams: Promise<{ from?: string; to?: string; view?: string; scheduled?: string }>
 }) {
   const ctx = await getAuthContext()
   const canCreate = hasMinimumRole(ctx?.activeTenantRole, 'operator')
@@ -80,6 +80,7 @@ export default async function BoardPage({
         view={view}
         isAdmin={isAdmin}
         currentUserId={ctx?.user.id}
+        initialScheduledFilter={query.scheduled === '1'}
       />
     </div>
   )

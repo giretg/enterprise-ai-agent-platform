@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useEffect, useState, useTransition } from 'react'
 import type { Connector, ConnectorGrant } from '@prisma/client'
 import { Card } from '@/components/ui/shell'
+import { useEmbedLoading } from '@/lib/control-plane-embed-bridge'
 import {
   listConnectorsPanelContext,
   revokeConnectorGrant,
@@ -95,12 +96,16 @@ export function ConnectorsPanel() {
   const [message, setMessage] = useState<string | null>(() =>
     searchParams.get('connected') === '1' ? 'Fiók sikeresen összekötve.' : null,
   )
+  const [initialized, setInitialized] = useState(false)
+
+  useEmbedLoading(!initialized)
 
   useEffect(() => {
     startTransition(async () => {
       const res = await listConnectorsPanelContext()
       if (!res.success) {
         setError(res.error)
+        setInitialized(true)
         return
       }
       setGrants(res.data.grants as GrantRow[])
@@ -115,6 +120,7 @@ export function ConnectorsPanel() {
         }
         return next
       })
+      setInitialized(true)
     })
   }, [])
 

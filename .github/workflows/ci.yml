@@ -78,6 +78,7 @@ jobs:
           npm run test:chat-process-attachment-access
           npm run test:iam-policy
           npm run test:control-plane-nav
+          npm run test:control-plane-embed
           npm run test:agent-access-graph
           npm run test:default-user-agent-grants
           npm run test:run-index
@@ -125,6 +126,8 @@ jobs:
           npm run test:public-routes
           npm run test:create-agent-wizard
           npm run test:agent-scaffold
+          npm run test:resume-last-agent-conversation
+          npm run test:agent-workspace-board
           npm run test:dispatch-cycle-endpoint
           npm run test:conversation-session
           npm run test:agent-interaction-ticket

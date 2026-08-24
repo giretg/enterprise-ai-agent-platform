@@ -1,5 +1,11 @@
 import type { AssigneeType, ProcessStatus, Ticket } from '@prisma/client'
 import { agentDisplayName } from '@/lib/agent-persona'
+import {
+  isScheduleSeriesTicket,
+  readTicketSchedule,
+  type TicketScheduleView,
+} from '@/lib/ticket-schedule'
+import { boardRunPulse, type BoardRunPulse } from '@/domain/agent/ticket-runtime-progress'
 
 export type TicketProcessBadgeInfo = {
   id: string
@@ -140,6 +146,24 @@ export function extractCreatorAgentId(payload: unknown): string | null {
   return null
 }
 
+/**
+ * Az agent „saját” feladata: amit ő hajt végre (`agentId` / agent assignee),
+ * vagy amit ő hozott létre (payload `createdByAgentId` / `requesterAgentId`).
+ */
+export function ticketInvolvesAgent(
+  ticket: {
+    agentId: string | null
+    assigneeType: string | null
+    assigneeId: string | null
+    payload?: unknown
+  },
+  agentId: string,
+): boolean {
+  if (ticket.agentId === agentId) return true
+  if (ticket.assigneeType === 'agent' && ticket.assigneeId === agentId) return true
+  return extractCreatorAgentId(ticket.payload) === agentId
+}
+
 export function formatTicketCreator(input: {
   createdById: string
   payload: unknown
@@ -184,10 +208,14 @@ export type EnrichedBoardTicket = Pick<
   | 'createdById'
   | 'processInstanceId'
   | 'lockToken'
+  | 'executeAfter'
 > &
   TicketDisplayExtras & {
     creator: TicketCreatorDisplay
     process: TicketProcessBadgeInfo | null
+    schedule: TicketScheduleView | null
+    scheduleSeries: boolean
+    runPulse: BoardRunPulse
   }
 
 export function formatTicketDateTime(value: Date | string): string {
@@ -257,7 +285,12 @@ export function canStartTicketDispatch(ticket: {
   state: string
   assigneeType?: string | null
   agentId?: string | null
+  payload?: unknown
+  scheduleSeries?: boolean
+  schedule?: Pick<TicketScheduleView, 'role'> | null
 }): boolean {
+  if (ticket.scheduleSeries === true || ticket.schedule?.role === 'series') return false
+  if (isScheduleSeriesTicket({ payload: ticket.payload })) return false
   return ticket.state === 'ready' && ticket.assigneeType === 'agent' && Boolean(ticket.agentId)
 }
 
@@ -329,6 +362,7 @@ export function enrichTicketsForBoard(
       createdById: ticket.createdById,
       lockToken: ticket.lockToken,
       processInstanceId: ticket.processInstanceId,
+      executeAfter: ticket.executeAfter,
       ...display,
       creator: formatTicketCreator({
         createdById: ticket.createdById,
@@ -337,6 +371,14 @@ export function enrichTicketsForBoard(
         userNames: names.users,
       }),
       process,
+      schedule: readTicketSchedule(ticket.payload, ticket.executeAfter),
+      scheduleSeries: isScheduleSeriesTicket(ticket),
+      runPulse: boardRunPulse({
+        state: ticket.state,
+        cancelRequested: ticket.cancelRequested,
+        lockedAt: ticket.lockedAt,
+        payload: ticket.payload,
+      }),
     }
   })
 }

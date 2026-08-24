@@ -57,6 +57,14 @@ export function isRunAnalystToolAllowed(tool: string): tool is RunAnalystToolCap
   return (RUN_ANALYST_ROLE_CAPABILITIES as readonly string[]).includes(tool)
 }
 
+/** Adminfelület / server action: a Futás-elemző tool-halmaza nem tenant-konfig. */
+export const RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE =
+  'A Futás-elemző eszközjogai platform által védettek, ezért itt nem módosíthatók.'
+
+/** Connector-hozzárendelés: egress-kötés ugyanazt a termékígéretet törné. */
+export const RUN_ANALYST_CONNECTOR_LOCKED_MESSAGE =
+  'A Futás-elemzőhöz nem rendelhető külső kapcsolat — az eszközjogai platform által védettek.'
+
 /**
  * Agent-overlay: a sensitivity-scanner kategóriák (PAN, IBAN, titok, TAJ, adószám)
  * ne menjenek nyersen külső modellre — a napló-olvasás nyers marad tenanton belül,

@@ -13,6 +13,7 @@ export function statusLabel(run: ActiveRun): string | null {
     if (run.status === 'awaiting_human') return 'Döntésre vár'
     if (run.status === 'needs_info') return 'Információra vár'
     if (run.status === 'in_progress') return 'Fut'
+    if (run.status === 'stalled') return 'Megállt'
     if (run.status === 'running' || run.status === 'streaming') return 'Fut'
     if (run.status === 'queued') return 'Sorban'
     return null
@@ -51,6 +52,7 @@ export function runPhaseTone(run: ActiveRun): RunTone {
       return 'warning'
     }
     if (run.status === 'cancelling') return 'danger'
+    if (run.status === 'stalled') return 'danger'
     return 'neutral'
   }
   if (run.status === 'rejected' || run.status === 'failed' || run.status === 'exhausted') {

@@ -1,3 +1,5 @@
+import { agentWorkspacePath } from '@/lib/agent-workspace-routes'
+
 export type RunAnalysisScope =
   | { kind: 'conversation'; conversationId: string; title?: string | null }
   | { kind: 'ticket'; ticketId: string; title?: string | null }
@@ -21,9 +23,10 @@ export function buildRunAnalysisPrefill(scope: RunAnalysisScope): string {
   }
 }
 
+/** Agent workspace chat — nem a régi adatlap URL (a Futás-elemző ott 404). */
 export function buildRunAnalysisAgentHref(agentId: string, prefill: string): string {
-  const params = new URLSearchParams({ openChat: '1', prefill })
-  return `/control-plane/agents/${agentId}?${params.toString()}`
+  const params = new URLSearchParams({ prefill })
+  return `${agentWorkspacePath(agentId, 'chat')}?${params.toString()}`
 }
 
 /** A teljes „Elemezd" útvonal egy szkópból — minden belépési pont ezt hívja. */

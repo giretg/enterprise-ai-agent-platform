@@ -16,8 +16,10 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../src/lib/db'
 import { PostgresAgentAccessGrantRepository } from '../src/repositories/postgres/agent-access-grant-repository'
+import { deleteTestTenants } from './_test-tenant-cleanup'
 
 let failures = 0
+let seededTenantIds: string[] = []
 async function check(name: string, fn: () => Promise<void>) {
   try {
     await fn()
@@ -82,6 +84,7 @@ async function seed() {
     })
   }
 
+  seededTenantIds = [tenantA.id, tenantB.id]
   return {
     tenantA,
     tenantB,
@@ -402,4 +405,7 @@ main()
     console.error(e)
     process.exitCode = 1
   })
-  .finally(() => prisma.$disconnect())
+  .finally(async () => {
+    await deleteTestTenants(prisma, seededTenantIds).catch(() => undefined)
+    await prisma.$disconnect()
+  })

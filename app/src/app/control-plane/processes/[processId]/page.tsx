@@ -21,6 +21,7 @@ export default async function ProcessDetailPage({
       ? await resolveRunAnalysisEntry({
           tenantId: ctx.activeTenantId,
           role: ctx.activeTenantRole,
+          userId: ctx.user.id,
         })
       : { canRunAnalysis: false, runAnalystAgentId: null }
   const data = detailRes.data as ProcessDetailData

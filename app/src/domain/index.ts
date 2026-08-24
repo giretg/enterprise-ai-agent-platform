@@ -1306,6 +1306,7 @@ const scheduledTaskService = new ScheduledTaskService(
   repositories.scheduledTasks,
   repositories.agents,
   repositories.audit,
+  repositories.tickets,
 )
 const monitorService = new MonitorService(
   repositories.monitors,

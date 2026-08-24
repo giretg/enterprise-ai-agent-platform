@@ -40,6 +40,7 @@ export default async function TicketDetailPage({
       ? await resolveRunAnalysisEntry({
           tenantId: ctx.activeTenantId,
           role: ctx.activeTenantRole,
+          userId: ctx.user.id,
         })
       : { canRunAnalysis: false, runAnalystAgentId: null }
   // Fetched last so its state can never be older than the history above.

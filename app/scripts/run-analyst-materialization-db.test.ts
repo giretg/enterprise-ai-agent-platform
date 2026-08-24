@@ -32,8 +32,10 @@ import type {
   ConnectorGrantRepository,
   ToolBrokerRepository,
 } from '../src/repositories/interfaces'
+import { deleteTestTenants } from './_test-tenant-cleanup'
 
 let failures = 0
+const seededTenantIds: string[] = []
 
 async function check(name: string, fn: () => void | Promise<void>) {
   try {
@@ -76,6 +78,7 @@ async function seedTenant() {
       { tenantId: tenant.id, userId: operator.id, role: 'operator', status: 'active' },
     ],
   })
+  seededTenantIds.push(tenant.id)
   return { tenant, admin, operator, suffix }
 }
 
@@ -244,7 +247,7 @@ async function main() {
     assert.equal(grant.canAddress, true)
   })
 
-  await check('kimenő tool (web_search) capability nélkül → capability_not_allowed', async () => {
+  await check('kimenő tool (web_search) capability nélkül → system_role_tool_not_allowed', async () => {
     const s = await seedTenant()
     const agent = await ensureTenantRunAnalystAgent({
       tenantId: s.tenant.id,
@@ -279,7 +282,45 @@ async function main() {
       tenantId: s.tenant.id,
     })
     assert.equal(denied.allowed, false)
-    if (!denied.allowed) assert.equal(denied.reason, 'capability_not_allowed')
+    if (!denied.allowed) assert.equal(denied.reason, 'system_role_tool_not_allowed')
+  })
+
+  await check('újraterializáció: nem kanonikus allowed capability lekapcsolva', async () => {
+    const s = await seedTenant()
+    const agent = await ensureTenantRunAnalystAgent({
+      tenantId: s.tenant.id,
+      approvedById: s.admin.id,
+    })
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId: agent.id, toolName: 'web_search' } },
+      create: { agentId: agent.id, toolName: 'web_search', allowed: true },
+      update: { allowed: true },
+    })
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId: agent.id, toolName: 'http_api_request' } },
+      create: { agentId: agent.id, toolName: 'http_api_request', allowed: true },
+      update: { allowed: true },
+    })
+    await ensureTenantRunAnalystAgent({
+      tenantId: s.tenant.id,
+      approvedById: s.admin.id,
+    })
+    const extras = await prisma.capability.findMany({
+      where: {
+        agentId: agent.id,
+        toolName: { in: ['web_search', 'http_api_request'] },
+      },
+    })
+    assert.equal(extras.length, 2)
+    assert.ok(extras.every((row) => row.allowed === false))
+    const allowed = (
+      await prisma.capability.findMany({
+        where: { agentId: agent.id, allowed: true },
+      })
+    )
+      .map((row) => row.toolName)
+      .sort()
+    assert.deepEqual(allowed, [...RUN_ANALYST_ROLE_CAPABILITIES].sort())
   })
 
   console.log(failures === 0 ? '\nMinden DB-regresszió zöld.' : `\n${failures} teszt elbukott.`)
@@ -291,4 +332,7 @@ main()
     console.error(e)
     process.exitCode = 1
   })
-  .finally(() => prisma.$disconnect())
+  .finally(async () => {
+    await deleteTestTenants(prisma, seededTenantIds).catch(() => undefined)
+    await prisma.$disconnect()
+  })

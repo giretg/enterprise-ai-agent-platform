@@ -53,6 +53,7 @@ const SKIP_REASON_LABELS: Record<string, string> = {
   lock_lost: 'a ticketet közben más vitte el',
   not_ready: 'a ticket nem ready állapotban van',
   scheduled_later: 'későbbre van ütemezve',
+  schedule_series: 'rendszeres sablon, nem fut önmagában',
 }
 
 function formatSkipReasons(skipReasons: Record<string, number>): string | null {

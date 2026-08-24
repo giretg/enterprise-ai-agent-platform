@@ -223,6 +223,7 @@ export function BoardListView({
                     <th className="px-3 py-2.5 font-semibold">Hozzárendelve</th>
                     <th className="hidden px-3 py-2.5 font-semibold lg:table-cell">Létrehozta</th>
                     <th className="hidden px-3 py-2.5 font-semibold xl:table-cell">Folyamat</th>
+                    <th className="hidden px-3 py-2.5 font-semibold lg:table-cell">Ütemezés</th>
                     <th className="px-3 py-2.5 font-semibold">Módosítva</th>
                     <th className="px-4 py-2.5 text-right font-semibold sm:px-5">Műveletek</th>
                   </tr>
@@ -268,6 +269,18 @@ export function BoardListView({
                             processType={ticket.process.processType}
                             status={ticket.process.status}
                           />
+                        ) : (
+                          <span className="text-xs text-ink-faint">—</span>
+                        )}
+                      </td>
+                      <td className="hidden px-3 py-3 lg:table-cell">
+                        {ticket.schedule ? (
+                          <span
+                            className="text-xs font-medium text-honey"
+                            title={ticket.schedule.label}
+                          >
+                            {ticket.schedule.compactLabel}
+                          </span>
                         ) : (
                           <span className="text-xs text-ink-faint">—</span>
                         )}

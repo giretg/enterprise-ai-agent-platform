@@ -17,6 +17,7 @@ import {
   isIdentityStepComplete,
   isPreCreateComplete,
   isStyleStepComplete,
+  matchAssignableConnectorsByName,
   matchAssignableSkillsByName,
   nextCreateAgentWizardStep,
   parseCreateAgentWizardStep,
@@ -149,6 +150,20 @@ function main() {
     )
   })
 
+  check('kapcsolatnév-egyeztetés a javaslatból (kisbetű-érzéketlen)', () => {
+    const matched = matchAssignableConnectorsByName(
+      [
+        { id: '1', name: 'POSnavigator Presetfilter api' },
+        { id: '2', name: 'Meta ads' },
+      ],
+      ['posnavigator presetfilter api'],
+    )
+    assert.deepEqual(
+      matched.map((c) => c.id),
+      ['1'],
+    )
+  })
+
   check('javasolt tool be van jelölve, de még nincs grantolva', () => {
     const enabled = initialEnabledToolNames([], ['kb_search', 'web_search'])
     assert.deepEqual(enabled, ['kb_search', 'web_search'])
@@ -182,6 +197,7 @@ function main() {
     assert.match(wizard, /Provisioning agent javasol/)
     assert.match(wizard, /suggestedTools=\{/)
     assert.match(wizard, /suggestedSkillNames=\{/)
+    assert.match(wizard, /suggestedConnectorNames=\{/)
     assert.doesNotMatch(wizard, /updateAgentCapabilities/)
     assert.doesNotMatch(wizard, /assignSkillAction/)
     assert.match(skills, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\.skills/)

@@ -24,6 +24,7 @@ import { PrivacyAdminPanel } from '@/components/privacy/privacy-admin-panel'
 import { TaskOnlyForm } from '@/components/agents/task-only-form'
 import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
 import { Card } from '@/components/ui/shell'
+import { Spinner } from '@/components/ui/spinner'
 import { WizardExternalPrompt } from '@/components/ui/wizard-external-prompt'
 import {
   CREATE_AGENT_WIZARD_EXTERNAL_HREFS,
@@ -417,8 +418,8 @@ export function CreateAgentWizard({
                     <p className="mt-1 text-xs text-ink-soft">
                       Írd le természetes nyelven, milyen agent kell — a provisioning agent
                       vázat javasol. Te átnézed és módosítod; az agent a „Létrehozás”
-                      gombra jön létre. A javasolt eszközöket és skilleket a következő
-                      lépéseken te kapcsolod be (connector nem rendelődik magától).
+                      gombra jön létre. A javasolt eszközöket, skilleket és kapcsolatokat
+                      a következő lépéseken te kapcsolod be.
                     </p>
                   </div>
                   <textarea
@@ -434,9 +435,17 @@ export function CreateAgentWizard({
                       type="button"
                       onClick={() => void generateProposal()}
                       disabled={generating || pending || !prompt.trim()}
-                      className="rounded-lg bg-coral px-3 py-1.5 text-sm font-medium text-card disabled:opacity-50"
+                      className="inline-flex items-center gap-2 rounded-lg bg-coral px-3 py-1.5 text-sm font-medium text-card disabled:opacity-50"
+                      aria-busy={generating}
                     >
-                      {generating ? 'Javaslat készül…' : 'Provisioning agent javasol'}
+                      {generating ? (
+                        <>
+                          <Spinner size="sm" className="text-card" />
+                          Javaslat készül…
+                        </>
+                      ) : (
+                        'Provisioning agent javasol'
+                      )}
                     </button>
                     {proposal ? (
                       <button
@@ -466,6 +475,11 @@ export function CreateAgentWizard({
                       {proposal.suggestedSkills.length > 0 ? (
                         <p className="mt-1 text-ink-soft">
                           Javasolt skillek: {proposal.suggestedSkills.join(', ')}
+                        </p>
+                      ) : null}
+                      {(proposal.suggestedConnectors?.length ?? 0) > 0 ? (
+                        <p className="mt-1 text-ink-soft">
+                          Javasolt kapcsolatok: {proposal.suggestedConnectors!.join(', ')}
                         </p>
                       ) : null}
                       {proposalWarnings.length > 0 ? (
@@ -681,6 +695,7 @@ export function CreateAgentWizard({
               <AssignExistingConnectorForm
                 agentId={createdAgentId}
                 connectors={assignableConnectors}
+                suggestedConnectorNames={proposal?.suggestedConnectors}
                 bare
                 onAssigned={refreshCatalogs}
               />

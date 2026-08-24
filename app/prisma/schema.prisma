@@ -413,6 +413,7 @@ enum ScheduledTaskRecurrence {
   daily
   weekly
   monthly
+  hourly
 }
 
 enum MonitorKind {

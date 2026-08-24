@@ -1,5 +1,3 @@
-import 'server-only'
-
 /**
  * Tenantonkénti Futás-elemző materializáció (spec #343, RA-01 / #345, RA-02 / #346).
  *

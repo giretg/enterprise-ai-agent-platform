@@ -91,13 +91,18 @@ export function withNavVisibilityPolicy(
  * Szerep nélküli hívó (pl. tisztán platform-szerepű superadmin) elől SOHA nem rejtünk:
  * a policy tenant-szerepkörökre szól, és a hiányzó szerep nem „nulladik szerepkör".
  */
+const NAV_KEY_LEGACY_HIDDEN: Record<string, readonly string[]> = {
+  'admin.agent-access': ['admin.agent-access', 'staff.access'],
+}
+
 export function isNavKeyHiddenFor(
   policy: NavVisibilityPolicy,
   role: UserRole | null | undefined,
   key: string,
 ): boolean {
   if (!role) return false
-  return policy[role].includes(key)
+  const keys = NAV_KEY_LEGACY_HIDDEN[key] ?? [key]
+  return keys.some((k) => policy[role].includes(k))
 }
 
 /** Igaz, ha a policy egyetlen szerepkörnél sem rejt el semmit. */

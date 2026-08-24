@@ -74,6 +74,7 @@ const SUMMARY_TILES: {
   label: string
   hint: string
   states: ColumnKey[] | null
+  scheduled?: boolean
   dot: string
   activeClass: string
   urgent?: boolean
@@ -108,6 +109,15 @@ const SUMMARY_TILES: {
     label: 'Indításra kész',
     hint: 'Hozzárendelve, de még nem indult el — a kártya play gombjával indíthatod.',
     states: ['ready'],
+    dot: 'bg-honey',
+    activeClass: 'border-honey/45 bg-honey/10',
+  },
+  {
+    key: 'scheduled',
+    label: 'Ütemezett',
+    hint: 'Konkrét időpontra vagy rendszeresen indított feladatok.',
+    states: null,
+    scheduled: true,
     dot: 'bg-honey',
     activeClass: 'border-honey/45 bg-honey/10',
   },
@@ -317,7 +327,13 @@ function TicketCard({
         <span className="rounded-full bg-ink/[0.05] px-2 py-0.5 text-[11px] font-medium text-ink-soft">
           {ticket.type === 'training' ? 'Tanítás' : 'Interakció'}
         </span>
-        {ticket.state === 'in_progress' && (
+        {ticket.state === 'in_progress' && ticket.runPulse === 'stalled' && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-coral/12 px-2 py-0.5 text-[11px] font-semibold text-coral-deep">
+            <span className="h-1.5 w-1.5 rounded-full bg-coral" aria-hidden />
+            Megállt
+          </span>
+        )}
+        {ticket.state === 'in_progress' && ticket.runPulse !== 'stalled' && (
           <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold text-sky animate-activity-run-row">
             <span className="relative flex h-1.5 w-1.5" aria-hidden>
               <span className="absolute inline-flex h-full w-full rounded-full bg-sky opacity-60 animate-activity-run-dot" />
@@ -332,6 +348,14 @@ function TicketCard({
             processType={ticket.process.processType}
             status={ticket.process.status}
           />
+        )}
+        {ticket.schedule && (
+          <span
+            className="rounded-full bg-honey/15 px-2 py-0.5 text-[11px] font-medium text-honey"
+            title={ticket.schedule.label}
+          >
+            {ticket.schedule.compactLabel}
+          </span>
         )}
       </div>
 
@@ -565,6 +589,9 @@ export function KanbanBoard({
   view = 'kanban',
   isAdmin = false,
   currentUserId,
+  initialScheduledFilter = false,
+  initialAgentId,
+  hideAssigneeFilter = false,
 }: {
   tickets: EnrichedBoardTicket[]
   agents: Agent[]
@@ -577,6 +604,11 @@ export function KanbanBoard({
   view?: BoardView
   isAdmin?: boolean
   currentUserId?: string | null
+  initialScheduledFilter?: boolean
+  /** Új feladat űrlap: ez az agent van előre kiválasztva. */
+  initialAgentId?: string
+  /** Agent-szűkített táblán a hozzárendelt-szűrő fölösleges. */
+  hideAssigneeFilter?: boolean
 }) {
   const router = useRouter()
   const pathname = usePathname()
@@ -590,7 +622,9 @@ export function KanbanBoard({
   const [assigneeFilter, setAssigneeFilter] = useState('all')
   const [processFilter, setProcessFilter] = useState('all')
   const [query, setQuery] = useState('')
-  const [stateFocus, setStateFocus] = useState<string | null>(null)
+  const [stateFocus, setStateFocus] = useState<string | null>(
+    initialScheduledFilter ? 'scheduled' : null,
+  )
   const [hideEmptyColumns, setHideEmptyColumns] = useState(true)
   /**
    * A dátum-inputok azonnal követik a kattintást (a navigáció csak utána fut le),
@@ -619,13 +653,21 @@ export function KanbanBoard({
     [tickets, agents],
   )
 
-  const filteredTickets = useMemo(
+  const baseFilteredTickets = useMemo(
     () =>
       tickets
         .filter((ticket) => matchesAssigneeFilter(ticket, assigneeFilter))
         .filter((ticket) => processFilter === 'all' || ticket.process?.id === processFilter)
         .filter((ticket) => matchesQuery(ticket, query)),
     [tickets, assigneeFilter, processFilter, query],
+  )
+
+  const filteredTickets = useMemo(
+    () =>
+      stateFocus === 'scheduled'
+        ? baseFilteredTickets.filter((ticket) => Boolean(ticket.schedule))
+        : baseFilteredTickets,
+    [baseFilteredTickets, stateFocus],
   )
 
   const focusedStates = useMemo(
@@ -676,6 +718,7 @@ export function KanbanBoard({
     params.set('from', range.from)
     params.set('to', range.to)
     if (view === 'list') params.set('view', 'list')
+    if (stateFocus === 'scheduled') params.set('scheduled', '1')
     router.replace(`${pathname}?${params.toString()}`)
   }
 
@@ -751,15 +794,23 @@ export function KanbanBoard({
 
   return (
     <div className="space-y-4">
-      {canCreate && assigneeOptions && <CreateBoardTicketForm assigneeOptions={assigneeOptions} />}
+      {canCreate && assigneeOptions && (
+        <CreateBoardTicketForm assigneeOptions={assigneeOptions} initialAgentId={initialAgentId} />
+      )}
 
       {/* Áttekintő csempék — kattintásra a kapcsolódó állapotokra szűkít. */}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         {SUMMARY_TILES.map((tile) => {
-          const count = tile.states
-            ? tile.states.reduce((sum, state) => sum + (countsByState.get(state) ?? 0), 0)
-            : filteredTickets.length
-          const active = tile.states ? stateFocus === tile.key : stateFocus === null
+          const count = tile.scheduled
+            ? baseFilteredTickets.filter((ticket) => Boolean(ticket.schedule)).length
+            : tile.states
+              ? tile.states.reduce((sum, state) => sum + (countsByState.get(state) ?? 0), 0)
+              : baseFilteredTickets.length
+          const active = tile.scheduled
+            ? stateFocus === 'scheduled'
+            : tile.states
+              ? stateFocus === tile.key
+              : stateFocus === null
           const urgent = Boolean(tile.urgent) && count > 0
 
           return (
@@ -768,7 +819,13 @@ export function KanbanBoard({
               type="button"
               title={tile.hint}
               aria-pressed={active}
-              onClick={() => setStateFocus(tile.states ? (active ? null : tile.key) : null)}
+              onClick={() => {
+                if (tile.scheduled) {
+                  setStateFocus(active ? null : 'scheduled')
+                  return
+                }
+                setStateFocus(tile.states ? (active ? null : tile.key) : null)
+              }}
               className={`rounded-xl border px-3 py-2.5 text-left transition hover:border-coral/35 hover:bg-coral/[0.04] ${
                 active ? tile.activeClass : 'border-line bg-card/70'
               } ${urgent && !active ? 'border-coral/30' : ''}`}
@@ -807,20 +864,22 @@ export function KanbanBoard({
             </div>
           </Field>
 
-          <Field label="Hozzárendelve" htmlFor="assignee-filter" className="w-full sm:w-48">
-            <select
-              id="assignee-filter"
-              value={assigneeFilter}
-              onChange={(e) => setAssigneeFilter(e.target.value)}
-              className={CONTROL_CLASS}
-            >
-              {filterOptions.map((option) => (
-                <option key={option.key} value={option.key}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </Field>
+          {hideAssigneeFilter ? null : (
+            <Field label="Hozzárendelve" htmlFor="assignee-filter" className="w-full sm:w-48">
+              <select
+                id="assignee-filter"
+                value={assigneeFilter}
+                onChange={(e) => setAssigneeFilter(e.target.value)}
+                className={CONTROL_CLASS}
+              >
+                {filterOptions.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
 
           <Field label="Módosítva">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -962,7 +1021,7 @@ export function KanbanBoard({
         </div>
       ) : (
         <>
-          {focusedStates && (
+          {(focusedStates || stateFocus === 'scheduled') && (
             <div className="flex flex-wrap items-center gap-2 text-xs text-ink-soft">
               <span className="rounded-full border border-coral/30 bg-coral/10 px-3 py-1 font-semibold text-coral-deep">
                 Szűkítve: {SUMMARY_TILES.find((tile) => tile.key === stateFocus)?.label}

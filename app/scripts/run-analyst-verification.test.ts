@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import type { Agent, UserRole } from '@prisma/client'
 import { prisma } from '../src/lib/db'
+import { deleteTestTenants } from './_test-tenant-cleanup'
 import { decideAuthz } from '../src/lib/iam-policy'
 import {
   RUN_ANALYST_FORBIDDEN_TOOLS,
@@ -414,30 +415,7 @@ async function seedTenantIsolationFixture() {
 }
 
 async function cleanupIsolationFixture(f: Awaited<ReturnType<typeof seedTenantIsolationFixture>>) {
-  const agentIds = [f.worker.id, f.runAnalystA.id, f.runAnalystB.id]
-  await prisma.modelCall.deleteMany({ where: { agentId: { in: agentIds } } })
-  await prisma.toolCall.deleteMany({ where: { agentId: { in: agentIds } } })
-  await prisma.agentTurn.deleteMany({ where: { conversationId: f.conversation.id } })
-  await prisma.processInstance.deleteMany({ where: { tenantId: f.tenantA.id } })
-  await prisma.playbookVersionV2.deleteMany({ where: { playbookId: f.process.playbookId } })
-  await prisma.playbookV2.deleteMany({ where: { tenantId: f.tenantA.id } })
-  await prisma.ticket.deleteMany({ where: { tenantId: f.tenantA.id } })
-  await prisma.conversation.deleteMany({ where: { tenantId: f.tenantA.id } })
-  await prisma.agentAccessGrant.deleteMany({
-    where: { tenantId: { in: [f.tenantA.id, f.tenantB.id] } },
-  })
-  await prisma.capability.deleteMany({
-    where: { agentId: { in: [f.worker.id, f.runAnalystA.id, f.runAnalystB.id] } },
-  })
-  await prisma.agent.deleteMany({
-    where: { id: { in: [f.worker.id, f.runAnalystA.id, f.runAnalystB.id] } },
-  })
-  await prisma.memory.delete({ where: { id: f.memoryId } }).catch(() => undefined)
-  await prisma.tenantMembership.deleteMany({
-    where: { tenantId: { in: [f.tenantA.id, f.tenantB.id] } },
-  })
-  await prisma.user.deleteMany({ where: { id: { in: [f.adminA.id, f.operatorB.id] } } })
-  await prisma.tenant.deleteMany({ where: { id: { in: [f.tenantA.id, f.tenantB.id] } } })
+  await deleteTestTenants(prisma, [f.tenantA.id, f.tenantB.id])
 }
 
 async function main() {

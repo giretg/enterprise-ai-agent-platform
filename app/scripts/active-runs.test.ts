@@ -6,8 +6,11 @@ import assert from 'node:assert/strict'
 import {
   TicketProgressFlusher,
   assessTicketRunLiveness,
+  boardRunPulse,
   formatTicketProgressAge,
+  isTicketRunLive,
   mergeRuntimeProgressIntoPayload,
+  presentTicketRunStatus,
   readTicketRuntimeProgress,
   TICKET_PROGRESS_ACTIVE_MS,
   TICKET_PROGRESS_FLUSH_INTERVAL_MS,
@@ -165,11 +168,41 @@ check('activeRunFromTicket reads runtimeProgress', () => {
     lockedAt: new Date('2026-07-19T10:00:00.000Z'),
     updatedAt: new Date('2026-07-19T10:00:00.000Z'),
   } as unknown as Ticket
-  const run = activeRunFromTicket(ticket)
+  const run = activeRunFromTicket(ticket, { nowMs: Date.parse('2026-07-19T10:00:10.000Z') })
   assert.equal(run.kind, 'ticket')
   assert.equal(run.phase, 'active')
+  assert.equal(run.status, 'in_progress')
   assert.equal(run.href, '/control-plane/tickets/ticket-1')
   assert.ok(run.latestActivity?.includes('kb_search'))
+})
+
+check('activeRunFromTicket: beragadt in_progress nem „Fut”', () => {
+  const ticket = {
+    id: 'ticket-stalled',
+    title: 'Beragadt feladat',
+    state: 'in_progress',
+    agentId: 'agent-2',
+    payload: {
+      runtimeProgress: {
+        updatedAt: '2026-08-22T11:33:00.000Z',
+        activities: [
+          {
+            id: 'reasoning-n',
+            kind: 'reasoning',
+            title: 'Tool eredmények kiértékelése',
+            status: 'running',
+          },
+        ],
+      },
+    },
+    lockedAt: new Date('2026-08-22T11:33:00.000Z'),
+    updatedAt: new Date('2026-08-22T11:33:00.000Z'),
+  } as unknown as Ticket
+  const run = activeRunFromTicket(ticket, { nowMs: Date.parse('2026-08-24T07:58:00.000Z') })
+  assert.equal(run.status, 'stalled')
+  assert.equal(run.phase, 'active')
+  assert.equal(run.canStop, true)
+  assert.equal(statusLabel(run), 'Megállt')
 })
 
 check('activeRunFromTicket keeps human input states visible, but only running ticket stops', () => {
@@ -320,6 +353,7 @@ check('summarizeRuns: fut / indításra vár / vár rád / új eredmény / siker
     { ...makeRun({ id: 'a', phase: 'active', status: 'running', startedAt }), seen: false },
     { ...makeRun({ id: 'b', phase: 'active', status: 'awaiting_human', startedAt }), seen: false },
     { ...makeRun({ id: 'ready', phase: 'active', status: 'ready', startedAt }), seen: false },
+    { ...makeRun({ id: 'stalled', phase: 'active', status: 'stalled', startedAt }), seen: false },
     { ...makeRun({ id: 'c', phase: 'completed', status: 'done', startedAt }), seen: false },
     { ...makeRun({ id: 'd', phase: 'completed', status: 'done', startedAt }), seen: true },
     { ...makeRun({ id: 'e', phase: 'completed', status: 'failed', startedAt }), seen: false },
@@ -346,6 +380,7 @@ check('workingAgentIds: csak aktívan futó agentek, awaiting_human / ready nem'
     makeRun({ id: 'r4', phase: 'completed', status: 'done', agentId: 'a4', startedAt }),
     makeRun({ id: 'r5', phase: 'active', status: 'in_progress', agentId: 'a1', startedAt }),
     makeRun({ id: 'r6', phase: 'active', status: 'ready', agentId: 'a5', startedAt }),
+    makeRun({ id: 'r7', phase: 'active', status: 'stalled', agentId: 'a6', startedAt }),
   ])
   assert.deepEqual([...ids].sort(), ['a1', 'a3'])
 })
@@ -504,6 +539,103 @@ check('assessTicketRunLiveness: active vs stalled vs cancelling', () => {
 check('formatTicketProgressAge is Hungarian relative', () => {
   assert.equal(formatTicketProgressAge(12_000), '12 másodperce')
   assert.equal(formatTicketProgressAge(125_000), '2 perce')
+})
+
+check('in_progress + 44h csend: a fejléc nem mondja, hogy éppen dolgozik', () => {
+  const updatedAt = '2026-08-22T11:33:00.000Z'
+  const nowMs = Date.parse('2026-08-24T07:58:00.000Z')
+  const progress = readTicketRuntimeProgress({
+    runtimeProgress: {
+      updatedAt,
+      activities: [
+        {
+          id: 'reasoning-n',
+          kind: 'reasoning',
+          title: 'Tool eredmények kiértékelése',
+          status: 'running',
+        },
+      ],
+    },
+  })
+  assert.ok(progress)
+  const liveness = assessTicketRunLiveness({
+    ticketState: 'in_progress',
+    progress,
+    nowMs,
+  })
+  assert.equal(liveness.kind, 'stalled')
+  assert.equal(isTicketRunLive(liveness), false)
+
+  const presented = presentTicketRunStatus({
+    liveness,
+    stateLabel: 'Végrehajtás alatt',
+    stateHint: 'Az AI munkatárs éppen dolgozik rajta.',
+  })
+  assert.equal(presented.label, 'Úgy tűnik megállt')
+  assert.equal(presented.live, false)
+  assert.equal(presented.stalled, true)
+  assert.match(presented.hint, /nincs friss jelzés 44 órája/)
+  assert.doesNotMatch(presented.hint, /éppen dolgozik/)
+})
+
+check('élő in_progress megtartja a workflow-címkét', () => {
+  const base = Date.parse('2026-08-24T07:58:00.000Z')
+  const progress = readTicketRuntimeProgress({
+    runtimeProgress: {
+      updatedAt: new Date(base).toISOString(),
+      activities: [{ id: 't1', kind: 'tool', title: 'file_read', status: 'running' }],
+    },
+  })
+  assert.ok(progress)
+  const liveness = assessTicketRunLiveness({
+    ticketState: 'in_progress',
+    progress,
+    nowMs: base + 10_000,
+  })
+  const presented = presentTicketRunStatus({
+    liveness,
+    stateLabel: 'Végrehajtás alatt',
+    stateHint: 'Az AI munkatárs éppen dolgozik rajta.',
+  })
+  assert.equal(presented.label, 'Végrehajtás alatt')
+  assert.equal(presented.hint, 'Az AI munkatárs éppen dolgozik rajta.')
+  assert.equal(presented.live, true)
+  assert.equal(presented.stalled, false)
+})
+
+check('boardRunPulse: beragadt in_progress kártya nem live', () => {
+  const pulse = boardRunPulse({
+    state: 'in_progress',
+    payload: {
+      runtimeProgress: {
+        updatedAt: '2026-08-22T11:33:00.000Z',
+        activities: [
+          {
+            id: 'reasoning-n',
+            kind: 'reasoning',
+            title: 'Tool eredmények kiértékelése',
+            status: 'running',
+          },
+        ],
+      },
+    },
+    nowMs: Date.parse('2026-08-24T07:58:00.000Z'),
+  })
+  assert.equal(pulse, 'stalled')
+  assert.equal(
+    boardRunPulse({
+      state: 'in_progress',
+      payload: {
+        runtimeProgress: {
+          updatedAt: '2026-08-24T07:57:50.000Z',
+          activities: [{ id: 't1', kind: 'tool', title: 'file_read', status: 'running' }],
+        },
+      },
+      nowMs: Date.parse('2026-08-24T07:58:00.000Z'),
+    }),
+    'live',
+  )
+  assert.equal(boardRunPulse({ state: 'ready' }), 'idle')
 })
 
 if (failures > 0) {

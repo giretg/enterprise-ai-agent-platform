@@ -141,7 +141,6 @@ function main() {
           'automation.playbooks',
           'automation.step-templates',
           'automation.processes',
-          'automation.scheduled-tasks',
           'automation.monitors',
         ],
       }),

@@ -4,8 +4,12 @@
  * Futtatás: npm run test:run-analyst-role
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Agent } from '@prisma/client'
 import {
+  RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE,
   RUN_ANALYST_FORBIDDEN_TOOLS,
   RUN_ANALYST_LOOP_GUARD_OVERRIDES,
   RUN_ANALYST_PRIVACY_CATEGORY_POLICY,
@@ -14,6 +18,7 @@ import {
   mergeRunAnalystLoopGuardModelConfig,
   runAnalystCapabilitiesAreDisjointFromForbidden,
 } from '../src/domain/agents/run-analyst-role'
+import { REGISTERED_AUDIT_ACTIONS } from '../src/lib/audit/event-catalog'
 import { resolveLoopGuardLimits } from '../src/domain/agent/loop-stop-decision'
 import { DEFAULT_ROLE_PERMISSIONS } from '../src/repositories/postgres/iam-repository'
 import {
@@ -90,20 +95,15 @@ async function main() {
     }
   })
 
-  await test('kézzel hozzáadott web_search capability sem nyit egresset', async () => {
-    const allowed = new Set<string>([...RUN_ANALYST_ROLE_CAPABILITIES, 'web_search'])
+  await test('kézzel hozzáadott forbidden/extra capability sem nyit toolt', async () => {
+    const drifted = [...RUN_ANALYST_FORBIDDEN_TOOLS, 'kb_search'] as const
+    const allowed = new Set<string>([...RUN_ANALYST_ROLE_CAPABILITIES, ...drifted])
     const authorizer = buildAuthorizer(allowed)
-    const result = await authorizer.authorize({ agentId: 'agent-ra', tool: 'web_search' })
-    assert.equal(result.allowed, false)
-    if (!result.allowed) assert.equal(result.reason, 'system_role_tool_not_allowed')
-  })
-
-  await test('kézzel hozzáadott gmail_send capability sem nyit egresset', async () => {
-    const allowed = new Set<string>([...RUN_ANALYST_ROLE_CAPABILITIES, 'gmail_send'])
-    const authorizer = buildAuthorizer(allowed)
-    const result = await authorizer.authorize({ agentId: 'agent-ra', tool: 'gmail_send' })
-    assert.equal(result.allowed, false)
-    if (!result.allowed) assert.equal(result.reason, 'system_role_tool_not_allowed')
+    for (const tool of drifted) {
+      const result = await authorizer.authorize({ agentId: 'agent-ra', tool })
+      assert.equal(result.allowed, false, tool)
+      if (!result.allowed) assert.equal(result.reason, 'system_role_tool_not_allowed', tool)
+    }
   })
 
   await test('engedélyezett capability (ticket_create) → átjut a capability-kapun', async () => {
@@ -138,6 +138,31 @@ async function main() {
     const entry = DEFAULT_ROLE_PERMISSIONS.find((p) => p.permissionKey === 'analysis.run')
     assert.ok(entry)
     assert.equal(entry!.minRole, 'admin')
+  })
+
+  await test('editor-deny: audit action a katalógusban, üzenet a capability-lock', () => {
+    assert.ok(REGISTERED_AUDIT_ACTIONS.has('capability.update_denied_system_role'))
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const platform = readFileSync(join(root, 'src/app/actions/platform.ts'), 'utf8')
+    assert.match(platform, /capability\.update_denied_system_role/)
+    assert.match(platform, /RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE/)
+    assert.equal(
+      RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE.includes('platform által védettek'),
+      true,
+    )
+  })
+
+  await test('az agent adatlap nem engedi szerkeszteni a Futás-elemző eszközjogait', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const page = readFileSync(
+      join(root, 'src/app/control-plane/agents/[agentId]/page.tsx'),
+      'utf8',
+    )
+    const provisioning = readFileSync(join(root, 'src/app/actions/provisioning.ts'), 'utf8')
+    assert.match(page, /capabilitiesLocked/)
+    assert.match(page, /canEdit=\{isAdmin && !capabilitiesLocked\}/)
+    assert.match(page, /RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE/)
+    assert.match(provisioning, /RUN_ANALYST_CONNECTOR_LOCKED_MESSAGE/)
   })
 
   await test('loop-guard modelConfig: ≥150 tool hívás task módban (#351)', () => {

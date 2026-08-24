@@ -52,6 +52,7 @@ export class PostgresScheduledTaskRepository implements ScheduledTaskRepository 
     nextRunAt: Date
     recurrence?: ScheduledTaskRecurrence
     maxRuns?: number | null
+    materializedTicketId?: string | null
   }): Promise<ScheduledTask> {
     return prisma.scheduledTask.create({
       data: {
@@ -67,6 +68,7 @@ export class PostgresScheduledTaskRepository implements ScheduledTaskRepository 
         nextRunAt: data.nextRunAt,
         recurrence: data.recurrence ?? 'none',
         maxRuns: data.maxRuns ?? null,
+        materializedTicketId: data.materializedTicketId ?? null,
       },
     })
   }
@@ -108,6 +110,7 @@ export class PostgresScheduledTaskRepository implements ScheduledTaskRepository 
       lastRunAt: Date
       materializedAt: Date
       nextRunAt: Date
+      payload?: Prisma.InputJsonValue
     },
   ): Promise<{ scheduledTask: ScheduledTask; ticket: Ticket } | null> {
     return prisma.$transaction(async (tx) => {
@@ -134,6 +137,7 @@ export class PostgresScheduledTaskRepository implements ScheduledTaskRepository 
           lastRunAt: data.lastRunAt,
           nextRunAt: data.nextRunAt,
           runCount: data.runCount,
+          ...(data.payload !== undefined ? { payload: data.payload } : {}),
         },
       })
 
@@ -142,6 +146,45 @@ export class PostgresScheduledTaskRepository implements ScheduledTaskRepository 
       await tx.$executeRaw`SELECT pg_notify(${DISPATCH_NOTIFY_CHANNEL}, ${materializedTicket.id})`
       return { scheduledTask, ticket: materializedTicket }
     })
+  }
+
+  async advanceExistingTicket(
+    id: string,
+    data: {
+      status: ScheduledTaskStatus
+      runCount: number
+      lastRunAt: Date
+      materializedAt: Date
+      nextRunAt: Date
+    },
+  ): Promise<ScheduledTask | null> {
+    const existing = await this.findById(id)
+    if (!existing?.materializedTicketId) return null
+    const ticketId = existing.materializedTicketId
+    return prisma.$transaction(async (tx) => {
+      const locked = await tx.scheduledTask.updateMany({
+        where: { id, status: 'materializing' },
+        data: {
+          status: data.status,
+          materializedAt: data.materializedAt,
+          lastRunAt: data.lastRunAt,
+          nextRunAt: data.nextRunAt,
+          runCount: data.runCount,
+        },
+      })
+      if (locked.count !== 1) return null
+      await tx.$executeRaw`SELECT pg_notify(${DISPATCH_NOTIFY_CHANNEL}, ${ticketId})`
+      return tx.scheduledTask.findUnique({ where: { id } })
+    })
+  }
+
+  async linkBoardTicket(id: string, ticketId: string): Promise<ScheduledTask | null> {
+    const updated = await prisma.scheduledTask.updateMany({
+      where: { id, status: 'active', materializedTicketId: null },
+      data: { materializedTicketId: ticketId },
+    })
+    if (updated.count !== 1) return null
+    return this.findById(id)
   }
 
   async revoke(id: string): Promise<ScheduledTask | null> {

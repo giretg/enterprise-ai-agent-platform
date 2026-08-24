@@ -86,7 +86,10 @@ tiszta DB-re alkalmazható és nincs drift a sémához képest.
 
 ## Dev auth
 
-Clerk nélkül a `DevAuthProvider` fut, alapértelmezett szerep: `operator` (`.env.local`: `DEV_AUTH_ROLE`).
+Clerk nélkül a `DevAuthProvider` fut: automatikus belépés a `.env.local` `DEV_AUTH_*` userrel (nálunk `seed-admin` / `admin`).
+
+- `npm run dev` — ha van `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` + `CLERK_SECRET_KEY`, Clerk beléptető.
+- `npm run dev:local-auth` — `AUTH_DISABLED=true`, port **3001**, Clerk UI nélkül. Ezen a címen a böngésző (és az agent) belépés nélkül kattinthat. Productionban a flag nem él (`NODE_ENV === production` → 503).
 
 Jóváhagyási műveletekhez állítsd: `DEV_AUTH_ROLE=approver`
 

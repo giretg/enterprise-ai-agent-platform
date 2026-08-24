@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { useMemo, useState, useTransition } from 'react'
 import { assignConnectorToAgent } from '@/app/actions/provisioning'
 import { Card } from '@/components/ui/shell'
+import { matchAssignableConnectorsByName } from '@/lib/create-agent-wizard'
 
 type ConnectorOption = {
   id: string
@@ -16,11 +17,14 @@ const INPUT = 'mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 te
 export function AssignExistingConnectorForm({
   agentId,
   connectors,
+  suggestedConnectorNames,
   bare = false,
   onAssigned,
 }: {
   agentId: string
   connectors: ConnectorOption[]
+  /** Javaslat: felülre kerül, elő van választva; hozzárendelés külön admin-kattintás. */
+  suggestedConnectorNames?: string[]
   bare?: boolean
   onAssigned?: () => void
 }) {
@@ -28,7 +32,16 @@ export function AssignExistingConnectorForm({
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
-  const [connectorId, setConnectorId] = useState(connectors[0]?.id ?? '')
+  const suggested = useMemo(
+    () => matchAssignableConnectorsByName(connectors, suggestedConnectorNames ?? []),
+    [connectors, suggestedConnectorNames],
+  )
+  const orderedConnectors = useMemo(() => {
+    if (suggested.length === 0) return connectors
+    const suggestedIds = new Set(suggested.map((connector) => connector.id))
+    return [...suggested, ...connectors.filter((connector) => !suggestedIds.has(connector.id))]
+  }, [connectors, suggested])
+  const [connectorId, setConnectorId] = useState(suggested[0]?.id ?? connectors[0]?.id ?? '')
   const [accessMode, setAccessMode] = useState<'read' | 'write'>('read')
   const [apiKey, setApiKey] = useState('')
 
@@ -72,6 +85,12 @@ export function AssignExistingConnectorForm({
           <p className="text-sm text-ink-faint">Nincs aktivált provisioning-kapcsolat.</p>
         ) : (
           <>
+            {suggested.length > 0 ? (
+              <p className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-ink">
+                A javaslat ezeket a kapcsolatokat ajánlja: {suggested.map((c) => c.name).join(', ')}.
+                Hozzárendelés csak a gombra történik.
+              </p>
+            ) : null}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <label className="block text-sm">
                 <span className="text-ink-soft">Kapcsolat</span>
@@ -80,7 +99,7 @@ export function AssignExistingConnectorForm({
                   onChange={(e) => setConnectorId(e.target.value)}
                   className={INPUT}
                 >
-                  {connectors.map((connector) => (
+                  {orderedConnectors.map((connector) => (
                     <option key={connector.id} value={connector.id}>
                       {connector.name} · {connector.type}
                     </option>

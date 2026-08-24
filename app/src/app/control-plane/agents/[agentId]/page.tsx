@@ -56,6 +56,8 @@ import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { enabledModelProviders } from '@/lib/model-policy'
 import { OpenInNewWindowLink } from '@/components/ui/open-in-new-window-link'
 import { CREATE_AGENT_WIZARD_EXTERNAL_HREFS } from '@/lib/create-agent-wizard'
+import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
+import { RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE } from '@/domain/agents/run-analyst-role'
 import { SettingsSectionShell, type SettingsSection } from '../../system/system-settings-shell'
 
 export const dynamic = 'force-dynamic'
@@ -253,6 +255,7 @@ export default async function AgentDetailPage({
       (connector.type === 'http_api' || connector.type === 'gmail') &&
       !assignedConnectorIds.has(connector.id),
   )
+  const capabilitiesLocked = agent.systemRole === RUN_ANALYST_SYSTEM_ROLE
   const modelConfig = agent.modelConfig as Record<string, unknown>
   const persona = personaFor(agent.name, agent)
   const defaultPersona = personaFor(agent.name)
@@ -426,8 +429,12 @@ export default async function AgentDetailPage({
           {governance && (
             <EditableCard
               title="Engedélyezett eszközök"
-              subtitle="Mit hívhat meg az agent munka közben"
-              canEdit={isAdmin}
+              subtitle={
+                capabilitiesLocked
+                  ? RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE
+                  : 'Mit hívhat meg az agent munka közben'
+              }
+              canEdit={isAdmin && !capabilitiesLocked}
               view={<CapabilityView capabilities={governance.capabilities} />}
               edit={
                 <AgentCapabilitiesPanel
@@ -459,17 +466,19 @@ export default async function AgentDetailPage({
             <InfoCard
               title="Külső kapcsolatok"
               subtitle={
-                isAdmin
-                  ? 'Amikhez ez az agent hozzáfér — és itt tudsz újat kötni hozzá.'
-                  : 'Amikhez ez az agent hozzáfér.'
+                capabilitiesLocked
+                  ? RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE
+                  : isAdmin
+                    ? 'Amikhez ez az agent hozzáfér — és itt tudsz újat kötni hozzá.'
+                    : 'Amikhez ez az agent hozzáfér.'
               }
             >
               <ApiConnectorList
                 agentId={agent.id}
                 connectors={governance.connectors}
-                canEdit={isAdmin}
+                canEdit={isAdmin && !capabilitiesLocked}
               />
-              {isAdmin ? (
+              {isAdmin && !capabilitiesLocked ? (
                 <div className="mt-6 space-y-3 border-t border-line pt-5">
                   <p className="text-sm font-semibold text-ink">Új kapcsolat</p>
                   <p className="text-xs text-ink-faint">
@@ -503,7 +512,7 @@ export default async function AgentDetailPage({
               ) : null}
             </InfoCard>
           )}
-          {governance && (
+          {governance && !capabilitiesLocked && (
             <WebSearchPolicyCard agentId={agent.id} connectors={governance.connectors} />
           )}
         </div>

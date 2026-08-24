@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useState, useTransition } from 'react'
+import { useEffect, useState, useTransition } from 'react'
 import Link from 'next/link'
 import type { ProcessStatus } from '@prisma/client'
 import { createDiscussionFromTicket, transitionTicket, deleteBoardTicket } from '@/app/actions/platform'
@@ -21,6 +21,12 @@ import {
   TICKET_TONE_DOT_CLASS,
 } from '@/lib/ticket-labels'
 import { canStartTicketDispatch, formatTicketDateTime } from '@/lib/ticket-display'
+import { readTicketSchedule } from '@/lib/ticket-schedule'
+import {
+  assessTicketRunLiveness,
+  presentTicketRunStatus,
+  readTicketRuntimeProgress,
+} from '@/domain/agent/ticket-runtime-progress'
 import { isRunAsAuthorized } from '@/lib/run-as-payload'
 import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
 import { readStepOutcome } from '@/lib/playbook-v2/process-step-payload'
@@ -37,6 +43,7 @@ type TicketView = {
   conversationId?: string | null
   createdAt: string | Date
   updatedAt: string | Date
+  executeAfter?: string | Date | null
   lockedAt?: string | Date | null
   cancelRequested?: boolean
   assigneeType?: string | null
@@ -520,6 +527,7 @@ export function TicketMeta({
   const router = useRouter()
   const dispatchTicket = useTicketDispatch()
   const payload = ticket.payload as Record<string, unknown> | null
+  const schedule = readTicketSchedule(ticket.payload, ticket.executeAfter)
   const proposal = payload?.proposal as Record<string, unknown> | undefined
   const diff = payload?.diff as Record<string, unknown> | undefined
   const assignee = ticket.assignee
@@ -531,6 +539,13 @@ export function TicketMeta({
   const [headerMessage, setHeaderMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(
     null,
   )
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (ticket.state !== 'in_progress') return
+    const tick = window.setInterval(() => setNowMs(Date.now()), 5_000)
+    return () => window.clearInterval(tick)
+  }, [ticket.state])
 
   const discussAgentId =
     ticket.agentId ??
@@ -616,16 +631,33 @@ export function TicketMeta({
   }
 
   const stateTone = TICKET_STATE_TONE[ticket.state] ?? 'neutral'
-  const stateLabel = TICKET_STATE_LABELS[ticket.state] ?? ticket.state
-  const stateHint = TICKET_STATE_HINTS[ticket.state] ?? null
-  const isInProgress = ticket.state === 'in_progress'
+  const workflowLabel = TICKET_STATE_LABELS[ticket.state] ?? ticket.state
+  const workflowHint = TICKET_STATE_HINTS[ticket.state] ?? null
+  const liveness = assessTicketRunLiveness({
+    ticketState: ticket.state,
+    cancelRequested: ticket.cancelRequested,
+    lockedAt: ticket.lockedAt,
+    progress: readTicketRuntimeProgress(ticket.payload),
+    nowMs,
+  })
+  const runStatus = presentTicketRunStatus({
+    liveness,
+    stateLabel: workflowLabel,
+    stateHint: workflowHint ?? '',
+  })
+  const stateLabel = runStatus.label
+  const stateHint = runStatus.hint || null
+  const runLive = runStatus.live
+  const headerTone = runStatus.stalled ? 'danger' : runStatus.live ? 'neutral' : stateTone
   const typeLabel = ticket.type === 'training' ? 'Tanítás' : 'Interakció'
   const assigneeHint =
     assignee?.detail ??
     (assignee?.type === 'agent'
-      ? isInProgress
+      ? runLive
         ? 'AI munkatárs — most éppen ezen dolgozik'
-        : 'AI munkatárs a felelős'
+        : runStatus.stalled
+          ? 'AI munkatárs — a futás elakadt'
+          : 'AI munkatárs a felelős'
       : assignee?.type === 'human'
         ? 'Emberi döntésre vár'
         : 'Még senki nem kapta meg')
@@ -633,7 +665,7 @@ export function TicketMeta({
   return (
     <>
       <header className="atelier-card overflow-hidden">
-        <div className={`h-1 w-full bg-gradient-to-r ${HERO_ACCENT_CLASS[stateTone]}`} aria-hidden />
+        <div className={`h-1 w-full bg-gradient-to-r ${HERO_ACCENT_CLASS[headerTone]}`} aria-hidden />
         <div className="p-5 sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0 flex-1">
@@ -650,16 +682,16 @@ export function TicketMeta({
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <span
                   className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${
-                    isInProgress
+                    runLive
                       ? 'animate-activity-run-row text-sky'
-                      : STATE_PILL_CLASS[stateTone]
+                      : STATE_PILL_CLASS[headerTone]
                   }`}
                 >
-                  {isInProgress ? (
+                  {runLive ? (
                     <LiveStatusDot size="md" />
                   ) : (
                     <span
-                      className={`h-2 w-2 rounded-full ${TICKET_TONE_DOT_CLASS[stateTone]}`}
+                      className={`h-2 w-2 rounded-full ${TICKET_TONE_DOT_CLASS[headerTone]}`}
                       aria-hidden
                     />
                   )}
@@ -673,6 +705,7 @@ export function TicketMeta({
                     status={ticket.process.status}
                   />
                 )}
+                {schedule ? <Badge tone="warning">{schedule.compactLabel}</Badge> : null}
               </div>
             </div>
 
@@ -748,8 +781,12 @@ export function TicketMeta({
               label="Hol tart"
               value={stateLabel}
               hint={stateHint}
-              dotClass={isInProgress ? 'bg-sky' : TICKET_TONE_DOT_CLASS[stateTone]}
-              live={isInProgress}
+              dotClass={
+                runLive
+                  ? 'bg-sky'
+                  : TICKET_TONE_DOT_CLASS[headerTone]
+              }
+              live={runLive}
             />
             <HeroFact
               label="Ki dolgozik rajta"
@@ -766,11 +803,24 @@ export function TicketMeta({
               label="Utolsó mozgás"
               value={formatTicketDateTime(ticket.updatedAt)}
               hint={
-                isInProgress
+                runLive
                   ? 'A lépések élőben frissülnek alább.'
-                  : `${typeLabel} típusú feladat`
+                  : runStatus.stalled
+                    ? 'Nincs friss jelzés — a futás elakadhatott.'
+                    : `${typeLabel} típusú feladat`
               }
             />
+            {schedule ? (
+              <HeroFact
+                label="Ütemezés"
+                value={
+                  schedule.kind === 'recurring'
+                    ? schedule.compactLabel
+                    : formatTicketDateTime(schedule.runAt)
+                }
+                hint={schedule.label}
+              />
+            ) : null}
           </dl>
         </div>
       </header>

@@ -1555,7 +1555,11 @@ export class AgentChatRuntime {
         ticketDiscussionPrompt,
       )
 
-      const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
+      const allowedChatTools = await listAllowedChatTools(
+        this.toolCaps,
+        params.agentId,
+        agentDetails.agent,
+      )
       const maxTurns = resolveToolLoopMaxTurns(modelConfig, allowedChatTools)
       const skillBinding = await this.buildSkillBinding(params.agentId, params.tenantId ?? null)
       // Futásidejű skill-snapshot perzisztálás a reprodukálhatósághoz (WP-5/D9/D12):
