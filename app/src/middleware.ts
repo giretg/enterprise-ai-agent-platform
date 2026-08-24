@@ -1,6 +1,7 @@
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
 import { NextResponse } from 'next/server'
 import { isClerkEnabled, isDevAuthAllowed } from '@/lib/clerk-config'
+import { embedHrefForPanel } from '@/lib/control-plane-embed'
 import { REQUEST_ID_HEADER, resolveRequestId } from '@/lib/observability/request-context'
 import { PUBLIC_ROUTE_PATTERNS } from '@/lib/auth/public-routes'
 
@@ -19,6 +20,22 @@ function withRequestId(req: Request, res: NextResponse): NextResponse {
 }
 
 export default clerkMiddleware(async (auth, req) => {
+  const { pathname } = req.nextUrl
+  if (pathname.startsWith('/embed/control-plane/')) {
+    const panel = decodeURIComponent(pathname.slice('/embed/control-plane/'.length).split('/')[0] ?? '')
+    const href = embedHrefForPanel(panel)
+    if (href) {
+      const url = req.nextUrl.clone()
+      url.pathname = href
+      const requestHeaders = new Headers(req.headers)
+      requestHeaders.set('x-cp-embed', '1')
+      return withRequestId(
+        req,
+        NextResponse.rewrite(url, { request: { headers: requestHeaders } }),
+      )
+    }
+  }
+
   if (!isClerkEnabled()) {
     if (!isDevAuthAllowed()) {
       return withRequestId(

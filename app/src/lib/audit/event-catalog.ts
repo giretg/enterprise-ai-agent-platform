@@ -95,6 +95,12 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.version',
   'behavior_profile.created',
   'capability.update',
+  // Futás-elemző: a capability-panel system-role miatt elutasított mentése.
+  'capability.update_denied_system_role',
+  // Futás-elemző napló-olvasás (RA-03…RA-06). Minden run_* hívás egyet ír.
+  'analysis.run_index',
+  'analysis.run_stats',
+  'analysis.run_trace',
 
   // Connectors / Provisioning
   'connector.create',

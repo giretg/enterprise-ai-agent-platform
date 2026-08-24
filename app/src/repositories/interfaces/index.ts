@@ -136,6 +136,11 @@ export type TicketFilter = {
   state?: TicketState | TicketState[]
   type?: Ticket['type']
   agentId?: string
+  /**
+   * Agent munkaterület-tábla: a ticketet az agent hajtja végre
+   * (`agentId` / agent assignee) VAGY ő hozta létre (payload creator mezők).
+   */
+  involvedAgentId?: string
   processInstanceId?: string
   source?: TicketSource | TicketSource[]
   /** Board / dashboard: user + system ticketek, teszt kizárva. */
@@ -239,6 +244,7 @@ export interface TicketRepository {
         | 'cancelRequested'
         | 'cancelRequestedById'
         | 'cancelRequestedAt'
+        | 'executeAfter'
       >
     >,
   ): Promise<Ticket>
@@ -342,6 +348,7 @@ export interface ScheduledTaskRepository {
     nextRunAt: Date
     recurrence?: ScheduledTaskRecurrence
     maxRuns?: number | null
+    materializedTicketId?: string | null
   }): Promise<ScheduledTask>
   claimDue(id: string, now: Date): Promise<ScheduledTask | null>
   /**
@@ -374,8 +381,24 @@ export interface ScheduledTaskRepository {
       lastRunAt: Date
       materializedAt: Date
       nextRunAt: Date
+      payload?: Prisma.InputJsonValue
     },
   ): Promise<{ scheduledTask: ScheduledTask; ticket: Ticket } | null>
+  /**
+   * Egyszeri, előre kirakott ticket: a claimelt taskot lezárja, új ticket nélkül.
+   * Rendszeres sorozatnál NEM ezt használjuk — ott mindig új példány készül.
+   */
+  advanceExistingTicket(
+    id: string,
+    data: {
+      status: ScheduledTaskStatus
+      runCount: number
+      lastRunAt: Date
+      materializedAt: Date
+      nextRunAt: Date
+    },
+  ): Promise<ScheduledTask | null>
+  linkBoardTicket(id: string, ticketId: string): Promise<ScheduledTask | null>
   revoke(id: string): Promise<ScheduledTask | null>
   findById(id: string): Promise<ScheduledTask | null>
   findStaleMaterializing(cutoff: Date, limit: number): Promise<ScheduledTask[]>

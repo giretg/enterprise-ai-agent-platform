@@ -43,10 +43,11 @@ const statusTone: Record<ScheduledTaskStatus, 'neutral' | 'success' | 'warning' 
 }
 
 const recurrenceLabel: Record<ScheduledTaskRecurrence, string> = {
-  none: 'one-shot',
+  none: 'egyszer',
   daily: 'naponta',
   weekly: 'hetente',
   monthly: 'havonta',
+  hourly: 'óránként',
 }
 
 function formatDate(date: Date | string): string {
@@ -104,7 +105,7 @@ export function ScheduledTaskList({
     return (
       <Card>
         <p className="text-sm text-ink-faint">
-          Nincs ütemezett task. Agent chatből tudsz létrehozni dátum megadásával.
+          Nincs ütemezett task. A feladat-modálban vagy az agent chatből tudsz időzítést megadni.
         </p>
       </Card>
     )

@@ -4,9 +4,9 @@ import { useEffect, useId, useRef, useState, useTransition } from 'react'
 import { createPortal } from 'react-dom'
 import { useRouter } from 'next/navigation'
 import { createBoardTicket } from '@/app/actions/platform'
-import { getAgentSkillsAction } from '@/app/actions/skills'
 import {
-  filterLaunchableSkills,
+  taskOnlyLaunchLabel,
+  useLaunchableSkills,
   TaskOnlyLaunchForm,
   type LaunchableSkill,
 } from '@/components/agents/task-only-launch-form'
@@ -17,6 +17,13 @@ import {
 } from '@/components/tickets/ticket-dispatch-prompt-modal'
 import { uploadTicketWorkspaceFiles } from '@/lib/ticket-workspace-files-client'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
+import {
+  EMPTY_TASK_SCHEDULE,
+  TaskScheduleFields,
+  taskScheduleToInput,
+  validateTaskSchedule,
+  type TaskScheduleState,
+} from '@/components/tickets/task-schedule-fields'
 
 /**
  * Feladatkör-korlátozás (#199) — a chat-gomb helyére lépő feladat-indító.
@@ -29,10 +36,182 @@ import { skillDisplayLabel } from '@/lib/skill/skill-name'
  * telezsúfolva mindkét út olvashatatlanná és törékennyé válna.
  */
 
-type SkillsState =
-  | { status: 'loading' }
-  | { status: 'ready'; skills: LaunchableSkill[] }
-  | { status: 'error'; message: string }
+function AgentTaskFlow({
+  agentId,
+  skills,
+  onClose,
+  returnFocusRef,
+  hideCancel,
+  titleId,
+  onPendingChange,
+}: {
+  agentId: string
+  skills: LaunchableSkill[]
+  onClose?: () => void
+  returnFocusRef?: React.RefObject<HTMLButtonElement | null>
+  hideCancel?: boolean
+  titleId?: string
+  onPendingChange?: (pending: boolean) => void
+}) {
+  const router = useRouter()
+  const dispatchTicket = useTicketDispatch()
+  const [pending, startTransition] = useTransition()
+  const [message, setMessage] = useState<string | null>(null)
+  const [dispatchPrompt, setDispatchPrompt] = useState<DispatchPrompt>(null)
+  const [dispatchPending, startDispatchTransition] = useTransition()
+  const [schedule, setSchedule] = useState<TaskScheduleState>(EMPTY_TASK_SCHEDULE)
+  const startRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    onPendingChange?.(pending)
+  }, [pending, onPendingChange])
+
+  const handleStart = ({
+    skillVersionId,
+    skillParameterValues,
+    files: localFiles,
+  }: {
+    skillVersionId: string
+    skillParameterValues: Record<string, string>
+    files: File[]
+  }) => {
+    const skill = skills.find((s) => s.skillVersionId === skillVersionId)
+    if (!skill) return
+    const scheduleError = validateTaskSchedule(schedule)
+    if (scheduleError) {
+      setMessage(scheduleError)
+      return
+    }
+    const scheduleInput = taskScheduleToInput(schedule)
+    const isScheduled = Boolean(scheduleInput && scheduleInput.scheduleMode !== 'none')
+
+    startTransition(async () => {
+      setMessage(null)
+      try {
+        const res = await createBoardTicket({
+          title: skillDisplayLabel(skill),
+          assigneeType: 'agent',
+          assigneeId: agentId,
+          skillVersionIds: [skillVersionId],
+          deferDispatch: true,
+          ...(Object.keys(skillParameterValues).length > 0 ? { skillParameterValues } : {}),
+          ...(scheduleInput && scheduleInput.scheduleMode !== 'none' ? scheduleInput : {}),
+        })
+        if (!res.success) {
+          setMessage(res.error)
+          return
+        }
+
+        const ticket = res.data.ticket
+        if (localFiles.length > 0) {
+          try {
+            await uploadTicketWorkspaceFiles(ticket.id, localFiles)
+          } catch (err) {
+            setMessage(
+              err instanceof Error
+                ? `A feladat létrejött, de a fájlok feltöltése sikertelen: ${err.message}`
+                : 'A feladat létrejött, de a fájlok feltöltése sikertelen',
+            )
+            router.refresh()
+            return
+          }
+        }
+
+        if (!isScheduled) {
+          setDispatchPrompt({ ticketId: ticket.id, title: ticket.title })
+        }
+        router.refresh()
+      } catch (err) {
+        setMessage(err instanceof Error ? err.message : 'Feladat létrehozása sikertelen')
+      }
+    })
+  }
+
+  const startDispatchFromPrompt = () => {
+    if (!dispatchPrompt) return
+    startDispatchTransition(async () => {
+      setMessage(null)
+      const res = await dispatchTicket(dispatchPrompt.ticketId)
+      if (!res.success) {
+        setMessage(res.error)
+        return
+      }
+      if (res.warning) {
+        setMessage(res.warning)
+        return
+      }
+      setDispatchPrompt(null)
+      onClose?.()
+    })
+  }
+
+  if (dispatchPrompt) {
+    return (
+      <TicketDispatchPromptModal
+        prompt={dispatchPrompt}
+        pending={dispatchPending}
+        message={message}
+        returnFocusRef={returnFocusRef ?? startRef}
+        onStart={startDispatchFromPrompt}
+        onLater={() => {
+          setDispatchPrompt(null)
+          setMessage(null)
+          onClose?.()
+        }}
+      />
+    )
+  }
+
+  return (
+    <TaskOnlyLaunchForm
+      skills={skills}
+      pending={pending}
+      message={message}
+      submitLabel="Indítás"
+      pendingLabel="Indítás…"
+      hideCancel={hideCancel}
+      showHeading
+      headingId={titleId}
+      onCancel={() => onClose?.()}
+      onSubmit={handleStart}
+      extraFields={
+        <TaskScheduleFields state={schedule} disabled={pending} onChange={setSchedule} />
+      }
+      initialFocusRef={startRef}
+    />
+  )
+}
+
+/** Korlátozott agent Indítás fül — a skill-kötött űrlap a munkaterületen. */
+export function AgentTaskPanel({ agentId }: { agentId: string }) {
+  const skillsState = useLaunchableSkills(agentId)
+
+  if (skillsState.status === 'loading') {
+    return <p className="text-sm text-ink-faint">Skillek betöltése…</p>
+  }
+
+  if (skillsState.status === 'error') {
+    return (
+      <p className="text-sm text-coral">
+        A feladat-indítás most nem érhető el: {skillsState.message}
+      </p>
+    )
+  }
+
+  if (skillsState.skills.length === 0) {
+    return (
+      <p className="text-sm text-ink-faint">
+        Ehhez az agenthez nincs futtatható skill hozzárendelve — szólj az adminnak.
+      </p>
+    )
+  }
+
+  return (
+    <div className="atelier-card p-5">
+      <AgentTaskFlow agentId={agentId} skills={skillsState.skills} hideCancel />
+    </div>
+  )
+}
 
 export function AgentTaskButton({
   agentId,
@@ -43,33 +222,14 @@ export function AgentTaskButton({
   className?: string
   compact?: boolean
 }) {
-  const [skillsState, setSkillsState] = useState<SkillsState>({ status: 'loading' })
+  const skillsState = useLaunchableSkills(agentId)
   const [open, setOpen] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    void getAgentSkillsAction(agentId).then((res) => {
-      if (cancelled) return
-      if (!res.success) {
-        setSkillsState({ status: 'error', message: res.error })
-        return
-      }
-      setSkillsState({ status: 'ready', skills: filterLaunchableSkills(res.data) })
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [agentId])
 
   const skills = skillsState.status === 'ready' ? skillsState.skills : []
   const loading = skillsState.status === 'loading'
   const disabled = loading || skills.length === 0
-  const label = loading
-    ? 'Betöltés…'
-    : skills.length === 1
-      ? skills[0].name
-      : 'Feladat'
+  const label = loading ? 'Betöltés…' : taskOnlyLaunchLabel(skillsState)
   const disabledReason =
     skillsState.status === 'error'
       ? `A feladat-indítás most nem érhető el: ${skillsState.message}`
@@ -121,16 +281,9 @@ function AgentTaskModal({
   returnFocusRef: React.RefObject<HTMLButtonElement | null>
   onClose: () => void
 }) {
-  const router = useRouter()
-  const dispatchTicket = useTicketDispatch()
   const titleId = useId()
-  const [pending, startTransition] = useTransition()
-  const [message, setMessage] = useState<string | null>(null)
-  const [dispatchPrompt, setDispatchPrompt] = useState<DispatchPrompt>(null)
-  const [dispatchPending, startDispatchTransition] = useTransition()
+  const [flowPending, setFlowPending] = useState(false)
   const [mounted, setMounted] = useState(false)
-  const [modalSkill, setModalSkill] = useState<LaunchableSkill | undefined>(skills[0])
-  const startRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- client portal mount gate
@@ -141,7 +294,7 @@ function AgentTaskModal({
     if (!mounted) return
     const returnFocusTarget = returnFocusRef.current
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape' && !pending) {
+      if (event.key === 'Escape' && !flowPending) {
         event.preventDefault()
         onClose()
       }
@@ -151,102 +304,14 @@ function AgentTaskModal({
       window.removeEventListener('keydown', onKeyDown)
       returnFocusTarget?.focus()
     }
-  }, [mounted, pending, onClose, returnFocusRef])
-
-  const handleStart = ({
-    skillVersionId,
-    skillParameterValues,
-    files: localFiles,
-  }: {
-    skillVersionId: string
-    skillParameterValues: Record<string, string>
-    files: File[]
-  }) => {
-    const skill = skills.find((s) => s.skillVersionId === skillVersionId)
-    if (!skill) return
-
-    startTransition(async () => {
-      setMessage(null)
-      try {
-        const res = await createBoardTicket({
-          title: skillDisplayLabel(skill),
-          assigneeType: 'agent',
-          assigneeId: agentId,
-          skillVersionIds: [skillVersionId],
-          deferDispatch: true,
-          ...(Object.keys(skillParameterValues).length > 0
-            ? { skillParameterValues }
-            : {}),
-        })
-        if (!res.success) {
-          setMessage(res.error)
-          return
-        }
-
-        const ticket = res.data.ticket
-        if (localFiles.length > 0) {
-          try {
-            await uploadTicketWorkspaceFiles(ticket.id, localFiles)
-          } catch (err) {
-            setMessage(
-              err instanceof Error
-                ? `A feladat létrejött, de a fájlok feltöltése sikertelen: ${err.message}`
-                : 'A feladat létrejött, de a fájlok feltöltése sikertelen',
-            )
-            router.refresh()
-            return
-          }
-        }
-
-        setDispatchPrompt({ ticketId: ticket.id, title: ticket.title })
-        router.refresh()
-      } catch (err) {
-        setMessage(err instanceof Error ? err.message : 'Feladat létrehozása sikertelen')
-      }
-    })
-  }
-
-  const startDispatchFromPrompt = () => {
-    if (!dispatchPrompt) return
-    startDispatchTransition(async () => {
-      setMessage(null)
-      const res = await dispatchTicket(dispatchPrompt.ticketId)
-      if (!res.success) {
-        setMessage(res.error)
-        return
-      }
-      if (res.warning) {
-        setMessage(res.warning)
-        return
-      }
-      setDispatchPrompt(null)
-      onClose()
-    })
-  }
-
-  if (dispatchPrompt) {
-    return (
-      <TicketDispatchPromptModal
-        prompt={dispatchPrompt}
-        pending={dispatchPending}
-        message={message}
-        returnFocusRef={returnFocusRef}
-        onStart={startDispatchFromPrompt}
-        onLater={() => {
-          setDispatchPrompt(null)
-          setMessage(null)
-          onClose()
-        }}
-      />
-    )
-  }
+  }, [mounted, flowPending, onClose, returnFocusRef])
 
   if (!mounted) return null
 
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4"
-      onClick={() => !pending && onClose()}
+      onClick={() => !flowPending && onClose()}
     >
       <div
         role="dialog"
@@ -255,23 +320,14 @@ function AgentTaskModal({
         className="atelier-card w-full max-w-lg p-5"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 id={titleId} className="font-display text-lg font-semibold">
-          {modalSkill ? skillDisplayLabel(modalSkill) : 'Feladat indítása'}
-        </h3>
-
-        <div className="mt-4">
-          <TaskOnlyLaunchForm
-            skills={skills}
-            pending={pending}
-            message={message}
-            submitLabel="Indítás"
-            pendingLabel="Indítás…"
-            onCancel={onClose}
-            onSubmit={handleStart}
-            onSelectedSkillChange={setModalSkill}
-            initialFocusRef={startRef}
-          />
-        </div>
+        <AgentTaskFlow
+          agentId={agentId}
+          skills={skills}
+          onClose={onClose}
+          returnFocusRef={returnFocusRef}
+          titleId={titleId}
+          onPendingChange={setFlowPending}
+        />
       </div>
     </div>,
     document.body,

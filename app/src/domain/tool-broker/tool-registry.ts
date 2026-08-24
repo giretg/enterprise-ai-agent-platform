@@ -25,9 +25,11 @@
  * D6 — a capability-grant a `capability` mezőből materializálódik.
  */
 import { z } from 'zod'
+import type { AgentSystemRole } from '@prisma/client'
 import type { CellStyle, XlsxCellChange, XlsxRow, XlsxSheetSpec, XlsxDataValidation } from '@/domain/file-editor/adapters/xlsx-adapter'
 import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
 import type { DocxBlockSpec } from '@/domain/file-editor/adapters/docx-adapter'
+import { presentScopeId, presentScopeIds } from '@/domain/run-analysis/run-scope'
 import { normalizeNyilvantartasRow } from '@/lib/tulajdoni-lap-egyeztetes'
 import { TULAJDONI_LAP_NEZETEK, isTulajdoniLapNezet } from '@/lib/tulajdoni-lap'
 import type {
@@ -84,6 +86,13 @@ export type ToolDescriptor<N extends ToolName = ToolName> = {
   /** Az eszközjog-szerkesztő UI csoportcímkéje (a katalógus ebből képződik). */
   readonly capabilityGroup: string
   /**
+   * Rendszer-szerephez kötött tool. Nem jelenik meg a normál capability-
+   * katalógusban, és a broker csak pontos role-egyezésnél futtatja.
+   */
+  readonly requiredSystemRole?: AgentSystemRole
+  /** Nem exkluzív tool, amelyet a platform az adott system role-nak materializál. */
+  readonly grantedSystemRoles?: readonly AgentSystemRole[]
+  /**
    * Kivételes eset: ha a Zod-alakból képzett JSON Schema nem adja vissza
    * hűen a modellnek szánt szerződést, itt felülírható. A drift-teszt ilyenkor
    * is ellenőrzi, hogy a `required` mezők a Zod-ban is kötelezők.
@@ -111,7 +120,25 @@ function numArg(args: Record<string, unknown>, key: string): number | undefined 
 function uuidListArg(args: Record<string, unknown>, key: string): string[] | undefined {
   const raw = args[key]
   if (!Array.isArray(raw)) return undefined
-  return raw.filter((v): v is string => typeof v === 'string' && v.length > 0)
+  return presentScopeIds(raw.filter((v): v is string => typeof v === 'string' && v.length > 0))
+}
+
+/** `run_index` / `run_stats` szkóp — nil UUID nem horgony. */
+function runScopeInvokeArgs(args: Record<string, unknown>) {
+  return {
+    agentId: presentScopeId(strArg(args, 'agentId') || undefined),
+    agentQuery: strArg(args, 'agentQuery') || undefined,
+    conversationId: presentScopeId(strArg(args, 'conversationId') || undefined),
+    ticketId: presentScopeId(strArg(args, 'ticketId') || undefined),
+    processInstanceId: presentScopeId(strArg(args, 'processInstanceId') || undefined),
+    playbookVersionId: presentScopeId(strArg(args, 'playbookVersionId') || undefined),
+    since: strArg(args, 'since') || undefined,
+    until: strArg(args, 'until') || undefined,
+    limit: numArg(args, 'limit') || undefined,
+    agentTurnIds: uuidListArg(args, 'agentTurnIds'),
+    ticketIds: uuidListArg(args, 'ticketIds'),
+    processInstanceIds: uuidListArg(args, 'processInstanceIds'),
+  }
 }
 
 function boolArg(args: Record<string, unknown>, key: string): boolean | undefined {
@@ -416,6 +443,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'ticket_create',
     handlerId: 'ticket_create',
     capabilityGroup: TOOL_GROUP_AGENTS,
+    grantedSystemRoles: ['run_analyst'],
   }),
 
   agent_ask: descriptor({
@@ -654,6 +682,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'http_api_get',
     handlerId: 'http_api',
     capabilityGroup: TOOL_GROUP_HTTP,
+    grantedSystemRoles: ['run_analyst'],
   }),
 
   http_api_get_all: descriptor({
@@ -696,6 +725,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'http_api_get_all',
     handlerId: 'http_api',
     capabilityGroup: TOOL_GROUP_HTTP,
+    grantedSystemRoles: ['run_analyst'],
   }),
 
   http_api_request: descriptor({
@@ -1915,6 +1945,9 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     description:
       'Futás-fejlécek lekérése szkóp alapján — a futás-elemzés első lépése. ' +
       'Bemenet: agent-név vagy -azonosító, beszélgetés/ticket/folyamat/playbook-verzió azonosító, időablak, darabszám. ' +
+      '`ticketId` a ticketet ÉS a hozzá tartozó folyamat-futást adja (testvér-lépések is, pl. emberi felülvizsgálati ticket → az eredeti agent-futás). ' +
+      'Ha van ticketId / conversationId / processInstanceId, az a horgony — agentQuery hiánya nem run_not_found. ' +
+      'Opcionális UUID mezőt ne tölts ki nil UUID-val (00000000-0000-0000-0000-000000000000): hagyd el; a tool a nil értéket figyelmen kívül hagyja. ' +
       'Kimenet futásonként EGY fejléc: mikor, melyik agent, szemcse (turn/ticket/process), körök, eszközhívások, megtagadások, token/költség, végállapot. ' +
       'Több futás egyszerre is kérhető explicit azonosítókkal. A válasz korlátozott; ha `truncated: true`, lapozz szűkebb szkóppal vagy kisebb limitet kérj.',
     argsSchema: z.object({
@@ -1935,20 +1968,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       return {
         ...ctx,
         tool: 'run_index',
-        args: {
-          agentId: strArg(args, 'agentId') || undefined,
-          agentQuery: strArg(args, 'agentQuery') || undefined,
-          conversationId: strArg(args, 'conversationId') || undefined,
-          ticketId: strArg(args, 'ticketId') || undefined,
-          processInstanceId: strArg(args, 'processInstanceId') || undefined,
-          playbookVersionId: strArg(args, 'playbookVersionId') || undefined,
-          since: strArg(args, 'since') || undefined,
-          until: strArg(args, 'until') || undefined,
-          limit: numArg(args, 'limit') || undefined,
-          agentTurnIds: uuidListArg(args, 'agentTurnIds'),
-          ticketIds: uuidListArg(args, 'ticketIds'),
-          processInstanceIds: uuidListArg(args, 'processInstanceIds'),
-        },
+        args: runScopeInvokeArgs(args),
       }
     },
     trust: 'external_untrusted',
@@ -1957,6 +1977,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'run_index',
     handlerId: 'run_index',
     capabilityGroup: TOOL_GROUP_ANALYSIS,
+    requiredSystemRole: 'run_analyst',
   }),
 
   run_trace: descriptor({
@@ -2019,6 +2040,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'run_trace',
     handlerId: 'run_trace',
     capabilityGroup: TOOL_GROUP_ANALYSIS,
+    requiredSystemRole: 'run_analyst',
   }),
 
   run_stats: descriptor({
@@ -2028,7 +2050,8 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       'Kimenet: eszköz × kimenetel mátrix (`ok` / `empty` / `partial` / `failed` / `denied`), latency-eloszlás eszközönként, ' +
       'prompt-cache találati arány (csak nem-`null` cache-adatú modellhívásokra), ismétlődő forrás-kulcsok, ' +
       'megtagadás-okok (`policyDecision`), skill-betöltések audit-eseményekből. ' +
-      'Gyanús pontokra fúrj le `run_trace`-szel.',
+      'Gyanús pontokra fúrj le `run_trace`-szel. ' +
+      'Opcionális UUID mezőt ne tölts ki nil UUID-val (00000000-0000-0000-0000-000000000000): hagyd el; a tool a nil értéket figyelmen kívül hagyja.',
     argsSchema: z.object({
       agentId: z.string().uuid().optional(),
       agentQuery: z.string().max(200).optional(),
@@ -2047,20 +2070,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       return {
         ...ctx,
         tool: 'run_stats',
-        args: {
-          agentId: strArg(args, 'agentId') || undefined,
-          agentQuery: strArg(args, 'agentQuery') || undefined,
-          conversationId: strArg(args, 'conversationId') || undefined,
-          ticketId: strArg(args, 'ticketId') || undefined,
-          processInstanceId: strArg(args, 'processInstanceId') || undefined,
-          playbookVersionId: strArg(args, 'playbookVersionId') || undefined,
-          since: strArg(args, 'since') || undefined,
-          until: strArg(args, 'until') || undefined,
-          limit: numArg(args, 'limit') || undefined,
-          agentTurnIds: uuidListArg(args, 'agentTurnIds'),
-          ticketIds: uuidListArg(args, 'ticketIds'),
-          processInstanceIds: uuidListArg(args, 'processInstanceIds'),
-        },
+        args: runScopeInvokeArgs(args),
       }
     },
     trust: 'external_untrusted',
@@ -2069,6 +2079,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'run_stats',
     handlerId: 'run_stats',
     capabilityGroup: TOOL_GROUP_ANALYSIS,
+    requiredSystemRole: 'run_analyst',
   }),
 
   reconcile_records: descriptor({
@@ -2153,6 +2164,17 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
 
 /** Minden kanonikus tool-név, determinisztikus (ábécé) sorrendben. */
 export const TOOL_NAMES: readonly ToolName[] = (Object.keys(TOOL_REGISTRY) as ToolName[]).sort()
+
+/** A kanonikus registryből képzett, system role-nak materializálandó capability-halmaz. */
+export function toolCapabilitiesForSystemRole(systemRole: AgentSystemRole): ToolName[] {
+  return TOOL_NAMES.filter((name) => {
+    const descriptor = TOOL_REGISTRY[name]
+    return (
+      descriptor.requiredSystemRole === systemRole ||
+      descriptor.grantedSystemRoles?.includes(systemRole) === true
+    )
+  })
+}
 
 export function isToolName(name: string): name is ToolName {
   return Object.prototype.hasOwnProperty.call(TOOL_REGISTRY, name)

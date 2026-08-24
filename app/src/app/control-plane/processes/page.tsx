@@ -17,6 +17,7 @@ import {
   type StartableProcessDefinition,
 } from '@/components/processes/start-process-form'
 import { ProcessDefinitionList } from '@/components/processes/process-definition-list'
+import { SettingsSectionShell, type SettingsSection } from '@/app/control-plane/system/system-settings-shell'
 import { PROCESS_STATUS_CLASS } from '@/lib/process-labels'
 
 export default async function ProcessesPage() {
@@ -65,6 +66,100 @@ export default async function ProcessesPage() {
     }))
   const processes = processesRes.success ? processesRes.data : []
 
+  const sections: SettingsSection[] = [
+    ...(canStart
+      ? [
+          {
+            id: 'uj-folyamat',
+            label: 'Új Folyamat',
+            description:
+              'Publikált Playbook-verzióból draft Folyamat: agent-kötések, triggerek, majd aktiválás.',
+            content: (
+              <div className="atelier-card p-5">
+                {!builderVersionsRes.success && (
+                  <p className="mb-3 text-sm text-coral">
+                    Nem sikerült betölteni a publikált Playbook-verziókat: {builderVersionsRes.error}
+                  </p>
+                )}
+                <ProcessDefinitionBuilder playbookVersions={builderVersions} />
+              </div>
+            ),
+          },
+          {
+            id: 'uj-futas',
+            label: 'Új Futás',
+            description: 'Egy aktív Folyamat kézi indítása bemeneti JSON-nel.',
+            content: (
+              <div className="atelier-card p-5">
+                {!definitionsRes.success && (
+                  <p className="mb-3 text-sm text-coral">
+                    Nem sikerült betölteni az aktív Folyamatokat: {definitionsRes.error}
+                  </p>
+                )}
+                <StartProcessForm definitions={definitions} playbooks={startable} />
+              </div>
+            ),
+          },
+        ]
+      : []),
+    {
+      id: 'folyamatok',
+      label: 'Folyamatok',
+      description: 'Draft, aktív és archivált Folyamatok — szerkesztés, csere, leállítás.',
+      content: (
+        <div className="atelier-card p-5">
+          {!definitionsRes.success && (
+            <p className="text-sm text-coral">Nem sikerült betölteni: {definitionsRes.error}</p>
+          )}
+          <ProcessDefinitionList
+            definitions={allDefinitions}
+            playbookVersions={playbookVersionsForList}
+            canEditDraft={canEditDraft}
+            canArchive={canArchive}
+          />
+        </div>
+      ),
+    },
+    {
+      id: 'futasok',
+      label: 'Futások',
+      description: 'Aktív és lezárt Futások listája.',
+      content: (
+        <div className="atelier-card p-5">
+          {!processesRes.success && (
+            <p className="text-sm text-coral">Nem sikerült betölteni: {processesRes.error}</p>
+          )}
+          <ul className="divide-y divide-ink/8">
+            {processes.map((p) => (
+              <li key={p.id} className="flex flex-wrap items-center justify-between gap-2 py-3">
+                <Link href={`/control-plane/processes/${p.id}`} className="group">
+                  <span className="font-medium group-hover:text-accent">{p.processType}</span>
+                  <span className="ml-2 font-mono text-xs text-ink-soft">{p.playbookRef}</span>
+                </Link>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-ink-soft">
+                    {new Date(p.startedAt).toLocaleString('hu-HU')}
+                  </span>
+                  <span
+                    className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                      PROCESS_STATUS_CLASS[p.status as keyof typeof PROCESS_STATUS_CLASS] ??
+                      'bg-ink/8 text-ink-soft'
+                    }`}
+                  >
+                    {p.status}
+                  </span>
+                </div>
+              </li>
+            ))}
+            {processes.length === 0 && (
+              <li className="py-3 text-sm text-ink-soft">Még nincs Futás.</li>
+            )}
+          </ul>
+        </div>
+      ),
+    },
+  ]
+
   return (
     <div className="space-y-6">
       <div>
@@ -73,75 +168,11 @@ export default async function ProcessesPage() {
         <p className="mt-1 max-w-2xl text-ink-soft">
           A Folyamat a publikált Playbook-verzióra PIN-elt, agentekhez kötött konfiguráció. A Futás
           egyetlen lefutás ebből a konfigurációból, kézi, ticket, chat vagy monitor triggerrel.
+          Válassz témát a bal oldalon — egyszerre egy terület jelenik meg.
         </p>
       </div>
 
-      {canStart && (
-        <section className="atelier-card p-5">
-          <h2 className="mb-4 font-display text-lg font-semibold">Új Folyamat összeállítása</h2>
-          {!builderVersionsRes.success && (
-            <p className="mb-3 text-sm text-coral">
-              Nem sikerült betölteni a publikált Playbook-verziókat: {builderVersionsRes.error}
-            </p>
-          )}
-          <ProcessDefinitionBuilder playbookVersions={builderVersions} />
-        </section>
-      )}
-
-      {canStart && (
-        <section className="atelier-card p-5">
-          <h2 className="mb-4 font-display text-lg font-semibold">Új Futás indítása</h2>
-          {!definitionsRes.success && (
-            <p className="mb-3 text-sm text-coral">
-              Nem sikerült betölteni az aktív Folyamatokat: {definitionsRes.error}
-            </p>
-          )}
-          <StartProcessForm definitions={definitions} playbooks={startable} />
-        </section>
-      )}
-
-      <section className="atelier-card p-5">
-        <h2 className="mb-4 font-display text-lg font-semibold">Folyamatok</h2>
-        {!definitionsRes.success && (
-          <p className="text-sm text-coral">Nem sikerült betölteni: {definitionsRes.error}</p>
-        )}
-        <ProcessDefinitionList
-          definitions={allDefinitions}
-          playbookVersions={playbookVersionsForList}
-          canEditDraft={canEditDraft}
-          canArchive={canArchive}
-        />
-      </section>
-
-      <section className="atelier-card p-5">
-        <h2 className="mb-4 font-display text-lg font-semibold">Aktív és lezárt Futások</h2>
-        {!processesRes.success && (
-          <p className="text-sm text-coral">Nem sikerült betölteni: {processesRes.error}</p>
-        )}
-        <ul className="divide-y divide-ink/8">
-          {processes.map((p) => (
-            <li key={p.id} className="flex flex-wrap items-center justify-between gap-2 py-3">
-              <Link href={`/control-plane/processes/${p.id}`} className="group">
-                <span className="font-medium group-hover:text-accent">{p.processType}</span>
-                <span className="ml-2 font-mono text-xs text-ink-soft">{p.playbookRef}</span>
-              </Link>
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-ink-soft">
-                  {new Date(p.startedAt).toLocaleString('hu-HU')}
-                </span>
-                <span
-                  className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                    PROCESS_STATUS_CLASS[p.status as keyof typeof PROCESS_STATUS_CLASS] ?? 'bg-ink/8 text-ink-soft'
-                  }`}
-                >
-                  {p.status}
-                </span>
-              </div>
-            </li>
-          ))}
-          {processes.length === 0 && <li className="py-3 text-sm text-ink-soft">Még nincs Futás.</li>}
-        </ul>
-      </section>
+      <SettingsSectionShell ariaLabel="Folyamat témák" sections={sections} />
     </div>
   )
 }

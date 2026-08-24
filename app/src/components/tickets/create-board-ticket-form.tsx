@@ -18,6 +18,13 @@ import {
   TicketDispatchPromptModal,
   type DispatchPrompt,
 } from '@/components/tickets/ticket-dispatch-prompt-modal'
+import {
+  EMPTY_TASK_SCHEDULE,
+  TaskScheduleFields,
+  taskScheduleToInput,
+  validateTaskSchedule,
+  type TaskScheduleState,
+} from '@/components/tickets/task-schedule-fields'
 import { Badge, Card } from '@/components/ui/shell'
 import { personaFor } from '@/lib/agent-persona'
 import { uploadTicketWorkspaceFiles } from '@/lib/ticket-workspace-files-client'
@@ -98,6 +105,7 @@ export function CreateBoardTicketForm({
   const [lastTicketId, setLastTicketId] = useState<string | null>(null)
   const [dispatchPrompt, setDispatchPrompt] = useState<DispatchPrompt>(null)
   const [dispatchPending, startDispatchTransition] = useTransition()
+  const [schedule, setSchedule] = useState<TaskScheduleState>(EMPTY_TASK_SCHEDULE)
 
   const assigneeChoices = useMemo(() => {
     if (assigneeType === 'agent') {
@@ -129,6 +137,8 @@ export function CreateBoardTicketForm({
   )
   const isTaskOnlyMode =
     assigneeType === 'agent' && Boolean(assigneeId && selectedAgent?.taskOnly)
+  /** Agent kártyáról / sínről: a felelős már kiválasztott, nincs választó UI. */
+  const agentPreselected = Boolean(initialAgentId)
 
   useEffect(() => {
     if (assigneeType !== 'agent' || !assigneeId) return
@@ -198,6 +208,7 @@ export function CreateBoardTicketForm({
     setSelectedSkillIds([])
     setSkillsCache(null)
     setPendingFiles([])
+    setSchedule(EMPTY_TASK_SCHEDULE)
   }
 
   // #199 — csatolmány-kapu az explicit skill-választás mellett. A szerver
@@ -250,9 +261,19 @@ export function CreateBoardTicketForm({
       setMessage('Válassz hozzárendelést')
       return
     }
+    if (assigneeType === 'agent') {
+      const scheduleError = validateTaskSchedule(schedule)
+      if (scheduleError) {
+        setMessage(scheduleError)
+        return
+      }
+    }
 
     const localFiles = pendingFiles.map((item) => item.file)
     const shouldDeferDispatch = assigneeType === 'agent'
+    const scheduleInput =
+      assigneeType === 'agent' ? taskScheduleToInput(schedule) : { scheduleMode: 'none' as const }
+    const isScheduled = Boolean(scheduleInput && scheduleInput.scheduleMode !== 'none')
 
     startTransition(async () => {
       setMessage(null)
@@ -266,6 +287,7 @@ export function CreateBoardTicketForm({
           skillVersionIds:
             assigneeType === 'agent' && selectedSkillIds.length > 0 ? selectedSkillIds : undefined,
           deferDispatch: shouldDeferDispatch,
+          ...(scheduleInput && scheduleInput.scheduleMode !== 'none' ? scheduleInput : {}),
         })
         if (!res.success) {
           setMessage(res.error)
@@ -292,7 +314,7 @@ export function CreateBoardTicketForm({
         resetForm()
         setOpen(false)
         setLastTicketId(ticketId)
-        if (assigneeType === 'agent') {
+        if (assigneeType === 'agent' && !isScheduled) {
           setDispatchPrompt({ ticketId, title: trimmedTitle })
         }
         router.refresh()
@@ -312,6 +334,13 @@ export function CreateBoardTicketForm({
     files: File[]
   }) => {
     if (!assigneeId) return
+    const scheduleError = validateTaskSchedule(schedule)
+    if (scheduleError) {
+      setMessage(scheduleError)
+      return
+    }
+    const scheduleInput = taskScheduleToInput(schedule)
+    const isScheduled = Boolean(scheduleInput && scheduleInput.scheduleMode !== 'none')
     const skill = launchableSkills.find((row) => row.skillVersionId === skillVersionId)
 
     startTransition(async () => {
@@ -327,6 +356,7 @@ export function CreateBoardTicketForm({
           ...(Object.keys(skillParameterValues).length > 0
             ? { skillParameterValues }
             : {}),
+          ...(scheduleInput && scheduleInput.scheduleMode !== 'none' ? scheduleInput : {}),
         })
         if (!res.success) {
           setMessage(res.error)
@@ -352,7 +382,9 @@ export function CreateBoardTicketForm({
         resetForm()
         setOpen(false)
         setLastTicketId(ticket.id)
-        setDispatchPrompt({ ticketId: ticket.id, title: ticket.title })
+        if (!isScheduled) {
+          setDispatchPrompt({ ticketId: ticket.id, title: ticket.title })
+        }
         router.refresh()
       } catch (err) {
         setMessage(err instanceof Error ? err.message : 'Feladat létrehozása sikertelen')
@@ -421,6 +453,7 @@ export function CreateBoardTicketForm({
 
   const formBody = (
     <div className="space-y-4">
+        {!agentPreselected ? (
         <div className="flex flex-wrap gap-4">
           <fieldset>
             <legend className="text-sm font-medium text-ink-soft">Hozzárendelve</legend>
@@ -504,6 +537,7 @@ export function CreateBoardTicketForm({
             )}
           </div>
         </div>
+        ) : null}
 
         {isTaskOnlyMode ? (
           assigneeId ? (
@@ -517,6 +551,13 @@ export function CreateBoardTicketForm({
                 submitLabel="Feladat létrehozása"
                 onCancel={closeForm}
                 onSubmit={handleTaskOnlySubmit}
+                extraFields={
+                  <TaskScheduleFields
+                    state={schedule}
+                    disabled={pending}
+                    onChange={setSchedule}
+                  />
+                }
               />
             )
           ) : null
@@ -524,13 +565,15 @@ export function CreateBoardTicketForm({
           <>
             {assigneeType === 'agent' && assigneeId && (
               <p className="text-xs text-ink-faint">
-                AI munkatárshoz rendelve a feladat a „Végrehajtásra vár” oszlopba kerül. Létrehozás után
-                megkérdezzük, hogy induljon-e a feldolgozás — vagy később a kártyán lévő play gombbal
-                indíthatod.
+                {schedule.mode === 'none'
+                  ? 'AI munkatárshoz rendelve a feladat a „Végrehajtásra vár” oszlopba kerül. Létrehozás után megkérdezzük, hogy induljon-e a feldolgozás — vagy később a kártyán lévő play gombbal indíthatod.'
+                  : 'A feladat azonnal megjelenik a táblán. A dispatcher a megadott időpontban indítja a feldolgozást — kézzel a kártya play gombjával is elindíthatod.'}
                 {pendingFiles.length > 0
                   ? ' Csatolt fájl esetén előbb feltöltjük a workspace-be.'
                   : ''}
-                Ha csak a cím van megadva leírás nélkül, a cím lesz a feladat szövege.
+                {schedule.mode === 'none'
+                  ? ' Ha csak a cím van megadva leírás nélkül, a cím lesz a feladat szövege.'
+                  : ''}
               </p>
             )}
             {assigneeType === 'human' && assigneeId && (
@@ -559,12 +602,10 @@ export function CreateBoardTicketForm({
 
             {assigneeType === 'agent' && assigneeId && (
               <div>
-                <p className="text-sm font-medium text-ink-soft">
-                  Skillek <span className="font-normal text-ink-faint">(opcionális)</span>
-                </p>
+                <p className="text-sm font-medium text-ink-soft">Képességek (Skill-ek)</p>
                 <p className="mt-1 text-xs text-ink-faint">
-                  A kiválasztott skillek a feldolgozás elején betöltődnek — az AI munkatárs ezeket
-                  követi.
+                  A Képességek előre megírt feladat leírások, amelyeket az AI munkatárs követni fog,
+                  ha kiválasztasz egyet.
                 </p>
                 {skillsLoading ? (
                   <p className="mt-2 text-sm text-ink-faint">Skillek betöltése…</p>
@@ -626,6 +667,10 @@ export function CreateBoardTicketForm({
                 className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
               />
             </div>
+
+            {assigneeType === 'agent' && assigneeId ? (
+              <TaskScheduleFields state={schedule} disabled={pending} onChange={setSchedule} />
+            ) : null}
 
             <div>
               <p className="text-sm font-medium text-ink-soft">
@@ -773,7 +818,7 @@ export function CreateBoardTicketForm({
               role="dialog"
               aria-modal="true"
               aria-labelledby="board-ticket-create-title"
-              className="max-h-[90vh] w-full max-w-2xl overflow-y-auto"
+              className="max-h-[90vh] w-full max-w-2xl overflow-y-auto sm:max-w-3xl lg:max-w-4xl"
               onClick={(e) => e.stopPropagation()}
             >
               <div id="board-ticket-create-title" className="sr-only">

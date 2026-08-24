@@ -19,6 +19,7 @@ import {
   AgentDetailLoadError,
   classifyAgentDetailLookup,
 } from '@/lib/agent-detail-access'
+import { canOpenRunAnalystWorkspace } from '@/lib/run-analysis-entry'
 import { logger } from '@/lib/observability/logger'
 import {
   loadEfficiencyAdvisorCard,
@@ -326,15 +327,23 @@ export async function loadAgentDetailPageData(
   }
   // #142 — a detail oldal a gráf `view` döntését használja (nem csak a régi
   // hiddenFromOperators kaput), így közvetlen URL sem fed fel elrejtett agentet.
-  const subject = tenantUserSubject(ctx)
-  const viewAllowed = subject
-    ? (
-        await services.agentAccess.canAccessAgent(subject, agentId, 'view', {
-          subjectIsTenantAdmin: isTenantAdmin(ctx),
-        })
-      ).allowed
-    : false
-  if (!viewAllowed) throw AgentDetailLoadError.noView()
+  const runAnalystOk = await canOpenRunAnalystWorkspace({
+    tenantId: ctx.activeTenantId,
+    role: ctx.activeTenantRole,
+    userId: ctx.user.id,
+    agentId,
+  })
+  if (!runAnalystOk) {
+    const subject = tenantUserSubject(ctx)
+    const viewAllowed = subject
+      ? (
+          await services.agentAccess.canAccessAgent(subject, agentId, 'view', {
+            subjectIsTenantAdmin: isTenantAdmin(ctx),
+          })
+        ).allowed
+      : false
+    if (!viewAllowed) throw AgentDetailLoadError.noView()
+  }
 
   let delegatedConnectors: AgentDetailPageData['delegatedConnectors'] = []
   let governance: AgentDetailPageData['governance'] = null

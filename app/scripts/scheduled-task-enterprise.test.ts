@@ -13,6 +13,7 @@ import type {
   AgentRepository,
   AuditRepository,
   ScheduledTaskRepository,
+  TicketRepository,
 } from '../src/repositories/interfaces'
 
 const TENANT_A = 'aaaaaaaa-0000-4000-8000-000000000001'
@@ -21,6 +22,8 @@ const AGENT_ID = 'cccccccc-0000-4000-8000-000000000003'
 const USER_ID = 'dddddddd-0000-4000-8000-000000000004'
 const TASK_ID = 'eeeeeeee-0000-4000-8000-000000000005'
 const TICKET_ID = 'ffffffff-0000-4000-8000-000000000006'
+const SERIES_TICKET_ID = 'aaaaaaaa-0000-4000-8000-0000000000aa'
+const OCCURRENCE_TICKET_ID = 'bbbbbbbb-0000-4000-8000-0000000000bb'
 const NOW = new Date('2026-07-18T10:00:00.000Z')
 
 let failures = 0
@@ -69,7 +72,11 @@ function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   } as ScheduledTask
 }
 
-function makeService(targetAgent: Agent, repository: Partial<ScheduledTaskRepository> = {}) {
+function makeService(
+  targetAgent: Agent,
+  repository: Partial<ScheduledTaskRepository> = {},
+  tickets?: Partial<TicketRepository>,
+) {
   const audit: Array<Record<string, unknown>> = []
   const scheduledTasks: ScheduledTaskRepository = {
     create: async (input) => task({
@@ -94,7 +101,15 @@ function makeService(targetAgent: Agent, repository: Partial<ScheduledTaskReposi
     },
   } as AuditRepository
 
-  return { service: new ScheduledTaskService(scheduledTasks, agents, auditRepository), audit }
+  return {
+    service: new ScheduledTaskService(
+      scheduledTasks,
+      agents,
+      auditRepository,
+      tickets as TicketRepository | undefined,
+    ),
+    audit,
+  }
 }
 
 console.log('=== scheduled task enterprise regresszió ===')
@@ -204,6 +219,120 @@ await test('a materializálás egy atomi repository-hívással hozza létre a ti
   assert.equal(materializeCalls, 1)
   assert.equal(createdTicketId, TICKET_ID)
   assert.deepEqual(result, [{ scheduledTaskId: TASK_ID, status: 'materialized', ticketId: TICKET_ID }])
+})
+
+await test('egyszeri, előre kirakott ticketet nem másol, csak lépteti az ütemezést', async () => {
+  let materializeCalls = 0
+  let advanceCalls = 0
+  const precreated = task({
+    status: 'materializing',
+    materializedTicketId: TICKET_ID,
+    runCount: 0,
+    recurrence: 'none',
+  })
+  const { service } = makeService(agent(), {
+    findDue: async () => [precreated],
+    claimDue: async () => precreated,
+    materializeTicket: async () => {
+      materializeCalls += 1
+      return null
+    },
+    advanceExistingTicket: async () => {
+      advanceCalls += 1
+      return task({
+        status: 'materialized',
+        materializedTicketId: TICKET_ID,
+        runCount: 1,
+        recurrence: 'none',
+      })
+    },
+  })
+
+  const result = await service.materializeDue(NOW, 1)
+  assert.equal(materializeCalls, 0)
+  assert.equal(advanceCalls, 1)
+  assert.deepEqual(result, [{ scheduledTaskId: TASK_ID, status: 'materialized', ticketId: TICKET_ID }])
+})
+
+await test('rendszeres sorozatnál új példány készül, a sablon a következő időpontra lép', async () => {
+  let materializeCalls = 0
+  let advanceCalls = 0
+  const seriesUpdates: Array<Record<string, unknown>> = []
+  const dueAt = new Date(NOW.getTime() - 1_000)
+  const precreated = task({
+    status: 'materializing',
+    materializedTicketId: SERIES_TICKET_ID,
+    runCount: 0,
+    recurrence: 'daily',
+    nextRunAt: dueAt,
+    payload: {
+      question: 'Készíts riportot',
+      attachmentDocumentIds: [],
+      seriesTicketId: SERIES_TICKET_ID,
+    },
+  })
+  const { service } = makeService(
+    agent(),
+    {
+      findDue: async () => [precreated],
+      claimDue: async () => precreated,
+      materializeTicket: async (_id, ticketInput, state) => {
+        materializeCalls += 1
+        assert.equal(ticketInput.executeAfter, null)
+        assert.ok(ticketInput.title.startsWith('Napi riport — '))
+        const payload = ticketInput.payload as Record<string, unknown>
+        assert.equal(payload.scheduleSeries, undefined)
+        assert.equal(payload.scheduleOccurrence, true)
+        assert.equal(payload.seriesTicketId, SERIES_TICKET_ID)
+        assert.equal(state.status, 'active')
+        return {
+          ticket: { id: OCCURRENCE_TICKET_ID, ...ticketInput } as Ticket,
+          scheduledTask: task({
+            status: 'active',
+            materializedTicketId: OCCURRENCE_TICKET_ID,
+            materializedAt: NOW,
+            lastRunAt: NOW,
+            runCount: 1,
+            recurrence: 'daily',
+          }),
+        }
+      },
+      advanceExistingTicket: async () => {
+        advanceCalls += 1
+        return null
+      },
+    },
+    {
+      findById: async (id) =>
+        id === SERIES_TICKET_ID
+          ? ({
+              id: SERIES_TICKET_ID,
+              state: 'ready',
+              payload: { scheduleSeries: true, question: 'Készíts riportot' },
+              executeAfter: dueAt,
+            } as unknown as Ticket)
+          : null,
+      update: async (id, data) => {
+        assert.equal(id, SERIES_TICKET_ID)
+        seriesUpdates.push(data as Record<string, unknown>)
+        return { id: SERIES_TICKET_ID, ...data } as Ticket
+      },
+    },
+  )
+
+  const result = await service.materializeDue(NOW, 1)
+  assert.equal(materializeCalls, 1)
+  assert.equal(advanceCalls, 0)
+  assert.equal(seriesUpdates.length, 1)
+  const seriesUpdate = seriesUpdates[0] ?? {}
+  assert.ok(seriesUpdate.executeAfter instanceof Date)
+  assert.equal((seriesUpdate.executeAfter as Date).toISOString(), '2026-07-19T09:59:59.000Z')
+  assert.equal(seriesUpdate.state, undefined)
+  const seriesPayload = seriesUpdate.payload as Record<string, unknown>
+  assert.equal(seriesPayload.scheduleSeries, true)
+  assert.deepEqual(result, [
+    { scheduledTaskId: TASK_ID, status: 'materialized', ticketId: OCCURRENCE_TICKET_ID },
+  ])
 })
 
 await test('a visszavont scheduled task run-as joga minden további tool-hívásnál elutasított', () => {

@@ -57,7 +57,7 @@ function ticketWhere(filter?: TicketFilter): Prisma.TicketWhereInput {
     where.state = Array.isArray(filter.state) ? { in: filter.state } : filter.state
   }
   if (filter?.type) where.type = filter.type
-  if (filter?.agentId) where.agentId = filter.agentId
+  if (filter?.agentId && !filter.involvedAgentId) where.agentId = filter.agentId
   if (filter?.processInstanceId) where.processInstanceId = filter.processInstanceId
   if (filter?.source) {
     where.source = Array.isArray(filter.source) ? { in: filter.source } : filter.source
@@ -69,6 +69,20 @@ function ticketWhere(filter?: TicketFilter): Prisma.TicketWhereInput {
     where.OR = [
       { createdById: filter.belongingToUserId },
       { assigneeType: 'human', assigneeId: filter.belongingToUserId },
+    ]
+  }
+  if (filter?.involvedAgentId) {
+    const id = filter.involvedAgentId
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+      {
+        OR: [
+          { agentId: id },
+          { assigneeType: 'agent', assigneeId: id },
+          { payload: { path: ['createdByAgentId'], equals: id } },
+          { payload: { path: ['requesterAgentId'], equals: id } },
+        ],
+      },
     ]
   }
   if (filter?.updatedAtGte || filter?.updatedAtLte) {
@@ -114,6 +128,8 @@ export class PostgresTicketRepository implements TicketRepository {
     // generál: `payload #>> '{delegationReturned}' = 'true'` → NULL ha a mező hiányzik → `NOT NULL` = NULL (falsy)
     // → kizárja azokat a ticketeket, ahol a mező nem létezik.
     // Fix: raw SQL csak az ID-szűréshez (helyes @> containment); majd findMany a típusos objektumokhoz.
+    // `scheduleSeries`: a rendszeres sablon nem dispatchelődik, még ha az executeAfter
+    // már elmúlt is — a worker új példányt materializál helyette.
     const ids = await prisma.$queryRaw<{ id: string }[]>`
       SELECT id
       FROM tickets
@@ -123,6 +139,7 @@ export class PostgresTicketRepository implements TicketRepository {
         AND (execute_after IS NULL OR execute_after <= ${now})
         AND agent_id IS NOT NULL
         AND NOT (payload @> '{"delegationReturned": true}')
+        AND NOT (payload @> '{"scheduleSeries": true}')
       ORDER BY updated_at ASC
       LIMIT ${limit}
     `
@@ -243,6 +260,7 @@ export class PostgresTicketRepository implements TicketRepository {
         | 'cancelRequested'
         | 'cancelRequestedById'
         | 'cancelRequestedAt'
+        | 'executeAfter'
       >
     >,
   ): Promise<Ticket> {

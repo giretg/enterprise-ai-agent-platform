@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { getAgentSkillsAction } from '@/app/actions/skills'
 import { WorkspaceFileDropzone } from '@/components/workspace/workspace-file-dropzone'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
 
@@ -59,6 +60,41 @@ export function filterLaunchableSkills(rows: AgentSkillRow[]): LaunchableSkill[]
   return [...bySkill.values()]
 }
 
+export type LaunchableSkillsState =
+  | { status: 'loading' }
+  | { status: 'ready'; skills: LaunchableSkill[] }
+  | { status: 'error'; message: string }
+
+/** `agentId` nélkül nem tölt — a sín beszélgetős kártyáin ki lehet hagyni. */
+export function useLaunchableSkills(agentId: string | null): LaunchableSkillsState {
+  const [skillsState, setSkillsState] = useState<LaunchableSkillsState>({ status: 'loading' })
+
+  useEffect(() => {
+    if (!agentId) return
+    let cancelled = false
+    void getAgentSkillsAction(agentId).then((res) => {
+      if (cancelled) return
+      if (!res.success) {
+        setSkillsState({ status: 'error', message: res.error })
+        return
+      }
+      setSkillsState({ status: 'ready', skills: filterLaunchableSkills(res.data) })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [agentId])
+
+  return skillsState
+}
+
+/** Sín / gomb címke: egy skill → a megjelenített neve, különben „Feladat”. */
+export function taskOnlyLaunchLabel(state: LaunchableSkillsState): string {
+  if (state.status !== 'ready') return 'Feladat'
+  if (state.skills.length === 1) return skillDisplayLabel(state.skills[0])
+  return 'Feladat'
+}
+
 export type TaskOnlyLaunchSubmitInput = {
   skillVersionId: string
   skillParameterValues: Record<string, string>
@@ -74,8 +110,12 @@ export function TaskOnlyLaunchForm({
   onCancel,
   onSubmit,
   cancelDisabled,
+  hideCancel,
+  extraFields,
   onSelectedSkillChange,
   initialFocusRef,
+  headingId,
+  showHeading = false,
 }: {
   skills: LaunchableSkill[]
   pending: boolean
@@ -85,9 +125,16 @@ export function TaskOnlyLaunchForm({
   onCancel: () => void
   onSubmit: (input: TaskOnlyLaunchSubmitInput) => void
   cancelDisabled?: boolean
+  /** Beágyazott felületen (pl. Indítás fül) nincs „Mégse”. */
+  hideCancel?: boolean
+  extraFields?: ReactNode
   onSelectedSkillChange?: (skill: LaunchableSkill | undefined) => void
   /** Modál megnyitásakor ide kerül a fókusz (Escape / a11y). */
   initialFocusRef?: RefObject<HTMLButtonElement | null>
+  /** Ha megadva, a kiválasztott skill neve címként jelenik meg a választó alatt. */
+  headingId?: string
+  /** Skill-cím megjelenítése a választó alatt (agent Indítás fül / modál). */
+  showHeading?: boolean
 }) {
   const [selectedId, setSelectedId] = useState(skills[0]?.skillVersionId ?? '')
   const [paramValues, setParamValues] = useState<Record<string, string>>({})
@@ -156,18 +203,6 @@ export function TaskOnlyLaunchForm({
 
   return (
     <div className="space-y-4">
-      {selected && (
-        <>
-          {selected.description && (
-            <p className="text-sm text-ink-soft">{selected.description}</p>
-          )}
-          <p className="text-xs text-ink-faint">
-            Ez az agent korlátozott feladatkörű: a feladat leírását nem kell megírnod — a
-            munkamenetet a skill tartalmazza.
-          </p>
-        </>
-      )}
-
       {skills.length > 1 && (
         <div>
           <label htmlFor="task-only-skill" className="text-sm font-medium text-ink-soft">
@@ -187,6 +222,27 @@ export function TaskOnlyLaunchForm({
             ))}
           </select>
         </div>
+      )}
+
+      {showHeading && selected ? (
+        <h3
+          {...(headingId ? { id: headingId } : {})}
+          className="font-display text-lg font-semibold"
+        >
+          {skillDisplayLabel(selected)}
+        </h3>
+      ) : null}
+
+      {selected && (
+        <>
+          {selected.description && (
+            <p className="text-sm text-ink-soft">{selected.description}</p>
+          )}
+          <p className="text-xs text-ink-faint">
+            Ez az agent korlátozott feladatkörű: a feladat leírását nem kell megírnod — a
+            munkamenetet a skill tartalmazza.
+          </p>
+        </>
       )}
 
       {selected && selected.parameters.length > 0 && (
@@ -256,6 +312,8 @@ export function TaskOnlyLaunchForm({
         </div>
       )}
 
+      {extraFields}
+
       {message && (
         <p className="rounded-lg border border-coral/30 bg-coral/10 px-3 py-2 text-sm text-coral">
           {message}
@@ -272,14 +330,16 @@ export function TaskOnlyLaunchForm({
         >
           {pending ? pendingLabel : submitLabel}
         </button>
-        <button
-          type="button"
-          disabled={pending || cancelDisabled}
-          onClick={onCancel}
-          className="rounded-lg border border-line px-4 py-2 text-sm text-ink-soft transition hover:bg-night-2 disabled:opacity-50"
-        >
-          Mégse
-        </button>
+        {!hideCancel ? (
+          <button
+            type="button"
+            disabled={pending || cancelDisabled}
+            onClick={onCancel}
+            className="rounded-lg border border-line px-4 py-2 text-sm text-ink-soft transition hover:bg-night-2 disabled:opacity-50"
+          >
+            Mégse
+          </button>
+        ) : null}
       </div>
     </div>
   )

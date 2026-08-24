@@ -41,7 +41,8 @@ export function isAgentActivelyWorking(run: ActiveRun): boolean {
   if (
     run.status === 'awaiting_human' ||
     run.status === 'needs_info' ||
-    run.status === 'ready'
+    run.status === 'ready' ||
+    run.status === 'stalled'
   ) {
     return false
   }

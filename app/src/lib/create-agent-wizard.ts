@@ -148,6 +148,7 @@ export type CreateAgentWizardProposal = {
   }
   suggestedCapabilities: string[]
   suggestedSkills: string[]
+  suggestedConnectors?: string[]
   summary?: string
 }
 
@@ -160,6 +161,17 @@ export function matchAssignableSkillsByName<T extends { name: string }>(
   )
   if (wanted.size === 0) return []
   return assignable.filter((skill) => wanted.has(skill.name.trim().toLowerCase()))
+}
+
+export function matchAssignableConnectorsByName<T extends { name: string }>(
+  assignable: T[],
+  suggestedNames: Iterable<string>,
+): T[] {
+  const wanted = new Set(
+    [...suggestedNames].map((n) => n.trim().toLowerCase()).filter(Boolean),
+  )
+  if (wanted.size === 0) return []
+  return assignable.filter((connector) => wanted.has(connector.name.trim().toLowerCase()))
 }
 
 export function grantedToolNames(

@@ -7,8 +7,10 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../src/lib/db'
 import { materializeDefaultUserAgentGrants } from '../src/domain/agent-access/default-user-agent-grants'
+import { deleteTestTenants } from './_test-tenant-cleanup'
 
 let failures = 0
+let seededTenantId: string | null = null
 
 async function check(name: string, fn: () => Promise<void>) {
   try {
@@ -69,6 +71,7 @@ async function seed() {
     })
   }
 
+  seededTenantId = tenant.id
   return { tenant, admin, member, mkAgent, suffix }
 }
 
@@ -158,4 +161,9 @@ main()
     console.error(e)
     process.exitCode = 1
   })
-  .finally(() => prisma.$disconnect())
+  .finally(async () => {
+    if (seededTenantId) {
+      await deleteTestTenants(prisma, [seededTenantId]).catch(() => undefined)
+    }
+    await prisma.$disconnect()
+  })

@@ -1,8 +1,15 @@
 import { z } from 'zod'
-import type { ToolName } from '@/domain/tool-broker/tool-broker-types'
 import { TOOL_NAMES, TOOL_REGISTRY } from '@/domain/tool-broker/tool-registry'
 import { githubRepositoryAccessSchema } from '@/domain/connector/github-repository-access-schema'
 import { MODEL_PROVIDER_IDS } from '@/lib/model-providers'
+import {
+  TICKET_SCHEDULE_INTERVAL_HOURS_MAX,
+  TICKET_SCHEDULE_INTERVAL_HOURS_MIN,
+  TICKET_SCHEDULE_MAX_RUNS_MAX,
+  TICKET_SCHEDULE_MAX_RUNS_MIN,
+  TICKET_SCHEDULE_RECURRENCES,
+  TICKET_SCHEDULE_RECURRENCES_WITH_NONE,
+} from '@/lib/ticket-schedule'
 
 export const ticketFilterSchema = z.object({
   state: z
@@ -190,6 +197,18 @@ export const modelPolicyEntrySchema = z.object({
   description: z.string().trim().max(280).optional(),
 })
 
+export const ticketScheduleRecurrenceSchema = z.enum(TICKET_SCHEDULE_RECURRENCES)
+const ticketScheduleIntervalHoursSchema = z
+  .number()
+  .int()
+  .min(TICKET_SCHEDULE_INTERVAL_HOURS_MIN)
+  .max(TICKET_SCHEDULE_INTERVAL_HOURS_MAX)
+const ticketScheduleMaxRunsSchema = z
+  .number()
+  .int()
+  .min(TICKET_SCHEDULE_MAX_RUNS_MIN)
+  .max(TICKET_SCHEDULE_MAX_RUNS_MAX)
+
 export const createBoardTicketSchema = z
   .object({
     title: z.string().trim().min(1).max(200),
@@ -210,6 +229,12 @@ export const createBoardTicketSchema = z
     skillParameterValues: z
       .record(z.string().min(1).max(120), z.string().max(2_000))
       .optional(),
+    /** `none` / hiány: azonnal (vagy play gomb). `once`: executeAfter. `recurring`: ScheduledTask. */
+    scheduleMode: z.enum(['none', 'once', 'recurring']).optional(),
+    runAt: z.string().datetime().optional(),
+    recurrence: ticketScheduleRecurrenceSchema.optional(),
+    intervalHours: ticketScheduleIntervalHoursSchema.optional(),
+    maxRuns: ticketScheduleMaxRunsSchema.nullable().optional(),
   })
   .refine((args) => args.assigneeType !== 'agent' || args.assigneeId, {
     message: 'assigneeId is required when assigneeType is agent',
@@ -224,6 +249,22 @@ export const createBoardTicketSchema = z
   .refine((args) => args.assigneeType === 'agent' || !args.skillParameterValues, {
     message: 'skillParameterValues only allowed when assigneeType is agent',
   })
+  .refine(
+    (args) =>
+      !args.scheduleMode ||
+      args.scheduleMode === 'none' ||
+      args.assigneeType === 'agent',
+    { message: 'Csak AI munkatárshoz adható ütemezés' },
+  )
+  .refine(
+    (args) =>
+      args.scheduleMode !== 'once' && args.scheduleMode !== 'recurring' || Boolean(args.runAt),
+    { message: 'Az ütemezett feladathoz időpont kell' },
+  )
+  .refine(
+    (args) => args.scheduleMode !== 'recurring' || Boolean(args.recurrence),
+    { message: 'A rendszeres feladathoz gyakoriság kell' },
+  )
 
 /** Board ticket deferred dispatch — a form `{ ticketId }` kulccsal hívja (nem `{ id }`). */
 export const dispatchBoardTicketSchema = z.object({
@@ -302,8 +343,9 @@ export const createScheduledAgentTaskSchema = z.object({
   conversationId: z.string().uuid().optional(),
   attachmentDocumentIds: z.array(z.string().uuid()).max(8).optional(),
   nextRunAt: z.string().datetime(),
-  recurrence: z.enum(['none', 'daily', 'weekly', 'monthly']).optional(),
-  maxRuns: z.number().int().min(1).max(365).nullable().optional(),
+  recurrence: z.enum(TICKET_SCHEDULE_RECURRENCES_WITH_NONE).optional(),
+  intervalHours: ticketScheduleIntervalHoursSchema.optional(),
+  maxRuns: ticketScheduleMaxRunsSchema.nullable().optional(),
   authorizeRunAs: z.boolean().optional(),
 })
 
@@ -807,16 +849,6 @@ export const createInteractionTicketSchema = z.object({
   payload: z.record(z.string(), z.unknown()),
   sourceDocumentId: z.string().uuid().optional(),
 })
-
-const ticketStateSchema = z.enum([
-  'backlog',
-  'ready',
-  'approved',
-  'in_progress',
-  'awaiting_human',
-  'done',
-  'rejected',
-])
 
 const toolInvokeBaseSchema = {
   ticketId: z.string().uuid().optional(),

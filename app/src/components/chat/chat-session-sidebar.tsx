@@ -190,7 +190,7 @@ export function AgentChatSessionSidebar({
                           disabled={isBusy}
                           onClick={() => onSelect(session.id)}
                           aria-current={active ? 'true' : undefined}
-                          className={`group relative w-full rounded-xl py-2.5 pl-4 pr-3 text-left transition-colors disabled:opacity-40 ${
+                          className={`group relative w-full rounded-xl py-2.5 pl-3 pr-4 text-left transition-colors disabled:opacity-40 ${
                             active
                               ? 'bg-coral/10 ring-1 ring-inset ring-coral/25'
                               : 'hover:bg-card'
@@ -199,7 +199,7 @@ export function AgentChatSessionSidebar({
                           {active && (
                             <span
                               aria-hidden
-                              className="absolute inset-y-2 left-1 w-1 rounded-full bg-coral"
+                              className="absolute inset-y-2 right-1 w-1 rounded-full bg-coral"
                             />
                           )}
                           <div className="flex items-baseline justify-between gap-2">

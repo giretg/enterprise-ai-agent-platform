@@ -12,6 +12,42 @@ import type { AuditRepository } from '@/repositories/interfaces'
 /** Egy szkóp alatt feloldott folyamat-ticketek felső korlátja. */
 export const MAX_PROCESS_TICKET_ROWS = 5_000
 
+/**
+ * RFC 4122 nil UUID és RFC 9562 max UUID. A modellek opcionális UUID mezőre
+ * ezeket küldik üres helyett — szkóp-horgonyként tilos kezelni, különben a
+ * valódi ticket / beszélgetés / folyamat `run_not_found`-dal eldől.
+ */
+export const NIL_SCOPE_UUID = '00000000-0000-0000-0000-000000000000'
+export const MAX_SCOPE_UUID = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+
+function isSentinelUuid(value: string): boolean {
+  const hex = value.toLowerCase().replace(/-/g, '')
+  return hex === '0'.repeat(32) || hex === 'f'.repeat(32)
+}
+
+/** Hiányzó, üres, nil vagy max UUID → nincs szkóp-horgony. */
+export function presentScopeId(value: string | undefined | null): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  if (isSentinelUuid(trimmed)) return undefined
+  return trimmed
+}
+
+/** UUID-lista: üres/nil elemek kiesnek; üres lista → nincs horgony. */
+export function presentScopeIds(values: string[] | undefined | null): string[] | undefined {
+  if (!values?.length) return undefined
+  const kept: string[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    const id = presentScopeId(value)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    kept.push(id)
+  }
+  return kept.length ? kept : undefined
+}
+
 /** ToolCall és ModelCall `where`-be egyaránt beilleszthető szkóp-szűrő. */
 type ScopedCallPart = { agentTurnId: { in: string[] } } | { ticketId: { in: string[] } }
 export type RunScopeCallFilter = ScopedCallPart | { OR: ScopedCallPart[] }

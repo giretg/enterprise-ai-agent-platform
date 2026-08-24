@@ -205,13 +205,21 @@ function main() {
     assert.deepEqual(covered, [...TOOL_NAMES].sort(), 'a validátor union nem fedi le a regisztert')
   })
 
-  test('a capability-katalógus minden tool jogát felkínálja', () => {
+  test('a capability-katalógus csak a normál, nem system-role-kötött toolokat kínálja', () => {
     const catalog = new Set(NORMAL_TOOL_CAPABILITY_NAMES)
     for (const name of TOOL_NAMES) {
-      assert.ok(
-        catalog.has(TOOL_REGISTRY[name].capability),
-        `a jogosultság-szerkesztőben nem adható meg: ${name}`,
+      const descriptor = TOOL_REGISTRY[name]
+      assert.equal(
+        catalog.has(descriptor.capability),
+        descriptor.requiredSystemRole === undefined,
+        `${name} grantolhatósága nem követi a requiredSystemRole mezőt`,
       )
+    }
+  })
+
+  test('a run_* toolok kizárólag a run_analyst rendszer-szerephez tartoznak', () => {
+    for (const name of ['run_index', 'run_trace', 'run_stats'] as const) {
+      assert.equal(TOOL_REGISTRY[name].requiredSystemRole, 'run_analyst', name)
     }
   })
 

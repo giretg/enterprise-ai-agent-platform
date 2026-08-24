@@ -65,7 +65,7 @@ export function summarizeRuns(runs: readonly ComposedRun[]): RunsSummary {
     if (run.phase === 'active') {
       if (run.status === 'ready') summary.ready += 1
       else if (run.status === 'awaiting_human' || run.status === 'needs_info') summary.waiting += 1
-      else summary.running += 1
+      else if (run.status !== 'stalled') summary.running += 1
       continue
     }
     if (run.status === 'failed' || run.status === 'exhausted' || run.status === 'rejected') {

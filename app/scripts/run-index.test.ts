@@ -17,6 +17,7 @@ import {
   TOOL_REGISTRY,
 } from '../src/domain/tool-broker/tool-registry'
 import { SIDE_EFFECTING_TOOLS, TOOL_TRUST_REGISTRY } from '../src/domain/tool-broker/tool-trust-registry'
+import { REGISTERED_AUDIT_ACTIONS } from '../src/lib/audit/event-catalog'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -63,6 +64,22 @@ async function main() {
     assert.equal(selected.length, 1)
   })
 
+  await test('selectRunIndexCandidates: horgonyzott ticket nem esik ki a limit alól', () => {
+    const base = Date.parse('2026-08-01T00:00:00Z')
+    const { selected, truncated } = selectRunIndexCandidates(
+      [
+        { grain: 'ticket', id: 'requested', startedAt: new Date(base) },
+        { grain: 'ticket', id: 'sibling', startedAt: new Date(base + 5_000) },
+        { grain: 'process', id: 'p-1', startedAt: new Date(base + 8_000) },
+      ],
+      2,
+      new Set(['ticket:requested']),
+    )
+    assert.equal(truncated, true)
+    assert.equal(selected.length, 2)
+    assert.ok(selected.some((s) => s.grain === 'ticket' && s.id === 'requested'))
+  })
+
   await test('RunIndexNotFoundError: run_not_found üzenet', () => {
     const err = new RunIndexNotFoundError()
     assert.equal(err.message, RUN_INDEX_NOT_FOUND)
@@ -88,6 +105,18 @@ async function main() {
     assert.match(src, /fetchLimit: limit \+ 1/)
   })
 
+  await test('forrásszerződés: ticket-horgony nem kever beszélgetés-fordulót, folyamatot kibont', () => {
+    const src = readFileSync(
+      join(root, 'src/domain/run-analysis/run-index-service.ts'),
+      'utf8',
+    )
+    assert.match(src, /anchoredToTicket/)
+    assert.match(src, /expandTicketProcessCandidates/)
+    assert.match(src, /hasHardScopeAnchor/)
+    assert.match(src, /expandTicketProcessCandidates\([\s\S]*siblingTake: number/)
+    assert.match(src, /orderBy: \{ createdAt: 'desc' \},\s*take: siblingTake/)
+  })
+
   await test('forrásszerződés: run_analyst önelemzés kizárva + audit', () => {
     const src = readFileSync(
       join(root, 'src/domain/run-analysis/run-index-service.ts'),
@@ -95,6 +124,140 @@ async function main() {
     )
     assert.match(src, /RUN_ANALYST_SYSTEM_ROLE/)
     assert.match(src, /analysis\.run_index/)
+  })
+
+  await test('audit-katalógus: analysis.run_index / run_stats / run_trace regisztrálva', () => {
+    for (const action of ['analysis.run_index', 'analysis.run_stats', 'analysis.run_trace'] as const) {
+      assert.equal(REGISTERED_AUDIT_ACTIONS.has(action), true, action)
+    }
+  })
+
+  const NIL = '00000000-0000-0000-0000-000000000000'
+  const MAX_UUID = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+  const TICKET = '929ae6a1-ee80-40a6-a045-eb8a735a3f12'
+  const CONVERSATION = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1'
+  const PROCESS = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2'
+  const invokeCtx = {
+    agentId: '70a0d096-acf0-48b5-811d-46b821b56c44',
+    agentVersion: 1,
+  }
+
+  await test('toInvokeInput: nil UUID kísérőmezők nem írják felül a ticket-horgonyt', () => {
+    const input = TOOL_REGISTRY.run_index.toInvokeInput(
+      {
+        ticketId: TICKET,
+        agentId: NIL,
+        conversationId: NIL,
+        processInstanceId: NIL,
+        playbookVersionId: NIL,
+        limit: 20,
+      },
+      invokeCtx,
+    )
+    assert.equal(input.tool, 'run_index')
+    assert.equal(input.args.ticketId, TICKET)
+    assert.equal(input.args.agentId, undefined)
+    assert.equal(input.args.conversationId, undefined)
+    assert.equal(input.args.processInstanceId, undefined)
+    assert.equal(input.args.playbookVersionId, undefined)
+    assert.equal(input.args.limit, 20)
+  })
+
+  await test('toInvokeInput: nil UUID kísérőmezők nem írják felül a beszélgetés-horgonyt', () => {
+    const input = TOOL_REGISTRY.run_index.toInvokeInput(
+      {
+        conversationId: CONVERSATION,
+        ticketId: NIL,
+        agentId: NIL,
+        processInstanceId: NIL,
+        playbookVersionId: NIL,
+      },
+      invokeCtx,
+    )
+    assert.equal(input.args.conversationId, CONVERSATION)
+    assert.equal(input.args.ticketId, undefined)
+  })
+
+  await test('toInvokeInput: nil UUID kísérőmezők nem írják felül a folyamat-horgonyt', () => {
+    const input = TOOL_REGISTRY.run_index.toInvokeInput(
+      {
+        processInstanceId: PROCESS,
+        ticketId: NIL,
+        conversationId: NIL,
+        agentId: NIL,
+        playbookVersionId: NIL,
+      },
+      invokeCtx,
+    )
+    assert.equal(input.args.processInstanceId, PROCESS)
+    assert.equal(input.args.ticketId, undefined)
+    assert.equal(input.args.conversationId, undefined)
+  })
+
+  await test('toInvokeInput: ticketIds lista + nil ticketId — a lista marad', () => {
+    const input = TOOL_REGISTRY.run_index.toInvokeInput(
+      {
+        ticketId: NIL,
+        ticketIds: [TICKET, NIL],
+        agentId: NIL,
+        conversationId: NIL,
+        processInstanceId: NIL,
+        playbookVersionId: NIL,
+        limit: 50,
+      },
+      invokeCtx,
+    )
+    assert.deepEqual(input.args.ticketIds, [TICKET])
+    assert.equal(input.args.ticketId, undefined)
+  })
+
+  await test('toInvokeInput: max UUID (ffffffff-…) sem horgony', () => {
+    const input = TOOL_REGISTRY.run_index.toInvokeInput(
+      {
+        ticketId: TICKET,
+        agentId: MAX_UUID,
+        conversationId: MAX_UUID,
+        processInstanceId: MAX_UUID,
+        playbookVersionId: MAX_UUID,
+        agentQuery: 'Adatok értelmezése és feltöltése az Ostoros Föld API-n',
+        limit: 20,
+      },
+      invokeCtx,
+    )
+    assert.equal(input.args.ticketId, TICKET)
+    assert.equal(input.args.agentId, undefined)
+    assert.equal(input.args.conversationId, undefined)
+    assert.equal(input.args.processInstanceId, undefined)
+    assert.equal(input.args.playbookVersionId, undefined)
+  })
+
+  await test('toInvokeInput: run_stats ugyanúgy eldobja a nil UUID-t', () => {
+    const input = TOOL_REGISTRY.run_stats.toInvokeInput(
+      {
+        ticketId: TICKET,
+        agentId: NIL,
+        conversationId: NIL,
+        processInstanceId: NIL,
+        playbookVersionId: NIL,
+      },
+      invokeCtx,
+    )
+    assert.equal(input.tool, 'run_stats')
+    assert.equal(input.args.ticketId, TICKET)
+    assert.equal(input.args.agentId, undefined)
+    assert.equal(input.args.conversationId, undefined)
+  })
+
+  await test('forrásszerződés: nil UUID szkópmezőt a service is ki nem töltöttnek veszi', () => {
+    const src = readFileSync(
+      join(root, 'src/domain/run-analysis/run-index-service.ts'),
+      'utf8',
+    )
+    assert.match(src, /normalizeRunIndexArgs/)
+    const scopeSrc = readFileSync(join(root, 'src/domain/run-analysis/run-scope.ts'), 'utf8')
+    assert.match(scopeSrc, /presentScopeId/)
+    assert.match(scopeSrc, /00000000-0000-0000-0000-000000000000/)
+    assert.match(scopeSrc, /ffffffff-ffff-ffff-ffff-ffffffffffff/)
   })
 
   if (failures > 0) {

@@ -36,6 +36,8 @@ import {
 } from '@/lib/observability/metrics'
 import { isTulajdoniLapNezet } from '@/lib/tulajdoni-lap'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
+import { isRunAnalystToolAllowed } from '@/domain/agents/run-analyst-role'
+import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
 import {
   connectorTypeForGrantTool,
   describeConnectorGrantTargets,
@@ -3262,9 +3264,16 @@ async function loadHttpApiConnectorsForGate(
 export async function listAllowedChatTools(
   toolCaps: ToolBrokerRepository,
   agentId: string,
+  agent?: { systemRole?: string | null },
 ): Promise<ChatPlatformToolName[]> {
   const caps = await toolCaps.findCapabilitiesForAgent(agentId)
+  const lockToRunAnalyst = agent?.systemRole === RUN_ANALYST_SYSTEM_ROLE
   return caps
     .filter((c) => c.allowed && isChatPlatformTool(c.toolName))
+    .filter((c) => {
+      const requiredRole = TOOL_REGISTRY[c.toolName as ToolName].requiredSystemRole
+      return !requiredRole || requiredRole === agent?.systemRole
+    })
+    .filter((c) => !lockToRunAnalyst || isRunAnalystToolAllowed(c.toolName))
     .map((c) => c.toolName as ChatPlatformToolName)
 }

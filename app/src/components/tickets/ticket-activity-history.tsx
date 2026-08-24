@@ -5,7 +5,8 @@ import { useEffect, useState } from 'react'
 import { getToolUiLabel } from '@/lib/tool-ui-labels'
 import {
   assessTicketRunLiveness,
-  formatTicketProgressAge,
+  describeTicketRunLiveness,
+  isTicketRunLive,
   readTicketRuntimeProgress,
   type TicketRunLiveness,
   type TicketRuntimeProgress,
@@ -66,57 +67,18 @@ function activityDisplayTitle(activity: ToolLoopActivityEvent): string {
   return activity.title
 }
 
-function livenessCopy(liveness: TicketRunLiveness): {
-  label: string
-  detail: string
-  tone: Tone
-} {
+function livenessTone(liveness: TicketRunLiveness): Tone {
   switch (liveness.kind) {
     case 'cancelling':
-      return {
-        label: 'Leállítás folyamatban',
-        detail: 'A stop kérés megérkezett; az AI munkatárs a következő biztonságos ponton kilép.',
-        tone: 'honey',
-      }
-    case 'starting':
-      return {
-        label: 'Indul…',
-        detail:
-          liveness.ageMs > 0
-            ? `Még nincs tool-hívás · ${formatTicketProgressAge(liveness.ageMs)}`
-            : 'A dispatcher elindította a futást, az első lépésre várunk.',
-        tone: 'sky',
-      }
-    case 'active':
-      return {
-        label: 'Feldolgozás folyamatban',
-        detail: liveness.currentStep
-          ? `Most ezen dolgozik: ${liveness.currentStep}`
-          : `Utolsó jelzés ${formatTicketProgressAge(liveness.ageMs)}`,
-        tone: 'sky',
-      }
     case 'quiet':
-      return {
-        label: 'Dolgozik — lassabb szakasz',
-        detail: liveness.currentStep
-          ? `Utolsó lépés: ${liveness.currentStep} · ${formatTicketProgressAge(liveness.ageMs)}`
-          : `Nincs friss jelzés ${formatTicketProgressAge(liveness.ageMs)} — hosszú modell-hívás is lehet.`,
-        tone: 'honey',
-      }
+      return 'honey'
+    case 'starting':
+    case 'active':
+      return 'sky'
     case 'stalled':
-      return {
-        label: 'Úgy tűnik megállt',
-        detail: liveness.currentStep
-          ? `Beragadt itt: ${liveness.currentStep} · nincs friss jelzés ${formatTicketProgressAge(liveness.ageMs)}`
-          : `Nincs friss aktivitás ${formatTicketProgressAge(liveness.ageMs)}. Ha így marad, állítsd le.`,
-        tone: 'coral',
-      }
+      return 'coral'
     case 'idle':
-      return {
-        label: 'Eseménytörténet',
-        detail: 'Most nem fut semmi — alább a legutóbbi futás lépései.',
-        tone: 'neutral',
-      }
+      return 'neutral'
   }
 }
 
@@ -286,7 +248,9 @@ export function TicketActivityHistory({ ticket }: { ticket: TicketActivitySource
 
   if (!inProgress && !hasActivities) return null
 
-  const { label, detail, tone } = livenessCopy(liveness)
+  const { label, detail } = describeTicketRunLiveness(liveness)
+  const tone = livenessTone(liveness)
+  const live = isTicketRunLive(liveness)
   const activities = progress?.activities ?? []
   const doneCount = activities.filter((activity) => activity.status === 'done').length
   const errorCount = activities.filter((activity) => activity.status === 'error').length
@@ -318,7 +282,7 @@ export function TicketActivityHistory({ ticket }: { ticket: TicketActivitySource
   return (
     <section className="atelier-card overflow-hidden">
       <div className={`flex flex-wrap items-start gap-3 border-b px-5 py-4 ${bandClasses(tone)}`}>
-        <StatusDot tone={tone} live={inProgress} />
+        <StatusDot tone={tone} live={live} />
         <div className="min-w-0 flex-1">
           <h2 className="font-display text-lg font-semibold tracking-tight text-ink">{label}</h2>
           <p className="mt-0.5 text-sm text-ink-soft">{detail}</p>
@@ -347,7 +311,7 @@ export function TicketActivityHistory({ ticket }: { ticket: TicketActivitySource
         {stopError && <p className="mb-3 text-sm text-coral">{stopError}</p>}
 
         {hasActivities && progress ? (
-          <ActivityTimeline progress={progress} live={inProgress} />
+          <ActivityTimeline progress={progress} live={live} />
         ) : (
           <p className="text-sm text-ink-soft">
             Még nincs rögzített lépés. Ha percek múlva sem történik semmi, a futás beragadhatott —
@@ -366,7 +330,7 @@ export function TicketActivityHistory({ ticket }: { ticket: TicketActivitySource
           </div>
         )}
 
-        {inProgress && (
+        {live && (
           <p className="mt-4 text-xs text-ink-faint">
             Ez a lista magától frissül, nem kell újratöltened az oldalt. A végleges válasz a
             Feladat-szálban jelenik meg.

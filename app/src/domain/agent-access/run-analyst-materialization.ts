@@ -1,5 +1,3 @@
-import 'server-only'
-
 /**
  * Tenantonkénti Futás-elemző materializáció (spec #343, RA-01 / #345, RA-02 / #346).
  *
@@ -15,6 +13,7 @@ import { appendAuditInTransaction } from '@/repositories/postgres/audit-reposito
 import {
   RUN_ANALYST_PRIVACY_CATEGORY_POLICY,
   RUN_ANALYST_ROLE_CAPABILITIES,
+  RUN_ANALYST_ROLE_INSTRUCTION,
   RUN_ANALYST_ROLE_TEMPLATE,
   mergeRunAnalystLoopGuardModelConfig,
 } from '@/domain/agents/run-analyst-role'
@@ -115,6 +114,61 @@ export async function materializeRunAnalystAdminGrants(params: {
   return { grantsCreated: rows.length }
 }
 
+async function ensureBoardConnector(agentId: string, tenantId: string): Promise<void> {
+  // ticket_create board-connectort igényel. A Futás-elemző connector-UI-ja zárolt,
+  // ezért a platform a materializációkor köti a tenant (vagy platform) boardját.
+  const connector =
+    (await prisma.connector.findFirst({
+      where: { type: 'board', lifecycleState: 'active', tenantId },
+      orderBy: { createdAt: 'asc' },
+    })) ??
+    (await prisma.connector.findFirst({
+      where: { type: 'board', lifecycleState: 'active', tenantId: null },
+      orderBy: { createdAt: 'asc' },
+    }))
+  if (!connector) return
+  await prisma.agentConnector.upsert({
+    where: { agentId_connectorId: { agentId, connectorId: connector.id } },
+    create: { agentId, connectorId: connector.id, accessMode: 'write' },
+    update: { accessMode: 'write' },
+  })
+}
+
+const LEGACY_NO_HTTP_TAIL =
+  'Your only write/delegation tool is ticket_create — use it to open follow-up work for humans. You have no web, email, HTTP API, or repository egress tools by design.'
+
+/**
+ * A platform-szöveg régi „nincs HTTP” zárómondata ne maradjon a materializált
+ * példányon, ha a capability-halmaz már tenant HTTP olvasást ad. Egyedi admin
+ * instrukciót nem írjuk felül — csak ezt a ismert zárást cseréljük.
+ */
+async function ensureRoleInstruction(agentId: string): Promise<void> {
+  const row = await prisma.agent.findUnique({
+    where: { id: agentId },
+    select: { roleInstruction: true, behaviorProfile: true },
+  })
+  if (!row) return
+  let roleInstruction = row.roleInstruction
+  if (roleInstruction.includes(LEGACY_NO_HTTP_TAIL)) {
+    const tail = RUN_ANALYST_ROLE_INSTRUCTION.slice(
+      RUN_ANALYST_ROLE_INSTRUCTION.indexOf('Your only write/delegation tool'),
+    )
+    roleInstruction = roleInstruction.replace(LEGACY_NO_HTTP_TAIL, tail)
+  }
+  let behaviorProfile = row.behaviorProfile
+  if (
+    behaviorProfile.includes('never mutates live config or calls egress tools') &&
+    !behaviorProfile.includes('read-only HTTP')
+  ) {
+    behaviorProfile = RUN_ANALYST_ROLE_TEMPLATE.behaviorProfile
+  }
+  if (roleInstruction === row.roleInstruction && behaviorProfile === row.behaviorProfile) return
+  await prisma.agent.update({
+    where: { id: agentId },
+    data: { roleInstruction, behaviorProfile },
+  })
+}
+
 async function ensureLoopGuardModelConfig(agentId: string): Promise<void> {
   const row = await prisma.agent.findUnique({
     where: { id: agentId },
@@ -142,6 +196,16 @@ async function ensureRunAnalystSkill(agentId: string, actorId: string): Promise<
 }
 
 async function ensureCapabilities(agentId: string): Promise<void> {
+  // A role saját allowlistje a forrásigazság. Egy régi vagy közvetlen DB-módosítás
+  // után se maradjon aktív, egressre használható többletjog a system agenten.
+  await prisma.capability.updateMany({
+    where: {
+      agentId,
+      toolName: { notIn: [...RUN_ANALYST_ROLE_CAPABILITIES] },
+      allowed: true,
+    },
+    data: { allowed: false },
+  })
   for (const toolName of RUN_ANALYST_ROLE_CAPABILITIES) {
     await prisma.capability.upsert({
       where: { agentId_toolName: { agentId, toolName } },
@@ -216,6 +280,8 @@ export async function ensureTenantRunAnalystAgent(params: {
   const existing = await findTenantRunAnalystAgent(params.tenantId)
   if (existing) {
     await ensureCapabilities(existing.id)
+    await ensureBoardConnector(existing.id, params.tenantId)
+    await ensureRoleInstruction(existing.id)
     await ensureLoopGuardModelConfig(existing.id)
     await ensureRunAnalystSkill(existing.id, params.approvedById)
     await ensureRunAnalystPrivacyCategoryPolicy(existing.id, params.approvedById)
@@ -281,6 +347,7 @@ export async function ensureTenantRunAnalystAgent(params: {
   })
 
   await ensureCapabilities(agent.id)
+  await ensureBoardConnector(agent.id, params.tenantId)
   await ensureRunAnalystSkill(agent.id, params.approvedById)
   await ensureRunAnalystPrivacyCategoryPolicy(agent.id, params.approvedById)
   await materializeRunAnalystAdminGrants({

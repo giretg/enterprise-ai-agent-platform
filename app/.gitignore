@@ -21,6 +21,8 @@
 
 # next.js
 /.next/
+/.next-local-auth/
+/.next-local-auth-verify/
 /out/
 
 # production

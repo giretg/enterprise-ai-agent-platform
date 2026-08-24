@@ -322,7 +322,11 @@ export class GeneralTaskRuntime {
       skillParameterPrompt,
     })
 
-    const allowedTools = await listAllowedChatTools(this.toolCaps, params.agentId)
+    const allowedTools = await listAllowedChatTools(
+      this.toolCaps,
+      params.agentId,
+      agentDetails.agent,
+    )
 
     // §4.7b — deliverable-lépés: a formátumhoz tartozó fájl-eszköz kötelező. Ha az
     // agentnek nincs grantolva, a fájl nem jöhet létre → a lépés hangosan bukjon,

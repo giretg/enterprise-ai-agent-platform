@@ -56,6 +56,8 @@ import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { enabledModelProviders } from '@/lib/model-policy'
 import { OpenInNewWindowLink } from '@/components/ui/open-in-new-window-link'
 import { CREATE_AGENT_WIZARD_EXTERNAL_HREFS } from '@/lib/create-agent-wizard'
+import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
+import { RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE } from '@/domain/agents/run-analyst-role'
 import { SettingsSectionShell, type SettingsSection } from '../../system/system-settings-shell'
 
 export const dynamic = 'force-dynamic'
@@ -163,6 +165,7 @@ function CapabilityView({
 export default async function AgentDetailPage({
   params,
   searchParams,
+  embedded = false,
 }: {
   params: Promise<{ agentId: string }>
   searchParams: Promise<{
@@ -174,6 +177,8 @@ export default async function AgentDetailPage({
     /** EFF-12: hatékonysági link → szekció (pl. motor, kapcsolatok). */
     section?: string
   }>
+  /** Workspace Adatlap-fül: nincs vissza-link, a chat/feladat a füleken van. */
+  embedded?: boolean
 }) {
   const { agentId } = await params
   const query = await searchParams
@@ -253,6 +258,7 @@ export default async function AgentDetailPage({
       (connector.type === 'http_api' || connector.type === 'gmail') &&
       !assignedConnectorIds.has(connector.id),
   )
+  const capabilitiesLocked = agent.systemRole === RUN_ANALYST_SYSTEM_ROLE
   const modelConfig = agent.modelConfig as Record<string, unknown>
   const persona = personaFor(agent.name, agent)
   const defaultPersona = personaFor(agent.name)
@@ -346,7 +352,7 @@ export default async function AgentDetailPage({
             {/* A tanult szabályok szerkesztése külön munkafelületen történik (verziózás,
                 visszaállítás), ezért itt nem doboz-belső szerkesztés, hanem átvezetés. */}
             <Link
-              href={`/control-plane/training?agentId=${agent.id}`}
+              href={`/control-plane/agents/${agent.id}/training`}
               className="mt-4 inline-block rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky"
             >
               Szabályok szerkesztése / törlése →
@@ -426,8 +432,12 @@ export default async function AgentDetailPage({
           {governance && (
             <EditableCard
               title="Engedélyezett eszközök"
-              subtitle="Mit hívhat meg az agent munka közben"
-              canEdit={isAdmin}
+              subtitle={
+                capabilitiesLocked
+                  ? RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE
+                  : 'Mit hívhat meg az agent munka közben'
+              }
+              canEdit={isAdmin && !capabilitiesLocked}
               view={<CapabilityView capabilities={governance.capabilities} />}
               edit={
                 <AgentCapabilitiesPanel
@@ -459,17 +469,19 @@ export default async function AgentDetailPage({
             <InfoCard
               title="Külső kapcsolatok"
               subtitle={
-                isAdmin
-                  ? 'Amikhez ez az agent hozzáfér — és itt tudsz újat kötni hozzá.'
-                  : 'Amikhez ez az agent hozzáfér.'
+                capabilitiesLocked
+                  ? RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE
+                  : isAdmin
+                    ? 'Amikhez ez az agent hozzáfér — és itt tudsz újat kötni hozzá.'
+                    : 'Amikhez ez az agent hozzáfér.'
               }
             >
               <ApiConnectorList
                 agentId={agent.id}
                 connectors={governance.connectors}
-                canEdit={isAdmin}
+                canEdit={isAdmin && !capabilitiesLocked}
               />
-              {isAdmin ? (
+              {isAdmin && !capabilitiesLocked ? (
                 <div className="mt-6 space-y-3 border-t border-line pt-5">
                   <p className="text-sm font-semibold text-ink">Új kapcsolat</p>
                   <p className="text-xs text-ink-faint">
@@ -503,7 +515,7 @@ export default async function AgentDetailPage({
               ) : null}
             </InfoCard>
           )}
-          {governance && (
+          {governance && !capabilitiesLocked && (
             <WebSearchPolicyCard agentId={agent.id} connectors={governance.connectors} />
           )}
         </div>
@@ -649,12 +661,14 @@ export default async function AgentDetailPage({
 
   return (
     <div className="space-y-6">
-      <Link
-        href="/control-plane/agents"
-        className="inline-block text-sm font-medium text-ink-soft hover:text-coral-deep"
-      >
-        ← Vissza a csapathoz
-      </Link>
+      {embedded ? null : (
+        <Link
+          href="/control-plane/agents"
+          className="inline-block text-sm font-medium text-ink-soft hover:text-coral-deep"
+        >
+          ← Vissza a csapathoz
+        </Link>
+      )}
       {secondaryError ? (
         <div className="rounded-xl border border-honey/40 bg-honey/10 px-4 py-3 text-sm text-ink-soft">
           Az agent betöltődött, de néhány panel (memória, tudásbázis vagy eszközök) most nem ért
@@ -695,9 +709,7 @@ export default async function AgentDetailPage({
         trait={<p className="text-sm leading-relaxed text-ink-soft">{persona.trait}</p>}
         actions={
           <>
-            {/* #199 — korlátozott feladatkörű agentnél nincs chat, csak egyetlen
-                skill-kötött feladat-indító gomb. */}
-            {agent.taskOnly ? (
+            {embedded ? null : agent.taskOnly ? (
               <AgentTaskButton agentId={agent.id} />
             ) : (
               <AgentChatButton
@@ -717,7 +729,7 @@ export default async function AgentDetailPage({
                 initialPrefill={initialPrefill}
               />
             )}
-            <AgentMiniAppsLink agentId={agent.id} />
+            {embedded ? null : <AgentMiniAppsLink agentId={agent.id} />}
             <span className="text-sm text-ink-faint">
               {roleInfo.title} — {roleInfo.description}
             </span>

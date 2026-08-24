@@ -28,7 +28,7 @@ spec: [`AI-Agent-Platform-Feature-Spec-Run-Analyst.md`](./AI-Agent-Platform-Feat
 
 **Mérföldkő:** M1 · **Prioritás:** Magas · **Függés:** RA-01 · **Állapot:** a mainen
 
-**DoD:** `run_index`, `run_trace`, `run_stats`, `ticket_create` capability; egress toolok tiltva; teszt: `npm run test:run-analyst-role`.
+**DoD:** `run_index`, `run_trace`, `run_stats`, `ticket_create`, valamint a hibakereséshez szükséges tenant-szintű `http_api_get` / `http_api_get_all` capability. A tenant API-k kötés nélküli olvasása kizárólag a `run_analyst` rendszer-szerepé; HTTP-írás és minden más egress tiltott. Teszt: `npm run test:run-analyst-role`.
 
 ---
 
@@ -90,7 +90,7 @@ spec: [`AI-Agent-Platform-Feature-Spec-Run-Analyst.md`](./AI-Agent-Platform-Feat
 **Feladat:**
 - Ellenőrzés 1 — a 2026-07-29-i visszaolvasás-incidens alakján (149 hívás / 132 újraolvasás / 40 kör).
 - Ellenőrzés 2 — hibás átadású folyamat-futás (step2 nem tölti step3 kötelező slotját).
-- Záró-kapuk: tenant-izoláció, admin-only belépés, egress tiltás, audit.
+- Záró-kapuk: tenant-izoláció, admin-only belépés, kizárólagos read-only diagnosztikai HTTP-hozzáférés, más egress tiltása, audit.
 - Spec és `DOCS.md` frissítése; kereszthivatkozás a #304-re.
 
 **DoD:** mindkét ellenőrzés eredménye dokumentálva; záró-kapuk zöldek; a spec jelzi, hogy v1 implementálva és mért eseten ellenőrizve.
@@ -145,7 +145,8 @@ Az elemző ezekből meg tudja nevezni az ismétlődő visszaolvasást és a kör
 | Idegen tenant `conversationId` / `ticketId` / `processInstanceId` | mindhárom tool: `run_not_found` |
 | Operator / viewer | `analysis.run` tiltva; „Elemezd" gomb nem renderelődik |
 | `run_analyst` agent | `hiddenFromOperators`, `inboundRestricted`; nincs default grant |
-| Kimenő egress | `web_search`, `gmail_*`, `http_api_*`, `repo_open_pull_request` nincs a capability-halmazban |
+| Kimenő egress | csak `http_api_get` / `http_api_get_all`, kizárólag tenanton belüli hibakereséshez; `http_api_request`, `web_search`, `gmail_*`, `repo_open_pull_request` tiltott |
+| Speciális toolok kizárólagossága | `run_index`, `run_stats`, `run_trace` csak `systemRole: run_analyst` mellett engedélyezhető és jeleníthető meg |
 | Audit | minden `run_*` hívás: `analysis.run_index` / `analysis.run_stats` / `analysis.run_trace` |
 
 ---

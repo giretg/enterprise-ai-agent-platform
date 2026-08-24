@@ -23,6 +23,8 @@ import type { AuditRepository } from '../src/repositories/interfaces'
  * kerülnek bele. A `[\s\S]*?` lusta, ezért a legközelebbi appendhez tapad.
  */
 const APPEND_ACTION_RE = /audit\.append\(\{[\s\S]*?\baction: '([^']+)'/g
+/** A Futás-elemző wrapperen át menő action-literálok — nem `audit.append({ action:`. */
+const WRAPPER_ACTION_RE = /appendRunAnalysisAudit\([\s\S]*?\baction: '([^']+)'/g
 
 function collectSourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -502,9 +504,12 @@ async function main() {
     const unregistered: string[] = []
     for (const file of collectSourceFiles(path.join(__dirname, '..', 'src'))) {
       const source = readFileSync(file, 'utf8')
-      for (const [, action] of source.matchAll(APPEND_ACTION_RE)) {
-        if (!REGISTERED_AUDIT_ACTIONS.has(action)) {
-          unregistered.push(`${path.relative(path.join(__dirname, '..'), file)}: '${action}'`)
+      for (const re of [APPEND_ACTION_RE, WRAPPER_ACTION_RE]) {
+        re.lastIndex = 0
+        for (const [, action] of source.matchAll(re)) {
+          if (!REGISTERED_AUDIT_ACTIONS.has(action)) {
+            unregistered.push(`${path.relative(path.join(__dirname, '..'), file)}: '${action}'`)
+          }
         }
       }
     }

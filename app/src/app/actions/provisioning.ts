@@ -35,6 +35,8 @@ import {
   allowsExternalRaw,
 } from '@/domain/privacy/privacy-category-policy'
 import { sensitivityLayerSkipsEnforcement } from '@/domain/gateway/sensitivity-mode'
+import { RUN_ANALYST_CONNECTOR_LOCKED_MESSAGE } from '@/domain/agents/run-analyst-role'
+import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
 
 async function categoryAllowsExternalForAgent(
   agentId: string,
@@ -1036,6 +1038,9 @@ export async function assignConnectorToAgent(input: unknown) {
       }),
     ])
     if (!agent) return fail('Agent not found')
+    if (agent.systemRole === RUN_ANALYST_SYSTEM_ROLE) {
+      return fail(RUN_ANALYST_CONNECTOR_LOCKED_MESSAGE)
+    }
     if (!connector) return fail('Csak aktivált, tenanton belüli kapcsolat rendelhető agenthez.')
 
     const res = await services.provisioning.assignConnectorToAgent(

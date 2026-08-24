@@ -27,6 +27,128 @@ export type TicketRunLiveness =
   | { kind: 'quiet'; ageMs: number; currentStep: string | null }
   | { kind: 'stalled'; ageMs: number; currentStep: string | null }
 
+/**
+ * Van-e most tényleges futás-jel? A ticket `in_progress` önmagában nem elég:
+ * egy beragadt futás workflow-állapota maradhat `in_progress`, közben a
+ * modellhívás / worker már nem ad életjelet.
+ */
+export function isTicketRunLive(liveness: TicketRunLiveness): boolean {
+  switch (liveness.kind) {
+    case 'starting':
+    case 'active':
+    case 'quiet':
+    case 'cancelling':
+      return true
+    case 'idle':
+    case 'stalled':
+      return false
+  }
+}
+
+export function describeTicketRunLiveness(liveness: TicketRunLiveness): {
+  label: string
+  detail: string
+} {
+  switch (liveness.kind) {
+    case 'cancelling':
+      return {
+        label: 'Leállítás folyamatban',
+        detail:
+          'A stop kérés megérkezett; az AI munkatárs a következő biztonságos ponton kilép.',
+      }
+    case 'starting':
+      return {
+        label: 'Indul…',
+        detail:
+          liveness.ageMs > 0
+            ? `Még nincs tool-hívás · ${formatTicketProgressAge(liveness.ageMs)}`
+            : 'A dispatcher elindította a futást, az első lépésre várunk.',
+      }
+    case 'active':
+      return {
+        label: 'Feldolgozás folyamatban',
+        detail: liveness.currentStep
+          ? `Most ezen dolgozik: ${liveness.currentStep}`
+          : `Utolsó jelzés ${formatTicketProgressAge(liveness.ageMs)}`,
+      }
+    case 'quiet':
+      return {
+        label: 'Dolgozik — lassabb szakasz',
+        detail: liveness.currentStep
+          ? `Utolsó lépés: ${liveness.currentStep} · ${formatTicketProgressAge(liveness.ageMs)}`
+          : `Nincs friss jelzés ${formatTicketProgressAge(liveness.ageMs)} — hosszú modell-hívás is lehet.`,
+      }
+    case 'stalled':
+      return {
+        label: 'Úgy tűnik megállt',
+        detail: liveness.currentStep
+          ? `Beragadt itt: ${liveness.currentStep} · nincs friss jelzés ${formatTicketProgressAge(liveness.ageMs)}`
+          : `Nincs friss aktivitás ${formatTicketProgressAge(liveness.ageMs)}. Ha így marad, állítsd le.`,
+      }
+    case 'idle':
+      return {
+        label: 'Eseménytörténet',
+        detail: 'Most nem fut semmi — alább a legutóbbi futás lépései.',
+      }
+  }
+}
+
+export type TicketRunStatusPresentation = {
+  label: string
+  hint: string
+  live: boolean
+  stalled: boolean
+}
+
+/**
+ * Fejléc / Hol tart: a workflow-állapot marad `in_progress`, de ha a futás
+ * beragadt, ne mondjuk azt, hogy az AI munkatárs éppen dolgozik rajta.
+ */
+export function presentTicketRunStatus(input: {
+  liveness: TicketRunLiveness
+  stateLabel: string
+  stateHint: string
+}): TicketRunStatusPresentation {
+  const live = isTicketRunLive(input.liveness)
+  if (input.liveness.kind === 'stalled' || input.liveness.kind === 'cancelling') {
+    const copy = describeTicketRunLiveness(input.liveness)
+    return {
+      label: copy.label,
+      hint: copy.detail,
+      live,
+      stalled: input.liveness.kind === 'stalled',
+    }
+  }
+  return {
+    label: input.stateLabel,
+    hint: input.stateHint,
+    live,
+    stalled: false,
+  }
+}
+
+/** Board-kártya pulzus: élő `in_progress`, vagy beragadt (ne „Fut”). */
+export type BoardRunPulse = 'idle' | 'live' | 'stalled'
+
+export function boardRunPulse(input: {
+  state: string
+  cancelRequested?: boolean
+  lockedAt?: string | Date | null
+  payload?: unknown
+  nowMs?: number
+}): BoardRunPulse {
+  const liveness = assessTicketRunLiveness({
+    ticketState: input.state,
+    cancelRequested: input.cancelRequested,
+    lockedAt: input.lockedAt,
+    progress: readTicketRuntimeProgress(input.payload ?? null),
+    nowMs: input.nowMs,
+  })
+  if (liveness.kind === 'stalled') return 'stalled'
+  if (isTicketRunLive(liveness)) return 'live'
+  return 'idle'
+}
+
 function activityStepLabel(activity: ToolLoopActivityEvent | undefined): string | null {
   if (!activity) return null
   return activity.title?.trim() || activity.kind || null

@@ -26,7 +26,7 @@ function StatusChip({ agent }: { agent: Agent }) {
   if (agent.status === 'suspended') return <Chip tone="danger">Felfüggesztve</Chip>
   if (agent.status === 'draft') return <Chip tone="neutral">Még vázlat</Chip>
   if (agent.status === 'retired') return <Chip tone="neutral">Nyugdíjazva</Chip>
-  if (agent.taskOnly) return <Chip tone="neutral">Csak feladat</Chip>
+  if (agent.taskOnly) return <Chip tone="neutral">Csak indítás</Chip>
   return null
 }
 

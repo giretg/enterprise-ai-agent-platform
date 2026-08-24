@@ -1,6 +1,14 @@
 import type { AgentTurn, Ticket } from '@prisma/client'
 import type { ActiveRun, ActiveRunPhase } from '@/lib/active-runs'
-import { readTicketRuntimeProgress } from '@/domain/agent/ticket-runtime-progress'
+import {
+  assessChatTurnLiveness,
+  describeChatTurnLiveness,
+} from '@/domain/agent/chat-turn-liveness'
+import {
+  assessTicketRunLiveness,
+  describeTicketRunLiveness,
+  readTicketRuntimeProgress,
+} from '@/domain/agent/ticket-runtime-progress'
 import { canStartTicketDispatch } from '@/lib/ticket-display'
 
 /** Sync a repository ACTIVE_AGENT_TURN_STATUSES listájával. */
@@ -69,20 +77,37 @@ export function activeRunFromChatTurn(
   turn: AgentTurn,
   viewer: ActiveRunViewer,
   agentName?: string | null,
+  opts?: { nowMs?: number },
 ): ActiveRun {
   const phase = chatPhase(turn.status)
+  const liveness = assessChatTurnLiveness({
+    status: turn.status,
+    cancelRequested: turn.cancelRequested,
+    heartbeatAt: turn.heartbeatAt,
+    startedAt: turn.startedAt,
+    activities: turn.activities,
+    nowMs: opts?.nowMs,
+  })
   const name = agentName?.trim() || `Agent ${turn.agentId.slice(0, 8)}…`
+  const status =
+    liveness.kind === 'stalled'
+      ? 'stalled'
+      : turn.cancelRequested && phase === 'active'
+        ? 'cancelling'
+        : turn.status
   return {
     kind: 'chat_turn',
     id: turn.id,
     title: name,
     href: `/control-plane/agents/${turn.agentId}?conversation=${turn.conversationId}&openChat=1`,
-    status: turn.cancelRequested && phase === 'active' ? 'cancelling' : turn.status,
+    status,
     phase,
     latestActivity:
-      turn.cancelRequested && phase === 'active'
-        ? 'Leállítás folyamatban…'
-        : summarizeActivities(turn.activities),
+      liveness.kind === 'stalled'
+        ? describeChatTurnLiveness(liveness).detail
+        : turn.cancelRequested && phase === 'active'
+          ? 'Leállítás folyamatban…'
+          : summarizeActivities(turn.activities),
     startedAt: turn.startedAt.toISOString(),
     finishedAt: turn.finishedAt ? turn.finishedAt.toISOString() : null,
     canStop: phase === 'active' && turn.createdById === viewer.userId,
@@ -92,23 +117,41 @@ export function activeRunFromChatTurn(
   }
 }
 
-export function activeRunFromTicket(ticket: Ticket): ActiveRun {
+export function activeRunFromTicket(
+  ticket: Ticket,
+  opts?: { nowMs?: number },
+): ActiveRun {
   const progress = readTicketRuntimeProgress(ticket.payload)
+  const liveness = assessTicketRunLiveness({
+    ticketState: ticket.state,
+    cancelRequested: ticket.cancelRequested,
+    lockedAt: ticket.lockedAt,
+    progress,
+    nowMs: opts?.nowMs,
+  })
   const phase = ticketPhase(ticket.state)
   const canStart = canStartTicketDispatch(ticket)
+  const status =
+    liveness.kind === 'stalled'
+      ? 'stalled'
+      : ticket.cancelRequested && ticket.state === 'in_progress'
+        ? 'cancelling'
+        : ticket.state
   return {
     kind: 'ticket',
     id: ticket.id,
     title: ticket.title || `Ticket ${ticket.id.slice(0, 8)}…`,
     href: `/control-plane/tickets/${ticket.id}`,
-    status: ticket.state,
+    status,
     phase,
     latestActivity:
-      progress
-        ? summarizeActivities(progress.activities)
-        : canStart
-          ? 'Indításra kész — kattints az Indítás gombra'
-          : null,
+      liveness.kind === 'stalled'
+        ? describeTicketRunLiveness(liveness).detail
+        : progress
+          ? summarizeActivities(progress.activities)
+          : canStart
+            ? 'Indításra kész — kattints az Indítás gombra'
+            : null,
     startedAt: (ticket.lockedAt ?? ticket.updatedAt).toISOString(),
     finishedAt: phase === 'completed' ? ticket.updatedAt.toISOString() : null,
     canStop: ticket.state === 'in_progress',

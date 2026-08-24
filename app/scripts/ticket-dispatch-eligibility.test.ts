@@ -52,6 +52,28 @@ async function main() {
     )
   })
 
+  await test('rendszeres sorozat-ticket nem indítható manuálisan', () => {
+    const agentId = '00000000-0000-4000-8000-000000000003'
+    assert.equal(
+      canStartTicketDispatch({
+        state: 'ready',
+        assigneeType: 'agent',
+        agentId,
+        scheduleSeries: true,
+      }),
+      false,
+    )
+    assert.equal(
+      canStartTicketDispatch({
+        state: 'ready',
+        assigneeType: 'agent',
+        agentId,
+        payload: { scheduleSeries: true },
+      }),
+      false,
+    )
+  })
+
   console.log('ok')
 }
 

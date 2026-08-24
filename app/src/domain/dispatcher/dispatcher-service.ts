@@ -28,6 +28,7 @@ import {
   ticketCallCapReason,
 } from '@/lib/ticket-call-cap'
 import { readPositiveInt } from '@/lib/read-positive-int'
+import { isScheduleSeriesTicket } from '@/lib/ticket-schedule'
 import type { DispatchAlertNotifier } from './dispatch-alert-notifier'
 
 export type DispatchBudget = {
@@ -53,6 +54,7 @@ export type DispatchSkipReason =
   | 'tenant_inactive'
   | 'process_terminal'
   | 'lock_lost'
+  | 'schedule_series'
 
 export type DispatchOutcome = {
   ticketId: string
@@ -267,6 +269,9 @@ export class DispatcherService {
     const ticket = await this.tickets.findById(ticketId)
     if (!ticket) return { ticketId, status: 'skipped', reason: 'no_agent' }
     if (ticket.state !== 'ready') return { ticketId, status: 'skipped', reason: 'not_ready' }
+    if (isScheduleSeriesTicket(ticket)) {
+      return this.skip(ticket, 'schedule_series')
+    }
     if (ticket.executeAfter && ticket.executeAfter > now) {
       return { ticketId, status: 'skipped', reason: 'scheduled_later' }
     }
@@ -760,6 +765,9 @@ export class DispatcherService {
   }
 
   private async dispatchReadyTicket(ticket: Ticket, now: Date): Promise<DispatchOutcome> {
+    if (isScheduleSeriesTicket(ticket)) {
+      return this.skip(ticket, 'schedule_series')
+    }
     if (!ticket.agentId) {
       return this.skip(ticket, 'no_agent')
     }

@@ -23,7 +23,7 @@ A platform naplói teljesek (`ModelCall`, `ToolCall`, `AgentTurn`, folyamat lép
 
 ## Solution (rövid)
 
-Tenant-szintű **beszélgethető elemző agent** (`systemRole: run_analyst`), admin-only hozzáféréssel, három olvasó tool-lal (`run_index` → `run_stats` → célzott `run_trace`) és egy író/delegáló jogosultsággal (`ticket_create`). **Javasol, nem alkalmaz** — a javaslatok a meglévő jóváhagyási utakra mennek:
+Tenant-szintű **beszélgethető elemző agent** (`systemRole: run_analyst`), admin-only hozzáféréssel, három kizárólagos futásolvasó tool-lal (`run_index` → `run_stats` → célzott `run_trace`), a tenant aktív API-jainak read-only diagnosztikai elérésével (`http_api_get`, `http_api_get_all`) és egy író/delegáló jogosultsággal (`ticket_create`). Az API-k kötés nélküli, tenant-szintű olvasása csak ennek a rendszer-szerepnek jár; HTTP-írás és más egress nem. **Javasol, nem alkalmaz** — a javaslatok a meglévő jóváhagyási utakra mennek:
 
 | Javaslat | Út |
 | --- | --- |

@@ -460,6 +460,25 @@ async function main() {
     }
   })
 
+  await check('run_analyst: driftelt egress nem kerül a modell tool-listájára', async () => {
+    const caps = {
+      findCapabilitiesForAgent: async () => [
+        { toolName: 'run_index', allowed: true },
+        { toolName: 'ticket_create', allowed: true },
+        { toolName: 'web_search', allowed: true },
+        { toolName: 'gmail_send', allowed: true },
+        { toolName: 'http_api_request', allowed: true },
+      ],
+      findConnectorsForAgent: async () => [],
+    } as unknown as ToolBrokerRepository
+    const allowed = await listAllowedChatTools(caps, 'agent-ra', { systemRole: 'run_analyst' })
+    assert.deepEqual(allowed, ['run_index', 'ticket_create'])
+    const unlocked = await listAllowedChatTools(caps, 'agent-1')
+    assert.ok(unlocked.includes('web_search'))
+    assert.ok(unlocked.includes('gmail_send'))
+    assert.ok(!unlocked.includes('run_index'))
+  })
+
   await check('vékony fallback: beágyazott {"tool":...} JSON tool_calls nélkül is hív', async () => {
     const gwCalls: GatewayCallArgs[] = []
     const brokerCalls: ToolBrokerInvokeInput[] = []

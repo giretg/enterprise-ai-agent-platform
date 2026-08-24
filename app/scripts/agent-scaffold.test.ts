@@ -8,8 +8,11 @@ import {
   AGENT_SCAFFOLD_FORBIDDEN_TOOLS,
   AGENT_SCAFFOLD_ROLE_INSTRUCTION,
   agentScaffoldUserMessage,
+  formatScaffoldCapabilityVocabulary,
   resolveAgentScaffoldModelConfig,
   sanitizeAgentScaffoldDraft,
+  selectScaffoldConnectors,
+  selectScaffoldPeerAgents,
   type AgentScaffoldingModel,
 } from '../src/domain/agents/agent-scaffold-agent'
 
@@ -48,6 +51,7 @@ function validDraft() {
     },
     suggestedCapabilities: ['kb_search', 'web_search'],
     suggestedSkills: ['wiki-qa'],
+    suggestedConnectors: ['CRM API'],
     summary: 'Belső tudás-asszisztens',
   }
 }
@@ -64,6 +68,30 @@ async function main() {
     assert.ok(validation.warnings.some((w) => w.code === 'UNKNOWN_CAPABILITY'))
   })
 
+  await test('sanitize: ismeretlen kapcsolat figyelmeztetéssel kiesik', () => {
+    const { draft, validation } = sanitizeAgentScaffoldDraft(validDraft(), {
+      knownCapabilities: ['kb_search', 'web_search'],
+      knownSkills: ['wiki-qa'],
+      knownConnectors: ['CRM API'],
+    })
+    assert.deepEqual(draft.suggestedConnectors, ['CRM API'])
+    const dropped = sanitizeAgentScaffoldDraft(validDraft(), {
+      knownCapabilities: ['kb_search', 'web_search'],
+      knownSkills: ['wiki-qa'],
+      knownConnectors: ['Másik API'],
+    })
+    assert.deepEqual(dropped.draft.suggestedConnectors, [])
+    assert.ok(dropped.validation.warnings.some((w) => w.code === 'UNKNOWN_CONNECTOR'))
+  })
+
+  await test('sanitize: üres connector-katalógus minden javaslatot eldob', () => {
+    const { draft, validation } = sanitizeAgentScaffoldDraft(validDraft(), {
+      knownConnectors: [],
+    })
+    assert.deepEqual(draft.suggestedConnectors, [])
+    assert.ok(validation.warnings.some((w) => w.code === 'UNKNOWN_CONNECTOR'))
+  })
+
   await test('sanitize: orchestrator tool-javaslatait kiüríti', () => {
     const { draft, validation } = sanitizeAgentScaffoldDraft(
       { ...validDraft(), role: 'orchestrator', suggestedCapabilities: ['kb_search'] },
@@ -71,7 +99,9 @@ async function main() {
     )
     assert.equal(draft.role, 'orchestrator')
     assert.deepEqual(draft.suggestedCapabilities, [])
+    assert.deepEqual(draft.suggestedConnectors, [])
     assert.ok(validation.warnings.some((w) => w.code === 'ORCHESTRATOR_TOOLS_CLEARED'))
+    assert.ok(validation.warnings.some((w) => w.code === 'ORCHESTRATOR_CONNECTORS_CLEARED'))
   })
 
   await test('draftFromDescription: valid JSON → ok draft', async () => {
@@ -115,6 +145,86 @@ async function main() {
     const user = messages.find((m) => m.role === 'user')
     assert.ok(user?.content.includes('<<<AGENT_DESC_BEGIN>>>'))
     assert.ok(user?.content.includes('UNTRUSTED DATA'))
+  })
+
+  await test('draftFromDescription: tenant-kontextus (agentek, connectorok, tool-leírás, skill-requires) a promptban van', async () => {
+    const model = fixedModel(JSON.stringify(validDraft()))
+    const agent = new AgentScaffoldAgent({ model })
+    await agent.draftFromDescription({
+      agentId: 'prov-1',
+      description: 'POS adatbázis szinkron a webről',
+      knownCapabilities: ['kb_search', 'http_api_get_all', 'reconcile_records'],
+      knownSkills: [
+        {
+          name: 'reconciliation-checklist',
+          description: 'Egyeztetés',
+          requiredTools: ['reconcile_records'],
+        },
+      ],
+      existingAgents: [{ name: 'Kati', role: 'worker', mission: 'POSnavigator marketing lead' }],
+      knownConnectors: [{ name: 'POSnavigator Presetfilter api', type: 'http_api' }],
+    })
+    const messages = model.lastMessages as Array<{ role: string; content: string }>
+    const user = messages.find((m) => m.role === 'user')?.content ?? ''
+    assert.match(user, /EXISTING AGENTS/)
+    assert.match(user, /Kati/)
+    assert.match(user, /CONNECTOR CATALOG/)
+    assert.match(user, /POSnavigator Presetfilter api/)
+    assert.match(user, /http_api_get_all/)
+    assert.match(user, /API lista lapozva/)
+    assert.match(user, /required tools: reconcile_records/)
+    assert.match(AGENT_SCAFFOLD_ROLE_INSTRUCTION, /follow their naming pattern/)
+    assert.match(AGENT_SCAFFOLD_ROLE_INSTRUCTION, /suggestedConnectors/)
+  })
+
+  await test('selectScaffoldPeerAgents: rendszer-agent és retired kiesik', () => {
+    const peers = selectScaffoldPeerAgents([
+      {
+        name: 'Futás-elemző',
+        role: 'worker',
+        status: 'active',
+        systemRole: 'run_analyst',
+        roleInstruction: 'Naplóelemzés',
+      },
+      {
+        name: 'Kati',
+        role: 'worker',
+        status: 'active',
+        systemRole: null,
+        roleInstruction: 'A POSnavigator.eu Marketing Lead vagyok — GTM, SEO.',
+      },
+      {
+        name: 'Régi',
+        role: 'worker',
+        status: 'retired',
+        systemRole: null,
+        roleInstruction: 'Nem él.',
+      },
+    ])
+    assert.deepEqual(
+      peers.map((p) => p.name),
+      ['Kati'],
+    )
+    assert.match(peers[0].mission, /Marketing Lead/)
+  })
+
+  await test('selectScaffoldConnectors: knowledge_base és kb: prefix kiesik', () => {
+    const connectors = selectScaffoldConnectors([
+      { name: 'kb:abc', type: 'knowledge_base' },
+      { name: 'POSnavigator Presetfilter api', type: 'http_api' },
+      { name: 'Web Search', type: 'web_search' },
+    ])
+    assert.deepEqual(
+      connectors.map((c) => c.name),
+      ['POSnavigator Presetfilter api', 'Web Search'],
+    )
+  })
+
+  await test('formatScaffoldCapabilityVocabulary: csoport + rövid UI-leírás', () => {
+    const text = formatScaffoldCapabilityVocabulary(['http_api_get_all', 'web_search'])
+    assert.match(text, /http_api_get_all \(API lista lapozva\)/)
+    assert.match(text, /web_search \(Webes keresés\)/)
+    assert.match(text, /http_api_get_all over paging/)
   })
 
   await test('resolveAgentScaffoldModelConfig: Registry modelConfig él', () => {

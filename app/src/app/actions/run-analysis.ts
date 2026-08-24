@@ -11,6 +11,7 @@ export async function getRunAnalysisEntry() {
     const entry = await resolveRunAnalysisEntry({
       tenantId: user.activeTenantId,
       role: user.activeTenantRole,
+      userId: user.user.id,
     })
     return ok(entry)
   } catch (e) {

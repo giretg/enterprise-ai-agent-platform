@@ -172,7 +172,11 @@ export class WikiAgentRuntime {
     const modelConfig = agentDetails.agent.modelConfig as ModelConfig
     const agentVersion = agentDetails.agent.currentVersion
 
-    const allowedTools = await listAllowedChatTools(this.toolCaps, params.agentId)
+    const allowedTools = await listAllowedChatTools(
+      this.toolCaps,
+      params.agentId,
+      agentDetails.agent,
+    )
     if (allowedTools.length > 0) {
       const { content } = await this.runWikiChatToolLoop({
         agentId: params.agentId,

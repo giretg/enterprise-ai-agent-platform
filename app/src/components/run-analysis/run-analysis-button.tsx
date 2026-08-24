@@ -20,6 +20,7 @@ export function RunAnalysisButton({
   return (
     <Link
       href={buildRunAnalysisHref(runAnalystAgentId, scope)}
+      target="_top"
       className={className}
       title="Futás-elemző megnyitása előre kitöltött kéréssel"
     >

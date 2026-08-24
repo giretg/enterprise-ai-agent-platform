@@ -21,6 +21,7 @@ import {
 } from '@/lib/validators/actions'
 import { fail, ok } from '@/lib/result'
 import { repositories } from '@/repositories/postgres'
+import { mergeRunAnalystLoopGuardModelConfig } from '@/domain/agents/run-analyst-role'
 
 /**
  * EFF-10 — hatékonysági kártya betöltése.
@@ -81,9 +82,14 @@ export async function applyEfficiencyHint(input: {
       undoKey: EFFICIENCY_ADVISOR_UNDO_KEY,
     })
 
+    const nextModelConfig =
+      agent.systemRole === 'run_analyst'
+        ? mergeRunAnalystLoopGuardModelConfig(result.modelConfig)
+        : result.modelConfig
+
     const updated = await repositories.agents.updateModelConfig({
       agentId: parsed.agentId,
-      modelConfig: result.modelConfig as Prisma.JsonValue,
+      modelConfig: nextModelConfig as Prisma.JsonValue,
     })
 
     await repositories.audit.append({

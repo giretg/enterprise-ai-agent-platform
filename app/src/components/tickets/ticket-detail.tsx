@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useState, useTransition } from 'react'
+import { useEffect, useState, useTransition } from 'react'
 import Link from 'next/link'
 import type { ProcessStatus } from '@prisma/client'
 import { createDiscussionFromTicket, transitionTicket, deleteBoardTicket } from '@/app/actions/platform'
@@ -21,6 +21,12 @@ import {
   TICKET_TONE_DOT_CLASS,
 } from '@/lib/ticket-labels'
 import { canStartTicketDispatch, formatTicketDateTime } from '@/lib/ticket-display'
+import { readTicketSchedule } from '@/lib/ticket-schedule'
+import {
+  assessTicketRunLiveness,
+  presentTicketRunStatus,
+  readTicketRuntimeProgress,
+} from '@/domain/agent/ticket-runtime-progress'
 import { isRunAsAuthorized } from '@/lib/run-as-payload'
 import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
 import { readStepOutcome } from '@/lib/playbook-v2/process-step-payload'
@@ -37,12 +43,14 @@ type TicketView = {
   conversationId?: string | null
   createdAt: string | Date
   updatedAt: string | Date
+  executeAfter?: string | Date | null
   lockedAt?: string | Date | null
   cancelRequested?: boolean
   assigneeType?: string | null
   assigneeId?: string | null
   agentId?: string | null
   processInstanceId?: string | null
+  playbookStepId?: string | null
   taskDescription?: string | null
   /** Nyitott következmény-kapu kártyák — ticket-szintű Approve elrejtéséhez. */
   pendingConsequenceApprovals?: unknown[] | null
@@ -64,6 +72,152 @@ type TicketView = {
     recipe: { name: string; version: number; status: string } | null
   } | null
   process?: { id: string; processType: string; status: ProcessStatus } | null
+}
+
+const PROCESS_STEP_STATUS_LABELS: Record<string, string> = {
+  pending: 'Következik',
+  ready: 'Indítható',
+  in_progress: 'Folyamatban',
+  awaiting_gate: 'Jóváhagyásra vár',
+  completed: 'Kész',
+  skipped: 'Kihagyva',
+  failed: 'Sikertelen',
+}
+
+const PROCESS_STEP_STATUS_CLASS: Record<string, string> = {
+  pending: 'bg-ink/[0.05] text-ink-faint',
+  ready: 'bg-sky/10 text-sky',
+  in_progress: 'bg-sky/15 text-sky',
+  awaiting_gate: 'bg-honey/15 text-honey',
+  completed: 'bg-sage/15 text-sage',
+  skipped: 'bg-ink/[0.05] text-ink-faint',
+  failed: 'bg-coral/15 text-coral',
+}
+
+function ProcessStepMarker({ status, position }: { status: string; position: number }) {
+  if (status === 'completed') return <span aria-hidden>✓</span>
+  if (status === 'failed') return <span aria-hidden>!</span>
+  if (status === 'skipped') return <span aria-hidden>–</span>
+  return <span>{position}</span>
+}
+
+/**
+ * A ticket folyamatbeli helye. Az authored (teljes) lépéssort mutatjuk, az
+ * instance-adatokból rávetítve az aktuális státuszokat. Így a még el nem indult
+ * lépések sem tűnnek el a felhasználó elől.
+ */
+export function TicketProcessPanel({
+  ticket,
+  data,
+}: {
+  ticket: Pick<TicketView, 'id' | 'playbookStepId'>
+  data: {
+    process: { id: string; processType: string; status: ProcessStatus }
+    steps: Array<{
+      stepId: string
+      stepName: string
+      status: string
+      ticketId: string | null
+    }>
+    intendedSteps: Array<{ stepId: string; stepName: string }>
+  }
+}) {
+  const instanceStepById = new Map(data.steps.map((step) => [step.stepId, step]))
+  const intendedSteps = data.intendedSteps
+  const steps =
+    intendedSteps.length > 0
+      ? intendedSteps.map((step) => ({
+          stepId: step.stepId,
+          stepName: step.stepName,
+          status: instanceStepById.get(step.stepId)?.status ?? 'pending',
+          ticketId: instanceStepById.get(step.stepId)?.ticketId ?? null,
+        }))
+      : data.steps
+
+  const ticketStepId =
+    ticket.playbookStepId ?? steps.find((step) => step.ticketId === ticket.id)?.stepId ?? null
+  const currentStepIndex = steps.findIndex((step) => step.stepId === ticketStepId)
+  const currentStep = currentStepIndex >= 0 ? steps[currentStepIndex] : null
+
+  return (
+    <section className="atelier-card overflow-hidden" aria-labelledby="ticket-process-heading">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-line px-5 py-4 sm:px-6">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-faint">
+            Folyamat része
+          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <h2 id="ticket-process-heading" className="font-display text-lg font-semibold">
+              {data.process.processType}
+            </h2>
+            <ProcessBadge
+              processInstanceId={data.process.id}
+              processType={data.process.processType}
+              status={data.process.status as ProcessStatus}
+            />
+          </div>
+          <p className="mt-1 text-sm text-ink-soft">
+            {currentStep
+              ? `Ez a feladat a folyamat ${currentStepIndex + 1}. lépése a ${steps.length}-ből: ${currentStep.stepName}.`
+              : 'Ez a feladat ehhez a folyamathoz tartozik.'}
+          </p>
+        </div>
+        <Link
+          href={`/control-plane/processes/${data.process.id}`}
+          className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky/30 bg-sky/10 px-4 py-2 text-sm font-semibold text-sky transition-colors hover:bg-sky/20"
+        >
+          Folyamat részletei <span aria-hidden>→</span>
+        </Link>
+      </div>
+
+      {steps.length > 0 ? (
+        <ol className="flex gap-3 overflow-x-auto px-5 py-4 sm:px-6" aria-label="A folyamat lépései">
+          {steps.map((step, index) => {
+            const isTicketStep = step.stepId === ticketStepId
+            return (
+              <li
+                key={step.stepId}
+                aria-current={isTicketStep ? 'step' : undefined}
+                className={`relative min-w-[11rem] flex-1 rounded-xl border p-3 transition-colors ${
+                  isTicketStep
+                    ? 'border-sky/45 bg-sky/[0.07] shadow-[inset_0_0_0_1px_rgba(79,146,168,0.12)]'
+                    : 'border-line bg-card'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-bold ${
+                      isTicketStep
+                        ? 'bg-sky text-white'
+                        : PROCESS_STEP_STATUS_CLASS[step.status] ?? 'bg-ink/[0.05] text-ink-soft'
+                    }`}
+                  >
+                    <ProcessStepMarker status={step.status} position={index + 1} />
+                  </span>
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-ink-faint">
+                    {index + 1}. lépés
+                  </span>
+                </div>
+                <p className="mt-2 text-sm font-semibold leading-snug text-ink">{step.stepName}</p>
+                <span
+                  className={`mt-2 inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                    PROCESS_STEP_STATUS_CLASS[step.status] ?? 'bg-ink/[0.05] text-ink-soft'
+                  }`}
+                >
+                  {isTicketStep ? 'Ez a feladat · ' : ''}
+                  {PROCESS_STEP_STATUS_LABELS[step.status] ?? step.status}
+                </span>
+              </li>
+            )
+          })}
+        </ol>
+      ) : (
+        <p className="px-5 py-4 text-sm text-ink-soft sm:px-6">
+          A folyamat lépései még nem érhetők el.
+        </p>
+      )}
+    </section>
+  )
 }
 
 type TicketProcessTrigger = {
@@ -520,6 +674,7 @@ export function TicketMeta({
   const router = useRouter()
   const dispatchTicket = useTicketDispatch()
   const payload = ticket.payload as Record<string, unknown> | null
+  const schedule = readTicketSchedule(ticket.payload, ticket.executeAfter)
   const proposal = payload?.proposal as Record<string, unknown> | undefined
   const diff = payload?.diff as Record<string, unknown> | undefined
   const assignee = ticket.assignee
@@ -531,6 +686,13 @@ export function TicketMeta({
   const [headerMessage, setHeaderMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(
     null,
   )
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (ticket.state !== 'in_progress') return
+    const tick = window.setInterval(() => setNowMs(Date.now()), 5_000)
+    return () => window.clearInterval(tick)
+  }, [ticket.state])
 
   const discussAgentId =
     ticket.agentId ??
@@ -616,16 +778,33 @@ export function TicketMeta({
   }
 
   const stateTone = TICKET_STATE_TONE[ticket.state] ?? 'neutral'
-  const stateLabel = TICKET_STATE_LABELS[ticket.state] ?? ticket.state
-  const stateHint = TICKET_STATE_HINTS[ticket.state] ?? null
-  const isInProgress = ticket.state === 'in_progress'
+  const workflowLabel = TICKET_STATE_LABELS[ticket.state] ?? ticket.state
+  const workflowHint = TICKET_STATE_HINTS[ticket.state] ?? null
+  const liveness = assessTicketRunLiveness({
+    ticketState: ticket.state,
+    cancelRequested: ticket.cancelRequested,
+    lockedAt: ticket.lockedAt,
+    progress: readTicketRuntimeProgress(ticket.payload),
+    nowMs,
+  })
+  const runStatus = presentTicketRunStatus({
+    liveness,
+    stateLabel: workflowLabel,
+    stateHint: workflowHint ?? '',
+  })
+  const stateLabel = runStatus.label
+  const stateHint = runStatus.hint || null
+  const runLive = runStatus.live
+  const headerTone = runStatus.stalled ? 'danger' : runStatus.live ? 'neutral' : stateTone
   const typeLabel = ticket.type === 'training' ? 'Tanítás' : 'Interakció'
   const assigneeHint =
     assignee?.detail ??
     (assignee?.type === 'agent'
-      ? isInProgress
+      ? runLive
         ? 'AI munkatárs — most éppen ezen dolgozik'
-        : 'AI munkatárs a felelős'
+        : runStatus.stalled
+          ? 'AI munkatárs — a futás elakadt'
+          : 'AI munkatárs a felelős'
       : assignee?.type === 'human'
         ? 'Emberi döntésre vár'
         : 'Még senki nem kapta meg')
@@ -633,7 +812,7 @@ export function TicketMeta({
   return (
     <>
       <header className="atelier-card overflow-hidden">
-        <div className={`h-1 w-full bg-gradient-to-r ${HERO_ACCENT_CLASS[stateTone]}`} aria-hidden />
+        <div className={`h-1 w-full bg-gradient-to-r ${HERO_ACCENT_CLASS[headerTone]}`} aria-hidden />
         <div className="p-5 sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0 flex-1">
@@ -650,16 +829,16 @@ export function TicketMeta({
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <span
                   className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${
-                    isInProgress
+                    runLive
                       ? 'animate-activity-run-row text-sky'
-                      : STATE_PILL_CLASS[stateTone]
+                      : STATE_PILL_CLASS[headerTone]
                   }`}
                 >
-                  {isInProgress ? (
+                  {runLive ? (
                     <LiveStatusDot size="md" />
                   ) : (
                     <span
-                      className={`h-2 w-2 rounded-full ${TICKET_TONE_DOT_CLASS[stateTone]}`}
+                      className={`h-2 w-2 rounded-full ${TICKET_TONE_DOT_CLASS[headerTone]}`}
                       aria-hidden
                     />
                   )}
@@ -673,6 +852,7 @@ export function TicketMeta({
                     status={ticket.process.status}
                   />
                 )}
+                {schedule ? <Badge tone="warning">{schedule.compactLabel}</Badge> : null}
               </div>
             </div>
 
@@ -731,6 +911,14 @@ export function TicketMeta({
                   {debugLogPending ? 'Log…' : 'Debug-log'}
                 </button>
               )}
+              <Link
+                href="/control-plane/board"
+                aria-label="Feladat bezárása és vissza a Boardhoz"
+                title="Bezárás és vissza a Boardhoz"
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-line bg-card text-lg leading-none text-ink-soft transition-colors hover:border-coral/35 hover:bg-coral/10 hover:text-coral-deep"
+              >
+                <span aria-hidden>×</span>
+              </Link>
             </div>
           </div>
 
@@ -748,8 +936,12 @@ export function TicketMeta({
               label="Hol tart"
               value={stateLabel}
               hint={stateHint}
-              dotClass={isInProgress ? 'bg-sky' : TICKET_TONE_DOT_CLASS[stateTone]}
-              live={isInProgress}
+              dotClass={
+                runLive
+                  ? 'bg-sky'
+                  : TICKET_TONE_DOT_CLASS[headerTone]
+              }
+              live={runLive}
             />
             <HeroFact
               label="Ki dolgozik rajta"
@@ -766,11 +958,24 @@ export function TicketMeta({
               label="Utolsó mozgás"
               value={formatTicketDateTime(ticket.updatedAt)}
               hint={
-                isInProgress
+                runLive
                   ? 'A lépések élőben frissülnek alább.'
-                  : `${typeLabel} típusú feladat`
+                  : runStatus.stalled
+                    ? 'Nincs friss jelzés — a futás elakadhatott.'
+                    : `${typeLabel} típusú feladat`
               }
             />
+            {schedule ? (
+              <HeroFact
+                label="Ütemezés"
+                value={
+                  schedule.kind === 'recurring'
+                    ? schedule.compactLabel
+                    : formatTicketDateTime(schedule.runAt)
+                }
+                hint={schedule.label}
+              />
+            ) : null}
           </dl>
         </div>
       </header>

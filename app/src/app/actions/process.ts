@@ -649,6 +649,42 @@ export async function getProcessDetail(input: unknown) {
   }
 }
 
+/**
+ * Ticket-részlethez optimalizált folyamat-kontextus. A teljes process detail
+ * auditot, delegációkat és agent-feloldást is tölt; a ticketen csak a teljes
+ * authored lépéssor és az instance-státuszok kellenek.
+ */
+export async function getTicketProcessContext(input: unknown) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const parsed = processIdSchema.parse(input)
+    const tenantId = user.activeTenantId
+    const detail = await services.processes.getProcess(tenantId, parsed.id)
+    const version = await repositories.playbooksV2.findVersion(tenantId, detail.playbookVersionId)
+    const compiled = (version?.compiledSpec ?? null) as CompiledSpec | null
+
+    return ok({
+      process: {
+        id: detail.id,
+        processType: detail.processType,
+        status: detail.status,
+      },
+      steps: detail.steps.map((step) => ({
+        stepId: step.stepId,
+        stepName: step.stepName,
+        status: step.status,
+        ticketId: step.ticketId,
+      })),
+      intendedSteps: (compiled?.ticketRules ?? []).map((rule) => ({
+        stepId: rule.stepId,
+        stepName: rule.stepName,
+      })),
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a ticket folyamatát')
+  }
+}
+
 export async function transitionProcessTicket(input: unknown) {
   try {
     const user = await requireTenantRole('operator')

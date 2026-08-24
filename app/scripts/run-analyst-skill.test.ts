@@ -49,7 +49,7 @@ async function main() {
     assert.equal(skillAllowsAttachments(parsed.content.runtimeHints), false)
     assert.deepEqual(
       parsed.suggestedRequires.map((r) => r.toolName).sort(),
-      ['run_index', 'run_stats', 'run_trace', 'ticket_create'].sort(),
+      ['http_api_get', 'http_api_get_all', 'run_index', 'run_stats', 'run_trace', 'ticket_create'].sort(),
     )
     const validation = validateSkill({
       name: parsed.name,
@@ -62,6 +62,7 @@ async function main() {
     assert.ok(parsed.content.instructions.join('\n').includes('run_index'))
     assert.ok(parsed.content.instructions.join('\n').includes('run_stats'))
     assert.ok(parsed.content.instructions.join('\n').includes('run_trace'))
+    assert.ok(parsed.content.instructions.join('\n').includes('http_api_get'))
     assert.ok(parsed.content.instructions.join('\n').includes('EFF-12'))
   })
 

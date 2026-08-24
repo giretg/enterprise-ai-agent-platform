@@ -9,9 +9,16 @@ import type {
   AgentRepository,
   AuditRepository,
   ScheduledTaskRepository,
+  TicketRepository,
 } from '@/repositories/interfaces'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
+import {
+  buildTicketScheduleStamp,
+  clampIntervalHours,
+  occurrenceTitle,
+  stampTicketSchedule,
+} from '@/lib/ticket-schedule'
 
 type MaterializeResult =
   | { scheduledTaskId: string; status: 'materialized'; ticketId: string }
@@ -26,11 +33,13 @@ type CreateScheduledAgentTaskParams = {
   nextRunAt: Date
   kind?: ScheduledTaskKind
   recurrence?: ScheduledTaskRecurrence
+  intervalHours?: number | null
   maxRuns?: number | null
   authorizeRunAs?: boolean
   conversationId?: string | null
   attachmentDocumentIds?: string[]
   payload?: Record<string, unknown>
+  materializedTicketId?: string | null
 }
 
 const recurrenceLabels: Record<ScheduledTaskRecurrence, string> = {
@@ -38,6 +47,7 @@ const recurrenceLabels: Record<ScheduledTaskRecurrence, string> = {
   daily: 'daily',
   weekly: 'weekly',
   monthly: 'monthly',
+  hourly: 'hourly',
 }
 
 function objectPayload(payload: Prisma.JsonValue): Record<string, unknown> {
@@ -61,9 +71,16 @@ function scheduledTaskRunAsPayload(task: ScheduledTask): Record<string, unknown>
   })
 }
 
-export function addRecurrence(date: Date, recurrence: ScheduledTaskRecurrence): Date | null {
+export function addRecurrence(
+  date: Date,
+  recurrence: ScheduledTaskRecurrence,
+  intervalHours = 1,
+): Date | null {
   if (recurrence === 'none') return null
   const next = new Date(date)
+  if (recurrence === 'hourly') {
+    next.setUTCHours(next.getUTCHours() + clampIntervalHours(intervalHours))
+  }
   if (recurrence === 'daily') next.setUTCDate(next.getUTCDate() + 1)
   if (recurrence === 'weekly') next.setUTCDate(next.getUTCDate() + 7)
   if (recurrence === 'monthly') {
@@ -78,14 +95,39 @@ export function addRecurrence(date: Date, recurrence: ScheduledTaskRecurrence): 
   return next
 }
 
+function intervalHoursFromPayload(payload: Prisma.JsonValue): number {
+  const hours = objectPayload(payload).intervalHours
+  return typeof hours === 'number' ? clampIntervalHours(hours) : 1
+}
+
+function seriesTicketIdFrom(payload: Record<string, unknown>, task: ScheduledTask): string | null {
+  if (typeof payload.seriesTicketId === 'string' && payload.seriesTicketId) {
+    return payload.seriesTicketId
+  }
+  // Régi board/chat sorozat: az első ticket a sablon, még nincs seriesTicketId.
+  if (task.recurrence !== 'none' && task.runCount === 0 && task.materializedTicketId) {
+    return task.materializedTicketId
+  }
+  return null
+}
+
+function occurrenceBasePayload(base: Record<string, unknown>): Record<string, unknown> {
+      const rest = { ...base }
+      delete rest.scheduleSeries
+      delete rest.scheduleOccurrence
+      delete rest.schedule
+      return rest
+}
+
 function nextRunAfter(
   scheduledRunAt: Date,
   recurrence: ScheduledTaskRecurrence,
   now: Date,
+  intervalHours = 1,
 ): Date | null {
-  let next = addRecurrence(scheduledRunAt, recurrence)
+  let next = addRecurrence(scheduledRunAt, recurrence, intervalHours)
   while (next && next <= now) {
-    next = addRecurrence(next, recurrence)
+    next = addRecurrence(next, recurrence, intervalHours)
   }
   return next
 }
@@ -95,7 +137,12 @@ function materializedTaskState(
   now: Date,
 ): { status: ScheduledTaskStatus; nextRunAt: Date; runCount: number } {
   const runCount = task.runCount + 1
-  const nextRunAt = nextRunAfter(task.nextRunAt, task.recurrence, now)
+  const nextRunAt = nextRunAfter(
+    task.nextRunAt,
+    task.recurrence,
+    now,
+    intervalHoursFromPayload(task.payload as Prisma.JsonValue),
+  )
   const maxRunsReached = task.maxRuns !== null && runCount >= task.maxRuns
   if (!nextRunAt || maxRunsReached) {
     return { status: 'materialized', nextRunAt: task.nextRunAt, runCount }
@@ -108,6 +155,7 @@ export class ScheduledTaskService {
     private scheduledTasks: ScheduledTaskRepository,
     private agents: AgentRepository,
     private audit: AuditRepository,
+    private tickets?: TicketRepository,
   ) {}
 
   async list(params: {
@@ -126,26 +174,39 @@ export class ScheduledTaskService {
     await this.requireReachableActiveAgent(params.agentId, params.tenantId)
 
     const authorizedAt = params.authorizeRunAs ? new Date() : null
+    const recurrence = params.recurrence ?? 'none'
+    const intervalHours =
+      recurrence === 'hourly' ? clampIntervalHours(params.intervalHours ?? 1) : undefined
+    const schedule = buildTicketScheduleStamp({
+      kind: recurrence === 'none' ? 'once' : 'recurring',
+      runAt: params.nextRunAt,
+      recurrence,
+      intervalHours,
+      maxRuns: params.maxRuns,
+    })
     const task = await this.scheduledTasks.create({
       tenantId: params.tenantId,
       kind: params.kind ?? 'agent_task',
       title,
       agentId: params.agentId,
       createdById: params.createdById,
-      payload: {
-        ...(params.payload ?? {}),
-        question: content,
-        source: 'scheduled_task',
-        conversationId: params.conversationId ?? null,
-        attachmentDocumentIds: params.attachmentDocumentIds ?? [],
-        scheduledRun: true,
-      } as Prisma.InputJsonValue,
+      payload: stampTicketSchedule(
+        {
+          ...(params.payload ?? {}),
+          question: content,
+          source: 'scheduled_task',
+          conversationId: params.conversationId ?? null,
+          attachmentDocumentIds: params.attachmentDocumentIds ?? [],
+        },
+        schedule,
+      ) as Prisma.InputJsonValue,
       runAsUserId: params.authorizeRunAs ? params.createdById : null,
       runAsAuthorizedAt: authorizedAt,
       runAsAuthorizedById: params.authorizeRunAs ? params.createdById : null,
       nextRunAt: params.nextRunAt,
-      recurrence: params.recurrence ?? 'none',
+      recurrence,
       maxRuns: params.maxRuns ?? null,
+      materializedTicketId: params.materializedTicketId ?? null,
     })
 
     await this.audit.append({
@@ -269,19 +330,83 @@ export class ScheduledTaskService {
       const attachmentDocumentIds = stringArray(basePayload.attachmentDocumentIds)
       const conversationId =
         typeof basePayload.conversationId === 'string' ? basePayload.conversationId : null
-      const payload = {
-        ...basePayload,
-        scheduledTaskId: claimed.id,
-        scheduledTaskKind: claimed.kind,
-        scheduledRun: true,
-        ...scheduledTaskRunAsPayload(claimed),
+      const nextTaskState = materializedTaskState(claimed, now)
+      const occurrenceRunAt = claimed.nextRunAt
+      const seriesTicketId = seriesTicketIdFrom(basePayload, claimed)
+      const scheduleStamp = buildTicketScheduleStamp({
+        kind: claimed.recurrence === 'none' ? 'once' : 'recurring',
+        runAt: occurrenceRunAt,
+        recurrence: claimed.recurrence,
+        intervalHours: intervalHoursFromPayload(claimed.payload as Prisma.JsonValue),
+        maxRuns: claimed.maxRuns,
+        role: claimed.recurrence === 'none' ? undefined : 'occurrence',
+      })
+      const payload = stampTicketSchedule(
+        {
+          ...occurrenceBasePayload(basePayload),
+          scheduledTaskKind: claimed.kind,
+          ...scheduledTaskRunAsPayload(claimed),
+        },
+        scheduleStamp,
+        {
+          scheduledTaskId: claimed.id,
+          role: claimed.recurrence === 'none' ? undefined : 'occurrence',
+          seriesTicketId,
+        },
+      )
+
+      // Egyszeri, előre kirakott ticket: ne hozzunk létre másodikat.
+      // Rendszeres sorozatnál mindig új példány készül; a sablon a táblán marad.
+      if (claimed.recurrence === 'none' && claimed.runCount === 0 && claimed.materializedTicketId) {
+        const advanced = await this.scheduledTasks.advanceExistingTicket(claimed.id, {
+          ...nextTaskState,
+          lastRunAt: now,
+          materializedAt: now,
+        })
+        if (!advanced) {
+          results.push({ scheduledTaskId: claimed.id, status: 'skipped' })
+          continue
+        }
+        await this.audit.append({
+          actorType: 'system',
+          actorId: null,
+          agentVersion: null,
+          action: 'scheduled_task.materialize',
+          targetType: 'scheduled_task',
+          targetId: claimed.id,
+          modelUsed: null,
+          inputRef: claimed.agentId,
+          outputRef: claimed.materializedTicketId,
+          policyDecision: 'materialized',
+          metadata: {
+            ticketId: claimed.materializedTicketId,
+            reusedBoardTicket: true,
+            runAsUserId: claimed.runAsUserId ?? null,
+            recurrence: recurrenceLabels[claimed.recurrence],
+            runCount: nextTaskState.runCount,
+            nextRunAt: nextTaskState.status === 'active' ? nextTaskState.nextRunAt.toISOString() : null,
+          } as Prisma.JsonValue,
+        })
+        results.push({
+          scheduledTaskId: claimed.id,
+          status: 'materialized',
+          ticketId: claimed.materializedTicketId,
+        })
+        continue
       }
 
-      const nextTaskState = materializedTaskState(claimed, now)
+      const taskPayloadUpdate =
+        seriesTicketId && basePayload.seriesTicketId !== seriesTicketId
+          ? ({ ...basePayload, seriesTicketId } as Prisma.InputJsonValue)
+          : undefined
+
       const materialized = await this.scheduledTasks.materializeTicket(claimed.id, {
         tenantId: claimed.tenantId,
         type: 'interaction',
-        title: claimed.title,
+        title:
+          claimed.recurrence === 'none'
+            ? claimed.title
+            : occurrenceTitle(claimed.title, occurrenceRunAt),
         state: 'ready',
         assigneeType: 'agent',
         assigneeId: claimed.agentId,
@@ -297,12 +422,14 @@ export class ScheduledTaskService {
         ...nextTaskState,
         lastRunAt: now,
         materializedAt: now,
+        ...(taskPayloadUpdate ? { payload: taskPayloadUpdate } : {}),
       })
       if (!materialized) {
         results.push({ scheduledTaskId: claimed.id, status: 'skipped' })
         continue
       }
       const ticket = materialized.ticket
+      await this.advanceSeriesTicket(claimed, seriesTicketId, nextTaskState)
       await this.audit.append({
         actorType: 'system',
         actorId: null,
@@ -316,6 +443,7 @@ export class ScheduledTaskService {
         policyDecision: 'materialized',
         metadata: {
           ticketId: ticket.id,
+          seriesTicketId,
           runAsUserId: claimed.runAsUserId ?? null,
           recurrence: recurrenceLabels[claimed.recurrence],
           runCount: nextTaskState.runCount,
@@ -331,6 +459,38 @@ export class ScheduledTaskService {
     }
 
     return results
+  }
+
+  /** A sorozat-ticket a következő időpontot mutatja, és soha nem ő a munkapéldány. */
+  private async advanceSeriesTicket(
+    claimed: ScheduledTask,
+    seriesTicketId: string | null,
+    nextTaskState: { status: ScheduledTaskStatus; nextRunAt: Date; runCount: number },
+  ): Promise<void> {
+    if (!this.tickets || !seriesTicketId) return
+    const series = await this.tickets.findById(seriesTicketId)
+    if (!series) return
+
+    const completed = nextTaskState.status !== 'active'
+    const intervalHours = intervalHoursFromPayload(claimed.payload as Prisma.JsonValue)
+    const stamp = buildTicketScheduleStamp({
+      kind: 'recurring',
+      runAt: completed ? claimed.nextRunAt : nextTaskState.nextRunAt,
+      recurrence: claimed.recurrence,
+      intervalHours,
+      maxRuns: claimed.maxRuns,
+      role: 'series',
+    })
+    const payload = stampTicketSchedule(objectPayload(series.payload as Prisma.JsonValue), stamp, {
+      scheduledTaskId: claimed.id,
+      role: 'series',
+    })
+    const seriesStillWaiting = series.state === 'ready' || series.state === 'backlog'
+    await this.tickets.update(seriesTicketId, {
+      executeAfter: completed ? null : nextTaskState.nextRunAt,
+      payload: payload as Prisma.JsonObject,
+      ...(completed && seriesStillWaiting ? { state: 'done' } : {}),
+    })
   }
 
   /** A tenant a scheduled task életciklusában is domain-szintű határ. */

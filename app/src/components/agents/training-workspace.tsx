@@ -61,6 +61,7 @@ export function TrainingWorkspace({
   memoryContent,
   memoryVersions,
   currentVersionId,
+  lockAgent = false,
 }: {
   agents: Agent[]
   trainingTickets: Ticket[]
@@ -68,6 +69,8 @@ export function TrainingWorkspace({
   memoryContent: string | null
   memoryVersions: MemoryVersionRow[]
   currentVersionId: string | null
+  /** Agent-munkaterületen a fül már kijelöli, kit tanítunk — nincs váltó. */
+  lockAgent?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -126,40 +129,42 @@ export function TrainingWorkspace({
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="min-w-[280px] max-w-md flex-1">
-          <label htmlFor="training-agent" className="text-sm text-ink-soft">
-            AI munkatárs
-          </label>
-          <AgentAssigneeSelect
-            id="training-agent"
-            agents={agents}
-            value={agentId}
-            disabled={pending}
-            onChange={(nextAgentId) => {
-              // A szerkesztett tétel indexe az aktuális agent memóriájára
-              // vonatkozik. Agentváltáskor nem vihetjük át másik szabálylistára.
-              setEditingIndex(null)
-              setEditText('')
-              setExpandedVersion(null)
-              setNewItem('')
-              setMessage(null)
-              setLastApprove(null)
-              setEvalBlockedFor(null)
-              setAgentId(nextAgentId)
-              router.push(`/control-plane/training?agentId=${nextAgentId}`)
-            }}
-          />
+      {lockAgent ? null : (
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="min-w-[280px] max-w-md flex-1">
+            <label htmlFor="training-agent" className="text-sm text-ink-soft">
+              AI munkatárs
+            </label>
+            <AgentAssigneeSelect
+              id="training-agent"
+              agents={agents}
+              value={agentId}
+              disabled={pending}
+              onChange={(nextAgentId) => {
+                // A szerkesztett tétel indexe az aktuális agent memóriájára
+                // vonatkozik. Agentváltáskor nem vihetjük át másik szabálylistára.
+                setEditingIndex(null)
+                setEditText('')
+                setExpandedVersion(null)
+                setNewItem('')
+                setMessage(null)
+                setLastApprove(null)
+                setEvalBlockedFor(null)
+                setAgentId(nextAgentId)
+                router.push(`/control-plane/agents/${nextAgentId}/training`)
+              }}
+            />
+          </div>
+          {selectedAgent && (
+            <Link
+              href={`/control-plane/agents/${selectedAgent.id}/profile`}
+              className="mb-2 text-sm text-sky hover:underline"
+            >
+              Adatlap →
+            </Link>
+          )}
         </div>
-        {selectedAgent && (
-          <Link
-            href={`/control-plane/agents/${selectedAgent.id}`}
-            className="mb-2 text-sm text-sky hover:underline"
-          >
-            Anatómia →
-          </Link>
-        )}
-      </div>
+      )}
 
       <Card title="Megtanult dolgok">
         <p className="mb-3 text-sm text-ink-soft">

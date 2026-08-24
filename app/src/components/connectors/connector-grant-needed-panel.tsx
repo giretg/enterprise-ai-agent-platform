@@ -39,8 +39,11 @@ export function ConnectorGrantNeededPanel({
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    const err = new URLSearchParams(window.location.search).get('error')
-    if (err) setError(err)
+    const timer = window.setTimeout(() => {
+      const oauthError = new URLSearchParams(window.location.search).get('error')
+      if (oauthError) setError(oauthError)
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [])
 
   if (cards.length === 0) return null

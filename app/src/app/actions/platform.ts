@@ -56,6 +56,8 @@ import { readTicketPromptText } from '@/lib/wiki-ticket-payload'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
 import { isAgentAccessError } from '@/domain/agent-access/agent-access-errors'
 import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
+import { canOpenRunAnalystWorkspace, resolveRunAnalysisEntry } from '@/lib/run-analysis-entry'
+import { mergeRunAnalystIntoCatalogIds } from '@/lib/run-analysis-shared'
 import { getReportTemplate, listReportTemplates } from '@/domain/report/report-templates'
 import { computePlaybookGovernance } from '@/domain/governance/measurement-report'
 import {
@@ -70,6 +72,11 @@ import {
   extractCreatorAgentId,
   formatTicketCreator,
 } from '@/lib/ticket-display'
+import {
+  buildTicketScheduleStamp,
+  isScheduleSeriesTicket,
+  stampTicketSchedule,
+} from '@/lib/ticket-schedule'
 import { buildOriginalDocumentMetadata } from '@/lib/document-storage'
 import { listTicketInputAttachments } from '@/domain/ticket/ticket-input-attachment-service'
 import { fail, ok, type ActionResult } from '@/lib/result'
@@ -77,8 +84,16 @@ import { applyAgentModelConfigUpdate } from '@/app/actions/agent-model-config-up
 import type { AgentModelConfigInput } from '@/app/actions/agent-model-config-update'
 import { isRuleExhausted, pickPeakAgent } from '@/lib/budget-rule-usage'
 import { NORMAL_TOOL_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
-import { PROVISIONING_ASSISTANT_AGENT_NAME } from '@/lib/platform-agent-registry'
-import { agentScaffoldUserMessage } from '@/domain/agents/agent-scaffold-agent'
+import {
+  PROVISIONING_ASSISTANT_AGENT_NAME,
+  RUN_ANALYST_SYSTEM_ROLE,
+} from '@/lib/platform-agent-registry'
+import {
+  RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE,
+  RUN_ANALYST_CONNECTOR_LOCKED_MESSAGE,
+  RUN_ANALYST_ROLE_CAPABILITIES,
+} from '@/domain/agents/run-analyst-role'
+import { agentScaffoldUserMessage, selectScaffoldConnectors, selectScaffoldPeerAgents } from '@/domain/agents/agent-scaffold-agent'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
 import {
   agentIdSchema,
@@ -511,6 +526,11 @@ export async function createBoardTicket(input: {
   dueBy?: string | null
   deferDispatch?: boolean
   skillParameterValues?: Record<string, string>
+  scheduleMode?: 'none' | 'once' | 'recurring'
+  runAt?: string
+  recurrence?: 'hourly' | 'daily' | 'weekly' | 'monthly'
+  intervalHours?: number
+  maxRuns?: number | null
 }) {
   try {
     const user = await requireTenantRole('operator')
@@ -621,6 +641,31 @@ export async function createBoardTicket(input: {
         }
       }
 
+      const scheduleMode = parsed.scheduleMode ?? 'none'
+      const executeAfter =
+        scheduleMode === 'once' || scheduleMode === 'recurring'
+          ? new Date(parsed.runAt as string)
+          : null
+      if (executeAfter && Number.isNaN(executeAfter.getTime())) return fail('Invalid runAt')
+      if (executeAfter) {
+        const stamp = buildTicketScheduleStamp({
+          kind: scheduleMode === 'recurring' ? 'recurring' : 'once',
+          runAt: executeAfter,
+          recurrence: parsed.recurrence,
+          intervalHours: parsed.intervalHours,
+          maxRuns: parsed.maxRuns,
+          role: scheduleMode === 'recurring' ? 'series' : undefined,
+        })
+        Object.assign(
+          payload,
+          stampTicketSchedule(
+            payload,
+            stamp,
+            scheduleMode === 'recurring' ? { role: 'series' } : undefined,
+          ),
+        )
+      }
+
       const ticket = await repositories.tickets.create({
         tenantId: user.activeTenantId,
         type: 'interaction',
@@ -631,13 +676,51 @@ export async function createBoardTicket(input: {
         agentId: parsed.assigneeId,
         payload: payload as Prisma.JsonValue,
         sourceDocumentId: null,
-        executeAfter: null,
+        executeAfter,
         dueBy,
         createdById: user.user.id,
       })
 
+      if (scheduleMode === 'recurring' && executeAfter && parsed.recurrence) {
+        const scheduledTask = await services.scheduledTasks.createAgentTask({
+          tenantId: user.activeTenantId,
+          agentId: parsed.assigneeId,
+          title: ticketTitle,
+          content: promptText,
+          createdById: user.user.id,
+          nextRunAt: executeAfter,
+          recurrence: parsed.recurrence,
+          intervalHours: parsed.intervalHours,
+          maxRuns: parsed.maxRuns,
+          payload: {
+            source: 'board',
+            seriesTicketId: ticket.id,
+            preferredSkillVersionIds: requestedSkillIds,
+            ...(agentDetails.agent.taskOnly ? { taskOnly: true } : {}),
+            ...(Object.keys(taskOnlySkillParameterValues).length > 0
+              ? { skillParameterValues: taskOnlySkillParameterValues }
+              : {}),
+          },
+        })
+        await repositories.tickets.update(ticket.id, {
+          payload: stampTicketSchedule(
+            payload,
+            buildTicketScheduleStamp({
+              kind: 'recurring',
+              runAt: executeAfter,
+              recurrence: parsed.recurrence,
+              intervalHours: parsed.intervalHours,
+              maxRuns: parsed.maxRuns,
+              role: 'series',
+            }),
+            { scheduledTaskId: scheduledTask.id, role: 'series' },
+          ) as Prisma.JsonObject,
+        })
+      }
+
+      const scheduled = Boolean(executeAfter)
       let warning: string | undefined
-      if (!parsed.deferDispatch) {
+      if (!parsed.deferDispatch && !scheduled) {
         const dispatchOutcome = await runAgentTicketDispatch(ticket.id, parsed.assigneeId)
         if (dispatchOutcome.error) return fail(dispatchOutcome.error)
         warning = dispatchOutcome.warning
@@ -694,6 +777,9 @@ export async function dispatchBoardTicket(input: { ticketId: string }) {
       return fail('Ticket is not assigned to an agent')
     }
     if (ticket.state !== 'ready') return fail('Ticket is not in ready state')
+    if (isScheduleSeriesTicket(ticket)) {
+      return fail('Recurring series tickets are not dispatched; a run copy is created at the scheduled time')
+    }
 
     const dispatchOutcome = await runAgentTicketDispatch(ticketId, ticket.agentId, {
       bypassDispatcherEnabledCheck: true,
@@ -767,16 +853,24 @@ export async function deleteBoardTicket(input: { ticketId: string }) {
   }
 }
 
-export async function listBoardTickets(input?: { updatedFrom?: string; updatedTo?: string }) {
+export async function listBoardTickets(input?: {
+  updatedFrom?: string
+  updatedTo?: string
+  involvedAgentId?: string
+}) {
   try {
     const user = await requireTenantRole('viewer')
     const range = resolveBoardDateRange({ from: input?.updatedFrom, to: input?.updatedTo })
+    const involvedAgentId = input?.involvedAgentId
+      ? agentIdSchema.parse({ id: input.involvedAgentId }).id
+      : undefined
     const page = await repositories.tickets.listPage({
       excludeTest: true,
       tenantId: user.activeTenantId,
       limit: BOARD_LIST_LIMIT,
       updatedAtGte: range.updatedAtGte,
       updatedAtLte: range.updatedAtLte,
+      ...(involvedAgentId ? { involvedAgentId } : {}),
     })
     const tickets = page.items
 
@@ -1298,11 +1392,22 @@ export async function listAgents(input?: { limit?: number; offset?: number }) {
     const accessible = await services.agentAccess.listAccessibleAgents(subject, 'view', {
       subjectIsTenantAdmin: isTenantAdmin(user),
     })
+    // A Futás-elemző a napi sínben is kell: tenant admin granttel a gráf adja,
+    // assume-tenant superadmin (nincs membership-grant) az `analysis.run` kapun át.
+    // Nincs `userId` — a 5 mp-es sín-poll nem materializál.
+    let catalogIds = accessible.map((a) => a.id)
+    if (isTenantAdmin(user)) {
+      const entry = await resolveRunAnalysisEntry({
+        tenantId: user.activeTenantId,
+        role: user.activeTenantRole,
+      })
+      catalogIds = mergeRunAnalystIntoCatalogIds(catalogIds, entry)
+    }
     // A lapozás a gráf által ENGEDÉLYEZETT halmazon fut (DB-szintű `ids` szűrő), így
     // egy oldal sem lesz „lyukas", és nem kell a teljes tenant-listát memóriába húzni.
     const page = await repositories.agents.listPage({
       tenantId: user.activeTenantId,
-      ids: accessible.map((a) => a.id),
+      ids: catalogIds,
       limit: input?.limit ?? DEFAULT_LIST_LIMIT,
       offset: input?.offset,
     })
@@ -1318,13 +1423,19 @@ export async function getAgent(input: { id: string }) {
     const { id } = agentIdSchema.parse(input)
     const subject = tenantUserSubject(user)
     if (!subject) return fail('Agent not found')
-    // #142 — közvetlen URL ne fedje fel a gráf szerint elrejtett agentet.
-    // A `hiddenFromOperators` a view döntésben benne van; grant nem írja felül.
-    // Lista-szerű (nem explicit megszólítási) próba: nincs deny-audit.
-    const decision = await services.agentAccess.canAccessAgent(subject, id, 'view', {
-      subjectIsTenantAdmin: isTenantAdmin(user),
+    const runAnalystOk = await canOpenRunAnalystWorkspace({
+      tenantId: user.activeTenantId,
+      role: user.activeTenantRole,
+      userId: user.user.id,
+      agentId: id,
     })
-    if (!decision.allowed) return fail('Agent not found')
+    if (!runAnalystOk) {
+      // #142 — közvetlen URL ne fedje fel a gráf szerint elrejtett agentet.
+      const decision = await services.agentAccess.canAccessAgent(subject, id, 'view', {
+        subjectIsTenantAdmin: isTenantAdmin(user),
+      })
+      if (!decision.allowed) return fail('Agent not found')
+    }
     const detail = await repositories.agents.findByIdForDisplay(id, user.activeTenantId)
     if (!detail) return fail('Agent not found')
     return ok(detail)
@@ -1516,6 +1627,9 @@ export async function createHttpApiConnectorForAgent(input: {
 
     const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
+    if (agent.systemRole === RUN_ANALYST_SYSTEM_ROLE) {
+      return fail(RUN_ANALYST_CONNECTOR_LOCKED_MESSAGE)
+    }
     if (agent.role === 'orchestrator') {
       return fail('Orchestrator agent nem kaphat HTTP API connectort vagy Tool Broker capability-t.')
     }
@@ -1852,6 +1966,15 @@ export async function draftAgentFromDescription(input: unknown) {
     const { readTenantLanguage } = await import('@/lib/tenant-language')
     const outputLanguage = readTenantLanguage(tenant?.settings)
 
+    const tenantAgents = user.activeTenantId
+      ? await repositories.agents.findMany({ tenantId: user.activeTenantId })
+      : []
+    const connectorCatalog = user.activeTenantId
+      ? await repositories.connectorDrafts.listActiveCatalog(user.activeTenantId)
+      : []
+    const existingAgents = selectScaffoldPeerAgents(tenantAgents)
+    const knownConnectors = selectScaffoldConnectors(connectorCatalog)
+
     const result = await services.agentScaffoldAgent.draftFromDescription({
       agentId: assistant.id,
       agentVersion: assistant.currentVersion,
@@ -1862,7 +1985,10 @@ export async function draftAgentFromDescription(input: unknown) {
       knownSkills: skillCatalog.map((s) => ({
         name: s.name,
         description: s.description,
+        requiredTools: s.requiredTools,
       })),
+      existingAgents,
+      knownConnectors,
       outputLanguage,
     })
 
@@ -1884,9 +2010,16 @@ export async function draftAgentFromDescription(input: unknown) {
       metadata: {
         assistantAgentId: assistant.id,
         role: result.draft.role,
+        suggestedCapabilities: result.draft.suggestedCapabilities,
         suggestedCapabilityCount: result.draft.suggestedCapabilities.length,
+        suggestedSkills: result.draft.suggestedSkills,
         suggestedSkillCount: result.draft.suggestedSkills.length,
+        suggestedConnectors: result.draft.suggestedConnectors,
+        suggestedConnectorCount: result.draft.suggestedConnectors.length,
+        warningCodes: result.validation.warnings.map((w) => w.code),
         warningCount: result.validation.warnings.length,
+        peerAgentCount: existingAgents.length,
+        connectorCatalogCount: knownConnectors.length,
       },
     })
 
@@ -3380,7 +3513,8 @@ export async function createScheduledAgentTask(input: {
   conversationId?: string
   attachmentDocumentIds?: string[]
   nextRunAt: string
-  recurrence?: 'none' | 'daily' | 'weekly' | 'monthly'
+  recurrence?: 'none' | 'hourly' | 'daily' | 'weekly' | 'monthly'
+  intervalHours?: number
   maxRuns?: number | null
   authorizeRunAs?: boolean
 }) {
@@ -3411,20 +3545,75 @@ export async function createScheduledAgentTask(input: {
       const documents = await repositories.documents.findByIds(attachmentIds)
       await assertDocumentsReachableFromTenant(documents, attachmentIds, user.activeTenantId)
     }
+    const nextRunAt = new Date(parsed.nextRunAt)
+    const recurrence = parsed.recurrence ?? 'none'
+    const isRecurring = recurrence !== 'none'
+    const scheduleStamp = buildTicketScheduleStamp({
+      kind: isRecurring ? 'recurring' : 'once',
+      runAt: nextRunAt,
+      recurrence,
+      intervalHours: parsed.intervalHours,
+      maxRuns: parsed.maxRuns,
+      role: isRecurring ? 'series' : undefined,
+    })
+    const ticketPayload = stampTicketSchedule(
+      {
+        question: parsed.content,
+        task: parsed.content,
+        source: 'scheduled_task',
+        conversationId: parsed.conversationId ?? null,
+        attachmentDocumentIds: attachmentIds,
+      },
+      scheduleStamp,
+      isRecurring ? { role: 'series' } : undefined,
+    )
+    const ticket = await repositories.tickets.create({
+      tenantId: user.activeTenantId,
+      type: 'interaction',
+      title: parsed.title,
+      state: 'ready',
+      assigneeType: 'agent',
+      assigneeId: parsed.agentId,
+      agentId: parsed.agentId,
+      payload: ticketPayload as Prisma.JsonValue,
+      sourceDocumentId: attachmentIds[0] ?? null,
+      conversationId: parsed.conversationId ?? null,
+      executeAfter: nextRunAt,
+      dueBy: null,
+      createdById: user.user.id,
+    })
     const scheduledTask = await services.scheduledTasks.createAgentTask({
       agentId: parsed.agentId,
       title: parsed.title,
       content: parsed.content,
       conversationId: parsed.conversationId,
       attachmentDocumentIds: attachmentIds,
-      nextRunAt: new Date(parsed.nextRunAt),
+      nextRunAt,
       recurrence: parsed.recurrence,
+      intervalHours: parsed.intervalHours,
       maxRuns: parsed.maxRuns,
       authorizeRunAs: parsed.authorizeRunAs,
       createdById: user.user.id,
       tenantId: user.activeTenantId,
+      materializedTicketId: isRecurring ? null : ticket.id,
+      payload: isRecurring ? { seriesTicketId: ticket.id } : undefined,
     })
-    return ok({ scheduledTaskId: scheduledTask.id, scheduledTask })
+    await repositories.tickets.update(ticket.id, {
+      payload: stampTicketSchedule(
+        ticketPayload,
+        scheduleStamp,
+        {
+          scheduledTaskId: scheduledTask.id,
+          ...(isRecurring ? { role: 'series' as const } : {}),
+        },
+      ) as Prisma.JsonObject,
+    })
+    return ok({
+      scheduledTaskId: scheduledTask.id,
+      scheduledTask,
+      ticketId: ticket.id,
+      ticket,
+    })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Scheduled task creation failed')
   }
@@ -5794,6 +5983,28 @@ export async function updateAgentCapabilities(input: {
 
     const agent = await repositories.agents.findById(agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
+
+    // A Futás-elemző tenant-naplókat olvas. A tool-halmaza ezért system-managed:
+    // egy admin sem adhat hozzá egress capability-t a normál capability-panelen.
+    if (agent.systemRole === RUN_ANALYST_SYSTEM_ROLE) {
+      await repositories.audit.append({
+        actorType: 'human',
+        actorId: user.user.id,
+        agentVersion: agent.currentVersion,
+        action: 'capability.update_denied_system_role',
+        targetType: 'agent',
+        targetId: agentId,
+        modelUsed: null,
+        inputRef: [...new Set(input.enabledTools)].join(','),
+        outputRef: 'denied',
+        policyDecision: 'denied',
+        metadata: {
+          systemRole: RUN_ANALYST_SYSTEM_ROLE,
+          requiredTools: [...RUN_ANALYST_ROLE_CAPABILITIES],
+        } as Prisma.JsonValue,
+      })
+      return fail(RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE)
+    }
 
     const allTools = [...new Set(input.enabledTools)].filter((toolName) =>
       CONFIGURABLE_AGENT_TOOL_SET.has(toolName),

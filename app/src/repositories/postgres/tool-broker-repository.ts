@@ -6,8 +6,9 @@ import type {
   ToolCall,
 } from '@prisma/client'
 import { prisma } from '@/lib/db'
-import type { ToolBrokerRepository } from '../interfaces'
+import type { AgentConnectorBinding, ToolBrokerRepository } from '../interfaces'
 import { pinnedRuntimeConfig } from '@/domain/connector-self-update/pinned-runtime-config'
+import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
 
 type ConnectorWithActiveSpec = Connector & {
   activeSpecVersion: { capabilitySet: Prisma.JsonValue } | null
@@ -38,6 +39,19 @@ function connectorTenantScope(tenantId?: string | null) {
       : { tenantId: null }
 }
 
+function syntheticReadBinding(connector: Connector): AgentConnectorBinding {
+  return {
+    connector,
+    accessMode: 'read',
+    agentSecretAlias: null,
+    writeApproval: 'per_call',
+    preapprovedTrustMode: null,
+    preapprovedExpiresAt: null,
+    preapprovedWriteLimit: null,
+    dangerPreapproved: false,
+  }
+}
+
 export class PostgresToolBrokerRepository implements ToolBrokerRepository {
   private async findRuntimeConnectorForAgent(input: {
     agentId: string
@@ -60,9 +74,56 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
       include: { connector: { include: { activeSpecVersion: { select: { capabilitySet: true } } } } },
       orderBy: { connector: { createdAt: 'asc' } },
     })
-    if (!row) return null
-    const connector = toRuntimeConnector(row.connector)
-    return connector ? { connector, agentSecretAlias: row.secretAlias ?? null } : null
+    if (row) {
+      const connector = toRuntimeConnector(row.connector)
+      if (connector) return { connector, agentSecretAlias: row.secretAlias ?? null }
+    }
+    if (input.type === 'http_api' && input.accessMode === 'read') {
+      const tenantId = await this.runAnalystTenantId(input.agentId)
+      if (tenantId !== false) {
+        const connectors = await this.findActiveTenantConnectors({
+          tenantId: input.tenantId ?? tenantId,
+          type: 'http_api',
+          ...(input.connectorId ? { connectorId: input.connectorId } : {}),
+        })
+        const connector = connectors[0]
+        if (connector) return { connector, agentSecretAlias: null }
+      }
+    }
+    return null
+  }
+
+  /**
+   * `false` = nem Futás-elemző. Egyébként a tenantId (lehet null platform-agentnél).
+   */
+  private async runAnalystTenantId(agentId: string): Promise<string | null | false> {
+    const agent = await prisma.agent.findUnique({
+      where: { id: agentId },
+      select: { systemRole: true, tenantId: true },
+    })
+    if (agent?.systemRole !== RUN_ANALYST_SYSTEM_ROLE) return false
+    return agent.tenantId
+  }
+
+  private async findActiveTenantConnectors(params: {
+    tenantId: string | null
+    type: ConnectorType
+    connectorId?: string
+  }): Promise<Connector[]> {
+    const rows = await prisma.connector.findMany({
+      where: {
+        type: params.type,
+        lifecycleState: 'active',
+        ...connectorTenantScope(params.tenantId),
+        ...(params.connectorId ? { id: params.connectorId } : {}),
+      },
+      include: { activeSpecVersion: { select: { capabilitySet: true } } },
+      orderBy: { createdAt: 'asc' },
+    })
+    return rows.flatMap((row) => {
+      const connector = toRuntimeConnector(row)
+      return connector ? [connector] : []
+    })
   }
 
   async findCapability(agentId: string, toolName: string): Promise<{ allowed: boolean } | null> {
@@ -122,7 +183,7 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
       include: { connector: { include: { activeSpecVersion: { select: { capabilitySet: true } } } } },
       orderBy: { connector: { name: 'asc' } },
     })
-    return rows.flatMap((r) => {
+    const bindings = rows.flatMap((r) => {
       const connector = toRuntimeConnector(r.connector)
       return connector
         ? [
@@ -139,6 +200,14 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
           ]
         : []
     })
+    const tenantId = await this.runAnalystTenantId(agentId)
+    if (tenantId === false) return bindings
+    const tenantHttp = await this.findActiveTenantConnectors({
+      tenantId,
+      type: 'http_api',
+    })
+    const withoutHttp = bindings.filter((binding) => binding.connector.type !== 'http_api')
+    return [...withoutHttp, ...tenantHttp.map(syntheticReadBinding)]
   }
 
   async findDocumentsForConnector(

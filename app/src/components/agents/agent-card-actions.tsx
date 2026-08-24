@@ -1,10 +1,11 @@
 'use client'
 
 import type { Agent } from '@prisma/client'
+import Link from 'next/link'
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
 import { AgentTaskButton } from '@/components/agents/agent-task-button'
 import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
-import { CreateBoardTicketForm } from '@/components/tickets/create-board-ticket-form'
+import { agentWorkspacePath } from '@/lib/agent-workspace-routes'
 
 export type AssigneeOptions = {
   agents: {
@@ -31,14 +32,12 @@ const SECONDARY_ACTION =
  * A kártyák lábléce: ugyanaz a gombsor a dashboardon és a csapat-listában,
  * hogy a felhasználó ne kelljen két különböző elrendezést megtanulnia.
  *
- * A gombok maguk hordozzák a modáljaikat (chat-dock, feladat-űrlap), itt csak
+ * A gombok maguk hordozzák a modáljaikat (chat-dock), itt csak
  * az egységes megjelenés és a sorrend dől el: előbb a megszólítás, utána a
  * mellékutak.
  */
 export function AgentCardActions({
   agent,
-  canCreateTicket = false,
-  assigneeOptions,
 }: {
   agent: Agent
   canCreateTicket?: boolean
@@ -46,7 +45,7 @@ export function AgentCardActions({
 }) {
   return (
     <div className="mt-auto flex flex-nowrap items-stretch gap-1.5 border-t border-line/70 bg-night-2/40 px-4 py-3">
-      {/* #199 — korlátozott feladatkörű agentnél nincs chat, csak feladat-indító. */}
+      {/* #199 — korlátozott agentnél nincs chat, csak skill-kötött indító. */}
       {agent.taskOnly ? (
         <AgentTaskButton agentId={agent.id} className={PRIMARY_ACTION} />
       ) : (
@@ -64,14 +63,13 @@ export function AgentCardActions({
             label="Beszélgetés"
             className={PRIMARY_ACTION}
           />
-          {canCreateTicket && assigneeOptions && (
-            <CreateBoardTicketForm
-              assigneeOptions={assigneeOptions}
-              initialAgentId={agent.id}
-              presentation="dialog"
-              trigger={{ label: 'Feladat', className: SECONDARY_ACTION, title: 'Feladatot adok' }}
-            />
-          )}
+          <Link
+            href={agentWorkspacePath(agent.id, 'board')}
+            className={SECONDARY_ACTION}
+            title="Az agent feladat-táblája"
+          >
+            Feladat
+          </Link>
         </>
       )}
       <AgentMiniAppsLink agentId={agent.id} compact className={SECONDARY_ACTION} />

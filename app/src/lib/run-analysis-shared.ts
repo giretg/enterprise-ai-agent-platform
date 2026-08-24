@@ -1,3 +1,5 @@
+import { agentWorkspacePath } from '@/lib/agent-workspace-routes'
+
 export type RunAnalysisScope =
   | { kind: 'conversation'; conversationId: string; title?: string | null }
   | { kind: 'ticket'; ticketId: string; title?: string | null }
@@ -21,9 +23,10 @@ export function buildRunAnalysisPrefill(scope: RunAnalysisScope): string {
   }
 }
 
+/** Agent workspace chat — nem a régi adatlap URL (a Futás-elemző ott 404). */
 export function buildRunAnalysisAgentHref(agentId: string, prefill: string): string {
-  const params = new URLSearchParams({ openChat: '1', prefill })
-  return `/control-plane/agents/${agentId}?${params.toString()}`
+  const params = new URLSearchParams({ prefill })
+  return `${agentWorkspacePath(agentId, 'chat')}?${params.toString()}`
 }
 
 /** A teljes „Elemezd" útvonal egy szkópból — minden belépési pont ezt hívja. */
@@ -34,4 +37,20 @@ export function buildRunAnalysisHref(agentId: string, scope: RunAnalysisScope): 
 export type RunAnalysisEntry = {
   canRunAnalysis: boolean
   runAnalystAgentId: string | null
+}
+
+/**
+ * A sín / operátori katalógus `view` azonosítói. A gráf a Futás-elemzőt
+ * admin-only csomópontként kihagyhatja (Web-Egress-szel együtt); az
+ * `analysis.run` kapu — tenant admin és assume-tenant superadmin — ettől
+ * függetlenül felteszi a listára, grant nélkül is. Operator kimarad.
+ */
+export function mergeRunAnalystIntoCatalogIds(
+  accessibleIds: readonly string[],
+  entry: Pick<RunAnalysisEntry, 'canRunAnalysis' | 'runAnalystAgentId'>,
+): string[] {
+  const ids = [...accessibleIds]
+  if (!entry.canRunAnalysis || !entry.runAnalystAgentId) return ids
+  if (!ids.includes(entry.runAnalystAgentId)) ids.push(entry.runAnalystAgentId)
+  return ids
 }
