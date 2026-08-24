@@ -1022,6 +1022,7 @@ export function MessageBubble({
 }) {
   const isUser = message.role === 'user'
   const isDeleted = Boolean(message.contentDeletedAt)
+  const [copied, setCopied] = useState(false)
   const time = formatMessageTime(message.createdAt)
   const isApprovalBubble = isUser && !isDeleted && isApprovalContinuationMessage(message.text)
   const approvalDisplayText = isApprovalBubble ? approvalContinuationDisplayText(message.text) : null
@@ -1032,6 +1033,16 @@ export function MessageBubble({
     if (message.privacyMarkers && message.privacyMarkers.length > 0) return message.privacyMarkers
     return buildChatPrivacyMarkers(message.text, privacyContext)
   }, [message.privacyMarkers, message.text, privacyContext])
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(message.text)
+      setCopied(true)
+    } catch {
+      // A vágólap-hozzáférés böngésző- vagy jogosultságfüggő; ilyenkor a chat
+      // működése maradjon zavartalan.
+    }
+  }
 
   return (
     <div
@@ -1188,23 +1199,65 @@ export function MessageBubble({
         )}
         </div>
 
-        {/* A törlés a buborék ALATT ül: korábban rálógott a szomszéd üzenetre és
-            eltakarta a szöveg elejét. */}
-        {!isDeleted && !message.id.startsWith('optimistic-') && (
-          <div className="mt-1 h-4 px-1">
+        {/* A buborék alatti műveletek ne lógjanak rá a szomszéd üzenetre. */}
+        {!isDeleted && message.text && (
+          <div className="mt-1 flex h-4 items-center gap-2 px-1">
             <button
               type="button"
-              onClick={() => onDeleteContent(message.id)}
-              disabled={isBusy}
-              className="text-[10px] font-semibold text-ink-faint opacity-0 transition-opacity hover:text-coral-deep focus:opacity-100 group-hover/msg:opacity-100 disabled:opacity-40"
-              title="Az üzenet szövegének végleges törlése"
+              onClick={() => void handleCopy()}
+              className="text-ink-faint opacity-70 transition-opacity hover:text-coral-deep hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral/40"
+              title={copied ? 'Üzenet a vágólapra másolva' : 'Üzenet másolása'}
+              aria-label={copied ? 'Üzenet a vágólapra másolva' : 'Üzenet másolása'}
             >
-              Tartalom törlése
+              {copied ? (
+                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden="true">
+                  <path
+                    d="m3.25 8.25 3 3 6.5-6.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="1.5"
+                  />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden="true">
+                  <rect
+                    x="5.25"
+                    y="5.25"
+                    width="7.5"
+                    height="7.5"
+                    rx="1.25"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.25"
+                  />
+                  <path
+                    d="M10.75 5.25V3.5A1.25 1.25 0 0 0 9.5 2.25H4A1.25 1.25 0 0 0 2.75 3.5V9A1.25 1.25 0 0 0 4 10.25h1.25"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeLinecap="round"
+                    strokeWidth="1.25"
+                  />
+                </svg>
+              )}
             </button>
+
+            {/* A törlés csak mentett üzeneteken érhető el. */}
+            {!message.id.startsWith('optimistic-') && (
+              <button
+                type="button"
+                onClick={() => onDeleteContent(message.id)}
+                disabled={isBusy}
+                className="text-[10px] font-semibold text-ink-faint opacity-0 transition-opacity hover:text-coral-deep focus:opacity-100 group-hover/msg:opacity-100 disabled:opacity-40"
+                title="Az üzenet szövegének végleges törlése"
+              >
+                Tartalom törlése
+              </button>
+            )}
           </div>
         )}
       </div>
     </div>
   )
 }
-
