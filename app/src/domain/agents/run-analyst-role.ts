@@ -49,6 +49,15 @@ export const RUN_ANALYST_FORBIDDEN_TOOLS = [
 export const RUN_ANALYST_ROLE_CAPABILITIES = [...RUN_ANALYST_TOOL_CAPABILITIES] as const
 
 /**
+ * Futás-elemző system role esetén ez a nem megkerülhető, futásidejű tool-allowlist.
+ * A capability-sorok adminisztratív adatok: sérült vagy kézzel bővített sor nem
+ * írhatja felül azt a termékbiztonsági ígéretet, hogy a napló-elemző nem egressel.
+ */
+export function isRunAnalystToolAllowed(tool: string): tool is RunAnalystToolCapability {
+  return (RUN_ANALYST_ROLE_CAPABILITIES as readonly string[]).includes(tool)
+}
+
+/**
  * Agent-overlay: a sensitivity-scanner kategóriák (PAN, IBAN, titok, TAJ, adószám)
  * ne menjenek nyersen külső modellre — a napló-olvasás nyers marad tenanton belül,
  * a kimenő védelmet a meglévő kategória-policy adja (#346).

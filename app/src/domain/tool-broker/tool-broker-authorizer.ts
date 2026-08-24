@@ -10,6 +10,8 @@
  */
 import type { AgentRole, ConnectorAccessMode, UserStatus } from '@prisma/client'
 import { prisma } from '@/lib/db'
+import { isRunAnalystToolAllowed } from '@/domain/agents/run-analyst-role'
+import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
 import {
   delegatedScopeDeniedReason,
   hasDelegatedScopeCheck,
@@ -171,6 +173,13 @@ export class AllowlistAuthorizer implements Authorizer {
     const effectiveTenantId = input.tenantId ?? agent?.tenantId ?? null
     if (agent?.tenantId && input.tenantId && agent.tenantId !== input.tenantId) {
       return { allowed: false, reason: 'tenant_isolation' }
+    }
+
+    // A Futás-elemző naplókat olvas, ezért a capability-táblában megjelenő
+    // adminisztratív/driftelt többletjog sem engedhet e-mail-, web- vagy HTTP-egresst.
+    // Ez a runtime-kapu a capability-szerkesztő mellett a második védelmi vonal.
+    if (agent?.systemRole === RUN_ANALYST_SYSTEM_ROLE && !isRunAnalystToolAllowed(input.tool)) {
+      return { allowed: false, reason: 'system_role_tool_not_allowed' }
     }
 
     let skipCapabilityCheck = false

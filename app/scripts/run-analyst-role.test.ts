@@ -52,7 +52,12 @@ function buildAuthorizer(allowedCapabilities: Set<string>) {
 
   const agents = {
     findById: async () =>
-      ({ id: 'agent-ra', role: 'worker', tenantId: 'tenant-1' }) as Agent,
+      ({
+        id: 'agent-ra',
+        role: 'worker',
+        tenantId: 'tenant-1',
+        systemRole: 'run_analyst',
+      }) as Agent,
   } as unknown as AgentRepository
 
   const grants = { findActiveGrant: async () => null } as unknown as ConnectorGrantRepository
@@ -85,20 +90,20 @@ async function main() {
     }
   })
 
-  await test('kimenő egress tool (web_search) → capability_not_allowed', async () => {
-    const allowed = new Set<string>(RUN_ANALYST_ROLE_CAPABILITIES)
+  await test('kézzel hozzáadott web_search capability sem nyit egresset', async () => {
+    const allowed = new Set<string>([...RUN_ANALYST_ROLE_CAPABILITIES, 'web_search'])
     const authorizer = buildAuthorizer(allowed)
     const result = await authorizer.authorize({ agentId: 'agent-ra', tool: 'web_search' })
     assert.equal(result.allowed, false)
-    if (!result.allowed) assert.equal(result.reason, 'capability_not_allowed')
+    if (!result.allowed) assert.equal(result.reason, 'system_role_tool_not_allowed')
   })
 
-  await test('kimenő egress tool (gmail_send) → capability_not_allowed', async () => {
-    const allowed = new Set<string>(RUN_ANALYST_ROLE_CAPABILITIES)
+  await test('kézzel hozzáadott gmail_send capability sem nyit egresset', async () => {
+    const allowed = new Set<string>([...RUN_ANALYST_ROLE_CAPABILITIES, 'gmail_send'])
     const authorizer = buildAuthorizer(allowed)
     const result = await authorizer.authorize({ agentId: 'agent-ra', tool: 'gmail_send' })
     assert.equal(result.allowed, false)
-    if (!result.allowed) assert.equal(result.reason, 'capability_not_allowed')
+    if (!result.allowed) assert.equal(result.reason, 'system_role_tool_not_allowed')
   })
 
   await test('engedélyezett capability (ticket_create) → átjut a capability-kapun', async () => {

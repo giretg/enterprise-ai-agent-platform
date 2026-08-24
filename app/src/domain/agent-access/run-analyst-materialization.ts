@@ -142,6 +142,16 @@ async function ensureRunAnalystSkill(agentId: string, actorId: string): Promise<
 }
 
 async function ensureCapabilities(agentId: string): Promise<void> {
+  // A role saját allowlistje a forrásigazság. Egy régi vagy közvetlen DB-módosítás
+  // után se maradjon aktív, egressre használható többletjog a system agenten.
+  await prisma.capability.updateMany({
+    where: {
+      agentId,
+      toolName: { notIn: [...RUN_ANALYST_ROLE_CAPABILITIES] },
+      allowed: true,
+    },
+    data: { allowed: false },
+  })
   for (const toolName of RUN_ANALYST_ROLE_CAPABILITIES) {
     await prisma.capability.upsert({
       where: { agentId_toolName: { agentId, toolName } },

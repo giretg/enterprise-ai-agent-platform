@@ -77,7 +77,11 @@ import { applyAgentModelConfigUpdate } from '@/app/actions/agent-model-config-up
 import type { AgentModelConfigInput } from '@/app/actions/agent-model-config-update'
 import { isRuleExhausted, pickPeakAgent } from '@/lib/budget-rule-usage'
 import { NORMAL_TOOL_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
-import { PROVISIONING_ASSISTANT_AGENT_NAME } from '@/lib/platform-agent-registry'
+import {
+  PROVISIONING_ASSISTANT_AGENT_NAME,
+  RUN_ANALYST_SYSTEM_ROLE,
+} from '@/lib/platform-agent-registry'
+import { RUN_ANALYST_ROLE_CAPABILITIES } from '@/domain/agents/run-analyst-role'
 import { agentScaffoldUserMessage } from '@/domain/agents/agent-scaffold-agent'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
 import {
@@ -5794,6 +5798,28 @@ export async function updateAgentCapabilities(input: {
 
     const agent = await repositories.agents.findById(agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
+
+    // A Futás-elemző tenant-naplókat olvas. A tool-halmaza ezért system-managed:
+    // egy admin sem adhat hozzá egress capability-t a normál capability-panelen.
+    if (agent.systemRole === RUN_ANALYST_SYSTEM_ROLE) {
+      await repositories.audit.append({
+        actorType: 'human',
+        actorId: user.user.id,
+        agentVersion: agent.currentVersion,
+        action: 'capability.update_denied_system_role',
+        targetType: 'agent',
+        targetId: agentId,
+        modelUsed: null,
+        inputRef: [...new Set(input.enabledTools)].join(','),
+        outputRef: 'denied',
+        policyDecision: 'denied',
+        metadata: {
+          systemRole: RUN_ANALYST_SYSTEM_ROLE,
+          requiredTools: [...RUN_ANALYST_ROLE_CAPABILITIES],
+        } as Prisma.JsonValue,
+      })
+      return fail('A Futás-elemző eszközjogai platform által védettek, ezért itt nem módosíthatók.')
+    }
 
     const allTools = [...new Set(input.enabledTools)].filter((toolName) =>
       CONFIGURABLE_AGENT_TOOL_SET.has(toolName),
