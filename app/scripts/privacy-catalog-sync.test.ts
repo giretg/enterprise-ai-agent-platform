@@ -228,6 +228,84 @@ async function main() {
     assert.equal(audit.events[0]?.action, 'privacy.catalog.sync.failed')
   })
 
+  await test('elavult katalógusverzió fail-closed: kisebb version nem írhatja felül a frissebb tokenize jelölést', async () => {
+    // v8: company_name tokenize. Stale v7 ugyanarra a mezőre pass-t adna → nyers PII.
+    const currentConfig = {
+      ...STORED_CONFIG,
+      catalog_version: 8,
+      fields: {
+        ...STORED_CONFIG.fields,
+        email: {
+          type: 'string',
+          privacy: 'tokenize',
+          entity_type: 'company',
+          source_id: 'crm/company/{id}',
+        },
+      },
+    }
+    const staleCatalog: PrivacyCatalogV2 = {
+      ...SOURCE_CATALOG,
+      catalog_version: 7,
+      fields: {
+        id: { type: 'integer', privacy: 'pass' },
+        company_name: { type: 'string', privacy: 'pass' },
+        email: { type: 'string', privacy: 'pass' },
+      },
+    }
+
+    const direct = applyPrivacyCatalogToConfig(currentConfig, staleCatalog)
+    assert.equal(direct.status, 'failed')
+    if (direct.status !== 'failed') return
+    assert.equal(direct.reason, 'stale_catalog')
+    assert.match(direct.detail, /régebbi/)
+
+    const audit = recordingAudit()
+    let persisted = 0
+    const outcome = await syncPrivacyCatalogForConnectorRow(
+      {
+        id: CONNECTOR,
+        name: 'CRM',
+        type: 'http_api',
+        tenantId: TENANT,
+        secretAlias: null,
+        config: currentConfig,
+      },
+      { id: null },
+      {
+        audit: audit.repo,
+        fetchCatalog: fetcherFor(staleCatalog),
+        persist: async () => {
+          persisted += 1
+        },
+      },
+    )
+    assert.equal(outcome.status, 'failed')
+    if (outcome.status !== 'failed') return
+    assert.equal(outcome.reason, 'stale_catalog')
+    assert.equal(persisted, 0, 'elavult katalógus nem írhat felül frissebb jelölést')
+    assert.equal(audit.events[0]?.action, 'privacy.catalog.sync.failed')
+    assert.equal(
+      (currentConfig.fields as Record<string, { privacy: string }>).email.privacy,
+      'tokenize',
+      'a tárolt tokenize jelölés érintetlen marad',
+    )
+  })
+
+  await test('ugyanakkora vagy nagyobb katalógusverzió továbbra is alkalmazható', () => {
+    const baseline = applyPrivacyCatalogToConfig(STORED_CONFIG, SOURCE_CATALOG)
+    assert.equal(baseline.status, 'applied')
+    if (baseline.status !== 'applied') return
+
+    const atSame = applyPrivacyCatalogToConfig(baseline.config, SOURCE_CATALOG)
+    assert.equal(atSame.status, 'no_change')
+
+    const newer: PrivacyCatalogV2 = { ...SOURCE_CATALOG, catalog_version: 9 }
+    const bumped = applyPrivacyCatalogToConfig(baseline.config, newer)
+    assert.equal(bumped.status, 'applied')
+    if (bumped.status !== 'applied') return
+    assert.equal(bumped.catalogVersion, 9)
+  })
+
   await test('elérhetetlen forrás nem törli a meglévő jelölést', async () => {
     const audit = recordingAudit()
     let persisted = 0
