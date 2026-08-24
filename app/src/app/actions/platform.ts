@@ -56,7 +56,8 @@ import { readTicketPromptText } from '@/lib/wiki-ticket-payload'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
 import { isAgentAccessError } from '@/domain/agent-access/agent-access-errors'
 import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
-import { canOpenRunAnalystWorkspace } from '@/lib/run-analysis-entry'
+import { canOpenRunAnalystWorkspace, resolveRunAnalysisEntry } from '@/lib/run-analysis-entry'
+import { mergeRunAnalystIntoCatalogIds } from '@/lib/run-analysis-shared'
 import { getReportTemplate, listReportTemplates } from '@/domain/report/report-templates'
 import { computePlaybookGovernance } from '@/domain/governance/measurement-report'
 import {
@@ -713,7 +714,7 @@ export async function createBoardTicket(input: {
               role: 'series',
             }),
             { scheduledTaskId: scheduledTask.id, role: 'series' },
-          ) as Prisma.InputJsonValue,
+          ) as Prisma.JsonObject,
         })
       }
 
@@ -1391,11 +1392,22 @@ export async function listAgents(input?: { limit?: number; offset?: number }) {
     const accessible = await services.agentAccess.listAccessibleAgents(subject, 'view', {
       subjectIsTenantAdmin: isTenantAdmin(user),
     })
+    // A Futás-elemző a napi sínben is kell: tenant admin granttel a gráf adja,
+    // assume-tenant superadmin (nincs membership-grant) az `analysis.run` kapun át.
+    // Nincs `userId` — a 5 mp-es sín-poll nem materializál.
+    let catalogIds = accessible.map((a) => a.id)
+    if (isTenantAdmin(user)) {
+      const entry = await resolveRunAnalysisEntry({
+        tenantId: user.activeTenantId,
+        role: user.activeTenantRole,
+      })
+      catalogIds = mergeRunAnalystIntoCatalogIds(catalogIds, entry)
+    }
     // A lapozás a gráf által ENGEDÉLYEZETT halmazon fut (DB-szintű `ids` szűrő), így
     // egy oldal sem lesz „lyukas", és nem kell a teljes tenant-listát memóriába húzni.
     const page = await repositories.agents.listPage({
       tenantId: user.activeTenantId,
-      ids: accessible.map((a) => a.id),
+      ids: catalogIds,
       limit: input?.limit ?? DEFAULT_LIST_LIMIT,
       offset: input?.offset,
     })
@@ -3594,7 +3606,7 @@ export async function createScheduledAgentTask(input: {
           scheduledTaskId: scheduledTask.id,
           ...(isRecurring ? { role: 'series' as const } : {}),
         },
-      ) as Prisma.InputJsonValue,
+      ) as Prisma.JsonObject,
     })
     return ok({
       scheduledTaskId: scheduledTask.id,

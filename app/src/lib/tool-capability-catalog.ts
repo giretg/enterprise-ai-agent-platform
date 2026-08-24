@@ -16,7 +16,9 @@ export type ToolCapabilityGroup = {
 export const NORMAL_TOOL_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = TOOL_GROUP_ORDER.flatMap(
   (label) => {
     const tools = TOOL_NAMES.filter(
-      (name) => TOOL_REGISTRY[name].capabilityGroup === label,
+      (name) =>
+        TOOL_REGISTRY[name].capabilityGroup === label &&
+        TOOL_REGISTRY[name].requiredSystemRole === undefined,
     ).map((name) => TOOL_REGISTRY[name].capability)
     return tools.length > 0 ? [{ label, tools }] : []
   },

@@ -757,6 +757,63 @@ async function serviceTests() {
     assert.equal(listed.length, 0)
   })
 
+  const runAnalyst = node({
+    id: 'run-analyst',
+    name: 'Futás-elemző',
+    systemRole: 'run_analyst',
+    inboundRestricted: true,
+    outboundRestricted: true,
+    hiddenFromOperators: true,
+  })
+  const runAnalystGrant = {
+    id: 'g-run-analyst',
+    tenantId: TENANT,
+    subjectType: 'user' as const,
+    subjectUserId: 'admin-1',
+    subjectAgentId: null,
+    targetAgentId: runAnalyst.id,
+    canView: true,
+    canAddress: true,
+  }
+
+  await check('Futás-elemző: tenant admin granttel a napi view-listán megjelenik', async () => {
+    const { service } = buildService({
+      agents: [...allAgents, runAnalyst],
+      grants: [runAnalystGrant],
+    })
+    const listed = await service.listAccessibleAgents(
+      { kind: 'user', userId: 'admin-1', tenantId: TENANT },
+      'view',
+      { subjectIsTenantAdmin: true },
+    )
+    const ids = listed.map((a) => a.id)
+    assert.ok(ids.includes(runAnalyst.id), 'a Futás-elemző a sín/katalógus listáján van')
+    assert.ok(!ids.includes(webEgress.id), 'a Web-Egress a napi listán marad rejtve')
+  })
+
+  await check('Futás-elemző: operator granttel sem látja a napi view-listán', async () => {
+    const { service } = buildService({
+      agents: [...allAgents, runAnalyst],
+      grants: [{ ...runAnalystGrant, subjectUserId: 'op-1' }],
+    })
+    const listed = await service.listAccessibleAgents(
+      { kind: 'user', userId: 'op-1', tenantId: TENANT },
+      'view',
+      { subjectIsTenantAdmin: false },
+    )
+    assert.ok(!listed.some((a) => a.id === runAnalyst.id))
+  })
+
+  await check('Futás-elemző: tenant admin grant nélkül nem a gráf-listán (inbound zárt)', async () => {
+    const { service } = buildService({ agents: [...allAgents, runAnalyst] })
+    const listed = await service.listAccessibleAgents(
+      { kind: 'user', userId: 'admin-1', tenantId: TENANT },
+      'view',
+      { subjectIsTenantAdmin: true },
+    )
+    assert.ok(!listed.some((a) => a.id === runAnalyst.id))
+  })
+
   await check('a shadow-check deny esetén `agent.access.bypass`-t ír, engedésnél semmit', async () => {
     // Web-Egress agent→agent grant nélkül deny — a shadow ezt naplózza.
     const denied = buildService({ agents: allAgents })

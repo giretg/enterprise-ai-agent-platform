@@ -11,6 +11,7 @@
 import type { AgentRole, ConnectorAccessMode, UserStatus } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { isRunAnalystToolAllowed } from '@/domain/agents/run-analyst-role'
+import { TOOL_REGISTRY } from './tool-registry'
 import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
 import {
   delegatedScopeDeniedReason,
@@ -175,9 +176,15 @@ export class AllowlistAuthorizer implements Authorizer {
       return { allowed: false, reason: 'tenant_isolation' }
     }
 
+    const requiredSystemRole = TOOL_REGISTRY[input.tool]?.requiredSystemRole
+    if (requiredSystemRole && agent?.systemRole !== requiredSystemRole) {
+      return { allowed: false, reason: 'system_role_tool_not_allowed' }
+    }
+
     // A Futás-elemző naplókat olvas, ezért a capability-táblában megjelenő
-    // adminisztratív/driftelt többletjog sem engedhet e-mail-, web- vagy HTTP-egresst.
-    // Ez a runtime-kapu a capability-szerkesztő mellett a második védelmi vonal.
+    // adminisztratív/driftelt többletjog sem engedhet e-mail-, web- vagy HTTP-írást.
+    // Tenant HTTP olvasás (http_api_get / get_all) szándékos kivétel. Ez a
+    // runtime-kapu a capability-szerkesztő mellett a második védelmi vonal.
     if (agent?.systemRole === RUN_ANALYST_SYSTEM_ROLE && !isRunAnalystToolAllowed(input.tool)) {
       return { allowed: false, reason: 'system_role_tool_not_allowed' }
     }
@@ -223,6 +230,14 @@ export class AllowlistAuthorizer implements Authorizer {
     // tulajdoni_lap_parse documentId (UUID) ágon ugyanez; workspace path ágon
     // viszont workspace connector kell (pdf_read-hez hasonlóan) — lásd TOOL_REQUIREMENTS.
     if (input.tool === 'document_read') {
+      return { allowed: true }
+    }
+
+    // run_index / run_trace / run_stats — system-role-kötött tenant-napló olvasás;
+    // nincs connector. A requiredSystemRole kapu fent, a capability előtt fut.
+    // Connector-mátrix hiányában a kapu `tool_not_configured`-re esett, a modell
+    // pedig tévesen „engedélyezzétek az admin oldalon” választ adott.
+    if (input.tool === 'run_index' || input.tool === 'run_trace' || input.tool === 'run_stats') {
       return { allowed: true }
     }
     if (input.tool === 'tulajdoni_lap_parse') {

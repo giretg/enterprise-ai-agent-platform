@@ -151,7 +151,7 @@ function AgentTaskFlow({
         prompt={dispatchPrompt}
         pending={dispatchPending}
         message={message}
-        returnFocusRef={returnFocusRef}
+        returnFocusRef={returnFocusRef ?? startRef}
         onStart={startDispatchFromPrompt}
         onLater={() => {
           setDispatchPrompt(null)

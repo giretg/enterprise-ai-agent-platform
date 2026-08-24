@@ -165,6 +165,7 @@ function CapabilityView({
 export default async function AgentDetailPage({
   params,
   searchParams,
+  embedded = false,
 }: {
   params: Promise<{ agentId: string }>
   searchParams: Promise<{
@@ -176,6 +177,8 @@ export default async function AgentDetailPage({
     /** EFF-12: hatékonysági link → szekció (pl. motor, kapcsolatok). */
     section?: string
   }>
+  /** Workspace Adatlap-fül: nincs vissza-link, a chat/feladat a füleken van. */
+  embedded?: boolean
 }) {
   const { agentId } = await params
   const query = await searchParams
@@ -349,7 +352,7 @@ export default async function AgentDetailPage({
             {/* A tanult szabályok szerkesztése külön munkafelületen történik (verziózás,
                 visszaállítás), ezért itt nem doboz-belső szerkesztés, hanem átvezetés. */}
             <Link
-              href={`/control-plane/training?agentId=${agent.id}`}
+              href={`/control-plane/agents/${agent.id}/training`}
               className="mt-4 inline-block rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky"
             >
               Szabályok szerkesztése / törlése →
@@ -658,12 +661,14 @@ export default async function AgentDetailPage({
 
   return (
     <div className="space-y-6">
-      <Link
-        href="/control-plane/agents"
-        className="inline-block text-sm font-medium text-ink-soft hover:text-coral-deep"
-      >
-        ← Vissza a csapathoz
-      </Link>
+      {embedded ? null : (
+        <Link
+          href="/control-plane/agents"
+          className="inline-block text-sm font-medium text-ink-soft hover:text-coral-deep"
+        >
+          ← Vissza a csapathoz
+        </Link>
+      )}
       {secondaryError ? (
         <div className="rounded-xl border border-honey/40 bg-honey/10 px-4 py-3 text-sm text-ink-soft">
           Az agent betöltődött, de néhány panel (memória, tudásbázis vagy eszközök) most nem ért
@@ -704,9 +709,7 @@ export default async function AgentDetailPage({
         trait={<p className="text-sm leading-relaxed text-ink-soft">{persona.trait}</p>}
         actions={
           <>
-            {/* #199 — korlátozott feladatkörű agentnél nincs chat, csak egyetlen
-                skill-kötött feladat-indító gomb. */}
-            {agent.taskOnly ? (
+            {embedded ? null : agent.taskOnly ? (
               <AgentTaskButton agentId={agent.id} />
             ) : (
               <AgentChatButton
@@ -726,7 +729,7 @@ export default async function AgentDetailPage({
                 initialPrefill={initialPrefill}
               />
             )}
-            <AgentMiniAppsLink agentId={agent.id} />
+            {embedded ? null : <AgentMiniAppsLink agentId={agent.id} />}
             <span className="text-sm text-ink-faint">
               {roleInfo.title} — {roleInfo.description}
             </span>

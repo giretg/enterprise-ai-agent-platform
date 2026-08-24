@@ -50,6 +50,7 @@ type TicketView = {
   assigneeId?: string | null
   agentId?: string | null
   processInstanceId?: string | null
+  playbookStepId?: string | null
   taskDescription?: string | null
   /** Nyitott következmény-kapu kártyák — ticket-szintű Approve elrejtéséhez. */
   pendingConsequenceApprovals?: unknown[] | null
@@ -71,6 +72,152 @@ type TicketView = {
     recipe: { name: string; version: number; status: string } | null
   } | null
   process?: { id: string; processType: string; status: ProcessStatus } | null
+}
+
+const PROCESS_STEP_STATUS_LABELS: Record<string, string> = {
+  pending: 'Következik',
+  ready: 'Indítható',
+  in_progress: 'Folyamatban',
+  awaiting_gate: 'Jóváhagyásra vár',
+  completed: 'Kész',
+  skipped: 'Kihagyva',
+  failed: 'Sikertelen',
+}
+
+const PROCESS_STEP_STATUS_CLASS: Record<string, string> = {
+  pending: 'bg-ink/[0.05] text-ink-faint',
+  ready: 'bg-sky/10 text-sky',
+  in_progress: 'bg-sky/15 text-sky',
+  awaiting_gate: 'bg-honey/15 text-honey',
+  completed: 'bg-sage/15 text-sage',
+  skipped: 'bg-ink/[0.05] text-ink-faint',
+  failed: 'bg-coral/15 text-coral',
+}
+
+function ProcessStepMarker({ status, position }: { status: string; position: number }) {
+  if (status === 'completed') return <span aria-hidden>✓</span>
+  if (status === 'failed') return <span aria-hidden>!</span>
+  if (status === 'skipped') return <span aria-hidden>–</span>
+  return <span>{position}</span>
+}
+
+/**
+ * A ticket folyamatbeli helye. Az authored (teljes) lépéssort mutatjuk, az
+ * instance-adatokból rávetítve az aktuális státuszokat. Így a még el nem indult
+ * lépések sem tűnnek el a felhasználó elől.
+ */
+export function TicketProcessPanel({
+  ticket,
+  data,
+}: {
+  ticket: Pick<TicketView, 'id' | 'playbookStepId'>
+  data: {
+    process: { id: string; processType: string; status: ProcessStatus }
+    steps: Array<{
+      stepId: string
+      stepName: string
+      status: string
+      ticketId: string | null
+    }>
+    intendedSteps: Array<{ stepId: string; stepName: string }>
+  }
+}) {
+  const instanceStepById = new Map(data.steps.map((step) => [step.stepId, step]))
+  const intendedSteps = data.intendedSteps
+  const steps =
+    intendedSteps.length > 0
+      ? intendedSteps.map((step) => ({
+          stepId: step.stepId,
+          stepName: step.stepName,
+          status: instanceStepById.get(step.stepId)?.status ?? 'pending',
+          ticketId: instanceStepById.get(step.stepId)?.ticketId ?? null,
+        }))
+      : data.steps
+
+  const ticketStepId =
+    ticket.playbookStepId ?? steps.find((step) => step.ticketId === ticket.id)?.stepId ?? null
+  const currentStepIndex = steps.findIndex((step) => step.stepId === ticketStepId)
+  const currentStep = currentStepIndex >= 0 ? steps[currentStepIndex] : null
+
+  return (
+    <section className="atelier-card overflow-hidden" aria-labelledby="ticket-process-heading">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-line px-5 py-4 sm:px-6">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-faint">
+            Folyamat része
+          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <h2 id="ticket-process-heading" className="font-display text-lg font-semibold">
+              {data.process.processType}
+            </h2>
+            <ProcessBadge
+              processInstanceId={data.process.id}
+              processType={data.process.processType}
+              status={data.process.status as ProcessStatus}
+            />
+          </div>
+          <p className="mt-1 text-sm text-ink-soft">
+            {currentStep
+              ? `Ez a feladat a folyamat ${currentStepIndex + 1}. lépése a ${steps.length}-ből: ${currentStep.stepName}.`
+              : 'Ez a feladat ehhez a folyamathoz tartozik.'}
+          </p>
+        </div>
+        <Link
+          href={`/control-plane/processes/${data.process.id}`}
+          className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky/30 bg-sky/10 px-4 py-2 text-sm font-semibold text-sky transition-colors hover:bg-sky/20"
+        >
+          Folyamat részletei <span aria-hidden>→</span>
+        </Link>
+      </div>
+
+      {steps.length > 0 ? (
+        <ol className="flex gap-3 overflow-x-auto px-5 py-4 sm:px-6" aria-label="A folyamat lépései">
+          {steps.map((step, index) => {
+            const isTicketStep = step.stepId === ticketStepId
+            return (
+              <li
+                key={step.stepId}
+                aria-current={isTicketStep ? 'step' : undefined}
+                className={`relative min-w-[11rem] flex-1 rounded-xl border p-3 transition-colors ${
+                  isTicketStep
+                    ? 'border-sky/45 bg-sky/[0.07] shadow-[inset_0_0_0_1px_rgba(79,146,168,0.12)]'
+                    : 'border-line bg-card'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-bold ${
+                      isTicketStep
+                        ? 'bg-sky text-white'
+                        : PROCESS_STEP_STATUS_CLASS[step.status] ?? 'bg-ink/[0.05] text-ink-soft'
+                    }`}
+                  >
+                    <ProcessStepMarker status={step.status} position={index + 1} />
+                  </span>
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-ink-faint">
+                    {index + 1}. lépés
+                  </span>
+                </div>
+                <p className="mt-2 text-sm font-semibold leading-snug text-ink">{step.stepName}</p>
+                <span
+                  className={`mt-2 inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                    PROCESS_STEP_STATUS_CLASS[step.status] ?? 'bg-ink/[0.05] text-ink-soft'
+                  }`}
+                >
+                  {isTicketStep ? 'Ez a feladat · ' : ''}
+                  {PROCESS_STEP_STATUS_LABELS[step.status] ?? step.status}
+                </span>
+              </li>
+            )
+          })}
+        </ol>
+      ) : (
+        <p className="px-5 py-4 text-sm text-ink-soft sm:px-6">
+          A folyamat lépései még nem érhetők el.
+        </p>
+      )}
+    </section>
+  )
 }
 
 type TicketProcessTrigger = {
@@ -764,6 +911,14 @@ export function TicketMeta({
                   {debugLogPending ? 'Log…' : 'Debug-log'}
                 </button>
               )}
+              <Link
+                href="/control-plane/board"
+                aria-label="Feladat bezárása és vissza a Boardhoz"
+                title="Bezárás és vissza a Boardhoz"
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-line bg-card text-lg leading-none text-ink-soft transition-colors hover:border-coral/35 hover:bg-coral/10 hover:text-coral-deep"
+              >
+                <span aria-hidden>×</span>
+              </Link>
             </div>
           </div>
 

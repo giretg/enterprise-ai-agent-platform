@@ -314,7 +314,7 @@ export function sanitizeAgentScaffoldDraft(
     keptConnectors.push(connector)
   }
 
-  let role = parsed.role
+  const role = parsed.role
   let suggestedCapabilities = [...new Set(keptCaps)]
   if (role === 'orchestrator' && suggestedCapabilities.length > 0) {
     warnings.push({

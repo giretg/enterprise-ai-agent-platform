@@ -1,11 +1,12 @@
 import { notFound } from 'next/navigation'
 import { getTicket, getTicketTransitions, listTicketComments } from '@/app/actions/platform'
-import { listProcessDefinitions } from '@/app/actions/process'
+import { getTicketProcessContext, listProcessDefinitions } from '@/app/actions/process'
 import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import {
   TicketActions,
   TicketMeta,
+  TicketProcessPanel,
   TicketProcessStartPanel,
   TicketRunAsAuthorization,
   TicketTechnicalPanels,
@@ -48,6 +49,9 @@ export default async function TicketDetailPage({
   if (!res.success) notFound()
 
   const ticket = res.data
+  const processDetailRes = ticket.processInstanceId
+    ? await getTicketProcessContext({ id: ticket.processInstanceId })
+    : null
   const transitions = transitionsRes.success ? transitionsRes.data : []
   const isAdmin = hasMinimumRole(ctx?.activeTenantRole, 'admin')
   const canManageRunAs = hasMinimumRole(ctx?.activeTenantRole, 'operator')
@@ -87,6 +91,10 @@ export default async function TicketDetailPage({
         canRunAnalysis={runAnalysisEntry.canRunAnalysis}
         runAnalystAgentId={runAnalysisEntry.runAnalystAgentId}
       />
+
+      {processDetailRes?.success ? (
+        <TicketProcessPanel ticket={ticket} data={processDetailRes.data} />
+      ) : null}
 
       {/* Fő sáv: primer akció (jóváhagyás) → kontextus (szál) → aktivitás.
           Oldalsáv: kísérő adatok (fájlok, engedélyek, állapot-előzmények). */}

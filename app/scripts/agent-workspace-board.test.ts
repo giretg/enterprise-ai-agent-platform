@@ -80,21 +80,25 @@ check('más agent ticketje nem számít érintettnek', () => {
   )
 })
 
-check('beszélgetős agent fülei: Beszélgetés, Feladatok, Mini-appok, Adatlap', () => {
+check('beszélgetős agent fülei: Beszélgetés, Feladatok, Mini-appok, Tanítás, Adatlap', () => {
   assert.deepEqual(
     workspaceTabsForAgent(false).map((item) => item.key),
-    ['chat', 'board', 'apps', 'profile'],
+    ['chat', 'board', 'apps', 'training', 'profile'],
   )
   assert.equal(
     workspaceTabsForAgent(false).find((item) => item.key === 'board')?.label,
     'Feladatok',
   )
+  assert.equal(
+    workspaceTabsForAgent(false).find((item) => item.key === 'training')?.label,
+    'Tanítás',
+  )
 })
 
-check('korlátozott agent fülei: Indítás, Feladatok, Mini-appok, Adatlap', () => {
+check('korlátozott agent fülei: Indítás, Feladatok, Mini-appok, Tanítás, Adatlap', () => {
   assert.deepEqual(
     workspaceTabsForAgent(true).map((item) => item.key),
-    ['task', 'board', 'apps', 'profile'],
+    ['task', 'board', 'apps', 'training', 'profile'],
   )
 })
 
@@ -103,6 +107,15 @@ check('a /board útvonal a munkaterület része', () => {
     `/control-plane/agents/${AGENT}/board`,
   )
   assert.deepEqual(parsed, { agentId: AGENT, tab: 'board' })
+})
+
+check('a /training útvonal a munkaterület része, az Adatlap előtt', () => {
+  const parsed = parseAgentWorkspacePath(
+    `/control-plane/agents/${AGENT}/training`,
+  )
+  assert.deepEqual(parsed, { agentId: AGENT, tab: 'training' })
+  const keys = workspaceTabsForAgent(false).map((item) => item.key)
+  assert.ok(keys.indexOf('training') < keys.indexOf('profile'))
 })
 
 const repo = readFileSync(
@@ -135,7 +148,46 @@ check('a sín Feladat gombja a board-fület nyitja, nem a létrehozó dialógust
 })
 
 check('a munkaterület rendereli a board-fület', () => {
-  assert.match(workspace, /tab === 'board'/)
+  assert.match(workspace, /board:\s*children \?\? loading/)
+})
+
+check('a munkaterület rendereli a Tanítás-fület az Adatlap előtt', () => {
+  assert.match(workspace, /training:\s*children \?\? loading/)
+})
+
+const tabPage = readFileSync(
+  resolve(
+    process.cwd(),
+    'src/app/control-plane/agents/[agentId]/(workspace)/[tab]/page.tsx',
+  ),
+  'utf8',
+)
+const agentLayout = readFileSync(
+  resolve(process.cwd(), 'src/app/control-plane/agents/[agentId]/(workspace)/layout.tsx'),
+  'utf8',
+)
+const detailPage = readFileSync(
+  resolve(process.cwd(), 'src/app/control-plane/agents/[agentId]/page.tsx'),
+  'utf8',
+)
+
+check('a fejléc a tabváltáskor megőrzött agent-layoutban marad', () => {
+  assert.match(agentLayout, /<AgentWorkspace>[\s\S]*\{children\}[\s\S]*<\/AgentWorkspace>/)
+  assert.doesNotMatch(tabPage, /<AgentWorkspace(?:\s|>)/)
+})
+
+check('az Adatlap-fül a teljes agent-beállítást mutatja (modell is)', () => {
+  assert.match(tabPage, /profile:\s*\(\)\s*=>/)
+  assert.match(tabPage, /AgentDetailPage/)
+  assert.match(tabPage, /embedded/)
+  assert.match(detailPage, /UpdateModelConfigForm/)
+  assert.match(detailPage, /id: 'motor'/)
+})
+
+check('a Tanítás-fül az adott agentet tanítja, nem a tenant-katalógust', () => {
+  assert.match(tabPage, /training:\s*\(\)\s*=>/)
+  assert.match(tabPage, /AgentWorkspaceTraining/)
+  assert.match(detailPage, /\/control-plane\/agents\/\$\{agent\.id\}\/training/)
 })
 
 if (failures > 0) {

@@ -70,6 +70,13 @@ check('archivált szűrőn nem resume-ol — az nem a folytatandó szál', () =>
   assert.equal(conversationIdToResume(base({ sessionsFilter: 'archived' })), null)
 })
 
+check('Elemezd / prefill belépés → új téma, nem a Futás-elemző előző szálát nyitja', () => {
+  assert.equal(
+    conversationIdToResume(base({ initialPrefill: 'Elemezd ezt a ticketet (ticketId: t-1).' })),
+    null,
+  )
+})
+
 const workspace = readFileSync(
   resolve(process.cwd(), 'src/components/agents/agent-workspace.tsx'),
   'utf8',
@@ -90,6 +97,16 @@ check('a chatpanel a resume-döntést használja, nem üresen nyit', () => {
   assert.match(panel, /conversationIdToResume/)
   assert.match(panel, /userStartedNew/)
   assert.match(panel, /setUserStartedNew\(true\)/)
+})
+
+check('Elemezd prefill a resume-döntésbe bekerül — különben a URL-strip után a régi szál visszajön', () => {
+  assert.match(panel, /conversationIdToResume\(\{[^}]*initialPrefill/)
+})
+
+check('Elemezd prefill új beszélgetést indít, mielőtt a composerbe ír', () => {
+  const apply = panel.match(/prefillAppliedRef[\s\S]{0,500}setInput\(initialPrefill\)/)
+  assert.ok(apply, 'prefill apply blokk megtalálható')
+  assert.match(apply[0], /startNewSession/)
 })
 
 if (failures > 0) {

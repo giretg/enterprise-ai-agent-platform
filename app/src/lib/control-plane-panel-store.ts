@@ -70,7 +70,7 @@ export function setControlPlanePanelKey(key: string | null) {
 }
 
 /** Vissza gomb / popstate — a látható panel tálcára kerül, nem dobódik el az iframe. */
-export function syncControlPlanePanelFromUrl(pathname: string) {
+export function syncControlPlanePanelFromUrl() {
   if (typeof window === 'undefined') return
   const urlKey = new URLSearchParams(window.location.search).get('panel')
   const current = effectivePanelKey()
@@ -135,7 +135,10 @@ export function closeControlPlanePanel(pathname: string) {
 export function closeControlPlanePanelByKey(key: string, pathname: string) {
   if (typeof window === 'undefined') return
   dockedPanelKeys = dockedPanelKeys.filter((item) => item !== key)
-  if (panelKey === key) {
+  // effectivePanelKey: frissítés / deep-link után a module panelKey még null,
+  // de a ?panel= URL tartja nyitva a modált — azt is zárni kell.
+  const active = effectivePanelKey()
+  if (active === key || panelKey === key) {
     panelKey = null
     syncUrlPanelParam(null, pathname)
   }

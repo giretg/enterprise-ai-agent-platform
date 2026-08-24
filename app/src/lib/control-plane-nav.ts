@@ -58,6 +58,25 @@ const isGroup = (entry: ControlPlaneNavEntry): entry is ControlPlaneNavGroup => 
 export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] = [
   { key: 'board', href: '/control-plane/board', label: 'Board' },
   {
+    key: 'staff',
+    label: 'Munkatársak',
+    children: [
+      // A névsor a bal sávban él; a tanítás az agent fejlécre került.
+      {
+        key: 'staff.behavior-profiles',
+        href: '/control-plane/behavior-profiles',
+        label: 'Viselkedés-profilok',
+      },
+      { key: 'staff.skills', href: '/control-plane/skills', label: 'Skill-katalógus' },
+      { key: 'staff.apps', href: '/control-plane/apps', label: 'Mini-appok' },
+      {
+        key: 'staff.sandbox-versions',
+        href: '/control-plane/sandbox-versions',
+        label: 'Sandbox verziók',
+      },
+    ],
+  },
+  {
     key: 'automation',
     label: 'Automatizálás',
     children: [

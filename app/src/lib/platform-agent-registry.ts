@@ -101,9 +101,10 @@ export function isRunAnalystAgent(agent: { systemRole?: string | null }): boolea
 }
 
 /**
- * True, ha az agent CSAK admin/kormányzási felületen látszik. Ma ez a Web-Egress és a
- * Futás-elemző; az org-ábra és az admin kormányzási felület megkapja, az operátori
- * felületek nem.
+ * True, ha az agent admin-only gráfcsomópont az org-ábrán. Ma ez a Web-Egress
+ * (napi operátori felületeken soha nem jelenik meg) és a Futás-elemző (a sín /
+ * katalógus a gráf + `analysis.run` kapun át adja a tenant adminnak; operator
+ * elől `hiddenFromOperators` takarja).
  */
 export function isAdminOnlyGraphNode(agent: { systemRole?: string | null }): boolean {
   return isWebEgressAgent(agent) || isRunAnalystAgent(agent)

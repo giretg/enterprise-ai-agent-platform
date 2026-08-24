@@ -809,6 +809,223 @@ async function main() {
     }
   })
 
+  await check('ticketId-szkóp: emberi felülvizsgálati ticket megtalálja a folyamat-futást, nem fullad el beszélgetés-fordulókban', async () => {
+    const f = await seedTenantIsolationFixture()
+    try {
+      const stepStarted = new Date('2026-08-24T12:56:00Z')
+      const reviewStarted = new Date('2026-08-24T12:56:30Z')
+      const decoyStarted = new Date('2026-08-24T14:30:00Z')
+
+      const stepTicket = await prisma.ticket.create({
+        data: {
+          tenantId: f.tenantA.id,
+          type: 'interaction',
+          title: 'adat_ertelmezes_es_feltoltes',
+          state: 'awaiting_human',
+          assigneeType: 'agent',
+          agentId: f.worker.id,
+          createdById: f.adminA.id,
+          processInstanceId: f.process.id,
+          playbookStepId: 'adat_ertelmezes_es_feltoltes',
+          createdAt: stepStarted,
+        },
+      })
+      const reviewTicket = await prisma.ticket.create({
+        data: {
+          tenantId: f.tenantA.id,
+          type: 'interaction',
+          title: 'Emberi felülvizsgálat: adat_ertelmezes_es_feltoltes',
+          state: 'awaiting_human',
+          assigneeType: 'human',
+          agentId: null,
+          createdById: f.adminA.id,
+          processInstanceId: f.process.id,
+          playbookStepId: 'adat_ertelmezes_es_feltoltes',
+          createdAt: reviewStarted,
+        },
+      })
+      await prisma.toolCall.createMany({
+        data: [
+          {
+            agentId: f.worker.id,
+            ticketId: stepTicket.id,
+            toolName: 'http_api_get_all',
+            status: 'ok',
+            outcome: 'ok',
+            latencyMs: 120,
+            argsMeta: { path: '/ownership' },
+          },
+          {
+            agentId: f.worker.id,
+            ticketId: stepTicket.id,
+            toolName: 'file_write',
+            status: 'ok',
+            outcome: 'ok',
+            latencyMs: 20,
+            argsMeta: { path: 'fold_frissites_progress.json' },
+          },
+          {
+            agentId: f.worker.id,
+            ticketId: stepTicket.id,
+            toolName: 'tulajdoni_lap_egyeztetes',
+            status: 'error',
+            outcome: 'failed',
+            latencyMs: 15,
+            argsMeta: { path: 'feldolgozott-tulajdoni-lap-043-15.json' },
+          },
+        ],
+      })
+      await prisma.agentTurn.createMany({
+        data: Array.from({ length: 5 }, (_, i) => ({
+          conversationId: f.conversation.id,
+          tenantId: f.tenantA.id,
+          agentId: f.worker.id,
+          agentVersion: 1,
+          createdById: f.adminA.id,
+          status: 'completed' as const,
+          startedAt: new Date(decoyStarted.getTime() + i * 1_000),
+        })),
+      })
+
+      const index = new RunIndexService(prisma, new CapturingAudit())
+      const stats = new RunStatsService(prisma, new CapturingAudit(), index)
+      const requester = {
+        tenantId: f.tenantA.id,
+        requesterAgentId: f.runAnalystA.id,
+        requesterAgentVersion: 1,
+        actingUserId: f.adminA.id,
+      }
+
+      const drowned = await index.query({
+        ...requester,
+        args: { ticketId: stepTicket.id, limit: 2 },
+      })
+      assert.ok(
+        drowned.runs.some((run) => run.runId === stepTicket.id),
+        'a lépés-ticket bent van',
+      )
+      assert.equal(
+        drowned.runs.some((run) => run.grain === 'turn'),
+        false,
+        'idegen beszélgetés-forduló nem keveredik a ticket-szkópba',
+      )
+
+      const stepIndex = await index.query({
+        ...requester,
+        args: { ticketId: stepTicket.id, limit: 10 },
+      })
+      const stepIds = stepIndex.runs.map((run) => `${run.grain}:${run.runId}`)
+      assert.ok(stepIds.includes(`ticket:${stepTicket.id}`), 'a lépés-ticket bent van')
+      assert.ok(stepIds.includes(`process:${f.process.id}`), 'a folyamat-szemcse bent van')
+      const stepHeader = stepIndex.runs.find((run) => run.runId === stepTicket.id)
+      assert.ok(stepHeader)
+      assert.equal(stepHeader!.toolCallCount, 3)
+
+      const reviewIndex = await index.query({
+        ...requester,
+        args: { ticketId: reviewTicket.id, limit: 10 },
+      })
+      const reviewIds = reviewIndex.runs.map((run) => `${run.grain}:${run.runId}`)
+      assert.ok(reviewIds.includes(`ticket:${reviewTicket.id}`), 'a felülvizsgálati ticket bent van')
+      assert.ok(reviewIds.includes(`ticket:${stepTicket.id}`), 'a testvér lépés-ticket bent van')
+      assert.ok(reviewIds.includes(`process:${f.process.id}`), 'a folyamat-szemcse a felülvizsgálatról is látszik')
+
+      const poisoned = await index.query({
+        ...requester,
+        args: { ticketId: reviewTicket.id, agentQuery: 'Emberi review', limit: 10 },
+      })
+      assert.ok(
+        poisoned.runs.some((run) => run.runId === stepTicket.id || run.runId === f.process.id),
+        'nem illeszkedő agentQuery nem dobja el a ticket-horgonyt',
+      )
+
+      const NIL = '00000000-0000-0000-0000-000000000000'
+      const nilCompanions = {
+        agentId: NIL,
+        conversationId: NIL,
+        processInstanceId: NIL,
+        playbookVersionId: NIL,
+      } as const
+
+      const nilTicket = await index.query({
+        ...requester,
+        args: { ticketId: reviewTicket.id, ...nilCompanions, limit: 10 },
+      })
+      assert.ok(
+        nilTicket.runs.some((run) => run.runId === reviewTicket.id || run.runId === stepTicket.id),
+        'nil UUID kísérőmezők nem dobják el a ticket-horgonyt',
+      )
+
+      const nilTicketList = await index.query({
+        ...requester,
+        args: { ticketIds: [reviewTicket.id], ticketId: NIL, ...nilCompanions, limit: 10 },
+      })
+      assert.ok(
+        nilTicketList.runs.some((run) => run.runId === reviewTicket.id || run.runId === stepTicket.id),
+        'explicit ticketIds + nil UUID kísérőmezők megtalálják a ticketet',
+      )
+
+      const nilConversation = await index.query({
+        ...requester,
+        args: { ...nilCompanions, conversationId: f.conversation.id, limit: 10 },
+      })
+      assert.ok(
+        nilConversation.runs.some((run) => run.runId === f.agentTurn.id),
+        'nil UUID kísérőmezők nem dobják el a beszélgetés-horgonyt',
+      )
+
+      const nilProcess = await index.query({
+        ...requester,
+        args: { processInstanceId: f.process.id, ticketId: NIL, conversationId: NIL, agentId: NIL, playbookVersionId: NIL, limit: 10 },
+      })
+      assert.ok(
+        nilProcess.runs.some((run) => run.runId === f.process.id),
+        'nil UUID kísérőmezők nem dobják el a folyamat-horgonyt',
+      )
+
+      const nilStats = await stats.query({
+        ...requester,
+        args: { ticketId: reviewTicket.id, ...nilCompanions, limit: 10 },
+      })
+      assert.equal(nilStats.totals.toolCallCount, 3, 'run_stats nil UUID mellett is a ticket szkópját adja')
+
+      const selfScoped = await index.query({
+        ...requester,
+        args: { ticketId: reviewTicket.id, agentId: f.runAnalystA.id, limit: 10 },
+      })
+      assert.ok(
+        selfScoped.runs.some((run) => run.runId === reviewTicket.id || run.runId === stepTicket.id),
+        'az elemző saját agentId-je nem dobja el a ticket-horgonyt',
+      )
+
+      const MAX_UUID = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+      const maxUuidTicket = await index.query({
+        ...requester,
+        args: {
+          ticketId: reviewTicket.id,
+          agentId: MAX_UUID,
+          conversationId: MAX_UUID,
+          processInstanceId: MAX_UUID,
+          playbookVersionId: MAX_UUID,
+          agentQuery: 'Adatok értelmezése és feltöltése az Ostoros Föld API-n',
+          limit: 10,
+        },
+      })
+      assert.ok(
+        maxUuidTicket.runs.some((run) => run.runId === reviewTicket.id || run.runId === stepTicket.id),
+        'max UUID kísérőmezők nem dobják el a ticket-horgonyt',
+      )
+
+      const reviewStats = await stats.query({
+        ...requester,
+        args: { ticketId: reviewTicket.id, limit: 10 },
+      })
+      assert.equal(reviewStats.totals.toolCallCount, 3)
+    } finally {
+      await cleanupIsolationFixture(f)
+    }
+  })
+
   await check('run_trace: DB-oldali összefoglaló és lapozott idővonal 60 eszközhíváson', async () => {
     const f = await seedTenantIsolationFixture()
     try {

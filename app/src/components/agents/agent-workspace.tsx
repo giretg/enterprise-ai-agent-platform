@@ -1,6 +1,5 @@
 'use client'
 
-import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { getAgent } from '@/app/actions/platform'
@@ -9,7 +8,6 @@ import { AgentChatPanel } from '@/components/agents/agent-chat-panel'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentWorkspaceApps } from '@/components/agents/agent-workspace-apps'
 import { AgentTaskPanel } from '@/components/agents/agent-task-button'
-import { openControlPlanePanel } from '@/lib/control-plane-panel-store'
 import { personaFor } from '@/lib/agent-persona'
 import { recordLastAgentChatForCurrentTenant } from '@/lib/last-agent-chat'
 import {
@@ -20,7 +18,12 @@ import {
 } from '@/lib/agent-rail-types'
 import {
   agentWorkspacePath,
+  isAgentWorkspaceClientTab,
+  isAgentWorkspaceRouteTab,
+  isAgentWorkspaceTab,
   workspaceTabsForAgent,
+  type AgentWorkspaceClientTab,
+  type AgentWorkspaceRouteTab,
 } from '@/lib/agent-workspace-routes'
 import type { RunAnalysisEntry } from '@/lib/run-analysis-shared'
 import {
@@ -196,13 +199,14 @@ function WorkspaceHeader({
             ⧉
           </WorkspaceIconButton>
         </div>
-      ) : (
-        <Link
-          href={`/control-plane/agents/${agent.id}`}
+      ) : tab === 'profile' || tab === 'training' ? null : (
+        <button
+          type="button"
+          onClick={() => router.push(agentWorkspacePath(agent.id, 'profile'))}
           className="ml-auto rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft hover:border-coral/40"
         >
-          Teljes adatlap
-        </Link>
+          Adatlap
+        </button>
       )}
     </header>
   )
@@ -238,81 +242,27 @@ function WorkspaceApps({ agent }: { agent: WorkspaceAgent }) {
   return <AgentWorkspaceApps agentId={agent.id} taskOnly={agent.taskOnly} />
 }
 
-function WorkspaceProfile({ agent }: { agent: WorkspaceAgent }) {
-  const persona = personaFor(agent.name, agent)
-  return (
-    <div className="flex-1 overflow-auto p-4 sm:p-6">
-      <div className="mx-auto grid max-w-4xl gap-4 md:grid-cols-2">
-        <section className="atelier-card p-5">
-          <h3 className="font-display text-lg font-semibold">Mivel bízták meg</h3>
-          <p className="mt-2 line-clamp-6 text-sm text-ink-soft">
-            {agent.roleInstruction?.trim() || 'Még nincs leírás.'}
-          </p>
-          <Link
-            href={`/control-plane/agents/${agent.id}`}
-            className="mt-4 inline-flex rounded-full border border-line px-4 py-2 text-sm font-semibold text-ink-soft hover:border-coral/40"
-          >
-            Szerkesztés az adatlapon
-          </Link>
-        </section>
-        <section className="atelier-card p-5">
-          <h3 className="font-display text-lg font-semibold">Munkakörnyezet</h3>
-          <dl className="mt-3 space-y-2 text-sm">
-            <div className="flex justify-between gap-3">
-              <dt className="text-ink-faint">Állapot</dt>
-              <dd className="font-medium">{agent.status}</dd>
-            </div>
-            <div className="flex justify-between gap-3">
-              <dt className="text-ink-faint">Megjelenített név</dt>
-              <dd className="font-medium">{persona.nickname}</dd>
-            </div>
-          </dl>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => openControlPlanePanel('staff.skills')}
-              className="rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft hover:bg-night-2"
-            >
-              Skillek
-            </button>
-            <button
-              type="button"
-              onClick={() => openControlPlanePanel('staff.training')}
-              className="rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft hover:bg-night-2"
-            >
-              Tanítás
-            </button>
-            <button
-              type="button"
-              onClick={() => openControlPlanePanel('admin.agent-access')}
-              className="rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft hover:bg-night-2"
-            >
-              Kapcsolatok
-            </button>
-          </div>
-        </section>
-      </div>
-    </div>
-  )
+function WorkspaceProfile({ children }: { children: React.ReactNode }) {
+  return <div className="min-h-0 flex-1 overflow-auto p-4 sm:p-6">{children}</div>
 }
 
-export function AgentWorkspace({ board = null }: { board?: React.ReactNode }) {
+export function AgentWorkspace({
+  children = null,
+}: {
+  children?: React.ReactNode
+}) {
   const params = useParams<{ agentId?: string; tab?: string }>()
   const searchParams = useSearchParams()
   const router = useRouter()
   const agentId = params.agentId
-  const tab = (params.tab as AgentWorkspaceTab | undefined) ?? 'chat'
+  const tab = isAgentWorkspaceTab(params.tab) ? params.tab : 'chat'
   const initialPrefill = searchParams.get('prefill')?.trim() || null
   const [agent, setAgent] = useState<WorkspaceAgent | null>(null)
   const [railCard, setRailCard] = useState<AgentRailCardState | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!agentId) {
-      setAgent(null)
-      setRailCard(null)
-      return
-    }
+    if (!agentId) return
     let cancelled = false
     void getAgent({ id: agentId }).then((res) => {
       if (cancelled) return
@@ -359,7 +309,7 @@ export function AgentWorkspace({ board = null }: { board?: React.ReactNode }) {
   }, [agentId])
 
   useEffect(() => {
-    if (!agent || !agentId) return
+    if (!agent || !agentId || agent.id !== agentId) return
     if (agent.taskOnly && tab === 'chat') {
       router.replace(agentWorkspacePath(agentId, 'task'))
       return
@@ -370,7 +320,7 @@ export function AgentWorkspace({ board = null }: { board?: React.ReactNode }) {
   }, [agent, agentId, tab, router])
 
   useEffect(() => {
-    if (!agent || !agentId) return
+    if (!agent || !agentId || agent.id !== agentId) return
     void recordLastAgentChatForCurrentTenant(agentId)
   }, [agent, agentId])
 
@@ -384,7 +334,7 @@ export function AgentWorkspace({ board = null }: { board?: React.ReactNode }) {
     )
   }
 
-  if (!agent) {
+  if (!agent || agent.id !== agentId) {
     return (
       <div className="flex flex-1 items-center justify-center p-6">
         <p className="text-sm text-ink-faint">Betöltés…</p>
@@ -392,22 +342,33 @@ export function AgentWorkspace({ board = null }: { board?: React.ReactNode }) {
     )
   }
 
+  const loading = (
+    <div className="flex flex-1 items-center justify-center p-6">
+      <p className="text-sm text-ink-faint">Betöltés…</p>
+    </div>
+  )
+  const clientContent: Record<AgentWorkspaceClientTab, React.ReactNode> = {
+    chat: agent.taskOnly ? null : (
+      <WorkspaceChat agent={agent} initialPrefill={initialPrefill} />
+    ),
+    task: <WorkspaceTask agent={agent} />,
+    apps: <WorkspaceApps agent={agent} />,
+  }
+  const routeContent: Record<AgentWorkspaceRouteTab, React.ReactNode> = {
+    board: children ?? loading,
+    training: children ?? loading,
+    profile: <WorkspaceProfile>{children}</WorkspaceProfile>,
+  }
+  const content = isAgentWorkspaceClientTab(tab)
+    ? clientContent[tab]
+    : isAgentWorkspaceRouteTab(tab)
+      ? routeContent[tab]
+      : null
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-night/30">
       <WorkspaceHeader agent={agent} tab={tab} railCard={railCard} />
-      {tab === 'chat' && !agent.taskOnly ? (
-        <WorkspaceChat agent={agent} initialPrefill={initialPrefill} />
-      ) : null}
-      {tab === 'task' ? <WorkspaceTask agent={agent} /> : null}
-      {tab === 'board' ? (
-        board ?? (
-          <div className="flex flex-1 items-center justify-center p-6">
-            <p className="text-sm text-ink-faint">Feladatok betöltése…</p>
-          </div>
-        )
-      ) : null}
-      {tab === 'apps' ? <WorkspaceApps agent={agent} /> : null}
-      {tab === 'profile' ? <WorkspaceProfile agent={agent} /> : null}
+      {content}
     </div>
   )
 }

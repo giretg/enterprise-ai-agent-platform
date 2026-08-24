@@ -3270,6 +3270,10 @@ export async function listAllowedChatTools(
   const lockToRunAnalyst = agent?.systemRole === RUN_ANALYST_SYSTEM_ROLE
   return caps
     .filter((c) => c.allowed && isChatPlatformTool(c.toolName))
+    .filter((c) => {
+      const requiredRole = TOOL_REGISTRY[c.toolName as ToolName].requiredSystemRole
+      return !requiredRole || requiredRole === agent?.systemRole
+    })
     .filter((c) => !lockToRunAnalyst || isRunAnalystToolAllowed(c.toolName))
     .map((c) => c.toolName as ChatPlatformToolName)
 }

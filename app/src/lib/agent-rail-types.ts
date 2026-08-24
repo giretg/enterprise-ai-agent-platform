@@ -35,7 +35,7 @@ export type AgentRailStateResponse = {
   asOf: string
 }
 
-export type AgentWorkspaceTab = 'chat' | 'task' | 'board' | 'apps' | 'profile'
+export type AgentWorkspaceTab = 'chat' | 'task' | 'board' | 'apps' | 'training' | 'profile'
 
 export type AgentRailFilter = 'all' | AgentRailLiveStatus
 

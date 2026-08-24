@@ -488,7 +488,7 @@ export class ScheduledTaskService {
     const seriesStillWaiting = series.state === 'ready' || series.state === 'backlog'
     await this.tickets.update(seriesTicketId, {
       executeAfter: completed ? null : nextTaskState.nextRunAt,
-      payload: payload as Prisma.InputJsonValue,
+      payload: payload as Prisma.JsonObject,
       ...(completed && seriesStillWaiting ? { state: 'done' } : {}),
     })
   }

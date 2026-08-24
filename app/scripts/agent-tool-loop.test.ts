@@ -476,6 +476,7 @@ async function main() {
     const unlocked = await listAllowedChatTools(caps, 'agent-1')
     assert.ok(unlocked.includes('web_search'))
     assert.ok(unlocked.includes('gmail_send'))
+    assert.ok(!unlocked.includes('run_index'))
   })
 
   await check('vékony fallback: beágyazott {"tool":...} JSON tool_calls nélkül is hív', async () => {

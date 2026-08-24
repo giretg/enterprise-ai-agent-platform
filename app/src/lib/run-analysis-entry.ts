@@ -23,17 +23,12 @@ export async function resolveRunAnalysisEntry(input: {
   if (!decision.allow) {
     return { canRunAnalysis: false, runAnalystAgentId: null }
   }
-  let agent = await findTenantRunAnalystAgent(input.tenantId)
-  if (!agent && input.userId) {
-    try {
-      agent = await ensureTenantRunAnalystAgent({
+  const agent = input.userId
+    ? await ensureTenantRunAnalystAgent({
         tenantId: input.tenantId,
         approvedById: input.userId,
-      })
-    } catch {
-      agent = await findTenantRunAnalystAgent(input.tenantId)
-    }
-  }
+      }).catch(() => findTenantRunAnalystAgent(input.tenantId))
+    : await findTenantRunAnalystAgent(input.tenantId)
   if (!agent) {
     return { canRunAnalysis: false, runAnalystAgentId: null }
   }

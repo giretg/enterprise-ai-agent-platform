@@ -7,7 +7,6 @@ import {
   closeControlPlanePanel,
   closeControlPlanePanelByKey,
   minimizeControlPlanePanel,
-  openControlPlanePanel,
   setControlPlanePanelKey,
   syncControlPlanePanelFromUrl,
   useControlPlaneDockedPanelKeys,
@@ -16,9 +15,8 @@ import {
 import { LoadingOverlay } from '@/components/ui/spinner'
 import { isControlPlaneEmbedReadyMessage } from '@/lib/control-plane-embed-messages'
 import {
+  CONTROL_PLANE_PANEL_VIEWPORT_CLASS,
   panelDefForKey,
-  panelSizeClass,
-  type ControlPlanePanelSize,
 } from '@/lib/control-plane-panels'
 
 let lastPanelOpener: HTMLElement | null = null
@@ -106,7 +104,6 @@ function RouteModalFrame({
   const titleId = useId()
   const closeRef = useRef<HTMLButtonElement>(null)
   const def = panelDefForKey(panelKey)
-  const size: ControlPlanePanelSize = def?.size ?? 'sz-m'
 
   useEffect(() => {
     closeRef.current?.focus()
@@ -139,7 +136,7 @@ function RouteModalFrame({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`flex max-h-[90vh] flex-col overflow-hidden rounded-2xl border border-line bg-card shadow-2xl ${panelSizeClass(size)}`}
+        className={`flex max-h-[90vh] flex-col overflow-hidden rounded-2xl border border-line bg-card shadow-2xl ${CONTROL_PLANE_PANEL_VIEWPORT_CLASS}`}
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex shrink-0 items-start gap-3 border-b border-line px-4 py-3">
@@ -200,11 +197,15 @@ export function RouteModalHost() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true)
+    // Deep-link / frissítés: a ?panel= URL-t store-ba emeljük, különben a ✕
+    // closeControlPlanePanelByKey nem talál module panelKey-t és nem zár.
+    syncControlPlanePanelFromUrl()
+    // Mount-only; az útvonalváltást a popstate listener kezeli.
   }, [])
 
   useEffect(() => {
     const onPop = () => {
-      syncControlPlanePanelFromUrl(pathname)
+      syncControlPlanePanelFromUrl()
     }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)

@@ -29,7 +29,7 @@ import {
   type AgentAccessVerb,
   disclosureForDeny,
 } from '@/lib/agent-access-graph'
-import { isAdminOnlyGraphNode, isPanelWizardAgent, isWebEgressAgent } from '@/lib/platform-agent-registry'
+import { isPanelWizardAgent, isWebEgressAgent } from '@/lib/platform-agent-registry'
 import { AgentAccessError } from './agent-access-errors'
 
 /** A gráf-döntéshez és a UI-hoz szükséges agent-adatok (nem a teljes `Agent`). */
@@ -231,13 +231,14 @@ export class AgentAccessService {
       if (subject.kind === 'agent' && candidate.id === subject.agentId) continue
       if (isPanelWizardAgent({ name: candidate.name, tenantId: candidate.tenantId })) continue
       if (options?.activeOnly && candidate.status !== 'active') continue
-      // A csak-admin csomópont (Web-Egress) nem kerül a napi operátori felületekre.
-      // Agent subject viszont a saját `address` grantján keresztül elérheti — a
-      // webes kutatást agent kéri agenttől, ezért ott nem szűrünk.
+      // A Web-Egress nem kerül a napi operátori felületekre (katalógus, sín,
+      // felelős-választó). Agent subject a saját `address` grantján elérheti.
+      // A Futás-elemző beszélgethető kolléga a tenant adminnak: a gráf
+      // (`hiddenFromOperators` + grant) dönt, ne ez a skip.
       if (
         subject.kind === 'user' &&
         !options?.includeAdminOnly &&
-        isAdminOnlyGraphNode(candidate)
+        isWebEgressAgent(candidate)
       ) {
         continue
       }

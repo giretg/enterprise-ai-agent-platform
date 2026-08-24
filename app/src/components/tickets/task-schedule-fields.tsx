@@ -2,6 +2,10 @@
 
 import {
   TICKET_SCHEDULE_RECURRENCE_LABELS,
+  TICKET_SCHEDULE_INTERVAL_HOURS_MAX,
+  TICKET_SCHEDULE_INTERVAL_HOURS_MIN,
+  TICKET_SCHEDULE_MAX_RUNS_MAX,
+  TICKET_SCHEDULE_MAX_RUNS_MIN,
   defaultScheduleLocalDateTime,
   localDateTimeToIso,
   type TicketScheduleRecurrence,
@@ -43,14 +47,22 @@ export function validateTaskSchedule(state: TaskScheduleState): string | null {
   if (!localDateTimeToIso(state.runAtLocal)) return 'Érvénytelen időpont.'
   if (state.mode === 'recurring' && state.recurrence === 'hourly') {
     const hours = Number(state.intervalHours)
-    if (!Number.isInteger(hours) || hours < 1 || hours > 168) {
-      return 'Az óra-köz az 1 és 168 óra között legyen.'
+    if (
+      !Number.isInteger(hours) ||
+      hours < TICKET_SCHEDULE_INTERVAL_HOURS_MIN ||
+      hours > TICKET_SCHEDULE_INTERVAL_HOURS_MAX
+    ) {
+      return `Az óra-köz az ${TICKET_SCHEDULE_INTERVAL_HOURS_MIN} és ${TICKET_SCHEDULE_INTERVAL_HOURS_MAX} óra között legyen.`
     }
   }
   if (state.mode === 'recurring' && state.maxRuns.trim()) {
     const maxRuns = Number(state.maxRuns)
-    if (!Number.isInteger(maxRuns) || maxRuns < 1 || maxRuns > 365) {
-      return 'A futások száma 1 és 365 között legyen.'
+    if (
+      !Number.isInteger(maxRuns) ||
+      maxRuns < TICKET_SCHEDULE_MAX_RUNS_MIN ||
+      maxRuns > TICKET_SCHEDULE_MAX_RUNS_MAX
+    ) {
+      return `A futások száma ${TICKET_SCHEDULE_MAX_RUNS_MIN} és ${TICKET_SCHEDULE_MAX_RUNS_MAX} között legyen.`
     }
   }
   return null
@@ -168,8 +180,8 @@ export function TaskScheduleFields({
               <span className="text-sm font-medium text-ink-soft">Hány óránként</span>
               <input
                 type="number"
-                min={1}
-                max={168}
+                min={TICKET_SCHEDULE_INTERVAL_HOURS_MIN}
+                max={TICKET_SCHEDULE_INTERVAL_HOURS_MAX}
                 value={state.intervalHours}
                 disabled={disabled}
                 onChange={(e) => onChange({ ...state, intervalHours: e.target.value })}
@@ -196,8 +208,8 @@ export function TaskScheduleFields({
             </span>
             <input
               type="number"
-              min={1}
-              max={365}
+              min={TICKET_SCHEDULE_MAX_RUNS_MIN}
+              max={TICKET_SCHEDULE_MAX_RUNS_MAX}
               placeholder="korlátlan"
               value={state.maxRuns}
               disabled={disabled}

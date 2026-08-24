@@ -47,18 +47,21 @@ export function AgentWorkspaceApps({
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
-    setError(null)
-    void listSandboxApps({ createdByAgentId: agentId }).then((res) => {
+    queueMicrotask(() => {
       if (cancelled) return
-      if (!res.success) {
-        setError(res.error)
-        setApps([])
+      setLoading(true)
+      setError(null)
+      void listSandboxApps({ createdByAgentId: agentId }).then((res) => {
+        if (cancelled) return
+        if (!res.success) {
+          setError(res.error)
+          setApps([])
+          setLoading(false)
+          return
+        }
+        setApps(res.data.apps)
         setLoading(false)
-        return
-      }
-      setApps(res.data.apps)
-      setLoading(false)
+      })
     })
     return () => {
       cancelled = true

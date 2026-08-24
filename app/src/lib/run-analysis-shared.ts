@@ -38,3 +38,19 @@ export type RunAnalysisEntry = {
   canRunAnalysis: boolean
   runAnalystAgentId: string | null
 }
+
+/**
+ * A sín / operátori katalógus `view` azonosítói. A gráf a Futás-elemzőt
+ * admin-only csomópontként kihagyhatja (Web-Egress-szel együtt); az
+ * `analysis.run` kapu — tenant admin és assume-tenant superadmin — ettől
+ * függetlenül felteszi a listára, grant nélkül is. Operator kimarad.
+ */
+export function mergeRunAnalystIntoCatalogIds(
+  accessibleIds: readonly string[],
+  entry: Pick<RunAnalysisEntry, 'canRunAnalysis' | 'runAnalystAgentId'>,
+): string[] {
+  const ids = [...accessibleIds]
+  if (!entry.canRunAnalysis || !entry.runAnalystAgentId) return ids
+  if (!ids.includes(entry.runAnalystAgentId)) ids.push(entry.runAnalystAgentId)
+  return ids
+}

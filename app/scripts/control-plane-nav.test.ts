@@ -101,6 +101,21 @@ function main() {
     )
   })
 
+  check('header keeps Munkatársak tools after the roster moved to the rail', () => {
+    const nav = buildControlPlaneNav({ tenantRole: 'operator', platformRoles: [] })
+    const staff = nav.find((entry) => 'children' in entry && entry.key === 'staff')
+    assert.ok(staff && 'children' in staff)
+    assert.equal(staff.label, 'Munkatársak')
+    const hrefs = staff.children.map((child) => child.href)
+    assert.ok(!hrefs.includes('/control-plane/training'))
+    assert.ok(hrefs.includes('/control-plane/skills'))
+    assert.ok(hrefs.includes('/control-plane/behavior-profiles'))
+    assert.ok(hrefs.includes('/control-plane/apps'))
+    assert.ok(hrefs.includes('/control-plane/sandbox-versions'))
+    assert.ok(!hrefs.includes('/control-plane/agents'))
+    assert.ok(!hrefs.includes('/control-plane/agent-access'))
+  })
+
   // ── Menü-láthatósági policy ───────────────────────────────────────────────
 
   check('nav keys are unique across the catalog', () => {

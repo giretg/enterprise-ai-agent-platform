@@ -214,6 +214,7 @@
     "test:iam-membership-scope": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-membership-scope.test.ts",
     "test:control-plane-nav": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/control-plane-nav.test.ts",
     "test:control-plane-embed": "tsx scripts/control-plane-embed.test.ts",
+    "test:control-plane-panel-store": "tsx scripts/control-plane-panel-store.test.ts",
     "test:system-agent-registry": "tsx scripts/system-agent-registry.test.ts",
     "test:clerk-invitation-membership": "tsx scripts/clerk-invitation-membership.test.ts",
     "test:tenant-management": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tenant-management.test.ts",

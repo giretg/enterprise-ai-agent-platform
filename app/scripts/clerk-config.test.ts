@@ -57,11 +57,12 @@ try {
 
   check('dev auth csak nem-productionban engedett', () => {
     const previous = process.env.NODE_ENV
-    process.env.NODE_ENV = 'development'
+    const writableEnv = process.env as Record<string, string | undefined>
+    writableEnv.NODE_ENV = 'development'
     assert.equal(isDevAuthAllowed(), true)
-    process.env.NODE_ENV = 'production'
+    writableEnv.NODE_ENV = 'production'
     assert.equal(isDevAuthAllowed(), false)
-    process.env.NODE_ENV = previous
+    writableEnv.NODE_ENV = previous
   })
 
   check('a root layout a szerver isClerkEnabled döntését adja a ClerkProvidernek', () => {

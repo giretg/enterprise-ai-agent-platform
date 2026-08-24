@@ -1,5 +1,7 @@
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
+import { mergeRunAnalystLoopGuardModelConfig } from '@/domain/agents/run-analyst-role'
+import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
 
 export type AgentModelConfigInput = {
   provider: string
@@ -25,9 +27,15 @@ export async function applyAgentModelConfigUpdate(input: {
     await services.platformSettings.assertModelAllowed(fallback.provider, fallback.model)
   }
 
+  const agent = await repositories.agents.findById(input.agentId)
+  const modelConfig =
+    agent?.systemRole === RUN_ANALYST_SYSTEM_ROLE
+      ? mergeRunAnalystLoopGuardModelConfig(input.modelConfig)
+      : input.modelConfig
+
   const result = await repositories.agents.updateModelConfig({
     agentId: input.agentId,
-    modelConfig: input.modelConfig,
+    modelConfig,
   })
   await repositories.audit.append({
     actorType: 'human',
@@ -36,14 +44,14 @@ export async function applyAgentModelConfigUpdate(input: {
     action: 'agent.version',
     targetType: 'agent',
     targetId: input.agentId,
-    modelUsed: input.modelConfig.model,
+    modelUsed: modelConfig.model,
     inputRef: null,
     outputRef: `v${result.agentVersion}`,
     policyDecision: 'allowed',
     metadata: {
       ...(input.scope === 'system_agent' ? { scope: input.scope } : {}),
       changed: ['modelConfig'],
-      modelConfig: input.modelConfig,
+      modelConfig,
     },
   })
   return result

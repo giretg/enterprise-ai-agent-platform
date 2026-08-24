@@ -310,7 +310,7 @@ await test('rendszeres sorozatnál új példány készül, a sablon a következ�
               state: 'ready',
               payload: { scheduleSeries: true, question: 'Készíts riportot' },
               executeAfter: dueAt,
-            } as Ticket)
+            } as unknown as Ticket)
           : null,
       update: async (id, data) => {
         assert.equal(id, SERIES_TICKET_ID)

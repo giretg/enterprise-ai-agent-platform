@@ -13,6 +13,8 @@ import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
 import {
   appendRunAnalysisAudit,
   loadProcessTicketIndex,
+  presentScopeId,
+  presentScopeIds,
   type RunAnalysisRequester,
 } from './run-scope'
 import type {
@@ -37,6 +39,7 @@ export class RunIndexNotFoundError extends Error {
 export function selectRunIndexCandidates(
   candidates: RunIndexCandidate[],
   limit: number,
+  pinnedKeys?: ReadonlySet<string>,
 ): { selected: RunIndexCandidate[]; truncated: boolean } {
   const byKey = new Map<string, RunIndexCandidate>()
   for (const candidate of candidates) {
@@ -49,8 +52,33 @@ export function selectRunIndexCandidates(
   const sorted = [...byKey.values()].sort(
     (a, b) => b.startedAt.getTime() - a.startedAt.getTime(),
   )
-  const page = toListPage(sorted, limit, 0)
-  return { selected: page.items, truncated: page.hasMore }
+  if (!pinnedKeys?.size) {
+    const page = toListPage(sorted, limit, 0)
+    return { selected: page.items, truncated: page.hasMore }
+  }
+  const pinned: RunIndexCandidate[] = []
+  const rest: RunIndexCandidate[] = []
+  for (const candidate of sorted) {
+    if (pinnedKeys.has(`${candidate.grain}:${candidate.id}`)) pinned.push(candidate)
+    else rest.push(candidate)
+  }
+  const selected = [...pinned.slice(0, limit)]
+  const remaining = limit - selected.length
+  if (remaining > 0) selected.push(...rest.slice(0, remaining))
+  return {
+    selected,
+    truncated: pinned.length + rest.length > selected.length,
+  }
+}
+
+function pinnedCandidateKeys(args: RunIndexArgs): Set<string> {
+  const keys = new Set<string>()
+  if (args.ticketId) keys.add(`ticket:${args.ticketId}`)
+  if (args.processInstanceId) keys.add(`process:${args.processInstanceId}`)
+  for (const id of args.ticketIds ?? []) keys.add(`ticket:${id}`)
+  for (const id of args.processInstanceIds ?? []) keys.add(`process:${id}`)
+  for (const id of args.agentTurnIds ?? []) keys.add(`turn:${id}`)
+  return keys
 }
 
 function parseIsoDate(value: string | undefined, label: string): Date | undefined {
@@ -58,6 +86,39 @@ function parseIsoDate(value: string | undefined, label: string): Date | undefine
   const parsed = Date.parse(value)
   if (Number.isNaN(parsed)) throw new Error(`invalid_${label}`)
   return new Date(parsed)
+}
+
+/** Kemény azonosító — ticket/beszélgetés/folyamat. Ezek mellett a névkeresés nem dobhat. */
+function hasHardScopeAnchor(args: RunIndexArgs): boolean {
+  return Boolean(
+    args.conversationId ||
+      args.ticketId ||
+      args.processInstanceId ||
+      args.playbookVersionId ||
+      args.agentTurnIds?.length ||
+      args.ticketIds?.length ||
+      args.processInstanceIds?.length,
+  )
+}
+
+/**
+ * Modell-koerció utáni második kapu: nil/üres UUID ne legyen horgony, még
+ * ha a hívó (teszt, más tool-út) a nyers argsot adja is.
+ */
+export function normalizeRunIndexArgs(args: RunIndexArgs): RunIndexArgs {
+  const agentQuery = args.agentQuery?.trim()
+  return {
+    ...args,
+    agentId: presentScopeId(args.agentId),
+    agentQuery: agentQuery || undefined,
+    conversationId: presentScopeId(args.conversationId),
+    ticketId: presentScopeId(args.ticketId),
+    processInstanceId: presentScopeId(args.processInstanceId),
+    playbookVersionId: presentScopeId(args.playbookVersionId),
+    agentTurnIds: presentScopeIds(args.agentTurnIds),
+    ticketIds: presentScopeIds(args.ticketIds),
+    processInstanceIds: presentScopeIds(args.processInstanceIds),
+  }
 }
 
 function resolveLimit(raw: number | undefined): number {
@@ -149,7 +210,7 @@ export class RunIndexService {
     truncated: boolean
   }> {
     const tenantId = input.tenantId
-    const args = input.args
+    const args = normalizeRunIndexArgs(input.args)
     const limit = resolveLimit(args.limit)
     const since = parseIsoDate(args.since, 'since')
     const until = parseIsoDate(args.until, 'until')
@@ -180,9 +241,16 @@ export class RunIndexService {
     let selected: RunIndexCandidate[]
     let truncated: boolean
 
+    const pinned = pinnedCandidateKeys(args)
+
     if (explicit) {
-      const candidates = await this.loadExplicitCandidates(tenantId, args, runAnalystIds)
-      const page = selectRunIndexCandidates(candidates, limit)
+      const candidates = await this.loadExplicitCandidates(
+        tenantId,
+        args,
+        runAnalystIds,
+        limit + 1,
+      )
+      const page = selectRunIndexCandidates(candidates, limit, pinned)
       selected = page.selected
       truncated = page.truncated
     } else {
@@ -196,7 +264,7 @@ export class RunIndexService {
         until,
         fetchLimit: limit + 1,
       })
-      const page = selectRunIndexCandidates(candidates, limit)
+      const page = selectRunIndexCandidates(candidates, limit, pinned)
       selected = page.selected
       truncated = page.truncated
     }
@@ -246,8 +314,14 @@ export class RunIndexService {
         where: { id: args.agentId },
         select: { id: true, tenantId: true },
       })
-      if (!agent || agent.tenantId !== tenantId) throw new RunIndexNotFoundError()
-      if (runAnalystIds.includes(agent.id)) throw new RunIndexNotFoundError()
+      const unusable =
+        !agent || agent.tenantId !== tenantId || runAnalystIds.includes(agent.id)
+      if (unusable) {
+        // A modell a saját elemző-UUID-jét vagy egy sentinel/idegen agentId-t
+        // is beküldi a ticket-horgony mellé — ez nem írhatja felül a ticketet.
+        if (hasHardScopeAnchor(args)) return undefined
+        throw new RunIndexNotFoundError()
+      }
       return agent.id
     }
     const query = args.agentQuery?.trim()
@@ -258,7 +332,13 @@ export class RunIndexService {
       .map((agent) => ({ agent, score: scoreAgentForCatalogQuery(agent, query) }))
       .filter((row) => row.score > 0)
       .sort((a, b) => b.score - a.score)
-    if (scored.length === 0) throw new RunIndexNotFoundError()
+    if (scored.length === 0) {
+      // Az Elemezd-prefill a ticket címét is beleteszi („Emberi felülvizsgálat: …").
+      // Ha a modell ezt agentQuery-ként is átadja, a névkeresés hiánya nem
+      // írhatja felül a valid ticket/folyamat horgonyt.
+      if (hasHardScopeAnchor(args)) return undefined
+      throw new RunIndexNotFoundError()
+    }
     return scored[0]!.agent.id
   }
 
@@ -358,6 +438,7 @@ export class RunIndexService {
     tenantId: string,
     args: RunIndexArgs,
     runAnalystIds: string[],
+    expansionLimit: number,
   ): Promise<RunIndexCandidate[]> {
     const candidates: RunIndexCandidate[] = []
     const analystFilter = runAnalystExclusionAgentIds(runAnalystIds)
@@ -384,16 +465,17 @@ export class RunIndexService {
           tenantId,
           ...excludeAnalystAgent('agentId', runAnalystIds),
         },
-        select: { id: true, createdAt: true },
+        select: { id: true, createdAt: true, processInstanceId: true },
       })
       if (tickets.length !== args.ticketIds.length) throw new RunIndexNotFoundError()
-      for (const ticket of tickets) {
-        candidates.push({
-          grain: 'ticket',
-          id: ticket.id,
-          startedAt: ticket.createdAt,
-        })
-      }
+      candidates.push(
+        ...(await this.expandTicketProcessCandidates(
+          tenantId,
+          tickets,
+          runAnalystIds,
+          expansionLimit,
+        )),
+      )
     }
 
     if (args.processInstanceIds?.length) {
@@ -437,6 +519,14 @@ export class RunIndexService {
         : undefined
 
     const analystFilter = runAnalystExclusionAgentIds(runAnalystIds)
+    const take = filters.fetchLimit
+    const anchoredToTicket = Boolean(filters.ticketId)
+    const anchoredToProcess = Boolean(filters.processInstanceId || filters.playbookVersionId)
+    const anchoredToConversation = Boolean(filters.conversationId)
+
+    // Ticket-horgony: a ticket UUID a szkóp, NEM a tenant összes beszélgetés-fordulója.
+    // AgentTurn-nek nincs ticketId mezője — a ticket-futás ToolCall.ticketId-n él.
+    const fetchTurns = !anchoredToProcess && (!anchoredToTicket || anchoredToConversation)
 
     const turnWhere = {
       tenantId,
@@ -446,12 +536,17 @@ export class RunIndexService {
       ...(timeFilter ? { startedAt: timeFilter } : {}),
     }
 
+    // ticketId egyedi: agent/conversation szűrő ne takarja el (emberi felülvizsgálati
+    // ticket agentId-je null, a címből kitalált agentQuery viszont a workerre oldódhat).
     const ticketWhere = {
       tenantId,
       ...excludeAnalystAgent('agentId', runAnalystIds),
-      ...(filters.agentId ? { agentId: filters.agentId } : {}),
-      ...(filters.conversationId ? { conversationId: filters.conversationId } : {}),
-      ...(filters.ticketId ? { id: filters.ticketId } : {}),
+      ...(filters.ticketId
+        ? { id: filters.ticketId }
+        : {
+            ...(filters.agentId ? { agentId: filters.agentId } : {}),
+            ...(filters.conversationId ? { conversationId: filters.conversationId } : {}),
+          }),
       ...(timeFilter ? { createdAt: timeFilter } : {}),
     }
 
@@ -463,32 +558,24 @@ export class RunIndexService {
       ...(timeFilter ? { startedAt: timeFilter } : {}),
     }
 
-    const take = filters.fetchLimit
-
-    const processOnlyScope =
-      Boolean(filters.processInstanceId || filters.playbookVersionId) &&
-      !filters.agentId &&
-      !filters.conversationId &&
-      !filters.ticketId
-
     const [turns, tickets, processes] = await Promise.all([
-      processOnlyScope
-        ? Promise.resolve([])
-        : this.prisma.agentTurn.findMany({
+      fetchTurns
+        ? this.prisma.agentTurn.findMany({
             where: turnWhere,
             select: { id: true, startedAt: true },
             orderBy: { startedAt: 'desc' },
             take,
-          }),
+          })
+        : Promise.resolve([]),
       filters.ticketId || filters.agentId || filters.conversationId
         ? this.prisma.ticket.findMany({
             where: ticketWhere,
-            select: { id: true, createdAt: true },
+            select: { id: true, createdAt: true, processInstanceId: true },
             orderBy: { createdAt: 'desc' },
             take,
           })
         : Promise.resolve([]),
-      filters.processInstanceId || filters.playbookVersionId
+      anchoredToProcess
         ? this.prisma.processInstance.findMany({
             where: processWhere,
             select: { id: true, startedAt: true },
@@ -502,8 +589,74 @@ export class RunIndexService {
     for (const turn of turns) {
       candidates.push({ grain: 'turn', id: turn.id, startedAt: turn.startedAt })
     }
-    for (const ticket of tickets) {
-      candidates.push({ grain: 'ticket', id: ticket.id, startedAt: ticket.createdAt })
+    if (anchoredToTicket) {
+      candidates.push(
+        ...(await this.expandTicketProcessCandidates(
+          tenantId,
+          tickets,
+          runAnalystIds,
+          take,
+        )),
+      )
+    } else {
+      for (const ticket of tickets) {
+        candidates.push({ grain: 'ticket', id: ticket.id, startedAt: ticket.createdAt })
+      }
+    }
+    for (const process of processes) {
+      candidates.push({ grain: 'process', id: process.id, startedAt: process.startedAt })
+    }
+    return candidates
+  }
+
+  /**
+   * Ticket-horgony: a ticket + a folyamat-szemcse + a testvér-lépések.
+   * Emberi felülvizsgálati ticketen az eredeti agent-futás a testvér-lépésen él.
+   */
+  private async expandTicketProcessCandidates(
+    tenantId: string,
+    tickets: Array<{ id: string; createdAt: Date; processInstanceId: string | null }>,
+    runAnalystIds: string[],
+    siblingTake: number,
+  ): Promise<RunIndexCandidate[]> {
+    const candidates: RunIndexCandidate[] = tickets.map((ticket) => ({
+      grain: 'ticket',
+      id: ticket.id,
+      startedAt: ticket.createdAt,
+    }))
+    const processIds = [
+      ...new Set(
+        tickets
+          .map((ticket) => ticket.processInstanceId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ]
+    if (processIds.length === 0) return candidates
+
+    const ticketIds = new Set(tickets.map((ticket) => ticket.id))
+    const [processes, siblings] = await Promise.all([
+      this.prisma.processInstance.findMany({
+        where: {
+          id: { in: processIds },
+          tenantId,
+          ...excludeAnalystAgent('startedByAgentId', runAnalystIds),
+        },
+        select: { id: true, startedAt: true },
+      }),
+      this.prisma.ticket.findMany({
+        where: {
+          processInstanceId: { in: processIds },
+          tenantId,
+          ...excludeAnalystAgent('agentId', runAnalystIds),
+        },
+        select: { id: true, createdAt: true },
+        orderBy: { createdAt: 'desc' },
+        take: siblingTake,
+      }),
+    ])
+    for (const sibling of siblings) {
+      if (ticketIds.has(sibling.id)) continue
+      candidates.push({ grain: 'ticket', id: sibling.id, startedAt: sibling.createdAt })
     }
     for (const process of processes) {
       candidates.push({ grain: 'process', id: process.id, startedAt: process.startedAt })

@@ -2,7 +2,6 @@
 
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import Link from 'next/link'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
 import {
@@ -53,12 +52,7 @@ function AgentRailRolePopover({
   visible: boolean
   onClose: () => void
 }) {
-  const [mounted, setMounted] = useState(false)
   const [position, setPosition] = useState({ top: 0, left: 0 })
-
-  useEffect(() => {
-    setMounted(true)
-  }, [])
 
   useEffect(() => {
     if (!visible) return
@@ -94,7 +88,9 @@ function AgentRailRolePopover({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [visible, onClose])
 
-  if (!visible || !mounted) return null
+  // A popover csak kliensoldali user-interakció után válhat láthatóvá, ezért
+  // nincs szükség külön hydration/mounted állapotra.
+  if (!visible) return null
 
   return createPortal(
     <div
@@ -159,6 +155,17 @@ function AgentRailCardMenu({
         type="button"
         role="menuitem"
         onClick={() => {
+          onOpenTab('training')
+          onClose()
+        }}
+        className="block w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-ink-soft transition-colors hover:bg-night-2 hover:text-ink"
+      >
+        Tanítás
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
           onOpenTab('profile')
           onClose()
         }}
@@ -166,14 +173,6 @@ function AgentRailCardMenu({
       >
         Adatlap
       </button>
-      <Link
-        href={`/control-plane/agents/${agentId}`}
-        role="menuitem"
-        onClick={onClose}
-        className="block rounded-lg px-3 py-2 text-sm font-semibold text-ink-soft transition-colors hover:bg-night-2 hover:text-ink"
-      >
-        Teljes adatlap
-      </Link>
     </div>
   )
 }

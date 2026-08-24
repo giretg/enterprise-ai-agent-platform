@@ -15,6 +15,10 @@
  */
 
 export const TICKET_SCHEDULE_RECURRENCES = ['hourly', 'daily', 'weekly', 'monthly'] as const
+export const TICKET_SCHEDULE_RECURRENCES_WITH_NONE = [
+  'none',
+  ...TICKET_SCHEDULE_RECURRENCES,
+] as const
 export type TicketScheduleRecurrence = (typeof TICKET_SCHEDULE_RECURRENCES)[number]
 export type TicketScheduleKind = 'once' | 'recurring'
 export type TicketScheduleRole = 'series' | 'occurrence'
@@ -48,8 +52,10 @@ export type TicketScheduleView = {
   compactLabel: string
 }
 
-const MIN_INTERVAL_HOURS = 1
-const MAX_INTERVAL_HOURS = 168
+export const TICKET_SCHEDULE_INTERVAL_HOURS_MIN = 1
+export const TICKET_SCHEDULE_INTERVAL_HOURS_MAX = 168
+export const TICKET_SCHEDULE_MAX_RUNS_MIN = 1
+export const TICKET_SCHEDULE_MAX_RUNS_MAX = 365
 
 export function isTicketScheduleRecurrence(value: unknown): value is TicketScheduleRecurrence {
   return (
@@ -59,7 +65,10 @@ export function isTicketScheduleRecurrence(value: unknown): value is TicketSched
 
 export function clampIntervalHours(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 1
-  return Math.min(MAX_INTERVAL_HOURS, Math.max(MIN_INTERVAL_HOURS, Math.floor(value)))
+  return Math.min(
+    TICKET_SCHEDULE_INTERVAL_HOURS_MAX,
+    Math.max(TICKET_SCHEDULE_INTERVAL_HOURS_MIN, Math.floor(value)),
+  )
 }
 
 function payloadRecord(payload: unknown): Record<string, unknown> | null {
