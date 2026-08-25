@@ -163,6 +163,9 @@ async function main() {
     assert.match(src, /MAX_STATS_SOURCE_KEY_SAMPLE/)
     assert.match(src, /analysis\.run_stats/)
     assert.match(src, /toolCallSourceKey/)
+    // A latency / process-ticket plafon nem lehet néma — a modellnek látnia kell.
+    assert.match(src, /latencyByToolTruncated/)
+    assert.match(src, /processTicketIndexTruncated/)
   })
 
   await test('forrásszerződés: run_index resolveScope kiszervezve', () => {

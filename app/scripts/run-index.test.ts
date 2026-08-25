@@ -124,6 +124,8 @@ async function main() {
     )
     assert.match(src, /RUN_ANALYST_SYSTEM_ROLE/)
     assert.match(src, /analysis\.run_index/)
+    // Folyamat → ticket plafon (5000+) nem lehet néma incomplete aggregátum.
+    assert.match(src, /processTicketIndexTruncated/)
   })
 
   await test('audit-katalógus: analysis.run_index / run_stats / run_trace regisztrálva', () => {

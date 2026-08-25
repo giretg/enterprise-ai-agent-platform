@@ -70,6 +70,8 @@ export type RunStatsResult = {
   truncated: boolean
   toolOutcomeMatrix: RunStatsToolOutcomeRow[]
   latencyByTool: RunStatsLatencyRow[]
+  /** True, ha a latency minta a felső korlát miatt nem a teljes tool-hívás-halmaz. */
+  latencyByToolTruncated: boolean
   promptCache: RunStatsPromptCache
   repeatedSourceKeys: RunStatsRepeatedSourceKey[]
   repeatedSourceKeysTruncated: boolean
