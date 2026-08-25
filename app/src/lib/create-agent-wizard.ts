@@ -62,7 +62,7 @@ export type CreateAgentWizardStepId = (typeof CREATE_AGENT_WIZARD_STEPS)[number]
 export const CREATE_AGENT_WIZARD_EXTERNAL_HREFS = {
   skills: '/control-plane/skills',
   connections: '/control-plane/provisioning',
-  connectors: '/control-plane/connectors',
+  connectors: '/control-plane/account',
   behaviorProfiles: '/control-plane/behavior-profiles',
 } as const
 

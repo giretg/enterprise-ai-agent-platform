@@ -420,7 +420,7 @@ export function AddApiConnectorForm({
 
         {authScheme === 'oauth2_delegated' && (
           <p className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-sage">
-            Automatikus hozzájárulás: a felhasználók az „Összekötött fiókok&rdquo; oldalon egy kattintással
+            Automatikus hozzájárulás: a felhasználók a „Kapcsolt fiókok” oldalon egy kattintással
             adnak engedélyt (authorization-code consent) — nincs kézi OAuth Playground, nem kell
             refresh tokent beilleszteni. A redirect URI a platform közös callbackje:{' '}
             <code>/api/connectors/oauth/callback</code> — ezt vedd fel az OAuth-app engedélyezett

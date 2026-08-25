@@ -1774,7 +1774,7 @@ export async function updateAgentConnectorBinding(input: {
     } else if (input.apiKey?.trim()) {
       if (link.connector.authMode === 'user_delegated') {
         return fail(
-          'Ez egy automatikus-hozzájárulású (user-delegált) kapcsolat — a per-agent kulcs futásidőben nem érvényesül. A hitelesítést az „Összekötött fiókok" oldalon kezeld.',
+          'Ez egy automatikus-hozzájárulású (user-delegált) kapcsolat — a per-agent kulcs futásidőben nem érvényesül. A hitelesítést a Kapcsolt fiókok oldalon kezeld.',
         )
       }
       await saveConnectorApiKey(scopedSecretId, input.apiKey.trim())

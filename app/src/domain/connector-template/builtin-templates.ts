@@ -9,7 +9,7 @@ export const BUILTIN_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
       'Per-user delegált Gmail OAuth connector — a platform gmail_* eszközei ezen a connectoron futnak.',
     activationHelp: `A Gmail connector a platform Google OAuth alkalmazását használja (Platform · Beállítások → Google OAuth). Tenant szinten nem kell Client ID-t vagy Secretet megadni.
 
-Aktiválás után a felhasználók a saját Google-fiókjukkal kötik be a postafiókot (Összekötött fiókok).`,
+Aktiválás után a felhasználók a saját Google-fiókjukkal kötik be a postafiókot (Kapcsolt fiókok).`,
     baseUrl: 'https://gmail.googleapis.com',
     egressHosts: [
       'gmail.googleapis.com',

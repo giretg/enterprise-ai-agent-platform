@@ -205,7 +205,7 @@ check('oauth return path: ticket / conversation / origin / fallback', () => {
   )
   assert.equal(
     oauthReturnPath({ kind: 'conversation', id: CONV }),
-    '/control-plane/connectors?connected=1',
+    '/control-plane/account?connected=1',
   )
   assert.equal(
     oauthReturnPath({ kind: 'conversation', id: CONV, agentId: AGENT, originPath: '/control-plane' }),

@@ -41,6 +41,7 @@ import type {
 } from '../src/repositories/interfaces'
 import { PlaybookV2Service } from '../src/domain/playbook/playbook-v2-service'
 import { ProcessService } from '../src/domain/playbook/process-service'
+import { WorkspaceStorage } from '../src/domain/file-editor/workspace-storage'
 import { ToolBrokerService } from '../src/domain/tool-broker/tool-broker-service'
 import { TicketService } from '../src/domain/ticket/ticket-service'
 import {
@@ -570,8 +571,13 @@ const AUTHOR = randomUUID()
 const APPROVER_USER = randomUUID()
 const AGENT = randomUUID()
 
+type SetupPublishedOpts = {
+  workspaceStorage?: WorkspaceStorage
+  dispatchTicket?: (ticketId: string) => Promise<unknown>
+}
+
 /** Publikál egy Playbookot + default assignmentet, és visszaadja a wired service-eket. */
-async function setupPublished(spec: Record<string, unknown>) {
+async function setupPublished(spec: Record<string, unknown>, opts?: SetupPublishedOpts) {
   const pbRepo = new FakePlaybookV2Repository()
   const procRepo = new FakeProcessRepository()
   const ticketRepo = new FakeTicketRepository()
@@ -608,10 +614,65 @@ async function setupPublished(spec: Record<string, unknown>) {
   })
 
   const ticketRepoTyped = ticketRepo as unknown as TicketRepository
-  const processService = new ProcessService(procRepo, pbRepo, ticketRepoTyped, audit)
+  const processService = new ProcessService(
+    procRepo,
+    pbRepo,
+    ticketRepoTyped,
+    audit,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    opts?.dispatchTicket,
+  )
+  if (opts?.workspaceStorage) {
+    processService.setWorkspaceHandoffStorage(opts.workspaceStorage)
+  }
   const stateMachine = new TicketStateMachine(ticketRepoTyped, pbRepo, procRepo, audit, processService)
 
   return { pbRepo, procRepo, ticketRepo, audit, registry, processService, stateMachine, versionId: version.id }
+}
+
+/** Két agent-lépéses folyamat: 1. lépés workspace-fájlt ad át path-slotban. */
+function handoffSpec(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: '1.0',
+    key: 'workspace-handoff',
+    name: 'Workspace handoff',
+    processType: 'workspace_handoff',
+    entryStepId: 'extract',
+    roles: [
+      { key: 'extractor', type: 'agent_role' },
+      { key: 'reviewer', type: 'agent_role' },
+    ],
+    steps: [
+      {
+        id: 'extract',
+        name: 'Feldolgozás',
+        ticketType: 'extract',
+        assignedRole: 'extractor',
+        allowedStates: ['ready', 'in_progress', 'done'],
+        outputContract: { requiredFields: ['feldolgozottLapPath'] },
+        onComplete: [{ condition: 'default', nextStepId: 'review' }],
+      },
+      {
+        id: 'review',
+        name: 'Egyeztetés',
+        ticketType: 'review',
+        assignedRole: 'reviewer',
+        allowedStates: ['ready', 'in_progress', 'done'],
+        inputSlots: [
+          { name: 'feldolgozottLapPath', type: 'string', required: true, source: 'step' },
+        ],
+      },
+    ],
+    gates: [],
+    transitions: [{ fromStepId: 'extract', toStepId: 'review', trigger: 'step.completed' }],
+    outputContract: { requiredFields: [] },
+    ...overrides,
+  }
 }
 
 async function main() {
@@ -1271,6 +1332,198 @@ async function main() {
     assert.ok(actions.includes('gate.bypass_denied'), 'gate.bypass_denied hiányzik a láncból')
     assert.ok(actions.includes('gate.approve'), 'gate.approve hiányzik a láncból')
     assert.ok(actions.includes('process.complete'), 'process.complete hiányzik a láncból')
+  })
+
+  await test('#377 — advance után a következő ticket workspace-ében ott a handoff fájl', async () => {
+    process.env.FILE_EDITOR_STUB = 'true'
+    process.env.FILE_EDITOR_STUB_MEMORY = 'true'
+    const storage = new WorkspaceStorage('test-bucket')
+    const dispatched: string[] = []
+    const ctx = await setupPublished(handoffSpec(), {
+      workspaceStorage: storage,
+      dispatchTicket: async (ticketId) => {
+        dispatched.push(ticketId)
+      },
+    })
+    const proc = await ctx.processService.startProcess({
+      tenantId: TENANT,
+      processType: 'workspace_handoff',
+      inputPayload: {},
+      startedBy: { type: 'agent', id: AGENT },
+    })
+    const entry = ctx.ticketRepo.tickets.find((t) => t.id === proc.rootTicketId)!
+    const handoffPath = 'feldolgozott-tulajdoni-lap-043-15.json'
+    const bytes = Buffer.from('{"kind":"tulajdoni_lap_feldolgozas"}', 'utf8')
+    await storage.write(TENANT, entry.id, handoffPath, bytes)
+    await storage.setFileAudience(TENANT, entry.id, handoffPath, 'internal')
+
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: entry.id,
+      toState: 'in_progress',
+      actor: { type: 'agent', id: AGENT },
+    })
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: entry.id,
+      toState: 'done',
+      actor: { type: 'agent', id: AGENT },
+      outputPayload: { feldolgozottLapPath: handoffPath },
+    })
+
+    const reviewTicket = ctx.ticketRepo.tickets.find((t) => t.playbookStepId === 'review')
+    assert.ok(reviewTicket, 'a következő lépés ticketje nem jött létre')
+    const copied = await storage.read(TENANT, reviewTicket!.id, handoffPath)
+    assert.ok(copied, 'a handoff fájl hiányzik a következő ticket workspace-éből')
+    assert.equal(copied.toString('utf8'), '{"kind":"tulajdoni_lap_feldolgozas"}')
+    assert.equal(await storage.getFileAudience(TENANT, reviewTicket!.id, handoffPath), 'internal')
+    assert.ok(dispatched.includes(reviewTicket!.id), 'a következő agent-ticketet dispatchölni kellett')
+    assert.equal((await ctx.processService.getProcess(TENANT, proc.id)).status, 'running')
+    assert.equal(ctx.audit.byAction('process.workspace_handoff').length, 1)
+  })
+
+  await test('#377 — hiányzó kötelező handoff fájl → blocked, nincs next dispatch', async () => {
+    process.env.FILE_EDITOR_STUB = 'true'
+    process.env.FILE_EDITOR_STUB_MEMORY = 'true'
+    const storage = new WorkspaceStorage('test-bucket')
+    const dispatched: string[] = []
+    const ctx = await setupPublished(handoffSpec(), {
+      workspaceStorage: storage,
+      dispatchTicket: async (ticketId) => {
+        dispatched.push(ticketId)
+      },
+    })
+    const proc = await ctx.processService.startProcess({
+      tenantId: TENANT,
+      processType: 'workspace_handoff',
+      inputPayload: {},
+      startedBy: { type: 'agent', id: AGENT },
+    })
+    const entry = ctx.ticketRepo.tickets.find((t) => t.id === proc.rootTicketId)!
+    const dispatchedAfterStart = [...dispatched]
+
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: entry.id,
+      toState: 'in_progress',
+      actor: { type: 'agent', id: AGENT },
+    })
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: entry.id,
+      toState: 'done',
+      actor: { type: 'agent', id: AGENT },
+      outputPayload: { feldolgozottLapPath: 'feldolgozott-tulajdoni-lap-043-15.json' },
+    })
+
+    const after = await ctx.processService.getProcess(TENANT, proc.id)
+    assert.equal(after.status, 'blocked')
+    const reviewTicket = ctx.ticketRepo.tickets.find((t) => t.playbookStepId === 'review')
+    assert.ok(reviewTicket, 'a fail-closed a ticket létrehozása után áll meg')
+    assert.ok(
+      !dispatched.includes(reviewTicket!.id),
+      'hiányzó fájllal a következő ticketet tilos dispatchölni',
+    )
+    assert.deepEqual(dispatched, dispatchedAfterStart)
+    const blocked = ctx.audit.byAction('process.blocked')
+    assert.equal(blocked.length, 1)
+    const reason = (blocked[0]?.metadata as { reason?: string } | null)?.reason ?? ''
+    assert.match(reason, /feldolgozott-tulajdoni-lap-043-15\.json/)
+  })
+
+  await test('#377 — kapu utáni next_step az eredeti step ticket workspace-éből másol', async () => {
+    process.env.FILE_EDITOR_STUB = 'true'
+    process.env.FILE_EDITOR_STUB_MEMORY = 'true'
+    const storage = new WorkspaceStorage('test-bucket')
+    const ctx = await setupPublished(
+      handoffSpec({
+        steps: [
+          {
+            id: 'extract',
+            name: 'Feldolgozás',
+            ticketType: 'extract',
+            assignedRole: 'extractor',
+            allowedStates: ['ready', 'in_progress', 'done'],
+            outputContract: { requiredFields: ['feldolgozottLapPath'] },
+            onComplete: [
+              { condition: 'default', gateId: 'review_gate', nextStepId: 'review' },
+            ],
+          },
+          {
+            id: 'review',
+            name: 'Egyeztetés',
+            ticketType: 'review',
+            assignedRole: 'reviewer',
+            allowedStates: ['ready', 'in_progress', 'done'],
+            inputSlots: [
+              { name: 'feldolgozottLapPath', type: 'string', required: true, source: 'step' },
+            ],
+          },
+        ],
+        gates: [
+          {
+            id: 'review_gate',
+            type: 'manual_review',
+            requiredActorRole: 'approver',
+            blocking: true,
+            criticality: 'L1',
+            evidenceRequired: true,
+          },
+        ],
+        roles: [
+          { key: 'extractor', type: 'agent_role' },
+          { key: 'reviewer', type: 'agent_role' },
+          { key: 'approver', type: 'human_role', requiredPermissions: ['ticket:approve'] },
+        ],
+      }),
+      { workspaceStorage: storage },
+    )
+    const proc = await ctx.processService.startProcess({
+      tenantId: TENANT,
+      processType: 'workspace_handoff',
+      inputPayload: {},
+      startedBy: { type: 'agent', id: AGENT },
+    })
+    const entry = ctx.ticketRepo.tickets.find((t) => t.id === proc.rootTicketId)!
+    const handoffPath = 'feldolgozott-tulajdoni-lap-043-15.json'
+    await storage.write(TENANT, entry.id, handoffPath, Buffer.from('kapu-handoff', 'utf8'))
+
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: entry.id,
+      toState: 'in_progress',
+      actor: { type: 'agent', id: AGENT },
+    })
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: entry.id,
+      toState: 'done',
+      actor: { type: 'agent', id: AGENT },
+      outputPayload: { feldolgozottLapPath: handoffPath },
+    })
+
+    const gateTicket = ctx.ticketRepo.tickets.find((t) => t.requiredGateId === 'review_gate')
+    assert.ok(gateTicket, 'nincs kapu-ticket')
+    assert.equal(
+      await storage.read(TENANT, gateTicket!.id, handoffPath),
+      null,
+      'a kapu-ticket NEM a forrás workspace',
+    )
+
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: gateTicket!.id,
+      toState: 'approved',
+      actor: { type: 'user', id: APPROVER_USER, roles: ['approver'] },
+      approvalEvidence: { note: 'ellenőrizve' },
+    })
+
+    const reviewTicket = ctx.ticketRepo.tickets.find((t) => t.playbookStepId === 'review')
+    assert.ok(reviewTicket, 'a kapu után nem jött létre a review ticket')
+    const copied = await storage.read(TENANT, reviewTicket!.id, handoffPath)
+    assert.ok(copied, 'a kapu után a review ticket workspace-éből hiányzik a fájl')
+    assert.equal(copied.toString('utf8'), 'kapu-handoff')
+    assert.equal((await ctx.processService.getProcess(TENANT, proc.id)).status, 'running')
   })
 
   console.log(`\n${failures === 0 ? '✅ Mind zöld' : `❌ ${failures} bukott teszt`}`)

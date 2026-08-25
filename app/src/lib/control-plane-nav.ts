@@ -51,12 +51,20 @@ const isGroup = (entry: ControlPlaneNavEntry): entry is ControlPlaneNavGroup => 
  * változhat (útvonal-átnevezés, szövegezés), a kulcs NEM — különben egy átnevezés
  * csendben feloldaná a tenant beállított tiltásait.
  *
- * Operátor = normál felhasználó (ticket/chat/agent-futás). Az Adminisztráció alatt
- * csak azt kapja, ami a napi munkához kell (saját fiókkötés); a többi admin /
- * approver / platform szerepre megy.
+ * Operátor = normál felhasználó (ticket/chat/agent-futás). A saját fiókkötés
+ * (Kapcsolt fiókok) a Board mellett él, nem az Adminisztráció alatt — különben
+ * a csoport elrejtése a saját Gmail/Telegram összekötést is levenné. Az
+ * Adminisztráció a tenant-admin / approver / platform szerepre megy.
  */
 export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] = [
   { key: 'board', href: '/control-plane/board', label: 'Board' },
+  // Saját csatorna-kötés + delegált connector — minden tenant-tag (viewer+) látja.
+  {
+    key: 'account',
+    href: '/control-plane/account',
+    label: 'Kapcsolt fiókok',
+    requires: { tenantRole: 'viewer' },
+  },
   {
     key: 'staff',
     label: 'Munkatársak',
@@ -94,9 +102,6 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
     key: 'admin',
     label: 'Adminisztráció',
     children: [
-      // Saját OAuth / connector grant — viewer is láthatja a saját fiókjait.
-      { key: 'admin.account', href: '/control-plane/account', label: 'Fiókom', requires: { tenantRole: 'viewer' } },
-      { key: 'admin.connectors', href: '/control-plane/connectors', label: 'Fiókok', requires: { tenantRole: 'viewer' } },
       {
         key: 'admin.provisioning',
         href: '/control-plane/provisioning',

@@ -1,0 +1,150 @@
+'use client'
+
+import Link from 'next/link'
+import { useState, useTransition } from 'react'
+import { Card } from '@/components/ui/shell'
+import { decommissionActiveConnector } from '@/app/actions/provisioning'
+
+type ConnectorRow = {
+  id: string
+  name: string
+  type: string
+  authMode: string
+  tenantId: string | null
+}
+
+type GoogleOAuthStatus = {
+  configured: boolean
+  persisted: boolean
+  source: 'platform' | 'env' | 'tenant_legacy' | null
+}
+
+/**
+ * Tenant-admin: a delegált connectorok életciklusa (leszerelés) és a Google OAuth
+ * állapot. A felhasználók saját összekötése a Kapcsolt fiókok oldalon van.
+ */
+export function DelegatedConnectorsAdminPanel({
+  initialConnectors,
+  googleOauth,
+  canManagePlatformOauth,
+}: {
+  initialConnectors: ConnectorRow[]
+  googleOauth: GoogleOAuthStatus
+  canManagePlatformOauth: boolean
+}) {
+  const [pending, startTransition] = useTransition()
+  const [connectors, setConnectors] = useState(initialConnectors)
+  const [decommissionTarget, setDecommissionTarget] = useState<string | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  return (
+    <div className="space-y-6">
+      <Card title="Google OAuth alkalmazás">
+        <div className="space-y-2 text-sm text-ink-soft">
+          {googleOauth.configured ? (
+            <p className="flex items-center gap-2 text-emerald-300">
+              <span aria-hidden className="h-2 w-2 rounded-full bg-emerald-400" />
+              A Google connectorok a platform OAuth-alkalmazását használják. A felhasználóknak
+              csak a saját Google belépésük kell — azt a Kapcsolt fiókok oldalon adják meg.
+            </p>
+          ) : (
+            <p>
+              A Google belépéshez a platform-adminnak be kell állítania az Enterprise AI Agent
+              Google OAuth clientjét a Platform · Beállítások oldalon.
+            </p>
+          )}
+          {canManagePlatformOauth ? (
+            <p>
+              <Link
+                href="/control-plane/platform/settings?section=google-oauth"
+                className="text-ink underline"
+              >
+                Megnyitás a platform-beállításokban
+              </Link>
+            </p>
+          ) : null}
+        </div>
+      </Card>
+
+      <Card title="Delegált connectorok">
+        <p className="mb-4 text-sm text-ink-soft">
+          Ezeket a connectorokat a tagok a saját fiókjukkal kötik be. A leszerelés archiválja a
+          connectort, és a hozzá tartozó user-grantek érvényüket vesztik.
+        </p>
+        {message && (
+          <p className="mb-3 rounded-lg border border-sage/35 bg-sage/10 px-3 py-2 text-sm text-sage">
+            {message}
+          </p>
+        )}
+        {error && (
+          <p className="mb-3 rounded-lg border border-coral/35 bg-coral/10 px-3 py-2 text-sm text-coral-deep">
+            {error}
+          </p>
+        )}
+        {connectors.length === 0 ? (
+          <p className="text-sm text-ink-soft">Nincs aktív user_delegated connector.</p>
+        ) : (
+          <ul className="space-y-3">
+            {connectors.map((connector) => (
+              <li
+                key={connector.id}
+                className="atelier-soft flex items-center justify-between gap-4 p-3"
+              >
+                <div>
+                  <p className="font-medium text-ink">{connector.name}</p>
+                  <p className="text-xs text-ink-soft">
+                    {connector.type} · {connector.authMode}
+                    {connector.tenantId ? '' : ' · globális'}
+                  </p>
+                </div>
+                {decommissionTarget === connector.id ? (
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <span className="text-xs text-coral">Biztosan leszereljük?</span>
+                    <button
+                      type="button"
+                      disabled={pending}
+                      className="rounded-lg border border-coral/50 bg-coral/10 px-3 py-1.5 text-sm text-coral"
+                      onClick={() =>
+                        startTransition(async () => {
+                          const res = await decommissionActiveConnector({
+                            connectorId: connector.id,
+                            reason: 'Admin leszerelés a Rendszer felületről',
+                          })
+                          if (res.success) {
+                            setConnectors((prev) => prev.filter((c) => c.id !== connector.id))
+                            setDecommissionTarget(null)
+                            setError(null)
+                            setMessage('Connector leszerelve és archiválva.')
+                          } else setError(res.error)
+                        })
+                      }
+                    >
+                      Igen, megszüntetés
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-lg border border-line px-3 py-1.5 text-sm text-ink-soft"
+                      onClick={() => setDecommissionTarget(null)}
+                    >
+                      Mégse
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={pending}
+                    className="rounded-lg border border-coral/40 px-3 py-1.5 text-sm text-coral hover:bg-coral/10"
+                    onClick={() => setDecommissionTarget(connector.id)}
+                  >
+                    Leszerelés
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    </div>
+  )
+}

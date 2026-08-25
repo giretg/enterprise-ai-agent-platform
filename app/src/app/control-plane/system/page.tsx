@@ -24,9 +24,15 @@ import { getTenantThinkingTraceControls } from '@/app/actions/chat-thinking-trac
 import { getTenantLanguage } from '@/app/actions/tenant-language'
 import { getPrivacyAdminView } from '@/app/actions/privacy'
 import { PrivacyAdminPanel } from '@/components/privacy/privacy-admin-panel'
+import { AdminChannelLinks } from '@/components/account/admin-channel-links'
+import { AdminChannelAgents } from '@/components/account/admin-channel-agents'
+import { listTenantChannelLinks } from '@/app/actions/channel-link'
+import { listTenantChannelAgents } from '@/app/actions/channel-agents'
+import { listDelegatedConnectorsAdminView } from '@/app/actions/connector-grants'
 import { readDispatcherRuntime } from '@/lib/dispatcher-runtime'
 import { enabledModelProviders } from '@/lib/model-policy'
 import { DatabaseControlPanel } from './database-control-panel'
+import { DelegatedConnectorsAdminPanel } from './delegated-connectors-admin-panel'
 import { AutomationControlSection } from './automation-control-section'
 import { DailyBudgetPanel } from './daily-budget-panel'
 import {
@@ -46,7 +52,12 @@ import { ChannelOpsPanel } from './channel-ops-panel'
 import { ChannelBotPanel } from './channel-bot-panel'
 import { SettingsSectionShell } from './system-settings-shell'
 
-export default async function SystemPage() {
+export default async function SystemPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ section?: string }>
+}) {
+  const query = await searchParams
   const [
     ctx,
     controlsRes,
@@ -69,6 +80,9 @@ export default async function SystemPage() {
     channelOpsRes,
     channelSetupRes,
     privacyRes,
+    tenantChannelLinks,
+    tenantChannelAgents,
+    delegatedConnectorsRes,
   ] = await Promise.all([
     getAuthContext(),
     getDispatcherControls(),
@@ -91,6 +105,9 @@ export default async function SystemPage() {
     getChannelOpsMetrics({ windowDays: 7 }),
     getTelegramChannelSetup(),
     getPrivacyAdminView({}),
+    listTenantChannelLinks(),
+    listTenantChannelAgents(),
+    listDelegatedConnectorsAdminView(),
   ])
   // §9.2/§13/4: a platform-globális vezérlőket csak platform-szerep szerkesztheti;
   // a tenant-admin itt read-only nézetet kap (a WRITE-actionök platform-guard alatt).
@@ -135,6 +152,7 @@ export default async function SystemPage() {
 
       <SettingsSectionShell
         ariaLabel="Rendszer témák"
+        initialId={query.section}
         sections={[
           {
             id: 'adatbazis',
@@ -296,6 +314,37 @@ export default async function SystemPage() {
             content: contractObservabilityRes.success
               ? <ContractObservabilityPanel data={contractObservabilityRes.data} />
               : errorBox('Nem sikerült betölteni a strukturált kimenet dashboardot.'),
+          },
+          {
+            id: 'telegram-hozzaferes',
+            label: 'Telegram-hozzáférés',
+            description:
+              'Szervezeti kapcsoló, a tagok Telegram-kötései, és hogy ki melyik agentet éri el telefonról.',
+            content: (
+              <div className="space-y-6">
+                {tenantChannelAgents ? (
+                  <AdminChannelAgents initialView={tenantChannelAgents} />
+                ) : (
+                  errorBox('Nem sikerült betölteni a szervezeti Telegram-hozzáférést.')
+                )}
+                <AdminChannelLinks initialLinks={tenantChannelLinks} />
+              </div>
+            ),
+          },
+          {
+            id: 'delegalt-connectorok',
+            label: 'Delegált connectorok',
+            description:
+              'A tagok saját fiókkal bekötött connectorai (Gmail stb.): OAuth-állapot és leszerelés.',
+            content: delegatedConnectorsRes.success ? (
+              <DelegatedConnectorsAdminPanel
+                initialConnectors={delegatedConnectorsRes.data.connectors}
+                googleOauth={delegatedConnectorsRes.data.googleOauth}
+                canManagePlatformOauth={delegatedConnectorsRes.data.canManagePlatformOauth}
+              />
+            ) : (
+              errorBox(delegatedConnectorsRes.error)
+            ),
           },
           // A csatorna platform-szintű erőforrás → a metrika superadmin-only (mint a bot-regisztráció).
           ...(canEdit

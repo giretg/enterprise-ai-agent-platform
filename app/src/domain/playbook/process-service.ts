@@ -32,6 +32,13 @@ import { formatPlaybookRefV2, parsePlaybookSpecV2, type PlaybookRole } from '@/l
 import { isAgentSuitable } from '@/domain/playbook/suitability'
 import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
 import { isHumanUserSuitable } from '@/domain/playbook/human-role-suitability'
+import type { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
+import {
+  HandoffFileMissingError,
+  assertRequiredHandoffFilesPresent,
+  collectHandoffCandidatePaths,
+  copyWorkspaceHandoff,
+} from '@/domain/playbook/workspace-handoff'
 import type {
   AgentRepository,
   AuditRepository,
@@ -198,6 +205,19 @@ export class ProcessService {
 
   setAgentAccessService(service: AgentAccessService): void {
     this.agentAccess = service
+  }
+
+  /**
+   * Ticket-workspace handoff (#377): a következő lépés ticketjébe átmásolja az
+   * előző ticket path-jelölt fájljait, mielőtt az agent-step dispatchülne.
+   * Setter-injektálás (mint az `awaitingHumanSink`), hogy a késői wiring ne
+   * bővítse a pozicionális konstruktort. Ha nincs bekötve (unit tesztek), a
+   * handoff no-op — a régi viselkedés változatlan.
+   */
+  private workspaceHandoffStorage?: WorkspaceStorage
+
+  setWorkspaceHandoffStorage(storage: WorkspaceStorage): void {
+    this.workspaceHandoffStorage = storage
   }
 
   /**
@@ -1041,6 +1061,20 @@ export class ProcessService {
       })
     }
 
+    // #377 — a ticket-szintű workspace prefix miatt a path string önmagában nem
+    // elég: a bájtokat az előző step ticketjéből ide kell másolni, MÉG mielőtt
+    // az új agent-ticket dispatchül. Hiányzó kötelező fájl → ProcessBlockedError
+    // (az advance `blockProcess`-re fordítja), üres workspace-szel nem indul tovább.
+    await this.handoffWorkspaceFiles({
+      tenantId,
+      process,
+      actor,
+      rule,
+      slotContext,
+      toTicketId: ticket.id,
+      fromTicketId: delegationFrom?.fromTicketId ?? null,
+    })
+
     // Azonnali dispatch: agent-step ready ticketje ugyanabban a kérésben elindul,
     // ahelyett hogy a NOTIFY-t figyelő workerre / cron-safety-netre várna.
     if (!isHuman) {
@@ -1048,6 +1082,85 @@ export class ProcessService {
     }
 
     return ticket
+  }
+
+  /**
+   * Előző step ticket workspace → következő ticket workspace. No-op, ha nincs
+   * tár bekötve, nincs forrás-ticket, vagy a tenant hiányzik.
+   */
+  private async handoffWorkspaceFiles(input: {
+    tenantId: string | null
+    process: ProcessInstance
+    actor: ProcessActor
+    rule: CompiledSpec['ticketRules'][number]
+    slotContext: {
+      processInput: Record<string, unknown>
+      previousStepResult?: Record<string, unknown>
+    }
+    toTicketId: string
+    fromTicketId: string | null
+  }): Promise<void> {
+    const storage = this.workspaceHandoffStorage
+    const { tenantId, fromTicketId } = input
+    if (!storage || !tenantId || !fromTicketId) return
+
+    const resolved = resolveStepInputPayload(input.rule, {
+      processInput: input.slotContext.processInput,
+      previousStepResult: input.slotContext.previousStepResult ?? {},
+    })
+    const candidates = collectHandoffCandidatePaths({
+      ...(input.slotContext.previousStepResult ?? {}),
+      ...resolved,
+    })
+    if (candidates.length === 0) return
+
+    const { copied, missing } = await copyWorkspaceHandoff({
+      storage,
+      tenantId,
+      fromTicketId,
+      toTicketId: input.toTicketId,
+      paths: candidates,
+    })
+
+    await this.append(tenantId, input.actor, {
+      action: 'process.workspace_handoff',
+      targetType: 'ticket',
+      targetId: input.toTicketId,
+      inputRef: input.process.playbookRef,
+      policyDecision: 'copied',
+      metadata: {
+        process_instance_id: input.process.id,
+        step_id: input.rule.stepId,
+        from_ticket_id: fromTicketId,
+        to_ticket_id: input.toTicketId,
+        copied,
+        missing,
+      },
+    })
+
+    const requiredValues: Record<string, unknown> = {}
+    for (const slot of input.rule.inputSlots ?? []) {
+      if (!slot.required) continue
+      const value = resolved[slot.name]
+      if (value !== undefined) requiredValues[slot.name] = value
+    }
+    const requiredPaths = collectHandoffCandidatePaths(requiredValues)
+    try {
+      await assertRequiredHandoffFilesPresent({
+        storage,
+        tenantId,
+        ticketId: input.toTicketId,
+        requiredPaths,
+      })
+    } catch (e) {
+      if (e instanceof HandoffFileMissingError) {
+        throw new ProcessBlockedError(
+          input.rule.stepId,
+          `A(z) '${input.rule.stepId}' lépés kötelező workspace-fájlja(i) hiányoznak a cél-ticket workspace-éből: ${e.missingPaths.join(', ')} (forrás: ${fromTicketId}, cél: ${input.toTicketId}).`,
+        )
+      }
+      throw e
+    }
   }
 
   private stepTicketPayload(

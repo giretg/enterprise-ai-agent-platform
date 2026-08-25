@@ -90,6 +90,7 @@
     "test:playbook-v2-runtime": "tsx scripts/playbook-v2-runtime.test.ts",
     "test:playbook-v2-process": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/playbook-v2-process.test.ts",
     "test:playbook-lifecycle": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/playbook-process-lifecycle.test.ts",
+    "test:workspace-handoff": "tsx scripts/workspace-handoff.test.ts",
     "test:playbook-process-def": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/playbook-process-definition.test.ts",
     "test:tool-loop": "tsx scripts/agent-tool-loop.test.ts",
     "test:connector-grant-needed": "tsx scripts/connector-grant-needed.test.ts",

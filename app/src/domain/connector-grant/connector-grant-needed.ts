@@ -159,7 +159,7 @@ export function oauthReturnPath(
     })
   }
   return withQuery(
-    '/control-plane/connectors',
+    '/control-plane/account',
     result?.error ? { error: result.error } : { connected: '1' },
   )
 }

@@ -47,8 +47,8 @@ export async function GET(request: Request) {
 
 async function redirectAfterOAuth(request: Request, state: string | null, error?: string) {
   const fallback = error
-    ? `/control-plane/connectors?error=${encodeURIComponent(error)}`
-    : '/control-plane/connectors?connected=1'
+    ? `/control-plane/account?error=${encodeURIComponent(error)}`
+    : '/control-plane/account?connected=1'
   if (!state) {
     return NextResponse.redirect(publicAppUrl(fallback, request))
   }

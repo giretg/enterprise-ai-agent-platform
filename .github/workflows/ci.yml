@@ -71,6 +71,7 @@ jobs:
           npm run test:model-call-budget-where
           npm run test:dispatch-board-ticket-schema
           npm run test:playbook-v2-process
+          npm run test:playbook-lifecycle
           npm run test:n-plus-one-batch
           npm run test:list-pagination
           npm run test:playbook-v2-registry
@@ -132,6 +133,7 @@ jobs:
           npm run test:conversation-session
           npm run test:agent-interaction-ticket
           npm run test:workspace-file-visibility
+          npm run test:workspace-handoff
           npm run test:workspace-inline-html-headers
           npm run test:tool-registry-drift
           npm run test:tool-trust

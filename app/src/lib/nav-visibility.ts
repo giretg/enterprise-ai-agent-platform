@@ -93,6 +93,8 @@ export function withNavVisibilityPolicy(
  */
 const NAV_KEY_LEGACY_HIDDEN: Record<string, readonly string[]> = {
   'admin.agent-access': ['admin.agent-access', 'staff.access'],
+  // Fiókom / Fiókok / Adminisztráció.account → Kapcsolt fiókok (főmenü).
+  account: ['account', 'admin.account', 'admin.connectors'],
 }
 
 export function isNavKeyHiddenFor(

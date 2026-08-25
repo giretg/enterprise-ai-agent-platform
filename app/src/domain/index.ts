@@ -352,7 +352,7 @@ const channelLinkingService = new ChannelLinkingService({
         title: 'Telegram-fiók összekötve',
         body:
           `A(z) ${org} szervezethez most egy Telegram-fiók lett összekötve a nevedben. ` +
-          'Ha nem te voltál, a Fiókom oldalon azonnal szüntesd meg az összekötést.',
+          'Ha nem te voltál, a Kapcsolt fiókok oldalon azonnal szüntesd meg az összekötést.',
         metadata: { channelType },
       })
     },
@@ -530,6 +530,9 @@ const connectorGrantService = new ConnectorGrantService(repositories.connectorGr
 const workspaceBucket = process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod'
 const workspaceStorage = new WorkspaceStorage(workspaceBucket)
 const fileEditorService = new FileEditorService(workspaceStorage)
+// #377 — lépésváltáskor a path-jelölt workspace-fájlok az előző ticketből a
+// következőbe másolódnak. Ha a setter nincs hívva (unit tesztek), a handoff no-op.
+processService.setWorkspaceHandoffStorage(workspaceStorage)
 const workspaceLifecycleService = new WorkspaceLifecycleService(
   repositories.connectors,
   (bucket) => new WorkspaceStorage(bucket),

@@ -23,6 +23,7 @@ import { evaluateTicketTransition } from '../src/lib/playbook-v2/runtime'
 import { parsePlaybookSpecV2 } from '../src/lib/playbook-v2/spec'
 import { isAgentSuitable } from '../src/domain/playbook/suitability'
 import { PlaybookValidator } from '../src/domain/playbook/playbook-validator'
+import { collectHandoffCandidatePaths } from '../src/domain/playbook/workspace-handoff'
 
 let failures = 0
 function check(name: string, fn: () => void) {
@@ -151,6 +152,32 @@ check('normalizeAgentStepResult: answer → outputContract mező', () => {
   )
   assert.equal(normalized.research_results, 'kutatási szöveg')
   assert.equal(normalized.answer, 'kutatási szöveg')
+})
+
+check('resolveStepInputPayload: workspace-relatív path-slot handoff-jelölt', () => {
+  const resolved = resolveStepInputPayload(
+    {
+      inputSlots: [
+        { name: 'feldolgozottLapPath', type: 'string', required: true, source: 'step' },
+        { name: 'ingatlan', type: 'string', required: false, source: 'step' },
+      ],
+    },
+    {
+      processInput: {},
+      previousStepResult: {
+        feldolgozottLapPath: 'feldolgozott-tulajdoni-lap-043-15.json',
+        ingatlan: 'Külterület, 43/15 helyrajzi szám',
+      },
+    },
+  )
+  assert.equal(resolved.feldolgozottLapPath, 'feldolgozott-tulajdoni-lap-043-15.json')
+  assert.deepEqual(collectHandoffCandidatePaths({
+    feldolgozottLapPath: resolved.feldolgozottLapPath,
+  }), ['feldolgozott-tulajdoni-lap-043-15.json'])
+  assert.deepEqual(
+    collectHandoffCandidatePaths({ tmp: '/tmp/tl_extracted.json', abs: '/Users/out.json' }),
+    [],
+  )
 })
 
 check('resolveStepInputPayload: step forrás az előző lépésből jön', () => {

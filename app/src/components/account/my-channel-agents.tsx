@@ -14,7 +14,14 @@ import {
  * tartozzon egy agent Telegramon; a platformon elvett vagy nem engedélyezett agent nem
  * választható, de érthető jelzést kap (nem nyers hiba). NFR-1: hétköznapi magyar.
  */
-export function MyChannelAgents({ initialView }: { initialView: MyChannelAgentsView }) {
+export function MyChannelAgents({
+  initialView,
+  embedded = false,
+}: {
+  initialView: MyChannelAgentsView
+  /** Kapcsolt-fiók kártyába ágyazva: nincs külön külső Card. */
+  embedded?: boolean
+}) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
@@ -28,8 +35,7 @@ export function MyChannelAgents({ initialView }: { initialView: MyChannelAgentsV
 
   const { channelEnabled, identityId, agents } = initialView
 
-  return (
-    <Card title="Az agentjeid Telegramon">
+  const body = (
       <div className="space-y-4">
         <p className="text-sm text-ink-soft">
           Itt látod, mely agenteket éred el Telegramon, és beállíthatod, melyik projekthez
@@ -146,6 +152,16 @@ export function MyChannelAgents({ initialView }: { initialView: MyChannelAgentsV
           </div>
         )}
       </div>
-    </Card>
   )
+
+  if (embedded) {
+    return (
+      <div className="space-y-3 border-t border-line/60 pt-4">
+        <h3 className="font-display text-base font-semibold">Az agentjeid Telegramon</h3>
+        {body}
+      </div>
+    )
+  }
+
+  return <Card title="Az agentjeid Telegramon">{body}</Card>
 }

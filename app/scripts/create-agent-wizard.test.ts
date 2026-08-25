@@ -129,7 +129,7 @@ function main() {
   check('a kitérők a skill / kapcsolat / profil oldalakra mutatnak', () => {
     assert.equal(CREATE_AGENT_WIZARD_EXTERNAL_HREFS.skills, '/control-plane/skills')
     assert.equal(CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connections, '/control-plane/provisioning')
-    assert.equal(CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connectors, '/control-plane/connectors')
+    assert.equal(CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connectors, '/control-plane/account')
     assert.equal(
       CREATE_AGENT_WIZARD_EXTERNAL_HREFS.behaviorProfiles,
       '/control-plane/behavior-profiles',

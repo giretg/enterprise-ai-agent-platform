@@ -35,13 +35,14 @@ function policyWith(patch: Partial<NavVisibilityPolicy>): NavVisibilityPolicy {
 }
 
 function main() {
-  check('operator sees Fiókok under Adminisztráció, not IAM/Platform/Rendszer', () => {
+  check('operator sees Kapcsolt fiókok in the main nav, not under Adminisztráció', () => {
     const nav = buildControlPlaneNav({
       tenantRole: 'operator',
       platformRoles: [],
     })
     const hrefs = flattenNavHrefs(nav)
-    assert.ok(hrefs.includes('/control-plane/connectors'))
+    assert.ok(hrefs.includes('/control-plane/account'))
+    assert.ok(!hrefs.includes('/control-plane/connectors'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
     assert.ok(!hrefs.includes('/control-plane/provisioning'))
     assert.ok(!hrefs.includes('/control-plane/system'))
@@ -49,6 +50,10 @@ function main() {
     assert.ok(!hrefs.includes('/control-plane/audit'))
     assert.ok(!hrefs.includes('/control-plane/platform/tenants'))
     assert.ok(!hrefs.includes('/control-plane/menu-access'))
+    const account = nav.find((entry) => !('children' in entry) && entry.key === 'account')
+    assert.ok(account && !('children' in account))
+    assert.equal(account.label, 'Kapcsolt fiókok')
+    assert.ok(!nav.some((entry) => 'children' in entry && entry.label === 'Adminisztráció'))
   })
 
   check('admin sees tenant admin pages but not platform pages without platform role', () => {
@@ -69,7 +74,7 @@ function main() {
       buildControlPlaneNav({ tenantRole: 'approver', platformRoles: [] }),
     )
     assert.ok(hrefs.includes('/control-plane/audit'))
-    assert.ok(hrefs.includes('/control-plane/connectors'))
+    assert.ok(hrefs.includes('/control-plane/account'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
     assert.ok(!hrefs.includes('/control-plane/system'))
   })
@@ -87,18 +92,15 @@ function main() {
     assert.ok(!hrefs.includes('/control-plane/platform/system-agents'))
   })
 
-  check('viewer with no admin children still sees core nav', () => {
+  check('viewer sees Kapcsolt fiókok and no Adminisztráció group', () => {
     const nav = buildControlPlaneNav({ tenantRole: 'viewer', platformRoles: [] })
     const hrefs = flattenNavHrefs(nav)
     assert.ok(hrefs.includes('/control-plane/board'))
-    assert.ok(hrefs.includes('/control-plane/connectors'))
-    const adminGroup = nav.find((entry) => 'children' in entry && entry.label === 'Adminisztráció')
-    assert.ok(adminGroup && 'children' in adminGroup)
-    // Fiókom + Fiókok — a viewer a SAJÁT fiókkötéseit látja, más admin oldalt nem.
-    assert.deepEqual(
-      adminGroup.children.map((child) => child.href),
-      ['/control-plane/account', '/control-plane/connectors'],
-    )
+    assert.ok(hrefs.includes('/control-plane/account'))
+    assert.ok(!nav.some((entry) => 'children' in entry && entry.label === 'Adminisztráció'))
+    const account = nav.find((entry) => !('children' in entry) && entry.key === 'account')
+    assert.ok(account && !('children' in account))
+    assert.equal(account.label, 'Kapcsolt fiókok')
   })
 
   check('header keeps Munkatársak tools after the roster moved to the rail', () => {
@@ -122,6 +124,30 @@ function main() {
     const keys = allNavKeys()
     assert.equal(new Set(keys).size, keys.length)
     assert.ok(keys.includes('admin.menu-access'))
+  })
+
+  check('hiding legacy admin.connectors still hides Kapcsolt fiókok', () => {
+    const hrefs = flattenNavHrefs(
+      buildControlPlaneNav({
+        tenantRole: 'operator',
+        platformRoles: [],
+        navVisibility: policyWith({ operator: ['admin.connectors'] }),
+      }),
+    )
+    assert.ok(!hrefs.includes('/control-plane/account'))
+    assert.ok(hrefs.includes('/control-plane/board'))
+  })
+
+  check('hiding the Adminisztráció group does not hide Kapcsolt fiókok', () => {
+    const hrefs = flattenNavHrefs(
+      buildControlPlaneNav({
+        tenantRole: 'operator',
+        platformRoles: [],
+        navVisibility: policyWith({ operator: ['admin'] }),
+      }),
+    )
+    assert.ok(hrefs.includes('/control-plane/account'))
+    assert.ok(!hrefs.includes('/control-plane/iam'))
   })
 
   check('hiding a leaf removes it only for the targeted role', () => {

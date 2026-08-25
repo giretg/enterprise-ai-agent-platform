@@ -96,6 +96,37 @@ export async function listConnectorsPanelContext() {
   }
 }
 
+/** Tenant-admin: a szervezetben elérhető delegált connectorok + platform OAuth állapot. */
+export async function listDelegatedConnectorsAdminView() {
+  try {
+    const user = await requireTenantRole('admin')
+    const [connectors, googleResolved] = await Promise.all([
+      prisma.connector.findMany({
+        where: {
+          authMode: 'user_delegated',
+          lifecycleState: 'active',
+          OR: [{ tenantId: null }, { tenantId: user.activeTenantId }],
+        },
+        orderBy: { name: 'asc' },
+        select: { id: true, name: true, type: true, authMode: true, tenantId: true },
+      }),
+      services.platformSettings.getGoogleOAuthConfig(),
+    ])
+    const googleView = toGoogleOAuthPublicView(googleResolved)
+    return ok({
+      connectors,
+      canManagePlatformOauth: isSuperadmin(user.platformRoles),
+      googleOauth: {
+        configured: googleView.configured,
+        persisted: googleView.persisted,
+        source: googleView.source,
+      },
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load delegated connectors')
+  }
+}
+
 export async function getPlatformGoogleOAuth() {
   try {
     await requirePlatformRole('platform_auditor')
@@ -178,12 +209,12 @@ export async function startConnectorOAuth(input: {
     if (connector.tenantId && connector.tenantId !== ctx.activeTenantId) return fail('Connector not found')
 
     const { oauthReturnPath } = await import('@/domain/connector-grant/connector-grant-needed')
-    const successPath = returnTo ? oauthReturnPath(returnTo) : '/control-plane/connectors?connected=1'
+    const successPath = returnTo ? oauthReturnPath(returnTo) : '/control-plane/account?connected=1'
 
     // A kért scope forrás-igazsága a SZERVER: a `toolName` alapján a
     // provider-regiszter a connector configjából oldja fel a legkisebb
     // szükséges halmazt. A kliens scope-listája csak explicit admin-választásnál
-    // (kapcsolatok oldali scope-profil) érvényes, és a szerviz azt is a
+    // (Kapcsolt fiókok oldali scope-profil) érvényes, és a szerviz azt is a
     // confighoz validálja.
     const requestedScopes = toolName
       ? resolveGrantOAuthScopes({

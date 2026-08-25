@@ -13,6 +13,7 @@ export type ControlPlanePanelDef = {
 
 const EYEBROW: Record<string, string> = {
   board: 'Munkatábla',
+  account: 'Fiók',
   automation: 'Automatizálás',
   admin: 'Adminisztráció',
   staff: 'Munkatársak',
@@ -64,9 +65,15 @@ export const CONTROL_PLANE_PANELS: Record<string, ControlPlanePanelDef> = Object
   [...leafPanelsFromCatalog(CONTROL_PLANE_NAV_CATALOG), ...EXTRA_PANELS].map((p) => [p.key, p]),
 )
 
+const PANEL_KEY_ALIASES: Record<string, string> = {
+  'admin.account': 'account',
+  'admin.connectors': 'account',
+}
+
 export function panelDefForKey(key: string | null | undefined): ControlPlanePanelDef | null {
   if (!key) return null
-  return CONTROL_PLANE_PANELS[key] ?? null
+  const resolved = PANEL_KEY_ALIASES[key] ?? key
+  return CONTROL_PLANE_PANELS[resolved] ?? null
 }
 
 /** Header-modalok: a viewport 90%-a (szélesség és magasság). */
