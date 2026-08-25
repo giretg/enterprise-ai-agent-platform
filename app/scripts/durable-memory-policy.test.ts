@@ -80,7 +80,7 @@ async function run() {
     assert.ok(actions.includes('submit_for_approval'))
     assert.ok(actions.includes('build_on_pending'))
     assert.equal(actions.includes('activate'), false)
-    assert.equal(nextStepLabel({ allowedActions: actions, pending: true, fourEyesWaiting: false }), 'Approver jóváhagyására vár')
+    assert.equal(nextStepLabel({ allowedActions: actions, pending: true, fourEyesWaiting: false }), 'Jóváhagyó döntésére vár')
   })
 
   await test('T14: operator + operator_can_activate aktiválhat', () => {

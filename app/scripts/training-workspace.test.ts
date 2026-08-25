@@ -55,7 +55,13 @@ function actor(role: UserRole, id: string): TrainingActor {
   return { id, tenantId: TENANT, role }
 }
 
-function makeHarness(opts: { profile?: unknown; evalActive?: boolean; evalPasses?: boolean } = {}) {
+function makeHarness(opts: {
+  profile?: unknown
+  evalActive?: boolean
+  evalPasses?: boolean
+  casMissOnActivate?: boolean
+  ticketCreateRace?: boolean
+} = {}) {
   const instructionVersions = new Map<string, InstructionVersionRow>()
   const trainingMeta = new Map<string, TrainingMetaRow>()
   const revisions = new Map<string, RevisionRow>()
@@ -107,7 +113,6 @@ function makeHarness(opts: { profile?: unknown; evalActive?: boolean; evalPasses
       [...instructionVersions.values()].sort((a, b) => b.version - a.version),
     findInstructionVersion: async (_memoryId, version) =>
       [...instructionVersions.values()].find((v) => v.version === version) ?? null,
-    findInstructionVersionById: async (id) => instructionVersions.get(id) ?? null,
     findTrainingMeta: async (ticketId) => trainingMeta.get(ticketId) ?? null,
     createTrainingMeta: async (data) => {
       trainingMeta.set(data.ticketId, {
@@ -164,7 +169,10 @@ function makeHarness(opts: { profile?: unknown; evalActive?: boolean; evalPasses
       if (!row) throw new Error('revision missing')
       Object.assign(row, data)
     },
-    createInstructionVersion: async (data) => {
+    activateInstructionVersion: async (data) => {
+      if (opts.casMissOnActivate || currentInstructionId !== data.expectedCurrentVersionId) {
+        return null
+      }
       const row: InstructionVersionRow = {
         id: `ver-${++versionSeq}`,
         memoryId: data.memoryId,
@@ -177,23 +185,23 @@ function makeHarness(opts: { profile?: unknown; evalActive?: boolean; evalPasses
         createdAt: new Date(),
       }
       instructionVersions.set(row.id, row)
+      if (data.expectedCurrentVersionId) {
+        const previous = instructionVersions.get(data.expectedCurrentVersionId)
+        if (previous) previous.status = 'rolled_back'
+      }
+      currentInstructionId = row.id
       return row
     },
-    setInstructionCurrent: async (params) => {
-      if (params.previousActiveId) {
-        const prev = instructionVersions.get(params.previousActiveId)
-        if (prev) prev.status = 'rolled_back'
-      }
-      currentInstructionId = params.nextVersionId
-    },
     restoreInstructionVersion: async (params) => {
-      if (params.previousActiveId && params.previousActiveId !== params.targetId) {
-        const prev = instructionVersions.get(params.previousActiveId)
+      if (currentInstructionId !== params.expectedCurrentVersionId) return false
+      if (params.expectedCurrentVersionId && params.expectedCurrentVersionId !== params.targetId) {
+        const prev = instructionVersions.get(params.expectedCurrentVersionId)
         if (prev) prev.status = 'rolled_back'
       }
       const target = instructionVersions.get(params.targetId)
       if (target) target.status = 'active'
       currentInstructionId = params.targetId
+      return true
     },
     findUser: async (id) => (users.has(id) ? { id } : null),
   }
@@ -215,6 +223,20 @@ function makeHarness(opts: { profile?: unknown; evalActive?: boolean; evalPasses
       tenantId?: string | null
       title: string
     }) => {
+      if (opts.ticketCreateRace && tickets.size === 0) {
+        const competing = {
+          id: 'ticket-competing',
+          state: 'awaiting_human',
+          type: 'training',
+          payload: {},
+          agentId: AGENT_ID,
+          createdById: APPROVER_B,
+          tenantId: TENANT,
+          title: 'Párhuzamos tanítás',
+        } as unknown as Ticket
+        tickets.set(competing.id, competing)
+        throw new Error('unique constraint: one open instruction training ticket per agent')
+      }
       const ticket = {
         id: `ticket-${++ticketSeq}`,
         state: data.state,
@@ -323,7 +345,7 @@ async function run() {
     assert.equal(submitted.ticket.state, 'awaiting_human')
     const ws = await h.service.getTrainingWorkspace({ agentId: AGENT_ID, actor: operator })
     assert.equal(ws.allowedActions.includes('activate'), false)
-    assert.equal(ws.pendingProposal?.nextStep, 'Approver jóváhagyására vár')
+    assert.equal(ws.pendingProposal?.nextStep, 'Jóváhagyó döntésére vár')
     await assert.rejects(
       () =>
         h.service.activateTraining({
@@ -359,6 +381,30 @@ async function run() {
     assert.ok(h.auditLog.some((a) => a.action === 'memory.update'))
     assert.ok(h.auditLog.some((a) => a.action === 'training.approved'))
     assert.equal(h.projectManifestCurrentId, 'proj-12')
+  })
+
+  await test('user-kezdeményezett tanítást az általános eval mód nem blokkolja', async () => {
+    const h = makeHarness({
+      profile: {
+        scope: ['memory'],
+        approval_mode: 'eval_only',
+        durable_memory_approval_policy: { activation_mode: 'operator_can_activate', four_eyes_required: false },
+      },
+      evalActive: false,
+    })
+    const preview = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'PDF-et csatolj' },
+      actor: operator,
+    })
+    const submitted = await h.service.submitTrainingProposal({ previewId: preview.previewId, actor: operator })
+    const result = await h.service.activateTraining({
+      ticketId: submitted.ticket.id,
+      revisionId: submitted.currentRevision.id,
+      actor: operator,
+    })
+    assert.equal(result.memoryVersion.version, 4)
+    assert.equal(result.evalRun, null)
   })
 
   await test('T15: viewer csak olvashat, action tiltott', async () => {
@@ -419,6 +465,20 @@ async function run() {
     assert.match(submitted.currentRevision.proposedVersionRef, /Magyarul válaszolj/)
   })
 
+  await test('párhuzamos első submitnál a DB-guard vesztesét új előnézetre küldi', async () => {
+    const h = makeHarness({ ticketCreateRace: true })
+    const preview = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'PDF-et csatolj' },
+      actor: operator,
+    })
+    await assert.rejects(
+      () => h.service.submitTrainingProposal({ previewId: preview.previewId, actor: operator }),
+      (e: unknown) => e instanceof TrainingGateError && e.code === 'composition_required',
+    )
+    assert.equal(h.tickets.size, 1)
+  })
+
   await test('T18: elavult revízió aktiválása elutasítva', async () => {
     const h = makeHarness()
     const first = await h.service.previewTrainingChange({
@@ -475,6 +535,34 @@ async function run() {
         }),
       (e: unknown) => e instanceof TrainingGateError && e.code === 'base_version_stale',
     )
+  })
+
+  await test('T19/CAS: a precheck utáni konkurens pointerváltás sem írható felül', async () => {
+    const h = makeHarness({
+      profile: {
+        scope: ['memory'],
+        approval_mode: 'human',
+        durable_memory_approval_policy: { activation_mode: 'operator_can_activate', four_eyes_required: false },
+      },
+      casMissOnActivate: true,
+    })
+    const preview = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'PDF-et csatolj' },
+      actor: operator,
+    })
+    const submitted = await h.service.submitTrainingProposal({ previewId: preview.previewId, actor: operator })
+    await assert.rejects(
+      () =>
+        h.service.activateTraining({
+          ticketId: submitted.ticket.id,
+          revisionId: submitted.currentRevision.id,
+          actor: operator,
+        }),
+      (e: unknown) => e instanceof TrainingGateError && e.code === 'base_version_stale',
+    )
+    assert.equal(h.currentInstructionId, 'ver-3')
+    assert.equal(h.instructionVersions.size, 1)
   })
 
   await test('T20: instruction aktiválás nem nyúl a projektmemória current pointerhez', async () => {

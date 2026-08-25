@@ -17,55 +17,18 @@ import {
   EMPTY_MEMORY_PLACEHOLDER,
   parseMemoryItems,
 } from '@/domain/training/memory-items'
-import type { TrainingAllowedAction } from '@/domain/training/durable-memory-policy'
-import type { TrainingCompositionMode } from '@/domain/training/training-composition'
-
-type TrainingWorkspaceView = {
-  agentId: string
-  agentName: string
-  activeVersion: {
-    id: string
-    version: number
-    content: string
-    createdAt: string | Date
-    source: string | null
-  } | null
-  pendingProposal: {
-    ticketId: string
-    revisionId: string
-    revision: number
-    proposedVersion: string
-    createdById: string
-    targetMemoryVersion: number
-    fourEyesWaiting: boolean
-    nextStep: string | null
-  } | null
-  allowedActions: TrainingAllowedAction[]
-  timeline: Array<{
-    id: string
-    version: number
-    status: string
-    source: string | null
-    approvedBy: string | null
-    createdAt: string | Date
-    content: string | null
-  }>
-}
-
-type MemoryVersionRow = {
-  id?: string
-  version: number
-  content: string | null
-  status: string
-  createdAt: string | Date
-  source: string | null
-}
+import type {
+  ChangeSummary,
+  ImpactResult,
+  TrainingCompositionMode,
+} from '@/domain/training/training-composition'
+import type { TrainingWorkspaceView } from '@/domain/training/training-workspace-contract'
 
 type PreviewState = {
   previewId: string
   proposedVersion: string
-  changeSummary: { added: string[]; removed: string[]; rewritten: Array<{ from: string; to: string }> }
-  impactResult: { verdict: 'complements' | 'changes' | 'blocked'; nextStep: string | null }
+  changeSummary: ChangeSummary
+  impactResult: ImpactResult
 }
 
 function fmtDate(d: string | Date) {
@@ -78,6 +41,59 @@ function previewContent(content: string | null | undefined, max = 400): string {
   return `${text.slice(0, max)}…`
 }
 
+function ChangeImpactSummary({
+  changeSummary,
+  impactResult,
+}: {
+  changeSummary: ChangeSummary
+  impactResult: ImpactResult
+}) {
+  const tone =
+    impactResult.verdict === 'blocked'
+      ? 'text-coral-deep'
+      : impactResult.verdict === 'changes'
+        ? 'text-honey'
+        : 'text-sage'
+
+  return (
+    <div className="mb-3">
+      <p className={`mb-3 text-sm font-semibold ${tone}`}>
+        {impactResult.verdict === 'complements' && 'Kiegészíti a meglévő szabályokat'}
+        {impactResult.verdict === 'changes' && 'Megváltoztatja a meglévő szabályokat'}
+        {impactResult.verdict === 'blocked' && 'Ez a tanítás nem engedhető meg'}
+      </p>
+      {changeSummary.added.length > 0 && (
+        <div className="mb-3">
+          <p className="mb-1 text-xs font-semibold text-ink-faint">Új szabályok</p>
+          <ul className="list-disc space-y-1 pl-5 text-sm text-ink-soft">
+            {changeSummary.added.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {changeSummary.rewritten.map((item) => (
+        <p key={`${item.from}-${item.to}`} className="mb-2 text-sm text-ink-soft">
+          <span className="text-ink-faint">Helyette:</span> {item.from} → {item.to}
+        </p>
+      ))}
+      {changeSummary.removed.length > 0 && (
+        <div className="mb-3">
+          <p className="mb-1 text-xs font-semibold text-ink-faint">Megszűnő szabályok</p>
+          <ul className="list-disc space-y-1 pl-5 text-sm text-ink-soft">
+            {changeSummary.removed.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {impactResult.nextStep && (
+        <p className="text-sm text-ink-soft">{impactResult.nextStep}</p>
+      )}
+    </div>
+  )
+}
+
 export function TrainingWorkspace({
   agents,
   selectedAgentId,
@@ -86,7 +102,7 @@ export function TrainingWorkspace({
 }: {
   agents: Agent[]
   selectedAgentId?: string
-  workspace: TrainingWorkspaceView | null
+  workspace: TrainingWorkspaceView<string | Date> | null
   lockAgent?: boolean
 }) {
   const router = useRouter()
@@ -103,14 +119,14 @@ export function TrainingWorkspace({
 
   const selectedAgent = agents.find((a) => a.id === agentId)
   const isSelectedAgentLoaded = agentId === selectedAgentId
-  const allowed = new Set<TrainingAllowedAction>(workspace?.allowedActions ?? [])
+  const allowed = new Set(workspace?.allowedActions ?? [])
   const canPreview = allowed.has('preview')
   const memoryContent = workspace?.activeVersion?.content ?? ''
   const items = useMemo(
     () => (isSelectedAgentLoaded ? parseMemoryItems(memoryContent) : []),
     [isSelectedAgentLoaded, memoryContent],
   )
-  const memoryVersions: MemoryVersionRow[] = workspace?.timeline ?? []
+  const memoryVersions = workspace?.timeline ?? []
   const currentVersionId = workspace?.activeVersion?.id ?? null
 
   function runPreview(
@@ -155,13 +171,6 @@ export function TrainingWorkspace({
       router.refresh()
     })
   }
-
-  const impactTone =
-    preview?.impactResult.verdict === 'blocked'
-      ? 'text-coral-deep'
-      : preview?.impactResult.verdict === 'changes'
-        ? 'text-honey'
-        : 'text-sage'
 
   return (
     <div className="space-y-6">
@@ -345,39 +354,10 @@ export function TrainingWorkspace({
 
       {preview && (
         <Card title="A változás hatása">
-          <p className={`mb-3 text-sm font-semibold ${impactTone}`}>
-            {preview.impactResult.verdict === 'complements' && 'Kiegészíti a meglévő szabályokat'}
-            {preview.impactResult.verdict === 'changes' && 'Megváltoztatja a meglévő szabályokat'}
-            {preview.impactResult.verdict === 'blocked' && 'Ez a tanítás nem engedhető meg'}
-          </p>
-          {preview.changeSummary.added.length > 0 && (
-            <div className="mb-3">
-              <p className="mb-1 text-xs font-semibold text-ink-faint">Új szabályok</p>
-              <ul className="list-disc space-y-1 pl-5 text-sm text-ink-soft">
-                {preview.changeSummary.added.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {preview.changeSummary.rewritten.map((item) => (
-            <p key={item.from} className="mb-2 text-sm text-ink-soft">
-              <span className="text-ink-faint">Helyette:</span> {item.from} → {item.to}
-            </p>
-          ))}
-          {preview.changeSummary.removed.length > 0 && (
-            <div className="mb-3">
-              <p className="mb-1 text-xs font-semibold text-ink-faint">Megszűnő szabályok</p>
-              <ul className="list-disc space-y-1 pl-5 text-sm text-ink-soft">
-                {preview.changeSummary.removed.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {preview.impactResult.nextStep && (
-            <p className="mb-3 text-sm text-ink-soft">{preview.impactResult.nextStep}</p>
-          )}
+          <ChangeImpactSummary
+            changeSummary={preview.changeSummary}
+            impactResult={preview.impactResult}
+          />
           <button
             type="button"
             className="mb-3 text-xs text-sky hover:underline"
@@ -437,6 +417,10 @@ export function TrainingWorkspace({
                 Részlet
               </Link>
             </div>
+            <ChangeImpactSummary
+              changeSummary={workspace.pendingProposal.changeSummary}
+              impactResult={workspace.pendingProposal.impactResult}
+            />
             <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-night-2 p-2 text-xs text-ink-soft">
               {workspace.pendingProposal.proposedVersion}
             </pre>
@@ -495,7 +479,7 @@ export function TrainingWorkspace({
         ) : (
           <ul className="space-y-2">
             {memoryVersions.map((v) => {
-              const isCurrent = v.id === currentVersionId || v.status === 'active'
+              const isCurrent = v.id === currentVersionId
               const open = expandedVersion === v.version
               return (
                 <li key={`${v.version}-${v.createdAt}`} className="atelier-soft p-3">

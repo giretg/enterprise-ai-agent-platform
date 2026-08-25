@@ -281,6 +281,7 @@ function seedCandidate(
     workstreamKey: null,
     operation: 'create',
     status: 'proposed',
+    proposedBy: 'agent',
     payload: {
       type: 'decision',
       path: 'agent-memory/decisions',
@@ -431,6 +432,94 @@ async function run() {
     assert.equal((approved as { outcome: string }).outcome, 'approved')
     assert.equal(f.candidateStore.get('cand-3')!.status, 'approved')
     assert.equal(f.ticketStore.get(ticketId)!.state, 'done')
+  })
+
+  await test('T21: ticketes projektmemória sem kerülheti meg a négy szem elvet', async () => {
+    const f = makeFakes()
+    setupPermissions(f.permissionsByKey)
+    f.agentsById.set(AGENT_ID, agent())
+    seedCandidate(f.candidateStore, { id: 'cand-ticket-eyes', proposedBy: APPROVER_ID })
+
+    const ticketed = await f.service.ticket('cand-ticket-eyes', APPROVER)
+    assert.equal(ticketed.ok, true)
+    const ticketId = f.candidateStore.get('cand-ticket-eyes')!.ticketId!
+    const approved = await f.service.approveTicketedCandidate(ticketId, APPROVER)
+
+    assert.deepEqual(approved, { ok: false, reason: 'four_eyes_required' })
+    assert.equal(f.chunkStore.size, 0)
+    assert.equal(f.ticketStore.get(ticketId)!.state, 'awaiting_human')
+  })
+
+  await test('ticketes projektmemóriánál az aktiváláskori aktuális profil dönt', async () => {
+    const f = makeFakes()
+    setupPermissions(f.permissionsByKey)
+    f.agentsById.set(AGENT_ID, agent())
+    seedCandidate(f.candidateStore, { id: 'cand-ticket-policy' })
+
+    await f.service.ticket('cand-ticket-policy', OPERATOR)
+    const ticketId = f.candidateStore.get('cand-ticket-policy')!.ticketId!
+    f.agentsById.set(
+      AGENT_ID,
+      agent({
+        selfEvolutionProfile: {
+          scope: ['behavior'],
+          approval_mode: 'human',
+          durable_memory_approval_policy: {
+            activation_mode: 'approver_required',
+            four_eyes_required: true,
+          },
+        } as never,
+      }),
+    )
+
+    const approved = await f.service.approveTicketedCandidate(ticketId, APPROVER)
+    assert.deepEqual(approved, { ok: false, reason: 'self_evolution_scope_excludes_memory' })
+    assert.equal(f.chunkStore.size, 0)
+  })
+
+  await test('ticketbe terelés sem kerülheti meg a kötelező evalt', async () => {
+    const f = makeFakes()
+    setupPermissions(f.permissionsByKey)
+    f.agentsById.set(
+      AGENT_ID,
+      agent({
+        selfEvolutionProfile: {
+          scope: ['memory'],
+          approval_mode: 'eval_only',
+          durable_memory_approval_policy: {
+            activation_mode: 'approver_required',
+            four_eyes_required: true,
+          },
+        } as never,
+      }),
+    )
+    seedCandidate(f.candidateStore, { id: 'cand-ticket-eval' })
+
+    await f.service.ticket('cand-ticket-eval', OPERATOR)
+    const ticketId = f.candidateStore.get('cand-ticket-eval')!.ticketId!
+    const approved = await f.service.approveTicketedCandidate(ticketId, APPROVER)
+
+    assert.deepEqual(approved, { ok: false, reason: 'eval_required_but_missing' })
+    assert.equal(f.candidateStore.get('cand-ticket-eval')!.status, 'ticketed')
+    assert.equal(f.chunkStore.size, 0)
+  })
+
+  await test('ticketes törléshez is külön admin jogosultság kell', async () => {
+    const f = makeFakes()
+    setupPermissions(f.permissionsByKey)
+    f.agentsById.set(AGENT_ID, agent())
+    seedCandidate(f.candidateStore, {
+      id: 'cand-ticket-delete',
+      operation: 'delete_request',
+    })
+
+    await f.service.ticket('cand-ticket-delete', OPERATOR)
+    const ticketId = f.candidateStore.get('cand-ticket-delete')!.ticketId!
+    const approved = await f.service.approveTicketedCandidate(ticketId, APPROVER)
+
+    assert.deepEqual(approved, { ok: false, reason: 'activation_forbidden' })
+    assert.equal(f.candidateStore.get('cand-ticket-delete')!.status, 'ticketed')
+    assert.equal(f.ticketStore.get(ticketId)!.state, 'awaiting_human')
   })
 
   await test('self_evolution_profile.scope kizárja a memóriát → deny, candidate változatlan', async () => {

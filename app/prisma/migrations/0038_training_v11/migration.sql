@@ -44,6 +44,56 @@ FROM (
 ) latest
 WHERE m.id = latest."memory_id";
 
+-- A legacy current pointer az instruction-lánc kizárólagos mutatója marad. Ha
+-- korábban mégis manifesztre mutatott, álljon vissza a legutóbbi aktív
+-- instruction-verzióra; a manifesztnek már külön current pointere van.
+UPDATE "memories" m
+SET "current_version_id" = latest.id
+FROM (
+  SELECT DISTINCT ON ("memory_id") "id", "memory_id"
+  FROM "memory_versions"
+  WHERE "kind" = 'instruction' AND "status" = 'active'
+  ORDER BY "memory_id", "version" DESC
+) latest
+WHERE m.id = latest."memory_id"
+  AND (
+    m."current_version_id" IS NULL
+    OR EXISTS (
+      SELECT 1
+      FROM "memory_versions" pointed
+      WHERE pointed.id = m."current_version_id"
+        AND pointed."kind" = 'project_manifest'
+    )
+  );
+
+-- Ha még egyetlen instruction-verzió sincs, a legacy manifeszt-pointert
+-- nullázzuk. Így az első instruction aktiválás null-ról induló CAS-a sikerülhet.
+UPDATE "memories" m
+SET "current_version_id" = NULL
+WHERE EXISTS (
+  SELECT 1
+  FROM "memory_versions" pointed
+  WHERE pointed.id = m."current_version_id"
+    AND pointed."kind" = 'project_manifest'
+)
+AND NOT EXISTS (
+  SELECT 1
+  FROM "memory_versions" instruction
+  WHERE instruction."memory_id" = m.id
+    AND instruction."kind" = 'instruction'
+    AND instruction."status" = 'active'
+);
+
+-- Az alkalmazás előnézeti ellenőrzése önmagában nem elég: két párhuzamos
+-- operátor ugyanabban a pillanatban is submitolhat. A részleges unique index a
+-- kanonikus DB-invariáns; a KB- és projektmemória-ticketek külön folyamatok.
+CREATE UNIQUE INDEX "tickets_one_open_instruction_training_per_agent_key"
+  ON "tickets"("agent_id")
+  WHERE "type" = 'training'
+    AND "agent_id" IS NOT NULL
+    AND "state" IN ('backlog', 'ready', 'in_progress', 'awaiting_human', 'needs_info')
+    AND COALESCE("payload"->>'kind', '') NOT IN ('kb_document', 'memory_candidate');
+
 ALTER TABLE "training_tickets"
   ADD COLUMN "eval_required" BOOLEAN NOT NULL DEFAULT false,
   ADD COLUMN "origin" "training_origin" NOT NULL DEFAULT 'human',

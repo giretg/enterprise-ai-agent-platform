@@ -25,6 +25,7 @@ import type { TicketService } from '../src/domain/ticket/ticket-service'
 import type { WriteGateService } from '../src/domain/writegate/write-gate-service'
 import type { EvalService } from '../src/domain/eval/eval-service'
 import type { SelfEvolutionGuard } from '../src/domain/training/self-evolution-guard'
+import type { TrainingStore } from '../src/domain/training/training-store'
 
 let failures = 0
 async function test(name: string, fn: () => void | Promise<void>) {
@@ -119,6 +120,7 @@ function makeService() {
     evalService,
     agentRepo,
     guard,
+    {} as TrainingStore,
   )
 }
 
@@ -192,7 +194,7 @@ async function main() {
           source: 'ui',
           actor: actorA,
         }),
-      // A tenant-guard átenged; a `prisma`-hívás DB nélkül bukik el.
+      // A tenant-guard átenged; a store seam fake-je a kapun túl bukik el.
       (e: Error) => !/^Agent not found$/.test(e.message),
     )
   })
@@ -203,7 +205,7 @@ async function main() {
   await test('rollbackMemory: megosztott (platform) agent elérhető marad', async () => {
     await assert.rejects(
       () => makeService().rollbackMemory(AGENT_SHARED, 1, actorA),
-      // A tenant-guard átenged; a `prisma`-hívás DB nélkül bukik el.
+      // A tenant-guard átenged; a store seam fake-je a kapun túl bukik el.
       (e: Error) => !/^Agent not found$/.test(e.message),
     )
   })

@@ -1,5 +1,9 @@
 import { decideAuthz } from '@/lib/iam-policy'
-import { requiresEvalGate, resolveSelfEvolutionProfile } from '@/lib/self-evolution-profile'
+import {
+  requiresEvalGate,
+  resolveSelfEvolutionProfile,
+  type SelfEvolutionProfile,
+} from '@/lib/self-evolution-profile'
 import {
   fourEyesBlocksActor,
   hasTrainingActivationRight,
@@ -153,107 +157,38 @@ export class MemoryApprovalService {
     }
 
     const profile = resolveSelfEvolutionProfile(agent.selfEvolutionProfile)
-    if (!profile.scope.includes('memory')) {
-      await this.audit.append({
-        actorType: 'human',
-        actorId: actor.id,
-        agentVersion: agent.currentVersion,
-        action: 'user.authz.deny',
-        targetType: 'memory_candidate',
-        targetId: candidateId,
-        modelUsed: null,
-        inputRef: 'memory.inline_approve',
-        outputRef: null,
-        policyDecision: 'self_evolution_scope_excludes_memory',
-        tenantId: candidate.tenantId,
-        metadata: { candidateId, agentId: agent.id },
-      })
-      return { ok: false, reason: 'self_evolution_scope_excludes_memory' }
+    const policyDenial = await this.durablePolicyDenial({
+      candidate,
+      agent,
+      actor,
+      profile,
+      inputRef: 'memory.inline_approve',
+    })
+    if (policyDenial === 'activation_forbidden') {
+      return this.ticket(candidateId, actor)
+    }
+    if (policyDenial) {
+      return { ok: false, reason: policyDenial }
     }
 
     const payload = readPayload(candidate.payload)
-
-    if (requiresEvalGate(profile)) {
-      const activeEval = await this.evalService.findActiveForAgent(agent.id)
-      if (!activeEval) return { ok: false, reason: 'eval_required_but_missing' }
-      const canonicalContent = buildCanonicalContent(candidate.operation, payload)
-      const evalRun = await this.evalService.run({
-        evalId: activeEval.id,
-        agentId: agent.id,
-        proposedContent: canonicalContent,
-        agentVersion: agent.currentVersion,
-        trigger: 'pre_training_approval',
-      })
-      if (!evalRun.passed) {
-        await this.audit.append({
-          actorType: 'human',
-          actorId: actor.id,
-          agentVersion: agent.currentVersion,
-          action: 'memory.write.eval_blocked',
-          targetType: 'memory_candidate',
-          targetId: candidateId,
-          modelUsed: null,
-          inputRef: activeEval.id,
-          outputRef: evalRun.id,
-          policyDecision: `eval_failed:score=${evalRun.score.toFixed(2)}`,
-          tenantId: candidate.tenantId,
-          metadata: evalRun.details,
-        })
-        return { ok: false, reason: 'eval_failed' }
-      }
-    }
+    const evalDenial = await this.evaluateCandidateIfRequired({
+      candidate,
+      agent,
+      actor,
+      profile,
+      payload,
+    })
+    if (evalDenial) return { ok: false, reason: evalDenial }
 
     const permissionKey = candidate.operation === 'delete_request' ? 'memory.delete_approve' : 'memory.inline_approve'
     const permEntry = await this.rolePermissions.findByKey(permissionKey)
     const canInline = decideAuthz({ status: 'active', role: actor.role }, permEntry?.minRole ?? null).allow
     const durablePolicy = resolveDurableMemoryApprovalPolicy(profile)
-    const canActivateByPolicy = hasTrainingActivationRight(actor.role, durablePolicy)
 
     // Rollback/törlés nem lazítható a tartós memória-policy-val (§4.5).
     if (candidate.operation === 'delete_request' && !canInline) {
       return this.ticket(candidateId, actor)
-    }
-
-    if (!canActivateByPolicy) {
-      await this.audit.append({
-        actorType: 'human',
-        actorId: actor.id,
-        agentVersion: agent.currentVersion,
-        action: 'user.authz.deny',
-        targetType: 'memory_candidate',
-        targetId: candidateId,
-        modelUsed: null,
-        inputRef: permissionKey,
-        outputRef: 'routed_to_ticket',
-        policyDecision: 'durable_memory_approver_required',
-        tenantId: candidate.tenantId,
-        metadata: { candidateId, agentId: agent.id, permissionKey },
-      })
-      return this.ticket(candidateId, actor)
-    }
-
-    if (
-      fourEyesBlocksActor({
-        policy: durablePolicy,
-        actorId: actor.id,
-        revisionCreatedById: candidate.proposedBy,
-      })
-    ) {
-      await this.audit.append({
-        actorType: 'human',
-        actorId: actor.id,
-        agentVersion: agent.currentVersion,
-        action: 'memory.write_denied',
-        targetType: 'memory_candidate',
-        targetId: candidateId,
-        modelUsed: null,
-        inputRef: 'four_eyes_required',
-        outputRef: 'four_eyes_required',
-        policyDecision: 'four_eyes_required',
-        tenantId: candidate.tenantId,
-        metadata: { candidateId, proposedBy: candidate.proposedBy },
-      })
-      return { ok: false, reason: 'four_eyes_required' }
     }
 
     // §6.3/§12.1 — a T2-írás HORGONYA a `memory.inline_approve` (delete-nél
@@ -361,11 +296,57 @@ export class MemoryApprovalService {
 
     const resolved = await this.resolveCandidateForActor(candidateId, actor, 'memory.ticket_approve')
     if (!resolved.ok) return resolved.result
-    const { candidate } = resolved
+    const { candidate, agent } = resolved
     if (candidate.status !== 'ticketed') return { ok: false, reason: `candidate_not_ticketed:${candidate.status}` }
     if (ticket.tenantId !== candidate.tenantId) return { ok: false, reason: 'ticket_not_found' }
 
+    // Az aktiválás pillanatában az aktuális profil dönt: a ticket megnyitása nem
+    // fagyaszthat be lazább policyt, és nem kerülheti meg a négy szem elvet.
+    const profile = resolveSelfEvolutionProfile(agent.selfEvolutionProfile)
+    const policyDenial = await this.durablePolicyDenial({
+      candidate,
+      agent,
+      actor,
+      profile,
+      inputRef: 'memory.ticket_approve',
+    })
+    if (policyDenial) return { ok: false, reason: policyDenial }
+
+    const permissionKey =
+      candidate.operation === 'delete_request' ? 'memory.delete_approve' : 'memory.ticket_approve'
+    const permission = await this.rolePermissions.findByKey(permissionKey)
+    const canApproveTicket = decideAuthz(
+      { status: 'active', role: actor.role },
+      permission?.minRole ?? null,
+    ).allow
+    if (!canApproveTicket) {
+      await this.audit.append({
+        actorType: 'human',
+        actorId: actor.id,
+        agentVersion: agent.currentVersion,
+        action: 'user.authz.deny',
+        targetType: 'memory_candidate',
+        targetId: candidate.id,
+        modelUsed: null,
+        inputRef: permissionKey,
+        outputRef: null,
+        policyDecision: 'ticket_approval_capability_missing',
+        tenantId: candidate.tenantId,
+        metadata: { candidateId: candidate.id, agentId: agent.id },
+      })
+      return { ok: false, reason: 'activation_forbidden' }
+    }
+
     const payload = readPayload(candidate.payload)
+    const evalDenial = await this.evaluateCandidateIfRequired({
+      candidate,
+      agent,
+      actor,
+      profile,
+      payload,
+    })
+    if (evalDenial) return { ok: false, reason: evalDenial }
+
     const chunkId = await this.performInlineWrite(candidate, payload, actor.id)
     memoryCandidatesTotal.inc({ status: 'approved' })
 
@@ -664,6 +645,129 @@ export class MemoryApprovalService {
     }
 
     return resultChunkId
+  }
+
+  private async durablePolicyDenial(params: {
+    candidate: {
+      id: string
+      tenantId: string | null
+      proposedBy: string
+    }
+    agent: {
+      id: string
+      currentVersion: number
+    }
+    actor: MemoryApprovalActor
+    profile: SelfEvolutionProfile
+    inputRef: string
+  }): Promise<'self_evolution_scope_excludes_memory' | 'activation_forbidden' | 'four_eyes_required' | null> {
+    if (!params.profile.scope.includes('memory')) {
+      await this.audit.append({
+        actorType: 'human',
+        actorId: params.actor.id,
+        agentVersion: params.agent.currentVersion,
+        action: 'user.authz.deny',
+        targetType: 'memory_candidate',
+        targetId: params.candidate.id,
+        modelUsed: null,
+        inputRef: params.inputRef,
+        outputRef: null,
+        policyDecision: 'self_evolution_scope_excludes_memory',
+        tenantId: params.candidate.tenantId,
+        metadata: { candidateId: params.candidate.id, agentId: params.agent.id },
+      })
+      return 'self_evolution_scope_excludes_memory'
+    }
+
+    const policy = resolveDurableMemoryApprovalPolicy(params.profile)
+    if (!hasTrainingActivationRight(params.actor.role, policy)) {
+      await this.audit.append({
+        actorType: 'human',
+        actorId: params.actor.id,
+        agentVersion: params.agent.currentVersion,
+        action: 'user.authz.deny',
+        targetType: 'memory_candidate',
+        targetId: params.candidate.id,
+        modelUsed: null,
+        inputRef: params.inputRef,
+        outputRef: 'routed_to_ticket',
+        policyDecision: 'durable_memory_approver_required',
+        tenantId: params.candidate.tenantId,
+        metadata: { candidateId: params.candidate.id, agentId: params.agent.id },
+      })
+      return 'activation_forbidden'
+    }
+
+    if (
+      fourEyesBlocksActor({
+        policy,
+        actorId: params.actor.id,
+        revisionCreatedById: params.candidate.proposedBy,
+      })
+    ) {
+      await this.audit.append({
+        actorType: 'human',
+        actorId: params.actor.id,
+        agentVersion: params.agent.currentVersion,
+        action: 'memory.write_denied',
+        targetType: 'memory_candidate',
+        targetId: params.candidate.id,
+        modelUsed: null,
+        inputRef: params.inputRef,
+        outputRef: 'four_eyes_required',
+        policyDecision: 'four_eyes_required',
+        tenantId: params.candidate.tenantId,
+        metadata: { candidateId: params.candidate.id, proposedBy: params.candidate.proposedBy },
+      })
+      return 'four_eyes_required'
+    }
+
+    return null
+  }
+
+  private async evaluateCandidateIfRequired(params: {
+    candidate: {
+      id: string
+      tenantId: string | null
+      operation: string
+    }
+    agent: {
+      id: string
+      currentVersion: number
+    }
+    actor: MemoryApprovalActor
+    profile: SelfEvolutionProfile
+    payload: MemoryCandidatePayload
+  }): Promise<'eval_required_but_missing' | 'eval_failed' | null> {
+    if (!requiresEvalGate(params.profile)) return null
+
+    const activeEval = await this.evalService.findActiveForAgent(params.agent.id)
+    if (!activeEval) return 'eval_required_but_missing'
+
+    const evalRun = await this.evalService.run({
+      evalId: activeEval.id,
+      agentId: params.agent.id,
+      proposedContent: buildCanonicalContent(params.candidate.operation, params.payload),
+      agentVersion: params.agent.currentVersion,
+      trigger: 'pre_training_approval',
+    })
+    if (evalRun.passed) return null
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId: params.actor.id,
+      agentVersion: params.agent.currentVersion,
+      action: 'memory.write.eval_blocked',
+      targetType: 'memory_candidate',
+      targetId: params.candidate.id,
+      modelUsed: null,
+      inputRef: activeEval.id,
+      outputRef: evalRun.id,
+      policyDecision: `eval_failed:score=${evalRun.score.toFixed(2)}`,
+      tenantId: params.candidate.tenantId,
+      metadata: evalRun.details,
+    })
+    return 'eval_failed'
   }
 
   /** S6: candidate és cél-agent csak az aktív tenantból kezelhető. */

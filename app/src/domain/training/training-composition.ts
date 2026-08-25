@@ -1,7 +1,6 @@
 import {
   applyMemoryItemChange,
   parseMemoryItems,
-  serializeMemoryItems,
   type MemoryItemOperation,
 } from './memory-items'
 import { detectHardFloorViolation, type HardFloorResult } from './training-hard-floor'
@@ -147,8 +146,4 @@ export function buildImpactResult(params: {
     hardFloor,
     nextStep: null,
   }
-}
-
-export function serializeItemsOrEmpty(items: string[]): string {
-  return serializeMemoryItems(items)
 }

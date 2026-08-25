@@ -22,9 +22,7 @@ import {
   hasTrainingRejectRight,
   nextStepLabel,
   resolveDurableMemoryApprovalPolicy,
-  type DurableMemoryApprovalPolicy,
   type TrainingActionErrorCode,
-  type TrainingAllowedAction,
 } from './durable-memory-policy'
 import {
   TrainingCompositionError,
@@ -36,12 +34,11 @@ import {
 } from './training-composition'
 import { signTrainingPreview, verifyTrainingPreview } from './training-preview-token'
 import {
-  prismaTrainingStore,
   type AgentTrainingContext,
-  type InstructionVersionRow,
   type RevisionRow,
   type TrainingStore,
 } from './training-store'
+import type { TrainingWorkspaceView } from './training-workspace-contract'
 
 const NIL_VERSION_ID = '00000000-0000-4000-8000-000000000000'
 const OPEN_TICKET_STATES = new Set(['backlog', 'ready', 'in_progress', 'awaiting_human', 'needs_info'])
@@ -98,41 +95,6 @@ export function mayOverrideFailedEval(profile: SelfEvolutionProfile): boolean {
   return !requiresEvalGate(profile)
 }
 
-export type TrainingWorkspaceView = {
-  agentId: string
-  agentName: string
-  activeVersion: {
-    id: string
-    version: number
-    content: string
-    createdAt: Date
-    source: string | null
-  } | null
-  pendingProposal: {
-    ticketId: string
-    revisionId: string
-    revision: number
-    proposedVersion: string
-    changeSummary: unknown
-    impactResult: unknown
-    createdById: string
-    targetMemoryVersion: number
-    fourEyesWaiting: boolean
-    nextStep: string | null
-  } | null
-  allowedActions: TrainingAllowedAction[]
-  timeline: Array<{
-    id: string
-    version: number
-    status: string
-    source: string | null
-    approvedBy: string | null
-    createdAt: Date
-    content: string | null
-  }>
-  policy: DurableMemoryApprovalPolicy
-}
-
 export class TrainingService {
   constructor(
     private tickets: TicketRepository,
@@ -142,7 +104,7 @@ export class TrainingService {
     private evalService: EvalService,
     private agents: AgentRepository,
     private selfEvolutionGuard: SelfEvolutionGuard,
-    private store: TrainingStore = prismaTrainingStore,
+    private store: TrainingStore,
   ) {}
 
   private async requireReachableAgent(
@@ -336,11 +298,6 @@ export class TrainingService {
     }
   }
 
-  async getInstructionTimeline(params: { agentId: string; actor: TrainingActor }) {
-    const workspace = await this.getTrainingWorkspace(params)
-    return workspace.timeline
-  }
-
   async previewTrainingChange(params: {
     agentId: string
     instruction: TrainingInstruction
@@ -469,30 +426,41 @@ export class TrainingService {
 
     let ticket = pendingTicket
     if (!ticket) {
-      ticket = await this.tickets.create({
-        tenantId: ctx.tenantId ?? params.actor.tenantId,
-        type: 'training',
-        title: `Tanítás: ${ctx.name}`,
-        state: 'backlog',
-        assigneeType: 'human',
-        assigneeId: null,
-        agentId: ctx.id,
-        payload: {
-          diff,
-          proposedContent: preview.proposedVersion,
-          source,
-        },
-        sourceDocumentId: null,
-        executeAfter: null,
-        dueBy: null,
-        createdById: params.actor.id,
-      })
+      try {
+        ticket = await this.tickets.create({
+          tenantId: ctx.tenantId ?? params.actor.tenantId,
+          type: 'training',
+          title: `Tanítás: ${ctx.name}`,
+          state: 'backlog',
+          assigneeType: 'human',
+          assigneeId: null,
+          agentId: ctx.id,
+          payload: {
+            diff,
+            proposedContent: preview.proposedVersion,
+            source,
+          },
+          sourceDocumentId: null,
+          executeAfter: null,
+          dueBy: null,
+          createdById: params.actor.id,
+        })
+      } catch (error) {
+        // Az adatbázis részleges unique indexe nyeri meg a párhuzamos submit-versenyt.
+        // A vesztes kliensnek újra meg kell néznie a közben létrejött javaslatot.
+        if (await this.findOpenInstructionTicket(ctx.id)) {
+          throw new TrainingGateError('composition_required')
+        }
+        throw error
+      }
       const targetMemoryVersion = await this.store.nextInstructionVersion(ctx.memoryId)
       await this.store.createTrainingMeta({
         ticketId: ticket.id,
         proposedDiff: diff,
         targetMemoryVersion,
-        evalRequired: requiresEvalGate(profile),
+        // Ez az útvonal user-kezdeményezett. Az általános approval_mode csak a
+        // későbbi reflection/system eredetű önfejlesztést kapuzhatja.
+        evalRequired: false,
         origin: 'human',
         scopeClass: 'memory',
       })
@@ -643,60 +611,55 @@ export class TrainingService {
     const approver = await this.store.findUser(params.actor.id)
     if (!approver) throw new Error('Approver not found')
 
-    if (requiresHumanApproval(profile) && policy.activation_mode === 'approver_required' && !hasMinimumRole(params.actor.role, 'approver')) {
-      return await deny('activation_forbidden')
-    }
-
     let evalRun = null
-    const activeEval = await this.evalService.findActiveForAgent(ctx.id)
-    if (activeEval || requiresEvalGate(profile)) {
-      if (!activeEval && requiresEvalGate(profile)) {
+    const evalRequired = currentMeta.origin !== 'human' && currentMeta.evalRequired
+    if (evalRequired) {
+      const activeEval = await this.evalService.findActiveForAgent(ctx.id)
+      if (!activeEval) {
         throw new Error('eval_required_but_missing')
       }
-      if (activeEval) {
-        evalRun = await this.evalService.run({
-          evalId: activeEval.id,
-          agentId: ctx.id,
-          proposedContent: revision.proposedVersionRef,
+      evalRun = await this.evalService.run({
+        evalId: activeEval.id,
+        agentId: ctx.id,
+        proposedContent: revision.proposedVersionRef,
+        agentVersion: ctx.currentVersion,
+        trigger: 'pre_training_approval',
+      })
+      await this.store.updateTrainingMeta(params.ticketId, {
+        evalResult: evalRun.details ?? { passed: evalRun.passed, score: evalRun.score },
+      })
+      if (!evalRun.passed && (!params.overrideEval || !mayOverrideFailedEval(profile))) {
+        await this.audit.append({
+          actorType: 'human',
+          actorId: params.actor.id,
           agentVersion: ctx.currentVersion,
-          trigger: 'pre_training_approval',
+          action: 'memory.write.eval_blocked',
+          targetType: 'memory',
+          targetId: ctx.memoryId,
+          modelUsed: null,
+          inputRef: activeEval.id,
+          outputRef: evalRun.id,
+          policyDecision: mayOverrideFailedEval(profile)
+            ? `eval_failed:score=${evalRun.score.toFixed(2)}`
+            : `eval_required_failed:score=${evalRun.score.toFixed(2)}`,
+          tenantId: ctx.tenantId,
+          metadata: { eval: evalRun.details, overrideRequested: params.overrideEval ?? false },
         })
-        await this.store.updateTrainingMeta(params.ticketId, {
-          evalResult: evalRun.details ?? { passed: evalRun.passed, score: evalRun.score },
-        })
-        if (!evalRun.passed && (!params.overrideEval || !mayOverrideFailedEval(profile))) {
-          await this.audit.append({
-            actorType: 'human',
-            actorId: params.actor.id,
+        if (!mayOverrideFailedEval(profile)) {
+          await this.ticketService.transition({
+            ticketId: params.ticketId,
+            toState: 'rejected',
+            actor: { type: 'system' },
+            note: `eval_required_failed: score ${Math.round(evalRun.score * 100)}%`,
             agentVersion: ctx.currentVersion,
-            action: 'memory.write.eval_blocked',
-            targetType: 'memory',
-            targetId: ctx.memoryId,
-            modelUsed: null,
-            inputRef: activeEval.id,
-            outputRef: evalRun.id,
-            policyDecision: mayOverrideFailedEval(profile)
-              ? `eval_failed:score=${evalRun.score.toFixed(2)}`
-              : `eval_required_failed:score=${evalRun.score.toFixed(2)}`,
-            tenantId: ctx.tenantId,
-            metadata: { eval: evalRun.details, overrideRequested: params.overrideEval ?? false },
           })
-          if (!mayOverrideFailedEval(profile)) {
-            await this.ticketService.transition({
-              ticketId: params.ticketId,
-              toState: 'rejected',
-              actor: { type: 'system' },
-              note: `eval_required_failed: score ${Math.round(evalRun.score * 100)}%`,
-              agentVersion: ctx.currentVersion,
-            })
-          }
-          throw new TrainingGateError(
-            'eval_failed',
-            mayOverrideFailedEval(profile)
-              ? `eval_failed: score ${Math.round(evalRun.score * 100)}% — use overrideEval to proceed`
-              : `eval_failed: score ${Math.round(evalRun.score * 100)}% — required eval cannot be overridden`,
-          )
         }
+        throw new TrainingGateError(
+          'eval_failed',
+          mayOverrideFailedEval(profile)
+            ? `eval_failed: score ${Math.round(evalRun.score * 100)}% — use overrideEval to proceed`
+            : `eval_failed: score ${Math.round(evalRun.score * 100)}% — required eval cannot be overridden`,
+        )
       }
     }
 
@@ -732,7 +695,7 @@ export class TrainingService {
     await this.store.updateTrainingMeta(params.ticketId, { writeGateTokenRef: gateToken.id })
 
     const nextVersion = revision.targetMemoryVersion
-    const memoryVersion = await this.store.createInstructionVersion({
+    const memoryVersion = await this.store.activateInstructionVersion({
       memoryId: ctx.memoryId,
       version: nextVersion,
       content: revision.proposedVersionRef,
@@ -740,12 +703,9 @@ export class TrainingService {
       source: 'training',
       approvedById: params.actor.id,
       parentVersion: ctx.currentInstruction?.version ?? null,
+      expectedCurrentVersionId: ctx.currentInstruction?.id ?? null,
     })
-    await this.store.setInstructionCurrent({
-      memoryId: ctx.memoryId,
-      nextVersionId: memoryVersion.id,
-      previousActiveId: ctx.currentInstruction?.id ?? null,
-    })
+    if (!memoryVersion) return await deny('base_version_stale')
 
     if (ticket.state === 'awaiting_human') {
       // Az awaiting_human → approved ticket-szabály approver szerepet vár.
@@ -908,7 +868,7 @@ export class TrainingService {
       throw new Error('Use the knowledge base approval flow for KB document tickets')
     }
 
-    let meta = await this.store.findTrainingMeta(ticketId)
+    const meta = await this.store.findTrainingMeta(ticketId)
     let revisionId = meta?.currentRevisionId
     if (!revisionId) {
       revisionId = (await this.ensureLegacyRevision(ticket, ticket.agentId)).id
@@ -963,11 +923,12 @@ export class TrainingService {
     const target = await this.store.findInstructionVersion(ctx.memoryId, toVersion)
     if (!target) throw new Error('Memory version not found')
 
-    await this.store.restoreInstructionVersion({
+    const restored = await this.store.restoreInstructionVersion({
       memoryId: ctx.memoryId,
       targetId: target.id,
-      previousActiveId: ctx.currentInstruction?.id ?? null,
+      expectedCurrentVersionId: ctx.currentInstruction?.id ?? null,
     })
+    if (!restored) throw new TrainingGateError('base_version_stale')
 
     await this.audit.append({
       actorType: 'human',

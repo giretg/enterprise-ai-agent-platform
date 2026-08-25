@@ -615,6 +615,7 @@ const trainingService = new TrainingService(
   evalService,
   repositories.agents,
   selfEvolutionGuard,
+  repositories.training,
 )
 // Tartós agent-memória — WP-6 (agent-memory-persistent-cross-conversation-spec.md
 // §6.3/§9.4): candidate → T2 chunk jóváhagyás, inline write-gate consume vagy

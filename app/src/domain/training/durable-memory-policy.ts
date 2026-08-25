@@ -182,6 +182,6 @@ export function nextStepLabel(params: {
 }): string | null {
   if (params.fourEyesWaiting) return 'Másik jóváhagyóra vár'
   if (params.pending && params.allowedActions.includes('activate')) return null
-  if (params.pending) return 'Approver jóváhagyására vár'
+  if (params.pending) return 'Jóváhagyó döntésére vár'
   return null
 }
