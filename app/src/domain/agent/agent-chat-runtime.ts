@@ -2306,17 +2306,29 @@ export class AgentChatRuntime {
         tenantId,
         requesterUserId,
       )
+      // APG-08: a known-value szótár vault megjelenítési értékeket hordoz. Csak a
+      // beszélgetés létrehozója kaphatja — ugyanaz a participant-kapu, mint a
+      // surrogate resolve. Idegen tenant-tag (vagy requester nélküli hívás) ne
+      // kapjon plaintext CRM/PII szótárat a kiemelés ürügyén.
+      const knownValues =
+        privacyContext &&
+        this.surrogateEngine &&
+        tenantId &&
+        requesterUserId &&
+        conversation.createdById === requesterUserId
+          ? await this.surrogateEngine.loadKnownValueReplacements(
+              tenantId,
+              { type: 'conversation', id: conversationId },
+              { includeObservePreviews: true },
+            )
+          : []
       const privacyMarkers =
         privacyContext && this.surrogateEngine && tenantId
           ? buildEntityMarkers({
               text,
               mode: privacyContext.mode,
               policy: privacyContext.policy,
-              knownValues: await this.surrogateEngine.loadKnownValueReplacements(
-                tenantId,
-                { type: 'conversation', id: conversationId },
-                { includeObservePreviews: true },
-              ),
+              knownValues,
             })
           : []
 
@@ -2338,15 +2350,33 @@ export class AgentChatRuntime {
     conversationId?: string | null
     tenantId?: string | null
     agentId: string
+    /** Kötelező a szótárhoz — APG-08 participant (createdById). */
+    requesterUserId?: string | null
   }): Promise<ChatPrivacyMarkerContext | null> {
     const privacyContext = this.resolvePrivacyObservability
       ? await this.resolvePrivacyObservability(input.tenantId ?? null, input.agentId)
       : null
     if (!privacyContext) return null
 
-    const knownValues =
-      this.surrogateEngine && input.tenantId && input.conversationId
-        ? await this.surrogateEngine.loadKnownValueReplacements(
+    let knownValues: ChatPrivacyMarkerContext['knownValues'] = []
+    if (
+      this.surrogateEngine &&
+      input.tenantId &&
+      input.conversationId &&
+      input.requesterUserId
+    ) {
+      try {
+        const { conversation } = await this.conversations.getConversation(
+          input.conversationId,
+          input.tenantId,
+        )
+        // Tenant-határ a getConversation-ön; a vault-szótár csak a tulajdonosé
+        // (APG-08). Agent-mismatch → üres szótár, ne idegen beszélgetés PII-ja.
+        if (
+          conversation.agentId === input.agentId &&
+          conversation.createdById === input.requesterUserId
+        ) {
+          knownValues = await this.surrogateEngine.loadKnownValueReplacements(
             input.tenantId,
             {
               type: 'conversation',
@@ -2354,7 +2384,11 @@ export class AgentChatRuntime {
             },
             { includeObservePreviews: true },
           )
-        : []
+        }
+      } catch {
+        // Ismeretlen / más tenant beszélgetés: policy+mode mehet, szótár nem.
+      }
+    }
 
     return {
       mode: privacyContext.mode,
