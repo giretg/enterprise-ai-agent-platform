@@ -33,3 +33,11 @@ _Avoid_: diff, új memóriaelem
 **Javaslat-revízió**:
 Ugyanazon készülő szabályverzió immutábilis változata; egy új revízió felváltja a korábbi jóváhagyhatóságát, de nem törli annak auditnyomát.
 _Avoid_: új memória-verzió, új ticket
+
+**Tartós memória-jóváhagyási szabály**:
+Az agent-szintű szabály, amely meghatározza, ki aktiválhat user által kezdeményezett betanított-szabály vagy projektmemória-változást, és szükséges-e független jóváhagyó.
+_Avoid_: tanítási jogosultság, közös memória
+
+**Négy szem elv**:
+Olyan agent-szintű jóváhagyási követelmény, amelynél a legutolsó javaslat-revízió kezdeményezője nem lehet annak aktiválója.
+_Avoid_: approver szerep, kettős kattintás

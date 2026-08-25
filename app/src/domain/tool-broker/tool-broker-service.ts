@@ -216,6 +216,10 @@ export class ToolBrokerService {
       sourceType: WebFetchSourceType
       allowedSourceUrls: string[]
       fetchIndex: number
+      extraAllowlistHosts?: string[]
+      allowedContentTypes?: readonly string[]
+      hop?: boolean
+      perDiscoveryMax?: number
     }) => Promise<WebFetchResult>,
   ) {
     // WP-8: a handlerek felé kiajánlott broker-képességek. A tool-logika a keret

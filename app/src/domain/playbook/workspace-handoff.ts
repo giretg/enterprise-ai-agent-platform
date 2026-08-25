@@ -8,6 +8,13 @@ import type { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
 const WINDOWS_ABSOLUTE = /^[a-zA-Z]:[\\/]/
 const URL_SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:/
 const FILE_EXTENSION = /\.[A-Za-z][A-Za-z0-9]{0,9}$/
+const EMAIL_ADDRESS = /^[^\s/@]+@[^\s/@]+\.[^\s/@]+$/
+const WORKSPACE_PATH_SLOT = /(path|file|artifact|document|attachment)$/i
+
+declare const workspaceRelativePathBrand: unique symbol
+export type WorkspaceRelativePath = string & {
+  readonly [workspaceRelativePathBrand]: true
+}
 
 export class HandoffFileMissingError extends Error {
   constructor(
@@ -32,41 +39,53 @@ function isUrl(value: string): boolean {
   return URL_SCHEME.test(value)
 }
 
-function normalizeHandoffPath(value: string): string | null {
+function parseWorkspaceRelativePath(value: string): WorkspaceRelativePath | null {
   const trimmed = value.trim()
   if (!trimmed) return null
-  if (isUrl(trimmed) || isAbsolutePath(trimmed)) return null
+  if (isUrl(trimmed) || isAbsolutePath(trimmed) || EMAIL_ADDRESS.test(trimmed)) return null
   const withSlashes = trimmed.replace(/\\/g, '/')
   const parts = withSlashes.split('/').filter((part) => part.length > 0 && part !== '.')
   if (parts.length === 0) return null
   if (parts.some((part) => part === '..')) return null
-  return parts.join('/')
+  return parts.join('/') as WorkspaceRelativePath
 }
 
 function looksLikeWorkspaceRelativePath(normalized: string): boolean {
   if (FILE_EXTENSION.test(normalized)) return true
-  // `/` önmagában nem elég: hrsz (`043/15`) és magyar cím (`Külterület, 43/15…`)
-  // nem workspace-fájl. Csak whitespace nélküli, betűt is tartalmazó relatív path.
-  if (!normalized.includes('/') || /\s/.test(normalized)) return false
-  return normalized.split('/').some((part) => /[A-Za-z]/.test(part))
+  return normalized.includes('/')
 }
 
 /**
  * Determinisztikus, DB nélkül: mely string értékek workspace-relatív path jelöltek.
  * Csak top-level stringek; abszolút path, URL és `..` traversal kiesik.
  */
-export function collectHandoffCandidatePaths(values: Record<string, unknown>): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
+export function collectHandoffCandidatePaths(
+  values: Record<string, unknown>,
+): WorkspaceRelativePath[] {
+  const seen = new Set<WorkspaceRelativePath>()
+  const out: WorkspaceRelativePath[] = []
   for (const value of Object.values(values)) {
     if (typeof value !== 'string') continue
-    const normalized = normalizeHandoffPath(value)
+    const normalized = parseWorkspaceRelativePath(value)
     if (!normalized || !looksLikeWorkspaceRelativePath(normalized)) continue
     if (seen.has(normalized)) continue
     seen.add(normalized)
     out.push(normalized)
   }
   return out
+}
+
+/**
+ * A fail-closed kapu csak explicit path/artifact nevű kontraktusmezőkre vonatkozik.
+ * Így egy e-mail, verziószám vagy helyrajzi szám nem válik pusztán a string
+ * alakja miatt kötelező workspace-fájllá.
+ */
+export function collectRequiredHandoffPaths(
+  values: Record<string, unknown>,
+): WorkspaceRelativePath[] {
+  return collectHandoffCandidatePaths(
+    Object.fromEntries(Object.entries(values).filter(([name]) => WORKSPACE_PATH_SLOT.test(name))),
+  )
 }
 
 export async function copyWorkspaceHandoff(input: {

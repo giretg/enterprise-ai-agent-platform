@@ -59,6 +59,10 @@ const AGENT_A = 'a9a9a9a9-0000-4000-8000-00000000000a'
 const AGENT_B = 'b9b9b9b9-0000-4000-8000-00000000000b'
 
 const actorA: ProvisioningActor = { type: 'user', userId: ADMIN_A, role: 'admin', tenantId: TENANT_A }
+const superadminA: ProvisioningActor = {
+  ...actorA,
+  canManagePlatformConnectors: true,
+}
 
 /** Aktív, tenant-A connector; `secretAlias: null` → a leszerelés nem nyúl a secret-store-hoz. */
 function connectorRow(tenantId: string | null) {
@@ -168,6 +172,26 @@ async function main() {
         actorA,
       ),
     )
+  })
+
+  await test('G6a tenant-admin globális connectort nem szerelhet le', async () => {
+    const svc = makeService({
+      drafts: fakeDrafts({ findConnectorById: async () => connectorRow(null) }),
+    })
+    await expectCode('PLATFORM_CONNECTOR_FORBIDDEN', () =>
+      svc.decommissionActiveConnector({ connectorId: CONNECTOR_A }, actorA),
+    )
+  })
+
+  await test('G6b superadmin globális connectort leszerelhet', async () => {
+    const svc = makeService({
+      drafts: fakeDrafts({ findConnectorById: async () => connectorRow(null) }),
+    })
+    const res = await svc.decommissionActiveConnector(
+      { connectorId: CONNECTOR_A },
+      superadminA,
+    )
+    assert.equal(res.lifecycleState, 'archived')
   })
 
   // ── B) Connector-agent kötés tenant-határa ──────────────────────────────────

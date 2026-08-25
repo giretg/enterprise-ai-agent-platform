@@ -10,10 +10,13 @@
  */
 import { createHash } from 'node:crypto'
 import { guardEgressUrl } from '@/domain/net/egress-guard'
+import { extractHtmlPdfLinks } from './extract-html-links'
+import { normalizeFetchUrl } from './normalize-fetch-url'
 import { sanitizeFetchedContent } from './content-sanitize'
 import {
   DEFAULT_WEB_FETCH_LIMITS,
   WEB_FETCH_ALLOWED_CONTENT_TYPES,
+  WEB_FETCH_PDF_CONTENT_TYPE,
   type WebFetchAuditMeta,
   type WebFetchBudget,
   type WebFetchLimits,
@@ -32,6 +35,13 @@ export interface WebFetchServiceDeps {
    */
   resolveHostIps?: (host: string) => Promise<string[]>
   limits?: Partial<WebFetchLimits>
+  /** Injektálható PDF-olvasó (teszthez); alapból a munkaterületi `pdfRead`. */
+  readPdf?: (buffer: Buffer) => Promise<{
+    text: string
+    numPages: number
+    truncated: boolean
+    notice: string | null
+  }>
 }
 
 export type WebFetchRequest = {
@@ -47,6 +57,14 @@ export type WebFetchRequest = {
   budget?: WebFetchBudget
   /** Egyszeri felülírás a service alap maxContentChars limitjére (pl. admin API-doksi letöltés). */
   maxContentChars?: number
+  /**
+   * Hívásonkénti extra elfogadott content-type (pl. `application/pdf` a kutatási ágon).
+   * A megosztott `WEB_FETCH_ALLOWED_CONTENT_TYPES` nem bővül — a provisioning Accept-je
+   * bit-azonos marad, ha ez a mező nincs megadva.
+   */
+  allowedContentTypes?: readonly string[]
+  /** Audit: ez a fetch HTML→PDF hop volt-e. */
+  hop?: boolean
 }
 
 function hashPrefix(content: string): string {
@@ -54,17 +72,38 @@ function hashPrefix(content: string): string {
 }
 
 function normalizeUrl(url: string): string | null {
+  return normalizeFetchUrl(url)
+}
+
+function effectiveAllowedContentTypes(extra?: readonly string[]): string[] {
+  return [...new Set([...WEB_FETCH_ALLOWED_CONTENT_TYPES, ...(extra ?? [])])]
+}
+
+function contentTypeBase(contentType: string): string {
+  return contentType.split(';')[0]!.trim().toLowerCase()
+}
+
+function contentTypeAllowed(contentType: string, allowed: readonly string[]): boolean {
+  return allowed.includes(contentTypeBase(contentType))
+}
+
+const PDF_MAGIC = new Uint8Array([0x25, 0x50, 0x44, 0x46]) // %PDF
+
+function isPdfMagic(bytes: Uint8Array): boolean {
+  if (bytes.byteLength < PDF_MAGIC.byteLength) return false
+  return PDF_MAGIC.every((b, i) => bytes[i] === b)
+}
+
+function urlPathIsPdf(url: string): boolean {
   try {
-    return new URL(url).toString()
+    return new URL(url).pathname.toLowerCase().endsWith('.pdf')
   } catch {
-    return null
+    return false
   }
 }
 
-function contentTypeAllowed(contentType: string): boolean {
-  const base = contentType.split(';')[0]!.trim().toLowerCase()
-  return (WEB_FETCH_ALLOWED_CONTENT_TYPES as readonly string[]).includes(base)
-}
+const EMPTY_PDF_NOTICE =
+  'A PDF-ből nem sikerült szöveget kinyerni (kép-alapú, jelszavas vagy sérült fájl lehet).'
 
 /** A body streamelt olvasása méret-cappal (§7.2/9). Túllépéskor abort + `too_large`. */
 async function readBodyCapped(
@@ -173,6 +212,7 @@ export class WebFetchService {
     const fetchImpl: FetchLike = this.deps.fetchImpl ?? (globalThis.fetch as FetchLike)
     if (!fetchImpl) return { ok: false, reason: 'fetch_failed', detail: 'fetch_unavailable' }
 
+    const allowedTypes = effectiveAllowedContentTypes(req.allowedContentTypes)
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), this.limits.timeoutMs)
     try {
@@ -180,7 +220,7 @@ export class WebFetchService {
         method: 'GET', // (7) CSAK GET
         redirect: 'manual', // (6) idegen-host redirect tilos
         signal: controller.signal,
-        headers: { Accept: WEB_FETCH_ALLOWED_CONTENT_TYPES.join(', ') },
+        headers: { Accept: allowedTypes.join(', ') },
         // (7.3) SOSEM küldünk tenant-secretet/cookie-t/auth-fejlécet — a doksi publikus.
       })
 
@@ -203,19 +243,41 @@ export class WebFetchService {
         return { ok: false, reason: 'fetch_failed', detail: `http_${res.status}` }
       }
 
-      // (8) Content-type allowlist.
+      // (8) Content-type allowlist — a típus-őr a bájtokon is fut (%PDF mágia).
       const contentType = res.headers.get('content-type') ?? ''
-      if (!contentTypeAllowed(contentType)) {
-        return { ok: false, reason: 'content_type_blocked', detail: contentType.split(';')[0]?.trim() }
-      }
+      const headerBase = contentTypeBase(contentType)
 
-      // (9) Méret-cap (streamelt).
+      // (9) Méret-cap (streamelt) — a mágiához a nyers bájt kell, UTF-8 dekódolás ELŐTT.
       const body = await readBodyCapped(res, this.limits.maxBytes, controller)
       if (!body.ok) return { ok: false, reason: 'too_large' }
 
-      const raw = new TextDecoder('utf-8', { fatal: false }).decode(body.bytes)
+      const pdfAllowed = allowedTypes.includes(WEB_FETCH_PDF_CONTENT_TYPE)
+      const magic = isPdfMagic(body.bytes)
+      const headerIsPdf = headerBase === WEB_FETCH_PDF_CONTENT_TYPE || headerBase === 'application/x-pdf'
+      const treatAsPdf =
+        pdfAllowed &&
+        magic &&
+        (headerIsPdf ||
+          (urlPathIsPdf(url) &&
+            (headerBase === '' ||
+              headerBase === 'text/html' ||
+              headerBase === 'application/octet-stream' ||
+              headerBase === 'binary/octet-stream')))
 
-      // (10) Sanitizálás + hossz-limit.
+      if (headerIsPdf && (!pdfAllowed || !magic)) {
+        return { ok: false, reason: 'content_type_blocked', detail: headerBase || WEB_FETCH_PDF_CONTENT_TYPE }
+      }
+      if (treatAsPdf) {
+        return this.extractPdf({ bytes: body.bytes, url, host, req })
+      }
+      if (!contentTypeAllowed(contentType, allowedTypes) || headerIsPdf) {
+        return { ok: false, reason: 'content_type_blocked', detail: headerBase }
+      }
+
+      const raw = new TextDecoder('utf-8', { fatal: false }).decode(body.bytes)
+      const links = /^text\/html\b/i.test(contentType) ? extractHtmlPdfLinks(raw, url) : undefined
+
+      // (10) Sanitizálás + hossz-limit. A nyers HTML nem hagyja el a service-t.
       const maxContentChars = req.maxContentChars ?? this.limits.maxContentChars
       const { text, truncated } = sanitizeFetchedContent({
         raw,
@@ -227,12 +289,13 @@ export class WebFetchService {
         ok: true,
         host,
         sourceType: req.sourceType,
-        contentType: contentType.split(';')[0]!.trim().toLowerCase(),
+        contentType: headerBase,
         bytes: body.bytes.byteLength,
         contentHash: hashPrefix(text),
         urlHash: hashPrefix(url),
         text,
         truncated,
+        links,
       }
     } catch (e) {
       const detail = e instanceof Error && e.name === 'AbortError' ? 'timeout' : 'request_failed'
@@ -240,6 +303,60 @@ export class WebFetchService {
     } finally {
       clearTimeout(timeout)
     }
+  }
+
+  private async extractPdf(input: {
+    bytes: Uint8Array
+    url: string
+    host: string
+    req: WebFetchRequest
+  }): Promise<WebFetchResult> {
+    const maxContentChars = input.req.maxContentChars ?? this.limits.maxContentChars
+    let text = ''
+    let truncated = false
+    let notice: string | undefined
+    let pageCount: number | undefined
+    try {
+      const result = await this.readPdf(Buffer.from(input.bytes))
+      text = result.text
+      truncated = result.truncated
+      notice = result.notice ?? undefined
+      pageCount = result.numPages
+    } catch {
+      notice = EMPTY_PDF_NOTICE
+    }
+    if (text.length > maxContentChars) {
+      text = text.slice(0, maxContentChars)
+      truncated = true
+    }
+    if (!text.trim()) {
+      truncated = true
+      notice = notice ?? EMPTY_PDF_NOTICE
+    }
+    return {
+      ok: true,
+      host: input.host,
+      sourceType: input.req.sourceType,
+      contentType: WEB_FETCH_PDF_CONTENT_TYPE,
+      bytes: input.bytes.byteLength,
+      contentHash: hashPrefix(text),
+      urlHash: hashPrefix(input.url),
+      text,
+      truncated,
+      pageCount,
+      notice,
+    }
+  }
+
+  private async readPdf(buffer: Buffer): Promise<{
+    text: string
+    numPages: number
+    truncated: boolean
+    notice: string | null
+  }> {
+    if (this.deps.readPdf) return this.deps.readPdf(buffer)
+    const { pdfRead } = await import('@/domain/file-editor/adapters/pdf-adapter')
+    return pdfRead(buffer)
   }
 }
 
@@ -264,9 +381,12 @@ export function toWebFetchAuditMeta(input: {
   urlHash: string
   host?: string
   sourceType?: WebFetchSourceType
+  hop?: boolean
   result: WebFetchResult
 }): WebFetchAuditMeta {
+  const hop = input.hop === true
   if (input.result.ok) {
+    const mime = input.result.contentType
     return {
       urlHash: input.result.urlHash,
       host: input.result.host,
@@ -274,6 +394,8 @@ export function toWebFetchAuditMeta(input: {
       bytes: input.result.bytes,
       contentHash: input.result.contentHash,
       status: 'ok',
+      contentType: mime === WEB_FETCH_PDF_CONTENT_TYPE ? 'pdf' : 'html',
+      hop,
     }
   }
   return {
@@ -283,5 +405,6 @@ export function toWebFetchAuditMeta(input: {
     bytes: 0,
     status: 'blocked',
     reason: input.result.reason,
+    hop,
   }
 }

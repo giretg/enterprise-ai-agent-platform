@@ -11,6 +11,7 @@ import {
   PLATFORM_WEB_SEARCH_CONNECTOR_NAME,
 } from '@/domain/web-search/web-search-connector-service'
 import { parseWebSearchConfig, type WebSearchConnectorConfig } from '@/domain/web-search/web-search-types'
+import { findForbiddenAllowedDomain } from '@/domain/web-research/fetch-trust'
 import { prisma } from '@/lib/db'
 import { fail, ok } from '@/lib/result'
 import {
@@ -294,11 +295,18 @@ export async function updateWebSearchPolicy(input: unknown) {
     if (!actorId) return fail('Nincs bejelentkezve')
 
     const previous = parseWebSearchConfig(connector.config)
+    const allowedDomains = normalizeDomains(parsed.allowedDomains)
+    const forbidden = findForbiddenAllowedDomain(allowedDomains)
+    if (forbidden) {
+      return fail(
+        `A(z) „${forbidden.pattern}" domain nem vehető fel: belső vagy tiltott cím (localhost, nyers IP, metadata-host, *.internal). Az engedélyezett lista letöltést is nyit, ezért ilyen minta mentése elutasítva.`,
+      )
+    }
     const nextConfig: WebSearchConnectorConfig = {
       ...previous,
       provider: 'custom_search_api',
       providerApiUrl: parsed.providerApiUrl,
-      allowedDomains: normalizeDomains(parsed.allowedDomains),
+      allowedDomains,
       deniedDomains: normalizeDomains(parsed.deniedDomains),
       allowGeneralWeb: parsed.allowGeneralWeb,
       defaultLocale: parsed.defaultLocale,
@@ -354,6 +362,8 @@ export async function updateWebSearchPolicy(input: unknown) {
         allowGeneralWeb: nextConfig.allowGeneralWeb,
         previousAllowGeneralWeb: previous.allowGeneralWeb,
         allowedDomains: nextConfig.allowedDomains,
+        allowedDomainsAdded: nextConfig.allowedDomains.filter((d) => !previous.allowedDomains.includes(d)),
+        allowedDomainsRemoved: previous.allowedDomains.filter((d) => !nextConfig.allowedDomains.includes(d)),
         deniedDomains: nextConfig.deniedDomains,
         providerApiUrl: nextConfig.providerApiUrl ?? null,
         defaultMaxResults: nextConfig.defaultMaxResults,

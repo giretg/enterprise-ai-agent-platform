@@ -51,6 +51,8 @@ import { parseWebSearchConfig, type WebSearchAdapterResolver, type WebSearchResu
 import { WebFetchService } from '@/domain/web-fetch/web-fetch-service'
 import { performAuditedWebFetch } from '@/domain/web-fetch/audited-web-fetch'
 import { resolveWebFetchLimitsFromEnv } from '@/domain/web-fetch/web-fetch-types'
+import { mergeResearchAllowlistHosts } from '@/domain/web-research/fetch-trust'
+import { WEB_RESEARCH_HOP_HARD_CAP } from '@/domain/web-research/pdf-hop'
 import { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
 import { FileEditorService } from '@/domain/file-editor/file-editor-service'
@@ -781,7 +783,18 @@ const toolBrokerService = new ToolBrokerService(
   // (`web_fetch.request`/`web_fetch.blocked`) kap, és a napi egress-keret (perAgentDayUsed) e
   // úton is érvényre jut. Korábban ez a closure a fetch-et audit ÉS keret-könyvelés nélkül
   // hívta, így a delegált webes egress láthatatlan volt a naplóban és a napi keret alól kicsúszott.
-  async ({ agentId, tenantId, url, sourceType, allowedSourceUrls, fetchIndex }) =>
+  async ({
+    agentId,
+    tenantId,
+    url,
+    sourceType,
+    allowedSourceUrls,
+    fetchIndex,
+    extraAllowlistHosts,
+    allowedContentTypes,
+    hop,
+    perDiscoveryMax,
+  }) =>
     performAuditedWebFetch(
       {
         countRecentAgentFetches: (id) =>
@@ -797,16 +810,21 @@ const toolBrokerService = new ToolBrokerService(
             url,
             sourceType,
             allowedSourceUrls,
-            allowlistHosts: await resolveEgressAllowlist(tenantId),
+            allowlistHosts: mergeResearchAllowlistHosts(
+              await resolveEgressAllowlist(tenantId),
+              extraAllowlistHosts ?? [],
+            ),
             enabled: await platformSettingsService.isWebFetchEnabled(),
-            maxContentChars: 20_000,
+            maxContentChars: resolveWebFetchLimitsFromEnv().maxContentChars,
+            allowedContentTypes,
+            hop,
             // A napi plafon a KONFIGURÁLHATÓ `webFetchBudgetMax.perAgentDay` (spec §9.3: „az
             // elsődleges korlát a maxFetchesPerAgentDay") — nem fix érték, hogy egy admin által
-            // csökkentett keret a delegációs úton is hasson. A per-request forrás-korlátot a hívó
-            // `maxSources` slice-a adja (spec §9.3), a `perDiscoveryMax` csak a felső biztonsági plafon.
+            // csökkentett keret a delegációs úton is hasson. A per-discovery plafon a hop-kvótával
+            // együtt méretezett (`maxSources + hopHardCap`), különben a hop `fetch_budget_exceeded`.
             budget: {
               perDiscoveryUsed: fetchIndex,
-              perDiscoveryMax: WEB_RESEARCH_MAX_SOURCES_CEILING,
+              perDiscoveryMax: perDiscoveryMax ?? WEB_RESEARCH_MAX_SOURCES_CEILING + WEB_RESEARCH_HOP_HARD_CAP,
               perAgentDayUsed,
               perAgentDayMax: webFetchBudgetMax.perAgentDay,
             },
@@ -815,7 +833,7 @@ const toolBrokerService = new ToolBrokerService(
         resolveAgentVersion: async (id) => (await repositories.agents.findById(id))?.currentVersion ?? null,
         hashPrefix: sha256Prefix,
       },
-      { agentId, url, sourceType },
+      { agentId, url, sourceType, hop },
     ),
 )
 const surrogateEngine = createPlatformSurrogateEngine(

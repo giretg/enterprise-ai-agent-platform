@@ -50,6 +50,8 @@ async function LinkedAccountsContent() {
         authMode: c.authMode,
         tenantId: c.tenantId,
         config: c.config,
+        assignedAgentCount: connectorsRes.data.connectorUsage[c.id]?.assignedAgentCount ?? 0,
+        capableAgentCount: connectorsRes.data.connectorUsage[c.id]?.capableAgentCount ?? 0,
       }))
     : []
 

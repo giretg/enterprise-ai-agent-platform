@@ -93,7 +93,7 @@ export function LinkedAccountsPanel({
       )}
       {error && (
         <p className="rounded-lg border border-coral/35 bg-coral/10 px-3 py-2 text-sm text-coral-deep">
-          {decodeURIComponent(error)}
+          {error}
         </p>
       )}
 
@@ -101,7 +101,7 @@ export function LinkedAccountsPanel({
         <AccountGroup
           id="connected-accounts-heading"
           title="Összekötött fiókok"
-          description="Ezekkel a fiókokkal az AI munkatárs már dolgozhat."
+          description="Ezekhez a fiókokhoz aktív felhasználói engedély tartozik; az agentenkénti használhatóságot a kártyák jelzik."
           count={connectedCount}
           emptyText="Még nincs összekötött fiókod. Az elérhető szolgáltatások közül választhatsz lent."
         >

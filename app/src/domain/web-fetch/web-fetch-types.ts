@@ -46,8 +46,10 @@ export function resolveWebFetchLimitsFromEnv(env: NodeJS.ProcessEnv = process.en
   }
 }
 
-/** A web-egress role forrás-osztályai — csak ezekre engedünk fetch-et (§5/4, §7.2/5). */
-export type WebFetchSourceType = 'official' | 'vendor_doc'
+/** A web-egress role forrás-osztályai. Az `unknown` a tenant-allowlistolt kereskedelmi host. */
+export type WebFetchSourceType = 'official' | 'vendor_doc' | 'news' | 'blog' | 'unknown'
+
+export const WEB_FETCH_PDF_CONTENT_TYPE = 'application/pdf'
 
 /** Fetch-budget állapot (§7.2/11) — a számlálást a hívó végzi, a service csak kapuz. */
 export type WebFetchBudget = {
@@ -89,6 +91,12 @@ export type WebFetchOk = {
   text: string
   /** Igaz, ha a nyers tartalom hosszabb volt, mint a megengedett karakter-limit. */
   truncated?: boolean
+  /** HTML-lapon talált HTTPS PDF-linkek (sanitizálás előtt kinyerve, sapkázva). */
+  links?: Array<{ url: string; text: string }>
+  /** PDF oldalszám, ha a kinyerés ismeri. */
+  pageCount?: number
+  /** Üres / tört / jelszavas PDF notice — a kutatás fail-soft jelzése. */
+  notice?: string
 }
 
 export type WebFetchBlocked = {
@@ -111,6 +119,10 @@ export type WebFetchAuditMeta = {
   contentHash?: string
   status: 'ok' | 'blocked'
   reason?: WebFetchBlockedReason
+  /** `html` | `pdf` | a blokkolt válasz MIME-alapja — nyers URL/tartalom nélkül. */
+  contentType?: string
+  /** Igaz, ha ez a fetch egy HTML→PDF hop volt. */
+  hop?: boolean
 }
 
 /** Tool Broker `web_fetch` args (§7.4) — a hívó a search-találat URL-jét adja át. */

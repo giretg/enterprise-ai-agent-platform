@@ -16,7 +16,7 @@ import {
   webEgressCapabilitiesAreDisjointFromForbidden,
 } from '../src/domain/agents/web-egress-role'
 import type { WebSearchResultItem, WebSearchSourceType } from '../src/domain/web-search/web-search-types'
-import type { WebFetchResult } from '../src/domain/web-fetch/web-fetch-types'
+import type { WebFetchResult, WebFetchSourceType } from '../src/domain/web-fetch/web-fetch-types'
 
 let failures = 0
 async function test(name: string, fn: () => Promise<void> | void) {
@@ -46,7 +46,7 @@ function resultItem(url: string, sourceType: WebSearchSourceType, rank = 1): Web
   }
 }
 
-function okFetch(text: string, host: string, sourceType: 'official' | 'vendor_doc'): WebFetchResult {
+function okFetch(text: string, host: string, sourceType: WebFetchSourceType): WebFetchResult {
   return {
     ok: true,
     host,

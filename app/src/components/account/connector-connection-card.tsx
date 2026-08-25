@@ -6,6 +6,7 @@ import { revokeConnectorGrant, startConnectorOAuth } from '@/app/actions/connect
 import { ConnectionCard } from '@/components/account/connection-card'
 import { GMAIL_SCOPES } from '@/domain/connector-grant/gmail-scopes'
 import { delegatedConnectorLabel } from '@/domain/connector-grant/delegated-oauth-registry'
+import { connectorUsageStatus } from '@/components/account/linked-account-view'
 
 export type LinkedConnectorView = {
   id: string
@@ -14,6 +15,8 @@ export type LinkedConnectorView = {
   authMode: string
   tenantId: string | null
   config: unknown
+  assignedAgentCount: number
+  capableAgentCount: number
 }
 
 export type LinkedGrantView = {
@@ -109,6 +112,7 @@ export function ConnectorConnectionCard({
     scopeProfiles.find((profile) => sameScopes(profile.scopes, selectedScopes)) ??
     scopeProfiles[0] ??
     GMAIL_SCOPE_PROFILES[0]
+  const usage = connectorUsageStatus(connector)
 
   return (
     <ConnectionCard
@@ -123,27 +127,38 @@ export function ConnectorConnectionCard({
       }
     >
       {activeGrant ? (
-        <button
-          type="button"
-          disabled={pending}
-          className="rounded-full border border-coral/50 px-4 py-2 text-sm font-semibold text-coral-deep disabled:opacity-50"
-          onClick={() =>
-            startTransition(async () => {
-              const res = await revokeConnectorGrant({ grantId: activeGrant.id })
-              if (res.success) {
-                setLocalGrants((prev) =>
-                  prev.map((g) => (g.id === activeGrant.id ? { ...g, status: 'revoked' } : g)),
-                )
-                setMessage({ ok: true, text: 'Az összekötést megszüntettük.' })
-                router.refresh()
-              } else {
-                setMessage({ ok: false, text: res.error })
-              }
-            })
-          }
-        >
-          Összekötés megszüntetése
-        </button>
+        <div className="space-y-3">
+          <p
+            className={`rounded-lg border px-3 py-2 text-sm ${
+              usage.usable
+                ? 'border-sage/35 bg-sage/10 text-sage'
+                : 'border-amber/40 bg-amber/10 text-ink-soft'
+            }`}
+          >
+            {usage.text}
+          </p>
+          <button
+            type="button"
+            disabled={pending}
+            className="rounded-full border border-coral/50 px-4 py-2 text-sm font-semibold text-coral-deep disabled:opacity-50"
+            onClick={() =>
+              startTransition(async () => {
+                const res = await revokeConnectorGrant({ grantId: activeGrant.id })
+                if (res.success) {
+                  setLocalGrants((prev) =>
+                    prev.map((g) => (g.id === activeGrant.id ? { ...g, status: 'revoked' } : g)),
+                  )
+                  setMessage({ ok: true, text: 'Az összekötést megszüntettük.' })
+                  router.refresh()
+                } else {
+                  setMessage({ ok: false, text: res.error })
+                }
+              })
+            }
+          >
+            Összekötés megszüntetése
+          </button>
+        </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2">
           {connector.type === 'gmail' && (

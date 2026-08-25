@@ -261,8 +261,38 @@ export function TenantWebSearchPolicyPanel({
                 disabled={!canEdit || policyPending}
                 className="accent-sage"
               />
-              allowGeneralWeb
+              allowGeneralWeb — csak a keresést szélesíti, tetszőleges oldal letöltését nem
             </label>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <label className="space-y-1 text-xs font-medium text-ink-soft">
+                Engedélyezett domainek (soronként)
+                <textarea
+                  value={policyForm.allowedDomainsText}
+                  onChange={(event) => updateForm('allowedDomainsText', event.target.value)}
+                  disabled={!canEdit || policyPending}
+                  rows={5}
+                  placeholder={'otpbank.hu\n*.otpbank.hu'}
+                  className="w-full rounded-lg border border-line bg-card px-3 py-2 text-sm text-ink disabled:opacity-60"
+                />
+              </label>
+              <label className="space-y-1 text-xs font-medium text-ink-soft">
+                Tiltott domainek (soronként)
+                <textarea
+                  value={policyForm.deniedDomainsText}
+                  onChange={(event) => updateForm('deniedDomainsText', event.target.value)}
+                  disabled={!canEdit || policyPending}
+                  rows={5}
+                  className="w-full rounded-lg border border-line bg-card px-3 py-2 text-sm text-ink disabled:opacity-60"
+                />
+              </label>
+            </div>
+            <p className="text-xs text-ink-soft">
+              Az engedélyezett lista a keresést és a letöltést is kapuzza: amit felveszel (pl.{' '}
+              <code>otpbank.hu</code> vagy <code>*.otpbank.hu</code>), azt az agent el is
+              olvashatja. A tiltott minta a keresés után is megállítja a letöltést. Nyers IP,
+              localhost, metadata-host és <code>*.internal</code> nem adható meg.
+            </p>
 
             {policyMessage ? (
               <p

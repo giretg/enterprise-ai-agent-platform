@@ -84,6 +84,33 @@ async function main() {
     const metaStr = JSON.stringify(audits[0]!.metadata)
     assert.doesNotMatch(metaStr, /secret-path/, 'nyers URL nem szivároghat auditba')
     assert.match(metaStr, /platform\.openai\.com/, 'a host benne van')
+    assert.doesNotMatch(metaStr, /hello/, 'nyers tartalom nem szivároghat')
+  })
+
+  await test('AWF-1b hop + contentType megjelenik az audit-metában, nyers URL nélkül', async () => {
+    const pdfResult: WebFetchResult = {
+      ok: true,
+      host: 'platform.openai.com',
+      sourceType: 'official',
+      contentType: 'application/pdf',
+      bytes: 1234,
+      contentHash: 'c'.repeat(16),
+      urlHash: 'u'.repeat(16),
+      text: 'NYERS-PDF-SZOVEG',
+      truncated: false,
+    }
+    const { deps, audits } = harness({ result: pdfResult })
+    await performAuditedWebFetch(deps, {
+      agentId: 'agent-egress',
+      url: 'https://platform.openai.com/docs/secret.pdf',
+      sourceType: 'unknown',
+      hop: true,
+    })
+    const meta = audits[0]!.metadata as { contentType?: string; hop?: boolean }
+    assert.equal(meta.contentType, 'pdf')
+    assert.equal(meta.hop, true)
+    assert.doesNotMatch(JSON.stringify(audits[0]!.metadata), /secret\.pdf/)
+    assert.doesNotMatch(JSON.stringify(audits[0]!.metadata), /NYERS-PDF-SZOVEG/)
   })
 
   await test('AWF-2 blokkolt letöltés → web_fetch.blocked audit (nem nyelődik el némán)', async () => {

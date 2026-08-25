@@ -1,3 +1,5 @@
+import { normalizeFetchUrl } from '@/domain/web-fetch/normalize-fetch-url'
+
 export type KnownUrlEntry = {
   normalizedUrl: string
   host: string
@@ -5,13 +7,7 @@ export type KnownUrlEntry = {
 }
 
 function normalizeForRegistry(url: string): string | null {
-  try {
-    const parsed = new URL(url)
-    parsed.hash = ''
-    return parsed.toString()
-  } catch {
-    return null
-  }
+  return normalizeFetchUrl(url)
 }
 
 export class KnownUrlRegistry {

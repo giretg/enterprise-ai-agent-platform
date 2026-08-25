@@ -18,6 +18,7 @@ import {
   HandoffFileMissingError,
   assertRequiredHandoffFilesPresent,
   collectHandoffCandidatePaths,
+  collectRequiredHandoffPaths,
   copyWorkspaceHandoff,
 } from '../src/domain/playbook/workspace-handoff'
 
@@ -56,7 +57,7 @@ async function main() {
     assert.deepEqual(collectHandoffCandidatePaths({ path: './foo.json' }), ['foo.json'])
   })
 
-  await check('collect: abszolút, /tmp, Windows, URL, traversal, hrsz és cím kiesik', () => {
+  await check('collect: abszolút, /tmp, Windows, URL, traversal és e-mail kiesik', () => {
     assert.deepEqual(
       collectHandoffCandidatePaths({
         users: '/Users/agent/out.json',
@@ -69,16 +70,34 @@ async function main() {
         nested: 'out/../../etc/passwd',
         empty: '',
         prose: 'ready',
-        hrsz: '043/15',
-        ingatlan: 'Külterület, 43/15 helyrajzi szám',
+        email: 'user@company.com',
       }),
       [],
     )
   })
 
-  await check('collect: tulajdoni-lap kimenetből csak a path-slot a jelölt, nem a hrsz/cím', () => {
+  await check('collect: minden relatív, perjeles path elfogadott', () => {
     assert.deepEqual(
-      collectHandoffCandidatePaths({
+      collectHandoffCandidatePaths({ spaced: 'exports/2026 final', numeric: '043/15' }),
+      ['exports/2026 final', '043/15'],
+    )
+  })
+
+  await check('required: csak explicit path/artifact nevű slotból lesz fail-closed fájl', () => {
+    assert.deepEqual(
+      collectRequiredHandoffPaths({
+        ownerEmail: 'user@company.com',
+        hrsz: '043/15',
+        feldolgozottLapPath: 'exports/2026 final',
+        sourceArtifact: 'handoff.json',
+      }),
+      ['exports/2026 final', 'handoff.json'],
+    )
+  })
+
+  await check('required: tulajdoni-lap kimenetből csak a path-slot kötelező fájl', () => {
+    assert.deepEqual(
+      collectRequiredHandoffPaths({
         status: 'ready',
         feldolgozottLapPath: 'feldolgozott-tulajdoni-lap-043-15.json',
         ingatlan: 'Külterület, 43/15 helyrajzi szám',

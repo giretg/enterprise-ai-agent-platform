@@ -8,12 +8,13 @@ export type WebResearchValidationResult =
   | { status: 'failed'; warnings: string[]; errors: string[] }
 
 const CONFIDENCE = z.enum(['high', 'medium', 'low'])
-const SOURCE_TYPE = z.enum(['official', 'vendor_doc', 'news', 'blog'])
+const SOURCE_TYPE = z.enum(['official', 'vendor_doc', 'news', 'blog', 'unknown'])
+const CONTENT_TYPE = z.enum(['html', 'pdf'])
 
 const schema = z.object({
   objectiveEcho: z.string().min(1).max(500),
   facts: z.array(z.object({
-    statement: z.string().min(1).max(1000),
+    statement: z.string().max(4000),
     sourceIndices: z.array(z.number().int().nonnegative()).min(1),
     confidence: CONFIDENCE,
   })).min(1),
@@ -23,6 +24,12 @@ const schema = z.object({
     sourceType: SOURCE_TYPE,
     contentHash: z.string().min(8).max(128),
     fetchedAt: z.string().datetime(),
+    title: z.string().max(500).optional(),
+    contentType: CONTENT_TYPE.optional(),
+    pageCount: z.number().int().nonnegative().optional(),
+    truncated: z.boolean().optional(),
+    hop: z.boolean().optional(),
+    notice: z.string().max(500).optional(),
   })).min(1),
   overallConfidence: CONFIDENCE,
   unverified: z.boolean(),
@@ -75,7 +82,9 @@ export function validateWebResearchResult(
     }
   }
 
-  const hasUnverifiedSource = result.sources.some((source) => source.sourceType === 'news' || source.sourceType === 'blog')
+  const hasUnverifiedSource = result.sources.some(
+    (source) => source.sourceType === 'news' || source.sourceType === 'blog' || source.sourceType === 'unknown',
+  )
   for (const source of result.sources) {
     const host = source.host.toLowerCase()
     if (!knownHosts.has(host)) errors.push(`unknown_source_host:${host}`)

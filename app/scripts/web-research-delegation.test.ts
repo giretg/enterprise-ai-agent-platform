@@ -115,6 +115,46 @@ async function main() {
     assert.match(res.errors.join(','), /inline_secret/)
   })
 
+  await test('WR-P3 unknown forrás unverified=true és confidence cap', () => {
+    const result = baseResult({
+      sources: [
+        {
+          urlHash: 'a'.repeat(16),
+          host: 'www.otpbank.hu',
+          sourceType: 'unknown',
+          contentHash: 'b'.repeat(16),
+          fetchedAt: new Date('2026-07-02T10:00:00.000Z').toISOString(),
+          contentType: 'pdf',
+          truncated: true,
+          hop: true,
+        },
+      ],
+      facts: [
+        {
+          statement: 'x'.repeat(4000),
+          sourceIndices: [0],
+          confidence: 'low',
+        },
+      ],
+      overallConfidence: 'high',
+      unverified: false,
+    })
+    const res = validateWebResearchResult(result, { knownHosts: ['www.otpbank.hu'] })
+    if (res.status === 'failed') throw new Error('unexpected validation failure')
+    assert.equal(res.status, 'warned')
+    assert.equal(res.result.unverified, true)
+    assert.equal(res.result.overallConfidence, 'medium')
+  })
+
+  await test('WR-P4 üres statement (kép-only PDF) átmegy', () => {
+    const result = baseResult({
+      facts: [{ statement: '', sourceIndices: [0], confidence: 'low' }],
+    })
+    const res = validateWebResearchResult(result, { knownHosts: ['platform.openai.com'] })
+    if (res.status === 'failed') throw new Error(res.errors.join(','))
+    assert.ok(res.status === 'passed' || res.status === 'warned')
+  })
+
   await test('WR-N1 forrás nélküli fact elbukik', () => {
     const result = baseResult({
       facts: [{ statement: 'Nincs provenance.', sourceIndices: [], confidence: 'low' }],

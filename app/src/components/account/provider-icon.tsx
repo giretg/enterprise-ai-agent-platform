@@ -1,3 +1,5 @@
+import { providerVisual } from '@/components/account/linked-account-view'
+
 type ProviderIconProps = {
   provider: string
   className?: string
@@ -10,6 +12,16 @@ function GmailIcon({ className }: { className?: string }) {
       <path fill="#34A853" d="M2.5 6.4v11.1C2.5 18.3 3.2 19 4 19h2.6V9.9L2.5 6.8v-.4Z" />
       <path fill="#FBBC04" d="M17.4 9.9V19H20c.8 0 1.5-.7 1.5-1.5V6.8l-4.1 3.1Z" />
       <path fill="#EA4335" d="M2.5 6.4c0-1.2 1.4-1.9 2.4-1.2L12 10.6l7.1-5.4c1-.7 2.4 0 2.4 1.2v.4L12 14 2.5 6.8v-.4Z" />
+    </svg>
+  )
+}
+
+function GoogleDriveIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <path fill="#0F9D58" d="M8.2 3h5.1l7.2 12.5h-5.1L8.2 3Z" />
+      <path fill="#F4B400" d="M8.2 3 1 15.5l2.6 4.5 7.2-12.5L8.2 3Z" />
+      <path fill="#4285F4" d="M3.6 20h14.3l2.6-4.5H6.2L3.6 20Z" />
     </svg>
   )
 }
@@ -56,13 +68,10 @@ function GenericProviderIcon({ className }: { className?: string }) {
 }
 
 export function ProviderIcon({ provider, className = 'h-7 w-7' }: ProviderIconProps) {
-  const normalized = provider.toLowerCase()
-  if (normalized === 'gmail' || normalized.includes('google')) {
-    return <GmailIcon className={className} />
-  }
-  if (normalized === 'telegram') return <TelegramIcon className={className} />
-  if (normalized.includes('microsoft') || normalized.includes('office')) {
-    return <MicrosoftIcon className={className} />
-  }
+  const visual = providerVisual(provider)
+  if (visual === 'google_drive') return <GoogleDriveIcon className={className} />
+  if (visual === 'gmail') return <GmailIcon className={className} />
+  if (visual === 'telegram') return <TelegramIcon className={className} />
+  if (visual === 'microsoft') return <MicrosoftIcon className={className} />
   return <GenericProviderIcon className={className} />
 }

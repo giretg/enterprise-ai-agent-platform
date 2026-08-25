@@ -37,6 +37,7 @@ import {
   HandoffFileMissingError,
   assertRequiredHandoffFilesPresent,
   collectHandoffCandidatePaths,
+  collectRequiredHandoffPaths,
   copyWorkspaceHandoff,
 } from '@/domain/playbook/workspace-handoff'
 import type {
@@ -1144,7 +1145,7 @@ export class ProcessService {
       const value = resolved[slot.name]
       if (value !== undefined) requiredValues[slot.name] = value
     }
-    const requiredPaths = collectHandoffCandidatePaths(requiredValues)
+    const requiredPaths = collectRequiredHandoffPaths(requiredValues)
     try {
       await assertRequiredHandoffFilesPresent({
         storage,

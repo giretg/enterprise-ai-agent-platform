@@ -37,8 +37,8 @@ export async function WebSearchPolicyCard({
           </p>
           <p className="mt-1 text-xs text-ink-faint">
             {config.allowGeneralWeb
-              ? 'Általános web engedélyezve (tiltólista + query-safety aktív)'
-              : 'Csak explicit domain allowlist (banki/PSP preset)'}
+              ? 'Általános web engedélyezve a kereséshez (tiltólista + query-safety aktív). A letöltés ettől még csak hivatalos forrásra vagy az allowlist hostjaira megy.'
+              : 'Csak explicit domain allowlist (banki/PSP preset). Az allowlist a keresést és a letöltést is kapuzza.'}
           </p>
         </div>
 
@@ -59,10 +59,22 @@ export async function WebSearchPolicyCard({
 
         {config.allowedDomains.length > 0 && (
           <div>
-            <p className="text-xs text-ink-faint">Engedélyezett domainek</p>
+            <p className="text-xs text-ink-faint">Engedélyezett domainek (keresés + letöltés)</p>
             <div className="mt-1 flex flex-wrap gap-1.5">
               {config.allowedDomains.map((domain) => (
                 <Badge key={domain} tone="neutral">
+                  {domain}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        )}
+        {config.deniedDomains.length > 0 && (
+          <div>
+            <p className="text-xs text-ink-faint">Tiltott domainek (keresés és letöltés után is)</p>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {config.deniedDomains.map((domain) => (
+                <Badge key={domain} tone="danger">
                   {domain}
                 </Badge>
               ))}

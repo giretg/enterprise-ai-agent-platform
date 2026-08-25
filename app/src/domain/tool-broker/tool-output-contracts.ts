@@ -239,10 +239,17 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
   },
   web_research_request: {
     outputSchema: z.looseObject({ ok: z.boolean() }),
-    emptiness: (output) =>
-      bool(output, 'ok') === false
-        ? `a webes kutatás nem futott le (${str(output, 'error') ?? 'ismeretlen ok'})`
-        : null,
+    emptiness: (output) => {
+      if (bool(output, 'ok') !== false) return null
+      const error = str(output, 'error')
+      if (error === 'domain_not_allowed' || error === 'NO_TRUSTED_SOURCE') {
+        return 'a webes kutatás nem talált letölthető, engedélyezett forrást — a bank domainjét a tenant-admin veheti fel a web-kereső allowlistre (a lista a letöltést is kapuzza)'
+      }
+      if (error === 'domain_denied') {
+        return 'a kért domain a tiltólistán van, ezért a kutatás nem futott le'
+      }
+      return `a webes kutatás nem futott le (${error ?? 'ismeretlen ok'})`
+    },
   },
 
   // ── Dokumentum-olvasás ────────────────────────────────────────────────────

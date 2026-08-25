@@ -28,6 +28,69 @@ import {
   resolveGrantOAuthScopes,
 } from '@/domain/connector-grant/delegated-oauth-registry'
 import { toGoogleOAuthPublicView } from '@/lib/platform-google-oauth-config'
+import { toolsRequiringConnector } from '@/domain/tool-broker/tool-connector-requirements'
+
+function activeDelegatedConnectorWhere(tenantId: string): Prisma.ConnectorWhereInput {
+  return {
+    authMode: 'user_delegated',
+    lifecycleState: 'active',
+    OR: [{ tenantId: null }, { tenantId }],
+  }
+}
+
+async function listActiveDelegatedConnectors(tenantId: string) {
+  return prisma.connector.findMany({
+    where: activeDelegatedConnectorWhere(tenantId),
+    orderBy: { name: 'asc' },
+  })
+}
+
+async function googleOAuthSummary() {
+  const resolved = await services.platformSettings.getGoogleOAuthConfig()
+  const view = toGoogleOAuthPublicView(resolved)
+  return {
+    configured: view.configured,
+    persisted: view.persisted,
+    source: view.source,
+  }
+}
+
+async function delegatedConnectorUsage(
+  connectors: Awaited<ReturnType<typeof listActiveDelegatedConnectors>>,
+  tenantId: string,
+) {
+  const links = await prisma.agentConnector.findMany({
+    where: {
+      connectorId: { in: connectors.map((connector) => connector.id) },
+      agent: { tenantId, status: 'active' },
+    },
+    select: {
+      connectorId: true,
+      agent: {
+        select: {
+          capabilities: {
+            where: { allowed: true },
+            select: { toolName: true },
+          },
+        },
+      },
+    },
+  })
+
+  return Object.fromEntries(
+    connectors.map((connector) => {
+      const requiredTools = new Set<string>(toolsRequiringConnector(connector.type))
+      const connectorLinks = links.filter((link) => link.connectorId === connector.id)
+      const capableAgentCount = connectorLinks.filter((link) =>
+        link.agent.capabilities.some((capability) => requiredTools.has(capability.toolName)),
+      ).length
+      return [
+        connector.id,
+        { assignedAgentCount: connectorLinks.length, capableAgentCount },
+      ]
+    }),
+  )
+}
 
 export async function listAgentDelegatedConnectors(agentId: string) {
   try {
@@ -67,29 +130,19 @@ export async function listConnectorsPanelContext() {
       user.activeTenantId,
       user.user.id,
     )
-    const [grants, connectors, googleResolved] = await Promise.all([
+    const [grants, connectors, googleOauth] = await Promise.all([
       services.connectorGrants.listForUser(user.user.id, user.activeTenantId),
-      prisma.connector.findMany({
-        where: {
-          authMode: 'user_delegated',
-          lifecycleState: 'active',
-          OR: [{ tenantId: null }, { tenantId: user.activeTenantId }],
-        },
-        orderBy: { name: 'asc' },
-      }),
-      services.platformSettings.getGoogleOAuthConfig(),
+      listActiveDelegatedConnectors(user.activeTenantId),
+      googleOAuthSummary(),
     ])
-    const googleView = toGoogleOAuthPublicView(googleResolved)
+    const connectorUsage = await delegatedConnectorUsage(connectors, user.activeTenantId)
     return ok({
       grants,
       connectors,
+      connectorUsage,
       isAdmin,
       canManagePlatformOauth: isSuperadmin(user.platformRoles),
-      googleOauth: {
-        configured: googleView.configured,
-        persisted: googleView.persisted,
-        source: googleView.source,
-      },
+      googleOauth,
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load connectors panel')
@@ -100,27 +153,22 @@ export async function listConnectorsPanelContext() {
 export async function listDelegatedConnectorsAdminView() {
   try {
     const user = await requireTenantRole('admin')
-    const [connectors, googleResolved] = await Promise.all([
-      prisma.connector.findMany({
-        where: {
-          authMode: 'user_delegated',
-          lifecycleState: 'active',
-          OR: [{ tenantId: null }, { tenantId: user.activeTenantId }],
-        },
-        orderBy: { name: 'asc' },
-        select: { id: true, name: true, type: true, authMode: true, tenantId: true },
-      }),
-      services.platformSettings.getGoogleOAuthConfig(),
+    const [connectors, googleOauth] = await Promise.all([
+      listActiveDelegatedConnectors(user.activeTenantId),
+      googleOAuthSummary(),
     ])
-    const googleView = toGoogleOAuthPublicView(googleResolved)
     return ok({
-      connectors,
+      connectors: connectors.map((connector) => ({
+        id: connector.id,
+        name: connector.name,
+        type: connector.type,
+        authMode: connector.authMode,
+        tenantId: connector.tenantId,
+        canDecommission:
+          connector.tenantId === user.activeTenantId || isSuperadmin(user.platformRoles),
+      })),
       canManagePlatformOauth: isSuperadmin(user.platformRoles),
-      googleOauth: {
-        configured: googleView.configured,
-        persisted: googleView.persisted,
-        source: googleView.source,
-      },
+      googleOauth,
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load delegated connectors')

@@ -37,6 +37,7 @@ import {
 import { sensitivityLayerSkipsEnforcement } from '@/domain/gateway/sensitivity-mode'
 import { RUN_ANALYST_CONNECTOR_LOCKED_MESSAGE } from '@/domain/agents/run-analyst-role'
 import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
+import { isSuperadmin } from '@/lib/tenant-policy'
 
 async function categoryAllowsExternalForAgent(
   agentId: string,
@@ -67,7 +68,13 @@ async function skipsProvisioningSensitivityReview(
  */
 
 function actorOf(user: Awaited<ReturnType<typeof requireTenantRole>>): ProvisioningActor {
-  return { type: 'user', userId: user.user.id, role: user.activeTenantRole, tenantId: user.activeTenantId }
+  return {
+    type: 'user',
+    userId: user.user.id,
+    role: user.activeTenantRole,
+    tenantId: user.activeTenantId,
+    canManagePlatformConnectors: isSuperadmin(user.platformRoles),
+  }
 }
 
 /** A ProvisioningError üzenetét ügyfél-barát formában visszaadjuk (kód + üzenet). */

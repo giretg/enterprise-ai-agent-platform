@@ -11,6 +11,7 @@ type ConnectorRow = {
   type: string
   authMode: string
   tenantId: string | null
+  canDecommission: boolean
 }
 
 type GoogleOAuthStatus = {
@@ -43,10 +44,13 @@ export function DelegatedConnectorsAdminPanel({
       <Card title="Google OAuth alkalmazás">
         <div className="space-y-2 text-sm text-ink-soft">
           {googleOauth.configured ? (
-            <p className="flex items-center gap-2 text-emerald-300">
-              <span aria-hidden className="h-2 w-2 rounded-full bg-emerald-400" />
-              A Google connectorok a platform OAuth-alkalmazását használják. A felhasználóknak
-              csak a saját Google belépésük kell — azt a Kapcsolt fiókok oldalon adják meg.
+            <p className="flex items-start gap-2 text-amber-200">
+              <span aria-hidden className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-amber-400" />
+              <span>
+                A platform OAuth-azonosítói be vannak állítva. Ez még nem igazolja a Google
+                API-k, az egress, a Picker vagy a connector működését; használat előtt
+                sikeres consent utáni smoke-ellenőrzés szükséges.
+              </span>
             </p>
           ) : (
             <p>
@@ -98,7 +102,11 @@ export function DelegatedConnectorsAdminPanel({
                     {connector.tenantId ? '' : ' · globális'}
                   </p>
                 </div>
-                {decommissionTarget === connector.id ? (
+                {!connector.canDecommission ? (
+                  <span className="rounded-lg border border-line px-3 py-1.5 text-xs text-ink-soft">
+                    Csak platform-superadmin szerelheti le
+                  </span>
+                ) : decommissionTarget === connector.id ? (
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     <span className="text-xs text-coral">Biztosan leszereljük?</span>
                     <button

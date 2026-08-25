@@ -33,6 +33,7 @@ export interface AuditedWebFetchInput {
   agentId: string
   url: string
   sourceType?: WebFetchSourceType
+  hop?: boolean
 }
 
 function hostFromUrl(url: string): string {
@@ -59,6 +60,7 @@ export async function performAuditedWebFetch(
     urlHash: deps.hashPrefix(input.url),
     host: hostFromUrl(input.url),
     sourceType: input.sourceType,
+    hop: input.hop,
     result,
   })
   const agentVersion = await deps.resolveAgentVersion(input.agentId).catch(() => null)

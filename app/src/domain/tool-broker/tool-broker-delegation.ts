@@ -87,14 +87,22 @@ import {
 import { effectiveConnectorRuntimeConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 
 import {
+  parseWebSearchConfig,
   type WebSearchResult,
 } from '@/domain/web-search/web-search-types'
 import { KnownUrlRegistry } from '@/domain/web-research/known-url-registry'
 import { validateWebResearchResult } from '@/domain/web-research/web-research-validator'
-import type {
-  WebResearchResult,
-  WebResearchSourceType,
+import {
+  WEB_RESEARCH_SOURCE_TYPES,
+  type WebResearchResult,
+  type WebResearchSourceType,
 } from '@/domain/web-research/web-research-types'
+import {
+  buildResearchSearchArgs,
+  buildWebResearchCandidate,
+  runWebResearchPipeline,
+  WEB_FETCH_RESEARCH_CONTENT_TYPES,
+} from '@/domain/web-research/research-pipeline'
 // WP-8 — tool-onkénti handler-regiszter (az óriás executeTool switch kiváltása).
 
 // WP-8 — a publikus tool-típusok külön fájlba (tool-broker-types.ts) kerültek;
@@ -1403,95 +1411,86 @@ export async function webResearchRequest(self: ToolBrokerService,
         Number(process.env.WEB_RESEARCH_MAX_SOURCES) > 0 ? Number(process.env.WEB_RESEARCH_MAX_SOURCES) : 8,
       ),
     )
-    const query = input.args.knownDomain ? `${objective} site:${input.args.knownDomain}` : objective
+    const searchArgs = buildResearchSearchArgs({
+      objective,
+      knownDomain: input.args.knownDomain,
+      maxSources,
+    })
     const search = await self.invoke({
       agentId: egressAgent.id,
       agentVersion: egressAgent.currentVersion,
       tool: 'web_search',
-      args: { query, maxResults: maxSources * 2, purpose: 'web_research_request' },
+      args: searchArgs,
       ...(input.conversationId ? { conversationId: input.conversationId } : {}),
       ...(input.ticketId ? { ticketId: input.ticketId } : {}),
       ...(input.actingUserId ? { actingUserId: input.actingUserId } : {}),
     })
     if (search.denied) {
-      await auditWebResearchBlocked(self, egressAgent.id, egressAgent.currentVersion, 'NO_TRUSTED_SOURCE', {
+      const mapped =
+        search.reason === 'domain_not_allowed' || search.reason === 'domain_denied'
+          ? search.reason
+          : 'NO_TRUSTED_SOURCE'
+      await auditWebResearchBlocked(self, egressAgent.id, egressAgent.currentVersion, mapped, {
         requesterAgentId: input.agentId,
         reason: search.reason,
         objectiveHash,
       })
-      return { ok: false, error: 'NO_TRUSTED_SOURCE' }
-    }
-
-    const registry = new KnownUrlRegistry()
-    const searchResult = search.result as WebSearchResult
-    const usable = searchResult.results
-      .filter((r) =>
-        (r.sourceType === 'official' || r.sourceType === 'vendor_doc') &&
-        allowedSourceTypes.includes(r.sourceType),
-      )
-      .slice(0, maxSources)
-    if (usable.length === 0) {
-      await auditWebResearchBlocked(self, egressAgent.id, egressAgent.currentVersion, 'NO_TRUSTED_SOURCE', {
-        requesterAgentId: input.agentId,
-        objectiveHash,
-      })
-      return { ok: false, error: 'NO_TRUSTED_SOURCE' }
+      return { ok: false, error: mapped }
     }
 
     if (!self.webResearchFetch) {
       throw new Error('web_research_fetch_not_configured')
     }
-    const allowedSourceUrls = usable.map((source) => source.url)
-    const fetched = [] as Array<{ source: (typeof usable)[number]; text: string; host: string; contentHash: string }>
-    for (const [index, source] of usable.entries()) {
-      registry.add(source.url, source.sourceType)
-      const result = await self.webResearchFetch({
-        agentId: egressAgent.id,
-        tenantId: requester?.tenantId ?? null,
-        url: source.url,
-        sourceType: source.sourceType as 'official' | 'vendor_doc',
-        allowedSourceUrls,
-        fetchIndex: index,
-      })
-      if (result.ok) {
-        fetched.push({ source, text: result.text, host: result.host, contentHash: result.contentHash })
-      }
+
+    const webSearchLink = await self.tools.findConnectorForAgent(
+      egressAgent.id,
+      'web_search',
+      'read',
+      requester?.tenantId ?? null,
+    )
+    const webSearchConfig = parseWebSearchConfig(webSearchLink?.connector.config)
+    const policy = {
+      allowedDomains: webSearchConfig.allowedDomains,
+      deniedDomains: webSearchConfig.deniedDomains,
     }
-    if (fetched.length === 0) {
+    const registry = new KnownUrlRegistry()
+    const searchResult = search.result as WebSearchResult
+    const pipeline = await runWebResearchPipeline({
+      objective,
+      searchResults: searchResult.results,
+      allowedSourceTypes,
+      maxSources,
+      policy,
+      registry,
+      fetch: (req) =>
+        self.webResearchFetch!({
+          agentId: egressAgent.id,
+          tenantId: requester?.tenantId ?? null,
+          url: req.url,
+          sourceType: req.sourceType,
+          allowedSourceUrls: req.allowedSourceUrls,
+          fetchIndex: req.fetchIndex,
+          extraAllowlistHosts: req.extraAllowlistHosts,
+          allowedContentTypes: WEB_FETCH_RESEARCH_CONTENT_TYPES,
+          hop: req.hop,
+          perDiscoveryMax: req.perDiscoveryMax,
+        }),
+    })
+    if (pipeline.fetched.length === 0) {
       await auditWebResearchBlocked(self, egressAgent.id, egressAgent.currentVersion, 'NO_TRUSTED_SOURCE', {
         requesterAgentId: input.agentId,
         objectiveHash,
       })
       return { ok: false, error: 'NO_TRUSTED_SOURCE' }
     }
-    const fetchedAt = new Date().toISOString()
-    const sources = fetched.map(({ source, host, contentHash }) => ({
-      urlHash: createHash('sha256').update(source.url).digest('hex').slice(0, 16),
-      host: host.toLowerCase(),
-      sourceType: source.sourceType as WebResearchSourceType,
-      contentHash,
-      fetchedAt,
-    }))
-    const facts = fetched.map(({ source, text }, index) => ({
-      statement: `${source.title}: ${text}`.replace(/\s+/g, ' ').trim().slice(0, 1000),
-      sourceIndices: [index],
-      confidence: source.sourceType === 'official' || source.sourceType === 'vendor_doc' ? 'medium' as const : 'low' as const,
-    }))
-    const hasUnverified = sources.some((source) => source.sourceType === 'news' || source.sourceType === 'blog')
-    const candidate: WebResearchResult = {
-      objectiveEcho: objective.slice(0, 500),
-      facts,
-      sources,
-      overallConfidence: hasUnverified ? 'medium' : 'medium',
-      unverified: hasUnverified,
-      provenance: {
-        egressRoleAgentId: egressAgent.id,
-        egressRoleAgentVersion: egressAgent.currentVersion,
-        requesterAgentId: input.agentId,
-        queryHash: objectiveHash,
-        contractVersion: 'web_research/v1',
-      },
-    }
+    const candidate: WebResearchResult = buildWebResearchCandidate({
+      objective,
+      fetched: pipeline.fetched,
+      egressRoleAgentId: egressAgent.id,
+      egressRoleAgentVersion: egressAgent.currentVersion,
+      requesterAgentId: input.agentId,
+      queryHash: objectiveHash,
+    })
 
     const validation = validateWebResearchResult(candidate, {
       knownHosts: registry.hosts(),
@@ -1548,15 +1547,21 @@ export async function resolveWebEgressAgent(self: ToolBrokerService, tenantId: s
 export function resolveResearchSourceTypes(self: ToolBrokerService, requested?: WebResearchSourceType[]): WebResearchSourceType[] {
     const bankPreset = process.env.PROVISIONING_BANK_PRESET === 'true'
     const policy: WebResearchSourceType[] = bankPreset
-      ? ['official', 'vendor_doc']
-      : ['official', 'vendor_doc', 'news', 'blog']
+      ? ['official', 'vendor_doc', 'unknown']
+      : [...WEB_RESEARCH_SOURCE_TYPES]
     if (!requested || requested.length === 0) return policy
     const requestedSet = new Set(requested)
     return policy.filter((sourceType) => requestedSet.has(sourceType))
   }
 
 export function isResearchSourceType(self: ToolBrokerService, value: string): value is WebResearchSourceType {
-    return value === 'official' || value === 'vendor_doc' || value === 'news' || value === 'blog'
+    return (
+      value === 'official' ||
+      value === 'vendor_doc' ||
+      value === 'news' ||
+      value === 'blog' ||
+      value === 'unknown'
+    )
   }
 
 export async function auditWebResearchBlocked(self: ToolBrokerService, 

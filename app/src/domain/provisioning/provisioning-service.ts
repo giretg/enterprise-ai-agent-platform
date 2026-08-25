@@ -38,7 +38,14 @@ import { isResolvableSecretAlias } from './secret-alias'
 import { isConnectorOwnedSecretRef } from './connector-secret-alias-policy'
 
 export type ProvisioningActor =
-  | { type: 'user'; userId: string; role: UserRole; tenantId: string | null }
+  | {
+      type: 'user'
+      userId: string
+      role: UserRole
+      tenantId: string | null
+      /** Platform-owned connector lifecycle operations require superadmin authority. */
+      canManagePlatformConnectors?: boolean
+    }
   | {
       type: 'agent'
       agentId: string
@@ -934,6 +941,16 @@ export class ProvisioningService {
   ): Promise<{ connectorId: string; lifecycleState: 'archived'; affectedAgentIds: string[] }> {
     const user = this.requireHumanAdmin(actor, 'decommissionActiveConnector')
     const connector = await this.loadConnectorForTenant(input.connectorId, actor)
+
+    if (
+      connector.tenantId === null &&
+      !(actor.type === 'user' && actor.canManagePlatformConnectors)
+    ) {
+      throw new ProvisioningError(
+        'PLATFORM_CONNECTOR_FORBIDDEN',
+        'platform-owned connectors can only be decommissioned by a superadmin',
+      )
+    }
 
     if (connector.lifecycleState !== 'active') {
       throw new ProvisioningError(
