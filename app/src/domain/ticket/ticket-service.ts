@@ -28,6 +28,9 @@ function actorMatchesRule(
   if (allowed === 'system_or_operator') {
     return actor.type === 'system' || actorMatchesRule(actor, 'operator')
   }
+  if (allowed === 'system_or_approver') {
+    return actor.type === 'system' || actorMatchesRule(actor, 'approver')
+  }
   if (allowed === 'creator_or_operator') {
     return (
       actorMatchesRule(actor, 'operator') ||

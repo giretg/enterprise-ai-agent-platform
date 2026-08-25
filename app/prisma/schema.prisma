@@ -143,6 +143,52 @@ enum MemoryVersionStatus {
   rolled_back
 }
 
+enum MemoryVersionKind {
+  instruction
+  project_manifest
+
+  @@map("memory_version_kind")
+}
+
+enum TrainingOrigin {
+  human
+  reflection
+
+  @@map("training_origin")
+}
+
+enum TrainingScopeClass {
+  memory
+  behavior
+  role
+
+  @@map("training_scope_class")
+}
+
+enum TrainingProposalCompositionMode {
+  build_on_pending
+  replace_pending
+
+  @@map("training_proposal_composition_mode")
+}
+
+enum TrainingProposalRevisionStatus {
+  current
+  superseded
+
+  @@map("training_proposal_revision_status")
+}
+
+enum TrainingProposalTokenStatus {
+  unissued
+  issued
+  consumed
+  expired
+  revoked
+
+  @@map("training_proposal_token_status")
+}
+
 enum ResourceType {
   secret
   policy
@@ -1474,15 +1520,17 @@ model AgentApiKey {
 }
 
 model Memory {
-  id               String  @id @default(uuid()) @db.Uuid
-  currentVersionId String? @map("current_version_id") @db.Uuid
+  id                             String  @id @default(uuid()) @db.Uuid
+  currentVersionId               String? @map("current_version_id") @db.Uuid
+  projectManifestCurrentVersionId String? @map("project_manifest_current_version_id") @db.Uuid
 
-  agent           Agent?
-  versions        MemoryVersion[]   @relation("MemoryVersions")
-  currentVersion  MemoryVersion?    @relation("MemoryCurrentVersion", fields: [currentVersionId], references: [id])
-  writeGateTokens WriteGateToken[]
-  chunks          MemoryChunk[]     @relation("MemoryChunks")
-  candidates      MemoryCandidate[] @relation("MemoryCandidates")
+  agent                           Agent?
+  versions                        MemoryVersion[]   @relation("MemoryVersions")
+  currentVersion                  MemoryVersion?    @relation("MemoryCurrentVersion", fields: [currentVersionId], references: [id])
+  projectManifestCurrentVersion   MemoryVersion?    @relation("MemoryProjectManifestCurrent", fields: [projectManifestCurrentVersionId], references: [id])
+  writeGateTokens                 WriteGateToken[]
+  chunks                          MemoryChunk[]     @relation("MemoryChunks")
+  candidates                      MemoryCandidate[] @relation("MemoryCandidates")
 
   @@map("memories")
 }
@@ -1491,30 +1539,36 @@ model MemoryVersion {
   id               String              @id @default(uuid()) @db.Uuid
   memoryId         String              @map("memory_id") @db.Uuid
   version          Int
+  kind             MemoryVersionKind   @default(instruction)
   // Legacy full-inject szövegblokk (§1.1). A tartós agent-memória spec
   // (agent-memory-persistent-cross-conversation-spec.md §9.3) óta a T2
   // kanonikus forrás a MemoryChunk; ez a mező demo-agenteken kívül NULL.
+  // Instruction-láncon a betanított működési szabályok teljes verziója.
   content          String?
   diffFromPrevious Json?               @map("diff_from_previous")
   status           MemoryVersionStatus @default(proposed)
   source           String?
   approvedById     String?             @map("approved_by") @db.Uuid
+  parentVersion    Int?                @map("parent_version")
   createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz
 
   // §9.3: a MemoryVersion mostani szerepe a T2 pillanatkép-manifeszt.
+  // Project-manifest láncon ezek a mezők élnek; az instruction-láncot nem lépik.
   activeChunkIds     Json?   @map("active_chunk_ids")
   changeSet          Json?   @map("change_set")
   projectKey         String? @map("project_key")
   workstreamKey      String? @map("workstream_key")
   sourceCandidateIds Json?   @map("source_candidate_ids")
 
-  memory           Memory         @relation("MemoryVersions", fields: [memoryId], references: [id], onDelete: Cascade)
-  approvedBy       User?          @relation("MemoryApprovedBy", fields: [approvedById], references: [id])
-  agentVersions    AgentVersion[]
-  currentForMemory Memory[]       @relation("MemoryCurrentVersion")
-  evalRuns         EvalRun[]
+  memory                       Memory         @relation("MemoryVersions", fields: [memoryId], references: [id], onDelete: Cascade)
+  approvedBy                   User?          @relation("MemoryApprovedBy", fields: [approvedById], references: [id])
+  agentVersions                AgentVersion[]
+  currentForMemory             Memory[]       @relation("MemoryCurrentVersion")
+  projectManifestCurrentForMemory Memory[]    @relation("MemoryProjectManifestCurrent")
+  evalRuns                     EvalRun[]
 
-  @@unique([memoryId, version])
+  @@unique([memoryId, kind, version])
+  @@index([memoryId, kind, status])
   @@map("memory_versions")
 }
 
@@ -3180,15 +3234,46 @@ model WriteGateToken {
 // ── §4.4: tanítási ticket first-class metaadata (a write-gate köti) ─────────
 
 model TrainingTicket {
-  ticketId            String  @id @map("ticket_id") @db.Uuid
-  proposedDiff        Json    @map("proposed_diff")
-  writeGateTokenRef   String? @map("write_gate_token_ref")
-  evalResult          Json?   @map("eval_result")
-  targetMemoryVersion Int     @map("target_memory_version")
+  ticketId            String             @id @map("ticket_id") @db.Uuid
+  proposedDiff        Json               @map("proposed_diff")
+  writeGateTokenRef   String?            @map("write_gate_token_ref")
+  evalResult          Json?              @map("eval_result")
+  evalRequired        Boolean            @default(false) @map("eval_required")
+  origin              TrainingOrigin     @default(human)
+  scopeClass          TrainingScopeClass @default(memory) @map("scope_class")
+  targetMemoryVersion Int                @map("target_memory_version")
+  currentRevisionId   String?            @unique @map("current_revision_id") @db.Uuid
 
-  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  ticket          Ticket                      @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  currentRevision TrainingProposalRevision?   @relation("CurrentTrainingRevision", fields: [currentRevisionId], references: [id])
+  revisions       TrainingProposalRevision[]  @relation("TrainingTicketRevisions")
 
   @@map("training_tickets")
+}
+
+model TrainingProposalRevision {
+  id                   String                         @id @default(uuid()) @db.Uuid
+  trainingTicketId     String                         @map("training_ticket_id") @db.Uuid
+  revision             Int
+  baseVersionId        String                         @map("base_version_id") @db.Uuid
+  proposedVersionRef   String                         @map("proposed_version_ref") @db.Text
+  changeSummary        Json                           @map("change_summary")
+  impactResult         Json                           @map("impact_result")
+  compositionMode      TrainingProposalCompositionMode @map("composition_mode")
+  status               TrainingProposalRevisionStatus @default(current)
+  targetMemoryVersion  Int                            @map("target_memory_version")
+  writeGateTokenRef    String?                        @map("write_gate_token_ref")
+  tokenStatus          TrainingProposalTokenStatus    @default(unissued) @map("token_status")
+  tokenExpiresAt       DateTime?                      @map("token_expires_at") @db.Timestamptz
+  createdById          String                         @map("created_by") @db.Uuid
+  createdAt            DateTime                       @default(now()) @map("created_at") @db.Timestamptz
+
+  trainingTicket TrainingTicket @relation("TrainingTicketRevisions", fields: [trainingTicketId], references: [ticketId], onDelete: Cascade)
+  currentFor     TrainingTicket? @relation("CurrentTrainingRevision")
+
+  @@unique([trainingTicketId, revision])
+  @@index([trainingTicketId, status])
+  @@map("training_proposal_revisions")
 }
 
 // ── Fázis 2: Eval-kapu ────────────────────────────────────────────────────

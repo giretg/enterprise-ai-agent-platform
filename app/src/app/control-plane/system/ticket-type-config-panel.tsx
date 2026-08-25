@@ -28,6 +28,7 @@ const ACTOR_LABELS: Record<TransitionAllowedActor, string> = {
   operator: 'Operátor',
   admin: 'Admin',
   system_or_operator: 'Rendszer vagy operátor',
+  system_or_approver: 'Rendszer vagy jóváhagyó',
   creator_or_operator: 'Létrehozó vagy operátor',
 }
 

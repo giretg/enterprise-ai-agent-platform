@@ -1033,7 +1033,7 @@ export interface ConsequenceApprovalRepository {
  * billenti (§9.3 rollback).
  */
 export interface MemoryVersionRepository {
-  /** A memory következő globális verziószáma (max+1, `training-service.ts` mintáját követve). */
+  /** A projektmemória-manifeszt következő verziószáma (instruction-lánctól független). */
   nextVersionNumber(memoryId: string): Promise<number>
   create(data: {
     memoryId: string

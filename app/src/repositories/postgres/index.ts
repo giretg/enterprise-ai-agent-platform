@@ -41,6 +41,7 @@ import { PostgresSandboxAppRepository } from './sandbox-app-repository'
 import { PostgresSandboxVersioningRepository } from './sandbox-versioning-repository'
 import { PostgresScheduledTaskRepository } from './scheduled-task-repository'
 import { PostgresTicketRepository } from './ticket-repository'
+import { PostgresTrainingStore } from './training-store'
 import { PostgresToolBrokerRepository } from './tool-broker-repository'
 
 import { PostgresConnectorGrantRepository } from './connector-grant-repository'
@@ -73,6 +74,7 @@ export const repositories = {
   tenantMemberships: new PostgresTenantMembershipRepository(),
   platformMemberships: new PostgresPlatformMembershipRepository(),
   tickets: new PostgresTicketRepository(),
+  training: new PostgresTrainingStore(),
   agents: new PostgresAgentRepository(),
   agentAccessGrants: new PostgresAgentAccessGrantRepository(),
   behaviorProfiles: new PostgresBehaviorProfileRepository(),

@@ -98,6 +98,11 @@ import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-author
 import {
   agentIdSchema,
   approveTrainingSchema,
+  previewTrainingChangeSchema,
+  submitTrainingProposalSchema,
+  activateTrainingSchema,
+  rejectTrainingSchema,
+  getTrainingWorkspaceSchema,
   createEvalSchema,
   runEvalSchema,
   costSummarySchema,
@@ -2307,6 +2312,10 @@ export async function updateAgentSelfEvolutionProfile(input: {
     scope: Array<'memory' | 'behavior' | 'role'>
     approval_mode: 'human' | 'higher_role' | 'eval_only' | 'auto_after_eval'
     diff_limit?: number
+    durable_memory_approval_policy?: {
+      activation_mode: 'approver_required' | 'operator_can_activate'
+      four_eyes_required: boolean
+    }
   }
 }) {
   try {
@@ -4076,14 +4085,106 @@ export async function proposeMemoryItemChange(
       actor: trainingActor(user),
     })
 
-    if (parsed.apply && hasMinimumRole(user.activeTenantRole, 'approver')) {
-      const approved = await services.training.approveTraining(ticket.id, trainingActor(user))
-      return ok({ ticket, approved })
+    if (parsed.apply) {
+      const workspace = await services.training.getTrainingWorkspace({
+        agentId: parsed.agentId,
+        actor: trainingActor(user),
+      })
+      if (workspace.allowedActions.includes('activate') && workspace.pendingProposal) {
+        const approved = await services.training.activateTraining({
+          ticketId: workspace.pendingProposal.ticketId,
+          revisionId: workspace.pendingProposal.revisionId,
+          actor: trainingActor(user),
+        })
+        return ok({ ticket, approved })
+      }
     }
 
     return ok({ ticket, approved: null })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to propose memory item change')
+  }
+}
+
+export async function getTrainingWorkspace(input: { agentId: string }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const parsed = getTrainingWorkspaceSchema.parse(input)
+    const data = await services.training.getTrainingWorkspace({
+      agentId: parsed.agentId,
+      actor: trainingActor(user),
+    })
+    return ok(JSON.parse(JSON.stringify(data)))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load training workspace')
+  }
+}
+
+export async function previewTrainingChange(input: z.infer<typeof previewTrainingChangeSchema>) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = previewTrainingChangeSchema.parse(input)
+    const data = await services.training.previewTrainingChange({
+      agentId: parsed.agentId,
+      instruction: parsed.instruction,
+      compositionMode: parsed.compositionMode ?? null,
+      actor: trainingActor(user),
+    })
+    return ok(data)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to preview training change')
+  }
+}
+
+export async function submitTrainingProposal(input: z.infer<typeof submitTrainingProposalSchema>) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = submitTrainingProposalSchema.parse(input)
+    const submitted = await services.training.submitTrainingProposal({
+      previewId: parsed.previewId,
+      actor: trainingActor(user),
+    })
+    if (parsed.activate) {
+      const approved = await services.training.activateTraining({
+        ticketId: submitted.ticket.id,
+        revisionId: submitted.currentRevision.id,
+        actor: trainingActor(user),
+      })
+      return ok({ ticket: submitted.ticket, currentRevision: submitted.currentRevision, approved })
+    }
+    return ok({ ticket: submitted.ticket, currentRevision: submitted.currentRevision, approved: null })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to submit training proposal')
+  }
+}
+
+export async function activateTraining(input: z.infer<typeof activateTrainingSchema>) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = activateTrainingSchema.parse(input)
+    const result = await services.training.activateTraining({
+      ticketId: parsed.ticketId,
+      revisionId: parsed.revisionId,
+      actor: trainingActor(user),
+    })
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to activate training')
+  }
+}
+
+export async function rejectTraining(input: z.infer<typeof rejectTrainingSchema>) {
+  try {
+    const user = await requireTenantRole('approver')
+    const parsed = rejectTrainingSchema.parse(input)
+    await services.training.rejectTraining({
+      ticketId: parsed.ticketId,
+      reason: parsed.reason,
+      actor: trainingActor(user),
+    })
+    return ok({ rejected: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to reject training')
   }
 }
 
@@ -4107,7 +4208,7 @@ export async function listTrainingMemoryVersions(input: {
 
 export async function approveTraining(input: { ticketId: string; overrideEval?: boolean }) {
   try {
-    const user = await requireTenantRole('approver')
+    const user = await requireTenantRole('operator')
     const parsed = approveTrainingSchema.parse(input)
     const result = await services.training.approveTraining(parsed.ticketId, trainingActor(user), {
       overrideEval: parsed.overrideEval,
@@ -5550,6 +5651,7 @@ export async function adminUpsertTicketType(input: {
       | 'operator'
       | 'admin'
       | 'system_or_operator'
+      | 'system_or_approver'
       | 'creator_or_operator'
   }>
 }) {

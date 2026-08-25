@@ -243,6 +243,9 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'training.eval_created',
   'training.eval',
   'training.eval_read',
+  'training.proposed',
+  'training.approved',
+  'training.rejected',
   'training.capability_escalation_denied',
   // Write-gate token életciklus (§9.4) — a következményes memória-írás engedélye
   // és felhasználása a hash-láncban is nyomon követhető, nem csak a token-táblában.

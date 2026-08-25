@@ -236,6 +236,11 @@ jobs:
       - name: Agent-forduló repository tesztek
         run: npm run test:agent-turn
 
+      # MemoryTraining v1.1: a pointer-CAS és az agentenként egy nyitott
+      # instruction-ticket részleges unique indexe csak valódi DB-n bizonyítható.
+      - name: Training repository DB-invariánsok
+        run: npm run test:training-store-db
+
       # Az agent-hozzáférési gráf DB-szintű invariánsai (#142): a subject-alak, a
       # „legalább egy ige", a self-edge és a subject→target egyediség CHECK/UNIQUE
       # kényszereit, valamint a cross-table tenant-invariáns TRANZAKCIÓS ellenőrzését

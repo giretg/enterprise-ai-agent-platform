@@ -279,7 +279,7 @@ export class PostgresMemoryChunkRepository implements MemoryChunkRepository {
 export class PostgresMemoryVersionRepository implements MemoryVersionRepository {
   async nextVersionNumber(memoryId: string): Promise<number> {
     const row = await prisma.memoryVersion.aggregate({
-      where: { memoryId },
+      where: { memoryId, kind: 'project_manifest' },
       _max: { version: true },
     })
     return (row._max.version ?? 0) + 1
@@ -295,10 +295,11 @@ export class PostgresMemoryVersionRepository implements MemoryVersionRepository 
     sourceCandidateIds: string[]
     approvedById: string | null
   }): Promise<MemoryVersion> {
-    return prisma.memoryVersion.create({
+    const created = await prisma.memoryVersion.create({
       data: {
         memoryId: data.memoryId,
         version: data.version,
+        kind: 'project_manifest',
         status: 'active',
         projectKey: data.projectKey,
         workstreamKey: data.workstreamKey,
@@ -308,6 +309,11 @@ export class PostgresMemoryVersionRepository implements MemoryVersionRepository 
         approvedById: data.approvedById,
       },
     })
+    await prisma.memory.update({
+      where: { id: data.memoryId },
+      data: { projectManifestCurrentVersionId: created.id },
+    })
+    return created
   }
 
   async findLatestForScope(params: {
@@ -318,6 +324,7 @@ export class PostgresMemoryVersionRepository implements MemoryVersionRepository 
     return prisma.memoryVersion.findFirst({
       where: {
         memoryId: params.memoryId,
+        kind: 'project_manifest',
         projectKey: params.projectKey,
         ...(params.workstreamKey !== undefined ? { workstreamKey: params.workstreamKey } : {}),
       },
@@ -326,8 +333,12 @@ export class PostgresMemoryVersionRepository implements MemoryVersionRepository 
   }
 
   async findByVersion(params: { memoryId: string; version: number }): Promise<MemoryVersion | null> {
-    return prisma.memoryVersion.findUnique({
-      where: { memoryId_version: { memoryId: params.memoryId, version: params.version } },
+    return prisma.memoryVersion.findFirst({
+      where: {
+        memoryId: params.memoryId,
+        version: params.version,
+        kind: 'project_manifest',
+      },
     })
   }
 
@@ -340,6 +351,7 @@ export class PostgresMemoryVersionRepository implements MemoryVersionRepository 
     return prisma.memoryVersion.findMany({
       where: {
         memoryId: params.memoryId,
+        kind: 'project_manifest',
         projectKey: params.projectKey,
         ...(params.workstreamKey !== undefined ? { workstreamKey: params.workstreamKey } : {}),
       },
