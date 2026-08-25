@@ -10,6 +10,10 @@ type Profile = {
   scope: Array<'memory' | 'behavior' | 'role'>
   approval_mode: 'human' | 'higher_role' | 'eval_only' | 'auto_after_eval'
   diff_limit?: number
+  durable_memory_approval_policy: {
+    activation_mode: 'approver_required' | 'operator_can_activate'
+    four_eyes_required: boolean
+  }
 }
 
 export function UpdateSelfEvolutionProfileForm({
@@ -26,13 +30,30 @@ export function UpdateSelfEvolutionProfileForm({
   const resolved = resolveSelfEvolutionProfile(currentProfile)
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
-  const [profile, setProfile] = useState<Profile>(resolved)
+  const [profile, setProfile] = useState<Profile>({
+    scope: resolved.scope,
+    approval_mode: resolved.approval_mode,
+    diff_limit: resolved.diff_limit,
+    durable_memory_approval_policy: resolved.durable_memory_approval_policy ?? {
+      activation_mode: 'approver_required',
+      four_eyes_required: true,
+    },
+  })
 
   const toggleScope = (scope: Profile['scope'][number]) => {
     setProfile((prev) => {
       const has = prev.scope.includes(scope)
       const nextScope = has ? prev.scope.filter((s) => s !== scope) : [...prev.scope, scope]
       return { ...prev, scope: nextScope.length ? nextScope : [scope] }
+    })
+  }
+
+  const setDurable = (patch: Partial<Profile['durable_memory_approval_policy']>) => {
+    setProfile((prev) => {
+      const next = { ...prev.durable_memory_approval_policy, ...patch }
+      if (next.four_eyes_required) next.activation_mode = 'approver_required'
+      if (next.activation_mode === 'operator_can_activate') next.four_eyes_required = false
+      return { ...prev, durable_memory_approval_policy: next }
     })
   }
 
@@ -70,7 +91,7 @@ export function UpdateSelfEvolutionProfileForm({
           ))}
         </fieldset>
         <label className="block text-sm">
-          <span className="text-ink-soft">Jóváhagyás</span>
+          <span className="text-ink-soft">Önfejlesztési jóváhagyás</span>
           <select
             value={profile.approval_mode}
             onChange={(e) =>
@@ -87,6 +108,42 @@ export function UpdateSelfEvolutionProfileForm({
             <option value="auto_after_eval">Ellenőrzés után automatikusan életbe lép</option>
           </select>
         </label>
+        <fieldset className="space-y-2">
+          <legend className="text-sm text-ink-soft">Tanítás és projektmemória életbelépése</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="activation_mode"
+              checked={profile.durable_memory_approval_policy.activation_mode === 'approver_required'}
+              onChange={() => setDurable({ activation_mode: 'approver_required' })}
+            />
+            Jóváhagyó léptetheti életbe
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="activation_mode"
+              checked={profile.durable_memory_approval_policy.activation_mode === 'operator_can_activate'}
+              disabled={profile.durable_memory_approval_policy.four_eyes_required}
+              onChange={() => setDurable({ activation_mode: 'operator_can_activate', four_eyes_required: false })}
+            />
+            Operátor is életbe léptetheti
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={profile.durable_memory_approval_policy.four_eyes_required}
+              disabled={profile.durable_memory_approval_policy.activation_mode === 'operator_can_activate'}
+              onChange={(e) =>
+                setDurable({
+                  four_eyes_required: e.target.checked,
+                  activation_mode: e.target.checked ? 'approver_required' : profile.durable_memory_approval_policy.activation_mode,
+                })
+              }
+            />
+            Négy szem elv — a javaslatot nem hagyhatja jóvá ugyanaz, aki írta
+          </label>
+        </fieldset>
         <label className="block text-sm">
           <span className="text-ink-soft">Max. változás méret (opcionális, sorokban)</span>
           <input

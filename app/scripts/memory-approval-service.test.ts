@@ -549,6 +549,37 @@ async function run() {
     assert.equal(approved.ok, true)
   })
 
+  await test('T23: operator_can_activate — operator elfogadhatja a projektmemória-javaslatot', async () => {
+    const f = makeFakes()
+    setupPermissions(f.permissionsByKey)
+    f.agentsById.set(
+      AGENT_ID,
+      agent({
+        selfEvolutionProfile: {
+          scope: ['memory'],
+          approval_mode: 'human',
+          durable_memory_approval_policy: { activation_mode: 'operator_can_activate', four_eyes_required: false },
+        } as never,
+      }),
+    )
+    seedCandidate(f.candidateStore, { id: 'cand-t23' })
+    const result = await f.service.approve('cand-t23', OPERATOR)
+    assert.equal(result.ok, true)
+    assert.equal((result as { outcome: string }).outcome, 'approved')
+    assert.equal(f.versionStore.size, 1)
+  })
+
+  await test('T23/T21: négy szem — a javaslattevő nem fogadhatja el saját projektmemóriáját', async () => {
+    const f = makeFakes()
+    setupPermissions(f.permissionsByKey)
+    f.agentsById.set(AGENT_ID, agent())
+    seedCandidate(f.candidateStore, { id: 'cand-eyes', proposedBy: APPROVER_ID })
+    const result = await f.service.approve('cand-eyes', APPROVER)
+    assert.equal(result.ok, false)
+    assert.equal((result as { reason: string }).reason, 'four_eyes_required')
+    assert.equal(f.candidateStore.get('cand-eyes')!.status, 'proposed')
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt megbukott.`)
     process.exit(1)

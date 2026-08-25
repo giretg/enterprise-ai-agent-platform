@@ -1,5 +1,10 @@
 import { decideAuthz } from '@/lib/iam-policy'
 import { requiresEvalGate, resolveSelfEvolutionProfile } from '@/lib/self-evolution-profile'
+import {
+  fourEyesBlocksActor,
+  hasTrainingActivationRight,
+  resolveDurableMemoryApprovalPolicy,
+} from '@/domain/training/durable-memory-policy'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { computeDiffHash } from '@/lib/crypto/hash-chain'
 import { detectPublishConflict } from './conflict-detection'
@@ -201,13 +206,60 @@ export class MemoryApprovalService {
     const permissionKey = candidate.operation === 'delete_request' ? 'memory.delete_approve' : 'memory.inline_approve'
     const permEntry = await this.rolePermissions.findByKey(permissionKey)
     const canInline = decideAuthz({ status: 'active', role: actor.role }, permEntry?.minRole ?? null).allow
+    const durablePolicy = resolveDurableMemoryApprovalPolicy(profile)
+    const canActivateByPolicy = hasTrainingActivationRight(actor.role, durablePolicy)
+
+    // Rollback/törlés nem lazítható a tartós memória-policy-val (§4.5).
+    if (candidate.operation === 'delete_request' && !canInline) {
+      return this.ticket(candidateId, actor)
+    }
+
+    if (!canActivateByPolicy) {
+      await this.audit.append({
+        actorType: 'human',
+        actorId: actor.id,
+        agentVersion: agent.currentVersion,
+        action: 'user.authz.deny',
+        targetType: 'memory_candidate',
+        targetId: candidateId,
+        modelUsed: null,
+        inputRef: permissionKey,
+        outputRef: 'routed_to_ticket',
+        policyDecision: 'durable_memory_approver_required',
+        tenantId: candidate.tenantId,
+        metadata: { candidateId, agentId: agent.id, permissionKey },
+      })
+      return this.ticket(candidateId, actor)
+    }
+
+    if (
+      fourEyesBlocksActor({
+        policy: durablePolicy,
+        actorId: actor.id,
+        revisionCreatedById: candidate.proposedBy,
+      })
+    ) {
+      await this.audit.append({
+        actorType: 'human',
+        actorId: actor.id,
+        agentVersion: agent.currentVersion,
+        action: 'memory.write_denied',
+        targetType: 'memory_candidate',
+        targetId: candidateId,
+        modelUsed: null,
+        inputRef: 'four_eyes_required',
+        outputRef: 'four_eyes_required',
+        policyDecision: 'four_eyes_required',
+        tenantId: candidate.tenantId,
+        metadata: { candidateId, proposedBy: candidate.proposedBy },
+      })
+      return { ok: false, reason: 'four_eyes_required' }
+    }
 
     // §6.3/§12.1 — a T2-írás HORGONYA a `memory.inline_approve` (delete-nél
-    // `memory.delete_approve`) capability. Ha az aktor NEM hordozza, a jóváhagyás
-    // ticketre kerül — FÜGGETLENÜL a self-evolution profil emberi-jóváhagyás
-    // igényétől. Korábban a kapu csak `requiresHumanApproval(profile)` mellett
-    // futott, így `eval_only`/`auto_after_eval` profilnál megkerülhető volt.
-    if (!canInline) {
+    // `memory.delete_approve`) capability. Az `operator_can_activate` policy
+    // ugyanazon write-gate útvonalat nyitja operátornak, jogosultságot nem emel.
+    if (!canInline && durablePolicy.activation_mode !== 'operator_can_activate') {
       await this.audit.append({
         actorType: 'human',
         actorId: actor.id,

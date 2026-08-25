@@ -35,8 +35,15 @@ assert.equal(
   'a kötelező eval-bukás system rejectionje testreszabott ticket-configban is megmarad',
 )
 
-for (const action of ['training.eval_created', 'training.eval', 'training.eval_read']) {
+for (const action of [
+  'training.eval_created',
+  'training.eval',
+  'training.eval_read',
+  'training.proposed',
+  'training.approved',
+  'training.rejected',
+]) {
   assert.doesNotThrow(() => assertAuditActionRegistered(action), `${action}: audit-katalógus`)
 }
 
-console.log('8/8 eval governance policy eset zöld')
+console.log('eval governance policy esetek zöldek')

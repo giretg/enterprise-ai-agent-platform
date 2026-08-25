@@ -7,6 +7,7 @@ export type TransitionAllowedActor =
   | 'operator'
   | 'admin'
   | 'system_or_operator'
+  | 'system_or_approver'
   | 'creator_or_operator'
 
 export type TicketTransitionConfigRule = {
@@ -42,6 +43,7 @@ export const TRANSITION_ALLOWED_ACTORS: TransitionAllowedActor[] = [
   'operator',
   'admin',
   'system_or_operator',
+  'system_or_approver',
   'creator_or_operator',
 ]
 
@@ -52,7 +54,7 @@ export const DEFAULT_TICKET_TRANSITIONS: TicketTransitionConfigRule[] = [
   { from: 'in_progress', to: 'awaiting_human', allowed: 'system' },
   { from: 'in_progress', to: 'done', allowed: 'system' },
   { from: 'in_progress', to: 'rejected', allowed: 'operator' },
-  { from: 'awaiting_human', to: 'approved', allowed: 'approver' },
+  { from: 'awaiting_human', to: 'approved', allowed: 'system_or_approver' },
   { from: 'awaiting_human', to: 'needs_info', allowed: 'creator_or_operator' },
   // Kötelező eval bukásakor a TrainingService rendszer-aktorral zárja le a
   // ticketet (MemoryTraining §4.1/T7); manuális elutasítás továbbra is operator.
@@ -72,6 +74,7 @@ export const DEFAULT_TICKET_TRANSITIONS: TicketTransitionConfigRule[] = [
  */
 const SYSTEM_REQUIRED_TRANSITION_ALLOWANCES = new Map<string, TransitionAllowedActor>([
   ['awaiting_human:rejected', 'system_or_operator'],
+  ['awaiting_human:approved', 'system_or_approver'],
 ])
 
 function transitionKey(rule: Pick<TicketTransitionConfigRule, 'from' | 'to'>): string {

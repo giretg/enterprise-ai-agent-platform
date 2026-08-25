@@ -3,11 +3,13 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useMemo, useState, useTransition } from 'react'
-import type { Agent, Ticket } from '@prisma/client'
+import type { Agent } from '@prisma/client'
 import {
-  approveTraining,
-  proposeMemoryItemChange,
+  activateTraining,
+  previewTrainingChange,
+  rejectTraining,
   rollbackMemory,
+  submitTrainingProposal,
 } from '@/app/actions/platform'
 import { AgentAssigneeSelect } from '@/components/agents/agent-assignee-select'
 import { Badge, Card } from '@/components/ui/shell'
@@ -15,21 +17,43 @@ import {
   EMPTY_MEMORY_PLACEHOLDER,
   parseMemoryItems,
 } from '@/domain/training/memory-items'
+import type { TrainingAllowedAction } from '@/domain/training/durable-memory-policy'
+import type { TrainingCompositionMode } from '@/domain/training/training-composition'
 
-type TrainingPayload = {
-  diff?: { before?: string; after?: string; summary?: string }
-  proposedContent?: string
-  source?: string
+type TrainingWorkspaceView = {
+  agentId: string
+  agentName: string
+  activeVersion: {
+    id: string
+    version: number
+    content: string
+    createdAt: string | Date
+    source: string | null
+  } | null
+  pendingProposal: {
+    ticketId: string
+    revisionId: string
+    revision: number
+    proposedVersion: string
+    createdById: string
+    targetMemoryVersion: number
+    fourEyesWaiting: boolean
+    nextStep: string | null
+  } | null
+  allowedActions: TrainingAllowedAction[]
+  timeline: Array<{
+    id: string
+    version: number
+    status: string
+    source: string | null
+    approvedBy: string | null
+    createdAt: string | Date
+    content: string | null
+  }>
 }
 
-type ApproveResult = {
-  memoryVersion: { version: number }
-  writeGateTokenId: string
-  evalRun: { passed: boolean; score: number } | null
-} | null
-
 type MemoryVersionRow = {
-  id: string
+  id?: string
   version: number
   content: string | null
   status: string
@@ -37,11 +61,11 @@ type MemoryVersionRow = {
   source: string | null
 }
 
-function trainingPayload(ticket: Ticket): TrainingPayload {
-  if (typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)) {
-    return ticket.payload as TrainingPayload
-  }
-  return {}
+type PreviewState = {
+  previewId: string
+  proposedVersion: string
+  changeSummary: { added: string[]; removed: string[]; rewritten: Array<{ from: string; to: string }> }
+  impactResult: { verdict: 'complements' | 'changes' | 'blocked'; nextStep: string | null }
 }
 
 function fmtDate(d: string | Date) {
@@ -56,20 +80,13 @@ function previewContent(content: string | null | undefined, max = 400): string {
 
 export function TrainingWorkspace({
   agents,
-  trainingTickets,
   selectedAgentId,
-  memoryContent,
-  memoryVersions,
-  currentVersionId,
+  workspace,
   lockAgent = false,
 }: {
   agents: Agent[]
-  trainingTickets: Ticket[]
   selectedAgentId?: string
-  memoryContent: string | null
-  memoryVersions: MemoryVersionRow[]
-  currentVersionId: string | null
-  /** Agent-munkaterületen a fül már kijelöli, kit tanítunk — nincs váltó. */
+  workspace: TrainingWorkspaceView | null
   lockAgent?: boolean
 }) {
   const router = useRouter()
@@ -80,22 +97,26 @@ export function TrainingWorkspace({
   const [editText, setEditText] = useState('')
   const [expandedVersion, setExpandedVersion] = useState<number | null>(null)
   const [message, setMessage] = useState<string | null>(null)
-  const [lastApprove, setLastApprove] = useState<ApproveResult>(null)
-  const [evalBlockedFor, setEvalBlockedFor] = useState<string | null>(null)
+  const [compositionMode, setCompositionMode] = useState<TrainingCompositionMode>('build_on_pending')
+  const [preview, setPreview] = useState<PreviewState | null>(null)
+  const [showFullVersion, setShowFullVersion] = useState(false)
 
   const selectedAgent = agents.find((a) => a.id === agentId)
   const isSelectedAgentLoaded = agentId === selectedAgentId
+  const allowed = new Set<TrainingAllowedAction>(workspace?.allowedActions ?? [])
+  const canPreview = allowed.has('preview')
+  const memoryContent = workspace?.activeVersion?.content ?? ''
   const items = useMemo(
     () => (isSelectedAgentLoaded ? parseMemoryItems(memoryContent) : []),
     [isSelectedAgentLoaded, memoryContent],
   )
+  const memoryVersions: MemoryVersionRow[] = workspace?.timeline ?? []
+  const currentVersionId = workspace?.activeVersion?.id ?? null
 
-  function runItemChange(
-    input:
-      | { operation: 'add'; text: string }
-      | { operation: 'update'; itemIndex: number; text: string }
-      | { operation: 'remove'; itemIndex: number },
-    successMsg: string,
+  function runPreview(
+    instruction:
+      | { kind: 'teach'; text: string }
+      | { kind: 'item_change'; change: { operation: 'add'; text: string } | { operation: 'update'; itemIndex: number; text: string } | { operation: 'remove'; itemIndex: number } },
   ) {
     if (!isSelectedAgentLoaded) {
       setMessage('Az új agent szabályai még betöltés alatt vannak.')
@@ -103,29 +124,44 @@ export function TrainingWorkspace({
     }
     startTransition(async () => {
       setMessage(null)
-      setLastApprove(null)
-      const res = await proposeMemoryItemChange({
+      setPreview(null)
+      const res = await previewTrainingChange({
         agentId,
-        apply: true,
-        ...input,
+        instruction,
+        compositionMode: workspace?.pendingProposal ? compositionMode : null,
       })
       if (!res.success) {
         setMessage(res.error ?? 'Hiba')
         return
       }
-      const approved = (res.data as { approved: ApproveResult }).approved
-      if (approved) {
-        setLastApprove(approved)
-        setMessage(successMsg)
-      } else {
-        setMessage(`${successMsg} — feladat létrehozva, jóváhagyásra vár.`)
+      setPreview(res.data as PreviewState)
+      setShowFullVersion(false)
+    })
+  }
+
+  function runSubmit(activate: boolean) {
+    if (!preview) return
+    startTransition(async () => {
+      const res = await submitTrainingProposal({ previewId: preview.previewId, activate })
+      if (!res.success) {
+        setMessage(res.error ?? 'Hiba')
+        return
       }
+      setPreview(null)
       setNewItem('')
       setEditingIndex(null)
       setEditText('')
+      setMessage(activate ? 'Az új szabályverzió életbe lépett.' : 'A javaslat jóváhagyásra vár.')
       router.refresh()
     })
   }
+
+  const impactTone =
+    preview?.impactResult.verdict === 'blocked'
+      ? 'text-coral-deep'
+      : preview?.impactResult.verdict === 'changes'
+        ? 'text-honey'
+        : 'text-sage'
 
   return (
     <div className="space-y-6">
@@ -141,15 +177,12 @@ export function TrainingWorkspace({
               value={agentId}
               disabled={pending}
               onChange={(nextAgentId) => {
-                // A szerkesztett tétel indexe az aktuális agent memóriájára
-                // vonatkozik. Agentváltáskor nem vihetjük át másik szabálylistára.
                 setEditingIndex(null)
                 setEditText('')
                 setExpandedVersion(null)
                 setNewItem('')
                 setMessage(null)
-                setLastApprove(null)
-                setEvalBlockedFor(null)
+                setPreview(null)
                 setAgentId(nextAgentId)
                 router.push(`/control-plane/agents/${nextAgentId}/training`)
               }}
@@ -166,10 +199,10 @@ export function TrainingWorkspace({
         </div>
       )}
 
-      <Card title="Megtanult dolgok">
+      <Card title="Betanított működési szabályok">
         <p className="mb-3 text-sm text-ink-soft">
-          Ezeket használja a mindennapi munkában. Itt módosíthatod vagy törölheted a rossz
-          szabályokat — minden változás új memória-verziót hoz létre.
+          Ezeket a munkatárs minden releváns feladatnál betartja. A változtatás új, jóváhagyott
+          szabályverziót készít — a korábbi verzió megmarad, és visszaállítható.
         </p>
         {!isSelectedAgentLoaded ? (
           <p className="text-sm text-ink-faint">Az agent szabályainak betöltése…</p>
@@ -188,22 +221,24 @@ export function TrainingWorkspace({
                       onChange={(e) => setEditText(e.target.value)}
                     />
                     <div className="flex flex-wrap gap-2">
+                      {canPreview && (
+                        <button
+                          type="button"
+                          disabled={pending || !editText.trim()}
+                          className="rounded-full bg-sage/20 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
+                          onClick={() =>
+                            runPreview({
+                              kind: 'item_change',
+                              change: { operation: 'update', itemIndex: index, text: editText },
+                            })
+                          }
+                        >
+                          Megnézem, mit változtat
+                        </button>
+                      )}
                       <button
                         type="button"
-                        disabled={pending || !isSelectedAgentLoaded || !editText.trim()}
-                        className="rounded-full bg-sage/20 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
-                        onClick={() =>
-                          runItemChange(
-                            { operation: 'update', itemIndex: index, text: editText },
-                            'Szabály frissítve.',
-                          )
-                        }
-                      >
-                        Mentés
-                      </button>
-                      <button
-                        type="button"
-                        disabled={pending || !isSelectedAgentLoaded}
+                        disabled={pending}
                         className="rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft"
                         onClick={() => {
                           setEditingIndex(null)
@@ -217,33 +252,35 @@ export function TrainingWorkspace({
                 ) : (
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <p className="whitespace-pre-wrap text-sm text-ink-soft">{item}</p>
-                    <span className="flex shrink-0 gap-2">
-                      <button
-                        type="button"
-                        disabled={pending || !isSelectedAgentLoaded}
-                        className="rounded-full border border-line px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-line/30 disabled:opacity-50"
-                        onClick={() => {
-                          setEditingIndex(index)
-                          setEditText(item)
-                        }}
-                      >
-                        Szerkeszt
-                      </button>
-                      <button
-                        type="button"
-                        disabled={pending || !isSelectedAgentLoaded}
-                        className="rounded-full border border-coral/30 px-3 py-1 text-xs font-semibold text-coral hover:bg-coral/10 disabled:opacity-50"
-                        onClick={() => {
-                          if (!confirm('Biztosan törlöd ezt a szabályt?')) return
-                          runItemChange(
-                            { operation: 'remove', itemIndex: index },
-                            'Szabály törölve.',
-                          )
-                        }}
-                      >
-                        Töröl
-                      </button>
-                    </span>
+                    {canPreview && (
+                      <span className="flex shrink-0 gap-2">
+                        <button
+                          type="button"
+                          disabled={pending}
+                          className="rounded-full border border-line px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-line/30 disabled:opacity-50"
+                          onClick={() => {
+                            setEditingIndex(index)
+                            setEditText(item)
+                          }}
+                        >
+                          Szerkeszt
+                        </button>
+                        <button
+                          type="button"
+                          disabled={pending}
+                          className="rounded-full border border-coral/30 px-3 py-1 text-xs font-semibold text-coral hover:bg-coral/10 disabled:opacity-50"
+                          onClick={() => {
+                            if (!confirm('Biztosan törlöd ezt a szabályt?')) return
+                            runPreview({
+                              kind: 'item_change',
+                              change: { operation: 'remove', itemIndex: index },
+                            })
+                          }}
+                        >
+                          Töröl
+                        </button>
+                      </span>
+                    )}
                   </div>
                 )}
               </li>
@@ -252,142 +289,216 @@ export function TrainingWorkspace({
         )}
       </Card>
 
-      <Card title="Új dolog megtanítása">
-        <p className="mb-3 text-sm text-ink-soft">
-          Írd le ide, hogy mit szeretnél, hogy megtanuljon a munkatárs!
-        </p>
-        <textarea
-          className="mb-3 w-full rounded-lg border border-line bg-night-2 p-3 text-sm"
-          rows={4}
-          value={newItem}
-          onChange={(e) => setNewItem(e.target.value)}
-          placeholder="Pl. Számláknál mindig ellenőrizd az ÁFA-kulcsot…"
-        />
-        <button
-          type="button"
-          disabled={pending || !isSelectedAgentLoaded || !newItem.trim() || !agentId}
-          className="rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky disabled:opacity-50"
-          onClick={() =>
-            runItemChange({ operation: 'add', text: newItem }, 'Új szabály hozzáadva.')
-          }
-        >
-          Hozzáadás
-        </button>
-      </Card>
+      {canPreview && (
+        <Card title="Új dolog megtanítása">
+          <p className="mb-3 text-sm text-ink-soft">
+            Írd le, mit szeretnél, hogy a munkatárs a továbbiakban tartson be.
+          </p>
+          {workspace?.pendingProposal && (
+            <fieldset className="mb-3 space-y-2">
+              <legend className="text-sm text-ink-soft">Van már egy függő javaslat. Mit tegyünk vele?</legend>
+              {(allowed.has('build_on_pending') || allowed.has('replace_pending')) && (
+                <div className="space-y-1 text-sm">
+                  {allowed.has('build_on_pending') && (
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name="composition"
+                        checked={compositionMode === 'build_on_pending'}
+                        onChange={() => setCompositionMode('build_on_pending')}
+                      />
+                      Beépítem a meglévő javaslatba
+                    </label>
+                  )}
+                  {allowed.has('replace_pending') && (
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name="composition"
+                        checked={compositionMode === 'replace_pending'}
+                        onChange={() => setCompositionMode('replace_pending')}
+                      />
+                      Lecserélem a meglévő javaslatot
+                    </label>
+                  )}
+                </div>
+              )}
+            </fieldset>
+          )}
+          <textarea
+            className="mb-3 w-full rounded-lg border border-line bg-night-2 p-3 text-sm"
+            rows={4}
+            value={newItem}
+            onChange={(e) => setNewItem(e.target.value)}
+            placeholder="Pl. Számláknál mindig ellenőrizd az ÁFA-kulcsot…"
+          />
+          <button
+            type="button"
+            disabled={pending || !isSelectedAgentLoaded || !newItem.trim() || !agentId}
+            className="rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky disabled:opacity-50"
+            onClick={() => runPreview({ kind: 'teach', text: newItem })}
+          >
+            Megnézem, mit változtat
+          </button>
+        </Card>
+      )}
 
-      <Card title="Függőben lévő tanítási feladatok">
-        {trainingTickets.length === 0 ? (
-          <p className="text-sm text-ink-faint">Nincs aktív training ticket.</p>
+      {preview && (
+        <Card title="A változás hatása">
+          <p className={`mb-3 text-sm font-semibold ${impactTone}`}>
+            {preview.impactResult.verdict === 'complements' && 'Kiegészíti a meglévő szabályokat'}
+            {preview.impactResult.verdict === 'changes' && 'Megváltoztatja a meglévő szabályokat'}
+            {preview.impactResult.verdict === 'blocked' && 'Ez a tanítás nem engedhető meg'}
+          </p>
+          {preview.changeSummary.added.length > 0 && (
+            <div className="mb-3">
+              <p className="mb-1 text-xs font-semibold text-ink-faint">Új szabályok</p>
+              <ul className="list-disc space-y-1 pl-5 text-sm text-ink-soft">
+                {preview.changeSummary.added.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {preview.changeSummary.rewritten.map((item) => (
+            <p key={item.from} className="mb-2 text-sm text-ink-soft">
+              <span className="text-ink-faint">Helyette:</span> {item.from} → {item.to}
+            </p>
+          ))}
+          {preview.changeSummary.removed.length > 0 && (
+            <div className="mb-3">
+              <p className="mb-1 text-xs font-semibold text-ink-faint">Megszűnő szabályok</p>
+              <ul className="list-disc space-y-1 pl-5 text-sm text-ink-soft">
+                {preview.changeSummary.removed.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {preview.impactResult.nextStep && (
+            <p className="mb-3 text-sm text-ink-soft">{preview.impactResult.nextStep}</p>
+          )}
+          <button
+            type="button"
+            className="mb-3 text-xs text-sky hover:underline"
+            onClick={() => setShowFullVersion((open) => !open)}
+          >
+            {showFullVersion ? 'Teljes új verzió elrejtése' : 'Teljes új verzió megtekintése'}
+          </button>
+          {showFullVersion && (
+            <pre className="mb-3 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-night-2 p-3 text-xs text-ink-soft">
+              {preview.proposedVersion}
+            </pre>
+          )}
+          {preview.impactResult.verdict !== 'blocked' && (
+            <div className="flex flex-wrap gap-2">
+              {allowed.has('activate') && (
+                <button
+                  type="button"
+                  disabled={pending}
+                  className="rounded-full bg-sage/20 px-4 py-2 text-sm font-semibold text-sage disabled:opacity-50"
+                  onClick={() => runSubmit(true)}
+                >
+                  Aktiválom az új verziót
+                </button>
+              )}
+              {allowed.has('submit_for_approval') && !allowed.has('activate') && (
+                <button
+                  type="button"
+                  disabled={pending}
+                  className="rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky disabled:opacity-50"
+                  onClick={() => runSubmit(false)}
+                >
+                  Jóváhagyásra küldöm
+                </button>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+
+      <Card title="Függőben lévő javaslat">
+        {!workspace?.pendingProposal ? (
+          <p className="text-sm text-ink-faint">Nincs jóváhagyásra váró tanítás.</p>
         ) : (
-          <ul className="space-y-4">
-            {trainingTickets.map((ticket) => {
-              const payload = trainingPayload(ticket)
-              const diff = payload.diff
-              return (
-                <li key={ticket.id} className="atelier-soft p-4">
-                  <div className="mb-2 flex flex-wrap items-center gap-2">
-                    <span className="font-medium">{ticket.title}</span>
-                    <Badge tone="warning">{ticket.state}</Badge>
-                    {payload.source && (
-                      <span className="text-xs text-ink-faint">{payload.source}</span>
-                    )}
-                    <Link
-                      href={`/control-plane/tickets/${ticket.id}`}
-                      className="text-xs text-sky hover:underline"
-                    >
-                      Részlet
-                    </Link>
-                  </div>
-                  {diff && (
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <div>
-                        <p className="mb-1 text-xs font-semibold text-ink-faint">Előtte</p>
-                        <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-night-2 p-2 text-xs text-ink-soft">
-                          {diff.before || '(üres)'}
-                        </pre>
-                      </div>
-                      <div>
-                        <p className="mb-1 text-xs font-semibold text-ink-faint">Utána</p>
-                        <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-night-2 p-2 text-xs text-ink-soft">
-                          {diff.after || payload.proposedContent || '—'}
-                        </pre>
-                      </div>
-                    </div>
-                  )}
-                  {ticket.state === 'awaiting_human' && (
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={pending || !isSelectedAgentLoaded}
-                        className="rounded-full bg-sage/20 px-4 py-2 text-sm font-semibold text-sage disabled:opacity-50"
-                        onClick={() => {
-                          setEvalBlockedFor(null)
-                          setLastApprove(null)
-                          startTransition(async () => {
-                            const res = await approveTraining({ ticketId: ticket.id })
-                            if (res.success) {
-                              setLastApprove(res.data as ApproveResult)
-                              setMessage(null)
-                              router.refresh()
-                            } else if (res.error?.startsWith('eval_failed')) {
-                              setEvalBlockedFor(ticket.id)
-                              setMessage(res.error)
-                            } else {
-                              setMessage(res.error ?? 'Hiba')
-                            }
-                          })
-                        }}
-                      >
-                        Jóváhagyás (write-gate)
-                      </button>
-
-                      {evalBlockedFor === ticket.id && (
-                        <button
-                          type="button"
-                          disabled={pending || !isSelectedAgentLoaded}
-                          className="rounded-full bg-coral/15 px-4 py-2 text-sm font-semibold text-coral-deep disabled:opacity-50"
-                          onClick={() => {
-                            startTransition(async () => {
-                              const res = await approveTraining({
-                                ticketId: ticket.id,
-                                overrideEval: true,
-                              })
-                              if (res.success) {
-                                setLastApprove(res.data as ApproveResult)
-                                setEvalBlockedFor(null)
-                                setMessage(null)
-                                router.refresh()
-                              } else {
-                                setMessage(res.error ?? 'Hiba')
-                              }
-                            })
-                          }}
-                        >
-                          Eval override (naplózva)
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </li>
-              )
-            })}
-          </ul>
+          <div className="atelier-soft p-4">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className="font-medium">
+                Következő verzió v{workspace.pendingProposal.targetMemoryVersion}/r
+                {workspace.pendingProposal.revision}
+              </span>
+              <Badge tone="warning">
+                {workspace.pendingProposal.nextStep ?? 'Jóváhagyásra vár'}
+              </Badge>
+              <Link
+                href={`/control-plane/tickets/${workspace.pendingProposal.ticketId}`}
+                className="text-xs text-sky hover:underline"
+              >
+                Részlet
+              </Link>
+            </div>
+            <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-night-2 p-2 text-xs text-ink-soft">
+              {workspace.pendingProposal.proposedVersion}
+            </pre>
+            <div className="flex flex-wrap gap-2">
+              {allowed.has('activate') && (
+                <button
+                  type="button"
+                  disabled={pending}
+                  className="rounded-full bg-sage/20 px-4 py-2 text-sm font-semibold text-sage disabled:opacity-50"
+                  onClick={() => {
+                    startTransition(async () => {
+                      const res = await activateTraining({
+                        ticketId: workspace.pendingProposal!.ticketId,
+                        revisionId: workspace.pendingProposal!.revisionId,
+                      })
+                      setMessage(res.success ? 'Az új szabályverzió életbe lépett.' : (res.error ?? 'Hiba'))
+                      if (res.success) router.refresh()
+                    })
+                  }}
+                >
+                  Jóváhagyom és aktiválom
+                </button>
+              )}
+              {allowed.has('reject') && (
+                <button
+                  type="button"
+                  disabled={pending}
+                  className="rounded-full border border-coral/30 px-4 py-2 text-sm font-semibold text-coral disabled:opacity-50"
+                  onClick={() => {
+                    const reason = prompt('Miért küldöd vissza a javaslatot?')
+                    if (!reason?.trim()) return
+                    startTransition(async () => {
+                      const res = await rejectTraining({
+                        ticketId: workspace.pendingProposal!.ticketId,
+                        reason: reason.trim(),
+                      })
+                      setMessage(res.success ? 'A javaslatot visszaküldted.' : (res.error ?? 'Hiba'))
+                      if (res.success) router.refresh()
+                    })
+                  }}
+                >
+                  Visszaküldöm
+                </button>
+              )}
+            </div>
+          </div>
         )}
       </Card>
 
-      <Card title="Verzió-idővonal / rollback">
+      <Card title="Szabályverziók">
         <p className="mb-3 text-sm text-ink-soft">
           Nézd meg, milyen tartalomra állnál vissza, mielőtt megerősíted.
         </p>
         {memoryVersions.length === 0 ? (
-          <p className="text-sm text-ink-faint">Nincs memória-verzió.</p>
+          <p className="text-sm text-ink-faint">Nincs szabályverzió.</p>
         ) : (
           <ul className="space-y-2">
             {memoryVersions.map((v) => {
               const isCurrent = v.id === currentVersionId || v.status === 'active'
               const open = expandedVersion === v.version
               return (
-                <li key={v.id} className="atelier-soft p-3">
+                <li key={`${v.version}-${v.createdAt}`} className="atelier-soft p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="text-sm text-ink-soft">
                       <span className="font-medium text-ink">v{v.version}</span>
@@ -407,16 +518,16 @@ export function TrainingWorkspace({
                       >
                         {open ? 'Előnézet bezárása' : 'Tartalom előnézet'}
                       </button>
-                      {!isCurrent && (
+                      {!isCurrent && allowed.has('rollback') && (
                         <button
                           type="button"
-                          disabled={pending || !isSelectedAgentLoaded || !agentId}
+                          disabled={pending || !agentId}
                           className="rounded-full bg-honey/20 px-3 py-1 text-xs font-semibold text-honey disabled:opacity-50"
                           onClick={() => {
-                            const preview = previewContent(v.content, 800)
+                            const snippet = previewContent(v.content, 800)
                             if (
                               !confirm(
-                                `Biztosan visszaállítod a memóriát a(z) v${v.version} állapotra?\n\n${preview}`,
+                                `Biztosan visszaállítod a szabályokat a(z) v${v.version} állapotra?\n\n${snippet}`,
                               )
                             ) {
                               return
@@ -428,8 +539,8 @@ export function TrainingWorkspace({
                               })
                               setMessage(
                                 res.success
-                                  ? `Rollback kész — most a v${v.version} az aktív.`
-                                  : (res.error ?? 'Rollback sikertelen'),
+                                  ? `Visszaállítás kész — most a v${v.version} az aktív.`
+                                  : (res.error ?? 'A visszaállítás sikertelen'),
                               )
                               if (res.success) router.refresh()
                             })
@@ -454,29 +565,10 @@ export function TrainingWorkspace({
 
       {message && (
         <p
-          className={`text-sm ${message.startsWith('eval_failed') || message.toLowerCase().includes('hiba') || message.toLowerCase().includes('sikertelen') ? 'text-coral-deep' : 'text-ink-soft'}`}
+          className={`text-sm ${message.toLowerCase().includes('hiba') || message.toLowerCase().includes('sikertelen') || message.toLowerCase().includes('nem') ? 'text-coral-deep' : 'text-ink-soft'}`}
         >
           {message}
         </p>
-      )}
-
-      {lastApprove && (
-        <div className="atelier-soft rounded-xl p-4 text-sm">
-          <p className="mb-1 font-semibold text-sage">
-            ✓ Memória frissítve — v{lastApprove.memoryVersion.version}
-          </p>
-          <p className="font-mono text-xs text-ink-faint">
-            Write-gate token: {lastApprove.writeGateTokenId.slice(0, 16)}…
-          </p>
-          {lastApprove.evalRun && (
-            <p
-              className={`mt-1 text-xs ${lastApprove.evalRun.passed ? 'text-sage' : 'text-honey'}`}
-            >
-              Eval: {lastApprove.evalRun.passed ? '✓ átment' : '⚠ figyelmeztetéssel override'} ·
-              score {Math.round(lastApprove.evalRun.score * 100)}%
-            </p>
-          )}
-        </div>
       )}
     </div>
   )

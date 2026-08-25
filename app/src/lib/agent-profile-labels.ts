@@ -66,7 +66,15 @@ export function selfEvolutionSummary(profile: SelfEvolutionProfile) {
   const approval = APPROVAL_LABELS[profile.approval_mode]
   const limit =
     profile.diff_limit != null ? ` · max. ${profile.diff_limit} sor változás` : ''
-  return `Önállóan fejlesztheti: ${scopes}. ${approval}${limit}.`
+  const durable = profile.durable_memory_approval_policy
+  const durableLabel = durable
+    ? durable.activation_mode === 'operator_can_activate'
+      ? 'az operátor is életbe léptetheti a tanítást'
+      : durable.four_eyes_required
+        ? 'a tanításhoz külön jóváhagyó kell'
+        : 'a tanítást jóváhagyó lépteti életbe'
+    : 'a tanításhoz külön jóváhagyó kell'
+  return `Önállóan fejlesztheti: ${scopes}. ${approval}${limit}. Tartós tudás: ${durableLabel}.`
 }
 
 export function recipeStatusLabel(status: string) {

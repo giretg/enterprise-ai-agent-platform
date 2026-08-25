@@ -8,6 +8,27 @@ export const selfEvolutionApprovalModeSchema = z.enum([
   'auto_after_eval',
 ])
 
+export const durableMemoryActivationModeSchema = z.enum([
+  'approver_required',
+  'operator_can_activate',
+])
+
+export const durableMemoryApprovalPolicySchema = z
+  .object({
+    activation_mode: durableMemoryActivationModeSchema,
+    four_eyes_required: z.boolean(),
+  })
+  .strict()
+  .superRefine((policy, ctx) => {
+    if (policy.four_eyes_required && policy.activation_mode === 'operator_can_activate') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'A négy szem elv bekapcsolása jóváhagyót követel — az operátor nem aktiválhat saját javaslatot',
+      })
+    }
+  })
+
 // agent-memory-persistent-cross-conversation-spec.md §12.2 — a WP-6/WP-8 által
 // bekötött memória-specifikus önfejlesztési beállítások. Minden mező opcionális:
 // hiányukban a platform-default (memory-types.ts DEFAULT_*) / a maintenance
@@ -28,15 +49,24 @@ export const selfEvolutionProfileSchema = z.object({
   scope: z.array(selfEvolutionScopeSchema).min(1).default(['memory']),
   approval_mode: selfEvolutionApprovalModeSchema.default('human'),
   diff_limit: z.number().int().positive().optional(),
+  durable_memory_approval_policy: durableMemoryApprovalPolicySchema.optional(),
   memory: memorySelfEvolutionConfigSchema.optional(),
 }).strict()
 
 export type SelfEvolutionProfile = z.infer<typeof selfEvolutionProfileSchema>
+export type DurableMemoryApprovalPolicyInput = z.infer<typeof durableMemoryApprovalPolicySchema>
 
-/** NULL profil = legszigorúbb (human) — §5.12.2 */
+/** NULL profil = legszigorúbb (human + approver_required + four_eyes) — §5.12.2 / §3.5 */
 export function resolveSelfEvolutionProfile(raw: unknown): SelfEvolutionProfile {
   if (raw === null || raw === undefined) {
-    return { scope: ['memory'], approval_mode: 'human' }
+    return {
+      scope: ['memory'],
+      approval_mode: 'human',
+      durable_memory_approval_policy: {
+        activation_mode: 'approver_required',
+        four_eyes_required: true,
+      },
+    }
   }
   return selfEvolutionProfileSchema.parse(raw)
 }

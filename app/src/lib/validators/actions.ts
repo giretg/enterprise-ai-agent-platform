@@ -125,6 +125,7 @@ export const ticketTransitionAllowedActorSchema = z.enum([
   'operator',
   'admin',
   'system_or_operator',
+  'system_or_approver',
   'creator_or_operator',
 ])
 
@@ -416,6 +417,46 @@ export const goldenSetAssertionSchema = z.object({
 export const approveTrainingSchema = z.object({
   ticketId: z.string().uuid(),
   overrideEval: z.boolean().optional(),
+})
+
+export const previewTrainingChangeSchema = z.object({
+  agentId: z.string().uuid(),
+  instruction: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('teach'), text: z.string().min(1) }),
+    z.object({
+      kind: z.literal('item_change'),
+      change: z.discriminatedUnion('operation', [
+        z.object({ operation: z.literal('add'), text: z.string().min(1) }),
+        z.object({
+          operation: z.literal('update'),
+          itemIndex: z.number().int().nonnegative(),
+          text: z.string().min(1),
+        }),
+        z.object({ operation: z.literal('remove'), itemIndex: z.number().int().nonnegative() }),
+      ]),
+    }),
+    z.object({ kind: z.literal('full_version'), content: z.string().min(1) }),
+  ]),
+  compositionMode: z.enum(['build_on_pending', 'replace_pending']).nullable().optional(),
+})
+
+export const submitTrainingProposalSchema = z.object({
+  previewId: z.string().min(1),
+  activate: z.boolean().optional(),
+})
+
+export const activateTrainingSchema = z.object({
+  ticketId: z.string().uuid(),
+  revisionId: z.string().uuid(),
+})
+
+export const rejectTrainingSchema = z.object({
+  ticketId: z.string().uuid(),
+  reason: z.string().trim().min(1).max(500),
+})
+
+export const getTrainingWorkspaceSchema = z.object({
+  agentId: z.string().uuid(),
 })
 
 export const createEvalSchema = z.object({
@@ -720,6 +761,21 @@ export const updateAgentSelfEvolutionProfileSchema = z.object({
     scope: z.array(z.enum(['memory', 'behavior', 'role'])).min(1),
     approval_mode: z.enum(['human', 'higher_role', 'eval_only', 'auto_after_eval']),
     diff_limit: z.number().int().positive().optional(),
+    durable_memory_approval_policy: z
+      .object({
+        activation_mode: z.enum(['approver_required', 'operator_can_activate']),
+        four_eyes_required: z.boolean(),
+      })
+      .strict()
+      .superRefine((policy, ctx) => {
+        if (policy.four_eyes_required && policy.activation_mode === 'operator_can_activate') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'A négy szem elv bekapcsolása jóváhagyót követel',
+          })
+        }
+      })
+      .optional(),
   }).strict(),
 })
 
