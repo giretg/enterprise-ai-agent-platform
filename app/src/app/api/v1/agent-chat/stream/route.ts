@@ -37,6 +37,7 @@ export async function POST(request: Request) {
     processInputPayload,
     consequenceApprovalIds,
     connectorGrantContinuation,
+    taskBriefing,
   } = body as {
     agentId?: string
     content?: string
@@ -46,6 +47,7 @@ export async function POST(request: Request) {
     processInputPayload?: Record<string, unknown>
     consequenceApprovalIds?: string[]
     connectorGrantContinuation?: boolean
+    taskBriefing?: { goal?: string; source?: string; constraint?: string; approval?: string } | null
   }
 
   if (!agentId || typeof agentId !== 'string') {
@@ -167,7 +169,23 @@ export async function POST(request: Request) {
           consequenceApprovalContinuation: true,
           ...(connectorGrantContinuation === true ? { connectorGrantContinuation: true } : {}),
         }
-      : { attachmentDocumentIds, processDefinitionId, processInputPayload }),
+      : {
+          attachmentDocumentIds,
+          processDefinitionId,
+          processInputPayload,
+          ...(taskBriefing &&
+          typeof taskBriefing === 'object' &&
+          typeof taskBriefing.goal === 'string'
+            ? {
+                taskBriefing: {
+                  goal: taskBriefing.goal,
+                  source: typeof taskBriefing.source === 'string' ? taskBriefing.source : '',
+                  constraint: typeof taskBriefing.constraint === 'string' ? taskBriefing.constraint : '',
+                  approval: typeof taskBriefing.approval === 'string' ? taskBriefing.approval : '',
+                },
+              }
+            : {}),
+        }),
   })
 
   // Az aktív-forduló ütközést (D7/E5) még a SSE-válasz megnyitása ELŐTT kell

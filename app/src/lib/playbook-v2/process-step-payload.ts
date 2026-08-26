@@ -25,6 +25,8 @@ export const AGENT_ANSWER_PAYLOAD_SKIP_KEYS = new Set([
   'createdByAgentId',
   'parentTicketId',
   'conversationId',
+  'briefing',
+  'briefingPending',
   'attachmentDocumentIds',
   'runAsUserId',
   'runAsAuthorized',

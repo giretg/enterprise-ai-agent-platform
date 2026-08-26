@@ -131,6 +131,44 @@ export class ConversationService {
     return conversation
   }
 
+  /**
+   * Feladat a beszélgetésben: user-üzenet + élő kártya (`ticketRefId`).
+   * Mindig új vagy a hívó által megadott szálra ír — nem keres last-used chatet.
+   */
+  async postTaskCard(params: {
+    conversationId: string
+    tenantId: string | null
+    createdById: string
+    agentId: string
+    agentVersion: number
+    model: string | null
+    userText: string
+    ticketId: string
+  }): Promise<void> {
+    await this.appendMessage({
+      conversationId: params.conversationId,
+      tenantId: params.tenantId,
+      role: 'user',
+      content: params.userText,
+      actingUserId: params.createdById,
+      actorType: 'human',
+      actorId: params.createdById,
+    })
+    await this.appendMessage({
+      conversationId: params.conversationId,
+      tenantId: params.tenantId,
+      role: 'agent',
+      content:
+        'Felvettem a táblára — a kártyán követheted, hol tart, és ott lesz az eredmény is.',
+      actingUserId: params.createdById,
+      actorType: 'agent',
+      actorId: params.agentId,
+      agentVersion: params.agentVersion,
+      model: params.model,
+      ticketRefId: params.ticketId,
+    })
+  }
+
   async appendMessage(params: {
     conversationId: string
     role: MessageRole

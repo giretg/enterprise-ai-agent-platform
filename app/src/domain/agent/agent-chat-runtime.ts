@@ -83,6 +83,11 @@ import {
   shouldPromoteSkillRunToTask,
 } from './skill-task-promotion'
 import {
+  assembleTaskBriefingDraft,
+  briefingToPayloadValue,
+  type TaskBriefing,
+} from '@/lib/work-traceability'
+import {
   buildReturnedDelegationPrompt,
   buildTurnContinuationPrompt,
   shouldInjectTurnContinuation,
@@ -506,6 +511,8 @@ export type AgentChatSendParams = {
   consequenceApprovalContinuation?: boolean
   /** OAuth-grant megadása utáni folytatás — a szerver adja a promptot. */
   connectorGrantContinuation?: boolean
+  /** #375 — a felhasználó által jóváhagyott feladat-eligazítás. */
+  taskBriefing?: TaskBriefing | null
 }
 
 type ChatModelConfig = {
@@ -973,6 +980,13 @@ export class AgentChatRuntime {
       })),
     })
     const attachmentTransfer = buildPromotedTaskAttachmentTransfer(input.attachmentDocs)
+    const briefing =
+      input.params.taskBriefing ??
+      assembleTaskBriefingDraft({
+        userText: question,
+        attachmentNames: input.attachmentDocs.map((doc) => doc.filename),
+        skillNames: slashResolved.loadedSkillNames,
+      })
 
     try {
       const ticket = await this.tickets.create(
@@ -991,6 +1005,7 @@ export class AgentChatRuntime {
             attachmentDocumentIds: binding.attachmentDocumentIds,
             preferredSkillVersionIds: slashResolved.loadedSkillVersionIds,
             promotedSkillNames: slashResolved.loadedSkillNames,
+            briefing: briefingToPayloadValue(briefing),
           } as Prisma.JsonValue,
           sourceDocumentId: attachmentTransfer.sourceDocumentId,
           conversationId: binding.conversationId,
@@ -1437,6 +1452,7 @@ export class AgentChatRuntime {
         agentVersion: agentDetails.agent.currentVersion,
         modelConfig,
         attachmentDocs,
+        taskBriefing: params.taskBriefing,
       })
       if (processReply) {
         await deliverPreparedReply(processReply)
@@ -2043,6 +2059,7 @@ export class AgentChatRuntime {
     attachmentDocumentIds?: string[]
     executeAfter?: Date | null
     authorizeRunAs?: boolean
+    briefing?: TaskBriefing | null
   }) {
     const text = params.content.trim()
     const attachmentIds = params.attachmentDocumentIds ?? []
@@ -2074,9 +2091,31 @@ export class AgentChatRuntime {
     }
 
     const titleSource = text || attachmentDocs[0]?.filename || 'Feladat'
-    const runAsPayload = params.authorizeRunAs
-      ? buildRunAsAuthorization({ userId: params.createdById })
-      : {}
+    const runAsPayload = buildRunAsAuthorization({ userId: params.createdById })
+    const briefing =
+      params.briefing ??
+      assembleTaskBriefingDraft({
+        userText: text,
+        attachmentNames: attachmentDocs.map((doc) => doc.filename),
+        authorizeRunAs: params.authorizeRunAs,
+      })
+
+    let conversationId = params.conversationId ?? null
+    if (conversationId) {
+      const existing = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
+      if (existing.conversation.agentId !== params.agentId) {
+        throw new Error('Conversation agent mismatch')
+      }
+    } else {
+      const created = await this.conversations.createConversation({
+        agentId: params.agentId,
+        createdById: params.createdById,
+        tenantId: params.tenantId ?? null,
+        title: titleSource.slice(0, 80),
+      })
+      conversationId = created.id
+    }
+
     const ticket = await this.tickets.create({
       tenantId: params.tenantId ?? null,
       type: 'interaction',
@@ -2086,7 +2125,7 @@ export class AgentChatRuntime {
       assigneeId: params.agentId,
       agentId: params.agentId,
       playbookRef: null,
-      conversationId: params.conversationId ?? null,
+      conversationId,
       payload: {
         question: text,
         source: 'agent_chat',
@@ -2095,12 +2134,45 @@ export class AgentChatRuntime {
         model: modelConfig.model,
         memoryVersion: agentDetails.memoryVersion,
         scheduledRun: params.executeAfter ? true : undefined,
+        briefing: briefingToPayloadValue(briefing),
         ...runAsPayload,
       },
       sourceDocumentId: attachmentIds[0] ?? null,
       executeAfter: params.executeAfter ?? null,
       dueBy: null,
       createdById: params.createdById,
+    })
+
+    try {
+      await this.conversations.postTaskCard({
+        conversationId,
+        tenantId: params.tenantId ?? null,
+        createdById: params.createdById,
+        agentId: params.agentId,
+        agentVersion: agentDetails.agent.currentVersion,
+        model: modelConfig.model,
+        userText: encodeStoredMessage(text || '(csatolmányok)', attachmentIds),
+        ticketId: ticket.id,
+      })
+    } catch (error) {
+      console.error('[agent-chat] feladat-kártya üzenet írása sikertelen', error)
+    }
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId: params.createdById,
+      agentVersion: agentDetails.agent.currentVersion,
+      action: 'task.briefing_confirmed',
+      targetType: 'ticket',
+      targetId: ticket.id,
+      modelUsed: null,
+      inputRef: conversationId,
+      outputRef: ticket.id,
+      policyDecision: 'allowed',
+      tenantId: params.tenantId ?? null,
+      conversationId,
+      ticketId: ticket.id,
+      metadata: { briefing, source: 'agent_chat' },
     })
 
     return ticket
@@ -2117,6 +2189,7 @@ export class AgentChatRuntime {
     agentVersion: number
     modelConfig: { provider: string; model: string; temperature?: number; maxTokens?: number }
     attachmentDocs: PreparedTurn['attachmentDocs']
+    taskBriefing?: TaskBriefing | null
   }): Promise<ChatProcessReply | null> {
     if (!params.processDefinitionId) return null
     if (!this.processDefinitions || !this.playbooksV2 || !this.processService) {
@@ -2190,6 +2263,42 @@ export class AgentChatRuntime {
       startedBy: { type: 'user', id: params.startedByUserId },
       attachments: buildPromotedTaskAttachmentTransfer(params.attachmentDocs).attachments,
     })
+
+    const briefing =
+      params.taskBriefing ??
+      assembleTaskBriefingDraft({
+        userText: params.message,
+        attachmentNames: params.attachmentDocs.map((doc) => doc.filename),
+        processName: def.name,
+      })
+    if (run.rootTicketId) {
+      const root = await this.tickets.findById(run.rootTicketId)
+      if (root) {
+        const payload =
+          root.payload && typeof root.payload === 'object' && !Array.isArray(root.payload)
+            ? (root.payload as Record<string, unknown>)
+            : {}
+        await this.tickets.update(run.rootTicketId, {
+          payload: { ...payload, briefing: briefingToPayloadValue(briefing) } as Prisma.JsonValue,
+        })
+        await this.audit.append({
+          actorType: 'human',
+          actorId: params.startedByUserId,
+          agentVersion: params.agentVersion,
+          action: 'task.briefing_confirmed',
+          targetType: 'ticket',
+          targetId: run.rootTicketId,
+          modelUsed: null,
+          inputRef: params.conversationId,
+          outputRef: run.rootTicketId,
+          policyDecision: 'allowed',
+          tenantId: processTenantId,
+          conversationId: params.conversationId,
+          ticketId: run.rootTicketId,
+          metadata: { briefing, source: 'chat_process', processId: run.id },
+        })
+      }
+    }
 
     const processLink = `/control-plane/processes/${run.id}`
     return {

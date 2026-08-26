@@ -358,6 +358,33 @@ async function main() {
     assert.equal((await conversations.findMessageById(agentMessage.id))?.ticketRefId, ticket.id)
   })
 
+  await test('postTaskCard — user-üzenet + élő kártya ticketRefId-vel', async () => {
+    const { service } = buildService()
+    const conv = await service.createConversation({
+      agentId: 'agent-1',
+      createdById: 'user-1',
+      tenantId: 'tenant-A',
+      title: 'Havi riport',
+    })
+    await service.postTaskCard({
+      conversationId: conv.id,
+      tenantId: 'tenant-A',
+      createdById: 'user-1',
+      agentId: 'agent-1',
+      agentVersion: 3,
+      model: 'test-model',
+      userText: 'csinálj egy riportot',
+      ticketId: 'ticket-board-1',
+    })
+    const after = await service.getConversation(conv.id, 'tenant-A')
+    assert.equal(after.messages.length, 2)
+    assert.equal(after.messages[0]?.role, 'user')
+    assert.equal(after.messages[0]?.content, 'csinálj egy riportot')
+    assert.equal(after.messages[1]?.role, 'agent')
+    assert.equal(after.messages[1]?.ticketRefId, 'ticket-board-1')
+    assert.match(after.messages[1]?.content ?? '', /Felvettem a táblára/)
+  })
+
   await test('promote cross-tenant deny — ticket nem nyílhat idegen conversationből', async () => {
     const { service, tickets } = buildService()
     const conv = await service.createConversation({

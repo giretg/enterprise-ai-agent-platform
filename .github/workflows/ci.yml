@@ -132,6 +132,9 @@ jobs:
           npm run test:agent-scaffold
           npm run test:resume-last-agent-conversation
           npm run test:agent-workspace-board
+          npm run test:board-tab-badge
+          npm run test:board-task-conversation
+          npm run test:work-traceability
           npm run test:dispatch-cycle-endpoint
           npm run test:conversation-session
           npm run test:agent-interaction-ticket

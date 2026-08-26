@@ -230,6 +230,11 @@ export const createBoardTicketSchema = z
     skillParameterValues: z
       .record(z.string().min(1).max(120), z.string().max(2_000))
       .optional(),
+    /**
+     * Munkaterület Feladatok-fül: a kiosztás kapjon saját beszélgetést.
+     * A szerver csak beszélgetős (nem task-only) agentnél érvényesíti.
+     */
+    linkConversation: z.boolean().optional(),
     /** `none` / hiány: azonnal (vagy play gomb). `once`: executeAfter. `recurring`: ScheduledTask. */
     scheduleMode: z.enum(['none', 'once', 'recurring']).optional(),
     runAt: z.string().datetime().optional(),
@@ -323,6 +328,13 @@ export const generateReportSchema = z.object({
 })
 
 
+export const taskBriefingSchema = z.object({
+  goal: z.string().trim().min(1).max(2000),
+  source: z.string().trim().max(2000),
+  constraint: z.string().trim().max(2000),
+  approval: z.string().trim().max(500),
+})
+
 export const createAgentTaskTicketSchema = z.object({
   agentId: z.string().uuid(),
   content: z.string().trim().max(8000).default(''),
@@ -333,8 +345,18 @@ export const createAgentTaskTicketSchema = z.object({
     .datetime()
     .optional(),
   authorizeRunAs: z.boolean().optional(),
+  briefing: taskBriefingSchema.optional(),
 }).refine((v) => v.content.length > 0 || (v.attachmentDocumentIds?.length ?? 0) > 0, {
   message: 'A feladat leírása vagy legalább egy csatolmány kötelező',
+})
+
+export const listChatTaskCardsSchema = z.object({
+  ticketIds: z.array(z.string().uuid()).min(1).max(50),
+})
+
+export const conversationMemoryStripSchema = z.object({
+  conversationId: z.string().uuid(),
+  agentId: z.string().uuid(),
 })
 
 export const createScheduledAgentTaskSchema = z.object({

@@ -27,6 +27,7 @@ import {
 } from '@/components/tickets/task-schedule-fields'
 import { Badge, Card } from '@/components/ui/shell'
 import { personaFor } from '@/lib/agent-persona'
+import { agentWorkspacePath } from '@/lib/agent-workspace-routes'
 import { uploadTicketWorkspaceFiles } from '@/lib/ticket-workspace-files-client'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
 
@@ -61,6 +62,24 @@ type SkillOption = {
 
 function makePendingFile(file: File): PendingFile {
   return { id: `${file.name}-${file.size}-${file.lastModified}`, file }
+}
+
+function boardTaskConversationHref(agentId: string, conversationId: string) {
+  return `${agentWorkspacePath(agentId, 'chat')}?conversation=${encodeURIComponent(conversationId)}`
+}
+
+/** Munkaterület Feladatok-fül: az új szál a Beszélgetés fülön nyílik, ne a régi maradjon. */
+function openLinkedBoardConversation(
+  router: ReturnType<typeof useRouter>,
+  input: {
+    initialAgentId?: string
+    assigneeType: 'agent' | 'human'
+    assigneeId: string
+    conversationId: string | null | undefined
+  },
+) {
+  if (!input.conversationId || !input.initialAgentId || input.assigneeType !== 'agent') return
+  router.push(boardTaskConversationHref(input.assigneeId, input.conversationId))
 }
 
 type CreateBoardTicketFormProps = {
@@ -103,6 +122,7 @@ export function CreateBoardTicketForm({
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
   const [message, setMessage] = useState<string | null>(null)
   const [lastTicketId, setLastTicketId] = useState<string | null>(null)
+  const [lastConversationHref, setLastConversationHref] = useState<string | null>(null)
   const [dispatchPrompt, setDispatchPrompt] = useState<DispatchPrompt>(null)
   const [dispatchPending, startDispatchTransition] = useTransition()
   const [schedule, setSchedule] = useState<TaskScheduleState>(EMPTY_TASK_SCHEDULE)
@@ -278,6 +298,7 @@ export function CreateBoardTicketForm({
     startTransition(async () => {
       setMessage(null)
       setLastTicketId(null)
+      setLastConversationHref(null)
       try {
         const res = await createBoardTicket({
           title: trimmedTitle,
@@ -287,6 +308,9 @@ export function CreateBoardTicketForm({
           skillVersionIds:
             assigneeType === 'agent' && selectedSkillIds.length > 0 ? selectedSkillIds : undefined,
           deferDispatch: shouldDeferDispatch,
+          ...(Boolean(initialAgentId) && assigneeType === 'agent'
+            ? { linkConversation: true }
+            : {}),
           ...(scheduleInput && scheduleInput.scheduleMode !== 'none' ? scheduleInput : {}),
         })
         if (!res.success) {
@@ -306,6 +330,17 @@ export function CreateBoardTicketForm({
                 : 'A feladat létrejött, de a fájlok feltöltése sikertelen',
             )
             setLastTicketId(ticketId)
+            setLastConversationHref(
+              res.data.conversationId
+                ? boardTaskConversationHref(assigneeId, res.data.conversationId)
+                : null,
+            )
+            openLinkedBoardConversation(router, {
+              initialAgentId,
+              assigneeType,
+              assigneeId,
+              conversationId: res.data.conversationId,
+            })
             router.refresh()
             return
           }
@@ -314,9 +349,20 @@ export function CreateBoardTicketForm({
         resetForm()
         setOpen(false)
         setLastTicketId(ticketId)
+        setLastConversationHref(
+          res.data.conversationId
+            ? boardTaskConversationHref(assigneeId, res.data.conversationId)
+            : null,
+        )
         if (assigneeType === 'agent' && !isScheduled) {
           setDispatchPrompt({ ticketId, title: trimmedTitle })
         }
+        openLinkedBoardConversation(router, {
+          initialAgentId,
+          assigneeType,
+          assigneeId,
+          conversationId: res.data.conversationId,
+        })
         router.refresh()
       } catch (err) {
         setMessage(err instanceof Error ? err.message : 'Feladat létrehozása sikertelen')
@@ -346,6 +392,7 @@ export function CreateBoardTicketForm({
     startTransition(async () => {
       setMessage(null)
       setLastTicketId(null)
+      setLastConversationHref(null)
       try {
         const res = await createBoardTicket({
           title: skill ? skillDisplayLabel(skill) : 'Feladat',
@@ -353,6 +400,9 @@ export function CreateBoardTicketForm({
           assigneeId,
           skillVersionIds: [skillVersionId],
           deferDispatch: true,
+          ...(Boolean(initialAgentId) && assigneeType === 'agent'
+            ? { linkConversation: true }
+            : {}),
           ...(Object.keys(skillParameterValues).length > 0
             ? { skillParameterValues }
             : {}),
@@ -374,6 +424,17 @@ export function CreateBoardTicketForm({
                 : 'A feladat létrejött, de a fájlok feltöltése sikertelen',
             )
             setLastTicketId(ticket.id)
+            setLastConversationHref(
+              res.data.conversationId
+                ? boardTaskConversationHref(assigneeId, res.data.conversationId)
+                : null,
+            )
+            openLinkedBoardConversation(router, {
+              initialAgentId,
+              assigneeType: 'agent',
+              assigneeId,
+              conversationId: res.data.conversationId,
+            })
             router.refresh()
             return
           }
@@ -382,9 +443,20 @@ export function CreateBoardTicketForm({
         resetForm()
         setOpen(false)
         setLastTicketId(ticket.id)
+        setLastConversationHref(
+          res.data.conversationId
+            ? boardTaskConversationHref(assigneeId, res.data.conversationId)
+            : null,
+        )
         if (!isScheduled) {
           setDispatchPrompt({ ticketId: ticket.id, title: ticket.title })
         }
+        openLinkedBoardConversation(router, {
+          initialAgentId,
+          assigneeType: 'agent',
+          assigneeId,
+          conversationId: res.data.conversationId,
+        })
         router.refresh()
       } catch (err) {
         setMessage(err instanceof Error ? err.message : 'Feladat létrehozása sikertelen')
@@ -795,6 +867,14 @@ export function CreateBoardTicketForm({
                   <Link href={`/control-plane/tickets/${lastTicketId}`} className="underline hover:text-ink">
                     megnyitás
                   </Link>
+                  {lastConversationHref ? (
+                    <>
+                      {' · '}
+                      <Link href={lastConversationHref} className="underline hover:text-ink">
+                        a beszélgetésben is látszik
+                      </Link>
+                    </>
+                  ) : null}
                 </>
               )}
             </p>

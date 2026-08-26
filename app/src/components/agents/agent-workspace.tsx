@@ -2,20 +2,17 @@
 
 import { useEffect, useState } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
-import { getAgent } from '@/app/actions/platform'
+import { getAgent, getAgentBoardTabBadge } from '@/app/actions/platform'
 import { getRunAnalysisEntry } from '@/app/actions/run-analysis'
 import { AgentChatPanel } from '@/components/agents/agent-chat-panel'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentWorkspaceApps } from '@/components/agents/agent-workspace-apps'
 import { AgentTaskPanel } from '@/components/agents/agent-task-button'
+import { AgentRoleDescriptionButton } from '@/components/agents/agent-role-description-modal'
 import { personaFor } from '@/lib/agent-persona'
 import { recordLastAgentChatForCurrentTenant } from '@/lib/last-agent-chat'
-import {
-  liveStatusLabel,
-  type AgentRailCardState,
-  type AgentRailStateResponse,
-  type AgentWorkspaceTab,
-} from '@/lib/agent-rail-types'
+import { type AgentWorkspaceTab } from '@/lib/agent-rail-types'
+import { boardTabBadge, type BoardTabBadge } from '@/lib/board-tab-badge'
 import {
   agentWorkspacePath,
   isAgentWorkspaceClientTab,
@@ -41,18 +38,9 @@ type WorkspaceAgent = {
   status: string
   avatarUrl: string | null
   personaNickname: string | null
+  personaGreeting: string | null
   roleInstruction: string
   taskOnly: boolean
-}
-
-function workspaceSubtitle(agent: WorkspaceAgent, railCard: AgentRailCardState | null): string {
-  const role =
-    railCard?.roleLabel?.trim() ||
-    agent.roleInstruction?.trim().split(/[.!?\n]/)[0]?.slice(0, 48) ||
-    'Munkatárs'
-  const status = railCard ? liveStatusLabel(railCard.liveStatus) : '—'
-  const when = railCard?.elapsed?.trim()
-  return when ? `${role} · ${status} · ${when}` : `${role} · ${status}`
 }
 
 function EmptyWorkspace() {
@@ -118,19 +106,52 @@ function useWorkspaceAnalyzeButton() {
   }
 }
 
+const BOARD_TAB_BADGE_POLL_MS = 15_000
+
+function useBoardTabBadge(agentId: string) {
+  const [badge, setBadge] = useState<BoardTabBadge | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      try {
+        const res = await getAgentBoardTabBadge({ agentId })
+        if (cancelled) return
+        if (!res.success) return
+        setBadge(boardTabBadge(res.data))
+      } catch {
+        // Előző szám marad — a poll majd újrapróbálja.
+      }
+    }
+    void load()
+    const timer = window.setInterval(() => void load(), BOARD_TAB_BADGE_POLL_MS)
+    const onFocus = () => void load()
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+  }, [agentId])
+
+  return badge
+}
+
 function WorkspaceHeader({
   agent,
   tab,
-  railCard,
 }: {
   agent: WorkspaceAgent
   tab: AgentWorkspaceTab
-  railCard: AgentRailCardState | null
 }) {
   const persona = personaFor(agent.name, agent)
   const router = useRouter()
   const showChatChrome = tab === 'chat' && !agent.taskOnly
   const { canAnalyze, analyzeDisabled } = useWorkspaceAnalyzeButton()
+  const boardBadge = useBoardTabBadge(agent.id)
 
   return (
     <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line bg-card/55 px-4 py-3 backdrop-blur-sm sm:gap-3 sm:px-5">
@@ -141,31 +162,59 @@ function WorkspaceHeader({
         avatarUrl={agent.avatarUrl}
         personaNickname={agent.personaNickname}
       />
-      <div className="min-w-0 flex-1 sm:max-w-[14rem]">
+      <div className="min-w-0 flex-1 sm:max-w-[16rem]">
         <h1 className="truncate font-display text-[17px] font-bold leading-tight">{persona.nickname}</h1>
-        <p className="truncate text-[11.5px] text-ink-faint">{workspaceSubtitle(agent, railCard)}</p>
+        <div className="mt-0.5 flex items-start gap-0.5">
+          <p className="min-w-0 flex-1 text-[11.5px] leading-snug italic text-ink-faint line-clamp-2">
+            &quot;{persona.greeting}&quot;
+          </p>
+          <AgentRoleDescriptionButton
+            nickname={persona.nickname}
+            description={agent.roleInstruction}
+            compact
+          />
+        </div>
       </div>
 
       <nav
         aria-label="Munkaterület fülek"
         className="order-last flex w-full gap-0.5 rounded-xl border border-line bg-night-2 p-0.5 sm:order-none sm:ml-2 sm:w-auto"
       >
-        {workspaceTabsForAgent(agent.taskOnly).map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            role="tab"
-            aria-selected={tab === item.key}
-            onClick={() => router.push(agentWorkspacePath(agent.id, item.key))}
-            className={`rounded-[9px] px-3 py-1.5 text-[13px] font-semibold transition-colors sm:px-3.5 ${
-              tab === item.key
-                ? 'bg-card text-coral-deep shadow-sm'
-                : 'text-ink-faint hover:text-ink-soft'
-            }`}
-          >
-            {item.label}
-          </button>
-        ))}
+        {workspaceTabsForAgent(agent.taskOnly).map((item) => {
+          const badge = item.key === 'board' ? boardBadge : null
+          return (
+            <button
+              key={item.key}
+              type="button"
+              role="tab"
+              aria-selected={tab === item.key}
+              aria-label={
+                badge ? `${item.label}, ${badge.count} ${badge.spoken}` : item.label
+              }
+              title={badge?.hint}
+              onClick={() => router.push(agentWorkspacePath(agent.id, item.key))}
+              className={`inline-flex items-center gap-1.5 rounded-[9px] px-3 py-1.5 text-[13px] font-semibold transition-colors sm:px-3.5 ${
+                tab === item.key
+                  ? 'bg-card text-coral-deep shadow-sm'
+                  : 'text-ink-faint hover:text-ink-soft'
+              }`}
+            >
+              {item.label}
+              {badge ? (
+                <span
+                  aria-hidden
+                  className={`inline-flex min-w-[1.15rem] items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${
+                    badge.tone === 'wait'
+                      ? 'bg-coral/15 text-coral'
+                      : 'bg-sky/15 text-sky'
+                  }`}
+                >
+                  {badge.count}
+                </span>
+              ) : null}
+            </button>
+          )
+        })}
       </nav>
 
       {showChatChrome ? (
@@ -212,15 +261,27 @@ function WorkspaceHeader({
   )
 }
 
-function WorkspaceChat({ agent, initialPrefill }: { agent: WorkspaceAgent; initialPrefill?: string | null }) {
+function WorkspaceChat({
+  agent,
+  initialPrefill,
+  initialConversationId,
+  focusMessageId,
+}: {
+  agent: WorkspaceAgent
+  initialPrefill?: string | null
+  initialConversationId?: string | null
+  focusMessageId?: string | null
+}) {
   return (
     <div className="relative min-h-0 flex-1 overflow-hidden">
       <AgentChatPanel
-        key={agent.id}
+        key={`${agent.id}:${initialConversationId ?? ''}`}
         agent={agent}
         open
         embedded
         initialPrefill={initialPrefill ?? null}
+        initialConversationId={initialConversationId ?? null}
+        focusMessageId={focusMessageId ?? null}
         onClose={() => {}}
       />
     </div>
@@ -257,8 +318,9 @@ export function AgentWorkspace({
   const agentId = params.agentId
   const tab = isAgentWorkspaceTab(params.tab) ? params.tab : 'chat'
   const initialPrefill = searchParams.get('prefill')?.trim() || null
+  const conversationParam = searchParams.get('conversation')?.trim() || null
+  const messageParam = searchParams.get('message')?.trim() || null
   const [agent, setAgent] = useState<WorkspaceAgent | null>(null)
-  const [railCard, setRailCard] = useState<AgentRailCardState | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -277,6 +339,7 @@ export function AgentWorkspace({
         status: res.data.agent.status,
         avatarUrl: res.data.agent.avatarUrl,
         personaNickname: res.data.agent.personaNickname,
+        personaGreeting: res.data.agent.personaGreeting,
         roleInstruction: res.data.agent.roleInstruction,
         taskOnly: res.data.agent.taskOnly,
       })
@@ -284,27 +347,6 @@ export function AgentWorkspace({
     })
     return () => {
       cancelled = true
-    }
-  }, [agentId])
-
-  useEffect(() => {
-    if (!agentId) return
-    let cancelled = false
-    const refreshRail = async () => {
-      try {
-        const res = await fetch('/api/agents/rail-state', { cache: 'no-store' })
-        if (!res.ok || cancelled) return
-        const data = (await res.json()) as AgentRailStateResponse
-        setRailCard(data.agents.find((row) => row.id === agentId) ?? null)
-      } catch {
-        if (!cancelled) setRailCard(null)
-      }
-    }
-    void refreshRail()
-    const timer = window.setInterval(() => void refreshRail(), 5000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
     }
   }, [agentId])
 
@@ -349,7 +391,12 @@ export function AgentWorkspace({
   )
   const clientContent: Record<AgentWorkspaceClientTab, React.ReactNode> = {
     chat: agent.taskOnly ? null : (
-      <WorkspaceChat agent={agent} initialPrefill={initialPrefill} />
+      <WorkspaceChat
+        agent={agent}
+        initialPrefill={initialPrefill}
+        initialConversationId={conversationParam}
+        focusMessageId={messageParam}
+      />
     ),
     task: <WorkspaceTask agent={agent} />,
     apps: <WorkspaceApps agent={agent} />,
@@ -367,7 +414,7 @@ export function AgentWorkspace({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-night/30">
-      <WorkspaceHeader agent={agent} tab={tab} railCard={railCard} />
+      <WorkspaceHeader agent={agent} tab={tab} />
       {content}
     </div>
   )

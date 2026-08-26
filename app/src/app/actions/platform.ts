@@ -73,6 +73,18 @@ import {
   formatTicketCreator,
 } from '@/lib/ticket-display'
 import {
+  buildChatTaskCardView,
+  buildMemoryStripView,
+  buildTicketOriginView,
+  nestProcessRunTickets,
+  processRunProgress,
+  visibleBoardTickets,
+  type ProcessRunMeta,
+  type TaskBriefing,
+} from '@/lib/work-traceability'
+import { personaFor } from '@/lib/agent-persona'
+import { shouldLinkBoardTaskConversation } from '@/lib/board-task-conversation'
+import {
   buildTicketScheduleStamp,
   isScheduleSeriesTicket,
   stampTicketSchedule,
@@ -137,6 +149,8 @@ import {
   askWikiSchema,
   generateReportSchema,
   createAgentTaskTicketSchema,
+  listChatTaskCardsSchema,
+  conversationMemoryStripSchema,
   createScheduledAgentTaskSchema,
   loadAgentChatSchema,
   listAgentChatSessionsSchema,
@@ -531,6 +545,7 @@ export async function createBoardTicket(input: {
   dueBy?: string | null
   deferDispatch?: boolean
   skillParameterValues?: Record<string, string>
+  linkConversation?: boolean
   scheduleMode?: 'none' | 'once' | 'recurring'
   runAt?: string
   recurrence?: 'hourly' | 'daily' | 'weekly' | 'monthly'
@@ -671,6 +686,22 @@ export async function createBoardTicket(input: {
         )
       }
 
+      const openConversation = shouldLinkBoardTaskConversation({
+        linkConversation: parsed.linkConversation,
+        assigneeType: 'agent',
+        taskOnly: agentDetails.agent.taskOnly,
+      })
+      let conversationId: string | null = null
+      if (openConversation) {
+        const created = await services.conversations.createConversation({
+          agentId: parsed.assigneeId,
+          createdById: user.user.id,
+          tenantId: user.activeTenantId,
+          title: ticketTitle.slice(0, 80),
+        })
+        conversationId = created.id
+      }
+
       const ticket = await repositories.tickets.create({
         tenantId: user.activeTenantId,
         type: 'interaction',
@@ -679,12 +710,30 @@ export async function createBoardTicket(input: {
         assigneeType: 'agent',
         assigneeId: parsed.assigneeId,
         agentId: parsed.assigneeId,
+        conversationId,
         payload: payload as Prisma.JsonValue,
         sourceDocumentId: null,
         executeAfter,
         dueBy,
         createdById: user.user.id,
       })
+
+      if (conversationId) {
+        try {
+          await services.conversations.postTaskCard({
+            conversationId,
+            tenantId: user.activeTenantId,
+            createdById: user.user.id,
+            agentId: parsed.assigneeId,
+            agentVersion: agentDetails.agent.currentVersion,
+            model: modelConfig.model,
+            userText: promptText,
+            ticketId: ticket.id,
+          })
+        } catch (error) {
+          console.error('[board] feladat-kártya üzenet írása sikertelen', error)
+        }
+      }
 
       if (scheduleMode === 'recurring' && executeAfter && parsed.recurrence) {
         const scheduledTask = await services.scheduledTasks.createAgentTask({
@@ -732,7 +781,7 @@ export async function createBoardTicket(input: {
       }
 
       const updated = await repositories.tickets.findById(ticket.id)
-      return ok({ ticket: updated ?? ticket, warning })
+      return ok({ ticket: updated ?? ticket, warning, conversationId })
     }
 
     const payload: Record<string, unknown> = { source: 'board' }
@@ -765,7 +814,7 @@ export async function createBoardTicket(input: {
       createdById: user.user.id,
     })
 
-    return ok({ ticket })
+    return ok({ ticket, conversationId: null })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create board ticket')
   }
@@ -908,25 +957,356 @@ export async function listBoardTickets(input?: {
       processInstanceIds.size > 0
         ? prisma.processInstance.findMany({
             where: { id: { in: [...processInstanceIds] } },
-            select: { id: true, processType: true, status: true },
+            select: {
+              id: true,
+              processType: true,
+              status: true,
+              rootTicketId: true,
+              steps: {
+                select: { ticketId: true, stepId: true, stepName: true, status: true },
+                orderBy: { startedAt: 'asc' },
+              },
+            },
           })
         : Promise.resolve([]),
     ])
 
-    const enriched = enrichTicketsForBoard(tickets, {
-      agents: new Map(
-        agents.map((agent) => [
-          agent.id,
-          { name: agent.name, personaNickname: agent.personaNickname },
-        ]),
+    const conversationIds = [
+      ...new Set(
+        tickets
+          .map((ticket) => ticket.conversationId)
+          .filter((id): id is string => Boolean(id)),
       ),
+    ]
+    const ticketIds = tickets.map((ticket) => ticket.id)
+    const [originMessages, originConversations] = await Promise.all([
+      ticketIds.length > 0
+        ? prisma.message.findMany({
+            where: { ticketRefId: { in: ticketIds } },
+            select: {
+              id: true,
+              ticketRefId: true,
+              conversationId: true,
+              createdAt: true,
+            },
+            orderBy: { createdAt: 'asc' },
+          })
+        : Promise.resolve([]),
+      conversationIds.length > 0
+        ? prisma.conversation.findMany({
+            where: { id: { in: conversationIds } },
+            select: { id: true, title: true, agentId: true },
+          })
+        : Promise.resolve([]),
+    ])
+
+    const extraAgentIds = new Set<string>()
+    for (const conversation of originConversations) extraAgentIds.add(conversation.agentId)
+    const missingOriginAgentIds = [...extraAgentIds].filter((id) => !agents.some((agent) => agent.id === id))
+    const extraOriginAgents =
+      missingOriginAgentIds.length > 0
+        ? await prisma.agent.findMany({
+            where: { id: { in: missingOriginAgentIds } },
+            select: { id: true, name: true, personaNickname: true },
+          })
+        : []
+
+    const agentLabels = new Map(
+      [...agents, ...extraOriginAgents].map((agent) => [
+        agent.id,
+        { name: agent.name, personaNickname: agent.personaNickname },
+      ]),
+    )
+    const conversationById = new Map(originConversations.map((row) => [row.id, row]))
+    const originMessageByTicket = new Map<string, (typeof originMessages)[number]>()
+    for (const message of originMessages) {
+      if (!message.ticketRefId || originMessageByTicket.has(message.ticketRefId)) continue
+      originMessageByTicket.set(message.ticketRefId, message)
+    }
+    const missingOriginConversationIds = [
+      ...new Set(
+        originMessages
+          .map((message) => message.conversationId)
+          .filter((id) => !conversationById.has(id)),
+      ),
+    ]
+    if (missingOriginConversationIds.length > 0) {
+      const extraConversations = await prisma.conversation.findMany({
+        where: { id: { in: missingOriginConversationIds } },
+        select: { id: true, title: true, agentId: true },
+      })
+      for (const row of extraConversations) conversationById.set(row.id, row)
+    }
+
+    const enriched = enrichTicketsForBoard(tickets, {
+      agents: agentLabels,
       users: new Map(users.map((u) => [u.id, u.name])),
       processes: new Map(processes.map((p) => [p.id, { processType: p.processType, status: p.status }])),
     })
 
-    return ok({ tickets: enriched, hasMore: page.hasMore })
+    const processRuns = new Map<string, ProcessRunMeta>(
+      processes.map((process) => [
+        process.id,
+        {
+          rootTicketId: process.rootTicketId,
+          steps: process.steps.map((step) => ({
+            ticketId: step.ticketId,
+            stepId: step.stepId,
+            stepName: step.stepName,
+            status: step.status,
+          })),
+        },
+      ]),
+    )
+
+    const withOrigin = enriched.map((ticket) => {
+      const message = originMessageByTicket.get(ticket.id)
+      const conversationId = message?.conversationId ?? ticket.conversationId
+      if (!conversationId) return ticket
+      const conversation = conversationById.get(conversationId)
+      const agentId = conversation?.agentId ?? ticket.agentId
+      const agent = agentId ? agentLabels.get(agentId) : undefined
+      return {
+        ...ticket,
+        origin: buildTicketOriginView({
+          conversationId,
+          messageId: message?.id ?? null,
+          agentId: agentId ?? null,
+          agentNickname: agent
+            ? personaFor(agent.name, { personaNickname: agent.personaNickname }).nickname
+            : 'AI munkatárs',
+          conversationTitle: conversation?.title ?? null,
+          at: message?.createdAt ?? ticket.createdAt,
+        }),
+      }
+    })
+
+    const nested = nestProcessRunTickets(withOrigin, processRuns)
+    const visible = visibleBoardTickets(nested).map((ticket) => {
+      if (ticket.origin) return ticket
+      const childOrigin = ticket.nestedSteps
+        .map((step) => (step.ticketId ? withOrigin.find((row) => row.id === step.ticketId)?.origin : null))
+        .find((origin) => origin)
+      return childOrigin ? { ...ticket, origin: childOrigin } : ticket
+    })
+
+    return ok({ tickets: visible, hasMore: page.hasMore })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list board tickets')
+  }
+}
+
+/**
+ * Feladatok-fül badge: az agent érintett ticketjei, dátumszűrő nélkül.
+ * Csak a kapu (`awaiting_human` / `needs_info`) és a futó (`in_progress`)
+ * számít — a ready/backlog a tábla belseje.
+ */
+export async function getAgentBoardTabBadge(input: { agentId: string }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const base = {
+      tenantId: user.activeTenantId,
+      involvedAgentId: agentId,
+      excludeTest: true,
+    }
+    const [attention, running] = await Promise.all([
+      repositories.tickets.count({
+        ...base,
+        state: ['awaiting_human', 'needs_info'],
+      }),
+      repositories.tickets.count({
+        ...base,
+        state: 'in_progress',
+      }),
+    ])
+    return ok({ attention, running })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load board tab badge')
+  }
+}
+
+export async function listChatTaskCards(input: { ticketIds: string[] }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const { ticketIds } = listChatTaskCardsSchema.parse(input)
+    const uniqueIds = [...new Set(ticketIds)]
+    const tickets = await prisma.ticket.findMany({
+      where: { id: { in: uniqueIds }, tenantId: user.activeTenantId },
+    })
+    const processInstanceIds = [
+      ...new Set(
+        tickets
+          .map((ticket) => ticket.processInstanceId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ]
+    const agentIds = new Set<string>()
+    for (const ticket of tickets) {
+      if (ticket.assigneeType === 'agent' && ticket.assigneeId) agentIds.add(ticket.assigneeId)
+      if (ticket.agentId) agentIds.add(ticket.agentId)
+    }
+    const [agents, processes] = await Promise.all([
+      agentIds.size > 0
+        ? prisma.agent.findMany({
+            where: { id: { in: [...agentIds] } },
+            select: { id: true, name: true, personaNickname: true },
+          })
+        : Promise.resolve([]),
+      processInstanceIds.length > 0
+        ? prisma.processInstance.findMany({
+            where: { id: { in: processInstanceIds } },
+            select: {
+              id: true,
+              steps: { select: { ticketId: true, stepId: true, stepName: true, status: true } },
+            },
+          })
+        : Promise.resolve([]),
+    ])
+    const agentById = new Map(agents.map((agent) => [agent.id, agent]))
+    const processById = new Map(
+      processes.map((process) => [
+        process.id,
+        {
+          rootTicketId: null,
+          steps: process.steps.map((step) => ({
+            ticketId: step.ticketId,
+            stepId: step.stepId,
+            stepName: step.stepName,
+            status: step.status,
+          })),
+        } satisfies ProcessRunMeta,
+      ]),
+    )
+
+    const cards = tickets.map((ticket) => {
+      const progress = ticket.processInstanceId
+        ? processRunProgress(processById.get(ticket.processInstanceId))
+        : null
+      const assigneeAgent =
+        ticket.assigneeType === 'agent' && ticket.assigneeId
+          ? agentById.get(ticket.assigneeId)
+          : ticket.agentId
+            ? agentById.get(ticket.agentId)
+            : undefined
+      const assigneeLabel = assigneeAgent
+        ? personaFor(assigneeAgent.name, { personaNickname: assigneeAgent.personaNickname }).nickname
+        : 'AI munkatárs'
+      return buildChatTaskCardView({
+        ticketId: ticket.id,
+        title: ticket.title,
+        state: ticket.state,
+        assigneeLabel,
+        createdAt: ticket.createdAt,
+        lockedAt: ticket.lockedAt,
+        stepsDone: progress?.done ?? null,
+        stepsTotal: progress?.total ?? null,
+        briefingPending: false,
+      })
+    })
+
+    return ok({ cards })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list chat task cards')
+  }
+}
+
+export async function getConversationMemoryStrip(input: {
+  conversationId: string
+  agentId: string
+}) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const parsed = conversationMemoryStripSchema.parse(input)
+    const { conversation, messages } = await services.conversations.getConversation(
+      parsed.conversationId,
+      user.activeTenantId,
+    )
+    if (conversation.agentId !== parsed.agentId) return fail('Conversation agent mismatch')
+
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent) return fail('Agent not found')
+    assertAgentTenantReachable(agent, user.activeTenantId)
+
+    const eligibleCount = messages.filter((message) => message.content && !message.contentDeletedAt).length
+    const openTickets = await prisma.ticket.findMany({
+      where: {
+        conversationId: parsed.conversationId,
+        tenantId: user.activeTenantId,
+        state: { notIn: ['done', 'rejected'] },
+      },
+      select: { id: true, title: true, state: true },
+      orderBy: { updatedAt: 'desc' },
+      take: 20,
+    })
+
+    const memoryId = agent.memoryId
+    const [focus, decisions, openMemoryTasks, constraints, artifacts] = memoryId
+      ? await Promise.all([
+          repositories.memoryChunks.findActiveFocus({
+            memoryId,
+            projectKey: '__general__',
+            workstreamKey: undefined,
+          }),
+          repositories.memoryChunks.listActiveByType({
+            memoryId,
+            projectKey: '__general__',
+            workstreamKey: undefined,
+            type: 'decision',
+            limit: 8,
+          }),
+          repositories.memoryChunks.listActiveByType({
+            memoryId,
+            projectKey: '__general__',
+            workstreamKey: undefined,
+            type: 'open_task',
+            limit: 8,
+          }),
+          repositories.memoryChunks.listActiveByType({
+            memoryId,
+            projectKey: '__general__',
+            workstreamKey: undefined,
+            type: 'constraint',
+            limit: 8,
+          }),
+          repositories.memoryChunks.listActiveByType({
+            memoryId,
+            projectKey: '__general__',
+            workstreamKey: undefined,
+            type: 'artifact',
+            limit: 8,
+          }),
+        ])
+      : [null, [], [], [], []]
+
+    const projectMemory: Array<{ title: string; type: string }> = []
+    const pushChunk = (type: string, chunk: { title?: string | null; text?: string | null } | null) => {
+      if (!chunk) return
+      const title = chunk.title?.trim() || chunk.text?.trim().slice(0, 80) || type
+      projectMemory.push({ title, type })
+    }
+    if (focus) pushChunk('focus', focus)
+    for (const chunk of decisions) pushChunk('decision', chunk)
+    for (const chunk of openMemoryTasks) pushChunk('open_task', chunk)
+    for (const chunk of constraints) pushChunk('constraint', chunk)
+    for (const chunk of artifacts) pushChunk('artifact', chunk)
+
+    const nickname = personaFor(agent.name, agent).nickname
+    return ok(
+      buildMemoryStripView({
+        agentNickname: nickname,
+        conversationMessageCount: eligibleCount,
+        projectMemory,
+        openTasks: openTickets.map((ticket) => ({
+          id: ticket.id,
+          title: ticket.title,
+          state: ticket.state,
+        })),
+        workspaceFiles: [],
+      }),
+    )
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load memory strip')
   }
 }
 
@@ -2346,6 +2726,9 @@ export async function updateAgentSelfEvolutionProfile(input: {
       return fail('Invalid self-evolution profile')
     }
     const parsed = parsedResult.data
+    if (parsed.profile.durable_memory_approval_policy) {
+      parsed.profile.durable_memory_approval_policy.four_eyes_required = false
+    }
     const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!existing) return fail('Agent not found')
     const agent = await repositories.agents.updateSelfEvolutionProfile(parsed)
@@ -3494,6 +3877,7 @@ export async function createAgentTaskTicket(input: {
   attachmentDocumentIds?: string[]
   executeAfter?: string
   authorizeRunAs?: boolean
+  briefing?: TaskBriefing
 }) {
   try {
     const user = await requireTenantRole('operator')
@@ -3506,10 +3890,11 @@ export async function createAgentTaskTicket(input: {
       attachmentDocumentIds: parsed.attachmentDocumentIds,
       executeAfter,
       authorizeRunAs: parsed.authorizeRunAs,
+      briefing: parsed.briefing,
       createdById: user.user.id,
       tenantId: user.activeTenantId,
     })
-    return ok({ ticketId: ticket.id, ticket })
+    return ok({ ticketId: ticket.id, ticket, conversationId: ticket.conversationId })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Task ticket creation failed')
   }
