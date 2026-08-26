@@ -29,14 +29,12 @@ function badgesFor(agent: Agent, activity: AgentActivity | undefined): AgentRail
   if (awaiting > 0) {
     badges.push({
       tone: 'wait',
-      label: awaiting === 1 ? '1 jóváhagyás vár' : `${awaiting} jóváhagyás vár`,
+      label: awaiting === 1 ? 'Jóváhagyásra vár' : `${awaiting} jóváhagyás vár`,
+      ...(activity?.attentionHref ? { href: activity.attentionHref } : {}),
     })
   }
   if (agent.status === 'suspended') {
     badges.push({ tone: 'err', label: 'leállítva' })
-  }
-  if (agent.taskOnly) {
-    badges.push({ tone: 'muted', label: 'csak indítás' })
   }
   return badges
 }
@@ -50,7 +48,9 @@ function activityTextFor(
     if (activity?.current?.needsYou) {
       const label = activity.current.label.toLowerCase()
       if (label.includes('kérdés') || label.includes('info')) return 'Kérdést tett fel'
-      return 'Jóváhagyásra vár'
+      // A „Jóváhagyásra vár” a badge pill — itt a konkrét ügy címe, ne ismétlődjön.
+      const title = activity.current.title?.trim()
+      return title || 'Döntésre vár'
     }
     return 'Válaszra vár'
   }
@@ -80,6 +80,7 @@ export function composeAgentRailStates(
       id: agent.id,
       name: agent.name,
       personaNickname: agent.personaNickname,
+      personaGreeting: agent.personaGreeting,
       avatarUrl: agent.avatarUrl,
       status: agent.status,
       taskOnly: agent.taskOnly,
@@ -90,6 +91,7 @@ export function composeAgentRailStates(
       elapsed: activity?.current?.elapsed ?? null,
       progress: null,
       badges: badgesFor(agent, activity),
+      attentionHref: activity?.attentionHref ?? null,
       sortRank: liveStatusSortRank(liveStatus),
     } satisfies AgentRailCardState
   })
