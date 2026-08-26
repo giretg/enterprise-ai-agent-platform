@@ -6,11 +6,13 @@ import assert from 'node:assert/strict'
 import {
   isWorkspaceFileUserFacing,
   isInternalWorkspaceFile,
+  isOfficeOpenXmlWorkspaceFile,
   linkWorkspaceFileReferences,
   referencedWorkspaceFiles,
   workspaceFileDownloadLink,
   workspaceFileLink,
   workspaceFileLinkForReference,
+  workspaceFileNeedsPrivacyEgress,
   workspaceHtmlPreviewFromLink,
   workspaceHtmlPreviewTarget,
 } from '../src/lib/workspace-file-visibility'
@@ -43,6 +45,13 @@ async function main() {
     assert.equal(isInternalWorkspaceFile('tool-outputs/02-http_api_get-call.json'), true)
     assert.equal(isInternalWorkspaceFile('orders_extract.json'), true)
     assert.equal(isWorkspaceFileUserFacing('havi_riport.html'), true)
+  })
+
+  await check('Office Open XML letöltés privacy egress, a GCS signed URL nem', () => {
+    assert.equal(isOfficeOpenXmlWorkspaceFile('riport.docx'), true)
+    assert.equal(workspaceFileNeedsPrivacyEgress('riport.docx'), true)
+    assert.equal(workspaceFileNeedsPrivacyEgress('havi.html'), true)
+    assert.equal(workspaceFileNeedsPrivacyEgress('scan.bin'), false)
   })
 
   await check('a HTML hivatkozás megnyitási URL-t, más fájl letöltési URL-t kap', () => {

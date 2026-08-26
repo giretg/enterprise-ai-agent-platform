@@ -6,13 +6,19 @@ import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
 import { resolveDownloadableWorkspacePath } from '@/domain/file-editor/workspace-download-guard'
 import { resolveWorkspaceTenantKey } from '@/lib/workspace-resource-access'
-import { isHtmlWorkspaceFile } from '@/lib/workspace-file-visibility'
+import {
+  isHtmlWorkspaceFile,
+  isOfficeOpenXmlWorkspaceFile,
+  officeWorkspaceContentType,
+  workspaceFileNeedsPrivacyEgress,
+} from '@/lib/workspace-file-visibility'
 import {
   INLINE_HTML_CONTENT_TYPE,
   inlineHtmlPreviewSecurityHeaders,
 } from '@/lib/workspace-inline-html-headers'
 import { readTicketPreferredSkillVersionIds } from '@/lib/task-only-ticket'
 import { resolveInlineWorkspaceHtml } from '@/lib/resolve-inline-workspace-html'
+import { resolveOfficeWorkspaceFile } from '@/lib/resolve-office-workspace-file'
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ success: false, error: message }, { status })
@@ -73,7 +79,8 @@ export async function GET(
       if (inline && !isHtmlWorkspaceFile(safePath)) {
         return jsonError('Only HTML workspace files can be opened inline', 400)
       }
-      if (signed) {
+      // HTML / Office: a GCS aláírt URL megkerülné az álnév-feloldást.
+      if (signed && !workspaceFileNeedsPrivacyEgress(safePath)) {
         const signedUrl = await storage.getSignedDownloadUrl(tenantId, ticketId, safePath, {
           stubDownloadPath: `/api/v1/tickets/${ticketId}/workspace/files`,
         })
@@ -124,6 +131,25 @@ export async function GET(
             'content-type': INLINE_HTML_CONTENT_TYPE,
             'content-disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
             'content-length': String(body.length),
+          },
+        })
+      }
+
+      if (isOfficeOpenXmlWorkspaceFile(safePath)) {
+        const buf = await storage.read(tenantId, ticketId, safePath)
+        if (!buf) return jsonError('File not found', 404)
+        const resolved = await resolveOfficeWorkspaceFile({
+          buffer: buf,
+          tenantId: user.activeTenantId,
+          ticketId,
+          requesterUserId: user.user.id,
+          surface: 'export_report',
+        })
+        return new NextResponse(new Uint8Array(resolved), {
+          headers: {
+            'content-type': officeWorkspaceContentType(safePath),
+            'content-disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+            'content-length': String(resolved.length),
           },
         })
       }
