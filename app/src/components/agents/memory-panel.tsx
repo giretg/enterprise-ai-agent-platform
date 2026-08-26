@@ -9,6 +9,7 @@ import {
   rollbackMemoryVersion,
   runMemoryMaintenance,
 } from '@/app/actions/platform'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import type { AgentDetailMemoryOverview } from '@/lib/agent-detail-page-data'
 
 type ChunkRow = {
@@ -342,8 +343,16 @@ export function MemoryPanel({
                   type="button"
                   disabled={pending}
                   onClick={() => {
-                    if (!confirm(`Biztosan visszaállítod a memóriát a(z) v${v.version} állapotra?`)) return
-                    run(() => rollbackMemoryVersion({ agentId, projectKey, toVersion: v.version }))
+                    void (async () => {
+                      const confirmed = await confirmDialog({
+                        title: `Memória visszaállítás: v${v.version}`,
+                        description: `Biztosan visszaállítod a memóriát a(z) v${v.version} állapotra?`,
+                        confirmLabel: 'Visszaállítás',
+                        tone: 'danger',
+                      })
+                      if (!confirmed) return
+                      run(() => rollbackMemoryVersion({ agentId, projectKey, toVersion: v.version }))
+                    })()
                   }}
                   className="rounded-full border border-line px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-line/30"
                 >

@@ -56,7 +56,7 @@ export const selfEvolutionProfileSchema = z.object({
 export type SelfEvolutionProfile = z.infer<typeof selfEvolutionProfileSchema>
 export type DurableMemoryApprovalPolicyInput = z.infer<typeof durableMemoryApprovalPolicySchema>
 
-/** NULL profil = legszigorúbb (human + approver_required + four_eyes) — §5.12.2 / §3.5 */
+/** NULL profil = jóváhagyó kell, négy szem ki (MemoryTraining v1.1.1 §4.5.1). */
 export function resolveSelfEvolutionProfile(raw: unknown): SelfEvolutionProfile {
   if (raw === null || raw === undefined) {
     return {
@@ -64,7 +64,7 @@ export function resolveSelfEvolutionProfile(raw: unknown): SelfEvolutionProfile 
       approval_mode: 'human',
       durable_memory_approval_policy: {
         activation_mode: 'approver_required',
-        four_eyes_required: true,
+        four_eyes_required: false,
       },
     }
   }

@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict'
 import type { Agent, Ticket, UserRole } from '@prisma/client'
 import { TrainingService, type TrainingActor } from '../src/domain/training/training-service'
+import type { TeachAnalyzer } from '../src/domain/training/teach-analyzer'
 import { TrainingGateError } from '../src/domain/training/durable-memory-policy'
 import { TicketService } from '../src/domain/ticket/ticket-service'
 import { serializeMemoryItems } from '../src/domain/training/memory-items'
@@ -61,6 +62,7 @@ function makeHarness(opts: {
   evalPasses?: boolean
   casMissOnActivate?: boolean
   ticketCreateRace?: boolean
+  teachAnalyzer?: TeachAnalyzer | null
 } = {}) {
   const instructionVersions = new Map<string, InstructionVersionRow>()
   const trainingMeta = new Map<string, TrainingMetaRow>()
@@ -311,6 +313,7 @@ function makeHarness(opts: {
     agents,
     {} as SelfEvolutionGuard,
     store,
+    opts.teachAnalyzer ?? null,
   )
 
   return {
@@ -419,6 +422,74 @@ async function run() {
           actor: viewer,
         }),
       (e: unknown) => e instanceof TrainingGateError,
+    )
+  })
+
+  await test('ellentmondó tanítás a meglévő szabályt átírja, nem fűzi mellé', async () => {
+    const h = makeHarness({
+      teachAnalyzer: {
+        async analyze({ existingItems, teaching }) {
+          const from = existingItems.find((item) => item.includes('Magyarul')) ?? existingItems[0]!
+          return {
+            added: [],
+            rewritten: [{ from, to: teaching }],
+            removed: [],
+          }
+        },
+      },
+    })
+    const preview = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'Angolul válaszolj' },
+      actor: operator,
+    })
+    assert.equal(preview.impactResult.verdict, 'changes')
+    assert.equal(preview.changeSummary.rewritten.length, 1)
+    assert.equal(preview.changeSummary.rewritten[0]?.to, 'Angolul válaszolj')
+    assert.doesNotMatch(preview.proposedVersion, /Magyarul válaszolj/)
+    assert.match(preview.proposedVersion, /Angolul válaszolj/)
+    assert.match(preview.proposedVersion, /ÁFA-t ellenőrizd/)
+  })
+
+  await test('nyitott ticket tartalom nélkül nem kér composition választást, és az előnézet lefut', async () => {
+    const h = makeHarness()
+    h.tickets.set('orphan', {
+      id: 'orphan',
+      state: 'awaiting_human',
+      type: 'training',
+      payload: { source: 'teach' },
+      agentId: AGENT_ID,
+      createdById: OPERATOR_ID,
+      tenantId: TENANT,
+      title: 'Árva tanítás',
+    } as Ticket)
+    const ws = await h.service.getTrainingWorkspace({ agentId: AGENT_ID, actor: operator })
+    assert.equal(ws.pendingProposal, null)
+    const preview = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'PDF-et csatolj' },
+      actor: operator,
+    })
+    assert.equal(preview.impactResult.verdict, 'complements')
+    assert.ok(preview.changeSummary.added.includes('PDF-et csatolj'))
+  })
+
+  await test('nyitott javaslat tartalommal compositionMode nélkül elutasít', async () => {
+    const h = makeHarness()
+    const first = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'PDF-et csatolj' },
+      actor: operator,
+    })
+    await h.service.submitTrainingProposal({ previewId: first.previewId, actor: operator })
+    await assert.rejects(
+      () =>
+        h.service.previewTrainingChange({
+          agentId: AGENT_ID,
+          instruction: { kind: 'teach', text: 'Dátumot ISO-ban írj' },
+          actor: operator,
+        }),
+      (e: unknown) => e instanceof TrainingGateError && e.code === 'composition_required',
     )
   })
 
@@ -621,6 +692,50 @@ async function run() {
     assert.equal(approved.length, 1)
     assert.equal((approved[0]?.metadata as { revisionCreatedBy?: string }).revisionCreatedBy, APPROVER_ID)
     assert.equal(approved[0]?.actorId, APPROVER_B)
+  })
+
+  await test('T9: rejectTraining indok nélkül is megy; ha van indok, a ticket note-jába és az auditba kerül', async () => {
+    const withoutReason = makeHarness()
+    const previewA = await withoutReason.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'PDF-et csatolj' },
+      actor: operator,
+    })
+    const submittedA = await withoutReason.service.submitTrainingProposal({
+      previewId: previewA.previewId,
+      actor: operator,
+    })
+    await withoutReason.service.rejectTraining({ ticketId: submittedA.ticket.id, actor: approver })
+    const rejectedA = withoutReason.tickets.get(submittedA.ticket.id)
+    assert.equal(rejectedA?.state, 'rejected')
+    const payloadA = rejectedA?.payload as { transitionNote?: string }
+    assert.equal(payloadA.transitionNote, undefined)
+    const auditA = withoutReason.auditLog.find((entry) => entry.action === 'training.rejected')
+    assert.ok(auditA)
+    assert.equal(auditA?.inputRef, null)
+
+    const withReason = makeHarness()
+    const previewB = await withReason.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'PDF-et csatolj' },
+      actor: operator,
+    })
+    const submittedB = await withReason.service.submitTrainingProposal({
+      previewId: previewB.previewId,
+      actor: operator,
+    })
+    await withReason.service.rejectTraining({
+      ticketId: submittedB.ticket.id,
+      reason: '  Nem illik a hangnemhez  ',
+      actor: approver,
+    })
+    const rejectedB = withReason.tickets.get(submittedB.ticket.id)
+    assert.equal(rejectedB?.state, 'rejected')
+    const payloadB = rejectedB?.payload as { transitionNote?: string }
+    assert.equal(payloadB.transitionNote, 'Nem illik a hangnemhez')
+    const auditB = withReason.auditLog.find((entry) => entry.action === 'training.rejected')
+    assert.equal(auditB?.inputRef, 'Nem illik a hangnemhez')
+    assert.equal((auditB?.metadata as { reason?: string }).reason, 'Nem illik a hangnemhez')
   })
 
   await test('T8: rollback visszaállítja az instruction current pointert, projektmemória érintetlen', async () => {

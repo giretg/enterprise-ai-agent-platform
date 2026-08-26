@@ -2,7 +2,17 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useMemo, useState, useTransition } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+  type RefObject,
+} from 'react'
+import { createPortal } from 'react-dom'
 import type { Agent } from '@prisma/client'
 import {
   activateTraining,
@@ -12,7 +22,16 @@ import {
   submitTrainingProposal,
 } from '@/app/actions/platform'
 import { AgentAssigneeSelect } from '@/components/agents/agent-assignee-select'
+import {
+  clearTrainingPreviewSession,
+  previewStateFromActionData,
+  readTrainingPreviewSession,
+  useTrainingPreviewSession,
+  writeTrainingPreviewSession,
+} from '@/components/agents/training-preview-session'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card } from '@/components/ui/shell'
+import { Spinner } from '@/components/ui/spinner'
 import {
   EMPTY_MEMORY_PLACEHOLDER,
   parseMemoryItems,
@@ -23,13 +42,7 @@ import type {
   TrainingCompositionMode,
 } from '@/domain/training/training-composition'
 import type { TrainingWorkspaceView } from '@/domain/training/training-workspace-contract'
-
-type PreviewState = {
-  previewId: string
-  proposedVersion: string
-  changeSummary: ChangeSummary
-  impactResult: ImpactResult
-}
+import { TRAINING_USER_ERRORS } from '@/domain/training/durable-memory-policy'
 
 function fmtDate(d: string | Date) {
   return new Date(d).toLocaleString('hu-HU')
@@ -73,9 +86,12 @@ function ChangeImpactSummary({
         </div>
       )}
       {changeSummary.rewritten.map((item) => (
-        <p key={`${item.from}-${item.to}`} className="mb-2 text-sm text-ink-soft">
-          <span className="text-ink-faint">Helyette:</span> {item.from} → {item.to}
-        </p>
+        <div key={`${item.from}-${item.to}`} className="mb-3 space-y-1">
+          <p className="text-xs font-semibold text-ink-faint">Régi szabály</p>
+          <p className="text-sm text-ink-soft">{item.from}</p>
+          <p className="text-xs font-semibold text-ink-faint">Új szabály</p>
+          <p className="text-sm text-ink">{item.to}</p>
+        </div>
       ))}
       {changeSummary.removed.length > 0 && (
         <div className="mb-3">
@@ -107,6 +123,7 @@ export function TrainingWorkspace({
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
+  const [previewPending, setPreviewPending] = useState(false)
   const [agentId, setAgentId] = useState(selectedAgentId ?? agents[0]?.id ?? '')
   const [newItem, setNewItem] = useState('')
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
@@ -114,8 +131,33 @@ export function TrainingWorkspace({
   const [expandedVersion, setExpandedVersion] = useState<number | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [compositionMode, setCompositionMode] = useState<TrainingCompositionMode>('build_on_pending')
-  const [preview, setPreview] = useState<PreviewState | null>(null)
   const [showFullVersion, setShowFullVersion] = useState(false)
+  const [submitPending, setSubmitPending] = useState(false)
+  const [submitResult, setSubmitResult] = useState<{
+    ticketId: string
+    outcome: 'activated' | 'awaiting_approval'
+    targetMemoryVersion: number
+    revision: number
+  } | null>(null)
+  const [rejectDialog, setRejectDialog] = useState<{ own: boolean; ticketId: string } | null>(null)
+  const [rejectReason, setRejectReason] = useState('')
+  const previewRef = useRef<HTMLDivElement>(null)
+  const rejectButtonRef = useRef<HTMLButtonElement>(null)
+  const previewSession = useTrainingPreviewSession(agentId)
+  const preview = previewSession.preview
+  const previewError = previewSession.error
+  const busy = pending || previewPending || submitPending
+  const showCompositionChoice = Boolean(workspace?.pendingProposal)
+
+  useEffect(() => {
+    setNewItem(readTrainingPreviewSession(agentId).draft)
+  }, [agentId])
+
+  useEffect(() => {
+    if (workspace?.pendingProposal) return
+    if (previewError !== TRAINING_USER_ERRORS.composition_required) return
+    writeTrainingPreviewSession(agentId, { preview, error: null })
+  }, [agentId, preview, previewError, workspace?.pendingProposal])
 
   const selectedAgent = agents.find((a) => a.id === agentId)
   const isSelectedAgentLoaded = agentId === selectedAgentId
@@ -129,47 +171,112 @@ export function TrainingWorkspace({
   const memoryVersions = workspace?.timeline ?? []
   const currentVersionId = workspace?.activeVersion?.id ?? null
 
-  function runPreview(
+  async function runPreview(
     instruction:
       | { kind: 'teach'; text: string }
       | { kind: 'item_change'; change: { operation: 'add'; text: string } | { operation: 'update'; itemIndex: number; text: string } | { operation: 'remove'; itemIndex: number } },
+    mode: TrainingCompositionMode | null = compositionMode,
   ) {
     if (!isSelectedAgentLoaded) {
       setMessage('Az új agent szabályai még betöltés alatt vannak.')
       return
     }
-    startTransition(async () => {
-      setMessage(null)
-      setPreview(null)
+    setMessage(null)
+    setPreviewPending(true)
+    try {
       const res = await previewTrainingChange({
         agentId,
         instruction,
-        compositionMode: workspace?.pendingProposal ? compositionMode : null,
+        compositionMode: showCompositionChoice ? mode : null,
       })
       if (!res.success) {
-        setMessage(res.error ?? 'Hiba')
+        writeTrainingPreviewSession(agentId, { preview: null, error: res.error ?? 'Hiba' })
         return
       }
-      setPreview(res.data as PreviewState)
+      const next = previewStateFromActionData(res.data)
+      if (!next) {
+        writeTrainingPreviewSession(agentId, {
+          preview: null,
+          error: 'Az előnézet nem jeleníthető meg. Próbáld újra.',
+        })
+        return
+      }
+      writeTrainingPreviewSession(agentId, { preview: next, error: null })
       setShowFullVersion(false)
-    })
+      requestAnimationFrame(() => {
+        previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      })
+    } catch (e) {
+      writeTrainingPreviewSession(agentId, {
+        preview: null,
+        error: e instanceof Error ? e.message : 'Az előnézet nem sikerült',
+      })
+    } finally {
+      setPreviewPending(false)
+    }
   }
 
-  function runSubmit(activate: boolean) {
+  async function runSubmit(activate: boolean) {
     if (!preview) return
-    startTransition(async () => {
+    setMessage(null)
+    setSubmitPending(true)
+    try {
       const res = await submitTrainingProposal({ previewId: preview.previewId, activate })
       if (!res.success) {
         setMessage(res.error ?? 'Hiba')
         return
       }
-      setPreview(null)
+      clearTrainingPreviewSession(agentId)
       setNewItem('')
       setEditingIndex(null)
       setEditText('')
-      setMessage(activate ? 'Az új szabályverzió életbe lépett.' : 'A javaslat jóváhagyásra vár.')
+      setSubmitResult({
+        ticketId: res.data.ticketId,
+        outcome: res.data.outcome,
+        targetMemoryVersion: res.data.targetMemoryVersion,
+        revision: res.data.revision,
+      })
       router.refresh()
-    })
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : 'A javaslat beküldése nem sikerült')
+    } finally {
+      setSubmitPending(false)
+    }
+  }
+
+  const closeRejectDialog = useCallback(() => {
+    if (submitPending) return
+    setRejectDialog(null)
+    setRejectReason('')
+  }, [submitPending])
+
+  async function confirmReject() {
+    if (!rejectDialog) return
+    const reason = rejectReason.trim()
+    const own = rejectDialog.own
+    setSubmitPending(true)
+    try {
+      const res = await rejectTraining({
+        ticketId: rejectDialog.ticketId,
+        ...(reason ? { reason } : {}),
+      })
+      setMessage(
+        res.success
+          ? own
+            ? 'A javaslatot visszavontad.'
+            : 'A javaslatot visszaküldted.'
+          : (res.error ?? 'Hiba'),
+      )
+      if (res.success) {
+        setRejectDialog(null)
+        setRejectReason('')
+        router.refresh()
+      }
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : 'A visszaküldés nem sikerült')
+    } finally {
+      setSubmitPending(false)
+    }
   }
 
   return (
@@ -184,14 +291,15 @@ export function TrainingWorkspace({
               id="training-agent"
               agents={agents}
               value={agentId}
-              disabled={pending}
+              disabled={busy}
               onChange={(nextAgentId) => {
                 setEditingIndex(null)
                 setEditText('')
                 setExpandedVersion(null)
-                setNewItem('')
                 setMessage(null)
-                setPreview(null)
+                setSubmitResult(null)
+                setRejectDialog(null)
+                setRejectReason('')
                 setAgentId(nextAgentId)
                 router.push(`/control-plane/agents/${nextAgentId}/training`)
               }}
@@ -233,21 +341,28 @@ export function TrainingWorkspace({
                       {canPreview && (
                         <button
                           type="button"
-                          disabled={pending || !editText.trim()}
+                          disabled={busy || !editText.trim()}
                           className="rounded-full bg-sage/20 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
                           onClick={() =>
-                            runPreview({
+                            void runPreview({
                               kind: 'item_change',
                               change: { operation: 'update', itemIndex: index, text: editText },
                             })
                           }
                         >
-                          Megnézem, mit változtat
+                          {previewPending ? (
+                            <span className="inline-flex items-center gap-2">
+                              <Spinner size="sm" />
+                              Elemzem a meglévő szabályokat…
+                            </span>
+                          ) : (
+                            'Megnézem, mit változtat'
+                          )}
                         </button>
                       )}
                       <button
                         type="button"
-                        disabled={pending}
+                        disabled={busy}
                         className="rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft"
                         onClick={() => {
                           setEditingIndex(null)
@@ -265,7 +380,7 @@ export function TrainingWorkspace({
                       <span className="flex shrink-0 gap-2">
                         <button
                           type="button"
-                          disabled={pending}
+                          disabled={busy}
                           className="rounded-full border border-line px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-line/30 disabled:opacity-50"
                           onClick={() => {
                             setEditingIndex(index)
@@ -276,14 +391,22 @@ export function TrainingWorkspace({
                         </button>
                         <button
                           type="button"
-                          disabled={pending}
+                          disabled={busy}
                           className="rounded-full border border-coral/30 px-3 py-1 text-xs font-semibold text-coral hover:bg-coral/10 disabled:opacity-50"
                           onClick={() => {
-                            if (!confirm('Biztosan törlöd ezt a szabályt?')) return
-                            runPreview({
-                              kind: 'item_change',
-                              change: { operation: 'remove', itemIndex: index },
-                            })
+                            void (async () => {
+                              const confirmed = await confirmDialog({
+                                title: 'Szabály törlése',
+                                description: 'Biztosan törlöd ezt a szabályt?',
+                                confirmLabel: 'Törlés',
+                                tone: 'danger',
+                              })
+                              if (!confirmed) return
+                              runPreview({
+                                kind: 'item_change',
+                                change: { operation: 'remove', itemIndex: index },
+                              })
+                            })()
                           }}
                         >
                           Töröl
@@ -303,98 +426,150 @@ export function TrainingWorkspace({
           <p className="mb-3 text-sm text-ink-soft">
             Írd le, mit szeretnél, hogy a munkatárs a továbbiakban tartson be.
           </p>
-          {workspace?.pendingProposal && (
-            <fieldset className="mb-3 space-y-2">
-              <legend className="text-sm text-ink-soft">Van már egy függő javaslat. Mit tegyünk vele?</legend>
-              {(allowed.has('build_on_pending') || allowed.has('replace_pending')) && (
-                <div className="space-y-1 text-sm">
-                  {allowed.has('build_on_pending') && (
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="radio"
-                        name="composition"
-                        checked={compositionMode === 'build_on_pending'}
-                        onChange={() => setCompositionMode('build_on_pending')}
-                      />
-                      Beépítem a meglévő javaslatba
-                    </label>
-                  )}
-                  {allowed.has('replace_pending') && (
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="radio"
-                        name="composition"
-                        checked={compositionMode === 'replace_pending'}
-                        onChange={() => setCompositionMode('replace_pending')}
-                      />
-                      Lecserélem a meglévő javaslatot
-                    </label>
-                  )}
-                </div>
-              )}
-            </fieldset>
-          )}
           <textarea
             className="mb-3 w-full rounded-lg border border-line bg-night-2 p-3 text-sm"
             rows={4}
             value={newItem}
-            onChange={(e) => setNewItem(e.target.value)}
+            onChange={(e) => {
+              const text = e.target.value
+              setNewItem(text)
+              writeTrainingPreviewSession(agentId, { draft: text })
+            }}
             placeholder="Pl. Számláknál mindig ellenőrizd az ÁFA-kulcsot…"
           />
+          {showCompositionChoice && workspace?.pendingProposal && (
+            <div className="mb-3 space-y-3">
+              <div className="atelier-soft p-3">
+                <p className="mb-2 text-xs font-semibold text-ink-faint">
+                  Ebbe a függő javaslatba építenél, vagy ezt cserélnéd le
+                </p>
+                <ChangeImpactSummary
+                  changeSummary={workspace.pendingProposal.changeSummary}
+                  impactResult={workspace.pendingProposal.impactResult}
+                />
+              </div>
+              <fieldset className="space-y-2">
+                <legend className="text-sm font-medium text-ink">
+                  Van már egy függő javaslat. Mit tegyünk vele?
+                </legend>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {allowed.has('build_on_pending') && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className={`rounded-xl border px-3 py-2 text-left text-sm ${
+                        compositionMode === 'build_on_pending'
+                          ? 'border-sky bg-sky/10 font-semibold text-sky'
+                          : 'border-line text-ink-soft hover:bg-line/30'
+                      }`}
+                      onClick={() => setCompositionMode('build_on_pending')}
+                    >
+                      Beépítem a meglévő javaslatba
+                    </button>
+                  )}
+                  {allowed.has('replace_pending') && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className={`rounded-xl border px-3 py-2 text-left text-sm ${
+                        compositionMode === 'replace_pending'
+                          ? 'border-honey bg-honey/10 font-semibold text-honey'
+                          : 'border-line text-ink-soft hover:bg-line/30'
+                      }`}
+                      onClick={() => setCompositionMode('replace_pending')}
+                    >
+                      Lecserélem a meglévő javaslatot
+                    </button>
+                  )}
+                </div>
+              </fieldset>
+            </div>
+          )}
           <button
             type="button"
-            disabled={pending || !isSelectedAgentLoaded || !newItem.trim() || !agentId}
+            disabled={busy || !isSelectedAgentLoaded || !newItem.trim() || !agentId}
             className="rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky disabled:opacity-50"
-            onClick={() => runPreview({ kind: 'teach', text: newItem })}
+            onClick={() => void runPreview({ kind: 'teach', text: newItem })}
           >
-            Megnézem, mit változtat
+            {previewPending ? (
+              <span className="inline-flex items-center gap-2">
+                <Spinner size="sm" />
+                Elemzem a meglévő szabályokat…
+              </span>
+            ) : (
+              'Megnézem, mit változtat'
+            )}
           </button>
+          {previewError && previewError !== TRAINING_USER_ERRORS.composition_required && (
+            <p className="mt-3 text-sm text-coral-deep">{previewError}</p>
+          )}
         </Card>
       )}
 
       {preview && (
-        <Card title="A változás hatása">
-          <ChangeImpactSummary
-            changeSummary={preview.changeSummary}
-            impactResult={preview.impactResult}
-          />
-          <button
-            type="button"
-            className="mb-3 text-xs text-sky hover:underline"
-            onClick={() => setShowFullVersion((open) => !open)}
-          >
-            {showFullVersion ? 'Teljes új verzió elrejtése' : 'Teljes új verzió megtekintése'}
-          </button>
-          {showFullVersion && (
-            <pre className="mb-3 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-night-2 p-3 text-xs text-ink-soft">
-              {preview.proposedVersion}
-            </pre>
-          )}
-          {preview.impactResult.verdict !== 'blocked' && (
-            <div className="flex flex-wrap gap-2">
-              {allowed.has('activate') && (
-                <button
-                  type="button"
-                  disabled={pending}
-                  className="rounded-full bg-sage/20 px-4 py-2 text-sm font-semibold text-sage disabled:opacity-50"
-                  onClick={() => runSubmit(true)}
-                >
-                  Aktiválom az új verziót
-                </button>
-              )}
-              {allowed.has('submit_for_approval') && !allowed.has('activate') && (
-                <button
-                  type="button"
-                  disabled={pending}
-                  className="rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky disabled:opacity-50"
-                  onClick={() => runSubmit(false)}
-                >
-                  Jóváhagyásra küldöm
-                </button>
-              )}
-            </div>
-          )}
-        </Card>
+        <div ref={previewRef}>
+          <Card title="A változás hatása">
+            <ChangeImpactSummary
+              changeSummary={preview.changeSummary}
+              impactResult={preview.impactResult}
+            />
+            <button
+              type="button"
+              className="mb-3 text-xs text-sky hover:underline"
+              onClick={() => setShowFullVersion((open) => !open)}
+            >
+              {showFullVersion ? 'Teljes javasolt verzió elrejtése' : 'Teljes javasolt verzió megtekintése'}
+            </button>
+            {showFullVersion && (
+              <div className="mb-3">
+                <p className="mb-1 text-xs font-semibold text-ink-faint">
+                  Így nézne ki a teljes szabályverzió aktiválás után
+                </p>
+                <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-night-2 p-3 text-xs text-ink-soft">
+                  {preview.proposedVersion}
+                </pre>
+              </div>
+            )}
+            {preview.impactResult.verdict !== 'blocked' && (
+              <div className="flex flex-wrap gap-2">
+                {allowed.has('activate') && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className="rounded-full bg-sage/20 px-4 py-2 text-sm font-semibold text-sage disabled:opacity-50"
+                    onClick={() => void runSubmit(true)}
+                  >
+                    {submitPending ? (
+                      <span className="inline-flex items-center gap-2">
+                        <Spinner size="sm" />
+                        Beküldés…
+                      </span>
+                    ) : (
+                      'Aktiválom az új verziót'
+                    )}
+                  </button>
+                )}
+                {allowed.has('submit_for_approval') && !allowed.has('activate') && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className="rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky disabled:opacity-50"
+                    onClick={() => void runSubmit(false)}
+                  >
+                    {submitPending ? (
+                      <span className="inline-flex items-center gap-2">
+                        <Spinner size="sm" />
+                        Beküldés…
+                      </span>
+                    ) : (
+                      'Jóváhagyásra küldöm'
+                    )}
+                  </button>
+                )}
+              </div>
+            )}
+          </Card>
+        </div>
       )}
 
       <Card title="Függőben lévő javaslat">
@@ -421,6 +596,9 @@ export function TrainingWorkspace({
               changeSummary={workspace.pendingProposal.changeSummary}
               impactResult={workspace.pendingProposal.impactResult}
             />
+            <p className="mb-1 text-xs font-semibold text-ink-faint">
+              A javasolt teljes szabályverzió
+            </p>
             <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-night-2 p-2 text-xs text-ink-soft">
               {workspace.pendingProposal.proposedVersion}
             </pre>
@@ -428,17 +606,19 @@ export function TrainingWorkspace({
               {allowed.has('activate') && (
                 <button
                   type="button"
-                  disabled={pending}
+                  disabled={busy}
                   className="rounded-full bg-sage/20 px-4 py-2 text-sm font-semibold text-sage disabled:opacity-50"
                   onClick={() => {
-                    startTransition(async () => {
+                    void (async () => {
+                      setSubmitPending(true)
                       const res = await activateTraining({
                         ticketId: workspace.pendingProposal!.ticketId,
                         revisionId: workspace.pendingProposal!.revisionId,
                       })
+                      setSubmitPending(false)
                       setMessage(res.success ? 'Az új szabályverzió életbe lépett.' : (res.error ?? 'Hiba'))
                       if (res.success) router.refresh()
-                    })
+                    })()
                   }}
                 >
                   Jóváhagyom és aktiválom
@@ -446,23 +626,19 @@ export function TrainingWorkspace({
               )}
               {allowed.has('reject') && (
                 <button
+                  ref={rejectButtonRef}
                   type="button"
-                  disabled={pending}
+                  disabled={busy}
                   className="rounded-full border border-coral/30 px-4 py-2 text-sm font-semibold text-coral disabled:opacity-50"
                   onClick={() => {
-                    const reason = prompt('Miért küldöd vissza a javaslatot?')
-                    if (!reason?.trim()) return
-                    startTransition(async () => {
-                      const res = await rejectTraining({
-                        ticketId: workspace.pendingProposal!.ticketId,
-                        reason: reason.trim(),
-                      })
-                      setMessage(res.success ? 'A javaslatot visszaküldted.' : (res.error ?? 'Hiba'))
-                      if (res.success) router.refresh()
+                    setRejectReason('')
+                    setRejectDialog({
+                      own: Boolean(workspace.pendingProposal!.fourEyesWaiting),
+                      ticketId: workspace.pendingProposal!.ticketId,
                     })
                   }}
                 >
-                  Visszaküldöm
+                  {workspace.pendingProposal.fourEyesWaiting ? 'Visszavonom' : 'Visszaküldöm'}
                 </button>
               )}
             </div>
@@ -505,29 +681,31 @@ export function TrainingWorkspace({
                       {!isCurrent && allowed.has('rollback') && (
                         <button
                           type="button"
-                          disabled={pending || !agentId}
+                          disabled={busy || !agentId}
                           className="rounded-full bg-honey/20 px-3 py-1 text-xs font-semibold text-honey disabled:opacity-50"
                           onClick={() => {
-                            const snippet = previewContent(v.content, 800)
-                            if (
-                              !confirm(
-                                `Biztosan visszaállítod a szabályokat a(z) v${v.version} állapotra?\n\n${snippet}`,
-                              )
-                            ) {
-                              return
-                            }
-                            startTransition(async () => {
-                              const res = await rollbackMemory({
-                                agentId,
-                                toVersion: v.version,
+                            void (async () => {
+                              const snippet = previewContent(v.content, 800)
+                              const confirmed = await confirmDialog({
+                                title: `Visszaállítás: v${v.version}`,
+                                description: `Biztosan visszaállítod a szabályokat a(z) v${v.version} állapotra?\n\n${snippet}`,
+                                confirmLabel: 'Visszaállítás',
+                                tone: 'danger',
                               })
-                              setMessage(
-                                res.success
-                                  ? `Visszaállítás kész — most a v${v.version} az aktív.`
-                                  : (res.error ?? 'A visszaállítás sikertelen'),
-                              )
-                              if (res.success) router.refresh()
-                            })
+                              if (!confirmed) return
+                              startTransition(async () => {
+                                const res = await rollbackMemory({
+                                  agentId,
+                                  toVersion: v.version,
+                                })
+                                setMessage(
+                                  res.success
+                                    ? `Visszaállítás kész — most a v${v.version} az aktív.`
+                                    : (res.error ?? 'A visszaállítás sikertelen'),
+                                )
+                                if (res.success) router.refresh()
+                              })
+                            })()
                           }}
                         >
                           Vissza erre
@@ -547,13 +725,202 @@ export function TrainingWorkspace({
         )}
       </Card>
 
-      {message && (
+      {(message || (previewError && previewError !== TRAINING_USER_ERRORS.composition_required)) && (
         <p
-          className={`text-sm ${message.toLowerCase().includes('hiba') || message.toLowerCase().includes('sikertelen') || message.toLowerCase().includes('nem') ? 'text-coral-deep' : 'text-ink-soft'}`}
+          className={`text-sm ${(message ?? previewError ?? '').toLowerCase().includes('hiba') || (message ?? previewError ?? '').toLowerCase().includes('sikertelen') || (message ?? previewError ?? '').toLowerCase().includes('nem') ? 'text-coral-deep' : 'text-ink-soft'}`}
         >
-          {message}
+          {message ?? previewError}
         </p>
       )}
+
+      {rejectDialog && (
+        <TrainingRejectModal
+          own={rejectDialog.own}
+          pending={submitPending}
+          reason={rejectReason}
+          returnFocusRef={rejectButtonRef}
+          onReasonChange={setRejectReason}
+          onCancel={closeRejectDialog}
+          onConfirm={() => {
+            void confirmReject()
+          }}
+        />
+      )}
+
+      {submitResult && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4"
+          onClick={() => setSubmitResult(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="training-submit-title"
+            className="atelier-card w-full max-w-md p-5"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="training-submit-title" className="font-display text-lg font-semibold">
+              {submitResult.outcome === 'activated'
+                ? 'Az új szabályverzió életbe lépett'
+                : 'Tanítási ticket létrejött'}
+            </h3>
+            {submitResult.outcome === 'activated' ? (
+              <p className="mt-2 text-sm text-ink-soft">
+                A v{submitResult.targetMemoryVersion} szabályverzió mostantól érvényes.
+              </p>
+            ) : (
+              <p className="mt-2 text-sm text-ink-soft">
+                A tanítási javaslat ticketként létrejött (v{submitResult.targetMemoryVersion}/r
+                {submitResult.revision}). Egy megfelelő joggal rendelkező jóváhagyó vagy
+                adminisztrátor hagyhatja jóvá — ha te magad nem vagy jóváhagyó, a saját
+                javaslatodat nem aktiválhatod.
+              </p>
+            )}
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <Link
+                href={`/control-plane/tickets/${submitResult.ticketId}`}
+                className="rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky"
+                onClick={() => setSubmitResult(null)}
+              >
+                Ticket megnyitása
+              </Link>
+              <button
+                type="button"
+                className="rounded-full border border-line px-4 py-2 text-sm font-semibold text-ink-soft"
+                onClick={() => setSubmitResult(null)}
+              >
+                Bezár
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
+  )
+}
+
+function TrainingRejectModal({
+  own,
+  pending,
+  reason,
+  returnFocusRef,
+  onReasonChange,
+  onCancel,
+  onConfirm,
+}: {
+  own: boolean
+  pending: boolean
+  reason: string
+  returnFocusRef: RefObject<HTMLButtonElement | null>
+  onReasonChange: (value: string) => void
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const titleId = useId()
+  const descriptionId = useId()
+  const reasonId = useId()
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const confirmRef = useRef<HTMLButtonElement>(null)
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client portal mount gate
+    setMounted(true)
+  }, [])
+
+  useEffect(() => {
+    if (!mounted) return
+    const returnFocusTarget = returnFocusRef.current
+    textareaRef.current?.focus()
+    return () => returnFocusTarget?.focus()
+  }, [mounted, returnFocusRef])
+
+  if (!mounted) return null
+
+  const title = own ? 'Javaslat visszavonása' : 'Javaslat visszaküldése'
+  const question = own ? 'Miért vonod vissza a javaslatot?' : 'Miért küldöd vissza a javaslatot?'
+  const confirmLabel = own ? 'Visszavonom' : 'Visszaküldöm'
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4"
+      onClick={() => !pending && onCancel()}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        className="atelier-card w-full max-w-md p-5"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && !pending) {
+            event.preventDefault()
+            onCancel()
+            return
+          }
+          if (event.key !== 'Tab') return
+          const order = [textareaRef.current, cancelRef.current, confirmRef.current].filter(
+            (node): node is HTMLElement => Boolean(node),
+          )
+          if (order.length === 0) return
+          const first = order[0]
+          const last = order[order.length - 1]
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault()
+            last.focus()
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault()
+            first.focus()
+          }
+        }}
+      >
+        <h3 id={titleId} className="font-display text-lg font-semibold">
+          {title}
+        </h3>
+        <p id={descriptionId} className="mt-2 text-sm text-ink-soft">
+          {question}
+        </p>
+        <p className="mt-1 text-xs text-ink-faint">
+          Az indoklás opcionális. Ha megadod, a ticket állapot-előzményében jelenik meg.
+        </p>
+        <label htmlFor={reasonId} className="sr-only">
+          Indoklás (opcionális)
+        </label>
+        <textarea
+          id={reasonId}
+          ref={textareaRef}
+          value={reason}
+          maxLength={500}
+          rows={3}
+          disabled={pending}
+          placeholder="Indoklás (opcionális)"
+          className="mt-3 w-full rounded-lg border border-line bg-night-2 p-3 text-sm text-ink disabled:opacity-50"
+          onChange={(event) => onReasonChange(event.target.value)}
+        />
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <button
+            ref={cancelRef}
+            type="button"
+            disabled={pending}
+            onClick={onCancel}
+            className="rounded-full border border-line px-4 py-2 text-sm font-semibold text-ink-soft hover:bg-night-2 disabled:opacity-50"
+          >
+            Mégse
+          </button>
+          <button
+            ref={confirmRef}
+            type="button"
+            disabled={pending}
+            onClick={onConfirm}
+            className="rounded-full border border-coral/40 bg-coral/12 px-4 py-2 text-sm font-semibold text-coral-deep hover:bg-coral/22 disabled:opacity-50"
+          >
+            {pending ? 'Mentés…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   )
 }

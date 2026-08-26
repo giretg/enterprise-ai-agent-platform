@@ -14,6 +14,7 @@ import {
   unshareKnowledgeBaseFromAgent,
   uploadDocument,
 } from '@/app/actions/platform'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Card } from '@/components/ui/shell'
 import { KbArtifactReview } from '@/components/agents/kb-artifact-review'
 import type { AgentDetailKbInitial } from '@/lib/agent-detail-page-data'
@@ -158,12 +159,20 @@ export function AgentKnowledgeBasePanel({
   }
 
   const handleDelete = (documentId: string, filename: string) => {
-    if (!window.confirm(`Biztosan törlöd: ${filename}?`)) return
-    startAction(async () => {
-      const res = await deleteKbDocument({ agentId, documentId })
-      setUploadMessage(res.success ? 'Dokumentum törölve.' : res.error)
-      if (res.success) refreshDocs()
-    })
+    void (async () => {
+      const confirmed = await confirmDialog({
+        title: 'Dokumentum törlése',
+        description: `Biztosan törlöd: ${filename}?`,
+        confirmLabel: 'Törlés',
+        tone: 'danger',
+      })
+      if (!confirmed) return
+      startAction(async () => {
+        const res = await deleteKbDocument({ agentId, documentId })
+        setUploadMessage(res.success ? 'Dokumentum törölve.' : res.error)
+        if (res.success) refreshDocs()
+      })
+    })()
   }
 
   if (isOrchestrator) {
