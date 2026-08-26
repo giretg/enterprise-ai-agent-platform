@@ -40,4 +40,5 @@ _Avoid_: tanítási jogosultság, közös memória
 
 **Négy szem elv**:
 Olyan agent-szintű jóváhagyási követelmény, amelynél a legutolsó javaslat-revízió kezdeményezője nem lehet annak aktiválója.
+A v1.1.1-től a termékfelületen **szünetel** (MemoryTraining spec §4.5.1): a mező a sémában megmarad, a default és a UI `false`, mert a jelenlegi tanítási folyamat mellett zsákutcába zárná a ticketet.
 _Avoid_: approver szerep, kettős kattintás

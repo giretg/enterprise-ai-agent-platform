@@ -3,6 +3,7 @@ import {
   parseMemoryItems,
   type MemoryItemOperation,
 } from './memory-items'
+import { applyTeachPlan, type TeachPlan } from './teach-plan'
 import { detectHardFloorViolation, type HardFloorResult } from './training-hard-floor'
 
 export type TrainingCompositionMode = 'build_on_pending' | 'replace_pending'
@@ -40,9 +41,14 @@ export class TrainingCompositionError extends Error {
   }
 }
 
-function applyInstruction(baseContent: string, instruction: TrainingInstruction): string {
+function applyInstruction(
+  baseContent: string,
+  instruction: TrainingInstruction,
+  teachPlan?: TeachPlan | null,
+): string {
   if (instruction.kind === 'full_version') return instruction.content
   if (instruction.kind === 'teach') {
+    if (teachPlan) return applyTeachPlan(baseContent, teachPlan)
     return applyMemoryItemChange(baseContent, { operation: 'add', text: instruction.text })
   }
   return applyMemoryItemChange(baseContent, instruction.change)
@@ -57,6 +63,7 @@ export function composeProposedVersion(params: {
   pendingContent: string | null
   instruction: TrainingInstruction
   compositionMode: TrainingCompositionMode | null
+  teachPlan?: TeachPlan | null
 }): { proposedVersion: string; base: 'active' | 'pending'; compositionMode: TrainingCompositionMode | null } {
   const hasPending = Boolean(params.pendingContent)
   if (hasPending && !params.compositionMode) {
@@ -68,14 +75,14 @@ export function composeProposedVersion(params: {
 
   if (hasPending && params.compositionMode === 'build_on_pending') {
     return {
-      proposedVersion: applyInstruction(params.pendingContent ?? '', params.instruction),
+      proposedVersion: applyInstruction(params.pendingContent ?? '', params.instruction, params.teachPlan),
       base: 'pending',
       compositionMode: 'build_on_pending',
     }
   }
 
   return {
-    proposedVersion: applyInstruction(params.activeContent, params.instruction),
+    proposedVersion: applyInstruction(params.activeContent, params.instruction, params.teachPlan),
     base: 'active',
     compositionMode: hasPending ? 'replace_pending' : params.compositionMode,
   }

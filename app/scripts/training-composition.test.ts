@@ -43,6 +43,26 @@ async function run() {
     assert.equal(impact.verdict, 'complements')
   })
 
+  await test('teachPlan átírja a konfliktusos szabályt — megváltoztatja, nem kiegészíti', () => {
+    const composed = composeProposedVersion({
+      activeContent: v3,
+      pendingContent: null,
+      instruction: { kind: 'teach', text: 'Angolul válaszolj' },
+      compositionMode: null,
+      teachPlan: {
+        added: [],
+        rewritten: [{ from: 'Magyarul válaszolj', to: 'Angolul válaszolj' }],
+        removed: [],
+      },
+    })
+    const summary = summarizeInstructionChange(v3, composed.proposedVersion)
+    assert.equal(summary.rewritten.length, 1)
+    assert.equal(summary.rewritten[0]?.from, 'Magyarul válaszolj')
+    assert.doesNotMatch(composed.proposedVersion, /Magyarul válaszolj/)
+    const impact = buildImpactResult({ changeSummary: summary, proposedVersion: composed.proposedVersion })
+    assert.equal(impact.verdict, 'changes')
+  })
+
   await test('meglévő szabály átírása → megváltoztatja', () => {
     const composed = composeProposedVersion({
       activeContent: v3,
