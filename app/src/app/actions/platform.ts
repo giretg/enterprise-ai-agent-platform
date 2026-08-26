@@ -19,7 +19,6 @@ import { getAuthContext, type TenantAuthContext } from '@/auth/context'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import { services } from '@/domain'
 import type { TrainingActor } from '@/domain/training/training-service'
-import { TrainingGateError } from '@/domain/training/durable-memory-policy'
 import type { GitHubRepositoryAccess } from '@/domain/connector/github-repository-access'
 import { buildTenantAccessAuditFilter } from '@/domain/iam/access-audit'
 import { SandboxAppError } from '@/domain/sandbox/errors'
@@ -4516,16 +4515,7 @@ export async function previewTrainingChange(input: z.infer<typeof previewTrainin
       compositionMode: parsed.compositionMode ?? null,
       actor: trainingActor(user),
     })
-    return ok(
-      JSON.parse(
-        JSON.stringify({
-          previewId: data.previewId,
-          proposedVersion: data.proposedVersion,
-          changeSummary: data.changeSummary,
-          impactResult: data.impactResult,
-        }),
-      ),
-    )
+    return ok(data)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to preview training change')
   }
@@ -4539,29 +4529,15 @@ export async function submitTrainingProposal(input: z.infer<typeof submitTrainin
       previewId: parsed.previewId,
       actor: trainingActor(user),
     })
-    const payload = {
-      ticketId: submitted.ticket.id,
-      revision: submitted.currentRevision.revision,
-      targetMemoryVersion: submitted.currentRevision.targetMemoryVersion,
-      outcome: 'awaiting_approval' as const,
-      reason: null as string | null,
-    }
-    if (!parsed.activate) {
-      return ok(payload)
-    }
-    try {
-      await services.training.activateTraining({
+    if (parsed.activate) {
+      const approved = await services.training.activateTraining({
         ticketId: submitted.ticket.id,
         revisionId: submitted.currentRevision.id,
         actor: trainingActor(user),
       })
-      return ok({ ...payload, outcome: 'activated' as const })
-    } catch (e) {
-      if (e instanceof TrainingGateError && (e.code === 'four_eyes_required' || e.code === 'activation_forbidden')) {
-        return ok({ ...payload, outcome: 'awaiting_approval' as const, reason: e.message })
-      }
-      throw e
+      return ok({ ticket: submitted.ticket, currentRevision: submitted.currentRevision, approved })
     }
+    return ok({ ticket: submitted.ticket, currentRevision: submitted.currentRevision, approved: null })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to submit training proposal')
   }
@@ -4588,7 +4564,7 @@ export async function rejectTraining(input: z.infer<typeof rejectTrainingSchema>
     const parsed = rejectTrainingSchema.parse(input)
     await services.training.rejectTraining({
       ticketId: parsed.ticketId,
-      reason: parsed.reason?.trim() || undefined,
+      reason: parsed.reason,
       actor: trainingActor(user),
     })
     return ok({ rejected: true })
