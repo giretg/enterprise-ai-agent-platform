@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { transitionProcessTicket, cancelProcess } from '@/app/actions/process'
 import { getTicket, listTicketComments } from '@/app/actions/platform'
+import { promptDialog } from '@/components/ui/confirm-dialog'
 import { Badge } from '@/components/ui/shell'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
 import { formatTicketDateTime } from '@/lib/ticket-display'
@@ -217,18 +218,28 @@ export function ProcessDetailView({
   }
 
   function doCancel() {
-    const reason = prompt('A folyamat visszavonásának indoka:')
-    if (!reason) return
-    setMessage(null)
-    startTransition(async () => {
-      const res = await cancelProcess({ id: data.process.id, reason })
-      if (res.success) {
-        setMessage({ tone: 'ok', text: 'Folyamat visszavonva.' })
-        router.refresh()
-      } else {
-        setMessage({ tone: 'err', text: res.error })
-      }
-    })
+    void (async () => {
+      const reason = await promptDialog({
+        title: 'Folyamat visszavonása',
+        description: 'Add meg a visszavonás indokát.',
+        inputLabel: 'Indok',
+        placeholder: 'A folyamat visszavonásának indoka…',
+        confirmLabel: 'Visszavonás',
+        tone: 'danger',
+        required: true,
+      })
+      if (!reason) return
+      setMessage(null)
+      startTransition(async () => {
+        const res = await cancelProcess({ id: data.process.id, reason })
+        if (res.success) {
+          setMessage({ tone: 'ok', text: 'Folyamat visszavonva.' })
+          router.refresh()
+        } else {
+          setMessage({ tone: 'err', text: res.error })
+        }
+      })
+    })()
   }
 
   const isClosed = ['completed', 'failed', 'cancelled'].includes(data.process.status)

@@ -16,6 +16,7 @@ import {
   setStepTemplateEvalSamplesAction,
   certifyStepTemplateVersionAction,
 } from '@/app/actions/step-template'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 
 type VersionView = {
   id: string
@@ -483,8 +484,16 @@ export function StepTemplateAdmin({ templates }: { templates: StepTemplateAdminV
                     {t.status === 'draft' && !t.currentPublishedVersionId && (
                       <button
                         onClick={() => {
-                          if (confirm(`Biztosan törlöd: ${t.name}?`))
+                          void (async () => {
+                            const confirmed = await confirmDialog({
+                              title: 'Sablon törlése',
+                              description: `Biztosan törlöd: ${t.name}?`,
+                              confirmLabel: 'Törlés',
+                              tone: 'danger',
+                            })
+                            if (!confirmed) return
                             run(() => deleteStepTemplateAction({ id: t.id }), 'Törölve.')
+                          })()
                         }}
                         disabled={pending}
                         className="rounded border border-coral/40 px-2 py-1 text-xs text-coral hover:bg-coral/10 disabled:opacity-50"
