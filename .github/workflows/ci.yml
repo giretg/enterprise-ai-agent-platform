@@ -60,6 +60,7 @@ jobs:
           npm run test:secret-config
           npm run test:audit-log
           npm run test:sandbox-csp
+          npm run test:sandbox-versioning
           npm run test:observability
           npm run test:health-endpoints
           npm run test:tool-broker-tenant
