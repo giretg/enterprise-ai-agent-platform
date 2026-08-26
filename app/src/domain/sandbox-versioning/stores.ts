@@ -43,10 +43,13 @@ const dataStub = (globalStub.__sandboxDataSnapshotStub__ ??= new Map())
 export function commitTreePath(params: {
   tenantId: string | null
   projectId: string
-  seq: number
+  treeHash: string
 }): string {
   const tenant = params.tenantId ?? '_global'
-  return `sandbox-code/${tenant}/${params.projectId}/commits/${params.seq}/tree.json`
+  // A commit-sorszám csak a DB-ben kiosztott, párhuzamosan versenyző metaadat.
+  // A fa tartalmától függő hash viszont stabil, ezért az object-store kulcsa is
+  // content-addressed: két egyidejű commit nem írhatja felül egymás fáját.
+  return `sandbox-code/${tenant}/${params.projectId}/trees/${params.treeHash.replace(':', '-')}.json`
 }
 
 export function dataSnapshotPath(params: {
@@ -73,7 +76,6 @@ export interface CodeTreeStore {
   putTree(params: {
     tenantId: string | null
     projectId: string
-    seq: number
     files: TreeFileInput[]
   }): Promise<StoredTree>
   /** A fa manifestje (path → hash/méret/bináris) tartalom nélkül. */
@@ -102,11 +104,10 @@ export class GcsCodeTreeStore implements CodeTreeStore {
   async putTree(params: {
     tenantId: string | null
     projectId: string
-    seq: number
     files: TreeFileInput[]
   }): Promise<StoredTree> {
     const built: BuiltTree = buildTree(params.files)
-    const treeRef = commitTreePath(params)
+    const treeRef = commitTreePath({ ...params, treeHash: built.treeHash })
     const filesByPath: Record<string, string> = {}
     for (const f of params.files) filesByPath[f.path.trim()] = f.content.replace(/\r\n/g, '\n')
 
