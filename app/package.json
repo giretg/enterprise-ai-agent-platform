@@ -72,6 +72,7 @@
     "test:monitor": "tsx scripts/monitor-engine.test.ts",
     "test:scheduled-task-enterprise": "tsx scripts/scheduled-task-enterprise.test.ts",
     "test:ticket-schedule": "tsx scripts/ticket-schedule.test.ts",
+    "test:ticket-acting-user": "tsx scripts/ticket-acting-user.test.ts",
     "test:provisioning": "tsx scripts/provisioning-assistant.test.ts",
     "test:tenant-web-egress-selection": "tsx scripts/tenant-web-egress-selection.test.ts",
     "test:connector-secret-alias-policy": "tsx scripts/connector-secret-alias-policy.test.ts",
