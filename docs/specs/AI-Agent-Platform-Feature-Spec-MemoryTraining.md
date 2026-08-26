@@ -1,8 +1,8 @@
 # Feature-spec — Tanítás, memória, write-gate és önfejlesztési pipeline
 
 **Készítette:** Excellence Pay KFT (Enterprise AI tanácsadás)
-**Verzió:** 1.1
-**Dátum:** 2026-08-25
+**Verzió:** 1.1.1
+**Dátum:** 2026-08-26
 **Forrásdokumentumok:** `AI-Agent-Platform-Koncepcio.md` (§4.6 tanítás és memória, §4.6.1 write-gate / aláírt token, §4.6.2 retrieval / hibrid keresés — elhalasztott, §4.6.3 reflexiós feeder, §4.6.4 önfejlesztési profil, §4.5 reprodukálhatóság, §4.13/4.14 `MemoryStore` cserepont és session-elhatárolás, §8.1 memória mint legnagyobb kockázat és érték, §8.2 prompt injection, §8.5 append-only audit), `AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md` (v1.0, §4.4 `memories`/`memory_versions`/`training_tickets` séma, §5.8 write-gate token protokoll + API, §5.11 `MemoryStore` interfész, §5.12.2 önfejlesztési profil, §11 audit-események), `AI-Agent-Platform-Feature-Spec-AgentRegistry.md` (v1.0, `self_evolution_profile`, `current_memory_version`, kemény padló), `AI-Agent-Platform-Feature-Spec-ModelGateway.md` (eval-futás modellhívásai), `AI-Agent-Platform-Feature-Spec-ConversationSession.md` (working memory ≠ tartós memória), `AI-Agent-Platform-Feature-Spec-PerUser-Connector.md` (embedding-hívás a Tool Brokeren át)
 **Olvasó:** fejlesztő(k). Feltételezi az append-only audit (`verifyChain`), az RBAC (`requireRole`), a Tool Broker capability-modell (`authorize()`), a Model Gateway routing és az Agent Registry (`agent_versions`, `self_evolution_profile`) ismeretét.
 **Státusz:** **MVP-horgok kész, teljes pipeline részben Fázis 2; a v1.1 termékdöntések még implementálandók.** A `memories` / `memory_versions` / `training_tickets` séma, a write-gate token protokoll (`createTrainingTicket` / `approveTraining` / `rollbackMemory`) és a runtime memóriaolvasás alapjai be vannak kötve. A v1.1-ben rögzített teljes javasolt szabályverzió, ticketen belüli revíziók, agent-szintű `durable_memory_approval_policy`, policy-alapú UI és a betanított szabályverzió/projektmemória-manifeszt szétválasztása **célállapot, nem jelenlegi kódkész állapot**. Ez a dokumentum a **teljes** tanítási-memória réteget specifikálja: a memória-verziózás állapotgépét, a write-gate token életciklusát kapuról kapura, a retrievalt, a reflexiós feedert mint javaslat-generátort, és az önfejlesztési profil end-to-end kikényszerítését a kemény padlóval.
@@ -21,7 +21,7 @@ Meghatározza, hogyan „tanul" egy agent a platformon — vagyis hogyan íródi
 4. **A reflexió javaslat-generátor, nem önmódosítás.** Az agent reflektálhat a munkájára és *javasolhat* tudásfrissítést, de a javaslat **automatikusan tanítási ticketként** a write-gate elé kerül — semmi nem lép életbe jóváhagyás nélkül (§4.6.3).
 5. **Az önfejlesztés tárcsa, nem kapcsoló — és van kemény padlója.** A write-gate kapu *erőssége* per-agent állítható (`self_evolution_profile`), de a verziózás + rollback + audit + szerveroldali token **sosem kapcsolható ki**, és egy agent önmódosítással **soha nem bővítheti** a jogosultságait vagy eszköz-hozzáférését (§4.6.4).
 6. **Egy agentnek egyszerre egy aktuális, jóváhagyásra váró betanított-szabály verziója lehet.** Az új tanítás ezt vagy továbbépíti, vagy lecseréli; mindkét esetben új javaslat-revízió készül, és kizárólag a legutolsó revízió aktiválható (§4.4).
-7. **A tartós memória aktiválási szintje és a négy szem elv agentenként állítható, de jogosultságot nem teremt.** Az agent profilja eldönti, hogy approver kell-e, operator is aktiválhat-e, illetve szükséges-e a kezdeményezőtől különböző jóváhagyó; a UI csak a szerveroldali RBAC és az agent profil metszete által engedett műveleteket mutatja (§4.5–4.6).
+7. **A tartós memória aktiválási szintje agentenként állítható, de jogosultságot nem teremt.** Az agent profilja eldönti, hogy approver kell-e, vagy operator is aktiválhat-e; a UI csak a szerveroldali RBAC és az agent profil metszete által engedett műveleteket mutatja (§4.5–4.6). A négy szem elv a modellben megmarad, a termékfelületen **szünetel** (§4.5.1) — ne keverd a kódbeli mezőt élő termékígérettel.
 
 **Miért ez a feature a legfontosabb:** a koncepció maga jelöli meg a tanítást/memóriát mint *„a legnagyobb kockázat és a legnagyobb érték"* (§8.1). Ez az a réteg, amely a platform fő differenciátorát — a kontrollált, nem-driftelő, auditálható AI-munkatársat — kódszinten bizonyíthatóvá teszi. Az Agent Registry spec ezt a réteget explicit out-of-scope-ként a *„külön memória / self-evolution spec"-re* utalta (§0.10); ez a dokumentum tölti be azt a helyet.
 
@@ -189,10 +189,11 @@ A `self_evolution_profile` az `agents` tábla `jsonb` mezője (Agent Registry sp
   },
   approval_mode: "human" | "higher_role" | "eval_only" | "auto_after_eval",
   diff_limit: { max_chars, max_items, max_salience } }
--- NULL = legszigorúbb (approver_required, four_eyes_required=true, human, scope=[memory])
+-- NULL = approver_required, four_eyes_required=false, human, scope=[memory]
+--   (a négy szem elv szünetel: §4.5.1; a mező a sémában megmarad)
 ```
 
-Ez a spec a profilt **olvassa és kikényszeríti** (§8), nem írja. A NULL-default mindig a legszigorúbb értelmezés. A `durable_memory_approval_policy` közös agent-szintű szabály a user által kezdeményezett **betanított működési szabály** aktiválására és a **projektmemória-javaslat** elfogadására. A két memória UI-ja és verziólánca ettől még külön marad. A régi, általános `approval_mode` az agent-/rendszer-kezdeményezett önfejlesztési és eval-automatizmusokat vezérli; user-kezdeményezett tartós memóriaírásnál nem írhatja felül a `durable_memory_approval_policy` értékét. A KB-publikálás, rollback, hard delete és capability-változtatás külön jogosultsági folyamat marad.
+Ez a spec a profilt **olvassa és kikényszeríti** (§8), nem írja. A NULL-default: jóváhagyó kell, négy szem ki. A `durable_memory_approval_policy` közös agent-szintű szabály a user által kezdeményezett **betanított működési szabály** aktiválására és a **projektmemória-javaslat** elfogadására. A két memória UI-ja és verziólánca ettől még külön marad. A régi, általános `approval_mode` az agent-/rendszer-kezdeményezett önfejlesztési és eval-automatizmusokat vezérli; user-kezdeményezett tartós memóriaírásnál nem írhatja felül a `durable_memory_approval_policy` értékét. A KB-publikálás, rollback, hard delete és capability-változtatás külön jogosultsági folyamat marad.
 
 ### 3.6 `training_proposal_revisions` — a ticketen belüli javaslattörténet
 
@@ -242,7 +243,7 @@ A koncepció §4.6.1 és a Roadmap §5.8 pontosan rögzíti a protokollt; itt fo
   [active] ──rollbackMemory(toVersion)──► a korábbi verzió újra [active], a leváltott [rolled_back]
 ```
 
-**Minden átmenet:** RBAC-kapuzott (`requireRole`), append-only auditba ír, és a `token_status`-t lépteti. A manuális tanítás `pending_approval → approved` kapu erőssége az érintett agent `durable_memory_approval_policy` mezőjéből jön (§4.5); `operator_can_activate` esetén az operator előnézetből közvetlenül az `approved → written → active` útvonalra léphet. `four_eyes_required=true` esetén az aktiváló user nem lehet a jelenlegi javaslat-revízió kezdeményezője. Az általános `approval_mode` csak az agent-/rendszer-kezdeményezett önfejlesztési ág kapuerősségét vezérli (§8.1).
+**Minden átmenet:** RBAC-kapuzott (`requireRole`), append-only auditba ír, és a `token_status`-t lépteti. A manuális tanítás `pending_approval → approved` kapu erőssége az érintett agent `durable_memory_approval_policy` mezőjéből jön (§4.5); `operator_can_activate` esetén az operator előnézetből közvetlenül az `approved → written → active` útvonalra léphet. Ha a `four_eyes_required` mező igaz (ma a termékfelület nem állítja, §4.5.1), az aktiváló user nem lehet a jelenlegi javaslat-revízió kezdeményezője. Az általános `approval_mode` csak az agent-/rendszer-kezdeményezett önfejlesztési ág kapuerősségét vezérli (§8.1).
 
 ### 4.2 A token életciklusa (kemény invariánsok)
 
@@ -292,15 +293,32 @@ Az agent `durable_memory_approval_policy` beállítása a user által kezdemény
 
 Szabályok:
 
-- Default és hiányzó érték: `approver_required`.
-- A `four_eyes_required` külön agent-szintű szabály. Ha igaz, a jóváhagyó személyazonosítója nem egyezhet a legutolsó javaslat-revízió `created_by` értékével; az approver szerep önmagában nem enged önjóváhagyást.
-- A `four_eyes_required=true` és az `operator_can_activate` együtt érvénytelen konfiguráció. A UI nem kínálhatja fel ezt a kombinációt, a backend pedig elutasítja; a négy szem elv bekapcsolása `approver_required` aktiválási módot feltételez.
+- Default és hiányzó érték: `approver_required`, `four_eyes_required=false` (§4.5.1).
+- A `four_eyes_required` a sémában megmarad. Ha igaz, a jóváhagyó személyazonosítója nem egyezhet a legutolsó javaslat-revízió `created_by` értékével; az approver szerep önmagában nem enged önjóváhagyást. **A termékfelület ezt a kapcsolót nem kínálja, mentéskor `false`-ra kényszeríti** — l. §4.5.1.
+- A `four_eyes_required=true` és az `operator_can_activate` együtt érvénytelen konfiguráció. A backend ezt elutasítja; a négy szem elv (ha valaha újra bekapcsolható lesz) `approver_required` aktiválási módot feltételez.
 - A beállítást csak admin módosíthatja, és a módosítás auditált.
 - A mód **nem ad tenant-hozzáférést és nem emel szerepet**. Az operator csak olyan agentet taníthat, amelyhez eleve hozzáfér, és rendelkezik tanítás-javaslati joggal.
 - Az `operator_can_activate` UX-rövidítés: ugyanaz a teljes verziózás, impact check, write-gate, audit és rollback fut, mint approveres aktiválásnál.
 - Ugyanez a policy dönt a user által elfogadott projektmemória-javaslatokról is, de a projektmemória külön felületen, külön adatokkal és külön verzióláncban marad.
 - Rollback, végleges törlés, capability-/connector-/RBAC-változtatás nem lazítható ezzel a beállítással; ezek külön adminisztratív jogot igényelnek.
 - Az aktiválás pillanatában az aktuális agent-beállítás és az aktuális user-jogosultság dönt; korábban megnyitott képernyő vagy ticket nem őriz meg lazább jogosultságot.
+
+#### 4.5.1 2026-08-26 termékdöntés — a négy szem elv szünetel
+
+**Ez nem spec-drift és nem véletlen gyengítés.** A v1.1.1-ben a négy szem elvet **szándékosan kivesszük a termékfelületről**, mert a most leszállított tanítási folyamat mellett **használhatatlan**: a tanítást tipikusan az a személy viszi végig, aki a tenantben jóváhagyó is (KKV: egy admin/approver). A `four_eyes_required=true` ekkor a saját javaslatot „Másik jóváhagyóra vár” állapotba zárja — második személy nélkül a ticket soha nem aktiválható, a tanítás nem fejezhető be. A kapcsoló tehát nem kontrollt adott, hanem elakadt munkát.
+
+Következmény a kódban:
+
+| Réteg | Viselkedés |
+|---|---|
+| UI (önfejlesztési profil) | nincs négy szem kapcsoló; mentéskor `four_eyes_required=false` |
+| NULL / hiányzó policy | `approver_required` + `four_eyes_required=false` |
+| Meglévő agentek | a mezőt `false`-ra kell állítani (egyszeri karbantartó script) |
+| Backend | a mező és a T21/T22 őr **megmarad**; ha a mező valahogy `true`, a szerver továbbra is tiltja az önjóváhagyást |
+
+Ami **nem** szűnik meg: az `approver_required` / `operator_can_activate` kapu, a write-gate, a verziózás, a rollback és az audit. A négy szem **célállapot marad**, de csak akkor kapcsolható vissza a felületre, ha a tanítási folyamat két külön személyre ténylegesen végigvihető (van második jóváhagyó, és a UI ezt a helyzetet kezeli, nem zárja zsákutcába a ticketet).
+
+**Ne interpretáld újra „a default a legszigorúbb, tehát négy szem be.”** A v1.1 NULL-értelmezése ezt mondta; a v1.1.1 felülírja.
 
 ### 4.6 Jogosultságalapú, közérthető tanítási UI
 
@@ -312,8 +330,9 @@ A UI a szerveroldali policy döntésének vetülete, nem önálló biztonsági k
 | operator + `approver_required` | „Megnézem, mit változtat” → „Jóváhagyásra küldöm” |
 | operator + `operator_can_activate` | „Megnézem, mit változtat” → „Aktiválom az új verziót” |
 | approver/admin + függő javaslat | „Jóváhagyom és aktiválom” + „Visszaküldöm” |
-| approver/admin + saját javaslat + négy szem elv | nincs jóváhagyó gomb; „Másik jóváhagyóra vár” státusz |
-| admin | a fentieken túl agent-szintű jóváhagyási mód beállítása; külön jogosultsággal rollback/törlés |
+| admin | a fentieken túl agent-szintű jóváhagyási mód (`approver_required` / `operator_can_activate`) beállítása; külön jogosultsággal rollback/törlés |
+
+A v1.1 „approver/admin + saját javaslat + négy szem elv → Másik jóváhagyóra vár” sora **nem élő UI** (§4.5.1). A backend-teszt (T21) a rejtett mezőre vonatkozik, nem a felületre.
 
 UX-követelmények:
 
@@ -427,13 +446,13 @@ A write-gate **minden agentre érvényes**; a kapu *erőssége* per-agent állí
 
 - **Scope (mit módosíthat magán):** `memory` / `+ behavior` / `+ role`. A tágabb scope erősebb kaput indokol. A `scope_class` a tárolt profil `scope`-ja ellen ellenőrződik — kívül eső scope → reject.
 - **Tartós memória aktiválása:** `approver_required` / `operator_can_activate`. A user által kezdeményezett betanított-szabály és projektmemória-változások közös küszöbe (§4.5); nem egyesíti a két memória tartalmát vagy verzióláncát.
-- **Négy szem elv:** `four_eyes_required`. Bekapcsolva a legutolsó javaslat-revízió kezdeményezője saját approver jogosultságával sem aktiválhat; külön személy szükséges.
+- **Négy szem elv:** `four_eyes_required` — **szünetel a termékfelületen** (§4.5.1). A mező a sémában és a szerverőrben megmarad; bekapcsolva a legutolsó javaslat-revízió kezdeményezője saját approver jogosultságával sem aktiválhat. A UI nem állítja `true`-ra.
 - **Approval mode (a tárcsa „laza" vége):** `human` (ember kötelező) / `higher_role` (magasabb jogú szerep elég) / `eval_only` (eval-kapu elég) / `auto_after_eval` (eval után automatikus promóció). Minden módban **fut a verziózás és az audit**; `eval_only` és `auto_after_eval` esetén az eval **kötelező**.
 - **Diff-limit (hatókör-limit):** `max_chars` / `max_items` / `max_salience` — mekkora és milyen tömegű/súlyú tudás érinthető egy ciklusban. Túllépés → reject.
 
 ### 8.2 Mindig fix, nem konfigurálható ki
 
-Verziózás + rollback + teljes audit, valamint a platform kezében maradó, szerveroldali, egyszer használatos write-token — **minden módban kötelező**. A `NULL` profil = legszigorúbb (`approver_required`, `four_eyes_required=true`, `human`, `scope=[memory]`).
+Verziózás + rollback + teljes audit, valamint a platform kezében maradó, szerveroldali, egyszer használatos write-token — **minden módban kötelező**. A `NULL` profil = `approver_required`, `four_eyes_required=false`, `human`, `scope=[memory]` (§4.5.1). A négy szem nem része a kötelező padlónak.
 
 ### 8.3 Kemény padló (privilege-escalation kizárása)
 
@@ -458,7 +477,7 @@ Egy agent **önmódosítással soha nem bővítheti** a saját jogosultságait v
 | I11 | Agent-beállítás nem teremt jogosultságot | aktiválás csak RBAC + agent `durable_memory_approval_policy` metszetével |
 | I12 | UI-gombkészlet a szerverpolicy vetülete | backend authz minden akción; kliens csak az engedett műveleteket rendereli |
 | I13 | A memóriafajták verziólánca nem írja felül egymást | betanított szabályverzió és projektmemória-manifeszt külön logikai current/version chain |
-| I14 | Négy szem elvnél nincs önjóváhagyás | ha `four_eyes_required`, akkor `activated_by != current_revision.created_by` |
+| I14 | Négy szem elvnél nincs önjóváhagyás | ha a mező `true`, akkor `activated_by != current_revision.created_by`; a termékfelület a mezőt nem kapcsolja be (§4.5.1) |
 
 **Audit-események** (append-only, `verifyChain()`-be láncolt): `memory.update`, `memory.rollback`, `memory.write_denied`, `training.proposed`, `training.approved`, `training.rejected`, `training.eval`, `memory.retrieval`. Minden esemény hordozza a `tenant_id`-t, az `agent_version`-t, a memória-verziót, a döntéshozót és a diff-összefoglalót. **GDPR:** a `content_ref` mögötti tartalom célzottan törölhető (jogszerű kérésre), de a metaadat-lánc és a hash-ek épek maradnak — `verifyChain()` törlés után is zöld (§8.5).
 
@@ -488,8 +507,8 @@ Egy agent **önmódosítással soha nem bővítheti** a saját jogosultságait v
 | T18 | Approver régi böngészőnézetből `v4/r1`-et aktiválna | Elutasítva mint elavult revízió; a legújabb `r2` új review-t igényel |
 | T19 | A ticket alapja `v3`, de közben `v4` aktívvá vált más úton | Aktiválás elutasítva; újraösszeállítás és új review szükséges, csendes felülírás nincs |
 | T20 | Projektmemória-manifeszt frissül | A betanított működési szabályok aktív verziója és current pointere változatlan marad |
-| T21 | Approver a saját javaslatát aktiválná `four_eyes_required=true` agentnél | Szerveroldalon elutasítva; „Másik jóváhagyóra vár” státusz; a javaslat függőben marad |
-| T22 | Másik approver aktiválja ugyanazt a javaslatot | Sikeres aktiválás, mindkét személy az auditban |
+| T21 | Approver a saját javaslatát aktiválná `four_eyes_required=true` agentnél | Szerveroldalon elutasítva; a javaslat függőben marad. **Backend-őr teszt** a szüneteltetett mezőre (§4.5.1), nem élő UI-útvonal |
+| T22 | Másik approver aktiválja ugyanazt a javaslatot `four_eyes_required=true` mellett | Sikeres aktiválás, mindkét személy az auditban. Ugyanúgy backend-őr teszt, mint T21 |
 | T23 | User projektmemória-javaslatot fogadna el | Ugyanaz a `durable_memory_approval_policy` dönt, de csak a projektmemória-manifeszt kap új verziót |
 
 ---
@@ -498,11 +517,13 @@ Egy agent **önmódosítással soha nem bővítheti** a saját jogosultságait v
 
 **Meglévő alap:** `memories` / `memory_versions` / `training_tickets` séma; write-gate token protokoll; `createTrainingTicket` / `approveTraining` / `rollbackMemory`; betanított szabályblokk + projektmemória-retrieval runtime-bekötés; `memory.update` / `rollback` / `write_denied` audit; önfejlesztési-profil olvasás + kemény padló.
 
-**v1.1 kötelező implementáció:** tanítási impact preview; teljes javasolt instruction-verzió; ticketen belüli revíziók; egy nyitott ticket/agent; közös `durable_memory_approval_policy` négy szem opcióval; policy-alapú gombkészlet; legújabb revízió + base-version compare-and-set; betanított szabályverzió és projektmemória-manifeszt külön logikai version/current chain.
+**v1.1 kötelező implementáció:** tanítási impact preview; teljes javasolt instruction-verzió; ticketen belüli revíziók; egy nyitott ticket/agent; közös `durable_memory_approval_policy` (`approver_required` / `operator_can_activate`); policy-alapú gombkészlet; legújabb revízió + base-version compare-and-set; betanított szabályverzió és projektmemória-manifeszt külön logikai version/current chain.
+
+**v1.1.1 (2026-08-26):** a négy szem elv kikerül a termékfelületről (§4.5.1). Nem töröltük a mezőt és a szerverőrt; a szállított tanítási folyamat mellett használhatatlan volt, ezért a default és a UI `false`.
 
 **Fázis 2:** (a) **hibrid retrieval** (FTS + lokális embedding + RRF + salience/decay) — csak ha a tudásbázis mérete vagy ügyfélkérés indokolja (§4.6.2, §10.B); (b) **reflexiós feeder** (§4.6.3, Roadmap D5) — a write-gate enélkül is teljes, ezért nem MVP; (c) **`auto_after_eval` mód éles használata** — eval-suite-érettséget feltételez.
 
-**Rögzített termékdöntések:** (a) a négy szem elv agent-szintű, és tiltja a saját javaslat jóváhagyását; (b) a user által kezdeményezett betanított-szabály és projektmemória-változások közös agent-szintű jóváhagyási policyból élnek, miközben tartalmuk és verzióláncuk külön marad; (c) függő javaslatra minden javaslati jogú user ráépíthet, de más javaslatát csak approver/admin cserélheti le vagy vonhatja vissza; (d) a két tartós memória külön current/version chain, ezért egyik frissítése és rollbackje sem módosítja a másikat. A fizikai megvalósítás lehet külön tábla vagy explicit típussal szeparált tárolás, de ezt az invariánst mindkettőnek garantálnia kell.
+**Rögzített termékdöntések:** (a) a négy szem elv **szünetel** a termékfelületen (§4.5.1): a mező és a szerverőr megmarad, de a UI nem kínálja, a default `false`, mert a jelenlegi tanítási folyamat mellett a saját javaslatot második személy nélkül zsákutcába zárná; visszakapcsolás csak akkor, ha két külön személyre végigvihető; (b) a user által kezdeményezett betanított-szabály és projektmemória-változások közös agent-szintű jóváhagyási policyból élnek (`approver_required` / `operator_can_activate`), miközben tartalmuk és verzióláncuk külön marad; (c) függő javaslatra minden javaslati jogú user ráépíthet, de más javaslatát csak approver/admin cserélheti le vagy vonhatja vissza; (d) a két tartós memória külön current/version chain, ezért egyik frissítése és rollbackje sem módosítja a másikat. A fizikai megvalósítás lehet külön tábla vagy explicit típussal szeparált tárolás, de ezt az invariánst mindkettőnek garantálnia kell.
 
 **Nyitott kérdések (validálandó):**
 1. **Eval-tolerancia és suite-karbantartás:** mekkora pontszám-csökkenés még elfogadható, és ki gondozza a suite-okat? (ügyfél-specifikus; alap-tolerancia tenant-konfig)
@@ -512,4 +533,4 @@ Egy agent **önmódosítással soha nem bővítheti** a saját jogosultságait v
 
 ---
 
-*Forrás és ellenőrzés: a dokumentum a `AI-Agent-Platform-Koncepcio.md` (§4.6–4.6.4, §8.1) és a `AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md` (§4.4, §5.8, §5.11, §5.12.2, §11) alapján készült, és illeszkedik az Agent Registry / Model Gateway / ConversationSession / Per-user Connector feature-specekhez. Utolsó termék- és kódellenőrzés: 2026-08-25.*
+*Forrás és ellenőrzés: a dokumentum a `AI-Agent-Platform-Koncepcio.md` (§4.6–4.6.4, §8.1) és a `AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md` (§4.4, §5.8, §5.11, §5.12.2, §11) alapján készült, és illeszkedik az Agent Registry / Model Gateway / ConversationSession / Per-user Connector feature-specekhez. Utolsó termék- és kódellenőrzés: 2026-08-26 (v1.1.1: négy szem elv szüneteltetése, §4.5.1).*

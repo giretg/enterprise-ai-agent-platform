@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict'
 import { resolveSelfEvolutionProfile } from '../src/lib/self-evolution-profile'
 import {
+  DEFAULT_DURABLE_MEMORY_POLICY,
   STRICT_DURABLE_MEMORY_POLICY,
   assertValidDurableMemoryPolicy,
   computeTrainingAllowedActions,
@@ -34,14 +35,15 @@ const USER_A = 'user-a'
 const USER_B = 'user-b'
 
 async function run() {
-  await test('NULL profil = approver_required + four_eyes', () => {
+  await test('NULL profil = jóváhagyó kell, négy szem ki', () => {
     const profile = resolveSelfEvolutionProfile(null)
-    assert.deepEqual(resolveDurableMemoryApprovalPolicy(profile), STRICT_DURABLE_MEMORY_POLICY)
+    assert.deepEqual(resolveDurableMemoryApprovalPolicy(profile), DEFAULT_DURABLE_MEMORY_POLICY)
+    assert.equal(profile.durable_memory_approval_policy?.four_eyes_required, false)
   })
 
-  await test('hiányzó policy mező a szigorú defaultot kapja', () => {
+  await test('hiányzó policy mező a defaultot kapja (négy szem ki)', () => {
     const profile = resolveSelfEvolutionProfile({ scope: ['memory'], approval_mode: 'human' })
-    assert.deepEqual(resolveDurableMemoryApprovalPolicy(profile), STRICT_DURABLE_MEMORY_POLICY)
+    assert.deepEqual(resolveDurableMemoryApprovalPolicy(profile), DEFAULT_DURABLE_MEMORY_POLICY)
   })
 
   await test('négy szem + operator_can_activate érvénytelen', () => {
@@ -103,6 +105,17 @@ async function run() {
       pending: { createdById: USER_B },
     })
     assert.deepEqual(actions, [])
+  })
+
+  await test('négy szem: saját új tanítás előnézetén nincs Aktiválom, csak jóváhagyásra küldés', () => {
+    const actions = computeTrainingAllowedActions({
+      role: APPROVER,
+      policy: STRICT_DURABLE_MEMORY_POLICY,
+      actorId: USER_A,
+      pending: null,
+    })
+    assert.equal(actions.includes('activate'), false)
+    assert.ok(actions.includes('submit_for_approval'))
   })
 
   await test('T21: approver saját javaslatát négy szem elvnél nem aktiválhatja', () => {

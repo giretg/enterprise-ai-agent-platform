@@ -17,6 +17,7 @@ import { MemoryRollbackService } from '@/domain/memory/memory-rollback-service'
 import { MemoryMaintenanceService } from '@/domain/memory/memory-maintenance-service'
 import { TrainingService } from '@/domain/training/training-service'
 import { SelfEvolutionGuard } from '@/domain/training/self-evolution-guard'
+import { LlmTeachAnalyzer } from '@/domain/training/teach-analyzer'
 import { AuditChainService } from '@/domain/audit/audit-chain-service'
 import { WriteGateService } from '@/domain/writegate/write-gate-service'
 import { EvalService } from '@/domain/eval/eval-service'
@@ -616,6 +617,7 @@ const trainingService = new TrainingService(
   repositories.agents,
   selfEvolutionGuard,
   repositories.training,
+  new LlmTeachAnalyzer({ model: modelGateway }),
 )
 // Tartós agent-memória — WP-6 (agent-memory-persistent-cross-conversation-spec.md
 // §6.3/§9.4): candidate → T2 chunk jóváhagyás, inline write-gate consume vagy

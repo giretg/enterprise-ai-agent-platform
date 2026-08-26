@@ -34,9 +34,9 @@ export function UpdateSelfEvolutionProfileForm({
     scope: resolved.scope,
     approval_mode: resolved.approval_mode,
     diff_limit: resolved.diff_limit,
-    durable_memory_approval_policy: resolved.durable_memory_approval_policy ?? {
-      activation_mode: 'approver_required',
-      four_eyes_required: true,
+    durable_memory_approval_policy: {
+      activation_mode: resolved.durable_memory_approval_policy?.activation_mode ?? 'approver_required',
+      four_eyes_required: false,
     },
   })
 
@@ -49,12 +49,14 @@ export function UpdateSelfEvolutionProfileForm({
   }
 
   const setDurable = (patch: Partial<Profile['durable_memory_approval_policy']>) => {
-    setProfile((prev) => {
-      const next = { ...prev.durable_memory_approval_policy, ...patch }
-      if (next.four_eyes_required) next.activation_mode = 'approver_required'
-      if (next.activation_mode === 'operator_can_activate') next.four_eyes_required = false
-      return { ...prev, durable_memory_approval_policy: next }
-    })
+    setProfile((prev) => ({
+      ...prev,
+      durable_memory_approval_policy: {
+        ...prev.durable_memory_approval_policy,
+        ...patch,
+        four_eyes_required: false,
+      },
+    }))
   }
 
   const form = (
@@ -65,7 +67,16 @@ export function UpdateSelfEvolutionProfileForm({
           e.preventDefault()
           startTransition(async () => {
             setError(null)
-            const res = await updateAgentSelfEvolutionProfile({ agentId, profile })
+            const res = await updateAgentSelfEvolutionProfile({
+              agentId,
+              profile: {
+                ...profile,
+                durable_memory_approval_policy: {
+                  ...profile.durable_memory_approval_policy,
+                  four_eyes_required: false,
+                },
+              },
+            })
             if (res.success) router.refresh()
             else setError(res.error)
           })
@@ -124,24 +135,9 @@ export function UpdateSelfEvolutionProfileForm({
               type="radio"
               name="activation_mode"
               checked={profile.durable_memory_approval_policy.activation_mode === 'operator_can_activate'}
-              disabled={profile.durable_memory_approval_policy.four_eyes_required}
-              onChange={() => setDurable({ activation_mode: 'operator_can_activate', four_eyes_required: false })}
+              onChange={() => setDurable({ activation_mode: 'operator_can_activate' })}
             />
             Operátor is életbe léptetheti
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={profile.durable_memory_approval_policy.four_eyes_required}
-              disabled={profile.durable_memory_approval_policy.activation_mode === 'operator_can_activate'}
-              onChange={(e) =>
-                setDurable({
-                  four_eyes_required: e.target.checked,
-                  activation_mode: e.target.checked ? 'approver_required' : profile.durable_memory_approval_policy.activation_mode,
-                })
-              }
-            />
-            Négy szem elv — a javaslatot nem hagyhatja jóvá ugyanaz, aki írta
           </label>
         </fieldset>
         <label className="block text-sm">

@@ -6,7 +6,9 @@ import type { SelfEvolutionProfile } from '@/lib/self-evolution-profile'
  * MemoryTraining v1.1 §3.5 / §4.5 — user-kezdeményezett tartós memóriaírás
  * jóváhagyási küszöbe. Az általános `approval_mode` ezt NEM írhatja felül.
  *
- * NULL / hiányzó mező = legszigorúbb: jóváhagyó kell, négy szem elv be.
+ * Hiányzó mező = jóváhagyó kell, négy szem ki.
+ * MemoryTraining v1.1.1 §4.5.1: a négy szem elv szünetel a termékfelületen
+ * (a mostani tanítási folyamat mellett használhatatlan); a mező és a szerverőr megmarad.
  */
 export type DurableMemoryActivationMode = 'approver_required' | 'operator_can_activate'
 
@@ -15,6 +17,12 @@ export type DurableMemoryApprovalPolicy = {
   four_eyes_required: boolean
 }
 
+export const DEFAULT_DURABLE_MEMORY_POLICY: DurableMemoryApprovalPolicy = {
+  activation_mode: 'approver_required',
+  four_eyes_required: false,
+}
+
+/** Explicit négy-szemes policy — a UI nem kínálja (§4.5.1), a backend T21/T22 még kezeli. */
 export const STRICT_DURABLE_MEMORY_POLICY: DurableMemoryApprovalPolicy = {
   activation_mode: 'approver_required',
   four_eyes_required: true,
@@ -74,7 +82,7 @@ export function resolveDurableMemoryApprovalPolicy(
   profile: SelfEvolutionProfile | null | undefined,
 ): DurableMemoryApprovalPolicy {
   const raw = profile?.durable_memory_approval_policy
-  if (!raw) return { ...STRICT_DURABLE_MEMORY_POLICY }
+  if (!raw) return { ...DEFAULT_DURABLE_MEMORY_POLICY }
   return {
     activation_mode: raw.activation_mode,
     four_eyes_required: raw.four_eyes_required,
@@ -158,8 +166,12 @@ export function computeTrainingAllowedActions(params: {
       actorId: params.actorId,
       revisionCreatedById: params.pending.createdById,
     })
+  const wouldBeOwnProposal = canPropose && !params.pending && params.policy.four_eyes_required
+  if (wouldBeOwnProposal) {
+    actions.add('submit_for_approval')
+  }
 
-  if (canActivateRole && !pendingBlocksFourEyes) {
+  if (canActivateRole && !pendingBlocksFourEyes && !wouldBeOwnProposal) {
     if (params.pending || params.policy.activation_mode === 'operator_can_activate') {
       actions.add('activate')
     }

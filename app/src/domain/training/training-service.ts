@@ -12,7 +12,9 @@ import type { TicketService } from '../ticket/ticket-service'
 import type { WriteGateService } from '../writegate/write-gate-service'
 import type { EvalService } from '../eval/eval-service'
 import type { SelfEvolutionGuard } from './self-evolution-guard'
-import type { MemoryItemOperation } from './memory-items'
+import { parseMemoryItems, type MemoryItemOperation } from './memory-items'
+import type { TeachAnalyzer } from './teach-analyzer'
+import { changeSummaryFromTeachPlan, type TeachPlan } from './teach-plan'
 import {
   TrainingGateError,
   computeTrainingAllowedActions,
@@ -105,6 +107,7 @@ export class TrainingService {
     private agents: AgentRepository,
     private selfEvolutionGuard: SelfEvolutionGuard,
     private store: TrainingStore,
+    private teachAnalyzer: TeachAnalyzer | null = null,
   ) {}
 
   private async requireReachableAgent(
@@ -315,15 +318,18 @@ export class TrainingService {
 
     const pendingTicket = await this.findOpenInstructionTicket(ctx.id)
     let pendingContent: string | null = null
+    let pendingRevision: RevisionRow | null = null
     if (pendingTicket) {
       const meta = await this.store.findTrainingMeta(pendingTicket.id)
-      const revision = meta?.currentRevisionId ? await this.store.findRevision(meta.currentRevisionId) : null
-      pendingContent = revision?.proposedVersionRef ?? null
-      if (!params.compositionMode) {
+      pendingRevision = meta?.currentRevisionId ? await this.store.findRevision(meta.currentRevisionId) : null
+      pendingContent = pendingRevision?.proposedVersionRef ?? null
+      // Csak akkor kell composition választás, ha van beépíthető javaslat-tartalom.
+      // Üres/árva nyitott jegyre a UI sem tud választót mutatni.
+      if (pendingContent && !params.compositionMode) {
         throw new TrainingGateError('composition_required')
       }
-      if (params.compositionMode === 'replace_pending') {
-        const own = (revision?.createdById ?? pendingTicket.createdById) === params.actor.id
+      if (pendingContent && params.compositionMode === 'replace_pending') {
+        const own = (pendingRevision?.createdById ?? pendingTicket.createdById) === params.actor.id
         if (!own && !hasTrainingRejectRight(params.actor.role)) {
           throw new TrainingGateError('replace_not_allowed')
         }
@@ -331,16 +337,33 @@ export class TrainingService {
     }
 
     try {
+      const baseContent =
+        pendingContent && params.compositionMode === 'build_on_pending'
+          ? pendingContent
+          : (ctx.currentInstruction?.content ?? '')
+      let teachPlan: TeachPlan | null = null
+      if (params.instruction.kind === 'teach' && this.teachAnalyzer) {
+        const agent = await this.agents.findById(ctx.id)
+        teachPlan = await this.teachAnalyzer.analyze({
+          existingItems: parseMemoryItems(baseContent),
+          teaching: params.instruction.text,
+          agentId: ctx.id,
+          agentVersion: ctx.currentVersion,
+          tenantId: ctx.tenantId,
+          modelConfig: agent && 'modelConfig' in agent ? agent.modelConfig : undefined,
+        })
+      }
       const composed = composeProposedVersion({
         activeContent: ctx.currentInstruction?.content ?? '',
         pendingContent,
         instruction: params.instruction,
         compositionMode: params.compositionMode ?? null,
+        teachPlan,
       })
-      const changeSummary = summarizeInstructionChange(
-        composed.base === 'pending' ? (pendingContent ?? '') : (ctx.currentInstruction?.content ?? ''),
-        composed.proposedVersion,
-      )
+      const before = composed.base === 'pending' ? (pendingContent ?? '') : (ctx.currentInstruction?.content ?? '')
+      const changeSummary = teachPlan
+        ? changeSummaryFromTeachPlan(parseMemoryItems(before), teachPlan)
+        : summarizeInstructionChange(before, composed.proposedVersion)
       const impactResult = buildImpactResult({ changeSummary, proposedVersion: composed.proposedVersion })
       const previewId = signTrainingPreview({
         agentId: ctx.id,
@@ -766,7 +789,7 @@ export class TrainingService {
     return { memoryVersion, writeGateTokenId: gateToken.id, evalRun }
   }
 
-  async rejectTraining(params: { ticketId: string; reason: string; actor: TrainingActor }) {
+  async rejectTraining(params: { ticketId: string; reason?: string; actor: TrainingActor }) {
     const ticket = await this.tickets.findById(params.ticketId)
     if (!ticket || ticket.type !== 'training') throw new Error('Training ticket not found')
     this.assertTicketTenantScope(ticket, params.actor)
@@ -781,11 +804,12 @@ export class TrainingService {
     if (meta?.currentRevisionId) {
       await this.store.updateRevision(meta.currentRevisionId, { tokenStatus: 'revoked', status: 'superseded' })
     }
+    const reason = params.reason?.trim() || undefined
     await this.ticketService.transition({
       ticketId: params.ticketId,
       toState: 'rejected',
       actor: { type: 'human', userId: params.actor.id, role: params.actor.role },
-      note: params.reason,
+      note: reason,
       agentVersion: ctx.currentVersion,
     })
     await this.audit.append({
@@ -796,12 +820,12 @@ export class TrainingService {
       targetType: 'ticket',
       targetId: params.ticketId,
       modelUsed: null,
-      inputRef: params.reason,
+      inputRef: reason ?? null,
       outputRef: 'rejected',
       policyDecision: 'rejected',
       tenantId: ctx.tenantId,
       ticketId: params.ticketId,
-      metadata: { reason: params.reason },
+      metadata: reason ? { reason } : {},
     })
   }
 

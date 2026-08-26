@@ -70,10 +70,8 @@ export function selfEvolutionSummary(profile: SelfEvolutionProfile) {
   const durableLabel = durable
     ? durable.activation_mode === 'operator_can_activate'
       ? 'az operátor is életbe léptetheti a tanítást'
-      : durable.four_eyes_required
-        ? 'a tanításhoz külön jóváhagyó kell'
-        : 'a tanítást jóváhagyó lépteti életbe'
-    : 'a tanításhoz külön jóváhagyó kell'
+      : 'a tanítást jóváhagyó lépteti életbe'
+    : 'a tanítást jóváhagyó lépteti életbe'
   return `Önállóan fejlesztheti: ${scopes}. ${approval}${limit}. Tartós tudás: ${durableLabel}.`
 }
 
