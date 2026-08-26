@@ -1,7 +1,8 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useEffect, useMemo, useState, useTransition } from 'react'
+import { useMemo, useState, useTransition } from 'react'
+import { useTicketWorkspaceFiles } from '@/components/tickets/use-ticket-workspace-files'
 import { addTicketComment, uploadTicketCommentAttachment } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { ChatMarkdown } from '@/components/chat/chat-markdown'
@@ -290,19 +291,7 @@ export function TicketThread({
   }
   comments: TicketThreadComment[]
 }) {
-  const [workspaceFilePaths, setWorkspaceFilePaths] = useState<string[]>([])
-  useEffect(() => {
-    const controller = new AbortController()
-    void fetch(`/api/v1/tickets/${ticket.id}/workspace/files`, { signal: controller.signal })
-      .then(async (response) => (response.ok ? response.json() : null))
-      .then((json: { data?: { files?: string[] } } | null) => {
-        if (!controller.signal.aborted) setWorkspaceFilePaths(json?.data?.files ?? [])
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setWorkspaceFilePaths([])
-      })
-    return () => controller.abort()
-  }, [ticket.id])
+  const { files: workspaceFilePaths } = useTicketWorkspaceFiles(ticket.id, ticket.state)
   const originalTask = ticket.taskDescription?.trim() || ticket.title
   const canHandBack = Boolean(
     ticket.agentId && !ticket.processInstanceId && ['done', 'awaiting_human'].includes(ticket.state),
