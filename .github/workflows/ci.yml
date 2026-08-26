@@ -64,6 +64,7 @@ jobs:
           npm run test:observability
           npm run test:health-endpoints
           npm run test:tool-broker-tenant
+          npm run test:ticket-acting-user
           npm run test:user-directory
           npm run test:provisioning-errors
           npm run test:tenant-web-egress-selection

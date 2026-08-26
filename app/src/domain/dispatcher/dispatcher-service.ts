@@ -16,7 +16,7 @@ import {
   ADVANCEABLE_PROCESS_STATUSES,
   TERMINAL_PROCESS_STATUSES,
 } from '@/lib/playbook-v2/process-status'
-import { isRunAsAuthorized, readRunAsUserId } from '@/lib/run-as-payload'
+import { resolveTicketActingUserIdWithContext } from '@/lib/ticket-acting-user'
 import { wikiSearchQuery } from '@/lib/wiki-ticket-payload'
 import { logger, dispatchTotal, dispatchLagMs } from '@/lib/observability'
 import { exceedsHardCap, type BudgetEngine, type BudgetUsage } from '@/domain/gateway/budget-engine'
@@ -887,7 +887,10 @@ export class DispatcherService {
       typeof payload.agentVersion === 'number' ? payload.agentVersion : undefined
     const searchQuery = wikiSearchQuery(payload).trim()
     const question = searchQuery || undefined
-    const actingUserId = isRunAsAuthorized(payload) ? (readRunAsUserId(payload) ?? undefined) : undefined
+    const actingUserId = ticket.agentId
+      ? ((await resolveTicketActingUserIdWithContext({ callerAgentId: ticket.agentId, ticket })) ??
+        undefined)
+      : undefined
 
     let started: Ticket | null = null
     let launcher: HarnessLauncher | null = null

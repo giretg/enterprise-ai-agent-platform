@@ -180,7 +180,9 @@ const ticketA = {
   id: 'ticket-A',
   tenantId: TENANT_A,
   agentId: CALLER,
-  payload: {},
+  createdById: 'human-user-A',
+  conversationId: null,
+  payload: { source: 'agent_chat' },
   state: 'in_progress',
 } as unknown as Ticket
 
@@ -391,6 +393,18 @@ async function main() {
   })
 
   // ── Külső agent API: acting-user / kontextus eredete ──────────────────────
+  await test('saját humán feladójú ticket run-as nélkül a feladót adja', async () => {
+    const broker = makeBroker()
+    const actingUserId = await broker.resolveActingUserId({
+      agentId: CALLER,
+      agentVersion: 1,
+      ticketId: ticketA.id,
+      tool: 'http_api_get',
+      args: { path: '/orders' },
+    })
+    assert.equal(actingUserId, 'human-user-A')
+  })
+
   await test('más agent ticketjének run-as grantját nem fogadja el', async () => {
     const broker = makeBroker()
     const actingUserId = await broker.resolveActingUserId({
