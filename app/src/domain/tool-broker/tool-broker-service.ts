@@ -6,12 +6,7 @@ import type {
 import { prisma } from '@/lib/db'
 import type { WebFetchResult, WebFetchSourceType } from '@/domain/web-fetch/web-fetch-types'
 
-import {
-  isRunAsAuthorized,
-  isScheduledTaskRunAsAuthorized,
-  readRunAsUserId,
-  SCHEDULED_TASK_ID,
-} from '@/lib/run-as-payload'
+import { resolveTicketActingUserIdWithContext } from '@/lib/ticket-acting-user'
 import { GmailApiAuthError } from '@/domain/connector-grant/gmail-api-client'
 
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
@@ -794,28 +789,14 @@ export class ToolBrokerService {
     if (effectiveTicketId) {
       const ticket = await this.tickets.findById(effectiveTicketId)
       // A ticket ID-je kliens által befolyásolható az agent API-n. Csak a hívó
-      // agenthez rendelt ticket viheti tovább a tárolt, explicit run-as jogot;
+      // agenthez rendelt ticket viheti tovább a feladó / run-as identitást;
       // különben egy másik agent ticketjének user-grantját lehetne megszemélyesíteni.
       if (ticket?.agentId === input.agentId) {
-        const payload = isRecord(ticket.payload) ? ticket.payload : null
-        if (isRunAsAuthorized(payload)) {
-          // Materializált scheduled futásnál a ticket-payload csak hivatkozás;
-          // a tényleges, visszavonható felhatalmazás a ScheduledTask sor. Egy
-          // visszavont vagy más tickethez kötött task sosem ad acting-user jogot.
-          if (typeof payload?.[SCHEDULED_TASK_ID] === 'string') {
-            const scheduledTask = await prisma.scheduledTask.findUnique({
-              where: { id: payload[SCHEDULED_TASK_ID] },
-            })
-            if (!isScheduledTaskRunAsAuthorized({
-              ticketId: ticket.id,
-              ticketTenantId: ticket.tenantId,
-              payload,
-              scheduledTask,
-            })) return null
-          }
-          return readRunAsUserId(payload)
-        }
-        return null
+        return resolveTicketActingUserIdWithContext({
+          callerAgentId: input.agentId,
+          ticket,
+          conversationIdHint: input.conversationId,
+        })
       }
     }
 

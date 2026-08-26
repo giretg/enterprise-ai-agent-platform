@@ -74,3 +74,95 @@ export function removeRunAsAuthorization(payload: Record<string, unknown>): Reco
   delete next[RUN_AS_AUTHORIZED_BY]
   return next
 }
+
+const NIL_USER_ID = '00000000-0000-0000-0000-000000000000'
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function payloadRecord(payload: unknown): Record<string, unknown> | null {
+  return isRecord(payload) ? payload : null
+}
+
+function isHumanUserId(userId: string | null | undefined): userId is string {
+  return Boolean(userId && userId !== NIL_USER_ID)
+}
+
+function isAgentFiledPayload(payload: Record<string, unknown> | null): boolean {
+  if (!payload) return false
+  return payload.source === 'agent_tool' || typeof payload.createdByAgentId === 'string'
+}
+
+function conversationActingUserId(
+  callerAgentId: string,
+  conversation: { agentId: string; createdById: string } | null | undefined,
+): string | null {
+  if (!conversation || conversation.agentId !== callerAgentId) return null
+  return isHumanUserId(conversation.createdById) ? conversation.createdById : null
+}
+
+export type TicketActingUserTicket = {
+  id: string
+  agentId: string | null
+  createdById: string
+  source?: string | null
+  conversationId?: string | null
+  tenantId?: string | null
+  payload: unknown
+}
+
+/**
+ * Ki a ticket acting userje?
+ *
+ * - Humán feladójú munka (board, egyszeri/ismétlődő scheduled, monitor): a feladó.
+ * - Explicit, még érvényes run-as: felülírja a feladót (scheduled task sorral egyeztetve).
+ * - Agent által felvett kártya: a beszélgetés beszélője, sosem a system user.
+ */
+export function resolveTicketActingUserId(input: {
+  callerAgentId: string
+  ticket: TicketActingUserTicket
+  conversation?: { agentId: string; createdById: string } | null
+  scheduledTask?: (Parameters<typeof isScheduledTaskRunAsAuthorized>[0]['scheduledTask'] & {
+    recurrence?: string | null
+  }) | null
+}): string | null {
+  if (!input.ticket.agentId || input.ticket.agentId !== input.callerAgentId) return null
+  const payload = payloadRecord(input.ticket.payload)
+
+  if (typeof payload?.[SCHEDULED_TASK_ID] === 'string') {
+    const taskLoaded = 'scheduledTask' in input
+    if (taskLoaded) {
+      if (
+        isScheduledTaskRunAsAuthorized({
+          ticketId: input.ticket.id,
+          ticketTenantId: input.ticket.tenantId ?? null,
+          payload,
+          scheduledTask: input.scheduledTask ?? null,
+        })
+      ) {
+        return readRunAsUserId(payload)
+      }
+    } else if (isRunAsAuthorized(payload)) {
+      return readRunAsUserId(payload)
+    }
+  } else if (isRunAsAuthorized(payload)) {
+    return readRunAsUserId(payload)
+  }
+
+  if (isAgentFiledPayload(payload)) {
+    return conversationActingUserId(input.callerAgentId, input.conversation)
+  }
+  if (isHumanUserId(input.ticket.createdById)) return input.ticket.createdById
+  return conversationActingUserId(input.callerAgentId, input.conversation)
+}
+
+export function readTicketConversationId(ticket: {
+  conversationId?: string | null
+  payload: unknown
+}): string | null {
+  if (ticket.conversationId?.trim()) return ticket.conversationId.trim()
+  const payload = payloadRecord(ticket.payload)
+  const fromPayload = payload?.conversationId
+  return typeof fromPayload === 'string' && fromPayload.trim() ? fromPayload.trim() : null
+}

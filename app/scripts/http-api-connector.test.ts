@@ -689,6 +689,90 @@ async function main() {
     }
   })
 
+  await test('runtime: actingUser.email nélkül a CRM-hívás fetch ELŐTT elhasal', async () => {
+    let fetched = false
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      fetched = true
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as typeof fetch
+    try {
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://crm.example/api/connector/v1',
+        auth: { scheme: 'bearer' },
+        requestHeaders: {
+          'X-Agent-Id': '{{agent.id}}',
+          'X-Acting-User': '{{actingUser.email}}',
+          'X-Connector-Call-Id': '{{call.id}}',
+        },
+        endpoints: [{ method: 'GET', path: '/orders' }],
+        restrictToEndpoints: true,
+      })
+      const client = new HttpApiClient(config, 'crm_key')
+      await assert.rejects(
+        client.request({
+          method: 'GET',
+          path: '/orders',
+          context: {
+            ...crmTraceContext,
+            actingUser: null,
+          },
+        }),
+        (e: unknown) =>
+          e instanceof HttpApiError &&
+          e.code === 'template_variable_missing' &&
+          e.message.includes('actingUser.email'),
+      )
+      assert.equal(fetched, false)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('runtime: defaultActingUserEmail fallback acting user nélkül is megy', async () => {
+    const calls: Array<{ init: RequestInit }> = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_input, init) => {
+      calls.push({ init: init ?? {} })
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as typeof fetch
+    try {
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://crm.example/api/connector/v1',
+        auth: { scheme: 'bearer' },
+        defaultActingUserEmail: 'fallback@ostorosbor.hu',
+        requestHeaders: {
+          'X-Agent-Id': '{{agent.id}}',
+          'X-Acting-User': '{{actingUser.email}}',
+          'X-Connector-Call-Id': '{{call.id}}',
+        },
+        endpoints: [{ method: 'GET', path: '/orders' }],
+        restrictToEndpoints: true,
+      })
+      const client = new HttpApiClient(config, 'crm_key')
+      const res = await client.request({
+        method: 'GET',
+        path: '/orders',
+        context: {
+          ...crmTraceContext,
+          actingUser: null,
+          defaultActingUserEmail: config.defaultActingUserEmail,
+        },
+      })
+      assert.equal(res.ok, true)
+      const headers = calls[0].init.headers as Record<string, string>
+      assert.equal(headers['X-Acting-User'], 'fallback@ostorosbor.hu')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   await test('runtime: hívó által beadott platform-injektált header → platform_injected_header', async () => {
     const config = parseHttpApiConfig({
       baseUrl: 'https://crm.example/api/v1',
