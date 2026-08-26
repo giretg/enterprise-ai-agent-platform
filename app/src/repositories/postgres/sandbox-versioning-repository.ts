@@ -84,20 +84,26 @@ export class PostgresSandboxVersioningRepository implements SandboxVersioningRep
 
   // ── commit ─────────────────────────────────────────────────────────────────
 
-  async createCommit(input: CreateSandboxCommitInput): Promise<SandboxCommit> {
+  async createCommitAndAdvanceTest(input: CreateSandboxCommitInput): Promise<SandboxCommit> {
     return prisma.$transaction(async (tx) => {
+      // A pointer- és a seq-verseny ugyanazon project-soron dől el. A lockot a
+      // commit beszúrásáig ÉS a pointerek mozgatásáig megtartjuk.
+      const locked = await tx.$queryRaw<Array<{ id: string; head_commit_id: string | null }>>`
+        SELECT id, head_commit_id FROM sandbox_projects WHERE id = ${input.projectId} FOR UPDATE
+      `
+      if (locked.length !== 1) throw new Error('Sandbox project not found while creating commit')
       const last = await tx.sandboxCommit.findFirst({
         where: { projectId: input.projectId },
         orderBy: { seq: 'desc' },
         select: { seq: true },
       })
       const seq = (last?.seq ?? 0) + 1
-      return tx.sandboxCommit.create({
+      const commit = await tx.sandboxCommit.create({
         data: {
           tenantId: input.tenantId,
           projectId: input.projectId,
           seq,
-          parentCommitId: input.parentCommitId,
+          parentCommitId: locked[0].head_commit_id,
           basedOnCommitId: input.basedOnCommitId,
           source: input.source,
           changeSummary: input.changeSummary,
@@ -113,6 +119,11 @@ export class PostgresSandboxVersioningRepository implements SandboxVersioningRep
           buildCost: input.buildCost ?? {},
         },
       })
+      await tx.sandboxProject.update({
+        where: { id: input.projectId },
+        data: { headCommitId: commit.id, testCommitId: commit.id },
+      })
+      return commit
     })
   }
 
@@ -182,6 +193,53 @@ export class PostgresSandboxVersioningRepository implements SandboxVersioningRep
     }>,
   ): Promise<SandboxPromotion> {
     return prisma.sandboxPromotion.update({ where: { id }, data })
+  }
+
+  async decidePendingPromotion(
+    id: string,
+    data: {
+      status: 'approved' | 'rejected'
+      approvedByUserId: string
+      reason: string | null
+      decidedAt: Date
+    },
+  ): Promise<SandboxPromotion | null> {
+    const changed = await prisma.sandboxPromotion.updateMany({
+      where: { id, status: 'pending_approval' },
+      data,
+    })
+    if (changed.count !== 1) return null
+    return prisma.sandboxPromotion.findUnique({ where: { id } })
+  }
+
+  async promoteApprovedPromotion(input: {
+    promotionId: string
+    projectId: string
+    fromCommitId: string
+    prePromotionSnapshotId: string
+    reason: string | null
+    promotedAt: Date
+  }): Promise<SandboxPromotion | null> {
+    return prisma.$transaction(async (tx) => {
+      // A test fejének összehasonlítása és a live pointer mozgatása egyetlen
+      // írási tranzakció: egy időközben érkezett commit nem élesíthet régi fát.
+      const project = await tx.sandboxProject.updateMany({
+        where: { id: input.projectId, testCommitId: input.fromCommitId },
+        data: { liveCommitId: input.fromCommitId },
+      })
+      if (project.count !== 1) return null
+      const promotion = await tx.sandboxPromotion.updateMany({
+        where: { id: input.promotionId, status: 'approved' },
+        data: {
+          status: 'promoted',
+          prePromotionSnapshotId: input.prePromotionSnapshotId,
+          reason: input.reason,
+          promotedAt: input.promotedAt,
+        },
+      })
+      if (promotion.count !== 1) throw new Error('Claimed sandbox promotion was lost')
+      return tx.sandboxPromotion.findUnique({ where: { id: input.promotionId } })
+    })
   }
 
   // ── adat-snapshot ─────────────────────────────────────────────────────────────

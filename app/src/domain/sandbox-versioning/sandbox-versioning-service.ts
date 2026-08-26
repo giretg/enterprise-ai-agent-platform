@@ -129,18 +129,13 @@ export class SandboxVersioningService {
     const stored = await this.codeStore.putTree({
       tenantId: project.tenantId,
       projectId: project.id,
-      // seq előlegzése: a fa-path a leendő commit seq-jét használja. A repo a commit
-      // beszúrásakor osztja ki a végleges seq-et; ütközés esetén a putTree idempotens
-      // felülír (immutable tartalom, azonos tree_hash), ezért itt a head+1 becslés elég.
-      seq: await this.nextSeqEstimate(project.id),
       files,
     })
 
     const af = actorAuditFields(actor)
-    const commit = await this.repo.createCommit({
+    const commit = await this.repo.createCommitAndAdvanceTest({
       tenantId: project.tenantId,
       projectId: project.id,
-      parentCommitId: project.headCommitId,
       basedOnCommitId: null,
       source: af.createdByType === 'agent' ? 'agent' : 'user',
       changeSummary: input.changeSummary,
@@ -154,12 +149,6 @@ export class SandboxVersioningService {
       createdFromTicketId: input.createdFromTicketId ?? null,
       createdFromRunId: input.createdFromRunId ?? null,
       buildCost: (input.buildCost ?? {}) as Prisma.InputJsonValue,
-    })
-
-    // A commit CSAK a `test` fát mozdítja; a `live` sosem változik commitra (§4.1).
-    await this.repo.updateProjectPointers(project.id, {
-      headCommitId: commit.id,
-      testCommitId: commit.id,
     })
 
     await this.appendAudit(actor, 'sandbox.commit', {
@@ -237,10 +226,9 @@ export class SandboxVersioningService {
     // Invariáns 2: NEM töröljük a history-t; új commitot hozunk létre, ami a régi
     // fát állítja vissza (based_on_commit_id = target). A live-t nem érinti.
     const af = actorAuditFields(actor)
-    const commit = await this.repo.createCommit({
+    const commit = await this.repo.createCommitAndAdvanceTest({
       tenantId: project.tenantId,
       projectId: project.id,
-      parentCommitId: project.headCommitId,
       basedOnCommitId: target.id,
       source: 'user',
       changeSummary: `Rollback → seq ${target.seq}: ${input.reason.trim()}`,
@@ -253,11 +241,6 @@ export class SandboxVersioningService {
       createdByAgentId: af.createdByAgentId,
       createdFromTicketId: null,
       createdFromRunId: null,
-    })
-
-    await this.repo.updateProjectPointers(project.id, {
-      headCommitId: commit.id,
-      testCommitId: commit.id,
     })
 
     await this.appendAudit(actor, 'sandbox.rollback', {
@@ -398,26 +381,40 @@ export class SandboxVersioningService {
       throw new SandboxVersionError('PROMOTION_ALREADY_DECIDED', `promotion is ${promotion.status}`)
     }
 
+    const decidedAt = new Date()
+    const decided = await this.repo.decidePendingPromotion(promotion.id, {
+      status: input.decision === 'reject' ? 'rejected' : 'approved',
+      approvedByUserId: actor.userId,
+      reason: input.reason ?? null,
+      decidedAt,
+    })
+    if (!decided) {
+      throw new SandboxVersionError('PROMOTION_ALREADY_DECIDED', 'promotion decision is already in progress or completed')
+    }
+
     if (input.decision === 'reject') {
-      await this.repo.updatePromotion(promotion.id, {
-        status: 'rejected',
-        approvedByUserId: actor.userId,
-        reason: input.reason ?? null,
-        decidedAt: new Date(),
-      })
       await this.appendAudit(actor, 'sandbox.promote.reject', {
         projectId: project.id,
-        commitId: promotion.fromCommitId,
+        commitId: decided.fromCommitId,
         env: 'live',
         reason: input.reason ?? null,
         approvedByUserId: actor.userId,
-        metadata: { promotionId: promotion.id },
+        metadata: { promotionId: decided.id },
       })
-      return { promotionId: promotion.id, status: 'rejected' }
+      return { promotionId: decided.id, status: 'rejected' }
     }
 
     // A from_commit legyen még a `test` aktuális feje (stale-védelem).
-    if (promotion.fromCommitId !== project.testCommitId) {
+    if (decided.fromCommitId !== project.testCommitId) {
+      await this.repo.updatePromotion(decided.id, { status: 'rejected', reason: 'test head moved since request' })
+      await this.appendAudit(actor, 'sandbox.promote.reject', {
+        projectId: project.id,
+        commitId: decided.fromCommitId,
+        env: 'live',
+        approvedByUserId: actor.userId,
+        metadata: { promotionId: decided.id, reason: 'test_head_moved' },
+        policyDecision: 'denied',
+      })
       throw new SandboxVersionError('PROMOTION_STALE_HEAD', 'test head moved since request')
     }
 
@@ -429,10 +426,10 @@ export class SandboxVersioningService {
         env: 'live',
         kind: 'pre_promotion',
         actor,
-        linkedPromotionId: promotion.id,
+        linkedPromotionId: decided.id,
       })
     } catch (err) {
-      await this.repo.updatePromotion(promotion.id, {
+      await this.repo.updatePromotion(decided.id, {
         status: 'rejected',
         decidedAt: new Date(),
         reason: 'pre-promotion snapshot failed',
@@ -444,28 +441,40 @@ export class SandboxVersioningService {
       )
     }
 
-    await this.repo.updateProjectPointers(project.id, { liveCommitId: promotion.fromCommitId })
-    await this.repo.updatePromotion(promotion.id, {
-      status: 'promoted',
-      approvedByUserId: actor.userId,
+    const promotedAt = new Date()
+    const promoted = await this.repo.promoteApprovedPromotion({
+      promotionId: decided.id,
+      projectId: project.id,
+      fromCommitId: decided.fromCommitId,
       prePromotionSnapshotId: snapshot.id,
-      reason: input.reason ?? promotion.reason,
-      decidedAt: new Date(),
-      promotedAt: new Date(),
+      reason: input.reason ?? decided.reason,
+      promotedAt,
     })
+    if (!promoted) {
+      await this.repo.updatePromotion(decided.id, { status: 'rejected', reason: 'test head moved during approval' })
+      await this.appendAudit(actor, 'sandbox.promote.reject', {
+        projectId: project.id,
+        commitId: decided.fromCommitId,
+        env: 'live',
+        approvedByUserId: actor.userId,
+        metadata: { promotionId: decided.id, reason: 'test_head_moved_during_approval' },
+        policyDecision: 'denied',
+      })
+      throw new SandboxVersionError('PROMOTION_STALE_HEAD', 'test head moved during approval')
+    }
 
     await this.appendAudit(actor, 'sandbox.promote.approve', {
       projectId: project.id,
-      commitId: promotion.fromCommitId,
+      commitId: decided.fromCommitId,
       env: 'live',
       reason: input.reason ?? null,
       approvedByUserId: actor.userId,
       snapshotId: snapshot.id,
       schemaHash: snapshot.schemaHash,
-      metadata: { promotionId: promotion.id, prevLiveCommitId: promotion.prevLiveCommitId },
+      metadata: { promotionId: decided.id, prevLiveCommitId: decided.prevLiveCommitId },
     })
 
-    return { promotionId: promotion.id, status: 'promoted', liveCommitId: promotion.fromCommitId }
+    return { promotionId: promoted.id, status: 'promoted', liveCommitId: decided.fromCommitId }
   }
 
   async listPromotions(input: { projectId: string; status?: SandboxPromotion['status'] }, actor: SandboxActor) {
@@ -610,11 +619,6 @@ export class SandboxVersioningService {
   }
 
   // ── Belső segédek ────────────────────────────────────────────────────────────
-
-  private async nextSeqEstimate(projectId: string): Promise<number> {
-    const [latest] = await this.repo.listCommits({ projectId, limit: 1 })
-    return (latest?.seq ?? 0) + 1
-  }
 
   private async persistSnapshot(
     project: { id: string; tenantId: string | null; dataBinding: unknown },
