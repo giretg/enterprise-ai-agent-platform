@@ -1,12 +1,18 @@
 import { NextResponse } from 'next/server'
 import { authenticateAgentRequest, requireAgentScope } from '@/auth/agent-api-key'
 import { services } from '@/domain'
+import { GatewayBudgetError } from '@/domain/gateway/model-gateway'
 import { buildStubOpenAiCompletion } from '@/domain/gateway/stub-openai-completion'
 import { relayTextToolCall } from '@/domain/gateway/text-tool-relay'
 import { assertAgentWorkTenantOperable } from '@/lib/agent-work-tenant-gate'
 import { resolveGatewayRequestModel } from '@/lib/harness-model-config'
+import {
+  parseAgentVersionHeader,
+  parseTicketIdHeader,
+} from '@/lib/gateway-request-context'
 import { repositories } from '@/repositories/postgres'
 import { openAiChatCompletionSchema } from '@/lib/validators/gateway'
+import { logger } from '@/lib/observability'
 
 function isStubProviderConfigured(): boolean {
   const providerUrl = process.env.CHATGPT_OAUTH_PROVIDER_URL
@@ -16,6 +22,27 @@ function isStubProviderConfigured(): boolean {
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: { message, type: 'gateway_error' } }, { status })
+}
+
+/**
+ * A `x-ticket-id` fejléc feloldása TÁROLHATÓ, tenant-birtokolt ticketId-vé.
+ * Csak jól formázott UUID, létező ticket, és — tenant-scoped agentnél — a hívó
+ * agent SAJÁT szervezetéhez tartozó ticket megy át. A megosztott (platform,
+ * `tenantId=null`) agent a korábbi, tágabb viselkedést tartja meg. Minden más
+ * eset némán `undefined` (a modellhívás lefut és rögzül, csak ticket-kontextus
+ * nélkül) — így egy hibás/idegen fejléc nem buktatja meg a költség-rekordot és
+ * nem tapad más tenant ticketjéhez.
+ */
+async function resolveTenantOwnedTicketId(
+  raw: string | null,
+  agentTenantId: string | null,
+): Promise<string | undefined> {
+  const candidate = parseTicketIdHeader(raw)
+  if (!candidate) return undefined
+  const ticket = await repositories.tickets.findById(candidate)
+  if (!ticket) return undefined
+  if (agentTenantId !== null && ticket.tenantId !== agentTenantId) return undefined
+  return candidate
 }
 
 export async function POST(request: Request) {
@@ -40,9 +67,19 @@ export async function POST(request: Request) {
     return jsonError(parsed.error.message, 400)
   }
 
-  const ticketId = request.headers.get('x-ticket-id')?.trim() || undefined
-  const agentVersionHeader = request.headers.get('x-agent-version')?.trim()
-  const agentVersion = agentVersionHeader ? Number.parseInt(agentVersionHeader, 10) : undefined
+  const agent = await repositories.agents.findById(auth.agentId)
+  if (!agent) return jsonError('Agent not found', 404)
+
+  // Az agent-kliens által küldött, NEM megbízható kontextus-fejlécek a tárolható
+  // tartományra szűrve. Enélkül egy rosszul formázott `x-agent-version` (→ NaN egy
+  // Int oszlopban) vagy egy idegen/ismeretlen `x-ticket-id` a modellhívás UTÁN
+  // buktatta volna meg a ModelCall rögzítését — a szolgáltatói költség így
+  // láthatatlanul kiesett volna a keretből, vagy más tenant ticketjéhez tapadt volna.
+  const agentVersion = parseAgentVersionHeader(request.headers.get('x-agent-version'))
+  const ticketId = await resolveTenantOwnedTicketId(
+    request.headers.get('x-ticket-id'),
+    agent.tenantId,
+  )
 
   const tenantGate = await assertAgentWorkTenantOperable({
     agentId: auth.agentId,
@@ -54,9 +91,6 @@ export async function POST(request: Request) {
       403,
     )
   }
-
-  const agent = await repositories.agents.findById(auth.agentId)
-  if (!agent) return jsonError('Agent not found', 404)
 
   const modelConfig = agent.modelConfig as {
     provider: string
@@ -169,8 +203,22 @@ export async function POST(request: Request) {
       agent_version: agentVersion ?? agent.currentVersion,
     })
   } catch (e) {
-    const message = e instanceof Error ? e.message : 'Gateway call failed'
-    const status = message.includes('budget') || message.includes('guardrail') ? 429 : 502
-    return jsonError(message, status)
+    // A keret-/guardrail-/érzékenység-kapu elutasítása mind `GatewayBudgetError`
+    // (a hívást egy kapu visszautasította, nem szerverhiba) → 429. Típus szerint
+    // döntünk, nem a hibaüzenet szövegére illesztve: az üzenet átfogalmazása nem
+    // csúsztathatja el a státuszt, és a belső részlet (pl. a guardrail-üzenetben
+    // szereplő ticket-azonosító) nem szivárog a külső API-kliensnek.
+    if (e instanceof GatewayBudgetError) {
+      return jsonError('Rate or budget limit reached', 429)
+    }
+    logger.error(
+      {
+        event: 'gateway.chat_completions.error',
+        agentId: auth.agentId,
+        error: e instanceof Error ? e.message : String(e),
+      },
+      'Gateway chat completion failed',
+    )
+    return jsonError('Gateway call failed', 502)
   }
 }
