@@ -2528,6 +2528,20 @@ export interface SandboxVersioningRepository {
       decidedAt: Date
     },
   ): Promise<SandboxPromotion | null>
+  /**
+   * A `staleBefore` előtt lefoglalt, de be nem fejezett (`approved`, `promoted_at IS NULL`)
+   * jóváhagyást foglalja újra — crash-recovery. Ha időközben más vitte tovább vagy a
+   * lefoglalás még friss, `null`.
+   */
+  reclaimStalledApproval(
+    id: string,
+    data: {
+      approvedByUserId: string
+      reason: string | null
+      decidedAt: Date
+      staleBefore: Date
+    },
+  ): Promise<SandboxPromotion | null>
   /** Csak a lefoglalt (`approved`) promotiont lépteti live-ba, ha még a test fejét célozza. */
   promoteApprovedPromotion(
     input: {
