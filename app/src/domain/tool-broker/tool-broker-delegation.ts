@@ -71,6 +71,7 @@ import {
   extractAgentAnswerDisplayBody,
 } from '@/lib/playbook-v2/process-step-payload'
 import {
+  buildRunAsAuthorization,
   isRunAsAuthorized,
   readRunAsUserId,
   RUN_AS_AUTHORIZED_AT,
@@ -1063,8 +1064,12 @@ export async function ticketCreate(self: ToolBrokerService,
         payload[RUN_AS_AUTHORIZED_BY] = parentPayload![RUN_AS_AUTHORIZED_BY]
       }
     }
+    if (!isRunAsAuthorized(payload) && input.actingUserId) {
+      Object.assign(payload, buildRunAsAuthorization({ userId: input.actingUserId }))
+    }
 
     const initialState: TicketState = args.assigneeType === 'agent' ? 'ready' : 'in_progress'
+    const conversationId = input.conversationId ?? parent?.conversationId ?? null
 
     let ticket = await self.tickets.create({
       tenantId: parent?.tenantId ?? null,
@@ -1079,6 +1084,7 @@ export async function ticketCreate(self: ToolBrokerService,
       executeAfter: null,
       dueBy: null,
       createdById: await systemUserId(),
+      conversationId,
     })
 
     if (args.assigneeType === 'human') {

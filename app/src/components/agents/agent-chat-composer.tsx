@@ -218,8 +218,7 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
         </div>
       ) : null}
 
-      {!embedded ? (
-        <div className="mb-2 flex flex-wrap items-center gap-2">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
           <div className="inline-flex rounded-lg border border-line bg-night-2 p-0.5" role="radiogroup" aria-label="Mi legyen az üzenetből">
             {modeOptions.map((option) => (
               <button
@@ -274,8 +273,7 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
               ) : null}
             </div>
           ) : null}
-        </div>
-      ) : null}
+      </div>
 
       {mode === 'process' ? (
         <ProcessPicker
@@ -290,21 +288,23 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
       {mode === 'task' ? (
         <div className="mb-2 rounded-xl border border-honey/35 bg-honey/5 px-3 py-2.5">
           <TaskScheduleFields state={ticketSchedule} disabled={disabled} onChange={onTicketScheduleChange} />
-          <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-lg bg-card px-2.5 py-2">
-            <input
-              type="checkbox"
-              checked={ticketAuthorizeRunAs}
-              onChange={(event) => onTicketAuthorizeRunAsChange(event.target.checked)}
-              disabled={disabled}
-              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-coral"
-            />
-            <span className="text-xs">
-              <span className="font-semibold text-ink">Futhat a nevemben</span>
-              <span className="mt-0.5 block text-[11px] leading-snug text-ink-faint">
-                Engedélyezi, hogy a feladat a te jogosultságoddal végezzen hozzáférést igénylő lépéseket.
+          {ticketSchedule.mode === 'recurring' ? (
+            <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-lg bg-card px-2.5 py-2">
+              <input
+                type="checkbox"
+                checked={ticketAuthorizeRunAs}
+                onChange={(event) => onTicketAuthorizeRunAsChange(event.target.checked)}
+                disabled={disabled}
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-coral"
+              />
+              <span className="text-xs">
+                <span className="font-semibold text-ink">Futhat a nevemben</span>
+                <span className="mt-0.5 block text-[11px] leading-snug text-ink-faint">
+                  A rendszeres futások a te fiókoddal (például Gmail) dolgozhatnak, akkor is, ha épp nem vagy a gépnél.
+                </span>
               </span>
-            </span>
-          </label>
+            </label>
+          ) : null}
         </div>
       ) : null}
 

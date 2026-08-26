@@ -4209,7 +4209,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
       assigneeType: 'agent',
       assigneeId: agentId,
       agentId,
-      payload: { runAsUserId: operatorId },
+      payload: { source: 'agent_tool', createdByAgentId: agentId, runAsUserId: operatorId },
       createdById: admin.id,
       executeAfter: null,
       dueBy: null,
@@ -4224,9 +4224,9 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     ticketId: runTicket.id,
   })
   if (deniedImplicitRunAs.denied && deniedImplicitRunAs.reason === 'acting_user_required') {
-    pass('F2-E — implicit run-as nélkül DENY')
+    pass('F2-E — agent-felvett ticket beszélő nélkül DENY')
   } else {
-    fail('F2-E implicit run-as deny', JSON.stringify(deniedImplicitRunAs))
+    fail('F2-E agent-filed ticket deny', JSON.stringify(deniedImplicitRunAs))
   }
 
   const deniedSpoofedTicketRunAs = await services.toolBroker.invoke({
@@ -4243,23 +4243,20 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     fail('F2-E ticket acting_user spoof deny', JSON.stringify(deniedSpoofedTicketRunAs))
   }
 
-  const deniedTicketConversationInheritance = await services.toolBroker.invoke({
+  const speakerFromConversation = await services.toolBroker.invoke({
     agentId,
     agentVersion,
     tool: 'gmail_search',
-    args: { query: 'platform' },
+    args: { query: 'platform', maxResults: 3 },
     ticketId: runTicket.id,
     conversationId: conversation.id,
   })
-  if (
-    deniedTicketConversationInheritance.denied &&
-    deniedTicketConversationInheritance.reason === 'acting_user_required'
-  ) {
-    pass('F2-E — ticket nem örököl implicit conversation usert')
+  if (!speakerFromConversation.denied && 'messages' in (speakerFromConversation.result as { messages?: unknown[] })) {
+    pass('F2-E — agent chatből felvett ticket a beszélő usert viszi')
   } else {
     fail(
-      'F2-E ticket conversation inheritance deny',
-      JSON.stringify(deniedTicketConversationInheritance),
+      'F2-E agent-filed conversation speaker',
+      JSON.stringify(speakerFromConversation),
     )
   }
 

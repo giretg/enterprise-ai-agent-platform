@@ -183,6 +183,7 @@ async function testEphemeralKeyAndPermanentBlock() {
   const started = await dispatcher.dispatchTicket(tickets.ticket.id)
   assert.equal(started.status, 'started')
   assert.equal(launchInput.current?.harnessAgentApiKey, `raw-${baseTicket.agentId}`)
+  assert.equal(launchInput.current?.actingUserId, baseTicket.createdById)
 
   const completed = await dispatcher.completeHarnessRun({
     ticketId: tickets.ticket.id,
@@ -632,8 +633,59 @@ async function testDispatchAlertNotifierReadsPersistedChannel() {
   assert.equal(sent[0].dedupKey, `dispatch-blocked:${baseTicket.id}`)
 }
 
+async function assertDispatchActingUser(
+  label: string,
+  ticketOverrides: Partial<Ticket>,
+  expectedActingUserId: string,
+) {
+  const tickets = new FakeTickets(cloneTicket(ticketOverrides))
+  const launchInput: { current?: Parameters<HarnessLauncher['launch']>[0] } = {}
+  const dispatcher = new DispatcherService(
+    tickets as unknown as TicketRepository,
+    new FakeAudit() as unknown as AuditRepository,
+    modelCalls,
+    {
+      mode: 'docker-local',
+      async launch(input) {
+        launchInput.current = input
+        return { jobId: `job-${label}` }
+      },
+    },
+    undefined,
+    async () => true,
+    new FakeAgents() as unknown as AgentRepository,
+  )
+
+  const started = await dispatcher.dispatchTicket(tickets.ticket.id)
+  assert.equal(started.status, 'started', `${label}: dispatch status`)
+  assert.equal(launchInput.current?.actingUserId, expectedActingUserId, `${label}: acting user`)
+}
+
+async function testDispatchActingUserFromTicketSource() {
+  await assertDispatchActingUser(
+    'monitor',
+    {
+      source: 'system',
+      payload: { source: 'monitor', monitorId: 'mon-1' },
+    },
+    baseTicket.createdById,
+  )
+  await assertDispatchActingUser(
+    'recurring-scheduled',
+    {
+      payload: {
+        source: 'scheduled_task',
+        scheduledTaskId: '99999999-0000-4000-8000-999999990001',
+        schedule: { kind: 'recurring', recurrence: 'daily' },
+      },
+    },
+    baseTicket.createdById,
+  )
+}
+
 async function main() {
   await testEphemeralKeyAndPermanentBlock()
+  await testDispatchActingUserFromTicketSource()
   await testPermanentHeuristicBlocksWithoutCategory()
   await testTransientFailureRetriesBeforeLimit()
   await testTransientRetryLimit()
