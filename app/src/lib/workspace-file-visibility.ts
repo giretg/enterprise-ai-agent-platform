@@ -8,6 +8,32 @@ export function isHtmlWorkspaceFile(path: string): boolean {
   return /\.html?$/i.test(path)
 }
 
+/** Word / Excel / PowerPoint — ZIP+XML, a tárban tokenizálva marad. */
+export function isOfficeOpenXmlWorkspaceFile(path: string): boolean {
+  return /\.(docx|xlsx|pptx)$/i.test(path)
+}
+
+/**
+ * Ezeket a letöltő route oldja fel a nézőnek (HTML preview/export, Office
+ * export). GCS signed URL megkerülné a feloldást, ezért ezekre tilos.
+ */
+export function workspaceFileNeedsPrivacyEgress(path: string): boolean {
+  return isHtmlWorkspaceFile(path) || isOfficeOpenXmlWorkspaceFile(path)
+}
+
+export function officeWorkspaceContentType(path: string): string {
+  if (/\.docx$/i.test(path)) {
+    return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  }
+  if (/\.xlsx$/i.test(path)) {
+    return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  }
+  if (/\.pptx$/i.test(path)) {
+    return 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+  }
+  return 'application/octet-stream'
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
