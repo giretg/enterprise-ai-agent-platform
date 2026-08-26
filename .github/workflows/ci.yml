@@ -133,6 +133,7 @@ jobs:
           npm run test:conversation-session
           npm run test:agent-interaction-ticket
           npm run test:workspace-file-visibility
+          npm run test:ticket-workspace-files
           npm run test:workspace-handoff
           npm run test:workspace-inline-html-headers
           npm run test:tool-registry-drift
