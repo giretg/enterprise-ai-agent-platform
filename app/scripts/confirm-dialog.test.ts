@@ -14,10 +14,6 @@ function readSrc(rel: string) {
 }
 
 const CALL_SITES = [
-  'src/components/agents/training-workspace.tsx',
-  'src/components/agents/agent-chat-panel.tsx',
-  'src/components/agents/memory-panel.tsx',
-  'src/components/agents/agent-knowledge-base-panel.tsx',
   'src/components/processes/process-definition-list.tsx',
   'src/components/processes/process-detail-view.tsx',
   'src/components/monitors/monitor-list.tsx',
@@ -25,7 +21,6 @@ const CALL_SITES = [
   'src/components/playbooks/playbook-detail.tsx',
   'src/components/skills/skill-catalog-manager.tsx',
   'src/components/tickets/ticket-detail.tsx',
-  'src/components/tickets/board-list-view.tsx',
   'src/app/control-plane/provisioning/provisioning-panel.tsx',
 ] as const
 
