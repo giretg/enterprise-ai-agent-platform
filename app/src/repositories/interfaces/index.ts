@@ -2433,7 +2433,6 @@ export type SandboxProjectPointers = {
 export type CreateSandboxCommitInput = {
   tenantId: string | null
   projectId: string
-  parentCommitId: string | null
   basedOnCommitId: string | null
   source: SandboxCommitSource
   changeSummary: string
@@ -2496,8 +2495,10 @@ export interface SandboxVersioningRepository {
   updateProjectPointers(id: string, pointers: SandboxProjectPointers): Promise<SandboxProject>
   archiveProject(id: string): Promise<SandboxProject>
 
-  // commit (a `seq` kiosztás a repository felelőssége, tranzakcióban)
-  createCommit(input: CreateSandboxCommitInput): Promise<SandboxCommit>
+  // Commit + test/head pointer egyetlen projektszintű tranzakcióban. Így két
+  // párhuzamos commit nem kaphat azonos seq-et, és nem írhatja vissza egymás
+  // test/head mutatóját.
+  createCommitAndAdvanceTest(input: CreateSandboxCommitInput): Promise<SandboxCommit>
   findCommitById(id: string): Promise<SandboxCommit | null>
   findCommitByTreeHash(projectId: string, treeHash: string): Promise<SandboxCommit | null>
   listCommits(filter: { projectId: string; limit?: number; beforeSeq?: number }): Promise<SandboxCommit[]>
@@ -2517,6 +2518,27 @@ export interface SandboxVersioningRepository {
       promotedAt: Date | null
     }>,
   ): Promise<SandboxPromotion>
+  /** A pending döntést atomikusan foglalja le; versenyvesztésnél `null`. */
+  decidePendingPromotion(
+    id: string,
+    data: {
+      status: 'approved' | 'rejected'
+      approvedByUserId: string
+      reason: string | null
+      decidedAt: Date
+    },
+  ): Promise<SandboxPromotion | null>
+  /** Csak a lefoglalt (`approved`) promotiont lépteti live-ba, ha még a test fejét célozza. */
+  promoteApprovedPromotion(
+    input: {
+      promotionId: string
+      projectId: string
+      fromCommitId: string
+      prePromotionSnapshotId: string
+      reason: string | null
+      promotedAt: Date
+    },
+  ): Promise<SandboxPromotion | null>
 
   // adat-snapshot
   createSnapshot(input: CreateSandboxSnapshotInput): Promise<SandboxDataSnapshot>
