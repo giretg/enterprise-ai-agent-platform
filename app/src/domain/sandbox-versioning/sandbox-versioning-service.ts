@@ -18,6 +18,14 @@ export type SandboxRole = 'viewer' | 'operator' | 'approver' | 'admin'
 
 const ROLE_RANK: Record<SandboxRole, number> = { viewer: 0, operator: 1, approver: 2, admin: 3 }
 
+/**
+ * Ennyi idő után tekintünk egy `approved` promóciót megszakadtnak. A jóváhagyás
+ * lefoglalja a sort, majd pre-promotion snapshotot készít; ha a folyamat közben
+ * elszáll, a sor `approved`-ban ragadna, és a go-live kézi DB-beavatkozás nélkül
+ * nem lenne befejezhető. A küszöb fölött a jóváhagyás újra lefoglalható.
+ */
+const STALLED_APPROVAL_MS = 5 * 60_000
+
 export type SandboxActor =
   | { userId: string; agentId?: undefined; tenantId: string | null; role?: SandboxRole }
   | { agentId: string; userId?: undefined; tenantId: string | null; agentVersion?: number | null }
@@ -377,17 +385,9 @@ export class SandboxVersioningService {
     const promotion = await this.repo.findPromotionById(input.promotionId)
     if (!promotion) throw new SandboxVersionError('PROMOTION_NOT_FOUND', 'promotion not found')
     const project = await this.ensureProject(promotion.projectId, actor)
-    if (promotion.status !== 'pending_approval') {
-      throw new SandboxVersionError('PROMOTION_ALREADY_DECIDED', `promotion is ${promotion.status}`)
-    }
 
     const decidedAt = new Date()
-    const decided = await this.repo.decidePendingPromotion(promotion.id, {
-      status: input.decision === 'reject' ? 'rejected' : 'approved',
-      approvedByUserId: actor.userId,
-      reason: input.reason ?? null,
-      decidedAt,
-    })
+    const decided = await this.claimDecision(promotion, input, actor.userId, decidedAt)
     if (!decided) {
       throw new SandboxVersionError('PROMOTION_ALREADY_DECIDED', 'promotion decision is already in progress or completed')
     }
@@ -619,6 +619,52 @@ export class SandboxVersioningService {
   }
 
   // ── Belső segédek ────────────────────────────────────────────────────────────
+
+  /**
+   * A döntés atomikus lefoglalása. Normál út: `pending_approval` → `approved`/`rejected`.
+   * A snapshot közben megszakadt jóváhagyás `STALLED_APPROVAL_MS` után újra lefoglalható,
+   * hogy az élesítés befejezhető legyen; a lefoglalás ilyenkor is compare-and-set, két
+   * egyidejű újrapróbálásból csak egy megy tovább. Versenyvesztésnél `null`, véglegesen
+   * lezárt promóciónál hiba.
+   */
+  private async claimDecision(
+    promotion: SandboxPromotion,
+    input: { decision: 'approve' | 'reject'; reason?: string },
+    approvedByUserId: string,
+    decidedAt: Date,
+  ): Promise<SandboxPromotion | null> {
+    if (promotion.status === 'pending_approval') {
+      return this.repo.decidePendingPromotion(promotion.id, {
+        status: input.decision === 'reject' ? 'rejected' : 'approved',
+        approvedByUserId,
+        // A kérelmező indoka a go-live rekord része: csak a jóváhagyó saját indoka
+        // írhatja felül, az indok nélküli jóváhagyás nem törölheti.
+        reason: input.reason ?? promotion.reason,
+        decidedAt,
+      })
+    }
+
+    const stalled =
+      promotion.status === 'approved' &&
+      promotion.promotedAt === null &&
+      decidedAt.getTime() - (promotion.decidedAt?.getTime() ?? 0) >= STALLED_APPROVAL_MS
+    if (stalled && input.decision === 'approve') {
+      return this.repo.reclaimStalledApproval(promotion.id, {
+        approvedByUserId,
+        reason: input.reason ?? promotion.reason,
+        decidedAt,
+        staleBefore: new Date(decidedAt.getTime() - STALLED_APPROVAL_MS),
+      })
+    }
+
+    if (promotion.status === 'approved' && promotion.promotedAt === null) {
+      throw new SandboxVersionError(
+        'PROMOTION_ALREADY_DECIDED',
+        'promotion is already being promoted; retry in a few minutes if it does not finish',
+      )
+    }
+    throw new SandboxVersionError('PROMOTION_ALREADY_DECIDED', `promotion is ${promotion.status}`)
+  }
 
   private async persistSnapshot(
     project: { id: string; tenantId: string | null; dataBinding: unknown },

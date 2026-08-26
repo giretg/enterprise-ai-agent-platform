@@ -212,6 +212,34 @@ export class PostgresSandboxVersioningRepository implements SandboxVersioningRep
     return prisma.sandboxPromotion.findUnique({ where: { id } })
   }
 
+  async reclaimStalledApproval(
+    id: string,
+    data: {
+      approvedByUserId: string
+      reason: string | null
+      decidedAt: Date
+      staleBefore: Date
+    },
+  ): Promise<SandboxPromotion | null> {
+    // A `decided_at` egyben lease is: az újrafoglalás előre tolja, így két egyidejű
+    // újrapróbálásból csak az egyik updateMany talál sort.
+    const changed = await prisma.sandboxPromotion.updateMany({
+      where: {
+        id,
+        status: 'approved',
+        promotedAt: null,
+        decidedAt: { lt: data.staleBefore },
+      },
+      data: {
+        approvedByUserId: data.approvedByUserId,
+        reason: data.reason,
+        decidedAt: data.decidedAt,
+      },
+    })
+    if (changed.count !== 1) return null
+    return prisma.sandboxPromotion.findUnique({ where: { id } })
+  }
+
   async promoteApprovedPromotion(input: {
     promotionId: string
     projectId: string
