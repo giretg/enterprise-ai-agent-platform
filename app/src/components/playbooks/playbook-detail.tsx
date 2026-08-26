@@ -25,6 +25,7 @@ import {
   syncPlaybookSpecInputSlots,
   validatePlaybookDraftSpec,
 } from '@/components/playbooks/playbook-spec-editor'
+import { promptDialog } from '@/components/ui/confirm-dialog'
 
 type ValidationResult = {
   valid: boolean
@@ -624,12 +625,22 @@ export function PlaybookDetail({
                         </button>
                         <button
                           onClick={() => {
-                            const reason = prompt('Elutasítás indoka:')
-                            if (reason)
+                            void (async () => {
+                              const reason = await promptDialog({
+                                title: 'Verzió elutasítása',
+                                description: 'Add meg az elutasítás indokát.',
+                                inputLabel: 'Indok',
+                                placeholder: 'Elutasítás indoka…',
+                                confirmLabel: 'Elutasítás',
+                                tone: 'danger',
+                                required: true,
+                              })
+                              if (!reason) return
                               run(
                                 () => rejectPlaybookVersionV2({ playbookVersionId: v.id, reason }),
                                 'Verzió elutasítva.',
                               )
+                            })()
                           }}
                           disabled={pending}
                           className="rounded-lg border border-coral/40 px-3 py-1.5 text-xs text-coral disabled:opacity-50"

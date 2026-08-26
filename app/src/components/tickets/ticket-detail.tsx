@@ -11,6 +11,7 @@ import { authorizeTicketRunAs, revokeTicketRunAs } from '@/app/actions/connector
 import { openAgentChat } from '@/components/agents/agent-chat-session-store'
 import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
 import { ProposalCard } from '@/components/tickets/proposal-card'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card } from '@/components/ui/shell'
 import { ProcessBadge } from '@/components/processes/process-badge'
 import { RunAnalysisButton } from '@/components/run-analysis/run-analysis-button'
@@ -743,22 +744,27 @@ export function TicketMeta({
   }
 
   function handleDelete() {
-    const confirmMessage = isAdminDelete
-      ? 'Biztosan véglegesen törlöd ezt a feladatot (admin)? A művelet nem vonható vissza, és a csatolt fájlok is törlődnek.'
-      : 'Biztosan törlöd ezt a feladatot? A művelet nem vonható vissza, és a csatolt fájlok is törlődnek.'
-    if (!window.confirm(confirmMessage)) {
-      return
-    }
+    void (async () => {
+      const confirmed = await confirmDialog({
+        title: isAdminDelete ? 'Feladat végleges törlése' : 'Feladat törlése',
+        description: isAdminDelete
+          ? 'Biztosan véglegesen törlöd ezt a feladatot (admin)? A művelet nem vonható vissza, és a csatolt fájlok is törlődnek.'
+          : 'Biztosan törlöd ezt a feladatot? A művelet nem vonható vissza, és a csatolt fájlok is törlődnek.',
+        confirmLabel: 'Törlés',
+        tone: 'danger',
+      })
+      if (!confirmed) return
 
-    startDeleteTransition(async () => {
-      setHeaderMessage(null)
-      const res = await deleteBoardTicket({ ticketId: ticket.id })
-      if (!res.success) {
-        setHeaderMessage({ tone: 'err', text: res.error })
-        return
-      }
-      router.replace('/control-plane/board')
-    })
+      startDeleteTransition(async () => {
+        setHeaderMessage(null)
+        const res = await deleteBoardTicket({ ticketId: ticket.id })
+        if (!res.success) {
+          setHeaderMessage({ tone: 'err', text: res.error })
+          return
+        }
+        router.replace('/control-plane/board')
+      })
+    })()
   }
 
   function handleDiscuss() {

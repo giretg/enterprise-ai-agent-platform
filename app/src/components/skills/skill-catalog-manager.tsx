@@ -20,6 +20,7 @@ import {
   type SkillAdvisoryReviewResult,
 } from '@/app/actions/skills'
 import { ToolCapabilityCheckboxGroups } from '@/components/tool-capabilities/tool-capability-checkbox-groups'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card } from '@/components/ui/shell'
 import { Collapsible } from '@/components/ui/collapsible'
 import type { SkillDiff } from '@/lib/skill/skill-diff'
@@ -597,11 +598,19 @@ export function SkillCatalogManager({
                             type="button"
                             disabled={pending}
                             onClick={() => {
-                              if (!window.confirm(`Biztosan törlöd a „${skillDisplayLabel(s)}” skillt és az összes verzióját? Csak hozzárendelés nélkül lehetséges.`)) return
-                              run(
-                                () => deleteSkillAction(s.id),
-                                `„${skillDisplayLabel(s)}” törölve a katalógusból.`,
-                              )
+                              void (async () => {
+                                const confirmed = await confirmDialog({
+                                  title: 'Skill törlése',
+                                  description: `Biztosan törlöd a „${skillDisplayLabel(s)}” skillt és az összes verzióját? Csak hozzárendelés nélkül lehetséges.`,
+                                  confirmLabel: 'Törlés',
+                                  tone: 'danger',
+                                })
+                                if (!confirmed) return
+                                run(
+                                  () => deleteSkillAction(s.id),
+                                  `„${skillDisplayLabel(s)}” törölve a katalógusból.`,
+                                )
+                              })()
                             }}
                             className="rounded-full border border-coral/40 px-3 py-1 text-xs font-medium text-coral disabled:opacity-50"
                           >
