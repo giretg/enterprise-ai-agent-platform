@@ -56,6 +56,7 @@
     "test:timing-safe-token": "tsx scripts/timing-safe-token.test.ts",
     "test:write-gate-single-use": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/write-gate-single-use.test.ts",
     "test:gateway-relay": "tsx scripts/text-tool-relay.test.ts",
+    "test:gateway-request-context": "tsx scripts/gateway-request-context.test.ts",
     "test:gateway-negative": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/model-gateway-negative.test.ts",
     "test:contract-runtime": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/contract-runtime.test.ts",
     "test:contract-observability": "tsx scripts/contract-observability.test.ts",
