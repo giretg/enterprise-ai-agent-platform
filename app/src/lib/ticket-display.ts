@@ -6,6 +6,7 @@ import {
   type TicketScheduleView,
 } from '@/lib/ticket-schedule'
 import { boardRunPulse, type BoardRunPulse } from '@/domain/agent/ticket-runtime-progress'
+import type { NestedProcessStepView, TicketOriginView } from '@/lib/work-traceability'
 
 export type TicketProcessBadgeInfo = {
   id: string
@@ -207,6 +208,8 @@ export type EnrichedBoardTicket = Pick<
   | 'updatedAt'
   | 'createdById'
   | 'processInstanceId'
+  | 'conversationId'
+  | 'playbookStepId'
   | 'lockToken'
   | 'executeAfter'
 > &
@@ -216,6 +219,12 @@ export type EnrichedBoardTicket = Pick<
     schedule: TicketScheduleView | null
     scheduleSeries: boolean
     runPulse: BoardRunPulse
+    origin: TicketOriginView | null
+    nestedSteps: NestedProcessStepView[]
+    stepsDone: number | null
+    stepsTotal: number | null
+    boardColumnState: string
+    hiddenAsProcessChild: boolean
   }
 
 export function formatTicketDateTime(value: Date | string): string {
@@ -362,7 +371,15 @@ export function enrichTicketsForBoard(
       createdById: ticket.createdById,
       lockToken: ticket.lockToken,
       processInstanceId: ticket.processInstanceId,
+      conversationId: ticket.conversationId,
+      playbookStepId: ticket.playbookStepId,
       executeAfter: ticket.executeAfter,
+      origin: null,
+      nestedSteps: [],
+      stepsDone: null,
+      stepsTotal: null,
+      boardColumnState: ticket.state,
+      hiddenAsProcessChild: false,
       ...display,
       creator: formatTicketCreator({
         createdById: ticket.createdById,

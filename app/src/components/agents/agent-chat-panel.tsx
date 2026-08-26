@@ -10,6 +10,7 @@ import {
   createScheduledAgentTask,
   deleteMessageContent,
   listAgentChatSessions,
+  listChatTaskCards,
   loadAgentChatMessages,
   promoteConversationWithAi,
 } from '@/app/actions/platform'
@@ -24,6 +25,7 @@ import { getTenantThinkingTraceControls } from '@/app/actions/chat-thinking-trac
 import { AgentDelegatedConnectorsBar } from '@/components/agents/agent-delegated-connectors-bar'
 import type { AgentDelegatedConnectorRow } from '@/lib/agent-delegated-connectors'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import {
   removeAgentChatDockEntry,
   upsertAgentChatDockEntry,
@@ -113,6 +115,8 @@ import {
   type ChatProcessDefinition,
   type ChatSkillOption,
 } from '@/components/agents/agent-chat-composer'
+import { MemoryStrip } from '@/components/agents/memory-strip'
+import { type ChatTaskCardView } from '@/lib/work-traceability'
 
 const CHAT_SESSIONS_PAGE_SIZE = 10
 
@@ -137,6 +141,7 @@ export function AgentChatPanel({
   restoreSignal = 0,
   tileTarget = null,
   embedded = false,
+  focusMessageId = null,
 }: {
   agent: ChatAgent
   open: boolean
@@ -155,6 +160,8 @@ export function AgentChatPanel({
   tileTarget?: HTMLElement | null
   /** Agent-sáv munkaterület: inline chat, nem lebegő ablak. */
   embedded?: boolean
+  /** Tábla „Eredet” ugrás: ezt az üzenetet emeli ki. */
+  focusMessageId?: string | null
 }) {
   const persona = personaFor(agent.name, agent)
   const router = useRouter()
@@ -236,6 +243,8 @@ export function AgentChatPanel({
    * sima beszélgetés folyt.
    */
   const [composerMode, setComposerMode] = useState<AgentChatComposerMode>('chat')
+  const [taskCards, setTaskCards] = useState<Record<string, ChatTaskCardView>>({})
+  const [taskCardsLoading, setTaskCardsLoading] = useState(false)
   const [privacyContext, setPrivacyContext] = useState<ChatPrivacyMarkerContext | null>(null)
   const [runAnalysisEntry, setRunAnalysisEntry] = useState<RunAnalysisEntry | null>(null)
   const [pending, startTransition] = useTransition()
@@ -631,25 +640,33 @@ export function AgentChatPanel({
   const handleDeleteMessageContent = useCallback(
     (messageId: string) => {
       if (controlsBusy) return
-      if (!window.confirm('Törlöd az üzenet tartalmát? A szálban csak a csontváz marad.')) return
+      void (async () => {
+        const confirmed = await confirmDialog({
+          title: 'Üzenettartalom törlése',
+          description: 'Törlöd az üzenet tartalmát? A szálban csak a csontváz marad.',
+          confirmLabel: 'Törlés',
+          tone: 'danger',
+        })
+        if (!confirmed) return
 
-      startTransition(async () => {
-        const res = await deleteMessageContent({ messageId })
-        if (!res.success) {
-          setStatusMessage(res.error)
-          return
-        }
-        const deletedAt = new Date().toISOString()
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id === messageId
-              ? { ...message, text: '', attachments: [], contentDeletedAt: deletedAt }
-              : message,
-          ),
-        )
-        setStatusMessage('Üzenettartalom törölve.')
-        await refreshSessions()
-      })
+        startTransition(async () => {
+          const res = await deleteMessageContent({ messageId })
+          if (!res.success) {
+            setStatusMessage(res.error)
+            return
+          }
+          const deletedAt = new Date().toISOString()
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === messageId
+                ? { ...message, text: '', attachments: [], contentDeletedAt: deletedAt }
+                : message,
+            ),
+          )
+          setStatusMessage('Üzenettartalom törölve.')
+          await refreshSessions()
+        })
+      })()
     },
     [controlsBusy, refreshSessions],
   )
@@ -732,18 +749,26 @@ export function AgentChatPanel({
 
   const handleArchiveConversation = useCallback(() => {
     if (!conversationId || controlsBusy || conversationStatus === 'archived') return
-    if (!window.confirm('Archiválod ezt a beszélgetést? Ezután csak olvasható lesz.')) return
-    startArchiveTransition(async () => {
-      setStatusMessage(null)
-      const res = await archiveConversation({ conversationId })
-      if (!res.success) {
-        setStatusMessage(res.error)
-        return
-      }
-      setConversationStatus('archived')
-      setStatusMessage('Beszélgetés archiválva.')
-      await refreshSessions()
-    })
+    void (async () => {
+      const confirmed = await confirmDialog({
+        title: 'Beszélgetés archiválása',
+        description: 'Archiválod ezt a beszélgetést? Ezután csak olvasható lesz.',
+        confirmLabel: 'Archiválás',
+        tone: 'danger',
+      })
+      if (!confirmed) return
+      startArchiveTransition(async () => {
+        setStatusMessage(null)
+        const res = await archiveConversation({ conversationId })
+        if (!res.success) {
+          setStatusMessage(res.error)
+          return
+        }
+        setConversationStatus('archived')
+        setStatusMessage('Beszélgetés archiválva.')
+        await refreshSessions()
+      })
+    })()
   }, [controlsBusy, conversationId, conversationStatus, refreshSessions])
 
   const handleDistillSkill = useCallback(() => {
@@ -1733,6 +1758,43 @@ export function AgentChatPanel({
     restoreSignal,
   ])
 
+  const ticketRefIds = useMemo(
+    () =>
+      [...new Set(messages.map((message) => message.ticketRefId).filter((id): id is string => Boolean(id)))],
+    [messages],
+  )
+  const ticketRefKey = ticketRefIds.join(',')
+
+  useEffect(() => {
+    if (ticketRefIds.length === 0) return
+    let cancelled = false
+    const load = async (initial: boolean) => {
+      if (initial) setTaskCardsLoading(true)
+      const res = await listChatTaskCards({ ticketIds: ticketRefIds })
+      if (cancelled || !res.success) {
+        if (!cancelled && initial) setTaskCardsLoading(false)
+        return
+      }
+      const next: Record<string, ChatTaskCardView> = {}
+      for (const card of res.data.cards) next[card.ticketId] = card
+      setTaskCards(next)
+      setTaskCardsLoading(false)
+    }
+    void load(true)
+    const timer = window.setInterval(() => void load(false), 4000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [ticketRefKey, ticketRefIds])
+
+  useEffect(() => {
+    if (!focusMessageId || messages.length === 0) return
+    const node = document.getElementById(`message-${focusMessageId}`)
+    if (!node) return
+    node.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [focusMessageId, messages])
+
   /**
    * A „Jóváhagyom" gomb után a művelet a szerveren MÁR lefutott — innen az agent
    * folytatja. Enélkül a felhasználó csak annyit lát, hogy „nem történik semmi":
@@ -1803,7 +1865,8 @@ export function AgentChatPanel({
                 : 'none',
             intervalHours: scheduleInput.intervalHours,
             maxRuns: scheduleInput.maxRuns,
-            authorizeRunAs: ticketAuthorizeRunAs,
+            authorizeRunAs:
+              scheduleInput.scheduleMode === 'recurring' ? ticketAuthorizeRunAs : true,
           })
           if (!res.success) {
             setStatusMessage(res.error)
@@ -1824,7 +1887,6 @@ export function AgentChatPanel({
           content: text,
           conversationId: conversationId ?? undefined,
           attachmentDocumentIds: documentIds,
-          authorizeRunAs: ticketAuthorizeRunAs,
         })
         if (!res.success) {
           setStatusMessage(res.error)
@@ -1832,7 +1894,29 @@ export function AgentChatPanel({
         }
         setLastTicketId(res.data.ticketId)
         resetComposer()
-        setStatusMessage('Feladat létrehozva — megjelenik a Kanban táblán.')
+        if (res.data.conversationId) {
+          setConversationId(res.data.conversationId)
+          const loaded = await loadAgentChatMessages({
+            conversationId: res.data.conversationId,
+            agentId: agent.id,
+          })
+          if (loaded.success) {
+            setMessages(
+              withPendingChatExtras(
+                loaded.data.messages.map((message) => ({
+                  ...message,
+                  createdAt: new Date(message.createdAt).toISOString(),
+                })),
+                loaded.data.pendingConsequenceApprovals?.map((approval) => ({
+                  ...approval,
+                  status: 'pending' as const,
+                })),
+                loaded.data.pendingConnectorGrants,
+              ),
+            )
+          }
+        }
+        setStatusMessage('Feladat a táblán — a kártyán követheted, hol tart.')
       } catch (e) {
         setStatusMessage(e instanceof Error ? e.message : 'Feladat létrehozás sikertelen')
       }
@@ -2196,6 +2280,11 @@ export function AgentChatPanel({
                       agentAvatarUrl={agent.avatarUrl}
                       agentStatus={agent.status}
                       personaNickname={agent.personaNickname}
+                      taskCard={
+                        message.ticketRefId ? taskCards[message.ticketRefId] ?? null : null
+                      }
+                      taskCardLoading={Boolean(message.ticketRefId) && taskCardsLoading}
+                      focused={focusMessageId === message.id}
                       activityStalled={
                         activeTurnStalled &&
                         activeTurnId != null &&
@@ -2287,6 +2376,11 @@ export function AgentChatPanel({
                 onStop={handleStop}
                 onCreateTicket={handleCreateTicket}
                 onSend={handleSend}
+              />
+              <MemoryStrip
+                conversationId={conversationId}
+                agentId={agent.id}
+                workspaceFiles={workspaceFilePaths}
               />
             </div>
           </div>

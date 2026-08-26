@@ -130,8 +130,16 @@ const railCard = readFileSync(
   resolve(process.cwd(), 'src/components/agents/agent-rail-card.tsx'),
   'utf8',
 )
+const railCompose = readFileSync(
+  resolve(process.cwd(), 'src/lib/agent-rail-compose.ts'),
+  'utf8',
+)
 const workspace = readFileSync(
   resolve(process.cwd(), 'src/components/agents/agent-workspace.tsx'),
+  'utf8',
+)
+const identityPage = readFileSync(
+  resolve(process.cwd(), 'src/app/control-plane/agents/[agentId]/page.tsx'),
   'utf8',
 )
 
@@ -142,13 +150,63 @@ check('a lista-szűrő a létrehozót és a végrehajtót is keresi', () => {
   assert.match(platform, /involvedAgentId/)
 })
 
-check('a sín Feladat gombja a board-fület nyitja, nem a létrehozó dialógust', () => {
-  assert.match(railCard, /onOpenTab\('board'\)/)
+check('a sín kártyáján nincs külön Beszélgetés/Feladat gombsor', () => {
+  assert.doesNotMatch(railCard, /ACTION_PRIMARY/)
+  assert.doesNotMatch(railCard, /className=\{ACTION_SECONDARY\}/)
+  assert.match(railCard, /További műveletek/)
+  assert.match(railCard, /workspaceTabsForAgent/)
+})
+
+check('a sín kártyája a bemutatkozást mutatja, a munkaköri leírás nem kattintható', () => {
+  assert.match(railCard, /persona\.greeting/)
+  assert.doesNotMatch(railCard, /showRolePopover/)
+  assert.doesNotMatch(railCard, /AgentRailRolePopover/)
+  assert.doesNotMatch(railCard, /card\.roleLabel/)
+})
+
+check('a munkaterület fejlécében a bemutatkozás mellett nyílik a munkaköri leírás', () => {
+  assert.match(workspace, /AgentRoleDescriptionButton/)
+  assert.match(workspace, /persona\.greeting/)
+  assert.doesNotMatch(workspace, /workspaceSubtitle/)
+})
+
+check('az adatlap fejlécében a bemutatkozás mellett nyílik a munkaköri leírás', () => {
+  assert.match(identityPage, /AgentRoleDescriptionButton/)
+  assert.match(identityPage, /agent\.roleInstruction/)
+})
+
+check('a sín-állapot tartalmazza a bemutatkozást', () => {
+  assert.match(railCompose, /personaGreeting: agent\.personaGreeting/)
+})
+
+check('a sín menüje a board-fület nyitja, nem a létrehozó dialógust', () => {
+  assert.match(railCard, /onOpenTab\(tab\.key\)/)
   assert.doesNotMatch(railCard, /CreateBoardTicketForm/)
 })
 
 check('a munkaterület rendereli a board-fület', () => {
   assert.match(workspace, /board:\s*children \?\? loading/)
+})
+
+check('a Feladatok-fül a board-tab badge-et a kapu/futó számból rajzolja', () => {
+  assert.match(workspace, /getAgentBoardTabBadge/)
+  assert.match(workspace, /boardTabBadge/)
+  assert.match(workspace, /item\.key === 'board'/)
+  assert.match(workspace, /badge\.count\} \$\{badge\.spoken\}/)
+  assert.match(workspace, /tone === 'wait'/)
+})
+
+check('a badge action az érintett ticketeket számolja, dátumszűrő nélkül', () => {
+  const fn = platform.slice(platform.indexOf('export async function getAgentBoardTabBadge'))
+  const body = fn.slice(0, fn.indexOf('export async function listChatTaskCards'))
+  assert.match(body, /involvedAgentId: agentId/)
+  assert.match(body, /excludeTest: true/)
+  assert.match(body, /awaiting_human/)
+  assert.match(body, /needs_info/)
+  assert.match(body, /in_progress/)
+  assert.doesNotMatch(body, /updatedAtGte|updatedFrom/)
+  assert.doesNotMatch(body, /['"]ready['"]/)
+  assert.doesNotMatch(body, /['"]backlog['"]/)
 })
 
 check('a munkaterület rendereli a Tanítás-fület az Adatlap előtt', () => {

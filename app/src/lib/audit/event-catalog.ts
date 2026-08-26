@@ -392,6 +392,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'skill.run_snapshot',
   // issue #161 — `preferredMode: 'task'`: a chat helyett a boardon fut végig.
   'skill.task_promoted',
+  /** #375 — a chatből indított feladat végleges eligazítása, amit a felhasználó látott és jóváhagyott. */
+  'task.briefing_confirmed',
 
   // Sandbox App Registry
   'retention.sweep',

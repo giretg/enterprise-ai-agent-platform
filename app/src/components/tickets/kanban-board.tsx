@@ -35,6 +35,7 @@ import {
   matchesAssigneeFilter,
   type EnrichedBoardTicket,
 } from '@/lib/ticket-display'
+import { formatOriginLabel } from '@/lib/work-traceability'
 
 export type RecentBoardProcess = {
   id: string
@@ -204,9 +205,22 @@ function matchesQuery(ticket: EnrichedBoardTicket, query: string): boolean {
   if (!query) return true
   const needle = query.trim().toLowerCase()
   if (!needle) return true
-  return [ticket.title, ticket.taskDescription, ticket.assignee.label, ticket.creator.label]
+  return [
+    ticket.title,
+    ticket.taskDescription,
+    ticket.assignee.label,
+    ticket.creator.label,
+    ticket.origin?.conversationTitle,
+    ticket.origin?.agentNickname,
+    ...ticket.nestedSteps.map((step) => step.title),
+    ...ticket.nestedSteps.map((step) => step.stepName),
+  ]
     .filter((value): value is string => Boolean(value))
     .some((value) => value.toLowerCase().includes(needle))
+}
+
+function boardColumnOf(ticket: EnrichedBoardTicket): string {
+  return ticket.boardColumnState || ticket.state
 }
 
 /** Egységes űrlapmező-keret a szűrősávban: felirat fölötte, vezérlő alatta. */
@@ -342,6 +356,11 @@ function TicketCard({
             Fut
           </span>
         )}
+        {ticket.stepsTotal != null && ticket.stepsTotal > 0 && (
+          <span className="rounded-full bg-ink/[0.05] px-2 py-0.5 text-[11px] font-medium text-ink-soft">
+            {ticket.stepsDone ?? 0}/{ticket.stepsTotal} lépés
+          </span>
+        )}
         {ticket.process && (
           <ProcessBadge
             processInstanceId={ticket.process.id}
@@ -379,6 +398,30 @@ function TicketCard({
         {ticket.assignee.type === 'human' && <Badge tone="warning">Ember</Badge>}
       </div>
 
+      {ticket.nestedSteps.length > 0 && (
+        <ol className="mt-2 space-y-1 border-t border-line/60 pt-2">
+          {ticket.nestedSteps.map((step) => (
+            <li key={`${step.ticketId ?? step.stepName}-${step.stepName}`}>
+              {step.ticketId ? (
+                <Link
+                  href={`/control-plane/tickets/${step.ticketId}`}
+                  draggable={false}
+                  className="flex items-start justify-between gap-2 text-[11px] leading-snug text-ink-soft hover:text-coral-deep"
+                >
+                  <span className="min-w-0 truncate">{step.stepName || step.title}</span>
+                  <span className="shrink-0 text-ink-faint">{step.stateLabel}</span>
+                </Link>
+              ) : (
+                <span className="flex items-start justify-between gap-2 text-[11px] leading-snug text-ink-faint">
+                  <span className="min-w-0 truncate">{step.stepName || step.title}</span>
+                  <span className="shrink-0">{step.stateLabel}</span>
+                </span>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+
       <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-line/60 pt-2 text-[11px] text-ink-faint">
         <span className="truncate" title={`Létrehozta: ${ticket.creator.label}`}>
           {ticket.creator.label}
@@ -392,6 +435,19 @@ function TicketCard({
           {formatRelativeTicketTime(ticket.updatedAt)}
         </time>
       </div>
+
+      {ticket.origin?.href ? (
+        <Link
+          href={ticket.origin.href}
+          draggable={false}
+          title={formatOriginLabel(ticket.origin)}
+          className="mt-1.5 block truncate text-[11px] font-medium text-coral hover:underline"
+        >
+          {formatOriginLabel(ticket.origin)} →
+        </Link>
+      ) : ticket.origin ? (
+        <p className="mt-1.5 truncate text-[11px] text-ink-faint">{formatOriginLabel(ticket.origin)}</p>
+      ) : null}
     </article>
   )
 }
@@ -656,6 +712,7 @@ export function KanbanBoard({
   const baseFilteredTickets = useMemo(
     () =>
       tickets
+        .filter((ticket) => !ticket.hiddenAsProcessChild)
         .filter((ticket) => matchesAssigneeFilter(ticket, assigneeFilter))
         .filter((ticket) => processFilter === 'all' || ticket.process?.id === processFilter)
         .filter((ticket) => matchesQuery(ticket, query)),
@@ -678,7 +735,8 @@ export function KanbanBoard({
   const countsByState = useMemo(() => {
     const counts = new Map<string, number>()
     for (const ticket of filteredTickets) {
-      counts.set(ticket.state, (counts.get(ticket.state) ?? 0) + 1)
+      const column = boardColumnOf(ticket)
+      counts.set(column, (counts.get(column) ?? 0) + 1)
     }
     return counts
   }, [filteredTickets])
@@ -706,7 +764,7 @@ export function KanbanBoard({
   const listTickets = useMemo(
     () =>
       focusedStates
-        ? filteredTickets.filter((ticket) => focusedStates.includes(ticket.state as ColumnKey))
+        ? filteredTickets.filter((ticket) => focusedStates.includes(boardColumnOf(ticket) as ColumnKey))
         : filteredTickets,
     [filteredTickets, focusedStates],
   )
@@ -1040,7 +1098,7 @@ export function KanbanBoard({
             className={`flex items-start gap-3 overflow-x-auto pb-4 ${pending ? 'opacity-70' : ''}`}
           >
             {visibleColumns.map((col) => {
-              const colTickets = filteredTickets.filter((t) => t.state === col.key)
+              const colTickets = filteredTickets.filter((t) => boardColumnOf(t) === col.key)
 
               return (
                 <KanbanColumn
