@@ -59,6 +59,10 @@ export function TenantSwitcher() {
 
   const active = state.tenants.find((t) => t.id === state.activeTenantId) ?? null
   const label = active?.displayName ?? (state.kind === 'platform' ? 'Platform' : 'Nincs tenant')
+  // A tenant selector only adds value when there is actually another tenant
+  // to switch to. Keep the header quiet for the common single-tenant case.
+  if (state.tenants.length < 2) return null
+
   const interactive = state.isSuperadmin || state.tenants.length > 1 || state.assumed
 
   const doSwitch = (tenantId: string) => {

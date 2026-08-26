@@ -158,15 +158,12 @@ export function AppShell({
           : 'min-h-screen text-ink'
       }
     >
-      <div className="shrink-0 border-b border-honey/25 bg-honey/8 px-4 py-2 text-center text-[11px] font-medium uppercase tracking-[0.18em] text-honey">
-        Excellence Enterprise AI Platform
-      </div>
       <header
         className={`z-20 shrink-0 border-b border-line bg-night/80 backdrop-blur-xl ${
           railLayout ? '' : 'sticky top-0'
         }`}
       >
-        <div className="mx-auto max-w-7xl px-4 py-3.5 sm:px-5">
+        <div className="w-full px-4 py-3.5 sm:px-5">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
               <div
