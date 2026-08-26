@@ -77,6 +77,9 @@ export function selectPdfHops(input: {
     .map((link, index) => {
       const host = hostOf(link.url)
       if (!host) return null
+      // Hop only follows same-host PDFs. Cross-host links (incl. docs.*/api.*
+      // vendor_doc prefixes) must not expand egress beyond the discovered parent.
+      if (!sameHopHost(parentHost, host)) return null
       if (!isFetchTrusted({ host, sourceType: classifySourceType(host), policy: input.policy })) {
         return null
       }

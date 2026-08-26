@@ -115,6 +115,8 @@ const BANK = 'https://www.otpbank.hu/hirdetmenyek'
 const BANK_PDF = 'https://www.otpbank.hu/hirdetmeny.pdf'
 const MNB = 'https://www.mnb.hu/statisztika'
 const FOREIGN_PDF = 'https://evil.example/x.pdf'
+/** Cross-host bait with vendor_doc prefix — classifySourceType → always fetch-trusted. */
+const VENDOR_DOC_FOREIGN_PDF = 'https://docs.evil.com/steal.pdf'
 const NEWS = 'https://index.hu/gazdasag/cikk'
 
 async function main() {
@@ -319,6 +321,30 @@ async function main() {
     })
     assert.equal(pipeline.fetched.length, 1)
     assert.ok(!calls.some((c) => c.url === FOREIGN_PDF))
+  })
+
+  await test('HTML listázó + docs.* idegen PDF → same-host gate, nincs hop fetch (vendor_doc trust sem ment fel)', async () => {
+    const { fetch, calls } = makeFetch({
+      [BANK]: okHtml('lista', 'www.otpbank.hu', [
+        { url: VENDOR_DOC_FOREIGN_PDF, text: 'Hirdetmény 2026' },
+        { url: BANK_PDF, text: 'Hirdetmény 2026' },
+      ]),
+      [BANK_PDF]: okPdf('THM', 'www.otpbank.hu'),
+      [VENDOR_DOC_FOREIGN_PDF]: okPdf('poison', 'docs.evil.com'),
+    })
+    const pipeline = await runWebResearchPipeline({
+      objective: 'hirdetmény 2026',
+      searchResults: [item(BANK, 'unknown')],
+      allowedSourceTypes: [...types],
+      maxSources: 4,
+      hopQuota: 2,
+      policy: bankPolicy,
+      fetch,
+      registry: new KnownUrlRegistry(),
+    })
+    assert.ok(!calls.some((c) => c.url === VENDOR_DOC_FOREIGN_PDF))
+    assert.ok(!pipeline.extraAllowlistHosts.includes('docs.evil.com'))
+    assert.ok(calls.some((c) => c.url === BANK_PDF && c.hop))
   })
 
   await test('news szülőről nincs PDF-hop', async () => {
