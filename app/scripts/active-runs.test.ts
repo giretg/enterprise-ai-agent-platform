@@ -404,6 +404,7 @@ check('summarizeAgentActivity: a kártya azt mondja, épp min dolgozik', () => {
         phase: 'active',
         status: 'awaiting_human',
         agentId: 'agi',
+        href: '/control-plane/tickets/r2',
         startedAt: '2026-08-03T11:55:00',
       }),
       makeRun({
@@ -437,6 +438,8 @@ check('summarizeAgentActivity: a kártya azt mondja, épp min dolgozik', () => {
   assert.equal(agi.current?.label, 'Fut')
   assert.equal(agi.current?.elapsed, '15 perce')
   assert.equal(agi.current?.needsYou, false)
+  // A pill a várakozóra megy, nem a futóra — még ha a „most ezen dolgozik” a futó is.
+  assert.equal(agi.attentionHref, '/control-plane/tickets/r2')
 })
 
 check('summarizeAgentActivity: ha csak várakozó ügy van, a felhasználón a sor', () => {
@@ -449,6 +452,7 @@ check('summarizeAgentActivity: ha csak várakozó ügy van, a felhasználón a s
         status: 'needs_info',
         agentId: 'reka',
         title: 'CRM adatpótlás',
+        href: '/control-plane/tickets/r1',
         startedAt: '2026-08-03T10:00:00',
       }),
       // agentId nélküli futás senkihez sem tartozik — nem torzítja a kártyát.
@@ -463,6 +467,7 @@ check('summarizeAgentActivity: ha csak várakozó ügy van, a felhasználón a s
   assert.equal(reka.awaitingHuman, 1)
   assert.equal(reka.current?.needsYou, true)
   assert.equal(reka.current?.label, 'Információra vár')
+  assert.equal(reka.attentionHref, '/control-plane/tickets/r1')
   assert.equal(activity.size, 1)
 })
 

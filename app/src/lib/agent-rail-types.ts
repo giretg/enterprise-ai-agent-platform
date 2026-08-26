@@ -6,18 +6,21 @@ export type AgentRailLiveStatus = 'busy' | 'wait' | 'idle' | 'off'
 export type AgentRailBadge = {
   tone: 'wait' | 'new' | 'err' | 'muted'
   label: string
+  /** Ha megvan: a badge a legutóbbi jóváhagyásra váró ticketre/beszélgetésre visz. */
+  href?: string
 }
 
 export type AgentRailCardState = {
   id: string
   name: string
   personaNickname: string | null
+  personaGreeting: string | null
   avatarUrl: string | null
   status: string
   taskOnly: boolean
-  /** Rövid előnézet a kártyán (max ~80 karakter). */
+  /** Rövid előnézet kereséshez (max ~80 karakter). */
   roleLabel: string
-  /** Teljes munkaköri leírás — hover-hinthez. */
+  /** Teljes munkaköri leírás — kereséshez és a fejléc-modalhoz. */
   roleDescription: string
   liveStatus: AgentRailLiveStatus
   activityText: string
@@ -25,6 +28,8 @@ export type AgentRailCardState = {
   /** Csak valós lépés-számból — nincs becsült százalék. */
   progress: { current: number; total: number } | null
   badges: AgentRailBadge[]
+  /** Legutóbbi jóváhagyásra/válaszra váró futás — a pill kattintásának célja. */
+  attentionHref: string | null
   /** Rendezéshez: vár rád → dolgozik → szabad → szünetel */
   sortRank: number
 }

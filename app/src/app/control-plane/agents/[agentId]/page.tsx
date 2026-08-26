@@ -13,6 +13,7 @@ import { ChatMarkdown } from '@/components/chat/chat-markdown'
 import { Collapsible } from '@/components/ui/collapsible'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentIdentityCard } from '@/components/agents/agent-identity-card'
+import { AgentRoleDescriptionButton } from '@/components/agents/agent-role-description-modal'
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
 import { AgentDelegatedConnectorsBar } from '@/components/agents/agent-delegated-connectors-bar'
 import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
@@ -697,9 +698,15 @@ export default async function AgentDetailPage({
                 </span>
                 <Badge tone={agent.status === 'active' ? 'success' : 'neutral'}>{mood.label}</Badge>
               </div>
-              <p className="mt-2 max-w-2xl text-base italic text-ink-soft">
-                &quot;{persona.greeting}&quot;
-              </p>
+              <div className="mt-2 flex max-w-2xl items-start gap-1.5">
+                <p className="min-w-0 flex-1 text-base italic text-ink-soft">
+                  &quot;{persona.greeting}&quot;
+                </p>
+                <AgentRoleDescriptionButton
+                  nickname={persona.nickname}
+                  description={agent.roleInstruction}
+                />
+              </div>
             </div>
             {delegatedConnectors.length > 0 ? (
               <AgentDelegatedConnectorsBar items={delegatedConnectors} variant="sidebar" />

@@ -80,7 +80,7 @@ export function AgentRail({
       if (!railFilterMatches(ui.filter, card.liveStatus)) return false
       if (!q) return true
       const hay =
-        `${card.name} ${card.roleLabel} ${card.roleDescription} ${card.personaNickname ?? ''}`.toLowerCase()
+        `${card.name} ${card.roleLabel} ${card.roleDescription} ${card.personaNickname ?? ''} ${card.personaGreeting ?? ''}`.toLowerCase()
       return hay.includes(q)
     })
   }, [cards, ui.filter, ui.search])
@@ -92,6 +92,11 @@ export function AgentRail({
     const card = cards.find((c) => c.id === agentId)
     const defaultTab: AgentWorkspaceTab = defaultAgentWorkspaceTab(card?.taskOnly ?? false)
     router.push(agentWorkspacePath(agentId, tab ?? defaultTab))
+  }
+
+  const navigateAttention = (href: string) => {
+    setAgentRailMobileOpen(false)
+    router.push(href)
   }
 
   const railInner = (
@@ -175,6 +180,7 @@ export function AgentRail({
               collapsed={ui.collapsed}
               onSelect={() => navigateAgent(card.id)}
               onOpenTab={(tab) => navigateAgent(card.id, tab)}
+              onOpenAttention={navigateAttention}
             />
           ))
         )}
