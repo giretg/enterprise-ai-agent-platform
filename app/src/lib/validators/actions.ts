@@ -474,7 +474,7 @@ export const activateTrainingSchema = z.object({
 
 export const rejectTrainingSchema = z.object({
   ticketId: z.string().uuid(),
-  reason: z.string().trim().min(1).max(500),
+  reason: z.string().trim().max(500).optional(),
 })
 
 export const getTrainingWorkspaceSchema = z.object({

@@ -23,6 +23,9 @@ const CALL_SITES = [
   'src/components/tickets/ticket-detail.tsx',
   'src/components/tickets/board-list-view.tsx',
   'src/components/agents/agent-chat-panel.tsx',
+  'src/components/agents/training-workspace.tsx',
+  'src/components/agents/memory-panel.tsx',
+  'src/components/agents/agent-knowledge-base-panel.tsx',
   'src/app/control-plane/provisioning/provisioning-panel.tsx',
 ] as const
 

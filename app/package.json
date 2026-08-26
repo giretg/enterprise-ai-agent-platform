@@ -113,6 +113,8 @@
     "test:durable-memory-policy": "tsx scripts/durable-memory-policy.test.ts",
     "test:training-composition": "tsx scripts/training-composition.test.ts",
     "test:training-workspace": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/training-workspace.test.ts",
+    "test:training-teach-plan": "tsx scripts/training-teach-plan.test.ts",
+    "test:training-preview-client": "tsx scripts/training-preview-client.test.ts",
     "test:training-store-db": "tsx scripts/training-store-db.test.ts",
     "test:memory-conflicts": "tsx scripts/memory-conflict-detection.test.ts",
     "test:memory-content-guard": "tsx scripts/memory-content-guard.test.ts",

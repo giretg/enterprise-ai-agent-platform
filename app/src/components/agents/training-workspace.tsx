@@ -861,9 +861,10 @@ function TrainingRejectModal({
             return
           }
           if (event.key !== 'Tab') return
-          const order = [textareaRef.current, cancelRef.current, confirmRef.current].filter(
-            (node): node is HTMLElement => Boolean(node),
-          )
+          const order: HTMLElement[] = []
+          if (textareaRef.current) order.push(textareaRef.current)
+          if (cancelRef.current) order.push(cancelRef.current)
+          if (confirmRef.current) order.push(confirmRef.current)
           if (order.length === 0) return
           const first = order[0]
           const last = order[order.length - 1]

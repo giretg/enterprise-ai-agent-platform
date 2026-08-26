@@ -462,7 +462,7 @@ async function run() {
       createdById: OPERATOR_ID,
       tenantId: TENANT,
       title: 'Árva tanítás',
-    } as Ticket)
+    } as unknown as Ticket)
     const ws = await h.service.getTrainingWorkspace({ agentId: AGENT_ID, actor: operator })
     assert.equal(ws.pendingProposal, null)
     const preview = await h.service.previewTrainingChange({
