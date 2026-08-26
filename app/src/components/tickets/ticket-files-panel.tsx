@@ -1,23 +1,19 @@
 'use client'
 
-import { useCallback, useEffect, useState, useTransition } from 'react'
+import { useState, useTransition } from 'react'
 import {
   HtmlPreviewModal,
   type HtmlPreviewTarget,
 } from '@/components/workspace/html-preview-modal'
 import { WorkspaceFileDropzone } from '@/components/workspace/workspace-file-dropzone'
 import { Card } from '@/components/ui/shell'
-import {
-  ticketWorkspaceFilesUrl,
-  uploadTicketWorkspaceFile,
-} from '@/lib/ticket-workspace-files-client'
+import { useTicketWorkspaceFiles } from '@/components/tickets/use-ticket-workspace-files'
+import { uploadTicketWorkspaceFile } from '@/lib/ticket-workspace-files-client'
 import {
   isHtmlWorkspaceFile,
   workspaceFileLink,
   workspaceHtmlPreviewTarget,
 } from '@/lib/workspace-file-visibility'
-
-type WorkspaceFile = { path: string }
 
 type TicketFilesPanelProps = {
   ticketId: string
@@ -25,39 +21,13 @@ type TicketFilesPanelProps = {
 }
 
 export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProps) {
-  const [files, setFiles] = useState<WorkspaceFile[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { files, loading, error, reload, listUrl } = useTicketWorkspaceFiles(ticketId, ticketState)
   const [uploading, startUpload] = useTransition()
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [htmlPreview, setHtmlPreview] = useState<HtmlPreviewTarget | null>(null)
 
-  const listUrl = ticketWorkspaceFilesUrl(ticketId)
   const isReadOnly = ['done', 'rejected', 'approved'].includes(ticketState)
   const visibleFiles = files
-
-  const loadFiles = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const res = await fetch(listUrl)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const json = (await res.json()) as { success: boolean; data?: { files: string[] } }
-      setFiles((json.data?.files ?? []).map((path) => ({ path })))
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Nem sikerült betölteni a fájlokat')
-    } finally {
-      setLoading(false)
-    }
-  }, [listUrl])
-
-  useEffect(() => {
-    const timeout = window.setTimeout(() => {
-      void loadFiles()
-    }, 0)
-
-    return () => window.clearTimeout(timeout)
-  }, [loadFiles])
 
   function handleOpen(path: string) {
     const preview = workspaceHtmlPreviewTarget(listUrl, path)
@@ -73,7 +43,7 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
     startUpload(async () => {
       try {
         await uploadTicketWorkspaceFile(ticketId, file)
-        await loadFiles()
+        await reload()
       } catch (err) {
         setUploadError(err instanceof Error ? err.message : 'Feltöltés sikertelen')
       }
@@ -102,34 +72,34 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
         <p className="text-sm text-ink-faint">Nincs munkafájl a workspace-ben.</p>
       ) : (
         <ul className="divide-y divide-line">
-          {visibleFiles.map((f) => (
-            <li key={f.path} className="flex items-center justify-between py-2">
-              {isHtmlWorkspaceFile(f.path) ? (
+          {visibleFiles.map((path) => (
+            <li key={path} className="flex items-center justify-between py-2">
+              {isHtmlWorkspaceFile(path) ? (
                 <button
                   type="button"
-                  onClick={() => handleOpen(f.path)}
+                  onClick={() => handleOpen(path)}
                   className="truncate text-left text-sm text-ink hover:text-sky hover:underline"
-                  title={f.path}
+                  title={path}
                 >
-                  {f.path}
+                  {path}
                 </button>
               ) : (
                 <a
-                  href={workspaceFileLink(listUrl, f.path)}
+                  href={workspaceFileLink(listUrl, path)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="truncate text-sm text-ink hover:text-sky hover:underline"
-                  title={f.path}
+                  title={path}
                 >
-                  {f.path}
+                  {path}
                 </a>
               )}
               <button
                 type="button"
-                onClick={() => handleOpen(f.path)}
+                onClick={() => handleOpen(path)}
                 className="ml-2 shrink-0 text-sm font-medium text-sky hover:underline"
               >
-                {isHtmlWorkspaceFile(f.path) ? 'Megnyitás' : 'Letöltés'}
+                {isHtmlWorkspaceFile(path) ? 'Megnyitás' : 'Letöltés'}
               </button>
             </li>
           ))}
