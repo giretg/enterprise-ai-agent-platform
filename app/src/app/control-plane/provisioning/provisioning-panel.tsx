@@ -1,6 +1,7 @@
 'use client'
 
 import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState, useTransition } from 'react'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card } from '@/components/ui/shell'
 import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
@@ -1797,11 +1798,17 @@ function DraftCard({
     if (hasInvalidSecretAlias) return
     if (isGmailConnector && !googleOauthConfigured) return
     if (!isGmailConnector && !hasActivationCredentials) {
-      const confirmed = window.confirm(
-        'Nem adtál meg API-kulcsot vagy érvényes titok-hivatkozást. Biztosan kulcs nélkül aktiválod? Az agent hívásai addig auth hibát fognak adni.',
-      )
-      if (!confirmed) return
-      run(() => activateConnector(buildActivationInput(true)), 'Connector aktiválva (kulcs nélkül).')
+      void (async () => {
+        const confirmed = await confirmDialog({
+          title: 'Aktiválás kulcs nélkül',
+          description:
+            'Nem adtál meg API-kulcsot vagy érvényes titok-hivatkozást. Biztosan kulcs nélkül aktiválod? Az agent hívásai addig auth hibát fognak adni.',
+          confirmLabel: 'Aktiválás',
+          tone: 'danger',
+        })
+        if (!confirmed) return
+        run(() => activateConnector(buildActivationInput(true)), 'Connector aktiválva (kulcs nélkül).')
+      })()
       return
     }
     run(() => activateConnector(buildActivationInput()), 'Connector aktiválva.')
@@ -2715,25 +2722,31 @@ function DraftCard({
                       (isGmailConnector && !googleOauthConfigured)
                     }
                     onClick={() => {
-                      if (!isGmailConnector && !hasActivationCredentials) {
-                        const confirmed = window.confirm(
-                          'Nem adtál meg API-kulcsot vagy érvényes titok-hivatkozást. Biztosan kulcs nélkül aktiválod?',
-                        )
-                        if (!confirmed) return
-                      }
-                      run(async () => {
-                        const activated = await activateConnector(
-                          buildActivationInput(!isGmailConnector && !hasActivationCredentials),
-                        )
-                        if (!activated.success) return { success: false, error: activated.error }
-
-                        const consent = await startConnectorOAuth({ connectorId: draft.connectorId })
-                        if (!consent.success) return { success: false, error: consent.error }
-                        if (!('stub' in consent.data && consent.data.stub)) {
-                          window.location.href = consent.data.url
+                      void (async () => {
+                        if (!isGmailConnector && !hasActivationCredentials) {
+                          const confirmed = await confirmDialog({
+                            title: 'Aktiválás kulcs nélkül',
+                            description:
+                              'Nem adtál meg API-kulcsot vagy érvényes titok-hivatkozást. Biztosan kulcs nélkül aktiválod?',
+                            confirmLabel: 'Aktiválás',
+                            tone: 'danger',
+                          })
+                          if (!confirmed) return
                         }
-                        return { success: true }
-                      }, 'Connector aktiválva, consent-flow elindítva.')
+                        run(async () => {
+                          const activated = await activateConnector(
+                            buildActivationInput(!isGmailConnector && !hasActivationCredentials),
+                          )
+                          if (!activated.success) return { success: false, error: activated.error }
+
+                          const consent = await startConnectorOAuth({ connectorId: draft.connectorId })
+                          if (!consent.success) return { success: false, error: consent.error }
+                          if (!('stub' in consent.data && consent.data.stub)) {
+                            window.location.href = consent.data.url
+                          }
+                          return { success: true }
+                        }, 'Connector aktiválva, consent-flow elindítva.')
+                      })()
                     }}
                     className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
                   >

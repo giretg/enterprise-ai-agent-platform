@@ -2,6 +2,7 @@
 
 import { ClerkProvider } from '@clerk/nextjs'
 import { createContext, useContext, type ReactNode } from 'react'
+import { ConfirmDialogHost } from '@/components/ui/confirm-dialog'
 
 const ClerkEnabledContext = createContext(false)
 
@@ -37,5 +38,10 @@ export function AuthProviders({
       children
     )
 
-  return <ClerkEnabledContext.Provider value={clerkEnabled}>{tree}</ClerkEnabledContext.Provider>
+  return (
+    <ClerkEnabledContext.Provider value={clerkEnabled}>
+      {tree}
+      <ConfirmDialogHost />
+    </ClerkEnabledContext.Provider>
+  )
 }

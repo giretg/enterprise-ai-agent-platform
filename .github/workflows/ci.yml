@@ -126,6 +126,7 @@ jobs:
           npm run test:channel-approval
           npm run test:ttl-secret-cache
           npm run test:public-routes
+          npm run test:confirm-dialog
           npm run test:create-agent-wizard
           npm run test:agent-scaffold
           npm run test:resume-last-agent-conversation

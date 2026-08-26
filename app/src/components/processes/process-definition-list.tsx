@@ -11,6 +11,7 @@ import {
   replaceActiveProcessDefinition,
   updateProcessDefinitionBindings,
 } from '@/app/actions/process'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { agentDisplayName } from '@/lib/agent-persona'
 import type { ProcessBuilderPlaybookVersion } from './process-definition-builder'
 
@@ -106,16 +107,24 @@ function ArchiveButton({ id }: { id: string }) {
   const [error, setError] = useState<string | null>(null)
 
   function onArchive() {
-    if (!window.confirm('Biztosan leállítod (archiválod) ezt a Folyamatot? A művelet nem visszavonható.')) return
-    setError(null)
-    startTransition(async () => {
-      const res = await archiveProcessDefinition({ id })
-      if (!res.success) {
-        setError(res.error)
-        return
-      }
-      router.refresh()
-    })
+    void (async () => {
+      const confirmed = await confirmDialog({
+        title: 'Folyamat leállítása',
+        description: 'Biztosan leállítod (archiválod) ezt a Folyamatot? A művelet nem visszavonható.',
+        confirmLabel: 'Leállítás',
+        tone: 'danger',
+      })
+      if (!confirmed) return
+      setError(null)
+      startTransition(async () => {
+        const res = await archiveProcessDefinition({ id })
+        if (!res.success) {
+          setError(res.error)
+          return
+        }
+        router.refresh()
+      })
+    })()
   }
 
   return (
@@ -183,82 +192,88 @@ function ProcessDefinitionEditForm({
   }
 
   function submit() {
-    if (
-      replaceMode &&
-      !window.confirm(
-        'Mentéskor új Folyamat jön létre a módosításokkal, a jelenlegi aktív példány leáll (archiválódik). A már futó Futások érintetlenek maradnak. Folytatod?',
-      )
-    ) {
-      return
-    }
-
-    setMessage(null)
-    startTransition(async () => {
+    void (async () => {
       if (replaceMode) {
-        const replaced = await replaceActiveProcessDefinition({
+        const confirmed = await confirmDialog({
+          title: 'Új Folyamat létrehozása',
+          description:
+            'Mentéskor új Folyamat jön létre a módosításokkal, a jelenlegi aktív példány leáll (archiválódik). A már futó Futások érintetlenek maradnak. Folytatod?',
+          confirmLabel: 'Folytatás',
+          tone: 'danger',
+        })
+        if (!confirmed) return
+      }
+
+      setMessage(null)
+      startTransition(async () => {
+        if (replaceMode) {
+          const replaced = await replaceActiveProcessDefinition({
+            id: definition.id,
+            roleBindings,
+            configValues: {},
+            triggerType,
+            triggerInputMap: triggerInputMapForSubmit(),
+            monitorDefinitionId:
+              triggerType === 'monitor_cron' && monitorDefinitionId.trim() ? monitorDefinitionId : null,
+          })
+          if (!replaced.success) {
+            setMessage({ tone: 'err', text: replaced.error })
+            return
+          }
+          setMessage({ tone: 'ok', text: replaced.data.message })
+          onClose()
+          router.refresh()
+          return
+        }
+
+        const updated = await updateProcessDefinitionBindings({
           id: definition.id,
           roleBindings,
           configValues: {},
-          triggerType,
-          triggerInputMap: triggerInputMapForSubmit(),
-          monitorDefinitionId:
-            triggerType === 'monitor_cron' && monitorDefinitionId.trim() ? monitorDefinitionId : null,
         })
-        if (!replaced.success) {
-          setMessage({ tone: 'err', text: replaced.error })
+        if (!updated.success) {
+          setMessage({ tone: 'err', text: updated.error })
           return
         }
-        setMessage({ tone: 'ok', text: replaced.data.message })
-        onClose()
+
+        if (existingTrigger && existingTrigger.type !== triggerType) {
+          const detached = await detachProcessTrigger({
+            processDefinitionId: definition.id,
+            triggerId: existingTrigger.id,
+          })
+          if (!detached.success) {
+            setMessage({ tone: 'err', text: detached.error })
+            return
+          }
+          const attached = await attachProcessTrigger({
+            processDefinitionId: definition.id,
+            type: triggerType,
+            inputMap: existingTrigger.inputMap ?? {},
+            monitorDefinitionId:
+              triggerType === 'monitor_cron' && monitorDefinitionId.trim() ? monitorDefinitionId : null,
+          })
+          if (!attached.success) {
+            setMessage({ tone: 'err', text: attached.error })
+            return
+          }
+        } else if (!existingTrigger) {
+          const attached = await attachProcessTrigger({
+            processDefinitionId: definition.id,
+            type: triggerType,
+            inputMap: {},
+            monitorDefinitionId:
+              triggerType === 'monitor_cron' && monitorDefinitionId.trim() ? monitorDefinitionId : null,
+          })
+          if (!attached.success) {
+            setMessage({ tone: 'err', text: attached.error })
+            return
+          }
+        }
+
+        setMessage({ tone: 'ok', text: 'Mentve.' })
         router.refresh()
-        return
-      }
-
-      const updated = await updateProcessDefinitionBindings({
-        id: definition.id,
-        roleBindings,
-        configValues: {},
       })
-      if (!updated.success) {
-        setMessage({ tone: 'err', text: updated.error })
-        return
-      }
-
-      if (existingTrigger && existingTrigger.type !== triggerType) {
-        const detached = await detachProcessTrigger({
-          processDefinitionId: definition.id,
-          triggerId: existingTrigger.id,
-        })
-        if (!detached.success) {
-          setMessage({ tone: 'err', text: detached.error })
-          return
-        }
-        const attached = await attachProcessTrigger({
-          processDefinitionId: definition.id,
-          type: triggerType,
-          inputMap: existingTrigger.inputMap ?? {},
-          monitorDefinitionId: triggerType === 'monitor_cron' && monitorDefinitionId.trim() ? monitorDefinitionId : null,
-        })
-        if (!attached.success) {
-          setMessage({ tone: 'err', text: attached.error })
-          return
-        }
-      } else if (!existingTrigger) {
-        const attached = await attachProcessTrigger({
-          processDefinitionId: definition.id,
-          type: triggerType,
-          inputMap: {},
-          monitorDefinitionId: triggerType === 'monitor_cron' && monitorDefinitionId.trim() ? monitorDefinitionId : null,
-        })
-        if (!attached.success) {
-          setMessage({ tone: 'err', text: attached.error })
-          return
-        }
-      }
-
-      setMessage({ tone: 'ok', text: 'Mentve.' })
-      router.refresh()
-    })
+    })()
   }
 
   return (

@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { pauseMonitor, resumeMonitor, revokeMonitor } from '@/app/actions/monitor'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 
 const KIND_LABEL: Record<string, string> = {
   board_backlog: 'Board elakadás',
@@ -56,17 +57,25 @@ export function MonitorList({
   }
 
   function revoke(monitor: MonitorListView) {
-    if (!confirm(`Biztosan visszavonod a(z) "${monitor.title}" monitort? Ez visszafordíthatatlan.`)) return
-    setMessage(null)
-    startTransition(async () => {
-      const res = await revokeMonitor({ id: monitor.id })
-      if (res.success) {
-        router.refresh()
-        setMessage({ tone: 'ok', text: 'Monitor visszavonva.' })
-      } else {
-        setMessage({ tone: 'err', text: res.error })
-      }
-    })
+    void (async () => {
+      const confirmed = await confirmDialog({
+        title: 'Monitor visszavonása',
+        description: `Biztosan visszavonod a(z) „${monitor.title}” monitort? Ez visszafordíthatatlan.`,
+        confirmLabel: 'Visszavonás',
+        tone: 'danger',
+      })
+      if (!confirmed) return
+      setMessage(null)
+      startTransition(async () => {
+        const res = await revokeMonitor({ id: monitor.id })
+        if (res.success) {
+          router.refresh()
+          setMessage({ tone: 'ok', text: 'Monitor visszavonva.' })
+        } else {
+          setMessage({ tone: 'err', text: res.error })
+        }
+      })
+    })()
   }
 
   if (monitors.length === 0) {
