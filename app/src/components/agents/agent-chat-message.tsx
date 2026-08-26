@@ -22,6 +22,8 @@ import {
   type ChatPrivacyMarkerContext,
 } from '@/lib/privacy-chat-markers'
 import { getToolUiLabel } from '@/lib/tool-ui-labels'
+import { ChatTaskCard, ChatTaskCardSkeleton } from '@/components/tickets/chat-task-card'
+import type { ChatTaskCardView } from '@/lib/work-traceability'
 import {
   approvalContinuationDisplayText,
   extractApprovalContinuationTechnicalDetails,
@@ -993,6 +995,9 @@ export function MessageBubble({
   privacyContext,
   activityStalled = false,
   activityStallDetail,
+  taskCard = null,
+  taskCardLoading = false,
+  focused = false,
 }: {
   message: ChatMessage
   isBusy: boolean
@@ -1019,6 +1024,9 @@ export function MessageBubble({
   privacyContext: ChatPrivacyMarkerContext | null
   activityStalled?: boolean
   activityStallDetail?: string | null
+  taskCard?: ChatTaskCardView | null
+  taskCardLoading?: boolean
+  focused?: boolean
 }) {
   const isUser = message.role === 'user'
   const isDeleted = Boolean(message.contentDeletedAt)
@@ -1046,9 +1054,13 @@ export function MessageBubble({
 
   return (
     <div
-      className={`group/msg flex animate-rise gap-2.5 ${
+      id={`message-${message.id}`}
+      data-message-id={message.id}
+      className={`group/msg flex animate-rise gap-2.5 rounded-2xl ${
         isUser ? 'flex-row-reverse' : 'flex-row'
-      } ${showAuthor ? 'mt-4 first:mt-0' : 'mt-1'}`}
+      } ${showAuthor ? 'mt-4 first:mt-0' : 'mt-1'} ${
+        focused ? 'ring-2 ring-coral/40 ring-offset-2 ring-offset-night' : ''
+      }`}
     >
       {/* Avatar-oszlop: a blokk első üzeneténél látszik, alatta csak helyet tart,
           hogy a folytatás-buborékok egy vonalban maradjanak. */}
@@ -1185,17 +1197,21 @@ export function MessageBubble({
           </div>
         )}
         {message.ticketRefId && (
-          <Link
-            href={`/control-plane/tickets/${message.ticketRefId}`}
-            onClick={onOpenTask}
-            className={`mt-2 inline-flex text-[11px] font-semibold hover:underline ${
-              isUser ? 'text-card' : 'text-coral'
-            }`}
-          >
-            {message.text.includes('Futás elindítva a(z)')
-              ? 'Belépő feladat megnyitása →'
-              : 'Feladat megnyitása →'}
-          </Link>
+          taskCard ? (
+            <ChatTaskCard card={taskCard} onOpen={onOpenTask} />
+          ) : taskCardLoading ? (
+            <ChatTaskCardSkeleton />
+          ) : (
+            <Link
+              href={`/control-plane/tickets/${message.ticketRefId}`}
+              onClick={onOpenTask}
+              className={`mt-2 inline-flex text-[11px] font-semibold hover:underline ${
+                isUser ? 'text-card' : 'text-coral'
+              }`}
+            >
+              Feladat megnyitása →
+            </Link>
+          )
         )}
         </div>
 

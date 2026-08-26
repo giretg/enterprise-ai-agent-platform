@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { deleteBoardTicket } from '@/app/actions/platform'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge } from '@/components/ui/shell'
 import { ProcessBadge } from '@/components/processes/process-badge'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE, TICKET_TONE_DOT_CLASS } from '@/lib/ticket-labels'
@@ -13,6 +14,7 @@ import {
   formatTicketDateTime,
   type EnrichedBoardTicket,
 } from '@/lib/ticket-display'
+import { formatOriginLabel } from '@/lib/work-traceability'
 
 export const BOARD_STATUS_GROUPS = [
   { key: 'backlog', label: TICKET_STATE_LABELS.backlog, accent: 'border-ink-faint/30' },
@@ -161,29 +163,39 @@ export function BoardListView({
   const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null)
 
   const handleDelete = (ticketId: string, isAdminDelete: boolean) => {
-    const confirmMessage = isAdminDelete
-      ? 'Biztosan véglegesen törlöd ezt a feladatot (admin)? A művelet nem vonható vissza, és a csatolt fájlok is törlődnek.'
-      : 'Biztosan törlöd ezt a feladatot? A művelet nem vonható vissza, és a csatolt fájlok is törlődnek.'
-    if (!window.confirm(confirmMessage)) return
+    void (async () => {
+      const confirmed = await confirmDialog({
+        title: isAdminDelete ? 'Feladat végleges törlése' : 'Feladat törlése',
+        description: isAdminDelete
+          ? 'Biztosan véglegesen törlöd ezt a feladatot (admin)? A művelet nem vonható vissza, és a csatolt fájlok is törlődnek.'
+          : 'Biztosan törlöd ezt a feladatot? A művelet nem vonható vissza, és a csatolt fájlok is törlődnek.',
+        confirmLabel: 'Törlés',
+        tone: 'danger',
+      })
+      if (!confirmed) return
 
-    setDeleteBusyId(ticketId)
-    startDeleteTransition(async () => {
-      try {
-        const res = await deleteBoardTicket({ ticketId })
-        if (!res.success) {
-          onDeleteError(res.error ?? 'Törlés sikertelen.')
-          return
+      setDeleteBusyId(ticketId)
+      startDeleteTransition(async () => {
+        try {
+          const res = await deleteBoardTicket({ ticketId })
+          if (!res.success) {
+            onDeleteError(res.error ?? 'Törlés sikertelen.')
+            return
+          }
+          router.refresh()
+        } finally {
+          setDeleteBusyId(null)
         }
-        router.refresh()
-      } finally {
-        setDeleteBusyId(null)
-      }
-    })
+      })
+    })()
   }
 
   const grouped = BOARD_STATUS_GROUPS.map((group) => ({
     ...group,
-    tickets: tickets.filter((ticket) => ticket.state === group.key),
+    tickets: tickets.filter(
+      (ticket) =>
+        !ticket.hiddenAsProcessChild && (ticket.boardColumnState || ticket.state) === group.key,
+    ),
   })).filter((group) => group.tickets.length > 0)
 
   if (grouped.length === 0) {
@@ -242,6 +254,30 @@ export function BoardListView({
                           <p className="font-medium text-ink transition group-hover:text-coral-deep">
                             {ticket.title}
                           </p>
+                          {ticket.stepsTotal != null && ticket.stepsTotal > 0 ? (
+                            <p className="mt-0.5 text-[11px] text-ink-faint">
+                              {ticket.stepsDone ?? 0}/{ticket.stepsTotal} lépés
+                            </p>
+                          ) : null}
+                          {ticket.origin?.href ? (
+                            <Link
+                              href={ticket.origin.href}
+                              className="mt-0.5 block text-[11px] font-medium text-coral hover:underline"
+                            >
+                              {formatOriginLabel(ticket.origin)} →
+                            </Link>
+                          ) : ticket.origin ? (
+                            <p className="mt-0.5 text-[11px] text-ink-faint">
+                              {formatOriginLabel(ticket.origin)}
+                            </p>
+                          ) : null}
+                          {ticket.nestedSteps.length > 0 ? (
+                            <p className="mt-0.5 text-[11px] text-ink-faint">
+                              {ticket.nestedSteps
+                                .map((step) => `${step.stepName} (${step.stateLabel})`)
+                                .join(' · ')}
+                            </p>
+                          ) : null}
                           <p className="mt-0.5 text-xs text-ink-faint md:hidden">
                             {ticket.type === 'training' ? 'Tanítás' : 'Interakció'}
                           </p>
