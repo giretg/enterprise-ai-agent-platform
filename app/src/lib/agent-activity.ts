@@ -24,6 +24,11 @@ export type AgentActivity = {
   } | null
   /** Emberi válaszra váró aktív futások száma. */
   awaitingHuman: number
+  /**
+   * A legfrissebb jóváhagyásra/válaszra váró futás linkje (ticket vagy beszélgetés).
+   * A sáv-kártya „Jóváhagyásra vár” pillje ide navigál.
+   */
+  attentionHref: string | null
   /** Ma lezárult futások száma (kész, elutasított, leállított egyaránt). */
   completedToday: number
 }
@@ -31,7 +36,7 @@ export type AgentActivity = {
 const WAITING_STATES = new Set(['awaiting_human', 'needs_info'])
 
 function emptyActivity(): AgentActivity {
-  return { working: false, current: null, awaitingHuman: 0, completedToday: 0 }
+  return { working: false, current: null, awaitingHuman: 0, attentionHref: null, completedToday: 0 }
 }
 
 /** „Ma nem dolgoztatok együtt” — az összegzésből kimaradt agentek alapértelmezése. */
@@ -60,12 +65,18 @@ function isBetterCurrent(candidate: ActiveRun, best: ActiveRun): boolean {
  * A relatív időt szándékosan itt (szerveren) formázzuk: a kártya így kész
  * szöveget kap, és nincs szerver/kliens eltérés a hidratálásnál.
  */
+/** A frissebb várakozó futás nyer — a pill a legutóbbi döntésre váró ügyre visz. */
+function isBetterAttention(candidate: ActiveRun, best: ActiveRun): boolean {
+  return new Date(candidate.startedAt).getTime() > new Date(best.startedAt).getTime()
+}
+
 export function summarizeAgentActivity(
   runs: readonly ActiveRun[],
   now: Date = new Date(),
 ): Map<string, AgentActivity> {
   const byAgent = new Map<string, AgentActivity>()
   const currentRun = new Map<string, ActiveRun>()
+  const attentionRun = new Map<string, ActiveRun>()
 
   for (const run of runs) {
     const agentId = run.agentId
@@ -74,7 +85,13 @@ export function summarizeAgentActivity(
 
     if (run.phase === 'active') {
       if (isAgentActivelyWorking(run)) entry.working = true
-      if (WAITING_STATES.has(run.status)) entry.awaitingHuman += 1
+      if (WAITING_STATES.has(run.status)) {
+        entry.awaitingHuman += 1
+        const bestAttention = attentionRun.get(agentId)
+        if (!bestAttention || isBetterAttention(run, bestAttention)) {
+          attentionRun.set(agentId, run)
+        }
+      }
       const best = currentRun.get(agentId)
       if (!best || isBetterCurrent(run, best)) currentRun.set(agentId, run)
     } else if (isSameDay(new Date(run.finishedAt ?? run.startedAt), now)) {
@@ -94,6 +111,12 @@ export function summarizeAgentActivity(
       elapsed: formatRunElapsed(run.startedAt, now),
       needsYou: WAITING_STATES.has(run.status),
     }
+  }
+
+  for (const [agentId, run] of attentionRun) {
+    const entry = byAgent.get(agentId)
+    if (!entry) continue
+    entry.attentionHref = run.href
   }
 
   return byAgent
