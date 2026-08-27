@@ -19,6 +19,8 @@ export type TrainingPreviewPayload = {
   actorId: string
   tenantId: string
   baseVersionId: string | null
+  /** Preview idején current pending revízió — build_on_pending submit ezt köti. */
+  expectedPendingRevisionId: string | null
   proposedVersion: string
   compositionMode: TrainingCompositionMode | null
   instruction: TrainingInstruction
@@ -69,6 +71,10 @@ export function verifyTrainingPreview(token: string, now = Date.now()): Training
   }
   if (!payload.agentId || !payload.actorId || !payload.tenantId || typeof payload.proposedVersion !== 'string') {
     throw new TrainingPreviewError('preview token payload invalid')
+  }
+  // Régi tokeneknél hiányozhat — nullként kezeljük (build_on_pending submit úgyis elutasítja).
+  if (payload.expectedPendingRevisionId === undefined) {
+    payload.expectedPendingRevisionId = null
   }
   return payload
 }

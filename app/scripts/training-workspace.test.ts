@@ -61,6 +61,8 @@ function makeHarness(opts: {
   evalActive?: boolean
   evalPasses?: boolean
   casMissOnActivate?: boolean
+  /** Szimulálja a precheck utáni konkurens supersede-et a claim előtt. */
+  supersedeBeforeClaim?: boolean
   ticketCreateRace?: boolean
   teachAnalyzer?: TeachAnalyzer | null
 } = {}) {
@@ -193,6 +195,61 @@ function makeHarness(opts: {
       }
       currentInstructionId = row.id
       return row
+    },
+    claimRevisionAndActivateInstruction: async (data) => {
+      if (opts.supersedeBeforeClaim) {
+        for (const row of revisions.values()) {
+          if (row.trainingTicketId === data.ticketId && row.status === 'current') {
+            row.status = 'superseded'
+            row.tokenStatus = 'revoked'
+          }
+        }
+        const metaRow = trainingMeta.get(data.ticketId)
+        if (metaRow) metaRow.currentRevisionId = 'rev-concurrent-other'
+      }
+      const ticket = tickets.get(data.ticketId)
+      if (!ticket || ticket.type !== 'training') return { ok: false, reason: 'stale_revision' }
+      if (!['awaiting_human', 'approved', 'in_progress', 'ready'].includes(ticket.state)) {
+        return { ok: false, reason: 'stale_revision' }
+      }
+      const meta = trainingMeta.get(data.ticketId)
+      if (!meta || meta.currentRevisionId !== data.revisionId) {
+        return { ok: false, reason: 'stale_revision' }
+      }
+      const revision = revisions.get(data.revisionId)
+      if (
+        !revision ||
+        revision.trainingTicketId !== data.ticketId ||
+        revision.status !== 'current' ||
+        (revision.tokenStatus !== 'unissued' && revision.tokenStatus !== 'issued')
+      ) {
+        return { ok: false, reason: 'stale_revision' }
+      }
+      revision.tokenStatus = 'consumed'
+      revision.writeGateTokenRef = data.writeGateTokenRef
+      meta.writeGateTokenRef = data.writeGateTokenRef
+
+      if (opts.casMissOnActivate || currentInstructionId !== data.expectedCurrentVersionId) {
+        return { ok: false, reason: 'base_version_stale' }
+      }
+      const row: InstructionVersionRow = {
+        id: `ver-${++versionSeq}`,
+        memoryId: data.memoryId,
+        version: data.version,
+        content: data.content,
+        status: 'active',
+        source: data.source,
+        approvedById: data.approvedById,
+        parentVersion: data.parentVersion,
+        createdAt: new Date(),
+      }
+      instructionVersions.set(row.id, row)
+      if (data.expectedCurrentVersionId) {
+        const previous = instructionVersions.get(data.expectedCurrentVersionId)
+        if (previous) previous.status = 'rolled_back'
+      }
+      currentInstructionId = row.id
+      return { ok: true, version: row }
     },
     restoreInstructionVersion: async (params) => {
       if (currentInstructionId !== params.expectedCurrentVersionId) return false
@@ -574,6 +631,60 @@ async function run() {
         }),
       (e: unknown) => e instanceof TrainingGateError && e.code === 'stale_revision',
     )
+  })
+
+  await test('T18/TOCTOU: precheck utáni supersede nem aktivál elavult revíziót', async () => {
+    const h = makeHarness({ supersedeBeforeClaim: true })
+    const preview = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'PDF-et csatolj' },
+      actor: operator,
+    })
+    const submitted = await h.service.submitTrainingProposal({ previewId: preview.previewId, actor: operator })
+    await assert.rejects(
+      () =>
+        h.service.activateTraining({
+          ticketId: submitted.ticket.id,
+          revisionId: submitted.currentRevision.id,
+          actor: approverB,
+        }),
+      (e: unknown) => e instanceof TrainingGateError && e.code === 'stale_revision',
+    )
+    assert.equal(h.currentInstructionId, 'ver-3')
+    assert.equal(h.instructionVersions.size, 1)
+  })
+
+  await test('build_on_pending: elavult preview nem írja felül a frissebb pendinget', async () => {
+    const h = makeHarness()
+    const first = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'PDF-et csatolj' },
+      actor: operator,
+    })
+    await h.service.submitTrainingProposal({ previewId: first.previewId, actor: operator })
+
+    const staleBuild = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'Dátumot ISO-ban írj' },
+      compositionMode: 'build_on_pending',
+      actor: operator,
+    })
+
+    const replace = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'Csak ezt tartsd' },
+      compositionMode: 'replace_pending',
+      actor: operator,
+    })
+    const r2 = await h.service.submitTrainingProposal({ previewId: replace.previewId, actor: operator })
+
+    await assert.rejects(
+      () => h.service.submitTrainingProposal({ previewId: staleBuild.previewId, actor: operator }),
+      (e: unknown) => e instanceof TrainingGateError && e.code === 'stale_revision',
+    )
+    assert.equal(h.trainingMeta.get(r2.ticket.id)?.currentRevisionId, r2.currentRevision.id)
+    assert.match(r2.currentRevision.proposedVersionRef, /Csak ezt tartsd/)
+    assert.doesNotMatch(r2.currentRevision.proposedVersionRef, /PDF-et csatolj/)
   })
 
   await test('T19: elavult alapverzió nem írható felül', async () => {

@@ -370,6 +370,7 @@ export class TrainingService {
         actorId: params.actor.id,
         tenantId: params.actor.tenantId,
         baseVersionId: ctx.currentInstruction?.id ?? NIL_VERSION_ID,
+        expectedPendingRevisionId: pendingRevision?.id ?? null,
         proposedVersion: composed.proposedVersion,
         compositionMode: composed.compositionMode,
         instruction: params.instruction,
@@ -437,6 +438,19 @@ export class TrainingService {
       const own = (currentRev?.createdById ?? pendingTicket.createdById) === params.actor.id
       if (!own && !hasTrainingRejectRight(params.actor.role)) {
         throw new TrainingGateError('replace_not_allowed')
+      }
+    }
+
+    // build_on_pending a preview idején current pending tartalomra épült. Ha azóta
+    // más valaki felülírta a javaslatot, a tokenben lévő proposedVersion elavult —
+    // ne supersede-eljük a frissebb pendinget az ócska A+B kompozícióval.
+    if (preview.compositionMode === 'build_on_pending') {
+      if (!pendingTicket || !preview.expectedPendingRevisionId) {
+        throw new TrainingGateError('stale_revision')
+      }
+      const meta = await this.store.findTrainingMeta(pendingTicket.id)
+      if (!meta || meta.currentRevisionId !== preview.expectedPendingRevisionId) {
+        throw new TrainingGateError('stale_revision')
       }
     }
 
@@ -711,14 +725,13 @@ export class TrainingService {
       context: gateContext,
     })
 
-    await this.store.updateRevision(revision.id, {
-      tokenStatus: 'consumed',
-      writeGateTokenRef: gateToken.id,
-    })
-    await this.store.updateTrainingMeta(params.ticketId, { writeGateTokenRef: gateToken.id })
-
     const nextVersion = revision.targetMemoryVersion
-    const memoryVersion = await this.store.activateInstructionVersion({
+    // Revízió claim + memory CAS egy tranzakcióban: a precheck és az írás között
+    // supersede/reject nem aktiválhat elavult javaslatot.
+    const activation = await this.store.claimRevisionAndActivateInstruction({
+      ticketId: params.ticketId,
+      revisionId: revision.id,
+      writeGateTokenRef: gateToken.id,
       memoryId: ctx.memoryId,
       version: nextVersion,
       content: revision.proposedVersionRef,
@@ -728,9 +741,12 @@ export class TrainingService {
       parentVersion: ctx.currentInstruction?.version ?? null,
       expectedCurrentVersionId: ctx.currentInstruction?.id ?? null,
     })
-    if (!memoryVersion) return await deny('base_version_stale')
+    if (!activation.ok) return await deny(activation.reason)
+    const memoryVersion = activation.version
 
-    if (ticket.state === 'awaiting_human') {
+    // Ticket állapotot frissen olvassuk — a claim utáni reject/átmenet ne a stale snapshoton fusson.
+    const ticketNow = (await this.tickets.findById(params.ticketId)) ?? ticket
+    if (ticketNow.state === 'awaiting_human') {
       // Az awaiting_human → approved ticket-szabály approver szerepet vár.
       // `operator_can_activate` esetén a policy már engedélyezte a hívót; a
       // ticket-gép system-átmenettel lép, a döntéshozó az auditban marad.
@@ -744,7 +760,7 @@ export class TrainingService {
         agentVersion: ctx.currentVersion,
       })
     }
-    if (ticket.state !== 'done') {
+    if (ticketNow.state !== 'done') {
       await this.ticketService.transition({
         ticketId: params.ticketId,
         toState: 'done',
