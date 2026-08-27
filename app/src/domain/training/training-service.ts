@@ -500,7 +500,13 @@ export class TrainingService {
     if (!meta) throw new Error('Training ticket not found')
     const existing = await this.store.listRevisions(ticket.id)
     const nextRevision = (existing.at(-1)?.revision ?? 0) + 1
-    await this.store.supersedeCurrentRevisions(ticket.id)
+    const hasCurrentRevision = existing.some((candidate) => candidate.status === 'current')
+    const superseded = await this.store.supersedeCurrentRevisions(ticket.id)
+    if (hasCurrentRevision && superseded === 0) {
+      // Egy közben elindult jóváhagyást nem írhat felül egy frissebb szerkesztés:
+      // különben a már megfogott revízió mégis élesbe juthatna.
+      throw new TrainingGateError('activation_in_progress')
+    }
     const revision = await this.store.createRevision({
       trainingTicketId: ticket.id,
       revision: nextRevision,
@@ -631,106 +637,117 @@ export class TrainingService {
       return await deny('hard_floor', { matched: impact.hardFloor.blocked ? impact.hardFloor.matched : null })
     }
 
-    const approver = await this.store.findUser(params.actor.id)
-    if (!approver) throw new Error('Approver not found')
+    // A Server Actionök kliensenként sorosak, de két böngészőből vagy két
+    // szerverpéldányból érkező jóváhagyás párhuzamos lehet. A foglalás a
+    // write-gate kiadása ELŐTT történik: egy revízióhoz pontosan egy token és
+    // egy auditált élesítési kísérlet tartozhat.
+    if (!(await this.store.claimRevisionActivation(revision.id))) {
+      return await deny('activation_in_progress')
+    }
 
-    let evalRun = null
-    const evalRequired = currentMeta.origin !== 'human' && currentMeta.evalRequired
-    if (evalRequired) {
-      const activeEval = await this.evalService.findActiveForAgent(ctx.id)
-      if (!activeEval) {
-        throw new Error('eval_required_but_missing')
-      }
-      evalRun = await this.evalService.run({
-        evalId: activeEval.id,
-        agentId: ctx.id,
-        proposedContent: revision.proposedVersionRef,
-        agentVersion: ctx.currentVersion,
-        trigger: 'pre_training_approval',
-      })
-      await this.store.updateTrainingMeta(params.ticketId, {
-        evalResult: evalRun.details ?? { passed: evalRun.passed, score: evalRun.score },
-      })
-      if (!evalRun.passed && (!params.overrideEval || !mayOverrideFailedEval(profile))) {
-        await this.audit.append({
-          actorType: 'human',
-          actorId: params.actor.id,
-          agentVersion: ctx.currentVersion,
-          action: 'memory.write.eval_blocked',
-          targetType: 'memory',
-          targetId: ctx.memoryId,
-          modelUsed: null,
-          inputRef: activeEval.id,
-          outputRef: evalRun.id,
-          policyDecision: mayOverrideFailedEval(profile)
-            ? `eval_failed:score=${evalRun.score.toFixed(2)}`
-            : `eval_required_failed:score=${evalRun.score.toFixed(2)}`,
-          tenantId: ctx.tenantId,
-          metadata: { eval: evalRun.details, overrideRequested: params.overrideEval ?? false },
-        })
-        if (!mayOverrideFailedEval(profile)) {
-          await this.ticketService.transition({
-            ticketId: params.ticketId,
-            toState: 'rejected',
-            actor: { type: 'system' },
-            note: `eval_required_failed: score ${Math.round(evalRun.score * 100)}%`,
-            agentVersion: ctx.currentVersion,
-          })
+    let instructionActivated = false
+    try {
+      const approver = await this.store.findUser(params.actor.id)
+      if (!approver) throw new Error('Approver not found')
+
+      let evalRun = null
+      const evalRequired = currentMeta.origin !== 'human' && currentMeta.evalRequired
+      if (evalRequired) {
+        const activeEval = await this.evalService.findActiveForAgent(ctx.id)
+        if (!activeEval) {
+          throw new Error('eval_required_but_missing')
         }
-        throw new TrainingGateError(
-          'eval_failed',
-          mayOverrideFailedEval(profile)
-            ? `eval_failed: score ${Math.round(evalRun.score * 100)}% — use overrideEval to proceed`
-            : `eval_failed: score ${Math.round(evalRun.score * 100)}% — required eval cannot be overridden`,
-        )
+        evalRun = await this.evalService.run({
+          evalId: activeEval.id,
+          agentId: ctx.id,
+          proposedContent: revision.proposedVersionRef,
+          agentVersion: ctx.currentVersion,
+          trigger: 'pre_training_approval',
+        })
+        await this.store.updateTrainingMeta(params.ticketId, {
+          evalResult: evalRun.details ?? { passed: evalRun.passed, score: evalRun.score },
+        })
+        if (!evalRun.passed && (!params.overrideEval || !mayOverrideFailedEval(profile))) {
+          await this.audit.append({
+            actorType: 'human',
+            actorId: params.actor.id,
+            agentVersion: ctx.currentVersion,
+            action: 'memory.write.eval_blocked',
+            targetType: 'memory',
+            targetId: ctx.memoryId,
+            modelUsed: null,
+            inputRef: activeEval.id,
+            outputRef: evalRun.id,
+            policyDecision: mayOverrideFailedEval(profile)
+              ? `eval_failed:score=${evalRun.score.toFixed(2)}`
+              : `eval_required_failed:score=${evalRun.score.toFixed(2)}`,
+            tenantId: ctx.tenantId,
+            metadata: { eval: evalRun.details, overrideRequested: params.overrideEval ?? false },
+          })
+          if (!mayOverrideFailedEval(profile)) {
+            await this.ticketService.transition({
+              ticketId: params.ticketId,
+              toState: 'rejected',
+              actor: { type: 'system' },
+              note: `eval_required_failed: score ${Math.round(evalRun.score * 100)}%`,
+              agentVersion: ctx.currentVersion,
+            })
+          }
+          throw new TrainingGateError(
+            'eval_failed',
+            mayOverrideFailedEval(profile)
+              ? `eval_failed: score ${Math.round(evalRun.score * 100)}% — use overrideEval to proceed`
+              : `eval_failed: score ${Math.round(evalRun.score * 100)}% — required eval cannot be overridden`,
+          )
+        }
       }
-    }
 
-    const boundContent = writeGateBoundContent({
-      revisionId: revision.id,
-      baseVersionId: revision.baseVersionId,
-      targetMemoryVersion: revision.targetMemoryVersion,
-      proposedVersion: revision.proposedVersionRef,
-    })
-    const gateContext = {
-      tenantId: ctx.tenantId,
-      actorType: 'human' as const,
-      actorId: params.actor.id,
-      agentVersion: ctx.currentVersion,
-    }
-    const gateToken = await this.writeGate.issue({
-      trainingTicketId: params.ticketId,
-      agentId: ctx.id,
-      targetMemoryId: ctx.memoryId,
-      proposedContent: boundContent,
-      context: gateContext,
-    })
-    await this.writeGate.consume({
-      tokenId: gateToken.id,
-      actualProposedContent: boundContent,
-      context: gateContext,
-    })
+      const boundContent = writeGateBoundContent({
+        revisionId: revision.id,
+        baseVersionId: revision.baseVersionId,
+        targetMemoryVersion: revision.targetMemoryVersion,
+        proposedVersion: revision.proposedVersionRef,
+      })
+      const gateContext = {
+        tenantId: ctx.tenantId,
+        actorType: 'human' as const,
+        actorId: params.actor.id,
+        agentVersion: ctx.currentVersion,
+      }
+      const gateToken = await this.writeGate.issue({
+        trainingTicketId: params.ticketId,
+        agentId: ctx.id,
+        targetMemoryId: ctx.memoryId,
+        proposedContent: boundContent,
+        context: gateContext,
+      })
+      await this.writeGate.consume({
+        tokenId: gateToken.id,
+        actualProposedContent: boundContent,
+        context: gateContext,
+      })
 
-    await this.store.updateRevision(revision.id, {
-      tokenStatus: 'consumed',
-      writeGateTokenRef: gateToken.id,
-    })
-    await this.store.updateTrainingMeta(params.ticketId, { writeGateTokenRef: gateToken.id })
+      const nextVersion = revision.targetMemoryVersion
+      const memoryVersion = await this.store.activateInstructionVersion({
+        memoryId: ctx.memoryId,
+        version: nextVersion,
+        content: revision.proposedVersionRef,
+        diffFromPrevious: computeDiff(ctx.currentInstruction?.content ?? '', revision.proposedVersionRef),
+        source: 'training',
+        approvedById: params.actor.id,
+        parentVersion: ctx.currentInstruction?.version ?? null,
+        expectedCurrentVersionId: ctx.currentInstruction?.id ?? null,
+      })
+      if (!memoryVersion) return await deny('base_version_stale')
+      instructionActivated = true
 
-    const nextVersion = revision.targetMemoryVersion
-    const memoryVersion = await this.store.activateInstructionVersion({
-      memoryId: ctx.memoryId,
-      version: nextVersion,
-      content: revision.proposedVersionRef,
-      diffFromPrevious: computeDiff(ctx.currentInstruction?.content ?? '', revision.proposedVersionRef),
-      source: 'training',
-      approvedById: params.actor.id,
-      parentVersion: ctx.currentInstruction?.version ?? null,
-      expectedCurrentVersionId: ctx.currentInstruction?.id ?? null,
-    })
-    if (!memoryVersion) return await deny('base_version_stale')
+      await this.store.updateRevision(revision.id, {
+        tokenStatus: 'consumed',
+        writeGateTokenRef: gateToken.id,
+      })
+      await this.store.updateTrainingMeta(params.ticketId, { writeGateTokenRef: gateToken.id })
 
-    if (ticket.state === 'awaiting_human') {
+      if (ticket.state === 'awaiting_human') {
       // Az awaiting_human → approved ticket-szabály approver szerepet vár.
       // `operator_can_activate` esetén a policy már engedélyezte a hívót; a
       // ticket-gép system-átmenettel lép, a döntéshozó az auditban marad.
@@ -743,16 +760,16 @@ export class TrainingService {
         note: hasMinimumRole(params.actor.role, 'approver') ? undefined : 'operator_can_activate',
         agentVersion: ctx.currentVersion,
       })
-    }
-    if (ticket.state !== 'done') {
+      }
+      if (ticket.state !== 'done') {
       await this.ticketService.transition({
         ticketId: params.ticketId,
         toState: 'done',
         actor: { type: 'system' },
       })
-    }
+      }
 
-    await this.audit.append({
+      await this.audit.append({
       actorType: 'human',
       actorId: params.actor.id,
       agentVersion: ctx.currentVersion,
@@ -770,8 +787,8 @@ export class TrainingService {
         revisionCreatedBy: revision.createdById,
         writeGateTokenId: gateToken.id,
       },
-    })
-    await this.audit.append({
+      })
+      await this.audit.append({
       actorType: 'human',
       actorId: params.actor.id,
       agentVersion: ctx.currentVersion,
@@ -784,9 +801,19 @@ export class TrainingService {
       policyDecision: evalRun?.passed === false ? 'write_gate_consumed:eval_override' : 'write_gate_consumed',
       tenantId: ctx.tenantId,
       metadata: { writeGateTokenId: gateToken.id, evalRunId: evalRun?.id ?? null, kind: 'instruction' },
-    })
+      })
 
-    return { memoryVersion, writeGateTokenId: gateToken.id, evalRun }
+      return { memoryVersion, writeGateTokenId: gateToken.id, evalRun }
+    } catch (error) {
+      // Ha a memória pointer még nem mozdult, a rövid életű próbálkozás nem
+      // ragaszthatja be a javaslatot: a felhasználó javíthasson vagy próbálja
+      // újra. Sikeres memóriaírás után viszont fail-closed marad a nyom.
+      if (!instructionActivated) {
+        await this.store.releaseRevisionActivationClaim(revision.id)
+        await this.store.updateTrainingMeta(params.ticketId, { writeGateTokenRef: null })
+      }
+      throw error
+    }
   }
 
   async rejectTraining(params: { ticketId: string; reason?: string; actor: TrainingActor }) {
@@ -802,7 +829,12 @@ export class TrainingService {
     if (!ctx) throw new Error('Agent not found')
     const meta = await this.store.findTrainingMeta(params.ticketId)
     if (meta?.currentRevisionId) {
-      await this.store.updateRevision(meta.currentRevisionId, { tokenStatus: 'revoked', status: 'superseded' })
+      const superseded = await this.store.supersedeCurrentRevisions(params.ticketId)
+      if (superseded === 0) {
+        // Ugyanaz a foglalás a visszautasításra is vonatkozik: nem állíthatjuk
+        // le félúton azt a jóváhagyást, amelynek memóriaírása már elindult.
+        throw new TrainingGateError('activation_in_progress')
+      }
     }
     const reason = params.reason?.trim() || undefined
     await this.ticketService.transition({

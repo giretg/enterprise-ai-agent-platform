@@ -84,11 +84,20 @@ export interface TrainingStore {
     data: Omit<RevisionRow, 'id' | 'createdAt' | 'status' | 'tokenStatus' | 'writeGateTokenRef' | 'tokenExpiresAt'> &
       Partial<Pick<RevisionRow, 'id' | 'status' | 'tokenStatus' | 'writeGateTokenRef' | 'tokenExpiresAt'>>,
   ): Promise<RevisionRow>
-  supersedeCurrentRevisions(ticketId: string): Promise<void>
+  /** Csak még nem foglalt javaslat cserélhető le; a visszatérő darabszám CAS-jelzés. */
+  supersedeCurrentRevisions(ticketId: string): Promise<number>
   updateRevision(
     id: string,
     data: Partial<Pick<RevisionRow, 'status' | 'tokenStatus' | 'writeGateTokenRef' | 'tokenExpiresAt'>>,
   ): Promise<void>
+  /**
+   * Egy jóváhagyási próbálkozás kizárólagos foglalása. A write-gate kiadása
+   * csak a sikeres foglalás UTÁN indulhat, különben két párhuzamos kérés
+   * külön tokent fogyaszthatna ugyanahhoz a revízióhoz.
+   */
+  claimRevisionActivation(revisionId: string): Promise<boolean>
+  /** Sikertelen, még memóriaírás nélküli próbálkozás után újrapróbálhatóvá teszi a revíziót. */
+  releaseRevisionActivationClaim(revisionId: string): Promise<void>
   activateInstructionVersion(data: {
     memoryId: string
     version: number

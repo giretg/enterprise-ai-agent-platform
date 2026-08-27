@@ -159,17 +159,37 @@ function makeHarness(opts: {
       return row
     },
     supersedeCurrentRevisions: async (ticketId) => {
+      let count = 0
       for (const row of revisions.values()) {
-        if (row.trainingTicketId === ticketId && row.status === 'current') {
+        if (
+          row.trainingTicketId === ticketId &&
+          row.status === 'current' &&
+          row.tokenStatus === 'unissued'
+        ) {
           row.status = 'superseded'
           row.tokenStatus = 'revoked'
+          count++
         }
       }
+      return count
     },
     updateRevision: async (id, data) => {
       const row = revisions.get(id)
       if (!row) throw new Error('revision missing')
       Object.assign(row, data)
+    },
+    claimRevisionActivation: async (id) => {
+      const row = revisions.get(id)
+      if (!row || row.status !== 'current' || row.tokenStatus !== 'unissued') return false
+      row.tokenStatus = 'issued'
+      return true
+    },
+    releaseRevisionActivationClaim: async (id) => {
+      const row = revisions.get(id)
+      if (row?.status === 'current' && row.tokenStatus === 'issued') {
+        row.tokenStatus = 'unissued'
+        row.writeGateTokenRef = null
+      }
     },
     activateInstructionVersion: async (data) => {
       if (opts.casMissOnActivate || currentInstructionId !== data.expectedCurrentVersionId) {
@@ -329,6 +349,7 @@ function makeHarness(opts: {
     tickets,
     revisions,
     trainingMeta,
+    tokenStore,
     setCurrentInstruction(id: string | null) {
       currentInstructionId = id
     },
@@ -634,6 +655,83 @@ async function run() {
     )
     assert.equal(h.currentInstructionId, 'ver-3')
     assert.equal(h.instructionVersions.size, 1)
+    assert.equal(
+      h.revisions.get(submitted.currentRevision.id)?.tokenStatus,
+      'unissued',
+      'a CAS-vesztes próbálkozás után a javaslat újrapróbálható marad',
+    )
+  })
+
+  await test('T19/approval-claim: két párhuzamos jóváhagyás csak egy tokent és egy memóriaírást indít', async () => {
+    const h = makeHarness({
+      profile: {
+        scope: ['memory'],
+        approval_mode: 'human',
+        durable_memory_approval_policy: { activation_mode: 'operator_can_activate', four_eyes_required: false },
+      },
+    })
+    const preview = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'PDF-et csatolj' },
+      actor: operator,
+    })
+    const submitted = await h.service.submitTrainingProposal({ previewId: preview.previewId, actor: operator })
+
+    const attempts = await Promise.allSettled([
+      h.service.activateTraining({
+        ticketId: submitted.ticket.id,
+        revisionId: submitted.currentRevision.id,
+        actor: operator,
+      }),
+      h.service.activateTraining({
+        ticketId: submitted.ticket.id,
+        revisionId: submitted.currentRevision.id,
+        actor: operator,
+      }),
+    ])
+
+    assert.equal(attempts.filter((attempt) => attempt.status === 'fulfilled').length, 1)
+    assert.equal(attempts.filter((attempt) => attempt.status === 'rejected').length, 1)
+    const rejected = attempts.find((attempt) => attempt.status === 'rejected')
+    assert.ok(
+      rejected?.status === 'rejected' &&
+        rejected.reason instanceof TrainingGateError &&
+        rejected.reason.code === 'activation_in_progress',
+    )
+    assert.equal(h.instructionVersions.size, 2, 'csak egy új instruction verzió születhet')
+    assert.equal(h.tokenStore.size, 1, 'csak a foglalást megszerző kérés kap write-gate tokent')
+    assert.equal(h.auditLog.filter((entry) => entry.action === 'training.approved').length, 1)
+    assert.equal(h.revisions.get(submitted.currentRevision.id)?.tokenStatus, 'consumed')
+  })
+
+  await test('T19/approval-claim: foglalt jóváhagyást sem szerkesztés, sem visszautasítás nem írhat felül', async () => {
+    const h = makeHarness()
+    const first = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'PDF-et csatolj' },
+      actor: operator,
+    })
+    const submitted = await h.service.submitTrainingProposal({ previewId: first.previewId, actor: operator })
+    const claimed = h.revisions.get(submitted.currentRevision.id)
+    assert.ok(claimed)
+    claimed.tokenStatus = 'issued'
+
+    const replacement = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'Dátumot ISO-ban írj' },
+      compositionMode: 'replace_pending',
+      actor: operator,
+    })
+    await assert.rejects(
+      () => h.service.submitTrainingProposal({ previewId: replacement.previewId, actor: operator }),
+      (e: unknown) => e instanceof TrainingGateError && e.code === 'activation_in_progress',
+    )
+    await assert.rejects(
+      () => h.service.rejectTraining({ ticketId: submitted.ticket.id, actor: approver }),
+      (e: unknown) => e instanceof TrainingGateError && e.code === 'activation_in_progress',
+    )
+    assert.equal(h.tickets.get(submitted.ticket.id)?.state, 'awaiting_human')
+    assert.equal(h.revisions.get(submitted.currentRevision.id)?.status, 'current')
   })
 
   await test('T20: instruction aktiválás nem nyúl a projektmemória current pointerhez', async () => {

@@ -167,10 +167,11 @@ export class PostgresTrainingStore implements TrainingStore {
   }
 
   async supersedeCurrentRevisions(ticketId: string) {
-    await prisma.trainingProposalRevision.updateMany({
-      where: { trainingTicketId: ticketId, status: 'current' },
+    const result = await prisma.trainingProposalRevision.updateMany({
+      where: { trainingTicketId: ticketId, status: 'current', tokenStatus: 'unissued' },
       data: { status: 'superseded', tokenStatus: 'revoked' },
     })
+    return result.count
   }
 
   async updateRevision(
@@ -178,6 +179,21 @@ export class PostgresTrainingStore implements TrainingStore {
     data: Parameters<TrainingStore['updateRevision']>[1],
   ) {
     await prisma.trainingProposalRevision.update({ where: { id }, data })
+  }
+
+  async claimRevisionActivation(revisionId: string) {
+    const claim = await prisma.trainingProposalRevision.updateMany({
+      where: { id: revisionId, status: 'current', tokenStatus: 'unissued' },
+      data: { tokenStatus: 'issued' },
+    })
+    return claim.count === 1
+  }
+
+  async releaseRevisionActivationClaim(revisionId: string) {
+    await prisma.trainingProposalRevision.updateMany({
+      where: { id: revisionId, status: 'current', tokenStatus: 'issued' },
+      data: { tokenStatus: 'unissued', writeGateTokenRef: null },
+    })
   }
 
   async activateInstructionVersion(data: Parameters<TrainingStore['activateInstructionVersion']>[0]) {

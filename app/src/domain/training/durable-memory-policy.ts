@@ -53,6 +53,7 @@ export type TrainingActionErrorCode =
   | 'diff_limit_exceeded'
   | 'eval_failed'
   | 'pending_blocked'
+  | 'activation_in_progress'
 
 export const TRAINING_USER_ERRORS: Record<TrainingActionErrorCode, string> = {
   stale_revision: 'A javaslat időközben frissült — nézd át a legújabb változatot',
@@ -66,6 +67,7 @@ export const TRAINING_USER_ERRORS: Record<TrainingActionErrorCode, string> = {
   diff_limit_exceeded: 'A változás nagyobb, mint amit az agent tanítási korlátja megenged',
   eval_failed: 'Az ellenőrzés nem ment át — a tanítás nem léphet életbe',
   pending_blocked: 'A javaslatot a rendszer nem engedheti meg',
+  activation_in_progress: 'A jóváhagyás már folyamatban van — frissítsd az oldalt, mielőtt újra döntesz',
 }
 
 export class TrainingGateError extends Error {
