@@ -10,6 +10,10 @@ import type {
 const INSTRUCTION: MemoryVersionKind = 'instruction'
 
 class InstructionVersionCasMiss extends Error {}
+class RevisionClaimMiss extends Error {}
+
+/** Aktiváláskor elfogadott ticket állapotok (claim + memory CAS előtt). */
+const ACTIVATABLE_TICKET_STATES = new Set(['awaiting_human', 'approved', 'in_progress', 'ready'])
 
 function mapInstruction(row: MemoryVersion): InstructionVersionRow {
   return {
@@ -220,6 +224,86 @@ export class PostgresTrainingStore implements TrainingStore {
         (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')
       ) {
         return null
+      }
+      throw error
+    }
+  }
+
+  async claimRevisionAndActivateInstruction(
+    data: Parameters<TrainingStore['claimRevisionAndActivateInstruction']>[0],
+  ) {
+    try {
+      const row = await prisma.$transaction(async (tx) => {
+        const ticket = await tx.ticket.findUnique({
+          where: { id: data.ticketId },
+          select: { state: true, type: true },
+        })
+        if (!ticket || ticket.type !== 'training') throw new RevisionClaimMiss()
+        // Rejected/done/cancelled ticketen ne aktiváljunk — a claim a memory írással együtt atomikus.
+        if (!ACTIVATABLE_TICKET_STATES.has(ticket.state)) throw new RevisionClaimMiss()
+
+        const meta = await tx.trainingTicket.findUnique({ where: { ticketId: data.ticketId } })
+        if (!meta || meta.currentRevisionId !== data.revisionId) throw new RevisionClaimMiss()
+
+        const revisionClaim = await tx.trainingProposalRevision.updateMany({
+          where: {
+            id: data.revisionId,
+            trainingTicketId: data.ticketId,
+            status: 'current',
+            tokenStatus: { in: ['unissued', 'issued'] },
+          },
+          data: {
+            tokenStatus: 'consumed',
+            writeGateTokenRef: data.writeGateTokenRef,
+          },
+        })
+        if (revisionClaim.count !== 1) throw new RevisionClaimMiss()
+
+        await tx.trainingTicket.update({
+          where: { ticketId: data.ticketId },
+          data: { writeGateTokenRef: data.writeGateTokenRef },
+        })
+
+        const created = await tx.memoryVersion.create({
+          data: {
+            memoryId: data.memoryId,
+            version: data.version,
+            kind: INSTRUCTION,
+            content: data.content,
+            diffFromPrevious: data.diffFromPrevious as Prisma.InputJsonValue | undefined,
+            status: 'active',
+            source: data.source ?? undefined,
+            approvedById: data.approvedById,
+            parentVersion: data.parentVersion,
+          },
+        })
+        const pointerClaim = await tx.memory.updateMany({
+          where: {
+            id: data.memoryId,
+            currentVersionId: data.expectedCurrentVersionId,
+          },
+          data: { currentVersionId: created.id },
+        })
+        if (pointerClaim.count !== 1) throw new InstructionVersionCasMiss()
+
+        if (data.expectedCurrentVersionId) {
+          await tx.memoryVersion.update({
+            where: { id: data.expectedCurrentVersionId },
+            data: { status: 'rolled_back' },
+          })
+        }
+        return created
+      })
+      return { ok: true as const, version: mapInstruction(row) }
+    } catch (error) {
+      if (error instanceof RevisionClaimMiss) {
+        return { ok: false as const, reason: 'stale_revision' as const }
+      }
+      if (
+        error instanceof InstructionVersionCasMiss ||
+        (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')
+      ) {
+        return { ok: false as const, reason: 'base_version_stale' as const }
       }
       throw error
     }

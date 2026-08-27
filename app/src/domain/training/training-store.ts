@@ -99,6 +99,29 @@ export interface TrainingStore {
     parentVersion: number | null
     expectedCurrentVersionId: string | null
   }): Promise<InstructionVersionRow | null>
+  /**
+   * Atomikusan: current revízió claim + instruction pointer CAS.
+   * Ha a revízió már nem current / nem a meta pointer, vagy a ticket nem
+   * aktiválható állapotú → stale_revision. Ha a memory pointer elmozdult →
+   * base_version_stale. Így a precheck és a memóriaírás között nem lehet
+   * superseded/rejected javaslatot aktiválni.
+   */
+  claimRevisionAndActivateInstruction(data: {
+    ticketId: string
+    revisionId: string
+    writeGateTokenRef: string
+    memoryId: string
+    version: number
+    content: string
+    diffFromPrevious: unknown
+    source: string | null
+    approvedById: string
+    parentVersion: number | null
+    expectedCurrentVersionId: string | null
+  }): Promise<
+    | { ok: true; version: InstructionVersionRow }
+    | { ok: false; reason: 'stale_revision' | 'base_version_stale' }
+  >
   restoreInstructionVersion(params: {
     memoryId: string
     targetId: string
