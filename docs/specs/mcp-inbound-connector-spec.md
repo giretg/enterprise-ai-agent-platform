@@ -1,8 +1,8 @@
 # Feature-spec — MCP-connector: külső alkalmazások csatolása kódírás nélkül
 
-**Verzió:** 1.0
+**Verzió:** 1.1
 **Dátum:** 2026-08-27
-**Státusz:** grillezésre / fejlesztésre kész javaslat
+**Státusz:** fejlesztésre kész (a v1.0 három nyitott kérdése lezárva — D11, D12, D13)
 **GitHub issue:** [#395](https://github.com/giretg/enterprise-ai-agent-platform/issues/395)
 **Célközönség:** product, platform-admin, security/compliance és fejlesztők
 
@@ -38,14 +38,16 @@ Ebből következik, hogy a munka nagy része **meglévő modulok újrahasznosít
 - Következmény-kapu és `AgentConnector.writeApproval` (per_call / preapproved) érvényesítése MCP-toolokra is.
 - A tool-leírások és a tool-eredmények bizalmi burkolása (prompt-injektálás elleni védelem).
 - Manifest-drift észlelése: a szerver megváltozott tool-listája diff + újrajóváhagyás nélkül nem lép életbe.
-- Auth: statikus token/API-kulcs a vaultban; OAuth2 client credentials.
+- Auth két módban: **tenant-szintű** (statikus token / OAuth2 client credentials a vaultban) és **per-felhasználós delegált OAuth** (D12).
+- Az MCP authorization-discovery kihasználása: a szerver `WWW-Authenticate` → protected resource metadata (RFC 9728) → authorization server metadata (RFC 8414) láncból az OAuth-végpontok **felderítve**, nem kézzel konfigurálva.
+- Platform-admin által kezelt **MCP-domain allowlist**: egy szállító domainje egyszer engedélyezendő, azon belül a tenantok szabadon kötnek connectort (D11).
 - Teljes audit: `ToolCall` rekord, tool-név, connector, acting user, tenant, kimenetel.
 - Dry-run: az aktiválás előtt az admin kipróbálhat egy olvasó toolt, és látja a nyers választ.
 
 ### 1.2 Out of scope — v1
 
 - **Lokális (stdio) MCP-szerverek futtatása.** Idegen processz indítása a platform gépén külön sandbox- és supply-chain-kérdés; v1 csak távoli, HTTP-s szervert hív.
-- **MCP per-user OAuth (delegált felhasználói hozzáférés).** v1-ben a grant tenant-szintű, service-módú. A `user_delegated` MCP külön kiadás — a Gmail/Drive minta ráhúzható, de nem most.
+- **Dynamic Client Registration (RFC 7591) automatikus futtatása.** A DCR támogatott, de csak a platform-admin domain-jóváhagyásának részeként, emberi megerősítéssel — nem tenant-admin kattintására (D11).
 - **MCP `resources` és `prompts` primitívek.** Csak `tools`. A `resources` a tudásbázis-határt érinti, külön döntés.
 - **Sampling (`sampling/createMessage`).** Az a képesség, hogy a külső szerver a MI modellünket hívja vissza, költség- és privacy-szempontból nem támogatott. Fail-closed: elutasítjuk.
 - **`tools/list_changed` automatikus átvétele.** Az értesítést fogadjuk és jelezzük, de a manifest nem frissül magától (lásd D3).
@@ -71,6 +73,8 @@ Az MCP-szerver **transzport, nem bizalmi határ**. Minden hívás ugyanazon a To
 | Írás-bizalom | `AgentConnector.writeApproval` (`per_call` \| `preapproved`), `preapprovedTrustMode`, `preapprovedExpiresAt`, `preapprovedWriteLimit`, `dangerPreapproved`. | Nincs új adatmodell; az MCP-connector ugyanezt örökli. |
 | Egress | `net/egress-guard.ts` `guardEgressUrl` + feloldás-utáni IP-recheck. | Kötelező az MCP-szerver URL-jére is — különben tenant-admin által megadott hostnév = vak SSRF. |
 | Credential | `grant-token-vault.ts`, `connector-secret-store.ts`. | Újrahasznosítható; a titok nem hagyja el a platformot. |
+| Per-user OAuth flow | `connector-grant-service.ts`: generikus Authorization Code + PKCE (`code_challenge_method=S256`), generikus callback route (`api/connectors/oauth/callback`). | **Újrahasznosítható**, nem kell új flow. |
+| Delegált grant-kapu | `delegated-oauth-registry.ts` saját doc-commentje szerint a kártya, a „Hozzáférés megadása" gomb és az OAuth utáni folytatás **minden** `user_delegated` connectorra működik, provider-bejegyzés nélkül; a regiszter csak scope-finomhangolásra kell. | A D12 (per-user MCP) **lényegesen olcsóbb**, mint elsőre látszott. |
 | Tool-eredmény burkolás | `tool-result-envelope.ts`, kimeneti szerződés (`tool-output-contract.ts`). | Az MCP-eredményre alkalmazandó; a **tool-leírásra** ma nincs analóg védelem (D5). |
 
 ## 3. Architektúra
@@ -161,6 +165,29 @@ Az MCP-szerver URL-je `guardEgressUrl`-en megy át, feloldás-utáni privát-IP 
 Az új kapu-ág (`mcp_not_in_manifest`, risk-döntés) `log_only` módban indul, dátumozott `enforce` kapcsolóval.
 *Miért:* a repó bevált mintája új korlátokra (#368); egy fals pozitív ne blokkolja az első bevezetést.
 
+**D11 — Az MCP-domaint platform-admin engedélyezi, domainenként egyszer.**
+Egy tenant-admin csak már engedélyezett domainen lévő MCP-szerverhez köthet connectort. Új domain felvétele platform-admin döntés; ez az a pont, ahol a DCR (ha kell) emberi megerősítéssel lefut.
+*Miért:* egy új MCP-szerver új egress-célpont — a tenant adata olyan félhez kerül, akit a platform sosem vizsgált, és nincs se aláírás, se reputáció, amiből ezt gépiesen eldönthetnénk. Ugyanakkor connectoronkénti platform-admin jóváhagyás visszahozná a napokat, amit a spec meg akar szüntetni. A **domain-szintű** granularitás az egyensúly: egyszeri költség szállítónként, nulla per-connector. A tenant-admin ezután percek alatt csatol.
+
+**D12 — Per-felhasználós delegált OAuth már a v1-ben.**
+Az MCP-connector `auth_mode`-ja lehet `service` (tenant-szintű) vagy `user_delegated`. Utóbbinál minden felhasználó a saját fiókjával hitelesít, és a `ConnectorGrant` per user jön létre — pontosan úgy, ahogy a Gmailnél.
+*Miért:* ha a csatolt rendszer felhasználó-függő adatot ad vissza (ki mit lát a saját Slackjében, Jirájában, naptárában), egy közös szolgálati identitás vagy túl sokat lát, vagy túl keveset — és mindkettő rossz. A tenant-szintű auth nem halasztás, hanem rossz alapértelmezés ezekre.
+*Amiért megfizethető:* a generikus PKCE-flow és a provider-független grant-kapu már megvan (§2), az MCP auth-discovery pedig épp azt automatizálja, ami a Gmailnél kézi volt (végpontok, metadata). A `delegated-oauth-registry`-be **nem kell** MCP-bejegyzés, hacsak nem akarunk tool→scope finomhangolást.
+*Következmény:* a Broker `resolveDelegatedAccessToken` útja és az acting-user feloldás (ticket / run-as / conversation) változatlanul érvényes az `mcp_call`-ra. Ahol nincs acting user, a `user_delegated` MCP-connector **nem hívható** (fail-closed) — nem esik vissza szolgálati identitásra.
+
+**D13 — Tool-plafon alapból, keresés fölötte.**
+Connectoronként max **30** jóváhagyott tool kerül determinisztikus sorrendben a promptba, fordulón belül befagyasztva. E fölött az `mcp_list_tools` keresővé vált: a modell rákérdez, mire van szüksége, és csak a találatokat kapja meg.
+*Miért:* a tipikus integráció (ticketing, CRM, dokumentum) bőven belefér 30-ba, ott a teljes lista olcsó és a prefix-cache ép marad (#380). A Zapier-szerű, több száz toolos szerver viszont valós, és arra a teljes lista használhatatlan. A két út **határa mérhető és tesztelhető**, nem ízlés kérdése.
+*Kockázat, amit vállalunk:* két viselkedés, amit dokumentálni és tesztelni kell. Az admin a UI-n lássa, melyik módban van a connectora, és miért.
+
+**D14 — A kockázati besorolás lefelé-módosítása megerősítés-köteles.**
+Nincs kötelező indoklás minden `read`-hez. De ha az admin egy `write_*` / `delete_*` / `share_*` / `create_*` nevű toolt sorol `read`-re, az külön megerősítő lépést kér és auditálódik.
+*Miért:* a kötelező indoklás minden importnál súrlódás, miközben a toolok többsége tényleg olvasás — a súrlódás oda tartozik, ahol a heurisztika és az emberi döntés ELTÉR.
+
+**D15 — Mellékhatásos MCP-hívás soha nem retry-olódik automatikusan.**
+`write` / `danger` besorolású `mcp_call` timeoutja `failed` kimenetel, kifejezett „bizonytalan kimenetel" jelöléssel, ami eljut az emberhez. Ahol a szerver támogat idempotency-kulcsot, azt küldjük.
+*Miért:* egy félbeszakadt hívásról nem tudjuk, végrehajtódott-e. A néma újrapróbálkozás duplán elküldött üzenetet vagy duplán létrehozott rekordot jelent. Ez ugyanaz a rés, amit a #384 az ügyfél-üzenetekre már leírt — ne legyen kétféle válaszunk rá.
+
 ## 5. Adatmodell
 
 ```prisma
@@ -194,6 +221,25 @@ model McpToolManifest {
 }
 ```
 
+```prisma
+model McpAllowedDomain {
+  id           String   @id @default(uuid()) @db.Uuid
+  /// Normalizált host (pl. "mcp.linear.app"). Wildcard nincs.
+  host         String   @unique
+  displayName  String?  @map("display_name")
+  note         String?
+  approvedById String   @map("approved_by") @db.Uuid
+  approvedAt   DateTime @default(now()) @map("approved_at") @db.Timestamptz
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz
+
+  @@map("mcp_allowed_domains")
+}
+```
+
+**D11 invariáns:** MCP-connector aktiválása és `mcp_call` futása is elutasításra kerül, ha a szerver hostja nincs élő (`revokedAt = null`) sorban. A domain visszavonása azonnal leállítja a rá épülő connectorokat — nem csak új felvételt tilt.
+
+**D12 — per-user grant:** nincs új tábla. Az `auth_mode = user_delegated` MCP-connector a meglévő `ConnectorGrant`-et használja (user + tenant + connector + scope-ok + token-referencia), a tokenek a vaultban. A `mcp_call` az acting user grantjével fut; acting user hiányában fail-closed.
+
 **Invariáns:** connectoronként legfeljebb egy `active` manifest. A `mcp_call` kizárólag ebből dolgozik; `active` manifest hiányában a tool nem hívható (fail-closed, nem üres lista).
 
 **SoD:** `approvedById != importedById`, ha az importot agent kezdeményezte. Ugyanaz a szabály, mint az önfrissítő connector capability-verzióinál.
@@ -206,6 +252,10 @@ Négy képernyő, közérthető nyelven, minden lépésnél magyarázó dobozzal
 2. **Eszközök átnézése.** Táblázat: név, teljes leírás, paraméterek, **javasolt** kockázat. Az admin pipálja, mi kell, és megerősíti a kockázatot. Fejléc-figyelmeztetés: *„A leírásokat a külső szolgáltató írta. Olvasd át — ez az, amit az agent látni fog."*
 3. **Kipróbálás (dry-run).** Egy olvasó tool lefuttatása valódi hívással, a nyers válasz megjelenítésével, mielőtt bármely agent hozzáférne.
 4. **Agenthez rendelés.** A meglévő agent–connector képernyő, `read`/`write` móddal és írás-bizalom beállítással.
+
+**`user_delegated` módban (D12) egy ötödik lépés a felhasználóé:** a connector megjelenik a „Kapcsolt fiókok" oldalon, ahol mindenki a saját fiókjával hitelesít. Ez a képernyő és az OAuth utáni folytatás **már ma működik** minden `user_delegated` connectorra, kód nélkül. Amíg egy felhasználó nem adta meg a hozzáférést, az agent az ő nevében nem hívja a connectort, és ezt érthetően meg is mondja — nem néma hiba.
+
+**Ha a domain nincs engedélyezve (D11):** az 1. lépés megáll, és a UI felajánlja a kérelmezést platform-admin felé, a megadott URL-lel és az admin indoklásával. Ne zsákutca legyen, hanem egy gomb.
 
 **Üres állapot** (nincs még MCP-connector): rövid magyarázat arról, mi ez, és egy-két ismert példa szerver, nem üres táblázat.
 
@@ -220,7 +270,10 @@ Négy képernyő, közérthető nyelven, minden lépésnél magyarázó dobozzal
 | **WP-5** | Bizalmi burkolás: a tool-leírások burkolt beillesztése a promptba (D5), az eredmény `external_untrusted` láncba kötése (D6), kimeneti szerződés alkalmazása. | WP-3 |
 | **WP-6** | Admin-UI: a §6 négy lépése, dry-run, üres állapot, kockázat-besorolás javaslattal. | WP-2, WP-4 |
 | **WP-7** | Drift: háttér-szinkron, `spec-diff` újrahasznosítás tool-manifestre, `tools/list_changed` fogadása, diff-nézet + SoD-jóváhagyás, „ki használja" visszakeresés. | WP-2, WP-6 |
-| **WP-8** | Auth: statikus token és OAuth2 client credentials a vaultból, hívásonkénti injektálás, lejárat-kezelés. | WP-1 |
+| **WP-8** | Auth — tenant-szintű: statikus token és OAuth2 client credentials a vaultból, hívásonkénti injektálás, lejárat-kezelés. | WP-1 |
+| **WP-10** | Auth — per-user (D12): MCP authorization-discovery (`WWW-Authenticate` → RFC 9728 → RFC 8414), a meglévő PKCE-flow és `ConnectorGrant` rákötése, acting-user fail-closed szabály, „Kapcsolt fiókok" megjelenés. | WP-3, WP-8 |
+| **WP-11** | Domain-allowlist (D11): `McpAllowedDomain` modell, platform-admin felület, kérelmezés-gomb a tenant-oldalon, visszavonás azonnali hatállyal, DCR emberi megerősítéssel. | WP-2 |
+| **WP-12** | Tool-plafon és keresés (D13): determinisztikus sorrend, fordulón belüli befagyasztás, 30 fölött kereső `mcp_list_tools`, mód-jelzés a UI-n. | WP-3, WP-6 |
 | **WP-9** | Tesztek + dokumentáció: tenant-izoláció, fail-closed manifest, kapu-mátrix, SSRF, injektálási regresszió; operátor-doc. | mind |
 
 ## 8. Elfogadási kritériumok
@@ -234,14 +287,22 @@ Négy képernyő, közérthető nyelven, minden lépésnél magyarázó dobozzal
 - [ ] `sampling/createMessage` kérés elutasítva és auditálva.
 - [ ] Minden `mcp_call` `ToolCall` rekordot és audit-sort hagy, a hívott tool nevével.
 - [ ] Egy tenant MCP-connectora másik tenant agentje számára nem elérhető.
+- [ ] Nem engedélyezett domainen lévő MCP-szerverhez a tenant-admin nem tud connectort aktiválni, és kap egy kérelmezés-gombot — regressziós teszt.
+- [ ] Egy domain visszavonása után a rá épülő, korábban működő connector hívásai elutasításra kerülnek — regressziós teszt.
+- [ ] `user_delegated` MCP-connector acting user nélkül **nem hívható**, és nem esik vissza szolgálati identitásra — regressziós teszt.
+- [ ] Két felhasználó ugyanazon a `user_delegated` MCP-connectoron a saját grantjével hív; az egyik tokenje a másik hívásában nem jelenik meg — regressziós teszt.
+- [ ] 30 fölötti jóváhagyott toolnál a connector keresős módba vált, és a teljes lista nem kerül a promptba — regressziós teszt.
+- [ ] `write`/`danger` MCP-hívás timeoutja nem indít újrapróbálkozást, és „bizonytalan kimenetel"-ként jelenik meg — regressziós teszt.
 
-## 9. Kockázatok és nyitott kérdések
+## 9. Fennmaradó kockázatok
 
-1. **Tool-robbanás a promptban.** Egy Zapier-szerű MCP-szerver több száz toolt kínál; ha mind a promptba kerül, a kontextus-költség elszáll, és a modell választása romlik. *Nyitott:* az `mcp_list_tools` lusta-betöltésű legyen-e (a modell keres, nem kap teljes listát), vagy elég a jóváhagyott toolok szűkítése? A #380 (előzmény-prefix cache) érinti — ha a tool-lista minden fordulóban változik, a prefix-cache romlik.
-2. **A `risk` besorolás emberi ítélet.** Egy `update_record` tool lehet ártalmatlan és lehet visszafordíthatatlan. A név-alapú javaslat segít, de nem old meg mindent. *Nyitott:* kérjünk-e kötelező indoklást a `read`-re soroláshoz?
-3. **Az MCP-szerver megbízhatósága nem mérhető.** Nincs aláírás, nincs reputáció. A védelem teljes egészében a mi kapuinkon áll. *Nyitott:* kelljen-e platform-admin jóváhagyás ahhoz, hogy egy tenant új MCP-szerver-domaint vegyen fel (allowlist), vagy elég a tenant-admin?
-4. **Hibás vagy lassú szerver.** Timeout, retry, és mi történik egy félbeszakadt `tools/call`-lal, aminek volt mellékhatása? A #384 (kézbesítés-bizonyosság) rokon probléma.
-5. **v1 után: `user_delegated` MCP.** A tenant-szintű grant azt jelenti, hogy minden agent ugyanazzal az identitással hív. Amint egy MCP-szerver felhasználói adatokhoz fér, kell a per-user grant — a Gmail/Drive minta ráhúzható, de tervezni kell.
+A v1.0 öt nyitott kérdéséből hármat a D11–D13 döntések zártak le, kettőt a D14–D15. Ami kockázatként megmarad:
+
+1. **A domain-allowlist szűk keresztmetszetté válhat.** Ha a platform-admin lassan reagál, a „percek alatt csatolok" ígéret a kérelmezési sorban hal meg. *Mérendő:* a kérelem→döntés átfutási idő; ha rendszeresen napokban mérhető, a D11 granularitását újra kell nézni.
+2. **A `risk` besorolás emberi ítélet marad.** Egy `update_record` lehet ártalmatlan és lehet visszafordíthatatlan; a név-alapú heurisztika és a D14 megerősítés segít, de nem old meg mindent. A védelem valódi alja a következmény-kapu, nem a besorolás.
+3. **Az MCP-szerver megbízhatósága nem mérhető gépiesen** — nincs aláírás, nincs reputáció. A D11 emberi döntést tesz oda, ahol nincs gépi jel; ez tudatos csere, nem megoldás.
+4. **A keresős mód (D13) rontja a prefix-cache-t** a nagy connectorokon. Ez a #380 munkával közös felület; ha ott stabil előzmény-prefix születik, a keresős ág költségét újra kell mérni.
+5. **A per-user grant (D12) életciklus-terhet hoz:** lejárt vagy visszavont grant esetén az agent némán elveszít egy képességet. A meglévő `markGrantExpired` út és a grant-hiány jelzése a Gmailnél már megvan — MCP-re ki kell terjeszteni, különben „az agent hirtelen buta lett" hibaként jelenik meg.
 
 ## 10. Kapcsolódás
 
@@ -250,4 +311,4 @@ Négy képernyő, közérthető nyelven, minden lépésnél magyarázó dobozzal
 - **#97** — trust-envelope: az MCP-eredmény `external_untrusted` láncba kötése.
 - **#195** — kimeneti szerződés: az MCP-válasz méret- és séma-kapuja.
 - **#368** — fokozatos kapu-élesítés (`log_only` → `enforce`), D10.
-- **#380** — előzmény-prefix cache: a dinamikus tool-lista rontja; lásd 9.1.
+- **#380** — előzmény-prefix cache: a keresős mód (D13) rontja; lásd 9.4.
