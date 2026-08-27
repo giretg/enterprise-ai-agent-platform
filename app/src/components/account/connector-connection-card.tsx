@@ -5,6 +5,7 @@ import { useState, useTransition } from 'react'
 import { revokeConnectorGrant, startConnectorOAuth } from '@/app/actions/connector-grants'
 import { ConnectionCard } from '@/components/account/connection-card'
 import { GMAIL_SCOPES } from '@/domain/connector-grant/gmail-scopes'
+import { DRIVE_SCOPE_PROFILES } from '@/domain/connector-grant/google-drive-scopes'
 import { delegatedConnectorLabel } from '@/domain/connector-grant/delegated-oauth-registry'
 import { connectorUsageStatus } from '@/components/account/linked-account-view'
 
@@ -87,7 +88,20 @@ function connectorDescription(connector: LinkedConnectorView): string {
   if (connector.type === 'gmail') {
     return 'AI munkatárs a te Gmail-fiókoddal olvas és ír — csak a te engedélyeddel, a te nevedben.'
   }
+  if (connector.type === 'google_drive') {
+    return 'Az AI munkatárs a te engedélyeddel kereshet és olvashat Drive-fájlokat. Ha írási profilt választasz, a jóváhagyási szabályok szerint létrehozhat vagy módosíthat fájlokat is.'
+  }
   return `Az agent a te ${delegatedConnectorLabel(connector.type, connector.name)} fiókoddal jár el.`
+}
+
+function scopeProfilesForConnector(connector: LinkedConnectorView) {
+  if (connector.type === 'google_drive') {
+    const configured = new Set(connectorConfiguredScopes(connector))
+    return DRIVE_SCOPE_PROFILES.filter((profile) =>
+      profile.scopes.every((scope) => configured.has(scope)),
+    ).map((profile) => ({ id: profile.id, label: profile.label, scopes: [...profile.scopes] }))
+  }
+  return availableScopeProfiles(connector)
 }
 
 export function ConnectorConnectionCard({
@@ -107,7 +121,7 @@ export function ConnectorConnectionCard({
 
   const activeGrant = localGrants.find((g) => g.connectorId === connector.id && g.status === 'active')
   const history = localGrants.filter((g) => g !== activeGrant)
-  const scopeProfiles = availableScopeProfiles(connector)
+  const scopeProfiles = scopeProfilesForConnector(connector)
   const currentProfile =
     scopeProfiles.find((profile) => sameScopes(profile.scopes, selectedScopes)) ??
     scopeProfiles[0] ??

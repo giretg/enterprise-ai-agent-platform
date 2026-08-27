@@ -49,7 +49,10 @@ import { matchForbiddenHost } from '@/domain/net/egress-guard'
 import { errorPolicySchema, type ErrorPolicy } from '@/lib/playbook-v2/spec'
 import {
   GOOGLE_OAUTH_PLATFORM_KEY,
+  GOOGLE_OAUTH_SERVICE_KEYS,
   loadGoogleOAuthConfig,
+  loadGoogleDrivePickerConfig,
+  type GoogleDrivePickerConfig,
   type GoogleOAuthConfig,
   type GoogleOAuthResolved,
 } from '@/lib/platform-google-oauth-config'
@@ -1992,8 +1995,98 @@ export class PlatformSettingsService {
 
   async getGoogleOAuthConfig(): Promise<GoogleOAuthResolved | null> {
     return loadGoogleOAuthConfig({
-      getPlatformValue: () => this.settings.get(GOOGLE_OAUTH_PLATFORM_KEY),
+      service: 'gmail',
+      getPlatformValue: () => this.settings.get(GOOGLE_OAUTH_SERVICE_KEYS.gmail),
+      getLegacyPlatformValue: () => this.settings.get(GOOGLE_OAUTH_PLATFORM_KEY),
     })
+  }
+
+  async getGoogleDriveOAuthConfig(): Promise<GoogleOAuthResolved | null> {
+    return loadGoogleOAuthConfig({
+      service: 'drive',
+      getPlatformValue: () => this.settings.get(GOOGLE_OAUTH_SERVICE_KEYS.drive),
+    })
+  }
+
+  async getGoogleDrivePickerConfig(): Promise<{
+    config: GoogleDrivePickerConfig
+    source: GoogleOAuthResolved['source']
+  } | null> {
+    return loadGoogleDrivePickerConfig({
+      getPlatformValue: () => this.settings.get('oauth.google.drive.picker'),
+    })
+  }
+
+  async upsertGoogleDriveOAuthConfig(
+    input: { clientId: string; clientSecret?: string; redirectUri?: string },
+    actorId: string,
+  ): Promise<GoogleOAuthResolved> {
+    const existing = await this.getGoogleDriveOAuthConfig()
+    const clientSecret = input.clientSecret?.trim() || existing?.config.clientSecret
+    if (!clientSecret) {
+      throw new Error('Client Secret szükséges az első beállításhoz.')
+    }
+    const redirectUri =
+      input.redirectUri === undefined
+        ? existing?.config.redirectUri
+        : input.redirectUri.trim() || undefined
+    const config: GoogleOAuthConfig = {
+      clientId: input.clientId.trim(),
+      clientSecret,
+      ...(redirectUri ? { redirectUri } : {}),
+    }
+    await this.settings.set(
+      GOOGLE_OAUTH_SERVICE_KEYS.drive,
+      config as unknown as Prisma.InputJsonObject,
+      actorId,
+    )
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: 'platform.oauth.google_drive.update',
+      targetType: 'platform_setting',
+      targetId: GOOGLE_OAUTH_SERVICE_KEYS.drive,
+      modelUsed: null,
+      inputRef: 'google_drive',
+      outputRef: config.clientId,
+      policyDecision: existing?.source === 'platform' ? 'updated' : 'configured',
+      metadata: {
+        redirectUri: config.redirectUri ?? null,
+        secretRotated: Boolean(input.clientSecret?.trim()),
+        previousSource: existing?.source ?? null,
+      },
+    })
+    return { config, source: 'platform' }
+  }
+
+  async upsertGoogleDrivePickerConfig(
+    input: { apiKey: string; appId: string },
+    actorId: string,
+  ): Promise<{ config: GoogleDrivePickerConfig; source: GoogleOAuthResolved['source'] }> {
+    const config: GoogleDrivePickerConfig = {
+      apiKey: input.apiKey.trim(),
+      appId: input.appId.trim(),
+    }
+    await this.settings.set(
+      'oauth.google.drive.picker',
+      config as unknown as Prisma.InputJsonObject,
+      actorId,
+    )
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: 'platform.oauth.google_drive_picker.update',
+      targetType: 'platform_setting',
+      targetId: 'oauth.google.drive.picker',
+      modelUsed: null,
+      inputRef: 'google_drive_picker',
+      outputRef: config.appId,
+      policyDecision: 'configured',
+      metadata: { appId: config.appId },
+    })
+    return { config, source: 'platform' }
   }
 
   async upsertGoogleOAuthConfig(

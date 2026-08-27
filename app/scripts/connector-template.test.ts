@@ -112,6 +112,7 @@ async function main() {
     for (const rawDescriptor of BUILTIN_CONNECTOR_TEMPLATES) {
       const descriptor = parseTemplateDescriptor(rawDescriptor)
       if ((descriptor.connectorType ?? 'http_api') === 'gmail') continue
+      if ((descriptor.connectorType ?? 'http_api') === 'google_drive') continue
       const input = inputs[descriptor.key]
       assert.ok(input, `missing test input for ${descriptor.key}`)
       const config = materializeConnectorConfig(

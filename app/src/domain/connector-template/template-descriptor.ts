@@ -71,7 +71,9 @@ export const authMethodDescriptorSchema = z.discriminatedUnion('kind', [
 ])
 export type AuthMethodDescriptor = z.infer<typeof authMethodDescriptorSchema>
 
-export const templateConnectorTypeSchema = z.enum(['http_api', 'gmail']).default('http_api')
+export const templateConnectorTypeSchema = z
+  .enum(['http_api', 'gmail', 'google_drive'])
+  .default('http_api')
 
 export const templateDescriptorSchema = z.object({
   key: connectorTemplateKeySchema,

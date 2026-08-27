@@ -625,6 +625,16 @@ export function argsMeta(
     }
   }
 
+  if (input.tool.startsWith('google_drive_') || input.tool.startsWith('google_docs_') || input.tool.startsWith('google_sheets_') || input.tool.startsWith('google_slides_')) {
+    const args = input.args as Record<string, unknown>
+    return {
+      ...base,
+      fileId: typeof args.fileId === 'string' ? args.fileId : null,
+      idempotencyKey: typeof args.idempotencyKey === 'string' ? args.idempotencyKey : null,
+      queryLength: typeof args.query === 'string' ? args.query.length : typeof args.nameContains === 'string' ? args.nameContains.length : null,
+    }
+  }
+
   if (input.tool === 'http_api_get') {
     return {
       ...base,
@@ -892,12 +902,16 @@ export function argsMeta(
     }
   }
 
-  return {
-    ...base,
-    ticketId: input.args.ticketId,
-    requestedState: input.args.patch.state ?? null,
-    payloadKeys: input.args.patch.payload ? Object.keys(input.args.patch.payload).sort() : [],
+  if (input.tool === 'board_write') {
+    return {
+      ...base,
+      ticketId: input.args.ticketId,
+      requestedState: input.args.patch.state ?? null,
+      payloadKeys: input.args.patch.payload ? Object.keys(input.args.patch.payload).sort() : [],
+    }
   }
+
+  return base
 }
 
 function isWebSearchResult(value: unknown): value is WebSearchResult {

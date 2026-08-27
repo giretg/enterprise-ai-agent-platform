@@ -4,7 +4,9 @@ import { prisma } from '@/lib/db'
 import {
   loadGoogleOAuthConfig,
   readGoogleOAuthConfigFromEnv,
+  googleOAuthServiceForConnectorType,
   type GoogleOAuthConfig,
+  type GoogleOAuthService,
 } from '@/lib/platform-google-oauth-config'
 import {
   buildGrantTokenRef,
@@ -129,8 +131,17 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
     clientIdRef: oauth.clientIdRef,
     redirectUri:
       oauth.redirectUri ??
-      (process.env.GMAIL_OAUTH_REDIRECT_URI?.trim() ||
-        `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/api/connectors/oauth/callback`),
+      (() => {
+        const service = googleOAuthService(connector)
+        const envRedirect =
+          service === 'drive'
+            ? process.env.GOOGLE_DRIVE_OAUTH_REDIRECT_URI?.trim()
+            : process.env.GMAIL_OAUTH_REDIRECT_URI?.trim()
+        return (
+          envRedirect ||
+          `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/api/connectors/oauth/callback`
+        )
+      })(),
     userInfoUrl: oauth.userInfoUrl ?? auth.userInfoUrl,
     accountEmailField: oauth.accountEmailField ?? auth.accountEmailField ?? 'email',
     offlineParams: oauth.offlineParams ?? auth.offlineParams ?? {},
@@ -138,31 +149,30 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
 }
 
 function isGoogleConnector(connector: Connector): boolean {
-  if (connector.type === 'gmail') return true
+  if (connector.type === 'gmail' || connector.type === 'google_drive') return true
   const config = (connector.config ?? {}) as ConnectorOAuthConfig
   const provider = (config.provider ?? '').toLowerCase()
   return provider.includes('google')
+}
+
+function googleOAuthService(connector: Connector): GoogleOAuthService {
+  return googleOAuthServiceForConnectorType(connector.type) ?? 'gmail'
 }
 
 async function resolvePlatformGoogleOAuthConfig(
   connector: Connector,
 ): Promise<GoogleOAuthConfig | null> {
   if (!isGoogleConnector(connector)) return null
+  const service = googleOAuthService(connector)
   try {
-    // Gmail (és más Google connector clientId nélkül) a platform OAuth appot
-    // használja. A UI a GMAIL_OAUTH_* env-et is „beállítva”-nak mutatja — a
-    // consentnek ugyanazt a sorrendet kell követnie (platform_settings → env).
-    // Tenant-harvest itt szándékosan ki van kapcsolva: idegen tenant secretje
-    // ne szivárogjon a consentbe.
     const resolved = await loadGoogleOAuthConfig({
+      service,
       includeEnv: true,
       listTenantSettings: async () => [],
     })
     return resolved?.config ?? null
   } catch {
-    // A platform_settings olvasás DB-hibája ne némítsa el az env-fallbacket:
-    // különben a UI „be van állítva (GMAIL_OAUTH_*)”, a gomb meg missing clientId.
-    return readGoogleOAuthConfigFromEnv()
+    return readGoogleOAuthConfigFromEnv(service)
   }
 }
 
@@ -237,7 +247,12 @@ async function resolveClientSecret(connector: Connector): Promise<string> {
   }
 
   const envKey = alias.replace(/^secret:\/\//, '').replace(/\//g, '_').toUpperCase()
-  const fromEnv = process.env[envKey] ?? process.env.GMAIL_OAUTH_CLIENT_SECRET
+  const service = googleOAuthService(connector)
+  const fromEnv =
+    process.env[envKey] ??
+    (service === 'drive'
+      ? process.env.GOOGLE_DRIVE_OAUTH_CLIENT_SECRET
+      : process.env.GMAIL_OAUTH_CLIENT_SECRET)
   if (!fromEnv) throw new Error(`Missing OAuth client secret for ${alias}`)
   return fromEnv
 }

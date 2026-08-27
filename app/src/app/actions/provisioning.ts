@@ -17,6 +17,7 @@ import {
   selfCheckTemplateDescriptor,
 } from '@/domain/connector-template/materializer'
 import { materializeGmailConnectorConfig } from '@/domain/connector-template/gmail-connector-config'
+import { materializeGoogleDriveConnectorConfig } from '@/domain/connector-template/google-drive-connector-config'
 import {
   parseTemplateDescriptor,
   templateDescriptorSchema,
@@ -791,7 +792,24 @@ export async function createConnectorFromTemplateAction(input: unknown) {
               templateOrigin: template.origin,
             },
           )
-        : materializeConnectorConfig(
+        : connectorType === 'google_drive'
+          ? materializeGoogleDriveConnectorConfig(
+              descriptor,
+              {
+                authMethodKind: parsed.authMethodKind,
+                instanceValues: parsed.instanceValues,
+                selectedScopes: parsed.selectedScopes,
+                selectedEndpoints: parsed.selectedEndpoints,
+              },
+              parsed.secretAliases,
+              {
+                templateId: template.id,
+                templateKey: template.key,
+                templateVersion: template.version,
+                templateOrigin: template.origin,
+              },
+            )
+          : materializeConnectorConfig(
             descriptor,
             {
               authMethodKind: parsed.authMethodKind,

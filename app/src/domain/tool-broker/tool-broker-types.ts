@@ -536,6 +536,74 @@ export type GmailSendArgs = {
   approvalTicketId?: string
 }
 
+export type GoogleDriveSearchArgs = {
+  query?: string
+  nameContains?: string
+  mimeTypes?: string[]
+  modifiedAfter?: string
+  driveId?: string
+  pageSize?: number
+  pageToken?: string
+}
+export type GoogleDriveGetFileArgs = { fileId: string }
+export type GoogleDriveReadFileArgs = { fileId: string; maxBytes?: number; sheetName?: string }
+export type GoogleDriveListDrivesArgs = { pageSize?: number; pageToken?: string }
+export type GoogleDriveCreateFolderArgs = {
+  name: string
+  parentFolderId?: string
+  idempotencyKey: string
+}
+export type GoogleDriveUploadFileArgs = {
+  artifactRef: string
+  name?: string
+  parentFolderId?: string
+  convertToGoogleType?: 'doc' | 'sheet' | 'slides'
+  idempotencyKey: string
+}
+export type GoogleDriveUpdateFileArgs = {
+  fileId: string
+  artifactRef?: string
+  textContent?: string
+  expectedModifiedTime?: string
+  idempotencyKey: string
+}
+export type GoogleDriveRenameFileArgs = { fileId: string; newName: string; idempotencyKey: string }
+export type GoogleDriveMoveFileArgs = {
+  fileId: string
+  destinationFolderId: string
+  idempotencyKey: string
+}
+export type GoogleDriveCopyFileArgs = {
+  fileId: string
+  newName?: string
+  parentFolderId?: string
+  idempotencyKey: string
+}
+export type GoogleDriveTrashFileArgs = { fileId: string }
+export type GoogleDriveRestoreFileArgs = { fileId: string }
+export type GoogleDriveShareFileArgs = {
+  fileId: string
+  recipientType: 'user' | 'group'
+  emailAddress: string
+  role: 'reader' | 'commenter' | 'writer'
+  sendNotificationEmail?: boolean
+  emailMessage?: string
+}
+export type GoogleDocsApplyEditsArgs = {
+  fileId: string
+  operations: Array<Record<string, unknown>>
+}
+export type GoogleSheetsWriteRangeArgs = {
+  fileId: string
+  range: string
+  values: unknown[][]
+  mode?: 'replace' | 'append'
+}
+export type GoogleSlidesApplyEditsArgs = {
+  fileId: string
+  operations: Array<Record<string, unknown>>
+}
+
 export type HttpApiQuery = Record<string, string | number | boolean>
 export type HttpApiHeaders = Record<string, string>
 export type HttpApiGetArgs = {
@@ -599,6 +667,46 @@ export type GmailGetMessageResult = Record<string, string>
 export type MailboxCountResult = { count: number; query: string }
 export type GmailCreateDraftResult = { draftId: string }
 export type GmailSendResult = { messageId: string }
+
+export type GoogleDriveFileSummary = {
+  id: string
+  name: string
+  mimeType: string
+  modifiedTime?: string
+  size?: string
+  webViewLink?: string
+  driveId?: string
+  trashed?: boolean
+  parents?: string[]
+}
+
+export type GoogleDriveSearchResult = {
+  files: GoogleDriveFileSummary[]
+  nextPageToken?: string
+}
+export type GoogleDriveGetFileResult = GoogleDriveFileSummary
+export type GoogleDriveReadFileResult = {
+  file: GoogleDriveFileSummary
+  contentType: string
+  text?: string
+  truncated: boolean
+  warnings: string[]
+}
+export type GoogleDriveListDrivesResult = {
+  drives: Array<{ id: string; name: string }>
+  nextPageToken?: string
+}
+export type GoogleDriveCreateFolderResult = { file: GoogleDriveFileSummary; created: boolean }
+export type GoogleDriveUploadFileResult = { file: GoogleDriveFileSummary; created: boolean }
+export type GoogleDriveUpdateFileResult = {
+  file: GoogleDriveFileSummary
+  conflict?: boolean
+}
+export type GoogleDriveCopyFileResult = { file: GoogleDriveFileSummary; created: boolean }
+export type GoogleDriveShareFileResult = { permissionId: string }
+export type GoogleDocsApplyEditsResult = { ok: true; fileId: string }
+export type GoogleSheetsWriteRangeResult = { ok: true; fileId: string; updatedCells?: number }
+export type GoogleSlidesApplyEditsResult = { ok: true; fileId: string }
 
 // ── Sandbox App Registry tool args (Feature-spec §5) ─────────────────────────
 export type SandboxAppCreateArgs = {
@@ -826,6 +934,22 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'mailbox_count'; args: MailboxCountArgs })
   | (ToolInvokeBase & { tool: 'gmail_create_draft'; args: GmailCreateDraftArgs })
   | (ToolInvokeBase & { tool: 'gmail_send'; args: GmailSendArgs })
+  | (ToolInvokeBase & { tool: 'google_drive_search'; args: GoogleDriveSearchArgs })
+  | (ToolInvokeBase & { tool: 'google_drive_get_file'; args: GoogleDriveGetFileArgs })
+  | (ToolInvokeBase & { tool: 'google_drive_read_file'; args: GoogleDriveReadFileArgs })
+  | (ToolInvokeBase & { tool: 'google_drive_list_drives'; args: GoogleDriveListDrivesArgs })
+  | (ToolInvokeBase & { tool: 'google_drive_create_folder'; args: GoogleDriveCreateFolderArgs })
+  | (ToolInvokeBase & { tool: 'google_drive_upload_file'; args: GoogleDriveUploadFileArgs })
+  | (ToolInvokeBase & { tool: 'google_drive_update_file'; args: GoogleDriveUpdateFileArgs })
+  | (ToolInvokeBase & { tool: 'google_drive_rename_file'; args: GoogleDriveRenameFileArgs })
+  | (ToolInvokeBase & { tool: 'google_drive_move_file'; args: GoogleDriveMoveFileArgs })
+  | (ToolInvokeBase & { tool: 'google_drive_copy_file'; args: GoogleDriveCopyFileArgs })
+  | (ToolInvokeBase & { tool: 'google_drive_trash_file'; args: GoogleDriveTrashFileArgs })
+  | (ToolInvokeBase & { tool: 'google_drive_restore_file'; args: GoogleDriveRestoreFileArgs })
+  | (ToolInvokeBase & { tool: 'google_drive_share_file'; args: GoogleDriveShareFileArgs })
+  | (ToolInvokeBase & { tool: 'google_docs_apply_edits'; args: GoogleDocsApplyEditsArgs })
+  | (ToolInvokeBase & { tool: 'google_sheets_write_range'; args: GoogleSheetsWriteRangeArgs })
+  | (ToolInvokeBase & { tool: 'google_slides_apply_edits'; args: GoogleSlidesApplyEditsArgs })
   | (ToolInvokeBase & { tool: 'http_api_get'; args: HttpApiGetArgs })
   | (ToolInvokeBase & { tool: 'http_api_get_all'; args: HttpApiGetAllArgs })
   | (ToolInvokeBase & { tool: 'http_api_request'; args: HttpApiRequestArgs })
@@ -955,6 +1079,18 @@ export type ToolBrokerInvokeResult =
         | MailboxCountResult
         | GmailCreateDraftResult
         | GmailSendResult
+        | GoogleDriveSearchResult
+        | GoogleDriveGetFileResult
+        | GoogleDriveReadFileResult
+        | GoogleDriveListDrivesResult
+        | GoogleDriveCreateFolderResult
+        | GoogleDriveUploadFileResult
+        | GoogleDriveUpdateFileResult
+        | GoogleDriveCopyFileResult
+        | GoogleDriveShareFileResult
+        | GoogleDocsApplyEditsResult
+        | GoogleSheetsWriteRangeResult
+        | GoogleSlidesApplyEditsResult
         | HttpApiCallResult
         | HttpApiGetAllResult
         | RepoPrepareResult

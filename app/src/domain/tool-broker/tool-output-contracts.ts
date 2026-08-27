@@ -147,6 +147,84 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
     effect: identifiedEffect('messageId', 'elküldött levél'),
   },
 
+  google_drive_search: {
+    outputSchema: listResult('files'),
+    emptiness: emptyList('files', 'a keresés egyetlen Drive fájlt sem talált'),
+  },
+  google_drive_get_file: {
+    outputSchema: z.record(z.string(), z.unknown()),
+    emptiness: (output) =>
+      Object.keys(rec(output)).length === 0 ? 'a fájl metaadat üres volt' : null,
+  },
+  google_drive_read_file: {
+    outputSchema: z.looseObject({
+      file: z.record(z.string(), z.unknown()),
+      contentType: z.string(),
+      truncated: z.boolean(),
+      warnings: z.array(z.string()),
+    }),
+    emptiness: (output) =>
+      !str(output, 'text') && (rec(output).warnings as unknown[] | undefined)?.length === 0
+        ? 'a fájl nem tartalmazott kinyerhető szöveget'
+        : null,
+    partial: (output) => (bool(output, 'truncated') === true ? 'a fájltartalom csonkolva lett' : null),
+  },
+  google_drive_list_drives: {
+    outputSchema: listResult('drives'),
+    emptiness: emptyList('drives', 'nincs elérhető megosztott meghajtó'),
+  },
+  google_drive_create_folder: {
+    outputSchema: z.looseObject({ file: z.record(z.string(), z.unknown()), created: z.boolean() }),
+    effect: identifiedEffect('file.id', 'létrehozott mappa'),
+  },
+  google_drive_upload_file: {
+    outputSchema: z.looseObject({ file: z.record(z.string(), z.unknown()), created: z.boolean() }),
+    effect: identifiedEffect('file.id', 'feltöltött fájl'),
+  },
+  google_drive_update_file: {
+    outputSchema: z.looseObject({
+      file: z.record(z.string(), z.unknown()),
+      conflict: z.boolean().optional(),
+    }),
+    effect: identifiedEffect('file.id', 'frissített fájl'),
+  },
+  google_drive_rename_file: {
+    outputSchema: z.record(z.string(), z.unknown()),
+    effect: identifiedEffect('id', 'átnevezett fájl'),
+  },
+  google_drive_move_file: {
+    outputSchema: z.record(z.string(), z.unknown()),
+    effect: identifiedEffect('id', 'áthelyezett fájl'),
+  },
+  google_drive_copy_file: {
+    outputSchema: z.looseObject({ file: z.record(z.string(), z.unknown()), created: z.boolean() }),
+    effect: identifiedEffect('file.id', 'másolat'),
+  },
+  google_drive_trash_file: {
+    outputSchema: z.record(z.string(), z.unknown()),
+    effect: identifiedEffect('id', 'kukába helyezett fájl'),
+  },
+  google_drive_restore_file: {
+    outputSchema: z.record(z.string(), z.unknown()),
+    effect: identifiedEffect('id', 'visszaállított fájl'),
+  },
+  google_drive_share_file: {
+    outputSchema: z.looseObject({ permissionId: z.string() }),
+    effect: identifiedEffect('permissionId', 'megosztási jog'),
+  },
+  google_docs_apply_edits: {
+    outputSchema: z.record(z.string(), z.unknown()),
+    effect: identifiedEffect('fileId', 'Docs módosítás'),
+  },
+  google_sheets_write_range: {
+    outputSchema: z.record(z.string(), z.unknown()),
+    effect: identifiedEffect('fileId', 'Sheets írás'),
+  },
+  google_slides_apply_edits: {
+    outputSchema: z.record(z.string(), z.unknown()),
+    effect: identifiedEffect('fileId', 'Slides módosítás'),
+  },
+
   // ── HTTP API connector ────────────────────────────────────────────────────
   http_api_get: {
     outputSchema: z.looseObject({ ok: z.boolean(), status: z.number() }),

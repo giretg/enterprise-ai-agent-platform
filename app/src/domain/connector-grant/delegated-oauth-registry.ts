@@ -17,6 +17,12 @@
  */
 import { GMAIL_SCOPES, gmailToolAllowedByScopes, normalizeGmailScope } from './gmail-scopes'
 import type { GmailTool } from './gmail-scopes'
+import {
+  driveToolAllowedByScopes,
+  driveToolMinimalScopes,
+  normalizeDriveScope,
+} from './google-drive-scopes'
+import type { DriveTool } from './google-drive-scopes'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-connector-requirements'
 
 /** Provider-független ok, ha a grant megvan, de a scope-ja kevés. */
@@ -77,7 +83,26 @@ const GMAIL_PROVIDER: DelegatedOAuthProvider = {
   scopeDeniedReason: 'gmail_scope_not_granted',
 }
 
-const PROVIDERS: readonly DelegatedOAuthProvider[] = [GMAIL_PROVIDER]
+const GOOGLE_DRIVE_TOOL_NAMES: readonly string[] = toolsRequiringConnector('google_drive')
+
+const GOOGLE_DRIVE_PROVIDER: DelegatedOAuthProvider = {
+  connectorType: 'google_drive',
+  label: 'Google Drive',
+  tools: GOOGLE_DRIVE_TOOL_NAMES,
+  defaultScopes: [
+    'https://www.googleapis.com/auth/drive.readonly',
+    'openid',
+    'https://www.googleapis.com/auth/userinfo.email',
+  ],
+  normalizeScope: normalizeDriveScope,
+  scopesForTool: (toolName) => driveToolMinimalScopes(toolName),
+  isToolAllowedByScopes: ({ toolName, scopes }) =>
+    GOOGLE_DRIVE_TOOL_NAMES.includes(toolName) &&
+    driveToolAllowedByScopes({ tool: toolName as DriveTool, scopes }),
+  scopeDeniedReason: 'google_drive_scope_not_granted',
+}
+
+const PROVIDERS: readonly DelegatedOAuthProvider[] = [GMAIL_PROVIDER, GOOGLE_DRIVE_PROVIDER]
 
 export function delegatedOAuthProvider(
   connectorType: string | null | undefined,

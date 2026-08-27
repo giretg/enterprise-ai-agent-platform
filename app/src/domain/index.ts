@@ -983,8 +983,11 @@ const provisioningService = new ProvisioningService({
   sandboxTester: provisioningSandboxTester,
   isTrustedExternalSecretAlias: (alias, tenantId) =>
     isTrustedExternalConnectorSecretAlias(alias, tenantId, trustedConnectorSecretAliasPolicy),
-  resolvePlatformGoogleOAuth: async () => {
-    const resolved = await platformSettingsService.getGoogleOAuthConfig()
+  resolvePlatformGoogleOAuth: async (service: 'gmail' | 'drive' = 'gmail') => {
+    const resolved =
+      service === 'drive'
+        ? await platformSettingsService.getGoogleDriveOAuthConfig()
+        : await platformSettingsService.getGoogleOAuthConfig()
     return { configured: Boolean(resolved) }
   },
   // issue #320: aktiváláskor a forrás `GET /privacy/catalog` katalógusa a

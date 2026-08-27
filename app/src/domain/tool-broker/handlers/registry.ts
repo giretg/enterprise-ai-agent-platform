@@ -20,6 +20,7 @@ import { fileToolHandler } from './file.handler'
 import { sandboxAppHandler } from './sandbox-app.handler'
 import { sandboxVersioningHandler } from './sandbox-versioning.handler'
 import { gmailHandler } from './gmail.handler'
+import { googleDriveHandler } from './google-drive.handler'
 import { memoryProposeHandler } from './memory.handler'
 import { documentReadHandler } from './document-read.handler'
 import { tulajdoniLapEgyeztetesHandler, tulajdoniLapHandler } from './tulajdoni-lap.handler'
@@ -43,6 +44,7 @@ export const TOOL_HANDLERS: readonly ToolHandler[] = [
   sandboxAppHandler,
   sandboxVersioningHandler,
   gmailHandler,
+  googleDriveHandler,
   memoryProposeHandler,
   documentReadHandler,
   tulajdoniLapHandler,

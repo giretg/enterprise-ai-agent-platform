@@ -213,6 +213,7 @@ enum ConnectorType {
   knowledge_base
   board
   gmail
+  google_drive
   workspace
   http_api
   web_search

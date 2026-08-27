@@ -222,6 +222,43 @@ export async function upsertPlatformGoogleOAuth(input: {
   }
 }
 
+export async function getPlatformGoogleDriveOAuthConfig() {
+  try {
+    await requirePlatformRole('platform_auditor')
+    const resolved = await services.platformSettings.getGoogleDriveOAuthConfig()
+    return ok(toGoogleOAuthPublicView(resolved))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load platform Google Drive OAuth config')
+  }
+}
+
+export async function upsertPlatformGoogleDriveOAuth(input: {
+  clientId: string
+  clientSecret?: string
+  redirectUri?: string
+}) {
+  try {
+    const ctx = await requirePlatformRole('superadmin')
+    const parsed = z.object({
+      clientId: z.string().trim().min(1),
+      clientSecret: z.string().trim().optional(),
+      redirectUri: z.union([z.literal(''), z.string().trim().url()]).optional(),
+    }).parse(input)
+
+    const resolved = await services.platformSettings.upsertGoogleDriveOAuthConfig(
+      {
+        clientId: parsed.clientId,
+        ...(parsed.clientSecret ? { clientSecret: parsed.clientSecret } : {}),
+        redirectUri: parsed.redirectUri,
+      },
+      ctx.user.id,
+    )
+    return ok(toGoogleOAuthPublicView(resolved))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to save platform Google Drive OAuth config')
+  }
+}
+
 export async function listUserDelegatedConnectors() {
   try {
     const user = await requireTenantRole('viewer')

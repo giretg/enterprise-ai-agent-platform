@@ -19,6 +19,10 @@ import {
   normalizeGmailConnectorConfig,
   type GmailConnectorConfig,
 } from '@/domain/connector-template/gmail-connector-config'
+import {
+  normalizeGoogleDriveConnectorConfig,
+  type GoogleDriveConnectorConfig,
+} from '@/domain/connector-template/google-drive-connector-config'
 import { enrichOstorosborConnectorConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 import {
   privacyCapabilityAbsentAudit,
@@ -33,6 +37,7 @@ import {
 } from './connector-config'
 import { validateDraftConfig, type ValidationResult } from './draft-validator'
 import { validateGmailDraftConfig } from './gmail-draft-validator'
+import { validateGoogleDriveDraftConfig } from './google-drive-draft-validator'
 import { ProvisioningError } from './errors'
 import { isResolvableSecretAlias } from './secret-alias'
 import { isConnectorOwnedSecretRef } from './connector-secret-alias-policy'
@@ -112,7 +117,7 @@ export interface ProvisioningDeps {
    * Gmail aktiváláskor a platform Google OAuth alkalmazás (Client ID + Secret)
    * kell, nem tenant-szintű creds. Hiányzó resolver = nincs beállítva (fail-closed).
    */
-  resolvePlatformGoogleOAuth?: () => Promise<{ configured: boolean }>
+  resolvePlatformGoogleOAuth?: (service?: 'gmail' | 'drive') => Promise<{ configured: boolean }>
   /**
    * Aktiválás után a forrás privacy-katalógusának behúzása (issue #320). Best-effort:
    * a hibája nem bukhatja el az aktiválást, de a kimenete auditálva van. Enélkül az új
@@ -233,6 +238,10 @@ export class ProvisioningService {
     let validationResult: ValidationResult
     if (draft.connector.type === 'gmail') {
       validationResult = validateGmailDraftConfig(parseGmailStoredConfig(draft.connector.config))
+    } else if (draft.connector.type === 'google_drive') {
+      validationResult = validateGoogleDriveDraftConfig(
+        parseGoogleDriveStoredConfig(draft.connector.config),
+      )
     } else {
       const config = parseStoredConfig(draft.connector.config)
       const [egressAllowlist, bankPreset] = await Promise.all([
@@ -411,6 +420,7 @@ export class ProvisioningService {
     const user = this.requireHumanAdmin(actor, 'activateConnector')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
     const isGmail = draft.connector.type === 'gmail'
+    const isGoogleDrive = draft.connector.type === 'google_drive'
 
     // Előfeltételek (§8.5, P5): nem-failed validáció + sikeres sandbox-teszt +
     // approved review + (secretAlias VAGY apiKey).
@@ -437,16 +447,19 @@ export class ProvisioningService {
     )
 
     const hasCredentials = hasApiKey || Boolean(approvedAlias)
-    const usesPlatformGoogleOAuth = isGmail
+    const usesPlatformGoogleOAuth = isGmail || isGoogleDrive
 
     if (usesPlatformGoogleOAuth) {
+      const oauthService = isGoogleDrive ? 'drive' : 'gmail'
       const platformGoogle = this.deps.resolvePlatformGoogleOAuth
-        ? await this.deps.resolvePlatformGoogleOAuth()
+        ? await this.deps.resolvePlatformGoogleOAuth(oauthService)
         : { configured: false }
       if (!platformGoogle.configured) {
         throw new ProvisioningError(
           'PLATFORM_GOOGLE_OAUTH_MISSING',
-          'A Gmail connector a platform Google OAuth alkalmazását használja — állítsd be a Platform · Beállítások → Google OAuth oldalon.',
+          isGoogleDrive
+            ? 'A Google Drive connector a platform Google Drive OAuth alkalmazását használja — állítsd be a Platform · Beállítások → Google Drive OAuth oldalon.'
+            : 'A Gmail connector a platform Google OAuth alkalmazását használja — állítsd be a Platform · Beállítások → Google OAuth oldalon.',
         )
       }
     } else if (!hasCredentials) {
@@ -506,6 +519,9 @@ export class ProvisioningService {
 
     if (isGmail) {
       parseGmailStoredConfig(draft.connector.config)
+      authMode = 'user_delegated'
+    } else if (isGoogleDrive) {
+      parseGoogleDriveStoredConfig(draft.connector.config)
       authMode = 'user_delegated'
     } else {
       const config = parseStoredConfig(draft.connector.config, {
@@ -1317,6 +1333,18 @@ function parseGmailStoredConfig(raw: unknown): GmailConnectorConfig {
     throw new ProvisioningError(
       'PROVISIONING_INVALID_INPUT',
       'stored gmail config invalid',
+      e,
+    )
+  }
+}
+
+function parseGoogleDriveStoredConfig(raw: unknown): GoogleDriveConnectorConfig {
+  try {
+    return normalizeGoogleDriveConnectorConfig(raw)
+  } catch (e) {
+    throw new ProvisioningError(
+      'PROVISIONING_INVALID_INPUT',
+      'stored google_drive config invalid',
       e,
     )
   }

@@ -13,7 +13,7 @@ import {
   getPlatformWebSearchPolicy,
 } from '@/app/actions/web-search'
 import { getSystemAgentsPageData } from '@/app/actions/system-agents'
-import { getPlatformGoogleOAuth } from '@/app/actions/connector-grants'
+import { getPlatformGoogleOAuth, getPlatformGoogleDriveOAuthConfig } from '@/app/actions/connector-grants'
 import { readDispatcherRuntime } from '@/lib/dispatcher-runtime'
 import { enabledModelProviders } from '@/lib/model-policy'
 import { PLAYBOOK_AUTHOR_AGENT_NAME, PROVISIONING_ASSISTANT_AGENT_NAME } from '@/lib/platform-agent-registry'
@@ -25,6 +25,7 @@ import { ModelPolicyPanel } from '@/app/control-plane/system/model-policy-panel'
 import { WebSearchControlPanel } from '@/app/control-plane/system/web-search-control-panel'
 import { WebFetchControlPanel } from '@/app/control-plane/system/web-fetch-control-panel'
 import { GoogleOAuthControlPanel } from '@/app/control-plane/system/google-oauth-control-panel'
+import { GoogleDriveOAuthControlPanel } from '@/app/control-plane/system/google-drive-oauth-control-panel'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { Card } from '@/components/ui/shell'
@@ -63,6 +64,7 @@ export default async function PlatformSettingsPage({
     routingPoliciesRes,
     systemAgentsRes,
     googleOauthRes,
+    googleDriveOauthRes,
   ] = await Promise.all([
     getAuthContext(),
     getDispatcherControls(),
@@ -76,6 +78,7 @@ export default async function PlatformSettingsPage({
     listModelRoutingPolicies(),
     getSystemAgentsPageData(),
     getPlatformGoogleOAuth(),
+    getPlatformGoogleDriveOAuthConfig(),
   ])
   const isPlatform = Boolean(
     ctx && (ctx.platformRoles.includes('superadmin') || ctx.platformRoles.includes('platform_operator')),
@@ -150,11 +153,19 @@ export default async function PlatformSettingsPage({
           },
           {
             id: 'google-oauth',
-            label: 'Google OAuth',
-            description: 'Az Enterprise AI Agent Google Cloud OAuth clientje minden tenant számára.',
+            label: 'Google OAuth (Gmail)',
+            description: 'Az Enterprise AI Agent Gmail OAuth clientje minden tenant számára.',
             content: googleOauthRes.success
               ? <GoogleOAuthControlPanel initial={googleOauthRes.data} canEdit={canEdit} />
               : errorBox(googleOauthRes.error),
+          },
+          {
+            id: 'google-drive-oauth',
+            label: 'Google Drive OAuth',
+            description: 'Külön OAuth client a Google Drive integrációhoz (scope-izoláció a Gmailtől).',
+            content: googleDriveOauthRes.success
+              ? <GoogleDriveOAuthControlPanel initial={googleDriveOauthRes.data} canEdit={canEdit} />
+              : errorBox(googleDriveOauthRes.error),
           },
           {
             id: 'web-search',

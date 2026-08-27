@@ -23,6 +23,8 @@ import {
 /** Mindig kapuzott toolok — args-független. */
 export const ALWAYS_CONSEQUENCE_GATED_TOOLS: ReadonlySet<string> = new Set<ToolName>([
   'gmail_send',
+  'google_drive_share_file',
+  'google_drive_trash_file',
   'file_delete',
   'repo_open_pull_request',
   'sandbox.request_promotion',

@@ -274,6 +274,7 @@ export const TOOL_GROUP_INGATLAN = 'Ingatlan-nyilvántartás'
 export const TOOL_GROUP_MINIAPP = 'Mini-app'
 export const TOOL_GROUP_SANDBOX = 'Sandbox verziókezelés'
 export const TOOL_GROUP_GMAIL = 'Email (Gmail)'
+export const TOOL_GROUP_GOOGLE_DRIVE = 'Google Drive'
 export const TOOL_GROUP_AGENTS = 'Agent együttműködés'
 export const TOOL_GROUP_HTTP = 'HTTP API'
 export const TOOL_GROUP_WEB = 'Webes kutatás'
@@ -292,6 +293,7 @@ export const TOOL_GROUP_ORDER: readonly string[] = [
   TOOL_GROUP_MINIAPP,
   TOOL_GROUP_SANDBOX,
   TOOL_GROUP_GMAIL,
+  TOOL_GROUP_GOOGLE_DRIVE,
   TOOL_GROUP_AGENTS,
   TOOL_GROUP_HTTP,
   TOOL_GROUP_WEB,
@@ -653,6 +655,390 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'gmail_send',
     handlerId: 'gmail',
     capabilityGroup: TOOL_GROUP_GMAIL,
+  }),
+
+  // ── Google Drive ──────────────────────────────────────────────────────────
+  google_drive_search: descriptor({
+    description:
+      'Google Drive fájlok keresése és listázása a kapcsolt felhasználó jogosultságai szerint.',
+    argsSchema: z.object({
+      query: z.string().max(1000).optional(),
+      nameContains: z.string().max(200).optional(),
+      mimeTypes: z.array(z.string().max(120)).max(10).optional(),
+      modifiedAfter: z.string().max(40).optional(),
+      driveId: z.string().max(120).optional(),
+      pageSize: z.number().int().min(1).max(100).optional(),
+      pageToken: z.string().max(500).optional(),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_drive_search',
+      args: {
+        query: optStr(args, 'query'),
+        nameContains: optStr(args, 'nameContains'),
+        mimeTypes: stringArrayArg(args, 'mimeTypes'),
+        modifiedAfter: optStr(args, 'modifiedAfter'),
+        driveId: optStr(args, 'driveId'),
+        pageSize: numArg(args, 'pageSize'),
+        pageToken: optStr(args, 'pageToken'),
+      },
+    }),
+    trust: 'external_untrusted',
+    sideEffecting: false,
+    surfaces: BOTH,
+    capability: 'google_drive_search',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_drive_get_file: descriptor({
+    description: 'Egy Google Drive fájl metaadatának lekérése fileId alapján.',
+    argsSchema: z.object({ fileId: z.string().min(1).max(200) }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_drive_get_file',
+      args: { fileId: strArg(args, 'fileId') },
+    }),
+    trust: 'external_untrusted',
+    sideEffecting: false,
+    surfaces: BOTH,
+    capability: 'google_drive_get_file',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_drive_read_file: descriptor({
+    description:
+      'Google Drive fájl tartalmának olvasása — Google Docs/Sheets export vagy natív fájl letöltés.',
+    argsSchema: z.object({
+      fileId: z.string().min(1).max(200),
+      maxBytes: z.number().int().min(1).max(20_000_000).optional(),
+      sheetName: z.string().max(120).optional(),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_drive_read_file',
+      args: {
+        fileId: strArg(args, 'fileId'),
+        maxBytes: numArg(args, 'maxBytes'),
+        sheetName: optStr(args, 'sheetName'),
+      },
+    }),
+    trust: 'external_untrusted',
+    sideEffecting: false,
+    surfaces: BOTH,
+    capability: 'google_drive_read_file',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_drive_list_drives: descriptor({
+    description: 'Megosztott Google Drive meghajtók listázása.',
+    argsSchema: z.object({
+      pageSize: z.number().int().min(1).max(100).optional(),
+      pageToken: z.string().max(500).optional(),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_drive_list_drives',
+      args: {
+        pageSize: numArg(args, 'pageSize'),
+        pageToken: optStr(args, 'pageToken'),
+      },
+    }),
+    trust: 'external_untrusted',
+    sideEffecting: false,
+    surfaces: BOTH,
+    capability: 'google_drive_list_drives',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_drive_create_folder: descriptor({
+    description: 'Új mappa létrehozása a Google Drive-on.',
+    argsSchema: z.object({
+      name: z.string().min(1).max(500),
+      parentFolderId: z.string().max(200).optional(),
+      idempotencyKey: z.string().min(1).max(200),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_drive_create_folder',
+      args: {
+        name: strArg(args, 'name'),
+        parentFolderId: optStr(args, 'parentFolderId'),
+        idempotencyKey: strArg(args, 'idempotencyKey'),
+      },
+    }),
+    trust: 'trusted',
+    sideEffecting: true,
+    surfaces: BOTH,
+    capability: 'google_drive_create_folder',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_drive_upload_file: descriptor({
+    description: 'Fájl feltöltése Google Drive-ra tenant-ellenőrzött artifactRef-ből.',
+    argsSchema: z.object({
+      artifactRef: z.string().min(1).max(500),
+      name: z.string().max(500).optional(),
+      parentFolderId: z.string().max(200).optional(),
+      convertToGoogleType: z.enum(['doc', 'sheet', 'slides']).optional(),
+      idempotencyKey: z.string().min(1).max(200),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_drive_upload_file',
+      args: {
+        artifactRef: strArg(args, 'artifactRef'),
+        name: optStr(args, 'name'),
+        parentFolderId: optStr(args, 'parentFolderId'),
+        convertToGoogleType: optStr(args, 'convertToGoogleType') as 'doc' | 'sheet' | 'slides' | undefined,
+        idempotencyKey: strArg(args, 'idempotencyKey'),
+      },
+    }),
+    trust: 'trusted',
+    sideEffecting: true,
+    surfaces: BOTH,
+    capability: 'google_drive_upload_file',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_drive_update_file: descriptor({
+    description: 'Google Drive fájl tartalmának frissítése szöveggel vagy artifactRef-fel.',
+    argsSchema: z.object({
+      fileId: z.string().min(1).max(200),
+      artifactRef: z.string().max(500).optional(),
+      textContent: z.string().max(500_000).optional(),
+      expectedModifiedTime: z.string().max(40).optional(),
+      idempotencyKey: z.string().min(1).max(200),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_drive_update_file',
+      args: {
+        fileId: strArg(args, 'fileId'),
+        artifactRef: optStr(args, 'artifactRef'),
+        textContent: optStr(args, 'textContent'),
+        expectedModifiedTime: optStr(args, 'expectedModifiedTime'),
+        idempotencyKey: strArg(args, 'idempotencyKey'),
+      },
+    }),
+    trust: 'trusted',
+    sideEffecting: true,
+    surfaces: BOTH,
+    capability: 'google_drive_update_file',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_drive_rename_file: descriptor({
+    description: 'Google Drive fájl átnevezése.',
+    argsSchema: z.object({
+      fileId: z.string().min(1).max(200),
+      newName: z.string().min(1).max(500),
+      idempotencyKey: z.string().min(1).max(200),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_drive_rename_file',
+      args: {
+        fileId: strArg(args, 'fileId'),
+        newName: strArg(args, 'newName'),
+        idempotencyKey: strArg(args, 'idempotencyKey'),
+      },
+    }),
+    trust: 'trusted',
+    sideEffecting: true,
+    surfaces: BOTH,
+    capability: 'google_drive_rename_file',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_drive_move_file: descriptor({
+    description: 'Google Drive fájl mozgatása másik mappába.',
+    argsSchema: z.object({
+      fileId: z.string().min(1).max(200),
+      destinationFolderId: z.string().min(1).max(200),
+      idempotencyKey: z.string().min(1).max(200),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_drive_move_file',
+      args: {
+        fileId: strArg(args, 'fileId'),
+        destinationFolderId: strArg(args, 'destinationFolderId'),
+        idempotencyKey: strArg(args, 'idempotencyKey'),
+      },
+    }),
+    trust: 'trusted',
+    sideEffecting: true,
+    surfaces: BOTH,
+    capability: 'google_drive_move_file',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_drive_copy_file: descriptor({
+    description: 'Google Drive fájl másolása.',
+    argsSchema: z.object({
+      fileId: z.string().min(1).max(200),
+      newName: z.string().max(500).optional(),
+      parentFolderId: z.string().max(200).optional(),
+      idempotencyKey: z.string().min(1).max(200),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_drive_copy_file',
+      args: {
+        fileId: strArg(args, 'fileId'),
+        newName: optStr(args, 'newName'),
+        parentFolderId: optStr(args, 'parentFolderId'),
+        idempotencyKey: strArg(args, 'idempotencyKey'),
+      },
+    }),
+    trust: 'trusted',
+    sideEffecting: true,
+    surfaces: BOTH,
+    capability: 'google_drive_copy_file',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_drive_trash_file: descriptor({
+    description: 'Google Drive fájl kukába helyezése (visszaállítható).',
+    argsSchema: z.object({ fileId: z.string().min(1).max(200) }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_drive_trash_file',
+      args: { fileId: strArg(args, 'fileId') },
+    }),
+    trust: 'trusted',
+    sideEffecting: true,
+    surfaces: BOTH,
+    capability: 'google_drive_trash_file',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_drive_restore_file: descriptor({
+    description: 'Google Drive fájl visszaállítása a kukából.',
+    argsSchema: z.object({ fileId: z.string().min(1).max(200) }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_drive_restore_file',
+      args: { fileId: strArg(args, 'fileId') },
+    }),
+    trust: 'trusted',
+    sideEffecting: true,
+    surfaces: BOTH,
+    capability: 'google_drive_restore_file',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_drive_share_file: descriptor({
+    description:
+      'Google Drive fájl megosztása konkrét felhasználóval vagy csoporttal — mindig jóváhagyás-köteles.',
+    argsSchema: z.object({
+      fileId: z.string().min(1).max(200),
+      recipientType: z.enum(['user', 'group']),
+      emailAddress: z.string().email(),
+      role: z.enum(['reader', 'commenter', 'writer']),
+      sendNotificationEmail: z.boolean().optional(),
+      emailMessage: z.string().max(2000).optional(),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_drive_share_file',
+      args: {
+        fileId: strArg(args, 'fileId'),
+        recipientType: strArg(args, 'recipientType') as 'user' | 'group',
+        emailAddress: strArg(args, 'emailAddress'),
+        role: strArg(args, 'role') as 'reader' | 'commenter' | 'writer',
+        sendNotificationEmail: boolArg(args, 'sendNotificationEmail'),
+        emailMessage: optStr(args, 'emailMessage'),
+      },
+    }),
+    trust: 'trusted',
+    sideEffecting: true,
+    surfaces: BOTH,
+    capability: 'google_drive_share_file',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_docs_apply_edits: descriptor({
+    description: 'Google Docs natív tartalom-módosítás batchUpdate műveletekkel.',
+    argsSchema: z.object({
+      fileId: z.string().min(1).max(200),
+      operations: z.array(z.record(z.string(), z.unknown())).min(1).max(50),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_docs_apply_edits',
+      args: {
+        fileId: strArg(args, 'fileId'),
+        operations: (args.operations as Array<Record<string, unknown>>) ?? [],
+      },
+    }),
+    trust: 'trusted',
+    sideEffecting: true,
+    surfaces: BOTH,
+    capability: 'google_docs_apply_edits',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_sheets_write_range: descriptor({
+    description: 'Google Sheets cellatartomány írása A1 jelöléssel.',
+    argsSchema: z.object({
+      fileId: z.string().min(1).max(200),
+      range: z.string().min(1).max(200),
+      values: z.array(z.array(z.unknown())).min(1).max(500),
+      mode: z.enum(['replace', 'append']).optional(),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_sheets_write_range',
+      args: {
+        fileId: strArg(args, 'fileId'),
+        range: strArg(args, 'range'),
+        values: (args.values as unknown[][]) ?? [],
+        mode: optStr(args, 'mode') as 'replace' | 'append' | undefined,
+      },
+    }),
+    trust: 'trusted',
+    sideEffecting: true,
+    surfaces: BOTH,
+    capability: 'google_sheets_write_range',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+  }),
+
+  google_slides_apply_edits: descriptor({
+    description: 'Google Slides natív tartalom-módosítás batchUpdate műveletekkel.',
+    argsSchema: z.object({
+      fileId: z.string().min(1).max(200),
+      operations: z.array(z.record(z.string(), z.unknown())).min(1).max(50),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'google_slides_apply_edits',
+      args: {
+        fileId: strArg(args, 'fileId'),
+        operations: (args.operations as Array<Record<string, unknown>>) ?? [],
+      },
+    }),
+    trust: 'trusted',
+    sideEffecting: true,
+    surfaces: BOTH,
+    capability: 'google_slides_apply_edits',
+    handlerId: 'google_drive',
+    capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
   }),
 
   // ── HTTP API ──────────────────────────────────────────────────────────────
