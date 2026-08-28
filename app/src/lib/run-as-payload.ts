@@ -89,9 +89,58 @@ function isHumanUserId(userId: string | null | undefined): userId is string {
   return Boolean(userId && userId !== NIL_USER_ID)
 }
 
+/** Agent által indított kártya — a createdById itt system/admin, NEM acting user. */
+const AGENT_FILED_SOURCES = new Set(['agent_tool', 'agent_ask'])
+
 function isAgentFiledPayload(payload: Record<string, unknown> | null): boolean {
   if (!payload) return false
-  return payload.source === 'agent_tool' || typeof payload.createdByAgentId === 'string'
+  if (typeof payload.createdByAgentId === 'string') return true
+  if (typeof payload.source === 'string' && AGENT_FILED_SOURCES.has(payload.source)) return true
+  // agent_ask / ticket_create delegation jelölő — source nélkül se essünk adminra
+  if (payload.delegation === true) return true
+  return false
+}
+
+/**
+ * Identitásmezők, amiket az agent payload-patchből nem írhat (board_write / ticket_create).
+ * Run-as, beszélgetés-kötés és agent-forrás bizalmi adat — csak a broker állíthatja.
+ */
+export const TICKET_IDENTITY_PAYLOAD_KEYS = [
+  SCHEDULED_TASK_ID,
+  RUN_AS_USER_ID,
+  RUN_AS_AUTHORIZED_AT,
+  RUN_AS_AUTHORIZED_BY,
+  'conversationId',
+  'source',
+  'createdByAgentId',
+  'requesterAgentId',
+  'delegation',
+] as const
+
+/** Agent-patch után: az eredeti identitásmezőket visszaírja / törli a hamisítottakat. */
+export function freezeTicketIdentityPayload(
+  merged: Record<string, unknown>,
+  original: Record<string, unknown> | null,
+): Record<string, unknown> {
+  for (const key of TICKET_IDENTITY_PAYLOAD_KEYS) {
+    if (original && Object.prototype.hasOwnProperty.call(original, key)) {
+      merged[key] = original[key]
+    } else {
+      delete merged[key]
+    }
+  }
+  return merged
+}
+
+/** Agent által megadott ticket_create payload: az identitásmezőket kidobjuk. */
+export function stripTicketIdentityFromAgentPayload(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...payload }
+  for (const key of TICKET_IDENTITY_PAYLOAD_KEYS) {
+    delete next[key]
+  }
+  return next
 }
 
 function conversationActingUserId(

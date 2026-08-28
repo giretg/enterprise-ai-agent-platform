@@ -8,13 +8,18 @@ import {
   type TicketActingUserTicket,
 } from '@/lib/run-as-payload'
 
+const AGENT_FILED_SOURCES = new Set(['agent_tool', 'agent_ask'])
+
 function isHumanUserId(userId: string | null | undefined): userId is string {
   return Boolean(userId && userId !== '00000000-0000-0000-0000-000000000000')
 }
 
 function isAgentFiledPayload(payload: Record<string, unknown> | null): boolean {
   if (!payload) return false
-  return payload.source === 'agent_tool' || typeof payload.createdByAgentId === 'string'
+  if (typeof payload.createdByAgentId === 'string') return true
+  if (typeof payload.source === 'string' && AGENT_FILED_SOURCES.has(payload.source)) return true
+  if (payload.delegation === true) return true
+  return false
 }
 
 function needsConversationLookup(ticket: TicketActingUserTicket): boolean {
