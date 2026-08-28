@@ -51,6 +51,17 @@ function str(value: unknown, key: string): string | null {
   return typeof raw === 'string' ? raw : null
 }
 
+/** Ponttal elválasztott útvonal (`file.id`) — a lapos `str` NEM engedi. */
+function pathStr(value: unknown, path: string): string | null {
+  if (!path.includes('.')) return str(value, path)
+  let cur: unknown = value
+  for (const part of path.split('.')) {
+    if (!cur || typeof cur !== 'object' || Array.isArray(cur)) return null
+    cur = (cur as Record<string, unknown>)[part]
+  }
+  return typeof cur === 'string' ? cur : null
+}
+
 function arr(value: unknown, key: string): unknown[] | null {
   const raw = rec(value)[key]
   return Array.isArray(raw) ? raw : null
@@ -85,7 +96,7 @@ function countedEffect(countKey: string, unit: string, targetKey = 'path') {
 /** Azonosító-alapú mellékhatás: a mért „hatás" maga a keletkezett azonosító. */
 function identifiedEffect(idKey: string, unit: string) {
   return (output: unknown): ToolEffectSummary | null => {
-    const id = str(output, idKey)
+    const id = pathStr(output, idKey)
     if (!id) return effect(0, unit, null)
     return effect(1, unit, id)
   }
@@ -150,6 +161,12 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
   google_drive_search: {
     outputSchema: listResult('files'),
     emptiness: emptyList('files', 'a keresés egyetlen Drive fájlt sem talált'),
+    // nextPageToken mellett az első oldal NEM teljes lista — ugyanaz a csendes
+    // csonkolás-osztály, mint http_api_get_all paginationComplete=false.
+    partial: (output) =>
+      str(output, 'nextPageToken')
+        ? 'a keresésnek van következő oldala (nextPageToken) — a lista NEM teljes, lapozz tovább vagy szűkíts'
+        : null,
   },
   google_drive_get_file: {
     outputSchema: z.record(z.string(), z.unknown()),
@@ -172,6 +189,10 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
   google_drive_list_drives: {
     outputSchema: listResult('drives'),
     emptiness: emptyList('drives', 'nincs elérhető megosztott meghajtó'),
+    partial: (output) =>
+      str(output, 'nextPageToken')
+        ? 'a meghajtólistának van következő oldala (nextPageToken) — a lista NEM teljes'
+        : null,
   },
   google_drive_create_folder: {
     outputSchema: z.looseObject({ file: z.record(z.string(), z.unknown()), created: z.boolean() }),
@@ -186,7 +207,13 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
       file: z.record(z.string(), z.unknown()),
       conflict: z.boolean().optional(),
     }),
-    effect: identifiedEffect('file.id', 'frissített fájl'),
+    // conflict:true → a tartalom NEM íródott; a file.id megléte nem jelent hatást.
+    effect: (output) => {
+      if (bool(output, 'conflict') === true) {
+        return effect(0, 'frissített fájl (conflict — nem történt írás)', pathStr(output, 'file.id'))
+      }
+      return identifiedEffect('file.id', 'frissített fájl')(output)
+    },
   },
   google_drive_rename_file: {
     outputSchema: z.record(z.string(), z.unknown()),
