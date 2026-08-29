@@ -807,7 +807,8 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
   }),
 
   google_drive_update_file: descriptor({
-    description: 'Google Drive fájl tartalmának frissítése szöveggel vagy artifactRef-fel.',
+    description:
+      'Google Drive szöveges fájl tartalmának frissítése (text/* / json / xml). Bináris és Google Workspace MIME tilos — azokhoz native API vagy artifactRef kell.',
     argsSchema: z.object({
       fileId: z.string().min(1).max(200),
       artifactRef: z.string().max(500).optional(),

@@ -67,12 +67,16 @@ export const googleDriveHandler: ToolHandler = {
         })
       case 'google_drive_upload_file':
         throw new Error(
-          'google_drive_upload_file requires artifactRef upload pipeline — használd a create_folder + update_file kombinációt stub módban.',
+          'google_drive_upload_file requires artifactRef upload pipeline — v1-ben text-only update_file csak text/* MIME-ra biztonságos.',
         )
       case 'google_docs_apply_edits':
       case 'google_sheets_write_range':
       case 'google_slides_apply_edits':
-        throw new Error(`${input.tool} native edit — v1 stub: használd google_drive_update_file szöveges tartalommal.`)
+        // Ne irányítsuk google_drive_update_file-ra: a textContent media-upload
+        // Workspace/bináris MIME-n adatvesztést okozna.
+        throw new Error(
+          `${input.tool} not implemented in v1 — native Docs/Sheets/Slides edit API required (google_drive_update_file textContent is text/* only)`,
+        )
       default:
         throw new Error(`Unknown Google Drive tool: ${input.tool}`)
     }

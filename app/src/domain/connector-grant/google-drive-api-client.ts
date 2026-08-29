@@ -40,6 +40,13 @@ const STUB_FILES: DriveFileSummary[] = [
     modifiedTime: new Date().toISOString(),
     size: '4096',
   },
+  {
+    id: 'stub-file-text',
+    name: 'jegyzet.txt',
+    mimeType: 'text/plain',
+    modifiedTime: new Date().toISOString(),
+    size: '42',
+  },
 ]
 
 const GOOGLE_WORKSPACE_EXPORT: Record<string, string> = {
@@ -48,8 +55,37 @@ const GOOGLE_WORKSPACE_EXPORT: Record<string, string> = {
   'application/vnd.google-apps.presentation': 'text/plain',
 }
 
+/** textContent media-upload csak ezekre biztonságos — bináris/Workspace MIME-ra adatvesztés. */
+const TEXT_MEDIA_UPDATE_MIMES = new Set([
+  'text/plain',
+  'text/csv',
+  'text/html',
+  'text/css',
+  'text/markdown',
+  'text/x-markdown',
+  'text/xml',
+  'text/javascript',
+  'application/json',
+  'application/xml',
+  'application/javascript',
+  'application/ecmascript',
+  'application/x-javascript',
+  'application/sql',
+  'application/yaml',
+  'application/x-yaml',
+  'application/rtf',
+])
+
 const MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
 const MAX_TEXT_CHARS = 200_000
+
+export function isGoogleDriveTextMediaMime(mimeType: string | undefined | null): boolean {
+  const mime = (mimeType ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+  if (!mime) return false
+  if (TEXT_MEDIA_UPDATE_MIMES.has(mime)) return true
+  // Szöveges altípusok (pl. text/x-python), de ne application/* találomra.
+  return mime.startsWith('text/')
+}
 
 export class GoogleDriveApiAuthError extends Error {
   constructor(
@@ -423,19 +459,27 @@ export class GoogleDriveApiClient {
     textContent: string
     expectedModifiedTime?: string
   }): Promise<{ file: DriveFileSummary; conflict: boolean }> {
+    const metadata = await this.getFile({ fileId: params.fileId })
+    if (!isGoogleDriveTextMediaMime(metadata.mimeType)) {
+      // Fail-closed: UTF-8 textContent + uploadType=media bináris/Workspace fájlt
+      // megsértene, miközben a hívás sikeresnek tűnne (adatvesztés).
+      throw new GoogleDriveApiError(
+        `google_drive.update_file: textContent not allowed for mimeType=${metadata.mimeType || '(missing)'} — use native Docs/Sheets/Slides APIs or binary artifactRef upload`,
+        415,
+        'UNSUPPORTED_MEDIA_TYPE',
+      )
+    }
+
     if (params.expectedModifiedTime) {
-      const existing = await this.getFile({ fileId: params.fileId })
-      if (existing.modifiedTime && existing.modifiedTime !== params.expectedModifiedTime) {
-        return { file: existing, conflict: true }
+      if (metadata.modifiedTime && metadata.modifiedTime !== params.expectedModifiedTime) {
+        return { file: metadata, conflict: true }
       }
     }
 
     if (this.isStub()) {
-      const file = await this.getFile({ fileId: params.fileId })
-      return { file, conflict: false }
+      return { file: metadata, conflict: false }
     }
 
-    const metadata = await this.getFile({ fileId: params.fileId })
     const url = new URL(`${UPLOAD_BASE}/files/${encodeURIComponent(params.fileId)}`)
     url.searchParams.set('uploadType', 'media')
     for (const [key, value] of Object.entries(sharedDriveParams())) {
@@ -447,7 +491,7 @@ export class GoogleDriveApiClient {
       method: 'PATCH',
       headers: {
         ...this.authHeaders(),
-        'content-type': metadata.mimeType || 'text/plain',
+        'content-type': metadata.mimeType.split(';')[0]?.trim() || 'text/plain',
       },
       body: params.textContent,
     })
