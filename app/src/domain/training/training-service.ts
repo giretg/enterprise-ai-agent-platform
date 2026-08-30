@@ -755,7 +755,7 @@ export class TrainingService {
       })
       await this.store.updateTrainingMeta(params.ticketId, { writeGateTokenRef: gateToken.id })
 
-      if (ticket.state === 'awaiting_human') {
+      // A kapu `awaiting_human`-ra szűkít: awaiting_human → approved → done.
       // Az awaiting_human → approved ticket-szabály approver szerepet vár.
       // `operator_can_activate` esetén a policy már engedélyezte a hívót; a
       // ticket-gép system-átmenettel lép, a döntéshozó az auditban marad.
@@ -768,14 +768,11 @@ export class TrainingService {
         note: hasMinimumRole(params.actor.role, 'approver') ? undefined : 'operator_can_activate',
         agentVersion: ctx.currentVersion,
       })
-      }
-      if (ticket.state !== 'done') {
       await this.ticketService.transition({
         ticketId: params.ticketId,
         toState: 'done',
         actor: { type: 'system' },
       })
-      }
 
       await this.audit.append({
       actorType: 'human',
