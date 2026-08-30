@@ -29,7 +29,7 @@ import {
   validateConnectorDraft,
   type FetchApiDocFromUrlData,
 } from '@/app/actions/provisioning'
-import { startConnectorOAuth, getGoogleOAuthConfiguredStatus } from '@/app/actions/connector-grants'
+import { startConnectorOAuth, getGoogleOAuthConfiguredStatus, getGoogleDriveOAuthConfiguredStatus } from '@/app/actions/connector-grants'
 import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'
 import { OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES } from '@/domain/connector-template/custom-template-seeds'
 import { SelfUpdatingConnectorsPanel } from '@/app/control-plane/connectors/self-updating/self-updating-connectors-panel'
@@ -218,7 +218,7 @@ type TemplateDescriptor = {
   displayName: string
   description?: string
   activationHelp?: string
-  connectorType: 'gmail' | 'http_api'
+  connectorType: 'gmail' | 'google_drive' | 'http_api'
   authMethods: Array<{ kind: 'api_key' | 'bearer' | 'basic' | 'service_oauth2' | 'user_delegated_oauth2' }>
   instanceFields: Array<{
     name: string
@@ -450,6 +450,32 @@ function inferDocSourceType(sourceRef: string, contentType?: string): 'openapi' 
   return 'api_doc'
 }
 
+function sourceMethodLabel(method: SourceMethod): string {
+  switch (method) {
+    case 'template':
+      return 'Sablon-katalógus'
+    case 'discover':
+      return 'Webes felfedezés'
+    case 'document':
+      return 'API-dokumentáció'
+    case 'manual':
+      return 'Kézi JSON'
+  }
+}
+
+function draftSourceProvenanceLabel(
+  sourceType: 'api_doc' | 'openapi' | 'manual' | 'template',
+  sourceMethod: SourceMethod,
+): string | null {
+  if (sourceMethod === 'document' && sourceType === 'openapi') {
+    return 'OpenAPI spec (automatikusan felismerve)'
+  }
+  if (sourceMethod === 'discover') {
+    return 'API-dokumentáció (webes felfedezésből)'
+  }
+  return null
+}
+
 function statusTone(s?: CheckStatus): 'neutral' | 'success' | 'warning' | 'danger' {
   if (s === 'passed') return 'success'
   if (s === 'warned') return 'warning'
@@ -473,6 +499,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
   const [agents, setAgents] = useState<AgentOption[]>([])
   const [templates, setTemplates] = useState<ConnectorTemplateRow[]>([])
   const [googleOauthConfigured, setGoogleOauthConfigured] = useState(false)
+  const [googleDriveOauthConfigured, setGoogleDriveOauthConfigured] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [loadedOnce, setLoadedOnce] = useState(false)
@@ -526,7 +553,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
         : {},
     )
     setTemplateSecretAliases(
-      descriptor.connectorType === 'gmail'
+      descriptor.connectorType === 'gmail' || descriptor.connectorType === 'google_drive'
         ? {}
         : Object.fromEntries(
             descriptor.instanceFields
@@ -536,13 +563,25 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
     )
   }, [])
 
+  useEffect(() => {
+    const normalized = name.trim().toLowerCase()
+    if (!normalized.includes('drive')) return
+    const driveTemplate = templates.find((template) => template.key === 'google-drive')
+    if (driveTemplate && selectedTemplateId !== driveTemplate.id) {
+      applyTemplateSelection(driveTemplate)
+      setSourceMethod('template')
+      setSourceType('template')
+    }
+  }, [name, templates, selectedTemplateId, applyTemplateSelection])
+
   const reload = useCallback(() => {
     startTransition(async () => {
-      const [d, a, t, g] = await Promise.all([
+      const [d, a, t, g, gd] = await Promise.all([
         listProvisioningDrafts(),
         listProvisioningAssignableAgents(),
         listConnectorTemplatesAction(),
         getGoogleOAuthConfiguredStatus(),
+        getGoogleDriveOAuthConfiguredStatus(),
       ])
       if (d.success) setDrafts(d.data as DraftRow[])
       else setError(d.error)
@@ -553,6 +592,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
         if (!selectedTemplateId && rows[0]) applyTemplateSelection(rows[0])
       }
       if (g.success) setGoogleOauthConfigured(g.data.configured)
+      if (gd.success) setGoogleDriveOauthConfigured(gd.data.configured)
       setLoadedOnce(true)
     })
   }, [applyTemplateSelection, selectedTemplateId])
@@ -743,6 +783,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? templates[0]
   const selectedTemplateDescriptor = selectedTemplate?.descriptor
   const isGmailTemplate = selectedTemplateDescriptor?.connectorType === 'gmail'
+  const isGoogleDriveTemplate = selectedTemplateDescriptor?.connectorType === 'google_drive'
   const effectiveTemplateAuthMethod =
     selectedTemplateDescriptor?.authMethods.find((m) => m.kind === templateAuthMethod)?.kind ??
     selectedTemplateDescriptor?.authMethods[0]?.kind ??
@@ -839,6 +880,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
       : sourceMethod !== 'template' && !configText.trim()
         ? 'Előbb generálj vagy adj meg config-deskriptort.'
         : null
+  const reviewProvenanceHint = draftSourceProvenanceLabel(sourceType, sourceMethod)
 
   return (
     <div className="space-y-6">
@@ -953,30 +995,15 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                     Ez alapján készül a draft azonosítható, admin által ellenőrizhető connectorrá.
                   </p>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="text-sm">
-                    <span className="mb-1 block text-ink-soft">Név</span>
-                    <input
-                      className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="Acme CRM"
-                    />
-                  </label>
-                  <label className="text-sm">
-                    <span className="mb-1 block text-ink-soft">Forrás típusa</span>
-                    <select
-                      className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-                      value={sourceType}
-                      onChange={(e) => setSourceType(e.target.value as typeof sourceType)}
-                    >
-                      <option value="api_doc">api_doc</option>
-                      <option value="openapi">openapi</option>
-                      <option value="manual">manual</option>
-                      <option value="template">template</option>
-                    </select>
-                  </label>
-                </div>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-ink-soft">Név</span>
+                  <input
+                    className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Acme CRM"
+                  />
+                </label>
               </div>
             ) : null}
 
@@ -1000,9 +1027,13 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                       type="button"
                       onClick={() => {
                         setSourceMethod(method.id)
-                        if (method.id === 'template') setSourceType('template')
-                        if (method.id === 'manual') setSourceType('manual')
-                        if (method.id !== 'manual' && method.id !== 'template' && sourceType !== 'api_doc') setSourceType('api_doc')
+                        if (method.id === 'template') {
+                          setSourceType('template')
+                        } else if (method.id === 'manual') {
+                          setSourceType('manual')
+                        } else {
+                          setSourceType('api_doc')
+                        }
                       }}
                       className={`rounded-md border px-3 py-3 text-left ${
                         sourceMethod === method.id
@@ -1052,6 +1083,12 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
 
                         {selectedTemplateDescriptor ? (
                           <div className="space-y-3">
+                            {isGoogleDriveTemplate && !googleDriveOauthConfigured ? (
+                              <p className="rounded-md border border-amber/35 bg-amber/10 px-3 py-2 text-xs text-ink-soft">
+                                A Google Drive sablonhoz a platform Drive OAuth beállítása kell
+                                (Platform · Beállítások → Google Drive OAuth).
+                              </p>
+                            ) : null}
                             {selectedTemplate.description ? (
                               <p className="text-xs text-ink-soft">{selectedTemplate.description}</p>
                             ) : null}
@@ -1378,6 +1415,19 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                     A secret SOSEM kerül ide, csak a Secret Managerbe szánt alias neve javasolt.
                   </p>
                 </div>
+                <dl className="grid gap-2 rounded-md border border-ink/12 bg-paper px-3 py-2 text-xs sm:grid-cols-2">
+                  <div>
+                    <dt className="text-ink-soft">Connector neve</dt>
+                    <dd className="font-semibold">{name.trim() || '—'}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-ink-soft">Forrás</dt>
+                    <dd className="font-semibold">{sourceMethodLabel(sourceMethod)}</dd>
+                    {reviewProvenanceHint ? (
+                      <dd className="mt-0.5 text-ink-soft">{reviewProvenanceHint}</dd>
+                    ) : null}
+                  </div>
+                </dl>
                 {sourceMethod === 'template' && selectedTemplateDescriptor ? (
                   <div className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
                     <div className="flex flex-wrap items-center gap-2">
@@ -1591,6 +1641,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                 templates={templates}
                 latestTemplateVersions={latestTemplateVersions}
                 googleOauthConfigured={googleOauthConfigured}
+                googleDriveOauthConfigured={googleDriveOauthConfigured}
                 pending={pending}
                 run={run}
               />
@@ -1614,6 +1665,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                 templates={templates}
                 latestTemplateVersions={latestTemplateVersions}
                 googleOauthConfigured={googleOauthConfigured}
+                googleDriveOauthConfigured={googleDriveOauthConfigured}
                 pending={pending}
                 run={run}
               />
@@ -1685,6 +1737,7 @@ function DraftCard({
   templates,
   latestTemplateVersions,
   googleOauthConfigured,
+  googleDriveOauthConfigured,
   pending,
   run,
 }: {
@@ -1693,6 +1746,7 @@ function DraftCard({
   templates: ConnectorTemplateRow[]
   latestTemplateVersions: Record<string, number>
   googleOauthConfigured: boolean
+  googleDriveOauthConfigured: boolean
   pending: boolean
   run: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
 }) {
@@ -1750,28 +1804,32 @@ function DraftCard({
       ? templates.find((template) => template.key === provenance.templateKey)?.descriptor
       : undefined)
   const isGmailConnector = draft.connectorType === 'gmail'
+  const isGoogleDriveConnector = draft.connectorType === 'google_drive'
+  const isPlatformGoogleConnector = isGmailConnector || isGoogleDriveConnector
   const activationHelp = templateDescriptor?.activationHelp?.trim() ?? ''
   const isActive = draft.lifecycleState === 'active'
   const isUserDelegated =
-    isGmailConnector ||
+    isPlatformGoogleConnector ||
     draft.authMode === 'user_delegated' ||
     cfg?.authMode === 'user_delegated' ||
     draft.httpApiView?.isDelegated === true
   // oauth2 (service VAGY delegált) → nem-titkos client_id-t kell megadni (config.auth.clientId).
   const isOauth2 =
-    isGmailConnector ||
+    isPlatformGoogleConnector ||
     isUserDelegated ||
     draft.httpApiView?.authScheme === 'oauth2' ||
     cfg?.auth?.type === 'oauth2'
   const isOstorosborCrm =
     provenance?.templateKey?.startsWith('ostorosbor-crm') === true ||
     cfg?.provider?.startsWith('ostorosbor-crm') === true
-  const hasActivationCredentials = isGmailConnector
-    ? googleOauthConfigured
+  const hasActivationCredentials = isPlatformGoogleConnector
+    ? isGmailConnector
+      ? googleOauthConfigured
+      : googleDriveOauthConfigured
     : !!apiKey.trim() ||
       (!!secretAlias.trim() && isResolvableSecretAlias(secretAlias.trim()))
   const hasInvalidSecretAlias =
-    !isGmailConnector &&
+    !isPlatformGoogleConnector &&
     !apiKey.trim() &&
     !!secretAlias.trim() &&
     !isResolvableSecretAlias(secretAlias.trim())
@@ -1780,13 +1838,15 @@ function DraftCard({
     draftId: draft.draftId,
     ...(isGmailConnector
       ? {}
-      : apiKey.trim()
+      : isGoogleDriveConnector
+        ? {}
+        : apiKey.trim()
         ? { apiKey: apiKey.trim() }
         : secretAlias.trim()
           ? { secretAlias: secretAlias.trim() }
           : {}),
-    ...(confirmKeyless && !isGmailConnector ? { confirmKeyless: true as const } : {}),
-    ...(isOauth2 && !isGmailConnector && clientId.trim() ? { clientId: clientId.trim() } : {}),
+    ...(confirmKeyless && !isPlatformGoogleConnector ? { confirmKeyless: true as const } : {}),
+    ...(isOauth2 && !isPlatformGoogleConnector && clientId.trim() ? { clientId: clientId.trim() } : {}),
     ...(isOstorosborCrm && actingUserEmail.trim()
       ? { defaultActingUserEmail: actingUserEmail.trim() }
       : {}),
@@ -1797,7 +1857,8 @@ function DraftCard({
   const handleActivate = () => {
     if (hasInvalidSecretAlias) return
     if (isGmailConnector && !googleOauthConfigured) return
-    if (!isGmailConnector && !hasActivationCredentials) {
+    if (isGoogleDriveConnector && !googleDriveOauthConfigured) return
+    if (!isPlatformGoogleConnector && !hasActivationCredentials) {
       void (async () => {
         const confirmed = await confirmDialog({
           title: 'Aktiválás kulcs nélkül',
@@ -2525,6 +2586,22 @@ function DraftCard({
                       </p>
                     )}
                   </div>
+                ) : isGoogleDriveConnector ? (
+                  <div className="text-xs sm:col-span-2">
+                    {googleDriveOauthConfigured ? (
+                      <p className="flex items-center gap-2 text-sage">
+                        <span aria-hidden className="h-2 w-2 rounded-full bg-sage" />
+                        A platform Google Drive OAuth alkalmazása be van állítva — Client ID és
+                        Secret nem kell tenant szinten.
+                      </p>
+                    ) : (
+                      <p className="text-honey">
+                        A Google Drive connector a platform Drive OAuth alkalmazását használja.
+                        Aktiválás előtt a platform-adminnak be kell állítania a Platform ·
+                        Beállítások → Google Drive OAuth oldalon.
+                      </p>
+                    )}
+                  </div>
                 ) : (
                   <>
                 <label className="text-xs sm:col-span-2">
@@ -2669,7 +2746,7 @@ function DraftCard({
                 <p className="mt-2 text-xs text-ink-soft">Kulcsos teszt: {authTestDetail}</p>
               ) : null}
               <div className="mt-2 flex flex-wrap gap-2">
-                {hasActivationCredentials && !isGmailConnector ? (
+                {hasActivationCredentials && !isPlatformGoogleConnector ? (
                   <button
                     type="button"
                     disabled={
@@ -2705,7 +2782,8 @@ function DraftCard({
                     pending ||
                     !activationReady ||
                     hasInvalidSecretAlias ||
-                    (isGmailConnector && !googleOauthConfigured)
+                    (isGmailConnector && !googleOauthConfigured) ||
+                    (isGoogleDriveConnector && !googleDriveOauthConfigured)
                   }
                   onClick={handleActivate}
                   className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
@@ -2719,11 +2797,12 @@ function DraftCard({
                       pending ||
                       !activationReady ||
                       hasInvalidSecretAlias ||
-                      (isGmailConnector && !googleOauthConfigured)
+                      (isGmailConnector && !googleOauthConfigured) ||
+                      (isGoogleDriveConnector && !googleDriveOauthConfigured)
                     }
                     onClick={() => {
                       void (async () => {
-                        if (!isGmailConnector && !hasActivationCredentials) {
+                        if (!isPlatformGoogleConnector && !hasActivationCredentials) {
                           const confirmed = await confirmDialog({
                             title: 'Aktiválás kulcs nélkül',
                             description:

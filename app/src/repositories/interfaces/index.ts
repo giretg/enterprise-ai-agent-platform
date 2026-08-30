@@ -2071,6 +2071,10 @@ export interface ConnectorGrantRepository {
   ): Promise<import('@prisma/client').ConnectorGrant>
   revokeAllForUser(userId: string): Promise<number>
   findById(id: string): Promise<import('@prisma/client').ConnectorGrant | null>
+  updateMetadata(
+    id: string,
+    metadata: import('@prisma/client').Prisma.InputJsonValue,
+  ): Promise<import('@prisma/client').ConnectorGrant>
 }
 
 // ── Provisioning Assistant (Connector Onboarding) ───────────────────────────

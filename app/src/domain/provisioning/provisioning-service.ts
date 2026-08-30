@@ -154,7 +154,7 @@ export class ProvisioningService {
     connectorId: string
     draftId: string
     lifecycleState: 'draft'
-    config: ConnectorConfig | GmailConnectorConfig
+    config: ConnectorConfig | GmailConnectorConfig | GoogleDriveConnectorConfig
   }> {
     await this.requireDraftCapability(actor, 'provisioning.draft.create')
 
@@ -163,11 +163,16 @@ export class ProvisioningService {
     }
 
     const connectorType = input.connectorType ?? 'http_api'
-    let config: ConnectorConfig | GmailConnectorConfig
+    const isDelegatedGoogleConnector =
+      connectorType === 'gmail' || connectorType === 'google_drive'
+    let config: ConnectorConfig | GmailConnectorConfig | GoogleDriveConnectorConfig
     let authMode: ConnectorConfig['authMode']
     try {
       if (connectorType === 'gmail') {
         config = normalizeGmailConnectorConfig(input.generatedConfig)
+        authMode = 'user_delegated'
+      } else if (connectorType === 'google_drive') {
+        config = normalizeGoogleDriveConnectorConfig(input.generatedConfig)
         authMode = 'user_delegated'
       } else {
         config = normalizeConnectorConfig(input.generatedConfig)
@@ -182,15 +187,15 @@ export class ProvisioningService {
 
     const secretAliasSuggested =
       input.secretAliasSuggested ??
-      (connectorType === 'gmail'
+      (isDelegatedGoogleConnector
         ? null
         : (config as ConnectorConfig).auth.secretAliasSuggested ?? null)
 
     // A forrás hash-e: a megadott sourceRef-ből vagy a nyers tartalomból. A tartalom
     // SOSEM kerül auditba/DB-be — csak a hash (§7.1, §10.1, P8).
     const sourceHash =
-      (connectorType === 'gmail'
-        ? (config as GmailConnectorConfig).provenance?.sourceHash
+      (isDelegatedGoogleConnector
+        ? (config as GmailConnectorConfig | GoogleDriveConnectorConfig).provenance?.sourceHash
         : (config as ConnectorConfig).provenance?.sourceHash) ??
       (input.sourceContent != null
         ? sha256Hex(input.sourceContent)
@@ -324,8 +329,11 @@ export class ProvisioningService {
     )
 
     let result: { ok: boolean; statusCode?: number; detail?: string }
-    if (draft.connector.type === 'gmail') {
-      const config = parseGmailStoredConfig(draft.connector.config)
+    if (draft.connector.type === 'gmail' || draft.connector.type === 'google_drive') {
+      const config =
+        draft.connector.type === 'gmail'
+          ? parseGmailStoredConfig(draft.connector.config)
+          : parseGoogleDriveStoredConfig(draft.connector.config)
       const authUrlOk = /^https?:\/\//i.test(config.oauth.authUrl?.trim() ?? '')
       const tokenUrlOk = /^https?:\/\//i.test(config.oauth.tokenUrl?.trim() ?? '')
       const scopesOk = config.oauth.scopes.length > 0
@@ -333,7 +341,10 @@ export class ProvisioningService {
       // OAuth metaadatokat ellenőrzi (mint a http_api delegált draft validátornál).
       result = {
         ok: authUrlOk && tokenUrlOk && scopesOk,
-        detail: 'gmail_oauth_metadata_check',
+        detail:
+          draft.connector.type === 'gmail'
+            ? 'gmail_oauth_metadata_check'
+            : 'google_drive_oauth_metadata_check',
       }
     } else if (this.deps.sandboxTester) {
       const config = parseStoredConfig(draft.connector.config)
@@ -369,8 +380,14 @@ export class ProvisioningService {
     this.requireHumanAdmin(actor, 'testConnectorDraftWithCredentials')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
 
-    if (draft.connector.type === 'gmail') {
-      return { ok: false, detail: 'gmail_connector_no_http_auth_test' }
+    if (draft.connector.type === 'gmail' || draft.connector.type === 'google_drive') {
+      return {
+        ok: false,
+        detail:
+          draft.connector.type === 'gmail'
+            ? 'gmail_connector_no_http_auth_test'
+            : 'google_drive_connector_no_http_auth_test',
+      }
     }
     if (!this.deps.sandboxTester) {
       return { ok: false, detail: 'sandbox_tester_not_configured' }

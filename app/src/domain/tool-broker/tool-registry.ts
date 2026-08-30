@@ -34,6 +34,8 @@ import { normalizeNyilvantartasRow } from '@/lib/tulajdoni-lap-egyeztetes'
 import { TULAJDONI_LAP_NEZETEK, isTulajdoniLapNezet } from '@/lib/tulajdoni-lap'
 import { knownDomainSchema } from '@/domain/web-research/known-domain'
 import type {
+  DocsEditOperation,
+  SlidesEditOperation,
   ToolBrokerInvokeInput,
   ToolInvokeBase,
   ToolName,
@@ -982,7 +984,9 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       tool: 'google_docs_apply_edits',
       args: {
         fileId: strArg(args, 'fileId'),
-        operations: (args.operations as Array<Record<string, unknown>>) ?? [],
+        // A séma szándékosan megengedő (`z.record`); a művelet-alak futásidejű
+        // ellenőrzése a `GoogleWorkspaceApiClient.validateDocsOperation`-ben történik.
+        operations: (args.operations as unknown as DocsEditOperation[]) ?? [],
       },
     }),
     trust: 'trusted',
@@ -1030,7 +1034,8 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       tool: 'google_slides_apply_edits',
       args: {
         fileId: strArg(args, 'fileId'),
-        operations: (args.operations as Array<Record<string, unknown>>) ?? [],
+        // Ld. fentebb: megengedő séma + futásidejű `validateSlidesOperation`.
+        operations: (args.operations as unknown as SlidesEditOperation[]) ?? [],
       },
     }),
     trust: 'trusted',

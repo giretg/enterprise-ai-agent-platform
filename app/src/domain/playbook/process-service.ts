@@ -723,9 +723,10 @@ export class ProcessService {
       // A tartalmi kudarc SOHA nem propagál sikerként; emberi felülvizsgálatra vár.
       // #33/#39 — a felülvizsgáló közérthető magyarázatot kap (outcome.message), nem
       // nyers `unhandled_blocked` címet.
-      if (completedStep) {
-        await this.processes.updateStep(completedStep.id, { status: 'awaiting_gate' })
-      }
+      //
+      // D2 javítás: a step státuszát NEM írjuk felül 'awaiting_gate'-re, mert ebben
+      // az ágban nincs kapu — a step 'completed' marad (a lépés gépi munkája lezajlott),
+      // a folyamat pedig 'awaiting_human'-ba kerül emberi felülvizsgálatra.
       const displayReason = outcomeMessage ?? decision.reason
       const reviewTicket = await this.tickets.create({
         tenantId: input.tenantId,

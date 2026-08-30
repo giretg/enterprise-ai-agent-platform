@@ -5,6 +5,13 @@ import { Card } from '@/components/ui/shell'
 import { upsertPlatformGoogleDriveOAuth } from '@/app/actions/connector-grants'
 import type { PlatformGoogleOAuthView } from '@/app/control-plane/system/google-oauth-control-panel'
 
+function sourceLabel(source: PlatformGoogleOAuthView['source']): string {
+  if (source === 'platform') return 'platform-beállítás'
+  if (source === 'env') return 'környezeti változó (GOOGLE_DRIVE_OAUTH_*)'
+  if (source === 'tenant_legacy') return 'korábbi tenant-beállítás'
+  return 'nincs forrás'
+}
+
 export function GoogleDriveOAuthControlPanel({
   initial,
   canEdit,
@@ -45,53 +52,93 @@ export function GoogleDriveOAuthControlPanel({
     <Card title="Google Drive OAuth alkalmazás">
       <div className="space-y-4">
         <p className="text-sm text-ink-soft">
-          Külön OAuth client a Gmailtől — a Drive és Gmail scope-izolációja és független
-          leválasztása miatt szükséges. A Picker API kulcsot külön kell beállítani a selected-write
-          profilhoz.
+          Külön OAuth client a Gmailtől — a Drive és Gmail scope-izolációja miatt szükséges. A
+          felhasználók a Kapcsolt fiókok oldalon kötik be a saját Google-fiókjukat; itt csak a
+          platform azonosítói vannak.
         </p>
 
         {view.configured ? (
           <p className="flex items-center gap-2 text-sm text-emerald-300">
             <span aria-hidden className="h-2 w-2 rounded-full bg-emerald-400" />
-            Be van állítva ({view.source === 'env' ? 'környezeti változó' : 'platform-beállítás'}).
+            Be van állítva ({sourceLabel(view.source)}
+            {view.persisted ? '' : ' — mentsd el platform-szintre'}).
           </p>
         ) : (
           <p className="text-sm text-ink-soft">Még nincs platform-szintű Google Drive OAuth client.</p>
         )}
 
-        {canEdit && editing ? (
+        {view.configured && !(canEdit && editing) ? (
           <div className="space-y-3">
-            <label className="block text-sm">
-              <span className="text-ink-soft">Client ID</span>
-              <input
-                className="mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm"
-                value={clientId}
-                onChange={(e) => setClientId(e.target.value)}
-              />
-            </label>
-            <label className="block text-sm">
-              <span className="text-ink-soft">Client Secret</span>
-              <input
-                type="password"
-                className="mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm"
-                value={clientSecret}
-                onChange={(e) => setClientSecret(e.target.value)}
-                placeholder={view.configured ? 'Üresen hagyva nem változik' : ''}
-              />
-            </label>
-            <label className="block text-sm">
-              <span className="text-ink-soft">Redirect URI</span>
-              <input
-                className="mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm"
-                value={redirectUri}
-                onChange={(e) => setRedirectUri(e.target.value)}
-              />
-            </label>
-            <div className="flex gap-2">
+            <dl className="space-y-1 text-xs text-ink-soft">
+              <div className="flex flex-wrap gap-x-2">
+                <dt className="text-ink-soft/70">Client ID:</dt>
+                <dd className="break-all font-mono text-ink">{view.clientId || '—'}</dd>
+              </div>
+              <div className="flex flex-wrap gap-x-2">
+                <dt className="text-ink-soft/70">Client Secret:</dt>
+                <dd className="text-ink">Mentve (nem jelenítjük meg)</dd>
+              </div>
+              <div className="flex flex-wrap gap-x-2">
+                <dt className="text-ink-soft/70">Redirect URI:</dt>
+                <dd className="break-all text-ink">
+                  {view.redirectUri ||
+                    'Nincs megadva — az alkalmazás alapértelmezett callback címe érvényes.'}
+                </dd>
+              </div>
+            </dl>
+            <ul className="list-inside list-disc space-y-1 text-xs text-ink-soft">
+              <li>A GCP OAuth kliensnél engedélyezd a Drive scope-okat (Data Access).</li>
+              <li>Pickerhez add hozzá a JavaScript origin-t is (pl. http://localhost:3000).</li>
+            </ul>
+            {canEdit ? (
               <button
                 type="button"
-                className="rounded-lg bg-ink px-3 py-1.5 text-sm text-surface disabled:opacity-50"
-                disabled={pending || !clientId.trim()}
+                className="rounded-lg border border-line px-3 py-1.5 text-sm text-ink"
+                onClick={() => {
+                  setClientId(view.clientId ?? '')
+                  setRedirectUri(view.redirectUri ?? '')
+                  setClientSecret('')
+                  setEditing(true)
+                }}
+              >
+                Szerkesztés
+              </button>
+            ) : (
+              <p className="text-xs text-ink-soft">Módosítani csak superadmin tud.</p>
+            )}
+          </div>
+        ) : canEdit ? (
+          <div className="space-y-3">
+            <div className="grid gap-3 md:grid-cols-2">
+              <input
+                value={clientId}
+                onChange={(e) => setClientId(e.target.value)}
+                placeholder="Google Drive OAuth Client ID"
+                className="rounded-lg border border-line bg-panel px-3 py-2 text-sm"
+              />
+              <input
+                type="password"
+                value={clientSecret}
+                onChange={(e) => setClientSecret(e.target.value)}
+                placeholder={
+                  view.configured
+                    ? 'Client Secret — üresen hagyva marad a mostani'
+                    : 'Google Drive OAuth Client Secret'
+                }
+                className="rounded-lg border border-line bg-panel px-3 py-2 text-sm"
+              />
+            </div>
+            <input
+              value={redirectUri}
+              onChange={(e) => setRedirectUri(e.target.value)}
+              placeholder="Redirect URI (opcionális)"
+              className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={pending || !clientId.trim() || (!view.configured && !clientSecret.trim())}
+                className="rounded-lg bg-accent px-3 py-1.5 text-sm text-white disabled:opacity-50"
                 onClick={save}
               >
                 Mentés
@@ -99,26 +146,32 @@ export function GoogleDriveOAuthControlPanel({
               {view.configured ? (
                 <button
                   type="button"
-                  className="rounded-lg border border-line px-3 py-1.5 text-sm"
-                  onClick={() => setEditing(false)}
+                  disabled={pending}
+                  className="rounded-lg border border-line px-3 py-1.5 text-sm text-ink-soft"
+                  onClick={() => {
+                    setEditing(false)
+                    setClientSecret('')
+                    setClientId(view.clientId ?? '')
+                    setRedirectUri(view.redirectUri ?? '')
+                  }}
                 >
                   Mégse
                 </button>
               ) : null}
             </div>
           </div>
-        ) : canEdit ? (
-          <button
-            type="button"
-            className="rounded-lg border border-line px-3 py-1.5 text-sm text-ink"
-            onClick={() => setEditing(true)}
-          >
-            Szerkesztés
-          </button>
-        ) : null}
+        ) : (
+          <p className="text-sm text-ink-soft">Megtekintési jogosultságod van. Szerkeszteni csak superadmin tud.</p>
+        )}
 
         {message ? (
-          <p className={`text-sm ${message.tone === 'ok' ? 'text-emerald-300' : 'text-rose-300'}`}>
+          <p
+            className={`rounded-lg border px-3 py-2 text-sm ${
+              message.tone === 'ok'
+                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+                : 'border-coral/35 bg-coral/10 text-coral-deep'
+            }`}
+          >
             {message.text}
           </p>
         ) : null}

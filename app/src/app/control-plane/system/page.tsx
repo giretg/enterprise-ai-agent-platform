@@ -335,11 +335,14 @@ export default async function SystemPage({
             id: 'delegalt-connectorok',
             label: 'Delegált connectorok',
             description:
-              'A tagok saját fiókkal bekötött connectorai (Gmail stb.): OAuth-állapot és leszerelés.',
+              'A tagok saját fiókkal bekötött connectorai (Gmail, Drive stb.): OAuth-readiness és leszerelés.',
             content: delegatedConnectorsRes.success ? (
               <DelegatedConnectorsAdminPanel
                 initialConnectors={delegatedConnectorsRes.data.connectors}
                 googleOauth={delegatedConnectorsRes.data.googleOauth}
+                googleDriveOauth={delegatedConnectorsRes.data.googleDriveOauth}
+                googleDrivePicker={delegatedConnectorsRes.data.googleDrivePicker}
+                hasGoogleDriveConnector={delegatedConnectorsRes.data.hasGoogleDriveConnector}
                 canManagePlatformOauth={delegatedConnectorsRes.data.canManagePlatformOauth}
               />
             ) : (

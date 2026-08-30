@@ -31,6 +31,7 @@ import {
 } from '../src/domain/web-search/web-search-connector-service'
 import { buildConnectorSecretRef } from '../src/domain/connector/connector-secret-store'
 import { ensureTenantGmailConnector } from '../src/lib/seed-gmail-connector'
+import { ensureTenantGoogleDriveConnector } from '../src/lib/seed-google-drive-connector'
 import { ensureStarterStepTemplates } from '../src/domain/step-template/step-template-catalog'
 import {
   computeSkillContentHash,
@@ -1416,6 +1417,9 @@ async function ensureDemoTenant(
 
   const demoGmail = await ensureTenantGmailConnector(prisma, DEMO_TENANT_ID)
   console.log('  Demo Gmail connector (provisioned template):', demoGmail.id)
+
+  const demoDrive = await ensureTenantGoogleDriveConnector(prisma, DEMO_TENANT_ID)
+  console.log('  Demo Google Drive connector (provisioned template):', demoDrive.id)
 
   const memberships: Array<{ userId: string; role: 'admin' | 'approver' | 'operator' }> = [
     { userId: admin.id, role: 'admin' },

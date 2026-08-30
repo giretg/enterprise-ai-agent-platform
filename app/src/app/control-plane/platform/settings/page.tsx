@@ -13,7 +13,7 @@ import {
   getPlatformWebSearchPolicy,
 } from '@/app/actions/web-search'
 import { getSystemAgentsPageData } from '@/app/actions/system-agents'
-import { getPlatformGoogleOAuth, getPlatformGoogleDriveOAuthConfig } from '@/app/actions/connector-grants'
+import { getPlatformGoogleOAuth, getPlatformGoogleDriveOAuthConfig, getPlatformGoogleDrivePickerConfig } from '@/app/actions/connector-grants'
 import { readDispatcherRuntime } from '@/lib/dispatcher-runtime'
 import { enabledModelProviders } from '@/lib/model-policy'
 import { PLAYBOOK_AUTHOR_AGENT_NAME, PROVISIONING_ASSISTANT_AGENT_NAME } from '@/lib/platform-agent-registry'
@@ -26,6 +26,7 @@ import { WebSearchControlPanel } from '@/app/control-plane/system/web-search-con
 import { WebFetchControlPanel } from '@/app/control-plane/system/web-fetch-control-panel'
 import { GoogleOAuthControlPanel } from '@/app/control-plane/system/google-oauth-control-panel'
 import { GoogleDriveOAuthControlPanel } from '@/app/control-plane/system/google-drive-oauth-control-panel'
+import { GoogleDrivePickerControlPanel } from '@/app/control-plane/system/google-drive-picker-control-panel'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { Card } from '@/components/ui/shell'
@@ -65,6 +66,7 @@ export default async function PlatformSettingsPage({
     systemAgentsRes,
     googleOauthRes,
     googleDriveOauthRes,
+    googleDrivePickerRes,
   ] = await Promise.all([
     getAuthContext(),
     getDispatcherControls(),
@@ -79,6 +81,7 @@ export default async function PlatformSettingsPage({
     getSystemAgentsPageData(),
     getPlatformGoogleOAuth(),
     getPlatformGoogleDriveOAuthConfig(),
+    getPlatformGoogleDrivePickerConfig(),
   ])
   const isPlatform = Boolean(
     ctx && (ctx.platformRoles.includes('superadmin') || ctx.platformRoles.includes('platform_operator')),
@@ -163,9 +166,20 @@ export default async function PlatformSettingsPage({
             id: 'google-drive-oauth',
             label: 'Google Drive OAuth',
             description: 'Külön OAuth client a Google Drive integrációhoz (scope-izoláció a Gmailtől).',
-            content: googleDriveOauthRes.success
-              ? <GoogleDriveOAuthControlPanel initial={googleDriveOauthRes.data} canEdit={canEdit} />
-              : errorBox(googleDriveOauthRes.error),
+            content: (
+              <div className="space-y-4">
+                {googleDriveOauthRes.success ? (
+                  <GoogleDriveOAuthControlPanel initial={googleDriveOauthRes.data} canEdit={canEdit} />
+                ) : (
+                  errorBox(googleDriveOauthRes.error)
+                )}
+                {googleDrivePickerRes.success ? (
+                  <GoogleDrivePickerControlPanel initial={googleDrivePickerRes.data} canEdit={canEdit} />
+                ) : (
+                  errorBox(googleDrivePickerRes.error)
+                )}
+              </div>
+            ),
           },
           {
             id: 'web-search',

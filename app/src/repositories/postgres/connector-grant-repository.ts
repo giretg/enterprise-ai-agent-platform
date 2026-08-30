@@ -35,6 +35,7 @@ export interface ConnectorGrantRepository {
   ): Promise<ConnectorGrant>
   revokeAllForUser(userId: string): Promise<number>
   findById(id: string): Promise<ConnectorGrant | null>
+  updateMetadata(id: string, metadata: Prisma.InputJsonValue): Promise<ConnectorGrant>
 }
 
 export class PostgresConnectorGrantRepository implements ConnectorGrantRepository {
@@ -148,5 +149,12 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
 
   async findById(id: string) {
     return prisma.connectorGrant.findUnique({ where: { id } })
+  }
+
+  async updateMetadata(id: string, metadata: Prisma.InputJsonValue) {
+    return prisma.connectorGrant.update({
+      where: { id },
+      data: { metadata },
+    })
   }
 }

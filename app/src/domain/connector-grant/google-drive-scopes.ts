@@ -116,12 +116,23 @@ export function driveScopeProfile(scopes: Prisma.JsonValue | string[] | null | u
   return 'readonly'
 }
 
+/**
+ * Egy toolhoz a LEGKISEBB szükséges scope — az OAuth-kérés ebből épül.
+ *
+ * FONTOS: itt szándékosan NEM szerepel a teljes `drive` scope. A teljes írás
+ * (`full_write`) admin-döntés (l. `DRIVE_SCOPE_PROFILES.adminOnly`), nem pedig
+ * egy eszközhöz automatikusan kért jogosultság. Ha ide bekerülne a `full`, akkor
+ * a tool-vezérelt „Hozzáférés megadása" folyamat — még egy sima olvasásnál is —
+ * a teljes Drive írási jogát kérné el, megkerülve a Picker-alapú, kijelölt-fájlos
+ * korlátozást. Ezért olvasáshoz `readonly`, íráshoz `file` (selected_write) a
+ * minimum; a teljes írást csak az explicit admin scope-profil kérheti.
+ */
 export function driveToolMinimalScopes(toolName: string): string[] {
   if ((READ_TOOLS as readonly string[]).includes(toolName)) {
-    return [DRIVE_SCOPES.readonly, DRIVE_SCOPES.full]
+    return [DRIVE_SCOPES.readonly]
   }
   if ((WRITE_TOOLS as readonly string[]).includes(toolName)) {
-    return [DRIVE_SCOPES.file, DRIVE_SCOPES.full]
+    return [DRIVE_SCOPES.file]
   }
   return []
 }
@@ -148,3 +159,18 @@ export const DRIVE_SCOPE_PROFILES = [
     adminOnly: true,
   },
 ] as const
+
+/**
+ * Admin-jogot igényel-e a kért scope-készlet által feloldott profil.
+ *
+ * Ugyanabból a `DRIVE_SCOPE_PROFILES.adminOnly` metaadatból dolgozik, amit a UI
+ * a profil-választó elrejtéséhez használ — így a kliensoldali „elrejtés" és a
+ * szerveroldali kapu egyazon forrás-igazságra épül, nem tud szétcsúszni.
+ */
+export function driveScopeProfileRequiresAdmin(
+  scopes: Prisma.JsonValue | string[] | null | undefined,
+): boolean {
+  const profileId = driveScopeProfile(scopes)
+  const profile = DRIVE_SCOPE_PROFILES.find((entry) => entry.id === profileId)
+  return Boolean(profile && 'adminOnly' in profile && profile.adminOnly)
+}

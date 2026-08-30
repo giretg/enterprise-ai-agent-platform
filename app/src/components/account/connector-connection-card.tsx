@@ -4,10 +4,25 @@ import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { revokeConnectorGrant, startConnectorOAuth } from '@/app/actions/connector-grants'
 import { ConnectionCard } from '@/components/account/connection-card'
+import { GoogleDrivePickerPanel } from '@/components/account/google-drive-picker-panel'
 import { GMAIL_SCOPES } from '@/domain/connector-grant/gmail-scopes'
-import { DRIVE_SCOPE_PROFILES } from '@/domain/connector-grant/google-drive-scopes'
+import {
+  DRIVE_SCOPE_PROFILES,
+  driveScopeProfile,
+  parseDriveScopes,
+} from '@/domain/connector-grant/google-drive-scopes'
+import {
+  emptyGoogleDriveGrantMetadata,
+  parseGoogleDriveGrantMetadata,
+  type GoogleDriveGrantMetadata,
+} from '@/domain/connector-grant/google-drive-grant-metadata'
 import { delegatedConnectorLabel } from '@/domain/connector-grant/delegated-oauth-registry'
 import { connectorUsageStatus } from '@/components/account/linked-account-view'
+import {
+  connectorScopeProfileDescription,
+  driveGrantScopeSummary,
+  gmailGrantScopeSummary,
+} from '@/components/account/delegated-oauth-ui'
 
 export type LinkedConnectorView = {
   id: string
@@ -27,6 +42,7 @@ export type LinkedGrantView = {
   accountLabel: string | null
   scopes: unknown
   grantedAt: string
+  metadata?: unknown
 }
 
 const GMAIL_SCOPE_PROFILES = [
@@ -60,12 +76,22 @@ const GMAIL_SCOPE_PROFILES = [
 function connectorConfiguredScopes(connector: LinkedConnectorView): string[] {
   const config = connector.config as { oauth?: { scopes?: unknown } } | null
   const scopes = config?.oauth?.scopes
+  if (connector.type === 'google_drive') {
+    if (!Array.isArray(scopes)) return [...DRIVE_SCOPE_PROFILES[0].scopes]
+    return scopes.filter((scope): scope is string => typeof scope === 'string')
+  }
   if (!Array.isArray(scopes)) return [...GMAIL_SCOPE_PROFILES[0].scopes]
   return scopes.filter((scope): scope is string => typeof scope === 'string')
 }
 
-function availableScopeProfiles(connector: LinkedConnectorView) {
+function availableScopeProfiles(connector: LinkedConnectorView, isAdmin: boolean) {
   const configured = new Set(connectorConfiguredScopes(connector))
+  if (connector.type === 'google_drive') {
+    return DRIVE_SCOPE_PROFILES.filter((profile) => {
+      if ('adminOnly' in profile && profile.adminOnly && !isAdmin) return false
+      return profile.scopes.every((scope) => configured.has(scope))
+    }).map((profile) => ({ id: profile.id, label: profile.label, scopes: [...profile.scopes] }))
+  }
   return GMAIL_SCOPE_PROFILES.filter((profile) =>
     profile.scopes.every((scope) => configured.has(scope)),
   )
@@ -76,12 +102,23 @@ function sameScopes(a: readonly string[], b: readonly string[]) {
   return [...a].sort().every((scope, index) => scope === [...b].sort()[index])
 }
 
-function scopeText(scopes: unknown): string {
+function scopeSummary(connectorType: string, scopes: unknown): string {
+  if (connectorType === 'google_drive') {
+    return driveGrantScopeSummary(scopes).label
+  }
+  if (connectorType === 'gmail') {
+    return gmailGrantScopeSummary(scopes).label
+  }
   if (!Array.isArray(scopes)) return 'nincs scope adat'
   const labels = scopes
     .filter((scope): scope is string => typeof scope === 'string')
     .map((scope) => scope.replace('https://www.googleapis.com/auth/', '').replace('https://', ''))
   return labels.length > 0 ? labels.join(', ') : 'nincs scope adat'
+}
+
+function connectedGrantSummary(connector: LinkedConnectorView, grant: LinkedGrantView): string {
+  const account = grant.accountLabel ?? 'Fiók'
+  return `${account} · ${scopeSummary(connector.type, grant.scopes)}`
 }
 
 function connectorDescription(connector: LinkedConnectorView): string {
@@ -94,22 +131,20 @@ function connectorDescription(connector: LinkedConnectorView): string {
   return `Az agent a te ${delegatedConnectorLabel(connector.type, connector.name)} fiókoddal jár el.`
 }
 
-function scopeProfilesForConnector(connector: LinkedConnectorView) {
-  if (connector.type === 'google_drive') {
-    const configured = new Set(connectorConfiguredScopes(connector))
-    return DRIVE_SCOPE_PROFILES.filter((profile) =>
-      profile.scopes.every((scope) => configured.has(scope)),
-    ).map((profile) => ({ id: profile.id, label: profile.label, scopes: [...profile.scopes] }))
-  }
-  return availableScopeProfiles(connector)
+function grantMetadata(raw: unknown): GoogleDriveGrantMetadata {
+  return parseGoogleDriveGrantMetadata(raw as never)
 }
 
 export function ConnectorConnectionCard({
   connector,
   grants,
+  isAdmin = false,
+  drivePickerConfigured = false,
 }: {
   connector: LinkedConnectorView
   grants: LinkedGrantView[]
+  isAdmin?: boolean
+  drivePickerConfigured?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -121,12 +156,16 @@ export function ConnectorConnectionCard({
 
   const activeGrant = localGrants.find((g) => g.connectorId === connector.id && g.status === 'active')
   const history = localGrants.filter((g) => g !== activeGrant)
-  const scopeProfiles = scopeProfilesForConnector(connector)
+  const scopeProfiles = availableScopeProfiles(connector, isAdmin)
   const currentProfile =
     scopeProfiles.find((profile) => sameScopes(profile.scopes, selectedScopes)) ??
     scopeProfiles[0] ??
     GMAIL_SCOPE_PROFILES[0]
   const usage = connectorUsageStatus(connector)
+  const showDrivePicker =
+    connector.type === 'google_drive' &&
+    activeGrant &&
+    driveScopeProfile(parseDriveScopes(activeGrant.scopes as never)) === 'selected_write'
 
   return (
     <ConnectionCard
@@ -135,9 +174,7 @@ export function ConnectorConnectionCard({
       description={connectorDescription(connector)}
       connected={Boolean(activeGrant)}
       connectedDetail={
-        activeGrant
-          ? `${activeGrant.accountLabel ?? 'Fiók'} · ${scopeText(activeGrant.scopes)}`
-          : undefined
+        activeGrant ? connectedGrantSummary(connector, activeGrant) : undefined
       }
     >
       {activeGrant ? (
@@ -151,6 +188,24 @@ export function ConnectorConnectionCard({
           >
             {usage.text}
           </p>
+          {connector.type === 'google_drive' && activeGrant ? (
+            <p className="text-xs leading-5 text-ink-soft">
+              {driveGrantScopeSummary(activeGrant.scopes).description}
+            </p>
+          ) : null}
+          {showDrivePicker ? (
+            <GoogleDrivePickerPanel
+              grantId={activeGrant.id}
+              initialMetadata={grantMetadata(activeGrant.metadata ?? emptyGoogleDriveGrantMetadata())}
+              pickerConfigured={drivePickerConfigured}
+            />
+          ) : null}
+          {(connector.type === 'gmail' || connector.type === 'google_drive') && (
+            <p className="text-xs text-ink-faint">
+              Más jogosultsági profilhoz bontsd az összekötést, válaszd ki az új profilt, majd kösd
+              újra össze.
+            </p>
+          )}
           <button
             type="button"
             disabled={pending}
@@ -174,51 +229,61 @@ export function ConnectorConnectionCard({
           </button>
         </div>
       ) : (
-        <div className="flex flex-wrap items-center gap-2">
-          {connector.type === 'gmail' && (
-            <select
-              value={currentProfile.id}
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {(connector.type === 'gmail' || connector.type === 'google_drive') && (
+              <select
+                value={currentProfile.id}
+                disabled={pending}
+                className="rounded-lg border border-line bg-panel px-2 py-1.5 text-sm text-ink"
+                onChange={(event) => {
+                  const profile =
+                    scopeProfiles.find((p) => p.id === event.target.value) ?? scopeProfiles[0]
+                  if (profile) setSelectedScopes([...profile.scopes])
+                }}
+              >
+                {scopeProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.label}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button
+              type="button"
               disabled={pending}
-              className="rounded-lg border border-line bg-panel px-2 py-1.5 text-sm text-ink"
-              onChange={(event) => {
-                const profile =
-                  GMAIL_SCOPE_PROFILES.find((p) => p.id === event.target.value) ??
-                  GMAIL_SCOPE_PROFILES[0]
-                setSelectedScopes([...profile.scopes])
-              }}
-            >
-              {scopeProfiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.label}
-                </option>
-              ))}
-            </select>
-          )}
-          <button
-            type="button"
-            disabled={pending}
-            className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)] disabled:opacity-50"
-            onClick={() =>
-              startTransition(async () => {
-                const res = await startConnectorOAuth({
-                  connectorId: connector.id,
-                  scopes: connector.type === 'gmail' ? selectedScopes : undefined,
-                })
-                if (res.success) {
-                  if ('stub' in res.data && res.data.stub) {
-                    router.refresh()
-                    setMessage({ ok: true, text: 'Fiók sikeresen összekötve (stub).' })
+              className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)] disabled:opacity-50"
+              onClick={() =>
+                startTransition(async () => {
+                  const res = await startConnectorOAuth({
+                    connectorId: connector.id,
+                    scopes:
+                      connector.type === 'gmail' || connector.type === 'google_drive'
+                        ? selectedScopes
+                        : undefined,
+                  })
+                  if (res.success) {
+                    if ('stub' in res.data && res.data.stub) {
+                      router.refresh()
+                      setMessage({ ok: true, text: 'Fiók sikeresen összekötve (stub).' })
+                    } else {
+                      window.location.href = res.data.url
+                    }
                   } else {
-                    window.location.href = res.data.url
+                    setMessage({ ok: false, text: res.error })
                   }
-                } else {
-                  setMessage({ ok: false, text: res.error })
-                }
-              })
-            }
-          >
-            Összekötés
-          </button>
+                })
+              }
+            >
+              Összekötés
+            </button>
+          </div>
+          {connector.type === 'google_drive' ? (
+            <p className="max-w-2xl text-xs leading-5 text-ink-soft">
+              {connectorScopeProfileDescription(connector.type, currentProfile.id) ??
+                'Válaszd ki, milyen Drive-hozzáférést adsz az agentnek.'}
+            </p>
+          ) : null}
         </div>
       )}
 

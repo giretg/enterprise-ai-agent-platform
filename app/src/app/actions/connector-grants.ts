@@ -27,8 +27,18 @@ import {
   parseDelegatedGrantScopes,
   resolveGrantOAuthScopes,
 } from '@/domain/connector-grant/delegated-oauth-registry'
-import { toGoogleOAuthPublicView } from '@/lib/platform-google-oauth-config'
+import { toGoogleOAuthPublicView, toGoogleDrivePickerPublicView } from '@/lib/platform-google-oauth-config'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-connector-requirements'
+import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
+import {
+  readGoogleDriveGrantMetadata,
+  removeGoogleDrivePickerSelection,
+  saveGoogleDrivePickerSelections as persistGoogleDrivePickerSelections,
+} from '@/domain/connector-grant/google-drive-grant-store'
+import {
+  driveScopeProfile,
+  driveScopeProfileRequiresAdmin,
+} from '@/domain/connector-grant/google-drive-scopes'
 
 function activeDelegatedConnectorWhere(tenantId: string): Prisma.ConnectorWhereInput {
   return {
@@ -52,6 +62,27 @@ async function googleOAuthSummary() {
     configured: view.configured,
     persisted: view.persisted,
     source: view.source,
+  }
+}
+
+async function googleDriveOAuthSummary() {
+  const resolved = await services.platformSettings.getGoogleDriveOAuthConfig()
+  const view = toGoogleOAuthPublicView(resolved)
+  return {
+    configured: view.configured,
+    persisted: view.persisted,
+    source: view.source,
+  }
+}
+
+async function googleDrivePickerSummary() {
+  const resolved = await services.platformSettings.getGoogleDrivePickerConfig()
+  const view = toGoogleDrivePickerPublicView(resolved)
+  return {
+    configured: view.configured,
+    persisted: view.persisted,
+    source: view.source,
+    appId: view.appId,
   }
 }
 
@@ -130,10 +161,11 @@ export async function listConnectorsPanelContext() {
       user.activeTenantId,
       user.user.id,
     )
-    const [grants, connectors, googleOauth] = await Promise.all([
+    const [grants, connectors, googleOauth, drivePicker] = await Promise.all([
       services.connectorGrants.listForUser(user.user.id, user.activeTenantId),
       listActiveDelegatedConnectors(user.activeTenantId),
       googleOAuthSummary(),
+      services.platformSettings.getGoogleDrivePickerConfig(),
     ])
     const connectorUsage = await delegatedConnectorUsage(connectors, user.activeTenantId)
     return ok({
@@ -143,6 +175,7 @@ export async function listConnectorsPanelContext() {
       isAdmin,
       canManagePlatformOauth: isSuperadmin(user.platformRoles),
       googleOauth,
+      drivePickerConfigured: Boolean(drivePicker),
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load connectors panel')
@@ -153,9 +186,11 @@ export async function listConnectorsPanelContext() {
 export async function listDelegatedConnectorsAdminView() {
   try {
     const user = await requireTenantRole('admin')
-    const [connectors, googleOauth] = await Promise.all([
+    const [connectors, googleOauth, googleDriveOauth, googleDrivePicker] = await Promise.all([
       listActiveDelegatedConnectors(user.activeTenantId),
       googleOAuthSummary(),
+      googleDriveOAuthSummary(),
+      googleDrivePickerSummary(),
     ])
     return ok({
       connectors: connectors.map((connector) => ({
@@ -169,6 +204,9 @@ export async function listDelegatedConnectorsAdminView() {
       })),
       canManagePlatformOauth: isSuperadmin(user.platformRoles),
       googleOauth,
+      googleDriveOauth,
+      googleDrivePicker,
+      hasGoogleDriveConnector: connectors.some((connector) => connector.type === 'google_drive'),
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load delegated connectors')
@@ -192,6 +230,16 @@ export async function getGoogleOAuthConfiguredStatus() {
     return ok({ configured: Boolean(resolved) })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load Google OAuth status')
+  }
+}
+
+export async function getGoogleDriveOAuthConfiguredStatus() {
+  try {
+    await requireTenantRole('viewer')
+    const resolved = await services.platformSettings.getGoogleDriveOAuthConfig()
+    return ok({ configured: Boolean(resolved) })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load Google Drive OAuth status')
   }
 }
 
@@ -256,6 +304,179 @@ export async function upsertPlatformGoogleDriveOAuth(input: {
     return ok(toGoogleOAuthPublicView(resolved))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to save platform Google Drive OAuth config')
+  }
+}
+
+export async function getPlatformGoogleDrivePickerConfig() {
+  try {
+    await requirePlatformRole('platform_auditor')
+    const resolved = await services.platformSettings.getGoogleDrivePickerConfig()
+    return ok(toGoogleDrivePickerPublicView(resolved))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load Google Drive Picker config')
+  }
+}
+
+export async function upsertPlatformGoogleDrivePickerConfig(input: { apiKey: string; appId: string }) {
+  try {
+    const ctx = await requirePlatformRole('superadmin')
+    const parsed = z
+      .object({
+        apiKey: z.string().trim().min(1),
+        appId: z.string().trim().min(1),
+      })
+      .parse(input)
+    const resolved = await services.platformSettings.upsertGoogleDrivePickerConfig(parsed, ctx.user.id)
+    return ok(toGoogleDrivePickerPublicView({ config: resolved.config, source: resolved.source }))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to save Google Drive Picker config')
+  }
+}
+
+export async function getGoogleDrivePickerSession(input: { grantId: string }) {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const { grantId } = connectorGrantIdSchema.parse(input)
+    const grant = await prisma.connectorGrant.findUnique({
+      where: { id: grantId },
+      include: { connector: true },
+    })
+    if (!grant || grant.userId !== ctx.user.id || grant.status !== 'active') {
+      return fail('Grant not found')
+    }
+    if (grant.connector.type !== 'google_drive') {
+      return fail('A Picker csak Google Drive granthez érhető el.')
+    }
+    if (driveScopeProfile(grant.scopes) !== 'selected_write') {
+      return fail('A Picker csak az „olvasás + írás kijelölt fájlokon” profilnál szükséges.')
+    }
+    const pickerConfig = await services.platformSettings.getGoogleDrivePickerConfig()
+    if (!pickerConfig) {
+      return fail('A Google Picker nincs platform-szinten beállítva (API key + App ID).')
+    }
+    const accessToken = await services.connectorGrants.resolveAccessToken({
+      connector: grant.connector,
+      grantId: grant.id,
+      tokenRef: grant.tokenRef,
+      actingUserId: ctx.user.id,
+      tenantId: grant.tenantId ?? ctx.activeTenantId,
+    })
+    const origin =
+      process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/$/, '') ?? 'http://localhost:3000'
+    return ok({
+      accessToken,
+      apiKey: pickerConfig.config.apiKey,
+      appId: pickerConfig.config.appId,
+      origin,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to start Google Picker session')
+  }
+}
+
+export async function saveGoogleDrivePickerSelections(input: {
+  grantId: string
+  selections: Array<{ fileId: string; name: string; mimeType: string }>
+}) {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const parsed = z
+      .object({
+        grantId: z.string().uuid(),
+        selections: z
+          .array(
+            z.object({
+              fileId: z.string().trim().min(1).max(200),
+              name: z.string().trim().min(1).max(500),
+              mimeType: z.string().trim().min(1).max(200),
+            }),
+          )
+          .min(1)
+          .max(50),
+      })
+      .parse(input)
+    const grant = await prisma.connectorGrant.findUnique({
+      where: { id: parsed.grantId },
+      include: { connector: true },
+    })
+    if (!grant || grant.userId !== ctx.user.id || grant.status !== 'active') {
+      return fail('Grant not found')
+    }
+    if (grant.connector.type !== 'google_drive') {
+      return fail('Érvénytelen connector típus.')
+    }
+    if (driveScopeProfile(grant.scopes) !== 'selected_write') {
+      return fail('A kiválasztás csak selected-write profilnál menthető.')
+    }
+
+    const accessToken = await services.connectorGrants.resolveAccessToken({
+      connector: grant.connector,
+      grantId: grant.id,
+      tokenRef: grant.tokenRef,
+      actingUserId: ctx.user.id,
+      tenantId: grant.tenantId ?? ctx.activeTenantId,
+    })
+    const drive = new GoogleDriveApiClient(accessToken)
+    const validated: Array<{ fileId: string; name: string; mimeType: string }> = []
+    for (const selection of parsed.selections) {
+      const file = await drive.getFile({ fileId: selection.fileId })
+      validated.push({
+        fileId: file.id,
+        name: file.name || selection.name,
+        mimeType: file.mimeType || selection.mimeType,
+      })
+    }
+
+    const metadata = await persistGoogleDrivePickerSelections({
+      grantId: grant.id,
+      selections: validated,
+    })
+    return ok({ metadata })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to save Picker selections')
+  }
+}
+
+export async function removeGoogleDrivePickerSelectionAction(input: {
+  grantId: string
+  fileId: string
+}) {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const parsed = z
+      .object({
+        grantId: z.string().uuid(),
+        fileId: z.string().trim().min(1).max(200),
+      })
+      .parse(input)
+    const grant = await prisma.connectorGrant.findUnique({ where: { id: parsed.grantId } })
+    if (!grant || grant.userId !== ctx.user.id || grant.status !== 'active') {
+      return fail('Grant not found')
+    }
+    const metadata = await removeGoogleDrivePickerSelection({
+      grantId: grant.id,
+      fileId: parsed.fileId,
+    })
+    return ok({ metadata })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to remove Picker selection')
+  }
+}
+
+export async function getGoogleDriveGrantManifest(input: { grantId: string }) {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const { grantId } = connectorGrantIdSchema.parse(input)
+    const grant = await prisma.connectorGrant.findUnique({ where: { id: grantId } })
+    if (!grant || grant.userId !== ctx.user.id) return fail('Grant not found')
+    const metadata = await readGoogleDriveGrantMetadata(grantId)
+    return ok({
+      metadata,
+      profile: driveScopeProfile(grant.scopes),
+      pickerConfigured: Boolean(await services.platformSettings.getGoogleDrivePickerConfig()),
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load Drive grant manifest')
   }
 }
 
@@ -327,6 +548,24 @@ export async function startConnectorOAuth(input: {
     )
     const mergedRequested = [...new Set([...(requestedScopes ?? []), ...existingScopes])]
     const effectiveScopes = mergedRequested.length > 0 ? mergedRequested : undefined
+
+    // A „Teljes olvasás + írás" (full `drive`) Drive-profil admin-döntés. A
+    // kliens a profil-választót elrejti a nem-adminok elől, de a server action
+    // közvetlenül is hívható (tetszőleges `scopes` tömbbel), ezért a kaput ITT,
+    // a szerveren is meg kell húzni — különben az „elrejtés" puszta UI-dísz, és
+    // egy alacsony jogú felhasználó (vagy kompromittált session) a teljes Drive
+    // írási jogát szerezhetné meg, megkerülve a Picker-alapú, kijelölt-fájlos
+    // korlátozást.
+    if (
+      connector.type === 'google_drive' &&
+      driveScopeProfileRequiresAdmin(effectiveScopes ?? []) &&
+      !hasMinimumRole(ctx.activeTenantRole, 'admin')
+    ) {
+      return fail(
+        'A „Teljes olvasás + írás" Google Drive hozzáférést csak tenant-admin kérheti. ' +
+          'Válaszd az „Olvasás + írás kijelölt fájlokon" profilt, és a Kapcsolt fiókok oldalon jelöld ki a szerkeszthető fájlokat.',
+      )
+    }
 
     if (isDelegatedOAuthStubEnabled()) {
       const { createOAuthState } = await import('@/lib/crypto/oauth-state')

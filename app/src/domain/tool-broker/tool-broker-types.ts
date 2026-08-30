@@ -589,9 +589,19 @@ export type GoogleDriveShareFileArgs = {
   sendNotificationEmail?: boolean
   emailMessage?: string
 }
+export type DocsEditOperation =
+  | { insertText: { location: { index: number }; text: string } }
+  | {
+      replaceAllText: {
+        containsText: { text: string; matchCase?: boolean }
+        replaceText: string
+      }
+    }
+  | { deleteContentRange: { range: { startIndex: number; endIndex: number } } }
+
 export type GoogleDocsApplyEditsArgs = {
   fileId: string
-  operations: Array<Record<string, unknown>>
+  operations: DocsEditOperation[]
 }
 export type GoogleSheetsWriteRangeArgs = {
   fileId: string
@@ -599,9 +609,20 @@ export type GoogleSheetsWriteRangeArgs = {
   values: unknown[][]
   mode?: 'replace' | 'append'
 }
+export type SlidesEditOperation =
+  | {
+      replaceAllText: {
+        containsText: { text: string; matchCase?: boolean }
+        replaceText: string
+        pageObjectIds?: string[]
+      }
+    }
+  | { deleteObject: { objectId: string } }
+  | { insertText: { objectId: string; insertionIndex: number; text: string } }
+
 export type GoogleSlidesApplyEditsArgs = {
   fileId: string
-  operations: Array<Record<string, unknown>>
+  operations: SlidesEditOperation[]
 }
 
 export type HttpApiQuery = Record<string, string | number | boolean>
