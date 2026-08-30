@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { RunRow, RunsSummaryChips } from '@/components/active-runs/run-row'
 import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
 import { activeRunKey, type ActiveRun } from '@/lib/active-runs'
@@ -12,6 +12,12 @@ import {
   type ComposedRun,
 } from '@/lib/active-runs-compose'
 import { loadSeenRunKeys, markRunSeen, pruneSeenRunKeys } from '@/lib/active-runs-seen'
+import { useAdaptivePoll } from '@/lib/use-adaptive-poll'
+
+/** Sűrű ütem: van élő (aktív) futás. */
+const POLL_ACTIVE_MS = 5000
+/** Nyugalmi ütem: nincs élő futás — ritkábban kérdezünk. */
+const POLL_IDLE_MS = 20000
 
 export function ActiveRunsPanel() {
   const router = useRouter()
@@ -50,16 +56,12 @@ export function ActiveRunsPanel() {
     }
   }, [applyRuns])
 
-  useEffect(() => {
-    // Szándékos: felcsatoláskor azonnal töltünk, majd 2,5 mp-enként pollozunk. A `refresh`
-    // elején a betöltés-jelző beállítása a mount-kori adatlekérés természetes velejárója.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refresh()
-    const timer = window.setInterval(() => {
-      void refresh()
-    }, 2500)
-    return () => window.clearInterval(timer)
-  }, [refresh])
+  const hasActiveRun = useMemo(() => runs.some((run) => run.phase === 'active'), [runs])
+  useAdaptivePoll(refresh, {
+    activeMs: POLL_ACTIVE_MS,
+    idleMs: POLL_IDLE_MS,
+    idle: !hasActiveRun,
+  })
 
   const stopRun = async (run: ActiveRun) => {
     if (!run.canStop || stoppingId || startingId) return

@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { AgentRailCard } from '@/components/agents/agent-rail-card'
 import {
@@ -17,6 +17,7 @@ import {
   defaultAgentWorkspaceTab,
   parseAgentWorkspacePath,
 } from '@/lib/agent-workspace-routes'
+import { useAdaptivePoll } from '@/lib/use-adaptive-poll'
 import {
   railFilterMatches,
   type AgentRailCardState,
@@ -25,7 +26,10 @@ import {
   type AgentWorkspaceTab,
 } from '@/lib/agent-rail-types'
 
-const POLL_MS = 5000
+/** Sűrű ütem: dolgozik vagy rád vár valamelyik agent. */
+const POLL_ACTIVE_MS = 5000
+/** Nyugalmi ütem: mindenki szabad — ilyenkor ritkábban kérdezünk. */
+const POLL_IDLE_MS = 20000
 
 const FILTERS: { key: AgentRailFilter; label: string; dot?: string }[] = [
   { key: 'all', label: 'Mind' },
@@ -65,14 +69,15 @@ export function AgentRail({
     }
   }, [])
 
-  useEffect(() => {
-    const initialTimer = window.setTimeout(() => void refresh(), 0)
-    const timer = window.setInterval(() => void refresh(), POLL_MS)
-    return () => {
-      window.clearTimeout(initialTimer)
-      window.clearInterval(timer)
-    }
-  }, [refresh])
+  const someoneNeedsAttention = useMemo(
+    () => cards.some((card) => card.liveStatus === 'busy' || card.liveStatus === 'wait'),
+    [cards],
+  )
+  useAdaptivePoll(refresh, {
+    activeMs: POLL_ACTIVE_MS,
+    idleMs: POLL_IDLE_MS,
+    idle: !someoneNeedsAttention,
+  })
 
   const filtered = useMemo(() => {
     const q = ui.search.trim().toLowerCase()
