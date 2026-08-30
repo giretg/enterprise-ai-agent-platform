@@ -76,7 +76,9 @@ export function assertGoogleDriveWriteAccess(params: {
       typeof params.args.destinationFolderId === 'string'
         ? params.args.destinationFolderId.trim()
         : ''
-    if (fileId && !allowedFiles.has(fileId)) {
+    // Fail-closed: az áthelyezendő forrásfájl azonosítója kötelező; hiányzó/üres
+    // id esetén nem „átcsúsztatjuk", hanem elutasítjuk.
+    if (!fileId || !allowedFiles.has(fileId)) {
       throw new GoogleDriveWriteAccessError(DRIVE_PICKER_RESELECT_MESSAGE)
     }
     if (
@@ -100,8 +102,11 @@ export function assertGoogleDriveWriteAccess(params: {
   }
 
   if (WRITE_TOOLS_REQUIRING_FILE.has(params.tool)) {
+    // Fail-closed: ezek az eszközök konkrét fájlt módosítanak/osztanak meg; a
+    // fájl-azonosító kötelező. Hiányzó/üres id NEM engedhet át (különben pl. a
+    // `share_file` a manifeszt-kapu megkerülésével futhatna).
     const fileId = readFileId(params.args)
-    if (fileId && !allowedFiles.has(fileId)) {
+    if (!fileId || !allowedFiles.has(fileId)) {
       throw new GoogleDriveWriteAccessError(DRIVE_PICKER_RESELECT_MESSAGE)
     }
   }

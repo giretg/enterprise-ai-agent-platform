@@ -132,7 +132,11 @@ export function driveToolMinimalScopes(toolName: string): string[] {
     return [DRIVE_SCOPES.readonly]
   }
   if ((WRITE_TOOLS as readonly string[]).includes(toolName)) {
-    return [DRIVE_SCOPES.file]
+    // A `selected_write` profil DEFINÍCIÓJA `drive.readonly` + `drive.file`: a
+    // `drive.file` önmagában NEM ad teljes Drive-keresést/olvasást, ezért a
+    // kereső/olvasó eszközök egy csak-`file` granton elakadnának. Mindkettőt
+    // kérjük — de a teljes `drive` scope-ot SOHA (az admin-döntés marad).
+    return [DRIVE_SCOPES.readonly, DRIVE_SCOPES.file]
   }
   return []
 }

@@ -984,8 +984,9 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       tool: 'google_docs_apply_edits',
       args: {
         fileId: strArg(args, 'fileId'),
-        // A séma szándékosan megengedő (`z.record`); a művelet-alak futásidejű
-        // ellenőrzése a `GoogleWorkspaceApiClient.validateDocsOperation`-ben történik.
+        // A séma szándékosan megengedő (`z.record`); a felső szintű művelet-kulcsot
+        // a `GoogleWorkspaceApiClient.validateDocsOperation` futásidőben ellenőrzi
+        // (a beágyazott mezőket nem — azokat a Google batchUpdate bírálja el).
         operations: (args.operations as unknown as DocsEditOperation[]) ?? [],
       },
     }),
@@ -1034,7 +1035,8 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       tool: 'google_slides_apply_edits',
       args: {
         fileId: strArg(args, 'fileId'),
-        // Ld. fentebb: megengedő séma + futásidejű `validateSlidesOperation`.
+        // Ld. fentebb: megengedő séma + futásidejű felső-szintű kulcs-ellenőrzés
+        // (`validateSlidesOperation`); a beágyazott mezőket a Google bírálja el.
         operations: (args.operations as unknown as SlidesEditOperation[]) ?? [],
       },
     }),

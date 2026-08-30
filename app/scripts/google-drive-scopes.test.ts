@@ -58,9 +58,17 @@ test('full drive grant: full_write profil', () => {
 test('driveToolMinimalScopes: least-privilege, teljes drive SOHA', () => {
   // Regresszió: a tool-vezérelt grant NEM kérheti a teljes `drive` scope-ot —
   // sem olvasáshoz, sem íráshoz. Olvasás → readonly, írás → file (selected_write).
+  // Olvasás → readonly; írás → selected_write pár (readonly + file), mert a
+  // `drive.file` önmagában nem ad teljes keresést/olvasást.
   assert.deepEqual(driveToolMinimalScopes('google_drive_read_file'), [DRIVE_SCOPES.readonly])
-  assert.deepEqual(driveToolMinimalScopes('google_drive_update_file'), [DRIVE_SCOPES.file])
-  assert.deepEqual(driveToolMinimalScopes('google_drive_share_file'), [DRIVE_SCOPES.file])
+  assert.deepEqual(driveToolMinimalScopes('google_drive_update_file'), [
+    DRIVE_SCOPES.readonly,
+    DRIVE_SCOPES.file,
+  ])
+  assert.deepEqual(driveToolMinimalScopes('google_drive_share_file'), [
+    DRIVE_SCOPES.readonly,
+    DRIVE_SCOPES.file,
+  ])
   // A teljes `drive` scope SOHA nem szerepel egy tool minimum-igényében.
   for (const tool of ['google_drive_read_file', 'google_drive_update_file', 'google_drive_share_file']) {
     assert.ok(!driveToolMinimalScopes(tool).includes(DRIVE_SCOPES.full))
