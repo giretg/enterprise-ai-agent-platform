@@ -75,8 +75,11 @@ check('okok: grant-hiány + provider-független és Gmail-történeti scope-hiá
 })
 
 check('provider-regiszter: Gmail bejegyzés, ismeretlen típus generikus', () => {
-  assert.deepEqual(registeredDelegatedProviderTypes(), ['gmail'])
+  assert.deepEqual(registeredDelegatedProviderTypes(), ['gmail', 'google_drive'])
   assert.equal(delegatedConnectorLabel('gmail', 'Céges levelezés'), 'Gmail')
+  assert.equal(delegatedConnectorLabel('google_drive', 'Akármi'), 'Google Drive')
+  assert.equal(delegatedScopeDeniedReason('google_drive'), 'google_drive_scope_not_granted')
+  assert.equal(hasDelegatedScopeCheck('google_drive'), true)
   // Ismeretlen providernél a connector SAJÁT neve a címke — nincs beégetve semmi.
   assert.equal(delegatedConnectorLabel('http_api', 'Ostorosbor API'), 'Ostorosbor API')
   assert.equal(delegatedConnectorLabel('http_api', ''), 'külső fiók')

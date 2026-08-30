@@ -1347,6 +1347,39 @@ async function run() {
     assert.ok(!JSON.stringify(r).includes('api.acme-crm.example'))
   })
 
+  await test('SBX: Google Drive sandbox zöld clientId nélkül (platform OAuth az aktiváláskor kell)', async () => {
+    const audit = new FakeAudit()
+    const drafts = new FakeDraftRepo()
+    const svc = new ProvisioningService({
+      drafts,
+      audit,
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      resolveBankPreset: async () => false,
+    })
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Google Drive',
+        sourceType: 'template',
+        connectorType: 'google_drive',
+        generatedConfig: {
+          provider: 'google-drive',
+          oauth: {
+            authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+            userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
+            scopes: ['https://www.googleapis.com/auth/drive.file'],
+            scopeTransform: 'none',
+          },
+        },
+      },
+      adminActor,
+    )
+    const t = await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+    assert.equal(t.ok, true)
+    assert.equal(t.detail, 'google_drive_oauth_metadata_check')
+    assert.equal(drafts.drafts.get(created.draftId)!.sandboxTestOk, true)
+  })
+
   await test('SBX: Gmail sandbox zöld clientId nélkül (platform OAuth az aktiváláskor kell)', async () => {
     const audit = new FakeAudit()
     const drafts = new FakeDraftRepo()

@@ -62,12 +62,16 @@ export function LinkedAccountsPanel({
   myAgents,
   connectors,
   grants,
+  isAdmin = false,
+  drivePickerConfigured = false,
 }: {
   links: ChannelLinkView[]
   notifications: UserNotificationView[]
   myAgents: MyChannelAgentsView
   connectors: LinkedConnectorView[]
   grants: LinkedGrantView[]
+  isAdmin?: boolean
+  drivePickerConfigured?: boolean
 }) {
   const searchParams = useSearchParams()
   const connected = searchParams.get('connected') === '1'
@@ -113,6 +117,8 @@ export function LinkedAccountsPanel({
               key={connector.id}
               connector={connector}
               grants={grants.filter((grant) => grant.connectorId === connector.id)}
+              isAdmin={isAdmin}
+              drivePickerConfigured={drivePickerConfigured}
             />
           ))}
         </AccountGroup>
@@ -132,6 +138,8 @@ export function LinkedAccountsPanel({
               key={connector.id}
               connector={connector}
               grants={grants.filter((grant) => grant.connectorId === connector.id)}
+              isAdmin={isAdmin}
+              drivePickerConfigured={drivePickerConfigured}
             />
           ))}
         </AccountGroup>

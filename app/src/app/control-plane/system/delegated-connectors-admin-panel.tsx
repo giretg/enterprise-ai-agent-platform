@@ -14,10 +14,43 @@ type ConnectorRow = {
   canDecommission: boolean
 }
 
-type GoogleOAuthStatus = {
+type OAuthReadiness = {
   configured: boolean
   persisted: boolean
   source: 'platform' | 'env' | 'tenant_legacy' | null
+}
+
+type DrivePickerReadiness = OAuthReadiness & {
+  appId: string | null
+}
+
+function readinessTone(configured: boolean): 'ok' | 'warn' {
+  return configured ? 'ok' : 'warn'
+}
+
+function ReadinessLine({
+  label,
+  configured,
+  detail,
+}: {
+  label: string
+  configured: boolean
+  detail: string
+}) {
+  const tone = readinessTone(configured)
+  return (
+    <li className="flex items-start gap-2 text-sm">
+      <span
+        aria-hidden
+        className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
+          tone === 'ok' ? 'bg-emerald-400' : 'bg-amber-400'
+        }`}
+      />
+      <span className={tone === 'ok' ? 'text-ink-soft' : 'text-amber-100/90'}>
+        <span className="font-medium text-ink">{label}:</span> {detail}
+      </span>
+    </li>
+  )
 }
 
 /**
@@ -27,10 +60,16 @@ type GoogleOAuthStatus = {
 export function DelegatedConnectorsAdminPanel({
   initialConnectors,
   googleOauth,
+  googleDriveOauth,
+  googleDrivePicker,
+  hasGoogleDriveConnector,
   canManagePlatformOauth,
 }: {
   initialConnectors: ConnectorRow[]
-  googleOauth: GoogleOAuthStatus
+  googleOauth: OAuthReadiness
+  googleDriveOauth: OAuthReadiness
+  googleDrivePicker: DrivePickerReadiness
+  hasGoogleDriveConnector: boolean
   canManagePlatformOauth: boolean
 }) {
   const [pending, startTransition] = useTransition()
@@ -39,25 +78,22 @@ export function DelegatedConnectorsAdminPanel({
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  const driveReady =
+    !hasGoogleDriveConnector || (googleDriveOauth.configured && googleDrivePicker.configured)
+
   return (
     <div className="space-y-6">
-      <Card title="Google OAuth alkalmazás">
-        <div className="space-y-2 text-sm text-ink-soft">
-          {googleOauth.configured ? (
-            <p className="flex items-start gap-2 text-amber-200">
-              <span aria-hidden className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-amber-400" />
-              <span>
-                A platform OAuth-azonosítói be vannak állítva. Ez még nem igazolja a Google
-                API-k, az egress, a Picker vagy a connector működését; használat előtt
-                sikeres consent utáni smoke-ellenőrzés szükséges.
-              </span>
-            </p>
-          ) : (
-            <p>
-              A Google belépéshez a platform-adminnak be kell állítania az Enterprise AI Agent
-              Google OAuth clientjét a Platform · Beállítások oldalon.
-            </p>
-          )}
+      <Card title="Google OAuth — Gmail">
+        <div className="space-y-3 text-sm text-ink-soft">
+          <ReadinessLine
+            label="Platform OAuth client"
+            configured={googleOauth.configured}
+            detail={
+              googleOauth.configured
+                ? 'Be van állítva. A tényleges működést consent utáni smoke teszt igazolja.'
+                : 'Hiányzik — a Gmail összekötés nem fog működni.'
+            }
+          />
           {canManagePlatformOauth ? (
             <p>
               <Link
@@ -70,6 +106,48 @@ export function DelegatedConnectorsAdminPanel({
           ) : null}
         </div>
       </Card>
+
+      {hasGoogleDriveConnector ? (
+        <Card title="Google OAuth — Drive">
+          <div className="space-y-3 text-sm text-ink-soft">
+            <ReadinessLine
+              label="Drive OAuth client"
+              configured={googleDriveOauth.configured}
+              detail={
+                googleDriveOauth.configured
+                  ? 'Be van állítva (külön client a Gmailtől).'
+                  : 'Hiányzik — a Drive összekötés nem fog működni.'
+              }
+            />
+            <ReadinessLine
+              label="Google Picker"
+              configured={googleDrivePicker.configured}
+              detail={
+                googleDrivePicker.configured
+                  ? `Be van állítva${googleDrivePicker.appId ? ` · App ID: ${googleDrivePicker.appId}` : ''}.`
+                  : 'Hiányzik — az „olvasás + írás kijelölt fájlokon” profil fájlválasztója nem működik.'
+              }
+            />
+            {!driveReady ? (
+              <p className="rounded-lg border border-amber/35 bg-amber/10 px-3 py-2 text-xs leading-5 text-ink-soft">
+                A tenantben van aktív Google Drive connector, de a platform readiness hiányos.
+                Ellenőrizd a GCP-ben a Drive, Docs, Sheets, Slides és Picker API-kat, az origin/API
+                key korlátozásokat, majd állítsd be a platform credentialokat.
+              </p>
+            ) : null}
+            {canManagePlatformOauth ? (
+              <p>
+                <Link
+                  href="/control-plane/platform/settings?section=google-drive-oauth"
+                  className="text-ink underline"
+                >
+                  Megnyitás a platform Drive / Picker beállításokban
+                </Link>
+              </p>
+            ) : null}
+          </div>
+        </Card>
+      ) : null}
 
       <Card title="Delegált connectorok">
         <p className="mb-4 text-sm text-ink-soft">

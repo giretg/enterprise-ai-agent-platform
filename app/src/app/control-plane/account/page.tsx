@@ -63,6 +63,7 @@ async function LinkedAccountsContent() {
         accountLabel: g.accountLabel,
         scopes: g.scopes,
         grantedAt: toIso(g.grantedAt),
+        metadata: g.metadata,
       }))
     : []
 
@@ -79,6 +80,10 @@ async function LinkedAccountsContent() {
         myAgents={myAgents}
         connectors={connectors}
         grants={grants}
+        isAdmin={connectorsRes.success ? connectorsRes.data.isAdmin : false}
+        drivePickerConfigured={
+          connectorsRes.success ? connectorsRes.data.drivePickerConfigured : false
+        }
       />
     </div>
   )

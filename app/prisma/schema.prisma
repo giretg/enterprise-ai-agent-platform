@@ -1847,6 +1847,8 @@ model ConnectorGrant {
   expiresAt       DateTime?            @map("expires_at") @db.Timestamptz
   lastRefreshedAt DateTime?            @map("last_refreshed_at") @db.Timestamptz
   revokedAt       DateTime?            @map("revoked_at") @db.Timestamptz
+  /// issue #378 — Picker manifest, app-created fájlok (selected-write profil).
+  metadata        Json                 @default("{}")
 
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)

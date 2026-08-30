@@ -59,6 +59,13 @@ const TOOL_NAME_ARRAY_ALLOWLIST = new Set([
   'src/domain/tool-broker/consequence-gate-policy.ts',
   // Szerep-szintű TILTÓlista (web-egress) — szándékosan nem a regiszter vetülete.
   'src/domain/agents/web-egress-role.ts',
+  // Drive OAuth-scope kategorizálás (olvasás vs. írás) — MÁS szemantika, mint a
+  // felület-szűrés: azt dönti el, egy tool `drive.readonly`-t vagy `drive.file`-t
+  // igényel-e. Vö. consequence-gate-policy.ts (kockázati osztályok).
+  'src/domain/connector-grant/google-drive-scopes.ts',
+  // A Picker-manifeszt ellenőrzést igénylő Drive írástoolok halmaza — szintén
+  // önálló szemantika (mely íráshoz kell kijelölt-fájl igazolás), nem regiszter-másolat.
+  'src/domain/connector-grant/google-drive-write-access.ts',
   // UI-címkék: `Record<string, ToolUiLabel>` — kulcsolt, nem lista.
   'src/lib/tool-ui-labels.ts',
 ])
