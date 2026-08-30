@@ -563,16 +563,18 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
     )
   }, [])
 
-  useEffect(() => {
-    const normalized = name.trim().toLowerCase()
-    if (!normalized.includes('drive')) return
-    const driveTemplate = templates.find((template) => template.key === 'google-drive')
-    if (driveTemplate && selectedTemplateId !== driveTemplate.id) {
+  const maybeAutoSelectDriveTemplate = useCallback(
+    (nextName: string, availableTemplates: ConnectorTemplateRow[]) => {
+      const normalized = nextName.trim().toLowerCase()
+      if (!normalized.includes('drive')) return
+      const driveTemplate = availableTemplates.find((template) => template.key === 'google-drive')
+      if (!driveTemplate) return
       applyTemplateSelection(driveTemplate)
       setSourceMethod('template')
       setSourceType('template')
-    }
-  }, [name, templates, selectedTemplateId, applyTemplateSelection])
+    },
+    [applyTemplateSelection],
+  )
 
   const reload = useCallback(() => {
     startTransition(async () => {
@@ -590,12 +592,13 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
         const rows = t.data as ConnectorTemplateRow[]
         setTemplates(rows)
         if (!selectedTemplateId && rows[0]) applyTemplateSelection(rows[0])
+        maybeAutoSelectDriveTemplate(name, rows)
       }
       if (g.success) setGoogleOauthConfigured(g.data.configured)
       if (gd.success) setGoogleDriveOauthConfigured(gd.data.configured)
       setLoadedOnce(true)
     })
-  }, [applyTemplateSelection, selectedTemplateId])
+  }, [applyTemplateSelection, maybeAutoSelectDriveTemplate, name, selectedTemplateId])
 
   useEffect(() => {
     reload()
@@ -1000,7 +1003,11 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                   <input
                     className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    onChange={(e) => {
+                      const next = e.target.value
+                      setName(next)
+                      maybeAutoSelectDriveTemplate(next, templates)
+                    }}
                     placeholder="Acme CRM"
                   />
                 </label>
