@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { RunRow, RunsSummaryChips } from '@/components/active-runs/run-row'
 import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
 import { activeRunKey, type ActiveRun } from '@/lib/active-runs'
@@ -13,8 +13,12 @@ import {
 } from '@/lib/active-runs-compose'
 import { runDayLabel } from '@/lib/active-runs-labels'
 import { loadSeenRunKeys, markRunSeen, pruneSeenRunKeys } from '@/lib/active-runs-seen'
+import { useAdaptivePoll } from '@/lib/use-adaptive-poll'
 
-const POLL_MS = 5000
+/** Sűrű ütem: van élő (aktív) futás. */
+const POLL_ACTIVE_MS = 5000
+/** Nyugalmi ütem: nincs élő futás — ritkábban kérdezünk. */
+const POLL_IDLE_MS = 20000
 /** Ennyi sor látszik alapból; a többi egy kattintással nyílik ki. */
 const COLLAPSED_LIMIT = 6
 
@@ -62,12 +66,12 @@ export function DashboardRunsList({ initialRuns }: { initialRuns: ActiveRun[] })
     }
   }, [applyRuns])
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void refresh()
-    }, POLL_MS)
-    return () => window.clearInterval(timer)
-  }, [refresh])
+  const hasActiveRun = useMemo(() => runs.some((run) => run.phase === 'active'), [runs])
+  useAdaptivePoll(refresh, {
+    activeMs: POLL_ACTIVE_MS,
+    idleMs: POLL_IDLE_MS,
+    idle: !hasActiveRun,
+  })
 
   const stopRun = async (run: ActiveRun) => {
     if (!run.canStop || stoppingId || startingId) return
