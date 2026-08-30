@@ -105,6 +105,66 @@ function buildRuntime(row: Agent) {
   return { runtime, calls }
 }
 
+/** APG-08 known-value szótár: csak a beszélgetés tulajdonosa kaphat plaintext needle-t. */
+function buildPrivacyMarkerRuntime(params: {
+  conversation: {
+    id: string
+    agentId: string
+    tenantId: string
+    createdById: string
+  }
+  knownValues: Array<{ needle: string; surrogate: string; fromStructuredField: boolean }>
+}) {
+  let loadCalls = 0
+  const conversations = {
+    getConversation: async (conversationId: string, tenantId?: string | null) => {
+      if (conversationId !== params.conversation.id) throw new Error('Conversation not found')
+      if (tenantId !== undefined && tenantId !== params.conversation.tenantId) {
+        throw new Error('Conversation not found')
+      }
+      return { conversation: params.conversation, messages: [] }
+    },
+  } as unknown as ConversationService
+  const surrogateEngine = {
+    loadKnownValueReplacements: async () => {
+      loadCalls += 1
+      return params.knownValues
+    },
+  }
+  const runtime = new AgentChatRuntime(
+    { findByIdForRuntime: async () => null } as unknown as AgentRepository,
+    { findById: async () => null } as unknown as DocumentRepository,
+    {} as unknown as TicketRepository,
+    {} as ModelGateway,
+    conversations,
+    {} as ToolBrokerService,
+    { listToolCallsForConversation: async () => [] } as unknown as ToolBrokerRepository,
+    {} as WorkspaceStorage,
+    { append: async () => ({ id: 'audit-1' }) } as unknown as AuditRepository,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    surrogateEngine as never,
+    undefined,
+    async () => ({
+      mode: 'enforce' as const,
+      policy: {
+        categories: {},
+        custom: {},
+        patternSetVersion: 1,
+        legacyToggleApplied: false,
+      } as never,
+    }),
+  )
+  return { runtime, getLoadCalls: () => loadCalls }
+}
+
 async function main() {
   console.log('=== AgentChat tenant-boundary teszt ===')
 
@@ -138,6 +198,63 @@ async function main() {
       /Agent not found/,
     )
     assert.equal(calls.createTicket, 0)
+  })
+
+  const conv = {
+    id: 'conv-1',
+    agentId: 'agent-A',
+    tenantId: 'tenant-A',
+    createdById: 'owner-A',
+  }
+  const secretValues = [
+    { needle: 'SPAR Titkos Kft.', surrogate: '[[COMPANY_1]]', fromStructuredField: true },
+  ]
+
+  await test('getPrivacyMarkerContext: tulajdonos megkapja a known-value szótárat', async () => {
+    const { runtime, getLoadCalls } = buildPrivacyMarkerRuntime({
+      conversation: conv,
+      knownValues: secretValues,
+    })
+    const ctx = await runtime.getPrivacyMarkerContext({
+      agentId: 'agent-A',
+      tenantId: 'tenant-A',
+      conversationId: 'conv-1',
+      requesterUserId: 'owner-A',
+    })
+    assert.ok(ctx)
+    assert.deepEqual(ctx!.knownValues, secretValues)
+    assert.equal(getLoadCalls(), 1)
+  })
+
+  await test('getPrivacyMarkerContext: idegen tenant-tag NEM kap vault plaintext szótárat (APG-08)', async () => {
+    const { runtime, getLoadCalls } = buildPrivacyMarkerRuntime({
+      conversation: conv,
+      knownValues: secretValues,
+    })
+    const ctx = await runtime.getPrivacyMarkerContext({
+      agentId: 'agent-A',
+      tenantId: 'tenant-A',
+      conversationId: 'conv-1',
+      requesterUserId: 'other-user-B',
+    })
+    assert.ok(ctx)
+    assert.deepEqual(ctx!.knownValues, [])
+    assert.equal(getLoadCalls(), 0, 'loadKnownValueReplacements ne fusson idegen kérőre')
+  })
+
+  await test('getPrivacyMarkerContext: requester nélkül üres szótár', async () => {
+    const { runtime, getLoadCalls } = buildPrivacyMarkerRuntime({
+      conversation: conv,
+      knownValues: secretValues,
+    })
+    const ctx = await runtime.getPrivacyMarkerContext({
+      agentId: 'agent-A',
+      tenantId: 'tenant-A',
+      conversationId: 'conv-1',
+    })
+    assert.ok(ctx)
+    assert.deepEqual(ctx!.knownValues, [])
+    assert.equal(getLoadCalls(), 0)
   })
 
   if (failures > 0) {

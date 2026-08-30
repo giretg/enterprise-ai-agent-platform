@@ -510,11 +510,16 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
       const sourceTruncated =
         (output as { repeatedSourceKeysTruncated?: boolean } | null)?.repeatedSourceKeysTruncated ===
         true
+      const latencyTruncated =
+        (output as { latencyByToolTruncated?: boolean } | null)?.latencyByToolTruncated === true
       if (truncated) {
         return 'több futás illeszkedik a szkópra, mint amennyit az aggregátum figyelembe vett — szűkítsd a szkópot'
       }
       if (sourceTruncated) {
         return 'több eszközhívás van a szkópban, mint amennyit a forrás-kulcs mintavétel feldolgozott — szűkítsd a szkópot'
+      }
+      if (latencyTruncated) {
+        return 'a latency percentilisek korlátos mintán készültek — szűkítsd a szkópot a teljes méréshez'
       }
       return null
     },

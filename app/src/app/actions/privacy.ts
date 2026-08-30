@@ -521,6 +521,7 @@ export async function getChatPrivacyMarkerContext(
       agentId: parsed.agentId,
       tenantId: user.activeTenantId,
       conversationId: parsed.conversationId ?? null,
+      requesterUserId: user.user.id,
     })
     return ok(context)
   } catch (e) {

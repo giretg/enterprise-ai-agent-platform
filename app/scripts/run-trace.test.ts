@@ -23,6 +23,7 @@ import {
   RUN_TRACE_NOT_FOUND,
   RunTraceNotFoundError,
   applyActivityStepRange,
+  buildTicketTraceAuditFilter,
   buildTimeline,
   buildTokenCurve,
   buildTraceSummary,
@@ -243,6 +244,30 @@ async function main() {
     assert.equal(plan.sources.toolCalls, true)
   })
 
+  await test('buildTicketTraceAuditFilter: chat-kötött ticket → OR (ne AND-eljen)', () => {
+    const since = new Date('2026-08-01T10:00:00Z')
+    const until = new Date('2026-08-01T11:00:00Z')
+    const linked = buildTicketTraceAuditFilter({
+      ticketId: '11111111-1111-4111-8111-111111111111',
+      conversationId: '22222222-2222-4222-8222-222222222222',
+      since,
+      until,
+    })
+    assert.equal(linked.mode, 'or')
+    assert.equal(linked.ticketId, '11111111-1111-4111-8111-111111111111')
+    assert.equal(linked.conversationId, '22222222-2222-4222-8222-222222222222')
+
+    const standalone = buildTicketTraceAuditFilter({
+      ticketId: '11111111-1111-4111-8111-111111111111',
+      conversationId: null,
+      since,
+      until,
+    })
+    assert.equal(standalone.mode, 'single')
+    assert.equal(standalone.ticketId, '11111111-1111-4111-8111-111111111111')
+    assert.equal(standalone.conversationId, undefined)
+  })
+
   await test('applyActivityStepRange: csak az aktivitásokat szűri', () => {
     const run = syntheticTurnRun(20)
     const timeline = buildTimeline(run)
@@ -293,6 +318,10 @@ async function main() {
     assert.match(src, /analysis\.run_trace/)
     assert.match(src, /RunIndexNotFoundError/)
     assert.match(src, /loadProcessRun/)
+    // Chat-kötött ticket audit: OR (ticket VAGY conversation), ne AND.
+    assert.match(src, /buildTicketTraceAuditFilter/)
+    assert.match(src, /loadAuditRows/)
+    assert.match(src, /mode === 'or'/)
   })
 
   await test('RA-05 DoD: hibás átadás — step2 kimenet nem tölti step3 kötelező slotját', () => {

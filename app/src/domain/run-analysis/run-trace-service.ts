@@ -181,12 +181,51 @@ export type TraceRunHeader = {
  * sorai szűkíthetők. A service ezen keresztül aggregál és lapoz — sosem tölti be
  * előbb az egészet.
  */
+/**
+ * Ticket-szkóp audit-szűrője. A broker `tool.call` sorai `targetType=ticket`
+ * mellett tipikusan `conversationId = null`-lal íródnak; a chat-események
+ * viszont conversation-horgonnyal. AND-elés → üres audit-idővonal.
+ * Ezért ticket + conversation esetén OR (két lekérdezés, összefésülve).
+ */
+export type TraceAuditFilter = {
+  ticketId?: string
+  conversationId?: string
+  /** `or` = ticket VAGY conversation (chat-kötött ticket); `single` = egy horgony. */
+  mode: 'single' | 'or'
+  since: Date
+  until?: Date
+}
+
 type TraceRunScope = TraceRunHeader & {
   callWhere: { agentTurnId: string } | { ticketId: string }
   messageWhere: Prisma.MessageWhereInput
-  auditFilter: { ticketId?: string; conversationId?: string; since: Date; until?: Date }
+  auditFilter: TraceAuditFilter
   activityTurnWhere: Prisma.AgentTurnWhereInput
   hasTicketSources: boolean
+}
+
+/** Ticket-grain audit-szűrő — chat-kötött ticketnél OR, különben ticket-only. */
+export function buildTicketTraceAuditFilter(input: {
+  ticketId: string
+  conversationId: string | null
+  since: Date
+  until: Date
+}): TraceAuditFilter {
+  if (input.conversationId) {
+    return {
+      ticketId: input.ticketId,
+      conversationId: input.conversationId,
+      mode: 'or',
+      since: input.since,
+      until: input.until,
+    }
+  }
+  return {
+    ticketId: input.ticketId,
+    mode: 'single',
+    since: input.since,
+    until: input.until,
+  }
 }
 
 function parseIsoDate(value: string | undefined, label: string): Date | undefined {
@@ -673,6 +712,7 @@ export class RunTraceService {
       messageWhere: messageIds.length ? { id: { in: messageIds } } : { id: { in: [] } },
       auditFilter: {
         conversationId: turn.conversationId,
+        mode: 'single',
         since: turn.startedAt,
         ...(turn.finishedAt ? { until: turn.finishedAt } : {}),
       },
@@ -743,12 +783,12 @@ export class RunTraceService {
             ],
           }
         : { ticketRefId: ticket.id },
-      auditFilter: {
+      auditFilter: buildTicketTraceAuditFilter({
         ticketId: ticket.id,
-        ...(ticket.conversationId ? { conversationId: ticket.conversationId } : {}),
+        conversationId: ticket.conversationId,
         since: windowStart,
         until: windowEnd,
-      },
+      }),
       activityTurnWhere,
       hasTicketSources: true,
     }
@@ -942,13 +982,7 @@ export class RunTraceService {
             })
           : Promise.resolve([]),
         plan.sources.audit
-          ? this.audit.findMany({
-              ...scope.auditFilter,
-              ...(timeWhere?.gte ? { since: timeWhere.gte } : {}),
-              ...(timeWhere?.lte ? { until: timeWhere.lte } : {}),
-              order: 'asc',
-              limit: auditCap,
-            })
+          ? this.loadAuditRows(scope.auditFilter, timeWhere, auditCap)
           : Promise.resolve([]),
         plan.sources.activities
           ? this.prisma.agentTurn.findMany({
@@ -1033,6 +1067,50 @@ export class RunTraceService {
       truncated: offset + items.length < totalCount,
       filters: plan.filters,
     }
+  }
+
+  /**
+   * Audit-sorok a szkóp szerint. Chat-kötött ticketnél a broker ticket-horgonnyal
+   * (`conversationId` null) és a chat conversation-horgonnyal is ír — AND helyett
+   * két lekérdezés, id szerint deduplikálva, időrendben vágva.
+   */
+  private async loadAuditRows(
+    filter: TraceAuditFilter,
+    timeWhere: { gte?: Date; lte?: Date } | undefined,
+    limit: number,
+  ) {
+    const since = timeWhere?.gte ?? filter.since
+    const until = timeWhere?.lte ?? filter.until
+    const base = {
+      ...(since ? { since } : {}),
+      ...(until ? { until } : {}),
+      order: 'asc' as const,
+      limit,
+    }
+
+    if (filter.mode === 'or' && filter.ticketId && filter.conversationId) {
+      const [byTicket, byConversation] = await Promise.all([
+        this.audit.findMany({ ...base, ticketId: filter.ticketId }),
+        this.audit.findMany({ ...base, conversationId: filter.conversationId }),
+      ])
+      const byId = new Map<string, (typeof byTicket)[number]>()
+      for (const row of [...byTicket, ...byConversation]) {
+        byId.set(row.id, row)
+      }
+      return [...byId.values()]
+        .sort((a, b) => {
+          const at = a.createdAt.getTime() - b.createdAt.getTime()
+          if (at !== 0) return at
+          return a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0
+        })
+        .slice(0, limit)
+    }
+
+    return this.audit.findMany({
+      ...base,
+      ...(filter.ticketId ? { ticketId: filter.ticketId } : {}),
+      ...(filter.conversationId ? { conversationId: filter.conversationId } : {}),
+    })
   }
 
   private async loadProcessRun(

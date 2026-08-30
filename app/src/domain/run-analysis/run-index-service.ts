@@ -279,13 +279,13 @@ export class RunIndexService {
       args: input.args,
     })
 
-    const runs = await this.buildHeaders(tenantId, selected)
+    const { runs, processTicketIndexTruncated } = await this.buildHeaders(tenantId, selected)
 
     const result: RunIndexResult = {
       runs,
       returnedCount: runs.length,
       limit,
-      truncated,
+      truncated: truncated || processTicketIndexTruncated,
       scope,
     }
 
@@ -672,7 +672,7 @@ export class RunIndexService {
   private async buildHeaders(
     tenantId: string,
     selected: RunIndexCandidate[],
-  ): Promise<RunIndexHeader[]> {
+  ): Promise<{ runs: RunIndexHeader[]; processTicketIndexTruncated: boolean }> {
     const turnIds = selected.filter((s) => s.grain === 'turn').map((s) => s.id)
     const ticketIds = selected.filter((s) => s.grain === 'ticket').map((s) => s.id)
     const processIds = selected.filter((s) => s.grain === 'process').map((s) => s.id)
@@ -860,7 +860,7 @@ export class RunIndexService {
         ),
       )
     }
-    return headers
+    return { runs: headers, processTicketIndexTruncated: processTickets.truncated }
   }
 
   private headerForTurn(

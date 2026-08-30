@@ -302,14 +302,16 @@ export class RunStatsService {
     const scopeFilter = buildScopedCallFilter(scopeIds)
     const toolWhere: Prisma.ToolCallWhereInput | null = scopeFilter
     const modelWhere: Prisma.ModelCallWhereInput | null = scopeFilter
+    const truncatedResult = truncated || scopeIds.processTicketIndexTruncated
 
     const emptyResult = (): RunStatsResult => ({
       scope,
       runCount: candidates.length,
       limit,
-      truncated,
+      truncated: truncatedResult,
       toolOutcomeMatrix: [],
       latencyByTool: [],
+      latencyByToolTruncated: false,
       promptCache: {
         measuredCalls: 0,
         unmeasuredCalls: 0,
@@ -424,9 +426,10 @@ export class RunStatsService {
       scope,
       runCount: candidates.length,
       limit,
-      truncated,
+      truncated: truncatedResult,
       toolOutcomeMatrix,
       latencyByTool: buildLatencyByTool(latencyRows),
+      latencyByToolTruncated: latencyTruncated,
       promptCache,
       repeatedSourceKeys,
       repeatedSourceKeysTruncated: sourceKeyTruncated || repeatedKeysTruncated,
@@ -467,7 +470,12 @@ export class RunStatsService {
   private async resolveScopeIds(
     tenantId: string,
     candidates: RunIndexCandidate[],
-  ): Promise<{ turnIds: string[]; ticketIds: string[]; conversationIds: string[] }> {
+  ): Promise<{
+    turnIds: string[]
+    ticketIds: string[]
+    conversationIds: string[]
+    processTicketIndexTruncated: boolean
+  }> {
     const turnIds = candidates.filter((c) => c.grain === 'turn').map((c) => c.id)
     const ticketIds = candidates.filter((c) => c.grain === 'ticket').map((c) => c.id)
     const processIds = candidates.filter((c) => c.grain === 'process').map((c) => c.id)
@@ -498,7 +506,12 @@ export class RunStatsService {
       ]),
     ]
 
-    return { turnIds, ticketIds: allTicketIds, conversationIds }
+    return {
+      turnIds,
+      ticketIds: allTicketIds,
+      conversationIds,
+      processTicketIndexTruncated: processTickets.truncated,
+    }
   }
 
   private async loadSkillAuditRows(
