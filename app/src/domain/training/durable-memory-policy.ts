@@ -54,6 +54,7 @@ export type TrainingActionErrorCode =
   | 'eval_failed'
   | 'pending_blocked'
   | 'activation_in_progress'
+  | 'not_awaiting_approval'
 
 export const TRAINING_USER_ERRORS: Record<TrainingActionErrorCode, string> = {
   stale_revision: 'A javaslat időközben frissült — nézd át a legújabb változatot',
@@ -68,6 +69,8 @@ export const TRAINING_USER_ERRORS: Record<TrainingActionErrorCode, string> = {
   eval_failed: 'Az ellenőrzés nem ment át — a tanítás nem léphet életbe',
   pending_blocked: 'A javaslatot a rendszer nem engedheti meg',
   activation_in_progress: 'A jóváhagyás már folyamatban van — frissítsd az oldalt, mielőtt újra döntesz',
+  not_awaiting_approval:
+    'A tanítás csak jóváhagyásra váró állapotból aktiválható — állítsd vissza jóváhagyásra, mielőtt életbe lépteted',
 }
 
 export class TrainingGateError extends Error {

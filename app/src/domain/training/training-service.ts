@@ -593,6 +593,14 @@ export class TrainingService {
       return await deny('activation_forbidden')
     }
 
+    // approveTraining ugyanezt követeli. A workspace OPEN_TICKET_STATES (needs_info,
+    // ready, …) mellett is mutat aktiválás gombot; memóriaírás után a needs_info/ready
+    // → done átmenet illegális, a catch pedig nem rollbackeli a pointert — így a
+    // szabály élesedne, miközben a ticket nyitva / hibaüzenettel marad.
+    if (ticket.state !== 'awaiting_human') {
+      return await deny('not_awaiting_approval', { ticketState: ticket.state })
+    }
+
     const revision = await this.store.findRevision(params.revisionId)
     if (!revision || revision.trainingTicketId !== params.ticketId) {
       return await deny('stale_revision')

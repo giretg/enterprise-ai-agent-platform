@@ -597,6 +597,44 @@ async function run() {
     )
   })
 
+  await test('needs_info ticketen aktiválás nem ír memóriát (awaiting_human kapu)', async () => {
+    const h = makeHarness({
+      profile: {
+        scope: ['memory'],
+        approval_mode: 'human',
+        durable_memory_approval_policy: { activation_mode: 'operator_can_activate', four_eyes_required: false },
+      },
+    })
+    const preview = await h.service.previewTrainingChange({
+      agentId: AGENT_ID,
+      instruction: { kind: 'teach', text: 'PDF-et csatolj' },
+      actor: operator,
+    })
+    const submitted = await h.service.submitTrainingProposal({ previewId: preview.previewId, actor: operator })
+    const ticket = h.tickets.get(submitted.ticket.id)
+    assert.ok(ticket)
+    // Board / pontosítás: awaiting_human → needs_info. A workspace továbbra is
+    // mutatja a pendinget (OPEN_TICKET_STATES), az aktiválás gomb is elérhető.
+    h.tickets.set(submitted.ticket.id, { ...ticket, state: 'needs_info' })
+    const ws = await h.service.getTrainingWorkspace({ agentId: AGENT_ID, actor: operator })
+    assert.equal(ws.pendingProposal?.ticketId, submitted.ticket.id)
+    assert.equal(ws.allowedActions.includes('activate'), true)
+
+    await assert.rejects(
+      () =>
+        h.service.activateTraining({
+          ticketId: submitted.ticket.id,
+          revisionId: submitted.currentRevision.id,
+          actor: operator,
+        }),
+      (e: unknown) => e instanceof TrainingGateError && e.code === 'not_awaiting_approval',
+    )
+    assert.equal(h.currentInstructionId, 'ver-3')
+    assert.equal(h.instructionVersions.size, 1)
+    assert.equal(h.tickets.get(submitted.ticket.id)?.state, 'needs_info')
+    assert.equal(h.revisions.get(submitted.currentRevision.id)?.tokenStatus, 'unissued')
+  })
+
   await test('T19: elavult alapverzió nem írható felül', async () => {
     const h = makeHarness()
     const preview = await h.service.previewTrainingChange({
