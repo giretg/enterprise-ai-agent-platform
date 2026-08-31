@@ -3,6 +3,7 @@ import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { composeAgentRailStates } from '@/lib/agent-rail-compose'
 import type { AgentRailStateResponse } from '@/lib/agent-rail-types'
 import { loadActiveRuns } from '@/lib/active-runs-load'
+import { coalescePollRead } from '@/lib/poll-coalesce'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -13,18 +14,33 @@ export async function GET() {
   if (!auth.ok) return auth.response
   const { user } = auth
 
-  const agentsRes = await listAgents()
+  // A sáv + a „Futások" panel + a több nyitott fül másodpercenként ugyanezt kéri:
+  // egy rövid (POLL_COALESCE_TTL_MS) ablakon belül a DB-kört megosztjuk. Az auth
+  // ettől függetlenül minden kérésnél lefut (fentebb).
+  const agentsRes = await coalescePollRead(
+    { tenantId: user.activeTenantId, userId: user.user.id, namespace: 'rail-agents' },
+    () => listAgents(),
+  )
   if (!agentsRes.success) {
     return Response.json({ error: agentsRes.error }, { status: 500 })
   }
 
   const runs =
     user.activeTenantRole && user.activeTenantRole !== 'viewer'
-      ? await loadActiveRuns({
-          tenantId: user.activeTenantId,
-          userId: user.user.id,
-          activeTenantRole: user.activeTenantRole,
-        })
+      ? await coalescePollRead(
+          {
+            tenantId: user.activeTenantId,
+            userId: user.user.id,
+            namespace: 'active-runs',
+            variant: user.activeTenantRole,
+          },
+          () =>
+            loadActiveRuns({
+              tenantId: user.activeTenantId,
+              userId: user.user.id,
+              activeTenantRole: user.activeTenantRole,
+            }),
+        )
       : []
 
   const body: AgentRailStateResponse = {

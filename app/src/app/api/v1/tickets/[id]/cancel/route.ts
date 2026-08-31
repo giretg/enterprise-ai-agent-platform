@@ -1,5 +1,6 @@
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { repositories } from '@/repositories/postgres'
+import { invalidatePollScope } from '@/lib/poll-coalesce'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -32,6 +33,10 @@ export async function POST(
   if (!cancelled) {
     return new Response('Ticket is not in progress', { status: 409 })
   }
+
+  // A leállítás azonnal látszódjon a „Futások" panelen / agent-sávban: a mutáció
+  // után eldobjuk e user rövid életű poll-cache-ét (lásd `@/lib/poll-coalesce`).
+  invalidatePollScope(user.activeTenantId, user.user.id)
 
   return new Response(null, { status: 202 })
 }
