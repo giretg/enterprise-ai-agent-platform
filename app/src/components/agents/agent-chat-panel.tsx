@@ -464,23 +464,27 @@ export function AgentChatPanel({
 
   useEffect(() => {
     if (!open || !sessionsOpen) return
-    void refreshSessions()
+    const timer = window.setTimeout(() => void refreshSessions(), 0)
+    return () => window.clearTimeout(timer)
   }, [open, sessionsOpen, refreshSessions])
 
   useEffect(() => {
     if (!open) return
-    if (initialConversationId || initialPrefill?.trim()) {
-      setLatestConversationId(null)
-      return
-    }
     let cancelled = false
-    setLatestConversationId(undefined)
-    void findLatestAgentChatSession({ agentId: agent.id }).then((res) => {
-      if (cancelled) return
-      setLatestConversationId(res.success ? (res.data.session?.id ?? null) : null)
-    })
+    const timer = window.setTimeout(() => {
+      if (initialConversationId || initialPrefill?.trim()) {
+        setLatestConversationId(null)
+        return
+      }
+      setLatestConversationId(undefined)
+      void findLatestAgentChatSession({ agentId: agent.id }).then((res) => {
+        if (cancelled) return
+        setLatestConversationId(res.success ? (res.data.session?.id ?? null) : null)
+      })
+    }, 0)
     return () => {
       cancelled = true
+      window.clearTimeout(timer)
     }
   }, [open, agent.id, initialConversationId, initialPrefill])
 
@@ -1270,7 +1274,6 @@ export function AgentChatPanel({
     if (!resumeId) return
     // Szándékos: a legutóbbi szál id-ja után aszinkron folytatjuk. A session-lista
     // (előzmények sáv) nem kell ehhez, és a selectSession identitás se indítson új loadot.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void selectSessionRef.current(resumeId)
   }, [
     open,
@@ -1292,7 +1295,6 @@ export function AgentChatPanel({
     if (!open || !initialConversationId) return
     // Szándékos: nyitáskor aszinkron beszélgetés-betöltést indítunk (a setState a fetch UTÁN
     // fut, nem szinkron az effekt törzsében) — a deep-link-nyitás nem fejezhető ki render alatt.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void selectSession(initialConversationId)
     // Csak nyitáskor / initialConversationId változáskor.
     // eslint-disable-next-line react-hooks/exhaustive-deps

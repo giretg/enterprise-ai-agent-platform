@@ -43,7 +43,7 @@ export type ConversationHistoryLoadState = 'idle' | 'loading' | 'ready'
 
 /**
  * A fő chatfelület „Előző beszélgetés betöltése” spinnere.
- * Egy folyamatos várakozás: session-lista + üzenetek — ne villogjon üres
+ * Egy folyamatos várakozás: legutóbbi szál feloldása + üzenetek — ne villogjon üres
  * üdvözlőre a kettő között, és üres szál ready állapotában ne pörögjön örökké.
  */
 export function previousConversationLoaderVisible(input: {

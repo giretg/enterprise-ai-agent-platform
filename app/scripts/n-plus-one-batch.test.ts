@@ -428,8 +428,7 @@ async function main() {
       undefined,
     )
     const loaded = await runtime.getConversationMessages('conv-1', 'tenant-1', 'agent-1', 'user-1')
-    const views = Array.isArray(loaded) ? loaded : loaded.messages
-    assert.equal(views.length, 5)
+    assert.equal(loaded.messages.length, 5)
     assert.equal(findByIdCalls.length, 0)
     assert.equal(findByIdsCalls.length, 1)
     assert.equal(findByIdsCalls[0]?.length, 5)
