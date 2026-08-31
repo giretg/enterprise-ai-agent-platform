@@ -79,6 +79,38 @@ function main() {
     })
   })
 
+  check('drive harvest ignores gmail oauth.google (no cross-service leak)', () => {
+    const resolved = resolveGoogleOAuthConfig({
+      platformValue: null,
+      envConfig: null,
+      service: 'drive',
+      tenantSettings: [
+        { oauth: { google: { clientId: 'gmail-id', clientSecret: 'gmail-secret' } } },
+      ],
+    })
+    assert.equal(resolved, null)
+  })
+
+  check('drive harvest uses oauth.drive tenant key', () => {
+    const resolved = resolveGoogleOAuthConfig({
+      platformValue: null,
+      envConfig: null,
+      service: 'drive',
+      tenantSettings: [
+        {
+          oauth: {
+            google: { clientId: 'gmail-id', clientSecret: 'gmail-secret' },
+            drive: { clientId: 'drive-id', clientSecret: 'drive-secret' },
+          },
+        },
+      ],
+    })
+    assert.deepEqual(resolved, {
+      source: 'tenant_legacy',
+      config: { clientId: 'drive-id', clientSecret: 'drive-secret' },
+    })
+  })
+
   check('public view never includes the secret', () => {
     const view = toGoogleOAuthPublicView({
       source: 'env',

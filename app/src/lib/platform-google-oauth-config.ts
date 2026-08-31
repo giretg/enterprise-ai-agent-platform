@@ -90,14 +90,17 @@ export function resolveGoogleOAuthConfig(input: {
   legacyPlatformValue?: unknown | null
   envConfig?: GoogleOAuthConfig | null
   tenantSettings?: unknown[]
+  /** Harvest target — Drive must not fall back to Gmail `oauth.google`. */
+  service?: GoogleOAuthService
 }): GoogleOAuthResolved | null {
+  const service = input.service ?? 'gmail'
   const fromPlatform = parseGoogleOAuthFields(input.platformValue)
   if (fromPlatform) return { config: fromPlatform, source: 'platform' }
   const fromLegacy = parseGoogleOAuthFields(input.legacyPlatformValue)
   if (fromLegacy) return { config: fromLegacy, source: 'platform' }
   if (input.envConfig) return { config: input.envConfig, source: 'env' }
   for (const settings of input.tenantSettings ?? []) {
-    const harvested = readTenantGoogleOAuthConfig(settings as Prisma.JsonValue)
+    const harvested = readTenantGoogleOAuthConfig(settings as Prisma.JsonValue, service)
     if (harvested) return { config: harvested, source: 'tenant_legacy' }
   }
   return null
@@ -144,6 +147,7 @@ export async function loadGoogleOAuthConfig(opts?: {
     legacyPlatformValue,
     envConfig,
     tenantSettings,
+    service,
   })
 }
 
