@@ -8,6 +8,7 @@
  *  - TTL lejárta után → új loader-hívás,
  *  - hibát (reject) SOSEM cache-elünk (átmeneti `PostgreSQL … Closed` nem ragad be),
  *  - `invalidatePrefix` / `invalidate` → a következő olvasás újratölt,
+ *  - invalidálás közben futó loader → nem írja vissza a régi értéket,
  *  - a két végpont és a két `cancel` route tényleg ezen a modulon megy át.
  *
  * Futtatás: npx tsx scripts/poll-coalesce.test.ts
@@ -68,6 +69,26 @@ test('a hibát nem cache-eljük — a következő kérés újrapróbál', async 
 
   await assert.rejects(cache.get('k', loader))
   assert.equal(await cache.get('k', loader), 2, 'a hiba nem ragadt be a TTL-re')
+})
+
+test('invalidálás közben futó loader nem írja vissza a régi értéket', async () => {
+  const clock = fakeClock()
+  const cache = createCoalescingCache<string>(10_000, clock.now)
+  let resolveLoader!: (value: string) => void
+  const loader = () =>
+    new Promise<string>((resolve) => {
+      resolveLoader = resolve
+    })
+
+  const pending = cache.get('t1|u1|active-runs|operator', loader)
+  cache.invalidatePrefix('t1|u1|')
+  resolveLoader('stale')
+  await pending
+
+  let calls = 0
+  const freshLoader = async () => `fresh-${++calls}`
+  assert.equal(await cache.get('t1|u1|active-runs|operator', freshLoader), 'fresh-1')
+  assert.equal(calls, 1, 'a stale eredmény nem cache-elődött')
 })
 
 test('invalidate és invalidatePrefix a következő olvasásnál újratölt', async () => {

@@ -18,6 +18,8 @@
  *    betöltést (thundering-herd elkerülése hideg cache mellett).
  *  - A lejárt bejegyzést a következő olvasás takarítja, így a `Map` mérete a
  *    (tenant, user) párok számához kötött marad.
+ *  - Invalidálás (pl. vész-leállítás) után a már futó loader NEM írhat vissza régi
+ *    adatot: scope-generációs számláló eldobja a lejárt betöltést.
  *
  * A kulcs MINDIG tartalmazza a tenant- és user-azonosítót (a `rail-state` az agent-
  * láthatóságot user-grant szerint szűri, a `loadActiveRuns` pedig a bejelentkezett
@@ -38,12 +40,29 @@ export type CoalescingCache<T> = {
   clear: () => void
 }
 
+/** Invalidálási scope: poll-kulcsoknál `tenant|user|`, egyébként maga a kulcs. */
+function scopeForKey(key: string): string {
+  const parts = key.split('|')
+  if (parts.length >= 3) return `${parts[0]}|${parts[1]}|`
+  return key
+}
+
 export function createCoalescingCache<T>(
   ttlMs: number,
   now: () => number = Date.now,
 ): CoalescingCache<T> {
-  const cache = new Map<string, { value: T; expiresAt: number }>()
+  const cache = new Map<string, { value: T; expiresAt: number; scopeGen: number }>()
   const inflight = new Map<string, Promise<T>>()
+  /** Scope-generáció: invalidálás után a már futó loader nem írhat vissza régi adatot. */
+  const scopeGeneration = new Map<string, number>()
+
+  function scopeGen(scope: string): number {
+    return scopeGeneration.get(scope) ?? 0
+  }
+
+  function bumpScope(scope: string): void {
+    scopeGeneration.set(scope, scopeGen(scope) + 1)
+  }
 
   /** Ne halmozódjanak a többé nem kért (tenant, user) kulcsok: ha a `Map` nagyra
    *  nő, egy körben kidobjuk a lejártakat. A TTL rövid, így ez ritkán fut. */
@@ -59,18 +78,22 @@ export function createCoalescingCache<T>(
       const at = now()
       if (cache.size > PRUNE_THRESHOLD) pruneExpired(at)
 
+      const scope = scopeForKey(key)
       const hit = cache.get(key)
       if (hit) {
-        if (hit.expiresAt > at) return hit.value
+        if (hit.expiresAt > at && hit.scopeGen === scopeGen(scope)) return hit.value
         cache.delete(key)
       }
 
       const pending = inflight.get(key)
       if (pending) return pending
 
+      const genAtStart = scopeGen(scope)
       const promise = loader()
         .then((value) => {
-          cache.set(key, { value, expiresAt: now() + ttlMs })
+          if (scopeGen(scope) === genAtStart) {
+            cache.set(key, { value, expiresAt: now() + ttlMs, scopeGen: genAtStart })
+          }
           return value
         })
         .finally(() => {
@@ -81,10 +104,12 @@ export function createCoalescingCache<T>(
       return promise
     },
     invalidate(key) {
+      bumpScope(scopeForKey(key))
       cache.delete(key)
       inflight.delete(key)
     },
     invalidatePrefix(prefix) {
+      bumpScope(prefix)
       for (const key of cache.keys()) {
         if (key.startsWith(prefix)) cache.delete(key)
       }
