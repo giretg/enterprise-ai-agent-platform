@@ -59,6 +59,7 @@ jobs:
         run: |
           npm run test:secret-config
           npm run test:adaptive-poll
+          npm run test:poll-coalesce
           npm run test:audit-log
           npm run test:sandbox-csp
           npm run test:sandbox-versioning
