@@ -165,6 +165,18 @@ async function main() {
     assert.ok(ws.getCell('B5').dataValidation)
   })
 
+  await check('teljes-lap mergeCells elutasítva (DoS-kapu), a lap nem módosul', async () => {
+    // Az exceljs a merge teljes területét cellánként bejárja — plafon nélkül egy
+    // "A1:XFD1048576" merge lefagyasztaná a megosztott futásidőt.
+    await assert.rejects(
+      () => xlsxApplyLayout(base, { mergeCells: ['A1:XFD1048576'] }, 'Egyeztetés'),
+      (err) => err instanceof FileEditorError && err.code === 'INVALID_RANGE',
+    )
+    // Egészséges kontroll: egy kis merge átmegy.
+    const ok = await xlsxApplyLayout(base, { mergeCells: ['A1:B1'] }, 'Egyeztetés')
+    assert.ok(Buffer.isBuffer(ok) && ok.length > 0)
+  })
+
   console.log(failures === 0 ? '\n✅ minden teszt zöld' : `\n❌ ${failures} teszt bukott`)
   process.exit(failures === 0 ? 0 : 1)
 }

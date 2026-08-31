@@ -405,6 +405,11 @@ export async function xlsxApplyLayout(
   }
 
   for (const merge of layout.mergeCells ?? []) {
+    // A merge-tartományt a `mergeCells` ELŐTT a közös terület-kapun engedjük át:
+    // az exceljs a merge teljes területét cellánként bejárja, ezért plafon nélkül
+    // egy `"A1:XFD1048576"` merge ugyanazt a több-tenantos DoS-t okozná, mint a
+    // formázás — ez az ág korábban NEM ment át a parseA1Range ellenőrzésen.
+    parseA1Range(merge)
     worksheet.mergeCells(merge)
   }
   for (const { column, width } of layout.columnWidths ?? []) {
