@@ -384,6 +384,10 @@ export const listAgentChatSessionsSchema = z.object({
   offset: z.number().int().min(0).optional(),
 })
 
+export const findLatestAgentChatSessionSchema = z.object({
+  agentId: z.string().uuid(),
+})
+
 export const conversationIdSchema = z.object({
   conversationId: z.string().uuid(),
 })

@@ -9,6 +9,7 @@ import {
   createAgentTaskTicket,
   createScheduledAgentTask,
   deleteMessageContent,
+  findLatestAgentChatSession,
   listAgentChatSessions,
   listChatTaskCards,
   loadAgentChatMessages,
@@ -68,7 +69,12 @@ import {
 } from '@/components/chat/conversation-files-panel'
 import { personaFor } from '@/lib/agent-persona'
 import { recordLastAgentChatForCurrentTenant } from '@/lib/last-agent-chat'
-import { conversationIdToResume } from '@/lib/resume-last-agent-conversation'
+import {
+  conversationIdToResume,
+  previousConversationLoaderVisible,
+  shouldSkipDuplicateSessionSelect,
+  type ConversationHistoryLoadState,
+} from '@/lib/resume-last-agent-conversation'
 import { LoadingState } from '@/components/ui/spinner'
 import { useAgentWorkspaceChatChrome } from '@/components/agents/use-agent-workspace-chat-chrome'
 import {
@@ -213,6 +219,10 @@ export function AgentChatPanel({
   const [runningConversationIds, setRunningConversationIds] = useState<string[]>([])
   const [sessions, setSessions] = useState<ChatSession[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [historyLoadState, setHistoryLoadState] = useState<ConversationHistoryLoadState>('idle')
+  const [latestConversationId, setLatestConversationId] = useState<string | null | undefined>(
+    undefined,
+  )
   const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false)
   const [sessionsHasMore, setSessionsHasMore] = useState(false)
   const [sessionsNextOffset, setSessionsNextOffset] = useState(0)
@@ -273,6 +283,8 @@ export function AgentChatPanel({
   const [userStartedNew, setUserStartedNew] = useState(false)
   /** In-flight szálbetöltés — Új beszélgetés közben a válasz ne írja vissza a régi szálat. */
   const sessionLoadGenRef = useRef(0)
+  /** Ugyanarra a szálra ne induljon második párhuzamos loadAgentChatMessages. */
+  const inFlightSessionRef = useRef<string | null>(null)
   const grantResumeStartedRef = useRef(false)
   const prefillAppliedRef = useRef(false)
   const startAgentTurnRef = useRef<
@@ -451,10 +463,26 @@ export function AgentChatPanel({
   }, [agent.id, sessionsFilter, sessionsHasMore, sessionsLoading, sessionsLoadingMore, sessionsNextOffset])
 
   useEffect(() => {
+    if (!open || !sessionsOpen) return
+    void refreshSessions()
+  }, [open, sessionsOpen, refreshSessions])
+
+  useEffect(() => {
     if (!open) return
-    const timer = window.setTimeout(() => void refreshSessions(), 0)
-    return () => window.clearTimeout(timer)
-  }, [open, refreshSessions])
+    if (initialConversationId || initialPrefill?.trim()) {
+      setLatestConversationId(null)
+      return
+    }
+    let cancelled = false
+    setLatestConversationId(undefined)
+    void findLatestAgentChatSession({ agentId: agent.id }).then((res) => {
+      if (cancelled) return
+      setLatestConversationId(res.success ? (res.data.session?.id ?? null) : null)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open, agent.id, initialConversationId, initialPrefill])
 
   useEffect(() => {
     if (!open) return
@@ -468,6 +496,8 @@ export function AgentChatPanel({
     if (isAgentTyping && !opts?.force) return
     setUserStartedNew(true)
     sessionLoadGenRef.current += 1
+    inFlightSessionRef.current = null
+    setHistoryLoadState('ready')
     pendingConsequenceContinuationRef.current = null
     setConversationId(null)
     setMessages([])
@@ -875,12 +905,14 @@ export function AgentChatPanel({
           res.data.pendingConnectorGrants,
         ),
       )
-      startTransition(() => {
-        void refreshSessions()
-      })
+      if (sessionsOpen) {
+        startTransition(() => {
+          void refreshSessions()
+        })
+      }
       return true
     },
-    [agent.id, refreshSessions],
+    [agent.id, refreshSessions, sessionsOpen],
   )
 
   const consumeReattachStream = useCallback(
@@ -1154,11 +1186,13 @@ export function AgentChatPanel({
 
   const selectSession = useCallback(
     async (id: string) => {
-      if (id === conversationId && !isAgentTyping) {
-        setSessionsOpen(false)
-        return
-      }
-      if (isAgentTyping && id === conversationId) {
+      if (
+        shouldSkipDuplicateSessionSelect({
+          requestedId: id,
+          currentConversationId: conversationId,
+          inFlightId: inFlightSessionRef.current,
+        })
+      ) {
         setSessionsOpen(false)
         return
       }
@@ -1171,7 +1205,10 @@ export function AgentChatPanel({
       clearActiveTurnState()
       setStopPending(false)
 
+      sessionLoadGenRef.current += 1
       const loadGen = sessionLoadGenRef.current
+      inFlightSessionRef.current = id
+      setHistoryLoadState('loading')
       setUserStartedNew(false)
       setConversationId(id)
       setStatusMessage(null)
@@ -1182,30 +1219,42 @@ export function AgentChatPanel({
       setSelectedProcessDefId(null)
       setConversationStatus(sessions.find((session) => session.id === id)?.status ?? 'active')
 
-      const res = await loadAgentChatMessages({ conversationId: id, agentId: agent.id })
-      if (loadGen !== sessionLoadGenRef.current) return
-      if (res.success) {
-        setConversationStatus(res.data.conversation.status)
-        setContinuedFromTicket(res.data.continuedFromTicket ?? null)
-        setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
-        setIsAdmin(res.data.isAdmin)
-        setMessages(
-          withPendingChatExtras(
-            res.data.messages.map((m) => ({
-              ...m,
-              createdAt: new Date(m.createdAt).toISOString(),
-            })),
-            res.data.pendingConsequenceApprovals?.map((a) => ({ ...a, status: 'pending' as const })),
-            res.data.pendingConnectorGrants,
-          ),
-        )
-        void reattachToConversation(id)
-      } else {
-        setStatusMessage(res.error)
+      try {
+        const res = await loadAgentChatMessages({ conversationId: id, agentId: agent.id })
+        if (loadGen !== sessionLoadGenRef.current) return
+        if (res.success) {
+          setConversationStatus(res.data.conversation.status)
+          setContinuedFromTicket(res.data.continuedFromTicket ?? null)
+          setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
+          setIsAdmin(res.data.isAdmin)
+          setMessages(
+            withPendingChatExtras(
+              res.data.messages.map((m) => ({
+                ...m,
+                createdAt: new Date(m.createdAt).toISOString(),
+              })),
+              res.data.pendingConsequenceApprovals?.map((a) => ({ ...a, status: 'pending' as const })),
+              res.data.pendingConnectorGrants,
+            ),
+          )
+          void reattachToConversation(id)
+        } else {
+          setStatusMessage(res.error)
+        }
+      } finally {
+        if (loadGen === sessionLoadGenRef.current) {
+          inFlightSessionRef.current = null
+          setHistoryLoadState('ready')
+        }
       }
     },
-    [agent.id, clearActiveTurnState, conversationId, isAgentTyping, reattachToConversation, sessions],
+    [agent.id, clearActiveTurnState, conversationId, reattachToConversation, sessions],
   )
+
+  const selectSessionRef = useRef(selectSession)
+  useEffect(() => {
+    selectSessionRef.current = selectSession
+  })
 
   // Beszélgetés gomb / munkaterület: a legutóbbi aktív szálat folytatjuk, nem üres újat.
   useEffect(() => {
@@ -1215,25 +1264,21 @@ export function AgentChatPanel({
       initialConversationId,
       currentConversationId: conversationId,
       userStartedNew,
-      sessionsLoading,
-      sessionsFilter,
-      sessions,
+      latestConversationId,
       initialPrefill,
     })
     if (!resumeId) return
-    // Szándékos: a session-lista betöltése után aszinkron folytatjuk a legutóbbi szálat.
+    // Szándékos: a legutóbbi szál id-ja után aszinkron folytatjuk. A session-lista
+    // (előzmények sáv) nem kell ehhez, és a selectSession identitás se indítson új loadot.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void selectSession(resumeId)
+    void selectSessionRef.current(resumeId)
   }, [
     open,
     initialConversationId,
     conversationId,
     userStartedNew,
-    sessionsLoading,
-    sessionsFilter,
-    sessions,
+    latestConversationId,
     initialPrefill,
-    selectSession,
   ])
 
   useEffect(() => {
@@ -2155,9 +2200,18 @@ export function AgentChatPanel({
               className={`flex-1 overflow-y-auto ${embedded ? 'px-6 py-5' : 'px-4 py-5 sm:px-6'}`}
             >
               {messages.length === 0 && ticketDiscussionHistory.length === 0 && !isAgentTyping ? (
-                !userStartedNew &&
-                !statusMessage &&
-                (sessionsLoading || Boolean(conversationId)) ? (
+                previousConversationLoaderVisible({
+                  messageCount: messages.length,
+                  ticketHistoryCount: ticketDiscussionHistory.length,
+                  isAgentTyping,
+                  userStartedNew,
+                  statusMessage,
+                  conversationId,
+                  historyLoadState,
+                  latestConversationId,
+                  initialConversationId,
+                  initialPrefill,
+                }) ? (
                   <LoadingState
                     label="Előző beszélgetés betöltése…"
                     className="h-full min-h-[200px]"

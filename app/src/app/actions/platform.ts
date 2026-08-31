@@ -155,6 +155,7 @@ import {
   createScheduledAgentTaskSchema,
   loadAgentChatSchema,
   listAgentChatSessionsSchema,
+  findLatestAgentChatSessionSchema,
   conversationIdSchema,
   promoteToTicketSchema,
   messageIdSchema,
@@ -217,9 +218,6 @@ function resolveUploadTarget(filename: string): { storageRef: string; absolutePa
   }
   return { storageRef: path.join('uploads', safeName), absolutePath }
 }
-
-const imageFilenamePattern = /\.(jpg|jpeg|png|gif|webp)$/i
-const imageDataMarkerPattern = /^(\[image:([^\]]+)\])([\s\S]*)$/
 
 function parseStoredChatMessage(content: string): { text: string; attachmentIds: string[] } {
   try {
@@ -4086,76 +4084,37 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
   try {
     const user = await requireTenantRole('viewer')
     const { conversationId, agentId } = loadAgentChatSchema.parse(input)
-    const { conversation, messages } = await services.conversations.getConversation(
-      conversationId,
-      user.activeTenantId,
-    )
-    if (conversation.agentId !== agentId) return fail('Conversation agent mismatch')
-    const privacyViews = await services.agentChat.getConversationMessages(
-      conversationId,
-      user.activeTenantId,
-      agentId,
-      user.user.id,
-    )
-    const privacyViewById = new Map(privacyViews.map((view) => [view.id, view]))
+    const actor = { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole }
+    const [loaded, pendingConsequenceApprovals, pendingConnectorGrants] = await Promise.all([
+      services.agentChat.getConversationMessages(
+        conversationId,
+        user.activeTenantId,
+        agentId,
+        user.user.id,
+      ),
+      // issue #97 — a következmény-kapu függő jóváhagyásai. A stream-esemény
+      // efemer: enélkül a „Jóváhagyom" gomb a forduló végén (a chat ilyenkor a DB
+      // végállapotát tölti újra), lapfrissítéskor és visszacsatlakozáskor eltűnne,
+      // a művelet pedig némán ott ülne lejáratig.
+      services.consequenceApproval.listOpenForConversation(conversationId, actor),
+      services.connectorGrants.listOpenGrantNeeds({
+        userId: user.user.id,
+        tenantId: user.activeTenantId,
+        conversationId,
+      }),
+    ])
+    const { conversation, messages } = loaded
 
-    const views = []
-    for (const message of messages) {
-      const contentDeletedAt = message.contentDeletedAt
-        ? message.contentDeletedAt.toISOString()
-        : null
-      const parsed = message.content && !message.contentDeletedAt
-        ? parseStoredChatMessage(message.content)
-        : { text: '', attachmentIds: [] }
-      const attachments = []
-
-      for (const documentId of parsed.attachmentIds) {
-        const doc = await prisma.document.findUnique({
-          where: { id: documentId },
-          select: { id: true, filename: true, extractedText: true },
-        })
-        if (!doc) continue
-        const kind: 'image' | 'text' = imageFilenamePattern.test(doc.filename) || doc.extractedText?.startsWith('[image:')
-          ? 'image'
-          : 'text'
-        const imageMatch = kind === 'image' && doc.extractedText
-          ? doc.extractedText.match(imageDataMarkerPattern)
-          : null
-        attachments.push({
-          documentId: doc.id,
-          filename: doc.filename,
-          kind,
-          previewDataUrl: imageMatch?.[2] && imageMatch[3]
-            ? `data:${imageMatch[2]};base64,${imageMatch[3]}`
-            : null,
-        })
-      }
-
-      views.push({
-        id: message.id,
-        role: message.role,
-        text: privacyViewById.get(message.id)?.text ?? parsed.text,
-        privacyMarkers: privacyViewById.get(message.id)?.privacyMarkers ?? [],
-        attachments,
-        createdAt: message.createdAt.toISOString(),
-        contentDeletedAt,
-        ticketRefId: message.ticketRefId,
-      })
-    }
-
-    // issue #97 — a következmény-kapu függő jóváhagyásai. A stream-esemény
-    // efemer: enélkül a „Jóváhagyom" gomb a forduló végén (a chat ilyenkor a DB
-    // végállapotát tölti újra), lapfrissítéskor és visszacsatlakozáskor eltűnne,
-    // a művelet pedig némán ott ülne lejáratig.
-    const pendingConsequenceApprovals = await services.consequenceApproval.listOpenForConversation(
-      conversationId,
-      { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole },
-    )
-    const pendingConnectorGrants = await services.connectorGrants.listOpenGrantNeeds({
-      userId: user.user.id,
-      tenantId: user.activeTenantId,
-      conversationId,
-    })
+    const views = messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      text: message.text,
+      privacyMarkers: message.privacyMarkers ?? [],
+      attachments: message.attachments,
+      createdAt: message.createdAt.toISOString(),
+      contentDeletedAt: message.contentDeletedAt ? message.contentDeletedAt.toISOString() : null,
+      ticketRefId: message.ticketRefId ?? null,
+    }))
 
     let continuedFromTicket: { id: string; title: string } | null = null
     let ticketDiscussionHistory: Array<{
@@ -4203,6 +4162,26 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load chat messages')
+  }
+}
+
+export async function findLatestAgentChatSession(input: { agentId: string }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const { agentId } = findLatestAgentChatSessionSchema.parse(input)
+    const session = await prisma.conversation.findFirst({
+      where: {
+        agentId,
+        createdById: user.user.id,
+        tenantId: user.activeTenantId,
+        status: 'active',
+      },
+      orderBy: { lastMessageAt: 'desc' },
+      select: { id: true, status: true },
+    })
+    return ok({ session })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to find latest chat session')
   }
 }
 

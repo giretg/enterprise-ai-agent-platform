@@ -252,6 +252,26 @@ async function main() {
     assert.match(read('src/domain/agent/agent-chat-runtime.ts'), /documents\.findByIds\(/)
     assert.match(read('src/domain/agent/general-task-runtime.ts'), /documents\.findByIds\(/)
     assert.match(read('src/domain/skill/skill-service.ts'), /findVersionsByIds\(/)
+
+    const chatRuntime = read('src/domain/agent/agent-chat-runtime.ts')
+    const loadMessagesStart = chatRuntime.indexOf('async getConversationMessages(')
+    const loadMessagesEnd = chatRuntime.indexOf('async getPrivacyMarkerContext(', loadMessagesStart)
+    assert.ok(loadMessagesStart >= 0 && loadMessagesEnd > loadMessagesStart, 'getConversationMessages megtalálható')
+    const loadMessages = chatRuntime.slice(loadMessagesStart, loadMessagesEnd)
+    assert.match(loadMessages, /documents\.findByIds\(/)
+    assert.doesNotMatch(loadMessages, /documents\.findById\(/)
+    assert.match(loadMessages, /loadKnownValueReplacements\(/)
+    const knownValueCalls = loadMessages.split('loadKnownValueReplacements(').length - 1
+    assert.equal(knownValueCalls, 1, 'known-value szótár beszélgetésenként egyszer, ne üzenetenként')
+
+    const platform = read('src/app/actions/platform.ts')
+    const actionStart = platform.indexOf('export async function loadAgentChatMessages')
+    const actionEnd = platform.indexOf('export async function listAgentChatSessions', actionStart)
+    assert.ok(actionStart >= 0 && actionEnd > actionStart, 'loadAgentChatMessages megtalálható')
+    const action = platform.slice(actionStart, actionEnd)
+    assert.match(action, /getConversationMessages\(/)
+    assert.doesNotMatch(action, /services\.conversations\.getConversation\(/)
+    assert.doesNotMatch(action, /prisma\.document\.findUnique/)
   })
 
   await test('listStartablePlaybooks uses one batch assignment lookup, never single', async () => {
@@ -352,6 +372,67 @@ async function main() {
       repo,
       { append: async () => ({}) as never } as never,
     ).listStartablePlaybooks(tenant), [])
+  })
+
+  await test('getConversationMessages batches documents and known-values, not per message', async () => {
+    const { AgentChatRuntime } = await import('../src/domain/agent/agent-chat-runtime')
+    const findByIdCalls: string[] = []
+    const findByIdsCalls: string[][] = []
+    const messages = Array.from({ length: 5 }, (_, i) => ({
+      id: `msg-${i}`,
+      role: i % 2 === 0 ? 'user' : 'agent',
+      content: JSON.stringify({ text: `üzenet ${i}`, attachmentIds: [`doc-${i}`] }),
+      contentDeletedAt: null,
+      createdAt: new Date(`2026-08-0${i + 1}T10:00:00Z`),
+      ticketRefId: null,
+    }))
+    const runtime = new AgentChatRuntime(
+      {} as never,
+      {
+        findById: async (id: string) => {
+          findByIdCalls.push(id)
+          return { id, filename: `${id}.txt`, extractedText: 'x' }
+        },
+        findByIds: async (ids: string[]) => {
+          findByIdsCalls.push(ids)
+          return ids.map((id) => ({ id, filename: `${id}.txt`, extractedText: 'x' }))
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        getConversation: async () => ({
+          conversation: {
+            id: 'conv-1',
+            agentId: 'agent-1',
+            status: 'active',
+            title: 'Teszt',
+            lastMessageAt: new Date(),
+            continuedFromTicketId: null,
+          },
+          messages,
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    )
+    const loaded = await runtime.getConversationMessages('conv-1', 'tenant-1', 'agent-1', 'user-1')
+    const views = Array.isArray(loaded) ? loaded : loaded.messages
+    assert.equal(views.length, 5)
+    assert.equal(findByIdCalls.length, 0)
+    assert.equal(findByIdsCalls.length, 1)
+    assert.equal(findByIdsCalls[0]?.length, 5)
   })
 
   if (failures > 0) {
