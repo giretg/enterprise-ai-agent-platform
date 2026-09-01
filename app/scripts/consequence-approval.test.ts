@@ -795,6 +795,27 @@ async function main() {
     assert.ok(s !== 'google_drive_share_file', 'nem a puszta tool-név')
   })
 
+  // A kukázás is mutassa, MELYIK fájlt érinti — a puszta tool-név nem elég.
+  await test('summary: google_drive_trash_file kártya a fájl azonosítóját mutatja', async () => {
+    const { service } = buildService()
+    await service.createFromBlocked({
+      invoke: {
+        agentId: 'agent-1',
+        agentVersion: 1,
+        conversationId: 'conv-1',
+        actingUserId: 'user-1',
+        tool: 'google_drive_trash_file',
+        args: { fileId: '1AbCdEf' },
+      } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    const open = await service.listOpenForConversation('conv-1', actor)
+    assert.equal(open.length, 1)
+    const s = open[0].summary
+    assert.ok(s.includes('1AbCdEf'), `a fájl azonosítója látszik: ${s}`)
+    assert.ok(s !== 'google_drive_trash_file', 'nem a puszta tool-név')
+  })
+
   await test('listOpenForConversation: a lejárt sor NEM tűnik el némán (expired jelöléssel jön)', async () => {
     const { service, repo } = buildService()
     const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
