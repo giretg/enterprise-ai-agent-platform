@@ -115,7 +115,84 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}… (rövidítve)` : text
 }
 
+function strArg(args: Record<string, unknown>, key: string): string | null {
+  const value = args[key]
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+/**
+ * A jóváhagyó kártyán megjelenő szöveg a legveszélyesebb (adat-kivivő,
+ * visszafordíthatatlan) toolokra: a TÉNYLEGES hatást mutatja, nem csak a tool
+ * nevét. A generikus `path`/`to`/`title` heurisztika ezeknél kevés volt: egy
+ * Drive-megosztás kártyája semmit sem írt a CÍMZETTRŐL vagy a JOGSZINTRŐL, egy
+ * levélküldésé pedig legfeljebb a címzettet — a tárgyat és a szöveget soha. Így a
+ * jóváhagyó vakon engedélyezhetett egy külső levelet vagy fájlmegosztást, ami épp
+ * ellentétes a következmény-kapu céljával (ember lássa, MI és KINEK megy ki).
+ *
+ * A megjelenített értékek a jóváhagyásba mentett (a modell által, esetleg
+ * álnevesített formában előállított) args-ból jönnek — nem oldunk fel nyers
+ * titkot a kártyához.
+ */
+function describeConsequenceForHuman(
+  toolName: string,
+  args: Record<string, unknown>,
+): string | null {
+  if (toolName === 'gmail_send') {
+    const to = strArg(args, 'to')
+    const subject = strArg(args, 'subject')
+    const body = strArg(args, 'body')
+    if (to || subject || body) {
+      const parts: string[] = [`címzett: ${clip(to ?? '(nincs megadva)', SUMMARY_ARG_MAX_CHARS)}`]
+      if (subject) parts.push(`tárgy: „${clip(subject, SUMMARY_ARG_MAX_CHARS)}”`)
+      if (body) {
+        parts.push(`szöveg: ${clip(body.replace(/\s+/g, ' ').trim(), SUMMARY_ARG_MAX_CHARS)}`)
+      }
+      return `gmail_send → ${parts.join(' · ')}`
+    }
+    // draftId-alapú küldés: a levél tartalma egy korábban (kapu nélkül) készített
+    // Gmail-piszkozatban van, ide nem jut el. Ezt KIMONDJUK, hogy a jóváhagyó
+    // tudja: a szöveget külön kell ellenőriznie, nem csak rábólint egy „gmail_send"-re.
+    const draftId = strArg(args, 'draftId')
+    if (draftId) {
+      return (
+        `gmail_send → előre elkészített piszkozat küldése (draftId: ${clip(draftId, 60)}). ` +
+        'A levél tartalma itt nem látszik — nyisd meg a Gmail-piszkozatot, mielőtt jóváhagyod.'
+      )
+    }
+    return null
+  }
+
+  if (toolName === 'google_drive_share_file') {
+    const fileId = strArg(args, 'fileId')
+    const email = strArg(args, 'emailAddress')
+    const role = strArg(args, 'role')
+    const recipientType = strArg(args, 'recipientType')
+    if (email || fileId) {
+      const roleLabel =
+        role === 'reader'
+          ? 'olvasó'
+          : role === 'commenter'
+            ? 'kommentelő'
+            : role === 'writer'
+              ? 'szerkesztő'
+              : (role ?? 'ismeretlen')
+      const who = email
+        ? `${clip(email, SUMMARY_ARG_MAX_CHARS)}${recipientType === 'group' ? ' (csoport)' : ''}`
+        : '(nincs címzett megadva)'
+      return (
+        `google_drive_share_file → fájl ${clip(fileId ?? '(ismeretlen)', 80)} megosztása ` +
+        `vele: ${who} — ${roleLabel} jog`
+      )
+    }
+    return null
+  }
+
+  return null
+}
+
 function summarizeArgs(toolName: string, args: Record<string, unknown>): string {
+  const consequence = describeConsequenceForHuman(toolName, args)
+  if (consequence) return consequence
   const path = typeof args.path === 'string' ? args.path : null
   if (path) return `${toolName} → ${clip(path, SUMMARY_ARG_MAX_CHARS)}`
   const to = typeof args.to === 'string' ? args.to : null
