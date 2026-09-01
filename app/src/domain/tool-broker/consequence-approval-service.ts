@@ -104,6 +104,8 @@ export type ConsequenceApprovalContinuation = {
 const CONTINUATION_RESULT_MAX_CHARS = 600
 /** Egy argumentum-részlet (útvonal, címzett, tárgy) maximális hossza a kártyán/promptban. */
 const SUMMARY_ARG_MAX_CHARS = 200
+/** Azonosító-részlet (draftId, fileId) maximális hossza a kártyán. */
+const SUMMARY_ID_MAX_CHARS = 80
 
 /**
  * Hosszkorlát MINDEN modell/kártya felé menő részletre. A tool argumentumai és az
@@ -115,7 +117,93 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}… (rövidítve)` : text
 }
 
+function strArg(args: Record<string, unknown>, key: string): string | null {
+  const value = args[key]
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+/**
+ * A jóváhagyó kártyán megjelenő szöveg a legveszélyesebb (adat-kivivő,
+ * visszafordíthatatlan) toolokra: a TÉNYLEGES hatást mutatja, nem csak a tool
+ * nevét. A generikus `path`/`to`/`title` heurisztika ezeknél kevés volt: egy
+ * Drive-megosztás kártyája semmit sem írt a CÍMZETTRŐL vagy a JOGSZINTRŐL, egy
+ * levélküldésé pedig legfeljebb a címzettet — a tárgyat és a szöveget soha. Így a
+ * jóváhagyó vakon engedélyezhetett egy külső levelet vagy fájlmegosztást, ami épp
+ * ellentétes a következmény-kapu céljával (ember lássa, MI és KINEK megy ki).
+ *
+ * A megjelenített értékek a jóváhagyásba mentett (a modell által, esetleg
+ * álnevesített formában előállított) args-ból jönnek — nem oldunk fel nyers
+ * titkot a kártyához.
+ */
+/** Drive-jogszint → közérthető magyar címke a kártyán. */
+const DRIVE_ROLE_LABELS: Record<string, string> = {
+  reader: 'olvasó',
+  commenter: 'kommentelő',
+  writer: 'szerkesztő',
+}
+
+function describeConsequenceForHuman(
+  toolName: string,
+  args: Record<string, unknown>,
+): string | null {
+  if (toolName === 'gmail_send') {
+    const to = strArg(args, 'to')
+    const subject = strArg(args, 'subject')
+    const body = strArg(args, 'body')
+    if (to || subject || body) {
+      const parts: string[] = [`címzett: ${clip(to ?? '(nincs megadva)', SUMMARY_ARG_MAX_CHARS)}`]
+      if (subject) parts.push(`tárgy: „${clip(subject, SUMMARY_ARG_MAX_CHARS)}”`)
+      if (body) {
+        parts.push(`szöveg: ${clip(body.replace(/\s+/g, ' ').trim(), SUMMARY_ARG_MAX_CHARS)}`)
+      }
+      return `${toolName} → ${parts.join(' · ')}`
+    }
+    // draftId-alapú küldés: a levél tartalma egy korábban (kapu nélkül) készített
+    // Gmail-piszkozatban van, ide nem jut el. Ezt KIMONDJUK, hogy a jóváhagyó
+    // tudja: a szöveget külön kell ellenőriznie, nem csak rábólint egy „gmail_send"-re.
+    const draftId = strArg(args, 'draftId')
+    if (draftId) {
+      return (
+        `${toolName} → előre elkészített piszkozat küldése (draftId: ${clip(draftId, SUMMARY_ID_MAX_CHARS)}). ` +
+        'A levél tartalma itt nem látszik — nyisd meg a Gmail-piszkozatot, mielőtt jóváhagyod.'
+      )
+    }
+    return null
+  }
+
+  if (toolName === 'google_drive_share_file') {
+    const fileId = strArg(args, 'fileId')
+    const email = strArg(args, 'emailAddress')
+    const role = strArg(args, 'role')
+    const recipientType = strArg(args, 'recipientType')
+    if (email || fileId) {
+      const roleLabel = (role && DRIVE_ROLE_LABELS[role]) ?? role ?? 'ismeretlen'
+      const who = email
+        ? `${clip(email, SUMMARY_ARG_MAX_CHARS)}${recipientType === 'group' ? ' (csoport)' : ''}`
+        : '(nincs címzett megadva)'
+      return (
+        `${toolName} → fájl ${clip(fileId ?? '(ismeretlen)', SUMMARY_ID_MAX_CHARS)} megosztása ` +
+        `vele: ${who} — ${roleLabel} jog`
+      )
+    }
+    return null
+  }
+
+  // A kukázás visszaállítható, de a jóváhagyó mégis lássa, MELYIK fájlt érinti —
+  // a puszta tool-név itt sem elég a tudatos döntéshez (a Drive-toolok mind a
+  // felhasználó valódi fájljain dolgoznak).
+  if (toolName === 'google_drive_trash_file') {
+    const fileId = strArg(args, 'fileId')
+    if (fileId) return `${toolName} → fájl ${clip(fileId, SUMMARY_ID_MAX_CHARS)} kukába helyezése`
+    return null
+  }
+
+  return null
+}
+
 function summarizeArgs(toolName: string, args: Record<string, unknown>): string {
+  const consequence = describeConsequenceForHuman(toolName, args)
+  if (consequence) return consequence
   const path = typeof args.path === 'string' ? args.path : null
   if (path) return `${toolName} → ${clip(path, SUMMARY_ARG_MAX_CHARS)}`
   const to = typeof args.to === 'string' ? args.to : null

@@ -717,6 +717,105 @@ async function main() {
     assert.equal(open[0].expired, false)
   })
 
+  // A jóváhagyó kártyája a legveszélyesebb, adat-kivivő hívásoknál MUTASSA a tényleges
+  // hatást — különben az ember vakon engedélyez egy külső levelet / fájlmegosztást.
+  await test('summary: gmail_send kártya a címzettet, TÁRGYAT és a szöveget is mutatja', async () => {
+    const { service } = buildService()
+    await service.createFromBlocked({
+      invoke: {
+        agentId: 'agent-1',
+        agentVersion: 1,
+        conversationId: 'conv-1',
+        actingUserId: 'user-1',
+        tool: 'gmail_send',
+        args: {
+          to: 'kulso@partner.example',
+          subject: 'Ajánlat',
+          body: 'Kedves Partner! Csatoltam a bizalmas árlistát. Üdv.',
+        },
+      } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    const open = await service.listOpenForConversation('conv-1', actor)
+    assert.equal(open.length, 1)
+    const s = open[0].summary
+    assert.ok(s.includes('kulso@partner.example'), `címzett látszik: ${s}`)
+    assert.ok(s.includes('Ajánlat'), `tárgy látszik: ${s}`)
+    assert.ok(s.includes('bizalmas árlistát'), `a levél szövege látszik: ${s}`)
+  })
+
+  // draftId-alapú küldésnél a tartalom nem elérhető — a kártya ezt MONDJA KI,
+  // hogy a jóváhagyó ne higgye azt, hogy egy üres „gmail_send"-et hagy jóvá.
+  await test('summary: gmail_send draftId — a kártya figyelmeztet, hogy a tartalom nem látszik', async () => {
+    const { service } = buildService()
+    await service.createFromBlocked({
+      invoke: {
+        agentId: 'agent-1',
+        agentVersion: 1,
+        conversationId: 'conv-1',
+        actingUserId: 'user-1',
+        tool: 'gmail_send',
+        args: { draftId: 'r-8842' },
+      } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    const open = await service.listOpenForConversation('conv-1', actor)
+    assert.equal(open.length, 1)
+    const s = open[0].summary
+    assert.ok(s.includes('r-8842'), `a draft azonosítója látszik: ${s}`)
+    assert.ok(s.includes('nem látszik'), `a kártya kimondja, hogy a tartalom nem látszik: ${s}`)
+    assert.ok(s !== 'gmail_send', 'nem a puszta tool-név')
+  })
+
+  // A Drive-megosztás a legcsendesebb adat-kiszivárgási út — a kártya mutassa a
+  // CÍMZETTET és a JOGSZINTET, ne csak a tool nevét.
+  await test('summary: google_drive_share_file kártya a címzettet és a jogszintet mutatja', async () => {
+    const { service } = buildService()
+    await service.createFromBlocked({
+      invoke: {
+        agentId: 'agent-1',
+        agentVersion: 1,
+        conversationId: 'conv-1',
+        actingUserId: 'user-1',
+        tool: 'google_drive_share_file',
+        args: {
+          fileId: '1AbCdEf',
+          recipientType: 'user',
+          emailAddress: 'kulso@masikceg.example',
+          role: 'writer',
+        },
+      } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    const open = await service.listOpenForConversation('conv-1', actor)
+    assert.equal(open.length, 1)
+    const s = open[0].summary
+    assert.ok(s.includes('kulso@masikceg.example'), `a címzett látszik: ${s}`)
+    assert.ok(s.includes('szerkesztő'), `a jogszint látszik: ${s}`)
+    assert.ok(s !== 'google_drive_share_file', 'nem a puszta tool-név')
+  })
+
+  // A kukázás is mutassa, MELYIK fájlt érinti — a puszta tool-név nem elég.
+  await test('summary: google_drive_trash_file kártya a fájl azonosítóját mutatja', async () => {
+    const { service } = buildService()
+    await service.createFromBlocked({
+      invoke: {
+        agentId: 'agent-1',
+        agentVersion: 1,
+        conversationId: 'conv-1',
+        actingUserId: 'user-1',
+        tool: 'google_drive_trash_file',
+        args: { fileId: '1AbCdEf' },
+      } as ToolBrokerInvokeInput,
+      tenantId: 'tenant-1',
+    })
+    const open = await service.listOpenForConversation('conv-1', actor)
+    assert.equal(open.length, 1)
+    const s = open[0].summary
+    assert.ok(s.includes('1AbCdEf'), `a fájl azonosítója látszik: ${s}`)
+    assert.ok(s !== 'google_drive_trash_file', 'nem a puszta tool-név')
+  })
+
   await test('listOpenForConversation: a lejárt sor NEM tűnik el némán (expired jelöléssel jön)', async () => {
     const { service, repo } = buildService()
     const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
