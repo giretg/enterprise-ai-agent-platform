@@ -184,6 +184,7 @@
     "test:active-runs": "tsx scripts/active-runs.test.ts",
     "test:adaptive-poll": "tsx scripts/adaptive-poll.test.ts",
     "test:poll-coalesce": "tsx scripts/poll-coalesce.test.ts",
+    "test:prisma-pool-config": "tsx scripts/prisma-pool-config.test.ts",
     "test:agent-registry": "tsx scripts/agent-registry-lifecycle.test.ts",
     "test:dispatcher-retry-loop": "tsx scripts/dispatcher-retry-loop.test.ts",
     "test:agent-access-grant-db": "tsx scripts/agent-access-grant-db.test.ts",
