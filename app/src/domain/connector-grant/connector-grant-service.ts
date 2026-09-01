@@ -32,6 +32,10 @@ import {
   scopesFromConnectorConfig,
 } from './delegated-oauth-registry'
 import { normalizeGmailScope } from './gmail-scopes'
+import {
+  clampDriveGrantedScopesToRequest,
+  mergeDriveGrantScopes,
+} from './google-drive-scopes'
 
 export type ConnectorOAuthConfig = {
   provider?: string
@@ -216,13 +220,20 @@ function resolveGrantedScopes(params: {
 
   const normalize = scopeNormalizerFor(params.connector)
   const grantedScopes = [...new Set(params.responseScope.split(' ').map(normalize).filter(Boolean))]
-  // A connector config a felső korlát — Google include_granted_scopes visszahozhat
-  // korábban megadott, a mostani kérésben nem ismételt scope-ot; azt elfogadjuk,
-  // de configon kívüli scope-ot továbbra is elutasítunk.
+  // A connector config a felső korlát — configon kívüli scope továbbra is hiba.
+  // Drive-nál a Google include_granted_scopes EXTRÁkat (pl. teljes `drive`) NEM
+  // írjuk a grantba: a start-kori admin-kapu a kért scope-okra épül, a callback
+  // nem szélesítheti full_write-ra (Picker-manifeszt megkerülés).
   const configured = new Set(readOAuthConfig(params.connector).scopes.map(normalize))
   const unexpected = grantedScopes.filter((scope) => !configured.has(scope))
   if (unexpected.length > 0) {
     throw new Error(`OAuth provider returned unrequested scope: ${unexpected.join(', ')}`)
+  }
+  if (params.connector.type === 'google_drive') {
+    return clampDriveGrantedScopesToRequest({
+      expectedScopes,
+      grantedScopes,
+    })
   }
   return grantedScopes
 }
@@ -492,19 +503,25 @@ export class ConnectorGrantService {
     })
 
     // Meglévő aktív grant scope-jait uniózzuk — a least-privilege újra-consent
-    // ne törölje a korábban megadott jogosultságokat a DB-ből.
+    // ne törölje a korábban megadott jogosultságokat a DB-ből (Gmail send+readonly).
+    // Drive: a teljes `drive` NEM öröklődhet, ha ez a kör nem admin-only profilt kért.
     const existing = await this.grants.findActiveGrant({
       tenantId: statePayload.tenantId,
       connectorId: params.connector.id,
       userId: statePayload.userId,
     })
     const normalize = scopeNormalizerFor(params.connector)
-    const mergedScopes = [
-      ...new Set([
-        ...parseDelegatedGrantScopes(existing?.scopes).map(normalize),
-        ...(tokens.scopes ?? []).map(normalize),
-      ]),
-    ]
+    const existingScopes = parseDelegatedGrantScopes(existing?.scopes).map(normalize)
+    const newScopes = (tokens.scopes ?? []).map(normalize)
+    const requestedScopes = (statePayload.requestedScopes ?? []).map(normalize)
+    const mergedScopes =
+      params.connector.type === 'google_drive'
+        ? mergeDriveGrantScopes({
+            existingScopes,
+            newScopes,
+            requestedScopes,
+          })
+        : [...new Set([...existingScopes, ...newScopes])]
     const tokensToStore: ConnectorGrantTokens = { ...tokens, scopes: mergedScopes }
 
     const tokenRef = buildGrantTokenRef({

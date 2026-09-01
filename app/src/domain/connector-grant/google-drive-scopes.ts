@@ -178,3 +178,40 @@ export function driveScopeProfileRequiresAdmin(
   const profile = DRIVE_SCOPE_PROFILES.find((entry) => entry.id === profileId)
   return Boolean(profile && 'adminOnly' in profile && profile.adminOnly)
 }
+
+/**
+ * Google `include_granted_scopes=true` visszahozhat korábban megadott scope-okat
+ * (pl. teljes `drive`), még ha a mostani kérés csak selected_write volt is.
+ * A platform grant-rekordját a KÉRT scope-okra szűkítjük — különben a start-kori
+ * admin-kapu megkerülhető, és a Picker-manifeszt nem futna.
+ */
+export function clampDriveGrantedScopesToRequest(params: {
+  expectedScopes: string[]
+  grantedScopes: string[]
+}): string[] {
+  const expected = new Set(params.expectedScopes.map(normalizeDriveScope))
+  return [
+    ...new Set(
+      params.grantedScopes.map(normalizeDriveScope).filter((scope) => expected.has(scope)),
+    ),
+  ]
+}
+
+/**
+ * Újra-consent unió: Gmail-szerű bővítés OK, de a teljes `drive` csak akkor
+ * maradhat a grantban, ha EZ a kör admin-only profilt kért. Különben a korábbi
+ * full_write (vagy include_granted) örökre megkerülné a selected_write kaput.
+ */
+export function mergeDriveGrantScopes(params: {
+  existingScopes: string[]
+  newScopes: string[]
+  requestedScopes: string[]
+}): string[] {
+  const merged = [
+    ...new Set(
+      [...params.existingScopes, ...params.newScopes].map(normalizeDriveScope).filter(Boolean),
+    ),
+  ]
+  if (driveScopeProfileRequiresAdmin(params.requestedScopes)) return merged
+  return merged.filter((scope) => scope !== DRIVE_SCOPES.full)
+}

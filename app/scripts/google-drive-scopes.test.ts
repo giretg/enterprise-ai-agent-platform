@@ -4,10 +4,12 @@
 import assert from 'node:assert/strict'
 import {
   DRIVE_SCOPES,
+  clampDriveGrantedScopesToRequest,
   driveScopeProfile,
   driveScopeProfileRequiresAdmin,
   driveToolAllowedByScopes,
   driveToolMinimalScopes,
+  mergeDriveGrantScopes,
   normalizeDriveScope,
 } from '../src/domain/connector-grant/google-drive-scopes'
 import {
@@ -106,11 +108,57 @@ test('resolveGrantOAuthScopes: seed-config mellett sem eszkalál full_write-ra',
   assert.equal(driveScopeProfile(shareScopes), 'selected_write')
 })
 
+test('resolveGrantOAuthScopes: tool nélküli default = config (full_write) — üres tömb NEM helyettesíti', () => {
+  // startConnectorOAuth admin-kapu: ha nincs scopes/toolName, a tényleges OAuth
+  // a teljes configot kéri. `driveScopeProfileRequiresAdmin([])` false lenne —
+  // a kapunak a feloldott config-listát kell néznie, nem az üres fallbackot.
+  const config = {
+    oauth: {
+      scopes: [DRIVE_SCOPES.readonly, DRIVE_SCOPES.file, DRIVE_SCOPES.full],
+    },
+  }
+  const defaults = resolveGrantOAuthScopes({ connectorType: 'google_drive', config })
+  assert.equal(driveScopeProfile(defaults), 'full_write')
+  assert.equal(driveScopeProfileRequiresAdmin(defaults), true)
+  assert.equal(driveScopeProfileRequiresAdmin([]), false)
+})
+
 test('driveScopeProfileRequiresAdmin: csak a full_write admin-only', () => {
   assert.equal(driveScopeProfileRequiresAdmin([DRIVE_SCOPES.full]), true)
   assert.equal(driveScopeProfileRequiresAdmin([DRIVE_SCOPES.readonly, DRIVE_SCOPES.file]), false)
   assert.equal(driveScopeProfileRequiresAdmin([DRIVE_SCOPES.readonly]), false)
   assert.equal(driveScopeProfileRequiresAdmin([]), false)
+})
+
+test('clampDriveGrantedScopesToRequest: include_granted full drive nem szélesít', () => {
+  // Google include_granted_scopes visszahozhatja a teljes `drive`-ot egy
+  // selected_write kérés mellé — a grant-rekordot a kért scope-okra szűkítjük.
+  const clamped = clampDriveGrantedScopesToRequest({
+    expectedScopes: [DRIVE_SCOPES.readonly, DRIVE_SCOPES.file],
+    grantedScopes: [DRIVE_SCOPES.readonly, DRIVE_SCOPES.file, DRIVE_SCOPES.full],
+  })
+  assert.deepEqual(clamped.sort(), [DRIVE_SCOPES.file, DRIVE_SCOPES.readonly].sort())
+  assert.equal(driveScopeProfile(clamped), 'selected_write')
+})
+
+test('mergeDriveGrantScopes: selected_write kérés nem örökít full_write-ot', () => {
+  const merged = mergeDriveGrantScopes({
+    existingScopes: [DRIVE_SCOPES.full],
+    newScopes: [DRIVE_SCOPES.readonly, DRIVE_SCOPES.file],
+    requestedScopes: [DRIVE_SCOPES.readonly, DRIVE_SCOPES.file],
+  })
+  assert.ok(!merged.includes(DRIVE_SCOPES.full))
+  assert.equal(driveScopeProfile(merged), 'selected_write')
+})
+
+test('mergeDriveGrantScopes: explicit full_write kérés megtartja a full scope-ot', () => {
+  const merged = mergeDriveGrantScopes({
+    existingScopes: [DRIVE_SCOPES.readonly],
+    newScopes: [DRIVE_SCOPES.full],
+    requestedScopes: [DRIVE_SCOPES.openid, DRIVE_SCOPES.email, DRIVE_SCOPES.full],
+  })
+  assert.ok(merged.includes(DRIVE_SCOPES.full))
+  assert.equal(driveScopeProfile(merged), 'full_write')
 })
 
 test('google_drive provider regisztrálva', () => {
