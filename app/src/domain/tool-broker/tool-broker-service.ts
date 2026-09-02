@@ -354,7 +354,7 @@ export class ToolBrokerService {
     }
 
     if (input.tool === 'gmail_send') {
-      const approved = await this.checkGmailSendApproval(input, input.args)
+      const approved = await this.checkGmailSendApproval(input, input.args, actingTenantId)
       if (!approved) {
         return recordDenied(this, 
           input,
@@ -858,15 +858,41 @@ export class ToolBrokerService {
   private async checkGmailSendApproval(
     input: ToolBrokerInvokeInput,
     args: GmailSendArgs,
+    actingTenantId: string | null,
   ): Promise<boolean> {
     const approvalTicketId = args.approvalTicketId ?? input.ticketId
     if (!approvalTicketId) return false
     const ticket = await this.tickets.findById(approvalTicketId)
     if (!ticket || ticket.state !== 'approved') return false
+
+    // A jóváhagyó jegy CSAK a hívó agenté lehet. Az `approvalTicketId` az agent
+    // által beküldött, NEM hitelesített azonosító (`tickets.findById` globális,
+    // tenant-szűrő nélkül), ezért kötés nélkül egy agent egy MÁSIK agent
+    // jóváhagyott jegyére hivatkozva oldhatná fel a saját e-mail-küldését
+    // (confused deputy). Ugyanaz az agent-kötés, mint a `board_write`-nál és a
+    // `resolveActingUserId`-nél feljebb.
+    if (ticket.agentId !== input.agentId) return false
+
+    // Tenant-kötés a jegyre, FAIL-CLOSED. Az összevetés alapja az agent HITELES
+    // tenantja (az agent-rekordból, nem a kliens által befolyásolható
+    // `actingTenantId`-ból). Megosztott (platform-szintű, tenantId=null) agentnél
+    // a hívás feloldott tenantja a jel. Ha egyik sem oldható fel, a küldés NEM
+    // futhat: a tenant-vak `findById` mellett egy feloldatlan tenant nem csúszhat
+    // át (a korábbi `actingTenantId !== null` őr fail-OPEN volt — épp a nem
+    // hitelesített external-agent úton hagyta ki a tenant-ellenőrzést).
+    const agent = await this.agents.findById(input.agentId)
+    const bindTenantId = agent?.tenantId ?? actingTenantId
+    if (bindTenantId === null || ticket.tenantId !== bindTenantId) return false
+
     const payload = isRecord(ticket.payload) ? ticket.payload : {}
     const approvedRef = payload.gmailSendApproved
     if (typeof approvedRef !== 'string' || !approvedRef) return false
-    return approvedRef === (args.draftId ?? args.to ?? '')
+
+    // A jóváhagyó a KONKRÉT draftId-t hagyja jóvá (`approveGmailSend`). A korábbi
+    // `?? args.to` visszaesés egy tetszőleges címzettet engedett volna a
+    // draftId-jóváhagyás alapján — a küldés kizárólag a jóváhagyott draftId-re szól.
+    const draftId = typeof args.draftId === 'string' ? args.draftId : ''
+    return draftId !== '' && approvedRef === draftId
   }
 
   /**
