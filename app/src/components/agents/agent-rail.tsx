@@ -1,8 +1,13 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
+import {
+  publishActiveRunsFeed,
+  publishActiveRunsFeedError,
+  subscribeActiveRunsRefresh,
+} from '@/components/active-runs/active-runs-feed-store'
 import { AgentRailCard } from '@/components/agents/agent-rail-card'
 import {
   setAgentRailFilter,
@@ -59,15 +64,23 @@ export function AgentRail({
       const res = await fetch('/api/agents/rail-state', { cache: 'no-store' })
       if (!res.ok) {
         setLoadError('A csapat állapota most nem frissíthető.')
+        publishActiveRunsFeedError('A futások most nem frissíthetők.')
         return
       }
       const data = (await res.json()) as AgentRailStateResponse
       setCards(data.agents)
       setLoadError(null)
+      // Ugyanaz a poll táplálja a fejléc „Futások” paneljét is — nincs külön kérés.
+      publishActiveRunsFeed(data.runs ?? [])
     } catch {
       setLoadError('A csapat állapota most nem frissíthető.')
+      publishActiveRunsFeedError('A futások most nem frissíthetők.')
     }
   }, [])
+
+  // A „Futások” panel (megnyitás / leállítás / indítás után) azonnali sáv-poll-t
+  // kérhet — a következő ütemezett kört nem várjuk meg.
+  useEffect(() => subscribeActiveRunsRefresh(() => void refresh()), [refresh])
 
   const someoneNeedsAttention = useMemo(
     () => cards.some((card) => card.liveStatus === 'busy' || card.liveStatus === 'wait'),

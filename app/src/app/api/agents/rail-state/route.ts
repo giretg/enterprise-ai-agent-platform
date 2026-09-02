@@ -45,6 +45,10 @@ export async function GET() {
 
   const body: AgentRailStateResponse = {
     agents: composeAgentRailStates(agentsRes.data, runs),
+    // A `runs` lista már megvan (fent, ugyanabból a `loadActiveRuns` körből) — a
+    // fejléc „Futások” panelje innen olvassa, így nincs külön `/api/v1/active-runs`
+    // poll ugyanarra a tenant+user adatra.
+    runs,
     asOf: new Date().toISOString(),
   }
   return Response.json(body)
