@@ -49,8 +49,6 @@ import { formatToolUiName } from '@/lib/tool-ui-labels'
 import {
   agentRoleLabel,
   modelConfigSummary,
-  recipeStatusLabel,
-  resourceTypeLabel,
   selfEvolutionSummary,
 } from '@/lib/agent-profile-labels'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
@@ -229,8 +227,6 @@ export default async function AgentDetailPage({
     agent,
     memoryContent,
     memoryVersion,
-    recipe,
-    resources,
     apiKeyPreview,
     behaviorProfileLink,
     delegatedConnectors,
@@ -268,9 +264,6 @@ export default async function AgentDetailPage({
   const roleInfo = agentRoleLabel(agent.role)
   const modelProviders = modelPolicy ? enabledModelProviders(modelPolicy) : []
   const behaviorOverlay = resolveBehaviorOverlay(agent)
-  const visibleResources = isAdmin
-    ? resources
-    : resources.filter((r) => r.type !== 'secret')
 
   const agentSections: SettingsSection[] = [
     {
@@ -403,17 +396,18 @@ export default async function AgentDetailPage({
           {
             id: 'projekt-memoria',
             label: 'Projekt-memória',
-            description: 'Tartós, conversationök közötti projektfolytonosság.',
+            description: 'Amit az agent a beszélgetések között megjegyez erről a projektről.',
             content: (
               <InfoCard
                 title="Projekt-memória"
-                subtitle="Amit az agent projektfolytonossági állapotként megjegyzett — fókusz, döntések, nyitott feladatok, konfliktusok — a jóváhagyási és visszaállítási eszközökkel együtt."
+                subtitle="Hol tart a munka, milyen döntések és szabályok vannak rögzítve, és visszaállíthatod egy korábbi állapotra. A viselkedési szabályok a Tanulás fülön vannak, a céges dokumentumok a Tudásbázisban."
               >
                 {memoryPanel ? (
                   <MemoryPanel
                     agentId={agent.id}
                     initialProjectKeys={memoryPanel.projectKeys}
                     initialProjectKey={memoryPanel.initialProjectKey}
+                    initialProjectLabels={memoryPanel.projectLabels}
                     initialOverview={memoryPanel.initialOverview}
                   />
                 ) : (
@@ -605,56 +599,14 @@ export default async function AgentDetailPage({
               suspendedReason={agent.suspendedReason}
               canManage={isAdmin}
             />
-          </InfoCard>
-        </div>
-      ),
-    },
-    {
-      id: 'technikai',
-      label: 'Technikai adatok',
-      description: 'Verziók, munkafolyamat-sablon és hozzárendelt források.',
-      content: (
-        <div className="grid gap-6 xl:grid-cols-2">
-          <Card title="Verziók">
-            <p className="text-sm text-ink-soft">
-              Munkakör v{agent.currentRoleInstructionVersion} · Munkastílus v
+            <p className="mt-4 border-t border-line pt-4 text-sm text-ink-soft">
+              Aktuális verziók: Munkakör v{agent.currentRoleInstructionVersion} · Munkastílus v
               {agent.currentBehaviorProfileVersion} · Agent v{agent.currentVersion}
             </p>
-            <p className="mt-2 text-xs text-ink-faint">
+            <p className="mt-1 text-xs text-ink-faint">
               {roleInfo.title} — {roleInfo.description}
             </p>
-          </Card>
-          <Card title="Munkafolyamat-sablon">
-            {recipe ? (
-              <div className="space-y-1 text-sm">
-                <p className="font-medium text-ink">{recipe.name}</p>
-                <p className="text-ink-soft">
-                  {recipe.ticketType === 'training' ? 'tanítási' : 'interakciós'} folyamat · v
-                  {recipe.version} · {recipeStatusLabel(recipe.status)}
-                </p>
-              </div>
-            ) : (
-              <p className="text-sm text-ink-faint">
-                Nincs munkafolyamat-sablon ehhez a verzióhoz.
-              </p>
-            )}
-          </Card>
-          <Card title="Hozzárendelt források">
-            {visibleResources.length === 0 ? (
-              <p className="text-sm text-ink-faint">Nincs hozzárendelt forrás.</p>
-            ) : (
-              <ul className="space-y-2 text-sm">
-                {visibleResources.map((r) => (
-                  <li key={r.id} className="atelier-soft p-3">
-                    <span className="font-medium text-ink">{r.name}</span>
-                    <span className="ml-2 text-ink-faint">
-                      {resourceTypeLabel(r.type)} · {r.scope} · v{r.version}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
+          </InfoCard>
         </div>
       ),
     },

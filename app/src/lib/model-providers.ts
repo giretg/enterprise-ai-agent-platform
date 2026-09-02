@@ -49,6 +49,11 @@ export type ModelProviderOption = {
   hint: string
   /** Ha megadva, a UI legördülőből választ; különben szabad szöveg. */
   models?: ModelOption[]
+  /**
+   * Luna/Terra/Sol a provider reasoning/thinking paraméterére megy.
+   * OpenRouter / Gemini / Ollama: no-op — a UI elrejti a mezőt.
+   */
+  thinkingProfile?: boolean
 }
 
 export const CHATGPT_OAUTH_MODELS: ModelOption[] = [
@@ -177,6 +182,7 @@ export const MODEL_PROVIDERS: ModelProviderOption[] = [
     defaultModel: 'chatgpt-oauth-default',
     hint: 'A Model Gateway szerveroldali ChatGPT OAuth mediációja (gpt-5.5). Codex CLI belépés: ~/.codex/auth.json.',
     models: CHATGPT_OAUTH_MODELS,
+    thinkingProfile: true,
   },
   {
     value: 'claude-code-oauth',
@@ -184,6 +190,7 @@ export const MODEL_PROVIDERS: ModelProviderOption[] = [
     defaultModel: 'claude-sonnet-4-6',
     hint: 'Claude Pro/Max előfizetés a Claude Code CLI belépésével (`claude auth login` vagy `claude setup-token`). Nem API-kulcs.',
     models: CLAUDE_CODE_OAUTH_MODELS,
+    thinkingProfile: true,
   },
   {
     value: 'grok-cli-oauth',
@@ -191,6 +198,7 @@ export const MODEL_PROVIDERS: ModelProviderOption[] = [
     defaultModel: 'grok-4.6',
     hint: 'SuperGrok / X Premium+ a Grok CLI belépésével (`grok login`). Token: ~/.grok/auth.json. Nem xAI API-kulcs.',
     models: GROK_CLI_OAUTH_MODELS,
+    thinkingProfile: true,
   },
   {
     value: 'gemini',
@@ -222,6 +230,11 @@ export function providerOption(
   return providers.find((p) => p.value === value) ?? MODEL_PROVIDERS.find((p) => p.value === value) ?? providers[0] ?? MODEL_PROVIDERS[0]
 }
 
+/** Luna/Terra/Sol csak ott jelenik meg, ahol a gateway ténylegesen alkalmazza. */
+export function providerUsesThinkingProfile(provider: string): boolean {
+  return MODEL_PROVIDERS.find((p) => p.value === provider)?.thinkingProfile === true
+}
+
 export function providerModelOptions(
   value: string,
   providers: ModelProviderOption[] = MODEL_PROVIDERS,
@@ -229,8 +242,12 @@ export function providerModelOptions(
   return providerOption(value, providers).models ?? []
 }
 
-export function modelLabel(provider: string, modelId: string): string {
-  const found = providerModelOptions(provider).find((m) => m.id === modelId)
+export function modelLabel(
+  provider: string,
+  modelId: string,
+  providers: ModelProviderOption[] = MODEL_PROVIDERS,
+): string {
+  const found = providerModelOptions(provider, providers).find((m) => m.id === modelId)
   return found?.label ?? modelId
 }
 

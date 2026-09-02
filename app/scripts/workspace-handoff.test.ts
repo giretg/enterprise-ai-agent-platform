@@ -53,7 +53,26 @@ async function main() {
     ])
   })
 
-  await check('collect: ./ prefix normalizálása', () => {
+  await check('collect: a modell PRÓZÁJA nem path-jelölt (ENAMETOOLONG-regresszió)', () => {
+  // Valós eset: az agent az egész markdown összefoglalóját tette a
+  // `feldolgozottLapPath` mezőbe. A benne lévő törtek („1/1", „43/15") miatt a
+  // heurisztika path-nak látta, és a tár egy 1200 karakteres fájlnevet nyitott
+  // volna meg (lokálisan ENAMETOOLONG, GCS-en néma szemétkulcs).
+  const prose = [
+    'A tulajdoni lap feldolgozása sikeresen megtörtént.',
+    '',
+    '- **Ingatlan:** Novaj, Külterület, 43/15 helyrajzi szám',
+    '- **Ellenőrzés:** a hatályos hányadok összege 1/1 (100%)',
+  ].join('\n')
+  assert.deepEqual(collectHandoffCandidatePaths({ feldolgozottLapPath: prose }), [])
+
+  // Egysoros, de irreálisan hosszú érték szintén kiesik.
+  assert.deepEqual(collectHandoffCandidatePaths({ outPath: `${'a'.repeat(600)}/x.json` }), [])
+  // Egyetlen túl hosszú szegmens (fájlnév) is.
+  assert.deepEqual(collectHandoffCandidatePaths({ outPath: `${'b'.repeat(240)}.json` }), [])
+})
+
+check('collect: ./ prefix normalizálása', () => {
     assert.deepEqual(collectHandoffCandidatePaths({ path: './foo.json' }), ['foo.json'])
   })
 

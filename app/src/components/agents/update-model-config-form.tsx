@@ -11,8 +11,10 @@ import {
   DEFAULT_MODEL_TYPE,
   MODEL_PROVIDERS,
   isModelType,
+  modelLabel,
   normalizeModelForProvider,
   providerOption,
+  providerUsesThinkingProfile,
   type ModelProviderOption,
   type ModelType,
 } from '@/lib/model-providers'
@@ -59,8 +61,9 @@ export function UpdateModelConfigForm({
     (current.fallbackModels?.length ?? 0) > 0,
   )
   const [fallbacks, setFallbacks] = useState<FallbackRow[]>(current.fallbackModels ?? [])
-  const [fbProvider, setFbProvider] = useState(MODEL_PROVIDERS[0]?.value ?? 'ollama')
-  const [fbModel, setFbModel] = useState(MODEL_PROVIDERS[0]?.defaultModel ?? '')
+  const seedFallback = (providers.length > 0 ? providers : MODEL_PROVIDERS)[0]
+  const [fbProvider, setFbProvider] = useState(seedFallback?.value ?? 'chatgpt-oauth')
+  const [fbModel, setFbModel] = useState(seedFallback?.defaultModel ?? '')
 
   const safeProviders = providers.length > 0 ? providers : MODEL_PROVIDERS
   const uniqueProviders = safeProviders.filter(
@@ -127,7 +130,7 @@ export function UpdateModelConfigForm({
             if (res.success) {
               setDone(
                 `Agent v${res.data.agentVersion} — ${provider}/${model.trim() || selected.defaultModel}${
-                  mode === 'full' ? ` · ${modelType}` : ''
+                  mode === 'full' && providerUsesThinkingProfile(provider) ? ` · ${modelType}` : ''
                 }`,
               )
               router.refresh()
@@ -167,10 +170,12 @@ export function UpdateModelConfigForm({
           </label>
           {mode === 'full' && (
             <>
-              <label className="block text-sm sm:col-span-2">
-                <span className="text-ink-soft">Modell típus (gondolkodási profil)</span>
-                <ModelTypeSelectField modelType={modelType} onModelTypeChange={setModelType} />
-              </label>
+              {providerUsesThinkingProfile(provider) ? (
+                <label className="block text-sm sm:col-span-2">
+                  <span className="text-ink-soft">Modell típus (gondolkodási profil)</span>
+                  <ModelTypeSelectField modelType={modelType} onModelTypeChange={setModelType} />
+                </label>
+              ) : null}
               <label className="block text-sm">
                 <span className="text-ink-soft">Temperature</span>
                 <input
@@ -215,7 +220,8 @@ export function UpdateModelConfigForm({
               {fallbacks.map((f, i) => (
                 <div key={`${f.provider}/${f.model}/${i}`} className="flex items-center justify-between text-sm">
                   <span className="text-ink">
-                    {i + 1}. {f.provider}/{f.model}
+                    {i + 1}. {providerOption(f.provider, providerOptions).label} /{' '}
+                    {modelLabel(f.provider, f.model, providerOptions)}
                   </span>
                   <button
                     type="button"
@@ -226,39 +232,46 @@ export function UpdateModelConfigForm({
                   </button>
                 </div>
               ))}
-              <div className="flex flex-wrap gap-2">
-                <select
-                  value={fbProvider}
-                  onChange={(e) => {
-                    const p = MODEL_PROVIDERS.find((x) => x.value === e.target.value)
-                    setFbProvider(e.target.value)
-                    if (p) setFbModel(p.defaultModel)
-                  }}
-                  className="rounded border border-line bg-night-2 px-2 py-1 text-xs"
-                >
-                  {MODEL_PROVIDERS.map((p) => (
-                    <option key={p.value} value={p.value}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  value={fbModel}
-                  onChange={(e) => setFbModel(e.target.value)}
-                  className="rounded border border-line bg-night-2 px-2 py-1 text-xs"
-                  placeholder="model"
-                />
-                <button
-                  type="button"
-                  className="rounded border border-line px-2 py-1 text-xs"
-                  onClick={() => {
-                    if (!fbModel.trim()) return
-                    setFallbacks((prev) => [...prev, { provider: fbProvider, model: fbModel.trim() }])
-                  }}
-                >
-                  Hozzáad
-                </button>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <label className="block text-sm">
+                  <span className="text-ink-soft">Modellforrás (provider)</span>
+                  <select
+                    value={fbProvider}
+                    onChange={(e) => {
+                      const next = providerOption(e.target.value, providerOptions)
+                      setFbProvider(next.value)
+                      setFbModel(normalizeModelForProvider(next.value, next.defaultModel, providerOptions))
+                    }}
+                    className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
+                  >
+                    {providerOptions.map((p) => (
+                      <option key={p.value} value={p.value}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block text-sm">
+                  <span className="text-ink-soft">Modell</span>
+                  <ModelSelectField
+                    provider={fbProvider}
+                    model={fbModel}
+                    onModelChange={setFbModel}
+                    providers={providerOptions}
+                  />
+                </label>
               </div>
+              <button
+                type="button"
+                className="rounded-full border border-line px-4 py-1.5 text-xs font-medium text-ink"
+                onClick={() => {
+                  const nextModel = normalizeModelForProvider(fbProvider, fbModel, providerOptions)
+                  if (!nextModel) return
+                  setFallbacks((prev) => [...prev, { provider: fbProvider, model: nextModel }])
+                }}
+              >
+                Hozzáad
+              </button>
             </div>
           )}
         </div>}

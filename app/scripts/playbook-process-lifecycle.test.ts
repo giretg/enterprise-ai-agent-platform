@@ -154,6 +154,17 @@ check('normalizeAgentStepResult: answer → outputContract mező', () => {
   assert.equal(normalized.answer, 'kutatási szöveg')
 })
 
+check('normalizeAgentStepResult: path-slotba NEM megy a próza', () => {
+  // Enélkül a szerződés „teljesültnek" látszott, a következő lépés pedig egy
+  // egész mondatot kapott fájlnév gyanánt.
+  const normalized = normalizeAgentStepResult(
+    { outputRequiredFields: ['feldolgozottLapPath', 'osszefoglalo'] },
+    { answer: 'A feldolgozás megtörtént, 1/1 hányaddal.', toolCallCount: 2 },
+  )
+  assert.equal(normalized.feldolgozottLapPath, undefined)
+  assert.equal(normalized.osszefoglalo, 'A feldolgozás megtörtént, 1/1 hányaddal.')
+})
+
 check('resolveStepInputPayload: workspace-relatív path-slot handoff-jelölt', () => {
   const resolved = resolveStepInputPayload(
     {

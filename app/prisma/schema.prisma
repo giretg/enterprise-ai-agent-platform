@@ -1987,6 +1987,25 @@ model KnowledgeChunk {
   @@map("knowledge_chunks")
 }
 
+/// Tenant-szintű munka-konténer: több beszélgetés és több AI-munkatárs tartozhat
+/// hozzá. A `key` a memória/conversation `projectKey` értéke. Az Általános
+/// (`__general__`) gyűjtő NINCS ebben a táblában — az implicit, mindig létezik.
+model WorkProject {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  key         String
+  name        String
+  description String?
+  createdById String    @map("created_by") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  archivedAt  DateTime? @map("archived_at") @db.Timestamptz
+
+  @@unique([tenantId, key])
+  @@index([tenantId, archivedAt])
+  @@map("work_projects")
+}
+
 model Conversation {
   id                String             @id @default(uuid()) @db.Uuid
   tenantId          String?            @map("tenant_id") @db.Uuid
@@ -2510,6 +2529,7 @@ model Ticket {
   playbookStepId    String?       @map("playbook_step_id")
   requiredGateId    String?       @map("required_gate_id")
   conversationId    String?       @map("conversation_id") @db.Uuid
+  projectKey        String        @default("__general__") @map("project_key")
   source            TicketSource  @default(user)
   createdById       String        @map("created_by") @db.Uuid
   createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz

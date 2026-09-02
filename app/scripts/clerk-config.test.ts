@@ -65,22 +65,24 @@ try {
     writableEnv.NODE_ENV = previous
   })
 
-  check('a root layout a szerver isClerkEnabled döntését adja a ClerkProvidernek', () => {
+  check('a root layout embed iframe-ben kikapcsolja a Clerk klienst', () => {
     const layout = readFileSync(resolve(process.cwd(), 'src/app/layout.tsx'), 'utf8')
+    const embed = readFileSync(resolve(process.cwd(), 'src/lib/control-plane-embed.ts'), 'utf8')
     const providers = readFileSync(
       resolve(process.cwd(), 'src/components/auth/providers.tsx'),
       'utf8',
     )
     const shell = readFileSync(resolve(process.cwd(), 'src/components/ui/shell.tsx'), 'utf8')
-    assert.match(layout, /clerkEnabled=\{isClerkEnabled\(\)\}/)
+    assert.match(layout, /isClerkClientEnabledForRequest/)
+    assert.match(embed, /isClerkClientEnabledForRequest/)
+    assert.match(providers, /ClerkEnabledContext.Provider/)
+    assert.match(shell, /useClerkEnabled\(\)/)
+    assert.doesNotMatch(shell, /isClerkUiEnabled/)
     assert.match(
       layout,
       /<html lang="hu" suppressHydrationWarning>/,
       'html: böngésző-extension attribútum ne indítson Next recovery-flasht',
     )
-    assert.match(providers, /ClerkEnabledContext.Provider/)
-    assert.match(shell, /useClerkEnabled\(\)/)
-    assert.doesNotMatch(shell, /isClerkUiEnabled/)
     const pkg = readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')
     assert.match(
       pkg,

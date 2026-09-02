@@ -83,13 +83,35 @@ function stubRootDir(): string {
  * MAGA is önvédő: minden kulcsépítő metódus ezen a normalizáláson engedi át a
  * bemenetet, függetlenül a hívótól.
  */
+/** POSIX NAME_MAX (255 bájt) alatti névhossz + józan teljes-hossz korlát. */
+const MAX_PATH_SEGMENT_CHARS = 200
+const MAX_OBJECT_PATH_CHARS = 512
+
 export function safeObjectPath(filePath: string): string {
+  // Prózát nem engedünk útvonalnak. Egy modell által visszaadott mondat („… 1/1
+  // (100%) …") a `/` miatt path-nak LÁTSZIK: lokálisan nyers ENAMETOOLONG lett
+  // belőle, GCS-en pedig némán létrejött volna egy több száz karakteres kulcs.
+  if (/[\u0000-\u001f\u007f]/.test(filePath)) {
+    throw new FileEditorError('INVALID_PATH', 'Path contains control characters')
+  }
+  if (filePath.length > MAX_OBJECT_PATH_CHARS) {
+    throw new FileEditorError(
+      'INVALID_PATH',
+      `Path is too long (${filePath.length} > ${MAX_OBJECT_PATH_CHARS} characters)`,
+    )
+  }
   const normalized = filePath.replace(/\\/g, '/').replace(/\/+/g, '/')
   const parts = normalized.split('/').filter(Boolean)
   const resolved: string[] = []
   for (const part of parts) {
     if (part === '..') {
       throw new FileEditorError('PATH_TRAVERSAL', `Path traversal detected: ${filePath}`)
+    }
+    if (part.length > MAX_PATH_SEGMENT_CHARS) {
+      throw new FileEditorError(
+        'INVALID_PATH',
+        `Path segment is too long (${part.length} > ${MAX_PATH_SEGMENT_CHARS} characters)`,
+      )
     }
     if (part !== '.') resolved.push(part)
   }

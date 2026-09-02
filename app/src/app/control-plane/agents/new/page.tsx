@@ -6,6 +6,7 @@ import { requireTenantRole } from '@/auth/tenant-context'
 import {
   CreateAgentWizard,
   type CreateAgentWizardContinuation,
+  type CreateAgentWizardCloneOption,
 } from '@/components/agents/create-agent-wizard'
 import {
   assignableConnectorsFromCatalog,
@@ -20,6 +21,7 @@ export default async function NewAgentPage({
   searchParams: Promise<{ continue?: string; step?: string }>
 }) {
   const query = await searchParams
+  const user = await requireTenantRole('admin')
   const policyRes = await getModelPolicy()
   const providers = policyRes.success ? enabledModelProviders(policyRes.data) : []
   const profilesRes = await listBehaviorProfiles()
@@ -30,6 +32,13 @@ export default async function NewAgentPage({
         currentVersion: profile.currentVersion,
       }))
     : []
+  const agentPage = await repositories.agents.listPage({
+    tenantId: user.activeTenantId,
+    unbounded: true,
+  })
+  const cloneableAgents: CreateAgentWizardCloneOption[] = agentPage.items
+    .map((agent) => ({ id: agent.id, name: agent.name }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'hu'))
 
   const continuation = await loadContinuation(query.continue)
 
@@ -51,6 +60,7 @@ export default async function NewAgentPage({
           <CreateAgentWizard
             providers={providers}
             profiles={profiles}
+            cloneableAgents={cloneableAgents}
             initialStep={
               continuation
                 ? parseCreateAgentWizardStep(query.step)

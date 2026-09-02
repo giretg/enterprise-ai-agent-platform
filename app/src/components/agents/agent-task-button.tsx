@@ -17,6 +17,8 @@ import {
 } from '@/components/tickets/ticket-dispatch-prompt-modal'
 import { uploadTicketWorkspaceFiles } from '@/lib/ticket-workspace-files-client'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
+import { AssignableWorkProjectSelect } from '@/components/work-projects/work-project-select'
+import { GENERAL_WORK_PROJECT_KEY } from '@/lib/work-project'
 import {
   EMPTY_TASK_SCHEDULE,
   TaskScheduleFields,
@@ -60,6 +62,7 @@ function AgentTaskFlow({
   const [dispatchPrompt, setDispatchPrompt] = useState<DispatchPrompt>(null)
   const [dispatchPending, startDispatchTransition] = useTransition()
   const [schedule, setSchedule] = useState<TaskScheduleState>(EMPTY_TASK_SCHEDULE)
+  const [projectKey, setProjectKey] = useState(GENERAL_WORK_PROJECT_KEY)
   const startRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -94,6 +97,7 @@ function AgentTaskFlow({
           assigneeId: agentId,
           skillVersionIds: [skillVersionId],
           deferDispatch: true,
+          projectKey,
           ...(Object.keys(skillParameterValues).length > 0 ? { skillParameterValues } : {}),
           ...(scheduleInput && scheduleInput.scheduleMode !== 'none' ? scheduleInput : {}),
         })
@@ -175,7 +179,15 @@ function AgentTaskFlow({
       onCancel={() => onClose?.()}
       onSubmit={handleStart}
       extraFields={
-        <TaskScheduleFields state={schedule} disabled={pending} onChange={setSchedule} />
+        <>
+          <AssignableWorkProjectSelect
+            id="agent-task-project"
+            value={projectKey}
+            onChange={setProjectKey}
+            disabled={pending}
+          />
+          <TaskScheduleFields state={schedule} disabled={pending} onChange={setSchedule} />
+        </>
       }
       initialFocusRef={startRef}
     />

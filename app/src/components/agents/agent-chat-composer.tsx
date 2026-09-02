@@ -12,6 +12,7 @@ import {
   type TaskScheduleState,
 } from '@/components/tickets/task-schedule-fields'
 import type { PendingAttachment } from '@/components/agents/agent-chat-state'
+import { AssignableWorkProjectSelect } from '@/components/work-projects/work-project-select'
 
 export type AgentChatComposerMode = 'chat' | 'task' | 'process'
 
@@ -68,6 +69,8 @@ type AgentChatComposerProps = {
   onStop: () => void
   onCreateTicket: () => void
   onSend: () => void
+  projectKey: string
+  onProjectKeyChange: (key: string) => void
 }
 
 function ProcessPicker({
@@ -152,7 +155,7 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
     ticketSchedule, onTicketScheduleChange, ticketAuthorizeRunAs,
     onTicketAuthorizeRunAsChange, input, onInputChange, textareaRef, onKeyDown,
     turnBlocksComposer, stopPending, ticketPending, pending, canSubmit, onStop,
-    onCreateTicket, onSend,
+    onCreateTicket, onSend, projectKey, onProjectKeyChange,
   } = props
   const [skillPickerOpen, setSkillPickerOpen] = useState(false)
   const modeOptions: Array<{ value: AgentChatComposerMode; label: string; hint: string }> = [
@@ -219,6 +222,13 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
       ) : null}
 
       <div className="mb-2 flex flex-wrap items-center gap-2">
+          <AssignableWorkProjectSelect
+            id="agent-chat-project"
+            compact
+            value={projectKey}
+            onChange={onProjectKeyChange}
+            disabled={disabled}
+          />
           <div className="inline-flex rounded-lg border border-line bg-night-2 p-0.5" role="radiogroup" aria-label="Mi legyen az üzenetből">
             {modeOptions.map((option) => (
               <button

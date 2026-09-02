@@ -210,6 +210,7 @@ export type EnrichedBoardTicket = Pick<
   | 'processInstanceId'
   | 'conversationId'
   | 'playbookStepId'
+  | 'requiredGateId'
   | 'lockToken'
   | 'executeAfter'
 > &
@@ -225,6 +226,7 @@ export type EnrichedBoardTicket = Pick<
     stepsTotal: number | null
     boardColumnState: string
     hiddenAsProcessChild: boolean
+    openTicketId: string
   }
 
 export function formatTicketDateTime(value: Date | string): string {
@@ -373,6 +375,7 @@ export function enrichTicketsForBoard(
       processInstanceId: ticket.processInstanceId,
       conversationId: ticket.conversationId,
       playbookStepId: ticket.playbookStepId,
+      requiredGateId: ticket.requiredGateId,
       executeAfter: ticket.executeAfter,
       origin: null,
       nestedSteps: [],
@@ -380,6 +383,7 @@ export function enrichTicketsForBoard(
       stepsTotal: null,
       boardColumnState: ticket.state,
       hiddenAsProcessChild: false,
+      openTicketId: ticket.id,
       ...display,
       creator: formatTicketCreator({
         createdById: ticket.createdById,

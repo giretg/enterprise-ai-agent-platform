@@ -17,6 +17,7 @@ import { hasMinimumRole } from '@/auth/types'
 import { requirePlatformRole, requireTenantPermission, requireTenantRole } from '@/auth/tenant-context'
 import { getAuthContext, type TenantAuthContext } from '@/auth/context'
 import { isSuperadmin } from '@/lib/tenant-policy'
+import { declaredWorkspaceOutputs } from '@/lib/declared-workspace-outputs'
 import { services } from '@/domain'
 import type { TrainingActor } from '@/domain/training/training-service'
 import { TrainingGateError } from '@/domain/training/durable-memory-policy'
@@ -93,6 +94,14 @@ import {
 import { buildOriginalDocumentMetadata } from '@/lib/document-storage'
 import { listTicketInputAttachments } from '@/domain/ticket/ticket-input-attachment-service'
 import { fail, ok, type ActionResult } from '@/lib/result'
+import { assignConnectorToAgent } from '@/app/actions/provisioning'
+import { assignSkillAction } from '@/app/actions/skills'
+import {
+  grantedToolNames,
+  parseAgentModelConfigForWizard,
+  type CreateAgentWizardCloneTemplate,
+} from '@/lib/create-agent-wizard'
+import { MODEL_PROVIDERS } from '@/lib/model-providers'
 import { applyAgentModelConfigUpdate } from '@/app/actions/agent-model-config-update'
 import type { AgentModelConfigInput } from '@/app/actions/agent-model-config-update'
 import { isRuleExhausted, pickPeakAgent } from '@/lib/budget-rule-usage'
@@ -128,8 +137,10 @@ import {
   activateSandboxAppVersionSchema,
   archiveSandboxAppSchema,
   listAuditLogSchema,
+  applyAgentCloneSettingsSchema,
   createAgentSchema,
   draftAgentFromDescriptionSchema,
+  getAgentCloneTemplateSchema,
   agentApiKeyIdSchema,
   suspendAgentSchema,
   createBehaviorProfileSchema,
@@ -164,6 +175,7 @@ import {
   processDocumentForWikiSchema,
   requestKbDocumentSchema,
   kbTicketSchema,
+  setKbDocumentProcessingModeSchema,
   shareKnowledgeBaseSchema,
   deleteKbDocumentSchema,
   kbArtifactReviewSchema,
@@ -550,10 +562,17 @@ export async function createBoardTicket(input: {
   recurrence?: 'hourly' | 'daily' | 'weekly' | 'monthly'
   intervalHours?: number
   maxRuns?: number | null
+  projectKey?: string
 }) {
   try {
     const user = await requireTenantRole('operator')
     const parsed = createBoardTicketSchema.parse(input)
+    const assignedProject = await services.workProjects.assignableKey(
+      user.activeTenantId,
+      parsed.projectKey,
+    )
+    if (!assignedProject.ok) return fail(assignedProject.reason)
+    const assignedProjectKey = assignedProject.key
 
     let promptText = parsed.description?.trim() || parsed.title.trim()
     let ticketTitle = parsed.title
@@ -697,6 +716,7 @@ export async function createBoardTicket(input: {
           createdById: user.user.id,
           tenantId: user.activeTenantId,
           title: ticketTitle.slice(0, 80),
+          projectKey: assignedProjectKey,
         })
         conversationId = created.id
       }
@@ -710,6 +730,7 @@ export async function createBoardTicket(input: {
         assigneeId: parsed.assigneeId,
         agentId: parsed.assigneeId,
         conversationId,
+        projectKey: assignedProjectKey,
         payload: payload as Prisma.JsonValue,
         sourceDocumentId: null,
         executeAfter,
@@ -806,6 +827,7 @@ export async function createBoardTicket(input: {
       assigneeType: 'human',
       assigneeId: parsed.assigneeId,
       agentId: null,
+      projectKey: assignedProjectKey,
       payload: payload as Prisma.JsonValue,
       sourceDocumentId: null,
       executeAfter: null,
@@ -1048,6 +1070,7 @@ export async function listBoardTickets(input?: {
         process.id,
         {
           rootTicketId: process.rootTicketId,
+          processStatus: process.status,
           steps: process.steps.map((step) => ({
             ticketId: step.ticketId,
             stepId: step.stepId,
@@ -1459,6 +1482,29 @@ export async function getTicketTransitions(input: { id: string }) {
     return ok(transitions)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to get ticket transitions')
+  }
+}
+
+/**
+ * A futás során előállítottként RÖGZÍTETT munkafájlok (mért mellékhatás).
+ * A Munkafájlok panel ezzel veti össze a tényleges tartalmat, hogy a
+ * „mentettem a fájlt" állítás és az üres lista közti ellentmondás látszódjon.
+ */
+export async function getTicketDeclaredOutputs(input: { id: string }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const { id } = ticketIdSchema.parse(input)
+    const ticket = await repositories.tickets.findById(id)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+    const calls = await prisma.toolCall.findMany({
+      where: { ticketId: id },
+      select: { toolName: true, effectSummary: true },
+      orderBy: { createdAt: 'asc' },
+    })
+    return ok(declaredWorkspaceOutputs(calls))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to read declared outputs')
   }
 }
 
@@ -2326,6 +2372,136 @@ export async function createAgent(input: {
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create agent')
+  }
+}
+
+/** Meglévő agent adatai az új-agent varázsló másolásához (pre-create + post-create sablon). */
+export async function getAgentCloneTemplate(input: { sourceAgentId: string }) {
+  try {
+    const user = await requireTenantRole('admin')
+    const { sourceAgentId } = getAgentCloneTemplateSchema.parse(input)
+    const agent = await repositories.agents.findById(sourceAgentId, user.activeTenantId)
+    if (!agent) return fail('Agent not found')
+
+    const [capabilities, connectors, assignedSkills] = await Promise.all([
+      repositories.toolBroker.findCapabilitiesForAgent(sourceAgentId),
+      repositories.toolBroker.findConnectorsForAgent(sourceAgentId),
+      services.skills.listAgentSkillsWithReadiness(sourceAgentId),
+    ])
+
+    const template: CreateAgentWizardCloneTemplate = {
+      sourceAgentId: agent.id,
+      sourceAgentName: agent.name,
+      role: agent.role === 'orchestrator' ? 'orchestrator' : 'worker',
+      roleInstruction: agent.roleInstruction,
+      behaviorProfile: agent.behaviorProfileOverlay || agent.behaviorProfile,
+      behaviorProfileId: agent.currentBehaviorProfileId ?? '',
+      modelConfig: parseAgentModelConfigForWizard(agent.modelConfig, MODEL_PROVIDERS),
+      enabledTools: grantedToolNames(capabilities),
+      skillVersionIds: assignedSkills.map((skill) => skill.skillVersionId),
+      connectors: connectors.map((item) => ({
+        connectorId: item.connector.id,
+        accessMode: item.accessMode === 'write' ? 'write' : 'read',
+        name: item.connector.name,
+      })),
+      taskOnly: agent.taskOnly,
+      hiddenFromOperators: agent.hiddenFromOperators,
+      allowSensitiveExternalModel: agent.allowSensitiveExternalModel,
+      selfEvolutionProfile: agent.selfEvolutionProfile,
+    }
+
+    return ok(template)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load agent clone template')
+  }
+}
+
+/** Létrehozás után: eszközök, skillek, kapcsolatok és működési beállítások másolása. */
+export async function applyAgentCloneSettings(input: {
+  targetAgentId: string
+  settings: z.infer<typeof applyAgentCloneSettingsSchema>['settings']
+}) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = applyAgentCloneSettingsSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.targetAgentId, user.activeTenantId)
+    if (!agent) return fail('Agent not found')
+
+    const warnings: string[] = []
+
+    if (parsed.settings.enabledTools.length > 0) {
+      const capRes = await updateAgentCapabilities({
+        agentId: parsed.targetAgentId,
+        enabledTools: parsed.settings.enabledTools,
+      })
+      if (!capRes.success) warnings.push(`Eszközök: ${capRes.error}`)
+    }
+
+    for (const skillVersionId of parsed.settings.skillVersionIds) {
+      const skillRes = await assignSkillAction({
+        agentId: parsed.targetAgentId,
+        skillVersionId,
+      })
+      if (!skillRes.success) {
+        warnings.push(`Skill (${skillVersionId}): ${skillRes.error}`)
+      }
+    }
+
+    for (const connector of parsed.settings.connectors) {
+      const connectorRes = await assignConnectorToAgent({
+        agentId: parsed.targetAgentId,
+        connectorId: connector.connectorId,
+        accessMode: connector.accessMode,
+      })
+      if (!connectorRes.success) {
+        warnings.push(`Kapcsolat (${connector.connectorId}): ${connectorRes.error}`)
+      }
+    }
+
+    if (agent.taskOnly !== parsed.settings.taskOnly) {
+      const taskRes = await updateAgentTaskOnly({
+        agentId: parsed.targetAgentId,
+        taskOnly: parsed.settings.taskOnly,
+      })
+      if (!taskRes.success) warnings.push(`Feladatkör-korlátozás: ${taskRes.error}`)
+    }
+
+    if (agent.hiddenFromOperators !== parsed.settings.hiddenFromOperators) {
+      const visRes = await updateAgentOperatorVisibility({
+        agentId: parsed.targetAgentId,
+        hiddenFromOperators: parsed.settings.hiddenFromOperators,
+      })
+      if (!visRes.success) warnings.push(`Operátor-láthatóság: ${visRes.error}`)
+    }
+
+    if (agent.allowSensitiveExternalModel !== parsed.settings.allowSensitiveExternalModel) {
+      const sensRes = await updateAgentSensitivityPolicy({
+        agentId: parsed.targetAgentId,
+        allowSensitiveExternalModel: parsed.settings.allowSensitiveExternalModel,
+      })
+      if (!sensRes.success) warnings.push(`Érzékeny modell-policy: ${sensRes.error}`)
+    }
+
+    if (parsed.settings.selfEvolutionProfile != null) {
+      const profileParsed = updateAgentSelfEvolutionProfileSchema.safeParse({
+        agentId: parsed.targetAgentId,
+        profile: parsed.settings.selfEvolutionProfile,
+      })
+      if (profileParsed.success) {
+        const evoRes = await updateAgentSelfEvolutionProfile(profileParsed.data)
+        if (!evoRes.success) warnings.push(`Önfejlesztési profil: ${evoRes.error}`)
+      } else {
+        warnings.push('Önfejlesztési profil: érvénytelen sablon')
+      }
+    }
+
+    if (warnings.length > 0) {
+      return fail(warnings.join(' '))
+    }
+
+    return ok({ applied: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to apply agent clone settings')
   }
 }
 
@@ -3352,6 +3528,29 @@ export async function requestKbDocument(input: {
   }
 }
 
+/** A jóváhagyó a review-ban választja a feldolgozási módot (egyszerű fájl / wiki). */
+export async function setKbDocumentProcessingMode(input: {
+  ticketId: string
+  processingMode: 'raw_text_only' | 'okf'
+}) {
+  try {
+    const user = await requireTenantRole('approver')
+    const parsed = setKbDocumentProcessingModeSchema.parse(input)
+    const document = await services.knowledgeBase.setPendingDocumentProcessingMode({
+      ticketId: parsed.ticketId,
+      processingMode: parsed.processingMode,
+      actorId: user.user.id,
+      actorTenantId: user.activeTenantId,
+    })
+    return ok({
+      documentId: document.id,
+      processingMode: document.processingMode,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to set KB processing mode')
+  }
+}
+
 /** Jóváhagyás után a dokumentum bekerül a KB-be és kereshetővé válik. */
 export async function approveKbDocument(input: { ticketId: string }) {
   try {
@@ -3877,15 +4076,22 @@ export async function createAgentTaskTicket(input: {
   executeAfter?: string
   authorizeRunAs?: boolean
   briefing?: TaskBriefing
+  projectKey?: string
 }) {
   try {
     const user = await requireTenantRole('operator')
     const parsed = createAgentTaskTicketSchema.parse(input)
+    const assignedProject = await services.workProjects.assignableKey(
+      user.activeTenantId,
+      parsed.projectKey,
+    )
+    if (!assignedProject.ok) return fail(assignedProject.reason)
     const executeAfter = parsed.executeAfter ? new Date(parsed.executeAfter) : null
     const ticket = await services.agentChat.createTaskTicket({
       agentId: parsed.agentId,
       content: parsed.content,
       conversationId: parsed.conversationId,
+      projectKey: assignedProject.key,
       attachmentDocumentIds: parsed.attachmentDocumentIds,
       executeAfter,
       authorizeRunAs: parsed.authorizeRunAs,
@@ -3910,10 +4116,16 @@ export async function createScheduledAgentTask(input: {
   intervalHours?: number
   maxRuns?: number | null
   authorizeRunAs?: boolean
+  projectKey?: string
 }) {
   try {
     const user = await requireTenantRole('operator')
     const parsed = createScheduledAgentTaskSchema.parse(input)
+    const assignedProject = await services.workProjects.assignableKey(
+      user.activeTenantId,
+      parsed.projectKey,
+    )
+    if (!assignedProject.ok) return fail(assignedProject.reason)
     // #142 — ütemezett feladat is agent-megszólítás: `address` kell, különben
     // tiltott agenthez materializálódó ticket kerülhet a boardra.
     const subject = tenantUserSubject(user)
@@ -3971,6 +4183,7 @@ export async function createScheduledAgentTask(input: {
       payload: ticketPayload as Prisma.JsonValue,
       sourceDocumentId: attachmentIds[0] ?? null,
       conversationId: parsed.conversationId ?? null,
+      projectKey: assignedProject.key,
       executeAfter: nextRunAt,
       dueBy: null,
       createdById: user.user.id,
@@ -4059,6 +4272,7 @@ export async function createDiscussionFromTicket(input: { ticketId: string }) {
       tenantId: user.activeTenantId,
       title,
       continuedFromTicketId: ticket.id,
+      projectKey: ticket.projectKey ?? '__general__',
     })
 
     return ok({
@@ -4152,6 +4366,7 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
         title: conversation.title,
         lastMessageAt: conversation.lastMessageAt.toISOString(),
         continuedFromTicketId: conversation.continuedFromTicketId,
+        projectKey: conversation.projectKey,
       },
       continuedFromTicket,
       ticketDiscussionHistory,
@@ -4980,9 +5195,10 @@ export async function listAgentMemoryProjectKeys(input: { agentId: string }) {
     assertAgentTenantReachable(agent, ctx.activeTenantId)
 
     const keys = new Set<string>(['__general__'])
+    const labels: Record<string, string> = { __general__: 'Általános (alapértelmezett)' }
     const memoryId = agent.memoryId
 
-    const [convRows, chunkRows, candidateRows, versionRows] = await Promise.all([
+    const [convRows, chunkRows, candidateRows, versionRows, defined] = await Promise.all([
       prisma.conversation.findMany({
         where: { agentId },
         distinct: ['projectKey'],
@@ -5003,7 +5219,18 @@ export async function listAgentMemoryProjectKeys(input: { agentId: string }) {
         distinct: ['projectKey'],
         select: { projectKey: true },
       }),
+      agent.tenantId
+        ? prisma.workProject.findMany({
+            where: { tenantId: agent.tenantId },
+            select: { key: true, name: true },
+          })
+        : Promise.resolve([]),
     ])
+
+    for (const row of defined) {
+      keys.add(row.key)
+      labels[row.key] = row.name
+    }
 
     for (const row of [...convRows, ...chunkRows, ...candidateRows, ...versionRows]) {
       const key = row.projectKey?.trim()
@@ -5016,7 +5243,7 @@ export async function listAgentMemoryProjectKeys(input: { agentId: string }) {
       return a.localeCompare(b, 'hu')
     })
 
-    return ok({ projectKeys })
+    return ok({ projectKeys, labels })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list memory project keys')
   }

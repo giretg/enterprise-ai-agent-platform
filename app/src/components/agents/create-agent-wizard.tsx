@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState, useTransition } from 'react'
-import { createAgent, draftAgentFromDescription, getAgentGovernance, listBehaviorProfiles, setAgentBehaviorProfile } from '@/app/actions/platform'
+import { createAgent, draftAgentFromDescription, getAgentCloneTemplate, getAgentGovernance, listBehaviorProfiles, setAgentBehaviorProfile, applyAgentCloneSettings } from '@/app/actions/platform'
 import { listConnectorCatalog } from '@/app/actions/provisioning'
 import {
   getAgentSkillsAction,
@@ -41,11 +41,13 @@ import {
   prevCreateAgentWizardStep,
   type CreateAgentWizardProposal,
   type CreateAgentWizardStepId,
+  type CreateAgentWizardCloneTemplate,
 } from '@/lib/create-agent-wizard'
 import {
   DEFAULT_MODEL_TYPE,
   MODEL_PROVIDERS,
   normalizeModelForProvider,
+  providerUsesThinkingProfile,
   type ModelProviderOption,
   type ModelType,
 } from '@/lib/model-providers'
@@ -66,6 +68,11 @@ export type CreateAgentWizardProfile = {
   id: string
   name: string
   currentVersion: number
+}
+
+export type CreateAgentWizardCloneOption = {
+  id: string
+  name: string
 }
 
 export type CreateAgentWizardConnector = {
@@ -119,11 +126,13 @@ function storeApiKey(agentId: string, apiKey: string) {
 export function CreateAgentWizard({
   providers = MODEL_PROVIDERS,
   profiles,
+  cloneableAgents = [],
   initialStep,
   continuation = null,
 }: {
   providers?: ModelProviderOption[]
   profiles: CreateAgentWizardProfile[]
+  cloneableAgents?: CreateAgentWizardCloneOption[]
   initialStep?: string
   continuation?: CreateAgentWizardContinuation | null
 }) {
@@ -162,6 +171,20 @@ export function CreateAgentWizard({
   const [generating, setGenerating] = useState(false)
   const [proposal, setProposal] = useState<CreateAgentWizardProposal | null>(null)
   const [proposalWarnings, setProposalWarnings] = useState<string[]>([])
+  const [cloneSourceId, setCloneSourceId] = useState('')
+  const [cloneTemplate, setCloneTemplate] = useState<CreateAgentWizardCloneTemplate | null>(null)
+  const [loadingClone, setLoadingClone] = useState(false)
+  const [operationDefaults, setOperationDefaults] = useState<{
+    taskOnly: boolean
+    hiddenFromOperators: boolean
+    allowSensitiveExternalModel: boolean
+    selfEvolutionProfile: unknown
+  }>({
+    taskOnly: continuation?.taskOnly ?? false,
+    hiddenFromOperators: continuation?.hiddenFromOperators ?? false,
+    allowSensitiveExternalModel: continuation?.allowSensitiveExternalModel ?? false,
+    selfEvolutionProfile: continuation?.selfEvolutionProfile ?? null,
+  })
 
   const selectedProvider = safeProviders.find((p) => p.value === provider) ?? safeProviders[0]
   const gate = { name, roleInstruction, behaviorProfile, createdAgentId }
@@ -214,6 +237,82 @@ export function CreateAgentWizard({
     }
   }, [createdAgentId, refreshCatalogs])
 
+  function resetFormToEmpty() {
+    setName('')
+    setRole('worker')
+    setRoleInstruction('')
+    setBehaviorProfile('')
+    setBehaviorProfileId('')
+    setProvider(safeProviders[0].value)
+    setModel(safeProviders[0].defaultModel)
+    setModelType(DEFAULT_MODEL_TYPE)
+    setTemperature(String(DEFAULT_MODEL.temperature))
+    setOperationDefaults({
+      taskOnly: false,
+      hiddenFromOperators: false,
+      allowSensitiveExternalModel: false,
+      selfEvolutionProfile: null,
+    })
+    setProposal(null)
+    setProposalWarnings([])
+    setPrompt('')
+  }
+
+  function applyCloneTemplate(template: CreateAgentWizardCloneTemplate) {
+    setCloneTemplate(template)
+    setName('')
+    setRole(template.role)
+    setRoleInstruction(template.roleInstruction)
+    setBehaviorProfile(template.behaviorProfile)
+    setBehaviorProfileId(template.behaviorProfileId)
+    setProvider(template.modelConfig.provider)
+    setModel(
+      normalizeModelForProvider(
+        template.modelConfig.provider,
+        template.modelConfig.model,
+        safeProviders,
+      ),
+    )
+    setModelType(template.modelConfig.modelType)
+    setTemperature(String(template.modelConfig.temperature))
+    setOperationDefaults({
+      taskOnly: template.taskOnly,
+      hiddenFromOperators: template.hiddenFromOperators,
+      allowSensitiveExternalModel: template.allowSensitiveExternalModel,
+      selfEvolutionProfile: template.selfEvolutionProfile,
+    })
+    setProposal(null)
+    setProposalWarnings([])
+    setPrompt('')
+  }
+
+  function clearCloneTemplate() {
+    setCloneTemplate(null)
+    setCloneSourceId('')
+    resetFormToEmpty()
+  }
+
+  async function handleCloneSourceChange(nextSourceId: string) {
+    setCloneSourceId(nextSourceId)
+    setError(null)
+    if (!nextSourceId) {
+      clearCloneTemplate()
+      return
+    }
+    setLoadingClone(true)
+    try {
+      const res = await getAgentCloneTemplate({ sourceAgentId: nextSourceId })
+      if (!res.success) {
+        setError(res.error)
+        clearCloneTemplate()
+        return
+      }
+      applyCloneTemplate(res.data)
+    } finally {
+      setLoadingClone(false)
+    }
+  }
+
   function goTo(next: CreateAgentWizardStepId) {
     if (!canEnterCreateAgentWizardStep(next, gate)) return
     setStep(next)
@@ -244,6 +343,8 @@ export function CreateAgentWizard({
       }
 
       const agentId = res.data.agent.id
+      const postCreateWarnings: string[] = []
+
       if (behaviorProfileId) {
         const profileRes = await setAgentBehaviorProfile({
           agentId,
@@ -251,10 +352,32 @@ export function CreateAgentWizard({
           overlay: behaviorProfile.trim(),
         })
         if (!profileRes.success) {
-          setError(
-            `Az agent létrejött, de a központi profilt nem sikerült rákötni: ${profileRes.error}`,
+          postCreateWarnings.push(
+            `A központi profilt nem sikerült rákötni: ${profileRes.error}`,
           )
         }
+      }
+
+      if (cloneTemplate) {
+        const cloneRes = await applyAgentCloneSettings({
+          targetAgentId: agentId,
+          settings: {
+            enabledTools: cloneTemplate.enabledTools,
+            skillVersionIds: cloneTemplate.skillVersionIds,
+            connectors: cloneTemplate.connectors,
+            taskOnly: cloneTemplate.taskOnly,
+            hiddenFromOperators: cloneTemplate.hiddenFromOperators,
+            allowSensitiveExternalModel: cloneTemplate.allowSensitiveExternalModel,
+            selfEvolutionProfile: cloneTemplate.selfEvolutionProfile,
+          },
+        })
+        if (!cloneRes.success) {
+          postCreateWarnings.push(`A másolás befejezése nem sikerült teljesen: ${cloneRes.error}`)
+        }
+      }
+
+      if (postCreateWarnings.length > 0) {
+        setError(`Az agent létrejött, de ${postCreateWarnings.join(' ')}`)
       }
 
       storeApiKey(agentId, res.data.apiKey)
@@ -287,6 +410,8 @@ export function CreateAgentWizard({
       }
       const draft = data.draft
       setProposal(draft)
+      clearCloneTemplate()
+      setCloneSourceId('')
       setName(draft.name)
       setRole(draft.role)
       setRoleInstruction(draft.roleInstruction)
@@ -411,6 +536,54 @@ export function CreateAgentWizard({
 
           {step === 'identity' ? (
             <div className="space-y-4">
+              {!createdAgentId ? (
+                <div className="space-y-3 rounded-md border border-ink/12 bg-paper px-3 py-3">
+                  <div>
+                    <p className="text-sm font-semibold">Másolás meglévő munkatársból</p>
+                    <p className="mt-1 text-xs text-ink-soft">
+                      Válassz egy agentet sablonnak — a varázsló mezői kitöltődnek az ő
+                      beállításaival. Csak az új nevet kell megadnod; a többit átnézheted
+                      lépésről lépésre.
+                    </p>
+                  </div>
+                  <label className="block text-sm">
+                    <span className="text-ink-soft">Sablon agent</span>
+                    <select
+                      value={cloneSourceId}
+                      onChange={(e) => void handleCloneSourceChange(e.target.value)}
+                      disabled={loadingClone || generating || pending || cloneableAgents.length === 0}
+                      className={INPUT}
+                    >
+                      <option value="">Nincs — üres űrlap</option>
+                      {cloneableAgents.map((agent) => (
+                        <option key={agent.id} value={agent.id}>
+                          {agent.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {loadingClone ? (
+                    <p className="inline-flex items-center gap-2 text-xs text-ink-soft">
+                      <Spinner size="sm" />
+                      Sablon betöltése…
+                    </p>
+                  ) : null}
+                  {cloneTemplate ? (
+                    <div className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-ink">
+                      <p className="font-semibold text-sage">
+                        „{cloneTemplate.sourceAgentName}" sablonja betöltve — add meg az új nevet,
+                        majd lépj tovább.
+                      </p>
+                      {cloneTemplate.enabledTools.length > 0 ? (
+                        <p className="mt-1 text-ink-soft">
+                          Eszközök, skillek és kapcsolatok a létrehozáskor másolódnak.
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
               {!createdAgentId ? (
                 <div className="space-y-3 rounded-md border border-ink/12 bg-paper px-3 py-3">
                   <div>
@@ -610,10 +783,12 @@ export function CreateAgentWizard({
                     providers={safeProviders}
                   />
                 </label>
-                <label className="block text-sm sm:col-span-2">
-                  <span className="text-ink-soft">Modell típus (gondolkodási profil)</span>
-                  <ModelTypeSelectField modelType={modelType} onModelTypeChange={setModelType} />
-                </label>
+                {providerUsesThinkingProfile(provider) ? (
+                  <label className="block text-sm sm:col-span-2">
+                    <span className="text-ink-soft">Modell típus (gondolkodási profil)</span>
+                    <ModelTypeSelectField modelType={modelType} onModelTypeChange={setModelType} />
+                  </label>
+                ) : null}
               </div>
               <p className="text-xs text-ink-soft">{selectedProvider.hint}</p>
               <label className="block text-sm">
@@ -646,7 +821,9 @@ export function CreateAgentWizard({
                 currentCapabilities={capabilities}
                 isOrchestrator={role === 'orchestrator'}
                 suggestedTools={
-                  role === 'worker' ? proposal?.suggestedCapabilities : undefined
+                  role === 'worker'
+                    ? proposal?.suggestedCapabilities ?? cloneTemplate?.enabledTools
+                    : undefined
                 }
                 bare
               />
@@ -670,7 +847,12 @@ export function CreateAgentWizard({
                 agentId={createdAgentId}
                 assigned={assignedSkills}
                 assignable={assignableSkills}
-                suggestedSkillNames={proposal?.suggestedSkills}
+                suggestedSkillNames={
+                  proposal?.suggestedSkills ??
+                  (cloneTemplate
+                    ? assignedSkills.map((skill) => skill.name)
+                    : undefined)
+                }
                 canEdit
                 bare
                 onChanged={refreshCatalogs}
@@ -695,7 +877,10 @@ export function CreateAgentWizard({
               <AssignExistingConnectorForm
                 agentId={createdAgentId}
                 connectors={assignableConnectors}
-                suggestedConnectorNames={proposal?.suggestedConnectors}
+                suggestedConnectorNames={
+                  proposal?.suggestedConnectors ??
+                  (cloneTemplate ? cloneTemplate.connectors.map((c) => c.name) : undefined)
+                }
                 bare
                 onAssigned={refreshCatalogs}
               />
@@ -738,12 +923,12 @@ export function CreateAgentWizard({
               <PrivacyAdminPanel agentId={createdAgentId} layers={['agent']} />
               <OperatorVisibilityForm
                 agentId={createdAgentId}
-                hiddenFromOperators={continuation?.hiddenFromOperators ?? false}
+                hiddenFromOperators={operationDefaults.hiddenFromOperators}
               />
-              <TaskOnlyForm agentId={createdAgentId} taskOnly={continuation?.taskOnly ?? false} />
+              <TaskOnlyForm agentId={createdAgentId} taskOnly={operationDefaults.taskOnly} />
               <UpdateSelfEvolutionProfileForm
                 agentId={createdAgentId}
-                currentProfile={continuation?.selfEvolutionProfile}
+                currentProfile={operationDefaults.selfEvolutionProfile}
                 bare
               />
               <div className="rounded-lg border border-line p-4">

@@ -15,6 +15,8 @@ import {
   loadAgentChatMessages,
   promoteConversationWithAi,
 } from '@/app/actions/platform'
+import { setConversationProjectKey } from '@/app/actions/work-projects'
+import { GENERAL_WORK_PROJECT_KEY, effectiveWorkProjectKey } from '@/lib/work-project'
 import { distillSkillFromConversationAction, getAgentSkillsAction } from '@/app/actions/skills'
 import { exportConversationDebugLog } from '@/app/actions/debug-log'
 import { getRunAnalysisEntry } from '@/app/actions/run-analysis'
@@ -174,6 +176,7 @@ export function AgentChatPanel({
   const dockId = useId()
   const [input, setInput] = useState('')
   const [conversationId, setConversationId] = useState<string | null>(null)
+  const [projectKey, setProjectKey] = useState(GENERAL_WORK_PROJECT_KEY)
   const [workspaceFilePaths, setWorkspaceFilePaths] = useState<string[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isAdmin, setIsAdmin] = useState(false)
@@ -504,6 +507,7 @@ export function AgentChatPanel({
     setHistoryLoadState('ready')
     pendingConsequenceContinuationRef.current = null
     setConversationId(null)
+    setProjectKey(GENERAL_WORK_PROJECT_KEY)
     setMessages([])
     setStatusMessage(null)
     setLastTicketId(null)
@@ -781,6 +785,18 @@ export function AgentChatPanel({
     })
   }, [agent.id, conversationId, controlsBusy, refreshSessions])
 
+  const handleProjectKeyChange = useCallback(
+    (next: string) => {
+      setProjectKey(next)
+      if (!conversationId || conversationStatus === 'archived') return
+      startTransition(async () => {
+        const res = await setConversationProjectKey({ conversationId, projectKey: next })
+        if (!res.success) setStatusMessage(res.error)
+      })
+    },
+    [conversationId, conversationStatus],
+  )
+
   const handleArchiveConversation = useCallback(() => {
     if (!conversationId || controlsBusy || conversationStatus === 'archived') return
     void (async () => {
@@ -895,6 +911,7 @@ export function AgentChatPanel({
         setPrivacyContext(privacyRes.data)
       }
       setConversationId(convId)
+      setProjectKey(effectiveWorkProjectKey(res.data.conversation.projectKey))
       setConversationStatus(res.data.conversation.status)
       setContinuedFromTicket(res.data.continuedFromTicket ?? null)
       setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
@@ -1228,6 +1245,7 @@ export function AgentChatPanel({
         if (loadGen !== sessionLoadGenRef.current) return
         if (res.success) {
           setConversationStatus(res.data.conversation.status)
+          setProjectKey(effectiveWorkProjectKey(res.data.conversation.projectKey))
           setContinuedFromTicket(res.data.continuedFromTicket ?? null)
           setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
           setIsAdmin(res.data.isAdmin)
@@ -1489,6 +1507,7 @@ export function AgentChatPanel({
             agentId: agent.id,
             content: text,
             conversationId: conversationId ?? undefined,
+            projectKey,
             attachmentDocumentIds: documentIds,
             processDefinitionId:
               composerMode === 'process' ? (selectedProcessDefId ?? undefined) : undefined,
@@ -1904,6 +1923,7 @@ export function AgentChatPanel({
             title: `Feladat: ${titleSource.slice(0, 80)}`,
             content: scheduledContent,
             conversationId: conversationId ?? undefined,
+            projectKey,
             attachmentDocumentIds: documentIds,
             nextRunAt: executeAfterIso,
             recurrence:
@@ -1933,6 +1953,7 @@ export function AgentChatPanel({
           agentId: agent.id,
           content: text,
           conversationId: conversationId ?? undefined,
+          projectKey,
           attachmentDocumentIds: documentIds,
         })
         if (!res.success) {
@@ -1948,6 +1969,7 @@ export function AgentChatPanel({
             agentId: agent.id,
           })
           if (loaded.success) {
+            setProjectKey(effectiveWorkProjectKey(loaded.data.conversation.projectKey))
             setMessages(
               withPendingChatExtras(
                 loaded.data.messages.map((message) => ({
@@ -2432,6 +2454,8 @@ export function AgentChatPanel({
                 onStop={handleStop}
                 onCreateTicket={handleCreateTicket}
                 onSend={handleSend}
+                projectKey={projectKey}
+                onProjectKeyChange={handleProjectKeyChange}
               />
               <MemoryStrip
                 conversationId={conversationId}

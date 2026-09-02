@@ -32,7 +32,13 @@ export type AgentDetailMemoryOverview = Awaited<ReturnType<typeof loadMemoryOver
 
 export type AgentDetailKbInitial = {
   kbDocs: Array<{ id: string; filename: string; status: string; createdAt: Date | string }>
-  pendingDocs: Array<{ ticketId: string; documentId: string; filename: string; createdAt: Date | string }>
+  pendingDocs: Array<{
+    ticketId: string
+    documentId: string
+    filename: string
+    createdAt: Date | string
+    processingMode?: 'raw_text_only' | 'okf' | null
+  }>
   sharedWith: Array<{ id: string; name: string }>
   agentOptions: Array<{ id: string; name: string; role: string }>
 }
@@ -91,6 +97,7 @@ export type AgentDetailPageData = {
   assignableSkills: AgentDetailAssignableSkill[]
   memoryPanel: {
     projectKeys: string[]
+    projectLabels: Record<string, string>
     initialProjectKey: string
     initialOverview: AgentDetailMemoryOverview
   } | null
@@ -115,8 +122,26 @@ function assertAgentReachable(agent: { tenantId: string | null }, tenantId: stri
   }
 }
 
-async function loadMemoryProjectKeys(agentId: string, memoryId: string): Promise<string[]> {
+async function loadMemoryProjectKeys(
+  agentId: string,
+  memoryId: string,
+  tenantId: string | null,
+): Promise<{ projectKeys: string[]; projectLabels: Record<string, string> }> {
   const keys = new Set<string>([DEFAULT_MEMORY_PROJECT_KEY])
+  const projectLabels: Record<string, string> = {
+    [DEFAULT_MEMORY_PROJECT_KEY]: 'Általános (alapértelmezett)',
+  }
+
+  const defined = tenantId
+    ? await prisma.workProject.findMany({
+        where: { tenantId },
+        select: { key: true, name: true },
+      })
+    : []
+  for (const row of defined) {
+    keys.add(row.key)
+    projectLabels[row.key] = row.name
+  }
 
   // Egy körös UNION a négy distinct findMany helyett — kevesebb round-trip, ugyanaz a kulcshalmaz.
   const rows = await prisma.$queryRaw<Array<{ project_key: string | null }>>`
@@ -137,11 +162,12 @@ async function loadMemoryProjectKeys(agentId: string, memoryId: string): Promise
     if (key) keys.add(key)
   }
 
-  return [...keys].sort((a, b) => {
+  const projectKeys = [...keys].sort((a, b) => {
     if (a === DEFAULT_MEMORY_PROJECT_KEY) return -1
     if (b === DEFAULT_MEMORY_PROJECT_KEY) return 1
     return a.localeCompare(b, 'hu')
   })
+  return { projectKeys, projectLabels }
 }
 
 async function loadMemoryOverview(memoryId: string, projectKey: string) {
@@ -397,12 +423,13 @@ export async function loadAgentDetailPageData(
       assignableSkills = mapAssignableSkills(skillCatalog, assignedSkillIds)
 
       const memoryId = detail.agent.memoryId
-      const [projectKeys, initialOverview] = await Promise.all([
-        loadMemoryProjectKeys(agentId, memoryId),
+      const [projectScope, initialOverview] = await Promise.all([
+        loadMemoryProjectKeys(agentId, memoryId, detail.agent.tenantId),
         loadMemoryOverview(memoryId, DEFAULT_MEMORY_PROJECT_KEY),
       ])
       memoryPanel = {
-        projectKeys,
+        projectKeys: projectScope.projectKeys,
+        projectLabels: projectScope.projectLabels,
         initialProjectKey: DEFAULT_MEMORY_PROJECT_KEY,
         initialOverview,
       }

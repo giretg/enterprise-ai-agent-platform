@@ -23,7 +23,8 @@ import {
 } from '@/lib/privacy-chat-markers'
 import { getToolUiLabel } from '@/lib/tool-ui-labels'
 import { ChatTaskCard, ChatTaskCardSkeleton } from '@/components/tickets/chat-task-card'
-import type { ChatTaskCardView } from '@/lib/work-traceability'
+import { MEMORY_TYPE_LABELS, type ChatTaskCardView } from '@/lib/work-traceability'
+import { memoryProjectKeyLabel } from '@/lib/memory-ui-labels'
 import {
   approvalContinuationDisplayText,
   extractApprovalContinuationTechnicalDetails,
@@ -108,18 +109,6 @@ function activityDotClass(status: AgentActivity['status']): string {
     case 'error':
       return 'bg-coral'
   }
-}
-
-const MEMORY_CANDIDATE_TYPE_LABEL: Record<string, string> = {
-  focus: 'Fókusz',
-  decision: 'Döntés',
-  open_task: 'Nyitott feladat',
-  assumption: 'Feltételezés',
-  finding: 'Feltárás',
-  constraint: 'Megkötés',
-  artifact: 'Artifact',
-  failed_attempt: 'Sikertelen próbálkozás',
-  handoff_summary: 'Átadás-összefoglaló',
 }
 
 const MEMORY_CANDIDATE_STATUS_LABEL: Record<MemoryCandidateCard['status'], string> = {
@@ -529,14 +518,14 @@ function MemoryCandidatesPanel({
           <div key={c.candidateId} className="rounded-md border border-line/70 bg-card/40 px-2.5 py-2">
             <div className="flex flex-wrap items-baseline gap-2">
               <span className="rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
-                {MEMORY_CANDIDATE_TYPE_LABEL[c.type ?? ''] ?? c.type ?? c.operation}
+                {MEMORY_TYPE_LABELS[c.type ?? ''] ?? c.type ?? c.operation}
               </span>
               <span className="truncate font-medium text-ink">{c.title ?? '(cím nélkül)'}</span>
               <span className="ml-auto shrink-0 text-[10px] text-ink-faint">{MEMORY_CANDIDATE_STATUS_LABEL[c.status]}</span>
             </div>
             {c.summary && <p className="mt-1 text-[11px] text-ink-faint">{c.summary}</p>}
             <p className="mt-1 text-[10px] text-ink-faint">
-              scope: {c.projectKey}
+              munka: {memoryProjectKeyLabel(c.projectKey)}
               {c.workstreamKey ? ` / ${c.workstreamKey}` : ''}
             </p>
             {c.resultMessage && <p className="mt-1 text-[11px] text-coral">{c.resultMessage}</p>}

@@ -1,5 +1,10 @@
 import { notFound } from 'next/navigation'
-import { getTicket, getTicketTransitions, listTicketComments } from '@/app/actions/platform'
+import {
+  getTicket,
+  getTicketDeclaredOutputs,
+  getTicketTransitions,
+  listTicketComments,
+} from '@/app/actions/platform'
 import { getTicketProcessContext, listProcessDefinitions } from '@/app/actions/process'
 import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
@@ -16,6 +21,7 @@ import { TicketThread } from '@/components/tickets/ticket-thread'
 import { TicketConsequenceApprovals } from '@/components/tickets/ticket-consequence-approvals'
 import { TicketConnectorGrants } from '@/components/tickets/ticket-connector-grants'
 import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
+import { TicketReviewActions } from '@/components/tickets/ticket-review-actions'
 import { TicketHistory } from '@/components/tickets/ticket-history'
 import { TicketActivityHistory } from '@/components/tickets/ticket-activity-history'
 import { canDeleteBoardTicket } from '@/lib/ticket-display'
@@ -30,12 +36,14 @@ export default async function TicketDetailPage({
 }) {
   const { ticketId } = await params
   const query = await searchParams
-  const [commentsRes, ctx, definitionsRes, transitionsRes] = await Promise.all([
-    listTicketComments({ ticketId }),
-    getAuthContext(),
-    listProcessDefinitions({ status: 'active' }),
-    getTicketTransitions({ id: ticketId }),
-  ])
+  const [commentsRes, ctx, definitionsRes, transitionsRes, declaredOutputsRes] =
+    await Promise.all([
+      listTicketComments({ ticketId }),
+      getAuthContext(),
+      listProcessDefinitions({ status: 'active' }),
+      getTicketTransitions({ id: ticketId }),
+      getTicketDeclaredOutputs({ id: ticketId }),
+    ])
   const runAnalysisEntry =
     ctx?.activeTenantId && ctx.activeTenantRole
       ? await resolveRunAnalysisEntry({
@@ -54,6 +62,13 @@ export default async function TicketDetailPage({
     : null
   const transitions = transitionsRes.success ? transitionsRes.data : []
   const isAdmin = hasMinimumRole(ctx?.activeTenantRole, 'admin')
+  const canOverrideStep = hasMinimumRole(ctx?.activeTenantRole, 'approver')
+  // A „Mi legyen ezzel a feladattal?" panel csak azon a ticketen jelenik meg,
+  // amelyik ténylegesen a nyitott emberi felülvizsgálat.
+  const reviewContext =
+    processDetailRes?.success && processDetailRes.data.reviewContext?.reviewTicketId === ticket.id
+      ? processDetailRes.data.reviewContext
+      : null
   const canManageRunAs = hasMinimumRole(ctx?.activeTenantRole, 'operator')
   const canStartProcess = hasMinimumRole(ctx?.activeTenantRole, 'operator')
   const deleteInfo = canDeleteBoardTicket(ticket, {
@@ -83,6 +98,7 @@ export default async function TicketDetailPage({
   return (
     <div className="space-y-6">
       <TicketMeta
+        key={ticket.id}
         ticket={ticket}
         isAdmin={isAdmin}
         canDispatch={canManageRunAs}
@@ -114,8 +130,15 @@ export default async function TicketDetailPage({
             ticketState={ticket.state}
             resumeAfterGrant={query.granted === '1'}
           />
+          {reviewContext && (
+            <TicketReviewActions
+              review={reviewContext}
+              canOverride={canOverrideStep}
+              canCancel={isAdmin}
+            />
+          )}
           <TicketThread ticket={ticket} comments={commentsRes.success ? commentsRes.data : []} />
-          <TicketActions ticket={ticket} />
+          <TicketActions ticket={ticket} hideDecisions={Boolean(reviewContext)} />
           <TicketActivityHistory
             ticket={{
               id: ticket.id,
@@ -128,7 +151,11 @@ export default async function TicketDetailPage({
         </div>
 
         <aside className="min-w-0 space-y-6">
-          <TicketFilesPanel ticketId={ticket.id} ticketState={ticket.state} />
+          <TicketFilesPanel
+            ticketId={ticket.id}
+            ticketState={ticket.state}
+            declaredOutputs={declaredOutputsRes.success ? declaredOutputsRes.data : []}
+          />
           <TicketRunAsAuthorization ticket={ticket} canManageRunAs={canManageRunAs} />
           {canStartProcess && <TicketProcessStartPanel ticket={ticket} definitions={definitions} />}
           <TicketHistory transitions={transitions} />

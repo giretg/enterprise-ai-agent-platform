@@ -38,10 +38,12 @@ export async function POST(request: Request) {
     consequenceApprovalIds,
     connectorGrantContinuation,
     taskBriefing,
+    projectKey,
   } = body as {
     agentId?: string
     content?: string
     conversationId?: string
+    projectKey?: string
     attachmentDocumentIds?: string[]
     processDefinitionId?: string
     processInputPayload?: Record<string, unknown>
@@ -162,6 +164,9 @@ export async function POST(request: Request) {
     createdById: user.user.id,
     tenantId: user.activeTenantId,
     conversationId: continuationConversationId ?? conversationId,
+    ...(!continuationContent && typeof projectKey === 'string' && projectKey.trim()
+      ? { projectKey: projectKey.trim() }
+      : {}),
     // Folytatáskor a kliens csak azonosítót küld: se csatolmány, se folyamat-indítás
     // nem utazhat vele — a forduló tartalmát teljes egészében a szerver adja.
     ...(continuationContent

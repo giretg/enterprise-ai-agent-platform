@@ -31,6 +31,9 @@ export const ticketIdSchema = z.object({
   id: z.string().uuid(),
 })
 
+/** Ticket/chat projekt-hatókör. Üres → Általános. */
+export const assignedProjectKeySchema = z.string().trim().max(120).optional()
+
 export const scheduledTaskIdSchema = z.object({
   id: z.string().uuid(),
 })
@@ -241,6 +244,7 @@ export const createBoardTicketSchema = z
     recurrence: ticketScheduleRecurrenceSchema.optional(),
     intervalHours: ticketScheduleIntervalHoursSchema.optional(),
     maxRuns: ticketScheduleMaxRunsSchema.nullable().optional(),
+    projectKey: assignedProjectKeySchema,
   })
   .refine((args) => args.assigneeType !== 'agent' || args.assigneeId, {
     message: 'assigneeId is required when assigneeType is agent',
@@ -301,6 +305,11 @@ export const kbTicketSchema = z.object({
   ticketId: z.string().uuid(),
 })
 
+export const setKbDocumentProcessingModeSchema = z.object({
+  ticketId: z.string().uuid(),
+  processingMode: z.enum(['raw_text_only', 'okf']),
+})
+
 export const shareKnowledgeBaseSchema = z.object({
   agentId: z.string().uuid(),
   targetAgentId: z.string().uuid(),
@@ -346,6 +355,7 @@ export const createAgentTaskTicketSchema = z.object({
     .optional(),
   authorizeRunAs: z.boolean().optional(),
   briefing: taskBriefingSchema.optional(),
+  projectKey: assignedProjectKeySchema,
 }).refine((v) => v.content.length > 0 || (v.attachmentDocumentIds?.length ?? 0) > 0, {
   message: 'A feladat leírása vagy legalább egy csatolmány kötelező',
 })
@@ -370,6 +380,7 @@ export const createScheduledAgentTaskSchema = z.object({
   intervalHours: ticketScheduleIntervalHoursSchema.optional(),
   maxRuns: ticketScheduleMaxRunsSchema.nullable().optional(),
   authorizeRunAs: z.boolean().optional(),
+  projectKey: assignedProjectKeySchema,
 })
 
 export const loadAgentChatSchema = z.object({
@@ -627,6 +638,29 @@ export const createAgentSchema = z.object({
     modelType: modelTypeSchema.optional(),
     temperature: z.number().min(0).max(2).optional(),
     maxTokens: z.number().int().positive().optional(),
+  }),
+})
+
+export const getAgentCloneTemplateSchema = z.object({
+  sourceAgentId: z.string().uuid(),
+})
+
+export const applyAgentCloneSettingsSchema = z.object({
+  targetAgentId: z.string().uuid(),
+  settings: z.object({
+    enabledTools: z.array(z.string()),
+    skillVersionIds: z.array(z.string().uuid()),
+    connectors: z.array(
+      z.object({
+        connectorId: z.string().uuid(),
+        accessMode: z.enum(['read', 'write']),
+        name: z.string().optional(),
+      }),
+    ),
+    taskOnly: z.boolean(),
+    hiddenFromOperators: z.boolean(),
+    allowSensitiveExternalModel: z.boolean(),
+    selfEvolutionProfile: z.unknown().optional(),
   }),
 })
 

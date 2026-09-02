@@ -13,6 +13,7 @@ export type ControlPlanePanelDef = {
 
 const EYEBROW: Record<string, string> = {
   board: 'Munkatábla',
+  projects: 'Munka',
   account: 'Fiók',
   automation: 'Automatizálás',
   admin: 'Adminisztráció',

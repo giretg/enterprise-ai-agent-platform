@@ -57,6 +57,7 @@ import {
   memoryContextSystemMessages,
   trainedRulesSystemMessages,
 } from '../memory/memory-runtime-helper'
+import { resolveWorkProjectBrief } from '../work-project/work-project-service'
 import type { MemoryRetrievalService } from '../memory/memory-retrieval-service'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
@@ -522,6 +523,8 @@ export type AgentChatSendParams = {
   createdById: string
   tenantId?: string | null
   conversationId?: string
+  /** Új beszélgetésnél a memória-hatókör. Meglévő szálon, ha a kliens küldi, a kulcs frissül. */
+  projectKey?: string
   attachmentDocumentIds?: string[]
   processDefinitionId?: string
   processInputPayload?: Record<string, unknown>
@@ -686,6 +689,7 @@ export class AgentChatRuntime {
       mode: PrivacyGatewayMode
       policy: ResolvedPrivacyCategoryPolicy
     }>,
+    private workProjects?: import('@/repositories/interfaces').WorkProjectRepository,
   ) {}
 
   /**
@@ -1157,6 +1161,17 @@ export class AgentChatRuntime {
       if (existing.conversation.agentId !== params.agentId) {
         return { kind: 'error', error: new Error('Conversation agent mismatch') }
       }
+      if (
+        params.projectKey &&
+        params.tenantId &&
+        params.projectKey !== existing.conversation.projectKey
+      ) {
+        await this.conversations.setProjectKey({
+          conversationId,
+          tenantId: params.tenantId,
+          projectKey: params.projectKey,
+        })
+      }
     } else {
       const title = (text || 'Új beszélgetés').slice(0, 80)
       const created = await this.conversations.createConversation({
@@ -1164,6 +1179,7 @@ export class AgentChatRuntime {
         createdById: params.createdById,
         tenantId: params.tenantId ?? null,
         title,
+        projectKey: params.projectKey ?? '__general__',
       })
       conversationId = created.id
     }
@@ -2079,6 +2095,7 @@ export class AgentChatRuntime {
     createdById: string
     tenantId?: string | null
     conversationId?: string | null
+    projectKey?: string
     attachmentDocumentIds?: string[]
     executeAfter?: Date | null
     authorizeRunAs?: boolean
@@ -2129,12 +2146,24 @@ export class AgentChatRuntime {
       if (existing.conversation.agentId !== params.agentId) {
         throw new Error('Conversation agent mismatch')
       }
+      if (
+        params.projectKey &&
+        params.tenantId &&
+        params.projectKey !== existing.conversation.projectKey
+      ) {
+        await this.conversations.setProjectKey({
+          conversationId,
+          tenantId: params.tenantId,
+          projectKey: params.projectKey,
+        })
+      }
     } else {
       const created = await this.conversations.createConversation({
         agentId: params.agentId,
         createdById: params.createdById,
         tenantId: params.tenantId ?? null,
         title: titleSource.slice(0, 80),
+        projectKey: params.projectKey ?? '__general__',
       })
       conversationId = created.id
     }
@@ -2149,6 +2178,7 @@ export class AgentChatRuntime {
       agentId: params.agentId,
       playbookRef: null,
       conversationId,
+      projectKey: params.projectKey ?? '__general__',
       payload: {
         question: text,
         source: 'agent_chat',
@@ -2744,6 +2774,7 @@ export class AgentChatRuntime {
     tenantId: string | null
     conversationId: string
   }) {
+    const brief = await resolveWorkProjectBrief(this.workProjects, params.tenantId, params.projectKey)
     return loadProjectMemoryContext({
       memoryRetrieval: this.memoryRetrieval,
       audit: this.audit,
@@ -2751,6 +2782,7 @@ export class AgentChatRuntime {
       agentVersion: params.agentDetails.agent.currentVersion,
       tenantId: params.tenantId,
       conversationId: params.conversationId,
+      brief,
       request: buildMemoryRetrievalRequest({
         agentId: params.agentDetails.agent.id,
         memoryId: params.agentDetails.agent.memoryId,

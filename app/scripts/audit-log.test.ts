@@ -25,6 +25,12 @@ import type { AuditRepository } from '../src/repositories/interfaces'
 const APPEND_ACTION_RE = /audit\.append\(\{[\s\S]*?\baction: '([^']+)'/g
 /** A Futás-elemző wrapperen át menő action-literálok — nem `audit.append({ action:`. */
 const WRAPPER_ACTION_RE = /appendRunAnalysisAudit\([\s\S]*?\baction: '([^']+)'/g
+/**
+ * Domain-service wrapper: `this.append(tenantId, actor, { action: '...' })`.
+ * A Playbook/process runtime így ír — a közvetlen `audit.append` regex ezt
+ * kihagyta, ezért új process-események (pl. human_override) élesben buktak.
+ */
+const SERVICE_APPEND_ACTION_RE = /this\.append\([\s\S]*?\baction: '([^']+)'/g
 
 function collectSourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -504,7 +510,7 @@ async function main() {
     const unregistered: string[] = []
     for (const file of collectSourceFiles(path.join(__dirname, '..', 'src'))) {
       const source = readFileSync(file, 'utf8')
-      for (const re of [APPEND_ACTION_RE, WRAPPER_ACTION_RE]) {
+      for (const re of [APPEND_ACTION_RE, WRAPPER_ACTION_RE, SERVICE_APPEND_ACTION_RE]) {
         re.lastIndex = 0
         for (const [, action] of source.matchAll(re)) {
           if (!REGISTERED_AUDIT_ACTIONS.has(action)) {

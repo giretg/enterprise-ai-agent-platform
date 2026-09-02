@@ -1,5 +1,13 @@
 /** Új-agent varázsló: lépések, kapuk és a „közben eszembe jutott” új-ablakos útvonalak. */
 
+import {
+  DEFAULT_MODEL_TYPE,
+  isModelType,
+  normalizeModelForProvider,
+  type ModelProviderOption,
+  type ModelType,
+} from '@/lib/model-providers'
+
 export const CREATE_AGENT_WIZARD_STEPS = [
   {
     id: 'identity',
@@ -211,4 +219,52 @@ export function assignableConnectorsFromCatalog<T extends { id: string; type: st
     (connector) =>
       (connector.type === 'http_api' || connector.type === 'gmail') && !assigned.has(connector.id),
   )
+}
+
+/** Meglévő agent másolásához — pre-create + post-create beállítások sablonja. */
+export type CreateAgentWizardCloneTemplate = {
+  sourceAgentId: string
+  sourceAgentName: string
+  role: 'worker' | 'orchestrator'
+  roleInstruction: string
+  behaviorProfile: string
+  behaviorProfileId: string
+  modelConfig: {
+    provider: string
+    model: string
+    modelType: ModelType
+    temperature: number
+  }
+  enabledTools: string[]
+  skillVersionIds: string[]
+  connectors: Array<{ connectorId: string; accessMode: 'read' | 'write'; name: string }>
+  taskOnly: boolean
+  hiddenFromOperators: boolean
+  allowSensitiveExternalModel: boolean
+  selfEvolutionProfile: unknown
+}
+
+export function parseAgentModelConfigForWizard(
+  raw: unknown,
+  providers: ModelProviderOption[],
+): CreateAgentWizardCloneTemplate['modelConfig'] {
+  const fallbackProvider = providers[0]?.value ?? 'chatgpt-oauth'
+  const fallbackModel =
+    providers.find((p) => p.value === fallbackProvider)?.defaultModel ?? 'chatgpt-oauth-default'
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const provider =
+    typeof record.provider === 'string' && providers.some((p) => p.value === record.provider)
+      ? record.provider
+      : fallbackProvider
+  const model = normalizeModelForProvider(
+    provider,
+    typeof record.model === 'string' ? record.model : fallbackModel,
+    providers,
+  )
+  const modelType = isModelType(record.modelType) ? record.modelType : DEFAULT_MODEL_TYPE
+  const temperature =
+    typeof record.temperature === 'number' && Number.isFinite(record.temperature)
+      ? record.temperature
+      : 0.2
+  return { provider, model, modelType, temperature }
 }

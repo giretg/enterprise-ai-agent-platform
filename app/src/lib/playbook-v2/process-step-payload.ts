@@ -10,6 +10,7 @@ import type {
   StepOutcomeStatus,
 } from '@/lib/playbook-v2/spec'
 import { STEP_OUTCOME_FIELD } from '@/lib/playbook-v2/spec'
+import { isWorkspacePathSlotName } from '@/domain/playbook/workspace-handoff'
 import { extractJsonObject } from '@/lib/extract-json-object'
 import { stringifyValue } from '@/lib/playbook-v2/effective-prompt'
 
@@ -258,7 +259,7 @@ export type StepOutcomeSignals = {
   toolCallCount: number
   /** A pre-fetch kb_search engedélyezett volt ÉS 0 találatot adott (diagnosztikai jel). */
   kbZeroHit: boolean
-  /** Bármely tool-hívást a broker megtagadott (denied). */
+  /** Bármely tool-hívást a broker megtagadott (grant/policy DENY) — NEM a skill-hatókör policy-skip. */
   toolDenied?: boolean
   /**
    * Hibapolicy spec §5.1/WP-3 — a lépés outputContract kötelező mezői közül melyik
@@ -275,7 +276,7 @@ export type StepOutcomeSignals = {
  * A step gépi `outcome`-ja a HARD SIGNALOKBÓL, determinisztikusan — az agent optimista
  * önbevallását felülírva (§10.1). NEM az agent prózáját elemzi.
  *
- *  - `failed`  — a tool-loop kimerült VAGY a broker tool-hívást tagadott meg;
+ *  - `failed`  — a tool-loop kimerült VAGY a broker grant/policy elutasított (NEM skill-hatókör skip);
  *  - `blocked` — a lépés outputContract kötelező mezői hiányoznak a végleges kimenetből;
  *  - `ok`      — egyébként (a happy path érintetlen; visszafelé kompatibilis).
  */
@@ -386,9 +387,13 @@ export function normalizeAgentStepResult(
   if (typeof answer !== 'string' || !answer.trim()) return normalized
 
   for (const field of rule?.outputRequiredFields ?? []) {
-    if (!slotValuePresent(normalized[field])) {
-      normalized[field] = answer
-    }
+    if (slotValuePresent(normalized[field])) continue
+    // Path-slotba (…Path/…File/…Document) NEM másoljuk a prózát: a szerződés
+    // ettől „teljesültnek" látszana, a következő lépés pedig egy több száz
+    // karakteres mondatot kapna fájlnév gyanánt. Maradjon hiányzó — így a
+    // kimeneti szerződés bukik, és emberi felülvizsgálatra megy a lépés.
+    if (isWorkspacePathSlotName(field)) continue
+    normalized[field] = answer
   }
   return normalized
 }

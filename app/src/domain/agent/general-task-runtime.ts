@@ -6,6 +6,7 @@ import type {
   ProcessRepository,
   TicketRepository,
   ToolBrokerRepository,
+  WorkProjectRepository,
 } from '@/repositories/interfaces'
 import type { Prisma } from '@prisma/client'
 import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
@@ -60,6 +61,7 @@ import {
   trainedRulesSystemMessages,
 } from '../memory/memory-runtime-helper'
 import type { MemoryRetrievalService } from '../memory/memory-retrieval-service'
+import { resolveWorkProjectBrief } from '../work-project/work-project-service'
 import type { ModelGateway, ModelConfig } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
@@ -198,6 +200,7 @@ export class GeneralTaskRuntime {
     private agentAccess?: AgentAccessService,
     /** Következmény-kapu (http_api_request write) — task ticketen is kell gomb. */
     private consequenceApprovals?: ConsequenceApprovalService,
+    private workProjects?: WorkProjectRepository,
   ) {}
 
   async processTicket(params: { ticketId: string; agentId: string }) {
@@ -899,9 +902,9 @@ export class GeneralTaskRuntime {
       toolCallCount,
       // Ha a broker BÁRMELY tool-hívást megtagadott (grant/policy DENY), a lépés hard-signal
       // `failed` — az agent nem tudta elvégezni a rábízott műveletet (pl. hiányzó Gmail-olvasási
-      // jog), akkor sem, ha a záró prózája ezt „ok"-ként tünteti fel. Így a Folyamat a hibaágra
-      // (onError/onBlocked → emberi felülvizsgálat) kerül, nem némán „completed"-ként zárul.
-      toolDenied: loopResult.deniedCount > 0,
+      // jog), akkor sem, ha a záró prózája ezt „ok"-ként tünteti fel. A skill-hatókörön kívüli
+      // elutasítás ide NEM tartozik (brokerDeniedCount).
+      toolDenied: loopResult.brokerDeniedCount > 0,
       kbZeroHit: kbSearch.enabled && kbSearch.hits.length === 0,
       missingOutputFields,
       contractErrorMessage: contractHumanSummary,
@@ -1260,10 +1263,8 @@ export class GeneralTaskRuntime {
   private async resolveProjectKeyForTicket(
     ticket: NonNullable<Awaited<ReturnType<TicketRepository['findById']>>>,
   ): Promise<string> {
-    if (ticket.processInstanceId && this.processes) {
-      const process = await this.processes.findProcess(ticket.tenantId, ticket.processInstanceId)
-      if (process?.processDefinitionId) return process.processDefinitionId
-    }
+    const explicit = ticket.projectKey?.trim()
+    if (explicit) return explicit
     return '__general__'
   }
 
@@ -1277,6 +1278,11 @@ export class GeneralTaskRuntime {
       return { block: null, tokens: 0, memoryMode: 'degraded' as const }
     }
     const projectKey = await this.resolveProjectKeyForTicket(params.ticket)
+    const brief = await resolveWorkProjectBrief(
+      this.workProjects,
+      params.ticket.tenantId,
+      projectKey,
+    )
     return loadProjectMemoryContext({
       memoryRetrieval: this.memoryRetrieval,
       audit: this.audit,
@@ -1285,6 +1291,7 @@ export class GeneralTaskRuntime {
       tenantId: params.ticket.tenantId,
       ticketId: params.ticket.id,
       conversationId: params.ticket.conversationId ?? null,
+      brief,
       request: buildMemoryRetrievalRequest({
         agentId: params.agentDetails.agent.id,
         memoryId: params.agentDetails.agent.memoryId,

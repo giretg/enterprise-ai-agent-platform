@@ -1,3 +1,4 @@
+import { isClerkEnabled } from '@/lib/clerk-config'
 import { CONTROL_PLANE_PANELS } from '@/lib/control-plane-panels'
 
 /** Middleware-barát panel → href map (embed rewrite). */
@@ -19,4 +20,15 @@ export function isControlPlaneEmbedRequest(h: {
   get(name: string): string | null
 }): boolean {
   return h.get('x-cp-embed') === '1' || h.get('sec-fetch-dest') === 'iframe'
+}
+
+/**
+ * Modal-iframe-ben a Clerk kliens (session refresh / redirect) összeakadhat a
+ * szülő ablak munkamenetével — a szerver oldali auth (middleware + Server Action)
+ * elég, a gyerek dokumentumnak nem kell ClerkProvider.
+ */
+export function isClerkClientEnabledForRequest(h: {
+  get(name: string): string | null
+}): boolean {
+  return isClerkEnabled() && !isControlPlaneEmbedRequest(h)
 }

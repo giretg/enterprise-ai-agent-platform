@@ -10,6 +10,10 @@ const URL_SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:/
 const FILE_EXTENSION = /\.[A-Za-z][A-Za-z0-9]{0,9}$/
 const EMAIL_ADDRESS = /^[^\s/@]+@[^\s/@]+\.[^\s/@]+$/
 const WORKSPACE_PATH_SLOT = /(path|file|artifact|document|attachment)$/i
+/** Egy workspace-fájlnév ennél hosszabb nem lehet (POSIX NAME_MAX alatt maradunk). */
+const MAX_HANDOFF_SEGMENT_CHARS = 200
+/** Teljes relatív útvonal felső korlátja. */
+const MAX_HANDOFF_PATH_CHARS = 512
 
 declare const workspaceRelativePathBrand: unique symbol
 export type WorkspaceRelativePath = string & {
@@ -42,14 +46,25 @@ function isUrl(value: string): boolean {
 function parseWorkspaceRelativePath(value: string): WorkspaceRelativePath | null {
   const trimmed = value.trim()
   if (!trimmed) return null
+  // Próza nem útvonal. Egy modell-válasz a benne lévő törtek („1/1", „43/15")
+  // miatt path-nak látszott, és a tár egy több száz karakteres fájlnévvel
+  // próbálkozott (lokálisan ENAMETOOLONG, GCS-en néma szemétkulcs).
+  if (trimmed.length > MAX_HANDOFF_PATH_CHARS) return null
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return null
   if (isUrl(trimmed) || isAbsolutePath(trimmed) || EMAIL_ADDRESS.test(trimmed)) return null
   const withSlashes = trimmed.replace(/\\/g, '/')
   const parts = withSlashes.split('/').filter((part) => part.length > 0 && part !== '.')
   if (parts.length === 0) return null
   if (parts.some((part) => part === '..')) return null
+  if (parts.some((part) => part.length > MAX_HANDOFF_SEGMENT_CHARS)) return null
   return parts.join('/') as WorkspaceRelativePath
 }
 
+/**
+ * Kiterjesztés VAGY könyvtáras alak. (Utóbbi szándékos: a folyamatok
+ * kiterjesztés nélküli handoff-útvonalat is használhatnak.) A prózát nem itt,
+ * hanem a hossz- és vezérlőkarakter-kapun szűrjük ki.
+ */
 function looksLikeWorkspaceRelativePath(normalized: string): boolean {
   if (FILE_EXTENSION.test(normalized)) return true
   return normalized.includes('/')
@@ -73,6 +88,11 @@ export function collectHandoffCandidatePaths(
     out.push(normalized)
   }
   return out
+}
+
+/** Path/artifact jellegű kontraktus-mezőnév (ide fájl-útvonal való, nem próza). */
+export function isWorkspacePathSlotName(name: string): boolean {
+  return WORKSPACE_PATH_SLOT.test(name)
 }
 
 /**

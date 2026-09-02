@@ -8,6 +8,7 @@
  * kulturált, márka-illesztett UI-t ad `reset()`-tel újrapróbálkozáshoz.
  */
 import { useEffect } from 'react'
+import { CP_EMBED_READY_MESSAGE } from '@/lib/control-plane-embed-messages'
 import { captureException } from '@/lib/observability'
 
 export default function Error({
@@ -19,6 +20,11 @@ export default function Error({
 }) {
   useEffect(() => {
     captureException(error, { source: 'app-error-boundary', digest: error.digest ?? null })
+    // Modal-iframe: a szülő overlay addig nem tűnik el, amíg cp-embed-ready nem jön —
+    // hiba esetén is jelezzünk, hogy a felhasználó lássa a hibaüzenetet, ne csak „Betöltés…”.
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: CP_EMBED_READY_MESSAGE }, window.location.origin)
+    }
   }, [error])
 
   return (

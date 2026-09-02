@@ -199,6 +199,7 @@ export interface TicketRepository {
       | 'cancelRequested'
       | 'cancelRequestedById'
       | 'cancelRequestedAt'
+      | 'projectKey'
     > &
       Partial<
         Pick<
@@ -216,6 +217,7 @@ export interface TicketRepository {
           | 'cancelRequested'
           | 'cancelRequestedById'
           | 'cancelRequestedAt'
+          | 'projectKey'
         >
       > & {
         /** A tickettel egy tranzakcióban létrehozott első komment és csatolmányai. */
@@ -245,6 +247,7 @@ export interface TicketRepository {
         | 'cancelRequestedById'
         | 'cancelRequestedAt'
         | 'executeAfter'
+        | 'projectKey'
       >
     >,
   ): Promise<Ticket>
@@ -1061,6 +1064,35 @@ export interface MemoryVersionRepository {
   }): Promise<MemoryVersion[]>
 }
 
+export type WorkProjectRecord = {
+  id: string
+  tenantId: string
+  key: string
+  name: string
+  description: string | null
+  createdById: string
+  createdAt: Date
+  updatedAt: Date
+  archivedAt: Date | null
+}
+
+export interface WorkProjectRepository {
+  listByTenant(tenantId: string, opts?: { includeArchived?: boolean }): Promise<WorkProjectRecord[]>
+  findById(id: string): Promise<WorkProjectRecord | null>
+  findByKey(tenantId: string, key: string): Promise<WorkProjectRecord | null>
+  create(data: {
+    tenantId: string
+    key: string
+    name: string
+    description: string | null
+    createdById: string
+  }): Promise<WorkProjectRecord>
+  update(
+    id: string,
+    patch: { name?: string; description?: string | null; archivedAt?: Date | null },
+  ): Promise<WorkProjectRecord>
+}
+
 export interface PlatformSettingsRepository {
   get(key: string): Promise<unknown | null>
   /** `Prisma.JsonNull` a „nincs érték” — a `value` oszlop nem nullable, törölni nem tudunk. */
@@ -1745,6 +1777,7 @@ export interface ConversationRepository {
   }): Promise<Conversation>
   findById(id: string): Promise<Conversation | null>
   findByIdForTenant(id: string, tenantId: string | null): Promise<Conversation | null>
+  updateProjectKey(id: string, projectKey: string): Promise<Conversation>
   list(params: {
     tenantId?: string | null
     agentId?: string

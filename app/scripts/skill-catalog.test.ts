@@ -1104,6 +1104,7 @@ async function main() {
       'a skill-hatókör mellett az infra-eszközök (extract/read) továbbra is jelezve vannak',
     )
     assert.equal(result.deniedCount, 1, 'a hívás elutasításra került')
+    assert.equal(result.brokerDeniedCount, 0, 'skill-hatókör skip nem broker-deny — nem fatal lépés-outcome')
     assert.ok(result.content.includes('Nem tudom elvégezni.'))
   })
 

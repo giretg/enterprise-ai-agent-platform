@@ -9,10 +9,12 @@ import { promptDialog } from '@/components/ui/confirm-dialog'
 import { Badge } from '@/components/ui/shell'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
 import { formatTicketDateTime } from '@/lib/ticket-display'
-import { PROCESS_STATUS_CLASS } from '@/lib/process-labels'
+import { PROCESS_STATUS_CLASS, PROCESS_STEP_STATUS_LABELS } from '@/lib/process-labels'
+import { compactProcessSupportTicketLabel } from '@/lib/work-traceability'
+import { isProcessStalled, processStepTraceStatus } from '@/lib/process-stall'
 import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
 import { TicketThread, type TicketThreadComment } from '@/components/tickets/ticket-thread'
-import { PlaybookFlowGraph, type TraceStatus, type TraceOverlay } from '@/components/playbooks/playbook-flow-graph'
+import { PlaybookFlowGraph, type NodeClickPayload, type TraceOverlay } from '@/components/playbooks/playbook-flow-graph'
 import { RunAnalysisButton } from '@/components/run-analysis/run-analysis-button'
 
 export type ProcessStepView = {
@@ -98,6 +100,13 @@ export type ProcessDetailData = {
   steps: ProcessStepView[]
   delegations: DelegationView[]
   gateTickets: GateTicketView[]
+  /** Playbook-lépéshez nem kötött folyamat-ticketek (pl. emberi felülvizsgálat fallback). */
+  supportTickets: Array<{
+    ticketId: string
+    title: string
+    state: string
+    playbookStepId: string | null
+  }>
   actualFlow: ActualFlow | null
   blockedReasons: Array<{ createdAt: string; stepId: string | null; reason: string }>
   intended: IntendedFlow | null
@@ -155,6 +164,16 @@ export function ProcessDetailView({
     }
   }, [isTerminal, router])
 
+  // A folyamat elakadt-e, és mely TERVEZETT lépésekhez nem jött létre futás-példány.
+  const stalled = isProcessStalled(data.process.status)
+  const startedStepIds = new Set(data.steps.map((s) => s.stepId))
+  const stepNameById = new Map(
+    [...data.steps, ...(data.intended?.steps ?? [])].map((s) => [s.stepId, s.stepName]),
+  )
+  const unstartedSteps = (data.intended?.steps ?? []).filter(
+    (step) => !startedStepIds.has(step.stepId),
+  )
+
   const gatesByStep = new Map<string, IntendedFlow['gates']>()
   for (const gate of data.intended?.gates ?? []) {
     gatesByStep.set(gate.stepId, [...(gatesByStep.get(gate.stepId) ?? []), gate])
@@ -169,29 +188,44 @@ export function ProcessDetailView({
   const actualStepById = new Map((data.actualFlow?.executedSteps ?? []).map((s) => [s.stepId, s]))
 
   // WP-1 §4 — trace-overlay a folyamat-gráfhoz: node-státusz + bejárt/eltérő élek.
-  const stepStatusToTrace = (status: string): TraceStatus => {
-    switch (status) {
-      case 'completed':
-        return 'done'
-      case 'failed':
-        return 'failed'
-      case 'awaiting_gate':
-        return 'awaiting'
-      case 'skipped':
-        return 'skipped'
-      case 'ready':
-      case 'in_progress':
-        return 'running'
-      default:
-        return 'pending'
-    }
-  }
+  const intendedStepIds = (data.intended?.steps ?? data.steps).map((s) => s.stepId)
+  const stalledStepId =
+    data.blockedReasons.find((item) => item.stepId)?.stepId ??
+    [...data.steps].reverse().find((s) => s.status === 'failed' || s.status === 'awaiting_gate')
+      ?.stepId ??
+    null
+  const instanceByStepId = new Map(data.steps.map((s) => [s.stepId, s]))
   const traceOverlay: TraceOverlay = {
-    nodeStatus: Object.fromEntries(data.steps.map((s) => [s.stepId, stepStatusToTrace(s.status)])),
+    nodeStatus: Object.fromEntries(
+      intendedStepIds.map((stepId) => {
+        const instance = instanceByStepId.get(stepId)
+        return [
+          stepId,
+          processStepTraceStatus(instance?.status ?? 'pending', {
+            stalledHere: stalled && stalledStepId === stepId,
+            processFailed: data.process.status === 'failed',
+          }),
+        ]
+      }),
+    ),
     traversedEdges: (data.actualFlow?.actualEdges ?? []).map((e) => `${e.fromStepId}→${e.toStepId}`),
     deviationEdges: (data.actualFlow?.actualEdges ?? [])
       .filter((e) => !e.inIntended)
       .map((e) => `${e.fromStepId}→${e.toStepId}`),
+  }
+  const graphClickableIds = [
+    ...data.steps.filter((s) => s.ticketId).map((s) => s.stepId),
+    ...data.gateTickets.map((g) => g.gateId),
+  ]
+
+  function openGraphNode(payload: NodeClickPayload) {
+    if (payload.type === 'step') {
+      const step = data.steps.find((s) => s.stepId === payload.id)
+      if (step?.ticketId) setOpenTicketId(step.ticketId)
+      return
+    }
+    const gate = data.gateTickets.find((g) => g.gateId === payload.id)
+    if (gate) setOpenTicketId(gate.ticketId)
   }
 
   function doTransition(ticketId: string, toState: string, evidenceRequired: boolean) {
@@ -321,6 +355,12 @@ export function ProcessDetailView({
       {/* Step timeline + gate panel */}
       <section className="atelier-card p-5">
         <h2 className="mb-4 font-display text-lg font-semibold">Lépések</h2>
+        {stalled && unstartedSteps.length > 0 && (
+          <p className="mb-3 rounded-lg border border-honey/30 bg-honey/[0.07] px-3 py-2 text-sm text-ink">
+            A futás elakadt: a tervezett lépések közül {unstartedSteps.length} el sem indult. Ezek a
+            lista végén, {'„Nem indult el”'} jelöléssel szerepelnek.
+          </p>
+        )}
         <ol className="space-y-3">
           {data.steps.map((s) => {
             const gates = gatesByStep.get(s.stepId) ?? []
@@ -349,7 +389,9 @@ export function ProcessDetailView({
                     <span className="font-medium">{s.stepName}</span>
                     <span className="ml-2 font-mono text-xs text-ink-soft">{s.stepId}</span>
                   </div>
-                  <Pill tone={STEP_TONE[s.status] ?? 'bg-ink/8 text-ink-soft'}>{s.status}</Pill>
+                  <Pill tone={STEP_TONE[s.status] ?? 'bg-ink/8 text-ink-soft'}>
+                    {PROCESS_STEP_STATUS_LABELS[s.status] ?? s.status}
+                  </Pill>
                 </div>
                 <p className="mt-1 text-xs text-ink-soft">
                   Szerep: {s.assignedRole}
@@ -388,9 +430,70 @@ export function ProcessDetailView({
               </li>
             )
           })}
-          {data.steps.length === 0 && <li className="text-sm text-ink-soft">Még nincs lépés.</li>}
+          {/* A soha el nem indult lépések: enélkül a felületen egyszerűen NEM LÉTEZTEK,
+              és úgy tűnt, a folyamat egylépéses. */}
+          {unstartedSteps.map((step) => (
+            <li
+              key={`unstarted-${step.stepId}`}
+              className="rounded-lg border border-dashed border-ink/15 bg-ink/[0.02] p-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span className="font-medium text-ink-soft">{step.stepName}</span>
+                  <span className="ml-2 font-mono text-xs text-ink-faint">{step.stepId}</span>
+                </div>
+                <Pill tone={stalled ? 'bg-honey/15 text-honey' : 'bg-ink/8 text-ink-soft'}>
+                  {stalled ? 'Nem indult el' : 'Következik'}
+                </Pill>
+              </div>
+              <p className="mt-1 text-xs text-ink-faint">
+                {stalled
+                  ? 'A folyamat elakadt egy korábbi lépésen, ezért ehhez a lépéshez feladat sem jött létre.'
+                  : 'A folyamat még nem jutott el eddig a lépésig.'}
+              </p>
+            </li>
+          ))}
+          {data.steps.length === 0 && unstartedSteps.length === 0 && (
+            <li className="text-sm text-ink-soft">Még nincs lépés.</li>
+          )}
         </ol>
       </section>
+
+      {data.supportTickets.length > 0 && (
+        <section className="atelier-card p-5">
+          <h2 className="mb-3 font-display text-lg font-semibold">További feladatok</h2>
+          <p className="mb-3 text-sm text-ink-soft">
+            Ezek a ticketek a folyamathoz tartoznak, de nem külön playbook-lépésként futnak (pl. emberi
+            felülvizsgálat hiba után).
+          </p>
+          <ul className="space-y-2">
+            {data.supportTickets.map((ticket) => (
+              <li key={ticket.ticketId}>
+                <Link
+                  href={`/control-plane/tickets/${ticket.ticketId}`}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-ink/10 px-3 py-2 text-sm transition-colors hover:border-accent/40 hover:bg-accent/5"
+                >
+                  <span className="font-medium">
+                    {compactProcessSupportTicketLabel(
+                      { title: ticket.title, playbookStepId: ticket.playbookStepId },
+                      stepNameById,
+                    )}
+                  </span>
+                  <Pill
+                    tone={
+                      TICKET_STATE_TONE[ticket.state as keyof typeof TICKET_STATE_TONE] ??
+                      'bg-ink/8 text-ink-soft'
+                    }
+                  >
+                    {TICKET_STATE_LABELS[ticket.state as keyof typeof TICKET_STATE_LABELS] ??
+                      ticket.state}
+                  </Pill>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section className="atelier-card p-5">
         <h2 className="mb-4 font-display text-lg font-semibold">Kapuk</h2>
@@ -476,7 +579,14 @@ export function ProcessDetailView({
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-soft">
                 Folyamat-trace (a tervezett gráfra rárajzolva)
               </p>
-              <PlaybookFlowGraph spec={data.spec} traceOverlay={traceOverlay} />
+              <PlaybookFlowGraph
+                spec={data.spec}
+                traceOverlay={traceOverlay}
+                clickableIds={graphClickableIds}
+                showEditGlyph={false}
+                clickHint="kattints a feladat megnyitásához"
+                onNodeClick={openGraphNode}
+              />
             </div>
           ) : null}
           <div className="grid gap-4 md:grid-cols-2">

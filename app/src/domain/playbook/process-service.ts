@@ -16,7 +16,7 @@
  * A determinisztikus döntéseket a `@/lib/playbook-v2/runtime` (`evaluateAdvance`)
  * tiszta magja hozza; ez a service köti DB-hez és audithoz.
  */
-import type { Prisma, ProcessInstance, ProcessTriggerType, TicketState } from '@prisma/client'
+import type { Prisma, ProcessInstance, ProcessTriggerType, Ticket, TicketState } from '@prisma/client'
 import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
 import { evaluateAdvance, type AdvanceDecision } from '@/lib/playbook-v2/runtime'
 import { stringifyValue } from '@/lib/playbook-v2/effective-prompt'
@@ -28,7 +28,12 @@ import {
   resolveStepInputPayload,
 } from '@/lib/playbook-v2/process-step-payload'
 import { ADVANCEABLE_PROCESS_STATUSES } from '@/lib/playbook-v2/process-status'
-import { formatPlaybookRefV2, parsePlaybookSpecV2, type PlaybookRole } from '@/lib/playbook-v2/spec'
+import {
+  formatPlaybookRefV2,
+  parsePlaybookSpecV2,
+  STEP_OUTCOME_FIELD,
+  type PlaybookRole,
+} from '@/lib/playbook-v2/spec'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
 import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
 import { isHumanUserSuitable } from '@/domain/playbook/human-role-suitability'
@@ -156,6 +161,16 @@ function errorRouteSourceOf(
     }
   }
   return null
+}
+
+/** Ugyanarra a lépésre ennyi emberi kezdeményezésű újrafuttatást engedünk. */
+export const MAX_HUMAN_RETRY_ATTEMPTS = 3
+
+/** Lezárt ticket-állapotok — a folyamat leállításakor ezeket már nem bántjuk. */
+const TERMINAL_TICKET_STATES = new Set<string>(['done', 'approved', 'rejected'])
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export class ProcessService {
@@ -897,6 +912,328 @@ export class ProcessService {
       metadata: { process_instance_id: process.id, reason: input.reason },
     })
     return updated
+  }
+
+  /**
+   * ── Emberi felülvizsgálat lezárása ────────────────────────────────────────
+   *
+   * A `await_human` ág egy MÁSIK ticketet nyit („Emberi felülvizsgálat: …"), a
+   * lépés saját ticketje pedig `done` marad. Eddig ezen a ponton a felhasználó
+   * nem tudott mit tenni: a generikus állapotgombok megkerülték a folyamatot, a
+   * felülvizsgálati ticketnek nincs agentje (a diszpécser sosem veszi fel), a
+   * kommentje pedig nem jutott el senkihez. Az alábbi három metódus a HÁROM
+   * értelmes döntést valósítja meg — mindegyik a folyamaton hagy nyomot.
+   */
+
+
+  private async loadReviewContext(tenantId: string | null, reviewTicketId: string) {
+    const review = await this.tickets.findById(reviewTicketId)
+    if (!review || (tenantId !== null && review.tenantId !== tenantId)) {
+      throw new ProcessServiceError('NOT_FOUND_OR_FORBIDDEN', 'A feladat nem található vagy nincs jogosultság.')
+    }
+    if (!review.processInstanceId || !review.playbookStepId) {
+      throw new ProcessServiceError('INVALID_STATE', 'Ez a feladat nem folyamat-lépéshez tartozik.')
+    }
+    const process = await this.processes.findProcess(tenantId, review.processInstanceId)
+    if (!process) {
+      throw new ProcessServiceError('NOT_FOUND_OR_FORBIDDEN', 'A folyamat nem található vagy nincs jogosultság.')
+    }
+    if (process.status === 'completed' || process.status === 'cancelled') {
+      throw new ProcessServiceError('INVALID_STATE', `A folyamat már lezárult (${process.status}).`)
+    }
+    const step = await this.processes.findStep(process.id, review.playbookStepId)
+    const processTickets = await this.tickets.findMany({
+      tenantId,
+      processInstanceId: process.id,
+    })
+    // A lépés SAJÁT ticketje (az agenté) — ezt kell újraindítani, nem a felülvizsgálatit.
+    const stepTicket =
+      (step?.ticketId ? processTickets.find((t) => t.id === step.ticketId) : undefined) ??
+      processTickets.find(
+        (t) => t.id !== review.id && t.playbookStepId === review.playbookStepId && t.agentId,
+      ) ??
+      null
+    return { review, process, step, stepTicket, processTickets }
+  }
+
+  /** A felülvizsgálati ticket lezárása döntés-nyommal (állapot + átmenet + audit). */
+  private async closeReviewTicket(input: {
+    tenantId: string | null
+    review: Ticket
+    toState: 'done' | 'approved' | 'rejected'
+    note: string
+    actorUserId: string
+  }): Promise<void> {
+    const fromState = input.review.state
+    if (fromState === input.toState) return
+    await this.tickets.update(input.review.id, {
+      state: input.toState,
+      lockToken: null,
+      lockedAt: null,
+    })
+    await this.tickets.recordTransition({
+      ticketId: input.review.id,
+      fromState,
+      toState: input.toState,
+      actorType: 'human',
+      actorId: input.actorUserId,
+      agentVersion: null,
+      note: input.note,
+    })
+  }
+
+  /**
+   * 1. döntés — „Javítsd ki és futtasd újra".
+   *
+   * A pontosítás a LÉPÉS ticketjének szálába kerül (onnan olvassa a futtató
+   * runtime), a lépés-ticket újra `ready` lesz, így a diszpécser felveszi.
+   */
+  async retryStepFromReview(input: {
+    tenantId: string | null
+    reviewTicketId: string
+    clarification: string
+    actorUserId: string
+    actorDisplayName?: string | null
+  }): Promise<{ stepTicketId: string; attempt: number }> {
+    const { review, process, step, stepTicket } = await this.loadReviewContext(
+      input.tenantId,
+      input.reviewTicketId,
+    )
+    if (!stepTicket) {
+      throw new ProcessServiceError(
+        'INVALID_STATE',
+        'Ehhez a lépéshez nincs újraindítható feladat (az AI munkatárs ticketje hiányzik).',
+      )
+    }
+    if (!stepTicket.agentId) {
+      throw new ProcessServiceError(
+        'INVALID_STATE',
+        'A lépés feladatához nincs AI munkatárs rendelve, ezért nem indítható újra.',
+      )
+    }
+    const clarification = input.clarification.trim()
+    if (!clarification) {
+      throw new ProcessServiceError('INVALID_STATE', 'A pontosítás szövege kötelező.')
+    }
+
+    const payload = isRecord(stepTicket.payload) ? { ...stepTicket.payload } : {}
+    const previousAttempt =
+      typeof payload.humanRetryAttempt === 'number' ? payload.humanRetryAttempt : 0
+    const attempt = previousAttempt + 1
+    if (attempt > MAX_HUMAN_RETRY_ATTEMPTS) {
+      throw new ProcessServiceError(
+        'INVALID_STATE',
+        `Ez a lépés már ${previousAttempt} alkalommal futott újra emberi pontosítás után. ` +
+          'Több automatikus próbálkozás nem segít — fogadd el kézi kiegészítéssel, vagy állítsd le a folyamatot.',
+      )
+    }
+
+    // A pontosítás a lépés szálába: a futtató runtime a ticket kommentjeiből
+    // építi a kontextust (l. buildThreadContextPrompt).
+    await this.tickets.appendComment({
+      ticketId: stepTicket.id,
+      kind: 'human_comment',
+      authorType: 'human',
+      authorUserId: input.actorUserId,
+      authorDisplayName: input.actorDisplayName ?? 'Felhasználó',
+      body: clarification,
+    })
+
+    // A régi (sikertelen) gépi outcome-ot töröljük: különben egy hibátlan új futás
+    // mellett is ott maradna a korábbi `failed` bélyeg.
+    delete payload[STEP_OUTCOME_FIELD]
+    payload.humanRetryAttempt = attempt
+    payload.humanRetryRequestedAt = new Date().toISOString()
+
+    await this.tickets.update(stepTicket.id, {
+      state: 'ready',
+      payload: payload as Prisma.JsonValue,
+      lockToken: null,
+      lockedAt: null,
+      cancelRequested: false,
+    })
+    await this.tickets.recordTransition({
+      ticketId: stepTicket.id,
+      fromState: stepTicket.state,
+      toState: 'ready',
+      actorType: 'human',
+      actorId: input.actorUserId,
+      agentVersion: null,
+      note: `Emberi pontosítás után újraindítva (${attempt}. próba): ${clarification.slice(0, 180)}`,
+    })
+
+    if (step) {
+      await this.processes.updateStep(step.id, { status: 'ready', completedAt: null })
+    }
+    await this.processes.updateProcess(process.id, { status: 'running' })
+    await this.closeReviewTicket({
+      tenantId: input.tenantId,
+      review,
+      toState: 'done',
+      note: `Újrafuttatás kérve (${attempt}. próba).`,
+      actorUserId: input.actorUserId,
+    })
+
+    await this.append(input.tenantId, { type: 'user', id: input.actorUserId }, {
+      action: 'process.step.retry',
+      targetType: 'process_instance',
+      targetId: process.id,
+      inputRef: process.playbookRef,
+      policyDecision: 'allowed',
+      metadata: {
+        process_instance_id: process.id,
+        step_id: review.playbookStepId,
+        review_ticket_id: review.id,
+        step_ticket_id: stepTicket.id,
+        attempt,
+        max_attempts: MAX_HUMAN_RETRY_ATTEMPTS,
+      },
+    })
+
+    return { stepTicketId: stepTicket.id, attempt }
+  }
+
+  /**
+   * 2. döntés — „Elfogadom, mehet tovább".
+   *
+   * A felhasználó kézzel pótolja a hiányzó kimeneti mezőket (vagy egyszerűen
+   * elfogadja a lépést), a folyamat a NORMÁL ágon lép tovább. A felülbírálás
+   * ténye auditált: ki, mikor, mely kulcsokat írta felül.
+   */
+  async resolveStepFromReview(input: {
+    tenantId: string | null
+    reviewTicketId: string
+    outputPatch?: Record<string, string>
+    note?: string | null
+    actorUserId: string
+  }): Promise<ProcessAdvanceResult> {
+    const { review, process, step, stepTicket } = await this.loadReviewContext(
+      input.tenantId,
+      input.reviewTicketId,
+    )
+    const patch = Object.fromEntries(
+      Object.entries(input.outputPatch ?? {})
+        .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value])
+        .filter(([, value]) => typeof value === 'string' && value.length > 0),
+    ) as Record<string, string>
+
+    const basePayload = isRecord(stepTicket?.payload)
+      ? { ...(stepTicket!.payload as Record<string, unknown>) }
+      : isRecord(review.payload)
+        ? { ...review.payload }
+        : {}
+    const mergedPayload: Record<string, unknown> = {
+      ...basePayload,
+      ...patch,
+      // A gépi kudarcot emberi döntés váltja fel — ezt a routing `ok`-ként látja.
+      [STEP_OUTCOME_FIELD]: {
+        status: 'ok',
+        reason: 'human_override',
+        ...(input.note?.trim() ? { message: input.note.trim() } : {}),
+      },
+      humanOverride: {
+        byUserId: input.actorUserId,
+        at: new Date().toISOString(),
+        fields: Object.keys(patch),
+        ...(input.note?.trim() ? { note: input.note.trim() } : {}),
+      },
+    }
+
+    if (stepTicket) {
+      await this.tickets.update(stepTicket.id, { payload: mergedPayload as Prisma.JsonValue })
+    }
+    // A step állapotát vissza kell vinni nem-lezártba, különben az advance
+    // idempotencia-őre no-opot adna a `completed` stepre.
+    if (step) {
+      await this.processes.updateStep(step.id, { status: 'in_progress', completedAt: null })
+    }
+    await this.processes.updateProcess(process.id, { status: 'running' })
+
+    await this.closeReviewTicket({
+      tenantId: input.tenantId,
+      review,
+      toState: 'approved',
+      note: input.note?.trim() || 'Emberi felülbírálás: a lépés elfogadva, a folyamat továbbmegy.',
+      actorUserId: input.actorUserId,
+    })
+
+    await this.append(input.tenantId, { type: 'user', id: input.actorUserId }, {
+      action: 'process.step.human_override',
+      targetType: 'process_instance',
+      targetId: process.id,
+      inputRef: process.playbookRef,
+      policyDecision: 'allowed',
+      metadata: {
+        process_instance_id: process.id,
+        step_id: review.playbookStepId,
+        review_ticket_id: review.id,
+        step_ticket_id: stepTicket?.id ?? null,
+        // Csak a kulcsok — az értékek üzleti adatok, nem valók az audit-sorba.
+        overridden_fields: Object.keys(patch),
+        note: input.note?.trim() ?? null,
+      },
+    })
+
+    return this.advance({
+      tenantId: input.tenantId,
+      processInstanceId: process.id,
+      completedStepId: review.playbookStepId!,
+      actor: { type: 'user', id: input.actorUserId },
+      resultPayload: mergedPayload,
+    })
+  }
+
+  /**
+   * 3. döntés — „Állítsuk le a folyamatot".
+   *
+   * A `cancelProcess` eddig csak a futás fejét zárta le: a nyitott ticketek
+   * ott maradtak a táblán, gazdátlanul. Itt a nyitott ticketeket is lezárjuk.
+   */
+  async cancelProcessWithTickets(input: {
+    tenantId: string | null
+    processInstanceId: string
+    reason: string
+    actorUserId: string
+  }): Promise<{ process: ProcessInstance; closedTicketIds: string[] }> {
+    const process = await this.cancelProcess(input)
+    const tickets = await this.tickets.findMany({
+      tenantId: input.tenantId,
+      processInstanceId: input.processInstanceId,
+    })
+    const closedTicketIds: string[] = []
+    for (const ticket of tickets) {
+      if (TERMINAL_TICKET_STATES.has(ticket.state)) continue
+      await this.tickets.update(ticket.id, {
+        state: 'rejected',
+        lockToken: null,
+        lockedAt: null,
+      })
+      await this.tickets.recordTransition({
+        ticketId: ticket.id,
+        fromState: ticket.state,
+        toState: 'rejected',
+        actorType: 'human',
+        actorId: input.actorUserId,
+        agentVersion: null,
+        note: `A folyamat leállítva: ${input.reason}`,
+      })
+      closedTicketIds.push(ticket.id)
+    }
+    if (closedTicketIds.length > 0) {
+      await this.append(input.tenantId, { type: 'user', id: input.actorUserId }, {
+        action: 'process.cancel.tickets_closed',
+        targetType: 'process_instance',
+        targetId: input.processInstanceId,
+        inputRef: process.playbookRef,
+        policyDecision: 'cancelled',
+        metadata: {
+          process_instance_id: input.processInstanceId,
+          closed_ticket_ids: closedTicketIds,
+          reason: input.reason,
+        },
+      })
+    }
+    return { process, closedTicketIds }
   }
 
   async getProcess(tenantId: string | null, processInstanceId: string) {

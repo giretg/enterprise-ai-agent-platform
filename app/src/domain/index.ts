@@ -72,6 +72,7 @@ import { ChannelTurnService } from '@/domain/channel/channel-turn-service'
 import { AgentChatChannelRuntime } from '@/domain/channel/channel-agent-runtime-adapter'
 import { ChannelNotificationService } from '@/domain/channel/channel-notification-service'
 import { ChannelAgentAccessService } from '@/domain/channel/channel-agent-access-service'
+import { WorkProjectService } from '@/domain/work-project/work-project-service'
 import {
   ChannelApprovalService,
   type ApprovalInitiatorNotifier,
@@ -1212,6 +1213,7 @@ const agentChatRuntime = new AgentChatRuntime(
     ])
     return { mode, policy }
   },
+  repositories.workProjects,
 )
 // 1:1 agent-chat a csatornán (#74, D8/D9/D10/D11). A worker második munkatípusa: a bejövő
 // Telegram-fordulót a MEGLÉVŐ webes chat-futásidőre képezzük (ugyanabba a beszélgetésbe, így a
@@ -1317,6 +1319,7 @@ const generalTaskRuntime = new GeneralTaskRuntime(
   () => platformSettingsService.getStructuringModel(),
   agentAccessService,
   consequenceApprovalService,
+  repositories.workProjects,
 )
 toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => {
   await wikiRuntime.processTicket({ ticketId, agentId: targetAgentId })
@@ -1387,6 +1390,8 @@ function createHarnessLauncher(): HarnessLauncher {
   throw new Error(`Unsupported HARNESS_LAUNCHER_MODE: ${mode}`)
 }
 
+const workProjectService = new WorkProjectService(repositories.workProjects, repositories.audit)
+
 const dispatcherService = new DispatcherService(
   repositories.tickets,
   repositories.audit,
@@ -1450,6 +1455,7 @@ export const services = {
   sandboxVersioning: sandboxVersioningService,
   scheduledTasks: scheduledTaskService,
   monitors: monitorService,
+  workProjects: workProjectService,
   connectorGrants: connectorGrantService,
   workspaceLifecycle: workspaceLifecycleService,
   selfEvolutionGuard,

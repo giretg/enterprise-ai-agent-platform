@@ -261,6 +261,7 @@ export class PostgresTicketRepository implements TicketRepository {
         | 'cancelRequestedById'
         | 'cancelRequestedAt'
         | 'executeAfter'
+        | 'projectKey'
       >
     >,
   ): Promise<Ticket> {

@@ -248,7 +248,7 @@ export function BoardListView({
                     >
                       <td className="px-4 py-3 sm:px-5">
                         <Link
-                          href={`/control-plane/tickets/${ticket.id}`}
+                          href={`/control-plane/tickets/${ticket.openTicketId}`}
                           className="group block min-w-0"
                         >
                           <p className="font-medium text-ink transition group-hover:text-coral-deep">

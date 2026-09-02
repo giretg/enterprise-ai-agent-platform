@@ -7,9 +7,11 @@ import {
   assembleTaskBriefingDraft,
   briefingFromPayload,
   briefingHasSource,
+  boardTicketTileStates,
   buildChatTaskCardView,
   buildMemoryStripView,
   compactTicketStateLabel,
+  countBoardTicketsByTileState,
   conversationOriginHref,
   formatBecameLabel,
   formatChatTaskCardMeta,
@@ -199,11 +201,88 @@ test('folyamat-lépések beolvadnak a szülő kártyába, a gyerekek eltűnnek a
   assert.ok(parent)
   assert.equal(parent.hiddenAsProcessChild, false)
   assert.equal(parent.boardColumnState, 'awaiting_human')
+  assert.equal(parent.openTicketId, 'review')
   assert.equal(parent.stepsTotal, 2)
   assert.equal(parent.stepsDone, 1)
   assert.equal(parent.nestedSteps.map((s) => s.stepName).join(','), 'Értelmezés,Felülvizsgálat')
   assert.equal(visible.find((row) => row.id === 'lone')?.boardColumnState, 'ready')
   assert.equal(nested.filter((row) => row.hiddenAsProcessChild).length, 2)
+})
+
+test('fallback emberi ticket a lépéslistában és a szülő oszlopában, ha nincs ProcessStepInstance-ben', () => {
+  const root = ticket({
+    id: 'root',
+    title: 'PDF beolvasás',
+    state: 'done',
+    processInstanceId: 'proc-2',
+    playbookStepId: 'pdf_beolvasas',
+    createdAt: '2026-08-31T08:13:50.000Z',
+  })
+  const review = ticket({
+    id: 'review',
+    title: 'Emberi felülvizsgálat: pdf_beolvasas',
+    state: 'awaiting_human',
+    processInstanceId: 'proc-2',
+    playbookStepId: 'pdf_beolvasas',
+    createdAt: '2026-08-31T08:15:03.000Z',
+  })
+  const nested = nestProcessRunTickets([root, review], new Map([
+    [
+      'proc-2',
+      {
+        rootTicketId: 'root',
+        processStatus: 'awaiting_human',
+        steps: [
+          { ticketId: 'root', stepId: 'pdf_beolvasas', stepName: 'PDF beolvasás', status: 'completed' },
+        ],
+      },
+    ],
+  ]))
+  const visible = visibleBoardTickets(nested)
+  const parent = visible.find((row) => row.id === 'root')
+  assert.ok(parent)
+  assert.equal(parent!.boardColumnState, 'awaiting_human')
+  assert.equal(parent!.openTicketId, 'review')
+  assert.equal(parent!.nestedSteps.length, 2)
+  assert.equal(parent!.nestedSteps[1]?.kind, 'support')
+  assert.equal(parent!.nestedSteps[1]?.state, 'awaiting_human')
+  assert.equal(parent!.nestedSteps[1]?.ticketId, 'review')
+})
+
+test('a board-kártya a 2. lépés ticketjét nyitja, ha az a teendő (kész 1. lépés, futó 2.)', () => {
+  const first = ticket({
+    id: 'step-1',
+    title: 'Tulajdoni lap PDF beolvasása',
+    state: 'done',
+    processInstanceId: 'proc-3',
+    playbookStepId: 'pdf_beolvasas',
+    createdAt: '2026-08-26T13:28:27.000Z',
+  })
+  const second = ticket({
+    id: 'step-2',
+    title: 'Adatok értelmezése és feltöltése az Ostoros Föld API-n',
+    state: 'in_progress',
+    processInstanceId: 'proc-3',
+    playbookStepId: 'adat_ertelmezes_es_feltoltes',
+    createdAt: '2026-08-26T13:28:53.000Z',
+  })
+  const nested = nestProcessRunTickets([first, second], new Map([
+    [
+      'proc-3',
+      {
+        rootTicketId: 'step-1',
+        processStatus: 'running',
+        steps: [
+          { ticketId: 'step-1', stepId: 'pdf_beolvasas', stepName: 'PDF beolvasás', status: 'completed' },
+          { ticketId: 'step-2', stepId: 'adat_ertelmezes_es_feltoltes', stepName: 'Feltöltés', status: 'in_progress' },
+        ],
+      },
+    ],
+  ]))
+  const parent = visibleBoardTickets(nested).find((row) => row.id === 'step-1')
+  assert.ok(parent)
+  assert.equal(parent!.openTicketId, 'step-2')
+  assert.equal(parent!.boardColumnState, 'in_progress')
 })
 
 test('ha a gyökér kártya nincs a listán, a legkorábbi lépés viszi a futást', () => {
@@ -238,6 +317,7 @@ test('ha a gyökér kártya nincs a listán, a legkorábbi lépés viszi a futá
   const visible = visibleBoardTickets(nested)
   assert.equal(visible.length, 1)
   assert.equal(visible[0].id, 'a')
+  assert.equal(visible[0].openTicketId, 'b')
   assert.equal(visible[0].boardColumnState, 'in_progress')
 })
 
@@ -316,6 +396,23 @@ test('rövid beszélgetésen a csík nem beszél kieső üzenetről', () => {
   })
   assert.equal(view.truncated, false)
   assert.equal(view.summaryLine, 'Ági most erre emlékszik: ez a beszélgetés (3 üzenet).')
+})
+
+test('a csempe-számláló a beágyazott folyamat-lépéseket is látja', () => {
+  // A szülő kártya oszlopa „emberre vár", de a futásban ott áll egy indításra
+  // kész lépés — a fejléc eddig 0-t mutatott rá.
+  const card = {
+    state: 'done',
+    boardColumnState: 'awaiting_human',
+    nestedSteps: [{ state: 'done' }, { state: 'ready' }],
+  }
+  assert.deepEqual(boardTicketTileStates(card).sort(), ['awaiting_human', 'done', 'ready'])
+
+  const counts = countBoardTicketsByTileState([card, { state: 'done' }])
+  assert.equal(counts.get('ready'), 1)
+  assert.equal(counts.get('awaiting_human'), 1)
+  // Egy kártya állapotonként csak egyszer számít.
+  assert.equal(counts.get('done'), 2)
 })
 
 if (failures > 0) {

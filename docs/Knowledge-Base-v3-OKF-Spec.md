@@ -592,12 +592,13 @@ Ha nincs `KnowledgeArtifact`, a `kb_search` fallbackel a régi `Document.extract
 ## 12. UI/UX javaslat
 
 ### 12.1 Upload képernyő
-- „Csak nyers szövegként" (default) / „OKF-tudásbázisra dolgozza fel" (opt-in, warninggal),
-- **sharing:** single / multi-agent + link-kezelés,
-- feldolgozási státusz: uploaded → extracting → generating → validating → awaiting approval → published / failed.
+- Az operátor fájlt tölt fel vagy szöveget illeszt be, majd **Beküldés jóváhagyásra**.
+- A feldolgozási módot **nem** a feltöltő választja (nincs „Nyers KB” / „OKF wiki” a feltöltő sávon).
+- **sharing:** a teljes KB-connector megosztása másik agenttel; a szekció akkor jelenik meg, ha van jóváhagyott dokumentum vagy meglévő megosztás.
+- feldolgozási státusz: uploaded → awaiting approval → (approver választ módot) → published / failed.
 
 ### 12.2 Review képernyő
-Hárompaneles: (1) forrás / extracted text, (2) generált OKF file tree + preview, (3) validation report + approve/reject. Kiemelések: alacsony source-link coverage, ellentmondás, broken link, nem besorolt / érzékeny tartalom.
+A **jóváhagyó** választja a módot: **Egyszerű dokumentum** (`raw_text_only`) vagy **Feldolgozás wiki formában** (`okf`). Wiki esetén draft artifact készül, majd hárompaneles review: (1) feltöltött szöveg, (2) wiki oldalak + preview, (3) ellenőrzés + approve/reject. Kiemelések: alacsony source-link coverage, ellentmondás, broken link, nem besorolt / érzékeny tartalom. Jóváhagyás mód nélkül nem engedélyezett.
 
 ### 12.3 Agent sandbox nézet
 A citation mutassa: OKF page title, section, original filename, source **oldal/section** (nem span), artifact version, `confidence` jelzés.
