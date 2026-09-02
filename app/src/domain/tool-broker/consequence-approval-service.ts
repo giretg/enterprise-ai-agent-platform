@@ -76,6 +76,12 @@ export type ConsequenceApprovalCard = {
    * ebből írja ki, MIÉRT nem futott le a művelet, és emiatt kínál újrapróbálást.
    */
   failedReason?: string
+  /**
+   * A tool invoke még fut (`invoking` / `retrying`). Nem dönthető újra, de a
+   * lista NEM hagyhatja ki — különben a ticket-folytatás „minden kész"-ként
+   * indítaná újra az agentet, miközben a mellékhatás még tart / elbukhat.
+   */
+  inFlight?: boolean
 }
 
 export type ConsequenceApprovalResult =
@@ -346,15 +352,24 @@ export class ConsequenceApprovalService {
   ): Promise<ConsequenceApprovalCard[]> {
     const cards: ConsequenceApprovalCard[] = []
     for (const row of rows) {
+      const inFlight = isInvokeInFlightResultMeta(row.resultMeta)
       // A sikeresen lefutott jóváhagyás lezárt ügy — nem kérünk rá újra gombot.
       // Az elbukott tool-hívás viszont igen: az emberi döntés megvan, a művelet
       // nem futott le, ezért újratöltés után is kell hozzá „Újrapróbálom".
-      if (row.status === 'approved' && !isFailedInvokeResultMeta(row.resultMeta)) continue
+      // Folyamatban lévő invoke: NEM zárható le „kész"-ként — a ticket-resume
+      // és a lista ugyanabból a forrásból dönt (lásd resumeTicketAfterConsequenceApprovals).
+      if (
+        row.status === 'approved' &&
+        !inFlight &&
+        !isFailedInvokeResultMeta(row.resultMeta)
+      ) {
+        continue
+      }
       // Defense-in-depth: az agentnek is elérhetőnek kell lennie a néző tenantjából.
       const agent = await this.agents.findById(row.agentId)
       if (!agent || !isAgentReachableFromTenant(agent.tenantId, actor.tenantId)) continue
       const failedReason =
-        row.status === 'approved'
+        row.status === 'approved' && !inFlight
           ? ((row.resultMeta as { reason?: unknown } | null)?.reason ?? 'invoke_failed')
           : null
       cards.push({
@@ -367,6 +382,7 @@ export class ConsequenceApprovalService {
         // hiányzik — nem küldjük vissza a felhasználót új kört kérni.
         expired: row.status === 'pending' && row.expiresAt.getTime() <= now,
         ...(failedReason ? { failedReason: String(failedReason) } : {}),
+        ...(inFlight ? { inFlight: true } : {}),
       })
     }
     return cards

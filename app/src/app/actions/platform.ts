@@ -4706,6 +4706,9 @@ async function resumeTicketAfterConsequenceApprovals(
     tenantId: actor.tenantId,
     role: actor.role,
   })
+  // Függő, elbukott VAGY még futó invoke — mind blokkol. Az in-flight sorok
+  // korábban kimaradtak a listából, ezért egy párhuzamos második kártya
+  // jóváhagyása „minden kész"-ként indította újra az agentet.
   if (open.length > 0) return { ticketResumed: false }
 
   const ticket = await repositories.tickets.findById(ticketId)

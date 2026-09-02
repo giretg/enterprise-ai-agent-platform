@@ -764,6 +764,51 @@ async function main() {
     assert.equal(open[0].expired, false, 'az elbukott hívás a jóváhagyási ablak után is újrafuttatható')
   })
 
+  // ÜZLETI KOCKÁZAT: két task-kártya párhuzamos jóváhagyásakor az első invoke
+  // `invoking` jelzővel `approved` státuszban van. Ha a lista ezt „kész"-ként
+  // kihagyná, a második kártya utáni ticket-resume azt hinné, minden lefutott —
+  // miközben az első mellékhatás még tart / elbukhat. A folytatás hazudna.
+  await test('listOpenForTicket: a folyamatban lévő invoke NEM tűnik el (resume-blokkoló)', async () => {
+    const { service, repo } = buildService()
+    const cardA = await service.createFromBlocked({
+      invoke: { ...baseInvoke, conversationId: undefined, ticketId: 'ticket-1' },
+      tenantId: 'tenant-1',
+    })
+    const cardB = await service.createFromBlocked({
+      invoke: {
+        ...baseInvoke,
+        conversationId: undefined,
+        ticketId: 'ticket-1',
+        args: { path: 'other.xlsx' },
+      },
+      tenantId: 'tenant-1',
+    })
+    repo.rows.get(cardA.approvalId)!.status = 'approved'
+    repo.rows.get(cardA.approvalId)!.resultMeta = { invoking: true } as never
+
+    const open = await service.listOpenForTicket('ticket-1', actor)
+    const ids = open.map((c) => c.approvalId).sort()
+    assert.deepEqual(ids, [cardA.approvalId, cardB.approvalId].sort())
+    const inflight = open.find((c) => c.approvalId === cardA.approvalId)
+    assert.equal(inflight?.inFlight, true)
+    assert.equal(inflight?.failedReason, undefined, 'in-flight nem failed — nincs Újrapróbálom')
+    assert.equal(
+      open.some((c) => c.approvalId === cardB.approvalId && !c.inFlight),
+      true,
+    )
+  })
+
+  await test('listOpenForConversation: a folyamatban lévő invoke újratöltéskor is látszik', async () => {
+    const { service, repo } = buildService()
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    repo.rows.get(card.approvalId)!.status = 'approved'
+    repo.rows.get(card.approvalId)!.resultMeta = { retrying: true } as never
+    const open = await service.listOpenForConversation('conv-1', actor)
+    assert.equal(open.length, 1)
+    assert.equal(open[0].inFlight, true)
+    assert.equal(open[0].failedReason, undefined)
+  })
+
   await test('listOpenForConversation: az elbukott sor a lejárati idő után is újrafuttatható', async () => {
     const { service, repo } = buildService({ failTimes: 1 })
     const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })

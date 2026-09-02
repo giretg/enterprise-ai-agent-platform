@@ -36,6 +36,11 @@ export interface ConnectorGrantRepository {
   revokeAllForUser(userId: string): Promise<number>
   findById(id: string): Promise<ConnectorGrant | null>
   updateMetadata(id: string, metadata: Prisma.InputJsonValue): Promise<ConnectorGrant>
+  updateMetadataIfMatch(
+    id: string,
+    expectedMetadata: Prisma.InputJsonValue,
+    metadata: Prisma.InputJsonValue,
+  ): Promise<boolean>
 }
 
 export class PostgresConnectorGrantRepository implements ConnectorGrantRepository {
@@ -156,5 +161,20 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
       where: { id },
       data: { metadata },
     })
+  }
+
+  async updateMetadataIfMatch(
+    id: string,
+    expectedMetadata: Prisma.InputJsonValue,
+    metadata: Prisma.InputJsonValue,
+  ): Promise<boolean> {
+    const result = await prisma.connectorGrant.updateMany({
+      where: {
+        id,
+        metadata: { equals: expectedMetadata },
+      },
+      data: { metadata },
+    })
+    return result.count === 1
   }
 }
