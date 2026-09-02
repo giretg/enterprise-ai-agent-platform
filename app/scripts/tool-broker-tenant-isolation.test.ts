@@ -198,11 +198,73 @@ const ticketBWithRunAs = {
   state: 'in_progress',
 } as unknown as Ticket
 
+const DRAFT_ID = 'draft-caller-1'
+
+/** Helyes kötésű, jóváhagyott gmail-küldés jegy: a hívó agenté (CALLER) és a hívás tenantjáé. */
+const gmailApprovedCaller = {
+  id: 'ticket-gmail-caller',
+  tenantId: TENANT_A,
+  agentId: CALLER,
+  createdById: 'human-user-A',
+  conversationId: null,
+  payload: { source: 'agent_chat', gmailSendApproved: DRAFT_ID },
+  state: 'approved',
+} as unknown as Ticket
+
+/** Ugyanaz a draftId jóváhagyva, de MÁS agent (ALFA) jegyén — a CALLER nem használhatja. */
+const gmailApprovedOtherAgent = {
+  id: 'ticket-gmail-other-agent',
+  tenantId: TENANT_A,
+  agentId: ALFA,
+  payload: { gmailSendApproved: DRAFT_ID },
+  state: 'approved',
+} as unknown as Ticket
+
+/** CALLER jegye, de MÁS tenantban (TENANT_B) — a TENANT_A-s hívás nem használhatja. */
+const gmailApprovedOtherTenant = {
+  id: 'ticket-gmail-other-tenant',
+  tenantId: TENANT_B,
+  agentId: CALLER,
+  payload: { gmailSendApproved: DRAFT_ID },
+  state: 'approved',
+} as unknown as Ticket
+
+/** Jóváhagyás nyers e-mail-címre (nem draftId) — a `to`-visszaesés tesztjéhez. */
+const gmailApprovedByEmail = {
+  id: 'ticket-gmail-by-email',
+  tenantId: TENANT_A,
+  agentId: CALLER,
+  createdById: 'human-user-A',
+  payload: { source: 'agent_chat', gmailSendApproved: 'victim@example.test' },
+  state: 'approved',
+} as unknown as Ticket
+
+/**
+ * MEGOSZTOTT (platform-szintű, tenantId=null) agent jegye. A fail-closed
+ * tenant-kötés tesztjéhez: ha sem az agent tenantja, sem a hívás tenantja nem
+ * oldható fel, a küldés nem futhat.
+ */
+const gmailApprovedShared = {
+  id: 'ticket-gmail-shared',
+  tenantId: TENANT_A,
+  agentId: SHARED,
+  payload: { gmailSendApproved: DRAFT_ID },
+  state: 'approved',
+} as unknown as Ticket
+
+const gmailApprovalTickets = [
+  gmailApprovedCaller,
+  gmailApprovedOtherAgent,
+  gmailApprovedOtherTenant,
+  gmailApprovedByEmail,
+  gmailApprovedShared,
+]
+
 const fakeTickets = {
   findById: async (id: string) => {
     if (id === ticketA.id) return ticketA
     if (id === ticketBWithRunAs.id) return ticketBWithRunAs
-    return null
+    return gmailApprovalTickets.find((t) => t.id === id) ?? null
   },
 } as unknown as TicketRepository
 
@@ -441,6 +503,84 @@ async function main() {
       actingUserSource: 'trusted_internal',
     })
     assert.equal(actingUserId, 'human-user-A')
+  })
+
+  // ── gmail_send jóváhagyás kötése (confused deputy / cross-tenant reuse) ─────
+  await test('gmail_send: helyes kötésű jóváhagyás átengedi a következmény-kaput', async () => {
+    const broker = makeBroker()
+    let passedGate = false
+    try {
+      const res = await broker.invoke({
+        agentId: CALLER,
+        agentVersion: 1,
+        ticketId: gmailApprovedCaller.id,
+        tool: 'gmail_send',
+        args: { draftId: DRAFT_ID, approvalTicketId: gmailApprovedCaller.id },
+      })
+      // A kaput átengedte, ha NEM human_approval_required a deny oka. (Valódi
+      // connector/grant nélkül a végrehajtás később bukhat — az itt nem számít.)
+      passedGate = !(res.denied && res.reason === 'human_approval_required')
+    } catch {
+      // A kapun túljutott, a delegált handler bukott el (nincs valódi grant) — ez jó jel.
+      passedGate = true
+    }
+    assert.ok(passedGate, 'a saját, jóváhagyott jegy feloldja a küldést')
+  })
+
+  await test('gmail_send: MÁS agent jóváhagyott jegyével nem küldhet (confused deputy)', async () => {
+    const broker = makeBroker()
+    const res = await broker.invoke({
+      agentId: CALLER,
+      agentVersion: 1,
+      ticketId: ticketA.id,
+      tool: 'gmail_send',
+      args: { draftId: DRAFT_ID, approvalTicketId: gmailApprovedOtherAgent.id },
+    })
+    assert.equal(res.denied, true)
+    assert.equal((res as { reason?: string }).reason, 'human_approval_required')
+  })
+
+  await test('gmail_send: MÁS tenant jóváhagyott jegyével nem küldhet (cross-tenant reuse)', async () => {
+    const broker = makeBroker()
+    const res = await broker.invoke({
+      agentId: CALLER,
+      agentVersion: 1,
+      ticketId: ticketA.id,
+      tool: 'gmail_send',
+      args: { draftId: DRAFT_ID, approvalTicketId: gmailApprovedOtherTenant.id },
+    })
+    assert.equal(res.denied, true)
+    assert.equal((res as { reason?: string }).reason, 'human_approval_required')
+  })
+
+  await test('gmail_send: draftId nélküli, `to`-ra hivatkozó küldést a jóváhagyás nem old fel', async () => {
+    const broker = makeBroker()
+    const res = await broker.invoke({
+      agentId: CALLER,
+      agentVersion: 1,
+      ticketId: gmailApprovedByEmail.id,
+      tool: 'gmail_send',
+      // A jegy `gmailSendApproved` értéke pont ez az e-mail — a régi `?? args.to`
+      // visszaesés ezt átengedte volna; a draftId-kötés után elutasított.
+      args: { to: 'victim@example.test', subject: 'x', body: 'y' },
+    })
+    assert.equal(res.denied, true)
+    assert.equal((res as { reason?: string }).reason, 'human_approval_required')
+  })
+
+  await test('gmail_send: feloldatlan tenant mellett a kapu FAIL-CLOSED (nem old fel)', async () => {
+    const broker = makeBroker()
+    // Megosztott agent (tenantId=null), ticketId/acting user NÉLKÜL → az agent
+    // tenantja is, a hívás tenantja is feloldatlan. A régi `actingTenantId !== null`
+    // őr ezt átengedte (fail-open); a fail-closed kötés elutasítja.
+    const res = await broker.invoke({
+      agentId: SHARED,
+      agentVersion: 1,
+      tool: 'gmail_send',
+      args: { draftId: DRAFT_ID, approvalTicketId: gmailApprovedShared.id },
+    })
+    assert.equal(res.denied, true)
+    assert.equal((res as { reason?: string }).reason, 'human_approval_required')
   })
 
   if (failures > 0) {
