@@ -407,6 +407,7 @@ const channelAgentAccessService = new ChannelAgentAccessService({
       return { id: agent.id, name: agent.name, usable: agent.status === 'active' }
     },
   },
+  projects: repositories.workProjects,
   isChannelEnabled: (tenantId) => platformSettingsService.isChannelEnabledForTenant(tenantId),
   audit: repositories.audit,
 })

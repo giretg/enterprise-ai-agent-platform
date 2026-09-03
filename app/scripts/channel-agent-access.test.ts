@@ -138,6 +138,13 @@ function makeHarness() {
     },
   }
 
+  const projects = new Map<string, { key: string; archivedAt: Date | null }>()
+  const projectRepo = {
+    async findByKey(tenantId: string, key: string) {
+      return projects.get(`${tenantId}:${key}`) ?? null
+    },
+  }
+
   // Szervezeti kill-switch: tenantId → elzárva?
   const killSwitch = new Map<string, boolean>()
   const isChannelEnabled = async (tenantId: string | null) =>
@@ -147,6 +154,7 @@ function makeHarness() {
     grants: grantRepo,
     identities: identityRepo,
     agents: directory,
+    projects: projectRepo,
     isChannelEnabled,
     audit,
   })
@@ -177,6 +185,9 @@ function makeHarness() {
   function addAgent(id: string, name: string, tenantId: string | null, usable = true) {
     agentRows.set(id, { id, name, tenantId, usable })
   }
+  function addProject(key: string, archived = false, tenantId = TENANT_A) {
+    projects.set(`${tenantId}:${key}`, { key, archivedAt: archived ? new Date() : null })
+  }
 
   return {
     service,
@@ -185,6 +196,7 @@ function makeHarness() {
     killSwitch,
     addIdentity,
     addAgent,
+    addProject,
     actionsOf: () => auditRows.map((r) => r.action),
   }
 }
@@ -339,6 +351,7 @@ async function main() {
     const h = makeHarness()
     const idn = h.addIdentity({ userId: USER_1 })
     h.addAgent('agent-ok', 'Elérhető', TENANT_A, true)
+    h.addProject('penzugy-2026')
     await h.service.grantAgent({ identityId: idn.id, agentId: 'agent-ok', actorUserId: ADMIN, actorTenantId: TENANT_A })
 
     const set = await h.service.setProjectKey({
@@ -353,7 +366,7 @@ async function main() {
     assert.ok(h.actionsOf().includes('channel.agent.project_set'))
   })
 
-  await test('CA-9 projektkötés fail-closed: idegen felhasználó / hibás kulcs / nem engedélyezett agent', async () => {
+  await test('CA-9 projektkötés fail-closed: idegen felhasználó / hibás, ismeretlen vagy archivált kulcs / nem engedélyezett agent', async () => {
     const h = makeHarness()
     const idn = h.addIdentity({ userId: USER_1 })
     h.addAgent('agent-ok', 'Elérhető', TENANT_A, true)
@@ -371,6 +384,19 @@ async function main() {
     })
     assert.equal(badKey.ok === false && badKey.reason, 'invalid_project_key')
 
+    const unknown = await h.service.setProjectKey({
+      identityId: idn.id, agentId: 'agent-ok', projectKey: 'nem-letezo-projekt',
+      actorUserId: USER_1, expectUserId: USER_1,
+    })
+    assert.equal(unknown.ok === false && unknown.reason, 'project_not_assignable')
+
+    h.addProject('archivalt-projekt', true)
+    const archived = await h.service.setProjectKey({
+      identityId: idn.id, agentId: 'agent-ok', projectKey: 'archivalt-projekt',
+      actorUserId: USER_1, expectUserId: USER_1,
+    })
+    assert.equal(archived.ok === false && archived.reason, 'project_not_assignable')
+
     const noGrant = await h.service.setProjectKey({
       identityId: idn.id, agentId: 'agent-nincs', projectKey: 'ok',
       actorUserId: USER_1, expectUserId: USER_1,
@@ -380,6 +406,27 @@ async function main() {
     // A grant projektje végig a gyűjtő maradt.
     const available = await h.service.resolveAvailableAgents(idn.id)
     assert.equal(available[0].projectKey, '__general__')
+  })
+
+  await test('CA-9b régi vagy közben archivált projektkulcs nem nyit árva memória-scope-ot', async () => {
+    const h = makeHarness()
+    const idn = h.addIdentity()
+    h.addAgent('agent-ok', 'Elérhető', TENANT_A, true)
+    h.grants.set('legacy-grant', {
+      id: 'legacy-grant', identityId: idn.id, agentId: 'agent-ok', projectKey: 'regi-nem-katalogus',
+      grantedById: ADMIN, grantedAt: new Date(), createdAt: new Date(),
+    })
+
+    const legacy = await h.service.resolveAvailableAgents(idn.id)
+    assert.equal(legacy[0]?.projectKey, '__general__')
+
+    h.addProject('mar-archivalt', true)
+    h.grants.set('legacy-grant', {
+      id: 'legacy-grant', identityId: idn.id, agentId: 'agent-ok', projectKey: 'mar-archivalt',
+      grantedById: ADMIN, grantedAt: new Date(), createdAt: new Date(),
+    })
+    const archived = await h.service.resolveAvailableAgents(idn.id)
+    assert.equal(archived[0]?.projectKey, '__general__')
   })
 
   // ── Visszavonás ─────────────────────────────────────────────────────────────
