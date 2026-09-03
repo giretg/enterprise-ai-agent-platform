@@ -23,6 +23,7 @@ import type {
   ChannelAgentGrantRepository,
   ChannelIdentityRepository,
 } from '@/repositories/interfaces'
+import { isReservedWorkProjectKey } from '@/lib/work-project'
 import {
   CHANNEL_AUDIT_ACTIONS,
   CHANNEL_DEFAULT_PROJECT_KEY,
@@ -52,10 +53,20 @@ export interface ChannelAgentDirectory {
   findInTenant(agentId: string, tenantId: string | null): Promise<ChannelAgentBrief | null>
 }
 
+/** A projektkatalógusnak csak a csatorna-scope érvényességéhez szükséges olvasója. */
+export interface ChannelWorkProjectReader {
+  findByKey(
+    tenantId: string,
+    key: string,
+  ): Promise<{ key: string; archivedAt: Date | null } | null>
+}
+
 export type ChannelAgentAccessDeps = {
   grants: ChannelAgentGrantRepository
   identities: Pick<ChannelIdentityRepository, 'findById'>
   agents: ChannelAgentDirectory
+  /** A csatorna-scope is a tenant által karbantartott projektkatalógusból választható. */
+  projects: ChannelWorkProjectReader
   /** A szervezeti kill-switch (D54): igaz, ha a csatorna él ennek a szervezetnek. Fail-closed. */
   isChannelEnabled: (tenantId: string | null) => Promise<boolean>
   audit: Pick<AuditRepository, 'append'>
@@ -79,6 +90,7 @@ export type GrantAgentResult =
         | 'identity_inactive'
         | 'agent_not_found'
         | 'agent_not_usable'
+        | 'project_not_assignable'
     }
 
 export type RevokeAgentResult =
@@ -89,7 +101,12 @@ export type SetProjectKeyResult =
   | { ok: true; grant: ChannelAgentGrant }
   | {
       ok: false
-      reason: 'identity_not_found' | 'not_owner' | 'invalid_project_key' | 'not_found'
+      reason:
+        | 'identity_not_found'
+        | 'not_owner'
+        | 'invalid_project_key'
+        | 'project_not_assignable'
+        | 'not_found'
     }
 
 export type SelectAgentResult =
@@ -126,10 +143,9 @@ export class ChannelAgentAccessService {
     const existing = await this.deps.grants.findByIdentityAndAgent(input.identityId, input.agentId)
     if (existing) return { ok: true, created: false, grant: existing }
 
-    const projectKey =
-      input.projectKey && isValidProjectKey(input.projectKey)
-        ? input.projectKey.trim()
-        : CHANNEL_DEFAULT_PROJECT_KEY
+    const requestedProjectKey = input.projectKey?.trim() || CHANNEL_DEFAULT_PROJECT_KEY
+    const projectKey = await this.assignableProjectKey(identity.tenantId, requestedProjectKey)
+    if (!projectKey) return { ok: false, reason: 'project_not_assignable' }
 
     const grant = await this.deps.grants.create({
       identityId: input.identityId,
@@ -192,7 +208,8 @@ export class ChannelAgentAccessService {
     const grant = await this.deps.grants.findByIdentityAndAgent(input.identityId, input.agentId)
     if (!grant) return { ok: false, reason: 'not_found' }
 
-    const projectKey = input.projectKey.trim()
+    const projectKey = await this.assignableProjectKey(identity.tenantId, input.projectKey.trim())
+    if (!projectKey) return { ok: false, reason: 'project_not_assignable' }
     const updated = await this.deps.grants.updateProjectKey(grant.id, projectKey)
     await this.auditGrant(CHANNEL_AUDIT_ACTIONS.agentProjectSet, 'project_set', identity, {
       actorUserId: input.actorUserId,
@@ -223,15 +240,23 @@ export class ChannelAgentAccessService {
     ])
     const byId = new Map(platformAgents.map((a) => [a.id, a]))
 
-    const agents: ChannelAgentGrantView[] = grants.map((g) => {
-      const a = byId.get(g.agentId)
-      return {
-        agentId: g.agentId,
-        agentName: a?.name ?? '(már nem elérhető agent)',
-        projectKey: g.projectKey,
-        availability: a && a.usable ? 'available' : 'agent_removed',
-      }
-    })
+    const agents: ChannelAgentGrantView[] = await Promise.all(
+      grants.map(async (g) => {
+        const a = byId.get(g.agentId)
+        // Régi grantok a projektkatalógus bevezetése előtt szabad szövegű kulcsot
+        // tárolhattak. A futás idejére ezt is fail-closed normalizáljuk az Általános
+        // scope-ra, hogy egy korábbi sor se hozzon létre árva memóriahatókört.
+        const projectKey =
+          (await this.assignableProjectKey(identity.tenantId, g.projectKey)) ??
+          CHANNEL_DEFAULT_PROJECT_KEY
+        return {
+          agentId: g.agentId,
+          agentName: a?.name ?? '(már nem elérhető agent)',
+          projectKey,
+          availability: a && a.usable ? 'available' : 'agent_removed',
+        }
+      }),
+    )
     return { channelEnabled, agents }
   }
 
@@ -261,6 +286,22 @@ export class ChannelAgentAccessService {
     if (!found) return { ok: false, reason: 'not_granted' }
     if (found.availability !== 'available') return { ok: false, reason: 'agent_removed' }
     return { ok: true, agent: found }
+  }
+
+  /**
+   * A `projectKey` nem puszta címke: ez választja ki, mely tartós memória kerül a
+   * csatorna-forduló promptjába. Emiatt csak az Általános gyűjtő vagy a tenant aktív
+   * projektkatalógusában lévő kulcs lehet érvényes.
+   */
+  private async assignableProjectKey(
+    tenantId: string | null,
+    rawKey: string,
+  ): Promise<string | null> {
+    const projectKey = rawKey.trim()
+    if (isReservedWorkProjectKey(projectKey)) return CHANNEL_DEFAULT_PROJECT_KEY
+    if (!tenantId || !isValidProjectKey(projectKey)) return null
+    const project = await this.deps.projects.findByKey(tenantId, projectKey)
+    return project && !project.archivedAt ? project.key : null
   }
 
   private async auditGrant(

@@ -196,6 +196,8 @@ function projectMessageFor(reason: string): string {
       return 'Ez a Telegram-kötés nem a tiéd.'
     case 'invalid_project_key':
       return 'A projektkulcs csak betűt, számot és a _ . : - jeleket tartalmazhatja (szóköz nélkül).'
+    case 'project_not_assignable':
+      return 'Ez a projekt nem található vagy archiválva van. Válassz aktív projektet.'
     case 'not_found':
       return 'Ehhez az agenthez nincs Telegram-engedélyed, ezért a projektet sem tudod beállítani.'
     default:
