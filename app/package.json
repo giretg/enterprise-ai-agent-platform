@@ -298,6 +298,7 @@
     "test:tool-result-extract": "tsx scripts/tool-result-extract.test.ts",
     "test:http-api-paginate": "tsx scripts/http-api-paginate.test.ts",
     "test:reconcile-records": "tsx scripts/reconcile-records.test.ts",
+    "test:recipe-tenant-scope": "tsx scripts/recipe-tenant-scope.test.ts",
     "test:trained-memory-prompt": "tsx scripts/trained-memory-prompt.test.ts",
     "probe:crm-privacy": "tsx scripts/crm-privacy-probe.ts"
   },
