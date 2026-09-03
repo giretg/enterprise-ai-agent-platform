@@ -1049,6 +1049,10 @@ model AgentVersion {
 
 model Recipe {
   id         String           @id @default(uuid()) @db.Uuid
+  // NULL = platform-szintű, globális sablon (seed: pl. key-ceremony, wiki-answer),
+  // amely minden bérlő agentjéhez köthető. Nem-NULL = bérlő-tulajdonú recept, amit
+  // csak a saját bérlője láthat/módosíthat (RecipeService tenant-kapu).
+  tenantId   String?          @map("tenant_id") @db.Uuid
   name       String
   ticketType RecipeTicketType @map("ticket_type")
   scope      RecipeScope      @default(single)
@@ -1056,6 +1060,7 @@ model Recipe {
 
   versions RecipeVersion[]
 
+  @@index([tenantId])
   @@map("recipes")
 }
 

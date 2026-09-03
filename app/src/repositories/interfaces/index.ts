@@ -1326,20 +1326,33 @@ export type RecipeListOpts = {
   limit?: number
   offset?: number
   unbounded?: boolean
+  /**
+   * Bérlő-kapu: ha megadva, csak a globális sablonok (tenant_id IS NULL) ÉS a
+   * megadott bérlő receptjei jönnek vissza. Elhagyva (rendszer-út) nincs szűrés.
+   */
+  tenantId?: string | null
 }
 
 export interface RecipeRepository {
   list(opts?: RecipeListOpts): Promise<RecipeWithVersions[]>
-  findById(id: string): Promise<RecipeWithVersions | null>
+  /**
+   * `tenantId` megadva: bérlő-kapu — a nem elérhető (más bérlő) recept `null`.
+   * Elhagyva a rendszer-út minden receptet lát.
+   */
+  findById(id: string, tenantId?: string | null): Promise<RecipeWithVersions | null>
   createRecipe(input: {
     name: string
     ticketType: RecipeTicketType
     scope: RecipeScope
     content: Prisma.JsonValue
+    /** NULL/elhagyva = platform-szintű, globális sablon; egyébként bérlő-tulajdon. */
+    tenantId?: string | null
   }): Promise<{ recipe: Recipe; version: RecipeVersion }>
-  addVersion(recipeId: string, content: Prisma.JsonValue): Promise<RecipeVersion>
-  approveVersion(versionId: string, approverId: string): Promise<RecipeVersion>
-  getActiveVersion(recipeId: string): Promise<RecipeVersion | null>
+  /** `tenantId` megadva: fail-closed, ha a recept nem elérhető a bérlőnek. */
+  addVersion(recipeId: string, content: Prisma.JsonValue, tenantId?: string | null): Promise<RecipeVersion>
+  /** `tenantId` megadva: fail-closed, ha a verzió receptje nem elérhető a bérlőnek. */
+  approveVersion(versionId: string, approverId: string, tenantId?: string | null): Promise<RecipeVersion>
+  getActiveVersion(recipeId: string, tenantId?: string | null): Promise<RecipeVersion | null>
 }
 
 // ── Skill-katalógus (skill-catalog-spec.md, WP-1) ───────────────────────────
