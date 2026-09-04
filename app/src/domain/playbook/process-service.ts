@@ -169,6 +169,12 @@ export const MAX_HUMAN_RETRY_ATTEMPTS = 3
 /** Lezárt ticket-állapotok — a folyamat leállításakor ezeket már nem bántjuk. */
 const TERMINAL_TICKET_STATES = new Set<string>(['done', 'approved', 'rejected'])
 
+/**
+ * Nyitott felülvizsgálati ticket-állapotok. Csak ezekre szabad döntést alkalmazni —
+ * lezárt review-n retry/resolve runaway re-dispatch / dupla advance lenne.
+ */
+const OPEN_REVIEW_TICKET_STATES = new Set<string>(['awaiting_human', 'needs_info'])
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -934,12 +940,37 @@ export class ProcessService {
     if (!review.processInstanceId || !review.playbookStepId) {
       throw new ProcessServiceError('INVALID_STATE', 'Ez a feladat nem folyamat-lépéshez tartozik.')
     }
+    // Kapu-ticket a TicketStateMachine-en megy (requiredActorRole, evidence) —
+    // a felülvizsgálati útvonal közvetlen update-tel megkerülné.
+    if (review.requiredGateId) {
+      throw new ProcessServiceError(
+        'INVALID_STATE',
+        'Ez kapu-jóváhagyási feladat — a felülvizsgálati döntések itt nem alkalmazhatók.',
+      )
+    }
+    // Az await_human review ticket emberi, agent nélküli; az agent lépés-ticketje
+    // külön van (stepTicket).
+    if (review.agentId) {
+      throw new ProcessServiceError(
+        'INVALID_STATE',
+        'Ez nem felülvizsgálati feladat (AI munkatárshoz kötött).',
+      )
+    }
+    if (!OPEN_REVIEW_TICKET_STATES.has(review.state)) {
+      throw new ProcessServiceError(
+        'INVALID_STATE',
+        'A felülvizsgálat már lezárult — új döntés nem alkalmazható.',
+      )
+    }
     const process = await this.processes.findProcess(tenantId, review.processInstanceId)
     if (!process) {
       throw new ProcessServiceError('NOT_FOUND_OR_FORBIDDEN', 'A folyamat nem található vagy nincs jogosultság.')
     }
-    if (process.status === 'completed' || process.status === 'cancelled') {
-      throw new ProcessServiceError('INVALID_STATE', `A folyamat már lezárult (${process.status}).`)
+    if (process.status !== 'awaiting_human') {
+      throw new ProcessServiceError(
+        'INVALID_STATE',
+        `A folyamat nem vár emberi felülvizsgálatra (${process.status}).`,
+      )
     }
     const step = await this.processes.findStep(process.id, review.playbookStepId)
     const processTickets = await this.tickets.findMany({
@@ -956,21 +987,36 @@ export class ProcessService {
     return { review, process, step, stepTicket, processTickets }
   }
 
-  /** A felülvizsgálati ticket lezárása döntés-nyommal (állapot + átmenet + audit). */
-  private async closeReviewTicket(input: {
-    tenantId: string | null
+  /**
+   * A felülvizsgálati döntés atomi claim-je: először CAS-sel lezárjuk a review
+   * ticketet, és csak utána futnak a mellékhatások (retry / advance). Így
+   * párhuzamos döntések közül csak egy viheti végig a folyamatot.
+   */
+  private async claimReviewDecision(input: {
     review: Ticket
     toState: 'done' | 'approved' | 'rejected'
     note: string
     actorUserId: string
   }): Promise<void> {
     const fromState = input.review.state
+    if (!OPEN_REVIEW_TICKET_STATES.has(fromState)) {
+      throw new ProcessServiceError(
+        'INVALID_STATE',
+        'A felülvizsgálat már lezárult — új döntés nem alkalmazható.',
+      )
+    }
     if (fromState === input.toState) return
-    await this.tickets.update(input.review.id, {
+    const claimed = await this.tickets.updateIfCurrentState(input.review.id, fromState as TicketState, {
       state: input.toState,
       lockToken: null,
       lockedAt: null,
     })
+    if (!claimed) {
+      throw new ProcessServiceError(
+        'INVALID_STATE',
+        'A felülvizsgálatot közben már lezárták — a döntés nem ismételhető.',
+      )
+    }
     await this.tickets.recordTransition({
       ticketId: input.review.id,
       fromState,
@@ -1028,6 +1074,14 @@ export class ProcessService {
       )
     }
 
+    // Először atomi claim — párhuzamos resolve/retry közül csak egy viheti végig.
+    await this.claimReviewDecision({
+      review,
+      toState: 'done',
+      note: `Újrafuttatás kérve (${attempt}. próba).`,
+      actorUserId: input.actorUserId,
+    })
+
     // A pontosítás a lépés szálába: a futtató runtime a ticket kommentjeiből
     // építi a kontextust (l. buildThreadContextPrompt).
     await this.tickets.appendComment({
@@ -1066,13 +1120,6 @@ export class ProcessService {
       await this.processes.updateStep(step.id, { status: 'ready', completedAt: null })
     }
     await this.processes.updateProcess(process.id, { status: 'running' })
-    await this.closeReviewTicket({
-      tenantId: input.tenantId,
-      review,
-      toState: 'done',
-      note: `Újrafuttatás kérve (${attempt}. próba).`,
-      actorUserId: input.actorUserId,
-    })
 
     await this.append(input.tenantId, { type: 'user', id: input.actorUserId }, {
       action: 'process.step.retry',
@@ -1139,6 +1186,14 @@ export class ProcessService {
       },
     }
 
+    // Először atomi claim — párhuzamos retry/resolve közül csak egy viheti végig.
+    await this.claimReviewDecision({
+      review,
+      toState: 'approved',
+      note: input.note?.trim() || 'Emberi felülbírálás: a lépés elfogadva, a folyamat továbbmegy.',
+      actorUserId: input.actorUserId,
+    })
+
     if (stepTicket) {
       await this.tickets.update(stepTicket.id, { payload: mergedPayload as Prisma.JsonValue })
     }
@@ -1148,14 +1203,6 @@ export class ProcessService {
       await this.processes.updateStep(step.id, { status: 'in_progress', completedAt: null })
     }
     await this.processes.updateProcess(process.id, { status: 'running' })
-
-    await this.closeReviewTicket({
-      tenantId: input.tenantId,
-      review,
-      toState: 'approved',
-      note: input.note?.trim() || 'Emberi felülbírálás: a lépés elfogadva, a folyamat továbbmegy.',
-      actorUserId: input.actorUserId,
-    })
 
     await this.append(input.tenantId, { type: 'user', id: input.actorUserId }, {
       action: 'process.step.human_override',

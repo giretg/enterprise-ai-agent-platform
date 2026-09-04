@@ -99,6 +99,13 @@ function harness(overrides?: { stepTicket?: Partial<FakeTicket>; processStatus?:
       if (data.payload) ticket.payload = data.payload as Record<string, unknown>
       return ticket
     },
+    updateIfCurrentState: async (id: string, currentState: string, data: Record<string, unknown>) => {
+      const ticket = tickets.find((t) => t.id === id)
+      if (!ticket || ticket.state !== currentState) return null
+      if (typeof data.state === 'string') ticket.state = data.state
+      if (data.payload) ticket.payload = data.payload as Record<string, unknown>
+      return ticket
+    },
     recordTransition: async (data: {
       ticketId: string
       fromState: string
@@ -289,8 +296,91 @@ await test('lezárt folyamaton már nincs döntés', async () => {
       clarification: 'mégis',
       actorUserId: 'user-1',
     }),
-    /már lezárult/,
+    /nem vár emberi felülvizsgálatra/,
   )
+})
+
+await test('lezárt review-n nincs második döntés (settled re-entry)', async () => {
+  const h = harness()
+  h.service.advance = (async () => ({ kind: 'noop' as const, status: 'running' as const })) as ProcessService['advance']
+
+  await h.service.resolveStepFromReview({
+    tenantId: h.tenantId,
+    reviewTicketId: 't-review',
+    actorUserId: 'user-1',
+  })
+  assert.equal(h.tickets.find((t) => t.id === 't-review')!.state, 'approved')
+  assert.equal(h.process.status, 'running')
+
+  await assert.rejects(
+    h.service.retryStepFromReview({
+      tenantId: h.tenantId,
+      reviewTicketId: 't-review',
+      clarification: 'mégis futtasd újra',
+      actorUserId: 'user-2',
+    }),
+    /már lezárult|nem vár emberi felülvizsgálatra/,
+  )
+  // A lépés ticketje nem mehet újra ready-re a második döntés miatt.
+  assert.equal(h.tickets.find((t) => t.id === 't-step')!.state, 'done')
+})
+
+await test('kapu-ticket nem használható felülvizsgálati döntésre', async () => {
+  const h = harness()
+  const gate = h.tickets.find((t) => t.id === 't-review')!
+  gate.requiredGateId = 'gate-manager'
+  gate.title = 'Kapu jóváhagyás: gate-manager'
+
+  await assert.rejects(
+    h.service.resolveStepFromReview({
+      tenantId: h.tenantId,
+      reviewTicketId: 't-review',
+      actorUserId: 'user-1',
+    }),
+    /kapu-jóváhagyási/,
+  )
+  assert.equal(gate.state, 'awaiting_human')
+  assert.equal(h.process.status, 'awaiting_human')
+})
+
+await test('párhuzamos retry+resolve: csak az első claim nyer', async () => {
+  const h = harness()
+  const advancedCalls: unknown[] = []
+  h.service.advance = (async () => {
+    advancedCalls.push(true)
+    return { kind: 'noop' as const, status: 'running' as const }
+  }) as ProcessService['advance']
+
+  // Mindkettő egyszerre tölti a nyitott kontextust; a CAS a claim-nél dönt.
+  const resolveP = h.service.resolveStepFromReview({
+    tenantId: h.tenantId,
+    reviewTicketId: 't-review',
+    actorUserId: 'user-resolve',
+  })
+  const retryP = h.service.retryStepFromReview({
+    tenantId: h.tenantId,
+    reviewTicketId: 't-review',
+    clarification: 'pótold a hiányzó mezőt',
+    actorUserId: 'user-retry',
+  })
+
+  const results = await Promise.allSettled([resolveP, retryP])
+  const fulfilled = results.filter((r) => r.status === 'fulfilled')
+  const rejected = results.filter((r) => r.status === 'rejected')
+  assert.equal(fulfilled.length, 1)
+  assert.equal(rejected.length, 1)
+  assert.match(String((rejected[0] as PromiseRejectedResult).reason), /közben már lezárták|már lezárult|nem vár/)
+
+  // Pontosan egy mellékhatás: vagy advance, vagy ready retry — nem mindkettő.
+  const stepState = h.tickets.find((t) => t.id === 't-step')!.state
+  if (advancedCalls.length === 1) {
+    assert.equal(stepState, 'done')
+    assert.equal(h.tickets.find((t) => t.id === 't-review')!.state, 'approved')
+  } else {
+    assert.equal(advancedCalls.length, 0)
+    assert.equal(stepState, 'ready')
+    assert.equal(h.tickets.find((t) => t.id === 't-review')!.state, 'done')
+  }
 })
 
   if (failures > 0) {
