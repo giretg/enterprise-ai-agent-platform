@@ -3,8 +3,12 @@
  * Futtatás: npx tsx scripts/claude-code-oauth-bridge.test.ts
  */
 import assert from 'node:assert/strict'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   CLAUDE_CODE_IDENTITY_PROMPT,
+  assertClaudeCodeCredentialFilePrivate,
   parseClaudeCodeCredentialJson,
   resolveClaudeCodeModel,
   resolveClaudeThinkingBudget,
@@ -86,6 +90,25 @@ check('credentials JSON parse', () => {
   assert.equal(tokens.accessToken, 'sk-ant-oat01-test')
   assert.equal(tokens.refreshToken, 'sk-ant-ort01-test')
   assert.equal(tokens.subscriptionType, 'max')
+})
+
+check('a fájlos OAuth credential nem lehet group/world olvasható', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'claude-oauth-'))
+  const filePath = join(directory, 'credentials.json')
+  try {
+    writeFileSync(filePath, JSON.stringify({ claudeAiOauth: { accessToken: 'test-token' } }), { mode: 0o600 })
+
+    chmodSync(filePath, 0o644)
+    assert.throws(
+      () => assertClaudeCodeCredentialFilePrivate(filePath),
+      /must not be readable by group or others/,
+    )
+
+    chmodSync(filePath, 0o600)
+    assert.doesNotThrow(() => assertClaudeCodeCredentialFilePrivate(filePath))
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 console.log(`\n=== Osszesites === ${failures === 0 ? 'MIND ZOLD' : `${failures} sikertelen`}`)
