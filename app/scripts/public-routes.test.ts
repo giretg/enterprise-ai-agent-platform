@@ -83,6 +83,17 @@ check('az operatív szondák publikusak (uptime-monitor / scrape)', () => {
   assertPublic('/api/metrics')
 })
 
+check('a bot-vezérlő fájlok publikusak (különben a Clerk 404-et ad rájuk)', () => {
+  assertPublic('/robots.txt')
+  assertPublic('/sitemap.xml')
+})
+
+check('a bot-fájl minták NEM tágabbak a kelleténél', () => {
+  assertProtected('/robots.txt/secret')
+  assertProtected('/api/robots.txt')
+  assertProtected('/sitemap.xml/leak')
+})
+
 // PR-4 — a rendes alkalmazás-felület és a kezelői API védett marad.
 check('az alkalmazás-felület és a kezelői API VÉDETT marad', () => {
   assertProtected('/')
