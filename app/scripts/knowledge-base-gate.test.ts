@@ -648,6 +648,236 @@ async function run() {
     assert.ok(chunks.size >= 1)
   })
 
+  await check('orphan pending + raw mód: jóváhagyás NEM publikál / NEM indexel', async () => {
+    const { kb, documents, agents, artifacts, chunks, connector } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker', tenantId: null })
+    const doc = seedDoc(documents, 'orphan-raw.md', null, '# A\nB')
+    const ticket = await kb.requestDocument({
+      agentId: 'agent-1',
+      documentId: doc.id,
+      createdById: 'u',
+      actorTenantId: TENANT_A,
+    })
+    await kb.setPendingDocumentProcessingMode({
+      ticketId: ticket.id,
+      processingMode: 'okf',
+      actorId: 'a1',
+      actorTenantId: TENANT_A,
+    })
+    // Race szimuláció: mód nyersre vált, de a draft pending marad (pl. másik
+    // párhuzamos createDraft a fail előtt).
+    const current = documents.get(doc.id)!
+    documents.set(doc.id, { ...current, processingMode: 'raw_text_only' })
+    assert.equal([...artifacts.values()][0].status, 'pending_review')
+
+    const approved = await kb.approveDocument({
+      ticketId: ticket.id,
+      approverId: 'a1',
+      approverRole: 'approver',
+      actorTenantId: TENANT_A,
+    })
+    assert.equal(approved.connectorId, connector.id)
+    assert.equal(approved.status, 'processed')
+    assert.equal([...artifacts.values()][0].status, 'failed')
+    assert.equal(chunks.size, 0, 'orphan draft ne indexelődjön nyers jóváhagyáskor')
+  })
+
+  await check('raw idempotens setPending: leftover pending draft failed', async () => {
+    const { kb, documents, agents, artifacts, connector } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker', tenantId: null })
+    const doc = seedDoc(documents, 'raw-idempotent.md', null, '# A\nB')
+    const ticket = await kb.requestDocument({
+      agentId: 'agent-1',
+      documentId: doc.id,
+      createdById: 'u',
+      actorTenantId: TENANT_A,
+      processingMode: 'raw_text_only',
+    })
+    // Orphan draft betolása raw mód mellett (mintha race hozta volna létre).
+    const orphanId = randomUUID()
+    artifacts.set(orphanId, {
+      id: orphanId,
+      connectorId: connector.id,
+      sourceDocumentId: doc.id,
+      version: 1,
+      status: 'pending_review',
+      title: 'orphan',
+      createdById: 'u',
+      createdByAgentId: 'agent-1',
+      createdAt: new Date(),
+      publishedAt: null,
+      validationResult: {},
+      bundleJson: {},
+    } as unknown as KnowledgeArtifact)
+
+    await kb.setPendingDocumentProcessingMode({
+      ticketId: ticket.id,
+      processingMode: 'raw_text_only',
+      actorId: 'a1',
+      actorTenantId: TENANT_A,
+    })
+    assert.equal(artifacts.get(orphanId)?.status, 'failed')
+  })
+
+  await check('approveDocument: idegen tenant bélyegű dok megosztott agenten tiltva', async () => {
+    const TENANT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const tickets = new Map<string, Ticket>()
+    const documents = new Map<string, Document>()
+    const agents = new Map<string, { id: string; name: string; role: string; tenantId: string | null }>()
+    const transitions: TicketTransition[] = []
+    const audits: Audit[] = []
+    const artifacts = new Map<string, KnowledgeArtifact>()
+    const chunks = new Map<string, KnowledgeChunk>()
+
+    const ticketRepo = {
+      async create(data: Record<string, unknown>) {
+        const ticket = {
+          id: randomUUID(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          lockToken: null,
+          lockedAt: null,
+          playbookRef: null,
+          conversationId: null,
+          source: 'user',
+          ...data,
+        } as unknown as Ticket
+        tickets.set(ticket.id, ticket)
+        return ticket
+      },
+      async findById(id: string) {
+        return tickets.get(id) ?? null
+      },
+      async update(id: string, data: Record<string, unknown>) {
+        const current = tickets.get(id)
+        if (!current) throw new Error('ticket not found')
+        const next = { ...current, ...data, updatedAt: new Date() } as Ticket
+        tickets.set(id, next)
+        return next
+      },
+      async recordTransition(data: Record<string, unknown>) {
+        const t = { id: randomUUID(), ts: new Date(), ...data } as unknown as TicketTransition
+        transitions.push(t)
+        return t
+      },
+      async findMany() {
+        return [...tickets.values()]
+      },
+    } as unknown as TicketRepository
+
+    const documentRepo = {
+      async findById(id: string) {
+        return documents.get(id) ?? null
+      },
+      async update(id: string, data: Partial<Document>) {
+        const current = documents.get(id)
+        if (!current) throw new Error('document not found')
+        const next = { ...current, ...data } as Document
+        documents.set(id, next)
+        return next
+      },
+    } as unknown as DocumentRepository
+
+    const agentRepo = {
+      async findById(id: string) {
+        return (agents.get(id) ?? null) as never
+      },
+    } as unknown as AgentRepository
+
+    const auditRepo = {
+      async append(entry: Audit) {
+        audits.push(entry)
+        return undefined as never
+      },
+    } as unknown as AuditRepository
+
+    const artifactRepo = {
+      async findById() {
+        return null
+      },
+      async create() {
+        throw new Error('unexpected')
+      },
+      async update() {
+        throw new Error('unexpected')
+      },
+      async findByConnector() {
+        return []
+      },
+      async latestVersionForDocument() {
+        return 0
+      },
+    } as unknown as KnowledgeArtifactRepository
+
+    const chunkRepo = {
+      async createMany() {
+        return 0
+      },
+      async findByArtifact() {
+        return []
+      },
+      async deleteByArtifact() {
+        return
+      },
+    } as unknown as KnowledgeChunkRepository
+
+    const connector = {
+      id: 'kb-conn-shared',
+      type: 'knowledge_base',
+      name: 'kb:shared',
+      tenantId: null,
+    } as unknown as Connector
+
+    const ticketService = new TicketService(ticketRepo, auditRepo)
+    const kb = new KnowledgeBaseService(
+      ticketRepo,
+      documentRepo,
+      agentRepo,
+      auditRepo,
+      ticketService,
+      artifactRepo,
+      chunkRepo,
+      async () => connector,
+      async (doc, actorTenantId) => {
+        const meta = doc.metadata as { tenantId?: string } | undefined
+        const stamped = typeof meta?.tenantId === 'string' ? meta.tenantId : null
+        if (!actorTenantId || !stamped || stamped !== actorTenantId) {
+          throw new Error('Document not found')
+        }
+      },
+    )
+
+    agents.set('agent-shared', {
+      id: 'agent-shared',
+      name: 'Shared Wiki',
+      role: 'worker',
+      tenantId: null,
+    })
+    const doc = seedDoc(documents, 'foreign.md', null, 'titok')
+    // Ticket tenant A nevében nyílik (requestDocument assertDocumentReachable ok).
+    const ticket = await kb.requestDocument({
+      agentId: 'agent-shared',
+      documentId: doc.id,
+      createdById: 'u-a',
+      actorTenantId: TENANT_A,
+      processingMode: 'raw_text_only',
+    })
+
+    await assert.rejects(
+      () =>
+        kb.approveDocument({
+          ticketId: ticket.id,
+          approverId: 'u-b',
+          approverRole: 'approver',
+          actorTenantId: TENANT_B,
+        }),
+      /Document not found/,
+    )
+    assert.equal(documents.get(doc.id)?.connectorId, null, 'idegen tenant ne köthesse be')
+    assert.equal(documents.get(doc.id)?.status, 'uploaded')
+    void chunks
+  })
+
   console.log(failures === 0 ? '\n✅ minden teszt zöld' : `\n❌ ${failures} teszt bukott`)
   if (failures > 0) process.exit(1)
 }
