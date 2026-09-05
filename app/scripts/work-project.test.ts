@@ -363,7 +363,9 @@ async function main() {
     assert.match(chat, /projectKey/)
     assert.match(chat, /createAgentTaskTicket\([\s\S]*projectKey/)
     assert.match(createForm, /createBoardTicket\([\s\S]*projectKey/)
-    assert.match(stream, /projectKey: projectKey\.trim\(\)/)
+    assert.match(stream, /services\.workProjects\.assignableKey\(user\.activeTenantId, projectKey\)/)
+    assert.match(stream, /error: 'invalid_work_project'/)
+    assert.match(stream, /projectKey: assignedProjectKey/)
   })
 
   if (failures > 0) {
