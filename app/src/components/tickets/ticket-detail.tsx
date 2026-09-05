@@ -4,13 +4,17 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useState, useTransition } from 'react'
 import Link from 'next/link'
 import type { ProcessStatus } from '@prisma/client'
-import { createDiscussionFromTicket, transitionTicket, deleteBoardTicket } from '@/app/actions/platform'
+import {
+  createDiscussionFromTicket,
+  transitionTicket,
+  deleteBoardTicket,
+  runRecurringTicketNow,
+} from '@/app/actions/platform'
 import { setTicketProjectKey } from '@/app/actions/work-projects'
 import { AssignableWorkProjectSelect } from '@/components/work-projects/work-project-select'
 import { effectiveWorkProjectKey } from '@/lib/work-project'
 import { exportTicketDebugLog } from '@/app/actions/debug-log'
 import { startProcessFromTicket, transitionProcessTicket } from '@/app/actions/process'
-import { authorizeTicketRunAs, revokeTicketRunAs } from '@/app/actions/connector-grants'
 import { openAgentChat } from '@/components/agents/agent-chat-session-store'
 import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
 import { ProposalCard } from '@/components/tickets/proposal-card'
@@ -31,7 +35,6 @@ import {
   presentTicketRunStatus,
   readTicketRuntimeProgress,
 } from '@/domain/agent/ticket-runtime-progress'
-import { isRunAsAuthorized } from '@/lib/run-as-payload'
 import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
 import { readStepOutcome } from '@/lib/playbook-v2/process-step-payload'
 import { readTicketCallCapMessageFromPayload } from '@/lib/ticket-call-cap'
@@ -491,103 +494,6 @@ function hasWikiAnswer(payload: unknown): boolean {
   )
 }
 
-function hasRunAsAuthorization(payload: Record<string, unknown> | null): boolean {
-  return isRunAsAuthorized(payload)
-}
-
-export function TicketRunAsAuthorization({
-  ticket,
-  canManageRunAs = false,
-}: {
-  ticket: TicketView
-  canManageRunAs?: boolean
-}) {
-  const router = useRouter()
-  const [pending, startTransition] = useTransition()
-  const [error, setError] = useState<string | null>(null)
-  const [message, setMessage] = useState<string | null>(null)
-
-  const payload =
-    typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
-      ? (ticket.payload as Record<string, unknown>)
-      : null
-  const authorized = hasRunAsAuthorization(payload)
-  const canAuthorize =
-    canManageRunAs &&
-    ticket.assigneeType === 'agent' &&
-    ['backlog', 'ready', 'in_progress'].includes(ticket.state) &&
-    !authorized
-
-  if (!canAuthorize && !authorized) return null
-
-  const authorize = () => {
-    setError(null)
-    setMessage(null)
-    startTransition(async () => {
-      const res = await authorizeTicketRunAs({ ticketId: ticket.id })
-      if (!res.success) {
-        setError(res.error)
-        return
-      }
-      setMessage('Run-as felhatalmazás rögzítve — az AI munkatárs a te fiókoddal járhat el autonóm futásnál.')
-      router.refresh()
-    })
-  }
-
-  const revoke = () => {
-    setError(null)
-    setMessage(null)
-    startTransition(async () => {
-      const res = await revokeTicketRunAs({ ticketId: ticket.id })
-      if (!res.success) {
-        setError(res.error)
-        return
-      }
-      setMessage('Run-as felhatalmazás visszavonva.')
-      router.refresh()
-    })
-  }
-
-  return (
-    <Card title="Run-as felhatalmazás">
-      {error && <p className="mb-3 text-sm text-coral">{error}</p>}
-      {message && <p className="mb-3 text-sm text-sage">{message}</p>}
-      {authorized ? (
-        <>
-          <p className="mb-3 text-sm text-ink-soft">
-            Autonóm futáshoz engedélyezve: a per-user connectorok a te fiókoddal futnak ezen a feladaton.
-          </p>
-          {canManageRunAs && (
-            <button
-              type="button"
-              disabled={pending}
-              onClick={revoke}
-              className="rounded-full bg-coral/20 px-4 py-2 text-sm font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
-            >
-              Run-as visszavonása
-            </button>
-          )}
-        </>
-      ) : (
-        <>
-          <p className="mb-3 text-sm text-ink-soft">
-            Ha az AI munkatárs autonóm futáskor (pl. ütemezett feladat) a te Gmail-fiókodat használja, itt adhatod meg
-            előre a felhatalmazást. Implicit öröklés nélkül — csak explicit, visszavonható engedély.
-          </p>
-          <button
-            type="button"
-            disabled={pending}
-            onClick={authorize}
-            className="rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky hover:bg-sky/30 disabled:opacity-50"
-          >
-            Run-as engedélyezése
-          </button>
-        </>
-      )}
-    </Card>
-  )
-}
-
 export function TicketProcessStartPanel({
   ticket,
   definitions,
@@ -1034,6 +940,7 @@ export function TicketMeta({
   const contractReview = contractReviewFromPayload(payload)
   const [debugLogPending, startDebugLogTransition] = useTransition()
   const [dispatchPending, startDispatchTransition] = useTransition()
+  const [runNowPending, startRunNowTransition] = useTransition()
   const [deletePending, startDeleteTransition] = useTransition()
   const [discussPending, startDiscussTransition] = useTransition()
   const [projectPending, startProjectTransition] = useTransition()
@@ -1062,6 +969,12 @@ export function TicketMeta({
       : null
 
   const canStartDispatch = canDispatch && canStartTicketDispatch(ticket)
+  const canRunNow =
+    canDispatch &&
+    Boolean(schedule?.scheduledTaskId) &&
+    schedule?.kind === 'recurring' &&
+    schedule.role !== 'occurrence' &&
+    (ticket.state === 'ready' || ticket.state === 'backlog')
 
   function handleExportDebugLog() {
     startDebugLogTransition(async () => {
@@ -1094,6 +1007,21 @@ export function TicketMeta({
         tone: res.warning ? 'err' : 'ok',
         text: res.warning ?? 'Feldolgozás elindítva.',
       })
+    })
+  }
+
+  function handleRunNow() {
+    startRunNowTransition(async () => {
+      setHeaderMessage(null)
+      const res = await runRecurringTicketNow({ ticketId: ticket.id })
+      if (!res.success) {
+        setHeaderMessage({ tone: 'err', text: res.error })
+        return
+      }
+      if (res.data.warning) {
+        setHeaderMessage({ tone: 'err', text: res.data.warning })
+      }
+      router.push(`/control-plane/tickets/${res.data.ticketId}`)
     })
   }
 
@@ -1249,17 +1177,28 @@ export function TicketMeta({
                   compact
                   value={projectKey}
                   onChange={handleProjectKeyChange}
-                  disabled={!canDispatch || projectPending || dispatchPending || deletePending}
+                  disabled={!canDispatch || projectPending || dispatchPending || runNowPending || deletePending}
                 />
               </div>
             </div>
 
             <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {canRunNow && (
+                <button
+                  type="button"
+                  onClick={handleRunNow}
+                  disabled={runNowPending || deletePending || discussPending}
+                  className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-coral-deep disabled:opacity-40"
+                  title="A sorozat következő futását azonnal elindítja. A rákövetkező időpont a megszokott ütemezés szerint marad."
+                >
+                  {runNowPending ? 'Indítás…' : 'Futtatás most'}
+                </button>
+              )}
               {canStartDispatch && (
                 <button
                   type="button"
                   onClick={handleStartDispatch}
-                  disabled={dispatchPending || deletePending || discussPending}
+                  disabled={dispatchPending || deletePending || discussPending || runNowPending}
                   className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-coral-deep disabled:opacity-40"
                   title="Kézi feldolgozás indítása — függetlenül a dispatcher állapotától"
                 >
@@ -1270,7 +1209,7 @@ export function TicketMeta({
                 <button
                   type="button"
                   onClick={handleDiscuss}
-                  disabled={discussPending || deletePending || dispatchPending}
+                  disabled={discussPending || deletePending || dispatchPending || runNowPending}
                   className="rounded-full border border-sky/35 bg-sky/10 px-4 py-2.5 text-sm font-semibold text-sky transition-colors hover:bg-sky/20 disabled:opacity-40"
                   title="Új chat az AI munkatárssal — a feladat előzményével a háttérben"
                 >
@@ -1287,7 +1226,7 @@ export function TicketMeta({
                 <button
                   type="button"
                   onClick={handleDelete}
-                  disabled={deletePending || dispatchPending || discussPending}
+                  disabled={deletePending || dispatchPending || discussPending || runNowPending}
                   className="rounded-full border border-coral/35 bg-coral/10 px-4 py-2.5 text-sm font-semibold text-coral transition-colors hover:bg-coral/20 disabled:opacity-40"
                   title={
                     isAdminDelete

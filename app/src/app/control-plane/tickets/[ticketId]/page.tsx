@@ -13,7 +13,6 @@ import {
   TicketMeta,
   TicketProcessPanel,
   TicketProcessStartPanel,
-  TicketRunAsAuthorization,
   TicketTechnicalPanels,
   type TicketStartableProcessDefinition,
 } from '@/components/tickets/ticket-detail'
@@ -24,7 +23,7 @@ import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
 import { TicketReviewActions } from '@/components/tickets/ticket-review-actions'
 import { TicketHistory } from '@/components/tickets/ticket-history'
 import { TicketActivityHistory } from '@/components/tickets/ticket-activity-history'
-import { canDeleteBoardTicket } from '@/lib/ticket-display'
+import { canDeleteBoardTicket, canEditTicketTask } from '@/lib/ticket-display'
 import { resolveRunAnalysisEntry } from '@/lib/run-analysis-entry'
 
 export default async function TicketDetailPage({
@@ -73,6 +72,10 @@ export default async function TicketDetailPage({
   const canStartProcess = hasMinimumRole(ctx?.activeTenantRole, 'operator')
   const deleteInfo = canDeleteBoardTicket(ticket, {
     isAdmin,
+    canManage: canManageRunAs,
+    userId: ctx?.user.id,
+  })
+  const canEditTask = canEditTicketTask(ticket, {
     canManage: canManageRunAs,
     userId: ctx?.user.id,
   })
@@ -137,7 +140,11 @@ export default async function TicketDetailPage({
               canCancel={isAdmin}
             />
           )}
-          <TicketThread ticket={ticket} comments={commentsRes.success ? commentsRes.data : []} />
+          <TicketThread
+            ticket={ticket}
+            comments={commentsRes.success ? commentsRes.data : []}
+            canEdit={canEditTask}
+          />
           <TicketActions ticket={ticket} hideDecisions={Boolean(reviewContext)} />
           <TicketActivityHistory
             ticket={{
@@ -156,7 +163,6 @@ export default async function TicketDetailPage({
             ticketState={ticket.state}
             declaredOutputs={declaredOutputsRes.success ? declaredOutputsRes.data : []}
           />
-          <TicketRunAsAuthorization ticket={ticket} canManageRunAs={canManageRunAs} />
           {canStartProcess && <TicketProcessStartPanel ticket={ticket} definitions={definitions} />}
           <TicketHistory transitions={transitions} />
           <TicketTechnicalPanels ticket={ticket} isAdmin={isAdmin} />

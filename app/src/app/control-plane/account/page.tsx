@@ -52,6 +52,8 @@ async function LinkedAccountsContent() {
         config: c.config,
         assignedAgentCount: connectorsRes.data.connectorUsage[c.id]?.assignedAgentCount ?? 0,
         capableAgentCount: connectorsRes.data.connectorUsage[c.id]?.capableAgentCount ?? 0,
+        capableAgentDisplayNames:
+          connectorsRes.data.connectorUsage[c.id]?.capableAgentDisplayNames ?? [],
       }))
     : []
 

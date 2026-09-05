@@ -29,6 +29,7 @@ import {
 } from '@/domain/connector-grant/delegated-oauth-registry'
 import { toGoogleOAuthPublicView, toGoogleDrivePickerPublicView } from '@/lib/platform-google-oauth-config'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-connector-requirements'
+import { agentDisplayName } from '@/lib/agent-persona'
 import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
 import {
   readGoogleDriveGrantMetadata,
@@ -99,6 +100,8 @@ async function delegatedConnectorUsage(
       connectorId: true,
       agent: {
         select: {
+          name: true,
+          personaNickname: true,
           capabilities: {
             where: { allowed: true },
             select: { toolName: true },
@@ -112,12 +115,19 @@ async function delegatedConnectorUsage(
     connectors.map((connector) => {
       const requiredTools = new Set<string>(toolsRequiringConnector(connector.type))
       const connectorLinks = links.filter((link) => link.connectorId === connector.id)
-      const capableAgentCount = connectorLinks.filter((link) =>
+      const capableAgents = connectorLinks.filter((link) =>
         link.agent.capabilities.some((capability) => requiredTools.has(capability.toolName)),
-      ).length
+      )
+      const capableAgentDisplayNames = capableAgents
+        .map((link) => agentDisplayName(link.agent.name, link.agent))
+        .sort((a, b) => a.localeCompare(b, 'hu'))
       return [
         connector.id,
-        { assignedAgentCount: connectorLinks.length, capableAgentCount },
+        {
+          assignedAgentCount: connectorLinks.length,
+          capableAgentCount: capableAgents.length,
+          capableAgentDisplayNames,
+        },
       ]
     }),
   )

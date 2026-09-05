@@ -335,6 +335,100 @@ await test('rendszeres sorozatnál új példány készül, a sablon a következ�
   ])
 })
 
+await test('runNow jövőbeli rendszeres feladatból azonnal példányt csinál', async () => {
+  let claimedAt: Date | null = null
+  let materializeCalls = 0
+  const nextRunAt = new Date(NOW.getTime() + 3600_000)
+  const seriesUpdates: Array<Record<string, unknown>> = []
+  const active = task({
+    status: 'active',
+    materializedTicketId: SERIES_TICKET_ID,
+    runCount: 0,
+    recurrence: 'daily',
+    nextRunAt,
+    payload: {
+      question: 'Készíts riportot',
+      attachmentDocumentIds: [],
+      seriesTicketId: SERIES_TICKET_ID,
+    },
+  })
+  const { service, audit } = makeService(
+    agent(),
+    {
+      findById: async () => active,
+      claimDue: async (_id, at) => {
+        claimedAt = at
+        return { ...active, status: 'materializing' }
+      },
+      materializeTicket: async (_id, ticketInput, state) => {
+        materializeCalls += 1
+        assert.equal(ticketInput.executeAfter, null)
+        assert.equal(state.status, 'active')
+        return {
+          ticket: { id: OCCURRENCE_TICKET_ID, ...ticketInput } as Ticket,
+          scheduledTask: task({
+            status: 'active',
+            materializedTicketId: OCCURRENCE_TICKET_ID,
+            materializedAt: NOW,
+            lastRunAt: NOW,
+            runCount: 1,
+            recurrence: 'daily',
+          }),
+        }
+      },
+    },
+    {
+      findById: async (id) =>
+        id === SERIES_TICKET_ID
+          ? ({
+              id: SERIES_TICKET_ID,
+              state: 'ready',
+              payload: { scheduleSeries: true, question: 'Készíts riportot' },
+              executeAfter: nextRunAt,
+            } as unknown as Ticket)
+          : null,
+      update: async (id, data) => {
+        assert.equal(id, SERIES_TICKET_ID)
+        seriesUpdates.push(data as Record<string, unknown>)
+        return { id: SERIES_TICKET_ID, ...data } as Ticket
+      },
+    },
+  )
+
+  const result = await service.runNow({
+    scheduledTaskId: TASK_ID,
+    actorId: USER_ID,
+    tenantId: TENANT_A,
+    now: NOW,
+  })
+  assert.equal(materializeCalls, 1)
+  assert.equal(claimedAt?.toISOString(), nextRunAt.toISOString())
+  assert.equal(result.ticketId, OCCURRENCE_TICKET_ID)
+  assert.equal(seriesUpdates.length, 1)
+  assert.equal(audit[0]?.actorType, 'human')
+  assert.equal((audit[0]?.metadata as { triggeredBy?: string }).triggeredBy, 'run_now')
+})
+
+await test('runNow egyszeri feladaton elutasít', async () => {
+  const { service } = makeService(agent(), {
+    findById: async () => task({ recurrence: 'none' }),
+  })
+  await assert.rejects(
+    () => service.runNow({ scheduledTaskId: TASK_ID, actorId: USER_ID, tenantId: TENANT_A, now: NOW }),
+    /Only recurring/,
+  )
+})
+
+await test('runNow idegen tenant taskját nem adja ki', async () => {
+  const { service } = makeService(agent(), {
+    findById: async () => task(),
+  })
+  await assert.rejects(
+    () => service.runNow({ scheduledTaskId: TASK_ID, actorId: USER_ID, tenantId: TENANT_B, now: NOW }),
+    /not found/,
+  )
+})
+
 await test('a visszavont scheduled task run-as joga minden további tool-hívásnál elutasított', () => {
   const authorizedAt = '2026-07-18T10:00:00.000Z'
   const payload = {

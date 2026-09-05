@@ -54,6 +54,7 @@ import {
   useAgentChatTurnLiveness,
 } from '@/components/agents/use-agent-chat-turn-liveness'
 import {
+  chatStreamHttpErrorMessage,
   decideChatStreamRecovery,
   resolveChatStreamConflict,
   STREAM_RECOVERED_MESSAGE,
@@ -184,7 +185,6 @@ export function AgentChatPanel({
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [lastTicketId, setLastTicketId] = useState<string | null>(null)
   const [ticketSchedule, setTicketSchedule] = useState<TaskScheduleState>(EMPTY_TASK_SCHEDULE)
-  const [ticketAuthorizeRunAs, setTicketAuthorizeRunAs] = useState(false)
   const [isAgentTyping, setIsAgentTyping] = useState(false)
   const [stopPending, setStopPending] = useState(false)
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null)
@@ -252,7 +252,7 @@ export function AgentChatPanel({
   /**
    * Mi legyen az üzenetből: válasz most (chat) vagy feladat a táblán (task).
    * Korábban ez implicit volt — két egyenrangú gomb állt egymás mellett, és a
-   * feladat-specifikus mezők (ütemezés, run-as) akkor is látszottak, amikor
+   * feladat-specifikus mezők (ütemezés) akkor is látszottak, amikor
    * sima beszélgetés folyt.
    */
   const [composerMode, setComposerMode] = useState<AgentChatComposerMode>('chat')
@@ -549,7 +549,6 @@ export function AgentChatPanel({
   const resetComposer = () => {
     setInput('')
     setTicketSchedule(EMPTY_TASK_SCHEDULE)
-    setTicketAuthorizeRunAs(false)
     pendingAttachments.forEach((a) => {
       if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
     })
@@ -641,7 +640,6 @@ export function AgentChatPanel({
     setComposerMode(next)
     if (next !== 'task') {
       setTicketSchedule(EMPTY_TASK_SCHEDULE)
-      setTicketAuthorizeRunAs(false)
     }
     if (next !== 'process') {
       setSelectedProcessDefId(null)
@@ -1557,12 +1555,18 @@ export function AgentChatPanel({
         if (!response.ok || !response.body) {
           removeFailedOptimisticMessages()
           markConversationRunning(conversationId, false)
+          let errorBody: { message?: string } | null = null
+          try {
+            errorBody = (await response.json()) as { message?: string }
+          } catch {
+            // plain-text 400 (pl. Invalid JSON body) — nincs JSON message
+          }
           setStatusMessage(
             options.connectorGrantContinuation
               ? `A hozzáférés megvan, de az agent folytatása nem indult el (${response.status}). Írd meg a chatben, hogy folytassa.`
               : options.consequenceApprovalIds?.length
                 ? `A jóváhagyott művelet lefutott, de az agent folytatása nem indult el (${response.status}). Írd meg a chatben, hogy folytassa.`
-                : `Küldés sikertelen (${response.status})`,
+                : chatStreamHttpErrorMessage(response.status, errorBody),
           )
           return
         }
@@ -1932,8 +1936,7 @@ export function AgentChatPanel({
                 : 'none',
             intervalHours: scheduleInput.intervalHours,
             maxRuns: scheduleInput.maxRuns,
-            authorizeRunAs:
-              scheduleInput.scheduleMode === 'recurring' ? ticketAuthorizeRunAs : true,
+            authorizeRunAs: true,
           })
           if (!res.success) {
             setStatusMessage(res.error)
@@ -2440,8 +2443,6 @@ export function AgentChatPanel({
                 onSelectProcess={setSelectedProcessDefId}
                 ticketSchedule={ticketSchedule}
                 onTicketScheduleChange={setTicketSchedule}
-                ticketAuthorizeRunAs={ticketAuthorizeRunAs}
-                onTicketAuthorizeRunAsChange={setTicketAuthorizeRunAs}
                 input={input}
                 onInputChange={setInput}
                 textareaRef={textareaRef}

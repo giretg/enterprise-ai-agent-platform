@@ -202,6 +202,72 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description: 'Gmail küldés — jóváhagyott ticket mellett (piszkozatból vagy közvetlenül).',
   },
 
+  // Google Drive
+  google_drive_search: {
+    label: 'Drive-keresés',
+    description: 'Google Drive fájlok keresése és listázása a kapcsolt fiók jogaival.',
+  },
+  google_drive_get_file: {
+    label: 'Drive-fájl adatai',
+    description: 'Egy Google Drive fájl metaadatának lekérése azonosító alapján.',
+  },
+  google_drive_read_file: {
+    label: 'Drive-fájl olvasása',
+    description: 'Google Drive fájl tartalmának olvasása (Docs/Sheets export vagy letöltés).',
+  },
+  google_drive_list_drives: {
+    label: 'Meghajtók listázása',
+    description: 'Megosztott Google Drive meghajtók listázása.',
+  },
+  google_drive_create_folder: {
+    label: 'Drive-mappa',
+    description: 'Új mappa létrehozása a Google Drive-on.',
+  },
+  google_drive_upload_file: {
+    label: 'Drive-feltöltés',
+    description: 'Fájl feltöltése Google Drive-ra.',
+  },
+  google_drive_update_file: {
+    label: 'Drive-fájl frissítése',
+    description: 'Meglévő Google Drive fájl tartalmának frissítése.',
+  },
+  google_drive_rename_file: {
+    label: 'Drive-átnevezés',
+    description: 'Google Drive fájl átnevezése.',
+  },
+  google_drive_move_file: {
+    label: 'Drive-áthelyezés',
+    description: 'Google Drive fájl mozgatása másik mappába.',
+  },
+  google_drive_copy_file: {
+    label: 'Drive-másolás',
+    description: 'Google Drive fájl másolása.',
+  },
+  google_drive_trash_file: {
+    label: 'Drive-kuka',
+    description: 'Google Drive fájl kukába helyezése (visszaállítható).',
+  },
+  google_drive_restore_file: {
+    label: 'Drive-visszaállítás',
+    description: 'Google Drive fájl visszaállítása a kukából.',
+  },
+  google_drive_share_file: {
+    label: 'Drive-megosztás',
+    description: 'Google Drive fájl megosztása — mindig jóváhagyás-köteles.',
+  },
+  google_docs_apply_edits: {
+    label: 'Docs szerkesztése',
+    description: 'Google Docs tartalmának módosítása.',
+  },
+  google_sheets_write_range: {
+    label: 'Sheets írása',
+    description: 'Google Sheets cellatartomány írása.',
+  },
+  google_slides_apply_edits: {
+    label: 'Slides szerkesztése',
+    description: 'Google Slides tartalmának módosítása.',
+  },
+
   // Agent együttműködés
   agent_catalog: {
     label: 'Agent-katalógus',
@@ -264,6 +330,24 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   web_research_request: {
     label: 'Webes kutatás',
     description: 'Strukturált web-kutatás kérése a Web-Egress workertől (tények + források).',
+  },
+
+  // Futás-elemzés / hibakeresés
+  run_index: {
+    label: 'Futás-lista',
+    description: 'Futás-fejlécek lekérése szkóp alapján — a futás-elemzés első lépése.',
+  },
+  run_trace: {
+    label: 'Futás-idővonal',
+    description: 'Egy futás idővonala vagy folyamat-nézete — a futás-elemzés lefúrása.',
+  },
+  run_stats: {
+    label: 'Futás-statisztika',
+    description: 'Összesített mutatók a kiválasztott futásokról.',
+  },
+  get_debug_trace: {
+    label: 'Hibakereső nyomvonal',
+    description: 'Agent-forduló álnevesített debug-nyomvonala hibakereséshez.',
   },
 
   // Projektmemória

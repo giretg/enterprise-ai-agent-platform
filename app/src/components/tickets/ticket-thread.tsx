@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { useMemo, useState, useTransition } from 'react'
 import { useTicketWorkspaceFiles } from '@/components/tickets/use-ticket-workspace-files'
-import { addTicketComment, uploadTicketCommentAttachment } from '@/app/actions/platform'
+import { addTicketComment, updateTicketTask, uploadTicketCommentAttachment } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { ChatMarkdown } from '@/components/chat/chat-markdown'
 import { formatTicketDateTime } from '@/lib/ticket-display'
@@ -271,9 +271,108 @@ function TicketCommentComposer({
   )
 }
 
+function TicketOriginalTask({
+  ticket,
+  originalTask,
+  canEdit,
+}: {
+  ticket: { id: string; title: string; createdAt: string | Date; creator?: { label: string } | null; inputAttachments?: TicketInputAttachmentView[] }
+  originalTask: string
+  canEdit: boolean
+}) {
+  const router = useRouter()
+  const [editing, setEditing] = useState(false)
+  const [title, setTitle] = useState(ticket.title)
+  const [description, setDescription] = useState(originalTask)
+  const [pending, startTransition] = useTransition()
+  const [error, setError] = useState<string | null>(null)
+
+  const save = () => {
+    setError(null)
+    startTransition(async () => {
+      const res = await updateTicketTask({
+        ticketId: ticket.id,
+        title: title.trim(),
+        description: description.trim(),
+      })
+      if (!res.success) {
+        setError(res.error)
+        return
+      }
+      setEditing(false)
+      router.refresh()
+    })
+  }
+
+  return (
+    <article className="rounded-lg border border-line bg-night-2/60 p-4">
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-faint">
+        <Badge tone="neutral">Feladat</Badge>
+        <span>{ticket.creator?.label ?? 'Felhasználó'}</span>
+        <span>{formatTicketDateTime(ticket.createdAt)}</span>
+        {canEdit ? (
+          <button
+            type="button"
+            onClick={() => {
+              if (editing) {
+                setEditing(false)
+                setError(null)
+                return
+              }
+              setTitle(ticket.title)
+              setDescription(originalTask)
+              setError(null)
+              setEditing(true)
+            }}
+            className="ml-auto rounded-full bg-ink/8 px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-ink/12 hover:text-ink"
+          >
+            {editing ? 'Mégse' : 'Szerkesztés'}
+          </button>
+        ) : null}
+      </div>
+      {editing ? (
+        <div className="space-y-2">
+          {error && <p className="text-sm text-coral">{error}</p>}
+          <input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            disabled={pending}
+            maxLength={200}
+            aria-label="Feladat címe"
+            className="w-full rounded-lg border border-line bg-card px-3 py-2 text-sm text-ink"
+          />
+          <textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            disabled={pending}
+            rows={6}
+            aria-label="Feladat leírása"
+            className="w-full rounded-lg border border-line bg-card px-3 py-2 text-sm leading-relaxed text-ink"
+          />
+          <button
+            type="button"
+            disabled={pending || !title.trim() || !description.trim()}
+            onClick={save}
+            className="rounded-lg bg-sky/20 px-4 py-2 text-sm font-semibold text-sky hover:bg-sky/30 disabled:opacity-50"
+          >
+            Mentés
+          </button>
+        </div>
+      ) : (
+        <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{originalTask}</p>
+      )}
+      <TicketInputAttachmentList
+        ticketId={ticket.id}
+        attachments={ticket.inputAttachments ?? []}
+      />
+    </article>
+  )
+}
+
 export function TicketThread({
   ticket,
   comments,
+  canEdit = false,
 }: {
   ticket: {
     id: string
@@ -290,6 +389,7 @@ export function TicketThread({
     inputAttachments?: TicketInputAttachmentView[]
   }
   comments: TicketThreadComment[]
+  canEdit?: boolean
 }) {
   const { files: workspaceFilePaths } = useTicketWorkspaceFiles(ticket.id, ticket.state)
   const originalTask = ticket.taskDescription?.trim() || ticket.title
@@ -313,18 +413,7 @@ export function TicketThread({
   return (
     <Card title="Feladat-szál">
       <div className="space-y-4">
-        <article className="rounded-lg border border-line bg-night-2/60 p-4">
-          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-faint">
-            <Badge tone="neutral">Feladat</Badge>
-            <span>{ticket.creator?.label ?? 'Felhasználó'}</span>
-            <span>{formatTicketDateTime(ticket.createdAt)}</span>
-          </div>
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{originalTask}</p>
-          <TicketInputAttachmentList
-            ticketId={ticket.id}
-            attachments={ticket.inputAttachments ?? []}
-          />
-        </article>
+        <TicketOriginalTask ticket={ticket} originalTask={originalTask} canEdit={canEdit} />
 
         {sorted.map((comment) => {
           const structured = structuredRecord(comment.structured)

@@ -231,6 +231,7 @@ export interface TicketRepository {
       Pick<
         Ticket,
         | 'state'
+        | 'title'
         | 'payload'
         | 'assigneeType'
         | 'assigneeId'

@@ -16,6 +16,22 @@ assert.equal(
   connectorUsageStatus({ assignedAgentCount: 2, capableAgentCount: 1 }).usable,
   true,
 )
+assert.equal(
+  connectorUsageStatus({
+    assignedAgentCount: 2,
+    capableAgentCount: 1,
+    capableAgentDisplayNames: ['Bori'],
+  }).text,
+  'Bori rendelkezik a szükséges eszközjoggal.',
+)
+assert.equal(
+  connectorUsageStatus({
+    assignedAgentCount: 3,
+    capableAgentCount: 2,
+    capableAgentDisplayNames: ['Bori', 'Dóra'],
+  }).text,
+  'Bori és Dóra rendelkeznek a szükséges eszközjoggal.',
+)
 assert.equal(providerVisual('gmail'), 'gmail')
 assert.equal(providerVisual('google_drive'), 'google_drive')
 assert.equal(providerVisual('google-drive'), 'google_drive')

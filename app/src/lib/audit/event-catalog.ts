@@ -368,6 +368,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'ticket.runas.revoke',
   'ticket.transition',
   'ticket.transition.denied',
+  'ticket.update',
   'ticket_type.upsert',
   'scheduled_task.create',
   'scheduled_task.materialize',

@@ -285,6 +285,12 @@ export const deleteBoardTicketSchema = z.object({
   ticketId: z.string().uuid(),
 })
 
+export const updateTicketTaskSchema = z.object({
+  ticketId: z.string().uuid(),
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().min(1).max(8000),
+})
+
 export const processDocumentSchema = z.object({
   documentId: z.string().uuid(),
   agentId: z.string().uuid(),

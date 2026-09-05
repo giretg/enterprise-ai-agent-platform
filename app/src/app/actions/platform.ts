@@ -69,7 +69,9 @@ import {
   type StructuredExtraction,
 } from '@/lib/kb-extraction'
 import {
+  applyTicketTaskDescription,
   buildTicketDisplayExtras,
+  canEditTicketTask,
   enrichTicketsForBoard,
   extractCreatorAgentId,
   formatTicketCreator,
@@ -84,11 +86,12 @@ import {
   type ProcessRunMeta,
   type TaskBriefing,
 } from '@/lib/work-traceability'
-import { personaFor } from '@/lib/agent-persona'
+import { agentDisplayName, personaFor } from '@/lib/agent-persona'
 import { shouldLinkBoardTaskConversation } from '@/lib/board-task-conversation'
 import {
   buildTicketScheduleStamp,
   isScheduleSeriesTicket,
+  readTicketSchedule,
   stampTicketSchedule,
 } from '@/lib/ticket-schedule'
 import { buildOriginalDocumentMetadata } from '@/lib/document-storage'
@@ -199,6 +202,7 @@ import {
   createBoardTicketSchema,
   dispatchBoardTicketSchema,
   deleteBoardTicketSchema,
+  updateTicketTaskSchema,
   inviteUserSchema,
   provisionUserSchema,
   redeemInvitationSchema,
@@ -775,6 +779,7 @@ export async function createBoardTicket(input: {
               ? { skillParameterValues: taskOnlySkillParameterValues }
               : {}),
           },
+          authorizeRunAs: true,
         })
         await repositories.tickets.update(ticket.id, {
           payload: stampTicketSchedule(
@@ -925,6 +930,70 @@ export async function deleteBoardTicket(input: { ticketId: string }) {
     return ok({ ticketId })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to delete board ticket')
+  }
+}
+
+export async function updateTicketTask(input: {
+  ticketId: string
+  title: string
+  description: string
+}) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const parsed = updateTicketTaskSchema.parse(input)
+    const ticket = await repositories.tickets.findById(parsed.ticketId)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+    if (!canWriteTicketComment(ticket, user)) return fail('Insufficient permissions')
+    if (
+      !canEditTicketTask(ticket, {
+        canManage: hasMinimumRole(user.activeTenantRole, 'operator'),
+        userId: user.user.id,
+      })
+    ) {
+      return fail('A feladat csak indítás előtt szerkeszthető')
+    }
+
+    const nextPayload = applyTicketTaskDescription(ticket.payload, parsed.description)
+    const updated = await repositories.tickets.update(ticket.id, {
+      title: parsed.title,
+      payload: nextPayload as Prisma.JsonValue,
+    })
+
+    const schedule = readTicketSchedule(ticket.payload, ticket.executeAfter)
+    if (schedule?.scheduledTaskId && schedule.role !== 'occurrence') {
+      const task = await prisma.scheduledTask.findFirst({
+        where: { id: schedule.scheduledTaskId, tenantId: user.activeTenantId },
+      })
+      if (task && (task.status === 'active' || task.status === 'materialized')) {
+        await prisma.scheduledTask.update({
+          where: { id: task.id },
+          data: {
+            title: parsed.title,
+            payload: applyTicketTaskDescription(task.payload, parsed.description) as Prisma.InputJsonValue,
+          },
+        })
+      }
+    }
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'ticket.update',
+      targetType: 'ticket',
+      targetId: ticket.id,
+      modelUsed: null,
+      inputRef: ticket.title,
+      outputRef: parsed.title,
+      policyDecision: 'allowed',
+      tenantId: ticket.tenantId,
+      ticketId: ticket.id,
+    })
+
+    return ok({ ticket: updated })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update ticket')
   }
 }
 
@@ -1357,6 +1426,74 @@ export async function revokeScheduledTask(input: { id: string }) {
     return ok(task)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to revoke scheduled task')
+  }
+}
+
+export async function runRecurringTicketNow(input: { ticketId: string }) {
+  try {
+    const user = await requireTenantRole('operator')
+    const { ticketId } = dispatchBoardTicketSchema.parse(input)
+    const ticket = await repositories.tickets.findById(ticketId)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+    if (!isScheduleSeriesTicket(ticket)) {
+      return fail('Csak rendszeres feladat indítható azonnal')
+    }
+    const scheduledTaskId = readTicketSchedule(ticket.payload, ticket.executeAfter)?.scheduledTaskId
+    if (!scheduledTaskId) {
+      return fail('Ehhez a feladathoz nincs ütemezett futás')
+    }
+
+    const materialized = await services.scheduledTasks.runNow({
+      scheduledTaskId,
+      actorId: user.user.id,
+      tenantId: user.activeTenantId,
+    })
+
+    const occurrence = await repositories.tickets.findById(materialized.ticketId)
+    if (!occurrence?.agentId) {
+      return ok({ ticketId: materialized.ticketId, warning: 'A futás létrejött, de nincs AI munkatárs.' })
+    }
+
+    const dispatchOutcome = await runAgentTicketDispatch(occurrence.id, occurrence.agentId, {
+      bypassDispatcherEnabledCheck: true,
+    })
+    if (dispatchOutcome.error) {
+      return ok({ ticketId: materialized.ticketId, warning: dispatchOutcome.error })
+    }
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'dispatch.manual',
+      targetType: 'ticket',
+      targetId: occurrence.id,
+      modelUsed: null,
+      inputRef: occurrence.agentId,
+      outputRef: dispatchOutcome.warning ? 'warning' : 'started',
+      policyDecision: 'allowed',
+      metadata: { warning: dispatchOutcome.warning ?? null, runNow: true },
+      tenantId: occurrence.tenantId,
+      ticketId: occurrence.id,
+    })
+
+    return ok({ ticketId: materialized.ticketId, warning: dispatchOutcome.warning })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Failed to run scheduled task now'
+    if (message === 'Scheduled task is already running') {
+      return fail('A következő futás már folyamatban van')
+    }
+    if (message === 'Scheduled task is not active') {
+      return fail('Ez a sorozat már nem aktív')
+    }
+    if (message === 'Only recurring scheduled tasks can be run now') {
+      return fail('Csak rendszeres feladat indítható azonnal')
+    }
+    if (message === 'Scheduled task not found') {
+      return fail('Ütemezett futás nem található')
+    }
+    return fail(message)
   }
 }
 
@@ -2391,7 +2528,7 @@ export async function getAgentCloneTemplate(input: { sourceAgentId: string }) {
 
     const template: CreateAgentWizardCloneTemplate = {
       sourceAgentId: agent.id,
-      sourceAgentName: agent.name,
+      sourceAgentName: agentDisplayName(agent.name, agent),
       role: agent.role === 'orchestrator' ? 'orchestrator' : 'worker',
       roleInstruction: agent.roleInstruction,
       behaviorProfile: agent.behaviorProfileOverlay || agent.behaviorProfile,
@@ -4198,7 +4335,7 @@ export async function createScheduledAgentTask(input: {
       recurrence: parsed.recurrence,
       intervalHours: parsed.intervalHours,
       maxRuns: parsed.maxRuns,
-      authorizeRunAs: parsed.authorizeRunAs,
+      authorizeRunAs: true,
       createdById: user.user.id,
       tenantId: user.activeTenantId,
       materializedTicketId: isRecurring ? null : ticket.id,

@@ -24,6 +24,7 @@ import { CHAT_PLATFORM_TOOLS } from '../src/domain/agent/chat-tool-loop'
 import { PLATFORM_BROKER_TOOLS } from '../src/harness/platform-mcp-bridge'
 import { toolInvokeSchema } from '../src/lib/validators/actions'
 import { NORMAL_TOOL_CAPABILITY_NAMES } from '../src/lib/tool-capability-catalog'
+import { TOOL_UI_LABELS } from '../src/lib/tool-ui-labels'
 import {
   SIDE_EFFECTING_TOOLS,
   TOOL_TRUST_REGISTRY,
@@ -228,6 +229,14 @@ function main() {
     for (const name of ['run_index', 'run_trace', 'run_stats'] as const) {
       assert.equal(TOOL_REGISTRY[name].requiredSystemRole, 'run_analyst', name)
     }
+  })
+
+  test('minden ToolName-hez van magyar UI-címke (nem a belső azonosító)', () => {
+    const missing = TOOL_NAMES.filter((name) => {
+      const meta = TOOL_UI_LABELS[name]
+      return !meta || !meta.label.trim() || meta.label === name
+    })
+    assert.deepEqual(missing, [], `hiányzó UI-címke: ${missing.join(', ')}`)
   })
 
   // ── 5. A generált JSON Schema és a Zod-séma oda-vissza konzisztens ───────
