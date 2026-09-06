@@ -30,7 +30,13 @@ import {
   resolvePrivacyEgressMatrix,
 } from '@/domain/privacy/privacy-egress-matrix'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
-import { findEmbeddedSurrogates, parseSurrogate, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
+import { privacyScopeForCall } from '@/domain/privacy/privacy-scope'
+import {
+  containsEmbeddedSurrogate,
+  findEmbeddedSurrogates,
+  parseSurrogate,
+  type SurrogateEntityType,
+} from '@/domain/privacy/surrogate-format'
 import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
 
 export type SurrogateDisplayLookup = (surrogate: string) => Promise<string | null>
@@ -155,9 +161,9 @@ export function createEgressDisplayLookup(params: {
       surrogate,
       requester: { tenantId: params.tenantId, userId: params.requesterUserId ?? null },
     })
-    if (!peeked.ok) return null
-    // A megjelenítési érték a vaultból is betöltődik (spec §5 R19): újraindítás vagy
-    // másik szerverpéldány után is a valódi nevet látja a felhasználó, nem az álnevet.
+    if (!peeked.ok && (peeked.reason === 'denied' || peeked.reason === 'hmac_invalid')) return null
+    // Ref-álnév: vault-találat. Val-álnév (feladatba írt e-mail): nincs ref-sor,
+    // a scanner allokációkor perzisztált megjelenítési érték a forrás.
     return (await params.engine.resolveDisplayValue(params.tenantId, params.scope, surrogate)) ?? null
   }
 }
@@ -220,5 +226,29 @@ export async function resolveChannelOutboundText(params: {
     scope: { type: 'conversation', id: params.conversationId },
     requesterUserId: params.userId,
     matrix: params.matrix,
+  })
+}
+
+/** Ticket-szál / trusted web UI: álnév → megjelenítési érték, ha van vault-találat. */
+export async function resolveWebUiTextForViewer(params: {
+  text: string
+  engine: SurrogateEngine | null | undefined
+  tenantId: string | null | undefined
+  conversationId?: string | null
+  ticketId?: string | null
+  requesterUserId?: string | null
+}): Promise<string> {
+  const text = params.text
+  if (!text || !params.engine || !params.tenantId || !params.requesterUserId) return text
+  if (!containsEmbeddedSurrogate(text)) return text
+  const scope = privacyScopeForCall(params.conversationId, params.ticketId)
+  if (!scope) return text
+  return resolveEgressTextForSurface({
+    text,
+    surface: 'web_ui',
+    engine: params.engine,
+    tenantId: params.tenantId,
+    scope,
+    requesterUserId: params.requesterUserId,
   })
 }

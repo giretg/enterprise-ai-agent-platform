@@ -529,7 +529,7 @@ export function TicketRunAsAuthorization({
         setError(res.error)
         return
       }
-      setMessage('Run-as felhatalmazás rögzítve — az AI munkatárs a te fiókoddal járhat el autonóm futásnál.')
+      setMessage('Kész. Az AI munkatárs a te fiókoddal dolgozhat ezen a feladaton, akkor is, ha épp nem vagy a gépnél.')
       router.refresh()
     })
   }
@@ -543,19 +543,20 @@ export function TicketRunAsAuthorization({
         setError(res.error)
         return
       }
-      setMessage('Run-as felhatalmazás visszavonva.')
+      setMessage('Az engedélyt visszavontuk.')
       router.refresh()
     })
   }
 
   return (
-    <Card title="Run-as felhatalmazás">
+    <Card title="Futhat a nevemben">
       {error && <p className="mb-3 text-sm text-coral">{error}</p>}
       {message && <p className="mb-3 text-sm text-sage">{message}</p>}
       {authorized ? (
         <>
           <p className="mb-3 text-sm text-ink-soft">
-            Autonóm futáshoz engedélyezve: a per-user connectorok a te fiókoddal futnak ezen a feladaton.
+            Engedélyezve: ezen a feladaton az AI munkatárs a te fiókoddal dolgozhat (például Gmail), akkor is, ha épp nem
+            vagy a gépnél.
           </p>
           {canManageRunAs && (
             <button
@@ -564,15 +565,15 @@ export function TicketRunAsAuthorization({
               onClick={revoke}
               className="rounded-full bg-coral/20 px-4 py-2 text-sm font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
             >
-              Run-as visszavonása
+              Engedély visszavonása
             </button>
           )}
         </>
       ) : (
         <>
           <p className="mb-3 text-sm text-ink-soft">
-            Ha az AI munkatárs autonóm futáskor (pl. ütemezett feladat) a te Gmail-fiókodat használja, itt adhatod meg
-            előre a felhatalmazást. Implicit öröklés nélkül — csak explicit, visszavonható engedély.
+            Ha az AI munkatárs akkor is a te fiókoddal dolgozna, amikor te nem vagy a gépnél (például ütemezett feladat),
+            itt engedélyezheted. Bármikor visszavonhatod.
           </p>
           <button
             type="button"
@@ -580,7 +581,7 @@ export function TicketRunAsAuthorization({
             onClick={authorize}
             className="rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky hover:bg-sky/30 disabled:opacity-50"
           >
-            Run-as engedélyezése
+            Engedélyezés
           </button>
         </>
       )}

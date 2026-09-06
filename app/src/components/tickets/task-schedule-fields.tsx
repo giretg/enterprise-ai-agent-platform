@@ -8,7 +8,9 @@ import {
   TICKET_SCHEDULE_MAX_RUNS_MIN,
   defaultScheduleLocalDateTime,
   localDateTimeToIso,
+  toDatetimeLocalValue,
   type TicketScheduleRecurrence,
+  type TicketScheduleView,
 } from '@/lib/ticket-schedule'
 
 export type TaskScheduleMode = 'none' | 'once' | 'recurring'
@@ -68,6 +70,17 @@ export function validateTaskSchedule(state: TaskScheduleState): string | null {
   return null
 }
 
+export function ticketScheduleToFieldState(schedule: TicketScheduleView | null): TaskScheduleState {
+  if (!schedule) return EMPTY_TASK_SCHEDULE
+  return {
+    mode: schedule.kind === 'recurring' ? 'recurring' : 'once',
+    runAtLocal: toDatetimeLocalValue(schedule.runAt),
+    recurrence: schedule.recurrence === 'none' ? 'daily' : schedule.recurrence,
+    intervalHours: String(schedule.intervalHours ?? 1),
+    maxRuns: schedule.maxRuns != null ? String(schedule.maxRuns) : '',
+  }
+}
+
 export function taskScheduleToInput(state: TaskScheduleState): BoardTicketScheduleInput | null {
   if (state.mode === 'none') return { scheduleMode: 'none' }
   const runAt = localDateTimeToIso(state.runAtLocal)
@@ -98,11 +111,14 @@ export function TaskScheduleFields({
   state,
   disabled,
   onChange,
+  allowedModes,
 }: {
   state: TaskScheduleState
   disabled?: boolean
   onChange: (next: TaskScheduleState) => void
+  allowedModes?: TaskScheduleMode[]
 }) {
+  const modes = MODE_OPTIONS.filter((option) => !allowedModes || allowedModes.includes(option.value))
   const setMode = (mode: TaskScheduleMode) => {
     onChange({
       ...state,
@@ -122,23 +138,25 @@ export function TaskScheduleFields({
           ? 'Ez a kártya a sorozat marad a következő időponttal. Futáskor új példány készül az aznapi dátummal — az megy készbe.'
           : 'Ha időpontot adsz meg, a feladat azonnal megjelenik a táblán, de a feldolgozás csak akkor indul.'}
       </p>
-      <div className="flex flex-wrap gap-2">
-        {MODE_OPTIONS.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            disabled={disabled}
-            onClick={() => setMode(option.value)}
-            className={`rounded-lg border px-3 py-1.5 text-sm transition disabled:opacity-50 ${
-              state.mode === option.value
-                ? 'border-honey/50 bg-honey/10 text-ink'
-                : 'border-line text-ink-soft hover:border-honey/30'
-            }`}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+      {modes.length > 1 ? (
+        <div className="flex flex-wrap gap-2">
+          {modes.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              disabled={disabled}
+              onClick={() => setMode(option.value)}
+              className={`rounded-lg border px-3 py-1.5 text-sm transition disabled:opacity-50 ${
+                state.mode === option.value
+                  ? 'border-honey/50 bg-honey/10 text-ink'
+                  : 'border-line text-ink-soft hover:border-honey/30'
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       {state.mode === 'once' && (
         <label className="block">

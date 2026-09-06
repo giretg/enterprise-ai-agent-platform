@@ -18,6 +18,7 @@ import { requirePlatformRole, requireTenantPermission, requireTenantRole } from 
 import { getAuthContext, type TenantAuthContext } from '@/auth/context'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import { declaredWorkspaceOutputs } from '@/lib/declared-workspace-outputs'
+import { resolveWebUiTextForViewer } from '@/domain/privacy/resolve-display-text'
 import { services } from '@/domain'
 import type { TrainingActor } from '@/domain/training/training-service'
 import { TrainingGateError } from '@/domain/training/durable-memory-policy'
@@ -69,7 +70,9 @@ import {
   type StructuredExtraction,
 } from '@/lib/kb-extraction'
 import {
+  applyTicketTaskDescription,
   buildTicketDisplayExtras,
+  canEditTicketTask,
   enrichTicketsForBoard,
   extractCreatorAgentId,
   formatTicketCreator,
@@ -89,6 +92,7 @@ import { shouldLinkBoardTaskConversation } from '@/lib/board-task-conversation'
 import {
   buildTicketScheduleStamp,
   isScheduleSeriesTicket,
+  readTicketSchedule,
   stampTicketSchedule,
 } from '@/lib/ticket-schedule'
 import { buildOriginalDocumentMetadata } from '@/lib/document-storage'
@@ -199,6 +203,7 @@ import {
   createBoardTicketSchema,
   dispatchBoardTicketSchema,
   deleteBoardTicketSchema,
+  updateTicketTaskSchema,
   inviteUserSchema,
   provisionUserSchema,
   redeemInvitationSchema,
@@ -928,6 +933,133 @@ export async function deleteBoardTicket(input: { ticketId: string }) {
   }
 }
 
+export async function updateTicketTask(input: {
+  ticketId: string
+  title: string
+  description: string
+  scheduleMode?: 'once' | 'recurring'
+  runAt?: string
+  recurrence?: 'hourly' | 'daily' | 'weekly' | 'monthly'
+  intervalHours?: number
+  maxRuns?: number | null
+}) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const parsed = updateTicketTaskSchema.parse(input)
+    const ticket = await repositories.tickets.findById(parsed.ticketId)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+    if (!canWriteTicketComment(ticket, user)) return fail('Insufficient permissions')
+    if (
+      !canEditTicketTask(ticket, {
+        canManage: hasMinimumRole(user.activeTenantRole, 'operator'),
+        userId: user.user.id,
+      })
+    ) {
+      return fail('A feladat csak indítás előtt szerkeszthető')
+    }
+
+    const currentSchedule = readTicketSchedule(ticket.payload, ticket.executeAfter)
+    if (currentSchedule?.role === 'occurrence') {
+      return fail('A már kiadott futás ütemezése nem módosítható')
+    }
+
+    let nextPayload = applyTicketTaskDescription(ticket.payload, parsed.description)
+    let executeAfter = ticket.executeAfter
+
+    if (parsed.scheduleMode) {
+      if (!parsed.runAt) return fail('Az ütemezett feladathoz időpont kell')
+      if (currentSchedule?.role === 'series' && parsed.scheduleMode !== 'recurring') {
+        return fail('A rendszeres sorozat ütemezése rendszeres marad')
+      }
+      if (currentSchedule?.kind === 'once' && parsed.scheduleMode !== 'once') {
+        return fail('Az egyszeri ütemezés itt csak az időpontot változtatja')
+      }
+      const runAt = new Date(parsed.runAt)
+      if (Number.isNaN(runAt.getTime())) return fail('Érvénytelen időpont')
+      const kind = parsed.scheduleMode
+      const stamp = buildTicketScheduleStamp({
+        kind,
+        runAt,
+        recurrence: kind === 'recurring' ? parsed.recurrence : 'none',
+        intervalHours: parsed.intervalHours,
+        maxRuns: parsed.maxRuns,
+        role: currentSchedule?.role,
+      })
+      nextPayload = stampTicketSchedule(nextPayload, stamp, {
+        scheduledTaskId: currentSchedule?.scheduledTaskId,
+        role: currentSchedule?.role,
+      })
+      executeAfter = runAt
+
+      if (currentSchedule?.scheduledTaskId && currentSchedule.role !== 'occurrence') {
+        const task = await prisma.scheduledTask.findFirst({
+          where: { id: currentSchedule.scheduledTaskId, tenantId: user.activeTenantId },
+        })
+        if (!task) return fail('Ütemezett futás nem található')
+        if (task.status !== 'active' && task.status !== 'materialized') {
+          return fail('Ez a sorozat már nem aktív')
+        }
+        await prisma.scheduledTask.update({
+          where: { id: task.id },
+          data: {
+            title: parsed.title,
+            nextRunAt: runAt,
+            recurrence: kind === 'recurring' ? (parsed.recurrence ?? 'daily') : 'none',
+            maxRuns: kind === 'recurring' ? parsed.maxRuns ?? null : null,
+            payload: stampTicketSchedule(
+              applyTicketTaskDescription(task.payload, parsed.description),
+              stamp,
+              {
+                scheduledTaskId: task.id,
+                role: currentSchedule.role,
+              },
+            ) as Prisma.InputJsonValue,
+          },
+        })
+      }
+    } else if (currentSchedule?.scheduledTaskId && currentSchedule.role !== 'occurrence') {
+      const task = await prisma.scheduledTask.findFirst({
+        where: { id: currentSchedule.scheduledTaskId, tenantId: user.activeTenantId },
+      })
+      if (task && (task.status === 'active' || task.status === 'materialized')) {
+        await prisma.scheduledTask.update({
+          where: { id: task.id },
+          data: {
+            title: parsed.title,
+            payload: applyTicketTaskDescription(task.payload, parsed.description) as Prisma.InputJsonValue,
+          },
+        })
+      }
+    }
+
+    const updated = await repositories.tickets.update(ticket.id, {
+      title: parsed.title,
+      payload: nextPayload as Prisma.JsonValue,
+      executeAfter,
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'ticket.update',
+      targetType: 'ticket',
+      targetId: ticket.id,
+      modelUsed: null,
+      inputRef: ticket.title,
+      outputRef: parsed.title,
+      policyDecision: 'allowed',
+      tenantId: ticket.tenantId,
+      ticketId: ticket.id,
+    })
+
+    return ok({ ticket: updated })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update ticket')
+  }
+}
+
 export async function listBoardTickets(input?: {
   updatedFrom?: string
   updatedTo?: string
@@ -1515,7 +1647,22 @@ export async function listTicketComments(input: { ticketId: string }) {
     const ticket = await repositories.tickets.findById(parsed.ticketId)
     if (!ticket) return fail('Ticket not found')
     assertTicketTenantScope(ticket, user.activeTenantId)
-    return ok(await repositories.tickets.listComments(parsed.ticketId))
+    const comments = await repositories.tickets.listComments(parsed.ticketId)
+    if (!ticket.tenantId) return ok(comments)
+    return ok(
+      await Promise.all(
+        comments.map(async (comment) => ({
+          ...comment,
+          body: await resolveWebUiTextForViewer({
+            text: comment.body,
+            engine: services.surrogateEngine,
+            tenantId: ticket.tenantId,
+            ticketId: parsed.ticketId,
+            requesterUserId: user.user.id,
+          }),
+        })),
+      ),
+    )
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list ticket comments')
   }

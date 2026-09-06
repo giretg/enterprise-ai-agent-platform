@@ -290,6 +290,9 @@ function main() {
         if (key === 'pattern' && typeof value === 'string' && LOOKAROUND.test(value)) {
           offenders.push(`${where}.pattern lookaround`)
         }
+        if (key === 'format' && value === 'email') {
+          offenders.push(`${where}.format=email`)
+        }
         inspect(value, `${where}.${key}`)
       }
     }

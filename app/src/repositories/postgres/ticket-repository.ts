@@ -245,6 +245,7 @@ export class PostgresTicketRepository implements TicketRepository {
       Pick<
         Ticket,
         | 'state'
+        | 'title'
         | 'payload'
         | 'assigneeType'
         | 'assigneeId'

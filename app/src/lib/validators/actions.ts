@@ -285,6 +285,17 @@ export const deleteBoardTicketSchema = z.object({
   ticketId: z.string().uuid(),
 })
 
+export const updateTicketTaskSchema = z.object({
+  ticketId: z.string().uuid(),
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().min(1).max(8000),
+  scheduleMode: z.enum(['once', 'recurring']).optional(),
+  runAt: z.string().datetime().optional(),
+  recurrence: ticketScheduleRecurrenceSchema.optional(),
+  intervalHours: ticketScheduleIntervalHoursSchema.optional(),
+  maxRuns: ticketScheduleMaxRunsSchema.nullable().optional(),
+})
+
 export const processDocumentSchema = z.object({
   documentId: z.string().uuid(),
   agentId: z.string().uuid(),
