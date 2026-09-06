@@ -141,6 +141,7 @@
     "test:channel-approval": "tsx scripts/channel-approval.test.ts",
     "test:ttl-secret-cache": "tsx scripts/ttl-secret-cache.test.ts",
     "test:public-routes": "tsx scripts/public-routes.test.ts",
+    "test:crawler-block": "tsx scripts/crawler-block.test.ts",
     "test:confirm-dialog": "tsx scripts/confirm-dialog.test.ts",
     "test:memory-ui-labels": "tsx scripts/memory-ui-labels.test.ts",
     "test:work-project": "tsx scripts/work-project.test.ts",
