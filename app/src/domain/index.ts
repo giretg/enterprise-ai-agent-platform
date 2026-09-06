@@ -393,9 +393,14 @@ const channelRetentionService = new ChannelRetentionService({
 // Csatorna-agent-hozzáférés (#75, D5/D9/D13/D54). A metszet bal oldala (platform-jog) az
 // agent-registry szervezeti szűrése (a per-felhasználó dedikálás élesítésekor magától
 // szigorodik — #70 Further Notes 1); a kill-switch a szervezeti Telegram-kapcsoló.
+// A projektkulcs a memória/audit hatóköre; a csatorna-út is a katalógus-kapun (assignableKey)
+// megy át, ezért a szolgáltatást a csatorna-hozzáférés ELŐTT kell felépíteni.
+const workProjectService = new WorkProjectService(repositories.workProjects, repositories.audit)
+
 const channelAgentAccessService = new ChannelAgentAccessService({
   grants: repositories.channelAgentGrants,
   identities: repositories.channelIdentities,
+  workProjects: workProjectService,
   agents: {
     async listForTenant(tenantId) {
       const agents = await repositories.agents.findMany({ tenantId })
@@ -1389,8 +1394,6 @@ function createHarnessLauncher(): HarnessLauncher {
   if (mode === 'cloud-run-job') return new CloudRunJobHarnessLauncher(cloudRunConfigFromEnv())
   throw new Error(`Unsupported HARNESS_LAUNCHER_MODE: ${mode}`)
 }
-
-const workProjectService = new WorkProjectService(repositories.workProjects, repositories.audit)
 
 const dispatcherService = new DispatcherService(
   repositories.tickets,

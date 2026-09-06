@@ -23,6 +23,7 @@ import type {
   ChannelAgentGrantRepository,
   ChannelIdentityRepository,
 } from '@/repositories/interfaces'
+import type { WorkProjectService } from '@/domain/work-project/work-project-service'
 import {
   CHANNEL_AUDIT_ACTIONS,
   CHANNEL_DEFAULT_PROJECT_KEY,
@@ -56,6 +57,12 @@ export type ChannelAgentAccessDeps = {
   grants: ChannelAgentGrantRepository
   identities: Pick<ChannelIdentityRepository, 'findById'>
   agents: ChannelAgentDirectory
+  /**
+   * A projektkatalógus-kapu (D9): a projektkulcs a memória/audit hatóköre, ezért a csatorna-út
+   * is csak a tenant katalógusában létező, nem archivált projektet (vagy az Általános gyűjtőt)
+   * fogadhat el — ugyanaz az `assignableKey` invariáns, mint a ticket- és a webes chat-úton.
+   */
+  workProjects: Pick<WorkProjectService, 'assignableKey'>
   /** A szervezeti kill-switch (D54): igaz, ha a csatorna él ennek a szervezetnek. Fail-closed. */
   isChannelEnabled: (tenantId: string | null) => Promise<boolean>
   audit: Pick<AuditRepository, 'append'>
@@ -89,7 +96,14 @@ export type SetProjectKeyResult =
   | { ok: true; grant: ChannelAgentGrant }
   | {
       ok: false
-      reason: 'identity_not_found' | 'not_owner' | 'invalid_project_key' | 'not_found'
+      reason:
+        | 'identity_not_found'
+        | 'not_owner'
+        | 'invalid_project_key'
+        | 'not_found'
+        | 'project_not_assignable'
+      /** A `project_not_assignable` ághoz tartozó, felhasználónak megmutatható konkrét ok. */
+      message?: string
     }
 
 export type SelectAgentResult =
@@ -192,7 +206,17 @@ export class ChannelAgentAccessService {
     const grant = await this.deps.grants.findByIdentityAndAgent(input.identityId, input.agentId)
     if (!grant) return { ok: false, reason: 'not_found' }
 
-    const projectKey = input.projectKey.trim()
+    // A projektkulcsnak a tenant katalógusában létező, NEM archivált projektnek (vagy az Általános
+    // gyűjtőnek) kell lennie. Enélkül egy ismeretlen vagy archivált kulcs nyomon követhetetlen
+    // memória-szeletet nyitna a csatorna-fordulókon — ugyanaz a kapu, mint a ticket/chat úton.
+    // Tenant nélküli identitáshoz nincs projektkatalógus — ilyenkor a kulcs nem állítható
+    // (fail-closed). Engedélyt (grant) csak tenant-kötött identitás kaphat, ezért ez az ág
+    // csak degenerált állapotban áll elő.
+    if (!identity.tenantId) return { ok: false, reason: 'project_not_assignable' }
+    const assigned = await this.deps.workProjects.assignableKey(identity.tenantId, input.projectKey)
+    if (!assigned.ok) return { ok: false, reason: 'project_not_assignable', message: assigned.reason }
+
+    const projectKey = assigned.key
     const updated = await this.deps.grants.updateProjectKey(grant.id, projectKey)
     await this.auditGrant(CHANNEL_AUDIT_ACTIONS.agentProjectSet, 'project_set', identity, {
       actorUserId: input.actorUserId,
