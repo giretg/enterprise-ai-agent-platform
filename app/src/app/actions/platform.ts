@@ -1492,6 +1492,74 @@ export async function revokeScheduledTask(input: { id: string }) {
   }
 }
 
+export async function runRecurringTicketNow(input: { ticketId: string }) {
+  try {
+    const user = await requireTenantRole('operator')
+    const { ticketId } = dispatchBoardTicketSchema.parse(input)
+    const ticket = await repositories.tickets.findById(ticketId)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+    if (!isScheduleSeriesTicket(ticket)) {
+      return fail('Csak rendszeres feladat indítható azonnal')
+    }
+    const scheduledTaskId = readTicketSchedule(ticket.payload, ticket.executeAfter)?.scheduledTaskId
+    if (!scheduledTaskId) {
+      return fail('Ehhez a feladathoz nincs ütemezett futás')
+    }
+
+    const materialized = await services.scheduledTasks.runNow({
+      scheduledTaskId,
+      actorId: user.user.id,
+      tenantId: user.activeTenantId,
+    })
+
+    const occurrence = await repositories.tickets.findById(materialized.ticketId)
+    if (!occurrence?.agentId) {
+      return ok({ ticketId: materialized.ticketId, warning: 'A futás létrejött, de nincs AI munkatárs.' })
+    }
+
+    const dispatchOutcome = await runAgentTicketDispatch(occurrence.id, occurrence.agentId, {
+      bypassDispatcherEnabledCheck: true,
+    })
+    if (dispatchOutcome.error) {
+      return ok({ ticketId: materialized.ticketId, warning: dispatchOutcome.error })
+    }
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'dispatch.manual',
+      targetType: 'ticket',
+      targetId: occurrence.id,
+      modelUsed: null,
+      inputRef: occurrence.agentId,
+      outputRef: dispatchOutcome.warning ? 'warning' : 'started',
+      policyDecision: 'allowed',
+      metadata: { warning: dispatchOutcome.warning ?? null, runNow: true },
+      tenantId: occurrence.tenantId,
+      ticketId: occurrence.id,
+    })
+
+    return ok({ ticketId: materialized.ticketId, warning: dispatchOutcome.warning })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Failed to run scheduled task now'
+    if (message === 'Scheduled task is already running') {
+      return fail('A következő futás már folyamatban van')
+    }
+    if (message === 'Scheduled task is not active') {
+      return fail('Ez a sorozat már nem aktív')
+    }
+    if (message === 'Only recurring scheduled tasks can be run now') {
+      return fail('Csak rendszeres feladat indítható azonnal')
+    }
+    if (message === 'Scheduled task not found') {
+      return fail('Ütemezett futás nem található')
+    }
+    return fail(message)
+  }
+}
+
 export async function getTicket(input: { id: string }) {
   try {
     const user = await requireTenantRole('viewer')

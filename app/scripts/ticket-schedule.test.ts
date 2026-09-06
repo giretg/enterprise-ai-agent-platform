@@ -155,17 +155,23 @@ test('végrehajtásra váró ticket szerkeszthető, futás közben nem', () => {
   const ctx = { canManage: true, userId: 'user-1' }
   const base = { createdById: 'user-1', lockToken: null, processInstanceId: null }
   assert.equal(canEditTicketTask({ ...base, state: 'ready' }, ctx), true)
+  assert.equal(canEditTicketTask({ ...base, state: 'backlog' }, ctx), true)
   assert.equal(canEditTicketTask({ ...base, state: 'in_progress' }, ctx), false)
   assert.equal(
     canEditTicketTask({ ...base, state: 'ready', processInstanceId: 'proc-1' }, ctx),
     false,
   )
+  assert.equal(
+    canEditTicketTask({ ...base, state: 'ready' }, { canManage: false, userId: 'other' }),
+    false,
+  )
 })
 
-test('feladat-szöveg szerkesztése a template question/task mezőket viszi', () => {
+test('feladat-szöveg szerkesztése a template question/task mezőket viszi, az ütemezést meghagyja', () => {
   const next = applyTicketTaskDescription(
     {
       question: 'Régi feladat',
+      source: 'scheduled_task',
       scheduleSeries: true,
       briefing: { goal: 'Régi feladat', source: '', constraint: '', approval: 'a feladó nevében fut' },
     },

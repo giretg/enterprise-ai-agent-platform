@@ -13,7 +13,6 @@ import {
   TicketMeta,
   TicketProcessPanel,
   TicketProcessStartPanel,
-  TicketRunAsAuthorization,
   TicketTechnicalPanels,
   type TicketStartableProcessDefinition,
 } from '@/components/tickets/ticket-detail'
@@ -32,7 +31,7 @@ export default async function TicketDetailPage({
   searchParams,
 }: {
   params: Promise<{ ticketId: string }>
-  searchParams: Promise<{ granted?: string }>
+  searchParams: Promise<{ granted?: string; edit?: string }>
 }) {
   const { ticketId } = await params
   const query = await searchParams
@@ -110,6 +109,7 @@ export default async function TicketDetailPage({
         isAdminDelete={deleteInfo.isAdminDelete}
         canRunAnalysis={runAnalysisEntry.canRunAnalysis}
         runAnalystAgentId={runAnalysisEntry.runAnalystAgentId}
+        canEditTask={canEditTask}
       />
 
       {processDetailRes?.success ? (
@@ -145,6 +145,7 @@ export default async function TicketDetailPage({
             ticket={ticket}
             comments={commentsRes.success ? commentsRes.data : []}
             canEdit={canEditTask}
+            initialEditing={query.edit === '1' && canEditTask}
           />
           <TicketActions ticket={ticket} hideDecisions={Boolean(reviewContext)} />
           <TicketActivityHistory
@@ -164,7 +165,6 @@ export default async function TicketDetailPage({
             ticketState={ticket.state}
             declaredOutputs={declaredOutputsRes.success ? declaredOutputsRes.data : []}
           />
-          <TicketRunAsAuthorization ticket={ticket} canManageRunAs={canManageRunAs} />
           {canStartProcess && <TicketProcessStartPanel ticket={ticket} definitions={definitions} />}
           <TicketHistory transitions={transitions} />
           <TicketTechnicalPanels ticket={ticket} isAdmin={isAdmin} />

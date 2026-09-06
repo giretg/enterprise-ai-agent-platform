@@ -14,6 +14,7 @@
  */
 import assert from 'node:assert/strict'
 import {
+  chatStreamHttpErrorMessage,
   decideChatStreamRecovery,
   resolveChatStreamConflict,
   STREAM_INTERRUPTED_MESSAGE,
@@ -85,6 +86,15 @@ check('409 agent_task_only: nem „már készül a válasz”, hanem tiltás', (
   )
   assert.equal(action.kind, 'blocked')
   assert.equal(action.kind === 'blocked' ? action.message : null, STREAM_TASK_ONLY_BLOCKED_MESSAGE)
+})
+
+check('400 JSON message megjelenik, plain-text 400 a státuszkódos fallback', () => {
+  assert.equal(
+    chatStreamHttpErrorMessage(400, { message: 'Ez a projekt archiválva van.' }),
+    'Ez a projekt archiválva van.',
+  )
+  assert.equal(chatStreamHttpErrorMessage(400, { message: '  ' }), 'Küldés sikertelen (400)')
+  assert.equal(chatStreamHttpErrorMessage(400, null), 'Küldés sikertelen (400)')
 })
 
 check('409 active_turn_exists: reattach-üzenet, turnId-vel', () => {

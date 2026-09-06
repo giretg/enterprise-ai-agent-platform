@@ -26,12 +26,9 @@ function ToolList({ items }: { items: ToolAccessDiagnosis[] }) {
 }
 
 export function AgentToolAccessDiagnostics({ report }: { report: AgentToolAccessReport }) {
-  const { visibleWithoutGrant, grantedButInvisible, handlerMissing } = report
+  const { visibleWithoutGrant, handlerMissing } = report
   const usable = report.tools.filter((t) => t.visible && t.allowed && t.handlerResolvable)
-  const healthy =
-    visibleWithoutGrant.length === 0 &&
-    grantedButInvisible.length === 0 &&
-    handlerMissing.length === 0
+  const healthy = visibleWithoutGrant.length === 0 && handlerMissing.length === 0
 
   return (
     <Card title="Eszköz-hozzáférés ellenőrzése">
@@ -48,8 +45,7 @@ export function AgentToolAccessDiagnostics({ report }: { report: AgentToolAccess
 
       {healthy && (
         <p className="mt-3 rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-sage">
-          Nincs eltérés: minden felkínált eszközhöz van jogosultság, és minden kiadott
-          jogosultsághoz tartozik felkínált eszköz.
+          Nincs eltérés: minden felkínált beszélgetés-eszközhöz van jogosultság.
         </p>
       )}
 
@@ -65,21 +61,6 @@ export function AgentToolAccessDiagnostics({ report }: { report: AgentToolAccess
             pipáld be őket alább az &bdquo;Eszközjogok szerkesztése&rdquo; résznél.
           </p>
           <ToolList items={visibleWithoutGrant} />
-        </div>
-      )}
-
-      {grantedButInvisible.length > 0 && (
-        <div className="mt-4">
-          <div className="flex items-center gap-2">
-            <Badge tone="warning">Van joga, de nem látja</Badge>
-            <span className="text-xs text-ink-faint">{grantedButInvisible.length} eszköz</span>
-          </div>
-          <p className="mt-2 text-xs text-ink-faint">
-            Ezekre ki van adva a jogosultság, de az eszköz nem jelenik meg a beszélgetésekben,
-            így az agent sosem hívja meg. Vagy a jogosultság fölösleges, vagy az eszköz
-            kimaradt a felkínált készletből.
-          </p>
-          <ToolList items={grantedButInvisible} />
         </div>
       )}
 

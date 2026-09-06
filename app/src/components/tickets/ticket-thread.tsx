@@ -283,6 +283,7 @@ function TicketOriginalTask({
   ticket,
   originalTask,
   canEdit,
+  initialEditing = false,
 }: {
   ticket: {
     id: string
@@ -295,11 +296,12 @@ function TicketOriginalTask({
   }
   originalTask: string
   canEdit: boolean
+  initialEditing?: boolean
 }) {
   const router = useRouter()
   const schedule = readTicketSchedule(ticket.payload, ticket.executeAfter)
   const canEditSchedule = canEdit && Boolean(schedule) && schedule?.role !== 'occurrence'
-  const [editing, setEditing] = useState(false)
+  const [editing, setEditing] = useState(initialEditing)
   const [title, setTitle] = useState(ticket.title)
   const [description, setDescription] = useState(originalTask)
   const [ticketSchedule, setTicketSchedule] = useState<TaskScheduleState>(() =>
@@ -424,6 +426,7 @@ export function TicketThread({
   ticket,
   comments,
   canEdit = false,
+  initialEditing = false,
 }: {
   ticket: {
     id: string
@@ -442,6 +445,7 @@ export function TicketThread({
   }
   comments: TicketThreadComment[]
   canEdit?: boolean
+  initialEditing?: boolean
 }) {
   const { files: workspaceFilePaths } = useTicketWorkspaceFiles(ticket.id, ticket.state)
   const originalTask = ticket.taskDescription?.trim() || ticket.title
@@ -463,9 +467,15 @@ export function TicketThread({
   )
 
   return (
-    <Card title="Feladat-szál">
-      <div className="space-y-4">
-        <TicketOriginalTask ticket={ticket} originalTask={originalTask} canEdit={canEdit} />
+    <div id="feladat-szal">
+      <Card title="Feladat-szál">
+        <div className="space-y-4">
+          <TicketOriginalTask
+            ticket={ticket}
+            originalTask={originalTask}
+            canEdit={canEdit}
+            initialEditing={initialEditing}
+          />
 
         {sorted.map((comment) => {
           const structured = structuredRecord(comment.structured)
@@ -541,7 +551,8 @@ export function TicketThread({
           canHandBack={canHandBack}
           handBackBlockedReason={handBackBlockedReason}
         />
-      </div>
-    </Card>
+        </div>
+      </Card>
+    </div>
   )
 }

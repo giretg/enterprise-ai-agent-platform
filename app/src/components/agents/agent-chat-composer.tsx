@@ -55,8 +55,6 @@ type AgentChatComposerProps = {
   onSelectProcess: (id: string | null) => void
   ticketSchedule: TaskScheduleState
   onTicketScheduleChange: (schedule: TaskScheduleState) => void
-  ticketAuthorizeRunAs: boolean
-  onTicketAuthorizeRunAsChange: (value: boolean) => void
   input: string
   onInputChange: (value: string) => void
   textareaRef: RefObject<HTMLTextAreaElement | null>
@@ -152,8 +150,7 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
     attachmentWarningSkills, attachments, onRemoveAttachment, onFilesSelected,
     fileInputRef, mode, onModeChange, disabled, skills, slash, processes,
     selectedProcess, selectedProcessId, processMissingFileAttachment, onSelectProcess,
-    ticketSchedule, onTicketScheduleChange, ticketAuthorizeRunAs,
-    onTicketAuthorizeRunAsChange, input, onInputChange, textareaRef, onKeyDown,
+    ticketSchedule, onTicketScheduleChange, input, onInputChange, textareaRef, onKeyDown,
     turnBlocksComposer, stopPending, ticketPending, pending, canSubmit, onStop,
     onCreateTicket, onSend, projectKey, onProjectKeyChange,
   } = props
@@ -298,23 +295,6 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
       {mode === 'task' ? (
         <div className="mb-2 rounded-xl border border-honey/35 bg-honey/5 px-3 py-2.5">
           <TaskScheduleFields state={ticketSchedule} disabled={disabled} onChange={onTicketScheduleChange} />
-          {ticketSchedule.mode === 'recurring' ? (
-            <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-lg bg-card px-2.5 py-2">
-              <input
-                type="checkbox"
-                checked={ticketAuthorizeRunAs}
-                onChange={(event) => onTicketAuthorizeRunAsChange(event.target.checked)}
-                disabled={disabled}
-                className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-coral"
-              />
-              <span className="text-xs">
-                <span className="font-semibold text-ink">Futhat a nevemben</span>
-                <span className="mt-0.5 block text-[11px] leading-snug text-ink-faint">
-                  A rendszeres futások a te fiókoddal (például Gmail) dolgozhatnak, akkor is, ha épp nem vagy a gépnél.
-                </span>
-              </span>
-            </label>
-          ) : null}
         </div>
       ) : null}
 

@@ -2,6 +2,7 @@ import { after } from 'next/server'
 import { services } from '@/domain'
 import { agentTurnRunner, type AgentChatStreamEvent } from '@/domain/agent/agent-turn-runner'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
+import { resolveChatStreamProjectKey } from '@/lib/chat-stream-project-key'
 import { startSseCommentHeartbeat } from '@/lib/sse-comment-heartbeat'
 import { shouldBlockTaskOnlyWebChat } from '@/lib/task-only-ticket'
 import { repositories } from '@/repositories/postgres'
@@ -109,6 +110,35 @@ export async function POST(request: Request) {
     continuationConversationId = conversationId
   }
 
+  // A projectKey a memória/audit hatóköre, ezért csak kiosztható kulcs mehet
+  // tovább — a beszélgetéshez már kötött kulcs archiválás után is marad.
+  let boundConversation: { projectKey: string | null } | null = null
+  if (
+    !continuationContent &&
+    typeof conversationId === 'string' &&
+    conversationId &&
+    typeof projectKey === 'string' &&
+    projectKey.trim()
+  ) {
+    boundConversation = await repositories.conversations.findByIdForTenant(
+      conversationId,
+      user.activeTenantId,
+    )
+  }
+  const assignedProject = await resolveChatStreamProjectKey({
+    projectKey,
+    skip: Boolean(continuationContent),
+    conversation: boundConversation,
+    assignableKey: (raw) => services.workProjects.assignableKey(user.activeTenantId, raw),
+  })
+  if (!assignedProject.ok) {
+    return Response.json(
+      { error: 'invalid_work_project', message: assignedProject.reason },
+      { status: 400 },
+    )
+  }
+  const assignedProjectKey = assignedProject.key
+
   // Feladatkör-korlátozás (#199): korlátozott agentnél a WEBES chat-felületről nem
   // indítható ÚJ forduló — kivéve a Ticket → Megbeszélés (#219) beszélgetést, ahol
   // a ticket előzményéről kell tudni beszélgetni. Ez UI-egyszerűsítés, nem
@@ -164,9 +194,7 @@ export async function POST(request: Request) {
     createdById: user.user.id,
     tenantId: user.activeTenantId,
     conversationId: continuationConversationId ?? conversationId,
-    ...(!continuationContent && typeof projectKey === 'string' && projectKey.trim()
-      ? { projectKey: projectKey.trim() }
-      : {}),
+    ...(assignedProjectKey ? { projectKey: assignedProjectKey } : {}),
     // Folytatáskor a kliens csak azonosítót küld: se csatolmány, se folyamat-indítás
     // nem utazhat vele — a forduló tartalmát teljes egészében a szerver adja.
     ...(continuationContent
