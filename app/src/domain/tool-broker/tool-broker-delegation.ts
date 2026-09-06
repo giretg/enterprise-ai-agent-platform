@@ -21,6 +21,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFile as nodeReadFile } from 'node:fs/promises'
 import nodePath from 'node:path'
 import { prisma } from '@/lib/db'
+import { resolveTicketMemoryProjectKey } from '@/lib/memory-project-key'
 import { isDocumentReachableFromTenant } from '@/lib/document-tenant-access'
 import { loadPdfParse } from '@/lib/pdf-parse'
 import {
@@ -1736,12 +1737,19 @@ async function resolveMemoryProjectKey(
   }
   if (input.ticketId) {
     const ticket = await self.tickets.findById(input.ticketId)
-    if (ticket?.processInstanceId) {
-      const process = await prisma.processInstance.findUnique({
-        where: { id: ticket.processInstanceId },
-        select: { processDefinitionId: true },
+    if (ticket) {
+      return resolveTicketMemoryProjectKey({
+        projectKey: ticket.projectKey,
+        processInstanceId: ticket.processInstanceId,
+        resolveProcessDefinitionId: async () => {
+          if (!ticket.processInstanceId) return null
+          const process = await prisma.processInstance.findUnique({
+            where: { id: ticket.processInstanceId },
+            select: { processDefinitionId: true },
+          })
+          return process?.processDefinitionId ?? null
+        },
       })
-      if (process?.processDefinitionId) return process.processDefinitionId
     }
   }
   return '__general__'

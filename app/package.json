@@ -143,6 +143,7 @@
     "test:public-routes": "tsx scripts/public-routes.test.ts",
     "test:confirm-dialog": "tsx scripts/confirm-dialog.test.ts",
     "test:memory-ui-labels": "tsx scripts/memory-ui-labels.test.ts",
+    "test:memory-project-key": "tsx scripts/memory-project-key.test.ts",
     "test:work-project": "tsx scripts/work-project.test.ts",
     "test:create-agent-wizard": "tsx scripts/create-agent-wizard.test.ts",
     "test:model-providers": "tsx scripts/model-providers.test.ts",

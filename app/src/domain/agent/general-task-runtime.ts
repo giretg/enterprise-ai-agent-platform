@@ -62,6 +62,7 @@ import {
 } from '../memory/memory-runtime-helper'
 import type { MemoryRetrievalService } from '../memory/memory-retrieval-service'
 import { resolveWorkProjectBrief } from '../work-project/work-project-service'
+import { resolveTicketMemoryProjectKey } from '@/lib/memory-project-key'
 import type { ModelGateway, ModelConfig } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
@@ -1257,15 +1258,21 @@ export class GeneralTaskRuntime {
   /**
    * agent-memory-persistent-cross-conversation-spec.md §2.1 — task/process-run
    * `projectKey` = a Folyamat-DEFINÍCIÓ (`ProcessDefinition.id`), nem az
-   * instance; process nélküli ad-hoc ticketnél `__general__` (soha nem néma
-   * fail-closed).
+   * instance; process nélküli ad-hoc ticketnél a ticket.projectKey / `__general__`
+   * (soha nem néma fail-closed). Az írás (`memory_propose`) ugyanígy old fel.
    */
   private async resolveProjectKeyForTicket(
     ticket: NonNullable<Awaited<ReturnType<TicketRepository['findById']>>>,
   ): Promise<string> {
-    const explicit = ticket.projectKey?.trim()
-    if (explicit) return explicit
-    return '__general__'
+    return resolveTicketMemoryProjectKey({
+      projectKey: ticket.projectKey,
+      processInstanceId: ticket.processInstanceId,
+      resolveProcessDefinitionId: async () => {
+        if (!ticket.processInstanceId || !this.processes) return null
+        const process = await this.processes.findProcess(ticket.tenantId, ticket.processInstanceId)
+        return process?.processDefinitionId ?? null
+      },
+    })
   }
 
   /** agent-memory-persistent-cross-conversation-spec.md §10.3 — retrieval-only memória-blokk task-ágon. */
