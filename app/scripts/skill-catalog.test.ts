@@ -8,6 +8,7 @@
  * (zöld/sárga/piros), és a determinista content-hash stabilitása.
  */
 import assert from 'node:assert/strict'
+import { deflateRawSync } from 'node:zlib'
 import {
   parseSkillMd,
   parseFrontmatter,
@@ -64,6 +65,7 @@ import {
   SKILL_REVIEW_ROLE_INSTRUCTION,
 } from '../src/domain/skill/skill-review-agent'
 import { PROVISIONING_ASSISTANT_ROLE_INSTRUCTION } from '../src/domain/provisioning/provisioning-assistant'
+import { readZipEntries, ZipReadError } from '../src/lib/skill/zip-reader'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -79,7 +81,52 @@ function check(name: string, fn: () => void | Promise<void>) {
 const TENANT_A = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'
 const TENANT_B = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb'
 
+function zipWithOverlappingCompressedEntries(): Uint8Array {
+  const name = Buffer.from('SKILL.md')
+  const content = Buffer.from(Array.from({ length: 600 }, (_, i) => i % 251))
+  const compressed = deflateRawSync(content)
+  const local = Buffer.alloc(30 + name.length + compressed.length)
+  local.writeUInt32LE(0x04034b50, 0)
+  local.writeUInt16LE(20, 4)
+  local.writeUInt16LE(8, 8)
+  local.writeUInt32LE(compressed.length, 18)
+  local.writeUInt32LE(content.length, 22)
+  local.writeUInt16LE(name.length, 26)
+  name.copy(local, 30)
+  compressed.copy(local, 30 + name.length)
+
+  const centralEntry = Buffer.alloc(46 + name.length)
+  centralEntry.writeUInt32LE(0x02014b50, 0)
+  centralEntry.writeUInt16LE(20, 4)
+  centralEntry.writeUInt16LE(20, 6)
+  centralEntry.writeUInt16LE(8, 10)
+  centralEntry.writeUInt32LE(compressed.length, 20)
+  centralEntry.writeUInt32LE(content.length, 24)
+  centralEntry.writeUInt16LE(name.length, 28)
+  name.copy(centralEntry, 46)
+
+  const central = Buffer.concat([centralEntry, centralEntry])
+  // A padding miatt az egyszerű összegzett-compressed-size korlát nem fogna.
+  const padding = Buffer.alloc(compressed.length * 2)
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0)
+  end.writeUInt16LE(2, 8)
+  end.writeUInt16LE(2, 10)
+  end.writeUInt32LE(central.length, 12)
+  end.writeUInt32LE(local.length + padding.length, 16)
+  return new Uint8Array(Buffer.concat([local, padding, central, end]))
+}
+
 async function main() {
+  console.log('Skill-csomag ZIP védelem')
+
+  await check('paddelt, átfedő tömörített ZIP-bejegyzések → elutasítva', () => {
+    assert.throws(
+      () => readZipEntries(zipWithOverlappingCompressedEntries()),
+      (error: unknown) => error instanceof ZipReadError && error.code === 'corrupt',
+    )
+  })
+
   console.log('SKILL.md adapter')
 
   await check('frontmatter + instrukció-bontás + provenience', () => {

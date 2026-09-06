@@ -571,7 +571,7 @@ export function CreateAgentWizard({
                   {cloneTemplate ? (
                     <div className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-ink">
                       <p className="font-semibold text-sage">
-                        „{cloneTemplate.sourceAgentName}" sablonja betöltve — add meg az új nevet,
+                        „{cloneTemplate.sourceAgentName}” sablonja betöltve — add meg az új nevet,
                         majd lépj tovább.
                       </p>
                       {cloneTemplate.enabledTools.length > 0 ? (

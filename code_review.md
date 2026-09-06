@@ -1,5 +1,14 @@
 # Enterprise code review log
 
+## 2026-09-06 - Skill-csomag import ZIP-olvasó: átfedő tömörített adattartományok ismételt kitömörítése CPU-kimerítést okozhatott
+
+- Áttekintett, korábban külön nem naplózott komponens: a külső **Skill-csomagok ZIP-import bizalmi határa** — `app/src/lib/skill/zip-reader.ts`, az `SkillService.importSkillPackage` belépése és a `skill-catalog.test.ts` regressziós kör. A tenant-katalógus korábbi vizsgálata a jogosultsági határt fedte, ez a kör a támadó-kontrollált archívum feldolgozásának rendelkezésreállását ellenőrizte.
+- **Lelet (magas, szolgáltatás-rendelkezésreállás):** a ZIP-olvasó korlátozta a letöltött archívumot, a fájlonkénti és teljes kicsomagolt méretet, de több central-directory bejegyzés ugyanarra a tömörített bájttartományra mutathatott. Egy paddelt, kis archívum így sokszor elindíthatta volna ugyanazt a `zlib` kitömörítést, miközben a kicsomagolt-kvóta alatt marad — CPU-kimerítést és lassú vagy hibás admin-importot okozva.
+- Javítás: a parser a `inflateRawSync` előtt rendezetten követi a tényleges `[dataStart, dataEnd)` tömörített adattartományokat, és bármely átfedést sérült archívumként, fail-closed elutasít. A 4 000 bejegyzéses plafonhoz arányos tömbbeszúrás explicit `ponytail:` megjegyzést kapott; nagyobb limitnél intervallumfa a skálázási út.
+- Üzleti hatás: egy külső skill importja nem lassíthatja vagy állíthatja meg az adminok munkáját és a platform megosztott feldolgozó kapacitását. A javítás az ellátásilánc-szerű importban inkább elutasít egy hibás csomagot, mint hogy egy tenant feltöltése a többiek rendelkezésreállását is veszélyeztesse.
+- Ellenőrzés: új, paddelt és átfedő central-directory hivatkozást tartalmazó regressziós teszt; `npm run test:skill-catalog`, `npx tsc --noEmit --pretty false` és `git diff --check` zöld. A `/code-review` Standards és Spec tengelye mindkét kezdeti lelet (padding-megkerülés, dokumentálandó O(n²) plafon) javítása után leletmentes.
+- PR: https://github.com/giretg/enterprise-ai-agent-platform/pull/433 (`codex`, `codex-automation`, `security`).
+
 ## 2026-09-04 - Folyamat emberi felülvizsgálat (review-döntések): a „továbbléptető" döntések nem voltak egyszer-használatosak → dupla-léptetés / duplikált munka
 
 - Áttekintett, korábban külön nem naplózott komponens: a **Folyamat-futás emberi felülvizsgálatának döntés-útja** — `app/src/domain/playbook/process-service.ts` (`retryStepFromReview`, `resolveStepFromReview`, a közös `loadReviewContext`/`advance`), a `app/src/app/actions/process.ts` szerver-akciók (`retryProcessStepFromReview`, `resolveProcessStepFromReview`, `cancelProcessFromReview`), és a `app/src/components/tickets/ticket-review-actions.tsx` UI. Ez a 2026-09-02-i feature-hullám (folyamat-elakadás UX + három review-döntés) új, kritikus governance-pontja: itt dönt ember arról, hogy egy elakadt/kudarcos lépés újrainduljon, emberi felülbírálással továbbmenjen, vagy a futás leálljon.
