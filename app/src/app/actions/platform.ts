@@ -992,7 +992,7 @@ export async function updateTicketTask(input: {
       })
       executeAfter = runAt
 
-      if (currentSchedule?.scheduledTaskId && currentSchedule.role !== 'occurrence') {
+      if (currentSchedule?.scheduledTaskId) {
         const task = await prisma.scheduledTask.findFirst({
           where: { id: currentSchedule.scheduledTaskId, tenantId: user.activeTenantId },
         })
@@ -1018,7 +1018,7 @@ export async function updateTicketTask(input: {
           },
         })
       }
-    } else if (currentSchedule?.scheduledTaskId && currentSchedule.role !== 'occurrence') {
+    } else if (currentSchedule?.scheduledTaskId) {
       const task = await prisma.scheduledTask.findFirst({
         where: { id: currentSchedule.scheduledTaskId, tenantId: user.activeTenantId },
       })
@@ -1050,6 +1050,7 @@ export async function updateTicketTask(input: {
       inputRef: ticket.title,
       outputRef: parsed.title,
       policyDecision: 'allowed',
+      metadata: { title: parsed.title },
       tenantId: ticket.tenantId,
       ticketId: ticket.id,
     })
