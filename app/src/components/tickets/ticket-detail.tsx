@@ -18,6 +18,7 @@ import { startProcessFromTicket, transitionProcessTicket } from '@/app/actions/p
 import { authorizeTicketRunAs, revokeTicketRunAs } from '@/app/actions/connector-grants'
 import { openAgentChat } from '@/components/agents/agent-chat-session-store'
 import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
+import { TICKET_TASK_EDIT_OPEN_EVENT } from '@/components/tickets/ticket-thread'
 import { ProposalCard } from '@/components/tickets/proposal-card'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card } from '@/components/ui/shell'
@@ -1325,13 +1326,19 @@ export function TicketMeta({
                 />
               ) : null}
               {canEditTask ? (
-                <Link
-                  href={`/control-plane/tickets/${ticket.id}?edit=1#feladat-szal`}
+                <button
+                  type="button"
+                  onClick={() => {
+                    document
+                      .getElementById('feladat-szal')
+                      ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+                    window.dispatchEvent(new CustomEvent(TICKET_TASK_EDIT_OPEN_EVENT))
+                  }}
                   className="rounded-full border border-honey/35 bg-honey/10 px-4 py-2.5 text-sm font-semibold text-honey transition-colors hover:bg-honey/20"
                   title="Feladat leírása és ütemezés módosítása — csak indítás előtt"
                 >
                   Szerkesztés
-                </Link>
+                </button>
               ) : null}
               {canDelete && (
                 <button

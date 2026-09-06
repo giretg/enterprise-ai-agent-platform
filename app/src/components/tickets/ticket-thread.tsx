@@ -1,7 +1,10 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useState, useTransition } from 'react'
+
+/** Fejléc „Szerkesztés" → szál inline szerkesztő (ugyanazon ticketen, refetch nélkül). */
+export const TICKET_TASK_EDIT_OPEN_EVENT = 'ticket-task-edit-open'
 import { useTicketWorkspaceFiles } from '@/components/tickets/use-ticket-workspace-files'
 import { addTicketComment, updateTicketTask, uploadTicketCommentAttachment } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
@@ -310,6 +313,26 @@ function TicketOriginalTask({
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
 
+  const beginEditing = () => {
+    setTitle(ticket.title)
+    setDescription(originalTask)
+    setTicketSchedule(ticketScheduleToFieldState(schedule))
+    setError(null)
+    setEditing(true)
+  }
+
+  useEffect(() => {
+    if (!initialEditing) return
+    beginEditing()
+    document.getElementById('feladat-szal')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [initialEditing])
+
+  useEffect(() => {
+    const openFromHeader = () => beginEditing()
+    window.addEventListener(TICKET_TASK_EDIT_OPEN_EVENT, openFromHeader)
+    return () => window.removeEventListener(TICKET_TASK_EDIT_OPEN_EVENT, openFromHeader)
+  }, [ticket.title, originalTask, schedule])
+
   const save = () => {
     setError(null)
     const scheduleInput = canEditSchedule ? taskScheduleToInput(ticketSchedule) : null
@@ -363,11 +386,7 @@ function TicketOriginalTask({
                 setError(null)
                 return
               }
-              setTitle(ticket.title)
-              setDescription(originalTask)
-              setTicketSchedule(ticketScheduleToFieldState(schedule))
-              setError(null)
-              setEditing(true)
+              beginEditing()
             }}
             className="ml-auto rounded-full bg-ink/8 px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-ink/12 hover:text-ink"
           >
