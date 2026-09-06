@@ -198,6 +198,8 @@ function projectMessageFor(reason: string): string {
       return 'A projektkulcs csak betűt, számot és a _ . : - jeleket tartalmazhatja (szóköz nélkül).'
     case 'not_found':
       return 'Ehhez az agenthez nincs Telegram-engedélyed, ezért a projektet sem tudod beállítani.'
+    case 'project_not_assignable':
+      return 'Ez a projekt nem választható (nem létezik vagy archiválva van).'
     default:
       return 'A projekt beállítása nem sikerült.'
   }
@@ -216,7 +218,7 @@ export async function setMyChannelAgentProject(input: unknown) {
       actorUserId: ctx.user.id,
       expectUserId: ctx.user.id,
     })
-    if (!res.ok) return fail(projectMessageFor(res.reason))
+    if (!res.ok) return fail(res.message ?? projectMessageFor(res.reason))
     return ok({ projectKey: res.grant.projectKey })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült beállítani a projektet.')

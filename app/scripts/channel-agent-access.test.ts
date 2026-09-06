@@ -17,11 +17,14 @@ import {
   ChannelAgentAccessService,
   type ChannelAgentDirectory,
 } from '../src/domain/channel/channel-agent-access-service'
+import { WorkProjectService } from '../src/domain/work-project/work-project-service'
 import { assertAuditActionRegistered } from '../src/lib/audit/event-catalog'
 import type {
   AuditRepository,
   ChannelAgentGrantRepository,
   ChannelIdentityRepository,
+  WorkProjectRecord,
+  WorkProjectRepository,
 } from '../src/repositories/interfaces'
 
 let failures = 0
@@ -143,12 +146,24 @@ function makeHarness() {
   const isChannelEnabled = async (tenantId: string | null) =>
     tenantId ? !(killSwitch.get(tenantId) ?? false) : false
 
+  // Projektkatalógus-kapu: a valódi WorkProjectService fut egy stub tár fölött, hogy a csatorna
+  // ugyanazt az `assignableKey` invariánst kapja, mint a ticket/chat út (létező + nem archivált).
+  const projects = new Map<string, WorkProjectRecord>() // `${tenantId}::${key}` → sor
+  let projectSeq = 0
+  const projectRepo = {
+    async findByKey(tenantId: string, key: string) {
+      return projects.get(`${tenantId}::${key}`) ?? null
+    },
+  } as unknown as WorkProjectRepository
+  const workProjects = new WorkProjectService(projectRepo, audit as unknown as AuditRepository)
+
   const service = new ChannelAgentAccessService({
     grants: grantRepo,
     identities: identityRepo,
     agents: directory,
     isChannelEnabled,
     audit,
+    workProjects,
   })
 
   // ── Segédek ──────────────────────────────────────────────────────────────
@@ -177,6 +192,20 @@ function makeHarness() {
   function addAgent(id: string, name: string, tenantId: string | null, usable = true) {
     agentRows.set(id, { id, name, tenantId, usable })
   }
+  function addProject(tenantId: string, key: string, opts?: { archived?: boolean }) {
+    const now = new Date('2026-07-23T10:00:00Z')
+    projects.set(`${tenantId}::${key}`, {
+      id: `project-${++projectSeq}`,
+      tenantId,
+      key,
+      name: key,
+      description: null,
+      createdById: ADMIN,
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: opts?.archived ? now : null,
+    })
+  }
 
   return {
     service,
@@ -185,6 +214,7 @@ function makeHarness() {
     killSwitch,
     addIdentity,
     addAgent,
+    addProject,
     actionsOf: () => auditRows.map((r) => r.action),
   }
 }
@@ -339,6 +369,7 @@ async function main() {
     const h = makeHarness()
     const idn = h.addIdentity({ userId: USER_1 })
     h.addAgent('agent-ok', 'Elérhető', TENANT_A, true)
+    h.addProject(TENANT_A, 'penzugy-2026')
     await h.service.grantAgent({ identityId: idn.id, agentId: 'agent-ok', actorUserId: ADMIN, actorTenantId: TENANT_A })
 
     const set = await h.service.setProjectKey({
@@ -351,6 +382,53 @@ async function main() {
     const available = await h.service.resolveAvailableAgents(idn.id)
     assert.equal(available[0].projectKey, 'penzugy-2026')
     assert.ok(h.actionsOf().includes('channel.agent.project_set'))
+  })
+
+  await test('CA-8b projektkötés katalógus-kapu: ismeretlen kulcs / archivált projekt TILTVA, a grant a gyűjtő marad', async () => {
+    const h = makeHarness()
+    const idn = h.addIdentity({ userId: USER_1 })
+    h.addAgent('agent-ok', 'Elérhető', TENANT_A, true)
+    h.addProject(TENANT_A, 'archiv-projekt', { archived: true })
+    await h.service.grantAgent({ identityId: idn.id, agentId: 'agent-ok', actorUserId: ADMIN, actorTenantId: TENANT_A })
+
+    // Ismeretlen (a katalógusban NEM létező) kulcs — nem nyithat nyomon követhetetlen memória-szeletet.
+    const unknown = await h.service.setProjectKey({
+      identityId: idn.id, agentId: 'agent-ok', projectKey: 'nincs-ilyen',
+      actorUserId: USER_1, expectUserId: USER_1,
+    })
+    assert.equal(unknown.ok === false && unknown.reason, 'project_not_assignable')
+
+    // Archivált projekt — az archiválás után nem indulhat rá új munka/memória.
+    const archived = await h.service.setProjectKey({
+      identityId: idn.id, agentId: 'agent-ok', projectKey: 'archiv-projekt',
+      actorUserId: USER_1, expectUserId: USER_1,
+    })
+    assert.equal(archived.ok === false && archived.reason, 'project_not_assignable')
+
+    // Egyik tiltott próbálkozás sem írta felül a grant projektjét — végig a gyűjtő maradt.
+    const available = await h.service.resolveAvailableAgents(idn.id)
+    assert.equal(available[0].projectKey, '__general__')
+    assert.ok(!h.actionsOf().includes('channel.agent.project_set'))
+  })
+
+  await test('CA-8c projektkötés: az Általános gyűjtő katalógus-bejegyzés nélkül is választható', async () => {
+    const h = makeHarness()
+    const idn = h.addIdentity({ userId: USER_1 })
+    h.addAgent('agent-ok', 'Elérhető', TENANT_A, true)
+    h.addProject(TENANT_A, 'penzugy-2026')
+    await h.service.grantAgent({ identityId: idn.id, agentId: 'agent-ok', actorUserId: ADMIN, actorTenantId: TENANT_A })
+    // Először egy valós projektre állítjuk…
+    await h.service.setProjectKey({
+      identityId: idn.id, agentId: 'agent-ok', projectKey: 'penzugy-2026',
+      actorUserId: USER_1, expectUserId: USER_1,
+    })
+    // …majd visszaállítjuk a gyűjtőre — ehhez nincs katalógus-sor, mégis érvényes.
+    const back = await h.service.setProjectKey({
+      identityId: idn.id, agentId: 'agent-ok', projectKey: '__general__',
+      actorUserId: USER_1, expectUserId: USER_1,
+    })
+    assert.equal(back.ok, true)
+    assert.equal(back.ok && back.grant.projectKey, '__general__')
   })
 
   await test('CA-9 projektkötés fail-closed: idegen felhasználó / hibás kulcs / nem engedélyezett agent', async () => {
