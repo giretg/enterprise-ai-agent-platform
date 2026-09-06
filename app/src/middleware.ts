@@ -4,23 +4,52 @@ import { isClerkEnabled, isDevAuthAllowed } from '@/lib/clerk-config'
 import { embedHrefForPanel } from '@/lib/control-plane-embed'
 import { REQUEST_ID_HEADER, resolveRequestId } from '@/lib/observability/request-context'
 import { PUBLIC_ROUTE_PATTERNS } from '@/lib/auth/public-routes'
+import {
+  isCrawlerAllowedPath,
+  isCrawlerBlockEnabled,
+  isKnownCrawlerRequest,
+} from '@/lib/security/crawler-block'
 
 // A minták (és a felvételük szabálya) a `public-routes.ts`-ben laknak, hogy regressziós
 // teszt rögzíthesse őket — a middleware-fájl maga egyetlen függvényt exportálhat.
 const isPublicRoute = createRouteMatcher([...PUBLIC_ROUTE_PATTERNS])
 
+const ROBOTS_TAG_HEADER = 'X-Robots-Tag'
+const ROBOTS_TAG_VALUE = 'noindex, nofollow, noarchive'
+
 /**
  * WP-6 (O2): minden kérés kap `x-request-id`-t (a bejövot átvesszük, vagy
  * generálunk), és tovább is adjuk a válaszban, hogy a kliens/monitor korrelálhasson.
+ *
+ * #426: amíg az indexelés nincs szándékosan engedélyezve (`ALLOW_SEARCH_INDEXING`,
+ * l. `crawler-block.ts` / `robots.ts`), minden válasz `X-Robots-Tag: noindex`-et
+ * is kap — védőháló arra az esetre, ha egy útvonal a lenti UA-alapú bot-szűrőt
+ * elkerülné (pl. egy magát nem bejelentő renderelő), a `robots.txt` mellett.
  */
-function withRequestId(req: Request, res: NextResponse): NextResponse {
+function finishResponse(req: Request, res: NextResponse): NextResponse {
   const requestId = resolveRequestId(req.headers.get(REQUEST_ID_HEADER))
   res.headers.set(REQUEST_ID_HEADER, requestId)
+  if (isCrawlerBlockEnabled()) {
+    res.headers.set(ROBOTS_TAG_HEADER, ROBOTS_TAG_VALUE)
+  }
   return res
 }
 
 export default clerkMiddleware(async (auth, req) => {
   const { pathname } = req.nextUrl
+
+  // #426: a Clerk dev-instance URL-ben szállított munkamenetét a Googlebot
+  // visszajátssza — a robots.txt (#420) ezt nem fogja meg, mert nem hozzáférés-
+  // vezérlés. Ez a réteg a Clerk-kulcsváltástól függetlenül, azonnal leállítja
+  // a magukat bejelentő crawlerek/renderelők hozzáférését — MIELŐTT a Clerk-
+  // munkamenet (és a benne visszajátszott token) egyáltalán kiértékelődne.
+  if (isCrawlerBlockEnabled() && isKnownCrawlerRequest(req) && !isCrawlerAllowedPath(pathname)) {
+    return finishResponse(
+      req,
+      NextResponse.json({ error: 'Crawlers are not allowed on this host' }, { status: 403 }),
+    )
+  }
+
   if (pathname.startsWith('/embed/control-plane/')) {
     const panel = decodeURIComponent(pathname.slice('/embed/control-plane/'.length).split('/')[0] ?? '')
     const href = embedHrefForPanel(panel)
@@ -29,7 +58,7 @@ export default clerkMiddleware(async (auth, req) => {
       url.pathname = href
       const requestHeaders = new Headers(req.headers)
       requestHeaders.set('x-cp-embed', '1')
-      return withRequestId(
+      return finishResponse(
         req,
         NextResponse.rewrite(url, { request: { headers: requestHeaders } }),
       )
@@ -38,17 +67,17 @@ export default clerkMiddleware(async (auth, req) => {
 
   if (!isClerkEnabled()) {
     if (!isDevAuthAllowed()) {
-      return withRequestId(
+      return finishResponse(
         req,
         NextResponse.json({ error: 'Authentication is not configured' }, { status: 503 }),
       )
     }
-    return withRequestId(req, NextResponse.next())
+    return finishResponse(req, NextResponse.next())
   }
   if (!isPublicRoute(req)) {
     await auth.protect()
   }
-  return withRequestId(req, NextResponse.next())
+  return finishResponse(req, NextResponse.next())
 })
 
 export const config = {
