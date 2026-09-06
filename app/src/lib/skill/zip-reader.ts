@@ -93,6 +93,22 @@ function findEocdOffset(buf: Buffer): number {
   return -1
 }
 
+function insertNonOverlappingRange(ranges: Array<{ start: number; end: number }>, start: number, end: number): boolean {
+  // ponytail: 4 000 bejegyzésnél a tömbbeszúrás elfogadható; nagyobb limithez intervallumfa kell.
+  let low = 0
+  let high = ranges.length
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (ranges[middle]!.start < start) low = middle + 1
+    else high = middle
+  }
+  const previous = ranges[low - 1]
+  const next = ranges[low]
+  if ((previous && previous.end > start) || (next && next.start < end)) return false
+  ranges.splice(low, 0, { start, end })
+  return true
+}
+
 /**
  * Az archívum összes támogatott bejegyzésének kiolvasása. A könyvtár-bejegyzések
  * (`/`-re végződő nevek) kimaradnak — minket csak a fájlok érdekelnek.
@@ -129,6 +145,7 @@ export function readZipEntries(
 
   const entries: ZipEntry[] = []
   let totalUncompressed = 0
+  const compressedRanges: Array<{ start: number; end: number }> = []
   let cursor = centralOffset
 
   for (let i = 0; i < entryCount; i++) {
@@ -175,6 +192,9 @@ export function readZipEntries(
     const dataStart = localOffset + 30 + localNameLength + localExtraLength
     const dataEnd = dataStart + compressedSize
     if (dataEnd > buf.length) throw new ZipReadError('Sérült ZIP (csonka adat).', 'corrupt')
+    if (!insertNonOverlappingRange(compressedRanges, dataStart, dataEnd)) {
+      throw new ZipReadError('Sérült ZIP (átfedő tömörített fájladat).', 'corrupt')
+    }
 
     const compressed = buf.subarray(dataStart, dataEnd)
     let bytes: Buffer
