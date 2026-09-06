@@ -4,7 +4,7 @@
 import { ExpandableContent } from '@/components/ui/expandable-content'
 import { Badge } from '@/components/ui/shell'
 import { NORMAL_TOOL_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
-import { formatToolUiName } from '@/lib/tool-ui-labels'
+import { getToolUiLabel } from '@/lib/tool-ui-labels'
 
 function ToolPillList({
   items,
@@ -75,10 +75,10 @@ export function AgentToolsOverview({
   const names = [...new Set([...NORMAL_TOOL_CAPABILITY_NAMES, ...capabilities.map((c) => c.toolName)])]
   const available = names
     .filter((name) => granted.has(name))
-    .map((name) => ({ key: name, label: formatToolUiName(name) }))
+    .map((name) => ({ key: name, label: getToolUiLabel(name).label }))
   const unavailable = names
     .filter((name) => !granted.has(name))
-    .map((name) => ({ key: name, label: formatToolUiName(name) }))
+    .map((name) => ({ key: name, label: getToolUiLabel(name).label }))
 
   if (available.length === 0 && unavailable.length === 0) {
     return (

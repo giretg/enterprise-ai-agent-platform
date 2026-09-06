@@ -70,12 +70,8 @@ export function AgentSkillsPanel({
     assignable,
     suggestedSkillNames ?? [],
   )
-  const [selected, setSelected] = useState<string>(
-    suggestedAssignable[0]?.activeVersionId ?? assignable[0]?.activeVersionId ?? '',
-  )
-  const selectedId = assignable.some((s) => s.activeVersionId === selected)
-    ? selected
-    : (suggestedAssignable[0]?.activeVersionId ?? assignable[0]?.activeVersionId ?? '')
+  const [selected, setSelected] = useState('')
+  const selectedSkill = assignable.find((s) => s.activeVersionId === selected) ?? null
 
   function run(fn: () => Promise<{ success: boolean; error?: string }>) {
     startTransition(async () => {
@@ -92,12 +88,6 @@ export function AgentSkillsPanel({
 
   const body = (
     <>
-      <p className="mb-4 text-xs text-ink-faint">
-        A hozzárendelt skillek Level-0 indexe a promptba kerül; a teljes instrukciót az
-        agent a <code>load_skill</code> toollal, auditáltan húzza be. A readiness csak
-        jelez — a hiányzó eszközjogot külön kell grantolni.
-      </p>
-
       {assigned.length === 0 ? (
         <p className="text-sm text-ink-faint">Nincs hozzárendelt skill.</p>
       ) : (
@@ -216,34 +206,50 @@ export function AgentSkillsPanel({
             </OpenInNewWindowLink>
           </p>
         ) : (
-          <div className="flex flex-wrap items-center gap-3">
-            <select
-              value={selectedId}
-              onChange={(e) => setSelected(e.target.value)}
-              className="rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-sm"
-            >
-              {assignable.map((s) => (
-                <option key={s.activeVersionId} value={s.activeVersionId}>
-                  {skillDisplayLabel(s)} (v{s.version}, {s.riskTier})
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              disabled={pending || !selectedId}
-              onClick={() =>
-                run(() => assignSkillAction({ agentId, skillVersionId: selectedId }))
-              }
-              className="rounded-full bg-coral/20 px-4 py-2 text-sm font-semibold text-coral disabled:opacity-50"
-            >
-              {pending ? 'Folyamatban...' : 'Hozzárendelés'}
-            </button>
-            <OpenInNewWindowLink
-              href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.skills}
-              className="text-xs font-medium text-coral hover:text-coral-deep"
-            >
-              Új skill
-            </OpenInNewWindowLink>
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <select
+                value={selectedSkill?.activeVersionId ?? ''}
+                onChange={(e) => setSelected(e.target.value)}
+                className="min-w-[12rem] flex-1 rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-sm"
+              >
+                <option value="">nincs kiválasztva</option>
+                {assignable.map((s) => (
+                  <option key={s.activeVersionId} value={s.activeVersionId}>
+                    {skillDisplayLabel(s)} (v{s.version}, {s.riskTier})
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={pending || !selectedSkill}
+                onClick={() =>
+                  run(() =>
+                    assignSkillAction({
+                      agentId,
+                      skillVersionId: selectedSkill!.activeVersionId,
+                    }),
+                  )
+                }
+                className="rounded-full bg-coral/20 px-4 py-2 text-sm font-semibold text-coral disabled:opacity-50"
+              >
+                {pending ? 'Folyamatban...' : 'Hozzárendelés'}
+              </button>
+              <OpenInNewWindowLink
+                href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.skills}
+                className="text-xs font-medium text-coral hover:text-coral-deep"
+              >
+                Új skill
+              </OpenInNewWindowLink>
+            </div>
+            {selectedSkill ? (
+              <div className="atelier-soft p-3">
+                <p className="text-sm font-medium text-ink">{skillDisplayLabel(selectedSkill)}</p>
+                <p className="mt-1 text-sm leading-relaxed text-ink-soft">
+                  {selectedSkill.description}
+                </p>
+              </div>
+            ) : null}
           </div>
         )}
       </div>
@@ -254,5 +260,5 @@ export function AgentSkillsPanel({
   )
 
   if (bare) return body
-  return <Card title="Skillek (progresszív betöltés)">{body}</Card>
+  return <Card title="Skillek (előre meghatározott feladatleírás)">{body}</Card>
 }
