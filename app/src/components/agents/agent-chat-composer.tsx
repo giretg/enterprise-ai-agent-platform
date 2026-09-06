@@ -226,7 +226,7 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
             onChange={onProjectKeyChange}
             disabled={disabled}
           />
-          <div className="inline-flex rounded-lg border border-line bg-night-2 p-0.5" role="radiogroup" aria-label="Mi legyen az üzenetből">
+          <div className="flex shrink-0 rounded-lg border border-line bg-night-2 p-0.5" role="radiogroup" aria-label="Mi legyen az üzenetből">
             {modeOptions.map((option) => (
               <button
                 key={option.value}
@@ -298,7 +298,7 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
         </div>
       ) : null}
 
-      <div className={`relative flex items-end gap-2 rounded-2xl border border-line p-2 shadow-sm focus-within:border-coral/40 focus-within:ring-2 focus-within:ring-coral/15 ${embedded ? 'bg-paper' : 'bg-card'}`}>
+      <div className={`relative flex items-end gap-1.5 rounded-2xl border border-line p-1.5 shadow-sm focus-within:border-coral/40 focus-within:ring-2 focus-within:ring-coral/15 sm:gap-2 sm:p-2 ${embedded ? 'bg-paper' : 'bg-card'}`}>
         <SkillSlashMenu autocomplete={slash} emptyLabel="Ehhez az AI munkatárshoz nincs engedélyezett skill hozzárendelve." position="above" className="left-12" />
         <input
           ref={fileInputRef}

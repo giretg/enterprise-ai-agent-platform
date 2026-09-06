@@ -163,11 +163,11 @@ export function AppShell({
           railLayout ? '' : 'sticky top-0'
         }`}
       >
-        <div className="w-full px-4 py-3.5 sm:px-5">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-3">
+        <div className="w-full px-3 py-2.5 sm:px-5 sm:py-3.5">
+          <div className="flex items-center justify-between gap-1.5 sm:gap-3">
+            <div className="flex min-w-0 shrink-0 items-center gap-2 sm:gap-3">
               <div
-                className="animate-breathe flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-xl"
+                className="animate-breathe flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-lg sm:h-11 sm:w-11 sm:rounded-2xl sm:text-xl"
                 style={{
                   background: markGradient,
                   boxShadow:
@@ -176,7 +176,7 @@ export function AppShell({
               >
                 {mark}
               </div>
-              <div className="min-w-0">
+              <div className="hidden min-w-0 sm:block">
                 <p className="truncate font-display text-[1.2rem] font-semibold leading-none tracking-tight sm:text-[1.35rem]">
                   {appName}
                 </p>
@@ -242,7 +242,7 @@ export function AppShell({
               })}
             </nav>
 
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
               {headerExtra}
               <ShellAuth clerkEnabled={clerkEnabled} />
               {switchLink && (
@@ -259,7 +259,7 @@ export function AppShell({
                 aria-expanded={mobileMenuOpen}
                 aria-controls="mobile-main-navigation"
                 onClick={() => setMobileMenuOpen((open) => !open)}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-line bg-card text-ink-soft transition-colors hover:border-coral/45 hover:text-coral-deep lg:hidden"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-line bg-card text-ink-soft transition-colors hover:border-coral/45 hover:text-coral-deep sm:h-10 sm:w-10 lg:hidden"
               >
                 <span className="flex w-4 flex-col gap-1">
                   <span className="h-0.5 rounded-full bg-current" />
@@ -328,7 +328,7 @@ export function Card({
   className?: string
 }) {
   return (
-    <section className={`atelier-card p-5 ${className}`}>
+    <section className={`atelier-card p-4 sm:p-5 ${className}`}>
       {title ? (
         <h2 className="mb-4 font-display text-lg font-semibold tracking-tight">{title}</h2>
       ) : null}

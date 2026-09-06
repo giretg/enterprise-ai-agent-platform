@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { getAgent, getAgentBoardTabBadge } from '@/app/actions/platform'
 import { getRunAnalysisEntry } from '@/app/actions/run-analysis'
@@ -9,6 +9,7 @@ import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentWorkspaceApps } from '@/components/agents/agent-workspace-apps'
 import { AgentTaskPanel } from '@/components/agents/agent-task-button'
 import { AgentRoleDescriptionButton } from '@/components/agents/agent-role-description-modal'
+import { setAgentRailMobileOpen } from '@/components/agents/agent-rail-store'
 import { personaFor } from '@/lib/agent-persona'
 import { recordLastAgentChatForCurrentTenant } from '@/lib/last-agent-chat'
 import { type AgentWorkspaceTab } from '@/lib/agent-rail-types'
@@ -61,10 +62,12 @@ function EmptyWorkspace() {
 function WorkspaceIconButton({
   title,
   onClick,
+  className = '',
   children,
 }: {
   title: string
   onClick: () => void
+  className?: string
   children: React.ReactNode
 }) {
   return (
@@ -73,7 +76,7 @@ function WorkspaceIconButton({
       title={title}
       aria-label={title}
       onClick={onClick}
-      className="grid h-8 w-8 place-items-center rounded-lg border border-line bg-card text-sm text-ink-soft transition-colors hover:bg-night-2 hover:text-ink"
+      className={`grid h-8 w-8 place-items-center rounded-lg border border-line bg-card text-sm text-ink-soft transition-colors hover:bg-night-2 hover:text-ink ${className}`}
     >
       {children}
     </button>
@@ -152,19 +155,39 @@ function WorkspaceHeader({
   const showChatChrome = tab === 'chat' && !agent.taskOnly
   const { canAnalyze, analyzeDisabled } = useWorkspaceAnalyzeButton()
   const boardBadge = useBoardTabBadge(agent.id)
+  // Mobilon a fülsor vízszintesen görgethető — az aktív fül különben kicsúszhat a képből.
+  const activeTabRef = useRef<HTMLButtonElement | null>(null)
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [tab])
 
   return (
-    <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line bg-card/55 px-4 py-3 backdrop-blur-sm sm:gap-3 sm:px-5">
-      <AgentAvatar
-        name={agent.name}
-        status={agent.status}
-        size="md"
-        avatarUrl={agent.avatarUrl}
-        personaNickname={agent.personaNickname}
-      />
+    <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line bg-card/55 px-3 py-2.5 backdrop-blur-sm sm:gap-3 sm:px-5 sm:py-3">
+      <button
+        type="button"
+        onClick={() => setAgentRailMobileOpen(true)}
+        className="shrink-0 rounded-full text-left xl:pointer-events-none"
+        aria-label="Munkatárs váltása"
+        title="Munkatárs váltása"
+      >
+        <AgentAvatar
+          name={agent.name}
+          status={agent.status}
+          size="md"
+          avatarUrl={agent.avatarUrl}
+          personaNickname={agent.personaNickname}
+        />
+      </button>
       <div className="min-w-0 flex-1 sm:max-w-[16rem]">
         <h1 className="truncate font-display text-[17px] font-bold leading-tight">{persona.nickname}</h1>
-        <div className="mt-0.5 flex items-start gap-0.5">
+        <button
+          type="button"
+          onClick={() => setAgentRailMobileOpen(true)}
+          className="mt-0.5 text-[11px] font-semibold text-coral-deep xl:hidden"
+        >
+          Munkatárs váltása ▾
+        </button>
+        <div className="mt-0.5 hidden items-start gap-0.5 sm:flex">
           <p className="min-w-0 flex-1 text-[11.5px] leading-snug italic text-ink-faint line-clamp-2">
             &quot;{persona.greeting}&quot;
           </p>
@@ -178,13 +201,14 @@ function WorkspaceHeader({
 
       <nav
         aria-label="Munkaterület fülek"
-        className="order-last flex w-full gap-0.5 rounded-xl border border-line bg-night-2 p-0.5 sm:order-none sm:ml-2 sm:w-auto"
+        className="order-last flex w-full gap-0.5 overflow-x-auto rounded-xl border border-line bg-night-2 p-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:order-none sm:ml-2 sm:w-auto"
       >
         {workspaceTabsForAgent(agent.taskOnly).map((item) => {
           const badge = item.key === 'board' ? boardBadge : null
           return (
             <button
               key={item.key}
+              ref={tab === item.key ? activeTabRef : undefined}
               type="button"
               role="tab"
               aria-selected={tab === item.key}
@@ -193,7 +217,7 @@ function WorkspaceHeader({
               }
               title={badge?.hint}
               onClick={() => router.push(agentWorkspacePath(agent.id, item.key))}
-              className={`inline-flex items-center gap-1.5 rounded-[9px] px-3 py-1.5 text-[13px] font-semibold transition-colors sm:px-3.5 ${
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-[9px] px-3 py-1.5 text-[13px] font-semibold transition-colors sm:px-3.5 ${
                 tab === item.key
                   ? 'bg-card text-coral-deep shadow-sm'
                   : 'text-ink-faint hover:text-ink-soft'
@@ -218,7 +242,7 @@ function WorkspaceHeader({
       </nav>
 
       {showChatChrome ? (
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-1 sm:gap-2">
           {canAnalyze ? (
             <button
               type="button"
@@ -244,7 +268,12 @@ function WorkspaceHeader({
           <WorkspaceIconButton title="Előzmények" onClick={() => workspaceChatToggleHistory()}>
             🕘
           </WorkspaceIconButton>
-          <WorkspaceIconButton title="Megnyitás külön ablakban" onClick={() => workspaceChatDetach()}>
+          {/* A lebegő csempe csak asztali gépen használható — mobilon elrejtve. */}
+          <WorkspaceIconButton
+            title="Megnyitás külön ablakban"
+            onClick={() => workspaceChatDetach()}
+            className="hidden sm:grid"
+          >
             ⧉
           </WorkspaceIconButton>
         </div>

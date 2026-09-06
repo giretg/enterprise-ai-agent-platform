@@ -690,6 +690,7 @@ export function KanbanBoard({
     initialScheduledFilter ? 'scheduled' : null,
   )
   const [hideEmptyColumns, setHideEmptyColumns] = useState(true)
+  const [filtersOpen, setFiltersOpen] = useState(false)
   /**
    * A dátum-inputok azonnal követik a kattintást (a navigáció csak utána fut le),
    * de ha az URL-ből új tartomány érkezik, az felülírja a helyi értéket. A
@@ -923,7 +924,25 @@ export function KanbanBoard({
 
       {/* Szűrősáv */}
       <div className="atelier-card !rounded-2xl !p-3 sm:!p-4">
-        <div className="flex flex-wrap items-end gap-3">
+        {/* Mobilon a szűrők egy képernyőnyit foglalnának a kártyák elől — alapból zárva. */}
+        <button
+          type="button"
+          onClick={() => setFiltersOpen((open) => !open)}
+          aria-expanded={filtersOpen}
+          className="flex w-full items-center justify-between gap-2 text-xs font-semibold text-ink-soft sm:hidden"
+        >
+          <span>
+            Keresés és szűrők
+            {filtersActive ? <span className="ml-1.5 text-coral">• aktív</span> : null}
+          </span>
+          <span className="flex items-center gap-2 font-normal text-ink-faint">
+            {listTickets.length} feladat
+            <span aria-hidden>{filtersOpen ? '▴' : '▾'}</span>
+          </span>
+        </button>
+        <div
+          className={`${filtersOpen ? 'mt-3 flex' : 'hidden'} flex-wrap items-end gap-3 sm:mt-0 sm:flex`}
+        >
           <Field label="Keresés" htmlFor="board-search" className="w-full sm:w-56">
             <div className="relative">
               <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-faint" />

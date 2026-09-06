@@ -39,6 +39,36 @@ export function shouldSkipDuplicateSessionSelect(input: {
   return false
 }
 
+/**
+ * A stream eseményei csak akkor írják a látható chatet, ha a felhasználó
+ * nem indított új szálat / nem váltott beszélgetést a forduló alatt.
+ */
+export function visibleChatOwnsStream(input: {
+  streamGen: number
+  currentGen: number
+}): boolean {
+  return input.streamGen === input.currentGen
+}
+
+/**
+ * Üzenet-újratöltés csak a most nézett szálra mehet. Különben a háttérben
+ * lezáró forduló visszarántaná a nézetet az előző beszélgetésre.
+ */
+export function visibleChatOwnsConversation(input: {
+  viewingConversationId: string | null
+  incomingConversationId: string
+}): boolean {
+  return input.viewingConversationId === input.incomingConversationId
+}
+
+/**
+ * A helyi SSE-olvasás megszakítása (új beszélgetés, szálváltás) a szerveren
+ * nem állítja le a fordulót — a „most dolgozik” jelölő marad.
+ */
+export function shouldClearTurnRunningOnStreamEnd(input: { aborted: boolean }): boolean {
+  return !input.aborted
+}
+
 export type ConversationHistoryLoadState = 'idle' | 'loading' | 'ready'
 
 /**

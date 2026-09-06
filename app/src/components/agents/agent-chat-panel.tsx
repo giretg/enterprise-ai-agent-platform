@@ -75,7 +75,10 @@ import { recordLastAgentChatForCurrentTenant } from '@/lib/last-agent-chat'
 import {
   conversationIdToResume,
   previousConversationLoaderVisible,
+  shouldClearTurnRunningOnStreamEnd,
   shouldSkipDuplicateSessionSelect,
+  visibleChatOwnsConversation,
+  visibleChatOwnsStream,
   type ConversationHistoryLoadState,
 } from '@/lib/resume-last-agent-conversation'
 import { LoadingState } from '@/components/ui/spinner'
@@ -286,6 +289,12 @@ export function AgentChatPanel({
   const [userStartedNew, setUserStartedNew] = useState(false)
   /** In-flight szálbetöltés — Új beszélgetés közben a válasz ne írja vissza a régi szálat. */
   const sessionLoadGenRef = useRef(0)
+  /** A nézett szál id-ja — szinkron, hogy egy lezáró háttér-stream ne rántsa vissza a nézetet. */
+  const conversationIdRef = useRef<string | null>(null)
+  const setViewingConversation = useCallback((id: string | null) => {
+    conversationIdRef.current = id
+    setConversationId(id)
+  }, [])
   /** Ugyanarra a szálra ne induljon második párhuzamos loadAgentChatMessages. */
   const inFlightSessionRef = useRef<string | null>(null)
   const grantResumeStartedRef = useRef(false)
@@ -499,14 +508,21 @@ export function AgentChatPanel({
     })()
   }, [open, agent.id])
 
-  const startNewSession = useCallback((opts?: { force?: boolean }) => {
-    if (isAgentTyping && !opts?.force) return
-    setUserStartedNew(true)
+  /** A helyi stream-olvasást elengedi; a szerver-forduló a háttérben megy tovább. */
+  const abandonLocalTurnView = useCallback(() => {
     sessionLoadGenRef.current += 1
-    inFlightSessionRef.current = null
-    setHistoryLoadState('ready')
+    streamAbortRef.current?.abort()
     pendingConsequenceContinuationRef.current = null
-    setConversationId(null)
+    inFlightSessionRef.current = null
+    clearActiveTurnState()
+    setStopPending(false)
+  }, [clearActiveTurnState])
+
+  const startNewSession = useCallback(() => {
+    abandonLocalTurnView()
+    setUserStartedNew(true)
+    setHistoryLoadState('ready')
+    setViewingConversation(null)
     setProjectKey(GENERAL_WORK_PROJECT_KEY)
     setMessages([])
     setStatusMessage(null)
@@ -517,7 +533,7 @@ export function AgentChatPanel({
     setSessionsFilter('active')
     setSessionsOpen(false)
     setSelectedProcessDefId(null)
-  }, [isAgentTyping])
+  }, [abandonLocalTurnView, setViewingConversation])
 
   useEffect(() => {
     if (open) {
@@ -901,6 +917,14 @@ export function AgentChatPanel({
         setStatusMessage(res.error)
         return false
       }
+      if (
+        !visibleChatOwnsConversation({
+          viewingConversationId: conversationIdRef.current,
+          incomingConversationId: convId,
+        })
+      ) {
+        return false
+      }
       const privacyRes = await getChatPrivacyMarkerContext({
         agentId: agent.id,
         conversationId: convId,
@@ -908,7 +932,15 @@ export function AgentChatPanel({
       if (privacyRes.success) {
         setPrivacyContext(privacyRes.data)
       }
-      setConversationId(convId)
+      if (
+        !visibleChatOwnsConversation({
+          viewingConversationId: conversationIdRef.current,
+          incomingConversationId: convId,
+        })
+      ) {
+        return false
+      }
+      setViewingConversation(convId)
       setProjectKey(effectiveWorkProjectKey(res.data.conversation.projectKey))
       setConversationStatus(res.data.conversation.status)
       setContinuedFromTicket(res.data.continuedFromTicket ?? null)
@@ -931,7 +963,7 @@ export function AgentChatPanel({
       }
       return true
     },
-    [agent.id, refreshSessions, sessionsOpen],
+    [agent.id, refreshSessions, sessionsOpen, setViewingConversation],
   )
 
   const consumeReattachStream = useCallback(
@@ -941,18 +973,21 @@ export function AgentChatPanel({
       agentMessageId: string
       signal: AbortSignal
     }) => {
+      const streamGen = sessionLoadGenRef.current
+      const viewLive = () =>
+        visibleChatOwnsStream({ streamGen, currentGen: sessionLoadGenRef.current })
+
       const response = await fetch(`/api/v1/agent-chat/turns/${params.turnId}/stream`, {
         signal: params.signal,
       })
       if (!response.ok || !response.body) {
-        setStatusMessage(`Visszacsatlakozás sikertelen (${response.status})`)
-        setIsAgentTyping(false)
-        setStopPending(false)
-        setActiveTurnId(null)
-        markConversationRunning(params.conversationId, false)
-        // A forduló közben / után is perzisztálódhatott a válasz — üres buborék
-        // helyett a DB végállapotot töltjük.
-        await reloadConversationMessages(params.conversationId)
+        if (viewLive()) {
+          setStatusMessage(`Visszacsatlakozás sikertelen (${response.status})`)
+          setIsAgentTyping(false)
+          setStopPending(false)
+          setActiveTurnId(null)
+          await reloadConversationMessages(params.conversationId)
+        }
         return
       }
 
@@ -961,6 +996,18 @@ export function AgentChatPanel({
 
       try {
         for await (const event of readAgentChatEventStream(response.body)) {
+            if (!viewLive()) {
+              if (event.type === 'done' && event.conversationId) {
+                sawTerminalEvent = true
+                markConversationRunning(event.conversationId, false)
+                return
+              }
+              if (event.type === 'error') {
+                sawTerminalEvent = true
+                return
+              }
+              continue
+            }
             if (event.type === 'snapshot') {
               const activities = Array.isArray(event.activities)
                 ? (event.activities as AgentActivity[])
@@ -1079,14 +1126,19 @@ export function AgentChatPanel({
         // Stream lezárult done/error nélkül (proxy timeout, élő busz elszakadás).
         // Ha a válasz közben elkészült, a DB-ből kell visszatölteni — különben
         // üres agent-buborék marad a UI-on.
-        if (!sawTerminalEvent && !params.signal.aborted) {
+        if (!sawTerminalEvent && !params.signal.aborted && viewLive()) {
           await reloadConversationMessages(params.conversationId)
         }
       } finally {
-        setIsAgentTyping(false)
-        setStopPending(false)
-        setActiveTurnId(null)
-        markConversationRunning(params.conversationId, false)
+        const aborted = params.signal.aborted && !sawTerminalEvent
+        if (viewLive()) {
+          setIsAgentTyping(false)
+          setStopPending(false)
+          setActiveTurnId(null)
+        }
+        if (shouldClearTurnRunningOnStreamEnd({ aborted })) {
+          markConversationRunning(params.conversationId, false)
+        }
       }
     },
     [markConversationRunning, reloadConversationMessages, thinkingTraceControls],
@@ -1095,10 +1147,12 @@ export function AgentChatPanel({
   const reattachToConversation = useCallback(
     async (convId: string) => {
       try {
+        if (conversationIdRef.current !== convId) return false
         const res = await fetch(
           `/api/v1/agent-chat/turns?conversationId=${encodeURIComponent(convId)}&active=1`,
         )
         if (!res.ok) return false
+        if (conversationIdRef.current !== convId) return false
         const data = (await res.json()) as {
           active: boolean
           turn: {
@@ -1112,7 +1166,11 @@ export function AgentChatPanel({
             cancelRequested?: boolean
           } | null
         }
-        if (!data.active || !data.turn) return false
+        if (!data.active || !data.turn) {
+          markConversationRunning(convId, false)
+          return false
+        }
+        if (conversationIdRef.current !== convId) return false
 
         const stalled = updateActiveTurnLiveness(data.turn)
 
@@ -1219,17 +1277,12 @@ export function AgentChatPanel({
       // Más beszélgetésre váltáskor a helyi stream-olvasást megszakítjuk (a szerver fut tovább).
       // A sorban álló folytatást ELŐBB eldobjuk — különben a setIsAgentTyping(false)
       // flushelná a régi approval-id-kat az új beszélgetésre.
-      streamAbortRef.current?.abort()
-      pendingConsequenceContinuationRef.current = null
-      clearActiveTurnState()
-      setStopPending(false)
-
-      sessionLoadGenRef.current += 1
+      abandonLocalTurnView()
       const loadGen = sessionLoadGenRef.current
       inFlightSessionRef.current = id
       setHistoryLoadState('loading')
       setUserStartedNew(false)
-      setConversationId(id)
+      setViewingConversation(id)
       setStatusMessage(null)
       setLastTicketId(null)
       setContinuedFromTicket(null)
@@ -1268,7 +1321,7 @@ export function AgentChatPanel({
         }
       }
     },
-    [agent.id, clearActiveTurnState, conversationId, reattachToConversation, sessions],
+    [abandonLocalTurnView, agent.id, conversationId, reattachToConversation, sessions, setViewingConversation],
   )
 
   const selectSessionRef = useRef(selectSession)
@@ -1345,7 +1398,7 @@ export function AgentChatPanel({
     if (initialConversationId && conversationId !== initialConversationId) return
     const timer = window.setTimeout(() => {
       prefillAppliedRef.current = true
-      startNewSession({ force: true })
+      startNewSession()
       setInput(initialPrefill)
       stripPrefillQueryFromUrl()
     }, 0)
@@ -1401,6 +1454,9 @@ export function AgentChatPanel({
     consequenceApprovalIds?: string[]
     connectorGrantContinuation?: boolean
   }) => {
+    const streamGen = sessionLoadGenRef.current
+    const viewLive = () =>
+      visibleChatOwnsStream({ streamGen, currentGen: sessionLoadGenRef.current })
     const text = options.text
     const localAttachments = options.attachments
     const optimisticUserId = `optimistic-user-${Date.now()}`
@@ -1465,6 +1521,7 @@ export function AgentChatPanel({
        * a tiszta {@link decideChatStreamRecovery} hozza, itt csak végrehajtjuk.
        */
       async function recoverInterruptedStream(ending: ChatStreamEnding) {
+        if (!viewLive()) return
         const action = decideChatStreamRecovery({
           ending,
           userMessagePersisted: persistedUserMessageId !== null,
@@ -1495,7 +1552,10 @@ export function AgentChatPanel({
 
       try {
         const documentIds = localAttachments.length > 0 ? await uploadAttachments(localAttachments) : []
-        if (abortController.signal.aborted) return
+        if (abortController.signal.aborted) {
+          markConversationRunning(conversationId, false)
+          return
+        }
 
         const response = await fetch('/api/v1/agent-chat/stream', {
           method: 'POST',
@@ -1520,6 +1580,7 @@ export function AgentChatPanel({
         // A fajtákat nem szabad összekeverni — a taskOnly eddig „már készül a
         // válasz”-ként jelent meg, eltüntette a kérdést, és beragadt a „most dolgozik".
         if (response.status === 409) {
+          if (!viewLive()) return
           removeFailedOptimisticMessages()
           markConversationRunning(conversationId, false)
           let conflictBody: {
@@ -1536,7 +1597,7 @@ export function AgentChatPanel({
           const conflict = resolveChatStreamConflict(conflictBody, conversationId)
           if (conflict.kind === 'active_turn') {
             if (conflict.conversationId) {
-              setConversationId(conflict.conversationId)
+              setViewingConversation(conflict.conversationId)
               const attached = await reattachToConversation(conflict.conversationId)
               if (attached) {
                 setStatusMessage('Már fut egy válasz — visszacsatlakoztál hozzá.')
@@ -1553,8 +1614,9 @@ export function AgentChatPanel({
         }
 
         if (!response.ok || !response.body) {
-          removeFailedOptimisticMessages()
           markConversationRunning(conversationId, false)
+          if (!viewLive()) return
+          removeFailedOptimisticMessages()
           let errorBody: { message?: string } | null = null
           try {
             errorBody = (await response.json()) as { message?: string }
@@ -1574,6 +1636,21 @@ export function AgentChatPanel({
         let streamTerminalEvent = false
 
         for await (const event of readAgentChatEventStream(response.body)) {
+            if (!viewLive()) {
+              if (event.type === 'meta' && event.conversationId) {
+                persistedUserMessageId = event.userMessageId
+                streamConversationIdRef.current = event.conversationId
+                markConversationRunning(event.conversationId, true)
+              } else if (event.type === 'done' && event.conversationId) {
+                markConversationRunning(event.conversationId, false)
+                streamTerminalEvent = true
+                break
+              } else if (event.type === 'error') {
+                streamTerminalEvent = true
+                break
+              }
+              continue
+            }
             if (event.type === 'turn' && event.turnId) {
               const turnBubbleId = agentBubbleIdForTurn(event.turnId)
               setActiveTurnId(event.turnId)
@@ -1589,7 +1666,7 @@ export function AgentChatPanel({
               persistedUserMessageId = event.userMessageId
               streamConversationIdRef.current = event.conversationId
               markConversationRunning(event.conversationId, true)
-              setConversationId(event.conversationId)
+              setViewingConversation(event.conversationId)
               setConversationStatus('active')
               setMessages((prev) =>
                 prev.map((message) =>
@@ -1703,7 +1780,7 @@ export function AgentChatPanel({
               streamTerminalEvent = true
               break
             } else if (event.type === 'done' && event.conversationId && event.messageId) {
-              setConversationId(event.conversationId)
+              setViewingConversation(event.conversationId)
               setConversationStatus('active')
               markConversationRunning(event.conversationId, false)
               setActiveTurnId(null)
@@ -1750,12 +1827,15 @@ export function AgentChatPanel({
         }
         // Visszacsatlakozás után a háttér-stream birtokolja a buborékot, a
         // stream-konverzáció-ref-et és a „gépel" jelzőt — ezeket nem bántjuk.
-        if (!handedOffToReattach) {
+        // Szálváltás után a nézet már más fordulóé: a régi stream ne törölje a gépelést.
+        if (!handedOffToReattach && viewLive()) {
           streamConversationIdRef.current = null
           setIsAgentTyping(false)
         }
-        setStopPending(false)
-        filesRef.current?.refresh()
+        if (viewLive()) {
+          setStopPending(false)
+          filesRef.current?.refresh()
+        }
       }
     })()
   }
@@ -1966,7 +2046,7 @@ export function AgentChatPanel({
         setLastTicketId(res.data.ticketId)
         resetComposer()
         if (res.data.conversationId) {
-          setConversationId(res.data.conversationId)
+          setViewingConversation(res.data.conversationId)
           const loaded = await loadAgentChatMessages({
             conversationId: res.data.conversationId,
             agentId: agent.id,
@@ -2224,7 +2304,7 @@ export function AgentChatPanel({
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <div
               ref={scrollRef}
-              className={`flex-1 overflow-y-auto ${embedded ? 'px-6 py-5' : 'px-4 py-5 sm:px-6'}`}
+              className={`flex-1 overflow-y-auto ${embedded ? 'px-3 py-3 sm:px-6 sm:py-5' : 'px-3 py-4 sm:px-6 sm:py-5'}`}
             >
               {messages.length === 0 && ticketDiscussionHistory.length === 0 && !isAgentTyping ? (
                 previousConversationLoaderVisible({
@@ -2415,7 +2495,7 @@ export function AgentChatPanel({
             <div
               className={
                 embedded
-                  ? 'shrink-0 bg-transparent px-6 pb-5 pt-0'
+                  ? 'shrink-0 bg-transparent px-3 pb-[max(.75rem,env(safe-area-inset-bottom))] pt-0 sm:px-6 sm:pb-5'
                   : 'shrink-0 border-t border-line bg-night px-3 py-3 sm:px-5 sm:py-4'
               }
             >
@@ -2485,7 +2565,6 @@ export function AgentChatPanel({
               loading={sessionsLoading}
               loadingMore={sessionsLoadingMore}
               hasMore={sessionsHasMore}
-              isBusy={controlsBusy}
               onSelect={selectSession}
               onNewChat={startNewSession}
               onLoadMore={loadMoreSessions}

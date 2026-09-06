@@ -131,8 +131,11 @@ export function ActiveRunsPanel() {
         }`}
         aria-expanded={open}
         aria-haspopup="dialog"
+        aria-label="Futások"
       >
-        Futások
+        {/* Mobilon a szó nem fér el a fejlécben — ott ikon + darabszám marad. */}
+        <span aria-hidden className="sm:hidden">▶</span>
+        <span className="hidden sm:inline">Futások</span>
         {badgeCount > 0 && (
           <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-sky px-1.5 text-[10px] font-bold text-card">
             {badgeCount}
