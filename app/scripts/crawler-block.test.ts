@@ -51,6 +51,11 @@ check('a Googlebot UA-ja crawlerként ismert fel', () => {
   assert.equal(isKnownCrawlerRequest(requestWithUserAgent(GOOGLEBOT_UA)), true)
 })
 
+check('az éles incidens rövid UA-ja (Google) is crawler', () => {
+  assert.equal(isKnownCrawlerRequest(requestWithUserAgent('Google')), true)
+  assert.equal(isKnownCrawlerRequest(requestWithUserAgent('Google-InspectionTool')), true)
+})
+
 check('más ismert kereső-crawlerek (Bingbot) UA-ja is felismert', () => {
   assert.equal(isKnownCrawlerRequest(requestWithUserAgent(BINGBOT_UA)), true)
 })

@@ -30,8 +30,11 @@ import type { NextRequest } from 'next/server'
  * A gyökér-ok javítása (Clerk production instance + session-revoke) emberi
  * lépés marad, lásd #426.
  */
+// #426 log: a kérések UA-ja szó szerint `Google` volt (nem csak `Googlebot`).
+// A `google` ág ezt és a `Google-InspectionTool` / `GoogleOther` családokat is megfogja;
+// asztali Chrome/Safari UA-jában nincs „google” (l. crawler-block.test.ts).
 const CRAWLER_USER_AGENT_PATTERN =
-  /bot|crawler|spider|slurp|facebookexternalhit|embedly|quora link preview|showyoubot|outbrain|pinterest\/|pingdom|ia_archiver|whatsapp|telegrambot|bytespider|ccbot/i
+  /bot|crawler|spider|slurp|facebookexternalhit|embedly|quora link preview|showyoubot|outbrain|pinterest\/|pingdom|ia_archiver|whatsapp|telegrambot|bytespider|ccbot|google/i
 
 /**
  * Ezeken az útvonalakon a bejelentett crawler is átengedett: a szándékosan
