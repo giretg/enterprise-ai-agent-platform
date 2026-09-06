@@ -9,13 +9,15 @@ import { inflateRawSync } from 'node:zlib'
  * formátum-lefedettség. Csak azt támogatjuk, amit a valódi skill-csomagok
  * használnak: `stored` (0) és `deflate` (8) tömörítés, sima könyvtárfa.
  *
- * A védekezés három rétege (mind KÖTELEZŐ, egyik sem opcionális):
+ * A védekezés négy rétege (mind KÖTELEZŐ, egyik sem opcionális):
  *   1. bájt-limitek (archívum, fájlonkénti és összesített kicsomagolt méret) —
  *      zip-bomba ellen; a deklarált méretet ÉS a tényleges kimenetet is nézzük,
  *      mert a fejléc hazudhat;
  *   2. útvonal-normalizálás — `..`, abszolút út és backslash-elválasztó
  *      elutasítva (zip-slip);
- *   3. bejegyzés-darabszám cap — a central directory végigolvasása is munka.
+ *   3. bejegyzés-darabszám cap — a central directory végigolvasása is munka;
+ *   4. tömörített `[dataStart, dataEnd)` tartományok diszjunktsága — ugyanaz a
+ *      deflate-blokk nem futhat le kétszer (átfedő central-directory hivatkozás).
  */
 
 export interface ZipEntry {
@@ -94,18 +96,9 @@ function findEocdOffset(buf: Buffer): number {
 }
 
 function insertNonOverlappingRange(ranges: Array<{ start: number; end: number }>, start: number, end: number): boolean {
-  // ponytail: 4 000 bejegyzésnél a tömbbeszúrás elfogadható; nagyobb limithez intervallumfa kell.
-  let low = 0
-  let high = ranges.length
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2)
-    if (ranges[middle]!.start < start) low = middle + 1
-    else high = middle
-  }
-  const previous = ranges[low - 1]
-  const next = ranges[low]
-  if ((previous && previous.end > start) || (next && next.start < end)) return false
-  ranges.splice(low, 0, { start, end })
+  // ponytail: 4 000 bejegyzésnél a lineáris scan elfogadható; nagyobb limithez intervallumfa kell.
+  if (ranges.some((range) => range.start < end && start < range.end)) return false
+  ranges.push({ start, end })
   return true
 }
 
