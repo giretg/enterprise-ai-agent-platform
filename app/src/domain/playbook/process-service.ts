@@ -899,10 +899,23 @@ export class ProcessService {
     if (process.status === 'completed' || process.status === 'cancelled') {
       throw new ProcessServiceError('INVALID_STATE', `Lezárt folyamat nem vonható vissza (${process.status}).`)
     }
-    const updated = await this.processes.updateProcess(process.id, {
-      status: 'cancelled',
-      completedAt: new Date(),
-    })
+    // CAS: ne írjuk felül, ha közben resolve/retry már `running`-ra vitte, majd
+    // advance lezárta — és fordítva: a resolve/retry CAS-a se tudja feltámasztani
+    // a cancel után a folyamatot (l. resumeProcessFromReviewDecision).
+    const updated = await this.processes.updateProcessIfStatusIn(
+      process.id,
+      ['created', 'running', 'awaiting_human', 'blocked', 'failed'],
+      {
+        status: 'cancelled',
+        completedAt: new Date(),
+      },
+    )
+    if (!updated) {
+      throw new ProcessServiceError(
+        'INVALID_STATE',
+        'A folyamat állapota közben megváltozott — frissítsd az oldalt.',
+      )
+    }
     await this.append(input.tenantId, { type: 'user', id: input.actorUserId }, {
       action: 'process.cancel',
       targetType: 'process_instance',
@@ -993,6 +1006,24 @@ export class ProcessService {
   }
 
   /**
+   * Emberi döntés után a folyamatot CSAK `awaiting_human`-ból lehet újra
+   * `running`-ra emelni. Feltétel nélküli `updateProcess({ status: 'running' })`
+   * feltámasztaná a közben leállított (cancelled) futást — pl. ha egy admin
+   * cancelProcess-t hív, miközben egy approver resolve/retry-t.
+   */
+  private async resumeProcessFromReviewDecision(processId: string): Promise<void> {
+    const resumed = await this.processes.updateProcessIfStatusIn(processId, ['awaiting_human'], {
+      status: 'running',
+    })
+    if (!resumed) {
+      throw new ProcessServiceError(
+        'INVALID_STATE',
+        'A folyamat már nem vár emberi döntésre (leállították vagy közben tovább lépett). Frissítsd az oldalt.',
+      )
+    }
+  }
+
+  /**
    * 1. döntés — „Javítsd ki és futtasd újra".
    *
    * A pontosítás a LÉPÉS ticketjének szálába kerül (onnan olvassa a futtató
@@ -1045,6 +1076,9 @@ export class ProcessService {
       note: `Újrafuttatás kérve (${attempt}. próba).`,
       actorUserId: input.actorUserId,
     })
+    // Cancel vs retry verseny: ne állítsuk vissza a lépést, ha a folyamatot
+    // közben leállították.
+    await this.resumeProcessFromReviewDecision(process.id)
 
     // A pontosítás a lépés szálába: a futtató runtime a ticket kommentjeiből
     // építi a kontextust (l. buildThreadContextPrompt).
@@ -1083,7 +1117,6 @@ export class ProcessService {
     if (step) {
       await this.processes.updateStep(step.id, { status: 'ready', completedAt: null })
     }
-    await this.processes.updateProcess(process.id, { status: 'running' })
 
     await this.append(input.tenantId, { type: 'user', id: input.actorUserId }, {
       action: 'process.step.retry',
@@ -1130,6 +1163,9 @@ export class ProcessService {
       note: input.note?.trim() || 'Emberi felülbírálás: a lépés elfogadva, a folyamat továbbmegy.',
       actorUserId: input.actorUserId,
     })
+    // Cancel vs resolve verseny: ne léptessünk tovább, ha a folyamatot közben leállították.
+    await this.resumeProcessFromReviewDecision(process.id)
+
     const patch = Object.fromEntries(
       Object.entries(input.outputPatch ?? {})
         .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value])
@@ -1166,7 +1202,6 @@ export class ProcessService {
     if (step) {
       await this.processes.updateStep(step.id, { status: 'in_progress', completedAt: null })
     }
-    await this.processes.updateProcess(process.id, { status: 'running' })
 
     await this.append(input.tenantId, { type: 'user', id: input.actorUserId }, {
       action: 'process.step.human_override',
