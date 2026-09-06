@@ -65,6 +65,18 @@ check('az összefoglaló ChatGPT OAuthnál kiírja a gondolkodási profilt', () 
   })
   assert.match(summary, /ChatGPT OAuth/)
   assert.match(summary, /Luna/)
+  assert.doesNotMatch(summary, /tartalék/)
+})
+
+check('az összefoglaló kiírja a tartalék modellt, ha van', () => {
+  const summary = modelConfigSummary({
+    provider: 'chatgpt-oauth',
+    model: 'chatgpt-oauth-default',
+    fallbackModels: [{ provider: 'claude-code-oauth', model: 'claude-sonnet-4-6' }],
+  })
+  assert.match(summary, /tartalék: /)
+  assert.match(summary, /Claude/)
+  assert.match(summary, /Sonnet/)
 })
 
 check('a gondolkodási motor űrlap a profilt providerhez köti', () => {

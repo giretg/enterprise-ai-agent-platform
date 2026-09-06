@@ -10,7 +10,10 @@
  */
 
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { assembleGatewayMessages, type PromptSegments } from '../src/domain/agent/prompt-assembler'
+import { findEmbeddedSurrogates } from '../src/domain/privacy/surrogate-format'
 import {
   CachedPrefixSurrogateInvariantError,
   MAX_CACHE_BREAKPOINTS,
@@ -219,6 +222,16 @@ async function main() {
     messages[historyIndex] = { role: 'user', content: 'Írj a [[EMAIL_1]] címre' }
     const breakpoints = resolveCacheBreakpoints(messages, policy)
     assert.deepEqual(findSurrogatesInCachedPrefix(messages, breakpoints), [])
+  })
+
+  await check('APG-15: a tool-loop stabil instrukció nem tartalmaz álnevet', () => {
+    const src = readFileSync(resolve(import.meta.dirname, '../src/domain/agent/chat-tool-loop.ts'), 'utf8')
+    assert.deepEqual(
+      findEmbeddedSurrogates(src)
+        .filter((match) => match.parsed != null)
+        .map((match) => match.text),
+      [],
+    )
   })
 
   await check('APG-15: skill-szöveg [[COMPANY_1]] a változó zónában, prefix tiszta', () => {

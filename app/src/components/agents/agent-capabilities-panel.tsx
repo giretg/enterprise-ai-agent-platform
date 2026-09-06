@@ -10,7 +10,10 @@ import {
   initialEnabledToolNames,
   toolSelectionHasChanges,
 } from '@/lib/create-agent-wizard'
-import { NORMAL_TOOL_CAPABILITY_GROUPS } from '@/lib/tool-capability-catalog'
+import {
+  NORMAL_TOOL_CAPABILITY_GROUPS,
+  splitToolGroupsByChatSurface,
+} from '@/lib/tool-capability-catalog'
 
 export function AgentCapabilitiesPanel({
   agentId,
@@ -73,6 +76,9 @@ export function AgentCapabilitiesPanel({
     })
   }
 
+  const { chat: chatGroups, other: otherGroups } = splitToolGroupsByChatSurface(
+    NORMAL_TOOL_CAPABILITY_GROUPS,
+  )
   const hasChanges = toolSelectionHasChanges(enabled, granted)
   const hasSuggestedPending =
     (suggestedTools?.length ?? 0) > 0 &&
@@ -91,12 +97,31 @@ export function AgentCapabilitiesPanel({
         </p>
       ) : null}
 
+      <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-ink-soft">
+        Beszélgetés-eszközök
+      </p>
       <ToolCapabilityCheckboxGroups
-        groups={NORMAL_TOOL_CAPABILITY_GROUPS}
+        groups={chatGroups}
         enabled={enabled}
         onChange={setEnabledAndClearDone}
         isToolDisabled={(_tool, selected) => isOrchestrator && !selected.has(_tool)}
       />
+      {otherGroups.length > 0 && (
+        <div className="mt-8">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-soft">
+            Egyéb eszközök
+          </p>
+          <p className="mb-4 text-xs text-ink-faint">
+            Nem a beszélgetésben hívja őket — monitor, MCP vagy háttérfolyamat.
+          </p>
+          <ToolCapabilityCheckboxGroups
+            groups={otherGroups}
+            enabled={enabled}
+            onChange={setEnabledAndClearDone}
+            isToolDisabled={(_tool, selected) => isOrchestrator && !selected.has(_tool)}
+          />
+        </div>
+      )}
 
       {error && <p className="mt-4 text-sm text-coral">{error}</p>}
       {done && (

@@ -6,12 +6,12 @@
  * A felhasználó felé ez „az agent buta" tünetként jelent meg, holott egy hiányzó
  * jogosultsági sorról volt szó. Egyetlen képernyő elég lett volna hozzá.
  *
- * Ez a modul állítja elő azt a képernyőt: tool-onként megmondja, hogy az agent
- * LÁTJA-e az eszközt, van-e hozzá `Capability` sora, valóban HÍVHATJA-e, és
+ * Ez a modul állítja elő azt a képernyőt: tool-onként megmondja, hogy a
+ * chat-katalógusban van-e, van-e `Capability` sora, tényleg hívható-e, és
  * feloldható-e a végrehajtó handler. Az egyetlen operátori eltérés:
  *
- *   „Látja, de nincs joga" — az agent felkínálva látja, de a broker elutasítja.
- *                            Ez a tulajdoni-lap incidens alakja.
+ *   „Nem elérhető" — chat-katalógusban van, de nincs grant, ezért a modell
+ *                    nem kapja meg. Ez a tulajdoni-lap incidens alakja.
  * A chatben szándékosan rejtett (MCP-only) grantok nem eltérés: nincs teendő.
  */
 import type { ToolBrokerRepository } from '@/repositories/interfaces'
@@ -45,7 +45,7 @@ export type AgentToolAccessReport = {
   agentId: string
   surface: ToolSurface
   tools: ToolAccessDiagnosis[]
-  /** „Látja, de nincs joga" — a tulajdoni-lap típusú hiány. */
+  /** Chat-katalógusban van, de nincs grant — a modell nem kapja meg. */
   visibleWithoutGrant: ToolAccessDiagnosis[]
   /** Grantolva + látható, de nincs végrehajtó — futásidejű hiba lenne. */
   handlerMissing: ToolAccessDiagnosis[]

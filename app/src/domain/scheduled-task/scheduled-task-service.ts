@@ -332,9 +332,9 @@ export class ScheduledTaskService {
   }
 
   /**
-   * Rendszeres sorozat következő példánya most, a naptár szerinti következő
-   * időpont ettől még a megszokott ütem szerint lép. A claimDue `now` cutoffját
-   * a saját nextRunAt-re emeljük, ha a futás még nem esedékes.
+   * Rendkívüli futtatás: most készül egy példány, a naptár szerinti következő
+   * időpont nem lép. A claimDue `now` cutoffját a saját nextRunAt-re emeljük,
+   * ha a futás még nem esedékes.
    */
   async runNow(params: {
     scheduledTaskId: string
@@ -382,8 +382,11 @@ export class ScheduledTaskService {
     const attachmentDocumentIds = stringArray(basePayload.attachmentDocumentIds)
     const conversationId =
       typeof basePayload.conversationId === 'string' ? basePayload.conversationId : null
-    const nextTaskState = materializedTaskState(claimed, now)
-    const occurrenceRunAt = claimed.nextRunAt
+    const extraordinary = actor.actorType === 'human'
+    const nextTaskState = extraordinary
+      ? { status: 'active' as const, nextRunAt: claimed.nextRunAt, runCount: claimed.runCount }
+      : materializedTaskState(claimed, now)
+    const occurrenceRunAt = extraordinary ? now : claimed.nextRunAt
     const seriesTicketId = seriesTicketIdFrom(basePayload, claimed)
     const scheduleStamp = buildTicketScheduleStamp({
       kind: claimed.recurrence === 'none' ? 'once' : 'recurring',
@@ -479,7 +482,9 @@ export class ScheduledTaskService {
       return { scheduledTaskId: claimed.id, status: 'skipped' }
     }
     const ticket = materialized.ticket
-    await this.advanceSeriesTicket(claimed, seriesTicketId, nextTaskState)
+    if (!extraordinary) {
+      await this.advanceSeriesTicket(claimed, seriesTicketId, nextTaskState)
+    }
     await this.audit.append({
       actorType: actor.actorType,
       actorId: actor.actorId,

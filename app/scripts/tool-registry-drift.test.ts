@@ -23,7 +23,11 @@ import {
 import { CHAT_PLATFORM_TOOLS } from '../src/domain/agent/chat-tool-loop'
 import { PLATFORM_BROKER_TOOLS } from '../src/harness/platform-mcp-bridge'
 import { toolInvokeSchema } from '../src/lib/validators/actions'
-import { NORMAL_TOOL_CAPABILITY_NAMES } from '../src/lib/tool-capability-catalog'
+import {
+  NORMAL_TOOL_CAPABILITY_GROUPS,
+  NORMAL_TOOL_CAPABILITY_NAMES,
+  splitToolGroupsByChatSurface,
+} from '../src/lib/tool-capability-catalog'
 import { TOOL_UI_LABELS } from '../src/lib/tool-ui-labels'
 import {
   SIDE_EFFECTING_TOOLS,
@@ -211,6 +215,17 @@ function main() {
       .options
     const covered = options.map((option) => option.shape.tool.value).sort()
     assert.deepEqual(covered, [...TOOL_NAMES].sort(), 'a validátor union nem fedi le a regisztert')
+  })
+
+  test('a szerkesztő chat / egyéb felosztása a surfaces-t követi', () => {
+    const { chat, other } = splitToolGroupsByChatSurface(NORMAL_TOOL_CAPABILITY_GROUPS)
+    const chatNames = chat.flatMap((g) => g.tools)
+    const otherNames = other.flatMap((g) => g.tools)
+    assert.ok(chatNames.includes('reconcile_records'))
+    assert.ok(!otherNames.includes('reconcile_records'))
+    assert.ok(otherNames.includes('mailbox_count'))
+    assert.ok(!chatNames.includes('mailbox_count'))
+    assert.deepEqual([...chatNames, ...otherNames].sort(), [...NORMAL_TOOL_CAPABILITY_NAMES].sort())
   })
 
   test('a capability-katalógus csak a normál, nem system-role-kötött toolokat kínálja', () => {

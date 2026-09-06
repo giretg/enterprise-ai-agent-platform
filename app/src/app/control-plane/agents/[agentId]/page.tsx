@@ -33,7 +33,7 @@ import { AssignExistingConnectorForm } from '@/components/agents/assign-existing
 import { ApiConnectorList } from '@/components/agents/api-connector-list'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
-import { AgentToolAccessDiagnostics } from '@/components/agents/agent-tool-access-diagnostics'
+import { AgentToolsOverview } from '@/components/agents/agent-tools-overview'
 import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import type { AgentSkillRow, AssignableSkill } from '@/app/actions/skills'
 import { WebSearchPolicyCard } from '@/components/agents/web-search-policy-card'
@@ -45,7 +45,6 @@ import {
 import { MemoryPanel } from '@/components/agents/memory-panel'
 import { resolveSelfEvolutionProfile } from '@/lib/self-evolution-profile'
 import { resolveBehaviorOverlay } from '@/lib/behavior-profile'
-import { formatToolUiName } from '@/lib/tool-ui-labels'
 import {
   agentRoleLabel,
   modelConfigSummary,
@@ -96,69 +95,6 @@ function ProseBlock({ text, empty }: { text: string | null | undefined; empty: s
     return <p className="text-sm italic text-ink-faint">{empty}</p>
   }
   return <ChatMarkdown content={text} variant="agent" />
-}
-
-/** Eszközjogok olvasható nézete: mit hívhat meg ténylegesen, és mi van letiltva. */
-function CapabilityView({
-  capabilities,
-}: {
-  capabilities: Array<{ toolName: string; allowed: boolean }>
-}) {
-  if (capabilities.length === 0) {
-    return (
-      <p className="text-sm text-ink-faint">
-        Még nincs beállítva egyetlen eszközjog sem — az agent csak beszélgetni tud.
-      </p>
-    )
-  }
-  const allowed = capabilities.filter((c) => c.allowed)
-  const denied = capabilities.filter((c) => !c.allowed)
-
-  return (
-    <div className="space-y-4">
-      <p className="text-sm text-ink">
-        <strong>{allowed.length}</strong> eszközt használhat
-        {denied.length > 0 ? `, ${denied.length} le van tiltva` : ''}.
-      </p>
-      <ExpandableContent>
-        <div className="space-y-4">
-          <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-soft">
-              Engedélyezett
-            </p>
-            {allowed.length === 0 ? (
-              <p className="text-sm italic text-ink-faint">Nincs engedélyezett eszköz.</p>
-            ) : (
-              <ul className="flex flex-wrap gap-2">
-                {allowed.map((cap) => (
-                  <li key={cap.toolName} className="atelier-soft px-2.5 py-1 text-xs text-ink">
-                    {formatToolUiName(cap.toolName)}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          {denied.length > 0 && (
-            <div className="border-t border-line pt-3">
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-soft">
-                Letiltva
-              </p>
-              <ul className="flex flex-wrap gap-2">
-                {denied.map((cap) => (
-                  <li
-                    key={cap.toolName}
-                    className="rounded-full border border-line px-2.5 py-1 text-xs text-ink-faint"
-                  >
-                    {formatToolUiName(cap.toolName)}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      </ExpandableContent>
-    </div>
-  )
 }
 
 export default async function AgentDetailPage({
@@ -227,7 +163,6 @@ export default async function AgentDetailPage({
     agent,
     memoryContent,
     memoryVersion,
-    apiKeyPreview,
     behaviorProfileLink,
     delegatedConnectors,
     governance,
@@ -433,7 +368,12 @@ export default async function AgentDetailPage({
                   : 'Mit hívhat meg az agent munka közben'
               }
               canEdit={isAdmin && !capabilitiesLocked}
-              view={<CapabilityView capabilities={governance.capabilities} />}
+              view={
+                <AgentToolsOverview
+                  capabilities={governance.capabilities}
+                  canEdit={isAdmin && !capabilitiesLocked}
+                />
+              }
               edit={
                 <AgentCapabilitiesPanel
                   agentId={agent.id}
@@ -444,7 +384,6 @@ export default async function AgentDetailPage({
               }
             />
           )}
-          {isAdmin && governance && <AgentToolAccessDiagnostics report={governance.toolAccess} />}
           <AgentSkillsPanel
             agentId={agent.id}
             assigned={agentSkills as AgentSkillRow[]}
@@ -525,14 +464,7 @@ export default async function AgentDetailPage({
           title="Gondolkodási motor"
           subtitle="Melyik modellt hívja, és mi a tartalék, ha az nem elérhető"
           canEdit={isAdmin}
-          view={
-            <div className="space-y-2">
-              <p className="text-sm text-ink-soft">{modelConfigSummary(modelConfig)}</p>
-              {isAdmin && apiKeyPreview && (
-                <p className="text-xs text-ink-faint">API kulcs: {apiKeyPreview}</p>
-              )}
-            </div>
-          }
+          view={<p className="text-sm text-ink-soft">{modelConfigSummary(modelConfig)}</p>}
           edit={
             <UpdateModelConfigForm
               agentId={agent.id}
