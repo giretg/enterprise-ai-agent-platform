@@ -24,6 +24,8 @@ import {
   catalogScopeForKind,
   isSkillAssignableToAgent,
   resolveSkillKind,
+  skillCatalogListPresentation,
+  SKILL_KIND_COPY,
   skillKindChangeError,
   skillKindCreateAuthError,
   skillKindInputError,
@@ -334,6 +336,16 @@ async function main() {
     assert.equal(resolveSkillKind(undefined, 'tenant'), 'tenant')
     assert.equal(resolveSkillKind(null, 'global'), 'published')
     assert.equal(resolveSkillKind('system', 'tenant'), 'system')
+  })
+
+  await check('skillCatalogListPresentation: hiányzó kind/versions nem dob', () => {
+    const empty = skillCatalogListPresentation({})
+    assert.equal(empty.kind, 'tenant')
+    assert.equal(empty.label, SKILL_KIND_COPY.tenant.label)
+    assert.equal(empty.versions.length, 0)
+    const published = skillCatalogListPresentation({ kind: 'nope', catalogScope: 'global' })
+    assert.equal(published.kind, 'published')
+    assert.equal(published.label, SKILL_KIND_COPY.published.label)
   })
 
   await check('rendszer-skillhez kötelező a systemRole; kiadotthoz tilos', () => {

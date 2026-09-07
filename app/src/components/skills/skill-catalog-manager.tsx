@@ -1,7 +1,8 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useEffect, useRef, useState, useTransition } from 'react'
+import { Component, useEffect, useRef, useState, useTransition, type ReactNode } from 'react'
+import { captureException } from '@/lib/observability'
 import {
   importSkillMdAction,
   createSkillAction,
@@ -35,11 +36,11 @@ import {
 import { NORMAL_TOOL_CAPABILITY_GROUPS } from '@/lib/tool-capability-catalog'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
 import {
-  SKILL_KIND_BADGE_TONE,
   SKILL_KIND_COPY,
   SKILL_SYSTEM_ROLE_LABEL,
   isSkillSystemRole,
   resolveSkillKind,
+  skillCatalogListPresentation,
   type SkillKind,
   type SkillSystemRole,
 } from '@/lib/skill/skill-kind'
@@ -330,7 +331,42 @@ type DiffResult = {
  * aláírást, admin-jóváhagyást / rollbackot, in-place verzió-szerkesztést és diff-et.
  * A desztilláció (D14) a chat-panelből indul (agent-detail, admin).
  */
-export function SkillCatalogManager({
+class SkillCatalogErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  componentDidCatch(error: Error) {
+    captureException(error, { source: 'skill-catalog-manager' })
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <p className="text-sm text-coral">
+          A katalógus megjelenítése elhasalt: {this.state.error.message}
+        </p>
+      )
+    }
+    return this.props.children
+  }
+}
+
+export function SkillCatalogManager(props: {
+  skills: SkillCatalogEntry[]
+  isAdmin: boolean
+  isPlatformAdmin?: boolean
+}) {
+  return (
+    <SkillCatalogErrorBoundary>
+      <SkillCatalogManagerView {...props} />
+    </SkillCatalogErrorBoundary>
+  )
+}
+
+function SkillCatalogManagerView({
   skills,
   isAdmin,
   isPlatformAdmin = false,
@@ -532,9 +568,10 @@ export function SkillCatalogManager({
               // Global skillt csak platform-admin írhat — a szerver is ezt kapuzza.
               const canWriteSkill =
                 isAdmin && (s.catalogScope === 'tenant' || isPlatformAdmin)
-              const latestVersion = s.versions[0]
+              const { kind, label: kindLabel, tone: kindTone, versions } =
+                skillCatalogListPresentation(s)
+              const latestVersion = versions[0]
               const versionsOpen = expandedSkillIds.has(s.id)
-              const kind = resolveSkillKind(s.kind, s.catalogScope)
               return (
               <li key={s.id} className="atelier-soft overflow-hidden">
                 <div className="p-4 sm:p-5">
@@ -557,7 +594,7 @@ export function SkillCatalogManager({
                       <p className="mt-2 max-w-3xl text-sm leading-relaxed text-ink-soft">{s.description}</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2">
-                      <Badge tone={SKILL_KIND_BADGE_TONE[kind]}>{SKILL_KIND_COPY[kind].label}</Badge>
+                      <Badge tone={kindTone}>{kindLabel}</Badge>
                       {kind === 'system' && s.requiredSystemRole ? (
                         <Badge tone="neutral">
                           {isSkillSystemRole(s.requiredSystemRole)
@@ -590,7 +627,7 @@ export function SkillCatalogManager({
                         onClick={() => toggleVersions(s.id)}
                         className="rounded-full border border-ink-faint/30 px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-ink-soft hover:text-ink"
                       >
-                        {versionsOpen ? 'Verziók bezárása' : `Verziók (${s.versions.length})`}
+                        {versionsOpen ? 'Verziók bezárása' : `Verziók (${versions.length})`}
                       </button>
                       {canWriteSkill && (
                         <button
@@ -612,7 +649,7 @@ export function SkillCatalogManager({
                       <p className="text-sm font-semibold text-ink">Verzióelőzmény és kezelés</p>
                       {canWriteSkill && (
                         <div className="flex flex-wrap gap-2">
-                          {s.versions.some((v) => v.status === 'active') && (
+                          {versions.some((v) => v.status === 'active') && (
                             <button
                               type="button"
                               disabled={pending}
@@ -678,10 +715,10 @@ export function SkillCatalogManager({
                       />
                     )}
 
-                    {s.versions.length >= 2 && <SkillVersionDiffPanel skill={s} running={pending} />}
+                    {versions.length >= 2 && <SkillVersionDiffPanel skill={s} running={pending} />}
 
                     <ul className="mt-4 space-y-2">
-                      {s.versions.map((v) => (
+                      {versions.map((v) => (
                     <li
                       key={v.id}
                       className="flex flex-wrap items-center justify-between gap-2 border-t border-ink-faint/10 pt-2 text-xs"

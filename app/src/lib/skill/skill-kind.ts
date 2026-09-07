@@ -61,6 +61,21 @@ export function resolveSkillKind(
   return catalogScope === 'global' ? 'published' : 'tenant'
 }
 
+/** Katalógus-sor első render: soha ne dobjon hiányzó kind/versions miatt. */
+export function skillCatalogListPresentation<T>(skill: {
+  kind?: unknown
+  catalogScope?: 'global' | 'tenant'
+  versions?: readonly T[] | null
+}) {
+  const kind = resolveSkillKind(skill.kind, skill.catalogScope)
+  return {
+    kind,
+    label: SKILL_KIND_COPY[kind].label,
+    tone: SKILL_KIND_BADGE_TONE[kind],
+    versions: skill.versions ?? [],
+  }
+}
+
 export function isSkillSystemRole(value: unknown): value is SkillSystemRole {
   return typeof value === 'string' && (SKILL_SYSTEM_ROLES as readonly string[]).includes(value)
 }

@@ -41,8 +41,8 @@ function actorFrom(ctx: TenantAuthContext): ActorContext {
   return {
     actorId: ctx.user.id,
     actorTenantId: ctx.activeTenantId,
-    isPlatformAdmin: ctx.platformRoles.some(
-      (r) => r === 'superadmin' || r === 'platform_operator',
+    isPlatformAdmin: Boolean(
+      ctx.platformRoles?.some((r) => r === 'superadmin' || r === 'platform_operator'),
     ),
   }
 }
