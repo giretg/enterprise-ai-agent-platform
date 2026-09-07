@@ -2,6 +2,7 @@ import { after } from 'next/server'
 import { services } from '@/domain'
 import { agentTurnRunner, type AgentChatStreamEvent } from '@/domain/agent/agent-turn-runner'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
+import { agentChatStreamTurnInputSchema } from '@/lib/validators/actions'
 import { resolveChatStreamProjectKey } from '@/lib/chat-stream-project-key'
 import { startSseCommentHeartbeat } from '@/lib/sse-comment-heartbeat'
 import { shouldBlockTaskOnlyWebChat } from '@/lib/task-only-ticket'
@@ -58,6 +59,26 @@ export async function POST(request: Request) {
   }
   if (typeof content !== 'string') {
     return new Response('content is required', { status: 400 })
+  }
+
+  // A kliens-vezérelt forduló-bemenet méret-kapui (DoS / OOM / költség). A
+  // szerver-action utak már kapuzzák a szabad szöveget és a csatolmány-listát; ez
+  // volt az egyetlen ingress határok nélkül. A folytatás-ágon a tartalmat a szerver
+  // adja, de a nyers body-mezőket ott is ellenőrizzük: túlméretes csatolmány-lista
+  // / briefing folytatáskor sem utazhat a fordulóval.
+  const turnInput = agentChatStreamTurnInputSchema.safeParse({
+    content,
+    attachmentDocumentIds,
+    taskBriefing,
+  })
+  if (!turnInput.success) {
+    return Response.json(
+      {
+        error: 'invalid_turn_input',
+        message: 'Az üzenet, a briefing vagy a csatolmány-lista túl nagy vagy érvénytelen.',
+      },
+      { status: 400 },
+    )
   }
 
   // issue #97 — jóváhagyás utáni FOLYTATÁS. A gomb megnyomása eddig lefuttatta a
