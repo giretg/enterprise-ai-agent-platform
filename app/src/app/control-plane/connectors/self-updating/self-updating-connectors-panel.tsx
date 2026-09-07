@@ -45,17 +45,17 @@ function friendlyChange(item: DiffItem) {
   if (item.change?.startsWith('optional_param_added')) return `Új választható adat érhető el: ${item.change.split(': ').slice(1).join(': ')}.`
   if (item.change?.startsWith('param_type_changed')) return `Megváltozott egy kért adat formátuma: ${item.change.split(': ').slice(1).join(': ')}.`
   if (item.change?.startsWith('param_now_required')) return `Egy korábban választható adat mostantól kötelező: ${item.change.split(': ').slice(1).join(': ')}.`
-  if (item.change?.startsWith('initial_base_url') || item.change?.startsWith('initial_egress_hosts')) return 'Ez az a partner-cím, ahová a kapcsolat a hívásokat és a hitelesítést küldi. Első alkalommal mindig ellenőrizni kell.'
+  if (item.change?.startsWith('initial_base_url') || item.change?.startsWith('initial_egress_hosts')) return 'Ez az a partner-cím, ahová a konnektor a hívásokat és a hitelesítést küldi. Első alkalommal mindig ellenőrizni kell.'
   if (item.change?.startsWith('base_url_changed') || item.change?.startsWith('egress_hosts_changed')) return 'Megváltozott, melyik partner-címre küldjük a hívásokat. Ezt biztonsági okból mindig ellenőrizni kell.'
   if (item.change === 'removed') return 'A partner megszüntette ezt a képességet.'
   if (item.change?.startsWith('header_now_required')) return 'A híváshoz mostantól egy új kötelező biztonsági fejléc kell.'
   if (item.change?.startsWith('initial_auth_mode')) return 'A partner által kért beléptetési mód első jóváhagyásra vár.'
   if (item.change?.startsWith('auth_config_changed')) return 'Megváltozott a partner beléptetési beállítása.'
   if (item.change?.startsWith('privacy_capability_added')) {
-    return 'A kapcsolat mostantól jelöli a védendő mezőket, így a platform álnévre tudja cserélni őket.'
+    return 'A konnektor mostantól jelöli a védendő mezőket, így a platform álnévre tudja cserélni őket.'
   }
   if (item.change?.startsWith('privacy_capability_removed')) {
-    return 'A kapcsolat kevesebb adatvédelmi képességet vállal. Ezt ellenőrizni kell.'
+    return 'A konnektor kevesebb adatvédelmi képességet vállal. Ezt ellenőrizni kell.'
   }
   if (item.change === 'added_write') return 'Új, adatot módosító képesség.'
   if (item.change === 'added') return 'Új, csak olvasási képesség.'
@@ -179,7 +179,7 @@ export function selfUpdatingSyncFeedback(data: {
       message: data.reason === 'unsupported_auth'
         ? 'A partner leírása OAuth-belépést kér, amit ez a kulcs + link típus még nem támogat. Semmit nem vettünk át; a jelenlegi verzió marad érvényben.'
         : unreachable
-          ? 'Nem sikerült elérni a partner API-leírását. Semmi nem változott — a kapcsolat a korábbi állapotban működik tovább. Próbáld később, vagy ellenőrizd a linket.'
+          ? 'Nem sikerült elérni a partner API-leírását. Semmi nem változott — a konnektor a korábbi állapotban működik tovább. Próbáld később, vagy ellenőrizd a linket.'
           : 'A partner leírását nem sikerült értelmezni, ezért nem vettünk át semmit. A jelenlegi verzió érvényben marad.',
     }
   }
@@ -213,7 +213,7 @@ export function TenantAutoApproveSwitch({
         <strong>Tisztán új, csak olvasási képességek automatikus átvételének engedélyezése.</strong>
         <br />
         <span className="text-xs text-ink-soft">
-          Ez önmagában nem kapcsol be semmit: minden kapcsolatnál külön is engedélyezni kell. Törlő,
+          Ez önmagában nem kapcsol be semmit: minden konnektornál külön is engedélyezni kell. Törlő,
           módosító, auth- vagy törésveszélyes változás mindig emberi jóváhagyást kér.
         </span>
       </span>
@@ -269,7 +269,7 @@ export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: b
     <div id="onfrissito" className="space-y-6 scroll-mt-6">
       {!embedded ? (
         <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight">Önfrissítő kapcsolatok</h1>
+          <h1 className="font-display text-2xl font-semibold tracking-tight">Önfrissítő konnektorok</h1>
         </div>
       ) : null}
 
@@ -291,11 +291,11 @@ export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: b
         />
       </Card>
 
-      <Card title={loadedOnce ? `Önfrissítő kapcsolatok (${rows.length})` : 'Önfrissítő kapcsolatok'}>
+      <Card title={loadedOnce ? `Önfrissítő konnektorok (${rows.length})` : 'Önfrissítő konnektorok'}>
         {!loadedOnce ? (
           <p className="text-sm text-ink-soft">Betöltés…</p>
         ) : rows.length === 0 ? (
-          <p className="text-sm text-ink-soft">Még nincs önfrissítő kapcsolat.</p>
+          <p className="text-sm text-ink-soft">Még nincs önfrissítő konnektor.</p>
         ) : (
           <div className="space-y-3">
             {rows.map((row) => (
@@ -428,7 +428,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
             <CapabilityList
               title={detailsTitle}
               capabilities={detailsCapabilities}
-              emptyHint="Ehhez a kapcsolathoz még nincs átvett vagy javasolt képességlista. Először keress frissítést."
+              emptyHint="Ehhez a konnektorhoz még nincs átvett vagy javasolt képességlista. Először keress frissítést."
             />
           ) : null}
 
@@ -478,19 +478,19 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
               onChange={(e) =>
                 run(
                   () => setSelfUpdatingAutoApprove({ connectorId: row.id, enabled: e.target.checked }),
-                  'A kapcsolat automatikus átvételi szabálya frissült.',
+                  'A konnektor automatikus átvételi szabálya frissült.',
                 )
               }
             />
             <span>
-              Ennél a kapcsolatnál a kizárólag új, csak olvasási képességek automatikusan átvehetők, ha a tenant
+              Ennél a konnektornál a kizárólag új, csak olvasási képességek automatikusan átvehetők, ha a tenant
               kapcsolója is be van kapcsolva.
             </span>
           </label>
 
           {proposal?.diffSummary ? (
             <div className="space-y-3 border-t border-ink/10 pt-4">
-              <h3 className="font-semibold">Változások a(z) „{row.name}” kapcsolatban</h3>
+              <h3 className="font-semibold">Változások a(z) „{row.name}” konnektorban</h3>
               <DiffGroup
                 title="🟢 Új képességek"
                 tone="success"
@@ -589,7 +589,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
                                       connectorId: row.id,
                                       versionId: version.id,
                                     }),
-                                  `A kapcsolat visszaállt a v${version.versionNo} állapotra.`,
+                                  `A konnektor visszaállt a v${version.versionNo} állapotra.`,
                                 )
                               }
                             >

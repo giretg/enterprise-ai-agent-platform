@@ -951,7 +951,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
             onClick={() => setShowCreateDraftForm(true)}
             className="ml-auto inline-flex shrink-0 items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-card transition hover:bg-coral-deep"
           >
-            Új konnektor hozzáadása
+            Új konnektor
           </button>
         ) : null}
       </div>
@@ -1187,7 +1187,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                   <div className="space-y-3 rounded-md border border-sage/25 bg-sage/5 p-3">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                       <div>
-                        <span className="block text-sm font-semibold">Konnektor-sablonkatalógus</span>
+                        <span className="block text-sm font-semibold">Konnektor-sablonok</span>
                         <p className="mt-1 text-xs text-ink-soft">
                           A sablon provider-metaadatból és instance-mezőkből önhordó draft configot készít.
                         </p>
@@ -2031,11 +2031,11 @@ function DraftCard({
           tone: 'danger',
         })
         if (!confirmed) return
-        run(() => activateConnector(buildActivationInput(true)), 'Connector aktiválva (kulcs nélkül).')
+        run(() => activateConnector(buildActivationInput(true)), 'Konnektor aktiválva (kulcs nélkül).')
       })()
       return
     }
-    run(() => activateConnector(buildActivationInput()), 'Connector aktiválva.')
+    run(() => activateConnector(buildActivationInput()), 'Konnektor aktiválva.')
   }
 
   const writeTools = useMemo(
@@ -2065,7 +2065,7 @@ function DraftCard({
     },
   ]
   const activeSteps: Array<{ id: ActiveManageStep; label: string; hint: string; done: boolean }> = [
-    { id: 'inspect', label: 'Állapot', hint: 'Aktív connector', done: true },
+    { id: 'inspect', label: 'Állapot', hint: 'Aktív konnektor', done: true },
     { id: 'assign', label: 'Hozzárendelés', hint: 'Agent jog', done: false },
     { id: 'revoke', label: 'Megszüntetés', hint: 'Leszerelés + archiválás', done: false },
   ]
@@ -2117,7 +2117,7 @@ function DraftCard({
         <div className="mt-2 space-y-2">
           <p className="text-xs text-honey">
             A mentés resetteli a kaput: a validáció, a review és a sandbox-teszt is újra
-            lefut majd, mielőtt a connector aktiválható lenne.
+            lefut majd, mielőtt a konnektor aktiválható lenne.
           </p>
           <textarea
             className="h-64 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
@@ -2151,14 +2151,14 @@ function DraftCard({
   const toggleOpen = () => setOpen((current) => !current)
   const handleDeleteFromList = async () => {
     const confirmed = await confirmDialog({
-      title: 'Kapcsolat törlése',
+      title: 'Konnektor törlése',
       description:
-        'Végleges törlés — csak sosem aktivált kapcsolatra. Az elrontott connector és a draft-sor törlődik; ez nem visszavonható.',
+        'Végleges törlés — csak sosem aktivált konnektorra. Az elrontott konnektor és a draft-sor törlődik; ez nem visszavonható.',
       confirmLabel: 'Törlés',
       tone: 'danger',
     })
     if (!confirmed) return
-    run(() => deleteConnectorDraft({ draftId: draft.draftId }), 'Kapcsolat törölve.')
+    run(() => deleteConnectorDraft({ draftId: draft.draftId }), 'Konnektor törölve.')
   }
 
   return (
@@ -2368,7 +2368,7 @@ function DraftCard({
             // „API-kapcsolat" szerkesztőn átírt http_api config). Secret-mentes read-only nézet.
             <div className="rounded-md bg-honey/5 p-3 text-xs">
               <p className="mb-2 text-ink-soft">
-                Ez a kapcsolat az „API-kapcsolat&rdquo; szerkesztőn keresztül lett beállítva
+                Ez a konnektor az „API-konnektor&rdquo; szerkesztőn keresztül lett beállítva
                 (http_api futásidejű config).
                 {draft.httpApiView.isDelegated
                   ? ' Automatikus hozzájárulású (user-delegált) OAuth.'
@@ -2464,8 +2464,8 @@ function DraftCard({
             <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
               <h4 className="mb-1 font-semibold">Szerkesztés / javítás</h4>
               <p className="mb-2 text-xs text-ink-soft">
-                Aktív connector configját nem lehet élesben átírni. A javításhoz nyisd vissza
-                draftba: a connector offline lesz (a Tool Broker nem oldja fel), majd a módosítás
+                Aktív konnektor configját nem lehet élesben átírni. A javításhoz nyisd vissza
+                draftba: a konnektor offline lesz (a Tool Broker nem oldja fel), majd a módosítás
                 után újra végig kell menni a valid→review→sandbox→aktiválás kapun. Az
                 agent-hozzárendelések megmaradnak, és újraaktiváláskor visszaállnak.
               </p>
@@ -2475,7 +2475,7 @@ function DraftCard({
                 onClick={() =>
                   run(
                     () => reopenConnector({ draftId: draft.draftId }),
-                    'Connector visszanyitva draftba — szerkeszd, majd aktiváld újra.',
+                    'Konnektor visszanyitva draftba — szerkeszd, majd aktiváld újra.',
                   )
                 }
                 className="rounded-md border border-honey/50 bg-honey/10 px-3 py-1.5 text-xs font-semibold text-honey disabled:opacity-50"
@@ -2494,7 +2494,7 @@ function DraftCard({
             <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
               <h4 className="mb-1 font-semibold text-coral">Draft törlése</h4>
               <p className="mb-2 text-xs text-ink-soft">
-                Végleges hard-delete — csak sosem aktivált draftra. Az elrontott draft connector és
+                Végleges hard-delete — csak sosem aktivált draftra. Az elrontott draft konnektor és
                 a draft-sor véglegesen törlődik (a törlés ténye auditba kerül).
               </p>
               {!confirmDelete ? (
@@ -2642,7 +2642,7 @@ function DraftCard({
                 <h4 className="font-semibold">Review döntés</h4>
                 <p className="mt-1 text-xs text-ink-soft">
                   A sandbox-teszt eredményét is figyelembe vevő végső emberi jóváhagyás. Ez csak
-                  draft állapotban értelmezett kapu. Aktív connectornál visszavonás vagy új verzió
+                  draft állapotban értelmezett kapu. Aktív konnektornál visszavonás vagy új verzió
                   kell, nem utólagos review-átírás.
                 </p>
               </div>
@@ -2694,7 +2694,7 @@ function DraftCard({
           {!isActive && selectedStep === 'sandbox' ? (
             <div className="space-y-3 border-t border-ink/10 pt-3">
               <div>
-                <h4 className="font-semibold">Sandbox kapcsolat-teszt</h4>
+                <h4 className="font-semibold">Sandbox konnektor-teszt</h4>
                 <p className="mt-1 text-xs text-ink-soft">
                   Szűk jogú, nem éles próbahívás. Sikeres teszt nélkül az aktiválás blokkolva marad.
                 </p>
@@ -2778,7 +2778,7 @@ function DraftCard({
                       </p>
                     ) : (
                       <p className="text-honey">
-                        A Gmail connector a platform Google OAuth alkalmazását használja. Aktiválás
+                        A Gmail konnektor a platform Google OAuth alkalmazását használja. Aktiválás
                         előtt a platform-adminnak be kell állítania a Platform · Beállítások →
                         Google OAuth oldalon.
                       </p>
@@ -2794,7 +2794,7 @@ function DraftCard({
                       </p>
                     ) : (
                       <p className="text-honey">
-                        A Google Drive connector a platform Drive OAuth alkalmazását használja.
+                        A Google Drive konnektor a platform Drive OAuth alkalmazását használja.
                         Aktiválás előtt a platform-adminnak be kell állítania a Platform ·
                         Beállítások → Google Drive OAuth oldalon.
                       </p>
@@ -3022,7 +3022,7 @@ function DraftCard({
                             window.location.href = consent.data.url
                           }
                           return { success: true }
-                        }, 'Connector aktiválva, consent-flow elindítva.')
+                        }, 'Konnektor aktiválva, consent-flow elindítva.')
                       })()
                     }}
                     className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
@@ -3171,7 +3171,7 @@ function DraftCard({
                         if (!res.success) return res
                         setConfirmDecomm(false)
                         return res
-                      }, 'Connector megszüntetve (archived).')
+                      }, 'Konnektor megszüntetve (archived).')
                     }
                     className="rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
                   >
