@@ -152,6 +152,26 @@ function applyStyle(cell: any, style: CellStyle): void {
   if (style.numFmt !== undefined) cell.numFmt = style.numFmt
 }
 
+/** Excel munkalap-korlátok: legnagyobb oszlop (XFD) és legnagyobb sorszám. */
+export const XLSX_MAX_COLUMN = 16384
+export const XLSX_MAX_ROW = 1_048_576
+
+/**
+ * Egyetlen formázó / elrendezés-művelet által érintett cellák felső korlátja.
+ *
+ * A `xlsxFormatRange` és a `xlsxApplyLayout` dataValidation-ága egy A1-tartomány
+ * MINDEN celláját bejárja (`for r … for c`, cellánként `getCell`). Terület-plafon
+ * nélkül egyetlen agent-hívás (pl. `"A1:XFD1048576"` = 16384×1048576 ≈ 17 milliárd
+ * cella) végtelenbe nyúló ciklust + tömeges cella-allokációt indítana, ami a
+ * MEGOSZTOTT, több-tenantos Node-futásidőt lefagyasztja vagy OOM-mal megöli — így
+ * egyetlen munkaterület hívása az összes tenant szolgáltatását megbénítaná (DoS).
+ *
+ * A plafon bőven a valós táblák felett van (az olvasás alapból max ~500 sor),
+ * de a fenti berobbanást kizárja. Oszlop-szintű beállítást (szélesség, rögzítés)
+ * nem cellánként, hanem az `xlsxApplyLayout` dedikált mezőivel kell megadni.
+ */
+export const XLSX_MAX_RANGE_CELLS = 250_000
+
 function columnLettersToNumber(letters: string): number {
   let n = 0
   for (const ch of letters.toUpperCase()) {
@@ -177,12 +197,31 @@ export function parseA1Range(range: string): { c1: number; r1: number; c2: numbe
   }
   const start = parseA1Cell(from)
   const end = to ? parseA1Cell(to) : start
-  return {
-    c1: Math.min(start.col, end.col),
-    r1: Math.min(start.row, end.row),
-    c2: Math.max(start.col, end.col),
-    r2: Math.max(start.row, end.row),
+  const c1 = Math.min(start.col, end.col)
+  const r1 = Math.min(start.row, end.row)
+  const c2 = Math.max(start.col, end.col)
+  const r2 = Math.max(start.row, end.row)
+
+  // Terület-plafon: a tartományt a hívók cellánként bejárják — plafon nélkül egy
+  // teljes-lap tartomány (pl. "A1:XFD1048576") a megosztott futásidőt megbénítaná.
+  // (Excel-korláton túli hivatkozás is ide fut be, mielőtt bármit módosítanánk.)
+  if (c2 > XLSX_MAX_COLUMN || r2 > XLSX_MAX_ROW) {
+    throw new FileEditorError(
+      'INVALID_RANGE',
+      `A tartomány túllépi az Excel korlátait (max oszlop XFD, max sor ${XLSX_MAX_ROW}): ${range}`,
+    )
   }
+  const cellCount = (c2 - c1 + 1) * (r2 - r1 + 1)
+  if (cellCount > XLSX_MAX_RANGE_CELLS) {
+    throw new FileEditorError(
+      'INVALID_RANGE',
+      `A tartomány túl nagy: ${cellCount} cella (max ${XLSX_MAX_RANGE_CELLS}). ` +
+        'Szűkítsd a tartományt (pl. csak a fejlécsort vagy a ténylegesen kitöltött sorokat formázd); ' +
+        'oszlopszélesség/rögzítés beállításához az xlsx_layout dedikált mezőit használd, ne cellánkénti formázást.',
+    )
+  }
+
+  return { c1, r1, c2, r2 }
 }
 
 function sheetNotFoundError(sheetName: string | undefined, workbook: { worksheets: Array<{ name: string }> }) {
@@ -365,6 +404,9 @@ export async function xlsxApplyLayout(
     throw sheetNotFoundError(sheetName, workbook)
   }
 
+  // Minden merge a közös kapun megy át, mielőtt bármelyiket alkalmaznánk —
+  // exceljs a merge területét cellánként járja, egy túl nagy tartomány DoS.
+  for (const merge of layout.mergeCells ?? []) parseA1Range(merge)
   for (const merge of layout.mergeCells ?? []) {
     worksheet.mergeCells(merge)
   }
