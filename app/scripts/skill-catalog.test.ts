@@ -23,6 +23,7 @@ import {
 import {
   catalogScopeForKind,
   isSkillAssignableToAgent,
+  resolveSkillKind,
   skillKindChangeError,
   skillKindCreateAuthError,
   skillKindInputError,
@@ -327,6 +328,12 @@ async function main() {
     assert.equal(catalogScopeForKind('tenant'), 'tenant')
     assert.equal(catalogScopeForKind('published'), 'global')
     assert.equal(catalogScopeForKind('system'), 'global')
+  })
+
+  await check('resolveSkillKind: hiányzó kind → catalogScope alapján', () => {
+    assert.equal(resolveSkillKind(undefined, 'tenant'), 'tenant')
+    assert.equal(resolveSkillKind(null, 'global'), 'published')
+    assert.equal(resolveSkillKind('system', 'tenant'), 'system')
   })
 
   await check('rendszer-skillhez kötelező a systemRole; kiadotthoz tilos', () => {

@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useEffect, useState, useTransition } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
 import {
   importSkillMdAction,
   createSkillAction,
@@ -39,6 +39,7 @@ import {
   SKILL_KIND_COPY,
   SKILL_SYSTEM_ROLE_LABEL,
   isSkillSystemRole,
+  resolveSkillKind,
   type SkillKind,
   type SkillSystemRole,
 } from '@/lib/skill/skill-kind'
@@ -533,6 +534,7 @@ export function SkillCatalogManager({
                 isAdmin && (s.catalogScope === 'tenant' || isPlatformAdmin)
               const latestVersion = s.versions[0]
               const versionsOpen = expandedSkillIds.has(s.id)
+              const kind = resolveSkillKind(s.kind, s.catalogScope)
               return (
               <li key={s.id} className="atelier-soft overflow-hidden">
                 <div className="p-4 sm:p-5">
@@ -555,8 +557,8 @@ export function SkillCatalogManager({
                       <p className="mt-2 max-w-3xl text-sm leading-relaxed text-ink-soft">{s.description}</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2">
-                      <Badge tone={SKILL_KIND_BADGE_TONE[s.kind]}>{SKILL_KIND_COPY[s.kind].label}</Badge>
-                      {s.kind === 'system' && s.requiredSystemRole ? (
+                      <Badge tone={SKILL_KIND_BADGE_TONE[kind]}>{SKILL_KIND_COPY[kind].label}</Badge>
+                      {kind === 'system' && s.requiredSystemRole ? (
                         <Badge tone="neutral">
                           {isSkillSystemRole(s.requiredSystemRole)
                             ? SKILL_SYSTEM_ROLE_LABEL[s.requiredSystemRole]
@@ -1142,20 +1144,21 @@ function SkillKindEditor({
   onRun: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
   isPlatformAdmin: boolean
 }) {
-  const [kind, setKind] = useState<SkillKind>(skill.kind)
-  const [requiredSystemRole, setRequiredSystemRole] = useState<SkillSystemRole | null>(
+  const [kind, setKind] = useState<SkillKind>(() => resolveSkillKind(skill.kind, skill.catalogScope))
+  const [requiredSystemRole, setRequiredSystemRole] = useState<SkillSystemRole | null>(() =>
     isSkillSystemRole(skill.requiredSystemRole) ? skill.requiredSystemRole : null,
   )
   const propEpoch = `${skill.id}\0${skill.kind}\0${skill.requiredSystemRole ?? ''}`
-  const [appliedEpoch, setAppliedEpoch] = useState(propEpoch)
+  const appliedEpochRef = useRef(propEpoch)
 
-  if (propEpoch !== appliedEpoch) {
-    setAppliedEpoch(propEpoch)
-    setKind(skill.kind)
+  useEffect(() => {
+    if (appliedEpochRef.current === propEpoch) return
+    appliedEpochRef.current = propEpoch
+    setKind(resolveSkillKind(skill.kind, skill.catalogScope))
     setRequiredSystemRole(
       isSkillSystemRole(skill.requiredSystemRole) ? skill.requiredSystemRole : null,
     )
-  }
+  }, [propEpoch, skill.kind, skill.requiredSystemRole, skill.catalogScope])
 
   const canEdit = isPlatformAdmin && skill.catalogScope === 'global'
   const dirty =
@@ -1221,18 +1224,17 @@ function SkillDisplayNameEditor({
   const [committed, setCommitted] = useState(propSaved)
   const [value, setValue] = useState(propSaved)
   const propEpoch = `${skill.id}\0${propSaved}`
-  const [appliedEpoch, setAppliedEpoch] = useState(propEpoch)
+  const appliedEpochRef = useRef(propEpoch)
 
-  // Prop-csere: render közben szinkronizálunk (ne setState-in-effect).
-  // Üres props + meglévő committed = stale Prisma-read a refresh után — ne wipe-oljuk.
-  // Nem-üres props mindig nyer (szerver az igazság).
-  if (propEpoch !== appliedEpoch) {
-    setAppliedEpoch(propEpoch)
+  // Prop-csere: üres props + meglévő committed = stale Prisma-read a refresh után — ne wipe-oljuk.
+  useEffect(() => {
+    if (appliedEpochRef.current === propEpoch) return
+    appliedEpochRef.current = propEpoch
     if (propSaved.trim() || !committed.trim()) {
       setCommitted(propSaved)
       setValue(propSaved)
     }
-  }
+  }, [propEpoch, propSaved, committed])
 
   const dirty = value.trim() !== committed.trim()
 
@@ -1294,13 +1296,13 @@ function SkillDescriptionEditor({
   const saved = skill.description
   const [value, setValue] = useState(saved)
   const propEpoch = `${skill.id}\0${saved}`
-  const [appliedEpoch, setAppliedEpoch] = useState(propEpoch)
+  const appliedEpochRef = useRef(propEpoch)
 
-  // Prop-csere: render közben szinkronizálunk (ne setState-in-effect).
-  if (propEpoch !== appliedEpoch) {
-    setAppliedEpoch(propEpoch)
+  useEffect(() => {
+    if (appliedEpochRef.current === propEpoch) return
+    appliedEpochRef.current = propEpoch
     setValue(saved)
-  }
+  }, [propEpoch, saved])
 
   const trimmed = value.trim()
   const dirty = trimmed !== saved.trim()

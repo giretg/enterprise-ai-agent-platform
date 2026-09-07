@@ -49,6 +49,18 @@ export function isSkillKind(value: unknown): value is SkillKind {
   return typeof value === 'string' && (SKILL_KINDS as readonly string[]).includes(value)
 }
 
+/**
+ * UI badge-ekhez: érvényes kind, vagy catalogScope alapján legjobb tipp.
+ * ponytail: HMR / régi RSC-payload ablak — ha a szerver már küld kind-et, ez csak guard.
+ */
+export function resolveSkillKind(
+  kind: unknown,
+  catalogScope: 'global' | 'tenant' = 'tenant',
+): SkillKind {
+  if (isSkillKind(kind)) return kind
+  return catalogScope === 'global' ? 'published' : 'tenant'
+}
+
 export function isSkillSystemRole(value: unknown): value is SkillSystemRole {
   return typeof value === 'string' && (SKILL_SYSTEM_ROLES as readonly string[]).includes(value)
 }
