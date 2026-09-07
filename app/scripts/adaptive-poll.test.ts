@@ -16,7 +16,6 @@ const readSrc = (rel: string) => readFileSync(resolve(root, rel), 'utf8')
 
 const POLLERS = [
   'src/components/agents/agent-rail.tsx',
-  'src/components/active-runs/active-runs-panel.tsx',
   'src/components/active-runs/dashboard-runs-list.tsx',
 ] as const
 
@@ -46,10 +45,14 @@ for (const file of POLLERS) {
   })
 }
 
-test('active-runs panel: nyugalmi ütem lassabb, mint az élő', () => {
+test('a fejléc „Futások” panelnek NINCS saját pollútja — a sáv adatából él', () => {
   const src = readSrc('src/components/active-runs/active-runs-panel.tsx')
-  const active = Number(/POLL_ACTIVE_MS\s*=\s*(\d+)/.exec(src)?.[1])
-  const idle = Number(/POLL_IDLE_MS\s*=\s*(\d+)/.exec(src)?.[1])
-  assert.ok(Number.isFinite(active) && Number.isFinite(idle), 'mindkét időköz definiált')
-  assert.ok(idle > active, 'a nyugalmi ütem ritkább')
+  assert.doesNotMatch(src, /useAdaptivePoll\(/, 'nincs saját poll-ciklus')
+  assert.doesNotMatch(src, /setInterval\(/)
+  assert.doesNotMatch(
+    src,
+    /fetch\(\s*['"]\/api\/v1\/active-runs['"]/,
+    'nem kérdezi külön az active-runs végpontot',
+  )
+  assert.match(src, /useActiveRunsFeed\(\)/, 'a megosztott hírcsatornából olvas')
 })

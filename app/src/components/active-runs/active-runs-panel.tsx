@@ -1,67 +1,51 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RunRow, RunsSummaryChips } from '@/components/active-runs/run-row'
+import {
+  requestActiveRunsRefresh,
+  useActiveRunsFeed,
+} from '@/components/active-runs/active-runs-feed-store'
 import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
 import { activeRunKey, type ActiveRun } from '@/lib/active-runs'
-import {
-  composeRunsPanel,
-  runsSummaryChips,
-  summarizeRuns,
-  type ComposedRun,
-} from '@/lib/active-runs-compose'
+import { composeRunsPanel, runsSummaryChips, summarizeRuns } from '@/lib/active-runs-compose'
 import { loadSeenRunKeys, markRunSeen, pruneSeenRunKeys } from '@/lib/active-runs-seen'
-import { useAdaptivePoll } from '@/lib/use-adaptive-poll'
-
-/** Sűrű ütem: van élő (aktív) futás. */
-const POLL_ACTIVE_MS = 5000
-/** Nyugalmi ütem: nincs élő futás — ritkábban kérdezünk. */
-const POLL_IDLE_MS = 20000
 
 export function ActiveRunsPanel() {
   const router = useRouter()
   const dispatchTicket = useTicketDispatch()
   const [open, setOpen] = useState(false)
-  const [runs, setRuns] = useState<ComposedRun[]>([])
-  const [badgeCount, setBadgeCount] = useState(0)
-  const [loading, setLoading] = useState(false)
   const [stoppingId, setStoppingId] = useState<string | null>(null)
   const [startingId, setStartingId] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
-  const applyRuns = useCallback((raw: ActiveRun[]) => {
-    const seenKeys = loadSeenRunKeys()
-    const composed = composeRunsPanel({ runs: raw, seenKeys })
-    setRuns(composed.runs)
-    setBadgeCount(composed.badgeCount)
-    pruneSeenRunKeys(new Set(raw.map((run) => activeRunKey(run))))
-  }, [])
+  // A futáslistát a munkatárs-sáv poll-ja szállítja (közös `rail-state` válasz),
+  // így ennek a panelnek nincs saját `/api/v1/active-runs` pollútja.
+  const feed = useActiveRunsFeed()
+  const loading = feed.receivedAt === null
+  const error = actionError ?? feed.error
 
+  // A sáv minden sikeres poll-ja új `feed.runs` tömböt ad → ez a helyes
+  // újraszámítási jel; a „látott” kulcsokat ilyenkor olvassuk localStorage-ból.
+  const composed = useMemo(
+    () => composeRunsPanel({ runs: feed.runs, seenKeys: loadSeenRunKeys() }),
+    [feed.runs],
+  )
+  const runs = composed.runs
+  const badgeCount = composed.badgeCount
+
+  useEffect(() => {
+    if (feed.receivedAt === null) return
+    pruneSeenRunKeys(new Set(feed.runs.map((run) => activeRunKey(run))))
+  }, [feed.runs, feed.receivedAt])
+
+  // Egy futás leállítása / indítása / a panel megnyitása után azonnali
+  // sáv-poll-t kérünk — a válasz ugyanezen a store-on át frissíti a listát.
   const refresh = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const res = await fetch('/api/v1/active-runs')
-      if (!res.ok) {
-        setError('Nem sikerült betölteni a futásokat.')
-        return
-      }
-      const data = (await res.json()) as { runs: ActiveRun[] }
-      applyRuns(data.runs ?? [])
-    } catch {
-      setError('Hálózati hiba a futások lekérésekor.')
-    } finally {
-      setLoading(false)
-    }
-  }, [applyRuns])
-
-  const hasActiveRun = useMemo(() => runs.some((run) => run.phase === 'active'), [runs])
-  useAdaptivePoll(refresh, {
-    activeMs: POLL_ACTIVE_MS,
-    idleMs: POLL_IDLE_MS,
-    idle: !hasActiveRun,
-  })
+    setActionError(null)
+    requestActiveRunsRefresh()
+  }, [])
 
   const stopRun = async (run: ActiveRun) => {
     if (!run.canStop || stoppingId || startingId) return
@@ -72,7 +56,7 @@ export function ActiveRunsPanel() {
           ? await fetch(`/api/v1/agent-chat/turns/${run.id}/cancel`, { method: 'POST' })
           : await fetch(`/api/v1/tickets/${run.id}/cancel`, { method: 'POST' })
       if (!response.ok) {
-        setError(
+        setActionError(
           response.status === 404 || response.status === 409
             ? 'A futás már nem aktív.'
             : 'Leállítás sikertelen.',
@@ -80,7 +64,7 @@ export function ActiveRunsPanel() {
       }
       await refresh()
     } catch {
-      setError('Leállítás sikertelen.')
+      setActionError('Leállítás sikertelen.')
     } finally {
       setStoppingId(null)
     }
@@ -92,13 +76,13 @@ export function ActiveRunsPanel() {
     try {
       const result = await dispatchTicket(run.id)
       if (!result.success) {
-        setError(result.error || 'Indítás sikertelen.')
+        setActionError(result.error || 'Indítás sikertelen.')
       } else {
-        setError(null)
+        setActionError(null)
       }
       await refresh()
     } catch {
-      setError('Indítás sikertelen.')
+      setActionError('Indítás sikertelen.')
     } finally {
       setStartingId(null)
     }

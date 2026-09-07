@@ -1,4 +1,5 @@
 import type { AgentActivity } from '@/lib/agent-activity'
+import type { ActiveRun } from '@/lib/active-runs'
 
 /** Élő állapot a bal sáv kártyáin — a rail-state API válasza agentenként. */
 export type AgentRailLiveStatus = 'busy' | 'wait' | 'idle' | 'off'
@@ -36,6 +37,13 @@ export type AgentRailCardState = {
 
 export type AgentRailStateResponse = {
   agents: AgentRailCardState[]
+  /**
+   * A bejelentkezett user élő futásai (chat-forduló + ticket) — ugyanaz a lista,
+   * amit a `/api/v1/active-runs` végpont adna. A fejléc „Futások” panelje ezt
+   * használja, így nem kell külön pollútat nyitnia ugyanarra az adatra.
+   * `viewer` szerepnél mindig üres (a futáslistát csak operator+ látja).
+   */
+  runs: ActiveRun[]
   /** Szerveridő ISO — poll/SSE szinkronhoz. */
   asOf: string
 }
