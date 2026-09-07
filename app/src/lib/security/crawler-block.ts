@@ -30,11 +30,16 @@ import type { NextRequest } from 'next/server'
  * A gyökér-ok javítása (Clerk production instance + session-revoke) emberi
  * lépés marad, lásd #426.
  */
-// #426 log: a kérések UA-ja szó szerint `Google` volt (nem csak `Googlebot`).
-// A `google` ág ezt és a `Google-InspectionTool` / `GoogleOther` családokat is megfogja;
-// asztali Chrome/Safari UA-jában nincs „google” (l. crawler-block.test.ts).
+// FIGYELEM (#436 utóélet): a minta SOSEM tartalmazhat csupasz `google` ágat.
+// A #426-os naplóban látott, szó szerint `Google` UA NEM a Googlebot volt, hanem a
+// Firebase App Hosting CDN / Google-frontend origin-lekérése: az élesben a Cloud Run
+// origin ezt látja MINDEN valódi felhasználói kérésnél is. A csupasz `google` ág ezért
+// 100%-ban kizárta a böngészőket (az egész host 403 lett, üres UA-val is), miközben
+// lokálisan — CDN nélkül, ahol a kliens UA-ja ér be — a szűrő helyesen viselkedett.
+// Google-crawlereket csak a konkrét termék-tokenekkel szabad felismerni (lentebb),
+// ezek egyikét sem küldi sem a böngésző, sem a Google saját infrastruktúrája.
 const CRAWLER_USER_AGENT_PATTERN =
-  /bot|crawler|spider|slurp|facebookexternalhit|embedly|quora link preview|showyoubot|outbrain|pinterest\/|pingdom|ia_archiver|whatsapp|telegrambot|bytespider|ccbot|google/i
+  /bot|crawler|spider|slurp|facebookexternalhit|embedly|quora link preview|showyoubot|outbrain|pinterest\/|pingdom|ia_archiver|whatsapp|telegrambot|bytespider|ccbot|google-inspectiontool|googleother|google-extended|apis-google|mediapartners-google|feedfetcher-google|google-read-aloud|google favicon|googleweblight/i
 
 /**
  * Ezeken az útvonalakon a bejelentett crawler is átengedett: a szándékosan
@@ -50,9 +55,12 @@ export function isCrawlerAllowedPath(pathname: string): boolean {
   )
 }
 
+export function crawlerBlockUserAgent(req: Pick<NextRequest, 'headers'>): string {
+  return req.headers.get('user-agent') ?? ''
+}
+
 export function isKnownCrawlerRequest(req: Pick<NextRequest, 'headers'>): boolean {
-  const userAgent = req.headers.get('user-agent') ?? ''
-  return CRAWLER_USER_AGENT_PATTERN.test(userAgent)
+  return CRAWLER_USER_AGENT_PATTERN.test(crawlerBlockUserAgent(req))
 }
 
 /**
@@ -63,4 +71,15 @@ export function isKnownCrawlerRequest(req: Pick<NextRequest, 'headers'>): boolea
  */
 export function isCrawlerBlockEnabled(): boolean {
   return process.env.ALLOW_SEARCH_INDEXING !== 'true'
+}
+
+/**
+ * Külön vészkapcsoló CSAK a UA-alapú tiltásra. A #436 kiesésekor az egyetlen
+ * kapcsoló (`ALLOW_SEARCH_INDEXING`) egyben az indexelést is visszakapcsolta volna,
+ * ezért nem lehetett vele gyorsan visszaállítani a hostot. Ezzel a UA-szűrő
+ * (deploy nélkül, env-ből) kikapcsolható úgy, hogy a `robots.txt` / `X-Robots-Tag`
+ * indexelés-tiltás érvényben marad.
+ */
+export function isCrawlerUserAgentBlockEnabled(): boolean {
+  return isCrawlerBlockEnabled() && process.env.DISABLE_CRAWLER_UA_BLOCK !== 'true'
 }
