@@ -1343,6 +1343,7 @@ async function ensureDemoSkills(approverId: string) {
         description: demo.description,
         catalogScope: 'global',
         tenantId: null,
+        kind: 'published',
         sourceType: 'authored',
         provenance: { origin: 'authored', format: 'seed' },
         license: null,

@@ -2,6 +2,15 @@
 
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import {
+  loadWorkspaceHtmlPreview,
+  WorkspaceHtmlPreviewError,
+  WORKSPACE_HTML_PREVIEW_GATEWAY_MESSAGE,
+} from '@/lib/load-workspace-html-preview'
+import {
+  INLINE_HTML_CONTENT_TYPE,
+  htmlWithInlinePreviewCsp,
+} from '@/lib/workspace-inline-html-headers'
 
 export type HtmlPreviewTarget = {
   /** Inline (megjelenítési) URL — disposition=inline. */
@@ -9,6 +18,21 @@ export type HtmlPreviewTarget = {
   /** Attachment letöltési URL. */
   downloadUrl: string
   fileName: string
+}
+
+type LoadState =
+  | { status: 'loading' }
+  | { status: 'ready'; objectUrl: string; html: string }
+  | { status: 'error'; message: string }
+
+function downloadLoadedHtml(fileName: string, html: string) {
+  const blob = new Blob([html], { type: INLINE_HTML_CONTENT_TYPE })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  anchor.click()
+  URL.revokeObjectURL(url)
 }
 
 export function HtmlPreviewModal({
@@ -21,6 +45,10 @@ export function HtmlPreviewModal({
   const titleId = useId()
   const closeRef = useRef<HTMLButtonElement>(null)
   const [mounted, setMounted] = useState(false)
+  const [retryKey, setRetryKey] = useState(0)
+  const requestId = `${target.url}#${retryKey}`
+  const [result, setResult] = useState<{ id: string; state: LoadState } | null>(null)
+  const loadState: LoadState = result?.id === requestId ? result.state : { status: 'loading' }
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- client portal mount gate
@@ -36,7 +64,41 @@ export function HtmlPreviewModal({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onClose])
 
+  useEffect(() => {
+    const controller = new AbortController()
+    let createdUrl: string | null = null
+
+    void loadWorkspaceHtmlPreview(target.url, { signal: controller.signal }).then(
+      (html) => {
+        const objectUrl = URL.createObjectURL(
+          new Blob([htmlWithInlinePreviewCsp(html)], { type: INLINE_HTML_CONTENT_TYPE }),
+        )
+        if (controller.signal.aborted) {
+          URL.revokeObjectURL(objectUrl)
+          return
+        }
+        createdUrl = objectUrl
+        setResult({ id: requestId, state: { status: 'ready', objectUrl, html } })
+      },
+      (error: unknown) => {
+        if (controller.signal.aborted) return
+        const message =
+          error instanceof WorkspaceHtmlPreviewError
+            ? error.message
+            : WORKSPACE_HTML_PREVIEW_GATEWAY_MESSAGE
+        setResult({ id: requestId, state: { status: 'error', message } })
+      },
+    )
+
+    return () => {
+      controller.abort()
+      if (createdUrl) URL.revokeObjectURL(createdUrl)
+    }
+  }, [requestId, target.url])
+
   if (!mounted) return null
+
+  const ready = loadState.status === 'ready' ? loadState : null
 
   return createPortal(
     <div
@@ -59,21 +121,22 @@ export function HtmlPreviewModal({
             {target.fileName}
           </h2>
           <div className="flex shrink-0 items-center gap-2">
-            <a
-              href={target.downloadUrl}
-              download={target.fileName}
-              className="rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-coral-deep"
+            <button
+              type="button"
+              disabled={!ready}
+              onClick={() => ready && downloadLoadedHtml(target.fileName, ready.html)}
+              className="rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-coral-deep disabled:opacity-40"
             >
               Letöltés
-            </a>
-            <a
-              href={target.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-coral-deep"
+            </button>
+            <button
+              type="button"
+              disabled={!ready}
+              onClick={() => ready && window.open(ready.objectUrl, '_blank', 'noopener,noreferrer')}
+              className="rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-coral-deep disabled:opacity-40"
             >
               Megnyitom új ablakban
-            </a>
+            </button>
             <button
               ref={closeRef}
               type="button"
@@ -85,12 +148,34 @@ export function HtmlPreviewModal({
             </button>
           </div>
         </div>
-        <iframe
-          title={target.fileName}
-          src={target.url}
-          referrerPolicy="no-referrer"
-          className="min-h-0 w-full flex-1 bg-white"
-        />
+        {loadState.status === 'ready' ? (
+          <iframe
+            title={target.fileName}
+            src={loadState.objectUrl}
+            sandbox=""
+            referrerPolicy="no-referrer"
+            className="min-h-0 w-full flex-1 bg-white"
+          />
+        ) : (
+          <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+            {loadState.status === 'loading' ? (
+              <p className="text-sm text-ink-soft">Riport betöltése…</p>
+            ) : (
+              <>
+                <p className="text-sm text-coral" role="alert">
+                  {loadState.message}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setRetryKey((key) => key + 1)}
+                  className="rounded-full border border-coral/40 bg-card px-4 py-2 text-xs font-semibold text-coral transition-colors hover:bg-coral/10"
+                >
+                  Újra
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>,
     document.body,

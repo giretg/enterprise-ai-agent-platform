@@ -132,6 +132,8 @@ export class PostgresSkillRepository implements SkillRepository {
           description: input.description,
           catalogScope: input.catalogScope,
           tenantId: input.tenantId,
+          kind: input.kind,
+          requiredSystemRole: input.requiredSystemRole ?? null,
           sourceType: input.sourceType,
           provenance: input.provenance ?? undefined,
           license: input.license,
@@ -157,6 +159,17 @@ export class PostgresSkillRepository implements SkillRepository {
     return prisma.skill.update({
       where: { id: skillId },
       data: { displayName },
+    })
+  }
+
+  async updateKind(
+    skillId: string,
+    kind: Skill['kind'],
+    requiredSystemRole: Skill['requiredSystemRole'],
+  ): Promise<Skill> {
+    return prisma.skill.update({
+      where: { id: skillId },
+      data: { kind, requiredSystemRole },
     })
   }
 

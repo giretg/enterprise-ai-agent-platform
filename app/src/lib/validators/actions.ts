@@ -355,6 +355,29 @@ export const taskBriefingSchema = z.object({
   approval: z.string().trim().max(500),
 })
 
+/**
+ * A webes chat-stream végpont (`POST /api/v1/agent-chat/stream`) kliens-vezérelt
+ * forduló-bemenetének méret-kapui. A szerver-action utak (feladat/komment) már
+ * kapuzzák a szabad szöveget és a csatolmány-listát; ez a végpont volt az egyetlen
+ * ingress, amelyen tetszőleges méretű `content`/`taskBriefing`, illetve tetszőlegesen
+ * hosszú (nem UUID) `attachmentDocumentIds` mehetett a prompt-összeállításba, a
+ * DB-írásba és a modellhívásba — erőforrás-kimerítés / OOM / költség kockázat.
+ *
+ * A `content` kapuja a komment-törzs (16 KiB) precedensét követi (chat = szabad
+ * szöveges emberi üzenet), a `taskBriefing` és a `attachmentDocumentIds` a
+ * feladat-út meglévő kapuit (2000/500 kar., max 8 UUID).
+ */
+export const AGENT_CHAT_STREAM_CONTENT_MAX = 16 * 1024
+
+export const agentChatStreamTurnInputSchema = z.object({
+  content: z.string().max(AGENT_CHAT_STREAM_CONTENT_MAX),
+  attachmentDocumentIds: z.array(z.string().uuid()).max(8).optional(),
+  // A feladat-út meglévő briefing-kapuit használjuk újra (nincs kapu-drift). A
+  // `.partial()` relaxálja a `goal` kötelezőségét: a chat-stream forduló nem
+  // feltétlen küld teljes briefinget, az üres-üzenet őr a runtime `beginTurn`-ben van.
+  taskBriefing: taskBriefingSchema.partial().nullish(),
+})
+
 export const createAgentTaskTicketSchema = z.object({
   agentId: z.string().uuid(),
   content: z.string().trim().max(8000).default(''),

@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url'
 import {
   INLINE_HTML_CONTENT_TYPE,
   INLINE_HTML_CONTENT_SECURITY_POLICY,
+  INLINE_HTML_META_CSP,
+  htmlWithInlinePreviewCsp,
   inlineHtmlPreviewSecurityHeaders,
 } from '../src/lib/workspace-inline-html-headers'
 
@@ -68,6 +70,15 @@ check('a válasz nosniff + no-referrer, text/html', () => {
   assert.equal(headers['x-content-type-options'], 'nosniff')
   assert.equal(headers['referrer-policy'], 'no-referrer')
   assert.equal(INLINE_HTML_CONTENT_TYPE, 'text/html; charset=utf-8')
+})
+
+check('a meta-CSP (blob előnézet) sem enged külső egresst, és nincs benne sandbox', () => {
+  // A sandbox direktíva meta-ban érvénytelen — az iframe attribútum viszi.
+  assert.equal(directive(INLINE_HTML_META_CSP, 'sandbox'), null)
+  assert.equal(directive(INLINE_HTML_META_CSP, 'img-src'), 'img-src data:')
+  assert.ok(!/https?:/.test(INLINE_HTML_META_CSP), INLINE_HTML_META_CSP)
+  const injected = htmlWithInlinePreviewCsp('<html><head></head><body>ok</body></html>')
+  assert.match(injected, /http-equiv="Content-Security-Policy"/)
 })
 
 // A wiring-lock: nem elég, hogy a policy-string biztonságos — mindkét
