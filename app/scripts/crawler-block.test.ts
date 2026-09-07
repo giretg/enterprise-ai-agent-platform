@@ -17,6 +17,7 @@ import { NextRequest } from 'next/server'
 import {
   isCrawlerAllowedPath,
   isCrawlerBlockEnabled,
+  isCrawlerUserAgentBlockEnabled,
   isKnownCrawlerRequest,
 } from '../src/lib/security/crawler-block'
 
@@ -45,24 +46,36 @@ const CHROME_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
 const SAFARI_IOS_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
+const FIREFOX_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:130.0) Gecko/20100101 Firefox/130.0'
 
 // #426 — a konkrét éles incidens: a Googlebot UA-ja felismerve.
 check('a Googlebot UA-ja crawlerként ismert fel', () => {
   assert.equal(isKnownCrawlerRequest(requestWithUserAgent(GOOGLEBOT_UA)), true)
 })
 
-check('az éles incidens rövid UA-ja (Google) is crawler', () => {
-  assert.equal(isKnownCrawlerRequest(requestWithUserAgent('Google')), true)
+// #436 REGRESSZIÓ: a csupasz `Google` UA-t crawlernek venni TELJES kiesést okozott.
+// Az App Hosting CDN / Google-frontend az origin felé ezzel az UA-val megy MINDEN
+// valódi felhasználói kérésnél is, ezért a `google` ág 403-at adott az egész hoston
+// (üres UA-val is), miközben lokálisan — CDN nélkül — a szűrő helyesnek látszott.
+check('a csupasz `Google` UA (App Hosting CDN origin-lekérés) NEM crawler', () => {
+  assert.equal(isKnownCrawlerRequest(requestWithUserAgent('Google')), false)
+})
+
+check('a konkrét Google-crawler termék-tokenek viszont crawlerek', () => {
   assert.equal(isKnownCrawlerRequest(requestWithUserAgent('Google-InspectionTool')), true)
+  assert.equal(isKnownCrawlerRequest(requestWithUserAgent('GoogleOther')), true)
+  assert.equal(isKnownCrawlerRequest(requestWithUserAgent('Google-Extended')), true)
+  assert.equal(isKnownCrawlerRequest(requestWithUserAgent('AdsBot-Google')), true)
 })
 
 check('más ismert kereső-crawlerek (Bingbot) UA-ja is felismert', () => {
   assert.equal(isKnownCrawlerRequest(requestWithUserAgent(BINGBOT_UA)), true)
 })
 
-check('valódi böngésző-UA (Chrome, Safari/iOS) SOSEM crawler', () => {
+check('valódi böngésző-UA (Chrome, Safari/iOS, Firefox) SOSEM crawler', () => {
   assert.equal(isKnownCrawlerRequest(requestWithUserAgent(CHROME_UA)), false)
   assert.equal(isKnownCrawlerRequest(requestWithUserAgent(SAFARI_IOS_UA)), false)
+  assert.equal(isKnownCrawlerRequest(requestWithUserAgent(FIREFOX_UA)), false)
 })
 
 check('User-Agent fejléc hiánya nem minősül crawlernek', () => {
@@ -102,6 +115,22 @@ check('ALLOW_SEARCH_INDEXING=true kikapcsolja a bot-tiltást is', () => {
   } finally {
     if (prev === undefined) delete process.env.ALLOW_SEARCH_INDEXING
     else process.env.ALLOW_SEARCH_INDEXING = prev
+  }
+})
+
+// #436: a UA-szűrőnek külön vészkapcsolója van, hogy egy téves minta esetén a hostot
+// az indexelés-tiltás feláldozása nélkül is vissza lehessen kapcsolni.
+check('DISABLE_CRAWLER_UA_BLOCK=true csak a UA-szűrőt kapcsolja ki, az indexelés-tiltást nem', () => {
+  const prev = process.env.DISABLE_CRAWLER_UA_BLOCK
+  try {
+    delete process.env.DISABLE_CRAWLER_UA_BLOCK
+    assert.equal(isCrawlerUserAgentBlockEnabled(), true)
+    process.env.DISABLE_CRAWLER_UA_BLOCK = 'true'
+    assert.equal(isCrawlerUserAgentBlockEnabled(), false)
+    assert.equal(isCrawlerBlockEnabled(), true)
+  } finally {
+    if (prev === undefined) delete process.env.DISABLE_CRAWLER_UA_BLOCK
+    else process.env.DISABLE_CRAWLER_UA_BLOCK = prev
   }
 })
 

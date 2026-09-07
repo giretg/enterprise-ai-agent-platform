@@ -5,8 +5,10 @@ import { embedHrefForPanel } from '@/lib/control-plane-embed'
 import { REQUEST_ID_HEADER, resolveRequestId } from '@/lib/observability/request-context'
 import { PUBLIC_ROUTE_PATTERNS } from '@/lib/auth/public-routes'
 import {
+  crawlerBlockUserAgent,
   isCrawlerAllowedPath,
   isCrawlerBlockEnabled,
+  isCrawlerUserAgentBlockEnabled,
   isKnownCrawlerRequest,
 } from '@/lib/security/crawler-block'
 
@@ -43,11 +45,16 @@ export default clerkMiddleware(async (auth, req) => {
   // vezérlés. Ez a réteg a Clerk-kulcsváltástól függetlenül, azonnal leállítja
   // a magukat bejelentő crawlerek/renderelők hozzáférését — MIELŐTT a Clerk-
   // munkamenet (és a benne visszajátszott token) egyáltalán kiértékelődne.
-  if (isCrawlerBlockEnabled() && isKnownCrawlerRequest(req) && !isCrawlerAllowedPath(pathname)) {
-    return finishResponse(
-      req,
-      NextResponse.json({ error: 'Crawlers are not allowed on this host' }, { status: 403 }),
+  if (isCrawlerUserAgentBlockEnabled() && isKnownCrawlerRequest(req) && !isCrawlerAllowedPath(pathname)) {
+    const blocked = NextResponse.json(
+      { error: 'Crawlers are not allowed on this host' },
+      { status: 403 },
     )
+    // #436: a kiesés azért volt nehezen behatárolható, mert a válaszból nem derült ki,
+    // MILYEN UA-t látott az origin (a CDN mögött ez nem a kliens UA-ja). A saját UA
+    // visszatükrözése nem szivárogtat semmit, viszont egy curl-lel diagnosztizálhatóvá teszi.
+    blocked.headers.set('x-crawler-block-ua', crawlerBlockUserAgent(req).slice(0, 120))
+    return finishResponse(req, blocked)
   }
 
   if (pathname.startsWith('/embed/control-plane/')) {
