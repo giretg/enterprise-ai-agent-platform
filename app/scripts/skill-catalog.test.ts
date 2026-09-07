@@ -8,6 +8,7 @@
  * (zöld/sárga/piros), és a determinista content-hash stabilitása.
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { deflateRawSync } from 'node:zlib'
 import {
   parseSkillMd,
@@ -31,7 +32,8 @@ import {
   skillKindInputError,
 } from '../src/lib/skill/skill-kind'
 import { computeSkillReadiness } from '../src/lib/skill/skill-readiness'
-import { computeSkillContentHash, type SkillContent } from '../src/lib/skill/skill-content'
+import type { SkillContent } from '../src/lib/skill/skill-content'
+import { computeSkillContentHash } from '../src/lib/skill/skill-content-hash'
 import {
   buildSkillIndexPrompt,
   resolveLoadableSkill,
@@ -346,6 +348,25 @@ async function main() {
     const published = skillCatalogListPresentation({ kind: 'nope', catalogScope: 'global' })
     assert.equal(published.kind, 'published')
     assert.equal(published.label, SKILL_KIND_COPY.published.label)
+  })
+
+  await check('skill-content kliens-biztos: nem húzza be a hash-chain/secret-resolver-t', () => {
+    // A katalógus UI (`skill-catalog-manager.tsx`) kliens komponens, és ebből a
+    // modulból importál. A hash-chain import-időben resolveSecret-et hív; prod
+    // böngészőben WRITE_GATE_SECRET nincs (nem NEXT_PUBLIC_), ezért a modul
+    // kiértékelése eldől — a Skill-katalógus „Valami félresiklott”.
+    const src = readFileSync(new URL('../src/lib/skill/skill-content.ts', import.meta.url), 'utf8')
+    const imports = [...src.matchAll(/^import\s.+$/gm)].map((m) => m[0])
+    assert.equal(
+      imports.some((line) => line.includes('hash-chain') || line.includes('secret-resolver')),
+      false,
+      `skill-content.ts ne importálja a hash-chain-t: ${imports.join(' | ')}`,
+    )
+    assert.equal(
+      imports.some((line) => line.includes('skill-attachments')),
+      false,
+      'skill-attachments node:crypto-t húzna a kliensbe',
+    )
   })
 
   await check('rendszer-skillhez kötelező a systemRole; kiadotthoz tilos', () => {

@@ -33,11 +33,8 @@ import { buildConnectorSecretRef } from '../src/domain/connector/connector-secre
 import { ensureTenantGmailConnector } from '../src/lib/seed-gmail-connector'
 import { ensureTenantGoogleDriveConnector } from '../src/lib/seed-google-drive-connector'
 import { ensureStarterStepTemplates } from '../src/domain/step-template/step-template-catalog'
-import {
-  computeSkillContentHash,
-  type SkillContent,
-  type SkillRequirement,
-} from '../src/lib/skill/skill-content'
+import { computeSkillContentHash } from '../src/lib/skill/skill-content-hash'
+import type { SkillContent, SkillRequirement } from '../src/lib/skill/skill-content'
 import { signSkillVersion } from '../src/lib/crypto/hash-chain'
 
 config({ path: path.join(process.cwd(), '.env.local') })

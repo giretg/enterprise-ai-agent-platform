@@ -36,7 +36,6 @@ import {
   SKILL_DESCRIPTION_MAX,
   SKILL_NAME_MAX,
   aggregateSkillRuntimeHints,
-  computeSkillContentHash,
   parseSkillContent,
   parseSkillRequires,
   skillAllowsAttachments,
@@ -45,6 +44,7 @@ import {
   type SkillRequirement,
   type SkillRuntimeHints,
 } from '@/lib/skill/skill-content'
+import { computeSkillContentHash } from '@/lib/skill/skill-content-hash'
 import { isSkillReadableFromTenant, isSkillWritableFromTenant } from '@/lib/skill/skill-scope'
 import {
   catalogScopeForKind,

@@ -1,11 +1,13 @@
 import { z } from 'zod'
-import { computeDiffHash } from '@/lib/crypto/hash-chain'
-import { attachmentsFingerprint, type SkillAttachment } from './skill-attachments'
 
 /**
  * Kanonikus belső skill-séma (spec §D6). A tárolt `SkillVersion.content` és
  * `SkillVersion.requires` JSON mezők tipizált vetülete. Az `SKILL.md` és minden
  * későbbi import-formátum ERRE a sémára képez; ez a natív reprezentáció.
+ *
+ * Kliens-komponens is importálja (skill-katalógus UI). Ne húzz ide node:crypto /
+ * hash-chain / secret-resolver importot — a tartalom-hash a
+ * `skill-content-hash.ts`-ben él.
  *
  * A puha rész (`instructions`, `triggerKeywords`, `parameters`) promptba
  * injektálódik; a kemény rész (`requires` capability-manifeszt) a Tool Brokerrel
@@ -237,33 +239,4 @@ export function parseSkillRequires(value: unknown): SkillRequirement[] {
   const parsed = skillRequiresSchema.safeParse(value)
   if (parsed.success) return parsed.data
   return []
-}
-
-/**
- * Determinista tartalom-hash a content + requires felett (aláíráshoz és
- * verzió-diffhez, WP-7). A kulcsokat rendezetten szerializáljuk, hogy a hash a
- * mezők sorrendjétől független legyen.
- */
-export function computeSkillContentHash(
-  content: SkillContent,
-  requires: SkillRequirement[],
-  attachments: SkillAttachment[] = [],
-): string {
-  // A melléklet-ujjlenyomat CSAK akkor kerül a kanonikus alakba, ha van melléklet:
-  // így a mező bevezetése előtt aláírt verziók hash-e bitre változatlan marad.
-  const attachmentPart =
-    attachments.length > 0 ? { attachments: attachmentsFingerprint(attachments) } : {}
-  const canonical = JSON.stringify({
-    ...attachmentPart,
-    content: {
-      instructions: content.instructions,
-      triggerKeywords: content.triggerKeywords,
-      parameters: content.parameters.map((p) => ({ name: p.name, description: p.description })),
-      runtimeHints: content.runtimeHints ?? null,
-    },
-    requires: [...requires]
-      .map((r) => ({ toolName: r.toolName, reason: r.reason }))
-      .sort((a, b) => a.toolName.localeCompare(b.toolName)),
-  })
-  return computeDiffHash(canonical)
 }

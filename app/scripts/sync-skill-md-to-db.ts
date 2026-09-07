@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { parseSkillMd } from '../src/lib/skill/skill-md-adapter'
 import { validateSkill } from '../src/lib/skill/skill-validator'
-import { computeSkillContentHash } from '../src/lib/skill/skill-content'
+import { computeSkillContentHash } from '../src/lib/skill/skill-content-hash'
 import { signSkillVersion } from '../src/lib/crypto/hash-chain'
 import { prisma } from '../src/lib/db'
 
