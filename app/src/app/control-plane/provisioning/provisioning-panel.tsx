@@ -30,9 +30,20 @@ import {
   type FetchApiDocFromUrlData,
 } from '@/app/actions/provisioning'
 import { startConnectorOAuth, getGoogleOAuthConfiguredStatus, getGoogleDriveOAuthConfiguredStatus } from '@/app/actions/connector-grants'
+import {
+  createSelfUpdatingConnector,
+  listSelfUpdatingConnectors,
+  setTenantSelfUpdatingAutoApprove,
+  syncSelfUpdatingConnector,
+} from '@/app/actions/self-updating-connectors'
 import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'
 import { OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES } from '@/domain/connector-template/custom-template-seeds'
-import { SelfUpdatingConnectorsPanel } from '@/app/control-plane/connectors/self-updating/self-updating-connectors-panel'
+import {
+  SelfUpdatingConnectorCard,
+  TenantAutoApproveSwitch,
+  selfUpdatingSyncFeedback,
+  type SelfUpdatingConnectorRow,
+} from '@/app/control-plane/connectors/self-updating/self-updating-connectors-panel'
 
 // A listProvisioningDrafts visszaadott alakja (provisioning-service.listDrafts).
 type CheckStatus = 'passed' | 'warned' | 'failed'
@@ -209,6 +220,7 @@ type DiscoverData =
     }
 
 type CreateStep = 'basics' | 'source' | 'review'
+type ConnectionKind = 'fixed' | 'self_updating'
 type SourceMethod = 'discover' | 'document' | 'manual' | 'template'
 type DraftManageStep = 'inspect' | 'validate' | 'review' | 'sandbox' | 'activate'
 type ActiveManageStep = 'inspect' | 'assign' | 'revoke'
@@ -244,47 +256,32 @@ type ConnectorTemplateRow = {
 }
 
 function ProvisioningTopicShell({
-  selfUpdating,
-  connectorCreation,
   templates,
   connections,
   canManageCatalog,
 }: {
-  selfUpdating: ReactNode
-  connectorCreation: ReactNode
   templates: ReactNode
   connections: ReactNode
   canManageCatalog: boolean
 }) {
   return (
     <SettingsSectionShell
-      ariaLabel="Provisioning témák"
+      ariaLabel="Konektorok témái"
+      initialId="kapcsolatok"
       sections={[
         {
-          id: 'onfrissito-kapcsolatok',
-          label: 'Önfrissítő kapcsolatok',
-          description: 'Kapcsolatok, amelyek jóváhagyással átvehetik a partner új képességeit.',
-          content: selfUpdating,
-        },
-        {
-          id: 'uj-kapcsolat',
-          label: 'Új kapcsolat',
-          description: 'Új draft connector létrehozása ellenőrizhető lépésekben.',
-          content: connectorCreation,
+          id: 'kapcsolatok',
+          label: 'Konnektorok',
+          description: 'Az aktív konnektorok és a még nem aktivált draftok.',
+          content: connections,
         },
         {
           id: 'sablonok',
-          label: 'Connector-sablonok',
+          label: 'Konnektor-sablonok',
           description: canManageCatalog
-            ? 'Platform-katalógus. Új sablont csak superadmin vehet fel; a tenantok ezekből hoznak létre connectort.'
-            : 'Platform-katalógus. Ezekből a sablonokból hozhatsz létre új connectort.',
+            ? 'Platform-katalógus. Új sablont csak superadmin vehet fel; a tenantok ezekből hoznak létre konnektort.'
+            : 'Platform-katalógus. Ezekből a sablonokból hozhatsz létre új konnektort.',
           content: templates,
-        },
-        {
-          id: 'kapcsolatok',
-          label: 'Draftok és aktív kapcsolatok',
-          description: 'A függőben lévő draftok és az aktivált provisioning-kapcsolatok.',
-          content: connections,
         },
       ]}
     />
@@ -496,6 +493,8 @@ function lifecycleTone(s: string): 'neutral' | 'success' | 'warning' | 'danger' 
 
 export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: boolean }) {
   const [drafts, setDrafts] = useState<DraftRow[]>([])
+  const [selfUpdatingRows, setSelfUpdatingRows] = useState<SelfUpdatingConnectorRow[]>([])
+  const [tenantAuto, setTenantAuto] = useState(false)
   const [agents, setAgents] = useState<AgentOption[]>([])
   const [templates, setTemplates] = useState<ConnectorTemplateRow[]>([])
   const [googleOauthConfigured, setGoogleOauthConfigured] = useState(false)
@@ -507,6 +506,9 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
 
   // Create-form állapot
   const [name, setName] = useState('')
+  const [connectionKind, setConnectionKind] = useState<ConnectionKind>('fixed')
+  const [selfUpdatingApiKey, setSelfUpdatingApiKey] = useState('')
+  const [selfUpdatingSpecUrl, setSelfUpdatingSpecUrl] = useState('')
   const [sourceType, setSourceType] = useState<'api_doc' | 'openapi' | 'manual' | 'template'>('api_doc')
   const [configText, setConfigText] = useState('')
   const [createStep, setCreateStep] = useState<CreateStep>('basics')
@@ -528,7 +530,6 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
 
   // Katalógus-szerkesztő láthatósága (csak superadmin, alapból csak egy gomb)
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false)
-  // Új draft connector wizard (alapból csak egy gomb)
   const [showCreateDraftForm, setShowCreateDraftForm] = useState(false)
 
   // Connector sablon-katalógus
@@ -578,12 +579,13 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
 
   const reload = useCallback(() => {
     startTransition(async () => {
-      const [d, a, t, g, gd] = await Promise.all([
+      const [d, a, t, g, gd, su] = await Promise.all([
         listProvisioningDrafts(),
         listProvisioningAssignableAgents(),
         listConnectorTemplatesAction(),
         getGoogleOAuthConfiguredStatus(),
         getGoogleDriveOAuthConfiguredStatus(),
+        listSelfUpdatingConnectors(),
       ])
       if (d.success) setDrafts(d.data as DraftRow[])
       else setError(d.error)
@@ -596,6 +598,10 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
       }
       if (g.success) setGoogleOauthConfigured(g.data.configured)
       if (gd.success) setGoogleDriveOauthConfigured(gd.data.configured)
+      if (su.success) {
+        setSelfUpdatingRows(su.data.connectors as SelfUpdatingConnectorRow[])
+        setTenantAuto(su.data.tenantAutoApproveEnabled)
+      }
       setLoadedOnce(true)
     })
   }, [applyTemplateSelection, maybeAutoSelectDriveTemplate, name, selectedTemplateId])
@@ -774,6 +780,10 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
 
   const openDrafts = drafts.filter((d) => d.lifecycleState !== 'active')
   const activatedDrafts = drafts.filter((d) => d.lifecycleState === 'active')
+  const activeItems = [
+    ...activatedDrafts.map((draft) => ({ kind: 'provisioned' as const, name: draft.name, draft })),
+    ...selfUpdatingRows.map((row) => ({ kind: 'self_updating' as const, name: row.name, row })),
+  ].sort((a, b) => a.name.localeCompare(b.name, 'hu'))
   const latestTemplateVersions = useMemo(() => {
     const versions: Record<string, number> = {}
     for (const template of templates) {
@@ -805,12 +815,27 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
     setShowCreateDraftForm(false)
     setName('')
     setCreateStep('basics')
+    setConnectionKind('fixed')
+    setSelfUpdatingApiKey('')
+    setSelfUpdatingSpecUrl('')
   }, [])
 
   const onCreate = useCallback(() => {
+    if (connectionKind === 'self_updating') {
+      run(async () => {
+        const result = await createSelfUpdatingConnector({
+          name,
+          apiKey: selfUpdatingApiKey,
+          specUrl: selfUpdatingSpecUrl,
+        })
+        if (result.success) closeCreateDraftForm()
+        return result
+      }, 'A konnektor létrejött. Jóvá kell hagyni a linket és a partner megbízhatóságát, mielőtt frissítést kereshetsz.')
+      return
+    }
     if (sourceMethod === 'template') {
       if (!selectedTemplate) {
-        setError('Válassz connector-sablont.')
+        setError('Válassz konnektor-sablont.')
         return
       }
       run(async () => {
@@ -825,7 +850,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
         })
         if (result.success) closeCreateDraftForm()
         return result
-      }, 'Sablonból draft connector létrehozva.')
+      }, 'Sablonból draft konnektor létrehozva.')
       return
     }
     let parsed: unknown
@@ -845,10 +870,11 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
       })
       if (result.success) closeCreateDraftForm()
       return result
-    }, 'Draft létrehozva.')
+    }, 'Konnektor létrehozva.')
   }, [
     closeCreateDraftForm,
     configText,
+    connectionKind,
     docSourceRef,
     docText,
     effectiveTemplateAuthMethod,
@@ -857,16 +883,24 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
     selectedEndpoints,
     selectedScopes,
     selectedTemplate,
+    selfUpdatingApiKey,
+    selfUpdatingSpecUrl,
     sourceMethod,
     sourceType,
     templateSecretAliases,
     templateValues,
   ])
 
-  const stepOrder: CreateStep[] = ['basics', 'source', 'review']
+  const stepOrder: CreateStep[] =
+    connectionKind === 'self_updating' ? ['basics', 'source'] : ['basics', 'source', 'review']
   const activeStepIndex = stepOrder.indexOf(createStep)
   const canEnterSource = name.trim().length > 0
-  const canEnterReview = canEnterSource && (sourceMethod === 'template' ? templateReady : configText.trim().length > 0)
+  const selfUpdatingReady =
+    canEnterSource && !!selfUpdatingApiKey.trim() && !!selfUpdatingSpecUrl.trim()
+  const canEnterReview =
+    connectionKind === 'self_updating'
+      ? selfUpdatingReady
+      : canEnterSource && (sourceMethod === 'template' ? templateReady : configText.trim().length > 0)
   const setWizardStep = (step: CreateStep) => {
     if (step === 'source' && !canEnterSource) return
     if (step === 'review' && !canEnterReview) return
@@ -875,25 +909,51 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
   const createDisabledReason = pending
     ? 'Folyamatban lévő művelet miatt várakozik.'
     : !name.trim()
-      ? 'Adj nevet a draft connectornak.'
-      : sourceMethod === 'template' && !selectedTemplate
-        ? 'Válassz connector-sablont.'
-      : sourceMethod === 'template' && !templateReady
+      ? 'Adj nevet a konnektornak.'
+      : connectionKind === 'self_updating' && !selfUpdatingApiKey.trim()
+        ? 'Add meg a hozzáférési kulcsot.'
+      : connectionKind === 'self_updating' && !selfUpdatingSpecUrl.trim()
+        ? 'Add meg az API-leírás linkjét.'
+      : connectionKind === 'fixed' && sourceMethod === 'template' && !selectedTemplate
+        ? 'Válassz konnektor-sablont.'
+      : connectionKind === 'fixed' && sourceMethod === 'template' && !templateReady
         ? 'Töltsd ki a sablon kötelező mezőit.'
-      : sourceMethod !== 'template' && !configText.trim()
+      : connectionKind === 'fixed' && sourceMethod !== 'template' && !configText.trim()
         ? 'Előbb generálj vagy adj meg config-deskriptort.'
         : null
   const reviewProvenanceHint = draftSourceProvenanceLabel(sourceType, sourceMethod)
 
+  const syncSelfUpdating = (connectorId: string) => {
+    setError(null)
+    setNotice(null)
+    startTransition(async () => {
+      const result = await syncSelfUpdatingConnector({ connectorId })
+      if (!result.success) {
+        setError(result.error ?? 'A frissítés nem sikerült.')
+        return
+      }
+      const feedback = selfUpdatingSyncFeedback(result.data)
+      if (feedback.ok) setNotice(feedback.message)
+      else setError(feedback.message)
+      reload()
+    })
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="font-display text-2xl font-semibold tracking-tight">Provisioning</h1>
-        <p className="mt-1 text-sm text-ink-soft">
-          Connector-onboarding asszisztens — <strong>propose, ne apply</strong>. Az asszisztens
-          draft connector-deskriptort állít elő; az aktiválás és az agenthez rendelés emberi
-          admin-aktus marad (CR-MVP-002).
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="font-display text-2xl font-semibold tracking-tight">Konektorok</h1>
+        </div>
+        {!showCreateDraftForm ? (
+          <button
+            type="button"
+            onClick={() => setShowCreateDraftForm(true)}
+            className="ml-auto inline-flex shrink-0 items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-card transition hover:bg-coral-deep"
+          >
+            Új konnektor hozzáadása
+          </button>
+        ) : null}
       </div>
 
       <ErrorDialog message={error} onClose={() => setError(null)} />
@@ -903,23 +963,8 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
         </div>
       ) : null}
 
-      <ProvisioningTopicShell
-        canManageCatalog={canManageCatalog}
-        selfUpdating={<SelfUpdatingConnectorsPanel embedded />}
-        connectorCreation={
-          <>
-      {!showCreateDraftForm ? (
-        <div>
-          <button
-            type="button"
-            onClick={() => setShowCreateDraftForm(true)}
-            className="inline-flex items-center gap-2 rounded-md border border-ink/15 bg-card px-4 py-2 text-sm font-semibold text-ink transition hover:border-coral/40 hover:text-coral-deep"
-          >
-            Új draft connector
-          </button>
-        </div>
-      ) : (
-      <Card title="Új draft connector">
+      {showCreateDraftForm ? (
+      <Card title="Új konnektor">
         <div className="mb-4 flex justify-end">
           <button
             type="button"
@@ -932,12 +977,19 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
         <div className="grid gap-5 lg:grid-cols-[15rem_1fr]">
           <ol className="space-y-2">
             {[
-              { id: 'basics' as const, label: 'Alapadatok', hint: name.trim() || 'Connector neve' },
+              {
+                id: 'basics' as const,
+                label: 'Alapadatok',
+                hint:
+                  `${connectionKind === 'self_updating' ? 'Önfrissítő' : 'Sima konnektor'}${name.trim() ? ` · ${name.trim()}` : ''}`,
+              },
               {
                 id: 'source' as const,
                 label: 'Forrás',
                 hint:
-                  sourceMethod === 'template'
+                  connectionKind === 'self_updating'
+                    ? 'Kulcs + API-leírás'
+                    : sourceMethod === 'template'
                     ? 'Sablon-katalógus'
                     : sourceMethod === 'discover'
                     ? 'Webes felfedezés'
@@ -945,11 +997,15 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                       ? 'API-dokumentáció'
                       : 'Kézi JSON',
               },
-              {
-                id: 'review' as const,
-                label: 'Ellenőrzés',
-                hint: configText.trim() ? 'Config-jelölt kész' : 'Config-jelölt kell',
-              },
+              ...(connectionKind === 'self_updating'
+                ? []
+                : [
+                    {
+                      id: 'review' as const,
+                      label: 'Ellenőrzés',
+                      hint: configText.trim() ? 'Config-jelölt kész' : 'Config-jelölt kell',
+                    },
+                  ]),
             ].map((step, index) => {
               const active = createStep === step.id
               const complete =
@@ -993,10 +1049,41 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
             {createStep === 'basics' ? (
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-base font-semibold">1. Nevezd el a kapcsolatot</h3>
+                  <h3 className="text-base font-semibold">1. Milyen konnektort hozol létre?</h3>
                   <p className="mt-1 text-xs text-ink-soft">
-                    Ez alapján készül a draft azonosítható, admin által ellenőrizhető connectorrá.
+                    Először válaszd ki a típust, majd nevezd el a konnektort.
                   </p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => setConnectionKind('fixed')}
+                    className={`rounded-md border px-4 py-3 text-left ${
+                      connectionKind === 'fixed'
+                        ? 'border-coral/45 bg-coral/8'
+                        : 'border-ink/12 bg-paper hover:border-coral/25'
+                    }`}
+                  >
+                    <span className="block text-sm font-semibold">Sima konnektor</span>
+                    <span className="mt-1 block text-xs text-ink-soft">
+                      A képességeket a szokásos onboarding folyamatban állítod be.
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConnectionKind('self_updating')}
+                    className={`rounded-md border px-4 py-3 text-left ${
+                      connectionKind === 'self_updating'
+                        ? 'border-coral/45 bg-coral/8'
+                        : 'border-ink/12 bg-paper hover:border-coral/25'
+                    }`}
+                  >
+                    <span className="block text-sm font-semibold">Önfrissítő konnektor</span>
+                    <span className="mt-1 block text-xs text-ink-soft">
+                      Egy kulcs és a partner API-leírásának linkje kell. A későbbi változásokat
+                      egy gombbal, átnézés után veheted át.
+                    </span>
+                  </button>
                 </div>
                 <label className="block text-sm">
                   <span className="mb-1 block text-ink-soft">Név</span>
@@ -1014,7 +1101,49 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
               </div>
             ) : null}
 
-            {createStep === 'source' ? (
+            {createStep === 'source' && connectionKind === 'self_updating' ? (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-base font-semibold">2. Kulcs és API-leírás</h3>
+                  <p className="mt-1 text-xs text-ink-soft">
+                    A partnertől kapott kulcs és a nyilvános API-leírás linkje kell. A képességeket
+                    csak akkor olvassuk ki, amikor a Frissítés gombot megnyomod.
+                  </p>
+                </div>
+                <label className="block text-sm">
+                  <span className="mb-1 block font-semibold">Hozzáférési kulcs</span>
+                  <input
+                    type="password"
+                    value={selfUpdatingApiKey}
+                    onChange={(e) => setSelfUpdatingApiKey(e.target.value)}
+                    className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                    autoComplete="new-password"
+                  />
+                  <span className="mt-1 block text-xs text-ink-soft">
+                    A partnertől kapott titkos kulcs. Biztonságos titoktárolóban marad; az adatbázisba soha nem kerül.
+                  </span>
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block font-semibold">API-leírás linkje</span>
+                  <input
+                    value={selfUpdatingSpecUrl}
+                    onChange={(e) => setSelfUpdatingSpecUrl(e.target.value)}
+                    className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                    placeholder="https://partner.example/openapi.json"
+                  />
+                  <span className="mt-1 block text-xs text-ink-soft">
+                    Innen olvassuk ki a képességeket, de csak amikor megnyomod a Frissítés gombot — sosem magától.
+                  </span>
+                </label>
+                <p className="rounded-md border border-honey/35 bg-honey/8 p-3 text-xs">
+                  A linket általában egy másik kollégának kell jóváhagynia, mielőtt élesítjük — így biztos,
+                  hogy nem elgépelt vagy hamis címről olvasunk. Platform-superadmin egyedül is jóváhagyhatja
+                  és élesítheti.
+                </p>
+              </div>
+            ) : null}
+
+            {createStep === 'source' && connectionKind === 'fixed' ? (
               <div className="space-y-4">
                 <div>
                   <h3 className="text-base font-semibold">2. Válassz forrást</h3>
@@ -1058,7 +1187,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                   <div className="space-y-3 rounded-md border border-sage/25 bg-sage/5 p-3">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                       <div>
-                        <span className="block text-sm font-semibold">Connector sablon-katalógus</span>
+                        <span className="block text-sm font-semibold">Konnektor-sablonkatalógus</span>
                         <p className="mt-1 text-xs text-ink-soft">
                           A sablon provider-metaadatból és instance-mezőkből önhordó draft configot készít.
                         </p>
@@ -1067,7 +1196,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                     </div>
 
                     {templates.length === 0 ? (
-                      <p className="text-xs text-ink-soft">Nincs elérhető connector-sablon.</p>
+                      <p className="text-xs text-ink-soft">Nincs elérhető konnektor-sablon.</p>
                     ) : (
                       <>
                         <label className="block text-xs">
@@ -1248,10 +1377,10 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                 {sourceMethod === 'discover' ? (
                   <div className="rounded-md border border-sage/25 bg-sage/5 p-3">
                     <span className="mb-1 block text-sm font-semibold">
-                      Kapcsolat felfedezése névből (web-egress role)
+                      Konnektor felfedezése névből (web-egress role)
                     </span>
                     <p className="mb-2 text-xs text-ink-soft">
-                      Add meg a kapcsolat nevét; a web-egress role agent csak official/vendor_doc
+                      Add meg a konnektor nevét; a web-egress role agent csak official/vendor_doc
                       forrásból készít config-jelöltet.
                     </p>
                     <label className="mb-2 block text-xs">
@@ -1424,7 +1553,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                 </div>
                 <dl className="grid gap-2 rounded-md border border-ink/12 bg-paper px-3 py-2 text-xs sm:grid-cols-2">
                   <div>
-                    <dt className="text-ink-soft">Connector neve</dt>
+                    <dt className="text-ink-soft">Konnektor neve</dt>
                     <dd className="font-semibold">{name.trim() || '—'}</dd>
                   </div>
                   <div>
@@ -1507,14 +1636,14 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
               >
                 Vissza
               </button>
-              {createStep === 'review' ? (
+              {createStep === 'review' || (connectionKind === 'self_updating' && createStep === 'source') ? (
                 <button
                   type="button"
                   disabled={!!createDisabledReason}
                   onClick={onCreate}
                   className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
                 >
-                  Draft létrehozása
+                  Konnektor létrehozása
                 </button>
               ) : (
                 <button
@@ -1530,9 +1659,9 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
           </div>
         </div>
       </Card>
-      )}
-          </>
-        }
+      ) : (
+      <ProvisioningTopicShell
+        canManageCatalog={canManageCatalog}
         templates={
           <>
       {canManageCatalog && !templateEditorOpen ? (
@@ -1544,13 +1673,13 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
           >
             Katalógus szerkesztése
           </button>
-          <Card title="Platform connector-sablonok">
+          <Card title="Platform konnektor-sablonok">
             <TemplateCatalogList templates={templates} pending={pending} canManage={false} />
           </Card>
         </div>
       ) : null}
       {canManageCatalog && templateEditorOpen ? (
-      <Card title="Platform connector-sablonok">
+      <Card title="Platform konnektor-sablonok">
         <div className="mb-4 flex justify-end">
           <button
             type="button"
@@ -1596,7 +1725,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                   }
                   run(
                     () => upsertConnectorTemplateAction({ descriptor }),
-                    'Connector-sablon mentve új verzióként.',
+                    'Konnektor-sablon mentve új verzióként.',
                   )
                 }}
                 className="rounded-md bg-ink px-4 py-2 text-xs font-semibold text-card disabled:opacity-50"
@@ -1614,7 +1743,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
             onDeprecate={(templateId) =>
               run(
                 () => deprecateConnectorTemplateAction({ templateId }),
-                'Connector-sablon deprecated állapotba került.',
+                'Konnektor-sablon deprecated állapotba került.',
               )
             }
           />
@@ -1622,9 +1751,9 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
       </Card>
       ) : null}
       {!canManageCatalog ? (
-        <Card title="Platform connector-sablonok">
+        <Card title="Platform konnektor-sablonok">
           <p className="mb-4 text-sm text-ink-soft">
-            Ezekből a sablonokból hozhatsz létre connectort. Új sablont csak platform-superadmin vehet fel.
+            Ezekből a sablonokból hozhatsz létre konnektort. Új sablont csak platform-superadmin vehet fel.
           </p>
           <TemplateCatalogList templates={templates} pending={pending} canManage={false} />
         </Card>
@@ -1633,11 +1762,61 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
         }
         connections={
           <div className="space-y-6">
-      <Card title={`Draftok (${openDrafts.length})`}>
+      <Card title={loadedOnce ? `Aktív konnektorok (${activeItems.length})` : 'Aktív konnektorok'}>
+        {!loadedOnce ? (
+          <p className="text-sm text-ink-soft">Betöltés…</p>
+        ) : activeItems.length === 0 ? (
+          <p className="text-sm text-ink-soft">Még nincs aktív konnektor.</p>
+        ) : (
+          <div className="space-y-3">
+            {activeItems.map((item) =>
+              item.kind === 'self_updating' ? (
+                <SelfUpdatingConnectorCard
+                  key={item.row.id}
+                  row={item.row}
+                  pending={pending}
+                  run={run}
+                  onSync={syncSelfUpdating}
+                />
+              ) : (
+                <DraftCard
+                  key={item.draft.draftId}
+                  draft={item.draft}
+                  agents={agents}
+                  templates={templates}
+                  latestTemplateVersions={latestTemplateVersions}
+                  googleOauthConfigured={googleOauthConfigured}
+                  googleDriveOauthConfigured={googleDriveOauthConfigured}
+                  pending={pending}
+                  run={run}
+                />
+              ),
+            )}
+          </div>
+        )}
+        {selfUpdatingRows.length > 0 ? (
+          <div className="mt-4 border-t border-ink/10 pt-4">
+            <TenantAutoApproveSwitch
+              tenantAuto={tenantAuto}
+              pending={pending}
+              onToggle={(enabled) =>
+                run(
+                  () => setTenantSelfUpdatingAutoApprove({ enabled }),
+                  enabled
+                    ? 'A tenant engedélyezte a korlátozott automatikus átvételt.'
+                    : 'Az automatikus átvétel tenant-szinten kikapcsolva.',
+                )
+              }
+            />
+          </div>
+        ) : null}
+      </Card>
+
+      <Card title={loadedOnce ? `Nem aktivált konnektorok (${openDrafts.length})` : 'Nem aktivált konnektorok'}>
         {!loadedOnce ? (
           <p className="text-sm text-ink-soft">Betöltés…</p>
         ) : openDrafts.length === 0 ? (
-          <p className="text-sm text-ink-soft">Még nincs draft connector.</p>
+          <p className="text-sm text-ink-soft">Nincs nem aktivált konnektor.</p>
         ) : (
           <div className="space-y-3">
             {openDrafts.map((d) => (
@@ -1656,33 +1835,10 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
           </div>
         )}
       </Card>
-
-      <Card title={`Aktivált provisioning-kapcsolatok (${activatedDrafts.length})`}>
-        {!loadedOnce ? (
-          <p className="text-sm text-ink-soft">Betöltés…</p>
-        ) : activatedDrafts.length === 0 ? (
-          <p className="text-sm text-ink-soft">Nincs provisioningből aktivált kapcsolat.</p>
-        ) : (
-          <div className="space-y-3">
-            {activatedDrafts.map((d) => (
-              <DraftCard
-                key={d.draftId}
-                draft={d}
-                agents={agents}
-                templates={templates}
-                latestTemplateVersions={latestTemplateVersions}
-                googleOauthConfigured={googleOauthConfigured}
-                googleDriveOauthConfigured={googleDriveOauthConfigured}
-                pending={pending}
-                run={run}
-              />
-            ))}
-          </div>
-        )}
-      </Card>
           </div>
         }
       />
+      )}
     </div>
   )
 }
@@ -1990,13 +2146,28 @@ function DraftCard({
     </div>
   ) : null
 
+  const canDeleteDraft =
+    !isActive && (draft.lifecycleState === 'draft' || draft.lifecycleState === 'validated')
+  const toggleOpen = () => setOpen((current) => !current)
+  const handleDeleteFromList = async () => {
+    const confirmed = await confirmDialog({
+      title: 'Kapcsolat törlése',
+      description:
+        'Végleges törlés — csak sosem aktivált kapcsolatra. Az elrontott connector és a draft-sor törlődik; ez nem visszavonható.',
+      confirmLabel: 'Törlés',
+      tone: 'danger',
+    })
+    if (!confirmed) return
+    run(() => deleteConnectorDraft({ draftId: draft.draftId }), 'Kapcsolat törölve.')
+  }
+
   return (
     <div className="rounded-lg border border-ink/12 bg-paper">
       <div className="flex flex-wrap items-center gap-2 px-4 py-3">
         <button
           type="button"
           className="font-semibold hover:underline"
-          onClick={() => setOpen((o) => !o)}
+          onClick={toggleOpen}
         >
           {open ? '▾' : '▸'} {draft.name}
         </button>
@@ -2017,18 +2188,38 @@ function DraftCard({
             {provenance.templateKey} v{provenance.templateVersion ?? '?'}
           </Badge>
         ) : null}
-        {isActive ? (
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           <button
             type="button"
-            className="ml-auto rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral"
-            onClick={() => {
-              setOpen(true)
-              setActiveStep('revoke')
-            }}
+            className="rounded-md border border-ink/20 px-2.5 py-1 text-xs font-semibold"
+            onClick={toggleOpen}
+            aria-expanded={open}
           >
-            Megszüntetés
+            {open ? 'Bezárás' : 'Részletek'}
           </button>
-        ) : null}
+          {canDeleteDraft ? (
+            <button
+              type="button"
+              disabled={pending}
+              className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral disabled:opacity-50"
+              onClick={() => void handleDeleteFromList()}
+            >
+              Törlés
+            </button>
+          ) : null}
+          {isActive ? (
+            <button
+              type="button"
+              className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral"
+              onClick={() => {
+                setOpen(true)
+                setActiveStep('revoke')
+              }}
+            >
+              Megszüntetés
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {open ? (

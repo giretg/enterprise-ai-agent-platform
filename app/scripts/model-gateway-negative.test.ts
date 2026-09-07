@@ -1244,11 +1244,61 @@ async function main() {
     })
     assert.equal(result.content, 'agent-fb')
     assert.equal(authHits.agentFb, 1)
+    assert.equal(authHits.primary, 1, 'auth hiba ne retry-zzon a tartalék előtt')
     assert.equal(authHits.globalFb, 0, 'globális a agent tartalék előtt hívódott')
     assert.ok(
       authAudit.events.some((e) => e.action === 'model.call.fallback'),
       'auth fallback audit hiányzik',
     )
+  })
+
+  await check('MG-N9: ugyanazon gateway-példányon a 401-es provider a következő hívástól kimarad', async () => {
+    const skipAudit = makeAuditRepo()
+    const skipCalls = makeModelCallRepo(0)
+    const skipHits = { primary: 0, fallback: 0 }
+    const skipProviders = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            skipHits.primary++
+            throw new Error('ChatGPT OAuth backend failed: 401')
+          },
+        },
+      ],
+      [
+        'openrouter',
+        {
+          name: 'openrouter',
+          async chat() {
+            skipHits.fallback++
+            return { content: 'fallback-ok', latencyMs: 1, usage: { promptTokens: 4, completionTokens: 2 } }
+          },
+        },
+      ],
+    ])
+    const gw = new ModelGateway(
+      skipAudit.repo,
+      skipCalls.repo,
+      skipProviders,
+      { maxCallsPerTicket: 30 },
+    )
+    const input = {
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user' as const, content: 'Szia' }],
+      modelConfig: {
+        provider: 'chatgpt-oauth',
+        model: 'chatgpt-oauth-default',
+        fallbackModels: [{ provider: 'openrouter', model: 'deepseek/deepseek-v4-flash-0731' }],
+      },
+    }
+    const first = await gw.call(input)
+    const second = await gw.call(input)
+    assert.equal(first.content, 'fallback-ok')
+    assert.equal(second.content, 'fallback-ok')
+    assert.equal(skipHits.primary, 1, 'a második hívás ne próbálja újra a 401-es ChatGPT-t')
+    assert.equal(skipHits.fallback, 2)
   })
 
   await check('MG-N9: ismeretlen provider kiesik; duplikátum összevonódik; lánc kimerüléskor utolsó hiba', async () => {

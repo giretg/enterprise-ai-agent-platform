@@ -65,6 +65,13 @@ export function classifyProviderError(error: unknown): FallbackErrorClass {
   const message = (err?.message ?? String(error)).toLowerCase().replace(/\b\d+\s*ms\b/g, ' ')
   const name = (err?.name ?? '').toLowerCase()
 
+  // Hiányzó sidecar / token: a provider ezen a hoston nem fog életre kelni
+  // (Firebase-en a ChatGPT OAuth nincs). Fail-closed `other` elnyelné a
+  // tartalékot; auth_error-ként skippeljük 15 percre, mint a 401-et.
+  if (message.includes('provider is not configured') || message.includes('provider nincs beállítva')) {
+    return 'auth_error'
+  }
+
   if (
     message.includes('401') ||
     message.includes('403') ||
@@ -145,6 +152,73 @@ export function isFallbackEligible(errorClass: FallbackErrorClass): boolean {
     case 'content_error':
     case 'other':
       return false
+  }
+}
+
+/**
+ * A Gateway `withRetry` csak erre az osztályra ismétel a TARTALÉK előtt.
+ * 401/403, 4xx tartalomhiba, 404: a következő kísérlet ugyanazt adná —
+ * a lánc következő jelöltjére kell lépni, nem háromszor várni.
+ */
+export function isTransientRetryable(errorClass: FallbackErrorClass): boolean {
+  return errorClass === 'provider_unavailable'
+}
+
+/** Auth-hiba: a token a futás ideje alatt nem javul meg (ChatGPT OAuth Firebase-en). */
+export const AUTH_SKIP_TTL_MS = 15 * 60_000
+const PROVIDER_UNAVAILABLE_SKIP_TTL_MS = 2 * 60_000
+const RATE_LIMITED_SKIP_TTL_MS = 30_000
+
+export function skipTtlMs(errorClass: FallbackErrorClass): number | null {
+  switch (errorClass) {
+    case 'auth_error':
+      return AUTH_SKIP_TTL_MS
+    case 'provider_unavailable':
+      return PROVIDER_UNAVAILABLE_SKIP_TTL_MS
+    case 'rate_limited':
+      return RATE_LIMITED_SKIP_TTL_MS
+    case 'model_unavailable':
+    case 'content_error':
+    case 'other':
+      return null
+  }
+}
+
+/**
+ * Folyamat-szintű „ez a provider most nem él" nyilvántartás.
+ * Egy 401 után a következő Gateway-hívások a tartalékkal indulnak, nem
+ * égetnek 2s-ot ugyanarra a holt sidecarra. TTL után egy próba újra mehet.
+ */
+export class ProviderSkipLedger {
+  private readonly skips = new Map<string, number>()
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  mark(provider: string, reason: FallbackErrorClass, ttlMs?: number): void {
+    const ttl = ttlMs ?? skipTtlMs(reason)
+    if (ttl == null) return
+    this.skips.set(provider, this.now() + ttl)
+  }
+
+  isSkipped(provider: string): boolean {
+    const until = this.skips.get(provider)
+    if (!until) return false
+    if (this.now() >= until) {
+      this.skips.delete(provider)
+      return false
+    }
+    return true
+  }
+
+  /**
+   * A skippelt provider kiesik. Ha minden kiesne, az utolsó jelölt marad —
+   * üres lánc helyett még egyszer megpróbáljuk a tartalékot.
+   */
+  filterChain(chain: FallbackCandidate[]): FallbackCandidate[] {
+    const kept = chain.filter((candidate) => !this.isSkipped(candidate.provider))
+    if (kept.length > 0) return kept
+    const last = chain[chain.length - 1]
+    return last ? [last] : chain
   }
 }
 

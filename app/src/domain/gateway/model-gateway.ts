@@ -68,7 +68,9 @@ import {
   fallbackMaxAttemptsFromEnv,
   FALLBACK_CHAIN_SETTING_KEY,
   isFallbackEligible,
+  isTransientRetryable,
   parseFallbackChainSetting,
+  ProviderSkipLedger,
   type FallbackCandidate,
   type FallbackErrorClass,
 } from './fallback-chain'
@@ -200,10 +202,6 @@ export interface AgentTenantResolver {
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
-}
-
-function classifyError(error: unknown): ModelCallStatus {
-  return persistedStatusFromErrorClass(classifyProviderError(error))
 }
 
 function persistedStatusFromErrorClass(errorClass: FallbackErrorClass): ModelCallStatus {
@@ -1185,9 +1183,9 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
       return await fn()
     } catch (error: unknown) {
       lastError = error
-      const status = classifyError(error)
-      // Only retry on transient errors, not rate-limit or budget denials.
-      if (status !== 'error') throw error
+      // 401/4xx: a következő kísérlet ugyanazt adná. A tartalék-lánc dolga
+      // váltani, nem a retry. Csak 5xx/hálózat ismétlődik a tartalék előtt.
+      if (!isTransientRetryable(classifyProviderError(error))) throw error
       if (attempt < MAX_RETRIES) {
         await new Promise((r) => setTimeout(r, 200 * 2 ** attempt))
       }
@@ -1221,6 +1219,13 @@ export class ModelGateway {
      */
     private agentTenantResolver?: AgentTenantResolver,
   ) {}
+
+  /**
+   * Folyamat-szintű skip: ha a ChatGPT OAuth (vagy más elsődleges) 401/unavailable,
+   * a következő hívások a tartalékkal indulnak. Ez a fallback értelme — ne égesse
+   * el a forduló falióráját ugyanarra a holt providerre.
+   */
+  private readonly skipLedger = new ProviderSkipLedger()
 
   /**
    * APG-12 — prompt-privacy transzformáció a classify előtt. Hiányában a mai
@@ -1695,7 +1700,7 @@ export class ModelGateway {
     agentModelConfig: unknown
     forcedLocal: boolean
   }): Promise<FallbackCandidate[]> {
-    return buildEffectiveFallbackChain({
+    const chain = buildEffectiveFallbackChain({
       primary: {
         provider: input.resolvedConfig.provider,
         model: input.resolvedConfig.model || 'chatgpt-oauth-default',
@@ -1707,6 +1712,7 @@ export class ModelGateway {
       localProvider: this.sensitivityPolicy.localProvider,
       maxAttempts: fallbackMaxAttemptsFromEnv(),
     })
+    return this.skipLedger.filterChain(chain)
   }
 
   /**
@@ -2006,6 +2012,7 @@ export class ModelGateway {
     const oauthResponse = chatGptOAuthDiagnostic(input.error)
     const next = input.chain[input.attemptIndex + 1]
     const willFallback = input.allowFallback && isFallbackEligible(errorClass) && !!next
+    this.skipLedger.mark(input.provider.name, errorClass)
 
     await this.modelCalls.create({
       agentId: input.agentId,

@@ -106,7 +106,7 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
       {
         key: 'admin.provisioning',
         href: '/control-plane/provisioning',
-        label: 'Provisioning',
+        label: 'Konektorok',
         requires: { tenantRole: 'admin' },
       },
       { key: 'admin.iam', href: '/control-plane/iam', label: 'IAM', requires: { tenantRole: 'admin' } },
