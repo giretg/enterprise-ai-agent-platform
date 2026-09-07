@@ -558,6 +558,17 @@ export async function startConnectorOAuth(input: {
     )
     const mergedRequested = [...new Set([...(requestedScopes ?? []), ...existingScopes])]
     const effectiveScopes = mergedRequested.length > 0 ? mergedRequested : undefined
+    // Ha a hívó nem adott scope-ot / toolName-et, a buildAuthorizationUrl a
+    // connector config TELJES oauth.scopes listáját kéri (seed: benne a full
+    // `drive`). A kaput erre a TÉNYLEGESEN kiküldött listára kell húzni —
+    // `effectiveScopes ?? []` üres tömbjén a full_write profil nem látszana, és
+    // a nem-admin megkapná a teljes Drive írási jogot.
+    const scopesForAdminGate =
+      effectiveScopes ??
+      resolveGrantOAuthScopes({
+        connectorType: connector.type,
+        config: connector.config,
+      })
 
     // A „Teljes olvasás + írás" (full `drive`) Drive-profil admin-döntés. A
     // kliens a profil-választót elrejti a nem-adminok elől, de a server action
@@ -568,7 +579,7 @@ export async function startConnectorOAuth(input: {
     // korlátozást.
     if (
       connector.type === 'google_drive' &&
-      driveScopeProfileRequiresAdmin(effectiveScopes ?? []) &&
+      driveScopeProfileRequiresAdmin(scopesForAdminGate) &&
       !hasMinimumRole(ctx.activeTenantRole, 'admin')
     ) {
       return fail(
@@ -583,7 +594,7 @@ export async function startConnectorOAuth(input: {
         userId: ctx.user.id,
         connectorId: connector.id,
         tenantId: ctx.activeTenantId,
-        requestedScopes: effectiveScopes,
+        requestedScopes: scopesForAdminGate.length > 0 ? scopesForAdminGate : effectiveScopes,
         ...(returnTo ? { returnTo } : {}),
       })
       await services.connectorGrants.completeOAuthCallback({

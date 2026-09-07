@@ -712,6 +712,63 @@ await test('completeOAuthCallback: újra-consent uniózza a meglévő grant scop
   }
 })
 
+await test('completeOAuthCallback: Drive selected_write kérés nem örökít full_write grantot', async () => {
+  const prevStub = process.env.CONNECTOR_OAUTH_STUB
+  process.env.CONNECTOR_OAUTH_STUB = 'true'
+  try {
+    const { DRIVE_SCOPES } = await import('../src/domain/connector-grant/google-drive-scopes')
+    const existing = grant({
+      id: 'grant-drive',
+      connectorId: 'conn-drive',
+      scopes: [DRIVE_SCOPES.full],
+      tokenRef: 'tenant/tenant-A/user/user-Y/connector/conn-drive',
+    })
+    const { service, created, getGrant } = buildGrantService(existing)
+    const connector = {
+      id: 'conn-drive',
+      type: 'google_drive' as ConnectorType,
+      name: 'Google Drive',
+      authMode: 'user_delegated',
+      lifecycleState: 'active',
+      scope: 'single',
+      secretAlias: 'secret://google-drive/oauth-client',
+      version: 1,
+      tenantId: 'tenant-A',
+      createdAt: new Date('2026-06-01T00:00:00.000Z'),
+      config: {
+        oauth: {
+          authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+          tokenUrl: 'https://oauth2.googleapis.com/token',
+          clientId: 'drive-client',
+          scopes: [DRIVE_SCOPES.readonly, DRIVE_SCOPES.file, DRIVE_SCOPES.full],
+        },
+      },
+    } as Connector
+    const { createOAuthState } = await import('../src/lib/crypto/oauth-state')
+    const requested = [DRIVE_SCOPES.readonly, DRIVE_SCOPES.file]
+    const { state } = createOAuthState({
+      userId: 'user-Y',
+      connectorId: connector.id,
+      tenantId: 'tenant-A',
+      requestedScopes: requested,
+    })
+    await service.completeOAuthCallback({
+      code: 'stub-auth-code',
+      state,
+      connector,
+      actorId: 'user-Y',
+    })
+    assert.equal(created.length, 1)
+    const scopes = (getGrant()?.scopes as string[]) ?? []
+    assert.ok(!scopes.includes(DRIVE_SCOPES.full), 'full drive must not survive selected_write re-consent')
+    assert.ok(scopes.includes(DRIVE_SCOPES.readonly))
+    assert.ok(scopes.includes(DRIVE_SCOPES.file))
+  } finally {
+    if (prevStub === undefined) delete process.env.CONNECTOR_OAUTH_STUB
+    else process.env.CONNECTOR_OAUTH_STUB = prevStub
+  }
+})
+
 // ---- Grant token vault / service-invariáns ---------------------------------
 
 console.log('=== connector grant service: token ownership invariant ===')
