@@ -42,7 +42,7 @@ export function WorkProjectSelect({
       : options
 
   return (
-    <div className={compact ? 'flex min-w-[12rem] items-center gap-2' : ''}>
+    <div className={compact ? 'flex min-w-0 flex-1 items-center gap-2 sm:flex-none sm:min-w-[12rem]' : ''}>
       <label
         htmlFor={id}
         className={compact ? 'shrink-0 text-xs font-medium text-ink-soft' : 'text-sm font-medium text-ink-soft'}

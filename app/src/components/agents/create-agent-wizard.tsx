@@ -26,6 +26,7 @@ import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-
 import { Card } from '@/components/ui/shell'
 import { Spinner } from '@/components/ui/spinner'
 import { WizardExternalPrompt } from '@/components/ui/wizard-external-prompt'
+import { agentDisplayName } from '@/lib/agent-persona'
 import {
   CREATE_AGENT_WIZARD_EXTERNAL_HREFS,
   CREATE_AGENT_WIZARD_STEPS,
@@ -73,6 +74,7 @@ export type CreateAgentWizardProfile = {
 export type CreateAgentWizardCloneOption = {
   id: string
   name: string
+  personaNickname?: string | null
 }
 
 export type CreateAgentWizardConnector = {
@@ -557,7 +559,7 @@ export function CreateAgentWizard({
                       <option value="">Nincs — üres űrlap</option>
                       {cloneableAgents.map((agent) => (
                         <option key={agent.id} value={agent.id}>
-                          {agent.name}
+                          {agentDisplayName(agent.name, agent)}
                         </option>
                       ))}
                     </select>
@@ -571,7 +573,7 @@ export function CreateAgentWizard({
                   {cloneTemplate ? (
                     <div className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-ink">
                       <p className="font-semibold text-sage">
-                        „{cloneTemplate.sourceAgentName}" sablonja betöltve — add meg az új nevet,
+                        „{cloneTemplate.sourceAgentName}” sablonja betöltve — add meg az új nevet,
                         majd lépj tovább.
                       </p>
                       {cloneTemplate.enabledTools.length > 0 ? (

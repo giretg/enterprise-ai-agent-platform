@@ -9,6 +9,7 @@ import { resolve } from 'node:path'
 import type { WorkProjectRecord, WorkProjectRepository } from '../src/repositories/interfaces'
 import { WorkProjectService } from '../src/domain/work-project/work-project-service'
 import { formatProjectMemoryContextBlock } from '../src/lib/memory-prompt'
+import { resolveChatStreamProjectKey } from '../src/lib/chat-stream-project-key'
 import {
   GENERAL_WORK_PROJECT_KEY,
   GENERAL_WORK_PROJECT_NAME,
@@ -362,8 +363,121 @@ async function main() {
     )
     assert.match(chat, /projectKey/)
     assert.match(chat, /createAgentTaskTicket\([\s\S]*projectKey/)
+    assert.match(chat, /chatStreamHttpErrorMessage/)
     assert.match(createForm, /createBoardTicket\([\s\S]*projectKey/)
-    assert.match(stream, /projectKey: projectKey\.trim\(\)/)
+    assert.match(stream, /resolveChatStreamProjectKey/)
+    assert.match(stream, /error: 'invalid_work_project'/)
+    assert.match(stream, /projectKey: assignedProjectKey/)
+  })
+
+  await test('stream kapu: érvényes kulcs a validált assigned.key-t adja tovább', async () => {
+    const calls: string[] = []
+    const result = await resolveChatStreamProjectKey({
+      projectKey: 'ingatlan-adasvetel',
+      skip: false,
+      conversation: null,
+      assignableKey: async (raw) => {
+        calls.push(raw)
+        return { ok: true, key: raw }
+      },
+    })
+    assert.deepEqual(result, { ok: true, key: 'ingatlan-adasvetel' })
+    assert.deepEqual(calls, ['ingatlan-adasvetel'])
+  })
+
+  await test('stream kapu: ismeretlen vagy archivált kulcs új beszélgetésnél 400', async () => {
+    const calls: string[] = []
+    const unknown = await resolveChatStreamProjectKey({
+      projectKey: 'nincs-ilyen',
+      skip: false,
+      conversation: null,
+      assignableKey: async (raw) => {
+        calls.push(raw)
+        return { ok: false, reason: 'A projekt nem található.' }
+      },
+    })
+    assert.deepEqual(unknown, { ok: false, reason: 'A projekt nem található.' })
+
+    const archived = await resolveChatStreamProjectKey({
+      projectKey: 'regi-ugy',
+      skip: false,
+      conversation: null,
+      assignableKey: async (raw) => {
+        calls.push(raw)
+        return { ok: false, reason: 'Ez a projekt archiválva van.' }
+      },
+    })
+    assert.deepEqual(archived, { ok: false, reason: 'Ez a projekt archiválva van.' })
+    assert.deepEqual(calls, ['nincs-ilyen', 'regi-ugy'])
+  })
+
+  await test('stream kapu: már kötött archivált kulcsot nem utasít el', async () => {
+    const calls: string[] = []
+    const result = await resolveChatStreamProjectKey({
+      projectKey: 'regi-ugy',
+      skip: false,
+      conversation: { projectKey: 'regi-ugy' },
+      assignableKey: async (raw) => {
+        calls.push(raw)
+        return { ok: false, reason: 'Ez a projekt archiválva van.' }
+      },
+    })
+    assert.deepEqual(result, { ok: true, key: 'regi-ugy' })
+    assert.deepEqual(calls, [])
+  })
+
+  await test('stream kapu: kulcsváltáskor az új kulcsnak kioszthatónak kell lennie', async () => {
+    const calls: string[] = []
+    const rejected = await resolveChatStreamProjectKey({
+      projectKey: 'regi-ugy',
+      skip: false,
+      conversation: { projectKey: 'ingatlan-adasvetel' },
+      assignableKey: async (raw) => {
+        calls.push(raw)
+        return { ok: false, reason: 'Ez a projekt archiválva van.' }
+      },
+    })
+    assert.deepEqual(rejected, { ok: false, reason: 'Ez a projekt archiválva van.' })
+    assert.deepEqual(calls, ['regi-ugy'])
+
+    const assigned = await resolveChatStreamProjectKey({
+      projectKey: 'uj-ugy',
+      skip: false,
+      conversation: { projectKey: 'ingatlan-adasvetel' },
+      assignableKey: async (raw) => {
+        calls.push(raw)
+        return { ok: true, key: raw }
+      },
+    })
+    assert.deepEqual(assigned, { ok: true, key: 'uj-ugy' })
+    assert.deepEqual(calls, ['regi-ugy', 'uj-ugy'])
+  })
+
+  await test('stream kapu: folytatás és üres kulcs nem hív assignableKey-t', async () => {
+    const calls: string[] = []
+    const assignableKey = async (raw: string) => {
+      calls.push(raw)
+      return { ok: true as const, key: raw }
+    }
+    assert.deepEqual(
+      await resolveChatStreamProjectKey({
+        projectKey: 'regi-ugy',
+        skip: true,
+        conversation: null,
+        assignableKey,
+      }),
+      { ok: true, key: undefined },
+    )
+    assert.deepEqual(
+      await resolveChatStreamProjectKey({
+        projectKey: '  ',
+        skip: false,
+        conversation: null,
+        assignableKey,
+      }),
+      { ok: true, key: undefined },
+    )
+    assert.deepEqual(calls, [])
   })
 
   if (failures > 0) {

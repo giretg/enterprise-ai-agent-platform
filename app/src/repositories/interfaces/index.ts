@@ -63,7 +63,9 @@ import type {
   Skill,
   SkillVersion,
   AgentSkill,
+  AgentSystemRole,
   SkillCatalogScope,
+  SkillKind,
   SkillSourceType,
   SkillRiskTier,
   SandboxApp,
@@ -231,6 +233,7 @@ export interface TicketRepository {
       Pick<
         Ticket,
         | 'state'
+        | 'title'
         | 'payload'
         | 'assigneeType'
         | 'assigneeId'
@@ -1355,6 +1358,8 @@ export interface CreateSkillInput {
   description: string
   catalogScope: SkillCatalogScope
   tenantId: string | null
+  kind: SkillKind
+  requiredSystemRole?: AgentSystemRole | null
   sourceType: SkillSourceType
   provenance: Prisma.InputJsonValue | null
   license: string | null
@@ -1400,6 +1405,12 @@ export interface SkillRepository {
   updateDisplayName(skillId: string, displayName: string | null): Promise<Skill>
   /** Level-0 index leírás — nem verziózott metaadat (katalógus / skill-választó). */
   updateDescription(skillId: string, description: string): Promise<Skill>
+  /** Katalógus-fajta + opcionális rendszer-agent kötés — nem verziózott metaadat. */
+  updateKind(
+    skillId: string,
+    kind: SkillKind,
+    requiredSystemRole: AgentSystemRole | null,
+  ): Promise<Skill>
   addVersion(input: AddSkillVersionInput): Promise<SkillVersion>
   /** Jóváhagyás: az adott verzió `active`, az addigi aktív `retired`, agentek átkötése. */
   approveVersion(

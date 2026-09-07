@@ -4,7 +4,12 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useState, useTransition } from 'react'
 import Link from 'next/link'
 import type { ProcessStatus } from '@prisma/client'
-import { createDiscussionFromTicket, transitionTicket, deleteBoardTicket } from '@/app/actions/platform'
+import {
+  createDiscussionFromTicket,
+  transitionTicket,
+  deleteBoardTicket,
+  runRecurringTicketNow,
+} from '@/app/actions/platform'
 import { setTicketProjectKey } from '@/app/actions/work-projects'
 import { AssignableWorkProjectSelect } from '@/components/work-projects/work-project-select'
 import { effectiveWorkProjectKey } from '@/lib/work-project'
@@ -13,6 +18,7 @@ import { startProcessFromTicket, transitionProcessTicket } from '@/app/actions/p
 import { authorizeTicketRunAs, revokeTicketRunAs } from '@/app/actions/connector-grants'
 import { openAgentChat } from '@/components/agents/agent-chat-session-store'
 import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
+import { TICKET_TASK_EDIT_OPEN_EVENT } from '@/components/tickets/ticket-thread'
 import { ProposalCard } from '@/components/tickets/proposal-card'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card } from '@/components/ui/shell'
@@ -529,7 +535,7 @@ export function TicketRunAsAuthorization({
         setError(res.error)
         return
       }
-      setMessage('Run-as felhatalmazás rögzítve — az AI munkatárs a te fiókoddal járhat el autonóm futásnál.')
+      setMessage('Kész. Az AI munkatárs a te fiókoddal dolgozhat ezen a feladaton, akkor is, ha épp nem vagy a gépnél.')
       router.refresh()
     })
   }
@@ -543,19 +549,20 @@ export function TicketRunAsAuthorization({
         setError(res.error)
         return
       }
-      setMessage('Run-as felhatalmazás visszavonva.')
+      setMessage('Az engedélyt visszavontuk.')
       router.refresh()
     })
   }
 
   return (
-    <Card title="Run-as felhatalmazás">
+    <Card title="Futhat a nevemben">
       {error && <p className="mb-3 text-sm text-coral">{error}</p>}
       {message && <p className="mb-3 text-sm text-sage">{message}</p>}
       {authorized ? (
         <>
           <p className="mb-3 text-sm text-ink-soft">
-            Autonóm futáshoz engedélyezve: a per-user connectorok a te fiókoddal futnak ezen a feladaton.
+            Engedélyezve: ezen a feladaton az AI munkatárs a te fiókoddal dolgozhat (például Gmail), akkor is, ha épp nem
+            vagy a gépnél.
           </p>
           {canManageRunAs && (
             <button
@@ -564,15 +571,15 @@ export function TicketRunAsAuthorization({
               onClick={revoke}
               className="rounded-full bg-coral/20 px-4 py-2 text-sm font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
             >
-              Run-as visszavonása
+              Engedély visszavonása
             </button>
           )}
         </>
       ) : (
         <>
           <p className="mb-3 text-sm text-ink-soft">
-            Ha az AI munkatárs autonóm futáskor (pl. ütemezett feladat) a te Gmail-fiókodat használja, itt adhatod meg
-            előre a felhatalmazást. Implicit öröklés nélkül — csak explicit, visszavonható engedély.
+            Ha az AI munkatárs akkor is a te fiókoddal dolgozna, amikor te nem vagy a gépnél (például ütemezett feladat),
+            itt engedélyezheted. Bármikor visszavonhatod.
           </p>
           <button
             type="button"
@@ -580,7 +587,7 @@ export function TicketRunAsAuthorization({
             onClick={authorize}
             className="rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky hover:bg-sky/30 disabled:opacity-50"
           >
-            Run-as engedélyezése
+            Engedélyezés
           </button>
         </>
       )}
@@ -1015,6 +1022,7 @@ export function TicketMeta({
   isAdminDelete = false,
   canRunAnalysis = false,
   runAnalystAgentId = null,
+  canEditTask = false,
 }: {
   ticket: TicketView
   isAdmin?: boolean
@@ -1023,6 +1031,7 @@ export function TicketMeta({
   isAdminDelete?: boolean
   canRunAnalysis?: boolean
   runAnalystAgentId?: string | null
+  canEditTask?: boolean
 }) {
   const router = useRouter()
   const dispatchTicket = useTicketDispatch()
@@ -1034,6 +1043,7 @@ export function TicketMeta({
   const contractReview = contractReviewFromPayload(payload)
   const [debugLogPending, startDebugLogTransition] = useTransition()
   const [dispatchPending, startDispatchTransition] = useTransition()
+  const [runNowPending, startRunNowTransition] = useTransition()
   const [deletePending, startDeleteTransition] = useTransition()
   const [discussPending, startDiscussTransition] = useTransition()
   const [projectPending, startProjectTransition] = useTransition()
@@ -1062,6 +1072,12 @@ export function TicketMeta({
       : null
 
   const canStartDispatch = canDispatch && canStartTicketDispatch(ticket)
+  const canRunNow =
+    canDispatch &&
+    Boolean(schedule?.scheduledTaskId) &&
+    schedule?.kind === 'recurring' &&
+    schedule.role !== 'occurrence' &&
+    (ticket.state === 'ready' || ticket.state === 'backlog')
 
   function handleExportDebugLog() {
     startDebugLogTransition(async () => {
@@ -1094,6 +1110,21 @@ export function TicketMeta({
         tone: res.warning ? 'err' : 'ok',
         text: res.warning ?? 'Feldolgozás elindítva.',
       })
+    })
+  }
+
+  function handleRunNow() {
+    startRunNowTransition(async () => {
+      setHeaderMessage(null)
+      const res = await runRecurringTicketNow({ ticketId: ticket.id })
+      if (!res.success) {
+        setHeaderMessage({ tone: 'err', text: res.error })
+        return
+      }
+      if (res.data.warning) {
+        setHeaderMessage({ tone: 'err', text: res.data.warning })
+      }
+      router.push(`/control-plane/tickets/${res.data.ticketId}`)
     })
   }
 
@@ -1249,17 +1280,28 @@ export function TicketMeta({
                   compact
                   value={projectKey}
                   onChange={handleProjectKeyChange}
-                  disabled={!canDispatch || projectPending || dispatchPending || deletePending}
+                  disabled={!canDispatch || projectPending || dispatchPending || runNowPending || deletePending}
                 />
               </div>
             </div>
 
             <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {canRunNow && (
+                <button
+                  type="button"
+                  onClick={handleRunNow}
+                  disabled={runNowPending || deletePending || discussPending}
+                  className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-coral-deep disabled:opacity-40"
+                  title="A sorozat következő futását azonnal elindítja. A rákövetkező időpont a megszokott ütemezés szerint marad."
+                >
+                  {runNowPending ? 'Indítás…' : 'Futtatás most'}
+                </button>
+              )}
               {canStartDispatch && (
                 <button
                   type="button"
                   onClick={handleStartDispatch}
-                  disabled={dispatchPending || deletePending || discussPending}
+                  disabled={dispatchPending || deletePending || discussPending || runNowPending}
                   className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-coral-deep disabled:opacity-40"
                   title="Kézi feldolgozás indítása — függetlenül a dispatcher állapotától"
                 >
@@ -1270,7 +1312,7 @@ export function TicketMeta({
                 <button
                   type="button"
                   onClick={handleDiscuss}
-                  disabled={discussPending || deletePending || dispatchPending}
+                  disabled={discussPending || deletePending || dispatchPending || runNowPending}
                   className="rounded-full border border-sky/35 bg-sky/10 px-4 py-2.5 text-sm font-semibold text-sky transition-colors hover:bg-sky/20 disabled:opacity-40"
                   title="Új chat az AI munkatárssal — a feladat előzményével a háttérben"
                 >
@@ -1282,6 +1324,21 @@ export function TicketMeta({
                   runAnalystAgentId={runAnalystAgentId}
                   scope={{ kind: 'ticket', ticketId: ticket.id, title: ticket.title }}
                 />
+              ) : null}
+              {canEditTask ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    document
+                      .getElementById('feladat-szal')
+                      ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+                    window.dispatchEvent(new CustomEvent(TICKET_TASK_EDIT_OPEN_EVENT))
+                  }}
+                  className="rounded-full border border-honey/35 bg-honey/10 px-4 py-2.5 text-sm font-semibold text-honey transition-colors hover:bg-honey/20"
+                  title="Feladat leírása és ütemezés módosítása — csak indítás előtt"
+                >
+                  Szerkesztés
+                </button>
               ) : null}
               {canDelete && (
                 <button

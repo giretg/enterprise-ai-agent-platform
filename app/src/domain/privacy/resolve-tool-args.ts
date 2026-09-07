@@ -1,10 +1,11 @@
 /**
  * Tool-argumentum feloldás (APG-05, spec §10.1).
  *
- * Az LLM álnevet ad vissza a tool-hívásban (`company="[[COMPANY_1]]"`). A
- * feloldott nyers érték — ref-surrogate-nál a `sourceId` — csak a connector
- * felé menő argumentumba kerül, soha a modell contextjébe. A feloldás
- * kizárólag vault-találaton múlik: kitalált álnév `privacy.surrogate.unknown`.
+ * Az LLM álnevet ad vissza a tool-hívásban (`company="[[COMPANY_1]]"`,
+ * `to="[[EMAIL_1]]"`). Ref-álnévnél a `sourceId`, val-álnévnél (szabad
+ * szöveges e-mail/telefon) a plaintext megy a connector argumentumba, soha
+ * a modell contextjébe. A feloldás kizárólag vault-találaton múlik:
+ * kitalált álnév `privacy.surrogate.unknown`.
  *
  * Csak a teljes string-érték számít álnévnek (`parseSurrogate`); részstring
  * (pl. path-ba ágyazott álnév) M1-ben szándékosan érintetlen.
@@ -22,7 +23,7 @@ export class UnknownSurrogateError extends Error {
     super(
       reason === 'denied'
         ? `Az álnév ebben a beszélgetésben nem oldható fel: ${surrogate}.`
-        : `Ismeretlen álnév: ${surrogate}. Csak a tool-válaszban kapott álnevet használd; kitalált álnév nem oldható fel.`,
+        : `Ismeretlen álnév: ${surrogate}. Csak a feladatban vagy tool-válaszban kapott álnevet használd; kitalált álnév nem oldható fel.`,
     )
     this.name = 'UnknownSurrogateError'
     this.surrogate = surrogate
@@ -132,12 +133,23 @@ async function replaceIfSurrogate(
 > {
   const parsed = parseSurrogate(value)
   if (!parsed) return { ok: true, changed: false }
-  const resolved = await ctx.engine.resolveRef({
+  const requester = { tenantId: ctx.tenantId, userId: ctx.requesterUserId ?? null }
+  const lookup = {
     tenantId: ctx.tenantId,
     scope: ctx.scope,
     surrogate: value,
-    requester: { tenantId: ctx.tenantId, userId: ctx.requesterUserId ?? null },
-  })
-  if (!resolved.ok) return { ok: false, surrogate: value, reason: resolved.reason }
-  return { ok: true, changed: true, value: resolved.record.sourceId, entityType: parsed.entityType }
+    requester,
+  }
+  const ref = await ctx.engine.peekRef(lookup)
+  if (ref.ok) return { ok: true, changed: true, value: ref.record.sourceId, entityType: parsed.entityType }
+  if (ref.reason === 'denied' || ref.reason === 'hmac_invalid') {
+    return { ok: false, surrogate: value, reason: ref.reason }
+  }
+
+  const val = await ctx.engine.resolveVal(lookup)
+  if (val.ok) return { ok: true, changed: true, value: val.value, entityType: parsed.entityType }
+  if (val.reason === 'denied' || val.reason === 'hmac_invalid') {
+    return { ok: false, surrogate: value, reason: val.reason }
+  }
+  return { ok: false, surrogate: value, reason: 'unknown' }
 }

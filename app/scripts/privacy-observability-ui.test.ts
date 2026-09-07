@@ -251,11 +251,12 @@ async function main() {
 
   await test('APG-22: a chat-felület a kiemelő komponenst használja', () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-    const src = readFileSync(join(root, 'src/components/agents/agent-chat-panel.tsx'), 'utf8')
-    assert.match(src, /PrivacyHighlightedText/)
-    assert.match(src, /privacyMarkers/)
-    assert.match(src, /PrivacyObservedText/)
-    assert.match(src, /privacyContext/)
+    const panel = readFileSync(join(root, 'src/components/agents/agent-chat-panel.tsx'), 'utf8')
+    const message = readFileSync(join(root, 'src/components/agents/agent-chat-message.tsx'), 'utf8')
+    assert.match(message, /PrivacyHighlightedText/)
+    assert.match(message, /privacyMarkers/)
+    assert.match(message, /PrivacyObservedText/)
+    assert.match(panel, /privacyContext/)
   })
 
   await test('OBSERVE: strukturált mező preview perzisztál és újratöltés után is kiemelhető', async () => {

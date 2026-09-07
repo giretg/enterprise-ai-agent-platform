@@ -1065,7 +1065,7 @@ export function MessageBubble({
         ) : null}
       </div>
 
-      <div className={`flex min-w-0 flex-col ${isUser ? 'items-end' : 'items-start'} max-w-[min(88%,64rem)]`}>
+      <div className={`flex min-w-0 max-w-[calc(100%-2.25rem)] flex-col sm:max-w-[min(88%,64rem)] ${isUser ? 'items-end' : 'items-start'}`}>
         {showAuthor && (
           <div
             className={`mb-1 flex items-baseline gap-2 px-1 text-[11px] ${
@@ -1078,7 +1078,7 @@ export function MessageBubble({
         )}
 
         <div
-          className={`relative w-full rounded-2xl px-4 py-3 shadow-sm ${
+          className={`relative w-full rounded-2xl px-3 py-2.5 shadow-sm sm:px-4 sm:py-3 ${
             isDeleted
               ? 'border border-dashed border-line bg-night-2 text-ink-faint'
               : isApprovalBubble

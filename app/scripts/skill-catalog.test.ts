@@ -8,6 +8,7 @@
  * (zöld/sárga/piros), és a determinista content-hash stabilitása.
  */
 import assert from 'node:assert/strict'
+import { deflateRawSync } from 'node:zlib'
 import {
   parseSkillMd,
   parseFrontmatter,
@@ -19,6 +20,16 @@ import {
   isSkillWritableFromTenant,
   filterSkillsByReadableTenant,
 } from '../src/lib/skill/skill-scope'
+import {
+  catalogScopeForKind,
+  isSkillAssignableToAgent,
+  resolveSkillKind,
+  skillCatalogListPresentation,
+  SKILL_KIND_COPY,
+  skillKindChangeError,
+  skillKindCreateAuthError,
+  skillKindInputError,
+} from '../src/lib/skill/skill-kind'
 import { computeSkillReadiness } from '../src/lib/skill/skill-readiness'
 import { computeSkillContentHash, type SkillContent } from '../src/lib/skill/skill-content'
 import {
@@ -64,6 +75,7 @@ import {
   SKILL_REVIEW_ROLE_INSTRUCTION,
 } from '../src/domain/skill/skill-review-agent'
 import { PROVISIONING_ASSISTANT_ROLE_INSTRUCTION } from '../src/domain/provisioning/provisioning-assistant'
+import { readZipEntries, ZipReadError } from '../src/lib/skill/zip-reader'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -79,7 +91,52 @@ function check(name: string, fn: () => void | Promise<void>) {
 const TENANT_A = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'
 const TENANT_B = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb'
 
+function zipWithOverlappingCompressedEntries(): Uint8Array {
+  const name = Buffer.from('SKILL.md')
+  const content = Buffer.from(Array.from({ length: 600 }, (_, i) => i % 251))
+  const compressed = deflateRawSync(content)
+  const local = Buffer.alloc(30 + name.length + compressed.length)
+  local.writeUInt32LE(0x04034b50, 0)
+  local.writeUInt16LE(20, 4)
+  local.writeUInt16LE(8, 8)
+  local.writeUInt32LE(compressed.length, 18)
+  local.writeUInt32LE(content.length, 22)
+  local.writeUInt16LE(name.length, 26)
+  name.copy(local, 30)
+  compressed.copy(local, 30 + name.length)
+
+  const centralEntry = Buffer.alloc(46 + name.length)
+  centralEntry.writeUInt32LE(0x02014b50, 0)
+  centralEntry.writeUInt16LE(20, 4)
+  centralEntry.writeUInt16LE(20, 6)
+  centralEntry.writeUInt16LE(8, 10)
+  centralEntry.writeUInt32LE(compressed.length, 20)
+  centralEntry.writeUInt32LE(content.length, 24)
+  centralEntry.writeUInt16LE(name.length, 28)
+  name.copy(centralEntry, 46)
+
+  const central = Buffer.concat([centralEntry, centralEntry])
+  // A padding miatt az egyszerű összegzett-compressed-size korlát nem fogna.
+  const padding = Buffer.alloc(compressed.length * 2)
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0)
+  end.writeUInt16LE(2, 8)
+  end.writeUInt16LE(2, 10)
+  end.writeUInt32LE(central.length, 12)
+  end.writeUInt32LE(local.length + padding.length, 16)
+  return new Uint8Array(Buffer.concat([local, padding, central, end]))
+}
+
 async function main() {
+  console.log('Skill-csomag ZIP védelem')
+
+  await check('paddelt, átfedő tömörített ZIP-bejegyzések → elutasítva', () => {
+    assert.throws(
+      () => readZipEntries(zipWithOverlappingCompressedEntries()),
+      (error: unknown) => error instanceof ZipReadError && error.code === 'corrupt',
+    )
+  })
+
   console.log('SKILL.md adapter')
 
   await check('frontmatter + instrukció-bontás + provenience', () => {
@@ -265,6 +322,81 @@ async function main() {
     ]
     const visible = filterSkillsByReadableTenant(skills, TENANT_A).map((s) => s.id)
     assert.deepEqual(visible, ['1', '2'])
+  })
+
+  console.log('Skill-fajta (system / published / tenant)')
+
+  await check('catalogScopeForKind: tenant→tenant, published/system→global', () => {
+    assert.equal(catalogScopeForKind('tenant'), 'tenant')
+    assert.equal(catalogScopeForKind('published'), 'global')
+    assert.equal(catalogScopeForKind('system'), 'global')
+  })
+
+  await check('resolveSkillKind: hiányzó kind → catalogScope alapján', () => {
+    assert.equal(resolveSkillKind(undefined, 'tenant'), 'tenant')
+    assert.equal(resolveSkillKind(null, 'global'), 'published')
+    assert.equal(resolveSkillKind('system', 'tenant'), 'system')
+  })
+
+  await check('skillCatalogListPresentation: hiányzó kind/versions nem dob', () => {
+    const empty = skillCatalogListPresentation({})
+    assert.equal(empty.kind, 'tenant')
+    assert.equal(empty.label, SKILL_KIND_COPY.tenant.label)
+    assert.equal(empty.versions.length, 0)
+    const published = skillCatalogListPresentation({ kind: 'nope', catalogScope: 'global' })
+    assert.equal(published.kind, 'published')
+    assert.equal(published.label, SKILL_KIND_COPY.published.label)
+  })
+
+  await check('rendszer-skillhez kötelező a systemRole; kiadotthoz tilos', () => {
+    assert.equal(skillKindInputError('system', null), 'Rendszer-skillhez ki kell választani, melyik rendszer-agenthez tartozik.')
+    assert.equal(skillKindInputError('system', 'run_analyst'), null)
+    assert.equal(skillKindInputError('published', 'run_analyst'), 'Csak rendszer-skillhez adható meg rendszer-agent.')
+    assert.equal(skillKindInputError('tenant', null), null)
+  })
+
+  await check('kiadott/rendszer skillt csak platform-admin hozhat létre', () => {
+    assert.equal(skillKindCreateAuthError('tenant', false), null)
+    assert.equal(
+      skillKindCreateAuthError('published', false),
+      'Kiadott vagy rendszer-skillt csak platform-admin hozhat létre.',
+    )
+    assert.equal(skillKindCreateAuthError('system', true), null)
+  })
+
+  await check('tenant-skill fajtája nem emelhető kiadottra; globális nem lehet tenant', () => {
+    assert.match(
+      skillKindChangeError({ kind: 'tenant', catalogScope: 'tenant' }, 'published', true) ?? '',
+      /tenant-határt/,
+    )
+    assert.match(
+      skillKindChangeError({ kind: 'published', catalogScope: 'global' }, 'tenant', true) ?? '',
+      /nem minősíthető tenant/,
+    )
+    assert.equal(
+      skillKindChangeError({ kind: 'published', catalogScope: 'global' }, 'system', true),
+      null,
+    )
+    assert.match(
+      skillKindChangeError({ kind: 'published', catalogScope: 'global' }, 'system', false) ?? '',
+      /platform-admin/,
+    )
+  })
+
+  await check('rendszer-skill csak a matching systemRole agentre köthető', () => {
+    const system = { kind: 'system' as const, requiredSystemRole: 'run_analyst' }
+    assert.equal(isSkillAssignableToAgent(system, { systemRole: 'run_analyst' }), true)
+    assert.equal(isSkillAssignableToAgent(system, { systemRole: 'web_egress' }), false)
+    assert.equal(isSkillAssignableToAgent(system, { systemRole: null }), false)
+  })
+
+  await check('kiadott és tenant skill csak sima agentre köthető', () => {
+    const published = { kind: 'published' as const, requiredSystemRole: null }
+    const tenant = { kind: 'tenant' as const, requiredSystemRole: null }
+    assert.equal(isSkillAssignableToAgent(published, { systemRole: null }), true)
+    assert.equal(isSkillAssignableToAgent(tenant, { systemRole: null }), true)
+    assert.equal(isSkillAssignableToAgent(published, { systemRole: 'run_analyst' }), false)
+    assert.equal(isSkillAssignableToAgent(tenant, { systemRole: 'run_analyst' }), false)
   })
 
   console.log('Readiness-check (§D10)')
@@ -809,6 +941,9 @@ async function main() {
     agentTenantId: string | null | 'missing'
     skillTenantId?: string | null
     status?: string
+    kind?: 'tenant' | 'published' | 'system'
+    requiredSystemRole?: string | null
+    agentSystemRole?: string | null
   }) {
     const calls: {
       assign: string[]
@@ -827,7 +962,13 @@ async function main() {
         skillId: 'skill-1',
         status: opts.status ?? 'active',
         contentHash: 'hash',
-        skill: { id: 'skill-1', tenantId: opts.skillTenantId ?? null, name: 'Global skill' },
+        skill: {
+          id: 'skill-1',
+          tenantId: opts.skillTenantId ?? null,
+          name: 'Global skill',
+          kind: opts.kind ?? (opts.skillTenantId ? 'tenant' : 'published'),
+          requiredSystemRole: opts.requiredSystemRole ?? null,
+        },
       }),
       assign: async (i: { skillVersionId: string }) => {
         calls.assign.push(i.skillVersionId)
@@ -848,7 +989,9 @@ async function main() {
     }
     const agentsRepo = {
       findById: async () =>
-        opts.agentTenantId === 'missing' ? null : { tenantId: opts.agentTenantId },
+        opts.agentTenantId === 'missing'
+          ? null
+          : { tenantId: opts.agentTenantId, systemRole: opts.agentSystemRole ?? null },
     }
     const svc = new SkillService(
       skillsRepo as never,
@@ -892,6 +1035,47 @@ async function main() {
     const { svc, calls } = makeAgentBoundSvc({ agentTenantId: null, skillTenantId: null })
     await svc.assign({ agentId: 'agent-shared', skillVersionId: 'v1', actor: adminA })
     assert.deepEqual(calls.assign, ['v1'])
+  })
+
+  await check('rendszer-skill sima agentre → elutasítva', async () => {
+    const { svc, calls } = makeAgentBoundSvc({
+      agentTenantId: TENANT_A,
+      skillTenantId: null,
+      kind: 'system',
+      requiredSystemRole: 'run_analyst',
+      agentSystemRole: null,
+    })
+    await assert.rejects(
+      () => svc.assign({ agentId: 'agent-a', skillVersionId: 'v1', actor: adminA }),
+      /rendszer-skill csak/,
+    )
+    assert.equal(calls.assign.length, 0)
+  })
+
+  await check('rendszer-skill a matching Futás-elemzőre → sikeres', async () => {
+    const { svc, calls } = makeAgentBoundSvc({
+      agentTenantId: TENANT_A,
+      skillTenantId: null,
+      kind: 'system',
+      requiredSystemRole: 'run_analyst',
+      agentSystemRole: 'run_analyst',
+    })
+    await svc.assign({ agentId: 'agent-ra', skillVersionId: 'v1', actor: adminA })
+    assert.deepEqual(calls.assign, ['v1'])
+  })
+
+  await check('kiadott skill Futás-elemzőre → elutasítva', async () => {
+    const { svc, calls } = makeAgentBoundSvc({
+      agentTenantId: TENANT_A,
+      skillTenantId: null,
+      kind: 'published',
+      agentSystemRole: 'run_analyst',
+    })
+    await assert.rejects(
+      () => svc.assign({ agentId: 'agent-ra', skillVersionId: 'v1', actor: adminA }),
+      /nem rendszer/,
+    )
+    assert.equal(calls.assign.length, 0)
   })
 
   await check('unassign IDEGEN tenant agentjéről → elutasítva, nincs törlés', async () => {

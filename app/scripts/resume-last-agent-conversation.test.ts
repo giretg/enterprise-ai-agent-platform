@@ -8,7 +8,10 @@ import { resolve } from 'node:path'
 import {
   conversationIdToResume,
   previousConversationLoaderVisible,
+  shouldClearTurnRunningOnStreamEnd,
   shouldSkipDuplicateSessionSelect,
+  visibleChatOwnsConversation,
+  visibleChatOwnsStream,
 } from '../src/lib/resume-last-agent-conversation'
 
 let failures = 0
@@ -216,7 +219,7 @@ check('a chatpanel a dupla-betöltés őrt és a loader-predikátumot használja
     /const selectSession = useCallback\(\s*async \(id: string\) => \{[\s\S]{0,1800}loadAgentChatMessages/,
   )
   assert.ok(select, 'selectSession blokk megtalálható')
-  assert.match(select[0], /sessionLoadGenRef\.current \+= 1/)
+  assert.match(select[0], /abandonLocalTurnView/)
 })
 
 check('a resume effect nem a selectSession identitásra van kötve (ne fusson újra thinking-trace/sessions miatt)', () => {
@@ -234,6 +237,68 @@ check('nyitáskor a legutóbbi szálat kéri, a session-listát csak az előzmé
     /useEffect\(\(\) => \{\n    if \(!open\) return\n    const timer = window\.setTimeout\(\(\) => void refreshSessions\(\)/,
   )
   assert.equal(openList, null)
+})
+
+check('szálváltás után a régi stream nem írja a látható chatet', () => {
+  assert.equal(visibleChatOwnsStream({ streamGen: 1, currentGen: 1 }), true)
+  assert.equal(visibleChatOwnsStream({ streamGen: 1, currentGen: 2 }), false)
+})
+
+check('üzenet-újratöltés csak a nézett szálra megy — üres új beszélgetést nem ránt vissza', () => {
+  assert.equal(
+    visibleChatOwnsConversation({
+      viewingConversationId: 'conv-a',
+      incomingConversationId: 'conv-a',
+    }),
+    true,
+  )
+  assert.equal(
+    visibleChatOwnsConversation({
+      viewingConversationId: null,
+      incomingConversationId: 'conv-a',
+    }),
+    false,
+  )
+  assert.equal(
+    visibleChatOwnsConversation({
+      viewingConversationId: 'conv-b',
+      incomingConversationId: 'conv-a',
+    }),
+    false,
+  )
+})
+
+check('helyi stream-abort (szálváltás) nem törli a háttérben futó jelölőt', () => {
+  assert.equal(shouldClearTurnRunningOnStreamEnd({ aborted: true }), false)
+  assert.equal(shouldClearTurnRunningOnStreamEnd({ aborted: false }), true)
+})
+
+check('Új beszélgetés futó forduló alatt is indul — a szerver megy tovább', () => {
+  const start = panel.match(
+    /const startNewSession = useCallback\(\(\) => \{[\s\S]{0,900}setSelectedProcessDefId\(null\)/,
+  )
+  assert.ok(start, 'startNewSession blokk megtalálható')
+  assert.doesNotMatch(start[0], /if \(isAgentTyping/)
+  assert.match(start[0], /abandonLocalTurnView/)
+  assert.match(start[0], /setViewingConversation\(null\)/)
+})
+
+check('szálváltás elengedi a helyi streamet, a futó fordulót a szerveren hagyja', () => {
+  assert.match(panel, /const abandonLocalTurnView = useCallback/)
+  assert.match(panel, /streamAbortRef\.current\?\.abort\(\)/)
+  assert.match(panel, /visibleChatOwnsStream/)
+  assert.match(panel, /visibleChatOwnsConversation/)
+  assert.match(panel, /shouldClearTurnRunningOnStreamEnd/)
+})
+
+check('az előzmény-sáv nem tiltja az új beszélgetést és a szálváltást, ha az agent dolgozik', () => {
+  const sidebar = readFileSync(
+    resolve(process.cwd(), 'src/components/chat/chat-session-sidebar.tsx'),
+    'utf8',
+  )
+  assert.match(sidebar, /onClick=\{onNewChat\}/)
+  assert.doesNotMatch(sidebar, /onClick=\{onNewChat\}[\s\S]{0,40}disabled=\{isBusy\}/)
+  assert.doesNotMatch(sidebar, /disabled=\{isBusy\}\s+onClick=\{\(\) => onSelect/)
 })
 
 check('a findLatest lekérdezés olcsó: findFirst, első user-üzenet join nélkül', () => {

@@ -1,4 +1,5 @@
-import type { Agent, SkillRiskTier } from '@prisma/client'
+import type { Agent, AgentSystemRole, SkillKind, SkillRiskTier } from '@prisma/client'
+import { isSkillAssignableToAgent } from '@/lib/skill/skill-kind'
 import type { TenantAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
@@ -11,10 +12,6 @@ import { prisma } from '@/lib/db'
 import type { SkillReadiness } from '@/lib/skill/skill-readiness'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { repositories } from '@/repositories/postgres'
-import {
-  buildAgentToolAccessReport,
-  type AgentToolAccessReport,
-} from '@/domain/tool-broker/tool-access-diagnostics'
 import {
   AgentDetailLoadError,
   classifyAgentDetailLookup,
@@ -53,6 +50,8 @@ export type AgentDetailSkillRow = {
   description: string
   version: number
   riskTier: SkillRiskTier
+  kind: SkillKind
+  requiredSystemRole: AgentSystemRole | null
   requires: Array<{ toolName: string; reason: string }>
   readiness: SkillReadiness
 }
@@ -63,6 +62,8 @@ export type AgentDetailAssignableSkill = {
   displayName: string | null
   description: string
   riskTier: SkillRiskTier
+  kind: SkillKind
+  requiredSystemRole: AgentSystemRole | null
   activeVersionId: string
   version: number
 }
@@ -84,11 +85,6 @@ export type AgentDetailPageData = {
   governance: {
     capabilities: Awaited<ReturnType<typeof repositories.toolBroker.findCapabilitiesForAgent>>
     connectors: Awaited<ReturnType<typeof repositories.toolBroker.findConnectorsForAgent>>
-    /**
-     * issue #194, WP-5 — „látja, de nincs joga" / „van joga, de nem látja".
-     * A MÁR betöltött capability-sorokból számol, nincs extra DB-kör.
-     */
-    toolAccess: AgentToolAccessReport
   } | null
   modelPolicy: Awaited<ReturnType<typeof services.platformSettings.getModelPolicy>> | null
   connectorCatalog: Awaited<ReturnType<typeof services.provisioning.listCatalog>> | null
@@ -286,6 +282,8 @@ function mapAgentSkillRows(
     description: r.description,
     version: r.version,
     riskTier: r.riskTier,
+    kind: r.kind,
+    requiredSystemRole: r.requiredSystemRole,
     requires: r.requires,
     readiness: r.readiness,
   }))
@@ -294,17 +292,28 @@ function mapAgentSkillRows(
 function mapAssignableSkills(
   catalog: Awaited<ReturnType<typeof services.skills.listForActor>>,
   assignedSkillIds: Set<string>,
+  agentSystemRole: string | null,
 ): AgentDetailAssignableSkill[] {
   const rows: AgentDetailAssignableSkill[] = []
   for (const skill of catalog) {
     const active = skill.versions.find((v) => v.status === 'active')
     if (!active || assignedSkillIds.has(skill.id)) continue
+    if (
+      !isSkillAssignableToAgent(
+        { kind: skill.kind, requiredSystemRole: skill.requiredSystemRole },
+        { systemRole: agentSystemRole },
+      )
+    ) {
+      continue
+    }
     rows.push({
       skillId: skill.id,
       name: skill.name,
       displayName: skill.displayName,
       description: skill.description,
       riskTier: skill.riskTier,
+      kind: skill.kind,
+      requiredSystemRole: skill.requiredSystemRole,
       activeVersionId: active.id,
       version: active.version,
     })
@@ -399,7 +408,6 @@ export async function loadAgentDetailPageData(
     governance = {
       capabilities,
       connectors,
-      toolAccess: buildAgentToolAccessReport(agentId, capabilities),
     }
     agentSkills = mapAgentSkillRows(assignedWithReadiness)
 
@@ -420,7 +428,11 @@ export async function loadAgentDetailPageData(
       }))
 
       const assignedSkillIds = new Set(assignedWithReadiness.map((a) => a.skillId))
-      assignableSkills = mapAssignableSkills(skillCatalog, assignedSkillIds)
+      assignableSkills = mapAssignableSkills(
+        skillCatalog,
+        assignedSkillIds,
+        detail.agent.systemRole ?? null,
+      )
 
       const memoryId = detail.agent.memoryId
       const [projectScope, initialOverview] = await Promise.all([

@@ -6,15 +6,13 @@
  * A felhasználó felé ez „az agent buta" tünetként jelent meg, holott egy hiányzó
  * jogosultsági sorról volt szó. Egyetlen képernyő elég lett volna hozzá.
  *
- * Ez a modul állítja elő azt a képernyőt: tool-onként megmondja, hogy az agent
- * LÁTJA-e az eszközt, van-e hozzá `Capability` sora, valóban HÍVHATJA-e, és
- * feloldható-e a végrehajtó handler. A két üzletileg érdekes eltérés:
+ * Ez a modul állítja elő azt a képernyőt: tool-onként megmondja, hogy a
+ * chat-katalógusban van-e, van-e `Capability` sora, tényleg hívható-e, és
+ * feloldható-e a végrehajtó handler. Az egyetlen operátori eltérés:
  *
- *   „Látja, de nincs joga"  — az agent felkínálva látja, de a broker elutasítja.
- *                             Ez a tulajdoni-lap incidens alakja.
- *   „Van joga, de nem látja" — a grant ki van adva (és fizetünk érte a
- *                             jogosultság-kezelésben), de a tool egyik
- *                             modell-felületen sem jelenik meg.
+ *   „Nem elérhető" — chat-katalógusban van, de nincs grant, ezért a modell
+ *                    nem kapja meg. Ez a tulajdoni-lap incidens alakja.
+ * A chatben szándékosan rejtett (MCP-only) grantok nem eltérés: nincs teendő.
  */
 import type { ToolBrokerRepository } from '@/repositories/interfaces'
 import { resolveToolHandler } from './handlers/registry'
@@ -41,19 +39,14 @@ export type ToolAccessDiagnosis = {
   issue: ToolAccessIssue | null
 }
 
-export type ToolAccessIssue =
-  | 'visible_without_grant'
-  | 'granted_but_invisible'
-  | 'handler_missing'
+export type ToolAccessIssue = 'visible_without_grant' | 'handler_missing'
 
 export type AgentToolAccessReport = {
   agentId: string
   surface: ToolSurface
   tools: ToolAccessDiagnosis[]
-  /** „Látja, de nincs joga" — a tulajdoni-lap típusú hiány. */
+  /** Chat-katalógusban van, de nincs grant — a modell nem kapja meg. */
   visibleWithoutGrant: ToolAccessDiagnosis[]
-  /** „Van joga, de nem látja" — kiadott, de kihasználatlan jogosultság. */
-  grantedButInvisible: ToolAccessDiagnosis[]
   /** Grantolva + látható, de nincs végrehajtó — futásidejű hiba lenne. */
   handlerMissing: ToolAccessDiagnosis[]
 }
@@ -92,10 +85,8 @@ export function buildAgentToolAccessReport(
     const handlerResolvable = resolveToolHandler(tool) !== undefined
 
     let issue: ToolAccessIssue | null = null
-    // Sorrend: a végrehajthatatlanság a legsúlyosabb (a hívás futásidőben esne el).
     if (allowed && visible && !handlerResolvable) issue = 'handler_missing'
     else if (visible && !allowed) issue = 'visible_without_grant'
-    else if (allowed && !visible) issue = 'granted_but_invisible'
 
     return {
       tool,
@@ -115,7 +106,6 @@ export function buildAgentToolAccessReport(
     surface,
     tools,
     visibleWithoutGrant: tools.filter((t) => t.issue === 'visible_without_grant'),
-    grantedButInvisible: tools.filter((t) => t.issue === 'granted_but_invisible'),
     handlerMissing: tools.filter((t) => t.issue === 'handler_missing'),
   }
 }

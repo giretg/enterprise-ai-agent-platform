@@ -12,6 +12,7 @@ import {
   assignableConnectorsFromCatalog,
   parseCreateAgentWizardStep,
 } from '@/lib/create-agent-wizard'
+import { agentDisplayName } from '@/lib/agent-persona'
 import { enabledModelProviders } from '@/lib/model-policy'
 import { repositories } from '@/repositories/postgres'
 
@@ -37,8 +38,14 @@ export default async function NewAgentPage({
     unbounded: true,
   })
   const cloneableAgents: CreateAgentWizardCloneOption[] = agentPage.items
-    .map((agent) => ({ id: agent.id, name: agent.name }))
-    .sort((a, b) => a.name.localeCompare(b.name, 'hu'))
+    .map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      personaNickname: agent.personaNickname,
+    }))
+    .sort((a, b) =>
+      agentDisplayName(a.name, a).localeCompare(agentDisplayName(b.name, b), 'hu'),
+    )
 
   const continuation = await loadContinuation(query.continue)
 

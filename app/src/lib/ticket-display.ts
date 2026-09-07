@@ -40,6 +40,23 @@ export function extractTaskDescription(payload: unknown): string | null {
   return null
 }
 
+/** A következő futás a `question`/`task` mezőt olvassa — mindkettőt egyben tartjuk. */
+export function applyTicketTaskDescription(
+  payload: unknown,
+  description: string,
+): Record<string, unknown> {
+  const record = readTicketPayload(payload) ?? {}
+  const next: Record<string, unknown> = { ...record, question: description, task: description }
+  const briefing = next.briefing
+  if (briefing && typeof briefing === 'object' && !Array.isArray(briefing)) {
+    const current = briefing as Record<string, unknown>
+    if (typeof current.goal === 'string') {
+      next.briefing = { ...current, goal: description }
+    }
+  }
+  return next
+}
+
 export type AssigneeDisplay = {
   type: AssigneeType | null
   label: string
@@ -306,6 +323,19 @@ export function canStartTicketDispatch(ticket: {
 }
 
 export const UNSTARTED_DELETABLE_STATES = ['ready', 'backlog'] as const
+
+/** Végrehajtásra váró vagy rendszeres sablon: a feladat és az ütemezés még átírható. */
+export function canEditTicketTask(
+  ticket: Pick<Ticket, 'state' | 'lockToken' | 'createdById' | 'processInstanceId'>,
+  ctx: { canManage: boolean; userId?: string | null },
+): boolean {
+  if (ticket.processInstanceId) return false
+  if (!UNSTARTED_DELETABLE_STATES.includes(ticket.state as (typeof UNSTARTED_DELETABLE_STATES)[number])) {
+    return false
+  }
+  if (ticket.lockToken) return false
+  return ctx.canManage || ticket.createdById === ctx.userId
+}
 
 export function canDeleteBoardTicket(
   ticket: Pick<Ticket, 'state' | 'lockToken' | 'createdById'>,

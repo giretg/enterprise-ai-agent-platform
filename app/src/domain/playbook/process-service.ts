@@ -956,24 +956,34 @@ export class ProcessService {
     return { review, process, step, stepTicket, processTickets }
   }
 
-  /** A felülvizsgálati ticket lezárása döntés-nyommal (állapot + átmenet + audit). */
-  private async closeReviewTicket(input: {
-    tenantId: string | null
+  /**
+   * A felülvizsgálati döntés EGYSZER-HASZNÁLATOS kapuja: a review ticketet
+   * atomikusan (`awaiting_human` → döntés-állapot) igényli ki, MIELŐTT a folyamat
+   * bármit léptetne. Ha a compare-and-set nem fog (a review már nincs
+   * `awaiting_human`-ban), akkor erről a felülvizsgálatról már döntöttek — a hívás
+   * elutasul. Ez zárja ki, hogy egy dupla kattintás vagy két jóváhagyó ugyanazt a
+   * lépést kétszer léptesse tovább (duplikált leendő ticketek / dupla dispatch).
+   */
+  private async claimReviewDecision(input: {
     review: Ticket
-    toState: 'done' | 'approved' | 'rejected'
+    toState: 'done' | 'approved'
     note: string
     actorUserId: string
   }): Promise<void> {
-    const fromState = input.review.state
-    if (fromState === input.toState) return
-    await this.tickets.update(input.review.id, {
+    const claimed = await this.tickets.updateIfCurrentState(input.review.id, 'awaiting_human', {
       state: input.toState,
       lockToken: null,
       lockedAt: null,
     })
+    if (!claimed) {
+      throw new ProcessServiceError(
+        'INVALID_STATE',
+        'Erről a felülvizsgálatról már döntöttek (vagy épp döntés alatt van). Frissítsd az oldalt, és nézd meg a folyamat aktuális állapotát.',
+      )
+    }
     await this.tickets.recordTransition({
       ticketId: input.review.id,
-      fromState,
+      fromState: 'awaiting_human',
       toState: input.toState,
       actorType: 'human',
       actorId: input.actorUserId,
@@ -1028,6 +1038,14 @@ export class ProcessService {
       )
     }
 
+    // Egyszer-használat (l. claimReviewDecision): a review-t előbb kiigényeljük.
+    await this.claimReviewDecision({
+      review,
+      toState: 'done',
+      note: `Újrafuttatás kérve (${attempt}. próba).`,
+      actorUserId: input.actorUserId,
+    })
+
     // A pontosítás a lépés szálába: a futtató runtime a ticket kommentjeiből
     // építi a kontextust (l. buildThreadContextPrompt).
     await this.tickets.appendComment({
@@ -1066,13 +1084,6 @@ export class ProcessService {
       await this.processes.updateStep(step.id, { status: 'ready', completedAt: null })
     }
     await this.processes.updateProcess(process.id, { status: 'running' })
-    await this.closeReviewTicket({
-      tenantId: input.tenantId,
-      review,
-      toState: 'done',
-      note: `Újrafuttatás kérve (${attempt}. próba).`,
-      actorUserId: input.actorUserId,
-    })
 
     await this.append(input.tenantId, { type: 'user', id: input.actorUserId }, {
       action: 'process.step.retry',
@@ -1111,6 +1122,14 @@ export class ProcessService {
       input.tenantId,
       input.reviewTicketId,
     )
+    // Egyszer-használat (l. claimReviewDecision): a review-t előbb kiigényeljük — enélkül
+    // az `advance()` idempotencia-őre kikerülne (a step szándékosan nem-`completed`-re áll).
+    await this.claimReviewDecision({
+      review,
+      toState: 'approved',
+      note: input.note?.trim() || 'Emberi felülbírálás: a lépés elfogadva, a folyamat továbbmegy.',
+      actorUserId: input.actorUserId,
+    })
     const patch = Object.fromEntries(
       Object.entries(input.outputPatch ?? {})
         .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value])
@@ -1148,14 +1167,6 @@ export class ProcessService {
       await this.processes.updateStep(step.id, { status: 'in_progress', completedAt: null })
     }
     await this.processes.updateProcess(process.id, { status: 'running' })
-
-    await this.closeReviewTicket({
-      tenantId: input.tenantId,
-      review,
-      toState: 'approved',
-      note: input.note?.trim() || 'Emberi felülbírálás: a lépés elfogadva, a folyamat továbbmegy.',
-      actorUserId: input.actorUserId,
-    })
 
     await this.append(input.tenantId, { type: 'user', id: input.actorUserId }, {
       action: 'process.step.human_override',

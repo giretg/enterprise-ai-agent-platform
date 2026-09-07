@@ -42,3 +42,17 @@ _Avoid_: tanítási jogosultság, közös memória
 Olyan agent-szintű jóváhagyási követelmény, amelynél a legutolsó javaslat-revízió kezdeményezője nem lehet annak aktiválója.
 A v1.1.1-től a termékfelületen **szünetel** (MemoryTraining spec §4.5.1): a mező a sémában megmarad, a default és a UI `false`, mert a jelenlegi tanítási folyamat mellett zsákutcába zárná a ticketet.
 _Avoid_: approver szerep, kettős kattintás
+
+## Skillek
+
+**Skill-fajta**:
+A skill katalógusbeli besorolása: tenant (csak a saját tenantban), kiadott (platform-kurált csomag, tenant-agentekhez rendelhető) vagy rendszer (platform belső, csak a megadott rendszer-agenthez köthető).
+_Avoid_: láthatósági szint, audience, superadmin-skill
+
+**Rendszer-skill**:
+Platform belső skill, amely csak a hozzá tartozó rendszer-agenten jelenik meg és oda rendelhető. A tenant admin a matching agenten látja, más agentre nem teheti.
+_Avoid_: global skill, platform skill
+
+**Kiadott skill**:
+Platform-admin által kiadott, tenantoknak olvasható, de nem szerkeszthető skill, amelyet a tenant admin a saját (nem rendszer-) agentjeihez rendelhet.
+_Avoid_: global pack, published catalog item

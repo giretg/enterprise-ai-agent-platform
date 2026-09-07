@@ -73,7 +73,6 @@ export function AgentChatSessionSidebar({
   loading,
   loadingMore = false,
   hasMore = false,
-  isBusy,
   onSelect,
   onNewChat,
   onLoadMore,
@@ -88,7 +87,6 @@ export function AgentChatSessionSidebar({
   loading: boolean
   loadingMore?: boolean
   hasMore?: boolean
-  isBusy: boolean
   onSelect: (conversationId: string) => void
   onNewChat: () => void
   onLoadMore?: () => void
@@ -107,8 +105,7 @@ export function AgentChatSessionSidebar({
         <button
           type="button"
           onClick={onNewChat}
-          disabled={isBusy}
-          className={`flex w-full items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-sm font-semibold transition-colors disabled:opacity-40 ${
+          className={`flex w-full items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-sm font-semibold transition-colors ${
             isNewActive
               ? 'border-coral/40 bg-coral/10 text-coral-deep'
               : 'border-line bg-card text-ink-soft hover:border-coral/30 hover:bg-coral/5 hover:text-coral-deep'
@@ -187,10 +184,9 @@ export function AgentChatSessionSidebar({
                       <li key={session.id}>
                         <button
                           type="button"
-                          disabled={isBusy}
                           onClick={() => onSelect(session.id)}
                           aria-current={active ? 'true' : undefined}
-                          className={`group relative w-full rounded-xl py-2.5 pl-3 pr-4 text-left transition-colors disabled:opacity-40 ${
+                          className={`group relative w-full rounded-xl py-2.5 pl-3 pr-4 text-left transition-colors ${
                             active
                               ? 'bg-coral/10 ring-1 ring-inset ring-coral/25'
                               : 'hover:bg-card'
@@ -250,7 +246,7 @@ export function AgentChatSessionSidebar({
               <button
                 type="button"
                 onClick={onLoadMore}
-                disabled={isBusy || loadingMore}
+                disabled={loadingMore}
                 className="w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/30 hover:text-coral-deep disabled:opacity-40"
               >
                 {loadingMore ? 'Betöltés…' : 'Régebbi beszélgetések'}

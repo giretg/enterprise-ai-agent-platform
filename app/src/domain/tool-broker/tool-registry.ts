@@ -604,7 +604,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
   gmail_create_draft: descriptor({
     description: 'Gmail piszkozat létrehozása.',
     argsSchema: z.object({
-      to: z.string().email(),
+      to: z.string().min(1).max(320),
       subject: z.string().min(1).max(500),
       body: z.string().min(1).max(20000),
       threadId: z.string().optional(),
@@ -632,7 +632,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     argsSchema: z
       .object({
         draftId: z.string().optional(),
-        to: z.string().email().optional(),
+        to: z.string().min(1).max(320).optional(),
         subject: z.string().optional(),
         body: z.string().optional(),
         approvalTicketId: z.string().uuid().optional(),
@@ -948,7 +948,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     argsSchema: z.object({
       fileId: z.string().min(1).max(200),
       recipientType: z.enum(['user', 'group']),
-      emailAddress: z.string().email(),
+      emailAddress: z.string().min(1).max(320),
       role: z.enum(['reader', 'commenter', 'writer']),
       sendNotificationEmail: z.boolean().optional(),
       emailMessage: z.string().max(2000).optional(),
@@ -2648,6 +2648,9 @@ function toWireSafeSchema(node: unknown): void {
   if (typeof record.pattern === 'string' && LOOKAROUND.test(record.pattern)) {
     delete record.pattern
   }
+  // `format: email` a modellnek azt mondja, `[[EMAIL_1]]` érvénytelen címzett —
+  // a platform a tool-argban oldja fel az álnevet (APG-05).
+  if (record.format === 'email') delete record.format
   for (const value of Object.values(record)) toWireSafeSchema(value)
 }
 

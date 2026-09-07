@@ -23,7 +23,11 @@ import { diffSkillVersions } from '@/lib/skill/skill-diff'
 import { PROVISIONING_ASSISTANT_TEMPLATE } from '@/domain/provisioning/provisioning-assistant'
 import type { TenantAuthContext } from '@/auth/context'
 import type { SkillReadiness } from '@/lib/skill/skill-readiness'
-import type { SkillRiskTier } from '@prisma/client'
+import type { AgentSystemRole, SkillKind, SkillRiskTier } from '@prisma/client'
+import {
+  catalogScopeForKind,
+  isSkillAssignableToAgent,
+} from '@/lib/skill/skill-kind'
 import { readTenantLanguage } from '@/lib/tenant-language'
 
 /**
@@ -37,8 +41,8 @@ function actorFrom(ctx: TenantAuthContext): ActorContext {
   return {
     actorId: ctx.user.id,
     actorTenantId: ctx.activeTenantId,
-    isPlatformAdmin: ctx.platformRoles.some(
-      (r) => r === 'superadmin' || r === 'platform_operator',
+    isPlatformAdmin: Boolean(
+      ctx.platformRoles?.some((r) => r === 'superadmin' || r === 'platform_operator'),
     ),
   }
 }
@@ -56,10 +60,11 @@ function messageFrom(err: unknown): string {
  * a SkillService write-útja nem tud eltérő határt kialakítani. Az idegen agent
  * opak `Agent not found` — nem felderítési orákulum.
  */
-async function assertAgentInTenant(agentId: string, activeTenantId: string | null): Promise<void> {
+async function assertAgentInTenant(agentId: string, activeTenantId: string | null) {
   const agent = await repositories.agents.findById(agentId)
   if (!agent) throw new SkillAccessError('Agent not found')
   assertAgentTenantReachable(agent, activeTenantId)
+  return agent
 }
 
 // ── WP-4: agent-detail skill panel (readiness + hozzárendelés) ────────────────
@@ -75,6 +80,8 @@ export interface AgentSkillRow {
   description: string
   version: number
   riskTier: SkillRiskTier
+  kind: SkillKind
+  requiredSystemRole: AgentSystemRole | null
   requires: Array<{ toolName: string; reason: string }>
   readiness: SkillReadiness
   /** A skill deklarált paraméterei (#199) — a feladat-indító űrlap mezői. */
@@ -103,6 +110,8 @@ export async function getAgentSkillsAction(
         description: r.description,
         version: r.version,
         riskTier: r.riskTier,
+        kind: r.kind,
+        requiredSystemRole: r.requiredSystemRole,
         requires: r.requires,
         readiness: r.readiness,
         parameters: r.content.parameters.map((p) => ({
@@ -157,6 +166,8 @@ export interface AssignableSkill {
   displayName: string | null
   description: string
   riskTier: SkillRiskTier
+  kind: SkillKind
+  requiredSystemRole: AgentSystemRole | null
   activeVersionId: string
   version: number
 }
@@ -170,7 +181,7 @@ export async function listAssignableSkillsAction(
 ): Promise<ActionResult<AssignableSkill[]>> {
   try {
     const ctx = await requireTenantRole('admin')
-    await assertAgentInTenant(agentId, ctx.activeTenantId)
+    const agent = await assertAgentInTenant(agentId, ctx.activeTenantId)
     const [catalog, assigned] = await Promise.all([
       services.skills.listForActor(ctx.activeTenantId),
       services.skills.listAgentSkillsWithReadiness(agentId),
@@ -180,12 +191,22 @@ export async function listAssignableSkillsAction(
     for (const skill of catalog) {
       const active = skill.versions.find((v) => v.status === 'active')
       if (!active || assignedSkillIds.has(skill.id)) continue
+      if (
+        !isSkillAssignableToAgent(
+          { kind: skill.kind, requiredSystemRole: skill.requiredSystemRole },
+          { systemRole: agent.systemRole ?? null },
+        )
+      ) {
+        continue
+      }
       rows.push({
         skillId: skill.id,
         name: skill.name,
         displayName: skill.displayName,
         description: skill.description,
         riskTier: skill.riskTier,
+        kind: skill.kind,
+        requiredSystemRole: skill.requiredSystemRole,
         activeVersionId: active.id,
         version: active.version,
       })
@@ -255,6 +276,8 @@ export interface SkillCatalogEntry {
   displayName: string | null
   description: string
   catalogScope: 'global' | 'tenant'
+  kind: SkillKind
+  requiredSystemRole: AgentSystemRole | null
   sourceType: 'authored' | 'imported'
   riskTier: SkillRiskTier
   license: string | null
@@ -281,6 +304,8 @@ export async function listSkillCatalogAction(): Promise<ActionResult<SkillCatalo
         displayName: s.displayName,
         description: s.description,
         catalogScope: s.catalogScope,
+        kind: s.kind,
+        requiredSystemRole: s.requiredSystemRole,
         sourceType: s.sourceType,
         riskTier: s.riskTier,
         license: s.license,
@@ -304,10 +329,14 @@ export async function listSkillCatalogAction(): Promise<ActionResult<SkillCatalo
   }
 }
 
+const skillKindSchema = z.enum(['tenant', 'published', 'system'])
+const systemRoleSchema = z.enum(['run_analyst', 'web_egress']).nullable().optional()
+
 const importSchema = z.object({
   raw: z.string().min(1, 'A SKILL.md tartalom nem lehet üres.'),
   sourceUrl: z.string().url().optional().or(z.literal('').transform(() => undefined)),
-  scope: z.enum(['tenant', 'global']).default('tenant'),
+  kind: skillKindSchema.default('tenant'),
+  requiredSystemRole: systemRoleSchema,
 })
 
 export async function importSkillMdAction(
@@ -317,13 +346,11 @@ export async function importSkillMdAction(
     const parsed = importSchema.parse(input)
     const ctx = await requireTenantRole('admin')
     const actor = actorFrom(ctx)
-    if (parsed.scope === 'global' && !actor.isPlatformAdmin) {
-      return fail('Global skillt csak platform-admin importálhat.')
-    }
     const result = await services.skills.importSkillMd({
       raw: parsed.raw,
       sourceUrl: parsed.sourceUrl,
-      catalogScope: parsed.scope,
+      kind: parsed.kind,
+      requiredSystemRole: parsed.requiredSystemRole,
       tenantId: ctx.activeTenantId,
       actor,
     })
@@ -354,7 +381,8 @@ const createSchema = z.object({
       return t ? t : null
     }),
   description: z.string().min(1).max(SKILL_DESCRIPTION_MAX),
-  scope: z.enum(['tenant', 'global']).default('tenant'),
+  kind: skillKindSchema.default('tenant'),
+  requiredSystemRole: systemRoleSchema,
   content: skillContentSchema,
   requires: skillRequiresSchema,
 })
@@ -366,9 +394,6 @@ export async function createSkillAction(
     const parsed = createSchema.parse(input)
     const ctx = await requireTenantRole('admin')
     const actor = actorFrom(ctx)
-    if (parsed.scope === 'global' && !actor.isPlatformAdmin) {
-      return fail('Global skillt csak platform-admin hozhat létre.')
-    }
     // A kézi szerzés is a hardcoded validátoron megy át (kód/injection tiltás,
     // tier-levezetés) — a puha rész sosem kap könnyített utat.
     const validation = validateSkill({
@@ -380,12 +405,15 @@ export async function createSkillAction(
     if (!validation.ok) {
       return fail(`A skill nem felelt meg a validátornak: ${validation.errors.join(' · ')}`)
     }
+    const catalogScope = catalogScopeForKind(parsed.kind)
     const { skill, versionId } = await services.skills.createSkill({
       name: parsed.name,
       displayName: parsed.displayName,
       description: parsed.description,
-      catalogScope: parsed.scope,
-      tenantId: parsed.scope === 'global' ? null : ctx.activeTenantId,
+      catalogScope,
+      tenantId: catalogScope === 'global' ? null : ctx.activeTenantId,
+      kind: parsed.kind,
+      requiredSystemRole: parsed.requiredSystemRole,
       sourceType: 'authored',
       provenance: { origin: 'authored' },
       license: null,
@@ -427,6 +455,31 @@ export async function updateSkillDisplayNameAction(
     })
     revalidatePath('/control-plane/skills')
     return ok({ displayName: skill.displayName })
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
+const updateKindSchema = z.object({
+  skillId: z.string().uuid(),
+  kind: skillKindSchema,
+  requiredSystemRole: systemRoleSchema,
+})
+
+export async function updateSkillKindAction(
+  input: z.input<typeof updateKindSchema>,
+): Promise<ActionResult<{ kind: SkillKind; requiredSystemRole: AgentSystemRole | null }>> {
+  try {
+    const parsed = updateKindSchema.parse(input)
+    const ctx = await requireTenantRole('admin')
+    const skill = await services.skills.updateKind({
+      skillId: parsed.skillId,
+      kind: parsed.kind,
+      requiredSystemRole: parsed.requiredSystemRole,
+      actor: actorFrom(ctx),
+    })
+    revalidatePath('/control-plane/skills')
+    return ok({ kind: skill.kind, requiredSystemRole: skill.requiredSystemRole })
   } catch (err) {
     return fail(messageFrom(err))
   }

@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { AgentRailCard } from '@/components/agents/agent-rail-card'
 import {
   setAgentRailFilter,
+  setAgentRailCollapsed,
   setAgentRailMobileOpen,
   setAgentRailSearch,
   toggleAgentRailCollapsed,
@@ -118,8 +119,16 @@ export function AgentRail({
           ) : null}
           <button
             type="button"
+            onClick={() => setAgentRailMobileOpen(false)}
+            className="ml-auto grid h-9 w-9 place-items-center rounded-lg border border-line bg-card text-base text-ink-soft hover:bg-night-2 xl:hidden"
+            aria-label="Munkatárslista bezárása"
+          >
+            ✕
+          </button>
+          <button
+            type="button"
             onClick={() => toggleAgentRailCollapsed()}
-            className="ml-auto grid h-7 w-7 place-items-center rounded-lg border border-line bg-card text-xs text-ink-soft hover:bg-night-2"
+            className="ml-auto hidden h-7 w-7 place-items-center rounded-lg border border-line bg-card text-xs text-ink-soft hover:bg-night-2 xl:grid"
             aria-label={ui.collapsed ? 'Sáv kinyitása' : 'Sáv összecsukása'}
           >
             {ui.collapsed ? '⟩' : '⟨'}
@@ -225,9 +234,9 @@ export function AgentRail({
         aria-hidden={!ui.mobileOpen}
       />
       <aside
-        className={`z-50 flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-line bg-card/70 backdrop-blur-md transition-[width] duration-200 ${
-          ui.collapsed ? 'w-[76px]' : 'w-[min(100vw-2rem,336px)]'
-        } fixed inset-y-0 left-0 top-[var(--cp-header-offset,7.5rem)] xl:static xl:top-auto ${
+        className={`fixed inset-y-0 left-0 z-50 flex h-full min-h-0 w-[min(100vw-2rem,336px)] shrink-0 flex-col overflow-hidden border-r border-line bg-card/95 backdrop-blur-md transition-[width,transform] duration-200 xl:static xl:top-auto ${
+          ui.collapsed ? 'xl:w-[76px]' : 'xl:w-[336px]'
+        } ${
           ui.mobileOpen ? 'translate-x-0' : '-translate-x-full xl:translate-x-0'
         }`}
         aria-label="Munkatárs-sáv"
@@ -241,15 +250,20 @@ export function AgentRail({
 /** Fejléc gomb: mobil sáv megnyitása (<1080px). */
 export function AgentRailMobileToggle() {
   const ui = useAgentRailUiState()
+  const toggle = () => {
+    if (!ui.mobileOpen) setAgentRailCollapsed(false)
+    setAgentRailMobileOpen(!ui.mobileOpen)
+  }
   return (
     <button
       type="button"
-      onClick={() => setAgentRailMobileOpen(!ui.mobileOpen)}
-      className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-line bg-card text-ink-soft hover:border-coral/40 hover:text-coral-deep xl:hidden"
-      aria-label="Munkatárs-sáv megnyitása"
+      onClick={toggle}
+      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full border border-line bg-card px-2.5 text-xs font-semibold text-ink-soft hover:border-coral/40 hover:text-coral-deep xl:hidden"
+      aria-label="Munkatárs váltása"
       aria-expanded={ui.mobileOpen}
     >
       <span className="text-sm">👥</span>
+      <span>Munkatársak</span>
     </button>
   )
 }

@@ -99,6 +99,18 @@ function harness(overrides?: { stepTicket?: Partial<FakeTicket>; processStatus?:
       if (data.payload) ticket.payload = data.payload as Record<string, unknown>
       return ticket
     },
+    // Atomikus compare-and-set: csak akkor ír, ha a jelenlegi állapot egyezik.
+    updateIfCurrentState: async (
+      id: string,
+      currentState: string,
+      data: Record<string, unknown>,
+    ) => {
+      const ticket = tickets.find((t) => t.id === id)
+      if (!ticket || ticket.state !== currentState) return null
+      if (typeof data.state === 'string') ticket.state = data.state
+      if (data.payload) ticket.payload = data.payload as Record<string, unknown>
+      return ticket
+    },
     recordTransition: async (data: {
       ticketId: string
       fromState: string
@@ -278,6 +290,55 @@ await test('leállítás: a nyitott feladatok lezárulnak, a lezártakat nem bá
   assert.ok(
     h.transitions.some((t) => t.ticketId === 't-review' && /leállítva/.test(t.note ?? '')),
   )
+})
+
+await test('elfogadás EGYSZER-HASZNÁLATOS: a második (dupla) jóváhagyás nem lépteti kétszer a folyamatot', async () => {
+  const h = harness()
+  const advancedCalls: Array<{ completedStepId: string }> = []
+  h.service.advance = (async (input: { completedStepId: string }) => {
+    advancedCalls.push(input)
+    return { kind: 'noop' as const, status: 'running' as const }
+  }) as ProcessService['advance']
+
+  const call = () =>
+    h.service.resolveStepFromReview({
+      tenantId: h.tenantId,
+      reviewTicketId: 't-review',
+      note: 'Rendben.',
+      actorUserId: 'user-1',
+    })
+
+  await call()
+  // A második hívás (dupla kattintás / második approver) elakad a kapun.
+  await assert.rejects(call(), /már döntöttek/)
+
+  // A folyamat CSAK egyszer lépett tovább — nincs duplikált advance.
+  assert.equal(advancedCalls.length, 1)
+  assert.equal(h.tickets.find((t) => t.id === 't-review')!.state, 'approved')
+  // A felülbírálás audit-nyoma is csak egyszer keletkezett.
+  assert.equal(
+    h.audits.filter((a) => a.action === 'process.step.human_override').length,
+    1,
+  )
+})
+
+await test('újrafuttatás EGYSZER-HASZNÁLATOS: a második kérés nem indítja újra kétszer a lépést', async () => {
+  const h = harness()
+  const call = () =>
+    h.service.retryStepFromReview({
+      tenantId: h.tenantId,
+      reviewTicketId: 't-review',
+      clarification: 'Pontosítás.',
+      actorUserId: 'user-1',
+    })
+
+  await call()
+  await assert.rejects(call(), /már döntöttek/)
+
+  // A lépés-ticket szálába csak EGY pontosítás került, és a retry-audit is egy.
+  assert.equal(h.comments.filter((c) => c.ticketId === 't-step').length, 1)
+  assert.equal(h.audits.filter((a) => a.action === 'process.step.retry').length, 1)
+  assert.equal(h.tickets.find((t) => t.id === 't-review')!.state, 'done')
 })
 
 await test('lezárt folyamaton már nincs döntés', async () => {

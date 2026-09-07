@@ -64,6 +64,8 @@ export async function ensureGlobalRunAnalysisSkill(actorId: string): Promise<{
       description: parsed.description,
       catalogScope: 'global',
       tenantId: null,
+      kind: 'system',
+      requiredSystemRole: 'run_analyst',
       sourceType: 'authored',
       provenance: { origin: 'skill_md', sourceUrl: 'docs/skills/futas-elemzes.SKILL.md' },
       license: parsed.license,
@@ -88,6 +90,9 @@ export async function ensureGlobalRunAnalysisSkill(actorId: string): Promise<{
   await repo.updateDescription(skill.id, parsed.description)
   if (parsed.displayName !== undefined) {
     await repo.updateDisplayName(skill.id, parsed.displayName)
+  }
+  if (skill.kind !== 'system' || skill.requiredSystemRole !== 'run_analyst') {
+    await repo.updateKind(skill.id, 'system', 'run_analyst')
   }
 
   const active = await repo.getActiveVersion(skill.id)

@@ -467,6 +467,8 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
       runId: z.string(),
       grain: z.enum(['turn', 'ticket', 'process']),
     }),
+    // Megtalált futás érvényes válasz, akkor is ha csendes — a hiány `run_not_found`.
+    emptiness: () => null,
     partial: (output) => {
       const view = (output as { view?: string } | null)?.view
       if (view === 'process') return null

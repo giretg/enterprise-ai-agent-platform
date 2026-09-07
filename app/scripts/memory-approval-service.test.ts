@@ -437,7 +437,16 @@ async function run() {
   await test('T21: ticketes projektmemória sem kerülheti meg a négy szem elvet', async () => {
     const f = makeFakes()
     setupPermissions(f.permissionsByKey)
-    f.agentsById.set(AGENT_ID, agent())
+    f.agentsById.set(
+      AGENT_ID,
+      agent({
+        selfEvolutionProfile: {
+          scope: ['memory'],
+          approval_mode: 'human',
+          durable_memory_approval_policy: { activation_mode: 'approver_required', four_eyes_required: true },
+        } as never,
+      }),
+    )
     seedCandidate(f.candidateStore, { id: 'cand-ticket-eyes', proposedBy: APPROVER_ID })
 
     const ticketed = await f.service.ticket('cand-ticket-eyes', APPROVER)
@@ -661,7 +670,16 @@ async function run() {
   await test('T23/T21: négy szem — a javaslattevő nem fogadhatja el saját projektmemóriáját', async () => {
     const f = makeFakes()
     setupPermissions(f.permissionsByKey)
-    f.agentsById.set(AGENT_ID, agent())
+    f.agentsById.set(
+      AGENT_ID,
+      agent({
+        selfEvolutionProfile: {
+          scope: ['memory'],
+          approval_mode: 'human',
+          durable_memory_approval_policy: { activation_mode: 'approver_required', four_eyes_required: true },
+        } as never,
+      }),
+    )
     seedCandidate(f.candidateStore, { id: 'cand-eyes', proposedBy: APPROVER_ID })
     const result = await f.service.approve('cand-eyes', APPROVER)
     assert.equal(result.ok, false)

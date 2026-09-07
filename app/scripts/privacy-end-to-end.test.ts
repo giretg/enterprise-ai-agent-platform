@@ -23,6 +23,7 @@ import { OSTOROSBOR_CRM_PRIVACY_FIELDS } from '../src/domain/privacy/connector-p
 import { resolvePrivacyCategoryPolicy } from '../src/domain/privacy/privacy-category-policy'
 import { transformPromptMessages } from '../src/domain/privacy/prompt-privacy-transform'
 import { resolveEgressTextForSurface } from '../src/domain/privacy/resolve-display-text'
+import { resolveToolArgs } from '../src/domain/privacy/resolve-tool-args'
 import { transformStructuredOutput } from '../src/domain/privacy/structured-output-transform'
 import { SurrogateEngine, type PrivacyAuditSink } from '../src/domain/privacy/surrogate-engine'
 import type { PrivacyScope } from '../src/domain/privacy/surrogate-vault'
@@ -53,6 +54,7 @@ const TICKET_SCOPE: PrivacyScope = { type: 'conversation', id: TICKET }
 const COMPANY = 'SPAR Magyarország Kereskedelmi Kft.'
 const PHONE = '+36 30 123 4567'
 const ACCOUNT = '11773016-11111018'
+const EMAIL = 'gergely.giret@itnatives.io'
 
 const silentAudit: PrivacyAuditSink = {
   async recordUnknownSurrogate() {},
@@ -203,6 +205,49 @@ async function main() {
       scope: SCOPE,
     })
     assert.equal(shown, 'A [[COMPANY_1]] forgalma 1 234 000 Ft.')
+  })
+
+  await test('feladat-ticket: e-mail álnév a modellnek, plaintext a gmail_send-nek és a UI-nak', async () => {
+    const { engine } = fixture()
+    const tokenizeEmail = resolvePrivacyCategoryPolicy({
+      agent: {
+        categories: { email: 'tokenize' },
+        custom: {},
+        updatedById: null,
+        updatedAt: null,
+      },
+    })
+    const result = await transformPromptMessages({
+      messages: [{ role: 'user', content: `Küldd a levelet a ${EMAIL} címre.` }],
+      mode: 'enforce',
+      policy: tokenizeEmail,
+      engine,
+      tenantId: TENANT,
+      scope: TICKET_SCOPE,
+    })
+    const sent = result.messages[0]?.content ?? ''
+    const alias = sent.match(/\[\[EMAIL_\d+\]\]/)?.[0]
+    assert.ok(alias, `nem keletkezett álnév: ${sent}`)
+    assert.equal(sent.includes(EMAIL), false)
+
+    const resolved = await resolveToolArgs({
+      args: { to: alias, subject: 'riport', body: 'teszt' },
+      engine,
+      tenantId: TENANT,
+      scope: TICKET_SCOPE,
+    })
+    assert.equal(resolved.ok, true)
+    if (!resolved.ok) return
+    assert.deepEqual(resolved.args, { to: EMAIL, subject: 'riport', body: 'teszt' })
+
+    const shown = await resolveEgressTextForSurface({
+      text: `A cím maszkolva: ${alias}`,
+      surface: 'web_ui',
+      engine,
+      tenantId: TENANT,
+      scope: TICKET_SCOPE,
+    })
+    assert.equal(shown, `A cím maszkolva: ${EMAIL}`)
   })
 
   await test('feladat-ticket kontextusban sem áll meg fail-closed hibával a hívás', async () => {
