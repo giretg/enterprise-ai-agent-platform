@@ -50,12 +50,18 @@ export class AgentChatChannelRuntime implements ChannelAgentRuntime {
     let streamError: string | null = null
 
     try {
+      // A grant `projectKey`-je a memória-/audit-hatóköre. A 24 órás gördülő
+      // beszélgetés létrehozáskor kap kulcsot, de a felhasználó a weben
+      // közben átállíthatja a grantet — ha itt nem adjuk tovább, a futásidő
+      // a régi conversation.projectKey-t használja (rossz projekt-memória),
+      // miközben a Telegram-címke már az új projektet mutatja.
       const stream = this.runtime.sendMessageStream({
         agentId: input.agentId,
         content: input.text,
         createdById: input.userId,
         tenantId: input.tenantId,
         conversationId: input.conversationId,
+        projectKey: input.projectKey,
       })
       for await (const event of stream as AsyncGenerator<AgentChatStreamEvent>) {
         switch (event.type) {

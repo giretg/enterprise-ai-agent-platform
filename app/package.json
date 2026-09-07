@@ -138,6 +138,7 @@
     "test:channel-metrics": "tsx scripts/channel-metrics-service.test.ts",
     "test:channel-retention": "tsx scripts/channel-retention-service.test.ts",
     "test:channel-turn": "tsx scripts/channel-turn.test.ts",
+    "test:channel-agent-runtime-adapter": "tsx scripts/channel-agent-runtime-adapter.test.ts",
     "test:channel-approval": "tsx scripts/channel-approval.test.ts",
     "test:ttl-secret-cache": "tsx scripts/ttl-secret-cache.test.ts",
     "test:public-routes": "tsx scripts/public-routes.test.ts",
