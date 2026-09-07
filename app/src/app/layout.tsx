@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
+import { headers } from 'next/headers'
 import { AuthProviders } from '@/components/auth/providers'
-import { isClerkEnabled } from '@/lib/clerk-config'
+import { isClerkClientEnabledForRequest } from '@/lib/control-plane-embed'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -8,11 +9,13 @@ export const metadata: Metadata = {
   description: 'Fázis 1 — Control Plane + Sandbox',
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const clerkEnabled = isClerkClientEnabledForRequest(await headers())
+
   return (
     <html lang="hu" suppressHydrationWarning>
       <body>
-        <AuthProviders clerkEnabled={isClerkEnabled()}>{children}</AuthProviders>
+        <AuthProviders clerkEnabled={clerkEnabled}>{children}</AuthProviders>
       </body>
     </html>
   )

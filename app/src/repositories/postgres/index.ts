@@ -50,6 +50,7 @@ import { PostgresSelfUpdatingConnectorRepository } from './self-updating-connect
 import { PostgresConnectorDraftRepository } from './connector-draft-repository'
 import { PostgresConnectorTemplateRepository } from './connector-template-repository'
 import { PostgresMonitorRepository } from './monitor-repository'
+import { PostgresWorkProjectRepository } from './work-project-repository'
 import { PostgresPlatformSettingsRepository } from './platform-settings-repository'
 import { PostgresSurrogateVault } from './surrogate-vault-repository'
 import { PostgresConversationPrivacyKeyRepository } from './conversation-privacy-key-repository'
@@ -112,6 +113,7 @@ export const repositories = {
   connectorDrafts: new PostgresConnectorDraftRepository(),
   connectorTemplates: new PostgresConnectorTemplateRepository(),
   monitors: new PostgresMonitorRepository(),
+  workProjects: new PostgresWorkProjectRepository(),
   platformSettings: new PostgresPlatformSettingsRepository(),
   surrogateVault: new PostgresSurrogateVault(resolveTenantPrivacyHmacKey),
   conversationPrivacyKeys: new PostgresConversationPrivacyKeyRepository(),

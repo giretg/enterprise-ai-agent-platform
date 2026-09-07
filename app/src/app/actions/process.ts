@@ -6,6 +6,7 @@
  * tenant-scope-olt; a kötelező kapukat NEM ezek, hanem a `TicketStateMachine`
  * szerveroldali állapotgépe kényszeríti ki (§2.5, §11.3, P6).
  */
+import { z } from 'zod'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
@@ -30,13 +31,21 @@ import {
   chatTriggerableProcessDefinitionsSchema,
 } from '@/lib/validators/actions'
 import { reconstructActualFlow } from '@/lib/playbook-v2/runtime'
+import {
+  classifyProcessSiblingKind,
+  isProcessStalled,
+  plainStallReason,
+  type ProcessSiblingTicket,
+} from '@/lib/process-stall'
 import { parsePlaybookSpecV2 } from '@/lib/playbook-v2/spec'
+import { outputRequiredFieldsForStep } from '@/lib/playbook-v2/process-step-payload'
 import { chatTriggerSlotDescriptors, resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
 import { agentDisplayName } from '@/lib/agent-persona'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
 import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
 import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
 import {
+  MAX_HUMAN_RETRY_ATTEMPTS,
   ProcessServiceError,
 } from '@/domain/playbook/process-service'
 import { ProcessDefinitionServiceError } from '@/domain/playbook/process-definition-service'
@@ -515,15 +524,33 @@ export async function getProcessDetail(input: unknown) {
           compiled,
         )
       : null
-    const blockedEvents = detail.status === 'blocked'
-      ? await repositories.audit.findMany({
-          action: 'process.blocked',
-          targetType: 'process_instance',
-          targetId: detail.id,
-          tenantId,
-          limit: 5,
-        })
-      : []
+    const blockedEvents =
+      detail.status === 'blocked' || detail.status === 'awaiting_human'
+        ? await repositories.audit.findMany({
+            action: 'process.blocked',
+            targetType: 'process_instance',
+            targetId: detail.id,
+            tenantId,
+            limit: 5,
+          })
+        : []
+
+    const stepTicketIds = new Set(
+      detail.steps.map((s) => s.ticketId).filter((id): id is string => Boolean(id)),
+    )
+    const supportTickets = tickets
+      .filter(
+        (t) =>
+          t.id !== detail.rootTicketId &&
+          !stepTicketIds.has(t.id) &&
+          !(t.requiredGateId && t.playbookStepId),
+      )
+      .map((t) => ({
+        ticketId: t.id,
+        title: t.title,
+        state: t.state,
+        playbookStepId: t.playbookStepId,
+      }))
 
     const agentIds = new Set(detail.steps.map((s) => s.assignedAgentId).filter((id): id is string => !!id))
     const agentLabelById = new Map<string, string>()
@@ -598,12 +625,21 @@ export async function getProcessDetail(input: unknown) {
           ? (event.metadata as Record<string, unknown>)
           : {}
         // #33/#39 — preferáld a közérthető human_summary-t a technikai routing_reason helyett.
+        // Ha az nincs, a gépi hibakódot (tool_denied, …) fordítjuk hétköznapi mondatra,
+        // különben a felületre nyers `unhandled_failed` kerülne.
         const humanSummary =
           typeof metadata.human_summary === 'string' ? metadata.human_summary : null
-        const reason =
-          humanSummary ||
-          (typeof metadata.reason === 'string' ? metadata.reason : null) ||
-          'Ismeretlen blokk-ok.'
+        const reason = plainStallReason({
+          humanSummary,
+          outcomeReason:
+            typeof metadata.outcome_reason === 'string' ? metadata.outcome_reason : null,
+          routingReason:
+            typeof metadata.routing_reason === 'string'
+              ? metadata.routing_reason
+              : typeof metadata.reason === 'string'
+                ? metadata.reason
+                : null,
+        })
         return {
           createdAt: event.createdAt.toISOString(),
           stepId:
@@ -615,6 +651,7 @@ export async function getProcessDetail(input: unknown) {
           reason,
         }
       }),
+      supportTickets,
       // WP-1 §4 — a PIN-elt authored spec a folyamat-trace SVG-gráfjához (read-only overlay).
       spec: version ? parsePlaybookSpecV2(version.spec) : null,
       // §9.2 szándékolt flow: a compiled spec lépés-sorrendje és routing-élei.
@@ -650,9 +687,9 @@ export async function getProcessDetail(input: unknown) {
 }
 
 /**
- * Ticket-részlethez optimalizált folyamat-kontextus. A teljes process detail
- * auditot, delegációkat és agent-feloldást is tölt; a ticketen csak a teljes
- * authored lépéssor és az instance-státuszok kellenek.
+ * Ticket-részlethez optimalizált folyamat-kontextus: authored lépéssor,
+ * instance-státuszok, testvér-ticketek, és a folyamat-gráf (PIN-elt spec +
+ * bejárt élek). A teljes process-detail audit/agent-feloldás nélkül.
  */
 export async function getTicketProcessContext(input: unknown) {
   try {
@@ -662,6 +699,103 @@ export async function getTicketProcessContext(input: unknown) {
     const detail = await services.processes.getProcess(tenantId, parsed.id)
     const version = await repositories.playbooksV2.findVersion(tenantId, detail.playbookVersionId)
     const compiled = (version?.compiledSpec ?? null) as CompiledSpec | null
+
+    // A folyamat ÖSSZES ticketje. Enélkül a lépés-ticketről nem látszik, hogy a
+    // runtime nyitott mellé egy emberi felülvizsgálati ticketet — a felhasználó
+    // egy „Kész" feladatot lát, miközben a futás rá vár egy másik ticketen.
+    const stepTicketIds = new Set(
+      detail.steps.map((s) => s.ticketId).filter((id): id is string => Boolean(id)),
+    )
+    const processTickets = await repositories.tickets.findMany({
+      tenantId,
+      processInstanceId: detail.id,
+    })
+    const siblingTickets: ProcessSiblingTicket[] = processTickets.map((t) => ({
+      ticketId: t.id,
+      title: t.title,
+      state: t.state,
+      stepId: t.playbookStepId ?? null,
+      gateId: t.requiredGateId ?? null,
+      kind: classifyProcessSiblingKind({
+        ticketId: t.id,
+        title: t.title,
+        playbookStepId: t.playbookStepId,
+        requiredGateId: t.requiredGateId,
+        stepTicketIds,
+      }),
+      createdAt: t.createdAt,
+    }))
+    const actualFlow = compiled
+      ? reconstructActualFlow(
+          detail.steps.map((s) => ({
+            stepId: s.stepId,
+            status: s.status,
+            assignedRole: s.assignedRole,
+          })),
+          detail.delegations.map((d) => ({
+            fromStepId: d.fromStepId,
+            toStepId: d.toStepId,
+            fromActorType: d.fromActorType,
+          })),
+          compiled,
+        )
+      : null
+
+    // Az elakadás oka a `process.blocked` auditból (a ticket payload csak a gépi
+    // outcome-ot őrzi; a közérthető magyarázat itt áll).
+    const blockedEvent = isProcessStalled(detail.status)
+      ? (
+          await repositories.audit.findMany({
+            action: 'process.blocked',
+            targetType: 'process_instance',
+            targetId: detail.id,
+            tenantId,
+            limit: 1,
+          })
+        )[0]
+      : undefined
+    const blockedMeta =
+      blockedEvent?.metadata && typeof blockedEvent.metadata === 'object'
+        ? (blockedEvent.metadata as Record<string, unknown>)
+        : null
+    const readString = (value: unknown) => (typeof value === 'string' ? value : null)
+
+    // A NYITOTT emberi felülvizsgálat kontextusa: mit lehet vele tenni. Enélkül a
+    // felület csak annyit tud, hogy „valami áll", de nem tudja felkínálni a döntést.
+    const openReview = siblingTickets.find(
+      (t) => t.kind === 'review' && !['done', 'approved', 'rejected'].includes(t.state),
+    )
+    const reviewStepRule = openReview?.stepId
+      ? (compiled?.ticketRules ?? []).find((rule) => rule.stepId === openReview.stepId)
+      : undefined
+    const reviewStepInstance = openReview?.stepId
+      ? detail.steps.find((step) => step.stepId === openReview.stepId)
+      : undefined
+    const reviewStepTicket = openReview
+      ? processTickets.find(
+          (t) =>
+            t.id !== openReview.ticketId &&
+            t.playbookStepId === openReview.stepId &&
+            Boolean(t.agentId),
+        ) ?? (reviewStepInstance?.ticketId
+          ? processTickets.find((t) => t.id === reviewStepInstance.ticketId)
+          : undefined)
+      : undefined
+    const reviewStepPayload =
+      reviewStepTicket?.payload && typeof reviewStepTicket.payload === 'object'
+        ? (reviewStepTicket.payload as Record<string, unknown>)
+        : {}
+    const requiredOutputFields = reviewStepRule
+      ? outputRequiredFieldsForStep(reviewStepRule, compiled?.outputRequiredFields ?? [])
+      : []
+    const currentOutputValues: Record<string, string> = {}
+    for (const field of requiredOutputFields) {
+      const value = reviewStepPayload[field]
+      if (typeof value === 'string') currentOutputValues[field] = value
+      else if (typeof value === 'number' || typeof value === 'boolean') {
+        currentOutputValues[field] = String(value)
+      }
+    }
 
     return ok({
       process: {
@@ -679,6 +813,39 @@ export async function getTicketProcessContext(input: unknown) {
         stepId: rule.stepId,
         stepName: rule.stepName,
       })),
+      reviewContext: openReview
+        ? {
+            reviewTicketId: openReview.ticketId,
+            stepId: openReview.stepId,
+            stepName: reviewStepRule?.stepName ?? reviewStepInstance?.stepName ?? openReview.stepId,
+            stepTicketId: reviewStepTicket?.id ?? null,
+            canRetry: Boolean(reviewStepTicket?.agentId),
+            requiredOutputFields,
+            currentOutputValues,
+            retryAttempt:
+              typeof reviewStepPayload.humanRetryAttempt === 'number'
+                ? reviewStepPayload.humanRetryAttempt
+                : 0,
+            maxRetryAttempts: MAX_HUMAN_RETRY_ATTEMPTS,
+          }
+        : null,
+      siblingTickets,
+      spec: version?.spec ?? null,
+      traversedEdges: (actualFlow?.actualEdges ?? []).map(
+        (edge) => `${edge.fromStepId}→${edge.toStepId}`,
+      ),
+      deviationEdges: (actualFlow?.actualEdges ?? [])
+        .filter((edge) => !edge.inIntended)
+        .map((edge) => `${edge.fromStepId}→${edge.toStepId}`),
+      blocked: blockedMeta
+        ? {
+            stepId: readString(blockedMeta.completed_step_id) ?? readString(blockedMeta.step_id),
+            humanSummary: readString(blockedMeta.human_summary),
+            outcomeReason: readString(blockedMeta.outcome_reason),
+            routingReason:
+              readString(blockedMeta.routing_reason) ?? readString(blockedMeta.reason),
+          }
+        : null,
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a ticket folyamatát')
@@ -707,6 +874,91 @@ export async function transitionProcessTicket(input: unknown) {
     }
     if (e instanceof TicketStateMachineError) return fail(e.message)
     return fail(e instanceof Error ? e.message : 'Nem sikerült végrehajtani az átmenetet')
+  }
+}
+
+/**
+ * ── Emberi felülvizsgálat lezárása (három döntés) ────────────────────────────
+ *
+ * Ezek az akciók a folyamat-állapotgépen keresztül dolgoznak. A ticket-részletek
+ * generikus állapotgombjai folyamat-ticketen SZÁNDÉKOSAN nem érhetők el: azok a
+ * playbookot megkerülve írták a ticketet, így a felhasználó „döntött", a futás
+ * pedig nem tudott róla.
+ */
+const reviewRetrySchema = z.object({
+  reviewTicketId: z.string().uuid(),
+  clarification: z.string().trim().min(1).max(8_000),
+})
+
+const reviewResolveSchema = z.object({
+  reviewTicketId: z.string().uuid(),
+  outputPatch: z.record(z.string(), z.string().max(4_000)).optional(),
+  note: z.string().trim().max(4_000).optional(),
+})
+
+const reviewCancelSchema = z.object({
+  reviewTicketId: z.string().uuid(),
+  reason: z.string().trim().min(1).max(2_000),
+})
+
+/** 1. döntés — pontosítás + a lépés újrafuttatása. */
+export async function retryProcessStepFromReview(input: unknown) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = reviewRetrySchema.parse(input)
+    const result = await services.processes.retryStepFromReview({
+      tenantId: user.activeTenantId,
+      reviewTicketId: parsed.reviewTicketId,
+      clarification: parsed.clarification,
+      actorUserId: user.user.id,
+      actorDisplayName: user.user.name,
+    })
+    return ok(result)
+  } catch (e) {
+    if (e instanceof ProcessServiceError) return fail(e.message)
+    return fail(e instanceof Error ? e.message : 'Nem sikerült újraindítani a lépést')
+  }
+}
+
+/** 2. döntés — emberi felülbírálás: a lépés elfogadva, a folyamat továbbmegy. */
+export async function resolveProcessStepFromReview(input: unknown) {
+  try {
+    // Ez az ág átlépi a gépi hibakaput, ezért jóváhagyói jogosultságot kér.
+    const user = await requireTenantRole('approver')
+    const parsed = reviewResolveSchema.parse(input)
+    const result = await services.processes.resolveStepFromReview({
+      tenantId: user.activeTenantId,
+      reviewTicketId: parsed.reviewTicketId,
+      outputPatch: parsed.outputPatch,
+      note: parsed.note,
+      actorUserId: user.user.id,
+    })
+    return ok({ kind: result.kind })
+  } catch (e) {
+    if (e instanceof ProcessServiceError) return fail(e.message)
+    return fail(e instanceof Error ? e.message : 'Nem sikerült lezárni a felülvizsgálatot')
+  }
+}
+
+/** 3. döntés — a teljes futás leállítása, a nyitott feladatok lezárásával. */
+export async function cancelProcessFromReview(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = reviewCancelSchema.parse(input)
+    const ticket = await repositories.tickets.findById(parsed.reviewTicketId)
+    if (!ticket || ticket.tenantId !== user.activeTenantId || !ticket.processInstanceId) {
+      return fail('A feladat nem található vagy nem folyamathoz tartozik')
+    }
+    const result = await services.processes.cancelProcessWithTickets({
+      tenantId: user.activeTenantId,
+      processInstanceId: ticket.processInstanceId,
+      reason: parsed.reason,
+      actorUserId: user.user.id,
+    })
+    return ok({ closedTicketCount: result.closedTicketIds.length })
+  } catch (e) {
+    if (e instanceof ProcessServiceError) return fail(e.message)
+    return fail(e instanceof Error ? e.message : 'Nem sikerült leállítani a folyamatot')
   }
 }
 

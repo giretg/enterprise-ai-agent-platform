@@ -63,7 +63,9 @@ import type {
   Skill,
   SkillVersion,
   AgentSkill,
+  AgentSystemRole,
   SkillCatalogScope,
+  SkillKind,
   SkillSourceType,
   SkillRiskTier,
   SandboxApp,
@@ -199,6 +201,7 @@ export interface TicketRepository {
       | 'cancelRequested'
       | 'cancelRequestedById'
       | 'cancelRequestedAt'
+      | 'projectKey'
     > &
       Partial<
         Pick<
@@ -216,6 +219,7 @@ export interface TicketRepository {
           | 'cancelRequested'
           | 'cancelRequestedById'
           | 'cancelRequestedAt'
+          | 'projectKey'
         >
       > & {
         /** A tickettel egy tranzakcióban létrehozott első komment és csatolmányai. */
@@ -229,6 +233,7 @@ export interface TicketRepository {
       Pick<
         Ticket,
         | 'state'
+        | 'title'
         | 'payload'
         | 'assigneeType'
         | 'assigneeId'
@@ -245,6 +250,7 @@ export interface TicketRepository {
         | 'cancelRequestedById'
         | 'cancelRequestedAt'
         | 'executeAfter'
+        | 'projectKey'
       >
     >,
   ): Promise<Ticket>
@@ -1061,6 +1067,35 @@ export interface MemoryVersionRepository {
   }): Promise<MemoryVersion[]>
 }
 
+export type WorkProjectRecord = {
+  id: string
+  tenantId: string
+  key: string
+  name: string
+  description: string | null
+  createdById: string
+  createdAt: Date
+  updatedAt: Date
+  archivedAt: Date | null
+}
+
+export interface WorkProjectRepository {
+  listByTenant(tenantId: string, opts?: { includeArchived?: boolean }): Promise<WorkProjectRecord[]>
+  findById(id: string): Promise<WorkProjectRecord | null>
+  findByKey(tenantId: string, key: string): Promise<WorkProjectRecord | null>
+  create(data: {
+    tenantId: string
+    key: string
+    name: string
+    description: string | null
+    createdById: string
+  }): Promise<WorkProjectRecord>
+  update(
+    id: string,
+    patch: { name?: string; description?: string | null; archivedAt?: Date | null },
+  ): Promise<WorkProjectRecord>
+}
+
 export interface PlatformSettingsRepository {
   get(key: string): Promise<unknown | null>
   /** `Prisma.JsonNull` a „nincs érték” — a `value` oszlop nem nullable, törölni nem tudunk. */
@@ -1323,6 +1358,8 @@ export interface CreateSkillInput {
   description: string
   catalogScope: SkillCatalogScope
   tenantId: string | null
+  kind: SkillKind
+  requiredSystemRole?: AgentSystemRole | null
   sourceType: SkillSourceType
   provenance: Prisma.InputJsonValue | null
   license: string | null
@@ -1368,6 +1405,12 @@ export interface SkillRepository {
   updateDisplayName(skillId: string, displayName: string | null): Promise<Skill>
   /** Level-0 index leírás — nem verziózott metaadat (katalógus / skill-választó). */
   updateDescription(skillId: string, description: string): Promise<Skill>
+  /** Katalógus-fajta + opcionális rendszer-agent kötés — nem verziózott metaadat. */
+  updateKind(
+    skillId: string,
+    kind: SkillKind,
+    requiredSystemRole: AgentSystemRole | null,
+  ): Promise<Skill>
   addVersion(input: AddSkillVersionInput): Promise<SkillVersion>
   /** Jóváhagyás: az adott verzió `active`, az addigi aktív `retired`, agentek átkötése. */
   approveVersion(
@@ -1745,6 +1788,7 @@ export interface ConversationRepository {
   }): Promise<Conversation>
   findById(id: string): Promise<Conversation | null>
   findByIdForTenant(id: string, tenantId: string | null): Promise<Conversation | null>
+  updateProjectKey(id: string, projectKey: string): Promise<Conversation>
   list(params: {
     tenantId?: string | null
     agentId?: string

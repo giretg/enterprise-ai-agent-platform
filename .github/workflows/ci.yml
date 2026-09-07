@@ -59,6 +59,7 @@ jobs:
         run: |
           npm run test:secret-config
           npm run test:adaptive-poll
+          npm run test:poll-coalesce
           npm run test:audit-log
           npm run test:sandbox-csp
           npm run test:sandbox-versioning
@@ -131,8 +132,12 @@ jobs:
           npm run test:channel-approval
           npm run test:ttl-secret-cache
           npm run test:public-routes
+          npm run test:crawler-block
           npm run test:confirm-dialog
           npm run test:create-agent-wizard
+          npm run test:model-providers
+          npm run test:work-project
+          npm run test:agent-chat-stream-input
           npm run test:agent-scaffold
           npm run test:resume-last-agent-conversation
           npm run test:agent-workspace-board
@@ -146,6 +151,7 @@ jobs:
           npm run test:ticket-workspace-files
           npm run test:workspace-handoff
           npm run test:workspace-inline-html-headers
+          npm run test:workspace-html-preview
           npm run test:tool-registry-drift
           npm run test:tool-trust
           npm run test:tool-output-contract

@@ -2,6 +2,7 @@ import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { repositories } from '@/repositories/postgres'
 import { agentTurnRunner } from '@/domain/agent/agent-turn-runner'
 import { isAgentTurnAccessible } from '@/lib/agent-turn-access'
+import { invalidatePollScope } from '@/lib/poll-coalesce'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -37,6 +38,13 @@ export async function POST(
   }
 
   const cancelled = await repositories.agentTurns.requestCancel(turn.id, user.user.id)
+
+  // A vész-leállítás legyen AZONNAL látható a sávban/„Futások" panelen: a mutáció
+  // UTÁN eldobjuk e user rövid életű poll-cache-ét, hogy a rákövetkező `refresh()`
+  // már a friss DB-állapotot lássa (különben legfeljebb POLL_COALESCE_TTL_MS-ig
+  // a leállítás előtti pillanatképet mutatná).
+  invalidatePollScope(user.activeTenantId, user.user.id)
+
   if (!cancelled) {
     // A forduló már terminális. Ez NEM hiba: a Stop és a saját lezárás
     // versenye normális, és a felhasználó szempontjából a kívánt állapot már

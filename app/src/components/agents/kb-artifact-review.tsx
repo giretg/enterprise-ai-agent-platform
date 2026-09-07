@@ -1,7 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import { getKbArtifactReview } from '@/app/actions/platform'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { getKbArtifactReview, setKbDocumentProcessingMode } from '@/app/actions/platform'
+import {
+  KB_PROCESSING_MODE_APPROVER_HINT,
+  KB_PROCESSING_MODE_OPTIONS,
+  type KbProcessingModeValue,
+} from '@/lib/kb-processing-mode-labels'
 
 type ValidationIssue = {
   severity: 'error' | 'warning'
@@ -33,14 +38,12 @@ type ReviewData = {
 }
 
 /**
- * §12.2 hárompaneles OKF artifact-review overlay:
- *  (1) forrás / extracted text,
- *  (2) generált OKF file-tree + oldal-preview,
- *  (3) §7.6 validation report + approve/reject.
+ * Jóváhagyói áttekintés: módválasztás + (wiki esetén) hárompaneles artifact-review.
  */
 export function KbArtifactReview({
   agentId,
   documentId,
+  ticketId,
   canApprove,
   actionPending,
   onApprove,
@@ -49,6 +52,7 @@ export function KbArtifactReview({
 }: {
   agentId: string
   documentId: string
+  ticketId?: string
   canApprove: boolean
   actionPending: boolean
   onApprove: (ticketId: string) => void
@@ -58,6 +62,24 @@ export function KbArtifactReview({
   const [data, setData] = useState<ReviewData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [modePending, setModePending] = useState(false)
+  const [optimisticMode, setOptimisticMode] = useState<KbProcessingModeValue | null>(null)
+
+  const loadReview = useCallback(async () => {
+    const res = await getKbArtifactReview({ agentId, documentId })
+    if (res.success) {
+      const review = res.data as ReviewData
+      setData(review)
+      setOptimisticMode(null)
+      setSelectedPath((current) => {
+        if (current && review.files.some((file) => file.path === current)) return current
+        return review.files[0]?.path ?? null
+      })
+      setError(null)
+    } else {
+      setError(res.error)
+    }
+  }, [agentId, documentId])
 
   useEffect(() => {
     let active = true
@@ -76,6 +98,36 @@ export function KbArtifactReview({
     }
   }, [agentId, documentId])
 
+  const resolvedTicketId = data?.ticketId ?? ticketId ?? null
+  const processingMode = (optimisticMode ?? data?.processingMode ?? null) as KbProcessingModeValue | null
+  const wikiReady = processingMode === 'okf' && data !== null && data.files.length > 0
+  const canSubmitApproval =
+    canApprove &&
+    Boolean(resolvedTicketId) &&
+    processingMode !== null &&
+    !modePending &&
+    (processingMode === 'raw_text_only' || wikiReady)
+
+  const handleSelectMode = async (mode: KbProcessingModeValue) => {
+    if (!canApprove || !resolvedTicketId || modePending || actionPending) return
+    if (processingMode === mode) return
+    setModePending(true)
+    setOptimisticMode(mode)
+    setError(null)
+    const res = await setKbDocumentProcessingMode({
+      ticketId: resolvedTicketId,
+      processingMode: mode,
+    })
+    if (!res.success) {
+      setError(res.error)
+      setOptimisticMode(null)
+      setModePending(false)
+      return
+    }
+    await loadReview()
+    setModePending(false)
+  }
+
   const selectedFile = useMemo(
     () => data?.files.find((f) => f.path === selectedPath) ?? null,
     [data, selectedPath],
@@ -84,42 +136,118 @@ export function KbArtifactReview({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
       <div className="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-line bg-night shadow-xl">
-        <header className="flex items-center justify-between border-b border-line px-5 py-3">
-          <div className="min-w-0">
-            <p className="text-xs font-medium uppercase tracking-widest text-ink-faint">
-              OKF artifact-review
-            </p>
-            <h2 className="truncate font-display text-lg font-semibold text-ink" title={data?.filename}>
-              {data?.filename ?? 'Betöltés…'}
-              {data?.artifact ? (
-                <span className="ml-2 text-sm font-normal text-ink-faint">v{data.artifact.version}</span>
-              ) : null}
-            </h2>
+        <header className="border-b border-line px-5 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-medium uppercase tracking-widest text-ink-faint">
+                Dokumentum áttekintése
+              </p>
+              <h2 className="truncate font-display text-lg font-semibold text-ink" title={data?.filename}>
+                {data?.filename ?? 'Betöltés…'}
+                {data?.artifact && processingMode === 'okf' ? (
+                  <span className="ml-2 text-sm font-normal text-ink-faint">v{data.artifact.version}</span>
+                ) : null}
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="shrink-0 rounded-full bg-night-2 px-4 py-1.5 text-sm font-semibold text-ink-soft hover:text-ink"
+            >
+              Bezárás
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="shrink-0 rounded-full bg-night-2 px-4 py-1.5 text-sm font-semibold text-ink-soft hover:text-ink"
-          >
-            Bezárás
-          </button>
+          <div className="mt-3">
+            <p className="mb-1.5 text-xs font-medium text-ink-soft">Hogyan kerüljön be a tudásbázisba?</p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {KB_PROCESSING_MODE_OPTIONS.map((mode) => {
+                const selected = processingMode === mode.value
+                return (
+                  <button
+                    key={mode.value}
+                    type="button"
+                    disabled={!canApprove || modePending || actionPending || !resolvedTicketId}
+                    onClick={() => void handleSelectMode(mode.value)}
+                    aria-pressed={selected}
+                    className={`rounded-xl border px-3 py-2 text-left transition disabled:opacity-60 ${
+                      selected
+                        ? 'border-sage/40 bg-sage/15'
+                        : 'border-line bg-night-2 hover:border-line/80'
+                    }`}
+                  >
+                    <span className={`block text-sm font-semibold ${selected ? 'text-sage' : 'text-ink'}`}>
+                      {mode.label}
+                    </span>
+                    <span className="mt-0.5 block text-xs leading-relaxed text-ink-faint">
+                      {mode.description}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+            {!canApprove && (
+              <p className="mt-2 text-xs text-ink-faint">{KB_PROCESSING_MODE_APPROVER_HINT}</p>
+            )}
+            {modePending && (
+              <p className="mt-2 text-xs text-ink-soft">Feldolgozási mód beállítása…</p>
+            )}
+          </div>
         </header>
 
         {error ? (
-          <div className="p-6 text-sm text-coral">{error}</div>
-        ) : !data ? (
-          <div className="p-6 text-sm text-ink-faint">Review betöltése…</div>
-        ) : data.processingMode !== 'okf' && data.files.length === 0 ? (
+          <div className="border-b border-coral/30 px-5 py-2 text-sm text-coral">{error}</div>
+        ) : null}
+        {!data ? (
+          error ? null : <div className="p-6 text-sm text-ink-faint">Áttekintés betöltése…</div>
+        ) : processingMode === null ? (
           <div className="p-6 text-sm text-ink-soft">
-            Ez a dokumentum <span className="font-medium text-ink">nyers szöveg</span> módban készült —
-            nincs OKF-artifact review. A jóváhagyás közvetlenül a nyers szöveget teszi kereshetővé.
+            Először válaszd ki, hogyan kerüljön be a dokumentum. A jóváhagyás csak utána érhető el.
+          </div>
+        ) : processingMode === 'raw_text_only' ? (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <h3 className="border-b border-line px-4 py-2 text-xs font-semibold uppercase tracking-widest text-ink-faint">
+                Feltöltött szöveg
+              </h3>
+              <pre className="flex-1 overflow-auto whitespace-pre-wrap px-4 py-3 font-mono text-xs leading-relaxed text-ink-soft">
+                {data.extractedText?.trim() || '(nincs kinyert szöveg)'}
+              </pre>
+            </section>
+            {canApprove && resolvedTicketId ? (
+              <div className="flex gap-2 border-t border-line px-4 py-3">
+                <button
+                  type="button"
+                  disabled={!canSubmitApproval || actionPending}
+                  onClick={() => onApprove(resolvedTicketId)}
+                  className="flex-1 rounded-full bg-sage/20 px-3 py-2 text-sm font-semibold text-sage hover:bg-sage/30 disabled:opacity-50"
+                >
+                  Jóváhagyás
+                </button>
+                <button
+                  type="button"
+                  disabled={actionPending || modePending}
+                  onClick={() => onReject(resolvedTicketId)}
+                  className="flex-1 rounded-full bg-coral/20 px-3 py-2 text-sm font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
+                >
+                  Elutasítás
+                </button>
+              </div>
+            ) : !canApprove ? (
+              <p className="border-t border-line px-4 py-3 text-xs text-ink-faint">
+                A jóváhagyáshoz jóváhagyói jogosultság szükséges.
+              </p>
+            ) : null}
+          </div>
+        ) : processingMode === 'okf' && !wikiReady ? (
+          <div className="p-6 text-sm text-ink-faint">
+            {modePending ? 'Wiki-előnézet készítése…' : 'A wiki-előnézet még nem elérhető.'}
           </div>
         ) : (
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-px overflow-hidden bg-line lg:grid-cols-3">
             {/* 1. Forrás / extracted text */}
             <section className="flex min-h-0 flex-col overflow-hidden bg-night">
               <h3 className="border-b border-line px-4 py-2 text-xs font-semibold uppercase tracking-widest text-ink-faint">
-                Forrás (extracted)
+                Feltöltött szöveg
               </h3>
               <pre className="flex-1 overflow-auto whitespace-pre-wrap px-4 py-3 font-mono text-xs leading-relaxed text-ink-soft">
                 {data.extractedText?.trim() || '(nincs kinyert szöveg)'}
@@ -129,7 +257,7 @@ export function KbArtifactReview({
             {/* 2. OKF file-tree + preview */}
             <section className="flex min-h-0 flex-col overflow-hidden bg-night">
               <h3 className="border-b border-line px-4 py-2 text-xs font-semibold uppercase tracking-widest text-ink-faint">
-                Generált OKF ({data.files.length})
+                Wiki oldalak ({data.files.length})
               </h3>
               <div className="flex max-h-40 flex-wrap gap-1 overflow-auto border-b border-line px-3 py-2">
                 {data.files.map((f) => (
@@ -156,7 +284,7 @@ export function KbArtifactReview({
             {/* 3. Validation report + approve/reject */}
             <section className="flex min-h-0 flex-col overflow-hidden bg-night">
               <h3 className="border-b border-line px-4 py-2 text-xs font-semibold uppercase tracking-widest text-ink-faint">
-                Validáció (§7.6)
+                Ellenőrzés
               </h3>
               <div className="flex-1 overflow-auto px-4 py-3">
                 {data.validation ? (
@@ -165,20 +293,20 @@ export function KbArtifactReview({
                   <p className="text-sm text-ink-faint">Nincs validációs adat.</p>
                 )}
               </div>
-              {canApprove && data.ticketId ? (
+              {canApprove && resolvedTicketId ? (
                 <div className="flex gap-2 border-t border-line px-4 py-3">
                   <button
                     type="button"
-                    disabled={actionPending}
-                    onClick={() => onApprove(data.ticketId as string)}
+                    disabled={!canSubmitApproval || actionPending}
+                    onClick={() => onApprove(resolvedTicketId)}
                     className="flex-1 rounded-full bg-sage/20 px-3 py-2 text-sm font-semibold text-sage hover:bg-sage/30 disabled:opacity-50"
                   >
-                    Jóváhagyás &amp; publikálás
+                    Jóváhagyás
                   </button>
                   <button
                     type="button"
-                    disabled={actionPending}
-                    onClick={() => onReject(data.ticketId as string)}
+                    disabled={actionPending || modePending}
+                    onClick={() => onReject(resolvedTicketId)}
                     className="flex-1 rounded-full bg-coral/20 px-3 py-2 text-sm font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
                   >
                     Elutasítás
@@ -186,7 +314,7 @@ export function KbArtifactReview({
                 </div>
               ) : !canApprove ? (
                 <p className="border-t border-line px-4 py-3 text-xs text-ink-faint">
-                  A jóváhagyáshoz approver jogosultság szükséges.
+                  A jóváhagyáshoz jóváhagyói jogosultság szükséges.
                 </p>
               ) : null}
             </section>

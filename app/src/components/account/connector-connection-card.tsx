@@ -33,6 +33,7 @@ export type LinkedConnectorView = {
   config: unknown
   assignedAgentCount: number
   capableAgentCount: number
+  capableAgentDisplayNames: string[]
 }
 
 export type LinkedGrantView = {

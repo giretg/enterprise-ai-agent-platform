@@ -1,11 +1,15 @@
 'use client'
 
+import type { KeyboardEvent } from 'react'
+
 /**
  * PlaybookFlowGraph — a Playbook-spec (§9.2) tervezett folyamatának SVG-gráfja.
  * Szándékosan DEFENZÍV: nyers `unknown` specet fogad, saját minimál-parse-szal,
  * és `null`-t ad vissza, ha a spec még nem rajzolható.
  *
- * Ha `onNodeClick` prop van, a node-ok kattinthatók (szerkesztési mód).
+ * Ha `onNodeClick` prop van, a node-ok kattinthatók. Szerkesztési módban
+ * (alapértelmezett) minden node; `clickableIds` megadásával csak a listában
+ * szereplők (pl. ticket-megnyitás a folyamat-nézeten).
  */
 
 type Condition =
@@ -280,10 +284,20 @@ export function PlaybookFlowGraph({
   spec,
   onNodeClick,
   traceOverlay,
+  currentNodeId,
+  clickableIds,
+  clickHint,
+  showEditGlyph = true,
 }: {
   spec: unknown
   onNodeClick?: (payload: NodeClickPayload) => void
   traceOverlay?: TraceOverlay
+  /** A most nézett ticket lépése / kapuja — keret a „itt vagy” jelzéshez. */
+  currentNodeId?: string | null
+  /** Ha meg van adva, csak ezek a node-ok kattinthatók. */
+  clickableIds?: string[]
+  clickHint?: string
+  showEditGlyph?: boolean
 }) {
   if (!spec || typeof spec !== 'object') return null
   const raw = spec as RawSpec
@@ -294,13 +308,23 @@ export function PlaybookFlowGraph({
   const traversedSet = new Set(traceOverlay?.traversedEdges ?? [])
   const deviationSet = new Set(traceOverlay?.deviationEdges ?? [])
   const hasTrace = !!traceOverlay
+  const clickableSet = clickableIds ? new Set(clickableIds) : null
+  const hint =
+    clickHint ??
+    (showEditGlyph ? 'kattints a szerkesztéshez' : 'kattints a feladat megnyitásához')
 
   const nodeById = new Map(nodes.map((n) => [n.id, n]))
   const positions = layoutNodes(nodes)
   const { width, height } = svgBounds(nodes, positions)
 
+  function isNodeClickable(n: GraphNode): boolean {
+    if (!onNodeClick) return false
+    if (clickableSet) return clickableSet.has(n.id)
+    return true
+  }
+
   function handleNodeClick(n: GraphNode) {
-    if (!onNodeClick) return
+    if (!isNodeClickable(n) || !onNodeClick) return
     if (n.kind === 'step') {
       const data = (raw.steps ?? []).find((s) => s.id === n.id) ?? { id: n.id }
       onNodeClick({ type: 'step', id: n.id, data })
@@ -308,6 +332,12 @@ export function PlaybookFlowGraph({
       const data = (raw.gates ?? []).find((g) => g.id === n.id) ?? { id: n.id }
       onNodeClick({ type: 'gate', id: n.id, data })
     }
+  }
+
+  function handleNodeKeyDown(event: KeyboardEvent<SVGGElement>, n: GraphNode) {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    handleNodeClick(n)
   }
 
   return (
@@ -408,15 +438,38 @@ export function PlaybookFlowGraph({
               : n.isEntry
                 ? 'stroke-coral/70'
                 : 'stroke-ink/20'
-          const clickable = !!onNodeClick
+          const clickable = isNodeClickable(n)
+          const isCurrent = currentNodeId === n.id
           return (
             <g
               key={n.id}
               onClick={() => handleNodeClick(n)}
-              style={clickable ? { cursor: 'pointer' } : undefined}
+              onKeyDown={clickable ? (event) => handleNodeKeyDown(event, n) : undefined}
+              tabIndex={clickable ? 0 : undefined}
+              style={clickable ? { cursor: 'pointer', outline: 'none' } : undefined}
               role={clickable ? 'button' : undefined}
-              aria-label={clickable ? `${n.label} szerkesztése` : undefined}
+              aria-current={isCurrent ? 'step' : undefined}
+              aria-label={
+                clickable
+                  ? showEditGlyph
+                    ? `${n.label} szerkesztése`
+                    : `${n.label} megnyitása`
+                  : isCurrent
+                    ? `${n.label} — ez a feladat`
+                    : undefined
+              }
             >
+              {isCurrent && (
+                <rect
+                  x={p.x - 4}
+                  y={p.y - 4}
+                  width={NODE_W + 8}
+                  height={n.height + 8}
+                  rx={isGate ? 8 : 12}
+                  className="fill-none stroke-sky/70"
+                  strokeWidth={2}
+                />
+              )}
               <rect
                 x={p.x}
                 y={p.y}
@@ -424,7 +477,7 @@ export function PlaybookFlowGraph({
                 height={n.height}
                 rx={isGate ? 6 : 10}
                 className={`${fill} ${border}${clickable ? ' hover:stroke-accent/70' : ''}`}
-                strokeWidth={n.isEntry ? 2 : 1.5}
+                strokeWidth={isCurrent || n.isEntry ? 2 : 1.5}
               />
               {/* Lépés/kapu neve */}
               <text
@@ -471,7 +524,7 @@ export function PlaybookFlowGraph({
                   ))}
                 </>
               )}
-              {clickable && (
+              {clickable && showEditGlyph && (
                 <text
                   x={p.x + NODE_W - 8}
                   y={p.y + n.height - 8}
@@ -521,7 +574,8 @@ export function PlaybookFlowGraph({
         </span>
         {onNodeClick && (
           <span className="inline-flex items-center gap-1">
-            <span className="text-ink/40">✎</span> kattints a szerkesztéshez
+            {showEditGlyph ? <span className="text-ink/40">✎</span> : null}
+            {hint}
           </span>
         )}
         {hasTrace && (

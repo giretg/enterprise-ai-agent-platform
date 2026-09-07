@@ -131,7 +131,7 @@ export function ScheduledTaskList({
                     <h2 className="font-display text-xl font-semibold text-ink">{task.title}</h2>
                     <Badge tone={status.tone}>{status.label}</Badge>
                     <Badge tone="neutral">{recurrenceLabel[task.recurrence]}</Badge>
-                    {task.runAsUserId && <Badge tone="success">run-as</Badge>}
+                    {task.runAsUserId && <Badge tone="success">a nevemben</Badge>}
                   </div>
                   <p className="mt-1 text-sm text-ink-faint">
                     {agentLabels.get(task.agentId) ?? task.agentId} · következő futás:{' '}

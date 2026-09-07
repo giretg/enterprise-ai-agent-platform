@@ -18,12 +18,22 @@ import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Card } from '@/components/ui/shell'
 import { KbArtifactReview } from '@/components/agents/kb-artifact-review'
 import type { AgentDetailKbInitial } from '@/lib/agent-detail-page-data'
+import {
+  KB_PROCESSING_MODE_APPROVER_HINT,
+  kbProcessingModeLabel,
+  kbSharingWholeBaseHint,
+} from '@/lib/kb-processing-mode-labels'
 
 type KbDocument = { id: string; filename: string; status: string; createdAt: Date | string }
-type PendingDoc = { ticketId: string; documentId: string; filename: string; createdAt: Date | string }
+type PendingDoc = {
+  ticketId: string
+  documentId: string
+  filename: string
+  createdAt: Date | string
+  processingMode?: 'raw_text_only' | 'okf' | null
+}
 type AgentOption = { id: string; name: string; role: string }
 type SharedAgent = { id: string; name: string }
-type KnowledgeProcessingMode = 'raw_text_only' | 'okf'
 
 export function AgentKnowledgeBasePanel({
   agentId,
@@ -49,7 +59,6 @@ export function AgentKnowledgeBasePanel({
   const [agentOptions, setAgentOptions] = useState<AgentOption[]>(initialData?.agentOptions ?? [])
   const [shareTargetId, setShareTargetId] = useState('')
   const [textInput, setTextInput] = useState('')
-  const [processingMode, setProcessingMode] = useState<KnowledgeProcessingMode>('raw_text_only')
   const [loading, setLoading] = useState(!initialData)
   const [reviewDoc, setReviewDoc] = useState<PendingDoc | null>(null)
 
@@ -104,18 +113,13 @@ export function AgentKnowledgeBasePanel({
       const requestRes = await requestKbDocument({
         documentId: (uploadRes.data as { id: string }).id,
         agentId,
-        processingMode,
       })
       if (!requestRes.success) {
         setUploadMessage(requestRes.error)
         return
       }
 
-      setUploadMessage(
-        processingMode === 'okf'
-          ? `Feltöltve OKF review-ra — jóváhagyásra vár: ${file?.name ?? 'szöveg'}`
-          : `Feltöltve — jóváhagyásra vár: ${file?.name ?? 'szöveg'}`,
-      )
+      setUploadMessage(`Beküldve — jóváhagyásra vár: ${file?.name ?? 'szöveg'}`)
       setTextInput('')
       if (fileInput) fileInput.value = ''
       refreshDocs()
@@ -196,6 +200,7 @@ export function AgentKnowledgeBasePanel({
       <KbArtifactReview
         agentId={agentId}
         documentId={reviewDoc.documentId}
+        ticketId={reviewDoc.ticketId}
         canApprove={canApprove}
         actionPending={actionPending}
         onApprove={(ticketId) => {
@@ -206,15 +211,17 @@ export function AgentKnowledgeBasePanel({
           setReviewDoc(null)
           handleReject(ticketId)
         }}
-        onClose={() => setReviewDoc(null)}
+        onClose={() => {
+          setReviewDoc(null)
+          refreshDocs()
+        }}
       />
     )}
     <Card title="Tudásbázis">
       <p className="mb-4 text-sm leading-relaxed text-ink-soft">
-        A feltöltött szövegek a(z) <span className="font-medium text-ink">{agentName}</span> agent
-        saját tudásbázisába kerülnek, <span className="font-medium text-ink">jóváhagyás után</span>. A{' '}
-        <code className="rounded bg-night-2 px-1 py-0.5 text-xs">kb_search</code> eszközzel keresi
-        őket válaszadáskor.
+        A feltöltött fájlok és szövegek a(z) <span className="font-medium text-ink">{agentName}</span>{' '}
+        agent saját tudásbázisába kerülnek, <span className="font-medium text-ink">jóváhagyás után</span>.
+        Az agent ezekből a dokumentumokból válaszol.
       </p>
 
       {canUpload ? (
@@ -239,39 +246,12 @@ export function AgentKnowledgeBasePanel({
               onChange={(e) => setTextInput(e.target.value)}
             />
           </div>
-          <div>
-            <p className="mb-1 block text-xs font-medium text-ink-soft">Feldolgozás</p>
-            <div className="inline-flex rounded-full border border-line bg-night-2 p-1">
-              {[
-                { value: 'raw_text_only' as const, label: 'Nyers KB' },
-                { value: 'okf' as const, label: 'OKF wiki' },
-              ].map((mode) => (
-                <button
-                  key={mode.value}
-                  type="button"
-                  onClick={() => setProcessingMode(mode.value)}
-                  className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${
-                    processingMode === mode.value
-                      ? 'bg-sage/20 text-sage'
-                      : 'text-ink-faint hover:text-ink-soft'
-                  }`}
-                  aria-pressed={processingMode === mode.value}
-                >
-                  {mode.label}
-                </button>
-              ))}
-            </div>
-          </div>
           <button
             type="submit"
             disabled={uploadPending}
             className="rounded-full bg-honey/20 px-5 py-2.5 text-sm font-semibold text-honey hover:bg-honey/30 disabled:opacity-50"
           >
-            {uploadPending
-              ? 'Feltöltés...'
-              : processingMode === 'okf'
-                ? '+ Beküldés OKF review-ra'
-                : '+ Beküldés jóváhagyásra'}
+            {uploadPending ? 'Feltöltés...' : '+ Beküldés jóváhagyásra'}
           </button>
           {uploadMessage && <p className="text-sm text-ink-soft">{uploadMessage}</p>}
         </form>
@@ -292,10 +272,13 @@ export function AgentKnowledgeBasePanel({
                 key={doc.ticketId}
                 className="flex items-center justify-between gap-2 text-sm text-ink-soft"
               >
-                <span className="flex items-center gap-2 truncate">
+                <span className="flex min-w-0 items-center gap-2 truncate">
                   <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-honey" />
-                  <span className="truncate" title={doc.filename}>
+                  <span className="min-w-0 truncate" title={doc.filename}>
                     {doc.filename}
+                  </span>
+                  <span className="shrink-0 rounded-full bg-night-2 px-2 py-0.5 text-[10px] font-medium text-ink-faint">
+                    {kbProcessingModeLabel(doc.processingMode)}
                   </span>
                 </span>
                 <span className="flex shrink-0 gap-2">
@@ -310,7 +293,12 @@ export function AgentKnowledgeBasePanel({
                     <>
                       <button
                         type="button"
-                        disabled={actionPending}
+                        disabled={actionPending || !doc.processingMode}
+                        title={
+                          doc.processingMode
+                            ? undefined
+                            : KB_PROCESSING_MODE_APPROVER_HINT
+                        }
                         onClick={() => handleApprove(doc.ticketId)}
                         className="rounded-full bg-sage/20 px-3 py-1 text-xs font-semibold text-sage hover:bg-sage/30 disabled:opacity-50"
                       >
@@ -326,7 +314,7 @@ export function AgentKnowledgeBasePanel({
                       </button>
                     </>
                   ) : (
-                    <span className="self-center text-xs text-ink-faint">approver hagyja jóvá</span>
+                    <span className="self-center text-xs text-ink-faint">jóváhagyó dönt</span>
                   )}
                 </span>
               </li>
@@ -371,10 +359,14 @@ export function AgentKnowledgeBasePanel({
         )}
       </div>
 
-      {canUpload && (
+      {canUpload && (kbDocs.length > 0 || sharedWith.length > 0) && (
         <div className="mt-4 border-t border-line pt-4">
-          <p className="mb-2 text-xs font-medium uppercase tracking-widest text-ink-faint">
-            Megosztás{sharedWith.length > 0 ? ` (${sharedWith.length} agent)` : ''}
+          <p className="mb-1 text-xs font-medium uppercase tracking-widest text-ink-faint">
+            Tudásbázis megosztása más agenttel
+            {sharedWith.length > 0 ? ` (${sharedWith.length})` : ''}
+          </p>
+          <p className="mb-3 text-xs leading-relaxed text-ink-faint">
+            {kbSharingWholeBaseHint(agentName)}
           </p>
           {sharedWith.length > 0 && (
             <ul className="mb-3 space-y-1">

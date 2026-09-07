@@ -122,3 +122,12 @@ export function resolveChatStreamConflict(
     message: body.message?.trim() || `Küldés sikertelen (409)`,
   }
 }
+
+/** Nem-409 HTTP hiba a stream indításakor — a JSON `message`, ha van. */
+export function chatStreamHttpErrorMessage(
+  status: number,
+  body: { message?: string } | null | undefined,
+): string {
+  const fromBody = body?.message?.trim()
+  return fromBody || `Küldés sikertelen (${status})`
+}

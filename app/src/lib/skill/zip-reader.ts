@@ -9,13 +9,15 @@ import { inflateRawSync } from 'node:zlib'
  * formátum-lefedettség. Csak azt támogatjuk, amit a valódi skill-csomagok
  * használnak: `stored` (0) és `deflate` (8) tömörítés, sima könyvtárfa.
  *
- * A védekezés három rétege (mind KÖTELEZŐ, egyik sem opcionális):
+ * A védekezés négy rétege (mind KÖTELEZŐ, egyik sem opcionális):
  *   1. bájt-limitek (archívum, fájlonkénti és összesített kicsomagolt méret) —
  *      zip-bomba ellen; a deklarált méretet ÉS a tényleges kimenetet is nézzük,
  *      mert a fejléc hazudhat;
  *   2. útvonal-normalizálás — `..`, abszolút út és backslash-elválasztó
  *      elutasítva (zip-slip);
- *   3. bejegyzés-darabszám cap — a central directory végigolvasása is munka.
+ *   3. bejegyzés-darabszám cap — a central directory végigolvasása is munka;
+ *   4. tömörített `[dataStart, dataEnd)` tartományok diszjunktsága — ugyanaz a
+ *      deflate-blokk nem futhat le kétszer (átfedő central-directory hivatkozás).
  */
 
 export interface ZipEntry {
@@ -93,6 +95,13 @@ function findEocdOffset(buf: Buffer): number {
   return -1
 }
 
+function insertNonOverlappingRange(ranges: Array<{ start: number; end: number }>, start: number, end: number): boolean {
+  // ponytail: 4 000 bejegyzésnél a lineáris scan elfogadható; nagyobb limithez intervallumfa kell.
+  if (ranges.some((range) => range.start < end && start < range.end)) return false
+  ranges.push({ start, end })
+  return true
+}
+
 /**
  * Az archívum összes támogatott bejegyzésének kiolvasása. A könyvtár-bejegyzések
  * (`/`-re végződő nevek) kimaradnak — minket csak a fájlok érdekelnek.
@@ -129,6 +138,7 @@ export function readZipEntries(
 
   const entries: ZipEntry[] = []
   let totalUncompressed = 0
+  const compressedRanges: Array<{ start: number; end: number }> = []
   let cursor = centralOffset
 
   for (let i = 0; i < entryCount; i++) {
@@ -175,6 +185,9 @@ export function readZipEntries(
     const dataStart = localOffset + 30 + localNameLength + localExtraLength
     const dataEnd = dataStart + compressedSize
     if (dataEnd > buf.length) throw new ZipReadError('Sérült ZIP (csonka adat).', 'corrupt')
+    if (!insertNonOverlappingRange(compressedRanges, dataStart, dataEnd)) {
+      throw new ZipReadError('Sérült ZIP (átfedő tömörített fájladat).', 'corrupt')
+    }
 
     const compressed = buf.subarray(dataStart, dataEnd)
     let bytes: Buffer

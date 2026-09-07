@@ -35,4 +35,9 @@ export const PUBLIC_ROUTE_PATTERNS = [
   '/api/healthz(.*)',
   '/api/readyz(.*)',
   '/api/metrics(.*)',
+  // Kereső-/bot-vezérlő fájlok: szándékosan nyilvánosak, tartalmuk nem érzékeny.
+  // Enélkül a Clerk `auth.protect()` 404-et adna a `/robots.txt`-re, amit a
+  // Googlebot „mindent szabad crawlolni"-ként értelmez (l. `src/app/robots.ts`).
+  '/robots.txt',
+  '/sitemap.xml',
 ] as const

@@ -35,7 +35,7 @@ import {
   matchesAssigneeFilter,
   type EnrichedBoardTicket,
 } from '@/lib/ticket-display'
-import { formatOriginLabel } from '@/lib/work-traceability'
+import { countBoardTicketsByTileState, formatOriginLabel } from '@/lib/work-traceability'
 
 export type RecentBoardProcess = {
   id: string
@@ -297,7 +297,7 @@ function TicketCard({
 
       <div className="flex items-start gap-2">
         <Link
-          href={`/control-plane/tickets/${ticket.id}`}
+          href={`/control-plane/tickets/${ticket.openTicketId}`}
           draggable={false}
           title={ticket.title}
           className="min-w-0 flex-1"
@@ -409,12 +409,20 @@ function TicketCard({
                   className="flex items-start justify-between gap-2 text-[11px] leading-snug text-ink-soft hover:text-coral-deep"
                 >
                   <span className="min-w-0 truncate">{step.stepName || step.title}</span>
-                  <span className="shrink-0 text-ink-faint">{step.stateLabel}</span>
+                  <span
+                    className={`shrink-0 ${step.kind === 'support' && (step.state === 'awaiting_human' || step.state === 'needs_info') ? 'font-medium text-honey' : 'text-ink-faint'}`}
+                  >
+                    {step.stateLabel}
+                  </span>
                 </Link>
               ) : (
                 <span className="flex items-start justify-between gap-2 text-[11px] leading-snug text-ink-faint">
                   <span className="min-w-0 truncate">{step.stepName || step.title}</span>
-                  <span className="shrink-0">{step.stateLabel}</span>
+                  <span
+                    className={`shrink-0 ${step.kind === 'support' && (step.state === 'awaiting_human' || step.state === 'needs_info') ? 'font-medium text-honey' : ''}`}
+                  >
+                    {step.stateLabel}
+                  </span>
                 </span>
               )}
             </li>
@@ -682,6 +690,7 @@ export function KanbanBoard({
     initialScheduledFilter ? 'scheduled' : null,
   )
   const [hideEmptyColumns, setHideEmptyColumns] = useState(true)
+  const [filtersOpen, setFiltersOpen] = useState(false)
   /**
    * A dátum-inputok azonnal követik a kattintást (a navigáció csak utána fut le),
    * de ha az URL-ből új tartomány érkezik, az felülírja a helyi értéket. A
@@ -740,6 +749,14 @@ export function KanbanBoard({
     }
     return counts
   }, [filteredTickets])
+
+  // A csempék a beágyazott folyamat-lépéseket is számolják (l.
+  // countBoardTicketsByTileState). Az oszlop-elrejtés viszont marad a
+  // `countsByState`-en: ott a tényleges KÁRTYÁK száma számít.
+  const tileCountsByState = useMemo(
+    () => countBoardTicketsByTileState(baseFilteredTickets),
+    [baseFilteredTickets],
+  )
 
   const visibleColumns = useMemo(
     () =>
@@ -862,7 +879,7 @@ export function KanbanBoard({
           const count = tile.scheduled
             ? baseFilteredTickets.filter((ticket) => Boolean(ticket.schedule)).length
             : tile.states
-              ? tile.states.reduce((sum, state) => sum + (countsByState.get(state) ?? 0), 0)
+              ? tile.states.reduce((sum, state) => sum + (tileCountsByState.get(state) ?? 0), 0)
               : baseFilteredTickets.length
           const active = tile.scheduled
             ? stateFocus === 'scheduled'
@@ -907,7 +924,25 @@ export function KanbanBoard({
 
       {/* Szűrősáv */}
       <div className="atelier-card !rounded-2xl !p-3 sm:!p-4">
-        <div className="flex flex-wrap items-end gap-3">
+        {/* Mobilon a szűrők egy képernyőnyit foglalnának a kártyák elől — alapból zárva. */}
+        <button
+          type="button"
+          onClick={() => setFiltersOpen((open) => !open)}
+          aria-expanded={filtersOpen}
+          className="flex w-full items-center justify-between gap-2 text-xs font-semibold text-ink-soft sm:hidden"
+        >
+          <span>
+            Keresés és szűrők
+            {filtersActive ? <span className="ml-1.5 text-coral">• aktív</span> : null}
+          </span>
+          <span className="flex items-center gap-2 font-normal text-ink-faint">
+            {listTickets.length} feladat
+            <span aria-hidden>{filtersOpen ? '▴' : '▾'}</span>
+          </span>
+        </button>
+        <div
+          className={`${filtersOpen ? 'mt-3 flex' : 'hidden'} flex-wrap items-end gap-3 sm:mt-0 sm:flex`}
+        >
           <Field label="Keresés" htmlFor="board-search" className="w-full sm:w-56">
             <div className="relative">
               <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-faint" />

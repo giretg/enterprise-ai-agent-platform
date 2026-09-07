@@ -138,6 +138,14 @@ const workspace = readFileSync(
   resolve(process.cwd(), 'src/components/agents/agent-workspace.tsx'),
   'utf8',
 )
+const rail = readFileSync(
+  resolve(process.cwd(), 'src/components/agents/agent-rail.tsx'),
+  'utf8',
+)
+const composer = readFileSync(
+  resolve(process.cwd(), 'src/components/agents/agent-chat-composer.tsx'),
+  'utf8',
+)
 const identityPage = readFileSync(
   resolve(process.cwd(), 'src/app/control-plane/agents/[agentId]/page.tsx'),
   'utf8',
@@ -168,6 +176,42 @@ check('a munkaterület fejlécében a bemutatkozás mellett nyílik a munkaköri
   assert.match(workspace, /AgentRoleDescriptionButton/)
   assert.match(workspace, /persona\.greeting/)
   assert.doesNotMatch(workspace, /workspaceSubtitle/)
+})
+
+check('mobilon egyértelmű a munkatársváltás és nem vágódik le a fülsor', () => {
+  assert.match(workspace, /Munkatárs váltása/)
+  assert.match(workspace, /overflow-x-auto/)
+  // A görgethető fülsorban az aktív fül különben kicsúszhat a képből.
+  assert.match(workspace, /activeTabRef/)
+  assert.match(workspace, /scrollIntoView/)
+  // A lebegő csempe csak asztali gépen működik.
+  assert.match(workspace, /hidden sm:grid/)
+  assert.match(rail, /Munkatárslista bezárása/)
+  assert.match(rail, /Munkatársak/)
+  // A szerkesztő fejléc-sora mobilon is egy sorban fér el.
+  assert.match(composer, /flex flex-wrap items-center gap-2/)
+  assert.doesNotMatch(composer, /grid-cols-1/)
+})
+
+check('a fejléc mobilon nem torlódik: a logó nem zsugorodik, a futás-gomb ikonos', () => {
+  const shell = readFileSync(resolve(process.cwd(), 'src/components/ui/shell.tsx'), 'utf8')
+  assert.match(shell, /flex min-w-0 shrink-0 items-center/)
+  const runs = readFileSync(
+    resolve(process.cwd(), 'src/components/active-runs/active-runs-panel.tsx'),
+    'utf8',
+  )
+  assert.match(runs, /aria-label="Futások"/)
+  assert.match(runs, /hidden sm:inline">Futások/)
+})
+
+check('a feladat-tábla szűrői mobilon összecsukva indulnak', () => {
+  const board = readFileSync(
+    resolve(process.cwd(), 'src/components/tickets/kanban-board.tsx'),
+    'utf8',
+  )
+  assert.match(board, /const \[filtersOpen, setFiltersOpen\] = useState\(false\)/)
+  assert.match(board, /Keresés és szűrők/)
+  assert.match(board, /sm:mt-0 sm:flex/)
 })
 
 check('az adatlap fejlécében a bemutatkozás mellett nyílik a munkaköri leírás', () => {

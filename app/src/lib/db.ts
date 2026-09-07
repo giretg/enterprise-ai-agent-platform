@@ -16,7 +16,7 @@ const globalForPrisma = globalThis as unknown as {
 }
 
 /** Dev HMR cache-ből maradt kliens nem látja az új sémát — ilyenkor újra generálunk. */
-const DEV_REQUIRED_MODELS = ['conversation', 'message'] as const
+const DEV_REQUIRED_MODELS = ['conversation', 'message', 'workProject'] as const
 /** Oszlopok, amiket a hosszú életű `next dev` Prisma-példánya gyakran „lefagyaszt”. */
 const DEV_REQUIRED_SKILL_FIELDS = ['displayName'] as const
 

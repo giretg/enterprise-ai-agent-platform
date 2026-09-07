@@ -130,6 +130,10 @@ export class PostgresConversationRepository implements ConversationRepository {
     return row
   }
 
+  async updateProjectKey(id: string, projectKey: string): Promise<Conversation> {
+    return prisma.conversation.update({ where: { id }, data: { projectKey } })
+  }
+
   async list(params: {
     tenantId?: string | null
     agentId?: string

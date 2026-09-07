@@ -4,10 +4,17 @@
 
 runConfig:
   cpu: 1
-  memoryMiB: 1024
+  # 2026-09-06: az `1024 / concurrency 40` beállítás ismét OOM-killt okozott az
+  # agent-chat alatt (l. e1a92700 első próbálkozás 512/80 → 1024/40). Egy 1 vCPU-s
+  # instance-en a hosszú életű chat-stream + inline HTML-riport előnézet (a
+  # workspace/files route a teljes fájlt bufferbe olvassa) párhuzamosan tolta 1 GiB
+  # fölé. Kevesebb egyidejű kérés/instance → az autoscaler több instance-re teríti
+  # a terhelést; +dupla memória a maradék csúcsokra. Visszaállítás: állítsd vissza
+  # 1024 / 40-re. Tartós megoldás: agent-runtime leválasztása az UI szolgálatról (#114).
+  memoryMiB: 2048
   minInstances: 0
   maxInstances: 10
-  concurrency: 40
+  concurrency: 10
 
 env:
   # A projektben az `ostorosbor-crm` backend is fut, és a névtelen DATABASE_URL /

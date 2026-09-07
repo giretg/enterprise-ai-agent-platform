@@ -30,6 +30,8 @@ import { personaFor } from '@/lib/agent-persona'
 import { agentWorkspacePath } from '@/lib/agent-workspace-routes'
 import { uploadTicketWorkspaceFiles } from '@/lib/ticket-workspace-files-client'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
+import { AssignableWorkProjectSelect } from '@/components/work-projects/work-project-select'
+import { GENERAL_WORK_PROJECT_KEY } from '@/lib/work-project'
 
 type AssigneeOptions = {
   agents: {
@@ -126,6 +128,7 @@ export function CreateBoardTicketForm({
   const [dispatchPrompt, setDispatchPrompt] = useState<DispatchPrompt>(null)
   const [dispatchPending, startDispatchTransition] = useTransition()
   const [schedule, setSchedule] = useState<TaskScheduleState>(EMPTY_TASK_SCHEDULE)
+  const [projectKey, setProjectKey] = useState(GENERAL_WORK_PROJECT_KEY)
 
   const assigneeChoices = useMemo(() => {
     if (assigneeType === 'agent') {
@@ -229,6 +232,7 @@ export function CreateBoardTicketForm({
     setSkillsCache(null)
     setPendingFiles([])
     setSchedule(EMPTY_TASK_SCHEDULE)
+    setProjectKey(GENERAL_WORK_PROJECT_KEY)
   }
 
   // #199 — csatolmány-kapu az explicit skill-választás mellett. A szerver
@@ -308,6 +312,7 @@ export function CreateBoardTicketForm({
           skillVersionIds:
             assigneeType === 'agent' && selectedSkillIds.length > 0 ? selectedSkillIds : undefined,
           deferDispatch: shouldDeferDispatch,
+          projectKey,
           ...(Boolean(initialAgentId) && assigneeType === 'agent'
             ? { linkConversation: true }
             : {}),
@@ -400,6 +405,7 @@ export function CreateBoardTicketForm({
           assigneeId,
           skillVersionIds: [skillVersionId],
           deferDispatch: true,
+          projectKey,
           ...(Boolean(initialAgentId) && assigneeType === 'agent'
             ? { linkConversation: true }
             : {}),
@@ -610,6 +616,13 @@ export function CreateBoardTicketForm({
           </div>
         </div>
         ) : null}
+
+        <AssignableWorkProjectSelect
+          id="board-ticket-project"
+          value={projectKey}
+          onChange={setProjectKey}
+          disabled={pending}
+        />
 
         {isTaskOnlyMode ? (
           assigneeId ? (

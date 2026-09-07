@@ -245,6 +245,7 @@ export class PostgresTicketRepository implements TicketRepository {
       Pick<
         Ticket,
         | 'state'
+        | 'title'
         | 'payload'
         | 'assigneeType'
         | 'assigneeId'
@@ -261,6 +262,7 @@ export class PostgresTicketRepository implements TicketRepository {
         | 'cancelRequestedById'
         | 'cancelRequestedAt'
         | 'executeAfter'
+        | 'projectKey'
       >
     >,
   ): Promise<Ticket> {

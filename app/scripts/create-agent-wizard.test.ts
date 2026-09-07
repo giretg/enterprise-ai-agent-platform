@@ -20,10 +20,12 @@ import {
   matchAssignableConnectorsByName,
   matchAssignableSkillsByName,
   nextCreateAgentWizardStep,
+  parseAgentModelConfigForWizard,
   parseCreateAgentWizardStep,
   prevCreateAgentWizardStep,
   toolSelectionHasChanges,
 } from '../src/lib/create-agent-wizard'
+import { MODEL_PROVIDERS } from '../src/lib/model-providers'
 
 let failures = 0
 function check(name: string, fn: () => void) {
@@ -169,6 +171,27 @@ function main() {
     assert.deepEqual(enabled, ['kb_search', 'web_search'])
     assert.equal(toolSelectionHasChanges(enabled, []), true)
     assert.equal(toolSelectionHasChanges(['kb_search'], ['kb_search']), false)
+  })
+
+  check('agent modelConfig parse a másolás varázslóhoz', () => {
+    const parsed = parseAgentModelConfigForWizard(
+      { provider: 'openrouter', model: 'anthropic/claude-sonnet-4', modelType: 'sol', temperature: 0.7 },
+      MODEL_PROVIDERS,
+    )
+    assert.equal(parsed.provider, 'openrouter')
+    assert.equal(parsed.modelType, 'sol')
+    assert.equal(parsed.temperature, 0.7)
+  })
+
+  check('a varázsló támogatja a meglévő agent másolását', () => {
+    const wizard = readFileSync(
+      resolve(process.cwd(), 'src/components/agents/create-agent-wizard.tsx'),
+      'utf8',
+    )
+    assert.match(wizard, /getAgentCloneTemplate/)
+    assert.match(wizard, /applyAgentCloneSettings/)
+    assert.match(wizard, /Másolás meglévő munkatársból/)
+    assert.match(wizard, /cloneableAgents/)
   })
 
   check('a varázsló provisioning-javaslatot és új-ablakos kitérőket tartalmaz', () => {

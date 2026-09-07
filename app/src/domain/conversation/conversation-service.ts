@@ -131,6 +131,17 @@ export class ConversationService {
     return conversation
   }
 
+  async setProjectKey(params: {
+    conversationId: string
+    tenantId: string
+    projectKey: string
+  }) {
+    const existing = await this.conversations.findByIdForTenant(params.conversationId, params.tenantId)
+    if (!existing) throw new Error('A beszélgetés nem található.')
+    if (existing.projectKey === params.projectKey) return existing
+    return this.conversations.updateProjectKey(params.conversationId, params.projectKey)
+  }
+
   /**
    * Feladat a beszélgetésben: user-üzenet + élő kártya (`ticketRefId`).
    * Mindig új vagy a hívó által megadott szálra ír — nem keres last-used chatet.

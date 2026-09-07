@@ -27,6 +27,10 @@ import {
   type VaultLookup,
 } from '../src/domain/privacy/surrogate-vault'
 import { valVaultMethodStubs } from './test-surrogate-vault-val-stubs'
+import {
+  InMemoryPrivacyKeyRepository,
+  InMemorySurrogateVault as FullSurrogateVault,
+} from './test-in-memory-surrogate-vault'
 import { parseSurrogate } from '../src/domain/privacy/surrogate-format'
 import type {
   AgentRepository,
@@ -224,6 +228,18 @@ function engine() {
   }
 }
 
+function valEngine() {
+  const vault = new FullSurrogateVault(() => HMAC_KEY)
+  const audit = new RecordingAudit()
+  const keys = new InMemoryPrivacyKeyRepository()
+  return {
+    vault,
+    audit,
+    engine: new SurrogateEngine(vault, audit, undefined, keys),
+    scope: { type: 'conversation' as const, id: CONVERSATION },
+  }
+}
+
 const ticket = {
   id: TICKET,
   tenantId: TENANT,
@@ -371,6 +387,27 @@ async function main() {
       query: { company: SOURCE_ID, year: 2026 },
       ids: [SOURCE_ID, 'nyers'],
     })
+  })
+
+  await test('resolveToolArgs: feladatbeli VAL e-mail → plaintext a gmail_send.args.to-ban', async () => {
+    const { engine: eng, scope } = valEngine()
+    const email = 'gergely.giret@itnatives.io'
+    const [alias] = await eng.allocateVals([
+      { tenantId: TENANT, scope, entityType: 'email', plaintext: email },
+    ])
+    const original = { to: alias, subject: 'riport', body: 'teszt' }
+    const snapshot = structuredClone(original)
+    const resolved = await resolveToolArgs({
+      args: original,
+      engine: eng,
+      tenantId: TENANT,
+      scope,
+    })
+    assert.equal(resolved.ok, true)
+    if (!resolved.ok) return
+    assert.equal(resolved.resolvedCount, 1)
+    assert.deepEqual(resolved.args, { to: email, subject: 'riport', body: 'teszt' })
+    assert.deepEqual(original, snapshot)
   })
 
   await test('resolveToolArgs: ismeretlen álnév nem cserél, vault-auditot ír', async () => {

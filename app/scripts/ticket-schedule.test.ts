@@ -17,6 +17,8 @@ import {
 } from '../src/lib/ticket-schedule'
 import { addRecurrence } from '../src/domain/scheduled-task/scheduled-task-service'
 import { createBoardTicketSchema } from '../src/lib/validators/actions'
+import { applyTicketTaskDescription, canEditTicketTask } from '../src/lib/ticket-display'
+import { ticketScheduleToFieldState } from '../src/components/tickets/task-schedule-fields'
 
 let failures = 0
 function test(name: string, fn: () => void) {
@@ -147,6 +149,60 @@ test('createBoardTicketSchema: rendszeres ütemezéshez időpont és gyakoriság
     }).success,
     false,
   )
+})
+
+test('végrehajtásra váró ticket szerkeszthető, futás közben nem', () => {
+  const ctx = { canManage: true, userId: 'user-1' }
+  const base = { createdById: 'user-1', lockToken: null, processInstanceId: null }
+  assert.equal(canEditTicketTask({ ...base, state: 'ready' }, ctx), true)
+  assert.equal(canEditTicketTask({ ...base, state: 'backlog' }, ctx), true)
+  assert.equal(canEditTicketTask({ ...base, state: 'in_progress' }, ctx), false)
+  assert.equal(
+    canEditTicketTask({ ...base, state: 'ready', processInstanceId: 'proc-1' }, ctx),
+    false,
+  )
+  assert.equal(
+    canEditTicketTask({ ...base, state: 'ready' }, { canManage: false, userId: 'other' }),
+    false,
+  )
+})
+
+test('feladat-szöveg szerkesztése a template question/task mezőket viszi, az ütemezést meghagyja', () => {
+  const next = applyTicketTaskDescription(
+    {
+      question: 'Régi feladat',
+      source: 'scheduled_task',
+      scheduleSeries: true,
+      briefing: { goal: 'Régi feladat', source: '', constraint: '', approval: 'a feladó nevében fut' },
+    },
+    'Új havi riport',
+  )
+  assert.equal(next.question, 'Új havi riport')
+  assert.equal(next.task, 'Új havi riport')
+  assert.equal(next.scheduleSeries, true)
+  assert.equal((next.briefing as { goal: string }).goal, 'Új havi riport')
+})
+
+test('meglévő rendszeres ütemezés mezőkre tölthető', () => {
+  const runAt = new Date('2026-10-06T06:11:00.000Z')
+  const view = readTicketSchedule(
+    stampTicketSchedule(
+      { question: 'Riport' },
+      buildTicketScheduleStamp({
+        kind: 'recurring',
+        runAt,
+        recurrence: 'monthly',
+        role: 'series',
+      }),
+      { scheduledTaskId: 'aaaaaaaa-0000-4000-8000-000000000001', role: 'series' },
+    ),
+    runAt,
+    new Date('2026-09-06T06:00:00.000Z'),
+  )
+  const fields = ticketScheduleToFieldState(view)
+  assert.equal(fields.mode, 'recurring')
+  assert.equal(fields.recurrence, 'monthly')
+  assert.ok(fields.runAtLocal)
 })
 
 console.log(failures === 0 ? '\nOK minden ticket-schedule teszt zöld' : `\n${failures} teszt bukott`)

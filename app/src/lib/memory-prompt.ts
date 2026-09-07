@@ -46,27 +46,46 @@ function formatChunkLine(chunk: RetrievedChunk, withScore = false): string {
   return `- [${chunk.type}] ${chunk.title}${scoreSuffix} — ${excerptChunk(chunk)} [id: ${chunk.id}]`
 }
 
+export type ProjectBriefForPrompt = {
+  key: string
+  name: string
+  description: string | null
+}
+
+function formatProjectBriefLines(brief: ProjectBriefForPrompt): string[] {
+  const lines = [`Projekt: ${brief.name}`]
+  const description = brief.description?.trim()
+  if (description) lines.push(description)
+  return lines
+}
+
 /**
  * A retrieval-eredményből épített, elhatárolt prompt-blokk (§4.1 T3 vetület +
- * §5 top-K). `null`-t ad, ha se `project_state`, se találat nincs — ilyenkor a
- * hívó dönthet, hogy egyáltalán beszúrja-e a blokkot.
+ * §5 top-K). Ha van projekt-név/leírás, az mindig bent van — akkor is, ha még
+ * nincs emlék. `null` csak akkor, ha se brief, se találat nincs.
  */
 export function formatProjectMemoryContextBlock(
-  result: MemoryRetrievalResult,
+  result: MemoryRetrievalResult | null | undefined,
   projectKey: string,
+  brief?: ProjectBriefForPrompt | null,
 ): string | null {
-  const state = result.projectState
-  const hasState =
+  const state = result?.projectState
+  const hasState = Boolean(
     state &&
-    (state.focusNarrative ||
-      state.decisions.length > 0 ||
-      state.openTasks.length > 0 ||
-      state.constraints.length > 0 ||
-      state.artifacts.length > 0)
-  const hasChunks = result.chunks.length > 0
-  if (!hasState && !hasChunks) return null
+      (state.focusNarrative ||
+        state.decisions.length > 0 ||
+        state.openTasks.length > 0 ||
+        state.constraints.length > 0 ||
+        state.artifacts.length > 0),
+  )
+  const hasChunks = Boolean(result && result.chunks.length > 0)
+  const hasConflicts = Boolean(result && result.conflictSets.length > 0)
+  if (!brief && !hasState && !hasChunks && !hasConflicts) return null
 
-  const lines: string[] = [`Project memory context (projekt: ${projectKey}):`]
+  const lines: string[] = [`Project memory context (projekt: ${brief?.name ?? projectKey}):`]
+  if (brief) {
+    lines.push('', ...formatProjectBriefLines(brief))
+  }
 
   if (state?.focusNarrative) {
     lines.push('', '[Jelenlegi fókusz]', state.focusNarrative.trim())
@@ -83,12 +102,12 @@ export function formatProjectMemoryContextBlock(
     listSection('Kulcs artifaktok', state.artifacts)
   }
 
-  if (hasChunks) {
+  if (hasChunks && result) {
     lines.push('', 'Releváns korábbi emlékek (keresés alapján):')
     for (const chunk of result.chunks) lines.push(formatChunkLine(chunk))
   }
 
-  if (result.conflictSets.length > 0) {
+  if (result && result.conflictSets.length > 0) {
     lines.push(
       '',
       'Figyelem — ellentmondó emlékek (a felsoroltak közül nem mindegyik lehet egyszerre igaz). ' +

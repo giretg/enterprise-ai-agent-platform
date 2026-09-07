@@ -25,7 +25,6 @@ import { AgentAssigneeSelect } from '@/components/agents/agent-assignee-select'
 import {
   clearTrainingPreviewSession,
   previewStateFromActionData,
-  readTrainingPreviewSession,
   useTrainingPreviewSession,
   writeTrainingPreviewSession,
 } from '@/components/agents/training-preview-session'
@@ -125,7 +124,6 @@ export function TrainingWorkspace({
   const [pending, startTransition] = useTransition()
   const [previewPending, setPreviewPending] = useState(false)
   const [agentId, setAgentId] = useState(selectedAgentId ?? agents[0]?.id ?? '')
-  const [newItem, setNewItem] = useState('')
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editText, setEditText] = useState('')
   const [expandedVersion, setExpandedVersion] = useState<number | null>(null)
@@ -146,12 +144,9 @@ export function TrainingWorkspace({
   const previewSession = useTrainingPreviewSession(agentId)
   const preview = previewSession.preview
   const previewError = previewSession.error
+  const newItem = previewSession.draft
   const busy = pending || previewPending || submitPending
   const showCompositionChoice = Boolean(workspace?.pendingProposal)
-
-  useEffect(() => {
-    setNewItem(readTrainingPreviewSession(agentId).draft)
-  }, [agentId])
 
   useEffect(() => {
     if (workspace?.pendingProposal) return
@@ -227,7 +222,6 @@ export function TrainingWorkspace({
         return
       }
       clearTrainingPreviewSession(agentId)
-      setNewItem('')
       setEditingIndex(null)
       setEditText('')
       setSubmitResult({
@@ -431,9 +425,7 @@ export function TrainingWorkspace({
             rows={4}
             value={newItem}
             onChange={(e) => {
-              const text = e.target.value
-              setNewItem(text)
-              writeTrainingPreviewSession(agentId, { draft: text })
+              writeTrainingPreviewSession(agentId, { draft: e.target.value })
             }}
             placeholder="Pl. Számláknál mindig ellenőrizd az ÁFA-kulcsot…"
           />

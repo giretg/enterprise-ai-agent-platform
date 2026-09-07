@@ -58,6 +58,7 @@ const isGroup = (entry: ControlPlaneNavEntry): entry is ControlPlaneNavGroup => 
  */
 export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] = [
   { key: 'board', href: '/control-plane/board', label: 'Board' },
+  { key: 'projects', href: '/control-plane/projects', label: 'Projektek' },
   // Saját csatorna-kötés + delegált connector — minden tenant-tag (viewer+) látja.
   {
     key: 'account',

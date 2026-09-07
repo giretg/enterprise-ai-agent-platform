@@ -400,6 +400,14 @@ enum SkillCatalogScope {
   tenant // tenant-lokális, más tenantnak sosem látható
 }
 
+/// Katalógus-besorolás (nem RBAC, nem tenant-határ).
+/// tenant = saját tenant; published = kiadott platform-csomag; system = rendszer-agenthez kötött.
+enum SkillKind {
+  tenant
+  published
+  system
+}
+
 enum SkillSourceType {
   authored
   imported
@@ -1086,6 +1094,9 @@ model Skill {
   description  String // Level-0 index szöveg (méret-limitált)
   catalogScope SkillCatalogScope @default(tenant)
   tenantId     String?           @map("tenant_id") @db.Uuid // null ⇔ global
+  kind         SkillKind         @default(tenant)
+  /// Csak `kind = system` esetén: melyik rendszer-agenthez köthető.
+  requiredSystemRole AgentSystemRole? @map("required_system_role")
   sourceType   SkillSourceType   @default(authored)
   provenance   Json? // forrás-URL/id, eredeti hash, importált-formátum
   license      String? // SPDX vagy 'proprietary' / null
@@ -1987,6 +1998,25 @@ model KnowledgeChunk {
   @@map("knowledge_chunks")
 }
 
+/// Tenant-szintű munka-konténer: több beszélgetés és több AI-munkatárs tartozhat
+/// hozzá. A `key` a memória/conversation `projectKey` értéke. Az Általános
+/// (`__general__`) gyűjtő NINCS ebben a táblában — az implicit, mindig létezik.
+model WorkProject {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  key         String
+  name        String
+  description String?
+  createdById String    @map("created_by") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  archivedAt  DateTime? @map("archived_at") @db.Timestamptz
+
+  @@unique([tenantId, key])
+  @@index([tenantId, archivedAt])
+  @@map("work_projects")
+}
+
 model Conversation {
   id                String             @id @default(uuid()) @db.Uuid
   tenantId          String?            @map("tenant_id") @db.Uuid
@@ -2510,6 +2540,7 @@ model Ticket {
   playbookStepId    String?       @map("playbook_step_id")
   requiredGateId    String?       @map("required_gate_id")
   conversationId    String?       @map("conversation_id") @db.Uuid
+  projectKey        String        @default("__general__") @map("project_key")
   source            TicketSource  @default(user)
   createdById       String        @map("created_by") @db.Uuid
   createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz

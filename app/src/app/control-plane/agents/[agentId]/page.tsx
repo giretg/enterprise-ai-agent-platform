@@ -33,7 +33,7 @@ import { AssignExistingConnectorForm } from '@/components/agents/assign-existing
 import { ApiConnectorList } from '@/components/agents/api-connector-list'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
-import { AgentToolAccessDiagnostics } from '@/components/agents/agent-tool-access-diagnostics'
+import { AgentToolsOverview } from '@/components/agents/agent-tools-overview'
 import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import type { AgentSkillRow, AssignableSkill } from '@/app/actions/skills'
 import { WebSearchPolicyCard } from '@/components/agents/web-search-policy-card'
@@ -45,12 +45,9 @@ import {
 import { MemoryPanel } from '@/components/agents/memory-panel'
 import { resolveSelfEvolutionProfile } from '@/lib/self-evolution-profile'
 import { resolveBehaviorOverlay } from '@/lib/behavior-profile'
-import { formatToolUiName } from '@/lib/tool-ui-labels'
 import {
   agentRoleLabel,
   modelConfigSummary,
-  recipeStatusLabel,
-  resourceTypeLabel,
   selfEvolutionSummary,
 } from '@/lib/agent-profile-labels'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
@@ -98,69 +95,6 @@ function ProseBlock({ text, empty }: { text: string | null | undefined; empty: s
     return <p className="text-sm italic text-ink-faint">{empty}</p>
   }
   return <ChatMarkdown content={text} variant="agent" />
-}
-
-/** Eszközjogok olvasható nézete: mit hívhat meg ténylegesen, és mi van letiltva. */
-function CapabilityView({
-  capabilities,
-}: {
-  capabilities: Array<{ toolName: string; allowed: boolean }>
-}) {
-  if (capabilities.length === 0) {
-    return (
-      <p className="text-sm text-ink-faint">
-        Még nincs beállítva egyetlen eszközjog sem — az agent csak beszélgetni tud.
-      </p>
-    )
-  }
-  const allowed = capabilities.filter((c) => c.allowed)
-  const denied = capabilities.filter((c) => !c.allowed)
-
-  return (
-    <div className="space-y-4">
-      <p className="text-sm text-ink">
-        <strong>{allowed.length}</strong> eszközt használhat
-        {denied.length > 0 ? `, ${denied.length} le van tiltva` : ''}.
-      </p>
-      <ExpandableContent>
-        <div className="space-y-4">
-          <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-soft">
-              Engedélyezett
-            </p>
-            {allowed.length === 0 ? (
-              <p className="text-sm italic text-ink-faint">Nincs engedélyezett eszköz.</p>
-            ) : (
-              <ul className="flex flex-wrap gap-2">
-                {allowed.map((cap) => (
-                  <li key={cap.toolName} className="atelier-soft px-2.5 py-1 text-xs text-ink">
-                    {formatToolUiName(cap.toolName)}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          {denied.length > 0 && (
-            <div className="border-t border-line pt-3">
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-soft">
-                Letiltva
-              </p>
-              <ul className="flex flex-wrap gap-2">
-                {denied.map((cap) => (
-                  <li
-                    key={cap.toolName}
-                    className="rounded-full border border-line px-2.5 py-1 text-xs text-ink-faint"
-                  >
-                    {formatToolUiName(cap.toolName)}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      </ExpandableContent>
-    </div>
-  )
 }
 
 export default async function AgentDetailPage({
@@ -229,9 +163,6 @@ export default async function AgentDetailPage({
     agent,
     memoryContent,
     memoryVersion,
-    recipe,
-    resources,
-    apiKeyPreview,
     behaviorProfileLink,
     delegatedConnectors,
     governance,
@@ -268,9 +199,6 @@ export default async function AgentDetailPage({
   const roleInfo = agentRoleLabel(agent.role)
   const modelProviders = modelPolicy ? enabledModelProviders(modelPolicy) : []
   const behaviorOverlay = resolveBehaviorOverlay(agent)
-  const visibleResources = isAdmin
-    ? resources
-    : resources.filter((r) => r.type !== 'secret')
 
   const agentSections: SettingsSection[] = [
     {
@@ -403,17 +331,18 @@ export default async function AgentDetailPage({
           {
             id: 'projekt-memoria',
             label: 'Projekt-memória',
-            description: 'Tartós, conversationök közötti projektfolytonosság.',
+            description: 'Amit az agent a beszélgetések között megjegyez erről a projektről.',
             content: (
               <InfoCard
                 title="Projekt-memória"
-                subtitle="Amit az agent projektfolytonossági állapotként megjegyzett — fókusz, döntések, nyitott feladatok, konfliktusok — a jóváhagyási és visszaállítási eszközökkel együtt."
+                subtitle="Hol tart a munka, milyen döntések és szabályok vannak rögzítve, és visszaállíthatod egy korábbi állapotra. A viselkedési szabályok a Tanulás fülön vannak, a céges dokumentumok a Tudásbázisban."
               >
                 {memoryPanel ? (
                   <MemoryPanel
                     agentId={agent.id}
                     initialProjectKeys={memoryPanel.projectKeys}
                     initialProjectKey={memoryPanel.initialProjectKey}
+                    initialProjectLabels={memoryPanel.projectLabels}
                     initialOverview={memoryPanel.initialOverview}
                   />
                 ) : (
@@ -439,7 +368,12 @@ export default async function AgentDetailPage({
                   : 'Mit hívhat meg az agent munka közben'
               }
               canEdit={isAdmin && !capabilitiesLocked}
-              view={<CapabilityView capabilities={governance.capabilities} />}
+              view={
+                <AgentToolsOverview
+                  capabilities={governance.capabilities}
+                  canEdit={isAdmin && !capabilitiesLocked}
+                />
+              }
               edit={
                 <AgentCapabilitiesPanel
                   agentId={agent.id}
@@ -450,7 +384,6 @@ export default async function AgentDetailPage({
               }
             />
           )}
-          {isAdmin && governance && <AgentToolAccessDiagnostics report={governance.toolAccess} />}
           <AgentSkillsPanel
             agentId={agent.id}
             assigned={agentSkills as AgentSkillRow[]}
@@ -531,14 +464,7 @@ export default async function AgentDetailPage({
           title="Gondolkodási motor"
           subtitle="Melyik modellt hívja, és mi a tartalék, ha az nem elérhető"
           canEdit={isAdmin}
-          view={
-            <div className="space-y-2">
-              <p className="text-sm text-ink-soft">{modelConfigSummary(modelConfig)}</p>
-              {isAdmin && apiKeyPreview && (
-                <p className="text-xs text-ink-faint">API kulcs: {apiKeyPreview}</p>
-              )}
-            </div>
-          }
+          view={<p className="text-sm text-ink-soft">{modelConfigSummary(modelConfig)}</p>}
           edit={
             <UpdateModelConfigForm
               agentId={agent.id}
@@ -605,56 +531,14 @@ export default async function AgentDetailPage({
               suspendedReason={agent.suspendedReason}
               canManage={isAdmin}
             />
-          </InfoCard>
-        </div>
-      ),
-    },
-    {
-      id: 'technikai',
-      label: 'Technikai adatok',
-      description: 'Verziók, munkafolyamat-sablon és hozzárendelt források.',
-      content: (
-        <div className="grid gap-6 xl:grid-cols-2">
-          <Card title="Verziók">
-            <p className="text-sm text-ink-soft">
-              Munkakör v{agent.currentRoleInstructionVersion} · Munkastílus v
+            <p className="mt-4 border-t border-line pt-4 text-sm text-ink-soft">
+              Aktuális verziók: Munkakör v{agent.currentRoleInstructionVersion} · Munkastílus v
               {agent.currentBehaviorProfileVersion} · Agent v{agent.currentVersion}
             </p>
-            <p className="mt-2 text-xs text-ink-faint">
+            <p className="mt-1 text-xs text-ink-faint">
               {roleInfo.title} — {roleInfo.description}
             </p>
-          </Card>
-          <Card title="Munkafolyamat-sablon">
-            {recipe ? (
-              <div className="space-y-1 text-sm">
-                <p className="font-medium text-ink">{recipe.name}</p>
-                <p className="text-ink-soft">
-                  {recipe.ticketType === 'training' ? 'tanítási' : 'interakciós'} folyamat · v
-                  {recipe.version} · {recipeStatusLabel(recipe.status)}
-                </p>
-              </div>
-            ) : (
-              <p className="text-sm text-ink-faint">
-                Nincs munkafolyamat-sablon ehhez a verzióhoz.
-              </p>
-            )}
-          </Card>
-          <Card title="Hozzárendelt források">
-            {visibleResources.length === 0 ? (
-              <p className="text-sm text-ink-faint">Nincs hozzárendelt forrás.</p>
-            ) : (
-              <ul className="space-y-2 text-sm">
-                {visibleResources.map((r) => (
-                  <li key={r.id} className="atelier-soft p-3">
-                    <span className="font-medium text-ink">{r.name}</span>
-                    <span className="ml-2 text-ink-faint">
-                      {resourceTypeLabel(r.type)} · {r.scope} · v{r.version}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
+          </InfoCard>
         </div>
       ),
     },

@@ -1,3 +1,4 @@
+import type { ToolName } from '@/domain/tool-broker/tool-broker-types'
 import { TOOL_GROUP_ORDER, TOOL_NAMES, TOOL_REGISTRY } from '@/domain/tool-broker/tool-registry'
 
 export type ToolCapabilityGroup = {
@@ -54,6 +55,27 @@ export const PLAYBOOK_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = [
 
 export function flattenToolCapabilityGroups(groups: readonly ToolCapabilityGroup[]): string[] {
   return [...new Set(groups.flatMap((group) => group.tools))]
+}
+
+function isChatCapability(capability: string): boolean {
+  const descriptor = TOOL_REGISTRY[capability as ToolName]
+  return descriptor?.surfaces.includes('chat') ?? false
+}
+
+/** A szerkesztőben: beszélgetés-eszközök vs. MCP / monitor / háttér. */
+export function splitToolGroupsByChatSurface(groups: readonly ToolCapabilityGroup[]): {
+  chat: ToolCapabilityGroup[]
+  other: ToolCapabilityGroup[]
+} {
+  const chat: ToolCapabilityGroup[] = []
+  const other: ToolCapabilityGroup[] = []
+  for (const group of groups) {
+    const chatTools = group.tools.filter(isChatCapability)
+    const otherTools = group.tools.filter((tool) => !isChatCapability(tool))
+    if (chatTools.length > 0) chat.push({ label: group.label, tools: chatTools })
+    if (otherTools.length > 0) other.push({ label: group.label, tools: otherTools })
+  }
+  return { chat, other }
 }
 
 export const NORMAL_TOOL_CAPABILITY_NAMES = flattenToolCapabilityGroups(NORMAL_TOOL_CAPABILITY_GROUPS)

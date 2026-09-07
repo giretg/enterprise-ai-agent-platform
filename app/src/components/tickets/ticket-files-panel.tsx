@@ -9,6 +9,7 @@ import { WorkspaceFileDropzone } from '@/components/workspace/workspace-file-dro
 import { Card } from '@/components/ui/shell'
 import { useTicketWorkspaceFiles } from '@/components/tickets/use-ticket-workspace-files'
 import { uploadTicketWorkspaceFile } from '@/lib/ticket-workspace-files-client'
+import { missingDeclaredOutputs } from '@/lib/declared-workspace-outputs'
 import {
   isHtmlWorkspaceFile,
   workspaceFileLink,
@@ -18,9 +19,15 @@ import {
 type TicketFilesPanelProps = {
   ticketId: string
   ticketState: string
+  /** Amit a futás előállítottként rögzített (mért mellékhatás) — ellenőrzéshez. */
+  declaredOutputs?: string[]
 }
 
-export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProps) {
+export function TicketFilesPanel({
+  ticketId,
+  ticketState,
+  declaredOutputs = [],
+}: TicketFilesPanelProps) {
   const { files, loading, error, reload, listUrl } = useTicketWorkspaceFiles(ticketId, ticketState)
   const [uploading, startUpload] = useTransition()
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -28,6 +35,9 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
 
   const isReadOnly = ['done', 'rejected', 'approved'].includes(ticketState)
   const visibleFiles = files
+  // Csak akkor állítunk hiányról, ha a lista tényleg megérkezett (nem betöltés/hiba).
+  const missingOutputs =
+    loading || error ? [] : missingDeclaredOutputs(declaredOutputs, visibleFiles)
 
   function handleOpen(path: string) {
     const preview = workspaceHtmlPreviewTarget(listUrl, path)
@@ -63,6 +73,29 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
       )}
 
       {uploadError && <p className="mb-2 text-sm text-coral">{uploadError}</p>}
+
+      {missingOutputs.length > 0 && (
+        <div className="mb-3 rounded-lg border border-honey/30 bg-honey/[0.07] p-3 text-sm">
+          <p className="font-semibold text-honey">
+            <span aria-hidden>⚠ </span>
+            {missingOutputs.length === 1
+              ? 'Egy fájl hiányzik a munkaterületről'
+              : `${missingOutputs.length} fájl hiányzik a munkaterületről`}
+          </p>
+          <p className="mt-1 text-ink-soft">
+            A futás naplója szerint ez elkészült, de most nincs meg. Ha kell, indítsd újra a
+            feladatot — a válaszban szereplő hivatkozás önmagában nem bizonyítja, hogy a fájl
+            megvan.
+          </p>
+          <ul className="mt-2 space-y-0.5">
+            {missingOutputs.map((path) => (
+              <li key={path} className="truncate font-mono text-xs text-ink" title={path}>
+                {path}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {loading ? (
         <p className="text-sm text-ink-faint">Betöltés...</p>

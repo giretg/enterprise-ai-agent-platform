@@ -20,3 +20,14 @@ export const PROCESS_STATUS_CLASS: Record<ProcessStatus, string> = {
   failed: 'bg-coral/15 text-coral',
   cancelled: 'bg-ink/8 text-ink-soft',
 }
+
+/** Folyamat-LÉPÉS állapot → magyar címke (feladat- és folyamat-részletek). */
+export const PROCESS_STEP_STATUS_LABELS: Record<string, string> = {
+  pending: 'Következik',
+  ready: 'Indítható',
+  in_progress: 'Folyamatban',
+  awaiting_gate: 'Jóváhagyásra vár',
+  completed: 'Kész',
+  skipped: 'Kihagyva',
+  failed: 'Sikertelen',
+}

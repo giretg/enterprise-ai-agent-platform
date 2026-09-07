@@ -7,6 +7,11 @@ import { DEFAULT_CONTEXT_RECENCY_MESSAGES } from '@/domain/conversation/context-
 import { formatRelativeTicketTime } from '@/lib/ticket-display'
 import { TICKET_STATE_LABELS } from '@/lib/ticket-labels'
 import { agentWorkspacePath } from '@/lib/agent-workspace-routes'
+import {
+  classifyProcessSiblingKind,
+  pickProcessOpenTicket,
+  type ProcessSiblingTicket,
+} from '@/lib/process-stall'
 
 /** Kompakt állapot a chat-kártyán és az „Ebből lett” soron. */
 export const TICKET_STATE_COMPACT: Record<string, string> = {
@@ -112,6 +117,8 @@ export type ProcessStepMeta = {
 
 export type ProcessRunMeta = {
   rootTicketId: string | null
+  /** A folyamat-példány állapota — tartalék jel a tábla-oszlophoz, ha egy gyerek ticket kimarad a listából. */
+  processStatus?: string | null
   steps: ProcessStepMeta[]
 }
 
@@ -121,6 +128,94 @@ export type NestedProcessStepView = {
   stepName: string
   state: string
   stateLabel: string
+  /** Playbook-lépés vs. runtime fallback (pl. emberi felülvizsgálat). */
+  kind: 'playbook_step' | 'support'
+}
+
+/** Folyamat-példány státusz → ticket-állapot a tábla aggregációhoz. */
+export function processStatusToBoardState(status: string): string | null {
+  switch (status) {
+    case 'awaiting_human':
+    case 'blocked':
+      return 'awaiting_human'
+    case 'running':
+      return 'in_progress'
+    case 'completed':
+      return 'done'
+    case 'failed':
+    case 'cancelled':
+      return 'rejected'
+    case 'created':
+      return 'ready'
+    default:
+      return null
+  }
+}
+
+/**
+ * Beágyazott sor címe: emberi felülvizsgálat / kapu ticket rövidítése.
+ *
+ * A lépés-azonosító (`pdf_beolvasas`) a felhasználónak semmit nem mond, ezért ha
+ * ismerjük a lépés nevét, AZT mutatjuk, és kimondjuk, hogy felülvizsgálatról van szó.
+ */
+export function compactProcessSupportTicketLabel(
+  ticket: { title: string; playbookStepId?: string | null },
+  stepNameById?: Map<string, string>,
+): string {
+  const stepName = ticket.playbookStepId ? stepNameById?.get(ticket.playbookStepId) : undefined
+  const humanPrefix = 'Emberi felülvizsgálat: '
+  if (ticket.title.startsWith(humanPrefix)) {
+    const rest = ticket.title.slice(humanPrefix.length).replace(/\s+/g, ' ').trim()
+    // A runtime a lépés-ID-t teszi a címbe, ha nincs közérthető magyarázat.
+    const detail = rest === ticket.playbookStepId ? (stepName ?? rest) : rest
+    if (detail.length > 0) {
+      const label = `Felülvizsgálat: ${detail}`
+      return label.length > 72 ? `${label.slice(0, 69)}…` : label
+    }
+  }
+  const gatePrefix = 'Kapu jóváhagyás: '
+  if (ticket.title.startsWith(gatePrefix)) {
+    const gate = ticket.title.slice(gatePrefix.length).trim()
+    if (gate) return `Jóváhagyás: ${stepName ?? gate}`
+    return ticket.title
+  }
+  if (ticket.playbookStepId) return stepName ?? ticket.playbookStepId
+  return ticket.title
+}
+
+/**
+ * Az áttekintő csempék állapot-halmaza egy tábla-kártyához.
+ *
+ * A folyamat-ticketek a szülő kártyába olvadnak, ezért a beágyazott lépések
+ * állapota eddig SEHOL nem számított bele a felső számlálókba: a fejléc
+ * „Indításra kész: 0"-t mutatott, miközben a futásban ott állt egy indításra
+ * váró lépés. Egy kártya állapotonként legfeljebb egyszer számít.
+ */
+export function boardTicketTileStates(ticket: {
+  boardColumnState?: string | null
+  state: string
+  nestedSteps?: Array<{ state: string }>
+}): string[] {
+  const states = new Set<string>([ticket.boardColumnState || ticket.state])
+  for (const step of ticket.nestedSteps ?? []) states.add(step.state)
+  return [...states]
+}
+
+/** Csempe-számlálók: hány KÁRTYA tartalmaz az adott állapotból legalább egyet. */
+export function countBoardTicketsByTileState(
+  tickets: Array<{
+    boardColumnState?: string | null
+    state: string
+    nestedSteps?: Array<{ state: string }>
+  }>,
+): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const ticket of tickets) {
+    for (const state of boardTicketTileStates(ticket)) {
+      counts.set(state, (counts.get(state) ?? 0) + 1)
+    }
+  }
+  return counts
 }
 
 const LIVE_TICKET_STATES = new Set(['in_progress', 'awaiting_human', 'needs_info'])
@@ -231,6 +326,7 @@ export type NestableBoardTicket = {
   state: string
   processInstanceId: string | null
   playbookStepId?: string | null
+  requiredGateId?: string | null
   createdAt: Date | string
 }
 
@@ -240,6 +336,8 @@ export type NestedBoardTicket<T extends NestableBoardTicket> = T & {
   stepsTotal: number | null
   boardColumnState: string
   hiddenAsProcessChild: boolean
+  /** A kártya megnyitásakor ez a ticket a teendő — nem feltétlenül a gyökér-lépés. */
+  openTicketId: string
 }
 
 function asTime(value: Date | string): number {
@@ -278,7 +376,7 @@ export function nestProcessRunTickets<T extends NestableBoardTicket>(
       group.find((ticket) => !ticket.playbookStepId) ??
       [...group].sort((a, b) => asTime(a.createdAt) - asTime(b.createdAt))[0]
 
-    const nestedSteps: NestedProcessStepView[] =
+    const playbookNestedSteps: NestedProcessStepView[] =
       meta && meta.steps.length > 0
         ? meta.steps.map((step) => {
             const bound = step.ticketId ? byId.get(step.ticketId) : undefined
@@ -291,6 +389,7 @@ export function nestProcessRunTickets<T extends NestableBoardTicket>(
               stepName: step.stepName,
               state,
               stateLabel: compactTicketStateLabel(state),
+              kind: 'playbook_step' as const,
             }
           })
         : group
@@ -302,15 +401,61 @@ export function nestProcessRunTickets<T extends NestableBoardTicket>(
               stepName: ticket.title,
               state: ticket.state,
               stateLabel: compactTicketStateLabel(ticket.state),
+              kind: 'support' as const,
             }))
 
-    const stepStates = nestedSteps.map((step) => step.state)
-    const boardColumnState = pickBoardColumnState([parent.state, ...stepStates])
+    const stepNameById = new Map((meta?.steps ?? []).map((step) => [step.stepId, step.stepName]))
+    const representedTicketIds = new Set<string>([parent.id])
+    for (const step of playbookNestedSteps) {
+      if (step.ticketId) representedTicketIds.add(step.ticketId)
+    }
+    const supportNestedSteps: NestedProcessStepView[] = group
+      .filter((ticket) => !representedTicketIds.has(ticket.id))
+      .sort((a, b) => asTime(a.createdAt) - asTime(b.createdAt))
+      .map((ticket) => ({
+        ticketId: ticket.id,
+        title: ticket.title,
+        stepName: compactProcessSupportTicketLabel(ticket, stepNameById),
+        state: ticket.state,
+        stateLabel: compactTicketStateLabel(ticket.state),
+        kind: 'support' as const,
+      }))
+
+    const nestedSteps = [...playbookNestedSteps, ...supportNestedSteps]
+
+    const processBoardState = meta?.processStatus
+      ? processStatusToBoardState(meta.processStatus)
+      : null
+    const boardColumnState = pickBoardColumnState([
+      ...group.map((ticket) => ticket.state),
+      ...(processBoardState ? [processBoardState] : []),
+    ])
     const completed = nestedSteps.filter((step) =>
       ['done', 'rejected'].includes(step.state),
     ).length
     const stepsTotal = nestedSteps.length > 0 ? nestedSteps.length : null
     const stepsDone = stepsTotal == null ? null : completed
+
+    const stepTicketIds = new Set(
+      (meta?.steps ?? [])
+        .map((step) => step.ticketId)
+        .filter((id): id is string => Boolean(id)),
+    )
+    const siblings: ProcessSiblingTicket[] = group.map((ticket) => ({
+      ticketId: ticket.id,
+      title: ticket.title,
+      state: ticket.state,
+      stepId: ticket.playbookStepId ?? null,
+      kind: classifyProcessSiblingKind({
+        ticketId: ticket.id,
+        title: ticket.title,
+        playbookStepId: ticket.playbookStepId,
+        requiredGateId: ticket.requiredGateId,
+        stepTicketIds,
+      }),
+      createdAt: ticket.createdAt,
+    }))
+    const openTicketId = pickProcessOpenTicket(siblings, parent.id)?.ticketId ?? parent.id
 
     for (const ticket of group) {
       if (ticket.id === parent.id) continue
@@ -322,6 +467,7 @@ export function nestProcessRunTickets<T extends NestableBoardTicket>(
         stepsTotal: null,
         boardColumnState: ticket.state,
         hiddenAsProcessChild: true,
+        openTicketId: ticket.id,
       })
     }
 
@@ -332,6 +478,7 @@ export function nestProcessRunTickets<T extends NestableBoardTicket>(
       stepsTotal,
       boardColumnState,
       hiddenAsProcessChild: false,
+      openTicketId,
     })
   }
 
@@ -344,6 +491,7 @@ export function nestProcessRunTickets<T extends NestableBoardTicket>(
       stepsTotal: null,
       boardColumnState: ticket.state,
       hiddenAsProcessChild: false,
+      openTicketId: ticket.id,
     })
   }
 
@@ -491,10 +639,10 @@ export function buildMemoryStripView(input: {
 }
 
 export const MEMORY_TYPE_LABELS: Record<string, string> = {
-  focus: 'Fókusz',
+  focus: 'Hol tartunk',
   decision: 'Döntés',
   open_task: 'Nyitott feladat',
-  constraint: 'Megkötés',
+  constraint: 'Projekt-szabály',
   artifact: 'Fontos fájl',
   finding: 'Tanulság',
   failed_attempt: 'Sikertelen próba',

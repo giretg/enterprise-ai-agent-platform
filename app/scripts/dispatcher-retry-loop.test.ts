@@ -38,6 +38,7 @@ const baseTicket = {
   playbookStepId: null,
   requiredGateId: null,
   conversationId: null,
+  projectKey: '__general__',
   source: 'user',
   cancelRequested: false,
   cancelRequestedById: null,

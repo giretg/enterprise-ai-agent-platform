@@ -31,6 +31,9 @@ export const ticketIdSchema = z.object({
   id: z.string().uuid(),
 })
 
+/** Ticket/chat projekt-hatókör. Üres → Általános. */
+export const assignedProjectKeySchema = z.string().trim().max(120).optional()
+
 export const scheduledTaskIdSchema = z.object({
   id: z.string().uuid(),
 })
@@ -241,6 +244,7 @@ export const createBoardTicketSchema = z
     recurrence: ticketScheduleRecurrenceSchema.optional(),
     intervalHours: ticketScheduleIntervalHoursSchema.optional(),
     maxRuns: ticketScheduleMaxRunsSchema.nullable().optional(),
+    projectKey: assignedProjectKeySchema,
   })
   .refine((args) => args.assigneeType !== 'agent' || args.assigneeId, {
     message: 'assigneeId is required when assigneeType is agent',
@@ -281,6 +285,17 @@ export const deleteBoardTicketSchema = z.object({
   ticketId: z.string().uuid(),
 })
 
+export const updateTicketTaskSchema = z.object({
+  ticketId: z.string().uuid(),
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().min(1).max(8000),
+  scheduleMode: z.enum(['once', 'recurring']).optional(),
+  runAt: z.string().datetime().optional(),
+  recurrence: ticketScheduleRecurrenceSchema.optional(),
+  intervalHours: ticketScheduleIntervalHoursSchema.optional(),
+  maxRuns: ticketScheduleMaxRunsSchema.nullable().optional(),
+})
+
 export const processDocumentSchema = z.object({
   documentId: z.string().uuid(),
   agentId: z.string().uuid(),
@@ -299,6 +314,11 @@ export const requestKbDocumentSchema = z.object({
 
 export const kbTicketSchema = z.object({
   ticketId: z.string().uuid(),
+})
+
+export const setKbDocumentProcessingModeSchema = z.object({
+  ticketId: z.string().uuid(),
+  processingMode: z.enum(['raw_text_only', 'okf']),
 })
 
 export const shareKnowledgeBaseSchema = z.object({
@@ -335,6 +355,29 @@ export const taskBriefingSchema = z.object({
   approval: z.string().trim().max(500),
 })
 
+/**
+ * A webes chat-stream végpont (`POST /api/v1/agent-chat/stream`) kliens-vezérelt
+ * forduló-bemenetének méret-kapui. A szerver-action utak (feladat/komment) már
+ * kapuzzák a szabad szöveget és a csatolmány-listát; ez a végpont volt az egyetlen
+ * ingress, amelyen tetszőleges méretű `content`/`taskBriefing`, illetve tetszőlegesen
+ * hosszú (nem UUID) `attachmentDocumentIds` mehetett a prompt-összeállításba, a
+ * DB-írásba és a modellhívásba — erőforrás-kimerítés / OOM / költség kockázat.
+ *
+ * A `content` kapuja a komment-törzs (16 KiB) precedensét követi (chat = szabad
+ * szöveges emberi üzenet), a `taskBriefing` és a `attachmentDocumentIds` a
+ * feladat-út meglévő kapuit (2000/500 kar., max 8 UUID).
+ */
+export const AGENT_CHAT_STREAM_CONTENT_MAX = 16 * 1024
+
+export const agentChatStreamTurnInputSchema = z.object({
+  content: z.string().max(AGENT_CHAT_STREAM_CONTENT_MAX),
+  attachmentDocumentIds: z.array(z.string().uuid()).max(8).optional(),
+  // A feladat-út meglévő briefing-kapuit használjuk újra (nincs kapu-drift). A
+  // `.partial()` relaxálja a `goal` kötelezőségét: a chat-stream forduló nem
+  // feltétlen küld teljes briefinget, az üres-üzenet őr a runtime `beginTurn`-ben van.
+  taskBriefing: taskBriefingSchema.partial().nullish(),
+})
+
 export const createAgentTaskTicketSchema = z.object({
   agentId: z.string().uuid(),
   content: z.string().trim().max(8000).default(''),
@@ -346,6 +389,7 @@ export const createAgentTaskTicketSchema = z.object({
     .optional(),
   authorizeRunAs: z.boolean().optional(),
   briefing: taskBriefingSchema.optional(),
+  projectKey: assignedProjectKeySchema,
 }).refine((v) => v.content.length > 0 || (v.attachmentDocumentIds?.length ?? 0) > 0, {
   message: 'A feladat leírása vagy legalább egy csatolmány kötelező',
 })
@@ -370,6 +414,7 @@ export const createScheduledAgentTaskSchema = z.object({
   intervalHours: ticketScheduleIntervalHoursSchema.optional(),
   maxRuns: ticketScheduleMaxRunsSchema.nullable().optional(),
   authorizeRunAs: z.boolean().optional(),
+  projectKey: assignedProjectKeySchema,
 })
 
 export const loadAgentChatSchema = z.object({
@@ -382,6 +427,10 @@ export const listAgentChatSessionsSchema = z.object({
   status: z.enum(['active', 'archived', 'all']).optional(),
   limit: z.number().int().min(1).max(50).optional(),
   offset: z.number().int().min(0).optional(),
+})
+
+export const findLatestAgentChatSessionSchema = z.object({
+  agentId: z.string().uuid(),
 })
 
 export const conversationIdSchema = z.object({
@@ -623,6 +672,29 @@ export const createAgentSchema = z.object({
     modelType: modelTypeSchema.optional(),
     temperature: z.number().min(0).max(2).optional(),
     maxTokens: z.number().int().positive().optional(),
+  }),
+})
+
+export const getAgentCloneTemplateSchema = z.object({
+  sourceAgentId: z.string().uuid(),
+})
+
+export const applyAgentCloneSettingsSchema = z.object({
+  targetAgentId: z.string().uuid(),
+  settings: z.object({
+    enabledTools: z.array(z.string()),
+    skillVersionIds: z.array(z.string().uuid()),
+    connectors: z.array(
+      z.object({
+        connectorId: z.string().uuid(),
+        accessMode: z.enum(['read', 'write']),
+        name: z.string().optional(),
+      }),
+    ),
+    taskOnly: z.boolean(),
+    hiddenFromOperators: z.boolean(),
+    allowSensitiveExternalModel: z.boolean(),
+    selfEvolutionProfile: z.unknown().optional(),
   }),
 })
 

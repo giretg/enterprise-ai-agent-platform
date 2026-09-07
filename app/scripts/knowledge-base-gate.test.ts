@@ -32,6 +32,8 @@ import type {
   TicketRepository,
 } from '../src/repositories/interfaces'
 
+const TENANT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
   return Promise.resolve()
@@ -198,6 +200,7 @@ function makeFakes() {
     artifactRepo,
     chunkRepo,
     ensureKb,
+    async () => undefined,
   )
 
   return { kb, tickets, documents, agents, transitions, audits, connector, artifacts, chunks }
@@ -218,6 +221,7 @@ function seedDoc(
     connectorId,
     uploadedById: randomUUID(),
     createdAt: new Date(),
+    metadata: { tenantId: TENANT_A },
   } as unknown as Document
   documents.set(doc.id, doc)
   return doc
@@ -237,7 +241,7 @@ async function run() {
       agentId: 'agent-1',
       documentId: doc.id,
       createdById: 'user-1',
-      actorTenantId: null,
+      actorTenantId: TENANT_A,
     })
 
     assert.equal(ticket.state, 'awaiting_human', 'a ticket jóváhagyásra vár')
@@ -255,7 +259,7 @@ async function run() {
     const { kb, documents, agents, transitions } = makeFakes()
     agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker', tenantId: null })
     const doc = seedDoc(documents, 'a.md')
-    await kb.requestDocument({ agentId: 'agent-1', documentId: doc.id, createdById: 'u', actorTenantId: null })
+    await kb.requestDocument({ agentId: 'agent-1', documentId: doc.id, createdById: 'u', actorTenantId: TENANT_A })
     const seq = transitions.map((t) => t.toState)
     assert.deepEqual(seq, ['ready', 'in_progress', 'awaiting_human'])
   })
@@ -268,14 +272,15 @@ async function run() {
       agentId: 'agent-1',
       documentId: doc.id,
       createdById: 'u',
-      actorTenantId: null,
+      actorTenantId: TENANT_A,
+      processingMode: 'raw_text_only',
     })
 
     const updated = await kb.approveDocument({
       ticketId: ticket.id,
       approverId: 'approver-1',
       approverRole: 'approver',
-      actorTenantId: null,
+      actorTenantId: TENANT_A,
     })
 
     assert.equal(updated.connectorId, connector.id, 'a dokumentum a KB connectorba kerül')
@@ -295,10 +300,10 @@ async function run() {
       agentId: 'agent-1',
       documentId: doc.id,
       createdById: 'u',
-      actorTenantId: null,
+      actorTenantId: TENANT_A,
     })
 
-    await kb.rejectDocument({ ticketId: ticket.id, approverId: 'a1', approverRole: 'approver', actorTenantId: null })
+    await kb.rejectDocument({ ticketId: ticket.id, approverId: 'a1', approverRole: 'approver', actorTenantId: TENANT_A })
 
     assert.equal(documents.get(doc.id)?.status, 'failed')
     assert.equal(documents.get(doc.id)?.connectorId, null, 'elutasított doc nem kerül a KB-be')
@@ -314,14 +319,16 @@ async function run() {
       agentId: 'agent-1',
       documentId: doc.id,
       createdById: 'u',
-      actorTenantId: null,
+      actorTenantId: TENANT_A,
+      processingMode: 'raw_text_only',
     })
 
     const before = await kb.listPendingDocuments('agent-1', null)
     assert.equal(before.length, 1)
     assert.equal(before[0].filename, 'fuggo.md')
+    assert.equal(before[0].processingMode, 'raw_text_only')
 
-    await kb.approveDocument({ ticketId: ticket.id, approverId: 'a1', approverRole: 'approver', actorTenantId: null })
+    await kb.approveDocument({ ticketId: ticket.id, approverId: 'a1', approverRole: 'approver', actorTenantId: TENANT_A })
     const after = await kb.listPendingDocuments('agent-1', null)
     assert.equal(after.length, 0)
   })
@@ -331,7 +338,7 @@ async function run() {
     agents.set('orch', { id: 'orch', name: 'Orchestrator', role: 'orchestrator', tenantId: null })
     const doc = seedDoc(documents, 'x.md')
     await assert.rejects(
-      kb.requestDocument({ agentId: 'orch', documentId: doc.id, createdById: 'u', actorTenantId: null }),
+      kb.requestDocument({ agentId: 'orch', documentId: doc.id, createdById: 'u', actorTenantId: TENANT_A }),
       /Orchestrator/,
     )
   })
@@ -341,7 +348,7 @@ async function run() {
     agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker', tenantId: null })
     const doc = seedDoc(documents, 'mar.md', 'kb-conn-1')
     await assert.rejects(
-      kb.requestDocument({ agentId: 'agent-1', documentId: doc.id, createdById: 'u', actorTenantId: null }),
+      kb.requestDocument({ agentId: 'agent-1', documentId: doc.id, createdById: 'u', actorTenantId: TENANT_A }),
       /already attached/,
     )
   })
@@ -359,7 +366,7 @@ async function run() {
     } as unknown as Ticket
     tickets.set(memTicket.id, memTicket)
     await assert.rejects(
-      kb.approveDocument({ ticketId: memTicket.id, approverId: 'a1', approverRole: 'approver', actorTenantId: null }),
+      kb.approveDocument({ ticketId: memTicket.id, approverId: 'a1', approverRole: 'approver', actorTenantId: TENANT_A }),
       /Not a KB document ticket/,
     )
   })
@@ -389,7 +396,7 @@ async function run() {
       agentId: 'agent-1',
       documentId: doc.id,
       createdById: 'u',
-      actorTenantId: null,
+      actorTenantId: TENANT_A,
       processingMode: 'okf',
     })
 
@@ -416,11 +423,11 @@ async function run() {
       agentId: 'agent-1',
       documentId: doc.id,
       createdById: 'u',
-      actorTenantId: null,
+      actorTenantId: TENANT_A,
       processingMode: 'okf',
     })
 
-    await kb.approveDocument({ ticketId: ticket.id, approverId: 'a1', approverRole: 'approver', actorTenantId: null })
+    await kb.approveDocument({ ticketId: ticket.id, approverId: 'a1', approverRole: 'approver', actorTenantId: TENANT_A })
 
     const artifact = [...artifacts.values()][0]
     assert.equal(artifact.status, 'published', 'publikált')
@@ -441,11 +448,11 @@ async function run() {
       agentId: 'agent-1',
       documentId: doc.id,
       createdById: 'u',
-      actorTenantId: null,
+      actorTenantId: TENANT_A,
       processingMode: 'okf',
     })
 
-    await kb.rejectDocument({ ticketId: ticket.id, approverId: 'a1', approverRole: 'approver', actorTenantId: null })
+    await kb.rejectDocument({ ticketId: ticket.id, approverId: 'a1', approverRole: 'approver', actorTenantId: TENANT_A })
 
     assert.equal([...artifacts.values()][0].status, 'failed')
     assert.equal(chunks.size, 0, 'elutasított artifact nem indexelődik')
@@ -459,24 +466,186 @@ async function run() {
       agentId: 'agent-1',
       documentId: doc.id,
       createdById: 'u',
-      actorTenantId: null,
+      actorTenantId: TENANT_A,
       processingMode: 'okf',
     })
 
     const before = await kb.listPendingArtifacts('agent-1', null)
     assert.equal(before.length, 1)
 
-    await kb.approveDocument({ ticketId: ticket.id, approverId: 'a1', approverRole: 'approver', actorTenantId: null })
+    await kb.approveDocument({ ticketId: ticket.id, approverId: 'a1', approverRole: 'approver', actorTenantId: TENANT_A })
     const after = await kb.listPendingArtifacts('agent-1', null)
     assert.equal(after.length, 0)
   })
 
-  await check('raw_text_only (default): NEM keletkezik artifact', async () => {
+  await check('raw_text_only (explicit): NEM keletkezik artifact', async () => {
     const { kb, documents, agents, artifacts } = makeFakes()
     agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker', tenantId: null })
     const doc = seedDoc(documents, 'nyers.md')
-    await kb.requestDocument({ agentId: 'agent-1', documentId: doc.id, createdById: 'u', actorTenantId: null })
+    await kb.requestDocument({
+      agentId: 'agent-1',
+      documentId: doc.id,
+      createdById: 'u',
+      actorTenantId: TENANT_A,
+      processingMode: 'raw_text_only',
+    })
     assert.equal(artifacts.size, 0, 'raw módban nincs OKF artifact')
+    assert.equal(documents.get(doc.id)?.processingMode, 'raw_text_only')
+  })
+
+  // ── Jóváhagyó választja a feldolgozási módot ──────────────────────────────
+
+  await check('mód nélkül: processingMode null, nincs artifact', async () => {
+    const { kb, documents, agents, artifacts } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker', tenantId: null })
+    const doc = seedDoc(documents, 'varakozik.md')
+    const ticket = await kb.requestDocument({
+      agentId: 'agent-1',
+      documentId: doc.id,
+      createdById: 'u',
+      actorTenantId: TENANT_A,
+    })
+    assert.equal(ticket.state, 'awaiting_human')
+    assert.equal(documents.get(doc.id)?.processingMode ?? null, null)
+    assert.equal(artifacts.size, 0)
+    const pending = await kb.listPendingDocuments('agent-1', null)
+    assert.equal(pending[0]?.processingMode ?? null, null)
+  })
+
+  await check('jóváhagyás mód nélkül elutasít', async () => {
+    const { kb, documents, agents } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker', tenantId: null })
+    const doc = seedDoc(documents, 'nincs-mod.md')
+    const ticket = await kb.requestDocument({
+      agentId: 'agent-1',
+      documentId: doc.id,
+      createdById: 'u',
+      actorTenantId: TENANT_A,
+    })
+    await assert.rejects(
+      kb.approveDocument({
+        ticketId: ticket.id,
+        approverId: 'a1',
+        approverRole: 'approver',
+        actorTenantId: TENANT_A,
+      }),
+      /processing mode/i,
+    )
+    assert.equal(documents.get(doc.id)?.connectorId, null)
+  })
+
+  await check('setPendingDocumentProcessingMode(okf) draft artifactot hoz létre', async () => {
+    const { kb, documents, agents, artifacts, chunks, audits } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker', tenantId: null })
+    const doc = seedDoc(documents, 'wiki.md', null, '# Fejezet\nSzöveg.')
+    const ticket = await kb.requestDocument({
+      agentId: 'agent-1',
+      documentId: doc.id,
+      createdById: 'u',
+      actorTenantId: TENANT_A,
+    })
+
+    const updated = await kb.setPendingDocumentProcessingMode({
+      ticketId: ticket.id,
+      processingMode: 'okf',
+      actorId: 'a1',
+      actorTenantId: TENANT_A,
+    })
+
+    assert.equal(updated.processingMode, 'okf')
+    const drafts = [...artifacts.values()]
+    assert.equal(drafts.length, 1)
+    assert.equal(drafts[0].status, 'pending_review')
+    assert.equal(chunks.size, 0)
+    assert.ok(audits.some((a) => a.action === 'kb.processing_mode.set'))
+  })
+
+  await check('setPendingDocumentProcessingMode(okf) idempotens: nem hoz második draftot', async () => {
+    const { kb, documents, agents, artifacts } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker', tenantId: null })
+    const doc = seedDoc(documents, 'wiki-once.md', null, '# A\nB')
+    const ticket = await kb.requestDocument({
+      agentId: 'agent-1',
+      documentId: doc.id,
+      createdById: 'u',
+      actorTenantId: TENANT_A,
+    })
+    await kb.setPendingDocumentProcessingMode({
+      ticketId: ticket.id,
+      processingMode: 'okf',
+      actorId: 'a1',
+      actorTenantId: TENANT_A,
+    })
+    await kb.setPendingDocumentProcessingMode({
+      ticketId: ticket.id,
+      processingMode: 'okf',
+      actorId: 'a1',
+      actorTenantId: TENANT_A,
+    })
+    assert.equal(artifacts.size, 1)
+  })
+
+  await check('wiki → egyszerű dokumentum: a draft failed, jóváhagyás nyers úton megy', async () => {
+    const { kb, documents, agents, artifacts, chunks, connector } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker', tenantId: null })
+    const doc = seedDoc(documents, 'vissza.md', null, '# A\nB')
+    const ticket = await kb.requestDocument({
+      agentId: 'agent-1',
+      documentId: doc.id,
+      createdById: 'u',
+      actorTenantId: TENANT_A,
+    })
+    await kb.setPendingDocumentProcessingMode({
+      ticketId: ticket.id,
+      processingMode: 'okf',
+      actorId: 'a1',
+      actorTenantId: TENANT_A,
+    })
+    await kb.setPendingDocumentProcessingMode({
+      ticketId: ticket.id,
+      processingMode: 'raw_text_only',
+      actorId: 'a1',
+      actorTenantId: TENANT_A,
+    })
+
+    assert.equal(documents.get(doc.id)?.processingMode, 'raw_text_only')
+    assert.equal([...artifacts.values()][0].status, 'failed')
+
+    const approved = await kb.approveDocument({
+      ticketId: ticket.id,
+      approverId: 'a1',
+      approverRole: 'approver',
+      actorTenantId: TENANT_A,
+    })
+    assert.equal(approved.connectorId, connector.id)
+    assert.equal(approved.status, 'processed')
+    assert.equal(chunks.size, 0, 'nyers úton nincs chunk index')
+  })
+
+  await check('jóváhagyás a review-ban választott okf mód után publikál', async () => {
+    const { kb, documents, agents, artifacts, chunks } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker', tenantId: null })
+    const doc = seedDoc(documents, 'kesobb-wiki.md', null, '# Egy\nKettő.')
+    const ticket = await kb.requestDocument({
+      agentId: 'agent-1',
+      documentId: doc.id,
+      createdById: 'u',
+      actorTenantId: TENANT_A,
+    })
+    await kb.setPendingDocumentProcessingMode({
+      ticketId: ticket.id,
+      processingMode: 'okf',
+      actorId: 'a1',
+      actorTenantId: TENANT_A,
+    })
+    await kb.approveDocument({
+      ticketId: ticket.id,
+      approverId: 'a1',
+      approverRole: 'approver',
+      actorTenantId: TENANT_A,
+    })
+    assert.equal([...artifacts.values()][0].status, 'published')
+    assert.ok(chunks.size >= 1)
   })
 
   console.log(failures === 0 ? '\n✅ minden teszt zöld' : `\n❌ ${failures} teszt bukott`)

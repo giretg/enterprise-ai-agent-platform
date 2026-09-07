@@ -6,7 +6,7 @@ import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentCardActions, type AssigneeOptions } from '@/components/agents/agent-card-actions'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
-import { modelLabel, modelTypeLabel } from '@/lib/model-providers'
+import { modelLabel, modelTypeLabel, providerUsesThinkingProfile } from '@/lib/model-providers'
 import { stripMarkdownForPreview } from '@/lib/markdown-text'
 
 const LABEL_TONE = {
@@ -21,9 +21,11 @@ function agentBrainLabel(agent: Agent) {
   const provider = typeof modelConfig.provider === 'string' ? modelConfig.provider : 'chatgpt-oauth'
   const model = typeof modelConfig.model === 'string' ? modelConfig.model : ''
   if (!model) return null
-  const type = modelTypeLabel(
-    typeof modelConfig.modelType === 'string' ? modelConfig.modelType : undefined,
-  )
+  const type = providerUsesThinkingProfile(provider)
+    ? modelTypeLabel(
+        typeof modelConfig.modelType === 'string' ? modelConfig.modelType : undefined,
+      )
+    : null
   return type ? `${modelLabel(provider, model)} · ${type}` : modelLabel(provider, model)
 }
 

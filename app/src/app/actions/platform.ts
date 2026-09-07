@@ -17,6 +17,8 @@ import { hasMinimumRole } from '@/auth/types'
 import { requirePlatformRole, requireTenantPermission, requireTenantRole } from '@/auth/tenant-context'
 import { getAuthContext, type TenantAuthContext } from '@/auth/context'
 import { isSuperadmin } from '@/lib/tenant-policy'
+import { declaredWorkspaceOutputs } from '@/lib/declared-workspace-outputs'
+import { resolveWebUiTextForViewer } from '@/domain/privacy/resolve-display-text'
 import { services } from '@/domain'
 import type { TrainingActor } from '@/domain/training/training-service'
 import { TrainingGateError } from '@/domain/training/durable-memory-policy'
@@ -68,7 +70,9 @@ import {
   type StructuredExtraction,
 } from '@/lib/kb-extraction'
 import {
+  applyTicketTaskDescription,
   buildTicketDisplayExtras,
+  canEditTicketTask,
   enrichTicketsForBoard,
   extractCreatorAgentId,
   formatTicketCreator,
@@ -88,11 +92,20 @@ import { shouldLinkBoardTaskConversation } from '@/lib/board-task-conversation'
 import {
   buildTicketScheduleStamp,
   isScheduleSeriesTicket,
+  readTicketSchedule,
   stampTicketSchedule,
 } from '@/lib/ticket-schedule'
 import { buildOriginalDocumentMetadata } from '@/lib/document-storage'
 import { listTicketInputAttachments } from '@/domain/ticket/ticket-input-attachment-service'
 import { fail, ok, type ActionResult } from '@/lib/result'
+import { assignConnectorToAgent } from '@/app/actions/provisioning'
+import { assignSkillAction } from '@/app/actions/skills'
+import {
+  grantedToolNames,
+  parseAgentModelConfigForWizard,
+  type CreateAgentWizardCloneTemplate,
+} from '@/lib/create-agent-wizard'
+import { MODEL_PROVIDERS } from '@/lib/model-providers'
 import { applyAgentModelConfigUpdate } from '@/app/actions/agent-model-config-update'
 import type { AgentModelConfigInput } from '@/app/actions/agent-model-config-update'
 import { isRuleExhausted, pickPeakAgent } from '@/lib/budget-rule-usage'
@@ -128,8 +141,10 @@ import {
   activateSandboxAppVersionSchema,
   archiveSandboxAppSchema,
   listAuditLogSchema,
+  applyAgentCloneSettingsSchema,
   createAgentSchema,
   draftAgentFromDescriptionSchema,
+  getAgentCloneTemplateSchema,
   agentApiKeyIdSchema,
   suspendAgentSchema,
   createBehaviorProfileSchema,
@@ -155,6 +170,7 @@ import {
   createScheduledAgentTaskSchema,
   loadAgentChatSchema,
   listAgentChatSessionsSchema,
+  findLatestAgentChatSessionSchema,
   conversationIdSchema,
   promoteToTicketSchema,
   messageIdSchema,
@@ -163,6 +179,7 @@ import {
   processDocumentForWikiSchema,
   requestKbDocumentSchema,
   kbTicketSchema,
+  setKbDocumentProcessingModeSchema,
   shareKnowledgeBaseSchema,
   deleteKbDocumentSchema,
   kbArtifactReviewSchema,
@@ -186,6 +203,7 @@ import {
   createBoardTicketSchema,
   dispatchBoardTicketSchema,
   deleteBoardTicketSchema,
+  updateTicketTaskSchema,
   inviteUserSchema,
   provisionUserSchema,
   redeemInvitationSchema,
@@ -217,9 +235,6 @@ function resolveUploadTarget(filename: string): { storageRef: string; absolutePa
   }
   return { storageRef: path.join('uploads', safeName), absolutePath }
 }
-
-const imageFilenamePattern = /\.(jpg|jpeg|png|gif|webp)$/i
-const imageDataMarkerPattern = /^(\[image:([^\]]+)\])([\s\S]*)$/
 
 function parseStoredChatMessage(content: string): { text: string; attachmentIds: string[] } {
   try {
@@ -552,10 +567,17 @@ export async function createBoardTicket(input: {
   recurrence?: 'hourly' | 'daily' | 'weekly' | 'monthly'
   intervalHours?: number
   maxRuns?: number | null
+  projectKey?: string
 }) {
   try {
     const user = await requireTenantRole('operator')
     const parsed = createBoardTicketSchema.parse(input)
+    const assignedProject = await services.workProjects.assignableKey(
+      user.activeTenantId,
+      parsed.projectKey,
+    )
+    if (!assignedProject.ok) return fail(assignedProject.reason)
+    const assignedProjectKey = assignedProject.key
 
     let promptText = parsed.description?.trim() || parsed.title.trim()
     let ticketTitle = parsed.title
@@ -699,6 +721,7 @@ export async function createBoardTicket(input: {
           createdById: user.user.id,
           tenantId: user.activeTenantId,
           title: ticketTitle.slice(0, 80),
+          projectKey: assignedProjectKey,
         })
         conversationId = created.id
       }
@@ -712,6 +735,7 @@ export async function createBoardTicket(input: {
         assigneeId: parsed.assigneeId,
         agentId: parsed.assigneeId,
         conversationId,
+        projectKey: assignedProjectKey,
         payload: payload as Prisma.JsonValue,
         sourceDocumentId: null,
         executeAfter,
@@ -808,6 +832,7 @@ export async function createBoardTicket(input: {
       assigneeType: 'human',
       assigneeId: parsed.assigneeId,
       agentId: null,
+      projectKey: assignedProjectKey,
       payload: payload as Prisma.JsonValue,
       sourceDocumentId: null,
       executeAfter: null,
@@ -905,6 +930,134 @@ export async function deleteBoardTicket(input: { ticketId: string }) {
     return ok({ ticketId })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to delete board ticket')
+  }
+}
+
+export async function updateTicketTask(input: {
+  ticketId: string
+  title: string
+  description: string
+  scheduleMode?: 'once' | 'recurring'
+  runAt?: string
+  recurrence?: 'hourly' | 'daily' | 'weekly' | 'monthly'
+  intervalHours?: number
+  maxRuns?: number | null
+}) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const parsed = updateTicketTaskSchema.parse(input)
+    const ticket = await repositories.tickets.findById(parsed.ticketId)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+    if (!canWriteTicketComment(ticket, user)) return fail('Insufficient permissions')
+    if (
+      !canEditTicketTask(ticket, {
+        canManage: hasMinimumRole(user.activeTenantRole, 'operator'),
+        userId: user.user.id,
+      })
+    ) {
+      return fail('A feladat csak indítás előtt szerkeszthető')
+    }
+
+    const currentSchedule = readTicketSchedule(ticket.payload, ticket.executeAfter)
+    if (currentSchedule?.role === 'occurrence') {
+      return fail('A már kiadott futás ütemezése nem módosítható')
+    }
+
+    let nextPayload = applyTicketTaskDescription(ticket.payload, parsed.description)
+    let executeAfter = ticket.executeAfter
+
+    if (parsed.scheduleMode) {
+      if (!parsed.runAt) return fail('Az ütemezett feladathoz időpont kell')
+      if (currentSchedule?.role === 'series' && parsed.scheduleMode !== 'recurring') {
+        return fail('A rendszeres sorozat ütemezése rendszeres marad')
+      }
+      if (currentSchedule?.kind === 'once' && parsed.scheduleMode !== 'once') {
+        return fail('Az egyszeri ütemezés itt csak az időpontot változtatja')
+      }
+      const runAt = new Date(parsed.runAt)
+      if (Number.isNaN(runAt.getTime())) return fail('Érvénytelen időpont')
+      const kind = parsed.scheduleMode
+      const stamp = buildTicketScheduleStamp({
+        kind,
+        runAt,
+        recurrence: kind === 'recurring' ? parsed.recurrence : 'none',
+        intervalHours: parsed.intervalHours,
+        maxRuns: parsed.maxRuns,
+        role: currentSchedule?.role,
+      })
+      nextPayload = stampTicketSchedule(nextPayload, stamp, {
+        scheduledTaskId: currentSchedule?.scheduledTaskId,
+        role: currentSchedule?.role,
+      })
+      executeAfter = runAt
+
+      if (currentSchedule?.scheduledTaskId) {
+        const task = await prisma.scheduledTask.findFirst({
+          where: { id: currentSchedule.scheduledTaskId, tenantId: user.activeTenantId },
+        })
+        if (!task) return fail('Ütemezett futás nem található')
+        if (task.status !== 'active' && task.status !== 'materialized') {
+          return fail('Ez a sorozat már nem aktív')
+        }
+        await prisma.scheduledTask.update({
+          where: { id: task.id },
+          data: {
+            title: parsed.title,
+            nextRunAt: runAt,
+            recurrence: kind === 'recurring' ? (parsed.recurrence ?? 'daily') : 'none',
+            maxRuns: kind === 'recurring' ? parsed.maxRuns ?? null : null,
+            payload: stampTicketSchedule(
+              applyTicketTaskDescription(task.payload, parsed.description),
+              stamp,
+              {
+                scheduledTaskId: task.id,
+                role: currentSchedule.role,
+              },
+            ) as Prisma.InputJsonValue,
+          },
+        })
+      }
+    } else if (currentSchedule?.scheduledTaskId) {
+      const task = await prisma.scheduledTask.findFirst({
+        where: { id: currentSchedule.scheduledTaskId, tenantId: user.activeTenantId },
+      })
+      if (task && (task.status === 'active' || task.status === 'materialized')) {
+        await prisma.scheduledTask.update({
+          where: { id: task.id },
+          data: {
+            title: parsed.title,
+            payload: applyTicketTaskDescription(task.payload, parsed.description) as Prisma.InputJsonValue,
+          },
+        })
+      }
+    }
+
+    const updated = await repositories.tickets.update(ticket.id, {
+      title: parsed.title,
+      payload: nextPayload as Prisma.JsonValue,
+      executeAfter,
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'ticket.update',
+      targetType: 'ticket',
+      targetId: ticket.id,
+      modelUsed: null,
+      inputRef: ticket.title,
+      outputRef: parsed.title,
+      policyDecision: 'allowed',
+      metadata: { title: parsed.title },
+      tenantId: ticket.tenantId,
+      ticketId: ticket.id,
+    })
+
+    return ok({ ticket: updated })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update ticket')
   }
 }
 
@@ -1050,6 +1203,7 @@ export async function listBoardTickets(input?: {
         process.id,
         {
           rootTicketId: process.rootTicketId,
+          processStatus: process.status,
           steps: process.steps.map((step) => ({
             ticketId: step.ticketId,
             stepId: step.stepId,
@@ -1339,6 +1493,74 @@ export async function revokeScheduledTask(input: { id: string }) {
   }
 }
 
+export async function runRecurringTicketNow(input: { ticketId: string }) {
+  try {
+    const user = await requireTenantRole('operator')
+    const { ticketId } = dispatchBoardTicketSchema.parse(input)
+    const ticket = await repositories.tickets.findById(ticketId)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+    if (!isScheduleSeriesTicket(ticket)) {
+      return fail('Csak rendszeres feladat indítható azonnal')
+    }
+    const scheduledTaskId = readTicketSchedule(ticket.payload, ticket.executeAfter)?.scheduledTaskId
+    if (!scheduledTaskId) {
+      return fail('Ehhez a feladathoz nincs ütemezett futás')
+    }
+
+    const materialized = await services.scheduledTasks.runNow({
+      scheduledTaskId,
+      actorId: user.user.id,
+      tenantId: user.activeTenantId,
+    })
+
+    const occurrence = await repositories.tickets.findById(materialized.ticketId)
+    if (!occurrence?.agentId) {
+      return ok({ ticketId: materialized.ticketId, warning: 'A futás létrejött, de nincs AI munkatárs.' })
+    }
+
+    const dispatchOutcome = await runAgentTicketDispatch(occurrence.id, occurrence.agentId, {
+      bypassDispatcherEnabledCheck: true,
+    })
+    if (dispatchOutcome.error) {
+      return ok({ ticketId: materialized.ticketId, warning: dispatchOutcome.error })
+    }
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'dispatch.manual',
+      targetType: 'ticket',
+      targetId: occurrence.id,
+      modelUsed: null,
+      inputRef: occurrence.agentId,
+      outputRef: dispatchOutcome.warning ? 'warning' : 'started',
+      policyDecision: 'allowed',
+      metadata: { warning: dispatchOutcome.warning ?? null, runNow: true },
+      tenantId: occurrence.tenantId,
+      ticketId: occurrence.id,
+    })
+
+    return ok({ ticketId: materialized.ticketId, warning: dispatchOutcome.warning })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Failed to run scheduled task now'
+    if (message === 'Scheduled task is already running') {
+      return fail('A következő futás már folyamatban van')
+    }
+    if (message === 'Scheduled task is not active') {
+      return fail('Ez a sorozat már nem aktív')
+    }
+    if (message === 'Only recurring scheduled tasks can be run now') {
+      return fail('Csak rendszeres feladat indítható azonnal')
+    }
+    if (message === 'Scheduled task not found') {
+      return fail('Ütemezett futás nem található')
+    }
+    return fail(message)
+  }
+}
+
 export async function getTicket(input: { id: string }) {
   try {
     const user = await requireTenantRole('viewer')
@@ -1464,6 +1686,29 @@ export async function getTicketTransitions(input: { id: string }) {
   }
 }
 
+/**
+ * A futás során előállítottként RÖGZÍTETT munkafájlok (mért mellékhatás).
+ * A Munkafájlok panel ezzel veti össze a tényleges tartalmat, hogy a
+ * „mentettem a fájlt" állítás és az üres lista közti ellentmondás látszódjon.
+ */
+export async function getTicketDeclaredOutputs(input: { id: string }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const { id } = ticketIdSchema.parse(input)
+    const ticket = await repositories.tickets.findById(id)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+    const calls = await prisma.toolCall.findMany({
+      where: { ticketId: id },
+      select: { toolName: true, effectSummary: true },
+      orderBy: { createdAt: 'asc' },
+    })
+    return ok(declaredWorkspaceOutputs(calls))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to read declared outputs')
+  }
+}
+
 export async function listTicketComments(input: { ticketId: string }) {
   try {
     const user = await requireTenantRole('viewer')
@@ -1471,7 +1716,22 @@ export async function listTicketComments(input: { ticketId: string }) {
     const ticket = await repositories.tickets.findById(parsed.ticketId)
     if (!ticket) return fail('Ticket not found')
     assertTicketTenantScope(ticket, user.activeTenantId)
-    return ok(await repositories.tickets.listComments(parsed.ticketId))
+    const comments = await repositories.tickets.listComments(parsed.ticketId)
+    if (!ticket.tenantId) return ok(comments)
+    return ok(
+      await Promise.all(
+        comments.map(async (comment) => ({
+          ...comment,
+          body: await resolveWebUiTextForViewer({
+            text: comment.body,
+            engine: services.surrogateEngine,
+            tenantId: ticket.tenantId,
+            ticketId: parsed.ticketId,
+            requesterUserId: user.user.id,
+          }),
+        })),
+      ),
+    )
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list ticket comments')
   }
@@ -2328,6 +2588,136 @@ export async function createAgent(input: {
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create agent')
+  }
+}
+
+/** Meglévő agent adatai az új-agent varázsló másolásához (pre-create + post-create sablon). */
+export async function getAgentCloneTemplate(input: { sourceAgentId: string }) {
+  try {
+    const user = await requireTenantRole('admin')
+    const { sourceAgentId } = getAgentCloneTemplateSchema.parse(input)
+    const agent = await repositories.agents.findById(sourceAgentId, user.activeTenantId)
+    if (!agent) return fail('Agent not found')
+
+    const [capabilities, connectors, assignedSkills] = await Promise.all([
+      repositories.toolBroker.findCapabilitiesForAgent(sourceAgentId),
+      repositories.toolBroker.findConnectorsForAgent(sourceAgentId),
+      services.skills.listAgentSkillsWithReadiness(sourceAgentId),
+    ])
+
+    const template: CreateAgentWizardCloneTemplate = {
+      sourceAgentId: agent.id,
+      sourceAgentName: agent.name,
+      role: agent.role === 'orchestrator' ? 'orchestrator' : 'worker',
+      roleInstruction: agent.roleInstruction,
+      behaviorProfile: agent.behaviorProfileOverlay || agent.behaviorProfile,
+      behaviorProfileId: agent.currentBehaviorProfileId ?? '',
+      modelConfig: parseAgentModelConfigForWizard(agent.modelConfig, MODEL_PROVIDERS),
+      enabledTools: grantedToolNames(capabilities),
+      skillVersionIds: assignedSkills.map((skill) => skill.skillVersionId),
+      connectors: connectors.map((item) => ({
+        connectorId: item.connector.id,
+        accessMode: item.accessMode === 'write' ? 'write' : 'read',
+        name: item.connector.name,
+      })),
+      taskOnly: agent.taskOnly,
+      hiddenFromOperators: agent.hiddenFromOperators,
+      allowSensitiveExternalModel: agent.allowSensitiveExternalModel,
+      selfEvolutionProfile: agent.selfEvolutionProfile,
+    }
+
+    return ok(template)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load agent clone template')
+  }
+}
+
+/** Létrehozás után: eszközök, skillek, kapcsolatok és működési beállítások másolása. */
+export async function applyAgentCloneSettings(input: {
+  targetAgentId: string
+  settings: z.infer<typeof applyAgentCloneSettingsSchema>['settings']
+}) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = applyAgentCloneSettingsSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.targetAgentId, user.activeTenantId)
+    if (!agent) return fail('Agent not found')
+
+    const warnings: string[] = []
+
+    if (parsed.settings.enabledTools.length > 0) {
+      const capRes = await updateAgentCapabilities({
+        agentId: parsed.targetAgentId,
+        enabledTools: parsed.settings.enabledTools,
+      })
+      if (!capRes.success) warnings.push(`Eszközök: ${capRes.error}`)
+    }
+
+    for (const skillVersionId of parsed.settings.skillVersionIds) {
+      const skillRes = await assignSkillAction({
+        agentId: parsed.targetAgentId,
+        skillVersionId,
+      })
+      if (!skillRes.success) {
+        warnings.push(`Skill (${skillVersionId}): ${skillRes.error}`)
+      }
+    }
+
+    for (const connector of parsed.settings.connectors) {
+      const connectorRes = await assignConnectorToAgent({
+        agentId: parsed.targetAgentId,
+        connectorId: connector.connectorId,
+        accessMode: connector.accessMode,
+      })
+      if (!connectorRes.success) {
+        warnings.push(`Kapcsolat (${connector.connectorId}): ${connectorRes.error}`)
+      }
+    }
+
+    if (agent.taskOnly !== parsed.settings.taskOnly) {
+      const taskRes = await updateAgentTaskOnly({
+        agentId: parsed.targetAgentId,
+        taskOnly: parsed.settings.taskOnly,
+      })
+      if (!taskRes.success) warnings.push(`Feladatkör-korlátozás: ${taskRes.error}`)
+    }
+
+    if (agent.hiddenFromOperators !== parsed.settings.hiddenFromOperators) {
+      const visRes = await updateAgentOperatorVisibility({
+        agentId: parsed.targetAgentId,
+        hiddenFromOperators: parsed.settings.hiddenFromOperators,
+      })
+      if (!visRes.success) warnings.push(`Operátor-láthatóság: ${visRes.error}`)
+    }
+
+    if (agent.allowSensitiveExternalModel !== parsed.settings.allowSensitiveExternalModel) {
+      const sensRes = await updateAgentSensitivityPolicy({
+        agentId: parsed.targetAgentId,
+        allowSensitiveExternalModel: parsed.settings.allowSensitiveExternalModel,
+      })
+      if (!sensRes.success) warnings.push(`Érzékeny modell-policy: ${sensRes.error}`)
+    }
+
+    if (parsed.settings.selfEvolutionProfile != null) {
+      const profileParsed = updateAgentSelfEvolutionProfileSchema.safeParse({
+        agentId: parsed.targetAgentId,
+        profile: parsed.settings.selfEvolutionProfile,
+      })
+      if (profileParsed.success) {
+        const evoRes = await updateAgentSelfEvolutionProfile(profileParsed.data)
+        if (!evoRes.success) warnings.push(`Önfejlesztési profil: ${evoRes.error}`)
+      } else {
+        warnings.push('Önfejlesztési profil: érvénytelen sablon')
+      }
+    }
+
+    if (warnings.length > 0) {
+      return fail(warnings.join(' '))
+    }
+
+    return ok({ applied: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to apply agent clone settings')
   }
 }
 
@@ -3354,6 +3744,29 @@ export async function requestKbDocument(input: {
   }
 }
 
+/** A jóváhagyó a review-ban választja a feldolgozási módot (egyszerű fájl / wiki). */
+export async function setKbDocumentProcessingMode(input: {
+  ticketId: string
+  processingMode: 'raw_text_only' | 'okf'
+}) {
+  try {
+    const user = await requireTenantRole('approver')
+    const parsed = setKbDocumentProcessingModeSchema.parse(input)
+    const document = await services.knowledgeBase.setPendingDocumentProcessingMode({
+      ticketId: parsed.ticketId,
+      processingMode: parsed.processingMode,
+      actorId: user.user.id,
+      actorTenantId: user.activeTenantId,
+    })
+    return ok({
+      documentId: document.id,
+      processingMode: document.processingMode,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to set KB processing mode')
+  }
+}
+
 /** Jóváhagyás után a dokumentum bekerül a KB-be és kereshetővé válik. */
 export async function approveKbDocument(input: { ticketId: string }) {
   try {
@@ -3879,15 +4292,22 @@ export async function createAgentTaskTicket(input: {
   executeAfter?: string
   authorizeRunAs?: boolean
   briefing?: TaskBriefing
+  projectKey?: string
 }) {
   try {
     const user = await requireTenantRole('operator')
     const parsed = createAgentTaskTicketSchema.parse(input)
+    const assignedProject = await services.workProjects.assignableKey(
+      user.activeTenantId,
+      parsed.projectKey,
+    )
+    if (!assignedProject.ok) return fail(assignedProject.reason)
     const executeAfter = parsed.executeAfter ? new Date(parsed.executeAfter) : null
     const ticket = await services.agentChat.createTaskTicket({
       agentId: parsed.agentId,
       content: parsed.content,
       conversationId: parsed.conversationId,
+      projectKey: assignedProject.key,
       attachmentDocumentIds: parsed.attachmentDocumentIds,
       executeAfter,
       authorizeRunAs: parsed.authorizeRunAs,
@@ -3912,10 +4332,16 @@ export async function createScheduledAgentTask(input: {
   intervalHours?: number
   maxRuns?: number | null
   authorizeRunAs?: boolean
+  projectKey?: string
 }) {
   try {
     const user = await requireTenantRole('operator')
     const parsed = createScheduledAgentTaskSchema.parse(input)
+    const assignedProject = await services.workProjects.assignableKey(
+      user.activeTenantId,
+      parsed.projectKey,
+    )
+    if (!assignedProject.ok) return fail(assignedProject.reason)
     // #142 — ütemezett feladat is agent-megszólítás: `address` kell, különben
     // tiltott agenthez materializálódó ticket kerülhet a boardra.
     const subject = tenantUserSubject(user)
@@ -3973,6 +4399,7 @@ export async function createScheduledAgentTask(input: {
       payload: ticketPayload as Prisma.JsonValue,
       sourceDocumentId: attachmentIds[0] ?? null,
       conversationId: parsed.conversationId ?? null,
+      projectKey: assignedProject.key,
       executeAfter: nextRunAt,
       dueBy: null,
       createdById: user.user.id,
@@ -4061,6 +4488,7 @@ export async function createDiscussionFromTicket(input: { ticketId: string }) {
       tenantId: user.activeTenantId,
       title,
       continuedFromTicketId: ticket.id,
+      projectKey: ticket.projectKey ?? '__general__',
     })
 
     return ok({
@@ -4086,76 +4514,37 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
   try {
     const user = await requireTenantRole('viewer')
     const { conversationId, agentId } = loadAgentChatSchema.parse(input)
-    const { conversation, messages } = await services.conversations.getConversation(
-      conversationId,
-      user.activeTenantId,
-    )
-    if (conversation.agentId !== agentId) return fail('Conversation agent mismatch')
-    const privacyViews = await services.agentChat.getConversationMessages(
-      conversationId,
-      user.activeTenantId,
-      agentId,
-      user.user.id,
-    )
-    const privacyViewById = new Map(privacyViews.map((view) => [view.id, view]))
+    const actor = { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole }
+    const [loaded, pendingConsequenceApprovals, pendingConnectorGrants] = await Promise.all([
+      services.agentChat.getConversationMessages(
+        conversationId,
+        user.activeTenantId,
+        agentId,
+        user.user.id,
+      ),
+      // issue #97 — a következmény-kapu függő jóváhagyásai. A stream-esemény
+      // efemer: enélkül a „Jóváhagyom" gomb a forduló végén (a chat ilyenkor a DB
+      // végállapotát tölti újra), lapfrissítéskor és visszacsatlakozáskor eltűnne,
+      // a művelet pedig némán ott ülne lejáratig.
+      services.consequenceApproval.listOpenForConversation(conversationId, actor),
+      services.connectorGrants.listOpenGrantNeeds({
+        userId: user.user.id,
+        tenantId: user.activeTenantId,
+        conversationId,
+      }),
+    ])
+    const { conversation, messages } = loaded
 
-    const views = []
-    for (const message of messages) {
-      const contentDeletedAt = message.contentDeletedAt
-        ? message.contentDeletedAt.toISOString()
-        : null
-      const parsed = message.content && !message.contentDeletedAt
-        ? parseStoredChatMessage(message.content)
-        : { text: '', attachmentIds: [] }
-      const attachments = []
-
-      for (const documentId of parsed.attachmentIds) {
-        const doc = await prisma.document.findUnique({
-          where: { id: documentId },
-          select: { id: true, filename: true, extractedText: true },
-        })
-        if (!doc) continue
-        const kind: 'image' | 'text' = imageFilenamePattern.test(doc.filename) || doc.extractedText?.startsWith('[image:')
-          ? 'image'
-          : 'text'
-        const imageMatch = kind === 'image' && doc.extractedText
-          ? doc.extractedText.match(imageDataMarkerPattern)
-          : null
-        attachments.push({
-          documentId: doc.id,
-          filename: doc.filename,
-          kind,
-          previewDataUrl: imageMatch?.[2] && imageMatch[3]
-            ? `data:${imageMatch[2]};base64,${imageMatch[3]}`
-            : null,
-        })
-      }
-
-      views.push({
-        id: message.id,
-        role: message.role,
-        text: privacyViewById.get(message.id)?.text ?? parsed.text,
-        privacyMarkers: privacyViewById.get(message.id)?.privacyMarkers ?? [],
-        attachments,
-        createdAt: message.createdAt.toISOString(),
-        contentDeletedAt,
-        ticketRefId: message.ticketRefId,
-      })
-    }
-
-    // issue #97 — a következmény-kapu függő jóváhagyásai. A stream-esemény
-    // efemer: enélkül a „Jóváhagyom" gomb a forduló végén (a chat ilyenkor a DB
-    // végállapotát tölti újra), lapfrissítéskor és visszacsatlakozáskor eltűnne,
-    // a művelet pedig némán ott ülne lejáratig.
-    const pendingConsequenceApprovals = await services.consequenceApproval.listOpenForConversation(
-      conversationId,
-      { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole },
-    )
-    const pendingConnectorGrants = await services.connectorGrants.listOpenGrantNeeds({
-      userId: user.user.id,
-      tenantId: user.activeTenantId,
-      conversationId,
-    })
+    const views = messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      text: message.text,
+      privacyMarkers: message.privacyMarkers ?? [],
+      attachments: message.attachments,
+      createdAt: message.createdAt.toISOString(),
+      contentDeletedAt: message.contentDeletedAt ? message.contentDeletedAt.toISOString() : null,
+      ticketRefId: message.ticketRefId ?? null,
+    }))
 
     let continuedFromTicket: { id: string; title: string } | null = null
     let ticketDiscussionHistory: Array<{
@@ -4193,6 +4582,7 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
         title: conversation.title,
         lastMessageAt: conversation.lastMessageAt.toISOString(),
         continuedFromTicketId: conversation.continuedFromTicketId,
+        projectKey: conversation.projectKey,
       },
       continuedFromTicket,
       ticketDiscussionHistory,
@@ -4203,6 +4593,26 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load chat messages')
+  }
+}
+
+export async function findLatestAgentChatSession(input: { agentId: string }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const { agentId } = findLatestAgentChatSessionSchema.parse(input)
+    const session = await prisma.conversation.findFirst({
+      where: {
+        agentId,
+        createdById: user.user.id,
+        tenantId: user.activeTenantId,
+        status: 'active',
+      },
+      orderBy: { lastMessageAt: 'desc' },
+      select: { id: true, status: true },
+    })
+    return ok({ session })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to find latest chat session')
   }
 }
 
@@ -5001,9 +5411,10 @@ export async function listAgentMemoryProjectKeys(input: { agentId: string }) {
     assertAgentTenantReachable(agent, ctx.activeTenantId)
 
     const keys = new Set<string>(['__general__'])
+    const labels: Record<string, string> = { __general__: 'Általános (alapértelmezett)' }
     const memoryId = agent.memoryId
 
-    const [convRows, chunkRows, candidateRows, versionRows] = await Promise.all([
+    const [convRows, chunkRows, candidateRows, versionRows, defined] = await Promise.all([
       prisma.conversation.findMany({
         where: { agentId },
         distinct: ['projectKey'],
@@ -5024,7 +5435,18 @@ export async function listAgentMemoryProjectKeys(input: { agentId: string }) {
         distinct: ['projectKey'],
         select: { projectKey: true },
       }),
+      agent.tenantId
+        ? prisma.workProject.findMany({
+            where: { tenantId: agent.tenantId },
+            select: { key: true, name: true },
+          })
+        : Promise.resolve([]),
     ])
+
+    for (const row of defined) {
+      keys.add(row.key)
+      labels[row.key] = row.name
+    }
 
     for (const row of [...convRows, ...chunkRows, ...candidateRows, ...versionRows]) {
       const key = row.projectKey?.trim()
@@ -5037,7 +5459,7 @@ export async function listAgentMemoryProjectKeys(input: { agentId: string }) {
       return a.localeCompare(b, 'hu')
     })
 
-    return ok({ projectKeys })
+    return ok({ projectKeys, labels })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list memory project keys')
   }

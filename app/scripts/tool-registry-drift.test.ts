@@ -23,7 +23,12 @@ import {
 import { CHAT_PLATFORM_TOOLS } from '../src/domain/agent/chat-tool-loop'
 import { PLATFORM_BROKER_TOOLS } from '../src/harness/platform-mcp-bridge'
 import { toolInvokeSchema } from '../src/lib/validators/actions'
-import { NORMAL_TOOL_CAPABILITY_NAMES } from '../src/lib/tool-capability-catalog'
+import {
+  NORMAL_TOOL_CAPABILITY_GROUPS,
+  NORMAL_TOOL_CAPABILITY_NAMES,
+  splitToolGroupsByChatSurface,
+} from '../src/lib/tool-capability-catalog'
+import { TOOL_UI_LABELS } from '../src/lib/tool-ui-labels'
 import {
   SIDE_EFFECTING_TOOLS,
   TOOL_TRUST_REGISTRY,
@@ -212,6 +217,17 @@ function main() {
     assert.deepEqual(covered, [...TOOL_NAMES].sort(), 'a validátor union nem fedi le a regisztert')
   })
 
+  test('a szerkesztő chat / egyéb felosztása a surfaces-t követi', () => {
+    const { chat, other } = splitToolGroupsByChatSurface(NORMAL_TOOL_CAPABILITY_GROUPS)
+    const chatNames = chat.flatMap((g) => g.tools)
+    const otherNames = other.flatMap((g) => g.tools)
+    assert.ok(chatNames.includes('reconcile_records'))
+    assert.ok(!otherNames.includes('reconcile_records'))
+    assert.ok(otherNames.includes('mailbox_count'))
+    assert.ok(!chatNames.includes('mailbox_count'))
+    assert.deepEqual([...chatNames, ...otherNames].sort(), [...NORMAL_TOOL_CAPABILITY_NAMES].sort())
+  })
+
   test('a capability-katalógus csak a normál, nem system-role-kötött toolokat kínálja', () => {
     const catalog = new Set(NORMAL_TOOL_CAPABILITY_NAMES)
     for (const name of TOOL_NAMES) {
@@ -228,6 +244,14 @@ function main() {
     for (const name of ['run_index', 'run_trace', 'run_stats'] as const) {
       assert.equal(TOOL_REGISTRY[name].requiredSystemRole, 'run_analyst', name)
     }
+  })
+
+  test('minden ToolName-hez van magyar UI-címke (nem a belső azonosító)', () => {
+    const missing = TOOL_NAMES.filter((name) => {
+      const meta = TOOL_UI_LABELS[name]
+      return !meta || !meta.label.trim() || meta.label === name
+    })
+    assert.deepEqual(missing, [], `hiányzó UI-címke: ${missing.join(', ')}`)
   })
 
   // ── 5. A generált JSON Schema és a Zod-séma oda-vissza konzisztens ───────
@@ -289,6 +313,9 @@ function main() {
         }
         if (key === 'pattern' && typeof value === 'string' && LOOKAROUND.test(value)) {
           offenders.push(`${where}.pattern lookaround`)
+        }
+        if (key === 'format' && value === 'email') {
+          offenders.push(`${where}.format=email`)
         }
         inspect(value, `${where}.${key}`)
       }

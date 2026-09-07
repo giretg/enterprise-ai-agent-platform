@@ -7,8 +7,10 @@ import { AutomationModeToggle } from '@/components/automation/automation-mode-to
 /** Control-plane fejléc: üresjárat/normál kapcsoló + aktív futások + tenant switcher. */
 export function ControlPlaneHeaderExtras() {
   return (
-    <div className="flex items-center gap-2">
-      <AutomationModeToggle />
+    <div className="flex items-center gap-1.5 sm:gap-2">
+      <div className="hidden sm:block">
+        <AutomationModeToggle />
+      </div>
       <ActiveRunsPanel />
       <TenantSwitcher />
     </div>

@@ -11,6 +11,7 @@ import {
   memoryRetrievalLatencyMs,
   memoryRetrieveTokens,
 } from '@/lib/observability/metrics'
+import type { WorkProjectBrief } from '@/domain/work-project/work-project-service'
 import type { MemoryRetrievalService } from './memory-retrieval-service'
 import {
   DEFAULT_CHUNK_TOKEN_BUDGET,
@@ -107,9 +108,14 @@ export async function loadProjectMemoryContext(params: {
   tenantId?: string | null
   ticketId?: string | null
   conversationId?: string | null
+  brief?: WorkProjectBrief | null
 }): Promise<ProjectMemoryContext> {
+  const briefBlock = () =>
+    formatProjectMemoryContextBlock(null, params.request.projectKey, params.brief)
+
   if (!params.memoryRetrieval) {
-    return { block: null, tokens: 0, memoryMode: 'degraded' }
+    const block = briefBlock()
+    return { block, tokens: estimateMemoryContextTokens(block), memoryMode: 'degraded' }
   }
 
   const baseAudit = {
@@ -129,7 +135,7 @@ export async function loadProjectMemoryContext(params: {
   try {
     const result = await params.memoryRetrieval.retrieveForRun(params.request)
     const latencyMs = Date.now() - startedAt
-    const block = formatProjectMemoryContextBlock(result, params.request.projectKey)
+    const block = formatProjectMemoryContextBlock(result, params.request.projectKey, params.brief)
     const tokens = estimateMemoryContextTokens(block)
 
     memoryRetrieveTokens.observe(tokens, { projectKey: params.request.projectKey })
@@ -192,6 +198,7 @@ export async function loadProjectMemoryContext(params: {
         memoryMode: 'degraded',
       },
     })
-    return { block: null, tokens: 0, memoryMode: 'degraded' }
+    const block = briefBlock()
+    return { block, tokens: estimateMemoryContextTokens(block), memoryMode: 'degraded' }
   }
 }

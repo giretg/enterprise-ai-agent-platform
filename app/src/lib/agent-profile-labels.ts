@@ -1,6 +1,6 @@
 import type { AgentRole } from '@prisma/client'
 import type { SelfEvolutionProfile } from '@/lib/self-evolution-profile'
-import { modelLabel, modelTypeLabel, providerOption } from '@/lib/model-providers'
+import { modelLabel, modelTypeLabel, providerOption, providerUsesThinkingProfile } from '@/lib/model-providers'
 
 const SCOPE_LABELS: Record<SelfEvolutionProfile['scope'][number], string> = {
   memory: 'emlékek',
@@ -45,18 +45,39 @@ export function agentRoleLabel(role: AgentRole) {
   return AGENT_ROLE_LABELS[role]
 }
 
+function fallbackModelRows(modelConfig: Record<string, unknown>) {
+  if (!Array.isArray(modelConfig.fallbackModels)) return []
+  return modelConfig.fallbackModels.filter(
+    (row): row is { provider: string; model: string } =>
+      !!row &&
+      typeof row === 'object' &&
+      typeof (row as { provider?: unknown }).provider === 'string' &&
+      typeof (row as { model?: unknown }).model === 'string',
+  )
+}
+
 export function modelConfigSummary(modelConfig: Record<string, unknown>) {
   const provider = String(modelConfig.provider ?? 'chatgpt-oauth')
   const model = String(modelConfig.model ?? '')
   const option = providerOption(provider)
   const parts = [option.label]
   if (model) parts.push(modelLabel(provider, model))
-  const typeLabel = modelTypeLabel(
-    typeof modelConfig.modelType === 'string' ? modelConfig.modelType : undefined,
-  )
+  const typeLabel = providerUsesThinkingProfile(provider)
+    ? modelTypeLabel(
+        typeof modelConfig.modelType === 'string' ? modelConfig.modelType : undefined,
+      )
+    : null
   if (typeLabel) parts.push(typeLabel)
   if (typeof modelConfig.temperature === 'number') {
     parts.push(`kreativitás: ${modelConfig.temperature}`)
+  }
+  const fallbacks = fallbackModelRows(modelConfig)
+  if (fallbacks.length > 0) {
+    parts.push(
+      `tartalék: ${fallbacks
+        .map((row) => `${providerOption(row.provider).label} / ${modelLabel(row.provider, row.model)}`)
+        .join(', ')}`,
+    )
   }
   return parts.join(' · ')
 }

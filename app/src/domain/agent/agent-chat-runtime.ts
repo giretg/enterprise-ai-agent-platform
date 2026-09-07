@@ -57,6 +57,7 @@ import {
   memoryContextSystemMessages,
   trainedRulesSystemMessages,
 } from '../memory/memory-runtime-helper'
+import { resolveWorkProjectBrief } from '../work-project/work-project-service'
 import type { MemoryRetrievalService } from '../memory/memory-retrieval-service'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
@@ -394,6 +395,27 @@ function isImageDocument(doc: { filename: string; extractedText: string | null }
   return Boolean(doc.extractedText?.startsWith('[image:'))
 }
 
+function chatAttachmentViewFromDocument(doc: {
+  id: string
+  filename: string
+  extractedText: string | null
+}): ChatAttachmentView {
+  const kind = isImageDocument(doc) ? 'image' : 'text'
+  let previewDataUrl: string | null = null
+  if (kind === 'image' && doc.extractedText) {
+    const imageMatch = doc.extractedText.match(IMAGE_MARKER)
+    if (imageMatch?.[2] && imageMatch[3]) {
+      previewDataUrl = `data:${imageMatch[2]};base64,${imageMatch[3]}`
+    }
+  }
+  return {
+    documentId: doc.id,
+    filename: doc.filename,
+    kind,
+    previewDataUrl,
+  }
+}
+
 export function formatAttachmentBlock(
   docs: Array<{
     id: string
@@ -442,6 +464,8 @@ export type ChatMessageView = {
   attachments: ChatAttachmentView[]
   createdAt: Date
   privacyMarkers?: PrivacyEntityMarker[]
+  contentDeletedAt?: Date | null
+  ticketRefId?: string | null
 }
 
 export type ChatSessionView = {
@@ -499,6 +523,8 @@ export type AgentChatSendParams = {
   createdById: string
   tenantId?: string | null
   conversationId?: string
+  /** Új beszélgetésnél a memória-hatókör. Meglévő szálon, ha a kliens küldi, a kulcs frissül. */
+  projectKey?: string
   attachmentDocumentIds?: string[]
   processDefinitionId?: string
   processInputPayload?: Record<string, unknown>
@@ -663,6 +689,7 @@ export class AgentChatRuntime {
       mode: PrivacyGatewayMode
       policy: ResolvedPrivacyCategoryPolicy
     }>,
+    private workProjects?: import('@/repositories/interfaces').WorkProjectRepository,
   ) {}
 
   /**
@@ -1134,6 +1161,17 @@ export class AgentChatRuntime {
       if (existing.conversation.agentId !== params.agentId) {
         return { kind: 'error', error: new Error('Conversation agent mismatch') }
       }
+      if (
+        params.projectKey &&
+        params.tenantId &&
+        params.projectKey !== existing.conversation.projectKey
+      ) {
+        await this.conversations.setProjectKey({
+          conversationId,
+          tenantId: params.tenantId,
+          projectKey: params.projectKey,
+        })
+      }
     } else {
       const title = (text || 'Új beszélgetés').slice(0, 80)
       const created = await this.conversations.createConversation({
@@ -1141,6 +1179,7 @@ export class AgentChatRuntime {
         createdById: params.createdById,
         tenantId: params.tenantId ?? null,
         title,
+        projectKey: params.projectKey ?? '__general__',
       })
       conversationId = created.id
     }
@@ -2056,6 +2095,7 @@ export class AgentChatRuntime {
     createdById: string
     tenantId?: string | null
     conversationId?: string | null
+    projectKey?: string
     attachmentDocumentIds?: string[]
     executeAfter?: Date | null
     authorizeRunAs?: boolean
@@ -2106,12 +2146,24 @@ export class AgentChatRuntime {
       if (existing.conversation.agentId !== params.agentId) {
         throw new Error('Conversation agent mismatch')
       }
+      if (
+        params.projectKey &&
+        params.tenantId &&
+        params.projectKey !== existing.conversation.projectKey
+      ) {
+        await this.conversations.setProjectKey({
+          conversationId,
+          tenantId: params.tenantId,
+          projectKey: params.projectKey,
+        })
+      }
     } else {
       const created = await this.conversations.createConversation({
         agentId: params.agentId,
         createdById: params.createdById,
         tenantId: params.tenantId ?? null,
         title: titleSource.slice(0, 80),
+        projectKey: params.projectKey ?? '__general__',
       })
       conversationId = created.id
     }
@@ -2126,6 +2178,7 @@ export class AgentChatRuntime {
       agentId: params.agentId,
       playbookRef: null,
       conversationId,
+      projectKey: params.projectKey ?? '__general__',
       payload: {
         question: text,
         source: 'agent_chat',
@@ -2372,7 +2425,10 @@ export class AgentChatRuntime {
     tenantId?: string | null,
     agentId?: string,
     requesterUserId?: string | null,
-  ): Promise<ChatMessageView[]> {
+  ): Promise<{
+    conversation: Awaited<ReturnType<ConversationService['getConversation']>>['conversation']
+    messages: ChatMessageView[]
+  }> {
     const { conversation, messages } = await this.conversations.getConversation(
       conversationId,
       tenantId,
@@ -2383,63 +2439,77 @@ export class AgentChatRuntime {
     const privacyContext = this.resolvePrivacyObservability
       ? await this.resolvePrivacyObservability(tenantId ?? null, conversation.agentId)
       : null
-    const views: ChatMessageView[] = []
+    const knownValues =
+      privacyContext && this.surrogateEngine && tenantId
+        ? await this.surrogateEngine.loadKnownValueReplacements(
+            tenantId,
+            { type: 'conversation', id: conversationId },
+            { includeObservePreviews: true },
+          )
+        : []
 
+    const parsedById = new Map<string, { text: string; attachmentIds: string[] }>()
+    const attachmentIds: string[] = []
     for (const message of messages) {
-      if (!message.content || message.contentDeletedAt) continue
-      const parsed = parseStoredMessage(message.content)
+      const parsed =
+        message.content && !message.contentDeletedAt
+          ? parseStoredMessage(message.content)
+          : { text: '', attachmentIds: [] }
+      parsedById.set(message.id, parsed)
+      attachmentIds.push(...parsed.attachmentIds)
+    }
+    const uniqueAttachmentIds = [...new Set(attachmentIds)]
+    const docs =
+      uniqueAttachmentIds.length > 0 ? await this.documents.findByIds(uniqueAttachmentIds) : []
+    const docsById = new Map(docs.map((doc) => [doc.id, doc]))
+    const matrix =
+      this.surrogateEngine && tenantId ? await this.loadEgressMatrix(tenantId) : undefined
+
+    const texts = await Promise.all(
+      messages.map((message) => {
+        const parsed = parsedById.get(message.id) ?? { text: '', attachmentIds: [] }
+        if (!message.content || message.contentDeletedAt) return Promise.resolve('')
+        return this.resolveWebUiText(
+          parsed.text,
+          conversationId,
+          tenantId,
+          requesterUserId,
+          matrix,
+        )
+      }),
+    )
+
+    const views: ChatMessageView[] = messages.map((message, index) => {
+      const parsed = parsedById.get(message.id) ?? { text: '', attachmentIds: [] }
       const attachments: ChatAttachmentView[] = []
-
       for (const documentId of parsed.attachmentIds) {
-        const doc = await this.documents.findById(documentId)
+        const doc = docsById.get(documentId)
         if (!doc) continue
-        const kind = isImageDocument(doc) ? 'image' : 'text'
-        let previewDataUrl: string | null = null
-        if (kind === 'image' && doc.extractedText) {
-          const imageMatch = doc.extractedText.match(IMAGE_MARKER)
-          if (imageMatch?.[2] && imageMatch[3]) {
-            previewDataUrl = `data:${imageMatch[2]};base64,${imageMatch[3]}`
-          }
-        }
-        attachments.push({
-          documentId: doc.id,
-          filename: doc.filename,
-          kind,
-          previewDataUrl,
-        })
+        attachments.push(chatAttachmentViewFromDocument(doc))
       }
-
-      const text = await this.resolveWebUiText(
-        parsed.text,
-        conversationId,
-        tenantId,
-        requesterUserId,
-      )
+      const text = texts[index] ?? ''
       const privacyMarkers =
-        privacyContext && this.surrogateEngine && tenantId
+        privacyContext && text
           ? buildEntityMarkers({
               text,
               mode: privacyContext.mode,
               policy: privacyContext.policy,
-              knownValues: await this.surrogateEngine.loadKnownValueReplacements(
-                tenantId,
-                { type: 'conversation', id: conversationId },
-                { includeObservePreviews: true },
-              ),
+              knownValues,
             })
           : []
-
-      views.push({
+      return {
         id: message.id,
         role: message.role as ChatMessageView['role'],
         text,
         attachments,
         createdAt: message.createdAt,
         privacyMarkers,
-      })
-    }
+        contentDeletedAt: message.contentDeletedAt,
+        ticketRefId: message.ticketRefId,
+      }
+    })
 
-    return views
+    return { conversation, messages: views }
   }
 
   /** APG-22 — élő chat UI: policy + beszélgetés-scoped known-value szótár. */
@@ -2484,9 +2554,10 @@ export class AgentChatRuntime {
     conversationId: string,
     tenantId?: string | null,
     requesterUserId?: string | null,
+    matrix?: ResolvedPrivacyEgressMatrix,
   ): Promise<string> {
     if (!this.surrogateEngine || !tenantId || !text) return text
-    const matrix = await this.loadEgressMatrix(tenantId)
+    const resolvedMatrix = matrix ?? (await this.loadEgressMatrix(tenantId))
     return resolveEgressTextForSurface({
       text,
       surface: 'web_ui',
@@ -2494,7 +2565,7 @@ export class AgentChatRuntime {
       tenantId,
       scope: { type: 'conversation', id: conversationId },
       requesterUserId,
-      matrix,
+      matrix: resolvedMatrix,
     })
   }
 
@@ -2703,6 +2774,7 @@ export class AgentChatRuntime {
     tenantId: string | null
     conversationId: string
   }) {
+    const brief = await resolveWorkProjectBrief(this.workProjects, params.tenantId, params.projectKey)
     return loadProjectMemoryContext({
       memoryRetrieval: this.memoryRetrieval,
       audit: this.audit,
@@ -2710,6 +2782,7 @@ export class AgentChatRuntime {
       agentVersion: params.agentDetails.agent.currentVersion,
       tenantId: params.tenantId,
       conversationId: params.conversationId,
+      brief,
       request: buildMemoryRetrievalRequest({
         agentId: params.agentDetails.agent.id,
         memoryId: params.agentDetails.agent.memoryId,

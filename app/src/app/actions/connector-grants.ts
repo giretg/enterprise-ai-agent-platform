@@ -29,6 +29,7 @@ import {
 } from '@/domain/connector-grant/delegated-oauth-registry'
 import { toGoogleOAuthPublicView, toGoogleDrivePickerPublicView } from '@/lib/platform-google-oauth-config'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-connector-requirements'
+import { agentDisplayName } from '@/lib/agent-persona'
 import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
 import {
   readGoogleDriveGrantMetadata,
@@ -99,6 +100,8 @@ async function delegatedConnectorUsage(
       connectorId: true,
       agent: {
         select: {
+          name: true,
+          personaNickname: true,
           capabilities: {
             where: { allowed: true },
             select: { toolName: true },
@@ -112,12 +115,19 @@ async function delegatedConnectorUsage(
     connectors.map((connector) => {
       const requiredTools = new Set<string>(toolsRequiringConnector(connector.type))
       const connectorLinks = links.filter((link) => link.connectorId === connector.id)
-      const capableAgentCount = connectorLinks.filter((link) =>
+      const capableAgents = connectorLinks.filter((link) =>
         link.agent.capabilities.some((capability) => requiredTools.has(capability.toolName)),
-      ).length
+      )
+      const capableAgentDisplayNames = capableAgents
+        .map((link) => agentDisplayName(link.agent.name, link.agent))
+        .sort((a, b) => a.localeCompare(b, 'hu'))
       return [
         connector.id,
-        { assignedAgentCount: connectorLinks.length, capableAgentCount },
+        {
+          assignedAgentCount: connectorLinks.length,
+          capableAgentCount: capableAgents.length,
+          capableAgentDisplayNames,
+        },
       ]
     }),
   )
@@ -679,16 +689,16 @@ export async function authorizeTicketRunAs(input: { ticketId: string }) {
     const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } })
     if (!ticket) return fail('Ticket not found')
     assertTicketTenantScope(ticket, user.activeTenantId)
-    if (ticket.assigneeType !== 'agent') return fail('Run-as can only be authorized for agent tickets')
+    if (ticket.assigneeType !== 'agent') return fail('Csak AI munkatárshoz rendelt feladaton engedélyezhető.')
     if (!['backlog', 'ready', 'in_progress'].includes(ticket.state)) {
-      return fail('Run-as can only be authorized before the ticket is closed')
+      return fail('Lezárt feladaton már nem engedélyezhető.')
     }
 
     const payload =
       typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
         ? { ...(ticket.payload as Record<string, unknown>) }
         : {}
-    if (isRunAsAuthorized(payload)) return fail('Run-as is already authorized for this ticket')
+    if (isRunAsAuthorized(payload)) return fail('Ez a feladat már a nevedben futhat.')
 
     const runAs = buildRunAsAuthorization({ userId: user.user.id })
     await prisma.ticket.update({
@@ -712,7 +722,7 @@ export async function authorizeTicketRunAs(input: { ticketId: string }) {
 
     return ok({ ticketId: ticket.id, runAsUserId: user.user.id })
   } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to authorize run-as')
+    return fail(e instanceof Error ? e.message : 'Nem sikerült engedélyezni.')
   }
 }
 
@@ -729,10 +739,10 @@ export async function revokeTicketRunAs(input: { ticketId: string }) {
       typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
         ? { ...(ticket.payload as Record<string, unknown>) }
         : {}
-    if (!isRunAsAuthorized(payload)) return fail('Run-as is not authorized for this ticket')
+    if (!isRunAsAuthorized(payload)) return fail('Ezen a feladaton nincs ilyen engedély.')
     const authorizedBy = readRunAsAuthorizedBy(payload)
     if (authorizedBy !== user.user.id && !hasMinimumRole(user.activeTenantRole, 'admin')) {
-      return fail('Only the authorizing user or an admin can revoke this run-as grant')
+      return fail('Csak te vagy egy admin vonhatja vissza az engedélyt.')
     }
 
     await prisma.ticket.update({
@@ -756,6 +766,6 @@ export async function revokeTicketRunAs(input: { ticketId: string }) {
 
     return ok({ ticketId: ticket.id })
   } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to revoke run-as')
+    return fail(e instanceof Error ? e.message : 'Nem sikerült visszavonni.')
   }
 }

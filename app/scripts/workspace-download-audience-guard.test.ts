@@ -69,6 +69,15 @@ async function main() {
     assert.throws(() => safeObjectPath('deliverables/../../secret'), FileEditorError)
   })
 
+  await check('safeObjectPath rejects absurdly long names (no raw ENAMETOOLONG)', () => {
+    // Egy modell-válasz került útvonal helyére: lokálisan nyers ENAMETOOLONG lett
+    // belőle, GCS-en pedig némán létrejött volna egy több száz karakteres kulcs.
+    assert.throws(() => safeObjectPath('x'.repeat(600)), /too long/)
+    assert.throws(() => safeObjectPath(`${'y'.repeat(240)}.json`), /too long/)
+    assert.throws(() => safeObjectPath('rossz\nnev.json'), /control characters/)
+    assert.equal(safeObjectPath('rendben/nev.json'), 'rendben/nev.json')
+  })
+
   await check('safeObjectPath normalizes `.` and duplicate slashes', () => {
     assert.equal(safeObjectPath('./a//b/./c.txt'), 'a/b/c.txt')
     assert.equal(safeObjectPath('/leading/slash.txt'), 'leading/slash.txt')

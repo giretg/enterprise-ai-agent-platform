@@ -36,6 +36,11 @@ type EnsureKnowledgeBase = (
   agent: Pick<Agent, 'id' | 'name' | 'role'>,
 ) => Promise<Connector | null>
 
+type AssertDocumentReachable = (
+  doc: { uploadedById: string; connectorId: string | null; metadata?: unknown },
+  actorTenantId: string | null,
+) => Promise<void>
+
 /**
  * §9.3 / §4.6: a tudásbázis-frissítés jóváhagyott tanítási ticketen megy.
  * A KB-dokumentum a `training` tickettípust használja (a memóriától eltérő
@@ -77,6 +82,8 @@ export class KnowledgeBaseService {
     private chunks: KnowledgeChunkRepository,
     // Injektálható a teszteléshez; alapból a valós provisioning.
     private ensureKnowledgeBase: EnsureKnowledgeBase = ensureAgentKnowledgeBase,
+    // Injektálható, hogy a gate-tesztek DB nélkül fussanak.
+    private assertDocumentReachable: AssertDocumentReachable = assertDocumentReachableFromTenant,
   ) {}
 
   /**
@@ -126,7 +133,11 @@ export class KnowledgeBaseService {
     createdById: string
     /** A hívó aktív tenantja (multi-tenant izoláció); null = platform/megosztott. */
     actorTenantId: string | null
-    /** KB-v3 §7.2 — feldolgozási mód; alapból nyers szöveg. */
+    /**
+     * KB-v3 §7.2 — feldolgozási mód. Ha nincs megadva, a jóváhagyó választja
+     * a review-ban (`setPendingDocumentProcessingMode`). Explicit érték
+     * (régi kliens / teszt) továbbra is a kéréskor rögzül.
+     */
     processingMode?: KnowledgeProcessingMode
   }): Promise<Ticket> {
     const agent = await this.agents.findById(params.agentId)
@@ -141,16 +152,18 @@ export class KnowledgeBaseService {
     // Tenant-határ: a dokumentum a hívó tenantjához kell tartozzon. Enélkül egy
     // idegen tenant friss feltöltésű dokumentumához is lehetett volna KB-jóváhagyási
     // ticketet nyitni, majd jóváhagyás után a saját KB-be beolvasni (cross-tenant IDOR).
-    await assertDocumentReachableFromTenant(document, params.actorTenantId)
+    await this.assertDocumentReachable(document, params.actorTenantId)
     if (document.connectorId) throw new Error('Document already attached to a knowledge base')
 
     const connector = await this.ensureKnowledgeBase(agent)
     if (!connector) throw new Error('Agent has no knowledge_base connector')
 
-    const processingMode = params.processingMode ?? 'raw_text_only'
-    // A módot a dokumentumon rögzítjük, hogy a jóváhagyáskor tudjuk, kell-e
-    // OKF-artifactot publikálni (§7.2/§7.8).
-    await this.documents.update(document.id, { processingMode })
+    const processingMode = params.processingMode ?? null
+    // A módot csak akkor rögzítjük most, ha a hívó explicit megadta. Különben
+    // a jóváhagyó dönt a review-ban — addig processingMode null marad.
+    if (processingMode) {
+      await this.documents.update(document.id, { processingMode })
+    }
 
     // OKF-mód: már a review-ticket nyitásakor legenerálunk egy draft artifactot,
     // hogy az approver tartalmat lásson (§7.5 — determinisztikus, nem LLM).
@@ -205,6 +218,91 @@ export class KnowledgeBaseService {
     return updated ?? ticket
   }
 
+  /**
+   * A jóváhagyó a review-ban választja a feldolgozási módot. OKF-re váltáskor
+   * draft artifact készül (ha még nincs); nyers módra vissza: a pending draft
+   * `failed`. Ugyanarra a módra újrahívás idempotens.
+   */
+  async setPendingDocumentProcessingMode(params: {
+    ticketId: string
+    processingMode: KnowledgeProcessingMode
+    actorId: string
+    actorTenantId: string | null
+  }): Promise<Document> {
+    const ticket = await this.tickets.findById(params.ticketId)
+    if (!ticket || ticket.type !== 'training') throw new Error('KB ticket not found')
+    await this.assertTicketAgentReachable(ticket, params.actorTenantId)
+    const payload = asKbDocumentPayload(ticket.payload)
+    if (!payload) throw new Error('Not a KB document ticket')
+    if (ticket.state !== 'awaiting_human') throw new Error('Ticket not awaiting approval')
+
+    const document = await this.documents.findById(payload.documentId)
+    if (!document) throw new Error('Document not found')
+    await this.assertDocumentReachable(document, params.actorTenantId)
+    if (document.connectorId) throw new Error('Document already attached to a knowledge base')
+
+    const pendingArtifacts = (
+      await this.artifacts.findByConnector(payload.connectorId, 'pending_review')
+    ).filter((a) => a.sourceDocumentId === document.id)
+
+    if (document.processingMode === params.processingMode) {
+      if (params.processingMode === 'okf' && pendingArtifacts.length === 0) {
+        const agent = await this.agents.findById(ticket.agentId ?? '')
+        if (!agent) throw new Error('Agent not found')
+        const connector = await this.ensureKnowledgeBase(agent)
+        if (!connector) throw new Error('Agent has no knowledge_base connector')
+        await this.createDraftArtifact({
+          document,
+          connector,
+          createdById: params.actorId,
+          createdByAgentId: agent.id,
+        })
+      }
+      return document
+    }
+
+    const updated = await this.documents.update(document.id, {
+      processingMode: params.processingMode,
+    })
+
+    if (params.processingMode === 'raw_text_only') {
+      for (const artifact of pendingArtifacts) {
+        await this.artifacts.update(artifact.id, { status: 'failed' })
+      }
+    } else if (params.processingMode === 'okf' && pendingArtifacts.length === 0) {
+      const agent = await this.agents.findById(ticket.agentId ?? '')
+      if (!agent) throw new Error('Agent not found')
+      const connector = await this.ensureKnowledgeBase(agent)
+      if (!connector) throw new Error('Agent has no knowledge_base connector')
+      await this.createDraftArtifact({
+        document: updated,
+        connector,
+        createdById: params.actorId,
+        createdByAgentId: agent.id,
+      })
+    }
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId: params.actorId,
+      agentVersion: null,
+      action: 'kb.processing_mode.set',
+      targetType: 'document',
+      targetId: document.id,
+      modelUsed: null,
+      inputRef: ticket.id,
+      outputRef: payload.connectorId,
+      policyDecision: 'kb_processing_mode_set',
+      metadata: {
+        processingMode: params.processingMode,
+        previousMode: document.processingMode,
+        agentId: ticket.agentId,
+      },
+    })
+
+    return updated
+  }
+
   /** Jóváhagyás: a dokumentum bekerül a KB connectorba és kereshetővé válik. */
   async approveDocument(params: {
     ticketId: string
@@ -219,6 +317,12 @@ export class KnowledgeBaseService {
     const payload = asKbDocumentPayload(ticket.payload)
     if (!payload) throw new Error('Not a KB document ticket')
     if (ticket.state !== 'awaiting_human') throw new Error('Ticket not awaiting approval')
+
+    const document = await this.documents.findById(payload.documentId)
+    if (!document) throw new Error('Document not found')
+    if (!document.processingMode) {
+      throw new Error('Select a processing mode before approving')
+    }
 
     const updated = await this.documents.update(payload.documentId, {
       connectorId: payload.connectorId,
@@ -316,7 +420,13 @@ export class KnowledgeBaseService {
     agentId: string,
     actorTenantId: string | null,
   ): Promise<
-    Array<{ ticketId: string; documentId: string; filename: string; createdAt: Date }>
+    Array<{
+      ticketId: string
+      documentId: string
+      filename: string
+      createdAt: Date
+      processingMode: KnowledgeProcessingMode | null
+    }>
   > {
     const agent = await this.agents.findById(agentId)
     if (!agent) throw new Error('Agent not found')
@@ -326,18 +436,26 @@ export class KnowledgeBaseService {
       agentId,
       state: 'awaiting_human',
     })
-    return tickets
-      .map((ticket) => {
-        const payload = asKbDocumentPayload(ticket.payload)
-        if (!payload) return null
-        return {
-          ticketId: ticket.id,
-          documentId: payload.documentId,
-          filename: payload.filename,
-          createdAt: ticket.createdAt,
-        }
+    const rows: Array<{
+      ticketId: string
+      documentId: string
+      filename: string
+      createdAt: Date
+      processingMode: KnowledgeProcessingMode | null
+    }> = []
+    for (const ticket of tickets) {
+      const payload = asKbDocumentPayload(ticket.payload)
+      if (!payload) continue
+      const document = await this.documents.findById(payload.documentId)
+      rows.push({
+        ticketId: ticket.id,
+        documentId: payload.documentId,
+        filename: payload.filename,
+        createdAt: ticket.createdAt,
+        processingMode: document?.processingMode ?? null,
       })
-      .filter((row): row is NonNullable<typeof row> => row !== null)
+    }
+    return rows
   }
 
   // ── KB-v3 artifact flow (§11.1) ───────────────────────────────────────────
