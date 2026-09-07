@@ -137,6 +137,7 @@ jobs:
           npm run test:create-agent-wizard
           npm run test:model-providers
           npm run test:work-project
+          npm run test:agent-chat-stream-input
           npm run test:agent-scaffold
           npm run test:resume-last-agent-conversation
           npm run test:agent-workspace-board
