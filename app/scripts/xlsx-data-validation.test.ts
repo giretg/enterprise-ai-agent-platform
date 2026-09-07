@@ -177,6 +177,13 @@ async function main() {
     assert.ok(Buffer.isBuffer(ok) && ok.length > 0)
   })
 
+  await check('kis + teljes-lap mergeCells köteg: a túl nagy miatt az egész elutasítva', async () => {
+    await assert.rejects(
+      () => xlsxApplyLayout(base, { mergeCells: ['A1:B1', 'A1:XFD1048576'] }, 'Egyeztetés'),
+      (err) => err instanceof FileEditorError && err.code === 'INVALID_RANGE',
+    )
+  })
+
   console.log(failures === 0 ? '\n✅ minden teszt zöld' : `\n❌ ${failures} teszt bukott`)
   process.exit(failures === 0 ? 0 : 1)
 }

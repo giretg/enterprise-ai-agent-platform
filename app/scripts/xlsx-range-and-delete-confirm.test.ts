@@ -59,6 +59,10 @@ check('range beyond Excel bounds is rejected', () => {
   )
 })
 
+check('Excel max column XFD is accepted for a single cell', () => {
+  assert.deepEqual(parseA1Range('XFD1'), { c1: 16384, r1: 1, c2: 16384, r2: 1 })
+})
+
 check('realistic table range stays under the cap', () => {
   // 500 sor × 50 oszlop = 25 000 cella — bőven a plafon (250 000) alatt.
   assert.deepEqual(parseA1Range('A1:AX500'), { c1: 1, r1: 1, c2: 50, r2: 500 })

@@ -404,12 +404,10 @@ export async function xlsxApplyLayout(
     throw sheetNotFoundError(sheetName, workbook)
   }
 
+  // Minden merge a közös kapun megy át, mielőtt bármelyiket alkalmaznánk —
+  // exceljs a merge területét cellánként járja, egy túl nagy tartomány DoS.
+  for (const merge of layout.mergeCells ?? []) parseA1Range(merge)
   for (const merge of layout.mergeCells ?? []) {
-    // A merge-tartományt a `mergeCells` ELŐTT a közös terület-kapun engedjük át:
-    // az exceljs a merge teljes területét cellánként bejárja, ezért plafon nélkül
-    // egy `"A1:XFD1048576"` merge ugyanazt a több-tenantos DoS-t okozná, mint a
-    // formázás — ez az ág korábban NEM ment át a parseA1Range ellenőrzésen.
-    parseA1Range(merge)
     worksheet.mergeCells(merge)
   }
   for (const { column, width } of layout.columnWidths ?? []) {
