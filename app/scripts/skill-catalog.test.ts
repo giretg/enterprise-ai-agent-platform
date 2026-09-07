@@ -78,6 +78,7 @@ import {
 } from '../src/domain/skill/skill-review-agent'
 import { PROVISIONING_ASSISTANT_ROLE_INSTRUCTION } from '../src/domain/provisioning/provisioning-assistant'
 import { readZipEntries, ZipReadError } from '../src/lib/skill/zip-reader'
+import { buildSkillPackage } from '../src/lib/skill/skill-package-adapter'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -137,6 +138,21 @@ async function main() {
       () => readZipEntries(zipWithOverlappingCompressedEntries()),
       (error: unknown) => error instanceof ZipReadError && error.code === 'corrupt',
     )
+  })
+
+  await check('szabványos skill-csomag → SKILL.md + referencia bejön, kód kimarad', () => {
+    const bytes = (text: string) => new TextEncoder().encode(text)
+    const pkg = buildSkillPackage([
+      { path: 'my-skill/SKILL.md', bytes: bytes('---\nname: demo\ndescription: Demo skill\n---\nTedd meg.') },
+      { path: 'my-skill/references/checklist.md', bytes: bytes('# Ellenőrzőlista') },
+      { path: 'my-skill/scripts/run.py', bytes: bytes('print("no")') },
+    ])
+
+    assert.equal(pkg.skillRoot, '')
+    assert.equal(pkg.attachments[0]?.path, 'references/checklist.md')
+    assert.deepEqual(pkg.skipped.map(({ path, reason }) => ({ path, reason })), [
+      { path: 'scripts/run.py', reason: 'code_file' },
+    ])
   })
 
   console.log('SKILL.md adapter')

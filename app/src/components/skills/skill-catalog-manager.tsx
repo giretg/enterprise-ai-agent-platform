@@ -5,6 +5,7 @@ import { Component, useEffect, useRef, useState, useTransition, type ReactNode }
 import { captureException } from '@/lib/observability'
 import {
   importSkillMdAction,
+  importSkillPackageAction,
   createSkillAction,
   updateSkillDisplayNameAction,
   updateSkillKindAction,
@@ -416,13 +417,20 @@ function SkillCatalogManagerView({
     setEditingSkillId(skillId)
   }
 
-  function run(fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) {
+  function run(
+    fn: () => Promise<{ success: boolean; error?: string; data?: unknown }>,
+    okMsg: string,
+  ) {
     startTransition(async () => {
       setError(null)
       setNotice(null)
       const res = await fn()
       if (res.success) {
-        setNotice(okMsg)
+        const actionNotice =
+          res.data && typeof res.data === 'object' && 'notice' in res.data
+            ? (res.data as { notice?: unknown }).notice
+            : null
+        setNotice(typeof actionNotice === 'string' ? actionNotice : okMsg)
         router.refresh()
       } else {
         setError(res.error ?? 'Ismeretlen hiba.')
@@ -461,7 +469,7 @@ function SkillCatalogManagerView({
                     : 'border-coral/35 bg-coral/8 text-coral hover:bg-coral/15'
                 }`}
               >
-                SKILL.md importálása
+                SKILL.md / ZIP importálása
               </button>
               <button
                 type="button"
@@ -481,7 +489,7 @@ function SkillCatalogManagerView({
             <div className="border-t border-line bg-night-2/35 p-5">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <p className="text-sm font-medium text-ink-soft">
-                  {creationMode === 'import' ? 'SKILL.md importálása' : 'Skill kézi létrehozása'}
+                  {creationMode === 'import' ? 'Skill importálása' : 'Skill kézi létrehozása'}
                 </p>
                 <button
                   type="button"
@@ -1116,25 +1124,71 @@ function ImportSkillForm({
   onRun: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
   isPlatformAdmin: boolean
 }) {
+  const [format, setFormat] = useState<'markdown' | 'zip'>('markdown')
   const [raw, setRaw] = useState('')
+  const [archive, setArchive] = useState<File | null>(null)
+  const [subpath, setSubpath] = useState('')
   const [sourceUrl, setSourceUrl] = useState('')
   const [kind, setKind] = useState<SkillKind>('tenant')
   const [requiredSystemRole, setRequiredSystemRole] = useState<SkillSystemRole | null>(null)
 
   return (
     <div className="max-w-4xl">
+      <div className="mb-3 flex gap-2" role="group" aria-label="Import formátuma">
+        {([
+          ['markdown', 'SKILL.md szöveg'],
+          ['zip', 'ZIP-csomag'],
+        ] as const).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={format === value}
+            onClick={() => setFormat(value)}
+            className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${
+              format === value
+                ? 'border-coral bg-coral/15 text-coral'
+                : 'border-ink-faint/30 text-ink-soft'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <p className="mb-3 text-xs text-ink-faint">
-        Illeszd be a <code>SKILL.md</code> tartalmát (YAML frontmatter + markdown törzs). A
-        hardcoded validátor elutasítja a kódot (T2/T3) és a prompt-injection mintákat. A skill
-        <em> proposed</em> verzióként jön létre; aktiválás külön jóváhagyással.
+        {format === 'markdown' ? (
+          <>Illeszd be a <code>SKILL.md</code> tartalmát (YAML frontmatter + markdown törzs).</>
+        ) : (
+          <>Tölts fel egy szabványos ZIP-csomagot, benne egy <code>SKILL.md</code> fájllal és opcionális szöveges referenciafájlokkal.</>
+        )}{' '}
+        A validátor elutasítja a prompt-injection mintákat; a futtatható fájlok nem kerülnek be.
+        A skill <em> proposed</em> verzióként jön létre; aktiválás külön jóváhagyással.
       </p>
-      <textarea
-        value={raw}
-        onChange={(e) => setRaw(e.target.value)}
-        rows={8}
-        placeholder="---&#10;name: ...&#10;title: Megjelenített feladatnév&#10;description: ...&#10;---&#10;# Áttekintés"
-        className="w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 font-mono text-xs"
-      />
+      {format === 'markdown' ? (
+        <textarea
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+          rows={8}
+          placeholder="---&#10;name: ...&#10;title: Megjelenített feladatnév&#10;description: ...&#10;---&#10;# Áttekintés"
+          className="w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 font-mono text-xs"
+        />
+      ) : (
+        <div className="space-y-2">
+          <input
+            type="file"
+            accept=".zip,application/zip"
+            aria-label="Skill ZIP-csomag (legfeljebb 9 MB)"
+            onChange={(event) => setArchive(event.target.files?.[0] ?? null)}
+            className="block w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-sm file:mr-3 file:rounded-full file:border-0 file:bg-coral/15 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-coral"
+          />
+          <input
+            value={subpath}
+            aria-label="Skill almappája"
+            onChange={(event) => setSubpath(event.target.value)}
+            placeholder="Skill almappája (csak ha a ZIP több skillt tartalmaz)"
+            className="w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-sm"
+          />
+        </div>
+      )}
       <input
         value={sourceUrl}
         onChange={(e) => setSourceUrl(e.target.value)}
@@ -1155,16 +1209,27 @@ function ImportSkillForm({
       </div>
       <button
         type="button"
-        disabled={running || raw.trim().length === 0}
+        disabled={running || (format === 'markdown' ? raw.trim().length === 0 : !archive)}
         onClick={() =>
           onRun(
-            () => importSkillMdAction({ raw, sourceUrl, kind, requiredSystemRole }),
+            () => {
+              if (format === 'markdown') {
+                return importSkillMdAction({ raw, sourceUrl, kind, requiredSystemRole })
+              }
+              const formData = new FormData()
+              if (archive) formData.set('archive', archive)
+              formData.set('sourceUrl', sourceUrl)
+              formData.set('subpath', subpath)
+              formData.set('kind', kind)
+              if (requiredSystemRole) formData.set('requiredSystemRole', requiredSystemRole)
+              return importSkillPackageAction(formData)
+            },
             'Skill importálva — proposed verzióként. Aktiváláshoz hagyd jóvá.',
           )
         }
         className="mt-4 rounded-full bg-coral/20 px-5 py-2 text-sm font-semibold text-coral disabled:opacity-50"
       >
-        {running ? 'Importálás...' : 'Import'}
+        {running ? 'Importálás...' : format === 'markdown' ? 'SKILL.md importálása' : 'ZIP importálása'}
       </button>
     </div>
   )

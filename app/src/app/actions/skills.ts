@@ -29,6 +29,7 @@ import {
   isSkillAssignableToAgent,
 } from '@/lib/skill/skill-kind'
 import { readTenantLanguage } from '@/lib/tenant-language'
+import { SKILL_PACKAGE_SKIP_LABEL } from '@/lib/skill/skill-package-adapter'
 
 /**
  * Skill-katalógus server actionök (skill-catalog-spec.md WP-4/6/7). Minden action
@@ -363,6 +364,80 @@ export async function importSkillMdAction(
       skillId: result.skill.id,
       versionId: result.versionId,
       riskTier: result.validation.riskTier,
+    })
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
+const skillPackageSchema = z.object({
+  sourceUrl: z.string().url().optional().or(z.literal('').transform(() => undefined)),
+  subpath: z.string().trim().max(500).optional().or(z.literal('').transform(() => undefined)),
+  kind: skillKindSchema.default('tenant'),
+  requiredSystemRole: systemRoleSchema,
+})
+
+const SKILL_PACKAGE_UPLOAD_MAX_BYTES = 9 * 1024 * 1024
+
+/** Szabványos, SKILL.md-t és opcionális referenciafájlokat tartalmazó ZIP importja. */
+export async function importSkillPackageAction(
+  formData: FormData,
+): Promise<ActionResult<{ skillId: string; versionId: string; notice: string }>> {
+  try {
+    const archive = formData.get('archive')
+    if (!(archive instanceof File) || archive.size === 0) {
+      return fail('Válassz ki egy ZIP-csomagot.')
+    }
+    if (!archive.name.toLowerCase().endsWith('.zip')) {
+      return fail('A skill-csomag ZIP-fájl legyen.')
+    }
+    if (archive.size > SKILL_PACKAGE_UPLOAD_MAX_BYTES) {
+      return fail('A ZIP-csomag legfeljebb 9 MB lehet.')
+    }
+
+    const field = (name: string) => {
+      const value = formData.get(name)
+      return typeof value === 'string' ? value : undefined
+    }
+    const parsed = skillPackageSchema.parse({
+      sourceUrl: field('sourceUrl'),
+      subpath: field('subpath'),
+      kind: field('kind'),
+      requiredSystemRole: field('requiredSystemRole') || undefined,
+    })
+    const ctx = await requireTenantRole('admin')
+    const result = await services.skills.importSkillPackage({
+      archive: new Uint8Array(await archive.arrayBuffer()),
+      subpath: parsed.subpath,
+      sourceUrl: parsed.sourceUrl,
+      sourceLabel: archive.name.slice(0, 255),
+      kind: parsed.kind,
+      requiredSystemRole: parsed.requiredSystemRole,
+      tenantId: ctx.activeTenantId,
+      actor: actorFrom(ctx),
+    })
+
+    if (!result.ok) {
+      if (result.stage === 'validation') {
+        return fail(`A skill nem felelt meg a hardcoded validátornak: ${result.validation.errors.join(' · ')}`)
+      }
+      const candidates = result.stage === 'package' && result.candidates.length > 0
+        ? ` Lehetséges skill-almappák: ${result.candidates.join(', ')}.`
+        : ''
+      return fail(`${result.message}${candidates}`)
+    }
+
+    const skipped = result.skipped.length > 0
+      ? ` Kimaradt ${result.skipped.length} fájl: ${result.skipped
+          .slice(0, 3)
+          .map((item) => `${item.path} (${SKILL_PACKAGE_SKIP_LABEL[item.reason]})`)
+          .join(' · ')}${result.skipped.length > 3 ? ' · …' : ''}`
+      : ''
+    revalidatePath('/control-plane/skills')
+    return ok({
+      skillId: result.skill.id,
+      versionId: result.versionId,
+      notice: `Skill-csomag importálva — ${result.attachments.length} referenciafájllal, proposed verzióként.${skipped}`,
     })
   } catch (err) {
     return fail(messageFrom(err))
@@ -784,4 +859,3 @@ export async function distillSkillFromConversationAction(
     return fail(messageFrom(err))
   }
 }
-
