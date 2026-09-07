@@ -10,7 +10,7 @@
  * a CLI is; a modellnek szóló utasítás a második system-blokkban van.
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { GatewayMessage, GatewayToolCall, ToolDefinition } from './model-gateway'
@@ -239,6 +239,13 @@ function defaultCredentialsPath(): string {
   return process.env.CLAUDE_CODE_AUTH_FILE?.trim() || join(homedir(), '.claude', '.credentials.json')
 }
 
+/** A refresh-token helyi fájlban csak a futtató user számára olvasható. */
+export function assertClaudeCodeCredentialFilePrivate(filePath: string): void {
+  if (statSync(filePath).mode & 0o077) {
+    throw new Error(`Claude Code credential file must not be readable by group or others: ${filePath}`)
+  }
+}
+
 function readFromMacosKeychain(): ClaudeCodeOAuthTokens | null {
   if (process.platform !== 'darwin') return null
   try {
@@ -286,12 +293,14 @@ export function createClaudeCodeTokenStoreFromEnv(
 
   const filePath = defaultCredentialsPath()
   if (!existsSync(filePath)) return null
+  assertClaudeCodeCredentialFilePrivate(filePath)
   return { ...parseClaudeCodeCredentialJson(readFileSync(filePath, 'utf8')), source: 'file', filePath }
 }
 
 async function persistClaudeCodeTokens(current: ClaudeCodeStoredCredential, next: ClaudeCodeOAuthTokens): Promise<void> {
   if (current.source === 'env') return
   if (current.source === 'file' && current.filePath) {
+    chmodSync(current.filePath, 0o600)
     writeFileSync(current.filePath, JSON.stringify(toCredentialFileShape(next), null, 2), { mode: 0o600 })
     return
   }
