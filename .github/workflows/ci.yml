@@ -151,6 +151,7 @@ jobs:
           npm run test:ticket-workspace-files
           npm run test:workspace-handoff
           npm run test:workspace-inline-html-headers
+          npm run test:workspace-html-preview
           npm run test:tool-registry-drift
           npm run test:tool-trust
           npm run test:tool-output-contract

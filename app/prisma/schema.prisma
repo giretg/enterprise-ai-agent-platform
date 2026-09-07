@@ -400,6 +400,14 @@ enum SkillCatalogScope {
   tenant // tenant-lokális, más tenantnak sosem látható
 }
 
+/// Katalógus-besorolás (nem RBAC, nem tenant-határ).
+/// tenant = saját tenant; published = kiadott platform-csomag; system = rendszer-agenthez kötött.
+enum SkillKind {
+  tenant
+  published
+  system
+}
+
 enum SkillSourceType {
   authored
   imported
@@ -1086,6 +1094,9 @@ model Skill {
   description  String // Level-0 index szöveg (méret-limitált)
   catalogScope SkillCatalogScope @default(tenant)
   tenantId     String?           @map("tenant_id") @db.Uuid // null ⇔ global
+  kind         SkillKind         @default(tenant)
+  /// Csak `kind = system` esetén: melyik rendszer-agenthez köthető.
+  requiredSystemRole AgentSystemRole? @map("required_system_role")
   sourceType   SkillSourceType   @default(authored)
   provenance   Json? // forrás-URL/id, eredeti hash, importált-formátum
   license      String? // SPDX vagy 'proprietary' / null

@@ -20,6 +20,13 @@ import {
   isSkillWritableFromTenant,
   filterSkillsByReadableTenant,
 } from '../src/lib/skill/skill-scope'
+import {
+  catalogScopeForKind,
+  isSkillAssignableToAgent,
+  skillKindChangeError,
+  skillKindCreateAuthError,
+  skillKindInputError,
+} from '../src/lib/skill/skill-kind'
 import { computeSkillReadiness } from '../src/lib/skill/skill-readiness'
 import { computeSkillContentHash, type SkillContent } from '../src/lib/skill/skill-content'
 import {
@@ -312,6 +319,65 @@ async function main() {
     ]
     const visible = filterSkillsByReadableTenant(skills, TENANT_A).map((s) => s.id)
     assert.deepEqual(visible, ['1', '2'])
+  })
+
+  console.log('Skill-fajta (system / published / tenant)')
+
+  await check('catalogScopeForKind: tenant→tenant, published/system→global', () => {
+    assert.equal(catalogScopeForKind('tenant'), 'tenant')
+    assert.equal(catalogScopeForKind('published'), 'global')
+    assert.equal(catalogScopeForKind('system'), 'global')
+  })
+
+  await check('rendszer-skillhez kötelező a systemRole; kiadotthoz tilos', () => {
+    assert.equal(skillKindInputError('system', null), 'Rendszer-skillhez ki kell választani, melyik rendszer-agenthez tartozik.')
+    assert.equal(skillKindInputError('system', 'run_analyst'), null)
+    assert.equal(skillKindInputError('published', 'run_analyst'), 'Csak rendszer-skillhez adható meg rendszer-agent.')
+    assert.equal(skillKindInputError('tenant', null), null)
+  })
+
+  await check('kiadott/rendszer skillt csak platform-admin hozhat létre', () => {
+    assert.equal(skillKindCreateAuthError('tenant', false), null)
+    assert.equal(
+      skillKindCreateAuthError('published', false),
+      'Kiadott vagy rendszer-skillt csak platform-admin hozhat létre.',
+    )
+    assert.equal(skillKindCreateAuthError('system', true), null)
+  })
+
+  await check('tenant-skill fajtája nem emelhető kiadottra; globális nem lehet tenant', () => {
+    assert.match(
+      skillKindChangeError({ kind: 'tenant', catalogScope: 'tenant' }, 'published', true) ?? '',
+      /tenant-határt/,
+    )
+    assert.match(
+      skillKindChangeError({ kind: 'published', catalogScope: 'global' }, 'tenant', true) ?? '',
+      /nem minősíthető tenant/,
+    )
+    assert.equal(
+      skillKindChangeError({ kind: 'published', catalogScope: 'global' }, 'system', true),
+      null,
+    )
+    assert.match(
+      skillKindChangeError({ kind: 'published', catalogScope: 'global' }, 'system', false) ?? '',
+      /platform-admin/,
+    )
+  })
+
+  await check('rendszer-skill csak a matching systemRole agentre köthető', () => {
+    const system = { kind: 'system' as const, requiredSystemRole: 'run_analyst' }
+    assert.equal(isSkillAssignableToAgent(system, { systemRole: 'run_analyst' }), true)
+    assert.equal(isSkillAssignableToAgent(system, { systemRole: 'web_egress' }), false)
+    assert.equal(isSkillAssignableToAgent(system, { systemRole: null }), false)
+  })
+
+  await check('kiadott és tenant skill csak sima agentre köthető', () => {
+    const published = { kind: 'published' as const, requiredSystemRole: null }
+    const tenant = { kind: 'tenant' as const, requiredSystemRole: null }
+    assert.equal(isSkillAssignableToAgent(published, { systemRole: null }), true)
+    assert.equal(isSkillAssignableToAgent(tenant, { systemRole: null }), true)
+    assert.equal(isSkillAssignableToAgent(published, { systemRole: 'run_analyst' }), false)
+    assert.equal(isSkillAssignableToAgent(tenant, { systemRole: 'run_analyst' }), false)
   })
 
   console.log('Readiness-check (§D10)')
@@ -856,6 +922,9 @@ async function main() {
     agentTenantId: string | null | 'missing'
     skillTenantId?: string | null
     status?: string
+    kind?: 'tenant' | 'published' | 'system'
+    requiredSystemRole?: string | null
+    agentSystemRole?: string | null
   }) {
     const calls: {
       assign: string[]
@@ -874,7 +943,13 @@ async function main() {
         skillId: 'skill-1',
         status: opts.status ?? 'active',
         contentHash: 'hash',
-        skill: { id: 'skill-1', tenantId: opts.skillTenantId ?? null, name: 'Global skill' },
+        skill: {
+          id: 'skill-1',
+          tenantId: opts.skillTenantId ?? null,
+          name: 'Global skill',
+          kind: opts.kind ?? (opts.skillTenantId ? 'tenant' : 'published'),
+          requiredSystemRole: opts.requiredSystemRole ?? null,
+        },
       }),
       assign: async (i: { skillVersionId: string }) => {
         calls.assign.push(i.skillVersionId)
@@ -895,7 +970,9 @@ async function main() {
     }
     const agentsRepo = {
       findById: async () =>
-        opts.agentTenantId === 'missing' ? null : { tenantId: opts.agentTenantId },
+        opts.agentTenantId === 'missing'
+          ? null
+          : { tenantId: opts.agentTenantId, systemRole: opts.agentSystemRole ?? null },
     }
     const svc = new SkillService(
       skillsRepo as never,
@@ -939,6 +1016,47 @@ async function main() {
     const { svc, calls } = makeAgentBoundSvc({ agentTenantId: null, skillTenantId: null })
     await svc.assign({ agentId: 'agent-shared', skillVersionId: 'v1', actor: adminA })
     assert.deepEqual(calls.assign, ['v1'])
+  })
+
+  await check('rendszer-skill sima agentre → elutasítva', async () => {
+    const { svc, calls } = makeAgentBoundSvc({
+      agentTenantId: TENANT_A,
+      skillTenantId: null,
+      kind: 'system',
+      requiredSystemRole: 'run_analyst',
+      agentSystemRole: null,
+    })
+    await assert.rejects(
+      () => svc.assign({ agentId: 'agent-a', skillVersionId: 'v1', actor: adminA }),
+      /rendszer-skill csak/,
+    )
+    assert.equal(calls.assign.length, 0)
+  })
+
+  await check('rendszer-skill a matching Futás-elemzőre → sikeres', async () => {
+    const { svc, calls } = makeAgentBoundSvc({
+      agentTenantId: TENANT_A,
+      skillTenantId: null,
+      kind: 'system',
+      requiredSystemRole: 'run_analyst',
+      agentSystemRole: 'run_analyst',
+    })
+    await svc.assign({ agentId: 'agent-ra', skillVersionId: 'v1', actor: adminA })
+    assert.deepEqual(calls.assign, ['v1'])
+  })
+
+  await check('kiadott skill Futás-elemzőre → elutasítva', async () => {
+    const { svc, calls } = makeAgentBoundSvc({
+      agentTenantId: TENANT_A,
+      skillTenantId: null,
+      kind: 'published',
+      agentSystemRole: 'run_analyst',
+    })
+    await assert.rejects(
+      () => svc.assign({ agentId: 'agent-ra', skillVersionId: 'v1', actor: adminA }),
+      /nem rendszer/,
+    )
+    assert.equal(calls.assign.length, 0)
   })
 
   await check('unassign IDEGEN tenant agentjéről → elutasítva, nincs törlés', async () => {

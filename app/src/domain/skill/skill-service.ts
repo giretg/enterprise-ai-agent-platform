@@ -1,4 +1,12 @@
-import type { Prisma, Skill, SkillCatalogScope, SkillRiskTier, SkillSourceType } from '@prisma/client'
+import type {
+  AgentSystemRole,
+  Prisma,
+  Skill,
+  SkillCatalogScope,
+  SkillKind,
+  SkillRiskTier,
+  SkillSourceType,
+} from '@prisma/client'
 import type {
   AuditRepository,
   AgentSkillMigration,
@@ -38,6 +46,15 @@ import {
   type SkillRuntimeHints,
 } from '@/lib/skill/skill-content'
 import { isSkillReadableFromTenant, isSkillWritableFromTenant } from '@/lib/skill/skill-scope'
+import {
+  catalogScopeForKind,
+  isSkillAssignableToAgent,
+  normalizeRequiredSystemRole,
+  skillAssignDeniedMessage,
+  skillKindChangeError,
+  skillKindCreateAuthError,
+  skillKindInputError,
+} from '@/lib/skill/skill-kind'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { parseSkillMd } from '@/lib/skill/skill-md-adapter'
 import {
@@ -118,7 +135,7 @@ export interface ActorContext {
  * A teljes {@link AgentRepository} helyett csak a `tenantId`-t igénylő olvasás kell.
  */
 export interface SkillAgentLookup {
-  findById(id: string): Promise<{ tenantId: string | null } | null>
+  findById(id: string): Promise<{ tenantId: string | null; systemRole?: string | null } | null>
 }
 
 /**
@@ -184,7 +201,10 @@ export class SkillService {
    * audit-sort hagy (`tenant_mismatch`), mert egy idegen agent-UUID-vel próbálkozó
    * művelet a legerősebb korai jele egy cross-tenant szondázásnak.
    */
-  private async assertAgentReachable(agentId: string, actor: ActorContext): Promise<void> {
+  private async requireReachableAgent(
+    agentId: string,
+    actor: ActorContext,
+  ): Promise<{ tenantId: string | null; systemRole: string | null }> {
     const agent = await this.agents.findById(agentId)
     if (!agent || !isAgentReachableFromTenant(agent.tenantId, actor.actorTenantId)) {
       await this.audit.append({
@@ -203,6 +223,11 @@ export class SkillService {
       })
       throw new SkillAccessError('Agent not found')
     }
+    return { tenantId: agent.tenantId, systemRole: agent.systemRole ?? null }
+  }
+
+  private async assertAgentReachable(agentId: string, actor: ActorContext): Promise<void> {
+    await this.requireReachableAgent(agentId, actor)
   }
 
   // ── Olvasás (fail-closed scope) ───────────────────────────────────────────
@@ -223,6 +248,7 @@ export class SkillService {
     const skills = await this.skills.listForTenant(actorTenantId)
     const entries: SkillReferenceEntry[] = []
     for (const skill of skills) {
+      if (skill.kind === 'system') continue
       const active = skill.versions.find((v) => v.status === 'active')
       if (!active) continue
       const content = parseSkillContent(active.content)
@@ -277,6 +303,8 @@ export class SkillService {
     description: string
     catalogScope: SkillCatalogScope
     tenantId: string | null
+    kind: SkillKind
+    requiredSystemRole?: AgentSystemRole | null
     sourceType: SkillSourceType
     provenance: Prisma.InputJsonValue | null
     license: string | null
@@ -287,6 +315,20 @@ export class SkillService {
     attachments?: SkillAttachment[]
     actor: ActorContext
   }): Promise<{ skill: Skill; versionId: string }> {
+    const kindError = skillKindInputError(input.kind, input.requiredSystemRole)
+    if (kindError) throw new SkillAccessError(kindError)
+    const authError = skillKindCreateAuthError(input.kind, input.actor.isPlatformAdmin)
+    if (authError) throw new SkillAccessError(authError)
+    if (catalogScopeForKind(input.kind) !== input.catalogScope) {
+      throw new SkillAccessError('A skill fajtája és a katalógus-hatókör nem illeszkedik.')
+    }
+    if (input.kind === 'tenant' && !input.tenantId) {
+      throw new SkillAccessError('Tenant-skillhez aktív tenant kell.')
+    }
+    if (input.kind !== 'tenant' && input.tenantId !== null) {
+      throw new SkillAccessError('Kiadott vagy rendszer-skill nem lehet tenant-hoz kötve.')
+    }
+    const requiredSystemRole = normalizeRequiredSystemRole(input.kind, input.requiredSystemRole)
     await this.assertSkillNameAvailable(input.name, input.tenantId)
     const attachments = input.attachments ?? []
     const contentHash = computeSkillContentHash(input.content, input.requires, attachments)
@@ -298,6 +340,8 @@ export class SkillService {
       description: input.description,
       catalogScope: input.catalogScope,
       tenantId: input.tenantId,
+      kind: input.kind,
+      requiredSystemRole,
       sourceType: input.sourceType,
       provenance: input.provenance,
       license: input.license,
@@ -326,6 +370,8 @@ export class SkillService {
         skillVersionId: version.id,
         riskTier: skill.riskTier,
         catalogScope: skill.catalogScope,
+        kind: skill.kind,
+        requiredSystemRole: skill.requiredSystemRole,
         contentHash,
       },
     })
@@ -341,7 +387,8 @@ export class SkillService {
   async importSkillMd(input: {
     raw: string
     sourceUrl?: string
-    catalogScope: SkillCatalogScope
+    kind: SkillKind
+    requiredSystemRole?: AgentSystemRole | null
     tenantId: string | null
     actor: ActorContext
   }): Promise<
@@ -359,12 +406,15 @@ export class SkillService {
       return { ok: false, validation }
     }
 
+    const catalogScope = catalogScopeForKind(input.kind)
     const { skill, versionId } = await this.createSkill({
       name: parsed.name,
       displayName: parsed.displayName,
       description: parsed.description,
-      catalogScope: input.catalogScope,
-      tenantId: input.catalogScope === 'global' ? null : input.tenantId,
+      catalogScope,
+      tenantId: catalogScope === 'global' ? null : input.tenantId,
+      kind: input.kind,
+      requiredSystemRole: input.requiredSystemRole,
       sourceType: 'imported',
       provenance: parsed.provenance as unknown as Prisma.InputJsonValue,
       license: parsed.license,
@@ -396,7 +446,8 @@ export class SkillService {
     subpath?: string
     sourceUrl?: string
     sourceLabel?: string
-    catalogScope: SkillCatalogScope
+    kind: SkillKind
+    requiredSystemRole?: AgentSystemRole | null
     tenantId: string | null
     actor: ActorContext
   }): Promise<SkillPackageImportResult> {
@@ -457,12 +508,15 @@ export class SkillService {
       ...(input.sourceLabel ? { sourceLabel: input.sourceLabel } : {}),
     }
 
+    const catalogScope = catalogScopeForKind(input.kind)
     const { skill, versionId } = await this.createSkill({
       name: parsed.name,
       displayName: parsed.displayName,
       description: parsed.description,
-      catalogScope: input.catalogScope,
-      tenantId: input.catalogScope === 'global' ? null : input.tenantId,
+      catalogScope,
+      tenantId: catalogScope === 'global' ? null : input.tenantId,
+      kind: input.kind,
+      requiredSystemRole: input.requiredSystemRole,
       sourceType: 'imported',
       provenance: provenance as unknown as Prisma.InputJsonValue,
       license: parsed.license,
@@ -589,6 +643,62 @@ export class SkillService {
   }
 
   /**
+   * Katalógus-fajta frissítése — nem verziózott metaadat. Tenant-skill fajtája
+   * nem emelhető kiadottra/rendszerre (az a tenant-határt törné); globális skill
+   * published ↔ system közt platform-admin állíthatja.
+   */
+  async updateKind(input: {
+    skillId: string
+    kind: SkillKind
+    requiredSystemRole?: AgentSystemRole | null
+    actor: ActorContext
+  }): Promise<Skill> {
+    const skill = await this.getReadableSkill(input.actor.actorTenantId, input.skillId)
+    if (!skill) throw new SkillAccessError('Skill not found')
+    if (
+      !isSkillWritableFromTenant(
+        skill.tenantId,
+        input.actor.actorTenantId,
+        input.actor.isPlatformAdmin,
+      )
+    ) {
+      throw new SkillAccessError(
+        skill.tenantId === null
+          ? 'Global skill fajtáját csak platform-admin módosíthatja.'
+          : 'Ez a skill nem szerkeszthető ebből a tenantból.',
+      )
+    }
+    const changeError = skillKindChangeError(
+      { kind: skill.kind, catalogScope: skill.catalogScope },
+      input.kind,
+      input.actor.isPlatformAdmin,
+    )
+    if (changeError) throw new SkillAccessError(changeError)
+    const kindError = skillKindInputError(input.kind, input.requiredSystemRole)
+    if (kindError) throw new SkillAccessError(kindError)
+    const requiredSystemRole = normalizeRequiredSystemRole(input.kind, input.requiredSystemRole)
+    const updated = await this.skills.updateKind(skill.id, input.kind, requiredSystemRole)
+    await this.audit.append({
+      actorType: input.actor.actorId ? 'human' : 'system',
+      actorId: input.actor.actorId,
+      agentVersion: null,
+      action: 'skill.kind_updated',
+      targetType: 'skill',
+      targetId: skill.id,
+      modelUsed: null,
+      inputRef: skill.name,
+      outputRef: input.kind,
+      policyDecision: 'allow',
+      tenantId: skill.tenantId,
+      metadata: {
+        from: { kind: skill.kind, requiredSystemRole: skill.requiredSystemRole },
+        to: { kind: input.kind, requiredSystemRole },
+      },
+    })
+    return updated
+  }
+
+  /**
    * D14 — skill desztillálása beszélgetésből. Transzkript + determinisztikus
    * `requires` (tényleges tool-hívások) → desztilláló agent (propose-not-apply) →
    * hardcoded validátor → `proposed` SkillVersion. Alap-scope: tenant-lokális draft,
@@ -691,6 +801,7 @@ export class SkillService {
       description: distilled.draft.description,
       catalogScope: 'tenant',
       tenantId: input.actor.actorTenantId,
+      kind: 'tenant',
       sourceType: 'authored',
       provenance: provenance as unknown as Prisma.InputJsonValue,
       license: null,
@@ -1046,13 +1157,20 @@ export class SkillService {
     if (!target) throw new SkillAccessError('Skill version not found')
     // A cél-agentnek is az actor tenantjából elérhetőnek kell lennie — különben
     // egy tenant-admin idegen tenant agentjébe injektálhatna skillt.
-    await this.assertAgentReachable(input.agentId, input.actor)
+    const agent = await this.requireReachableAgent(input.agentId, input.actor)
     // Csak olvasható skill rendelhető hozzá (global vagy saját tenant).
     if (!isSkillReadableFromTenant(target.skill.tenantId, input.actor.actorTenantId)) {
       throw new SkillAccessError()
     }
     if (target.status !== 'active') {
       throw new SkillAccessError('Only an active skill version can be assigned')
+    }
+    const skillKind = {
+      kind: target.skill.kind,
+      requiredSystemRole: target.skill.requiredSystemRole,
+    }
+    if (!isSkillAssignableToAgent(skillKind, agent)) {
+      throw new SkillAccessError(skillAssignDeniedMessage(skillKind, agent))
     }
 
     const { replacedVersionIds } = await this.skills.assign({
@@ -1709,6 +1827,8 @@ export class SkillService {
         description: a.skillVersion.skill.description,
         version: a.skillVersion.version,
         riskTier: a.skillVersion.skill.riskTier,
+        kind: a.skillVersion.skill.kind,
+        requiredSystemRole: a.skillVersion.skill.requiredSystemRole,
         content: parseSkillContent(a.skillVersion.content),
         requires,
         readiness,

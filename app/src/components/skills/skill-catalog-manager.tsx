@@ -6,6 +6,7 @@ import {
   importSkillMdAction,
   createSkillAction,
   updateSkillDisplayNameAction,
+  updateSkillKindAction,
   updateSkillDescriptionAction,
   approveSkillVersionAction,
   rollbackSkillVersionAction,
@@ -22,7 +23,6 @@ import {
 import { ToolCapabilityCheckboxGroups } from '@/components/tool-capabilities/tool-capability-checkbox-groups'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card } from '@/components/ui/shell'
-import { Collapsible } from '@/components/ui/collapsible'
 import type { SkillDiff } from '@/lib/skill/skill-diff'
 import type { SkillParameter, SkillRuntimeHints } from '@/lib/skill/skill-content'
 import {
@@ -34,6 +34,15 @@ import {
 } from '@/lib/skill/skill-content'
 import { NORMAL_TOOL_CAPABILITY_GROUPS } from '@/lib/tool-capability-catalog'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
+import {
+  SKILL_KIND_BADGE_TONE,
+  SKILL_KIND_COPY,
+  SKILL_SYSTEM_ROLE_LABEL,
+  isSkillSystemRole,
+  type SkillKind,
+  type SkillSystemRole,
+} from '@/lib/skill/skill-kind'
+import { SkillKindFields } from '@/components/skills/skill-kind-fields'
 
 const STATUS_TONE: Record<string, 'neutral' | 'success' | 'warning' | 'danger'> = {
   proposed: 'warning',
@@ -342,7 +351,14 @@ export function SkillCatalogManager({
   const normalizedCatalogQuery = catalogQuery.trim().toLocaleLowerCase('hu-HU')
   const filteredSkills = normalizedCatalogQuery
     ? skills.filter((skill) =>
-        [skillDisplayLabel(skill), skill.name, skill.description, skill.catalogScope, skill.sourceType]
+        [
+          skillDisplayLabel(skill),
+          skill.name,
+          skill.description,
+          skill.catalogScope,
+          skill.kind,
+          skill.sourceType,
+        ]
           .join(' ')
           .toLocaleLowerCase('hu-HU')
           .includes(normalizedCatalogQuery),
@@ -439,9 +455,17 @@ export function SkillCatalogManager({
                 </button>
               </div>
               {creationMode === 'import' ? (
-                <ImportSkillForm running={pending} onRun={run} />
+                <ImportSkillForm
+                  running={pending}
+                  onRun={run}
+                  isPlatformAdmin={isPlatformAdmin}
+                />
               ) : (
-                <CreateSkillForm running={pending} onRun={run} />
+                <CreateSkillForm
+                  running={pending}
+                  onRun={run}
+                  isPlatformAdmin={isPlatformAdmin}
+                />
               )}
             </div>
           )}
@@ -531,7 +555,14 @@ export function SkillCatalogManager({
                       <p className="mt-2 max-w-3xl text-sm leading-relaxed text-ink-soft">{s.description}</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2">
-                      <Badge tone="neutral">{s.catalogScope}</Badge>
+                      <Badge tone={SKILL_KIND_BADGE_TONE[s.kind]}>{SKILL_KIND_COPY[s.kind].label}</Badge>
+                      {s.kind === 'system' && s.requiredSystemRole ? (
+                        <Badge tone="neutral">
+                          {isSkillSystemRole(s.requiredSystemRole)
+                            ? SKILL_SYSTEM_ROLE_LABEL[s.requiredSystemRole]
+                            : s.requiredSystemRole}
+                        </Badge>
+                      ) : null}
                       <Badge tone="neutral">{s.sourceType}</Badge>
                       {s.license && <Badge tone="neutral">{s.license}</Badge>}
                     </div>
@@ -625,6 +656,12 @@ export function SkillCatalogManager({
                         <summary className="cursor-pointer text-xs font-medium text-ink-soft">Skill metaadatainak szerkesztése</summary>
                         <div className="mt-3 border-t border-ink-faint/15 pt-1">
                           <SkillDisplayNameEditor skill={s} running={pending} onRun={run} />
+                          <SkillKindEditor
+                            skill={s}
+                            running={pending}
+                            onRun={run}
+                            isPlatformAdmin={isPlatformAdmin}
+                          />
                           <SkillDescriptionEditor skill={s} running={pending} onRun={run} />
                         </div>
                       </details>
@@ -1034,13 +1071,16 @@ function EditSkillVersionForm({
 function ImportSkillForm({
   running,
   onRun,
+  isPlatformAdmin,
 }: {
   running: boolean
   onRun: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
+  isPlatformAdmin: boolean
 }) {
   const [raw, setRaw] = useState('')
   const [sourceUrl, setSourceUrl] = useState('')
-  const [scope, setScope] = useState<'tenant' | 'global'>('tenant')
+  const [kind, setKind] = useState<SkillKind>('tenant')
+  const [requiredSystemRole, setRequiredSystemRole] = useState<SkillSystemRole | null>(null)
 
   return (
     <div className="max-w-4xl">
@@ -1062,34 +1102,24 @@ function ImportSkillForm({
         placeholder="Forrás URL (opcionális)"
         className="mt-2 w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-sm"
       />
-      <div className="mt-3 flex items-center gap-3">
-        <Collapsible title="Hatókör" subtitle={scope === 'global' ? 'global (platform)' : 'tenant-lokális'}>
-          <div className="flex gap-3 text-sm">
-            <label className="flex items-center gap-2">
-              <input
-                type="radio"
-                checked={scope === 'tenant'}
-                onChange={() => setScope('tenant')}
-              />
-              Tenant-lokális
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="radio"
-                checked={scope === 'global'}
-                onChange={() => setScope('global')}
-              />
-              Global (platform-admin)
-            </label>
-          </div>
-        </Collapsible>
+      <div className="mt-3">
+        <SkillKindFields
+          kind={kind}
+          requiredSystemRole={requiredSystemRole}
+          isPlatformAdmin={isPlatformAdmin}
+          disabled={running}
+          onChange={(next) => {
+            setKind(next.kind)
+            setRequiredSystemRole(next.requiredSystemRole)
+          }}
+        />
       </div>
       <button
         type="button"
         disabled={running || raw.trim().length === 0}
         onClick={() =>
           onRun(
-            () => importSkillMdAction({ raw, sourceUrl, scope }),
+            () => importSkillMdAction({ raw, sourceUrl, kind, requiredSystemRole }),
             'Skill importálva — proposed verzióként. Aktiváláshoz hagyd jóvá.',
           )
         }
@@ -1097,6 +1127,81 @@ function ImportSkillForm({
       >
         {running ? 'Importálás...' : 'Import'}
       </button>
+    </div>
+  )
+}
+
+function SkillKindEditor({
+  skill,
+  running,
+  onRun,
+  isPlatformAdmin,
+}: {
+  skill: SkillCatalogEntry
+  running: boolean
+  onRun: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
+  isPlatformAdmin: boolean
+}) {
+  const [kind, setKind] = useState<SkillKind>(skill.kind)
+  const [requiredSystemRole, setRequiredSystemRole] = useState<SkillSystemRole | null>(
+    isSkillSystemRole(skill.requiredSystemRole) ? skill.requiredSystemRole : null,
+  )
+  const propEpoch = `${skill.id}\0${skill.kind}\0${skill.requiredSystemRole ?? ''}`
+  const [appliedEpoch, setAppliedEpoch] = useState(propEpoch)
+
+  if (propEpoch !== appliedEpoch) {
+    setAppliedEpoch(propEpoch)
+    setKind(skill.kind)
+    setRequiredSystemRole(
+      isSkillSystemRole(skill.requiredSystemRole) ? skill.requiredSystemRole : null,
+    )
+  }
+
+  const canEdit = isPlatformAdmin && skill.catalogScope === 'global'
+  const dirty =
+    kind !== skill.kind ||
+    (requiredSystemRole ?? null) !== (skill.requiredSystemRole ?? null)
+
+  return (
+    <div className="mt-3 space-y-2">
+      <SkillKindFields
+        name={`skill-kind-${skill.id}`}
+        kind={kind}
+        requiredSystemRole={requiredSystemRole}
+        isPlatformAdmin={canEdit}
+        disabled={running || !canEdit}
+        disableKinds={skill.catalogScope === 'global' ? ['tenant'] : ['published', 'system']}
+        onChange={(next) => {
+          setKind(next.kind)
+          setRequiredSystemRole(next.requiredSystemRole)
+        }}
+      />
+      {canEdit ? (
+        <button
+          type="button"
+          disabled={running || !dirty}
+          onClick={() =>
+            onRun(
+              () =>
+                updateSkillKindAction({
+                  skillId: skill.id,
+                  kind,
+                  requiredSystemRole,
+                }),
+              `Fajta mentve: ${SKILL_KIND_COPY[kind].label}.`,
+            )
+          }
+          className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-medium text-ink-soft disabled:opacity-50"
+        >
+          Fajta mentése
+        </button>
+      ) : (
+        <p className="text-[11px] text-ink-faint">
+          {skill.catalogScope === 'tenant'
+            ? 'A tenant-skill fajtája rögzített.'
+            : 'A kiadott vagy rendszer fajtát csak platform-admin állíthatja.'}
+        </p>
+      )}
     </div>
   )
 }
@@ -1251,13 +1356,17 @@ function SkillDescriptionEditor({
 function CreateSkillForm({
   running,
   onRun,
+  isPlatformAdmin,
 }: {
   running: boolean
   onRun: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
+  isPlatformAdmin: boolean
 }) {
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [description, setDescription] = useState('')
+  const [kind, setKind] = useState<SkillKind>('tenant')
+  const [requiredSystemRole, setRequiredSystemRole] = useState<SkillSystemRole | null>(null)
   const [instructions, setInstructions] = useState('')
   const [triggerKeywordsRaw, setTriggerKeywordsRaw] = useState('')
   const [parametersRaw, setParametersRaw] = useState('')
@@ -1275,7 +1384,8 @@ function CreateSkillForm({
       name,
       displayName: displayName.trim() || null,
       description,
-      scope: 'tenant',
+      kind,
+      requiredSystemRole,
       content: {
         instructions: instructionBlocks,
         triggerKeywords: parseTriggerKeywords(triggerKeywordsRaw),
@@ -1311,6 +1421,18 @@ function CreateSkillForm({
         placeholder="Rövid leírás (Level-0 index)"
         className="mt-2 w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-sm"
       />
+      <div className="mt-3">
+        <SkillKindFields
+          kind={kind}
+          requiredSystemRole={requiredSystemRole}
+          isPlatformAdmin={isPlatformAdmin}
+          disabled={running}
+          onChange={(next) => {
+            setKind(next.kind)
+            setRequiredSystemRole(next.requiredSystemRole)
+          }}
+        />
+      </div>
       <textarea
         value={instructions}
         onChange={(e) => setInstructions(e.target.value)}

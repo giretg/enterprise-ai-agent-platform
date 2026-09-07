@@ -18,6 +18,14 @@ import {
 import type { SkillReadinessColor } from '@/lib/skill/skill-readiness'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
 import { formatToolUiName } from '@/lib/tool-ui-labels'
+import {
+  SKILL_KIND_BADGE_TONE,
+  SKILL_KIND_COPY,
+  SKILL_SYSTEM_ROLE_LABEL,
+  isSkillKind,
+  isSkillSystemRole,
+} from '@/lib/skill/skill-kind'
+import { SkillKindLegend } from '@/components/skills/skill-kind-fields'
 
 const READINESS_TONE: Record<SkillReadinessColor, 'success' | 'warning' | 'danger'> = {
   green: 'success',
@@ -102,6 +110,11 @@ export function AgentSkillsPanel({
                   ) : null}
                   <span className="ml-2 text-xs text-ink-faint">v{s.version}</span>
                   <span className="ml-2 text-xs uppercase text-ink-faint">{s.riskTier}</span>
+                  {isSkillKind(s.kind) ? (
+                    <span className="ml-2">
+                      <Badge tone={SKILL_KIND_BADGE_TONE[s.kind]}>{SKILL_KIND_COPY[s.kind].label}</Badge>
+                    </span>
+                  ) : null}
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge tone={READINESS_TONE[s.readiness.color]}>
@@ -198,6 +211,9 @@ export function AgentSkillsPanel({
         <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-ink-faint">
           Skill hozzárendelése
         </p>
+        <div className="mb-3 rounded-lg border border-ink-faint/20 bg-night-2/30 px-3 py-2">
+          <SkillKindLegend compact />
+        </div>
         {assignable.length === 0 ? (
           <p className="text-xs text-ink-faint">
             Nincs több hozzárendelhető aktív skill a katalógusban.{' '}
@@ -216,6 +232,7 @@ export function AgentSkillsPanel({
                 <option value="">nincs kiválasztva</option>
                 {assignable.map((s) => (
                   <option key={s.activeVersionId} value={s.activeVersionId}>
+                    {isSkillKind(s.kind) ? `${SKILL_KIND_COPY[s.kind].label} · ` : ''}
                     {skillDisplayLabel(s)} (v{s.version}, {s.riskTier})
                   </option>
                 ))}
@@ -244,7 +261,23 @@ export function AgentSkillsPanel({
             </div>
             {selectedSkill ? (
               <div className="atelier-soft p-3">
-                <p className="text-sm font-medium text-ink">{skillDisplayLabel(selectedSkill)}</p>
+                <p className="flex flex-wrap items-center gap-2 text-sm font-medium text-ink">
+                  {skillDisplayLabel(selectedSkill)}
+                  {isSkillKind(selectedSkill.kind) ? (
+                    <Badge tone={SKILL_KIND_BADGE_TONE[selectedSkill.kind]}>
+                      {SKILL_KIND_COPY[selectedSkill.kind].label}
+                    </Badge>
+                  ) : null}
+                </p>
+                {isSkillKind(selectedSkill.kind) ? (
+                  <p className="mt-1 text-xs leading-relaxed text-ink-faint">
+                    {SKILL_KIND_COPY[selectedSkill.kind].explanation}
+                    {selectedSkill.kind === 'system' &&
+                    isSkillSystemRole(selectedSkill.requiredSystemRole)
+                      ? ` Kötés: ${SKILL_SYSTEM_ROLE_LABEL[selectedSkill.requiredSystemRole]}.`
+                      : ''}
+                  </p>
+                ) : null}
                 <p className="mt-1 text-sm leading-relaxed text-ink-soft">
                   {selectedSkill.description}
                 </p>

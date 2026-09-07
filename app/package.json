@@ -286,6 +286,7 @@
     "test:workspace-file-visibility": "tsx scripts/workspace-file-visibility.test.ts",
     "test:workspace-download-guard": "tsx scripts/workspace-download-audience-guard.test.ts",
     "test:workspace-inline-html-headers": "tsx scripts/workspace-inline-html-headers.test.ts",
+    "test:workspace-html-preview": "tsx scripts/load-workspace-html-preview.test.ts",
     "test:task-workspace-prompt": "tsx scripts/task-workspace-prompt.test.ts",
     "test:chat-thinking-trace": "tsx scripts/chat-thinking-trace.test.ts",
     "test:chatgpt-oauth-runtime-safety": "tsx scripts/chatgpt-oauth-runtime-safety.test.ts",
