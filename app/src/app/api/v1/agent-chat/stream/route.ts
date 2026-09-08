@@ -70,12 +70,14 @@ export async function POST(request: Request) {
     content,
     attachmentDocumentIds,
     taskBriefing,
+    processInputPayload,
   })
   if (!turnInput.success) {
     return Response.json(
       {
         error: 'invalid_turn_input',
-        message: 'Az üzenet, a briefing vagy a csatolmány-lista túl nagy vagy érvénytelen.',
+        message:
+          'Az üzenet, a briefing, a csatolmány-lista vagy a folyamat-bemenet túl nagy vagy érvénytelen.',
       },
       { status: 400 },
     )
@@ -226,7 +228,7 @@ export async function POST(request: Request) {
       : {
           attachmentDocumentIds,
           processDefinitionId,
-          processInputPayload,
+          processInputPayload: turnInput.data.processInputPayload,
           ...(taskBriefing &&
           typeof taskBriefing === 'object' &&
           typeof taskBriefing.goal === 'string'
