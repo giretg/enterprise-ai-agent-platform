@@ -66,7 +66,14 @@ import type { ModelGateway, ModelConfig } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import { formatAttachmentBlock } from './agent-chat-runtime'
-import { listAllowedChatTools, resolveToolLoopMaxTurns, runAgentToolLoop, AgentToolLoopCancelledError, type LoadSkillFn } from './chat-tool-loop'
+import {
+  listAllowedChatTools,
+  resolveToolLoopMaxTurns,
+  runAgentToolLoop,
+  AgentToolLoopCancelledError,
+  type LoadSkillAttachmentFn,
+  type LoadSkillFn,
+} from './chat-tool-loop'
 import { formatTaskWorkspaceFilesPrompt } from '@/lib/task-workspace-prompt'
 import { formatSkillParameterValuesPrompt } from '@/lib/skill/skill-context'
 import {
@@ -280,6 +287,7 @@ export class GeneralTaskRuntime {
     // kapná, épp azt veszítve el, amiért a boardra került).
     let skillRuntimeHints: { maxWallClockMs?: number; maxToolCalls?: number } | undefined
     let skillToolScope: string[] | undefined
+    let skillAttachmentsAvailable = false
     // #199 — a korlátozott feladatkörű agentnél NINCS szabad szöveges leírás: a
     // bemenetet a skill deklarált paraméterei és a csatolt fájlok adják. A megadott
     // értékek külön, jól elkülönített blokkban mennek a modellhez, a paraméter
@@ -306,6 +314,7 @@ export class GeneralTaskRuntime {
       preloadedSkillPrompts = preloaded.preloadedPrompts
       skillRuntimeHints = preloaded.runtimeHints
       skillToolScope = preloaded.requiredTools
+      skillAttachmentsAvailable = preloaded.attachmentsAvailable === true
       skillParameterPrompt = formatSkillParameterValuesPrompt(
         preloaded.parameters ?? [],
         readSkillParameterValues(payload),
@@ -357,6 +366,16 @@ export class GeneralTaskRuntime {
             this.skills!.loadSkillForAgent({
               agentId: params.agentId,
               skillVersionId,
+              actor: { actorId: null, actorTenantId: ticket.tenantId ?? null, isPlatformAdmin: false },
+            })
+        : undefined
+    const loadSkillAttachment: LoadSkillAttachmentFn | undefined =
+      this.skills && skillIndexPrompt
+        ? (skillVersionId, path) =>
+            this.skills!.loadSkillAttachmentForAgent({
+              agentId: params.agentId,
+              skillVersionId,
+              path,
               actor: { actorId: null, actorTenantId: ticket.tenantId ?? null, isPlatformAdmin: false },
             })
         : undefined
@@ -425,6 +444,8 @@ export class GeneralTaskRuntime {
         ...(skillRuntimeHints ? { initialSkillRuntimeHints: skillRuntimeHints } : {}),
         ...(skillToolScope ? { initialSkillToolScope: skillToolScope } : {}),
         loadSkill,
+        loadSkillAttachment,
+        ...(skillAttachmentsAvailable ? { initialSkillAttachmentsAvailable: true } : {}),
         archiveLargeToolResult: (input) =>
           this.archiveLargeToolResult(wsTenant, ticket.id, input),
         writeWorkspaceFile: async (path, content, audience = 'internal') => {
