@@ -1,5 +1,15 @@
 # Enterprise code review log
 
+## 2026-09-08 - Önfrissítő connector: elavult specifikáció-javaslat blokkolhatta a helyes frissítés elkészítését
+
+- Áttekintett, korábban külön nem naplózott komponens: az **önfrissítő connector specifikáció-szinkron és verzióváltási runtime-ja** — `app/src/domain/connector-self-update/self-update-service.ts`, a PostgreSQL repository tranzakciói, a pinned runtime-config és a rollback/proposal életciklus. Ez a felület határozza meg, hogy egy partner API-jának változása biztonságosan, jóváhagyható diffként kerülhet-e be a futó AI-agentek eszközkészletébe.
+- Rendben talált kontrollok: a letöltés SSRF- és redirect-pinning kapun keresztül fut; az első és a kockázatos változatokat emberi jóváhagyás és szerepszétválasztás védi; rollbackkor a repository az akkor nyitott javaslatokat elutasítja; a futtatókörnyezet csak jóváhagyott capability snapshotot használ.
+- **Lelet (közepes, rendelkezésreállás / funkcionális korrektség):** a nyitott javaslat újrahasznosítása csak a letöltött specifikáció hash-ét nézte, azt nem, hogy a javaslat melyik aktív verzióhoz készült. Egy rollback vagy párhuzamos verzióváltás után ezért egy már elavult, nem jóváhagyható, de azonos hash-ű javaslat visszakerülhetett volna a szinkron eredményébe, ahelyett hogy az aktuális verzióhoz új diff készülne. A kapcsolat változatlan partner-specifikáció mellett is kézi adatbázis-műveletre vagy speciális operátori beavatkozásra szorulhatott volna.
+- Javítás: a nyitott javaslat keresése most `diffFromVersionId` szerint is az aktív verzióhoz kötött. Emellett a proposal létrehozó tranzakció közvetlenül a beszúrás előtt ellenőrzi, hogy az aktív bázis nem változott meg; ilyen versenyben a rendszer inkább újraszinkronizálást kér, és nem tárol jóváhagyhatatlan javaslatot.
+- Üzleti hatás: a partner API változásainak kontrollált átvétele nem akadhat el egy korábbi állapot maradványa miatt. Az üzemeltető a friss, ténylegesen jóváhagyható változati listát kapja, így a kapcsolat helyreállításához nem kell adatbázis-adminisztráció, és az AI-agentek csak a helyes, jóváhagyott képességkészlettel dolgoznak.
+- Ellenőrzés: `npm run test:self-updating-connector-lifecycle`, célzott ESLint és `git diff --check` zöld. A teljes `npx tsc --noEmit --pretty false` egy meglévő, ettől független hibán áll meg: `app/scripts/scheduled-task-enterprise.test.ts:411` (`claimedAt?.toISOString()` típusa `never`).
+- PR: https://github.com/giretg/enterprise-ai-agent-platform/pull/444 (`codex`, `codex-automation`).
+
 ## 2026-09-06 - Skill-csomag import ZIP-olvasó: átfedő tömörített adattartományok ismételt kitömörítése CPU-kimerítést okozhatott
 
 - Áttekintett, korábban külön nem naplózott komponens: a külső **Skill-csomagok ZIP-import bizalmi határa** — `app/src/lib/skill/zip-reader.ts`, az `SkillService.importSkillPackage` belépése és a `skill-catalog.test.ts` regressziós kör. A tenant-katalógus korábbi vizsgálata a jogosultsági határt fedte, ez a kör a támadó-kontrollált archívum feldolgozásának rendelkezésreállását ellenőrizte.

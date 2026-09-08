@@ -83,7 +83,12 @@ export interface SelfUpdatingConnectorRepository {
   }): Promise<void>
   updatePolicy(input: { sourceId: string; connectorId: string; tenantId: string; actorId: string; policy: AutoApprovePolicy }): Promise<void>
   listUsage(connectorId: string, tenantId: string): Promise<Record<string, UsageRef[]>>
-  findOpenProposalByHash(connectorId: string, tenantId: string, rawHash: string): Promise<SelfUpdatingSpecVersion | null>
+  findOpenProposalByHash(
+    connectorId: string,
+    tenantId: string,
+    rawHash: string,
+    diffFromVersionId: string | null,
+  ): Promise<SelfUpdatingSpecVersion | null>
   createProposal(input: {
     connectorId: string
     tenantId: string
@@ -252,7 +257,12 @@ export class SelfUpdatingConnectorService {
       return { kind: 'unchanged', activeVersionId: ctx.connector.activeSpecVersionId }
     }
 
-    const existingProposal = await this.repo.findOpenProposalByHash(connectorId, actor.tenantId, result.rawHash)
+    const existingProposal = await this.repo.findOpenProposalByHash(
+      connectorId,
+      actor.tenantId,
+      result.rawHash,
+      ctx.connector.activeSpecVersionId,
+    )
     const existingProposalSet = existingProposal
       ? parseCapabilitySet(existingProposal.capabilitySet)
       : null
