@@ -68,10 +68,23 @@ class MemoryRepo implements SelfUpdatingConnectorRepository {
     this.context!.source.autoApprovePolicy = input.policy
   }
   async listUsage() { return {} }
-  async findOpenProposalByHash(_connectorId: string, tenantId: string, rawHash: string) {
-    return this.versions.find((version) => version.tenantId === tenantId && version.rawHash === rawHash && version.status === 'proposed') ?? null
+  async findOpenProposalByHash(
+    _connectorId: string,
+    tenantId: string,
+    rawHash: string,
+    diffFromVersionId?: string | null,
+  ) {
+    return this.versions.find((version) =>
+      version.tenantId === tenantId &&
+      version.rawHash === rawHash &&
+      version.status === 'proposed' &&
+      (diffFromVersionId === undefined || version.diffFromVersionId === diffFromVersionId),
+    ) ?? null
   }
   async createProposal(input: Parameters<SelfUpdatingConnectorRepository['createProposal']>[0]) {
+    if (input.diffFromVersionId !== this.context!.connector.activeSpecVersionId) {
+      throw new SelfUpdateError('INVALID_STATE', 'stale proposal')
+    }
     const version: SelfUpdatingSpecVersion = {
       id: `00000000-0000-0000-0000-${String(this.versions.length + 200).padStart(12, '0')}`,
       connectorId: input.connectorId, tenantId: input.tenantId, versionNo: this.versions.length + 1,
@@ -267,6 +280,14 @@ async function run() {
     await service.rollback(connectorId, v0.id, { id: APPROVER, tenantId: TENANT })
     assert.equal(stale.status, 'rejected')
     await expectCode('INVALID_STATE', () => service.approveVersion(connectorId, stale.id, { id: APPROVER, tenantId: TENANT }))
+
+    // Egy korábbi futásból vagy rollback-versenyből maradt, azonos hash-ű javaslat
+    // nem blokkolhatja az új aktív verzióhoz készülő friss diffet.
+    stale.status = 'proposed'
+    const result = await service.sync(connectorId, { id: SETTER, tenantId: TENANT })
+    assert.equal(result.kind, 'proposed')
+    assert.equal(repo.versions.at(-1)?.diffFromVersionId, v0.id)
+    assert.notEqual(repo.versions.at(-1)?.id, stale.id)
   })
 
   console.log('\n✅ Önfrissítő connector életciklus-tesztek zöldek')

@@ -7,6 +7,101 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-09-08 — Folyamat-indító bemenet méret-kapu + ingress/authz-felület átvizsgálás
+
+**Scope-választás (kockázati alapon):** a 09-07 kör lezárása után a legnagyobb
+nyitott, klienstartalmú, határok nélküli ingress a **folyamat-indító `inputPayload`**
+volt — a ledger `processInputPayload` residual-ját célozza, és közvetlenül a nyitott
+**Cloud Run OOM-incidenshez** (`healthcheck-cloud-run-oom-concurrency`) kapcsolódik.
+A kiválasztás előtt széles authz/ingress-átvizsgálás futott (lásd Coverage), amelyből
+kockázati sorrendben ez a bizonyítható finding emelkedett ki.
+
+**Coverage (átvizsgálva, VERIFIKÁLTAN ZÁRT — nem finding):**
+- **Folyamat-definíció életciklus** (`process-definitions/*` route-család:
+  create/patch/activate/archive/runs/triggers): minden mutátor `requireDef(tenantId,id)`
+  → `defs.findById` `where:{id,tenantId}`. Tenant-scoped, szerepkör-kapuval. Tiszta.
+- **`startProcess` / `startFromDefinition`**: def+verzió+playbook mind `input.tenantId`-re
+  szűrve; `rootTicketId` a belépő ticketre felülíródik; `conversationId` nincs cross-tenant
+  olvasva. Tiszta.
+- **Workspace fájl-letöltés** (conversations + tickets párhuzamos route): szimmetrikus,
+  `resolveWorkspaceTenantKey` + közös `resolveDownloadableWorkspacePath` letöltés-kapu. Tiszta.
+- **Agent-turn cancel + reconnect-stream**: `findById` után `isAgentTurnAccessible`
+  (tenant ÉS létrehozó egyezés). Tiszta.
+- **Telegram jóváhagyás-callback** (untrusted external ingress): titkos fejléc (konstans idő),
+  aláírás a kötött mezőkre, címzett-identitás kötés, aktív+tenant egyezés, allowedActions,
+  ÉLŐ szerep-újraellenőrzés, saját-kérés kapu, atomikus egyszer-használat CAS. Tiszta.
+- **OAuth connector-callback**: AES-256-GCM state (nem hamisítható), `state.userId===actorId`
+  + connector-tenant egyezés + PKCE → nincs OAuth-CSRF/token-injekció. Tiszta.
+- **Dispatcher HTTP-szerződés** (`handleDispatchCycleRequest`): fail-closed token (üres titok→401),
+  timing-safe, body csak auth után. Tiszta.
+- **Harness route-ok**: `/process` agent-kulcs + scope + `ticket.agentId===auth.agentId`;
+  `/complete` platform-szintű shared token (infra-auth). Tiszta a tenant-határon.
+- **Write-gate token consume**: státusz/lejárat/diff-hash/subject/aláírás + egyszer-használat CAS. Tiszta.
+- **Tool-broker `document_read` / `tulajdoni_lap_parse`**: `canAccessDocument` +
+  `isDocumentReachableFromTenant` (fail-closed, bélyeg-pontos tenant-egyezés); a
+  `conversationId`/`ticketId` szerver-injektált futáskontextus, nem agent-arg. Tiszta.
+
+### Finding (CONFIRMED) — validálatlan `inputPayload` / `processInputPayload` (DoS/OOM/költség)
+
+A folyamat-indító bemenet (`Record<string, unknown>`) **méret-kapu nélkül** jutott el a
+runtime-ba, a DB-be (`Prisma.InputJsonValue`) és az agent promptjába, KÉT klienstartalmú
+ingressen:
+1. **Chat-stream** (`POST /api/v1/agent-chat/stream`) — a `processInputPayload` mezőt a
+   09-07 (#438) `agentChatStreamTurnInputSchema` **nem** fedte (explicit residual).
+2. **REST futás-indító** (`POST /api/v1/process-definitions/[id]/runs`) — a
+   `startProcessSchema.inputPayload` szabad `z.record(...)` volt, korlát nélkül.
+
+- **Hatás:** hitelesített kliens tetszőlegesen nagy/mély JSON-objektumot küldhetett →
+  erőforrás-kimerítés (OOM-irány a memória-szűkös Cloud Run konténerben), DB-hízás,
+  fölös modellköltség. Nincs cross-tenant szivárgás.
+- **Súlyosság:** közepes (hitelesített DoS / OOM / költség), de a **nyitott OOM-incidens**
+  miatt gyakorlati kockázata a szokásosnál magasabb.
+
+### Javítás (root cause a határon)
+
+Közös `processInputPayloadSchema` (`validators/actions.ts`): `z.record` + szerializált
+méret ≤ **64 KiB** (`PROCESS_INPUT_PAYLOAD_MAX_BYTES`). Egy helyen definiálva, **mindkét**
+ingressen alkalmazva (nincs kapu-drift): `agentChatStreamTurnInputSchema.processInputPayload`
+és `startProcessSchema.inputPayload`. A chat-route a határon `safeParse`-el →
+`400 invalid_turn_input`, és a lefelé küldött érték a **validált** `turnInput.data.processInputPayload`
+(a nyers body-mező csak kapu-input). A közös séma a `startProcessSchema` révén a
+`app/actions/process.ts` server-action utat is fedi → mindkét úton (chat + ticket/action) véd.
+
+### Ellenőrzések
+
+- `scripts/agent-chat-stream-input.test.ts` (15 assert, zöld): folyamat-bemenet exact-max
+  átmegy, +1 bájt bukik a chat-stream ÉS a REST `startProcessSchema` sémán, normál payload
+  átmegy, route-wiring forrás-assert (`safeParse`-ben + validált érték downstream).
+- `tsc --noEmit` + `eslint`: a módosított fájlokra tiszta.
+- Független `/code-review` (Matt Pocock, 2 párhuzamos axis):
+  - **Standards:** nincs hard violation; magyar kommentek/üzenetek, „mindkét úton" elv
+    teljesül, a közös séma az anti-smell (Duplicated Code/Shotgun Surgery megszűnik).
+    Két triviális judgement-call (a refine-üzenet „bájt" szava belső Zod-üzenet;
+    a route egyetlen mezője megy `turnInput.data`-ból — okát komment fedi).
+  - **Spec:** követelmények teljesülve, nincs scope-creep, nem bypassable (a `safeParse`
+    feltétel nélkül fut a route tetején, folytatáskor is). Egyetlen ismert plafon: a
+    nyers body a payload-kapu ELŐTT parse-olódik (l. residual).
+
+### PR
+
+- **#443** — `fix(process): bound process-start input payload at both ingresses (DoS/OOM)`
+  (branch `fix/process-input-payload-size-limit`, commit `0c71c5a8b`, `main`-ről).
+
+### Residual risk / következő audithoz
+
+- **Nyers kérés-törzs plafon (a legfontosabb követő):** `request.json()` / `readJson`
+  egyik érintett route-on sincs globálisan méret-kapuzva, így egy több MB-os *body* már a
+  `JSON.parse`-nál OOM-olhat, a mező-szintű kapu ELŐTT. A #438 mintát követve most a
+  parse-olt mezőt kapuztuk; a raw-body plafon szélesebb, minden route-ot érintő follow-up
+  (közös `readJsonBounded` a `readJson`/`request.json()` helyére).
+- **Mélység-kapu:** a 64 KiB-os szerializált méret közvetve korlátozza a beágyazást; külön
+  depth-limit nem szükséges (a `JSON.parse` rekurziós plafonja alatt maradunk), de ha a
+  raw-body kapu bejön, érdemes együtt nézni.
+- A fent felsorolt VERIFIKÁLTAN ZÁRT scope-ok újra-auditja nem szükséges, hacsak új hívó/
+  ingress nem kerül be (különösen: `agent-chat-runtime.setProjectKey` sink, ha új hívót kap).
+
+---
+
 ## 2026-09-07 — Agent-chat stream API: kliens forduló-bemenet méret-kapui (DoS/OOM)
 
 **Scope:** `POST /api/v1/agent-chat/stream` kliens-vezérelt bemenetei — `content`,
