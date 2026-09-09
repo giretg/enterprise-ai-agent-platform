@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useState, type KeyboardEvent, type RefObject } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
 import { isFileLikeSlot } from '@/lib/playbook-v2/trigger-input'
 import {
   SkillSlashMenu,
@@ -154,7 +154,23 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
     turnBlocksComposer, stopPending, ticketPending, pending, canSubmit, onStop,
     onCreateTicket, onSend, projectKey, onProjectKeyChange,
   } = props
-  const [skillPickerOpen, setSkillPickerOpen] = useState(false)
+  const [plusOpen, setPlusOpen] = useState(false)
+  const plusRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!plusOpen) return
+    const onPointerDown = (event: PointerEvent) => {
+      if (plusRef.current && !plusRef.current.contains(event.target as Node)) setPlusOpen(false)
+    }
+    const onEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setPlusOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onEscape)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onEscape)
+    }
+  }, [plusOpen])
   const modeOptions: Array<{ value: AgentChatComposerMode; label: string; hint: string }> = [
     { value: 'chat', label: 'Beszélgetés', hint: 'Az agent most válaszol.' },
     { value: 'task', label: 'Feladat', hint: 'Az üzenetből feladat lesz a táblán — akár időzítve.' },
@@ -218,70 +234,6 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
         </div>
       ) : null}
 
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-          <AssignableWorkProjectSelect
-            id="agent-chat-project"
-            compact
-            value={projectKey}
-            onChange={onProjectKeyChange}
-            disabled={disabled}
-          />
-          <div className="flex shrink-0 rounded-lg border border-line bg-night-2 p-0.5" role="radiogroup" aria-label="Mi legyen az üzenetből">
-            {modeOptions.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                role="radio"
-                aria-checked={mode === option.value}
-                title={option.hint}
-                onClick={() => {
-                  setSkillPickerOpen(false)
-                  onModeChange(option.value)
-                }}
-                disabled={disabled}
-                className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors disabled:opacity-40 ${
-                  mode === option.value ? 'bg-card text-ink shadow-sm' : 'text-ink-faint hover:text-ink-soft'
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-          {skills.length > 0 ? (
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setSkillPickerOpen((open) => !open)}
-                disabled={disabled}
-                aria-expanded={skillPickerOpen}
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold disabled:opacity-40 ${
-                  skillPickerOpen ? 'border-coral/40 bg-coral/10 text-coral-deep' : 'border-line bg-card text-ink-soft'
-                }`}
-              >
-                <span aria-hidden>⚡</span> Skill
-              </button>
-              {skillPickerOpen ? (
-                <div className="absolute bottom-full left-0 z-40 mb-1.5 max-h-64 w-[min(20rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-line bg-card p-1 shadow-xl">
-                  {skills.map((skill) => (
-                    <button
-                      key={skill.skillVersionId}
-                      type="button"
-                      onClick={() => {
-                        slash.insertAtCursor(skill)
-                        setSkillPickerOpen(false)
-                      }}
-                      className="flex w-full flex-col rounded-lg px-3 py-2 text-left hover:bg-night-2"
-                    >
-                      <span className="text-xs font-semibold text-ink">{skill.name}</span>
-                      <span className="line-clamp-2 text-[11px] text-ink-faint">{skill.description}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-      </div>
-
       {mode === 'process' ? (
         <ProcessPicker
           processes={processes}
@@ -308,6 +260,76 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
           className="hidden"
           onChange={(event) => onFilesSelected(event.target.files)}
         />
+        <div className="relative shrink-0" ref={plusRef}>
+          <button
+            type="button"
+            onClick={() => setPlusOpen((open) => !open)}
+            disabled={disabled}
+            aria-expanded={plusOpen}
+            aria-label="Üzenet beállításai: projekt, mód és skill"
+            title="Projekt, mód és skill választása"
+            className={`rounded-xl p-2.5 text-lg font-semibold leading-none disabled:opacity-40 ${
+              plusOpen ? 'bg-night-2 text-ink' : 'text-ink-faint hover:bg-night-2'
+            }`}
+          >
+            +
+          </button>
+          {plusOpen ? (
+            <div className="absolute bottom-full left-0 z-40 mb-1.5 w-[min(20rem,calc(100vw-2rem))] rounded-xl border border-line bg-card p-2 shadow-xl">
+              <p className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-faint">Projekt</p>
+              <AssignableWorkProjectSelect
+                id="agent-chat-project"
+                value={projectKey}
+                onChange={onProjectKeyChange}
+                disabled={disabled}
+              />
+              <p className="px-1 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-ink-faint">Mi legyen az üzenetből</p>
+              <div className="flex flex-col gap-1" role="radiogroup" aria-label="Mi legyen az üzenetből">
+                {modeOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={mode === option.value}
+                    title={option.hint}
+                    onClick={() => {
+                      onModeChange(option.value)
+                      setPlusOpen(false)
+                    }}
+                    disabled={disabled}
+                    className={`rounded-lg px-3 py-2 text-left text-xs font-semibold transition-colors disabled:opacity-40 ${
+                      mode === option.value ? 'bg-night-2 text-ink shadow-sm' : 'text-ink-faint hover:bg-night-2 hover:text-ink-soft'
+                    }`}
+                  >
+                    {option.label}
+                    <span className="block text-[11px] font-normal text-ink-faint">{option.hint}</span>
+                  </button>
+                ))}
+              </div>
+              {skills.length > 0 ? (
+                <>
+                  <p className="px-1 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-ink-faint">Skill</p>
+                  <div className="max-h-48 overflow-y-auto rounded-lg">
+                    {skills.map((skill) => (
+                      <button
+                        key={skill.skillVersionId}
+                        type="button"
+                        onClick={() => {
+                          slash.insertAtCursor(skill)
+                          setPlusOpen(false)
+                        }}
+                        className="flex w-full flex-col rounded-lg px-3 py-2 text-left hover:bg-night-2"
+                      >
+                        <span className="text-xs font-semibold text-ink">⚡ {skill.name}</span>
+                        <span className="line-clamp-2 text-[11px] text-ink-faint">{skill.description}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
         <button type="button" onClick={() => fileInputRef.current?.click()} disabled={disabled} className="shrink-0 rounded-xl p-2.5 text-ink-faint hover:bg-night-2 disabled:opacity-40" aria-label="Fájl vagy kép csatolása">📎</button>
         <textarea
           ref={textareaRef}
