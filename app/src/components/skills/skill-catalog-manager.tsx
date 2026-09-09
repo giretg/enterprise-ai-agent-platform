@@ -6,6 +6,7 @@ import { captureException } from '@/lib/observability'
 import {
   importSkillMdAction,
   importSkillPackageAction,
+  listSkillCatalogAction,
   createSkillAction,
   updateSkillDisplayNameAction,
   updateSkillKindAction,
@@ -655,10 +656,11 @@ function SkillCatalogManagerView({
   const [openTab, setOpenTab] = useState<{ skillId: string; tab: SkillRowTab } | null>(null)
   const [creationMode, setCreationMode] = useState<'import' | 'manual' | null>(null)
   const [catalogQuery, setCatalogQuery] = useState('')
+  const [catalogSkills, setCatalogSkills] = useState(skills)
 
   const normalizedCatalogQuery = catalogQuery.trim().toLocaleLowerCase('hu-HU')
   const filteredSkills = normalizedCatalogQuery
-    ? skills.filter((skill) =>
+    ? catalogSkills.filter((skill) =>
         [
           skillDisplayLabel(skill),
           skill.name,
@@ -671,7 +673,7 @@ function SkillCatalogManagerView({
           .toLocaleLowerCase('hu-HU')
           .includes(normalizedCatalogQuery),
       )
-    : skills
+    : catalogSkills
 
   function selectTab(skillId: string, tab: SkillRowTab) {
     setOpenTab((current) =>
@@ -682,6 +684,7 @@ function SkillCatalogManagerView({
   function run(
     fn: () => Promise<{ success: boolean; error?: string; data?: unknown }>,
     okMsg: string,
+    onSuccess?: () => void | Promise<void>,
   ) {
     startTransition(async () => {
       setError(null)
@@ -693,6 +696,9 @@ function SkillCatalogManagerView({
             ? (res.data as { notice?: unknown }).notice
             : null
         setNotice(typeof actionNotice === 'string' ? actionNotice : okMsg)
+        const refreshedCatalog = await listSkillCatalogAction()
+        if (refreshedCatalog.success) setCatalogSkills(refreshedCatalog.data)
+        await onSuccess?.()
         router.refresh()
       } else {
         setError(res.error ?? 'Ismeretlen hiba.')
@@ -765,6 +771,7 @@ function SkillCatalogManagerView({
                 <ImportSkillForm
                   running={pending}
                   onRun={run}
+                  onSuccess={() => setCreationMode('import')}
                   isPlatformAdmin={isPlatformAdmin}
                 />
               ) : (
@@ -780,14 +787,14 @@ function SkillCatalogManagerView({
       )}
 
       <Card
-        title={`Katalógus · ${skills.length} skill`}
+        title={`Katalógus · ${catalogSkills.length} skill`}
         className="[&>h2]:mb-1"
       >
         <p className="mb-5 text-sm text-ink-faint">
           Alapból minden skill legutóbbi verzióját látod. A teljes előzmény és a verzióműveletek
           a „Verziók” gomb mögött érhetők el.
         </p>
-        {skills.length > 0 && (
+        {catalogSkills.length > 0 && (
           <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-center">
             <label className="relative block min-w-0 flex-1">
               <span className="sr-only">Keresés a skillek között</span>
@@ -821,11 +828,11 @@ function SkillCatalogManagerView({
               )}
             </label>
             <p className="shrink-0 text-xs text-ink-faint">
-              {filteredSkills.length} / {skills.length} találat
+              {filteredSkills.length} / {catalogSkills.length} találat
             </p>
           </div>
         )}
-        {skills.length === 0 ? (
+        {catalogSkills.length === 0 ? (
           <p className="text-sm text-ink-faint">Még nincs skill a katalógusban.</p>
         ) : filteredSkills.length === 0 ? (
           <div className="rounded-xl border border-dashed border-ink-faint/30 bg-night-2/30 px-4 py-7 text-center">
@@ -1399,10 +1406,16 @@ function EditSkillVersionForm({
 function ImportSkillForm({
   running,
   onRun,
+  onSuccess,
   isPlatformAdmin,
 }: {
   running: boolean
-  onRun: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
+  onRun: (
+    fn: () => Promise<{ success: boolean; error?: string }>,
+    okMsg: string,
+    onSuccess?: () => void | Promise<void>,
+  ) => void
+  onSuccess: () => void | Promise<void>
   isPlatformAdmin: boolean
 }) {
   const [format, setFormat] = useState<'markdown' | 'zip'>('markdown')
@@ -1506,6 +1519,7 @@ function ImportSkillForm({
               return importSkillPackageAction(formData)
             },
             'Skill importálva — proposed verzióként. Aktiváláshoz hagyd jóvá.',
+            onSuccess,
           )
         }
         className="mt-4 rounded-full bg-coral/20 px-5 py-2 text-sm font-semibold text-coral disabled:opacity-50"
