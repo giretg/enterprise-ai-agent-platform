@@ -7,6 +7,78 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-09-09 — Nyers JSON kérés-törzs méret-kapu MINDEN ingressen (DoS/OOM)
+
+**Scope-választás (kockázati alapon):** a 09-08 kör lezárt residualja explicit ezt jelölte
+„a legfontosabb követő"-nek: a mező-szintű kapuk (#438/#443) UTÁN is nyitva maradt a
+**nyers kérés-törzs** — `request.json()` / `readJson` egyik route-on sem volt globálisan
+méret-kapuzva, így egy több MB-os *body* már a `JSON.parse`-nál OOM-olhatott, a mező-kapu
+ELŐTT. Ez közvetlenül a **nyitott Cloud Run OOM-incidens** (`healthcheck-cloud-run-oom-concurrency`)
+vektora → a legmagasabb *gyakorlati* kockázat.
+
+**Coverage (a teljes JSON-ingress-felület felmérve):**
+- Minden `app/src/app/api/**` body-olvasó felderítve: 7 nyers `request.json()`, 4 `readJson`,
+  1 nyers `request.text()` (dispatch-cycle), 2 `formData()` (fájlfeltöltés).
+- A `formData()` multipart-utak (`tickets|conversations/.../workspace/files`) szándékosan
+  **kívül** vannak a JSON-scope-on (feltöltés-méret ≠ JSON-parse OOM) — residual.
+
+### Finding (CONFIRMED) — határ nélküli kérés-törzs → OOM a `JSON.parse` előtt
+
+A control-plane JSON-végpontjai a teljes kérés-törzset a memóriába pufferelték `JSON.parse`
+elé, felső korlát nélkül. Hitelesített kliens (a Telegram-webhooknál külső fél) több MB-os
+törzzsel a memória-szűkös konténerben OOM-ot válthatott ki — a mező-szintű kapuk ez ELŐTT
+hatástalanok. **Súlyosság:** közepes (hitelesített DoS/OOM), de a nyitott OOM-incidens miatt
+a gyakorlati kockázat magasabb. Nincs cross-tenant szivárgás.
+
+### Javítás (root cause a megosztott határon)
+
+`readJson` (`lib/api-response.ts`) mostantól a bájt-plafonig olvas a törzsből, **mielőtt**
+memóriába pufferelné: Content-Length gyors-elutasítás + stream-darabolós számláló, ami
+`reader.cancel()`-lel megszakít a plafon átlépésekor (chunked / Content-Length nélküli
+törzsnél is). Egy hely, minden JSON-ingress rajta megy át:
+- 4 process-route (`readJson`-t már használ) → ingyen véd;
+- 7 nyers `request.json()` hívó átállítva (`agent-chat/stream`, `gateway/chat/completions`,
+  `agent/tickets`, `agent/tools`, `harness .../complete` + `.../process`, `telegram/webhook`);
+- `internal/dispatch-cycle` nyers `request.text()`-je a közös `readBoundedText`-en (a handler
+  meglévő catch-e 400-at ad túl nagy törzsre).
+- Alap plafon **1 MiB**; a nagy modell-kontextust hordozó **gateway explicit 4 MiB**.
+
+### Ellenőrzések
+
+- `scripts/read-json-body-limit.test.ts` (új, 10 assert, zöld): plafon-határ (exact-max/+1),
+  Content-Length gyors út, **chunked stream-számláló** (a fő bypass-teszt), `readBoundedText`
+  viselkedés, érvénytelen-JSON elkülönítése a méret-hibától, route-wiring forrás-assertek
+  (nincs maradék nyers `request.json()` / `request.text()`). `test:read-json-body-limit`.
+- `tsc --noEmit` + `eslint` tiszta a módosított fájlokra.
+- Független `/code-review` (Matt Pocock, 2 párhuzamos axis):
+  - **Standards:** hard violation nincs; a „közös kapu, nincs drift" standardot **erősíti**.
+    Judgement-callok: Shotgun Surgery (a közös kapu elkerülhetetlen ára), a try/catch-duplikáció
+    **nem e diff terméke**, a forrás-szkennelő teszt-assert törékeny (de a repo bevett mintája).
+  - **Spec:** mag-követelmény teljesül, **nincs bypass** (a stream-út a chunked törzset a parse
+    előtt megszakítja). Két pont **átvezetve ugyanebben a PR-ben:** (a) dispatch-cycle nyers
+    törzs kapuzása; (b) a `RequestBodyTooLargeError` félrevezető 413-ígéretének törlése
+    (a típus valódi haszna: méret- vs. JSON-hiba megkülönböztetés a teszteknek).
+
+### PR
+
+- **#445** — `fix(api): bound JSON request bodies at every ingress (DoS/OOM)`
+  (branch `fix/bounded-json-body-oom`, `main`-ről; izolált worktree — a `main` munkafa 29
+  idegen, commit-olatlan változást tartalmazott, ezek NEM kerültek a PR-be).
+
+### Residual risk / következő audithoz
+
+- **Státuszkód-finomítás:** a process-route-ok generikus catch-e a túl nagy törzsre 500-at ad
+  (a többi ingress 400/null-t); rejection mindkét esetben (nincs OOM). A `413`-ra képezés
+  opcionális UX-nicety, nem biztonsági kérdés.
+- **Fájlfeltöltés (`formData()`):** a `workspace/files` multipart útjai külön feltöltés-méret-
+  kapu (GCS-kvóta) tárgya — nem JSON-scope, follow-up.
+- **Gateway 4 MiB:** tapasztalati plafon; ha valós nagy-kontextusú agent-forgalom efölé nő,
+  emelni kell (l. `workspace/files` streamelés follow-up).
+- A teljes JSON-ingress-felület mostantól egyetlen kapuzott helyen (`readJson`/`readBoundedText`)
+  fut — új route csak ezeken át olvasson törzset (regressziós forrás-assert őrzi a meglévőket).
+
+---
+
 ## 2026-09-08 — Folyamat-indító bemenet méret-kapu + ingress/authz-felület átvizsgálás
 
 **Scope-választás (kockázati alapon):** a 09-07 kör lezárása után a legnagyobb
