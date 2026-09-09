@@ -15,6 +15,7 @@ import { resolve } from 'node:path'
 import {
   DEFAULT_MAX_JSON_BODY_BYTES,
   RequestBodyTooLargeError,
+  readBoundedText,
   readJson,
 } from '../src/lib/api-response'
 
@@ -98,6 +99,15 @@ async function main() {
     assert.equal(DEFAULT_MAX_JSON_BODY_BYTES, 1024 * 1024)
   })
 
+  await test('readBoundedText: plafon alatti nyers törzs átmegy, túl nagy elutasításra kerül', async () => {
+    const text = await readBoundedText(jsonRequest('{"ticketId":"t1"}'), 1024)
+    assert.equal(text, '{"ticketId":"t1"}')
+    await assert.rejects(
+      readBoundedText(streamedRequest(64 * 1024), 4 * 1024),
+      RequestBodyTooLargeError,
+    )
+  })
+
   // Route-wiring forrás-assertek: minden JSON-ingress a közös, kapuzott readJson-t használja,
   // nem a nyers request.json()-t (különben a kapu megkerülhető lenne).
   await test('minden JSON-ingress a readJson-on megy át (nincs nyers request.json())', () => {
@@ -119,6 +129,19 @@ async function main() {
         `${rel}: nem maradhat nyers request.json()`,
       )
     }
+  })
+
+  await test('a dispatch-cycle nyers törzse is kapuzott (readBoundedText, nincs csupasz request.text())', () => {
+    const src = readFileSync(
+      resolve(process.cwd(), 'src/app/api/v1/internal/dispatch-cycle/route.ts'),
+      'utf8',
+    )
+    assert.ok(src.includes('readBoundedText(request)'), 'readBoundedText-et kell használnia')
+    assert.equal(
+      /=>\s*request\.text\(\)/.test(src),
+      false,
+      'nem maradhat csupasz request.text()',
+    )
   })
 
   await test('a gateway tágabb, de véges plafont kap (4 MiB, nem alap)', () => {

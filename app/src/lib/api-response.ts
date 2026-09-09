@@ -18,7 +18,11 @@ export function apiError(message: string, status: number, details?: unknown) {
  */
 export const DEFAULT_MAX_JSON_BODY_BYTES = 1024 * 1024
 
-/** Túl nagy kérés-törzs — a hívó 413-ra képezheti le, vagy a meglévő catch-e kezeli. */
+/**
+ * Túl nagy kérés-törzs. Külön típus, hogy a méret miatti elutasítás megkülönböztethető
+ * legyen a hibás JSON-tól (a tesztek ezt ellenőrzik; a hívók catch-e mindkettőt 400/null-ra
+ * képezi, ami a kívánt viselkedés — a lényeg, hogy a törzs sosem OOM-oljon).
+ */
 export class RequestBodyTooLargeError extends Error {
   constructor(readonly maxBytes: number) {
     super(`A kérés törzse meghaladja a ${maxBytes} bájtos korlátot`)
@@ -31,7 +35,10 @@ export class RequestBodyTooLargeError extends Error {
  * A stream-et darabonként fogyasztja és megszakítja a plafon átlépésekor — így egy óriási
  * (akár chunked, Content-Length nélküli) törzs sem OOM-ol a `JSON.parse` előtt.
  */
-async function readBoundedBodyText(request: Request, maxBytes: number): Promise<string> {
+export async function readBoundedText(
+  request: Request,
+  maxBytes: number = DEFAULT_MAX_JSON_BODY_BYTES,
+): Promise<string> {
   // Gyors út: ha az őszinte Content-Length már túllépi a plafont, elutasítjuk pufferelés nélkül.
   const declared = Number(request.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > maxBytes) {
@@ -73,7 +80,7 @@ export async function readJson(
   request: Request,
   maxBytes: number = DEFAULT_MAX_JSON_BODY_BYTES,
 ): Promise<unknown> {
-  const text = await readBoundedBodyText(request, maxBytes)
+  const text = await readBoundedText(request, maxBytes)
   try {
     return JSON.parse(text)
   } catch {
