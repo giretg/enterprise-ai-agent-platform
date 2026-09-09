@@ -36,6 +36,7 @@ import {
 } from '@/lib/skill/skill-content'
 import { NORMAL_TOOL_CAPABILITY_GROUPS } from '@/lib/tool-capability-catalog'
 import { skillDisplayLabel } from '@/lib/skill/skill-name'
+import { formatToolUiName } from '@/lib/tool-ui-labels'
 import {
   SKILL_KIND_COPY,
   SKILL_SYSTEM_ROLE_LABEL,
@@ -296,6 +297,246 @@ function SkillRuntimeHintsFields({
   )
 }
 
+/** Level-2 melléklet szerkesztés alatti alakja — bytes/sha256 szerveroldalon készül. */
+type AttachmentDraft = { path: string; text: string }
+
+/**
+ * Feltöltési méret-plafon a böngészőben. Tükrözi a szerveroldali
+ * `SKILL_ATTACHMENT_MAX_BYTES`-t; azt a konstanst nem importáljuk, mert a modulja
+ * `node:crypto`-t húzna a kliens bundle-be (l. a skill-catalog teszt őrét).
+ */
+const ATTACHMENT_UPLOAD_MAX_BYTES = 128 * 1024
+
+/** Egy melléklet-fájl olvasó nézete: alapból csukva, hogy a lista áttekinthető maradjon. */
+function SkillAttachmentReader({ path, text }: { path: string; text: string }) {
+  return (
+    <details className="rounded-lg border border-ink-faint/20 bg-card/60 px-3 py-2">
+      <summary className="cursor-pointer font-mono text-xs text-ink-soft">
+        {path} <span className="text-ink-faint">({Math.ceil(text.length / 1024)} KB)</span>
+      </summary>
+      <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-ink-faint/15 pt-2 font-mono text-[11px] leading-relaxed text-ink-soft">
+        {text}
+      </pre>
+    </details>
+  )
+}
+
+/**
+ * A skillhez tartozó fájlok szerkesztése. A fájl SZÖVEG (referencia-dokumentum,
+ * sablon, adat-táblázat) — futtatható kód nem kerülhet ide, ezt az importáló és a
+ * szerveroldali kapu is őrzi.
+ */
+function SkillAttachmentsEditor({
+  attachments,
+  onChange,
+  disabled,
+}: {
+  attachments: AttachmentDraft[]
+  onChange: (next: AttachmentDraft[]) => void
+  disabled?: boolean
+}) {
+  const [uploadError, setUploadError] = useState<string | null>(null)
+
+  function update(index: number, patch: Partial<AttachmentDraft>) {
+    onChange(attachments.map((a, i) => (i === index ? { ...a, ...patch } : a)))
+  }
+
+  return (
+    <div className="rounded-lg border border-ink-faint/20 bg-night-2/30 p-3">
+      <p className="text-xs font-medium text-ink-soft">Fájlok a skillhez ({attachments.length})</p>
+      <p className="mt-1 text-[11px] text-ink-faint">
+        Ezeket az agent csak akkor olvassa be, ha munka közben szüksége van rájuk. Szöveges
+        segédanyag: leírás, sablon, adat-táblázat.
+      </p>
+      {attachments.length === 0 ? (
+        <p className="mt-2 text-[11px] text-ink-faint">Ehhez a verzióhoz nem tartozik fájl.</p>
+      ) : (
+        <ul className="mt-3 space-y-2">
+          {attachments.map((a, i) => (
+            <li key={i} className="rounded-lg border border-ink-faint/15 bg-card/60 p-2">
+              <div className="flex items-center gap-2">
+                <input
+                  value={a.path}
+                  onChange={(e) => update(i, { path: e.target.value })}
+                  placeholder="pl. references/adokulcsok.md"
+                  disabled={disabled}
+                  className="min-w-0 flex-1 rounded border border-ink-faint/30 bg-transparent px-2 py-1 font-mono text-xs"
+                />
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onChange(attachments.filter((_, idx) => idx !== i))}
+                  className="rounded-full border border-coral/40 px-2 py-1 text-[11px] font-medium text-coral disabled:opacity-50"
+                >
+                  Törlés
+                </button>
+              </div>
+              <textarea
+                value={a.text}
+                onChange={(e) => update(i, { text: e.target.value })}
+                rows={6}
+                disabled={disabled}
+                className="mt-2 w-full rounded border border-ink-faint/30 bg-transparent px-2 py-1 font-mono text-[11px]"
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange([...attachments, { path: '', text: '' }])}
+          className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-medium text-ink-soft disabled:opacity-50"
+        >
+          Üres fájl hozzáadása
+        </button>
+        <label className="cursor-pointer rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-medium text-ink-soft hover:border-ink-soft hover:text-ink">
+          Fájl feltöltése
+          <input
+            type="file"
+            multiple
+            accept=".md,.txt,.html,.htm,.csv,.json,.yaml,.yml,.xml,text/*"
+            disabled={disabled}
+            className="sr-only"
+            onChange={(e) => {
+              const picked = Array.from(e.target.files ?? [])
+              e.target.value = ''
+              if (picked.length === 0) return
+              setUploadError(null)
+              void (async () => {
+                const loaded: AttachmentDraft[] = []
+                for (const file of picked) {
+                  if (file.size > ATTACHMENT_UPLOAD_MAX_BYTES) {
+                    setUploadError(
+                      `A(z) „${file.name}” túl nagy (max ${ATTACHMENT_UPLOAD_MAX_BYTES / 1024} KB).`,
+                    )
+                    continue
+                  }
+                  loaded.push({ path: file.name, text: await file.text() })
+                }
+                if (loaded.length > 0) onChange([...attachments, ...loaded])
+              })()
+            }}
+          />
+        </label>
+        <span className="text-[11px] text-ink-faint">Szöveges fájl, max 128 KB / db.</span>
+      </div>
+      {uploadError && <p className="mt-2 text-[11px] text-coral">{uploadError}</p>}
+    </div>
+  )
+}
+
+/**
+ * Csak-olvasó skill-nézet („Megnyitás”). Ugyanazt a verzió-részletet tölti, amit a
+ * szerkesztő — de semmit nem ír, így operátor is megnézheti, mit csinál a skill.
+ */
+function SkillDetailPanel({ skill }: { skill: SkillCatalogEntry }) {
+  const defaultVersionId =
+    skill.versions.find((v) => v.status === 'active')?.id ?? skill.versions[0]?.id ?? ''
+  const [versionId, setVersionId] = useState(defaultVersionId)
+  const [detail, setDetail] = useState<SkillVersionDetail | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!versionId) return
+    let cancelled = false
+    void (async () => {
+      setLoading(true)
+      setError(null)
+      const res = await getSkillVersionAction(versionId)
+      if (cancelled) return
+      setLoading(false)
+      if (!res.success) {
+        setDetail(null)
+        setError(res.error)
+        return
+      }
+      setDetail(res.data)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [versionId])
+
+  return (
+    <div className="border-t border-line bg-card/40 p-4 sm:p-5">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="font-semibold text-ink">Skill részletei</span>
+        <span className="text-ink-soft">Verzió:</span>
+        <select
+          value={versionId}
+          onChange={(e) => setVersionId(e.target.value)}
+          className="rounded border border-ink-faint/30 bg-transparent px-2 py-1"
+        >
+          {skill.versions.map((v) => (
+            <option key={v.id} value={v.id}>
+              v{v.version} ({v.status})
+            </option>
+          ))}
+        </select>
+        {loading && <span className="text-ink-faint">Betöltés…</span>}
+      </div>
+      {error && <p className="mt-2 text-xs text-coral">{error}</p>}
+      {detail && (
+        <div className="mt-3 space-y-3">
+          <div>
+            <p className="text-xs font-medium text-ink-soft">Instrukciók</p>
+            <pre className="mt-1 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-ink-faint/20 bg-card/60 p-3 text-xs leading-relaxed text-ink-soft">
+              {detail.content.instructions.join('\n\n')}
+            </pre>
+          </div>
+          {detail.content.triggerKeywords.length > 0 && (
+            <p className="text-xs text-ink-soft">
+              <span className="font-medium">Mikor induljon:</span>{' '}
+              {detail.content.triggerKeywords.join(', ')}
+            </p>
+          )}
+          {detail.content.parameters.length > 0 && (
+            <div className="text-xs text-ink-soft">
+              <p className="font-medium">Bemenetek</p>
+              <ul className="mt-1 space-y-0.5">
+                {detail.content.parameters.map((p) => (
+                  <li key={p.name}>
+                    <span className="font-mono">{p.name}</span> — {p.description}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {describeRuntimeHints(detail.content.runtimeHints) && (
+            <p className="text-xs text-ink-soft">
+              <span className="font-medium">Futási keret:</span>{' '}
+              {describeRuntimeHints(detail.content.runtimeHints)}
+            </p>
+          )}
+          <p className="text-xs text-ink-soft">
+            <span className="font-medium">Szükséges eszközök:</span>{' '}
+            {detail.requires.length > 0
+              ? detail.requires.map((r) => formatToolUiName(r.toolName)).join(', ')
+              : 'nincs — csak instrukció'}
+          </p>
+          <div>
+            <p className="text-xs font-medium text-ink-soft">
+              Fájlok a skillhez ({detail.attachments.length})
+            </p>
+            {detail.attachments.length === 0 ? (
+              <p className="mt-1 text-[11px] text-ink-faint">Ehhez a verzióhoz nem tartozik fájl.</p>
+            ) : (
+              <div className="mt-2 space-y-2">
+                {detail.attachments.map((a) => (
+                  <SkillAttachmentReader key={a.path} path={a.path} text={a.text} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SkillRequiresToolPicker({
   enabled,
   onChange,
@@ -355,6 +596,35 @@ class SkillCatalogErrorBoundary extends Component<{ children: ReactNode }, { err
   }
 }
 
+/** A katalógus-sor fülei: egyszerre egy téma látszik (részletek / verziók / új verzió). */
+type SkillRowTab = 'details' | 'versions' | 'edit'
+
+function SkillRowTabButton({
+  active,
+  tone = 'neutral',
+  onClick,
+  children,
+}: {
+  active: boolean
+  tone?: 'neutral' | 'accent'
+  onClick: () => void
+  children: ReactNode
+}) {
+  const base = 'rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors'
+  const style = active
+    ? tone === 'accent'
+      ? 'border-coral bg-coral text-white'
+      : 'border-ink bg-ink text-card'
+    : tone === 'accent'
+      ? 'border-coral/35 bg-coral/8 text-coral hover:bg-coral/15'
+      : 'border-ink-faint/30 text-ink-soft hover:border-ink-soft hover:text-ink'
+  return (
+    <button type="button" role="tab" aria-selected={active} onClick={onClick} className={`${base} ${style}`}>
+      {children}
+    </button>
+  )
+}
+
 export function SkillCatalogManager(props: {
   skills: SkillCatalogEntry[]
   isAdmin: boolean
@@ -381,9 +651,9 @@ function SkillCatalogManagerView({
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [editingSkillId, setEditingSkillId] = useState<string | null>(null)
+  /** Soronként egyszerre EGY fül nyitva; null = minden csukva. */
+  const [openTab, setOpenTab] = useState<{ skillId: string; tab: SkillRowTab } | null>(null)
   const [creationMode, setCreationMode] = useState<'import' | 'manual' | null>(null)
-  const [expandedSkillIds, setExpandedSkillIds] = useState<Set<string>>(() => new Set())
   const [catalogQuery, setCatalogQuery] = useState('')
 
   const normalizedCatalogQuery = catalogQuery.trim().toLocaleLowerCase('hu-HU')
@@ -403,18 +673,10 @@ function SkillCatalogManagerView({
       )
     : skills
 
-  function toggleVersions(skillId: string) {
-    setExpandedSkillIds((current) => {
-      const next = new Set(current)
-      if (next.has(skillId)) next.delete(skillId)
-      else next.add(skillId)
-      return next
-    })
-  }
-
-  function openVersionEditor(skillId: string) {
-    setExpandedSkillIds((current) => new Set(current).add(skillId))
-    setEditingSkillId(skillId)
+  function selectTab(skillId: string, tab: SkillRowTab) {
+    setOpenTab((current) =>
+      current?.skillId === skillId && current.tab === tab ? null : { skillId, tab },
+    )
   }
 
   function run(
@@ -579,7 +841,7 @@ function SkillCatalogManagerView({
               const { kind, label: kindLabel, tone: kindTone, versions } =
                 skillCatalogListPresentation(s)
               const latestVersion = versions[0]
-              const versionsOpen = expandedSkillIds.has(s.id)
+              const activeTab = openTab?.skillId === s.id ? openTab.tab : null
               return (
               <li key={s.id} className="atelier-soft overflow-hidden">
                 <div className="p-4 sm:p-5">
@@ -628,30 +890,46 @@ function SkillCatalogManagerView({
                       )}
                       {describeRuntimeHints(s.runtimeHints) && <span>Aktív futási keret: {describeRuntimeHints(s.runtimeHints)}</span>}
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        aria-expanded={versionsOpen}
-                        onClick={() => toggleVersions(s.id)}
-                        className="rounded-full border border-ink-faint/30 px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-ink-soft hover:text-ink"
+                    <div role="tablist" className="flex flex-wrap gap-2">
+                      <SkillRowTabButton
+                        active={activeTab === 'details'}
+                        onClick={() => selectTab(s.id, 'details')}
                       >
-                        {versionsOpen ? 'Verziók bezárása' : `Verziók (${versions.length})`}
-                      </button>
+                        Részletek
+                      </SkillRowTabButton>
+                      <SkillRowTabButton
+                        active={activeTab === 'versions'}
+                        onClick={() => selectTab(s.id, 'versions')}
+                      >
+                        Verziók ({versions.length})
+                      </SkillRowTabButton>
                       {canWriteSkill && (
-                        <button
-                          type="button"
-                          disabled={pending}
-                          onClick={() => openVersionEditor(s.id)}
-                          className="rounded-full bg-coral/15 px-3 py-1.5 text-xs font-semibold text-coral transition-colors hover:bg-coral/25 disabled:opacity-50"
+                        <SkillRowTabButton
+                          active={activeTab === 'edit'}
+                          tone="accent"
+                          onClick={() => selectTab(s.id, 'edit')}
                         >
                           Új verzió
-                        </button>
+                        </SkillRowTabButton>
                       )}
                     </div>
                   </div>
                 </div>
 
-                {versionsOpen && (
+                {activeTab === 'details' && <SkillDetailPanel skill={s} />}
+
+                {canWriteSkill && activeTab === 'edit' && (
+                  <div className="border-t border-line bg-card/55 p-4 sm:p-5">
+                    <EditSkillVersionForm
+                      skill={s}
+                      running={pending}
+                      onRun={run}
+                      onClose={() => setOpenTab(null)}
+                    />
+                  </div>
+                )}
+
+                {activeTab === 'versions' && (
                   <div className="border-t border-line bg-card/55 p-4 sm:p-5">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <p className="text-sm font-semibold text-ink">Verzióelőzmény és kezelés</p>
@@ -712,15 +990,6 @@ function SkillCatalogManagerView({
                           <SkillDescriptionEditor skill={s} running={pending} onRun={run} />
                         </div>
                       </details>
-                    )}
-
-                    {canWriteSkill && editingSkillId === s.id && (
-                      <EditSkillVersionForm
-                        skill={s}
-                        running={pending}
-                        onRun={run}
-                        onClose={() => setEditingSkillId(null)}
-                      />
                     )}
 
                     {versions.length >= 2 && <SkillVersionDiffPanel skill={s} running={pending} />}
@@ -983,6 +1252,7 @@ function EditSkillVersionForm({
   const [parametersRaw, setParametersRaw] = useState('')
   const [runtimeHints, setRuntimeHints] = useState<RuntimeHintsDraft>(EMPTY_RUNTIME_HINTS)
   const [requiredTools, setRequiredTools] = useState<Set<string>>(() => new Set())
+  const [attachments, setAttachments] = useState<AttachmentDraft[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -992,6 +1262,9 @@ function EditSkillVersionForm({
     setParametersRaw(formatParameters(detail.content.parameters))
     setRuntimeHints(runtimeHintsToDraft(detail.content.runtimeHints))
     setRequiredTools(new Set(detail.requires.map((r) => r.toolName)))
+    // A mellékletek átöröklődnek az új verzióra — enélkül a szerkesztés csendben
+    // elhagyná a csomagból importált fájlokat.
+    setAttachments(detail.attachments.map((a) => ({ path: a.path, text: a.text })))
   }
 
   useEffect(() => {
@@ -1032,6 +1305,9 @@ function EditSkillVersionForm({
         ...(hints ? { runtimeHints: hints } : {}),
       },
       requires,
+      attachments: attachments
+        .filter((a) => a.path.trim().length > 0)
+        .map((a) => ({ path: a.path.trim(), text: a.text })),
     })
   }
 
@@ -1096,6 +1372,11 @@ function EditSkillVersionForm({
       <SkillRequiresToolPicker
         enabled={requiredTools}
         onChange={setRequiredTools}
+        disabled={loading}
+      />
+      <SkillAttachmentsEditor
+        attachments={attachments}
+        onChange={setAttachments}
         disabled={loading}
       />
       <button
@@ -1476,6 +1757,7 @@ function CreateSkillForm({
   const [parametersRaw, setParametersRaw] = useState('')
   const [runtimeHints, setRuntimeHints] = useState<RuntimeHintsDraft>(EMPTY_RUNTIME_HINTS)
   const [requiredTools, setRequiredTools] = useState<Set<string>>(() => new Set())
+  const [attachments, setAttachments] = useState<AttachmentDraft[]>([])
 
   function build() {
     const instructionBlocks = instructions
@@ -1497,6 +1779,9 @@ function CreateSkillForm({
         ...(hints ? { runtimeHints: hints } : {}),
       },
       requires,
+      attachments: attachments
+        .filter((a) => a.path.trim().length > 0)
+        .map((a) => ({ path: a.path.trim(), text: a.text })),
     })
   }
 
@@ -1562,6 +1847,13 @@ function CreateSkillForm({
       </div>
       <div className="mt-2">
         <SkillRequiresToolPicker enabled={requiredTools} onChange={setRequiredTools} />
+      </div>
+      <div className="mt-2">
+        <SkillAttachmentsEditor
+          attachments={attachments}
+          onChange={setAttachments}
+          disabled={running}
+        />
       </div>
       <button
         type="button"

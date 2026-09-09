@@ -30,6 +30,14 @@ import {
 } from '@/lib/skill/skill-kind'
 import { readTenantLanguage } from '@/lib/tenant-language'
 import { SKILL_PACKAGE_SKIP_LABEL } from '@/lib/skill/skill-package-adapter'
+import {
+  SKILL_ATTACHMENTS_TOTAL_MAX_BYTES,
+  SKILL_ATTACHMENT_MAX_BYTES,
+  SKILL_ATTACHMENT_MAX_COUNT,
+  hashAttachmentBytes,
+  parseSkillAttachments,
+  type SkillAttachment,
+} from '@/lib/skill/skill-attachments'
 
 /**
  * Skill-katalógus server actionök (skill-catalog-spec.md WP-4/6/7). Minden action
@@ -460,6 +468,11 @@ const createSchema = z.object({
   requiredSystemRole: systemRoleSchema,
   content: skillContentSchema,
   requires: skillRequiresSchema,
+  /** Level-2 fájlok kézi szerzésnél is — ugyanaz a szerveroldali kapu, mint a javaslatnál. */
+  attachments: z
+    .array(z.object({ path: z.string().min(1).max(300), text: z.string() }))
+    .max(SKILL_ATTACHMENT_MAX_COUNT)
+    .optional(),
 })
 
 export async function createSkillAction(
@@ -481,6 +494,7 @@ export async function createSkillAction(
       return fail(`A skill nem felelt meg a validátornak: ${validation.errors.join(' · ')}`)
     }
     const catalogScope = catalogScopeForKind(parsed.kind)
+    const createAttachments = materializeAttachments(parsed.attachments)
     const { skill, versionId } = await services.skills.createSkill({
       name: parsed.name,
       displayName: parsed.displayName,
@@ -495,6 +509,7 @@ export async function createSkillAction(
       riskTier: validation.riskTier,
       content: parsed.content,
       requires: parsed.requires,
+      ...(createAttachments ? { attachments: createAttachments } : {}),
       actor,
     })
     revalidatePath('/control-plane/skills')
@@ -587,7 +602,46 @@ const proposeSchema = z.object({
   skillId: z.string().uuid(),
   content: skillContentSchema,
   requires: skillRequiresSchema,
+  /** A kliens csak útvonalat + szöveget küld; bytes/sha256 szerveroldalon készül. */
+  attachments: z
+    .array(z.object({ path: z.string().min(1).max(300), text: z.string() }))
+    .max(SKILL_ATTACHMENT_MAX_COUNT)
+    .optional(),
 })
+
+/**
+ * Kliens-küldte melléklet → tárolt alak. A méret- és útvonal-kapuk itt (bizalmi
+ * határon) élnek: a bytes/sha256 sosem a kliensé, különben a provenience hazudható.
+ */
+function materializeAttachments(
+  input: Array<{ path: string; text: string }> | undefined,
+): SkillAttachment[] | undefined {
+  if (!input) return undefined
+  const seen = new Set<string>()
+  let total = 0
+  return input.map((raw) => {
+    const path = raw.path.trim().replace(/^\/+/, '')
+    if (!path) throw new SkillAccessError('A melléklet útvonala nem lehet üres.')
+    if (path.split('/').includes('..')) {
+      throw new SkillAccessError(`Nem megengedett melléklet-útvonal: ${raw.path}`)
+    }
+    if (seen.has(path)) throw new SkillAccessError(`Ismétlődő melléklet-útvonal: ${path}`)
+    seen.add(path)
+    const buf = Buffer.from(raw.text, 'utf8')
+    if (buf.byteLength > SKILL_ATTACHMENT_MAX_BYTES) {
+      throw new SkillAccessError(
+        `A(z) „${path}” melléklet túl nagy (max ${Math.floor(SKILL_ATTACHMENT_MAX_BYTES / 1024)} KB).`,
+      )
+    }
+    total += buf.byteLength
+    if (total > SKILL_ATTACHMENTS_TOTAL_MAX_BYTES) {
+      throw new SkillAccessError(
+        `A mellékletek együtt túllépik a ${Math.floor(SKILL_ATTACHMENTS_TOTAL_MAX_BYTES / 1024)} KB-os keretet.`,
+      )
+    }
+    return { path, text: raw.text, bytes: buf.byteLength, sha256: hashAttachmentBytes(buf) }
+  })
+}
 
 export interface SkillVersionDetail {
   versionId: string
@@ -596,6 +650,8 @@ export interface SkillVersionDetail {
   status: string
   content: SkillContent
   requires: Array<{ toolName: string; reason: string }>
+  /** Level-2 melléklet-fájlok teljes szövege (megnyitás / szerkesztés). */
+  attachments: SkillAttachment[]
   contentHash: string
 }
 
@@ -616,6 +672,7 @@ export async function getSkillVersionAction(
       status: target.status,
       content: parseSkillContent(target.content),
       requires: parseSkillRequires(target.requires),
+      attachments: parseSkillAttachments(target.attachments),
       contentHash: target.contentHash,
     })
   } catch (err) {
@@ -681,10 +738,12 @@ export async function proposeSkillVersionAction(
     if (!validation.ok) {
       return fail(`A javasolt verzió nem felelt meg a validátornak: ${validation.errors.join(' · ')}`)
     }
+    const attachments = materializeAttachments(parsed.attachments)
     const res = await services.skills.proposeVersion({
       skillId: parsed.skillId,
       content: parsed.content,
       requires: parsed.requires,
+      ...(attachments ? { attachments } : {}),
       actor: actorFrom(ctx),
     })
     revalidatePath('/control-plane/skills')

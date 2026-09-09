@@ -1354,6 +1354,52 @@ async function main() {
   })
 
   console.log('')
+  console.log('Verzió-javaslat mellékletekkel (katalógus „Megnyitás” / szerkesztés)')
+
+  await check('proposeVersion átviszi a mellékleteket és hash-eli őket', async () => {
+    const added: Array<Record<string, unknown>> = []
+    const skillsRepo = {
+      findById: async () => ({ id: 'skill-1', tenantId: TENANT_A }),
+      addVersion: async (input: Record<string, unknown>) => {
+        added.push(input)
+        return { id: 'ver-2', version: 2 }
+      },
+    }
+    const svc = new SkillService(
+      skillsRepo as never,
+      { append: async (d: unknown) => d } as never,
+      {} as never,
+      {} as never,
+    )
+    const content: SkillContent = {
+      instructions: ['Csináld.'],
+      triggerKeywords: ['x'],
+      parameters: [],
+    }
+    const attachments = [
+      { path: 'references/a.md', text: 'egy', bytes: 3, sha256: 'aaa' },
+    ]
+    await svc.proposeVersion({
+      skillId: 'skill-1',
+      content,
+      requires: [],
+      attachments,
+      actor: { actorId: 'u1', actorTenantId: TENANT_A, isPlatformAdmin: false },
+    })
+    assert.deepEqual(added[0]?.attachments, attachments, 'a melléklet a verzióval tárolódik')
+    assert.equal(
+      added[0]?.contentHash,
+      computeSkillContentHash(content, [], attachments),
+      'a hash a mellékletet is fedi',
+    )
+    assert.notEqual(
+      added[0]?.contentHash,
+      computeSkillContentHash(content, []),
+      'melléklet nélküli hash különbözik',
+    )
+  })
+
+  console.log('')
   if (failures > 0) {
     console.error(`❌ ${failures} teszt bukott`)
     process.exit(1)

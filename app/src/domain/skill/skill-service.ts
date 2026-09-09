@@ -827,6 +827,8 @@ export class SkillService {
     skillId: string
     content: SkillContent
     requires: SkillRequirement[]
+    /** Level-2 mellékletek. Hiányzik → a verzió melléklet nélkül születik. */
+    attachments?: SkillAttachment[]
     actor: ActorContext
   }): Promise<{ versionId: string; version: number }> {
     const skill = await this.skills.findById(input.skillId)
@@ -835,11 +837,15 @@ export class SkillService {
       throw new SkillAccessError()
     }
 
-    const contentHash = computeSkillContentHash(input.content, input.requires)
+    const attachments = input.attachments ?? []
+    const contentHash = computeSkillContentHash(input.content, input.requires, attachments)
     const version = await this.skills.addVersion({
       skillId: input.skillId,
       content: input.content as unknown as Prisma.InputJsonValue,
       requires: input.requires as unknown as Prisma.InputJsonValue,
+      ...(attachments.length > 0
+        ? { attachments: attachments as unknown as Prisma.InputJsonValue }
+        : {}),
       contentHash,
     })
 
