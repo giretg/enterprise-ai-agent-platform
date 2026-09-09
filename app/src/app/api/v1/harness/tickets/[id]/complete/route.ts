@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { services } from '@/domain'
 import { harnessCompletionSchema } from '@/lib/validators/actions'
+import { readJson } from '@/lib/api-response'
 import { safeSecretEquals } from '@/lib/crypto/timing-safe'
 
 function jsonError(message: string, status: number) {
@@ -25,7 +26,7 @@ export async function POST(
 
   let body: unknown
   try {
-    body = await request.json()
+    body = await readJson(request)
   } catch {
     return jsonError('Invalid JSON body', 400)
   }

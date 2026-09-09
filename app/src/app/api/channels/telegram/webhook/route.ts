@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { services } from '@/domain'
+import { readJson } from '@/lib/api-response'
 
 /**
  * Telegram bejövő webhook — VÉKONY, logikátlan adapter (Telegram feature-spec #70/#72, D15).
@@ -15,7 +16,8 @@ import { services } from '@/domain'
 export async function POST(request: Request) {
   try {
     const secretHeader = request.headers.get('x-telegram-bot-api-secret-token')
-    const body = (await request.json().catch(() => null)) as TelegramUpdate | null
+    // Túl nagy / érvénytelen törzs → null (csendes elutasítás, gyors 200), OOM-vektor nélkül.
+    const body = (await readJson(request).catch(() => null)) as TelegramUpdate | null
 
     const callback = extractCallbackQuery(body)
     if (callback) {

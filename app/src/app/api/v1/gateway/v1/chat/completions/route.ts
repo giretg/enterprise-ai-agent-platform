@@ -7,6 +7,11 @@ import { assertAgentWorkTenantOperable } from '@/lib/agent-work-tenant-gate'
 import { resolveGatewayRequestModel } from '@/lib/harness-model-config'
 import { repositories } from '@/repositories/postgres'
 import { openAiChatCompletionSchema } from '@/lib/validators/gateway'
+import { readJson } from '@/lib/api-response'
+
+// A gateway teljes modell-kontextust (előzmény + tool-eredmények) hordoz, ami legitim
+// módon nagyobb lehet, mint a többi végpont — tágabb, de véges plafon az OOM ellen.
+const GATEWAY_MAX_JSON_BODY_BYTES = 4 * 1024 * 1024
 
 function isStubProviderConfigured(): boolean {
   const providerUrl = process.env.CHATGPT_OAUTH_PROVIDER_URL
@@ -30,7 +35,7 @@ export async function POST(request: Request) {
 
   let body: unknown
   try {
-    body = await request.json()
+    body = await readJson(request, GATEWAY_MAX_JSON_BODY_BYTES)
   } catch {
     return jsonError('Invalid JSON body', 400)
   }
