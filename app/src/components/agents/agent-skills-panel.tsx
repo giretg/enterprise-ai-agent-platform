@@ -26,6 +26,15 @@ import {
   isSkillSystemRole,
 } from '@/lib/skill/skill-kind'
 import { SkillKindLegend } from '@/components/skills/skill-kind-fields'
+import dynamic from 'next/dynamic'
+import { catalogScopeForKind } from '@/lib/skill/skill-kind'
+
+// Csak kattintásra töltjük be — a katalógus-szerkesztő nagy, az agent-oldalnak
+// nem kell magával cipelnie.
+const SkillQuickEditModal = dynamic(
+  () => import('@/components/skills/skill-quick-edit-modal').then((m) => m.SkillQuickEditModal),
+  { ssr: false },
+)
 
 const READINESS_TONE: Record<SkillReadinessColor, 'success' | 'warning' | 'danger'> = {
   green: 'success',
@@ -57,6 +66,8 @@ export function AgentSkillsPanel({
   assignable,
   suggestedSkillNames,
   canEdit = true,
+  isAdmin = false,
+  isPlatformAdmin = false,
   bare = false,
   onChanged,
 }: {
@@ -67,6 +78,10 @@ export function AgentSkillsPanel({
   suggestedSkillNames?: string[]
   /** Operátor a listát látja; az admin ugyanitt rendel / tilt / leszerel. */
   canEdit?: boolean
+  /** Tenant admin — a skill TARTALMÁT (új verzió javaslása) csak ő szerkesztheti. */
+  isAdmin?: boolean
+  /** Global (kiadott/rendszer) skill tartalmát csak platform-admin írhatja. */
+  isPlatformAdmin?: boolean
   /** A hívó már adott keretet (címsor + doboz) — ne rajzoljunk másodikat. */
   bare?: boolean
   onChanged?: () => void
@@ -79,7 +94,14 @@ export function AgentSkillsPanel({
     suggestedSkillNames ?? [],
   )
   const [selected, setSelected] = useState('')
+  const [editSkillId, setEditSkillId] = useState<string | null>(null)
   const selectedSkill = assignable.find((s) => s.activeVersionId === selected) ?? null
+  // Ugyanaz a szabály, mint a katalógusban: global skillt tenant-admin nem ír.
+  const canEditSelected = Boolean(
+    selectedSkill &&
+      isAdmin &&
+      (catalogScopeForKind(selectedSkill.kind) === 'tenant' || isPlatformAdmin),
+  )
 
   function run(fn: () => Promise<{ success: boolean; error?: string }>) {
     startTransition(async () => {
@@ -281,6 +303,15 @@ export function AgentSkillsPanel({
                 <p className="mt-1 text-sm leading-relaxed text-ink-soft">
                   {selectedSkill.description}
                 </p>
+                {canEditSelected ? (
+                  <button
+                    type="button"
+                    onClick={() => setEditSkillId(selectedSkill.skillId)}
+                    className="mt-3 rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-medium text-ink-soft hover:text-ink"
+                  >
+                    Módosítás
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -289,6 +320,10 @@ export function AgentSkillsPanel({
       ) : null}
 
       {error && <p className="mt-4 text-sm text-coral">{error}</p>}
+
+      {editSkillId ? (
+        <SkillQuickEditModal skillId={editSkillId} onClose={() => setEditSkillId(null)} />
+      ) : null}
     </>
   )
 

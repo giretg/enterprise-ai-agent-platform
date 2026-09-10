@@ -157,6 +157,9 @@ export default async function AgentDetailPage({
     )
   }
 
+  const isPlatformAdmin = Boolean(
+    tenantCtx.platformRoles?.some((r) => r === 'superadmin' || r === 'platform_operator'),
+  )
   const {
     isAdmin,
     canManageKb,
@@ -391,6 +394,8 @@ export default async function AgentDetailPage({
             assigned={agentSkills as AgentSkillRow[]}
             assignable={assignableSkills as AssignableSkill[]}
             canEdit={canManageSkills}
+            isAdmin={isAdmin}
+            isPlatformAdmin={isPlatformAdmin}
           />
         </div>
       ),

@@ -686,7 +686,7 @@ function TabButton({
  * A skill saját lapja / az űrlapok külön rétegen. A lista mögötte érintetlen marad —
  * korábban minden panel a katalógus-dobozban nyílt ki, és egymásba folytak.
  */
-function SkillModal({
+export function SkillModal({
   eyebrow,
   title,
   subtitle,
@@ -1604,7 +1604,7 @@ function SkillContentFields({
   )
 }
 
-function EditSkillVersionForm({
+export function EditSkillVersionForm({
   skill,
   running,
   onRun,
