@@ -467,6 +467,7 @@ export class ScheduledTaskService {
       agentId: claimed.agentId,
       payload: payload as Prisma.JsonObject,
       sourceDocumentId: attachmentDocumentIds[0] ?? null,
+      attachmentDocumentIds,
       conversationId,
       executeAfter: null,
       dueBy: null,

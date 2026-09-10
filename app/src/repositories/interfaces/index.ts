@@ -380,7 +380,10 @@ export interface ScheduledTaskRepository {
       | 'dueBy'
       | 'createdById'
       | 'source'
-    > & { payload: Prisma.InputJsonValue },
+    > & {
+      payload: Prisma.InputJsonValue
+      attachmentDocumentIds?: string[]
+    },
     data: {
       status: ScheduledTaskStatus
       runCount: number

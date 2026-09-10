@@ -16,6 +16,7 @@ import {
   splitInstructions,
 } from '../src/lib/skill/skill-md-adapter'
 import { validateSkill } from '../src/lib/skill/skill-validator'
+import { canManageAgentSkills } from '../src/lib/agent-skill-management'
 import {
   isSkillReadableFromTenant,
   isSkillWritableFromTenant,
@@ -1397,6 +1398,21 @@ async function main() {
       computeSkillContentHash(content, []),
       'melléklet nélküli hash különbözik',
     )
+  })
+
+  await check('delegált skill-kezelés: admin mindig, operátor csak engedéllyel', () => {
+    // Admin: a kapcsoló állásától függetlenül kezelhet.
+    assert.equal(canManageAgentSkills('admin', false), true)
+    assert.equal(canManageAgentSkills('admin', true), true)
+    // Operátor: csak ha ezen az agenten delegált.
+    assert.equal(canManageAgentSkills('operator', false), false)
+    assert.equal(canManageAgentSkills('operator', true), true)
+    // Approver az operátor FÖLÖTT van a rangsorban → a delegálás rá is áll.
+    assert.equal(canManageAgentSkills('approver', true), true)
+    assert.equal(canManageAgentSkills('approver', false), false)
+    // Viewer sosem; hiányzó szerep fail-closed.
+    assert.equal(canManageAgentSkills('viewer', true), false)
+    assert.equal(canManageAgentSkills(null, true), false)
   })
 
   console.log('')

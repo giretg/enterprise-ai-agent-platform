@@ -11,6 +11,12 @@ import { DISPATCH_NOTIFY_CHANNEL } from '@/lib/dispatch-notify'
 import { resolveTicketSource } from '@/lib/ticket-source'
 import type { ScheduledTaskRepository } from '../interfaces'
 
+function metadataByteSize(metadata: unknown): number | null {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null
+  const value = (metadata as Record<string, unknown>).byteSize
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+}
+
 export class PostgresScheduledTaskRepository implements ScheduledTaskRepository {
   async findMany(filter?: {
     tenantId?: string | null
@@ -103,7 +109,10 @@ export class PostgresScheduledTaskRepository implements ScheduledTaskRepository 
       | 'dueBy'
       | 'createdById'
       | 'source'
-    > & { payload: Prisma.InputJsonValue },
+    > & {
+      payload: Prisma.InputJsonValue
+      attachmentDocumentIds?: string[]
+    },
     data: {
       status: ScheduledTaskStatus
       runCount: number
@@ -122,10 +131,33 @@ export class PostgresScheduledTaskRepository implements ScheduledTaskRepository 
       })
       if (locked.count !== 1) return null
 
+      const attachmentDocumentIds = [...new Set(ticket.attachmentDocumentIds ?? [])]
+      const documents = attachmentDocumentIds.length
+        ? await tx.document.findMany({ where: { id: { in: attachmentDocumentIds } } })
+        : []
+      const documentsById = new Map(documents.map((document) => [document.id, document]))
+      if (documentsById.size !== attachmentDocumentIds.length) {
+        throw new Error('Scheduled task attachment not found')
+      }
+
       const materializedTicket = await tx.ticket.create({
         data: {
           ...ticket,
           source: resolveTicketSource(ticket.source),
+          attachments: attachmentDocumentIds.length
+            ? {
+                create: attachmentDocumentIds.map((documentId, index) => {
+                  const document = documentsById.get(documentId)!
+                  return {
+                    documentId,
+                    seq: index + 1,
+                    filename: document.filename,
+                    mimeType: document.mimeType,
+                    byteSize: metadataByteSize(document.metadata),
+                  }
+                }),
+              }
+            : undefined,
         } as Prisma.TicketUncheckedCreateInput,
       })
       const scheduledTask = await tx.scheduledTask.update({

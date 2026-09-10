@@ -18,6 +18,7 @@ import {
   resolveStoredDocumentDownload,
 } from '../src/lib/document-storage'
 import { ticketInputAttachmentDownloadUrl } from '../src/lib/ticket-input-attachments'
+import { readFileSync } from 'node:fs'
 
 const attachmentDocuments = [
   {
@@ -101,6 +102,16 @@ assert.match(markup, /Bemeneti csatolmányok/)
 assert.match(markup, /tulajdoni-lap\.pdf/)
 assert.match(markup, /href="\/api\/v1\/tickets\/ticket-1\/attachments\/attachment-2"/)
 assert.match(markup, /Letöltés/)
+
+const agentChatRuntime = readFileSync(
+  resolve(process.cwd(), 'src/domain/agent/agent-chat-runtime.ts'),
+  'utf8',
+)
+assert.match(
+  agentChatRuntime,
+  /const attachmentTransfer = buildPromotedTaskAttachmentTransfer\(attachmentDocs\)[\s\S]{0,2600}\{ attachments: attachmentTransfer\.attachments \}/,
+  'a normál chatből létrehozott task is első osztályú ticket-csatolmányokat kapjon',
+)
 
 async function verifyRepositoryPersistence(): Promise<void> {
   config({ path: resolve(process.cwd(), '.env.local'), quiet: true })

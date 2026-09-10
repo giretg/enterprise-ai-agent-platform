@@ -9,7 +9,7 @@ function CatalogLoadError({ error }: { error: string }) {
     <div className="space-y-8">
       <div className="animate-rise">
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">
-          Governance alá vont skillek
+          Jóváhagyott munkamenetek
         </p>
         <h1 className="mt-2 font-display text-[2.4rem] font-semibold leading-tight">
           Skill-katalógus
@@ -54,16 +54,19 @@ export default async function SkillCatalogPage() {
       <div className="space-y-8">
         <div className="animate-rise">
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">
-            Governance alá vont skillek
+            Jóváhagyott munkamenetek
           </p>
           <h1 className="mt-2 font-display text-[2.4rem] font-semibold leading-tight">
             Skill-katalógus
           </h1>
           <p className="mt-2 max-w-2xl text-ink-soft">
-            Importálható (<code>SKILL.md</code>) vagy appon belül szerzett, verziózott,
-            aláírt agent-skillek. A skill „ereje” mindig annyi, amennyi capability-t az
-            admin melléad — a szöveg maga tehetetlen. Minden verzió a write-gate kapun megy
-            át: <em>proposed → approved → active</em>, rollbackkel.
+            A skill egy leírt munkamenet: elmondja az AI-munkatársnak, hogyan csináljon meg
+            egy visszatérő feladatot. Önmagában tehetetlen — hogy mit tud <em>megtenni</em>,
+            azt az agentnek adott jogosultságok döntik el.
+          </p>
+          <p className="mt-2 max-w-2xl text-sm text-ink-faint">
+            Minden módosítás előbb javaslat (<em>proposed</em>), és csak jóváhagyás után lesz
+            éles (<em>active</em>) — a korábbi verzióra bármikor visszaállhatsz.
           </p>
         </div>
 

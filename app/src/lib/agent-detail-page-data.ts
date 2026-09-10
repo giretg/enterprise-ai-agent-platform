@@ -2,6 +2,7 @@ import type { Agent, AgentSystemRole, SkillKind, SkillRiskTier } from '@prisma/c
 import { isSkillAssignableToAgent } from '@/lib/skill/skill-kind'
 import type { TenantAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
+import { canManageAgentSkills } from '@/lib/agent-skill-management'
 import { services } from '@/domain'
 import type { ProvisioningActor } from '@/domain/provisioning/provisioning-service'
 import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
@@ -72,6 +73,8 @@ export type AgentDetailPageData = {
   isAdmin: boolean
   canManageKb: boolean
   canApproveKb: boolean
+  /** Kezelheti-e az aktuális felhasználó az agenthez rendelt skilleket (admin, vagy delegált operátor)? */
+  canManageSkills: boolean
   agent: NonNullable<Awaited<ReturnType<typeof repositories.agents.findByIdForDisplay>>>['agent']
   memoryContent: string | null
   memoryVersion: number | null
@@ -362,6 +365,12 @@ export async function loadAgentDetailPageData(
   }
   // #142 — a detail oldal a gráf `view` döntését használja (nem csak a régi
   // hiddenFromOperators kaput), így közvetlen URL sem fed fel elrejtett agentet.
+  // Delegálható skill-kezelés: admin mindig, operátor csak ha ezen az agenten
+  // engedélyezett. UGYANAZ a helper dönt, mint a server action kapuja.
+  const canManageSkills = canManageAgentSkills(
+    ctx.activeTenantRole,
+    detail.agent.operatorCanManageSkills,
+  )
   const runAnalystOk = await canOpenRunAnalystWorkspace({
     tenantId: ctx.activeTenantId,
     role: ctx.activeTenantRole,
@@ -410,6 +419,17 @@ export async function loadAgentDetailPageData(
       connectors,
     }
     agentSkills = mapAgentSkillRows(assignedWithReadiness)
+
+    if (canManageSkills && !isAdmin) {
+      // Delegált operátor: a hozzárendelhető skillek listája kell neki, az admin-only
+      // panelek (modellpolicy, connector-katalógus, projekt-memória) NEM.
+      const skillCatalog = await services.skills.listForActor(ctx.activeTenantId)
+      assignableSkills = mapAssignableSkills(
+        skillCatalog,
+        new Set(assignedWithReadiness.map((a) => a.skillId)),
+        detail.agent.systemRole ?? null,
+      )
+    }
 
     if (isAdmin) {
       const [policy, catalog, profiles, skillCatalog] = await Promise.all([
@@ -486,6 +506,7 @@ export async function loadAgentDetailPageData(
     isAdmin,
     canManageKb,
     canApproveKb,
+    canManageSkills,
     agent: detail.agent,
     memoryContent: detail.memoryContent,
     memoryVersion: detail.memoryVersion,

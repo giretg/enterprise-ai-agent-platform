@@ -916,6 +916,12 @@ model Agent {
   // (`agent_ask`, csatorna, agent API-kulcs, ticket-komment) nyitva maradnak.
   // Csak tenant admin írhatja, minden váltás auditált (`agent.task_only`).
   taskOnly                      Boolean     @default(false) @map("task_only")
+  // Delegált skill-kezelés: ha true, az OPERÁTOR is hozzárendelhet / levehet /
+  // ki-bekapcsolhat skillt EZEN az agenten. A skill-katalógus szerkesztése (verzió,
+  // tartalom, jóváhagyás) továbbra is admin-aktus, és a capability-grantokat sem
+  // érinti — az operátor csak a már jóváhagyott skillek közül választ.
+  // Csak tenant admin írhatja, minden váltás auditált (`agent.operator_skill_management`).
+  operatorCanManageSkills       Boolean     @default(false) @map("operator_can_manage_skills")
   // Agent-hozzáférési gráf kapcsolói.
   // `inboundRestricted`: user→agent view/address csak explicit granttal.
   // Üzleti alap: true — a tenant tagok kiinduló jogait `AgentAccessGrant` sorok

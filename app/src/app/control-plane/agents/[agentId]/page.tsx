@@ -23,6 +23,7 @@ import { PrivacyAdminPanel } from '@/components/privacy/privacy-admin-panel'
 import { getPrivacyAdminView } from '@/app/actions/privacy'
 import { OperatorVisibilityForm } from '@/components/agents/operator-visibility-form'
 import { TaskOnlyForm } from '@/components/agents/task-only-form'
+import { OperatorSkillManagementForm } from '@/components/agents/operator-skill-management-form'
 import { EfficiencyAdvisorPanel } from '@/components/agents/efficiency-advisor-panel'
 import { AgentTaskButton } from '@/components/agents/agent-task-button'
 import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
@@ -160,6 +161,7 @@ export default async function AgentDetailPage({
     isAdmin,
     canManageKb,
     canApproveKb,
+    canManageSkills,
     agent,
     memoryContent,
     memoryVersion,
@@ -388,7 +390,7 @@ export default async function AgentDetailPage({
             agentId={agent.id}
             assigned={agentSkills as AgentSkillRow[]}
             assignable={assignableSkills as AssignableSkill[]}
-            canEdit={isAdmin}
+            canEdit={canManageSkills}
           />
         </div>
       ),
@@ -520,6 +522,11 @@ export default async function AgentDetailPage({
               hiddenFromOperators={agent.hiddenFromOperators}
             />
           ) : null}
+          <OperatorSkillManagementForm
+            agentId={agent.id}
+            operatorCanManageSkills={agent.operatorCanManageSkills}
+            canEdit={isAdmin}
+          />
           <TaskOnlyForm agentId={agent.id} taskOnly={agent.taskOnly} canEdit={isAdmin} />
           <InfoCard
             title="Életciklus"

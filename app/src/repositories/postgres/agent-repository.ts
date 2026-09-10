@@ -449,6 +449,19 @@ export class PostgresAgentRepository implements AgentRepository {
     return updated
   }
 
+  /** Agent-szintű delegálás: az operátor kezelheti-e az agent skill-hozzárendeléseit. */
+  async updateOperatorSkillManagement(input: {
+    agentId: string
+    operatorCanManageSkills: boolean
+  }): Promise<{ operatorCanManageSkills: boolean }> {
+    const updated = await prisma.agent.update({
+      where: { id: input.agentId },
+      data: { operatorCanManageSkills: input.operatorCanManageSkills },
+      select: { operatorCanManageSkills: true },
+    })
+    return updated
+  }
+
   /**
    * Agent-hozzáférési gráf kapcsolói (Access-Policy §agent-scope, #142). Nem emel
    * agent-verziót és nem befolyásolja a dispatch-et — csak azt, hogy a gráf melyik

@@ -932,6 +932,12 @@ export const updateAgentTaskOnlySchema = z.object({
   taskOnly: z.boolean(),
 })
 
+/** Agent-szintű delegálás: az operátor kezelheti-e az agenthez rendelt skilleket. */
+export const updateAgentOperatorSkillManagementSchema = z.object({
+  agentId: z.string().uuid(),
+  operatorCanManageSkills: z.boolean(),
+})
+
 export const applyEfficiencyHintSchema = z.object({
   agentId: z.string().uuid(),
   kind: z.enum(['stricter_compaction', 'narrower_source_frame', 'narrower_tool_budget']),

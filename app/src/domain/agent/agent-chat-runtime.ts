@@ -2123,6 +2123,7 @@ export class AgentChatRuntime {
     })
 
     const attachmentDocs = await this.loadDocuments(attachmentIds, params.tenantId ?? null)
+    const attachmentTransfer = buildPromotedTaskAttachmentTransfer(attachmentDocs)
     const modelConfig = agentDetails.agent.modelConfig as {
       provider: string
       model: string
@@ -2168,33 +2169,36 @@ export class AgentChatRuntime {
       conversationId = created.id
     }
 
-    const ticket = await this.tickets.create({
-      tenantId: params.tenantId ?? null,
-      type: 'interaction',
-      title: `Feladat: ${titleSource.slice(0, 80)}`,
-      state: 'ready',
-      assigneeType: 'agent',
-      assigneeId: params.agentId,
-      agentId: params.agentId,
-      playbookRef: null,
-      conversationId,
-      projectKey: params.projectKey ?? '__general__',
-      payload: {
-        question: text,
-        source: 'agent_chat',
-        attachmentDocumentIds: attachmentIds,
-        agentVersion: agentDetails.agent.currentVersion,
-        model: modelConfig.model,
-        memoryVersion: agentDetails.memoryVersion,
-        scheduledRun: params.executeAfter ? true : undefined,
-        briefing: briefingToPayloadValue(briefing),
-        ...runAsPayload,
+    const ticket = await this.tickets.create(
+      {
+        tenantId: params.tenantId ?? null,
+        type: 'interaction',
+        title: `Feladat: ${titleSource.slice(0, 80)}`,
+        state: 'ready',
+        assigneeType: 'agent',
+        assigneeId: params.agentId,
+        agentId: params.agentId,
+        playbookRef: null,
+        conversationId,
+        projectKey: params.projectKey ?? '__general__',
+        payload: {
+          question: text,
+          source: 'agent_chat',
+          attachmentDocumentIds: attachmentTransfer.attachments.map((attachment) => attachment.documentId),
+          agentVersion: agentDetails.agent.currentVersion,
+          model: modelConfig.model,
+          memoryVersion: agentDetails.memoryVersion,
+          scheduledRun: params.executeAfter ? true : undefined,
+          briefing: briefingToPayloadValue(briefing),
+          ...runAsPayload,
+        },
+        sourceDocumentId: attachmentTransfer.sourceDocumentId,
+        executeAfter: params.executeAfter ?? null,
+        dueBy: null,
+        createdById: params.createdById,
       },
-      sourceDocumentId: attachmentIds[0] ?? null,
-      executeAfter: params.executeAfter ?? null,
-      dueBy: null,
-      createdById: params.createdById,
-    })
+      { attachments: attachmentTransfer.attachments },
+    )
 
     try {
       await this.conversations.postTaskCard({

@@ -97,6 +97,7 @@ import {
 } from '@/lib/ticket-schedule'
 import { buildOriginalDocumentMetadata } from '@/lib/document-storage'
 import { listTicketInputAttachments } from '@/domain/ticket/ticket-input-attachment-service'
+import { buildPromotedTaskAttachmentTransfer } from '@/domain/agent/skill-task-promotion'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { assignConnectorToAgent } from '@/app/actions/provisioning'
 import { assignSkillAction } from '@/app/actions/skills'
@@ -160,6 +161,7 @@ import {
   updateAgentSensitivityPolicySchema,
   updateAgentOperatorVisibilitySchema,
   updateAgentTaskOnlySchema,
+  updateAgentOperatorSkillManagementSchema,
   createHttpApiConnectorSchema,
   createTrainingSchema,
   askWikiSchema,
@@ -2977,6 +2979,53 @@ export async function updateAgentTaskOnly(input: { agentId: string; taskOnly: bo
   }
 }
 
+/**
+ * Agent-szintű delegálás: az operátor kezelheti-e EZEN az agenten a skill-
+ * hozzárendeléseket (assign / unassign / enable). A kapu-döntést a közös
+ * {@link canManageAgentSkills} hozza — itt csak a kapcsoló írása történik.
+ *
+ * A delegálás NEM ad skill-szerkesztést, verzió-jóváhagyást vagy capability-grantot.
+ */
+export async function updateAgentOperatorSkillManagement(input: {
+  agentId: string
+  operatorCanManageSkills: boolean
+}) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = updateAgentOperatorSkillManagementSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
+    if (!agent) return fail('Agent not found')
+    if (agent.operatorCanManageSkills === parsed.operatorCanManageSkills) {
+      return ok({ operatorCanManageSkills: agent.operatorCanManageSkills })
+    }
+
+    const updated = await repositories.agents.updateOperatorSkillManagement(parsed)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: agent.currentVersion,
+      action: 'agent.operator_skill_management',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: `from:${agent.operatorCanManageSkills}`,
+      outputRef: `to:${updated.operatorCanManageSkills}`,
+      policyDecision: 'allowed',
+      metadata: {
+        operatorCanManageSkills: updated.operatorCanManageSkills,
+        scope: 'skill_assignment_only',
+      },
+    })
+
+    return ok(updated)
+  } catch (e) {
+    return fail(
+      e instanceof Error ? e.message : 'Failed to update agent operator skill management',
+    )
+  }
+}
+
 export async function updateAgentPersona(input: {
   agentId: string
   personaNickname?: string
@@ -4362,10 +4411,9 @@ export async function createScheduledAgentTask(input: {
       throw error
     }
     const attachmentIds = [...new Set(parsed.attachmentDocumentIds ?? [])]
-    if (attachmentIds.length > 0) {
-      const documents = await repositories.documents.findByIds(attachmentIds)
-      await assertDocumentsReachableFromTenant(documents, attachmentIds, user.activeTenantId)
-    }
+    const attachmentDocuments = await repositories.documents.findByIds(attachmentIds)
+    await assertDocumentsReachableFromTenant(attachmentDocuments, attachmentIds, user.activeTenantId)
+    const attachmentTransfer = buildPromotedTaskAttachmentTransfer(attachmentDocuments)
     const nextRunAt = new Date(parsed.nextRunAt)
     const recurrence = parsed.recurrence ?? 'none'
     const isRecurring = recurrence !== 'none'
@@ -4383,7 +4431,7 @@ export async function createScheduledAgentTask(input: {
         task: parsed.content,
         source: 'scheduled_task',
         conversationId: parsed.conversationId ?? null,
-        attachmentDocumentIds: attachmentIds,
+        attachmentDocumentIds: attachmentTransfer.attachments.map((attachment) => attachment.documentId),
       },
       scheduleStamp,
       isRecurring ? { role: 'series' } : undefined,
@@ -4397,13 +4445,13 @@ export async function createScheduledAgentTask(input: {
       assigneeId: parsed.agentId,
       agentId: parsed.agentId,
       payload: ticketPayload as Prisma.JsonValue,
-      sourceDocumentId: attachmentIds[0] ?? null,
+      sourceDocumentId: attachmentTransfer.sourceDocumentId,
       conversationId: parsed.conversationId ?? null,
       projectKey: assignedProject.key,
       executeAfter: nextRunAt,
       dueBy: null,
       createdById: user.user.id,
-    })
+    }, { attachments: attachmentTransfer.attachments })
     const scheduledTask = await services.scheduledTasks.createAgentTask({
       agentId: parsed.agentId,
       title: parsed.title,

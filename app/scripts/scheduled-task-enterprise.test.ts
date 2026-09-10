@@ -187,7 +187,8 @@ await test('saját és megosztott aktív agent ütemezhető', async () => {
 })
 
 await test('a materializálás egy atomi repository-hívással hozza létre a ticketet és zárja a taskot', async () => {
-  const dueTask = task()
+  const attachmentId = '99999999-0000-4000-8000-000000000001'
+  const dueTask = task({ payload: { question: 'Készíts riportot', attachmentDocumentIds: [attachmentId] } })
   let materializeCalls = 0
   let createdTicketId: string | null = null
   const { service } = makeService(agent(), {
@@ -199,6 +200,7 @@ await test('a materializálás egy atomi repository-hívással hozza létre a ti
       assert.equal(ticketInput.tenantId, TENANT_A)
       assert.equal(ticketInput.agentId, AGENT_ID)
       assert.equal((ticketInput.payload as Record<string, unknown>).scheduledTaskId, TASK_ID)
+      assert.deepEqual(ticketInput.attachmentDocumentIds, [attachmentId])
       assert.equal(state.status, 'materialized')
       const createdTicket = { id: TICKET_ID, ...ticketInput } as Ticket
       createdTicketId = createdTicket.id

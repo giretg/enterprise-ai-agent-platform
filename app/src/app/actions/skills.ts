@@ -6,6 +6,7 @@ import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
+import { canManageAgentSkills } from '@/lib/agent-skill-management'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { SkillAccessError, type ActorContext } from '@/domain/skill/skill-service'
 import {
@@ -74,6 +75,26 @@ async function assertAgentInTenant(agentId: string, activeTenantId: string | nul
   if (!agent) throw new SkillAccessError('Agent not found')
   assertAgentTenantReachable(agent, activeTenantId)
   return agent
+}
+
+/**
+ * Kapu az agenthez RENDELT skillek kezeléséhez (hozzárendel / levesz / ki-bekapcsol).
+ * Admin mindig; operátor csak ha az admin EZEN az agenten delegálta
+ * (`Agent.operatorCanManageSkills`) — a döntést a közös {@link canManageAgentSkills}
+ * hozza, hogy a UI `canEdit` és a szerveroldali kapu ne tudjon szétcsúszni.
+ *
+ * A katalógus-szerkesztés (verzió, tartalom, jóváhagyás) és a capability-grant
+ * változatlanul admin-aktus — ez a kapu csak a hozzárendelésre szól.
+ */
+async function requireAgentSkillManager(agentId: string) {
+  const ctx = await requireTenantRole('operator')
+  const agent = await assertAgentInTenant(agentId, ctx.activeTenantId)
+  if (!canManageAgentSkills(ctx.activeTenantRole, agent.operatorCanManageSkills)) {
+    throw new SkillAccessError(
+      'Ezen az agenten a skill-hozzárendelés admin-döntés. Kérd meg az admint, hogy engedélyezze az operátori kezelést.',
+    )
+  }
+  return { ctx, agent }
 }
 
 // ── WP-4: agent-detail skill panel (readiness + hozzárendelés) ────────────────
@@ -189,8 +210,7 @@ export async function listAssignableSkillsAction(
   agentId: string,
 ): Promise<ActionResult<AssignableSkill[]>> {
   try {
-    const ctx = await requireTenantRole('admin')
-    const agent = await assertAgentInTenant(agentId, ctx.activeTenantId)
+    const { ctx, agent } = await requireAgentSkillManager(agentId)
     const [catalog, assigned] = await Promise.all([
       services.skills.listForActor(ctx.activeTenantId),
       services.skills.listAgentSkillsWithReadiness(agentId),
@@ -231,7 +251,7 @@ export async function assignSkillAction(input: {
   skillVersionId: string
 }): Promise<ActionResult<null>> {
   try {
-    const ctx = await requireTenantRole('admin')
+    const { ctx } = await requireAgentSkillManager(input.agentId)
     await services.skills.assign({
       agentId: input.agentId,
       skillVersionId: input.skillVersionId,
@@ -249,7 +269,7 @@ export async function unassignSkillAction(input: {
   skillVersionId: string
 }): Promise<ActionResult<null>> {
   try {
-    const ctx = await requireTenantRole('admin')
+    const { ctx } = await requireAgentSkillManager(input.agentId)
     await services.skills.unassign({
       agentId: input.agentId,
       skillVersionId: input.skillVersionId,
@@ -268,7 +288,7 @@ export async function setSkillEnabledAction(input: {
   enabled: boolean
 }): Promise<ActionResult<null>> {
   try {
-    const ctx = await requireTenantRole('admin')
+    const { ctx } = await requireAgentSkillManager(input.agentId)
     await services.skills.setEnabled({ ...input, actor: actorFrom(ctx) })
     revalidatePath(`/control-plane/agents/${input.agentId}`)
     return ok(null)
