@@ -60,3 +60,10 @@ test('active-runs panel: nyugalmi ütem lassabb, mint az élő', () => {
   assert.ok(Number.isFinite(active) && Number.isFinite(idle), 'mindkét időköz definiált')
   assert.ok(idle > active, 'a nyugalmi ütem ritkább')
 })
+
+test('chat liveness poll: 5 mp backstop, Next.js-inlinelhető NEXT_PUBLIC env', () => {
+  const src = readSrc('src/components/agents/use-agent-chat-turn-liveness.ts')
+  assert.match(src, /resolveLivenessPollMs\(/)
+  assert.match(src, /process\.env\.NEXT_PUBLIC_AGENT_TURN_LIVENESS_POLL_MS/)
+  assert.doesNotMatch(src, /activeMs:\s*2_000/)
+})

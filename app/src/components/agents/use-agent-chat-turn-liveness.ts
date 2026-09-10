@@ -5,6 +5,10 @@ import {
   assessChatTurnLiveness,
   describeChatTurnLiveness,
 } from '@/domain/agent/chat-turn-liveness'
+import {
+  AGENT_TURN_LIVENESS_POLL_ENV,
+  resolveLivenessPollMs,
+} from '@/domain/agent/agent-turn-reconnect'
 import type { ChatTurnActivity } from '@/lib/chat-turn-progress'
 import { useAdaptivePoll } from '@/lib/use-adaptive-poll'
 
@@ -30,9 +34,21 @@ export function describeChatTurnStall(turn: ChatTurnProgressSnapshot): string | 
 }
 
 /**
+ * Next.js a kliens-bundle-be csak a literális `process.env.NEXT_PUBLIC_*`
+ * hozzáférést égeti be. A `resolveLivenessPollMs(process.env)` indirekt olvasás
+ * a böngészőben mindig az alapértékre esne.
+ */
+const LIVENESS_POLL_MS = resolveLivenessPollMs({
+  [AGENT_TURN_LIVENESS_POLL_ENV]: process.env.NEXT_PUBLIC_AGENT_TURN_LIVENESS_POLL_MS,
+})
+
+/**
  * Egy aktív chat-turn életjelét és részleges eredményét pollolja. A hívó csak a
  * beszélgetés-azonosítót és a megfigyelhető progress-kezelőt ismeri; a heartbeat
  * döntés, retry és timer a modul implementációjában marad.
+ *
+ * Az élő SSE-stream az elsődleges csatorna; ez a poll stall-érzékelés és
+ * részszöveg-backstop, ha a stream megszakad. 5 mp elég — a stall-küszöb 45 mp.
  */
 export function useAgentChatTurnLiveness(input: {
   active: boolean
@@ -84,8 +100,8 @@ export function useAgentChatTurnLiveness(input: {
   ])
 
   useAdaptivePoll(pullProgress, {
-    activeMs: 2_000,
-    idleMs: 5_000,
+    activeMs: LIVENESS_POLL_MS,
+    idleMs: LIVENESS_POLL_MS,
     idle: false,
     enabled: active && Boolean(conversationId) && Boolean(activeTurnId),
   })
