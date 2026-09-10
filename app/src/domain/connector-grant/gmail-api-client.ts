@@ -126,16 +126,68 @@ function encodeMimeHeaderValue(value: string): string {
   return words.join('\r\n ')
 }
 
-function buildRawMessage(params: { to: string; subject: string; body: string }): string {
-  const lines = [
-    `To: ${params.to}`,
+export type GmailAttachment = {
+  fileName: string
+  mimeType: string
+  /** Nyers bájtok standard base64 kódolva. */
+  contentBase64: string
+}
+
+function encodeAttachmentFileName(fileName: string): string {
+  const safe = fileName.replace(/[\r\n"]/g, '_')
+  if (/^[\x20-\x7E]*$/.test(safe) && safe.length > 0) return `"${safe}"`
+  const fallback = safe.replace(/[^\x20-\x7E]+/g, '_') || 'attachment.html'
+  return `"${fallback}"; filename*=UTF-8''${encodeURIComponent(fileName)}`
+}
+
+export function buildRawMessage(params: {
+  to?: string
+  subject: string
+  body: string
+  attachments?: GmailAttachment[]
+}): string {
+  const headerLines = [
+    ...(params.to ? [`To: ${params.to}`] : []),
     `Subject: ${encodeMimeHeaderValue(params.subject)}`,
     'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=utf-8',
+  ]
+  if (!params.attachments || params.attachments.length === 0) {
+    const lines = [
+      ...headerLines,
+      'Content-Type: text/plain; charset=utf-8',
+      'Content-Transfer-Encoding: 8bit',
+      '',
+      params.body,
+    ]
+    return Buffer.from(lines.join('\r\n'), 'utf8').toString('base64url')
+  }
+  const boundary = `platform-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+  const lines = [
+    ...headerLines,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    '',
+    'This is a multi-part message in MIME format.',
+    '',
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="utf-8"',
     'Content-Transfer-Encoding: 8bit',
     '',
     params.body,
+    '',
   ]
+  for (const attachment of params.attachments) {
+    const encodedName = encodeAttachmentFileName(attachment.fileName)
+    lines.push(
+      `--${boundary}`,
+      `Content-Type: ${attachment.mimeType}; name=${encodedName}`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename=${encodedName}`,
+      '',
+      attachment.contentBase64.replace(/\s+/g, '').replace(/(.{76})/g, '$1\r\n'),
+      '',
+    )
+  }
+  lines.push(`--${boundary}--`, '')
   return Buffer.from(lines.join('\r\n'), 'utf8').toString('base64url')
 }
 
@@ -252,10 +304,11 @@ export class GmailApiClient {
   }
 
   async createDraft(params: {
-    to: string
+    to?: string
     subject: string
     body: string
     threadId?: string
+    attachments?: GmailAttachment[]
   }): Promise<{ draftId: string }> {
     if (this.isStub()) {
       return { draftId: `stub-draft-${Date.now()}` }

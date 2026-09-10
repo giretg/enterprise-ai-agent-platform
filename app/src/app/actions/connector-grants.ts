@@ -32,6 +32,11 @@ import { toolsRequiringConnector } from '@/domain/tool-broker/tool-connector-req
 import { agentDisplayName } from '@/lib/agent-persona'
 import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
 import {
+  GmailApiAuthError,
+  GmailApiClient,
+} from '@/domain/connector-grant/gmail-api-client'
+import { gmailToolAllowedByScopes } from '@/domain/connector-grant/gmail-scopes'
+import {
   readGoogleDriveGrantMetadata,
   removeGoogleDrivePickerSelection,
   saveGoogleDrivePickerSelections as persistGoogleDrivePickerSelections,
@@ -635,8 +640,69 @@ export async function revokeConnectorGrant(input: { grantId: string }) {
   }
 }
 
-function assertTicketTenantScope(
-  ticket: { tenantId: string | null },
+const gmailDraftAttachmentSchema = z.object({
+  fileName: z.string().trim().min(1).max(200),
+  html: z.string().min(1).max(8_000_000),
+})
+
+/**
+ * Előnézeti HTML-riport → Gmail-piszkozat `.html` melléklettel a felhasználó
+ * saját, csatolt Gmail-fiókjába. Nem küld, csak piszkozatot készít.
+ */
+export async function createGmailDraftWithAttachment(input: { fileName: string; html: string }) {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const parsed = gmailDraftAttachmentSchema.parse(input)
+    const fileName = parsed.fileName.split('/').pop()?.trim() ?? ''
+    if (!fileName || fileName === '.' || fileName === '..' || !/\.html?$/i.test(fileName)) {
+      return fail('Érvénytelen fájlnév.')
+    }
+    const grant = await prisma.connectorGrant.findFirst({
+      where: {
+        userId: ctx.user.id,
+        tenantId: ctx.activeTenantId,
+        status: 'active',
+        connector: { type: 'gmail', lifecycleState: 'active' },
+      },
+      include: { connector: true },
+      orderBy: { grantedAt: 'desc' },
+    })
+    if (!grant) return fail('Nincs aktív Gmail-fiók csatlakoztatva.')
+    if (!gmailToolAllowedByScopes({ tool: 'gmail_create_draft', scopes: grant.scopes })) {
+      return fail('A csatolt Gmail-fiók csak olvasásra jogosult — a piszkozathoz írási engedély kell.')
+    }
+    const accessToken = await services.connectorGrants.resolveAccessToken({
+      connector: grant.connector,
+      grantId: grant.id,
+      tokenRef: grant.tokenRef,
+      actingUserId: ctx.user.id,
+      tenantId: grant.tenantId ?? ctx.activeTenantId,
+    })
+    const subject = fileName.replace(/\.html?$/i, '')
+    const { draftId } = await new GmailApiClient(accessToken).createDraft({
+      subject,
+      body: `Csatolva küldöm a riportot: ${fileName}.\r\n\r\nA melléklet az előnézetben látott HTML-riport.`,
+      attachments: [
+        {
+          fileName,
+          mimeType: 'text/html',
+          contentBase64: Buffer.from(parsed.html, 'utf8').toString('base64'),
+        },
+      ],
+    })
+    return ok({ draftId })
+  } catch (e) {
+    if (
+      (e instanceof Error && e.message === 'grant_token_expired') ||
+      e instanceof GmailApiAuthError
+    ) {
+      return fail('A Gmail-kapcsolat lejárt — kösd össze újra a fiókot.')
+    }
+    return fail(e instanceof Error ? e.message : 'Failed to create Gmail draft')
+  }
+}
+
+function assertTicketTenantScope(  ticket: { tenantId: string | null },
   activeTenantId: string,
 ): void {
   if (ticket.tenantId !== activeTenantId) {

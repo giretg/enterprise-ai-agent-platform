@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { listConnectorsPanelContext, createGmailDraftWithAttachment } from '@/app/actions/connector-grants'
 import {
   loadWorkspaceHtmlPreview,
   WorkspaceHtmlPreviewError,
@@ -35,6 +36,19 @@ function downloadLoadedHtml(fileName: string, html: string) {
   URL.revokeObjectURL(url)
 }
 
+async function hasActiveGmailGrant(): Promise<boolean> {
+  try {
+    const res = await listConnectorsPanelContext()
+    if (!res.success) return false
+    const gmailIds = new Set(
+      res.data.connectors.filter((c) => c.type === 'gmail').map((c) => c.id),
+    )
+    return res.data.grants.some((g) => g.status === 'active' && gmailIds.has(g.connectorId))
+  } catch {
+    return false
+  }
+}
+
 export function HtmlPreviewModal({
   target,
   onClose,
@@ -46,6 +60,8 @@ export function HtmlPreviewModal({
   const closeRef = useRef<HTMLButtonElement>(null)
   const [mounted, setMounted] = useState(false)
   const [retryKey, setRetryKey] = useState(0)
+  const [sendingEmail, setSendingEmail] = useState(false)
+  const [emailStatus, setEmailStatus] = useState<string | null>(null)
   const requestId = `${target.url}#${retryKey}`
   const [result, setResult] = useState<{ id: string; state: LoadState } | null>(null)
   const loadState: LoadState = result?.id === requestId ? result.state : { status: 'loading' }
@@ -96,9 +112,36 @@ export function HtmlPreviewModal({
     }
   }, [requestId, target.url])
 
-  if (!mounted) return null
-
   const ready = loadState.status === 'ready' ? loadState : null
+
+  async function handleSendEmail() {
+    if (!ready || sendingEmail) return
+    setSendingEmail(true)
+    setEmailStatus(null)
+    try {
+      if (await hasActiveGmailGrant()) {
+        const res = await createGmailDraftWithAttachment({
+          fileName: target.fileName,
+          html: ready.html,
+        })
+        if (res.success) {
+          setEmailStatus('Piszkozat létrehozva a Gmail Piszkozatok között.')
+          window.open('https://mail.google.com/mail/#drafts', '_blank', 'noopener,noreferrer')
+        } else {
+          setEmailStatus(res.error)
+        }
+        return
+      }
+      downloadLoadedHtml(target.fileName, ready.html)
+      const subject = target.fileName.replace(/\.html?$/i, '')
+      const body = `Csatolva küldöm a riportot: ${target.fileName}.\n\n(A fájl most letöltődött — csatold a levélhez.)`
+      window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+    } finally {
+      setSendingEmail(false)
+    }
+  }
+
+  if (!mounted) return null
 
   return createPortal(
     <div
@@ -129,6 +172,24 @@ export function HtmlPreviewModal({
             >
               Letöltés
             </button>
+            <button
+              type="button"
+              disabled={!ready || sendingEmail}
+              onClick={() => void handleSendEmail()}
+              title="Csatolt Gmail-fiók esetén piszkozat készül a riport mellékletével, különben letöltés + alapértelmezett levelező."
+              className="rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-coral-deep disabled:opacity-40"
+            >
+              {sendingEmail ? 'Piszkozat készül…' : 'Elküldöm emailben'}
+            </button>
+            {emailStatus && (
+              <span
+                role="status"
+                title={emailStatus}
+                className="max-w-56 truncate text-[11px] text-ink-soft"
+              >
+                {emailStatus}
+              </span>
+            )}
             <button
               type="button"
               disabled={!ready}

@@ -112,6 +112,7 @@ jobs:
           npm run test:loop-stop
           npm run test:tool-loop
           npm run test:connector-grant-needed
+          npm run test:gmail-draft-attachment
           npm run test:turn-cost
           npm run test:efficiency-advisor
           npm run test:efficiency-advisor-apply
