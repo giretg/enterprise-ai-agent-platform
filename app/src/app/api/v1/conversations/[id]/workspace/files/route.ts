@@ -17,6 +17,11 @@ import {
 } from '@/lib/workspace-inline-html-headers'
 import { resolveInlineWorkspaceHtml } from '@/lib/resolve-inline-workspace-html'
 import { resolveOfficeWorkspaceFile } from '@/lib/resolve-office-workspace-file'
+import {
+  MAX_WORKSPACE_UPLOAD_BYTES,
+  WORKSPACE_UPLOAD_LIMIT_MESSAGE,
+  rejectOversizedUpload,
+} from '@/lib/workspace-upload-limit'
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ success: false, error: message }, { status })
@@ -189,6 +194,12 @@ export async function POST(
     return jsonError('Conversation not found', 404)
   }
 
+  // OOM-kapu: a túlméretes törzset a Content-Length alapján elutasítjuk, MIELŐTT
+  // a `request.formData()` az egészet memóriába pufferelné (a `file.size` kapu
+  // alább csak a kipufferelés után futna le).
+  const oversized = rejectOversizedUpload(request)
+  if (oversized) return oversized
+
   let formData: FormData
   try {
     formData = await request.formData()
@@ -202,8 +213,7 @@ export async function POST(
   const pathField = formData.get('path')
   const filePath = typeof pathField === 'string' && pathField.trim() ? pathField.trim() : file.name
 
-  const MAX = 50 * 1024 * 1024
-  if (file.size > MAX) return jsonError('File exceeds 50 MB limit', 413)
+  if (file.size > MAX_WORKSPACE_UPLOAD_BYTES) return jsonError(WORKSPACE_UPLOAD_LIMIT_MESSAGE, 413)
 
   const storage = getStorage()
 
