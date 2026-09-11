@@ -15,6 +15,9 @@ import type { AgentChatStreamEvent } from '../src/domain/agent/agent-turn-runner
 import {
   AGENT_TURN_RECONNECT_POLL_DEFAULT_MS,
   AGENT_TURN_RECONNECT_POLL_ENV,
+  AGENT_TURN_LIVENESS_POLL_DEFAULT_MS,
+  AGENT_TURN_LIVENESS_POLL_ENV,
+  resolveLivenessPollMs,
   resolveReconnectPollMs,
   snapshotEvent,
   streamTurnReconnect,
@@ -87,6 +90,18 @@ async function main() {
     assert.equal(resolveReconnectPollMs({ [AGENT_TURN_RECONNECT_POLL_ENV]: '0' }), 750)
     assert.equal(resolveReconnectPollMs({ [AGENT_TURN_RECONNECT_POLL_ENV]: '-5' }), 750)
     assert.equal(resolveReconnectPollMs({ [AGENT_TURN_RECONNECT_POLL_ENV]: 'abc' }), 750)
+  })
+
+  await check('resolveLivenessPollMs: kliens-poll alapérték 5 mp, függetlenül a DB-kadenciától', () => {
+    assert.equal(AGENT_TURN_LIVENESS_POLL_DEFAULT_MS, 5000)
+    assert.notEqual(AGENT_TURN_LIVENESS_POLL_DEFAULT_MS, AGENT_TURN_RECONNECT_POLL_DEFAULT_MS)
+    assert.equal(resolveLivenessPollMs({}), 5000)
+  })
+
+  await check('resolveLivenessPollMs: env felülírja, érvénytelen → alapérték', () => {
+    assert.equal(resolveLivenessPollMs({ [AGENT_TURN_LIVENESS_POLL_ENV]: '3000' }), 3000)
+    assert.equal(resolveLivenessPollMs({ [AGENT_TURN_LIVENESS_POLL_ENV]: '0' }), 5000)
+    assert.equal(resolveLivenessPollMs({ [AGENT_TURN_LIVENESS_POLL_ENV]: 'abc' }), 5000)
   })
 
   await check('E2: snapshot → delták → lezáró esemény (poll-út, E10)', async () => {

@@ -33,6 +33,31 @@ export function resolveReconnectPollMs(
 }
 
 /**
+ * A KLIENS-oldali életjel-poll (`useAgentChatTurnLiveness`) alapértéke. Ez NEM a
+ * fenti szerver-oldali DB-figyelési kadencia: a böngésző az élő SSE-stream
+ * MELLETT pollozza ezt a végpontot, pusztán stall-érzékelésre és
+ * részszöveg-backstopként arra az esetre, ha a stream megszakad. Ehhez 5 mp
+ * bőven elég. Korábban a hook a 750 ms-es DB-kadenciát használta kliens
+ * HTTP-poll ütemének, ami forduló-futásonként ~1,3 kérés/mp fölösleges
+ * Cloud Run + Neon terhelést jelentett (a stream már szállítja ugyanazt).
+ * A `NEXT_PUBLIC_` előtag kell, hogy az érték a kliens-bundle-be is bekerüljön.
+ */
+export const AGENT_TURN_LIVENESS_POLL_DEFAULT_MS = 5000
+
+/** A kliens-életjel-poll frekvenciáját felülíró (build-időben beégő) változó. */
+export const AGENT_TURN_LIVENESS_POLL_ENV = 'NEXT_PUBLIC_AGENT_TURN_LIVENESS_POLL_MS'
+
+/**
+ * A kliens-életjel-poll konfigurált frekvenciája ms-ben. Érvénytelen / nem
+ * pozitív érték esetén a dokumentált alapértékre esik vissza.
+ */
+export function resolveLivenessPollMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  return readPositiveInt(env[AGENT_TURN_LIVENESS_POLL_ENV], AGENT_TURN_LIVENESS_POLL_DEFAULT_MS)
+}
+
+/**
  * A visszacsatlakozáshoz szükséges forduló-mezők strukturális halmaza — a
  * Prisma `AgentTurn` sor ezt kielégíti, de a mag nem kötődik a Prisma típushoz.
  */
