@@ -51,6 +51,8 @@ env:
     value: "Enterprise AI Agent Platform"
   - variable: CLERK_SECRET_KEY
     secret: CLERK_SECRET_KEY
+  - variable: CLERK_WEBHOOK_SIGNING_SECRET
+    secret: CLERK_WEBHOOK_SIGNING_SECRET
   - variable: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
     secret: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
     availability:
@@ -84,7 +86,7 @@ env:
       - RUNTIME
   # --- Gmail per-user connector (OAuth) ---
   - variable: NEXT_PUBLIC_APP_URL
-    value: "https://enterprise-ai-agent-platform--enterprise-ai-demo.europe-west4.hosted.app"
+    value: "https://ai.excellencepay.com"
     availability:
       - BUILD
       - RUNTIME
@@ -97,7 +99,7 @@ env:
     availability:
       - RUNTIME
   - variable: GMAIL_OAUTH_REDIRECT_URI
-    value: "https://enterprise-ai-agent-platform--enterprise-ai-demo.europe-west4.hosted.app/api/connectors/oauth/callback"
+    value: "https://ai.excellencepay.com/api/connectors/oauth/callback"
     availability:
       - RUNTIME
   # --- Agent workspace storage (file editor, GCS) ---

@@ -104,7 +104,7 @@ Ha a böngésző közvetlenül nyitja meg a pre-signed URL-t, a bucket CORS-ja �
 ```json
 [
   {
-    "origin": ["https://enterprise-ai-agent-platform--enterprise-ai-demo.europe-west4.hosted.app"],
+    "origin": ["https://ai.excellencepay.com"],
     "method": ["GET", "HEAD"],
     "responseHeader": ["Content-Type", "Content-Disposition"],
     "maxAgeSeconds": 3600
