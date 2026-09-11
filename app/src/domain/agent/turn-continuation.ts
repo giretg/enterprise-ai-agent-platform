@@ -27,6 +27,11 @@ const CONTINUATION_REASONS = new Set([
 
 const MAX_ACTIVITY_LINES = 40
 
+/** Rövid, önálló felhasználói üzenet, amely egyértelműen az előző futást folytatja. */
+export function isExplicitContinuationRequest(text: string): boolean {
+  return /^(folytasd|folytatás|continue|resume|go on|keep going)[.!\s]*$/i.test(text.trim())
+}
+
 /** Mikor érdemes continuation-blokkot injektálni a következő fordulóba. */
 export function shouldInjectTurnContinuation(turn: ContinuationTurnSnapshot): boolean {
   if (turn.status !== 'exhausted') return false
@@ -79,7 +84,9 @@ export function buildTurnContinuationPrompt(
     '',
     'KÖTELEZŐ:',
     '- NE kezdd elölről a teljes folyamatot.',
-    '- Először listázd / nézd meg a munkaterület fájljait (progress JSON, kivonatok, Excel).',
+    workspaceFiles.length > 0
+      ? '- A munkaterület fájljai lent vannak felsorolva — NE listázd újra, a kivonatokból (progress JSON, Excel) dolgozz.'
+      : '- Először listázd / nézd meg a munkaterület fájljait (progress JSON, kivonatok, Excel).',
     '- NE ismételd a már sikeresen lefutott, drága lépéseket (újraparse, ugyanaz az API-lekérdezés / http_api_get_all, ugyanazok a JSON-ok chunkolt file_read-del), ha az eredményük már fájlban van.',
     '- Nagy listák egyeztetéséhez: tool_result_extract (archívum VAGY workspace JSON) → reconcile_records / tulajdoni_lap_egyeztetes — NE párosíts a modellben.',
     '- Csak a hiányzó / kimaradt lépéseket csináld meg; a „skipped / a futás leállt — kimaradt” tételek tipikusan ezek.',

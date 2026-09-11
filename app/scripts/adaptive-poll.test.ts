@@ -16,6 +16,7 @@ const readSrc = (rel: string) => readFileSync(resolve(root, rel), 'utf8')
 
 const POLLERS = [
   'src/components/agents/agent-rail.tsx',
+  'src/components/agents/use-agent-chat-turn-liveness.ts',
   'src/components/active-runs/active-runs-panel.tsx',
   'src/components/active-runs/dashboard-runs-list.tsx',
 ] as const
@@ -34,6 +35,12 @@ test('a hook külön élő és nyugalmi időközt kezel, és nem építi újra a
   // A futó időzítő referencián át olvassa a késleltetést → csak `enabled` építi újra.
   assert.match(src, /delayRef\.current/)
   assert.match(src, /\}, \[enabled\]\)/)
+})
+
+test('a következő poll csak az előző befejezése után ütemeződik', () => {
+  const src = readSrc('src/lib/use-adaptive-poll.ts')
+  assert.match(src, /await refreshRef\.current\(\)/)
+  assert.match(src, /finally\s*\{[\s\S]*setTimeout\(tick, delayRef\.current\)/)
 })
 
 for (const file of POLLERS) {

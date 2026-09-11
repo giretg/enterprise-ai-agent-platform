@@ -25,7 +25,11 @@ import {
   sourceIngestBudget,
   toolCallSourceKey,
 } from '../src/domain/agent/loop-stop-decision'
-import { runAgentToolLoop, type ChatPlatformToolName } from '../src/domain/agent/chat-tool-loop'
+import {
+  TOOL_LOOP_CHECKPOINT_PATH,
+  runAgentToolLoop,
+  type ChatPlatformToolName,
+} from '../src/domain/agent/chat-tool-loop'
 import type {
   GatewayMessage,
   GatewayToolCall,
@@ -53,6 +57,10 @@ function check(name: string, fn: () => void | Promise<void>) {
 
 const MODEL_CONFIG: ModelConfig = { provider: 'chatgpt-oauth', model: 'stub' }
 const fakeToolCaps = { findConnectorsForAgent: async () => [] } as unknown as ToolBrokerRepository
+const brokerReturning = (output: unknown) =>
+  ({
+    invoke: async (input: ToolBrokerInvokeInput) => fakeToolBrokerSuccess(input.tool, output),
+  }) as unknown as ToolBrokerService
 
 const TEST_LIMITS: ContextCompactionLimits = {
   keepRecentToolResults: 2,
@@ -244,6 +252,196 @@ async function main() {
     assert.equal(extractReadBackSourcePath('{"path":"a/b.json","x":1}'), 'a/b.json')
     assert.equal(extractReadBackSourcePath('csonkolt szöveg path nélkül'), null)
     assert.equal(extractReadBackSourcePath('HIBA: nincs ilyen elmentett tool-eredmény'), null)
+  })
+
+  await check('ugyanaz a path tooltól függetlenül ugyanaz a forrás', () => {
+    assert.equal(
+      toolCallSourceKey('file_read', { path: 'adat/nagy.json', offset: 0 }),
+      toolCallSourceKey('tool_result_read', { path: 'adat/nagy.json', offset: 40_000 }),
+    )
+    assert.notEqual(
+      toolCallSourceKey('load_skill_attachment', { skillVersionId: 'v1', path: 'assets/template.html' }),
+      toolCallSourceKey('load_skill_attachment', { skillVersionId: 'v2', path: 'assets/template.html' }),
+      'azonos relatív nevű, de más skillverzióhoz tartozó melléklet nem ugyanaz a forrás',
+    )
+    assert.notEqual(
+      toolCallSourceKey('gmail_get_message', { id: '42' }),
+      toolCallSourceKey('ticket_get', { id: '42' }),
+      'az általános id mező tool-név nélkül külön entitástípusokat ütköztetne',
+    )
+  })
+
+  await check('az első sikeres fallback modellre rögzül a teljes tool-loop', async () => {
+    const requestedProviders: string[] = []
+    const requestedFallbackCounts: number[] = []
+    let call = 0
+    const gateway = {
+      call: async (args: { modelConfig: ModelConfig }) => {
+        requestedProviders.push(args.modelConfig.provider)
+        requestedFallbackCounts.push(args.modelConfig.fallbackModels?.length ?? 0)
+        call += 1
+        if (call === 1) {
+          return {
+            content: '',
+            toolCalls: [{ id: 'sticky-1', name: 'kb_search', input: { query: 'adat' } }],
+            provider: 'openrouter',
+            model: 'deepseek/deepseek-v4-flash-0731',
+            fallbackRoute: { provider: 'openrouter', model: 'deepseek/deepseek-v4-flash-0731' },
+            usage: { promptTokens: 1, completionTokens: 1 },
+          }
+        }
+        return {
+          content: 'Kész.',
+          provider: 'openrouter',
+          model: 'deepseek/deepseek-v4-flash-0731',
+          usage: { promptTokens: 1, completionTokens: 1 },
+        }
+      },
+    } as unknown as ModelGateway
+
+    await runAgentToolLoop({
+      gateway,
+      toolBroker: brokerReturning({ hits: [] }),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-sticky-model' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'keress' }],
+      modelConfig: {
+        ...MODEL_CONFIG,
+        fallbackModels: [
+          { provider: 'openrouter', model: 'deepseek/deepseek-v4-flash-0731' },
+          { provider: 'openrouter', model: 'tartalek-2' },
+        ],
+      },
+      allowedTools: ['kb_search'],
+      maxTurns: 3,
+    })
+
+    assert.deepEqual(requestedProviders, ['chatgpt-oauth', 'openrouter'])
+    // A pinnelt tartalék elsődleges lett, a mögötte lévő tartalék megmaradt.
+    assert.deepEqual(requestedFallbackCounts, [2, 1])
+  })
+
+  await check('a sikeres elsődleges modell megtartja a vésztartalékait', async () => {
+    const requestedFallbackCounts: number[] = []
+    let call = 0
+    const gateway = {
+      call: async (args: { modelConfig: ModelConfig }) => {
+        requestedFallbackCounts.push(args.modelConfig.fallbackModels?.length ?? 0)
+        call += 1
+        // A provider a modell-id hosszabb alakját echózza vissza — ez NEM tartalék.
+        return call === 1
+          ? {
+              content: '',
+              toolCalls: [{ id: 'primary-1', name: 'kb_search', input: { query: 'adat' } }],
+              provider: MODEL_CONFIG.provider,
+              model: `${MODEL_CONFIG.model}-20260601`,
+            }
+          : {
+              content: 'Kész.',
+              provider: MODEL_CONFIG.provider,
+              model: `${MODEL_CONFIG.model}-20260601`,
+            }
+      },
+    } as unknown as ModelGateway
+
+    await runAgentToolLoop({
+      gateway,
+      toolBroker: brokerReturning({ hits: [] }),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-primary-model' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'keress' }],
+      modelConfig: {
+        ...MODEL_CONFIG,
+        fallbackModels: [{ provider: 'openrouter', model: 'fallback' }],
+      },
+      allowedTools: ['kb_search'],
+      maxTurns: 3,
+    })
+
+    assert.deepEqual(requestedFallbackCounts, [1, 1])
+  })
+
+  await check('a fallback modell a folytatási körben is megmarad', async () => {
+    const workspace = new Map<string, string>()
+    let firstCall = true
+    const firstGateway = {
+      call: async () => {
+        if (firstCall) {
+          firstCall = false
+          return {
+            content: '',
+            toolCalls: [{ id: 'checkpoint-tool', name: 'kb_search', input: { query: 'adat' } }],
+            provider: 'openrouter',
+            model: 'deepseek/deepseek-v4-flash-0731',
+            fallbackRoute: { provider: 'openrouter', model: 'deepseek/deepseek-v4-flash-0731' },
+          }
+        }
+        return {
+          content: 'Első kör kész.',
+          provider: 'openrouter',
+          model: 'deepseek/deepseek-v4-flash-0731',
+        }
+      },
+    } as unknown as ModelGateway
+    const workspaceIo = {
+      writeWorkspaceFile: async (path: string, content: string) => {
+        workspace.set(path, content)
+        return { bytes: Buffer.byteLength(content) }
+      },
+      readWorkspaceFile: async (path: string) => workspace.get(path) ?? null,
+      listWorkspaceFiles: async () => [...workspace.keys()],
+    }
+
+    await runAgentToolLoop({
+      gateway: firstGateway,
+      toolBroker: brokerReturning({ hits: [] }),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-checkpoint-model' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'keress' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['kb_search'],
+      maxTurns: 3,
+      ...workspaceIo,
+    })
+    assert.ok(workspace.has(TOOL_LOOP_CHECKPOINT_PATH))
+
+    let resumedProvider = ''
+    const resumedGateway = {
+      call: async (args: { modelConfig: ModelConfig }) => {
+        resumedProvider = args.modelConfig.provider
+        return {
+          content: 'Folytatás kész.',
+          provider: args.modelConfig.provider,
+          model: args.modelConfig.model,
+        }
+      },
+    } as unknown as ModelGateway
+    await runAgentToolLoop({
+      gateway: resumedGateway,
+      toolBroker: brokerReturning({ hits: [] }),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-checkpoint-model' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'folytasd' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['kb_search'],
+      maxTurns: 2,
+      resumeCheckpoint: true,
+      ...workspaceIo,
+    })
+
+    assert.equal(resumedProvider, 'openrouter')
   })
 
   await check('a per-kör visszaolvasási keret a tömörítés keretére szorít (invariáns)', () => {

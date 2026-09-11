@@ -7,6 +7,61 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-09-11 — Fájlfeltöltés (`formData()`) OOM: a scope MÁR javítva (#448) — duplikátum visszavonva + coverage-rés rögzítve
+
+**Scope-választás (kockázati alapon):** a 09-09 kör lezárt residualja explicit ezt
+jelölte a „legfontosabb követő"-nek: a multipart **fájlfeltöltés** — a két
+`.../workspace/files` POST route (`tickets` + `conversations`) a `request.formData()`-tal
+a teljes törzset memóriába pufferelte, és csak UTÁNA nézte az 50 MB-os kaput
+(OOM ellen hatástalan). Ez közvetlenül a **nyitott Cloud Run OOM-incidens**
+(`healthcheck-cloud-run-oom-concurrency`) vektora → a legmagasabb *gyakorlati* kockázat.
+
+### Finding A (CONFIRMED, de MÁR JAVÍTVA) — méret-kapu a teljes törzs pufferelése UTÁN → OOM
+
+Mindkét feltöltő route a `await request.formData()`-tal a teljes multipart törzset
+memóriába pufferelte, MIELŐTT a `file.size > 50 MB` kapu lefutott volna → hitelesített
+operátor tetszőlegesen nagy törzzsel OOM-kill-t válthatott ki. A finding valós; **de a
+kódbázisban már nyitva van rá a kanonikus fix:** **PR #448**
+(`fix/bounded-upload-formData-oom`, 09-10) — `lib/bounded-form-data.ts` /
+`readBoundedFormData`. Ez a helyes, **erős** megoldás: Content-Length gyors-elutasítás
+MELLETT egy streamelő `TransformStream` bájt-számláló megszakítja a parse-t a teljes
+pufferelés BEFEJEZÉSE előtt — így a chunked / hiányzó / hazudott Content-Length
+támadói utat is zárja. Mindkét route-on helyesen bekötve, `RequestBodyTooLargeError` →
+413, a pontos per-fájl `file.size` kapu megtartva.
+
+### Finding B (PROCESS/COVERAGE) — a 09-10 audit-kör terméke (#448) nem került a naplóba
+
+A napló utolsó bejegyzése 09-09 volt; a 09-10 kör létrehozta #448-at, de sem a
+`production_audit.md`-ben, sem a memóriában nem jelölte. Emiatt **ez a kör kockázati
+alapon ugyanazt a (már megoldott) scope-ot választotta** és egy gyengébb, csak
+Content-Length-alapú duplikátumot (#450) kezdett. **Tanulság / következő audithoz:** a
+scope-választás ELŐTT a nyitott PR-eket (`gh pr list`) is nézni kell, nemcsak a ledgert —
+több nyitott OOM-keményítő PR halmozódik (#443 process-input, #445 nyers-JSON,
+#448 multipart), egyik sincs main-en.
+
+### Tevékenység ebben a körben
+
+- **#448 független verifikáció:** átnéztem a `readBoundedFormData`-t és a két route
+  bekötését — korrekt, a streaming bájt-számláló a `Content-Length`-only megközelítésnél
+  erősebb (zárja az attacker-path residualt). **Javaslat: #448 a kanonikus fix, mergelni.**
+- **#450 (saját duplikátum) LEZÁRVA + branch törölve:** gyengébb (csak Content-Length),
+  felesleges a #448 mellett. A zárás-komment rögzíti az okot.
+- Nettó kód-változás e körből: **0** (a napló-bejegyzésen kívül) — a kockázatot #448 fedi.
+
+### Residual risk / következő audithoz
+
+- **#448 MERGE-re vár:** amíg nincs main-en, az OOM-vektor élesben nyitva marad. A
+  három nyitott OOM-PR (#443/#445/#448) merge-sorrendje és CI-státusza a következő
+  kör prioritása — új scope helyett ezek átvezetése csökkenti ténylegesen a kockázatot.
+- **Tartós OOM-fix:** platform/ingress-szintű törzs-méret plafon (apphosting/Cloud Run)
+  + a #114 runtime-szétválasztás; a nyitott OOM-incidenst NE jelöljük lezártnak #448
+  merge-ével sem (csak a feltöltés-vektort zárja, nem a teljes párhuzamos-chat OOM-ot).
+- **Malware / content-type hamisítás (idea #447):** változatlanul nyitva; külön, tágabb
+  biztonsági kapu (magic-bytes + AV + makró-vizsgálat, karantén) — önálló scope, e kör
+  NEM érintette.
+
+---
+
 ## 2026-09-09 — Nyers JSON kérés-törzs méret-kapu MINDEN ingressen (DoS/OOM)
 
 **Scope-választás (kockázati alapon):** a 09-08 kör lezárt residualja explicit ezt jelölte

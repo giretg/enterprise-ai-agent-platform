@@ -15,6 +15,7 @@ import {
   evaluateLoopContinuation,
   mergeSkillRuntimeHints,
   resolveLoopGuardLimits,
+  shouldEnterCompletionPhase,
   trackTurnProgress,
   type LoopGuardLimits,
 } from '../src/domain/agent/loop-stop-decision'
@@ -134,6 +135,12 @@ async function main() {
       limits: LIMITS,
     })
     assert.equal(decision.continue, true)
+  })
+
+  await check('a falióra utolsó 30%-a a lezárásé', () => {
+    assert.equal(shouldEnterCompletionPhase(251_999, 360_000), false)
+    assert.equal(shouldEnterCompletionPhase(252_000, 360_000), true)
+    assert.equal(shouldEnterCompletionPhase(359_999, 360_000), true)
   })
 
   await check('a megszakítás-kérés mindent megelőz', () => {
@@ -345,6 +352,85 @@ async function main() {
   })
 
   // --- 4. Loop-integráció: a három új feltétel ---
+
+  await check('lezárási szakaszban az új olvasás kimarad, az író tool lefut', async () => {
+    let clock = 0
+    let gatewayCall = 0
+    let sawCompletionPrompt = false
+    const invoked: string[] = []
+    const gateway = {
+      call: async (args: GatewayCallArgs) => {
+        gatewayCall += 1
+        if (gatewayCall === 1) {
+          clock = 75_000
+          return {
+            content: '',
+            toolCalls: [{ id: 'initial-read', name: 'kb_search', input: { query: 'adat' } }],
+          }
+        }
+        sawCompletionPrompt = args.messages.some(
+          (message) => message.role === 'system' && message.content.includes('LEZÁRÁSI SZAKASZ'),
+        )
+        if (gatewayCall === 2) {
+          return {
+            content: '',
+            toolCalls: [
+              { id: 'late-read', name: 'kb_search', input: { query: 'még több adat' } },
+              { id: 'deliverable', name: 'file_write', input: { path: 'eredmeny.md', content: 'Kész' } },
+            ],
+          }
+        }
+        if (gatewayCall === 3) {
+          // Saját kivonat visszaolvasása mehet (ismert forrás), új oldal nem.
+          return {
+            content: '',
+            toolCalls: [
+              { id: 'own-file', name: 'file_read', input: { path: 'eredmeny.md' } },
+              { id: 'new-page', name: 'kb_get_page', input: { pageId: 'uj-oldal' } },
+            ],
+          }
+        }
+        return { content: 'Elkészült az eredmény.' }
+      },
+    } as unknown as ModelGateway
+    const broker = {
+      invoke: async (input: ToolBrokerInvokeInput) => {
+        invoked.push(input.tool)
+        const machineData = { ok: true }
+        return {
+          denied: false,
+          trust: 'trusted',
+          outcome: 'ok',
+          outcomeReason: null,
+          effect: null,
+          modelText: JSON.stringify(machineData),
+          machineData,
+          result: machineData,
+          resultMeta: {},
+          latencyMs: 1,
+        } as unknown as ToolBrokerInvokeResult
+      },
+    } as unknown as ToolBrokerService
+
+    const result = await runAgentToolLoop({
+      gateway,
+      toolBroker: broker,
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-completion-phase' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'Készíts riportot.' }],
+      modelConfig: { ...MODEL_CONFIG, maxToolWallClockMs: 100_000 } as ModelConfig,
+      allowedTools: ['kb_search', 'kb_get_page', 'file_write', 'file_read'],
+      maxTurns: 6,
+      now: () => clock,
+    })
+
+    assert.equal(sawCompletionPrompt, true)
+    assert.deepEqual(invoked, ['kb_search', 'file_write', 'file_read'])
+    assert.equal(result.status, 'completed')
+  })
 
   await check('faliórai korlát leállítja a loopot (wallclock_timeout)', async () => {
     // Minden óraolvasás 40 mp-et léptet; a limit 60 mp → a 2. kör elején lejár.

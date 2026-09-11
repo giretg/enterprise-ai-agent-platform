@@ -193,6 +193,7 @@
     "test:agent-turn-watchdog": "tsx scripts/agent-turn-watchdog.test.ts",
     "test:active-runs": "tsx scripts/active-runs.test.ts",
     "test:adaptive-poll": "tsx scripts/adaptive-poll.test.ts",
+    "test:conversation-write-retry": "tsx scripts/conversation-write-retry.test.ts",
     "test:poll-coalesce": "tsx scripts/poll-coalesce.test.ts",
     "test:agent-registry": "tsx scripts/agent-registry-lifecycle.test.ts",
     "test:dispatcher-retry-loop": "tsx scripts/dispatcher-retry-loop.test.ts",

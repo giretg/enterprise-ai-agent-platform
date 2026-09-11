@@ -11,6 +11,7 @@ import {
 import {
   buildReturnedDelegationPrompt,
   buildTurnContinuationPrompt,
+  isExplicitContinuationRequest,
   shouldInjectTurnContinuation,
 } from '../src/domain/agent/turn-continuation'
 import {
@@ -58,6 +59,12 @@ check('continuation: csak exhausted + resource reason', () => {
     }),
     false,
   )
+})
+
+check('explicit folytatás: rövid folytasd/continue igen, új feladat nem', () => {
+  assert.equal(isExplicitContinuationRequest('folytasd'), true)
+  assert.equal(isExplicitContinuationRequest('Continue!'), true)
+  assert.equal(isExplicitContinuationRequest('készíts inkább egy Excelt'), false)
 })
 
 check('continuation prompt: ne kezdj elölről + aktivitások', () => {

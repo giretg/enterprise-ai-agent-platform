@@ -44,23 +44,30 @@ export function useAdaptivePoll(
     if (!enabled || typeof document === 'undefined') return
 
     let cancelled = false
+    let running = false
     let timer: ReturnType<typeof setTimeout> | undefined
 
-    const tick = () => {
-      if (cancelled) return
-      if (document.visibilityState !== 'hidden') {
-        void refreshRef.current()
+    const tick = async () => {
+      if (cancelled || running) return
+      running = true
+      try {
+        if (document.visibilityState !== 'hidden') {
+          await refreshRef.current()
+        }
+      } finally {
+        running = false
+        if (!cancelled) timer = setTimeout(tick, delayRef.current)
       }
-      timer = setTimeout(tick, delayRef.current)
     }
 
-    // Felcsatoláskor azonnali első betöltés, majd időzített ismétlés.
-    void refreshRef.current()
-    timer = setTimeout(tick, delayRef.current)
+    // Felcsatoláskor azonnali első betöltés; a következő csak annak
+    // befejezése után indul, tehát lassú hálózaton sincs átfedő poll.
+    void tick()
 
     const onVisible = () => {
       if (!cancelled && document.visibilityState === 'visible') {
-        void refreshRef.current()
+        if (timer) clearTimeout(timer)
+        void tick()
       }
     }
     document.addEventListener('visibilitychange', onVisible)

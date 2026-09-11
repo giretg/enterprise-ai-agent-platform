@@ -11,7 +11,7 @@ import type {
 import { prisma } from '@/lib/db'
 import type { ConversationRepository } from '../interfaces'
 
-const MAX_APPEND_RETRIES = 3
+const MAX_APPEND_RETRIES = 5
 
 function encodeContent(content: string): string {
   return `inline:${content}`
@@ -45,8 +45,19 @@ function clampLimit(limit: number | undefined, fallback = 50): number {
   return Math.max(1, Math.min(limit ?? fallback, 100))
 }
 
-function isUniqueCollision(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'
+const RETRYABLE_APPEND_CODES = new Set([
+  'P1001', // DB nem elérhető
+  'P1002', // DB timeout
+  'P1008', // műveleti timeout
+  'P1017', // kapcsolat lezárult
+  'P2002', // seq verseny
+  'P2028', // lejárt tranzakció
+  'P2034', // write conflict / deadlock
+])
+
+export function isRetryableMessageAppendError(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('code' in error)) return false
+  return RETRYABLE_APPEND_CODES.has(String(error.code))
 }
 
 export class PostgresConversationRepository implements ConversationRepository {
@@ -258,7 +269,10 @@ export class PostgresConversationRepository implements ConversationRepository {
           return message
         })
       } catch (error) {
-        if (isUniqueCollision(error) && attempt < MAX_APPEND_RETRIES - 1) continue
+        if (isRetryableMessageAppendError(error) && attempt < MAX_APPEND_RETRIES - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** attempt))
+          continue
+        }
         throw error
       }
     }

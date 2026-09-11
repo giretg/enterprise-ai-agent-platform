@@ -240,19 +240,26 @@ async function main() {
         {
           name: 'stub',
           async chat() {
-            return { content: 'stub válasz', usage: { promptTokens: 10, completionTokens: 5 }, latencyMs: 1 }
+            // A provider a modell-id dátumozott alakját echózza — ez nem tartalék.
+            return {
+              content: 'stub válasz',
+              model: 'stub-model-20260601',
+              usage: { promptTokens: 10, completionTokens: 5 },
+              latencyMs: 1,
+            }
           },
         },
       ],
     ])
 
     const gw = new ModelGateway(auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 })
-    await gw.call({
+    const primaryResult = await gw.call({
       agentId: TEST_AGENT_ID,
       agentVersion: 1,
       messages: [{ role: 'user', content: 'teszt lekérdezés' }],
       modelConfig: { provider: 'stub', model: 'stub-model' },
     })
+    assert.equal(primaryResult.fallbackRoute, undefined, 'elsődleges siker nem tartalék-út')
 
     const callEvent = events.find((e) => e.action === 'model.call')
     assert.ok(callEvent, 'model.call esemény nem keletkezett')
@@ -958,6 +965,7 @@ async function main() {
 
     assert.equal(result.content, 'tartalék ok')
     assert.equal(result.provider, 'gemini')
+    assert.deepEqual(result.fallbackRoute, { provider: 'gemini', model: 'gemini-3.5-flash' })
     assert.ok(calls.primary >= 1, 'elsődleges nem hívódott')
     assert.equal(calls.secondary, 1)
     assert.equal(created.length, 2, `várható 2 hívás-napló, kapott ${created.length}`)

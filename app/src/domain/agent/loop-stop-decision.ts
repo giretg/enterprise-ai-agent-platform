@@ -85,6 +85,15 @@ export type LoopGuardState = {
 const CONTINUE: LoopStopDecision = { continue: true }
 
 /**
+ * A falióra utolsó 30%-át (legfeljebb a keret felét) a kész eredményre
+ * tartjuk fenn. Így a discovery nem fogyaszthatja el a teljes futást.
+ */
+export function shouldEnterCompletionPhase(elapsedMs: number, maxWallClockMs: number): boolean {
+  const reserveMs = Math.min(maxWallClockMs / 2, Math.max(30_000, maxWallClockMs * 0.3))
+  return elapsedMs >= maxWallClockMs - reserveMs
+}
+
+/**
  * A loop folytathatóságának egyetlen döntési pontja. A sorrend szándékos: a
  * felhasználói szándék (`cancelled`) mindent megelőz, utána a meglévő
  * kör-limit, majd az új, erőforrás-alapú feltételek.
@@ -272,10 +281,23 @@ export function toolCallSourceKey(
   input: Record<string, unknown> | undefined,
 ): string | null {
   if (!input) return null
-  for (const field of ['path', 'documentId', 'url', 'pageId', 'skillVersionId', 'id'] as const) {
-    const value = input[field]
-    if (typeof value === 'string' && value.trim()) return `${toolName}:${field}:${value.trim()}`
+  const skillVersionId = input.skillVersionId
+  const path = input.path
+  if (
+    toolName === 'load_skill_attachment' &&
+    typeof skillVersionId === 'string' &&
+    skillVersionId.trim() &&
+    typeof path === 'string' &&
+    path.trim()
+  ) {
+    return `skillVersionId:${skillVersionId.trim()}:path:${path.trim()}`
   }
+  for (const field of ['path', 'documentId', 'url', 'pageId', 'skillVersionId'] as const) {
+    const value = input[field]
+    if (typeof value === 'string' && value.trim()) return `${field}:${value.trim()}`
+  }
+  const id = input.id
+  if (typeof id === 'string' && id.trim()) return `${toolName}:id:${id.trim()}`
   return null
 }
 

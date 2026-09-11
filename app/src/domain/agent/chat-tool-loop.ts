@@ -86,6 +86,7 @@ import {
   resolveLoopGuardLimits,
   resolveSourceIngestLimits,
   SOURCE_INGEST_DEFAULTS,
+  shouldEnterCompletionPhase,
   sourceIngestBudget,
   toolCallSourceKey,
   trackTurnProgress,
@@ -290,6 +291,56 @@ const TOOL_RESULT_INLINE_LIMIT = 12_000
 const TOOL_RESULT_PREVIEW_CHARS = 10_000
 const TOOL_RESULT_READ_DEFAULT_LIMIT = 40_000
 const TOOL_RESULT_READ_MAX_LIMIT = 40_000
+export const TOOL_LOOP_CHECKPOINT_PATH = '.workspace-meta/tool-loop-checkpoint.json'
+const COMPLETION_PHASE_MESSAGE =
+  'LEZÁRÁSI SZAKASZ: a futás idejének utolsó része következik. Ne gyűjts új forrást és ne indíts új kutatást. A már összegyűjtött adatokból készítsd el MOST a felhasználó által kért legkisebb, de használható végeredményt. Ha fájlt/riportot/prezentációt kért, azonnal hívd a megfelelő író eszközt; egyébként adj végleges természetes nyelvű választ.'
+
+type ToolLoopCheckpoint = {
+  version: 1
+  modelRoute?: Pick<ModelConfig, 'provider' | 'model'>
+  sourceIngestChars?: Record<string, number>
+  archiveSourceKeys?: Record<string, string>
+  outputWritten?: boolean
+}
+
+function parseToolLoopCheckpoint(raw: string | null): ToolLoopCheckpoint | null {
+  if (!raw) return null
+  try {
+    const value = JSON.parse(raw) as Partial<ToolLoopCheckpoint>
+    if (!value || value.version !== 1) return null
+    const modelRoute = value.modelRoute
+    return {
+      version: 1,
+      ...(modelRoute &&
+      typeof modelRoute.provider === 'string' &&
+      modelRoute.provider.trim() &&
+      typeof modelRoute.model === 'string' &&
+      modelRoute.model.trim()
+        ? { modelRoute: { provider: modelRoute.provider, model: modelRoute.model } }
+        : {}),
+      ...(value.sourceIngestChars && typeof value.sourceIngestChars === 'object'
+        ? { sourceIngestChars: value.sourceIngestChars }
+        : {}),
+      ...(value.archiveSourceKeys && typeof value.archiveSourceKeys === 'object'
+        ? { archiveSourceKeys: value.archiveSourceKeys }
+        : {}),
+      ...(value.outputWritten === true ? { outputWritten: true } : {}),
+    }
+  } catch {
+    return null
+  }
+}
+
+function isDiscoveryTool(toolName: string): boolean {
+  if (
+    toolName === TOOL_RESULT_READ ||
+    toolName === LOAD_SKILL_TOOL ||
+    toolName === LOAD_SKILL_ATTACHMENT_TOOL
+  ) {
+    return true
+  }
+  return isToolName(toolName) && !TOOL_REGISTRY[toolName].sideEffecting
+}
 
 /**
  * Mennyi keretnek kell maradnia ahhoz, hogy egy delegáció (`agent_ask`)
@@ -877,6 +928,8 @@ export async function runAgentToolLoop(params: {
   listWorkspaceFiles?: () => Promise<string[]>
   /** Workspace fájl olvasása — lusta betöltés a hidratált archívum-maphoz. */
   readWorkspaceFile?: (path: string) => Promise<string | null>
+  /** Korábbi kimerült/újraindított futás checkpointjának folytatása ugyanabban a workspace-ben. */
+  resumeCheckpoint?: boolean
   onActivity?: (event: ToolLoopActivityEvent) => void | Promise<void>
   /**
    * Kör-eleji horog. A chat-forduló ezen ír életjelet (heartbeat) a perzisztált
@@ -1028,6 +1081,55 @@ export async function runAgentToolLoop(params: {
     toolTail: runtimePrompt.toolTail,
   })
 
+  let checkpoint: ToolLoopCheckpoint | null = null
+  if (params.resumeCheckpoint && params.readWorkspaceFile) {
+    try {
+      checkpoint = parseToolLoopCheckpoint(
+        await params.readWorkspaceFile(TOOL_LOOP_CHECKPOINT_PATH),
+      )
+    } catch (error) {
+      logger.warn({ error }, 'agent.tool_loop.checkpoint_read_failed')
+    }
+  }
+  // Az első sikeres provider/model a teljes folytatási láncra rögzül. Firebase-en
+  // a ChatGPT OAuth várhatóan fallbackre esik; a következő „folytasd” se próbálja
+  // újra a csak localhoston elérhető providert.
+  let pinnedModel: Pick<ModelConfig, 'provider' | 'model'> | null = checkpoint?.modelRoute ?? null
+  const activeModelConfig = (): ModelConfig => {
+    const pinned = pinnedModel
+    if (!pinned) return params.modelConfig
+    // A pinnelt tartalék lesz az elsődleges; a többi tartalék megmarad mögötte.
+    return {
+      ...params.modelConfig,
+      ...pinned,
+      fallbackModels: (params.modelConfig.fallbackModels ?? []).filter(
+        (candidate) => candidate.provider !== pinned.provider || candidate.model !== pinned.model,
+      ),
+    }
+  }
+  let outputWritten = checkpoint?.outputWritten === true
+  const archiveSourceKeys = new Map<string, string>(
+    Object.entries(checkpoint?.archiveSourceKeys ?? {}).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    ),
+  )
+  if (checkpoint) {
+    logger.info(
+      {
+        provider: checkpoint.modelRoute?.provider ?? null,
+        model: checkpoint.modelRoute?.model ?? null,
+        sourceCount: Object.keys(checkpoint.sourceIngestChars ?? {}).length,
+        archiveCount: archiveSourceKeys.size,
+        outputWritten,
+        ...(params.context.conversationId
+          ? { conversationId: params.context.conversationId }
+          : {}),
+        ...(params.context.ticketId ? { ticketId: params.context.ticketId } : {}),
+      },
+      'agent.tool_loop.checkpoint_resumed',
+    )
+  }
+
   let toolCallCount = 0
   /** Összes elutasítás / policy-skip (telemetria, UI). */
   let deniedCount = 0
@@ -1092,8 +1194,9 @@ export async function runAgentToolLoop(params: {
   })
   const archivedToolResults = new Map<
     string,
-    { content: string | null; bytes: number; toolName: string }
+    { content: string | null; bytes: number; toolName: string; sourceKey?: string }
   >()
+  const sourceKeyByToolCallId = new Map<string, string>()
   /**
    * A betöltött skill(ek) `allowed-tools` hatóköre. `null` = nincs szűkítés.
    * A `load_skill` sikeres hívása menet közben is beállíthatja/bővítheti.
@@ -1147,7 +1250,12 @@ export async function runAgentToolLoop(params: {
         const withoutExt = base.replace(/\.[^.]+$/, '')
         const withoutTurn = withoutExt.replace(/^\d+-/, '')
         const toolName = withoutTurn.replace(/-[^-]+$/, '') || 'archived'
-        archivedToolResults.set(path, { content: null, bytes: 0, toolName })
+        archivedToolResults.set(path, {
+          content: null,
+          bytes: 0,
+          toolName,
+          ...(archiveSourceKeys.get(path) ? { sourceKey: archiveSourceKeys.get(path) } : {}),
+        })
       }
     } catch (error) {
       logger.warn({ error }, 'agent.tool_loop.archive_hydration_failed')
@@ -1156,18 +1264,24 @@ export async function runAgentToolLoop(params: {
 
   const rememberArchived = (
     path: string,
-    entry: { content: string; bytes: number; toolName: string },
+    entry: { content: string; bytes: number; toolName: string; sourceKey?: string },
   ) => {
     archivedToolResults.set(path, entry)
+    if (entry.sourceKey) archiveSourceKeys.set(path, entry.sourceKey)
   }
 
   const loadArchivedContent = async (
     path: string,
-  ): Promise<{ content: string; bytes: number; toolName: string } | null> => {
+  ): Promise<{ content: string; bytes: number; toolName: string; sourceKey?: string } | null> => {
     const entry = archivedToolResults.get(path)
     if (!entry) return null
     if (entry.content != null) {
-      return { content: entry.content, bytes: entry.bytes, toolName: entry.toolName }
+      return {
+        content: entry.content,
+        bytes: entry.bytes,
+        toolName: entry.toolName,
+        ...(entry.sourceKey ? { sourceKey: entry.sourceKey } : {}),
+      }
     }
     if (!params.readWorkspaceFile) return null
     try {
@@ -1180,6 +1294,7 @@ export async function runAgentToolLoop(params: {
         content,
         bytes: Buffer.byteLength(content, 'utf8'),
         toolName: entry.toolName,
+        ...(entry.sourceKey ? { sourceKey: entry.sourceKey } : {}),
       }
       archivedToolResults.set(path, loaded)
       return loaded
@@ -1282,7 +1397,12 @@ export async function runAgentToolLoop(params: {
         content: item.content,
         bytes: archiveBytes,
         toolName: item.toolName,
+        ...(sourceKeyByToolCallId.get(item.toolCallId) || archiveSourceKeys.get(item.path)
+          ? { sourceKey: sourceKeyByToolCallId.get(item.toolCallId) ?? archiveSourceKeys.get(item.path) }
+          : {}),
       })
+      const sourceKey = sourceKeyByToolCallId.get(item.toolCallId)
+      if (sourceKey) archiveSourceKeys.set(item.path, sourceKey)
       committed.push(item)
     }
 
@@ -1400,7 +1520,32 @@ export async function runAgentToolLoop(params: {
     params.modelConfig as unknown as Record<string, unknown>,
   )
   /** Forrás-kulcs → a futás alatt eddig ebből behozott karakterek. */
-  const ingestedCharsBySource = new Map<string, number>()
+  const ingestedCharsBySource = new Map<string, number>(
+    Object.entries(checkpoint?.sourceIngestChars ?? {}).filter(
+      (entry): entry is [string, number] =>
+        typeof entry[1] === 'number' && Number.isFinite(entry[1]) && entry[1] >= 0,
+    ),
+  )
+  const persistCheckpoint = async (): Promise<void> => {
+    if (!params.writeWorkspaceFile) return
+    try {
+      const sourceIngestChars = Object.fromEntries([...ingestedCharsBySource].slice(-500))
+      const savedArchiveSourceKeys = Object.fromEntries([...archiveSourceKeys].slice(-500))
+      await params.writeWorkspaceFile(
+        TOOL_LOOP_CHECKPOINT_PATH,
+        JSON.stringify({
+          version: 1,
+          ...(pinnedModel ? { modelRoute: pinnedModel } : {}),
+          sourceIngestChars,
+          archiveSourceKeys: savedArchiveSourceKeys,
+          ...(outputWritten ? { outputWritten: true } : {}),
+        } satisfies ToolLoopCheckpoint),
+        'internal',
+      )
+    } catch (error) {
+      logger.warn({ error }, 'agent.tool_loop.checkpoint_write_failed')
+    }
+  }
   /** Az aktuális körben archívumból visszaolvasott karakterek (kör elején nullázva). */
   let turnReadBackChars = 0
   // issue #195 D6 — fordulónkénti visszaolvasás-számvitel. A mért incidensben egy
@@ -1507,6 +1652,7 @@ export async function runAgentToolLoop(params: {
 
   // A tényleges leállási ok; `max_turns_exhausted` a loop természetes kifutása.
   let stopReason: ToolLoopStopReason = 'max_turns_exhausted'
+  let completionPhase = false
   // Az utolsó kör asszisztens-szövege — ez a részeredmény, amit akkor is ki
   // tudunk adni, ha a záró összefoglaló hívás nem fér bele a türelmi időbe.
   let lastAssistantText = ''
@@ -1538,6 +1684,22 @@ export async function runAgentToolLoop(params: {
       if (turnDecision.reason === 'cancelled') throw new AgentToolLoopCancelledError()
       stopReason = turnDecision.reason
       break
+    }
+    if (
+      !completionPhase &&
+      shouldEnterCompletionPhase(now() - startedAt, guardLimits.maxWallClockMs)
+    ) {
+      completionPhase = true
+      messages.push({ role: 'system', content: COMPLETION_PHASE_MESSAGE })
+      logger.info(
+        {
+          turn,
+          elapsedMs: now() - startedAt,
+          maxWallClockMs: guardLimits.maxWallClockMs,
+          outputWritten,
+        },
+        'agent.tool_loop.completion_phase_started',
+      )
     }
     await params.onTurnStart?.(turn, { toolCallCount, deniedCount })
     let webSearchCallsThisTurn = 0
@@ -1574,14 +1736,19 @@ export async function runAgentToolLoop(params: {
     // ITT, a hívás előtt történik, hogy a megtakarítás már ezt a hívást érintse.
     await compactContext(turn)
 
-    const { content, toolCalls } = await params.gateway.call({
+    const modelResult = await params.gateway.call({
       agentId: params.agentId,
       ...params.context,
       messages,
-      modelConfig: params.modelConfig,
+      modelConfig: activeModelConfig(),
       ...(tools.length ? { tools } : {}),
       ...(onReasoningDelta ? { onReasoningDelta } : {}),
     })
+    const { content, toolCalls } = modelResult
+    if (!pinnedModel && modelResult.fallbackRoute) {
+      pinnedModel = modelResult.fallbackRoute
+      await persistCheckpoint()
+    }
 
     // Forduló-végi flush + összefoglaló (D3): ahol volt valódi reasoning, a
     // placeholder-cím "Gondolkodás"-ra vált és a rövidített, redaktált szöveg a
@@ -1705,6 +1872,8 @@ export async function runAgentToolLoop(params: {
     })
 
     for (const [callIndex, call] of calls.entries()) {
+      const callSourceKey = toolCallSourceKey(call.name, call.input)
+      if (callSourceKey) sourceKeyByToolCallId.set(call.id, callSourceKey)
       // Spec §7 — minden tool-hívás ELŐTT ugyanaz a döntéshozó. Leálláskor a már
       // kiadott tool-hívásokra kötelező tool-üzenetet adni (különben a modellnek
       // küldött előzmény inkonzisztens lenne), majd gráceful finalizálunk.
@@ -1721,6 +1890,20 @@ export async function runAgentToolLoop(params: {
         }
         break turnLoop
       }
+      // Lezárási szakasz: csak ÚJ forrás tilos. A már beolvasott forrás (saját
+      // kivonat, archívum) kell a végeredményhez, ha a tömörítés kiszervezte.
+      const knownSource =
+        (callSourceKey != null && ingestedCharsBySource.has(callSourceKey)) ||
+        (typeof call.input.path === 'string' && archivedToolResults.has(call.input.path))
+      if (completionPhase && isDiscoveryTool(call.name) && !knownSource) {
+        turnToolCallsIssued += 1
+        await skipToolCall(
+          call,
+          '[LEZÁRÁSI SZAKASZ] Új forrás beolvasása már nem fér bele. A már megismert adatokból készítsd el most a végeredményt; ha fájlt kértek, hívd az író eszközt.',
+          'lezárási szakasz — új olvasás kimaradt',
+        )
+        continue
+      }
       // A visszaolvasás ugyanolyan eszközhívás, mint a többi: BESZÁMÍT a
       // tool-büdzsébe, átmegy az ismétlés-őrön, és a kör előrehaladás-mérlegébe is
       // bekerül. Amíg ez az ág mindezt megkerülte, egy visszaolvasásba ragadt
@@ -1729,7 +1912,6 @@ export async function runAgentToolLoop(params: {
         turnToolCallsIssued += 1
         const readStartedAt = now()
         const path = typeof call.input.path === 'string' ? call.input.path : ''
-        const readSourceKey = toolCallSourceKey(call.name, call.input) ?? `${call.name}:path:${path}`
         let archived = path ? await loadArchivedContent(path) : null
         // Workspace fájl (pl. egyeztetes-eltero.json): nem tool-archívum, de a
         // skill útmutatója tool_result_read-et kér rá. Extract már így működik.
@@ -1741,6 +1923,7 @@ export async function runAgentToolLoop(params: {
                 content: workspaceContent,
                 bytes: Buffer.byteLength(workspaceContent, 'utf8'),
                 toolName: 'workspace',
+                ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
               }
               rememberArchived(path, loaded)
               archived = loaded
@@ -1749,6 +1932,8 @@ export async function runAgentToolLoop(params: {
             logger.warn({ path, error }, 'agent.tool_loop.workspace_read_fallback_failed')
           }
         }
+        const readSourceKey =
+          archived?.sourceKey ?? callSourceKey ?? `${call.name}:path:${path}`
         const offset = clamp(numArg(call.input, 'offset') ?? 0, 0, archived?.content.length ?? 0)
         const limit = clamp(
           numArg(call.input, 'limit') ?? TOOL_RESULT_READ_DEFAULT_LIMIT,
@@ -2107,7 +2292,7 @@ export async function runAgentToolLoop(params: {
         // újratöltő futás sem tudja tisztára mosni a zsákutca-sorozatot.
         const skillContent = loaded.ok ? loaded.instructions : `ELUTASÍTVA: ${loaded.reason}`
         const skillRedundant = noteSourceIngest(
-          toolCallSourceKey(call.name, call.input),
+          callSourceKey,
           skillContent.length,
           skillContent.length,
         )
@@ -2173,7 +2358,7 @@ export async function runAgentToolLoop(params: {
         // Ugyanannak a mellékletnek az újratöltése nem hoz új információt — a
         // forrás-számvitel ezt zsákutcaként látja (mint a `load_skill`-nél).
         const attachmentRedundant = noteSourceIngest(
-          toolCallSourceKey(call.name, call.input),
+          callSourceKey,
           attachmentContent.length,
           attachmentContent.length,
         )
@@ -2610,6 +2795,7 @@ export async function runAgentToolLoop(params: {
 
         const result = await params.toolBroker.invoke(invokeInput)
         toolCallCount += 1
+        if (!result.denied && TOOL_REGISTRY[toolName].sideEffecting) outputWritten = true
         if (result.denied) {
           deniedCount += 1
           brokerDeniedCount += 1
@@ -2656,7 +2842,7 @@ export async function runAgentToolLoop(params: {
         const redundantIngest =
           !result.denied &&
           noteSourceIngest(
-            toolCallSourceKey(toolName, call.input),
+            callSourceKey,
             resultBody.length,
             ingestSourceChars,
           )
@@ -2729,6 +2915,7 @@ export async function runAgentToolLoop(params: {
               content: archiveContent,
               bytes: archive.bytes,
               toolName: call.name,
+              ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
             })
             const workspacePath = workspaceCopyPathForArchive(archive.path)
             if (params.writeWorkspaceFile && workspacePath !== archive.path) {
@@ -2739,6 +2926,7 @@ export async function runAgentToolLoop(params: {
                     content: archiveContent,
                     bytes: copy.bytes,
                     toolName: call.name,
+                    ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
                   })
                 }
               } catch (error) {
@@ -2904,6 +3092,8 @@ export async function runAgentToolLoop(params: {
       logger.info(costSignalFields, 'agent.tool_loop.turn_cost_signals')
     }
 
+    await persistCheckpoint()
+
     // issue #97 — chat: kapu után ne égjünk újabb tool-köröket (folytatás a
     // gomb után). Task: maradjunk a loopban, hogy a modell a terv többi írását
     // is be tudja sorolni külön kártyákra (Approve all), amíg a limit engedi.
@@ -2935,7 +3125,7 @@ export async function runAgentToolLoop(params: {
       agentId: params.agentId,
       ...params.context,
       messages,
-      modelConfig: params.modelConfig,
+      modelConfig: activeModelConfig(),
     })
     const grantContent =
       stripToolArtifacts(grantFinal.content) || grantFinal.content.trim() || lastAssistantText.trim()
@@ -2978,7 +3168,7 @@ export async function runAgentToolLoop(params: {
       agentId: params.agentId,
       ...params.context,
       messages,
-      modelConfig: params.modelConfig,
+      modelConfig: activeModelConfig(),
     })
     const gateContent =
       stripToolArtifacts(gateFinal.content) || gateFinal.content.trim() || lastAssistantText.trim()
@@ -3018,7 +3208,7 @@ export async function runAgentToolLoop(params: {
       agentId: params.agentId,
       ...params.context,
       messages,
-      modelConfig: params.modelConfig,
+      modelConfig: activeModelConfig(),
     })
     .then(({ content }) => content)
 

@@ -473,6 +473,7 @@ export class GeneralTaskRuntime {
             return null
           }
         },
+        resumeCheckpoint: true,
         ...(this.consequenceApprovals
           ? {
               createConsequenceApproval: async (invoke: import('../tool-broker/tool-broker-types').ToolBrokerInvokeInput) =>

@@ -10,7 +10,11 @@
  * Ez a modul a DÖNTÉS és a SZÖVEG; a ticket felvétele a chat-runtime dolga.
  */
 
+import { LOOP_GUARD_DEFAULTS } from './loop-stop-decision'
+
 export type SkillTaskPromotionHints = {
+  maxWallClockMs?: number
+  maxToolCalls?: number
   preferredMode?: 'chat' | 'task'
 } | null | undefined
 
@@ -99,7 +103,13 @@ export function shouldPromoteSkillRunToTask(input: {
   loadedSkillNames: string[]
 }): boolean {
   if (input.loadedSkillNames.length === 0) return false
-  return input.runtimeHints?.preferredMode === 'task'
+  const hints = input.runtimeHints
+  if (hints?.preferredMode === 'chat') return false
+  return (
+    hints?.preferredMode === 'task' ||
+    (hints?.maxWallClockMs ?? 0) > LOOP_GUARD_DEFAULTS.maxWallClockMs ||
+    (hints?.maxToolCalls ?? 0) > LOOP_GUARD_DEFAULTS.maxToolCalls
+  )
 }
 
 /** Ticket-cím a felhasználó kéréséből — rövid, kereshető, skill-névvel. */

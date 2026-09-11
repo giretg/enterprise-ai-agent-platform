@@ -115,7 +115,7 @@ test('diff: a keret emelése LÁTHATÓ a jóváhagyónak', () => {
 
 // ── 2. board-promóció ───────────────────────────────────────────────────────
 
-test('promóció: csak betöltött skill + preferredMode=task esetén', () => {
+test('promóció: explicit task vagy chat-keretet meghaladó skill esetén', () => {
   assert.equal(
     shouldPromoteSkillRunToTask({
       runtimeHints: { preferredMode: 'task' },
@@ -130,6 +130,14 @@ test('promóció: csak betöltött skill + preferredMode=task esetén', () => {
   assert.equal(
     shouldPromoteSkillRunToTask({ runtimeHints: { preferredMode: 'chat' }, loadedSkillNames: ['x'] }),
     false,
+  )
+  assert.equal(
+    shouldPromoteSkillRunToTask({ runtimeHints: { maxWallClockMs: 600_000 }, loadedSkillNames: ['x'] }),
+    true,
+  )
+  assert.equal(
+    shouldPromoteSkillRunToTask({ runtimeHints: { maxToolCalls: 330 }, loadedSkillNames: ['x'] }),
+    true,
   )
   assert.equal(shouldPromoteSkillRunToTask({ runtimeHints: null, loadedSkillNames: ['x'] }), false)
 })

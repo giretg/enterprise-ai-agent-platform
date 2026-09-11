@@ -91,6 +91,7 @@ import {
 import {
   buildReturnedDelegationPrompt,
   buildTurnContinuationPrompt,
+  isExplicitContinuationRequest,
   shouldInjectTurnContinuation,
   type ContinuationActivity,
   type ReturnedDelegation,
@@ -1701,6 +1702,8 @@ export class AgentChatRuntime {
               return null
             }
           },
+          resumeCheckpoint:
+            Boolean(continuationPrompt) || isExplicitContinuationRequest(text),
           shouldCancel: () => isCancelRequestedNow(),
           // Körönkénti életjel: ettől ismerhető fel kívülről az elhalt futás (D10).
           // A `turnIndex` 0-alapú, tehát a MEGKEZDETT körök száma index+1 — így a

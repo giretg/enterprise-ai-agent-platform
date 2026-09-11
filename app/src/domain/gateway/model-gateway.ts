@@ -2206,6 +2206,8 @@ export class ModelGateway {
     costEstimate: number
     provider: string
     model: string
+    /** Az elsődleges (routing utáni) jelölt helyett ténylegesen használt tartalék — csak fallback esetén. */
+    fallbackRoute?: FallbackCandidate
   }> {
     const prep = await this.prepareModelCall(params)
     const {
@@ -2332,6 +2334,10 @@ export class ModelGateway {
           costEstimate,
           provider: provider.name,
           model: usedModel,
+          ...(candidate.provider !== resolvedConfig.provider ||
+          candidate.model !== (resolvedConfig.model || 'chatgpt-oauth-default')
+            ? { fallbackRoute: { provider: candidate.provider, model: candidate.model } }
+            : {}),
         }
       } catch (error: unknown) {
         lastError = error

@@ -11,6 +11,7 @@ import {
   listAllowedChatTools,
   runAgentToolLoop,
   recoverOpenAiToolCallsFromText,
+  TOOL_LOOP_CHECKPOINT_PATH,
 } from '../src/domain/agent/chat-tool-loop'
 import { assembleContext } from '../src/domain/conversation/context-assembly'
 import { resolveTicketProcessRoute } from '../src/lib/ticket-process-route'
@@ -666,7 +667,8 @@ async function main() {
     })
 
     assert.equal(result.content, 'Kivonat kész.')
-    assert.equal(written.size, 1)
+    assert.ok(written.has(TOOL_LOOP_CHECKPOINT_PATH))
+    assert.equal([...written.keys()].filter((path) => path !== TOOL_LOOP_CHECKPOINT_PATH).length, 1)
     const out = JSON.parse(written.get('nyilvantartas-kivonat.json')!)
     assert.equal(out.length, 300)
     assert.deepEqual(Object.keys(out[0]).sort(), ['anyjaNeve', 'nev', 'szuletesiEv'])
