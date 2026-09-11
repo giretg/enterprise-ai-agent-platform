@@ -63,6 +63,20 @@ test('kompakt állapot: in_progress → Fut', () => {
   assert.equal(compactTicketStateLabel('awaiting_human'), 'Rád vár')
 })
 
+test('ready a chat-kártyán a valódi állapotot mutatja, nem „Készül”-t', () => {
+  assert.equal(compactTicketStateLabel('ready'), 'Végrehajtásra vár')
+  const card = buildChatTaskCardView({
+    ticketId: 'a1b2c3d4-e5f6-7890-abcd-ef0123456789',
+    title: 'tárgyalasi-felkeszito: a Vino Trade -ről',
+    state: 'ready',
+    assigneeLabel: 'Réka',
+    createdAt: '2026-09-11T10:30:00.000Z',
+  })
+  assert.equal(card.stateLabel, 'Végrehajtásra vár')
+  assert.equal(card.live, false)
+  assert.equal(card.state, 'ready')
+})
+
 test('Ebből lett sor a kártya állapotával', () => {
   assert.equal(
     formatBecameLabel({ ticketId: 'a1b2c3d4-e5f6-7890-abcd-ef0123456789', state: 'in_progress' }),

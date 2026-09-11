@@ -128,6 +128,7 @@
     "test:n-plus-one-batch": "tsx scripts/n-plus-one-batch.test.ts",
     "test:list-pagination": "tsx scripts/list-pagination.test.ts",
     "test:agent-chat-tenant-boundary": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-chat-tenant-boundary.test.ts",
+    "test:chat-task-immediate-dispatch": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/chat-task-immediate-dispatch.test.ts",
     "test:user-directory": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/user-directory-tool.test.ts",
     "test:conversation-session": "tsx scripts/conversation-session.test.ts",
     "test:channel-transport": "tsx scripts/channel-outbound-transport.test.ts",

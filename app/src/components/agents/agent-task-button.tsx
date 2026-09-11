@@ -199,7 +199,7 @@ export function AgentTaskPanel({ agentId }: { agentId: string }) {
   const skillsState = useLaunchableSkills(agentId)
 
   if (skillsState.status === 'loading') {
-    return <p className="text-sm text-ink-faint">Skillek betöltése…</p>
+    return <p className="text-sm text-ink-faint">Képességek betöltése…</p>
   }
 
   if (skillsState.status === 'error') {

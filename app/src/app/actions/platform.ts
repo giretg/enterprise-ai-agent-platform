@@ -1356,6 +1356,8 @@ export async function listChatTaskCards(input: { ticketIds: string[] }) {
         assigneeLabel,
         createdAt: ticket.createdAt,
         lockedAt: ticket.lockedAt,
+        cancelRequested: ticket.cancelRequested,
+        payload: ticket.payload,
         stepsDone: progress?.done ?? null,
         stepsTotal: progress?.total ?? null,
         briefingPending: false,

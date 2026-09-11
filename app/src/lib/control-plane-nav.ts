@@ -76,7 +76,7 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         href: '/control-plane/behavior-profiles',
         label: 'Viselkedés-profilok',
       },
-      { key: 'staff.skills', href: '/control-plane/skills', label: 'Skill-katalógus' },
+      { key: 'staff.skills', href: '/control-plane/skills', label: 'Képességek (skill-ek)' },
       { key: 'staff.apps', href: '/control-plane/apps', label: 'Mini-appok' },
       {
         key: 'staff.sandbox-versions',

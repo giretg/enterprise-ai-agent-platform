@@ -1,3 +1,5 @@
+export type WorkspaceDistillTarget = { id: string; name: string }
+
 type WorkspaceChatChrome = {
   startNewChat: () => void
   toggleHistory: () => void
@@ -6,6 +8,21 @@ type WorkspaceChatChrome = {
   hasSavedConversation: boolean
   analyzeDisabled: boolean
   analyze: () => void
+  distill: () => void
+  distillDisabled: boolean
+  distillPending: boolean
+  distillTargets: WorkspaceDistillTarget[]
+  distillTargetSkillId: string
+  setDistillTargetSkillId: (id: string) => void
+}
+
+const EMPTY_CHROME_STATE = {
+  hasSavedConversation: false,
+  analyzeDisabled: false,
+  distillDisabled: true,
+  distillPending: false,
+  distillTargets: [] as WorkspaceDistillTarget[],
+  distillTargetSkillId: '',
 }
 
 let chrome: WorkspaceChatChrome | null = null
@@ -52,12 +69,22 @@ export function workspaceChatAnalyze() {
   chrome?.analyze()
 }
 
-export function getWorkspaceChatAnalyzeState(): Pick<
-  WorkspaceChatChrome,
-  'hasSavedConversation' | 'analyzeDisabled'
-> {
+export function workspaceChatDistill() {
+  chrome?.distill()
+}
+
+export function workspaceChatSetDistillTarget(id: string) {
+  chrome?.setDistillTargetSkillId(id)
+}
+
+export function getWorkspaceChatChromeState(): typeof EMPTY_CHROME_STATE {
+  if (!chrome) return EMPTY_CHROME_STATE
   return {
-    hasSavedConversation: chrome?.hasSavedConversation ?? false,
-    analyzeDisabled: chrome?.analyzeDisabled ?? false,
+    hasSavedConversation: chrome.hasSavedConversation,
+    analyzeDisabled: chrome.analyzeDisabled,
+    distillDisabled: chrome.distillDisabled,
+    distillPending: chrome.distillPending,
+    distillTargets: chrome.distillTargets,
+    distillTargetSkillId: chrome.distillTargetSkillId,
   }
 }

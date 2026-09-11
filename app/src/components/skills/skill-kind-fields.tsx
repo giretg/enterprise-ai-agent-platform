@@ -41,7 +41,7 @@ export function SkillKindFields({
 }) {
   return (
     <fieldset className="space-y-3" disabled={disabled}>
-      <legend className="text-xs font-medium text-ink-soft">Skill fajtája</legend>
+      <legend className="text-xs font-medium text-ink-soft">A képesség fajtája</legend>
       <div className="space-y-2">
         {SKILL_KINDS.map((option) => {
           const locked =

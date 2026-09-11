@@ -119,7 +119,7 @@ export function AgentSkillsPanel({
   const body = (
     <>
       {assigned.length === 0 ? (
-        <p className="text-sm text-ink-faint">Nincs hozzárendelt skill.</p>
+        <p className="text-sm text-ink-faint">Nincs hozzárendelt képesség.</p>
       ) : (
         <ul className="space-y-3">
           {assigned.map((s) => (
@@ -231,16 +231,16 @@ export function AgentSkillsPanel({
       {canEdit ? (
       <div className="mt-5 border-t border-ink-faint/15 pt-4">
         <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-ink-faint">
-          Skill hozzárendelése
+          Képesség hozzárendelése
         </p>
         <div className="mb-3 rounded-lg border border-ink-faint/20 bg-night-2/30 px-3 py-2">
           <SkillKindLegend compact />
         </div>
         {assignable.length === 0 ? (
           <p className="text-xs text-ink-faint">
-            Nincs több hozzárendelhető aktív skill a katalógusban.{' '}
+            Nincs több hozzárendelhető aktív képesség a katalógusban.{' '}
             <OpenInNewWindowLink href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.skills}>
-              Új skill létrehozása
+              Új képesség létrehozása
             </OpenInNewWindowLink>
           </p>
         ) : (
@@ -278,7 +278,7 @@ export function AgentSkillsPanel({
                 href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.skills}
                 className="text-xs font-medium text-coral hover:text-coral-deep"
               >
-                Új skill
+                Új képesség
               </OpenInNewWindowLink>
             </div>
             {selectedSkill ? (
@@ -328,5 +328,5 @@ export function AgentSkillsPanel({
   )
 
   if (bare) return body
-  return <Card title="Skillek (előre meghatározott feladatleírás)">{body}</Card>
+  return <Card title="Képességek (skill-ek)">{body}</Card>
 }

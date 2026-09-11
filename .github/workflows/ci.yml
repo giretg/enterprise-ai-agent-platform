@@ -145,6 +145,7 @@ jobs:
           npm run test:board-tab-badge
           npm run test:board-task-conversation
           npm run test:work-traceability
+          npm run test:chat-task-immediate-dispatch
           npm run test:dispatch-cycle-endpoint
           npm run test:conversation-session
           npm run test:agent-interaction-ticket

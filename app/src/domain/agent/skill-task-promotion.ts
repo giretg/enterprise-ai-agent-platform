@@ -4,8 +4,9 @@
  * A hosszú skill (tulajdoni-lap egyeztetés, nagy kutatás) nem attól lesz kész,
  * hogy a chat fordulóját 15 percre nyújtjuk: a felhasználó közben egy pörgő
  * jelzést néz, a lecsatlakozás kockázata nő, és a részeredmény a beszélgetésben
- * ragad. Ilyenkor ticketet nyitunk, a munka a boardon fut végig, a chat pedig
- * rövid marad — a felhasználó azonnal kap egy hivatkozást, ahol követheti.
+ * ragad. Ilyenkor ticketet nyitunk, a munka a boardon fut végig (azonnal
+ * elindul, a dispatcher workerre várakozás nélkül), a chat pedig rövid marad —
+ * a felhasználó azonnal kap egy hivatkozást, ahol követheti.
  *
  * Ez a modul a DÖNTÉS és a SZÖVEG; a ticket felvétele a chat-runtime dolga.
  */

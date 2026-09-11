@@ -45,8 +45,8 @@ export function TenantLanguagePanel({
     <Card title="Tenant nyelv">
       <div className="space-y-4">
         <p className="text-sm text-ink-soft">
-          A skill-desztilláló és a folyamat-definiáló (Playbook Author) agent ezen a
-          nyelven írja a skill- és folyamat-promptokat, valamint a kapcsolódó emberi
+          A képesség-készítő és a folyamat-definiáló (Playbook Author) agent ezen a
+          nyelven írja a képesség- és folyamat-promptokat, valamint a kapcsolódó emberi
           szövegeket (név, leírás, instrukciók). A JSON kulcsok angolul maradnak.
         </p>
         <div className="flex flex-wrap gap-2">

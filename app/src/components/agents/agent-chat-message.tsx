@@ -1,7 +1,8 @@
 'use client'
 
 import Link from 'next/link'
-import { useMemo, useState, useTransition, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import {
   approveConsequenceApproval,
   approveMemoryCandidate,
@@ -131,10 +132,42 @@ export function ChatHeaderMenu({
   children: React.ReactNode
 }) {
   const [open, setOpen] = useState(false)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null)
+
+  useLayoutEffect(() => {
+    if (!open) return
+    const place = () => {
+      const button = buttonRef.current
+      if (!button) return
+      const rect = button.getBoundingClientRect()
+      setPos({
+        top: rect.bottom + 6,
+        right: Math.max(8, window.innerWidth - rect.right),
+      })
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open])
 
   return (
     <div className="relative">
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
@@ -150,25 +183,72 @@ export function ChatHeaderMenu({
         <span aria-hidden className="text-sm leading-none">⋯</span>
         <span className="hidden lg:inline">Műveletek</span>
       </button>
-      {open && (
-        <>
-          <button
-            type="button"
-            tabIndex={-1}
-            aria-hidden
-            className="fixed inset-0 z-30 cursor-default"
-            onClick={() => setOpen(false)}
-          />
-          <div
-            role="menu"
-            className="absolute right-0 z-40 mt-1.5 w-[min(16rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-line bg-card p-1 shadow-xl"
-            onClick={() => setOpen(false)}
-          >
-            {children}
-          </div>
-        </>
-      )}
+      {open && pos
+        ? createPortal(
+            <>
+              <div
+                aria-hidden
+                className="fixed inset-0 z-[400] cursor-default"
+                onClick={() => setOpen(false)}
+              />
+              <div
+                role="menu"
+                className="fixed z-[401] w-[min(16rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-line bg-card p-1 shadow-xl"
+                style={{ top: pos.top, right: pos.right }}
+                onClick={() => setOpen(false)}
+              >
+                {children}
+              </div>
+            </>,
+            document.body,
+          )
+        : null}
     </div>
+  )
+}
+
+export function DistillSkillMenuItems({
+  pending,
+  disabled,
+  targets,
+  targetSkillId,
+  onTargetChange,
+  onDistill,
+}: {
+  pending: boolean
+  disabled: boolean
+  targets: Array<{ id: string; name: string }>
+  targetSkillId: string
+  onTargetChange: (id: string) => void
+  onDistill: () => void
+}) {
+  return (
+    <>
+      {targets.length > 0 && (
+        <label className="block px-3 py-2" onClick={(e) => e.stopPropagation()}>
+          <span className="block text-[11px] font-semibold text-ink-soft">Hová kerüljön</span>
+          <select
+            value={targetSkillId}
+            onChange={(e) => onTargetChange(e.target.value)}
+            disabled={disabled}
+            className="mt-1 w-full rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink-soft disabled:opacity-40"
+          >
+            <option value="">Új képesség</option>
+            {targets.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} (új verzió)
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      <ChatMenuItem
+        title={pending ? 'Létrehozás…' : 'Képesség (skill) létrehozása'}
+        hint="A beszélgetés módszeréből képesség-vázlat készül. Jóváhagyás után lesz éles."
+        onClick={onDistill}
+        disabled={disabled}
+      />
+    </>
   )
 }
 

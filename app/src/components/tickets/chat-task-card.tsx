@@ -29,11 +29,15 @@ export function ChatTaskCard({
           className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
             card.live
               ? 'text-sky animate-activity-run-row'
-              : card.state === 'done'
+              : card.stalled
+                ? 'bg-coral/12 text-coral-deep'
+                : card.state === 'done'
                 ? 'bg-sage/15 text-sage'
                 : card.state === 'awaiting_human' || card.state === 'needs_info'
                   ? 'bg-coral/12 text-coral-deep'
-                  : 'bg-ink/[0.05] text-ink-soft'
+                  : card.state === 'ready'
+                    ? 'bg-honey/15 text-honey'
+                    : 'bg-ink/[0.05] text-ink-soft'
           }`}
         >
           {card.live ? (

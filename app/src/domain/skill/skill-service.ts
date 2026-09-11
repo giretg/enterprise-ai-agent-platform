@@ -20,6 +20,12 @@ import {
   deriveRequiresFromToolCalls,
 } from '@/lib/skill/skill-distill-transcript'
 import {
+  collectDistillAttachmentCandidates,
+  formatDistillAttachmentIndex,
+  selectDistillAttachments,
+} from '@/lib/skill/skill-distill-attachments'
+import { isInternalWorkspaceFile } from '@/lib/workspace-file-visibility'
+import {
   SkillDistillerAgent,
   type SkillDistillDraft,
 } from '@/domain/skill/skill-distiller-agent'
@@ -65,6 +71,7 @@ import {
 import { readZipEntries, ZipReadError } from '@/lib/skill/zip-reader'
 import {
   buildSkillPackage,
+  classifyPackageFile,
   SkillPackageError,
   type SkillPackageResult,
   type SkillPackageSkippedFile,
@@ -152,8 +159,15 @@ export type SkillDistillResult =
       draft: SkillDistillDraft
       requires: SkillRequirement[]
       created: boolean
+      attachments: SkillAttachment[]
     }
   | { ok: false; stage: 'access' | 'empty' | 'distill' | 'validation'; detail: string }
+
+/** Beszélgetés-workspace olvasás a desztillált skill Level-2 mellékleteihez. */
+export interface DistillWorkspaceStorage {
+  listUserFacing(tenantId: string, conversationId: string): Promise<string[]>
+  read(tenantId: string, conversationId: string, path: string): Promise<Buffer | null>
+}
 
 /**
  * Csomag-import eredmény. A hibás ágak is BESZÉDESEK: az admin abból, amit
@@ -186,6 +200,7 @@ export class SkillService {
     private toolBroker: ToolBrokerRepository,
     private agents: SkillAgentLookup,
     private conversations?: ConversationRepository,
+    private workspace?: DistillWorkspaceStorage,
   ) {}
 
   /**
@@ -740,6 +755,11 @@ export class SkillService {
     const usedTools = [...new Set(toolCalls.filter((t) => t.status === 'ok').map((t) => t.toolName))]
     const requires = deriveRequiresFromToolCalls(toolCalls)
 
+    const candidateAttachments = await this.collectWorkspaceAttachmentCandidates({
+      tenantId: input.actor.actorTenantId,
+      conversationId: input.conversationId,
+    })
+
     const distilled = await input.distiller.distill({
       agentId: input.agentId,
       agentVersion: input.agentVersion,
@@ -749,10 +769,16 @@ export class SkillService {
       turns,
       usedTools,
       outputLanguage: input.outputLanguage,
+      candidateAttachmentIndex: formatDistillAttachmentIndex(candidateAttachments),
     })
     if (!distilled.ok) {
       return { ok: false, stage: 'distill', detail: distilled.detail }
     }
+
+    const attachments = selectDistillAttachments(
+      candidateAttachments,
+      distilled.draft.attachmentPaths,
+    )
 
     const validation = validateSkill({
       name: distilled.draft.name,
@@ -783,6 +809,7 @@ export class SkillService {
         skillId: input.targetSkillId,
         content: distilled.draft.content,
         requires,
+        ...(attachments.length > 0 ? { attachments } : {}),
         actor: input.actor,
       })
       return {
@@ -793,6 +820,7 @@ export class SkillService {
         draft: distilled.draft,
         requires,
         created: false,
+        attachments,
       }
     }
 
@@ -808,6 +836,7 @@ export class SkillService {
       riskTier: validation.riskTier,
       content: distilled.draft.content,
       requires,
+      ...(attachments.length > 0 ? { attachments } : {}),
       actor: input.actor,
     })
 
@@ -819,7 +848,39 @@ export class SkillService {
       draft: distilled.draft,
       requires,
       created: true,
+      attachments,
     }
+  }
+
+  /**
+   * A beszélgetés user-facing szöveges fájljaiból skill-melléklet jelöltek.
+   * Olvasási hiba nem buktatja a desztillációt — akkor melléklet nélkül megy tovább.
+   */
+  private async collectWorkspaceAttachmentCandidates(input: {
+    tenantId: string | null
+    conversationId: string
+  }): Promise<SkillAttachment[]> {
+    if (!this.workspace || !input.tenantId) return []
+    let paths: string[]
+    try {
+      paths = await this.workspace.listUserFacing(input.tenantId, input.conversationId)
+    } catch {
+      return []
+    }
+    const files: Array<{ path: string; bytes: Uint8Array }> = []
+    for (const path of paths) {
+      if (isInternalWorkspaceFile(path)) continue
+      if (classifyPackageFile(path) !== 'reference') continue
+      let buf: Buffer | null
+      try {
+        buf = await this.workspace.read(input.tenantId, input.conversationId, path)
+      } catch {
+        continue
+      }
+      if (!buf) continue
+      files.push({ path, bytes: buf })
+    }
+    return collectDistillAttachmentCandidates(files)
   }
 
   /** Meglévő skill új (proposed) verziója — a write-gate kapun megy át. */

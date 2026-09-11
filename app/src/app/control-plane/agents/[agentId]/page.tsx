@@ -625,7 +625,6 @@ export default async function AgentDetailPage({
                   personaGreeting: agent.personaGreeting,
                   personaTrait: agent.personaTrait,
                 }}
-                canDistillSkill={isAdmin}
                 initialConversationId={initialConversationId}
                 autoOpen={openChat}
                 resumeAfterGrant={resumeAfterGrant}

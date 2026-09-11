@@ -530,7 +530,7 @@ function SkillDetailPanel({ skill }: { skill: SkillCatalogEntry }) {
           </FormSection>
 
           <FormSection
-            title={`Fájlok a skillhez (${detail.attachments.length})`}
+            title={`Fájlok a képességhez (${detail.attachments.length})`}
             hint="Az agent csak akkor olvassa be őket, ha munka közben szüksége van rájuk."
           >
             {detail.attachments.length === 0 ? (
@@ -580,7 +580,7 @@ type DiffResult = {
  * kettő (import + kézi) itt landol; mindkettő a hardcoded validátoron megy át és
  * `proposed` verzióként áll elő. A verziólista mutatja a write-gate állapotot, az
  * aláírást, admin-jóváhagyást / rollbackot, in-place verzió-szerkesztést és diff-et.
- * A desztilláció (D14) a chat-panelből indul (agent-detail, admin).
+ * A desztilláció (D14) a beszélgetés ⋯ menüjéből indul (munkaterület és lebegő chat).
  */
 class SkillCatalogErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null }
@@ -874,10 +874,10 @@ function SkillCatalogManagerView({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <h2 className="font-display text-lg font-semibold tracking-tight">
-              Katalógus · {catalogSkills.length} skill
+              Katalógus · {catalogSkills.length} képesség
             </h2>
             <p className="mt-1 text-sm text-ink-faint">
-              Kattints egy skillre — a részletek, a verziók és a szerkesztés a skill saját
+              Kattints egy képességre — a részletek, a verziók és a szerkesztés a saját
               lapján nyílnak meg.
             </p>
           </div>
@@ -895,7 +895,7 @@ function SkillCatalogManagerView({
                 onClick={() => setCreationMode('manual')}
                 className="rounded-full bg-coral px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-coral/90"
               >
-                + Új skill
+                + Új képesség
               </button>
             </div>
           )}
@@ -904,7 +904,7 @@ function SkillCatalogManagerView({
         {catalogSkills.length > 0 && (
           <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
             <label className="relative block min-w-0 flex-1">
-              <span className="sr-only">Keresés a skillek között</span>
+              <span className="sr-only">Keresés a képességek között</span>
               <svg
                 aria-hidden
                 viewBox="0 0 20 20"
@@ -1081,9 +1081,9 @@ function SkillCatalogManagerView({
 
       {isAdmin && creationMode && (
         <SkillModal
-          eyebrow="Új skill"
-          title={creationMode === 'import' ? 'Skill importálása' : 'Skill létrehozása'}
-          subtitle="A skill mindig javaslatként (proposed) jön létre — aktiválás külön jóváhagyással."
+          eyebrow="Új képesség"
+          title={creationMode === 'import' ? 'Képesség importálása' : 'Képesség (skill) létrehozása'}
+          subtitle="A képesség mindig javaslatként (proposed) jön létre — aktiválás külön jóváhagyással."
           onClose={() => setCreationMode(null)}
           tabs={
             <>
@@ -1259,8 +1259,8 @@ function SkillVersionsPanel({
                 onClick={() => {
                   void (async () => {
                     const confirmed = await confirmDialog({
-                      title: 'Skill törlése',
-                      description: `Biztosan törlöd a „${skillDisplayLabel(skill)}” skillt és az összes verzióját? Csak hozzárendelés nélkül lehetséges.`,
+                      title: 'Képesség törlése',
+                      description: `Biztosan törlöd a „${skillDisplayLabel(skill)}” képességet és az összes verzióját? Csak hozzárendelés nélkül lehetséges.`,
                       confirmLabel: 'Törlés',
                       tone: 'danger',
                     })
@@ -1525,8 +1525,8 @@ function SkillContentFields({
   return (
     <>
       <FormSection
-        title="Mit csináljon a skill?"
-        hint="Ez a szöveg megy oda az agentnek, amikor a skill elindul. Írd úgy, ahogy egy új kollégának magyaráznád el a feladatot."
+        title="Mit csináljon a képesség?"
+        hint="Ez a szöveg megy oda az agentnek, amikor a képesség elindul. Írd úgy, ahogy egy új kollégának magyaráznád el a feladatot."
       >
         <Field label="Instrukciók" hint="Az üres sorral elválasztott részekből külön lépés-blokk lesz.">
           <textarea
@@ -1591,7 +1591,7 @@ function SkillContentFields({
       </FormSection>
 
       <FormSection
-        title={`Fájlok a skillhez (${draft.attachments.length})`}
+        title={`Fájlok a képességhez (${draft.attachments.length})`}
         hint="Szöveges segédanyag: leírás, sablon, adat-táblázat. Az agent csak akkor olvassa be, ha munka közben szüksége van rá."
       >
         <SkillAttachmentsEditor
@@ -1732,7 +1732,7 @@ function ImportSkillForm({
   return (
     <div className="space-y-4">
       <FormSection
-        title="Honnan jön a skill?"
+        title="Honnan jön a képesség?"
         hint="A validátor elutasítja a prompt-injection mintákat, és futtatható fájlt nem enged be."
       >
         <Field label="Formátum">
@@ -1787,7 +1787,7 @@ function ImportSkillForm({
               <input
                 type="file"
                 accept=".zip,application/zip"
-                aria-label="Skill ZIP-csomag (legfeljebb 9 MB)"
+                aria-label="Képesség ZIP-csomag (legfeljebb 9 MB)"
                 onChange={(event) => setArchive(event.target.files?.[0] ?? null)}
                 className={`${INPUT_CLASS} file:mr-3 file:rounded-full file:border-0 file:bg-coral/15 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-coral`}
               />
@@ -1798,7 +1798,7 @@ function ImportSkillForm({
             >
               <input
                 value={subpath}
-                aria-label="Skill almappája"
+                aria-label="Képesség almappája"
                 onChange={(event) => setSubpath(event.target.value)}
                 placeholder="skills/havi-report"
                 className={INPUT_CLASS}
@@ -1848,7 +1848,7 @@ function ImportSkillForm({
                 if (requiredSystemRole) formData.set('requiredSystemRole', requiredSystemRole)
                 return importSkillPackageAction(formData)
               },
-              'Skill importálva — javaslatként. A skill lapján, a „Verziók” fülön hagyd jóvá.',
+              'Képesség importálva — javaslatként. A képesség lapján, a „Verziók” fülön hagyd jóvá.',
               onSuccess,
             )
           }
@@ -2186,13 +2186,13 @@ function CreateSkillForm({
                   requiredSystemRole,
                   ...contentDraftPayload(draft),
                 }),
-              'Skill létrehozva — javaslatként. A skill lapján, a „Verziók” fülön hagyd jóvá.',
+              'Képesség létrehozva — javaslatként. A képesség lapján, a „Verziók” fülön hagyd jóvá.',
               onSuccess,
             )
           }
           className="rounded-full bg-coral px-5 py-2 text-sm font-semibold text-white disabled:opacity-50"
         >
-          {running ? 'Létrehozás…' : 'Skill létrehozása'}
+          {running ? 'Létrehozás…' : 'Képesség (skill) létrehozása'}
         </button>
       </div>
     </div>

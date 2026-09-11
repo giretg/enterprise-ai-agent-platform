@@ -12,7 +12,7 @@ function CatalogLoadError({ error }: { error: string }) {
           Jóváhagyott munkamenetek
         </p>
         <h1 className="mt-2 font-display text-[2.4rem] font-semibold leading-tight">
-          Skill-katalógus
+          Képességek (skill-ek)
         </h1>
       </div>
       <Card>
@@ -39,7 +39,7 @@ export default async function SkillCatalogPage() {
       return (
         <Card>
           <p className="text-sm text-ink-faint">
-            A skill-katalógus megtekintéséhez legalább operátor jogosultság szükséges.
+            A képességek megtekintéséhez legalább operátor jogosultság szükséges.
           </p>
         </Card>
       )
@@ -47,7 +47,7 @@ export default async function SkillCatalogPage() {
 
     const res = await listSkillCatalogAction()
     if (!res.success) {
-      return <CatalogLoadError error={res.error ?? 'A skill-katalógus betöltése sikertelen.'} />
+      return <CatalogLoadError error={res.error ?? 'A képességek betöltése sikertelen.'} />
     }
 
     return (
@@ -57,12 +57,12 @@ export default async function SkillCatalogPage() {
             Jóváhagyott munkamenetek
           </p>
           <h1 className="mt-2 font-display text-[2.4rem] font-semibold leading-tight">
-            Skill-katalógus
+            Képességek (skill-ek)
           </h1>
           <p className="mt-2 max-w-2xl text-ink-soft">
-            A skill egy leírt munkamenet: elmondja az AI-munkatársnak, hogyan csináljon meg
-            egy visszatérő feladatot. Önmagában tehetetlen — hogy mit tud <em>megtenni</em>,
-            azt az agentnek adott jogosultságok döntik el.
+            A képesség (skill) egy leírt munkamenet: elmondja az AI-munkatársnak, hogyan
+            csináljon meg egy visszatérő feladatot. Önmagában tehetetlen — hogy mit tud{' '}
+            <em>megtenni</em>, azt az agentnek adott jogosultságok döntik el.
           </p>
           <p className="mt-2 max-w-2xl text-sm text-ink-faint">
             Minden módosítás előbb javaslat (<em>proposed</em>), és csak jóváhagyás után lesz
@@ -80,7 +80,7 @@ export default async function SkillCatalogPage() {
   } catch (err) {
     return (
       <CatalogLoadError
-        error={err instanceof Error ? err.message : 'A skill-katalógus betöltése sikertelen.'}
+        error={err instanceof Error ? err.message : 'A képességek betöltése sikertelen.'}
       />
     )
   }

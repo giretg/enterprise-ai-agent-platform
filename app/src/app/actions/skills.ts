@@ -887,6 +887,7 @@ export interface DistilledSkillPreview {
   riskTier: SkillRiskTier
   requires: Array<{ toolName: string; reason: string }>
   created: boolean
+  attachmentCount: number
 }
 
 export async function distillSkillFromConversationAction(
@@ -894,9 +895,8 @@ export async function distillSkillFromConversationAction(
 ): Promise<ActionResult<DistilledSkillPreview>> {
   try {
     const parsed = distillSchema.parse(input)
-    const ctx = await requireTenantRole('admin')
-    const agent = await repositories.agents.findById(parsed.agentId)
-    if (!agent) return fail('Az agent nem található.')
+    const ctx = await requireTenantRole('operator')
+    const agent = await assertAgentInTenant(parsed.agentId, ctx.activeTenantId)
 
     const tenant = await repositories.tenants.findById(ctx.activeTenantId!)
     const outputLanguage = readTenantLanguage(tenant?.settings)
@@ -915,9 +915,9 @@ export async function distillSkillFromConversationAction(
     if (!result.ok) {
       const prefix =
         result.stage === 'validation'
-          ? 'A desztillált skill nem felelt meg a validátornak'
+          ? 'A desztillált képesség nem felelt meg a validátornak'
           : result.stage === 'distill'
-            ? 'A desztilláló nem tudott érvényes draftot készíteni'
+            ? 'Nem sikerült érvényes képesség-vázlatot készíteni'
             : result.stage === 'empty'
               ? 'Nincs desztillálható tartalom'
               : 'Hozzáférés megtagadva'
@@ -933,6 +933,7 @@ export async function distillSkillFromConversationAction(
       riskTier: result.riskTier,
       requires: result.requires,
       created: result.created,
+      attachmentCount: result.attachments.length,
     })
   } catch (err) {
     return fail(messageFrom(err))

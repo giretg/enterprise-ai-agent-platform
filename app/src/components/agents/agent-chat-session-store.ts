@@ -85,7 +85,7 @@ export function openAgentChat(input: {
     {
       id,
       agent: input.agent,
-      canDistillSkill: input.canDistillSkill ?? false,
+      canDistillSkill: input.canDistillSkill ?? true,
       initialConversationId: input.initialConversationId ?? null,
       resumeAfterGrant: input.resumeAfterGrant ?? false,
       initialPrefill: input.initialPrefill ?? null,
@@ -132,7 +132,7 @@ export function persistAgentChatForOAuth(input: {
 }) {
   const payload = {
     agent: input.agent,
-    canDistillSkill: input.canDistillSkill ?? false,
+    canDistillSkill: input.canDistillSkill ?? true,
     initialConversationId: input.initialConversationId ?? null,
   }
   try {
@@ -161,7 +161,7 @@ export function consumePendingOAuthAgentChat(): {
     }
     return {
       agent: parsed.agent,
-      canDistillSkill: Boolean(parsed.canDistillSkill),
+      canDistillSkill: parsed.canDistillSkill !== false,
       initialConversationId:
         typeof parsed.initialConversationId === 'string' ? parsed.initialConversationId : null,
     }

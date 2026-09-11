@@ -86,6 +86,7 @@ import { useAgentWorkspaceChatChrome } from '@/components/agents/use-agent-works
 import {
   ChatHeaderMenu,
   ChatMenuItem,
+  DistillSkillMenuItems,
   MessageBubble,
   type AgentActivity,
   type ChatMessage,
@@ -146,7 +147,7 @@ export function AgentChatPanel({
   agent,
   open,
   onClose,
-  canDistillSkill = false,
+  canDistillSkill = true,
   initialConversationId = null,
   resumeAfterGrant = false,
   initialPrefill = null,
@@ -158,7 +159,7 @@ export function AgentChatPanel({
   agent: ChatAgent
   open: boolean
   onClose: () => void
-  /** Admin: D14 skill-desztilláció a beszélgetésből (skill-catalog-spec §WP-6). */
+  /** Beszélgetésből képesség-vázlat (D14). Alapból minden chat-felületen él. */
   canDistillSkill?: boolean
   /** Deep-link / Aktív futások: nyitáskor ezt a beszélgetést tölti be + reattach. */
   initialConversationId?: string | null
@@ -612,14 +613,12 @@ export function AgentChatPanel({
         }
       }
       setAgentSkills([...enabledBySkill.values()])
-      if (canDistillSkill) {
-        setDistillTargets([...distillBySkill.values()])
-      }
+      setDistillTargets([...distillBySkill.values()])
     })
     return () => {
       cancelled = true
     }
-  }, [agent.id, canDistillSkill, open])
+  }, [agent.id, open])
 
   // #199/D6 — chatben a csatolmány-tiltás CSAK figyelmeztetés: a küldést nem
   // törjük meg. A kemény kapu ott van, ahol a skillt explicit kiválasztják
@@ -836,7 +835,7 @@ export function AgentChatPanel({
   }, [controlsBusy, conversationId, conversationStatus, refreshSessions])
 
   const handleDistillSkill = useCallback(() => {
-    if (!conversationId || controlsBusy || !canDistillSkill) return
+    if (!conversationId || controlsBusy) return
     if (messages.length === 0) {
       setStatusMessage('Nincs desztillálható üzenet ebben a beszélgetésben.')
       return
@@ -856,15 +855,19 @@ export function AgentChatPanel({
         res.data.requires.length > 0
           ? ` Javasolt eszközök: ${res.data.requires.map((r) => r.toolName).join(', ')}.`
           : ''
-      const versionHint = res.data.created ? 'Új skill draft' : 'Új verzió javaslat'
+      const fileHint =
+        res.data.attachmentCount > 0
+          ? ` ${res.data.attachmentCount} fájl a képességhez került.`
+          : ''
+      const versionHint = res.data.created ? 'Új képesség-vázlat' : 'Új verzió javaslat'
       setStatusMessage(
-        `${versionHint} (${res.data.riskTier}): „${res.data.name}".${reqHint} Jóváhagyás: Skill katalógus.`,
+        `${versionHint} (${res.data.riskTier}): „${res.data.name}".${reqHint}${fileHint} Jóváhagyás: Képességek (skill-ek).`,
       )
     })
-  }, [agent.id, canDistillSkill, conversationId, controlsBusy, distillTargetSkillId, messages.length])
+  }, [agent.id, conversationId, controlsBusy, distillTargetSkillId, messages.length])
 
   const handleExportDebugLog = useCallback(() => {
-    if (!conversationId || controlsBusy || !canDistillSkill) return
+    if (!conversationId || controlsBusy || !isAdmin) return
     startDebugLogTransition(async () => {
       setStatusMessage(null)
       const res = await exportConversationDebugLog({ conversationId })
@@ -881,7 +884,7 @@ export function AgentChatPanel({
       URL.revokeObjectURL(url)
       setStatusMessage(`Debug-log letöltve: ${res.data.filename}`)
     })
-  }, [canDistillSkill, controlsBusy, conversationId])
+  }, [controlsBusy, conversationId, isAdmin])
 
   const handleAnalyzeConversation = useCallback(() => {
     if (!conversationId || !runAnalysisEntry?.canRunAnalysis || !runAnalysisEntry.runAnalystAgentId) {
@@ -902,12 +905,17 @@ export function AgentChatPanel({
     embedded,
     open,
     agent,
-    canDistillSkill,
     conversationId,
     startNewChat: startNewSession,
     toggleHistory: toggleWorkspaceHistory,
     analyze: handleAnalyzeConversation,
     analyzeDisabled: controlsBusy,
+    distill: handleDistillSkill,
+    distillDisabled: controlsBusy || messages.length === 0,
+    distillPending,
+    distillTargets,
+    distillTargetSkillId,
+    setDistillTargetSkillId,
   })
 
   const reloadConversationMessages = useCallback(
@@ -2198,44 +2206,21 @@ export function AgentChatPanel({
                 disabled={controlsBusy || conversationStatus === 'archived'}
                 tone="warn"
               />
-              {canDistillSkill && (
-                <>
-                  {distillTargets.length > 0 && (
-                    <label
-                      className="block px-3 py-2"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <span className="block text-[11px] font-semibold text-ink-soft">
-                        Desztillálás célja
-                      </span>
-                      <select
-                        value={distillTargetSkillId}
-                        onChange={(e) => setDistillTargetSkillId(e.target.value)}
-                        disabled={controlsBusy}
-                        className="mt-1 w-full rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink-soft disabled:opacity-40"
-                      >
-                        <option value="">Új skill</option>
-                        {distillTargets.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.name} (új verzió)
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                  <ChatMenuItem
-                    title={distillPending ? 'Desztillálás…' : 'Skill desztillálása'}
-                    hint="A beszélgetés módszeréből skill-vázlat készül (jóváhagyás kell)."
-                    onClick={handleDistillSkill}
-                    disabled={controlsBusy || messages.length === 0}
-                  />
-                  <ChatMenuItem
-                    title={debugLogPending ? 'Log készül…' : 'Debug-log letöltése'}
-                    hint="Teljes telemetria: üzenetek, fordulók, model- és tool-hívások."
-                    onClick={handleExportDebugLog}
-                    disabled={controlsBusy}
-                  />
-                </>
+              <DistillSkillMenuItems
+                pending={distillPending}
+                disabled={controlsBusy || messages.length === 0}
+                targets={distillTargets}
+                targetSkillId={distillTargetSkillId}
+                onTargetChange={setDistillTargetSkillId}
+                onDistill={handleDistillSkill}
+              />
+              {isAdmin && (
+                <ChatMenuItem
+                  title={debugLogPending ? 'Log készül…' : 'Debug-log letöltése'}
+                  hint="Teljes telemetria: üzenetek, fordulók, model- és tool-hívások."
+                  onClick={handleExportDebugLog}
+                  disabled={controlsBusy}
+                />
               )}
               {conversationStatus !== 'archived' && (
                 <>
@@ -2345,8 +2330,8 @@ export function AgentChatPanel({
                         ? [
                             {
                               icon: '⚡',
-                              title: 'Skill indítása',
-                              hint: 'Írj / jelet, vagy válassz a „Skill” gombbal.',
+                              title: 'Képesség indítása',
+                              hint: 'Írj / jelet, vagy válassz a + menü Képesség listájából.',
                             },
                           ]
                         : []),
@@ -2586,7 +2571,7 @@ export function AgentChatButton({
   className = '',
   compact = false,
   label = '💬 Beszélgetés',
-  canDistillSkill = false,
+  canDistillSkill = true,
   initialConversationId = null,
   autoOpen = false,
   resumeAfterGrant = false,

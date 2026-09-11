@@ -177,12 +177,12 @@ export function SkillSlashMenu<T extends SlashSkillOption>({
   return (
     <div
       role="listbox"
-      aria-label="Skill slash-parancsok"
+      aria-label="Képesség slash-parancsok"
       className={`absolute z-20 max-h-48 w-72 overflow-y-auto rounded-xl border border-line bg-card py-1 shadow-lg ${anchor} ${className}`}
     >
       {autocomplete.options.length === 0 ? (
         <p className="px-3 py-2 text-xs text-ink-faint">
-          {autocomplete.hasSkills ? 'Nincs illeszkedő skill.' : emptyLabel}
+          {autocomplete.hasSkills ? 'Nincs illeszkedő képesség.' : emptyLabel}
         </p>
       ) : (
         autocomplete.options.map((skill, index) => (

@@ -304,8 +304,8 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description: 'Archívum vagy workspace JSON mezőkivonata fájlba, a teljes tartalom nélkül.',
   },
   load_skill: {
-    label: 'Skill betöltése',
-    description: 'Hozzárendelt skill promptjának betöltése a beszélgetésbe.',
+    label: 'Képesség betöltése',
+    description: 'Hozzárendelt képesség promptjának betöltése a beszélgetésbe.',
   },
 
   // HTTP API

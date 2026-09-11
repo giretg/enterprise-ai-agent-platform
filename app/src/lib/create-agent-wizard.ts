@@ -35,7 +35,7 @@ export const CREATE_AGENT_WIZARD_STEPS = [
   },
   {
     id: 'skills',
-    label: 'Skillek',
+    label: 'Képességek',
     hint: 'Katalógusból hozzárendelve',
     phase: 'post',
   },

@@ -4,6 +4,7 @@
  * Tiszta, DB nélküli nézetmodell — a kártya ugyanabból a Ticket sorból él, mint a tábla.
  */
 import { DEFAULT_CONTEXT_RECENCY_MESSAGES } from '@/domain/conversation/context-assembly'
+import { boardRunPulse } from '@/domain/agent/ticket-runtime-progress'
 import { formatRelativeTicketTime } from '@/lib/ticket-display'
 import { TICKET_STATE_LABELS } from '@/lib/ticket-labels'
 import { agentWorkspacePath } from '@/lib/agent-workspace-routes'
@@ -13,10 +14,9 @@ import {
   type ProcessSiblingTicket,
 } from '@/lib/process-stall'
 
-/** Kompakt állapot a chat-kártyán és az „Ebből lett” soron. */
+/** Kompakt állapot a chat-kártyán és az „Ebből lett” soron. Hiányzó kulcs → `TICKET_STATE_LABELS`. */
 export const TICKET_STATE_COMPACT: Record<string, string> = {
   backlog: 'Sorban',
-  ready: 'Készül',
   in_progress: 'Fut',
   awaiting_human: 'Rád vár',
   needs_info: 'Pontosítás',
@@ -100,6 +100,7 @@ export type ChatTaskCardView = {
   state: string
   stateLabel: string
   live: boolean
+  stalled: boolean
   stepsDone: number | null
   stepsTotal: number | null
   elapsedLabel: string | null
@@ -231,20 +232,32 @@ export function buildChatTaskCardView(input: {
   assigneeLabel: string
   createdAt: Date | string
   lockedAt?: Date | string | null
+  cancelRequested?: boolean | null
+  payload?: unknown
   stepsDone?: number | null
   stepsTotal?: number | null
   briefingPending?: boolean
   now?: Date
 }): ChatTaskCardView {
-  const live = isLiveTicketState(input.state)
+  const runPulse = boardRunPulse({
+    state: input.state,
+    cancelRequested: input.cancelRequested ?? false,
+    lockedAt: input.lockedAt,
+    payload: input.payload ?? null,
+    nowMs: input.now?.getTime(),
+  })
+  const stalled = runPulse === 'stalled'
+  // A boarddal megegyezően: beragadt `in_progress` nem „Fut”, hanem „Megállt”.
+  const live = runPulse === 'live'
   const elapsedFrom = input.lockedAt ?? input.createdAt
   return {
     ticketId: input.ticketId,
     shortRef: formatTicketShortRef(input.ticketId),
     title: input.title,
     state: input.state,
-    stateLabel: compactTicketStateLabel(input.state),
+    stateLabel: stalled ? 'Megállt' : compactTicketStateLabel(input.state),
     live,
+    stalled,
     stepsDone: input.stepsDone ?? null,
     stepsTotal: input.stepsTotal ?? null,
     elapsedLabel: live ? formatRelativeTicketTime(elapsedFrom, input.now) : null,

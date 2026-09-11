@@ -352,6 +352,14 @@ function isDiscoveryTool(toolName: string): boolean {
 const AGENT_ASK_MIN_REMAINING_MS = 60_000
 
 /**
+ * Modell-várakozási életjel: amíg egy `gateway.call` válaszra várunk, sem
+ * activity, sem heartbeat nem születne — a UI ezért 2 perc után tévesen
+ * „megállt"-ot mutatna egy élő futásra. Sokkal ritkább, mint az
+ * ACTIVE-küszöb (45 mp), hogy az életjel-költség elhanyagolható maradjon.
+ */
+export const MODEL_WAIT_HEARTBEAT_MS = 30_000
+
+/**
  * A nagy tool-eredmény helyén álló előnézet archívum-mutatója. Ha egy ilyen
  * előnézetet szervez ki a kontextus-tömörítés, a MEGLÉVŐ útvonalat kell
  * továbbadnia — különben a teljes tartalmat felülírná a saját előnézetével.
@@ -992,6 +1000,8 @@ export async function runAgentToolLoop(params: {
   now?: () => number
   /** Tesztelhetőség: türelmi idő a záró összefoglaló hívásra (default {@link FINALIZE_GRACE_MS}). */
   finalizeGraceMs?: number
+  /** Tesztelhetőség: modell-várakozási életjel üteme (default {@link MODEL_WAIT_HEARTBEAT_MS}). */
+  modelWaitHeartbeatMs?: number
 }): Promise<ToolLoopResult> {
   const maxTurns = params.maxTurns ?? 20
   // Spec §7 — a leállási döntéshozó küszöbei és a hozzá tartozó állapot.
@@ -1233,6 +1243,27 @@ export async function runAgentToolLoop(params: {
   let tools = buildTools()
   const emitActivity = async (event: ToolLoopActivityEvent) => {
     await params.onActivity?.(event)
+  }
+
+  /**
+   * Modellhívás várakozási életjellel: a futó állapot újra-kiadása az
+   * upsert miatt nem duplikálódik, csak az `updatedAt` frissül — a futás
+   * közben is látszik, hogy él. Fail-soft: az életjel hibája nem buktatja
+   * a hívást. (ponytail: 30 mp-es fix ütem, finomhangolás helyett.)
+   */
+  const callGatewayWithWaitHeartbeat = async <T>(
+    runningActivity: ToolLoopActivityEvent,
+    call: () => Promise<T>,
+  ): Promise<T> => {
+    const timer = setInterval(() => {
+      void emitActivity(runningActivity).catch(() => {})
+    }, params.modelWaitHeartbeatMs ?? MODEL_WAIT_HEARTBEAT_MS)
+    ;(timer as unknown as { unref?: () => void }).unref?.()
+    try {
+      return await call()
+    } finally {
+      clearInterval(timer)
+    }
   }
 
   // WP-3: fordulók közötti archívum-nyilvántartás. A `.tool-results/` (és a
@@ -1736,14 +1767,18 @@ export async function runAgentToolLoop(params: {
     // ITT, a hívás előtt történik, hogy a megtakarítás már ezt a hívást érintse.
     await compactContext(turn)
 
-    const modelResult = await params.gateway.call({
-      agentId: params.agentId,
-      ...params.context,
-      messages,
-      modelConfig: activeModelConfig(),
-      ...(tools.length ? { tools } : {}),
-      ...(onReasoningDelta ? { onReasoningDelta } : {}),
-    })
+    const modelResult = await callGatewayWithWaitHeartbeat(
+      { id: reasoningTurnId, kind: 'reasoning', title: placeholderTitle, status: 'running' },
+      () =>
+        params.gateway.call({
+          agentId: params.agentId,
+          ...params.context,
+          messages,
+          modelConfig: activeModelConfig(),
+          ...(tools.length ? { tools } : {}),
+          ...(onReasoningDelta ? { onReasoningDelta } : {}),
+        }),
+    )
     const { content, toolCalls } = modelResult
     if (!pinnedModel && modelResult.fallbackRoute) {
       pinnedModel = modelResult.fallbackRoute

@@ -5,6 +5,7 @@ import { openAgentChat } from '@/components/agents/agent-chat-session-store'
 import {
   clearWorkspaceChatChrome,
   registerWorkspaceChatChrome,
+  type WorkspaceDistillTarget,
 } from '@/lib/agent-workspace-chat-chrome'
 
 type WorkspaceChatAgent = {
@@ -20,22 +21,32 @@ export function useAgentWorkspaceChatChrome({
   embedded,
   open,
   agent,
-  canDistillSkill,
   conversationId,
   startNewChat,
   toggleHistory,
   analyze,
   analyzeDisabled,
+  distill,
+  distillDisabled,
+  distillPending,
+  distillTargets,
+  distillTargetSkillId,
+  setDistillTargetSkillId,
 }: {
   embedded: boolean
   open: boolean
   agent: WorkspaceChatAgent
-  canDistillSkill: boolean
   conversationId: string | null
   startNewChat: () => void
   toggleHistory: () => void
   analyze: () => void
   analyzeDisabled: boolean
+  distill: () => void
+  distillDisabled: boolean
+  distillPending: boolean
+  distillTargets: WorkspaceDistillTarget[]
+  distillTargetSkillId: string
+  setDistillTargetSkillId: (id: string) => void
 }) {
   useEffect(() => {
     if (!embedded || !open) return
@@ -45,22 +56,33 @@ export function useAgentWorkspaceChatChrome({
       detach: () =>
         openAgentChat({
           agent,
-          canDistillSkill,
+          canDistillSkill: true,
           initialConversationId: conversationId,
         }),
       hasSavedConversation: Boolean(conversationId),
       analyzeDisabled,
       analyze,
+      distill,
+      distillDisabled,
+      distillPending,
+      distillTargets,
+      distillTargetSkillId,
+      setDistillTargetSkillId,
     })
     return () => clearWorkspaceChatChrome()
   }, [
     agent,
     analyze,
     analyzeDisabled,
-    canDistillSkill,
     conversationId,
+    distill,
+    distillDisabled,
+    distillPending,
+    distillTargetSkillId,
+    distillTargets,
     embedded,
     open,
+    setDistillTargetSkillId,
     startNewChat,
     toggleHistory,
   ])

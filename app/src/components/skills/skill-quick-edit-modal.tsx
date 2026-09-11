@@ -74,7 +74,7 @@ export function SkillQuickEditModal({
 
   return (
     <SkillModal
-      eyebrow="Skill szerkesztése"
+      eyebrow="Képesség szerkesztése"
       title={skill ? skillDisplayLabel(skill) : 'Betöltés…'}
       subtitle="A mentés új verziót javasol — élessé a katalógusban tett jóváhagyás teszi."
       onClose={onClose}

@@ -25,13 +25,20 @@ import {
 } from '@/lib/agent-workspace-routes'
 import type { RunAnalysisEntry } from '@/lib/run-analysis-shared'
 import {
-  getWorkspaceChatAnalyzeState,
+  getWorkspaceChatChromeState,
   subscribeWorkspaceChatChrome,
   workspaceChatAnalyze,
   workspaceChatDetach,
+  workspaceChatDistill,
+  workspaceChatSetDistillTarget,
   workspaceChatStartNew,
   workspaceChatToggleHistory,
 } from '@/lib/agent-workspace-chat-chrome'
+import {
+  ChatHeaderMenu,
+  ChatMenuItem,
+  DistillSkillMenuItems,
+} from '@/components/agents/agent-chat-message'
 
 type WorkspaceAgent = {
   id: string
@@ -85,7 +92,7 @@ function WorkspaceIconButton({
 
 function useWorkspaceAnalyzeButton() {
   const [entry, setEntry] = useState<RunAnalysisEntry | null>(null)
-  const [chrome, setChrome] = useState(getWorkspaceChatAnalyzeState)
+  const [chrome, setChrome] = useState(getWorkspaceChatChromeState)
 
   useEffect(() => {
     void getRunAnalysisEntry().then((res) => {
@@ -94,7 +101,7 @@ function useWorkspaceAnalyzeButton() {
   }, [])
 
   useEffect(() => {
-    const sync = () => setChrome(getWorkspaceChatAnalyzeState())
+    const sync = () => setChrome(getWorkspaceChatChromeState())
     sync()
     return subscribeWorkspaceChatChrome(sync)
   }, [])
@@ -106,6 +113,11 @@ function useWorkspaceAnalyzeButton() {
   return {
     canAnalyze,
     analyzeDisabled: chrome.analyzeDisabled,
+    canDistill: chrome.hasSavedConversation,
+    distillDisabled: chrome.distillDisabled,
+    distillPending: chrome.distillPending,
+    distillTargets: chrome.distillTargets,
+    distillTargetSkillId: chrome.distillTargetSkillId,
   }
 }
 
@@ -153,7 +165,15 @@ function WorkspaceHeader({
   const persona = personaFor(agent.name, agent)
   const router = useRouter()
   const showChatChrome = tab === 'chat' && !agent.taskOnly
-  const { canAnalyze, analyzeDisabled } = useWorkspaceAnalyzeButton()
+  const {
+    canAnalyze,
+    analyzeDisabled,
+    canDistill,
+    distillDisabled,
+    distillPending,
+    distillTargets,
+    distillTargetSkillId,
+  } = useWorkspaceAnalyzeButton()
   const boardBadge = useBoardTabBadge(agent.id)
   // Mobilon a fülsor vízszintesen görgethető — az aktív fül különben kicsúszhat a képből.
   const activeTabRef = useRef<HTMLButtonElement | null>(null)
@@ -243,17 +263,25 @@ function WorkspaceHeader({
 
       {showChatChrome ? (
         <div className="ml-auto flex items-center gap-1 sm:gap-2">
-          {canAnalyze ? (
-            <button
-              type="button"
-              title="Futás-elemző megnyitása ezzel a beszélgetéssel kitöltve"
-              aria-label="Elemezd"
-              disabled={analyzeDisabled}
-              onClick={() => workspaceChatAnalyze()}
-              className="inline-flex h-8 shrink-0 items-center rounded-lg border border-honey/35 bg-honey/10 px-2.5 text-[13px] font-semibold text-honey transition-colors hover:bg-honey/20 disabled:opacity-40 lg:px-3"
-            >
-              Elemezd
-            </button>
+          {canDistill ? (
+            <ChatHeaderMenu>
+              {canAnalyze ? (
+                <ChatMenuItem
+                  title="Elemezd"
+                  hint="Futás-elemző megnyitása ezzel a beszélgetéssel kitöltve."
+                  onClick={() => workspaceChatAnalyze()}
+                  disabled={analyzeDisabled}
+                />
+              ) : null}
+              <DistillSkillMenuItems
+                pending={distillPending}
+                disabled={distillDisabled}
+                targets={distillTargets}
+                targetSkillId={distillTargetSkillId}
+                onTargetChange={workspaceChatSetDistillTarget}
+                onDistill={() => workspaceChatDistill()}
+              />
+            </ChatHeaderMenu>
           ) : null}
           <button
             type="button"

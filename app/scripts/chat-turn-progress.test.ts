@@ -44,7 +44,7 @@ check('tünet: üres buborék = nincs aktivitás-doboz (typing marad)', () => {
 
 check('SSE-nélküli DB-poll feltölti az aktivitásokat a buborékba', () => {
   const remote = [
-    activity('skill-slash-tulajdoni-lap-egyeztetes', 'Skill betöltve: tulajdoni-lap-egyeztetes', 'done'),
+    activity('skill-slash-tulajdoni-lap-egyeztetes', 'Képesség betöltve: tulajdoni-lap-egyeztetes', 'done'),
     activity('reasoning-0', 'Üzenet feldolgozása', 'running'),
   ]
   const next = mergeTurnProgressIntoMessages(

@@ -66,6 +66,7 @@ import type { ProcessService } from '../playbook/process-service'
 import {
   AgentToolLoopCancelledError,
   listAllowedChatTools,
+  MODEL_WAIT_HEARTBEAT_MS,
   resolveToolLoopMaxTurns,
   runAgentToolLoop,
   type LoadSkillFn,
@@ -691,6 +692,12 @@ export class AgentChatRuntime {
       policy: ResolvedPrivacyCategoryPolicy
     }>,
     private workProjects?: import('@/repositories/interfaces').WorkProjectRepository,
+    /**
+     * Chatből nyitott feladat azonnali indítása. A dispatcher worker
+     * LISTEN/cron/enable-jétől függetlenül hívandó (a composition
+     * `bypassEnabledCheck: true`-val köti be). Hiányában a ticket ready-ben marad.
+     */
+    private dispatchTicket?: (ticketId: string) => Promise<unknown>,
   ) {}
 
   /**
@@ -966,8 +973,8 @@ export class AgentChatRuntime {
    *
    * A hosszú skillt nem a chat fordulójában nyújtjuk ki: ticketet nyitunk
    * ugyanennek az agentnek, átvisszük a kérést, a csatolmányokat és a betöltött
-   * skill-verziókat, majd a dispatcher futtatja végig `task` módban (ott a
-   * keretek eleve tágabbak, és a részeredmény a ticketen marad).
+   * skill-verziókat, majd azonnal elindítjuk `task` módban (ott a keretek eleve
+   * tágabbak, és a részeredmény a ticketen marad). A dispatcher workerre nem várunk.
    *
    * `null` → nincs promóció, a chat a szokásos módon fut. A ticket felvételének
    * hibája NEM buktatja el a fordulót: ilyenkor is `null`-lal térünk vissza, és
@@ -1064,6 +1071,8 @@ export class AgentChatRuntime {
           attachmentCount: binding.attachmentDocumentIds.length,
         },
       })
+
+      await this.triggerImmediateDispatch(ticket)
 
       return {
         text: buildSkillTaskPromotionMessage({
@@ -1526,7 +1535,7 @@ export class AgentChatRuntime {
       }
 
       // issue #161 — `preferredMode: 'task'`: a hosszú skillt nem a chatben
-      // nyújtjuk 15 percre, hanem ticketet nyitunk és a board futtatja végig.
+      // nyújtjuk 15 percre, hanem ticketet nyitunk és azonnal elindítjuk.
       // A chat rövid marad; a felhasználó a ticket hivatkozását kapja vissza.
       const promotion = await this.trySkillTaskPromotion({
         params,
@@ -1541,7 +1550,7 @@ export class AgentChatRuntime {
           await emitActivity({
             id: `skill-slash-${skillName}`,
             kind: 'tool',
-            title: `Skill betöltve: ${skillName}`,
+            title: `Képesség betöltve: ${skillName}`,
             detail: 'Felhasználói /slash parancs alapján',
             status: 'done',
           })
@@ -1632,7 +1641,7 @@ export class AgentChatRuntime {
         const activity: ToolLoopActivityEvent = {
           id: `skill-slash-${skillName}`,
           kind: 'tool',
-          title: `Skill betöltve: ${skillName}`,
+          title: `Képesség betöltve: ${skillName}`,
           detail: 'Felhasználói /slash parancs alapján',
           status: 'done',
         }
@@ -1722,7 +1731,16 @@ export class AgentChatRuntime {
             })
             await refreshCancelFromDb()
           },
-          onActivity: (activity) => emitActivity(activity),
+          onActivity: async (activity) => {
+            await emitActivity(activity)
+            // Modell-várakozási életjel: hosszú modellhívás alatt a loop
+            // újra kiadja a futó állapotot — a `heartbeatAt` is frissül,
+            // különben a chat-forduló tévesen „megállt"-ot mutatna. A fojtás
+            // miatt legfeljebb az életjel-ütemben ír DB-t. Fail-soft.
+            if (Date.now() - (turn.lastHeartbeatAt ?? 0) >= MODEL_WAIT_HEARTBEAT_MS) {
+              await this.heartbeatTurnRecord(turn)
+            }
+          },
           ...(thinkingEnabled
             ? {
                 onReasoning: (turnId: string, delta: string) =>
@@ -2235,7 +2253,23 @@ export class AgentChatRuntime {
       metadata: { briefing, source: 'agent_chat' },
     })
 
+    await this.triggerImmediateDispatch(ticket)
+
     return ticket
+  }
+
+  /** Best-effort azonnali indítás — bukása nem hiúsíthatja meg a ticket felvételét. */
+  private async triggerImmediateDispatch(ticket: {
+    id: string
+    executeAfter?: Date | null
+  }): Promise<void> {
+    if (!this.dispatchTicket) return
+    if (ticket.executeAfter && ticket.executeAfter.getTime() > Date.now()) return
+    try {
+      await this.dispatchTicket(ticket.id)
+    } catch (error) {
+      console.error('[agent-chat] azonnali feldolgozás indítása sikertelen', error)
+    }
   }
 
   private async tryStartChatTriggeredProcess(params: {

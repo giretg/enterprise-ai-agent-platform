@@ -305,6 +305,37 @@ async function main() {
     assert.deepEqual(turnStarts, [0, 1, 2], 'körönként pontosan egy életjel, a kör indexével')
   })
 
+  await check('életjel: lassú modellhívás alatt a futó állapot újra kiadódik (téves „megállt" ellen)', async () => {
+    const activities: Array<{ id: string; status: string }> = []
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+    const slowGateway = {
+      call: async () => {
+        await sleep(120)
+        return { content: 'Kész.', usage: { promptTokens: 1, completionTokens: 1 } }
+      },
+    } as unknown as ModelGateway
+    const result = await runAgentToolLoop({
+      gateway: slowGateway,
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 3,
+      context: { conversationId: 'conv-hb' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'szia' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: [],
+      modelWaitHeartbeatMs: 30,
+      onActivity: (event) => {
+        activities.push({ id: event.id, status: event.status })
+      },
+    })
+
+    assert.equal(result.content, 'Kész.')
+    const running = activities.filter((a) => a.id === 'reasoning-0' && a.status === 'running')
+    assert.ok(running.length >= 2, `ismételt életjel várható, kapott: ${running.length}`)
+  })
+
   await check('prompt cache: a loop statikus prefixe a változó kontextus és előzmény elé kerül', async () => {
     const gwCalls: GatewayCallArgs[] = []
     await runAgentToolLoop({

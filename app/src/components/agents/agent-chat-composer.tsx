@@ -205,7 +205,7 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
       ) : null}
       {attachmentWarningSkills.length > 0 ? (
         <p className="mb-3 rounded-lg border border-honey/40 bg-honey/10 px-3 py-2 text-xs text-honey">
-          A(z) {attachmentWarningSkills.join(', ')} skill jellemzően nem fájlból dolgozik —
+          A(z) {attachmentWarningSkills.join(', ')} képesség jellemzően nem fájlból dolgozik —
           a csatolmányt lehet, hogy figyelmen kívül hagyja.
         </p>
       ) : null}
@@ -251,7 +251,7 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
       ) : null}
 
       <div className={`relative flex items-end gap-1.5 rounded-2xl border border-line p-1.5 shadow-sm focus-within:border-coral/40 focus-within:ring-2 focus-within:ring-coral/15 sm:gap-2 sm:p-2 ${embedded ? 'bg-paper' : 'bg-card'}`}>
-        <SkillSlashMenu autocomplete={slash} emptyLabel="Ehhez az AI munkatárshoz nincs engedélyezett skill hozzárendelve." position="above" className="left-12" />
+        <SkillSlashMenu autocomplete={slash} emptyLabel="Ehhez az AI munkatárshoz nincs engedélyezett képesség hozzárendelve." position="above" className="left-12" />
         <input
           ref={fileInputRef}
           type="file"
@@ -266,8 +266,8 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
             onClick={() => setPlusOpen((open) => !open)}
             disabled={disabled}
             aria-expanded={plusOpen}
-            aria-label="Üzenet beállításai: projekt, mód és skill"
-            title="Projekt, mód és skill választása"
+            aria-label="Üzenet beállításai: projekt, mód és képesség"
+            title="Projekt, mód és képesség választása"
             className={`rounded-xl p-2.5 text-lg font-semibold leading-none disabled:opacity-40 ${
               plusOpen ? 'bg-night-2 text-ink' : 'text-ink-faint hover:bg-night-2'
             }`}
@@ -308,7 +308,7 @@ export function AgentChatComposer(props: AgentChatComposerProps) {
               </div>
               {skills.length > 0 ? (
                 <>
-                  <p className="px-1 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-ink-faint">Skill</p>
+                  <p className="px-1 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-ink-faint">Képesség</p>
                   <div className="max-h-48 overflow-y-auto rounded-lg">
                     {skills.map((skill) => (
                       <button

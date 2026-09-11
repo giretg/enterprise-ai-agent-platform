@@ -3,7 +3,8 @@
  *
  * A Claude-nál bevett minta („készíts ebből skillt") governance-konform megvalósítása:
  * egy lezajlott beszélgetésből (conversation/ticket) instrukció-only skill-DRAFT-ot
- * desztillál. A §4.6.3 reflexió-feeder user-triggerelt változata.
+ * desztillál, és a beszélgetés workspace-ének szöveges fájljaiból Level-2 mellékletet
+ * javasol. A §4.6.3 reflexió-feeder user-triggerelt változata.
  *
  * GOVERNANCE (a `PlaybookAuthorAgent` és a Provisioning Assistant mintája):
  *  - A modell kimenete CSAK adat (propose-not-apply). Az agent SOSEM ír a DB-be,
@@ -17,7 +18,8 @@
  *    magasabb jogú humán aktus marad — a skill sosem ad magának jogot.
  *  - **Instrukció-only → T0/T1 → Fázis 1.** A modellt kód-kiemelés tiltására utasítjuk,
  *    a validátor pedig kód-jelenlét esetén elutasít (a T0/T1 kényszerítés teherhordója
- *    a determinista validátor, nem a prompt).
+ *    a determinista validátor, nem a prompt). A mellékletek szöveges referenciák
+ *    (ugyanaz a kapu, mint a csomag-importnál): kód-fájl nem kerül be.
  *
  * #33 — a kimenet a contract-runtime szigorú módján megy át (javítási esély).
  */
@@ -35,8 +37,10 @@ import {
 import {
   SKILL_DESCRIPTION_MAX,
   SKILL_NAME_MAX,
+  skillParameterSchema,
   type SkillContent,
 } from '@/lib/skill/skill-content'
+import { SKILL_ATTACHMENT_MAX_COUNT } from '@/lib/skill/skill-attachments'
 import {
   DEFAULT_TENANT_LANGUAGE,
   outputLanguageInstruction,
@@ -54,13 +58,17 @@ HARD RULES (non-negotiable):
 - The "description" is a short Level-0 index line (max ${SKILL_DESCRIPTION_MAX} chars) shown before the skill is loaded: say what the skill is for and when to use it, in one or two sentences.
 - The "instructions" is an ordered array of self-contained instruction blocks (the actual step-by-step method). Write imperative, agent-facing guidance.
 - "triggerKeywords" are a few short phrases that signal this skill is relevant.
+- "parameters" are reusable inputs for a future run of the same method (name + short description). Omit one-off values from THIS conversation.
+- "attachmentPaths" may only list paths from the candidate-files list you are given. Pick reusable templates, checklists, and reference docs — NEVER one-off data, personal records, or this-run outputs. If none are reusable, return []. Do not paste file contents into instructions; tell the agent to load them with load_skill_attachment when needed.
 
 OUTPUT: a single JSON object only (no prose, no markdown fences) matching this shape:
 {
   "name": string (short, human-readable),
   "description": string (Level-0 index line),
   "instructions": string[] (ordered instruction blocks),
-  "triggerKeywords": string[] (optional, may be empty)
+  "triggerKeywords": string[] (optional, may be empty),
+  "parameters": [{"name": string, "description": string}] (optional, may be empty),
+  "attachmentPaths": string[] (optional, subset of candidate file paths)
 }`
 
 const skillDistillSchema = z.object({
@@ -68,6 +76,8 @@ const skillDistillSchema = z.object({
   description: z.string().trim().min(1),
   instructions: z.array(z.string().trim().min(1)).min(1),
   triggerKeywords: z.array(z.string()).default([]),
+  parameters: z.array(skillParameterSchema).default([]),
+  attachmentPaths: z.array(z.string()).default([]),
 })
 
 const skillDistillContract = compileFromZod(
@@ -98,6 +108,8 @@ export interface SkillDistillDraft {
   name: string
   description: string
   content: SkillContent
+  /** A jelölt workspace-fájlokból a modell által választott útvonalak. */
+  attachmentPaths: string[]
 }
 
 export type SkillDistillResult =
@@ -161,6 +173,8 @@ export function buildDistillMessages(input: {
   transcript: string
   usedTools?: string[]
   outputLanguage?: TenantLanguage
+  /** Jelölt skill-mellékletek indexe (path + előnézet). Üres = nincs fájl. */
+  candidateAttachmentIndex?: string
 }): GatewayMessage[] {
   const language = input.outputLanguage ?? DEFAULT_TENANT_LANGUAGE
   const parts: string[] = []
@@ -171,6 +185,13 @@ export function buildDistillMessages(input: {
     parts.push(
       `For context, the agent used these tools during the conversation (do NOT output a requires field — this is only to help you describe the method):\n${input.usedTools.join(', ')}`,
     )
+  }
+  if (input.candidateAttachmentIndex?.trim()) {
+    parts.push(
+      `Candidate reusable files from the conversation workspace. Pick ONLY general templates, checklists, and reference docs — not one-off data, personal records, or this-run outputs. Return exact paths in "attachmentPaths" (or [] if none belong in the skill). Do not paste file bodies into instructions.\n${input.candidateAttachmentIndex}`,
+    )
+  } else {
+    parts.push('There are no candidate files. Return "attachmentPaths": [].')
   }
   parts.push(`Conversation transcript:\n${input.transcript}`)
   parts.push('Return ONLY the JSON descriptor.')
@@ -185,6 +206,15 @@ export function buildDistillMessages(input: {
 
 function toDistillDraft(value: Record<string, unknown>): SkillDistillDraft {
   const parsed = skillDistillSchema.parse(value)
+  const seenPaths = new Set<string>()
+  const attachmentPaths: string[] = []
+  for (const raw of parsed.attachmentPaths) {
+    const path = raw.trim().replace(/^\/+/, '')
+    if (!path || seenPaths.has(path)) continue
+    seenPaths.add(path)
+    attachmentPaths.push(path)
+    if (attachmentPaths.length >= SKILL_ATTACHMENT_MAX_COUNT) break
+  }
   return {
     name: parsed.name.slice(0, SKILL_NAME_MAX),
     description: parsed.description.slice(0, SKILL_DESCRIPTION_MAX),
@@ -193,8 +223,12 @@ function toDistillDraft(value: Record<string, unknown>): SkillDistillDraft {
       triggerKeywords: parsed.triggerKeywords
         .filter((k): k is string => typeof k === 'string' && k.trim().length > 0)
         .map((k) => k.trim()),
-      parameters: [],
+      parameters: parsed.parameters.map((p) => ({
+        name: p.name.trim(),
+        description: p.description.trim(),
+      })),
     },
+    attachmentPaths,
   }
 }
 
@@ -237,6 +271,7 @@ export class SkillDistillerAgent {
     /** Tenant kimeneti nyelv — skill name/description/instructions. */
     outputLanguage?: TenantLanguage
     sensitivityOverride?: SensitivityOverride
+    candidateAttachmentIndex?: string
   }): Promise<SkillDistillResult> {
     const transcript = buildTranscriptText(input.turns)
     if (transcript.trim().length === 0) {
@@ -246,6 +281,7 @@ export class SkillDistillerAgent {
       transcript,
       usedTools: input.usedTools,
       outputLanguage: input.outputLanguage,
+      candidateAttachmentIndex: input.candidateAttachmentIndex,
     })
     const modelConfig = this.deps.modelConfig ?? resolveSkillDistillerModelConfig(input.agentModelConfig)
 

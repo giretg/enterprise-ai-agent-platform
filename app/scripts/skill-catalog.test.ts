@@ -52,6 +52,11 @@ import {
   conversationMessagesToTurns,
   deriveRequiresFromToolCalls,
 } from '../src/lib/skill/skill-distill-transcript'
+import {
+  collectDistillAttachmentCandidates,
+  formatDistillAttachmentIndex,
+  selectDistillAttachments,
+} from '../src/lib/skill/skill-distill-attachments'
 import { diffSkillVersions } from '../src/lib/skill/skill-diff'
 import {
   dedupeAgentSkillAssignments,
@@ -754,6 +759,25 @@ async function main() {
     if (r.ok) {
       assert.equal(r.draft.name, 'Checklist skill')
       assert.equal(r.draft.content.instructions.length, 2)
+      assert.deepEqual(r.draft.attachmentPaths, [])
+      assert.deepEqual(r.draft.content.parameters, [])
+    }
+  })
+
+  await check('parseDistillOutput: paraméterek és attachmentPaths bekerülnek', () => {
+    const r = parseDistillOutput(
+      JSON.stringify({
+        name: 'Egyeztetés',
+        description: 'Havi egyeztetés.',
+        instructions: ['Töltsd be a sablont load_skill_attachment-tel.'],
+        parameters: [{ name: 'honap', description: 'melyik hónap' }],
+        attachmentPaths: ['templates/checklist.md', '/templates/checklist.md', ''],
+      }),
+    )
+    assert.equal(r.ok, true)
+    if (r.ok) {
+      assert.deepEqual(r.draft.content.parameters, [{ name: 'honap', description: 'melyik hónap' }])
+      assert.deepEqual(r.draft.attachmentPaths, ['templates/checklist.md'])
     }
   })
 
@@ -765,6 +789,52 @@ async function main() {
     const user = msgs.find((m) => m.role === 'user')?.content ?? ''
     assert.ok(user.includes('do NOT output a requires field'))
     assert.ok(user.includes('kb_search'))
+    assert.ok(user.includes('There are no candidate files'))
+  })
+
+  await check('buildDistillMessages: jelölt fájlok a promptba kerülnek', () => {
+    const msgs = buildDistillMessages({
+      transcript: 'User: hi\n\nAgent: hello',
+      candidateAttachmentIndex: '- templates/checklist.md (1 KB): # Checklist',
+    })
+    const user = msgs.find((m) => m.role === 'user')?.content ?? ''
+    assert.ok(user.includes('templates/checklist.md'))
+    assert.ok(user.includes('attachmentPaths'))
+    assert.ok(!user.includes('There are no candidate files'))
+  })
+
+  await check('collectDistillAttachmentCandidates: kód, bináris, belső path kimarad', () => {
+    const picked = collectDistillAttachmentCandidates([
+      { path: 'templates/checklist.md', bytes: Buffer.from('# Checklist\n1. Kérdezz') },
+      { path: 'run.py', bytes: Buffer.from('print("x")') },
+      { path: 'tool-outputs/raw.json', bytes: Buffer.from('{"a":1}') },
+      { path: 'notes.md', bytes: Buffer.from('\0binary') },
+    ])
+    assert.deepEqual(picked.map((a) => a.path), ['templates/checklist.md'])
+    assert.ok(picked[0]!.text.includes('Checklist'))
+    assert.ok(picked[0]!.sha256.length > 0)
+  })
+
+  await check('selectDistillAttachments: csak a jelölt, kért pathok', () => {
+    const candidates = collectDistillAttachmentCandidates([
+      { path: 'templates/checklist.md', bytes: Buffer.from('# A') },
+      { path: 'references/rules.md', bytes: Buffer.from('# B') },
+    ])
+    const picked = selectDistillAttachments(candidates, [
+      'templates/checklist.md',
+      'invented/secret.md',
+    ])
+    assert.deepEqual(picked.map((a) => a.path), ['templates/checklist.md'])
+    assert.deepEqual(selectDistillAttachments(candidates, []), [])
+  })
+
+  await check('formatDistillAttachmentIndex: path + előnézet', () => {
+    const candidates = collectDistillAttachmentCandidates([
+      { path: 'templates/checklist.md', bytes: Buffer.from('# Checklist\n1. Kérdezz') },
+    ])
+    const index = formatDistillAttachmentIndex(candidates)
+    assert.ok(index.includes('templates/checklist.md'))
+    assert.ok(index.includes('Checklist'))
   })
 
   await check('buildDistillMessages: tenant nyelv bekerül a system promptba (hu alapértelmezés)', () => {
@@ -782,6 +852,78 @@ async function main() {
     const system = msgs.find((m) => m.role === 'system')?.content ?? ''
     assert.ok(system.includes('English'))
     assert.ok(!system.includes('Hungarian'))
+  })
+
+  await check('distillFromConversation: a modell által választott workspace-fájl melléklet lesz', async () => {
+    let createdAttachments: unknown
+    let candidateIndex = ''
+    const skillsRepo = {
+      findByNameInScope: async () => null,
+      createSkill: async (input: { attachments?: unknown; name: string }) => {
+        createdAttachments = input.attachments
+        return {
+          skill: { id: 's1', tenantId: 't1', name: input.name },
+          version: { id: 'v1', version: 1 },
+        }
+      },
+    }
+    const auditRepo = { append: async (d: unknown) => d }
+    const conversations = {
+      findByIdForTenant: async () => ({ id: 'c1', agentId: 'a1' }),
+      findMessages: async () => [
+        { role: 'user', content: 'Készíts sablont a havi egyeztetéshez.', contentDeletedAt: null },
+        { role: 'agent', content: 'A templates/checklist.md kész.', contentDeletedAt: null },
+      ],
+    }
+    const toolBroker = { listToolCallsForConversation: async () => [] }
+    const workspace = {
+      listUserFacing: async () => ['templates/checklist.md', 'run.py', 'invoice-2026.pdf'],
+      read: async (_tenant: string, _id: string, path: string) => {
+        if (path === 'templates/checklist.md') return Buffer.from('# Checklist\n1. Kérdezz')
+        return null
+      },
+    }
+    const distiller = {
+      distill: async (input: { candidateAttachmentIndex?: string }) => {
+        candidateIndex = input.candidateAttachmentIndex ?? ''
+        return {
+          ok: true as const,
+          draft: {
+            name: 'Havi egyeztetés',
+            description: 'Havi partner-egyeztetés sablonnal.',
+            content: {
+              instructions: ['Töltsd be a sablont load_skill_attachment-tel.'],
+              triggerKeywords: ['egyeztetés'],
+              parameters: [],
+            },
+            attachmentPaths: ['templates/checklist.md', 'invented.md'],
+          },
+        }
+      },
+    }
+    const svc = new SkillService(
+      skillsRepo as never,
+      auditRepo as never,
+      toolBroker as never,
+      {} as never,
+      conversations as never,
+      workspace,
+    )
+    const result = await svc.distillFromConversation({
+      conversationId: 'c1',
+      agentId: 'a1',
+      actor: { actorId: 'u1', actorTenantId: 't1', isPlatformAdmin: false },
+      distiller: distiller as never,
+    })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.equal(result.created, true)
+    assert.equal(result.attachments.length, 1)
+    assert.equal(result.attachments[0]?.path, 'templates/checklist.md')
+    assert.ok(candidateIndex.includes('templates/checklist.md'))
+    assert.ok(!candidateIndex.includes('run.py'))
+    const stored = createdAttachments as Array<{ path: string }>
+    assert.deepEqual(stored.map((a) => a.path), ['templates/checklist.md'])
   })
 
   console.log('')

@@ -627,7 +627,7 @@ export function CreateBoardTicketForm({
         {isTaskOnlyMode ? (
           assigneeId ? (
             skillsLoading ? (
-              <p className="text-sm text-ink-faint">Skillek betöltése…</p>
+              <p className="text-sm text-ink-faint">Képességek betöltése…</p>
             ) : (
               <TaskOnlyLaunchForm
                 skills={launchableSkills}
@@ -687,16 +687,16 @@ export function CreateBoardTicketForm({
 
             {assigneeType === 'agent' && assigneeId && (
               <div>
-                <p className="text-sm font-medium text-ink-soft">Képességek (Skill-ek)</p>
+                <p className="text-sm font-medium text-ink-soft">Képességek (skill-ek)</p>
                 <p className="mt-1 text-xs text-ink-faint">
-                  A Képességek előre megírt feladat leírások, amelyeket az AI munkatárs követni fog,
+                  A képességek előre megírt feladatleírások, amelyeket az AI munkatárs követni fog,
                   ha kiválasztasz egyet.
                 </p>
                 {skillsLoading ? (
-                  <p className="mt-2 text-sm text-ink-faint">Skillek betöltése…</p>
+                  <p className="mt-2 text-sm text-ink-faint">Képességek betöltése…</p>
                 ) : agentSkills.length === 0 ? (
                   <p className="mt-2 text-sm text-ink-faint">
-                    Ehhez az AI munkatárshoz nincs engedélyezett skill.
+                    Ehhez az AI munkatárshoz nincs engedélyezett képesség.
                   </p>
                 ) : (
                   <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-lg border border-line p-2">

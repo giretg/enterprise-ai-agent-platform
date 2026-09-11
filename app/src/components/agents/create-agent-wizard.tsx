@@ -863,7 +863,7 @@ export function CreateAgentWizard({
                 links={[
                   {
                     href: CREATE_AGENT_WIZARD_EXTERNAL_HREFS.skills,
-                    label: 'Új skill a katalógusban',
+                    label: 'Új képesség a katalógusban',
                     description: 'Importálás vagy appon belüli skill — jóváhagyás után itt hozzárendeled.',
                   },
                 ]}

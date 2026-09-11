@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { useCallback, useState, type ReactNode } from 'react'
@@ -25,7 +26,6 @@ export function AppShell({
   appName,
   appSubtitle,
   navItems,
-  accentColor,
   children,
   switchLink,
   pathname,
@@ -47,14 +47,6 @@ export function AppShell({
   /** `rail`: sáv + munkaterület elrendezés, nincs max-width a main-en. */
   layout?: 'default' | 'rail'
 }) {
-  // The estate's two cellars: the tasting room (control plane) and the
-  // working press-house (sandbox). Each keeps a warm monogram & tone.
-  const mark = accentColor === 'teal' ? '🍇' : '🍷'
-  const markGradient =
-    accentColor === 'teal'
-      ? 'linear-gradient(140deg, #6f9a55, #4d86a6)'
-      : 'linear-gradient(140deg, #b07d24, #b23a55)'
-
   const isActive = (href: string, exact?: boolean) => {
     if (exact) return pathname === href
     return pathname.startsWith(href)
@@ -166,16 +158,13 @@ export function AppShell({
         <div className="w-full px-3 py-2.5 sm:px-5 sm:py-3.5">
           <div className="flex items-center justify-between gap-1.5 sm:gap-3">
             <div className="flex min-w-0 shrink-0 items-center gap-2 sm:gap-3">
-              <div
-                className="animate-breathe flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-lg sm:h-11 sm:w-11 sm:rounded-2xl sm:text-xl"
-                style={{
-                  background: markGradient,
-                  boxShadow:
-                    'inset 0 2px 5px rgba(255,255,255,0.4), 0 10px 22px -10px rgba(178,58,85,0.5)',
-                }}
-              >
-                {mark}
-              </div>
+              <Image
+                src="/excellence-ai-logo.png"
+                alt="Excellence AI"
+                width={44}
+                height={44}
+                className="h-9 w-9 shrink-0 rounded-xl object-cover sm:h-11 sm:w-11 sm:rounded-2xl"
+              />
               <div className="hidden min-w-0 sm:block">
                 <p className="truncate font-display text-[1.2rem] font-semibold leading-none tracking-tight sm:text-[1.35rem]">
                   {appName}

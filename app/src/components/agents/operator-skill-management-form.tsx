@@ -40,9 +40,9 @@ export function OperatorSkillManagementForm({
   return (
     <Card title="Munkamenetek kezelése operátorként">
       <p className="mb-4 text-xs text-ink-faint">
-        Alapból csak admin döntheti el, melyik skill (leírt munkamenet) tartozik ehhez az
+        Alapból csak admin döntheti el, melyik képesség (skill) tartozik ehhez az
         agenthez. Ezzel a kapcsolóval ezt a döntést átadod az operátoroknak is — de csak
-        EZEN az agenten, és csak a már jóváhagyott skillek közül választhatnak.
+        EZEN az agenten, és csak a már jóváhagyott képességek közül választhatnak.
       </p>
 
       {canEdit ? (
@@ -57,10 +57,10 @@ export function OperatorSkillManagementForm({
             />
             <span>
               <span className="text-ink-soft">
-                Az operátor is hozzárendelhet és levehet skillt
+                Az operátor is hozzárendelhet és levehet képességet
               </span>
               <span className="mt-1 block text-xs text-ink-faint">
-                Amit ez NEM ad: skill-szöveg szerkesztése, új verzió jóváhagyása, új
+                Amit ez NEM ad: képesség-szöveg szerkesztése, új verzió jóváhagyása, új
                 eszközjog. Minden hozzárendelés ugyanúgy auditált marad.
               </span>
             </span>
@@ -72,8 +72,8 @@ export function OperatorSkillManagementForm({
       ) : (
         <p className="text-sm leading-relaxed text-ink">
           {allowed
-            ? 'Az operátorok is hozzárendelhetnek és levehetnek skillt ezen az agenten.'
-            : 'A skill-hozzárendelés ezen az agenten admin-döntés.'}
+            ? 'Az operátorok is hozzárendelhetnek és levehetnek képességet ezen az agenten.'
+            : 'A képesség-hozzárendelés ezen az agenten admin-döntés.'}
         </p>
       )}
     </Card>
