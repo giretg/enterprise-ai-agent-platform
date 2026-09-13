@@ -1299,14 +1299,16 @@ export class SkillService {
   /** Az agenthez rendelt, enabled skillek Level-0 index-bejegyzései (D2/D7). */
   async getAssignedSkillIndex(agentId: string): Promise<AssignedSkillEntry[]> {
     const rows = await this.skills.listEnabledForAgent(agentId)
-    return rows.map((a) => ({
-      skillId: a.skillVersion.skill.id,
-      skillVersionId: a.skillVersionId,
-      name: a.skillVersion.skill.name,
-      displayName: a.skillVersion.skill.displayName,
-      description: a.skillVersion.skill.description,
-      version: a.skillVersion.version,
-    }))
+    return rows
+      .filter((a) => a.skillVersion.status === 'active')
+      .map((a) => ({
+        skillId: a.skillVersion.skill.id,
+        skillVersionId: a.skillVersionId,
+        name: a.skillVersion.skill.name,
+        displayName: a.skillVersion.skill.displayName,
+        description: a.skillVersion.skill.description,
+        version: a.skillVersion.version,
+      }))
   }
 
   /** Level-0 index rendszer-üzenet szöveg (üres, ha nincs hozzárendelt skill). */
@@ -1381,7 +1383,7 @@ export class SkillService {
       const entry = resolveLoadableSkill(index, skillVersionId)
       if (!entry) continue
       const version = versionById.get(skillVersionId)
-      if (!version) continue
+      if (!version || version.status !== 'active') continue
       const content = parseSkillContent(version.content)
 
       // Fail-closed readiness-kapu: hiányzó capability-nél nem töltjük be.
@@ -1600,7 +1602,9 @@ export class SkillService {
     }
 
     const version = await this.skills.findVersionById(input.skillVersionId)
-    if (!version) return { ok: false, reason: 'A skill-verzió nem található.' }
+    if (!version || version.status !== 'active') {
+      return { ok: false, reason: 'A skill-verzió nem aktív.' }
+    }
     const content = parseSkillContent(version.content)
 
     // Fail-closed readiness-kapu: hiányzó capability-nél a skill nem töltődik be.
@@ -1688,7 +1692,9 @@ export class SkillService {
     }
 
     const version = await this.skills.findVersionById(input.skillVersionId)
-    if (!version) return { ok: false, reason: 'A skill-verzió nem található.' }
+    if (!version || version.status !== 'active') {
+      return { ok: false, reason: 'A skill-verzió nem aktív.' }
+    }
 
     const attachments = parseSkillAttachments(version.attachments)
     const wanted = input.path.trim()
@@ -1732,7 +1738,7 @@ export class SkillService {
    */
   async getRunSkillSnapshot(agentId: string): Promise<string[]> {
     const rows = await this.skills.listEnabledForAgent(agentId)
-    return rows.map((a) => a.skillVersionId)
+    return rows.filter((a) => a.skillVersion.status === 'active').map((a) => a.skillVersionId)
   }
 
   /**
