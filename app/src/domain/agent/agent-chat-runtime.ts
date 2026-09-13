@@ -694,8 +694,8 @@ export class AgentChatRuntime {
     private workProjects?: import('@/repositories/interfaces').WorkProjectRepository,
     /**
      * Chatből nyitott feladat azonnali indítása. A dispatcher worker
-     * LISTEN/cron/enable-jétől függetlenül hívandó (a composition
-     * `bypassEnabledCheck: true`-val köti be). Hiányában a ticket ready-ben marad.
+     * LISTEN/cron-jától függetlenül hívandó. A System-oldali dispatcher-kapu
+     * továbbra is dönt; hiányában vagy szüneteltetéskor a ticket ready-ben marad.
      */
     private dispatchTicket?: (ticketId: string) => Promise<unknown>,
   ) {}

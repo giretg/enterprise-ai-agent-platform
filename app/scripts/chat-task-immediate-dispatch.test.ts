@@ -1,7 +1,7 @@
 /**
- * Chatből létrejövő agent-feladat azonnal elindul — a dispatcher worker
- * LISTEN/cron/enable-jétől függetlenül. A skill-promóció és a chat „Feladat”
- * gomb ugyanazt a varratot használja.
+ * Chatből létrejövő agent-feladat azonnal indítási kísérletet kap — a dispatcher
+ * worker LISTEN/cron-jától függetlenül, de a System-oldali vészfék betartásával.
+ * A skill-promóció és a chat „Feladat” gomb ugyanazt a varratot használja.
  *
  * Futtatás: npm run test:chat-task-immediate-dispatch
  */
@@ -173,7 +173,7 @@ async function main() {
     assert.deepEqual(dispatched, [])
   })
 
-  await test('skill-promóció ugyanazt a varratot hívja, dispatcher enable nélkül', () => {
+  await test('skill-promóció ugyanazt a varratot hívja, a dispatcher vészfék megkerülése nélkül', () => {
     const runtimeSrc = readFileSync(
       resolve(import.meta.dirname, '../src/domain/agent/agent-chat-runtime.ts'),
       'utf8',
@@ -195,7 +195,8 @@ async function main() {
     )
     const chatCtor = composition.slice(composition.indexOf('const agentChatRuntime = new AgentChatRuntime'))
     const chatCtorBody = chatCtor.slice(0, chatCtor.indexOf('const channelTurnService'))
-    assert.match(chatCtorBody, /bypassEnabledCheck:\s*true/)
+    assert.match(chatCtorBody, /dispatcherService\.dispatchTicket\(ticketId\)/)
+    assert.doesNotMatch(chatCtorBody, /bypassEnabledCheck:\s*true/)
   })
 
   if (failures > 0) {
