@@ -660,8 +660,8 @@ async function main() {
     const appended: Array<Record<string, unknown>> = []
     const skillsRepo = {
       listEnabledForAgent: async () => [
-        { skillVersionId: 'v1' },
-        { skillVersionId: 'v2' },
+        { skillVersionId: 'v1', skillVersion: { status: 'active' } },
+        { skillVersionId: 'v2', skillVersion: { status: 'retired' } },
       ],
     }
     const auditRepo = {
@@ -676,13 +676,13 @@ async function main() {
       context: { ticketId: 'ticket-9' },
       actorTenantId: TENANT_A,
     })
-    assert.deepEqual(ids, ['v1', 'v2'])
+    assert.deepEqual(ids, ['v1'], 'a visszavont skill nem kerülhet futásidejű snapshotba')
     assert.equal(appended.length, 1, 'egy audit-bejegyzés keletkezik')
     assert.equal(appended[0].action, 'skill.run_snapshot')
     assert.equal(appended[0].ticketId, 'ticket-9', 'a futáshoz (ticket) kötve')
     assert.deepEqual(
       (appended[0].metadata as { skillVersionIds: string[] }).skillVersionIds,
-      ['v1', 'v2'],
+      ['v1'],
     )
   })
 
@@ -1142,12 +1142,17 @@ async function main() {
    * Fixture a betöltési úthoz: egy hozzárendelt, enabled skill-verzió, megadott
    * `requires`-szel, és egy agent megadott capability-készlettel.
    */
-  const makeLoadSvc = (opts: { requires: string[]; caps: string[] }) => {
+  const makeLoadSvc = (opts: {
+    requires: string[]
+    caps: string[]
+    status?: 'active' | 'retired'
+  }) => {
     const appended: Array<Record<string, unknown>> = []
     const version = {
       id: 'sv-1',
       skillId: 'sk-1',
       version: 4,
+      status: opts.status ?? 'active',
       content: { instructions: ['Csináld így.'], triggerKeywords: [], parameters: [] },
       requires: opts.requires.map((toolName) => ({ toolName, reason: 'SKILL.md allowed-tools' })),
     }
@@ -1159,6 +1164,7 @@ async function main() {
             id: 'sv-1',
             version: 4,
             skillId: 'sk-1',
+            status: opts.status ?? 'active',
             skill: { id: 'sk-1', name: 'Egyeztetés', description: 'teszt' },
           },
         },
@@ -1233,6 +1239,39 @@ async function main() {
       'a hatókör a skill allowed-tools listája — NEM az agent teljes capability-készlete',
     )
     assert.equal(appended.filter((a) => a.action === 'skill.loaded').length, 1)
+  })
+
+  await check('deaktivált skill: egyik futtatási út sem tölti be a megmaradt hozzárendelést', async () => {
+    const { svc, appended } = makeLoadSvc({
+      requires: ['http_api_get'],
+      caps: ['http_api_get'],
+      status: 'retired',
+    })
+    const load = await svc.loadSkillForAgent({
+      agentId: 'agent-1',
+      skillVersionId: 'sv-1',
+      actor: actorX,
+    })
+    const preload = await svc.preloadSkillsByVersionIds({
+      agentId: 'agent-1',
+      skillVersionIds: ['sv-1'],
+      actor: actorX,
+    })
+    const attachment = await svc.loadSkillAttachmentForAgent({
+      agentId: 'agent-1',
+      skillVersionId: 'sv-1',
+      path: 'references/procedure.md',
+      actor: actorX,
+    })
+    assert.equal(load.ok, false, 'a load_skill nem futtat visszavont instrukciót')
+    assert.equal(preload.preloadedPrompts.length, 0, 'ticket és /slash sem előtölthet visszavont skillt')
+    assert.equal(preload.loadedSkillVersionIds.length, 0)
+    assert.equal(attachment.ok, false, 'a skill melléklete sem marad olvasható')
+    assert.equal(appended.filter((a) => a.action === 'skill.loaded').length, 0)
+    assert.ok(
+      appended.filter((a) => a.action === 'skill.access_denied').length >= 3,
+      'a tiltott futtatási kísérlet auditálva marad',
+    )
   })
 
   await check('preload (/slash): hiányzó capability → blocked, üres prompt, nincs betöltés', async () => {
