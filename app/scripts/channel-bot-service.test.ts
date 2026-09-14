@@ -60,6 +60,7 @@ function makeHarness() {
         channelType: input.channelType,
         tenantId: input.tenantId,
         name: input.name,
+        botUsername: input.botUsername ?? null,
         accessKeySecretRef: input.accessKeySecretRef,
         webhookSecretRef: input.webhookSecretRef,
         status: input.status ?? 'active',
@@ -76,6 +77,7 @@ function makeHarness() {
       const next: ChannelBot = {
         ...cur,
         ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.botUsername !== undefined ? { botUsername: input.botUsername } : {}),
         ...(input.accessKeySecretRef !== undefined ? { accessKeySecretRef: input.accessKeySecretRef } : {}),
         ...(input.webhookSecretRef !== undefined ? { webhookSecretRef: input.webhookSecretRef } : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
@@ -350,6 +352,49 @@ async function main() {
     const check = await svc.checkConnection('telegram')
     assert.equal(check.reachable, false)
     assert.equal(check.failureReason, 'provider_error')
+  })
+
+  await test('CB-17 regisztráció felhasználónévvel: tárolódik, a nézet visszaadja (nem titok)', async () => {
+    const { svc } = makeHarness()
+    const res = await svc.registerPlatformBot({ ...VALID, botUsername: '@ceg_agent_bot' }, 'admin-1')
+    assert.equal(res.ok, true)
+    // Vezető @ levágva, a publikus nézetben látható (a mélylinkhez kell).
+    assert.equal(res.ok && res.bot.botUsername, 'ceg_agent_bot')
+    const view = await svc.getPlatformBot('telegram')
+    assert.equal(view!.botUsername, 'ceg_agent_bot')
+  })
+
+  await test('CB-18 érvénytelen felhasználónév elutasítva (túl rövid / tiltott karakter)', async () => {
+    const { svc, audits } = makeHarness()
+    for (const bad of ['ab', 'rossz-név!', 'név szóközzel', 'a'.repeat(33)]) {
+      const res = await svc.registerPlatformBot({ ...VALID, botUsername: bad }, 'admin-1')
+      assert.equal(res.ok, false, `elvárt elutasítás: ${bad}`)
+      assert.equal(!res.ok && res.reason, 'invalid_bot_username')
+    }
+    assert.equal(audits.length, 0)
+  })
+
+  await test('CB-19 setup-állapot: a DB-ben tárolt felhasználónév felülírja az env-fallbacket', async () => {
+    const { setupSvc } = makeHarness()
+    // Env szerint nincs beállítva — de a DB-sor megadja → configured=true a DB értékével.
+    const svc = setupSvc({ botUsername: 'env_fallback_bot', botUsernameConfigured: false })
+    await svc.registerPlatformBot({ ...VALID, botUsername: 'db_ben_tarolt_bot' }, 'admin-1')
+    const state = await svc.getSetupState('telegram')
+    assert.equal(state.botUsername, 'db_ben_tarolt_bot')
+    assert.equal(state.botUsernameConfigured, true)
+  })
+
+  await test('CB-20 frissítés: felhasználónév cserélhető a kulcsok érintése nélkül', async () => {
+    const { svc, rows } = makeHarness()
+    await svc.registerPlatformBot(VALID, 'admin-1')
+    const res = await svc.updatePlatformBot(
+      { channelType: 'telegram', botUsername: 'uj_nev_bot' },
+      'admin-2',
+    )
+    assert.equal(res.ok, true)
+    assert.equal(res.ok && res.bot.botUsername, 'uj_nev_bot')
+    const stored = [...rows.values()][0]
+    assert.equal(stored.accessKeySecretRef, VALID.accessKeySecretRef)
   })
 
   if (failures > 0) {

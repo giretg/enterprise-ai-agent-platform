@@ -9,7 +9,8 @@ import {
   createAgentTaskTicket,
   createScheduledAgentTask,
   deleteMessageContent,
-  findLatestAgentChatSession,
+  resumeLatestAgentChat,
+  type LoadedAgentChat,
   listAgentChatSessions,
   listChatTaskCards,
   loadAgentChatMessages,
@@ -230,6 +231,7 @@ export function AgentChatPanel({
   const [latestConversationId, setLatestConversationId] = useState<string | null | undefined>(
     undefined,
   )
+  const preloadedChatRef = useRef<LoadedAgentChat | null>(null)
   const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false)
   const [sessionsHasMore, setSessionsHasMore] = useState(false)
   const [sessionsNextOffset, setSessionsNextOffset] = useState(0)
@@ -490,9 +492,12 @@ export function AgentChatPanel({
         return
       }
       setLatestConversationId(undefined)
-      void findLatestAgentChatSession({ agentId: agent.id }).then((res) => {
+      // Egy körben jön az id + az üzenetek; a selectSession a ref-ből veszi, nem tölt újra.
+      void resumeLatestAgentChat({ agentId: agent.id }).then((res) => {
         if (cancelled) return
-        setLatestConversationId(res.success ? (res.data.session?.id ?? null) : null)
+        const chat = res.success ? res.data.chat : null
+        preloadedChatRef.current = chat
+        setLatestConversationId(chat?.conversationId ?? null)
       })
     }, 0)
     return () => {
@@ -1300,7 +1305,12 @@ export function AgentChatPanel({
       setConversationStatus(sessions.find((session) => session.id === id)?.status ?? 'active')
 
       try {
-        const res = await loadAgentChatMessages({ conversationId: id, agentId: agent.id })
+        const preloaded = preloadedChatRef.current
+        preloadedChatRef.current = null
+        const res =
+          preloaded?.conversationId === id
+            ? ({ success: true, data: preloaded } as const)
+            : await loadAgentChatMessages({ conversationId: id, agentId: agent.id })
         if (loadGen !== sessionLoadGenRef.current) return
         if (res.success) {
           setConversationStatus(res.data.conversation.status)

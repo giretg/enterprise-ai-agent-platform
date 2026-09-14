@@ -3,7 +3,7 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { useCallback, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { ShellAuth } from '@/components/auth/shell-auth'
 import { useClerkEnabled } from '@/components/auth/providers'
 import { rememberPanelOpener } from '@/components/ui/route-modal'
@@ -60,6 +60,24 @@ export function AppShell({
   const searchParams = useSearchParams()
   const storePanel = useControlPlanePanelKey()
   const activePanel = storePanel ?? searchParams.get('panel')
+
+  useEffect(() => {
+    if (!openGroup) return
+    const onMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node
+      const openEl = document.querySelector('[data-open-group]')
+      if (openEl && !openEl.contains(target)) setOpenGroup(null)
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenGroup(null)
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [openGroup])
 
   const openNavPanel = useCallback(
     (key: string, opener?: HTMLElement | null) => {
@@ -181,7 +199,11 @@ export function AppShell({
                   const active = isGroupActive(item)
                   const open = openGroup === item.label
                   return (
-                    <div key={item.label} className="relative">
+                    <div
+                      key={item.label}
+                      className="relative"
+                      {...(open ? { 'data-open-group': '' } : {})}
+                    >
                       <button
                         type="button"
                         aria-haspopup="menu"
@@ -205,24 +227,15 @@ export function AppShell({
                         )}
                       </button>
                       {open && (
-                        <>
-                          <button
-                            type="button"
-                            aria-hidden
-                            tabIndex={-1}
-                            onClick={() => setOpenGroup(null)}
-                            className="fixed inset-0 z-30 cursor-default"
-                          />
-                          <div
-                            role="menu"
-                            className="absolute right-0 top-full z-40 mt-2 min-w-[12rem] rounded-2xl border border-line bg-night/95 p-1.5 shadow-xl backdrop-blur-xl"
-                          >
-                            {item.children.map((child) => {
-                              const childActive = isActive(child.href, child.exact)
-                              return renderNavLeaf(child, childActive, () => setOpenGroup(null), false)
-                            })}
-                          </div>
-                        </>
+                        <div
+                          role="menu"
+                          className="absolute right-0 top-full z-40 mt-2 min-w-[12rem] rounded-2xl border border-line bg-night/95 p-1.5 shadow-xl backdrop-blur-xl"
+                        >
+                          {item.children.map((child) => {
+                            const childActive = isActive(child.href, child.exact)
+                            return renderNavLeaf(child, childActive, () => setOpenGroup(null), false)
+                          })}
+                        </div>
                       )}
                     </div>
                   )

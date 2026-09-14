@@ -4564,105 +4564,116 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
   try {
     const user = await requireTenantRole('viewer')
     const { conversationId, agentId } = loadAgentChatSchema.parse(input)
-    const actor = { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole }
-    const [loaded, pendingConsequenceApprovals, pendingConnectorGrants] = await Promise.all([
-      services.agentChat.getConversationMessages(
-        conversationId,
-        user.activeTenantId,
-        agentId,
-        user.user.id,
-      ),
-      // issue #97 — a következmény-kapu függő jóváhagyásai. A stream-esemény
-      // efemer: enélkül a „Jóváhagyom" gomb a forduló végén (a chat ilyenkor a DB
-      // végállapotát tölti újra), lapfrissítéskor és visszacsatlakozáskor eltűnne,
-      // a művelet pedig némán ott ülne lejáratig.
-      services.consequenceApproval.listOpenForConversation(conversationId, actor),
-      services.connectorGrants.listOpenGrantNeeds({
-        userId: user.user.id,
-        tenantId: user.activeTenantId,
-        conversationId,
-      }),
-    ])
-    const { conversation, messages } = loaded
-
-    const views = messages.map((message) => ({
-      id: message.id,
-      role: message.role,
-      text: message.text,
-      privacyMarkers: message.privacyMarkers ?? [],
-      attachments: message.attachments,
-      createdAt: message.createdAt.toISOString(),
-      contentDeletedAt: message.contentDeletedAt ? message.contentDeletedAt.toISOString() : null,
-      ticketRefId: message.ticketRefId ?? null,
-    }))
-
-    let continuedFromTicket: { id: string; title: string } | null = null
-    let ticketDiscussionHistory: Array<{
-      id: string
-      role: 'user' | 'agent' | 'system'
-      text: string
-      authorLabel: string
-      createdAt: string
-    }> = []
-    if (conversation.continuedFromTicketId) {
-      const sourceTicket = await repositories.tickets.findById(conversation.continuedFromTicketId)
-      if (sourceTicket && sourceTicket.tenantId === user.activeTenantId) {
-        continuedFromTicket = { id: sourceTicket.id, title: sourceTicket.title }
-        const payload =
-          sourceTicket.payload &&
-          typeof sourceTicket.payload === 'object' &&
-          !Array.isArray(sourceTicket.payload)
-            ? (sourceTicket.payload as Record<string, unknown>)
-            : {}
-        const originalTask = readTicketPromptText(payload) || sourceTicket.title
-        const comments = await repositories.tickets.listComments(sourceTicket.id)
-        ticketDiscussionHistory = buildTicketDiscussionHistory({
-          comments,
-          originalTask,
-          ticketCreatedAt: sourceTicket.createdAt,
-        })
-      }
-    }
-
-    return ok({
-      conversationId,
-      conversation: {
-        id: conversation.id,
-        status: conversation.status,
-        title: conversation.title,
-        lastMessageAt: conversation.lastMessageAt.toISOString(),
-        continuedFromTicketId: conversation.continuedFromTicketId,
-        projectKey: conversation.projectKey,
-      },
-      continuedFromTicket,
-      ticketDiscussionHistory,
-      messages: views,
-      pendingConsequenceApprovals,
-      pendingConnectorGrants,
-      isAdmin: hasMinimumRole(user.activeTenantRole, 'admin'),
-    })
+    return ok(await loadAgentChatPayload(user, conversationId, agentId))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load chat messages')
   }
 }
 
-export async function findLatestAgentChatSession(input: { agentId: string }) {
+/**
+ * „Beszélgetés” gomb: a legutóbbi aktív szál + üzenetei EGY körben — külön
+ * `findLatestAgentChatSession` → `loadAgentChatMessages` lánc két auth-feloldást
+ * és két round-tripet fizetett, ezt látta a felhasználó spinnerként.
+ */
+export async function resumeLatestAgentChat(input: { agentId: string }) {
   try {
     const user = await requireTenantRole('viewer')
     const { agentId } = findLatestAgentChatSessionSchema.parse(input)
     const session = await prisma.conversation.findFirst({
-      where: {
-        agentId,
-        createdById: user.user.id,
-        tenantId: user.activeTenantId,
-        status: 'active',
-      },
+      where: { agentId, createdById: user.user.id, tenantId: user.activeTenantId, status: 'active' },
       orderBy: { lastMessageAt: 'desc' },
-      select: { id: true, status: true },
+      select: { id: true },
     })
-    return ok({ session })
+    if (!session) return ok({ chat: null })
+    return ok({ chat: await loadAgentChatPayload(user, session.id, agentId) })
   } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to find latest chat session')
+    return fail(e instanceof Error ? e.message : 'Failed to resume chat')
+  }
+}
+
+export type LoadedAgentChat = Awaited<ReturnType<typeof loadAgentChatPayload>>
+
+async function loadAgentChatPayload(
+  user: Awaited<ReturnType<typeof requireTenantRole>>,
+  conversationId: string,
+  agentId: string,
+) {
+  const actor = { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole }
+  const [loaded, pendingConsequenceApprovals, pendingConnectorGrants] = await Promise.all([
+    services.agentChat.getConversationMessages(
+      conversationId,
+      user.activeTenantId,
+      agentId,
+      user.user.id,
+    ),
+    // issue #97 — a következmény-kapu függő jóváhagyásai. A stream-esemény
+    // efemer: enélkül a „Jóváhagyom" gomb a forduló végén (a chat ilyenkor a DB
+    // végállapotát tölti újra), lapfrissítéskor és visszacsatlakozáskor eltűnne,
+    // a művelet pedig némán ott ülne lejáratig.
+    services.consequenceApproval.listOpenForConversation(conversationId, actor),
+    services.connectorGrants.listOpenGrantNeeds({
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
+      conversationId,
+    }),
+  ])
+  const { conversation, messages } = loaded
+
+  const views = messages.map((message) => ({
+    id: message.id,
+    role: message.role,
+    text: message.text,
+    privacyMarkers: message.privacyMarkers ?? [],
+    attachments: message.attachments,
+    createdAt: message.createdAt.toISOString(),
+    contentDeletedAt: message.contentDeletedAt ? message.contentDeletedAt.toISOString() : null,
+    ticketRefId: message.ticketRefId ?? null,
+  }))
+
+  let continuedFromTicket: { id: string; title: string } | null = null
+  let ticketDiscussionHistory: Array<{
+    id: string
+    role: 'user' | 'agent' | 'system'
+    text: string
+    authorLabel: string
+    createdAt: string
+  }> = []
+  if (conversation.continuedFromTicketId) {
+    const sourceTicket = await repositories.tickets.findById(conversation.continuedFromTicketId)
+    if (sourceTicket && sourceTicket.tenantId === user.activeTenantId) {
+      continuedFromTicket = { id: sourceTicket.id, title: sourceTicket.title }
+      const payload =
+        sourceTicket.payload &&
+        typeof sourceTicket.payload === 'object' &&
+        !Array.isArray(sourceTicket.payload)
+          ? (sourceTicket.payload as Record<string, unknown>)
+          : {}
+      const originalTask = readTicketPromptText(payload) || sourceTicket.title
+      const comments = await repositories.tickets.listComments(sourceTicket.id)
+      ticketDiscussionHistory = buildTicketDiscussionHistory({
+        comments,
+        originalTask,
+        ticketCreatedAt: sourceTicket.createdAt,
+      })
+    }
+  }
+
+  return {
+    conversationId,
+    conversation: {
+      id: conversation.id,
+      status: conversation.status,
+      title: conversation.title,
+      lastMessageAt: conversation.lastMessageAt.toISOString(),
+      continuedFromTicketId: conversation.continuedFromTicketId,
+      projectKey: conversation.projectKey,
+    },
+    continuedFromTicket,
+    ticketDiscussionHistory,
+    messages: views,
+    pendingConsequenceApprovals,
+    pendingConnectorGrants,
+    isAdmin: hasMinimumRole(user.activeTenantRole, 'admin'),
   }
 }
 

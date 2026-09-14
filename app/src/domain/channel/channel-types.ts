@@ -164,6 +164,25 @@ export function isSecretRef(value: string): boolean {
 }
 
 /**
+ * A Telegram platform-bot két titkának menedzselt tároló-azonosítója. A beüzemelő UI-ról
+ * beírt NYERS titok a connectoroknál bevált secret-store mögé kerül (Secret Manager prod,
+ * lokális fájl dev), a `channel_bots` sorban csak a `secret-ref:<id>` hivatkozás áll —
+ * ugyanaz a minta, mint az API-kulcsoknál. A feloldás a meglévő `resolveConnectorApiKey`
+ * úton megy (a `secret-ref:` prefixet az már ma is érti), ezért nincs új tároló-kód.
+ */
+export const CHANNEL_BOT_TOKEN_SECRET_ID = 'channel-telegram-bot-token' as const
+export const CHANNEL_WEBHOOK_SECRET_ID = 'channel-telegram-webhook-secret' as const
+
+/**
+ * Telegram bot-felhasználónév szabály (BotFather-konvenció: 5–32 karakter, betű/szám/
+ * aláhúzás, @ nélkül — a vezető @-ot a hívó már levágta). Nem titok, de a rossz mélylink
+ * csendes üzemzavara miatt fail-fast validáljuk.
+ */
+export function isValidTelegramBotUsername(value: string): boolean {
+  return /^[A-Za-z0-9_]{5,32}$/.test(value.trim())
+}
+
+/**
  * Egy csatorna-bot felületen MEGMUTATHATÓ nézete. A titok-referenciákat SOHA nem adja
  * vissza — csak azt, hogy be van-e állítva (`hasAccessKey` / `hasWebhookSecret`). Így a
  * kulcs a felületről nem olvasható vissza, csak felülírható.
@@ -174,6 +193,8 @@ export type ChannelBotPublicView = {
   tenantId: string | null
   isPlatformLevel: boolean
   name: string
+  /** A bot Telegram-felhasználóneve (@ nélkül) — nem titok, a mélylinkhez kell. */
+  botUsername: string | null
   status: 'active' | 'disabled'
   hasAccessKey: boolean
   hasWebhookSecret: boolean

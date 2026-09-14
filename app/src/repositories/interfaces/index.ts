@@ -2646,6 +2646,8 @@ export type CreateChannelBotInput = {
   channelType: ChannelType
   tenantId: string | null
   name: string
+  /** A bot Telegram-felhasználóneve (@ nélkül) — a mélylink alapja, nem titok. */
+  botUsername?: string | null
   accessKeySecretRef: string
   webhookSecretRef: string
   status?: ChannelBotStatus
@@ -2654,6 +2656,7 @@ export type CreateChannelBotInput = {
 
 export type UpdateChannelBotInput = Partial<{
   name: string
+  botUsername: string | null
   accessKeySecretRef: string
   webhookSecretRef: string
   status: ChannelBotStatus

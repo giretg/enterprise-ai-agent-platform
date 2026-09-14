@@ -21,6 +21,7 @@ import {
   extractConnectorConfigFromOpenApiSpec,
   parseOpenApiDocument,
 } from '@/domain/provisioning/openapi-config-extractor'
+import { extractCatalogLeaves, isCatalogIndexDocument } from './catalog-index'
 import type { CapabilitySet } from './capability-set'
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>
@@ -54,6 +55,7 @@ export type SpecSyncFailReason =
   | 'not_openapi'
   | 'parse_error'
   | 'empty_spec'
+  | 'catalog_index'
   | 'unsupported_auth'
 
 export type SpecSyncResult =
@@ -137,6 +139,27 @@ export class SpecSyncService {
   }
 
   /**
+   * Nyers spec-szöveg letöltése őrzött egress-szel, parse nélkül. A katalógus-
+   * előnézet (leaf-picker) használja: ugyanaz az A4-őr, mint a syncben, titkot
+   * sosem küldünk.
+   */
+  async downloadRawSpec(specUrl: string): Promise<
+    { ok: true; text: string; host: string } | { ok: false; reason: SpecSyncFailReason; detail?: string }
+  > {
+    const host = hostOf(specUrl)
+    const guard = await guardEgressUrl({
+      url: specUrl,
+      allowlistHosts: host ? [host] : [],
+      resolveHostIps: this.deps.resolveHostIps,
+    })
+    if (!guard.ok) return { ok: false, reason: guard.reason, detail: guard.detail }
+    const download = await this.download(guard.url, guard.host)
+    if (!download.ok) return download
+    if (!download.text.trim()) return { ok: false, reason: 'empty_spec' }
+    return { ok: true, text: download.text, host: guard.host }
+  }
+
+  /**
    * Letölti és capability-set-té parse-olja a spec-URL tartalmát. A `specUrl` a
    * connectorhoz JÓVÁHAGYOTT, oda-szögezett link (A4) — az egress-allowlist a hostja.
    * `providerHint` az extractor provider-slug tippje (a connector neve/providerje).
@@ -158,6 +181,17 @@ export class SpecSyncService {
     if (!rawText.trim()) return { ok: false, reason: 'empty_spec' }
 
     const document = await parseOpenApiDocument(rawText)
+    // Gyűjtőindex (pl. katalógus-YAML csupa `/openapi/*.yaml` bejegyzéssel):
+    // ebből csak dokumentáció-olvasó connector születne, adatművelet nélkül.
+    // Fail-closed + terelés a leaf-választó varázslóba.
+    if (document && isCatalogIndexDocument(document)) {
+      const leaves = extractCatalogLeaves(document, specUrl)
+      return {
+        ok: false,
+        reason: 'catalog_index',
+        detail: `${leaves.length} leaf-spec közül választható a létrehozó varázslóban`,
+      }
+    }
     // D1: az önfrissítő MVP kizárólag OpenAPI 3.x snapshotot fogad el. A közös
     // extractor a hagyományos provisioning miatt Swagger 2-t is tud, itt szűkítünk.
     if (!document || typeof document.openapi !== 'string' || !document.openapi.startsWith('3.')) {

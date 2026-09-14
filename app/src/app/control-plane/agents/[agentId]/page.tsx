@@ -29,7 +29,6 @@ import { AgentTaskButton } from '@/components/agents/agent-task-button'
 import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
-import { AddApiConnectorForm } from '@/components/agents/add-api-connector-form'
 import { AssignExistingConnectorForm } from '@/components/agents/assign-existing-connector-form'
 import { ApiConnectorList } from '@/components/agents/api-connector-list'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
@@ -424,27 +423,21 @@ export default async function AgentDetailPage({
               />
               {isAdmin && !capabilitiesLocked ? (
                 <div className="mt-6 space-y-3 border-t border-line pt-5">
-                  <p className="text-sm font-semibold text-ink">Új kapcsolat</p>
+                  <p className="text-sm font-semibold text-ink">Kapcsolat hozzárendelése</p>
                   <p className="text-xs text-ink-faint">
-                    Ha közben új kapcsolatot kell definiálnod, az új ablakban nyílik — ez az
-                    oldal itt marad.{' '}
-                    <OpenInNewWindowLink href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connections}>
-                      Provisioning-varázsló
-                    </OpenInNewWindowLink>
-                    {' · '}
+                    A kapcsolatokat központilag a{' '}
                     <OpenInNewWindowLink href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connectors}>
                       Kapcsolat-katalógus
-                    </OpenInNewWindowLink>
+                    </OpenInNewWindowLink>{' '}
+                    és a{' '}
+                    <OpenInNewWindowLink href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connections}>
+                      Provisioning-varázsló
+                    </OpenInNewWindowLink>{' '}
+                    oldalon kezeld — itt csak a már aktivált kapcsolatot rendeled az agenthez.
                   </p>
                   <Collapsible
-                    title="Új API-kapcsolat hozzáadása"
-                    subtitle="Külső REST API bekötése új connectorként"
-                  >
-                    <AddApiConnectorForm agentId={agent.id} bare />
-                  </Collapsible>
-                  <Collapsible
                     title="Meglévő kapcsolat hozzárendelése"
-                    subtitle="Már aktivált provisioning-kapcsolat csatolása"
+                    subtitle="Már aktivált kapcsolat csatolása az agenthez"
                   >
                     <AssignExistingConnectorForm
                       agentId={agent.id}
@@ -570,6 +563,18 @@ export default async function AgentDetailPage({
         <div className="rounded-xl border border-honey/40 bg-honey/10 px-4 py-3 text-sm text-ink-soft">
           Az agent betöltődött, de néhány panel (memória, tudásbázis vagy eszközök) most nem ért
           el. Frissítsd az oldalt, ha hiányzik valami.
+        </div>
+      ) : null}
+
+      {agent.status === 'draft' ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300/40 bg-amber-500/10 px-4 py-3">
+          <p className="text-sm text-ink">
+            <span className="font-semibold">Még vázlat</span> — {agent.name} nem kap feladatot és nem dispatchelhető, amíg nem aktiválod.
+            {isAdmin ? ' Az aktiválás befagyasztja az első verziót.' : ' Ehhez admin jog kell.'}
+          </p>
+          {isAdmin ? (
+            <AgentLifecycleControls agentId={agent.id} status={agent.status} canManage />
+          ) : null}
         </div>
       ) : null}
 

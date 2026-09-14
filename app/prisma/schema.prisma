@@ -2249,6 +2249,10 @@ model ChannelBot {
   channelType        ChannelType      @map("channel_type")
   tenantId           String?          @map("tenant_id") @db.Uuid
   name               String
+  // A bot Telegram-felhasználóneve (@ nélkül) — ebből épül a `t.me/<username>?start=…`
+  // mélylink. A platform-admin a beüzemelő UI-on adja meg; régi telepítésnél az env
+  // (`TELEGRAM_BOT_USERNAME`) a fallback. Nem titok, sima szövegként tárolható.
+  botUsername        String?          @map("bot_username")
   accessKeySecretRef String           @map("access_key_secret_ref")
   webhookSecretRef   String           @map("webhook_secret_ref")
   status             ChannelBotStatus @default(active)

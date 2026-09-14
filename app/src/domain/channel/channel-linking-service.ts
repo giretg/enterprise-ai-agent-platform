@@ -252,7 +252,11 @@ export class ChannelLinkingService {
 
     return {
       ok: true,
-      deepLink: this.deps.buildDeepLink(jti),
+      // A mélylink a DB-ben tárolt felhasználónévből épül (beüzemelő UI); ha az nincs
+      // megadva, a befecskendezett env-alapú építő a fallback (régi telepítések).
+      deepLink: bot.botUsername?.trim()
+        ? `https://t.me/${bot.botUsername.trim()}?start=${jti}`
+        : this.deps.buildDeepLink(jti),
       expiresAt,
       warning: LINK_WARNING_TEXT,
     }

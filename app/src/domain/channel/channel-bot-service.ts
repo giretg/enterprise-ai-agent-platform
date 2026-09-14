@@ -18,12 +18,15 @@ import type { ChannelOutboundTransport } from './channel-outbound-transport'
 import {
   CHANNEL_AUDIT_ACTIONS,
   isSecretRef,
+  isValidTelegramBotUsername,
   type ChannelBotPublicView,
 } from './channel-types'
 
 export type RegisterPlatformBotInput = {
   channelType: ChannelType
   name: string
+  /** A bot Telegram-felhasználóneve (@ nélkül) — a mélylink alapja, nem titok. */
+  botUsername?: string | null
   /** Titok-referencia (nem nyers token). Pl. `secret-manager:projects/.../secrets/telegram-bot`. */
   accessKeySecretRef: string
   /** A webhook titkos fejléc referenciája (nem nyers érték). */
@@ -33,6 +36,8 @@ export type RegisterPlatformBotInput = {
 export type UpdatePlatformBotInput = {
   channelType: ChannelType
   name?: string
+  /** Ha megadva (null-lal törölhető), felülírja a tárolt felhasználónevet. */
+  botUsername?: string | null
   status?: 'active' | 'disabled'
   /** Ha megadva, felülírja a hozzáférési kulcs referenciáját (a nyers kulcs cseréjéhez). */
   accessKeySecretRef?: string
@@ -42,6 +47,7 @@ export type UpdatePlatformBotInput = {
 
 export type ChannelBotServiceError =
   | 'invalid_name'
+  | 'invalid_bot_username'
   | 'invalid_secret_ref'
   | 'already_exists'
   | 'not_found'
@@ -122,6 +128,10 @@ export class ChannelBotService {
   ): Promise<ChannelBotServiceResult> {
     const name = input.name.trim()
     if (!name) return { ok: false, reason: 'invalid_name' }
+    const botUsername = normalizeBotUsername(input.botUsername)
+    if (botUsername !== null && !isValidTelegramBotUsername(botUsername)) {
+      return { ok: false, reason: 'invalid_bot_username' }
+    }
     if (!isSecretRef(input.accessKeySecretRef) || !isSecretRef(input.webhookSecretRef)) {
       return { ok: false, reason: 'invalid_secret_ref' }
     }
@@ -133,6 +143,7 @@ export class ChannelBotService {
       channelType: input.channelType,
       tenantId: null, // platform-szintű
       name,
+      botUsername,
       accessKeySecretRef: input.accessKeySecretRef.trim(),
       webhookSecretRef: input.webhookSecretRef.trim(),
       status: 'active',
@@ -157,6 +168,12 @@ export class ChannelBotService {
     if (input.name !== undefined && input.name.trim() === '') {
       return { ok: false, reason: 'invalid_name' }
     }
+    if (input.botUsername !== undefined) {
+      const normalized = normalizeBotUsername(input.botUsername)
+      if (normalized !== null && !isValidTelegramBotUsername(normalized)) {
+        return { ok: false, reason: 'invalid_bot_username' }
+      }
+    }
     if (input.accessKeySecretRef !== undefined && !isSecretRef(input.accessKeySecretRef)) {
       return { ok: false, reason: 'invalid_secret_ref' }
     }
@@ -166,6 +183,9 @@ export class ChannelBotService {
 
     const bot = await this.deps.bots.update(existing.id, {
       ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+      ...(input.botUsername !== undefined
+        ? { botUsername: normalizeBotUsername(input.botUsername) }
+        : {}),
       ...(input.status !== undefined ? { status: input.status } : {}),
       ...(input.accessKeySecretRef !== undefined
         ? { accessKeySecretRef: input.accessKeySecretRef.trim() }
@@ -195,7 +215,14 @@ export class ChannelBotService {
    */
   async getSetupState(channelType: ChannelType): Promise<ChannelSetupState> {
     const bot = await this.deps.bots.findPlatformBot(channelType)
-    const username = this.deps.resolveBotUsername?.() ?? { username: '', configured: false }
+    const fallback = this.deps.resolveBotUsername?.() ?? { username: '', configured: false }
+    // A DB-ben tárolt felhasználónév az elsődleges (beüzemelő UI); az env csak a régi
+    // telepítések fallbackje, hogy a migráció előtt felvett botok mélylinkje ne törjön el.
+    const stored = bot?.botUsername?.trim()
+    const username =
+      stored && isValidTelegramBotUsername(stored)
+        ? { username: stored, configured: true }
+        : fallback
     return {
       bot: bot ? toPublicView(bot) : null,
       botUsername: username.username,
@@ -289,7 +316,11 @@ export class ChannelBotService {
     if (!me.ok) return { ...base, failureReason: me.reason }
 
     const botUsername = readString(me.result, 'username')
-    const expected = this.deps.resolveBotUsername?.()
+    const stored = bot.botUsername?.trim()
+    const expected =
+      stored && isValidTelegramBotUsername(stored)
+        ? { username: stored, configured: true }
+        : this.deps.resolveBotUsername?.()
     const info = await this.deps.transport.send({
       channelType,
       method: 'getWebhookInfo',
@@ -334,6 +365,7 @@ export class ChannelBotService {
         channelType: bot.channelType,
         platformLevel: bot.tenantId === null,
         name: bot.name,
+        botUsername: bot.botUsername ?? null,
         // A referenciák (NEM a nyers titok) auditálhatók — ez maga a mutató, nem a kulcs.
         accessKeySecretRef: bot.accessKeySecretRef,
         webhookSecretRef: bot.webhookSecretRef,
@@ -363,10 +395,18 @@ function toPublicView(bot: ChannelBot): ChannelBotPublicView {
     tenantId: bot.tenantId,
     isPlatformLevel: bot.tenantId === null,
     name: bot.name,
+    botUsername: bot.botUsername?.trim() || null,
     status: bot.status,
     hasAccessKey: bot.accessKeySecretRef.trim().length > 0,
     hasWebhookSecret: bot.webhookSecretRef.trim().length > 0,
     createdAt: bot.createdAt.toISOString(),
     updatedAt: bot.updatedAt.toISOString(),
   }
+}
+
+/** Vezető @ levágása + trim; üres → null (nincs megadva). A forma-ellenőrzés külön lépés. */
+function normalizeBotUsername(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null
+  const trimmed = value.trim().replace(/^@+/, '').trim()
+  return trimmed ? trimmed : null
 }

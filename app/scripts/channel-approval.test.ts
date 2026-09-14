@@ -116,6 +116,7 @@ function makeHarness(opts?: {
     channelType: 'telegram',
     tenantId: null,
     name: 'Platform Bot',
+    botUsername: null,
     accessKeySecretRef: 'env:X',
     webhookSecretRef: 'env:Y',
     status: 'active',

@@ -1,10 +1,17 @@
 'use server'
 
 import { randomUUID } from 'node:crypto'
+import { lookup } from 'node:dns/promises'
 import { z } from 'zod'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { parseCapabilitySet } from '@/domain/connector-self-update/capability-set'
+import {
+  extractCatalogLeaves,
+  isCatalogIndexDocument,
+} from '@/domain/connector-self-update/catalog-index'
+import { SpecSyncService } from '@/domain/connector-self-update/spec-sync'
+import { parseOpenApiDocument } from '@/domain/provisioning/openapi-config-extractor'
 import { SelfUpdateError } from '@/domain/connector-self-update/self-update-service'
 import {
   buildConnectorSecretRef,
@@ -30,6 +37,19 @@ const createSchema = z.object({
   specUrl: z.string().url().refine((value) => new URL(value).protocol === 'https:', 'Csak https link használható.'),
 })
 const rotateApiKeySchema = connectorIdSchema.extend({ apiKey: apiKeyField })
+const httpsUrlField = z.string().url().refine((value) => new URL(value).protocol === 'https:', 'Csak https link használható.')
+const catalogPreviewSchema = z.object({ catalogUrl: httpsUrlField })
+const catalogLeafSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  specUrl: httpsUrlField,
+  apiKey: z.string().trim().max(10_000).optional(),
+})
+const catalogCreateSchema = z.object({
+  items: catalogLeafSchema.array().min(1).max(50),
+  // Közös kulcs minden leafhez (pl. POSnavigator: egy pn_-kulcs minden API-ra).
+  // Ha üres, leafenkénti kulcs (vagy kulcs nélküli, publikus leaf) érvényes.
+  sharedApiKey: z.string().trim().max(10_000).optional(),
+})
 
 function actionError(error: unknown, fallback: string) {
   if (error instanceof SelfUpdateError) return fail(error.message)
@@ -139,6 +159,86 @@ export async function createSelfUpdatingConnector(input: unknown) {
   } catch (error) {
     if (connectorId) await deleteConnectorApiKey(connectorId).catch(() => {})
     return actionError(error, 'Nem sikerült létrehozni az OpenAPI-kapcsolatot.')
+  }
+}
+
+/**
+ * Gyűjtőindex-előnézet a létrehozó varázslóhoz: letölti a linket, és ha
+ * katalógus (csupa spec-fájl `paths`), visszaadja a leaf-spec URL-eket.
+ * Egyetlen API-leírásnál `{ isCatalog: false }` — mehet a sima létrehozás.
+ */
+export async function previewSelfUpdatingCatalog(input: unknown) {
+  try {
+    await requireTenantRole('operator')
+    const { catalogUrl } = catalogPreviewSchema.parse(input)
+    // Ugyanaz a DNS-utáni privát-IP újraellenőrzés, mint a wired sync-motornál (#243):
+    // feloldó nélkül egy belső címre mutató hostnév átcsúszna az egress-őrön.
+    const service = new SpecSyncService({
+      resolveHostIps: async (host) => (await lookup(host, { all: true })).map((e) => e.address),
+    })
+    const downloaded = await service.downloadRawSpec(catalogUrl)
+    if (!downloaded.ok) {
+      return fail(
+        downloaded.reason === 'fetch_failed'
+          ? 'Nem sikerült elérni a linket. Ellenőrizd a címet, vagy próbáld később.'
+          : 'A link tartalmát nem sikerült beolvasni — nem OpenAPI-leírásra mutat.',
+      )
+    }
+    const document = await parseOpenApiDocument(downloaded.text)
+    if (!document) return ok({ isCatalog: false, leaves: [] })
+    if (!isCatalogIndexDocument(document)) return ok({ isCatalog: false, leaves: [] })
+    const leaves = extractCatalogLeaves(document, catalogUrl).map((leaf) => ({
+      name: leaf.name,
+      specUrl: leaf.specUrl,
+      summary: leaf.summary,
+    }))
+    return ok({ isCatalog: true, leaves })
+  } catch (error) {
+    return actionError(error, 'Nem sikerült megvizsgálni a linket.')
+  }
+}
+
+/**
+ * Tömeges létrehozás katalógus-leafekből: leafenként egy önfrissítő connector,
+ * mindegyik a normál úton (link-jóváhagyás + partner-bizalom + sync + verzió-
+ * jóváhagyás várat magára a panelen). A közös kulcsot minden connector saját
+ * titok-slotjába mentjük — funkcionálisan ugyanaz a kulcs, de cserélhető egyenként.
+ * Részleges siker lehetséges: az eredmény leafenkénti.
+ */
+export async function createSelfUpdatingConnectorsFromCatalog(input: unknown) {
+  try {
+    const ctx = await requireTenantRole('admin')
+    const parsed = catalogCreateSchema.parse(input)
+    const sharedKey = parsed.sharedApiKey?.trim() ? parsed.sharedApiKey.trim() : null
+    const results: Array<{ name: string; specUrl: string; ok: boolean; connectorId?: string; error?: string }> = []
+    for (const item of parsed.items) {
+      const connectorId = randomUUID()
+      const apiKey = sharedKey ?? (item.apiKey?.trim() ? item.apiKey.trim() : null)
+      try {
+        if (apiKey) await saveConnectorApiKey(connectorId, apiKey)
+        const created = await services.selfUpdatingConnectors.create(
+          {
+            connectorId,
+            name: item.name,
+            specUrl: item.specUrl,
+            secretAlias: apiKey ? buildConnectorSecretRef(connectorId) : null,
+          },
+          actor(ctx),
+        )
+        results.push({ name: item.name, specUrl: item.specUrl, ok: true, connectorId: created.connector.id })
+      } catch (error) {
+        if (apiKey) await deleteConnectorApiKey(connectorId).catch(() => {})
+        results.push({
+          name: item.name,
+          specUrl: item.specUrl,
+          ok: false,
+          error: error instanceof Error ? error.message : 'A létrehozás nem sikerült.',
+        })
+      }
+    }
+    return ok({ items: results })
+  } catch (error) {
+    return actionError(error, 'Nem sikerült létrehozni a kapcsolatokat.')
   }
 }
 

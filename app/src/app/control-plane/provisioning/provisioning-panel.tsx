@@ -34,7 +34,9 @@ import { listTenants } from '@/app/actions/tenant'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
   createSelfUpdatingConnector,
+  createSelfUpdatingConnectorsFromCatalog,
   listSelfUpdatingConnectors,
+  previewSelfUpdatingCatalog,
   setTenantSelfUpdatingAutoApprove,
   syncSelfUpdatingConnector,
 } from '@/app/actions/self-updating-connectors'
@@ -528,6 +530,19 @@ export function ProvisioningPanel({
   const [fixedSource, setFixedSource] = useState<'template' | 'custom'>('template')
   const [selfUpdatingApiKey, setSelfUpdatingApiKey] = useState('')
   const [selfUpdatingSpecUrl, setSelfUpdatingSpecUrl] = useState('')
+  // Katalógus-varázsló (gyűjtőindex → leafenkénti kapcsolatok) állapota
+  type CatalogLeafRow = { name: string; specUrl: string; summary: string | null }
+  type CatalogBatchRow = { name: string; specUrl: string; ok: boolean; error?: string }
+  const [catalogChecking, setCatalogChecking] = useState(false)
+  const [catalogChecked, setCatalogChecked] = useState(false)
+  const [catalogIsCatalog, setCatalogIsCatalog] = useState(false)
+  const [catalogLeaves, setCatalogLeaves] = useState<CatalogLeafRow[]>([])
+  const [catalogSelected, setCatalogSelected] = useState<Record<string, boolean>>({})
+  const [catalogNames, setCatalogNames] = useState<Record<string, string>>({})
+  const [catalogKeyMode, setCatalogKeyMode] = useState<'none' | 'shared' | 'per_leaf'>('shared')
+  const [catalogSharedKey, setCatalogSharedKey] = useState('')
+  const [catalogLeafKeys, setCatalogLeafKeys] = useState<Record<string, string>>({})
+  const [catalogBatch, setCatalogBatch] = useState<CatalogBatchRow[] | null>(null)
   const [sourceType, setSourceType] = useState<'api_doc' | 'openapi' | 'manual' | 'template'>('api_doc')
   const [configText, setConfigText] = useState('')
   const [createStep, setCreateStep] = useState<CreateStep>('basics')
@@ -841,7 +856,90 @@ export function ProvisioningPanel({
     setFixedSource('template')
     setSelfUpdatingApiKey('')
     setSelfUpdatingSpecUrl('')
+    setCatalogChecking(false)
+    setCatalogChecked(false)
+    setCatalogIsCatalog(false)
+    setCatalogLeaves([])
+    setCatalogSelected({})
+    setCatalogNames({})
+    setCatalogKeyMode('shared')
+    setCatalogSharedKey('')
+    setCatalogLeafKeys({})
+    setCatalogBatch(null)
   }, [])
+
+  const checkCatalog = useCallback(() => {
+    const url = selfUpdatingSpecUrl.trim()
+    if (!url) {
+      setError('Add meg az API-leírás linkjét.')
+      return
+    }
+    setError(null)
+    setNotice(null)
+    setCatalogBatch(null)
+    setCatalogChecking(true)
+    startTransition(async () => {
+      const result = await previewSelfUpdatingCatalog({ catalogUrl: url })
+      setCatalogChecking(false)
+      if (!result.success) {
+        setError(result.error ?? 'A link vizsgálata nem sikerült.')
+        return
+      }
+      const data = result.data as { isCatalog: boolean; leaves: CatalogLeafRow[] }
+      setCatalogChecked(true)
+      setCatalogIsCatalog(data.isCatalog)
+      if (!data.isCatalog) {
+        setCatalogLeaves([])
+        setNotice('Ez egyetlen API leírása, nem gyűjtőindex — mehet a sima „Konnektor létrehozása”.')
+        return
+      }
+      setCatalogLeaves(data.leaves)
+      setCatalogSelected(Object.fromEntries(data.leaves.map((leaf) => [leaf.specUrl, true])))
+      setCatalogNames(Object.fromEntries(data.leaves.map((leaf) => [leaf.specUrl, leaf.name])))
+      setNotice(`Gyűjtőindex: ${data.leaves.length} API-leírás található benne. Válaszd ki, melyikből legyen kapcsolat.`)
+    })
+  }, [selfUpdatingSpecUrl])
+
+  const createFromCatalog = useCallback(() => {
+    const selected = catalogLeaves.filter((leaf) => catalogSelected[leaf.specUrl])
+    if (selected.length === 0) {
+      setError('Válassz legalább egy API-leírást a listából.')
+      return
+    }
+    for (const leaf of selected) {
+      if (!(catalogNames[leaf.specUrl] ?? '').trim()) {
+        setError('Minden kiválasztott sornak adj nevet.')
+        return
+      }
+    }
+    setError(null)
+    setNotice(null)
+    setCatalogBatch(null)
+    startTransition(async () => {
+      const result = await createSelfUpdatingConnectorsFromCatalog({
+        items: selected.map((leaf) => ({
+          name: (catalogNames[leaf.specUrl] ?? '').trim(),
+          specUrl: leaf.specUrl,
+          apiKey:
+            catalogKeyMode === 'per_leaf' ? (catalogLeafKeys[leaf.specUrl] ?? '').trim() || undefined : undefined,
+        })),
+        sharedApiKey: catalogKeyMode === 'shared' ? catalogSharedKey.trim() || undefined : undefined,
+      })
+      if (!result.success) {
+        setError(result.error ?? 'A kapcsolatok létrehozása nem sikerült.')
+        return
+      }
+      const data = result.data as { items: CatalogBatchRow[] }
+      setCatalogBatch(data.items)
+      const okCount = data.items.filter((item) => item.ok).length
+      setNotice(
+        okCount === data.items.length
+          ? `${okCount} kapcsolat létrejött. A panelen jóvá kell hagyni a linkeket és a partner megbízhatóságát, mielőtt frissítést kereshetsz.`
+          : `${okCount}/${data.items.length} kapcsolat jött létre — a hibás sorokat lásd alább.`,
+      )
+      reload()
+    })
+  }, [catalogLeaves, catalogSelected, catalogNames, catalogKeyMode, catalogSharedKey, catalogLeafKeys, reload])
 
   const onCreate = useCallback(() => {
     if (connectionKind === 'self_updating') {
@@ -1226,7 +1324,11 @@ export function ProvisioningPanel({
                   <span className="mb-1 block font-semibold">API-leírás linkje</span>
                   <input
                     value={selfUpdatingSpecUrl}
-                    onChange={(e) => setSelfUpdatingSpecUrl(e.target.value)}
+                    onChange={(e) => {
+                      setSelfUpdatingSpecUrl(e.target.value)
+                      setCatalogChecked(false)
+                      setCatalogBatch(null)
+                    }}
                     className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
                     placeholder="https://partner.example/openapi.json"
                   />
@@ -1234,6 +1336,162 @@ export function ProvisioningPanel({
                     Innen olvassuk ki a képességeket, de csak amikor megnyomod a Frissítés gombot — sosem magától.
                   </span>
                 </label>
+                <div className="rounded-md border border-ink/12 bg-card p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={catalogChecking || !selfUpdatingSpecUrl.trim()}
+                      onClick={checkCatalog}
+                      className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+                    >
+                      {catalogChecking ? 'Vizsgálat…' : 'Gyűjtőindex? — link vizsgálata'}
+                    </button>
+                    <span className="text-xs text-ink-soft">
+                      Ha a link katalógust (több API-leírást) tartalmaz, itt választhatod ki, melyikből legyen kapcsolat.
+                    </span>
+                  </div>
+
+                  {catalogChecked && !catalogIsCatalog ? (
+                    <p className="mt-2 text-xs text-ink-soft">
+                      Ez egyetlen API leírása — a lenti „Konnektor létrehozása” gombbal hozd létre.
+                    </p>
+                  ) : null}
+
+                  {catalogChecked && catalogIsCatalog ? (
+                    <div className="mt-3 space-y-3">
+                      <p className="text-xs font-semibold">
+                        Gyűjtőindex ({catalogLeaves.length} API-leírás) — válaszd ki, melyikből legyen kapcsolat:
+                      </p>
+                      <div className="max-h-64 space-y-2 overflow-y-auto">
+                        {catalogLeaves.map((leaf) => (
+                          <div key={leaf.specUrl} className="rounded-md border border-ink/10 p-2">
+                            <label className="flex items-start gap-2 text-sm">
+                              <input
+                                type="checkbox"
+                                checked={catalogSelected[leaf.specUrl] ?? false}
+                                onChange={(e) =>
+                                  setCatalogSelected((prev) => ({ ...prev, [leaf.specUrl]: e.target.checked }))
+                                }
+                                className="mt-1"
+                              />
+                              <span className="flex-1">
+                                <input
+                                  value={catalogNames[leaf.specUrl] ?? leaf.name}
+                                  onChange={(e) =>
+                                    setCatalogNames((prev) => ({ ...prev, [leaf.specUrl]: e.target.value }))
+                                  }
+                                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1 text-sm font-semibold"
+                                  aria-label={`Kapcsolat neve (${leaf.specUrl})`}
+                                />
+                                <span className="mt-0.5 block break-all font-mono text-[11px] text-ink-soft">
+                                  {leaf.specUrl}
+                                </span>
+                                {leaf.summary ? (
+                                  <span className="mt-0.5 block text-xs text-ink-soft">{leaf.summary}</span>
+                                ) : null}
+                              </span>
+                            </label>
+                            {catalogKeyMode === 'per_leaf' && (catalogSelected[leaf.specUrl] ?? false) ? (
+                              <label className="mt-2 block text-xs">
+                                <span className="mb-1 block text-ink-soft">Kulcs ehhez a kapcsolathoz (opcionális)</span>
+                                <input
+                                  type="password"
+                                  value={catalogLeafKeys[leaf.specUrl] ?? ''}
+                                  onChange={(e) =>
+                                    setCatalogLeafKeys((prev) => ({ ...prev, [leaf.specUrl]: e.target.value }))
+                                  }
+                                  autoComplete="new-password"
+                                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1"
+                                />
+                              </label>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="space-y-2 text-sm">
+                        <span className="block text-xs font-semibold">Hozzáférési kulcsok</span>
+                        <label className="flex items-start gap-2 text-xs">
+                          <input
+                            type="radio"
+                            checked={catalogKeyMode === 'shared'}
+                            onChange={() => setCatalogKeyMode('shared')}
+                            className="mt-0.5"
+                          />
+                          <span>
+                            <strong>Közös kulcs minden kapcsolathoz</strong>
+                            <span className="block text-ink-soft">
+                              Egy kulcs (pl. POSnavigator pn_-kulcs) minden kiválasztott API-ra. Minden kapcsolat a
+                              saját titok-slotjába kapja — később egyenként cserélhető.
+                            </span>
+                          </span>
+                        </label>
+                        {catalogKeyMode === 'shared' ? (
+                          <input
+                            type="password"
+                            value={catalogSharedKey}
+                            onChange={(e) => setCatalogSharedKey(e.target.value)}
+                            autoComplete="new-password"
+                            placeholder="Közös hozzáférési kulcs (opcionális)"
+                            className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm"
+                          />
+                        ) : null}
+                        <label className="flex items-start gap-2 text-xs">
+                          <input
+                            type="radio"
+                            checked={catalogKeyMode === 'per_leaf'}
+                            onChange={() => setCatalogKeyMode('per_leaf')}
+                            className="mt-0.5"
+                          />
+                          <span>
+                            <strong>Külön kulcs kapcsolatonként</strong>
+                            <span className="block text-ink-soft">Minden kiválasztott sor alatt külön kulcs adható meg.</span>
+                          </span>
+                        </label>
+                        <label className="flex items-start gap-2 text-xs">
+                          <input
+                            type="radio"
+                            checked={catalogKeyMode === 'none'}
+                            onChange={() => setCatalogKeyMode('none')}
+                            className="mt-0.5"
+                          />
+                          <span>
+                            <strong>Kulcs nélkül</strong>
+                            <span className="block text-ink-soft">Nyilvános, kulcsot nem kérő API-khoz.</span>
+                          </span>
+                        </label>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={pending || catalogChecking}
+                        onClick={createFromCatalog}
+                        className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
+                      >
+                        Kiválasztott kapcsolatok létrehozása
+                      </button>
+
+                      {catalogBatch ? (
+                        <ul className="space-y-1 text-xs">
+                          {catalogBatch.map((item) => (
+                            <li
+                              key={item.specUrl}
+                              className={`rounded-md border px-2 py-1.5 ${
+                                item.ok ? 'border-sage/35 bg-sage/8' : 'border-coral/40 bg-coral/8'
+                              }`}
+                            >
+                              {item.ok ? (
+                                <span>✓ <strong>{item.name}</strong> létrejött — link-jóváhagyás és bizalom még hátravan.</span>
+                              ) : (
+                                <span>✗ <strong>{item.name}</strong>: {item.error ?? 'nem sikerült'}</span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
                 <p className="rounded-md border border-honey/35 bg-honey/8 p-3 text-xs">
                   A linket általában egy másik kollégának kell jóváhagynia, mielőtt élesítjük — így biztos,
                   hogy nem elgépelt vagy hamis címről olvasunk. Platform-superadmin egyedül is jóváhagyhatja

@@ -3,14 +3,23 @@
 import { z } from 'zod'
 import { requirePlatformRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
+import {
+  CHANNEL_BOT_TOKEN_SECRET_ID,
+  CHANNEL_WEBHOOK_SECRET_ID,
+  isValidTelegramBotUsername,
+} from '@/domain/channel/channel-types'
 import { ensureActiveDatabaseMode } from '@/lib/db'
 import { fail, ok } from '@/lib/result'
 
 /**
  * Platform-szintű csatorna-bot regisztráció / frissítés (Telegram feature-spec #70/#71, D3).
- * CSAK platform-admin (superadmin). A hozzáférési kulcsot és a webhook titkos fejlécet a
- * hívó TITOK-REFERENCIAKÉNT adja (`env:` / `secret-ref:` / `secret-manager:`) — a nyers
- * kulcs sosem jut a szerverre ezen az úton, és a visszaadott nézet sosem tartalmazza.
+ * CSAK platform-admin (superadmin).
+ *
+ * A hozzáférési kulcs és a webhook titkos fejléc NYERSEN beírható a beüzemelő UI-on: a
+ * szerver a connectoroknál bevált menedzselt titok-tárba menti (Secret Manager prod,
+ * lokális fájl dev), és a `channel_bots` sorba CSAK a `secret-ref:…` hivatkozás kerül.
+ * A visszaadott nézet sosem tartalmaz titkot — csak azt, hogy be van-e állítva.
+ * (Régi, env-alapú telepítésekhez a `…SecretRef` mezők továbbra is elfogadottak.)
  */
 
 const secretRefSchema = z
@@ -22,17 +31,56 @@ const secretRefSchema = z
     'A titok CSAK referenciaként adható meg (env:… / secret-ref:… / secret-manager:…), nyersen nem.',
   )
 
+/**
+ * Nyers BotFather-token (pl. `123456:ABC-…`): legalább 20 karakter és tartalmaz kettőspontot.
+ * A finom érvényesítést a Telegram `getMe` ellenőrzés végzi a 4. lépésben.
+ */
+const rawAccessKeySchema = z
+  .string()
+  .trim()
+  .min(20, 'A hozzáférési kulcs túl rövid — a BotFathertől kapott teljes tokent írd be.')
+  .refine((v) => v.includes(':'), 'Ez nem tűnik Telegram bot-tokennek (forma: számok:kód).')
+
+/** Nyers webhook-titok: a Telegram 1–256 karaktert enged, mi legalább 16-ot kérünk. */
+const rawWebhookSecretSchema = z
+  .string()
+  .trim()
+  .min(16, 'A webhook titkos fejléc legalább 16 karakter legyen — válassz hosszú, véletlen szöveget.')
+  .max(256, 'A webhook titkos fejléc legfeljebb 256 karakter lehet (Telegram-korlát).')
+  .refine(
+    (v) => !/^(env:|secret-ref:|secret-manager:)/.test(v),
+    'Ide a NYERS titkos szöveget írd, nem a hivatkozását.',
+  )
+
+const botUsernameSchema = z
+  .string()
+  .trim()
+  .transform((v) => v.replace(/^@+/, '').trim())
+  .refine(
+    (v) => v.length === 0 || isValidTelegramBotUsername(v),
+    'A felhasználónév 5–32 karakter (betű, szám, aláhúzás), @ nélkül.',
+  )
+
 const registerPlatformBotSchema = z.object({
   channelType: z.literal('telegram'),
   name: z.string().trim().min(1, 'A bot neve kötelező.'),
-  accessKeySecretRef: secretRefSchema,
-  webhookSecretRef: secretRefSchema,
+  /** A bot Telegram-felhasználóneve (@ nélkül) — a t.me/… mélylink alapja, nem titok. */
+  botUsername: botUsernameSchema.optional(),
+  /** ÚJ út: nyers titok a UI-ról → a szerver a menedzselt titok-tárba menti. */
+  accessKey: rawAccessKeySchema.optional(),
+  webhookSecret: rawWebhookSecretSchema.optional(),
+  /** RÉGI út (visszafelé-kompat): már hivatkozott titok (env / secret-manager). */
+  accessKeySecretRef: secretRefSchema.optional(),
+  webhookSecretRef: secretRefSchema.optional(),
 })
 
 const updatePlatformBotSchema = z.object({
   channelType: z.literal('telegram'),
   name: z.string().trim().min(1).optional(),
+  botUsername: botUsernameSchema.optional(),
   status: z.enum(['active', 'disabled']).optional(),
+  accessKey: rawAccessKeySchema.optional(),
+  webhookSecret: rawWebhookSecretSchema.optional(),
   accessKeySecretRef: secretRefSchema.optional(),
   webhookSecretRef: secretRefSchema.optional(),
 })
@@ -42,8 +90,10 @@ function messageFor(reason: string): string {
   switch (reason) {
     case 'invalid_name':
       return 'A bot neve kötelező.'
+    case 'invalid_bot_username':
+      return 'A bot felhasználóneve 5–32 karakter (betű, szám, aláhúzás), @ nélkül — ezt a BotFathertől kaptad.'
     case 'invalid_secret_ref':
-      return 'A hozzáférési kulcs és a webhook titkos fejléc CSAK referenciaként adható meg (env:… / secret-ref:… / secret-manager:…), nyersen nem.'
+      return 'A hozzáférési kulcs vagy a webhook titkos fejléc formája érvénytelen.'
     case 'already_exists':
       return 'Már van regisztrált platform-bot ehhez a csatornához — a meglévőt frissítsd.'
     case 'not_found':
@@ -53,12 +103,60 @@ function messageFor(reason: string): string {
   }
 }
 
+/**
+ * A nyers UI-titkokat a menedzselt titok-tárba menti, és visszaadja a DB-be írandó
+ * `secret-ref:…` hivatkozásokat. Amelyikhez se nyers, se referencia nem érkezett, ahhoz
+ * `undefined` tartozik (regisztrációnál ez hibát jelent, frissítésnél „marad a régi").
+ */
+async function storeRawSecrets(parsed: {
+  accessKey?: string
+  webhookSecret?: string
+  accessKeySecretRef?: string
+  webhookSecretRef?: string
+}): Promise<{ accessKeySecretRef?: string; webhookSecretRef?: string }> {
+  const { saveConnectorApiKey, buildConnectorSecretRef } = await import(
+    '@/domain/connector/connector-secret-store'
+  )
+  const out: { accessKeySecretRef?: string; webhookSecretRef?: string } = {}
+  if (parsed.accessKey?.trim()) {
+    await saveConnectorApiKey(CHANNEL_BOT_TOKEN_SECRET_ID, parsed.accessKey.trim())
+    out.accessKeySecretRef = buildConnectorSecretRef(CHANNEL_BOT_TOKEN_SECRET_ID)
+  } else if (parsed.accessKeySecretRef) {
+    out.accessKeySecretRef = parsed.accessKeySecretRef
+  }
+  if (parsed.webhookSecret) {
+    await saveConnectorApiKey(CHANNEL_WEBHOOK_SECRET_ID, parsed.webhookSecret)
+    out.webhookSecretRef = buildConnectorSecretRef(CHANNEL_WEBHOOK_SECRET_ID)
+  } else if (parsed.webhookSecretRef) {
+    out.webhookSecretRef = parsed.webhookSecretRef
+  }
+  return out
+}
+
 export async function registerPlatformChannelBot(input: unknown) {
   try {
     await ensureActiveDatabaseMode()
     const actor = (await requirePlatformRole('superadmin')).user
     const parsed = registerPlatformBotSchema.parse(input)
-    const res = await services.channelBots.registerPlatformBot(parsed, actor.id)
+    // A titok-slot csatornánként EGY (fix azonosító): a létezés-ellenőrzés a mentés ELŐTT
+    // kell, különben egy elutasított (already_exists) regisztráció felülírná az élő bot kulcsát.
+    if (await services.channelBots.getPlatformBot(parsed.channelType)) {
+      return fail(messageFor('already_exists'))
+    }
+    const refs = await storeRawSecrets(parsed)
+    if (!refs.accessKeySecretRef || !refs.webhookSecretRef) {
+      return fail('A hozzáférési kulcs és a webhook titkos fejléc is kötelező a regisztrációhoz.')
+    }
+    const res = await services.channelBots.registerPlatformBot(
+      {
+        channelType: parsed.channelType,
+        name: parsed.name,
+        ...(parsed.botUsername ? { botUsername: parsed.botUsername } : {}),
+        accessKeySecretRef: refs.accessKeySecretRef,
+        webhookSecretRef: refs.webhookSecretRef,
+      },
+      actor.id,
+    )
     if (!res.ok) return fail(messageFor(res.reason))
     return ok(res.bot)
   } catch (e) {
@@ -71,7 +169,27 @@ export async function updatePlatformChannelBot(input: unknown) {
     await ensureActiveDatabaseMode()
     const actor = (await requirePlatformRole('superadmin')).user
     const parsed = updatePlatformBotSchema.parse(input)
-    const res = await services.channelBots.updatePlatformBot(parsed, actor.id)
+    if (!(await services.channelBots.getPlatformBot(parsed.channelType))) {
+      return fail(messageFor('not_found'))
+    }
+    const refs = await storeRawSecrets(parsed)
+    const res = await services.channelBots.updatePlatformBot(
+      {
+        channelType: parsed.channelType,
+        ...(parsed.name !== undefined ? { name: parsed.name } : {}),
+        ...(parsed.botUsername !== undefined
+          ? { botUsername: parsed.botUsername || null }
+          : {}),
+        ...(parsed.status !== undefined ? { status: parsed.status } : {}),
+        ...(refs.accessKeySecretRef !== undefined
+          ? { accessKeySecretRef: refs.accessKeySecretRef }
+          : {}),
+        ...(refs.webhookSecretRef !== undefined
+          ? { webhookSecretRef: refs.webhookSecretRef }
+          : {}),
+      },
+      actor.id,
+    )
     if (!res.ok) return fail(messageFor(res.reason))
     return ok(res.bot)
   } catch (e) {

@@ -53,6 +53,7 @@ export class PostgresChannelBotRepository implements ChannelBotRepository {
         channelType: input.channelType,
         tenantId: input.tenantId,
         name: input.name,
+        botUsername: input.botUsername ?? null,
         accessKeySecretRef: input.accessKeySecretRef,
         webhookSecretRef: input.webhookSecretRef,
         status: input.status ?? 'active',
@@ -66,6 +67,7 @@ export class PostgresChannelBotRepository implements ChannelBotRepository {
       where: { id },
       data: {
         ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.botUsername !== undefined ? { botUsername: input.botUsername } : {}),
         ...(input.accessKeySecretRef !== undefined
           ? { accessKeySecretRef: input.accessKeySecretRef }
           : {}),

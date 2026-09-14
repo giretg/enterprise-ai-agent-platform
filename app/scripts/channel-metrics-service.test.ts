@@ -34,6 +34,7 @@ function makeBot(overrides?: Partial<ChannelBot>): ChannelBot {
     channelType: 'telegram',
     tenantId: null,
     name: 'Platform Bot',
+    botUsername: null,
     accessKeySecretRef: 'env:X',
     webhookSecretRef: 'env:Y',
     status: 'active',

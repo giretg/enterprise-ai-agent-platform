@@ -20,7 +20,8 @@ import {
  *
  * A képernyő ezért NÉGY számozott lépés, mindegyik kimondja, mi történik és miért:
  *  1. bot létrehozása a BotFathernél (a platformon kívül),
- *  2. a titkok elhelyezése és a bot regisztrálása titok-REFERENCIÁVAL (nyers kulcs sosem),
+ *  2. a bot adatainak megadása ITT (nyers kulcs + webhook-titok + felhasználónév — a
+ *     titkok a menedzselt titok-tárba kerülnek, mint az API-kulcsok),
  *  3. a webhook bekötése egyetlen gombbal,
  *  4. ellenőrzés — a Telegram maga mondja meg, működik-e.
  */
@@ -71,15 +72,19 @@ export function ChannelBotPanel({
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
   const [check, setCheck] = useState<ConnectionCheck | null>(null)
   const [name, setName] = useState(initial.bot?.name ?? 'Platform Telegram bot')
-  const [accessKeyRef, setAccessKeyRef] = useState('')
-  const [webhookSecretRef, setWebhookSecretRef] = useState('')
+  const [botUsername, setBotUsername] = useState(initial.bot?.botUsername ?? '')
+  const [accessKey, setAccessKey] = useState('')
+  const [webhookSecret, setWebhookSecret] = useState('')
 
   const bot = setup.bot
   const registered = Boolean(bot)
 
   async function reload() {
     const fresh = await getTelegramChannelSetup()
-    if (fresh.success) setSetup(fresh.data)
+    if (fresh.success) {
+      setSetup(fresh.data)
+      setBotUsername(fresh.data.bot?.botUsername ?? '')
+    }
   }
 
   function saveBot() {
@@ -89,21 +94,23 @@ export function ChannelBotPanel({
         ? await updatePlatformChannelBot({
             channelType: 'telegram',
             name: name.trim(),
-            ...(accessKeyRef.trim() ? { accessKeySecretRef: accessKeyRef.trim() } : {}),
-            ...(webhookSecretRef.trim() ? { webhookSecretRef: webhookSecretRef.trim() } : {}),
+            botUsername: botUsername.trim(),
+            ...(accessKey.trim() ? { accessKey: accessKey.trim() } : {}),
+            ...(webhookSecret ? { webhookSecret } : {}),
           })
         : await registerPlatformChannelBot({
             channelType: 'telegram',
             name: name.trim(),
-            accessKeySecretRef: accessKeyRef.trim(),
-            webhookSecretRef: webhookSecretRef.trim(),
+            botUsername: botUsername.trim(),
+            accessKey: accessKey.trim(),
+            webhookSecret,
           })
       if (!res.success) {
         setMessage({ tone: 'err', text: res.error })
         return
       }
-      setAccessKeyRef('')
-      setWebhookSecretRef('')
+      setAccessKey('')
+      setWebhookSecret('')
       setMessage({
         tone: 'ok',
         text: registered
@@ -163,7 +170,8 @@ export function ChannelBotPanel({
   const canSave =
     canEdit &&
     name.trim().length > 0 &&
-    (registered || (accessKeyRef.trim().length > 0 && webhookSecretRef.trim().length > 0))
+    botUsername.trim().length > 0 &&
+    (registered || (accessKey.trim().length > 0 && webhookSecret.length > 0))
 
   return (
     <Card title="Telegram-csatorna beüzemelése">
@@ -186,32 +194,38 @@ export function ChannelBotPanel({
 
         <Step index={2} title="Regisztráld a botot itt a platformon" done={registered}>
           <p className="text-xs text-ink-soft">
-            A tokent és a webhook titkos fejlécét <strong>sosem írjuk be nyersen</strong> — csak
-            azt adod meg, <em>hol</em> találhatók (titok-referencia). Így a kulcs nem kerül
-            adatbázisba, naplóba és a képernyőre sem olvasható vissza. Elfogadott formák:{' '}
-            <code className="rounded bg-panel/60 px-1">env:NEV</code>,{' '}
-            <code className="rounded bg-panel/60 px-1">secret-ref:…</code>,{' '}
-            <code className="rounded bg-panel/60 px-1">secret-manager:…</code>.
+            Mindent <strong>ezen a felületen</strong> adsz meg: a BotFathertől kapott{' '}
+            <strong>hozzáférési kulcsot</strong>, egy általad választott hosszú véletlen{' '}
+            <strong>webhook-titkot</strong>, és a bot <strong>felhasználónevét</strong> (@ nélkül).
+            A két titok a szerver menedzselt titok-tárába kerül (mint az API-kulcsok) — az
+            adatbázisban csak hivatkozás szerepel, a képernyőre sosem olvashatók vissza, és a
+            naplókba sem kerülnek be.
           </p>
           <p className="text-xs text-ink-soft">
-            A <strong>webhook titkos fejléc</strong> egy általad választott, hosszú véletlen
-            szöveg. Ezzel ismerjük fel, hogy a beérkező üzenet tényleg a Telegramtól jön, és nem
-            valaki más próbál agent-futást indítani nálunk.
+            A <strong>webhook-titok</strong> egy általad választott, hosszú véletlen szöveg
+            (legalább 16 karakter). Ezzel ismerjük fel, hogy a beérkező üzenet tényleg a
+            Telegramtól jön, és nem valaki más próbál agent-futást indítani nálunk.
           </p>
 
           {registered && bot ? (
             <div className="rounded-md border border-line/60 bg-panel/40 p-3 text-xs text-ink-soft">
               <p className="text-ink">
-                Regisztrálva: <strong>{bot.name}</strong> ·{' '}
-                {bot.status === 'active' ? 'aktív' : 'kikapcsolva'}
+                Regisztrálva: <strong>{bot.name}</strong>
+                {bot.botUsername ? (
+                  <>
+                    {' '}· <code className="rounded bg-panel/60 px-1">@{bot.botUsername}</code>
+                  </>
+                ) : null}{' '}
+                · {bot.status === 'active' ? 'aktív' : 'kikapcsolva'}
               </p>
               <p className="mt-1">
                 Hozzáférési kulcs: {bot.hasAccessKey ? 'beállítva' : 'HIÁNYZIK'} · Webhook titkos
                 fejléc: {bot.hasWebhookSecret ? 'beállítva' : 'HIÁNYZIK'}
               </p>
               <p className="mt-1">
-                A mezőket csak akkor töltsd ki, ha <strong>cserélni</strong> akarod a kulcsot —
-                üresen hagyva a jelenlegi marad érvényben.
+                A titok-mezőket csak akkor töltsd ki, ha <strong>cserélni</strong> akarod a kulcsot —
+                üresen hagyva a jelenlegi marad érvényben. A nevet és a felhasználónevet bármikor
+                átírhatod.
               </p>
             </div>
           ) : null}
@@ -227,22 +241,36 @@ export function ChannelBotPanel({
               />
             </label>
             <label className="text-xs text-ink-soft">
-              Hozzáférési kulcs — hol található
+              Bot felhasználóneve (@ nélkül, a BotFathertől)
               <input
-                value={accessKeyRef}
+                value={botUsername}
                 disabled={!canEdit || pending}
-                placeholder="env:TELEGRAM_BOT_TOKEN"
-                onChange={(e) => setAccessKeyRef(e.target.value)}
+                placeholder="cegem_agent_bot"
+                onChange={(e) => setBotUsername(e.target.value)}
                 className="mt-1 w-full rounded-md border border-line/60 bg-panel/40 px-3 py-1.5 font-mono text-sm text-ink disabled:opacity-50"
               />
             </label>
-            <label className="text-xs text-ink-soft sm:col-span-2">
-              Webhook titkos fejléc — hol található
+            <label className="text-xs text-ink-soft">
+              Hozzáférési kulcs (BotFather-token)
               <input
-                value={webhookSecretRef}
+                type="password"
+                value={accessKey}
                 disabled={!canEdit || pending}
-                placeholder="env:TELEGRAM_WEBHOOK_SECRET"
-                onChange={(e) => setWebhookSecretRef(e.target.value)}
+                placeholder={registered ? '•••••• (üresen hagyva marad a jelenlegi)' : '123456:ABC-DEF…'}
+                autoComplete="new-password"
+                onChange={(e) => setAccessKey(e.target.value)}
+                className="mt-1 w-full rounded-md border border-line/60 bg-panel/40 px-3 py-1.5 font-mono text-sm text-ink disabled:opacity-50"
+              />
+            </label>
+            <label className="text-xs text-ink-soft">
+              Webhook titkos fejléc (saját, hosszú véletlen szöveg)
+              <input
+                type="password"
+                value={webhookSecret}
+                disabled={!canEdit || pending}
+                placeholder={registered ? '•••••• (üresen hagyva marad a jelenlegi)' : 'pl. 32 véletlen karakter'}
+                autoComplete="new-password"
+                onChange={(e) => setWebhookSecret(e.target.value)}
                 className="mt-1 w-full rounded-md border border-line/60 bg-panel/40 px-3 py-1.5 font-mono text-sm text-ink disabled:opacity-50"
               />
             </label>
@@ -275,13 +303,11 @@ export function ChannelBotPanel({
             <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-ink-soft">
               <p className="font-medium text-ink">Hiányzik a bot felhasználóneve</p>
               <p className="mt-1">
-                A <code className="rounded bg-panel/60 px-1">TELEGRAM_BOT_USERNAME</code> nincs
-                beállítva, ezért az összekötő link jelenleg a{' '}
+                Az összekötő link jelenleg a{' '}
                 <code className="rounded bg-panel/60 px-1">{setup.botUsername}</code> helykitöltő
                 névre mutat. Ha így hagyod, a felhasználók a „Telegram összekötése&rdquo; gombra
                 kattintva <strong>rossz vagy nemlétező bothoz</strong> jutnak. Írd be a BotFathertől
-                kapott felhasználónevet (@ nélkül) a környezeti változóba, és indítsd újra az
-                alkalmazást.
+                kapott felhasználónevet (@ nélkül) fent, és mentsd el.
               </p>
             </div>
           ) : (
@@ -368,8 +394,7 @@ export function ChannelBotPanel({
                     <p className="text-coral-deep">
                       A beállított felhasználónév (<code>{setup.botUsername}</code>) nem egyezik a
                       valódival (<code>{check.botUsername}</code>) — az összekötő link rossz botra
-                      mutat. Javítsd a{' '}
-                      <code className="rounded bg-panel/60 px-1">TELEGRAM_BOT_USERNAME</code>-t.
+                      mutat. Javítsd a felhasználónevet a 2. lépésben.
                     </p>
                   ) : null}
                   {check.pendingUpdateCount ? (

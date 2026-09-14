@@ -231,7 +231,9 @@ check('a resume effect nem a selectSession identitásra van kötve (ne fusson ú
 })
 
 check('nyitáskor a legutóbbi szálat kéri, a session-listát csak az előzmények sáv kinyitásakor', () => {
-  assert.match(panel, /findLatestAgentChatSession/)
+  assert.match(panel, /resumeLatestAgentChat\(/)
+  // Egy kör: az id + üzenetek együtt jönnek, a selectSession a ref-ből veszi, nem tölt újra.
+  assert.match(panel, /preloaded\?\.conversationId === id/)
   assert.match(panel, /if \(!open \|\| !sessionsOpen\) return/)
   const openList = panel.match(
     /useEffect\(\(\) => \{\n    if \(!open\) return\n    const timer = window\.setTimeout\(\(\) => void refreshSessions\(\)/,
@@ -301,11 +303,11 @@ check('az előzmény-sáv nem tiltja az új beszélgetést és a szálváltást,
   assert.doesNotMatch(sidebar, /disabled=\{isBusy\}\s+onClick=\{\(\) => onSelect/)
 })
 
-check('a findLatest lekérdezés olcsó: findFirst, első user-üzenet join nélkül', () => {
+check('a resume lekérdezés olcsó: findFirst, első user-üzenet join nélkül', () => {
   const platform = readFileSync(resolve(process.cwd(), 'src/app/actions/platform.ts'), 'utf8')
-  const start = platform.indexOf('export async function findLatestAgentChatSession')
-  const end = platform.indexOf('export async function listAgentChatSessions', start)
-  assert.ok(start >= 0 && end > start, 'findLatestAgentChatSession megtalálható')
+  const start = platform.indexOf('export async function resumeLatestAgentChat')
+  const end = platform.indexOf('export type LoadedAgentChat', start)
+  assert.ok(start >= 0 && end > start, 'resumeLatestAgentChat megtalálható')
   const body = platform.slice(start, end)
   assert.match(body, /findFirst\(/)
   assert.match(body, /status: 'active'/)
