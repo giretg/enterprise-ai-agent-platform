@@ -89,6 +89,14 @@ export type ToolDescriptor<N extends ToolName = ToolName> = {
   /** Az eszközjog-szerkesztő UI csoportcímkéje (a katalógus ebből képződik). */
   readonly capabilityGroup: string
   /**
+   * Halasztott tool-betöltés (#468, D1). `true` = a teljes séma minden
+   * modellhívásban a `tools[]`-ben van; `false` = a modell csak az egysoros
+   * indexet látja, a sémát `tool_describe`-bal kéri le. NEM jogosultsági bit.
+   */
+  readonly preload: boolean
+  /** Egysoros index-leírás, ha a `description` első mondata nem informatív (D2). */
+  readonly summary?: string
+  /**
    * Rendszer-szerephez kötött tool. Nem jelenik meg a normál capability-
    * katalógusban, és a broker csak pontos role-egyezésnél futtatja.
    */
@@ -336,6 +344,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'kb_search',
     handlerId: 'kb',
     capabilityGroup: TOOL_GROUP_KB,
+    preload: true,
   }),
 
   kb_list_index: descriptor({
@@ -356,6 +365,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'kb_list_index',
     handlerId: 'kb',
     capabilityGroup: TOOL_GROUP_KB,
+    preload: true,
   }),
 
   kb_get_page: descriptor({
@@ -376,6 +386,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'kb_get_page',
     handlerId: 'kb',
     capabilityGroup: TOOL_GROUP_KB,
+    preload: true,
   }),
 
   // ── Board / ticket ────────────────────────────────────────────────────────
@@ -413,6 +424,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'board_write',
     handlerId: 'board_write',
     capabilityGroup: TOOL_GROUP_AGENTS,
+    preload: false,
   }),
 
   ticket_create: descriptor({
@@ -448,6 +460,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'ticket_create',
     handlerId: 'ticket_create',
     capabilityGroup: TOOL_GROUP_AGENTS,
+    preload: true,
     grantedSystemRoles: ['run_analyst'],
   }),
 
@@ -473,6 +486,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'agent_ask',
     handlerId: 'agent_ask',
     capabilityGroup: TOOL_GROUP_AGENTS,
+    preload: true,
   }),
 
   agent_resolve: descriptor({
@@ -492,6 +506,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'agent_resolve',
     handlerId: 'agent_directory',
     capabilityGroup: TOOL_GROUP_AGENTS,
+    preload: true,
   }),
 
   agent_catalog: descriptor({
@@ -516,6 +531,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'agent_catalog',
     handlerId: 'agent_directory',
     capabilityGroup: TOOL_GROUP_AGENTS,
+    preload: true,
   }),
 
   user_directory: descriptor({
@@ -536,6 +552,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'user_directory',
     handlerId: 'agent_directory',
     capabilityGroup: TOOL_GROUP_AGENTS,
+    preload: true,
   }),
 
   // ── Gmail ─────────────────────────────────────────────────────────────────
@@ -556,6 +573,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'gmail_search',
     handlerId: 'gmail',
     capabilityGroup: TOOL_GROUP_GMAIL,
+    preload: true,
   }),
 
   gmail_get_message: descriptor({
@@ -572,6 +590,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'gmail_get_message',
     handlerId: 'gmail',
     capabilityGroup: TOOL_GROUP_GMAIL,
+    preload: false,
   }),
 
   mailbox_count: descriptor({
@@ -599,6 +618,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'mailbox_count',
     handlerId: 'gmail',
     capabilityGroup: TOOL_GROUP_GMAIL,
+    preload: false,
   }),
 
   gmail_create_draft: descriptor({
@@ -625,6 +645,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'gmail_create_draft',
     handlerId: 'gmail',
     capabilityGroup: TOOL_GROUP_GMAIL,
+    preload: false,
   }),
 
   gmail_send: descriptor({
@@ -657,6 +678,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'gmail_send',
     handlerId: 'gmail',
     capabilityGroup: TOOL_GROUP_GMAIL,
+    preload: false,
   }),
 
   // ── Google Drive ──────────────────────────────────────────────────────────
@@ -691,6 +713,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_drive_search',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_drive_get_file: descriptor({
@@ -707,6 +730,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_drive_get_file',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_drive_read_file: descriptor({
@@ -732,6 +756,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_drive_read_file',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: true,
   }),
 
   google_drive_list_drives: descriptor({
@@ -754,6 +779,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_drive_list_drives',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_drive_create_folder: descriptor({
@@ -778,6 +804,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_drive_create_folder',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_drive_upload_file: descriptor({
@@ -806,6 +833,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_drive_upload_file',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_drive_update_file: descriptor({
@@ -834,6 +862,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_drive_update_file',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_drive_rename_file: descriptor({
@@ -858,6 +887,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_drive_rename_file',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_drive_move_file: descriptor({
@@ -882,6 +912,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_drive_move_file',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_drive_copy_file: descriptor({
@@ -908,6 +939,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_drive_copy_file',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_drive_trash_file: descriptor({
@@ -924,6 +956,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_drive_trash_file',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_drive_restore_file: descriptor({
@@ -940,6 +973,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_drive_restore_file',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_drive_share_file: descriptor({
@@ -971,6 +1005,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_drive_share_file',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_docs_apply_edits: descriptor({
@@ -996,6 +1031,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_docs_apply_edits',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_sheets_write_range: descriptor({
@@ -1022,6 +1058,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_sheets_write_range',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   google_slides_apply_edits: descriptor({
@@ -1046,6 +1083,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'google_slides_apply_edits',
     handlerId: 'google_drive',
     capabilityGroup: TOOL_GROUP_GOOGLE_DRIVE,
+    preload: false,
   }),
 
   // ── HTTP API ──────────────────────────────────────────────────────────────
@@ -1076,6 +1114,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'http_api_get',
     handlerId: 'http_api',
     capabilityGroup: TOOL_GROUP_HTTP,
+    preload: false,
     grantedSystemRoles: ['run_analyst'],
   }),
 
@@ -1119,6 +1158,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'http_api_get_all',
     handlerId: 'http_api',
     capabilityGroup: TOOL_GROUP_HTTP,
+    preload: false,
     grantedSystemRoles: ['run_analyst'],
   }),
 
@@ -1151,6 +1191,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'http_api_request',
     handlerId: 'http_api',
     capabilityGroup: TOOL_GROUP_HTTP,
+    preload: false,
   }),
 
   // ── Repo ──────────────────────────────────────────────────────────────────
@@ -1181,6 +1222,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'repo_prepare',
     handlerId: 'repo',
     capabilityGroup: TOOL_GROUP_WORKSPACE,
+    preload: false,
   }),
 
   repo_open_pull_request: descriptor({
@@ -1210,6 +1252,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'repo_open_pull_request',
     handlerId: 'repo',
     capabilityGroup: TOOL_GROUP_WORKSPACE,
+    preload: false,
   }),
 
   // ── Workspace fájlok ──────────────────────────────────────────────────────
@@ -1234,6 +1277,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'file_read',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_WORKSPACE,
+    preload: true,
   }),
 
   file_write: descriptor({
@@ -1253,6 +1297,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'file_write',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_WORKSPACE,
+    preload: true,
   }),
 
   create_html: descriptor({
@@ -1276,6 +1321,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'create_html',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_DOCS,
+    preload: false,
   }),
 
   file_edit: descriptor({
@@ -1302,6 +1348,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'file_edit',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_WORKSPACE,
+    preload: true,
   }),
 
   file_list: descriptor({
@@ -1321,6 +1368,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'file_list',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_WORKSPACE,
+    preload: true,
   }),
 
   file_glob: descriptor({
@@ -1337,6 +1385,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'file_glob',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_WORKSPACE,
+    preload: true,
   }),
 
   file_search: descriptor({
@@ -1365,6 +1414,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'file_search',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_WORKSPACE,
+    preload: true,
   }),
 
   file_delete: descriptor({
@@ -1386,6 +1436,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'file_delete',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_WORKSPACE,
+    preload: true,
   }),
 
   // ── XLSX ──────────────────────────────────────────────────────────────────
@@ -1407,6 +1458,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'xlsx_read_sheet',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_XLSX,
+    preload: true,
   }),
 
   xlsx_write_cells: descriptor({
@@ -1449,6 +1501,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'xlsx_write_cells',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_XLSX,
+    preload: false,
   }),
 
   xlsx_format_range: descriptor({
@@ -1476,6 +1529,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'xlsx_format_range',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_XLSX,
+    preload: false,
   }),
 
   xlsx_layout: descriptor({
@@ -1544,6 +1598,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'xlsx_layout',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_XLSX,
+    preload: false,
   }),
 
   xlsx_create: descriptor({
@@ -1575,6 +1630,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'xlsx_create',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_XLSX,
+    preload: false,
   }),
 
   xlsx_append_rows: descriptor({
@@ -1606,6 +1662,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'xlsx_append_rows',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_XLSX,
+    preload: false,
   }),
 
   // ── DOCX / PDF / PPTX ─────────────────────────────────────────────────────
@@ -1623,6 +1680,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'docx_read',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_DOCS,
+    preload: true,
   }),
 
   docx_create: descriptor({
@@ -1666,6 +1724,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'docx_create',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_DOCS,
+    preload: false,
   }),
 
   pdf_read: descriptor({
@@ -1688,6 +1747,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'pdf_read',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_DOCS,
+    preload: true,
   }),
 
   pdf_create: descriptor({
@@ -1723,6 +1783,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'pdf_create',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_DOCS,
+    preload: false,
   }),
 
   pptx_create: descriptor({
@@ -1767,6 +1828,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'pptx_create',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_PPTX,
+    preload: false,
   }),
 
   // ── Mini-app (sandbox app) ────────────────────────────────────────────────
@@ -1797,6 +1859,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'sandbox_app.create',
     handlerId: 'sandbox_app',
     capabilityGroup: TOOL_GROUP_MINIAPP,
+    preload: false,
   }),
 
   'sandbox_app.update_artifact': descriptor({
@@ -1825,6 +1888,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'sandbox_app.update_artifact',
     handlerId: 'sandbox_app',
     capabilityGroup: TOOL_GROUP_MINIAPP,
+    preload: false,
   }),
 
   'sandbox_app.preview': descriptor({
@@ -1845,6 +1909,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'sandbox_app.preview',
     handlerId: 'sandbox_app',
     capabilityGroup: TOOL_GROUP_MINIAPP,
+    preload: false,
   }),
 
   'sandbox_app.export': descriptor({
@@ -1865,6 +1930,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'sandbox_app.export',
     handlerId: 'sandbox_app',
     capabilityGroup: TOOL_GROUP_MINIAPP,
+    preload: false,
   }),
 
   'sandbox_app.list': descriptor({
@@ -1896,6 +1962,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'sandbox_app.list',
     handlerId: 'sandbox_app',
     capabilityGroup: TOOL_GROUP_MINIAPP,
+    preload: false,
   }),
 
   'sandbox_app.get': descriptor({
@@ -1916,6 +1983,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'sandbox_app.get',
     handlerId: 'sandbox_app',
     capabilityGroup: TOOL_GROUP_MINIAPP,
+    preload: false,
   }),
 
   // ── Sandbox verziókezelés (kód/adat sáv) ──────────────────────────────────
@@ -1954,6 +2022,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'sandbox.commit',
     handlerId: 'sandbox_versioning',
     capabilityGroup: TOOL_GROUP_SANDBOX,
+    preload: false,
   }),
 
   'sandbox.request_promotion': descriptor({
@@ -1974,6 +2043,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'sandbox.request_promotion',
     handlerId: 'sandbox_versioning',
     capabilityGroup: TOOL_GROUP_SANDBOX,
+    preload: false,
   }),
 
   'sandbox.snapshot': descriptor({
@@ -1994,6 +2064,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'sandbox.snapshot',
     handlerId: 'sandbox_versioning',
     capabilityGroup: TOOL_GROUP_SANDBOX,
+    preload: false,
   }),
 
   // ── Web ───────────────────────────────────────────────────────────────────
@@ -2028,6 +2099,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'web_search',
     handlerId: 'web_search',
     capabilityGroup: TOOL_GROUP_WEB,
+    preload: true,
   }),
 
   web_research_request: descriptor({
@@ -2060,6 +2132,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'web_research_request',
     handlerId: 'web_research_request',
     capabilityGroup: TOOL_GROUP_WEB,
+    preload: false,
   }),
 
   // ── Projektmemória ────────────────────────────────────────────────────────
@@ -2163,6 +2236,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'memory_propose',
     handlerId: 'memory_propose',
     capabilityGroup: TOOL_GROUP_MEMORY,
+    preload: true,
   }),
 
   // ── Dokumentum / ingatlan-nyilvántartás ───────────────────────────────────
@@ -2196,6 +2270,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'document_read',
     handlerId: 'document_read',
     capabilityGroup: TOOL_GROUP_DOCS,
+    preload: true,
   }),
 
   tulajdoni_lap_parse: descriptor({
@@ -2249,6 +2324,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'tulajdoni_lap_parse',
     handlerId: 'tulajdoni_lap_parse',
     capabilityGroup: TOOL_GROUP_INGATLAN,
+    preload: false,
   }),
 
   tulajdoni_lap_egyeztetes: descriptor({
@@ -2332,6 +2408,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'tulajdoni_lap_egyeztetes',
     handlerId: 'tulajdoni_lap_egyeztetes',
     capabilityGroup: TOOL_GROUP_INGATLAN,
+    preload: false,
   }),
 
   get_debug_trace: descriptor({
@@ -2354,6 +2431,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'get_debug_trace',
     handlerId: 'get_debug_trace',
     capabilityGroup: TOOL_GROUP_PRIVACY,
+    preload: false,
   }),
 
   run_index: descriptor({
@@ -2392,6 +2470,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'run_index',
     handlerId: 'run_index',
     capabilityGroup: TOOL_GROUP_ANALYSIS,
+    preload: false,
     requiredSystemRole: 'run_analyst',
   }),
 
@@ -2455,6 +2534,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'run_trace',
     handlerId: 'run_trace',
     capabilityGroup: TOOL_GROUP_ANALYSIS,
+    preload: false,
     requiredSystemRole: 'run_analyst',
   }),
 
@@ -2494,6 +2574,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'run_stats',
     handlerId: 'run_stats',
     capabilityGroup: TOOL_GROUP_ANALYSIS,
+    preload: false,
     requiredSystemRole: 'run_analyst',
   }),
 
@@ -2572,6 +2653,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'reconcile_records',
     handlerId: 'reconcile_records',
     capabilityGroup: TOOL_GROUP_WORKSPACE,
+    preload: false,
   }),
 }
 
@@ -2597,6 +2679,15 @@ export function isToolName(name: string): name is ToolName {
 
 export function resolveToolDescriptor(name: string): ToolDescriptor | undefined {
   return isToolName(name) ? (TOOL_REGISTRY[name] as ToolDescriptor) : undefined
+}
+
+/** Az egysoros tool-index sor leírás-része (D2): `summary`, különben az első mondat, max 120 kar. */
+export function toolIndexSummary(name: ToolName): string {
+  const d = TOOL_REGISTRY[name]
+  // Mondatvég = írásjel + szóköz + nagybetű (a „.xlsx", „(pl." nem az).
+  const first =
+    d.summary ?? d.description.match(/^[\s\S]*?[.!?](?=\s+[A-ZÁÉÍÓÖŐÚÜŰ„(]|\s*$)/)?.[0] ?? d.description
+  return first.length > 120 ? `${first.slice(0, 117).trimEnd()}…` : first.trim()
 }
 
 /** Az adott felületen látszó toolok — a chat- és MCP-vetület KIZÁRÓLAG ebből épül. */

@@ -72,9 +72,11 @@ import { effectiveConnectorRuntimeConfig } from '@/domain/connector-template/ost
 import type { ToolName } from '@/domain/tool-broker/tool-broker-types'
 // issue #194 — a chat-vetület KIZÁRÓLAG a kanonikus tool-regiszterből képződik.
 import {
+  TOOL_GROUP_ORDER,
   TOOL_REGISTRY,
   buildToolInvokeInput,
   isToolName,
+  toolIndexSummary,
   toolJsonSchema,
   toolsForSurface,
 } from '@/domain/tool-broker/tool-registry'
@@ -301,6 +303,8 @@ type ToolLoopCheckpoint = {
   sourceIngestChars?: Record<string, number>
   archiveSourceKeys?: Record<string, string>
   outputWritten?: boolean
+  /** #468 D10 — „folytasd" után ne kelljen újra describe-olni. */
+  activatedTools?: string[]
 }
 
 function parseToolLoopCheckpoint(raw: string | null): ToolLoopCheckpoint | null {
@@ -325,6 +329,9 @@ function parseToolLoopCheckpoint(raw: string | null): ToolLoopCheckpoint | null 
         ? { archiveSourceKeys: value.archiveSourceKeys }
         : {}),
       ...(value.outputWritten === true ? { outputWritten: true } : {}),
+      ...(Array.isArray(value.activatedTools)
+        ? { activatedTools: value.activatedTools.filter((t): t is string => typeof t === 'string') }
+        : {}),
     }
   } catch {
     return null
@@ -335,7 +342,8 @@ function isDiscoveryTool(toolName: string): boolean {
   if (
     toolName === TOOL_RESULT_READ ||
     toolName === LOAD_SKILL_TOOL ||
-    toolName === LOAD_SKILL_ATTACHMENT_TOOL
+    toolName === LOAD_SKILL_ATTACHMENT_TOOL ||
+    toolName === TOOL_DESCRIBE_TOOL
   ) {
     return true
   }
@@ -457,6 +465,53 @@ const LOAD_SKILL_ATTACHMENT_DEFINITION: ToolDefinition = {
   description:
     'Egy már betöltött skill mellékletének (referencia-dokumentum, adat-tábla) behúzása a skill `id`-je (skillVersionId) és a melléklet útvonala alapján. Csak a betöltött skill melléklet-listájában szereplő útvonal kérhető le. Akkor hívd, ha a skill instrukciója egy mellékletre hivatkozik, és annak tartalma kell a feladathoz.',
   inputSchema: objectSchema({ skillVersionId: STR, path: STR }, ['skillVersionId', 'path']),
+}
+
+// ── Halasztott tool-betöltés (#468, deferred-tool-loading-spec D2/D3) ────────
+// A modell alapból csak a tömör tool-indexet látja; a `preload: false` toolok
+// teljes sémáját a `tool_describe`-bal kéri le. NEM jogosultsági réteg: a
+// hívhatóságot továbbra is a capability-grant + skill-hatókör + broker dönti.
+const TOOL_DESCRIBE_TOOL = 'tool_describe'
+const TOOL_DESCRIBE_MAX_NAMES = 8
+
+const TOOL_DESCRIBE_DEFINITION: ToolDefinition = {
+  name: TOOL_DESCRIBE_TOOL,
+  description:
+    'Egy vagy több, az eszköz-indexben látott eszköz teljes paraméter-sémájának lekérése (names), és/vagy egy külső REST API connector teljes végpont-katalógusa (connectorId). Csak akkor hívd, ha az eszközt tényleg használni akarod; a [betöltött] jelűeknél felesleges. A leírt eszközt utána a saját nevén hívd.',
+  inputSchema: objectSchema({ names: { type: 'array', items: STR }, connectorId: STR }, []),
+}
+
+/**
+ * Level-0 tool-index (D2, D8): determinisztikus (csoport-sorrend, azon belül
+ * név), nincs benne per-request adat — a stabil prompt-prefix része.
+ */
+function buildToolIndexBlock(
+  allowed: readonly ChatPlatformToolName[],
+  preloaded: ReadonlySet<string>,
+  connectorIndex: string | null,
+): string {
+  const byGroup = new Map<string, ChatPlatformToolName[]>()
+  for (const name of [...allowed].sort()) {
+    const group = TOOL_REGISTRY[name].capabilityGroup
+    byGroup.set(group, [...(byGroup.get(group) ?? []), name])
+  }
+  const groups = [...byGroup.keys()].sort(
+    (a, b) => TOOL_GROUP_ORDER.indexOf(a) - TOOL_GROUP_ORDER.indexOf(b),
+  )
+  const lines = [
+    'Eszközeid. A [betöltött] jelűek sémája már nálad van, hívd őket közvetlenül. ' +
+      `A többinél ELŐBB hívd a ${TOOL_DESCRIBE_TOOL} eszközt (több nevet is megadhatsz egyszerre), ` +
+      'megkapod a pontos paraméter-sémát — utána a saját nevén hívd.',
+  ]
+  for (const group of groups) {
+    lines.push('', group)
+    for (const name of byGroup.get(group)!) {
+      const tag = preloaded.has(name) ? ' [betöltött]' : ''
+      lines.push(`- ${toWireToolName(name)}${tag} — ${toolIndexSummary(name)}`)
+    }
+  }
+  if (connectorIndex) lines.push('', connectorIndex)
+  return lines.join('\n')
 }
 
 /**
@@ -993,6 +1048,12 @@ export async function runAgentToolLoop(params: {
    * Undefined = nincs szűkítés (nincs betöltött skill, vagy nem deklarált eszközöket).
    */
   initialSkillToolScope?: string[]
+  /**
+   * #468 D4 — a beszélgetés korábbi `ToolCall`-jainak tool-nevei. Az ezekben
+   * szereplő grantolt toolok discovery nélkül aktiválódnak. Elhagyható (task /
+   * agent API): akkor legfeljebb +1 `tool_describe` kör az ára.
+   */
+  priorToolNames?: readonly string[]
   archiveLargeToolResult?: (input: LargeToolResultArchiveInput) => Promise<LargeToolResultArchive | null>
   /**
    * Workspace fájl írása (issue #179): hétköznapi másolat nagy eredményhez,
@@ -1091,12 +1152,40 @@ export async function runAgentToolLoop(params: {
       ? 'Ez egy aszinkron feladat — a végeredményed visszakerül a ticketbe. Dolgozz végig minden szükséges eszközhívást, majd add meg a kész választ természetes magyar szövegként (NE JSON).'
       : 'Ez egy közvetlen beszélgetés — a végén természetes magyar szöveggel válaszolj a felhasználónak (NE JSON).'
   const allowedTools = [...params.allowedTools].sort()
+  /**
+   * #468 D4 — a modell számára SÉMÁVAL is látható toolok. Forduló elején:
+   * preload-default ∪ skill-hatókör ∪ korábbi ToolCall-ok; menet közben a
+   * `tool_describe`, a skill-betöltés és a közvetlen hívás (D5) bővíti.
+   */
+  const activatedTools = new Set<string>([
+    ...allowedTools.filter((t) => TOOL_REGISTRY[t].preload),
+    ...(params.initialSkillToolScope ?? []),
+    ...(params.priorToolNames ?? []).filter((t) => (allowedTools as string[]).includes(t)),
+  ])
+  // Ha http_api eszköz engedélyezett, a hozzárendelt connector(ek) index-sora a
+  // stabil prefixbe, a teljes végpont-katalógus a tool_describe válaszába kerül
+  // (D6). Ugyanez a lista kell a következmény-kapu http_api_request döntéséhez.
+  let httpApiGateConnectors: HttpApiGateConnector[] = []
+  let httpApiDescribeBlocks = new Map<string, string>()
+  let httpApiIndex: string | null = null
+  if (allowedTools.some((t) => t === 'http_api_get' || t === 'http_api_get_all' || t === 'http_api_request')) {
+    const loaded = await loadHttpApiConnectorsForGate(params.toolCaps, params.agentId)
+    httpApiGateConnectors = loaded.gateConnectors
+    httpApiDescribeBlocks = loaded.describeBlocks
+    httpApiIndex = loaded.spec
+  }
   const loopStablePreamble: GatewayMessage[] = [
     { role: 'system', content: modeNote },
     { role: 'system', content: TOOL_INSTRUCTION },
     {
       role: 'system',
-      content: `A számodra engedélyezett eszközök: ${allowedTools.join(', ')}`,
+      // D8: a [betöltött] jel CSAK a regiszter-defaultot tükrözi — az index-blokk
+      // így független a priorToolNames-től (stabil prefix).
+      content: buildToolIndexBlock(
+        allowedTools,
+        new Set(allowedTools.filter((t) => TOOL_REGISTRY[t].preload)),
+        httpApiIndex,
+      ),
     },
     {
       role: 'system',
@@ -1120,22 +1209,13 @@ export async function runAgentToolLoop(params: {
       content:
         `A betöltött skill eszköz-hatóköre szűkebb: a skill capability-eszközei közül KIZÁRÓLAG ezeket hívhatod — ` +
         `${[...params.initialSkillToolScope].sort().join(', ')}. ` +
-        `A platform infrastruktúra-eszközei (tool_result_read, tool_result_extract` +
+        `A platform infrastruktúra-eszközei (tool_result_read, tool_result_extract, ${TOOL_DESCRIBE_TOOL}` +
         `${loadSkill ? ', load_skill' : ''}) továbbra is elérhetők — nagy / archivált tool-eredményhez ezeket használd. ` +
         `A többi capability-eszköz hívását a platform elutasítja. ` +
         `Ha a feladat ezekkel nem oldható meg, ne kerüld meg kézzel: állj meg, és mondd el a felhasználónak, mi hiányzik.`,
     })
   }
 
-  // Ha http_api eszköz engedélyezett, a hozzárendelt connector(ek)
-  // endpoint-katalógusát a modell elé tesszük — így tudja, mit hívhat.
-  // Ugyanez a lista kell a következmény-kapu http_api_request döntéséhez.
-  let httpApiGateConnectors: HttpApiGateConnector[] = []
-  if (allowedTools.some((t) => t === 'http_api_get' || t === 'http_api_get_all' || t === 'http_api_request')) {
-    const loaded = await loadHttpApiConnectorsForGate(params.toolCaps, params.agentId)
-    httpApiGateConnectors = loaded.gateConnectors
-    if (loaded.spec) loopStablePreamble.push({ role: 'system', content: loaded.spec })
-  }
   if (allowedTools.includes('repo_prepare')) {
     loopStablePreamble.push({
       role: 'system',
@@ -1176,6 +1256,9 @@ export async function runAgentToolLoop(params: {
   // a ChatGPT OAuth várhatóan fallbackre esik; a következő „folytasd” se próbálja
   // újra a csak localhoston elérhető providert.
   let pinnedModel: Pick<ModelConfig, 'provider' | 'model'> | null = checkpoint?.modelRoute ?? null
+  for (const t of checkpoint?.activatedTools ?? []) {
+    if ((allowedTools as string[]).includes(t)) activatedTools.add(t)
+  }
   const activeModelConfig = (): ModelConfig => {
     const pinned = pinnedModel
     if (!pinned) return params.modelConfig
@@ -1300,8 +1383,11 @@ export async function runAgentToolLoop(params: {
     const inScope = skillToolScope
       ? allowedTools.filter((t) => skillToolScope!.has(t))
       : allowedTools
+    // D4/D8: csak az aktivált toolok sémája megy ki; a lista név szerint rendezett,
+    // így két azonos állapot bájt-azonos `tools[]`-t ad (prompt-cache).
     return [
-      ...toToolDefinitions(inScope),
+      ...toToolDefinitions(inScope.filter((t) => activatedTools.has(t))),
+      ...(allowedTools.length > 0 ? [TOOL_DESCRIBE_DEFINITION] : []),
       // Infrastruktúra-eszközök: nem capability-k, a skill nem is deklarálja őket,
       // de nélkülük a nagy eredmények kezelése és a skill-betöltés lehetetlen.
       ...(params.archiveLargeToolResult
@@ -1641,6 +1727,7 @@ export async function runAgentToolLoop(params: {
           sourceIngestChars,
           archiveSourceKeys: savedArchiveSourceKeys,
           ...(outputWritten ? { outputWritten: true } : {}),
+          activatedTools: [...activatedTools].sort(),
         } satisfies ToolLoopCheckpoint),
         'internal',
       )
@@ -2404,6 +2491,8 @@ export async function runAgentToolLoop(params: {
         // modellhívás már a szűkített listát lássa.
         if (loaded.ok && loaded.requiredTools && loaded.requiredTools.length > 0) {
           skillToolScope = new Set([...(skillToolScope ?? []), ...loaded.requiredTools])
+          // D4: a skill névre hivatkozik az eszközeire — discovery-kör felesleges.
+          for (const t of loaded.requiredTools) activatedTools.add(t)
           const skillTitle = skillVersionId ? shortText(skillVersionId, 24) : 'betöltött skill'
           if (!skillScopeSources.includes(skillTitle)) skillScopeSources.push(skillTitle)
           tools = buildTools()
@@ -2517,6 +2606,61 @@ export async function runAgentToolLoop(params: {
         continue
       }
 
+      // tool_describe (#468 D3): séma-lekérés. Nem broker-hívás, nem ToolCall-
+      // rekord, nem számít a kör-limitbe és a zsákutca-mérlegbe sem. A nem
+      // grantolt tool sémája NEM szivárog: csak „nem elérhető" jön vissza.
+      if (call.name === TOOL_DESCRIBE_TOOL) {
+        const rawNames = Array.isArray(call.input.names)
+          ? call.input.names.filter((n): n is string => typeof n === 'string')
+          : []
+        const connectorId = strArg(call.input, 'connectorId')
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: TOOL_DESCRIBE_TOOL,
+          detail: [...rawNames, ...(connectorId ? [connectorId] : [])].join(', ') || undefined,
+          status: 'running',
+        })
+        const described: Array<Record<string, unknown>> = []
+        for (const raw of rawNames.slice(0, TOOL_DESCRIBE_MAX_NAMES)) {
+          const name = fromWireToolName(raw)
+          if (isChatPlatformTool(name) && (allowedTools as string[]).includes(name)) {
+            activatedTools.add(name)
+            described.push({
+              name: toWireToolName(name),
+              description: TOOL_REGISTRY[name].description,
+              parameters: toolJsonSchema(name),
+            })
+          } else {
+            described.push({ name: raw, error: 'nem elérhető' })
+          }
+        }
+        if (rawNames.length > TOOL_DESCRIBE_MAX_NAMES) {
+          described.push({ error: `egy hívásban legfeljebb ${TOOL_DESCRIBE_MAX_NAMES} név` })
+        }
+        const connectorBlock = connectorId
+          ? (httpApiDescribeBlocks.get(connectorId) ?? `connectorId ${connectorId}: nem elérhető`)
+          : null
+        tools = buildTools()
+        const content =
+          (described.length ? JSON.stringify(described) : '') +
+          (connectorBlock ? `${described.length ? '\n\n' : ''}${connectorBlock}` : '')
+        messages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          toolName: call.name,
+          content: content || 'Adj meg legalább egy eszköznevet (names) vagy connectorId-t.',
+        })
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: TOOL_DESCRIBE_TOOL,
+          detail: `${described.filter((d) => !d.error).length} eszköz leírva${connectorBlock ? ' + connector' : ''}`,
+          status: 'done',
+        })
+        continue
+      }
+
       // A modell a „wire" nevet adja vissza (pl. sandbox_app_create) — a belső
       // logika (guard, allowlist, invoke) a pontos belső nevet igényli.
       const toolName = fromWireToolName(call.name)
@@ -2571,6 +2715,14 @@ export async function runAgentToolLoop(params: {
           'skill-hatókörön kívüli eszköz',
         )
         continue
+      }
+
+      // #468 D5: le nem írt, de grantolt tool közvetlen hívása LEFUT (a
+      // jogosultság nem függ a láthatóságtól), és a forduló hátralévő részére aktivál.
+      const calledUndescribed = !activatedTools.has(toolName)
+      if (calledUndescribed) {
+        activatedTools.add(toolName)
+        tools = buildTools()
       }
 
       const pathArg = typeof call.input.path === 'string' ? call.input.path : ''
@@ -3120,7 +3272,10 @@ export async function runAgentToolLoop(params: {
           }
         }
       } catch (e) {
-        const message = e instanceof Error ? e.message : 'tool_call_failed'
+        let message = e instanceof Error ? e.message : 'tool_call_failed'
+        if (calledUndescribed && message.startsWith('Érvénytelen argumentumok')) {
+          message = `Tipp: a pontos sémáért hívd a ${TOOL_DESCRIBE_TOOL} eszközt. ${message}`
+        }
         if (toolName === 'web_search' && isWebSearchProviderRateLimited(message)) {
           markWebSearchRateLimited(webSearchGuard, messages)
         }
@@ -3432,16 +3587,26 @@ function resolveHttpApiConfigForGate(raw: unknown): unknown {
   return effectiveConnectorRuntimeConfig(raw)
 }
 
-async function loadHttpApiConnectorsForGate(
+export async function loadHttpApiConnectorsForGate(
   toolCaps: ToolBrokerRepository,
   agentId: string,
-): Promise<{ spec: string | null; gateConnectors: HttpApiGateConnector[] }> {
+): Promise<{
+  /** Index-fejléc + connectoronként egy sor (≤3 végpontnál a teljes blokk inline) — stabil prefix. */
+  spec: string | null
+  gateConnectors: HttpApiGateConnector[]
+  /** connectorId → teljes végpont-katalógus; a `tool_describe({connectorId})` válasza (D6). */
+  describeBlocks: Map<string, string>
+}> {
   const links = await toolCaps.findConnectorsForAgent(agentId)
-  const apis = links.filter((l) => l.connector.type === 'http_api')
-  if (apis.length === 0) return { spec: null, gateConnectors: [] }
+  const apis = links
+    .filter((l) => l.connector.type === 'http_api')
+    .sort((a, b) => a.connector.name.localeCompare(b.connector.name) || a.connector.id.localeCompare(b.connector.id))
+  if (apis.length === 0) return { spec: null, gateConnectors: [], describeBlocks: new Map() }
 
   const gateConnectors: HttpApiGateConnector[] = []
-  const blocks = apis.map((link) => {
+  const describeBlocks = new Map<string, string>()
+  const indexLines: string[] = []
+  for (const link of apis) {
     const { connector, accessMode } = link
     let parsed = null as ReturnType<typeof parseHttpApiConfig> | null
     try {
@@ -3590,16 +3755,27 @@ async function loadHttpApiConnectorsForGate(
         )
       }
     }
-    return lines.join('\n')
-  })
+    const block = lines.join('\n')
+    // ponytail: fix küszöb — ≤3 végpontnál nincs mit halasztani (D6); grant-szintű bit Fázis 2.
+    const endpointCount = Array.isArray(endpoints) ? endpoints.length : 0
+    const firstSentence = config.description?.match(/^[\s\S]*?[.!?](?=\s|$)/)?.[0] ?? config.description ?? ''
+    indexLines.push(
+      `- ${connector.name} (connectorId: ${connector.id}) — ${writeAllowed ? 'olvasás + írás' : 'csak olvasás'}` +
+        ` — ${endpointCount} végpont${firstSentence ? ` — ${firstSentence.slice(0, 120)}` : ''}` +
+        (endpointCount <= 3 ? `\n${block}` : ''),
+    )
+    describeBlocks.set(connector.id, block)
+  }
 
   return {
     gateConnectors,
+    describeBlocks,
     spec: [
+      `Külső REST API-k (http_api_get / http_api_get_all / http_api_request). A teljes végpont-katalógust a ${TOOL_DESCRIBE_TOOL} eszközzel kérd le (connectorId), ha nincs kiírva.`,
       'A hozzád rendelt külső REST API(k) — olvasáshoz http_api_get (egy oldal) vagy http_api_get_all (lapozott lista egy hívásban), íráshoz (csak ha a connector Hozzáférés sora „olvasás + írás”) http_api_request eszközt hívj. Ha több API-kapcsolat van, add meg a megfelelő connectorId-t. A path a Base URL-hez relatív; az API-kulcsot és a konfigurált fejléceket a rendszer injektálja, neked nem kell megadnod.',
       'A headers mezőben kizárólag az adott endpoint „Hívói fejlécek” listájában szereplő értékeket add meg. Ne találj ki auth-, trace- vagy idempotencia-fejlécet: amit a lista nem kér, azt a platform kezeli vagy tiltja.',
       buildHttpApiEfficiencyGuidance(),
-      ...blocks,
+      indexLines.join('\n'),
     ].join('\n\n'),
   }
 }

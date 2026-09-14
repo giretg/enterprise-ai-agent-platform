@@ -1690,6 +1690,8 @@ export class AgentChatRuntime {
           ...(slashResolved.requiredTools
             ? { initialSkillToolScope: slashResolved.requiredTools }
             : {}),
+          // #468 D4: a korábban már hívott toolok discovery nélkül aktiválódnak.
+          priorToolNames: [...new Set(priorToolCalls.map((c) => c.toolName))],
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
           writeWorkspaceFile: async (path, content, audience = 'internal') => {

@@ -96,6 +96,7 @@
     "test:workspace-handoff": "tsx scripts/workspace-handoff.test.ts",
     "test:playbook-process-def": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/playbook-process-definition.test.ts",
     "test:tool-loop": "tsx scripts/agent-tool-loop.test.ts",
+    "tool-prompt-size": "tsx scripts/tool-prompt-size.ts",
     "test:connector-grant-needed": "tsx scripts/connector-grant-needed.test.ts",
     "test:gmail-draft-attachment": "tsx scripts/gmail-draft-attachment.test.ts",
     "test:linked-account-view": "tsx scripts/linked-account-view.test.ts",

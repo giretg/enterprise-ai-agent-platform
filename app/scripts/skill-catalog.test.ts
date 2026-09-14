@@ -1513,9 +1513,11 @@ async function main() {
 
   await check('hatókör nélkül minden engedélyezett eszköz elérhető marad (nincs regresszió)', async () => {
     const offeredToolNames: string[][] = []
+    let indexBlock = ''
     const gateway = {
-      call: async (input: { tools?: Array<{ name?: string }> }) => {
+      call: async (input: { tools?: Array<{ name?: string }>; messages: Array<{ content?: string }> }) => {
         offeredToolNames.push((input.tools ?? []).map((t) => t.name ?? ''))
+        indexBlock = input.messages.find((m) => m.content?.startsWith('Eszközeid.'))?.content ?? ''
         return { content: 'Kész.', toolCalls: [] }
       },
     }
@@ -1530,9 +1532,14 @@ async function main() {
       messages: [{ role: 'user', content: 'Szia.' }],
       modelConfig: { provider: 'stub', model: 'stub' } as never,
       allowedTools: ['xlsx_create', 'tulajdoni_lap_egyeztetes'],
+      priorToolNames: ['xlsx_create'],
     })
+    // #468: a halasztott tool az INDEXBEN látszik + tool_describe-bal kérhető;
+    // a korábban már hívott (priorToolNames) sémával is ott van.
     assert.ok(offeredToolNames[0].includes('xlsx_create'))
-    assert.ok(offeredToolNames[0].includes('tulajdoni_lap_egyeztetes'))
+    assert.ok(offeredToolNames[0].includes('tool_describe'))
+    assert.ok(!offeredToolNames[0].includes('tulajdoni_lap_egyeztetes'))
+    assert.ok(indexBlock.includes('- tulajdoni_lap_egyeztetes — '))
   })
 
   console.log('')
