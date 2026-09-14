@@ -816,23 +816,27 @@ export function extractConnectorConfigFromOpenApiSpec(
   if (egressHosts.length === 0) egressHosts.push(baseHost)
 
   const schemeName = pickPrimarySecurityScheme(spec)
-  if (!schemeName) {
-    return { ok: false, reason: 'unsupported', detail: 'missing securitySchemes' }
-  }
+  // Kulcs nélküli, publikus OpenAPI: nincs securitySchemes / nincs használat —
+  // ez nem hiba, hanem `auth: none` (pl. nyílt adat-API-k).
+  const authMapping = schemeName
+    ? mapSecurityScheme(spec, schemeName)
+    : { auth: { type: 'none' as const }, authMode: 'service' as const }
 
-  const authMapping = mapSecurityScheme(spec, schemeName)
   if (!authMapping) {
     return { ok: false, reason: 'unsupported', detail: `unsupported security scheme: ${schemeName}` }
   }
 
   const provider = providerFromSpec(spec, providerHint)
-  const auth: ConnectorAuth = {
-    ...authMapping.auth,
-    secretAliasSuggested:
-      authMapping.auth.type === 'oauth2'
-        ? authMapping.auth.secretAliasSuggested
-        : authMapping.auth.secretAliasSuggested ?? secretAliasForProvider(provider),
-  }
+  const auth: ConnectorAuth =
+    authMapping.auth.type === 'none'
+      ? authMapping.auth
+      : {
+          ...authMapping.auth,
+          secretAliasSuggested:
+            authMapping.auth.type === 'oauth2'
+              ? authMapping.auth.secretAliasSuggested
+              : authMapping.auth.secretAliasSuggested ?? secretAliasForProvider(provider),
+        }
 
   const rawConfig = {
     capabilitySchemaVersion: OPENAPI_CAPABILITY_SCHEMA_VERSION,

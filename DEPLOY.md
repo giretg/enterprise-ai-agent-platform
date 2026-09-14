@@ -133,12 +133,27 @@ legacy szolgáltatás (wiki-harness LISTEN/NOTIFY worker, `min-instances=1`) —
 
 ## 4. Clerk webhook regisztrálás
 
-A deploy után a production URL ismert. A Clerk Dashboard-on:
+Az éles domain: `https://ai.excellencepay.com`. A Clerk Dashboard-on:
 
 1. **Webhooks** → **Add Endpoint**
-2. URL: `https://<your-app-hosting-url>/api/webhooks/clerk`
+2. URL: `https://ai.excellencepay.com/api/webhooks/clerk`
 3. Events: `user.created`, `user.updated`
 4. Signing secret → másold be a `CLERK_WEBHOOK_SIGNING_SECRET` secret-be
+
+## 4.1 Egyedi domain ellenőrzőlista (`ai.excellencepay.com`)
+
+Az App Hosting custom domain infra-szintű, de a külső szolgáltatásoknál a régi
+`*.hosted.app` URL-t le kell cserélni — különben a callback néma hibával elhal:
+
+1. **Clerk:** webhook endpoint (fent) + allowed origins / redirect URL-ek az új domainre.
+2. **Google OAuth (Gmail/Drive connector):** a Cloud Console-ban az authorized
+   redirect URI `https://ai.excellencepay.com/api/connectors/oauth/callback`
+   (ez az `apphosting.yaml`-ban a `GMAIL_OAUTH_REDIRECT_URI` értéke is).
+3. **Telegram/csatorna webhook:** `NEXT_PUBLIC_APP_URL` már az új domainre mutat,
+   de a Telegramnál korábban beállított webhookot újra kell regisztrálni, ha még a
+   régi URL-re mutat (Control Plane → csatorna beüzemelési panel → kapcsolat-ellenőrzés).
+4. **Scheduler rollback cél:** `app/infra/gcp/dispatch-cycle-scheduler.env`
+   `PLATFORM_API_URL` értéke az új domain — redeploy előtt ellenőrizd.
 
 ## 5. Clerk RBAC
 

@@ -1,6 +1,8 @@
 import type { Metadata } from 'next'
 import { headers } from 'next/headers'
+import { getLocale } from 'next-intl/server'
 import { AuthProviders } from '@/components/auth/providers'
+import { defaultLocale, isAppLocale } from '@/i18n/config'
 import { isClerkClientEnabledForRequest } from '@/lib/control-plane-embed'
 import './globals.css'
 
@@ -13,11 +15,23 @@ export const metadata: Metadata = {
     'Excellence AI is a governed enterprise AI coworker platform. Access-controlled agents, audit, and human approval.',
 }
 
+async function documentLocale(): Promise<string> {
+  const fromHeader = (await headers()).get('x-next-intl-locale')
+  if (fromHeader && isAppLocale(fromHeader)) return fromHeader
+  try {
+    return await getLocale()
+  } catch {
+    return defaultLocale
+  }
+}
+
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const clerkEnabled = isClerkClientEnabledForRequest(await headers())
+  const headerList = await headers()
+  const clerkEnabled = isClerkClientEnabledForRequest(headerList)
+  const locale = await documentLocale()
 
   return (
-    <html lang="hu" suppressHydrationWarning>
+    <html lang={locale} suppressHydrationWarning>
       <body>
         <AuthProviders clerkEnabled={clerkEnabled}>{children}</AuthProviders>
       </body>

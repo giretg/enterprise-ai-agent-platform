@@ -177,7 +177,7 @@ export function selfUpdatingSyncFeedback(data: {
     return {
       ok: false,
       message: data.reason === 'unsupported_auth'
-        ? 'A partner leírása OAuth-belépést kér, amit ez a kulcs + link típus még nem támogat. Semmit nem vettünk át; a jelenlegi verzió marad érvényben.'
+        ? 'A partner leírása OAuth-belépést kér, amit ez az OpenAPI-kapcsolat még nem támogat. Semmit nem vettünk át; a jelenlegi verzió marad érvényben.'
         : unreachable
           ? 'Nem sikerült elérni a partner API-leírását. Semmi nem változott — a konnektor a korábbi állapotban működik tovább. Próbáld később, vagy ellenőrizd a linket.'
           : 'A partner leírását nem sikerült értelmezni, ezért nem vettünk át semmit. A jelenlegi verzió érvényben marad.',
@@ -269,7 +269,7 @@ export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: b
     <div id="onfrissito" className="space-y-6 scroll-mt-6">
       {!embedded ? (
         <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight">Önfrissítő konnektorok</h1>
+          <h1 className="font-display text-2xl font-semibold tracking-tight">OpenAPI-kapcsolatok</h1>
         </div>
       ) : null}
 
@@ -291,11 +291,11 @@ export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: b
         />
       </Card>
 
-      <Card title={loadedOnce ? `Önfrissítő konnektorok (${rows.length})` : 'Önfrissítő konnektorok'}>
+      <Card title={loadedOnce ? `OpenAPI-kapcsolatok (${rows.length})` : 'OpenAPI-kapcsolatok'}>
         {!loadedOnce ? (
           <p className="text-sm text-ink-soft">Betöltés…</p>
         ) : rows.length === 0 ? (
-          <p className="text-sm text-ink-soft">Még nincs önfrissítő konnektor.</p>
+          <p className="text-sm text-ink-soft">Még nincs OpenAPI-kapcsolat.</p>
         ) : (
           <div className="space-y-3">
             {rows.map((row) => (
@@ -342,7 +342,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
         >
           {open ? '▾' : '▸'} {row.name}
         </button>
-        <Badge tone="success">önfrissítő</Badge>
+        <Badge tone="success">OpenAPI</Badge>
         <Badge tone={row.urlApproved ? 'success' : 'warning'}>
           {row.urlApproved ? 'link jóváhagyva' : 'link jóváhagyásra vár'}
         </Badge>

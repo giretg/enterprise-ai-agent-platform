@@ -30,6 +30,7 @@ import {
   type FetchApiDocFromUrlData,
 } from '@/app/actions/provisioning'
 import { startConnectorOAuth, getGoogleOAuthConfiguredStatus, getGoogleDriveOAuthConfiguredStatus } from '@/app/actions/connector-grants'
+import { listTenants } from '@/app/actions/tenant'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
   createSelfUpdatingConnector,
@@ -260,10 +261,12 @@ function ProvisioningTopicShell({
   templates,
   connections,
   canManageCatalog,
+  isSuperadmin,
 }: {
   templates: ReactNode
   connections: ReactNode
   canManageCatalog: boolean
+  isSuperadmin: boolean
 }) {
   return (
     <SettingsSectionShell
@@ -280,8 +283,10 @@ function ProvisioningTopicShell({
           id: 'sablonok',
           label: 'Konnektor-sablonok',
           description: canManageCatalog
-            ? 'Platform-katalógus. Új sablont csak superadmin vehet fel; a tenantok ezekből hoznak létre konnektort.'
-            : 'Platform-katalógus. Ezekből a sablonokból hozhatsz létre új konnektort.',
+            ? isSuperadmin
+              ? 'Platform- és tenant-katalógus. Superadmin platformra vagy bármely tenantra vehet fel sablont; tenant-admin csak a sajátjára.'
+              : 'Sablon-katalógus. Tenant-admin a saját tenantjára vehet fel új sablont.'
+            : 'Sablon-katalógus. Ezekből a sablonokból hozhatsz létre új konnektort.',
           content: templates,
         },
       ]}
@@ -315,6 +320,9 @@ function TemplateCatalogList({
               <Badge tone="neutral">v{template.version}</Badge>
               <Badge tone={template.origin === 'builtin' ? 'success' : 'warning'}>
                 {template.origin}
+              </Badge>
+              <Badge tone={template.tenantId ? 'warning' : 'success'}>
+                {template.tenantId ? 'tenant' : 'platform'}
               </Badge>
               <Badge tone={template.status === 'active' ? 'success' : 'warning'}>
                 {template.status}
@@ -492,7 +500,15 @@ function lifecycleTone(s: string): 'neutral' | 'success' | 'warning' | 'danger' 
   return 'neutral'
 }
 
-export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: boolean }) {
+export function ProvisioningPanel({
+  canManageCatalog,
+  isSuperadmin,
+  activeTenantId,
+}: {
+  canManageCatalog: boolean
+  isSuperadmin: boolean
+  activeTenantId: string | null
+}) {
   const [drafts, setDrafts] = useState<DraftRow[]>([])
   const [selfUpdatingRows, setSelfUpdatingRows] = useState<SelfUpdatingConnectorRow[]>([])
   const [tenantAuto, setTenantAuto] = useState(false)
@@ -508,6 +524,8 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
   // Create-form állapot
   const [name, setName] = useState('')
   const [connectionKind, setConnectionKind] = useState<ConnectionKind>('fixed')
+  // Általános konnektoron belül: sablon-katalógusból vagy egyéb kapcsolat.
+  const [fixedSource, setFixedSource] = useState<'template' | 'custom'>('template')
   const [selfUpdatingApiKey, setSelfUpdatingApiKey] = useState('')
   const [selfUpdatingSpecUrl, setSelfUpdatingSpecUrl] = useState('')
   const [sourceType, setSourceType] = useState<'api_doc' | 'openapi' | 'manual' | 'template'>('api_doc')
@@ -542,6 +560,10 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
   const [selectedScopes, setSelectedScopes] = useState<string[]>([])
   const [selectedEndpoints, setSelectedEndpoints] = useState<string[]>([])
   const [templateEditorText, setTemplateEditorText] = useState(EXAMPLE_TEMPLATE_DESCRIPTOR)
+  // Sablon scope: platform (tenantId null) vagy tenant-szintű.
+  const [templateScope, setTemplateScope] = useState<'platform' | 'tenant'>('platform')
+  const [templateTenantId, setTemplateTenantId] = useState('')
+  const [tenantOptions, setTenantOptions] = useState<Array<{ id: string; name: string }>>([])
 
   const applyTemplateSelection = useCallback((template: ConnectorTemplateRow) => {
     const descriptor = template.descriptor
@@ -565,19 +587,6 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
     )
   }, [])
 
-  const maybeAutoSelectDriveTemplate = useCallback(
-    (nextName: string, availableTemplates: ConnectorTemplateRow[]) => {
-      const normalized = nextName.trim().toLowerCase()
-      if (!normalized.includes('drive')) return
-      const driveTemplate = availableTemplates.find((template) => template.key === 'google-drive')
-      if (!driveTemplate) return
-      applyTemplateSelection(driveTemplate)
-      setSourceMethod('template')
-      setSourceType('template')
-    },
-    [applyTemplateSelection],
-  )
-
   const reload = useCallback(() => {
     startTransition(async () => {
       const [d, a, t, g, gd, su] = await Promise.all([
@@ -595,7 +604,6 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
         const rows = t.data as ConnectorTemplateRow[]
         setTemplates(rows)
         if (!selectedTemplateId && rows[0]) applyTemplateSelection(rows[0])
-        maybeAutoSelectDriveTemplate(name, rows)
       }
       if (g.success) setGoogleOauthConfigured(g.data.configured)
       if (gd.success) setGoogleDriveOauthConfigured(gd.data.configured)
@@ -603,9 +611,20 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
         setSelfUpdatingRows(su.data.connectors as SelfUpdatingConnectorRow[])
         setTenantAuto(su.data.tenantAutoApproveEnabled)
       }
+      if (isSuperadmin) {
+        const tenants = await listTenants()
+        if (tenants.success) {
+          setTenantOptions(
+            (tenants.data as Array<{ id: string; displayName: string }>).map((tn) => ({
+              id: tn.id,
+              name: tn.displayName,
+            })),
+          )
+        }
+      }
       setLoadedOnce(true)
     })
-  }, [applyTemplateSelection, maybeAutoSelectDriveTemplate, name, selectedTemplateId])
+  }, [applyTemplateSelection, isSuperadmin, selectedTemplateId])
 
   useEffect(() => {
     reload()
@@ -795,6 +814,9 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
     return versions
   }, [templates])
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? templates[0]
+  // Sablon-út: az 1. lépésben választott sablon; az alternatív úton nincs sablon.
+  const isTemplatePath = connectionKind === 'fixed' && fixedSource === 'template'
+  const effectiveName = isTemplatePath ? (selectedTemplate?.displayName ?? '') : name
   const selectedTemplateDescriptor = selectedTemplate?.descriptor
   const isGmailTemplate = selectedTemplateDescriptor?.connectorType === 'gmail'
   const isGoogleDriveTemplate = selectedTemplateDescriptor?.connectorType === 'google_drive'
@@ -804,9 +826,8 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
     templateAuthMethod
   const templateRequiredFields = selectedTemplateDescriptor?.instanceFields.filter((f) => f.required !== false) ?? []
   const templateReady =
-    sourceMethod === 'template' &&
+    isTemplatePath &&
     !!selectedTemplate &&
-    !!name.trim() &&
     templateRequiredFields.every((field) => {
       const source = field.type === 'secret' ? templateSecretAliases : templateValues
       return !!source[field.name]?.trim()
@@ -817,6 +838,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
     setName('')
     setCreateStep('basics')
     setConnectionKind('fixed')
+    setFixedSource('template')
     setSelfUpdatingApiKey('')
     setSelfUpdatingSpecUrl('')
   }, [])
@@ -834,7 +856,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
       }, 'A konnektor létrejött. Jóvá kell hagyni a linket és a partner megbízhatóságát, mielőtt frissítést kereshetsz.')
       return
     }
-    if (sourceMethod === 'template') {
+    if (isTemplatePath) {
       if (!selectedTemplate) {
         setError('Válassz konnektor-sablont.')
         return
@@ -842,7 +864,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
       run(async () => {
         const result = await createConnectorFromTemplateAction({
           templateId: selectedTemplate.id,
-          name,
+          name: selectedTemplate.displayName,
           authMethodKind: effectiveTemplateAuthMethod,
           instanceValues: templateValues,
           secretAliases: templateSecretAliases,
@@ -879,6 +901,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
     docSourceRef,
     docText,
     effectiveTemplateAuthMethod,
+    isTemplatePath,
     name,
     run,
     selectedEndpoints,
@@ -886,7 +909,6 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
     selectedTemplate,
     selfUpdatingApiKey,
     selfUpdatingSpecUrl,
-    sourceMethod,
     sourceType,
     templateSecretAliases,
     templateValues,
@@ -895,13 +917,19 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
   const stepOrder: CreateStep[] =
     connectionKind === 'self_updating' ? ['basics', 'source'] : ['basics', 'source', 'review']
   const activeStepIndex = stepOrder.indexOf(createStep)
-  const canEnterSource = name.trim().length > 0
+  // Sablon-úton a név = sablonnév, nem kérünk be külön nevet.
+  const canEnterSource =
+    connectionKind === 'self_updating'
+      ? name.trim().length > 0
+      : isTemplatePath
+        ? !!selectedTemplate
+        : name.trim().length > 0
   const selfUpdatingReady =
-    canEnterSource && !!selfUpdatingApiKey.trim() && !!selfUpdatingSpecUrl.trim()
+    canEnterSource && !!selfUpdatingSpecUrl.trim()
   const canEnterReview =
     connectionKind === 'self_updating'
       ? selfUpdatingReady
-      : canEnterSource && (sourceMethod === 'template' ? templateReady : configText.trim().length > 0)
+      : canEnterSource && (isTemplatePath ? templateReady : configText.trim().length > 0)
   const setWizardStep = (step: CreateStep) => {
     if (step === 'source' && !canEnterSource) return
     if (step === 'review' && !canEnterReview) return
@@ -909,20 +937,18 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
   }
   const createDisabledReason = pending
     ? 'Folyamatban lévő művelet miatt várakozik.'
-    : !name.trim()
-      ? 'Adj nevet a konnektornak.'
-      : connectionKind === 'self_updating' && !selfUpdatingApiKey.trim()
-        ? 'Add meg a hozzáférési kulcsot.'
-      : connectionKind === 'self_updating' && !selfUpdatingSpecUrl.trim()
-        ? 'Add meg az API-leírás linkjét.'
-      : connectionKind === 'fixed' && sourceMethod === 'template' && !selectedTemplate
-        ? 'Válassz konnektor-sablont.'
-      : connectionKind === 'fixed' && sourceMethod === 'template' && !templateReady
-        ? 'Töltsd ki a sablon kötelező mezőit.'
-      : connectionKind === 'fixed' && sourceMethod !== 'template' && !configText.trim()
-        ? 'Előbb generálj vagy adj meg config-deskriptort.'
-        : null
-  const reviewProvenanceHint = draftSourceProvenanceLabel(sourceType, sourceMethod)
+    : connectionKind === 'fixed' && isTemplatePath && !selectedTemplate
+      ? 'Válassz konnektor-sablont.'
+      : !isTemplatePath && !name.trim()
+        ? 'Adj nevet a konnektornak.'
+        : connectionKind === 'self_updating' && !selfUpdatingSpecUrl.trim()
+          ? 'Add meg az API-leírás linkjét.'
+        : connectionKind === 'fixed' && isTemplatePath && !templateReady
+          ? 'Töltsd ki a sablon kötelező mezőit.'
+          : connectionKind === 'fixed' && !isTemplatePath && !configText.trim()
+            ? 'Előbb generálj vagy adj meg config-deskriptort.'
+            : null
+  const reviewProvenanceHint = draftSourceProvenanceLabel(sourceType, isTemplatePath ? 'template' : sourceMethod)
 
   const syncSelfUpdating = (connectorId: string) => {
     setError(null)
@@ -982,16 +1008,16 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                 id: 'basics' as const,
                 label: 'Alapadatok',
                 hint:
-                  `${connectionKind === 'self_updating' ? 'Önfrissítő' : 'Sima konnektor'}${name.trim() ? ` · ${name.trim()}` : ''}`,
+                  `${connectionKind === 'self_updating' ? 'OpenAPI' : 'Általános konnektor'}${effectiveName.trim() ? ` · ${effectiveName.trim()}` : ''}`,
               },
               {
                 id: 'source' as const,
                 label: 'Forrás',
                 hint:
                   connectionKind === 'self_updating'
-                    ? 'Kulcs + API-leírás'
-                    : sourceMethod === 'template'
-                    ? 'Sablon-katalógus'
+                    ? 'API-leírás + kulcs (opcionális)'
+                    : isTemplatePath
+                    ? `Sablon · ${selectedTemplate?.displayName ?? '—'}`
                     : sourceMethod === 'discover'
                     ? 'Webes felfedezés'
                     : sourceMethod === 'document'
@@ -1052,7 +1078,8 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                 <div>
                   <h3 className="text-base font-semibold">1. Milyen konnektort hozol létre?</h3>
                   <p className="mt-1 text-xs text-ink-soft">
-                    Először válaszd ki a típust, majd nevezd el a konnektort.
+                    Először válaszd ki a típust. Sablonból a konnektor a sablon nevét kapja;
+                    nevet csak egyéb kapcsolatnál kell adni.
                   </p>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -1065,9 +1092,10 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                         : 'border-ink/12 bg-paper hover:border-coral/25'
                     }`}
                   >
-                    <span className="block text-sm font-semibold">Sima konnektor</span>
+                    <span className="block text-sm font-semibold">Általános konnektor</span>
                     <span className="mt-1 block text-xs text-ink-soft">
-                      A képességeket a szokásos onboarding folyamatban állítod be.
+                      Sablon-katalógusból vagy egyedi kapcsolatként, a szokásos onboarding
+                      folyamatban.
                     </span>
                   </button>
                   <button
@@ -1079,40 +1107,110 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                         : 'border-ink/12 bg-paper hover:border-coral/25'
                     }`}
                   >
-                    <span className="block text-sm font-semibold">Önfrissítő konnektor</span>
+                    <span className="block text-sm font-semibold">OpenAPI-kapcsolat</span>
                     <span className="mt-1 block text-xs text-ink-soft">
-                      Egy kulcs és a partner API-leírásának linkje kell. A későbbi változásokat
-                      egy gombbal, átnézés után veheted át.
+                      A partner API-leírásának linkje kell; kulcs csak akkor, ha az API
+                      kér. A későbbi változásokat egy gombbal, átnézés után veheted át.
                     </span>
                   </button>
                 </div>
-                <label className="block text-sm">
-                  <span className="mb-1 block text-ink-soft">Név</span>
-                  <input
-                    className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-                    value={name}
-                    onChange={(e) => {
-                      const next = e.target.value
-                      setName(next)
-                      maybeAutoSelectDriveTemplate(next, templates)
-                    }}
-                    placeholder="Acme CRM"
-                  />
-                </label>
+                {connectionKind === 'fixed' ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFixedSource('template')
+                        setSourceMethod('template')
+                        setSourceType('template')
+                      }}
+                      className={`rounded-md border px-4 py-3 text-left ${
+                        fixedSource === 'template'
+                          ? 'border-coral/45 bg-coral/8'
+                          : 'border-ink/12 bg-paper hover:border-coral/25'
+                      }`}
+                    >
+                      <span className="block text-sm font-semibold">Sablonból</span>
+                      <span className="mt-1 block text-xs text-ink-soft">
+                        Válassz a sablon-katalógusból — a konnektor a sablon nevét kapja.
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFixedSource('custom')
+                        setSourceMethod('discover')
+                        setSourceType('api_doc')
+                      }}
+                      className={`rounded-md border px-4 py-3 text-left ${
+                        fixedSource === 'custom'
+                          ? 'border-coral/45 bg-coral/8'
+                          : 'border-ink/12 bg-paper hover:border-coral/25'
+                      }`}
+                    >
+                      <span className="block text-sm font-semibold">Egyéb kapcsolat</span>
+                      <span className="mt-1 block text-xs text-ink-soft">
+                        Nincs hozzá sablon — egyedi onboarding felfedezéssel vagy doksiból.
+                      </span>
+                    </button>
+                  </div>
+                ) : null}
+                {connectionKind === 'fixed' && fixedSource === 'template' ? (
+                  <div className="space-y-2">
+                    <label className="block text-sm">
+                      <span className="mb-1 block text-ink-soft">Sablon-katalógus</span>
+                      <select
+                        className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                        value={selectedTemplate?.id ?? ''}
+                        onChange={(e) => {
+                          const template = templates.find((t) => t.id === e.target.value)
+                          if (template) applyTemplateSelection(template)
+                        }}
+                      >
+                        {templates.map((template) => (
+                          <option key={template.id} value={template.id}>
+                            {template.displayName} v{template.version} ({template.origin}
+                            {template.tenantId ? ' · tenant' : ' · platform'})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {templates.length === 0 ? (
+                      <p className="text-xs text-ink-soft">Nincs elérhető konnektor-sablon.</p>
+                    ) : (
+                      <p className="text-xs text-ink-soft">
+                        Név: <span className="font-semibold">{selectedTemplate?.displayName}</span>{' '}
+                        — a sablon nevét használjuk, külön nevet nem kell adni.
+                      </p>
+                    )}
+                  </div>
+                ) : null}
+                {connectionKind === 'self_updating' ||
+                (connectionKind === 'fixed' && fixedSource === 'custom') ? (
+                  <label className="block text-sm">
+                    <span className="mb-1 block text-ink-soft">Név</span>
+                    <input
+                      className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="Acme CRM"
+                    />
+                  </label>
+                ) : null}
               </div>
             ) : null}
 
             {createStep === 'source' && connectionKind === 'self_updating' ? (
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-base font-semibold">2. Kulcs és API-leírás</h3>
+                  <h3 className="text-base font-semibold">2. API-leírás és kulcs</h3>
                   <p className="mt-1 text-xs text-ink-soft">
-                    A partnertől kapott kulcs és a nyilvános API-leírás linkje kell. A képességeket
-                    csak akkor olvassuk ki, amikor a Frissítés gombot megnyomod.
+                    A nyilvános API-leírás linkje kell; kulcs csak akkor, ha a partner
+                    API-ja kér. A képességeket csak akkor olvassuk ki, amikor a Frissítés
+                    gombot megnyomod.
                   </p>
                 </div>
                 <label className="block text-sm">
-                  <span className="mb-1 block font-semibold">Hozzáférési kulcs</span>
+                  <span className="mb-1 block font-semibold">Hozzáférési kulcs (opcionális)</span>
                   <input
                     type="password"
                     value={selfUpdatingApiKey}
@@ -1121,7 +1219,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                     autoComplete="new-password"
                   />
                   <span className="mt-1 block text-xs text-ink-soft">
-                    A partnertől kapott titkos kulcs. Biztonságos titoktárolóban marad; az adatbázisba soha nem kerül.
+                    Csak akkor kell, ha a partner API-ja kulcsot kér. Biztonságos titoktárolóban marad; az adatbázisba soha nem kerül. Kulcs nélküli, nyilvános API-nál üresen hagyható.
                   </span>
                 </label>
                 <label className="block text-sm">
@@ -1144,81 +1242,31 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
               </div>
             ) : null}
 
-            {createStep === 'source' && connectionKind === 'fixed' ? (
+            {createStep === 'source' && connectionKind === 'fixed' && isTemplatePath ? (
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-base font-semibold">2. Válassz forrást</h3>
+                  <h3 className="text-base font-semibold">2. Sablon beállításai</h3>
                   <p className="mt-1 text-xs text-ink-soft">
-                    A folyamat egy config-jelöltig visz. A draftot csak a következő lépésben hozod létre.
+                    {selectedTemplate?.displayName} — állítsd be az auth-módot és a kötelező
+                    mezőket. A konnektor a sablon nevét kapja.
                   </p>
                 </div>
-                <div className="grid gap-2 sm:grid-cols-4">
-                  {[
-                    { id: 'template' as const, label: 'Sablon', hint: 'Katalógusból' },
-                    { id: 'discover' as const, label: 'Felfedezés', hint: 'Név és domain alapján' },
-                    { id: 'document' as const, label: 'API-doksi', hint: 'Feltöltés vagy beillesztés' },
-                    { id: 'manual' as const, label: 'Kézi JSON', hint: 'Saját deszkriptor' },
-                  ].map((method) => (
-                    <button
-                      key={method.id}
-                      type="button"
-                      onClick={() => {
-                        setSourceMethod(method.id)
-                        if (method.id === 'template') {
-                          setSourceType('template')
-                        } else if (method.id === 'manual') {
-                          setSourceType('manual')
-                        } else {
-                          setSourceType('api_doc')
-                        }
-                      }}
-                      className={`rounded-md border px-3 py-3 text-left ${
-                        sourceMethod === method.id
-                          ? 'border-coral/45 bg-coral/8'
-                          : 'border-ink/12 bg-paper hover:border-coral/25'
-                      }`}
-                    >
-                      <span className="block text-sm font-semibold">{method.label}</span>
-                      <span className="mt-1 block text-xs text-ink-soft">{method.hint}</span>
-                    </button>
-                  ))}
-                </div>
-
-                {sourceMethod === 'template' ? (
-                  <div className="space-y-3 rounded-md border border-sage/25 bg-sage/5 p-3">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <span className="block text-sm font-semibold">Konnektor-sablonok</span>
-                        <p className="mt-1 text-xs text-ink-soft">
-                          A sablon provider-metaadatból és instance-mezőkből önhordó draft configot készít.
-                        </p>
-                      </div>
-                      <Badge tone="neutral">{templates.length} sablon</Badge>
+                <div className="space-y-3 rounded-md border border-sage/25 bg-sage/5 p-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <span className="block text-sm font-semibold">Konnektor-sablonok</span>
+                      <p className="mt-1 text-xs text-ink-soft">
+                        A sablon provider-metaadatból és instance-mezőkből önhordó draft configot készít.
+                      </p>
                     </div>
+                    <Badge tone="neutral">{templates.length} sablon</Badge>
+                  </div>
 
-                    {templates.length === 0 ? (
-                      <p className="text-xs text-ink-soft">Nincs elérhető konnektor-sablon.</p>
-                    ) : (
-                      <>
-                        <label className="block text-xs">
-                          <span className="mb-1 block text-ink-soft">Sablon</span>
-                          <select
-                            className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-                            value={selectedTemplate?.id ?? ''}
-                            onChange={(e) => {
-                              const template = templates.find((t) => t.id === e.target.value)
-                              if (template) applyTemplateSelection(template)
-                            }}
-                          >
-                            {templates.map((template) => (
-                              <option key={template.id} value={template.id}>
-                                {template.displayName} v{template.version} ({template.origin})
-                              </option>
-                            ))}
-                          </select>
-                        </label>
+                  {templates.length === 0 ? (
+                    <p className="text-xs text-ink-soft">Nincs elérhető konnektor-sablon.</p>
+                  ) : null}
 
-                        {selectedTemplateDescriptor ? (
+                  {selectedTemplateDescriptor ? (
                           <div className="space-y-3">
                             {isGoogleDriveTemplate && !googleDriveOauthConfigured ? (
                               <p className="rounded-md border border-amber/35 bg-amber/10 px-3 py-2 text-xs text-ink-soft">
@@ -1370,10 +1418,46 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                             ) : null}
                           </div>
                         ) : null}
-                      </>
-                    )}
                   </div>
-                ) : null}
+                </div>
+              ) : null}
+
+              {createStep === 'source' && connectionKind === 'fixed' && !isTemplatePath ? (
+                <div className="space-y-4">
+                  <div>
+                    <h3 className="text-base font-semibold">2. Egyéb kapcsolat forrása</h3>
+                    <p className="mt-1 text-xs text-ink-soft">
+                      A folyamat egy config-jelöltig visz. A draftot csak a következő lépésben hozod létre.
+                    </p>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    {[
+                      { id: 'discover' as const, label: 'Felfedezés', hint: 'Név és domain alapján' },
+                      { id: 'document' as const, label: 'API-doksi', hint: 'Feltöltés vagy beillesztés' },
+                      { id: 'manual' as const, label: 'Kézi JSON', hint: 'Saját deszkriptor' },
+                    ].map((method) => (
+                      <button
+                        key={method.id}
+                        type="button"
+                        onClick={() => {
+                          setSourceMethod(method.id)
+                          if (method.id === 'manual') {
+                            setSourceType('manual')
+                          } else {
+                            setSourceType('api_doc')
+                          }
+                        }}
+                        className={`rounded-md border px-3 py-3 text-left ${
+                          sourceMethod === method.id
+                            ? 'border-coral/45 bg-coral/8'
+                            : 'border-ink/12 bg-paper hover:border-coral/25'
+                        }`}
+                      >
+                        <span className="block text-sm font-semibold">{method.label}</span>
+                        <span className="mt-1 block text-xs text-ink-soft">{method.hint}</span>
+                      </button>
+                    ))}
+                  </div>
 
                 {sourceMethod === 'discover' ? (
                   <div className="rounded-md border border-sage/25 bg-sage/5 p-3">
@@ -1555,17 +1639,17 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                 <dl className="grid gap-2 rounded-md border border-ink/12 bg-paper px-3 py-2 text-xs sm:grid-cols-2">
                   <div>
                     <dt className="text-ink-soft">Konnektor neve</dt>
-                    <dd className="font-semibold">{name.trim() || '—'}</dd>
+                    <dd className="font-semibold">{effectiveName.trim() || '—'}</dd>
                   </div>
                   <div>
                     <dt className="text-ink-soft">Forrás</dt>
-                    <dd className="font-semibold">{sourceMethodLabel(sourceMethod)}</dd>
+                    <dd className="font-semibold">{sourceMethodLabel(isTemplatePath ? 'template' : sourceMethod)}</dd>
                     {reviewProvenanceHint ? (
                       <dd className="mt-0.5 text-ink-soft">{reviewProvenanceHint}</dd>
                     ) : null}
                   </div>
                 </dl>
-                {sourceMethod === 'template' && selectedTemplateDescriptor ? (
+                {isTemplatePath && selectedTemplateDescriptor ? (
                   <div className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-semibold">{selectedTemplate?.displayName}</span>
@@ -1663,6 +1747,7 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
       ) : (
       <ProvisioningTopicShell
         canManageCatalog={canManageCatalog}
+        isSuperadmin={isSuperadmin}
         templates={
           <>
       {canManageCatalog && !templateEditorOpen ? (
@@ -1674,13 +1759,13 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
           >
             Katalógus szerkesztése
           </button>
-          <Card title="Platform konnektor-sablonok">
+          <Card title="Konnektor-sablonok">
             <TemplateCatalogList templates={templates} pending={pending} canManage={false} />
           </Card>
         </div>
       ) : null}
       {canManageCatalog && templateEditorOpen ? (
-      <Card title="Platform konnektor-sablonok">
+      <Card title="Konnektor-sablonok">
         <div className="mb-4 flex justify-end">
           <button
             type="button"
@@ -1696,7 +1781,9 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
               <div>
                 <h3 className="text-base font-semibold">Sablon descriptor</h3>
                 <p className="mt-1 text-xs text-ink-soft">
-                  A sablon a teljes platform katalógusába kerül. Mentéskor új verzió jön létre, és lefut a materializer self-check.
+                  {isSuperadmin
+                    ? 'Válaszd ki, platform- vagy tenant-szintű legyen. Mentéskor új verzió jön létre, és lefut a materializer self-check.'
+                    : 'A sablon a saját tenantod katalógusába kerül. Mentéskor új verzió jön létre, és lefut a materializer self-check.'}
                 </p>
               </div>
               <button
@@ -1707,6 +1794,40 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                 Példa betöltése
               </button>
             </div>
+            {isSuperadmin ? (
+              <div className="flex flex-wrap items-center gap-3 text-xs">
+                <label className="inline-flex items-center gap-2 font-semibold">
+                  <input
+                    type="radio"
+                    checked={templateScope === 'platform'}
+                    onChange={() => setTemplateScope('platform')}
+                  />
+                  Platform-szintű
+                </label>
+                <label className="inline-flex items-center gap-2 font-semibold">
+                  <input
+                    type="radio"
+                    checked={templateScope === 'tenant'}
+                    onChange={() => setTemplateScope('tenant')}
+                  />
+                  Tenant-szintű
+                </label>
+                {templateScope === 'tenant' ? (
+                  <select
+                    className="rounded-md border border-ink/15 bg-paper px-3 py-2"
+                    value={templateTenantId}
+                    onChange={(e) => setTemplateTenantId(e.target.value)}
+                  >
+                    <option value="">Válassz tenantot…</option>
+                    {tenantOptions.map((tn) => (
+                      <option key={tn.id} value={tn.id}>
+                        {tn.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+              </div>
+            ) : null}
             <textarea
               className="h-80 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
               value={templateEditorText}
@@ -1715,7 +1836,11 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
             <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
-                disabled={pending || !templateEditorText.trim()}
+                disabled={
+                  pending ||
+                  !templateEditorText.trim() ||
+                  (isSuperadmin && templateScope === 'tenant' && !templateTenantId)
+                }
                 onClick={() => {
                   let descriptor: unknown
                   try {
@@ -1724,8 +1849,20 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
                     setError('A sablon descriptor nem érvényes JSON.')
                     return
                   }
+                  if (isSuperadmin && templateScope === 'tenant' && !templateTenantId) {
+                    setError('Tenant-szintű sablonhoz válassz tenantot.')
+                    return
+                  }
                   run(
-                    () => upsertConnectorTemplateAction({ descriptor }),
+                    () =>
+                      upsertConnectorTemplateAction({
+                        descriptor,
+                        tenantId: isSuperadmin
+                          ? templateScope === 'tenant'
+                            ? templateTenantId
+                            : null
+                          : (activeTenantId ?? null),
+                      }),
                     'Konnektor-sablon mentve új verzióként.',
                   )
                 }}
@@ -1752,9 +1889,9 @@ export function ProvisioningPanel({ canManageCatalog }: { canManageCatalog: bool
       </Card>
       ) : null}
       {!canManageCatalog ? (
-        <Card title="Platform konnektor-sablonok">
+        <Card title="Konnektor-sablonok">
           <p className="mb-4 text-sm text-ink-soft">
-            Ezekből a sablonokból hozhatsz létre konnektort. Új sablont csak platform-superadmin vehet fel.
+            Ezekből a sablonokból hozhatsz létre konnektort.
           </p>
           <TemplateCatalogList templates={templates} pending={pending} canManage={false} />
         </Card>

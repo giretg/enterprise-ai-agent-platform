@@ -1793,12 +1793,12 @@ export class PlatformSettingsService {
       agentVersion: null,
       action: 'model.structuring.set',
       targetType: 'platform_setting',
-      targetId: STRUCTURING_MODEL_SETTING_KEY,
+      targetId: null,
       modelUsed: null,
       inputRef: null,
       outputRef: `${parsed.provider}/${parsed.model}`,
       policyDecision: 'allowed',
-      metadata: { structuringModel: parsed },
+      metadata: { settingKey: STRUCTURING_MODEL_SETTING_KEY, structuringModel: parsed },
     })
     return parsed
   }
@@ -1826,12 +1826,12 @@ export class PlatformSettingsService {
       agentVersion: null,
       action: 'model.fallback_chain.set',
       targetType: 'platform_setting',
-      targetId: FALLBACK_CHAIN_SETTING_KEY,
+      targetId: null,
       modelUsed: null,
       inputRef: null,
       outputRef: `len:${parsed.length}`,
       policyDecision: 'allowed',
-      metadata: { chain: parsed },
+      metadata: { settingKey: FALLBACK_CHAIN_SETTING_KEY, chain: parsed },
     })
     return parsed
   }
@@ -2046,12 +2046,13 @@ export class PlatformSettingsService {
       agentVersion: null,
       action: 'platform.oauth.google_drive.update',
       targetType: 'platform_setting',
-      targetId: GOOGLE_OAUTH_SERVICE_KEYS.drive,
+      targetId: null,
       modelUsed: null,
       inputRef: 'google_drive',
       outputRef: config.clientId,
       policyDecision: existing?.source === 'platform' ? 'updated' : 'configured',
       metadata: {
+        settingKey: GOOGLE_OAUTH_SERVICE_KEYS.drive,
         redirectUri: config.redirectUri ?? null,
         secretRotated: Boolean(input.clientSecret?.trim()),
         previousSource: existing?.source ?? null,
@@ -2079,12 +2080,12 @@ export class PlatformSettingsService {
       agentVersion: null,
       action: 'platform.oauth.google_drive_picker.update',
       targetType: 'platform_setting',
-      targetId: 'oauth.google.drive.picker',
+      targetId: null,
       modelUsed: null,
       inputRef: 'google_drive_picker',
       outputRef: config.appId,
       policyDecision: 'configured',
-      metadata: { appId: config.appId },
+      metadata: { settingKey: 'oauth.google.drive.picker', appId: config.appId },
     })
     return { config, source: 'platform' }
   }
@@ -2118,12 +2119,13 @@ export class PlatformSettingsService {
       agentVersion: null,
       action: 'platform.oauth.google.update',
       targetType: 'platform_setting',
-      targetId: GOOGLE_OAUTH_PLATFORM_KEY,
+      targetId: null,
       modelUsed: null,
       inputRef: 'google',
       outputRef: config.clientId,
       policyDecision: existing?.source === 'platform' ? 'updated' : 'configured',
       metadata: {
+        settingKey: GOOGLE_OAUTH_PLATFORM_KEY,
         redirectUri: config.redirectUri ?? null,
         secretRotated: Boolean(input.clientSecret?.trim()),
         previousSource: existing?.source ?? null,

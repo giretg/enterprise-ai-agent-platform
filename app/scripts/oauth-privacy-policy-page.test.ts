@@ -9,8 +9,13 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const page = readFileSync(join(root, 'src/app/privacy/page.tsx'), 'utf8')
-const shell = readFileSync(join(root, 'src/components/public-site/public-site-shell.tsx'), 'utf8')
+const page = readFileSync(join(root, 'src/content/public/privacy-en.tsx'), 'utf8')
+const enMessages = JSON.parse(readFileSync(join(root, 'src/messages/en.json'), 'utf8')) as {
+  Nav: { privacy: string }
+  Metadata: { privacyTitle: string }
+  Privacy: { title: string }
+}
+const privacyPage = readFileSync(join(root, 'src/app/[locale]/privacy/page.tsx'), 'utf8')
 
 let passed = 0
 let failed = 0
@@ -27,9 +32,10 @@ function check(name: string, fn: () => void) {
 }
 
 check('title is Privacy Policy, not a homepage alias', () => {
-  assert.match(page, /title:\s*'Privacy Policy'/)
-  assert.match(page, /title="Privacy Policy"/)
-  assert.match(page, /canonical: 'https:\/\/ai\.excellencepay\.com\/privacy'/)
+  assert.equal(enMessages.Metadata.privacyTitle, 'Privacy Policy')
+  assert.equal(enMessages.Privacy.title, 'Privacy Policy')
+  assert.match(privacyPage, /pathname: '\/privacy'/)
+  assert.match(privacyPage, /titleKey: 'privacyTitle'/)
 })
 
 const requiredHeadings = [
@@ -62,8 +68,7 @@ check('encryption and deletion are explicit', () => {
 })
 
 check('homepage chrome links to Privacy Policy in English', () => {
-  assert.match(shell, /href: '\/privacy',\s*label: 'Privacy Policy'/)
-  assert.match(shell, /Privacy Policy/)
+  assert.equal(enMessages.Nav.privacy, 'Privacy Policy')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

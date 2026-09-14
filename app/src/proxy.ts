@@ -1,10 +1,13 @@
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
 import { NextResponse } from 'next/server'
+import createIntlMiddleware from 'next-intl/middleware'
 import { isClerkEnabled, isDevAuthAllowed } from '@/lib/clerk-config'
 import { embedHrefForPanel } from '@/lib/control-plane-embed'
 import { REQUEST_ID_HEADER, resolveRequestId } from '@/lib/observability/request-context'
 import { isPublicBrandingPath } from '@/lib/auth/public-branding'
 import { PUBLIC_ROUTE_PATTERNS } from '@/lib/auth/public-routes'
+import { localizedPublicPath, unprefixedAliasLocale, type PublicPathname } from '@/i18n/config'
+import { routing } from '@/i18n/routing'
 import {
   crawlerBlockUserAgent,
   isCrawlerAllowedPath,
@@ -13,8 +16,10 @@ import {
   isKnownCrawlerRequest,
 } from '@/lib/security/crawler-block'
 
+const intlMiddleware = createIntlMiddleware(routing)
+
 // A minták (és a felvételük szabálya) a `public-routes.ts`-ben laknak, hogy regressziós
-// teszt rögzíthesse őket — a middleware-fájl maga egyetlen függvényt exportálhat.
+// teszt rögzíthesse őket — a proxy-fájl maga egyetlen függvényt exportálhat.
 const isPublicRoute = createRouteMatcher([...PUBLIC_ROUTE_PATTERNS])
 
 const ROBOTS_TAG_HEADER = 'X-Robots-Tag'
@@ -41,7 +46,7 @@ function finishResponse(req: Request, res: NextResponse): NextResponse {
   return res
 }
 
-export default clerkMiddleware(async (auth, req) => {
+export const proxy = clerkMiddleware(async (auth, req) => {
   const { pathname } = req.nextUrl
 
   // #426: a Clerk dev-instance URL-ben szállított munkamenetét a Googlebot
@@ -59,6 +64,15 @@ export default clerkMiddleware(async (auth, req) => {
     // visszatükrözése nem szivárogtat semmit, viszont egy curl-lel diagnosztizálhatóvá teszi.
     blocked.headers.set('x-crawler-block-ua', crawlerBlockUserAgent(req).slice(0, 120))
     return finishResponse(req, blocked)
+  }
+
+  const aliasLocale = unprefixedAliasLocale(pathname)
+  if (aliasLocale) {
+    const url = req.nextUrl.clone()
+    url.pathname = localizedPublicPath(pathname.replace(/\/$/, '') as PublicPathname, aliasLocale)
+    const requestHeaders = new Headers(req.headers)
+    requestHeaders.set('x-next-intl-locale', aliasLocale)
+    return finishResponse(req, NextResponse.rewrite(url, { request: { headers: requestHeaders } }))
   }
 
   if (pathname.startsWith('/embed/control-plane/')) {
@@ -83,10 +97,16 @@ export default clerkMiddleware(async (auth, req) => {
         NextResponse.json({ error: 'Authentication is not configured' }, { status: 503 }),
       )
     }
+    if (isPublicBrandingPath(pathname)) {
+      return finishResponse(req, intlMiddleware(req))
+    }
     return finishResponse(req, NextResponse.next())
   }
   if (!isPublicRoute(req)) {
     await auth.protect()
+  }
+  if (isPublicBrandingPath(pathname)) {
+    return finishResponse(req, intlMiddleware(req))
   }
   return finishResponse(req, NextResponse.next())
 })

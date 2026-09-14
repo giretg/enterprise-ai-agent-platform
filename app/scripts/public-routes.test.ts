@@ -100,11 +100,19 @@ check('a Google OAuth branding-oldalak publikusak (honlap, adatvédelem, ÁSZF)'
   assertPublic('/privacy/')
   assertPublic('/gtc')
   assertPublic('/gtc/')
+  assertPublic('/hu')
+  assertPublic('/en')
+  assertPublic('/hu/privacy')
+  assertPublic('/en/privacy')
+  assertPublic('/hu/gtc')
+  assertPublic('/en/gtc')
 })
 
 check('a branding minták NEM tágabbak a kelleténél', () => {
   assertProtected('/privacy-admin')
   assertProtected('/gtc-admin')
+  assertProtected('/hu/control-plane')
+  assertProtected('/en/agents')
 })
 
 // PR-4 — a rendes alkalmazás-felület és a kezelői API védett marad.

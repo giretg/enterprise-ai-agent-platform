@@ -216,15 +216,17 @@ function resolveGrantedScopes(params: {
 
   const normalize = scopeNormalizerFor(params.connector)
   const grantedScopes = [...new Set(params.responseScope.split(' ').map(normalize).filter(Boolean))]
-  // A connector config a felső korlát — Google include_granted_scopes visszahozhat
-  // korábban megadott, a mostani kérésben nem ismételt scope-ot; azt elfogadjuk,
-  // de configon kívüli scope-ot továbbra is elutasítunk.
+  // A connector config a felső korlát: a grant csak ebből tárol. Google a token
+  // `scope` mezőjébe belerakja az identity scope-okat (openid / userinfo.*) és
+  // — include_granted_scopes=true mellett — korábbi, más Google-szolgáltatásra
+  // adott jogosultságokat is (pl. Drive a Gmail callbackben). Ezeket eldobjuk,
+  // nem buktatjuk a callbacket; a mögöttes token ettől még szélesebb lehet.
   const configured = new Set(readOAuthConfig(params.connector).scopes.map(normalize))
-  const unexpected = grantedScopes.filter((scope) => !configured.has(scope))
-  if (unexpected.length > 0) {
-    throw new Error(`OAuth provider returned unrequested scope: ${unexpected.join(', ')}`)
+  const usable = grantedScopes.filter((scope) => configured.has(scope))
+  if (usable.length === 0) {
+    throw new Error(`OAuth provider returned unrequested scope: ${grantedScopes.join(', ')}`)
   }
-  return grantedScopes
+  return usable
 }
 
 async function resolveClientSecret(connector: Connector): Promise<string> {

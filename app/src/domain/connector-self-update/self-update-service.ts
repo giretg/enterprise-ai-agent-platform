@@ -60,7 +60,8 @@ export interface SelfUpdatingConnectorRepository {
     tenantId: string
     name: string
     specUrl: string
-    secretAlias: string
+    /** Kulcs nélküli (auth: none) OpenAPI-nál null — a broker ilyenkor nem injektál fejlécet. */
+    secretAlias?: string | null
     createdById: string
   }): Promise<SelfUpdatingContext>
   deleteUninitialized(connectorId: string, tenantId: string): Promise<void>
@@ -165,7 +166,7 @@ export class SelfUpdatingConnectorService {
   ) {}
 
   async create(
-    input: { connectorId?: string; name: string; specUrl: string; secretAlias: string },
+    input: { connectorId?: string; name: string; specUrl: string; secretAlias?: string | null },
     actor: SelfUpdateActor,
   ): Promise<SelfUpdatingContext> {
     const context = await this.repo.create({ ...input, tenantId: actor.tenantId, createdById: actor.id })
@@ -388,7 +389,7 @@ export class SelfUpdatingConnectorService {
 
   private async context(connectorId: string, actor: SelfUpdateActor): Promise<SelfUpdatingContext> {
     const ctx = await this.repo.findContext(connectorId, actor.tenantId)
-    if (!ctx) throw new SelfUpdateError('NOT_FOUND', 'Az önfrissítő kapcsolat nem található.')
+    if (!ctx) throw new SelfUpdateError('NOT_FOUND', 'Az OpenAPI-kapcsolat nem található.')
     if (ctx.connector.tenantId !== actor.tenantId || ctx.source.tenantId !== actor.tenantId) {
       throw new SelfUpdateError('TENANT_ISOLATION', 'A kapcsolat nem érhető el ebben a tenantban.')
     }

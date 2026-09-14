@@ -3,6 +3,7 @@
  * Futtatás: npx tsx scripts/robots.test.ts
  */
 import assert from 'node:assert/strict'
+import { robotsAllowRules } from '../src/i18n/config'
 import robots from '../src/app/robots'
 
 let passed = 0
@@ -25,7 +26,7 @@ check('alapból a branding-oldalak engedélyezettek, a többi tiltott', () => {
     delete process.env.ALLOW_SEARCH_INDEXING
     const result = robots()
     const rules = Array.isArray(result.rules) ? result.rules[0] : result.rules
-    assert.deepEqual(rules.allow, ['/$', '/privacy', '/gtc'])
+    assert.deepEqual(rules.allow, robotsAllowRules())
     assert.equal(rules.disallow, '/')
   } finally {
     if (prev === undefined) delete process.env.ALLOW_SEARCH_INDEXING

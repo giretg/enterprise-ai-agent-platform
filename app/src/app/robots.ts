@@ -1,4 +1,5 @@
 import type { MetadataRoute } from 'next'
+import { robotsAllowRules } from '@/i18n/config'
 
 /**
  * `/robots.txt` — a keresőmotor-/renderelő-botok viselkedését szabályozza.
@@ -33,9 +34,11 @@ export default function robots(): MetadataRoute.Robots {
     rules: [
       {
         userAgent: '*',
-        // `/$` = csak a gyökér, nem az egész host. A privacy/ÁSZF hosszabb, ezért
-        // a `Disallow: /` elé nyerik a Google longest-match szabálya szerint.
-        allow: ['/$', '/privacy', '/gtc'],
+        // `/$` = csak a gyökér. A locale-home (`/hu$`, `/en$`) és a `/hu/`, `/en/`
+        // prefixek a honlap + jogi oldalak kétnyelvű URL-jeit engedik. A privacy/ÁSZF
+        // (prefixszel és anélkül) hosszabb, ezért a `Disallow: /` elé nyerik a Google
+        // longest-match szabálya szerint.
+        allow: robotsAllowRules(),
         disallow: '/',
       },
     ],

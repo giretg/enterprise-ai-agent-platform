@@ -1,7 +1,8 @@
 'use server'
 
 import { z } from 'zod'
-import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
+import { getAuthContext } from '@/auth/context'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { prisma } from '@/lib/db'
@@ -133,6 +134,8 @@ const upsertConnectorTemplateSchema = z.object({
   descriptor: templateDescriptorSchema,
   description: z.string().max(1000).optional(),
   selfCheck: templateSelfCheckSchema.optional(),
+  // Platform-szintű = null; tenant-szintű = adott tenant id.
+  tenantId: z.string().min(1).nullable().optional(),
 })
 
 const deprecateConnectorTemplateSchema = z.object({
@@ -882,10 +885,19 @@ export async function upsertConnectorTemplateAction(input: unknown) {
 
     selfCheckTemplateDescriptor(descriptor, parsed.selfCheck)
 
-    // A katalógus platform-szintű: új/frissített custom sablont csak superadmin írhat,
-    // és mindig globális (tenantId = null). Tenantok csak felhasználhatják.
-    const actorId = (await requirePlatformRole('superadmin')).user.id
-    const tenantId = null
+    // Scope: superadmin írhat platformra (null) vagy bármely tenantra;
+    // tenant-admin csak a saját tenantjára.
+    const ctx = await getAuthContext()
+    let actorId: string
+    let tenantId: string | null
+    if (ctx && isSuperadmin(ctx.platformRoles)) {
+      actorId = ctx.user.id
+      tenantId = parsed.tenantId ?? null
+    } else {
+      const user = await requireTenantRole('admin')
+      actorId = user.user.id
+      tenantId = user.activeTenantId
+    }
 
     const latest = await repositories.connectorTemplates.findLatestByKey(descriptor.key, tenantId)
     if (latest?.origin === 'builtin') {
@@ -949,7 +961,17 @@ export async function deprecateConnectorTemplateAction(input: unknown) {
       return fail('Builtin connector-sablon nem deprecálható ezen a felületen.')
     }
 
-    const actorId = (await requirePlatformRole('superadmin')).user.id
+    const ctx = await getAuthContext()
+    let actorId: string
+    if (ctx && isSuperadmin(ctx.platformRoles)) {
+      actorId = ctx.user.id
+    } else {
+      const user = await requireTenantRole('admin')
+      if (!template.tenantId || template.tenantId !== user.activeTenantId) {
+        return fail('Csak a saját tenant sablonja deprecálható.')
+      }
+      actorId = user.user.id
+    }
 
     await repositories.connectorTemplates.deprecate(template.id)
     await repositories.audit.append({

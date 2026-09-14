@@ -522,6 +522,31 @@ async function main() {
     assert.deepEqual(unregistered, [])
   })
 
+  // audit_log.target_id @db.Uuid — setting-kulcs (`oauth.google`) Prisma UUID-parse hibát dob.
+  const AUDIT_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const TARGET_ID_LITERAL_RE = /\btargetId:\s*'([^']*)'/g
+  const TARGET_ID_SETTING_KEY_RE =
+    /\btargetId:\s*((?:[A-Z][A-Z0-9_]*_KEY|[A-Z][A-Z0-9_]*_KEYS\.[A-Za-z0-9_]+))/g
+
+  check('audit.append targetId literál UUID — setting-kulcs nem fér a @db.Uuid oszlopba', () => {
+    const bad: string[] = []
+    for (const file of collectSourceFiles(path.join(__dirname, '..', 'src'))) {
+      const rel = path.relative(path.join(__dirname, '..'), file)
+      const source = readFileSync(file, 'utf8')
+      TARGET_ID_LITERAL_RE.lastIndex = 0
+      for (const [, value] of source.matchAll(TARGET_ID_LITERAL_RE)) {
+        if (value !== '' && !AUDIT_UUID_RE.test(value)) {
+          bad.push(`${rel}: '${value}'`)
+        }
+      }
+      TARGET_ID_SETTING_KEY_RE.lastIndex = 0
+      for (const [, ident] of source.matchAll(TARGET_ID_SETTING_KEY_RE)) {
+        bad.push(`${rel}: ${ident}`)
+      }
+    }
+    assert.deepEqual(bad, [])
+  })
+
   console.log(failed === 0 ? `\nMinden teszt zöld (${passed}).` : `\n${failed} teszt bukott (${passed} zöld).`)
   if (failed > 0) process.exit(1)
 }

@@ -31,7 +31,7 @@ ugyanabban a GCP projektben. A kettő a **megosztott Neon Postgres**-en kereszt�
 | GCP projekt | `enterprise-ai-demo` (projektszám 346824017066) |
 | Régió | `europe-west4` (a platform App Hosting régiója — egy régióban tartjuk) |
 | Platform (App Hosting backend) | `enterprise-ai-agent-platform` |
-| Platform URL | `https://enterprise-ai-agent-platform--enterprise-ai-demo.europe-west4.hosted.app` |
+| Platform URL | `https://ai.excellencepay.com` (egyedi domain az App Hosting backenden) |
 | App Hosting forrás | GitHub `giretg/enterprise-ai-agent-platform`, **`main` branch — push-ra auto-rollout** |
 | Artifact Registry repo | `ai-platform` (docker, europe-west4) |
 | Cloud Run Job | `wiki-harness` (europe-west4) |
@@ -106,8 +106,8 @@ npm run harness:cloud-run-deploy   # Cloud Build (amd64) → push → gcloud run
 HARNESS_CLOUD_RUN_PROJECT_ID=enterprise-ai-demo \
 HARNESS_CLOUD_RUN_LOCATION=europe-west4 \
 HARNESS_CLOUD_RUN_JOB_NAME=wiki-harness \
-PLATFORM_API_URL=https://enterprise-ai-agent-platform--enterprise-ai-demo.europe-west4.hosted.app \
-HARNESS_CALLBACK_URL=https://enterprise-ai-agent-platform--enterprise-ai-demo.europe-west4.hosted.app \
+PLATFORM_API_URL=https://ai.excellencepay.com \
+HARNESS_CALLBACK_URL=https://ai.excellencepay.com \
 HARNESS_CALLBACK_TOKEN=<a tokenből> \
 HARNESS_CLOUD_RUN_BEARER_TOKEN="$(gcloud auth print-access-token)" \
 npm run harness:cloud-run-smoke
@@ -145,7 +145,7 @@ Jelenleg **app-szintű** egress guard van (`egress-guard.ts` + N4 acceptance), a
 Production-höz **hálózati** deny-by-default kell:
 - Serverless **VPC Access connector** (europe-west4) + `--vpc-egress=all-traffic`.
 - **Cloud NAT** + **egress firewall**, ami csak a platform/Gateway/Broker hostokat engedi.
-- Buktató: a platform `*.hosted.app` **publikus** URL — a hostname-alapú engedélyezés nehéz, IP-tartományt kell kezelni, vagy belső (VPC-n belüli) platform-elérést bevezetni.
+- Buktató: a platform egyedi domainen (`ai.excellencepay.com`) fut az App Hosting backend előtt — a hostname-alapú engedélyezésnél ezt a hostot kell kezelni (a régi `*.hosted.app` URL csak tartalék).
 - Ha kész, a Jobon `HARNESS_EGRESS_ENFORCE=true` visszakapcsolható (az induló `assertEgressDenyByDefault` ekkor a hálózati zárást ellenőrzi az `example.com` próbával).
 
 ### 5.2 Production dispatcher launch-auth — **MEGOLDVA (kód+infra), lásd `CLOUD-RUN-DISPATCHER-SETUP.md`**

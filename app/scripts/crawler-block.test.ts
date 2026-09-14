@@ -97,11 +97,16 @@ check('a Google OAuth branding-oldalakat a crawler is olvashatja', () => {
   assert.equal(isCrawlerAllowedPath('/privacy/'), true)
   assert.equal(isCrawlerAllowedPath('/gtc'), true)
   assert.equal(isCrawlerAllowedPath('/gtc/'), true)
+  assert.equal(isCrawlerAllowedPath('/hu'), true)
+  assert.equal(isCrawlerAllowedPath('/en/privacy'), true)
+  assert.equal(isCrawlerAllowedPath('/hu/gtc'), true)
 })
 
 check('a gyökér-engedély NEM prefix: a control-plane zárva marad', () => {
   assert.equal(isCrawlerAllowedPath('/privacy-admin'), false)
   assert.equal(isCrawlerAllowedPath('/gtc-admin'), false)
+  assert.equal(isCrawlerAllowedPath('/hu/control-plane'), false)
+  assert.equal(isCrawlerAllowedPath('/en/agents'), false)
 })
 
 // A szándékosan publikus bot-vezérlő fájlok + uptime-szondák: itt a crawler is átjut.

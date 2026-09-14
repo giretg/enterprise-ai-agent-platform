@@ -34,6 +34,7 @@ export type HttpApiAuthConfig =
   | { scheme: 'header'; header: string }
   | { scheme: 'bearer' }
   | { scheme: 'basic' }
+  | { scheme: 'none' }
   | {
       scheme: 'oauth2'
       tokenUrl: string
@@ -239,8 +240,10 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
       throw new Error('http_api config.auth.headerName is required for type "api_key_header"')
     }
     auth = { scheme: 'header', header }
+  } else if (authRaw.type === 'none' || authRaw.scheme === 'none') {
+    auth = { scheme: 'none' }
   } else {
-    throw new Error('http_api config.auth.scheme must be "header", "bearer", "basic" or "oauth2"')
+    throw new Error('http_api config.auth.scheme must be "header", "bearer", "basic", "none" or "oauth2"')
   }
 
   const requestHeaders = parseHeaderTemplates(raw.requestHeaders, 'requestHeaders')
@@ -705,6 +708,8 @@ export class HttpApiClient {
       return buildAuthHeaders(profile.auth ?? this.config.auth, key)
     }
 
+    if (this.config.auth.scheme === 'none') return {}
+
     if (!this.defaultApiKey) {
       throw new HttpApiError('http_api connector has no default API key', 'missing_api_key')
     }
@@ -1063,6 +1068,7 @@ async function resolveOAuth2AccessToken(
 }
 
 async function buildAuthHeaders(auth: HttpApiAuthConfig, apiKey: string): Promise<Record<string, string>> {
+  if (auth.scheme === 'none') return {}
   if (auth.scheme === 'bearer') return { authorization: `Bearer ${apiKey}` }
   if (auth.scheme === 'basic') return { authorization: `Basic ${apiKey}` }
   if (auth.scheme === 'oauth2') {

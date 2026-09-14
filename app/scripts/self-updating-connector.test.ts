@@ -341,6 +341,22 @@ async function run() {
     if (!result.ok) assert.equal(result.reason, 'unsupported_auth')
   })
 
+  await test('kulcs nélküli OpenAPI (nincs securitySchemes) → auth none, sync ok, runtime kulcs nélkül', async () => {
+    const keyless = JSON.stringify({
+      openapi: '3.0.3', info: { title: 'Nyílt Adat API', version: '1' },
+      servers: [{ url: 'https://api.partner-crm.example/v1' }],
+      paths: { '/items': { get: { operationId: 'listItems' } } },
+    })
+    const svc = new SpecSyncService({ fetchImpl: fakeFetch(keyless) })
+    const result = await svc.sync('https://api.partner-crm.example/openapi.json')
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.equal(result.capabilitySet.auth.type, 'none')
+    const runtime = pinnedRuntimeConfig('self_updating', {}, result.capabilitySet)
+    assert.ok(runtime)
+    assert.equal(parseHttpApiConfig(runtime).auth.scheme, 'none')
+  })
+
   await test('fail-closed: a snapshot privát API-célhostja blokkolt', async () => {
     const privateTarget = JSON.stringify({
       ...baseSpec({ '/orders': { get: { operationId: 'listOrders' } } }),

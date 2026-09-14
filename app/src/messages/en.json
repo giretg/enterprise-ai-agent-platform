@@ -1,0 +1,96 @@
+{
+  "Metadata": {
+    "homeTitle": "Excellence AI — Governed AI coworkers for companies",
+    "homeDescription": "Excellence AI is a governed enterprise AI coworker platform. It lets companies give employees AI agents that work on company tools under access control, audit, and human approval.",
+    "privacyTitle": "Privacy Policy",
+    "privacyDescription": "Privacy Policy for Excellence AI. How Excellence Pay Kft. accesses, collects, uses, stores, shares, protects, retains, and deletes personal data, including Google user data from Gmail and Google Drive.",
+    "gtcTitle": "Terms of Service",
+    "gtcDescription": "General terms and conditions for Excellence AI, the governed enterprise AI coworker platform operated by Excellence Pay Kft."
+  },
+  "Nav": {
+    "aria": "Public navigation",
+    "home": "Home",
+    "privacy": "Privacy Policy",
+    "terms": "Terms",
+    "signIn": "Sign in",
+    "tagline": "Governed AI coworkers"
+  },
+  "Footer": {
+    "privacy": "Privacy Policy",
+    "terms": "Terms of Service",
+    "signIn": "Sign in"
+  },
+  "LocaleSwitcher": {
+    "label": "Language",
+    "hu": "HU",
+    "en": "EN"
+  },
+  "Legal": {
+    "updated": "Last updated: {date}"
+  },
+  "Privacy": {
+    "title": "Privacy Policy",
+    "description": "This Privacy Policy explains how Excellence AI accesses, collects, uses, stores, shares, protects, retains, and deletes personal data — including Google user data from Gmail and Google Drive.",
+    "updated": "14 September 2026"
+  },
+  "Terms": {
+    "title": "Terms of Service",
+    "description": "The terms for using Excellence AI. The service is an invitation-only enterprise workspace, not a public consumer chatbot.",
+    "updated": "13 September 2026"
+  },
+  "Home": {
+    "badge": "Governed AI coworkers · Operated in the EU",
+    "heroLine1": "AI coworkers",
+    "heroLine2": "you control.",
+    "heroBody": "Give your team AI coworkers that work in company systems — with access control, human approval, an audit trail, and a cost budget.",
+    "ctaSignIn": "Sign in",
+    "ctaHow": "How it works",
+    "trustApproval": "Human approval",
+    "trustAudit": "Full audit log",
+    "trustBudget": "Cost budget",
+    "trustGdpr": "GDPR · EU data processing",
+    "chatName": "Léna",
+    "chatRole": "customer-support AI coworker · Claude Sonnet 4.6",
+    "chatStatus": "working",
+    "chatUser": "Anna Kovács",
+    "chatUserText": "Léna, reply to the complaint email based on the policy.",
+    "chatAgent": "Léna · customer-support AI",
+    "chatAgentText": "I checked the customer in the CRM database: the complaint is valid, and per the knowledge base they are entitled to a refund within 14 days.",
+    "chatDraftText": "Dear Gábor, we will of course refund the purchase amount today.",
+    "approvalTitle": "Outbound email — waiting for approval",
+    "approvalTo": "To",
+    "approvalToValue": "nagy.peter@ugyfel.hu",
+    "approvalSubject": "Subject",
+    "approvalSubjectValue": "Re: Complaint — #4821",
+    "approvalSource": "Source",
+    "approvalSourceValue": "Return policy v3",
+    "approvalApprove": "Approve",
+    "approvalRevise": "Request changes",
+    "whyEyebrow": "Why Excellence AI",
+    "whyTitle": "Professional company control over AI.",
+    "featureCoworkersTitle": "AI coworkers, not chatbots",
+    "featureCoworkersBody": "The AI coworker reads email, drafts documents, and carries work through — in your tools, under your rules.",
+    "featureAccessTitle": "Access and approval",
+    "featureAccessBody": "You decide who and which AI coworker can access what. Sensitive actions wait for a human before anything is sent.",
+    "featureAuditTitle": "Work you can trace",
+    "featureAuditBody": "Every step is logged: who asked for what, which data the AI touched, what went out. You can review it later.",
+    "featureAdminTitle": "Admin control",
+    "featureAdminBody": "The company administrator sets who can trust the AI with what: roles, data and tool access, autonomy level, and cost budget.",
+    "featureModelsTitle": "Model-agnostic",
+    "featureModelsBody": "We do not lock you to one vendor. You can pick a model per AI coworker — and switch whenever a better or cheaper option appears.",
+    "howEyebrow": "How it works",
+    "howStep1Title": "Set admin controls",
+    "howStep1Body": "The company administrator sets who may work with which AI coworker, on which data, and with how much autonomy.",
+    "howStep2Title": "Delegate the work",
+    "howStep2Body": "In chat, as a task, or as a scheduled process. The AI coworker carries it through in company systems.",
+    "howStep3Title": "A human decides at the sensitive points",
+    "howStep3Body": "Outbound email, file sharing, payments: an approval card, one click.",
+    "aboutTitle": "What is Excellence AI for?",
+    "aboutBody": "Excellence AI is operated by Excellence Pay Kft. The platform lets company employees do real office work with AI coworkers — mail, documents, internal knowledge, approved processes — without losing control of data and permissions. Connecting external accounts is always optional, and the details are in the privacy notice.",
+    "aboutCardLead": "<brand>Excellence AI</brand> is a governed enterprise AI coworker platform operated by Excellence Pay Kft. It helps organizations give employees AI agents that work on company tools under access control, audit logging, privacy safeguards, and human approval.",
+    "aboutCardRest": "The product is not a public consumer chatbot. It is a signed-in workspace where invited company members run governed AI agents. External account connections are always optional and described in detail in the privacy documents. See the <privacy>Privacy Policy</privacy> and <terms>Terms</terms>.",
+    "ctaTitle": "Your first AI coworker is waiting.",
+    "ctaBody": "A closed, invitation-only workspace. Sign in with your company account and put the first one to work.",
+    "ctaButton": "Sign in to Excellence AI →"
+  }
+}

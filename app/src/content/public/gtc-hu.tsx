@@ -1,21 +1,8 @@
-import type { Metadata } from 'next'
-import Link from 'next/link'
-import { LegalPage } from '@/components/public-site/public-site-shell'
+import { Link } from '@/i18n/navigation'
 
-export const metadata: Metadata = {
-  title: 'ÁSZF',
-  description:
-    'General terms and conditions for Excellence AI, the governed enterprise AI coworker platform operated by Excellence Pay Kft.',
-  robots: { index: true, follow: true },
-}
-
-export default function GtcPage() {
+export function GtcHu() {
   return (
-    <LegalPage
-      title="Általános szerződési feltételek"
-      description="Az Excellence AI használatának feltételei. A szolgáltatás meghívásos vállalati munkaterület, nem nyilvános fogyasztói chatbot."
-      updated="2026. szeptember 13."
-    >
+    <div lang="hu">
       <p>
         Ezek az általános szerződési feltételek („ÁSZF”) az <strong>Excellence Pay Kft.</strong>{' '}
         („szolgáltató”) által a <Link href="/">https://ai.excellencepay.com</Link> címen
@@ -30,11 +17,6 @@ export default function GtcPage() {
         csatlakoztathatnak eszközöket (például Gmail vagy Google Drive), és a jogosultságuk szerint
         jóváhagyhatnak érzékeny műveleteket. A platform nem nyilvános, bárki által regisztrálható
         fogyasztói szolgáltatás: a belépés meghívásos.
-      </p>
-      <p>
-        Excellence AI is a governed enterprise AI coworker platform. Invited members of a customer
-        organization can run AI agents, attach company tools, and approve high-impact actions. It
-        is not a public consumer chatbot.
       </p>
 
       <h2>2. Szerződéskötés és fiók</h2>
@@ -121,12 +103,6 @@ export default function GtcPage() {
         <br />
         Adatvédelem: <a href="mailto:privacy@excellencepay.com">privacy@excellencepay.com</a>
       </p>
-      <p>
-        English summary: by signing in to Excellence AI you agree to these terms. The service is a
-        governed, invitation-only AI coworker workspace. Google access is optional, limited to the
-        scopes you grant, and may be revoked at any time. See the{' '}
-        <Link href="/privacy">Privacy Policy</Link> for data use.
-      </p>
-    </LegalPage>
+    </div>
   )
 }

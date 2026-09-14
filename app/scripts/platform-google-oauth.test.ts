@@ -4,7 +4,11 @@
  * Futtatás: npx tsx scripts/platform-google-oauth.test.ts
  */
 import assert from 'node:assert/strict'
+import { PlatformSettingsService } from '../src/domain/platform-settings/platform-settings-service'
+import type { AuditRepository, PlatformSettingsRepository } from '../src/repositories/interfaces'
 import {
+  GOOGLE_OAUTH_PLATFORM_KEY,
+  GOOGLE_OAUTH_SERVICE_KEYS,
   parseGoogleOAuthFields,
   readGoogleOAuthConfigFromEnv,
   readTenantGoogleOAuthConfig,
@@ -23,7 +27,35 @@ function check(name: string, fn: () => void) {
   }
 }
 
-function main() {
+async function checkAsync(name: string, fn: () => Promise<void>) {
+  try {
+    await fn()
+    console.log(`  OK  ${name}`)
+  } catch (error) {
+    failures++
+    console.error(`  FAIL ${name}:`, error)
+  }
+}
+
+function inMemoryPlatformSettings() {
+  const store = new Map<string, unknown>()
+  const events: Array<{ action: string; targetId: string | null; metadata: unknown }> = []
+  const settingsRepo: PlatformSettingsRepository = {
+    get: async (key) => store.get(key) ?? null,
+    set: async (key, value) => {
+      store.set(key, value)
+    },
+  }
+  const auditRepo = {
+    append: async (event: { action: string; targetId: string | null; metadata: unknown }) => {
+      events.push({ action: event.action, targetId: event.targetId, metadata: event.metadata })
+      return event
+    },
+  } as unknown as AuditRepository
+  return { svc: new PlatformSettingsService(settingsRepo, auditRepo), events, store }
+}
+
+async function main() {
   check('parse rejects incomplete fields', () => {
     assert.equal(parseGoogleOAuthFields({ clientId: 'id' }), null)
     assert.equal(parseGoogleOAuthFields({ clientSecret: 'secret' }), null)
@@ -121,6 +153,44 @@ function main() {
     }
   })
 
+  await checkAsync('upsertGoogleOAuthConfig audit targetId UUID-oszlopba nem ír setting-kulcsot', async () => {
+    const { svc, events, store } = inMemoryPlatformSettings()
+    const actorId = 'aaaaaaaa-bbbb-4000-8000-000000000001'
+    await svc.upsertGoogleOAuthConfig(
+      {
+        clientId: '346824017066-test.apps.googleusercontent.com',
+        clientSecret: 'test-secret',
+        redirectUri: 'https://ai.example.com/api/connectors/oauth/callback',
+      },
+      actorId,
+    )
+    assert.equal(store.has(GOOGLE_OAUTH_PLATFORM_KEY), true)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].action, 'platform.oauth.google.update')
+    assert.equal(events[0].targetId, null)
+    assert.equal((events[0].metadata as { settingKey: string }).settingKey, GOOGLE_OAUTH_PLATFORM_KEY)
+  })
+
+  await checkAsync('upsertGoogleDriveOAuthConfig audit targetId UUID-oszlopba nem ír setting-kulcsot', async () => {
+    const { svc, events } = inMemoryPlatformSettings()
+    await svc.upsertGoogleDriveOAuthConfig(
+      { clientId: 'drive-client', clientSecret: 'drive-secret' },
+      'aaaaaaaa-bbbb-4000-8000-000000000001',
+    )
+    assert.equal(events[0].targetId, null)
+    assert.equal((events[0].metadata as { settingKey: string }).settingKey, GOOGLE_OAUTH_SERVICE_KEYS.drive)
+  })
+
+  await checkAsync('upsertGoogleDrivePickerConfig audit targetId UUID-oszlopba nem ír setting-kulcsot', async () => {
+    const { svc, events } = inMemoryPlatformSettings()
+    await svc.upsertGoogleDrivePickerConfig(
+      { apiKey: 'picker-key', appId: 'picker-app' },
+      'aaaaaaaa-bbbb-4000-8000-000000000001',
+    )
+    assert.equal(events[0].targetId, null)
+    assert.equal((events[0].metadata as { settingKey: string }).settingKey, 'oauth.google.drive.picker')
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} failed`)
     process.exit(1)
@@ -128,4 +198,4 @@ function main() {
   console.log('\nAll checks passed.')
 }
 
-main()
+void main()

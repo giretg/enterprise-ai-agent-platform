@@ -747,7 +747,7 @@ export class ProvisioningService {
     if (!isConnectorAssignableToAgent(connector.connectorMode, connector.activeCapabilitySet)) {
       throw new ProvisioningError(
         'CONNECTOR_NOT_ASSIGNABLE',
-        'Az önfrissítő kapcsolatnak előbb legyen jóváhagyott, aktív OpenAPI-verziója (Frissítés keresése → jóváhagyás).',
+        'Az OpenAPI-kapcsolatnak előbb legyen jóváhagyott, aktív verziója (Frissítés keresése → jóváhagyás).',
       )
     }
 

@@ -719,6 +719,126 @@ console.log('=== connector grant service: token ownership invariant ===')
 const grantTokenDir = await mkdtemp(join(tmpdir(), 'connector-grant-test-'))
 process.env.CONNECTOR_GRANT_TOKEN_DIR = grantTokenDir
 
+function gmailDelegatedConnector(scopes: string[]): Connector {
+  return gmailConnector({
+    config: {
+      oauth: {
+        authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+        tokenUrl: 'https://oauth2.googleapis.com/token',
+        clientId: 'gmail-client',
+        scopes,
+        scopeTransform: 'gmailAlias',
+      },
+    } as unknown as Connector['config'],
+  })
+}
+
+async function withGoogleTokenResponse<T>(
+  scope: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prevFetch = globalThis.fetch
+  const prevStub = process.env.CONNECTOR_OAUTH_STUB
+  const prevGmailStub = process.env.GMAIL_OAUTH_STUB
+  const prevSecret = process.env.GMAIL_OAUTH_CLIENT_SECRET
+  delete process.env.CONNECTOR_OAUTH_STUB
+  delete process.env.GMAIL_OAUTH_STUB
+  process.env.GMAIL_OAUTH_CLIENT_SECRET = 'test-gmail-secret'
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url === 'https://oauth2.googleapis.com/token') {
+      return new Response(
+        JSON.stringify({
+          access_token: 'ya29.access',
+          refresh_token: '1//refresh',
+          expires_in: 3600,
+          scope,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }) as typeof fetch
+  try {
+    return await fn()
+  } finally {
+    globalThis.fetch = prevFetch
+    if (prevStub === undefined) delete process.env.CONNECTOR_OAUTH_STUB
+    else process.env.CONNECTOR_OAUTH_STUB = prevStub
+    if (prevGmailStub === undefined) delete process.env.GMAIL_OAUTH_STUB
+    else process.env.GMAIL_OAUTH_STUB = prevGmailStub
+    if (prevSecret === undefined) delete process.env.GMAIL_OAUTH_CLIENT_SECRET
+    else process.env.GMAIL_OAUTH_CLIENT_SECRET = prevSecret
+  }
+}
+
+await test('completeOAuthCallback: Google identity + korábbi include_granted_scopes extra scope-okat eldob, a kért Gmail scope-ot megtartja', async () => {
+  const connector = gmailDelegatedConnector([GMAIL_SCOPES.modify])
+  const { service, created } = buildGrantService(null)
+  const { createOAuthState } = await import('../src/lib/crypto/oauth-state')
+  const { state } = createOAuthState({
+    userId: 'user-Y',
+    connectorId: connector.id,
+    tenantId: 'tenant-A',
+    requestedScopes: [GMAIL_SCOPES.modify],
+  })
+  // A screenshot hibája: Google a token `scope` mezőjébe belerakja az openid /
+  // userinfo identity scope-okat, a korábbi Drive grantet, és extra Gmail
+  // scope-okat is. A callback ezeken ne bukjon — a grant csak a configban
+  // engedett modify-t tárolja.
+  await withGoogleTokenResponse(
+    [
+      'https://www.googleapis.com/auth/userinfo.profile',
+      'openid',
+      'https://www.googleapis.com/auth/gmail.settings.basic',
+      'https://www.googleapis.com/auth/gmail.compose',
+      'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/userinfo.email',
+      GMAIL_SCOPES.modify,
+    ].join(' '),
+    () =>
+      service.completeOAuthCallback({
+        code: 'auth-code',
+        state,
+        connector,
+        actorId: 'user-Y',
+      }),
+  )
+  assert.equal(created.length, 1)
+  assert.deepEqual(created[0]?.scopes, [GMAIL_SCOPES.modify])
+})
+
+await test('completeOAuthCallback: ha a tokenben nincs a connectorhoz tartozó scope, a callback továbbra is hibázik', async () => {
+  const connector = gmailDelegatedConnector([GMAIL_SCOPES.modify])
+  const { service, created } = buildGrantService(null)
+  const { createOAuthState } = await import('../src/lib/crypto/oauth-state')
+  const { state } = createOAuthState({
+    userId: 'user-Y',
+    connectorId: connector.id,
+    tenantId: 'tenant-A',
+    requestedScopes: [GMAIL_SCOPES.modify],
+  })
+  await assert.rejects(
+    () =>
+      withGoogleTokenResponse(
+        [
+          'openid',
+          'https://www.googleapis.com/auth/userinfo.email',
+          'https://www.googleapis.com/auth/drive.readonly',
+        ].join(' '),
+        () =>
+          service.completeOAuthCallback({
+            code: 'auth-code',
+            state,
+            connector,
+            actorId: 'user-Y',
+          }),
+      ),
+    /OAuth provider returned unrequested scope/,
+  )
+  assert.equal(created.length, 0)
+})
+
 await test('resolveAccessToken csak egyező user+tenant+connector+tokenRef mellett ad ki tokent', async () => {
   const activeGrant = grant({
     expiresAt: new Date(Date.now() + 3600_000),

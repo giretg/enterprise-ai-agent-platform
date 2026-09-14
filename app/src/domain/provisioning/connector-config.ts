@@ -100,7 +100,7 @@ export const proposedToolSchema = z.object({
 export type ProposedTool = z.infer<typeof proposedToolSchema>
 
 export const connectorAuthSchema = z.object({
-  type: z.enum(['api_key_header', 'bearer_token', 'basic', 'oauth2']),
+  type: z.enum(['api_key_header', 'bearer_token', 'basic', 'oauth2', 'none']),
   headerName: z.string().optional(),
   /** A secret SOSEM kerül ide — csak a Secret Managerbe szánt alias NEVE javasolt. */
   secretAliasSuggested: z.string().optional(),

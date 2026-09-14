@@ -107,7 +107,7 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
     tenantId: string
     name: string
     specUrl: string
-    secretAlias: string
+    secretAlias?: string | null
     createdById: string
   }): Promise<SelfUpdatingContext> {
     const row = await prisma.$transaction(async (tx) => {
@@ -121,7 +121,7 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
           scope: 'single',
           lifecycleState: 'active',
           connectorMode: 'self_updating',
-          secretAlias: input.secretAlias,
+          secretAlias: input.secretAlias ?? null,
           config: {},
           specSource: {
             create: {
@@ -184,7 +184,7 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
         where: { id: input.sourceId, connectorId: input.connectorId, tenantId: input.tenantId },
         data: { urlApprovedById: input.actorId, urlApprovedAt: input.at },
       })
-      if (updated.count !== 1) throw new SelfUpdateError('NOT_FOUND', 'Az önfrissítő kapcsolat nem található.')
+      if (updated.count !== 1) throw new SelfUpdateError('NOT_FOUND', 'Az OpenAPI-kapcsolat nem található.')
       await appendAuditInTransaction(tx, connectorAudit({
         action: 'connector.self_update.source.approve', actorId: input.actorId,
         tenantId: input.tenantId, connectorId: input.connectorId, policyDecision: 'allowed',
@@ -202,7 +202,7 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
         where: { id: input.sourceId, connectorId: input.connectorId, tenantId: input.tenantId },
         data: { trustedById: input.actorId, trustedAt: input.at },
       })
-      if (updated.count !== 1) throw new SelfUpdateError('NOT_FOUND', 'Az önfrissítő kapcsolat nem található.')
+      if (updated.count !== 1) throw new SelfUpdateError('NOT_FOUND', 'Az OpenAPI-kapcsolat nem található.')
       await appendAuditInTransaction(tx, connectorAudit({
         action: 'connector.self_update.trust.approve', actorId: input.actorId,
         tenantId: input.tenantId, connectorId: input.connectorId, policyDecision: 'allowed',
@@ -217,7 +217,7 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
         where: { id: input.sourceId, connectorId: input.connectorId, tenantId: input.tenantId },
         data: { autoApprovePolicy: input.policy as Prisma.InputJsonValue },
       })
-      if (updated.count !== 1) throw new SelfUpdateError('NOT_FOUND', 'Az önfrissítő kapcsolat nem található.')
+      if (updated.count !== 1) throw new SelfUpdateError('NOT_FOUND', 'Az OpenAPI-kapcsolat nem található.')
       await appendAuditInTransaction(tx, connectorAudit({
         action: 'connector.self_update.policy.update', actorId: input.actorId,
         tenantId: input.tenantId, connectorId: input.connectorId, policyDecision: 'allowed',
@@ -293,7 +293,7 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
   }): Promise<SelfUpdatingSpecVersion> {
     const row = await prisma.$transaction(async (tx) => {
       const connector = await tx.connector.findFirst({ where: { id: input.connectorId, tenantId: input.tenantId, connectorMode: 'self_updating' }, select: { id: true } })
-      if (!connector) throw new SelfUpdateError('NOT_FOUND', 'Az önfrissítő kapcsolat nem található.')
+      if (!connector) throw new SelfUpdateError('NOT_FOUND', 'Az OpenAPI-kapcsolat nem található.')
       const latest = await tx.connectorSpecVersion.aggregate({ where: { connectorId: input.connectorId }, _max: { versionNo: true } })
       const proposal = await tx.connectorSpecVersion.create({
         data: {

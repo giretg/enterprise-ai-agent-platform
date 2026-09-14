@@ -25,7 +25,8 @@ const versionSchema = connectorIdSchema.extend({ versionId: z.string().uuid() })
 const apiKeyField = z.string().trim().min(1).max(10_000)
 const createSchema = z.object({
   name: z.string().trim().min(1).max(120),
-  apiKey: apiKeyField,
+  // Opcionális: kulcs nélküli, publikus OpenAPI-nál üresen hagyható.
+  apiKey: z.string().trim().max(10_000).optional(),
   specUrl: z.string().url().refine((value) => new URL(value).protocol === 'https:', 'Csak https link használható.'),
 })
 const rotateApiKeySchema = connectorIdSchema.extend({ apiKey: apiKeyField })
@@ -113,7 +114,7 @@ export async function listSelfUpdatingConnectors() {
       })),
     })
   } catch (error) {
-    return actionError(error, 'Nem sikerült betölteni az önfrissítő kapcsolatokat.')
+    return actionError(error, 'Nem sikerült betölteni az OpenAPI-kapcsolatokat.')
   }
 }
 
@@ -123,20 +124,21 @@ export async function createSelfUpdatingConnector(input: unknown) {
     const ctx = await requireTenantRole('admin')
     const parsed = createSchema.parse(input)
     connectorId = randomUUID()
-    await saveConnectorApiKey(connectorId, parsed.apiKey)
+    const apiKey = parsed.apiKey?.trim() ? parsed.apiKey.trim() : null
+    if (apiKey) await saveConnectorApiKey(connectorId, apiKey)
     const created = await services.selfUpdatingConnectors.create(
       {
         connectorId,
         name: parsed.name,
         specUrl: parsed.specUrl,
-        secretAlias: buildConnectorSecretRef(connectorId),
+        secretAlias: apiKey ? buildConnectorSecretRef(connectorId) : null,
       },
       actor(ctx),
     )
     return ok({ connectorId: created.connector.id })
   } catch (error) {
     if (connectorId) await deleteConnectorApiKey(connectorId).catch(() => {})
-    return actionError(error, 'Nem sikerült létrehozni az önfrissítő kapcsolatot.')
+    return actionError(error, 'Nem sikerült létrehozni az OpenAPI-kapcsolatot.')
   }
 }
 
@@ -255,7 +257,7 @@ export async function updateSelfUpdatingConnectorApiKey(input: unknown) {
       },
       select: { id: true, secretAlias: true },
     })
-    if (!connector) return fail('Az önfrissítő kapcsolat nem található, vagy nincs aktív állapotban.')
+    if (!connector) return fail('Az OpenAPI-kapcsolat nem található, vagy nincs aktív állapotban.')
 
     const secretAlias = buildConnectorSecretRef(connector.id)
     const aliasRepointed = connector.secretAlias !== secretAlias

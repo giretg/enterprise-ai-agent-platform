@@ -1,14 +1,19 @@
 import Image from 'next/image'
-import Link from 'next/link'
+import NextLink from 'next/link'
 import type { ReactNode } from 'react'
+import { getTranslations } from 'next-intl/server'
+import { Link } from '@/i18n/navigation'
+import { LocaleSwitcher } from './locale-switcher'
 
-const nav = [
-  { href: '/', label: 'Home' },
-  { href: '/privacy', label: 'Privacy Policy' },
-  { href: '/gtc', label: 'Terms' },
-] as const
+export async function PublicSiteShell({ children }: { children: ReactNode }) {
+  const t = await getTranslations('Nav')
+  const footer = await getTranslations('Footer')
+  const nav = [
+    { href: '/' as const, label: t('home') },
+    { href: '/privacy' as const, label: t('privacy') },
+    { href: '/gtc' as const, label: t('terms') },
+  ]
 
-export function PublicSiteShell({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col text-ink">
       <header className="sticky top-0 z-20 border-b border-line bg-night/80 backdrop-blur-xl">
@@ -27,11 +32,11 @@ export function PublicSiteShell({ children }: { children: ReactNode }) {
                 Excellence AI
               </p>
               <p className="mt-1 hidden text-[11px] uppercase tracking-[0.16em] text-ink-faint sm:block">
-                Governed AI coworkers
+                {t('tagline')}
               </p>
             </div>
           </Link>
-          <nav aria-label="Nyilvános navigáció" className="flex items-center gap-1 sm:gap-2">
+          <nav aria-label={t('aria')} className="flex items-center gap-1 sm:gap-2">
             {nav.map((item) => (
               <Link
                 key={item.href}
@@ -41,12 +46,13 @@ export function PublicSiteShell({ children }: { children: ReactNode }) {
                 {item.label}
               </Link>
             ))}
-            <Link
+            <LocaleSwitcher />
+            <NextLink
               href="/sign-in"
               className="rounded-full bg-coral px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-coral-deep"
             >
-              Bejelentkezés
-            </Link>
+              {t('signIn')}
+            </NextLink>
           </nav>
         </div>
       </header>
@@ -59,14 +65,14 @@ export function PublicSiteShell({ children }: { children: ReactNode }) {
           </p>
           <div className="flex flex-wrap gap-4">
             <Link href="/privacy" className="hover:text-ink">
-              Privacy Policy
+              {footer('privacy')}
             </Link>
             <Link href="/gtc" className="hover:text-ink">
-              Terms of Service
+              {footer('terms')}
             </Link>
-            <Link href="/sign-in" className="hover:text-ink">
-              Belépés
-            </Link>
+            <NextLink href="/sign-in" className="hover:text-ink">
+              {footer('signIn')}
+            </NextLink>
           </div>
         </div>
       </footer>
@@ -74,7 +80,7 @@ export function PublicSiteShell({ children }: { children: ReactNode }) {
   )
 }
 
-export function LegalPage({
+export async function LegalPage({
   title,
   description,
   updated,
@@ -85,13 +91,14 @@ export function LegalPage({
   updated: string
   children: ReactNode
 }) {
+  const t = await getTranslations('Legal')
   return (
     <PublicSiteShell>
       <article className="mx-auto max-w-3xl px-5 py-14 sm:py-20">
         <p className="text-sm font-medium uppercase tracking-[0.16em] text-ink-faint">Excellence AI</p>
         <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-ink">{title}</h1>
         {description ? <p className="mt-4 text-lg leading-relaxed text-ink-soft">{description}</p> : null}
-        <p className="mt-3 text-sm text-ink-faint">Last updated / Utolsó frissítés: {updated}</p>
+        <p className="mt-3 text-sm text-ink-faint">{t('updated', { date: updated })}</p>
         <div className="mt-10 space-y-4 text-[15px] leading-7 text-ink-soft [&_a]:text-coral-deep [&_a]:underline [&_a]:underline-offset-2 [&_code]:rounded [&_code]:bg-night-2 [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[13px] [&_code]:text-ink [&_h2]:mt-10 [&_h2]:font-display [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:text-ink [&_h3]:mt-6 [&_h3]:text-lg [&_h3]:font-semibold [&_h3]:text-ink [&_li]:mt-1 [&_strong]:font-semibold [&_strong]:text-ink [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-5">
           {children}
         </div>
