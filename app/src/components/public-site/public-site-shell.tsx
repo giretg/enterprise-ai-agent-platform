@@ -3,9 +3,9 @@ import Link from 'next/link'
 import type { ReactNode } from 'react'
 
 const nav = [
-  { href: '/', label: 'Főoldal' },
-  { href: '/privacy', label: 'Adatvédelem' },
-  { href: '/gtc', label: 'ÁSZF' },
+  { href: '/', label: 'Home' },
+  { href: '/privacy', label: 'Privacy Policy' },
+  { href: '/gtc', label: 'Terms' },
 ] as const
 
 export function PublicSiteShell({ children }: { children: ReactNode }) {
@@ -59,10 +59,10 @@ export function PublicSiteShell({ children }: { children: ReactNode }) {
           </p>
           <div className="flex flex-wrap gap-4">
             <Link href="/privacy" className="hover:text-ink">
-              Adatvédelmi tájékoztató
+              Privacy Policy
             </Link>
             <Link href="/gtc" className="hover:text-ink">
-              Általános szerződési feltételek
+              Terms of Service
             </Link>
             <Link href="/sign-in" className="hover:text-ink">
               Belépés
@@ -91,8 +91,8 @@ export function LegalPage({
         <p className="text-sm font-medium uppercase tracking-[0.16em] text-ink-faint">Excellence AI</p>
         <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-ink">{title}</h1>
         {description ? <p className="mt-4 text-lg leading-relaxed text-ink-soft">{description}</p> : null}
-        <p className="mt-3 text-sm text-ink-faint">Utolsó frissítés: {updated}</p>
-        <div className="mt-10 space-y-4 text-[15px] leading-7 text-ink-soft [&_a]:text-coral-deep [&_a]:underline [&_a]:underline-offset-2 [&_h2]:mt-10 [&_h2]:font-display [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:text-ink [&_h3]:mt-6 [&_h3]:text-lg [&_h3]:font-semibold [&_h3]:text-ink [&_li]:mt-1 [&_strong]:font-semibold [&_strong]:text-ink [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-5">
+        <p className="mt-3 text-sm text-ink-faint">Last updated / Utolsó frissítés: {updated}</p>
+        <div className="mt-10 space-y-4 text-[15px] leading-7 text-ink-soft [&_a]:text-coral-deep [&_a]:underline [&_a]:underline-offset-2 [&_code]:rounded [&_code]:bg-night-2 [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[13px] [&_code]:text-ink [&_h2]:mt-10 [&_h2]:font-display [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:text-ink [&_h3]:mt-6 [&_h3]:text-lg [&_h3]:font-semibold [&_h3]:text-ink [&_li]:mt-1 [&_strong]:font-semibold [&_strong]:text-ink [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-5">
           {children}
         </div>
       </article>

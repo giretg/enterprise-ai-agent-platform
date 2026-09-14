@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { startConnectorOAuth } from '@/app/actions/connector-grants'
+import { navigateToOAuth } from '@/lib/oauth-navigation'
 import { delegatedConnectorLabel } from '@/domain/connector-grant/delegated-oauth-registry'
 import { isScopeNotGrantedReason } from '@/domain/connector-grant/connector-grant-needed'
 
@@ -74,8 +75,8 @@ export function ConnectorGrantNeededPanel({
       if ('url' in res.data && typeof res.data.url === 'string') {
         onBeforeRedirect?.()
         // A stub-ág is URL-t ad vissza (a visszatérési útvonalat), tehát mindkét
-        // esetben navigálunk — `assign`, nem `location.href` írása.
-        window.location.assign(res.data.url)
+        // esetben navigálunk.
+        navigateToOAuth(res.data.url)
         return
       }
       window.location.reload()

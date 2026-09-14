@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { revokeConnectorGrant, startConnectorOAuth } from '@/app/actions/connector-grants'
+import { navigateToOAuth } from '@/lib/oauth-navigation'
 import { ConnectionCard } from '@/components/account/connection-card'
 import { GoogleDrivePickerPanel } from '@/components/account/google-drive-picker-panel'
 import { GMAIL_SCOPES } from '@/domain/connector-grant/gmail-scopes'
@@ -268,7 +269,7 @@ export function ConnectorConnectionCard({
                       router.refresh()
                       setMessage({ ok: true, text: 'Fiók sikeresen összekötve (stub).' })
                     } else {
-                      window.location.href = res.data.url
+                      navigateToOAuth(res.data.url)
                     }
                   } else {
                     setMessage({ ok: false, text: res.error })

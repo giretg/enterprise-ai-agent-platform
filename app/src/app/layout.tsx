@@ -10,7 +10,7 @@ export const metadata: Metadata = {
     template: '%s · Excellence AI',
   },
   description:
-    'Excellence AI is a governed enterprise AI coworker platform. Access-controlled agents, audit, and optional Gmail and Google Drive connections.',
+    'Excellence AI is a governed enterprise AI coworker platform. Access-controlled agents, audit, and human approval.',
 }
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

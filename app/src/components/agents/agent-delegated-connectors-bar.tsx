@@ -3,6 +3,7 @@
 import { useTransition } from 'react'
 import type { Connector } from '@prisma/client'
 import { startConnectorOAuth } from '@/app/actions/connector-grants'
+import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
   connectorFriendlyLabel,
   connectorOAuthScopesFromConfig,
@@ -37,7 +38,7 @@ export function AgentDelegatedConnectorsBar({
         return
       }
       if ('url' in res.data && typeof res.data.url === 'string') {
-        window.location.href = res.data.url
+        navigateToOAuth(res.data.url)
       } else {
         window.location.reload()
       }

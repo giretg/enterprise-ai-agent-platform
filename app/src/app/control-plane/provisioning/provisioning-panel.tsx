@@ -30,6 +30,7 @@ import {
   type FetchApiDocFromUrlData,
 } from '@/app/actions/provisioning'
 import { startConnectorOAuth, getGoogleOAuthConfiguredStatus, getGoogleDriveOAuthConfiguredStatus } from '@/app/actions/connector-grants'
+import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
   createSelfUpdatingConnector,
   listSelfUpdatingConnectors,
@@ -2739,7 +2740,7 @@ function DraftCard({
                     const res = await startConnectorOAuth({ connectorId: draft.connectorId })
                     if (!res.success) return { success: false, error: res.error }
                     if (!('stub' in res.data && res.data.stub)) {
-                      window.location.href = res.data.url
+                      navigateToOAuth(res.data.url)
                     }
                     return { success: true }
                   }, 'Consent-flow elindítva.')
@@ -3019,7 +3020,7 @@ function DraftCard({
                           const consent = await startConnectorOAuth({ connectorId: draft.connectorId })
                           if (!consent.success) return { success: false, error: consent.error }
                           if (!('stub' in consent.data && consent.data.stub)) {
-                            window.location.href = consent.data.url
+                            navigateToOAuth(consent.data.url)
                           }
                           return { success: true }
                         }, 'Konnektor aktiválva, consent-flow elindítva.')
