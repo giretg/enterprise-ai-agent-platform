@@ -45,7 +45,12 @@ const steps = [
 
 const chat = [
   { from: 'user', who: 'Kovács Anna', text: 'Léna, válaszold meg a reklamációs e-mailt a szabályzat alapján.' },
-  { from: 'agent', who: 'Léna · ügyfélszolgálati AI', text: 'Megnéztem a tudásbázisban: 14 napos visszaküldés (v3). A piszkozat kész, jóváhagyásra várok.' },
+  {
+    from: 'agent',
+    who: 'Léna · ügyfélszolgálati AI',
+    text: 'Megnéztem a tudásbázisban: 14 napos visszaküldés (v3). A piszkozat kész, jóváhagyásra várok.',
+    draft: 'Kedves Gábor! A vásárlás értékét természetesen visszatérítjük a mai napon. Üdvözlettel: Léna',
+  },
 ]
 
 function Icon({ d }: { d: string }) {
@@ -124,8 +129,14 @@ export default function Home() {
                   <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold ${m.from === 'user' ? 'bg-ink text-night' : 'bg-coral text-white'}`}>
                     {m.who[0]}
                   </span>
-                  <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.from === 'user' ? 'rounded-br-sm bg-ink text-night' : 'rounded-bl-sm bg-card-2 text-ink'}`}>
+                  {/* buborék-színek = agent-chat-panel.tsx */}
+                  <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${m.from === 'user' ? 'rounded-tr-md bg-coral/85 text-card' : 'rounded-tl-md border border-line bg-card/80 text-ink-soft'}`}>
                     {m.text}
+                    {m.draft && (
+                      <blockquote className="mt-2 border-l-2 border-line pl-3 text-xs italic leading-relaxed text-ink-faint">
+                        {m.draft}
+                      </blockquote>
+                    )}
                   </div>
                 </div>
               ))}
@@ -136,7 +147,7 @@ export default function Home() {
                   <p className="text-xs font-semibold text-ink">Kimenő e-mail — jóváhagyásra vár</p>
                 </div>
                 <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                  <dt className="text-ink-faint">Címzett</dt><dd className="text-ink">nagy.peter@ugyfel.hu</dd>
+                  <dt className="text-ink-faint">Címzett</dt><dd className="text-ink">kiss.gabor@ugyfel.hu</dd>
                   <dt className="text-ink-faint">Tárgy</dt><dd className="text-ink">Re: Reklamáció — #4821</dd>
                   <dt className="text-ink-faint">Forrás</dt><dd className="text-ink">Visszaküldési szabályzat v3</dd>
                 </dl>
