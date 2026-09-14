@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useId, useRef, useState, useTransition } from 'react'
 import { createPortal } from 'react-dom'
 import {
+  listMyChannelLinks,
   startTelegramLink,
   unlinkMyTelegram,
   type ChannelLinkView,
@@ -11,6 +12,7 @@ import {
 import type { MyChannelAgentsView } from '@/app/actions/channel-agents'
 import { ConnectionCard } from '@/components/account/connection-card'
 import { MyChannelAgents } from '@/components/account/my-channel-agents'
+import { useAdaptivePoll } from '@/lib/use-adaptive-poll'
 
 const STATUS_LABEL: Record<string, string> = {
   active: 'Összekötve',
@@ -179,6 +181,10 @@ function TelegramConnectionModal({
               <p className="mt-3 text-xs leading-5 text-ink-soft">
                 A link {formatDateTime(pendingLink.expiresAt)}-ig és csak egyszer érvényes.
               </p>
+              <p className="mt-2 text-xs leading-5 text-ink-soft" role="status">
+                Miután a Telegramban a „Start”-ra koppintottál, ez az oldal magától jelzi az
+                összekötést — nem kell frissítened.
+              </p>
             </div>
           ) : null}
 
@@ -207,11 +213,38 @@ export function TelegramLinkPanel({
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
   const [pendingLink, setPendingLink] = useState<PendingTelegramLink | null>(null)
   const [guideOpen, setGuideOpen] = useState(false)
+  const [detectedActive, setDetectedActive] = useState<ChannelLinkView | null>(null)
   const connectButtonRef = useRef<HTMLButtonElement>(null)
   const closeGuide = useCallback(() => setGuideOpen(false), [])
 
-  const activeTelegram = initialLinks.find((l) => l.channelType === 'telegram' && l.status === 'active')
-  const history = initialLinks.filter((l) => l !== activeTelegram)
+  const initialActive = initialLinks.find(
+    (l) => l.channelType === 'telegram' && l.status === 'active',
+  )
+  const activeTelegram = detectedActive ?? initialActive
+  const history = activeTelegram
+    ? initialLinks.filter((l) => l.id !== activeTelegram.id)
+    : initialLinks
+
+  const checkLinkStatus = useCallback(async () => {
+    const fresh = await listMyChannelLinks()
+    const active = fresh.find((l) => l.channelType === 'telegram' && l.status === 'active')
+    if (active) {
+      setDetectedActive(active)
+      setPendingLink(null)
+      setGuideOpen(false)
+      setMessage({ ok: true, text: 'A Telegram-összekötés létrejött.' })
+      router.refresh()
+    }
+  }, [router])
+
+  // Amíg a felhasználó a Telegramban jóváhagy, a kártya magától átvált —
+  // kézi oldalfrissítés nélkül.
+  useAdaptivePoll(checkLinkStatus, {
+    activeMs: 3000,
+    idleMs: 3000,
+    idle: false,
+    enabled: guideOpen && pendingLink !== null && !activeTelegram,
+  })
 
   return (
     <ConnectionCard

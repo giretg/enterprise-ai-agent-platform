@@ -815,9 +815,19 @@ export function ProvisioningPanel({
 
   const openDrafts = drafts.filter((d) => d.lifecycleState !== 'active')
   const activatedDrafts = drafts.filter((d) => d.lifecycleState === 'active')
+  // Üzemi értelemben csak a végigvitt kapcsolat aktív: link jóváhagyva + partner
+  // megbízható + van átvett verzió. A csak lifecycleState-ben aktív, de még
+  // jóváhagyásra váró sor külön kártyába kerül — különben az „Aktív" címke
+  // azt sugallná, hogy használható agent-hozzárendelésre.
+  const isSelfUpdatingReady = (row: SelfUpdatingConnectorRow) =>
+    row.urlApproved && row.trusted && !!row.activeSpecVersionId
+  const readySelfUpdatingRows = selfUpdatingRows.filter(isSelfUpdatingReady)
+  const pendingSelfUpdatingRows = selfUpdatingRows
+    .filter((row) => !isSelfUpdatingReady(row))
+    .sort((a, b) => a.name.localeCompare(b.name, 'hu'))
   const activeItems = [
     ...activatedDrafts.map((draft) => ({ kind: 'provisioned' as const, name: draft.name, draft })),
-    ...selfUpdatingRows.map((row) => ({ kind: 'self_updating' as const, name: row.name, row })),
+    ...readySelfUpdatingRows.map((row) => ({ kind: 'self_updating' as const, name: row.name, row })),
   ].sort((a, b) => a.name.localeCompare(b.name, 'hu'))
   const latestTemplateVersions = useMemo(() => {
     const versions: Record<string, number> = {}
@@ -895,10 +905,17 @@ export function ProvisioningPanel({
       }
       setCatalogLeaves(data.leaves)
       setCatalogSelected(Object.fromEntries(data.leaves.map((leaf) => [leaf.specUrl, true])))
-      setCatalogNames(Object.fromEntries(data.leaves.map((leaf) => [leaf.specUrl, leaf.name])))
+      // A leaf-kapcsolatok nevének eleje a gyűjtőkapcsolat neve (1. lépésben megadott név),
+      // hogy a listában egyértelmű legyen az összetartozás (pl. „posnav – blogs").
+      const prefix = name.trim()
+      setCatalogNames(
+        Object.fromEntries(
+          data.leaves.map((leaf) => [leaf.specUrl, prefix ? `${prefix} – ${leaf.name}` : leaf.name]),
+        ),
+      )
       setNotice(`Gyűjtőindex: ${data.leaves.length} API-leírás található benne. Válaszd ki, melyikből legyen kapcsolat.`)
     })
-  }, [selfUpdatingSpecUrl])
+  }, [selfUpdatingSpecUrl, name])
 
   const createFromCatalog = useCallback(() => {
     const selected = catalogLeaves.filter((leaf) => catalogSelected[leaf.specUrl])
@@ -943,6 +960,11 @@ export function ProvisioningPanel({
 
   const onCreate = useCallback(() => {
     if (connectionKind === 'self_updating') {
+      // Gyűjtőindexből nem születhet önálló kapcsolat: a leaf-választó a helyes út.
+      if (catalogChecked && catalogIsCatalog) {
+        setError('Ez gyűjtőindex (katalógus) — önálló kapcsolat nem hozható létre belőle. Használd a fenti „Kiválasztott kapcsolatok létrehozása” gombot.')
+        return
+      }
       run(async () => {
         const result = await createSelfUpdatingConnector({
           name,
@@ -993,6 +1015,8 @@ export function ProvisioningPanel({
       return result
     }, 'Konnektor létrehozva.')
   }, [
+    catalogChecked,
+    catalogIsCatalog,
     closeCreateDraftForm,
     configText,
     connectionKind,
@@ -1041,6 +1065,8 @@ export function ProvisioningPanel({
         ? 'Adj nevet a konnektornak.'
         : connectionKind === 'self_updating' && !selfUpdatingSpecUrl.trim()
           ? 'Add meg az API-leírás linkjét.'
+        : connectionKind === 'self_updating' && catalogChecked && catalogIsCatalog
+          ? 'Ez gyűjtőindex — a fenti leaf-választóval hozd létre a kapcsolatokat, önálló „Konnektor létrehozása” itt nem mehet.'
         : connectionKind === 'fixed' && isTemplatePath && !templateReady
           ? 'Töltsd ki a sablon kötelező mezőit.'
           : connectionKind === 'fixed' && !isTemplatePath && !configText.trim()
@@ -2207,6 +2233,26 @@ export function ProvisioningPanel({
           </div>
         ) : null}
       </Card>
+
+      {loadedOnce && pendingSelfUpdatingRows.length > 0 ? (
+      <Card title={`Jóváhagyásra váró OpenAPI-kapcsolatok (${pendingSelfUpdatingRows.length})`}>
+        <p className="mb-3 text-sm text-ink-soft">
+          Ezeknél még hátravan a link jóváhagyása, a partner megbízhatónak minősítése vagy az első
+          verzió átvétele — agenthez még nem rendelhetők, ezért nem az Aktív listában szerepelnek.
+        </p>
+        <div className="space-y-3">
+          {pendingSelfUpdatingRows.map((row) => (
+            <SelfUpdatingConnectorCard
+              key={row.id}
+              row={row}
+              pending={pending}
+              run={run}
+              onSync={syncSelfUpdating}
+            />
+          ))}
+        </div>
+      </Card>
+      ) : null}
 
       <Card title={loadedOnce ? `Nem aktivált konnektorok (${openDrafts.length})` : 'Nem aktivált konnektorok'}>
         {!loadedOnce ? (

@@ -88,7 +88,7 @@ export async function listSelfUpdatingConnectors() {
   try {
     const ctx = await requireTenantRole('operator')
     const connectors = await prisma.connector.findMany({
-      where: { tenantId: ctx.activeTenantId, connectorMode: 'self_updating' },
+      where: { tenantId: ctx.activeTenantId, connectorMode: 'self_updating', lifecycleState: 'active' },
       select: { id: true },
       orderBy: { createdAt: 'desc' },
     })
@@ -143,6 +143,22 @@ export async function createSelfUpdatingConnector(input: unknown) {
   try {
     const ctx = await requireTenantRole('admin')
     const parsed = createSchema.parse(input)
+    // Gyűjtőindex-őr: katalógus-URL-ből nem születhet önálló kapcsolat —
+    // abból csak dokumentáció-olvasó, adatművelet nélküli connector lenne.
+    // A leaf-választó varázsló (preview + tömeges létrehozás) a helyes út.
+    const guardService = new SpecSyncService({
+      resolveHostIps: async (host) => (await lookup(host, { all: true })).map((e) => e.address),
+    })
+    const downloaded = await guardService.downloadRawSpec(parsed.specUrl)
+    if (downloaded.ok) {
+      const document = await parseOpenApiDocument(downloaded.text)
+      if (document && isCatalogIndexDocument(document)) {
+        const leaves = extractCatalogLeaves(document, parsed.specUrl)
+        return fail(
+          `Ez gyűjtőindex (katalógus), nem egyetlen API leírása — önálló kapcsolat nem hozható létre belőle. Válassz a ${leaves.length} API-leírás közül a „Gyűjtőindex? — link vizsgálata” gombbal.`,
+        )
+      }
+    }
     connectorId = randomUUID()
     const apiKey = parsed.apiKey?.trim() ? parsed.apiKey.trim() : null
     if (apiKey) await saveConnectorApiKey(connectorId, apiKey)

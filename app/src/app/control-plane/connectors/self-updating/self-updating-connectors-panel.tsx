@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, useTransition } from 'react'
 import { Badge, Card } from '@/components/ui/shell'
 import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
+import { decommissionActiveConnector } from '@/app/actions/provisioning'
 import {
   approveSelfUpdatingSource,
   approveSelfUpdatingVersion,
@@ -322,6 +323,10 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
   const [open, setOpen] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [newApiKey, setNewApiKey] = useState('')
+  const [confirmDecomm, setConfirmDecomm] = useState(false)
+  const [decommReason, setDecommReason] = useState('')
+  const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
+  const [decommApprover, setDecommApprover] = useState('')
   const proposal = row.versions.find((version) => version.status === 'proposed')
   const active = row.versions.find((version) => version.id === row.activeSpecVersionId)
   const detailsCapabilities = proposal?.capabilities?.length
@@ -609,6 +614,89 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
                 </tbody>
               </table>
             </div>
+          </div>
+
+          <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
+            <h4 className="mb-2 font-semibold text-coral">Megszüntetés (auditált leszerelés)</h4>
+            <p className="text-xs text-ink-soft">
+              Nem hard-delete: az agent-hozzárendelések levétele és a menedzselt secret-ref törlése után a
+              kapcsolat <code>archived</code> állapotba kerül — a sor és az audit-előzmény megmarad.
+              Bank-preset / L2–L3 esetén második jóváhagyó kell.
+            </p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <label className="text-xs sm:col-span-2">
+                <span className="mb-1 block text-ink-soft">Indok (auditba kerül)</span>
+                <input
+                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                  value={decommReason}
+                  onChange={(e) => setDecommReason(e.target.value)}
+                  placeholder="Pl. lecserélt szolgáltató, felesleges leaf"
+                />
+              </label>
+              <label className="text-xs">
+                <span className="mb-1 block text-ink-soft">Kritikusság</span>
+                <select
+                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                  value={decommCriticality}
+                  onChange={(e) => setDecommCriticality(e.target.value as typeof decommCriticality)}
+                >
+                  <option value="L1">L1</option>
+                  <option value="L2">L2 (dual-control)</option>
+                  <option value="L3">L3 (dual-control)</option>
+                </select>
+              </label>
+              <label className="text-xs">
+                <span className="mb-1 block text-ink-soft">2. jóváhagyó (≠ te)</span>
+                <input
+                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                  value={decommApprover}
+                  onChange={(e) => setDecommApprover(e.target.value)}
+                  placeholder="user-id (dual-control esetén)"
+                />
+              </label>
+            </div>
+            {!confirmDecomm ? (
+              <button
+                type="button"
+                className="mt-3 rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral"
+                onClick={() => setConfirmDecomm(true)}
+              >
+                Megszüntetés
+              </button>
+            ) : (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-coral">
+                  Biztos? A kapcsolat leszerelődik és archiválódik.
+                </span>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() =>
+                    run(async () => {
+                      const res = await decommissionActiveConnector({
+                        connectorId: row.id,
+                        criticality: decommCriticality,
+                        approverId: decommApprover.trim() || undefined,
+                        reason: decommReason.trim() || undefined,
+                      })
+                      if (!res.success) return res
+                      setConfirmDecomm(false)
+                      return res
+                    }, 'Kapcsolat megszüntetve (archived).')
+                  }
+                  className="rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
+                >
+                  Igen, szüntesd meg
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDecomm(false)}
+                  className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
+                >
+                  Mégse
+                </button>
+              </div>
+            )}
           </div>
         </div>
       ) : null}
