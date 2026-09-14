@@ -5,8 +5,12 @@ import { isClerkClientEnabledForRequest } from '@/lib/control-plane-embed'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Enterprise AI Agent Platform',
-  description: 'Fázis 1 — Control Plane + Sandbox',
+  title: {
+    default: 'Excellence AI',
+    template: '%s · Excellence AI',
+  },
+  description:
+    'Excellence AI is a governed enterprise AI coworker platform. Access-controlled agents, audit, and optional Gmail and Google Drive connections.',
 }
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

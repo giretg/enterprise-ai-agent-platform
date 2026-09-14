@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { isClerkEnabled, isDevAuthAllowed } from '@/lib/clerk-config'
 import { embedHrefForPanel } from '@/lib/control-plane-embed'
 import { REQUEST_ID_HEADER, resolveRequestId } from '@/lib/observability/request-context'
+import { isPublicBrandingPath } from '@/lib/auth/public-branding'
 import { PUBLIC_ROUTE_PATTERNS } from '@/lib/auth/public-routes'
 import {
   crawlerBlockUserAgent,
@@ -31,7 +32,10 @@ const ROBOTS_TAG_VALUE = 'noindex, nofollow, noarchive'
 function finishResponse(req: Request, res: NextResponse): NextResponse {
   const requestId = resolveRequestId(req.headers.get(REQUEST_ID_HEADER))
   res.headers.set(REQUEST_ID_HEADER, requestId)
-  if (isCrawlerBlockEnabled()) {
+  // A Google OAuth-verifikáció a honlapot és a privacy/ÁSZF oldalt olvassa —
+  // ezeken a noindex-címke és a 403-as crawler-tiltás egyaránt elbukna.
+  const pathname = new URL(req.url).pathname
+  if (isCrawlerBlockEnabled() && !isPublicBrandingPath(pathname)) {
     res.headers.set(ROBOTS_TAG_HEADER, ROBOTS_TAG_VALUE)
   }
   return res

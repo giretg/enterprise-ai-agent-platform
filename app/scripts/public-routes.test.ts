@@ -94,10 +94,24 @@ check('a bot-fájl minták NEM tágabbak a kelleténél', () => {
   assertProtected('/sitemap.xml/leak')
 })
 
+check('a Google OAuth branding-oldalak publikusak (honlap, adatvédelem, ÁSZF)', () => {
+  assertPublic('/')
+  assertPublic('/privacy')
+  assertPublic('/privacy/')
+  assertPublic('/gtc')
+  assertPublic('/gtc/')
+})
+
+check('a branding minták NEM tágabbak a kelleténél', () => {
+  assertProtected('/privacy-admin')
+  assertProtected('/gtc-admin')
+})
+
 // PR-4 — a rendes alkalmazás-felület és a kezelői API védett marad.
 check('az alkalmazás-felület és a kezelői API VÉDETT marad', () => {
-  assertProtected('/')
   assertProtected('/dashboard')
+  assertProtected('/control-plane')
+  assertProtected('/control-plane/agents')
   assertProtected('/api/agents')
   assertProtected('/api/v1/internal/other-endpoint')
 })

@@ -84,11 +84,24 @@ check('User-Agent fejléc hiánya nem minősül crawlernek', () => {
 
 // A védett alkalmazás-felület: a crawlernek itt NEM szabad átjutnia.
 check('a rendes alkalmazás-felület és a kezelői API a crawler elől is zárva marad', () => {
-  assert.equal(isCrawlerAllowedPath('/'), false)
   assert.equal(isCrawlerAllowedPath('/dashboard'), false)
+  assert.equal(isCrawlerAllowedPath('/control-plane'), false)
   assert.equal(isCrawlerAllowedPath('/control-plane/agents/abc/chat'), false)
   assert.equal(isCrawlerAllowedPath('/api/v1/agent-chat/stream'), false)
   assert.equal(isCrawlerAllowedPath('/api/v1/conversations/abc/workspace/files'), false)
+})
+
+check('a Google OAuth branding-oldalakat a crawler is olvashatja', () => {
+  assert.equal(isCrawlerAllowedPath('/'), true)
+  assert.equal(isCrawlerAllowedPath('/privacy'), true)
+  assert.equal(isCrawlerAllowedPath('/privacy/'), true)
+  assert.equal(isCrawlerAllowedPath('/gtc'), true)
+  assert.equal(isCrawlerAllowedPath('/gtc/'), true)
+})
+
+check('a gyökér-engedély NEM prefix: a control-plane zárva marad', () => {
+  assert.equal(isCrawlerAllowedPath('/privacy-admin'), false)
+  assert.equal(isCrawlerAllowedPath('/gtc-admin'), false)
 })
 
 // A szándékosan publikus bot-vezérlő fájlok + uptime-szondák: itt a crawler is átjut.

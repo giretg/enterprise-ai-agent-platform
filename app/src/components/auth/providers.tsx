@@ -30,7 +30,9 @@ export function AuthProviders({
         publishableKey={publishableKey}
         signInUrl="/sign-in"
         signUpUrl="/sign-up"
-        afterSignOutUrl="/sign-in"
+        signInFallbackRedirectUrl="/control-plane"
+        signUpFallbackRedirectUrl="/control-plane"
+        afterSignOutUrl="/"
       >
         {children}
       </ClerkProvider>

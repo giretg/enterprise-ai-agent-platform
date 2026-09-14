@@ -1,3 +1,5 @@
+import { PUBLIC_BRANDING_ROUTE_PATTERNS } from './public-branding'
+
 /**
  * A Clerk auth-kaput MEGKERÜLŐ (publikus) route-minták EGYETLEN forrása.
  *
@@ -14,9 +16,11 @@
  *
  * A listára KIZÁRÓLAG olyan route kerülhet, amely a saját kérés-hitelesítését maga végzi
  * (megosztott titok konstans idejű vetése, aláírt webhook, token-fejléc), vagy szándékosan
- * nyilvános (bejelentkezési oldalak, uptime-szondák).
+ * nyilvános (bejelentkezési oldalak, branding-oldalak, uptime-szondák).
  */
 export const PUBLIC_ROUTE_PATTERNS = [
+  // Google OAuth branding: honlap, adatvédelem, ÁSZF — belépés nélkül olvasható.
+  ...PUBLIC_BRANDING_ROUTE_PATTERNS,
   '/sign-in(.*)',
   '/sign-up(.*)',
   '/api/v1/agent(.*)',

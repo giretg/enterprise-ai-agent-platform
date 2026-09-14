@@ -1,4 +1,5 @@
 import type { NextRequest } from 'next/server'
+import { isPublicBrandingPath } from '@/lib/auth/public-branding'
 
 /**
  * Ismert kereső-/előnézet-crawlerek felismerése és korai elutasítása.
@@ -43,13 +44,16 @@ const CRAWLER_USER_AGENT_PATTERN =
 
 /**
  * Ezeken az útvonalakon a bejelentett crawler is átengedett: a szándékosan
- * publikus bot-vezérlő fájlok (`src/app/robots.ts`) és az uptime-szondák.
+ * publikus bot-vezérlő fájlok (`src/app/robots.ts`), az uptime-szondák, és a
+ * Google OAuth branding-oldalak (honlap / adatvédelem / ÁSZF). A `/` itt
+ * PONTOS gyökér, nem prefix — különben az egész host nyitva lenne.
  * SZŰKEBB, mint `PUBLIC_ROUTE_PATTERNS` — a saját hitelesítésű gépi belépőket
  * (pl. `/api/v1/agent(.*)`) egy crawler-nek NEM kell tudnia elérni.
  */
 export const CRAWLER_ALWAYS_ALLOWED_PATHS = ['/robots.txt', '/sitemap.xml', '/api/healthz', '/api/readyz'] as const
 
 export function isCrawlerAllowedPath(pathname: string): boolean {
+  if (isPublicBrandingPath(pathname)) return true
   return CRAWLER_ALWAYS_ALLOWED_PATHS.some(
     (allowed) => pathname === allowed || pathname.startsWith(`${allowed}/`),
   )
