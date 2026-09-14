@@ -576,6 +576,74 @@ export function recoverHermesToolCallsFromText(
   return calls
 }
 
+// DeepSeek (openrouteren pl. deepseek-v4-flash) néha nem natív tool_calls-t ad,
+// hanem az Anthropic-stílusú XML hívást írja szövegbe, egy DeepSeek-specifikus
+// záró token-nel: <invoke name="x"><parameter name="y">z</parameter></invoke>
+// </｜DSML｜tool_calls>. A záró token variálhat, ezért csak az <invoke>/<parameter>
+// párost parse-oljuk, a stray tokent a stripToolArtifacts takarítja el.
+const DSML_INVOKE_RE = /<invoke\s+name="([^"]*)">([\s\S]*?)<\/invoke>/gi
+const DSML_PARAMETER_RE = /<parameter\s+name="([^"]*)">([\s\S]*?)<\/parameter>/gi
+// Bármelyik DeepSeek-féle speciális token (<｜...｜> / </｜...｜>) — ilyen
+// teljes szélességű függőleges vonalas token valódi felhasználói szövegben
+// (magyarul vagy angolul) nem fordul elő, ezért ez a takarítás sosem vág ki
+// legitim tartalmat.
+const DSML_STRAY_TOKEN_RE = /<\/?｜[^｜<>]*｜>/g
+
+export function recoverDsmlToolCallsFromText(
+  content: string,
+): Array<{ tool: string; args: Record<string, unknown> }> {
+  const calls: Array<{ tool: string; args: Record<string, unknown> }> = []
+  const invokeRe = new RegExp(DSML_INVOKE_RE.source, 'gi')
+  let invokeMatch: RegExpExecArray | null
+  while ((invokeMatch = invokeRe.exec(content)) !== null) {
+    const [, name, body] = invokeMatch
+    if (!name) continue
+    const args: Record<string, unknown> = {}
+    const paramRe = new RegExp(DSML_PARAMETER_RE.source, 'gi')
+    let paramMatch: RegExpExecArray | null
+    while ((paramMatch = paramRe.exec(body)) !== null) {
+      const [, paramName, paramValue] = paramMatch
+      if (paramName) args[paramName] = paramValue.trim()
+    }
+    calls.push({ tool: name, args })
+  }
+  return calls
+}
+
+// A DeepSeek-V3/R1-család (ez adja a modell-hívások ~52%-át ezen a
+// platformon) SAJÁT, dokumentált natív tool-call formátuma — nem az
+// előző, Anthropic-stílusú hibrid, hanem a modell tokenizerében rögzített
+// speciális tokenekkel épített blokk:
+//   <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>NÉV
+//   ```json
+//   {ARGS}
+//   ```<｜tool▁call▁end｜><｜tool▁calls▁end｜>
+// Ugyanaz a hiba-osztály, mint a <invoke>-nál: a provider chat-template
+// néha nem alakítja natív tool_calls-szá, és a nyers token-szöveg szivárog.
+const DEEPSEEK_NATIVE_CALL_RE =
+  /<｜tool▁call▁begin｜>\s*function\s*<｜tool▁sep｜>\s*([^\n<]+?)\s*\n?```(?:json)?\s*([\s\S]*?)```\s*<｜tool▁call▁end｜>/gi
+
+export function recoverDeepseekNativeToolCallsFromText(
+  content: string,
+): Array<{ tool: string; args: Record<string, unknown> }> {
+  const calls: Array<{ tool: string; args: Record<string, unknown> }> = []
+  const re = new RegExp(DEEPSEEK_NATIVE_CALL_RE.source, 'gi')
+  let match: RegExpExecArray | null
+  while ((match = re.exec(content)) !== null) {
+    const [, name, argsJson] = match
+    if (!name) continue
+    try {
+      const parsed = JSON.parse(argsJson.trim())
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        calls.push({ tool: name.trim(), args: parsed as Record<string, unknown> })
+      }
+    } catch {
+      // hibás argument JSON — ignoráljuk, a stripToolArtifacts akkor is takarít
+    }
+  }
+  return calls
+}
+
 type OpenAiDelta = {
   index?: number
   function?: { name?: string; arguments?: string }
@@ -631,6 +699,9 @@ function stripToolArtifacts(content: string): string {
   return content
     .replace(OPENAI_DELTA_RUN_RE, '')
     .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+    .replace(DSML_INVOKE_RE, '')
+    .replace(DEEPSEEK_NATIVE_CALL_RE, '')
+    .replace(DSML_STRAY_TOKEN_RE, '')
     .replace(/```(?:json)?\s*\{[\s\S]*?\}\s*```/gi, '')
     .replace(/\{[\s\S]*"tool"\s*:\s*"[^"]+"[\s\S]*\}/g, '')
     .trim()
@@ -1819,6 +1890,26 @@ export async function runAgentToolLoop(params: {
       if (hermes.length > 0) {
         calls = hermes.map((c, i) => ({
           id: `hermes_${turn}_${i}`,
+          name: c.tool,
+          input: c.args,
+        }))
+      }
+    }
+    if (calls.length === 0) {
+      const dsml = recoverDsmlToolCallsFromText(content)
+      if (dsml.length > 0) {
+        calls = dsml.map((c, i) => ({
+          id: `dsml_${turn}_${i}`,
+          name: c.tool,
+          input: c.args,
+        }))
+      }
+    }
+    if (calls.length === 0) {
+      const deepseekNative = recoverDeepseekNativeToolCallsFromText(content)
+      if (deepseekNative.length > 0) {
+        calls = deepseekNative.map((c, i) => ({
+          id: `deepseek_native_${turn}_${i}`,
           name: c.tool,
           input: c.args,
         }))

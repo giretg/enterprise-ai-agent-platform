@@ -2104,6 +2104,24 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
         .optional(),
       evidence: z.string().max(4000).optional(),
       reason: z.string().min(1).max(2000),
+    })
+    // A leírás szövegesen "kötelezőnek" mondja a type/path/title/text mezőt
+    // create/update/supersede-nél és a supersedes-t a célzott műveleteknél
+    // (memory-acceptance-policy.ts ezt kényszeríti ki futáskor) — ez a
+    // superRefine ugyanazt a szabályt viszi előre a gate ELÉ, hogy egy hibás
+    // hívás ne fogyasszon el egy soha nem sikerülő jóváhagyást.
+    .superRefine((val, ctx) => {
+      const contentOps = ['create', 'update', 'supersede']
+      const targetRequiredOps = ['update', 'supersede', 'archive', 'delete_request']
+      if (contentOps.includes(val.operation)) {
+        if (!val.type) ctx.addIssue({ code: 'custom', path: ['type'], message: 'invalid_type' })
+        if (!val.path?.trim()) ctx.addIssue({ code: 'custom', path: ['path'], message: 'invalid_path' })
+        if (!val.title?.trim()) ctx.addIssue({ code: 'custom', path: ['title'], message: 'invalid_title' })
+        if (!val.text?.trim()) ctx.addIssue({ code: 'custom', path: ['text'], message: 'invalid_text' })
+      }
+      if (targetRequiredOps.includes(val.operation) && !val.supersedes?.trim()) {
+        ctx.addIssue({ code: 'custom', path: ['supersedes'], message: 'target_chunk_required' })
+      }
     }),
     toInvokeInput: (args, ctx) => {
       const operation = strArg(args, 'operation')
@@ -2596,7 +2614,18 @@ export function buildToolInvokeInput(
   args: Record<string, unknown>,
   ctx: ToolInvokeContext,
 ): ToolBrokerInvokeInput {
-  return (TOOL_REGISTRY[tool] as ToolDescriptor).toInvokeInput(args, ctx)
+  const descriptor = TOOL_REGISTRY[tool] as ToolDescriptor
+  // A REST agent-tools API a `toolInvokeSchema`-n át MÁR validál hívás előtt;
+  // a chat-loop viszont a modell nyers, validálatlan inputját adja ide (a
+  // modell szövegesen "kötelezőnek" hihet egy mezőt, amit a séma nem
+  // kényszerít ki) — ezért ITT, az egyetlen közös csomóponton validálunk, hogy
+  // egy garantáltan hibás hívás a következmény-kapu ELŐTT bukjon el, ne egy
+  // elfogyasztott felhasználói jóváhagyás UTÁN.
+  const parsed = descriptor.argsSchema.safeParse(args)
+  if (!parsed.success) {
+    throw new Error(`Érvénytelen argumentumok a(z) "${tool}" eszközhöz: ${parsed.error.message}`)
+  }
+  return descriptor.toInvokeInput(parsed.data as Record<string, unknown>, ctx)
 }
 
 /**
