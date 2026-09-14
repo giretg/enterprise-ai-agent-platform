@@ -1189,7 +1189,16 @@ export class ProvisioningService {
 
   async listCatalog(
     actor: ProvisioningActor,
-  ): Promise<Array<{ id: string; type: string; name: string }>> {
+  ): Promise<
+    Array<{
+      id: string
+      type: string
+      name: string
+      description?: string | null
+      baseUrl?: string | null
+      tools?: Array<{ method: string; path: string; description?: string | null }>
+    }>
+  > {
     return this.deps.drafts.listActiveCatalog(actor.tenantId)
   }
 

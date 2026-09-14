@@ -1,6 +1,6 @@
 'use client'
 
-import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState, useTransition } from 'react'
+import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState, useSyncExternalStore, useTransition } from 'react'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card } from '@/components/ui/shell'
 import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
@@ -272,7 +272,7 @@ function ProvisioningTopicShell({
 }) {
   return (
     <SettingsSectionShell
-      ariaLabel="Konektorok témái"
+      ariaLabel="Konnektorok témái"
       initialId="kapcsolatok"
       sections={[
         {
@@ -502,6 +502,14 @@ function lifecycleTone(s: string): 'neutral' | 'success' | 'warning' | 'danger' 
   return 'neutral'
 }
 
+function subscribeNever() {
+  return () => {}
+}
+
+function readInIframe() {
+  return window.parent !== window
+}
+
 export function ProvisioningPanel({
   canManageCatalog,
   isSuperadmin,
@@ -522,6 +530,9 @@ export function ProvisioningPanel({
   const [notice, setNotice] = useState<string | null>(null)
   const [loadedOnce, setLoadedOnce] = useState(false)
   const [pending, startTransition] = useTransition()
+  // Panel-dobozban (iframe modal) a doboz fejléce már mutatja a címet — a belső
+  // H1 ugyanazt ismételné, ezért ott elrejtjük; teljes oldalon megmarad.
+  const inPanelModal = useSyncExternalStore(subscribeNever, readInIframe, () => false)
 
   // Create-form állapot
   const [name, setName] = useState('')
@@ -1094,7 +1105,9 @@ export function ProvisioningPanel({
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight">Konektorok</h1>
+          {inPanelModal ? null : (
+            <h1 className="font-display text-2xl font-semibold tracking-tight">Konnektorok</h1>
+          )}
         </div>
         {!showCreateDraftForm ? (
           <button

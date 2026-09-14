@@ -2270,7 +2270,17 @@ export interface ConnectorDraftRepository {
   /** Meglévő (aktivált) connector-katalógus metaadata, secret nélkül (§9 catalog.read). */
   listActiveCatalog(
     tenantId: string | null,
-  ): Promise<Array<{ id: string; type: ConnectorType; name: string }>>
+  ): Promise<
+    Array<{
+      id: string
+      type: ConnectorType
+      name: string
+      /** Rövid emberi leírás a config/capabilitySet-ből; null = nincs leírás. */
+      description?: string | null
+      baseUrl?: string | null
+      tools?: Array<{ method: string; path: string; description?: string | null }>
+    }>
+  >
 }
 
 export type { ConnectorLifecycleState }

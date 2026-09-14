@@ -16,7 +16,7 @@ import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-bas
 import { AgentLifecycleControls } from '@/components/agents/agent-lifecycle-controls'
 import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import { ApiConnectorList } from '@/components/agents/api-connector-list'
-import { AssignExistingConnectorForm } from '@/components/agents/assign-existing-connector-form'
+import { AssignExistingConnectorForm, type ConnectorOption } from '@/components/agents/assign-existing-connector-form'
 import { ModelSelectField } from '@/components/agents/model-select-field'
 import { ModelTypeSelectField } from '@/components/agents/model-type-select-field'
 import { OperatorVisibilityForm } from '@/components/agents/operator-visibility-form'
@@ -105,7 +105,7 @@ export type CreateAgentWizardContinuation = {
   assignedSkills: AgentSkillRow[]
   assignableSkills: AssignableSkill[]
   connectors: CreateAgentWizardConnector[]
-  assignableConnectors: Array<{ id: string; type: string; name: string }>
+  assignableConnectors: ConnectorOption[]
 }
 
 function readStoredApiKey(agentId: string): string | null {

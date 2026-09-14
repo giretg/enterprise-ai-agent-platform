@@ -177,7 +177,7 @@ export function selfUpdatingSyncFeedback(data: {
     if (data.reason === 'catalog_index') {
       return {
         ok: false,
-        message: 'Ez a link gyűjtőindex (katalógus), nem egyetlen API leírása — belőle csak dokumentáció-olvasó kapcsolat születne. Semmit nem vettünk át; hozd létre a kapcsolatokat a Konektorok → Új konnektor varázsló leaf-választójával.',
+        message: 'Ez a link gyűjtőindex (katalógus), nem egyetlen API leírása — belőle csak dokumentáció-olvasó kapcsolat születne. Semmit nem vettünk át; hozd létre a kapcsolatokat a Konnektorok → Új konnektor varázsló leaf-választójával.',
       }
     }
     const unreachable = ['fetch_failed', 'ssrf_blocked', 'egress_not_allowlisted', 'scheme_blocked'].includes(data.reason ?? '')

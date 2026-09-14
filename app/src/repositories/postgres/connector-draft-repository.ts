@@ -352,7 +352,16 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
 
   async listActiveCatalog(
     tenantId: string | null,
-  ): Promise<Array<{ id: string; type: ConnectorType; name: string }>> {
+  ): Promise<
+    Array<{
+      id: string
+      type: ConnectorType
+      name: string
+      description?: string | null
+      baseUrl?: string | null
+      tools?: Array<{ method: string; path: string; description?: string | null }>
+    }>
+  > {
     const rows = await prisma.connector.findMany({
       where: { tenantId, lifecycleState: 'active' },
       select: {
@@ -360,6 +369,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         type: true,
         name: true,
         connectorMode: true,
+        config: true,
         activeSpecVersion: { select: { capabilitySet: true } },
       },
       orderBy: { name: 'asc' },
@@ -371,6 +381,76 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
           row.activeSpecVersion?.capabilitySet ?? null,
         ),
       )
-      .map(({ id, type, name }) => ({ id, type, name }))
+      .map((row) => ({
+        id: row.id,
+        type: row.type,
+        name: row.name,
+        ...describeCatalogRow(row.type, row.config, row.activeSpecVersion?.capabilitySet ?? null),
+      }))
   }
+}
+
+/**
+ * Katalógus-leírás a secret-mentes configból. Nincs új tábla: a leírás a már
+ * tárolt proposedTools[].description / baseUrl / provider mezőkből áll össze.
+ * Gmailre fix emberi mondat, mert ott nincs proposedTools.
+ */
+// ponytail: heurisztikus összefoglaló, nem tárolt leírás — külön description oszlop ha szerkeszthető szöveg kell
+function describeCatalogRow(
+  type: string,
+  config: unknown,
+  capabilitySet: unknown,
+): {
+  description: string | null
+  baseUrl: string | null
+  tools: Array<{ method: string; path: string; description?: string | null }>
+} {
+  if (type === 'gmail') {
+    return {
+      description: 'Gmail-fiók olvasása és írása a felhasználó nevében, engedélyhez kötve.',
+      baseUrl: null,
+      tools: [],
+    }
+  }
+  const cfg = (capabilitySet ?? config) as Record<string, unknown> | null
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+    return { description: null, baseUrl: null, tools: [] }
+  }
+  const baseUrl = typeof cfg.baseUrl === 'string' ? cfg.baseUrl : null
+  const provider = typeof cfg.provider === 'string' ? cfg.provider : null
+  const rawTools = Array.isArray(cfg.proposedTools)
+    ? cfg.proposedTools
+    : Array.isArray(cfg.endpoints)
+      ? cfg.endpoints
+      : []
+  const tools = rawTools
+    .filter((t): t is Record<string, unknown> => typeof t === 'object' && t !== null)
+    .map((t) => ({
+      method: String(t.method ?? ''),
+      path: String(t.path ?? ''),
+      ...(typeof t.description === 'string' && t.description.trim()
+        ? { description: t.description.trim().slice(0, 300) }
+        : {}),
+    }))
+    .filter((t) => t.method && t.path)
+    .slice(0, 50)
+  if (tools.length === 0) {
+    if (!provider && !baseUrl) return { description: null, baseUrl, tools: [] }
+    return {
+      description: [provider, baseUrl].filter(Boolean).join(' · ') || null,
+      baseUrl,
+      tools: [],
+    }
+  }
+  const withDesc = tools.filter((t) => t.description).length
+  const head =
+    withDesc > 0
+      ? tools
+          .filter((t) => t.description)
+          .slice(0, 2)
+          .map((t) => t.description as string)
+          .join(' ')
+          .slice(0, 300)
+      : `${tools.length} művelet${provider ? ` · ${provider}` : ''}${baseUrl ? ` · ${baseUrl}` : ''}`
+  return { description: head || null, baseUrl, tools }
 }

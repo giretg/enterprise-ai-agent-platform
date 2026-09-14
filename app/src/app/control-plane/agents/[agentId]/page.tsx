@@ -10,7 +10,6 @@ import { Badge, Card } from '@/components/ui/shell'
 import { EditableCard } from '@/components/ui/editable-card'
 import { ExpandableContent } from '@/components/ui/expandable-content'
 import { ChatMarkdown } from '@/components/chat/chat-markdown'
-import { Collapsible } from '@/components/ui/collapsible'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentIdentityCard } from '@/components/agents/agent-identity-card'
 import { AgentRoleDescriptionButton } from '@/components/agents/agent-role-description-modal'
@@ -29,7 +28,7 @@ import { AgentTaskButton } from '@/components/agents/agent-task-button'
 import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
-import { AssignExistingConnectorForm } from '@/components/agents/assign-existing-connector-form'
+import { AssignConnectorModal } from '@/components/agents/assign-existing-connector-form'
 import { ApiConnectorList } from '@/components/agents/api-connector-list'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
@@ -52,8 +51,6 @@ import {
 } from '@/lib/agent-profile-labels'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { enabledModelProviders } from '@/lib/model-policy'
-import { OpenInNewWindowLink } from '@/components/ui/open-in-new-window-link'
-import { CREATE_AGENT_WIZARD_EXTERNAL_HREFS } from '@/lib/create-agent-wizard'
 import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
 import { RUN_ANALYST_CAPABILITIES_LOCKED_MESSAGE } from '@/domain/agents/run-analyst-role'
 import { SettingsSectionShell, type SettingsSection } from '../../system/system-settings-shell'
@@ -416,37 +413,16 @@ export default async function AgentDetailPage({
                     : 'Amikhez ez az agent hozzáfér.'
               }
             >
+              {isAdmin && !capabilitiesLocked && assignableConnectors.length > 0 ? (
+                <div className="mb-4 flex justify-end">
+                  <AssignConnectorModal agentId={agent.id} connectors={assignableConnectors} />
+                </div>
+              ) : null}
               <ApiConnectorList
                 agentId={agent.id}
                 connectors={governance.connectors}
                 canEdit={isAdmin && !capabilitiesLocked}
               />
-              {isAdmin && !capabilitiesLocked ? (
-                <div className="mt-6 space-y-3 border-t border-line pt-5">
-                  <p className="text-sm font-semibold text-ink">Kapcsolat hozzárendelése</p>
-                  <p className="text-xs text-ink-faint">
-                    A kapcsolatokat központilag a{' '}
-                    <OpenInNewWindowLink href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connectors}>
-                      Kapcsolat-katalógus
-                    </OpenInNewWindowLink>{' '}
-                    és a{' '}
-                    <OpenInNewWindowLink href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connections}>
-                      Provisioning-varázsló
-                    </OpenInNewWindowLink>{' '}
-                    oldalon kezeld — itt csak a már aktivált kapcsolatot rendeled az agenthez.
-                  </p>
-                  <Collapsible
-                    title="Meglévő kapcsolat hozzárendelése"
-                    subtitle="Már aktivált kapcsolat csatolása az agenthez"
-                  >
-                    <AssignExistingConnectorForm
-                      agentId={agent.id}
-                      connectors={assignableConnectors}
-                      bare
-                    />
-                  </Collapsible>
-                </div>
-              ) : null}
             </InfoCard>
           )}
           {governance && !capabilitiesLocked && (
