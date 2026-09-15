@@ -537,6 +537,14 @@ export type AgentChatSendParams = {
   connectorGrantContinuation?: boolean
   /** #375 — a felhasználó által jóváhagyott feladat-eligazítás. */
   taskBriefing?: TaskBriefing | null
+  /**
+   * Beágyazott agent-chat (#481 D4): a beágyazó app `postMessage`-kontextusa,
+   * a stream-route által MÁR burkolva (`embeddedContextToModelPrefix`). Csak a modellnek szóló
+   * promptba kerül be (`latestUserTextOverride` elé fűzve) — a perzisztált
+   * user-üzenet (és így a beszélgetés-előzmény) NEM tartalmazza, hogy a
+   * felhasználó chatje ne teljen meg a külső app nyers adatával.
+   */
+  modelContextPrefix?: string | null
 }
 
 type ChatModelConfig = {
@@ -1553,8 +1561,11 @@ export class AgentChatRuntime {
         await deliverPreparedReply(promotion)
         return
       }
-      const latestUserTextOverride =
-        slashResolved.modelFacingText !== text ? slashResolved.modelFacingText : undefined
+      const latestUserTextOverride = params.modelContextPrefix
+        ? `${params.modelContextPrefix}\n\n${slashResolved.modelFacingText}`
+        : slashResolved.modelFacingText !== text
+          ? slashResolved.modelFacingText
+          : undefined
       const kbSearch = await this.fetchKbSearchContext({
         agentId: params.agentId,
         agentVersion: agentDetails.agent.currentVersion,

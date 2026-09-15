@@ -72,6 +72,7 @@ import {
   type ConversationFilesPanelHandle,
 } from '@/components/chat/conversation-files-panel'
 import { personaFor } from '@/lib/agent-persona'
+import type { EmbeddedContext } from '@/lib/embed-apps'
 import { recordLastAgentChatForCurrentTenant } from '@/lib/last-agent-chat'
 import {
   conversationIdToResume,
@@ -134,7 +135,7 @@ import { type ChatTaskCardView } from '@/lib/work-traceability'
 
 const CHAT_SESSIONS_PAGE_SIZE = 10
 
-type ChatAgent = {
+export type ChatAgent = {
   id: string
   name: string
   status?: string
@@ -156,6 +157,7 @@ export function AgentChatPanel({
   tileTarget = null,
   embedded = false,
   focusMessageId = null,
+  externalContext = null,
 }: {
   agent: ChatAgent
   open: boolean
@@ -164,6 +166,13 @@ export function AgentChatPanel({
   canDistillSkill?: boolean
   /** Deep-link / Aktív futások: nyitáskor ezt a beszélgetést tölti be + reattach. */
   initialConversationId?: string | null
+  /**
+   * Beágyazott agent-chat (#481 D4): a beágyazó app `postMessage`-ből kapott
+   * NYERS kontextusa. Minden ezután küldött üzenettel elmegy; az allowlist-
+   * ellenőrzést és az untrusted burkolatot a stream-route végzi — a felhasználó
+   * buborékában NEM jelenik meg, csak a modellnek szánt szövegben.
+   */
+  externalContext?: EmbeddedContext | null
   /** OAuth-grant után a szerveroldali folytatás-forduló. */
   resumeAfterGrant?: boolean
   /** RA-08: deep-link — szerkeszthető első üzenet a composerben (nem auto-send). */
@@ -1591,6 +1600,10 @@ export function AgentChatPanel({
               ? { consequenceApprovalIds: options.consequenceApprovalIds }
               : {}),
             ...(options.connectorGrantContinuation ? { connectorGrantContinuation: true } : {}),
+            // #481 D4: a beágyazó app kontextusa KÜLÖN mezőn, nyersen megy — a
+            // szerver burkolja; a felhasználó buborékájában (`content`) NEM jelenik
+            // meg, és nem is perzisztálódik a beszélgetésbe.
+            ...(externalContext ? { embeddedContext: externalContext } : {}),
           }),
         })
 

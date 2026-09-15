@@ -32,6 +32,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // Szerepkörönkénti fejléc-menü kurálás (Menü-hozzáférés). A metadata a teljes
   // előtte/utána policy-t hordozza, hogy a döntés visszakereshető legyen.
   'tenant.nav_visibility.update',
+  // Beágyazott agent-chat (#481 D7): „Beágyazó alkalmazások" allowlist bővítése/törlése.
+  'embed.app.changed',
   'tenant.oauth.google.update',
   'platform.oauth.google.update',
   'platform.oauth.google_drive.update',

@@ -1,4 +1,5 @@
 import type { Prisma, UserRole } from '@prisma/client'
+import { settingsRecord } from '@/lib/tenant-settings'
 
 /**
  * Menü-láthatósági policy — szerepkörönként elrejthető fejléc-menüpontok.
@@ -38,12 +39,6 @@ export const NAV_KEYS_LOCKED_FOR_ADMIN: readonly string[] = ['admin', 'admin.men
 
 export function emptyNavVisibilityPolicy(): NavVisibilityPolicy {
   return { viewer: [], operator: [], approver: [], admin: [] }
-}
-
-function settingsRecord(value: unknown): Record<string, Prisma.JsonValue> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, Prisma.JsonValue>)
-    : {}
 }
 
 function toKeyList(value: unknown): string[] {

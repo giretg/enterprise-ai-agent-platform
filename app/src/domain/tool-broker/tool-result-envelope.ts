@@ -48,6 +48,23 @@ export function envelopeToolResultForModel(trust: TrustClass, raw: string): stri
 }
 
 /**
+ * Forduló-szintű burkolat forrás-attribútummal (beágyazott agent-chat, #481 D4).
+ * A stream-API `embeddedContext` mezőjéből a szerver építi (`embeddedContextToModelPrefix`),
+ * és csak a modell-promptba kerül — nem a Tool Broker eszköz-eredmény útjára —
+ * ezért nem a fenti `EXTERNAL_DATA_OPEN`
+ * konstanst használja, hanem ugyanazzal az escape-technikával egy `source`
+ * attribútumos nyitó-cimkét épít, hogy a modell lássa, MELYIK beágyazó appból jött.
+ */
+export function envelopeEmbeddedContextForModel(source: string, raw: string): string {
+  return [
+    EXTERNAL_DATA_WARNING,
+    `<<<EXTERNAL_UNTRUSTED_DATA source="${source}">>>`,
+    escapeFenceSequences(raw),
+    EXTERNAL_DATA_CLOSE,
+  ].join('\n')
+}
+
+/**
  * NINCS burkolat-levevő függvény (issue #195 D5). A Tool Broker két külön
  * csatornát ad: a `modelText` a becsomagolt, MODELLNEK szánt szöveg, a
  * `machineData` a nyers, SOSEM burkolt adat a gépi fogyasztóknak (munkaterület,
