@@ -3,6 +3,7 @@ import { getAuthContext } from '@/auth/context'
 import { listAgents } from '@/app/actions/platform'
 import { repositories } from '@/repositories/postgres'
 import { findEmbedApp, readEmbedApps } from '@/lib/embed-apps'
+import { MAX_LIST_LIMIT } from '@/lib/list-pagination'
 import { EmbedSignInPrompt } from './[agentId]/embed-sign-in-prompt'
 
 /**
@@ -33,8 +34,10 @@ export default async function EmbedAgentPickerPage({
   if (!embedApp) notFound()
 
   // A meglévő webes láthatósági gráfon megy át (#52/#80, #142) — mindenki csak a
-  // számára elérhető agenteket látja; a chat-route úgyis újra ellenőriz.
-  const agentsRes = await listAgents({ limit: 50 })
+  // számára elérhető agenteket látja; a chat-route úgyis újra ellenőriz. Nincs
+  // lapozás a pickerben, ezért a felső korláttal kérjük, hogy a `retired` szűrés
+  // ne egyen le helyet az élő agentek elől.
+  const agentsRes = await listAgents({ limit: MAX_LIST_LIMIT })
   const agents = (agentsRes.success ? agentsRes.data : []).filter((a) => a.status !== 'retired')
 
   const chatHref = (agentId: string) =>
