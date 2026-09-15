@@ -2608,7 +2608,8 @@ export async function runAgentToolLoop(params: {
 
       // tool_describe (#468 D3): séma-lekérés. Nem broker-hívás, nem ToolCall-
       // rekord, nem számít a kör-limitbe és a zsákutca-mérlegbe sem. A nem
-      // grantolt tool sémája NEM szivárog: csak „nem elérhető" jön vissza.
+      // grantolt (vagy skill-hatókörön kívüli) tool sémája NEM szivárog: csak
+      // „nem elérhető" jön vissza.
       if (call.name === TOOL_DESCRIBE_TOOL) {
         const rawNames = Array.isArray(call.input.names)
           ? call.input.names.filter((n): n is string => typeof n === 'string')
@@ -2624,7 +2625,15 @@ export async function runAgentToolLoop(params: {
         const described: Array<Record<string, unknown>> = []
         for (const raw of rawNames.slice(0, TOOL_DESCRIBE_MAX_NAMES)) {
           const name = fromWireToolName(raw)
-          if (isChatPlatformTool(name) && (allowedTools as string[]).includes(name)) {
+          // A describe láthatósága kövesse a HÍVHATÓSÁGOT: ha egy betöltött skill
+          // szűkíti a hatókört, a hatókörön kívüli (bár grantolt) tool sémáját se
+          // adjuk vissza — a hívást a skill-kapu úgyis elutasítaná, és a describe
+          // ne csábítson kézi kerülőútra egy nem használható eszközzel.
+          if (
+            isChatPlatformTool(name) &&
+            (allowedTools as string[]).includes(name) &&
+            (!skillToolScope || skillToolScope.has(name))
+          ) {
             activatedTools.add(name)
             described.push({
               name: toWireToolName(name),
