@@ -20,8 +20,10 @@ export type AgentRailCardState = {
   taskOnly: boolean
   /** Rövid előnézet kereséshez (max ~80 karakter). */
   roleLabel: string
-  /** Teljes munkaköri leírás — kereséshez és a fejléc-modalhoz. */
+  /** Teljes munkaköri leírás — kereséshez és a modalhoz. */
   roleDescription: string
+  /** Eredeti munkaköri leírás instruction markdown formátumban. */
+  roleInstruction?: string
   liveStatus: AgentRailLiveStatus
   activityText: string
   elapsed: string | null

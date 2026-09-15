@@ -16,6 +16,7 @@ import { AgentRoleDescriptionButton } from '@/components/agents/agent-role-descr
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
 import { AgentDelegatedConnectorsBar } from '@/components/agents/agent-delegated-connectors-bar'
 import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
+import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdatePersonaForm } from '@/components/agents/update-persona-form'
 import { PrivacyAdminPanel } from '@/components/privacy/privacy-admin-panel'
@@ -631,6 +632,7 @@ export default async function AgentDetailPage({
               />
             )}
             {embedded ? null : <AgentMiniAppsLink agentId={agent.id} />}
+            {embedded ? null : <AgentIdCopyButton agentId={agent.id} />}
             <span className="text-sm text-ink-faint">
               {roleInfo.title} — {roleInfo.description}
             </span>
