@@ -78,7 +78,7 @@ export function EmbedAppsPanel({ initialApps }: { initialApps: EmbedApp[] }) {
       <p className="mb-4 text-xs text-ink-faint">
         Hogyan működik: a másik rendszerben egy gomb külön ablakban megnyitja a platform
         chatjét (<code>/embed/agents/&lt;agent-azonosító&gt;?app=&lt;slug&gt;&amp;thread=&lt;ügy-azonosító&gt;</code>),
-        és átadja neki a megnyitott ügy adatait. A bekötő-kódot a „Bekötő-kód másolása"
+        és átadja neki a megnyitott ügy adatait. A bekötő-kódot a „Bekötő-kód másolása”
         gombbal add át a rendszer fejlesztőjének.
       </p>
 
