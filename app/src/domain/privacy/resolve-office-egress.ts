@@ -6,6 +6,7 @@
  * álneveket az XML szöveg-node-okban (export_report mátrix).
  */
 import JSZip from 'jszip'
+import { assertSafeOfficeArchive } from '@/lib/office-archive-guard'
 import { privacyScopeForCall } from '@/domain/privacy/privacy-scope'
 import {
   resolveEgressTextForSurface,
@@ -29,7 +30,13 @@ export async function resolveOfficeFileEgressForViewer(params: {
   onResolved?: EgressResolveAudit
 }): Promise<Buffer> {
   const buffer = params.buffer
-  if (!buffer.length || !params.engine || !params.tenantId || !params.requesterUserId) {
+  if (!buffer.length) return buffer
+
+  // A bizalmi határ hibánál dob: a route így privacy-konfiguráció nélkül sem
+  // küld vissza sérült Office-archívumot, és a JSZip sem bontja ki a támadó inputját.
+  assertSafeOfficeArchive(buffer)
+
+  if (!params.engine || !params.tenantId || !params.requesterUserId) {
     return buffer
   }
   const scope = privacyScopeForCall(params.conversationId, params.ticketId)

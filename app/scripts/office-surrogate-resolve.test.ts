@@ -70,6 +70,16 @@ async function xmlParts(buffer: Buffer): Promise<Record<string, string>> {
 async function main() {
   console.log('Office álnév-feloldás (docx/xlsx letöltés)\n')
 
+  await test('privacy-konfiguráció nélkül sem küld vissza sérült Office-archívumot', async () => {
+    await assert.rejects(() => resolveOfficeFileEgressForViewer({
+      buffer: Buffer.from('not a zip'),
+      engine: null,
+      tenantId: null,
+      requesterUserId: null,
+      surface: 'web_ui',
+    }))
+  })
+
   await test('Word XML szöveg-node (xml:space=preserve) feloldható a HTML parserrel', async () => {
     const xml = `<w:t xml:space="preserve">${COMPANY} – Utolsó 2 hónap rendelési riport</w:t>`
     const out = await resolveHtmlDisplayText(xml, async (s) => DISPLAY[s] ?? null)

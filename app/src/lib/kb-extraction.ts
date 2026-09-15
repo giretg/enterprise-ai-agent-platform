@@ -1,4 +1,5 @@
 import type { ExtractedBlock } from './kb-v3'
+import { assertSafeOfficeArchive } from './office-archive-guard'
 import { loadPdfParse } from './pdf-parse'
 
 /**
@@ -144,6 +145,7 @@ async function extractPdf(buffer: Buffer): Promise<StructuredExtraction> {
 // ── DOCX (heading/section-út) ────────────────────────────────────────────────
 
 async function extractDocx(buffer: Buffer): Promise<StructuredExtraction> {
+  assertSafeOfficeArchive(buffer)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let mammoth: any
   try {
@@ -220,6 +222,7 @@ function htmlToText(html: string): string {
 // ── XLSX (cella-tartomány) ───────────────────────────────────────────────────
 
 async function extractXlsx(buffer: Buffer): Promise<StructuredExtraction> {
+  assertSafeOfficeArchive(buffer)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let mod: any
   try {

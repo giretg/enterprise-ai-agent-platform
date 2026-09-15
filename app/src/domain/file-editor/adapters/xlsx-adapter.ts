@@ -1,5 +1,6 @@
 import type { CellValue } from 'exceljs'
 import { FileEditorError } from '../workspace-storage'
+import { assertSafeOfficeArchive, OfficeArchiveError } from '@/lib/office-archive-guard'
 
 export type XlsxRow = Record<string, string | number | boolean | null>
 
@@ -255,13 +256,25 @@ async function loadWorkbook(): Promise<any> {
   return new Workbook()
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadWorkbookFromBuffer(buffer: Buffer): Promise<any> {
+  try {
+    assertSafeOfficeArchive(buffer)
+  } catch (error) {
+    if (error instanceof OfficeArchiveError) throw new FileEditorError('INVALID_ARGS', error.message)
+    throw error
+  }
+  const workbook = await loadWorkbook()
+  await workbook.xlsx.load(buffer)
+  return workbook
+}
+
 export async function xlsxReadSheet(
   buffer: Buffer,
   sheetName?: string,
   maxRows = 500,
 ): Promise<{ sheet: string; headers: string[]; rows: XlsxRow[] }> {
-  const workbook = await loadWorkbook()
-  await workbook.xlsx.load(buffer)
+  const workbook = await loadWorkbookFromBuffer(buffer)
 
   const worksheet = sheetName
     ? workbook.getWorksheet(sheetName)
@@ -303,8 +316,7 @@ export async function xlsxReadSheet(
  * a sorok tab-tagolt értékekkel szerepelnek.
  */
 export async function xlsxExtractText(buffer: Buffer, maxRowsPerSheet = 1000): Promise<string> {
-  const workbook = await loadWorkbook()
-  await workbook.xlsx.load(buffer)
+  const workbook = await loadWorkbookFromBuffer(buffer)
 
   const blocks: string[] = []
   const worksheets = workbook.worksheets as Array<{
@@ -338,8 +350,7 @@ export async function xlsxWriteCells(
   changes: XlsxCellChange[],
   sheetName?: string,
 ): Promise<Buffer> {
-  const workbook = await loadWorkbook()
-  await workbook.xlsx.load(buffer)
+  const workbook = await loadWorkbookFromBuffer(buffer)
 
   const worksheet = sheetName
     ? workbook.getWorksheet(sheetName)
@@ -371,8 +382,7 @@ export async function xlsxFormatRange(
   style: CellStyle,
   sheetName?: string,
 ): Promise<Buffer> {
-  const workbook = await loadWorkbook()
-  await workbook.xlsx.load(buffer)
+  const workbook = await loadWorkbookFromBuffer(buffer)
 
   const worksheet = sheetName ? workbook.getWorksheet(sheetName) : workbook.worksheets[0]
   if (!worksheet) {
@@ -396,8 +406,7 @@ export async function xlsxApplyLayout(
   layout: XlsxLayout,
   sheetName?: string,
 ): Promise<Buffer> {
-  const workbook = await loadWorkbook()
-  await workbook.xlsx.load(buffer)
+  const workbook = await loadWorkbookFromBuffer(buffer)
 
   const worksheet = sheetName ? workbook.getWorksheet(sheetName) : workbook.worksheets[0]
   if (!worksheet) {
@@ -471,8 +480,7 @@ export async function xlsxAppendRows(
   newRows: XlsxRow[],
   sheetName?: string,
 ): Promise<Buffer> {
-  const workbook = await loadWorkbook()
-  await workbook.xlsx.load(buffer)
+  const workbook = await loadWorkbookFromBuffer(buffer)
 
   const worksheet = sheetName
     ? workbook.getWorksheet(sheetName)
