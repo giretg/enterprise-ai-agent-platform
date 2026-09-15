@@ -15,7 +15,7 @@ import type { DiagnosticCheck } from './agent-diagnostics'
 /** A próba-írások jelölése — a felhasználó Drive-jában/Gmailjében is felismerhető. */
 export const DIAGNOSTICS_PROBE_MARKER = '[Diagnosztika – törölhető]'
 
-export type ProbeOutcome = 'ok' | 'fail' | 'unknown'
+export type ProbeOutcome = 'ok' | 'warn' | 'fail' | 'unknown'
 
 export interface ProbeResult {
   id: string
@@ -24,18 +24,15 @@ export interface ProbeResult {
   /** Sanitizált ok-kategória (pl. 'timeout', 'auth_failed', 'not_testable'). */
   reason: string
   fixSection: DiagnosticCheck['fixSection']
-  fixHint: string
 }
 
 export function probeResultToCheck(result: ProbeResult): DiagnosticCheck {
-  const status = result.outcome === 'ok' ? 'ok' : result.outcome === 'fail' ? 'fail' : 'unknown'
   return {
     id: result.id,
     label: result.label,
-    status,
+    status: result.outcome,
     detail: probeDetail(result),
     fixSection: result.fixSection,
-    fixHint: result.fixHint,
   }
 }
 
@@ -47,6 +44,8 @@ function probeDetail(result: ProbeResult): string {
       return 'A rendszer elérhető, de a próba token nélkül futott — a tényleges hozzáférés a fiók-összekötéstől függ.'
     case 'write_probe_ok':
       return 'A próba-írás (létrehozás + azonnali törlés) sikerült, nem maradt utána semmi.'
+    case 'cleanup_failed':
+      return 'A próbaelem létrejött, de az automatikus törlés nem sikerült. A megjelölt piszkozatot vagy mappát töröld kézzel.'
     case 'no_grant':
       return 'Nincs összekötött fiók ehhez a kapcsolathoz — az élő próba fiók nélkül nem fut.'
     case 'auth_failed':
@@ -68,17 +67,31 @@ export function sanitizeProbeError(error: unknown): 'timeout' | 'auth_failed' | 
   return 'request_failed'
 }
 
+export function publicDiagnosticsError(error: unknown): string {
+  void error
+  return 'Az agent tesztelése sikertelen.'
+}
+
 /** Időkorlátos futtatás — a diagnosztika sose lógjon egy lassú API-n. */
-export async function withProbeTimeout<T>(promise: Promise<T>, ms = 8000): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | null = null
+export async function withProbeTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, ms = 8000): Promise<T> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error('probe timeout')), ms)
   try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('probe timeout')), ms)
-      }),
-    ])
+    return await operation(controller.signal)
   } finally {
-    if (timer) clearTimeout(timer)
+    clearTimeout(timer)
+  }
+}
+
+export async function runWriteProbe(
+  create: (signal: AbortSignal) => Promise<string>,
+  cleanup: (id: string, signal: AbortSignal) => Promise<unknown>,
+): Promise<'write_probe_ok' | 'cleanup_failed'> {
+  const id = await withProbeTimeout(create)
+  try {
+    await withProbeTimeout((signal) => cleanup(id, signal))
+    return 'write_probe_ok'
+  } catch {
+    return 'cleanup_failed'
   }
 }

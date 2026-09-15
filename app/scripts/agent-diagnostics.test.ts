@@ -10,7 +10,10 @@ import {
 } from '../src/domain/agent-diagnostics/agent-diagnostics'
 import {
   probeResultToCheck,
+  publicDiagnosticsError,
+  runWriteProbe,
   sanitizeProbeError,
+  withProbeTimeout,
 } from '../src/domain/agent-diagnostics/agent-probes'
 
 function test(name: string, fn: () => void) {
@@ -66,6 +69,14 @@ test('gmail írás scope-hiány: fail (az elfelejtett írásjog esete)', () => {
   assert.ok(write)
   assert.equal(write.status, 'fail')
   assert.equal(write.fixSection, 'kapcsolatok')
+})
+
+test('gmail_send is író eszköz', () => {
+  const checks = computeAgentDiagnostics({
+    allowedTools: ['gmail_send'], boundConnectorTypes: ['gmail'], gmailSendCovered: false,
+    driveWriteCovered: null, skills: [], isDraft: false,
+  })
+  assert.equal(checks.find((c) => c.id === 'write:gmail')?.status, 'fail')
 })
 
 test('drive írás scope-hiány: fail, lefedve: ok selected_only megjegyzéssel', () => {
@@ -158,6 +169,21 @@ test('sanitizeProbeError: titok/host soha nem kerül a válaszba', () => {
   assert.equal(sanitizeProbeError(new Error('boom https://secret-host/x token abc')), 'request_failed')
 })
 
+test('felső szintű hibaüzenet sem szivárogtat belső részletet', () => {
+  assert.equal(publicDiagnosticsError(new Error('DB https://secret-host token abc')), 'Az agent tesztelése sikertelen.')
+})
+
+async function runAsyncTests() {
+  let aborted = false
+  await assert.rejects(withProbeTimeout((signal) => new Promise<void>((_resolve, reject) => {
+    signal.addEventListener('abort', () => { aborted = true; reject(signal.reason) })
+  }), 1), /timeout/)
+  assert.equal(aborted, true)
+
+  const reason = await runWriteProbe(async () => 'created-id', async () => { throw new Error('cleanup failed') })
+  assert.equal(reason, 'cleanup_failed')
+}
+
 test('probeResultToCheck: unknown marad unknown, fix-szekció megmarad', () => {
   const check = probeResultToCheck({
     id: 'live:xyz',
@@ -165,10 +191,11 @@ test('probeResultToCheck: unknown marad unknown, fix-szekció megmarad', () => {
     outcome: 'unknown',
     reason: 'not_testable',
     fixSection: 'kapcsolatok',
-    fixHint: 'Kézzel ellenőrizd.',
   })
   assert.equal(check.status, 'unknown')
   assert.equal(check.fixSection, 'kapcsolatok')
 })
 
-console.log('\nAll agent-diagnostics tests passed.')
+runAsyncTests()
+  .then(() => console.log('\nAll agent-diagnostics tests passed.'))
+  .catch((error) => { console.error(error); process.exitCode = 1 })

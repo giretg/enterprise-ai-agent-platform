@@ -69,13 +69,14 @@ export function AgentDiagnosticsPanel({ agentId, bare = false }: { agentId: stri
         type="button"
         onClick={run}
         disabled={pending}
+        aria-busy={pending}
         className="rounded-full bg-coral/20 px-5 py-2 text-sm font-semibold text-coral disabled:opacity-50"
       >
         {pending ? 'Tesztelés…' : result ? 'Újratesztelés' : 'Agent tesztelése'}
       </button>
-      {error && <p className="mt-4 text-sm text-coral">{error}</p>}
+      {error && <p role="alert" className="mt-4 text-sm text-coral">{error}</p>}
       {result && (
-        <div className="mt-5 space-y-6">
+        <div aria-live="polite" className="mt-5 space-y-6">
           <CheckGroup title="Beállítások" checks={result.static} agentId={agentId} />
           <CheckGroup title="Élő kapcsolatok" checks={result.live} agentId={agentId} />
         </div>

@@ -19,7 +19,6 @@ export interface DiagnosticCheck {
   /** Rövid, nem technikai magyarázat + tennivaló. Soha nem tartalmaz titkot. */
   detail: string
   fixSection: DiagnosticFixSection
-  fixHint: string
 }
 
 export interface DiagnosticsStaticInput {
@@ -66,7 +65,7 @@ const isKbTool = (tool: string): boolean => tool.startsWith('kb_')
  * szándékosan NINCS itt: a küldés emberi-jóváhagyás kapuja policy, nem scope —
  * a scope-ot a piszkozat (`gmail_create_draft`) bizonyítja.
  */
-export const GMAIL_WRITE_TOOLS = ['gmail_create_draft'] as const
+export const GMAIL_WRITE_TOOLS = ['gmail_create_draft', 'gmail_send'] as const
 export const DRIVE_WRITE_TOOLS = [
   'google_drive_create_folder',
   'google_drive_upload_file',
@@ -100,7 +99,6 @@ export function computeAgentDiagnostics(input: DiagnosticsStaticInput): Diagnost
         status: 'ok',
         detail: `${family.tools.length} eszköz használhatja a bekötött ${family.label} kapcsolatot.`,
         fixSection: 'kapcsolatok',
-        fixHint: 'Nincs tennivaló.',
       })
     } else {
       checks.push({
@@ -109,7 +107,6 @@ export function computeAgentDiagnostics(input: DiagnosticsStaticInput): Diagnost
         status: 'fail',
         detail: `${family.tools.length} eszköz engedélyezve van (${family.tools.slice(0, 3).join(', ')}${family.tools.length > 3 ? '…' : ''}), de nincs hozzá ${family.label} kapcsolat kötve — ezek most nem működnének.`,
         fixSection: 'kapcsolatok',
-        fixHint: 'A Kapcsolatok résznél rendelj hozzá egyet.',
       })
     }
   }
@@ -123,7 +120,6 @@ export function computeAgentDiagnostics(input: DiagnosticsStaticInput): Diagnost
       detail:
         'Van engedélyezett Gmail-író eszköz (piszkozat), de a megadott fiók-hozzáférés csak olvasásra jogosít — az agent nem tudna piszkozatot létrehozni.',
       fixSection: 'kapcsolatok',
-      fixHint: 'Kösd össze újra a Gmail-fiókot írási jogosultsággal.',
     })
   } else if (input.gmailSendCovered === true) {
     checks.push({
@@ -132,7 +128,6 @@ export function computeAgentDiagnostics(input: DiagnosticsStaticInput): Diagnost
       status: 'ok',
       detail: 'A fiók-hozzáférés piszkozat-létrehozásra is jogosít.',
       fixSection: 'kapcsolatok',
-      fixHint: 'Nincs tennivaló.',
     })
   }
   if (input.driveWriteCovered === false) {
@@ -143,7 +138,6 @@ export function computeAgentDiagnostics(input: DiagnosticsStaticInput): Diagnost
       detail:
         'Van engedélyezett Drive-író eszköz, de a megadott hozzáférés csak olvasásra jogosít — az írás most biztosan elakadna.',
       fixSection: 'kapcsolatok',
-      fixHint: 'A Kapcsolatok résznél válts „Olvasás + írás" profilra.',
     })
   } else if (input.driveWriteCovered === true) {
     checks.push({
@@ -154,7 +148,6 @@ export function computeAgentDiagnostics(input: DiagnosticsStaticInput): Diagnost
         ? 'Az írás a kijelölt / app-létrehozott fájlokra korlátozódik — ez a biztonságos alapbeállítás.'
         : 'A hozzáférés írási jogot is ad.',
       fixSection: 'kapcsolatok',
-      fixHint: 'Nincs tennivaló.',
     })
   }
 
@@ -170,7 +163,6 @@ export function computeAgentDiagnostics(input: DiagnosticsStaticInput): Diagnost
         status: 'fail',
         detail: `${red.map((s) => s.name).slice(0, 3).join(', ')}${red.length > 3 ? '…' : ''} olyan eszközt igényel, amihez nincs kapcsolat — amíg ez nincs meg, a skill nem működik.`,
         fixSection: 'skillek',
-        fixHint: 'A Skillek résznél nézd meg a piros sort: melyik eszköz hiányzik.',
       })
     } else if (yellow.length > 0) {
       checks.push({
@@ -179,7 +171,6 @@ export function computeAgentDiagnostics(input: DiagnosticsStaticInput): Diagnost
         status: 'warn',
         detail: `${yellow.map((s) => s.name).slice(0, 3).join(', ')}${yellow.length > 3 ? '…' : ''} eszköze nincs engedélyezve, de pótolható.`,
         fixSection: 'skillek',
-        fixHint: 'A Skillek résznél engedélyezd a sárga sor eszközét.',
       })
     } else {
       checks.push({
@@ -188,7 +179,6 @@ export function computeAgentDiagnostics(input: DiagnosticsStaticInput): Diagnost
         status: 'ok',
         detail: 'Minden bekapcsolt skill eszköze engedélyezve van.',
         fixSection: 'skillek',
-        fixHint: 'Nincs tennivaló.',
       })
     }
   }
@@ -200,7 +190,6 @@ export function computeAgentDiagnostics(input: DiagnosticsStaticInput): Diagnost
       status: 'warn',
       detail: 'Vázlat agent nem kap feladatot — a kapcsolatok ettől még tesztelhetők, de élesben nem dolgozna.',
       fixSection: 'motor',
-      fixHint: 'Ha kész, aktiváld az életciklus-dobozban.',
     })
   }
 
@@ -211,7 +200,6 @@ export function computeAgentDiagnostics(input: DiagnosticsStaticInput): Diagnost
       status: 'unknown',
       detail: 'Az agentnek nincs engedélyezett külső eszköze — csak beszélgetni tud. Ha kell neki valami, az Eszközöknél add hozzá.',
       fixSection: 'eszkozok',
-      fixHint: 'Az Eszközök résznél jelöld be, amire szüksége van.',
     })
   }
   return checks

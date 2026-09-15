@@ -16,12 +16,14 @@ import {
 import {
   DIAGNOSTICS_PROBE_MARKER,
   probeResultToCheck,
+  publicDiagnosticsError,
+  runWriteProbe,
   sanitizeProbeError,
   withProbeTimeout,
   type ProbeResult,
 } from '@/domain/agent-diagnostics/agent-probes'
 import { gmailToolAllowedByScopes } from '@/domain/connector-grant/gmail-scopes'
-import { driveToolAllowedByScopes } from '@/domain/connector-grant/google-drive-scopes'
+import { driveScopeProfile, driveToolAllowedByScopes } from '@/domain/connector-grant/google-drive-scopes'
 import { GmailApiClient } from '@/domain/connector-grant/gmail-api-client'
 import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
 import { HttpSandboxConnectionTester } from '@/domain/provisioning/sandbox-connection-tester'
@@ -53,12 +55,17 @@ export async function runAgentDiagnostics(input: {
   includeLive?: boolean
   includeWriteProbe?: boolean
 }): Promise<ActionResult<AgentDiagnosticsResult>> {
+  let auditContext: { agentId: string; tenantId: string | null; userId: string } | null = null
   try {
     const ctx = await requireTenantRole('admin')
     const parsed = inputSchema.parse(input)
+    auditContext = { agentId: parsed.agentId, tenantId: ctx.activeTenantId, userId: ctx.user.id }
 
     const agent = await repositories.agents.findById(parsed.agentId, ctx.activeTenantId)
-    if (!agent) return fail('Agent not found')
+    if (!agent) {
+      await appendDiagnosticsAudit(auditContext, 'failed', { reason: 'agent_not_found' })
+      return fail('Az agent tesztelése sikertelen.')
+    }
 
     const [capabilities, connectors, skillsWithReadiness, myGrants] = await Promise.all([
       repositories.toolBroker.findCapabilitiesForAgent(parsed.agentId),
@@ -90,10 +97,9 @@ export async function runAgentDiagnostics(input: {
       const grant = grantByConnectorId.get(binding.connector.id)
       if (!grant) continue
       if (binding.connector.type === 'gmail' && needsGmailWrite && gmailSendCovered === null) {
-        gmailSendCovered = gmailToolAllowedByScopes({
-          tool: 'gmail_create_draft',
-          scopes: grant.scopes,
-        })
+        gmailSendCovered = GMAIL_WRITE_TOOLS.filter((tool) => allowedTools.includes(tool)).every(
+          (tool) => gmailToolAllowedByScopes({ tool, scopes: grant.scopes }),
+        )
       }
       if (
         binding.connector.type === 'google_drive' &&
@@ -104,7 +110,7 @@ export async function runAgentDiagnostics(input: {
           tool: 'google_drive_create_folder',
           scopes: grant.scopes,
         })
-        driveWriteIsSelectedOnly = driveWriteCovered
+        driveWriteIsSelectedOnly = driveScopeProfile(grant.scopes) === 'selected_write'
       }
     }
 
@@ -138,7 +144,6 @@ export async function runAgentDiagnostics(input: {
             outcome: 'fail',
             reason: 'no_grant',
             fixSection: 'kapcsolatok',
-            fixHint: 'A Kapcsolatok résznél kösd össze a fiókot.',
           }),
         )
       }
@@ -165,6 +170,11 @@ export async function runAgentDiagnostics(input: {
       }
     }
 
+    await appendDiagnosticsAudit(auditContext, 'allowed', {
+      staticCount: staticChecks.length,
+      liveCount: live.length,
+      includeWriteProbe: parsed.includeWriteProbe,
+    })
     logger.info({
       event: 'agent_diagnostics.run',
       agentId: parsed.agentId,
@@ -177,8 +187,27 @@ export async function runAgentDiagnostics(input: {
 
     return ok({ static: staticChecks, live })
   } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to run agent diagnostics')
+    if (auditContext) {
+      await appendDiagnosticsAudit(auditContext, 'failed', {
+        reason: sanitizeProbeError(e),
+        includeWriteProbe: input.includeWriteProbe === true,
+      }).catch(() => undefined)
+    }
+    return fail(publicDiagnosticsError(e))
   }
+}
+
+async function appendDiagnosticsAudit(
+  context: { agentId: string; tenantId: string | null; userId: string },
+  policyDecision: 'allowed' | 'failed',
+  metadata: Record<string, string | number | boolean | null>,
+) {
+  await repositories.audit.append({
+    actorType: 'human', actorId: context.userId, agentVersion: null,
+    action: 'agent.diagnostics.run', targetType: 'agent', targetId: context.agentId,
+    modelUsed: null, inputRef: null, outputRef: null, policyDecision, metadata,
+    tenantId: context.tenantId,
+  })
 }
 
 async function probeConnector(params: {
@@ -191,7 +220,7 @@ async function probeConnector(params: {
   tenantId: string | null
   includeWriteProbe: boolean
 }): Promise<ProbeResult | null> {
-  const base = { fixSection: 'kapcsolatok' as const, fixHint: 'A Kapcsolatok résznél ellenőrizd.' }
+  const base = { fixSection: 'kapcsolatok' as const }
   try {
     if (params.connectorType === 'gmail') {
       return await probeGmail(params, base)
@@ -217,10 +246,6 @@ async function probeConnector(params: {
       outcome: 'fail',
       reason: sanitizeProbeError(e),
       ...base,
-      fixHint:
-        sanitizeProbeError(e) === 'auth_failed'
-          ? 'Kösd össze újra a fiókot a Kapcsolatok résznél.'
-          : base.fixHint,
     }
   }
 }
@@ -244,28 +269,25 @@ async function resolveUserToken(connectorId: string, userId: string) {
 
 async function probeGmail(
   params: { connectorId: string; connectorName: string; userId: string; includeWriteProbe: boolean },
-  base: { fixSection: 'kapcsolatok'; fixHint: string },
+  base: { fixSection: 'kapcsolatok' },
 ): Promise<ProbeResult> {
-  const token = await withProbeTimeout(resolveUserToken(params.connectorId, params.userId))
+  const token = await withProbeTimeout(() => resolveUserToken(params.connectorId, params.userId))
   const gmail = new GmailApiClient(token)
-  await withProbeTimeout(gmail.search({ query: '', maxResults: 1 }))
+  await withProbeTimeout((signal) => gmail.search({ query: '', maxResults: 1, signal }))
 
   if (params.includeWriteProbe) {
     // Próba-írás: piszkozat + AZONNALI törlés. Küldés soha.
     const marker = `${DIAGNOSTICS_PROBE_MARKER} Agent-teszt ${new Date().toISOString().slice(0, 10)}`
-    const draft = await withProbeTimeout(
-      gmail.createDraft({ subject: marker, body: 'Automatikus agent-diagnosztika, azonnal törölve.' }),
+    const reason = await runWriteProbe(
+      async (signal) => (await gmail.createDraft({
+        subject: marker, body: 'Automatikus agent-diagnosztika, azonnal törölve.', signal,
+      })).draftId,
+      (draftId, signal) => gmail.deleteDraft({ draftId, signal }),
     )
-    try {
-      await withProbeTimeout(gmail.deleteDraft({ draftId: draft.draftId }))
-    } catch {
-      // A piszkozat megmaradhat — a felhasználó egyértelmű név alapján törölheti.
-    }
     return {
       id: `live:${params.connectorId}`,
-      label: `${params.connectorName}: olvasás + próba-írás OK`,
-      outcome: 'ok',
-      reason: 'write_probe_ok',
+      label: `${params.connectorName}: ${reason === 'write_probe_ok' ? 'olvasás + próba-írás OK' : 'a próbaelem törlése sikertelen'}`,
+      outcome: reason === 'write_probe_ok' ? 'ok' : 'warn', reason,
       ...base,
     }
   }
@@ -280,25 +302,22 @@ async function probeGmail(
 
 async function probeDrive(
   params: { connectorId: string; connectorName: string; userId: string; includeWriteProbe: boolean },
-  base: { fixSection: 'kapcsolatok'; fixHint: string },
+  base: { fixSection: 'kapcsolatok' },
 ): Promise<ProbeResult> {
-  const token = await withProbeTimeout(resolveUserToken(params.connectorId, params.userId))
+  const token = await withProbeTimeout(() => resolveUserToken(params.connectorId, params.userId))
   const drive = new GoogleDriveApiClient(token)
-  await withProbeTimeout(drive.search({ pageSize: 1 }))
+  await withProbeTimeout((signal) => drive.search({ pageSize: 1, signal }))
 
   if (params.includeWriteProbe) {
     const name = `${DIAGNOSTICS_PROBE_MARKER} Agent-teszt ${new Date().toISOString().slice(0, 10)}`
-    const created = await withProbeTimeout(drive.createFolder({ name }))
-    try {
-      await withProbeTimeout(drive.trashFile({ fileId: created.file.id }))
-    } catch {
-      // A mappa megmaradhat — a név alapján egyértelműen törölhető.
-    }
+    const reason = await runWriteProbe(
+      async (signal) => (await drive.createFolder({ name, signal })).file.id,
+      (fileId, signal) => drive.trashFile({ fileId, signal }),
+    )
     return {
       id: `live:${params.connectorId}`,
-      label: `${params.connectorName}: olvasás + próba-írás OK`,
-      outcome: 'ok',
-      reason: 'write_probe_ok',
+      label: `${params.connectorName}: ${reason === 'write_probe_ok' ? 'olvasás + próba-írás OK' : 'a próbaelem törlése sikertelen'}`,
+      outcome: reason === 'write_probe_ok' ? 'ok' : 'warn', reason,
       ...base,
     }
   }
@@ -319,7 +338,7 @@ async function probeHttp(
     secretAlias: string | null
     tenantId: string | null
   },
-  base: { fixSection: 'kapcsolatok'; fixHint: string },
+  base: { fixSection: 'kapcsolatok' },
 ): Promise<ProbeResult> {
   // Token nélküli read-only próba a meglévő sandbox-testerrel (egress + SSRF-őr).
   let config
@@ -347,7 +366,7 @@ async function probeHttp(
     },
     resolveSandboxToken: async () => null,
   })
-  const result = await withProbeTimeout(
+  const result = await withProbeTimeout(() =>
     tester.test({ config, secretAlias: params.secretAlias, tenantId: params.tenantId }),
   )
   if (result.ok) {
@@ -366,7 +385,6 @@ async function probeHttp(
       outcome: 'fail',
       reason: 'request_failed',
       ...base,
-      fixHint: 'Ellenőrizd a connector célcímét és a tenant egress-engedélyeket.',
     }
   }
   return {
