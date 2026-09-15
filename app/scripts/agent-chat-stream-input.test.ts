@@ -10,8 +10,19 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
   AGENT_CHAT_STREAM_CONTENT_MAX,
+  PROCESS_INPUT_PAYLOAD_MAX_BYTES,
   agentChatStreamTurnInputSchema,
+  startProcessSchema,
 } from '../src/lib/validators/actions'
+
+const UUID_DEF = '22222222-2222-4222-8222-222222222222'
+
+/** Olyan payload, amelynek szerializált mérete pontosan `bytes` bájt. */
+function payloadOfBytes(bytes: number): Record<string, unknown> {
+  // {"v":"<pad>"} — a kereten kívüli karakterek a `v` érték hosszát adják.
+  const envelope = Buffer.byteLength(JSON.stringify({ v: '' }), 'utf8')
+  return { v: 'x'.repeat(Math.max(0, bytes - envelope)) }
+}
 
 const UUID = '11111111-1111-4111-8111-111111111111'
 
@@ -97,6 +108,49 @@ async function main() {
       taskBriefing: { goal: 'cél', approval: 'a'.repeat(501) },
     })
     assert.equal(parsed.success, false)
+  })
+
+  await test('pontosan a maximum méretű folyamat-bemenet átmegy', () => {
+    const parsed = agentChatStreamTurnInputSchema.safeParse({
+      content: 'x',
+      processInputPayload: payloadOfBytes(PROCESS_INPUT_PAYLOAD_MAX_BYTES),
+    })
+    assert.equal(parsed.success, true)
+  })
+
+  await test('túlméretes folyamat-bemenet elutasítva a chat-stream sémán', () => {
+    const parsed = agentChatStreamTurnInputSchema.safeParse({
+      content: 'x',
+      processInputPayload: payloadOfBytes(PROCESS_INPUT_PAYLOAD_MAX_BYTES + 1),
+    })
+    assert.equal(parsed.success, false)
+  })
+
+  await test('túlméretes folyamat-bemenet elutasítva a REST futás-indítón is (közös kapu)', () => {
+    const parsed = startProcessSchema.safeParse({
+      processDefinitionId: UUID_DEF,
+      inputPayload: payloadOfBytes(PROCESS_INPUT_PAYLOAD_MAX_BYTES + 1),
+    })
+    assert.equal(parsed.success, false)
+  })
+
+  await test('normál méretű folyamat-bemenet átmegy a REST futás-indítón', () => {
+    const parsed = startProcessSchema.safeParse({
+      processDefinitionId: UUID_DEF,
+      inputPayload: { region: 'EU', priority: 3 },
+    })
+    assert.equal(parsed.success, true)
+  })
+
+  await test('a chat-stream route a folyamat-bemenetet is a határon kapuzza', () => {
+    const src = readFileSync(
+      resolve(import.meta.dirname, '../src/app/api/v1/agent-chat/stream/route.ts'),
+      'utf8',
+    )
+    // A safeParse a `processInputPayload`-ot is kapja, és a lefelé küldött érték a
+    // VALIDÁLT (`turnInput.data`), nem a nyers body-mező.
+    assert.match(src, /processInputPayload,\s*\n\s*\}\)/)
+    assert.match(src, /processInputPayload: turnInput\.data\.processInputPayload/)
   })
 
   await test('a route a sémát a határon alkalmazza és 400-at ad', () => {

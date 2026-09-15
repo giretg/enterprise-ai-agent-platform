@@ -369,6 +369,25 @@ export const taskBriefingSchema = z.object({
  */
 export const AGENT_CHAT_STREAM_CONTENT_MAX = 16 * 1024
 
+/**
+ * Folyamat-indító bemenet (config-rés + trigger-input) méret-kapuja. Ugyanaz a
+ * `Record<string, unknown>` KÉT ingressen érkezhet — a REST futás-indító
+ * (`startProcessSchema.inputPayload`) és a chat-stream (`processInputPayload`) —,
+ * ezért EGY helyen kapuzzuk (nincs kapu-drift). A payload strukturált adat (nem
+ * szabad szöveg), így a szerializált méret a mérvadó korlát: egy hitelesített
+ * kliens tetszőlegesen nagy / mély objektuma OOM-ot, DB-hízást és fölös
+ * prompt-költséget okozna a memória-szűkös futtató konténerben. 64 KiB bőven
+ * elég a valós config/trigger-értékekhez, a rossz esetet viszont keményen zárja.
+ */
+export const PROCESS_INPUT_PAYLOAD_MAX_BYTES = 64 * 1024
+
+export const processInputPayloadSchema = z
+  .record(z.string(), z.unknown())
+  .refine(
+    (value) => Buffer.byteLength(JSON.stringify(value), 'utf8') <= PROCESS_INPUT_PAYLOAD_MAX_BYTES,
+    { message: `A folyamat-bemenet nem lehet nagyobb ${PROCESS_INPUT_PAYLOAD_MAX_BYTES} bájtnál.` },
+  )
+
 export const agentChatStreamTurnInputSchema = z.object({
   content: z.string().max(AGENT_CHAT_STREAM_CONTENT_MAX),
   attachmentDocumentIds: z.array(z.string().uuid()).max(8).optional(),
@@ -376,6 +395,10 @@ export const agentChatStreamTurnInputSchema = z.object({
   // `.partial()` relaxálja a `goal` kötelezőségét: a chat-stream forduló nem
   // feltétlen küld teljes briefinget, az üres-üzenet őr a runtime `beginTurn`-ben van.
   taskBriefing: taskBriefingSchema.partial().nullish(),
+  // A folyamat-indító payload ugyanazon a kapun megy át, mint a REST futás-indító
+  // (közös `processInputPayloadSchema`) — enélkül ez volt az utolsó határok nélküli
+  // klienstartalom ezen az ingressen.
+  processInputPayload: processInputPayloadSchema.optional(),
 })
 
 export const createAgentTaskTicketSchema = z.object({
@@ -1344,7 +1367,7 @@ export const startProcessSchema = z
     triggerType: processTriggerTypeSchema.optional(),
     processType: z.string().trim().min(1).max(120).optional(),
     playbookVersionId: z.string().uuid().optional(),
-    inputPayload: z.record(z.string(), z.unknown()).optional(),
+    inputPayload: processInputPayloadSchema.optional(),
     conversationId: z.string().uuid().nullable().optional(),
     rootTicketId: z.string().uuid().nullable().optional(),
   })
