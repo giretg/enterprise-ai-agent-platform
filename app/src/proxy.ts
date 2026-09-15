@@ -45,7 +45,7 @@ function finishResponse(req: Request, res: NextResponse): NextResponse {
   }
   // Beágyazott agent-chat (#481 D1): a route csak külön ablakban él, sosem iframe-ben —
   // idegen domain semmiképp ne tudja keretezni.
-  if (pathname.startsWith('/embed/agents/')) {
+  if (pathname === '/embed/agents' || pathname.startsWith('/embed/agents/')) {
     res.headers.set('Content-Security-Policy', "frame-ancestors 'none'")
   }
   return res

@@ -21,13 +21,19 @@ export function EmbedAppsPanel({ initialApps }: { initialApps: EmbedApp[] }) {
   const [removingSlug, setRemovingSlug] = useState<string | null>(null)
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null)
 
-  /** A beágyazó app fejlesztőjének átadható bekötő-kód (spec §8) — a slug már benne van. */
+  /** A beágyazó app fejlesztőjének átadható bekötő-kód (spec §8) — a slug már benne van.
+   *
+   *  Az agentet NEM kell ismernie a külső appnak: a picker-URL (`/embed/agents`)
+   *  a bejelentkezett user saját agent-listáját mutatja, a választás ugyanabban az
+   *  ablakban a chatre visz. Közvetlen agent-URL (`/embed/agents/<id>`) csak akkor
+   *  kell, ha a CRM gombonként fix agenthez nyit — az ID az agent-adatlapról másolható.
+   */
   function snippetFor(app: EmbedApp): string {
     const platform = typeof window === 'undefined' ? '' : window.location.origin
     return [
       `const PLATFORM = '${platform}'`,
       `const win = window.open(`,
-      `  \`\${PLATFORM}/embed/agents/\${agentId}?app=${app.slug}&thread=\${encodeURIComponent(recordId)}\`,`,
+      `  \`\${PLATFORM}/embed/agents?app=${app.slug}&thread=\${encodeURIComponent(recordId)}\`,`,
       `  'eai-chat', 'popup,width=480,height=720')`,
       `window.addEventListener('message', (e) => {`,
       `  if (e.origin !== PLATFORM || e.data?.type !== 'eai:ready') return`,
@@ -77,9 +83,9 @@ export function EmbedAppsPanel({ initialApps }: { initialApps: EmbedApp[] }) {
       </p>
       <p className="mb-4 text-xs text-ink-faint">
         Hogyan működik: a másik rendszerben egy gomb külön ablakban megnyitja a platform
-        chatjét (<code>/embed/agents/&lt;agent-azonosító&gt;?app=&lt;slug&gt;&amp;thread=&lt;ügy-azonosító&gt;</code>),
-        és átadja neki a megnyitott ügy adatait. A bekötő-kódot a „Bekötő-kód másolása”
-        gombbal add át a rendszer fejlesztőjének.
+        agent-választóját (<code>/embed/agents?app=&lt;slug&gt;&amp;thread=&lt;ügy-azonosító&gt;</code>),
+        a felhasználó ott választ agentet, és az ablak átadja neki a megnyitott ügy adatait.
+        A bekötő-kódot a „Bekötő-kód másolása” gombbal add át a rendszer fejlesztőjének.
       </p>
 
       {apps.length === 0 ? (
