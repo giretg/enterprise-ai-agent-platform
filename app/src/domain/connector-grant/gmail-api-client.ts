@@ -198,7 +198,7 @@ export class GmailApiClient {
     return process.env.GMAIL_API_STUB === 'true' || this.accessToken.startsWith('stub-')
   }
 
-  async search(params: { query: string; maxResults?: number }): Promise<{ messages: GmailMessageSummary[] }> {
+  async search(params: { query: string; maxResults?: number; signal?: AbortSignal }): Promise<{ messages: GmailMessageSummary[] }> {
     if (this.isStub()) {
       const q = params.query.toLowerCase()
       const hits = STUB_MESSAGES.filter(
@@ -214,6 +214,7 @@ export class GmailApiClient {
 
     const listRes = await fetchWithBackoff('gmail.search', listUrl, {
       headers: { authorization: `Bearer ${this.accessToken}` },
+      signal: params.signal,
     })
     if (!listRes.ok) throw gmailApiError('gmail.search', listRes.status)
     const listData = (await listRes.json()) as { messages?: Array<{ id: string }> }
@@ -221,7 +222,7 @@ export class GmailApiClient {
 
     const messages: GmailMessageSummary[] = []
     for (const id of ids) {
-      const summary = await this.getMessageSummary(id)
+      const summary = await this.getMessageSummary(id, params.signal)
       messages.push(summary)
     }
     return { messages }
@@ -252,7 +253,7 @@ export class GmailApiClient {
     return { count: listData.resultSizeEstimate ?? listData.messages?.length ?? 0 }
   }
 
-  private async getMessageSummary(id: string): Promise<GmailMessageSummary> {
+  private async getMessageSummary(id: string, signal?: AbortSignal): Promise<GmailMessageSummary> {
     const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}`)
     url.searchParams.set('format', 'metadata')
     for (const header of ['From', 'Subject', 'Date']) {
@@ -261,6 +262,7 @@ export class GmailApiClient {
 
     const res = await fetchWithBackoff('gmail.search.metadata', url, {
       headers: { authorization: `Bearer ${this.accessToken}` },
+      signal,
     })
     if (!res.ok) throw gmailApiError('gmail.search.metadata', res.status)
     const raw = (await res.json()) as Record<string, unknown>
@@ -309,6 +311,7 @@ export class GmailApiClient {
     body: string
     threadId?: string
     attachments?: GmailAttachment[]
+    signal?: AbortSignal
   }): Promise<{ draftId: string }> {
     if (this.isStub()) {
       return { draftId: `stub-draft-${Date.now()}` }
@@ -324,10 +327,26 @@ export class GmailApiClient {
         'content-type': 'application/json',
       },
       body: JSON.stringify({ message }),
+      signal: params.signal,
     })
     if (!res.ok) throw gmailApiError('gmail.create_draft', res.status)
     const data = (await res.json()) as { id?: string }
     return { draftId: data.id ?? 'unknown' }
+  }
+
+  /**
+   * Diagnosztikai próba-írás takarítása: a létrehozott piszkozat azonnali
+   * törlése. Stub módban nincs hálózati hívás.
+   */
+  async deleteDraft(params: { draftId: string; signal?: AbortSignal }): Promise<{ ok: true }> {
+    if (this.isStub()) return { ok: true }
+    const res = await fetchWithBackoff(
+      'gmail.delete_draft',
+      `https://gmail.googleapis.com/gmail/v1/users/me/drafts/${encodeURIComponent(params.draftId)}`,
+      { method: 'DELETE', headers: { authorization: `Bearer ${this.accessToken}` }, signal: params.signal },
+    )
+    if (!res.ok) throw gmailApiError('gmail.delete_draft', res.status)
+    return { ok: true }
   }
 
   async send(params: { draftId?: string; to?: string; subject?: string; body?: string }): Promise<{ messageId: string }> {

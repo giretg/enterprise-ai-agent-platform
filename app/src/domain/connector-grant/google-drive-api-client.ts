@@ -143,6 +143,7 @@ export class GoogleDriveApiClient {
     driveId?: string
     pageSize?: number
     pageToken?: string
+    signal?: AbortSignal
   }): Promise<{ files: DriveFileSummary[]; nextPageToken?: string }> {
     if (this.isStub()) {
       const q = (params.query ?? params.nameContains ?? '').toLowerCase()
@@ -175,7 +176,7 @@ export class GoogleDriveApiClient {
       url.searchParams.set(key, value)
     }
 
-    const res = await fetchWithBackoff('google_drive.search', url, { headers: this.authHeaders() })
+    const res = await fetchWithBackoff('google_drive.search', url, { headers: this.authHeaders(), signal: params.signal })
     if (!res.ok) throw driveApiError('google_drive.search', res.status, await res.text())
     const data = (await res.json()) as { files?: Record<string, unknown>[]; nextPageToken?: string }
     const files = (data.files ?? [])
@@ -306,6 +307,7 @@ export class GoogleDriveApiClient {
   async createFolder(params: {
     name: string
     parentFolderId?: string
+    signal?: AbortSignal
   }): Promise<{ file: DriveFileSummary; created: boolean }> {
     if (this.isStub()) {
       return {
@@ -335,6 +337,7 @@ export class GoogleDriveApiClient {
       method: 'POST',
       headers: { ...this.authHeaders(), 'content-type': 'application/json' },
       body: JSON.stringify(metadata),
+      signal: params.signal,
     })
     if (!res.ok) throw driveApiError('google_drive.create_folder', res.status, await res.text())
     const raw = (await res.json()) as Record<string, unknown>
@@ -410,8 +413,8 @@ export class GoogleDriveApiClient {
     return { file, created: true }
   }
 
-  async trashFile(params: { fileId: string }): Promise<DriveFileSummary> {
-    return this.patchMetadata(params.fileId, { trashed: true })
+  async trashFile(params: { fileId: string; signal?: AbortSignal }): Promise<DriveFileSummary> {
+    return this.patchMetadata(params.fileId, { trashed: true }, params.signal)
   }
 
   async restoreFile(params: { fileId: string }): Promise<DriveFileSummary> {
@@ -497,6 +500,7 @@ export class GoogleDriveApiClient {
   private async patchMetadata(
     fileId: string,
     patch: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<DriveFileSummary> {
     if (this.isStub()) {
       const existing = await this.getFile({ fileId })
@@ -513,6 +517,7 @@ export class GoogleDriveApiClient {
       method: 'PATCH',
       headers: { ...this.authHeaders(), 'content-type': 'application/json' },
       body: JSON.stringify(patch),
+      signal,
     })
     if (!res.ok) throw driveApiError('google_drive.patch', res.status, await res.text())
     const raw = (await res.json()) as Record<string, unknown>

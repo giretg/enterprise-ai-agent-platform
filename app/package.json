@@ -98,6 +98,7 @@
     "test:tool-loop": "tsx scripts/agent-tool-loop.test.ts",
     "tool-prompt-size": "tsx scripts/tool-prompt-size.ts",
     "test:connector-grant-needed": "tsx scripts/connector-grant-needed.test.ts",
+    "test:agent-diagnostics": "tsx scripts/agent-diagnostics.test.ts",
     "test:gmail-draft-attachment": "tsx scripts/gmail-draft-attachment.test.ts",
     "test:linked-account-view": "tsx scripts/linked-account-view.test.ts",
     "test:oauth-navigation": "tsx scripts/oauth-navigation.test.ts",
