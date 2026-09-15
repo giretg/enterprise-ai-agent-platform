@@ -1086,6 +1086,9 @@ async function main() {
     {
       title: 'regisztrált provider (Gmail)',
       tool: 'gmail_search' as const,
+      // Eszközönként ÉRVÉNYES args kell: a séma különben a broker ELŐTT dob, és a
+      // grant-kártya-ág sosem fut le (gmail_search: query=string; http_api_get: path).
+      input: { query: 'x' } as Record<string, unknown>,
       reason: 'connector_grant_missing',
       prompt: 'hány olvasatlan levelem van?',
       expectedConnectorType: 'gmail',
@@ -1093,6 +1096,7 @@ async function main() {
     {
       title: 'generikus OAuth-connector (http_api)',
       tool: 'http_api_get' as const,
+      input: { path: '/me' } as Record<string, unknown>,
       reason: 'connector_scope_not_granted',
       prompt: 'kérdezd le a saját fiókom adatait',
       expectedConnectorType: undefined,
@@ -1121,7 +1125,7 @@ async function main() {
         const result = await runAgentToolLoop({
           gateway: fakeGateway(
             [
-              { toolCalls: [{ id: 'c1', name: scenario.tool, input: { query: 'x', path: '/me' } }] },
+              { toolCalls: [{ id: 'c1', name: scenario.tool, input: scenario.input }] },
               { content: 'Hozzáférés kell — a gomb a chatben jelenik meg.' },
             ],
             gwCalls,
@@ -1252,6 +1256,38 @@ async function main() {
     await run([{ content: 'Kész.' }], ['xlsx_write_cells'])
     assert.deepEqual(toolNames(firstRun), ['file_read', 'xlsx_write_cells', 'tool_describe'])
     assert.equal(indexOf(firstRun), indexOf(0))
+  })
+
+  await check('tool_describe: skill-hatókörön kívüli grantolt tool sémája NEM adódik ki (describe = hívhatóság)', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          { toolCalls: [{ id: 'd1', name: 'tool_describe', input: { names: ['xlsx_create', 'xlsx_write_cells'] } }] },
+          { content: 'Kész.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBrokerResult(brokerCalls, { ok: true, path: 'x.xlsx' }),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-1' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'Excel' }],
+      modelConfig: MODEL_CONFIG,
+      // Grant: mindkettő; a betöltött skill hatóköre viszont CSAK xlsx_create.
+      allowedTools: ['file_read', 'xlsx_create', 'xlsx_write_cells'],
+      initialSkillToolScope: ['xlsx_create'],
+    })
+    const describeMsg = gwCalls[1].messages.find((m) => m.role === 'tool' && m.toolCallId === 'd1')
+    assert.ok(describeMsg && 'content' in describeMsg)
+    const described = JSON.parse(describeMsg.content as string) as Array<Record<string, unknown>>
+    // Hatókörön belüli → séma; hatókörön kívüli (bár grantolt) → „nem elérhető", séma nélkül.
+    assert.equal(described[0].name, 'xlsx_create')
+    assert.ok(described[0].parameters)
+    assert.deepEqual(described[1], { name: 'xlsx_write_cells', error: 'nem elérhető' })
   })
 
   if (failures > 0) {
