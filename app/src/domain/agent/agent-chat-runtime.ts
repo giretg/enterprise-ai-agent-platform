@@ -3020,13 +3020,13 @@ export class AgentChatRuntime {
           workspaceFiles.map((p) => `- ${p}`).join('\n') +
           `\n\nEzeket a file_read / xlsx_read_sheet / file_search stb. eszközökkel éred el a fenti pontos néven. ` +
           `Csatolmány PDF/DOCX tartalmához (documentId a csatolmány-blokkban) a document_read eszközt használd oldalra vagy keresésre — ne a teljes .txt-t file_read-del. ` +
-          `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz. Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozz létre. A kész, felhasználónak szánt fájlra a válaszodban mindig csak a pontos, backtickbe tett fájlnévvel hivatkozz (pl. \`riport.html\`) — ebből kattintható link lesz; a HTML megnyitható, a többi letölthető.`,
+          `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz. Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozz létre. A kész, felhasználónak szánt fájlra a válaszodban mindig csak a pontos, backtickbe tett fájlnévvel hivatkozz (pl. \`riport.html\`) — ebből kattintható link lesz; a HTML megnyitható, a többi letölthető. Új fájlnál az eszköz által visszaadott \`path\` mezőt szó szerint másold vissza, sose rekonstruáld fejből (a skill-minta helyőrzőjét nem szabad cégnévvel kitölteni).`,
       })
     } else {
       variableContext.push({
         role: 'system',
         content:
-          'A beszélgetés munkaterülete jelenleg üres (nincs feltöltött fájl). Ha a felhasználó létező fájlra hivatkozik, kérd meg, hogy csatolja (📎). Csatolt PDF/DOCX esetén a document_read eszközt használd (pages/query). Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozhatsz létre. A kész, felhasználónak szánt fájlt a válaszodban pontos, backtickbe tett fájlnévvel említsd, hogy kattintható legyen.',
+          'A beszélgetés munkaterülete jelenleg üres (nincs feltöltött fájl). Ha a felhasználó létező fájlra hivatkozik, kérd meg, hogy csatolja (📎). Csatolt PDF/DOCX esetén a document_read eszközt használd (pages/query). Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozhatsz létre. A kész, felhasználónak szánt fájlt a válaszodban pontos, backtickbe tett fájlnévvel említsd, hogy kattintható legyen. Új fájlnál az eszköz által visszaadott `path` mezőt szó szerint másold vissza, sose rekonstruáld fejből.',
       })
     }
 
