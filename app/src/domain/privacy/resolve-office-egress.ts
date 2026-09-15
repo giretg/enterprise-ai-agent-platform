@@ -30,15 +30,17 @@ export async function resolveOfficeFileEgressForViewer(params: {
   onResolved?: EgressResolveAudit
 }): Promise<Buffer> {
   const buffer = params.buffer
-  if (!buffer.length || !params.engine || !params.tenantId || !params.requesterUserId) {
+  if (!buffer.length) return buffer
+
+  // A bizalmi határ hibánál dob: a route így privacy-konfiguráció nélkül sem
+  // küld vissza sérült Office-archívumot, és a JSZip sem bontja ki a támadó inputját.
+  assertSafeOfficeArchive(buffer)
+
+  if (!params.engine || !params.tenantId || !params.requesterUserId) {
     return buffer
   }
   const scope = privacyScopeForCall(params.conversationId, params.ticketId)
   if (!scope) return buffer
-
-  // A bizalmi határ hibánál dob: a route így nem küld vissza részben feloldott
-  // vagy sérült Office-archívumot, és a JSZip sem bontja ki a támadó inputját.
-  assertSafeOfficeArchive(buffer)
 
   let zip: JSZip
   try {
