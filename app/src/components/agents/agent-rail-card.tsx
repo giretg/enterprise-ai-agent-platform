@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
+import { AgentRoleDescriptionButton } from '@/components/agents/agent-role-description-modal'
 import { personaFor } from '@/lib/agent-persona'
 import {
   liveStatusLabel,
@@ -127,23 +128,27 @@ export function AgentRailCard({
     }
   }
 
+  const roleInstructionText = card.roleInstruction || card.roleDescription
+
   return (
-      <div
-        role="option"
-        aria-selected={selected}
-        tabIndex={0}
-        onClick={onSelect}
-        onKeyDown={handleKeyDown}
-        className={`relative w-full rounded-2xl border bg-gradient-to-br from-card to-card-2 p-3 text-left shadow-sm transition-all hover:-translate-y-px hover:border-[#dbcaa9] hover:shadow-md ${
+    <div
+      role="option"
+      aria-selected={selected}
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={handleKeyDown}
+      className={`relative w-full rounded-2xl border p-3 text-left transition-all hover:-translate-y-px hover:border-[#dbcaa9] hover:shadow-md ${
         menuOpen ? 'z-20' : ''
       } ${
-        selected ? 'border-coral shadow-[0_0_0_1px_inset_var(--color-coral)]' : 'border-line'
+        selected
+          ? 'border-coral-deep border-l-[6px] border-l-coral-deep bg-gradient-to-br from-coral/[0.18] via-card to-card shadow-lg ring-2 ring-coral/50'
+          : 'border-line bg-gradient-to-br from-card to-card-2 shadow-sm'
       } ${collapsed ? 'w-[52px] overflow-hidden p-1.5' : ''}`}
     >
       {selected && !collapsed ? (
         <span
           aria-hidden
-          className="absolute -left-3 top-4 bottom-4 w-0.5 rounded-r bg-coral"
+          className="absolute left-0 top-3 bottom-3 w-1.5 rounded-r-full bg-coral-deep"
         />
       ) : null}
 
@@ -170,7 +175,11 @@ export function AgentRailCard({
         ) : (
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1">
-              <p className="min-w-0 flex-1 truncate font-display text-[15px] font-bold leading-tight">
+              <p
+                className={`min-w-0 flex-1 truncate font-display text-[15px] font-bold leading-tight ${
+                  selected ? 'text-coral-deep' : 'text-ink'
+                }`}
+              >
                 {persona.nickname}
               </p>
               <div ref={menuWrapRef} className="relative -mr-1 shrink-0">
@@ -198,9 +207,18 @@ export function AgentRailCard({
                 ) : null}
               </div>
             </div>
-            <p className="line-clamp-2 text-[11px] leading-snug italic text-ink-faint">
-              &quot;{persona.greeting}&quot;
-            </p>
+            <div className="mt-0.5 flex items-start gap-1">
+              <p className="min-w-0 flex-1 text-[11px] leading-snug italic text-ink-faint line-clamp-2">
+                &quot;{persona.greeting}&quot;
+              </p>
+              {roleInstructionText ? (
+                <AgentRoleDescriptionButton
+                  nickname={persona.nickname}
+                  description={roleInstructionText}
+                  compact
+                />
+              ) : null}
+            </div>
           </div>
         )}
       </div>
@@ -256,6 +274,6 @@ export function AgentRailCard({
           ) : null}
         </>
       ) : null}
-      </div>
+    </div>
   )
 }

@@ -86,6 +86,7 @@ export function composeAgentRailStates(
       taskOnly: agent.taskOnly,
       roleLabel: roleLabelFor(agent),
       roleDescription: roleDescriptionFor(agent),
+      roleInstruction: agent.roleInstruction ?? '',
       liveStatus,
       activityText: activityTextFor(agent, activity, liveStatus),
       elapsed: activity?.current?.elapsed ?? null,

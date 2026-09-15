@@ -8,9 +8,7 @@ import { AgentChatPanel } from '@/components/agents/agent-chat-panel'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentWorkspaceApps } from '@/components/agents/agent-workspace-apps'
 import { AgentTaskPanel } from '@/components/agents/agent-task-button'
-import { AgentRoleDescriptionButton } from '@/components/agents/agent-role-description-modal'
 import { setAgentRailMobileOpen } from '@/components/agents/agent-rail-store'
-import { personaFor } from '@/lib/agent-persona'
 import { recordLastAgentChatForCurrentTenant } from '@/lib/last-agent-chat'
 import { type AgentWorkspaceTab } from '@/lib/agent-rail-types'
 import { boardTabBadge, type BoardTabBadge } from '@/lib/board-tab-badge'
@@ -162,7 +160,6 @@ function WorkspaceHeader({
   agent: WorkspaceAgent
   tab: AgentWorkspaceTab
 }) {
-  const persona = personaFor(agent.name, agent)
   const router = useRouter()
   const showChatChrome = tab === 'chat' && !agent.taskOnly
   const {
@@ -183,10 +180,11 @@ function WorkspaceHeader({
 
   return (
     <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line bg-card/55 px-3 py-2.5 backdrop-blur-sm sm:gap-3 sm:px-5 sm:py-3">
+      {/* Mobilon az avatar nyitja a munkatárs-sávot; asztali gépen a sáv kijelölése mutatja az agentet. */}
       <button
         type="button"
         onClick={() => setAgentRailMobileOpen(true)}
-        className="shrink-0 rounded-full text-left xl:pointer-events-none"
+        className="shrink-0 rounded-full text-left xl:hidden"
         aria-label="Munkatárs váltása"
         title="Munkatárs váltása"
       >
@@ -198,26 +196,6 @@ function WorkspaceHeader({
           personaNickname={agent.personaNickname}
         />
       </button>
-      <div className="min-w-0 flex-1 sm:max-w-[16rem]">
-        <h1 className="truncate font-display text-[17px] font-bold leading-tight">{persona.nickname}</h1>
-        <button
-          type="button"
-          onClick={() => setAgentRailMobileOpen(true)}
-          className="mt-0.5 text-[11px] font-semibold text-coral-deep xl:hidden"
-        >
-          Munkatárs váltása ▾
-        </button>
-        <div className="mt-0.5 hidden items-start gap-0.5 sm:flex">
-          <p className="min-w-0 flex-1 text-[11.5px] leading-snug italic text-ink-faint line-clamp-2">
-            &quot;{persona.greeting}&quot;
-          </p>
-          <AgentRoleDescriptionButton
-            nickname={persona.nickname}
-            description={agent.roleInstruction}
-            compact
-          />
-        </div>
-      </div>
 
       <nav
         aria-label="Munkaterület fülek"

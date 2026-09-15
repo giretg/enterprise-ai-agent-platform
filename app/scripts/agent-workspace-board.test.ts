@@ -165,17 +165,19 @@ check('a sín kártyáján nincs külön Beszélgetés/Feladat gombsor', () => {
   assert.match(railCard, /workspaceTabsForAgent/)
 })
 
-check('a sín kártyája a bemutatkozást mutatja, a munkaköri leírás nem kattintható', () => {
+check('a sín kártyája a bemutatkozást mutatja, mellette nyílik a munkaköri leírás', () => {
   assert.match(railCard, /persona\.greeting/)
+  assert.match(railCard, /AgentRoleDescriptionButton/)
   assert.doesNotMatch(railCard, /showRolePopover/)
   assert.doesNotMatch(railCard, /AgentRailRolePopover/)
   assert.doesNotMatch(railCard, /card\.roleLabel/)
 })
 
-check('a munkaterület fejlécében a bemutatkozás mellett nyílik a munkaköri leírás', () => {
-  assert.match(workspace, /AgentRoleDescriptionButton/)
-  assert.match(workspace, /persona\.greeting/)
+check('a munkaterület fejléce csak a fülsort mutatja, az agent-nevet a sín kijelölése adja', () => {
+  assert.doesNotMatch(workspace, /AgentRoleDescriptionButton/)
+  assert.doesNotMatch(workspace, /persona\.greeting/)
   assert.doesNotMatch(workspace, /workspaceSubtitle/)
+  assert.match(workspace, /Munkaterület fülek/)
 })
 
 check('mobilon egyértelmű a munkatársváltás és nem vágódik le a fülsor', () => {
