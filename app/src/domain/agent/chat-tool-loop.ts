@@ -23,8 +23,12 @@ import {
 import {
   TOOL_RESULT_EXTRACT_TOOL_NAME,
   buildExtractSummary,
+  describeJsonShapeHints,
+  envelopeArchived,
   extractToolResultRows,
+  findRecordArray,
   formatLargeToolResultPreview,
+  parseToolResultJson,
   workspaceCopyPathForArchive,
 } from './tool-result-extract'
 import { logger } from '@/lib/observability/logger'
@@ -47,6 +51,7 @@ import {
 // issue #97 — a becsomagolás, issue #195 — a kimenetel közlése: mindkettő a Tool
 // Broker határán történik, a fogyasztó a kész `modelText`-et kapja.
 import {
+  buildToolModelText,
   describeOutcomeForModel,
   describeOutcomeForUi,
 } from '@/domain/tool-broker/tool-output-contract'
@@ -290,7 +295,8 @@ export function resolveToolLoopMaxTurns(
 
 const TOOL_RESULT_READ = TOOL_RESULT_READ_TOOL_NAME
 const TOOL_RESULT_INLINE_LIMIT = 12_000
-const TOOL_RESULT_PREVIEW_CHARS = 10_000
+const TOOL_RESULT_PREVIEW_HEAD = 2_000
+const TOOL_RESULT_PREVIEW_TAIL = 500
 const TOOL_RESULT_READ_DEFAULT_LIMIT = 40_000
 const TOOL_RESULT_READ_MAX_LIMIT = 40_000
 export const TOOL_LOOP_CHECKPOINT_PATH = '.workspace-meta/tool-loop-checkpoint.json'
@@ -393,8 +399,12 @@ const TOOL_RESULT_READ_DEFINITION: ToolDefinition = {
   description:
     'Korábban elmentett nagy tool-eredmény VAGY munkaterületi JSON fájl (pl. egyeztetes-eltero.json) részletének visszaolvasása. ' +
     'path: `.tool-results/…`, `tool-outputs/…` vagy relatív workspace path. Offset karakter-alapú, limit karakterben. ' +
+    'Listából a 150. rekordhoz add meg: arrayPath + rowOffset=149, rowLimit=1. ' +
     'Mezőkivonathoz előnyben: tool_result_extract.',
-  inputSchema: objectSchema({ path: STR, offset: NUM, limit: NUM }, ['path']),
+  inputSchema: objectSchema(
+    { path: STR, offset: NUM, limit: NUM, arrayPath: STR, rowOffset: NUM, rowLimit: NUM },
+    ['path'],
+  ),
 }
 
 const TOOL_RESULT_EXTRACT = TOOL_RESULT_EXTRACT_TOOL_NAME
@@ -764,6 +774,16 @@ function stripToolArtifacts(content: string): string {
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.floor(n)))
+}
+
+function largeToolResultPreview(content: string, headChars: number): { head: string; text: string } {
+  const head = content.slice(0, headChars)
+  if (content.length <= headChars + TOOL_RESULT_PREVIEW_TAIL + 100) return { head, text: content }
+  const omitted = content.length - headChars - TOOL_RESULT_PREVIEW_TAIL
+  return {
+    head,
+    text: `${head}\n…[kihagyva ${omitted} karakter]…\n${content.slice(-TOOL_RESULT_PREVIEW_TAIL)}`,
+  }
 }
 
 // A loop SAJÁT (nem broker-) pszeudo-tooljainak — tool_result_read /
@@ -2152,6 +2172,10 @@ export async function runAgentToolLoop(params: {
         }
         const readSourceKey =
           archived?.sourceKey ?? callSourceKey ?? `${call.name}:path:${path}`
+        const arrayPath = strArg(call.input, 'arrayPath') || undefined
+        const rowMode = numArg(call.input, 'rowOffset') != null || numArg(call.input, 'rowLimit') != null
+        const rowOffset = clamp(numArg(call.input, 'rowOffset') ?? 0, 0, Number.MAX_SAFE_INTEGER)
+        const rowLimit = clamp(numArg(call.input, 'rowLimit') ?? 50, 1, 200)
         const offset = clamp(numArg(call.input, 'offset') ?? 0, 0, archived?.content.length ?? 0)
         const limit = clamp(
           numArg(call.input, 'limit') ?? TOOL_RESULT_READ_DEFAULT_LIMIT,
@@ -2171,7 +2195,7 @@ export async function runAgentToolLoop(params: {
             status: 'denied',
             outcome: 'failed',
             startedAt: readStartedAt,
-            argsMeta: { path, offset, limit, source_key: readSourceKey },
+            argsMeta: { path, offset, limit, array_path: arrayPath, row_offset: rowOffset, row_limit: rowLimit, source_key: readSourceKey },
             resultMeta: { blocked: true, reason },
           })
         }
@@ -2213,7 +2237,9 @@ export async function runAgentToolLoop(params: {
         }
 
         // 3. fék — a közös ismétlés-őr: ugyanaz a (path, offset, limit) hármas.
-        const readRepeatKey = `${TOOL_RESULT_READ}:${path}:${offset}:${limit}`
+        const readRepeatKey = rowMode
+          ? `${TOOL_RESULT_READ}:${path}:${arrayPath ?? ''}:${rowOffset}:${rowLimit}`
+          : `${TOOL_RESULT_READ}:${path}:${offset}:${limit}`
         const readRepeatCount = (callRepeatTracker.get(readRepeatKey) ?? 0) + 1
         callRepeatTracker.set(readRepeatKey, readRepeatCount)
         if (readRepeatCount > REPEAT_LIMIT) {
@@ -2236,26 +2262,50 @@ export async function runAgentToolLoop(params: {
           status: 'running',
         })
         const content = archived?.content ?? ''
-        const chunk = content.slice(offset, offset + limit)
-        const nextOffset = offset + chunk.length < content.length ? offset + chunk.length : null
-        const readContent = archived
-          ? JSON.stringify({
+        let returnedChars = 0
+        let nextOffset: number | null = null
+        let readContent = `HIBA: nincs ilyen elmentett tool-eredmény ebben a futásban: ${path}`
+        if (archived && rowMode) {
+          const parsed = parseToolResultJson(content)
+          const rows = parsed == null ? null : findRecordArray(parsed, arrayPath)
+          if (!rows) {
+            readContent = `HIBA: nem található rekordtömb a JSON-ban — add meg az arrayPath-ot (${describeJsonShapeHints(parsed)})`
+          } else {
+            const slice = rows.slice(rowOffset, rowOffset + rowLimit)
+            const rawRows = JSON.stringify(slice)
+            returnedChars = rawRows.length
+            readContent = JSON.stringify({
               path,
               toolName: archived.toolName,
-              offset,
-              limit,
-              returnedChars: chunk.length,
-              totalChars: content.length,
-              nextOffset,
-              content: chunk,
+              arrayPath: arrayPath ?? null,
+              rowOffset,
+              returnedRows: slice.length,
+              totalRows: rows.length,
+              nextRowOffset: rowOffset + slice.length < rows.length ? rowOffset + slice.length : null,
+              rows: envelopeArchived(archived.toolName, rawRows),
             })
-          : `HIBA: nincs ilyen elmentett tool-eredmény ebben a futásban: ${path}`
+          }
+        } else if (archived) {
+          const chunk = content.slice(offset, offset + limit)
+          returnedChars = chunk.length
+          nextOffset = offset + chunk.length < content.length ? offset + chunk.length : null
+          readContent = JSON.stringify({
+            path,
+            toolName: archived.toolName,
+            offset,
+            limit,
+            returnedChars,
+            totalChars: content.length,
+            nextOffset,
+            content: envelopeArchived(archived.toolName, chunk),
+          })
+        }
         toolCallCount += 1
         if (archived) {
-          turnReadBackChars += chunk.length
+          turnReadBackChars += returnedChars
           turnReadBackCalls += 1
           toolResultReadbackTotal.inc({ phase: 'allowed', reason: 'read' })
-          const redundant = noteSourceIngest(readSourceKey, chunk.length, content.length)
+          const redundant = noteSourceIngest(readSourceKey, returnedChars, content.length)
           // Ismételt behozás: a tartalom mehet, de a kört nem mossa tisztára.
           pushToolResult(call, readContent, redundant ? 'barren' : 'new')
           // issue #180 WP-3 — a lefutott visszaolvasás is a `tool_calls` táblába
@@ -2265,14 +2315,14 @@ export async function runAgentToolLoop(params: {
             status: 'ok',
             // Ismételt behozás = a hívás nem hozott új munkát: `partial`, hogy a
             // „melyik eszköz jár üresben?" nézet ezt is megmutassa.
-            outcome: redundant ? 'partial' : chunk.length > 0 ? 'ok' : 'empty',
+            outcome: redundant ? 'partial' : returnedChars > 0 ? 'ok' : 'empty',
             startedAt: readStartedAt,
             argsMeta: {
               path,
               offset,
               limit,
               source_key: readSourceKey,
-              returned_chars: chunk.length,
+              returned_chars: returnedChars,
               total_chars: content.length,
             },
             resultMeta: { redundant, next_offset: nextOffset },
@@ -2295,7 +2345,7 @@ export async function runAgentToolLoop(params: {
           id: `tool-${call.id}`,
           kind: 'tool',
           title: 'tool_result_read',
-          detail: archived ? `${chunk.length} karakter visszaolvasva` : 'archívum nem található',
+          detail: archived ? `${returnedChars} karakter visszaolvasva` : 'archívum nem található',
           status: archived ? 'done' : 'error',
           archivePath: path || undefined,
         })
@@ -2451,6 +2501,7 @@ export async function runAgentToolLoop(params: {
           rowCount: extracted.rowCount,
           sampleRows: extracted.rows.slice(0, 3),
           bytes: written.bytes,
+          sourceToolName: archived?.toolName ?? 'workspace',
         })
         pushToolResult(call, `${summary}\n(forrás: ${sourceLabel})`, 'new', {
           fingerprintContent: `${outputPath}:${extracted.rowCount}`,
@@ -3236,18 +3287,34 @@ export async function runAgentToolLoop(params: {
               status: 'done',
               archivePath: archive.path,
             })
-            const preview = archiveContent.slice(0, TOOL_RESULT_PREVIEW_CHARS)
+            const configuredHead = (params.modelConfig as Record<string, unknown>).toolResultPreviewChars
+            const preview = largeToolResultPreview(
+              archiveContent,
+              typeof configuredHead === 'number' && Number.isFinite(configuredHead)
+                ? clamp(configuredHead, 500, 10_000)
+                : TOOL_RESULT_PREVIEW_HEAD,
+            )
             toolContent = formatLargeToolResultPreview({
               archivePath: archive.path,
               workspacePath,
               chars: archiveContent.length,
               bytes: archive.bytes,
-              previewText: preview,
+              previewText: envelopeArchived(call.name, preview.text),
+              shapePreviewText: preview.head,
             })
           } else {
-            toolContent =
-              modelContent.slice(0, TOOL_RESULT_INLINE_LIMIT) +
-              `\n...[csonkítva — az eredmény ${modelContent.length} kar, limit ${TOOL_RESULT_INLINE_LIMIT}; teljes archívum nem készült]`
+            toolContent = result.denied
+              ? modelContent
+              : buildToolModelText({
+                  tool: call.name,
+                  trust: result.trust,
+                  outcome: 'partial',
+                  reason: result.outcomeReason,
+                  effect: result.effect,
+                  machineData: result.machineData,
+                  maxModelBytes: TOOL_RESULT_INLINE_LIMIT,
+                  fullDataRef: null,
+                }).modelText
           }
           // issue #195 — a nagy eredmény átformálása (archív-előnézet / csonkolás)
           // NEM nyelheti el a kimenetelt: az `empty` / `partial` közlés a

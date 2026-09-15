@@ -65,6 +65,7 @@ import { resolveWorkProjectBrief } from '../work-project/work-project-service'
 import type { ModelGateway, ModelConfig } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
+import { createWorkspaceToolResultArchiver } from './tool-result-archive'
 import { formatAttachmentBlock } from './agent-chat-runtime'
 import {
   listAllowedChatTools,
@@ -124,11 +125,6 @@ function readSkillParameterValues(payload: Record<string, unknown>): Record<stri
 function formatDueByPrompt(dueBy: Date | null | undefined): string | null {
   if (!dueBy || Number.isNaN(dueBy.getTime())) return null
   return `Határidő: ${dueBy.toISOString()}. A feladatot a határidő figyelembevételével tervezd és hajtsd végre.`
-}
-
-function safeToolResultName(value: string): string {
-  const cleaned = value.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '')
-  return cleaned.slice(0, 80) || 'tool-result'
 }
 
 /** Chat-csatolmány extractedText képjelölője — l. agent-chat-runtime. */
@@ -446,8 +442,7 @@ export class GeneralTaskRuntime {
         loadSkill,
         loadSkillAttachment,
         ...(skillAttachmentsAvailable ? { initialSkillAttachmentsAvailable: true } : {}),
-        archiveLargeToolResult: (input) =>
-          this.archiveLargeToolResult(wsTenant, ticket.id, input),
+        archiveLargeToolResult: createWorkspaceToolResultArchiver(this.workspaceStorage, wsTenant, ticket.id),
         writeWorkspaceFile: async (path, content, audience = 'internal') => {
           try {
             const bytes = Buffer.from(content, 'utf8')
@@ -1344,29 +1339,6 @@ export class GeneralTaskRuntime {
       )
     } catch {
       // A fájl publikálási metaadata nem szakíthatja meg a már kész választ.
-    }
-  }
-
-  private async archiveLargeToolResult(
-    tenantId: string,
-    ticketId: string,
-    input: { toolName: string; callId: string; turn: number; content: string; path?: string },
-  ): Promise<{ path: string; bytes: number } | null> {
-    const bytes = Buffer.from(input.content, 'utf8')
-    // Kötött útvonal a kontextus-tömörítéstől: a modellnek adott stub már ezt
-    // az útvonalat nevezte meg, a fájlnak ott kell keletkeznie.
-    const path =
-      input.path ??
-      [
-        '.tool-results',
-        `${String(input.turn + 1).padStart(2, '0')}-${safeToolResultName(input.toolName)}-${safeToolResultName(input.callId)}.json`,
-      ].join('/')
-
-    try {
-      await this.workspaceStorage.write(tenantId, ticketId, path, bytes)
-      return { path, bytes: bytes.length }
-    } catch {
-      return null
     }
   }
 

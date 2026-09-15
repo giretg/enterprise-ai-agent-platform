@@ -27,6 +27,7 @@ import {
 } from '../src/domain/tool-broker/tool-output-contract'
 import { resolveToolOutputContract } from '../src/domain/tool-broker/tool-output-contracts'
 import { isSideEffectingTool } from '../src/domain/tool-broker/tool-trust-registry'
+import { createWorkspaceToolResultArchiver } from '../src/domain/agent/tool-result-archive'
 import type { AuditRepository, ToolBrokerRepository } from '../src/repositories/interfaces'
 
 let failures = 0
@@ -644,7 +645,22 @@ async function main() {
     assert.match(toolMessage.content, /tool_result_extract/)
     assert.match(toolMessage.content, /tool-outputs\//)
     assert.doesNotMatch(toolMessage.content, /olvasd tovább a tool_result_read/)
-    assert.ok(!toolMessage.content.includes('Ügyfél 400'))
+    assert.match(toolMessage.content, /Ügyfél 400/)
+    assert.match(toolMessage.content, /<<<EXTERNAL_UNTRUSTED_DATA>>>/)
+    assert.match(toolMessage.content, /<<<END_EXTERNAL_UNTRUSTED_DATA>>>/)
+    assert.ok(toolMessage.content.length < 4000, `előnézet túl hosszú: ${toolMessage.content.length}`)
+  })
+
+  await check('nagy tool eredmény: sikertelen archiválás nem nyeli el a teljes eredményt', async () => {
+    const archive = createWorkspaceToolResultArchiver(
+      { write: async () => { throw new Error('workspace unavailable') } } as never,
+      'tenant-1',
+      'conv-1',
+    )
+    await assert.rejects(
+      archive({ toolName: 'http_api_get', callId: 'crm-call', turn: 0, content: 'teljes eredmény' }),
+      /workspace unavailable/,
+    )
   })
 
   await check('tool_result_extract: 300 sor × 3 mező egy hívásban, válasz < 2000 kar', async () => {
@@ -757,7 +773,31 @@ async function main() {
     const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
     assert.ok(toolMessage)
     assert.match(toolMessage.content, /from-previous-turn/)
+    assert.match(toolMessage.content, /EXTERNAL_UNTRUSTED_DATA/)
     assert.doesNotMatch(toolMessage.content, /nincs ilyen elmentett tool-eredmény/)
+  })
+
+  await check('rekord-szelet: a 150. rekord kérhető ki trust-envelope-pal', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const archivePath = '.tool-results/01-http_api_get-rows.json'
+    const archiveContent = JSON.stringify({ data: Array.from({ length: 200 }, (_, i) => ({ id: i + 1 })) })
+    await runAgentToolLoop({
+      gateway: fakeGateway([
+        { toolCalls: [{ id: 'read-row', name: 'tool_result_read', input: { path: archivePath, arrayPath: 'data', rowOffset: 149, rowLimit: 1 } }] },
+        { content: 'Megvan.' },
+      ], gwCalls),
+      toolBroker: fakeToolBrokerResult([], {}), toolCaps: fakeToolCaps,
+      agentId: 'agent-1', agentVersion: 1, context: { conversationId: 'conv-row-read' }, mode: 'chat',
+      messages: [{ role: 'user', content: 'kérem a 150. rekordot' }], modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get'],
+      archiveLargeToolResult: async () => ({ path: archivePath, bytes: archiveContent.length }),
+      listWorkspaceFiles: async () => [archivePath], readWorkspaceFile: async () => archiveContent,
+    })
+    const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
+    assert.ok(toolMessage)
+    const result = JSON.parse(toolMessage.content)
+    assert.equal(result.rowOffset, 149); assert.equal(result.totalRows, 200); assert.equal(result.returnedRows, 1)
+    assert.match(result.rows, /\{"id":150\}/); assert.match(result.rows, /EXTERNAL_UNTRUSTED_DATA/)
   })
 
   await check('file_read archívum-path esetén tool_result_read/extract felé irányít', async () => {

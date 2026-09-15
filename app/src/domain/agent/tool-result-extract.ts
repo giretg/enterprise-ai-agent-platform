@@ -8,6 +8,9 @@
  */
 export const TOOL_RESULT_EXTRACT_TOOL_NAME = 'tool_result_extract'
 
+import { envelopeToolResultForModel } from '@/domain/tool-broker/tool-result-envelope'
+import { resolveTrustClass } from '@/domain/tool-broker/tool-trust-registry'
+
 const SAMPLE_ROW_LIMIT = 3
 
 export type ExtractToolResultInput = {
@@ -109,7 +112,7 @@ function pickFields(row: unknown, fields: string[]): Record<string, unknown> {
   return out
 }
 
-function findRecordArray(root: unknown, arrayPath?: string): unknown[] | null {
+export function findRecordArray(root: unknown, arrayPath?: string): unknown[] | null {
   if (arrayPath) {
     const at = valueAtPath(root, arrayPath)
     return Array.isArray(at) ? at : null
@@ -184,16 +187,21 @@ export function buildExtractSummary(input: {
   rowCount: number
   sampleRows: Record<string, unknown>[]
   bytes: number
+  sourceToolName?: string
 }): string {
   const samples = input.sampleRows.slice(0, SAMPLE_ROW_LIMIT)
   return [
     `Kivonat kész: ${input.rowCount} sor → ${input.outputPath} (${input.bytes} bájt).`,
     `Mezők: ${input.fields.join(', ')}.`,
     `Mintasorok (${samples.length}/${input.rowCount}):`,
-    JSON.stringify(samples, null, 2),
+    envelopeArchived(input.sourceToolName ?? 'workspace', JSON.stringify(samples, null, 2)),
     'A teljes kivonat a munkaterületen van — NE olvasd vissza az eredeti forrást chunkolt file_read-del.',
     'Tovább: reconcile_records / tulajdoni_lap_egyeztetes / xlsx_append_rows a kimeneti fájlból.',
   ].join('\n')
+}
+
+export function envelopeArchived(toolName: string, text: string): string {
+  return envelopeToolResultForModel(resolveTrustClass(toolName), text)
 }
 
 /**
@@ -206,10 +214,11 @@ export function formatLargeToolResultPreview(input: {
   chars: number
   bytes: number
   previewText: string
+  shapePreviewText?: string
 }): string {
   // Az első „elmentve:" útvonal a rendszer-archívum — a tömörítés pointere erre épül.
   // A hétköznapi workspacePath a modellnek szóló elsődleges feldolgozási cél.
-  const shapeHint = arrayPathHintFromPreview(input.previewText)
+  const shapeHint = arrayPathHintFromPreview(input.shapePreviewText ?? input.previewText)
   return [
     `[Nagy tool-eredmény] A teljes eredmény elmentve: ${input.archivePath}`,
     `Munkaterületi másolat (ezt használd tovább): ${input.workspacePath}`,
