@@ -32,6 +32,7 @@ import { AssignConnectorModal } from '@/components/agents/assign-existing-connec
 import { ApiConnectorList } from '@/components/agents/api-connector-list'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
+import { AgentDiagnosticsPanel } from '@/components/agents/agent-diagnostics-panel'
 import { AgentToolsOverview } from '@/components/agents/agent-tools-overview'
 import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import type { AgentSkillRow, AssignableSkill } from '@/app/actions/skills'
@@ -349,6 +350,23 @@ export default async function AgentDetailPage({
                 ) : (
                   <MemoryPanel agentId={agent.id} />
                 )}
+              </InfoCard>
+            ),
+          },
+        ]
+      : []),
+    ...(isAdmin
+      ? [
+          {
+            id: 'diagnosztika',
+            label: 'Tesztelés',
+            description: 'Egy gombnyomásra kiderül, működnek-e az agent eszközei és kapcsolatai.',
+            content: (
+              <InfoCard
+                title="Agent tesztelése"
+                subtitle="Eszközök, skillek, kapcsolatok — élő próbával, oda vezető javítással"
+              >
+                <AgentDiagnosticsPanel agentId={agent.id} bare />
               </InfoCard>
             ),
           },

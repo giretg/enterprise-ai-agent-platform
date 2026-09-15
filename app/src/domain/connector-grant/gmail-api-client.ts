@@ -330,6 +330,21 @@ export class GmailApiClient {
     return { draftId: data.id ?? 'unknown' }
   }
 
+  /**
+   * Diagnosztikai próba-írás takarítása: a létrehozott piszkozat azonnali
+   * törlése. Stub módban nincs hálózati hívás.
+   */
+  async deleteDraft(params: { draftId: string }): Promise<{ ok: true }> {
+    if (this.isStub()) return { ok: true }
+    const res = await fetchWithBackoff(
+      'gmail.delete_draft',
+      `https://gmail.googleapis.com/gmail/v1/users/me/drafts/${encodeURIComponent(params.draftId)}`,
+      { method: 'DELETE', headers: { authorization: `Bearer ${this.accessToken}` } },
+    )
+    if (!res.ok) throw gmailApiError('gmail.delete_draft', res.status)
+    return { ok: true }
+  }
+
   async send(params: { draftId?: string; to?: string; subject?: string; body?: string }): Promise<{ messageId: string }> {
     if (this.isStub()) {
       return { messageId: `stub-sent-${Date.now()}` }
