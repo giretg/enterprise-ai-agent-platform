@@ -17,6 +17,7 @@ import { resolveToolHandler } from '../src/domain/tool-broker/handlers/registry'
 import {
   TOOL_NAMES,
   TOOL_REGISTRY,
+  toolIndexSummary,
   toolJsonSchema,
   toolsForSurface,
 } from '../src/domain/tool-broker/tool-registry'
@@ -116,6 +117,10 @@ function main() {
       assert.equal(typeof descriptor.toInvokeInput, 'function', `hiányzó toInvokeInput: ${name}`)
       assert.ok(descriptor.capability.trim().length > 0, `üres capability: ${name}`)
       assert.ok(descriptor.surfaces.length > 0, `egyetlen felületen sem látszik: ${name}`)
+      // #468 D1/D2: halasztás-döntés + egysoros index-alak minden toolhoz.
+      assert.equal(typeof descriptor.preload, 'boolean', `hiányzó preload: ${name}`)
+      const line = toolIndexSummary(name)
+      assert.ok(line.length > 0 && line.length <= 120, `nincs egysoros index-leírás: ${name}`)
     }
   })
 

@@ -367,8 +367,9 @@ async function main() {
     const history = content.indexOf('kérdés')
     assert.ok(toolInstruction > 0 && toolInstruction < policy)
     assert.ok(policy < memory && memory < slashSkill && slashSkill < history)
-    assert.deepEqual(gwCalls[0].tools?.map((tool) => tool.name), ['file_read', 'web_search'])
-    assert.ok(content.some((value) => value === 'A számodra engedélyezett eszközök: file_read, web_search'))
+    // #468: mag-toolok sémája + tool_describe; az index-blokk a stabil prefixben.
+    assert.deepEqual(gwCalls[0].tools?.map((tool) => tool.name), ['file_read', 'web_search', 'tool_describe'])
+    assert.ok(content.some((value) => value.startsWith('Eszközeid.') && value.includes('- file_read [betöltött]')))
   })
 
   await check('chat mód: conversationId + actingUserId propagál', async () => {
@@ -1195,6 +1196,62 @@ async function main() {
       [0, 1, 2],
     )
     assert.ok(seen.every((s) => s.deniedCount === 0))
+  })
+
+  // #468 — halasztott tool-betöltés (deferred-tool-loading-spec §6).
+  await check('deferred tools: index + tool_describe → aktiválás; D5 közvetlen hívás; nem grantolt séma nem szivárog; D4/D8 determinizmus', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const run = (responses: FakeResponse[], priorToolNames?: string[]) =>
+      runAgentToolLoop({
+        gateway: fakeGateway(responses, gwCalls),
+        toolBroker: fakeToolBrokerResult(brokerCalls, { ok: true, path: 'x.xlsx' }),
+        toolCaps: fakeToolCaps,
+        agentId: 'agent-1',
+        agentVersion: 1,
+        context: { conversationId: 'conv-1' },
+        mode: 'chat',
+        messages: [{ role: 'user', content: 'Excel' }],
+        modelConfig: MODEL_CONFIG,
+        allowedTools: ['file_read', 'xlsx_append_rows', 'xlsx_create', 'xlsx_write_cells'],
+        ...(priorToolNames ? { priorToolNames } : {}),
+      })
+    const toolNames = (i: number) => gwCalls[i].tools?.map((t) => t.name) ?? []
+    const indexOf = (i: number) =>
+      gwCalls[i].messages.find((m) => 'content' in m && m.content?.startsWith('Eszközeid.'))?.content ?? ''
+
+    await run([
+      { toolCalls: [{ id: 'd1', name: 'tool_describe', input: { names: ['xlsx_create', 'gmail_send', 'nincs_ilyen'] } }] },
+      { toolCalls: [{ id: 'c1', name: 'xlsx_create', input: { path: 'x.xlsx', sheets: [{ name: 'A' }] } }] },
+      { toolCalls: [{ id: 'c2', name: 'xlsx_write_cells', input: { path: 'x.xlsx', sheet: 'A', changes: [{ cell: 'A1', value: 1 }] } }] },
+      { toolCalls: [{ id: 'c3', name: 'xlsx_append_rows', input: { path: 'x.xlsx' } }] },
+      { content: 'Kész.' },
+    ])
+    // 1. kör: csak a mag-tool sémája + tool_describe; az index mindent felsorol.
+    assert.deepEqual(toolNames(0), ['file_read', 'tool_describe'])
+    assert.ok(indexOf(0).includes('- file_read [betöltött]') && indexOf(0).includes('- xlsx_create — '))
+    // describe-válasz: grantolt → séma; nem grantolt / ismeretlen → „nem elérhető", séma nélkül.
+    const describeMsg = gwCalls[1].messages.find((m) => m.role === 'tool' && m.toolCallId === 'd1')
+    assert.ok(describeMsg && 'content' in describeMsg)
+    const described = JSON.parse(describeMsg.content as string) as Array<Record<string, unknown>>
+    assert.equal(described[0].name, 'xlsx_create')
+    assert.ok(described[0].parameters)
+    assert.deepEqual(described[1], { name: 'gmail_send', error: 'nem elérhető' })
+    assert.deepEqual(described[2], { name: 'nincs_ilyen', error: 'nem elérhető' })
+    // 2. kör: xlsx_create aktiválva; xlsx_write_cells még nem.
+    assert.deepEqual(toolNames(1), ['file_read', 'xlsx_create', 'tool_describe'])
+    // D5: le nem írt xlsx_write_cells közvetlen hívása lefut a brokeren és aktivál.
+    assert.deepEqual(brokerCalls.map((c) => c.tool), ['xlsx_create', 'xlsx_write_cells'])
+    assert.deepEqual(toolNames(3), ['file_read', 'xlsx_create', 'xlsx_write_cells', 'tool_describe'])
+    // D5 tipp-sor: CSAK le nem írt tool hibás args-ánál (nem grantolt hívás → változatlan ELUTASÍTVA).
+    const c3 = gwCalls[4].messages.find((m) => m.role === 'tool' && m.toolCallId === 'c3')
+    assert.ok(c3 && 'content' in c3 && (c3.content as string).startsWith('HIBA: Tipp: a pontos sémáért hívd a tool_describe'))
+    assert.ok(!(gwCalls[4].messages.find((m) => m.role === 'tool' && m.toolCallId === 'c2') as { content: string }).content.includes('Tipp:'))
+    const firstRun = gwCalls.length
+    // D4: priorToolNames → discovery nélkül aktív; D8: az index-blokk mégis azonos.
+    await run([{ content: 'Kész.' }], ['xlsx_write_cells'])
+    assert.deepEqual(toolNames(firstRun), ['file_read', 'xlsx_write_cells', 'tool_describe'])
+    assert.equal(indexOf(firstRun), indexOf(0))
   })
 
   if (failures > 0) {
