@@ -16,6 +16,8 @@ export type TicketConsequenceApproval = {
   expiresAt: string
   expired?: boolean
   failedReason?: string
+  /** Tool invoke még fut — ne dönthető újra, de a lista se hallgassa el. */
+  inFlight?: boolean
 }
 
 /** Ameddig a ticket dolgozhat, a kártyalista magától frissül. */
@@ -73,8 +75,19 @@ export function TicketConsequenceApprovals({
   const [showDetails, setShowDetails] = useState(false)
 
   // Dönthető: élő pending, VAGY elbukott invoke (újrapróba). A lejárt pending NEM.
+  // Folyamatban lévő invoke: látszik, de nem dönthető (a resume sem indulhat el).
   const open = useMemo(
-    () => initial.filter((a) => !decisions[a.approvalId] && (!a.expired || a.failedReason)),
+    () =>
+      initial.filter(
+        (a) =>
+          !decisions[a.approvalId] &&
+          !a.inFlight &&
+          (!a.expired || a.failedReason),
+      ),
+    [initial, decisions],
+  )
+  const inFlight = useMemo(
+    () => initial.filter((a) => !decisions[a.approvalId] && a.inFlight),
     [initial, decisions],
   )
   // Lejárt pending: gomb nélkül, de LÁTHATÓ — különben a ticket hazudik („vár
@@ -95,10 +108,17 @@ export function TicketConsequenceApprovals({
   // zárná le a feladatot, hogy közben műveletek maradtak jóváhagyatlanul.
   useEffect(() => {
     if (anyBusy) return
-    if (!LIVE_STATES.has(ticketState) && open.length === 0 && expiredPending.length === 0) return
+    if (
+      !LIVE_STATES.has(ticketState) &&
+      open.length === 0 &&
+      inFlight.length === 0 &&
+      expiredPending.length === 0
+    ) {
+      return
+    }
     const timer = setInterval(() => router.refresh(), POLL_MS)
     return () => clearInterval(timer)
-  }, [router, ticketState, open.length, expiredPending.length, anyBusy])
+  }, [router, ticketState, open.length, inFlight.length, expiredPending.length, anyBusy])
 
   const decide = useCallback((approvalId: string, decision: Decision) => {
     setDecisions((prev) => ({ ...prev, [approvalId]: decision }))
@@ -211,23 +231,33 @@ export function TicketConsequenceApprovals({
   }
 
   const decidedRows = initial.filter((a) => decisions[a.approvalId])
-  if (open.length === 0 && expiredPending.length === 0 && decidedRows.length === 0 && !batchNote) {
+  if (
+    open.length === 0 &&
+    inFlight.length === 0 &&
+    expiredPending.length === 0 &&
+    decidedRows.length === 0 &&
+    !batchNote
+  ) {
     return null
   }
 
   const collecting = open.length > 0 && !canDecide
   const title = allExpired
     ? `${expiredPending.length} művelet jóváhagyása lejárt`
-    : open.length > 0
-      ? collecting
-        ? `${open.length} művelet gyűlik — jóváhagyás a futás vége után`
-        : `${open.length} művelet vár jóváhagyásra`
-      : 'Jóváhagyott API-műveletek'
+    : inFlight.length > 0 && open.length === 0
+      ? `${inFlight.length} művelet folyamatban`
+      : open.length > 0
+        ? collecting
+          ? `${open.length} művelet gyűlik — jóváhagyás a futás vége után`
+          : `${open.length} művelet vár jóváhagyásra`
+        : 'Jóváhagyott API-műveletek'
   const description = allExpired
     ? 'A jóváhagyási ablak lejárt, ezek a gombok már nem élnek. Dobd vissza a feladatot alább, majd indítsd újra — az agent újra kéri a jóváhagyást. A ticket-szintű „Jóváhagyás” NEM futtatja le ezeket a műveleteket.'
-    : collecting
-      ? 'Az AI munkatárs még dolgozik; a külső rendszerbe író hívások sorban gyűlnek. A jóváhagyó gomb akkor lesz elérhető, amikor a futás emberi döntésre áll.'
-      : 'Ezeket a külső rendszerbe író hívásokat a platform nem futtatta le magától. A gomb megnyomása után sorban lefutnak, és a feladat magától folytatódik.'
+    : inFlight.length > 0 && open.length === 0
+      ? 'A jóváhagyott műveletek épp futnak. A feladat akkor folytatódik, amikor mindegyik befejeződött — ne indítsd újra kézzel.'
+      : collecting
+        ? 'Az AI munkatárs még dolgozik; a külső rendszerbe író hívások sorban gyűlnek. A jóváhagyó gomb akkor lesz elérhető, amikor a futás emberi döntésre áll.'
+        : 'Ezeket a külső rendszerbe író hívásokat a platform nem futtatta le magától. A gomb megnyomása után sorban lefutnak, és a feladat magától folytatódik.'
 
   return (
     <Card title={title}>
@@ -271,15 +301,18 @@ export function TicketConsequenceApprovals({
             {initial.map((a) => {
               const decision = decisions[a.approvalId]
               const busy = busyIds.has(a.approvalId)
-              const openRow = !decision && (!a.expired || Boolean(a.failedReason))
+              const openRow =
+                !decision && !a.inFlight && (!a.expired || Boolean(a.failedReason))
               const note =
                 decision?.note ??
                 rowErrors[a.approvalId] ??
-                (a.failedReason
-                  ? errorLabel(a.failedReason)
-                  : a.expired
-                    ? 'A jóváhagyási ablak lejárt — dobd vissza és indítsd újra a feladatot.'
-                    : '')
+                (a.inFlight
+                  ? 'A művelet épp fut — várj a befejezésére.'
+                  : a.failedReason
+                    ? errorLabel(a.failedReason)
+                    : a.expired
+                      ? 'A jóváhagyási ablak lejárt — dobd vissza és indítsd újra a feladatot.'
+                      : '')
               return (
                 <li
                   key={a.approvalId}
@@ -292,20 +325,24 @@ export function TicketConsequenceApprovals({
                           ? 'success'
                           : decision?.status === 'rejected'
                             ? 'neutral'
-                            : a.expired && !a.failedReason
-                              ? 'danger'
-                              : 'warning'
+                            : a.inFlight
+                              ? 'warning'
+                              : a.expired && !a.failedReason
+                                ? 'danger'
+                                : 'warning'
                       }
                     >
                       {decision?.status === 'approved'
                         ? 'Jóváhagyva'
                         : decision?.status === 'rejected'
                           ? 'Elutasítva'
-                          : a.expired && !a.failedReason
-                            ? 'Lejárt'
-                            : collecting
-                              ? 'Gyűlik'
-                              : 'Várakozik'}
+                          : a.inFlight
+                            ? 'Folyamatban'
+                            : a.expired && !a.failedReason
+                              ? 'Lejárt'
+                              : collecting
+                                ? 'Gyűlik'
+                                : 'Várakozik'}
                     </Badge>
                     <span className="font-medium text-ink">{a.toolName}</span>
                   </div>

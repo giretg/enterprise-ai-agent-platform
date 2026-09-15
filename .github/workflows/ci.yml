@@ -159,6 +159,7 @@ jobs:
           npm run test:tool-output-contract
           npm run test:consequence-gate
           npm run test:consequence-approval
+          npm run test:google-drive-grant-metadata-cas
           npm run test:skill-catalog
           npm run test:turn-continuation
           npm run test:agent-ask-deadline

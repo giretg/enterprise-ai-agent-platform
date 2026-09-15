@@ -110,6 +110,7 @@
     "test:tool-output-contract": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tool-output-contract.test.ts",
     "test:consequence-gate": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/consequence-gate.test.ts",
     "test:consequence-approval": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/consequence-approval.test.ts",
+    "test:google-drive-grant-metadata-cas": "tsx scripts/google-drive-grant-metadata-cas.test.ts",
     "test:tool-broker-tenant": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tool-broker-tenant-isolation.test.ts",
     "test:eval-service": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/eval-service-agent-binding.test.ts",
     "test:memory-approval": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/memory-approval-service.test.ts",

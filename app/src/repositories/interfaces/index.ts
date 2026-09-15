@@ -2134,6 +2134,15 @@ export interface ConnectorGrantRepository {
     id: string,
     metadata: import('@prisma/client').Prisma.InputJsonValue,
   ): Promise<import('@prisma/client').ConnectorGrant>
+  /**
+   * Optimistic CAS a grant metadata JSON-ra. `expectedMetadata` a legutóbbi
+   * olvasott érték; ha közben más írt, `false` (a hívó újraolvassa).
+   */
+  updateMetadataIfMatch(
+    id: string,
+    expectedMetadata: import('@prisma/client').Prisma.InputJsonValue,
+    metadata: import('@prisma/client').Prisma.InputJsonValue,
+  ): Promise<boolean>
 }
 
 // ── Provisioning Assistant (Connector Onboarding) ───────────────────────────
