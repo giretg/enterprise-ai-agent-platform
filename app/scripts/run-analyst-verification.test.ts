@@ -431,7 +431,7 @@ async function main() {
     const top = keys.sort((a, b) => b.rereadCount - a.rereadCount)[0]!
     assert.equal(top.rereadCount, 131, '132 olvasás ugyanabból a forrásból → 131 ismételt')
     assert.equal(top.readCount, 132)
-    assert.match(top.sourceKey, /tool_result_read:path:/)
+    assert.match(top.sourceKey, /^path:/)
 
     const base = Date.parse(INCIDENT_DATE)
     const path = INCIDENT_PATH

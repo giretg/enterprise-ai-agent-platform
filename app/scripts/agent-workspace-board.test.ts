@@ -190,8 +190,8 @@ check('mobilon egyértelmű a munkatársváltás és nem vágódik le a fülsor'
   assert.match(workspace, /hidden sm:grid/)
   assert.match(rail, /Munkatárslista bezárása/)
   assert.match(rail, /Munkatársak/)
-  // A szerkesztő fejléc-sora mobilon is egy sorban fér el.
-  assert.match(composer, /flex flex-wrap items-center gap-2/)
+  // A projekt/mód/képesség választó egy "+" menübe költözött, a beviteli sor mobilon is egy sorban fér el.
+  assert.match(composer, /flex items-end gap-1\.5/)
   assert.doesNotMatch(composer, /grid-cols-1/)
 })
 
