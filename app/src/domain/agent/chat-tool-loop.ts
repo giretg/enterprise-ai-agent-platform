@@ -1989,21 +1989,23 @@ export async function runAgentToolLoop(params: {
     // modell mondandójának vége elveszett. Mért eset (2026-09-15, SPAR
     // tárgyalási felkészítő): 3× pontosan 16 384 tokennél vágott a kimenet,
     // észrevétlenül — a loop ment tovább, mintha teljes válasz jött volna.
-    // A nudge a következő kör elejére kerül (stabil prefix után), így a
-    // prompt-cache előtagját nem töri meg.
+    // ponytail: proxy-jel (usage >= maxTokens), nem finish_reason — a gateway
+    // ma nem adja tovább; reasoning-modellnél a gondolkodás is beleszámít.
     const configuredMaxTokens = activeModelConfig().maxTokens
-    const completedTokens = modelResult.usage?.completionTokens ?? 0
-    if (
+    const truncatedAtMaxTokens =
       typeof configuredMaxTokens === 'number' &&
       configuredMaxTokens > 0 &&
-      completedTokens >= configuredMaxTokens
-    ) {
-      messages.push({
-        role: 'system',
-        content:
-          `[CSONKOLT VÁLASZ] Az előző válaszod elérte a hosszkorlátot (${configuredMaxTokens} token) és csonkolódott — a végét a felhasználó nem kapta meg. ` +
-          'Ne ismételd meg egyben: folytasd RÖVIDEN onnan, ahol abbamaradt, vagy bontsd a feladatot kisebb lépésekre (egyszerre kevesebb adat).',
-      })
+      (modelResult.usage?.completionTokens ?? 0) >= configuredMaxTokens
+    if (truncatedAtMaxTokens) {
+      logger.warn(
+        {
+          turn,
+          maxTokens: configuredMaxTokens,
+          hasToolCalls: (toolCalls?.length ?? 0) > 0,
+          ...(params.context.conversationId ? { conversationId: params.context.conversationId } : {}),
+        },
+        'agent.tool_loop.completion_truncated',
+      )
     }
 
     // Forduló-végi flush + összefoglaló (D3): ahol volt valódi reasoning, a
@@ -2112,7 +2114,11 @@ export async function runAgentToolLoop(params: {
           }
         }
         return {
-          content: await displayForUi(cleaned),
+          content: await displayForUi(
+            truncatedAtMaxTokens
+              ? `${cleaned}\n\n_[A válasz a modell hosszkorlátjánál (${configuredMaxTokens} token) megszakadt — kérj rövidebb folytatást.]_`
+              : cleaned,
+          ),
           toolCallCount,
           deniedCount,
           brokerDeniedCount,
@@ -2149,6 +2155,16 @@ export async function runAgentToolLoop(params: {
       ...(assistantText ? { content: assistantText } : {}),
       toolCalls: calls,
     })
+    // A nudge a csonkolt asszisztens-üzenet UTÁN áll, így az „előző válaszod"
+    // arra mutat, amire kell; a stabil prefixet nem töri.
+    if (truncatedAtMaxTokens) {
+      messages.push({
+        role: 'system',
+        content:
+          `[CSONKOLT VÁLASZ] Az előző válaszod elérte a hosszkorlátot (${configuredMaxTokens} token) és csonkolódott — a végét a felhasználó nem kapta meg. ` +
+          'Ne ismételd meg egyben: folytasd RÖVIDEN onnan, ahol abbamaradt, vagy bontsd a feladatot kisebb lépésekre (egyszerre kevesebb adat).',
+      })
+    }
 
     for (const [callIndex, call] of calls.entries()) {
       const callSourceKey = toolCallSourceKey(call.name, call.input)

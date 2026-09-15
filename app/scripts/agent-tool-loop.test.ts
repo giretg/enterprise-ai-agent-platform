@@ -987,10 +987,33 @@ async function main() {
     assert.equal(result.status, 'completed')
     assert.equal(gwCalls.length, 2)
     const secondMessages = gwCalls[1]!.messages as Array<{ role: string; content?: string }>
-    assert.ok(
-      secondMessages.some((m) => m.role === 'system' && (m.content ?? '').includes('CSONKOLT VÁLASZ')),
-      'a második körben ott a csonkolás-nudge',
+    const nudgeIdx = secondMessages.findIndex(
+      (m) => m.role === 'system' && (m.content ?? '').includes('CSONKOLT VÁLASZ'),
     )
+    const assistantIdx = secondMessages.findIndex((m) => m.role === 'assistant')
+    assert.ok(nudgeIdx >= 0, 'a második körben ott a csonkolás-nudge')
+    assert.ok(nudgeIdx > assistantIdx, 'a nudge a csonkolt asszisztens-üzenet UTÁN áll')
+  })
+
+  await check('csonkolt válasz: tool-hívás nélküli végső válasznál a felhasználó jelzést kap', async () => {
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [{ content: 'Hosszú válasz eleje', usage: { promptTokens: 10, completionTokens: 100 } }],
+        [],
+      ),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { ticketId: 'ticket-truncated-final' },
+      mode: 'task',
+      messages: [{ role: 'user', content: 'írj sokat' }],
+      modelConfig: { ...MODEL_CONFIG, maxTokens: 100 },
+      allowedTools: [],
+    })
+    assert.equal(result.status, 'completed')
+    assert.match(result.content, /Hosszú válasz eleje/)
+    assert.match(result.content, /hosszkorlátjánál \(100 token\) megszakadt/)
   })
 
   await check('csonkolt válasz: korlát alatti completionnél nincs nudge', async () => {
