@@ -1789,6 +1789,18 @@ export interface ConversationRepository {
     /** Ticket → Megbeszélés (#219): forrás ticket (prior kontextus). */
     continuedFromTicketId?: string | null
   }): Promise<Conversation>
+  /**
+   * Beágyazott agent-chat (#481 D3): per-user szál a `(channel, channelExternalId,
+   * createdById)` részleges egyedi indexen — ha van, folytatódik; ha nincs, létrejön.
+   * Egyidejű megnyitás versenyét a vesztes újraolvasással oldja fel.
+   */
+  findOrCreateEmbeddedThread(data: {
+    tenantId: string
+    agentId: string
+    createdById: string
+    channelExternalId: string
+    title: string
+  }): Promise<Conversation>
   findById(id: string): Promise<Conversation | null>
   findByIdForTenant(id: string, tenantId: string | null): Promise<Conversation | null>
   updateProjectKey(id: string, projectKey: string): Promise<Conversation>

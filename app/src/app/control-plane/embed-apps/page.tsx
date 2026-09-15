@@ -1,6 +1,6 @@
 import { requireTenantRole } from '@/auth/tenant-context'
 import { getEmbedApps } from '@/app/actions/embed-apps'
-import { EmbedAppsPanel } from '@/components/agents/embed-apps-panel'
+import { EmbedAppsPanel } from '@/components/iam/embed-apps-panel'
 
 /**
  * Beágyazott agent-chat — „Beágyazó alkalmazások" (feature-spec #481, D7). Tenant-admin

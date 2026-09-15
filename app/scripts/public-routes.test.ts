@@ -77,6 +77,13 @@ check('a saját hitelesítésű gépi belépők publikusak (token/aláírás a h
   assertPublic('/api/webhooks/clerk')
 })
 
+check('a beágyazott chat-route publikus (session nélkül a saját bejelentkezés-állapotát mutatja, #481 D5)', () => {
+  assertPublic('/embed/agents/abc')
+  assertPublic('/embed/agents/abc?app=crm&thread=1')
+  assertProtected('/embed')
+  assertProtected('/agents/abc')
+})
+
 check('az operatív szondák publikusak (uptime-monitor / scrape)', () => {
   assertPublic('/api/healthz')
   assertPublic('/api/readyz')

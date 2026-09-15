@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client'
+import { settingsRecord } from '@/lib/tenant-settings'
 
 /** Tenant kimeneti nyelve — skill/playbook promptok és emberi szövegek. */
 export type TenantLanguage = 'hu' | 'en'
@@ -16,12 +17,6 @@ export const TENANT_LANGUAGE_OPTIONS: ReadonlyArray<{
   { value: 'hu', label: 'Magyar', nativeLabel: 'Hungarian' },
   { value: 'en', label: 'English', nativeLabel: 'English' },
 ]
-
-function settingsRecord(value: unknown): Record<string, Prisma.JsonValue> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, Prisma.JsonValue>)
-    : {}
-}
 
 export function isTenantLanguage(value: unknown): value is TenantLanguage {
   return value === 'hu' || value === 'en'

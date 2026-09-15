@@ -23,6 +23,10 @@ export const PUBLIC_ROUTE_PATTERNS = [
   ...PUBLIC_BRANDING_ROUTE_PATTERNS,
   '/sign-in(.*)',
   '/sign-up(.*)',
+  // Beágyazott agent-chat (#481 D5): az oldal MAGA ellenőrzi a sessiont, és session
+  // nélkül a saját „jelentkezz be" állapotát mutatja (nem a Clerk-átirányítást) —
+  // minden adat-elérése (agent, beszélgetés, server-actionök) külön hitelesített.
+  '/embed/agents/(.*)',
   '/api/v1/agent(.*)',
   '/api/v1/gateway(.*)',
   '/api/v1/harness(.*)',

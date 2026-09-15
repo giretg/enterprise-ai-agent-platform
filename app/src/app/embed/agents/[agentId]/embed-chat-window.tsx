@@ -7,10 +7,11 @@
  */
 import { useEffect, useState } from 'react'
 import { AgentChatPanel, type ChatAgent } from '@/components/agents/agent-chat-panel'
-
-const MAX_CONTEXT_BYTES = 8 * 1024
-
-type ExternalContext = { source: string; label: string; data: unknown }
+import {
+  EMBED_CONTEXT_MAX_BYTES,
+  embeddedContextByteSize,
+  type EmbeddedContext,
+} from '@/lib/embed-apps'
 
 export function EmbedChatWindow({
   agent,
@@ -23,7 +24,7 @@ export function EmbedChatWindow({
   appSlug: string
   appOrigin: string
 }) {
-  const [externalContext, setExternalContext] = useState<ExternalContext | null>(null)
+  const [externalContext, setExternalContext] = useState<EmbeddedContext | null>(null)
 
   useEffect(() => {
     if (window.opener) {
@@ -38,9 +39,9 @@ export function EmbedChatWindow({
       }
       const { label, data } = payload as { label?: unknown; data?: unknown }
       if (typeof label !== 'string' || data === undefined) return
-      const serialized = JSON.stringify(data)
-      if (serialized.length > MAX_CONTEXT_BYTES) return
-      setExternalContext({ source: `embedded_app:${appSlug}`, label, data })
+      // Ugyanaz a bájt-mérce, mint a route-on: ami itt átmegy, ott nem bukik.
+      if (embeddedContextByteSize({ label, data }) > EMBED_CONTEXT_MAX_BYTES) return
+      setExternalContext({ appSlug, label, data })
     }
 
     window.addEventListener('message', onMessage)

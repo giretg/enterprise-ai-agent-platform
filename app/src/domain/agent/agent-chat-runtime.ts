@@ -539,7 +539,7 @@ export type AgentChatSendParams = {
   taskBriefing?: TaskBriefing | null
   /**
    * Beágyazott agent-chat (#481 D4): a beágyazó app `postMessage`-kontextusa,
-   * MÁR burkolva (`envelopeEmbeddedContextForModel`). Csak a modellnek szóló
+   * a stream-route által MÁR burkolva (`embeddedContextToModelPrefix`). Csak a modellnek szóló
    * promptba kerül be (`latestUserTextOverride` elé fűzve) — a perzisztált
    * user-üzenet (és így a beszélgetés-előzmény) NEM tartalmazza, hogy a
    * felhasználó chatje ne teljen meg a külső app nyers adatával.
@@ -1561,10 +1561,8 @@ export class AgentChatRuntime {
         await deliverPreparedReply(promotion)
         return
       }
-      const modelFacingBaseText =
-        slashResolved.modelFacingText !== text ? slashResolved.modelFacingText : text
       const latestUserTextOverride = params.modelContextPrefix
-        ? `${params.modelContextPrefix}\n\n${modelFacingBaseText}`
+        ? `${params.modelContextPrefix}\n\n${slashResolved.modelFacingText}`
         : slashResolved.modelFacingText !== text
           ? slashResolved.modelFacingText
           : undefined

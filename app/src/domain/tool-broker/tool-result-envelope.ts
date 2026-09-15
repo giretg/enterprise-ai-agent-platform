@@ -49,8 +49,9 @@ export function envelopeToolResultForModel(trust: TrustClass, raw: string): stri
 
 /**
  * Forduló-szintű burkolat forrás-attribútummal (beágyazott agent-chat, #481 D4).
- * A `taskBriefing.source` mezőbe kerülő, app-eredetű kontextusra — nem a Tool
- * Broker eszköz-eredmény útjára — ezért nem a fenti `EXTERNAL_DATA_OPEN`
+ * A stream-API `embeddedContext` mezőjéből a szerver építi (`embeddedContextToModelPrefix`),
+ * és csak a modell-promptba kerül — nem a Tool Broker eszköz-eredmény útjára —
+ * ezért nem a fenti `EXTERNAL_DATA_OPEN`
  * konstanst használja, hanem ugyanazzal az escape-technikával egy `source`
  * attribútumos nyitó-cimkét épít, hogy a modell lássa, MELYIK beágyazó appból jött.
  */

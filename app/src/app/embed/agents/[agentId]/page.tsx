@@ -1,8 +1,6 @@
 import { notFound } from 'next/navigation'
-import { Prisma } from '@prisma/client'
 import { getAuthContext } from '@/auth/context'
 import { getAgent } from '@/app/actions/platform'
-import { prisma } from '@/lib/db'
 import { repositories } from '@/repositories/postgres'
 import { findEmbedApp, readEmbedApps } from '@/lib/embed-apps'
 import { EmbedChatWindow } from './embed-chat-window'
@@ -31,10 +29,7 @@ export default async function EmbedAgentChatPage({
 
   if (!appSlug || !thread) notFound()
 
-  const tenant = await prisma.tenant.findUnique({
-    where: { id: ctx.activeTenantId },
-    select: { settings: true },
-  })
+  const tenant = await repositories.tenants.findById(ctx.activeTenantId)
   // D7: üres/ismeretlen slug → 404, a lista maga a kapu.
   const embedApp = findEmbedApp(readEmbedApps(tenant?.settings), appSlug)
   if (!embedApp) notFound()
@@ -45,33 +40,15 @@ export default async function EmbedAgentChatPage({
   if (!agentRes.success) notFound()
   const agent = agentRes.data.agent
 
-  const channelExternalId = `${appSlug}:${thread}`
-  let conversation = await prisma.conversation.findFirst({
-    where: { channel: 'embedded_app', channelExternalId, createdById: ctx.user.id },
+  // D3: per-user szál — ugyanaz a `<slug>:<thread>` kulcs más agent alatt nem nyílik meg.
+  const conversation = await repositories.conversations.findOrCreateEmbeddedThread({
+    tenantId: ctx.activeTenantId,
+    agentId,
+    createdById: ctx.user.id,
+    channelExternalId: `${appSlug}:${thread}`,
+    title: `${embedApp.name} · ${thread}`,
   })
-  if (conversation && conversation.agentId !== agentId) notFound()
-  if (!conversation) {
-    try {
-      conversation = await repositories.conversations.create({
-        tenantId: ctx.activeTenantId,
-        agentId,
-        createdById: ctx.user.id,
-        channel: 'embedded_app',
-        channelExternalId,
-        title: `${embedApp.name} · ${thread}`.slice(0, 200),
-      })
-    } catch (e) {
-      // Két egyidejű megnyitás versenyezhet a részleges egyedi indexen (D3) — a
-      // vesztes újraolvassa, amit a nyertes közben létrehozott.
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-        conversation = await prisma.conversation.findFirst({
-          where: { channel: 'embedded_app', channelExternalId, createdById: ctx.user.id },
-        })
-      }
-      if (!conversation) throw e
-      if (conversation.agentId !== agentId) notFound()
-    }
-  }
+  if (conversation.agentId !== agentId) notFound()
 
   return (
     <EmbedChatWindow

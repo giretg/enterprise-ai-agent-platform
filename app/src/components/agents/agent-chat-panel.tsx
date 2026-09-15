@@ -71,8 +71,8 @@ import {
   ConversationFilesPanel,
   type ConversationFilesPanelHandle,
 } from '@/components/chat/conversation-files-panel'
-import { envelopeEmbeddedContextForModel } from '@/domain/tool-broker/tool-result-envelope'
 import { personaFor } from '@/lib/agent-persona'
+import type { EmbeddedContext } from '@/lib/embed-apps'
 import { recordLastAgentChatForCurrentTenant } from '@/lib/last-agent-chat'
 import {
   conversationIdToResume,
@@ -168,11 +168,11 @@ export function AgentChatPanel({
   initialConversationId?: string | null
   /**
    * Beágyazott agent-chat (#481 D4): a beágyazó app `postMessage`-ből kapott
-   * kontextusa (`source` pl. `embedded_app:crm`). Minden ezután küldött
-   * üzenethez untrusted burkolattal hozzáfűzve megy — a felhasználó
+   * NYERS kontextusa. Minden ezután küldött üzenettel elmegy; az allowlist-
+   * ellenőrzést és az untrusted burkolatot a stream-route végzi — a felhasználó
    * buborékában NEM jelenik meg, csak a modellnek szánt szövegben.
    */
-  externalContext?: { source: string; label: string; data: unknown } | null
+  externalContext?: EmbeddedContext | null
   /** OAuth-grant után a szerveroldali folytatás-forduló. */
   resumeAfterGrant?: boolean
   /** RA-08: deep-link — szerkeszthető első üzenet a composerben (nem auto-send). */
@@ -1600,17 +1600,10 @@ export function AgentChatPanel({
               ? { consequenceApprovalIds: options.consequenceApprovalIds }
               : {}),
             ...(options.connectorGrantContinuation ? { connectorGrantContinuation: true } : {}),
-            // #481 D4: a beágyazó app kontextusa untrusted burkolattal megy a
-            // modellnek, egy KÜLÖN mezőn — a felhasználó buborékájában (`content`)
-            // NEM jelenik meg, és nem is perzisztálódik a beszélgetésbe.
-            ...(externalContext
-              ? {
-                  modelContextPrefix: envelopeEmbeddedContextForModel(
-                    externalContext.source,
-                    `${externalContext.label}: ${JSON.stringify(externalContext.data)}`,
-                  ),
-                }
-              : {}),
+            // #481 D4: a beágyazó app kontextusa KÜLÖN mezőn, nyersen megy — a
+            // szerver burkolja; a felhasználó buborékájában (`content`) NEM jelenik
+            // meg, és nem is perzisztálódik a beszélgetésbe.
+            ...(externalContext ? { embeddedContext: externalContext } : {}),
           }),
         })
 

@@ -1,4 +1,6 @@
 import type { Prisma } from '@prisma/client'
+import { envelopeEmbeddedContextForModel } from '@/domain/tool-broker/tool-result-envelope'
+import { settingsRecord } from '@/lib/tenant-settings'
 
 /**
  * Beágyazott agent-chat — „Beágyazó alkalmazások" allowlist (feature-spec #481, D7).
@@ -17,19 +19,18 @@ export type EmbedApp = { slug: string; name: string; origin: string }
 
 const MAX_APPS = 20
 const SLUG_MAX_LENGTH = 40
+/** D4: az `eai:context` üzenet (label + data) felső mérete — bájtban, UTF-8 szerint. */
+export const EMBED_CONTEXT_MAX_BYTES = 8 * 1024
 
-function settingsRecord(value: unknown): Record<string, Prisma.JsonValue> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, Prisma.JsonValue>)
-    : {}
-}
+/** A beágyazó app `postMessage`-ből kapott kontextusa — nyersen, burkolat nélkül. */
+export type EmbeddedContext = { appSlug: string; label: string; data: unknown }
 
 /** Emberi névből URL-biztos slug — ékezet nélkül, kötőjelezve. */
 export function slugifyAppName(name: string): string {
   return name
     .trim()
     .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/\p{M}/gu, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
@@ -90,4 +91,30 @@ export function withEmbedApps(settings: unknown, apps: readonly EmbedApp[]): Pri
 
 export function findEmbedApp(apps: readonly EmbedApp[], slug: string): EmbedApp | undefined {
   return apps.find((a) => a.slug === slug)
+}
+
+/** Kliens és szerver UGYANEZZEL mér, hogy ami a böngészőn átment, a route-on ne bukjon. */
+export function embeddedContextByteSize(ctx: Pick<EmbeddedContext, 'label' | 'data'>): number {
+  return new TextEncoder().encode(`${ctx.label}: ${JSON.stringify(ctx.data)}`).length
+}
+
+/**
+ * Szerveroldali burkolás (D4, #97): az allowlist-ellenőrzés és az untrusted burkolat
+ * itt készül, NEM a böngészőben — a kliens csak nyers `{ appSlug, label, data }`-t
+ * küldhet, így a `source` címke nem hamisítható és burkolatlan prefix nem juthat
+ * a promptba.
+ */
+export function embeddedContextToModelPrefix(
+  apps: readonly EmbedApp[],
+  ctx: EmbeddedContext,
+): { ok: true; prefix: string } | { ok: false; reason: 'app_not_allowed' | 'too_large' } {
+  if (!findEmbedApp(apps, ctx.appSlug)) return { ok: false, reason: 'app_not_allowed' }
+  if (embeddedContextByteSize(ctx) > EMBED_CONTEXT_MAX_BYTES) return { ok: false, reason: 'too_large' }
+  return {
+    ok: true,
+    prefix: envelopeEmbeddedContextForModel(
+      `embedded_app:${ctx.appSlug}`,
+      `${ctx.label}: ${JSON.stringify(ctx.data)}`,
+    ),
+  }
 }

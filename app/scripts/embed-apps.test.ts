@@ -6,6 +6,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  EMBED_CONTEXT_MAX_BYTES,
+  embeddedContextByteSize,
+  embeddedContextToModelPrefix,
   findEmbedApp,
   isValidEmbedOrigin,
   readEmbedApps,
@@ -61,4 +64,34 @@ test('envelopeEmbeddedContextForModel: forrás-attribútum + határolt blokk + e
   assert.match(wrapped, /<<<EXTERNAL_UNTRUSTED_DATA source="embedded_app:crm">>>/)
   assert.match(wrapped, /<<<END_EXTERNAL_UNTRUSTED_DATA>>>/)
   assert.doesNotMatch(wrapped.split('\n').slice(2, -1).join('\n'), /<<<kitörés>>>/)
+})
+
+const apps = [{ slug: 'crm', name: 'CRM', origin: 'https://crm.example.com' }]
+
+test('embeddedContextToModelPrefix: engedélyezett slug → burkolt prefix a szerverről', () => {
+  const res = embeddedContextToModelPrefix(apps, { appSlug: 'crm', label: 'Ügy', data: { id: 1 } })
+  assert.ok(res.ok)
+  assert.match(res.prefix, /<<<EXTERNAL_UNTRUSTED_DATA source="embedded_app:crm">>>/)
+  assert.match(res.prefix, /Ügy: \{"id":1\}/)
+})
+
+test('embeddedContextToModelPrefix: ismeretlen slug / üres allowlist elutasítva (forrás-címke nem hamisítható)', () => {
+  assert.deepEqual(
+    embeddedContextToModelPrefix(apps, { appSlug: 'evil', label: 'x', data: {} }),
+    { ok: false, reason: 'app_not_allowed' },
+  )
+  assert.deepEqual(
+    embeddedContextToModelPrefix([], { appSlug: 'crm', label: 'x', data: {} }),
+    { ok: false, reason: 'app_not_allowed' },
+  )
+})
+
+test('8 kB kapu: bájtban mér (UTF-8), a label is beleszámít, felette elutasít', () => {
+  assert.equal(embeddedContextByteSize({ label: 'é', data: '' }), new TextEncoder().encode('é: ""').length)
+  const bigLabel = 'á'.repeat(EMBED_CONTEXT_MAX_BYTES / 2) // 2 bájt/karakter → önmagában kitölti a keretet
+  assert.deepEqual(
+    embeddedContextToModelPrefix(apps, { appSlug: 'crm', label: bigLabel, data: { id: 1 } }),
+    { ok: false, reason: 'too_large' },
+  )
+  assert.ok(embeddedContextToModelPrefix(apps, { appSlug: 'crm', label: 'ok', data: 'x'.repeat(8000) }).ok)
 })

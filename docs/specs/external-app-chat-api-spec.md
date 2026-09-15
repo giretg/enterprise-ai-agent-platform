@@ -72,7 +72,7 @@ Részleges egyedi index: `(channel, channel_external_id, created_by_id) WHERE ch
 ### D4 — `postMessage` szerződés
 - embed → opener: `{ type: 'eai:ready' }` betöltéskor (`targetOrigin` = az allowlist-bejegyzés originje).
 - opener → embed: `{ type: 'eai:context', label: string, data: Record<string, unknown> }`, max 8 kB. Az embed csak az allowlist originjéről fogad (`event.origin` ellenőrzés); hibás origin némán eldobva.
-- A kontextus a **következő forduló** `briefing.source`-ába kerül `<<<EXTERNAL_UNTRUSTED_DATA source="embedded_app:<slug>">>>` burkolattal (#97) — nincs új mező a stream-API-n. Az opener bármikor küldhet újat; a következő forduló azt viszi. **Nem perzisztált**: a weben folytatva nincs kontextus — rendben, az agent a connectorán lekéri.
+- A kontextus a stream-API külön `embeddedContext { appSlug, label, data }` mezőjén megy, **nyersen**; a **szerver** ellenőrzi a slugot az allowlisten és a 8 kB-ot, majd `<<<EXTERNAL_UNTRUSTED_DATA source="embedded_app:<slug>">>>` burkolattal (#97) a modell-prompt elé fűzi (`latestUserTextOverride`, mint a `/slash` skill-feloldás). *(Implementációs korrekció: a `briefing.source` út nem jó — a `taskBriefing` csak ticket-promóciókor ér a modellhez, a `content` pedig perzisztálódik.)* Az opener bármikor küldhet újat; minden ezután küldött forduló azt viszi. **Nem perzisztált**: a weben folytatva nincs kontextus — rendben, az agent a connectorán lekéri.
 - Indok az „untrusted"-re: az app rekordjaiban ügyfél által írt szöveg van; a mellékhatásos tool utána a következmény-kapura esik — kívánt viselkedés.
 
 ### D5 — Kijelentkezett állapot
@@ -82,7 +82,7 @@ Nincs Clerk-session → az embed-route egy állapot-komponenst mutat: *„A besz
 Semmi új: a panel kártyái. A chat-jóváhagyás **önjóváhagyás** (`assertActorCanDecide` = beszélgetés-hozzáférés + agent elérhető a tenantból), mint a weben — a v0.1 D5 „SoD" állítása téves volt; SoD csak a ticket-úton van. A connector-grant OAuth-popup top-level ablakból működik.
 
 ### D7 — Allowlist tárolás és UI
-`Tenant.settings.embedApps: [{ slug, name, origin }]`. Oldal `/settings/embed-apps` („Beágyazó alkalmazások"): lista, hozzáadás (név, origin, slug automatikusan a névből), törlés. Tenant-admin szerkeszti. **Üres lista = az embed-route zárva** a tenantnak — külön kill-switch nincs. Audit: `embed.app.changed { actor, slug, change }`.
+`Tenant.settings.embedApps: [{ slug, name, origin }]`. Oldal `/control-plane/embed-apps` („Beágyazó alkalmazások", a Menü-hozzáférés mellett): lista, hozzáadás (név, origin, slug automatikusan a névből), törlés. Tenant-admin szerkeszti. **Üres lista = az embed-route zárva** a tenantnak — külön kill-switch nincs. Audit: `embed.app.changed { actor, slug, change }`.
 
 Üres állapot szövege (NFR közérthető UI): *„Itt engedélyezheted, hogy egy másik rendszered — például a CRM — a saját felületéről nyisson beszélgetést az agenteiddel. Add meg a rendszer nevét és a címét (origin); a felhasználók a platform-fiókjukkal lépnek be."*
 
@@ -114,12 +114,12 @@ enum ChannelType { telegram, embedded_app }
 |---|---|---|
 | WP-1 | Enum + index migráció; `embedApps` olvasó/író a tenant-beállításban; audit-esemény | 0,25 nap |
 | WP-2 | `/embed/agents/[agentId]` route + layout (shell nélkül), slug/thread feloldás, beszélgetés-keresés/létrehozás, `frame-ancestors 'none'`, kijelentkezett állapot | 0,5 nap |
-| WP-3 | `postMessage` kezelő a panel körül; kontextus → `briefing.source` burkolva; méret-kapu | 0,25 nap |
-| WP-4 | `/settings/embed-apps` oldal | 0,5 nap |
+| WP-3 | `postMessage` kezelő a panel körül; kontextus → `embeddedContext`, szerveroldali burkolat; méret-kapu | 0,25 nap |
+| WP-4 | `/control-plane/embed-apps` oldal | 0,5 nap |
 | WP-5 | Integrációs függelék (§8) + tesztek | 0,25 nap |
 | WP-6 | CRM-oldali gomb — **külön issue a CRM-repóban** | külön |
 
-**Elfogadás (tesztek):** ismeretlen slug → 404; üres allowlist → 404; idegen tenant agentje → 404; nincs session → bejelentkezés-állapot; ugyanaz a `thread` két usertől két beszélgetés, ugyanattól a usertől ugyanaz; `eai:context` rossz originről eldobva; jó originről a következő forduló `briefing.source`-a burkolva tartalmazza; 8 kB felett elutasítva; a beszélgetés a webes listában látszik `"<app> · <thread>"` címmel; embed-válasz fejlécében `frame-ancestors 'none'`; `embed.app.changed` audit íródik.
+**Elfogadás (tesztek):** ismeretlen slug → 404; üres allowlist → 404; idegen tenant agentje → 404; nincs session → bejelentkezés-állapot; ugyanaz a `thread` két usertől két beszélgetés, ugyanattól a usertől ugyanaz; `eai:context` rossz originről eldobva; jó originről a következő forduló modell-promptja burkolva tartalmazza (a szerver burkol; nem engedélyezett slug → 403); 8 kB felett elutasítva; a beszélgetés a webes listában látszik `"<app> · <thread>"` címmel; embed-válasz fejlécében `frame-ancestors 'none'`; `embed.app.changed` audit íródik.
 
 ## 7. Nyitott kérdések
 Nincs — a 2026-09-15-i grill-ülés minden ágat lezárt. Változás esetén §9.

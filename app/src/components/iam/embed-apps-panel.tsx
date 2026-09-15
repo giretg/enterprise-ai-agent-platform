@@ -19,6 +19,29 @@ export function EmbedAppsPanel({ initialApps }: { initialApps: EmbedApp[] }) {
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
   const [removingSlug, setRemovingSlug] = useState<string | null>(null)
+  const [copiedSlug, setCopiedSlug] = useState<string | null>(null)
+
+  /** A beágyazó app fejlesztőjének átadható bekötő-kód (spec §8) — a slug már benne van. */
+  function snippetFor(app: EmbedApp): string {
+    const platform = typeof window === 'undefined' ? '' : window.location.origin
+    return [
+      `const PLATFORM = '${platform}'`,
+      `const win = window.open(`,
+      `  \`\${PLATFORM}/embed/agents/\${agentId}?app=${app.slug}&thread=\${encodeURIComponent(recordId)}\`,`,
+      `  'eai-chat', 'popup,width=480,height=720')`,
+      `window.addEventListener('message', (e) => {`,
+      `  if (e.origin !== PLATFORM || e.data?.type !== 'eai:ready') return`,
+      `  win.postMessage({ type: 'eai:context', label: 'Megnyitott ügy', data: record }, PLATFORM)`,
+      `})`,
+    ].join('\n')
+  }
+
+  function copySnippet(app: EmbedApp) {
+    void navigator.clipboard.writeText(snippetFor(app)).then(() => {
+      setCopiedSlug(app.slug)
+      setTimeout(() => setCopiedSlug(null), 2000)
+    })
+  }
 
   function submitAdd() {
     setError(null)
@@ -52,6 +75,12 @@ export function EmbedAppsPanel({ initialApps }: { initialApps: EmbedApp[] }) {
         felületéről nyisson beszélgetést az agenteiddel. Add meg a rendszer nevét és a
         címét (origin); a felhasználók a platform-fiókjukkal lépnek be.
       </p>
+      <p className="mb-4 text-xs text-ink-faint">
+        Hogyan működik: a másik rendszerben egy gomb külön ablakban megnyitja a platform
+        chatjét (<code>/embed/agents/&lt;agent-azonosító&gt;?app=&lt;slug&gt;&amp;thread=&lt;ügy-azonosító&gt;</code>),
+        és átadja neki a megnyitott ügy adatait. A bekötő-kódot a „Bekötő-kód másolása"
+        gombbal add át a rendszer fejlesztőjének.
+      </p>
 
       {apps.length === 0 ? (
         <p className="mb-5 rounded-lg border border-line bg-ink/5 px-3 py-2 text-sm text-ink-faint">
@@ -68,6 +97,14 @@ export function EmbedAppsPanel({ initialApps }: { initialApps: EmbedApp[] }) {
                   {app.origin} · slug: {app.slug}
                 </p>
               </div>
+              <button
+                type="button"
+                onClick={() => copySnippet(app)}
+                className="shrink-0 rounded-full px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-ink/5"
+                title="A beágyazó app fejlesztőjének átadható JavaScript-részlet, ezzel a sluggal."
+              >
+                {copiedSlug === app.slug ? 'Másolva' : 'Bekötő-kód másolása'}
+              </button>
               <button
                 type="button"
                 onClick={() => submitRemove(app.slug)}
@@ -94,6 +131,7 @@ export function EmbedAppsPanel({ initialApps }: { initialApps: EmbedApp[] }) {
           value={origin}
           onChange={(e) => setOrigin(e.target.value)}
           placeholder="https://crm.example.com"
+          title="A rendszer címe a böngésző címsorából, útvonal nélkül (pl. https://crm.cegnev.hu). Csak innen fogadjuk el az átadott ügy-adatokat."
           className="flex-1 rounded-lg border border-line bg-card px-3 py-2 text-sm"
         />
         <button

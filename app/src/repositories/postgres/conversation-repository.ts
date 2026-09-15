@@ -130,6 +130,31 @@ export class PostgresConversationRepository implements ConversationRepository {
     })
   }
 
+  async findOrCreateEmbeddedThread(data: {
+    tenantId: string
+    agentId: string
+    createdById: string
+    channelExternalId: string
+    title: string
+  }): Promise<Conversation> {
+    const where = {
+      channel: 'embedded_app' as const,
+      channelExternalId: data.channelExternalId,
+      createdById: data.createdById,
+    }
+    const existing = await prisma.conversation.findFirst({ where })
+    if (existing) return existing
+    try {
+      return await this.create({ ...data, channel: 'embedded_app', title: data.title.slice(0, 200) })
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        const raced = await prisma.conversation.findFirst({ where })
+        if (raced) return raced
+      }
+      throw e
+    }
+  }
+
   async findById(id: string): Promise<Conversation | null> {
     return prisma.conversation.findUnique({ where: { id } })
   }

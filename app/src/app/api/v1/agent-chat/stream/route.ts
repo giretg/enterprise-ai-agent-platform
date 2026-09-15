@@ -3,6 +3,7 @@ import { services } from '@/domain'
 import { agentTurnRunner, type AgentChatStreamEvent } from '@/domain/agent/agent-turn-runner'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { agentChatStreamTurnInputSchema } from '@/lib/validators/actions'
+import { embeddedContextToModelPrefix, readEmbedApps } from '@/lib/embed-apps'
 import { resolveChatStreamProjectKey } from '@/lib/chat-stream-project-key'
 import { startSseCommentHeartbeat } from '@/lib/sse-comment-heartbeat'
 import { shouldBlockTaskOnlyWebChat } from '@/lib/task-only-ticket'
@@ -40,7 +41,7 @@ export async function POST(request: Request) {
     consequenceApprovalIds,
     connectorGrantContinuation,
     taskBriefing,
-    modelContextPrefix,
+    embeddedContext,
     projectKey,
   } = body as {
     agentId?: string
@@ -53,7 +54,7 @@ export async function POST(request: Request) {
     consequenceApprovalIds?: string[]
     connectorGrantContinuation?: boolean
     taskBriefing?: { goal?: string; source?: string; constraint?: string; approval?: string } | null
-    modelContextPrefix?: string | null
+    embeddedContext?: { appSlug?: string; label?: string; data?: unknown } | null
   }
 
   if (!agentId || typeof agentId !== 'string') {
@@ -72,7 +73,7 @@ export async function POST(request: Request) {
     content,
     attachmentDocumentIds,
     taskBriefing,
-    modelContextPrefix,
+    embeddedContext,
   })
   if (!turnInput.success) {
     return Response.json(
@@ -82,6 +83,31 @@ export async function POST(request: Request) {
       },
       { status: 400 },
     )
+  }
+
+  // #481 D4 — a beágyazó app kontextusát a SZERVER burkolja: a slugnak a tenant
+  // allowlistjén kell lennie (különben bármely webes kliens hamis forrás-címkével
+  // tolhatna szöveget a promptba), és a 8 kB-os kapu itt is érvényes.
+  let modelContextPrefix: string | undefined
+  if (turnInput.data.embeddedContext) {
+    const tenant = await repositories.tenants.findById(user.activeTenantId)
+    const wrapped = embeddedContextToModelPrefix(
+      readEmbedApps(tenant?.settings),
+      turnInput.data.embeddedContext,
+    )
+    if (!wrapped.ok) {
+      return Response.json(
+        {
+          error: wrapped.reason === 'too_large' ? 'embedded_context_too_large' : 'embedded_app_not_allowed',
+          message:
+            wrapped.reason === 'too_large'
+              ? 'A beágyazó alkalmazás túl nagy kontextust küldött (max 8 kB).'
+              : 'Ez az alkalmazás nincs engedélyezve a beágyazott chathez.',
+        },
+        { status: wrapped.reason === 'too_large' ? 413 : 403 },
+      )
+    }
+    modelContextPrefix = wrapped.prefix
   }
 
   // issue #97 — jóváhagyás utáni FOLYTATÁS. A gomb megnyomása eddig lefuttatta a
@@ -230,9 +256,7 @@ export async function POST(request: Request) {
           attachmentDocumentIds,
           processDefinitionId,
           processInputPayload,
-          ...(turnInput.data.modelContextPrefix
-            ? { modelContextPrefix: turnInput.data.modelContextPrefix }
-            : {}),
+          ...(modelContextPrefix ? { modelContextPrefix } : {}),
           ...(taskBriefing &&
           typeof taskBriefing === 'object' &&
           typeof taskBriefing.goal === 'string'
