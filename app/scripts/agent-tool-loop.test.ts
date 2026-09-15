@@ -27,6 +27,7 @@ import {
 } from '../src/domain/tool-broker/tool-output-contract'
 import { resolveToolOutputContract } from '../src/domain/tool-broker/tool-output-contracts'
 import { isSideEffectingTool } from '../src/domain/tool-broker/tool-trust-registry'
+import { createWorkspaceToolResultArchiver } from '../src/domain/agent/tool-result-archive'
 import type { AuditRepository, ToolBrokerRepository } from '../src/repositories/interfaces'
 
 let failures = 0
@@ -648,6 +649,18 @@ async function main() {
     assert.match(toolMessage.content, /<<<EXTERNAL_UNTRUSTED_DATA>>>/)
     assert.match(toolMessage.content, /<<<END_EXTERNAL_UNTRUSTED_DATA>>>/)
     assert.ok(toolMessage.content.length < 4000, `előnézet túl hosszú: ${toolMessage.content.length}`)
+  })
+
+  await check('nagy tool eredmény: sikertelen archiválás nem nyeli el a teljes eredményt', async () => {
+    const archive = createWorkspaceToolResultArchiver(
+      { write: async () => { throw new Error('workspace unavailable') } } as never,
+      'tenant-1',
+      'conv-1',
+    )
+    await assert.rejects(
+      archive({ toolName: 'http_api_get', callId: 'crm-call', turn: 0, content: 'teljes eredmény' }),
+      /workspace unavailable/,
+    )
   })
 
   await check('tool_result_extract: 300 sor × 3 mező egy hívásban, válasz < 2000 kar', async () => {
