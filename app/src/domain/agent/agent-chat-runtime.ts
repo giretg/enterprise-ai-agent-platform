@@ -1830,6 +1830,12 @@ export class AgentChatRuntime {
         await this.publishReferencedWorkspaceFiles(tenantKey, conversationId, reply)
         loopToolCallCount = result.value.toolCallCount
         loopDeniedCount = result.value.deniedCount
+        // Fallback-attribúció: ha a loop tartalék modellen dolgozott, az üzeneten
+        // a TÉNYLEGES modell álljon, ne a konfigurált. Mért eset (2026-09-15):
+        // `gpt-5.5` szerepelt az üzeneten, miközben 52 hívást a deepseek vitt —
+        // a költség- és minőség-elemzés máshogy hamis.
+        const executedModel = result.value.executedModel
+        if (executedModel?.model) turn.model = executedModel.model
         if (result.value.status === 'exhausted') {
           loopStopReason = result.value.reason
         }

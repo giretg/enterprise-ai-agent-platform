@@ -166,6 +166,14 @@ export type ToolLoopResult =
       brokerDeniedCount: number
       status: 'completed'
       reason?: undefined
+      /**
+       * A fordulóban TÉNYLEGESEN dolgozó provider/modell. Fallback nélkül nincs
+       * kitöltve — ilyenkor a hívó a konfigurált modellt használhatja. Mért eset
+       * (2026-09-15, SPAR tárgyalási felkészítő): az üzeneten `gpt-5.5` állt,
+       * miközben mind az 52 sikeres hívást a deepseek fallback vitte, így a
+       * költség- és minőség-attribúció hamis volt.
+       */
+      executedModel?: { provider: string; model: string }
       /** Következmény-kapu: van függő jóváhagyás (task ticketen is). */
       awaitingConsequenceApproval?: boolean
       consequenceApprovalIds?: string[]
@@ -182,6 +190,8 @@ export type ToolLoopResult =
       brokerDeniedCount: number
       status: 'exhausted'
       reason: ToolLoopStopReason
+      /** Lásd a `completed` ágon: fallback esetén a ténylegesen dolgozó modell. */
+      executedModel?: { provider: string; model: string }
       /**
        * A kapu az erőforrás-alapú leállás ágán is jelez: a függő jóváhagyás
        * ERŐSEBB jelzés, mint a kimerülés — a hívó ilyenkor is a „gombra vár"
@@ -1376,6 +1386,14 @@ export async function runAgentToolLoop(params: {
       : {}),
     ...preapprovedSummaryFields(),
   })
+  /**
+   * A ténylegesen dolgozó modell MINDEN kilépési ponton. A `pinnedModel` az
+   * első sikeres fallbacknél rögzül (lásd `activeModelConfig`) — nélküle a
+   * lezárt üzeneten a konfigurált modell állna, nem a futtató.
+   */
+  const executedModelFields = (): {
+    executedModel?: { provider: string; model: string }
+  } => (pinnedModel ? { executedModel: { ...pinnedModel } } : {})
   const archivedToolResults = new Map<
     string,
     { content: string | null; bytes: number; toolName: string; sourceKey?: string }
@@ -1967,6 +1985,28 @@ export async function runAgentToolLoop(params: {
       pinnedModel = modelResult.fallbackRoute
       await persistCheckpoint()
     }
+    // Csonkolt válasz: a completion elérte a `maxTokens` korlátot, tehát a
+    // modell mondandójának vége elveszett. Mért eset (2026-09-15, SPAR
+    // tárgyalási felkészítő): 3× pontosan 16 384 tokennél vágott a kimenet,
+    // észrevétlenül — a loop ment tovább, mintha teljes válasz jött volna.
+    // ponytail: proxy-jel (usage >= maxTokens), nem finish_reason — a gateway
+    // ma nem adja tovább; reasoning-modellnél a gondolkodás is beleszámít.
+    const configuredMaxTokens = activeModelConfig().maxTokens
+    const truncatedAtMaxTokens =
+      typeof configuredMaxTokens === 'number' &&
+      configuredMaxTokens > 0 &&
+      (modelResult.usage?.completionTokens ?? 0) >= configuredMaxTokens
+    if (truncatedAtMaxTokens) {
+      logger.warn(
+        {
+          turn,
+          maxTokens: configuredMaxTokens,
+          hasToolCalls: (toolCalls?.length ?? 0) > 0,
+          ...(params.context.conversationId ? { conversationId: params.context.conversationId } : {}),
+        },
+        'agent.tool_loop.completion_truncated',
+      )
+    }
 
     // Forduló-végi flush + összefoglaló (D3): ahol volt valódi reasoning, a
     // placeholder-cím "Gondolkodás"-ra vált és a rövidített, redaktált szöveg a
@@ -2070,15 +2110,21 @@ export async function runAgentToolLoop(params: {
             brokerDeniedCount,
             status: 'completed',
             ...consequenceGateFields(),
+            ...executedModelFields(),
           }
         }
         return {
-          content: await displayForUi(cleaned),
+          content: await displayForUi(
+            truncatedAtMaxTokens
+              ? `${cleaned}\n\n_[A válasz a modell hosszkorlátjánál (${configuredMaxTokens} token) megszakadt — kérj rövidebb folytatást.]_`
+              : cleaned,
+          ),
           toolCallCount,
           deniedCount,
           brokerDeniedCount,
           status: 'completed',
           ...consequenceGateFields(),
+          ...executedModelFields(),
         }
       }
 
@@ -2096,6 +2142,7 @@ export async function runAgentToolLoop(params: {
         brokerDeniedCount,
         status: 'completed',
         ...consequenceGateFields(),
+        ...executedModelFields(),
       }
     }
 
@@ -2108,6 +2155,16 @@ export async function runAgentToolLoop(params: {
       ...(assistantText ? { content: assistantText } : {}),
       toolCalls: calls,
     })
+    // A nudge a csonkolt asszisztens-üzenet UTÁN áll, így az „előző válaszod"
+    // arra mutat, amire kell; a stabil prefixet nem töri.
+    if (truncatedAtMaxTokens) {
+      messages.push({
+        role: 'system',
+        content:
+          `[CSONKOLT VÁLASZ] Az előző válaszod elérte a hosszkorlátot (${configuredMaxTokens} token) és csonkolódott — a végét a felhasználó nem kapta meg. ` +
+          'Ne ismételd meg egyben: folytasd RÖVIDEN onnan, ahol abbamaradt, vagy bontsd a feladatot kisebb lépésekre (egyszerre kevesebb adat).',
+      })
+    }
 
     for (const [callIndex, call] of calls.entries()) {
       const callSourceKey = toolCallSourceKey(call.name, call.input)
@@ -3504,6 +3561,7 @@ export async function runAgentToolLoop(params: {
       awaitingConnectorGrant: hasGrantCards,
       connectorGrantNeeds: [...connectorGrantNeeds],
       ...preapprovedSummaryFields(),
+      ...executedModelFields(),
     }
   }
 
@@ -3547,6 +3605,7 @@ export async function runAgentToolLoop(params: {
       awaitingConsequenceApproval: hasCards,
       consequenceApprovalIds: [...consequenceApprovalIds],
       ...preapprovedSummaryFields(),
+      ...executedModelFields(),
     }
   }
 
@@ -3603,6 +3662,7 @@ export async function runAgentToolLoop(params: {
     status: 'exhausted',
     reason: stopReason,
     ...consequenceGateFields(),
+    ...executedModelFields(),
   }
 }
 

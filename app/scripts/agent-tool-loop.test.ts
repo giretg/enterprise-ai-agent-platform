@@ -52,7 +52,12 @@ type GatewayCallArgs = {
   tools?: ToolDefinition[]
 }
 
-type FakeResponse = { content?: string; toolCalls?: GatewayToolCall[] }
+type FakeResponse = {
+  content?: string
+  toolCalls?: GatewayToolCall[]
+  usage?: { promptTokens: number; completionTokens: number }
+  fallbackRoute?: { provider: string; model: string }
+}
 
 function fakeGateway(responses: FakeResponse[], record: GatewayCallArgs[]): ModelGateway {
   let i = 0
@@ -64,7 +69,8 @@ function fakeGateway(responses: FakeResponse[], record: GatewayCallArgs[]): Mode
       return {
         content: r.content ?? '',
         ...(r.toolCalls?.length ? { toolCalls: r.toolCalls } : {}),
-        usage: { promptTokens: 1, completionTokens: 1 },
+        ...(r.fallbackRoute ? { fallbackRoute: r.fallbackRoute } : {}),
+        usage: r.usage ?? { promptTokens: 1, completionTokens: 1 },
       }
     },
   } as unknown as ModelGateway
@@ -908,6 +914,138 @@ async function main() {
     assert.equal(result.reason, 'max_turns_exhausted')
     assert.equal(result.toolCallCount, 1)
     assert.match(result.content, /nem sikerült|körök elfogytak/i)
+  })
+
+  await check('fallback-attribúció: tartalék modellnél a loop visszaadja a ténylegesen dolgozó modellt', async () => {
+    // Mért eset (2026-09-15, SPAR tárgyalási felkészítő): az üzeneten gpt-5.5
+    // állt, miközben 52 hívást a deepseek fallback vitt.
+    const gwCalls: GatewayCallArgs[] = []
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [{ content: 'Kész a feladat.' , fallbackRoute: { provider: 'openrouter', model: 'deepseek/deepseek-x' } }],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { ticketId: 'ticket-fallback' },
+      mode: 'task',
+      messages: [{ role: 'user', content: 'adj választ' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: [],
+    })
+
+    assert.deepEqual(result.executedModel, { provider: 'openrouter', model: 'deepseek/deepseek-x' })
+  })
+
+  await check('fallback-attribúció: fallback nélkül nincs executedModel (a konfigurált modell az igazság)', async () => {
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway([{ content: 'Kész.' }], []),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { ticketId: 'ticket-primary' },
+      mode: 'task',
+      messages: [{ role: 'user', content: 'adj választ' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: [],
+    })
+
+    assert.equal(result.executedModel, undefined)
+  })
+
+  await check('csonkolt válasz: maxTokens elérésekor a loop rövid folytatásra kér a következő körben', async () => {
+    // Mért eset (2026-09-15): 3× pontosan 16 384 completion tokennél vágott a
+    // kimenet, észrevétlenül. Az első kör tool-hívást is ad (így lesz második
+    // kör), és a usage a korláton áll.
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [{ id: 'c1', name: 'file_read', input: { path: 'a.txt' } }],
+            usage: { promptTokens: 10, completionTokens: 100 },
+          },
+          { content: 'Kész röviden.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker(brokerCalls),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { ticketId: 'ticket-truncated' },
+      mode: 'task',
+      messages: [{ role: 'user', content: 'olvasd be a.txt' }],
+      modelConfig: { ...MODEL_CONFIG, maxTokens: 100 },
+      allowedTools: ['file_read'],
+    })
+
+    assert.equal(result.status, 'completed')
+    assert.equal(gwCalls.length, 2)
+    const secondMessages = gwCalls[1]!.messages as Array<{ role: string; content?: string }>
+    const nudgeIdx = secondMessages.findIndex(
+      (m) => m.role === 'system' && (m.content ?? '').includes('CSONKOLT VÁLASZ'),
+    )
+    const assistantIdx = secondMessages.findIndex((m) => m.role === 'assistant')
+    assert.ok(nudgeIdx >= 0, 'a második körben ott a csonkolás-nudge')
+    assert.ok(nudgeIdx > assistantIdx, 'a nudge a csonkolt asszisztens-üzenet UTÁN áll')
+  })
+
+  await check('csonkolt válasz: tool-hívás nélküli végső válasznál a felhasználó jelzést kap', async () => {
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [{ content: 'Hosszú válasz eleje', usage: { promptTokens: 10, completionTokens: 100 } }],
+        [],
+      ),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { ticketId: 'ticket-truncated-final' },
+      mode: 'task',
+      messages: [{ role: 'user', content: 'írj sokat' }],
+      modelConfig: { ...MODEL_CONFIG, maxTokens: 100 },
+      allowedTools: [],
+    })
+    assert.equal(result.status, 'completed')
+    assert.match(result.content, /Hosszú válasz eleje/)
+    assert.match(result.content, /hosszkorlátjánál \(100 token\) megszakadt/)
+  })
+
+  await check('csonkolt válasz: korlát alatti completionnél nincs nudge', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [{ id: 'c1', name: 'file_read', input: { path: 'a.txt' } }],
+            usage: { promptTokens: 10, completionTokens: 50 },
+          },
+          { content: 'Kész.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { ticketId: 'ticket-not-truncated' },
+      mode: 'task',
+      messages: [{ role: 'user', content: 'olvasd be a.txt' }],
+      modelConfig: { ...MODEL_CONFIG, maxTokens: 100 },
+      allowedTools: ['file_read'],
+    })
+
+    assert.equal(gwCalls.length, 2)
+    const secondMessages = gwCalls[1]!.messages as Array<{ role: string; content?: string }>
+    assert.ok(
+      secondMessages.every((m) => !(m.content ?? '').includes('CSONKOLT VÁLASZ')),
+      'korlát alatt nincs nudge',
+    )
   })
 
   await check('routing: hiányzó / üres / wiki source → wiki', () => {
