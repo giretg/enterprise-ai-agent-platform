@@ -62,6 +62,18 @@ const CENTRAL_FILE_SIGNATURE = 0x02014b50
 const LOCAL_FILE_SIGNATURE = 0x04034b50
 const ZIP64_EOCD_LOCATOR_SIGNATURE = 0x07064b50
 
+const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, index) => {
+  let crc = index
+  for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0)
+  return crc >>> 0
+})
+
+export function zipCrc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff
+  for (const byte of bytes) crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8)
+  return (crc ^ 0xffffffff) >>> 0
+}
+
 /**
  * Az útvonal biztonságos alakja: `/`-elválasztás, nincs abszolút gyökér, nincs
  * `..` szegmens, nincs vezérlőkarakter. A visszatérés `null`, ha a bejegyzést el
@@ -72,7 +84,6 @@ export function normalizeZipPath(raw: string): string | null {
   if (raw.includes('\\')) return null
   if (raw.startsWith('/')) return null
   if (/^[a-zA-Z]:/.test(raw)) return null
-  // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f]/.test(raw)) return null
 
   const segments = raw.split('/')
@@ -110,6 +121,29 @@ export function readZipEntries(
   archive: Uint8Array,
   limits: ZipReadLimits = DEFAULT_ZIP_LIMITS,
 ): ZipEntry[] {
+  return readZipEntriesInternal(archive, limits, true, false)
+}
+
+/**
+ * ZIP-archívum ellenőrzése a bejegyzések memóriában tartása nélkül.
+ *
+ * Az Office-feldolgozók saját ZIP-olvasót használnak; előttük ezzel ugyanazt a
+ * deklarált és tényleges kicsomagolt méretkorlátot érvényesítjük, mint a
+ * skill-importnál, de nem duplázzuk meg az egész archívum memóriaigényét.
+ */
+export function assertZipEntriesWithinLimits(
+  archive: Uint8Array,
+  limits: ZipReadLimits,
+): void {
+  readZipEntriesInternal(archive, limits, false, true)
+}
+
+function readZipEntriesInternal(
+  archive: Uint8Array,
+  limits: ZipReadLimits,
+  collectEntries: boolean,
+  rejectInvalidPaths: boolean,
+): ZipEntry[] {
   const buf = Buffer.from(archive.buffer, archive.byteOffset, archive.byteLength)
   if (buf.length < 22) throw new ZipReadError('A fájl túl rövid ahhoz, hogy ZIP legyen.', 'not_a_zip')
 
@@ -138,6 +172,7 @@ export function readZipEntries(
 
   const entries: ZipEntry[] = []
   let totalUncompressed = 0
+  let declaredTotalUncompressed = 0
   const compressedRanges: Array<{ start: number; end: number }> = []
   let cursor = centralOffset
 
@@ -147,7 +182,9 @@ export function readZipEntries(
       throw new ZipReadError('Sérült központi könyvtár (rossz aláírás).', 'corrupt')
     }
 
+    const flags = buf.readUInt16LE(cursor + 8)
     const method = buf.readUInt16LE(cursor + 10)
+    const crc = buf.readUInt32LE(cursor + 16)
     const compressedSize = buf.readUInt32LE(cursor + 20)
     const uncompressedSize = buf.readUInt32LE(cursor + 24)
     const nameLength = buf.readUInt16LE(cursor + 28)
@@ -157,15 +194,25 @@ export function readZipEntries(
     const rawName = buf.toString('utf8', cursor + 46, cursor + 46 + nameLength)
     cursor += 46 + nameLength + extraLength + commentLength
 
-    if (rawName.endsWith('/')) continue // könyvtár-bejegyzés
     const path = normalizeZipPath(rawName)
-    if (path === null) continue // zip-slip vagy értelmezhetetlen név → kihagyjuk
+    if (path === null) {
+      if (rejectInvalidPaths) throw new ZipReadError('Sérült ZIP (érvénytelen bejegyzésnév).', 'corrupt')
+      continue // zip-slip vagy értelmezhetetlen név → skill-importban kihagyjuk
+    }
+    if (rawName.endsWith('/')) continue // könyvtár-bejegyzés
 
     // A DEKLARÁLT méret gyors kapuja — a valódi ellenőrzés a kicsomagolás után jön.
     if (uncompressedSize > limits.maxFileBytes) {
       throw new ZipReadError(
         `Túl nagy fájl a csomagban: ${path} (${uncompressedSize} bájt).`,
         'file_too_large',
+      )
+    }
+    declaredTotalUncompressed += uncompressedSize
+    if (declaredTotalUncompressed > limits.maxTotalBytes) {
+      throw new ZipReadError(
+        `A csomag deklarált kicsomagolt mérete túllépi a keretet (${limits.maxTotalBytes} bájt).`,
+        'archive_too_large',
       )
     }
     if (method !== 0 && method !== 8) {
@@ -180,8 +227,24 @@ export function readZipEntries(
     if (buf.readUInt32LE(localOffset) !== LOCAL_FILE_SIGNATURE) {
       throw new ZipReadError('Sérült lokális fejléc (rossz aláírás).', 'corrupt')
     }
+    const localFlags = buf.readUInt16LE(localOffset + 6)
+    const localMethod = buf.readUInt16LE(localOffset + 8)
+    const localCrc = buf.readUInt32LE(localOffset + 14)
+    const localCompressedSize = buf.readUInt32LE(localOffset + 18)
+    const localUncompressedSize = buf.readUInt32LE(localOffset + 22)
     const localNameLength = buf.readUInt16LE(localOffset + 26)
     const localExtraLength = buf.readUInt16LE(localOffset + 28)
+    const localRawName = buf.toString('utf8', localOffset + 30, localOffset + 30 + localNameLength)
+    if (localFlags !== flags || localMethod !== method || localRawName !== rawName) {
+      throw new ZipReadError('Sérült ZIP (eltérő lokális fejléc).', 'corrupt')
+    }
+    // Data descriptornál (bit 3) a lokális méretek/CRC szándékosan nullák lehetnek.
+    if (
+      (flags & 0x08) === 0 &&
+      (localCrc !== crc || localCompressedSize !== compressedSize || localUncompressedSize !== uncompressedSize)
+    ) {
+      throw new ZipReadError('Sérült ZIP (eltérő lokális méretek).', 'corrupt')
+    }
     const dataStart = localOffset + 30 + localNameLength + localExtraLength
     const dataEnd = dataStart + compressedSize
     if (dataEnd > buf.length) throw new ZipReadError('Sérült ZIP (csonka adat).', 'corrupt')
@@ -209,6 +272,9 @@ export function readZipEntries(
         'file_too_large',
       )
     }
+    if (bytes.byteLength !== uncompressedSize || zipCrc32(bytes) !== crc) {
+      throw new ZipReadError(`Sérült ZIP (hibás kicsomagolt adat): ${path}`, 'corrupt')
+    }
     totalUncompressed += bytes.byteLength
     if (totalUncompressed > limits.maxTotalBytes) {
       throw new ZipReadError(
@@ -217,7 +283,7 @@ export function readZipEntries(
       )
     }
 
-    entries.push({ path, bytes: new Uint8Array(bytes) })
+    if (collectEntries) entries.push({ path, bytes: new Uint8Array(bytes) })
   }
 
   return entries

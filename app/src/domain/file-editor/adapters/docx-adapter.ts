@@ -1,4 +1,5 @@
 import { FileEditorError } from '../workspace-storage'
+import { assertSafeOfficeArchive, OfficeArchiveError } from '@/lib/office-archive-guard'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function importMammoth(): Promise<any> {
@@ -25,6 +26,12 @@ async function importDocx(): Promise<any> {
 }
 
 export async function docxRead(buffer: Buffer): Promise<{ text: string; messages: string[] }> {
+  try {
+    assertSafeOfficeArchive(buffer)
+  } catch (error) {
+    if (error instanceof OfficeArchiveError) throw new FileEditorError('INVALID_ARGS', error.message)
+    throw error
+  }
   const mammoth = await importMammoth()
   const result = await mammoth.extractRawText({ buffer })
   return {
