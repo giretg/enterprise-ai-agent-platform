@@ -323,7 +323,6 @@ function TicketOriginalTask({
 
   useEffect(() => {
     if (!initialEditing) return
-    beginEditing()
     document.getElementById('feladat-szal')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }, [initialEditing])
 

@@ -1878,16 +1878,15 @@ function SkillKindEditor({
     isSkillSystemRole(skill.requiredSystemRole) ? skill.requiredSystemRole : null,
   )
   const propEpoch = `${skill.id}\0${skill.kind}\0${skill.requiredSystemRole ?? ''}`
-  const appliedEpochRef = useRef(propEpoch)
+  const [appliedEpoch, setAppliedEpoch] = useState(propEpoch)
 
-  useEffect(() => {
-    if (appliedEpochRef.current === propEpoch) return
-    appliedEpochRef.current = propEpoch
+  if (appliedEpoch !== propEpoch) {
+    setAppliedEpoch(propEpoch)
     setKind(resolveSkillKind(skill.kind, skill.catalogScope))
     setRequiredSystemRole(
       isSkillSystemRole(skill.requiredSystemRole) ? skill.requiredSystemRole : null,
     )
-  }, [propEpoch, skill.kind, skill.requiredSystemRole, skill.catalogScope])
+  }
 
   const canEdit = isPlatformAdmin && skill.catalogScope === 'global'
   const dirty =
@@ -1953,17 +1952,16 @@ function SkillDisplayNameEditor({
   const [committed, setCommitted] = useState(propSaved)
   const [value, setValue] = useState(propSaved)
   const propEpoch = `${skill.id}\0${propSaved}`
-  const appliedEpochRef = useRef(propEpoch)
+  const [appliedEpoch, setAppliedEpoch] = useState(propEpoch)
 
   // Prop-csere: üres props + meglévő committed = stale Prisma-read a refresh után — ne wipe-oljuk.
-  useEffect(() => {
-    if (appliedEpochRef.current === propEpoch) return
-    appliedEpochRef.current = propEpoch
+  if (appliedEpoch !== propEpoch) {
+    setAppliedEpoch(propEpoch)
     if (propSaved.trim() || !committed.trim()) {
       setCommitted(propSaved)
       setValue(propSaved)
     }
-  }, [propEpoch, propSaved, committed])
+  }
 
   const dirty = value.trim() !== committed.trim()
 
@@ -2025,13 +2023,12 @@ function SkillDescriptionEditor({
   const saved = skill.description
   const [value, setValue] = useState(saved)
   const propEpoch = `${skill.id}\0${saved}`
-  const appliedEpochRef = useRef(propEpoch)
+  const [appliedEpoch, setAppliedEpoch] = useState(propEpoch)
 
-  useEffect(() => {
-    if (appliedEpochRef.current === propEpoch) return
-    appliedEpochRef.current = propEpoch
+  if (appliedEpoch !== propEpoch) {
+    setAppliedEpoch(propEpoch)
     setValue(saved)
-  }, [propEpoch, saved])
+  }
 
   const trimmed = value.trim()
   const dirty = trimmed !== saved.trim()

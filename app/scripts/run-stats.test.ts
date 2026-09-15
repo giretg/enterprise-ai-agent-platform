@@ -107,7 +107,8 @@ async function main() {
     assert.equal(keys.length, 1)
     assert.equal(keys[0]!.readCount, 133)
     assert.equal(keys[0]!.rereadCount, 132)
-    assert.match(keys[0]!.sourceKey, /file_read:path:/)
+    assert.equal(keys[0]!.toolName, 'file_read')
+    assert.equal(keys[0]!.sourceKey, `path:${path}`)
   })
 
   await test('computeRepeatedSourceKeys: külön futások nem keverednek', () => {

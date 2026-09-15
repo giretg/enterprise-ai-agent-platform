@@ -63,22 +63,10 @@ const isKbTool = (tool: string): boolean => tool.startsWith('kb_')
 /**
  * Írás-eszközök, amikhez a grant scope-ját külön ellenőrizzük. A `gmail_send`
  * szándékosan NINCS itt: a küldés emberi-jóváhagyás kapuja policy, nem scope —
- * a scope-ot a piszkozat (`gmail_create_draft`) bizonyítja.
+ * a scope-ot a piszkozat (`gmail_create_draft`) bizonyítja. A Drive-írástoolok
+ * kanonikus halmaza: `isDriveWriteTool` (google-drive-scopes.ts).
  */
 export const GMAIL_WRITE_TOOLS = ['gmail_create_draft', 'gmail_send'] as const
-export const DRIVE_WRITE_TOOLS = [
-  'google_drive_create_folder',
-  'google_drive_upload_file',
-  'google_drive_update_file',
-  'google_drive_rename_file',
-  'google_drive_move_file',
-  'google_drive_copy_file',
-  'google_drive_trash_file',
-  'google_drive_share_file',
-  'google_docs_apply_edits',
-  'google_sheets_write_range',
-  'google_slides_apply_edits',
-] as const
 
 export function computeAgentDiagnostics(input: DiagnosticsStaticInput): DiagnosticCheck[] {
   const checks: DiagnosticCheck[] = []

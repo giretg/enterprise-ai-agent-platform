@@ -338,7 +338,7 @@ await test('rendszeres sorozatnál új példány készül, a sablon a következ�
 })
 
 await test('runNow jövőbeli rendszeres feladatból azonnal példányt csinál', async () => {
-  let claimedAt: Date | null = null
+  const claimed: { at: Date | null } = { at: null }
   let materializeCalls = 0
   const nextRunAt = new Date(NOW.getTime() + 3600_000)
   const seriesUpdates: Array<Record<string, unknown>> = []
@@ -359,7 +359,7 @@ await test('runNow jövőbeli rendszeres feladatból azonnal példányt csinál'
     {
       findById: async () => active,
       claimDue: async (_id, at) => {
-        claimedAt = at
+        claimed.at = at
         return { ...active, status: 'materializing' }
       },
       materializeTicket: async (_id, ticketInput, state) => {
@@ -410,7 +410,7 @@ await test('runNow jövőbeli rendszeres feladatból azonnal példányt csinál'
     now: NOW,
   })
   assert.equal(materializeCalls, 1)
-  assert.equal(claimedAt?.toISOString(), nextRunAt.toISOString())
+  assert.equal(claimed.at?.toISOString(), nextRunAt.toISOString())
   assert.equal(result.ticketId, OCCURRENCE_TICKET_ID)
   assert.equal(seriesUpdates.length, 0)
   assert.equal(audit[0]?.actorType, 'human')
