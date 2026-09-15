@@ -1215,9 +1215,11 @@ const agentChatRuntime = new AgentChatRuntime(
     return { mode, policy }
   },
   repositories.workProjects,
-  // Chatből nyitott feladat: azonnal próbáljuk indítani, de a System-oldali
-  // dispatcher vészfék és az engedélyezett futtató-környezetek továbbra is élnek.
-  (ticketId: string) => dispatcherService.dispatchTicket(ticketId),
+  // Chatből nyitott feladat: ugyanaz az azonnali indítás, mint a ticket
+  // „Végrehajtás" gombja — a dispatcher poll-vészféke nem vonatkozik rá
+  // (kikapcsolt dispatcher mellett is indul), a keret/tenant-kapuk igen.
+  (ticketId: string) =>
+    dispatcherService.dispatchTicket(ticketId, new Date(), { bypassEnabledCheck: true }),
 )
 // 1:1 agent-chat a csatornán (#74, D8/D9/D10/D11). A worker második munkatípusa: a bejövő
 // Telegram-fordulót a MEGLÉVŐ webes chat-futásidőre képezzük (ugyanabba a beszélgetésbe, így a
