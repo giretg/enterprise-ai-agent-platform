@@ -9,7 +9,6 @@ import { fail, ok, type ActionResult } from '@/lib/result'
 import { logger } from '@/lib/observability/logger'
 import {
   computeAgentDiagnostics,
-  DRIVE_WRITE_TOOLS,
   GMAIL_WRITE_TOOLS,
   type DiagnosticCheck,
 } from '@/domain/agent-diagnostics/agent-diagnostics'
@@ -23,7 +22,11 @@ import {
   type ProbeResult,
 } from '@/domain/agent-diagnostics/agent-probes'
 import { gmailToolAllowedByScopes } from '@/domain/connector-grant/gmail-scopes'
-import { driveScopeProfile, driveToolAllowedByScopes } from '@/domain/connector-grant/google-drive-scopes'
+import {
+  driveScopeProfile,
+  driveToolAllowedByScopes,
+  isDriveWriteTool,
+} from '@/domain/connector-grant/google-drive-scopes'
 import { GmailApiClient } from '@/domain/connector-grant/gmail-api-client'
 import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
 import { HttpSandboxConnectionTester } from '@/domain/provisioning/sandbox-connection-tester'
@@ -91,7 +94,7 @@ export async function runAgentDiagnostics(input: {
       (GMAIL_WRITE_TOOLS as readonly string[]).includes(t),
     )
     const needsDriveWrite = allowedTools.some((t) =>
-      (DRIVE_WRITE_TOOLS as readonly string[]).includes(t),
+      isDriveWriteTool(t),
     )
     for (const binding of connectors) {
       const grant = grantByConnectorId.get(binding.connector.id)

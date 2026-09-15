@@ -131,8 +131,9 @@ async function main() {
   await check('kevés maradék keretnél az agent_ask el sem indul', async () => {
     const gwCalls: GatewayCallArgs[] = []
     const brokerCalls: ToolBrokerInvokeInput[] = []
-    // 100 s keret, amiből 71 s eltelt → 29 s marad, ami a 60 s-os
-    // delegáció-küszöb alatt van, de a forduló maga még nem futott ki az időből.
+    // 100 s keret, amiből 50 s eltelt → 50 s marad, ami a 60 s-os
+    // delegáció-küszöb alatt van, de a lezárási szakasz (70 s-tól) még nem él,
+    // így a delegáció-specifikus [LIMIT] üzenetet mérjük, nem az általános kaput.
     let clockCalls = 0
     const result = await runAgentToolLoop({
       gateway: fakeGateway(
@@ -142,7 +143,7 @@ async function main() {
               {
                 id: 'ask-1',
                 name: 'agent_ask',
-                input: { targetAgentId: 'agent-2', question: 'Mi a riport formátuma?' },
+                input: { targetAgentId: '22222222-0000-4000-8000-000000000002', question: 'Mi a riport formátuma?' },
               },
             ],
           },
@@ -159,10 +160,10 @@ async function main() {
       messages: [{ role: 'user', content: 'kérdezd meg Ákost' }],
       modelConfig: { ...MODEL_CONFIG, maxToolWallClockMs: 100_000 } as ModelConfig,
       allowedTools: ['agent_ask'],
-      // Az első hívás a forduló kezdete (startedAt), utána állandó 71 s.
+      // Az első hívás a forduló kezdete (startedAt), utána állandó 50 s.
       now: () => {
         clockCalls += 1
-        return clockCalls === 1 ? 0 : 71_000
+        return clockCalls === 1 ? 0 : 50_000
       },
     })
 
@@ -185,7 +186,7 @@ async function main() {
               {
                 id: 'ask-1',
                 name: 'agent_ask',
-                input: { targetAgentId: 'agent-2', question: 'Mi a riport formátuma?' },
+                input: { targetAgentId: '22222222-0000-4000-8000-000000000002', question: 'Mi a riport formátuma?' },
               },
             ],
           },

@@ -167,6 +167,11 @@ async function runLoop(
   return { result, invoked, gated }
 }
 
+// A loopon átmenő hívásoknál a connectorId Zod-uuid (buildToolInvokeInput a kapu előtt validál).
+const CONN_WRITE = 'aaaaaaaa-0000-4000-8000-000000000001'
+const CONN_READ_ONLY = 'aaaaaaaa-0000-4000-8000-000000000002'
+const CONN_PREAPP = 'aaaaaaaa-0000-4000-8000-000000000003'
+
 const sampleHttpConfig: HttpApiConfig = {
   baseUrl: 'https://api.example.com',
   auth: { scheme: 'bearer' },
@@ -199,7 +204,7 @@ async function main() {
     const gw: GatewayCallArgs[] = []
     const { invoked, gated } = await runLoop(
       [
-        { toolCalls: [{ id: 'c1', name: 'gmail_send', input: { to: 'x@y.hu' } }] },
+        { toolCalls: [{ id: 'c1', name: 'gmail_send', input: { to: 'x@y.hu', subject: 'tárgy', body: 'szöveg' } }] },
         { content: 'kész' },
       ],
       ['gmail_send'],
@@ -291,9 +296,9 @@ async function main() {
     const gw: GatewayCallArgs[] = []
     await runLoop(
       [
-        { toolCalls: [{ id: 'c1', name: 'gmail_send', input: { to: 'a@b.hu' } }] },
+        { toolCalls: [{ id: 'c1', name: 'gmail_send', input: { to: 'a@b.hu', subject: 'tárgy', body: 'szöveg' } }] },
         { content: 'összefoglaló a gombról' },
-        { toolCalls: [{ id: 'c2', name: 'gmail_send', input: { to: 'c@d.hu' } }] },
+        { toolCalls: [{ id: 'c2', name: 'gmail_send', input: { to: 'c@d.hu', subject: 'tárgy', body: 'szöveg' } }] },
       ],
       ['gmail_send'],
       gw,
@@ -369,11 +374,13 @@ async function main() {
     assert.equal(approvals, 0, 'nem nyithat consequence-approvalt')
     assert.equal(gated.length, 0, 'nem recordConsequenceGateBlock')
     assert.equal(invoked.length, 0, 'broker.invoke nem fut')
-    assert.equal(result.deniedCount, 1)
+    // Az üres path már a Zod-sémán (buildToolInvokeInput) bukik, a kapu előtt:
+    // HIBA tool-válasz, nem DENIED — de ugyanúgy nincs kártya és nincs invoke.
+    assert.equal(result.deniedCount, 0)
     const toolMsg = gw
       .flatMap((c) => c.messages)
       .find((m) => m.role === 'tool' && m.toolCallId === 'c1')
-    assert.match(toolMsg!.content ?? '', /path kötelező/)
+    assert.match(toolMsg!.content ?? '', /HIBA:.*Érvénytelen argumentumok a\(z\) "http_api_request"/)
     assert.doesNotMatch(toolMsg!.content ?? '', /JÓVÁHAGYÁS SZÜKSÉGES/)
   })
 
@@ -502,7 +509,7 @@ async function main() {
       findConnectorsForAgent: async () => [
         {
           connector: {
-            id: 'conn-1',
+            id: CONN_WRITE,
             name: 'Parcels API',
             type: 'http_api',
             config: sampleHttpConfig,
@@ -525,7 +532,7 @@ async function main() {
                 id: 'c-get',
                 name: 'http_api_request',
                 input: {
-                  connectorId: 'conn-1',
+                  connectorId: CONN_WRITE,
                   method: 'GET',
                   path: '/parcels',
                   body: { name: 'sneaky' },
@@ -565,7 +572,7 @@ async function main() {
     assert.ok(toolMsg?.content, 'tool válasz kell')
     // Érvénytelen method → HIBA, VAGY kapu (JÓVÁHAGYÁS) — mindkettő fail-closed.
     const failClosed =
-      /HIBA:.*http_api_request érvénytelen method/i.test(toolMsg!.content ?? '') ||
+      /HIBA:.*(http_api_request érvénytelen method|Érvénytelen argumentumok a\(z\) "http_api_request")/i.test(toolMsg!.content ?? '') ||
       /JÓVÁHAGYÁS SZÜKSÉGES/i.test(toolMsg!.content ?? '')
     assert.equal(failClosed, true, `váratlan tool válasz: ${toolMsg!.content}`)
     if (/JÓVÁHAGYÁS SZÜKSÉGES/i.test(toolMsg!.content ?? '')) {
@@ -609,7 +616,7 @@ async function main() {
       findConnectorsForAgent: async () => [
         {
           connector: {
-            id: 'fee173de-read-only',
+            id: CONN_READ_ONLY,
             name: 'CRM ReadOnly',
             type: 'http_api',
             config: {
@@ -644,7 +651,7 @@ async function main() {
                 id: 'c1',
                 name: 'http_api_request',
                 input: {
-                  connectorId: 'fee173de-read-only',
+                  connectorId: CONN_READ_ONLY,
                   method: 'POST',
                   path: '/reports/query',
                   body: { q: 'x' },
@@ -686,7 +693,7 @@ async function main() {
       .find((m) => m.role === 'tool' && m.toolCallId === 'c1')
     assert.match(
       toolMsg!.content ?? '',
-      /DENIED: missing_http_api_connector_write_fee173de-read-only/,
+      new RegExp(`DENIED: missing_http_api_connector_write_${CONN_READ_ONLY}`),
     )
     assert.match(toolMsg!.content ?? '', /http_api_get/)
     assert.doesNotMatch(toolMsg!.content ?? '', /JÓVÁHAGYÁS SZÜKSÉGES/)
@@ -710,7 +717,7 @@ async function main() {
       const gw: GatewayCallArgs[] = []
       const { result, gated } = await runLoop(
         [
-          { toolCalls: [{ id: 'c1', name: 'gmail_send', input: { to: 'x@y.hu' } }] },
+          { toolCalls: [{ id: 'c1', name: 'gmail_send', input: { to: 'x@y.hu', subject: 'tárgy', body: 'szöveg' } }] },
           { content: 'Előkészítettem a műveletet, jóváhagyásra vár.' },
         ],
         ['gmail_send'],
@@ -739,8 +746,8 @@ async function main() {
     const gw: GatewayCallArgs[] = []
     const { result } = await runLoop(
       [
-        { toolCalls: [{ id: 'c1', name: 'gmail_send', input: { to: 'x@y.hu' } }] },
-        { toolCalls: [{ id: 'c2', name: 'gmail_send', input: { to: 'x@y.hu' } }] },
+        { toolCalls: [{ id: 'c1', name: 'gmail_send', input: { to: 'x@y.hu', subject: 'tárgy', body: 'szöveg' } }] },
+        { toolCalls: [{ id: 'c2', name: 'gmail_send', input: { to: 'x@y.hu', subject: 'tárgy', body: 'szöveg' } }] },
         { content: 'kész' },
       ],
       ['gmail_send'],
@@ -770,7 +777,7 @@ async function main() {
     const { result } = await runLoop(
       [
         ...Array.from({ length: 5 }, (_, i) => ({
-          toolCalls: [{ id: `c${i}`, name: 'gmail_send', input: { to: `x${i}@y.hu` } }],
+          toolCalls: [{ id: `c${i}`, name: 'gmail_send', input: { to: `x${i}@y.hu`, subject: 'tárgy', body: 'szöveg' } }],
         })),
         { content: 'kész' },
       ],
@@ -992,7 +999,7 @@ async function main() {
       findConnectorsForAgent: async () => [
         {
           connector: {
-            id: 'fee173de-preapp',
+            id: CONN_PREAPP,
             name: 'CRM Preapproved',
             type: 'http_api',
             config: {
@@ -1028,7 +1035,7 @@ async function main() {
                 id: 'c1',
                 name: 'http_api_request',
                 input: {
-                  connectorId: 'fee173de-preapp',
+                  connectorId: CONN_PREAPP,
                   method: 'POST',
                   path: '/reports/query',
                   body: { q: 'x' },
@@ -1084,7 +1091,7 @@ async function main() {
     const { result } = await runLoop(
       [
         ...Array.from({ length: 8 }, (_, i) => ({
-          toolCalls: [{ id: `c${i}`, name: 'gmail_send', input: { to: `x${i}@y.hu` } }],
+          toolCalls: [{ id: `c${i}`, name: 'gmail_send', input: { to: `x${i}@y.hu`, subject: 'tárgy', body: 'szöveg' } }],
         })),
         { content: 'kész' },
       ],

@@ -697,8 +697,9 @@ export class AgentChatRuntime {
     }>,
     private workProjects?: import('@/repositories/interfaces').WorkProjectRepository,
     /**
-     * Chatből nyitott feladat azonnali indítása — a ticket „Végrehajtás"
-     * gombjával azonos út, a dispatcher poll-vészfékétől függetlenül.
+     * Chatből nyitott feladat azonnali indítása. A dispatcher worker
+     * LISTEN/cron-jától függetlenül hívandó; a System-oldali dispatcher-kapu
+     * továbbra is dönt — szüneteltetéskor a ticket ready-ben marad.
      */
     private dispatchTicket?: (ticketId: string) => Promise<unknown>,
   ) {}

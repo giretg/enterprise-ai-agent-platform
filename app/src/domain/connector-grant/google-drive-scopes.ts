@@ -88,6 +88,11 @@ const WRITE_TOOLS: readonly DriveTool[] = [
   'google_slides_apply_edits',
 ]
 
+/** Drive-írástool-e (a `WRITE_TOOLS` kanonikus halmaza alapján). */
+export function isDriveWriteTool(toolName: string): boolean {
+  return (WRITE_TOOLS as readonly string[]).includes(toolName)
+}
+
 export function driveToolAllowedByScopes(params: {
   tool: DriveTool
   scopes: Prisma.JsonValue | string[] | null | undefined

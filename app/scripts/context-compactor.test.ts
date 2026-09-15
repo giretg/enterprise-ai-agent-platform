@@ -687,6 +687,8 @@ async function main() {
     limits: ContextCompactionLimits,
     options: { archiveSucceeds?: boolean } = {},
   ) {
+    // A nagy eredmények már a loop offload-előnézetével (~2,5k karakter) érkeznek,
+    // ezért a tömörítési keretnek ez alá kell lőnie, hogy egyáltalán működésbe lépjen.
     const TURNS = 8
     const promptSizes: number[] = []
     const archived = new Map<string, string>()
@@ -797,7 +799,7 @@ async function main() {
     })
     const on = await runLongScenario({
       keepRecentToolResults: 2,
-      maxToolResultChars: 30_000,
+      maxToolResultChars: 10_000,
       minEvictableChars: 500,
     })
 
@@ -820,7 +822,7 @@ async function main() {
   await check('a kiszervezett tartalom a tool_result_read-del visszaolvasható', async () => {
     const on = await runLongScenario({
       keepRecentToolResults: 2,
-      maxToolResultChars: 30_000,
+      maxToolResultChars: 10_000,
       minEvictableChars: 500,
     })
     assert.ok(on.archived.size > 0, 'a kiszervezett eredmény archívumba került')
@@ -834,7 +836,7 @@ async function main() {
     const failed = await runLongScenario(
       {
         keepRecentToolResults: 2,
-        maxToolResultChars: 30_000,
+        maxToolResultChars: 10_000,
         minEvictableChars: 500,
       },
       { archiveSucceeds: false },

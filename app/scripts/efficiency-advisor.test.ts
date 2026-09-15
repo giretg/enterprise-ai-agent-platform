@@ -692,7 +692,7 @@ async function main() {
     assert.ok(oversized)
     assert.equal(oversized?.metric.toolName, 'http_api_get')
     assert.equal(oversized?.metric.repeats, 4 * 3)
-    assert.equal(oversized?.metric.sourceKey, 'http_api_get:path:/rows')
+    assert.equal(oversized?.metric.sourceKey, 'path:/rows')
     assert.equal(oversized?.suggestion.applicable, false)
     assert.equal(oversized?.suggestion.link, 'tool_narrowing')
     assert.equal(oversized?.suggestion.modelConfigPatch, undefined)

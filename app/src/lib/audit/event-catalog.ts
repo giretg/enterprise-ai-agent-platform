@@ -84,6 +84,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent_access.run_analyst_admin_grants.materialize',
   // Tenant admin: agent elrejtése / megjelenítése az operátorok listájából.
   'agent.operator_visibility',
+  'agent.operator_skill_management',
+  'agent.diagnostics.run',
   'agent.persona',
   'agent.resumed',
   'agent.retired',
