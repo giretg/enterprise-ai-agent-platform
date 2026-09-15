@@ -7,6 +7,101 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-09-15 — Halasztott tool-betöltés (#468 `tool_describe` + tool-index): describe-láthatóság ↔ hívhatóság
+
+**Scope-választás (kockázati alapon):** `gh pr list` + ledger után az előző 5 kör
+mind az OOM/törzs-méret-kapu felületet fedte (több nyitott OOM-PR merge-re vár —
+azok átvezetése PR-menedzsment, nem új finding). A legnagyobb **nem-auditált** felület
+a friss (09-14 main-re került) **#468 halasztott tool-betöltés**: a `tool_describe`
+meta-tool + tool-index a **minden agent-fordulóra ható tool-diszpécser** kritikus úton
+van, és eddig auditálatlan volt. Egy diszpécser-hiba blast-radiusa platform-szintű.
+
+**Coverage:** `chat-tool-loop.ts` teljes `tool_describe`-ág + `activatedTools`
+(preload ∪ skill ∪ prior ∪ checkpoint) + a D5 közvetlen-hívás-ág + a http_api
+connector describe-blokk + a hívás-idejű kapuk (allow-list 2697, skill-hatókör 2714,
+következmény-kapu) átnézve. `tool-registry.ts` `preload`/`toolIndexSummary`/drift-teszt
+átnézve.
+
+### Biztonsági megállapítás (NINCS finding) — a láthatóság authz-semleges
+
+A jogosultság **invoke-időben** dől el, a láthatóságtól függetlenül: grant-allow-list
+(2697), skill-hatókör (2714), broker/következmény-kapu — mind a describe/aktiválás
+UTÁN, attól függetlenül fut. Ellenőrizve: (a) `tool_describe` **nem** ad ki nem-grantolt
+tool sémát (`allowedTools.includes` kapu); (b) a connector-katalógus **agent-scoped**
+(`findConnectorsForAgent(agentId)` → `describeBlocks` map, ismeretlen connectorId →
+„nem elérhető"), nincs cross-tenant szivárgás; (c) D5 (le-nem-írt grantolt tool
+közvetlen hívása) a skill-hatókör-kapu UTÁN aktivál, nem kerüli meg. **Nincs
+cross-tenant / OOM / séma-szivárgás finding.**
+
+### Finding 1 (CONFIRMED, low) — describe-láthatóság ≠ hívhatóság betöltött skill alatt
+
+A `tool_describe` csak `allowedTools` (teljes grant) alapján kapuzott, a betöltött
+skill hatókörét (`skillToolScope`) **figyelmen kívül hagyva**. Skill-szűkített futásban
+a modell lekérhette a skill által kizárt (bár grantolt) tool sémáját — amit a hívás-kapu
+(2714) utána úgyis elutasít. Describe és invoke **eltérő választ** adott → felesleges
+modell-kör + pont a skill-hatókör-kapu által tiltott „kézi kerülőút" csábítása.
+**Súlyosság:** alacsony (nincs titok-szivárgás: a séma nem érzékeny; nem cross-tenant;
+a tool továbbra sem hívható). Megbízhatóság/UX + a skill-kontraktus konzisztenciája.
+
+### Finding 2 (CONFIRMED, teszt) — stale `http_api` grant-kártya teszt = csendes hamis-zöld
+
+A provider-független grant-kapu teszt közös `{ query:'x' }` inputot adott mindkét ágnak.
+`gmail_search`-re érvényes (query=string), `http_api_get`-re **nem** (a séma `query`-t
+`record`-ként várja) → a Zod-validáció a `buildToolInvokeInput`-ban a **broker ELŐTT**
+dobott, így a http_api grant-kártya ág **sosem futott le** (a teszt nem azt mérte, amit
+állított). Nem termék-bug (a grant-kártya éles úton helyes), hanem valódi **coverage-rés**.
+
+### Javítás
+
+- **Forrás (már main-en, `41f40d3d5`, PR #475 auto-merge):** a `tool_describe`-ág is
+  `skillToolScope`-ra kapuz → hatókörön kívüli tool sémája „nem elérhető".
+- **Drift-mentesítés (#477, review-driven):** egy `toolInSkillScope` predikátum a
+  három hely helyett (tools[]-szűrés, describe-láthatóság, hívás-kapu 2714) — az
+  invariáns nem drift-elhet szét inverz feltételekkel. Viselkedés változatlan.
+- **Teszt (#477):** eszközönként érvényes args → a http_api grant-ág valódi lefutása,
+  + új regresszió a hatókörön kívüli describe elrejtésére.
+
+### Ellenőrzések
+
+- `scripts/agent-tool-loop.test.ts` — teljes fájl **zöld** (új skill-hatókör describe
+  assert + a javított http_api grant-ág). `tool-registry-drift.test.ts` zöld.
+- `tsc --noEmit` + `eslint` tiszta az érintett fájlokra (a 2 megmaradt tsc-hiba —
+  `scheduled-task-enterprise.test.ts`, `.next-local-auth` generált — **pre-existing**
+  main-baseline, nem ebből a körből).
+- Független `/code-review` (Matt Pocock, 2 párhuzamos axis):
+  - **Standards:** nincs hard violation; a describe-predikátum a hívás-kapu pontos
+    inverze („közös kapu / nincs drift" standardot erősíti). Egyetlen judgement-call
+    (a hármas ismétlés drift-kockázata) **átvezetve** a `toolInSkillScope` predikátummal.
+  - **Spec:** _defensible alignment, nem violation_ — a spec §1.3 „nem-leírt ≠
+    jogosultsági állapot" a *fail-open* irányt (D5) védi; a nem-hívható séma elrejtése a
+    *szigorúbb* irány, és a §1.3+D10 maga is a skill-hatókört hívhatóság-döntőnek nevezi.
+    Nincs hibás implementáció.
+
+### PR
+
+- **#477** — `fix(tools): tool_describe kövesse a skill-hatókört — regresszió +
+  drift-mentesítés` (branch `test/tool-describe-skill-scope-coverage`, `main`-ről).
+- A forrás-fix (`41f40d3d5`) **már main-en** (a környezet automatizációja PR #475-öt e
+  kör közben auto-merge-elte; a #468 forrás-fix ezért main-en, #477 a tesztet+refaktort viszi).
+
+### Residual risk / következő audithoz
+
+- **D2 index (stabil prefix) skill-hatókörön kívüli grantolt toolt is felsorol:**
+  az index-blokk `allowedTools`-ból épül (D8: prior-független stabil prefix), így betöltött
+  skill alatt olyan toolt is mutat, amit a modell most már **sem describe-olni, sem hívni**
+  nem tud. Nem szivárgás (a név nem érzékeny), de UX/konzisztencia-rés — a skill-hatókör-jegyzet
+  jelzi a valóban használhatókat. Follow-up: index is szűkíthető skill-hatókörre (a stabil-prefix
+  cache-előny mérlegelésével).
+- **Describe üzenet-paritás:** a hatókörön kívüli describe ugyanazt a terse „nem elérhető"-t
+  adja, mint a nem-grantolt eset, míg a hívás-kapu (2714) gazdagabb „nincs a skill listájában"
+  üzenetet ad. A modell így nem különbözteti meg a két okot — apró, spec-néma, opcionális UX-nicety.
+- **`priorToolNames` wire↔belső név:** a `ToolCall.toolName` (belső név) egyezik az
+  `allowedTools`-szal; ha valaha wire-néven tárolódna, csak +1 describe-kör az ára (nem authz).
+- **Nyitott OOM-PR stack (#443/#445/#448) továbbra is merge-re vár** — a tartós OOM-kockázat
+  csökkentése ezek átvezetése; a következő kör prioritása lehet.
+
+---
+
 ## 2026-09-11 — Fájlfeltöltés (`formData()`) OOM: a scope MÁR javítva (#448) — duplikátum visszavonva + coverage-rés rögzítve
 
 **Scope-választás (kockázati alapon):** a 09-09 kör lezárt residualja explicit ezt
