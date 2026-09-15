@@ -1369,6 +1369,13 @@ export async function runAgentToolLoop(params: {
     params.initialSkillToolScope && params.initialSkillToolScope.length > 0
       ? new Set(params.initialSkillToolScope)
       : null
+  // Egyetlen hatókör-predikátum: nincs betöltött skill → minden grantolt tool
+  // hívható; ha van, csak a skill allowed-tools-a. A `tools[]`-szűrés, a describe-
+  // láthatóság és a hívás-kapu MIND ezt használja — így a „describe = hívhatóság"
+  // invariáns nem drift-elhet szét (a három hely különben inverz feltételekkel
+  // ismételné ugyanezt). A `skillToolScope`-ra menet közben mutálódik (load_skill),
+  // ezért az arrow a változót olvassa, nem pillanatképet.
+  const toolInSkillScope = (name: string): boolean => !skillToolScope || skillToolScope.has(name)
   /** A hatókört kiváltó skill neve(i) — az elutasító üzenet ezt nevezi meg. */
   const skillScopeSources: string[] = []
   const loadSkillAttachment = params.loadSkillAttachment
@@ -1380,9 +1387,7 @@ export async function runAgentToolLoop(params: {
   let attachmentToolAvailable = params.initialSkillAttachmentsAvailable === true
 
   const buildTools = (): ToolDefinition[] => {
-    const inScope = skillToolScope
-      ? allowedTools.filter((t) => skillToolScope!.has(t))
-      : allowedTools
+    const inScope = allowedTools.filter(toolInSkillScope)
     // D4/D8: csak az aktivált toolok sémája megy ki; a lista név szerint rendezett,
     // így két azonos állapot bájt-azonos `tools[]`-t ad (prompt-cache).
     return [
@@ -2632,7 +2637,7 @@ export async function runAgentToolLoop(params: {
           if (
             isChatPlatformTool(name) &&
             (allowedTools as string[]).includes(name) &&
-            (!skillToolScope || skillToolScope.has(name))
+            toolInSkillScope(name)
           ) {
             activatedTools.add(name)
             described.push({
@@ -2711,7 +2716,7 @@ export async function runAgentToolLoop(params: {
       // tiltása ellenére kézi kerülőutat épített (pl. cellánkénti Excel-írás a
       // determinisztikus egyeztető eszköz helyett), és félkész eredményt adott
       // késznek. Az üzenet megmondja, mi a helyes lépés — ne kerülőutat keressen.
-      if (skillToolScope && !skillToolScope.has(toolName)) {
+      if (!toolInSkillScope(toolName)) {
         // Policy-elutasítás — ugyanaz a kategória, mint az írásjog- vagy a
         // következmény-kapu, ezért a denied számlálóban is meg kell jelennie.
         deniedCount += 1
@@ -2719,7 +2724,7 @@ export async function runAgentToolLoop(params: {
           call,
           `ELUTASÍTVA: az eszköz „${call.name}" nincs a betöltött skill allowed-tools listájában, ezért ebben a ` +
             `feladatban nem használható. A skill által engedélyezett eszközök: ` +
-            `${[...skillToolScope].sort().join(', ')}. Ne építs kézi kerülőutat: ha a feladat ezekkel nem oldható ` +
+            `${[...(skillToolScope ?? [])].sort().join(', ')}. Ne építs kézi kerülőutat: ha a feladat ezekkel nem oldható ` +
             `meg, állj meg, és mondd el a felhasználónak, mi hiányzik.`,
           'skill-hatókörön kívüli eszköz',
         )
