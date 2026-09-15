@@ -618,6 +618,7 @@ enum ConversationStatus {
 // de az enum és a séma előre felkészül rájuk.
 enum ChannelType {
   telegram
+  embedded_app
 }
 
 /// A regisztrált csatorna-bot állapota. `disabled` esetén a csatorna némán zárva —
@@ -2065,6 +2066,10 @@ model Conversation {
   privacyKey           ConversationPrivacyKey?
   observeEntities      ConversationObserveEntity[]
 
+  // Beágyazott agent-chat (feature-spec #481, D3): per-user szál egyediség —
+  // ugyanaz a slug+thread+user mindig ugyanazt a beszélgetést nyitja. Részleges
+  // egyedi index — a Prisma-séma ezt nem tudja kifejezni, kézzel írt SQL a
+  // migrációban (mint az agent_turns aktív-forduló indexe).
   @@index([tenantId, agentId, lastMessageAt])
   @@index([tenantId, createdById])
   @@index([retainUntil, legalHold])

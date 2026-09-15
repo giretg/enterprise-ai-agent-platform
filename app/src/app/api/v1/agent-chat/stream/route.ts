@@ -40,6 +40,7 @@ export async function POST(request: Request) {
     consequenceApprovalIds,
     connectorGrantContinuation,
     taskBriefing,
+    modelContextPrefix,
     projectKey,
   } = body as {
     agentId?: string
@@ -52,6 +53,7 @@ export async function POST(request: Request) {
     consequenceApprovalIds?: string[]
     connectorGrantContinuation?: boolean
     taskBriefing?: { goal?: string; source?: string; constraint?: string; approval?: string } | null
+    modelContextPrefix?: string | null
   }
 
   if (!agentId || typeof agentId !== 'string') {
@@ -70,6 +72,7 @@ export async function POST(request: Request) {
     content,
     attachmentDocumentIds,
     taskBriefing,
+    modelContextPrefix,
   })
   if (!turnInput.success) {
     return Response.json(
@@ -227,6 +230,9 @@ export async function POST(request: Request) {
           attachmentDocumentIds,
           processDefinitionId,
           processInputPayload,
+          ...(turnInput.data.modelContextPrefix
+            ? { modelContextPrefix: turnInput.data.modelContextPrefix }
+            : {}),
           ...(taskBriefing &&
           typeof taskBriefing === 'object' &&
           typeof taskBriefing.goal === 'string'

@@ -124,6 +124,12 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         requires: { tenantRole: 'admin' },
       },
       {
+        key: 'admin.embed-apps',
+        href: '/control-plane/embed-apps',
+        label: 'Beágyazó alkalmazások',
+        requires: { tenantRole: 'admin' },
+      },
+      {
         key: 'admin.platform-tenants',
         href: '/control-plane/platform/tenants',
         label: 'Platform · Tenantok',

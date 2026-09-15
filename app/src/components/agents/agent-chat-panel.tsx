@@ -71,6 +71,7 @@ import {
   ConversationFilesPanel,
   type ConversationFilesPanelHandle,
 } from '@/components/chat/conversation-files-panel'
+import { envelopeEmbeddedContextForModel } from '@/domain/tool-broker/tool-result-envelope'
 import { personaFor } from '@/lib/agent-persona'
 import { recordLastAgentChatForCurrentTenant } from '@/lib/last-agent-chat'
 import {
@@ -134,7 +135,7 @@ import { type ChatTaskCardView } from '@/lib/work-traceability'
 
 const CHAT_SESSIONS_PAGE_SIZE = 10
 
-type ChatAgent = {
+export type ChatAgent = {
   id: string
   name: string
   status?: string
@@ -156,6 +157,7 @@ export function AgentChatPanel({
   tileTarget = null,
   embedded = false,
   focusMessageId = null,
+  externalContext = null,
 }: {
   agent: ChatAgent
   open: boolean
@@ -164,6 +166,13 @@ export function AgentChatPanel({
   canDistillSkill?: boolean
   /** Deep-link / Aktív futások: nyitáskor ezt a beszélgetést tölti be + reattach. */
   initialConversationId?: string | null
+  /**
+   * Beágyazott agent-chat (#481 D4): a beágyazó app `postMessage`-ből kapott
+   * kontextusa (`source` pl. `embedded_app:crm`). Minden ezután küldött
+   * üzenethez untrusted burkolattal hozzáfűzve megy — a felhasználó
+   * buborékában NEM jelenik meg, csak a modellnek szánt szövegben.
+   */
+  externalContext?: { source: string; label: string; data: unknown } | null
   /** OAuth-grant után a szerveroldali folytatás-forduló. */
   resumeAfterGrant?: boolean
   /** RA-08: deep-link — szerkeszthető első üzenet a composerben (nem auto-send). */
@@ -1591,6 +1600,17 @@ export function AgentChatPanel({
               ? { consequenceApprovalIds: options.consequenceApprovalIds }
               : {}),
             ...(options.connectorGrantContinuation ? { connectorGrantContinuation: true } : {}),
+            // #481 D4: a beágyazó app kontextusa untrusted burkolattal megy a
+            // modellnek, egy KÜLÖN mezőn — a felhasználó buborékájában (`content`)
+            // NEM jelenik meg, és nem is perzisztálódik a beszélgetésbe.
+            ...(externalContext
+              ? {
+                  modelContextPrefix: envelopeEmbeddedContextForModel(
+                    externalContext.source,
+                    `${externalContext.label}: ${JSON.stringify(externalContext.data)}`,
+                  ),
+                }
+              : {}),
           }),
         })
 

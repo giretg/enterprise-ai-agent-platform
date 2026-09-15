@@ -376,6 +376,11 @@ export const agentChatStreamTurnInputSchema = z.object({
   // `.partial()` relaxálja a `goal` kötelezőségét: a chat-stream forduló nem
   // feltétlen küld teljes briefinget, az üres-üzenet őr a runtime `beginTurn`-ben van.
   taskBriefing: taskBriefingSchema.partial().nullish(),
+  // Beágyazott agent-chat (#481 D4): a beágyazó app kontextusa, MÁR burkolva
+  // (`envelopeEmbeddedContextForModel`) — csak a modell-promptba kerül, nem
+  // perzisztálódik a `content` mellett. 9000: a postMessage-kontextus max 8 kB
+  // + a burkolat pár száz karaktere.
+  modelContextPrefix: z.string().max(9000).nullish(),
 })
 
 export const createAgentTaskTicketSchema = z.object({
@@ -1230,6 +1235,16 @@ export const setNavVisibilitySchema = z.object({
     approver: navVisibilityKeyList,
     admin: navVisibilityKeyList,
   }),
+})
+
+/** Beágyazott agent-chat — „Beágyazó alkalmazások" allowlist szerkesztése (#481 D7). */
+export const addEmbedAppSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  origin: z.string().trim().min(1).max(200),
+})
+
+export const removeEmbedAppSchema = z.object({
+  slug: z.string().trim().min(1).max(40),
 })
 
 /** Web Fetch (WS-D) platform-tool vezérlés (WebFetch-Egress §14). Legalább az egyik mező. */
