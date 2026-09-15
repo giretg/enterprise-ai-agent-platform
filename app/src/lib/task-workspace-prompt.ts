@@ -22,7 +22,7 @@ export function formatTaskWorkspaceFilesPrompt(workspaceFiles: string[]): string
       `Workspace PDF/DOCX-hez NE találj ki documentId-t — a document_read csak a csatolmány-blokkban megadott documentId-kre való. ` +
       `Tulajdoni lap (földhivatali TULLAP/INYER PDF) esetén NE pdf_read-del lapozz: hívd a tulajdoni_lap_parse-t ` +
       `(chat csatolmánynál documentId, workspace fájlnál path — pl. path: "fajl.pdf" vagy "fajl.pdf.txt"). ` +
-      `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz. Kész fájlra a válaszodban pontos, backtickbe tett fájlnévvel hivatkozz (pl. \`riport.xlsx\`), hogy a felhasználó egy kattintással letölthesse; HTML-nél a link megnyitja a riportot.`,
+      `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz. Kész fájlra a válaszodban pontos, backtickbe tett fájlnévvel hivatkozz (pl. \`riport.xlsx\`), hogy a felhasználó egy kattintással letölthesse; HTML-nél a link megnyitja a riportot. Új fájlnál az eszköz által visszaadott \`path\` mezőt szó szerint másold vissza, sose rekonstruáld fejből.`,
   ]
 
   if (pdfs.length > 0) {
