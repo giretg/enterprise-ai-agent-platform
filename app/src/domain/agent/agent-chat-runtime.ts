@@ -61,6 +61,7 @@ import { resolveWorkProjectBrief } from '../work-project/work-project-service'
 import type { MemoryRetrievalService } from '../memory/memory-retrieval-service'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
+import { createWorkspaceToolResultArchiver } from './tool-result-archive'
 import type { CompiledSpec } from '../playbook/playbook-compiler'
 import type { ProcessService } from '../playbook/process-service'
 import {
@@ -126,11 +127,6 @@ const DUPLICATE_RUN_MESSAGE =
 
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
 const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
-
-function safeToolResultName(value: string): string {
-  const cleaned = value.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '')
-  return cleaned.slice(0, 80) || 'tool-result'
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -1692,8 +1688,7 @@ export class AgentChatRuntime {
             : {}),
           // #468 D4: a korábban már hívott toolok discovery nélkül aktiválódnak.
           priorToolNames: [...new Set(priorToolCalls.map((c) => c.toolName))],
-          archiveLargeToolResult: (input) =>
-            this.archiveLargeToolResult(tenantKey, conversationId, input),
+          archiveLargeToolResult: createWorkspaceToolResultArchiver(this.workspaceStorage, tenantKey, conversationId),
           writeWorkspaceFile: async (path, content, audience = 'internal') => {
             try {
               const bytes = Buffer.from(content, 'utf8')
@@ -2743,29 +2738,6 @@ export class AgentChatRuntime {
       )
     } catch {
       // A fájl publikálási metaadata nem szakíthatja meg a már kész választ.
-    }
-  }
-
-  private async archiveLargeToolResult(
-    tenantId: string,
-    conversationId: string,
-    input: { toolName: string; callId: string; turn: number; content: string; path?: string },
-  ): Promise<{ path: string; bytes: number } | null> {
-    const bytes = Buffer.from(input.content, 'utf8')
-    // A kontextus-tömörítés kötött útvonalat ad: a stub már közölte a modellel,
-    // hol keresse az eredményt, ezért ott kell keletkeznie.
-    const path =
-      input.path ??
-      [
-        '.tool-results',
-        `${String(input.turn + 1).padStart(2, '0')}-${safeToolResultName(input.toolName)}-${safeToolResultName(input.callId)}.json`,
-      ].join('/')
-
-    try {
-      await this.workspaceStorage.write(tenantId, conversationId, path, bytes)
-      return { path, bytes: bytes.length }
-    } catch {
-      return null
     }
   }
 

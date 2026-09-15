@@ -15,11 +15,13 @@ import type { GatewayMessage, ModelGateway } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { PlaybookService } from '../playbook/playbook-service'
 import type { ConversationService } from '../conversation/conversation-service'
+import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import { assembleContext, type ContextAssemblyMessage } from '../conversation/context-assembly'
 import { TicketService } from '../ticket/ticket-service'
 import { assembleGatewayMessages } from './prompt-assembler'
 import type { ReportTemplate } from '../report/report-templates'
 import { listAllowedChatTools, runAgentToolLoop, type ChatPlatformToolName } from './chat-tool-loop'
+import { createWorkspaceToolResultArchiver } from './tool-result-archive'
 import {
   compileFromZod,
   contractToJsonSchema,
@@ -95,6 +97,7 @@ export class WikiAgentRuntime {
     private playbooks: PlaybookService,
     private conversations: ConversationService,
     private audit: AuditRepository,
+    private workspaceStorage: WorkspaceStorage,
   ) {}
 
   /**
@@ -595,6 +598,32 @@ export class WikiAgentRuntime {
       messages,
       modelConfig: params.modelConfig,
       allowedTools: params.allowedTools,
+      archiveLargeToolResult: createWorkspaceToolResultArchiver(
+        this.workspaceStorage,
+        params.tenantId ?? 'global',
+        params.conversationId,
+      ),
+      writeWorkspaceFile: async (path, content, audience = 'internal') => {
+        try {
+          const bytes = Buffer.from(content, 'utf8')
+          const tenantId = params.tenantId ?? 'global'
+          await this.workspaceStorage.write(tenantId, params.conversationId, path, bytes)
+          await this.workspaceStorage.setFileAudience(tenantId, params.conversationId, path, audience)
+          return { bytes: bytes.length }
+        } catch {
+          return null
+        }
+      },
+      listWorkspaceFiles: () =>
+        this.workspaceStorage.list(params.tenantId ?? 'global', params.conversationId).catch(() => []),
+      readWorkspaceFile: async (path) => {
+        try {
+          const value = await this.workspaceStorage.read(params.tenantId ?? 'global', params.conversationId, path)
+          return value ? value.toString('utf8') : null
+        } catch {
+          return null
+        }
+      },
     })
   }
 

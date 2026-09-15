@@ -672,6 +672,8 @@ export const createAgentSchema = z.object({
     modelType: modelTypeSchema.optional(),
     temperature: z.number().min(0).max(2).optional(),
     maxTokens: z.number().int().positive().optional(),
+    /** Nagy eszköz-eredmény előnézete (karakter). */
+    toolResultPreviewChars: z.number().int().min(500).max(10_000).optional(),
   }),
 })
 
@@ -992,6 +994,8 @@ export const updateAgentModelConfigSchema = z.object({
     modelType: modelTypeSchema.optional(),
     temperature: z.number().min(0).max(2).optional(),
     maxTokens: z.number().int().positive().optional(),
+    /** Nagy eszköz-eredmény előnézete (karakter). */
+    toolResultPreviewChars: z.number().int().min(500).max(10_000).optional(),
     /** Agent-szintű tartalék — a globális lánc előtt fut. */
     fallbackModels: z
       .array(z.object({ provider: modelProviderSchema, model: z.string().min(1) }))

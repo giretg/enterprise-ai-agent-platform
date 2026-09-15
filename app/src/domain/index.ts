@@ -1305,6 +1305,7 @@ const wikiRuntime = new WikiAgentRuntime(
   playbookService,
   conversationService,
   repositories.audit,
+  workspaceStorage,
 )
 const generalTaskRuntime = new GeneralTaskRuntime(
   repositories.agents,
