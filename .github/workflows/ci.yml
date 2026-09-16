@@ -298,6 +298,14 @@ jobs:
       - name: Privacy feloldási scope-invariáns
         run: npm run test:privacy-resolve-scope
 
+      # AI Privacy Gateway APG-18 (#292): a val-surrogate crypto-shredding a
+      # retention sweep-hez kötött adatkulcs-törlésre épül, ezt csak valódi
+      # Postgres ellen lehet bizonyítani — a stub-DB job fake DATABASE_URL-jével
+      # sosem futott le, minden itteni futás elhasalt rajta (lásd health-check
+      # 2026-09-16).
+      - name: Val-surrogate crypto-shredding DB-invariáns
+        run: npm run test:val-surrogate-crypto-shred
+
   security-scan:
     name: Titok-szkennelés + CodeQL
     runs-on: ubuntu-latest
