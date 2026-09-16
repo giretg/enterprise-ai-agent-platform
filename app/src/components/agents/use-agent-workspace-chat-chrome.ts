@@ -22,6 +22,7 @@ export function useAgentWorkspaceChatChrome({
   open,
   agent,
   conversationId,
+  fallbackModel,
   startNewChat,
   toggleHistory,
   analyze,
@@ -37,6 +38,7 @@ export function useAgentWorkspaceChatChrome({
   open: boolean
   agent: WorkspaceChatAgent
   conversationId: string | null
+  fallbackModel: string | null
   startNewChat: () => void
   toggleHistory: () => void
   analyze: () => void
@@ -60,6 +62,7 @@ export function useAgentWorkspaceChatChrome({
           initialConversationId: conversationId,
         }),
       hasSavedConversation: Boolean(conversationId),
+      fallbackModel,
       analyzeDisabled,
       analyze,
       distill,
@@ -81,6 +84,7 @@ export function useAgentWorkspaceChatChrome({
     distillTargetSkillId,
     distillTargets,
     embedded,
+    fallbackModel,
     open,
     setDistillTargetSkillId,
     startNewChat,

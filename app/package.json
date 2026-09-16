@@ -58,6 +58,7 @@
     "test:agent-api-key-hash": "tsx scripts/agent-api-key-hash.test.ts",
     "test:agent-api-tool-context": "tsx scripts/agent-api-tool-context.test.ts",
     "test:timing-safe-token": "tsx scripts/timing-safe-token.test.ts",
+    "test:fallback-chain": "tsx scripts/fallback-chain.test.ts",
     "test:write-gate-single-use": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/write-gate-single-use.test.ts",
     "test:gateway-relay": "tsx scripts/text-tool-relay.test.ts",
     "test:gateway-negative": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/model-gateway-negative.test.ts",

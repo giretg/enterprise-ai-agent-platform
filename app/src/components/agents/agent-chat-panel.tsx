@@ -87,6 +87,7 @@ import { LoadingState } from '@/components/ui/spinner'
 import { useAgentWorkspaceChatChrome } from '@/components/agents/use-agent-workspace-chat-chrome'
 import {
   ChatHeaderMenu,
+  FallbackModelBadge,
   ChatMenuItem,
   DistillSkillMenuItems,
   MessageBubble,
@@ -250,6 +251,7 @@ export function AgentChatPanel({
   const [sessionsOpen, setSessionsOpen] = useState(false)
   const [sessionsFilter, setSessionsFilter] = useState<ChatSessionStatusFilter>('active')
   const [conversationStatus, setConversationStatus] = useState<'active' | 'archived'>('active')
+  const [fallbackModel, setFallbackModel] = useState<string | null>(null)
   /** Ticket → Megbeszélés (#219): forrás feladat a chat fejlécében. */
   const [continuedFromTicket, setContinuedFromTicket] = useState<{
     id: string
@@ -548,6 +550,7 @@ export function AgentChatPanel({
     setContinuedFromTicket(null)
     setTicketDiscussionHistory([])
     setConversationStatus('active')
+    setFallbackModel(null)
     setSessionsFilter('active')
     setSessionsOpen(false)
     setSelectedProcessDefId(null)
@@ -923,6 +926,7 @@ export function AgentChatPanel({
     open,
     agent,
     conversationId,
+    fallbackModel,
     startNewChat: startNewSession,
     toggleHistory: toggleWorkspaceHistory,
     analyze: handleAnalyzeConversation,
@@ -968,6 +972,7 @@ export function AgentChatPanel({
       setViewingConversation(convId)
       setProjectKey(effectiveWorkProjectKey(res.data.conversation.projectKey))
       setConversationStatus(res.data.conversation.status)
+      setFallbackModel(res.data.fallbackModel)
       setContinuedFromTicket(res.data.continuedFromTicket ?? null)
       setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
       setIsAdmin(res.data.isAdmin)
@@ -2230,6 +2235,7 @@ export function AgentChatPanel({
             )}
           </div>
 
+          <FallbackModelBadge model={fallbackModel} />
           {conversationId && (
             <ChatHeaderMenu>
               {runAnalysisEntry?.canRunAnalysis && runAnalysisEntry.runAnalystAgentId ? (

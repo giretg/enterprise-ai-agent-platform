@@ -36,6 +36,7 @@ import {
   ChatHeaderMenu,
   ChatMenuItem,
   DistillSkillMenuItems,
+  FallbackModelBadge,
 } from '@/components/agents/agent-chat-message'
 
 type WorkspaceAgent = {
@@ -112,6 +113,7 @@ function useWorkspaceAnalyzeButton() {
     canAnalyze,
     analyzeDisabled: chrome.analyzeDisabled,
     canDistill: chrome.hasSavedConversation,
+    fallbackModel: chrome.fallbackModel,
     distillDisabled: chrome.distillDisabled,
     distillPending: chrome.distillPending,
     distillTargets: chrome.distillTargets,
@@ -166,6 +168,7 @@ function WorkspaceHeader({
     canAnalyze,
     analyzeDisabled,
     canDistill,
+    fallbackModel,
     distillDisabled,
     distillPending,
     distillTargets,
@@ -241,6 +244,7 @@ function WorkspaceHeader({
 
       {showChatChrome ? (
         <div className="ml-auto flex items-center gap-1 sm:gap-2">
+          <FallbackModelBadge model={fallbackModel} />
           {canDistill ? (
             <ChatHeaderMenu>
               {canAnalyze ? (
