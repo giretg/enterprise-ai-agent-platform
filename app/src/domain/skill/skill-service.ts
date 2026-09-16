@@ -37,6 +37,7 @@ import { signSkillVersion } from '@/lib/crypto/hash-chain'
 import {
   normalizeSkillDisplayName,
   normalizeSkillName,
+  skillNamesEqual,
 } from '@/lib/skill/skill-name'
 import {
   SKILL_DESCRIPTION_MAX,
@@ -564,6 +565,142 @@ export class SkillService {
     })
 
     return { ok: true, skill, versionId, validation, attachments, skipped, skillRoot: pkg.skillRoot }
+  }
+
+  /**
+   * Meglévő skillhez új verzió javaslata ZIP-csomagból — ugyanaz a parse/validátor
+   * út, mint az új skill importnál, de `proposed` verzió jön létre (nem új skill).
+   * A csomag `name` mezőjének egyeznie kell a katalógus-skill technikai nevével.
+   */
+  async importSkillPackageVersion(input: {
+    skillId: string
+    archive: Uint8Array
+    subpath?: string
+    sourceUrl?: string
+    sourceLabel?: string
+    actor: ActorContext
+  }): Promise<
+    | {
+        ok: true
+        versionId: string
+        version: number
+        validation: SkillValidationResult
+        attachments: SkillAttachment[]
+        skipped: SkillPackageSkippedFile[]
+        skillRoot: string
+      }
+    | { ok: false; stage: 'archive'; message: string; code: string }
+    | { ok: false; stage: 'package'; message: string; code: string; candidates: string[] }
+    | {
+        ok: false
+        stage: 'validation'
+        validation: SkillValidationResult
+        skipped: SkillPackageSkippedFile[]
+      }
+  > {
+    const skill = await this.getReadableSkill(input.actor.actorTenantId, input.skillId)
+    if (!skill) throw new SkillAccessError('Skill not found')
+    if (
+      !isSkillWritableFromTenant(
+        skill.tenantId,
+        input.actor.actorTenantId,
+        input.actor.isPlatformAdmin,
+      )
+    ) {
+      throw new SkillAccessError()
+    }
+
+    let entries: { path: string; bytes: Uint8Array }[]
+    try {
+      entries = readZipEntries(input.archive)
+    } catch (e) {
+      if (e instanceof ZipReadError) {
+        return { ok: false, stage: 'archive', message: e.message, code: e.code }
+      }
+      throw e
+    }
+
+    let pkg: SkillPackageResult
+    try {
+      pkg = buildSkillPackage(entries, input.subpath ? { subpath: input.subpath } : {})
+    } catch (e) {
+      if (e instanceof SkillPackageError) {
+        return {
+          ok: false,
+          stage: 'package',
+          message: e.message,
+          code: e.code,
+          candidates: e.candidates,
+        }
+      }
+      throw e
+    }
+
+    const parsed = parseSkillMd(pkg.skillMdRaw, input.sourceUrl ? { url: input.sourceUrl } : {})
+    if (!skillNamesEqual(parsed.name, skill.name)) {
+      throw new SkillAccessError(
+        `A csomag skill-neve („${parsed.name}”) nem egyezik a katalógus-skillkel („${skill.name}”).`,
+      )
+    }
+
+    const validation = validateSkill({
+      name: parsed.name,
+      description: parsed.description,
+      content: parsed.content,
+      requires: parsed.suggestedRequires,
+    })
+    if (!validation.ok) {
+      return { ok: false, stage: 'validation', validation, skipped: pkg.skipped }
+    }
+
+    const skipped = [...pkg.skipped]
+    const attachments: SkillAttachment[] = []
+    for (const attachment of pkg.attachments) {
+      const hits = findInjectionPatterns(attachment.text)
+      if (hits.length > 0) {
+        skipped.push({ path: attachment.path, reason: 'injection_pattern', bytes: attachment.bytes })
+        continue
+      }
+      attachments.push(attachment)
+    }
+
+    const { versionId, version } = await this.proposeVersion({
+      skillId: skill.id,
+      content: parsed.content,
+      requires: parsed.suggestedRequires,
+      attachments,
+      actor: input.actor,
+    })
+
+    await this.audit.append({
+      actorType: input.actor.actorId ? 'human' : 'system',
+      actorId: input.actor.actorId,
+      agentVersion: null,
+      action: 'skill.package_version_proposed',
+      targetType: 'skill',
+      targetId: skill.id,
+      modelUsed: null,
+      inputRef: input.sourceLabel ?? input.sourceUrl ?? 'zip-upload',
+      outputRef: `v${version}`,
+      policyDecision: 'proposed',
+      tenantId: skill.tenantId,
+      metadata: {
+        skillVersionId: versionId,
+        skillRoot: pkg.skillRoot,
+        attachmentCount: attachments.length,
+        skippedCount: skipped.length,
+      },
+    })
+
+    return {
+      ok: true,
+      versionId,
+      version,
+      validation,
+      attachments,
+      skipped,
+      skillRoot: pkg.skillRoot,
+    }
   }
 
   /**
@@ -1130,13 +1267,13 @@ export class SkillService {
   }
 
   /**
-   * Aktív verzió visszavonása — a skill nem lesz újra hozzárendelhető; a meglévő
-   * agent-hozzárendelések érintetlenek maradnak (nincs új aktív verzió).
+   * Aktív verzió visszavonása — a skill nem lesz újra hozzárendelhető, és minden
+   * agent-ről lekerül (nincs új aktív verzió).
    */
   async deactivateSkill(input: {
     skillId: string
     actor: ActorContext
-  }): Promise<{ versionId: string; version: number } | null> {
+  }): Promise<{ versionId: string; version: number; detachedAssignmentCount: number } | null> {
     const skill = await this.getReadableSkill(input.actor.actorTenantId, input.skillId)
     if (!skill) throw new SkillAccessError('Skill not found')
     if (
@@ -1154,6 +1291,8 @@ export class SkillService {
       throw new SkillAccessError('Nincs aktív verzió — a skill már deaktivált.')
     }
 
+    const detachedAssignmentCount = await this.skills.detachAllAssignmentsForSkill(input.skillId)
+
     await this.audit.append({
       actorType: 'human',
       actorId: input.actor.actorId,
@@ -1166,10 +1305,10 @@ export class SkillService {
       outputRef: `v${retired.version}`,
       policyDecision: 'retired',
       tenantId: skill.tenantId,
-      metadata: { skillVersionId: retired.id },
+      metadata: { skillVersionId: retired.id, detachedAssignmentCount },
     })
 
-    return { versionId: retired.id, version: retired.version }
+    return { versionId: retired.id, version: retired.version, detachedAssignmentCount }
   }
 
   /**

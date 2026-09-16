@@ -283,6 +283,13 @@ export class PostgresSkillRepository implements SkillRepository {
     })
   }
 
+  async detachAllAssignmentsForSkill(skillId: string): Promise<number> {
+    const result = await prisma.agentSkill.deleteMany({
+      where: { skillVersion: { skillId } },
+    })
+    return result.count
+  }
+
   async deleteSkill(skillId: string): Promise<void> {
     await prisma.skill.delete({ where: { id: skillId } })
   }

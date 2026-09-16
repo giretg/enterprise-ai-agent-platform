@@ -1431,10 +1431,12 @@ export interface SkillRepository {
     versionId: string,
     params: { approverId: string; signature: string },
   ): Promise<SkillVersionActivationResult>
-  /** Az aktív verzió `retired` — a skill nem hozzárendelhető, meglévő hozzárendelések megmaradnak. */
+  /** Az aktív verzió `retired` — a skill nem hozzárendelhető új agentekhez. */
   retireActiveVersion(skillId: string): Promise<SkillVersion | null>
   getActiveVersion(skillId: string): Promise<SkillVersion | null>
   countAssignmentsForSkill(skillId: string): Promise<number>
+  /** Minden agent-skill hozzárendelés törlése a skill összes verziójáról. */
+  detachAllAssignmentsForSkill(skillId: string): Promise<number>
   deleteSkill(skillId: string): Promise<void>
 
   // Hozzárendelés (AgentSkill)
