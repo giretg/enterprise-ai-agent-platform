@@ -28,6 +28,10 @@ import {
 import { resolveToolOutputContract } from '../src/domain/tool-broker/tool-output-contracts'
 import { isSideEffectingTool } from '../src/domain/tool-broker/tool-trust-registry'
 import { createWorkspaceToolResultArchiver } from '../src/domain/agent/tool-result-archive'
+import {
+  inheritSandboxTrust,
+  resolveInputTrust,
+} from '../src/domain/agent/tool-result-extract'
 import type { AuditRepository, ToolBrokerRepository } from '../src/repositories/interfaces'
 
 let failures = 0
@@ -1615,6 +1619,445 @@ async function main() {
     const denied = gwCalls[1]?.messages.find((m) => m.role === 'tool' && m.toolCallId === 's1')
     assert.ok(denied && 'content' in denied)
     assert.match(String(denied.content), /allowed-tools/)
+  })
+
+  await check('#470 T1: saveAs a nyers eredményt fájlba írja, a broker args-ból kiesik', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const workspaceWrites: Array<{ path: string; content: string; audience?: string }> = []
+    const body = { ok: true, status: 200, body: { tickets: [{ id: 1, status: 'open' }] } }
+
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'list-1',
+                name: 'http_api_get',
+                input: { path: '/tickets', saveAs: 'x.json' },
+              },
+            ],
+          },
+          { content: 'Mentettem a listát.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBrokerResult(brokerCalls, body, 'external_untrusted'),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-saveas' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'listázd a ticketeket' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get'],
+      writeWorkspaceFile: async (path, content, audience) => {
+        workspaceWrites.push({ path, content, audience })
+        return { bytes: Buffer.byteLength(content) }
+      },
+    })
+
+    assert.equal(brokerCalls.length, 1)
+    assert.ok('args' in brokerCalls[0])
+    assert.equal('saveAs' in brokerCalls[0].args, false)
+    const saved = workspaceWrites.filter((w) => w.path === 'x.json')
+    assert.equal(saved.length, 1)
+    assert.equal(saved[0].audience, 'internal')
+    assert.equal(saved[0].content, JSON.stringify(body))
+    const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
+    assert.ok(toolMessage)
+    assert.match(String(toolMessage.content), /Mentve: x\.json \(/)
+  })
+
+  await check('#470 T2: sandbox_exec tool-outputs input → external_untrusted burkolat', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'sbx-1',
+                name: 'sandbox_exec',
+                input: {
+                  command: ['python3', '/work/run.py'],
+                  inputs: ['tool-outputs/03-http_api_get_all-abc.json'],
+                  script: 'print(1)',
+                },
+              },
+            ],
+          },
+          { content: '131 nyitott.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBrokerResult(
+        [],
+        { exitCode: 0, stdout: '{"new":131}', stderr: '', outputs: [] },
+        'trusted',
+      ),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-sbx-trust' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'számold össze' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['sandbox_exec'],
+    })
+    const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
+    assert.ok(toolMessage)
+    assert.match(String(toolMessage.content), /<<<EXTERNAL_UNTRUSTED_DATA>>>/)
+    assert.match(String(toolMessage.content), /<<<END_EXTERNAL_UNTRUSTED_DATA>>>/)
+  })
+
+  await check('#470 T3: sandbox_exec feltöltés → internal, input nélkül → trusted', async () => {
+    const known = new Map([['tickets-open.json', 'external_untrusted' as const]])
+    assert.equal(
+      resolveInputTrust('tool-outputs/03-http_api_get_all-abc.json', new Map()),
+      'external_untrusted',
+    )
+    assert.equal(resolveInputTrust('feltoltes.csv', new Map()), 'internal')
+    assert.equal(inheritSandboxTrust(['feltoltes.csv'], new Map()), 'internal')
+    assert.equal(inheritSandboxTrust([], new Map()), 'trusted')
+    assert.equal(inheritSandboxTrust(undefined, new Map()), 'trusted')
+    assert.equal(inheritSandboxTrust(['tickets-open.json'], known), 'external_untrusted')
+
+    async function runSandbox(inputs?: string[]) {
+      const gwCalls: GatewayCallArgs[] = []
+      await runAgentToolLoop({
+        gateway: fakeGateway(
+          [
+            {
+              toolCalls: [
+                {
+                  id: 'sbx-t3',
+                  name: 'sandbox_exec',
+                  input: {
+                    command: ['python3', '/work/run.py'],
+                    ...(inputs ? { inputs } : {}),
+                    script: 'print(1)',
+                  },
+                },
+              ],
+            },
+            { content: 'Kész.' },
+          ],
+          gwCalls,
+        ),
+        toolBroker: fakeToolBrokerResult(
+          [],
+          { exitCode: 0, stdout: 'ok', stderr: '', outputs: [] },
+          'trusted',
+        ),
+        toolCaps: fakeToolCaps,
+        agentId: 'agent-1',
+        agentVersion: 1,
+        context: { conversationId: `conv-sbx-t3-${inputs?.join(',') ?? 'none'}` },
+        mode: 'chat',
+        messages: [{ role: 'user', content: 'futtasd' }],
+        modelConfig: MODEL_CONFIG,
+        allowedTools: ['sandbox_exec'],
+      })
+      const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
+      assert.ok(toolMessage)
+      return String(toolMessage.content)
+    }
+
+    assert.doesNotMatch(await runSandbox(['feltoltes.csv']), /EXTERNAL_UNTRUSTED_DATA/)
+    assert.doesNotMatch(await runSandbox(), /EXTERNAL_UNTRUSTED_DATA/)
+  })
+
+  await check('#470 D1: sandbox aggregálás csak sandbox_exec granttal kerül a promptba', async () => {
+    const withSandbox: GatewayCallArgs[] = []
+    await runAgentToolLoop({
+      gateway: fakeGateway([{ content: 'Kész.' }], withSandbox),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-d1-on' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'hány ticket?' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['sandbox_exec'],
+    })
+    const on = withSandbox[0].messages.map((m) => m.content).join('\n')
+    assert.match(on, /CSAK a kész számokat printeli/)
+    assert.match(on, /ne becsülj/)
+
+    const withoutSandbox: GatewayCallArgs[] = []
+    await runAgentToolLoop({
+      gateway: fakeGateway([{ content: 'Kész.' }], withoutSandbox),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-d1-off' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'hány ticket?' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get'],
+    })
+    const off = withoutSandbox[0].messages.map((m) => m.content).join('\n')
+    assert.doesNotMatch(off, /CSAK a kész számokat printeli/)
+  })
+
+  await check('#470 D2+D3: saveAs fájl sandbox-inputként örökli a forrás trustját', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const httpBody = { ok: true, status: 200, body: { tickets: [{ id: 1, status: 'open' }] } }
+    const sandboxBody = { exitCode: 0, stdout: '{"open":1}', stderr: '', outputs: [] }
+    const httpBroker = fakeToolBrokerResult([], httpBody, 'external_untrusted')
+    const sandboxBroker = fakeToolBrokerResult([], sandboxBody, 'trusted')
+    const toolBroker = {
+      invoke: async (input: ToolBrokerInvokeInput) => {
+        brokerCalls.push(input)
+        return input.tool === 'sandbox_exec' ? sandboxBroker.invoke(input) : httpBroker.invoke(input)
+      },
+    } as ToolBrokerService
+
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'list-1',
+                name: 'http_api_get',
+                input: { path: '/tickets', saveAs: 'tickets-open.json' },
+              },
+            ],
+          },
+          {
+            toolCalls: [
+              {
+                id: 'sbx-1',
+                name: 'sandbox_exec',
+                input: {
+                  command: ['python3', '/work/run.py'],
+                  inputs: ['tickets-open.json'],
+                  script: 'print(1)',
+                },
+              },
+            ],
+          },
+          { content: '1 nyitott.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker,
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-saveas-trust' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'számold státuszonként' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get', 'sandbox_exec'],
+      writeWorkspaceFile: async (_path, content) => ({ bytes: Buffer.byteLength(content) }),
+    })
+
+    assert.equal(brokerCalls.length, 2)
+    assert.ok('args' in brokerCalls[0])
+    assert.equal('saveAs' in brokerCalls[0].args, false)
+    const sandboxResult = gwCalls[2].messages.find((m) => m.role === 'tool' && m.toolCallId === 'sbx-1')
+    assert.ok(sandboxResult)
+    assert.match(String(sandboxResult.content), /<<<EXTERNAL_UNTRUSTED_DATA>>>/)
+  })
+
+  await check('#470 D3: láncolt sandbox-output és sandbox saveAs megtartja a forrás trustját', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const httpBody = {
+      ok: true,
+      status: 200,
+      body: { tickets: [{ id: 1, status: 'open' }] },
+    }
+    const sandboxBody = {
+      exitCode: 0,
+      stdout: '{"open":1}',
+      stderr: '',
+      outputs: ['derived.json'],
+    }
+    const httpBroker = fakeToolBrokerResult([], httpBody, 'external_untrusted')
+    const sandboxBroker = fakeToolBrokerResult([], sandboxBody, 'trusted')
+    const toolBroker = {
+      invoke: (input: ToolBrokerInvokeInput) =>
+        input.tool === 'sandbox_exec' ? sandboxBroker.invoke(input) : httpBroker.invoke(input),
+    } as ToolBrokerService
+
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'source',
+                name: 'http_api_get',
+                input: { path: '/tickets', saveAs: 'source.json' },
+              },
+            ],
+          },
+          {
+            toolCalls: [
+              {
+                id: 'derive',
+                name: 'sandbox_exec',
+                input: {
+                  command: ['python3', '/work/run.py'],
+                  inputs: ['source.json'],
+                  outputs: ['derived.json'],
+                  script: 'print(1)',
+                  saveAs: 'sandbox-result.json',
+                },
+              },
+            ],
+          },
+          {
+            toolCalls: [
+              {
+                id: 'read-output',
+                name: 'sandbox_exec',
+                input: {
+                  command: ['python3', '/work/run.py'],
+                  inputs: ['derived.json'],
+                  script: 'print(1)',
+                },
+              },
+            ],
+          },
+          {
+            toolCalls: [
+              {
+                id: 'read-saveas',
+                name: 'sandbox_exec',
+                input: {
+                  command: ['python3', '/work/run.py'],
+                  inputs: ['sandbox-result.json'],
+                  script: 'print(1)',
+                },
+              },
+            ],
+          },
+          { content: 'Kész.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker,
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-sandbox-chain' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'dolgozd fel két lépésben' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get', 'sandbox_exec'],
+      writeWorkspaceFile: async (_path, content) => ({ bytes: Buffer.byteLength(content) }),
+    })
+
+    const derived = gwCalls[2].messages.find(
+      (message) => message.role === 'tool' && message.toolCallId === 'derive',
+    )
+    assert.ok(derived)
+    assert.match(String(derived.content), /<<<EXTERNAL_UNTRUSTED_DATA>>>/)
+
+    for (const [callIndex, toolCallId] of [
+      [3, 'read-output'],
+      [4, 'read-saveas'],
+    ] as const) {
+      const result = gwCalls[callIndex].messages.find(
+        (message) => message.role === 'tool' && message.toolCallId === toolCallId,
+      )
+      assert.ok(result)
+      assert.match(String(result.content), /<<<EXTERNAL_UNTRUSTED_DATA>>>/)
+    }
+  })
+
+  await check('#470 D3: custom saveAs trustja új chat-fordulóban is megmarad', async () => {
+    const workspace = new Map<string, string>()
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'source',
+                name: 'http_api_get',
+                input: { path: '/tickets', saveAs: 'tickets-open.json' },
+              },
+            ],
+          },
+          { content: 'Mentve.' },
+        ],
+        [],
+      ),
+      toolBroker: fakeToolBrokerResult(
+        [],
+        { ok: true, status: 200, body: { tickets: [{ id: 1, status: 'open' }] } },
+        'external_untrusted',
+      ),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-persisted-trust' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'mentsd el' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get'],
+      writeWorkspaceFile: async (path, content) => {
+        workspace.set(path, content)
+        return { bytes: Buffer.byteLength(content) }
+      },
+    })
+    assert.ok(workspace.has(TOOL_LOOP_CHECKPOINT_PATH))
+    assert.equal(
+      JSON.parse(workspace.get(TOOL_LOOP_CHECKPOINT_PATH)!).savedTrustByPath['tickets-open.json'],
+      'external_untrusted',
+    )
+
+    const gwCalls: GatewayCallArgs[] = []
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'sandbox-next-turn',
+                name: 'sandbox_exec',
+                input: {
+                  command: ['python3', '/work/run.py'],
+                  inputs: ['tickets-open.json'],
+                  script: 'print(1)',
+                },
+              },
+            ],
+          },
+          { content: '1 nyitott.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBrokerResult(
+        [],
+        { exitCode: 0, stdout: '{"open":1}', stderr: '', outputs: [] },
+        'trusted',
+      ),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-persisted-trust' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'most számold össze' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['sandbox_exec'],
+      readWorkspaceFile: async (path) => workspace.get(path) ?? null,
+    })
+
+    const sandboxResult = gwCalls[1].messages.find(
+      (message) => message.role === 'tool' && message.toolCallId === 'sandbox-next-turn',
+    )
+    assert.ok(sandboxResult)
+    assert.match(String(sandboxResult.content), /<<<EXTERNAL_UNTRUSTED_DATA>>>/)
   })
 
   if (failures > 0) {

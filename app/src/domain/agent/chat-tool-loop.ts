@@ -28,7 +28,11 @@ import {
   extractToolResultRows,
   findRecordArray,
   formatLargeToolResultPreview,
+  inheritSandboxTrust,
+  isSafeWorkspaceRelativePath,
   parseToolResultJson,
+  resolveInputTrust,
+  toolNameFromArchivePath,
   workspaceCopyPathForArchive,
 } from './tool-result-extract'
 import { logger } from '@/lib/observability/logger'
@@ -74,7 +78,9 @@ import {
   formatHttpApiEndpointCatalogSuffix,
 } from '@/domain/connector/http-api-prompt'
 import { effectiveConnectorRuntimeConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
-import type { ToolName } from '@/domain/tool-broker/tool-broker-types'
+import type { ToolName, TrustClass } from '@/domain/tool-broker/tool-broker-types'
+import { envelopeToolResultForModel } from '@/domain/tool-broker/tool-result-envelope'
+import { resolveTrustClass } from '@/domain/tool-broker/tool-trust-registry'
 // issue #194 — a chat-vetület KIZÁRÓLAG a kanonikus tool-regiszterből képződik.
 import {
   TOOL_GROUP_ORDER,
@@ -229,6 +235,15 @@ Ha külső adatra (email, fájl, más agent) vagy ticketre / fájlműveletre van
 - Ha nincs több eszközszükséglet, válaszolj természetes magyar szöveggel.
 `
 
+const SANDBOX_AGGREGATE_INSTRUCTION =
+  '- Számolás, csoportosítás, összesítés, top-N, eltérés-keresés listán: NE fejben és NE prózában. Ha az eredmény fájlban van (`tool-outputs/…json` vagy más workspace JSON/CSV), futtasd `sandbox_exec`-kel: `inputs` = a fájl, `script` = rövid Python, ami `/work/in/<fájl>`-ból olvas és CSAK a kész számokat printeli. Ha a lista-eredmény nem került fájlba, kérd újra `saveAs` paraméterrel. A választ a stdout számaiból írd — ne becsülj.'
+
+function toolInstructionFor(allowedTools: readonly string[]): string {
+  if (!allowedTools.includes('sandbox_exec')) return TOOL_INSTRUCTION
+  const needle = '- HTTP API (http_api_get / http_api_get_all):'
+  return TOOL_INSTRUCTION.replace(needle, `${SANDBOX_AGGREGATE_INSTRUCTION}\n${needle}`)
+}
+
 const STR = { type: 'string' } as const
 const NUM = { type: 'number' } as const
 
@@ -318,6 +333,7 @@ type ToolLoopCheckpoint = {
   modelRoute?: Pick<ModelConfig, 'provider' | 'model'>
   sourceIngestChars?: Record<string, number>
   archiveSourceKeys?: Record<string, string>
+  savedTrustByPath?: Record<string, TrustClass>
   outputWritten?: boolean
   /** #468 D10 — „folytasd" után ne kelljen újra describe-olni. */
   activatedTools?: string[]
@@ -343,6 +359,17 @@ function parseToolLoopCheckpoint(raw: string | null): ToolLoopCheckpoint | null 
         : {}),
       ...(value.archiveSourceKeys && typeof value.archiveSourceKeys === 'object'
         ? { archiveSourceKeys: value.archiveSourceKeys }
+        : {}),
+      ...(value.savedTrustByPath && typeof value.savedTrustByPath === 'object'
+        ? {
+            savedTrustByPath: Object.fromEntries(
+              Object.entries(value.savedTrustByPath).filter(
+                ([path, trust]) =>
+                  isSafeWorkspaceRelativePath(path) &&
+                  (trust === 'trusted' || trust === 'internal' || trust === 'external_untrusted'),
+              ),
+            ) as Record<string, TrustClass>,
+          }
         : {}),
       ...(value.outputWritten === true ? { outputWritten: true } : {}),
       ...(Array.isArray(value.activatedTools)
@@ -1233,7 +1260,7 @@ export async function runAgentToolLoop(params: {
   }
   const loopStablePreamble: GatewayMessage[] = [
     { role: 'system', content: modeNote },
-    { role: 'system', content: TOOL_INSTRUCTION },
+    { role: 'system', content: toolInstructionFor(allowedTools) },
     {
       role: 'system',
       // D8: a [betöltött] jel CSAK a regiszter-defaultot tükrözi — az index-blokk
@@ -1299,16 +1326,17 @@ export async function runAgentToolLoop(params: {
     toolTail: runtimePrompt.toolTail,
   })
 
-  let checkpoint: ToolLoopCheckpoint | null = null
-  if (params.resumeCheckpoint && params.readWorkspaceFile) {
+  let workspaceCheckpoint: ToolLoopCheckpoint | null = null
+  if (params.readWorkspaceFile) {
     try {
-      checkpoint = parseToolLoopCheckpoint(
+      workspaceCheckpoint = parseToolLoopCheckpoint(
         await params.readWorkspaceFile(TOOL_LOOP_CHECKPOINT_PATH),
       )
     } catch (error) {
       logger.warn({ error }, 'agent.tool_loop.checkpoint_read_failed')
     }
   }
+  const checkpoint = params.resumeCheckpoint ? workspaceCheckpoint : null
   // Az első sikeres provider/model a teljes folytatási láncra rögzül. Firebase-en
   // a ChatGPT OAuth várhatóan fallbackre esik; a következő „folytasd” se próbálja
   // újra a csak localhoston elérhető providert.
@@ -1425,6 +1453,13 @@ export async function runAgentToolLoop(params: {
     string,
     { content: string | null; bytes: number; toolName: string; sourceKey?: string }
   >()
+  // #470 D2/D3 — path → a fájlt létrehozó eredmény effektív trustja. A
+  // workspace-checkpoint a custom `saveAs` és a sandbox-output provenienciáját
+  // a következő chat-/ticket-fordulóra is átviszi.
+  const savedTrustByPath = new Map<string, TrustClass>(
+    Object.entries(workspaceCheckpoint?.savedTrustByPath ?? {}),
+  )
+  const resultTrustByToolCallId = new Map<string, TrustClass>()
   const sourceKeyByToolCallId = new Map<string, string>()
   /**
    * A betöltött skill(ek) `allowed-tools` hatóköre. `null` = nincs szűkítés.
@@ -1503,17 +1538,16 @@ export async function runAgentToolLoop(params: {
       for (const path of paths) {
         if (!path.startsWith('.tool-results/') && !path.startsWith('tool-outputs/')) continue
         if (archivedToolResults.has(path)) continue
-        const base = path.split('/').pop() ?? 'tool-result'
-        // Basename minták: `01-http_api_get-crm-call.json` vagy `http_api_get-call-0.json`
-        const withoutExt = base.replace(/\.[^.]+$/, '')
-        const withoutTurn = withoutExt.replace(/^\d+-/, '')
-        const toolName = withoutTurn.replace(/-[^-]+$/, '') || 'archived'
+        const toolName = toolNameFromArchivePath(path) ?? 'archived'
         archivedToolResults.set(path, {
           content: null,
           bytes: 0,
           toolName,
           ...(archiveSourceKeys.get(path) ? { sourceKey: archiveSourceKeys.get(path) } : {}),
         })
+        if (!savedTrustByPath.has(path)) {
+          savedTrustByPath.set(path, resolveTrustClass(toolName))
+        }
       }
     } catch (error) {
       logger.warn({ error }, 'agent.tool_loop.archive_hydration_failed')
@@ -1523,8 +1557,10 @@ export async function runAgentToolLoop(params: {
   const rememberArchived = (
     path: string,
     entry: { content: string; bytes: number; toolName: string; sourceKey?: string },
+    trust: TrustClass = resolveTrustClass(entry.toolName),
   ) => {
     archivedToolResults.set(path, entry)
+    savedTrustByPath.set(path, trust)
     if (entry.sourceKey) archiveSourceKeys.set(path, entry.sourceKey)
   }
 
@@ -1560,13 +1596,6 @@ export async function runAgentToolLoop(params: {
       logger.warn({ path, error }, 'agent.tool_loop.archive_lazy_load_failed')
       return null
     }
-  }
-
-  const isSafeWorkspaceRelativePath = (path: string): boolean => {
-    if (!path || path.includes('\0')) return false
-    if (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path)) return false
-    const parts = path.split(/[/\\]/)
-    return parts.every((part) => part !== '..' && part !== '')
   }
 
   // ── Kontextus-tömörítés (hosszú futások token-költsége) ────────────────────
@@ -1659,6 +1688,10 @@ export async function runAgentToolLoop(params: {
           ? { sourceKey: sourceKeyByToolCallId.get(item.toolCallId) ?? archiveSourceKeys.get(item.path) }
           : {}),
       })
+      savedTrustByPath.set(
+        item.path,
+        resultTrustByToolCallId.get(item.toolCallId) ?? resolveTrustClass(item.toolName),
+      )
       const sourceKey = sourceKeyByToolCallId.get(item.toolCallId)
       if (sourceKey) archiveSourceKeys.set(item.path, sourceKey)
       committed.push(item)
@@ -1789,6 +1822,7 @@ export async function runAgentToolLoop(params: {
     try {
       const sourceIngestChars = Object.fromEntries([...ingestedCharsBySource].slice(-500))
       const savedArchiveSourceKeys = Object.fromEntries([...archiveSourceKeys].slice(-500))
+      const persistedTrustByPath = Object.fromEntries([...savedTrustByPath].slice(-500))
       await params.writeWorkspaceFile(
         TOOL_LOOP_CHECKPOINT_PATH,
         JSON.stringify({
@@ -1796,6 +1830,7 @@ export async function runAgentToolLoop(params: {
           ...(pinnedModel ? { modelRoute: pinnedModel } : {}),
           sourceIngestChars,
           archiveSourceKeys: savedArchiveSourceKeys,
+          savedTrustByPath: persistedTrustByPath,
           ...(outputWritten ? { outputWritten: true } : {}),
           activatedTools: [...activatedTools].sort(),
         } satisfies ToolLoopCheckpoint),
@@ -2247,7 +2282,7 @@ export async function runAgentToolLoop(params: {
                 toolName: 'workspace',
                 ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
               }
-              rememberArchived(path, loaded)
+              rememberArchived(path, loaded, resolveInputTrust(path, savedTrustByPath))
               archived = loaded
             }
           } catch (error) {
@@ -2517,11 +2552,15 @@ export async function runAgentToolLoop(params: {
             if (workspaceContent != null) {
               sourceContent = workspaceContent
               sourceLabel = 'munkaterület'
-              rememberArchived(path, {
-                content: workspaceContent,
-                bytes: Buffer.byteLength(workspaceContent, 'utf8'),
-                toolName: 'workspace_file',
-              })
+              rememberArchived(
+                path,
+                {
+                  content: workspaceContent,
+                  bytes: Buffer.byteLength(workspaceContent, 'utf8'),
+                  toolName: 'workspace_file',
+                },
+                resolveInputTrust(path, savedTrustByPath),
+              )
             }
           } catch (error) {
             logger.warn({ path, error }, 'agent.tool_loop.extract_workspace_fallback_failed')
@@ -2578,6 +2617,7 @@ export async function runAgentToolLoop(params: {
           })
           continue
         }
+        savedTrustByPath.set(outputPath, resolveInputTrust(path, savedTrustByPath))
 
         const summary = buildExtractSummary({
           outputPath,
@@ -3015,7 +3055,11 @@ export async function runAgentToolLoop(params: {
           detail: describeToolCall(toolName, call.input),
           status: 'running',
         })
-        const invokeInput = buildToolInvokeInput(toolName as ChatPlatformToolName, call.input, {
+        const invokeArgs = { ...(call.input as Record<string, unknown>) }
+        const saveAs =
+          typeof invokeArgs.saveAs === 'string' && invokeArgs.saveAs.length > 0 ? invokeArgs.saveAs : null
+        delete invokeArgs.saveAs
+        const invokeInput = buildToolInvokeInput(toolName as ChatPlatformToolName, invokeArgs, {
           agentId: params.agentId,
           agentVersion: params.agentVersion,
           ...params.context,
@@ -3322,6 +3366,53 @@ export async function runAgentToolLoop(params: {
         // nem tud gépi útra kerülni.
         const modelContent = result.denied ? rawContent : result.modelText
         let toolContent = modelContent
+        const sandboxTrust =
+          toolName === 'sandbox_exec' && !result.denied
+            ? inheritSandboxTrust(
+                Array.isArray(gateArgs.inputs)
+                  ? gateArgs.inputs.filter((p): p is string => typeof p === 'string')
+                  : [],
+                savedTrustByPath,
+              )
+            : null
+        const previewTrust = sandboxTrust ?? (result.denied ? resolveTrustClass(call.name) : result.trust)
+        resultTrustByToolCallId.set(call.id, previewTrust)
+        if (sandboxTrust && !result.denied) {
+          const outputs = (result.machineData as { outputs?: unknown }).outputs
+          if (Array.isArray(outputs)) {
+            for (const path of outputs) {
+              if (typeof path === 'string' && isSafeWorkspaceRelativePath(path)) {
+                savedTrustByPath.set(path, sandboxTrust)
+              }
+            }
+          }
+        }
+        let saveAsNote: string | null = null
+        const persistWorkspaceCopy = async (
+          path: string,
+          content: string,
+          trust: TrustClass,
+        ): Promise<boolean> => {
+          if (!params.writeWorkspaceFile || !isSafeWorkspaceRelativePath(path)) return false
+          try {
+            const copy = await params.writeWorkspaceFile(path, content, 'internal')
+            if (!copy) return false
+            rememberArchived(
+              path,
+              {
+                content,
+                bytes: copy.bytes,
+                toolName: call.name,
+                ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
+              },
+              trust,
+            )
+            return true
+          } catch (error) {
+            logger.warn({ path, error }, 'agent.tool_loop.workspace_copy_failed')
+            return false
+          }
+        }
         // A méret-döntés a NYERS adaton dől el: a broker `modelText`-je már
         // tartalmazhat kimenetel-közlést, abból nem szabad archiválási küszöböt
         // számolni — az archívumba amúgy is a nyers adat kerül.
@@ -3350,29 +3441,23 @@ export async function runAgentToolLoop(params: {
           }
 
           if (archive) {
-            rememberArchived(archive.path, {
-              content: archiveContent,
-              bytes: archive.bytes,
-              toolName: call.name,
-              ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
-            })
-            const workspacePath = workspaceCopyPathForArchive(archive.path)
-            if (params.writeWorkspaceFile && workspacePath !== archive.path) {
-              try {
-                const copy = await params.writeWorkspaceFile(workspacePath, archiveContent, 'internal')
-                if (copy) {
-                  rememberArchived(workspacePath, {
-                    content: archiveContent,
-                    bytes: copy.bytes,
-                    toolName: call.name,
-                    ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
-                  })
-                }
-              } catch (error) {
-                logger.warn(
-                  { path: workspacePath, error },
-                  'agent.tool_loop.workspace_copy_failed',
-                )
+            rememberArchived(
+              archive.path,
+              {
+                content: archiveContent,
+                bytes: archive.bytes,
+                toolName: call.name,
+                ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
+              },
+              previewTrust,
+            )
+            const requestedSaveAs =
+              saveAs && isSafeWorkspaceRelativePath(saveAs) ? saveAs : null
+            const workspacePath = requestedSaveAs ?? workspaceCopyPathForArchive(archive.path)
+            if (workspacePath !== archive.path) {
+              const written = await persistWorkspaceCopy(workspacePath, archiveContent, previewTrust)
+              if (written && requestedSaveAs) {
+                saveAsNote = `Mentve: ${workspacePath} (${archive.bytes} bájt)`
               }
             }
             await emitActivity({
@@ -3395,7 +3480,7 @@ export async function runAgentToolLoop(params: {
               workspacePath,
               chars: archiveContent.length,
               bytes: archive.bytes,
-              previewText: envelopeArchived(call.name, preview.text),
+              previewText: envelopeToolResultForModel(previewTrust, preview.text),
               shapePreviewText: preview.head,
             })
           } else {
@@ -3403,7 +3488,7 @@ export async function runAgentToolLoop(params: {
               ? modelContent
               : buildToolModelText({
                   tool: call.name,
-                  trust: result.trust,
+                  trust: previewTrust,
                   outcome: 'partial',
                   reason: result.outcomeReason,
                   effect: result.effect,
@@ -3419,7 +3504,18 @@ export async function runAgentToolLoop(params: {
             const notice = describeOutcomeForModel(result.outcome, result.outcomeReason, result.effect)
             if (notice) toolContent = `${notice}\n${toolContent}`
           }
+        } else if (sandboxTrust === 'external_untrusted') {
+          toolContent = envelopeToolResultForModel(sandboxTrust, toolContent)
         }
+
+        if (!result.denied && saveAs && rawContent.length <= TOOL_RESULT_INLINE_LIMIT) {
+          const written = await persistWorkspaceCopy(saveAs, rawContent, previewTrust)
+          if (written) {
+            const bytes = Buffer.byteLength(rawContent, 'utf8')
+            saveAsNote = `Mentve: ${saveAs} (${bytes} bájt)`
+          }
+        }
+        if (saveAsNote) toolContent = `${toolContent}\n${saveAsNote}`
 
         pushToolResult(call, toolContent, redundantIngest ? 'barren' : 'new', {
           toolName,
