@@ -667,6 +667,58 @@ async function main() {
       archive({ toolName: 'http_api_get', callId: 'crm-call', turn: 0, content: 'teljes eredmény' }),
       /workspace unavailable/,
     )
+
+    // Loop-szinten: a dobó archiváló NE fordítsa HIBA-ra a már sikeres
+    // tool-hívást — partial/csonkolt modelText marad, a gépi adat megmarad.
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const largeRows = Array.from({ length: 400 }, (_, i) => ({
+      id: i + 1,
+      name: `Ügyfél ${i + 1}`,
+      revenue: (i + 1) * 1000,
+      note: 'hosszú crm sor '.repeat(8),
+    }))
+    const activities: Array<{ id: string; status: string; detail?: string }> = []
+
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          { toolCalls: [{ id: 'crm-fail-arch', name: 'http_api_get', input: { path: '/customers' } }] },
+          { content: 'A CRM listát a csonkolt előnézetből összefoglaltam.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBrokerResult(
+        brokerCalls,
+        { ok: true, status: 200, body: { customers: largeRows } },
+        'external_untrusted',
+      ),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-archive-fail' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'milyen ügyfelek vannak?' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get'],
+      archiveLargeToolResult: async () => {
+        throw new Error('workspace unavailable')
+      },
+      onActivity: (event) => {
+        activities.push({ id: event.id, status: event.status, detail: event.detail })
+      },
+    })
+
+    assert.equal(result.content, 'A CRM listát a csonkolt előnézetből összefoglaltam.')
+    assert.equal(brokerCalls.length, 1)
+    const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
+    assert.ok(toolMessage)
+    assert.doesNotMatch(toolMessage.content, /^HIBA:/)
+    assert.doesNotMatch(toolMessage.content, /workspace unavailable/)
+    assert.match(toolMessage.content, /Ügyfél/)
+    const toolActivity = activities.filter((a) => a.id === 'tool-crm-fail-arch')
+    assert.ok(toolActivity.some((a) => a.status === 'done'))
+    assert.equal(toolActivity.some((a) => a.status === 'error'), false)
   })
 
   await check('tool_result_extract: 300 sor × 3 mező egy hívásban, válasz < 2000 kar', async () => {
