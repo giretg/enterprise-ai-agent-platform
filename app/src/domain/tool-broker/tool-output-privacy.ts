@@ -69,6 +69,15 @@ export async function buildPrivacyAwareOutcomeChannels(
     await auditStructuredPrivacyFailure(params, error)
     throw error
   }
+  if (params.tool === 'sandbox_exec' && modelOutput && typeof modelOutput === 'object') {
+    const output = modelOutput as Record<string, unknown>
+    modelOutput = {
+      exitCode: output.exitCode,
+      stdout: output.stdout,
+      stderr: output.stderr,
+      outputs: output.outputs,
+    }
+  }
   return buildToolOutcomeChannels({
     tool: params.tool,
     trust: params.trust,

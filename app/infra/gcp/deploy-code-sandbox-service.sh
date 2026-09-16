@@ -13,6 +13,7 @@ gcloud beta run deploy "$SERVICE" \
   --image "$IMAGE" \
   --sandbox-launcher \
   --no-allow-unauthenticated \
+  --cpu-throttling \
   --min-instances 0 \
   --max-instances "${CODE_SANDBOX_MAX_INSTANCES:-3}" \
   --concurrency 1 \

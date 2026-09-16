@@ -623,9 +623,6 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
       stdout: z.string(),
       stderr: z.string(),
       outputs: z.array(z.string()),
-      stdoutTruncated: z.boolean(),
-      stderrTruncated: z.boolean(),
-      metrics: z.record(z.string(), z.unknown()),
     }),
     effect: (output) => effect(1, 'sandbox-futtatás', (arr(output, 'outputs') ?? []).join(', ') || null),
     partial: (output) => {

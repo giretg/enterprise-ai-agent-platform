@@ -12,7 +12,10 @@ import { GmailApiAuthError } from '@/domain/connector-grant/gmail-api-client'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import type { FileEditorService } from '@/domain/file-editor/file-editor-service'
 import { CodeSandboxDeniedError } from '@/domain/code-sandbox/code-sandbox-service'
-import { codeSandboxConfigSchema } from '@/domain/code-sandbox/code-sandbox-types'
+import {
+  codeSandboxConfigSchema,
+  positiveIntegerEnv,
+} from '@/domain/code-sandbox/code-sandbox-types'
 
 import type {
   AgentRepository,
@@ -154,20 +157,21 @@ export type ConnectorEntityResolverFactory = (input: {
   agentId: string
 }) => Promise<ConnectorEntityResolver | null>
 
-function positiveIntegerEnv(name: string, fallback: number): number {
-  const value = Number(process.env[name])
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
-}
-
 export function codeSandboxBudgetDenial(
   usage: { calls: number; execMs: number },
   requestedTimeoutMs: number,
+  limits?: { maxCallsPerScope?: number; maxExecSecPerScope?: number },
 ): string | null {
-  if (usage.calls >= positiveIntegerEnv('CODE_SANDBOX_MAX_CALLS_PER_SCOPE', 10)) {
-    return 'code_sandbox_call_budget_exceeded'
-  }
-  const maxExecMs = positiveIntegerEnv('CODE_SANDBOX_MAX_EXEC_SEC_PER_SCOPE', 300) * 1000
-  return usage.execMs + requestedTimeoutMs > maxExecMs ? 'code_sandbox_time_budget_exceeded' : null
+  const maxCalls =
+    limits?.maxCallsPerScope ??
+    positiveIntegerEnv('CODE_SANDBOX_MAX_CALLS_PER_SCOPE', 10)
+  if (usage.calls >= maxCalls) return 'code_sandbox_call_budget_exceeded'
+  const maxExecMs =
+    (limits?.maxExecSecPerScope ??
+      positiveIntegerEnv('CODE_SANDBOX_MAX_EXEC_SEC_PER_SCOPE', 300)) * 1000
+  return usage.execMs + requestedTimeoutMs > maxExecMs
+    ? 'code_sandbox_time_budget_exceeded'
+    : null
 }
 
 export class ToolBrokerService {
@@ -459,8 +463,42 @@ export class ToolBrokerService {
       const defaultTimeoutMs = connectorConfig.success
         ? Math.min(connectorConfig.data.maxExecSec * 1000, 120_000)
         : 120_000
-      const budgetDenial = codeSandboxBudgetDenial(usage, input.args.timeoutMs ?? defaultTimeoutMs)
+      const budgetDenial = codeSandboxBudgetDenial(
+        usage,
+        input.args.timeoutMs ?? defaultTimeoutMs,
+        connectorConfig.success
+          ? {
+              maxCallsPerScope: connectorConfig.data.maxCallsPerScope,
+              maxExecSecPerScope: connectorConfig.data.maxExecSecPerScope,
+            }
+          : undefined,
+      )
       if (budgetDenial) return recordDenied(this, input, ticketId, authorization.connector?.id ?? null, budgetDenial, startedAt, actingUserId, authorization.grant?.id ?? null)
+      const needsWorkspaceWrite = (input.args.outputs?.length ?? 0) > 0
+      const needsWorkspaceRead =
+        needsWorkspaceWrite || (input.args.inputs?.length ?? 0) > 0 || input.args.script !== undefined
+      if (needsWorkspaceRead) {
+        const workspace = await this.tools.findConnectorForAgent(
+          input.agentId,
+          'workspace',
+          needsWorkspaceWrite ? 'write' : 'read',
+          actingTenantId,
+        )
+        if (!workspace) {
+          return recordDenied(
+            this,
+            input,
+            ticketId,
+            authorization.connector?.id ?? null,
+            needsWorkspaceWrite
+              ? 'missing_workspace_connector_write'
+              : 'missing_workspace_connector_read',
+            startedAt,
+            actingUserId,
+            authorization.grant?.id ?? null,
+          )
+        }
+      }
       // ponytail: a precheck versenyezhet két párhuzamos hívásnál; ha ez mérten előfordul,
       // atomikus scope-usage sort kell bevezetni. A Cloud Run concurrency=1 ma szűkíti a plafont.
     }

@@ -15,7 +15,7 @@ import path from 'node:path'
 import { z } from 'zod'
 import {
   isCanonicalBase64,
-  normalizeSandboxWorkspacePath,
+  relativeSandboxPath,
   type CodeSandboxLimits,
 } from './code-sandbox-types'
 
@@ -24,6 +24,8 @@ const requestSchema = z.object({
   allowEgress: z.boolean(),
   command: z.array(z.string().min(1).max(8192)).min(1).max(64),
   timeoutMs: z.number().int().min(1).max(900_000),
+  cpuProfile: z.string().trim().min(1).max(64).default('1'),
+  memoryProfile: z.string().trim().min(1).max(64).default('512Mi'),
   env: z.record(z.string(), z.string().max(8192)).default({}),
   limits: z.object({
     maxFiles: z.number().int().min(1).max(256),
@@ -133,18 +135,39 @@ function runProcess(
 }
 
 function safeMountedPath(root: string, sandboxPath: string): string {
-  const relative =
-    sandboxPath === '/work/run.py'
-      ? 'run.py'
-      : sandboxPath.startsWith('/work/in/')
-        ? normalizeSandboxWorkspacePath(sandboxPath.slice('/work/in/'.length))
-        : (() => {
-            throw new Error(`invalid_sandbox_input_path: ${sandboxPath}`)
-          })()
+  const relative = relativeSandboxPath(sandboxPath, '/work/in/')
   const resolved = path.resolve(root, relative)
   if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`))
     throw new Error('sandbox_input_path_escape')
   return resolved
+}
+
+export function buildSandboxRunArgs(input: {
+  sandboxName: string
+  inputDir: string
+  outputDir: string
+  scriptPath?: string
+  allowEgress: boolean
+}): string[] {
+  const runArgs = [
+    'run',
+    '--write',
+    input.sandboxName,
+    '--detach',
+    '--mount',
+    `type=bind,source=${input.inputDir},destination=/work/in,readonly`,
+    '--mount',
+    `type=bind,source=${input.outputDir},destination=/work/out`,
+  ]
+  if (input.scriptPath) {
+    runArgs.push(
+      '--mount',
+      `type=bind,source=${input.scriptPath},destination=/work/run.py,readonly`,
+    )
+  }
+  if (input.allowEgress) runArgs.push('--allow-egress')
+  runArgs.push('--', '/bin/sleep', '1000')
+  return runArgs
 }
 
 export async function collectSandboxOutputs(
@@ -222,24 +245,15 @@ export async function executeCloudRunSandbox(raw: unknown) {
       await chmod(target, 0o444)
     }
 
-    const runArgs = [
-      'run',
-      '--write',
+    const runArgs = buildSandboxRunArgs({
       sandboxName,
-      '--detach',
-      '--mount',
-      `type=bind,source=${inputDir},destination=/work/in,readonly`,
-      '--mount',
-      `type=bind,source=${outputDir},destination=/work/out`,
-    ]
-    if (request.files.some((file) => file.path === '/work/run.py')) {
-      runArgs.push(
-        '--mount',
-        `type=bind,source=${path.join(scriptDir, 'run.py')},destination=/work/run.py,readonly`,
-      )
-    }
-    if (request.allowEgress) runArgs.push('--allow-egress')
-    runArgs.push('--', '/bin/sleep', '1000')
+      inputDir,
+      outputDir,
+      scriptPath: request.files.some((file) => file.path === '/work/run.py')
+        ? path.join(scriptDir, 'run.py')
+        : undefined,
+      allowEgress: request.allowEgress,
+    })
     const provisionStarted = Date.now()
     const provision = await runProcess(
       sandboxBinary(),
@@ -252,21 +266,9 @@ export async function executeCloudRunSandbox(raw: unknown) {
       throw new Error(`sandbox_provision_failed: ${provision.stderr}`)
 
     const execStarted = Date.now()
-    const envArgs = Object.entries(request.env).flatMap(([key, value]) => [
-      '--env',
-      `${key}=${value}`,
-    ])
     const result = await runProcess(
       sandboxBinary(),
-      [
-        'exec',
-        sandboxName,
-        '--workdir',
-        '/work',
-        ...envArgs,
-        '--',
-        ...request.command,
-      ],
+      ['exec', sandboxName, '--workdir', '/work', '--', ...request.command],
       request.timeoutMs,
       request.limits,
     )
@@ -284,7 +286,9 @@ export async function executeCloudRunSandbox(raw: unknown) {
         totalMs: Date.now() - startedAt,
         inputBytes,
         outputBytes,
-        egressBytes: null,
+        cpuProfile: request.cpuProfile,
+        memoryProfile: request.memoryProfile,
+        egressBytes: request.allowEgress ? null : 0,
         coldStart: null,
         exitStatus: result.exitCode,
       },
@@ -302,7 +306,10 @@ export async function executeCloudRunSandbox(raw: unknown) {
 
 export function authorizeSandboxRequest(header: string | undefined): boolean {
   const expected = process.env.CODE_SANDBOX_SHARED_TOKEN
-  if (!expected) return true // Cloud Run IAM marad a külső auth-határ.
+  if (!expected) {
+    // Cloud Run IAM is the outer auth boundary only on Cloud Run.
+    return Boolean(process.env.K_SERVICE)
+  }
   const actual = header?.replace(/^Bearer\s+/i, '') ?? ''
   const expectedBytes = Buffer.from(expected)
   const actualBytes = Buffer.from(actual)

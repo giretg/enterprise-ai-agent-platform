@@ -23,6 +23,8 @@ const inputSchema = z.object({
   maxExecSec: z.number().int().min(1).max(900),
   cpuProfile: z.string().trim().min(1).max(64).default('1'),
   memoryProfile: z.string().trim().min(1).max(64).default('512Mi'),
+  maxCallsPerScope: z.number().int().min(1).max(1000).default(10),
+  maxExecSecPerScope: z.number().int().min(1).max(3600).default(300),
   apiKey: z.string().max(4096).optional(),
   enabled: z.boolean().default(true),
 })
@@ -37,7 +39,7 @@ export async function listCodeSandboxConnectors() {
         toolCalls: {
           where: { toolName: 'sandbox_exec' },
           orderBy: { createdAt: 'desc' },
-          take: 1,
+          take: 5,
           select: {
             status: true,
             latencyMs: true,
@@ -47,26 +49,22 @@ export async function listCodeSandboxConnectors() {
         },
       },
     })
-    return ok(
-      connectors.map((connector) => ({
+    return ok({
+      platformEnabled: process.env.CODE_SANDBOX_ENABLED !== 'false',
+      connectors: connectors.map((connector) => ({
         id: connector.id,
         name: connector.name,
         lifecycleState: connector.lifecycleState,
         hasApiKey: Boolean(connector.secretAlias),
         config: codeSandboxConfigSchema.parse(connector.config),
-        lastCall: connector.toolCalls[0]
-          ? {
-              status: connector.toolCalls[0].status,
-              latencyMs: connector.toolCalls[0].latencyMs,
-              metrics: connector.toolCalls[0].resultMeta as Record<
-                string,
-                unknown
-              > | null,
-              createdAt: connector.toolCalls[0].createdAt.toISOString(),
-            }
-          : null,
+        recentCalls: connector.toolCalls.map((call) => ({
+          status: call.status,
+          latencyMs: call.latencyMs,
+          metrics: call.resultMeta as Record<string, unknown> | null,
+          createdAt: call.createdAt.toISOString(),
+        })),
       })),
-    )
+    })
   } catch (error) {
     return fail(
       error instanceof Error
@@ -89,6 +87,8 @@ export async function saveCodeSandboxConnector(input: unknown) {
       defaultAllowEgress: false,
       cpuProfile: parsed.cpuProfile,
       memoryProfile: parsed.memoryProfile,
+      maxCallsPerScope: parsed.maxCallsPerScope,
+      maxExecSecPerScope: parsed.maxExecSecPerScope,
     })
     const existing = parsed.connectorId
       ? await prisma.connector.findFirst({

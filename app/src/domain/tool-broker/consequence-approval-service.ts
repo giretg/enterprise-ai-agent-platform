@@ -116,6 +116,15 @@ function clip(text: string, max: number): string {
 }
 
 function summarizeArgs(toolName: string, args: Record<string, unknown>): string {
+  if (toolName === 'sandbox_exec') {
+    const command = Array.isArray(args.command)
+      ? args.command.filter((part): part is string => typeof part === 'string').join(' ')
+      : ''
+    const egress = args.allowEgress === true ? ' · kimenő hálózat' : ''
+    return command
+      ? `${toolName} → ${clip(command, SUMMARY_ARG_MAX_CHARS)}${egress}`
+      : `${toolName}${egress}`
+  }
   const path = typeof args.path === 'string' ? args.path : null
   if (path) return `${toolName} → ${clip(path, SUMMARY_ARG_MAX_CHARS)}`
   const to = typeof args.to === 'string' ? args.to : null

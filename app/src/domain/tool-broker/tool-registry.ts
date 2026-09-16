@@ -1444,7 +1444,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
   // ── Kódfuttatás ───────────────────────────────────────────────────────────
   sandbox_exec: descriptor({
     description:
-      'Parancsot futtat izolált, hívásonként új sandboxban. A workspace inputok csak /work/in alatt olvashatók, a kért outputok /work/out alól kerülnek vissza. Hálózat alapból tiltott; allowEgress:true külön emberi jóváhagyást kér.',
+      'Parancsot futtat izolált, hívásonként új sandboxban. A workspace inputok csak /work/in alatt olvashatók, a kért outputok /work/out alól kerülnek vissza; azonos útvonalú meglévő workspace-fájlt atomikusan felülír. Hálózat alapból tiltott; allowEgress:true külön emberi jóváhagyást kér.',
     argsSchema: z.object({
       command: z.array(z.string().min(1).max(8192)).min(1).max(64),
       script: z.string().optional(),
@@ -1465,7 +1465,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
         allowEgress: boolArg(args, 'allowEgress'),
       },
     }),
-    trust: 'external_untrusted',
+    trust: 'trusted',
     sideEffecting: true,
     surfaces: CHAT_ONLY,
     capability: 'sandbox_exec',

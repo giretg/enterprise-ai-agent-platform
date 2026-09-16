@@ -915,8 +915,6 @@ export type PptxCreateArgs = {
   slides: PptxSlideSpec[]
 }
 
-export type SandboxExecArgs = SandboxExecInput
-
 export type ToolInvokeBase = {
   agentId: string
   agentVersion: number
@@ -998,7 +996,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'pdf_read'; args: PdfReadArgs })
   | (ToolInvokeBase & { tool: 'pdf_create'; args: PdfCreateArgs })
   | (ToolInvokeBase & { tool: 'pptx_create'; args: PptxCreateArgs })
-  | (ToolInvokeBase & { tool: 'sandbox_exec'; args: SandboxExecArgs })
+  | (ToolInvokeBase & { tool: 'sandbox_exec'; args: SandboxExecInput })
   | (ToolInvokeBase & { tool: 'sandbox_app.create'; args: SandboxAppCreateArgs })
   | (ToolInvokeBase & { tool: 'sandbox_app.update_artifact'; args: SandboxAppUpdateArtifactArgs })
   | (ToolInvokeBase & { tool: 'sandbox_app.preview'; args: SandboxAppPreviewArgs })

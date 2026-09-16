@@ -930,6 +930,23 @@ function describeToolCall(tool: string, args: Record<string, unknown>): string |
   }
 }
 
+function describeDeniedToolReason(toolName: string, reason: string | undefined): string {
+  if (reason === 'missing_code_sandbox_connector_write') {
+    return 'A jog engedélyezve van, de nincs kódfuttató kapcsolat hozzárendelve — az agent nem tud kódot futtatni.'
+  }
+  if (reason === 'ambiguous_code_sandbox_connector') {
+    return 'Több kódfuttató kapcsolat van hozzárendelve — válassz egyet a Kapcsolatok oldalon.'
+  }
+  if (
+    toolName === 'sandbox_exec' &&
+    (reason === 'missing_workspace_connector_read' ||
+      reason === 'missing_workspace_connector_write')
+  ) {
+    return 'A kódfuttatáshoz workspace-kapcsolat is kell, mert a bemenet/kimenet fájlok oda íródnak.'
+  }
+  return reason ?? 'elutasítva'
+}
+
 function num(value: unknown): number {
   return typeof value === 'number' ? value : 0
 }
@@ -938,7 +955,10 @@ function describeToolResult(result: unknown): string {
   if (!result || typeof result !== 'object') return 'eredmény megérkezett'
   const record = result as Record<string, unknown>
   if (typeof record.exitCode === 'number' && Array.isArray(record.outputs)) {
-    return `exit ${record.exitCode} · ${record.outputs.length} output`
+    const files = record.outputs.filter((item): item is string => typeof item === 'string')
+    return files.length
+      ? `exit ${record.exitCode} · ${files.join(', ')}`
+      : `exit ${record.exitCode}`
   }
   // Egyeztetés: a státusz-bontás az érdekes, nem a sorok száma.
   if (
@@ -3277,7 +3297,7 @@ export async function runAgentToolLoop(params: {
           kind: 'tool',
           title: call.name,
           detail: result.denied
-            ? result.reason
+            ? describeDeniedToolReason(toolName, result.reason)
             : outcomeUiDetail ?? describeToolResult(result.machineData),
           status: result.denied ? 'skipped' : 'done',
         })

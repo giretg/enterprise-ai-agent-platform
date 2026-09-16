@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { resolveConnectorApiKey } from '@/domain/connector/http-api-client'
-import { E2BCompatibleSandboxAdapter } from './e2b-sandbox-provider'
 import {
   codeSandboxLimits,
   isCanonicalBase64,
-  normalizeSandboxWorkspacePath,
+  isSmokeSuccess,
+  relativeSandboxPath,
+  smokeSandboxRequest,
   type CodeSandboxConfig,
   type SandboxExecMetrics,
   type SandboxHandle,
@@ -30,9 +31,8 @@ function executeResponseSchema(limits: ReturnType<typeof codeSandboxLimits>) {
       .array(
         z.object({
           path: z.string().refine((value) => {
-            if (!value.startsWith('/work/out/')) return false
             try {
-              normalizeSandboxWorkspacePath(value.slice('/work/out/'.length))
+              relativeSandboxPath(value, '/work/out/')
               return true
             } catch {
               return false
@@ -61,8 +61,8 @@ function executeResponseSchema(limits: ReturnType<typeof codeSandboxLimits>) {
 }
 
 /**
- * Mindkét provider ugyanazt a minimális, önhostolható HTTP-protokollt beszéli.
- * Egy kérés egy teljes távoli sandbox-életciklus; állapot nem ragad app instance-hoz.
+ * Mindkét provider ugyanazt a minimális HTTP-protokollt beszéli.
+ * Egy kérés egy teljes távoli sandbox-életciklus.
  */
 export class HttpSandboxProvider implements SandboxProvider {
   private readonly runs = new Map<string, BufferedRun>()
@@ -76,7 +76,10 @@ export class HttpSandboxProvider implements SandboxProvider {
   async checkHealth(): Promise<'ready' | 'failed'> {
     try {
       const response = await this.request('/v1/smoke', {})
-      return response.ok ? 'ready' : 'failed'
+      if (!response.ok) return 'failed'
+      return isSmokeSuccess(executeResponseSchema(codeSandboxLimits()).parse(await response.json()))
+        ? 'ready'
+        : 'failed'
     } catch {
       return 'failed'
     }
@@ -118,6 +121,8 @@ export class HttpSandboxProvider implements SandboxProvider {
       allowEgress: handle.allowEgress,
       command: input.command,
       timeoutMs: input.timeoutMs,
+      cpuProfile: this.config.cpuProfile,
+      memoryProfile: this.config.memoryProfile,
       env: input.env ?? {},
       limits,
       files: [...run.files].map(([path, bytes]) => ({
@@ -172,7 +177,7 @@ export class HttpSandboxProvider implements SandboxProvider {
         'content-type': 'application/json',
         ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(path === '/v1/smoke' ? smokeSandboxRequest() : body),
       signal: AbortSignal.timeout((this.config.maxExecSec + 15) * 1000),
     })
   }
@@ -196,9 +201,6 @@ export class HttpSandboxProvider implements SandboxProvider {
   }
 }
 
-export class CloudRunSandboxAdapter extends HttpSandboxProvider {}
-export { E2BCompatibleSandboxAdapter } from './e2b-sandbox-provider'
-
 export function createSandboxProvider(
   config: CodeSandboxConfig,
   secretAlias: string | null,
@@ -209,8 +211,5 @@ export function createSandboxProvider(
       ? process.env.CODE_SANDBOX_CLOUD_RUN_URL
       : process.env.CODE_SANDBOX_E2B_BASE_URL)
   if (!baseUrl) throw new Error('code_sandbox_base_url_missing')
-  const resolved = { ...config, baseUrl }
-  return config.provider === 'cloud_run'
-    ? new CloudRunSandboxAdapter(resolved, secretAlias)
-    : new E2BCompatibleSandboxAdapter(resolved, secretAlias)
+  return new HttpSandboxProvider({ ...config, baseUrl }, secretAlias)
 }

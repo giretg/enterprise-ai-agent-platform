@@ -1468,6 +1468,103 @@ async function main() {
     assert.deepEqual(described[1], { name: 'xlsx_write_cells', error: 'nem elérhető' })
   })
 
+  await check('sandbox_exec: grant nélkül nincs a tools[]-ben, granttal a teljes séma ott van chat- és ticket-úton', async () => {
+    const capsGranted = {
+      findCapabilitiesForAgent: async () => [{ toolName: 'sandbox_exec', allowed: true }],
+      findConnectorsForAgent: async () => [],
+    } as unknown as ToolBrokerRepository
+    const capsDenied = {
+      findCapabilitiesForAgent: async () => [{ toolName: 'sandbox_exec', allowed: false }],
+      findConnectorsForAgent: async () => [],
+    } as unknown as ToolBrokerRepository
+    assert.deepEqual(await listAllowedChatTools(capsGranted, 'agent-1'), ['sandbox_exec'])
+    assert.deepEqual(await listAllowedChatTools(capsDenied, 'agent-1'), [])
+
+    async function firstTools(mode: 'chat' | 'task') {
+      const gwCalls: GatewayCallArgs[] = []
+      await runAgentToolLoop({
+        gateway: fakeGateway([{ content: 'Kész.' }], gwCalls),
+        toolBroker: fakeToolBroker([]),
+        toolCaps: capsGranted,
+        agentId: 'agent-1',
+        agentVersion: 1,
+        context: mode === 'chat' ? { conversationId: 'conv-sbx' } : { ticketId: 'ticket-sbx' },
+        mode,
+        messages: [{ role: 'user', content: 'számolj' }],
+        modelConfig: MODEL_CONFIG,
+        allowedTools: await listAllowedChatTools(capsGranted, 'agent-1'),
+      })
+      return gwCalls[0].tools ?? []
+    }
+
+    for (const mode of ['chat', 'task'] as const) {
+      const tools = await firstTools(mode)
+      const sandbox = tools.find((tool) => tool.name === 'sandbox_exec')
+      assert.ok(sandbox, `${mode}: sandbox_exec hiányzik a tools[]-ből`)
+      const schema = sandbox.inputSchema as { properties?: Record<string, unknown> }
+      assert.ok(schema.properties?.command)
+      assert.ok(schema.properties?.script)
+      assert.ok(schema.properties?.inputs)
+      assert.ok(schema.properties?.outputs)
+      assert.ok(schema.properties?.timeoutMs)
+      assert.ok(schema.properties?.allowEgress)
+    }
+
+    const gwDenied: GatewayCallArgs[] = []
+    await runAgentToolLoop({
+      gateway: fakeGateway([{ content: 'Kész.' }], gwDenied),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: capsDenied,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-sbx-off' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'számolj' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: await listAllowedChatTools(capsDenied, 'agent-1'),
+    })
+    assert.equal(
+      (gwDenied[0].tools ?? []).some((tool) => tool.name === 'sandbox_exec'),
+      false,
+    )
+  })
+
+  await check('sandbox_exec: skill allowed-tools nélkül ELUTASÍTVA', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 's1',
+                name: 'sandbox_exec',
+                input: { command: ['python3', '-c', 'print(1)'] },
+              },
+            ],
+          },
+          { content: 'Kész.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker(brokerCalls),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-skill-sbx' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'futtass kódot' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['sandbox_exec', 'file_read'],
+      initialSkillToolScope: ['file_read'],
+    })
+    assert.equal(brokerCalls.length, 0)
+    const denied = gwCalls[1]?.messages.find((m) => m.role === 'tool' && m.toolCallId === 's1')
+    assert.ok(denied && 'content' in denied)
+    assert.match(String(denied.content), /allowed-tools/)
+  })
+
   if (failures > 0) {
     console.log(`\n${failures} teszt elbukott.`)
     process.exit(1)

@@ -297,6 +297,16 @@ export class AllowlistAuthorizer implements Authorizer {
       typeof input.args?.connectorId === 'string'
         ? input.args.connectorId
         : null
+    if (requirement.connectorType === 'code_sandbox' && !requestedConnectorId) {
+      const assigned = (await this.tools.findConnectorsForAgent(input.agentId)).filter(
+        (binding) =>
+          binding.connector.type === 'code_sandbox' &&
+          binding.connector.lifecycleState === 'active',
+      )
+      if (assigned.length > 1) {
+        return { allowed: false, reason: 'ambiguous_code_sandbox_connector' }
+      }
+    }
     const link = requestedConnectorId
       ? await this.tools.findConnectorForAgentById(
           input.agentId,

@@ -169,6 +169,7 @@ export class CodeSandboxService {
     }
   }
 
+  /** Meglévő workspace-fájlt felülír; hiba esetén a korábbi tartalmat visszaállítja. */
   private async writeOutputsAtomically(
     tenantId: string,
     scopeKey: string,

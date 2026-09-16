@@ -4,6 +4,7 @@ import {
   executeCloudRunSandbox,
   authorizeSandboxRequest,
 } from '@/domain/code-sandbox/cloud-run-runner'
+import { smokeSandboxRequest } from '@/domain/code-sandbox/code-sandbox-types'
 
 const maxRequestBytes = Number(
   process.env.CODE_SANDBOX_MAX_REQUEST_BYTES ?? 30 * 1024 * 1024,
@@ -33,22 +34,7 @@ createServer(async (request, response) => {
     }
     const body =
       request.url === '/v1/smoke'
-        ? {
-            id: randomUUID(),
-            allowEgress: false,
-            command: ['/bin/echo', 'sandbox-ready'],
-            timeoutMs: 10_000,
-            env: {},
-            files: [],
-            limits: {
-              maxFiles: 1,
-              maxFileBytes: 1024,
-              maxInputBytes: 1024,
-              maxOutputBytes: 1024,
-              maxStdoutBytes: 1024,
-              maxStderrBytes: 1024,
-            },
-          }
+        ? { id: randomUUID(), ...smokeSandboxRequest() }
         : JSON.parse(Buffer.concat(chunks).toString('utf8'))
     const result = await executeCloudRunSandbox(body)
     response.writeHead(200).end(JSON.stringify(result))

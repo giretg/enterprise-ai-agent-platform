@@ -1,6 +1,11 @@
 import path from 'node:path'
 import { z } from 'zod'
 
+export function positiveIntegerEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
+}
+
 export const codeSandboxConfigSchema = z.object({
   provider: z.enum(['cloud_run', 'e2b_compatible']),
   region: z
@@ -16,6 +21,8 @@ export const codeSandboxConfigSchema = z.object({
   defaultAllowEgress: z.literal(false).default(false),
   cpuProfile: z.string().trim().min(1).max(64).default('1'),
   memoryProfile: z.string().trim().min(1).max(64).default('512Mi'),
+  maxCallsPerScope: z.number().int().min(1).max(1000).default(10),
+  maxExecSecPerScope: z.number().int().min(1).max(3600).default(300),
 })
 
 export type CodeSandboxConfig = z.infer<typeof codeSandboxConfigSchema>
@@ -76,26 +83,74 @@ export type CodeSandboxLimits = {
   maxStderrBytes: number
 }
 
-function positiveEnv(name: string, fallback: number): number {
-  const value = Number(process.env[name])
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
-}
-
 export function codeSandboxLimits(): CodeSandboxLimits {
   return {
-    maxFiles: positiveEnv('CODE_SANDBOX_MAX_FILES', 32),
-    maxFileBytes: positiveEnv('CODE_SANDBOX_MAX_FILE_BYTES', 5 * 1024 * 1024),
-    maxInputBytes: positiveEnv(
+    maxFiles: positiveIntegerEnv('CODE_SANDBOX_MAX_FILES', 32),
+    maxFileBytes: positiveIntegerEnv('CODE_SANDBOX_MAX_FILE_BYTES', 5 * 1024 * 1024),
+    maxInputBytes: positiveIntegerEnv(
       'CODE_SANDBOX_MAX_INPUT_BYTES',
       20 * 1024 * 1024,
     ),
-    maxOutputBytes: positiveEnv(
+    maxOutputBytes: positiveIntegerEnv(
       'CODE_SANDBOX_MAX_OUTPUT_BYTES',
       20 * 1024 * 1024,
     ),
-    maxStdoutBytes: positiveEnv('CODE_SANDBOX_MAX_STDOUT_BYTES', 256 * 1024),
-    maxStderrBytes: positiveEnv('CODE_SANDBOX_MAX_STDERR_BYTES', 256 * 1024),
+    maxStdoutBytes: positiveIntegerEnv('CODE_SANDBOX_MAX_STDOUT_BYTES', 256 * 1024),
+    maxStderrBytes: positiveIntegerEnv('CODE_SANDBOX_MAX_STDERR_BYTES', 256 * 1024),
   }
+}
+
+export function relativeSandboxPath(
+  sandboxPath: string,
+  prefix: '/work/in/' | '/work/out/',
+): string {
+  if (prefix === '/work/in/' && sandboxPath === '/work/run.py') return 'run.py'
+  if (!sandboxPath.startsWith(prefix))
+    throw new Error(`invalid_sandbox_path: ${sandboxPath}`)
+  return normalizeSandboxWorkspacePath(sandboxPath.slice(prefix.length))
+}
+
+export const SMOKE_INPUT_PATH = '/work/in/ping.txt'
+export const SMOKE_OUTPUT_PATH = '/work/out/pong.txt'
+export const SMOKE_INPUT_BYTES = Buffer.from('ping', 'utf8')
+
+export function smokeSandboxRequest() {
+  return {
+    allowEgress: false,
+    command: [
+      'python3',
+      '-c',
+      'from pathlib import Path; Path("/work/out/pong.txt").write_text(Path("/work/in/ping.txt").read_text())',
+    ],
+    timeoutMs: 15_000,
+    env: {},
+    files: [
+      {
+        path: SMOKE_INPUT_PATH,
+        contentBase64: SMOKE_INPUT_BYTES.toString('base64'),
+      },
+    ],
+    limits: {
+      maxFiles: 2,
+      maxFileBytes: 1024,
+      maxInputBytes: 1024,
+      maxOutputBytes: 1024,
+      maxStdoutBytes: 1024,
+      maxStderrBytes: 1024,
+    },
+  }
+}
+
+export function isSmokeSuccess(body: {
+  exitCode: number
+  outputs?: Array<{ path: string; contentBase64: string }>
+}): boolean {
+  const pong = body.outputs?.find((output) => output.path === SMOKE_OUTPUT_PATH)
+  return (
+    body.exitCode === 0 &&
+    Boolean(pong) &&
+    Buffer.from(pong!.contentBase64, 'base64').equals(SMOKE_INPUT_BYTES)
+  )
 }
 
 /** Szigorú, kanonikus, workspace-relatív útvonal; nincs javítgató normalizálás. */

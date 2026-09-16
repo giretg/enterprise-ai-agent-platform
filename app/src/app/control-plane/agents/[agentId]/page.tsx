@@ -439,7 +439,8 @@ export default async function AgentDetailPage({
             >
               {sandboxCapabilityMissingConnector ? (
                 <p className="mb-4 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
-                  A Kódfuttatás jogosultság aktív, de nincs sandbox connector hozzárendelve. A futtatás addig blokkolva marad.
+                  A jog engedélyezve van, de nincs kódfuttató kapcsolat hozzárendelve — az
+                  agent nem tud kódot futtatni.
                 </p>
               ) : null}
               {isAdmin && !capabilitiesLocked && assignableConnectors.length > 0 ? (

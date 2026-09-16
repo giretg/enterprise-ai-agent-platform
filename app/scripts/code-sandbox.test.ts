@@ -3,19 +3,25 @@ import { link, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { CodeSandboxService } from '@/domain/code-sandbox/code-sandbox-service'
-import { collectSandboxOutputs } from '@/domain/code-sandbox/cloud-run-runner'
+import {
+  HttpSandboxProvider,
+  createSandboxProvider,
+} from '@/domain/code-sandbox/http-sandbox-provider'
+import {
+  authorizeSandboxRequest,
+  buildSandboxRunArgs,
+  collectSandboxOutputs,
+} from '@/domain/code-sandbox/cloud-run-runner'
 import {
   codeSandboxConfigSchema,
   isCanonicalBase64,
+  isSmokeSuccess,
   normalizeSandboxWorkspacePath,
+  relativeSandboxPath,
+  smokeSandboxRequest,
   type SandboxHandle,
   type SandboxProvider,
 } from '@/domain/code-sandbox/code-sandbox-types'
-import {
-  CloudRunSandboxAdapter,
-  createSandboxProvider,
-  E2BCompatibleSandboxAdapter,
-} from '@/domain/code-sandbox/http-sandbox-provider'
 import { requiresConsequenceApproval } from '@/domain/tool-broker/consequence-gate-policy'
 import { codeSandboxBudgetDenial } from '@/domain/tool-broker/tool-broker-service'
 import type { FileEditorService } from '@/domain/file-editor/file-editor-service'
@@ -142,14 +148,66 @@ async function main() {
     codeSandboxBudgetDenial({ calls: 0, execMs: 299_000 }, 1_000),
     null,
   )
+  assert.ok(createSandboxProvider(config, null) instanceof HttpSandboxProvider)
   assert.ok(
-    createSandboxProvider(config, null) instanceof CloudRunSandboxAdapter,
+    createSandboxProvider({ ...config, provider: 'e2b_compatible' }, null) instanceof
+      HttpSandboxProvider,
   )
-  assert.ok(
-    createSandboxProvider(
-      { ...config, provider: 'e2b_compatible' },
-      null,
-    ) instanceof E2BCompatibleSandboxAdapter,
+  const smoke = smokeSandboxRequest()
+  assert.equal(smoke.allowEgress, false)
+  assert.equal(smoke.command[0], 'python3')
+  assert.equal(smoke.files[0]?.path, '/work/in/ping.txt')
+  assert.equal(
+    isSmokeSuccess({
+      exitCode: 0,
+      outputs: [
+        {
+          path: '/work/out/pong.txt',
+          contentBase64: Buffer.from('ping').toString('base64'),
+        },
+      ],
+    }),
+    true,
+  )
+  assert.equal(isSmokeSuccess({ exitCode: 0, outputs: [] }), false)
+  assert.equal(relativeSandboxPath('/work/run.py', '/work/in/'), 'run.py')
+  assert.equal(relativeSandboxPath('/work/out/result.bin', '/work/out/'), 'result.bin')
+  assert.throws(() => relativeSandboxPath('/tmp/x', '/work/out/'))
+
+  const previousToken = process.env.CODE_SANDBOX_SHARED_TOKEN
+  const previousService = process.env.K_SERVICE
+  delete process.env.CODE_SANDBOX_SHARED_TOKEN
+  delete process.env.K_SERVICE
+  assert.equal(authorizeSandboxRequest('Bearer x'), false)
+  process.env.K_SERVICE = 'enterprise-code-sandbox'
+  assert.equal(authorizeSandboxRequest(undefined), true)
+  delete process.env.K_SERVICE
+  process.env.CODE_SANDBOX_SHARED_TOKEN = 'secret-token'
+  assert.equal(authorizeSandboxRequest('Bearer secret-token'), true)
+  assert.equal(authorizeSandboxRequest('Bearer other'), false)
+  if (previousToken === undefined) delete process.env.CODE_SANDBOX_SHARED_TOKEN
+  else process.env.CODE_SANDBOX_SHARED_TOKEN = previousToken
+  if (previousService === undefined) delete process.env.K_SERVICE
+  else process.env.K_SERVICE = previousService
+
+  const blocked = buildSandboxRunArgs({
+    sandboxName: 'exec-1',
+    inputDir: '/tmp/in',
+    outputDir: '/tmp/out',
+    allowEgress: false,
+  })
+  assert.equal(blocked.includes('--allow-egress'), false)
+  const open = buildSandboxRunArgs({
+    sandboxName: 'exec-1',
+    inputDir: '/tmp/in',
+    outputDir: '/tmp/out',
+    allowEgress: true,
+  })
+  assert.ok(open.includes('--allow-egress'))
+
+  assert.equal(
+    codeSandboxBudgetDenial({ calls: 2, execMs: 0 }, 1, { maxCallsPerScope: 2 }),
+    'code_sandbox_call_budget_exceeded',
   )
 
   const editor = fakeEditor({ 'input.txt': Uint8Array.from([9]) })
