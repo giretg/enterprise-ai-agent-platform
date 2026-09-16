@@ -388,6 +388,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'skill.imported',
   /** Több-fájlos csomag-import (ZIP/URL): mi jött be és mi maradt ki, tételesen. */
   'skill.package_imported',
+  /** Meglévő skillhez ZIP-csomagból javasolt új verzió (proposed). */
+  'skill.package_version_proposed',
   /** Level-2 melléklet betöltése futás közben (a `load_skill` utáni harmadik szint). */
   'skill.attachment_loaded',
   'skill.created',
