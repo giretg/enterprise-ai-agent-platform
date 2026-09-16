@@ -1486,8 +1486,9 @@ export class SkillService {
       loadedSkillNames.push(entry.name)
       loadedSkillVersionIds.push(skillVersionId)
       // Level-2: az előtöltött skill mellékleteinek LISTÁJA is megy (tartalom nem).
-      const attachmentIndex = formatAttachmentIndex(parseSkillAttachments(version.attachments))
-      if (attachmentIndex) attachmentsAvailable = true
+      const attachments = parseSkillAttachments(version.attachments)
+      const attachmentIndex = formatAttachmentIndex(attachments, content.instructions.join('\n'))
+      if (attachments.length > 0) attachmentsAvailable = true
       preloadedPrompts.push(
         `${reason}\n\n${buildLoadedSkillPrompt(entry, content)}${
           attachmentIndex ? `\n\n${attachmentIndex}` : ''
@@ -1701,7 +1702,7 @@ export class SkillService {
     // Level-2: a melléklet LISTÁJA megy a Level-1 törzzsel (néhány sor), a
     // TARTALMA nem — azt külön, explicit `load_skill_attachment` hívás hozza be.
     const attachments = parseSkillAttachments(version.attachments)
-    const attachmentIndex = formatAttachmentIndex(attachments)
+    const attachmentIndex = formatAttachmentIndex(attachments, content.instructions.join('\n'))
     const instructions = attachmentIndex
       ? `${buildLoadedSkillPrompt(entry, content)}\n\n${attachmentIndex}`
       : buildLoadedSkillPrompt(entry, content)

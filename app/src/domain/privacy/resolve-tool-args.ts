@@ -8,22 +8,33 @@
  * kitalált álnév `privacy.surrogate.unknown`.
  *
  * Csak a teljes string-érték számít álnévnek (`parseSurrogate`); részstring
- * (pl. path-ba ágyazott álnév) M1-ben szándékosan érintetlen.
+ * M1-ben szándékosan érintetlen — KIVÉVE a `path` kulcs: fájlnévbe ágyazott
+ * álnév (`riport-[[COMPANY_1]].html`) sem feloldva, sem nyersen nem jó (a
+ * chat-ben megjelenített név sosem egyezne a valódi fájllal), ezért a hívás
+ * tippel elutasítva: legyen semleges a fájlnév.
  */
 import { addSpanCategory, mergePrivacySpanCategories } from '@/domain/privacy/privacy-mode'
 import type { SurrogateEngine } from '@/domain/privacy/surrogate-engine'
-import { parseSurrogate, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
+import {
+  containsEmbeddedSurrogate,
+  parseSurrogate,
+  type SurrogateEntityType,
+} from '@/domain/privacy/surrogate-format'
 import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
+
+export type SurrogateResolveFailure = 'unknown' | 'hmac_invalid' | 'denied' | 'embedded_in_path'
 
 export class UnknownSurrogateError extends Error {
   readonly surrogate: string
-  readonly reason: 'unknown' | 'hmac_invalid' | 'denied'
+  readonly reason: SurrogateResolveFailure
 
-  constructor(surrogate: string, reason: 'unknown' | 'hmac_invalid' | 'denied' = 'unknown') {
+  constructor(surrogate: string, reason: SurrogateResolveFailure = 'unknown') {
     super(
       reason === 'denied'
         ? `Az álnév ebben a beszélgetésben nem oldható fel: ${surrogate}.`
-        : `Ismeretlen álnév: ${surrogate}. Csak a feladatban vagy tool-válaszban kapott álnevet használd; kitalált álnév nem oldható fel.`,
+        : reason === 'embedded_in_path'
+          ? `Fájlnévbe/útvonalba nem ágyazható álnév: ${surrogate}. Adj semleges fájlnevet (pl. targyalasi-felkeszito-2026-09-15.html); az álnév a tartalomban maradhat.`
+          : `Ismeretlen álnév: ${surrogate}. Csak a feladatban vagy tool-válaszban kapott álnevet használd; kitalált álnév nem oldható fel.`,
     )
     this.name = 'UnknownSurrogateError'
     this.surrogate = surrogate
@@ -46,7 +57,7 @@ export type ResolveToolArgsResult =
       resolvedCount: number
       byCategory: Partial<Record<SurrogateEntityType, number>>
     }
-  | { ok: false; surrogate: string; reason: 'unknown' | 'hmac_invalid' | 'denied' }
+  | { ok: false; surrogate: string; reason: SurrogateResolveFailure }
 
 export async function resolveToolArgs(input: ResolveToolArgsInput): Promise<ResolveToolArgsResult> {
   let copy: unknown
@@ -106,6 +117,9 @@ async function walk(
   let byCategory: Partial<Record<SurrogateEntityType, number>> = {}
   for (const [key, child] of Object.entries(record)) {
     if (typeof child === 'string') {
+      if (key === 'path' && !parseSurrogate(child) && containsEmbeddedSurrogate(child)) {
+        return { ok: false, surrogate: child.match(/\[\[[^\]]+\]\]/)?.[0] ?? child, reason: 'embedded_in_path' }
+      }
       const replaced = await replaceIfSurrogate(child, ctx)
       if (!replaced.ok) return replaced
       if (replaced.changed) {

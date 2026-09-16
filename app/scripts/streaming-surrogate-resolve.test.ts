@@ -227,6 +227,19 @@ async function main() {
     assert.equal(resolver.isEmpty, true)
   })
 
+  await test('nyitott kód-span: `fajl-[[COMPANY_1]]` álnév a záró backtickig várakozik, nem oldódik fel', async () => {
+    const { joined } = await collect(
+      mapLookup({ '[[COMPANY_1]]': 'SPAR' }),
+      ['📄 **`targyalasi-', '[[COMPANY_1]]', '-2026.html`** és [[COMPANY_1]] partner.'],
+    )
+    assert.equal(joined, '📄 **`targyalasi-[[COMPANY_1]]-2026.html`** és SPAR partner.')
+  })
+
+  await test('nyitott kód-span finish-kor kimegy (nem ragad be; lezáratlan backtick = sima szöveg)', async () => {
+    const { joined } = await collect(mapLookup({ '[[COMPANY_1]]': 'SPAR' }), ['`x-', '[[COMPANY_1]]'])
+    assert.equal(joined, '`x-SPAR')
+  })
+
   await test('finish(): lezáratlan [[COMP töredék eldobódik, puffer üres', async () => {
     const { joined, resolver } = await collect(mapLookup({ '[[COMPANY_1]]': 'SPAR' }), [
       'Előtte [[COMP',

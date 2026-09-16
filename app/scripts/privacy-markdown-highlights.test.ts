@@ -48,6 +48,18 @@ check('kiemelés <mark>-kal, szöveg escape nélkül is olvasható', () => {
   assert.equal(out.includes('<script'), false)
 })
 
+check('kód-spanben lévő találat nem kap <mark>-ot (fájlnév-link marad)', () => {
+  const text = 'Kész: `riport-Penny Kft.-2026.html` a Penny Kft. részére'
+  const inCode = text.indexOf('Penny Kft.')
+  const inText = text.lastIndexOf('Penny Kft.')
+  const out = injectPrivacyHighlights(text, [
+    marker(inCode, inCode + 10, { category: 'company' }),
+    marker(inText, inText + 10, { category: 'company' }),
+  ])
+  assert.equal(out.includes('`riport-Penny Kft.-2026.html`'), true)
+  assert.equal((out.match(/<mark/g) ?? []).length, 1)
+})
+
 check('üzenetben lévő raw HTML escape-elődik (XSS a marker mellett)', () => {
   const payload = '<img src=x onerror=alert(1)>'
   const email = 'a@b.c'
