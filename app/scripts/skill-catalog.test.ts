@@ -1617,6 +1617,43 @@ async function main() {
   })
 
   console.log('')
+  console.log('Skill deaktiválás')
+
+  await check('deactivateSkill: aktív verzió retired + agent-hozzárendelések lekerülnek', async () => {
+    let detachedSkillId: string | null = null
+    const skillsRepo = {
+      findById: async (id: string) =>
+        id === 's1'
+          ? {
+              id: 's1',
+              tenantId: 't1',
+              name: 'demo-skill',
+              versions: [{ id: 'v2', version: 2, status: 'active' }],
+            }
+          : null,
+      retireActiveVersion: async (skillId: string) => ({
+        id: 'v2',
+        version: 2,
+        skillId,
+        status: 'retired',
+      }),
+      detachAllAssignmentsForSkill: async (skillId: string) => {
+        detachedSkillId = skillId
+        return 3
+      },
+    }
+    const auditRepo = { append: async () => undefined }
+    const svc = new SkillService(skillsRepo as never, auditRepo as never, {} as never, {} as never)
+    const res = await svc.deactivateSkill({
+      skillId: 's1',
+      actor: { actorId: 'u1', actorTenantId: 't1', isPlatformAdmin: false },
+    })
+    assert.equal(res?.versionId, 'v2')
+    assert.equal(res?.detachedAssignmentCount, 3)
+    assert.equal(detachedSkillId, 's1')
+  })
+
+  console.log('')
   if (failures > 0) {
     console.error(`❌ ${failures} teszt bukott`)
     process.exit(1)

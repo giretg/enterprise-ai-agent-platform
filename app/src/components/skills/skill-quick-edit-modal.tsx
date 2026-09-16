@@ -53,6 +53,15 @@ export function SkillQuickEditModal({
     }
   }, [skillId])
 
+  async function refreshCatalog() {
+    const res = await listSkillCatalogAction()
+    if (res.success) {
+      const found = res.data.find((s) => s.id === skillId) ?? null
+      if (found) setSkill(found)
+    }
+    router.refresh()
+  }
+
   function run(
     fn: () => Promise<{ success: boolean; error?: string }>,
     okMsg: string,
@@ -67,8 +76,8 @@ export function SkillQuickEditModal({
         return
       }
       setNotice(okMsg)
+      await refreshCatalog()
       await onSuccess?.()
-      router.refresh()
     })
   }
 
@@ -78,22 +87,15 @@ export function SkillQuickEditModal({
       title={skill ? skillDisplayLabel(skill) : 'Betöltés…'}
       subtitle="A mentés új verziót javasol — élessé a katalógusban tett jóváhagyás teszi."
       onClose={onClose}
+      error={error}
+      notice={notice}
     >
-      {error && (
-        <p className="mb-4 rounded-lg border border-coral/30 bg-coral/10 px-3 py-2 text-sm text-coral">
-          {error}
-        </p>
-      )}
-      {notice && (
-        <p className="mb-4 rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-sage">
-          {notice}
-        </p>
-      )}
       {skill ? (
         <EditSkillVersionForm
           skill={skill}
           running={pending}
           onRun={run}
+          onRefreshCatalog={refreshCatalog}
           onClose={onClose}
         />
       ) : error ? null : (

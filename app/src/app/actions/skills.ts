@@ -472,6 +472,74 @@ export async function importSkillPackageAction(
   }
 }
 
+const skillPackageVersionSchema = z.object({
+  skillId: z.string().uuid(),
+  sourceUrl: z.string().url().optional().or(z.literal('').transform(() => undefined)),
+  subpath: z.string().trim().max(500).optional().or(z.literal('').transform(() => undefined)),
+})
+
+/** Meglévő skillhez új verzió javaslata ZIP-csomagból (proposed — jóváhagyás külön). */
+export async function importSkillPackageVersionAction(
+  formData: FormData,
+): Promise<ActionResult<{ versionId: string; version: number; notice: string }>> {
+  try {
+    const archive = formData.get('archive')
+    if (!(archive instanceof File) || archive.size === 0) {
+      return fail('Válassz ki egy ZIP-csomagot.')
+    }
+    if (!archive.name.toLowerCase().endsWith('.zip')) {
+      return fail('A skill-csomag ZIP-fájl legyen.')
+    }
+    if (archive.size > SKILL_PACKAGE_UPLOAD_MAX_BYTES) {
+      return fail('A ZIP-csomag legfeljebb 9 MB lehet.')
+    }
+
+    const field = (name: string) => {
+      const value = formData.get(name)
+      return typeof value === 'string' ? value : undefined
+    }
+    const parsed = skillPackageVersionSchema.parse({
+      skillId: field('skillId'),
+      sourceUrl: field('sourceUrl'),
+      subpath: field('subpath'),
+    })
+    const ctx = await requireTenantRole('admin')
+    const result = await services.skills.importSkillPackageVersion({
+      skillId: parsed.skillId,
+      archive: new Uint8Array(await archive.arrayBuffer()),
+      subpath: parsed.subpath,
+      sourceUrl: parsed.sourceUrl,
+      sourceLabel: archive.name.slice(0, 255),
+      actor: actorFrom(ctx),
+    })
+
+    if (!result.ok) {
+      if (result.stage === 'validation') {
+        return fail(`A skill nem felelt meg a hardcoded validátornak: ${result.validation.errors.join(' · ')}`)
+      }
+      const candidates = result.stage === 'package' && result.candidates.length > 0
+        ? ` Lehetséges skill-almappák: ${result.candidates.join(', ')}.`
+        : ''
+      return fail(`${result.message}${candidates}`)
+    }
+
+    const skipped = result.skipped.length > 0
+      ? ` Kimaradt ${result.skipped.length} fájl: ${result.skipped
+          .slice(0, 3)
+          .map((item) => `${item.path} (${SKILL_PACKAGE_SKIP_LABEL[item.reason]})`)
+          .join(' · ')}${result.skipped.length > 3 ? ' · …' : ''}`
+      : ''
+    revalidatePath('/control-plane/skills')
+    return ok({
+      versionId: result.versionId,
+      version: result.version,
+      notice: `ZIP-csomag v${result.version} javaslatként — ${result.attachments.length} referenciafájllal.${skipped}`,
+    })
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
 const createSchema = z.object({
   name: z.string().min(1).max(SKILL_NAME_MAX),
   displayName: z
@@ -801,7 +869,7 @@ export async function rollbackSkillVersionAction(
 
 export async function deactivateSkillAction(
   skillId: string,
-): Promise<ActionResult<{ versionId: string; version: number }>> {
+): Promise<ActionResult<{ versionId: string; version: number; detachedAssignmentCount: number }>> {
   try {
     const ctx = await requireTenantRole('admin')
     const res = await services.skills.deactivateSkill({ skillId, actor: actorFrom(ctx) })
