@@ -31,6 +31,7 @@ import {
   inheritSandboxTrust,
   isSafeWorkspaceRelativePath,
   parseToolResultJson,
+  resolveInputTrust,
   toolNameFromArchivePath,
   workspaceCopyPathForArchive,
 } from './tool-result-extract'
@@ -332,6 +333,7 @@ type ToolLoopCheckpoint = {
   modelRoute?: Pick<ModelConfig, 'provider' | 'model'>
   sourceIngestChars?: Record<string, number>
   archiveSourceKeys?: Record<string, string>
+  savedTrustByPath?: Record<string, TrustClass>
   outputWritten?: boolean
   /** #468 D10 — „folytasd" után ne kelljen újra describe-olni. */
   activatedTools?: string[]
@@ -357,6 +359,17 @@ function parseToolLoopCheckpoint(raw: string | null): ToolLoopCheckpoint | null 
         : {}),
       ...(value.archiveSourceKeys && typeof value.archiveSourceKeys === 'object'
         ? { archiveSourceKeys: value.archiveSourceKeys }
+        : {}),
+      ...(value.savedTrustByPath && typeof value.savedTrustByPath === 'object'
+        ? {
+            savedTrustByPath: Object.fromEntries(
+              Object.entries(value.savedTrustByPath).filter(
+                ([path, trust]) =>
+                  isSafeWorkspaceRelativePath(path) &&
+                  (trust === 'trusted' || trust === 'internal' || trust === 'external_untrusted'),
+              ),
+            ) as Record<string, TrustClass>,
+          }
         : {}),
       ...(value.outputWritten === true ? { outputWritten: true } : {}),
       ...(Array.isArray(value.activatedTools)
@@ -1313,16 +1326,17 @@ export async function runAgentToolLoop(params: {
     toolTail: runtimePrompt.toolTail,
   })
 
-  let checkpoint: ToolLoopCheckpoint | null = null
-  if (params.resumeCheckpoint && params.readWorkspaceFile) {
+  let workspaceCheckpoint: ToolLoopCheckpoint | null = null
+  if (params.readWorkspaceFile) {
     try {
-      checkpoint = parseToolLoopCheckpoint(
+      workspaceCheckpoint = parseToolLoopCheckpoint(
         await params.readWorkspaceFile(TOOL_LOOP_CHECKPOINT_PATH),
       )
     } catch (error) {
       logger.warn({ error }, 'agent.tool_loop.checkpoint_read_failed')
     }
   }
+  const checkpoint = params.resumeCheckpoint ? workspaceCheckpoint : null
   // Az első sikeres provider/model a teljes folytatási láncra rögzül. Firebase-en
   // a ChatGPT OAuth várhatóan fallbackre esik; a következő „folytasd” se próbálja
   // újra a csak localhoston elérhető providert.
@@ -1439,11 +1453,13 @@ export async function runAgentToolLoop(params: {
     string,
     { content: string | null; bytes: number; toolName: string; sourceKey?: string }
   >()
-  // #470 D2/D3 — path → eredeti tool trust. Csak ezen a loop-futáson él;
-  // következő fordulóban a `.tool-results/` / `tool-outputs/` névfeloldás
-  // viszi, a custom `saveAs` név `internal` lesz. Persistálni, ha a custom
-  // nevet fordulók közt sandbox-inputként újrahasználják.
-  const savedTrustByPath = new Map<string, TrustClass>()
+  // #470 D2/D3 — path → a fájlt létrehozó eredmény effektív trustja. A
+  // workspace-checkpoint a custom `saveAs` és a sandbox-output provenienciáját
+  // a következő chat-/ticket-fordulóra is átviszi.
+  const savedTrustByPath = new Map<string, TrustClass>(
+    Object.entries(workspaceCheckpoint?.savedTrustByPath ?? {}),
+  )
+  const resultTrustByToolCallId = new Map<string, TrustClass>()
   const sourceKeyByToolCallId = new Map<string, string>()
   /**
    * A betöltött skill(ek) `allowed-tools` hatóköre. `null` = nincs szűkítés.
@@ -1529,7 +1545,9 @@ export async function runAgentToolLoop(params: {
           toolName,
           ...(archiveSourceKeys.get(path) ? { sourceKey: archiveSourceKeys.get(path) } : {}),
         })
-        savedTrustByPath.set(path, resolveTrustClass(toolName))
+        if (!savedTrustByPath.has(path)) {
+          savedTrustByPath.set(path, resolveTrustClass(toolName))
+        }
       }
     } catch (error) {
       logger.warn({ error }, 'agent.tool_loop.archive_hydration_failed')
@@ -1539,9 +1557,10 @@ export async function runAgentToolLoop(params: {
   const rememberArchived = (
     path: string,
     entry: { content: string; bytes: number; toolName: string; sourceKey?: string },
+    trust: TrustClass = resolveTrustClass(entry.toolName),
   ) => {
     archivedToolResults.set(path, entry)
-    savedTrustByPath.set(path, resolveTrustClass(entry.toolName))
+    savedTrustByPath.set(path, trust)
     if (entry.sourceKey) archiveSourceKeys.set(path, entry.sourceKey)
   }
 
@@ -1669,6 +1688,10 @@ export async function runAgentToolLoop(params: {
           ? { sourceKey: sourceKeyByToolCallId.get(item.toolCallId) ?? archiveSourceKeys.get(item.path) }
           : {}),
       })
+      savedTrustByPath.set(
+        item.path,
+        resultTrustByToolCallId.get(item.toolCallId) ?? resolveTrustClass(item.toolName),
+      )
       const sourceKey = sourceKeyByToolCallId.get(item.toolCallId)
       if (sourceKey) archiveSourceKeys.set(item.path, sourceKey)
       committed.push(item)
@@ -1799,6 +1822,7 @@ export async function runAgentToolLoop(params: {
     try {
       const sourceIngestChars = Object.fromEntries([...ingestedCharsBySource].slice(-500))
       const savedArchiveSourceKeys = Object.fromEntries([...archiveSourceKeys].slice(-500))
+      const persistedTrustByPath = Object.fromEntries([...savedTrustByPath].slice(-500))
       await params.writeWorkspaceFile(
         TOOL_LOOP_CHECKPOINT_PATH,
         JSON.stringify({
@@ -1806,6 +1830,7 @@ export async function runAgentToolLoop(params: {
           ...(pinnedModel ? { modelRoute: pinnedModel } : {}),
           sourceIngestChars,
           archiveSourceKeys: savedArchiveSourceKeys,
+          savedTrustByPath: persistedTrustByPath,
           ...(outputWritten ? { outputWritten: true } : {}),
           activatedTools: [...activatedTools].sort(),
         } satisfies ToolLoopCheckpoint),
@@ -2257,7 +2282,7 @@ export async function runAgentToolLoop(params: {
                 toolName: 'workspace',
                 ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
               }
-              rememberArchived(path, loaded)
+              rememberArchived(path, loaded, resolveInputTrust(path, savedTrustByPath))
               archived = loaded
             }
           } catch (error) {
@@ -2527,11 +2552,15 @@ export async function runAgentToolLoop(params: {
             if (workspaceContent != null) {
               sourceContent = workspaceContent
               sourceLabel = 'munkaterület'
-              rememberArchived(path, {
-                content: workspaceContent,
-                bytes: Buffer.byteLength(workspaceContent, 'utf8'),
-                toolName: 'workspace_file',
-              })
+              rememberArchived(
+                path,
+                {
+                  content: workspaceContent,
+                  bytes: Buffer.byteLength(workspaceContent, 'utf8'),
+                  toolName: 'workspace_file',
+                },
+                resolveInputTrust(path, savedTrustByPath),
+              )
             }
           } catch (error) {
             logger.warn({ path, error }, 'agent.tool_loop.extract_workspace_fallback_failed')
@@ -2588,6 +2617,7 @@ export async function runAgentToolLoop(params: {
           })
           continue
         }
+        savedTrustByPath.set(outputPath, resolveInputTrust(path, savedTrustByPath))
 
         const summary = buildExtractSummary({
           outputPath,
@@ -3346,18 +3376,37 @@ export async function runAgentToolLoop(params: {
               )
             : null
         const previewTrust = sandboxTrust ?? (result.denied ? resolveTrustClass(call.name) : result.trust)
+        resultTrustByToolCallId.set(call.id, previewTrust)
+        if (sandboxTrust && !result.denied) {
+          const outputs = (result.machineData as { outputs?: unknown }).outputs
+          if (Array.isArray(outputs)) {
+            for (const path of outputs) {
+              if (typeof path === 'string' && isSafeWorkspaceRelativePath(path)) {
+                savedTrustByPath.set(path, sandboxTrust)
+              }
+            }
+          }
+        }
         let saveAsNote: string | null = null
-        const persistWorkspaceCopy = async (path: string, content: string): Promise<boolean> => {
+        const persistWorkspaceCopy = async (
+          path: string,
+          content: string,
+          trust: TrustClass,
+        ): Promise<boolean> => {
           if (!params.writeWorkspaceFile || !isSafeWorkspaceRelativePath(path)) return false
           try {
             const copy = await params.writeWorkspaceFile(path, content, 'internal')
             if (!copy) return false
-            rememberArchived(path, {
-              content,
-              bytes: copy.bytes,
-              toolName: call.name,
-              ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
-            })
+            rememberArchived(
+              path,
+              {
+                content,
+                bytes: copy.bytes,
+                toolName: call.name,
+                ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
+              },
+              trust,
+            )
             return true
           } catch (error) {
             logger.warn({ path, error }, 'agent.tool_loop.workspace_copy_failed')
@@ -3392,17 +3441,21 @@ export async function runAgentToolLoop(params: {
           }
 
           if (archive) {
-            rememberArchived(archive.path, {
-              content: archiveContent,
-              bytes: archive.bytes,
-              toolName: call.name,
-              ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
-            })
+            rememberArchived(
+              archive.path,
+              {
+                content: archiveContent,
+                bytes: archive.bytes,
+                toolName: call.name,
+                ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
+              },
+              previewTrust,
+            )
             const requestedSaveAs =
               saveAs && isSafeWorkspaceRelativePath(saveAs) ? saveAs : null
             const workspacePath = requestedSaveAs ?? workspaceCopyPathForArchive(archive.path)
             if (workspacePath !== archive.path) {
-              const written = await persistWorkspaceCopy(workspacePath, archiveContent)
+              const written = await persistWorkspaceCopy(workspacePath, archiveContent, previewTrust)
               if (written && requestedSaveAs) {
                 saveAsNote = `Mentve: ${workspacePath} (${archive.bytes} bájt)`
               }
@@ -3456,7 +3509,7 @@ export async function runAgentToolLoop(params: {
         }
 
         if (!result.denied && saveAs && rawContent.length <= TOOL_RESULT_INLINE_LIMIT) {
-          const written = await persistWorkspaceCopy(saveAs, rawContent)
+          const written = await persistWorkspaceCopy(saveAs, rawContent, previewTrust)
           if (written) {
             const bytes = Buffer.byteLength(rawContent, 'utf8')
             saveAsNote = `Mentve: ${saveAs} (${bytes} bájt)`

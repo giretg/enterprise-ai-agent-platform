@@ -314,7 +314,7 @@ const TRUST_RANK: Record<TrustClass, number> = {
   external_untrusted: 0,
 }
 
-export function minTrustClass(classes: readonly TrustClass[]): TrustClass {
+function minTrustClass(classes: readonly TrustClass[]): TrustClass {
   if (classes.length === 0) return 'trusted'
   return classes.reduce((lowest, next) =>
     TRUST_RANK[next] < TRUST_RANK[lowest] ? next : lowest,

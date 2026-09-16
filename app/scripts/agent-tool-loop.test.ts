@@ -1867,6 +1867,199 @@ async function main() {
     assert.match(String(sandboxResult.content), /<<<EXTERNAL_UNTRUSTED_DATA>>>/)
   })
 
+  await check('#470 D3: láncolt sandbox-output és sandbox saveAs megtartja a forrás trustját', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const httpBody = {
+      ok: true,
+      status: 200,
+      body: { tickets: [{ id: 1, status: 'open' }] },
+    }
+    const sandboxBody = {
+      exitCode: 0,
+      stdout: '{"open":1}',
+      stderr: '',
+      outputs: ['derived.json'],
+    }
+    const httpBroker = fakeToolBrokerResult([], httpBody, 'external_untrusted')
+    const sandboxBroker = fakeToolBrokerResult([], sandboxBody, 'trusted')
+    const toolBroker = {
+      invoke: (input: ToolBrokerInvokeInput) =>
+        input.tool === 'sandbox_exec' ? sandboxBroker.invoke(input) : httpBroker.invoke(input),
+    } as ToolBrokerService
+
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'source',
+                name: 'http_api_get',
+                input: { path: '/tickets', saveAs: 'source.json' },
+              },
+            ],
+          },
+          {
+            toolCalls: [
+              {
+                id: 'derive',
+                name: 'sandbox_exec',
+                input: {
+                  command: ['python3', '/work/run.py'],
+                  inputs: ['source.json'],
+                  outputs: ['derived.json'],
+                  script: 'print(1)',
+                  saveAs: 'sandbox-result.json',
+                },
+              },
+            ],
+          },
+          {
+            toolCalls: [
+              {
+                id: 'read-output',
+                name: 'sandbox_exec',
+                input: {
+                  command: ['python3', '/work/run.py'],
+                  inputs: ['derived.json'],
+                  script: 'print(1)',
+                },
+              },
+            ],
+          },
+          {
+            toolCalls: [
+              {
+                id: 'read-saveas',
+                name: 'sandbox_exec',
+                input: {
+                  command: ['python3', '/work/run.py'],
+                  inputs: ['sandbox-result.json'],
+                  script: 'print(1)',
+                },
+              },
+            ],
+          },
+          { content: 'Kész.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker,
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-sandbox-chain' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'dolgozd fel két lépésben' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get', 'sandbox_exec'],
+      writeWorkspaceFile: async (_path, content) => ({ bytes: Buffer.byteLength(content) }),
+    })
+
+    const derived = gwCalls[2].messages.find(
+      (message) => message.role === 'tool' && message.toolCallId === 'derive',
+    )
+    assert.ok(derived)
+    assert.match(String(derived.content), /<<<EXTERNAL_UNTRUSTED_DATA>>>/)
+
+    for (const [callIndex, toolCallId] of [
+      [3, 'read-output'],
+      [4, 'read-saveas'],
+    ] as const) {
+      const result = gwCalls[callIndex].messages.find(
+        (message) => message.role === 'tool' && message.toolCallId === toolCallId,
+      )
+      assert.ok(result)
+      assert.match(String(result.content), /<<<EXTERNAL_UNTRUSTED_DATA>>>/)
+    }
+  })
+
+  await check('#470 D3: custom saveAs trustja új chat-fordulóban is megmarad', async () => {
+    const workspace = new Map<string, string>()
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'source',
+                name: 'http_api_get',
+                input: { path: '/tickets', saveAs: 'tickets-open.json' },
+              },
+            ],
+          },
+          { content: 'Mentve.' },
+        ],
+        [],
+      ),
+      toolBroker: fakeToolBrokerResult(
+        [],
+        { ok: true, status: 200, body: { tickets: [{ id: 1, status: 'open' }] } },
+        'external_untrusted',
+      ),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-persisted-trust' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'mentsd el' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get'],
+      writeWorkspaceFile: async (path, content) => {
+        workspace.set(path, content)
+        return { bytes: Buffer.byteLength(content) }
+      },
+    })
+    assert.ok(workspace.has(TOOL_LOOP_CHECKPOINT_PATH))
+    assert.equal(
+      JSON.parse(workspace.get(TOOL_LOOP_CHECKPOINT_PATH)!).savedTrustByPath['tickets-open.json'],
+      'external_untrusted',
+    )
+
+    const gwCalls: GatewayCallArgs[] = []
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'sandbox-next-turn',
+                name: 'sandbox_exec',
+                input: {
+                  command: ['python3', '/work/run.py'],
+                  inputs: ['tickets-open.json'],
+                  script: 'print(1)',
+                },
+              },
+            ],
+          },
+          { content: '1 nyitott.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBrokerResult(
+        [],
+        { exitCode: 0, stdout: '{"open":1}', stderr: '', outputs: [] },
+        'trusted',
+      ),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-persisted-trust' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'most számold össze' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['sandbox_exec'],
+      readWorkspaceFile: async (path) => workspace.get(path) ?? null,
+    })
+
+    const sandboxResult = gwCalls[1].messages.find(
+      (message) => message.role === 'tool' && message.toolCallId === 'sandbox-next-turn',
+    )
+    assert.ok(sandboxResult)
+    assert.match(String(sandboxResult.content), /<<<EXTERNAL_UNTRUSTED_DATA>>>/)
+  })
+
   if (failures > 0) {
     console.log(`\n${failures} teszt elbukott.`)
     process.exit(1)
