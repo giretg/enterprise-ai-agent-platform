@@ -202,6 +202,7 @@ export function AgentChatPanel({
   const [isAgentTyping, setIsAgentTyping] = useState(false)
   const [stopPending, setStopPending] = useState(false)
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null)
+  const activeTurnFinishedRef = useRef<(conversationId: string) => void>(() => {})
   const applyPolledTurnProgress = useCallback(
     (progress: { turnId: string; partialText: string; activities: ChatTurnActivity[] }) => {
       const agentMessageId = agentBubbleIdForTurn(progress.turnId)
@@ -227,6 +228,8 @@ export function AgentChatPanel({
     conversationId,
     activeTurnId,
     onProgress: applyPolledTurnProgress,
+    onFinished: (finishedConversationId) =>
+      activeTurnFinishedRef.current(finishedConversationId),
   })
   const clearActiveTurnState = useCallback(() => {
     setIsAgentTyping(false)
@@ -988,6 +991,17 @@ export function AgentChatPanel({
     [agent.id, refreshSessions, sessionsOpen, setViewingConversation],
   )
 
+  useEffect(() => {
+    activeTurnFinishedRef.current = (finishedConversationId) => {
+      void reloadConversationMessages(finishedConversationId).then(() => {
+        if (conversationIdRef.current !== finishedConversationId) return
+        markConversationRunning(finishedConversationId, false)
+        clearActiveTurnState()
+        setStopPending(false)
+      })
+    }
+  }, [clearActiveTurnState, markConversationRunning, reloadConversationMessages])
+
   const consumeReattachStream = useCallback(
     async (params: {
       turnId: string
@@ -1153,12 +1167,16 @@ export function AgentChatPanel({
         }
       } finally {
         const aborted = params.signal.aborted && !sawTerminalEvent
-        if (viewLive()) {
+        const clearRunning = shouldClearTurnRunningOnStreamEnd({
+          aborted,
+          sawTerminalEvent,
+        })
+        if (viewLive() && clearRunning) {
           setIsAgentTyping(false)
           setStopPending(false)
           setActiveTurnId(null)
         }
-        if (shouldClearTurnRunningOnStreamEnd({ aborted })) {
+        if (clearRunning) {
           markConversationRunning(params.conversationId, false)
         }
       }
