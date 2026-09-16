@@ -744,6 +744,20 @@ export function argsMeta(
     return { ...base, projectId: input.args.projectId, hasReason: Boolean(input.args.reason) }
   if (input.tool === 'sandbox.snapshot')
     return { ...base, projectId: input.args.projectId, env: 'test' }
+  if (input.tool === 'sandbox_exec') {
+    return {
+      ...base,
+      command: input.args.command,
+      scriptLength: input.args.script?.length ?? 0,
+      scriptHash: input.args.script
+        ? createHash('sha256').update(input.args.script).digest('hex').slice(0, 16)
+        : null,
+      inputs: input.args.inputs ?? [],
+      outputs: input.args.outputs ?? [],
+      timeoutMs: input.args.timeoutMs ?? null,
+      allowEgress: input.args.allowEgress === true,
+    }
+  }
   if (input.tool === 'web_search') {
     // I-WS-10/WS10: a nyers query SOSEM kerül auditba — csak hossz + hash. A
     // hash-t a policy.authorize() már kiszámolta (webSearchEffective.queryHash);
@@ -958,6 +972,18 @@ function resultMetaFields(result: ToolExecutionResult): Record<string, unknown> 
       recencyDays: result.queryMeta.recencyDays ?? null,
       resultDomains: [...new Set(result.results.map((r) => r.domain))],
       warningCodes: result.warnings.map((w) => w.code),
+    }
+  }
+  if ('metrics' in result && 'exitCode' in result && 'outputs' in result) {
+    const metrics = result.metrics as Record<string, unknown>
+    return {
+      ...metrics,
+      exitCode: result.exitCode,
+      outputCount: Array.isArray(result.outputs) ? result.outputs.length : 0,
+      stdoutBytes: typeof result.stdout === 'string' ? Buffer.byteLength(result.stdout) : 0,
+      stderrBytes: typeof result.stderr === 'string' ? Buffer.byteLength(result.stderr) : 0,
+      stdoutTruncated: result.stdoutTruncated,
+      stderrTruncated: result.stderrTruncated,
     }
   }
   if ('status' in result && 'ok' in result && 'body' in result) {

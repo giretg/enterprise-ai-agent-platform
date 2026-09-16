@@ -1308,6 +1308,12 @@ export interface ToolBrokerRepository {
   countToolCallsForTicket(ticketId: string, toolName: string): Promise<number>
   /** Chat: beszélgetés-scope web_search limit (ticket nélküli fordulók). */
   countToolCallsForConversation(conversationId: string, toolName: string): Promise<number>
+  /** Egy ticket/conversation tool-budgetjének végrehajtott hívásai és mért ideje. */
+  getToolUsageForScope(input: {
+    ticketId?: string
+    conversationId?: string
+    toolName: string
+  }): Promise<{ calls: number; execMs: number }>
   /** Web Search rate-limit (maxQueriesPerAgentDay) — Feature-spec WebSearchTool §5.4. */
   countToolCallsForAgentSince(agentId: string, toolName: string, since: Date): Promise<number>
   /** Governance/agent-card nézethez — Feature-spec WebSearchTool §7.1/§7.3. */

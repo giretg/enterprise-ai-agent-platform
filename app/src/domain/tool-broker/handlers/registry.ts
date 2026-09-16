@@ -29,6 +29,7 @@ import { debugTraceHandler } from './debug-trace.handler'
 import { runIndexHandler } from './run-index.handler'
 import { runTraceHandler } from './run-trace.handler'
 import { runStatsHandler } from './run-stats.handler'
+import { sandboxExecHandler } from './sandbox-exec.handler'
 
 export const TOOL_HANDLERS: readonly ToolHandler[] = [
   kbHandler,
@@ -41,6 +42,7 @@ export const TOOL_HANDLERS: readonly ToolHandler[] = [
   httpApiHandler,
   repoHandler,
   fileToolHandler,
+  sandboxExecHandler,
   sandboxAppHandler,
   sandboxVersioningHandler,
   gmailHandler,

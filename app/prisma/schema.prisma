@@ -217,6 +217,7 @@ enum ConnectorType {
   workspace
   http_api
   web_search
+  code_sandbox
 }
 
 enum ConnectorAuthMode {

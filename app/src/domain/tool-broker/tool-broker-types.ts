@@ -68,6 +68,7 @@ import type {
   WebResearchRequestArgs,
   WebResearchRequestResult,
 } from '@/domain/web-research/web-research-types'
+import type { SandboxExecInput, SandboxExecResult } from '@/domain/code-sandbox/code-sandbox-service'
 
 export type KbSearchArgs = {
   query: string
@@ -914,6 +915,8 @@ export type PptxCreateArgs = {
   slides: PptxSlideSpec[]
 }
 
+export type SandboxExecArgs = SandboxExecInput
+
 export type ToolInvokeBase = {
   agentId: string
   agentVersion: number
@@ -995,6 +998,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'pdf_read'; args: PdfReadArgs })
   | (ToolInvokeBase & { tool: 'pdf_create'; args: PdfCreateArgs })
   | (ToolInvokeBase & { tool: 'pptx_create'; args: PptxCreateArgs })
+  | (ToolInvokeBase & { tool: 'sandbox_exec'; args: SandboxExecArgs })
   | (ToolInvokeBase & { tool: 'sandbox_app.create'; args: SandboxAppCreateArgs })
   | (ToolInvokeBase & { tool: 'sandbox_app.update_artifact'; args: SandboxAppUpdateArtifactArgs })
   | (ToolInvokeBase & { tool: 'sandbox_app.preview'; args: SandboxAppPreviewArgs })
@@ -1135,6 +1139,7 @@ export type ToolBrokerInvokeResult =
         | PdfReadResult
         | PdfCreateResult
         | PptxCreateResult
+        | SandboxExecResult
         | SandboxCommitResult
         | SandboxRequestPromotionResult
         | SandboxSnapshotResult

@@ -39,6 +39,7 @@ import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import type { AgentSkillRow, AssignableSkill } from '@/app/actions/skills'
 import { WebSearchPolicyCard } from '@/components/agents/web-search-policy-card'
 import { AgentLifecycleControls } from '@/components/agents/agent-lifecycle-controls'
+import { CodeSandboxConnectorPanel } from '@/components/agents/code-sandbox-connector-panel'
 import {
   BehaviorProfileEditForm,
   BehaviorProfileView,
@@ -188,9 +189,13 @@ export default async function AgentDetailPage({
   const assignedConnectorIds = new Set(
     governance?.connectors.map((item) => item.connector.id) ?? [],
   )
+  const sandboxCapabilityMissingConnector = Boolean(
+    governance?.capabilities.some((capability) => capability.toolName === 'sandbox_exec' && capability.allowed)
+    && !governance.connectors.some((item) => item.connector.type === 'code_sandbox'),
+  )
   const assignableConnectors = (connectorCatalog ?? []).filter(
     (connector) =>
-      (connector.type === 'http_api' || connector.type === 'gmail') &&
+      (connector.type === 'http_api' || connector.type === 'gmail' || connector.type === 'code_sandbox') &&
       !assignedConnectorIds.has(connector.id),
   )
   const capabilitiesLocked = agent.systemRole === RUN_ANALYST_SYSTEM_ROLE
@@ -432,6 +437,11 @@ export default async function AgentDetailPage({
                     : 'Amikhez ez az agent hozzáfér.'
               }
             >
+              {sandboxCapabilityMissingConnector ? (
+                <p className="mb-4 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
+                  A Kódfuttatás jogosultság aktív, de nincs sandbox connector hozzárendelve. A futtatás addig blokkolva marad.
+                </p>
+              ) : null}
               {isAdmin && !capabilitiesLocked && assignableConnectors.length > 0 ? (
                 <div className="mb-4 flex justify-end">
                   <AssignConnectorModal agentId={agent.id} connectors={assignableConnectors} />
@@ -447,6 +457,7 @@ export default async function AgentDetailPage({
           {governance && !capabilitiesLocked && (
             <WebSearchPolicyCard agentId={agent.id} connectors={governance.connectors} />
           )}
+          {isAdmin && !capabilitiesLocked ? <CodeSandboxConnectorPanel /> : null}
         </div>
       ),
     },

@@ -237,6 +237,23 @@ export class FileEditorService {
     return this.storage.read(tenantId, ticketId, safePath)
   }
 
+  /** Nyers bájtok írása bináris toolokhoz (pl. sandbox-kimenet). */
+  async writeRawFile(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string; bytes: Uint8Array },
+  ): Promise<FileWriteResult> {
+    const safePath = resolveSafePath(args.path)
+    const buf = Buffer.from(args.bytes)
+    await this.storage.write(tenantId, ticketId, safePath, buf)
+    return { path: safePath, bytesWritten: buf.length }
+  }
+
+  /** Belső rollback-primitív; nem kér interaktív törlés-megerősítést. */
+  async deleteRawFile(tenantId: string, ticketId: string, path: string): Promise<void> {
+    await this.storage.delete(tenantId, ticketId, resolveSafePath(path))
+  }
+
   /**
    * `opts.quota`: köteg-írásokhoz (repo-import) átadható kvóta-session — ilyenkor
    * a kvótát a session könyveli, nem fájlonkénti teljes workspace-listázás.

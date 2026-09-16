@@ -59,6 +59,7 @@ export const TOOL_REQUIREMENTS: Partial<Record<
   file_glob: { connectorType: 'workspace', accessMode: 'read' },
   file_search: { connectorType: 'workspace', accessMode: 'read' },
   file_delete: { connectorType: 'workspace', accessMode: 'write' },
+  sandbox_exec: { connectorType: 'code_sandbox', accessMode: 'write' },
   xlsx_read_sheet: { connectorType: 'workspace', accessMode: 'read' },
   xlsx_write_cells: { connectorType: 'workspace', accessMode: 'write' },
   xlsx_format_range: { connectorType: 'workspace', accessMode: 'write' },

@@ -11,6 +11,8 @@ import { GmailApiAuthError } from '@/domain/connector-grant/gmail-api-client'
 
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import type { FileEditorService } from '@/domain/file-editor/file-editor-service'
+import { CodeSandboxDeniedError } from '@/domain/code-sandbox/code-sandbox-service'
+import { codeSandboxConfigSchema } from '@/domain/code-sandbox/code-sandbox-types'
 
 import type {
   AgentRepository,
@@ -151,6 +153,22 @@ export type ConnectorEntityResolverFactory = (input: {
   actingUserId?: string | null
   agentId: string
 }) => Promise<ConnectorEntityResolver | null>
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
+}
+
+export function codeSandboxBudgetDenial(
+  usage: { calls: number; execMs: number },
+  requestedTimeoutMs: number,
+): string | null {
+  if (usage.calls >= positiveIntegerEnv('CODE_SANDBOX_MAX_CALLS_PER_SCOPE', 10)) {
+    return 'code_sandbox_call_budget_exceeded'
+  }
+  const maxExecMs = positiveIntegerEnv('CODE_SANDBOX_MAX_EXEC_SEC_PER_SCOPE', 300) * 1000
+  return usage.execMs + requestedTimeoutMs > maxExecMs ? 'code_sandbox_time_budget_exceeded' : null
+}
 
 export class ToolBrokerService {
   delegationProcessor: DelegationProcessor | null = null
@@ -429,6 +447,24 @@ export class ToolBrokerService {
       webSearchEffective = decision.effective
     }
 
+    if (input.tool === 'sandbox_exec') {
+      if (!ticketId && !input.conversationId) {
+        return recordDenied(this, input, ticketId, authorization.connector?.id ?? null, 'code_sandbox_scope_required', startedAt, actingUserId, authorization.grant?.id ?? null)
+      }
+      const usage = await this.tools.getToolUsageForScope({
+        ...(ticketId ? { ticketId } : { conversationId: input.conversationId }),
+        toolName: 'sandbox_exec',
+      })
+      const connectorConfig = codeSandboxConfigSchema.safeParse(authorization.connector?.config)
+      const defaultTimeoutMs = connectorConfig.success
+        ? Math.min(connectorConfig.data.maxExecSec * 1000, 120_000)
+        : 120_000
+      const budgetDenial = codeSandboxBudgetDenial(usage, input.args.timeoutMs ?? defaultTimeoutMs)
+      if (budgetDenial) return recordDenied(this, input, ticketId, authorization.connector?.id ?? null, budgetDenial, startedAt, actingUserId, authorization.grant?.id ?? null)
+      // ponytail: a precheck versenyezhet két párhuzamos hívásnál; ha ez mérten előfordul,
+      // atomikus scope-usage sort kell bevezetni. A Cloud Run concurrency=1 ma szűkíti a plafont.
+    }
+
     // issue #195 — a tool kimeneti szerződése. A `contract` a bemeneti méret-kapuhoz
     // (D7) már a handler-hívás ELŐTT kell, hogy egy kombinatorikus tool ne a workert
     // fagyassza le, hanem azonnal, érthető hibával álljon meg.
@@ -518,6 +554,9 @@ export class ToolBrokerService {
     } catch (e) {
       const latencyMs = Date.now() - startedAt
       const message = e instanceof Error ? e.message : 'tool_call_failed'
+      if (e instanceof CodeSandboxDeniedError) {
+        return recordDenied(this, input, ticketId, authorization.connector?.id ?? null, e.reason, startedAt, actingUserId, authorization.grant?.id ?? null)
+      }
       if (
         e instanceof GmailApiAuthError &&
         authorization.connector?.authMode === 'user_delegated' &&

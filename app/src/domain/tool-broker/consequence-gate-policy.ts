@@ -34,6 +34,7 @@ export const ALWAYS_CONSEQUENCE_GATED_TOOLS: ReadonlySet<string> = new Set<ToolN
 
 export type ConsequenceGateReason =
   | 'high_risk_tool'
+  | 'sandbox_egress'
   | 'http_api_malformed'
   | 'http_api_not_allowlisted'
   | 'http_api_write_or_danger'
@@ -88,6 +89,9 @@ export function requiresConsequenceApproval(
 ): ConsequenceGateDecision {
   if (tool === 'http_api_request') {
     return evaluateHttpApiRequestGate(args ?? {}, httpApiConnectors ?? [], budget, now)
+  }
+  if (tool === 'sandbox_exec' && args?.allowEgress === true) {
+    return { required: true, reason: 'sandbox_egress' }
   }
   if (ALWAYS_CONSEQUENCE_GATED_TOOLS.has(tool)) {
     return { required: true, reason: 'high_risk_tool' }
@@ -302,6 +306,8 @@ export function consequenceGateReasonForModel(reason: ConsequenceGateReason | un
       return 'a hívott HTTP végpont nincs a connector engedélyezett listáján'
     case 'http_api_write_or_danger':
       return 'a HTTP hívás író / veszélyes (write vagy danger) végpontra megy'
+    case 'sandbox_egress':
+      return 'a kódfuttatás hálózati hozzáférést kér az izolált sandboxból'
     case 'unknown_tool':
       return 'ez egy nem besorolt eszköz, ezért óvatosságból jóváhagyást kérünk'
     case 'high_risk_tool':

@@ -295,6 +295,30 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     })
   }
 
+  async getToolUsageForScope(input: {
+    ticketId?: string
+    conversationId?: string
+    toolName: string
+  }): Promise<{ calls: number; execMs: number }> {
+    const rows = await prisma.toolCall.findMany({
+      where: {
+        toolName: input.toolName,
+        status: { in: ['ok', 'error'] },
+        ...(input.ticketId ? { ticketId: input.ticketId } : { conversationId: input.conversationId }),
+      },
+      select: { resultMeta: true, latencyMs: true },
+    })
+    return {
+      calls: rows.length,
+      execMs: rows.reduce((sum, row) => {
+        const meta = row.resultMeta && typeof row.resultMeta === 'object' && !Array.isArray(row.resultMeta)
+          ? row.resultMeta as Record<string, unknown>
+          : {}
+        return sum + (typeof meta.execMs === 'number' ? meta.execMs : row.latencyMs)
+      }, 0),
+    }
+  }
+
   async countToolCallsForAgentSince(agentId: string, toolName: string, since: Date): Promise<number> {
     return prisma.toolCall.count({
       where: { agentId, toolName, status: 'ok', createdAt: { gte: since } },
