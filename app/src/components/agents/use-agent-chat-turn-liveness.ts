@@ -59,8 +59,9 @@ export function useAgentChatTurnLiveness(input: {
     partialText: string
     activities: ChatTurnActivity[]
   }) => void
+  onFinished: (conversationId: string) => void
 }) {
-  const { active, conversationId, activeTurnId, onProgress } = input
+  const { active, conversationId, activeTurnId, onProgress, onFinished } = input
   const [stallDetail, setStallDetail] = useState<string | null>(null)
   const reset = useCallback(() => setStallDetail(null), [])
   const updateFromSnapshot = useCallback((turn: ChatTurnProgressSnapshot) => {
@@ -80,7 +81,10 @@ export function useAgentChatTurnLiveness(input: {
         active: boolean
         turn: ChatTurnProgressSnapshot | null
       }
-      if (!data.active || !data.turn) return
+      if (!data.active || !data.turn) {
+        onFinished(conversationId)
+        return
+      }
       updateFromSnapshot(data.turn)
       const activities = Array.isArray(data.turn.activities)
         ? (data.turn.activities as ChatTurnActivity[])
@@ -95,6 +99,7 @@ export function useAgentChatTurnLiveness(input: {
     active,
     activeTurnId,
     conversationId,
+    onFinished,
     onProgress,
     updateFromSnapshot,
   ])

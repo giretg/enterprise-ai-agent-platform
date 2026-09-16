@@ -62,11 +62,14 @@ export function visibleChatOwnsConversation(input: {
 }
 
 /**
- * A helyi SSE-olvasás megszakítása (új beszélgetés, szálváltás) a szerveren
- * nem állítja le a fordulót — a „most dolgozik” jelölő marad.
+ * A helyi SSE-olvasás megszakítása vagy lezáró esemény nélküli hálózati vége
+ * nem állítja le a szerver-fordulót — a „most dolgozik” jelölő marad.
  */
-export function shouldClearTurnRunningOnStreamEnd(input: { aborted: boolean }): boolean {
-  return !input.aborted
+export function shouldClearTurnRunningOnStreamEnd(input: {
+  aborted: boolean
+  sawTerminalEvent: boolean
+}): boolean {
+  return !input.aborted && input.sawTerminalEvent
 }
 
 export type ConversationHistoryLoadState = 'idle' | 'loading' | 'ready'

@@ -270,9 +270,20 @@ check('üzenet-újratöltés csak a nézett szálra megy — üres új beszélge
   )
 })
 
-check('helyi stream-abort (szálváltás) nem törli a háttérben futó jelölőt', () => {
-  assert.equal(shouldClearTurnRunningOnStreamEnd({ aborted: true }), false)
-  assert.equal(shouldClearTurnRunningOnStreamEnd({ aborted: false }), true)
+check('csak lezáró esemény törli a futó jelölőt', () => {
+  assert.equal(
+    shouldClearTurnRunningOnStreamEnd({ aborted: true, sawTerminalEvent: false }),
+    false,
+  )
+  assert.equal(
+    shouldClearTurnRunningOnStreamEnd({ aborted: false, sawTerminalEvent: false }),
+    false,
+    'lezáró esemény nélkül megszakadt streamnél az agent tovább dolgozhat',
+  )
+  assert.equal(
+    shouldClearTurnRunningOnStreamEnd({ aborted: false, sawTerminalEvent: true }),
+    true,
+  )
 })
 
 check('Új beszélgetés futó forduló alatt is indul — a szerver megy tovább', () => {
@@ -291,6 +302,30 @@ check('szálváltás elengedi a helyi streamet, a futó fordulót a szerveren ha
   assert.match(panel, /visibleChatOwnsStream/)
   assert.match(panel, /visibleChatOwnsConversation/)
   assert.match(panel, /shouldClearTurnRunningOnStreamEnd/)
+})
+
+check('lezáró esemény nélküli reconnect-vég nem rejti el a dolgozik jelzőt', () => {
+  const reconnect = panel.match(
+    /const consumeReattachStream = useCallback\([\s\S]+?const reattachToConversation = useCallback/,
+  )
+  assert.ok(reconnect, 'consumeReattachStream blokk megtalálható')
+  assert.match(reconnect[0], /const clearRunning = shouldClearTurnRunningOnStreamEnd/)
+  assert.match(reconnect[0], /if \(viewLive\(\) && clearRunning\) \{[\s\S]+?setIsAgentTyping\(false\)/)
+})
+
+check('megszakadt stream után a poll zárja le és frissíti a fordulót', () => {
+  const livenessHook = readFileSync(
+    resolve(process.cwd(), 'src/components/agents/use-agent-chat-turn-liveness.ts'),
+    'utf8',
+  )
+  assert.match(
+    livenessHook,
+    /if \(!data\.active \|\| !data\.turn\) \{\s*onFinished\(conversationId\)/,
+  )
+  assert.match(
+    panel,
+    /activeTurnFinishedRef\.current = \(finishedConversationId\) => \{[\s\S]{0,400}reloadConversationMessages\(finishedConversationId\)/,
+  )
 })
 
 check('az előzmény-sáv nem tiltja az új beszélgetést és a szálváltást, ha az agent dolgozik', () => {
