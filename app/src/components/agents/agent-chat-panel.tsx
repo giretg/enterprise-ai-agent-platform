@@ -17,6 +17,7 @@ import {
   promoteConversationWithAi,
 } from '@/app/actions/platform'
 import { setConversationProjectKey } from '@/app/actions/work-projects'
+import { isChatPinnedToBottom } from '@/lib/agent-chat-scroll'
 import { GENERAL_WORK_PROJECT_KEY, effectiveWorkProjectKey } from '@/lib/work-project'
 import { distillSkillFromConversationAction, getAgentSkillsAction } from '@/app/actions/skills'
 import { exportConversationDebugLog } from '@/app/actions/debug-log'
@@ -287,6 +288,8 @@ export function AgentChatPanel({
   const [distillTargets, setDistillTargets] = useState<Array<{ id: string; name: string }>>([])
   const [agentSkills, setAgentSkills] = useState<ChatSkillOption[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
+  /** Ha a user felfelé görgetett, a stream közbeni activity-frissítés ne húzza vissza. */
+  const pinnedToBottomRef = useRef(true)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const filesRef = useRef<ConversationFilesPanelHandle>(null)
@@ -438,7 +441,18 @@ export function AgentChatPanel({
     }
   }, [])
 
-  const scrollToBottom = useCallback(() => {
+  const syncPinnedToBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    pinnedToBottomRef.current = isChatPinnedToBottom(
+      el.scrollTop,
+      el.scrollHeight,
+      el.clientHeight,
+    )
+  }, [])
+
+  const scrollToBottom = useCallback((options?: { force?: boolean }) => {
+    if (!options?.force && !pinnedToBottomRef.current) return
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
     })
@@ -1345,6 +1359,7 @@ export function AgentChatPanel({
           setContinuedFromTicket(res.data.continuedFromTicket ?? null)
           setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
           setIsAdmin(res.data.isAdmin)
+          pinnedToBottomRef.current = true
           setMessages(
             withPendingChatExtras(
               res.data.messages.map((m) => ({
@@ -1529,6 +1544,7 @@ export function AgentChatPanel({
       activities: [],
     }
 
+    pinnedToBottomRef.current = true
     setMessages((prev) => [...prev, optimisticUserMessage, optimisticAgentMessage])
     setStatusMessage(null)
     setLastTicketId(null)
@@ -2330,6 +2346,7 @@ export function AgentChatPanel({
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <div
               ref={scrollRef}
+              onScroll={syncPinnedToBottom}
               className={`flex-1 overflow-y-auto ${embedded ? 'px-3 py-3 sm:px-6 sm:py-5' : 'px-3 py-4 sm:px-6 sm:py-5'}`}
             >
               {messages.length === 0 && ticketDiscussionHistory.length === 0 && !isAgentTyping ? (
