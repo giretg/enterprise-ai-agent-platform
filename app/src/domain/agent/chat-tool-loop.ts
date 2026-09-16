@@ -3300,15 +3300,27 @@ export async function runAgentToolLoop(params: {
         // számolni — az archívumba amúgy is a nyers adat kerül.
         if (rawContent.length > TOOL_RESULT_INLINE_LIMIT) {
           const archiveContent = rawContent
-          const archive = params.archiveLargeToolResult
-            ? await params.archiveLargeToolResult({
+          // Az archiváló szándékosan dobhat (pl. workspace write hiba). A
+          // kontextus-tömörítés ágon már try/catch van; itt is kell, különben
+          // a külső catch a SIKERES tool-hívást HIBA-ként jelenti, elnyeli a
+          // gépi eredményt, és a modell újra futtathat mellékhatásos eszközt.
+          let archive: LargeToolResultArchive | null = null
+          if (params.archiveLargeToolResult) {
+            try {
+              archive = await params.archiveLargeToolResult({
                 toolName: call.name,
                 callId: call.id,
                 turn,
                 content: archiveContent,
                 context: params.context,
               })
-            : null
+            } catch (error) {
+              logger.warn(
+                { toolName: call.name, callId: call.id, turn, error },
+                'agent.tool_loop.large_result_archive_failed',
+              )
+            }
+          }
 
           if (archive) {
             rememberArchived(archive.path, {
