@@ -48,6 +48,14 @@ import {
   selfUpdatingSyncFeedback,
   type SelfUpdatingConnectorRow,
 } from '@/app/control-plane/connectors/self-updating/self-updating-connectors-panel'
+import { CodeSandboxConnectorCard, newCodeSandboxFormState } from '@/components/connectors/code-sandbox-connector-card'
+import {
+  CodeSandboxConnectorForm,
+  buildCodeSandboxSaveInput,
+  codeSandboxFormReady,
+  type CodeSandboxFormState,
+} from '@/components/connectors/code-sandbox-connector-form'
+import { listCodeSandboxConnectors, saveCodeSandboxConnector } from '@/app/actions/code-sandbox'
 
 // A listProvisioningDrafts visszaadott alakja (provisioning-service.listDrafts).
 type CheckStatus = 'passed' | 'warned' | 'failed'
@@ -224,7 +232,7 @@ type DiscoverData =
     }
 
 type CreateStep = 'basics' | 'source' | 'review'
-type ConnectionKind = 'fixed' | 'self_updating'
+type ConnectionKind = 'fixed' | 'self_updating' | 'code_sandbox'
 type SourceMethod = 'discover' | 'document' | 'manual' | 'template'
 type DraftManageStep = 'inspect' | 'validate' | 'review' | 'sandbox' | 'activate'
 type ActiveManageStep = 'inspect' | 'assign' | 'revoke'
@@ -521,6 +529,29 @@ export function ProvisioningPanel({
 }) {
   const [drafts, setDrafts] = useState<DraftRow[]>([])
   const [selfUpdatingRows, setSelfUpdatingRows] = useState<SelfUpdatingConnectorRow[]>([])
+  type CodeSandboxConnectorRow = {
+    id: string
+    name: string
+    lifecycleState: string
+    hasApiKey: boolean
+    config: {
+      provider: 'cloud_run' | 'e2b_compatible'
+      region: string
+      baseUrl?: string
+      maxExecSec: number
+      cpuProfile: string
+      memoryProfile: string
+      maxCallsPerScope: number
+      maxExecSecPerScope: number
+    }
+    recentCalls: Array<{
+      status: string
+      latencyMs: number
+      metrics: Record<string, unknown> | null
+      createdAt: string
+    }>
+  }
+  const [codeSandboxRows, setCodeSandboxRows] = useState<CodeSandboxConnectorRow[]>([])
   const [tenantAuto, setTenantAuto] = useState(false)
   const [agents, setAgents] = useState<AgentOption[]>([])
   const [templates, setTemplates] = useState<ConnectorTemplateRow[]>([])
@@ -537,6 +568,9 @@ export function ProvisioningPanel({
   // Create-form állapot
   const [name, setName] = useState('')
   const [connectionKind, setConnectionKind] = useState<ConnectionKind>('fixed')
+  const [codeSandboxForm, setCodeSandboxForm] = useState<CodeSandboxFormState>(() =>
+    newCodeSandboxFormState(),
+  )
   // Általános konnektoron belül: sablon-katalógusból vagy egyéb kapcsolat.
   const [fixedSource, setFixedSource] = useState<'template' | 'custom'>('template')
   const [selfUpdatingApiKey, setSelfUpdatingApiKey] = useState('')
@@ -615,13 +649,14 @@ export function ProvisioningPanel({
 
   const reload = useCallback(() => {
     startTransition(async () => {
-      const [d, a, t, g, gd, su] = await Promise.all([
+      const [d, a, t, g, gd, su, cs] = await Promise.all([
         listProvisioningDrafts(),
         listProvisioningAssignableAgents(),
         listConnectorTemplatesAction(),
         getGoogleOAuthConfiguredStatus(),
         getGoogleDriveOAuthConfiguredStatus(),
         listSelfUpdatingConnectors(),
+        listCodeSandboxConnectors(),
       ])
       if (d.success) setDrafts(d.data as DraftRow[])
       else setError(d.error)
@@ -637,6 +672,7 @@ export function ProvisioningPanel({
         setSelfUpdatingRows(su.data.connectors as SelfUpdatingConnectorRow[])
         setTenantAuto(su.data.tenantAutoApproveEnabled)
       }
+      if (cs.success) setCodeSandboxRows(cs.data.connectors)
       if (isSuperadmin) {
         const tenants = await listTenants()
         if (tenants.success) {
@@ -839,6 +875,9 @@ export function ProvisioningPanel({
   const activeItems = [
     ...activatedDrafts.map((draft) => ({ kind: 'provisioned' as const, name: draft.name, draft })),
     ...readySelfUpdatingRows.map((row) => ({ kind: 'self_updating' as const, name: row.name, row })),
+    ...codeSandboxRows
+      .filter((row) => row.lifecycleState === 'active')
+      .map((row) => ({ kind: 'code_sandbox' as const, name: row.name, row })),
   ].sort((a, b) => a.name.localeCompare(b.name, 'hu'))
   const latestTemplateVersions = useMemo(() => {
     const versions: Record<string, number> = {}
@@ -887,6 +926,7 @@ export function ProvisioningPanel({
     setCatalogSharedKey('')
     setCatalogLeafKeys({})
     setCatalogBatch(null)
+    setCodeSandboxForm(newCodeSandboxFormState())
   }, [])
 
   const checkCatalog = useCallback(() => {
@@ -970,6 +1010,18 @@ export function ProvisioningPanel({
   }, [catalogLeaves, catalogSelected, catalogNames, catalogKeyMode, catalogSharedKey, catalogLeafKeys, reload])
 
   const onCreate = useCallback(() => {
+    if (connectionKind === 'code_sandbox') {
+      if (!codeSandboxFormReady(codeSandboxForm)) {
+        setError('Add meg a nevet és a Gateway URL-t.')
+        return
+      }
+      run(async () => {
+        const result = await saveCodeSandboxConnector(buildCodeSandboxSaveInput(codeSandboxForm))
+        if (result.success) closeCreateDraftForm()
+        return result
+      }, 'A kódfuttató sandbox connector létrejött.')
+      return
+    }
     if (connectionKind === 'self_updating') {
       // Gyűjtőindexből nem születhet önálló kapcsolat: a leaf-választó a helyes út.
       if (catalogChecked && catalogIsCatalog) {
@@ -1029,6 +1081,7 @@ export function ProvisioningPanel({
     catalogChecked,
     catalogIsCatalog,
     closeCreateDraftForm,
+    codeSandboxForm,
     configText,
     connectionKind,
     docSourceRef,
@@ -1048,21 +1101,27 @@ export function ProvisioningPanel({
   ])
 
   const stepOrder: CreateStep[] =
-    connectionKind === 'self_updating' ? ['basics', 'source'] : ['basics', 'source', 'review']
+    connectionKind === 'self_updating' || connectionKind === 'code_sandbox'
+      ? ['basics', 'source']
+      : ['basics', 'source', 'review']
   const activeStepIndex = stepOrder.indexOf(createStep)
   // Sablon-úton a név = sablonnév, nem kérünk be külön nevet.
   const canEnterSource =
-    connectionKind === 'self_updating'
-      ? name.trim().length > 0
-      : isTemplatePath
-        ? !!selectedTemplate
-        : name.trim().length > 0
+    connectionKind === 'code_sandbox'
+      ? codeSandboxForm.name.trim().length > 0
+      : connectionKind === 'self_updating'
+        ? name.trim().length > 0
+        : isTemplatePath
+          ? !!selectedTemplate
+          : name.trim().length > 0
   const selfUpdatingReady =
     canEnterSource && !!selfUpdatingSpecUrl.trim()
   const canEnterReview =
-    connectionKind === 'self_updating'
-      ? selfUpdatingReady
-      : canEnterSource && (isTemplatePath ? templateReady : configText.trim().length > 0)
+    connectionKind === 'code_sandbox'
+      ? codeSandboxFormReady(codeSandboxForm)
+      : connectionKind === 'self_updating'
+        ? selfUpdatingReady
+        : canEnterSource && (isTemplatePath ? templateReady : configText.trim().length > 0)
   const setWizardStep = (step: CreateStep) => {
     if (step === 'source' && !canEnterSource) return
     if (step === 'review' && !canEnterReview) return
@@ -1070,9 +1129,11 @@ export function ProvisioningPanel({
   }
   const createDisabledReason = pending
     ? 'Folyamatban lévő művelet miatt várakozik.'
+    : connectionKind === 'code_sandbox' && !codeSandboxFormReady(codeSandboxForm)
+      ? 'Add meg a nevet és a Gateway URL-t.'
     : connectionKind === 'fixed' && isTemplatePath && !selectedTemplate
       ? 'Válassz konnektor-sablont.'
-      : !isTemplatePath && !name.trim()
+      : !isTemplatePath && connectionKind !== 'code_sandbox' && !name.trim()
         ? 'Adj nevet a konnektornak.'
         : connectionKind === 'self_updating' && !selfUpdatingSpecUrl.trim()
           ? 'Add meg az API-leírás linkjét.'
@@ -1145,13 +1206,19 @@ export function ProvisioningPanel({
                 id: 'basics' as const,
                 label: 'Alapadatok',
                 hint:
-                  `${connectionKind === 'self_updating' ? 'OpenAPI' : 'Általános konnektor'}${effectiveName.trim() ? ` · ${effectiveName.trim()}` : ''}`,
+                  `${connectionKind === 'code_sandbox'
+                    ? 'Kódfuttató sandbox'
+                    : connectionKind === 'self_updating'
+                      ? 'OpenAPI'
+                      : 'Általános konnektor'}${effectiveName.trim() ? ` · ${effectiveName.trim()}` : ''}`,
               },
               {
                 id: 'source' as const,
                 label: 'Forrás',
                 hint:
-                  connectionKind === 'self_updating'
+                  connectionKind === 'code_sandbox'
+                    ? 'Gateway URL + limiték'
+                    : connectionKind === 'self_updating'
                     ? 'API-leírás + kulcs (opcionális)'
                     : isTemplatePath
                     ? `Sablon · ${selectedTemplate?.displayName ?? '—'}`
@@ -1161,7 +1228,7 @@ export function ProvisioningPanel({
                       ? 'API-dokumentáció'
                       : 'Kézi JSON',
               },
-              ...(connectionKind === 'self_updating'
+              ...(connectionKind === 'self_updating' || connectionKind === 'code_sandbox'
                 ? []
                 : [
                     {
@@ -1219,7 +1286,7 @@ export function ProvisioningPanel({
                     nevet csak egyéb kapcsolatnál kell adni.
                   </p>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   <button
                     type="button"
                     onClick={() => setConnectionKind('fixed')}
@@ -1248,6 +1315,24 @@ export function ProvisioningPanel({
                     <span className="mt-1 block text-xs text-ink-soft">
                       A partner API-leírásának linkje kell; kulcs csak akkor, ha az API
                       kér. A későbbi változásokat egy gombbal, átnézés után veheted át.
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConnectionKind('code_sandbox')
+                      setCodeSandboxForm(newCodeSandboxFormState())
+                    }}
+                    className={`rounded-md border px-4 py-3 text-left ${
+                      connectionKind === 'code_sandbox'
+                        ? 'border-coral/45 bg-coral/8'
+                        : 'border-ink/12 bg-paper hover:border-coral/25'
+                    }`}
+                  >
+                    <span className="block text-sm font-semibold">Kódfuttató sandbox</span>
+                    <span className="mt-1 block text-xs text-ink-soft">
+                      Külső izolált doboz, ahol az agent által írt kód fut. Egy connector
+                      több agenthez is hozzárendelhető.
                     </span>
                   </button>
                 </div>
@@ -1321,6 +1406,19 @@ export function ProvisioningPanel({
                     )}
                   </div>
                 ) : null}
+                {connectionKind === 'code_sandbox' ? (
+                  <label className="block text-sm">
+                    <span className="mb-1 block text-ink-soft">Név</span>
+                    <input
+                      className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                      value={codeSandboxForm.name}
+                      onChange={(e) =>
+                        setCodeSandboxForm((current) => ({ ...current, name: e.target.value }))
+                      }
+                      placeholder="EU kódfuttató sandbox"
+                    />
+                  </label>
+                ) : null}
                 {connectionKind === 'self_updating' ||
                 (connectionKind === 'fixed' && fixedSource === 'custom') ? (
                   <label className="block text-sm">
@@ -1333,6 +1431,24 @@ export function ProvisioningPanel({
                     />
                   </label>
                 ) : null}
+              </div>
+            ) : null}
+
+            {createStep === 'source' && connectionKind === 'code_sandbox' ? (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-base font-semibold">2. Sandbox backend beállítása</h3>
+                  <p className="mt-1 text-xs text-ink-soft">
+                    A connector tenant-szintű: létrehozás után bármely agenthez hozzárendelhető
+                    a Kapcsolatok menüben.
+                  </p>
+                </div>
+                <CodeSandboxConnectorForm
+                  value={codeSandboxForm}
+                  onChange={setCodeSandboxForm}
+                  showActions={false}
+                  showConnectorPicker={false}
+                />
               </div>
             ) : null}
 
@@ -2018,7 +2134,9 @@ export function ProvisioningPanel({
               >
                 Vissza
               </button>
-              {createStep === 'review' || (connectionKind === 'self_updating' && createStep === 'source') ? (
+              {createStep === 'review' ||
+              ((connectionKind === 'self_updating' || connectionKind === 'code_sandbox') &&
+                createStep === 'source') ? (
                 <button
                   type="button"
                   disabled={!!createDisabledReason}
@@ -2212,6 +2330,12 @@ export function ProvisioningPanel({
                   pending={pending}
                   run={run}
                   onSync={syncSelfUpdating}
+                />
+              ) : item.kind === 'code_sandbox' ? (
+                <CodeSandboxConnectorCard
+                  key={item.row.id}
+                  row={item.row}
+                  onSaved={reload}
                 />
               ) : (
                 <DraftCard
