@@ -425,6 +425,21 @@ async function main() {
     assert.equal(audit.events[0]?.surrogate, '[[COMPANY_99]]')
   })
 
+  await test('resolveToolArgs: path-ba ágyazott álnév elutasítva tippel (semleges fájlnév)', async () => {
+    const { engine: eng, scope } = engine()
+    const resolved = await resolveToolArgs({
+      args: { path: 'tool-outputs/[[COMPANY_1]]-rendeles.json', content: 'x [[COMPANY_1]] y' },
+      engine: eng,
+      tenantId: TENANT,
+      scope,
+    })
+    assert.equal(resolved.ok, false)
+    if (resolved.ok) return
+    assert.equal(resolved.reason, 'embedded_in_path')
+    assert.equal(resolved.surrogate, '[[COMPANY_1]]')
+    assert.match(new UnknownSurrogateError(resolved.surrogate, resolved.reason).message, /semleges fájlnevet/)
+  })
+
   await test('broker: surrogate-tal hívott tool a source ID-val éri el a connectort', async () => {
     const { engine: eng, scope } = engine()
     await eng.allocateRef({

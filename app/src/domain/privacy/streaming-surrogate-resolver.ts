@@ -52,8 +52,11 @@ export class StreamingSurrogateResolver {
 
   private async flush(final: boolean): Promise<void> {
     const released: string[] = []
-    drainStreamingPending(this.buffer, final, (pending, isFinal) => decide(pending, isFinal), (chunk) =>
-      released.push(chunk),
+    drainStreamingPending(
+      this.buffer,
+      final,
+      (pending, isFinal) => decide(pending, isFinal, this.originalEmitted + released.join('')),
+      (chunk) => released.push(chunk),
     )
     for (const chunk of released) {
       const originalSoFar = this.originalEmitted + chunk
@@ -85,7 +88,7 @@ export function createWebUiStreamingResolver(params: {
   return new StreamingSurrogateResolver(lookup, params.emit)
 }
 
-function decide(pending: string, final: boolean): StreamDrainAction {
+function decide(pending: string, final: boolean, emittedSoFar: string): StreamDrainAction {
   const open = pending.indexOf('[[')
   if (open < 0) {
     if (!final && pending.endsWith('[')) {
@@ -96,7 +99,20 @@ function decide(pending: string, final: boolean): StreamDrainAction {
   if (open > 0) return { type: 'emit', count: open }
 
   const close = pending.indexOf(']]', 2)
-  if (close >= 0) return { type: 'emit', count: close + 2 }
+  if (close >= 0) {
+    // Nyitott kód-span (`` `fajl-[[COMPANY_1]]`` záró backtick még nem jött):
+    // a parser szövegnek látná és feloldaná → a fájlnév a UI-ban nem egyezne
+    // a valódival. Tartsuk vissza a záróig (korlátosan), a tesztelt eset a
+    // tool-outputs/…-[[COMPANY_1]]-….json chat-válasz.
+    // A feloldás kontextusa csak az eddig kiadott szöveg + a darab, ezért a
+    // darabnak a záró backticket is tartalmaznia kell.
+    const inOpenCodeSpan = countBackticks(emittedSoFar + pending.slice(0, open)) % 2 === 1
+    if (inOpenCodeSpan && !final && pending.length <= STREAM_BUFFER_LIMITS.HARD_BUFFER_CHARS) {
+      const closingTick = pending.indexOf('`', close + 2)
+      return closingTick < 0 ? { type: 'hold' } : { type: 'emit', count: closingTick + 1 }
+    }
+    return { type: 'emit', count: close + 2 }
+  }
 
   if (final) return { type: 'replace', consume: pending.length, emit: '' }
 
@@ -106,4 +122,13 @@ function decide(pending: string, final: boolean): StreamDrainAction {
     return { type: 'emit', count: 2 }
   }
   return { type: 'hold' }
+}
+
+/** Backtick-paritás az aktuális bekezdésben — páratlan = nyitott kód-span. */
+function countBackticks(text: string): number {
+  const paragraphStart = text.lastIndexOf('\n\n')
+  const paragraph = paragraphStart < 0 ? text : text.slice(paragraphStart + 2)
+  let count = 0
+  for (const ch of paragraph) if (ch === '`') count += 1
+  return count
 }

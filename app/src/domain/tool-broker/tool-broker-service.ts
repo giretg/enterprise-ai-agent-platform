@@ -550,7 +550,9 @@ export class ToolBrokerService {
       const privacyDecision =
         unknownSurrogate && e.reason === 'denied'
           ? 'privacy.resolve.denied'
-          : unknownSurrogate
+          : unknownSurrogate && e.reason === 'embedded_in_path'
+            ? 'privacy.surrogate.embedded_in_path'
+            : unknownSurrogate
             ? 'privacy.surrogate.unknown'
             : null
       await recordCall(this, {

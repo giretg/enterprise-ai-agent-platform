@@ -85,6 +85,7 @@ import {
 import { PROVISIONING_ASSISTANT_ROLE_INSTRUCTION } from '../src/domain/provisioning/provisioning-assistant'
 import { readZipEntries, ZipReadError } from '../src/lib/skill/zip-reader'
 import { buildSkillPackage } from '../src/lib/skill/skill-package-adapter'
+import { formatAttachmentIndex } from '../src/lib/skill/skill-attachments'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -1585,6 +1586,18 @@ async function main() {
       added[0]?.contentHash,
       computeSkillContentHash(content, []),
       'melléklet nélküli hash különbözik',
+    )
+  })
+
+  await check('melléklet-index: hivatkozott, de nem csatolt references/assets → figyelmeztető sor', () => {
+    const text = 'Olvasd el a [leírást](references/adatgyujtes.md#adatleltár) és a [sablont](assets/sablon.html).'
+    const note = formatAttachmentIndex([], text)
+    assert.match(note, /NINCS csatolmány/)
+    assert.match(note, /references\/adatgyujtes\.md, assets\/sablon\.html/)
+    assert.equal(formatAttachmentIndex([], 'Nincs relatív hivatkozás.'), '')
+    assert.match(
+      formatAttachmentIndex([{ path: 'assets/sablon.html', text: 'x', bytes: 1, sha256: 'a' }], text),
+      /load_skill_attachment/,
     )
   })
 

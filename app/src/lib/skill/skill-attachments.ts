@@ -76,8 +76,28 @@ export function formatAttachmentForPrompt(attachment: SkillAttachment): string {
 }
 
 /** Level-1 betöltéskor a melléklet-lista (nem a tartalom!) megy át a modellnek. */
-export function formatAttachmentIndex(attachments: SkillAttachment[]): string {
-  if (attachments.length === 0) return ''
+export function formatAttachmentIndex(
+  attachments: SkillAttachment[],
+  /** A Level-1 instrukció-szöveg: ha relatív mellékletre hivatkozik, de nincs csatolva, jelezzük. */
+  instructionsText?: string,
+): string {
+  if (attachments.length === 0) {
+    // Mért eset (2026-09-15, tárgyalási felkészítő): az instrukció
+    // `references/…` és `assets/…` fájlokra mutatott, a verzióhoz nem volt
+    // csatolmány → a modell 3 file_glob-bal kereste a munkaterületen, majd a
+    // hiányra hivatkozott. Egy sor megspórolja a keresést.
+    const missing = [
+      ...new Set(
+        [...(instructionsText ?? '').matchAll(/\]\(((?:references|assets)\/[^)#]+)/g)].map((m) => m[1]),
+      ),
+    ]
+    if (missing.length === 0) return ''
+    return (
+      `A skill instrukciója mellékletekre hivatkozik (${missing.join(', ')}), de ehhez a ` +
+      `skill-verzióhoz NINCS csatolmány. Ne keresd őket a munkaterületen és ne hivatkozz a ` +
+      `hiányukra — az instrukció önmagában elegendő keret.`
+    )
+  }
   const lines = attachments.map((a) => `- ${a.path} (${Math.ceil(a.bytes / 1024)} KB)`)
   return (
     `A skillhez tartozó mellékletek (a tartalmuk NINCS betöltve — ha kell, ` +

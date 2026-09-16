@@ -47,7 +47,15 @@ export function injectPrivacyHighlights(
   // Balról jobbra, átfedő / érvénytelen tartományok kihagyásával — így az
   // escape utáni pozíciók nem csúsznak el, és a korábbi „jobbról balra splice”
   // sem tudott raw HTML-t a marker köré hagyni.
-  const sorted = [...markers].sort((a, b) => a.start - b.start || b.end - a.end)
+  // Kód-span / fence belsejében a <mark> nyers szövegként jelenne meg (és a
+  // fájlnév-link is elromlana) — ott nem jelölünk.
+  const codeRanges = [...text.matchAll(/```[\s\S]*?```|`[^`\n]+`/g)].map((m) => ({
+    start: m.index,
+    end: m.index + m[0].length,
+  }))
+  const sorted = markers
+    .filter((m) => !codeRanges.some((r) => m.start < r.end && m.end > r.start))
+    .sort((a, b) => a.start - b.start || b.end - a.end)
   let out = ''
   let cursor = 0
   for (const marker of sorted) {
