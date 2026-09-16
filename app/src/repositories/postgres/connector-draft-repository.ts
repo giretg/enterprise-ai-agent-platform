@@ -412,6 +412,16 @@ function describeCatalogRow(
       tools: [],
     }
   }
+  if (type === 'code_sandbox') {
+    const cfg = config as Record<string, unknown> | null
+    const baseUrl = typeof cfg?.baseUrl === 'string' ? cfg.baseUrl : null
+    return {
+      description:
+        'Izolált külső doboz, ahol az agent által írt kód fut. A platform-adatok csak a futtatás bemenetén kerülnek be.',
+      baseUrl,
+      tools: [],
+    }
+  }
   const cfg = (capabilitySet ?? config) as Record<string, unknown> | null
   if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
     return { description: null, baseUrl: null, tools: [] }

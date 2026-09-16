@@ -286,6 +286,7 @@ function AssignConnectorDialog({
   const [accessMode, setAccessMode] = useState<'read' | 'write'>('read')
   const [apiKey, setApiKey] = useState('')
   const selected = connectors.find((c) => c.id === connectorId) ?? null
+  const effectiveAccessMode = selected?.type === 'code_sandbox' ? 'write' : accessMode
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- client portal mount gate
@@ -307,7 +308,7 @@ function AssignConnectorDialog({
       const res = await assignConnectorToAgent({
         agentId,
         connectorId,
-        accessMode,
+        accessMode: effectiveAccessMode,
         ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
       })
       if (res.success) {
@@ -416,8 +417,9 @@ function AssignConnectorDialog({
                 <label className="block text-sm">
                   <span className="text-ink-soft">Hozzáférés</span>
                   <select
-                    value={accessMode}
+                    value={effectiveAccessMode}
                     onChange={(e) => setAccessMode(e.target.value as 'read' | 'write')}
+                    disabled={selected.type === 'code_sandbox'}
                     className={INPUT}
                   >
                     <option value="read">Csak olvasás</option>

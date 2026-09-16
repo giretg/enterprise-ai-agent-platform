@@ -39,7 +39,6 @@ import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import type { AgentSkillRow, AssignableSkill } from '@/app/actions/skills'
 import { WebSearchPolicyCard } from '@/components/agents/web-search-policy-card'
 import { AgentLifecycleControls } from '@/components/agents/agent-lifecycle-controls'
-import { CodeSandboxConnectorPanel } from '@/components/agents/code-sandbox-connector-panel'
 import {
   BehaviorProfileEditForm,
   BehaviorProfileView,
@@ -440,7 +439,8 @@ export default async function AgentDetailPage({
               {sandboxCapabilityMissingConnector ? (
                 <p className="mb-4 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
                   A jog engedélyezve van, de nincs kódfuttató kapcsolat hozzárendelve — az
-                  agent nem tud kódot futtatni.
+                  agent nem tud kódot futtatni. Új sandbox connectort az Adminisztráció →
+                  Konnektorok menüben hozhatsz létre, majd itt rendeld hozzá.
                 </p>
               ) : null}
               {isAdmin && !capabilitiesLocked && assignableConnectors.length > 0 ? (
@@ -458,7 +458,6 @@ export default async function AgentDetailPage({
           {governance && !capabilitiesLocked && (
             <WebSearchPolicyCard agentId={agent.id} connectors={governance.connectors} />
           )}
-          {isAdmin && !capabilitiesLocked ? <CodeSandboxConnectorPanel /> : null}
         </div>
       ),
     },
