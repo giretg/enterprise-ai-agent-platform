@@ -16,7 +16,7 @@ assert.equal(isTicketCallCapReason('Call limit exceeded'), false)
 const message = formatTicketCallCapUserMessage({ calls: 30, maxCalls: 30 })
 assert.match(message, /Keret kimerült/)
 assert.match(message, /NEM áll vissza holnap/)
-assert.match(message, /GATEWAY_MAX_CALLS_PER_TICKET/)
+assert.match(message, /Model-keretek/)
 assert.match(message, /új ticketet/)
 
 assert.equal(

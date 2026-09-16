@@ -1410,6 +1410,7 @@ const dispatcherService = new DispatcherService(
   repositories.processes,
   budgetEngine,
   repositories.tenants,
+  () => platformSettingsService.resolveGatewayTicketCallCapLimit(),
 )
 
 export const services = {
