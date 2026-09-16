@@ -91,6 +91,8 @@ export function AssignExistingConnectorForm({
     [connectorId, connectors],
   )
 
+  const effectiveAccessMode = selected?.type === 'code_sandbox' ? 'write' : accessMode
+
   function submit() {
     startTransition(async () => {
       setError(null)
@@ -99,7 +101,7 @@ export function AssignExistingConnectorForm({
       const res = await assignConnectorToAgent({
         agentId,
         connectorId,
-        accessMode,
+        accessMode: effectiveAccessMode,
         ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
       })
 
@@ -150,8 +152,9 @@ export function AssignExistingConnectorForm({
               <label className="block text-sm">
                 <span className="text-ink-soft">Hozzáférés</span>
                 <select
-                  value={accessMode}
+                  value={effectiveAccessMode}
                   onChange={(e) => setAccessMode(e.target.value as 'read' | 'write')}
+                  disabled={selected?.type === 'code_sandbox'}
                   className={INPUT}
                 >
                   <option value="read">Csak olvasás</option>

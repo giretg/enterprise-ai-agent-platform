@@ -114,17 +114,18 @@ function main() {
     )
   })
 
-  check('hozzárendelhető kapcsolatok: csak http_api/gmail, már kötöttek nélkül', () => {
+  check('hozzárendelhető kapcsolatok: http_api/gmail/code_sandbox, már kötöttek nélkül', () => {
     const catalog = [
       { id: '1', type: 'http_api', name: 'CRM' },
       { id: '2', type: 'gmail', name: 'Levél' },
       { id: '3', type: 'board', name: 'Board' },
       { id: '4', type: 'http_api', name: 'Már kötve' },
+      { id: '5', type: 'code_sandbox', name: 'Sandbox' },
     ]
     const result = assignableConnectorsFromCatalog(catalog, ['4'])
     assert.deepEqual(
       result.map((c) => c.id),
-      ['1', '2'],
+      ['1', '2', '5'],
     )
   })
 

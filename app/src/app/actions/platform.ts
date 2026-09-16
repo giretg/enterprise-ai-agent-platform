@@ -6912,6 +6912,7 @@ const BOARD_TOOLS = toolsRequiringConnector('board')
 const GMAIL_TOOLS = toolsRequiringConnector('gmail')
 const GMAIL_WRITE_TOOLS = toolsRequiringConnector('gmail', 'write')
 const HTTP_API_TOOLS = toolsRequiringConnector('http_api')
+const CODE_SANDBOX_TOOLS = toolsRequiringConnector('code_sandbox')
 
 const CONFIGURABLE_AGENT_TOOLS = NORMAL_TOOL_CAPABILITY_NAMES
 
@@ -7013,6 +7014,8 @@ export async function updateAgentCapabilities(input: {
     // és az auto-választás korábban a legrégebbi platform-connectort (Provider CRM) húzta
     // be cross-tenant. A konkrét connectort az adminnak explicit hozzá kell rendelnie.
     const needsHttpApi = HTTP_API_TOOLS.some((t) => enabledSet.has(t))
+    // A capability és a konkrét provider-hozzárendelés szándékosan külön döntés.
+    const needsCodeSandbox = CODE_SANDBOX_TOOLS.some((t) => enabledSet.has(t))
     const needsWebSearch = enabledSet.has('web_search')
     const needsBoard = BOARD_TOOLS.some((t) => enabledSet.has(t))
 
@@ -7122,6 +7125,8 @@ export async function updateAgentCapabilities(input: {
         gmailLinked: needsGmail,
         httpApiLinked: false,
         httpApiAssignmentRequired: needsHttpApi,
+        codeSandboxLinked: false,
+        codeSandboxAssignmentRequired: needsCodeSandbox,
         webSearchLinked: needsWebSearch,
         boardLinked: needsBoard,
       } as Prisma.JsonValue,
@@ -7135,6 +7140,8 @@ export async function updateAgentCapabilities(input: {
       // A http_api connector sosem linkelődik automatikusan — külön hozzárendelés kell.
       httpApiLinked: false,
       httpApiAssignmentRequired: needsHttpApi,
+      codeSandboxLinked: false,
+      codeSandboxAssignmentRequired: needsCodeSandbox,
       webSearchLinked: needsWebSearch,
       boardLinked: needsBoard,
     })

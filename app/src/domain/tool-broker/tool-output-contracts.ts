@@ -617,6 +617,23 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
     },
   },
 
+  sandbox_exec: {
+    outputSchema: z.looseObject({
+      exitCode: z.number().int(),
+      stdout: z.string(),
+      stderr: z.string(),
+      outputs: z.array(z.string()),
+    }),
+    effect: (output) => effect(1, 'sandbox-futtatás', (arr(output, 'outputs') ?? []).join(', ') || null),
+    partial: (output) => {
+      const reasons = [
+        bool(output, 'stdoutTruncated') ? 'stdout csonkolva' : null,
+        bool(output, 'stderrTruncated') ? 'stderr csonkolva' : null,
+      ].filter(Boolean)
+      return reasons.length ? reasons.join(', ') : null
+    },
+  },
+
   // ── Munkaterületi fájlok — olvasás ────────────────────────────────────────
   file_read: {
     outputSchema: z.looseObject({ path: z.string(), totalLines: z.number(), content: z.string() }),

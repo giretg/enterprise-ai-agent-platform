@@ -277,6 +277,7 @@ const httpHeadersSchema = z.record(z.string(), z.string().max(4000))
 
 export const TOOL_GROUP_KB = 'Tudásbázis (KB / OKF)'
 export const TOOL_GROUP_WORKSPACE = 'Fájlkezelés (Workspace)'
+export const TOOL_GROUP_CODE_EXEC = 'Kódfuttatás'
 export const TOOL_GROUP_XLSX = 'Excel (XLSX)'
 export const TOOL_GROUP_PPTX = 'PowerPoint (PPTX)'
 export const TOOL_GROUP_DOCS = 'Dokumentumok'
@@ -296,6 +297,7 @@ export const TOOL_GROUP_ANALYSIS = 'Futás-elemzés'
 export const TOOL_GROUP_ORDER: readonly string[] = [
   TOOL_GROUP_KB,
   TOOL_GROUP_WORKSPACE,
+  TOOL_GROUP_CODE_EXEC,
   TOOL_GROUP_XLSX,
   TOOL_GROUP_PPTX,
   TOOL_GROUP_DOCS,
@@ -1436,6 +1438,39 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
     capability: 'file_delete',
     handlerId: 'file',
     capabilityGroup: TOOL_GROUP_WORKSPACE,
+    preload: true,
+  }),
+
+  // ── Kódfuttatás ───────────────────────────────────────────────────────────
+  sandbox_exec: descriptor({
+    description:
+      'Parancsot futtat izolált, hívásonként új sandboxban. A workspace inputok csak /work/in alatt olvashatók, a kért outputok /work/out alól kerülnek vissza; azonos útvonalú meglévő workspace-fájlt atomikusan felülír. Hálózat alapból tiltott; allowEgress:true külön emberi jóváhagyást kér.',
+    argsSchema: z.object({
+      command: z.array(z.string().min(1).max(8192)).min(1).max(64),
+      script: z.string().optional(),
+      inputs: z.array(z.string().min(1).max(500)).max(32).optional(),
+      outputs: z.array(z.string().min(1).max(500)).max(32).optional(),
+      timeoutMs: z.number().int().min(1).max(900_000).optional(),
+      allowEgress: z.boolean().optional(),
+    }),
+    toInvokeInput: (args, ctx) => ({
+      ...ctx,
+      tool: 'sandbox_exec',
+      args: {
+        command: stringArrayArg(args, 'command') ?? [],
+        script: optStr(args, 'script'),
+        inputs: stringArrayArg(args, 'inputs'),
+        outputs: stringArrayArg(args, 'outputs'),
+        timeoutMs: numArg(args, 'timeoutMs'),
+        allowEgress: boolArg(args, 'allowEgress'),
+      },
+    }),
+    trust: 'trusted',
+    sideEffecting: true,
+    surfaces: CHAT_ONLY,
+    capability: 'sandbox_exec',
+    handlerId: 'sandbox_exec',
+    capabilityGroup: TOOL_GROUP_CODE_EXEC,
     preload: true,
   }),
 

@@ -65,8 +65,12 @@ export function AgentCapabilitiesPanel({
         const base = linked.length
           ? `${res.data.updatedCount} eszköz engedélyezve — ${linked.join(', ')} automatikusan linkelve.`
           : `${res.data.updatedCount} eszköz engedélyezve.`
-        const msg = res.data.httpApiAssignmentRequired
-          ? `${base} A HTTP API tool használatához rendelj hozzá egy kapcsolatot a „Meglévő kapcsolat hozzárendelése" résznél.`
+        const assignments = [
+          res.data.httpApiAssignmentRequired ? 'HTTP API' : null,
+          res.data.codeSandboxAssignmentRequired ? 'kódfuttató sandbox' : null,
+        ].filter(Boolean)
+        const msg = assignments.length
+          ? `${base} A(z) ${assignments.join(' és ')} használatához rendelj hozzá külön kapcsolatot a „Meglévő kapcsolat hozzárendelése" résznél.`
           : base
         setDone(msg)
         router.refresh()

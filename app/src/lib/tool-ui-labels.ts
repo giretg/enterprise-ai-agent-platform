@@ -321,6 +321,10 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'API írás',
     description: 'Író (POST/PUT/PATCH/DELETE) hívás a hozzárendelt külső REST API-n.',
   },
+  sandbox_exec: {
+    label: 'Kód futtatása',
+    description: 'Izolált, hívásonként új sandbox futtatása kontrollált workspace inputtal és outputtal.',
+  },
 
   // Webes kutatás
   web_search: {

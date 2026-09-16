@@ -7,6 +7,96 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-09-16 — Kódfuttató sandbox (`sandbox_exec` / #485): agent-vezérelt tetszőleges kódfuttatás izolációja
+
+**Scope-választás (kockázati alapon):** `gh pr list` + ledger után az összes eddigi kör
+az OOM/ingress/tool-diszpécser felületet fedte. A `feat/485-code-sandbox` ágon egy **teljesen
+új, még commitálatlan** (29 munkafa-fájl, 0 branch-commit) **kódfuttató sandbox** él: az agent
+`sandbox_exec` toolon keresztül **tetszőleges parancsot/scriptet** futtat hívásonként új,
+izolált sandboxban, workspace-fájlokat mountolva be/ki. Ez a platform **legmagasabb blast-radiusú
+felülete** (RCE-osztály), és eddig **auditálatlan** volt → egyértelműen a legnagyobb kockázat.
+
+**Coverage (a teljes végrehajtási lánc bejárva):** `sandbox-exec.handler.ts` → `CodeSandboxService`
+(input/output méret-, fájlszám-, path-kapuk, atomikus visszaírás) → `HttpSandboxProvider`
+(HTTP-protokoll, Cloud Run metadata identity token) → `code-sandbox-server.ts` →
+`executeCloudRunSandbox` (`spawn` a `sandbox` CLI-re, mount-ok, output-begyűjtés) → `sandbox` CLI.
+Melléksávok: consequence-gate (`sandbox_egress`), per-scope hívás/idő-keret
+(`tool-broker-service.ts:432`), audit-surrogate (`tool-broker-support.ts:747`, kód SOHA nem
+naplózódik, csak hash), connector-követelmény (`code_sandbox`+write), tenant-feloldás
+(`resolveWorkspaceStorageTenantId`), admin-only server-action (`actions/code-sandbox.ts`),
+deploy/Docker config.
+
+### Biztonsági megállapítás — NINCS finding (≥8 konfidencia); az izolációs kontrollok helytállnak
+
+A kötelező scoped security scan (`/security-review`, dedikált felderítő sub-agent) **és** a
+független end-to-end kézi trace **egyaránt 0 bizonyítható, ≥8-konfidenciájú kihasználható
+hibát** talált. Ellenőrzötten **SAFE** (mind explicit verifikálva, nem feltételezve):
+
+- **Command injection — nincs.** `spawn(binary, argv)` shell nélkül; az agent `command[]`-je a
+  `--` terminátor MÖGÖTT megy (nem injektálhat sandbox-flaget); provision fix `/bin/sleep 1000`;
+  `env` az agent számára elérhetetlen (a service sosem ad át env-et).
+- **Path traversal — nincs.** `normalizeSandboxWorkspacePath` (kontrollkarakter/backslash/abszolút/
+  drive-betű/`..`/nem-kanonikus tiltás, `normalized===value` követelmény) app- ÉS szerveroldalon;
+  `safeMountedPath` `resolve`+`startsWith(root+sep)`; a `file-editor` `resolveSafePath` rétege alatta.
+- **Sandbox-escape output-linkkel — nincs.** `collectSandboxOutputs` `lstat`-tal **symlinket,
+  nem-reguláris fájlt és hardlinket (`nlink!==1`) eldob** → a sandbox nem szivárogtathat ki
+  host-fájlt `/work/out`-ba; csak az explicit kért (normalizált) output-ok kerülnek vissza.
+- **Egress-kontroll — nincs split-brain.** A consequence-gate és a végrehajtás **ugyanazt a
+  mappelt `invokeInput.args`-ot** olvassa; `boolArg` csak szigorú `true`-ra ad egresst; a runner
+  `--allow-egress`-t csak `request.allowEgress===true`-ra fűz. `allowEgress:true` → **emberi
+  jóváhagyás** (`sandbox_egress`). A hálózat-tiltás alapértelmezés a GCP Sandbox Launcher opt-in
+  `--allow-egress` szemantikáján áll (megbízható infra, nem kód-defektus).
+- **Szerver-authz — SAFE a deploy-konfiggal.** `authorizeSandboxRequest` token hiányában `true`-t
+  ad (Cloud Run IAM a határ); a deploy `--no-allow-unauthenticated` (privát), token esetén
+  hossz-ellenőrzés + `timingSafeEqual`.
+- **Cross-tenant — nincs.** `scopeKey=ticketId??conversationId` runtime-kontextusból (nem agent-arg);
+  tenant a közös `resolveWorkspaceStorageTenantId`-vel, a fájl-toolokkal azonos mintán; a
+  server-action mind `requireTenantRole('admin')` + tenant-scoped `findFirst` (nincs IDOR).
+
+### Reliability / correctness — átvizsgálva, nincs adatvesztés/hibás-működés finding
+
+- **Atomikus output-visszaírás:** `writeOutputsAtomically` a régi tartalmat elmenti és hibára
+  visszagörgeti (üres puffer is truthy → helyes restore; null=nem létezett → delete). Nincs
+  adatvesztési ág normál futásban.
+- **Failure-mode:** minden ág `finally`-ben `provider.destroy` + a runner saját `finally`-je
+  `sandbox delete --force` → nincs árva sandbox; hiba esetén nincs parciális visszaírás.
+- **Kill-switch:** `CODE_SANDBOX_ENABLED=false` globálisan, connectoronként lifecycle-tiltás.
+
+### Ellenőrzések
+
+- `npm run test:code-sandbox` — **zöld** (path-normalizálás elutasítások, egress consequence-gate
+  `required` állapotok, EU-régió kényszerítés, symlink/hardlink output-elutasítás, provider
+  teardown sikeren ÉS hibán, egress-default-false).
+- Kötelező scoped security scan (`/security-review`): dedikált felderítő sub-agent + false-positive
+  szűrés → **0 finding ≥8 konfidencián**, a fenti SAFE-kontrollok tételes verifikációjával.
+- **Nettó kód-változás e körből: 0** — nincs bizonyítható finding, ezért a szabály szerint (`csak
+  bizonyítható finding alapján módosíts`) nincs kód-módosítás, nincs PR és nincs `/code-review`
+  (az a *létrehozott változtatásra* való; nincs ilyen). Az érték a coverage: a platform
+  legmagasabb kockázatú (RCE-osztály) felületének első, dokumentált izoláció-verifikációja.
+
+### Residual risk / következő audithoz
+
+- **`authorizeSandboxRequest` fail-open token nélkül:** Cloud Runon IAM+privát ingress fedi, de
+  **nem-Cloud-Run** deployon (a doc explicit említi ezt az utat) token-felejtés esetén az RCE-végpont
+  auth nélkül nyitva. Hardening-javaslat (nem e-kör-finding, mert env/config admin-felelősség):
+  fail-closed default nem-Cloud-Run providernél, vagy kötelező token, ha a provider nem `cloud_run`.
+- **`baseUrl` ↔ `region` eltérés:** a Zod EU-régió-kényszer csak metaadat; a tényleges futtató a
+  `baseUrl` (admin-állítja, nem validált a régióhoz). Adat-honosság (GDPR) szempontból a `baseUrl`
+  a valódi döntő — admin-felelősség, de érdemes a mentéskor egyeztetni/figyelmeztetni. (Kapcsolódik:
+  idea #413 adat-honosság.)
+- **Egress-default a `sandbox` CLI-n múlik:** ha a GCP launcher valaha network-ON default-ra váltana,
+  a jóvá-nem-hagyott (non-egress) futások hálózatot kapnának. Egy soros infra-verifikáció a launcher
+  doksijával ajánlott; a kód opt-in, helyes.
+- **Output-fájlszám/-méret kapu ALL `/work/out`-ra:** a runner az összes out/ fájlra számol
+  (`maxFiles-files.length`), nem csak a kért output-okra → egy sok scratch-fájlt író script az
+  egész futást „output_file_count_exceeded"-del bukhatja, hiába csak 1 output-ot kért. UX/megbízhatóság
+  foot-gun a limiten belül, nem adatvesztés — opcionális follow-up (csak a kért output-okra számolni).
+- **Precheck-race a per-scope keretnél:** ponytail-komment jelzi; Cloud Run `concurrency=1` ma szűkíti.
+- **A feature még commitálatlan (0 branch-commit):** amíg nincs main-en/PR-ben, a fenti verifikáció
+  a *jelenlegi munkafa-állapotra* érvényes; a merge előtti végső állapotot újra kell nézni, ha változik.
+
+---
+
 ## 2026-09-15 — Halasztott tool-betöltés (#468 `tool_describe` + tool-index): describe-láthatóság ↔ hívhatóság
 
 **Scope-választás (kockázati alapon):** `gh pr list` + ledger után az előző 5 kör

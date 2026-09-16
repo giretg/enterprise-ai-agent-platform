@@ -217,7 +217,7 @@ export function assignableConnectorsFromCatalog<T extends { id: string; type: st
   const assigned = new Set(assignedIds)
   return catalog.filter(
     (connector) =>
-      (connector.type === 'http_api' || connector.type === 'gmail') && !assigned.has(connector.id),
+      (connector.type === 'http_api' || connector.type === 'gmail' || connector.type === 'code_sandbox') && !assigned.has(connector.id),
   )
 }
 
