@@ -178,6 +178,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'sensitivity.layer.mode.set',
   // Napi model-keret (összesített tenant + per-agent) átállítása a tenant admin felületről.
   'model.budget_changed',
+  // Feladat-ticket modellhívás-plafon (platform_settings) — Rendszer → Model-keretek.
+  'gateway.ticket_call_cap.set',
   'model.fallback_chain.set',
   'model.structuring.set',
   'model_policy.upsert',
