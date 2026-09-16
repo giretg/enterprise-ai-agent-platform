@@ -95,6 +95,12 @@ function zipWithUndercountedEocd(files: ZipFile[], reportedEntryCount: number): 
   return full
 }
 
+const undercountLimits = {
+  maxFileBytes: 128 * 1024,
+  maxTotalBytes: 128 * 1024,
+  maxEntries: 10,
+}
+
 const undercountBomb = zipWithUndercountedEocd(
   [
     { name: 'word/document.xml', contents: Buffer.from('safe') },
@@ -103,14 +109,29 @@ const undercountBomb = zipWithUndercountedEocd(
   1,
 )
 assert.throws(
-  () => assertZipEntriesWithinLimits(undercountBomb, {
-    maxFileBytes: 128 * 1024,
-    maxTotalBytes: 128 * 1024,
-    maxEntries: 10,
-  }),
-  (error: unknown) =>
-    error instanceof ZipReadError &&
-    (error.code === 'file_too_large' || error.code === 'corrupt'),
+  () => assertZipEntriesWithinLimits(undercountBomb, undercountLimits),
+  (error: unknown) => error instanceof ZipReadError && error.code === 'file_too_large',
+)
+
+const undercountMismatch = zipWithUndercountedEocd(
+  [
+    { name: 'word/document.xml', contents: Buffer.from('safe') },
+    { name: 'word/extra.xml', contents: Buffer.from('hidden') },
+  ],
+  1,
+)
+assert.throws(
+  () => assertZipEntriesWithinLimits(undercountMismatch, undercountLimits),
+  (error: unknown) => error instanceof ZipReadError && error.code === 'corrupt',
+)
+
+const undercountTooMany = zipWithUndercountedEocd(
+  Array.from({ length: 12 }, (_, i) => ({ name: `word/f${i}.xml`, contents: Buffer.from('x') })),
+  1,
+)
+assert.throws(
+  () => assertZipEntriesWithinLimits(undercountTooMany, undercountLimits),
+  (error: unknown) => error instanceof ZipReadError && error.code === 'too_many_entries',
 )
 
 const invalidPathBomb = zipWithFiles([{
