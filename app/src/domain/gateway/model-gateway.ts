@@ -31,6 +31,12 @@ import {
   type ModelPricingTable,
 } from '@/lib/model-pricing'
 import {
+  DEFAULT_MAX_CALLS_PER_TICKET,
+  GATEWAY_TICKET_CALL_CAP_KEY,
+  parseGatewayTicketCallCapStored,
+  resolveMaxCallsPerTicket,
+} from '@/lib/gateway-ticket-call-cap'
+import {
   callChatGptOAuth,
   callChatGptOAuthStream,
   chatGptOAuthDiagnostic,
@@ -130,17 +136,13 @@ export type GatewayGuardrail = {
  * hogy egy elszabaduló agent-loop ne fogyassza a teljes napi budget capet
  * (100 hívás/agent/nap, ld. DispatcherService). Env-ből felülírható.
  */
-export const DEFAULT_MAX_CALLS_PER_TICKET = 30
+export { DEFAULT_MAX_CALLS_PER_TICKET }
 
-/** A guardrailt env-ből olvassa (`GATEWAY_MAX_CALLS_PER_TICKET`), különben az alapérték. */
+/** Platform_settings → env → alapértelmezés; tesztekben a konstruktor guardrail-je is él. */
 export function guardrailFromEnv(
   env: Record<string, string | undefined> = process.env,
 ): GatewayGuardrail {
-  const raw = env.GATEWAY_MAX_CALLS_PER_TICKET?.trim()
-  const parsed = raw ? Number.parseInt(raw, 10) : NaN
-  const maxCallsPerTicket =
-    Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_CALLS_PER_TICKET
-  return { maxCallsPerTicket }
+  return { maxCallsPerTicket: resolveMaxCallsPerTicket({ env }) }
 }
 
 export class GatewayBudgetError extends Error {
@@ -1227,6 +1229,15 @@ export class ModelGateway {
    */
   private readonly skipLedger = new ProviderSkipLedger()
 
+  private async resolveMaxCallsPerTicketLimit(): Promise<number> {
+    if (this.pricingSettings) {
+      const raw = await this.pricingSettings.get(GATEWAY_TICKET_CALL_CAP_KEY)
+      const stored = parseGatewayTicketCallCapStored(raw)
+      return resolveMaxCallsPerTicket({ platformMax: stored?.maxCallsPerTicket ?? null })
+    }
+    return this.guardrail.maxCallsPerTicket
+  }
+
   /**
    * APG-12 — prompt-privacy transzformáció a classify előtt. Hiányában a mai
    * sorrend marad (osztályozó a nyers üzeneteken).
@@ -1802,8 +1813,9 @@ export class ModelGateway {
     const model = resolvedConfig.model || 'chatgpt-oauth-default'
 
     if (params.ticketId && isUuid(params.ticketId)) {
+      const maxCallsPerTicket = await this.resolveMaxCallsPerTicketLimit()
       const usage = await this.modelCalls.getUsageForTicket(params.ticketId)
-      if (usage.calls >= this.guardrail.maxCallsPerTicket) {
+      if (usage.calls >= maxCallsPerTicket) {
         await this.audit.append({
           actorType: 'agent',
           actorId: params.agentId,
@@ -1813,13 +1825,13 @@ export class ModelGateway {
           targetId: params.ticketId,
           modelUsed: model,
           inputRef: `calls:${usage.calls}`,
-          outputRef: `cap:${this.guardrail.maxCallsPerTicket}`,
+          outputRef: `cap:${maxCallsPerTicket}`,
           policyDecision: 'budget_blocked',
           metadata: usage,
         })
         modelCallsTotal.inc({ provider: 'guardrail', status: 'budget_blocked' })
         throw new GatewayBudgetError(
-          `Gateway guardrail: ticket ${params.ticketId} reached ${this.guardrail.maxCallsPerTicket} model calls`,
+          `Gateway guardrail: ticket ${params.ticketId} reached ${maxCallsPerTicket} model calls`,
         )
       }
     }

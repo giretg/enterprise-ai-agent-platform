@@ -233,6 +233,9 @@ export class DispatcherService {
      * tulajdonos-tenantja, a kapu fail-closed tilt (nem engedi át a lyukat).
      */
     private tenants?: TenantRepository,
+    /** Platform_settings → env → alapértelmezés; hiányában csak env/alap. */
+    private resolveTicketCallCapLimit: () => Promise<number> = async () =>
+      guardrailFromEnv().maxCallsPerTicket,
   ) {}
 
   private get launcher(): HarnessLauncher {
@@ -509,7 +512,7 @@ export class DispatcherService {
     })
     if (isTicketCallCapErrorMessage(input.error)) {
       const usage = await this.modelCalls.getUsageForTicket(input.ticket.id)
-      const maxCalls = guardrailFromEnv().maxCallsPerTicket
+      const maxCalls = await this.resolveTicketCallCapLimit()
       nextPayload = withTicketCallCapPayload(
         nextPayload,
         formatTicketCallCapUserMessage({ calls: usage.calls, maxCalls }),
@@ -870,7 +873,7 @@ export class DispatcherService {
 
     // Ticketenkénti modellhívás-plafon (Gateway guardrail) — élettartam, nem napi.
     // Ha már kimerült, ne induljon Ready↔Feldolgozás ping-pong.
-    const maxCallsPerTicket = guardrailFromEnv().maxCallsPerTicket
+    const maxCallsPerTicket = await this.resolveTicketCallCapLimit()
     const ticketUsage = await this.modelCalls.getUsageForTicket(ticket.id)
     if (ticketUsage.calls >= maxCallsPerTicket) {
       return this.blockForTicketCallCap(ticket, ticketUsage, maxCallsPerTicket)
@@ -972,7 +975,7 @@ export class DispatcherService {
             reason: isTicketCallCapErrorMessage(errorMessage)
               ? ticketCallCapReason(
                   (await this.modelCalls.getUsageForTicket(ticket.id)).calls,
-                  guardrailFromEnv().maxCallsPerTicket,
+                  await this.resolveTicketCallCapLimit(),
                 )
               : errorMessage,
           }

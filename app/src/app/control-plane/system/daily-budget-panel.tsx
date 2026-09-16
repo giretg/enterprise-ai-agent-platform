@@ -6,12 +6,14 @@ import { Card } from '@/components/ui/shell'
 import {
   createModelBudget,
   deleteModelBudget,
+  setGatewayTicketCallCap,
   setTenantDailyBudget,
   updateModelBudget,
   type BudgetLimits,
   type BudgetRuleView,
   type DailyBudgetOverview,
 } from '@/app/actions/platform'
+import type { GatewayTicketCallCapView } from '@/domain/platform-settings/platform-settings-service'
 
 /** Üres mező = korlátlan. A `0` érvénytelen (azonnal mindent blokkolna), ezért nem engedjük. */
 function parseLimit(raw: string): number | null {
@@ -580,6 +582,8 @@ export function DailyBudgetPanel({
   canEdit,
   rules: initialRules,
   canEditRules,
+  ticketCallCap,
+  canEditTicketCallCap = false,
 }: {
   overview: DailyBudgetOverview
   canEdit: boolean
@@ -587,11 +591,17 @@ export function DailyBudgetPanel({
   rules: BudgetRuleView[]
   /** Egyedi szabályt csak platform-superadmin szerkeszthet. */
   canEditRules: boolean
+  ticketCallCap?: GatewayTicketCallCapView | null
+  /** Platform-szintű feladat-ticket plafon — csak superadmin. */
+  canEditTicketCallCap?: boolean
 }) {
   const [draft, setDraft] = useState<DailyBudgetDraft>({
     tenant: toDraft(overview.tenant),
     perAgent: toDraft(overview.perAgent),
   })
+  const [ticketCallCapDraft, setTicketCallCapDraft] = useState(
+    ticketCallCap ? String(ticketCallCap.maxCallsPerTicket) : '',
+  )
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
   const [pending, startTransition] = useTransition()
   const [rules, setRules] = useState(initialRules)
@@ -645,6 +655,23 @@ export function DailyBudgetPanel({
     }))
   }
 
+  function saveTicketCallCap() {
+    const parsed = parseLimit(ticketCallCapDraft)
+    if (parsed === null) {
+      setMessage({ tone: 'err', text: 'A feladat-ticket plafon pozitív egész szám kell legyen.' })
+      return
+    }
+    startTransition(async () => {
+      const res = await setGatewayTicketCallCap({ maxCallsPerTicket: parsed })
+      if (res.success) router.refresh()
+      setMessage(
+        res.success
+          ? { tone: 'ok', text: 'Feladat-ticket modellhívás-plafon mentve.' }
+          : { tone: 'err', text: res.error },
+      )
+    })
+  }
+
   function save() {
     startTransition(async () => {
       const res = await setTenantDailyBudget({
@@ -688,6 +715,67 @@ export function DailyBudgetPanel({
             Üres mező = nincs korlát az adott dimenzióban.
           </p>
         </Explain>
+
+        {ticketCallCap && (
+          <section className="space-y-3 rounded-lg border border-line/50 bg-panel/20 p-4">
+            <div>
+              <h3 className="text-sm font-semibold text-ink">Feladat-ticket modellhívás-plafon</h3>
+              <p className="text-xs text-ink-faint">
+                Egy feladat-ticket élettartamára szól — nem napi keret, és nem nullázódik éjfélkor.
+                Ha a ticket eléri a plafont, nem indítható újra; új ticket vagy magasabb plafon kell.
+              </p>
+            </div>
+            <p className="text-sm text-ink-soft">
+              Jelenlegi érvényes plafon:{' '}
+              <span className="font-mono text-xs">{hu(ticketCallCap.maxCallsPerTicket)}</span> modellhívás
+              / ticket
+              {!ticketCallCap.configuredInPlatform && (
+                <>
+                  {' '}
+                  (nincs UI-ban mentve —{' '}
+                  <span className="font-mono text-[11px]">
+                    GATEWAY_MAX_CALLS_PER_TICKET={ticketCallCap.envFallback}
+                  </span>{' '}
+                  vagy alapértelmezés {hu(ticketCallCap.defaultLimit)})
+                </>
+              )}
+            </p>
+            {canEditTicketCallCap ? (
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="text-xs text-ink-soft">
+                  Modellhívás / ticket
+                  <input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={ticketCallCapDraft}
+                    onChange={(e) => setTicketCallCapDraft(e.target.value)}
+                    disabled={pending}
+                    className="mt-1 block w-40 rounded-md border border-line/60 bg-panel/40 px-2 py-1 text-sm"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={saveTicketCallCap}
+                  disabled={pending}
+                  className="rounded-md bg-coral px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                >
+                  Plafon mentése
+                </button>
+              </div>
+            ) : (
+              <p className="text-xs text-ink-faint">
+                A plafon módosítása platform-superadmin jogosultságot igényel.
+              </p>
+            )}
+          </section>
+        )}
+
+        {message && (
+          <p className={`text-sm ${message.tone === 'ok' ? 'text-emerald-600' : 'text-coral'}`}>
+            {message.text}
+          </p>
+        )}
 
         {nothingConfigured && (
           <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-ink">
@@ -833,11 +921,6 @@ export function DailyBudgetPanel({
             >
               {pending ? 'Mentés…' : 'Napi keretek mentése'}
             </button>
-            {message && (
-              <span className={`text-xs ${message.tone === 'ok' ? 'text-emerald-600' : 'text-coral'}`}>
-                {message.text}
-              </span>
-            )}
           </div>
         )}
 

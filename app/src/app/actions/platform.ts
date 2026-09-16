@@ -27,10 +27,9 @@ import { buildTenantAccessAuditFilter } from '@/domain/iam/access-audit'
 import { SandboxAppError } from '@/domain/sandbox/errors'
 import { dispatchBudgetFromEnv } from '@/domain/dispatcher/dispatcher-service'
 import {
-  currentTicketCallCapLimit,
   formatTicketCallCapUserMessage,
   isTicketCallCapReason,
-  ticketCallCapExceededMessage,
+  ticketCallCapExceededMessageWithLimit,
 } from '@/lib/ticket-call-cap'
 import {
   getSchedulerJobStatus,
@@ -38,7 +37,10 @@ import {
   setSchedulerJobPaused,
 } from '@/domain/dispatcher/cloud-scheduler-admin'
 import { runDispatchCycle, type DispatchCycleSummary } from '@/domain/dispatcher/run-dispatch-cycle'
-import type { DispatchCycleRunRecord } from '@/domain/platform-settings/platform-settings-service'
+import type {
+  DispatchCycleRunRecord,
+  GatewayTicketCallCapView,
+} from '@/domain/platform-settings/platform-settings-service'
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
@@ -439,13 +441,11 @@ async function runAgentTicketDispatch(
     if (dispatchResult.status === 'budget_blocked') {
       if (isTicketCallCapReason(dispatchResult.reason)) {
         const usage = await repositories.modelCalls.getUsageForTicket(ticketId)
+        const maxCalls = await services.platformSettings.resolveGatewayTicketCallCapLimit()
         return {
           warning:
-            ticketCallCapExceededMessage(usage) ??
-            formatTicketCallCapUserMessage({
-              calls: usage.calls,
-              maxCalls: currentTicketCallCapLimit(),
-            }),
+            ticketCallCapExceededMessageWithLimit(usage, maxCalls) ??
+            formatTicketCallCapUserMessage({ calls: usage.calls, maxCalls }),
         }
       }
       const since = new Date()
@@ -1906,8 +1906,10 @@ export async function addTicketComment(input: {
 
     let warning: string | undefined
     if (parsed.handBackToAgent) {
-      const callCapWarning = ticketCallCapExceededMessage(
+      const callCapMax = await services.platformSettings.resolveGatewayTicketCallCapLimit()
+      const callCapWarning = ticketCallCapExceededMessageWithLimit(
         await repositories.modelCalls.getUsageForTicket(ticket.id),
+        callCapMax,
       )
       if (callCapWarning) {
         return ok({ comment, warning: callCapWarning })
@@ -1985,8 +1987,10 @@ export async function transitionTicket(input: {
     }
 
     if (parsed.toState === 'ready' && existing.agentId) {
-      const callCapError = ticketCallCapExceededMessage(
+      const callCapMax = await services.platformSettings.resolveGatewayTicketCallCapLimit()
+      const callCapError = ticketCallCapExceededMessageWithLimit(
         await repositories.modelCalls.getUsageForTicket(existing.id),
+        callCapMax,
       )
       if (callCapError) return fail(callCapError)
     }
@@ -7389,6 +7393,34 @@ export type DailyBudgetOverview = {
  * fogyasztás ugyanazon a gördülő 24 órás ablakon számol, amit a dispatcher-kapu is néz
  * (`budgetPeriodSince`), így a kiírt „elhasznált / limit" nem tér el a kapu döntésétől.
  */
+export async function getGatewayTicketCallCapView(): Promise<ActionResult<GatewayTicketCallCapView>> {
+  try {
+    await requireTenantRole('admin')
+    return ok(await services.platformSettings.getGatewayTicketCallCapView())
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load ticket call cap')
+  }
+}
+
+export async function setGatewayTicketCallCap(input: {
+  maxCallsPerTicket: number
+}): Promise<ActionResult<GatewayTicketCallCapView>> {
+  try {
+    const actor = (await requirePlatformRole('superadmin')).user
+    const maxCallsPerTicket = Number(input.maxCallsPerTicket)
+    if (!Number.isFinite(maxCallsPerTicket) || maxCallsPerTicket <= 0) {
+      return fail('A modellhívás-plafon pozitív egész szám kell legyen.')
+    }
+    const view = await services.platformSettings.setGatewayTicketCallCap(
+      maxCallsPerTicket,
+      actor.id,
+    )
+    return ok(view)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to save ticket call cap')
+  }
+}
+
 export async function getDailyBudgetOverview(): Promise<ActionResult<DailyBudgetOverview>> {
   try {
     const ctx = await requireTenantRole('operator')

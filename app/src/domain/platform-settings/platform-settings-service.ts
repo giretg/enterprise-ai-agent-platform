@@ -105,12 +105,31 @@ import {
   type PrivacyEgressMatrixLayer,
   type ResolvedPrivacyEgressMatrix,
 } from '@/domain/privacy/privacy-egress-matrix'
-
+import {
+  clampTicketCallCapLimit,
+  DEFAULT_MAX_CALLS_PER_TICKET,
+  GATEWAY_TICKET_CALL_CAP_KEY,
+  parseGatewayTicketCallCapStored,
+  resolveMaxCallsPerTicket,
+  type GatewayTicketCallCapStored,
+} from '@/lib/gateway-ticket-call-cap'
 export const DISPATCHER_CONTROLS_KEY = 'dispatcher.controls'
 export const DISPATCHER_LAST_CYCLE_KEY = 'dispatcher.last_cycle'
 export const TICKET_TYPE_CONFIGS_KEY = 'ticket.type_configs'
 export const MONITOR_CONTROLS_KEY = 'monitor.controls'
 export const AUTOMATION_IDLE_SNAPSHOT_KEY = 'automation.idle_snapshot'
+
+export type GatewayTicketCallCapView = {
+  /** Érvényes plafon (platform → env → alapértelmezés). */
+  maxCallsPerTicket: number
+  /** Van-e platform_settings-ben mentett érték (nem csak env/alap). */
+  configuredInPlatform: boolean
+  platformValue: number | null
+  envFallback: number
+  defaultLimit: number
+  updatedById: string | null
+  updatedAt: string | null
+}
 
 export const POLL_INTERVAL_MIN_MS = 5_000
 export const POLL_INTERVAL_MAX_MS = 600_000
@@ -393,6 +412,57 @@ export class PlatformSettingsService {
     private settings: PlatformSettingsRepository,
     private audit: AuditRepository,
   ) {}
+
+  async getGatewayTicketCallCapStored(): Promise<GatewayTicketCallCapStored | null> {
+    const raw = await this.settings.get(GATEWAY_TICKET_CALL_CAP_KEY)
+    return parseGatewayTicketCallCapStored(raw)
+  }
+
+  async getGatewayTicketCallCapView(): Promise<GatewayTicketCallCapView> {
+    const stored = await this.getGatewayTicketCallCapStored()
+    const envFallback = resolveMaxCallsPerTicket({ platformMax: null })
+    const maxCallsPerTicket = resolveMaxCallsPerTicket({
+      platformMax: stored?.maxCallsPerTicket ?? null,
+    })
+    return {
+      maxCallsPerTicket,
+      configuredInPlatform: stored != null,
+      platformValue: stored?.maxCallsPerTicket ?? null,
+      envFallback,
+      defaultLimit: DEFAULT_MAX_CALLS_PER_TICKET,
+      updatedById: stored?.updatedById ?? null,
+      updatedAt: stored?.updatedAt ?? null,
+    }
+  }
+
+  async resolveGatewayTicketCallCapLimit(): Promise<number> {
+    const stored = await this.getGatewayTicketCallCapStored()
+    return resolveMaxCallsPerTicket({ platformMax: stored?.maxCallsPerTicket ?? null })
+  }
+
+  async setGatewayTicketCallCap(maxCallsPerTicket: number, actorId: string): Promise<GatewayTicketCallCapView> {
+    const nextValue = clampTicketCallCapLimit(maxCallsPerTicket)
+    const payload: GatewayTicketCallCapStored = {
+      maxCallsPerTicket: nextValue,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    }
+    await this.settings.set(GATEWAY_TICKET_CALL_CAP_KEY, payload as unknown as Prisma.InputJsonObject, actorId)
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: 'gateway.ticket_call_cap.set',
+      targetType: 'platform_settings',
+      targetId: null,
+      modelUsed: null,
+      inputRef: String(nextValue),
+      outputRef: GATEWAY_TICKET_CALL_CAP_KEY,
+      policyDecision: 'allowed',
+      metadata: { maxCallsPerTicket: nextValue },
+    })
+    return this.getGatewayTicketCallCapView()
+  }
 
   async getDispatcherControls(): Promise<DispatcherControls> {
     const raw = (await this.settings.get(DISPATCHER_CONTROLS_KEY)) as Partial<DispatcherControls> | null

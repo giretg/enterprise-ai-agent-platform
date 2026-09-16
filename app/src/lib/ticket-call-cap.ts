@@ -1,15 +1,14 @@
+import {
+  DEFAULT_MAX_CALLS_PER_TICKET,
+  resolveMaxCallsPerTicket,
+  TICKET_CALL_CAP_SETTINGS_MENU,
+} from '@/lib/gateway-ticket-call-cap'
+
 /** Payload `error.code` / audit reason — ticketenkénti modellhívás-plafon. */
 export const TICKET_CALL_CAP_ERROR_CODE = 'TICKET_CALL_CAP'
 
 /** `DispatchOutcome.reason` prefix a ticket call-cap ághoz. */
 export const TICKET_CALL_CAP_REASON_PREFIX = 'ticket_call_cap:'
-
-/**
- * Alapértelmezett ticket-plafon — tartsd szinkronban
- * `model-gateway.DEFAULT_MAX_CALLS_PER_TICKET`-tel.
- * Szándékosan NEM a gateway modulból importáljuk (kliens UI is használja ezt a fájlt).
- */
-const DEFAULT_MAX_CALLS_PER_TICKET = 30
 
 export function ticketCallCapReason(calls: number, maxCalls: number): string {
   return `${TICKET_CALL_CAP_REASON_PREFIX}${calls}/${maxCalls}`
@@ -30,7 +29,7 @@ export function formatTicketCallCapUserMessage(input: {
   return (
     `Keret kimerült — ez a ticket nem indítható újra (${input.calls}/${input.maxCalls} modellhívás). ` +
     `Ez a plafon ticketenként érvényes, és NEM áll vissza holnap. ` +
-    `Mit tehetsz: (1) nyiss új ticketet a folytatáshoz, vagy (2) szólj az adminnak, hogy emelje a GATEWAY_MAX_CALLS_PER_TICKET környezeti változót, majd próbáld újra.`
+    `Mit tehetsz: (1) nyiss új ticketet a folytatáshoz, vagy (2) emeld a plafont a ${TICKET_CALL_CAP_SETTINGS_MENU} menüben (Feladat-ticket modellhívás-plafon), majd próbáld újra.`
   )
 }
 
@@ -55,18 +54,25 @@ export function isTicketCallCapErrorMessage(error: string | undefined | null): b
 
 export function currentTicketCallCapLimit(
   env: Record<string, string | undefined> = process.env,
+  platformMax?: number | null,
 ): number {
-  const raw = env.GATEWAY_MAX_CALLS_PER_TICKET?.trim()
-  const parsed = raw ? Number.parseInt(raw, 10) : NaN
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_CALLS_PER_TICKET
+  return resolveMaxCallsPerTicket({ platformMax, env })
 }
 
 /** Ha a ticket túllépte a plafont, user-facing üzenet; különben `null`. */
 export function ticketCallCapExceededMessage(
   usage: { calls: number },
   env: Record<string, string | undefined> = process.env,
+  platformMax?: number | null,
 ): string | null {
-  const maxCalls = currentTicketCallCapLimit(env)
+  const maxCalls = currentTicketCallCapLimit(env, platformMax)
+  return ticketCallCapExceededMessageWithLimit(usage, maxCalls)
+}
+
+export function ticketCallCapExceededMessageWithLimit(
+  usage: { calls: number },
+  maxCalls: number,
+): string | null {
   if (usage.calls < maxCalls) return null
   return formatTicketCallCapUserMessage({ calls: usage.calls, maxCalls })
 }

@@ -1,6 +1,7 @@
 import { getAuthContext } from '@/auth/context'
 import {
   getDailyBudgetOverview,
+  getGatewayTicketCallCapView,
   getDatabaseMode,
   getDispatcherControls,
   getMemoryObservabilityDashboard,
@@ -77,6 +78,7 @@ export default async function SystemPage({
     memoryObservabilityRes,
     contractObservabilityRes,
     dailyBudgetRes,
+    ticketCallCapRes,
     channelOpsRes,
     channelSetupRes,
     privacyRes,
@@ -102,6 +104,7 @@ export default async function SystemPage({
     getMemoryObservabilityDashboard(),
     getContractObservabilityDashboard(),
     getDailyBudgetOverview(),
+    getGatewayTicketCallCapView(),
     getChannelOpsMetrics({ windowDays: 7 }),
     getTelegramChannelSetup(),
     getPrivacyAdminView({}),
@@ -196,6 +199,8 @@ export default async function SystemPage({
                   canEdit={canEditTenantBudget}
                   rules={budgetsRes.success ? budgetsRes.data : []}
                   canEditRules={canEdit}
+                  ticketCallCap={ticketCallCapRes.success ? ticketCallCapRes.data : null}
+                  canEditTicketCallCap={canEdit}
                 />
               )
               : errorBox(dailyBudgetRes.error),
