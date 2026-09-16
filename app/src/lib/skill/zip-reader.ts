@@ -175,11 +175,25 @@ function readZipEntriesInternal(
   let declaredTotalUncompressed = 0
   const compressedRanges: Array<{ start: number; end: number }> = []
   let cursor = centralOffset
+  // A központi könyvtárat a DEKLARÁLT MÉRET szerint járjuk végig — NEM az EOCD
+  // entryCount mezője szerint. Az EOCD alábecsülhető (JSZip/ExcelJS/Mammoth a
+  // teljes CD-t látja), és akkor a régi ciklus átugrotta a rejtett zip-bomba
+  // bejegyzéseket. A méret-határ + entryCount egyezés együtt zárja a rést.
+  const centralEnd = centralOffset + centralSize
+  let recordsSeen = 0
 
-  for (let i = 0; i < entryCount; i++) {
-    if (cursor + 46 > buf.length) throw new ZipReadError('Sérült központi könyvtár.', 'corrupt')
+  while (cursor < centralEnd) {
+    if (cursor + 46 > centralEnd) throw new ZipReadError('Sérült központi könyvtár.', 'corrupt')
     if (buf.readUInt32LE(cursor) !== CENTRAL_FILE_SIGNATURE) {
       throw new ZipReadError('Sérült központi könyvtár (rossz aláírás).', 'corrupt')
+    }
+
+    recordsSeen += 1
+    if (recordsSeen > limits.maxEntries) {
+      throw new ZipReadError(
+        `Túl sok bejegyzés a csomagban (${recordsSeen} > ${limits.maxEntries}).`,
+        'too_many_entries',
+      )
     }
 
     const flags = buf.readUInt16LE(cursor + 8)
@@ -191,8 +205,10 @@ function readZipEntriesInternal(
     const extraLength = buf.readUInt16LE(cursor + 30)
     const commentLength = buf.readUInt16LE(cursor + 32)
     const localOffset = buf.readUInt32LE(cursor + 42)
+    const recordEnd = cursor + 46 + nameLength + extraLength + commentLength
+    if (recordEnd > centralEnd) throw new ZipReadError('Sérült központi könyvtár.', 'corrupt')
     const rawName = buf.toString('utf8', cursor + 46, cursor + 46 + nameLength)
-    cursor += 46 + nameLength + extraLength + commentLength
+    cursor = recordEnd
 
     const path = normalizeZipPath(rawName)
     if (path === null) {
@@ -284,6 +300,16 @@ function readZipEntriesInternal(
     }
 
     if (collectEntries) entries.push({ path, bytes: new Uint8Array(bytes) })
+  }
+
+  if (cursor !== centralEnd) {
+    throw new ZipReadError('Sérült ZIP (a központi könyvtár mérete nem egyezik).', 'corrupt')
+  }
+  if (recordsSeen !== entryCount) {
+    throw new ZipReadError(
+      'Sérült ZIP (az EOCD bejegyzésszáma nem egyezik a központi könyvtárral).',
+      'corrupt',
+    )
   }
 
   return entries

@@ -85,6 +85,55 @@ assert.throws(
   (error: unknown) => error instanceof ZipReadError && error.code === 'corrupt',
 )
 
+/** EOCD entryCount alábecslés: a CD-ben rejtett bomba a régi kaput átugrotta, a JSZip viszont kibontotta. */
+function zipWithUndercountedEocd(files: ZipFile[], reportedEntryCount: number): Buffer {
+  const full = zipWithFiles(files)
+  const eocd = full.length - 22
+  assert.equal(full.readUInt32LE(eocd), 0x06054b50)
+  full.writeUInt16LE(reportedEntryCount, eocd + 8)
+  full.writeUInt16LE(reportedEntryCount, eocd + 10)
+  return full
+}
+
+const undercountLimits = {
+  maxFileBytes: 128 * 1024,
+  maxTotalBytes: 128 * 1024,
+  maxEntries: 10,
+}
+
+const undercountBomb = zipWithUndercountedEocd(
+  [
+    { name: 'word/document.xml', contents: Buffer.from('safe') },
+    { name: 'word/bomb.xml', contents: Buffer.alloc(256 * 1024, 'A') },
+  ],
+  1,
+)
+assert.throws(
+  () => assertZipEntriesWithinLimits(undercountBomb, undercountLimits),
+  (error: unknown) => error instanceof ZipReadError && error.code === 'file_too_large',
+)
+
+const undercountMismatch = zipWithUndercountedEocd(
+  [
+    { name: 'word/document.xml', contents: Buffer.from('safe') },
+    { name: 'word/extra.xml', contents: Buffer.from('hidden') },
+  ],
+  1,
+)
+assert.throws(
+  () => assertZipEntriesWithinLimits(undercountMismatch, undercountLimits),
+  (error: unknown) => error instanceof ZipReadError && error.code === 'corrupt',
+)
+
+const undercountTooMany = zipWithUndercountedEocd(
+  Array.from({ length: 12 }, (_, i) => ({ name: `word/f${i}.xml`, contents: Buffer.from('x') })),
+  1,
+)
+assert.throws(
+  () => assertZipEntriesWithinLimits(undercountTooMany, undercountLimits),
+  (error: unknown) => error instanceof ZipReadError && error.code === 'too_many_entries',
+)
+
 const invalidPathBomb = zipWithFiles([{
   name: '../word/document.xml',
   contents: Buffer.alloc(256 * 1024, 'A'),
