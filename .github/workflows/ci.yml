@@ -176,7 +176,6 @@ jobs:
           npm run test:user-input-resolver
           npm run test:privacy-egress-matrix
           npm run test:debug-trace-projection
-          npm run test:val-surrogate-crypto-shred
           npm run test:privacy-observability-ui
           npm run test:privacy-observe
           npm run test:privacy-category-policy
@@ -271,6 +270,12 @@ jobs:
 
       - name: Default user→agent grant DB-regresszió (#344)
         run: npm run test:default-user-agent-grants-db
+
+      # APG-18 (#292): val-surrogate adatkulcs + crypto-shredding + vault GC —
+      # tenant/conversation sorokat ír és retention-sweepet futtat, csak valódi
+      # Postgres ellen fut (a stub-DB-s suite-ban DB-hiba miatt bukott).
+      - name: Val-surrogate crypto-shredding DB-teszt
+        run: npm run test:val-surrogate-crypto-shred
 
       # Futás-elemző (#343): a tenantonként EGY példány kényszerét, az admin-only
       # grantokat és a tenant-izolációt (idegen azonosító → `run_not_found`) csak
