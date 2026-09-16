@@ -28,7 +28,10 @@ import {
   extractToolResultRows,
   findRecordArray,
   formatLargeToolResultPreview,
+  inheritSandboxTrust,
+  isSafeWorkspaceRelativePath,
   parseToolResultJson,
+  toolNameFromArchivePath,
   workspaceCopyPathForArchive,
 } from './tool-result-extract'
 import { logger } from '@/lib/observability/logger'
@@ -74,7 +77,9 @@ import {
   formatHttpApiEndpointCatalogSuffix,
 } from '@/domain/connector/http-api-prompt'
 import { effectiveConnectorRuntimeConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
-import type { ToolName } from '@/domain/tool-broker/tool-broker-types'
+import type { ToolName, TrustClass } from '@/domain/tool-broker/tool-broker-types'
+import { envelopeToolResultForModel } from '@/domain/tool-broker/tool-result-envelope'
+import { resolveTrustClass } from '@/domain/tool-broker/tool-trust-registry'
 // issue #194 — a chat-vetület KIZÁRÓLAG a kanonikus tool-regiszterből képződik.
 import {
   TOOL_GROUP_ORDER,
@@ -228,6 +233,15 @@ Ha külső adatra (email, fájl, más agent) vagy ticketre / fájlműveletre van
 - HTTP API (http_api_get / http_api_get_all): a connector endpoint-katalógusában szereplő query/path paramétereket használd — ne találj ki mezőneveket. Nagy listához http_api_get_all; időszak/összehasonlítás/top-N: aggregált vagy report végpont + period paramok, ne dumpold a teljes listát és ne helyettesíts más proxy-metrikával. Nagy archive → tool_result_extract (ne chunkolt file_read). GitHub Contents (/repos/…/contents/…): a platform a fájl base64 tartalmát automatikusan UTF-8 szövegre dekódolja (encoding:"utf-8") — NE próbáld kézzel dekódolni, és NE állítsd hogy „nem tudod olvasni" csak azért, mert eredetileg base64 volt. Kód-kérdésnél előbb a fájllistát kérd le (/repos/…/git/trees/<branch>?recursive=1 egyetlen hívás), abból válaszd ki a 1–3 releváns fájlt, és csak azokat olvasd be.
 - Ha nincs több eszközszükséglet, válaszolj természetes magyar szöveggel.
 `
+
+const SANDBOX_AGGREGATE_INSTRUCTION =
+  '- Számolás, csoportosítás, összesítés, top-N, eltérés-keresés listán: NE fejben és NE prózában. Ha az eredmény fájlban van (`tool-outputs/…json` vagy más workspace JSON/CSV), futtasd `sandbox_exec`-kel: `inputs` = a fájl, `script` = rövid Python, ami `/work/in/<fájl>`-ból olvas és CSAK a kész számokat printeli. Ha a lista-eredmény nem került fájlba, kérd újra `saveAs` paraméterrel. A választ a stdout számaiból írd — ne becsülj.'
+
+function toolInstructionFor(allowedTools: readonly string[]): string {
+  if (!allowedTools.includes('sandbox_exec')) return TOOL_INSTRUCTION
+  const needle = '- HTTP API (http_api_get / http_api_get_all):'
+  return TOOL_INSTRUCTION.replace(needle, `${SANDBOX_AGGREGATE_INSTRUCTION}\n${needle}`)
+}
 
 const STR = { type: 'string' } as const
 const NUM = { type: 'number' } as const
@@ -1233,7 +1247,7 @@ export async function runAgentToolLoop(params: {
   }
   const loopStablePreamble: GatewayMessage[] = [
     { role: 'system', content: modeNote },
-    { role: 'system', content: TOOL_INSTRUCTION },
+    { role: 'system', content: toolInstructionFor(allowedTools) },
     {
       role: 'system',
       // D8: a [betöltött] jel CSAK a regiszter-defaultot tükrözi — az index-blokk
@@ -1425,6 +1439,11 @@ export async function runAgentToolLoop(params: {
     string,
     { content: string | null; bytes: number; toolName: string; sourceKey?: string }
   >()
+  // #470 D2/D3 — path → eredeti tool trust. Csak ezen a loop-futáson él;
+  // következő fordulóban a `.tool-results/` / `tool-outputs/` névfeloldás
+  // viszi, a custom `saveAs` név `internal` lesz. Persistálni, ha a custom
+  // nevet fordulók közt sandbox-inputként újrahasználják.
+  const savedTrustByPath = new Map<string, TrustClass>()
   const sourceKeyByToolCallId = new Map<string, string>()
   /**
    * A betöltött skill(ek) `allowed-tools` hatóköre. `null` = nincs szűkítés.
@@ -1503,17 +1522,14 @@ export async function runAgentToolLoop(params: {
       for (const path of paths) {
         if (!path.startsWith('.tool-results/') && !path.startsWith('tool-outputs/')) continue
         if (archivedToolResults.has(path)) continue
-        const base = path.split('/').pop() ?? 'tool-result'
-        // Basename minták: `01-http_api_get-crm-call.json` vagy `http_api_get-call-0.json`
-        const withoutExt = base.replace(/\.[^.]+$/, '')
-        const withoutTurn = withoutExt.replace(/^\d+-/, '')
-        const toolName = withoutTurn.replace(/-[^-]+$/, '') || 'archived'
+        const toolName = toolNameFromArchivePath(path) ?? 'archived'
         archivedToolResults.set(path, {
           content: null,
           bytes: 0,
           toolName,
           ...(archiveSourceKeys.get(path) ? { sourceKey: archiveSourceKeys.get(path) } : {}),
         })
+        savedTrustByPath.set(path, resolveTrustClass(toolName))
       }
     } catch (error) {
       logger.warn({ error }, 'agent.tool_loop.archive_hydration_failed')
@@ -1525,6 +1541,7 @@ export async function runAgentToolLoop(params: {
     entry: { content: string; bytes: number; toolName: string; sourceKey?: string },
   ) => {
     archivedToolResults.set(path, entry)
+    savedTrustByPath.set(path, resolveTrustClass(entry.toolName))
     if (entry.sourceKey) archiveSourceKeys.set(path, entry.sourceKey)
   }
 
@@ -1560,13 +1577,6 @@ export async function runAgentToolLoop(params: {
       logger.warn({ path, error }, 'agent.tool_loop.archive_lazy_load_failed')
       return null
     }
-  }
-
-  const isSafeWorkspaceRelativePath = (path: string): boolean => {
-    if (!path || path.includes('\0')) return false
-    if (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path)) return false
-    const parts = path.split(/[/\\]/)
-    return parts.every((part) => part !== '..' && part !== '')
   }
 
   // ── Kontextus-tömörítés (hosszú futások token-költsége) ────────────────────
@@ -3015,7 +3025,11 @@ export async function runAgentToolLoop(params: {
           detail: describeToolCall(toolName, call.input),
           status: 'running',
         })
-        const invokeInput = buildToolInvokeInput(toolName as ChatPlatformToolName, call.input, {
+        const invokeArgs = { ...(call.input as Record<string, unknown>) }
+        const saveAs =
+          typeof invokeArgs.saveAs === 'string' && invokeArgs.saveAs.length > 0 ? invokeArgs.saveAs : null
+        delete invokeArgs.saveAs
+        const invokeInput = buildToolInvokeInput(toolName as ChatPlatformToolName, invokeArgs, {
           agentId: params.agentId,
           agentVersion: params.agentVersion,
           ...params.context,
@@ -3322,6 +3336,34 @@ export async function runAgentToolLoop(params: {
         // nem tud gépi útra kerülni.
         const modelContent = result.denied ? rawContent : result.modelText
         let toolContent = modelContent
+        const sandboxTrust =
+          toolName === 'sandbox_exec' && !result.denied
+            ? inheritSandboxTrust(
+                Array.isArray(gateArgs.inputs)
+                  ? gateArgs.inputs.filter((p): p is string => typeof p === 'string')
+                  : [],
+                savedTrustByPath,
+              )
+            : null
+        const previewTrust = sandboxTrust ?? (result.denied ? resolveTrustClass(call.name) : result.trust)
+        let saveAsNote: string | null = null
+        const persistWorkspaceCopy = async (path: string, content: string): Promise<boolean> => {
+          if (!params.writeWorkspaceFile || !isSafeWorkspaceRelativePath(path)) return false
+          try {
+            const copy = await params.writeWorkspaceFile(path, content, 'internal')
+            if (!copy) return false
+            rememberArchived(path, {
+              content,
+              bytes: copy.bytes,
+              toolName: call.name,
+              ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
+            })
+            return true
+          } catch (error) {
+            logger.warn({ path, error }, 'agent.tool_loop.workspace_copy_failed')
+            return false
+          }
+        }
         // A méret-döntés a NYERS adaton dől el: a broker `modelText`-je már
         // tartalmazhat kimenetel-közlést, abból nem szabad archiválási küszöböt
         // számolni — az archívumba amúgy is a nyers adat kerül.
@@ -3356,23 +3398,13 @@ export async function runAgentToolLoop(params: {
               toolName: call.name,
               ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
             })
-            const workspacePath = workspaceCopyPathForArchive(archive.path)
-            if (params.writeWorkspaceFile && workspacePath !== archive.path) {
-              try {
-                const copy = await params.writeWorkspaceFile(workspacePath, archiveContent, 'internal')
-                if (copy) {
-                  rememberArchived(workspacePath, {
-                    content: archiveContent,
-                    bytes: copy.bytes,
-                    toolName: call.name,
-                    ...(callSourceKey ? { sourceKey: callSourceKey } : {}),
-                  })
-                }
-              } catch (error) {
-                logger.warn(
-                  { path: workspacePath, error },
-                  'agent.tool_loop.workspace_copy_failed',
-                )
+            const requestedSaveAs =
+              saveAs && isSafeWorkspaceRelativePath(saveAs) ? saveAs : null
+            const workspacePath = requestedSaveAs ?? workspaceCopyPathForArchive(archive.path)
+            if (workspacePath !== archive.path) {
+              const written = await persistWorkspaceCopy(workspacePath, archiveContent)
+              if (written && requestedSaveAs) {
+                saveAsNote = `Mentve: ${workspacePath} (${archive.bytes} bájt)`
               }
             }
             await emitActivity({
@@ -3395,7 +3427,7 @@ export async function runAgentToolLoop(params: {
               workspacePath,
               chars: archiveContent.length,
               bytes: archive.bytes,
-              previewText: envelopeArchived(call.name, preview.text),
+              previewText: envelopeToolResultForModel(previewTrust, preview.text),
               shapePreviewText: preview.head,
             })
           } else {
@@ -3403,7 +3435,7 @@ export async function runAgentToolLoop(params: {
               ? modelContent
               : buildToolModelText({
                   tool: call.name,
-                  trust: result.trust,
+                  trust: previewTrust,
                   outcome: 'partial',
                   reason: result.outcomeReason,
                   effect: result.effect,
@@ -3419,7 +3451,18 @@ export async function runAgentToolLoop(params: {
             const notice = describeOutcomeForModel(result.outcome, result.outcomeReason, result.effect)
             if (notice) toolContent = `${notice}\n${toolContent}`
           }
+        } else if (sandboxTrust === 'external_untrusted') {
+          toolContent = envelopeToolResultForModel(sandboxTrust, toolContent)
         }
+
+        if (!result.denied && saveAs && rawContent.length <= TOOL_RESULT_INLINE_LIMIT) {
+          const written = await persistWorkspaceCopy(saveAs, rawContent)
+          if (written) {
+            const bytes = Buffer.byteLength(rawContent, 'utf8')
+            saveAsNote = `Mentve: ${saveAs} (${bytes} bájt)`
+          }
+        }
+        if (saveAsNote) toolContent = `${toolContent}\n${saveAsNote}`
 
         pushToolResult(call, toolContent, redundantIngest ? 'barren' : 'new', {
           toolName,

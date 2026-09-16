@@ -9,6 +9,7 @@
 export const TOOL_RESULT_EXTRACT_TOOL_NAME = 'tool_result_extract'
 
 import { envelopeToolResultForModel } from '@/domain/tool-broker/tool-result-envelope'
+import type { TrustClass } from '@/domain/tool-broker/tool-broker-types'
 import { resolveTrustClass } from '@/domain/tool-broker/tool-trust-registry'
 
 const SAMPLE_ROW_LIMIT = 3
@@ -287,4 +288,60 @@ function firstArrayPath(value: unknown, prefix = ''): string | null {
 export function workspaceCopyPathForArchive(archivePath: string): string {
   const base = archivePath.split('/').pop() || 'tool-result.json'
   return `tool-outputs/${base}`
+}
+
+export function isSafeWorkspaceRelativePath(path: string): boolean {
+  if (!path || path.includes('\0')) return false
+  if (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path)) return false
+  const parts = path.split(/[/\\]/)
+  return parts.every((part) => part !== '..' && part !== '')
+}
+
+/** `#469` D1 / `#470` D3 — `01-http_api_get-crm-call.json` → `http_api_get`. */
+export function toolNameFromArchivePath(path: string): string | null {
+  if (!path.startsWith('.tool-results/') && !path.startsWith('tool-outputs/')) return null
+  const base = path.split('/').pop()
+  if (!base) return null
+  const withoutExt = base.replace(/\.[^.]+$/, '')
+  const withoutTurn = withoutExt.replace(/^\d+-/, '')
+  const toolName = withoutTurn.replace(/-[^-]+$/, '')
+  return toolName || null
+}
+
+const TRUST_RANK: Record<TrustClass, number> = {
+  trusted: 2,
+  internal: 1,
+  external_untrusted: 0,
+}
+
+export function minTrustClass(classes: readonly TrustClass[]): TrustClass {
+  if (classes.length === 0) return 'trusted'
+  return classes.reduce((lowest, next) =>
+    TRUST_RANK[next] < TRUST_RANK[lowest] ? next : lowest,
+  )
+}
+
+/**
+ * Sandbox-bemenet provenienciája (#470 D3). Ismert `saveAs` / archívum-path a
+ * térképből; `.tool-results/` és `tool-outputs/` a fájlnév tool-nevéből;
+ * egyéb relatív workspace-fájl `internal`; minden más fail-safe untrusted.
+ */
+export function resolveInputTrust(
+  path: string,
+  known: ReadonlyMap<string, TrustClass>,
+): TrustClass {
+  const recorded = known.get(path)
+  if (recorded) return recorded
+  const fromName = toolNameFromArchivePath(path)
+  if (fromName) return resolveTrustClass(fromName)
+  if (isSafeWorkspaceRelativePath(path)) return 'internal'
+  return 'external_untrusted'
+}
+
+export function inheritSandboxTrust(
+  inputs: readonly string[] | undefined,
+  known: ReadonlyMap<string, TrustClass>,
+): TrustClass {
+  if (!inputs || inputs.length === 0) return 'trusted'
+  return minTrustClass(inputs.map((path) => resolveInputTrust(path, known)))
 }
