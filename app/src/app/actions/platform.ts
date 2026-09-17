@@ -20,6 +20,7 @@ import { isSuperadmin } from '@/lib/tenant-policy'
 import { declaredWorkspaceOutputs } from '@/lib/declared-workspace-outputs'
 import { resolveWebUiTextForViewer } from '@/domain/privacy/resolve-display-text'
 import { services } from '@/domain'
+import { extractAgentFallbackModels, findFallbackModelUsed } from '@/domain/gateway/fallback-chain'
 import type { TrainingActor } from '@/domain/training/training-service'
 import { TrainingGateError } from '@/domain/training/durable-memory-policy'
 import type { GitHubRepositoryAccess } from '@/domain/connector/github-repository-access'
@@ -4597,6 +4598,31 @@ export async function resumeLatestAgentChat(input: { agentId: string }) {
 
 export type LoadedAgentChat = Awaited<ReturnType<typeof loadAgentChatPayload>>
 
+/**
+ * „A beszélgetés a tartalék AI-modellen futott" — a fejléc sárga jelzőjéhez.
+ * Nincs külön oszlop: egy sikeres modellhívás akkor tartalék, ha az agent
+ * saját vagy a platform globális tartalék-láncában szereplő (provider, model)
+ * párra ment. A visszaadott érték a modell neve (`provider/model`), vagy null.
+ */
+async function findConversationFallbackModel(
+  conversationId: string,
+  agentId: string,
+): Promise<string | null> {
+  const [agent, globalFallbacks, calls] = await Promise.all([
+    prisma.agent.findUnique({ where: { id: agentId }, select: { modelConfig: true } }),
+    services.platformSettings.getFallbackChain().catch(() => []),
+    prisma.modelCall.findMany({
+      where: { conversationId, status: 'ok' },
+      distinct: ['provider', 'model'],
+      select: { provider: true, model: true },
+    }),
+  ])
+  return findFallbackModelUsed(calls, [
+    ...extractAgentFallbackModels(agent?.modelConfig),
+    ...globalFallbacks,
+  ])
+}
+
 async function loadAgentChatPayload(
   user: Awaited<ReturnType<typeof requireTenantRole>>,
   conversationId: string,
@@ -4622,6 +4648,7 @@ async function loadAgentChatPayload(
     }),
   ])
   const { conversation, messages } = loaded
+  const fallbackModel = await findConversationFallbackModel(conversationId, agentId)
 
   const views = messages.map((message) => ({
     id: message.id,
@@ -4672,6 +4699,7 @@ async function loadAgentChatPayload(
       continuedFromTicketId: conversation.continuedFromTicketId,
       projectKey: conversation.projectKey,
     },
+    fallbackModel,
     continuedFromTicket,
     ticketDiscussionHistory,
     messages: views,

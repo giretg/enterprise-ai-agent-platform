@@ -6,6 +6,8 @@ type WorkspaceChatChrome = {
   detach: () => void
   /** Van betöltött, mentett beszélgetés-szál — a fejléc ezt kombinálja az analysis.run kapuval. */
   hasSavedConversation: boolean
+  /** A betöltött szál tartalék-modellen futott (`provider/model`), vagy null. */
+  fallbackModel: string | null
   analyzeDisabled: boolean
   analyze: () => void
   distill: () => void
@@ -18,6 +20,7 @@ type WorkspaceChatChrome = {
 
 const EMPTY_CHROME_STATE = {
   hasSavedConversation: false,
+  fallbackModel: null as string | null,
   analyzeDisabled: false,
   distillDisabled: true,
   distillPending: false,
@@ -81,6 +84,7 @@ export function getWorkspaceChatChromeState(): typeof EMPTY_CHROME_STATE {
   if (!chrome) return EMPTY_CHROME_STATE
   return {
     hasSavedConversation: chrome.hasSavedConversation,
+    fallbackModel: chrome.fallbackModel,
     analyzeDisabled: chrome.analyzeDisabled,
     distillDisabled: chrome.distillDisabled,
     distillPending: chrome.distillPending,

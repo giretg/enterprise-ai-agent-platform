@@ -266,3 +266,17 @@ export function buildEffectiveFallbackChain(input: {
 
   return filtered
 }
+
+/**
+ * Az első olyan (provider, model) hívás neve, ami a tartalék-láncban szerepel —
+ * „a beszélgetés a tartalék modellen futott" jelzőhöz. `provider/model` vagy null.
+ */
+export function findFallbackModelUsed(
+  calls: ReadonlyArray<{ provider: string; model: string }>,
+  fallbacks: ReadonlyArray<FallbackCandidate>,
+): string | null {
+  const hit = calls.find((call) =>
+    fallbacks.some((f) => f.provider === call.provider && f.model === call.model),
+  )
+  return hit ? `${hit.provider}/${hit.model}` : null
+}
