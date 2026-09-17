@@ -3,6 +3,7 @@ import { authenticateAgentRequest, requireAgentScope } from '@/auth/agent-api-ke
 import { services } from '@/domain'
 import { buildStubOpenAiCompletion } from '@/domain/gateway/stub-openai-completion'
 import { relayTextToolCall } from '@/domain/gateway/text-tool-relay'
+import { parseAgentVersionHeader } from '@/lib/agent-version-header'
 import { assertAgentWorkTenantOperable } from '@/lib/agent-work-tenant-gate'
 import { resolveGatewayRequestModel } from '@/lib/harness-model-config'
 import { repositories } from '@/repositories/postgres'
@@ -41,8 +42,10 @@ export async function POST(request: Request) {
   }
 
   const ticketId = request.headers.get('x-ticket-id')?.trim() || undefined
-  const agentVersionHeader = request.headers.get('x-agent-version')?.trim()
-  const agentVersion = agentVersionHeader ? Number.parseInt(agentVersionHeader, 10) : undefined
+  // Kliens-vezérelt fejléc: nem-numerikus érték `NaN`-t adna, ami NEM esik vissza
+  // a `?? agent.currentVersion` fallbackre, és a fizetős hívás UTÁN buktatja a
+  // `model_calls` rögzítést (néma költség-/audit-rés). Ezért a határon validáljuk.
+  const agentVersion = parseAgentVersionHeader(request.headers.get('x-agent-version'))
 
   const tenantGate = await assertAgentWorkTenantOperable({
     agentId: auth.agentId,
