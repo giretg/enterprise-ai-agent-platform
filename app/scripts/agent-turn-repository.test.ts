@@ -346,6 +346,104 @@ async function main() {
     }
   })
 
+  // ── #516: atomi claim + tulajdonoshoz kötött írás ────────────────────────
+
+  await check('#516: PÁRHUZAMOS claim ugyanarra a queued fordulóra — pontosan egy nyer', async () => {
+    const fixture = await seedFixture()
+    try {
+      const queued = await repo.create({
+        ...createInput(fixture),
+        status: 'queued',
+        input: { v: 1, content: 'Szia', attachmentDocumentIds: [] },
+      })
+      assert.equal(queued.status, 'queued')
+      assert.equal(queued.lockToken, null)
+
+      const ownerA = randomUUID()
+      const ownerB = randomUUID()
+      const [a, b] = await Promise.all([
+        repo.claim(queued.id, ownerA, new Date()),
+        repo.claim(queued.id, ownerB, new Date()),
+      ])
+      const winners = [a, b].filter((r) => r !== null)
+      assert.equal(winners.length, 1, 'két azonos indításból pontosan egy szerez futtatási jogot')
+      const stored = await repo.findById(queued.id)
+      assert.equal(stored?.status, 'running')
+      assert.ok(stored?.lockToken === ownerA || stored?.lockToken === ownerB)
+      assert.equal(stored?.lockToken, winners[0]!.lockToken)
+
+      // A mentett bemenet a rekordon marad — másik processz is olvashatja.
+      assert.deepEqual(stored?.input, { v: 1, content: 'Szia', attachmentDocumentIds: [] })
+    } finally {
+      await cleanup(fixture)
+    }
+  })
+
+  await check('#516: már running / terminális forduló nem claimelhető', async () => {
+    const fixture = await seedFixture()
+    try {
+      const turn = await repo.create({ ...createInput(fixture), status: 'queued' })
+      assert.ok(await repo.claim(turn.id, randomUUID(), new Date()))
+      assert.equal(await repo.claim(turn.id, randomUUID(), new Date()), null, 'running → nincs claim')
+      await repo.finalize(turn.id, { status: 'cancelled', reason: 'cancelled' })
+      assert.equal(await repo.claim(turn.id, randomUUID(), new Date()), null, 'terminális → nincs claim')
+      // Visszavont (Stop) queued forduló sem indulhat el késve.
+      const late = await repo.create({ ...createInput(fixture), status: 'queued' })
+      await repo.finalize(late.id, { status: 'cancelled', reason: 'cancelled' })
+      assert.equal(await repo.claim(late.id, randomUUID(), new Date()), null)
+    } finally {
+      await cleanup(fixture)
+    }
+  })
+
+  await check('#516: RÉGI TULAJDONOS a watchdog-reclaim után nem ír életjelet, progresst, végállapotot', async () => {
+    const fixture = await seedFixture()
+    try {
+      const turn = await repo.create({ ...createInput(fixture), status: 'queued' })
+      const oldOwner = randomUUID()
+      assert.ok(await repo.claim(turn.id, oldOwner, new Date()))
+      assert.ok(await repo.heartbeat(turn.id, oldOwner, new Date()), 'amíg övé, üthet szívet')
+
+      // Watchdog: token nélküli reclaim-lezárás (a régi futó közben még él).
+      const reclaimed = await repo.finalize(turn.id, {
+        status: 'failed',
+        reason: 'watchdog',
+        error: 'reclaimed',
+      })
+      assert.equal(reclaimed?.status, 'failed')
+
+      assert.equal(await repo.heartbeat(turn.id, oldOwner, new Date()), null)
+      assert.equal(await repo.updateProgress(turn.id, oldOwner, { partialText: 'késő' }), null)
+      assert.equal(
+        await repo.finalize(turn.id, { status: 'completed', partialText: 'kész' }, oldOwner),
+        null,
+        'a régi tulajdonos tokenes lezárása nem írja felül a watchdog végállapotát',
+      )
+      const stored = await repo.findById(turn.id)
+      assert.equal(stored?.status, 'failed')
+      assert.equal(stored?.reason, 'watchdog')
+      assert.equal(stored?.partialText, '')
+    } finally {
+      await cleanup(fixture)
+    }
+  })
+
+  await check('#516: tokenes finalize csak a tulajdonosnak — idegen token aktív fordulón sem zár', async () => {
+    const fixture = await seedFixture()
+    try {
+      const turn = await repo.create({ ...createInput(fixture), status: 'queued' })
+      const owner = randomUUID()
+      assert.ok(await repo.claim(turn.id, owner, new Date()))
+      assert.equal(await repo.finalize(turn.id, { status: 'completed' }, randomUUID()), null)
+      assert.equal((await repo.findById(turn.id))?.status, 'running')
+      const closed = await repo.finalize(turn.id, { status: 'completed' }, owner)
+      assert.equal(closed?.status, 'completed')
+      assert.equal(closed?.lockToken, null)
+    } finally {
+      await cleanup(fixture)
+    }
+  })
+
   console.log(failures === 0 ? '\nMinden teszt zöld.' : `\n${failures} teszt bukott.`)
   await prisma.$disconnect()
   process.exit(failures === 0 ? 0 : 1)

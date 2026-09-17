@@ -2201,6 +2201,12 @@ model AgentTurn {
    */
   userMessageId      String?         @map("user_message_id") @db.Uuid
   assistantMessageId String?         @map("assistant_message_id") @db.Uuid
+  /**
+   * #516 — verziózott, tartós forduló-bemenet (`chat-turn-input.ts`). Ebből
+   * rekonstruálja a futtatómag a fordulót másik processzben is. Privát
+   * modellkontextust is tartalmazhat — a kliens-snapshot SOSEM adja vissza.
+   */
+  input              Json?
 
   // Haladás / reconnect-snapshot (§5.3)
   partialText String @default("") @map("partial_text")

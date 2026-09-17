@@ -555,3 +555,19 @@ mire riasztást tenni, tehát ugyanaz a hiba hat futáson át csendben megismét
   `agent_turn_cost_alerts_total{reason,mode}`.
 - Elfogadás: `npm run test:turn-cost` — a mért eset (132/149 = 89%) riaszt, egy
   normál, 3–5 eszközhívásos forduló nem.
+
+## 15. Tartós bemenet és közös futtatómag (issue #516 / #508 WP-1+WP-2 — MEGÉPÜLT, 2026-09-17)
+
+A forduló futása többé nem a kérés-scope-ban előkészített memóriabeli `PreparedTurn`-ből, hanem a rekordra mentett, verziózott bemenetből indul — így másik processzben is rekonstruálható.
+
+| Elem | Hol | Mit csinál |
+|---|---|---|
+| `AgentTurn.input` (JSONB) | `0049_agent_turn_input` | `chat-turn-input.ts` `v: 1` séma: szöveg, csatolmány-id-k, projektkulcs, folyamat-bemenet, briefing, folytatás-jelzők, privát `modelContextPrefix`. Titok/token NEM kerül bele. A kliens-snapshot (`GET turns`, reconnect `snapshot`) mezőnként válogat, az `input`-ot sosem adja ki. |
+| Gyors fogadás | `AgentChatRuntime.beginTurn` | agent/tenant/access-ellenőrzés → rekord `queued` + `input` (D7 részleges egyedi index) → user-üzenet → `attachUserMessage` (NEM fail-soft) → `launcher.launch`. DB-hiba = `error` esemény `turn`/`meta` nélkül; rekord nélkül nincs futás. |
+| `ChatTurnLauncher` | `chat-turn-launcher.ts` | Indítási határ; `launchId` ≠ tulajdonos-token. v1: `in-process` (Tier-1 runner). `CHAT_TURN_LAUNCHER_MODE` ismeretlen értéke bootkor hiba. |
+| Közös mag | `AgentChatRuntime.runReservedTurn({ turnId, launchId }, emit?)` | DB-ből tölt → `parseStoredTurnInput` (ismeretlen verzió → `StoredTurnInputError`, nem claimel) → atomi `claim` (`queued → running`, saját `ownerToken`) → tenant-újraellenőrzés, csatolmány/workspace előkészítés → `executeTurn` → tokenes `finalize`. Vesztes claim mellékhatás nélkül kilép. |
+| Tulajdonosság | `AgentTurnRepository.claim / heartbeat / updateProgress / finalize(…, lockToken)` | Mind feltételes írás. `null` → `ownershipLost`; a következő checkpoint (`onTurnStart` — MÉG a kör modellhívása előtt) `TurnOwnershipLostError`-ral áll le: nincs új modell-/tool-hívás, nincs lezáró üzenet a beszélgetésbe (az a tényleges tulajdonosé), a rekord végállapotát nem írja felül. |
+
+Ismert korlát: a folyamatban lévő modell-/tool-hívást nem szakítjuk meg (a loopnak nincs AbortSignal-ja) — a leállás a következő checkpointon kooperatív. A tool-eredményt a broker `ToolCall` rekordja őrzi akkor is, ha a tulajdonjog közben elveszett.
+
+Tesztek: `test:chat-turn-input` (séma, leak, launcher-mód), `test:agent-turn-record` (új processz rekonstrukció, dupla indítás, ismeretlen verzió, tulajdonvesztés), `test:agent-turn` (valódi Postgres: párhuzamos claim, régi tulajdonos, tokenes finalize).

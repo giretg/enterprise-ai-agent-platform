@@ -47,6 +47,7 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
           status: data.status ?? 'running',
           lockToken: data.lockToken ?? null,
           lockedAt: data.lockedAt ?? null,
+          ...(data.input !== undefined ? { input: data.input } : {}),
         },
       })
     } catch (error) {
@@ -106,6 +107,15 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
     const result = await prisma.agentTurn.updateMany({
       where: { id, status: { in: [...ACTIVE_AGENT_TURN_STATUSES] }, lockToken: null },
       data: { lockToken, lockedAt: now, heartbeatAt: now },
+    })
+    if (result.count !== 1) return null
+    return this.findById(id)
+  }
+
+  async claim(id: string, ownerToken: string, now: Date): Promise<AgentTurn | null> {
+    const result = await prisma.agentTurn.updateMany({
+      where: { id, status: 'queued', lockToken: null },
+      data: { status: 'running', lockToken: ownerToken, lockedAt: now, heartbeatAt: now, startedAt: now },
     })
     if (result.count !== 1) return null
     return this.findById(id)
@@ -179,11 +189,19 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
     return turn.cancelRequested
   }
 
-  async finalize(id: string, data: FinalizeAgentTurnInput): Promise<AgentTurn | null> {
+  async finalize(
+    id: string,
+    data: FinalizeAgentTurnInput,
+    lockToken?: string,
+  ): Promise<AgentTurn | null> {
     // Csak aktív fordulót zárunk le: a második lezárás (pl. watchdog vs. runner
     // versenye) `null`-t ad, nem írja felül az első terminális állapotot.
     const result = await prisma.agentTurn.updateMany({
-      where: { id, status: { in: [...ACTIVE_AGENT_TURN_STATUSES] } },
+      where: {
+        id,
+        status: { in: [...ACTIVE_AGENT_TURN_STATUSES] },
+        ...(lockToken !== undefined ? { lockToken } : {}),
+      },
       data: {
         status: data.status,
         assistantMessageId: data.assistantMessageId ?? null,

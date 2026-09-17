@@ -1903,6 +1903,8 @@ export type CreateAgentTurnInput = {
   status?: ActiveAgentTurnStatus
   lockToken?: string | null
   lockedAt?: Date | null
+  /** #516 — verziózott tartós bemenet (`chat-turn-input.ts`). */
+  input?: Prisma.InputJsonValue
 }
 
 export type FinalizeAgentTurnInput = {
@@ -1970,6 +1972,12 @@ export interface AgentTurnRepository {
    * `null` = a lockot valaki más tartja, vagy a forduló már terminális.
    */
   acquireLock(id: string, lockToken: string, now: Date): Promise<AgentTurn | null>
+  /**
+   * #516 — atomi `queued → running` munkafelvétel a futtató SAJÁT
+   * tulajdonos-tokenjével. `null` = már más claimelte, vagy a forduló nem
+   * `queued` (terminális / visszavont) — a hívó mellékhatás nélkül kilép.
+   */
+  claim(id: string, ownerToken: string, now: Date): Promise<AgentTurn | null>
   /** Csak a lock birtokosa engedheti el; a státuszt nem érinti. */
   releaseLock(id: string, lockToken: string): Promise<void>
   /** Csak a lock birtokosa üthet szívet — a stale-reclaim így nem írható vissza. */
@@ -1993,8 +2001,11 @@ export interface AgentTurnRepository {
   /**
    * Terminális lezárás: a lock elengedésével együtt, egyetlen feltételes
    * írásban. `null` = a forduló már terminális volt (a lezárás idempotens).
+   * `lockToken` megadásakor (#516) CSAK a tulajdonos zárhat — a régi tulajdonos
+   * nem írhatja felül a watchdog / új tulajdonos végállapotát. Token nélkül a
+   * reclaim-utak (watchdog, elengedés) zárnak.
    */
-  finalize(id: string, data: FinalizeAgentTurnInput): Promise<AgentTurn | null>
+  finalize(id: string, data: FinalizeAgentTurnInput, lockToken?: string): Promise<AgentTurn | null>
   /** Watchdog: aktív, de a `heartbeatAt`-je a küszöbnél régebbi fordulók. */
   findStale(cutoff: Date, limit: number): Promise<AgentTurn[]>
   /**

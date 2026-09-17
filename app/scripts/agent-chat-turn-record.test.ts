@@ -7,7 +7,7 @@
  *  - minden fordulóra keletkezik rekord, a user-üzenet azonosítójával;
  *  - a forduló a végén TERMINÁLIS állapotra zárul (a keletkezett agent-üzenet
  *    azonosítójával), hibánál `failed`, a stream eldobásakor pedig szintén zárul;
- *  - a rekord hibája NEM változtatja meg a chat viselkedését (fail-soft).
+ *  - a rekord hibája (#516) NEM hamis elfogadás: rekord nélkül nincs futás.
  *
  * A DB-szintű aktív-forduló invariánst (D7) a `agent-turn-repository.test.ts`
  * bizonyítja valódi Postgres ellen — azt fake nem tudja igazolni.
@@ -32,6 +32,8 @@ import type { GatewayToolCall, ModelGateway } from '../src/domain/gateway/model-
 import type { ToolBrokerService } from '../src/domain/tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../src/domain/file-editor/workspace-storage'
 import { AgentAccessService } from '../src/domain/agent-access/agent-access-service'
+import type { ChatTurnLauncher } from '../src/domain/agent/chat-turn-launcher'
+import { StoredTurnInputError } from '../src/domain/agent/chat-turn-input'
 
 let failures = 0
 async function test(name: string, fn: () => void | Promise<void>) {
@@ -149,6 +151,7 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
   const rowsById = new Map<string, AgentTurn>()
   const inputById = new Map<string, Parameters<AgentTurnRepository['create']>[0]>()
   const heartbeats: Array<{ id: string; lockToken: string }> = []
+  const claimed: Array<{ id: string; ownerToken: string }> = []
   const repo: AgentTurnRepository = {
     async create(data) {
       if (options.failOnCreate) throw options.failOnCreate
@@ -161,11 +164,17 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
       const row = {
         id,
         conversationId: data.conversationId,
+        tenantId: data.tenantId,
+        agentId: data.agentId,
+        agentVersion: data.agentVersion,
+        createdById: data.createdById,
         status: data.status ?? 'running',
         userMessageId: data.userMessageId ?? null,
         lockToken: data.lockToken ?? null,
+        input: data.input ?? null,
         partialText: '',
         activities: [],
+        startedAt: new Date(),
         // A séma szerint NOT NULL, `now()` alapértékkel — a foglalás
         // stale-ellenőrzése ezt olvassa, ezért a fake-ben is jelen kell lennie.
         heartbeatAt: new Date(),
@@ -195,12 +204,21 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
     async acquireLock() {
       return null
     },
+    async claim(id, ownerToken, now) {
+      const row = rowsById.get(id)
+      if (!row || row.status !== 'queued' || row.lockToken !== null) return null
+      claimed.push({ id, ownerToken })
+      Object.assign(row, { status: 'running', lockToken: ownerToken, lockedAt: now, heartbeatAt: now })
+      return row
+    },
     async releaseLock() {},
     async heartbeat(id, lockToken, now) {
       heartbeats.push({ id, lockToken })
       const row = rowsById.get(id)
-      if (row) Object.assign(row, { heartbeatAt: now })
-      return row ?? null
+      if (!row || row.lockToken !== lockToken) return null
+      if (!activeByConversation.has(row.conversationId)) return null
+      Object.assign(row, { heartbeatAt: now })
+      return row
     },
     async updateProgress(id, lockToken, data) {
       const row = rowsById.get(id)
@@ -225,12 +243,15 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
       const row = rowsById.get(id)
       return Boolean(row?.cancelRequested && activeByConversation.has(row.conversationId))
     },
-    async finalize(id, data) {
-      finalized.push({ id, ...data })
+    async finalize(id, data, lockToken) {
       const row = rowsById.get(id)
-      if (row) {
+      if (!row || !activeByConversation.has(row.conversationId)) return null
+      if (lockToken !== undefined && row.lockToken !== lockToken) return null
+      finalized.push({ id, ...data })
+      {
         Object.assign(row, {
           status: data.status,
+          reason: data.reason ?? null,
           partialText: data.partialText ?? row.partialText,
           activities: data.activities ?? row.activities,
           assistantMessageId: data.assistantMessageId ?? null,
@@ -252,7 +273,7 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
     const row = activeByConversation.get(conversationId)
     if (row) Object.assign(row, { heartbeatAt: new Date(Date.now() - ms) })
   }
-  return { repo, created, finalized, progress, ageActiveTurn, heartbeats }
+  return { repo, created, finalized, progress, ageActiveTurn, heartbeats, claimed, rowsById }
 }
 
 function buildRuntime(options: {
@@ -272,14 +293,18 @@ function buildRuntime(options: {
   deniedPaths?: string[]
   /** C1: időközben megérkezett, még meg nem jelenített delegációs ticketek. */
   returnedDelegations?: Array<{ id: string; title: string; payload: Record<string, unknown> }>
+  /** #516: saját indító (pl. „másik processz" szimulálásához). */
+  launcher?: ChatTurnLauncher
+  /** #516: közös beszélgetés-tár két runtime-példány között. */
+  messages?: Array<Message & { content: string }>
 }) {
-  const messages: Array<Message & { content: string }> = []
+  const messages: Array<Message & { content: string }> = options.messages ?? []
   let seq = 0
   const conversations = {
     createConversation: async () => ({ id: 'conv-1' }),
     getConversation: async () => ({
       conversation: { id: 'conv-1', agentId: 'agent-1', projectKey: '__general__' },
-      messages: messages.map((m) => ({ ...m, content: '', contentDeletedAt: null })),
+      messages: messages.map((m) => ({ ...m, contentDeletedAt: null })),
     }),
     appendMessage: async (params: {
       role: string
@@ -384,6 +409,12 @@ function buildRuntime(options: {
     // szolgáltatásnál a chat FAIL-CLOSED módon nem indul el, ezért a fókusztesztek
     // egy korlátozás nélküli (C4 alapértékű) tenant-gráfot kapnak.
     permissiveAgentAccess(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    options.launcher,
   )
   return { runtime, messages, gatewayCalls, surfaced }
 }
@@ -415,8 +446,11 @@ async function main() {
     assert.equal(record.agentId, 'agent-1')
     assert.equal(record.agentVersion, 3)
     assert.equal(record.createdById, 'user-1')
-    assert.equal(record.status, 'running')
-    assert.ok(record.lockToken, 'az indító process azonnal claimeli a fordulót')
+    // #516: a rekord `queued`, lock nélkül jön létre; a tulajdonjogot a
+    // futtatómag szerzi meg atomi claimmel.
+    assert.equal(record.status, 'queued')
+    assert.equal(record.lockToken, undefined)
+    assert.equal((record.input as { v: number }).v, 1, 'verziózott bemenet a rekordon')
     // A rekord a forduló user-üzenetére mutat.
     const userMessageEvent = events.find((e) => e.type === 'meta')
     assert.equal(record.userMessageId, userMessageEvent?.userMessageId)
@@ -616,8 +650,9 @@ async function main() {
 
 
 
-  await test('FAIL-SOFT: a rekord létrehozásának hibája nem változtatja meg a chatet', async () => {
-    // Nem ütközés, hanem elérhetetlen rekord-tár: a chatnek ettől mennie kell.
+  await test('#516: a rekord létrehozásának hibája = nincs hamis elfogadás, nincs futás', async () => {
+    // Elérhetetlen rekord-tár: tartós bemenet nélkül a futás nem indulhat el,
+    // és a felhasználó sem kaphat „elfogadva" visszajelzést.
     const turns = fakeTurnRepository({
       failOnCreate: new Error('agent_turns tábla elérhetetlen'),
     })
@@ -626,11 +661,13 @@ async function main() {
     const events = []
     for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
 
-    // A forduló ugyanúgy végigfut és perzisztálja az agent-választ.
-    const doneEvent = events.find((e) => e.type === 'done')
-    assert.ok(doneEvent, 'a chat a rekord nélkül is done-nal zárul')
-    assert.ok(messages.some((m) => m.role === 'agent'))
-    assert.equal(turns.finalized.length, 0, 'nincs mit lezárni, ha a rekord nem jött létre')
+    assert.deepEqual(
+      events.map((e) => e.type),
+      ['error'],
+      'se turn, se meta — a kliens nem tarthatja meg elfogadottként',
+    )
+    assert.equal(messages.length, 0, 'user-üzenet sem perzisztálódik rekord nélkül')
+    assert.equal(turns.finalized.length, 0)
   })
 
   await test('a tool-loop körönként életjelet ír a forduló-rekordra', async () => {
@@ -642,10 +679,12 @@ async function main() {
 
     assert.ok(turns.heartbeats.length >= 1, 'legalább egy kör → legalább egy életjel')
     assert.equal(turns.heartbeats[0].id, 'turn-1')
+    // #516: a token a futtatómag claimjéből származik, nem a foglalásból.
+    assert.ok(turns.claimed[0]?.ownerToken, 'a futtató saját tulajdonos-tokent vált a claimkor')
     assert.equal(
       turns.heartbeats[0].lockToken,
-      turns.created[0].lockToken,
-      'az életjel a saját lock-tokenjével megy — csak a tulajdonos frissíthet',
+      turns.claimed[0].ownerToken,
+      'az életjel a saját tulajdonos-tokenjével megy — csak a tulajdonos frissíthet',
     )
   })
 
@@ -855,11 +894,158 @@ async function main() {
     )
   })
 
-  await test('bekötetlen forduló-tár esetén a chat változatlanul működik', async () => {
+  await test('#516: bekötetlen forduló-tár esetén a chat egyértelmű hibával áll le', async () => {
     const { runtime } = buildRuntime({})
     const events = []
     for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
-    assert.ok(events.some((e) => e.type === 'done'))
+    assert.deepEqual(events.map((e) => e.type), ['error'])
+  })
+
+  // ── #516: tartós bemenet + közös futtatómag ──────────────────────────────
+
+  await test('#516: a fogadás csak a rekordot, bemenetet és user-üzenetet írja — a futás a launcheré', async () => {
+    const turns = fakeTurnRepository()
+    const launched: string[] = []
+    const launcher: ChatTurnLauncher = {
+      async launch({ turnId }) {
+        launched.push(turnId)
+        return { launchId: 'launch-1' }
+      },
+    }
+    const { runtime, messages, gatewayCalls } = buildRuntime({ turns: turns.repo, launcher })
+
+    const events = []
+    for await (const event of runtime.sendMessageStream({ ...turnParams(), modelContextPrefix: '[külső app: rendelés #42]' })) {
+      events.push(event)
+    }
+
+    // A stream a tartós fogadás után lezárul (turn + meta) — ez NEM a munka vége.
+    assert.deepEqual(events.map((e) => e.type), ['turn', 'meta'])
+    assert.deepEqual(launched, ['turn-1'])
+    assert.equal(gatewayCalls.length, 0, 'a kérés-úton nincs modellhívás')
+    const row = turns.rowsById.get('turn-1')!
+    assert.equal(row.status, 'queued')
+    assert.equal(row.userMessageId, messages[0].id, 'a user-üzenet a rekordhoz kötve')
+    const input = row.input as { v: number; content: string; modelContextPrefix?: string }
+    assert.equal(input.v, 1)
+    assert.equal(input.content, 'Szia')
+    assert.equal(input.modelContextPrefix, '[külső app: rendelés #42]')
+  })
+
+  await test('#516: ÚJ PROCESSZ — a mag csak a turnId-ból, a mentett bemenetből rekonstruál és lefut', async () => {
+    const turns = fakeTurnRepository()
+    const launcher: ChatTurnLauncher = { async launch() { return { launchId: 'launch-1' } } }
+    const shared: Array<Message & { content: string }> = []
+    const requester = buildRuntime({ turns: turns.repo, launcher, messages: shared })
+    for await (const _ of requester.runtime.sendMessageStream({
+      ...turnParams(),
+      modelContextPrefix: '[külső app: rendelés #42]',
+    })) void _
+
+    // „Másik processz": friss runtime-példány, closure nélkül, ugyanaz a DB.
+    const worker = buildRuntime({ turns: turns.repo, messages: shared })
+    const events: Array<{ type: string }> = []
+    await worker.runtime.runReservedTurn({ turnId: 'turn-1', launchId: 'launch-2' }, (e) => {
+      events.push(e)
+    })
+
+    assert.ok(events.some((e) => e.type === 'done'), 'a futás done-nal zárul')
+    assert.equal(worker.gatewayCalls.length, 1, 'a worker hívja a modellt')
+    const userPrompt = worker.gatewayCalls[0].messages.find((m) => m.role === 'user')?.content ?? ''
+    assert.ok(
+      userPrompt.includes('[külső app: rendelés #42]'),
+      'a privát modellkontextus a mentett bemenetből visszakerül a promptba',
+    )
+    assert.ok(shared.some((m) => m.role === 'agent'), 'az agent-válasz a beszélgetésbe kerül')
+    const row = turns.rowsById.get('turn-1')!
+    assert.equal(row.status, 'completed')
+    assert.equal(turns.claimed.length, 1)
+    assert.notEqual(turns.claimed[0].ownerToken, 'launch-2', 'a tulajdonos-token ≠ indítási azonosító')
+    assert.equal(turns.finalized[0].assistantMessageId, shared.find((m) => m.role === 'agent')!.id)
+  })
+
+  await test('#516: dupla indítás — a második futtató claim nélkül, mellékhatás nélkül kilép', async () => {
+    const turns = fakeTurnRepository()
+    const launcher: ChatTurnLauncher = { async launch() { return { launchId: 'launch-1' } } }
+    const shared: Array<Message & { content: string }> = []
+    const requester = buildRuntime({ turns: turns.repo, launcher, messages: shared })
+    for await (const _ of requester.runtime.sendMessageStream(turnParams())) void _
+
+    const a = buildRuntime({ turns: turns.repo, messages: shared })
+    const b = buildRuntime({ turns: turns.repo, messages: shared })
+    await Promise.all([
+      a.runtime.runReservedTurn({ turnId: 'turn-1', launchId: 'launch-a' }),
+      b.runtime.runReservedTurn({ turnId: 'turn-1', launchId: 'launch-b' }),
+    ])
+
+    assert.equal(turns.claimed.length, 1, 'pontosan egy claim')
+    assert.equal(a.gatewayCalls.length + b.gatewayCalls.length, 1, 'egyetlen modellhívás')
+    assert.equal(shared.filter((m) => m.role === 'agent').length, 1, 'egyetlen agent-válasz')
+  })
+
+  await test('#516: ismeretlen bemeneti verzió egyértelmű hiba, a rekord nem claimelődik', async () => {
+    const turns = fakeTurnRepository()
+    await turns.repo.create({
+      conversationId: 'conv-1',
+      tenantId: 'tenant-1',
+      agentId: 'agent-1',
+      agentVersion: 3,
+      createdById: 'user-1',
+      status: 'queued',
+      userMessageId: 'user-msg-0',
+      input: { v: 99, content: 'x', attachmentDocumentIds: [] },
+    })
+    const { runtime, gatewayCalls } = buildRuntime({ turns: turns.repo })
+    await assert.rejects(
+      () => runtime.runReservedTurn({ turnId: 'turn-1', launchId: 'launch-1' }),
+      (e: unknown) => e instanceof StoredTurnInputError && /Ismeretlen bemeneti verzió: 99/.test(e.message),
+    )
+    assert.equal(turns.claimed.length, 0)
+    assert.equal(gatewayCalls.length, 0)
+    assert.equal(turns.rowsById.get('turn-1')!.status, 'queued')
+  })
+
+  await test('#516: tulajdonvesztés után nincs új modellhívás, és a régi tulajdonos nem ír végállapotot', async () => {
+    const turns = fakeTurnRepository()
+    // A watchdog / másik futtató a MÁSODIK életjel előtt átveszi a fordulót:
+    // token nélküli (reclaim) lezárás, ahogy a watchdog teszi.
+    const originalHeartbeat = turns.repo.heartbeat.bind(turns.repo)
+    let lostAtCall = 0
+    turns.repo.heartbeat = async (id, token, now) => {
+      if (turns.heartbeats.length === 1) {
+        await turns.repo.finalize(id, { status: 'failed', reason: 'watchdog', error: 'reclaimed' })
+        lostAtCall = turns.heartbeats.length + 1
+      }
+      return originalHeartbeat(id, token, now)
+    }
+    const shared: Array<Message & { content: string }> = []
+    const { runtime, gatewayCalls } = buildRuntime({
+      turns: turns.repo,
+      withTools: true,
+      messages: shared,
+      // 3 kör: két tool-hívás, majd szöveg — de a 2. körnél elveszik a tulajdonjog.
+      modelToolCalls: [
+        [{ id: 'c1', name: 'file_read', input: { path: 'a.txt' } }],
+        [{ id: 'c2', name: 'file_read', input: { path: 'b.txt' } }],
+        undefined,
+      ],
+    })
+    const events: Array<{ type: string; message?: string }> = []
+    for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
+
+    assert.equal(lostAtCall, 2, 'a tulajdonjog a 2. életjelnél veszett el')
+    assert.equal(gatewayCalls.length, 1, 'a tulajdonvesztés után nincs új modellhívás')
+    const errorEvent = events.find((e) => e.type === 'error')
+    assert.ok(errorEvent && /tulajdonjoga elveszett/.test(errorEvent.message ?? ''))
+    const row = turns.rowsById.get('turn-1')!
+    assert.equal(row.status, 'failed')
+    assert.equal(row.reason, 'watchdog', 'a régi tulajdonos nem írja felül a végállapotot')
+    assert.equal(
+      turns.finalized.filter((f) => f.id === 'turn-1').length,
+      1,
+      'csak a reclaim lezárása íródott',
+    )
+    assert.ok(!shared.some((m) => m.role === 'agent'), 'a régi tulajdonos nem ír lezáró üzenetet')
   })
 
   if (failures > 0) {
