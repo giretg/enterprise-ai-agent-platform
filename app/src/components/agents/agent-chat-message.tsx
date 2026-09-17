@@ -466,7 +466,7 @@ function AgentActivityPanel({
   // erőltetjük ki a nyitást, hogy a user választása megmaradjon.
   const [open, setOpen] = useState(false)
   const running = activities.find((activity) => activity.status === 'running')
-  const activelyWorking = running && !stalled
+  const activelyWorking = Boolean(running) && !stalled
   const latest = running ?? activities[activities.length - 1]
   const hasError = activities.some((activity) => activity.status === 'error')
   const currentTaskTitle = running ? activityDisplayTitle(running) : null
