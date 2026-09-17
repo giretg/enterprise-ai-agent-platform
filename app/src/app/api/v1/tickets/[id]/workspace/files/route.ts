@@ -19,6 +19,12 @@ import {
 import { readTicketPreferredSkillVersionIds } from '@/lib/task-only-ticket'
 import { resolveInlineWorkspaceHtml } from '@/lib/resolve-inline-workspace-html'
 import { resolveOfficeWorkspaceFile } from '@/lib/resolve-office-workspace-file'
+import {
+  readBoundedFormData,
+  RequestBodyTooLargeError,
+  WORKSPACE_UPLOAD_MAX_BYTES,
+  WORKSPACE_MULTIPART_BODY_MAX_BYTES,
+} from '@/lib/bounded-form-data'
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ success: false, error: message }, { status })
@@ -208,8 +214,10 @@ export async function POST(
 
   let formData: FormData
   try {
-    formData = await request.formData()
-  } catch {
+    // Törzs-szintű OOM-kapu: a plafon a memóriába pufferelés BEFEJEZÉSE előtt fut.
+    formData = await readBoundedFormData(request, WORKSPACE_MULTIPART_BODY_MAX_BYTES)
+  } catch (e) {
+    if (e instanceof RequestBodyTooLargeError) return jsonError('File exceeds 50 MB limit', 413)
     return jsonError('Expected multipart/form-data', 400)
   }
 
@@ -219,8 +227,8 @@ export async function POST(
   const pathField = formData.get('path')
   const filePath = typeof pathField === 'string' && pathField.trim() ? pathField.trim() : file.name
 
-  const MAX = 50 * 1024 * 1024
-  if (file.size > MAX) return jsonError('File exceeds 50 MB limit', 413)
+  // Pontos per-fájl kapu (a törzs-kapu ráhagyással enged; ez a tényleges 50 MB-ot vágja).
+  if (file.size > WORKSPACE_UPLOAD_MAX_BYTES) return jsonError('File exceeds 50 MB limit', 413)
 
   const storage = getStorage()
 
