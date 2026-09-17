@@ -165,11 +165,28 @@ export async function refreshActiveDatabaseMode(
  * `cpu: 1` mellett ez 3 kapcsolat, miközben a `concurrency` 40 — a poolra váró
  * kérések `pool_timeout` hibába futnának. A poolt ezért explicitté tesszük, de a
  * connection stringben megadott értéket sosem írjuk felül.
+ *
+ * A `connection_limit` szándékosan alacsony (serverless-hangolás): minél kevesebb
+ * kapcsolatot tart nyitva egy instance, annál gyakrabban forog mindegyik, így
+ * ritkábban éri el őket a Neon pooler `server_idle_timeout`-ja / a compute
+ * auto-suspend. A "holtan hagyott" pooled kapcsolat a `prisma:error Error in
+ * PostgreSQL connection: Error { kind: Closed }` fő forrása. Ha burst alatt kevés
+ * az 5 kapcsolat (P2024 pool_timeout a logban), a `PRISMA_CONNECTION_LIMIT`
+ * env-vel emelhető deploy nélkül is.
  */
 const POOL_DEFAULTS: Record<string, string> = {
-  connection_limit: process.env.PRISMA_CONNECTION_LIMIT?.trim() || '10',
+  connection_limit: process.env.PRISMA_CONNECTION_LIMIT?.trim() || '5',
   pool_timeout: '20',
   connect_timeout: '10',
+}
+
+/**
+ * Neon pooled (PgBouncer, transaction mode) végpont — a `-pooler` aldomain a
+ * megkülönböztető jel (`ep-xxx-pooler.<régió>.aws.neon.tech`). A direkt végponton
+ * (migráció, `DIRECT_URL`) nincs `-pooler`, oda nem tesszük ki a flaget.
+ */
+function isNeonPooledHost(hostname: string): boolean {
+  return /-pooler\./.test(hostname)
 }
 
 export function applyPoolDefaults(url: string): string {
@@ -177,6 +194,15 @@ export function applyPoolDefaults(url: string): string {
     const parsed = new URL(url)
     for (const [key, value] of Object.entries(POOL_DEFAULTS)) {
       if (!parsed.searchParams.has(key)) parsed.searchParams.set(key, value)
+    }
+    // PgBouncer transaction-pooling mögött a Prisma nevesített prepared statement
+    // cache-e ütközik (`prepared statement "s0" already exists`), amit a pooler a
+    // szerver-kapcsolat bontásával "büntet" → a query engine `kind: Closed`-ot lát
+    // a következő lekérdezésnél. A `pgbouncer=true` kikapcsolja a nevesített
+    // prepared statementeket. Csak a runtime (pooled) kliensre hat: a migráció a
+    // `DIRECT_URL`-t nyersen, ezen a függvényen kívül használja.
+    if (isNeonPooledHost(parsed.hostname) && !parsed.searchParams.has('pgbouncer')) {
+      parsed.searchParams.set('pgbouncer', 'true')
     }
     return parsed.toString()
   } catch {
