@@ -71,6 +71,7 @@ function formatSkipReasons(skipReasons: Record<string, number>): string | null {
 function formatCycleRunMessage(summary: {
   reclaimedDispatches: number
   reclaimedAgentTurns: number
+  chatTurnLaunches: { scanned: number; launched: number; failed: number }
   materializedScheduledTasks: number
   monitorSweep: { ran: boolean; escalated: number; openedTickets: number }
   workspacePurge: { purgedTickets: number }
@@ -103,12 +104,17 @@ function formatCycleRunMessage(summary: {
   return [
     `${summary.reclaimedDispatches} elakadt futás visszavéve`,
     `${summary.reclaimedAgentTurns} chat-forduló watchdog-lezárás`,
+    summary.chatTurnLaunches.launched + summary.chatTurnLaunches.failed > 0
+      ? `${summary.chatTurnLaunches.launched} chat-indítás, ${summary.chatTurnLaunches.failed} végleges indítási hiba`
+      : null,
     `${summary.materializedScheduledTasks} ütemezett task materializálva`,
     monitorPart,
     `${summary.workspacePurge.purgedTickets} workspace takarítva`,
     `megőrzés: ${summary.conversationRetention.sweptConversations} beszélgetés ürítve (${summary.conversationRetention.deletedMessages} üzenet)`,
     dispatchPart,
-  ].join(' · ')
+  ]
+    .filter(Boolean)
+    .join(' · ')
 }
 
 /** `slate` = szándékosan kikapcsolt folyamat (nem hiba), szemben a `red` = váratlanul áll. */

@@ -1872,6 +1872,9 @@ export interface ConversationRepository {
  */
 export const ACTIVE_AGENT_TURN_STATUSES = ['queued', 'running', 'streaming'] as const
 
+/** Van futási tulajdonosa — a 120s watchdog csak ezeket zárja; a `queued` az indítás-helyreállításé (#517). */
+export const OWNED_AGENT_TURN_STATUSES = ['running', 'streaming'] as const
+
 export type ActiveAgentTurnStatus = (typeof ACTIVE_AGENT_TURN_STATUSES)[number]
 
 export type TerminalAgentTurnStatus = Exclude<AgentTurnStatus, ActiveAgentTurnStatus>
@@ -1905,6 +1908,15 @@ export type CreateAgentTurnInput = {
   lockedAt?: Date | null
   /** #516 — verziózott tartós bemenet (`chat-turn-input.ts`). */
   input?: Prisma.InputJsonValue
+  /** #517 — ha a teszt/foglalás már tudja az indítási azonosítót. */
+  launchId?: string | null
+}
+
+export type RecordChatTurnLaunchAttemptInput = {
+  launchId: string
+  nextRetryAt: Date
+  incrementAttempt?: boolean
+  providerRef?: string | null
 }
 
 export type FinalizeAgentTurnInput = {
@@ -1973,11 +1985,21 @@ export interface AgentTurnRepository {
    */
   acquireLock(id: string, lockToken: string, now: Date): Promise<AgentTurn | null>
   /**
-   * #516 — atomi `queued → running` munkafelvétel a futtató SAJÁT
-   * tulajdonos-tokenjével. `null` = már más claimelte, vagy a forduló nem
-   * `queued` (terminális / visszavont) — a hívó mellékhatás nélkül kilép.
+   * #516/#517 — atomi `queued → running` munkafelvétel a futtató SAJÁT
+   * tulajdonos-tokenjével, a rekord aktuális `launchId`-jéhez kötve.
+   * `null` = már más claimelte, a forduló nem `queued`, vagy a launchId
+   * lejárt/más — a hívó mellékhatás nélkül kilép.
    */
-  claim(id: string, ownerToken: string, now: Date): Promise<AgentTurn | null>
+  claim(id: string, ownerToken: string, now: Date, launchId: string): Promise<AgentTurn | null>
+  /**
+   * #517 — tartós attempt rögzítése queued fordulón. `null` = már nem queued.
+   */
+  recordLaunchAttempt(id: string, data: RecordChatTurnLaunchAttemptInput): Promise<AgentTurn | null>
+  /**
+   * #517 — indításra érett queued fordulók (van user-üzenet, nincs Stop, a
+   * következő próbálkozás ideje lejárt vagy még nem volt attempt).
+   */
+  findQueuedForLaunch(now: Date, limit: number): Promise<AgentTurn[]>
   /** Csak a lock birtokosa engedheti el; a státuszt nem érinti. */
   releaseLock(id: string, lockToken: string): Promise<void>
   /** Csak a lock birtokosa üthet szívet — a stale-reclaim így nem írható vissza. */
@@ -2006,7 +2028,7 @@ export interface AgentTurnRepository {
    * reclaim-utak (watchdog, elengedés) zárnak.
    */
   finalize(id: string, data: FinalizeAgentTurnInput, lockToken?: string): Promise<AgentTurn | null>
-  /** Watchdog: aktív, de a `heartbeatAt`-je a küszöbnél régebbi fordulók. */
+  /** Watchdog: tulajdonolt (running/streaming), de a `heartbeatAt`-je a küszöbnél régebbi fordulók. A `queued` nem stale running. */
   findStale(cutoff: Date, limit: number): Promise<AgentTurn[]>
   /**
    * A beszélgetés legutóbbi terminális fordulója (folytatás-prompthoz).

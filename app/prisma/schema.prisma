@@ -2208,6 +2208,16 @@ model AgentTurn {
    */
   input              Json?
 
+  /**
+   * #517 — tartós indítási kísérlet. A `launchId` az indítás korrelációja,
+   * nem a tulajdonos-token: a claim csak a rekord aktuális `launchId`-jével
+   * sikerül, a lejárt attempt későn érkező workere nem indul el.
+   */
+  launchId           String?   @map("launch_id") @db.Uuid
+  launchAttemptCount Int       @default(0) @map("launch_attempt_count")
+  launchNextRetryAt  DateTime? @map("launch_next_retry_at") @db.Timestamptz
+  launchProviderRef  String?   @map("launch_provider_ref")
+
   // Haladás / reconnect-snapshot (§5.3)
   partialText String @default("") @map("partial_text")
   activities  Json   @default("[]")
@@ -2242,6 +2252,7 @@ model AgentTurn {
 
   @@index([conversationId, status])
   @@index([status, heartbeatAt])
+  @@index([status, launchNextRetryAt])
   @@map("agent_turns")
 }
 

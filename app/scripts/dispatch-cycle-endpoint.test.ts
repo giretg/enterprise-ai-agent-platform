@@ -32,6 +32,7 @@ const SUMMARY: DispatchCycleSummary = {
   reclaimedDispatches: 1,
   reclaimedScheduledTasks: 0,
   reclaimedAgentTurns: 0,
+  chatTurnLaunches: { scanned: 0, launched: 0, failed: 0 },
   channelTurns: { reclaimed: 0, processed: 2 },
   conversationRetention: { sweptConversations: 0, deletedMessages: 0 },
   surrogateVaultGc: { deletedMappings: 0, conversationIds: [] },

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Message, Prisma, ToolCall } from '@prisma/client'
 import {
   ActiveAgentTurnExistsError,
+  OWNED_AGENT_TURN_STATUSES,
   type AgentRepository,
   type AgentTurnRepository,
   type AuditRepository,
@@ -116,6 +117,11 @@ import {
 } from './chat-turn-input'
 import { createInProcessChatTurnLauncher, type ChatTurnLauncher } from './chat-turn-launcher'
 import {
+  launchAcceptedChatTurn,
+  recoverQueuedChatTurns,
+  type RecoverQueuedChatTurnsSummary,
+} from './chat-turn-dispatch'
+import {
   isInternalWorkspaceFile,
   referencedWorkspaceFiles,
 } from '@/lib/workspace-file-visibility'
@@ -127,9 +133,6 @@ import { readTicketPromptText } from '@/lib/wiki-ticket-payload'
  * runner process-lokális védelme; a beszélgetés-szintű „egy aktív forduló"
  * invariánst (D7) a küldés elején álló foglalás intézi (#61).
  */
-const DUPLICATE_RUN_MESSAGE =
-  'Ez a forduló már fut. Várd meg, amíg elkészül, vagy állítsd le, mielőtt újat küldesz.'
-
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
 const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
 
@@ -789,12 +792,13 @@ export class AgentChatRuntime {
     // Ütközés: vagy tényleg fut egy forduló, vagy egy ELHALT rekord blokkol.
     const active = await turns.findActiveByConversation(params.conversationId).catch(() => null)
     if (active) {
-      // Ha az életjel ideje hiányzik vagy értelmezhetetlen, a fordulót ÉLŐNEK
-      // tekintjük. Egy téves 409-et a felhasználó és a watchdog (#64) is orvosol;
-      // egy téves visszavétel viszont két párhuzamos futást engedne ugyanarra a
-      // beszélgetésre — pont azt, amit a D7 kizár.
+      // #517: a queued fordulónak nincs futási tulajdonosa — a 120s heartbeat
+      // watchdog csak running/streaming loopra vonatkozik. Queued = indításra vár,
+      // D7 szerint a beszélgetés foglalt (409), nem „elhalt futás".
+      const owned = (OWNED_AGENT_TURN_STATUSES as readonly string[]).includes(active.status)
       const heartbeatAt = active.heartbeatAt?.getTime?.()
       const alive =
+        !owned ||
         typeof heartbeatAt !== 'number' ||
         Number.isNaN(heartbeatAt) ||
         heartbeatAt > Date.now() - resolveStaleTurnMs()
@@ -1306,28 +1310,29 @@ export class AgentChatRuntime {
     }
 
     // Tartós fogadás megvan: a rekord, a bemenet és a user-üzenet összekötve.
-    // Az indítás innentől a launcher dolga; a mag a DB-ből tölt.
-    let launched: { launchId: string } | null
-    try {
-      launched = await this.launcher.launch({ turnId })
-    } catch (error) {
-      await this.releaseReservedTurnRecord(
-        turnRecord,
-        error instanceof Error ? error.message : 'Turn launch failed',
-      )
+    // Az indítás innentől a launcher + egyeztető ciklus dolga; a gyors
+    // próbálkozás csak optimalizáció. Átmeneti / elveszett válasz NEM zárja
+    // le a fordulót — a ciklus egyeztet és újrapróbál (#517).
+    const accepted = await this.requireTurnStore().findById(turnId)
+    if (!accepted) {
       return {
         kind: 'error',
-        error: error instanceof Error ? error : new Error('Turn launch failed'),
+        error: new Error('A forduló nem található a fogadás után.'),
         meta: { conversationId, userMessageId: userMessage.id },
       }
     }
-    if (!launched) {
-      // Ugyanarra a fordulóra már fut futtatás ebben a processben: nem indítunk
-      // másodikat. A futás el sem indult, tehát a rekordot senki sem fogja lezárni.
-      await this.releaseReservedTurnRecord(turnRecord, DUPLICATE_RUN_MESSAGE)
+    const launched = await launchAcceptedChatTurn(
+      {
+        turns: this.requireTurnStore(),
+        launcher: this.launcher,
+        conversations: this.conversations,
+      },
+      accepted,
+    )
+    if (launched.kind === 'failed') {
       return {
         kind: 'error',
-        error: new Error(DUPLICATE_RUN_MESSAGE),
+        error: new Error(launched.error),
         meta: { conversationId, userMessageId: userMessage.id },
       }
     }
@@ -1339,6 +1344,23 @@ export class AgentChatRuntime {
       userMessageId: userMessage.id,
       subscribe: agentTurnRunner.isRunning(turnId) ? () => agentTurnRunner.subscribe(turnId)! : null,
     }
+  }
+
+  /**
+   * #517 — a dispatch-ciklus hívja: tartós, még el nem indult queued fordulók
+   * egyeztetése és indítása. Stale running loopot nem játssza újra.
+   */
+  async recoverQueuedTurns(input: {
+    limit?: number
+    now?: Date
+  } = {}): Promise<RecoverQueuedChatTurnsSummary> {
+    return recoverQueuedChatTurns({
+      turns: this.requireTurnStore(),
+      launcher: this.launcher,
+      conversations: this.conversations,
+      now: input.now,
+      limit: input.limit,
+    })
   }
 
   /**
@@ -1395,10 +1417,10 @@ export class AgentChatRuntime {
     }
 
     const ownerToken = randomUUID()
-    const claimed = await turns.claim(turnId, ownerToken, new Date())
+    const claimed = await turns.claim(turnId, ownerToken, new Date(), launchId)
     if (!claimed) {
-      // Más futtató már átvette, vagy a forduló időközben terminális lett
-      // (Stop / watchdog). Mellékhatás nélkül kilépünk — a vesztes nem futtat.
+      // Más futtató már átvette, a launchId lejárt, vagy a forduló időközben
+      // terminális lett (Stop / watchdog). Mellékhatás nélkül kilépünk.
       console.warn('[agent-chat] forduló-claim sikertelen — más tulajdonos vagy lezárt forduló', {
         turnId,
         launchId,

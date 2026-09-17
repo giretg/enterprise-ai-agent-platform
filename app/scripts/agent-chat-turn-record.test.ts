@@ -177,6 +177,11 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
         // A séma szerint NOT NULL, `now()` alapértékkel — a foglalás
         // stale-ellenőrzése ezt olvassa, ezért a fake-ben is jelen kell lennie.
         heartbeatAt: new Date(),
+        launchId: data.launchId ?? null,
+        launchAttemptCount: 0,
+        launchNextRetryAt: null,
+        launchProviderRef: null,
+        cancelRequested: false,
       } as unknown as AgentTurn
       activeByConversation.set(data.conversationId, row)
       rowsById.set(id, row)
@@ -203,12 +208,38 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
     async acquireLock() {
       return null
     },
-    async claim(id, ownerToken, now) {
+    async claim(id, ownerToken, now, launchId) {
       const row = rowsById.get(id)
-      if (!row || row.status !== 'queued' || row.lockToken !== null) return null
+      if (!row || row.status !== 'queued' || row.lockToken !== null || row.launchId !== launchId) {
+        return null
+      }
       claimed.push({ id, ownerToken })
       Object.assign(row, { status: 'running', lockToken: ownerToken, lockedAt: now, heartbeatAt: now })
       return row
+    },
+    async recordLaunchAttempt(id, data) {
+      const row = rowsById.get(id)
+      if (!row || row.status !== 'queued') return null
+      Object.assign(row, {
+        launchId: data.launchId,
+        launchNextRetryAt: data.nextRetryAt,
+        launchAttemptCount: data.incrementAttempt
+          ? (row.launchAttemptCount ?? 0) + 1
+          : row.launchAttemptCount,
+        ...(data.providerRef !== undefined ? { launchProviderRef: data.providerRef } : {}),
+      })
+      return row
+    },
+    async findQueuedForLaunch(now, limit) {
+      return [...rowsById.values()]
+        .filter(
+          (row) =>
+            row.status === 'queued' &&
+            row.userMessageId &&
+            !row.cancelRequested &&
+            (row.launchNextRetryAt == null || row.launchNextRetryAt <= now),
+        )
+        .slice(0, limit)
     },
     async releaseLock() {},
     async heartbeat(id, lockToken, now) {
@@ -648,6 +679,28 @@ async function main() {
     assert.equal(turns.finalized.length, 0, 'élő fordulót nem zárunk le')
   })
 
+  await test('#517: queued, régi heartbeatű forduló nem watchdog — 409, a launch-helyreállításé', async () => {
+    const turns = fakeTurnRepository()
+    const { runtime } = buildRuntime({ turns: turns.repo })
+    await turns.repo.create({
+      conversationId: 'conv-1',
+      tenantId: null,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      createdById: 'user-1',
+      status: 'queued',
+      userMessageId: 'msg-queued',
+      input: { v: 1, content: 'Szia', attachmentDocumentIds: [] },
+    })
+    turns.ageActiveTurn('conv-1', 10 * 60_000)
+
+    const events = []
+    for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
+
+    assert.ok(events.some((e) => e.type === 'conflict'), 'a queued foglalás ütközést ad')
+    assert.equal(turns.finalized.length, 0, 'queued sort nem zár a 120s watchdog')
+  })
+
 
 
   await test('#516: a rekord létrehozásának hibája = nincs hamis elfogadás, nincs futás', async () => {
@@ -909,7 +962,10 @@ async function main() {
     const launcher: ChatTurnLauncher = {
       async launch({ turnId }) {
         launched.push(turnId)
-        return { launchId: 'launch-1' }
+        return { launchId: 'launch-1', outcome: 'accepted' }
+      },
+      async reconcile() {
+        return { state: 'not_found' }
       },
     }
     const { runtime, messages, gatewayCalls } = buildRuntime({ turns: turns.repo, launcher })
@@ -934,7 +990,14 @@ async function main() {
 
   await test('#516: ÚJ PROCESSZ — a mag csak a turnId-ból, a mentett bemenetből rekonstruál és lefut', async () => {
     const turns = fakeTurnRepository()
-    const launcher: ChatTurnLauncher = { async launch() { return { launchId: 'launch-1' } } }
+    const launcher: ChatTurnLauncher = {
+      async launch() {
+        return { launchId: 'launch-1', outcome: 'accepted' }
+      },
+      async reconcile() {
+        return { state: 'not_found' }
+      },
+    }
     const shared: Array<Message & { content: string }> = []
     const requester = buildRuntime({ turns: turns.repo, launcher, messages: shared })
     for await (const _ of requester.runtime.sendMessageStream({
@@ -943,9 +1006,10 @@ async function main() {
     })) void _
 
     // „Másik processz": friss runtime-példány, closure nélkül, ugyanaz a DB.
+    const storedLaunchId = turns.rowsById.get('turn-1')!.launchId!
     const worker = buildRuntime({ turns: turns.repo, messages: shared })
     const events: Array<{ type: string }> = []
-    await worker.runtime.runReservedTurn({ turnId: 'turn-1', launchId: 'launch-2' }, (e) => {
+    await worker.runtime.runReservedTurn({ turnId: 'turn-1', launchId: storedLaunchId }, (e) => {
       events.push(e)
     })
 
@@ -960,22 +1024,30 @@ async function main() {
     const row = turns.rowsById.get('turn-1')!
     assert.equal(row.status, 'completed')
     assert.equal(turns.claimed.length, 1)
-    assert.notEqual(turns.claimed[0].ownerToken, 'launch-2', 'a tulajdonos-token ≠ indítási azonosító')
+    assert.notEqual(turns.claimed[0].ownerToken, storedLaunchId, 'a tulajdonos-token ≠ indítási azonosító')
     assert.equal(turns.finalized[0].assistantMessageId, shared.find((m) => m.role === 'agent')!.id)
   })
 
   await test('#516: dupla indítás — a második futtató claim nélkül, mellékhatás nélkül kilép', async () => {
     const turns = fakeTurnRepository()
-    const launcher: ChatTurnLauncher = { async launch() { return { launchId: 'launch-1' } } }
+    const launcher: ChatTurnLauncher = {
+      async launch() {
+        return { launchId: 'launch-1', outcome: 'accepted' }
+      },
+      async reconcile() {
+        return { state: 'not_found' }
+      },
+    }
     const shared: Array<Message & { content: string }> = []
     const requester = buildRuntime({ turns: turns.repo, launcher, messages: shared })
     for await (const _ of requester.runtime.sendMessageStream(turnParams())) void _
 
+    const launchId = turns.rowsById.get('turn-1')!.launchId!
     const a = buildRuntime({ turns: turns.repo, messages: shared })
     const b = buildRuntime({ turns: turns.repo, messages: shared })
     await Promise.all([
-      a.runtime.runReservedTurn({ turnId: 'turn-1', launchId: 'launch-a' }),
-      b.runtime.runReservedTurn({ turnId: 'turn-1', launchId: 'launch-b' }),
+      a.runtime.runReservedTurn({ turnId: 'turn-1', launchId }),
+      b.runtime.runReservedTurn({ turnId: 'turn-1', launchId }),
     ])
 
     assert.equal(turns.claimed.length, 1, 'pontosan egy claim')
@@ -1070,6 +1142,27 @@ async function main() {
       'csak a reclaim lezárása íródott',
     )
     assert.ok(!shared.some((m) => m.role === 'agent'), 'a régi tulajdonos nem ír lezáró üzenetet')
+  })
+
+  await test('#517: átmeneti launch-hiba a fogadás után nem zárja le a fordulót', async () => {
+    const turns = fakeTurnRepository()
+    const launcher: ChatTurnLauncher = {
+      async launch() {
+        throw new Error('upstream timeout')
+      },
+      async reconcile() {
+        return { state: 'not_found' }
+      },
+    }
+    const { runtime } = buildRuntime({ turns: turns.repo, launcher })
+    const events = []
+    for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
+    assert.deepEqual(events.map((e) => e.type), ['turn', 'meta'])
+    const row = turns.rowsById.get('turn-1')!
+    assert.equal(row.status, 'queued')
+    assert.ok(row.launchId)
+    assert.equal(row.launchAttemptCount, 1)
+    assert.equal(turns.finalized.length, 0)
   })
 
   if (failures > 0) {

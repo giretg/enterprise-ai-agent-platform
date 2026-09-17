@@ -31,6 +31,8 @@ export type DispatchCycleSummary = {
   reclaimedScheduledTasks: number
   /** Watchdog: elavult heartbeatű chat-fordulók lezárása (issue #64 / D10). */
   reclaimedAgentTurns: number
+  /** #517 — tartós, még el nem indult chat-fordulók egyeztetése / indítása. */
+  chatTurnLaunches: { scanned: number; launched: number; failed: number }
   /**
    * A worker MÁSODIK munkatípusa (#73, D8): a bekötött Telegram-üzenetek forduló-sora. A
    * `reclaimed` a crash-elakadt `running` sorok visszatétele, a `processed` a lezavart fordulók.
@@ -70,6 +72,7 @@ const EMPTY_SUMMARY: DispatchCycleSummary = {
   reclaimedDispatches: 0,
   reclaimedScheduledTasks: 0,
   reclaimedAgentTurns: 0,
+  chatTurnLaunches: { scanned: 0, launched: 0, failed: 0 },
   channelTurns: { reclaimed: 0, processed: 0 },
   conversationRetention: { sweptConversations: 0, deletedMessages: 0 },
   surrogateVaultGc: { deletedMappings: 0, conversationIds: [] },
@@ -120,6 +123,22 @@ export async function runDispatchCycle(
       conversations: services.conversations,
     })
     const reclaimedAgentTurns = reclaimedTurns.filter((r) => r.status === 'reclaimed').length
+
+    // #517 — tartós queued chat-fordulók indítása / egyeztetése. Fail-soft:
+    // a ticket-dispatch ettől nem dőlhet el. Stale running loopot NEM játssza újra.
+    let chatTurnLaunches: DispatchCycleSummary['chatTurnLaunches'] = {
+      scanned: 0,
+      launched: 0,
+      failed: 0,
+    }
+    try {
+      chatTurnLaunches = await services.agentChat.recoverQueuedTurns({ limit: batchLimit })
+    } catch (error) {
+      console.error(
+        '[dispatch-cycle] chat-turn launch recover error:',
+        error instanceof Error ? error.message : error,
+      )
+    }
 
     // Csatorna-forduló sor (#73/#74, D8): a worker második munkatípusa — a bejövő Telegram-
     // csatorna-fordulók 1:1 agent-chat feldolgozása. A crash-elakadt `running` sorok visszavétele
@@ -269,6 +288,7 @@ export async function runDispatchCycle(
       reclaimedDispatches,
       reclaimedScheduledTasks,
       reclaimedAgentTurns,
+      chatTurnLaunches,
       channelTurns,
       conversationRetention,
       surrogateVaultGc,

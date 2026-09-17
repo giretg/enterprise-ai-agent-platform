@@ -92,6 +92,11 @@ async function runDispatchCycle(ticketId?: string) {
         `[dispatcher] watchdog closed ${summary.reclaimedAgentTurns} stale agent turn(s)`,
       )
     }
+    if (summary.chatTurnLaunches.launched > 0 || summary.chatTurnLaunches.failed > 0) {
+      console.log(
+        `[dispatcher] chat-turn launch: ${summary.chatTurnLaunches.launched} started, ${summary.chatTurnLaunches.failed} failed (${summary.chatTurnLaunches.scanned} scanned)`,
+      )
+    }
     if (summary.channelTurns.reclaimed > 0) {
       console.log(`[dispatcher] reclaimed ${summary.channelTurns.reclaimed} stale channel turn(s)`)
     }

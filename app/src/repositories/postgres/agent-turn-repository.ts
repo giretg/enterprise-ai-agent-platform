@@ -3,10 +3,12 @@ import type { AgentTurn } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import {
   ACTIVE_AGENT_TURN_STATUSES,
+  OWNED_AGENT_TURN_STATUSES,
   ActiveAgentTurnExistsError,
   type AgentTurnRepository,
   type CreateAgentTurnInput,
   type FinalizeAgentTurnInput,
+  type RecordChatTurnLaunchAttemptInput,
   type UpdateAgentTurnProgressInput,
 } from '../interfaces'
 
@@ -48,6 +50,7 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
           lockToken: data.lockToken ?? null,
           lockedAt: data.lockedAt ?? null,
           ...(data.input !== undefined ? { input: data.input } : {}),
+          ...(data.launchId !== undefined ? { launchId: data.launchId } : {}),
         },
       })
     } catch (error) {
@@ -112,13 +115,43 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
     return this.findById(id)
   }
 
-  async claim(id: string, ownerToken: string, now: Date): Promise<AgentTurn | null> {
+  async claim(id: string, ownerToken: string, now: Date, launchId: string): Promise<AgentTurn | null> {
     const result = await prisma.agentTurn.updateMany({
-      where: { id, status: 'queued', lockToken: null },
+      where: { id, status: 'queued', lockToken: null, launchId },
       data: { status: 'running', lockToken: ownerToken, lockedAt: now, heartbeatAt: now, startedAt: now },
     })
     if (result.count !== 1) return null
     return this.findById(id)
+  }
+
+  async recordLaunchAttempt(
+    id: string,
+    data: RecordChatTurnLaunchAttemptInput,
+  ): Promise<AgentTurn | null> {
+    const result = await prisma.agentTurn.updateMany({
+      where: { id, status: 'queued' },
+      data: {
+        launchId: data.launchId,
+        launchNextRetryAt: data.nextRetryAt,
+        ...(data.incrementAttempt ? { launchAttemptCount: { increment: 1 } } : {}),
+        ...(data.providerRef !== undefined ? { launchProviderRef: data.providerRef } : {}),
+      },
+    })
+    if (result.count !== 1) return null
+    return this.findById(id)
+  }
+
+  async findQueuedForLaunch(now: Date, limit: number): Promise<AgentTurn[]> {
+    return prisma.agentTurn.findMany({
+      where: {
+        status: 'queued',
+        userMessageId: { not: null },
+        cancelRequested: false,
+        OR: [{ launchNextRetryAt: null }, { launchNextRetryAt: { lte: now } }],
+      },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+    })
   }
 
   async releaseLock(id: string, lockToken: string): Promise<void> {
@@ -224,7 +257,7 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
   async findStale(cutoff: Date, limit: number): Promise<AgentTurn[]> {
     return prisma.agentTurn.findMany({
       where: {
-        status: { in: [...ACTIVE_AGENT_TURN_STATUSES] },
+        status: { in: [...OWNED_AGENT_TURN_STATUSES] },
         heartbeatAt: { lte: cutoff },
       },
       orderBy: { heartbeatAt: 'asc' },
