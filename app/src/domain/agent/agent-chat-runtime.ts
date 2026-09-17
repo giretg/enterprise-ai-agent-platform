@@ -109,7 +109,11 @@ import {
   type TurnSnapshotFlush,
 } from './agent-turn-snapshot'
 import { resolveStaleTurnMs, closeTurnAsWatchdog } from './agent-turn-watchdog'
-import { buildStoredTurnInput, parseStoredTurnInput } from './chat-turn-input'
+import {
+  buildStoredTurnInput,
+  parseStoredTurnInput,
+  StoredTurnInputError,
+} from './chat-turn-input'
 import { createInProcessChatTurnLauncher, type ChatTurnLauncher } from './chat-turn-launcher'
 import {
   isInternalWorkspaceFile,
@@ -1357,10 +1361,37 @@ export class AgentChatRuntime {
     const record = await turns.findById(turnId)
     if (!record) throw new Error(`A forduló nem található: ${turnId}`)
     // A bemenet ellenőrzése a claim ELŐTT: hiányos / ismeretlen verziójú
-    // rekordot nem veszünk át, hogy ne zárjuk le tévesen.
-    const input = parseStoredTurnInput(record.input)
-    if (!record.userMessageId) {
-      throw new Error('A forduló mentett bemenetéhez nem tartozik user-üzenet.')
+    // rekordot nem veszünk át (ne fusson más kontextussal). A hiba viszont
+    // TERMINÁLIS — queued-en hagyni D7-zárolná a beszélgetést a watchdogig.
+    let input
+    try {
+      input = parseStoredTurnInput(record.input)
+      if (!record.userMessageId) {
+        throw new StoredTurnInputError('A forduló mentett bemenetéhez nem tartozik user-üzenet.')
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'A forduló mentett bemenete érvénytelen.'
+      emit({ type: 'error', message })
+      const failed: StreamTurnContext = {
+        conversationId: record.conversationId,
+        userMessageCreatedAt: record.startedAt,
+        agentId: record.agentId,
+        agentVersion: record.agentVersion,
+        createdById: record.createdById,
+        model: '',
+        activities: [],
+        completedReply: null,
+        finalized: false,
+        turnRecordId: turnId,
+        turnRecordLockToken: null,
+        turnRecordClosed: false,
+        lastHeartbeatAt: Date.now(),
+        ownershipLost: false,
+      }
+      await this.persistFailedTurn(failed, message)
+      await this.closeTurnRecord(failed, { status: 'failed', reason: 'error', error: message })
+      return
     }
 
     const ownerToken = randomUUID()
