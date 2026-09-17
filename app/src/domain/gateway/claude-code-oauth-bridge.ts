@@ -14,6 +14,7 @@ import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from 'no
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { GatewayMessage, GatewayToolCall, ToolDefinition } from './model-gateway'
+import { ModelCallAbortedError } from './fallback-chain'
 
 /** A Claude Code CLI nyilvános OAuth kliens-azonosítója (refresh flow). */
 export const CLAUDE_CODE_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
@@ -58,6 +59,7 @@ export class ClaudeCodeOAuthBackendError extends Error {
 type TimedRequest = {
   response: Response
   timedOut: () => boolean
+  callerAborted: () => boolean
   close: () => void
 }
 
@@ -69,24 +71,32 @@ async function startTimedRequest(url: string, init: RequestInit): Promise<TimedR
     didTimeOut = true
     controller.abort()
   }, timeoutMs)
+  const signal = init.signal
+    ? AbortSignal.any([controller.signal, init.signal])
+    : controller.signal
 
   try {
-    const response = await fetch(url, { ...init, signal: controller.signal })
+    const response = await fetch(url, { ...init, signal })
     return {
       response,
       timedOut: () => didTimeOut,
+      callerAborted: () => Boolean(init.signal?.aborted) && !didTimeOut,
       close: () => {
         clearTimeout(timer)
         controller.abort()
       },
     }
-  } catch {
+  } catch (error) {
     clearTimeout(timer)
+    if (init.signal?.aborted && !didTimeOut) throw new ModelCallAbortedError()
     throw new ClaudeCodeOAuthBackendError(didTimeOut ? 'timeout' : 'network', undefined, timeoutMs)
   }
 }
 
 function backendReadError(request: TimedRequest, error: unknown): never {
+  if (error instanceof ModelCallAbortedError || request.callerAborted()) {
+    throw new ModelCallAbortedError()
+  }
   if (request.timedOut() || (error instanceof Error && error.name === 'AbortError')) {
     throw new ClaudeCodeOAuthBackendError('timeout', undefined, claudeCodeOAuthRequestTimeoutMs())
   }
@@ -399,6 +409,7 @@ type ClaudeCodeCallInput = {
   maxTokens?: number
   thinkingBudget?: ClaudeThinkingBudget
   onReasoningDelta?: (delta: string) => void
+  signal?: AbortSignal
 }
 
 function buildClaudeBody(input: ClaudeCodeCallInput, stream: boolean): Record<string, unknown> {
@@ -474,6 +485,7 @@ export async function callClaudeCodeOAuth(input: ClaudeCodeCallInput): Promise<C
     method: 'POST',
     headers: claudeRequestHeaders(input.tokens.accessToken, Boolean(input.thinkingBudget)),
     body: JSON.stringify(body),
+    signal: input.signal,
   })
   try {
     const response = successfulResponse(request)

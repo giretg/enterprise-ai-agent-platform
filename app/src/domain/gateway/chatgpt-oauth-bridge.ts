@@ -12,6 +12,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { GatewayMessage, GatewayToolCall, ToolDefinition } from './model-gateway'
+import { ModelCallAbortedError } from './fallback-chain'
 
 /** A Codex CLI hivatalos OAuth kliens-azonosítója (refresh flow-hoz). */
 export const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
@@ -61,6 +62,7 @@ export class ChatGptOAuthBackendError extends Error {
 type ChatGptOAuthRequest = {
   response: Response
   timedOut: () => boolean
+  callerAborted: () => boolean
   close: () => void
 }
 
@@ -72,24 +74,32 @@ async function startChatGptOAuthRequest(url: string, init: RequestInit): Promise
     didTimeOut = true
     controller.abort()
   }, timeoutMs)
+  const signal = init.signal
+    ? AbortSignal.any([controller.signal, init.signal])
+    : controller.signal
 
   try {
-    const response = await fetch(url, { ...init, signal: controller.signal })
+    const response = await fetch(url, { ...init, signal })
     return {
       response,
       timedOut: () => didTimeOut,
+      callerAborted: () => Boolean(init.signal?.aborted) && !didTimeOut,
       close: () => {
         clearTimeout(timer)
         controller.abort()
       },
     }
-  } catch {
+  } catch (error) {
     clearTimeout(timer)
+    if (init.signal?.aborted && !didTimeOut) throw new ModelCallAbortedError()
     throw new ChatGptOAuthBackendError(didTimeOut ? 'timeout' : 'network', undefined, timeoutMs)
   }
 }
 
 function backendReadError(request: ChatGptOAuthRequest, error: unknown): never {
+  if (error instanceof ModelCallAbortedError || request.callerAborted()) {
+    throw new ModelCallAbortedError()
+  }
   if (request.timedOut() || (error instanceof Error && error.name === 'AbortError')) {
     throw new ChatGptOAuthBackendError('timeout', undefined, chatGptOAuthRequestTimeoutMs())
   }
@@ -676,6 +686,7 @@ type ChatGptOAuthCallInput = {
    * nem-streamelő tool-loopban is (az egész SSE-t inkrementálisan olvassuk).
    */
   onReasoningDelta?: (delta: string) => void
+  signal?: AbortSignal
 }
 
 async function callChatGptOAuthUnlocked(
@@ -734,6 +745,7 @@ async function callChatGptOAuthUnlocked(
       session_id: randomUUID(),
     },
     body: serializedRequestBody,
+    signal: input.signal,
   })
 
   try {

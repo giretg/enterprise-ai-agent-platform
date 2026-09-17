@@ -117,6 +117,7 @@ export class GeminiProvider implements ModelProvider {
     tools?: ToolDefinition[]
     responseJsonSchema?: Record<string, unknown>
     onReasoningDelta?: (delta: string) => void
+    signal?: AbortSignal
   }): Promise<ModelProviderResult> {
     if (isGeminiStubConfigured()) {
       return stubGeminiAnswer(input.messages)
@@ -133,6 +134,7 @@ export class GeminiProvider implements ModelProvider {
         ...(systemInstruction ? { systemInstruction } : {}),
         ...(input.modelConfig.temperature != null ? { temperature: input.modelConfig.temperature } : {}),
         ...(input.modelConfig.maxTokens != null ? { maxOutputTokens: input.modelConfig.maxTokens } : {}),
+        ...(input.signal ? { abortSignal: input.signal } : {}),
         // Chat "thinking-trace" (WP-8): thought summary bekérése csak akkor, ha a
         // hívó kért reasoning-et (a runtime a tenant D7-kapcsolójától teszi függővé).
         // A `thinkingBudget:-1` dinamikus keret — a modell dönt a gondolkodás mélységéről.

@@ -52,6 +52,24 @@ export const LOOP_GUARD_DEFAULTS = {
   maxNoProgressTurns: 3,
 } as const
 
+/**
+ * Üres agent-`maxTokens` esetén a provider 16 384-et ad — chatben ez percekre
+ * elszaladhat. A wizard defaultja 4096; agent/skill beállítás felülírja.
+ */
+export const DEFAULT_CHAT_MAX_TOKENS = 4096
+/** Ticket/task: hosszabb kimenet kellhet (riport, skill), de ne a 16k provider-default. */
+export const DEFAULT_TASK_MAX_TOKENS = 8192
+
+export function applyDefaultMaxTokens(
+  maxTokens: number | undefined,
+  mode: LoopGuardMode,
+): number {
+  if (typeof maxTokens === 'number' && Number.isFinite(maxTokens) && maxTokens > 0) {
+    return maxTokens
+  }
+  return mode === 'task' ? DEFAULT_TASK_MAX_TOKENS : DEFAULT_CHAT_MAX_TOKENS
+}
+
 /** Ticket / aszinkron task futások alapértelmezett falióra-kerete (15 perc). */
 export const TASK_LOOP_GUARD_DEFAULTS = {
   maxWallClockMs: 900_000,
@@ -397,10 +415,33 @@ export function mergeSkillRuntimeHints(
  * mi ért véget, miért, és hogy a részeredmény megmaradt. A `max_turns_exhausted`
  * szándékosan hiányzik — annak a meglévő üzenete és viselkedése változatlan.
  */
-export function describeLoopStop(reason: LoopStopReason, limits: LoopGuardLimits): string | null {
+/** A timeout-üzenet időbontása — a modell ezt ne találja ki. */
+export type LoopStopTiming = {
+  modelMs: number
+  toolMs: number
+  skippedToolCalls: number
+}
+
+function formatStopTiming(timing: LoopStopTiming): string {
+  const modelS = Math.round(timing.modelMs / 1000)
+  const toolS = Math.round(timing.toolMs / 1000)
+  const skipped =
+    timing.skippedToolCalls > 0
+      ? `, ${timing.skippedToolCalls} kimaradt hívás`
+      : ''
+  return `modellhívás ${modelS} s / eszközhívás ${toolS} s${skipped}`
+}
+
+export function describeLoopStop(
+  reason: LoopStopReason,
+  limits: LoopGuardLimits,
+  timing?: LoopStopTiming,
+): string | null {
   switch (reason) {
-    case 'wallclock_timeout':
-      return `⏱️ **Leálltam, mert elértem az időkorlátot.** Erre a fordulóra ${Math.round(limits.maxWallClockMs / 1000)} másodperc jut, és ez letelt. Amit eddig összegyűjtöttem, megmaradt — ha folytassam, írd meg, és innen viszem tovább.`
+    case 'wallclock_timeout': {
+      const spent = timing ? ` (${formatStopTiming(timing)})` : ''
+      return `⏱️ **Leálltam, mert elértem az időkorlátot.** Erre a fordulóra ${Math.round(limits.maxWallClockMs / 1000)} másodperc jut, és ez letelt${spent}. Amit eddig összegyűjtöttem, megmaradt — ha folytassam, írd meg, és innen viszem tovább.`
+    }
     case 'tool_budget':
       return `🧰 **Leálltam, mert elfogyott az eszközhívási keret.** Egy fordulóban legfeljebb ${limits.maxToolCalls} eszközhívást (keresés, fájlművelet, külső rendszer) használhatok, és ezt elhasználtam. A részeredmény megmaradt; ha kisebb lépésekre bontod a kérést, tovább tudok haladni.`
     case 'no_progress':

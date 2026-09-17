@@ -34,6 +34,21 @@ export type FallbackErrorClass =
   | 'content_error'
   | 'other'
 
+/** A hívó (forduló-falióra) szakította meg a modellhívást — nem provider-hiba, nincs tartalék. */
+export class ModelCallAbortedError extends Error {
+  constructor() {
+    super('Model call aborted by turn deadline')
+    this.name = 'ModelCallAbortedError'
+  }
+}
+
+export function isModelCallAborted(error: unknown): boolean {
+  return (
+    error instanceof ModelCallAbortedError ||
+    (error instanceof Error && error.name === 'ModelCallAbortedError')
+  )
+}
+
 export function fallbackMaxAttemptsFromEnv(
   env: Record<string, string | undefined> = process.env,
 ): number {
@@ -56,6 +71,7 @@ export function extractAgentFallbackModels(modelConfig: unknown): FallbackCandid
 }
 
 export function classifyProviderError(error: unknown): FallbackErrorClass {
+  if (isModelCallAborted(error)) return 'other'
   const err = error instanceof Error ? error : null
   // Az időkorlát-üzenetek beleírják a beállított ezredmásodperc-értéket
   // ("... timed out after 240000ms"). Ez a szám nem hibakód, de a lentebbi

@@ -11,6 +11,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { GatewayMessage, GatewayToolCall, ToolDefinition } from './model-gateway'
+import { ModelCallAbortedError } from './fallback-chain'
 
 export const GROK_CLI_OAUTH_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828'
 const TOKEN_URL = 'https://auth.x.ai/oauth2/token'
@@ -49,6 +50,7 @@ export class GrokCliOAuthBackendError extends Error {
 type TimedRequest = {
   response: Response
   timedOut: () => boolean
+  callerAborted: () => boolean
   close: () => void
 }
 
@@ -60,24 +62,32 @@ async function startTimedRequest(url: string, init: RequestInit): Promise<TimedR
     didTimeOut = true
     controller.abort()
   }, timeoutMs)
+  const signal = init.signal
+    ? AbortSignal.any([controller.signal, init.signal])
+    : controller.signal
 
   try {
-    const response = await fetch(url, { ...init, signal: controller.signal })
+    const response = await fetch(url, { ...init, signal })
     return {
       response,
       timedOut: () => didTimeOut,
+      callerAborted: () => Boolean(init.signal?.aborted) && !didTimeOut,
       close: () => {
         clearTimeout(timer)
         controller.abort()
       },
     }
-  } catch {
+  } catch (error) {
     clearTimeout(timer)
+    if (init.signal?.aborted && !didTimeOut) throw new ModelCallAbortedError()
     throw new GrokCliOAuthBackendError(didTimeOut ? 'timeout' : 'network', undefined, timeoutMs)
   }
 }
 
 function backendReadError(request: TimedRequest, error: unknown): never {
+  if (error instanceof ModelCallAbortedError || request.callerAborted()) {
+    throw new ModelCallAbortedError()
+  }
   if (request.timedOut() || (error instanceof Error && error.name === 'AbortError')) {
     throw new GrokCliOAuthBackendError('timeout', undefined, grokCliOAuthRequestTimeoutMs())
   }
@@ -317,6 +327,7 @@ type GrokCallInput = {
   temperature?: number
   reasoningEffort?: GrokReasoningEffort
   onReasoningDelta?: (delta: string) => void
+  signal?: AbortSignal
 }
 
 function grokChatUrl(env: Record<string, string | undefined> = process.env): string {
@@ -377,6 +388,7 @@ export async function callGrokCliOAuth(input: GrokCallInput): Promise<GrokCliBri
     method: 'POST',
     headers: grokRequestHeaders(input.tokens.accessToken, model, false),
     body: JSON.stringify(body),
+    signal: input.signal,
   })
   try {
     const response = successfulResponse(request)
