@@ -180,6 +180,7 @@
     "test:agent-turn": "tsx scripts/agent-turn-repository.test.ts",
     "test:agent-turn-record": "tsx scripts/agent-chat-turn-record.test.ts",
     "test:chat-turn-input": "tsx scripts/chat-turn-input.test.ts",
+    "test:chat-turn-launch": "tsx scripts/chat-turn-launch.test.ts",
     "test:loop-stop": "tsx scripts/loop-stop-decision.test.ts",
     "test:turn-cost": "tsx scripts/turn-cost-signals.test.ts",
     "test:efficiency-advisor": "tsx scripts/efficiency-advisor.test.ts",
