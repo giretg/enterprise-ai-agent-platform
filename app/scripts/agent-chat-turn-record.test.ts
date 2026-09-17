@@ -211,7 +211,13 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
     },
     async claim(id, ownerToken, now, launchId) {
       const row = rowsById.get(id)
-      if (!row || row.status !== 'queued' || row.lockToken !== null || row.launchId !== launchId) {
+      if (
+        !row ||
+        row.status !== 'queued' ||
+        row.lockToken !== null ||
+        row.launchId !== launchId ||
+        row.cancelRequested
+      ) {
         return null
       }
       claimed.push({ id, ownerToken })
@@ -304,6 +310,9 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
       return row ?? null
     },
     async findStale() {
+      return []
+    },
+    async findOwnedStartedBefore() {
       return []
     },
     async findLatestTerminalByConversation() {
@@ -1174,6 +1183,30 @@ async function main() {
     assert.ok(row.launchId)
     assert.equal(row.launchAttemptCount, 1)
     assert.equal(turns.finalized.length, 0)
+  })
+
+  await test('#519: Stop után a késői worker nem claimel és nem indít eszközt', async () => {
+    const turns = fakeTurnRepository()
+    const launcher: ChatTurnLauncher = {
+      async launch() {
+        return { launchId: 'launch-1', outcome: 'accepted' }
+      },
+      async reconcile() {
+        return { state: 'not_found' }
+      },
+    }
+    const shared: Array<Message & { content: string }> = []
+    const requester = buildRuntime({ turns: turns.repo, launcher, messages: shared })
+    for await (const _ of requester.runtime.sendMessageStream(turnParams())) void _
+
+    const launchId = turns.rowsById.get('turn-1')!.launchId!
+    assert.ok(await turns.repo.requestCancel('turn-1', 'user-1'))
+    const worker = buildRuntime({ turns: turns.repo, messages: shared })
+    await worker.runtime.runReservedTurn({ turnId: 'turn-1', launchId })
+
+    assert.equal(turns.claimed.length, 0, 'Stop után nincs claim')
+    assert.equal(worker.gatewayCalls.length, 0, 'késői worker nem indít modell-/eszközhívást')
+    assert.equal(turns.rowsById.get('turn-1')!.status, 'cancelled')
   })
 
   if (failures > 0) {

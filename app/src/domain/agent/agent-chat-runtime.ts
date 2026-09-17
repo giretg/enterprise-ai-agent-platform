@@ -117,6 +117,7 @@ import {
 } from './chat-turn-input'
 import { createInProcessChatTurnLauncher, type ChatTurnLauncher } from './chat-turn-launcher'
 import {
+  cancelQueuedChatTurn,
   launchAcceptedChatTurn,
   recoverQueuedChatTurns,
   type RecoverQueuedChatTurnsSummary,
@@ -943,32 +944,36 @@ export class AgentChatRuntime {
   }
 
   /**
-   * Forduló-rekord terminális lezárása. Idempotens: a repository csak aktív
-   * fordulót zár, és a `turnRecordClosed` flag megakadályozza a dupla hívást a
-   * `finally`-ág felől. Szintén fail-soft. A részszöveg tartalom-őrön megy át
-   * (Q4), ugyanúgy, mint a köztes snapshot.
+   * Forduló-rekord terminális lezárása. A repository csak aktív fordulót zár.
+   * Átmeneti DB-hiba: egy újrapróbálás; ha az is elhasal, a rekord running
+   * marad, és a watchdog a stale heartbeatből zár (#519). A `turnRecordClosed`
+   * flag csak sikeres írás után áll — így a `finally` újra próbálhat.
    */
   private async closeTurnRecord(
     turn: StreamTurnContext | null,
     data: FinalizeAgentTurnInput,
   ): Promise<void> {
     if (!this.agentTurns || !turn?.turnRecordId || turn.turnRecordClosed) return
-    turn.turnRecordClosed = true
+    const rawPartial = data.partialText ?? turn.completedReply ?? ''
+    const payload: FinalizeAgentTurnInput = {
+      ...data,
+      partialText: guardTurnPartialText(rawPartial),
+      activities: data.activities ?? (turn.activities as unknown as Prisma.InputJsonValue),
+    }
+    const write = () =>
+      this.agentTurns!.finalize(turn.turnRecordId!, payload, turn.turnRecordLockToken ?? undefined)
     try {
-      const rawPartial = data.partialText ?? turn.completedReply ?? ''
-      // #516 — tulajdonoshoz kötött lezárás: elvesztett tulajdonjognál `null`,
-      // és a másik fél végállapota marad.
-      await this.agentTurns.finalize(
-        turn.turnRecordId,
-        {
-          ...data,
-          partialText: guardTurnPartialText(rawPartial),
-          activities: data.activities ?? (turn.activities as unknown as Prisma.InputJsonValue),
-        },
-        turn.turnRecordLockToken ?? undefined,
-      )
+      await write()
+      turn.turnRecordClosed = true
     } catch (error) {
-      console.error('[agent-chat] forduló-rekord lezárása sikertelen', error)
+      // #519: átmeneti DB-kiesés — egy újrapróbálás, különben a watchdog zárja
+      // a stale heartbeatből. Sikertelen írásra NEM jelöljük closednak.
+      try {
+        await write()
+        turn.turnRecordClosed = true
+      } catch (retryError) {
+        console.error('[agent-chat] forduló-rekord lezárása sikertelen', retryError ?? error)
+      }
     }
   }
 
@@ -1395,6 +1400,12 @@ export class AgentChatRuntime {
     const { turnId, launchId } = request
     const record = await turns.findById(turnId)
     if (!record) throw new Error(`A forduló nem található: ${turnId}`)
+    // #519: Stop után a késői worker ne claimeljen és ne indítson eszközt —
+    // a queued visszavonás tartós, a claim `cancelRequested`-et is nézi.
+    if (record.status === 'queued' && record.cancelRequested) {
+      await cancelQueuedChatTurn(turns, turnId)
+      return
+    }
     // A bemenet ellenőrzése a claim ELŐTT: hiányos / ismeretlen verziójú
     // rekordot nem veszünk át (ne fusson más kontextussal). A hiba viszont
     // TERMINÁLIS — queued-en hagyni D7-zárolná a beszélgetést a watchdogig.

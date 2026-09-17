@@ -230,8 +230,9 @@ export async function launchAcceptedChatTurn(
     return { kind: 'failed', error: LAUNCH_FAILED_TURN_ERROR }
   }
 
-  // Elfogadott (provider-refes) attempt újrapróbálása: új azonosító, a régi worker ne claimelhessen.
-  const launchId = turn.launchProviderRef ? randomUUID() : latest.launchId
+  // #519: a lejárt attempt érvénytelen — új launchId, a késői worker a régivel
+  // nem claimelhet, akkor sem, ha az első indításnak nem lett provider-refje.
+  const launchId = randomUUID()
 
   const recorded = await deps.turns.recordLaunchAttempt(turn.id, {
     launchId,

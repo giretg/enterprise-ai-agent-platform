@@ -1997,10 +1997,10 @@ export interface AgentTurnRepository {
    */
   acquireLock(id: string, lockToken: string, now: Date): Promise<AgentTurn | null>
   /**
-   * #516/#517 — atomi `queued → running` munkafelvétel a futtató SAJÁT
+   * #516/#517/#519 — atomi `queued → running` munkafelvétel a futtató SAJÁT
    * tulajdonos-tokenjével, a rekord aktuális `launchId`-jéhez kötve.
-   * `null` = már más claimelte, a forduló nem `queued`, vagy a launchId
-   * lejárt/más — a hívó mellékhatás nélkül kilép.
+   * `null` = már más claimelte, a forduló nem `queued`, a launchId
+   * lejárt/más, vagy Stop (`cancelRequested`) — a hívó mellékhatás nélkül kilép.
    */
   claim(id: string, ownerToken: string, now: Date, launchId: string): Promise<AgentTurn | null>
   /**
@@ -2059,6 +2059,11 @@ export interface AgentTurnRepository {
   finalize(id: string, data: FinalizeAgentTurnInput, lockToken?: string | null): Promise<AgentTurn | null>
   /** Watchdog: tulajdonolt (running/streaming), de a `heartbeatAt`-je a küszöbnél régebbi fordulók. A `queued` nem stale running. */
   findStale(cutoff: Date, limit: number): Promise<AgentTurn[]>
+  /**
+   * #519 — az aktív futási szakasz 30 perces kemény teteje: `startedAt` (claim)
+   * szerinti tulajdonolt fordulók. A sorban állás ideje nem számít.
+   */
+  findOwnedStartedBefore(cutoff: Date, limit: number): Promise<AgentTurn[]>
   /**
    * A beszélgetés legutóbbi terminális fordulója (folytatás-prompthoz).
    * Aktív (queued/running/streaming) sorokat kihagyja.

@@ -127,7 +127,7 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
 
   async claim(id: string, ownerToken: string, now: Date, launchId: string): Promise<AgentTurn | null> {
     const result = await prisma.agentTurn.updateMany({
-      where: { id, status: 'queued', lockToken: null, launchId },
+      where: { id, status: 'queued', lockToken: null, launchId, cancelRequested: false },
       data: { status: 'running', lockToken: ownerToken, lockedAt: now, heartbeatAt: now, startedAt: now },
     })
     if (result.count !== 1) return null
@@ -313,6 +313,17 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
         heartbeatAt: { lte: cutoff },
       },
       orderBy: { heartbeatAt: 'asc' },
+      take: limit,
+    })
+  }
+
+  async findOwnedStartedBefore(cutoff: Date, limit: number): Promise<AgentTurn[]> {
+    return prisma.agentTurn.findMany({
+      where: {
+        status: { in: [...OWNED_AGENT_TURN_STATUSES] },
+        startedAt: { lte: cutoff },
+      },
+      orderBy: { startedAt: 'asc' },
       take: limit,
     })
   }

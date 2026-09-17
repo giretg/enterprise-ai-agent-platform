@@ -408,6 +408,49 @@ async function main() {
     }
   })
 
+  await check('#519: Stop-olt (cancelRequested) queued forduló nem claimelhető', async () => {
+    const fixture = await seedFixture()
+    try {
+      const launchId = randomUUID()
+      const turn = await repo.create({ ...createInput(fixture), status: 'queued', launchId })
+      assert.ok(await repo.requestCancel(turn.id, fixture.userId))
+      assert.equal(
+        await repo.claim(turn.id, randomUUID(), new Date(), launchId),
+        null,
+        'késői worker Stop után nem indul',
+      )
+      assert.equal((await repo.findById(turn.id))?.status, 'queued')
+      assert.equal((await repo.findById(turn.id))?.cancelRequested, true)
+    } finally {
+      await cleanup(fixture)
+    }
+  })
+
+  await check('#519: findOwnedStartedBefore a claimelt futást nézi, queued-et kihagyja', async () => {
+    const runningFix = await seedFixture()
+    const queuedFix = await seedFixture()
+    try {
+      const running = await repo.create({ ...createInput(runningFix), lockToken: randomUUID(), lockedAt: new Date() })
+      const queued = await repo.create({
+        ...createInput(queuedFix),
+        status: 'queued',
+        launchId: randomUUID(),
+      })
+      const old = new Date(Date.now() - 31 * 60_000)
+      await prisma.agentTurn.updateMany({
+        where: { id: { in: [running.id, queued.id] } },
+        data: { startedAt: old, heartbeatAt: new Date() },
+      })
+      const found = await repo.findOwnedStartedBefore(new Date(Date.now() - 30 * 60_000), 50)
+      const ids = found.map((t) => t.id)
+      assert.ok(ids.includes(running.id), 'a 30 percet túllépő futás a szakaszőrön')
+      assert.ok(!ids.includes(queued.id), 'a sorban állás nem a 30 perces keret')
+    } finally {
+      await cleanup(runningFix)
+      await cleanup(queuedFix)
+    }
+  })
+
   await check('#516: RÉGI TULAJDONOS a watchdog-reclaim után nem ír életjelet, progresst, végállapotot', async () => {
     const fixture = await seedFixture()
     try {

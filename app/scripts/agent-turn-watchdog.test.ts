@@ -68,15 +68,25 @@ function fakeTurns(initial: AgentTurn[]) {
   const rows = new Map(initial.map((t) => [t.id, { ...t }]))
   const finalized: Array<{ id: string } & FinalizeAgentTurnInput> = []
 
-  const repo: Pick<AgentTurnRepository, 'findStale' | 'finalize' | 'findById'> = {
+  const repo: Pick<AgentTurnRepository, 'findStale' | 'findOwnedStartedBefore' | 'finalize' | 'findById'> = {
     async findStale(cutoff, limit) {
       return [...rows.values()]
         .filter(
           (t) =>
-            (t.status === 'queued' || t.status === 'running' || t.status === 'streaming') &&
+            (t.status === 'running' || t.status === 'streaming') &&
             t.heartbeatAt.getTime() <= cutoff.getTime(),
         )
         .sort((a, b) => a.heartbeatAt.getTime() - b.heartbeatAt.getTime())
+        .slice(0, limit)
+    },
+    async findOwnedStartedBefore(cutoff, limit) {
+      return [...rows.values()]
+        .filter(
+          (t) =>
+            (t.status === 'running' || t.status === 'streaming') &&
+            t.startedAt.getTime() <= cutoff.getTime(),
+        )
+        .sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime())
         .slice(0, limit)
     },
     async finalize(id, data) {
@@ -163,6 +173,7 @@ async function main() {
         status: 'running',
         heartbeatAt: staleAt,
         partialText: 'Részleges válasz a crash előtt.',
+        activities: [{ id: 't1', kind: 'tool', title: 'file_read', status: 'done' }],
         lockToken: 'lock-stale',
       }),
     ])
@@ -193,6 +204,9 @@ async function main() {
       'Részleges válasz a crash előtt.',
       'részszöveg megőrződik a rekordon',
     )
+    assert.deepEqual(turns.rows.get('turn-stale')?.activities, [
+      { id: 't1', kind: 'tool', title: 'file_read', status: 'done' },
+    ])
   })
 
   await check('friss heartbeatű fordulóhoz a watchdog NEM nyúl', async () => {
@@ -219,6 +233,47 @@ async function main() {
     assert.equal(conversations.messages.length, 0)
     assert.equal(turns.rows.get('turn-fresh')?.status, 'running')
     assert.equal(turns.rows.get('turn-fresh')?.lockToken, 'lock-fresh')
+  })
+
+  await check('#519: 30 perces szakaszkeret — friss heartbeatű, de túl hosszú futás lezárul', async () => {
+    const startedAt = new Date(Date.now() - 31 * 60_000)
+    const turns = fakeTurns([
+      makeTurn({
+        id: 'turn-long',
+        conversationId: 'conv-phase',
+        status: 'running',
+        heartbeatAt: new Date(),
+        startedAt,
+        partialText: 'Még dolgoztam, amikor lejárt a keret.',
+        activities: [{ id: 't2', kind: 'tool', title: 'web_search', status: 'running' }],
+        lockToken: 'lock-long',
+      }),
+      makeTurn({
+        id: 'turn-queued',
+        conversationId: 'conv-queue',
+        status: 'queued',
+        startedAt: new Date(Date.now() - 2 * 60 * 60_000),
+        heartbeatAt: new Date(Date.now() - 2 * 60 * 60_000),
+        lockToken: null,
+      }),
+    ])
+    const conversations = fakeConversations()
+    const results = await reclaimStaleAgentTurns({
+      turns: turns.repo as AgentTurnRepository,
+      conversations,
+      now: new Date(),
+    })
+
+    const long = results.find((r) => r.turnId === 'turn-long')
+    assert.equal(long?.status, 'reclaimed')
+    assert.equal(turns.rows.get('turn-long')?.status, 'exhausted')
+    assert.equal(turns.rows.get('turn-long')?.reason, 'wallclock_timeout')
+    assert.match(conversations.messages[0]?.content ?? '', /Még dolgoztam/)
+    assert.match(conversations.messages[0]?.content ?? '', /30 perc/)
+    assert.deepEqual(turns.rows.get('turn-long')?.activities, [
+      { id: 't2', kind: 'tool', title: 'web_search', status: 'running' },
+    ])
+    assert.equal(turns.rows.get('turn-queued')?.status, 'queued', 'a sorban állás nem a 30 perces keret')
   })
 
   await check('már lezárt fordulót (verseny) skipped-ként jelöl', async () => {
