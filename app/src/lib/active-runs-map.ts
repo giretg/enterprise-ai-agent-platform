@@ -94,9 +94,11 @@ export function activeRunFromChatTurn(
   const status =
     liveness.kind === 'stalled'
       ? 'stalled'
-      : turn.cancelRequested && phase === 'active'
-        ? 'cancelling'
-        : turn.status
+      : liveness.kind === 'launching'
+        ? 'starting'
+        : turn.cancelRequested && phase === 'active'
+          ? 'cancelling'
+          : turn.status
   return {
     kind: 'chat_turn',
     id: turn.id,
@@ -105,7 +107,9 @@ export function activeRunFromChatTurn(
     status,
     phase,
     latestActivity:
-      liveness.kind === 'stalled' || liveness.kind === 'queued' || liveness.kind === 'starting'
+      liveness.kind === 'stalled' ||
+      liveness.kind === 'queued' ||
+      liveness.kind === 'launching'
         ? describeChatTurnLiveness(liveness).detail
         : turn.cancelRequested && phase === 'active'
           ? 'Leállítás folyamatban…'

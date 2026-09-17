@@ -50,7 +50,7 @@ export function describeChatTurnQueue(
 ): { label: string; detail: string } | null {
   if (turn.status !== 'queued') return null
   const liveness = assessSnapshot(turn)
-  return liveness.kind === 'queued' || liveness.kind === 'starting'
+  return liveness.kind === 'queued' || liveness.kind === 'launching'
     ? describeChatTurnLiveness(liveness)
     : null
 }

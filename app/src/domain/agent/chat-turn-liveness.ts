@@ -19,6 +19,8 @@ export type ChatTurnLiveness =
   | { kind: 'cancelling' }
   /** #518 — kapacitásra vár: nincs futtatási hely; nem „elhalt", bármeddig várhat. */
   | { kind: 'queued'; ageMs: number }
+  /** #518 — indításra lefoglalva, még nincs futó tulajdonos. Nem `starting`: az a claimelt, tool nélküli futás. */
+  | { kind: 'launching'; ageMs: number }
   | { kind: 'starting'; ageMs: number }
   | { kind: 'active'; ageMs: number; currentStep: string | null }
   | { kind: 'quiet'; ageMs: number; currentStep: string | null }
@@ -27,6 +29,7 @@ export type ChatTurnLiveness =
 export function isChatTurnLive(liveness: ChatTurnLiveness): boolean {
   switch (liveness.kind) {
     case 'queued':
+    case 'launching':
     case 'starting':
     case 'active':
     case 'quiet':
@@ -52,6 +55,11 @@ export function describeChatTurnLiveness(liveness: ChatTurnLiveness): {
       return {
         label: 'Sorban áll',
         detail: `Vár a szabad futtatási helyre · ${formatTicketProgressAge(liveness.ageMs)}. Amint felszabadul egy hely, automatikusan elindul.`,
+      }
+    case 'launching':
+      return {
+        label: 'Indul…',
+        detail: `A futtatási hely lefoglalva, a worker indulására várunk · ${formatTicketProgressAge(liveness.ageMs)}`,
       }
     case 'starting':
       return {
@@ -136,7 +144,7 @@ export function assessChatTurnLiveness(input: {
     // Nincs futó tulajdonos, a heartbeat nem életjel: a sorban állást nem a
     // 120 mp-es watchdog, az indítást a 10 perces indítási határ (#517) figyeli.
     const reservedMs = parseReferenceMs(input.launchReservedAt)
-    if (reservedMs !== null) return { kind: 'starting', ageMs: Math.max(0, now - reservedMs) }
+    if (reservedMs !== null) return { kind: 'launching', ageMs: Math.max(0, now - reservedMs) }
     const acceptedMs = parseReferenceMs(input.createdAt) ?? parseReferenceMs(input.startedAt)
     return { kind: 'queued', ageMs: acceptedMs === null ? 0 : Math.max(0, now - acceptedMs) }
   }

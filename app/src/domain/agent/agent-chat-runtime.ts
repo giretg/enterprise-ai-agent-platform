@@ -1351,6 +1351,7 @@ export class AgentChatRuntime {
     }
   }
 
+  /** ponytail: finish-kick only looks at 5 waiters; the rest wait for the ~30s dispatch cycle. Drain until waiting/global_full if kick latency becomes the bottleneck. */
   private kickQueuedTurns(): void {
     if (!this.agentTurns) return
     this.recoverQueuedTurns({ limit: 5 }).catch((error) => {
