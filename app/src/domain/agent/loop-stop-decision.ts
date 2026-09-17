@@ -77,9 +77,19 @@ export const TASK_LOOP_GUARD_DEFAULTS = {
   maxNoProgressTurns: 4,
 } as const
 
+/**
+ * #519 / #508 §9 — egy aktív futási szakasz kemény teteje. A sorban állás és a
+ * tartós emberi várakozás nem része. Az alkalmazás a platform 30 perces
+ * Job-limitje előtt mentési időt hagy, hogy a részeredmény bekerülhessen.
+ */
+export const CHAT_TURN_ACTIVE_PHASE_MS = 30 * 60 * 1000
+export const CHAT_TURN_ACTIVE_SAVE_MS = 60 * 1000
+export const CHAT_TURN_ACTIVE_LOOP_MAX_MS =
+  CHAT_TURN_ACTIVE_PHASE_MS - CHAT_TURN_ACTIVE_SAVE_MS
+
 /** Épeszű tartományok — a konfiguráció nem tudja kikapcsolni a védelmet. */
 const LIMIT_RANGES = {
-  maxWallClockMs: { min: 10_000, max: 3_600_000 },
+  maxWallClockMs: { min: 10_000, max: CHAT_TURN_ACTIVE_LOOP_MAX_MS },
   maxToolCalls: { min: 5, max: 500 },
   maxNoProgressTurns: { min: 2, max: 20 },
 } as const

@@ -363,6 +363,34 @@ async function main() {
     assert.equal(rows.get('claimed')!.status, 'queued', 'tokenes sort a null-token nem zár')
   })
 
+  await test('#519: lejárt 10 perces indítási határ új launchId-t ad, a régi attempt érvénytelen', async () => {
+    const oldLaunch = randomUUID()
+    const { repo, rows } = fakeTurns(
+      queuedTurn({
+        launchId: oldLaunch,
+        launchProviderRef: oldLaunch,
+        launchAttemptCount: 1,
+        launchReservedAt: new Date(0),
+        launchNextRetryAt: new Date(0),
+      }),
+    )
+    const launched: string[] = []
+    const launcher: ChatTurnLauncher = {
+      async launch({ launchId }) {
+        launched.push(launchId)
+        return { launchId, outcome: 'accepted', providerRef: launchId }
+      },
+      async reconcile() {
+        return { state: 'not_found' }
+      },
+    }
+    const result = await launchAcceptedChatTurn({ turns: repo, launcher, capacity: BIG }, rows.get('turn-1')!)
+    assert.equal(result.kind, 'launched')
+    assert.equal(launched.length, 1)
+    assert.notEqual(launched[0], oldLaunch, 'a lejárt attempt azonosítója érvénytelen')
+    assert.equal(rows.get('turn-1')!.launchId, launched[0])
+  })
+
   if (failures > 0) {
     console.log(`\n${failures} teszt bukott.`)
     process.exit(1)

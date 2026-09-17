@@ -580,7 +580,7 @@ Egy `queued` rekord három, külön mért szakaszban lehet — új státusz-enum
 |---|---|---|---|
 | Kapacitásra vár | `launchId IS NULL` | `launchReservedAt − createdAt` | Senki nem lövi le: nem számít a limitbe, nincs attempt. A `stalled` liveness sem vonatkozik rá (`kind: 'queued'`). |
 | Indításra lefoglalva | `launchId` + `launchReservedAt` | `startedAt − launchReservedAt` | #517 indítási határ (10 perc), reconcile, max attempt. Liveness `kind: 'launching'` — nem a tool nélküli `starting`. |
-| Fut | `running`/`streaming` (claim) | `finishedAt − startedAt` | 120 mp heartbeat-watchdog. |
+| Fut | `running`/`streaming` (claim) | `finishedAt − startedAt` | 120 mp heartbeat-watchdog + 30 perc szakaszkeret (#519). |
 
 - Limitek: `CHAT_TURN_MAX_ACTIVE_GLOBAL` (alap 6) és `CHAT_TURN_MAX_ACTIVE_PER_TENANT` (alap 3) — a futó + indításra lefoglalt sorokra. Véges alapérték; a demó értékei a deploy-konfigból (`resolveChatTurnCapacity`).
 - Foglalás: `AgentTurnRepository.reserveLaunchCapacity` — egy tranzakció, `pg_advisory_xact_lock` alatt számol és ír, így több dispatcher (kérés-út gyorsindítás + worker-ciklus + felszabadulás utáni „kick”) sem lépi túl a limitet. A hely a terminális lezárással szabadul fel.
@@ -590,3 +590,17 @@ Egy `queued` rekord három, külön mért szakaszban lehet — új státusz-enum
 - UI: `GET turns?active=1` adja a `createdAt`/`launchReservedAt` mezőt; a fejléc-chip és a Futások panel „sorban áll” / „indul…” / „dolgozik”. SSE nélkül, újranyitáskor a poll-snapshotból áll helyre.
 
 Tesztek: `test:chat-turn-launch` (telített globális/tenant kapacitás, felszabadulás, queued Stop), `test:agent-turn` (valódi Postgres: 5 párhuzamos foglalás globális=3 / tenant=2 limitre, lezárás felszabadít, beszélgetés-limit, null-tokenes Stop vs. claimelt sor).
+
+### Megbízható Stop és időkorlátos lezárás (#519)
+
+A queued/starting munka azonnal visszavonható; running esetben a Stop kooperatív (elindult tool befejeződik, új nem indul). A `cancelRequested` flag tartós: a claim elutasítja, a késői worker nem indít eszközt.
+
+| Őr | Alap | Mit NEM zár |
+|---|---|---|
+| 10 perc indítási határ | `launchReservedAt` / attempt `nextRetryAt` | Kapacitásra váró (`launchId` nélküli) sor. Lejáratkor egyeztetés + új `launchId` (régi attempt érvénytelen). |
+| ~120 mp heartbeat | `heartbeatAt`, összehangolva a 30 mp-es modell-/tool-várakozási életjellel | Hosszú, élő modell- vagy tool-várás. |
+| 30 perc aktív szakasz | `startedAt` (claim). A loop a keret előtt 60 mp mentési időt hagy. | Queue-idő, tartós emberi várakozás (más szakasz). |
+
+Stale running v1-ben látható `failed`/`watchdog` vagy `exhausted`/`wallclock_timeout`, megőrzött részszöveggel és aktivitásokkal, automatikus loop-replay nélkül. Finalizerhiba / átmeneti DB-kiesés: egy újrapróbálás, majd a watchdog a stale heartbeatből zár — a felület nem marad örök gépelésben (`stalled` → terminális).
+
+Tesztek: `test:agent-turn-record` (Stop vs. késői worker), `test:chat-turn-launch` (10 perc attempt-érvénytelenítés), `test:agent-turn-watchdog` (120s + 30 perc, queued kimarad), `test:loop-stop` (falióra-plafon), `test:tool-loop` (tool-várakozási életjel), `test:agent-turn` (claim+Stop verseny, Postgres).

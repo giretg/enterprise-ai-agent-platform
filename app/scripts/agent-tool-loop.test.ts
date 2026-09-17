@@ -347,6 +347,52 @@ async function main() {
     assert.ok(running.length >= 2, `ismételt életjel várható, kapott: ${running.length}`)
   })
 
+  await check('életjel: lassú tool-hívás alatt a futó állapot újra kiadódik (téves watchdog ellen)', async () => {
+    const activities: Array<{ id: string; status: string }> = []
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const slowBroker: ToolBrokerService = {
+      invoke: async (input: ToolBrokerInvokeInput) => {
+        brokerCalls.push(input)
+        await sleep(120)
+        return {
+          denied: false,
+          result: { ok: true },
+          resultMeta: {},
+          latencyMs: 120,
+        } as unknown as ToolBrokerInvokeResult
+      },
+    } as unknown as ToolBrokerService
+    const gwCalls: GatewayCallArgs[] = []
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          { toolCalls: [{ id: 'c1', name: 'file_read', input: { path: 'a.txt' } }] },
+          { content: 'Kész.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: slowBroker,
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 3,
+      context: { conversationId: 'conv-tool-hb' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'olvasd' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['file_read'],
+      modelWaitHeartbeatMs: 30,
+      onActivity: (event) => {
+        activities.push({ id: event.id, status: event.status })
+      },
+    })
+
+    assert.equal(result.content, 'Kész.')
+    assert.equal(brokerCalls.length, 1)
+    const running = activities.filter((a) => a.id === 'tool-c1' && a.status === 'running')
+    assert.ok(running.length >= 2, `tool-életjel várható, kapott: ${running.length}`)
+  })
+
   await check('prompt cache: a loop statikus prefixe a változó kontextus és előzmény elé kerül', async () => {
     const gwCalls: GatewayCallArgs[] = []
     await runAgentToolLoop({

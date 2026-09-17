@@ -20,6 +20,7 @@ import {
   resolveLoopGuardLimits,
   shouldEnterCompletionPhase,
   trackTurnProgress,
+  CHAT_TURN_ACTIVE_LOOP_MAX_MS,
   type LoopGuardLimits,
 } from '../src/domain/agent/loop-stop-decision'
 import { runAgentToolLoop, type ChatPlatformToolName } from '../src/domain/agent/chat-tool-loop'
@@ -305,6 +306,20 @@ async function main() {
     assert.equal(merged.maxToolCalls, 120)
     const stillHigh = mergeSkillRuntimeHints(merged, { maxWallClockMs: 30_000 })
     assert.equal(stillHigh.maxWallClockMs, 900_000)
+  })
+
+  await check('#519: a falióra nem lépheti túl a 30 perc − mentési tartalékot', () => {
+    const prev = process.env.AGENT_LOOP_MAX_WALLCLOCK_MS
+    process.env.AGENT_LOOP_MAX_WALLCLOCK_MS = String(60 * 60 * 1000)
+    try {
+      const limits = resolveLoopGuardLimits(undefined, 20)
+      assert.equal(limits.maxWallClockMs, CHAT_TURN_ACTIVE_LOOP_MAX_MS)
+      const raised = mergeSkillRuntimeHints(limits, { maxWallClockMs: 3_600_000 })
+      assert.equal(raised.maxWallClockMs, CHAT_TURN_ACTIVE_LOOP_MAX_MS)
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_LOOP_MAX_WALLCLOCK_MS
+      else process.env.AGENT_LOOP_MAX_WALLCLOCK_MS = prev
+    }
   })
 
   await check('initialSkillRuntimeHints: 200s-nél még fut chat skill-kerettel', async () => {

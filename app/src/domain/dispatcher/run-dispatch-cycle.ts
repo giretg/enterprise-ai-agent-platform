@@ -116,8 +116,9 @@ export async function runDispatchCycle(
     const reclaimedTasks = await services.scheduledTasks.reclaimStaleMaterializations()
     const reclaimedScheduledTasks = reclaimedTasks.filter((r) => r.status === 'reclaimed').length
 
-    // Chat AgentTurn watchdog (D10 / #64): crash/deploy alatt elvágott fordulók
-    // ne maradjanak örökre „gépel" állapotban. A küszöb: AGENT_TURN_STALE_MS (~120s).
+    // Chat AgentTurn watchdog (D10 / #64 / #519): crash/deploy alatt elvágott
+    // fordulók ne maradjanak örökre „gépel" állapotban. Küszöb: ~120s heartbeat
+    // VAGY 30 perc aktív szakasz (startedAt). A queued sorban állást nem lövi.
     const reclaimedTurns = await reclaimStaleAgentTurns({
       turns: repositories.agentTurns,
       conversations: services.conversations,

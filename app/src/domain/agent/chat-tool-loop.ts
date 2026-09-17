@@ -405,10 +405,11 @@ function isDiscoveryTool(toolName: string): boolean {
 const AGENT_ASK_MIN_REMAINING_MS = 60_000
 
 /**
- * Modell-várakozási életjel: amíg egy `gateway.call` válaszra várunk, sem
- * activity, sem heartbeat nem születne — a UI ezért 2 perc után tévesen
- * „megállt"-ot mutatna egy élő futásra. Sokkal ritkább, mint az
- * ACTIVE-küszöb (45 mp), hogy az életjel-költség elhanyagolható maradjon.
+ * Modell-/tool-várakozási életjel: amíg egy `gateway.call` vagy tool-invoke
+ * válaszra várunk, sem activity, sem heartbeat nem születne — a UI ezért
+ * 2 perc után tévesen „megállt"-ot mutatna, a 120s watchdog pedig tévesen
+ * zárna egy élő futást. Sokkal ritkább, mint az ACTIVE-küszöb (45 mp),
+ * hogy az életjel-költség elhanyagolható maradjon.
  */
 export const MODEL_WAIT_HEARTBEAT_MS = 30_000
 
@@ -3305,7 +3306,16 @@ export async function runAgentToolLoop(params: {
           continue
         }
 
-        const result = await params.toolBroker.invoke(invokeInput)
+        const result = await callGatewayWithWaitHeartbeat(
+          {
+            id: `tool-${call.id}`,
+            kind: 'tool',
+            title: call.name,
+            detail: describeToolCall(toolName, call.input),
+            status: 'running',
+          },
+          () => params.toolBroker.invoke(invokeInput),
+        )
         toolCallMs += typeof result.latencyMs === 'number' ? result.latencyMs : 0
         toolCallCount += 1
         if (!result.denied && TOOL_REGISTRY[toolName].sideEffecting) outputWritten = true
