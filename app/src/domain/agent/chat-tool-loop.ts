@@ -92,6 +92,7 @@ import {
   toolsForSurface,
 } from '@/domain/tool-broker/tool-registry'
 import {
+  applyDefaultMaxTokens,
   describeLoopStop,
   evaluateLoopContinuation,
   isRedundantSourceIngest,
@@ -106,6 +107,7 @@ import {
   type LoopGuardLimits,
   type LoopStopReason,
 } from './loop-stop-decision'
+import { isModelCallAborted, ModelCallAbortedError } from '@/domain/gateway/fallback-chain'
 import {
   describeTurnCostAlert,
   evaluateTurnCostSignals,
@@ -1223,6 +1225,9 @@ export async function runAgentToolLoop(params: {
   // Spec §7 — a leállási döntéshozó küszöbei és a hozzá tartozó állapot.
   const now = params.now ?? Date.now
   const startedAt = now()
+  let modelCallMs = 0
+  let toolCallMs = 0
+  let skippedToolCalls = 0
   let guardLimits: LoopGuardLimits = resolveLoopGuardLimits(
     params.modelConfig as unknown as Record<string, unknown>,
     maxTurns,
@@ -1346,14 +1351,18 @@ export async function runAgentToolLoop(params: {
   }
   const activeModelConfig = (): ModelConfig => {
     const pinned = pinnedModel
-    if (!pinned) return params.modelConfig
-    // A pinnelt tartalék lesz az elsődleges; a többi tartalék megmarad mögötte.
+    const base = pinned
+      ? {
+          ...params.modelConfig,
+          ...pinned,
+          fallbackModels: (params.modelConfig.fallbackModels ?? []).filter(
+            (candidate) => candidate.provider !== pinned.provider || candidate.model !== pinned.model,
+          ),
+        }
+      : params.modelConfig
     return {
-      ...params.modelConfig,
-      ...pinned,
-      fallbackModels: (params.modelConfig.fallbackModels ?? []).filter(
-        (candidate) => candidate.provider !== pinned.provider || candidate.model !== pinned.model,
-      ),
+      ...base,
+      maxTokens: applyDefaultMaxTokens(base.maxTokens, params.mode === 'task' ? 'task' : 'chat'),
     }
   }
   let outputWritten = checkpoint?.outputWritten === true
@@ -1525,6 +1534,25 @@ export async function runAgentToolLoop(params: {
       return await call()
     } finally {
       clearInterval(timer)
+    }
+  }
+
+  const remainingWallClockMs = () => guardLimits.maxWallClockMs - (now() - startedAt)
+
+  const withTurnDeadline = async <T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    const remainingMs = remainingWallClockMs()
+    if (remainingMs <= 0) throw new ModelCallAbortedError()
+    const signal = AbortSignal.timeout(Math.max(1, remainingMs))
+    const t0 = Date.now()
+    try {
+      return await run(signal)
+    } catch (error) {
+      if (isModelCallAborted(error) || signal.aborted || remainingWallClockMs() <= 0) {
+        throw new ModelCallAbortedError()
+      }
+      throw error
+    } finally {
+      modelCallMs += Math.max(0, Date.now() - t0)
     }
   }
 
@@ -1787,6 +1815,7 @@ export async function runAgentToolLoop(params: {
   // A kihagyás „eredménynek" számít a kör mérlegében, de nem előrehaladásnak —
   // így a csupa-kihagyott kör zsákutcaként viselkedik.
   const skipToolCall = async (call: GatewayToolCall, content: string, detail: string) => {
+    skippedToolCalls += 1
     pushToolResult(call, content, 'barren')
     await emitActivity({ id: `tool-${call.id}`, kind: 'tool', title: call.name, detail, status: 'skipped' })
   }
@@ -2030,18 +2059,30 @@ export async function runAgentToolLoop(params: {
     // ITT, a hívás előtt történik, hogy a megtakarítás már ezt a hívást érintse.
     await compactContext(turn)
 
-    const modelResult = await callGatewayWithWaitHeartbeat(
-      { id: reasoningTurnId, kind: 'reasoning', title: placeholderTitle, status: 'running' },
-      () =>
-        params.gateway.call({
-          agentId: params.agentId,
-          ...params.context,
-          messages,
-          modelConfig: activeModelConfig(),
-          ...(tools.length ? { tools } : {}),
-          ...(onReasoningDelta ? { onReasoningDelta } : {}),
-        }),
-    )
+    let modelResult
+    try {
+      modelResult = await callGatewayWithWaitHeartbeat(
+        { id: reasoningTurnId, kind: 'reasoning', title: placeholderTitle, status: 'running' },
+        () =>
+          withTurnDeadline((signal) =>
+            params.gateway.call({
+              agentId: params.agentId,
+              ...params.context,
+              messages,
+              modelConfig: activeModelConfig(),
+              signal,
+              ...(tools.length ? { tools } : {}),
+              ...(onReasoningDelta ? { onReasoningDelta } : {}),
+            }),
+          ),
+      )
+    } catch (error) {
+      if (isModelCallAborted(error)) {
+        stopReason = 'wallclock_timeout'
+        break
+      }
+      throw error
+    }
     const { content, toolCalls } = modelResult
     if (!pinnedModel && modelResult.fallbackRoute) {
       pinnedModel = modelResult.fallbackRoute
@@ -3265,6 +3306,7 @@ export async function runAgentToolLoop(params: {
         }
 
         const result = await params.toolBroker.invoke(invokeInput)
+        toolCallMs += typeof result.latencyMs === 'number' ? result.latencyMs : 0
         toolCallCount += 1
         if (!result.denied && TOOL_REGISTRY[toolName].sideEffecting) outputWritten = true
         if (result.denied) {
@@ -3744,6 +3786,27 @@ export async function runAgentToolLoop(params: {
     }
   }
 
+  const stopTiming = { modelMs: modelCallMs, toolMs: toolCallMs, skippedToolCalls }
+  const stopNotice = describeLoopStop(stopReason, guardLimits, stopTiming)
+
+  // Wallclock: a modell ne találjon ki okot (mért eset: „a CRM timeoutolt",
+  // pedig a lekérdezés el sem indult). A rendszer-szöveg a döntő.
+  if (stopReason === 'wallclock_timeout') {
+    const body = lastAssistantText.trim()
+    return {
+      content: await displayForUi(
+        stopNotice ? [body, stopNotice].filter(Boolean).join('\n\n---\n\n') : body,
+      ),
+      toolCallCount,
+      deniedCount,
+      brokerDeniedCount,
+      status: 'exhausted',
+      reason: stopReason,
+      ...consequenceGateFields(),
+      ...executedModelFields(),
+    }
+  }
+
   messages.push({
     role: 'system',
     content:
@@ -3751,11 +3814,10 @@ export async function runAgentToolLoop(params: {
   })
   // Az új leállási okoknál a záró prózát is a valós okhoz igazítjuk (a
   // `max_turns_exhausted` szövege szándékosan változatlan marad).
-  const stopNotice = describeLoopStop(stopReason, guardLimits)
   if (stopNotice) {
     messages.push({
       role: 'system',
-      content: `A futás idő előtt leállt (${stopReason}). Foglald össze RÖVIDEN, mit sikerült elvégezni és mi maradt hátra. Ne kezdj új eszközhívásba, és ne állítsd késznek azt, ami nem készült el.`,
+      content: `A futás idő előtt leállt (${stopReason}). Foglald össze RÖVIDEN, mit sikerült elvégezni és mi maradt hátra. Ne magyarázd a leállás okát — azt a rendszer közli. Ne kezdj új eszközhívásba, és ne állítsd késznek azt, ami nem készült el.`,
     })
   }
 
@@ -3768,11 +3830,8 @@ export async function runAgentToolLoop(params: {
     })
     .then(({ content }) => content)
 
-  // Erőforrás-alapú leállás után a záró összefoglalóra is jár határidő. A
-  // `gateway.call` nem megszakítható, ezért nem a hívást szakítjuk félbe, hanem
-  // azt kötjük ki, meddig VÁRUNK rá — e nélkül a faliórai időkorlát átlépése
-  // után a felhasználó még egy korlátlan modellhívást várna végig. A
-  // `max_turns_exhausted` út szándékosan határidő nélkül marad (változatlan
+  // Erőforrás-alapú leállás után a záró összefoglalóra is jár határidő.
+  // A `max_turns_exhausted` út szándékosan határidő nélkül marad (változatlan
   // viselkedés). Ha a türelmi idő letelik, az utolsó kör asszisztens-szövege
   // megy ki részeredményként.
   const finalContent = stopNotice

@@ -33,7 +33,6 @@ import type { ToolBrokerService } from '../src/domain/tool-broker/tool-broker-se
 import type { WorkspaceStorage } from '../src/domain/file-editor/workspace-storage'
 import { AgentAccessService } from '../src/domain/agent-access/agent-access-service'
 import type { ChatTurnLauncher } from '../src/domain/agent/chat-turn-launcher'
-import { StoredTurnInputError } from '../src/domain/agent/chat-turn-input'
 
 let failures = 0
 async function test(name: string, fn: () => void | Promise<void>) {
@@ -252,6 +251,7 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
         Object.assign(row, {
           status: data.status,
           reason: data.reason ?? null,
+          error: data.error ?? null,
           partialText: data.partialText ?? row.partialText,
           activities: data.activities ?? row.activities,
           assistantMessageId: data.assistantMessageId ?? null,
@@ -995,14 +995,38 @@ async function main() {
       userMessageId: 'user-msg-0',
       input: { v: 99, content: 'x', attachmentDocumentIds: [] },
     })
-    const { runtime, gatewayCalls } = buildRuntime({ turns: turns.repo })
-    await assert.rejects(
-      () => runtime.runReservedTurn({ turnId: 'turn-1', launchId: 'launch-1' }),
-      (e: unknown) => e instanceof StoredTurnInputError && /Ismeretlen bemeneti verzió: 99/.test(e.message),
-    )
+    const { runtime, gatewayCalls, messages } = buildRuntime({ turns: turns.repo })
+    const events: Array<{ type: string; message?: string }> = []
+    await runtime.runReservedTurn({ turnId: 'turn-1', launchId: 'launch-1' }, (e) => {
+      events.push(e)
+    })
     assert.equal(turns.claimed.length, 0)
     assert.equal(gatewayCalls.length, 0)
-    assert.equal(turns.rowsById.get('turn-1')!.status, 'queued')
+    const row = turns.rowsById.get('turn-1')!
+    assert.equal(row.status, 'failed', 'a beszélgetés D7-zárolása feloldódik')
+    assert.equal(row.reason, 'error')
+    assert.match(row.error ?? '', /Ismeretlen bemeneti verzió: 99/)
+    assert.ok(events.some((e) => e.type === 'error' && /Ismeretlen bemeneti verzió: 99/.test(e.message ?? '')))
+    assert.ok(messages.some((m) => m.role === 'agent'), 'a felhasználó látja a hibát, nem némán áll meg')
+  })
+
+  await test('#516: hiányzó user-üzenet — nem claimel, a queued zárolás feloldódik', async () => {
+    const turns = fakeTurnRepository()
+    await turns.repo.create({
+      conversationId: 'conv-1',
+      tenantId: 'tenant-1',
+      agentId: 'agent-1',
+      agentVersion: 3,
+      createdById: 'user-1',
+      status: 'queued',
+      input: { v: 1, content: 'Szia', attachmentDocumentIds: [] },
+    })
+    const { runtime, gatewayCalls } = buildRuntime({ turns: turns.repo })
+    await runtime.runReservedTurn({ turnId: 'turn-1', launchId: 'launch-1' })
+    assert.equal(turns.claimed.length, 0)
+    assert.equal(gatewayCalls.length, 0)
+    assert.equal(turns.rowsById.get('turn-1')!.status, 'failed')
+    assert.equal(await turns.repo.findActiveByConversation('conv-1'), null)
   })
 
   await test('#516: tulajdonvesztés után nincs új modellhívás, és a régi tulajdonos nem ír végállapotot', async () => {

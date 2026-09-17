@@ -74,12 +74,15 @@ import {
   fallbackMaxAttemptsFromEnv,
   FALLBACK_CHAIN_SETTING_KEY,
   isFallbackEligible,
+  isModelCallAborted,
   isTransientRetryable,
+  ModelCallAbortedError,
   parseFallbackChainSetting,
   ProviderSkipLedger,
   type FallbackCandidate,
   type FallbackErrorClass,
 } from './fallback-chain'
+export { ModelCallAbortedError, isModelCallAborted } from './fallback-chain'
 import {
   cacheControlPayload,
   extractPromptCacheUsage,
@@ -109,14 +112,20 @@ function modelProviderFetchTimeoutMs(): number {
     : DEFAULT_MODEL_PROVIDER_FETCH_TIMEOUT_MS
 }
 
-async function fetchWithProviderTimeout(url: string, init: RequestInit): Promise<Response> {
+async function fetchWithProviderTimeout(url: string, init: RequestInit = {}): Promise<Response> {
   const timeoutMs = modelProviderFetchTimeoutMs()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const callerSignal = init.signal
+  const signal =
+    callerSignal && !callerSignal.aborted
+      ? AbortSignal.any([controller.signal, callerSignal])
+      : controller.signal
   try {
-    return await fetch(url, { ...init, signal: controller.signal })
+    return await fetch(url, { ...init, signal })
   } catch (error: unknown) {
-    if (error instanceof Error && error.name === 'AbortError') {
+    if (callerSignal?.aborted) throw new ModelCallAbortedError()
+    if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
       throw new Error(`Model provider request timed out after ${timeoutMs}ms`)
     }
     throw error
@@ -330,6 +339,8 @@ export interface ModelProvider {
      * hívó felelős a tartalom-őrért (D5), mielőtt a kliensre kerül.
      */
     onReasoningDelta?: (delta: string) => void
+    /** Forduló-falióra — a fetch és a body-olvasás is megszakad. */
+    signal?: AbortSignal
   }): Promise<ModelProviderResult>
   chatStream?(input: {
     agentId: string
@@ -339,6 +350,7 @@ export interface ModelProvider {
     onReasoningDelta?: (delta: string) => void
     /** A streaming válasz végén érkező provider usage-blokk oldalcsatornája. */
     onUsage?: (usage: ModelProviderUsage) => void
+    signal?: AbortSignal
   }): AsyncGenerator<string, void, unknown>
 }
 
@@ -591,6 +603,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
     tools?: ToolDefinition[]
     responseJsonSchema?: Record<string, unknown>
     onReasoningDelta?: (delta: string) => void
+    signal?: AbortSignal
   }): Promise<ModelProviderResult> {
     const providerUrl = process.env.CHATGPT_OAUTH_PROVIDER_URL
     const internalKey = process.env.CHATGPT_OAUTH_PROVIDER_KEY
@@ -613,6 +626,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
         tools: input.tools,
         reasoningEffort: resolveReasoningEffort(input.modelConfig.modelType),
         onReasoningDelta: input.onReasoningDelta,
+        signal: input.signal,
       })
       return {
         content: result.content,
@@ -638,6 +652,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
         'content-type': 'application/json',
       },
       body: JSON.stringify(input),
+      signal: input.signal,
     })
 
     if (!response.ok) {
@@ -720,6 +735,7 @@ export class ClaudeCodeOAuthProvider implements ModelProvider {
     tools?: ToolDefinition[]
     responseJsonSchema?: Record<string, unknown>
     onReasoningDelta?: (delta: string) => void
+    signal?: AbortSignal
   }): Promise<ModelProviderResult> {
     if (isClaudeCodeStubConfigured()) {
       return stubWikiAnswer(input.messages)
@@ -737,6 +753,7 @@ export class ClaudeCodeOAuthProvider implements ModelProvider {
       model: input.modelConfig.model,
       tools: input.tools,
       maxTokens: input.modelConfig.maxTokens,
+      signal: input.signal,
       thinkingBudget: input.onReasoningDelta
         ? resolveClaudeThinkingBudget(input.modelConfig.modelType)
         : null,
@@ -793,6 +810,7 @@ export class GrokCliOAuthProvider implements ModelProvider {
     tools?: ToolDefinition[]
     responseJsonSchema?: Record<string, unknown>
     onReasoningDelta?: (delta: string) => void
+    signal?: AbortSignal
   }): Promise<ModelProviderResult> {
     if (isGrokCliStubConfigured()) {
       return stubWikiAnswer(input.messages)
@@ -813,6 +831,7 @@ export class GrokCliOAuthProvider implements ModelProvider {
       temperature: input.modelConfig.temperature,
       reasoningEffort: resolveGrokReasoningEffort(input.modelConfig.modelType),
       onReasoningDelta: input.onReasoningDelta,
+      signal: input.signal,
     })
     return {
       content: result.content,
@@ -902,6 +921,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     tools?: ToolDefinition[]
     responseJsonSchema?: Record<string, unknown>
     onReasoningDelta?: (delta: string) => void
+    signal?: AbortSignal
   }): Promise<ModelProviderResult> {
     const baseUrl = (process.env[this.baseUrlEnvVar] || this.defaultBaseUrl)?.replace(/\/+$/, '')
     if (!baseUrl) {
@@ -954,13 +974,20 @@ export class OpenAiCompatibleProvider implements ModelProvider {
           : {}),
         ...this.options.extraBody?.({ reasoningRequested: typeof input.onReasoningDelta === 'function' }),
       }),
+      signal: input.signal,
     })
 
     if (!response.ok) {
       throw new Error(`${this.name} provider failed: ${response.status} ${(await response.text()).slice(0, 200)}`)
     }
 
-    const data = (await response.json()) as OpenAiCompatibleResponse
+    let data: OpenAiCompatibleResponse
+    try {
+      data = (await response.json()) as OpenAiCompatibleResponse
+    } catch (error) {
+      if (input.signal?.aborted) throw new ModelCallAbortedError()
+      throw error
+    }
     const content = extractOpenAiCompatibleContent(data)
     const toolCalls = extractOpenAiToolCalls(data)
 
@@ -1006,6 +1033,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     modelConfig: ModelConfig
     onReasoningDelta?: (delta: string) => void
     onUsage?: (usage: ModelProviderUsage) => void
+    signal?: AbortSignal
   }): AsyncGenerator<string, void, unknown> {
     const baseUrl = (process.env[this.baseUrlEnvVar] || this.defaultBaseUrl)?.replace(/\/+$/, '')
     if (!baseUrl) {
@@ -1035,6 +1063,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         ...(this.options.promptCache ? { stream_options: { include_usage: true } } : {}),
         ...this.options.extraBody?.({ reasoningRequested: typeof input.onReasoningDelta === 'function' }),
       }),
+      signal: input.signal,
     })
 
     if (!response.ok) {
@@ -1088,6 +1117,10 @@ export class OpenAiCompatibleProvider implements ModelProvider {
           }
         }
       }
+    } catch (error) {
+      // A forduló-falióra a body-olvasás közben is megszakíthat.
+      if (input.signal?.aborted) throw new ModelCallAbortedError()
+      throw error
     } finally {
       reader.releaseLock()
     }
@@ -2210,6 +2243,8 @@ export class ModelGateway {
      * (chat-tool-loop) tartalom-őrön (D5) engedi át, mielőtt a kliensre kerül.
      */
     onReasoningDelta?: (delta: string) => void
+    /** Forduló-falióra — a folyamatban lévő provider-hívást is megszakítja. */
+    signal?: AbortSignal
   }): Promise<{
     content: string
     toolCalls?: GatewayToolCall[]
@@ -2259,6 +2294,7 @@ export class ModelGateway {
             tools: params.tools,
             responseJsonSchema: params.responseJsonSchema,
             onReasoningDelta: params.onReasoningDelta,
+            signal: params.signal,
           }),
         )
 
@@ -2352,6 +2388,9 @@ export class ModelGateway {
             : {}),
         }
       } catch (error: unknown) {
+        if (isModelCallAborted(error) || params.signal?.aborted) {
+          throw isModelCallAborted(error) ? error : new ModelCallAbortedError()
+        }
         lastError = error
         const shouldContinue = await this.handleAttemptFailure({
           error,
@@ -2400,6 +2439,7 @@ export class ModelGateway {
     sensitivityOverride?: SensitivityOverride
     /** Chat "thinking-trace" spec — reasoning-summary delta oldalcsatorna (tool nélküli ág). */
     onReasoningDelta?: (delta: string) => void
+    signal?: AbortSignal
   }): AsyncGenerator<string, void, unknown> {
     const prep = await this.prepareModelCall(params)
     const {
@@ -2506,6 +2546,7 @@ export class ModelGateway {
           messages: prep.messages,
           modelConfig: attemptConfig,
           onReasoningDelta: params.onReasoningDelta,
+          signal: params.signal,
           onUsage: (usage) => {
             streamUsage = usage
           },
@@ -2588,6 +2629,9 @@ export class ModelGateway {
         })
         return
       } catch (error: unknown) {
+        if (isModelCallAborted(error) || params.signal?.aborted) {
+          throw isModelCallAborted(error) ? error : new ModelCallAbortedError()
+        }
         lastError = error
         const shouldContinue = await this.handleAttemptFailure({
           error,

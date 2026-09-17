@@ -13,6 +13,9 @@ import {
   TASK_LOOP_GUARD_DEFAULTS,
   describeLoopStop,
   evaluateLoopContinuation,
+  applyDefaultMaxTokens,
+  DEFAULT_CHAT_MAX_TOKENS,
+  DEFAULT_TASK_MAX_TOKENS,
   mergeSkillRuntimeHints,
   resolveLoopGuardLimits,
   shouldEnterCompletionPhase,
@@ -135,6 +138,13 @@ async function main() {
       limits: LIMITS,
     })
     assert.equal(decision.continue, true)
+  })
+
+  await check('üres maxTokens: chat 4096, task 8192, beállítás felülír', () => {
+    assert.equal(applyDefaultMaxTokens(undefined, 'chat'), DEFAULT_CHAT_MAX_TOKENS)
+    assert.equal(applyDefaultMaxTokens(undefined, 'task'), DEFAULT_TASK_MAX_TOKENS)
+    assert.equal(applyDefaultMaxTokens(16384, 'chat'), 16384)
+    assert.equal(applyDefaultMaxTokens(0, 'chat'), DEFAULT_CHAT_MAX_TOKENS)
   })
 
   await check('a falióra utolsó 30%-a a lezárásé', () => {
@@ -433,22 +443,29 @@ async function main() {
   })
 
   await check('faliórai korlát leállítja a loopot (wallclock_timeout)', async () => {
-    // Minden óraolvasás 40 mp-et léptet; a limit 60 mp → a 2. kör elején lejár.
+    // A modellhívás viszi az időt, nem az óraolvasás — így a maradék-falióra
+    // AbortSignal nem nullázza a keretet pusztán attól, hogy a loop ránéz.
     let clock = 0
     const brokerCalls: ToolBrokerInvokeInput[] = []
+    const base = repeatingToolGateway({ assistantText: 'Dolgozom rajta.' })
+    const gateway: ModelGateway = {
+      call: async (args) => {
+        clock += 40_000
+        return base.call(args)
+      },
+    } as ModelGateway
     const result = await runLoop({
-      gateway: repeatingToolGateway({ assistantText: 'Dolgozom rajta.' }),
+      gateway,
       toolBroker: constantResultBroker(brokerCalls),
       modelConfig: { ...MODEL_CONFIG, maxToolWallClockMs: 60_000 } as ModelConfig,
-      now: () => {
-        clock += 40_000
-        return clock
-      },
+      now: () => clock,
     })
     assert.equal(result.status, 'exhausted')
     assert.equal(result.reason, 'wallclock_timeout')
     assert.match(result.content, /időkorlátot/)
-    assert.ok(result.content.includes('Összefoglaló a részeredményről.'), 'a részválasz megmarad')
+    assert.match(result.content, /modellhívás \d+ s \/ eszközhívás \d+ s/)
+    assert.ok(result.content.includes('Dolgozom rajta.'), 'a részválasz megmarad, záró modellhívás nélkül')
+    assert.equal(result.content.includes('Összefoglaló a részeredményről.'), false)
   })
 
   await check('tool-büdzsé leállítja a loopot (tool_budget)', async () => {
@@ -551,6 +568,42 @@ async function main() {
       const notice = describeLoopStop(reason, LIMITS)
       assert.ok(notice && notice.length > 40, `${reason}: van önmagyarázó szöveg`)
     }
+    const timed = describeLoopStop('wallclock_timeout', LIMITS, {
+      modelMs: 346_000,
+      toolMs: 5_000,
+      skippedToolCalls: 1,
+    })
+    assert.match(timed ?? '', /modellhívás 346 s \/ eszközhívás 5 s, 1 kimaradt hívás/)
+  })
+
+  await check('folyamatban lévő modellhívás megszakad a maradék faliórán', async () => {
+    let reads = 0
+    let sawSignal = false
+    const gateway = {
+      call: async (args: { signal?: AbortSignal }) => {
+        sawSignal = args.signal instanceof AbortSignal
+        await new Promise<never>((_, reject) => {
+          const fail = () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+          if (args.signal?.aborted) fail()
+          args.signal?.addEventListener('abort', fail, { once: true })
+        })
+      },
+    } as unknown as ModelGateway
+    const result = await runLoop({
+      gateway,
+      toolBroker: constantResultBroker([]),
+      modelConfig: { ...MODEL_CONFIG, maxToolWallClockMs: 10_000 } as ModelConfig,
+      now: () => {
+        reads += 1
+        return reads === 1 ? 0 : 9_990
+      },
+    })
+    assert.equal(sawSignal, true)
+    assert.equal(result.status, 'exhausted')
+    assert.equal(result.reason, 'wallclock_timeout')
+    assert.match(result.content, /időkorlátot/)
+    assert.equal(result.content.includes('Összefoglaló'), false)
   })
 
   // --- 6. Regressziók (code review, 2026-07-19) ---

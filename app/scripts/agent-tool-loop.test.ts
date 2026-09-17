@@ -1012,6 +1012,61 @@ async function main() {
     assert.equal(result.executedModel, undefined)
   })
 
+  await check('üres maxTokens: chat 4096, task 8192; beállítás megmarad, fallback is kapja', async () => {
+    const chatCalls: GatewayCallArgs[] = []
+    await runAgentToolLoop({
+      gateway: fakeGateway([{ content: 'Kész.' }], chatCalls),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-tokens' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'szia' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: [],
+    })
+    assert.equal(chatCalls[0]?.modelConfig.maxTokens, 4096)
+
+    const taskCalls: GatewayCallArgs[] = []
+    await runAgentToolLoop({
+      gateway: fakeGateway([{ content: 'Kész.' }], taskCalls),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { ticketId: 'ticket-tokens' },
+      mode: 'task',
+      messages: [{ role: 'user', content: 'szia' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: [],
+    })
+    assert.equal(taskCalls[0]?.modelConfig.maxTokens, 8192)
+
+    const pinnedCalls: GatewayCallArgs[] = []
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            content: 'Kész.',
+            fallbackRoute: { provider: 'openrouter', model: 'deepseek/x' },
+          },
+        ],
+        pinnedCalls,
+      ),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-fallback-tokens' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'szia' }],
+      modelConfig: { ...MODEL_CONFIG, maxTokens: 12000 },
+      allowedTools: [],
+    })
+    assert.equal(pinnedCalls[0]?.modelConfig.maxTokens, 12000)
+  })
+
   await check('csonkolt válasz: maxTokens elérésekor a loop rövid folytatásra kér a következő körben', async () => {
     // Mért eset (2026-09-15): 3× pontosan 16 384 completion tokennél vágott a
     // kimenet, észrevétlenül. Az első kör tool-hívást is ad (így lesz második
