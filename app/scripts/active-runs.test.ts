@@ -21,6 +21,7 @@ import { composeRunsPanel, runsSummaryChips, summarizeRuns } from '../src/lib/ac
 import {
   formatRunClock,
   formatRunElapsed,
+  formatWorkElapsedMmSs,
   runDayLabel,
   statusLabel,
 } from '../src/lib/active-runs-labels'
@@ -486,6 +487,13 @@ check('formatRunElapsed: aktív futásnál a kor a fő információ', () => {
   assert.equal(formatRunElapsed('2026-08-03T11:45:00', now), '15 perce')
   assert.equal(formatRunElapsed('2026-08-03T09:00:00', now), '3 órája')
   assert.equal(formatRunElapsed('2026-08-01T09:00:00', now), '2 napja')
+})
+
+check('formatWorkElapsedMmSs: perc:mp óra a chat munka-sávhoz', () => {
+  const started = Date.parse('2026-08-03T12:00:00')
+  assert.equal(formatWorkElapsedMmSs(started, started + 34_000), '0:34')
+  assert.equal(formatWorkElapsedMmSs(started, started + 125_000), '2:05')
+  assert.equal(formatWorkElapsedMmSs(started, started - 1_000), '0:00')
 })
 
 check('assessTicketRunLiveness: active vs stalled vs cancelling', () => {

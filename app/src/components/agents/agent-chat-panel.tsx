@@ -204,6 +204,7 @@ export function AgentChatPanel({
   const [isAgentTyping, setIsAgentTyping] = useState(false)
   const [stopPending, setStopPending] = useState(false)
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null)
+  const [activeTurnStartedAt, setActiveTurnStartedAt] = useState<string | null>(null)
   const activeTurnFinishedRef = useRef<(conversationId: string) => void>(() => {})
   const applyPolledTurnProgress = useCallback(
     (progress: { turnId: string; partialText: string; activities: ChatTurnActivity[] }) => {
@@ -236,6 +237,7 @@ export function AgentChatPanel({
   const clearActiveTurnState = useCallback(() => {
     setIsAgentTyping(false)
     setActiveTurnId(null)
+    setActiveTurnStartedAt(null)
     resetActiveTurnLiveness()
   }, [resetActiveTurnLiveness])
   const [runningConversationIds, setRunningConversationIds] = useState<string[]>([])
@@ -1041,6 +1043,7 @@ export function AgentChatPanel({
           setIsAgentTyping(false)
           setStopPending(false)
           setActiveTurnId(null)
+          setActiveTurnStartedAt(null)
           await reloadConversationMessages(params.conversationId)
         }
         return
@@ -1194,6 +1197,7 @@ export function AgentChatPanel({
           setIsAgentTyping(false)
           setStopPending(false)
           setActiveTurnId(null)
+          setActiveTurnStartedAt(null)
         }
         if (clearRunning) {
           markConversationRunning(params.conversationId, false)
@@ -1239,6 +1243,7 @@ export function AgentChatPanel({
           : []
 
         setActiveTurnId(data.turn.id)
+        setActiveTurnStartedAt(data.turn.startedAt ?? new Date().toISOString())
         setStopPending(false)
         if (stalled) {
           setIsAgentTyping(false)
@@ -1272,7 +1277,7 @@ export function AgentChatPanel({
                 role: 'agent' as const,
                 text: data.turn!.partialText ?? '',
                 attachments: [],
-                createdAt: new Date().toISOString(),
+                createdAt: data.turn.startedAt ?? new Date().toISOString(),
                 activities,
               },
             ]
@@ -1307,7 +1312,7 @@ export function AgentChatPanel({
               role: 'agent' as const,
               text: data.turn!.partialText ?? '',
               attachments: [],
-              createdAt: new Date().toISOString(),
+              createdAt: data.turn.startedAt ?? new Date().toISOString(),
               activities,
             },
           ]
@@ -1540,12 +1545,13 @@ export function AgentChatPanel({
       createdAt: new Date().toISOString(),
     }
 
+    const turnStartedAt = new Date().toISOString()
     const optimisticAgentMessage: ChatMessage = {
       id: agentBubbleMessageId,
       role: 'agent',
       text: '',
       attachments: [],
-      createdAt: new Date().toISOString(),
+      createdAt: turnStartedAt,
       activities: [],
     }
 
@@ -1554,6 +1560,7 @@ export function AgentChatPanel({
     setStatusMessage(null)
     setLastTicketId(null)
     resetActiveTurnLiveness()
+    setActiveTurnStartedAt(turnStartedAt)
     setIsAgentTyping(true)
     streamConversationIdRef.current = conversationId
     if (conversationId) markConversationRunning(conversationId, true)
@@ -1845,6 +1852,7 @@ export function AgentChatPanel({
             ) {
               markConversationRunning(event.conversationId, false)
               setActiveTurnId(null)
+              setActiveTurnStartedAt(null)
               await reloadConversationMessages(event.conversationId)
               setStatusMessage('Agent válasz megszakítva — részeredmény mentve.')
               streamTerminalEvent = true
@@ -1854,6 +1862,7 @@ export function AgentChatPanel({
               setConversationStatus('active')
               markConversationRunning(event.conversationId, false)
               setActiveTurnId(null)
+              setActiveTurnStartedAt(null)
               // A Folyamat-választás csak addig marad rögzítve, amíg a Futás
               // ténylegesen el nem indul (§4.4) — utána a chat visszaáll
               // normál beszélgetésre, hogy ne próbálja újraindítani.
@@ -2501,6 +2510,11 @@ export function AgentChatPanel({
                         message.id === agentBubbleIdForTurn(activeTurnId)
                       }
                       activityStallDetail={activeTurnStallDetail}
+                      activityWorkStartedAt={
+                        activeTurnId != null && message.id === agentBubbleIdForTurn(activeTurnId)
+                          ? activeTurnStartedAt
+                          : null
+                      }
                       onDeleteContent={handleDeleteMessageContent}
                       onOpenTask={handleMinimize}
                       onMemoryCandidateUpdate={handleMemoryCandidateUpdate}

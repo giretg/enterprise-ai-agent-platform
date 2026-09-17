@@ -88,6 +88,14 @@ export function formatRunClock(iso: string, now: Date = new Date()): string {
   return date.toLocaleDateString('hu-HU', { month: 'short', day: 'numeric' })
 }
 
+/** Futó munka élő órája — perc:mp, a chat „Éppen dolgozik” sávjához. */
+export function formatWorkElapsedMmSs(startedAtMs: number, nowMs: number): string {
+  const totalSec = Math.max(0, Math.floor((nowMs - startedAtMs) / 1000))
+  const minutes = Math.floor(totalSec / 60)
+  const seconds = totalSec % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
 /** Aktív futásnál a kor a fontos információ, nem az indulás órája. */
 export function formatRunElapsed(iso: string, now: Date = new Date()): string {
   const ms = now.getTime() - new Date(iso).getTime()
