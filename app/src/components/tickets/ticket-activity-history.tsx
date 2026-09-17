@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
+import { useVisibilityGatedInterval } from '@/components/tickets/use-visibility-gated-interval'
 import { getToolUiLabel } from '@/lib/tool-ui-labels'
 import {
   assessTicketRunLiveness,
@@ -228,15 +229,13 @@ export function TicketActivityHistory({ ticket }: { ticket: TicketActivitySource
   const hasActivities = Boolean(progress && progress.activities.length > 0)
 
   // Élő futásnál a szerver-oldali payload újratöltése tartja frissen a lépéseket.
+  useVisibilityGatedInterval(() => router.refresh(), 2_000, inProgress)
+
   useEffect(() => {
     if (!inProgress) return
-    const refresh = window.setInterval(() => router.refresh(), 2_000)
     const tick = window.setInterval(() => setNowMs(Date.now()), 5_000)
-    return () => {
-      window.clearInterval(refresh)
-      window.clearInterval(tick)
-    }
-  }, [inProgress, router])
+    return () => window.clearInterval(tick)
+  }, [inProgress])
 
   const liveness = assessTicketRunLiveness({
     ticketState: ticket.state,

@@ -195,6 +195,7 @@
     "test:xlsx-data-validation": "tsx scripts/xlsx-data-validation.test.ts",
     "test:ticket-thread-prompt": "tsx scripts/ticket-thread-prompt.test.ts",
     "test:ticket-workspace-files": "tsx scripts/ticket-workspace-files.test.ts",
+    "test:ticket-poll-visibility": "tsx scripts/ticket-poll-visibility.test.ts",
     "test:ticket-input-attachments": "tsx scripts/ticket-input-attachments.test.ts",
     "test:office-archive-limits": "tsx scripts/office-archive-limits.test.ts",
     "test:agent-turn-snapshot": "tsx scripts/agent-turn-snapshot.test.ts",
