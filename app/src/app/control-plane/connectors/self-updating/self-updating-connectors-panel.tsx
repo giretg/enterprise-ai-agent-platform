@@ -388,6 +388,13 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
           >
             Frissítés
           </button>
+          <button
+            type="button"
+            className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral"
+            onClick={() => setOpen(true)}
+          >
+            Megszüntetés
+          </button>
         </div>
       </div>
 

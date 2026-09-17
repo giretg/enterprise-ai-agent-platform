@@ -84,6 +84,7 @@
     "test:tenant-web-egress-selection": "tsx scripts/tenant-web-egress-selection.test.ts",
     "test:connector-secret-alias-policy": "tsx scripts/connector-secret-alias-policy.test.ts",
     "test:connector-api-key-rotate": "tsx scripts/connector-api-key-rotate.test.ts",
+    "test:connector-card-edit-decommission": "tsx scripts/connector-card-edit-decommission.test.ts",
     "test:provisioning-governance": "tsx scripts/provisioning-governance.test.ts",
     "test:openapi-extractor": "tsx scripts/openapi-config-extractor.test.ts",
     "test:self-updating-connector": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/self-updating-connector.test.ts",
