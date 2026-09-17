@@ -12,6 +12,11 @@
  * Ezért a határon validálunk: csak nemnegatív egészt fogadunk el, minden mást
  * `undefined`-ként adunk vissza — így a hívó a `?? agent.currentVersion`
  * fallbackre esik.
+ *
+ * Nem a `readPositiveInt`-et használjuk: az fallback-értéket ad (nem `undefined`-et,
+ * amiből a hívó `??`-ja döntene), és a `0`-t is eldobja — a verzió `0` viszont
+ * érvényes. A `parseInt` szándékosan csonkol (`"3abc" → 3`): a lényeg, hogy `NaN`
+ * sose keletkezzen; a `3` érvényes egész, nem nyit költség-/audit-rést.
  */
 export function parseAgentVersionHeader(raw: string | null | undefined): number | undefined {
   const trimmed = raw?.trim()
