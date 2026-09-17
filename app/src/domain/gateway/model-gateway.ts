@@ -1033,6 +1033,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     modelConfig: ModelConfig
     onReasoningDelta?: (delta: string) => void
     onUsage?: (usage: ModelProviderUsage) => void
+    signal?: AbortSignal
   }): AsyncGenerator<string, void, unknown> {
     const baseUrl = (process.env[this.baseUrlEnvVar] || this.defaultBaseUrl)?.replace(/\/+$/, '')
     if (!baseUrl) {
@@ -1062,6 +1063,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         ...(this.options.promptCache ? { stream_options: { include_usage: true } } : {}),
         ...this.options.extraBody?.({ reasoningRequested: typeof input.onReasoningDelta === 'function' }),
       }),
+      signal: input.signal,
     })
 
     if (!response.ok) {
@@ -1115,6 +1117,10 @@ export class OpenAiCompatibleProvider implements ModelProvider {
           }
         }
       }
+    } catch (error) {
+      // A forduló-falióra a body-olvasás közben is megszakíthat.
+      if (input.signal?.aborted) throw new ModelCallAbortedError()
+      throw error
     } finally {
       reader.releaseLock()
     }
