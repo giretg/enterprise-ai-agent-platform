@@ -6,11 +6,21 @@ import {
   OWNED_AGENT_TURN_STATUSES,
   ActiveAgentTurnExistsError,
   type AgentTurnRepository,
+  type ChatTurnCapacityLimits,
   type CreateAgentTurnInput,
   type FinalizeAgentTurnInput,
   type RecordChatTurnLaunchAttemptInput,
+  type ReserveChatTurnCapacityResult,
   type UpdateAgentTurnProgressInput,
 } from '../interfaces'
+
+/** #518 — a kapacitásba beszámító sorok: futó + indításra lefoglalt (queued, launchId-vel). */
+const OCCUPYING_CAPACITY: Prisma.AgentTurnWhereInput = {
+  OR: [
+    { status: { in: [...OWNED_AGENT_TURN_STATUSES] } },
+    { status: 'queued', launchId: { not: null } },
+  ],
+}
 
 /**
  * A `0009_agent_turn` migráció részleges egyedi indexe — az `agent_turns` tábla
@@ -141,17 +151,59 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
     return this.findById(id)
   }
 
-  async findQueuedForLaunch(now: Date, limit: number): Promise<AgentTurn[]> {
-    return prisma.agentTurn.findMany({
-      where: {
-        status: 'queued',
-        userMessageId: { not: null },
-        cancelRequested: false,
-        OR: [{ launchNextRetryAt: null }, { launchNextRetryAt: { lte: now } }],
-      },
-      orderBy: { createdAt: 'asc' },
-      take: limit,
+  async reserveLaunchCapacity(
+    id: string,
+    data: { launchId: string; nextRetryAt: Date; limits: ChatTurnCapacityLimits },
+    now: Date,
+  ): Promise<ReserveChatTurnCapacityResult> {
+    return prisma.$transaction(async (tx) => {
+      // ponytail: egy globális advisory lock sorosítja a foglalást — a limitek
+      // kicsik (tucatnyi), ez bőven elég; tenantonkénti lock, ha a foglalás
+      // maga lenne a szűk keresztmetszet.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('agent_turn_capacity'))`
+      const turn = await tx.agentTurn.findUnique({
+        where: { id },
+        select: { status: true, launchId: true, tenantId: true },
+      })
+      if (!turn || turn.status !== 'queued' || turn.launchId) return 'not_waiting'
+      const globalCount = await tx.agentTurn.count({ where: OCCUPYING_CAPACITY })
+      if (globalCount >= data.limits.global) return 'global_full'
+      const tenantCount = await tx.agentTurn.count({
+        where: { AND: [OCCUPYING_CAPACITY, { tenantId: turn.tenantId }] },
+      })
+      if (tenantCount >= data.limits.perTenant) return 'tenant_full'
+      const result = await tx.agentTurn.updateMany({
+        where: { id, status: 'queued', launchId: null },
+        data: {
+          launchId: data.launchId,
+          launchReservedAt: now,
+          launchNextRetryAt: data.nextRetryAt,
+          launchAttemptCount: { increment: 1 },
+        },
+      })
+      return result.count === 1 ? 'reserved' : 'not_waiting'
     })
+  }
+
+  async findQueuedForLaunch(now: Date, limit: number): Promise<AgentTurn[]> {
+    // Tenantonként kiegyenlített sorrend (#518): minden tenant legrégebbi sora
+    // előbb, mint bármely tenant másodikja — a telített tenant hosszú sora nem
+    // tolja ki a többit a batchből.
+    const ids = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM (
+        SELECT id, created_at,
+               row_number() OVER (PARTITION BY tenant_id ORDER BY created_at) AS rn
+        FROM agent_turns
+        WHERE status = 'queued'
+          AND user_message_id IS NOT NULL
+          AND (launch_next_retry_at IS NULL OR launch_next_retry_at <= ${now})
+      ) q
+      ORDER BY rn, created_at
+      LIMIT ${limit}`
+    if (ids.length === 0) return []
+    const rows = await prisma.agentTurn.findMany({ where: { id: { in: ids.map((r) => r.id) } } })
+    const byId = new Map(rows.map((row) => [row.id, row]))
+    return ids.map((r) => byId.get(r.id)).filter((row): row is AgentTurn => Boolean(row))
   }
 
   async releaseLock(id: string, lockToken: string): Promise<void> {
@@ -225,7 +277,7 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
   async finalize(
     id: string,
     data: FinalizeAgentTurnInput,
-    lockToken?: string,
+    lockToken?: string | null,
   ): Promise<AgentTurn | null> {
     // Csak aktív fordulót zárunk le: a második lezárás (pl. watchdog vs. runner
     // versenye) `null`-t ad, nem írja felül az első terminális állapotot.

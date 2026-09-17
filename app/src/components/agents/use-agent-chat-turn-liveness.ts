@@ -19,18 +19,40 @@ export type ChatTurnProgressSnapshot = {
   activities?: unknown
   heartbeatAt?: string
   startedAt?: string
+  createdAt?: string
+  launchReservedAt?: string | null
   cancelRequested?: boolean
 }
 
-export function describeChatTurnStall(turn: ChatTurnProgressSnapshot): string | null {
-  const liveness = assessChatTurnLiveness({
+function assessSnapshot(turn: ChatTurnProgressSnapshot) {
+  return assessChatTurnLiveness({
     status: turn.status ?? 'running',
     cancelRequested: turn.cancelRequested,
     heartbeatAt: turn.heartbeatAt,
     startedAt: turn.startedAt,
+    createdAt: turn.createdAt,
+    launchReservedAt: turn.launchReservedAt,
     activities: turn.activities,
   })
+}
+
+export function describeChatTurnStall(turn: ChatTurnProgressSnapshot): string | null {
+  const liveness = assessSnapshot(turn)
   return liveness.kind === 'stalled' ? describeChatTurnLiveness(liveness).detail : null
+}
+
+/**
+ * #518 — a még el nem indult forduló sor-állapota („Sorban áll” / „Indul…”),
+ * `null`, ha már fut. A fejléc-chip ebből tudja, hogy nem gépel, hanem vár.
+ */
+export function describeChatTurnQueue(
+  turn: ChatTurnProgressSnapshot,
+): { label: string; detail: string } | null {
+  if (turn.status !== 'queued') return null
+  const liveness = assessSnapshot(turn)
+  return liveness.kind === 'queued' || liveness.kind === 'launching'
+    ? describeChatTurnLiveness(liveness)
+    : null
 }
 
 /**
@@ -63,10 +85,15 @@ export function useAgentChatTurnLiveness(input: {
 }) {
   const { active, conversationId, activeTurnId, onProgress, onFinished } = input
   const [stallDetail, setStallDetail] = useState<string | null>(null)
-  const reset = useCallback(() => setStallDetail(null), [])
+  const [queueState, setQueueState] = useState<{ label: string; detail: string } | null>(null)
+  const reset = useCallback(() => {
+    setStallDetail(null)
+    setQueueState(null)
+  }, [])
   const updateFromSnapshot = useCallback((turn: ChatTurnProgressSnapshot) => {
     const detail = describeChatTurnStall(turn)
     setStallDetail(detail)
+    setQueueState(describeChatTurnQueue(turn))
     return detail !== null
   }, [])
 
@@ -111,5 +138,5 @@ export function useAgentChatTurnLiveness(input: {
     enabled: active && Boolean(conversationId) && Boolean(activeTurnId),
   })
 
-  return { stalled: stallDetail !== null, stallDetail, reset, updateFromSnapshot }
+  return { stalled: stallDetail !== null, stallDetail, queueState, reset, updateFromSnapshot }
 }

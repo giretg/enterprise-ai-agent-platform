@@ -53,6 +53,8 @@ export async function GET(request: Request) {
       userMessageId: turn.userMessageId,
       startedAt: turn.startedAt.toISOString(),
       heartbeatAt: turn.heartbeatAt.toISOString(),
+      createdAt: turn.createdAt.toISOString(),
+      launchReservedAt: turn.launchReservedAt?.toISOString() ?? null,
       cancelRequested: turn.cancelRequested,
     },
   })

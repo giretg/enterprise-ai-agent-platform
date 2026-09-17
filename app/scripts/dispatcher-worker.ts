@@ -92,9 +92,13 @@ async function runDispatchCycle(ticketId?: string) {
         `[dispatcher] watchdog closed ${summary.reclaimedAgentTurns} stale agent turn(s)`,
       )
     }
-    if (summary.chatTurnLaunches.launched > 0 || summary.chatTurnLaunches.failed > 0) {
+    if (
+      summary.chatTurnLaunches.launched > 0 ||
+      summary.chatTurnLaunches.failed > 0 ||
+      summary.chatTurnLaunches.waiting > 0
+    ) {
       console.log(
-        `[dispatcher] chat-turn launch: ${summary.chatTurnLaunches.launched} started, ${summary.chatTurnLaunches.failed} failed (${summary.chatTurnLaunches.scanned} scanned)`,
+        `[dispatcher] chat-turn launch: ${summary.chatTurnLaunches.launched} started, ${summary.chatTurnLaunches.waiting} waiting for capacity, ${summary.chatTurnLaunches.failed} failed (${summary.chatTurnLaunches.scanned} scanned)`,
       )
     }
     if (summary.channelTurns.reclaimed > 0) {

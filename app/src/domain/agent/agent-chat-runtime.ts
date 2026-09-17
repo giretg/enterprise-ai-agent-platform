@@ -731,7 +731,12 @@ export class AgentChatRuntime {
     launcher?: ChatTurnLauncher,
   ) {
     this.launcher =
-      launcher ?? createInProcessChatTurnLauncher((request, emit) => this.runReservedTurn(request, emit))
+      launcher ??
+      createInProcessChatTurnLauncher((request, emit) =>
+        // #518: a felszabadult hely azonnal a következő sorban állóé — ne
+        // várjon a dispatch-ciklus következő körére.
+        this.runReservedTurn(request, emit).finally(() => this.kickQueuedTurns()),
+      )
   }
 
   private launcher: ChatTurnLauncher
@@ -1344,6 +1349,14 @@ export class AgentChatRuntime {
       userMessageId: userMessage.id,
       subscribe: agentTurnRunner.isRunning(turnId) ? () => agentTurnRunner.subscribe(turnId)! : null,
     }
+  }
+
+  /** ponytail: finish-kick only looks at 5 waiters; the rest wait for the ~30s dispatch cycle. Drain until waiting/global_full if kick latency becomes the bottleneck. */
+  private kickQueuedTurns(): void {
+    if (!this.agentTurns) return
+    this.recoverQueuedTurns({ limit: 5 }).catch((error) => {
+      console.error('[agent-chat] sorban álló fordulók indítása sikertelen', error)
+    })
   }
 
   /**

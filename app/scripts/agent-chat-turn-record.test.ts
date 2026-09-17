@@ -181,6 +181,7 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
         launchAttemptCount: 0,
         launchNextRetryAt: null,
         launchProviderRef: null,
+        launchReservedAt: null,
         cancelRequested: false,
       } as unknown as AgentTurn
       activeByConversation.set(data.conversationId, row)
@@ -230,13 +231,23 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
       })
       return row
     },
+    async reserveLaunchCapacity(id, data, now) {
+      const row = rowsById.get(id)
+      if (!row || row.status !== 'queued' || row.launchId) return 'not_waiting'
+      Object.assign(row, {
+        launchId: data.launchId,
+        launchReservedAt: now,
+        launchNextRetryAt: data.nextRetryAt,
+        launchAttemptCount: (row.launchAttemptCount ?? 0) + 1,
+      })
+      return 'reserved'
+    },
     async findQueuedForLaunch(now, limit) {
       return [...rowsById.values()]
         .filter(
           (row) =>
             row.status === 'queued' &&
             row.userMessageId &&
-            !row.cancelRequested &&
             (row.launchNextRetryAt == null || row.launchNextRetryAt <= now),
         )
         .slice(0, limit)

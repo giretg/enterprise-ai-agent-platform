@@ -25,6 +25,8 @@ import {
   recoverQueuedChatTurns,
 } from '../src/domain/agent/chat-turn-dispatch'
 
+const BIG = { global: 100, perTenant: 100 }
+
 let failures = 0
 async function test(name: string, fn: () => void | Promise<void>) {
   try {
@@ -53,6 +55,7 @@ function queuedTurn(overrides: Partial<AgentTurn> = {}): AgentTurn {
     launchAttemptCount: 0,
     launchNextRetryAt: null,
     launchProviderRef: null,
+    launchReservedAt: null,
     partialText: '',
     activities: [],
     turnCount: 0,
@@ -74,12 +77,15 @@ function queuedTurn(overrides: Partial<AgentTurn> = {}): AgentTurn {
   } as AgentTurn
 }
 
-function fakeTurns(initial: AgentTurn) {
-  const rows = new Map<string, AgentTurn>([[initial.id, { ...initial }]])
+const OCCUPYING = (row: AgentTurn) =>
+  row.status === 'running' || row.status === 'streaming' || (row.status === 'queued' && row.launchId)
+
+function fakeTurns(...initial: AgentTurn[]) {
+  const rows = new Map<string, AgentTurn>(initial.map((row) => [row.id, { ...row }]))
   const finalized: Array<{ id: string; status: string; reason?: string | null }> = []
   const repo: Pick<
     AgentTurnRepository,
-    'findById' | 'findQueuedForLaunch' | 'recordLaunchAttempt' | 'finalize'
+    'findById' | 'findQueuedForLaunch' | 'recordLaunchAttempt' | 'reserveLaunchCapacity' | 'finalize'
   > = {
     async findById(id) {
       return rows.get(id) ?? null
@@ -90,10 +96,26 @@ function fakeTurns(initial: AgentTurn) {
           (row) =>
             row.status === 'queued' &&
             row.userMessageId &&
-            !row.cancelRequested &&
             (row.launchNextRetryAt == null || row.launchNextRetryAt <= now),
         )
         .slice(0, limit)
+    },
+    async reserveLaunchCapacity(id, data, now) {
+      const row = rows.get(id)
+      if (!row || row.status !== 'queued' || row.launchId) return 'not_waiting'
+      const all = [...rows.values()].filter(OCCUPYING)
+      if (all.length >= data.limits.global) return 'global_full'
+      if (all.filter((r) => r.tenantId === row.tenantId).length >= data.limits.perTenant) {
+        return 'tenant_full'
+      }
+      rows.set(id, {
+        ...row,
+        launchId: data.launchId,
+        launchReservedAt: now,
+        launchNextRetryAt: data.nextRetryAt,
+        launchAttemptCount: row.launchAttemptCount + 1,
+      })
+      return 'reserved'
     },
     async recordLaunchAttempt(id, data) {
       const row = rows.get(id)
@@ -110,11 +132,12 @@ function fakeTurns(initial: AgentTurn) {
       rows.set(id, next)
       return next
     },
-    async finalize(id, data) {
+    async finalize(id, data, lockToken) {
       const row = rows.get(id)
       if (!row || (row.status !== 'queued' && row.status !== 'running' && row.status !== 'streaming')) {
         return null
       }
+      if (lockToken !== undefined && row.lockToken !== lockToken) return null
       finalized.push({ id, status: data.status, reason: data.reason })
       const next = {
         ...row,
@@ -154,7 +177,7 @@ async function main() {
         return { state: 'not_found' }
       },
     }
-    const summary = await recoverQueuedChatTurns({ turns: repo, launcher })
+    const summary = await recoverQueuedChatTurns({ turns: repo, launcher, capacity: BIG })
     assert.equal(summary.scanned, 1)
     assert.equal(summary.launched, 1)
     assert.equal(launched.length, 1)
@@ -179,12 +202,12 @@ async function main() {
         return running.has(turnId) ? { state: 'running' } : { state: 'not_found' }
       },
     }
-    const first = await launchAcceptedChatTurn({ turns: repo, launcher }, rows.get('turn-1')!)
+    const first = await launchAcceptedChatTurn({ turns: repo, launcher, capacity: BIG }, rows.get('turn-1')!)
     assert.equal(first.kind, 'pending')
     assert.equal(rows.get('turn-1')!.status, 'queued')
     assert.equal(finalized.length, 0, 'elveszett válasz nem hamis végleges hiba')
 
-    const second = await launchAcceptedChatTurn({ turns: repo, launcher }, rows.get('turn-1')!)
+    const second = await launchAcceptedChatTurn({ turns: repo, launcher, capacity: BIG }, rows.get('turn-1')!)
     assert.equal(second.kind, 'already_running')
     assert.equal(launched.length, 1, 'nincs dupla launch')
     assert.equal(rows.get('turn-1')!.status, 'queued')
@@ -204,8 +227,8 @@ async function main() {
           : { state: 'not_found' }
       },
     }
-    assert.equal((await launchAcceptedChatTurn({ turns: repo, launcher }, rows.get('turn-1')!)).kind, 'launched')
-    const again = await launchAcceptedChatTurn({ turns: repo, launcher }, rows.get('turn-1')!)
+    assert.equal((await launchAcceptedChatTurn({ turns: repo, launcher, capacity: BIG }, rows.get('turn-1')!)).kind, 'launched')
+    const again = await launchAcceptedChatTurn({ turns: repo, launcher, capacity: BIG }, rows.get('turn-1')!)
     assert.equal(again.kind, 'already_running')
     assert.equal(launched.length, 1)
   })
@@ -220,7 +243,7 @@ async function main() {
         return { state: 'not_found' }
       },
     }
-    const result = await launchAcceptedChatTurn({ turns: repo, launcher }, rows.get('turn-1')!)
+    const result = await launchAcceptedChatTurn({ turns: repo, launcher, capacity: BIG }, rows.get('turn-1')!)
     assert.equal(result.kind, 'failed')
     assert.equal(rows.get('turn-1')!.status, 'failed')
     assert.equal(finalized[0]?.reason, LAUNCH_FAILED_REASON)
@@ -244,7 +267,7 @@ async function main() {
         return { state: 'not_found' }
       },
     }
-    const failed = await recoverQueuedChatTurns({ turns: repo, launcher })
+    const failed = await recoverQueuedChatTurns({ turns: repo, launcher, capacity: BIG })
     assert.equal(failed.failed, 1)
     assert.equal(launched.length, 0)
     assert.equal(rows.get('turn-1')!.status, 'failed')
@@ -253,6 +276,7 @@ async function main() {
     const runningStore = fakeTurns(queuedTurn({ status: 'running', lockToken: 'owner-1' }))
     const replay = await recoverQueuedChatTurns({
       turns: runningStore.repo,
+      capacity: BIG,
       launcher: {
         async launch() {
           throw new Error('nem szabad running loopot újraindítani')
@@ -264,6 +288,79 @@ async function main() {
     })
     assert.equal(replay.scanned, 0)
     assert.equal(replay.launched, 0)
+  })
+
+  await test('#518: telített globális kapacitásnál a sor vár — nincs attempt, nincs hiba, nincs launchId', async () => {
+    const { repo, rows, finalized } = fakeTurns(
+      queuedTurn({ id: 'busy', conversationId: 'c-busy', status: 'running', lockToken: 'o' }),
+      queuedTurn({ id: 'wait', conversationId: 'c-wait' }),
+    )
+    const launcher: ChatTurnLauncher = {
+      async launch() {
+        throw new Error('telített kapacitásnál nem szabad indítani')
+      },
+      async reconcile() {
+        return { state: 'not_found' }
+      },
+    }
+    const summary = await recoverQueuedChatTurns({
+      turns: repo,
+      launcher,
+      capacity: { global: 1, perTenant: 1 },
+    })
+    assert.equal(summary.waiting, 1)
+    assert.equal(summary.launched, 0)
+    const row = rows.get('wait')!
+    assert.equal(row.status, 'queued')
+    assert.equal(row.launchId, null, 'várakozás nem foglal — nem éri a 10 perces indítási határ')
+    assert.equal(row.launchAttemptCount, 0)
+    assert.equal(finalized.length, 0)
+  })
+
+  await test('#518: telített tenant nem blokkol más tenantot; felszabadulás után a várakozó indul', async () => {
+    const { repo, rows } = fakeTurns(
+      queuedTurn({ id: 'a-run', conversationId: 'c1', tenantId: 'A', status: 'running', lockToken: 'o' }),
+      queuedTurn({ id: 'a-wait', conversationId: 'c2', tenantId: 'A' }),
+      queuedTurn({ id: 'b-wait', conversationId: 'c3', tenantId: 'B' }),
+    )
+    const launched: string[] = []
+    const launcher: ChatTurnLauncher = {
+      async launch({ turnId, launchId }) {
+        launched.push(turnId)
+        return { launchId, outcome: 'accepted', providerRef: launchId }
+      },
+      async reconcile() {
+        return { state: 'running' }
+      },
+    }
+    const capacity = { global: 4, perTenant: 1 }
+    const first = await recoverQueuedChatTurns({ turns: repo, launcher, capacity })
+    assert.deepEqual(launched, ['b-wait'], 'A telített, B indul')
+    assert.equal(first.waiting, 1)
+    assert.ok(rows.get('b-wait')!.launchReservedAt, 'a foglalás ideje mérhető')
+
+    await repo.finalize('a-run', { status: 'completed' })
+    await recoverQueuedChatTurns({ turns: repo, launcher, capacity })
+    assert.deepEqual(launched, ['b-wait', 'a-wait'], 'a felszabadult hely a várakozóé')
+  })
+
+  await test('#518: queued Stop lezárja a sort tulajdonos nélkül; claimelt sort nem üt el', async () => {
+    const { repo, rows, finalized } = fakeTurns(
+      queuedTurn({ id: 'stop', conversationId: 'c1', cancelRequested: true }),
+      queuedTurn({ id: 'claimed', conversationId: 'c2', cancelRequested: true, lockToken: 'owner' }),
+    )
+    const launcher: ChatTurnLauncher = {
+      async launch() {
+        throw new Error('Stop-olt sort nem indítunk')
+      },
+      async reconcile() {
+        return { state: 'not_found' }
+      },
+    }
+    await recoverQueuedChatTurns({ turns: repo, launcher, capacity: { global: 9, perTenant: 9 } })
+    assert.equal(rows.get('stop')!.status, 'cancelled')
+    assert.equal(finalized[0]?.reason, 'stop')
+    assert.equal(rows.get('claimed')!.status, 'queued', 'tokenes sort a null-token nem zár')
   })
 
   if (failures > 0) {

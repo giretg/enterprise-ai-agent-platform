@@ -15,7 +15,8 @@ export function statusLabel(run: ActiveRun): string | null {
     if (run.status === 'in_progress') return 'Fut'
     if (run.status === 'stalled') return 'Megállt'
     if (run.status === 'running' || run.status === 'streaming') return 'Fut'
-    if (run.status === 'queued') return 'Sorban'
+    if (run.status === 'starting') return 'Indul…'
+    if (run.status === 'queued') return 'Sorban áll'
     return null
   }
   switch (run.status) {

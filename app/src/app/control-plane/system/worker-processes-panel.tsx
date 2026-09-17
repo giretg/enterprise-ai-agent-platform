@@ -71,7 +71,7 @@ function formatSkipReasons(skipReasons: Record<string, number>): string | null {
 function formatCycleRunMessage(summary: {
   reclaimedDispatches: number
   reclaimedAgentTurns: number
-  chatTurnLaunches: { scanned: number; launched: number; failed: number }
+  chatTurnLaunches: { scanned: number; launched: number; failed: number; waiting?: number }
   materializedScheduledTasks: number
   monitorSweep: { ran: boolean; escalated: number; openedTickets: number }
   workspacePurge: { purgedTickets: number }
@@ -104,8 +104,8 @@ function formatCycleRunMessage(summary: {
   return [
     `${summary.reclaimedDispatches} elakadt futás visszavéve`,
     `${summary.reclaimedAgentTurns} chat-forduló watchdog-lezárás`,
-    summary.chatTurnLaunches.launched + summary.chatTurnLaunches.failed > 0
-      ? `${summary.chatTurnLaunches.launched} chat-indítás, ${summary.chatTurnLaunches.failed} végleges indítási hiba`
+    summary.chatTurnLaunches.launched + summary.chatTurnLaunches.failed + (summary.chatTurnLaunches.waiting ?? 0) > 0
+      ? `${summary.chatTurnLaunches.launched} chat-indítás, ${summary.chatTurnLaunches.waiting ?? 0} kapacitásra vár, ${summary.chatTurnLaunches.failed} végleges indítási hiba`
       : null,
     `${summary.materializedScheduledTasks} ütemezett task materializálva`,
     monitorPart,
