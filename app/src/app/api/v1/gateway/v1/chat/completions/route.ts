@@ -5,6 +5,7 @@ import { services } from '@/domain'
 import { buildStubOpenAiCompletion } from '@/domain/gateway/stub-openai-completion'
 import { relayTextToolCall } from '@/domain/gateway/text-tool-relay'
 import { isAgentApiToolContextOwnedByAgent } from '@/lib/agent-api-tool-context'
+import { parseAgentVersionHeader } from '@/lib/agent-version-header'
 import { assertAgentWorkTenantOperable } from '@/lib/agent-work-tenant-gate'
 import { resolveGatewayRequestModel } from '@/lib/harness-model-config'
 import { repositories } from '@/repositories/postgres'
@@ -43,8 +44,10 @@ export async function POST(request: Request) {
   }
 
   const ticketId = request.headers.get('x-ticket-id')?.trim() || undefined
-  const agentVersionHeader = request.headers.get('x-agent-version')?.trim()
-  const agentVersion = agentVersionHeader ? Number.parseInt(agentVersionHeader, 10) : undefined
+  // Kliens-vezérelt fejléc: nem-numerikus érték `NaN`-t adna, ami NEM esik vissza
+  // a `?? agent.currentVersion` fallbackre, és a fizetős hívás UTÁN buktatja a
+  // `model_calls` rögzítést (néma költség-/audit-rés). Ezért a határon validáljuk.
+  const agentVersion = parseAgentVersionHeader(request.headers.get('x-agent-version'))
 
   // Az agent API-kulcs nem jogosít fel tetszőleges ticket hívási keretének
   // fogyasztására. A gateway auditja és call-capje a fejlécből vett tickethez

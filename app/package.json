@@ -57,6 +57,7 @@
     "s7:live-smoke": "tsx scripts/s7-live-smoke.ts",
     "test:agent-api-key-hash": "tsx scripts/agent-api-key-hash.test.ts",
     "test:agent-api-tool-context": "tsx scripts/agent-api-tool-context.test.ts",
+    "test:agent-version-header": "tsx scripts/agent-version-header.test.ts",
     "test:gateway-ticket-context-route": "tsx scripts/gateway-ticket-context-route.test.ts",
     "test:timing-safe-token": "tsx scripts/timing-safe-token.test.ts",
     "test:fallback-chain": "tsx scripts/fallback-chain.test.ts",

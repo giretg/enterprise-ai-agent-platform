@@ -7,6 +7,82 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-09-17 — Külső gateway (`POST /v1/chat/completions`): agent-API bizalmi határ + `x-agent-version` NaN költség-/audit-rés
+
+**Scope-választás (kockázati alapon):** `gh pr list` + ledger után az előző körök az
+OOM-ingress, a tool-diszpécser és a kódfuttató sandbox felületét fedték. A **külső,
+hitelesített OpenAI-kompatibilis gateway** (`/api/v1/gateway/v1/chat/completions`) — a
+platform egyik legmagasabb értékű külső támadási felülete (agent API-kulcs auth, tenant-
+feloldás, költség/keret-kikényszerítés) — **nem szerepelt a napi ledgerben**, ezért ez volt
+a legnagyobb nem-auditált kockázat. Az ág épp itt dolgozott (ticket confused-deputy), ami a
+felület fontosságát is jelzi.
+
+**Coverage (teljes bizalmi-határ trace):** `authenticateAgentRequest` → `authenticateApiKey`
+(formátum-kapu → HKDF egyedi lookup-hash → `bcrypt.compare` + usability; legacy-út csak a
+hash nélküli sorokat bcrypteli, backfillel) → `requireAgentScope` → `openAiChatCompletionSchema`
+→ tenant-gate (`assertAgentWorkTenantOperable`, `ticket.tenantId ?? agent.tenantId`) →
+`resolveGatewayRequestModel` + `RoutingEngine.resolve` (kliens `overrideHint` CSAK explicit
+policy-engedéllyel; nincs policy → agent-config, az override eldobva). Melléksáv: **minden**
+agent-API ingress cross-tenant kontextus-kapuja — `agent/tools`, `agent/tickets/[id]`,
+`harness/tickets/[id]/process`, `agent/tickets` create — mind kikényszeríti a
+`ticket.agentId === auth.agentId` / tenant-tulajdont; a `board_write` args-ticketId külön a
+`referencedTicketIds`-be kerül; a connector a broker `authorizer`-én az agent grantjából
+oldódik (nincs args-vezérelt `connectorId` IDOR); `resolveWorkspaceStorageTenantId` csak a
+felső-szintű (kapuzott) `ticketId`/`conversationId`-ből választ tenantot.
+
+### Biztonsági megállapítás — a bizalmi határ helytáll (nincs auth/IDOR finding)
+
+Az auth, a scope, a cross-tenant kontextus-tulajdon, a connector-authz és a modell-override-
+routing mind megfelelően kapuzott. A gateway `x-ticket-id` confused-deputy (idegen ticket
+call-capjének fogyasztása) volt az utolsó rés, és azt a **felhasználó egyidejűleg javította**
+(`386f4d548 fix(gateway): bind ticket usage to authenticated agent`, `isAgentApiToolContext­OwnedByAgent`
+kapu a tenant-gate elé). A kötelező diff-alapú `/security-review` a **committálatlan** ág-állapoton
+üres diffet kapott (az ág 0 branch-commit volt a munka idején), ezért a finding-felderítés a
+kézi end-to-end trace volt.
+
+### Bizonyított finding (correctness / cost-integrity, ≥9) — javítva
+
+**`x-agent-version` NaN → néma költség- és audit-rés.** A gateway a fejlécet nyers
+`Number.parseInt`-tel olvasta; nem-numerikus értékre (`x-agent-version: abc`) ez `NaN`, és a
+`NaN ?? agent.currentVersion` **nem** esik vissza (a `NaN` nem nullish). A `NaN` továbbfolyt a
+`services.gateway.call({ agentVersion })` → `modelCalls.create({ agentVersion })`-ba, ahol a
+`ModelCall.agentVersion` **`Int?`**. A Prisma a `NaN`-t elutasítja — de a **fizetős
+`provider.chat()` EKKOR MÁR lefutott** (`model-gateway.ts:2253` a hívás, `:2279` a rögzítés).
+Következmény: valós provider-költség keletkezik, de a hívás **soha nem könyvelődik** a per-ticket
+modellhívás-plafon, a keret-aggregátum és az auditnapló felé; a hívó 502-t kap. Egy hibás
+verzió-fejlécet küldő kliens minden hívásnál láthatatlanul megkerülné a platform két
+alapígéretét (**költség-kontroll + auditálhatóság**, AGENTS.md).
+
+**Root-cause javítás a bizalmi határon** (PR **#512**, ág `fix/gateway-agent-version-header-validation`,
+main-re bázisolva; a felhasználó WIP-je érintetlen — külön git worktree-ben készült):
+- `app/src/lib/agent-version-header.ts` — `parseAgentVersionHeader`: csak nemnegatív egész, minden
+  más `undefined` → a hívó `?? agent.currentVersion` fallbackje lép; `NaN` sosem keletkezik.
+- `route.ts` — a nyers `parseInt` cseréje a határ-parserre (mind a 4 downstream site — normál és
+  stub út — a közös `??` fallbackre esik).
+- `app/scripts/agent-version-header.test.ts` — 12 eset + invariáns-loop: a visszaadott érték sosem NaN.
+
+### Ellenőrzések
+- `npm run test:agent-version-header` — **12 passed, 0 failed**.
+- Matt Pocock `/code-review` (Standards + Spec, párhuzamos sub-agentek): **mindkét tengely „ship"**.
+  Standards: 0 dokumentált-standard sértés; egy judgement-call (sibling `readPositiveInt` — nem
+  használható, mert fallbackot ad és a `0`-t eldobja) → JSDoc-jegyzet hozzáadva. Spec: a fix a
+  helyes egyetlen choke-pointon oldja meg, NaN egyik downstream siten sem jut át; a `3abc → 3`
+  csonkolás szándékos és spec-konform (jegyzetelve).
+
+### Residual risk / következő audithoz
+- **`agentVersion` a chat-úton is `??`-ozódik** — ott `agent.currentVersion`-ból jön (nem fejléc),
+  így a NaN-rés kizárólag a gateway-fejléc volt; más ingress nem olvas `x-agent-version`-t (grep-elve).
+- **`3abc → 3` parseInt-csonkolás szándékos** (a cél a NaN kizárása). Ha később szigorú
+  verzió-egyeztetés kell (a fejléc ↔ létező AgentVersion), az külön kapu — ma az agentVersion csak
+  attribúció, nem authz.
+- **Egyéb ingress-méret-kapuk (OOM) továbbra is nyitottak** (PR #445/#448/#443 merge-re vár) — az a
+  külön, már ledgerezett munka.
+- **A felhasználó ticket-ownership javítása (`386f4d548`) még az ágon van, nincs main-en** — a két
+  változtatás logikailag független (más sorok), de a `package.json` scripts-blokk és a `route.ts`
+  szomszédos hunkjai a two-branch merge-nél kézi egyeztetést kérhetnek; nem PR-blokkoló.
+
+---
+
 ## 2026-09-16 — Kódfuttató sandbox (`sandbox_exec` / #485): agent-vezérelt tetszőleges kódfuttatás izolációja
 
 **Scope-választás (kockázati alapon):** `gh pr list` + ledger után az összes eddigi kör
