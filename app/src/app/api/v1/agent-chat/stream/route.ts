@@ -2,6 +2,7 @@ import { after } from 'next/server'
 import { services } from '@/domain'
 import { agentTurnRunner, type AgentChatStreamEvent } from '@/domain/agent/agent-turn-runner'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
+import { readJson } from '@/lib/api-response'
 import { agentChatStreamTurnInputSchema } from '@/lib/validators/actions'
 import { embeddedContextToModelPrefix, readEmbedApps } from '@/lib/embed-apps'
 import { resolveChatStreamProjectKey } from '@/lib/chat-stream-project-key'
@@ -26,8 +27,9 @@ export async function POST(request: Request) {
 
   let body: unknown
   try {
-    body = await request.json()
+    body = await readJson(request)
   } catch {
+    // Érvénytelen VAGY túl nagy törzs → 400 (nem indul forduló, nincs OOM-vektor).
     return new Response('Invalid JSON body', { status: 400 })
   }
 

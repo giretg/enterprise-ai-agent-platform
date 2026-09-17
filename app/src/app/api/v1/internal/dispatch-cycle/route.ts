@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { handleDispatchCycleRequest } from '@/domain/dispatcher/dispatch-cycle-request'
 import { runDispatchCycle } from '@/domain/dispatcher/run-dispatch-cycle'
+import { readBoundedText } from '@/lib/api-response'
 
 /**
  * Stateless dispatch-ciklus végpont (§5.7 költség-kiegészítés): ugyanazt a ciklust futtatja
@@ -22,7 +23,9 @@ export async function POST(request: Request) {
   const result = await handleDispatchCycleRequest(
     {
       providedToken: request.headers.get('x-dispatcher-token'),
-      readRawBody: () => request.text(),
+      // A nyers törzset is bájt-plafonig olvassuk (a `handleDispatchCycleRequest`
+      // ezt is `JSON.parse`-olja); túl nagy törzs → a handler catch-e 400-at ad, OOM nélkül.
+      readRawBody: () => readBoundedText(request),
     },
     runDispatchCycle,
   )

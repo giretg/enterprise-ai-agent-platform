@@ -3,6 +3,7 @@ import { authenticateAgentRequest, requireAgentScope } from '@/auth/agent-api-ke
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { resolveTicketProcessRoute } from '@/lib/ticket-process-route'
+import { readJson } from '@/lib/api-response'
 
 function jsonError(
   message: string,
@@ -33,7 +34,7 @@ export async function POST(
 
   let body: { agentId?: string } = {}
   try {
-    const parsed = (await request.json()) as { agentId?: string }
+    const parsed = (await readJson(request)) as { agentId?: string }
     body = parsed ?? {}
   } catch {
     // üres body is elfogadható — auth.agentId a forrás

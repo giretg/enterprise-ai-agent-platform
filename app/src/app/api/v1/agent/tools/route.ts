@@ -6,6 +6,7 @@ import { isAgentApiToolContextOwnedByAgent } from '@/lib/agent-api-tool-context'
 import { repositories } from '@/repositories/postgres'
 import { toolInvokeSchema } from '@/lib/validators/actions'
 import { buildToolInvokeInput } from '@/domain/tool-broker/tool-registry'
+import { readJson } from '@/lib/api-response'
 import { recordDenied } from '@/domain/tool-broker/tool-broker-audit'
 import { prisma } from '@/lib/db'
 
@@ -25,7 +26,7 @@ export async function POST(request: Request) {
 
   let body: unknown
   try {
-    body = await request.json()
+    body = await readJson(request)
   } catch {
     return jsonError('Invalid JSON body', 400)
   }

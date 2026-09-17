@@ -10,6 +10,7 @@ import {
 } from '@/lib/agent-interaction-ticket'
 import { repositories } from '@/repositories/postgres'
 import { createInteractionTicketSchema } from '@/lib/validators/actions'
+import { readJson } from '@/lib/api-response'
 
 function jsonError(message: string, status: number, data?: unknown) {
   return NextResponse.json({ success: false, error: message, data }, { status })
@@ -54,7 +55,7 @@ export async function POST(request: Request) {
 
   let body: unknown
   try {
-    body = await request.json()
+    body = await readJson(request)
   } catch {
     return jsonError('Invalid JSON body', 400)
   }
