@@ -2,7 +2,10 @@ import { NextResponse } from 'next/server'
 import { authenticateAgentRequest, requireAgentScope } from '@/auth/agent-api-key'
 import { services } from '@/domain'
 import { assertAgentWorkTenantOperable } from '@/lib/agent-work-tenant-gate'
-import { isAgentApiToolContextOwnedByAgent } from '@/lib/agent-api-tool-context'
+import {
+  isAgentApiMcpTool,
+  isAgentApiToolContextOwnedByAgent,
+} from '@/lib/agent-api-tool-context'
 import { repositories } from '@/repositories/postgres'
 import { toolInvokeSchema } from '@/lib/validators/actions'
 import { buildToolInvokeInput } from '@/domain/tool-broker/tool-registry'
@@ -49,6 +52,20 @@ export async function POST(request: Request) {
         ...(parsed.data.conversationId ? { conversationId: parsed.data.conversationId } : {}),
       },
     )
+
+    // Surface-kapu a harness klienssel szinkronban: chat-only tool (pl.
+    // sandbox_exec) ne kerülhesse meg a chat-loop következmény-kapuját.
+    if (!isAgentApiMcpTool(parsed.data.tool)) {
+      await recordDenied(
+        services.toolBroker,
+        { ...invokeInput, ticketId: undefined, conversationId: undefined },
+        null,
+        null,
+        'tool_not_available_on_mcp_surface',
+        Date.now(),
+      )
+      return jsonError('Ez az eszköz nem érhető el a gépi agent API-n.', 403)
+    }
     // A descriptor által generált schema board_write-nál garantálja a ticketId-t;
     // a `toolInvokeSchema` közös Zod-típusa viszont az args-ot szándékosan unknownként tartja.
     const boardTargetTicketId =

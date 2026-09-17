@@ -11,9 +11,22 @@
  * ismert idegen végrehajtási azonosító cross-tenant munkaterület-olvasást
  * vagy -írást nyithatna.
  */
+import { resolveToolDescriptor } from '@/domain/tool-broker/tool-registry'
+
 export type AgentApiToolContextLookup = {
   findTicketOwner(ticketId: string): Promise<{ agentId: string | null } | null>
   findConversationOwner(conversationId: string): Promise<{ agentId: string } | null>
+}
+
+/**
+ * A gépi `/api/v1/agent/tools` út csak `mcp` surface toolokat futtathat.
+ * A harness kliens ezt már szűri; a szervernek is kell, különben a
+ * `chat`-only toolok (pl. `sandbox_exec` + `allowEgress`) megkerülik a
+ * chat-loop következmény-kapuját.
+ */
+export function isAgentApiMcpTool(tool: string): boolean {
+  const descriptor = resolveToolDescriptor(tool)
+  return Boolean(descriptor?.surfaces.includes('mcp'))
 }
 
 export async function isAgentApiToolContextOwnedByAgent(
