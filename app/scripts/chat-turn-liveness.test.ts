@@ -71,6 +71,7 @@ check('activeRunFromChatTurn: stale heartbeat → stalled státusz', () => {
     status: 'running',
     userMessageId: null,
     assistantMessageId: null,
+    input: null,
     partialText: '',
     activities: [
       {

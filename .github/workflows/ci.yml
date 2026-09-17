@@ -105,6 +105,7 @@ jobs:
           npm run test:chat-tool-history
           npm run test:context-compactor
           npm run test:agent-turn-record
+          npm run test:chat-turn-input
           npm run test:agent-runtime-display-loader
           npm run test:agent-turn-snapshot
           npm run test:agent-turn-reconnect

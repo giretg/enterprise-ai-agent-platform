@@ -7,6 +7,7 @@ import { RoutingEngine } from '@/domain/gateway/routing-engine'
 import { BudgetEngine } from '@/domain/gateway/budget-engine'
 import { BookkeeperAgentRuntime } from '@/domain/agent/bookkeeper-runtime'
 import { AgentChatRuntime } from '@/domain/agent/agent-chat-runtime'
+import { resolveChatTurnLauncherMode } from './agent/chat-turn-launcher'
 import { GeneralTaskRuntime } from '@/domain/agent/general-task-runtime'
 import { WikiAgentRuntime } from '@/domain/agent/wiki-runtime'
 import { TicketService } from '@/domain/ticket/ticket-service'
@@ -1181,6 +1182,10 @@ const skillService = new SkillService(
   repositories.conversations,
   workspaceStorage,
 )
+// #516 — a forduló-indító mód ellenőrzése bootkor: nem támogatott mód HIBA, nem
+// csendes visszaesés a webprocesszre. v1-ben csak in-process létezik (a runtime
+// alapértéke), ezért csak a validálás történik itt.
+resolveChatTurnLauncherMode()
 const agentChatRuntime = new AgentChatRuntime(
   repositories.agents,
   repositories.documents,
