@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict'
 import {
   chatMessageShowsAgentActivity,
+  mergeActiveTurnBubble,
   mergeTurnProgressIntoMessages,
   type ChatTurnActivity,
   type ChatTurnProgressMessage,
@@ -90,6 +91,20 @@ check('DB későbbi done felülírja a helyi runningot', () => {
     activities: [activity('tool-1', 'file_read', 'done')],
   })
   assert.equal(next[0].activities?.[0]?.status, 'done')
+})
+
+check('DB reload után a futó forduló buborékja visszajön a turn API-ból', () => {
+  const reloadedFromDb = [
+    { id: 'user-1', role: 'user' as const, text: '/targyalasi-felkeszito' },
+  ]
+  const next = mergeActiveTurnBubble(reloadedFromDb, {
+    turnId: 'turn-99',
+    partialText: '',
+    activities: [activity('tool-1', 'web_search', 'running')],
+  })
+  const agent = next[next.length - 1]
+  assert.equal(agent.id, 'turn-agent-turn-99')
+  assert.equal(chatMessageShowsAgentActivity(agent), true)
 })
 
 check('partialText csak hosszabbít, nem vág vissza streamelt szöveget', () => {

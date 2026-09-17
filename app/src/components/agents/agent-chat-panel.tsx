@@ -49,6 +49,7 @@ import { getChatPrivacyMarkerContext } from '@/app/actions/privacy'
 import type { ChatPrivacyMarkerContext } from '@/lib/privacy-chat-markers'
 import {
   chatMessageShowsAgentActivity,
+  mergeActiveTurnBubble,
   mergeTurnProgressIntoMessages,
   type ChatTurnActivity,
 } from '@/lib/chat-turn-progress'
@@ -955,6 +956,94 @@ export function AgentChatPanel({
     setDistillTargetSkillId,
   })
 
+  type ActiveTurnApiSnapshot = {
+    id: string
+    status?: string
+    partialText: string
+    activities: unknown
+    startedAt?: string
+    cancelRequested?: boolean
+    heartbeatAt?: string
+  }
+
+  const fetchActiveTurnSnapshot = useCallback(async (convId: string) => {
+    const res = await fetch(
+      `/api/v1/agent-chat/turns?conversationId=${encodeURIComponent(convId)}&active=1`,
+    )
+    if (!res.ok) return null
+    const data = (await res.json()) as { active: boolean; turn: ActiveTurnApiSnapshot | null }
+    if (!data.active || !data.turn) return null
+    return data.turn
+  }, [])
+
+  /** Futó forduló aktivitás-buborék — a DB reload ezt nem adja vissza. */
+  const applyActiveTurnSnapshot = useCallback(
+    (turn: ActiveTurnApiSnapshot, messages: ChatMessage[]): ChatMessage[] => {
+      const activities = Array.isArray(turn.activities)
+        ? (turn.activities as AgentActivity[])
+        : []
+      return mergeActiveTurnBubble(messages, {
+        turnId: turn.id,
+        partialText: turn.partialText ?? '',
+        startedAt: turn.startedAt,
+        activities,
+      })
+    },
+    [],
+  )
+
+  const adoptActiveTurnState = useCallback(
+    (convId: string, turn: ActiveTurnApiSnapshot): 'active' | 'stalled' => {
+      const stalled = updateActiveTurnLiveness(turn)
+      setActiveTurnId(turn.id)
+      setActiveTurnStartedAt(turn.startedAt ?? null)
+      setStopPending(false)
+      if (stalled) {
+        setIsAgentTyping(false)
+        markConversationRunning(convId, false)
+        return 'stalled'
+      }
+      setIsAgentTyping(true)
+      markConversationRunning(convId, true)
+      return 'active'
+    },
+    [markConversationRunning, updateActiveTurnLiveness],
+  )
+
+  /**
+   * Aktív forduló állapot a szerverről — visszaállítja az „Éppen dolgozik” dobozt,
+   * ha a stream megszakadt vagy a reload letörölte a kliens-buborékot.
+   */
+  const syncActiveTurnFromServer = useCallback(
+    async (
+      convId: string,
+      baseMessages?: ChatMessage[],
+    ): Promise<'active' | 'stalled' | 'idle'> => {
+      if (
+        !visibleChatOwnsConversation({
+          viewingConversationId: conversationIdRef.current,
+          incomingConversationId: convId,
+        })
+      ) {
+        return 'idle'
+      }
+      const turn = await fetchActiveTurnSnapshot(convId)
+      if (!turn) {
+        markConversationRunning(convId, false)
+        return 'idle'
+      }
+
+      const phase = adoptActiveTurnState(convId, turn)
+      if (baseMessages) {
+        setMessages(applyActiveTurnSnapshot(turn, baseMessages))
+      } else {
+        setMessages((prev) => applyActiveTurnSnapshot(turn, prev))
+      }
+      return phase
+    },
+    [adoptActiveTurnState, applyActiveTurnSnapshot, fetchActiveTurnSnapshot, markConversationRunning],
+  )
+
   const reloadConversationMessages = useCallback(
     async (convId: string) => {
       const res = await loadAgentChatMessages({ conversationId: convId, agentId: agent.id })
@@ -992,16 +1081,19 @@ export function AgentChatPanel({
       setContinuedFromTicket(res.data.continuedFromTicket ?? null)
       setTicketDiscussionHistory(res.data.ticketDiscussionHistory ?? [])
       setIsAdmin(res.data.isAdmin)
-      setMessages(
-        withPendingChatExtras(
-          res.data.messages.map((m) => ({
-            ...m,
-            createdAt: new Date(m.createdAt).toISOString(),
-          })),
-          res.data.pendingConsequenceApprovals?.map((a) => ({ ...a, status: 'pending' as const })),
-          res.data.pendingConnectorGrants,
-        ),
+      const baseMessages = withPendingChatExtras(
+        res.data.messages.map((m) => ({
+          ...m,
+          createdAt: new Date(m.createdAt).toISOString(),
+        })),
+        res.data.pendingConsequenceApprovals?.map((a) => ({ ...a, status: 'pending' as const })),
+        res.data.pendingConnectorGrants,
       )
+      // A perzisztált üzenetek nem tartalmazzák a futó forduló aktivitás-buborékot.
+      const activePhase = await syncActiveTurnFromServer(convId, baseMessages)
+      if (activePhase === 'idle') {
+        setMessages(baseMessages)
+      }
       if (sessionsOpen) {
         startTransition(() => {
           void refreshSessions()
@@ -1009,7 +1101,7 @@ export function AgentChatPanel({
       }
       return true
     },
-    [agent.id, refreshSessions, sessionsOpen, setViewingConversation],
+    [agent.id, refreshSessions, sessionsOpen, setViewingConversation, syncActiveTurnFromServer],
   )
 
   useEffect(() => {
@@ -1181,11 +1273,13 @@ export function AgentChatPanel({
             }
         }
 
-        // Stream lezárult done/error nélkül (proxy timeout, élő busz elszakadás).
-        // Ha a válasz közben elkészült, a DB-ből kell visszatölteni — különben
-        // üres agent-buborék marad a UI-on.
+        // Stream lezárult done/error nélkül — a futó forduló állapota a turn API-n van,
+        // ne a perzisztált üzenetlistán (az nem tartalmaz aktivitás-buborékot).
         if (!sawTerminalEvent && !params.signal.aborted && viewLive()) {
-          await reloadConversationMessages(params.conversationId)
+          const status = await syncActiveTurnFromServer(params.conversationId)
+          if (status === 'idle') {
+            await reloadConversationMessages(params.conversationId)
+          }
         }
       } finally {
         const aborted = params.signal.aborted && !sawTerminalEvent
@@ -1204,7 +1298,7 @@ export function AgentChatPanel({
         }
       }
     },
-    [markConversationRunning, reloadConversationMessages, thinkingTraceControls],
+    [markConversationRunning, reloadConversationMessages, syncActiveTurnFromServer, thinkingTraceControls],
   )
 
   const reattachToConversation = useCallback(
@@ -1235,94 +1329,29 @@ export function AgentChatPanel({
         }
         if (conversationIdRef.current !== convId) return false
 
-        const stalled = updateActiveTurnLiveness(data.turn)
-
         const agentMessageId = agentBubbleIdForTurn(data.turn.id)
-        const activities = Array.isArray(data.turn.activities)
-          ? (data.turn.activities as AgentActivity[])
-          : []
-
-        setActiveTurnId(data.turn.id)
-        setActiveTurnStartedAt(data.turn.startedAt ?? new Date().toISOString())
-        setStopPending(false)
-        if (stalled) {
-          setIsAgentTyping(false)
-          markConversationRunning(convId, false)
-        } else {
-          streamAbortRef.current?.abort()
-          const abortController = new AbortController()
-          streamAbortRef.current = abortController
-          streamConversationIdRef.current = convId
-          setIsAgentTyping(true)
-          markConversationRunning(convId, true)
-          setMessages((prev) => {
-            const withoutOptimistic = prev.filter((m) => m.id !== agentMessageId)
-            const last = withoutOptimistic[withoutOptimistic.length - 1]
-            if (last?.role === 'agent' && !last.text.trim() && !chatMessageShowsAgentActivity(last)) {
-              return withoutOptimistic.map((m, i) =>
-                i === withoutOptimistic.length - 1
-                  ? {
-                      ...m,
-                      id: agentMessageId,
-                      text: data.turn!.partialText ?? '',
-                      activities,
-                    }
-                  : m,
-              )
-            }
-            return [
-              ...withoutOptimistic,
-              {
-                id: agentMessageId,
-                role: 'agent' as const,
-                text: data.turn!.partialText ?? '',
-                attachments: [],
-                createdAt: data.turn.startedAt ?? new Date().toISOString(),
-                activities,
-              },
-            ]
-          })
-          void consumeReattachStream({
-            turnId: data.turn.id,
-            conversationId: convId,
-            agentMessageId,
-            signal: abortController.signal,
-          })
+        const phase = adoptActiveTurnState(convId, data.turn)
+        setMessages((prev) => applyActiveTurnSnapshot(data.turn!, prev))
+        if (phase === 'stalled') {
           return true
         }
-        setMessages((prev) => {
-          const withoutOptimistic = prev.filter((m) => m.id !== agentMessageId)
-          const last = withoutOptimistic[withoutOptimistic.length - 1]
-          if (last?.role === 'agent' && !last.text.trim() && !chatMessageShowsAgentActivity(last)) {
-            return withoutOptimistic.map((m, i) =>
-              i === withoutOptimistic.length - 1
-                ? {
-                    ...m,
-                    id: agentMessageId,
-                    text: data.turn!.partialText ?? '',
-                    activities,
-                  }
-                : m,
-            )
-          }
-          return [
-            ...withoutOptimistic,
-            {
-              id: agentMessageId,
-              role: 'agent' as const,
-              text: data.turn!.partialText ?? '',
-              attachments: [],
-              createdAt: data.turn.startedAt ?? new Date().toISOString(),
-              activities,
-            },
-          ]
+
+        streamAbortRef.current?.abort()
+        const abortController = new AbortController()
+        streamAbortRef.current = abortController
+        streamConversationIdRef.current = convId
+        void consumeReattachStream({
+          turnId: data.turn.id,
+          conversationId: convId,
+          agentMessageId,
+          signal: abortController.signal,
         })
         return true
       } catch {
         return false
       }
     },
-    [consumeReattachStream, markConversationRunning, updateActiveTurnLiveness],
+    [adoptActiveTurnState, applyActiveTurnSnapshot, consumeReattachStream, markConversationRunning],
   )
 
   const selectSession = useCallback(
@@ -2023,6 +2052,18 @@ export function AgentChatPanel({
     if (!node) return
     node.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [focusMessageId, messages])
+
+  // Fül-váltás / háttérbe kerülés után a stream megszakadhat; a poll rejtett
+  // fülön nem fut — visszatéréskor azonnal szinkronizáljuk a futó fordulót.
+  useEffect(() => {
+    if (!conversationId || conversationStatus === 'archived') return
+    const resync = () => {
+      if (document.visibilityState !== 'visible') return
+      void syncActiveTurnFromServer(conversationId)
+    }
+    document.addEventListener('visibilitychange', resync)
+    return () => document.removeEventListener('visibilitychange', resync)
+  }, [conversationId, conversationStatus, syncActiveTurnFromServer])
 
   /**
    * A „Jóváhagyom" gomb után a művelet a szerveren MÁR lefutott — innen az agent

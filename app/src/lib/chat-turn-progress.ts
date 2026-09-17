@@ -101,3 +101,46 @@ export function chatMessageShowsAgentActivity(
 ): boolean {
   return Boolean(message?.activities && message.activities.length > 0)
 }
+
+function turnAgentBubbleId(turnId: string): string {
+  return `turn-agent-${turnId}`
+}
+
+/**
+ * Futó forduló pillanatképe a kliens üzenetlistában — a DB reload NEM tartalmazza,
+ * ezért stream-megszakadás / fül-váltás után külön kell visszatölteni.
+ */
+export function mergeActiveTurnBubble<T extends ChatTurnProgressMessage>(
+  messages: T[],
+  snapshot: {
+    turnId: string
+    partialText: string
+    startedAt?: string
+    activities: ChatTurnActivity[]
+  },
+): T[] {
+  const agentMessageId = turnAgentBubbleId(snapshot.turnId)
+  const withoutTurnBubble = messages.filter((message) => message.id !== agentMessageId)
+  const last = withoutTurnBubble[withoutTurnBubble.length - 1]
+  if (last?.role === 'agent' && !last.text.trim() && !chatMessageShowsAgentActivity(last)) {
+    return withoutTurnBubble.map((message, index) =>
+      index === withoutTurnBubble.length - 1
+        ? {
+            ...message,
+            id: agentMessageId,
+            text: snapshot.partialText,
+            activities: mergeChatTurnActivities(message.activities, snapshot.activities),
+          }
+        : message,
+    )
+  }
+  return [
+    ...withoutTurnBubble,
+    {
+      id: agentMessageId,
+      role: 'agent' as const,
+      text: snapshot.partialText,
+      activities: snapshot.activities,
+    } as T,
+  ]
+}
