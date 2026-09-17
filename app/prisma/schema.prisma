@@ -2217,6 +2217,13 @@ model AgentTurn {
   launchAttemptCount Int       @default(0) @map("launch_attempt_count")
   launchNextRetryAt  DateTime? @map("launch_next_retry_at") @db.Timestamptz
   launchProviderRef  String?   @map("launch_provider_ref")
+  /**
+   * #518 — a kapacitás-hely foglalásának ideje. `queued` + null = kapacitásra
+   * vár (nem számít a limitbe, nem éri a 10 perces indítási határ);
+   * `queued` + kitöltve = indításra lefoglalva. Sorban állás = ez − createdAt,
+   * indulás = startedAt − ez.
+   */
+  launchReservedAt   DateTime? @map("launch_reserved_at") @db.Timestamptz
 
   // Haladás / reconnect-snapshot (§5.3)
   partialText String @default("") @map("partial_text")

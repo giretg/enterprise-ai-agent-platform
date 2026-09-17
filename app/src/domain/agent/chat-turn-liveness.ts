@@ -17,6 +17,8 @@ const ACTIVE_CHAT_STATUSES = new Set(['queued', 'running', 'streaming'])
 export type ChatTurnLiveness =
   | { kind: 'idle' }
   | { kind: 'cancelling' }
+  /** #518 — kapacitásra vár: nincs futtatási hely; nem „elhalt", bármeddig várhat. */
+  | { kind: 'queued'; ageMs: number }
   | { kind: 'starting'; ageMs: number }
   | { kind: 'active'; ageMs: number; currentStep: string | null }
   | { kind: 'quiet'; ageMs: number; currentStep: string | null }
@@ -24,6 +26,7 @@ export type ChatTurnLiveness =
 
 export function isChatTurnLive(liveness: ChatTurnLiveness): boolean {
   switch (liveness.kind) {
+    case 'queued':
     case 'starting':
     case 'active':
     case 'quiet':
@@ -44,6 +47,11 @@ export function describeChatTurnLiveness(liveness: ChatTurnLiveness): {
       return {
         label: 'Leállítás folyamatban',
         detail: 'A stop kérés megérkezett; a válasz a következő biztonságos ponton zárul.',
+      }
+    case 'queued':
+      return {
+        label: 'Sorban áll',
+        detail: `Vár a szabad futtatási helyre · ${formatTicketProgressAge(liveness.ageMs)}. Amint felszabadul egy hely, automatikusan elindul.`,
       }
     case 'starting':
       return {
@@ -111,6 +119,9 @@ export function assessChatTurnLiveness(input: {
   cancelRequested?: boolean
   heartbeatAt?: string | Date | null
   startedAt?: string | Date | null
+  /** #518 — a kapacitás-hely foglalásának ideje; queued + null = sorban áll. */
+  launchReservedAt?: string | Date | null
+  createdAt?: string | Date | null
   activities?: unknown
   staleAfterMs?: number
   nowMs?: number
@@ -120,6 +131,15 @@ export function assessChatTurnLiveness(input: {
 
   const staleAfterMs = input.staleAfterMs ?? resolveStaleTurnMs()
   const now = input.nowMs ?? Date.now()
+
+  if (input.status === 'queued') {
+    // Nincs futó tulajdonos, a heartbeat nem életjel: a sorban állást nem a
+    // 120 mp-es watchdog, az indítást a 10 perces indítási határ (#517) figyeli.
+    const reservedMs = parseReferenceMs(input.launchReservedAt)
+    if (reservedMs !== null) return { kind: 'starting', ageMs: Math.max(0, now - reservedMs) }
+    const acceptedMs = parseReferenceMs(input.createdAt) ?? parseReferenceMs(input.startedAt)
+    return { kind: 'queued', ageMs: acceptedMs === null ? 0 : Math.max(0, now - acceptedMs) }
+  }
   const activities = parseActivities(input.activities)
   const currentStep = latestActivityStep(activities)
 

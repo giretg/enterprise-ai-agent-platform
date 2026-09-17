@@ -1919,6 +1919,18 @@ export type RecordChatTurnLaunchAttemptInput = {
   providerRef?: string | null
 }
 
+/** #518 — futó + indításra lefoglalt szakaszok plafonja. Véges, konfigurálható. */
+export type ChatTurnCapacityLimits = {
+  global: number
+  perTenant: number
+}
+
+export type ReserveChatTurnCapacityResult =
+  | 'reserved'
+  | 'global_full'
+  | 'tenant_full'
+  | 'not_waiting'
+
 export type FinalizeAgentTurnInput = {
   status: TerminalAgentTurnStatus
   assistantMessageId?: string | null
@@ -1996,8 +2008,23 @@ export interface AgentTurnRepository {
    */
   recordLaunchAttempt(id: string, data: RecordChatTurnLaunchAttemptInput): Promise<AgentTurn | null>
   /**
-   * #517 — indításra érett queued fordulók (van user-üzenet, nincs Stop, a
-   * következő próbálkozás ideje lejárt vagy még nem volt attempt).
+   * #518 — ATOMI kapacitás-foglalás egy kapacitásra váró (`queued`, launchId
+   * nélküli) fordulóra: ha a globális és a tenant-limit engedi, launchId +
+   * `launchReservedAt` + első attempt egyetlen, kizárólagos lépésben. Több
+   * dispatcher mellett sem lépheti túl a limitet. A hely a terminális
+   * lezárással szabadul fel.
+   */
+  reserveLaunchCapacity(
+    id: string,
+    data: { launchId: string; nextRetryAt: Date; limits: ChatTurnCapacityLimits },
+    now: Date,
+  ): Promise<ReserveChatTurnCapacityResult>
+  /**
+   * #517/#518 — figyelmet igénylő queued fordulók: van user-üzenet, és a
+   * következő próbálkozás ideje lejárt vagy még nem volt attempt. A Stop-olt
+   * queued sor IS benne van (a hívó zárja le). A sorrend tenantonként
+   * kiegyenlített: minden tenant legrégebbi sora előbb jön, mint bármely
+   * tenant másodikja — egy telített tenant így nem tartja fel a többit.
    */
   findQueuedForLaunch(now: Date, limit: number): Promise<AgentTurn[]>
   /** Csak a lock birtokosa engedheti el; a státuszt nem érinti. */
@@ -2025,9 +2052,11 @@ export interface AgentTurnRepository {
    * írásban. `null` = a forduló már terminális volt (a lezárás idempotens).
    * `lockToken` megadásakor (#516) CSAK a tulajdonos zárhat — a régi tulajdonos
    * nem írhatja felül a watchdog / új tulajdonos végállapotát. Token nélkül a
-   * reclaim-utak (watchdog, elengedés) zárnak.
+   * reclaim-utak (watchdog, elengedés) zárnak. `null` token = CSAK tulajdonos
+   * nélküli (queued) forduló zárható — a queued Stop így nem üt el egy
+   * időközben claimelt futást.
    */
-  finalize(id: string, data: FinalizeAgentTurnInput, lockToken?: string): Promise<AgentTurn | null>
+  finalize(id: string, data: FinalizeAgentTurnInput, lockToken?: string | null): Promise<AgentTurn | null>
   /** Watchdog: tulajdonolt (running/streaming), de a `heartbeatAt`-je a küszöbnél régebbi fordulók. A `queued` nem stale running. */
   findStale(cutoff: Date, limit: number): Promise<AgentTurn[]>
   /**

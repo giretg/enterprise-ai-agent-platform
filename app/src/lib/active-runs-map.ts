@@ -85,6 +85,8 @@ export function activeRunFromChatTurn(
     cancelRequested: turn.cancelRequested,
     heartbeatAt: turn.heartbeatAt,
     startedAt: turn.startedAt,
+    launchReservedAt: turn.launchReservedAt,
+    createdAt: turn.createdAt,
     activities: turn.activities,
     nowMs: opts?.nowMs,
   })
@@ -103,7 +105,7 @@ export function activeRunFromChatTurn(
     status,
     phase,
     latestActivity:
-      liveness.kind === 'stalled'
+      liveness.kind === 'stalled' || liveness.kind === 'queued' || liveness.kind === 'starting'
         ? describeChatTurnLiveness(liveness).detail
         : turn.cancelRequested && phase === 'active'
           ? 'Leállítás folyamatban…'

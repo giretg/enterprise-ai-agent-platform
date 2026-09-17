@@ -225,6 +225,7 @@ export function AgentChatPanel({
   const {
     stalled: activeTurnStalled,
     stallDetail: activeTurnStallDetail,
+    queueState: activeTurnQueueState,
     reset: resetActiveTurnLiveness,
     updateFromSnapshot: updateActiveTurnLiveness,
   } = useAgentChatTurnLiveness({
@@ -962,6 +963,8 @@ export function AgentChatPanel({
     partialText: string
     activities: unknown
     startedAt?: string
+    createdAt?: string
+    launchReservedAt?: string | null
     cancelRequested?: boolean
     heartbeatAt?: string
   }
@@ -2278,6 +2281,15 @@ export function AgentChatPanel({
                 <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-coral/40 bg-coral/10 px-2 py-0.5 text-[10px] font-semibold text-coral-deep">
                   <span className="h-1.5 w-1.5 rounded-full bg-coral" aria-hidden />
                   úgy tűnik megállt
+                </span>
+              ) : isAgentTyping && activeTurnQueueState ? (
+                // #518: sorban áll / indul — nem gépel, futtatási helyre vár.
+                <span
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-honey/40 bg-honey/10 px-2 py-0.5 text-[10px] font-semibold text-honey"
+                  title={activeTurnQueueState.detail}
+                >
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-honey" aria-hidden />
+                  {activeTurnQueueState.label.toLowerCase()}
                 </span>
               ) : isAgentTyping ? (
                 <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-sky/40 bg-sky/10 px-2 py-0.5 text-[10px] font-semibold text-sky">

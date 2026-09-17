@@ -1,6 +1,7 @@
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { repositories } from '@/repositories/postgres'
 import { agentTurnRunner } from '@/domain/agent/agent-turn-runner'
+import { cancelQueuedChatTurn } from '@/domain/agent/chat-turn-dispatch'
 import { isAgentTurnAccessible } from '@/lib/agent-turn-access'
 import { invalidatePollScope } from '@/lib/poll-coalesce'
 
@@ -53,6 +54,13 @@ export async function POST(
       { status: 'already_finished', turnStatus: turn.status },
       { status: 200 },
     )
+  }
+
+  // #518: a kapacitásra váró / indításra foglalt sor tulajdonos nélkül zárható —
+  // ne várjon a következő dispatch-körre. Ha közben claimelték, ez nem enged,
+  // és a futó loop a flagből áll le.
+  if (cancelled.status === 'queued') {
+    await cancelQueuedChatTurn(repositories.agentTurns, turn.id)
   }
 
   // Tier-1 gyorsút: ha a futás helyben van, azonnal jelzünk neki. Ha nincs, a

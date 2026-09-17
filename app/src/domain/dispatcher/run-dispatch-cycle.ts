@@ -32,7 +32,7 @@ export type DispatchCycleSummary = {
   /** Watchdog: elavult heartbeatű chat-fordulók lezárása (issue #64 / D10). */
   reclaimedAgentTurns: number
   /** #517 — tartós, még el nem indult chat-fordulók egyeztetése / indítása. */
-  chatTurnLaunches: { scanned: number; launched: number; failed: number }
+  chatTurnLaunches: { scanned: number; launched: number; failed: number; waiting: number }
   /**
    * A worker MÁSODIK munkatípusa (#73, D8): a bekötött Telegram-üzenetek forduló-sora. A
    * `reclaimed` a crash-elakadt `running` sorok visszatétele, a `processed` a lezavart fordulók.
@@ -72,7 +72,7 @@ const EMPTY_SUMMARY: DispatchCycleSummary = {
   reclaimedDispatches: 0,
   reclaimedScheduledTasks: 0,
   reclaimedAgentTurns: 0,
-  chatTurnLaunches: { scanned: 0, launched: 0, failed: 0 },
+  chatTurnLaunches: { scanned: 0, launched: 0, failed: 0, waiting: 0 },
   channelTurns: { reclaimed: 0, processed: 0 },
   conversationRetention: { sweptConversations: 0, deletedMessages: 0 },
   surrogateVaultGc: { deletedMappings: 0, conversationIds: [] },
@@ -130,6 +130,7 @@ export async function runDispatchCycle(
       scanned: 0,
       launched: 0,
       failed: 0,
+      waiting: 0,
     }
     try {
       chatTurnLaunches = await services.agentChat.recoverQueuedTurns({ limit: batchLimit })

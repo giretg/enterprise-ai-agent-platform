@@ -15,7 +15,7 @@
  */
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { PrismaClient } from '@prisma/client'
+import { PrismaClient, type AgentTurn } from '@prisma/client'
 import { PostgresAgentTurnRepository } from '../src/repositories/postgres/agent-turn-repository'
 import { ActiveAgentTurnExistsError } from '../src/repositories/interfaces'
 
@@ -514,6 +514,93 @@ async function main() {
       await cleanup(dueFix)
       await cleanup(laterFix)
       await cleanup(runningFix)
+    }
+  })
+
+  await check('#518: PÁRHUZAMOS kapacitás-foglalás — globális/tenant limit nem lépi túl, lezárás felszabadít, beszélgetés-limit marad', async () => {
+    // Tenant A: 3 beszélgetés, tenant B: 2 beszélgetés; limit global=3, perTenant=2.
+    const fixtures = await Promise.all([seedFixture(), seedFixture(), seedFixture()])
+    const [a1, a2, a3] = fixtures
+    // a2/a3 ugyanabba a tenantba: a fixture saját tenantot ad, ezért átírjuk.
+    await prisma.conversation.updateMany({
+      where: { id: { in: [a2.conversationId, a3.conversationId] } },
+      data: { tenantId: a1.tenantId },
+    })
+    const b = await Promise.all([seedFixture(), seedFixture()])
+    await prisma.conversation.update({
+      where: { id: b[1].conversationId },
+      data: { tenantId: b[0].tenantId },
+    })
+    const inputA = (f: Fixture) => ({ ...createInput(f), tenantId: a1.tenantId, status: 'queued' as const })
+    const inputB = (f: Fixture) => ({ ...createInput(f), tenantId: b[0].tenantId, status: 'queued' as const })
+    const all = [...fixtures, ...b]
+    try {
+      const turns = await Promise.all([
+        repo.create(inputA(a1)),
+        repo.create(inputA(a2)),
+        repo.create(inputA(a3)),
+        repo.create(inputB(b[0])),
+        repo.create(inputB(b[1])),
+      ])
+      const limits = { global: 3, perTenant: 2 }
+      const reserve = (t: AgentTurn) =>
+        repo.reserveLaunchCapacity(
+          t.id,
+          { launchId: randomUUID(), nextRetryAt: new Date(), limits },
+          new Date(),
+        )
+
+      // Öt „dispatcher" egyszerre — advisory lock alatt sorosítva.
+      const results = await Promise.all(turns.map(reserve))
+      const reserved = results.filter((r) => r === 'reserved').length
+      assert.equal(reserved, 3, `pontosan a globális limit foglal (${results.join(',')})`)
+      const occupiedA = await prisma.agentTurn.count({
+        where: { tenantId: a1.tenantId, status: 'queued', launchId: { not: null } },
+      })
+      assert.ok(occupiedA <= 2, 'tenant A nem lépi túl a saját limitjét')
+      const occupiedB = await prisma.agentTurn.count({
+        where: { tenantId: b[0].tenantId, status: 'queued', launchId: { not: null } },
+      })
+      assert.ok(occupiedB >= 1, 'a telített A tenant nem zárja ki B-t')
+
+      // Váró sor: a második kör is telített → nincs foglalás, nincs attempt.
+      const waiting = turns.filter((t, i) => results[i] !== 'reserved')
+      for (const t of waiting) {
+        const again = await reserve(t)
+        assert.ok(again === 'global_full' || again === 'tenant_full', `telített: ${again}`)
+        const row = await repo.findById(t.id)
+        assert.equal(row?.launchId, null)
+        assert.equal(row?.launchAttemptCount, 0)
+        assert.equal(row?.launchReservedAt, null)
+      }
+
+      // Beszélgetés-limit a foglalt/váró sor mellett is: második aktív forduló ugyanarra a beszélgetésre tilos.
+      await assert.rejects(repo.create(inputA(a1)), ActiveAgentTurnExistsError)
+
+      // Lezárás felszabadít: egy foglalt sor terminális → egy várakozó bejut.
+      const held = turns.find((t, i) => results[i] === 'reserved')!
+      assert.ok(await repo.finalize(held.id, { status: 'completed' }))
+      const freed = await Promise.all(waiting.map(reserve))
+      assert.equal(freed.filter((r) => r === 'reserved').length, 1, `egy hely szabadult (${freed.join(',')})`)
+
+      // A tenantonként kiegyenlített sorrend: minden tenant első sora előbb, mint bármely második.
+      const order = await repo.findQueuedForLaunch(new Date(), 50)
+      const ours = order.filter((t) => t.tenantId === a1.tenantId || t.tenantId === b[0].tenantId)
+      const firstB = ours.findIndex((t) => t.tenantId === b[0].tenantId)
+      const secondA = ours.findIndex((t, i) => t.tenantId === a1.tenantId && ours.slice(0, i).some((p) => p.tenantId === a1.tenantId))
+      if (firstB >= 0 && secondA >= 0) assert.ok(firstB < secondA, 'B első sora megelőzi A második sorát')
+
+      // Queued Stop: null-token finalize csak tulajdonos nélküli sorra; claimelt (tokenes) sort nem zár.
+      const stopTarget = waiting[freed.findIndex((r) => r !== 'reserved')]
+      await repo.requestCancel(stopTarget.id, a1.userId)
+      assert.ok(await repo.finalize(stopTarget.id, { status: 'cancelled', reason: 'stop' }, null))
+      const justReserved = waiting[freed.findIndex((r) => r === 'reserved')]
+      const claimed = await repo.claim(justReserved.id, randomUUID(), new Date(), (await repo.findById(justReserved.id))!.launchId!)
+      assert.ok(claimed)
+      assert.equal(await repo.finalize(justReserved.id, { status: 'cancelled', reason: 'stop' }, null), null)
+      assert.equal((await repo.findById(justReserved.id))?.status, 'running')
+    } finally {
+      for (const f of all) await cleanup(f)
     }
   })
 

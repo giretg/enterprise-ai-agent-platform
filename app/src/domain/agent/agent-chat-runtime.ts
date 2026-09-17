@@ -731,7 +731,12 @@ export class AgentChatRuntime {
     launcher?: ChatTurnLauncher,
   ) {
     this.launcher =
-      launcher ?? createInProcessChatTurnLauncher((request, emit) => this.runReservedTurn(request, emit))
+      launcher ??
+      createInProcessChatTurnLauncher((request, emit) =>
+        // #518: a felszabadult hely azonnal a következő sorban állóé — ne
+        // várjon a dispatch-ciklus következő körére.
+        this.runReservedTurn(request, emit).finally(() => this.kickQueuedTurns()),
+      )
   }
 
   private launcher: ChatTurnLauncher
@@ -1344,6 +1349,13 @@ export class AgentChatRuntime {
       userMessageId: userMessage.id,
       subscribe: agentTurnRunner.isRunning(turnId) ? () => agentTurnRunner.subscribe(turnId)! : null,
     }
+  }
+
+  private kickQueuedTurns(): void {
+    if (!this.agentTurns) return
+    this.recoverQueuedTurns({ limit: 5 }).catch((error) => {
+      console.error('[agent-chat] sorban álló fordulók indítása sikertelen', error)
+    })
   }
 
   /**

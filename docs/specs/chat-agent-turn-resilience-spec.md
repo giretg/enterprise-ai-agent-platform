@@ -571,3 +571,22 @@ A forduló futása többé nem a kérés-scope-ban előkészített memóriabeli 
 Ismert korlát: a tool-hívás AbortSignal-ja még nem végigvezetett a broker minden handlerén — a modellhívást a maradék falióra megszakítja (`AbortSignal.timeout(remaining)` a `gateway.call`-on). A tool-eredményt a broker `ToolCall` rekordja őrzi akkor is, ha a tulajdonjog közben elveszett.
 
 Tesztek: `test:chat-turn-input` (séma, leak, launcher-mód), `test:agent-turn-record` (új processz rekonstrukció, dupla indítás, ismeretlen verzió, tulajdonvesztés), `test:agent-turn` (valódi Postgres: párhuzamos claim, régi tulajdonos, tokenes finalize).
+
+### Kapacitáskorlátos sorban állás (#518)
+
+Egy `queued` rekord három, külön mért szakaszban lehet — új státusz-enum nélkül:
+
+| Szakasz | Ismérv | Mérés | Ki figyeli |
+|---|---|---|---|
+| Kapacitásra vár | `launchId IS NULL` | `launchReservedAt − createdAt` | Senki nem lövi le: nem számít a limitbe, nincs attempt. A `stalled` liveness sem vonatkozik rá (`kind: 'queued'`). |
+| Indításra lefoglalva | `launchId` + `launchReservedAt` | `startedAt − launchReservedAt` | #517 indítási határ (10 perc), reconcile, max attempt. |
+| Fut | `running`/`streaming` (claim) | `finishedAt − startedAt` | 120 mp heartbeat-watchdog. |
+
+- Limitek: `CHAT_TURN_MAX_ACTIVE_GLOBAL` (alap 6) és `CHAT_TURN_MAX_ACTIVE_PER_TENANT` (alap 3) — a futó + indításra lefoglalt sorokra. Véges alapérték; a demó értékei a deploy-konfigból (`resolveChatTurnCapacity`).
+- Foglalás: `AgentTurnRepository.reserveLaunchCapacity` — egy tranzakció, `pg_advisory_xact_lock` alatt számol és ír, így több dispatcher (kérés-út gyorsindítás + worker-ciklus + felszabadulás utáni „kick”) sem lépi túl a limitet. A hely a terminális lezárással szabadul fel.
+- Sorrend: `findQueuedForLaunch` tenantonként kiegyenlített (`row_number() OVER (PARTITION BY tenant_id)`): minden tenant első sora előbb, mint bármely tenant másodikja; a ciklus a telített tenant többi sorát átugorja → nincs head-of-line blokkolás.
+- Beszélgetés: változatlanul a D7 részleges egyedi index — egy aktív forduló beszélgetésenként; a közvetlen küldés `409`-e megmarad.
+- Queued Stop: `cancelQueuedChatTurn` — `finalize(…, lockToken: null)`, csak tulajdonos nélküli sort zár; claimelt sort a futó loop állít le a flagből. A Stop-út azonnal hívja, a ciklus a lemaradtakat söpri.
+- UI: `GET turns?active=1` adja a `createdAt`/`launchReservedAt` mezőt; a fejléc-chip „sorban áll” / „indul…”, a Futások panel „Sorban áll” + részlet. SSE nélkül, újranyitáskor a poll-snapshotból áll helyre.
+
+Tesztek: `test:chat-turn-launch` (telített globális/tenant kapacitás, felszabadulás, queued Stop), `test:agent-turn` (valódi Postgres: 5 párhuzamos foglalás globális=3 / tenant=2 limitre, lezárás felszabadít, beszélgetés-limit, null-tokenes Stop vs. claimelt sor).
