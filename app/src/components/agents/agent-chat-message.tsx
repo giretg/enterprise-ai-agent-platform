@@ -207,6 +207,42 @@ export function ChatHeaderMenu({
   )
 }
 
+/**
+ * Sárga felkiáltójel a chat-fejlécben, ha a szál (részben) a tartalék
+ * AI-modellen futott. Hover: natív `title`; kattintás: ugyanaz a szöveg
+ * felugró dobozban (érintőképernyőn nincs hover).
+ */
+export function FallbackModelBadge({ model }: { model: string | null }) {
+  const [open, setOpen] = useState(false)
+  if (!model) return null
+  const text = `A beszélgetés a tartalék AI-modellen futott: ${model}`
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-label={text}
+        title={text}
+        className="grid h-8 w-8 place-items-center rounded-lg border border-amber-400/60 bg-amber-100 text-sm font-bold leading-none text-amber-700 transition-colors hover:bg-amber-200"
+      >
+        <span aria-hidden>!</span>
+      </button>
+      {open ? (
+        <>
+          <div aria-hidden className="fixed inset-0 z-[400] cursor-default" onClick={() => setOpen(false)} />
+          <div
+            role="status"
+            className="absolute right-0 top-full z-[401] mt-1.5 w-[min(18rem,calc(100vw-1.5rem))] rounded-xl border border-amber-400/60 bg-card px-3 py-2 text-xs text-ink shadow-xl"
+          >
+            {text}
+          </div>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
 export function DistillSkillMenuItems({
   pending,
   disabled,

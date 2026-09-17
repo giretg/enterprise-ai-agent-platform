@@ -7,6 +7,7 @@ import {
   ConnectorGrantNeededPanel,
   type ConnectorGrantNeededView,
 } from '@/components/connectors/connector-grant-needed-panel'
+import { useVisibilityGatedInterval } from '@/components/tickets/use-visibility-gated-interval'
 import { Card } from '@/components/ui/shell'
 
 const LIVE_STATES = new Set(['ready', 'approved', 'in_progress', 'awaiting_human'])
@@ -45,12 +46,8 @@ export function TicketConnectorGrants({
   const [status, setStatus] = useState<string | null>(null)
   const resumeStartedRef = useRef(false)
 
-  useEffect(() => {
-    if (busy) return
-    if (!LIVE_STATES.has(ticketState) && initial.length === 0) return
-    const timer = setInterval(() => router.refresh(), POLL_MS)
-    return () => clearInterval(timer)
-  }, [busy, initial.length, router, ticketState])
+  const shouldPoll = !busy && (LIVE_STATES.has(ticketState) || initial.length > 0)
+  useVisibilityGatedInterval(() => router.refresh(), POLL_MS, shouldPoll)
 
   useEffect(() => {
     if (!resumeAfterGrant || resumeStartedRef.current) return

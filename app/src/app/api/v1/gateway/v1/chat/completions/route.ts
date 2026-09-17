@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server'
+import { z } from 'zod'
 import { authenticateAgentRequest, requireAgentScope } from '@/auth/agent-api-key'
 import { services } from '@/domain'
 import { buildStubOpenAiCompletion } from '@/domain/gateway/stub-openai-completion'
 import { relayTextToolCall } from '@/domain/gateway/text-tool-relay'
+import { isAgentApiToolContextOwnedByAgent } from '@/lib/agent-api-tool-context'
 import { parseAgentVersionHeader } from '@/lib/agent-version-header'
 import { assertAgentWorkTenantOperable } from '@/lib/agent-work-tenant-gate'
 import { resolveGatewayRequestModel } from '@/lib/harness-model-config'
@@ -46,6 +48,40 @@ export async function POST(request: Request) {
   // a `?? agent.currentVersion` fallbackre, és a fizetős hívás UTÁN buktatja a
   // `model_calls` rögzítést (néma költség-/audit-rés). Ezért a határon validáljuk.
   const agentVersion = parseAgentVersionHeader(request.headers.get('x-agent-version'))
+
+  // Az agent API-kulcs nem jogosít fel tetszőleges ticket hívási keretének
+  // fogyasztására. A gateway auditja és call-capje a fejlécből vett tickethez
+  // könyvel, ezért a brokerrel azonos tulajdonosi kapu kell még a tenant-gate előtt.
+  const ownsTicketContext =
+    (!ticketId || z.string().uuid().safeParse(ticketId).success) &&
+    (await isAgentApiToolContextOwnedByAgent(
+      { agentId: auth.agentId, ...(ticketId ? { ticketIds: [ticketId] } : {}) },
+      {
+        findTicketOwner: async (id) => {
+          const ticket = await repositories.tickets.findById(id)
+          return ticket ? { agentId: ticket.agentId } : null
+        },
+        findConversationOwner: async () => null,
+      },
+    ))
+  if (!ownsTicketContext) {
+    await repositories.audit.append({
+      actorType: 'agent',
+      actorId: auth.agentId,
+      agentVersion: null,
+      action: 'model.call.denied',
+      // Az idegen ticket azonosítóját nem tesszük audit-céllá: az elutasítás
+      // visszakövethető a hívó agenthez, de nem kever idegen tenantot a nyomába.
+      targetType: 'agent',
+      targetId: auth.agentId,
+      modelUsed: null,
+      inputRef: 'gateway_ticket_context',
+      outputRef: 'agent_api_context_not_accessible',
+      policyDecision: 'denied',
+      metadata: { context: 'ticket' },
+    })
+    return jsonError('A modellhívás ticketje nem ehhez az agenthez tartozik.', 403)
+  }
 
   const tenantGate = await assertAgentWorkTenantOperable({
     agentId: auth.agentId,

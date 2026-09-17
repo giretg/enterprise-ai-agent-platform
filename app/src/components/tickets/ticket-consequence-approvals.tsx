@@ -1,12 +1,13 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import {
   approveConsequenceApproval,
   approveTicketConsequenceApprovals,
   rejectConsequenceApproval,
 } from '@/app/actions/platform'
+import { useVisibilityGatedInterval } from '@/components/tickets/use-visibility-gated-interval'
 import { Badge, Card } from '@/components/ui/shell'
 
 export type TicketConsequenceApproval = {
@@ -93,12 +94,9 @@ export function TicketConsequenceApprovals({
   // Élő lista: amíg a ticket dolgozhat vagy van nyitott kártya, újratöltjük. A
   // kártyák a futás KÖZBEN születnek — pillanatkép mellett a felhasználó úgy
   // zárná le a feladatot, hogy közben műveletek maradtak jóváhagyatlanul.
-  useEffect(() => {
-    if (anyBusy) return
-    if (!LIVE_STATES.has(ticketState) && open.length === 0 && expiredPending.length === 0) return
-    const timer = setInterval(() => router.refresh(), POLL_MS)
-    return () => clearInterval(timer)
-  }, [router, ticketState, open.length, expiredPending.length, anyBusy])
+  const shouldPoll =
+    !anyBusy && (LIVE_STATES.has(ticketState) || open.length > 0 || expiredPending.length > 0)
+  useVisibilityGatedInterval(() => router.refresh(), POLL_MS, shouldPoll)
 
   const decide = useCallback((approvalId: string, decision: Decision) => {
     setDecisions((prev) => ({ ...prev, [approvalId]: decision }))
