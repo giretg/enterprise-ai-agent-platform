@@ -5,6 +5,7 @@ import { repositories } from '@/repositories/postgres'
 import { findEmbedApp, readEmbedApps } from '@/lib/embed-apps'
 import { MAX_LIST_LIMIT } from '@/lib/list-pagination'
 import { EmbedSignInPrompt } from './[agentId]/embed-sign-in-prompt'
+import { EmbedAgentPickerCards } from './embed-agent-picker-cards'
 
 /**
  * Beágyazott agent-chat — agent-választó idegen alkalmazásból (feature-spec #481,
@@ -53,18 +54,7 @@ export default async function EmbedAgentPickerPage({
             Nincs elérhető agent a fiókodhoz — kérj hozzáférést a platform-admintól.
           </p>
         ) : (
-          <ul className="mt-4 divide-y divide-line rounded-lg border border-line bg-card">
-            {agents.map((agent) => (
-              <li key={agent.id}>
-                <a href={chatHref(agent.id)} className="block px-4 py-3 hover:bg-ink/5">
-                  <p className="text-sm font-semibold text-ink">{agent.name}</p>
-                  {agent.personaNickname ? (
-                    <p className="truncate text-xs text-ink-faint">{agent.personaNickname}</p>
-                  ) : null}
-                </a>
-              </li>
-            ))}
-          </ul>
+          <EmbedAgentPickerCards agents={agents} chatHref={chatHref} />
         )}
       </div>
     </div>
