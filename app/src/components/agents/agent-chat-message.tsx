@@ -31,6 +31,8 @@ import {
   extractApprovalContinuationTechnicalDetails,
   isApprovalContinuationMessage,
 } from '@/lib/consequence-approval-display'
+import { formatWorkElapsedMmSs } from '@/lib/active-runs-labels'
+import { useVisibilityGatedInterval } from '@/components/tickets/use-visibility-gated-interval'
 
 export type AgentActivity = {
   id: string
@@ -333,6 +335,21 @@ function activityDisplayTitle(activity: AgentActivity): string {
   return activity.title
 }
 
+function parseStartedAtMs(iso: string | null | undefined): number | null {
+  if (!iso) return null
+  const ms = Date.parse(iso)
+  return Number.isFinite(ms) ? ms : null
+}
+
+/** Élő perc:mp óra — csak aktív munka közben fut, rejtett fülön szünetel. */
+function useLiveWorkElapsed(startedAtIso: string | null | undefined, active: boolean): string | null {
+  const startedAtMs = parseStartedAtMs(startedAtIso)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useVisibilityGatedInterval(() => setNowMs(Date.now()), 1000, active && startedAtMs !== null)
+  if (!active || startedAtMs === null) return null
+  return formatWorkElapsedMmSs(startedAtMs, nowMs)
+}
+
 function PrivacyObservedText({
   text,
   privacyContext,
@@ -432,6 +449,7 @@ function AgentActivityPanel({
   privacyContext,
   stalled = false,
   stallDetail,
+  workStartedAt,
 }: {
   activities: AgentActivity[]
   thinking?: Record<string, string>
@@ -441,14 +459,18 @@ function AgentActivityPanel({
   /** Heartbeat elmaradt — a lépés „running", de a futás valószínűleg elhalt. */
   stalled?: boolean
   stallDetail?: string | null
+  /** Forduló indulása — élő órához; hiányában a buborék `createdAt`-ja. */
+  workStartedAt?: string | null
 }) {
   // Alapból zárt — a teljes lista csak kattintásra nyílik; stream közben sem
   // erőltetjük ki a nyitást, hogy a user választása megmaradjon.
   const [open, setOpen] = useState(false)
   const running = activities.find((activity) => activity.status === 'running')
-  const activelyWorking = running && !stalled
+  const activelyWorking = Boolean(running) && !stalled
   const latest = running ?? activities[activities.length - 1]
   const hasError = activities.some((activity) => activity.status === 'error')
+  const currentTaskTitle = running ? activityDisplayTitle(running) : null
+  const liveElapsed = useLiveWorkElapsed(workStartedAt, activelyWorking)
   const headerHint = stalled
     ? stallDetail ?? 'Nincs friss életjel — a válasz valószínűleg elhalt.'
     : activelyWorking
@@ -489,13 +511,28 @@ function AgentActivityPanel({
           aria-hidden
         />
         <span className="min-w-0 flex-1 truncate font-medium text-ink">
-          {activelyWorking
-            ? 'Éppen dolgozik'
-            : stalled
-              ? 'Úgy tűnik megállt'
-              : hasError
-                ? 'Elakadt egy lépésnél'
-                : 'Kész'}
+          {activelyWorking ? (
+            <>
+              Éppen dolgozik
+              {currentTaskTitle ? (
+                <span className="font-normal text-ink-soft"> · {currentTaskTitle}</span>
+              ) : null}
+              {liveElapsed ? (
+                <span
+                  className="ml-1.5 inline-flex items-center rounded-md bg-sky/10 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-sky"
+                  aria-label={`Futás ideje: ${liveElapsed}`}
+                >
+                  {liveElapsed}
+                </span>
+              ) : null}
+            </>
+          ) : stalled ? (
+            'Úgy tűnik megállt'
+          ) : hasError ? (
+            'Elakadt egy lépésnél'
+          ) : (
+            'Kész'
+          )}
           <span className="ml-1.5 font-normal text-ink-faint">
             · {activities.length} lépés
           </span>
@@ -1100,6 +1137,7 @@ export function MessageBubble({
   privacyContext,
   activityStalled = false,
   activityStallDetail,
+  activityWorkStartedAt = null,
   taskCard = null,
   taskCardLoading = false,
   focused = false,
@@ -1129,6 +1167,8 @@ export function MessageBubble({
   privacyContext: ChatPrivacyMarkerContext | null
   activityStalled?: boolean
   activityStallDetail?: string | null
+  /** Aktív forduló indulása — élő „Éppen dolgozik” óra. */
+  activityWorkStartedAt?: string | null
   taskCard?: ChatTaskCardView | null
   taskCardLoading?: boolean
   focused?: boolean
@@ -1219,6 +1259,7 @@ export function MessageBubble({
                 privacyContext={privacyContext}
                 stalled={activityStalled}
                 stallDetail={activityStallDetail}
+                workStartedAt={activityWorkStartedAt ?? message.createdAt}
               />
             )}
             {!isUser && message.memoryCandidates && message.memoryCandidates.length > 0 && (
