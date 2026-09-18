@@ -261,10 +261,16 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
       itemCount: z.number(),
       items: z.array(z.unknown()),
     }),
-    emptiness: (output) =>
-      (num(output, 'itemCount') ?? 0) === 0
+    // ok:false (auth/HTTP/arrayPath hiba) SOHA nem „üres nyilvántartás":
+    // a validateToolOutput az emptiness-t a partial ELŐTT értékeli, ezért ha
+    // itt itemCount===0-ra empty-t adnánk, a partial „ne egyeztess" üzenete
+    // soha nem futna — a modell/gépi fogyasztó pedig törlésnek nézné a hibát.
+    emptiness: (output) => {
+      if (bool(output, 'ok') === false) return null
+      return (num(output, 'itemCount') ?? 0) === 0
         ? `a végiglapozás egyetlen sort sem hozott (${str(output, 'path') ?? 'ismeretlen útvonal'})`
-        : null,
+        : null
+    },
     // A csonka lapozás a legveszélyesebb csendes hiba: ebből lesz a hamis
     // „182 új rekord" egyeztetés. Kötelezően látszania kell.
     partial: (output) => {
