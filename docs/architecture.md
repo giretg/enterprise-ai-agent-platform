@@ -1,4 +1,4 @@
-# Architecture note — Phase 0 compilation boundary + Phase A MCP gate + Phase B schema + Phase C Drive read
+# Architecture note — Phase 0 compilation boundary + Phase A MCP gate + Phase B schema + Phase C Drive read + Phase E write approval
 
 This repository is being rebuilt as an Enterprise MCP control plane. Phase 0
 establishes a **clean compilation boundary**. It is not a compatibility layer
@@ -16,19 +16,25 @@ Publish creates an append-only `AgentDefinitionVersion` (stable id = version
 UUID). MCP tools `platform.whoami`, `platform.agents.list`, and
 `platform.agent.get_definition` are read-only. Control Plane is the write path.
 There is no `AuditLog` table. `GatewayOperation` / `GatewayApproval` tables
-exist for #541; the domain remains TODO.
+exist; Phase E implements enqueue / approve / reject / execute.
 
 **Phase C:** `google_drive_search` and `google_drive_read_file` are registered
 on the same `/api/mcp/{tenantSlug}` resource. Policy comes from the published
 `AgentDefinitionVersion.snapshot`; live DB checks confirm the connector is
 still `active` and the principal has a delegated `ConnectorGrant`.
-`authorizeToolCall` is the single gate. Writes (`google_drive_create_folder`,
-GatewayOperation) stay on #541. Credentials are resolved server-side only
+`authorizeToolCall` is the single gate. Credentials are resolved server-side only
 (`resolveAccessToken`) and never appear in MCP payloads. Audit is structured
 `console.info` (`enterprise.tool.ok` / `denied` / `error`) — still no
-`AuditLog` table. Dual-harness evidence (Codex + Claude Code CLI versions and
-Clerk instance type) is recorded on the PR when
-`docs/mcp-compatibility-runbook.md` is executed.
+`AuditLog` table.
+
+**Phase E:** `google_drive_create_folder` enqueues a `GatewayOperation` in
+`awaiting_approval`. A tenant admin/approver (self-approval allowed) approves
+or rejects in Control Plane `/control-plane/operations`. Approval executes
+the Drive write once in the same request (no worker). Idempotent retries use
+`idempotencyKey`. Status is readable via `platform.gateway_operation.get`.
+A `write` connector binding satisfies read tools; write tools require `write`.
+Dual-harness evidence (Codex + Claude Code CLI versions and Clerk instance
+type) is recorded on the PR when `docs/mcp-compatibility-runbook.md` is executed.
 
 ## Entry points
 
@@ -38,8 +44,8 @@ Clerk instance type) is recorded on the PR when
 | `app/src/auth/mcp-principal.ts` | MCP principal (Phase A/B) |
 | `app/src/app/api/mcp/[tenantSlug]/route.ts` | Tenant-scoped MCP resource URL (Phase A) |
 | `app/src/domain/agent-definition/` | Immutable Agent Definition (Phase B) |
-| `app/src/domain/enterprise-tools/` | `authorizeToolCall` + Drive read gateway (Phase C) |
-| `app/src/domain/gateway-operation/` | GatewayOperation / GatewayApproval (Phase E) |
+| `app/src/domain/enterprise-tools/` | `authorizeToolCall` + Drive read/write gateway |
+| `app/src/domain/gateway-operation/` | GatewayOperation enqueue / approve / execute (Phase E) |
 
 Control Plane login remains Clerk (`app/src/auth/*`). Tenant membership is
 `auth/tenant-context.ts` plus `domain/iam` and `domain/tenant`.
@@ -72,10 +78,12 @@ ESLint rule.
   `/api/mcp/{tenantSlug}` plus membership or superadmin assume.
 - `tools/list` is not a security boundary. `tools/call` uses an allow-list
   (`platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`,
-  `google_drive_search`, `google_drive_read_file`); every Drive `tools/call`
-  still runs `authorizeToolCall`.
+  `platform.gateway_operation.get`, `google_drive_search`,
+  `google_drive_read_file`, `google_drive_create_folder`); every Drive
+  `tools/call` still runs `authorizeToolCall`. Writes enqueue instead of
+  calling Google until a human approves.
 - Credentials never leave the server.
 - Prisma is the Phase B target schema. Drive **read** MCP tools are Phase C
-  (#540). Drive **write** is #541.
+  (#540). Drive **write** + approval is Phase E (#541).
 
 Detailed KEEP / EXTRACT / DELETE ledger: [`docs/rebuild-surgery-manifest.md`](rebuild-surgery-manifest.md).

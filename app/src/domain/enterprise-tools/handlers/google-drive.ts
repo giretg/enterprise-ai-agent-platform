@@ -1,5 +1,6 @@
 import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
 import {
+  GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
   type EnterpriseDriveTool,
@@ -19,7 +20,7 @@ function optionalStringArray(value: unknown): string[] | undefined {
   return items.length > 0 ? items : undefined
 }
 
-/** Read-only Drive tools. Writes belong to #541. */
+/** Drive tool executor. Write tools run only after GatewayOperation approval. */
 export async function executeGoogleDriveTool(
   toolName: EnterpriseDriveTool,
   args: Record<string, unknown>,
@@ -42,6 +43,13 @@ export async function executeGoogleDriveTool(
     return drive.readFile({
       fileId,
       maxBytes: optionalNumber(args.maxBytes),
+    })
+  }
+  if (toolName === GOOGLE_DRIVE_CREATE_FOLDER_TOOL) {
+    const name = optionalString(args.name) ?? ''
+    return drive.createFolder({
+      name,
+      parentFolderId: optionalString(args.parentFolderId),
     })
   }
   throw new Error(`unsupported drive tool: ${toolName}`)

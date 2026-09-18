@@ -1,0 +1,484 @@
+import { canOperateAgent, isPrivilegedAgentReader, type AgentDefinition } from '@/domain/agent-definition'
+import {
+  GoogleDriveApiAuthError,
+  GoogleDriveApiError,
+} from '@/domain/connector-grant/google-drive-api-client'
+import {
+  assertGoogleDriveWriteAccess,
+  GoogleDriveWriteAccessError,
+} from '@/domain/connector-grant/google-drive-write-access'
+import { executeGoogleDriveTool } from '@/domain/enterprise-tools/handlers/google-drive'
+import {
+  authorizeToolCall,
+  type AuthorizeToolCallDeps,
+  type EnterpriseToolMcpResult,
+  type LiveConnectorRow,
+  type ToolCallPrincipal,
+} from '@/domain/enterprise-tools'
+import {
+  GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+  isEnterpriseDriveWriteTool,
+  schemaForEnterpriseDriveTool,
+} from '@/domain/enterprise-tools/tool-definitions'
+import type {
+  GatewayOperationRecord,
+  GatewayOperationStatus,
+  GatewayOperationStore,
+  GatewayOperationView,
+} from './types'
+
+export type GatewayActor = ToolCallPrincipal
+
+export type GatewayOperationOk = { ok: true; view: GatewayOperationView; created?: boolean }
+export type GatewayOperationErr = { ok: false; code: string }
+export type GatewayOperationResult = GatewayOperationOk | GatewayOperationErr
+
+export type GatewayOperationServiceDeps = AuthorizeToolCallDeps & {
+  loadDefinition: (input: {
+    tenantId: string
+    definitionId: string
+  }) => Promise<AgentDefinition | null>
+  findAgentGrant: (input: {
+    tenantId: string
+    userId: string
+    agentId: string
+  }) => Promise<{ accessLevel: string } | null>
+  resolveAccessToken: (input: {
+    connector: LiveConnectorRow
+    grantId: string
+    tokenRef: string
+    actingUserId: string
+    tenantId: string
+  }) => Promise<string>
+  operations: GatewayOperationStore
+  executeDriveTool?: (
+    toolName: typeof GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+    args: Record<string, unknown>,
+    accessToken: string,
+  ) => Promise<unknown>
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+const MESSAGES: Record<string, string> = {
+  definition_not_found: 'Agent definition not found',
+  definition_mismatch: 'agentId does not match the loaded definition',
+  agent_access_denied: 'Operate grant required to invoke this agent',
+  tool_not_configured: 'Tool is not configured',
+  capability_not_allowed: 'Tool is not allowed by the published agent definition',
+  missing_google_drive_connector_read: 'Published definition has no Google Drive read connector',
+  missing_google_drive_connector_write: 'Published definition has no Google Drive write connector',
+  tenant_isolation: 'Connector does not belong to this tenant',
+  connector_not_active: 'Connector is not active',
+  connector_grant_missing: 'Google Drive access has not been granted',
+  acting_user_required: 'This tool requires a delegated user grant',
+  google_drive_scope_not_granted: 'Google Drive scopes are insufficient',
+  invalid_args: 'Invalid tool arguments',
+  idempotency_key_required: 'idempotencyKey is required',
+  operation_not_found: 'Gateway operation not found',
+  operation_not_awaiting_approval: 'Gateway operation is not awaiting approval',
+  approval_already_decided: 'Gateway operation has already been decided',
+  approver_not_authorized: 'Approver is not authorized',
+  drive_write_not_allowed: 'Google Drive write is not allowed for the selected files',
+  google_drive_auth_failed: 'Google Drive authentication failed',
+  google_drive_api_error: 'Google Drive request failed',
+  tool_execution_failed: 'Tool execution failed',
+}
+
+function asUuid(value: unknown): string | undefined {
+  return typeof value === 'string' && UUID_RE.test(value) ? value : undefined
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+export function canApproveGatewayOperation(actor: GatewayActor): boolean {
+  if (actor.assumed) return true
+  return isPrivilegedAgentReader(actor.role)
+}
+
+export function canSeeGatewayOperation(
+  actor: GatewayActor,
+  operation: { principalUserId: string },
+): boolean {
+  if (actor.userId === operation.principalUserId) return true
+  return canApproveGatewayOperation(actor)
+}
+
+export function toGatewayOperationView(row: GatewayOperationRecord): GatewayOperationView {
+  return {
+    operationId: row.id,
+    status: row.status,
+    toolName: row.toolName,
+    idempotencyKey: row.idempotencyKey,
+    definitionId: row.agentDefinitionVersionId,
+    agentId: row.agentId,
+    principalUserId: row.principalUserId,
+    connectorId: row.connectorId,
+    errorCode: row.errorCode,
+    result: row.status === 'succeeded' ? row.resultJson : null,
+    approval: row.approval
+      ? {
+          decision: row.approval.decision,
+          decidedByUserId: row.approval.decidedByUserId,
+          decidedAt: row.approval.decidedAt ? row.approval.decidedAt.toISOString() : null,
+          reason: row.approval.reason,
+        }
+      : null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  }
+}
+
+function textResult(payload: unknown, isError = false): EnterpriseToolMcpResult {
+  return {
+    ...(isError ? { isError: true as const } : {}),
+    content: [{ type: 'text', text: JSON.stringify(payload) }],
+  }
+}
+
+function errorMcp(code: string): EnterpriseToolMcpResult {
+  return textResult({ code, message: MESSAGES[code] ?? 'Gateway operation failed' }, true)
+}
+
+export function enqueueResultToMcp(result: GatewayOperationResult): EnterpriseToolMcpResult {
+  if (!result.ok) return errorMcp(result.code)
+  return textResult({
+    operationId: result.view.operationId,
+    status: result.view.status,
+    idempotencyKey: result.view.idempotencyKey,
+    toolName: result.view.toolName,
+  })
+}
+
+export function getResultToMcp(result: GatewayOperationResult): EnterpriseToolMcpResult {
+  if (!result.ok) return errorMcp(result.code)
+  return textResult(result.view)
+}
+
+function err(code: string): GatewayOperationErr {
+  return { ok: false, code }
+}
+
+function ok(view: GatewayOperationView, created?: boolean): GatewayOperationOk {
+  return created === undefined ? { ok: true, view } : { ok: true, view, created }
+}
+
+async function loadAuthorizedWrite(
+  deps: GatewayOperationServiceDeps,
+  principal: GatewayActor,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<
+  | { ok: false; code: string }
+  | {
+      ok: true
+      definition: AgentDefinition
+      connectorId: string
+      parsedArgs: Record<string, unknown>
+    }
+> {
+  if (!isEnterpriseDriveWriteTool(toolName)) return err('tool_not_configured')
+
+  const definitionId = asUuid(args.definitionId)
+  if (!definitionId) return err('definition_not_found')
+
+  const definition = await deps.loadDefinition({
+    tenantId: principal.tenantId,
+    definitionId,
+  })
+  if (!definition) return err('definition_not_found')
+
+  if (args.agentId !== undefined) {
+    const agentIdArg = asUuid(args.agentId)
+    if (!agentIdArg || agentIdArg !== definition.agentId) return err('definition_mismatch')
+  }
+
+  const grant = await deps.findAgentGrant({
+    tenantId: principal.tenantId,
+    userId: principal.userId,
+    agentId: definition.agentId,
+  })
+  if (!canOperateAgent({ role: principal.role, grant, assumed: principal.assumed })) {
+    return err('agent_access_denied')
+  }
+
+  const idempotencyKey = args.idempotencyKey
+  if (typeof idempotencyKey !== 'string' || idempotencyKey.length === 0) {
+    return err('idempotency_key_required')
+  }
+
+  const parsed = schemaForEnterpriseDriveTool(toolName).safeParse(args)
+  if (!parsed.success) return err('invalid_args')
+
+  const authorized = await authorizeToolCall(deps, {
+    principal,
+    definition,
+    toolName,
+    args: parsed.data as Record<string, unknown>,
+  })
+  if (!authorized.allowed) return err(authorized.reason)
+
+  return {
+    ok: true,
+    definition,
+    connectorId: authorized.connectorId,
+    parsedArgs: parsed.data as Record<string, unknown>,
+  }
+}
+
+export async function enqueueGatewayOperation(
+  deps: GatewayOperationServiceDeps,
+  input: { principal: GatewayActor; toolName: string; args: Record<string, unknown> },
+): Promise<GatewayOperationResult> {
+  const { principal, toolName, args } = input
+  const authorized = await loadAuthorizedWrite(deps, principal, toolName, args)
+  if (!authorized.ok) {
+    console.info('enterprise.tool.denied', {
+      toolName,
+      reason: authorized.code,
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      ...(asUuid(args.definitionId) ? { definitionId: asUuid(args.definitionId) } : {}),
+    })
+    return authorized
+  }
+
+  const idempotencyKey = String(authorized.parsedArgs.idempotencyKey)
+  const existing = await deps.operations.findByTenantAndIdempotencyKey(
+    principal.tenantId,
+    idempotencyKey,
+  )
+  if (existing) return ok(toGatewayOperationView(existing), false)
+
+  const inserted = await deps.operations.createAwaitingApproval({
+    tenantId: principal.tenantId,
+    agentDefinitionVersionId: authorized.definition.definitionId,
+    agentId: authorized.definition.agentId,
+    principalUserId: principal.userId,
+    toolName,
+    argsJson: authorized.parsedArgs,
+    idempotencyKey,
+    connectorId: authorized.connectorId,
+  })
+  if (inserted.created) {
+    console.info('gateway.operation.enqueued', {
+      operationId: inserted.record.id,
+      toolName,
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      definitionId: authorized.definition.definitionId,
+      idempotencyKey,
+    })
+  }
+  return ok(toGatewayOperationView(inserted.record), inserted.created)
+}
+
+export async function getGatewayOperation(
+  deps: GatewayOperationServiceDeps,
+  input: { principal: GatewayActor; operationId: string },
+): Promise<GatewayOperationResult> {
+  const operationId = asUuid(input.operationId)
+  if (!operationId) return err('operation_not_found')
+  const row = await deps.operations.findById(operationId)
+  if (!row || row.tenantId !== input.principal.tenantId) return err('operation_not_found')
+  if (!canSeeGatewayOperation(input.principal, row)) return err('operation_not_found')
+  return ok(toGatewayOperationView(row))
+}
+
+export type GatewayPendingOperation = GatewayOperationView & {
+  args: Record<string, unknown>
+}
+
+export async function listPendingGatewayOperations(
+  deps: GatewayOperationServiceDeps,
+  input: { tenantId: string },
+): Promise<GatewayPendingOperation[]> {
+  const rows = await deps.operations.listAwaitingApproval(input.tenantId)
+  return rows.map((row) => ({
+    ...toGatewayOperationView(row),
+    args: asRecord(row.argsJson),
+  }))
+}
+
+export async function rejectGatewayOperation(
+  deps: GatewayOperationServiceDeps,
+  input: { tenantId: string; operationId: string; actor: GatewayActor; reason?: string },
+): Promise<GatewayOperationResult> {
+  if (!canApproveGatewayOperation(input.actor)) return err('approver_not_authorized')
+  const operationId = asUuid(input.operationId)
+  if (!operationId) return err('operation_not_found')
+
+  const decidedAt = new Date()
+  const claimed = await deps.operations.withLockedOperation(operationId, async (row, save) => {
+    if (row.tenantId !== input.tenantId) return err('operation_not_found')
+    if (row.status !== 'awaiting_approval') return err('operation_not_awaiting_approval')
+    if (row.approval && row.approval.decision !== 'pending') return err('approval_already_decided')
+    const updated = await save({
+      status: 'rejected',
+      approval: {
+        decision: 'rejected',
+        decidedByUserId: input.actor.userId,
+        reason: input.reason ?? null,
+        decidedAt,
+      },
+    })
+    return ok(toGatewayOperationView(updated))
+  })
+  if (!claimed) return err('operation_not_found')
+  if (claimed.ok) {
+    console.info('gateway.operation.rejected', {
+      operationId,
+      decidedByUserId: input.actor.userId,
+      tenantId: input.tenantId,
+      ...(input.reason ? { reason: input.reason } : {}),
+    })
+  }
+  return claimed
+}
+
+export async function approveGatewayOperation(
+  deps: GatewayOperationServiceDeps,
+  input: { tenantId: string; operationId: string; actor: GatewayActor; reason?: string },
+): Promise<GatewayOperationResult> {
+  if (!canApproveGatewayOperation(input.actor)) return err('approver_not_authorized')
+  const operationId = asUuid(input.operationId)
+  if (!operationId) return err('operation_not_found')
+
+  const decidedAt = new Date()
+  const claimed = await deps.operations.withLockedOperation(operationId, async (row, save) => {
+    if (row.tenantId !== input.tenantId) return err('operation_not_found')
+    if (row.status !== 'awaiting_approval') return err('operation_not_awaiting_approval')
+    if (row.approval && row.approval.decision !== 'pending') return err('approval_already_decided')
+    await save({
+      status: 'approved',
+      approval: {
+        decision: 'approved',
+        decidedByUserId: input.actor.userId,
+        reason: input.reason ?? null,
+        decidedAt,
+      },
+    })
+    const executing = await save({ status: 'executing' })
+    return { ok: true as const, record: executing }
+  })
+  if (!claimed) return err('operation_not_found')
+  if (!claimed.ok) return claimed
+
+  console.info('gateway.operation.approved', {
+    operationId,
+    decidedByUserId: input.actor.userId,
+    tenantId: input.tenantId,
+  })
+  console.info('gateway.operation.executing', {
+    operationId,
+    connectorId: claimed.record.connectorId,
+    tenantId: input.tenantId,
+  })
+
+  const executed = await executeApprovedOperation(deps, claimed.record)
+  return ok(toGatewayOperationView(executed))
+}
+
+async function executeApprovedOperation(
+  deps: GatewayOperationServiceDeps,
+  operation: GatewayOperationRecord,
+): Promise<GatewayOperationRecord> {
+  const args = asRecord(operation.argsJson)
+  const requester: GatewayActor = {
+    userId: operation.principalUserId,
+    tenantId: operation.tenantId,
+    role: 'operator',
+    assumed: false,
+  }
+
+  const fail = async (code: string) => {
+    const updated = await deps.operations.update(operation.id, {
+      status: 'failed',
+      errorCode: code,
+    })
+    console.info('gateway.operation.failed', {
+      operationId: operation.id,
+      connectorId: operation.connectorId,
+      tenantId: operation.tenantId,
+      errorCode: code,
+    })
+    return updated ?? { ...operation, status: 'failed' as GatewayOperationStatus, errorCode: code }
+  }
+
+  const definition = await deps.loadDefinition({
+    tenantId: operation.tenantId,
+    definitionId: operation.agentDefinitionVersionId,
+  })
+  if (!definition) return fail('definition_not_found')
+
+  const authorized = await authorizeToolCall(deps, {
+    principal: requester,
+    definition,
+    toolName: operation.toolName,
+    args,
+  })
+  if (!authorized.allowed) return fail(authorized.reason)
+
+  const grant = await deps.findActiveGrant({
+    tenantId: operation.tenantId,
+    connectorId: authorized.connectorId,
+    userId: operation.principalUserId,
+  })
+  if (!grant) return fail('connector_grant_missing')
+
+  try {
+    assertGoogleDriveWriteAccess({
+      tool: operation.toolName,
+      args,
+      scopes: grant.scopes as never,
+      metadata: grant.metadata as never,
+    })
+  } catch (error) {
+    if (error instanceof GoogleDriveWriteAccessError) return fail('drive_write_not_allowed')
+    return fail('tool_execution_failed')
+  }
+
+  let accessToken: string
+  try {
+    accessToken = await deps.resolveAccessToken({
+      connector: authorized.connector,
+      grantId: authorized.grantId,
+      tokenRef: authorized.tokenRef,
+      actingUserId: operation.principalUserId,
+      tenantId: operation.tenantId,
+    })
+  } catch {
+    return fail('google_drive_auth_failed')
+  }
+
+  const execute = deps.executeDriveTool ?? executeGoogleDriveTool
+  try {
+    const result = await execute(GOOGLE_DRIVE_CREATE_FOLDER_TOOL, args, accessToken)
+    const updated = await deps.operations.update(operation.id, {
+      status: 'succeeded',
+      resultJson: result,
+      errorCode: null,
+    })
+    const file = result && typeof result === 'object' ? (result as { file?: { id?: string } }).file : undefined
+    console.info('gateway.operation.succeeded', {
+      operationId: operation.id,
+      connectorId: authorized.connectorId,
+      tenantId: operation.tenantId,
+      ...(typeof file?.id === 'string' ? { fileId: file.id } : {}),
+    })
+    return updated ?? { ...operation, status: 'succeeded', resultJson: result, errorCode: null }
+  } catch (error) {
+    return fail(mapDriveError(error))
+  }
+}
+
+function mapDriveError(error: unknown): string {
+  if (error instanceof GoogleDriveWriteAccessError) return 'drive_write_not_allowed'
+  if (error instanceof GoogleDriveApiAuthError) return 'google_drive_auth_failed'
+  if (error instanceof GoogleDriveApiError) return 'google_drive_api_error'
+  return 'tool_execution_failed'
+}

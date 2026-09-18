@@ -7,6 +7,7 @@ import type { AgentDefinition } from '../src/domain/agent-definition'
 import {
   authorizeToolCall,
   invokeEnterpriseTool,
+  GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
   type AuthorizeToolCallDeps,
@@ -204,7 +205,7 @@ async function main() {
           name: 'Drive assistant',
           roleInstruction: 'Inspect Drive',
           skills: [],
-          connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'write' }],
+          connectors: [],
           capabilities: [{ toolName: GOOGLE_DRIVE_SEARCH_TOOL, allowed: true }],
         },
       }),
@@ -212,6 +213,88 @@ async function main() {
       args: {},
     })
     assert.deepEqual(result, { allowed: false, reason: 'missing_google_drive_connector_read' })
+  })
+
+  await check('write binding satisfies read tool requirements', async () => {
+    const result = await authorizeToolCall(authorizeDeps(), {
+      principal: principal(),
+      definition: definition({
+        snapshot: {
+          name: 'Drive assistant',
+          roleInstruction: 'Inspect Drive',
+          skills: [],
+          connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'write' }],
+          capabilities: [{ toolName: GOOGLE_DRIVE_SEARCH_TOOL, allowed: true }],
+        },
+      }),
+      toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+      args: {},
+    })
+    assert.equal(result.allowed, true)
+  })
+
+  await check('write tool requires write binding', async () => {
+    const result = await authorizeToolCall(authorizeDeps(), {
+      principal: principal(),
+      definition: definition({
+        snapshot: {
+          name: 'Drive assistant',
+          roleInstruction: 'Inspect Drive',
+          skills: [],
+          connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'read' }],
+          capabilities: [{ toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL, allowed: true }],
+        },
+      }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { name: 'Q3', idempotencyKey: 'k1' },
+    })
+    assert.deepEqual(result, { allowed: false, reason: 'missing_google_drive_connector_write' })
+  })
+
+  await check('write tool with write binding and selected_write scopes is allowed', async () => {
+    const result = await authorizeToolCall(
+      authorizeDeps({
+        grant: grant({
+          scopes: [
+            'https://www.googleapis.com/auth/drive.readonly',
+            'https://www.googleapis.com/auth/drive.file',
+          ],
+        }),
+      }),
+      {
+        principal: principal(),
+        definition: definition({
+          snapshot: {
+            name: 'Drive assistant',
+            roleInstruction: 'Inspect Drive',
+            skills: [],
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'write' }],
+            capabilities: [{ toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL, allowed: true }],
+          },
+        }),
+        toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+        args: { name: 'Q3', idempotencyKey: 'k1' },
+      },
+    )
+    assert.equal(result.allowed, true)
+  })
+
+  await check('write tool with readonly scopes is google_drive_scope_not_granted', async () => {
+    const result = await authorizeToolCall(authorizeDeps(), {
+      principal: principal(),
+      definition: definition({
+        snapshot: {
+          name: 'Drive assistant',
+          roleInstruction: 'Inspect Drive',
+          skills: [],
+          connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'write' }],
+          capabilities: [{ toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL, allowed: true }],
+        },
+      }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { name: 'Q3', idempotencyKey: 'k1' },
+    })
+    assert.deepEqual(result, { allowed: false, reason: 'google_drive_scope_not_granted' })
   })
 
   await check('grant missing', async () => {
@@ -282,7 +365,7 @@ async function main() {
     const result = await authorizeToolCall(authorizeDeps(), {
       principal: principal(),
       definition: definition(),
-      toolName: 'google_drive_create_folder',
+      toolName: 'not_a_real_tool',
       args: {},
     })
     assert.deepEqual(result, { allowed: false, reason: 'tool_not_configured' })
@@ -469,6 +552,65 @@ async function main() {
     assert.equal(payload.code, 'google_drive_api_error')
     assert.equal(payload.status, 413)
     assert.equal(payload.googleCode, 'file_too_large')
+  })
+
+  await check('invoke create_folder enqueues instead of calling Drive', async () => {
+    let driveCalled = false
+    let enqueued: { toolName?: string; name?: unknown } | null = null
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        executeDriveTool: async () => {
+          driveCalled = true
+          return { leaked: true }
+        },
+      }),
+      {
+        principal: principal({ role: 'admin' }),
+        toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+        args: { definitionId: DEFINITION_ID, name: 'Q3 reports', idempotencyKey: 'idem-1' },
+      },
+    )
+    assert.equal(driveCalled, false)
+    assert.equal(result.isError, true)
+    assert.equal(parsePayload(result).code, 'tool_not_configured')
+
+    const withEnqueue = await invokeEnterpriseTool(
+      {
+        ...invokeDeps({
+          executeDriveTool: async () => {
+            driveCalled = true
+            return { leaked: true }
+          },
+        }),
+        async enqueueWrite(input) {
+          enqueued = { toolName: input.toolName, name: input.args.name }
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                  status: 'awaiting_approval',
+                  idempotencyKey: 'idem-1',
+                  toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+                }),
+              },
+            ],
+          }
+        },
+      },
+      {
+        principal: principal({ role: 'admin' }),
+        toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+        args: { definitionId: DEFINITION_ID, name: 'Q3 reports', idempotencyKey: 'idem-1' },
+      },
+    )
+    assert.equal(driveCalled, false)
+    assert.equal(withEnqueue.isError, undefined)
+    const payload = parsePayload(withEnqueue)
+    assert.equal(payload.status, 'awaiting_approval')
+    assert.equal(enqueued?.toolName, GOOGLE_DRIVE_CREATE_FOLDER_TOOL)
+    assert.equal(enqueued?.name, 'Q3 reports')
   })
 
   await check('token resolution failure does not leak tokenRef', async () => {

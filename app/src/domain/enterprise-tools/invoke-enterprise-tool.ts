@@ -12,6 +12,7 @@ import {
 import { executeGoogleDriveTool } from './handlers/google-drive'
 import {
   isEnterpriseDriveTool,
+  isEnterpriseDriveWriteTool,
   schemaForEnterpriseDriveTool,
   type EnterpriseDriveTool,
 } from './tool-definitions'
@@ -43,6 +44,11 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps & {
     args: Record<string, unknown>,
     accessToken: string,
   ) => Promise<unknown>
+  enqueueWrite?: (input: {
+    principal: ToolCallPrincipal
+    toolName: string
+    args: Record<string, unknown>
+  }) => Promise<EnterpriseToolMcpResult>
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -54,6 +60,8 @@ const DENY_MESSAGES: Record<string, string> = {
   tool_not_configured: 'Tool is not configured',
   capability_not_allowed: 'Tool is not allowed by the published agent definition',
   missing_google_drive_connector_read: 'Published definition has no Google Drive read connector',
+  missing_google_drive_connector_write: 'Published definition has no Google Drive write connector',
+  idempotency_key_required: 'idempotencyKey is required',
   tenant_isolation: 'Connector does not belong to this tenant',
   connector_not_active: 'Connector is not active',
   connector_grant_missing: 'Google Drive access has not been granted',
@@ -141,6 +149,14 @@ export async function invokeEnterpriseTool(
   if (!canOperateAgent({ role: principal.role, grant, assumed: principal.assumed })) {
     auditDenied(principal, toolName, 'agent_access_denied', definitionId, definition.agentId)
     return errorResult('agent_access_denied')
+  }
+
+  if (isEnterpriseDriveWriteTool(toolName)) {
+    if (!deps.enqueueWrite) {
+      auditDenied(principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
+      return errorResult('tool_not_configured')
+    }
+    return deps.enqueueWrite({ principal, toolName, args })
   }
 
   if (!isEnterpriseDriveTool(toolName)) {

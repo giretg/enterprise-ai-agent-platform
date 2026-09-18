@@ -61,13 +61,23 @@ async function main() {
         userId: user.id,
       },
     },
-    update: { status: 'active', tokenRef: `stub-seed-drive-grant:${user.id}` },
+    update: {
+      status: 'active',
+      tokenRef: `stub-seed-drive-grant:${user.id}`,
+      scopes: [
+        'https://www.googleapis.com/auth/drive.readonly',
+        'https://www.googleapis.com/auth/drive.file',
+      ],
+    },
     create: {
       tenantId: tenant.id,
       connectorId: connector.id,
       userId: user.id,
       status: 'active',
-      scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+      scopes: [
+        'https://www.googleapis.com/auth/drive.readonly',
+        'https://www.googleapis.com/auth/drive.file',
+      ],
       tokenRef: `stub-seed-drive-grant:${user.id}`,
       accountLabel: 'seed-placeholder',
     },
@@ -79,7 +89,7 @@ async function main() {
       tenantId: tenant.id,
       name: 'Drive assistant',
       roleInstruction:
-        'You inspect Google Drive through MCP. Search and read files for the signed-in operator. Do not invent Drive contents.',
+        'You inspect Google Drive through MCP. Search and read files, and request folder creation for the signed-in operator. Folder writes wait for human approval. Do not invent Drive contents.',
       status: 'draft',
     },
     create: {
@@ -87,7 +97,7 @@ async function main() {
       tenantId: tenant.id,
       name: 'Drive assistant',
       roleInstruction:
-        'You inspect Google Drive through MCP. Search and read files for the signed-in operator. Do not invent Drive contents.',
+        'You inspect Google Drive through MCP. Search and read files, and request folder creation for the signed-in operator. Folder writes wait for human approval. Do not invent Drive contents.',
       status: 'draft',
     },
   })
@@ -103,8 +113,8 @@ async function main() {
 
   await prisma.agentConnector.upsert({
     where: { agentId_connectorId: { agentId: agent.id, connectorId: connector.id } },
-    update: { accessMode: 'read' },
-    create: { agentId: agent.id, connectorId: connector.id, accessMode: 'read' },
+    update: { accessMode: 'write' },
+    create: { agentId: agent.id, connectorId: connector.id, accessMode: 'write' },
   })
 
   const published = await services.agentDefinitions.publishAgentDefinition({

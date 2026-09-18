@@ -524,3 +524,5 @@ export interface PlatformSettingsRepository {
 }
 
 export type { Capability }
+
+export type { GatewayOperationStore as GatewayOperationRepository } from '@/domain/gateway-operation'

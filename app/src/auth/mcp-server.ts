@@ -13,8 +13,10 @@ import {
   type AgentDefinition,
 } from '@/domain/agent-definition'
 import {
+  GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  googleDriveCreateFolderInputSchema,
   googleDriveReadFileInputSchema,
   googleDriveSearchInputSchema,
   isEnterpriseDriveTool,
@@ -28,6 +30,7 @@ import {
   MCP_ALLOWED_TOOLS,
   MCP_AGENTS_LIST_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
+  MCP_GATEWAY_OPERATION_GET_TOOL,
   MCP_WHOAMI_TOOL,
   resolveMcpPrincipal,
   type McpPrincipal,
@@ -68,6 +71,10 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     principal: McpPrincipal
     toolName: string
     args: Record<string, unknown>
+  }) => Promise<EnterpriseToolMcpResult>
+  getGatewayOperation: (input: {
+    principal: McpPrincipal
+    operationId: string
   }) => Promise<EnterpriseToolMcpResult>
 }
 
@@ -157,6 +164,13 @@ export function productionMcpDeps(): McpRuntimeDeps {
     loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),
     canViewAgent,
     invokeEnterpriseTool: (input) => services.enterpriseTools.invoke(input),
+    getGatewayOperation: async (input) =>
+      services.gatewayOperations.toMcpGet(
+        await services.gatewayOperations.get({
+          principal: input.principal,
+          operationId: input.operationId,
+        }),
+      ),
   }
 }
 
@@ -303,6 +317,26 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_READ_FILE_TOOL, args, deps),
       )
+      server.registerTool(
+        GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+        {
+          title: 'Create Google Drive folder',
+          description:
+            'Request creation of a Drive folder under a published agent definition. Does not call Google until a human approves the operation.',
+          inputSchema: googleDriveCreateFolderInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_CREATE_FOLDER_TOOL, args, deps),
+      )
+      server.registerTool(
+        MCP_GATEWAY_OPERATION_GET_TOOL,
+        {
+          title: 'Get gateway operation',
+          description: 'Read one gateway operation the caller is allowed to see.',
+          inputSchema: z.object({ operationId: z.string().uuid() }).passthrough(),
+        },
+        async (args) =>
+          getGatewayOperationToolResult(principal, args as Record<string, unknown>, deps),
+      )
 
       server.server.setRequestHandler('tools/call', async (request) => {
         const toolName = request.params.name
@@ -322,6 +356,9 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
         if (toolName === MCP_AGENT_GET_DEFINITION_TOOL) {
           return getDefinitionToolResult(principal, args, deps)
         }
+        if (toolName === MCP_GATEWAY_OPERATION_GET_TOOL) {
+          return getGatewayOperationToolResult(principal, args, deps)
+        }
         if (isEnterpriseDriveTool(toolName)) {
           return enterpriseToolResult(principal, toolName, args, deps)
         }
@@ -329,7 +366,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
       })
     },
     {
-      serverInfo: { name: 'enterprise-mcp', version: 'phase-c' },
+      serverInfo: { name: 'enterprise-mcp', version: 'phase-e' },
     },
   )
 }
@@ -342,6 +379,16 @@ async function enterpriseToolResult(
 ) {
   await auditMcpToolCall(deps, principal, toolName)
   return deps.invokeEnterpriseTool({ principal, toolName, args })
+}
+
+async function getGatewayOperationToolResult(
+  principal: McpPrincipal,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+) {
+  await auditMcpToolCall(deps, principal, MCP_GATEWAY_OPERATION_GET_TOOL)
+  const operationId = typeof args.operationId === 'string' ? args.operationId : ''
+  return deps.getGatewayOperation({ principal, operationId })
 }
 
 function toAuthInfo(token: string, verified: VerifiedOAuthToken): AuthInfo {

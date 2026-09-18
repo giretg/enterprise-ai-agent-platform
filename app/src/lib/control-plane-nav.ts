@@ -76,6 +76,12 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
     label: 'Adminisztráció',
     children: [
       {
+        key: 'admin.operations',
+        href: '/control-plane/operations',
+        label: 'Jóváhagyások',
+        requires: { tenantRole: 'approver' },
+      },
+      {
         key: 'admin.provisioning',
         href: '/control-plane/provisioning',
         label: 'Konnektorok',

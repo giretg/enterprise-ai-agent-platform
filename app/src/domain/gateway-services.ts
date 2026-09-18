@@ -14,6 +14,16 @@ import {
   invokeEnterpriseTool,
   type EnterpriseToolDeps,
 } from '@/domain/enterprise-tools'
+import {
+  enqueueGatewayOperation,
+  enqueueResultToMcp,
+  getGatewayOperation,
+  getResultToMcp,
+  approveGatewayOperation,
+  rejectGatewayOperation,
+  listPendingGatewayOperations,
+  type GatewayOperationServiceDeps,
+} from '@/domain/gateway-operation'
 import { IamService } from '@/domain/iam/iam-service'
 import { PlatformSettingsService } from '@/domain/platform-settings/platform-settings-service'
 import { ProvisioningService } from '@/domain/provisioning/provisioning-service'
@@ -62,12 +72,21 @@ function isStubDriveCredential(tokenRef: string): boolean {
   return tokenRef.startsWith('stub-') || process.env.GOOGLE_DRIVE_API_STUB === 'true'
 }
 
-const enterpriseToolDeps: EnterpriseToolDeps = {
-  loadDefinition: (input) => agentDefinitionService.loadAgentDefinition(input),
-  findAgentGrant: (input) => repositories.resourceGrants.findAgentGrant(input),
-  findConnector: (id) => repositories.connectors.findById(id),
-  findActiveGrant: (input) => repositories.connectorGrants.findActiveGrant(input),
-  async resolveAccessToken(params) {
+const sharedToolLookups = {
+  loadDefinition: (input: { tenantId: string; definitionId: string }) =>
+    agentDefinitionService.loadAgentDefinition(input),
+  findAgentGrant: (input: { tenantId: string; userId: string; agentId: string }) =>
+    repositories.resourceGrants.findAgentGrant(input),
+  findConnector: (id: string) => repositories.connectors.findById(id),
+  findActiveGrant: (input: { tenantId: string; connectorId: string; userId: string }) =>
+    repositories.connectorGrants.findActiveGrant(input),
+  async resolveAccessToken(params: {
+    connector: { id: string }
+    grantId: string
+    tokenRef: string
+    actingUserId: string
+    tenantId: string
+  }) {
     if (isStubDriveCredential(params.tokenRef)) {
       return params.tokenRef.startsWith('stub-') ? params.tokenRef : `stub-${params.grantId}`
     }
@@ -83,6 +102,17 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   },
 }
 
+const gatewayOperationDeps: GatewayOperationServiceDeps = {
+  ...sharedToolLookups,
+  operations: repositories.gatewayOperations,
+}
+
+const enterpriseToolDeps: EnterpriseToolDeps = {
+  ...sharedToolLookups,
+  enqueueWrite: async (input) =>
+    enqueueResultToMcp(await enqueueGatewayOperation(gatewayOperationDeps, input)),
+}
+
 export const services = {
   platformSettings: platformSettingsService,
   iam: iamService,
@@ -96,5 +126,18 @@ export const services = {
       authorizeToolCall(enterpriseToolDeps, input),
     invoke: (input: Parameters<typeof invokeEnterpriseTool>[1]) =>
       invokeEnterpriseTool(enterpriseToolDeps, input),
+  },
+  gatewayOperations: {
+    enqueue: (input: Parameters<typeof enqueueGatewayOperation>[1]) =>
+      enqueueGatewayOperation(gatewayOperationDeps, input),
+    get: (input: Parameters<typeof getGatewayOperation>[1]) =>
+      getGatewayOperation(gatewayOperationDeps, input),
+    approve: (input: Parameters<typeof approveGatewayOperation>[1]) =>
+      approveGatewayOperation(gatewayOperationDeps, input),
+    reject: (input: Parameters<typeof rejectGatewayOperation>[1]) =>
+      rejectGatewayOperation(gatewayOperationDeps, input),
+    listPending: (input: Parameters<typeof listPendingGatewayOperations>[1]) =>
+      listPendingGatewayOperations(gatewayOperationDeps, input),
+    toMcpGet: getResultToMcp,
   },
 }
