@@ -253,7 +253,17 @@ export async function getPlatformAuditTrail(input?: { limit?: number }) {
       action: [...TENANT_LIFECYCLE_AUDIT_ACTIONS],
       limit: input?.limit ?? 100,
     })
-    return ok(entries)
+    return ok(
+      entries.map((entry) => ({
+        id: entry.id,
+        action: entry.action,
+        actorId: entry.actorId,
+        targetType: entry.targetType,
+        targetId: entry.targetId,
+        policyDecision: entry.policyDecision,
+        createdAt: entry.createdAt.toISOString(),
+      })),
+    )
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load platform audit trail')
   }

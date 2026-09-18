@@ -274,6 +274,15 @@ class FakeAuditRepository implements AuditRepository {
         (filter?.since === undefined || r.createdAt >= filter.since),
     )
   }
+  async listHashChain(filter?: { fromSeq?: bigint; toSeq?: bigint }) {
+    return this.rows
+      .filter(
+        (r) =>
+          (filter?.fromSeq === undefined || r.seq >= filter.fromSeq) &&
+          (filter?.toSeq === undefined || r.seq <= filter.toSeq),
+      )
+      .map((r) => ({ seq: r.seq, hash: r.hash }))
+  }
   async getActionCounts(): Promise<Record<string, number>> {
     return {}
   }
@@ -320,6 +329,9 @@ class MemoryChainedAudit implements AuditRepository {
   }
   async findAll(): Promise<AuditLog[]> {
     return [...this.rows]
+  }
+  async listHashChain() {
+    return this.rows.map((r) => ({ seq: r.seq, hash: r.hash }))
   }
   async getActionCounts(): Promise<Record<string, number>> {
     return {}
@@ -373,6 +385,59 @@ async function main() {
     assert.equal(jsonLines.includes(tenantA), true)
   })
 
+  await checkAsync('verifyChain: tenant walk follows global predecessor hash', async () => {
+    const tenantA = 'aaaaaaaa-bbbb-4000-8000-000000000001'
+    const tenantB = 'bbbbbbbb-cccc-4000-8000-000000000002'
+    const rows: AuditLog[] = []
+    let prevHash = GENESIS_HASH
+    const tenants = [tenantA, tenantB, tenantA]
+    for (let i = 0; i < tenants.length; i++) {
+      const row = makeRow({
+        seq: BigInt(i + 1),
+        prevHash,
+        action: 'mcp.auth.ok',
+        tenantId: tenants[i],
+        metadata: { step: i + 1 },
+      })
+      row.hash = hashForV2(row, prevHash)
+      rows.push(row)
+      prevHash = row.hash
+    }
+    const svc = new AuditChainService(new FakeAuditRepository(rows))
+    const result = await svc.verifyChain(undefined, undefined, tenantA)
+    assert.equal(result.ok, true)
+    if (result.ok) assert.equal(result.checked, 2)
+  })
+
+  await checkAsync('verifyChain: tenant walk fails when a global insert breaks prevHash', async () => {
+    const tenantA = 'aaaaaaaa-bbbb-4000-8000-000000000001'
+    const rows: AuditLog[] = []
+    let prevHash = GENESIS_HASH
+    for (let i = 1; i <= 2; i++) {
+      const row = makeRow({
+        seq: BigInt(i),
+        prevHash,
+        action: 'mcp.auth.ok',
+        tenantId: tenantA,
+      })
+      row.hash = hashForV2(row, prevHash)
+      rows.push(row)
+      prevHash = row.hash
+    }
+    const forged = makeRow({
+      seq: BigInt(3),
+      prevHash: GENESIS_HASH,
+      action: 'mcp.auth.ok',
+      tenantId: tenantA,
+    })
+    forged.hash = hashForV2(forged, GENESIS_HASH)
+    rows.push(forged)
+    const svc = new AuditChainService(new FakeAuditRepository(rows))
+    const result = await svc.verifyChain(undefined, undefined, tenantA)
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.equal(result.firstBreakSeq, '3')
+  })
+
   await checkAsync('concurrent appends still verify', async () => {
     const repo = new MemoryChainedAudit()
     await Promise.all(
@@ -405,7 +470,9 @@ async function main() {
     const sql = readFileSync(sqlPath, 'utf8')
     assert.match(sql, /CREATE TABLE "audit_log"/)
     assert.match(sql, /audit_log_deny_mutation/)
-    assert.match(sql, /BEFORE UPDATE OR DELETE ON audit_log/)
+    assert.match(sql, /CREATE UNIQUE INDEX "audit_log_seq_key"/)
+    assert.match(sql, /ON DELETE RESTRICT/)
+    assert.doesNotMatch(sql, /ON DELETE SET NULL/)
   })
 
   check('audit control plane: lista és SIEM export az aktív tenanttal szűr', () => {
@@ -413,6 +480,17 @@ async function main() {
     assert.match(source, /requireTenantRole\('approver'\)/)
     assert.match(source, /tenantId: user\.activeTenantId/)
     assert.match(source, /exportJsonLines\(\{\s*tenantId: user\.activeTenantId/)
+    const page = readFileSync(
+      path.join(__dirname, '..', 'src', 'app', 'control-plane', 'audit', 'page.tsx'),
+      'utf8',
+    )
+    assert.match(page, /requireTenantRole\('approver'\)/)
+  })
+
+  check('platform IAM audit trail strips BigInt seq before the client panel', () => {
+    const source = readFileSync(path.join(__dirname, '..', 'src', 'app', 'actions', 'tenant.ts'), 'utf8')
+    assert.match(source, /createdAt: entry\.createdAt\.toISOString\(\)/)
+    assert.doesNotMatch(source, /return ok\(entries\)/)
   })
 
   check('event-catalog: minden audit.append/writeAudit action-literál szerepel a katalógusban', () => {

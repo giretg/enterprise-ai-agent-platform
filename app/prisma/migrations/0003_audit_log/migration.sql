@@ -25,13 +25,18 @@ CREATE TABLE "audit_log" (
 );
 
 -- CreateIndex
+CREATE UNIQUE INDEX "audit_log_seq_key" ON "audit_log"("seq");
+
+-- CreateIndex
 CREATE INDEX "audit_log_tenant_id_created_at_idx" ON "audit_log"("tenant_id", "created_at");
 
 -- CreateIndex
 CREATE INDEX "audit_log_action_created_at_idx" ON "audit_log"("action", "created_at");
 
 -- AddForeignKey
-ALTER TABLE "audit_log" ADD CONSTRAINT "audit_log_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+-- RESTRICT: append-only trigger blocks UPDATE/DELETE on audit_log, so SET NULL/CASCADE
+-- on tenant delete would fail with a confusing append-only error.
+ALTER TABLE "audit_log" ADD CONSTRAINT "audit_log_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 -- Append-only enforcement for audit_log (AuditLog-Observability feature-spec §2/2, §4).
 --

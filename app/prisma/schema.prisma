@@ -607,7 +607,7 @@ model PlatformSetting {
 
 model AuditLog {
   id             String         @id @default(uuid()) @db.Uuid
-  seq            BigInt         @default(autoincrement())
+  seq            BigInt         @unique @default(autoincrement())
   actorType      AuditActorType @map("actor_type")
   actorId        String?        @map("actor_id") @db.Uuid
   agentVersion   Int?           @map("agent_version")
@@ -624,7 +624,7 @@ model AuditLog {
   createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
   tenantId       String?        @map("tenant_id") @db.Uuid
 
-  tenant Tenant? @relation(fields: [tenantId], references: [id])
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
 
   @@index([tenantId, createdAt])
   @@index([action, createdAt])

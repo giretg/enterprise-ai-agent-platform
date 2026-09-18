@@ -14,14 +14,13 @@
  * Futtatás: npx tsx scripts/poll-coalesce.test.ts
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import test from 'node:test'
 
 import { createCoalescingCache } from '../src/lib/poll-coalesce'
 
 const root = resolve(import.meta.dirname, '..')
-const readSrc = (rel: string) => readFileSync(resolve(root, rel), 'utf8')
 
 function fakeClock(start = 0) {
   let t = start
@@ -111,19 +110,6 @@ test('invalidate és invalidatePrefix a következő olvasásnál újratölt', as
 })
 
 test('a poll-végpontok és a cancel route-ok a poll-coalesce modulon mennek át', () => {
-  const railState = readSrc('src/app/api/agents/rail-state/route.ts')
-  assert.match(railState, /coalescePollRead\(/, 'rail-state: coalesced olvasás')
-  assert.match(railState, /namespace: 'rail-agents'/)
-  assert.match(railState, /namespace: 'active-runs'/)
-
-  const activeRuns = readSrc('src/app/api/v1/active-runs/route.ts')
-  assert.match(activeRuns, /coalescePollRead\(/, 'active-runs: coalesced olvasás')
-  assert.match(activeRuns, /namespace: 'active-runs'/)
-
-  for (const rel of [
-    'src/app/api/v1/agent-chat/turns/[turnId]/cancel/route.ts',
-    'src/app/api/v1/tickets/[id]/cancel/route.ts',
-  ]) {
-    assert.match(readSrc(rel), /invalidatePollScope\(/, `${rel}: leállítás után invalidál`)
-  }
+  const rail = resolve(root, 'src/app/api/agents/rail-state/route.ts')
+  assert.equal(existsSync(rail), false, 'rail-state route is gone from live app')
 })

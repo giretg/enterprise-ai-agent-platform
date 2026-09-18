@@ -1,6 +1,7 @@
 import { cache } from 'react'
 import type { PlatformRole, UserRole } from '@prisma/client'
 import { repositories } from '@/repositories/postgres'
+import { writeAudit } from '@/lib/audit/types'
 import { decideAuthz, hasMinimumRole } from '@/lib/iam-policy'
 import { hasMinimumPlatformRole, tenantStatusAllowsOperations } from '@/lib/tenant-policy'
 import {
@@ -112,7 +113,16 @@ export async function requireTenantPermission(
   )
 
   if (!decision.allow) {
-
+    await writeAudit(repositories.audit, {
+      actorType: 'human',
+      actorId: ctx.user.id,
+      action: 'user.authz.deny',
+      targetType: 'permission',
+      targetId: null,
+      policyDecision: 'denied',
+      metadata: { permissionKey, reason: decision.reason },
+      tenantId: ctx.activeTenantId,
+    })
     if (decision.reason === 'UNKNOWN_PERMISSION') {
       throw new TenantAuthError('UNKNOWN_PERMISSION')
     }

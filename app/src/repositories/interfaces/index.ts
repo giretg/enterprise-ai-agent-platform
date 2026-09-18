@@ -548,11 +548,19 @@ export type AuditWalkFilter = {
   toSeq?: bigint
   tenantId?: string
   since?: Date
+  limit?: number
+}
+
+export type AuditChainLink = {
+  seq: bigint
+  hash: string | null
 }
 
 export interface AuditRepository {
   append(data: AuditAppendInput): Promise<AuditLog>
   findMany(filter?: AuditListFilter): Promise<AuditLog[]>
   findAll(filter?: AuditWalkFilter): Promise<AuditLog[]>
+  /** Seq+hash only — tenant verify uses this for predecessor linkage without other-tenant metadata. */
+  listHashChain(filter?: { fromSeq?: bigint; toSeq?: bigint }): Promise<AuditChainLink[]>
   getActionCounts(filter?: { actions?: string[]; since?: Date }): Promise<Record<string, number>>
 }

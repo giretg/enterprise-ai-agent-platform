@@ -1,12 +1,19 @@
 import type { AuditLog, Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
-import type { AuditAppendInput, AuditListFilter, AuditRepository, AuditWalkFilter } from '../interfaces'
+import type {
+  AuditAppendInput,
+  AuditChainLink,
+  AuditListFilter,
+  AuditRepository,
+  AuditWalkFilter,
+} from '../interfaces'
 import { computeAuditHashV2, GENESIS_HASH } from '@/lib/crypto/hash-chain'
 import { assertAuditMetadataSafe } from '@/lib/audit/payload-guard'
 import { assertAuditActionRegistered } from '@/lib/audit/event-catalog'
 import { deriveAuditAttribution } from '@/lib/audit/attribution'
 
 const AUDIT_CHAIN_LOCK_KEY = 424242
+const AUDIT_WALK_MAX = 100_000
 
 /** Ugyanaz az audit-hash-lánc írás, egy hívó által már megnyitott tranzakcióban. */
 export async function appendAuditInTransaction(
@@ -111,6 +118,19 @@ export class PostgresAuditRepository implements AuditRepository {
         ...(filter?.since ? { createdAt: { gte: filter.since } } : {}),
       },
       orderBy: { seq: 'asc' },
+      take: filter?.limit ?? AUDIT_WALK_MAX,
+    })
+  }
+
+  async listHashChain(filter?: { fromSeq?: bigint; toSeq?: bigint }): Promise<AuditChainLink[]> {
+    const seqFilter: Prisma.BigIntFilter = {}
+    if (filter?.fromSeq !== undefined) seqFilter.gte = filter.fromSeq
+    if (filter?.toSeq !== undefined) seqFilter.lte = filter.toSeq
+    return prisma.auditLog.findMany({
+      where: Object.keys(seqFilter).length > 0 ? { seq: seqFilter } : {},
+      orderBy: { seq: 'asc' },
+      select: { seq: true, hash: true },
+      take: AUDIT_WALK_MAX,
     })
   }
 

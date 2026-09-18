@@ -2,8 +2,7 @@
  * Kötelező eseménytípus-katalógus. Minden `AuditRepository.append()` `action`
  * mezője itt kell legyen — ismeretlen típus fail-fast.
  *
- * Phase F: a chat/ticket/dispatcher/memory/monitor/model.call források nincsenek
- * a live `app/`-ban. A lista a még létező writer-ekre van nyesve.
+ * Phase F: a lista a live `app/` writer-ekre van nyesve (nincs chat/ticket/sín).
  */
 export const CORE_MVP_AUDIT_ACTIONS = [
   'mcp.auth.ok',
@@ -24,26 +23,20 @@ export const CORE_MVP_AUDIT_ACTIONS = [
 export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   ...CORE_MVP_AUDIT_ACTIONS,
 
-  'access.denied',
   'user.authz.deny',
   'user.invite.issue',
   'user.invite.redeem',
   'user.invite.revoke',
   'user.permission.update',
-  'user.profile.update',
   'user.provision.claim',
   'user.provision.create',
   'user.reactivate',
   'user.role.assign',
   'user.role.change',
-  'user.selfregister',
   'user.suspend',
 
   'platform.role.grant',
   'platform.role.revoke',
-  'platform.oauth.google.update',
-  'platform.oauth.google_drive.update',
-  'platform.oauth.google_drive_picker.update',
 
   'tenant.create',
   'tenant.suspend',
@@ -58,30 +51,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'tenant.member.role.change',
   'tenant.member.suspend',
   'tenant.member.invite_accept',
-  'tenant.language.update',
-  'tenant.nav_visibility.update',
-  'tenant.oauth.google.update',
-  'tenant.self_update.policy.update',
 
   'agent.create',
   'agent.activated',
   'agent.version',
-  'agent.suspended',
-  'agent.resumed',
-  'agent.retired',
-  'agent.delete',
-  'agent.avatar',
-  'agent.access.granted',
-  'agent.access.denied',
-
-  'capability.update',
-  'connector.create',
-  'connector.update',
-  'connector.binding.update',
-  'connector.grant.create',
-  'connector.grant.expire',
-  'connector.grant.refresh',
-  'connector.grant.revoke',
 
   'provisioning.access_denied',
   'provisioning.connector.activate',
@@ -98,15 +71,6 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   'privacy.connector.capability.absent',
   'privacy.connector.capability.changed',
-  'privacy.catalog.sync.applied',
-  'privacy.catalog.sync.failed',
-
-  'skill.blocked_unready',
-  'skill.access_denied',
-  'skill.assigned',
-  'skill.unassigned',
-  'skill.created',
-  'skill.deleted',
 ])
 
 export class UnregisteredAuditActionError extends Error {

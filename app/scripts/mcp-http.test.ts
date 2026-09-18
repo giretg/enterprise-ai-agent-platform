@@ -375,7 +375,7 @@ async function main() {
     assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), false)
   })
 
-  await check('invalid token → 401', async () => {
+  await check('invalid token → 401, not audited (flood)', async () => {
     const { deps, audit } = runtimeDeps()
     const res = await post(
       'acme',
@@ -384,7 +384,7 @@ async function main() {
       deps,
     )
     assert.equal(res.status, 401)
-    assert.ok(audit.some((row) => row.action === 'mcp.auth.deny'))
+    assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), false)
   })
 
   await check('unknown slug after auth → 403 tenant_unavailable', async () => {
@@ -513,7 +513,7 @@ async function main() {
       role: 'operator',
       assumed: false,
     })
-    assert.ok(audit.some((row) => row.action === 'mcp.auth.ok'))
+    assert.equal(audit.filter((row) => row.action === 'mcp.auth.ok').length, 0)
     assert.ok(audit.some((row) => row.action === 'mcp.tools.call' && row.inputRef === MCP_WHOAMI_TOOL))
   })
 
