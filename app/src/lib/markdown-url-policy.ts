@@ -3,7 +3,8 @@
  *
  * A chat markdownja nem megbízható: a modell (vagy a felhasználó) tetszőleges
  * linket és képet tehet bele. Külső kép auto-betöltése beacon / exfiltráció;
- * `javascript:` link aktív kód. A policy a ChatMarkdown egyetlen belépője.
+ * `javascript:` link aktív kód. KEEP surfaces that render markdown must use this
+ * policy; the former ChatMarkdown renderer lives under `legacy/`.
  */
 
 export const unresolvedSurrogateHint =

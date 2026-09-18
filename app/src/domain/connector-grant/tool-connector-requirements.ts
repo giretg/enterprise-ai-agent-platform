@@ -6,14 +6,13 @@
  * authorizer ezt a mátrixot használja ÉS a regisztert is hívja, tehát a mátrix
  * nem élhet az authorizerben.
  *
- * A `tool-broker-authorizer.ts` re-exportálja, így a meglévő import-utak
- * változatlanok.
+ * EXTRACT from the former tool-broker matrix so connector-grant KEEP can
+ * decide which tools need a connector without importing the legacy broker.
  */
 import type { ConnectorAccessMode, ConnectorType } from '@prisma/client'
-import type { ToolName } from './tool-broker-types'
 
 export const TOOL_REQUIREMENTS: Partial<Record<
-  ToolName,
+  string,
   { connectorType: ConnectorType; accessMode: ConnectorAccessMode }
 >> = {
   kb_search: { connectorType: 'knowledge_base', accessMode: 'read' },
@@ -101,9 +100,9 @@ export const TOOL_REQUIREMENTS: Partial<Record<
 export function toolsRequiringConnector(
   connectorType: ConnectorType,
   accessMode?: ConnectorAccessMode,
-): ToolName[] {
+): string[] {
   return (Object.entries(TOOL_REQUIREMENTS) as Array<
-    [ToolName, { connectorType: ConnectorType; accessMode: ConnectorAccessMode }]
+    [string, { connectorType: ConnectorType; accessMode: ConnectorAccessMode }]
   >)
     .filter(
       ([, requirement]) =>

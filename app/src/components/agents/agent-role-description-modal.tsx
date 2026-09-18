@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChatMarkdown } from '@/components/chat/chat-markdown'
+
 
 function DocumentIcon({ className }: { className?: string }) {
   return (
@@ -81,7 +81,9 @@ function AgentRoleDescriptionModal({
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           {description.trim() ? (
-            <ChatMarkdown content={description} variant="agent" />
+            <div className="whitespace-pre-wrap text-sm leading-relaxed text-ink">
+              {description}
+            </div>
           ) : (
             <p className="text-sm italic text-ink-faint">Még nincs leírva, miben segít.</p>
           )}

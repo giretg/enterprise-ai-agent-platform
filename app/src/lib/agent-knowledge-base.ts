@@ -1,9 +1,7 @@
 import type { Agent, Connector, PrismaClient } from '@prisma/client'
+import { toolsRequiringConnector } from '@/domain/connector-grant/tool-connector-requirements'
 import { prisma } from '@/lib/db'
 import { upsertConnectorByTypeName } from '@/lib/connector-upsert'
-function toolsRequiringConnector(_toolName: string): string[] {
-  return []
-}
 
 export function knowledgeBaseConnectorName(agentId: string): string {
   return `kb:${agentId}`

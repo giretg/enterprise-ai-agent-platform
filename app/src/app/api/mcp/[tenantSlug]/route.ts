@@ -6,16 +6,17 @@
  */
 export const dynamic = 'force-dynamic'
 
-export async function GET(): Promise<Response> {
+function notImplemented(): Response {
   return Response.json(
     { error: 'TODO(phase-A): MCP transport is not implemented' },
     { status: 501 },
   )
 }
 
-export async function POST(): Promise<Response> {
-  return Response.json(
-    { error: 'TODO(phase-A): MCP transport is not implemented' },
-    { status: 501 },
-  )
+export function GET(): Response {
+  return notImplemented()
+}
+
+export function POST(): Response {
+  return notImplemented()
 }

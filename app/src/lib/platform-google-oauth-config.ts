@@ -117,16 +117,16 @@ export async function loadGoogleOAuthConfig(opts?: {
   includeEnv?: boolean
 }): Promise<GoogleOAuthResolved | null> {
   const service = opts?.service ?? 'gmail'
-  const { configPrisma, prisma } = await import('@/lib/db')
+  const { prisma } = await import('@/lib/db')
   const serviceKey = GOOGLE_OAUTH_SERVICE_KEYS[service]
   const platformValue = opts?.getPlatformValue
     ? await opts.getPlatformValue()
-    : ((await configPrisma.platformSetting.findUnique({ where: { key: serviceKey } }))?.value ?? null)
+    : ((await prisma.platformSetting.findUnique({ where: { key: serviceKey } }))?.value ?? null)
   const legacyPlatformValue =
     service === 'gmail' && !parseGoogleOAuthFields(platformValue)
       ? opts?.getLegacyPlatformValue
         ? await opts.getLegacyPlatformValue()
-        : ((await configPrisma.platformSetting.findUnique({ where: { key: GOOGLE_OAUTH_PLATFORM_KEY } }))
+        : ((await prisma.platformSetting.findUnique({ where: { key: GOOGLE_OAUTH_PLATFORM_KEY } }))
             ?.value ?? null)
       : null
   const envConfig = opts?.includeEnv === false ? null : readGoogleOAuthConfigFromEnv(service)
@@ -151,10 +151,10 @@ export async function loadGoogleDrivePickerConfig(opts?: {
   getPlatformValue?: () => Promise<unknown | null>
   includeEnv?: boolean
 }): Promise<{ config: GoogleDrivePickerConfig; source: GoogleOAuthSource } | null> {
-  const { configPrisma } = await import('@/lib/db')
+  const { prisma } = await import('@/lib/db')
   const platformValue = opts?.getPlatformValue
     ? await opts.getPlatformValue()
-    : ((await configPrisma.platformSetting.findUnique({ where: { key: 'oauth.google.drive.picker' } }))
+    : ((await prisma.platformSetting.findUnique({ where: { key: 'oauth.google.drive.picker' } }))
         ?.value ?? null)
   const fromPlatform = parseGoogleDrivePickerFields(platformValue)
   if (fromPlatform) return { config: fromPlatform, source: 'platform' }

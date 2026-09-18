@@ -31,10 +31,12 @@ rewiring todo list.
 
 ## Import boundary
 
-CI fails if the target layers import the old `@/domain` services barrel or the
-legacy runtime graph (`AgentChatRuntime`, `ModelGateway`, dispatcher,
-conversation, harness). See `app/src/domain/import-boundary-guard.ts` and the
-`no-restricted-imports` ESLint rule.
+CI fails if the target layers import the old `@/domain` services barrel
+(exact `@/domain` / `@/domain/index`, not KEEP subpaths such as
+`@/domain/iam/...`) or the legacy runtime graph (`AgentChatRuntime`,
+`ModelGateway`, dispatcher, conversation, harness). See
+`app/src/domain/import-boundary-guard.ts` and the `no-restricted-imports`
+ESLint rule.
 
 ## Isolation decisions
 

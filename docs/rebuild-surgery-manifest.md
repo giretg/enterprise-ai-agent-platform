@@ -580,7 +580,9 @@ app/src/domain/tool-broker/consequence-gate-policy.ts
 app/src/domain/tool-broker/tool-output-privacy.ts
 ```
 
-A `tool-broker/` fa **nem maradhat** az `app/` alatt: 20+ importja mutat a cut setbe (web-search, code-sandbox, ticket, memory, sandbox-versioning). Költözik `legacy/domain/tool-broker/`-ba mint REFERENCE/EXTRACT forrás; az EXTRACT másolatok (fenti lista) a cut **előtt** készülnek, és nem importálnak a cut setből.
+A `tool-broker/` fa **nem maradhat** az `app/` alatt: 20+ importja mutat a cut setbe (web-search, code-sandbox, ticket, memory, sandbox-versioning). Költözik `legacy/domain/tool-broker/`-ba mint REFERENCE/EXTRACT forrás.
+
+Phase 0 KEEP no longer imports the later-phase EXTRACT list (prompt-assembler, authorizer, registry, Drive handler, consequence-gate, output-privacy). Those stay in `legacy/domain/` until Phase B/C/E. The KEEP slivers that still had callers were extracted to `domain/connector-grant/tool-connector-requirements.ts` and Docs/Slides op types on `google-workspace-api-client.ts`. Self-updating pin logic is DEFER: KEEP uses `domain/connector/runtime-config.ts` (fail-closed).
 
 ---
 

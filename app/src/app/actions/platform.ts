@@ -8,7 +8,7 @@ import { services } from '@/domain/gateway-services'
 import { repositories } from '@/repositories/postgres'
 import { prisma } from '@/lib/db'
 import { isClerkEnabled } from '@/lib/clerk-config'
-import { fail, ok, type ActionResult } from '@/lib/result'
+import { fail, ok } from '@/lib/result'
 import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
 import { DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import {
@@ -35,8 +35,6 @@ import {
   updateBehaviorProfileSchema,
   updateRolePermissionSchema,
 } from '@/lib/validators/actions'
-
-export type { ActionResult }
 
 export async function getMe() {
   try {

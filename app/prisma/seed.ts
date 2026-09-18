@@ -1,6 +1,7 @@
 /**
- * Phase 0 seed — User/Tenant/membership only.
- * Drive grant and Agent Definition seed come in later phases.
+ * Phase 0 seed is a no-op so `prisma db seed` still compiles without the
+ * legacy runtime graph. The previous seed lives at `legacy/prisma/seed.ts`.
+ * Phase B (#539) rewrites a minimal User/Tenant/Agent/Drive-grant seed.
  */
 import { PrismaClient } from '@prisma/client'
 

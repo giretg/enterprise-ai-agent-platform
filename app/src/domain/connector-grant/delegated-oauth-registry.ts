@@ -23,7 +23,7 @@ import {
   normalizeDriveScope,
 } from './google-drive-scopes'
 import type { DriveTool } from './google-drive-scopes'
-import { toolsRequiringConnector } from '@/domain/tool-broker/tool-connector-requirements'
+import { toolsRequiringConnector } from '@/domain/connector-grant/tool-connector-requirements'
 
 /** Provider-független ok, ha a grant megvan, de a scope-ja kevés. */
 export const GENERIC_SCOPE_DENIED_REASON = 'connector_scope_not_granted'

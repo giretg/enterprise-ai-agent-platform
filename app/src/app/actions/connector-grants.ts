@@ -32,11 +32,7 @@ import {
   driveScopeProfile,
   driveScopeProfileRequiresAdmin,
 } from '@/domain/connector-grant/google-drive-scopes'
-
-function toolsRequiringConnector(_type: string): string[] {
-  if (_type === 'google_drive') return ['google_drive_search', 'google_drive_read_file']
-  return []
-}
+import { toolsRequiringConnector } from '@/domain/connector-grant/tool-connector-requirements'
 
 async function loadAgentDelegatedConnectors(
   _agentId: string,

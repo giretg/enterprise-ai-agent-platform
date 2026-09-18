@@ -7,7 +7,7 @@ import type {
   ConnectorType,
 } from '@prisma/client'
 import { Prisma } from '@prisma/client'
-import { isConnectorAssignableToAgent } from '@/domain/connector-self-update/pinned-runtime-config'
+import { isConnectorAssignableToAgent } from '@/domain/connector/runtime-config'
 import { prisma } from '@/lib/db'
 import { withConnectorPrivacySlot } from '@/lib/privacy-slot'
 import type {
@@ -376,10 +376,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
     })
     return rows
       .filter((row) =>
-        isConnectorAssignableToAgent(
-          row.connectorMode,
-          row.activeSpecVersion?.capabilitySet ?? null,
-        ),
+        isConnectorAssignableToAgent(row.connectorMode),
       )
       .map((row) => ({
         id: row.id,

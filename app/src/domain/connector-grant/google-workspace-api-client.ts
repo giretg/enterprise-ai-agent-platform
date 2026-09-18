@@ -2,7 +2,8 @@
  * Google Docs / Sheets / Slides REST adapter — issue #378 §4.2 native edit toolok.
  * Stub mód: GOOGLE_WORKSPACE_API_STUB=true vagy GOOGLE_DRIVE_API_STUB=true.
  */
-import type { DocsEditOperation, SlidesEditOperation } from '@/domain/tool-broker/tool-broker-types'
+export type DocsEditOperation = Record<string, unknown>
+export type SlidesEditOperation = Record<string, unknown>
 
 const DOCS_BASE = 'https://docs.googleapis.com/v1'
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4'

@@ -25,6 +25,7 @@ const FORBIDDEN = [
   /from ['"]@\/domain\/dispatcher/,
   /from ['"]@\/domain\/conversation/,
   /from ['"]@\/domain\/channel/,
+  /from ['"]@\/harness\//,
   /AgentChatRuntime/,
   /ChatTurnLauncher/,
   /ModelGateway/,

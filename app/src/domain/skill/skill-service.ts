@@ -10,23 +10,10 @@ import type {
 import type {
   AuditRepository,
   AgentSkillMigration,
-  ConversationRepository,
   SkillRepository,
   SkillWithVersions,
   ToolBrokerRepository,
 } from '@/repositories/interfaces'
-import {
-  conversationMessagesToTurns,
-  deriveRequiresFromToolCalls,
-} from '@/lib/skill/skill-distill-transcript'
-import {
-  collectDistillAttachmentCandidates,
-  formatDistillAttachmentIndex,
-  selectDistillAttachments,
-} from '@/lib/skill/skill-distill-attachments'
-import { isInternalWorkspaceFile } from '@/lib/workspace-file-visibility'
-import { SkillDistillerAgent, type SkillDistillDraft } from '@/domain/skill/skill-distiller-agent'
-import { SkillReviewAgent, type SkillAdvisoryReview } from '@/domain/skill/skill-review-agent'
 import { signSkillVersion } from '@/lib/crypto/hash-chain'
 import {
   normalizeSkillDisplayName,
@@ -66,7 +53,6 @@ import {
 import { readZipEntries, ZipReadError } from '@/lib/skill/zip-reader'
 import {
   buildSkillPackage,
-  classifyPackageFile,
   SkillPackageError,
   type SkillPackageResult,
   type SkillPackageSkippedFile,
@@ -90,7 +76,6 @@ import {
   flattenToolCapabilityGroups,
   PLAYBOOK_CAPABILITY_GROUPS,
 } from '@/lib/tool-capability-catalog'
-import type { TenantLanguage } from '@/lib/tenant-language'
 
 /** A platform által ismert (connectorral kiépíthető) tool-nevek — readiness bázis. */
 const KNOWN_TOOL_NAMES = new Set<string>(flattenToolCapabilityGroups(PLAYBOOK_CAPABILITY_GROUPS))
@@ -144,27 +129,7 @@ export interface SkillAgentLookup {
  * Skill-katalógus domain-szolgáltatás (skill-catalog-spec.md). A meglévő
  * write-gate / audit / capability rétegek FÖLÉ épül. Minden cross-tenant felület
  * fail-closed (§D8): idegen tenant skillje sosem olvasható/írható.
- */
-export type SkillDistillResult =
-  | {
-      ok: true
-      skillId: string
-      versionId: string
-      riskTier: SkillRiskTier
-      draft: SkillDistillDraft
-      requires: SkillRequirement[]
-      created: boolean
-      attachments: SkillAttachment[]
-    }
-  | { ok: false; stage: 'access' | 'empty' | 'distill' | 'validation'; detail: string }
-
-/** Beszélgetés-workspace olvasás a desztillált skill Level-2 mellékleteihez. */
-export interface DistillWorkspaceStorage {
-  listUserFacing(tenantId: string, conversationId: string): Promise<string[]>
-  read(tenantId: string, conversationId: string, path: string): Promise<Buffer | null>
-}
-
-/**
+ *
  * Csomag-import eredmény. A hibás ágak is BESZÉDESEK: az admin abból, amit
  * visszakap, tudja, mi a következő lépés (melyik skillt válassza, mi maradt ki,
  * miért bukott a validátor) — nem egy általános „import sikertelen” üzenetet lát.
@@ -194,8 +159,6 @@ export class SkillService {
     private audit: AuditRepository,
     private toolBroker: ToolBrokerRepository,
     private agents: SkillAgentLookup,
-    private conversations?: ConversationRepository,
-    private workspace?: DistillWorkspaceStorage,
   ) {}
 
   /**
@@ -844,22 +807,6 @@ export class SkillService {
     return updated
   }
 
-  /**
-   * D14 — skill desztillálása beszélgetésből. Transzkript + determinisztikus
-   * `requires` (tényleges tool-hívások) → desztilláló agent (propose-not-apply) →
-   * hardcoded validátor → `proposed` SkillVersion. Alap-scope: tenant-lokális draft,
-   * sosem auto-global. A beszélgetés nem megbízható input — provenience-kedvezmény nélkül.
-   */
-  async distillFromConversation(_input: {
-    conversationId: string
-    agentId: string
-    actor: ActorContext
-    distiller: SkillDistillerAgent
-    [key: string]: unknown
-  }): Promise<SkillDistillResult> {
-    throw new Error('Skill distillation moved to the harness (Phase 0)')
-  }
-
   async proposeVersion(input: {
     skillId: string
     content: SkillContent
@@ -902,19 +849,6 @@ export class SkillService {
     })
 
     return { versionId: version.id, version: version.version }
-  }
-
-  /**
-   * Tanácsadó LLM-review egy skill-verzióhoz (WP-3 §D5). A hardcoded validátor
-   * eredménye mindig visszajön; az LLM kimenet CSAK tanácsadó — sosem kapu.
-   */
-  async advisoryReviewVersion(_input: {
-    versionId: string
-    actor: ActorContext
-    reviewer: SkillReviewAgent
-    [key: string]: unknown
-  }): Promise<{ ok: true; validation: unknown; review: SkillAdvisoryReview } | { ok: false; stage: string; detail: string }> {
-    throw new Error('Skill review moved to the harness (Phase 0)')
   }
 
   async approveVersion(input: {

@@ -6,32 +6,37 @@
  * be imported from this module or from the MCP/agent-definition/enterprise-tools
  * layers.
  */
-import { prisma } from '@/lib/db'
+import type { Agent } from '@prisma/client'
 import { repositories } from '@/repositories/postgres'
-import { IamService } from '@/domain/iam/iam-service'
-import { TenantService } from '@/domain/tenant/tenant-service'
+import {
+  AgentAccessService,
+  type AgentGraphNode,
+} from '@/domain/agent-access/agent-access-service'
 import { AuditChainService } from '@/domain/audit/audit-chain-service'
 import { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
-import { SkillService } from '@/domain/skill/skill-service'
-import { AgentAccessService } from '@/domain/agent-access/agent-access-service'
-import { ProvisioningService } from '@/domain/provisioning/provisioning-service'
+import { IamService } from '@/domain/iam/iam-service'
 import { PlatformSettingsService } from '@/domain/platform-settings/platform-settings-service'
+import { ProvisioningService } from '@/domain/provisioning/provisioning-service'
+import { SkillService } from '@/domain/skill/skill-service'
+import { TenantService } from '@/domain/tenant/tenant-service'
 
-const AGENT_GRAPH_NODE_SELECT = {
-  id: true,
-  name: true,
-  avatarUrl: true,
-  personaNickname: true,
-  personaTrait: true,
-  role: true,
-  systemRole: true,
-  status: true,
-  tenantId: true,
-  hiddenFromOperators: true,
-  inboundRestricted: true,
-  outboundRestricted: true,
-  taskOnly: true,
-} as const
+function toAgentGraphNode(agent: Agent): AgentGraphNode {
+  return {
+    id: agent.id,
+    name: agent.name,
+    avatarUrl: agent.avatarUrl,
+    personaNickname: agent.personaNickname,
+    personaTrait: agent.personaTrait,
+    role: agent.role,
+    systemRole: agent.systemRole,
+    status: agent.status,
+    tenantId: agent.tenantId,
+    hiddenFromOperators: agent.hiddenFromOperators,
+    inboundRestricted: agent.inboundRestricted,
+    outboundRestricted: agent.outboundRestricted,
+    taskOnly: agent.taskOnly,
+  }
+}
 
 const connectorGrantService = new ConnectorGrantService(
   repositories.connectorGrants,
@@ -76,18 +81,13 @@ const auditChainService = new AuditChainService(repositories.audit)
 const agentAccessService = new AgentAccessService({
   agents: {
     findById: async (agentId) => {
-      const agent = await prisma.agent.findUnique({
-        where: { id: agentId },
-        select: AGENT_GRAPH_NODE_SELECT,
-      })
-      return agent ?? null
+      const agent = await repositories.agents.findById(agentId)
+      return agent ? toAgentGraphNode(agent) : null
     },
-    listForTenant: async (tenantId) =>
-      prisma.agent.findMany({
-        where: { tenantId },
-        select: AGENT_GRAPH_NODE_SELECT,
-        orderBy: { name: 'asc' },
-      }),
+    listForTenant: async (tenantId) => {
+      const agents = await repositories.agents.findMany({ tenantId, unbounded: true })
+      return agents.map(toAgentGraphNode).sort((a, b) => a.name.localeCompare(b.name))
+    },
     setRestrictions: (input) => repositories.agents.updateAccessRestrictions(input),
   },
   grants: repositories.agentAccessGrants,

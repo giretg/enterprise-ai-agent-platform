@@ -40,6 +40,7 @@ import { validateGoogleDriveDraftConfig } from './google-drive-draft-validator'
 import { ProvisioningError } from './errors'
 import { isResolvableSecretAlias } from './secret-alias'
 import { isConnectorOwnedSecretRef } from './connector-secret-alias-policy'
+import { isConnectorAssignableToAgent } from '@/domain/connector/runtime-config'
 
 export type ProvisioningActor =
   | {
@@ -58,14 +59,6 @@ export type ProvisioningActor =
     }
 
 export type Criticality = 'L1' | 'L2' | 'L3'
-
-/** Self-updating connectors are DEFER; only canonical/fixed connectors assign in Phase 0. */
-function isConnectorAssignableToAgent(
-  connectorMode: 'fixed' | 'self_updating',
-  _activeCapabilitySet: unknown,
-): boolean {
-  return connectorMode === 'fixed'
-}
 
 /** A draft connectort sandboxban kipróbáló adapter (§8.4). F2-P-D köti be a valódi MCP-proxyt. */
 export interface SandboxConnectionTester {
@@ -751,7 +744,7 @@ export class ProvisioningService {
         'only an active connector can be assigned to an agent',
       )
     }
-    if (!isConnectorAssignableToAgent(connector.connectorMode, connector.activeCapabilitySet)) {
+    if (!isConnectorAssignableToAgent(connector.connectorMode)) {
       throw new ProvisioningError(
         'CONNECTOR_NOT_ASSIGNABLE',
         'Az OpenAPI-kapcsolatnak előbb legyen jóváhagyott, aktív verziója (Frissítés keresése → jóváhagyás).',

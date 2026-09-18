@@ -37,11 +37,21 @@ const eslintConfig = defineConfig([
       "no-restricted-imports": [
         "error",
         {
-          patterns: [
+          paths: [
             {
-              group: ["@/domain", "@/domain/index", "@/domain/index.ts"],
+              name: "@/domain",
               message: "Target graph must not import the legacy @/domain services barrel.",
             },
+            {
+              name: "@/domain/index",
+              message: "Target graph must not import the legacy @/domain services barrel.",
+            },
+            {
+              name: "@/domain/index.ts",
+              message: "Target graph must not import the legacy @/domain services barrel.",
+            },
+          ],
+          patterns: [
             {
               group: [
                 "@/domain/agent/*",

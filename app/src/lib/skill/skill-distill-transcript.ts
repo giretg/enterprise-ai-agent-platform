@@ -1,5 +1,10 @@
 import type { SkillRequirement } from '@/lib/skill/skill-content'
-import type { DistillTranscriptTurn } from '@/domain/skill/skill-distiller-agent'
+
+export type DistillTranscriptTurn = {
+  role: 'user' | 'assistant' | 'tool' | 'agent'
+  text: string
+  toolName?: string
+}
 
 /** A futásidejű `load_skill` meta-tool — nem kerül a desztillált skill `requires`-ébe. */
 export const DISTILL_EXCLUDED_TOOLS = new Set(['load_skill'])
