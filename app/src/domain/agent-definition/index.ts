@@ -196,3 +196,17 @@ export function canReadPublishedAgent(input: {
   if (isPrivilegedAgentReader(input.role)) return true
   return input.grant?.accessLevel === 'view' || input.grant?.accessLevel === 'operate'
 }
+
+/**
+ * Tool invoke: admin/approver (including assumed superadmin) bypass;
+ * everyone else needs ResourceGrant `operate`. `view` is definition-read only.
+ */
+export function canOperateAgent(input: {
+  role: string
+  grant: { accessLevel: string } | null
+  assumed?: boolean
+}): boolean {
+  if (input.assumed) return true
+  if (isPrivilegedAgentReader(input.role)) return true
+  return input.grant?.accessLevel === 'operate'
+}

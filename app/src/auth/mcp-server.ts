@@ -13,6 +13,14 @@ import {
   type AgentDefinition,
 } from '@/domain/agent-definition'
 import {
+  GOOGLE_DRIVE_READ_FILE_TOOL,
+  GOOGLE_DRIVE_SEARCH_TOOL,
+  googleDriveReadFileInputSchema,
+  googleDriveSearchInputSchema,
+  isEnterpriseDriveTool,
+  type EnterpriseToolMcpResult,
+} from '@/domain/enterprise-tools'
+import {
   auditMcpAuthDenied,
   auditMcpToolCall,
   auditMcpToolDenied,
@@ -56,6 +64,11 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     role: McpPrincipal['role']
     agentId: string
   }) => Promise<boolean>
+  invokeEnterpriseTool: (input: {
+    principal: McpPrincipal
+    toolName: string
+    args: Record<string, unknown>
+  }) => Promise<EnterpriseToolMcpResult>
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
@@ -143,6 +156,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
     },
     loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),
     canViewAgent,
+    invokeEnterpriseTool: (input) => services.enterpriseTools.invoke(input),
   }
 }
 
@@ -269,6 +283,26 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
         },
         async (args) => getDefinitionToolResult(principal, args as Record<string, unknown>, deps),
       )
+      server.registerTool(
+        GOOGLE_DRIVE_SEARCH_TOOL,
+        {
+          title: 'Search Google Drive',
+          description:
+            'Search files visible to the delegated Google account under a published agent definition.',
+          inputSchema: googleDriveSearchInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_SEARCH_TOOL, args, deps),
+      )
+      server.registerTool(
+        GOOGLE_DRIVE_READ_FILE_TOOL,
+        {
+          title: 'Read Google Drive file',
+          description:
+            'Read or export a Drive file under a published agent definition. Credentials stay on the server.',
+          inputSchema: googleDriveReadFileInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_READ_FILE_TOOL, args, deps),
+      )
 
       server.server.setRequestHandler('tools/call', async (request) => {
         const toolName = request.params.name
@@ -288,13 +322,26 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
         if (toolName === MCP_AGENT_GET_DEFINITION_TOOL) {
           return getDefinitionToolResult(principal, args, deps)
         }
+        if (isEnterpriseDriveTool(toolName)) {
+          return enterpriseToolResult(principal, toolName, args, deps)
+        }
         return whoamiToolResult(principal, deps)
       })
     },
     {
-      serverInfo: { name: 'enterprise-mcp', version: 'phase-b' },
+      serverInfo: { name: 'enterprise-mcp', version: 'phase-c' },
     },
   )
+}
+
+async function enterpriseToolResult(
+  principal: McpPrincipal,
+  toolName: string,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+) {
+  await auditMcpToolCall(deps, principal, toolName)
+  return deps.invokeEnterpriseTool({ principal, toolName, args })
 }
 
 function toAuthInfo(token: string, verified: VerifiedOAuthToken): AuthInfo {
