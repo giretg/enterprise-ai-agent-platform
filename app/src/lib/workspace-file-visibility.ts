@@ -4,6 +4,11 @@ export type WorkspaceFileAudience = 'user' | 'internal'
 export const WORKSPACE_FILE_AUDIENCE_MANIFEST = '.workspace-meta/file-audience.json'
 export const WORKSPACE_FILE_AUDIENCE_PREFIX = '.workspace-meta/file-audience/'
 
+/** Rejtett közönség-meta: csak `setFileAudience` írhatja, agent file tool nem. */
+export function isWorkspaceMetaPath(path: string): boolean {
+  return path === WORKSPACE_FILE_AUDIENCE_MANIFEST || path.startsWith('.workspace-meta/')
+}
+
 export function isHtmlWorkspaceFile(path: string): boolean {
   return /\.html?$/i.test(path)
 }
@@ -86,8 +91,7 @@ export function linkWorkspaceFileReferences(
  */
 export function isInternalWorkspaceFile(path: string): boolean {
   return (
-    path === WORKSPACE_FILE_AUDIENCE_MANIFEST ||
-    path.startsWith('.workspace-meta/') ||
+    isWorkspaceMetaPath(path) ||
     path.startsWith('.tool-results/') ||
     path.startsWith('tool-outputs/') ||
     /(?:^|\/)[^/]+_(?:extract|raw|response)\.json$/i.test(path)
@@ -99,7 +103,7 @@ export function isWorkspaceFileUserFacing(
   path: string,
   audience?: WorkspaceFileAudience,
 ): boolean {
-  if (path === WORKSPACE_FILE_AUDIENCE_MANIFEST || path.startsWith('.workspace-meta/')) return false
+  if (isWorkspaceMetaPath(path)) return false
   if (audience) return audience === 'user'
   return !isInternalWorkspaceFile(path)
 }

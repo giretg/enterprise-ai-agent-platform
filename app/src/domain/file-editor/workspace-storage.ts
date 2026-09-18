@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import {
   isWorkspaceFileUserFacing,
+  isWorkspaceMetaPath,
   type WorkspaceFileAudience,
   WORKSPACE_FILE_AUDIENCE_MANIFEST,
   WORKSPACE_FILE_AUDIENCE_PREFIX,
@@ -42,6 +43,23 @@ export class FileEditorError extends Error {
   ) {
     super(message)
     this.name = 'FileEditorError'
+  }
+}
+
+/**
+ * A `.workspace-meta/**` markerfák csak a `setFileAudience` / workspace-takarítás
+ * útján módosíthatók. Közvetlen `file_write`/`file_delete` különben audience-t
+ * hamisíthatna (belső tool-kimenet → felhasználói letöltés).
+ */
+function assertWorkspaceMetaMutationAllowed(
+  filePath: string,
+  allowWorkspaceMeta: boolean | undefined,
+): void {
+  if (isWorkspaceMetaPath(filePath) && !allowWorkspaceMeta) {
+    throw new FileEditorError(
+      'FORBIDDEN_PATH',
+      `Workspace metadata paths are not directly mutable: ${filePath}`,
+    )
   }
 }
 
@@ -443,9 +461,10 @@ export class WorkspaceStorage {
     ticketId: string,
     rawFilePath: string,
     data: Buffer,
-    opts: { quota?: WorkspaceQuotaSession } = {},
+    opts: { quota?: WorkspaceQuotaSession; allowWorkspaceMeta?: boolean } = {},
   ): Promise<void> {
     const filePath = safeObjectPath(rawFilePath)
+    assertWorkspaceMetaMutationAllowed(filePath, opts.allowWorkspaceMeta)
     if (data.length > MAX_FILE_SIZE_BYTES) {
       throw new FileEditorError('FILE_TOO_LARGE', 'File exceeds 50 MB write limit')
     }
@@ -483,8 +502,14 @@ export class WorkspaceStorage {
     if (!res.ok) throw new FileEditorError('GCS_WRITE_FAILED', `GCS write failed: HTTP ${res.status}`)
   }
 
-  async delete(tenantId: string, ticketId: string, rawFilePath: string): Promise<void> {
+  async delete(
+    tenantId: string,
+    ticketId: string,
+    rawFilePath: string,
+    opts: { allowWorkspaceMeta?: boolean } = {},
+  ): Promise<void> {
     const filePath = safeObjectPath(rawFilePath)
+    assertWorkspaceMetaMutationAllowed(filePath, opts.allowWorkspaceMeta)
     if (this.usesMemoryStub()) {
       stubStore.delete(stubKey(tenantId, ticketId, filePath))
       return
@@ -518,7 +543,7 @@ export class WorkspaceStorage {
       return paths.length
     }
     for (const filePath of paths) {
-      await this.delete(tenantId, ticketId, filePath)
+      await this.delete(tenantId, ticketId, filePath, { allowWorkspaceMeta: true })
     }
     return paths.length
   }
@@ -645,6 +670,7 @@ export class WorkspaceStorage {
       ticketId,
       `${WORKSPACE_FILE_AUDIENCE_PREFIX}${Buffer.from(filePath, 'utf8').toString('base64url')}`,
       Buffer.from(audience, 'utf8'),
+      { allowWorkspaceMeta: true },
     )
   }
 
