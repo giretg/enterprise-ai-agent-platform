@@ -35,7 +35,11 @@ export type PrivacyCatalogFetchFailReason =
   | 'http_error'
   | 'invalid_catalog'
 
-export type PrivacyCatalogSyncFailReason = PrivacyCatalogFetchFailReason | 'invalid_config'
+export type PrivacyCatalogSyncFailReason =
+  | PrivacyCatalogFetchFailReason
+  | 'invalid_config'
+  /** A forrás régebbi `catalog_version`-t adott, mint ami már tárolva van. */
+  | 'stale_catalog'
 
 export type PrivacyCatalogFetchResult =
   | { ok: true; catalog: PrivacyCatalogV2 }
@@ -202,6 +206,11 @@ export function describePrivacyCatalogChanges(before: unknown, after: unknown): 
  * felülírja; a hiányzókat érintetlenül hagyja (a `fields` kötelező, tehát a
  * mezőjelölés mindig a forrásé). A `catalog_version`-t is átvesszük: erről
  * derül ki később, hogy a tárolt jelölés melyik publikációhoz tartozik.
+ *
+ * Monotonitás (forrás-szerződés §6.1): a `catalog_version` csak nőhet. Ha a
+ * forrás (cache, partial rollout, régi pod) kisebb verziót ad, mint ami már
+ * tárolva van, fail-closed — különben egy elavult `pass` felülírhatna egy újabb
+ * `tokenize`/`block` jelölést, és nyers ügyféladat menne a modellhez.
  */
 export function applyPrivacyCatalogToConfig(
   rawConfig: unknown,
@@ -212,6 +221,21 @@ export function applyPrivacyCatalogToConfig(
     rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig)
       ? { ...(rawConfig as Record<string, unknown>) }
       : {}
+
+  const storedVersion =
+    typeof base.catalog_version === 'number' && Number.isInteger(base.catalog_version)
+      ? base.catalog_version
+      : null
+  if (storedVersion != null && catalog.catalog_version < storedVersion) {
+    return {
+      status: 'failed',
+      reason: 'stale_catalog',
+      detail:
+        `a forrás katalógusverziója (${catalog.catalog_version}) régebbi, mint a tárolt ` +
+        `(${storedVersion}) — elavult jelölés nem írhatja felül a frissebbet`,
+    }
+  }
+
   const next: Record<string, unknown> = {
     ...base,
     fields: patch.fields,

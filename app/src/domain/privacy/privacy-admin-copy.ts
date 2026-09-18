@@ -290,6 +290,8 @@ const SYNC_FAIL_REASONS: Record<string, string> = {
   http_error: 'A forrásrendszer nem adta ki a katalógust.',
   invalid_catalog: 'A forrás katalógusa nem felel meg a szerződésnek.',
   invalid_config: 'A forrás katalógusa a platform adatvédelmi szabályába ütközik.',
+  stale_catalog:
+    'A forrás régebbi katalógusverziót adott, mint ami már a platformon van — a frissebb jelölés megmarad.',
 }
 
 export function privacyCatalogSyncMessage(input: PrivacyCatalogSyncMessageInput): {

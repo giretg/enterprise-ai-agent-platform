@@ -228,6 +228,7 @@ async function main() {
       'http_error',
       'invalid_catalog',
       'invalid_config',
+      'stale_catalog',
     ]
     for (const reason of reasons) {
       const message = privacyCatalogSyncMessage({ status: 'failed', reason, detail: 'részlet' })
