@@ -31,7 +31,10 @@ const eslintConfig = defineConfig([
       "src/domain/enterprise-tools/**",
       "src/domain/gateway-operation/**",
       "src/auth/mcp-principal.ts",
+      "src/auth/mcp-server.ts",
+      "src/auth/mcp-oauth-metadata.ts",
       "src/app/api/mcp/**",
+      "src/app/.well-known/**",
     ],
     rules: {
       "no-restricted-imports": [

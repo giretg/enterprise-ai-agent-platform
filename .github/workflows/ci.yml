@@ -64,6 +64,8 @@ jobs:
           npm run test:control-plane-nav
           npm run test:health-endpoints
           npm run test:public-routes
+          npm run test:mcp-principal
+          npm run test:mcp-http
           npm run test:crawler-block
           npm run test:egress-guard
           npm run test:ttl-secret-cache

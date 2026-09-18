@@ -49,4 +49,13 @@ export const PUBLIC_ROUTE_PATTERNS = [
   // Googlebot „mindent szabad crawlolni"-ként értelmez (l. `src/app/robots.ts`).
   '/robots.txt',
   '/sitemap.xml',
+  // MCP resource server (Clerk OAuth bearer in the handler, RFC 9728 discovery).
+  // If these stay protected, Codex/Claude Code get an HTML login redirect instead
+  // of 401 + WWW-Authenticate — the same failure class as the Telegram webhook.
+  '/api/mcp',
+  '/api/mcp/(.*)',
+  '/.well-known/oauth-protected-resource',
+  '/.well-known/oauth-protected-resource/(.*)',
+  '/.well-known/oauth-authorization-server',
+  '/.well-known/oauth-authorization-server/(.*)',
 ] as const

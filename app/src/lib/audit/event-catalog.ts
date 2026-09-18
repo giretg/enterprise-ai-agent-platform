@@ -13,6 +13,10 @@
 export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // IAM / RBAC (access.*, user.*)
   'access.denied',
+  'mcp.auth.ok',
+  'mcp.auth.deny',
+  'mcp.tools.call',
+  'mcp.tools.call.deny',
   'platform.role.grant',
   'platform.role.revoke',
   'tenant.create',

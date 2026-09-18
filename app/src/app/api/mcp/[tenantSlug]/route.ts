@@ -1,22 +1,20 @@
-/**
- * Tenant-scoped MCP resource URL.
- *
- * TODO(phase-A): official MCP SDK v2 `createMcpHandler`, stateless.
- * Phase 0 only establishes the route boundary.
- */
+import { handleMcpRequest } from '@/auth/mcp-server'
+
 export const dynamic = 'force-dynamic'
 
-function notImplemented(): Response {
-  return Response.json(
-    { error: 'TODO(phase-A): MCP transport is not implemented' },
-    { status: 501 },
-  )
+type RouteContext = { params: Promise<{ tenantSlug: string }> }
+
+export async function GET(request: Request, context: RouteContext): Promise<Response> {
+  const { tenantSlug } = await context.params
+  return handleMcpRequest(request, tenantSlug)
 }
 
-export function GET(): Response {
-  return notImplemented()
+export async function POST(request: Request, context: RouteContext): Promise<Response> {
+  const { tenantSlug } = await context.params
+  return handleMcpRequest(request, tenantSlug)
 }
 
-export function POST(): Response {
-  return notImplemented()
+export async function DELETE(request: Request, context: RouteContext): Promise<Response> {
+  const { tenantSlug } = await context.params
+  return handleMcpRequest(request, tenantSlug)
 }

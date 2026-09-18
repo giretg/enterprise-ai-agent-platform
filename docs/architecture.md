@@ -1,8 +1,15 @@
-# Architecture note — Phase 0 compilation boundary
+# Architecture note — Phase 0 compilation boundary + Phase A MCP gate
 
 This repository is being rebuilt as an Enterprise MCP control plane. Phase 0
 establishes a **clean compilation boundary**. It is not a compatibility layer
 and not a data-model migration.
+
+**Phase A is live:** Codex and Claude Code authenticate to the same tenant-scoped
+Streamable HTTP resource at `/api/mcp/{tenantSlug}`. Clerk is the OAuth
+authorization server; this app is only a resource server. The canonical OAuth
+resource identifier (token audience, if any) is `{origin}/api/mcp` — no tenant
+slug. Tenant isolation is the URL slug plus membership or superadmin assume.
+The probe tool is `platform.whoami`. See `docs/mcp-compatibility-runbook.md`.
 
 ## Entry points
 
@@ -42,10 +49,10 @@ ESLint rule.
 
 - The platform does not call a model for agent execution and does not store
   Conversation / AgentTurn state for MCP.
-- There is no server-side selected-tenant / selected-agent session. Tenant will
-  be `/api/mcp/{tenantSlug}` plus membership.
-- `tools/list` is not a security boundary; every `tools/call` goes through
-  `authorizeToolCall` (Phase C).
+- There is no server-side selected-tenant / selected-agent session. Tenant is
+  `/api/mcp/{tenantSlug}` plus membership or superadmin assume.
+- `tools/list` is not a security boundary. Phase A `tools/call` uses a one-tool
+  allow-list (`platform.whoami`); `authorizeToolCall` is Phase C.
 - Credentials never leave the server.
 - Prisma schema is still the legacy schema in Phase 0 so the control plane can
   boot. Target schema rewrite is Phase B (`#539`).
