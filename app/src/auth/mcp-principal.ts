@@ -129,14 +129,20 @@ export function tokenClaimsForeignOrigin(
   return false
 }
 
-/** Denials persist to audit_log except unauthenticated 401 (flood). */
+/** Missing/invalid Bearer is attacker-controlled volume — console only, no hash-chain lock. */
+const UNAUDITED_MCP_AUTH_CODES: ReadonlySet<McpPrincipalFailureCode> = new Set([
+  'unauthenticated',
+  'invalid_token',
+])
+
+/** Denials persist to audit_log except unauthenticated/invalid_token (flood). */
 export async function auditMcpAuthDenied(
   deps: McpPrincipalDeps | { audit?: AuditSink },
   failure: Pick<McpPrincipalFailure, 'code'> & { userId?: string; tenantId?: string },
   tenantSlug?: string,
 ): Promise<void> {
   console.info('mcp.auth.deny', { code: failure.code, tenantSlug, userId: failure.userId })
-  if (failure.code === 'unauthenticated') return
+  if (UNAUDITED_MCP_AUTH_CODES.has(failure.code)) return
   await writeAudit(deps.audit, {
     actorType: failure.userId ? 'human' : 'system',
     actorId: failure.userId ?? null,
@@ -241,35 +247,17 @@ export async function resolveMcpPrincipal(
     )
   }
 
-  const principal: McpPrincipal = {
-    userId: user.id,
-    tenantId: tenant.id,
-    tenantSlug: tenant.slug,
-    role,
-    assumed,
-    platformRoles,
-  }
-
-  await writeAudit(deps.audit, {
-    actorType: 'human',
-    actorId: principal.userId,
-    agentVersion: null,
-    action: 'mcp.auth.ok',
-    targetType: 'tenant',
-    targetId: principal.tenantId,
-    modelUsed: null,
-    inputRef: principal.role,
-    outputRef: principal.tenantSlug,
-    policyDecision: 'allowed',
-    metadata: {
-      tenantSlug: principal.tenantSlug,
-      assumed: principal.assumed,
-      role: principal.role,
+  return {
+    ok: true,
+    principal: {
+      userId: user.id,
+      tenantId: tenant.id,
+      tenantSlug: tenant.slug,
+      role,
+      assumed,
+      platformRoles,
     },
-    tenantId: principal.tenantId,
-  })
-
-  return { ok: true, principal }
+  }
 }
 
 export async function auditMcpToolCall(

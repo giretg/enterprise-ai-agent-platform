@@ -54,9 +54,8 @@ export class AuditChainService {
 
   /**
    * Teljes lánc (paraméter nélkül) vagy egy [fromSeq..toSeq] szegmens.
-   * Tenant-szűrésnél a sorok saját tárolt prevHash-ére támaszkodunk (a globális
-   * láncba platform-események is beékelődhetnek), így más tenant tartalma
-   * nem szivárog.
+   * Tenant-szűrés a tenant sorok mezőit ellenőrzi, a prevHash-t a globális
+   * előző seq hash-éből (csak seq+hash, idegen metadata nélkül).
    */
   async verifyChain(
     fromSeq?: bigint,
@@ -71,18 +70,35 @@ export class AuditChainService {
     if (rows.length === 0) return { ok: true, checked: 0 }
 
     const tenantScoped = Boolean(tenantId)
-    let prevHash = tenantScoped || fromSeq !== undefined ? (rows[0].prevHash ?? GENESIS_HASH) : GENESIS_HASH
+    const links = tenantScoped ? await this.audit.listHashChain({ toSeq }) : undefined
 
-    for (const row of rows) {
+    let prevHash =
+      tenantScoped || fromSeq !== undefined ? (rows[0].prevHash ?? GENESIS_HASH) : GENESIS_HASH
+    let linkIdx = 0
+    let globalPrev = GENESIS_HASH
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]
       if (!row.hash) {
-        return { ok: false, checked: rows.indexOf(row), firstBreakSeq: row.seq.toString() }
+        return { ok: false, checked: i, firstBreakSeq: row.seq.toString() }
       }
 
-      const expectedPrev = tenantScoped ? (row.prevHash ?? GENESIS_HASH) : prevHash
-      const expected = expectedHashForRow(row, expectedPrev)
+      if (tenantScoped && links) {
+        while (linkIdx < links.length && links[linkIdx].seq < row.seq) {
+          const linkHash = links[linkIdx].hash
+          if (linkHash) globalPrev = linkHash
+          linkIdx += 1
+        }
+      }
 
+      const expectedPrev = tenantScoped ? globalPrev : prevHash
+      if (tenantScoped && (row.prevHash ?? GENESIS_HASH) !== expectedPrev) {
+        return { ok: false, checked: i, firstBreakSeq: row.seq.toString() }
+      }
+
+      const expected = expectedHashForRow(row, expectedPrev)
       if (row.hash !== expected) {
-        return { ok: false, checked: rows.indexOf(row), firstBreakSeq: row.seq.toString() }
+        return { ok: false, checked: i, firstBreakSeq: row.seq.toString() }
       }
 
       prevHash = row.hash

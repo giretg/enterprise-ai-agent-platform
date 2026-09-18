@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { listAuditLog } from '@/app/actions/audit'
 import { Badge, Card } from '@/components/ui/shell'
 import { AuditChainPanel } from './audit-chain-panel'
@@ -41,6 +42,7 @@ export default async function AuditLogPage({
   }>
 }) {
   const { action, actorType, actorId, targetType, targetId, since } = await searchParams
+  await requireTenantRole('approver')
   const isFiltered = Boolean(action || actorType || actorId || targetType || targetId || since)
   const res = await listAuditLog({
     limit: 200,
@@ -51,7 +53,20 @@ export default async function AuditLogPage({
     targetId,
     since,
   })
-  const entries = res.success ? res.data : []
+  if (!res.success) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Audit</p>
+          <h1 className="mt-2 font-display text-3xl font-semibold">Audit napló</h1>
+        </div>
+        <p className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+          {res.error}
+        </p>
+      </div>
+    )
+  }
+  const entries = res.data
   const filterParts = [
     action ? `action=${action}` : null,
     actorType ? `actor=${actorType}` : null,
