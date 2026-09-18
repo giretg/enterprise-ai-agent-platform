@@ -4,13 +4,17 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { requireTenantRole, TenantAuthError } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
-import { repositories } from '@/repositories/postgres'
 import { fail, ok, type ActionResult } from '@/lib/result'
-import type { GatewayOperationView } from '@/domain/gateway-operation'
-import type { PendingOperationRow } from '@/app/control-plane/operations/types'
+import type {
+  GatewayOperationView,
+  GatewayPendingOperationRow,
+} from '@/domain/gateway-operation'
 
 const operationIdSchema = z.object({
   operationId: z.string().uuid(),
+})
+
+const rejectSchema = operationIdSchema.extend({
   reason: z.string().max(500).optional(),
 })
 
@@ -32,24 +36,11 @@ function mapAuthError(error: unknown): ActionResult<never> {
 }
 
 export async function listPendingGatewayOperationsAction(): Promise<
-  ActionResult<{ operations: PendingOperationRow[] }>
+  ActionResult<{ operations: GatewayPendingOperationRow[] }>
 > {
   try {
     const ctx = await requireTenantRole('approver')
-    const pending = await services.gatewayOperations.listPending({ tenantId: ctx.activeTenantId })
-    const operations = await Promise.all(
-      pending.map(async (row) => {
-        const [user, agent] = await Promise.all([
-          repositories.users.findById(row.principalUserId),
-          repositories.agents.findById(row.agentId, ctx.activeTenantId),
-        ])
-        return {
-          ...row,
-          requesterName: user?.name || user?.email || row.principalUserId,
-          agentName: agent?.name || row.agentId,
-        }
-      }),
-    )
+    const operations = await services.gatewayOperations.listPending({ tenantId: ctx.activeTenantId })
     return ok({ operations })
   } catch (error) {
     return mapAuthError(error)
@@ -66,7 +57,6 @@ export async function approveGatewayOperationAction(
       tenantId: ctx.activeTenantId,
       operationId: parsed.operationId,
       actor: actorFrom(ctx),
-      reason: parsed.reason,
     })
     if (!result.ok) return fail(result.code)
     revalidatePath('/control-plane/operations')
@@ -78,10 +68,10 @@ export async function approveGatewayOperationAction(
 }
 
 export async function rejectGatewayOperationAction(
-  input: z.infer<typeof operationIdSchema>,
+  input: z.infer<typeof rejectSchema>,
 ): Promise<ActionResult<GatewayOperationView>> {
   try {
-    const parsed = operationIdSchema.parse(input)
+    const parsed = rejectSchema.parse(input)
     const ctx = await requireTenantRole('approver')
     const result = await services.gatewayOperations.reject({
       tenantId: ctx.activeTenantId,

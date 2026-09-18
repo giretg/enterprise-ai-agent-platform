@@ -16,12 +16,9 @@ import {
   enqueueGatewayOperation,
   getGatewayOperation,
   rejectGatewayOperation,
-  type GatewayOperationCreateInput,
-  type GatewayOperationPatch,
-  type GatewayOperationRecord,
   type GatewayOperationServiceDeps,
-  type GatewayOperationStore,
 } from '../src/domain/gateway-operation'
+import { MemoryGatewayOperationStore } from './memory-gateway-operation-store'
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const APPROVER_ID = '12121212-1212-4121-8121-121212121212'
@@ -99,118 +96,6 @@ function grant(overrides: Partial<LiveGrantRow> = {}): LiveGrantRow {
   }
 }
 
-class MemoryGatewayOperationStore implements GatewayOperationStore {
-  private rows = new Map<string, GatewayOperationRecord>()
-  private byKey = new Map<string, string>()
-  private lock: Promise<void> = Promise.resolve()
-
-  async findById(id: string) {
-    return this.rows.get(id) ?? null
-  }
-
-  async findByTenantAndIdempotencyKey(tenantId: string, idempotencyKey: string) {
-    const id = this.byKey.get(`${tenantId}:${idempotencyKey}`)
-    return id ? (this.rows.get(id) ?? null) : null
-  }
-
-  async createAwaitingApproval(input: GatewayOperationCreateInput) {
-    const key = `${input.tenantId}:${input.idempotencyKey}`
-    const existingId = this.byKey.get(key)
-    if (existingId) {
-      const existing = this.rows.get(existingId)
-      if (existing) return { record: existing, created: false }
-    }
-    const now = new Date()
-    const record: GatewayOperationRecord = {
-      id: globalThis.crypto.randomUUID(),
-      tenantId: input.tenantId,
-      agentDefinitionVersionId: input.agentDefinitionVersionId,
-      agentId: input.agentId,
-      principalUserId: input.principalUserId,
-      toolName: input.toolName,
-      argsJson: input.argsJson,
-      idempotencyKey: input.idempotencyKey,
-      status: 'awaiting_approval',
-      connectorId: input.connectorId,
-      errorCode: null,
-      resultJson: null,
-      createdAt: now,
-      updatedAt: now,
-      approval: {
-        id: globalThis.crypto.randomUUID(),
-        decidedByUserId: null,
-        decision: 'pending',
-        reason: null,
-        decidedAt: null,
-      },
-    }
-    this.rows.set(record.id, record)
-    this.byKey.set(key, record.id)
-    return { record, created: true }
-  }
-
-  async listAwaitingApproval(tenantId: string) {
-    return [...this.rows.values()]
-      .filter((row) => row.tenantId === tenantId && row.status === 'awaiting_approval')
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-  }
-
-  async withLockedOperation<T>(
-    operationId: string,
-    fn: (
-      row: GatewayOperationRecord,
-      save: (patch: GatewayOperationPatch) => Promise<GatewayOperationRecord>,
-    ) => Promise<T>,
-  ): Promise<T | null> {
-    const previous = this.lock
-    let release!: () => void
-    this.lock = new Promise((resolve) => {
-      release = resolve
-    })
-    await previous
-    try {
-      const row = this.rows.get(operationId)
-      if (!row) return null
-      const save = async (patch: GatewayOperationPatch) => {
-        const updated = applyPatch(row, patch)
-        this.rows.set(operationId, updated)
-        Object.assign(row, updated)
-        return updated
-      }
-      return fn(row, save)
-    } finally {
-      release()
-    }
-  }
-
-  async update(id: string, patch: GatewayOperationPatch) {
-    const row = this.rows.get(id)
-    if (!row) return null
-    const updated = applyPatch(row, patch)
-    this.rows.set(id, updated)
-    return updated
-  }
-}
-
-function applyPatch(row: GatewayOperationRecord, patch: GatewayOperationPatch): GatewayOperationRecord {
-  return {
-    ...row,
-    status: patch.status ?? row.status,
-    errorCode: patch.errorCode !== undefined ? patch.errorCode : row.errorCode,
-    resultJson: patch.resultJson !== undefined ? patch.resultJson : row.resultJson,
-    updatedAt: new Date(),
-    approval: patch.approval
-      ? {
-          id: row.approval?.id ?? globalThis.crypto.randomUUID(),
-          decidedByUserId: patch.approval.decidedByUserId,
-          decision: patch.approval.decision,
-          reason: patch.approval.reason ?? null,
-          decidedAt: patch.approval.decidedAt,
-        }
-      : row.approval,
-  }
-}
-
 function captureInfo() {
   const events: Array<{ event: string; payload: Record<string, unknown> }> = []
   const original = console.info
@@ -231,11 +116,16 @@ function deps(opts?: {
   connector?: LiveConnectorRow | null
   grant?: LiveGrantRow | null
   grantAccessLevel?: string | null
+  requester?: { role: string; assumed: boolean } | null
+  findAgentGrant?: GatewayOperationServiceDeps['findAgentGrant']
   executeDriveTool?: GatewayOperationServiceDeps['executeDriveTool']
+  recordCreatedDriveFiles?: GatewayOperationServiceDeps['recordCreatedDriveFiles']
   driveCalls?: unknown[]
+  executedTools?: string[]
 }): { deps: GatewayOperationServiceDeps; store: MemoryGatewayOperationStore } {
   const store = new MemoryGatewayOperationStore()
   const driveCalls = opts?.driveCalls ?? []
+  const executedTools = opts?.executedTools ?? []
   return {
     store,
     deps: {
@@ -243,12 +133,14 @@ function deps(opts?: {
       async loadDefinition() {
         return definition()
       },
-      async findAgentGrant() {
-        if (opts && 'grantAccessLevel' in opts) {
-          return opts.grantAccessLevel ? { accessLevel: opts.grantAccessLevel } : null
-        }
-        return { accessLevel: 'operate' }
-      },
+      findAgentGrant:
+        opts?.findAgentGrant ??
+        (async () => {
+          if (opts && 'grantAccessLevel' in opts) {
+            return opts.grantAccessLevel ? { accessLevel: opts.grantAccessLevel } : null
+          }
+          return { accessLevel: 'operate' }
+        }),
       async findConnector() {
         return opts && 'connector' in opts ? (opts.connector ?? null) : connector()
       },
@@ -258,9 +150,16 @@ function deps(opts?: {
       async resolveAccessToken() {
         return 'stub-drive-token'
       },
+      async resolveRequester() {
+        return opts && 'requester' in opts
+          ? (opts.requester ?? null)
+          : { role: 'admin', assumed: false }
+      },
+      recordCreatedDriveFiles: opts?.recordCreatedDriveFiles,
       executeDriveTool:
         opts?.executeDriveTool ??
-        (async (_tool, args) => {
+        (async (tool, args) => {
+          executedTools.push(tool)
           driveCalls.push(args)
           return {
             file: {
@@ -325,9 +224,10 @@ async function main() {
 
   await check('self-approval by admin executes Drive once and stores resultJson', async () => {
     const driveCalls: unknown[] = []
+    const executedTools: string[] = []
     const logs = captureInfo()
     try {
-      const wired = deps({ driveCalls })
+      const wired = deps({ driveCalls, executedTools })
       const enqueued = await enqueueGatewayOperation(wired.deps, {
         principal: principal(),
         toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
@@ -349,6 +249,7 @@ async function main() {
       assert.equal(result.file?.id, 'folder-1')
       assert.equal(result.created, true)
       assert.equal(driveCalls.length, 1)
+      assert.deepEqual(executedTools, [GOOGLE_DRIVE_CREATE_FOLDER_TOOL])
       assert.ok(logs.events.some((row) => row.event === 'gateway.operation.approved'))
       assert.ok(logs.events.some((row) => row.event === 'gateway.operation.executing'))
       assert.ok(logs.events.some((row) => row.event === 'gateway.operation.succeeded'))
@@ -558,6 +459,125 @@ async function main() {
     assert.equal(replay.view.operationId, enqueued.view.operationId)
     assert.equal(replay.view.status, 'succeeded')
     assert.equal(driveCalls.length, 1)
+  })
+
+  await check('admin enqueue without operate grant still executes', async () => {
+    const driveCalls: unknown[] = []
+    const wired = deps({ driveCalls, grantAccessLevel: null, requester: { role: 'admin', assumed: false } })
+    const enqueued = await enqueueGatewayOperation(wired.deps, {
+      principal: principal({ role: 'admin' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, idempotencyKey: 'idem-admin' },
+    })
+    assert.equal(enqueued.ok, true)
+    if (!enqueued.ok) return
+    const approved = await approveGatewayOperation(wired.deps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal(),
+    })
+    assert.equal(approved.ok, true)
+    if (!approved.ok) return
+    assert.equal(approved.view.status, 'succeeded')
+    assert.equal(driveCalls.length, 1)
+  })
+
+  await check('assumed superadmin enqueue without operate grant still executes', async () => {
+    const driveCalls: unknown[] = []
+    const wired = deps({
+      driveCalls,
+      grantAccessLevel: null,
+      requester: { role: 'admin', assumed: true },
+    })
+    const enqueued = await enqueueGatewayOperation(wired.deps, {
+      principal: principal({ role: 'operator', assumed: true }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, idempotencyKey: 'idem-assumed' },
+    })
+    assert.equal(enqueued.ok, true)
+    if (!enqueued.ok) return
+    const approved = await approveGatewayOperation(wired.deps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal(),
+    })
+    assert.equal(approved.ok, true)
+    if (!approved.ok) return
+    assert.equal(approved.view.status, 'succeeded')
+    assert.equal(driveCalls.length, 1)
+  })
+
+  await check('execute re-checks operate grant and fails if it was revoked', async () => {
+    let access: string | null = 'operate'
+    const driveCalls: unknown[] = []
+    const wired = deps({
+      driveCalls,
+      requester: { role: 'operator', assumed: false },
+      findAgentGrant: async () => (access ? { accessLevel: access } : null),
+    })
+    const enqueued = await enqueueGatewayOperation(wired.deps, {
+      principal: principal({ role: 'operator' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, idempotencyKey: 'idem-revoked' },
+    })
+    assert.equal(enqueued.ok, true)
+    if (!enqueued.ok) return
+    access = null
+    const approved = await approveGatewayOperation(wired.deps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal(),
+    })
+    assert.equal(approved.ok, true)
+    if (!approved.ok) return
+    assert.equal(approved.view.status, 'failed')
+    assert.equal(approved.view.errorCode, 'agent_access_denied')
+    assert.equal(driveCalls.length, 0)
+  })
+
+  await check('enqueue deny logs agentId', async () => {
+    const logs = captureInfo()
+    try {
+      const wired = deps({ grantAccessLevel: 'view', requester: { role: 'operator', assumed: false } })
+      const result = await enqueueGatewayOperation(wired.deps, {
+        principal: principal({ role: 'operator' }),
+        toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+        args: FOLDER_ARGS,
+      })
+      assert.deepEqual(result, { ok: false, code: 'agent_access_denied' })
+      const denied = logs.events.find((row) => row.event === 'enterprise.tool.denied')
+      assert.equal(denied?.payload.agentId, AGENT_ID)
+      assert.equal(denied?.payload.definitionId, DEFINITION_ID)
+    } finally {
+      logs.restore()
+    }
+  })
+
+  await check('succeeded selected_write records created Drive files', async () => {
+    const recorded: Array<{ grantId: string; files: Array<{ fileId: string }> }> = []
+    const wired = deps({
+      recordCreatedDriveFiles: async (input) => {
+        recorded.push(input)
+      },
+    })
+    const enqueued = await enqueueGatewayOperation(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, idempotencyKey: 'idem-track' },
+    })
+    assert.equal(enqueued.ok, true)
+    if (!enqueued.ok) return
+    const approved = await approveGatewayOperation(wired.deps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal(),
+    })
+    assert.equal(approved.ok, true)
+    if (!approved.ok) return
+    assert.equal(approved.view.status, 'succeeded')
+    assert.equal(recorded.length, 1)
+    assert.equal(recorded[0]?.grantId, GRANT_ID)
+    assert.equal(recorded[0]?.files[0]?.fileId, 'folder-1')
   })
 
   await check('missing idempotencyKey is idempotency_key_required', async () => {

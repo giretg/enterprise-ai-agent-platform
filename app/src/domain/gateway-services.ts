@@ -14,6 +14,7 @@ import {
   invokeEnterpriseTool,
   type EnterpriseToolDeps,
 } from '@/domain/enterprise-tools'
+import { recordGoogleDriveAppCreatedFile } from '@/domain/connector-grant/google-drive-grant-store'
 import {
   enqueueGatewayOperation,
   enqueueResultToMcp,
@@ -23,7 +24,9 @@ import {
   rejectGatewayOperation,
   listPendingGatewayOperations,
   type GatewayOperationServiceDeps,
+  type GatewayPendingOperationRow,
 } from '@/domain/gateway-operation'
+import { isSuperadmin } from '@/lib/tenant-policy'
 import { IamService } from '@/domain/iam/iam-service'
 import { PlatformSettingsService } from '@/domain/platform-settings/platform-settings-service'
 import { ProvisioningService } from '@/domain/provisioning/provisioning-service'
@@ -102,9 +105,53 @@ const sharedToolLookups = {
   },
 }
 
+async function resolveRequester(input: { tenantId: string; userId: string }) {
+  const membership = await repositories.tenantMemberships.findByTenantAndUser(
+    input.tenantId,
+    input.userId,
+  )
+  if (membership?.status === 'active') {
+    return { role: membership.role, assumed: false }
+  }
+  const platformRows = await repositories.platformMemberships.findByUser(input.userId)
+  const platformRoles = platformRows.filter((row) => row.status === 'active').map((row) => row.role)
+  if (isSuperadmin(platformRoles)) return { role: 'admin', assumed: true }
+  return null
+}
+
 const gatewayOperationDeps: GatewayOperationServiceDeps = {
   ...sharedToolLookups,
   operations: repositories.gatewayOperations,
+  resolveRequester,
+  async recordCreatedDriveFiles({ grantId, files }) {
+    for (const file of files) {
+      await recordGoogleDriveAppCreatedFile({ grantId, ...file })
+    }
+  },
+}
+
+async function listPendingOperationRows(input: {
+  tenantId: string
+}): Promise<GatewayPendingOperationRow[]> {
+  const pending = await listPendingGatewayOperations(gatewayOperationDeps, input)
+  return Promise.all(
+    pending.map(async (row) => {
+      const [user, agent, definition] = await Promise.all([
+        repositories.users.findById(row.principalUserId),
+        repositories.agents.findById(row.agentId, input.tenantId),
+        agentDefinitionService.loadAgentDefinition({
+          tenantId: input.tenantId,
+          definitionId: row.definitionId,
+        }),
+      ])
+      return {
+        ...row,
+        requesterName: user?.name || user?.email || row.principalUserId,
+        agentName: agent?.name || row.agentId,
+        definitionLabel: definition?.snapshot.name || row.definitionId,
+      }
+    }),
+  )
 }
 
 const enterpriseToolDeps: EnterpriseToolDeps = {
@@ -136,8 +183,7 @@ export const services = {
       approveGatewayOperation(gatewayOperationDeps, input),
     reject: (input: Parameters<typeof rejectGatewayOperation>[1]) =>
       rejectGatewayOperation(gatewayOperationDeps, input),
-    listPending: (input: Parameters<typeof listPendingGatewayOperations>[1]) =>
-      listPendingGatewayOperations(gatewayOperationDeps, input),
+    listPending: (input: { tenantId: string }) => listPendingOperationRows(input),
     toMcpGet: getResultToMcp,
   },
 }

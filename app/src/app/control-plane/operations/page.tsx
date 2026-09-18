@@ -1,5 +1,6 @@
 import { requireTenantRole } from '@/auth/tenant-context'
 import { listPendingGatewayOperationsAction } from '@/app/actions/gateway-operation'
+import { operationErrorLabel } from './labels'
 import { OperationsPanel } from './operations-panel'
 
 export default async function OperationsPage() {
@@ -14,13 +15,13 @@ export default async function OperationsPage() {
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Jóváhagyások</p>
         <h1 className="mt-2 font-display text-3xl font-semibold">Jóváhagyásra váró műveletek</h1>
         <p className="mt-1 max-w-2xl text-ink-soft">
-          Az ügynök mappát szeretne létrehozni a Google Drive-on. A jóváhagyás után a rendszer
+          A munkatárs mappát szeretne létrehozni a Google Drive-on. A jóváhagyás után a rendszer
           egyszer végrehajtja a kérést; elutasításnál nem történik írás.
         </p>
       </div>
       {error ? (
         <p className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          {error}
+          {operationErrorLabel(error)}
         </p>
       ) : (
         <OperationsPanel operations={operations} />

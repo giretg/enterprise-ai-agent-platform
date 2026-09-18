@@ -24,4 +24,5 @@ export type {
   GatewayOperationResult,
   GatewayOperationServiceDeps,
   GatewayPendingOperation,
+  GatewayPendingOperationRow,
 } from './gateway-operation-service'

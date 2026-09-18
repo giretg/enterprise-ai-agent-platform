@@ -12,6 +12,7 @@ export {
   type ToolCallPrincipal,
 } from './authorize-tool-call'
 export { invokeEnterpriseTool, type EnterpriseToolDeps, type EnterpriseToolMcpResult } from './invoke-enterprise-tool'
+export { asUuid, ENTERPRISE_TOOL_ERROR_MESSAGES, enterpriseToolErrorMessage } from './tool-error-messages'
 export {
   ENTERPRISE_DRIVE_TOOLS,
   ENTERPRISE_DRIVE_WRITE_TOOLS,

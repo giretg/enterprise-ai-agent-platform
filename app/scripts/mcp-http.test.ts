@@ -30,11 +30,9 @@ import {
   enqueueResultToMcp,
   getGatewayOperation,
   getResultToMcp,
-  type GatewayOperationCreateInput,
-  type GatewayOperationPatch,
-  type GatewayOperationRecord,
-  type GatewayOperationStore,
+  type GatewayOperationServiceDeps,
 } from '../src/domain/gateway-operation'
+import { MemoryGatewayOperationStore } from './memory-gateway-operation-store'
 import {
   MCP_AGENTS_LIST_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
@@ -165,109 +163,6 @@ function liveGrant(): LiveGrantRow {
   }
 }
 
-class MemoryGatewayOperationStore implements GatewayOperationStore {
-  private rows = new Map<string, GatewayOperationRecord>()
-  private byKey = new Map<string, string>()
-
-  async findById(id: string) {
-    return this.rows.get(id) ?? null
-  }
-
-  async findByTenantAndIdempotencyKey(tenantId: string, idempotencyKey: string) {
-    const id = this.byKey.get(`${tenantId}:${idempotencyKey}`)
-    return id ? (this.rows.get(id) ?? null) : null
-  }
-
-  async createAwaitingApproval(input: GatewayOperationCreateInput) {
-    const key = `${input.tenantId}:${input.idempotencyKey}`
-    const existingId = this.byKey.get(key)
-    if (existingId) {
-      const existing = this.rows.get(existingId)
-      if (existing) return { record: existing, created: false }
-    }
-    const now = new Date()
-    const record: GatewayOperationRecord = {
-      id: globalThis.crypto.randomUUID(),
-      tenantId: input.tenantId,
-      agentDefinitionVersionId: input.agentDefinitionVersionId,
-      agentId: input.agentId,
-      principalUserId: input.principalUserId,
-      toolName: input.toolName,
-      argsJson: input.argsJson,
-      idempotencyKey: input.idempotencyKey,
-      status: 'awaiting_approval',
-      connectorId: input.connectorId,
-      errorCode: null,
-      resultJson: null,
-      createdAt: now,
-      updatedAt: now,
-      approval: {
-        id: globalThis.crypto.randomUUID(),
-        decidedByUserId: null,
-        decision: 'pending',
-        reason: null,
-        decidedAt: null,
-      },
-    }
-    this.rows.set(record.id, record)
-    this.byKey.set(key, record.id)
-    return { record, created: true }
-  }
-
-  async listAwaitingApproval(tenantId: string) {
-    return [...this.rows.values()].filter(
-      (row) => row.tenantId === tenantId && row.status === 'awaiting_approval',
-    )
-  }
-
-  async withLockedOperation<T>(
-    operationId: string,
-    fn: (
-      row: GatewayOperationRecord,
-      save: (patch: GatewayOperationPatch) => Promise<GatewayOperationRecord>,
-    ) => Promise<T>,
-  ) {
-    const row = this.rows.get(operationId)
-    if (!row) return null
-    const save = async (patch: GatewayOperationPatch) => {
-      const updated: GatewayOperationRecord = {
-        ...row,
-        status: patch.status ?? row.status,
-        errorCode: patch.errorCode !== undefined ? patch.errorCode : row.errorCode,
-        resultJson: patch.resultJson !== undefined ? patch.resultJson : row.resultJson,
-        updatedAt: new Date(),
-        approval: patch.approval
-          ? {
-              id: row.approval?.id ?? globalThis.crypto.randomUUID(),
-              decidedByUserId: patch.approval.decidedByUserId,
-              decision: patch.approval.decision,
-              reason: patch.approval.reason ?? null,
-              decidedAt: patch.approval.decidedAt,
-            }
-          : row.approval,
-      }
-      this.rows.set(operationId, updated)
-      Object.assign(row, updated)
-      return updated
-    }
-    return fn(row, save)
-  }
-
-  async update(id: string, patch: GatewayOperationPatch) {
-    const row = this.rows.get(id)
-    if (!row) return null
-    const updated = {
-      ...row,
-      status: patch.status ?? row.status,
-      errorCode: patch.errorCode !== undefined ? patch.errorCode : row.errorCode,
-      resultJson: patch.resultJson !== undefined ? patch.resultJson : row.resultJson,
-      updatedAt: new Date(),
-    }
-    this.rows.set(id, updated)
-    return updated
-  }
-}
-
 function runtimeDeps(overrides: {
   membership?: TenantMembership | null
   tenant?: Tenant | null
@@ -312,6 +207,29 @@ function runtimeDeps(overrides: {
     return SAMPLE_DEFINITION
   }
   const operations = new MemoryGatewayOperationStore()
+  const gatewayDeps: GatewayOperationServiceDeps = {
+    loadDefinition: ({ tenantId, definitionId }) => loadDefinition({ tenantId, definitionId }),
+    async findAgentGrant({ agentId }) {
+      return grantedAgentIds.has(agentId) ? { accessLevel: grantAccessLevel } : null
+    },
+    async findConnector() {
+      return liveConnector()
+    },
+    async findActiveGrant(input) {
+      seen.findActiveGrantTenantId = input.tenantId
+      seen.findActiveGrantUserId = input.userId
+      return liveGrant()
+    },
+    async resolveAccessToken(params) {
+      seen.resolveActingUserId = params.actingUserId
+      seen.resolveTenantId = params.tenantId
+      return 'stub-drive-token'
+    },
+    operations,
+    async resolveRequester() {
+      return { role, assumed: false }
+    },
+  }
   const enterpriseDeps: EnterpriseToolDeps = {
     loadDefinition: ({ tenantId, definitionId }) => loadDefinition({ tenantId, definitionId }),
     async findAgentGrant({ agentId }) {
@@ -331,12 +249,7 @@ function runtimeDeps(overrides: {
       return 'stub-drive-token'
     },
     enqueueWrite: async (input) =>
-      enqueueResultToMcp(
-        await enqueueGatewayOperation(
-          { ...enterpriseDeps, operations },
-          input,
-        ),
-      ),
+      enqueueResultToMcp(await enqueueGatewayOperation(gatewayDeps, input)),
   }
   return {
     audit,
@@ -382,9 +295,7 @@ function runtimeDeps(overrides: {
       },
       invokeEnterpriseTool: (input) => invokeEnterpriseTool(enterpriseDeps, input),
       getGatewayOperation: async (input) =>
-        getResultToMcp(
-          await getGatewayOperation({ ...enterpriseDeps, operations }, input),
-        ),
+        getResultToMcp(await getGatewayOperation(gatewayDeps, input)),
     },
   }
 }

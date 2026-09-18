@@ -1,6 +1,1 @@
-import type { GatewayPendingOperation } from '@/domain/gateway-operation'
-
-export type PendingOperationRow = GatewayPendingOperation & {
-  requesterName: string
-  agentName: string
-}
+export type { GatewayPendingOperationRow as PendingOperationRow } from '@/domain/gateway-operation'

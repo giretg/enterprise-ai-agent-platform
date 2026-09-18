@@ -22,7 +22,7 @@ function optionalStringArray(value: unknown): string[] | undefined {
 
 /** Drive tool executor. Write tools run only after GatewayOperation approval. */
 export async function executeGoogleDriveTool(
-  toolName: EnterpriseDriveTool,
+  toolName: EnterpriseDriveTool | string,
   args: Record<string, unknown>,
   accessToken: string,
 ): Promise<unknown> {

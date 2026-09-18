@@ -5,17 +5,15 @@ import {
   approveGatewayOperationAction,
   rejectGatewayOperationAction,
 } from '@/app/actions/gateway-operation'
+import { formatToolUiName } from '@/lib/tool-ui-labels'
+import { operationErrorLabel } from './labels'
 import type { PendingOperationRow } from './types'
 
-const ERROR_LABELS: Record<string, string> = {
-  approver_not_authorized: 'Nincs jogod jóváhagyni vagy elutasítani ezt a műveletet.',
-  operation_not_found: 'A művelet nem található.',
-  operation_not_awaiting_approval: 'Ez a művelet már nem vár jóváhagyásra.',
-  approval_already_decided: 'Erről a műveletről már döntöttek.',
-  drive_write_not_allowed: 'A Google Drive írás ehhez a mappához nem engedélyezett.',
-  google_drive_auth_failed: 'A Google Drive bejelentkezés sikertelen.',
-  google_drive_api_error: 'A Google Drive kérés sikertelen.',
-  tool_execution_failed: 'A művelet végrehajtása sikertelen.',
+function agentDefinitionLabel(row: PendingOperationRow): string {
+  if (row.definitionLabel && row.definitionLabel !== row.agentName) {
+    return `${row.agentName} · ${row.definitionLabel}`
+  }
+  return row.agentName
 }
 
 function argsSummary(args: Record<string, unknown>): string {
@@ -43,7 +41,7 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
     const result = await approveGatewayOperationAction({ operationId })
     setBusyId(null)
     if (!result.success) {
-      setMessage(ERROR_LABELS[result.error] ?? result.error)
+      setMessage(operationErrorLabel(result.error))
       return
     }
     const fileId =
@@ -66,7 +64,7 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
     })
     setBusyId(null)
     if (!result.success) {
-      setMessage(ERROR_LABELS[result.error] ?? result.error)
+      setMessage(operationErrorLabel(result.error))
       return
     }
     setMessage('Elutasítva. A Google Drive-on nem jött létre mappa.')
@@ -90,11 +88,11 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
               className="rounded-xl border border-ink/10 bg-white/50 p-4 shadow-sm"
             >
               <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <p className="font-medium text-ink">{row.toolName}</p>
+                <p className="font-medium text-ink">{formatToolUiName(row.toolName)}</p>
                 <p className="text-xs text-ink-faint">{formatWhen(row.createdAt)}</p>
               </div>
               <p className="mt-1 text-sm text-ink-soft">
-                {row.agentName} · {row.requesterName}
+                {agentDefinitionLabel(row)} · {row.requesterName}
               </p>
               <p className="mt-1 text-sm text-ink">{argsSummary(row.args)}</p>
               <label className="mt-3 block text-xs text-ink-soft">
