@@ -23,7 +23,7 @@ export default function Error({
     // Modal-iframe: a szülő overlay addig nem tűnik el, amíg cp-embed-ready nem jön —
     // hiba esetén is jelezzünk, hogy a felhasználó lássa a hibaüzenetet, ne csak „Betöltés…”.
     if (window.parent !== window) {
-      window.parent.postMessage({ type: CP_EMBED_READY_MESSAGE }, window.location.origin)
+      window.parent.postMessage(CP_EMBED_READY_MESSAGE, window.location.origin)
     }
   }, [error])
 

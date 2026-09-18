@@ -4,6 +4,7 @@
  */
 import assert from 'node:assert/strict'
 import { embedHrefForPanel, isClerkClientEnabledForRequest, isControlPlaneEmbedRequest } from '../src/lib/control-plane-embed'
+import { CP_EMBED_READY_MESSAGE, isControlPlaneEmbedReadyMessage } from '../src/lib/control-plane-embed-messages'
 import { isClerkEnabled } from '../src/lib/clerk-config'
 
 let passed = 0
@@ -44,8 +45,13 @@ check('szülőablak navigáció → nem embed', () => {
 })
 
 check('ismert panel kulcsnak van href-je', () => {
-  assert.equal(embedHrefForPanel('board'), '/control-plane/board')
+  assert.equal(embedHrefForPanel('staff.skills'), '/control-plane/skills')
   assert.equal(embedHrefForPanel('ticket.missing'), null)
+})
+
+check('cp-embed-ready üzenet: top-level source+type (nem nested type mező)', () => {
+  assert.equal(isControlPlaneEmbedReadyMessage(CP_EMBED_READY_MESSAGE), true)
+  assert.equal(isControlPlaneEmbedReadyMessage({ type: CP_EMBED_READY_MESSAGE }), false)
 })
 
 check('embed iframe → Clerk kliens ki (szerver auth elég)', () => {
