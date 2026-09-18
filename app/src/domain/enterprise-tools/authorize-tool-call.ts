@@ -45,6 +45,7 @@ export type LiveGrantRow = {
   tokenRef: string
   scopes: unknown
   status: string
+  metadata?: unknown
 }
 
 export type AuthorizeToolCallDeps = {
@@ -61,7 +62,7 @@ export async function authorizeToolCall(
   input: AuthorizeToolCallInput,
 ): Promise<AuthorizeToolCallResult> {
   const requirement = TOOL_REQUIREMENTS[input.toolName]
-  if (!requirement || requirement.connectorType !== 'google_drive' || requirement.accessMode !== 'read') {
+  if (!requirement || requirement.connectorType !== 'google_drive') {
     return { allowed: false, reason: 'tool_not_configured' }
   }
 
@@ -73,10 +74,20 @@ export async function authorizeToolCall(
   }
 
   const binding = input.definition.snapshot.connectors.find(
-    (row) => row.type === 'google_drive' && row.accessMode === 'read',
+    (row) =>
+      row.type === requirement.connectorType &&
+      (requirement.accessMode === 'read'
+        ? row.accessMode === 'read' || row.accessMode === 'write'
+        : row.accessMode === 'write'),
   )
   if (!binding) {
-    return { allowed: false, reason: 'missing_google_drive_connector_read' }
+    return {
+      allowed: false,
+      reason:
+        requirement.accessMode === 'read'
+          ? 'missing_google_drive_connector_read'
+          : 'missing_google_drive_connector_write',
+    }
   }
 
   const connector = await deps.findConnector(binding.connectorId)

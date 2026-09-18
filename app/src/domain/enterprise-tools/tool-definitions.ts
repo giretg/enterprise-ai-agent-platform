@@ -2,18 +2,28 @@ import { z } from 'zod'
 
 export const GOOGLE_DRIVE_SEARCH_TOOL = 'google_drive_search'
 export const GOOGLE_DRIVE_READ_FILE_TOOL = 'google_drive_read_file'
+export const GOOGLE_DRIVE_CREATE_FOLDER_TOOL = 'google_drive_create_folder'
+
+export const ENTERPRISE_DRIVE_WRITE_TOOLS = [GOOGLE_DRIVE_CREATE_FOLDER_TOOL] as const
 
 export const ENTERPRISE_DRIVE_TOOLS = [
   GOOGLE_DRIVE_SEARCH_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
+  ...ENTERPRISE_DRIVE_WRITE_TOOLS,
 ] as const
 
+export type EnterpriseDriveWriteTool = (typeof ENTERPRISE_DRIVE_WRITE_TOOLS)[number]
 export type EnterpriseDriveTool = (typeof ENTERPRISE_DRIVE_TOOLS)[number]
 
 const ENTERPRISE_DRIVE_TOOL_SET = new Set<string>(ENTERPRISE_DRIVE_TOOLS)
+const ENTERPRISE_DRIVE_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_DRIVE_WRITE_TOOLS)
 
 export function isEnterpriseDriveTool(toolName: string): toolName is EnterpriseDriveTool {
   return ENTERPRISE_DRIVE_TOOL_SET.has(toolName)
+}
+
+export function isEnterpriseDriveWriteTool(toolName: string): toolName is EnterpriseDriveWriteTool {
+  return ENTERPRISE_DRIVE_WRITE_TOOL_SET.has(toolName)
 }
 
 const definitionId = z.string().uuid()
@@ -42,8 +52,18 @@ export const googleDriveReadFileInputSchema = z
   })
   .passthrough()
 
+export const googleDriveCreateFolderInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    name: z.string().min(1).max(500),
+    parentFolderId: z.string().max(200).optional(),
+    idempotencyKey: z.string().min(1).max(200),
+  })
+  .passthrough()
+
 export function schemaForEnterpriseDriveTool(toolName: EnterpriseDriveTool) {
-  return toolName === GOOGLE_DRIVE_READ_FILE_TOOL
-    ? googleDriveReadFileInputSchema
-    : googleDriveSearchInputSchema
+  if (toolName === GOOGLE_DRIVE_READ_FILE_TOOL) return googleDriveReadFileInputSchema
+  if (toolName === GOOGLE_DRIVE_CREATE_FOLDER_TOOL) return googleDriveCreateFolderInputSchema
+  return googleDriveSearchInputSchema
 }

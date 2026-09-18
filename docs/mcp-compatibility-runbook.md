@@ -1,4 +1,4 @@
-# MCP compatibility runbook (Phase A + Phase C Drive)
+# MCP compatibility runbook (Phase A + Phase C Drive + Phase E write)
 
 Prove that **Codex and Claude Code authenticate to and use the same tenant-scoped MCP endpoint**. Do not use `mcp-remote`. Live Clerk OAuth is required; `AUTH_DISABLED` / DevAuth is not a passing path.
 
@@ -87,11 +87,10 @@ Set `GOOGLE_DRIVE_API_STUB=true`. Seed keeps a placeholder grant whose `tokenRef
 |---|---|---|
 | 1 | OAuth connect; `platform.whoami` | `tenantSlug` matches the URL |
 | 2 | `platform.agents.list` | Contains **Drive assistant** |
-| 3 | `platform.agent.get_definition` | Snapshot lists `google_drive_search` + `google_drive_read_file` and a `google_drive` connector with `accessMode: read` |
+| 3 | `platform.agent.get_definition` | Snapshot lists `google_drive_search` + `google_drive_read_file` (+ `google_drive_create_folder`) and a `google_drive` connector with `accessMode: write` (write also satisfies read) |
 | 4 | `google_drive_search` `{ definitionId, nameContains: "Platform" }` | `files[]` non-empty (stub document) |
 | 5 | `google_drive_read_file` `{ definitionId, fileId }` from step 4 | `text` or `warnings`; payload has **no** access token / `tokenRef` |
 | 6 | Negative: definition without the capability, or operator with only `view` | HTTP 200, MCP `isError: true`, `code` ∈ `{ capability_not_allowed, agent_access_denied, … }` |
-| 7 | `google_drive_create_folder` | `tool_not_allowed` (not registered; writes are #541) |
 
 `definitionId` is required (published `AgentDefinitionVersion.id`). Extra JSON keys such as `tenantId` / `userId` are ignored.
 
@@ -99,7 +98,7 @@ Set `GOOGLE_DRIVE_API_STUB=true`. Seed keeps a placeholder grant whose `tokenRef
 
 1. Seed with `SEED_CLERK_USER_ID` = the Clerk user id of the human running Codex / Claude Code.
 2. In Control Plane, complete Google Drive OAuth for that same user on the tenant Drive connector (`drive.readonly` or broader). This replaces the seed placeholder grant.
-3. Repeat steps 1–7 above against a real Drive file the account can see.
+3. Repeat steps 1–6 above against a real Drive file the account can see.
 4. Record `codex --version`, `claude --version`, and Clerk instance type (dev/prod) in the PR.
 
 Policy is the **published snapshot**. If an admin later decommissions the connector, calls against an old `definitionId` fail with `connector_not_active` even if the snapshot still lists it.
@@ -108,7 +107,35 @@ Policy is the **published snapshot**. If an admin later decommissions the connec
 
 Unauthenticated 401s are **not** written to `audit_log` (they would flood). They are logged at info. `invalid_token` and membership/assume/inactive denies **are** audited (`mcp.auth.deny`). Successful principal resolution writes `mcp.auth.ok` with `{ tenantSlug, assumed }` — not `tenant.assume` on every assumed MCP request.
 
-Drive tool invokes log `enterprise.tool.ok`, `enterprise.tool.denied`, and `enterprise.tool.error` at info. There is still no `AuditLog` table.
+Drive tool invokes log `enterprise.tool.ok`, `enterprise.tool.denied`, and `enterprise.tool.error` at info. Gateway writes log `gateway.operation.enqueued` / `approved` / `rejected` / `executing` / `succeeded` / `failed`. There is still no `AuditLog` table.
+
+## Phase E — Controlled write + approval
+
+Same URL as Phase A/C: `/api/mcp/{tenantSlug}`. No dispatcher, queue, or internal agent runtime. Folder creation **does not call Google** until a human approves in Control Plane.
+
+### Local stub (no live Google)
+
+Set `GOOGLE_DRIVE_API_STUB=true`. Seed uses a `write` connector binding and `selected_write` scopes (`drive.readonly` + `drive.file`). A `write` binding still satisfies read tools.
+
+Complete Phase C steps 1–6 first, then:
+
+| Step | Action | Expect |
+|---|---|---|
+| 7 | `google_drive_create_folder` `{ definitionId, name, idempotencyKey }` | `{ operationId, status: "awaiting_approval" }`; **no folder yet** |
+| 8 | `platform.gateway_operation.get` `{ operationId }` | `status: "awaiting_approval"`, `approval.decision: "pending"` |
+| 9 | Control Plane → **Jóváhagyások**: approve (same user OK if admin/approver) | operation → `succeeded`; `result.file.id` present |
+| 10 | Repeat step 7 with **same** `idempotencyKey` | same `operationId`, `status: "succeeded"`; **no second folder** |
+| 11 | Repeat step 7 with **new** key; reject in Control Plane | `status: "rejected"`; no Drive side effect |
+| 12 | Negative: operator without `operate` grant | MCP `isError: true`, `agent_access_denied` |
+| 13 | Negative: non-privileged user tries to approve | Control Plane error `approver_not_authorized` |
+
+`awaiting_approval` is a successful enqueue (`isError` omitted/false), not a policy deny.
+
+### Live Google OAuth (harness)
+
+1. Complete Phase C live OAuth so the same Clerk user has a Drive grant with write-capable scopes (`drive.file` or full Drive).
+2. Repeat steps 7–13. After approval, the folder exists in the Google account; a retry with the same `idempotencyKey` must not create a second folder.
+3. Record `codex --version`, `claude --version`, and Clerk instance type (dev/prod) in the PR.
 
 ## Import notes
 

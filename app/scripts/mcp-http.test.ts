@@ -17,6 +17,7 @@ import {
   isPrivilegedAgentReader,
 } from '../src/domain/agent-definition'
 import {
+  GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
   invokeEnterpriseTool,
@@ -25,12 +26,19 @@ import {
   type LiveGrantRow,
 } from '../src/domain/enterprise-tools'
 import {
+  enqueueGatewayOperation,
+  enqueueResultToMcp,
+  getGatewayOperation,
+  getResultToMcp,
+  type GatewayOperationServiceDeps,
+} from '../src/domain/gateway-operation'
+import { MemoryGatewayOperationStore } from './memory-gateway-operation-store'
+import {
   MCP_AGENTS_LIST_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
+  MCP_GATEWAY_OPERATION_GET_TOOL,
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
-
-const GOOGLE_DRIVE_CREATE_FOLDER_TOOL = 'google_drive_create_folder'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
 const ORIGIN = 'https://app.example.com'
@@ -116,10 +124,11 @@ const SAMPLE_DEFINITION = {
     name: 'Drive assistant',
     roleInstruction: 'Inspect Drive',
     skills: [],
-    connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'read' as const }],
+    connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'write' as const }],
     capabilities: [
       { toolName: GOOGLE_DRIVE_SEARCH_TOOL, allowed: true },
       { toolName: GOOGLE_DRIVE_READ_FILE_TOOL, allowed: true },
+      { toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL, allowed: true },
     ],
   },
 }
@@ -146,7 +155,10 @@ function liveGrant(): LiveGrantRow {
   return {
     id: GRANT_ID,
     tokenRef: 'stub-drive-token',
-    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+    scopes: [
+      'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/drive.file',
+    ],
     status: 'active',
   }
 }
@@ -194,6 +206,30 @@ function runtimeDeps(overrides: {
     if (input.definitionId && input.definitionId !== DEFINITION_ID) return null
     return SAMPLE_DEFINITION
   }
+  const operations = new MemoryGatewayOperationStore()
+  const gatewayDeps: GatewayOperationServiceDeps = {
+    loadDefinition: ({ tenantId, definitionId }) => loadDefinition({ tenantId, definitionId }),
+    async findAgentGrant({ agentId }) {
+      return grantedAgentIds.has(agentId) ? { accessLevel: grantAccessLevel } : null
+    },
+    async findConnector() {
+      return liveConnector()
+    },
+    async findActiveGrant(input) {
+      seen.findActiveGrantTenantId = input.tenantId
+      seen.findActiveGrantUserId = input.userId
+      return liveGrant()
+    },
+    async resolveAccessToken(params) {
+      seen.resolveActingUserId = params.actingUserId
+      seen.resolveTenantId = params.tenantId
+      return 'stub-drive-token'
+    },
+    operations,
+    async resolveRequester() {
+      return { role, assumed: false }
+    },
+  }
   const enterpriseDeps: EnterpriseToolDeps = {
     loadDefinition: ({ tenantId, definitionId }) => loadDefinition({ tenantId, definitionId }),
     async findAgentGrant({ agentId }) {
@@ -212,6 +248,8 @@ function runtimeDeps(overrides: {
       seen.resolveTenantId = params.tenantId
       return 'stub-drive-token'
     },
+    enqueueWrite: async (input) =>
+      enqueueResultToMcp(await enqueueGatewayOperation(gatewayDeps, input)),
   }
   return {
     audit,
@@ -256,6 +294,8 @@ function runtimeDeps(overrides: {
         })
       },
       invokeEnterpriseTool: (input) => invokeEnterpriseTool(enterpriseDeps, input),
+      getGatewayOperation: async (input) =>
+        getResultToMcp(await getGatewayOperation(gatewayDeps, input)),
     },
   }
 }
@@ -398,7 +438,7 @@ async function main() {
     assert.equal(body.error.code, 'auth_not_configured')
   })
 
-  await check('tools/list returns platform tools and Drive read tools, not create_folder', async () => {
+  await check('tools/list returns platform tools, Drive read+write, and gateway_operation.get', async () => {
     const { deps } = runtimeDeps()
     const init = await initialize(deps)
     assert.equal(init.status, 200, `initialize HTTP ${init.status}: ${await init.clone().text()}`)
@@ -421,8 +461,9 @@ async function main() {
       MCP_AGENT_GET_DEFINITION_TOOL,
       GOOGLE_DRIVE_SEARCH_TOOL,
       GOOGLE_DRIVE_READ_FILE_TOOL,
+      GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
-    assert.equal(names.includes(GOOGLE_DRIVE_CREATE_FOLDER_TOOL), false)
   })
 
   await check('platform.whoami returns principal JSON and ignores extra args', async () => {
@@ -784,7 +825,7 @@ async function main() {
     assert.equal(payload.code, 'agent_access_denied')
   })
 
-  await check('google_drive_create_folder is tool_not_allowed', async () => {
+  await check('google_drive_create_folder enqueues awaiting_approval without writing', async () => {
     const { deps } = runtimeDeps({ role: 'admin' })
     await initialize(deps)
     const res = await post(
@@ -795,7 +836,11 @@ async function main() {
         method: 'tools/call',
         params: {
           name: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
-          arguments: { definitionId: DEFINITION_ID },
+          arguments: {
+            definitionId: DEFINITION_ID,
+            name: 'Q3 reports',
+            idempotencyKey: 'idem-mcp-1',
+          },
         },
       },
       { authorization: `Bearer ${TOKEN}` },
@@ -805,9 +850,63 @@ async function main() {
     const body = (await readJson(res)) as {
       result?: { isError?: boolean; content?: Array<{ text: string }> }
     }
-    assert.equal(body.result?.isError, true)
-    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
-    assert.equal(payload.code, 'tool_not_allowed')
+    assert.equal(body.result?.isError, undefined)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      operationId?: string
+      status?: string
+      idempotencyKey?: string
+      toolName?: string
+    }
+    assert.equal(payload.status, 'awaiting_approval')
+    assert.equal(payload.idempotencyKey, 'idem-mcp-1')
+    assert.equal(payload.toolName, GOOGLE_DRIVE_CREATE_FOLDER_TOOL)
+    assert.equal(typeof payload.operationId, 'string')
+
+    const get = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 18,
+        method: 'tools/call',
+        params: {
+          name: MCP_GATEWAY_OPERATION_GET_TOOL,
+          arguments: { operationId: payload.operationId },
+        },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const got = JSON.parse(
+      ((await readJson(get)) as { result?: { content?: Array<{ text: string }> } }).result?.content?.[0]
+        ?.text ?? '{}',
+    ) as { status?: string; approval?: { decision?: string } }
+    assert.equal(got.status, 'awaiting_approval')
+    assert.equal(got.approval?.decision, 'pending')
+
+    const replay = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 19,
+        method: 'tools/call',
+        params: {
+          name: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+          arguments: {
+            definitionId: DEFINITION_ID,
+            name: 'Q3 reports',
+            idempotencyKey: 'idem-mcp-1',
+          },
+        },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const replayed = JSON.parse(
+      ((await readJson(replay)) as { result?: { content?: Array<{ text: string }> } }).result
+        ?.content?.[0]?.text ?? '{}',
+    ) as { operationId?: string; status?: string }
+    assert.equal(replayed.operationId, payload.operationId)
+    assert.equal(replayed.status, 'awaiting_approval')
   })
 
   await check('protected resource metadata resource is {origin}/api/mcp at every well-known path', async () => {
