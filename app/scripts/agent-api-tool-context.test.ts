@@ -4,6 +4,7 @@
  */
 import assert from 'node:assert/strict'
 import {
+  isAgentApiMcpTool,
   isAgentApiToolContextOwnedByAgent,
   type AgentApiToolContextLookup,
 } from '../src/lib/agent-api-tool-context'
@@ -106,6 +107,13 @@ async function main() {
       ),
       true,
     )
+  })
+
+  await check('chat-only sandbox_exec nem érhető el a gépi agent API surface-en', async () => {
+    assert.equal(isAgentApiMcpTool('sandbox_exec'), false)
+    assert.equal(isAgentApiMcpTool('file_read'), true)
+    assert.equal(isAgentApiMcpTool('file_delete'), true)
+    assert.equal(isAgentApiMcpTool('not_a_real_tool'), false)
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)
