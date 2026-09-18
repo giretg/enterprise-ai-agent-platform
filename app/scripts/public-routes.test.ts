@@ -130,8 +130,20 @@ check('az alkalmazás-felület és a kezelői API VÉDETT marad', () => {
   assertProtected('/dashboard')
   assertProtected('/control-plane')
   assertProtected('/control-plane/agents')
+  assertProtected('/control-plane/iam')
   assertProtected('/api/agents')
+  assertProtected('/api/connectors/oauth/callback')
   assertProtected('/api/v1/internal/other-endpoint')
+})
+
+check('az MCP resource URL és az OAuth well-known discovery publikus (Clerk-kapu előtt 401 + WWW-Authenticate)', () => {
+  assertPublic('/api/mcp')
+  assertPublic('/api/mcp/acme')
+  assertPublic('/api/mcp/acme/')
+  assertPublic('/.well-known/oauth-protected-resource')
+  assertPublic('/.well-known/oauth-protected-resource/api/mcp')
+  assertPublic('/.well-known/oauth-protected-resource/api/mcp/acme')
+  assertPublic('/.well-known/oauth-authorization-server')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

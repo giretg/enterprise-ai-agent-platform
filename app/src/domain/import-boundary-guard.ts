@@ -11,7 +11,10 @@ const ROOT = join(import.meta.dirname, '../..')
 const TARGETS = [
   'src/domain/gateway-services.ts',
   'src/auth/mcp-principal.ts',
+  'src/auth/mcp-server.ts',
+  'src/auth/mcp-oauth-metadata.ts',
   'src/app/api/mcp',
+  'src/app/.well-known',
   'src/domain/agent-definition',
   'src/domain/enterprise-tools',
   'src/domain/gateway-operation',
