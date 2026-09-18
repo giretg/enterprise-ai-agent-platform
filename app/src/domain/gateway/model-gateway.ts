@@ -112,15 +112,38 @@ function modelProviderFetchTimeoutMs(): number {
     : DEFAULT_MODEL_PROVIDER_FETCH_TIMEOUT_MS
 }
 
-async function fetchWithProviderTimeout(url: string, init: RequestInit = {}): Promise<Response> {
+/**
+ * Provider fetch + forduló-falióra jel egyesítése.
+ *
+ * Fontos: a hívó jelét AKKOR IS be kell vonni, ha már aborted. A
+ * `!callerSignal.aborted` szűrés kihagyná a faliórát → a fetch a provider
+ * timeoutig (alap 120s) továbbmehetne a forduló kerete után is (fizetős
+ * hívás + #525 timeout-hazugság vissza). Az OAuth bridge-ek ugyanezt a
+ * mintát követik (`AbortSignal.any` feltétel nélkül).
+ *
+ * Exportált a regressziós teszthez.
+ */
+export function combineProviderFetchSignal(
+  timeoutSignal: AbortSignal,
+  callerSignal?: AbortSignal | null,
+): AbortSignal {
+  return callerSignal ? AbortSignal.any([timeoutSignal, callerSignal]) : timeoutSignal
+}
+
+/** @internal — regressziós tesztek hívják; a provider-útvonalak ezen keresztül mennek. */
+export async function fetchWithProviderTimeout(
+  url: string,
+  init: RequestInit = {},
+): Promise<Response> {
   const timeoutMs = modelProviderFetchTimeoutMs()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   const callerSignal = init.signal
-  const signal =
-    callerSignal && !callerSignal.aborted
-      ? AbortSignal.any([controller.signal, callerSignal])
-      : controller.signal
+  if (callerSignal?.aborted) {
+    clearTimeout(timer)
+    throw new ModelCallAbortedError()
+  }
+  const signal = combineProviderFetchSignal(controller.signal, callerSignal)
   try {
     return await fetch(url, { ...init, signal })
   } catch (error: unknown) {
