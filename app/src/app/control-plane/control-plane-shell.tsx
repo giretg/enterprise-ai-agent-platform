@@ -4,6 +4,7 @@ import { Suspense, useSyncExternalStore, type ReactNode } from 'react'
 import { usePathname } from 'next/navigation'
 import { AppShell, type NavEntry } from '@/components/ui/shell'
 import { AgentRail, AgentRailMobileToggle } from '@/components/agents/agent-rail'
+import { TenantSwitcher } from '@/components/tenant/tenant-switcher'
 import { ControlPlanePanelDockHost } from '@/components/ui/control-plane-panel-dock'
 import { RouteModalHost } from '@/components/ui/route-modal'
 import { ControlPlaneEmbedBridge } from '@/lib/control-plane-embed-bridge'
@@ -90,6 +91,7 @@ export function ControlPlaneShell({
           headerExtra={
             <div className="flex items-center gap-2">
               <AgentRailMobileToggle />
+              <TenantSwitcher />
             </div>
           }
         >
