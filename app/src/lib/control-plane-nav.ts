@@ -57,9 +57,7 @@ const isGroup = (entry: ControlPlaneNavEntry): entry is ControlPlaneNavGroup => 
  * Adminisztráció a tenant-admin / approver / platform szerepre megy.
  */
 export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] = [
-  { key: 'board', href: '/control-plane/board', label: 'Board' },
-  { key: 'projects', href: '/control-plane/projects', label: 'Projektek' },
-  // Saját csatorna-kötés + delegált connector — minden tenant-tag (viewer+) látja.
+  { key: 'agents', href: '/control-plane/agents', label: 'Munkatársak' },
   {
     key: 'account',
     href: '/control-plane/account',
@@ -68,35 +66,14 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
   },
   {
     key: 'staff',
-    label: 'Munkatársak',
+    label: 'Katalógus',
     children: [
-      // A névsor a bal sávban él; a tanítás az agent fejlécre került.
       {
         key: 'staff.behavior-profiles',
         href: '/control-plane/behavior-profiles',
         label: 'Viselkedés-profilok',
       },
       { key: 'staff.skills', href: '/control-plane/skills', label: 'Képességek (skill-ek)' },
-      { key: 'staff.apps', href: '/control-plane/apps', label: 'Mini-appok' },
-      {
-        key: 'staff.sandbox-versions',
-        href: '/control-plane/sandbox-versions',
-        label: 'Sandbox verziók',
-      },
-    ],
-  },
-  {
-    key: 'automation',
-    label: 'Automatizálás',
-    children: [
-      { key: 'automation.playbooks', href: '/control-plane/playbooks', label: 'Playbookok' },
-      {
-        key: 'automation.step-templates',
-        href: '/control-plane/step-templates',
-        label: 'Lépés-sablonok',
-      },
-      { key: 'automation.processes', href: '/control-plane/processes', label: 'Folyamatok' },
-      { key: 'automation.monitors', href: '/control-plane/monitors', label: 'Monitorok' },
     ],
   },
   {
@@ -110,7 +87,6 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         requires: { tenantRole: 'admin' },
       },
       { key: 'admin.iam', href: '/control-plane/iam', label: 'IAM', requires: { tenantRole: 'admin' } },
-      // #142 — korábban staff.access; a sáv az alaphelyzet, a gráf-szerkesztő admin alatt marad.
       {
         key: 'admin.agent-access',
         href: '/control-plane/agent-access',
@@ -121,12 +97,6 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         key: 'admin.menu-access',
         href: '/control-plane/menu-access',
         label: 'Menü-hozzáférés',
-        requires: { tenantRole: 'admin' },
-      },
-      {
-        key: 'admin.embed-apps',
-        href: '/control-plane/embed-apps',
-        label: 'Beágyazó alkalmazások',
         requires: { tenantRole: 'admin' },
       },
       {
@@ -147,13 +117,6 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         label: 'Platform · Beállítások',
         requires: { platformRole: 'platform_auditor' },
       },
-      {
-        key: 'admin.governance',
-        href: '/control-plane/governance',
-        label: 'Governance',
-        requires: { tenantRole: 'admin' },
-      },
-      { key: 'admin.system', href: '/control-plane/system', label: 'Rendszer', requires: { tenantRole: 'admin' } },
       {
         key: 'admin.audit',
         href: '/control-plane/audit',

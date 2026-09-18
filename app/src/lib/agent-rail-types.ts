@@ -1,5 +1,3 @@
-import type { AgentActivity } from '@/lib/agent-activity'
-
 /** Élő állapot a bal sáv kártyáin — a rail-state API válasza agentenként. */
 export type AgentRailLiveStatus = 'busy' | 'wait' | 'idle' | 'off'
 
@@ -42,7 +40,7 @@ export type AgentRailStateResponse = {
   asOf: string
 }
 
-export type AgentWorkspaceTab = 'chat' | 'task' | 'board' | 'apps' | 'training' | 'profile'
+export type AgentWorkspaceTab = 'profile'
 
 export type AgentRailFilter = 'all' | AgentRailLiveStatus
 
@@ -50,19 +48,6 @@ export type AgentRailFilter = 'all' | AgentRailLiveStatus
 export function railFilterMatches(filter: AgentRailFilter, liveStatus: AgentRailLiveStatus): boolean {
   if (filter === 'all') return true
   return filter === liveStatus
-}
-
-export function liveStatusFromActivity(
-  agentStatus: string,
-  activity: AgentActivity | undefined,
-): AgentRailLiveStatus {
-  if (agentStatus === 'suspended' || agentStatus === 'retired' || agentStatus === 'draft') {
-    return 'off'
-  }
-  if (activity?.current?.needsYou || (activity?.awaitingHuman ?? 0) > 0) return 'wait'
-  if (activity?.working) return 'busy'
-  if (agentStatus === 'active') return 'idle'
-  return 'off'
 }
 
 export function liveStatusSortRank(status: AgentRailLiveStatus): number {

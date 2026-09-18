@@ -2,7 +2,6 @@ import { listBehaviorProfiles } from '@/app/actions/platform'
 import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { Card } from '@/components/ui/shell'
-import { BehaviorProfileCatalog } from '@/components/agents/behavior-profile-catalog'
 
 export default async function BehaviorProfilesPage() {
   const ctx = await getAuthContext()
@@ -35,7 +34,19 @@ export default async function BehaviorProfilesPage() {
         </p>
       </div>
 
-      <BehaviorProfileCatalog profiles={profiles} />
+      <Card title="Profilok">
+        <ul className="divide-y divide-line/70">
+          {profiles.map((profile) => (
+            <li key={profile.id} className="flex items-center justify-between py-2 text-sm">
+              <span className="font-medium">{profile.name}</span>
+              <span className="text-ink-soft">v{profile.currentVersion}</span>
+            </li>
+          ))}
+        </ul>
+        {profiles.length === 0 ? (
+          <p className="text-sm text-ink-soft">Még nincs viselkedés-profil.</p>
+        ) : null}
+      </Card>
     </div>
   )
 }

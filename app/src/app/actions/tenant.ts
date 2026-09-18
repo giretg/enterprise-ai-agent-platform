@@ -3,7 +3,7 @@
 import { cookies } from 'next/headers'
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
-import { services } from '@/domain'
+import { services } from '@/domain/gateway-services'
 import { getAuthContext, ACTIVE_TENANT_COOKIE } from '@/auth/context'
 import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
 import { decideSwitch, TENANT_AUDIT_ACTIONS } from '@/lib/tenant-policy'

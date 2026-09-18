@@ -42,7 +42,7 @@ function main() {
     })
     const hrefs = flattenNavHrefs(nav)
     assert.ok(hrefs.includes('/control-plane/account'))
-    assert.ok(hrefs.includes('/control-plane/projects'))
+    assert.ok(hrefs.includes('/control-plane/agents'))
     assert.ok(!hrefs.includes('/control-plane/connectors'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
     assert.ok(!hrefs.includes('/control-plane/provisioning'))
@@ -64,8 +64,8 @@ function main() {
     assert.ok(hrefs.includes('/control-plane/iam'))
     assert.ok(hrefs.includes('/control-plane/menu-access'))
     assert.ok(hrefs.includes('/control-plane/provisioning'))
-    assert.ok(hrefs.includes('/control-plane/system'))
-    assert.ok(hrefs.includes('/control-plane/governance'))
+    assert.ok(!hrefs.includes('/control-plane/system'))
+    assert.ok(!hrefs.includes('/control-plane/governance'))
     assert.ok(hrefs.includes('/control-plane/audit'))
     assert.ok(!hrefs.includes('/control-plane/platform/tenants'))
   })
@@ -96,8 +96,7 @@ function main() {
   check('viewer sees Kapcsolt fiókok and no Adminisztráció group', () => {
     const nav = buildControlPlaneNav({ tenantRole: 'viewer', platformRoles: [] })
     const hrefs = flattenNavHrefs(nav)
-    assert.ok(hrefs.includes('/control-plane/board'))
-    assert.ok(hrefs.includes('/control-plane/projects'))
+    assert.ok(hrefs.includes('/control-plane/agents'))
     assert.ok(hrefs.includes('/control-plane/account'))
     assert.ok(!nav.some((entry) => 'children' in entry && entry.label === 'Adminisztráció'))
     const account = nav.find((entry) => !('children' in entry) && entry.key === 'account')
@@ -109,13 +108,13 @@ function main() {
     const nav = buildControlPlaneNav({ tenantRole: 'operator', platformRoles: [] })
     const staff = nav.find((entry) => 'children' in entry && entry.key === 'staff')
     assert.ok(staff && 'children' in staff)
-    assert.equal(staff.label, 'Munkatársak')
+    assert.equal(staff.label, 'Katalógus')
     const hrefs = staff.children.map((child) => child.href)
     assert.ok(!hrefs.includes('/control-plane/training'))
     assert.ok(hrefs.includes('/control-plane/skills'))
     assert.ok(hrefs.includes('/control-plane/behavior-profiles'))
-    assert.ok(hrefs.includes('/control-plane/apps'))
-    assert.ok(hrefs.includes('/control-plane/sandbox-versions'))
+    assert.ok(!hrefs.includes('/control-plane/apps'))
+    assert.ok(!hrefs.includes('/control-plane/sandbox-versions'))
     assert.ok(!hrefs.includes('/control-plane/agents'))
     assert.ok(!hrefs.includes('/control-plane/agent-access'))
   })
@@ -137,7 +136,7 @@ function main() {
       }),
     )
     assert.ok(!hrefs.includes('/control-plane/account'))
-    assert.ok(hrefs.includes('/control-plane/board'))
+    assert.ok(hrefs.includes('/control-plane/agents'))
   })
 
   check('hiding the Adminisztráció group does not hide Kapcsolt fiókok', () => {
@@ -160,9 +159,9 @@ function main() {
     const approver = flattenNavHrefs(
       buildControlPlaneNav({ tenantRole: 'approver', platformRoles: [], navVisibility }),
     )
-    assert.ok(!operator.includes('/control-plane/playbooks'))
-    assert.ok(operator.includes('/control-plane/processes'))
-    assert.ok(approver.includes('/control-plane/playbooks'))
+    assert.ok(operator.includes('/control-plane/skills'))
+    assert.ok(operator.includes('/control-plane/agents'))
+    assert.ok(approver.includes('/control-plane/skills'))
   })
 
   check('hiding a group removes the whole dropdown', () => {
@@ -202,7 +201,7 @@ function main() {
       }),
     )
     assert.ok(!hrefs.includes('/control-plane/iam'))
-    assert.ok(hrefs.includes('/control-plane/board'))
+    assert.ok(hrefs.includes('/control-plane/agents'))
   })
 
   check('admin lockout is impossible — menu-access stays visible', () => {

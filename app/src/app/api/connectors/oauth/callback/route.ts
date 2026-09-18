@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getCurrentUser } from '@/auth'
 import { oauthReturnPath } from '@/domain/connector-grant/connector-grant-needed'
-import { services } from '@/domain'
+import { services } from '@/domain/gateway-services'
 import { prisma } from '@/lib/db'
 import { publicAppUrl } from '@/lib/public-app-url'
 

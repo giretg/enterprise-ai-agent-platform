@@ -35,7 +35,7 @@ import {
   scopesFromConnectorConfig,
 } from '../src/domain/connector-grant/delegated-oauth-registry'
 import { GMAIL_SCOPES } from '../src/domain/connector-grant/gmail-scopes'
-import { toolsRequiringConnector } from '../src/domain/tool-broker/tool-connector-requirements'
+import { toolsRequiringConnector } from '../src/domain/connector-grant/tool-connector-requirements'
 
 const CONV = '11111111-1111-4111-8111-111111111111'
 const TICKET = '22222222-2222-4222-8222-222222222222'

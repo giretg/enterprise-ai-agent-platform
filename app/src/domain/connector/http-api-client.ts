@@ -12,7 +12,7 @@
  */
 import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
-import { getCloudRunAccessToken } from '@/domain/dispatcher/cloud-run-auth'
+import { getCloudRunAccessToken } from '@/domain/net/cloud-run-auth'
 import { guardEgressUrl } from '@/domain/net/egress-guard'
 import {
   httpPaginationSchema,

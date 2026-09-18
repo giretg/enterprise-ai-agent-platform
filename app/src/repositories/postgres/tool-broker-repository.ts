@@ -5,9 +5,9 @@ import type {
   Prisma,
   ToolCall,
 } from '@prisma/client'
+import { pinnedRuntimeConfig } from '@/domain/connector/runtime-config'
 import { prisma } from '@/lib/db'
 import type { AgentConnectorBinding, ToolBrokerRepository } from '../interfaces'
-import { pinnedRuntimeConfig } from '@/domain/connector-self-update/pinned-runtime-config'
 import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
 
 type ConnectorWithActiveSpec = Connector & {
@@ -15,11 +15,7 @@ type ConnectorWithActiveSpec = Connector & {
 }
 
 function toRuntimeConnector(row: ConnectorWithActiveSpec): Connector | null {
-  const config = pinnedRuntimeConfig(
-    row.connectorMode,
-    row.config,
-    row.activeSpecVersion?.capabilitySet ?? null,
-  )
+  const config = pinnedRuntimeConfig(row.connectorMode, row.config)
   if (!config) return null
   const connector = Object.fromEntries(
     Object.entries(row).filter(([key]) => key !== 'activeSpecVersion'),

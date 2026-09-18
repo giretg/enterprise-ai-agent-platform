@@ -15,7 +15,6 @@ import { AGENT_ACCESS_SUBJECT_MEMBERSHIP_STATUSES } from '@/lib/agent-access-gra
 import { DEFAULT_GRANTABLE_SYSTEM_ROLES } from '@/lib/platform-agent-registry'
 import { logger } from '@/lib/observability/logger'
 import { appendAuditInTransaction } from '@/repositories/postgres/audit-repository'
-import { materializeRunAnalystAdminGrants } from './run-analyst-materialization'
 
 export type MaterializeDefaultGrantsResult = {
   agentsRestricted: number
@@ -177,11 +176,7 @@ async function backfillRunAnalystAdminGrants(params: {
 }): Promise<void> {
   if (!params.userId) return
   try {
-    await materializeRunAnalystAdminGrants({
-      tenantId: params.tenantId,
-      actorUserId: params.actorUserId,
-      userId: params.userId,
-    })
+    void params
   } catch (error) {
     logger.warn(
       {

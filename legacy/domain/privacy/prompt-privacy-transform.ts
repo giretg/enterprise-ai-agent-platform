@@ -11,7 +11,7 @@
  * (pl. Project memory context adat-blokk, APG-20) ugyanazon a transzformáción
  * mennek át. A bemenetet nem mutálja.
  */
-import { collectSensitivityMatchSpans } from '@/domain/gateway/sensitivity-router'
+import { collectSensitivityMatchSpans } from '@/domain/privacy/sensitivity-match-spans'
 import { applySurrogateReplacements } from '@/domain/privacy/apply-replacements'
 import {
   actionForPrivacyCategory,

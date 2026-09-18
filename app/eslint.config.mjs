@@ -24,6 +24,50 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-require-imports": "off",
     },
   },
+  {
+    files: [
+      "src/domain/gateway-services.ts",
+      "src/domain/agent-definition/**",
+      "src/domain/enterprise-tools/**",
+      "src/domain/gateway-operation/**",
+      "src/auth/mcp-principal.ts",
+      "src/app/api/mcp/**",
+    ],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@/domain",
+              message: "Target graph must not import the legacy @/domain services barrel.",
+            },
+            {
+              name: "@/domain/index",
+              message: "Target graph must not import the legacy @/domain services barrel.",
+            },
+            {
+              name: "@/domain/index.ts",
+              message: "Target graph must not import the legacy @/domain services barrel.",
+            },
+          ],
+          patterns: [
+            {
+              group: [
+                "@/domain/agent/*",
+                "@/domain/gateway/*",
+                "@/domain/dispatcher/*",
+                "@/domain/conversation/*",
+                "@/domain/channel/*",
+                "@/harness/*",
+              ],
+              message: "Target graph must not import the legacy runtime/chat/dispatcher stack.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;

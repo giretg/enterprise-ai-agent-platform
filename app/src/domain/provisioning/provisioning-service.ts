@@ -14,7 +14,6 @@ import { createHash } from 'crypto'
 import type { ConnectorAccessMode, ConnectorType, Prisma, UserRole } from '@prisma/client'
 import type { AuditRepository, ConnectorDraftRepository } from '@/repositories/interfaces'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
-import { isConnectorAssignableToAgent } from '@/domain/connector-self-update/pinned-runtime-config'
 import {
   normalizeGmailConnectorConfig,
   type GmailConnectorConfig,
@@ -41,6 +40,7 @@ import { validateGoogleDriveDraftConfig } from './google-drive-draft-validator'
 import { ProvisioningError } from './errors'
 import { isResolvableSecretAlias } from './secret-alias'
 import { isConnectorOwnedSecretRef } from './connector-secret-alias-policy'
+import { isConnectorAssignableToAgent } from '@/domain/connector/runtime-config'
 
 export type ProvisioningActor =
   | {
@@ -744,7 +744,7 @@ export class ProvisioningService {
         'only an active connector can be assigned to an agent',
       )
     }
-    if (!isConnectorAssignableToAgent(connector.connectorMode, connector.activeCapabilitySet)) {
+    if (!isConnectorAssignableToAgent(connector.connectorMode)) {
       throw new ProvisioningError(
         'CONNECTOR_NOT_ASSIGNABLE',
         'Az OpenAPI-kapcsolatnak előbb legyen jóváhagyott, aktív verziója (Frissítés keresése → jóváhagyás).',

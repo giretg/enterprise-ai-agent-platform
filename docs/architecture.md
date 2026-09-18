@@ -1,0 +1,53 @@
+# Architecture note — Phase 0 compilation boundary
+
+This repository is being rebuilt as an Enterprise MCP control plane. Phase 0
+establishes a **clean compilation boundary**. It is not a compatibility layer
+and not a data-model migration.
+
+## Entry points
+
+| Path | Role |
+|---|---|
+| `app/src/domain/gateway-services.ts` | Target composition root (IAM, tenant, audit, connector/grant, skill, provisioning) |
+| `app/src/auth/mcp-principal.ts` | MCP principal (Phase A) |
+| `app/src/app/api/mcp/[tenantSlug]/route.ts` | Tenant-scoped MCP resource URL (Phase A) |
+| `app/src/domain/agent-definition/` | Immutable Agent Definition (Phase B) |
+| `app/src/domain/enterprise-tools/` | `authorizeToolCall` + registry (Phase C) |
+| `app/src/domain/gateway-operation/` | GatewayOperation / GatewayApproval (Phase E) |
+
+Control Plane login remains Clerk (`app/src/auth/*`). Tenant membership is
+`auth/tenant-context.ts` plus `domain/iam` and `domain/tenant`.
+
+## `legacy/` rule
+
+DELETE / REFERENCE ONLY / DEFER trees were `git mv`'d to `legacy/` at the repo
+root, **outside** `app/`. They are readable history and a reference for later
+EXTRACT work. They are **not** part of the active TypeScript project and must
+not be imported from `app/src`.
+
+Do not use `tsconfig.exclude` for those trees: exclude only drops root files,
+not transitives. Moving them makes leftover imports fail, which is the
+rewiring todo list.
+
+## Import boundary
+
+CI fails if the target layers import the old `@/domain` services barrel
+(exact `@/domain` / `@/domain/index`, not KEEP subpaths such as
+`@/domain/iam/...`) or the legacy runtime graph (`AgentChatRuntime`,
+`ModelGateway`, dispatcher, conversation, harness). See
+`app/src/domain/import-boundary-guard.ts` and the `no-restricted-imports`
+ESLint rule.
+
+## Isolation decisions
+
+- The platform does not call a model for agent execution and does not store
+  Conversation / AgentTurn state for MCP.
+- There is no server-side selected-tenant / selected-agent session. Tenant will
+  be `/api/mcp/{tenantSlug}` plus membership.
+- `tools/list` is not a security boundary; every `tools/call` goes through
+  `authorizeToolCall` (Phase C).
+- Credentials never leave the server.
+- Prisma schema is still the legacy schema in Phase 0 so the control plane can
+  boot. Target schema rewrite is Phase B (`#539`).
+
+Detailed KEEP / EXTRACT / DELETE ledger: [`docs/rebuild-surgery-manifest.md`](rebuild-surgery-manifest.md).

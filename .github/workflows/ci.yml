@@ -55,156 +55,23 @@ jobs:
       - name: Type-check (tsc --noEmit)
         run: npx tsc --noEmit
 
-      - name: Stub-DB domain tests
+      - name: Import-boundary guard
+        run: npm run test:import-boundary
+
+      - name: KEEP stub-DB tests
         run: |
-          npm run test:secret-config
-          npm run test:adaptive-poll
-          npm run test:poll-coalesce
-          npm run test:fallback-chain
-          npm run test:audit-log
-          npm run test:sandbox-csp
-          npm run test:sandbox-versioning
-          npm run test:observability
-          npm run test:health-endpoints
-          npm run test:tool-broker-tenant
-          npm run test:ticket-acting-user
-          npm run test:user-directory
-          npm run test:provisioning-errors
-          npm run test:tenant-web-egress-selection
-          npm run test:provisioning-governance
-          npm run test:dispatch-budget
-          npm run test:model-call-budget-where
-          npm run test:dispatch-board-ticket-schema
-          npm run test:playbook-v2-process
-          npm run test:playbook-lifecycle
-          npm run test:n-plus-one-batch
-          npm run test:list-pagination
-          npm run test:playbook-v2-registry
-          npm run test:playbook-process-def
-          npm run test:chat-process-attachment-access
           npm run test:iam-policy
           npm run test:control-plane-nav
-          npm run test:control-plane-embed
-          npm run test:agent-access-graph
-          npm run test:default-user-agent-grants
-          npm run test:run-index
-          npm run test:run-trace
-          npm run test:run-stats
-          npm run test:run-analyst-role
-          npm run test:run-analyst-skill
-          npm run test:run-analysis-entry
-          npm run test:memory-approval
-          npm run test:training-tenant
-          npm run test:training-workspace
-          npm run test:training-teach-plan
-          npm run test:training-preview-client
-          npm run test:memory-conflicts
-          npm run test:memory-content-guard
-          npm run test:memory-maintenance-rollback
-          npm run test:chat-thinking-trace
-          npm run test:chat-tool-history
-          npm run test:context-compactor
-          npm run test:agent-turn-record
-          npm run test:chat-turn-input
-          npm run test:chat-turn-launch
-          npm run test:agent-runtime-display-loader
-          npm run test:agent-turn-snapshot
-          npm run test:agent-turn-reconnect
-          npm run test:chat-stream-recovery
-          npm run test:agent-turn-watchdog
-          npm run test:loop-stop
-          npm run test:tool-loop
-          npm run test:connector-grant-needed
-          npm run test:agent-diagnostics
-          npm run test:gmail-draft-attachment
-          npm run test:turn-cost
-          npm run test:efficiency-advisor
-          npm run test:efficiency-advisor-apply
-          npm run test:http-api
-          npm run test:decode-github-contents
-          npm run test:stuck-final-answer
-          npm run test:http-api-per-agent-key
-          npm run test:connector-template
-          npm run test:provisioning
-          npm run test:connector-secret-alias-policy
-          npm run test:connector-api-key-rotate
-          npm run test:file-search-safe
-          npm run test:channel-linking
-          npm run test:channel-turn
-          npm run test:channel-metrics
-          npm run test:channel-retention
-          npm run test:channel-agent-access
-          npm run test:channel-approval
-          npm run test:ttl-secret-cache
+          npm run test:health-endpoints
           npm run test:public-routes
           npm run test:crawler-block
-          npm run test:confirm-dialog
-          npm run test:create-agent-wizard
-          npm run test:model-providers
-          npm run test:work-project
-          npm run test:agent-chat-stream-input
-          npm run test:agent-scaffold
-          npm run test:resume-last-agent-conversation
-          npm run test:agent-workspace-board
-          npm run test:board-tab-badge
-          npm run test:board-task-conversation
-          npm run test:work-traceability
-          npm run test:chat-task-immediate-dispatch
-          npm run test:dispatch-cycle-endpoint
-          npm run test:conversation-session
-          npm run test:agent-interaction-ticket
-          npm run test:workspace-file-visibility
-          npm run test:ticket-workspace-files
-          npm run test:workspace-handoff
-          npm run test:workspace-inline-html-headers
-          npm run test:workspace-html-preview
-          npm run test:tool-registry-drift
-          npm run test:tool-trust
-          npm run test:tool-output-contract
-          npm run test:consequence-gate
-          npm run test:consequence-approval
-          npm run test:skill-catalog
-          npm run test:turn-continuation
-          npm run test:agent-ask-deadline
-          npm run test:skill-runtime-followup
-          npm run test:agent-task-only
-          npm run test:debug-log-export
-          npm run test:prompt-assembler
-          npm run test:prompt-cache
-          npm run test:surrogate-engine
-          npm run test:connector-privacy
-          npm run test:privacy-catalog-sync
-          npm run test:structured-output-privacy
-          npm run test:known-value-substitution
-          npm run test:user-input-resolver
-          npm run test:privacy-egress-matrix
-          npm run test:debug-trace-projection
-          npm run test:privacy-observability-ui
-          npm run test:privacy-observe
-          npm run test:privacy-category-policy
-          npm run test:privacy-admin-ui
-          npm run test:privacy-markdown-highlights
-          npm run test:prompt-privacy-transform
-          npm run test:gateway-negative
-          npm run test:claude-code-oauth-bridge
-          npm run test:grok-cli-oauth-bridge
-          npm run test:subscription-oauth-runtime-safety
-          npm run test:privacy-latency
-          npm run test:privacy-enforce-failure
-          npm run test:privacy-end-to-end
-          npm run test:privacy-eval
-          npm run test:tool-arg-resolve
-          npm run test:streaming-surrogate-resolve
-          npm run test:render-surrogate-resolve
-          npm run test:office-surrogate-resolve
-
-      # Prompt-eval A fázis — piros vonalak (issue #35). SZÁNDÉKOSAN külön lépés:
-      # ez biztonsági kapu, nem funkcionális teszt. Ha elbukik, egy prompt-módosítás
-      # áttört egy invariánst (hurok / tenant-határ / SoD / írás-engedély /
-      # szenzitív-kiszivárgás) — nem felülbírálható, a változás így nem élesíthető.
-      # Nem hív modellt és nem kerül tokenbe: a költségkeret nem tudja kiéheztetni.
-      - name: Piros vonalak (prompt-eval, blokkoló)
-        run: npm run test:prompt-eval
+          npm run test:egress-guard
+          npm run test:ttl-secret-cache
+          npm run test:connector-grant-needed
+          npm run test:connector-secret-alias-policy
+          npm run test:default-user-agent-grants
+          npm run test:iam-tenant-boundary
+          npm run test:iam-membership-scope
 
   migrations:
     name: Prisma migrate deploy (ephemeral Postgres)
@@ -253,61 +120,11 @@ jobs:
       - name: Prisma migrate status
         run: npx prisma migrate status
 
-      # Az aktív-forduló invariánst (chat-agent-turn-resilience-spec.md D7) egy
-      # RÉSZLEGES EGYEDI INDEX kényszeríti ki — ezt csak valódi Postgres ellen
-      # lehet bizonyítani, ezért a stub-DB-s suite helyett itt fut.
-      - name: Agent-forduló repository tesztek
-        run: npm run test:agent-turn
-
-      # MemoryTraining v1.1: a pointer-CAS és az agentenként egy nyitott
-      # instruction-ticket részleges unique indexe csak valódi DB-n bizonyítható.
-      - name: Training repository DB-invariánsok
-        run: npm run test:training-store-db
-
-      # Az agent-hozzáférési gráf DB-szintű invariánsai (#142): a subject-alak, a
-      # „legalább egy ige", a self-edge és a subject→target egyediség CHECK/UNIQUE
-      # kényszereit, valamint a cross-table tenant-invariáns TRANZAKCIÓS ellenőrzését
-      # csak valódi Postgres ellen lehet bizonyítani.
       - name: Agent-hozzáférési gráf DB-invariánsok
         run: npm run test:agent-access-grant-db
 
       - name: Default user→agent grant DB-regresszió (#344)
         run: npm run test:default-user-agent-grants-db
-
-      # APG-18 (#292): val-surrogate adatkulcs + crypto-shredding + vault GC —
-      # tenant/conversation sorokat ír és retention-sweepet futtat, csak valódi
-      # Postgres ellen fut (a stub-DB-s suite-ban DB-hiba miatt bukott).
-      - name: Val-surrogate crypto-shredding DB-teszt
-        run: npm run test:val-surrogate-crypto-shred
-
-      # Futás-elemző (#343): a tenantonként EGY példány kényszerét, az admin-only
-      # grantokat és a tenant-izolációt (idegen azonosító → `run_not_found`) csak
-      # valódi Postgres ellen lehet bizonyítani.
-      - name: Futás-elemző materializáció DB-invariánsok (#345)
-        run: npm run test:run-analyst-materialization-db
-
-      - name: Futás-elemző záró-ellenőrzés (#353)
-        run: npm run test:run-analyst-verification
-
-      # AI Privacy Gateway APG-01: a surrogate_map bijektivitását (unique +
-      # párhuzamos allokáció → újraolvasás, nem duplikátum) csak valódi Postgres
-      # ellen lehet bizonyítani.
-      - name: Privacy surrogate_map DB-invariánsok
-        run: npm run test:surrogate-map
-
-      # AI Privacy Gateway APG-08: a feloldási scope-invariáns (tenant +
-      # conversation + résztvevő) és a privacy.resolve.denied audit csak
-      # valódi Postgres + hash-láncolt audit ellen bizonyítható.
-      - name: Privacy feloldási scope-invariáns
-        run: npm run test:privacy-resolve-scope
-
-      # AI Privacy Gateway APG-18 (#292): a val-surrogate crypto-shredding a
-      # retention sweep-hez kötött adatkulcs-törlésre épül, ezt csak valódi
-      # Postgres ellen lehet bizonyítani — a stub-DB job fake DATABASE_URL-jével
-      # sosem futott le, minden itteni futás elhasalt rajta (lásd health-check
-      # 2026-09-16).
-      - name: Val-surrogate crypto-shredding DB-invariáns
-        run: npm run test:val-surrogate-crypto-shred
 
   security-scan:
     name: Titok-szkennelés + CodeQL

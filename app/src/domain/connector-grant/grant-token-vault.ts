@@ -4,7 +4,7 @@
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { getCloudRunAccessToken } from '@/domain/dispatcher/cloud-run-auth'
+import { getCloudRunAccessToken } from '@/domain/net/cloud-run-auth'
 
 export type ConnectorGrantTokens = {
   accessToken: string

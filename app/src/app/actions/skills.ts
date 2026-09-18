@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { requireTenantRole } from '@/auth/tenant-context'
-import { services } from '@/domain'
+import { services } from '@/domain/gateway-services'
 import { repositories } from '@/repositories/postgres'
 import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
 import { canManageAgentSkills } from '@/lib/agent-skill-management'
@@ -21,7 +21,6 @@ import {
 } from '@/lib/skill/skill-content'
 import { validateSkill } from '@/lib/skill/skill-validator'
 import { diffSkillVersions } from '@/lib/skill/skill-diff'
-import { PROVISIONING_ASSISTANT_TEMPLATE } from '@/domain/provisioning/provisioning-assistant'
 import type { TenantAuthContext } from '@/auth/context'
 import type { SkillReadiness } from '@/lib/skill/skill-readiness'
 import type { AgentSystemRole, SkillKind, SkillRiskTier } from '@prisma/client'
@@ -913,27 +912,9 @@ export async function reviewSkillVersionAction(
   versionId: string,
 ): Promise<ActionResult<SkillAdvisoryReviewResult>> {
   try {
-    const ctx = await requireTenantRole('admin')
-    // A seedelt Provisioning Assistant — audit-attribúció + Registry modelConfig (feladat-specifikus prompt a review agentben).
-    const agents = await repositories.agents.findMany()
-    const assistant = agents.find((a) => a.name === PROVISIONING_ASSISTANT_TEMPLATE.name)
-    if (!assistant) {
-      return fail('A review-agent nincs seedelve. Futtasd: npm run db:seed.')
-    }
-
-    const result = await services.skills.advisoryReviewVersion({
-      versionId,
-      reviewAgentId: assistant.id,
-      reviewAgentVersion: assistant.currentVersion,
-      reviewAgentModelConfig: assistant.modelConfig,
-      actor: actorFrom(ctx),
-      reviewer: services.skillReviewAgent,
-    })
-    if (!result.ok) {
-      const prefix = result.stage === 'access' ? 'Hozzáférés megtagadva' : 'LLM-review sikertelen'
-      return fail(`${prefix}: ${result.detail}`)
-    }
-    return ok({ validation: result.validation, review: result.review })
+    await requireTenantRole('admin')
+    void versionId
+    return fail('A skill LLM-review a control plane-ből kikerült (Phase 0).')
   } catch (err) {
     return fail(messageFrom(err))
   }
@@ -959,51 +940,7 @@ export interface DistilledSkillPreview {
 }
 
 export async function distillSkillFromConversationAction(
-  input: z.input<typeof distillSchema>,
+  _input: z.input<typeof distillSchema>,
 ): Promise<ActionResult<DistilledSkillPreview>> {
-  try {
-    const parsed = distillSchema.parse(input)
-    const ctx = await requireTenantRole('operator')
-    const agent = await assertAgentInTenant(parsed.agentId, ctx.activeTenantId)
-
-    const tenant = await repositories.tenants.findById(ctx.activeTenantId!)
-    const outputLanguage = readTenantLanguage(tenant?.settings)
-
-    const result = await services.skills.distillFromConversation({
-      conversationId: parsed.conversationId,
-      agentId: parsed.agentId,
-      agentVersion: agent.currentVersion,
-      agentModelConfig: agent.modelConfig,
-      actor: actorFrom(ctx),
-      distiller: services.skillDistillerAgent,
-      targetSkillId: parsed.targetSkillId,
-      outputLanguage,
-    })
-
-    if (!result.ok) {
-      const prefix =
-        result.stage === 'validation'
-          ? 'A desztillált képesség nem felelt meg a validátornak'
-          : result.stage === 'distill'
-            ? 'Nem sikerült érvényes képesség-vázlatot készíteni'
-            : result.stage === 'empty'
-              ? 'Nincs desztillálható tartalom'
-              : 'Hozzáférés megtagadva'
-      return fail(`${prefix}: ${result.detail}`)
-    }
-
-    revalidatePath('/control-plane/skills')
-    return ok({
-      skillId: result.skillId,
-      versionId: result.versionId,
-      name: result.draft.name,
-      description: result.draft.description,
-      riskTier: result.riskTier,
-      requires: result.requires,
-      created: result.created,
-      attachmentCount: result.attachments.length,
-    })
-  } catch (err) {
-    return fail(messageFrom(err))
-  }
+  return fail('A skill-desztilláció a control plane-ből kikerült (Phase 0).')
 }

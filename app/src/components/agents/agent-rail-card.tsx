@@ -2,7 +2,6 @@
 
 import { useEffect, useId, useRef, useState } from 'react'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
-import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
 import { AgentRoleDescriptionButton } from '@/components/agents/agent-role-description-modal'
 import { personaFor } from '@/lib/agent-persona'
 import {
@@ -48,16 +47,7 @@ function AgentRailCardMenu({
       role="menu"
       className="absolute right-0 top-full z-20 mt-1 min-w-[11rem] rounded-xl border border-line bg-card p-1 shadow-xl"
     >
-      {workspaceTabsForAgent(taskOnly).map((tab) =>
-        tab.key === 'apps' ? (
-          <AgentMiniAppsLink
-            key={tab.key}
-            agentId={agentId}
-            compact
-            label={tab.label}
-            className={MENU_ITEM}
-          />
-        ) : (
+      {workspaceTabsForAgent(taskOnly).map((tab) => (
           <button
             key={tab.key}
             type="button"
@@ -71,8 +61,7 @@ function AgentRailCardMenu({
           >
             {tab.label}
           </button>
-        ),
-      )}
+        ))}
     </div>
   )
 }
