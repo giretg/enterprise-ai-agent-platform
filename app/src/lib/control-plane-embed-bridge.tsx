@@ -11,7 +11,7 @@ const EmbedBridgeContext = createContext<EmbedBridgeContextValue | null>(null)
 
 function postEmbedReady() {
   if (window.parent === window) return
-  window.parent.postMessage({ type: CP_EMBED_READY_MESSAGE }, window.location.origin)
+  window.parent.postMessage(CP_EMBED_READY_MESSAGE, window.location.origin)
 }
 
 /** Embed layout: jelzi a szülő modalnak, ha a tartalom készen áll. */
