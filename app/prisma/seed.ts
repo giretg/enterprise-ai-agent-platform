@@ -10,9 +10,43 @@
 import { prisma } from '../src/lib/db'
 import { services } from '../src/domain/gateway-services'
 import { ensureTenantGoogleDriveConnector } from '../src/lib/seed-google-drive-connector'
+import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
+import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
+import type { TemplateDescriptor } from '../src/domain/connector-template/template-descriptor'
+import type { Prisma } from '@prisma/client'
 
 const SEED_TENANT_SLUG = process.env.SEED_TENANT_SLUG ?? 'demo'
 const SEED_CLERK_USER_ID = process.env.SEED_CLERK_USER_ID ?? 'seed-clerk-user'
+
+async function upsertTemplates(
+  origin: 'builtin' | 'custom',
+  descriptors: TemplateDescriptor[],
+) {
+  for (const descriptor of descriptors) {
+    const existing = await prisma.connectorTemplate.findFirst({
+      where: { key: descriptor.key, version: 1, tenantId: null, origin },
+    })
+    const data = {
+      displayName: descriptor.displayName,
+      description: descriptor.description ?? null,
+      descriptor: descriptor as Prisma.InputJsonValue,
+      status: 'active' as const,
+    }
+    if (!existing) {
+      await prisma.connectorTemplate.create({
+        data: {
+          key: descriptor.key,
+          version: 1,
+          origin,
+          tenantId: null,
+          ...data,
+        },
+      })
+      continue
+    }
+    await prisma.connectorTemplate.update({ where: { id: existing.id }, data })
+  }
+}
 
 async function main() {
   const tenant = await prisma.tenant.upsert({
@@ -50,6 +84,9 @@ async function main() {
       activatedAt: new Date(),
     },
   })
+
+  await upsertTemplates('builtin', BUILTIN_CONNECTOR_TEMPLATES)
+  await upsertTemplates('custom', GLOBAL_CUSTOM_CONNECTOR_TEMPLATES)
 
   const connector = await ensureTenantGoogleDriveConnector(prisma, tenant.id)
 

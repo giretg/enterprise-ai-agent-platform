@@ -30,6 +30,7 @@ import { isSuperadmin } from '@/lib/tenant-policy'
 import { IamService } from '@/domain/iam/iam-service'
 import { PlatformSettingsService } from '@/domain/platform-settings/platform-settings-service'
 import { ProvisioningService } from '@/domain/provisioning/provisioning-service'
+import { HttpSandboxConnectionTester } from '@/domain/provisioning/sandbox-connection-tester'
 import { SkillService } from '@/domain/skill/skill-service'
 import { TenantService } from '@/domain/tenant/tenant-service'
 
@@ -58,11 +59,26 @@ const skillService = new SkillService(repositories.skills, repositories.agents, 
   },
 })
 
+const resolveEgressAllowlist = (tenantId: string | null) =>
+  platformSettingsService.getEgressAllowlist(tenantId)
+const resolveBankPreset = async () => process.env.PROVISIONING_BANK_PRESET === 'true'
+
 const provisioningService = new ProvisioningService({
   drafts: repositories.connectorDrafts,
   connectorGrants: connectorGrantService,
-  resolveEgressAllowlist: (tenantId) => platformSettingsService.getEgressAllowlist(tenantId),
-  resolveBankPreset: async () => process.env.PROVISIONING_BANK_PRESET === 'true',
+  resolveEgressAllowlist,
+  resolveBankPreset,
+  sandboxTester: new HttpSandboxConnectionTester({ resolveEgressAllowlist, resolveBankPreset }),
+  resolvePlatformGoogleOAuth: async (service = 'gmail') => {
+    if (process.env.GOOGLE_DRIVE_API_STUB === 'true' && service === 'drive') {
+      return { configured: true }
+    }
+    const cfg =
+      service === 'drive'
+        ? await platformSettingsService.getGoogleDriveOAuthConfig()
+        : await platformSettingsService.getGoogleOAuthConfig()
+    return { configured: Boolean(cfg) }
+  },
 })
 
 const agentDefinitionService = new AgentDefinitionService({
