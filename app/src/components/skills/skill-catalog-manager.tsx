@@ -50,12 +50,9 @@ import { skillDisplayLabel } from '@/lib/skill/skill-name'
 import { formatToolUiName } from '@/lib/tool-ui-labels'
 import {
   SKILL_KIND_COPY,
-  SKILL_SYSTEM_ROLE_LABEL,
-  isSkillSystemRole,
   resolveSkillKind,
   skillCatalogListPresentation,
   type SkillKind,
-  type SkillSystemRole,
 } from '@/lib/skill/skill-kind'
 import { SkillKindFields } from '@/components/skills/skill-kind-fields'
 
@@ -748,13 +745,7 @@ function SkillCatalogRow({
               </Badge>
             ) : null}
             <Badge tone={kindTone}>{kindLabel}</Badge>
-            {kind === 'system' && skill.requiredSystemRole ? (
-              <Badge tone="neutral">
-                {isSkillSystemRole(skill.requiredSystemRole)
-                  ? SKILL_SYSTEM_ROLE_LABEL[skill.requiredSystemRole]
-                  : skill.requiredSystemRole}
-              </Badge>
-            ) : null}
+            {kind === 'system' ? <Badge tone="neutral">system</Badge> : null}
           </div>
           <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-ink-soft">
             {skill.description}
@@ -1947,21 +1938,19 @@ function ImportSkillForm({
   const [subpath, setSubpath] = useState('')
   const [sourceUrl, setSourceUrl] = useState('')
   const [kind, setKind] = useState<SkillKind>('tenant')
-  const [requiredSystemRole, setRequiredSystemRole] = useState<SkillSystemRole | null>(null)
 
   function submit() {
     startTransition(async () => {
       setFormError(null)
       const res =
         format === 'markdown'
-          ? await importSkillMdAction({ raw, sourceUrl, kind, requiredSystemRole })
+          ? await importSkillMdAction({ raw, sourceUrl, kind })
           : await (async () => {
               const formData = new FormData()
               if (archive) formData.set('archive', archive)
               formData.set('sourceUrl', sourceUrl)
               formData.set('subpath', subpath)
               formData.set('kind', kind)
-              if (requiredSystemRole) formData.set('requiredSystemRole', requiredSystemRole)
               return importSkillPackageAction(formData)
             })()
       if (res.success) {
@@ -2065,12 +2054,10 @@ function ImportSkillForm({
       <FormSection title="Ki használhatja?">
         <SkillKindFields
           kind={kind}
-          requiredSystemRole={requiredSystemRole}
           isPlatformAdmin={isPlatformAdmin}
           disabled={pending}
           onChange={(next) => {
             setKind(next.kind)
-            setRequiredSystemRole(next.requiredSystemRole)
           }}
         />
       </FormSection>
@@ -2102,37 +2089,27 @@ function SkillKindEditor({
   isPlatformAdmin: boolean
 }) {
   const [kind, setKind] = useState<SkillKind>(() => resolveSkillKind(skill.kind, skill.catalogScope))
-  const [requiredSystemRole, setRequiredSystemRole] = useState<SkillSystemRole | null>(() =>
-    isSkillSystemRole(skill.requiredSystemRole) ? skill.requiredSystemRole : null,
-  )
-  const propEpoch = `${skill.id}\0${skill.kind}\0${skill.requiredSystemRole ?? ''}`
+  const propEpoch = `${skill.id}\0${skill.kind}`
   const [appliedEpoch, setAppliedEpoch] = useState(propEpoch)
 
   if (appliedEpoch !== propEpoch) {
     setAppliedEpoch(propEpoch)
     setKind(resolveSkillKind(skill.kind, skill.catalogScope))
-    setRequiredSystemRole(
-      isSkillSystemRole(skill.requiredSystemRole) ? skill.requiredSystemRole : null,
-    )
   }
 
   const canEdit = isPlatformAdmin && skill.catalogScope === 'global'
-  const dirty =
-    kind !== skill.kind ||
-    (requiredSystemRole ?? null) !== (skill.requiredSystemRole ?? null)
+  const dirty = kind !== skill.kind
 
   return (
     <div className="mt-3 space-y-2">
       <SkillKindFields
         name={`skill-kind-${skill.id}`}
         kind={kind}
-        requiredSystemRole={requiredSystemRole}
         isPlatformAdmin={canEdit}
         disabled={running || !canEdit}
         disableKinds={skill.catalogScope === 'global' ? ['tenant'] : ['published', 'system']}
         onChange={(next) => {
           setKind(next.kind)
-          setRequiredSystemRole(next.requiredSystemRole)
         }}
       />
       {canEdit ? (
@@ -2145,7 +2122,6 @@ function SkillKindEditor({
                 updateSkillKindAction({
                   skillId: skill.id,
                   kind,
-                  requiredSystemRole,
                 }),
               `Fajta mentve: ${SKILL_KIND_COPY[kind].label}.`,
             )
@@ -2324,7 +2300,6 @@ function CreateSkillForm({
   const [displayName, setDisplayName] = useState('')
   const [description, setDescription] = useState('')
   const [kind, setKind] = useState<SkillKind>('tenant')
-  const [requiredSystemRole, setRequiredSystemRole] = useState<SkillSystemRole | null>(null)
   const [draft, setDraft] = useState<SkillContentDraft>(EMPTY_CONTENT_DRAFT)
 
   function submit() {
@@ -2335,7 +2310,6 @@ function CreateSkillForm({
         displayName: displayName.trim() || null,
         description,
         kind,
-        requiredSystemRole,
         ...contentDraftPayload(draft),
       })
       if (res.success) {
@@ -2401,12 +2375,10 @@ function CreateSkillForm({
       <FormSection title="Ki használhatja?">
         <SkillKindFields
           kind={kind}
-          requiredSystemRole={requiredSystemRole}
           isPlatformAdmin={isPlatformAdmin}
           disabled={pending}
           onChange={(next) => {
             setKind(next.kind)
-            setRequiredSystemRole(next.requiredSystemRole)
           }}
         />
       </FormSection>

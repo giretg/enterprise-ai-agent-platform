@@ -46,7 +46,7 @@ function activeDelegatedConnectorWhere(tenantId: string): Prisma.ConnectorWhereI
   return {
     authMode: 'user_delegated',
     lifecycleState: 'active',
-    OR: [{ tenantId: null }, { tenantId }],
+    tenantId,
   }
 }
 
@@ -102,7 +102,6 @@ async function delegatedConnectorUsage(
       agent: {
         select: {
           name: true,
-          personaNickname: true,
           capabilities: {
             where: { allowed: true },
             select: { toolName: true },
@@ -117,10 +116,12 @@ async function delegatedConnectorUsage(
       const requiredTools = new Set<string>(toolsRequiringConnector(connector.type))
       const connectorLinks = links.filter((link) => link.connectorId === connector.id)
       const capableAgents = connectorLinks.filter((link) =>
-        link.agent.capabilities.some((capability) => requiredTools.has(capability.toolName)),
+        link.agent.capabilities.some((capability: { toolName: string }) =>
+          requiredTools.has(capability.toolName),
+        ),
       )
       const capableAgentDisplayNames = capableAgents
-        .map((link) => agentDisplayName(link.agent.name, link.agent))
+        .map((link) => link.agent.name)
         .sort((a, b) => a.localeCompare(b, 'hu'))
       return [
         connector.id,
@@ -498,7 +499,7 @@ export async function listUserDelegatedConnectors() {
       where: {
         authMode: 'user_delegated',
         lifecycleState: 'active',
-        OR: [{ tenantId: null }, { tenantId: user.activeTenantId }],
+        tenantId: user.activeTenantId,
       },
       orderBy: { name: 'asc' },
     })

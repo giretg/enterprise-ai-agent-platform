@@ -1,27 +1,12 @@
-import type { AuditRepository } from '@/repositories/interfaces'
-
-export const ACCESS_AUDIT_ACTIONS = [
-  'user.invite.issue',
-  'user.invite.redeem',
-  'user.invite.revoke',
-  'user.provision.create',
-  'user.provision.claim',
-  'user.selfregister',
-  'user.role.assign',
-  'user.role.change',
-  'user.suspend',
-  'user.reactivate',
-  'user.permission.update',
-  'user.authz.deny',
-] as const
-
-export function buildTenantAccessAuditFilter(params: {
+/** Filter shape for former access-audit queries. AuditLog was dropped in Phase B. */
+export function buildTenantAccessAuditFilter(input: { tenantId: string; limit?: number }): {
   tenantId: string
-  limit?: number
-}): NonNullable<Parameters<AuditRepository['findMany']>[0]> {
+  limit: number
+  action: string[]
+} {
   return {
-    action: [...ACCESS_AUDIT_ACTIONS],
-    tenantId: params.tenantId,
-    limit: params.limit ?? 200,
+    tenantId: input.tenantId,
+    limit: input.limit ?? 50,
+    action: ['user.authz.deny', 'user.permission.update'],
   }
 }

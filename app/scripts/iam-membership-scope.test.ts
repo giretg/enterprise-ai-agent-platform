@@ -70,11 +70,6 @@ function fixture(seedUsers: StoredUser[] = [], seedMemberships: StoredMembership
     } as never,
     {} as never,
     {} as never,
-    {
-      async append() {
-        return {} as never
-      },
-    } as never,
     undefined,
     {
       async findByTenantAndUser(tenantId: string, userId: string) {
@@ -179,7 +174,6 @@ async function main() {
     assert.equal(listed[0]?.id, 'user-colleague')
     assert.equal(listed[0]?.role, 'operator')
     assert.equal(listed[0]?.status, 'active')
-    assert.equal(listed[0]?.tenantId, 'tenant-a')
   })
 
   await check('listUsers overlays membership role/status over legacy User fields', async () => {
@@ -209,7 +203,6 @@ async function main() {
     assert.equal(listed.length, 1)
     assert.equal(listed[0]?.role, 'viewer')
     assert.equal(listed[0]?.status, 'pending')
-    assert.equal(listed[0]?.tenantId, 'tenant-b')
   })
 
   await check('changeRole updates membership role without mutating global User.role', async () => {

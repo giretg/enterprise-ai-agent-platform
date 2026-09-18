@@ -294,10 +294,7 @@ export function AgentSkillsPanel({
                 {isSkillKind(selectedSkill.kind) ? (
                   <p className="mt-1 text-xs leading-relaxed text-ink-faint">
                     {SKILL_KIND_COPY[selectedSkill.kind].explanation}
-                    {selectedSkill.kind === 'system' &&
-                    isSkillSystemRole(selectedSkill.requiredSystemRole)
-                      ? ` Kötés: ${SKILL_SYSTEM_ROLE_LABEL[selectedSkill.requiredSystemRole]}.`
-                      : ''}
+                    {selectedSkill.kind === 'system' ? '' : ''}
                   </p>
                 ) : null}
                 <p className="mt-1 text-sm leading-relaxed text-ink-soft">

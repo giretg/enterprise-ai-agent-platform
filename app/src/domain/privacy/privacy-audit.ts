@@ -5,7 +5,6 @@
  * soha a nyers entitásérték. A builder allowlist-eli a mezőket; extra kulcs
  * (`displayValue`, `rawValue`, `sourceId`, tool-args) nem kerül a láncba.
  */
-import type { AuditRepository } from '@/repositories/interfaces'
 import { isSurrogateEntityType, parseSurrogate, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
 import type { PrivacyGatewayMode, PrivacySpanSummary } from '@/domain/privacy/privacy-mode'
@@ -118,76 +117,9 @@ export function summaryFromSurrogate(surrogate: string): PrivacySpanSummary {
 }
 
 export async function recordPrivacyGatewayAudit(
-  audit: AuditRepository,
-  input: PrivacyGatewayAuditInput,
+  _input: PrivacyGatewayAuditInput,
 ): Promise<void> {
-  const summary = input.summary
-  const metadata = buildPrivacyAuditMetadata({
-    category: summary.categories[0],
-    categories: summary.categories,
-    action: input.action.startsWith('privacy.resolve') ? 'resolve' : 'tokenize',
-    spanCount: summary.spanCount,
-    byCategory: summary.byCategory,
-    scopeType: input.scope.type,
-    mode: input.mode,
-    reason: input.reason,
-  })
-  const refs = auditRefsFor(input, summary)
-  await audit.append({
-    actorType: input.actorType ?? 'system',
-    actorId: input.actorId ?? null,
-    agentVersion: null,
-    action: input.action,
-    targetType: input.scope.type,
-    targetId: input.scope.id,
-    modelUsed: null,
-    inputRef: refs.inputRef,
-    outputRef: refs.outputRef,
-    policyDecision: refs.policyDecision,
-    metadata,
-    tenantId: input.tenantId,
-    ticketId: input.ticketId ?? null,
-    conversationId: input.scope.type === 'conversation' ? input.scope.id : null,
-  })
-}
-
-function auditRefsFor(
-  input: PrivacyGatewayAuditInput,
-  summary: PrivacySpanSummary,
-): { inputRef: string | null; outputRef: string | null; policyDecision: string } {
-  if (input.action === 'privacy.resolve.denied') {
-    return {
-      inputRef: input.surrogate ?? null,
-      outputRef: input.reason ?? 'denied',
-      policyDecision: 'denied',
-    }
-  }
-  if (input.action === 'privacy.surrogate.unknown') {
-    return {
-      inputRef: input.surrogate ?? null,
-      outputRef: input.reason ?? 'unknown',
-      policyDecision: input.reason ?? 'unknown',
-    }
-  }
-  return {
-    inputRef: summary.categories.length > 0 ? summary.categories.join(',') : null,
-    outputRef: `spans:${summary.spanCount}`,
-    policyDecision: policyDecisionFor(input.action, input.mode, input.reason),
-  }
-}
-
-function policyDecisionFor(
-  action: PrivacyGatewayAuditAction,
-  mode: PrivacyGatewayMode | undefined,
-  reason: string | undefined,
-): string {
-  if (action === 'privacy.transform.observed') return 'observed'
-  if (action === 'privacy.transform.applied') return 'applied'
-  if (action === 'privacy.transform.failed') return reason ?? 'degraded'
-  if (action === 'privacy.resolve.applied') return 'applied'
-  if (action === 'privacy.resolve.denied') return reason ?? 'denied'
-  if (action === 'privacy.surrogate.unknown') return reason ?? 'unknown'
-  return mode ?? action
+  // Phase B has no AuditLog table.
 }
 
 /** Teszt-segéd: a serializált audit-ágban megjelenik-e bármely nyers entitásérték. */

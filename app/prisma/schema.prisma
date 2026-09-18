@@ -28,8 +28,6 @@ enum InvitationStatus {
   revoked
 }
 
-// ── Tenant Management (Feature-spec Tenant-Management §4) ────────────────────
-
 enum TenantStatus {
   active
   suspended
@@ -43,10 +41,6 @@ enum TenantMembershipStatus {
   suspended
 }
 
-/**
- * Platform-szintű szerep — NEM tenant-role (§3.1). Az enum bővíthetően
- * vezeti be a platform-szerepeket (§6.2, döntés 3.3/10).
- */
 enum PlatformRole {
   superadmin
   platform_operator
@@ -60,14 +54,11 @@ enum PlatformMembershipStatus {
 
 enum ResourceGrantType {
   agent
-  playbook
-  ticket_type
 }
 
 enum ResourceAccessLevel {
   view
   operate
-  approve
 }
 
 enum AgentStatus {
@@ -77,147 +68,9 @@ enum AgentStatus {
   retired
 }
 
-enum AgentRole {
-  worker
-  orchestrator
-}
-
-/**
- * Platform által kezelt, nem a felhasználó által adott agent-azonosságok.
- *
- * A `role` üzleti munkakört jelöl (worker/orchestrator); ez a mező viszont a
- * biztonsági határral rendelkező rendszer-szerepet. A kettőt nem szabad név vagy
- * prompt alapján összemosni, mert a név tenant-admin által is megváltoztatható.
- */
-enum AgentSystemRole {
-  web_egress
-  run_analyst
-
-  @@map("agent_system_role")
-}
-
-/// Agent-hozzáférési gráf (Access-Policy §agent-scope): az él ALANYA vagy egy konkrét
-/// user, vagy egy másik agent. Csoport/Team/OrgUnit alany szándékosan NEM tartozik ide —
-/// az külön domain-entitást és migrációt igényelne.
-enum AgentAccessSubjectType {
-  user
-  agent
-
-  @@map("agent_access_subject_type")
-}
-
-/// Konfigurálható szerep-sablon (Feature-spec §3.5) — a szerep ADAT-konfiguráció,
-/// nem beégetett típus. A `tool_access_allowed` runtime-invariánst a Tool Broker
-/// `authorize()` elsőként nézi (§6); orchestrator = FALSE (tool-less by design).
-/// `tenant_id = NULL` → rendszer-szintű beépített sablon (worker | orchestrator).
-model RoleTemplate {
-  id                   String    @id @default(uuid()) @db.Uuid
-  tenantId             String?   @map("tenant_id") @db.Uuid
-  key                  AgentRole
-  displayName          String    @map("display_name")
-  toolAccessAllowed    Boolean   @map("tool_access_allowed")
-  // worker: tetszőleges capability (["*"]); orchestrator: kizárólag ["ticket:create"].
-  allowedOutbound      Json      @map("allowed_outbound")
-  // Az orchestrator is a write-gate alatt áll (nincs kivételezett státusz).
-  selfEvolutionAllowed Boolean   @map("self_evolution_allowed")
-  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
-
-  @@unique([tenantId, key])
-  @@map("role_templates")
-}
-
-enum PlaybookVersionStatus {
-  proposed
-  active
-  retired
-}
-
-enum ApiKeyStatus {
-  active
-  revoked
-}
-
-enum MemoryVersionStatus {
-  proposed
-  active
-  rolled_back
-}
-
-enum MemoryVersionKind {
-  instruction
-  project_manifest
-
-  @@map("memory_version_kind")
-}
-
-enum TrainingOrigin {
-  human
-  reflection
-
-  @@map("training_origin")
-}
-
-enum TrainingScopeClass {
-  memory
-  behavior
-  role
-
-  @@map("training_scope_class")
-}
-
-enum TrainingProposalCompositionMode {
-  build_on_pending
-  replace_pending
-
-  @@map("training_proposal_composition_mode")
-}
-
-enum TrainingProposalRevisionStatus {
-  current
-  superseded
-
-  @@map("training_proposal_revision_status")
-}
-
-enum TrainingProposalTokenStatus {
-  unissued
-  issued
-  consumed
-  expired
-  revoked
-
-  @@map("training_proposal_token_status")
-}
-
-enum ResourceType {
-  secret
-  policy
-  file
-  dataset
-  connector
-  tool
-}
-
-enum ResourceScope {
-  global
-  group
-  single
-}
-
-enum AccessMode {
-  read
-  use
-}
-
 enum ConnectorType {
-  knowledge_base
-  board
-  gmail
   google_drive
-  workspace
   http_api
-  web_search
-  code_sandbox
 }
 
 enum ConnectorAuthMode {
@@ -242,32 +95,6 @@ enum ConnectorAccessMode {
   write
 }
 
-/// issue #220 — agent↔connector írás-bizalom a következmény-kapuhoz.
-/// `per_call` = mai viselkedés (minden író hívás külön kártya); `preapproved` = kapu-skip
-/// allowlistelt write(/danger) hívásokra, audit + opcionális szigorú fékekkel.
-enum WriteApprovalMode {
-  per_call
-  preapproved
-}
-
-/// `preapproved` trust mód: laza = csak audit; szigorú = hívásszám-limit + lejárat.
-enum PreapprovedTrustMode {
-  lax
-  strict
-}
-
-/// Opcionális címke: hol van a „valódi” emberi következmény-határ.
-/// Nem kapcsolja a kaput — UI javaslat az adminnak (issue #220).
-enum ConsequenceBoundary {
-  external_draft
-  platform
-}
-
-// ── Fázis 2: Provisioning Assistant (Connector Onboarding) ──────────────────
-// A connector életciklus-állapota. DEFAULT `active`, hogy a meglévő sorok
-// viselkedése változatlan maradjon; a draft-connector `draft|validated`
-// állapotban a Tool Brokerben SOHA nem oldódik fel (runtime DENY).
-// (Feature-spec — Provisioning-Assistant §4.1.)
 enum ConnectorLifecycleState {
   draft
   validated
@@ -311,98 +138,11 @@ enum ConnectorDraftReviewStatus {
   @@map("connector_draft_review_status")
 }
 
-// ── Önfrissítő connector (Dev-Spec — Self-Updating-Connector §5) ────────────
-// A connector "módja". DEFAULT `fixed`, hogy a meglévő sorok viselkedése
-// változatlan maradjon; `self_updating` connector kap egy ConnectorSpecSource-ot
-// és a futásidejű képességeit az `activeSpecVersion` capabilitySet-je adja (A3).
-enum ConnectorMode {
-  fixed
-  self_updating
-
-  @@map("connector_mode")
-}
-
-// Egy letöltött+parse-olt spec-pillanatkép életciklusa (Dev-Spec §5/§9).
-// `proposed` a szinkron eredménye; emberi jóváhagyás → `approved` (ez lesz az aktív),
-// a korábbi aktív → `superseded`; elutasítás → `rejected`; rollback → `rolled_back`.
-enum ConnectorSpecVersionStatus {
-  proposed
-  approved
-  superseded
-  rejected
-  rolled_back
-
-  @@map("connector_spec_version_status")
-}
-
-enum ToolCallStatus {
-  ok
-  denied
-  error
-}
-
-/// Következmény-kapu (issue #97) — külső tartalom után mellékhatásos tool
-/// emberi jóváhagyásra vár. A teljes tool-args itt él (az argsMeta csak összefoglaló).
-enum ConsequenceApprovalStatus {
-  pending
-  approved
-  rejected
-  expired
-
-  @@map("consequence_approval_status")
-}
-
-// issue #97 — bizalmi osztály minden eszköz-eredményen. Determinisztikus,
-// tool-nevenkénti besorolás (tool-trust-registry.ts); indexelt audit-oszlop.
-enum TrustClass {
-  trusted
-  internal
-  external_untrusted
-}
-
-/// Eszközhívás kimenetele (issue #195 D1). Az `empty` és a `partial` NEM hiba,
-/// hanem tény: eddig épp az volt a baj, hogy a „sikeresen semmit nem csinált"
-/// eset `ok`-ként jelent meg (üres Excel, hiányzó sorok, néma adatvesztés).
-enum ToolOutcome {
-  ok
-  empty
-  partial
-  failed
-}
-
-enum ModelCallStatus {
-  ok
-  error
-  rate_limited
-}
-
-enum RecipeTicketType {
-  interaction
-  training
-}
-
-enum RecipeScope {
-  global
-  single
-}
-
-enum RecipeVersionStatus {
-  proposed
-  active
-  retired
-}
-
-// ── Skill-katalógus (spec: skill-catalog-spec.md) ───────────────────────────
-// Importálható/szerezhető, governance alá vont agent-skillek. A skill puha része
-// (instrukciók) promptba injektálva; a kemény része (`requires` capability-manifeszt)
-// a Tool Brokerrel kikényszerítve. Fázis 1: kizárólag T0/T1 (instrukció-only).
 enum SkillCatalogScope {
-  global // admin-kurált, tenantoknak read-only
-  tenant // tenant-lokális, más tenantnak sosem látható
+  global
+  tenant
 }
 
-/// Katalógus-besorolás (nem RBAC, nem tenant-határ).
-/// tenant = saját tenant; published = kiadott platform-csomag; system = rendszer-agenthez kötött.
 enum SkillKind {
   tenant
   published
@@ -415,10 +155,10 @@ enum SkillSourceType {
 }
 
 enum SkillRiskTier {
-  t0 // csak instrukció, nincs tool-igény, nincs kód
-  t1 // instrukció + tool-igény, nincs kód
-  t2 // kód, nincs egress/secret (Fázis 2)
-  t3 // kód + háló/secret (Fázis 2)
+  t0
+  t1
+  t2
+  t3
 }
 
 enum SkillVersionStatus {
@@ -429,254 +169,20 @@ enum SkillVersionStatus {
   rolled_back
 }
 
-enum TicketType {
-  interaction
-  training
-  monitor_alert
-}
-
-enum TicketState {
-  backlog
-  ready
+enum GatewayOperationStatus {
+  requested
+  awaiting_approval
   approved
-  in_progress
-  awaiting_human
-  needs_info
-  done
   rejected
-}
-
-enum TicketSource {
-  user
-  test
-  system
-}
-
-enum ScheduledTaskStatus {
-  active
-  materializing
-  materialized
-  revoked
-}
-
-enum ScheduledTaskKind {
-  agent_task
-  wiki_question
-}
-
-enum ScheduledTaskRecurrence {
-  none
-  daily
-  weekly
-  monthly
-  hourly
-}
-
-enum MonitorKind {
-  board_backlog
-  deadline
-  connector_count
-  composite
-}
-
-enum MonitorStatus {
-  active
-  paused
-  revoked
-}
-
-enum MonitorRunOutcome {
-  quiet
-  escalated
-  suppressed
-  skipped
-  error
-}
-
-enum MonitorCatchupPolicy {
-  run_late
-  skip
-}
-
-enum AssigneeType {
-  human
-  agent
-}
-
-enum DocumentStatus {
-  uploaded
-  processing
-  processed
+  executing
+  succeeded
   failed
 }
 
-// ── KB-v3: OKF dokumentum-tudásbázis (Knowledge-Base-v3-OKF-Spec §8.1) ──────
-// Feldolgozási mód dokumentumonként. `raw_text_only` a legacy/gyors út,
-// `okf` az LLM-generált OKF-javaslat review-ra. A v2 structured_rag / okf_plus_rag
-// tudatosan törölve — nincs RAG (D-A).
-enum KnowledgeProcessingMode {
-  raw_text_only
-  okf
-
-  @@map("knowledge_processing_mode")
-}
-
-enum KnowledgeArtifactStatus {
-  draft
-  processing
-  pending_review
-  published
-  failed
-  superseded
-
-  @@map("knowledge_artifact_status")
-}
-
-enum KnowledgeArtifactFormat {
-  okf_v0_1
-  markdown_bundle
-  raw_markdown
-  json
-
-  @@map("knowledge_artifact_format")
-}
-
-// A megoszthatóság a connector tulajdonsága, független a tartalom típusától (D-C/D-D).
-enum KnowledgeConnectorSharing {
-  single_agent
-  multi_agent
-
-  @@map("knowledge_connector_sharing")
-}
-
-enum AuditActorType {
-  human
-  agent
-  system
-}
-
-enum TicketCommentKind {
-  human_comment
-  agent_answer
-  agent_progress
-  system_note
-}
-
-enum TicketCommentAttachmentKind {
-  file
-  screenshot
-}
-
-enum SandboxAppLevel {
-  A0
-  A1
-  A2
-  A3
-}
-
-enum SandboxAppType {
-  single_html
-  static_bundle
-  sandbox_data_app
-  integrated_app
-}
-
-enum SandboxAppStatus {
-  draft
-  active
-  archived
-  blocked
-}
-
-enum SandboxAppVersionStatus {
-  draft
-  active
-  superseded
-  blocked
-}
-
-enum SandboxAppCriticality {
-  L0
-  L1
-  L2
-  L3
-}
-
-enum SandboxCreatedByType {
-  user
-  agent
-  system
-}
-
-enum ConversationStatus {
-  active
-  archived
-}
-
-// ── Csatorna-réteg (Telegram feature-spec #70, D14) ─────────────────────────
-// Az általános Csatorna (Channel) réteg típus-diszkriminátora. Ma egyetlen tag
-// (telegram); a WhatsApp/Slack/SMS adapterek KÍVÜL esnek a hatókörön (Out of Scope),
-// de az enum és a séma előre felkészül rájuk.
-enum ChannelType {
-  telegram
-  embedded_app
-}
-
-/// A regisztrált csatorna-bot állapota. `disabled` esetén a csatorna némán zárva —
-/// incidens esetén a platform-admin egy lépésben elzárhatja a kimenő/bejövő utat.
-enum ChannelBotStatus {
-  active
-  disabled
-}
-
-/// A csatorna-identitás (külső fiók ↔ platform-felhasználó kötés) állapota.
-/// `revoked` = a felhasználó/admin megszüntette; `blocked` = a külső oldal jelezte,
-/// hogy a felhasználó letiltotta a botot (D15 — a küldés abbamarad). SZEREPKÖRT nem tárol.
-enum ChannelIdentityStatus {
-  active
-  revoked
-  blocked
-}
-
-/// A worker második munkatípusának (D8) sor-állapota. A forduló túléli a webhook-kérést,
-/// újrapróbálható és mérhető.
-enum ChannelTurnStatus {
-  queued
-  running
-  done
-  failed
-}
-
-enum MessageRole {
-  user
-  agent
-  system
-  tool
-}
-
-/// chat-agent-turn-resilience-spec.md §4 (D1) — a chat-agent-forduló életciklus-státusza.
-/// A `queued|running|streaming` az aktív halmaz (l. az aktív-forduló invariánst),
-/// a többi terminális.
-enum AgentTurnStatus {
-  queued
-  running
-  streaming
-  completed
-  exhausted
-  cancelled
-  failed
-}
-
-enum MessageCriticality {
-  L0
-  L1
-  L2
-  L3
-}
-
-enum RetentionPolicyAppliesTo {
-  all
-  agent
+enum GatewayApprovalDecision {
+  pending
+  approved
+  rejected
 }
 
 model User {
@@ -684,12 +190,8 @@ model User {
   externalAuthId  String     @unique @map("external_auth_id")
   email           String
   name            String
-  // Szabad szöveges "humán szerep" leírás (pl. "marketing vezető", "copywriter").
-  // Az agent user_directory toolja ezt látja, hogy egy feladathoz megtalálja az illetékest.
-  jobDescription  String?    @map("job_description")
   role            UserRole?
   status          UserStatus @default(pending) @map("status")
-  tenantId        String?    @map("tenant_id") @db.Uuid
   invitedById     String?    @map("invited_by") @db.Uuid
   activatedAt     DateTime?  @map("activated_at") @db.Timestamptz
   suspendedAt     DateTime?  @map("suspended_at") @db.Timestamptz
@@ -699,68 +201,48 @@ model User {
   createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  invitedBy                     User?                @relation("UserInvitedBy", fields: [invitedById], references: [id])
-  invitedUsers                  User[]               @relation("UserInvitedBy")
-  suspendedBy                   User?                @relation("UserSuspendedBy", fields: [suspendedById], references: [id])
-  suspendedUsers                User[]               @relation("UserSuspendedBy")
-  approvedMemoryVersions        MemoryVersion[]      @relation("MemoryApprovedBy")
-  approvedRecipeVersions        RecipeVersion[]      @relation("RecipeApprovedBy")
-  approvedSkillVersions         SkillVersion[]       @relation("SkillApprovedBy")
-  approvedPlaybookVersions      PlaybookVersion[]    @relation("PlaybookApprovedBy")
-  createdTickets                Ticket[]             @relation("TicketCreatedBy")
-  ticketCommentsAuthored        TicketComment[]      @relation("TicketCommentAuthorUser")
-  uploadedDocuments             Document[]           @relation("DocumentUploadedBy")
-  createdInvitations            Invitation[]         @relation("InvitationCreatedBy")
-  connectorGrants               ConnectorGrant[]
-  scheduledTasksCreated         ScheduledTask[]      @relation("ScheduledTaskCreatedBy")
-  scheduledTasksRunAs           ScheduledTask[]      @relation("ScheduledTaskRunAsUser")
-  scheduledTasksRunAsAuthorized ScheduledTask[]      @relation("ScheduledTaskRunAsAuthorizedBy")
-  monitorDefinitionsCreated     MonitorDefinition[]  @relation("MonitorDefinitionCreatedBy")
-  conversationsCreated          Conversation[]       @relation("ConversationCreatedBy")
-  messagesActing                Message[]            @relation("MessageActingUser")
-  resourceGrantsReceived        ResourceGrant[]      @relation("ResourceGrantUser")
-  resourceGrantsIssued          ResourceGrant[]      @relation("ResourceGrantGrantedBy")
-  tenantMemberships             TenantMembership[]   @relation("MembershipUser")
-  membershipsInvited            TenantMembership[]   @relation("MembershipInvitedBy")
-  platformMemberships           PlatformMembership[] @relation("PlatformMembershipUser")
-  tenantsCreated                Tenant[]             @relation("TenantCreatedBy")
-  channelIdentities             ChannelIdentity[]    @relation("ChannelIdentityUser")
-  channelLinkTokens             ChannelLinkToken[]   @relation("ChannelLinkTokenUser")
-  userNotifications             UserNotification[]   @relation("UserNotificationUser")
-  agentAccessGrantsAsSubject    AgentAccessGrant[]   @relation("AgentAccessSubjectUser")
-  agentAccessGrantsIssued       AgentAccessGrant[]   @relation("AgentAccessGrantedBy")
+  invitedBy                   User?                 @relation("UserInvitedBy", fields: [invitedById], references: [id])
+  invitedUsers                User[]                @relation("UserInvitedBy")
+  suspendedBy                 User?                 @relation("UserSuspendedBy", fields: [suspendedById], references: [id])
+  suspendedUsers              User[]                @relation("UserSuspendedBy")
+  approvedSkillVersions       SkillVersion[]        @relation("SkillApprovedBy")
+  createdInvitations          Invitation[]          @relation("InvitationCreatedBy")
+  connectorGrants             ConnectorGrant[]
+  resourceGrantsReceived      ResourceGrant[]       @relation("ResourceGrantUser")
+  resourceGrantsIssued        ResourceGrant[]       @relation("ResourceGrantGrantedBy")
+  tenantMemberships           TenantMembership[]    @relation("MembershipUser")
+  membershipsInvited          TenantMembership[]    @relation("MembershipInvitedBy")
+  platformMemberships         PlatformMembership[]  @relation("PlatformMembershipUser")
+  tenantsCreated              Tenant[]              @relation("TenantCreatedBy")
+  publishedDefinitions        AgentDefinitionVersion[] @relation("DefinitionPublishedBy")
+  gatewayOperations           GatewayOperation[]    @relation("GatewayOperationPrincipal")
+  gatewayApprovalsDecided     GatewayApproval[]     @relation("GatewayApprovalDecidedBy")
 
-  @@index([tenantId, status])
-  @@index([tenantId, role])
+  @@index([status])
   @@map("users")
 }
 
 model Invitation {
-  id          String           @id @default(uuid()) @db.Uuid
-  tenantId    String?          @map("tenant_id") @db.Uuid
-  // A Clerk-meghívó visszavonásához és a provider/local állapot egyeztetéséhez.
-  clerkInvitationId String?    @unique @map("clerk_invitation_id")
-  email       String
-  role        UserRole
-  tokenHash   String           @unique @map("token_hash")
-  status      InvitationStatus @default(pending)
-  expiresAt   DateTime         @map("expires_at") @db.Timestamptz
-  redeemedAt  DateTime?        @map("redeemed_at") @db.Timestamptz
-  revokedAt   DateTime?        @map("revoked_at") @db.Timestamptz
-  createdById String           @map("created_by") @db.Uuid
-  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  id                String           @id @default(uuid()) @db.Uuid
+  tenantId          String?          @map("tenant_id") @db.Uuid
+  clerkInvitationId String?          @unique @map("clerk_invitation_id")
+  email             String
+  role              UserRole
+  tokenHash         String           @unique @map("token_hash")
+  status            InvitationStatus @default(pending)
+  expiresAt         DateTime         @map("expires_at") @db.Timestamptz
+  redeemedAt        DateTime?        @map("redeemed_at") @db.Timestamptz
+  revokedAt         DateTime?        @map("revoked_at") @db.Timestamptz
+  createdById       String           @map("created_by") @db.Uuid
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz
 
-  createdBy User @relation("InvitationCreatedBy", fields: [createdById], references: [id])
+  tenant    Tenant? @relation(fields: [tenantId], references: [id])
+  createdBy User    @relation("InvitationCreatedBy", fields: [createdById], references: [id])
 
   @@index([tenantId, status])
   @@map("invitations")
 }
 
-/**
- * Tenant = egy cég/ügyfél első osztályú entitása (Feature-spec Tenant-Management §2, §4.1).
- * A tenant a by-design multi-tenancy izolációs egysége: két tenant nem osztozik
- * agenten, Playbookon, connectoron, sessionön vagy beálltáson (Koncepció 8.8).
- */
 model Tenant {
   id              String       @id @default(uuid()) @db.Uuid
   slug            String       @unique
@@ -775,20 +257,20 @@ model Tenant {
 
   createdBy         User?              @relation("TenantCreatedBy", fields: [createdById], references: [id])
   memberships       TenantMembership[]
-  agentAccessGrants AgentAccessGrant[]
-  surrogateMaps     SurrogateMap[]
-  conversationPrivacyKeys ConversationPrivacyKey[]
-  conversationObserveEntities ConversationObserveEntity[]
+  invitations       Invitation[]
+  agents            Agent[]
+  skills            Skill[]
+  connectors        Connector[]
+  connectorGrants   ConnectorGrant[]
+  connectorDrafts   ConnectorDraft[]
+  connectorTemplates ConnectorTemplate[]
+  resourceGrants    ResourceGrant[]
+  gatewayOperations GatewayOperation[]
 
   @@index([status])
   @@map("tenants")
 }
 
-/**
- * Tenanton belüli szerep és státusz (§3.1, §4.1). A `User` a globális identitás,
- * a tenant-tagságot és -szerepet ez a join-modell hordozza — egy user több tenant
- * tagja is lehet (§2/3). Az igazság forrása membership-szinten van, nem a `User`-en.
- */
 model TenantMembership {
   id          String                 @id @default(uuid()) @db.Uuid
   tenantId    String                 @map("tenant_id") @db.Uuid
@@ -811,10 +293,6 @@ model TenantMembership {
   @@map("tenant_memberships")
 }
 
-/**
- * Platform-szintű tagság (§3.1, §4.1). A superadmin NEM tenant-role, ezért külön
- * modellben él — így a `hasMinimumRole(..., 'admin')` sosem tekinti tenant-adminnak.
- */
 model PlatformMembership {
   id        String                   @id @default(uuid()) @db.Uuid
   userId    String                   @map("user_id") @db.Uuid
@@ -830,9 +308,6 @@ model PlatformMembership {
   @@map("platform_memberships")
 }
 
-/**
- * Deklaratív permission-mátrix (Feature-spec IAM/RBAC §3.3): permission_key → minimális szerep.
- */
 model RolePermission {
   id            String   @id @default(uuid()) @db.Uuid
   permissionKey String   @unique @map("permission_key")
@@ -843,12 +318,9 @@ model RolePermission {
   @@map("role_permissions")
 }
 
-/**
- * Fázis 3 erőforrás-szintű humán láthatóság horga (§3.4) — a Fázis 1-2-ben nincs kikényszerítve.
- */
 model ResourceGrant {
   id           String              @id @default(uuid()) @db.Uuid
-  tenantId     String?             @map("tenant_id") @db.Uuid
+  tenantId     String              @map("tenant_id") @db.Uuid
   userId       String              @map("user_id") @db.Uuid
   resourceType ResourceGrantType   @map("resource_type")
   resourceId   String              @map("resource_id") @db.Uuid
@@ -856,261 +328,72 @@ model ResourceGrant {
   grantedById  String              @map("granted_by") @db.Uuid
   grantedAt    DateTime            @default(now()) @map("granted_at") @db.Timestamptz
 
-  user      User @relation("ResourceGrantUser", fields: [userId], references: [id])
-  grantedBy User @relation("ResourceGrantGrantedBy", fields: [grantedById], references: [id])
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User   @relation("ResourceGrantUser", fields: [userId], references: [id])
+  grantedBy User   @relation("ResourceGrantGrantedBy", fields: [grantedById], references: [id])
 
+  @@unique([tenantId, userId, resourceType, resourceId])
   @@index([tenantId, userId])
+  @@index([tenantId, resourceId])
   @@map("resource_grants")
 }
 
 model Agent {
-  id                            String      @id @default(uuid()) @db.Uuid
-  tenantId                      String?     @map("tenant_id") @db.Uuid
-  name                          String
-  // Szerep-instrukció ("mit csinál") és viselkedés-profil ("hogyan") külön
-  // verziózva (§4.2/§5.3) — egymástól függetlenül frissíthető és visszakereshető.
-  roleInstruction               String      @map("role_instruction")
-  // A ténylegesen használt viselkedés-profil ("hogyan"): a választott megosztott
-  // profil pinnelt törzse + az agent-specifikus `behaviorProfileOverlay` együtt,
-  // egy szövegbe komponálva (composeBehaviorProfile). A runtime EZT olvassa, így a
-  // prompt-építés és a reprodukálhatósági snapshot változatlan marad.
-  behaviorProfile               String      @map("behavior_profile")
-  // Az agent-specifikus, egyedileg szerkeszthető kiegészítés a megosztott profil
-  // mellé (§3.4). Ez a "hogyan" azon része, ami csak erre az agentre igaz. Ha nincs
-  // megosztott profil, önmagában ez adja a teljes viselkedés-profilt.
-  behaviorProfileOverlay        String?     @map("behavior_profile_overlay")
-  // Emberi arc (agent-persona.ts): admin által szerkeszthető megjelenített név,
-  // üdvözlő mondat és jellemvonás. Ha null, a névből számított meleg
-  // alapértelmezés jelenik meg. `avatarUrl` opcionális feltöltött portré
-  // (data URL vagy külső URL); ha null, a gradiens+emoji arc látszik.
-  personaNickname               String?     @map("persona_nickname")
-  personaGreeting               String?     @map("persona_greeting")
-  personaTrait                  String?     @map("persona_trait")
-  avatarUrl                     String?     @map("avatar_url")
-  modelConfig                   Json        @map("model_config")
-  status                        AgentStatus @default(draft)
-  currentVersion                Int         @default(1) @map("current_version")
-  currentRoleInstructionVersion Int         @default(1) @map("current_role_instruction_version")
-  currentBehaviorProfileVersion Int         @default(1) @map("current_behavior_profile_version")
-  // Fázis 2 (§3.4): opcionális hivatkozás egy MEGOSZTOTT viselkedés-profilra. Ha
-  // be van állítva, a `current_behavior_profile_version` a profil pinnelt al-verziója,
-  // és a `behavior_profile` szöveg az elfogadott profil-al-verzió másolata (kaszkád).
-  currentBehaviorProfileId      String?     @map("current_behavior_profile_id") @db.Uuid
-  role                          AgentRole   @default(worker)
-  // Biztonsági rendszer-szerep. A Web-Egress kiválasztása és a `web_fetch` kapu
-  // kizárólag ezt a perzisztált azonosítót fogadja el, sosem az agent megjelenített nevét.
-  systemRole                    AgentSystemRole? @map("system_role")
-  // DEPRECATED (APG-11): a mindent-vagy-semmit kapcsolót a kategória-policy
-  // váltja. Az olvasók a `resolvePrivacyCategoryPolicy` legacy overlayén
-  // keresztül értelmezik, amíg az agentnek nincs explicit overlay-je. Ne olvasd
-  // közvetlenül — a mezőt a migrált viselkedés miatt még nem töröljük.
-  // Sensitivity router (§4.7.2): ha true, egyik sensitivity szint sem blokkolja
-  // vagy tereli helyi modellre az agent hívását. Az osztályozás és auditálás aktív
-  // marad. Csak tenant admin / superadmin írhatja, minden váltás auditált.
-  allowSensitiveExternalModel   Boolean     @default(false) @map("allow_sensitive_external_model")
-  // Operator-láthatóság: ha true, non-admin szerepek (operator/approver/viewer)
-  // nem látják az agentet a listákban és a detail oldalon. A futás/dispatch
-  // NEM függ ettől — csak a UI/API láthatóság. Csak tenant admin írhatja.
-  hiddenFromOperators           Boolean     @default(false) @map("hidden_from_operators")
-  // Feladatkör-korlátozás (#199): az agent felületén nincs chat, csak egyetlen
-  // skill-kötött feladat-indító gomb. UI-EGYSZERŰSÍTÉS, NEM jogosultsági korlát —
-  // az agent képességei változatlanok, és a nem-emberi belépési pontok
-  // (`agent_ask`, csatorna, agent API-kulcs, ticket-komment) nyitva maradnak.
-  // Csak tenant admin írhatja, minden váltás auditált (`agent.task_only`).
-  taskOnly                      Boolean     @default(false) @map("task_only")
-  // Delegált skill-kezelés: ha true, az OPERÁTOR is hozzárendelhet / levehet /
-  // ki-bekapcsolhat skillt EZEN az agenten. A skill-katalógus szerkesztése (verzió,
-  // tartalom, jóváhagyás) továbbra is admin-aktus, és a capability-grantokat sem
-  // érinti — az operátor csak a már jóváhagyott skillek közül választ.
-  // Csak tenant admin írhatja, minden váltás auditált (`agent.operator_skill_management`).
-  operatorCanManageSkills       Boolean     @default(false) @map("operator_can_manage_skills")
-  // Agent-hozzáférési gráf kapcsolói.
-  // `inboundRestricted`: user→agent view/address csak explicit granttal.
-  // Üzleti alap: true — a tenant tagok kiinduló jogait `AgentAccessGrant` sorok
-  // hordozzák (mindenki látja/megszólíthatja, az admin pipával vesz el).
-  // Normál agent→agent utat NEM zárja (az a forrás `outboundRestricted`-je);
-  // Web-Egress célra az evaluate továbbra is grantot követel.
-  // `outboundRestricted`: agent→agent kimenő él csak explicit granttal.
-  inboundRestricted             Boolean     @default(true) @map("inbound_restricted")
-  outboundRestricted            Boolean     @default(false) @map("outbound_restricted")
-  selfEvolutionProfile          Json?       @map("self_evolution_profile")
-  memoryId                      String      @unique @map("memory_id") @db.Uuid
-  createdAt                     DateTime    @default(now()) @map("created_at") @db.Timestamptz
-  // Fázis 2 életciklus (§4): a nyugdíjazás/felfüggesztés audithoz és reprodukálhatósághoz megőrzött.
-  retiredAt                     DateTime?   @map("retired_at") @db.Timestamptz
-  suspendedReason               String?     @map("suspended_reason")
+  id                         String      @id @default(uuid()) @db.Uuid
+  tenantId                   String      @map("tenant_id") @db.Uuid
+  name                       String
+  roleInstruction            String      @map("role_instruction")
+  status                     AgentStatus @default(draft)
+  currentDefinitionVersionId String?     @unique @map("current_definition_version_id") @db.Uuid
+  avatarUrl                  String?     @map("avatar_url")
+  createdAt                  DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                  DateTime    @updatedAt @map("updated_at") @db.Timestamptz
+  retiredAt                  DateTime?   @map("retired_at") @db.Timestamptz
 
-  memory             Memory              @relation(fields: [memoryId], references: [id])
-  behaviorProfileRef BehaviorProfile?    @relation(fields: [currentBehaviorProfileId], references: [id])
-  versions           AgentVersion[]
-  apiKeys            AgentApiKey[]
-  agentResources     AgentResource[]
-  tickets            Ticket[]
-  ticketComments     TicketComment[]     @relation("TicketCommentAuthorAgent")
-  modelCalls         ModelCall[]
-  agentConnectors    AgentConnector[]
-  capabilities       Capability[]
-  agentSkills        AgentSkill[]
-  toolCalls          ToolCall[]
-  writeGateTokens    WriteGateToken[]
-  memoryChunks       MemoryChunk[]       @relation("MemoryChunkAgent")
-  memoryCandidates        MemoryCandidate[]        @relation("MemoryCandidateAgent")
-  consequenceApprovals    ConsequenceApproval[]    @relation("ConsequenceApprovalAgent")
-  evals                   Eval[]
-  scheduledTasks          ScheduledTask[]
-  monitorDefinitions      MonitorDefinition[]
-  conversations           Conversation[]
-  retentionPolicies       RetentionPolicy[]
-  channelAgentGrants      ChannelAgentGrant[]      @relation("ChannelAgentGrantAgent")
-  accessGrantsAsSubject   AgentAccessGrant[]       @relation("AgentAccessSubjectAgent")
-  accessGrantsAsTarget    AgentAccessGrant[]       @relation("AgentAccessTarget")
+  tenant            Tenant                   @relation(fields: [tenantId], references: [id])
+  currentDefinition AgentDefinitionVersion?  @relation("AgentCurrentDefinition", fields: [currentDefinitionVersionId], references: [id], onDelete: SetNull)
+  definitionVersions AgentDefinitionVersion[] @relation("AgentDefinitionHistory")
+  agentConnectors   AgentConnector[]
+  capabilities      Capability[]
+  agentSkills       AgentSkill[]
 
   @@index([tenantId, status])
-  @@index([tenantId, role])
-  @@unique([tenantId, systemRole])
-  @@index([currentBehaviorProfileId])
   @@map("agents")
 }
 
-/// Agent-hozzáférési gráf éle (Access-Policy §agent-scope). Explicit, IRÁNYÍTOTT
-/// allow-él: nincs címke-, szerep- vagy deny-szabály; A→B és B→A két külön sor.
-/// A `canView` (a subject megtudhatja, hogy a cél létezik) és a `canAddress`
-/// (chat/ticket/`agent_ask` indítható a cél felé) FÜGGETLEN boolean — egyik sem
-/// implikálja a másikat. Egy subject→target párhoz legfeljebb egy sor tartozik, a két
-/// boolean együtt hordozza a két vizuális sávot; ha mindkettő hamisra kerülne, a sor
-/// törlődik (DB CHECK kényszeríti).
-///
-/// SZÁNDÉKOSAN nem a `ResourceGrant` táblát használjuk: annak alanya csak user lehet,
-/// és az egyetlen `view | operate | approve` SKÁLA-igéje nem tudja kifejezni a két
-/// független booleant.
-model AgentAccessGrant {
-  id             String                 @id @default(uuid()) @db.Uuid
-  tenantId       String                 @map("tenant_id") @db.Uuid
-  subjectType    AgentAccessSubjectType @map("subject_type")
-  subjectUserId  String?                @map("subject_user_id") @db.Uuid
-  subjectAgentId String?                @map("subject_agent_id") @db.Uuid
-  targetAgentId  String                 @map("target_agent_id") @db.Uuid
-  canView        Boolean                @default(false) @map("can_view")
-  canAddress     Boolean                @default(false) @map("can_address")
-  grantedById    String                 @map("granted_by") @db.Uuid
-  grantedAt      DateTime               @default(now()) @map("granted_at") @db.Timestamptz
-  updatedAt      DateTime               @updatedAt @map("updated_at") @db.Timestamptz
+model AgentDefinitionVersion {
+  id            String   @id @default(uuid()) @db.Uuid
+  agentId       String   @map("agent_id") @db.Uuid
+  version       Int
+  snapshot      Json
+  contentHash   String   @map("content_hash")
+  publishedById String   @map("published_by") @db.Uuid
+  publishedAt   DateTime @default(now()) @map("published_at") @db.Timestamptz
 
-  tenant       Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  subjectUser  User?  @relation("AgentAccessSubjectUser", fields: [subjectUserId], references: [id], onDelete: Cascade)
-  subjectAgent Agent? @relation("AgentAccessSubjectAgent", fields: [subjectAgentId], references: [id], onDelete: Cascade)
-  targetAgent  Agent  @relation("AgentAccessTarget", fields: [targetAgentId], references: [id], onDelete: Cascade)
-  grantedBy    User   @relation("AgentAccessGrantedBy", fields: [grantedById], references: [id])
-
-  @@unique([tenantId, subjectUserId, targetAgentId])
-  @@unique([tenantId, subjectAgentId, targetAgentId])
-  @@index([tenantId, targetAgentId])
-  @@index([tenantId, subjectAgentId])
-  @@map("agent_access_grants")
-}
-
-/// Megosztott, újrahasznosítható viselkedés-profil ("hogyan") — több agent hivatkozhatja
-/// (egységes céges hangnem/nyelv/formázás/citálás). Feature-spec §3.4.
-model BehaviorProfile {
-  id             String   @id @default(uuid()) @db.Uuid
-  tenantId       String?  @map("tenant_id") @db.Uuid
-  name           String
-  currentVersion Int      @default(1) @map("current_version")
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
-
-  versions BehaviorProfileVersion[]
-  agents   Agent[]
-
-  @@map("behavior_profiles")
-}
-
-model BehaviorProfileVersion {
-  id           String   @id @default(uuid()) @db.Uuid
-  profileId    String   @map("profile_id") @db.Uuid
-  version      Int
-  body         String
-  // A write-gate alá esik (§4.6.1) — a jóváhagyó admin.
-  approvedById String?  @map("approved_by") @db.Uuid
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
-
-  profile BehaviorProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
-
-  @@unique([profileId, version])
-  @@map("behavior_profile_versions")
-}
-
-model AgentVersion {
-  id                      String   @id @default(uuid()) @db.Uuid
-  agentId                 String   @map("agent_id") @db.Uuid
-  version                 Int
-  roleInstructionSnapshot String   @map("role_instruction_snapshot")
-  behaviorProfileSnapshot String   @map("behavior_profile_snapshot")
-  // Mely al-verziókat fagyasztotta ez az agent-verzió (reprodukálhatóság).
-  roleInstructionVersion  Int      @map("role_instruction_version")
-  behaviorProfileVersion  Int      @map("behavior_profile_version")
-  modelConfigSnapshot     Json     @map("model_config_snapshot")
-  memoryVersionId         String   @map("memory_version_id") @db.Uuid
-  recipeVersionId         String?  @map("recipe_version_id") @db.Uuid
-  // A futáskor érvényes önfejlesztési kapu-profil befagyasztása (spec 3.2) — audithoz.
-  selfEvolutionSnapshot   Json?    @map("self_evolution_snapshot")
-  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz
-
-  agent         Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  memoryVersion MemoryVersion  @relation(fields: [memoryVersionId], references: [id])
-  recipeVersion RecipeVersion? @relation(fields: [recipeVersionId], references: [id])
+  agent         Agent               @relation("AgentDefinitionHistory", fields: [agentId], references: [id], onDelete: Cascade)
+  publishedBy   User                @relation("DefinitionPublishedBy", fields: [publishedById], references: [id])
+  currentForAgent Agent?            @relation("AgentCurrentDefinition")
+  gatewayOperations GatewayOperation[]
 
   @@unique([agentId, version])
-  @@map("agent_versions")
+  @@map("agent_definition_versions")
 }
 
-model Recipe {
-  id         String           @id @default(uuid()) @db.Uuid
-  name       String
-  ticketType RecipeTicketType @map("ticket_type")
-  scope      RecipeScope      @default(single)
-  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz
-
-  versions RecipeVersion[]
-
-  @@map("recipes")
-}
-
-model RecipeVersion {
-  id           String              @id @default(uuid()) @db.Uuid
-  recipeId     String              @map("recipe_id") @db.Uuid
-  version      Int
-  content      Json
-  status       RecipeVersionStatus @default(proposed)
-  approvedById String?             @map("approved_by") @db.Uuid
-  createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz
-
-  recipe        Recipe         @relation(fields: [recipeId], references: [id], onDelete: Cascade)
-  approvedBy    User?          @relation("RecipeApprovedBy", fields: [approvedById], references: [id])
-  agentVersions AgentVersion[]
-
-  @@unique([recipeId, version])
-  @@map("recipe_versions")
-}
-
-// ── Skill-katalógus modellek (spec §3) ──────────────────────────────────────
-// A meglévő `Recipe`-hez NEM nyúlunk (az az agent tanítási/interakciós útja).
 model Skill {
   id           String            @id @default(uuid()) @db.Uuid
   name         String
-  /** Embernek szóló feladatnév (select / modál). Hiányzik → `name`. */
   displayName  String?           @map("display_name")
-  description  String // Level-0 index szöveg (méret-limitált)
+  description  String
   catalogScope SkillCatalogScope @default(tenant)
-  tenantId     String?           @map("tenant_id") @db.Uuid // null ⇔ global
+  tenantId     String?           @map("tenant_id") @db.Uuid
   kind         SkillKind         @default(tenant)
-  /// Csak `kind = system` esetén: melyik rendszer-agenthez köthető.
-  requiredSystemRole AgentSystemRole? @map("required_system_role")
   sourceType   SkillSourceType   @default(authored)
-  provenance   Json? // forrás-URL/id, eredeti hash, importált-formátum
-  license      String? // SPDX vagy 'proprietary' / null
-  riskTier     SkillRiskTier // F1: csak t0/t1
+  provenance   Json?
+  license      String?
+  riskTier     SkillRiskTier
   createdAt    DateTime          @default(now()) @map("created_at") @db.Timestamptz
 
+  tenant   Tenant?        @relation(fields: [tenantId], references: [id])
   versions SkillVersion[]
 
   @@index([tenantId])
@@ -1121,14 +404,11 @@ model SkillVersion {
   id           String             @id @default(uuid()) @db.Uuid
   skillId      String             @map("skill_id") @db.Uuid
   version      Int
-  content      Json // { instructions[], triggerKeywords[], parameters[] }
-  requires     Json // capability-manifeszt: [{ toolName, reason }]
-  // Level-2 mellékletek: [{ path, text, bytes, sha256 }] — csak SZÖVEGES referencia.
-  // A csomag-importáló a futtatható kód-fájlokat kihagyja, tehát ide sosem kerül kód.
+  content      Json
+  requires     Json
   attachments  Json?
   status       SkillVersionStatus @default(proposed)
   contentHash  String             @map("content_hash")
-  signature    String? // WriteGateToken-mechanizmussal aláírva (WP-7)
   approvedById String?            @map("approved_by") @db.Uuid
   createdAt    DateTime           @default(now()) @map("created_at") @db.Timestamptz
 
@@ -1154,565 +434,6 @@ model AgentSkill {
   @@map("agent_skills")
 }
 
-model Playbook {
-  id          String   @id @default(uuid()) @db.Uuid
-  name        String
-  processType String   @map("process_type")
-  tenantId    String?  @map("tenant_id") @db.Uuid
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
-
-  versions PlaybookVersion[]
-
-  @@map("playbooks")
-}
-
-model PlaybookVersion {
-  id           String                @id @default(uuid()) @db.Uuid
-  playbookId   String                @map("playbook_id") @db.Uuid
-  version      Int
-  spec         Json
-  status       PlaybookVersionStatus @default(proposed)
-  approvedById String?               @map("approved_by") @db.Uuid
-  createdAt    DateTime              @default(now()) @map("created_at") @db.Timestamptz
-
-  playbook   Playbook @relation(fields: [playbookId], references: [id], onDelete: Cascade)
-  approvedBy User?    @relation("PlaybookApprovedBy", fields: [approvedById], references: [id])
-
-  @@unique([playbookId, version])
-  @@map("playbook_versions")
-}
-
-// --- Fázis 2 Playbook (Feature-spec — Playbook §4) ---------------------------
-// Új, párhuzamos V2 réteg az objektum-alapú, verziózott Playbook-folyamatokhoz.
-// A meglévő `playbooks` / `playbook_versions` táblákat NEM érinti.
-
-enum PlaybookV2Status {
-  draft
-  published
-  archived
-  blocked
-}
-
-enum PlaybookVersionV2Status {
-  draft
-  pending_approval
-  published
-  rejected
-  retired
-}
-
-// --- Fázis 2 Playbook process runtime (Feature-spec — Playbook §4.1) ---------
-
-enum ProcessActorType {
-  user
-  agent
-  system
-}
-
-enum ProcessStatus {
-  created
-  running
-  awaiting_human
-  blocked
-  completed
-  failed
-  cancelled
-}
-
-enum ProcessStepStatus {
-  pending
-  ready
-  in_progress
-  awaiting_gate
-  completed
-  skipped
-  failed
-}
-
-enum DelegationStatus {
-  pending
-  delivered
-  accepted
-  done
-  failed
-  cancelled
-}
-
-// --- Folyamat (Process Definition) réteg (Folyamat-feature-spec §1, §4.1) -----
-
-enum ProcessDefinitionStatus {
-  draft
-  active
-  archived
-}
-
-enum ProcessTriggerType {
-  manual // Folyamatok-UI (kézi/teszt)
-  ticket
-  chat
-  monitor_cron
-}
-
-model PlaybookV2 {
-  id                        String           @id @default(uuid()) @db.Uuid
-  tenantId                  String?          @map("tenant_id") @db.Uuid
-  key                       String
-  name                      String
-  description               String?
-  processType               String           @map("process_type")
-  status                    PlaybookV2Status @default(draft)
-  currentPublishedVersionId String?          @map("current_published_version_id") @db.Uuid
-  ownerUserId               String?          @map("owner_user_id") @db.Uuid
-  createdAt                 DateTime         @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt                 DateTime         @updatedAt @map("updated_at") @db.Timestamptz
-  archivedAt                DateTime?        @map("archived_at") @db.Timestamptz
-
-  versions           PlaybookVersionV2[]
-  assignments        PlaybookAssignment[]
-  processes          ProcessInstance[]
-  processDefinitions ProcessDefinition[]
-
-  @@unique([tenantId, key])
-  @@map("playbooks_v2")
-}
-
-model PlaybookVersionV2 {
-  id               String                  @id @default(uuid()) @db.Uuid
-  tenantId         String?                 @map("tenant_id") @db.Uuid
-  playbookId       String                  @map("playbook_id") @db.Uuid
-  version          Int
-  status           PlaybookVersionV2Status @default(draft)
-  spec             Json
-  compiledSpec     Json?                   @map("compiled_spec")
-  // Canvas node-pozíciók / viewport — PREZENTÁCIÓ, a canonical contentHash-ből
-  // KIZÁRVA (Governed Flow Builder D2). Alak: { nodes: { "<stepId|gateId>": { x, y } }, viewport?: {...} }.
-  // Node arrébb húzása SOHA nem szül új contentHash-t vagy verziót.
-  layout           Json                    @default("{}")
-  validationResult Json                    @default("{}") @map("validation_result")
-  changeSummary    String                  @map("change_summary")
-  contentHash      String                  @map("content_hash")
-  createdById      String                  @map("created_by_user_id") @db.Uuid
-  approvedById     String?                 @map("approved_by_user_id") @db.Uuid
-  approvedAt       DateTime?               @map("approved_at") @db.Timestamptz
-  publishedAt      DateTime?               @map("published_at") @db.Timestamptz
-  retiredAt        DateTime?               @map("retired_at") @db.Timestamptz
-  createdAt        DateTime                @default(now()) @map("created_at") @db.Timestamptz
-
-  playbook           PlaybookV2           @relation(fields: [playbookId], references: [id], onDelete: Cascade)
-  assignments        PlaybookAssignment[]
-  processes          ProcessInstance[]
-  processDefinitions ProcessDefinition[]
-
-  @@unique([playbookId, version])
-  @@unique([tenantId, playbookId, contentHash])
-  @@map("playbook_versions_v2")
-}
-
-model PlaybookAssignment {
-  id                String    @id @default(uuid()) @db.Uuid
-  tenantId          String?   @map("tenant_id") @db.Uuid
-  playbookId        String    @map("playbook_id") @db.Uuid
-  playbookVersionId String    @map("playbook_version_id") @db.Uuid
-  assignmentType    String    @map("assignment_type")
-  assignmentKey     String    @map("assignment_key")
-  isDefault         Boolean   @default(false) @map("is_default")
-  createdById       String    @map("created_by_user_id") @db.Uuid
-  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  revokedAt         DateTime? @map("revoked_at") @db.Timestamptz
-
-  playbook        PlaybookV2        @relation(fields: [playbookId], references: [id], onDelete: Cascade)
-  playbookVersion PlaybookVersionV2 @relation(fields: [playbookVersionId], references: [id], onDelete: Cascade)
-
-  @@index([tenantId, assignmentType, assignmentKey])
-  @@map("playbook_assignments")
-}
-
-// --- Governed Flow Builder — StepTemplate katalógus (§3.2, WP-3) --------------
-// Governance-safe, újrahasznosítható lépés-legók a Canvas palettájához.
-// A template SOHA nem ad futásidejű tool-jogot (D3) — a capability-t a Tool Broker
-// kényszeríti ki runtime-ban; ez csak egy előkitöltött spec-fragment.
-
-enum StepTemplateStatus {
-  draft
-  published
-  retired
-}
-
-model StepTemplate {
-  id                        String             @id @default(uuid()) @db.Uuid
-  tenantId                  String?            @map("tenant_id") @db.Uuid // null = globális, admin-karbantartott
-  key                       String
-  name                      String
-  description               String?
-  category                  String?
-  status                    StepTemplateStatus @default(draft)
-  currentPublishedVersionId String?            @map("current_published_version_id") @db.Uuid
-  createdAt                 DateTime           @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt                 DateTime           @updatedAt @map("updated_at") @db.Timestamptz
-  archivedAt                DateTime?          @map("archived_at") @db.Timestamptz
-
-  versions StepTemplateVersion[]
-
-  @@unique([tenantId, key])
-  @@map("step_templates")
-}
-
-model StepTemplateVersion {
-  id          String   @id @default(uuid()) @db.Uuid
-  templateId  String   @map("template_id") @db.Uuid
-  version     Int
-  // Egy playbook-spec steps[]-fragment + ajánlott gate(ek), role-PLACEHOLDER-rel.
-  // requiredCapabilities benne van, DE ez csak JAVASLAT — jogot nem ad (D3).
-  fragment    Json
-  contentHash String   @map("content_hash")
-  // D8 — opcionális "certified" tier: a published-höz NEM kell eval, a certify-hoz igen.
-  // evalSamples alak: [{ sampleInput, expectations[] }] — a hash-elt fragmenten KÍVÜL.
-  certified   Boolean  @default(false)
-  evalSamples Json     @default("[]") @map("eval_samples")
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
-
-  template StepTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
-
-  @@unique([templateId, version])
-  @@map("step_template_versions")
-}
-
-// --- Fázis 2 Playbook process runtime (Feature-spec — Playbook §4.5–4.7) -----
-
-model ProcessInstance {
-  id                  String              @id @default(uuid()) @db.Uuid
-  tenantId            String?             @map("tenant_id") @db.Uuid
-  processType         String              @map("process_type")
-  status              ProcessStatus       @default(created)
-  playbookId          String              @map("playbook_id") @db.Uuid
-  playbookVersionId   String              @map("playbook_version_id") @db.Uuid
-  playbookRef         String              @map("playbook_ref")
-  playbookContentHash String              @map("playbook_content_hash")
-  // §7: a Futás forrás-Folyamata és triggere (opcionális a régi rekordok miatt).
-  processDefinitionId String?             @map("process_definition_id") @db.Uuid
-  triggerType         ProcessTriggerType? @map("trigger_type")
-  startedByType       ProcessActorType    @map("started_by_type")
-  startedByUserId     String?             @map("started_by_user_id") @db.Uuid
-  startedByAgentId    String?             @map("started_by_agent_id") @db.Uuid
-  conversationId      String?             @map("conversation_id") @db.Uuid
-  rootTicketId        String?             @map("root_ticket_id") @db.Uuid
-  inputPayload        Json                @default("{}") @map("input_payload")
-  outputPayload       Json                @default("{}") @map("output_payload")
-  startedAt           DateTime            @default(now()) @map("started_at") @db.Timestamptz
-  completedAt         DateTime?           @map("completed_at") @db.Timestamptz
-  failedAt            DateTime?           @map("failed_at") @db.Timestamptz
-
-  playbook          PlaybookV2            @relation(fields: [playbookId], references: [id])
-  playbookVersion   PlaybookVersionV2     @relation(fields: [playbookVersionId], references: [id])
-  processDefinition ProcessDefinition?    @relation(fields: [processDefinitionId], references: [id])
-  steps             ProcessStepInstance[]
-  delegations       DelegationEdge[]
-
-  @@index([tenantId, status])
-  @@index([tenantId, processType])
-  @@index([processDefinitionId])
-  @@map("process_instances")
-}
-
-model ProcessStepInstance {
-  id                String            @id @default(uuid()) @db.Uuid
-  tenantId          String?           @map("tenant_id") @db.Uuid
-  processInstanceId String            @map("process_instance_id") @db.Uuid
-  stepId            String            @map("step_id")
-  stepName          String            @map("step_name")
-  status            ProcessStepStatus @default(pending)
-  assignedRole      String            @map("assigned_role")
-  assignedAgentId   String?           @map("assigned_agent_id") @db.Uuid
-  assignedUserId    String?           @map("assigned_user_id") @db.Uuid
-  ticketId          String?           @map("ticket_id") @db.Uuid
-  startedAt         DateTime?         @map("started_at") @db.Timestamptz
-  completedAt       DateTime?         @map("completed_at") @db.Timestamptz
-  failedAt          DateTime?         @map("failed_at") @db.Timestamptz
-  resultPayload     Json              @default("{}") @map("result_payload")
-
-  process ProcessInstance @relation(fields: [processInstanceId], references: [id], onDelete: Cascade)
-
-  @@unique([processInstanceId, stepId])
-  @@index([tenantId, status])
-  @@map("process_step_instances")
-}
-
-model DelegationEdge {
-  id                String           @id @default(uuid()) @db.Uuid
-  tenantId          String?          @map("tenant_id") @db.Uuid
-  processInstanceId String           @map("process_instance_id") @db.Uuid
-  fromStepId        String           @map("from_step_id")
-  toStepId          String           @map("to_step_id")
-  fromTicketId      String?          @map("from_ticket_id") @db.Uuid
-  toTicketId        String?          @map("to_ticket_id") @db.Uuid
-  fromActorType     ProcessActorType @map("from_actor_type")
-  fromAgentId       String?          @map("from_agent_id") @db.Uuid
-  fromUserId        String?          @map("from_user_id") @db.Uuid
-  toActorType       ProcessActorType @map("to_actor_type")
-  toAgentId         String?          @map("to_agent_id") @db.Uuid
-  toUserId          String?          @map("to_user_id") @db.Uuid
-  status            DelegationStatus @default(pending)
-  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz
-  deliveredAt       DateTime?        @map("delivered_at") @db.Timestamptz
-  acceptedAt        DateTime?        @map("accepted_at") @db.Timestamptz
-  doneAt            DateTime?        @map("done_at") @db.Timestamptz
-  failedAt          DateTime?        @map("failed_at") @db.Timestamptz
-  metadata          Json             @default("{}")
-
-  process ProcessInstance @relation(fields: [processInstanceId], references: [id], onDelete: Cascade)
-
-  @@index([tenantId, processInstanceId])
-  @@map("delegation_edges")
-}
-
-/// Folyamat (2. szint): egy publikált Playbook-verzióra PIN-elt, konfigurált,
-/// nevesített, újrahasználható definíció. Folyamat-feature-spec §1, §4.1.
-model ProcessDefinition {
-  id                String                  @id @default(uuid()) @db.Uuid
-  tenantId          String?                 @map("tenant_id") @db.Uuid
-  name              String
-  description       String?
-  status            ProcessDefinitionStatus @default(draft)
-  // PIN a publikált Playbook-verzióra (§4.10). A verzió cseréje tudatos, külön aktus.
-  playbookId        String                  @map("playbook_id") @db.Uuid
-  playbookVersionId String                  @map("playbook_version_id") @db.Uuid
-  // roleKey -> agentId leképezés a Folyamaton (§4.1, §1.2). { "reviewer": "<uuid>", ... }
-  roleBindings      Json                    @default("{}") @map("role_bindings")
-  // config-forrású rések értékei (§4.7). { "sablon": "...", ... }
-  configValues      Json                    @default("{}") @map("config_values")
-  createdById       String                  @map("created_by_user_id") @db.Uuid
-  approvedById      String?                 @map("approved_by_user_id") @db.Uuid
-  approvedAt        DateTime?               @map("approved_at") @db.Timestamptz
-  createdAt         DateTime                @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt         DateTime                @updatedAt @map("updated_at") @db.Timestamptz
-  archivedAt        DateTime?               @map("archived_at") @db.Timestamptz
-
-  playbook        PlaybookV2        @relation(fields: [playbookId], references: [id])
-  playbookVersion PlaybookVersionV2 @relation(fields: [playbookVersionId], references: [id])
-  triggers        ProcessTrigger[]
-  instances       ProcessInstance[]
-
-  @@index([tenantId, status])
-  @@map("process_definitions")
-}
-
-/// Egy Folyamathoz kötött trigger (§4.4). Egy Folyamatnak több triggere lehet.
-model ProcessTrigger {
-  id                  String             @id @default(uuid()) @db.Uuid
-  tenantId            String?            @map("tenant_id") @db.Uuid
-  processDefinitionId String             @map("process_definition_id") @db.Uuid
-  type                ProcessTriggerType
-  enabled             Boolean            @default(true)
-  // trigger-input -> deklarált rés leképezés (§4.4). Alakja triggertípus-függő:
-  //  ticket:       { fieldMap: { "<slotName>": "<ticketFieldKey>" } }
-  //  chat:         { slotNames: ["cég", ...] }
-  //  monitor_cron: { contextMap: { "<slotName>": "now()" | "<collectorField>" } }
-  //  manual:       {}  (az operátor űrlapon tölt)
-  inputMap            Json               @default("{}") @map("input_map")
-  // monitor_cron esetén a forrás MonitorDefinition (opcionális FK-ként is tükrözve)
-  monitorDefinitionId String?            @map("monitor_definition_id") @db.Uuid
-  createdById         String             @map("created_by_user_id") @db.Uuid
-  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz
-  revokedAt           DateTime?          @map("revoked_at") @db.Timestamptz
-
-  processDefinition ProcessDefinition @relation(fields: [processDefinitionId], references: [id], onDelete: Cascade)
-
-  @@index([tenantId, type])
-  @@index([processDefinitionId])
-  @@map("process_triggers")
-}
-
-model AgentApiKey {
-  id         String       @id @default(uuid()) @db.Uuid
-  agentId    String       @map("agent_id") @db.Uuid
-  keyHash    String       @map("key_hash")
-  lookupHash String?      @unique @map("lookup_hash")
-  scopes     Json
-  status     ApiKeyStatus @default(active)
-  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz
-  rotatedAt  DateTime?    @map("rotated_at") @db.Timestamptz
-  lastUsedAt DateTime?    @map("last_used_at") @db.Timestamptz
-  expiresAt  DateTime?    @map("expires_at") @db.Timestamptz
-
-  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
-
-  @@map("agent_api_keys")
-}
-
-model Memory {
-  id                             String  @id @default(uuid()) @db.Uuid
-  currentVersionId               String? @map("current_version_id") @db.Uuid
-  projectManifestCurrentVersionId String? @map("project_manifest_current_version_id") @db.Uuid
-
-  agent                           Agent?
-  versions                        MemoryVersion[]   @relation("MemoryVersions")
-  currentVersion                  MemoryVersion?    @relation("MemoryCurrentVersion", fields: [currentVersionId], references: [id])
-  projectManifestCurrentVersion   MemoryVersion?    @relation("MemoryProjectManifestCurrent", fields: [projectManifestCurrentVersionId], references: [id])
-  writeGateTokens                 WriteGateToken[]
-  chunks                          MemoryChunk[]     @relation("MemoryChunks")
-  candidates                      MemoryCandidate[] @relation("MemoryCandidates")
-
-  @@map("memories")
-}
-
-model MemoryVersion {
-  id               String              @id @default(uuid()) @db.Uuid
-  memoryId         String              @map("memory_id") @db.Uuid
-  version          Int
-  kind             MemoryVersionKind   @default(instruction)
-  // Legacy full-inject szövegblokk (§1.1). A tartós agent-memória spec
-  // (agent-memory-persistent-cross-conversation-spec.md §9.3) óta a T2
-  // kanonikus forrás a MemoryChunk; ez a mező demo-agenteken kívül NULL.
-  // Instruction-láncon a betanított működési szabályok teljes verziója.
-  content          String?
-  diffFromPrevious Json?               @map("diff_from_previous")
-  status           MemoryVersionStatus @default(proposed)
-  source           String?
-  approvedById     String?             @map("approved_by") @db.Uuid
-  parentVersion    Int?                @map("parent_version")
-  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz
-
-  // §9.3: a MemoryVersion mostani szerepe a T2 pillanatkép-manifeszt.
-  // Project-manifest láncon ezek a mezők élnek; az instruction-láncot nem lépik.
-  activeChunkIds     Json?   @map("active_chunk_ids")
-  changeSet          Json?   @map("change_set")
-  projectKey         String? @map("project_key")
-  workstreamKey      String? @map("workstream_key")
-  sourceCandidateIds Json?   @map("source_candidate_ids")
-
-  memory                       Memory         @relation("MemoryVersions", fields: [memoryId], references: [id], onDelete: Cascade)
-  approvedBy                   User?          @relation("MemoryApprovedBy", fields: [approvedById], references: [id])
-  agentVersions                AgentVersion[]
-  currentForMemory             Memory[]       @relation("MemoryCurrentVersion")
-  projectManifestCurrentForMemory Memory[]    @relation("MemoryProjectManifestCurrent")
-  evalRuns                     EvalRun[]
-
-  @@unique([memoryId, kind, version])
-  @@index([memoryId, kind, status])
-  @@map("memory_versions")
-}
-
-// ── Tartós agent-memória (agent-memory-persistent-cross-conversation-spec.md, WP-1) ─────
-
-model MemoryChunk {
-  id       String @id @default(uuid()) @db.Uuid
-  memoryId String @map("memory_id") @db.Uuid
-  agentId  String @map("agent_id") @db.Uuid
-
-  tenantId      String? @map("tenant_id") @db.Uuid
-  projectKey    String  @map("project_key")
-  workstreamKey String? @map("workstream_key")
-
-  type     String
-  path     String
-  title    String
-  section  String?
-  text     String
-  summary  String?
-  tags     String[] @default([])
-  metadata Json?
-
-  status     String @default("active")
-  salience   Float  @default(0.5)
-  confidence String @default("normal")
-
-  sourceRefs Json?   @map("source_refs")
-  evidence   String?
-
-  approvedBy String?   @map("approved_by") @db.Uuid
-  approvedAt DateTime? @map("approved_at") @db.Timestamptz
-
-  reviewAfter DateTime? @map("review_after") @db.Timestamptz
-  expiresAt   DateTime? @map("expires_at") @db.Timestamptz
-
-  supersedes   String? @map("supersedes") @db.Uuid
-  supersededBy String? @map("superseded_by") @db.Uuid
-
-  retrievedCount            Int       @default(0) @map("retrieved_count")
-  usedInAnswerCount         Int       @default(0) @map("used_in_answer_count")
-  userConfirmedHelpfulCount Int       @default(0) @map("user_confirmed_helpful_count")
-  userCorrectedCount        Int       @default(0) @map("user_corrected_count")
-  lastRetrievedAt           DateTime? @map("last_retrieved_at") @db.Timestamptz
-  lastUsedAt                DateTime? @map("last_used_at") @db.Timestamptz
-  lastValidatedAt           DateTime? @map("last_validated_at") @db.Timestamptz
-
-  contentHash String   @map("content_hash")
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
-
-  memory Memory @relation("MemoryChunks", fields: [memoryId], references: [id], onDelete: Cascade)
-  agent  Agent  @relation("MemoryChunkAgent", fields: [agentId], references: [id], onDelete: Cascade)
-
-  @@index([memoryId, projectKey, workstreamKey, status])
-  @@index([memoryId, path, status])
-  @@index([tenantId, agentId, status])
-  @@map("memory_chunks")
-}
-
-model MemoryCandidate {
-  id       String @id @default(uuid()) @db.Uuid
-  memoryId String @map("memory_id") @db.Uuid
-  agentId  String @map("agent_id") @db.Uuid
-
-  tenantId      String? @map("tenant_id") @db.Uuid
-  projectKey    String  @map("project_key")
-  workstreamKey String? @map("workstream_key")
-
-  operation String
-  payload   Json
-  status    String @default("proposed")
-
-  proposedBy         String  @map("proposed_by")
-  proposedByRunId    String? @map("proposed_by_run_id")
-  proposedInThreadId String? @map("proposed_in_thread_id")
-  ticketId           String? @map("ticket_id") @db.Uuid
-
-  approvedBy String?   @map("approved_by") @db.Uuid
-  approvedAt DateTime? @map("approved_at") @db.Timestamptz
-  rejectedBy String?   @map("rejected_by") @db.Uuid
-  rejectedAt DateTime? @map("rejected_at") @db.Timestamptz
-
-  writeGateTokenId String? @map("write_gate_token_id") @db.Uuid
-
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
-
-  memory         Memory          @relation("MemoryCandidates", fields: [memoryId], references: [id], onDelete: Cascade)
-  agent          Agent           @relation("MemoryCandidateAgent", fields: [agentId], references: [id], onDelete: Cascade)
-  ticket         Ticket?         @relation(fields: [ticketId], references: [id])
-  writeGateToken WriteGateToken?
-
-  @@index([memoryId, projectKey, status])
-  @@index([agentId, status])
-  @@map("memory_candidates")
-}
-
-model Resource {
-  id        String        @id @default(uuid()) @db.Uuid
-  type      ResourceType
-  name      String
-  scope     ResourceScope
-  version   Int           @default(1)
-  dataRef   String        @map("data_ref")
-  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz
-
-  agentResources AgentResource[]
-
-  @@map("resources")
-}
-
-model AgentResource {
-  agentId    String     @map("agent_id") @db.Uuid
-  resourceId String     @map("resource_id") @db.Uuid
-  accessMode AccessMode @map("access_mode")
-
-  agent    Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
-
-  @@id([agentId, resourceId])
-  @@map("agent_resources")
-}
-
 model Connector {
   id             String                  @id @default(uuid()) @db.Uuid
   type           ConnectorType
@@ -1723,35 +444,16 @@ model Connector {
   version        Int                     @default(1)
   config         Json                    @default("{}")
   lifecycleState ConnectorLifecycleState @default(active) @map("lifecycle_state")
-  tenantId       String?                 @map("tenant_id") @db.Uuid
+  tenantId       String                  @map("tenant_id") @db.Uuid
   createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
-  // ── Önfrissítő connector (Dev-Spec — Self-Updating-Connector) ──
-  // `fixed` a default; `self_updating` esetén a futásidejű képességet az
-  // `activeSpecVersion` capabilitySet-je adja (A3), nem a `config.endpoints`.
-  connectorMode       ConnectorMode         @default(fixed) @map("connector_mode")
-  activeSpecVersionId String?               @map("active_spec_version_id") @db.Uuid
-  activeSpecVersion   ConnectorSpecVersion? @relation("ActiveSpecVersion", fields: [activeSpecVersionId], references: [id], onDelete: SetNull)
+  tenant          Tenant           @relation(fields: [tenantId], references: [id])
+  agentConnectors AgentConnector[]
+  grants          ConnectorGrant[]
+  draft           ConnectorDraft?
+  gatewayOperations GatewayOperation[]
 
-  /// issue #220 — opcionális UI címke / admin-javaslat (NEM kapcsolja a kaput).
-  consequenceBoundary ConsequenceBoundary? @map("consequence_boundary")
-
-  /// issue #320 — tenanton belüli monoton forrás-sorszám (S1, S2, …); soha nem újrahasznált.
-  privacySlot Int @map("privacy_slot")
-
-  agentConnectors    AgentConnector[]
-  toolCalls          ToolCall[]
-  documents          Document[]
-  grants             ConnectorGrant[]
-  draft              ConnectorDraft?
-  knowledgeArtifacts KnowledgeArtifact[]
-  specSource         ConnectorSpecSource?
-  specVersions       ConnectorSpecVersion[] @relation("SpecVersions")
-
-  // §4.2: tenant-scope egyediség — a régi @@unique([type, name]) cross-tenant
-  // névütközést okozott (két tenant nem használhatta ugyanazt a connector-nevet).
   @@unique([tenantId, type, name])
-  @@unique([tenantId, privacySlot], map: "connectors_tenant_privacy_slot_key")
   @@map("connectors")
 }
 
@@ -1769,93 +471,39 @@ model ConnectorTemplate {
   createdAt   DateTime                @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime                @updatedAt @map("updated_at") @db.Timestamptz
 
+  tenant Tenant? @relation(fields: [tenantId], references: [id])
+
   @@unique([key, version, tenantId])
   @@index([origin, status])
   @@map("connector_templates")
 }
 
-// A draft eredetét, forrását és validációs eredményét külön tartjuk, hogy a
-// `connectors` tábla tiszta maradjon (Feature-spec — Provisioning-Assistant §4.2).
-// A forrásdokumentum TARTALMA sosem kerül ide — csak a `sourceHash` + storage-ref.
 model ConnectorDraft {
-  id                          String                     @id @default(uuid()) @db.Uuid
-  tenantId                    String?                    @map("tenant_id") @db.Uuid
-  connectorId                 String                     @unique @map("connector_id") @db.Uuid
-  sourceType                  ConnectorDraftSourceType   @map("source_type")
-  sourceRef                   String?                    @map("source_ref")
-  sourceHash                  String                     @map("source_hash")
-  generatedByAgentId          String?                    @map("generated_by_agent_id") @db.Uuid
-  generatedByAgentVersion     Int?                       @map("generated_by_agent_version")
-  generatedFromConversationId String?                    @map("generated_from_conversation_id") @db.Uuid
-  validationResult            Json?                      @map("validation_result")
-  reviewStatus                ConnectorDraftReviewStatus @default(pending) @map("review_status")
-  reviewedById                String?                    @map("reviewed_by") @db.Uuid
-  secondApproverId            String?                    @map("second_approver_id") @db.Uuid
-  sandboxTestOk               Boolean?                   @map("sandbox_test_ok")
-  createdAt                   DateTime                   @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt                   DateTime                   @updatedAt @map("updated_at") @db.Timestamptz
+  id                      String                     @id @default(uuid()) @db.Uuid
+  tenantId                String                     @map("tenant_id") @db.Uuid
+  connectorId             String                     @unique @map("connector_id") @db.Uuid
+  sourceType              ConnectorDraftSourceType   @map("source_type")
+  sourceRef               String?                    @map("source_ref")
+  sourceHash              String                     @map("source_hash")
+  generatedByAgentId      String?                    @map("generated_by_agent_id") @db.Uuid
+  validationResult        Json?                      @map("validation_result")
+  reviewStatus            ConnectorDraftReviewStatus @default(pending) @map("review_status")
+  reviewedById            String?                    @map("reviewed_by") @db.Uuid
+  secondApproverId        String?                    @map("second_approver_id") @db.Uuid
+  sandboxTestOk           Boolean?                   @map("sandbox_test_ok")
+  createdAt               DateTime                   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt               DateTime                   @updatedAt @map("updated_at") @db.Timestamptz
 
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, connectorId])
   @@map("connector_drafts")
 }
 
-// ── Önfrissítő connector: spec-forrás (Dev-Spec §5) ─────────────────────────
-// A connectorhoz kötött, JÓVÁHAGYOTT link, amiről a szinkron a leírást húzza.
-// A titok (kulcs) NEM ide kerül — az a Connector.secretAlias mögött marad (A6).
-// A `specUrl`-t egyszer explicit jóvá kell hagyni (T2/A4), utána oda van szögezve.
-model ConnectorSpecSource {
-  id                String    @id @default(uuid()) @db.Uuid
-  tenantId          String?   @map("tenant_id") @db.Uuid
-  connectorId       String    @unique @map("connector_id") @db.Uuid
-  connector         Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
-  specUrl           String    @map("spec_url") // A4: pinned, jóváhagyott link
-  specFormat        String    @default("openapi_3") @map("spec_format") // jövőállóság (D1)
-  urlApprovedById   String?   @map("url_approved_by") @db.Uuid // ki hagyta jóvá a linket (T2)
-  urlApprovedAt     DateTime? @map("url_approved_at") @db.Timestamptz
-  trustedById       String?   @map("trusted_by") @db.Uuid // T1: explicit partner-bizalmi minősítés
-  trustedAt         DateTime? @map("trusted_at") @db.Timestamptz
-  autoApprovePolicy Json?     @map("auto_approve_policy") // D5/T4: mi mehet emberi kapu nélkül
-  lastSyncedAt      DateTime? @map("last_synced_at") @db.Timestamptz
-  createdById       String?   @map("created_by") @db.Uuid
-  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz
-
-  @@map("connector_spec_sources")
-}
-
-// ── Önfrissítő connector: verziózott spec-pillanatkép (Dev-Spec §5, §7 A7) ──
-// Append-only történet. `rawSnapshot` a bizonyíték ("ezt töltöttük le, ekkor"),
-// `capabilitySet` a kiparse-olt, strukturált képességlista (a broker ezt érti).
-// Egyszerre pontosan egy `approved` verzió az aktív (Connector.activeSpecVersionId).
-model ConnectorSpecVersion {
-  id                String                     @id @default(uuid()) @db.Uuid
-  tenantId          String?                    @map("tenant_id") @db.Uuid
-  connectorId       String                     @map("connector_id") @db.Uuid
-  connector         Connector                  @relation("SpecVersions", fields: [connectorId], references: [id], onDelete: Cascade)
-  versionNo         Int                        @map("version_no") // 1,2,3… append-only
-  rawSnapshot       Json                       @map("raw_snapshot") // nyers spec (bizonyíték)
-  rawHash           String                     @map("raw_hash") // tartalom-hash (A4/A5)
-  capabilitySet     Json                       @map("capability_set") // kiparse-olt, strukturált képességek
-  status            ConnectorSpecVersionStatus @default(proposed)
-  diffFromVersionId String?                    @map("diff_from_version_id") @db.Uuid
-  diffSummary       Json?                      @map("diff_summary") // A2: gépi diff (§6)
-  fetchedAt         DateTime                   @default(now()) @map("fetched_at") @db.Timestamptz
-  approvedById      String?                    @map("approved_by") @db.Uuid
-  approvedAt        DateTime?                  @map("approved_at") @db.Timestamptz
-  createdAt         DateTime                   @default(now()) @map("created_at") @db.Timestamptz
-
-  activeForConnectors Connector[] @relation("ActiveSpecVersion")
-
-  @@unique([connectorId, versionNo])
-  @@index([connectorId, status])
-  @@map("connector_spec_versions")
-}
-
 model ConnectorGrant {
   id              String               @id @default(uuid()) @db.Uuid
-  tenantId        String?              @map("tenant_id") @db.Uuid
+  tenantId        String               @map("tenant_id") @db.Uuid
   connectorId     String               @map("connector_id") @db.Uuid
   userId          String               @map("user_id") @db.Uuid
   status          ConnectorGrantStatus @default(active)
@@ -1866,9 +514,9 @@ model ConnectorGrant {
   expiresAt       DateTime?            @map("expires_at") @db.Timestamptz
   lastRefreshedAt DateTime?            @map("last_refreshed_at") @db.Timestamptz
   revokedAt       DateTime?            @map("revoked_at") @db.Timestamptz
-  /// issue #378 — Picker manifest, app-created fájlok (selected-write profil).
   metadata        Json                 @default("{}")
 
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -1880,18 +528,6 @@ model AgentConnector {
   agentId     String              @map("agent_id") @db.Uuid
   connectorId String              @map("connector_id") @db.Uuid
   accessMode  ConnectorAccessMode @map("access_mode")
-  secretAlias String?             @map("secret_alias")
-
-  /// issue #220 — írás-bizalom. Új `write` kötésnél default `per_call`.
-  writeApproval        WriteApprovalMode     @default(per_call) @map("write_approval")
-  /// Kötelező, ha `writeApproval = preapproved` (laza | szigorú).
-  preapprovedTrustMode PreapprovedTrustMode? @map("preapproved_trust_mode")
-  /// Szigorú módban kötelező; laza módban opcionális visszavonási határ.
-  preapprovedExpiresAt DateTime?             @map("preapproved_expires_at") @db.Timestamptz
-  /// Szigorú: max író hívás / futás (hard cap a domain rétegben).
-  preapprovedWriteLimit Int?                 @map("preapproved_write_limit")
-  /// Danger risk is skipelhető-e preapproved alatt. Default off.
-  dangerPreapproved    Boolean               @default(false) @map("danger_preapproved")
 
   agent     Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
@@ -1912,1537 +548,46 @@ model Capability {
   @@map("capabilities")
 }
 
-model Document {
-  id            String         @id @default(uuid()) @db.Uuid
-  filename      String
-  storageRef    String         @map("storage_ref")
-  extractedText String?        @map("extracted_text")
-  status        DocumentStatus @default(uploaded)
-  connectorId   String?        @map("connector_id") @db.Uuid
-  uploadedById  String         @map("uploaded_by") @db.Uuid
-  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz
+model GatewayOperation {
+  id                        String                 @id @default(uuid()) @db.Uuid
+  tenantId                  String                 @map("tenant_id") @db.Uuid
+  agentDefinitionVersionId  String                 @map("agent_definition_version_id") @db.Uuid
+  principalUserId           String                 @map("principal_user_id") @db.Uuid
+  toolName                  String                 @map("tool_name")
+  argsJson                  Json                   @map("args_json")
+  idempotencyKey            String                 @map("idempotency_key")
+  status                    GatewayOperationStatus
+  connectorId               String?                @map("connector_id") @db.Uuid
+  errorCode                 String?                @map("error_code")
+  createdAt                 DateTime               @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                 DateTime               @updatedAt @map("updated_at") @db.Timestamptz
 
-  // KB-v3 (§8.2) — opcionális metaadat + feldolgozási mód. Meglévő sorok
-  // változatlanul működnek (mind nullable / default).
-  mimeType       String?                  @map("mime_type")
-  contentHash    String?                  @map("content_hash")
-  processingMode KnowledgeProcessingMode? @map("processing_mode")
-  metadata       Json                     @default("{}")
+  tenant     Tenant                 @relation(fields: [tenantId], references: [id])
+  definition AgentDefinitionVersion @relation(fields: [agentDefinitionVersionId], references: [id])
+  principal  User                   @relation("GatewayOperationPrincipal", fields: [principalUserId], references: [id])
+  connector  Connector?             @relation(fields: [connectorId], references: [id])
+  approval   GatewayApproval?
 
-  uploadedBy               User                      @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
-  connector                Connector?                @relation(fields: [connectorId], references: [id])
-  tickets                  Ticket[]
-  artifacts                KnowledgeArtifact[]
-  ticketAttachments        TicketAttachment[]
-  ticketCommentAttachments TicketCommentAttachment[]
-
-  @@index([connectorId, status])
-  @@map("documents")
-}
-
-// ── KB-v3 adatmodell (§8.3/§8.4) ────────────────────────────────────────────
-// A scope-kulcs a `connectorId` (D-B); az `agentId` legfeljebb nullable
-// provenance, retrievalben SOHA nem szűr. A `tenantId` a `system` tenantnál is
-// valós UUID (D-E, lásd SYSTEM_TENANT_ID) — nincs NULL-izolációs ág.
-model KnowledgeArtifact {
-  id               String  @id @default(uuid()) @db.Uuid
-  tenantId         String? @map("tenant_id") @db.Uuid
-  connectorId      String  @map("connector_id") @db.Uuid // SCOPE-KULCS
-  createdByAgentId String? @map("created_by_agent_id") @db.Uuid // provenance, NEM scope
-  sourceDocumentId String? @map("source_document_id") @db.Uuid
-
-  format               KnowledgeArtifactFormat @default(okf_v0_1)
-  status               KnowledgeArtifactStatus @default(draft)
-  version              Int
-  contentHash          String                  @map("content_hash")
-  bundleRef            String                  @map("bundle_ref")
-  generationModel      String?                 @map("generation_model")
-  generationPromptHash String?                 @map("generation_prompt_hash")
-  validationResult     Json                    @default("{}") @map("validation_result")
-  reviewSummary        String?                 @map("review_summary")
-  createdById          String?                 @map("created_by") @db.Uuid
-  approvedById         String?                 @map("approved_by") @db.Uuid
-  createdAt            DateTime                @default(now()) @map("created_at") @db.Timestamptz
-  publishedAt          DateTime?               @map("published_at") @db.Timestamptz
-
-  connector      Connector        @relation(fields: [connectorId], references: [id], onDelete: Cascade)
-  sourceDocument Document?        @relation(fields: [sourceDocumentId], references: [id])
-  chunks         KnowledgeChunk[]
-
-  @@unique([connectorId, sourceDocumentId, version])
-  @@index([tenantId, connectorId, status])
-  @@index([connectorId, status])
-  @@map("knowledge_artifacts")
-}
-
-model KnowledgeChunk {
-  id          String  @id @default(uuid()) @db.Uuid
-  tenantId    String? @map("tenant_id") @db.Uuid
-  artifactId  String  @map("artifact_id") @db.Uuid
-  connectorId String  @map("connector_id") @db.Uuid // SCOPE-KULCS (D-B)
-
-  path        String
-  title       String
-  type        String
-  section     String?
-  chunkIndex  Int     @map("chunk_index")
-  text        String
-  summary     String?
-  tags        Json    @default("[]")
-  metadata    Json    @default("{}")
-  sourceRef   Json?   @map("source_ref") // oldal/section-szint (§4.7), NEM span-pontos
-  contentHash String  @map("content_hash")
-
-  // Full-text: Postgres tsvector GIN index nyers SQL migrationnel (később).
-  // NINCS embedding mező (D-A). A vektor a KnowledgeIndexStore mögött adható hozzá.
-
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-
-  artifact KnowledgeArtifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
-
-  @@index([tenantId, connectorId])
-  @@index([connectorId])
-  @@index([artifactId, path])
-  @@map("knowledge_chunks")
-}
-
-/// Tenant-szintű munka-konténer: több beszélgetés és több AI-munkatárs tartozhat
-/// hozzá. A `key` a memória/conversation `projectKey` értéke. Az Általános
-/// (`__general__`) gyűjtő NINCS ebben a táblában — az implicit, mindig létezik.
-model WorkProject {
-  id          String    @id @default(uuid()) @db.Uuid
-  tenantId    String    @map("tenant_id") @db.Uuid
-  key         String
-  name        String
-  description String?
-  createdById String    @map("created_by") @db.Uuid
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
-  archivedAt  DateTime? @map("archived_at") @db.Timestamptz
-
-  @@unique([tenantId, key])
-  @@index([tenantId, archivedAt])
-  @@map("work_projects")
-}
-
-model Conversation {
-  id                String             @id @default(uuid()) @db.Uuid
-  tenantId          String?            @map("tenant_id") @db.Uuid
-  agentId           String             @map("agent_id") @db.Uuid
-  title             String?
-  status            ConversationStatus @default(active)
-  // agent-memory-persistent-cross-conversation-spec.md §2.1: chat-oldali
-  // projektfolytonossági scope-kulcs; soft-default a per-tenant+agent
-  // "__general__" projektre, a chat-fejléc projekt-választója írja.
-  projectKey        String             @default("__general__") @map("project_key")
-  createdById       String             @map("created_by") @db.Uuid
-  retentionPolicyId String?            @map("retention_policy_id") @db.Uuid
-  retainUntil       DateTime?          @map("retain_until") @db.Timestamptz
-  legalHold         Boolean            @default(false) @map("legal_hold")
-  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz
-  lastMessageAt     DateTime           @default(now()) @map("last_message_at") @db.Timestamptz
-
-  // Csatorna-megjelölés (Telegram feature-spec #70, D14): ha a beszélgetés egy
-  // csatorna-adapteren (pl. Telegram) keresztül él, ez jelöli a csatorna típusát és
-  // a külső szál-azonosítót. Webes beszélgetésnél mindkettő null.
-  channel           ChannelType?       @map("channel")
-  channelExternalId String?            @map("channel_external_id")
-
-  // Ticket → Megbeszélés (#219): új chat a ticket-szállal prior kontextusként.
-  // Nem az origin `ticket.conversationId`; egy tickethez több ilyen conversation is lehet.
-  continuedFromTicketId String? @map("continued_from_ticket_id") @db.Uuid
-
-  agent               Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  createdBy           User             @relation("ConversationCreatedBy", fields: [createdById], references: [id])
-  retentionPolicy     RetentionPolicy? @relation(fields: [retentionPolicyId], references: [id])
-  continuedFromTicket Ticket?          @relation("ConversationContinuedFromTicket", fields: [continuedFromTicketId], references: [id], onDelete: SetNull)
-  messages             Message[]
-  tickets              Ticket[]
-  modelCalls           ModelCall[]
-  toolCalls            ToolCall[]
-  agentTurns           AgentTurn[]
-  channelSessions      ChannelSession[]
-  consequenceApprovals ConsequenceApproval[]
-  privacyKey           ConversationPrivacyKey?
-  observeEntities      ConversationObserveEntity[]
-
-  // Beágyazott agent-chat (feature-spec #481, D3): per-user szál egyediség —
-  // ugyanaz a slug+thread+user mindig ugyanazt a beszélgetést nyitja. Részleges
-  // egyedi index — a Prisma-séma ezt nem tudja kifejezni, kézzel írt SQL a
-  // migrációban (mint az agent_turns aktív-forduló indexe).
-  @@index([tenantId, agentId, lastMessageAt])
-  @@index([tenantId, createdById])
-  @@index([retainUntil, legalHold])
-  @@index([channel, channelExternalId])
-  @@index([continuedFromTicketId])
-  @@map("conversations")
-}
-
-/// Per-conversation adatkulcs val-surrogate titkosításhoz (APG-18, spec §6).
-/// Retention-járatkor törlődik → crypto-shredding. Legal hold alatt megmarad.
-model ConversationPrivacyKey {
-  conversationId String   @id @map("conversation_id") @db.Uuid
-  tenantId       String   @map("tenant_id") @db.Uuid
-  wrappedKey     String   @map("wrapped_key")
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
-
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-
-  @@index([tenantId])
-  @@map("conversation_privacy_keys")
-}
-
-/// OBSERVE mód UI-előnézet: megfigyelt entitásértékek a chat kiemeléshez (APG-22).
-/// Külön a surrogate_map vaulttól — preview-álnev ütközés és prompt known-value
-/// szennyezés nélkül. A beszélgetés törlésekor crypto-shreddinggel eltűnik.
-model ConversationObserveEntity {
-  conversationId   String   @map("conversation_id") @db.Uuid
-  tenantId         String   @map("tenant_id") @db.Uuid
-  entityType       String   @map("entity_type")
-  valueFingerprint String   @map("value_fingerprint")
-  previewOrdinal   Int      @map("preview_ordinal")
-  displayValueEnc  String   @map("display_value_enc")
-  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
-
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-
-  @@id([conversationId, entityType, valueFingerprint])
-  @@index([tenantId])
-  @@map("conversation_observe_entities")
-}
-
-/// Következmény-kapu pending jóváhagyás — a blokkolt mellékhatásos tool teljes
-/// args-ával. Jóváhagyáskor a szerver egyszer lefuttatja a toolt (agent újraindítás nélkül).
-model ConsequenceApproval {
-  id             String                     @id @default(uuid()) @db.Uuid
-  /// Chat-kötött jóváhagyás. Task-only ticketnél null — ilyenkor a `ticketId` kötelező.
-  conversationId String?                    @map("conversation_id") @db.Uuid
-  agentId        String                     @map("agent_id") @db.Uuid
-  agentVersion   Int                        @map("agent_version")
-  tenantId       String?                    @map("tenant_id") @db.Uuid
-  actingUserId   String?                    @map("acting_user_id") @db.Uuid
-  ticketId       String?                    @map("ticket_id") @db.Uuid
-  toolName       String                     @map("tool_name")
-  /// Teljes tool-args a broker.invoke újrafuttatásához (NEM a sanitizált argsMeta).
-  args           Json
-  status         ConsequenceApprovalStatus  @default(pending)
-  blockedToolCallId String?                 @map("blocked_tool_call_id") @db.Uuid
-  resultMeta     Json?                      @map("result_meta")
-  approvedBy     String?                    @map("approved_by") @db.Uuid
-  approvedAt     DateTime?                  @map("approved_at") @db.Timestamptz
-  rejectedBy     String?                    @map("rejected_by") @db.Uuid
-  rejectedAt     DateTime?                  @map("rejected_at") @db.Timestamptz
-  expiresAt      DateTime                   @map("expires_at") @db.Timestamptz
-  createdAt      DateTime                   @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt      DateTime                   @updatedAt @map("updated_at") @db.Timestamptz
-
-  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  ticket       Ticket?       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  agent        Agent         @relation("ConsequenceApprovalAgent", fields: [agentId], references: [id], onDelete: Cascade)
-
-  @@index([conversationId, status])
-  @@index([ticketId, status])
-  @@index([agentId, status])
-  @@index([expiresAt, status])
-  @@map("consequence_approvals")
-}
-
-model Message {
-  id               String              @id @default(uuid()) @db.Uuid
-  conversationId   String              @map("conversation_id") @db.Uuid
-  seq              Int
-  role             MessageRole
-  actingUserId     String?             @map("acting_user_id") @db.Uuid
-  agentVersion     Int?                @map("agent_version")
-  model            String?
-  contentRef       String?             @map("content_ref")
-  contentHash      String?             @map("content_hash")
-  contentDeletedAt DateTime?           @map("content_deleted_at") @db.Timestamptz
-  ticketRefId      String?             @map("ticket_ref") @db.Uuid
-  auditEventRef    String?             @map("audit_event_ref")
-  criticality      MessageCriticality?
-  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz
-
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  actingUser   User?        @relation("MessageActingUser", fields: [actingUserId], references: [id])
-  ticketRef    Ticket?      @relation(fields: [ticketRefId], references: [id])
-
-  @@unique([conversationId, seq])
-  @@index([conversationId, createdAt])
-  @@index([contentDeletedAt])
-  @@map("messages")
-}
-
-/// chat-agent-turn-resilience-spec.md §4 (D1/D7/D8-Tier-2) — a chat-agent-forduló
-/// első osztályú, perzisztált rekordja. A `messages` a végállapot; ez a köztes,
-/// élő rekord, ami a haladást (részszöveg, aktivitások), az elszámolókat és a
-/// futtatás-tulajdonlást (lock + heartbeat, a `Ticket` dispatcher-konvenciója
-/// szerint) hordozza. Lezáráskor `assistantMessageId`-vel mutat a keletkezett
-/// agent-üzenetre.
-///
-/// Aktív-forduló invariáns (D7): egy `conversationId`-hez legfeljebb EGY
-/// `queued|running|streaming` sor lehet. Ezt a `0009_agent_turn` migráció
-/// részleges egyedi indexe kényszeríti ki (Prisma-sémában nem kifejezhető).
-model AgentTurn {
-  id                 String          @id @default(uuid()) @db.Uuid
-  conversationId     String          @map("conversation_id") @db.Uuid
-  tenantId           String?         @map("tenant_id") @db.Uuid
-  agentId            String          @map("agent_id") @db.Uuid
-  agentVersion       Int             @map("agent_version")
-  createdById        String          @map("created_by") @db.Uuid
-  status             AgentTurnStatus @default(queued)
-  /**
-   * A forduló-helyet a user-üzenet perzisztálása ELŐTT foglaljuk (D7/#61), hogy
-   * az elutasított küldés ne hagyjon árva üzenetet — a foglalás és a bekötés
-   * közötti pillanatban ezért üres.
-   */
-  userMessageId      String?         @map("user_message_id") @db.Uuid
-  assistantMessageId String?         @map("assistant_message_id") @db.Uuid
-  /**
-   * #516 — verziózott, tartós forduló-bemenet (`chat-turn-input.ts`). Ebből
-   * rekonstruálja a futtatómag a fordulót másik processzben is. Privát
-   * modellkontextust is tartalmazhat — a kliens-snapshot SOSEM adja vissza.
-   */
-  input              Json?
-
-  /**
-   * #517 — tartós indítási kísérlet. A `launchId` az indítás korrelációja,
-   * nem a tulajdonos-token: a claim csak a rekord aktuális `launchId`-jével
-   * sikerül, a lejárt attempt későn érkező workere nem indul el.
-   */
-  launchId           String?   @map("launch_id") @db.Uuid
-  launchAttemptCount Int       @default(0) @map("launch_attempt_count")
-  launchNextRetryAt  DateTime? @map("launch_next_retry_at") @db.Timestamptz
-  launchProviderRef  String?   @map("launch_provider_ref")
-  /**
-   * #518 — a kapacitás-hely foglalásának ideje. `queued` + null = kapacitásra
-   * vár (nem számít a limitbe, nem éri a 10 perces indítási határ);
-   * `queued` + kitöltve = indításra lefoglalva. Sorban állás = ez − createdAt,
-   * indulás = startedAt − ez.
-   */
-  launchReservedAt   DateTime? @map("launch_reserved_at") @db.Timestamptz
-
-  // Haladás / reconnect-snapshot (§5.3)
-  partialText String @default("") @map("partial_text")
-  activities  Json   @default("[]")
-
-  // Loop-elszámolók (§7)
-  turnCount     Int @default(0) @map("turn_count")
-  toolCallCount Int @default(0) @map("tool_call_count")
-  deniedCount   Int @default(0) @map("denied_count")
-
-  // Kontroll (D6)
-  cancelRequested     Boolean   @default(false) @map("cancel_requested")
-  cancelRequestedById String?   @map("cancel_requested_by") @db.Uuid
-  cancelRequestedAt   DateTime? @map("cancel_requested_at") @db.Timestamptz
-
-  // Életciklus / lock (Tier-2, D8/D10)
-  lockToken   String?   @map("lock_token")
-  lockedAt    DateTime? @map("locked_at") @db.Timestamptz
-  heartbeatAt DateTime  @default(now()) @map("heartbeat_at") @db.Timestamptz
-  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz
-  finishedAt  DateTime? @map("finished_at") @db.Timestamptz
-  reason      String?
-  error       String?
-
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
-
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  // issue #180 WP-2 — a fordulóhoz kötött modellhívások (per-forduló költség).
-  modelCalls   ModelCall[]
-  // issue #237 — a fordulóhoz kötött eszközhívások (hatékonysági tanácsadó).
-  toolCalls    ToolCall[]
-
-  @@index([conversationId, status])
-  @@index([status, heartbeatAt])
-  @@index([status, launchNextRetryAt])
-  @@map("agent_turns")
-}
-
-// ── Csatorna-réteg entitások (Telegram feature-spec #70, D14) ───────────────
-// Ez a slice CSAK az adatmodellt és a platform-bot regisztrációját hozza; a
-// bejövő webhook, az összekötés és a futásidő későbbi ticketek. A cél, hogy a
-// későbbi szeleteknek legyen mire épülniük.
-
-/// Regisztrált csatorna-bot (D3/D14). A `tenantId` üresen hagyható = platform-szintű
-/// bot (a connectoroknál bevált platform-vs-szervezet minta szerint). A hozzáférési
-/// kulcs és a webhook titkos fejléc SOHA nem nyersen, csak TITOK-REFERENCIAKÉNT
-/// tárolódik (`accessKeySecretRef` / `webhookSecretRef` — pl. `env:...`,
-/// `secret-manager:...`), és a felületen sosem olvasható vissza. Egyetlen platform-bot
-/// él csatorna-típusonként (részleges egyedi index, `tenant_id IS NULL`).
-model ChannelBot {
-  id                 String           @id @default(uuid()) @db.Uuid
-  channelType        ChannelType      @map("channel_type")
-  tenantId           String?          @map("tenant_id") @db.Uuid
-  name               String
-  // A bot Telegram-felhasználóneve (@ nélkül) — ebből épül a `t.me/<username>?start=…`
-  // mélylink. A platform-admin a beüzemelő UI-on adja meg; régi telepítésnél az env
-  // (`TELEGRAM_BOT_USERNAME`) a fallback. Nem titok, sima szövegként tárolható.
-  botUsername        String?          @map("bot_username")
-  accessKeySecretRef String           @map("access_key_secret_ref")
-  webhookSecretRef   String           @map("webhook_secret_ref")
-  status             ChannelBotStatus @default(active)
-  createdById        String?          @map("created_by") @db.Uuid
-  createdAt          DateTime         @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt          DateTime         @updatedAt @map("updated_at") @db.Timestamptz
-
-  sessions ChannelSession[]
-
-  // Szervezeti bot egyediség típusonként; a platform-bot (tenant_id IS NULL)
-  // egyediségét a migráció részleges egyedi indexe kényszeríti ki (Prisma-sémában
-  // a NULL-ok külön értékek, ezért ott nem kifejezhető).
-  @@unique([channelType, tenantId])
-  @@index([channelType, status])
-  @@map("channel_bots")
-}
-
-/// Külső fiók ↔ platform-felhasználó kötés (D2/D14). A `tenantId` a kötéskor RÖGZÍTETT
-/// szervezet. A `lookupHash` a külső azonosító determinisztikus, egyedi kereső-hashe
-/// (a nyers külső azonosító csak titkosítva, `externalUserIdEnc`). SZEREPKÖRT NEM tárol —
-/// az minden üzenetnél élőben oldódik fel a tagságból (D2).
-model ChannelIdentity {
-  id                String                @id @default(uuid()) @db.Uuid
-  channelType       ChannelType           @map("channel_type")
-  externalUserIdEnc String                @map("external_user_id_enc")
-  lookupHash        String                @map("lookup_hash")
-  tenantId          String?               @map("tenant_id") @db.Uuid
-  userId            String                @map("user_id") @db.Uuid
-  status            ChannelIdentityStatus @default(active)
-  linkedAt          DateTime              @default(now()) @map("linked_at") @db.Timestamptz
-  createdAt         DateTime              @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt         DateTime              @updatedAt @map("updated_at") @db.Timestamptz
-
-  user     User                @relation("ChannelIdentityUser", fields: [userId], references: [id], onDelete: Cascade)
-  grants   ChannelAgentGrant[]
-  sessions ChannelSession[]
-
-  @@unique([channelType, lookupHash])
-  @@index([userId, status])
+  @@unique([tenantId, idempotencyKey])
   @@index([tenantId, status])
-  @@map("channel_identities")
+  @@map("gateway_operations")
 }
 
-/// Melyik agent érhető el a csatornán, kinek, melyik projekttel (D5/D9/D14). Nem új
-/// jogosultság-forrás, hanem SZŰKÍTÉS: a platform-oldali hozzáféréssel vett metszet.
-/// A `projectKey` alapértéke a gyűjtő (`__general__`).
-model ChannelAgentGrant {
-  id          String   @id @default(uuid()) @db.Uuid
-  identityId  String   @map("identity_id") @db.Uuid
-  agentId     String   @map("agent_id") @db.Uuid
-  projectKey  String   @default("__general__") @map("project_key")
-  grantedById String?  @map("granted_by") @db.Uuid
-  grantedAt   DateTime @default(now()) @map("granted_at") @db.Timestamptz
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+model GatewayApproval {
+  id              String                   @id @default(uuid()) @db.Uuid
+  operationId     String                   @unique @map("operation_id") @db.Uuid
+  decidedByUserId String?                  @map("decided_by_user_id") @db.Uuid
+  decision        GatewayApprovalDecision  @default(pending)
+  reason          String?
+  decidedAt       DateTime?                @map("decided_at") @db.Timestamptz
+  createdAt       DateTime                 @default(now()) @map("created_at") @db.Timestamptz
 
-  identity ChannelIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
-  agent    Agent           @relation("ChannelAgentGrantAgent", fields: [agentId], references: [id], onDelete: Cascade)
+  operation GatewayOperation @relation(fields: [operationId], references: [id], onDelete: Cascade)
+  decidedBy User?            @relation("GatewayApprovalDecidedBy", fields: [decidedByUserId], references: [id])
 
-  @@unique([identityId, agentId])
-  @@index([agentId])
-  @@map("channel_agent_grants")
+  @@map("gateway_approvals")
 }
 
-/// Külső szál ↔ beszélgetés összerendelés (D8/D9/D14). Az `updateWatermark` a Telegram
-/// monoton növekvő frissítés-azonosítójának munkamenetenkénti vízjele (D15 duplikáció-
-/// védelem). A `lastActivityAt` a 24 órás gördülő beszélgetéshez (D9).
-model ChannelSession {
-  id               String   @id @default(uuid()) @db.Uuid
-  botId            String   @map("bot_id") @db.Uuid
-  externalThreadId String   @map("external_thread_id")
-  conversationId   String?  @map("conversation_id") @db.Uuid
-  identityId       String?   @map("identity_id") @db.Uuid
-  activeAgentId    String?   @map("active_agent_id") @db.Uuid
-  updateWatermark  BigInt?   @map("update_watermark")
-  // D12 — a bekötetlen küldő EGYETLEN semleges választ kap, utána csend ugyanabban a
-  // szálban. Ez a bélyeg jelöli, hogy a semleges válasz már kiment; ha ki van töltve,
-  // a további bekötetlen üzenetek némán elnyelődnek (nem generálnak kimenő hívást).
-  unlinkedNoticeAt DateTime? @map("unlinked_notice_at") @db.Timestamptz
-  lastActivityAt   DateTime  @default(now()) @map("last_activity_at") @db.Timestamptz
-  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz
-
-  bot          ChannelBot       @relation(fields: [botId], references: [id], onDelete: Cascade)
-  conversation Conversation?    @relation(fields: [conversationId], references: [id], onDelete: SetNull)
-  identity     ChannelIdentity? @relation(fields: [identityId], references: [id], onDelete: SetNull)
-  turns        ChannelTurn[]
-  outboundMessages ChannelOutboundMessage[]
-
-  @@unique([botId, externalThreadId])
-  @@index([identityId])
-  @@index([lastActivityAt])
-  @@map("channel_sessions")
-}
-
-/// A worker munkasora — a második munkatípus (D8/D14). Egy bejövő üzenet egy sor;
-/// a forduló túléli a webhook-kérést, `attempts` szerint újrapróbálható, `lastError`
-/// diagnosztizálható.
-model ChannelTurn {
-  id         String            @id @default(uuid()) @db.Uuid
-  sessionId  String            @map("session_id") @db.Uuid
-  inboundRef String?           @map("inbound_ref")
-  /// A bejövő üzenet szövege (D14 „bejövő üzenet"). A worker ebből futtatja a fordulót;
-  /// a webhook-kérés túlélése ezt igényli (a nyers Telegram-üzenetet sehol máshol nem
-  /// tároljuk). Fájl/hang esetén null — a `inboundKind` jelzi, hogy nem szöveg.
-  inboundText String?           @map("inbound_text")
-  /// A bejövő üzenet fajtája: `text` (feldolgozható) vagy `unsupported` (fájl/kép/hang —
-  /// a bot érthetően megmondja, hogy ezt még nem tudja kezelni; nincs agent-futás).
-  inboundKind String            @default("text") @map("inbound_kind")
-  status     ChannelTurnStatus @default(queued)
-  attempts   Int               @default(0)
-  lastError  String?           @map("last_error")
-  createdAt  DateTime          @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt  DateTime          @updatedAt @map("updated_at") @db.Timestamptz
-
-  session ChannelSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-
-  @@index([sessionId, status])
-  @@index([status, createdAt])
-  @@map("channel_turns")
-}
-
-/// A bot SAJÁT kimenő üzeneteinek nyilvántartása a megőrzési takarításhoz (D4/#78).
-/// A hiteles példány a MIÉNK; a Telegram csak kézbesítési csatorna. A bot a megőrzési
-/// horizonton takarítja a saját kimenő üzeneteit — privát chatben CSAK a magáéit tudja
-/// törölni (a felhasználóét nem), ezért ez a tábla KIZÁRÓLAG a bot által küldött
-/// üzenetek `providerMessageId`-ját tárolja (nyers tartalom NÉLKÜL), hogy a takarító a
-/// `deleteMessage` hívásokhoz tudja a (chat, message) párost. A `purgedAt` billen, amint
-/// a törlés megtörtént (vagy a provider szerint az üzenet már nem létezik) — idempotens.
-model ChannelOutboundMessage {
-  id                String      @id @default(uuid()) @db.Uuid
-  sessionId         String      @map("session_id") @db.Uuid
-  channelType       ChannelType @map("channel_type")
-  /// A cél-chat külső azonosítója (a `deleteMessage` chat_id-ja). Nem tartalom.
-  externalThreadId  String      @map("external_thread_id")
-  /// A provider által adott üzenet-azonosító (a `deleteMessage` message_id-ja).
-  providerMessageId String      @map("provider_message_id")
-  /// Diagnosztikai kategória a kimenő üzenetről (pl. `link_established`) — NEM a szöveg.
-  kind              String?
-  sentAt            DateTime    @default(now()) @map("sent_at") @db.Timestamptz
-  /// Kitöltve, amint a megőrzési takarítás törölte (vagy a provider szerint már nincs meg).
-  purgedAt          DateTime?   @map("purged_at") @db.Timestamptz
-
-  session ChannelSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-
-  // A takarító a régi, még nem takarított sorokat kéri le (sentAt szerint, purgedAt IS NULL).
-  @@index([purgedAt, sentAt])
-  @@index([sessionId])
-  @@map("channel_outbound_messages")
-}
-
-/// Deep-link összekötő token (Telegram feature-spec #70/#72, D12). A webes „Telegram
-/// összekötése" gomb egy RÖVID ÉLETTARTAMÚ, EGYSZER FELHASZNÁLHATÓ tokent állít elő,
-/// amibe bele van kötve a SZERVEZET, a FELHASZNÁLÓ és a LEJÁRAT — aláírva
-/// (`signature`, HMAC a `jti`+szervezet+felhasználó+lejárat felett; a beváltás konstans
-/// idővel ellenőrzi). A Telegram `start` paramétere legfeljebb 64 karakter, ezért a
-/// mélylink CSAK a rövid `jti`-t hordozza; az aláírt kötés (mezők + `signature`) itt,
-/// szerveroldalon él (a write-gate token `tokenHash`+`signature` mintáját követve).
-/// Az egyszer-használatot a `consumedAt` atomi billentése kényszeríti (verseny-biztos).
-model ChannelLinkToken {
-  id                   String      @id @default(uuid()) @db.Uuid
-  channelType          ChannelType @map("channel_type")
-  /// A mélylink `start` paramétere — rövid, kitalálhatatlan, egyedi (nem a nyers azonosító).
-  jti                  String      @unique
-  /// HMAC-aláírás a kötött mezők felett (integritás + hamisítás-detektálás, konstans idejű vetés).
-  signature            String
-  userId               String      @map("user_id") @db.Uuid
-  /// A kötéskor RÖGZÍTETT szervezet (D2). Üres = platform-szintű felhasználó.
-  tenantId             String?     @map("tenant_id") @db.Uuid
-  expiresAt            DateTime    @map("expires_at") @db.Timestamptz
-  /// Beváltáskor töltődik ki (egyszer-használat). A második beváltás nem hoz létre kötést.
-  consumedAt           DateTime?   @map("consumed_at") @db.Timestamptz
-  /// A beváltó külső fiók kereső-hashe — a kettős-koppintás idempotens sikeréhez
-  /// (ugyanaz a fiók) vs. a továbbküldött-link elutasításához (más fiók).
-  consumedByLookupHash String?     @map("consumed_by_lookup_hash")
-  createdById          String?     @map("created_by") @db.Uuid
-  createdAt            DateTime    @default(now()) @map("created_at") @db.Timestamptz
-
-  user User @relation("ChannelLinkTokenUser", fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@index([expiresAt])
-  @@map("channel_link_tokens")
-}
-
-/// Eseményvezérelt jóváhagyás Telegram-gombokkal (Telegram feature-spec #70/#76, D5/D6/D14).
-/// Amikor egy ticket `awaiting_human`-ba lép, a felelős / jóváhagyói kör jogosultság-tudatos
-/// gombokat kap; EGY sor = EGY címzettnek kiküldött gombüzenet. A sor hordozza a KÖTÉST
-/// (ticket, kapu, címzett-identitás, kezdeményező, kért szerepkör) és a megengedett döntéseket,
-/// hogy a koppintáskor a szerver élőben újra tudja ellenőrizni a jogosultságot, és az
-/// EGYSZER-használatot atomian (a `status` `pending`→`decided` billentése, verseny-biztos)
-/// kikényszerítse. A gomb-payload aláírása a kötött mezők felett képződik (l.
-/// `channel-approval-token.ts`); a nyers külső azonosító SOHA nem kerül ide (csak a
-/// `recipientIdentityId` és a döntéskor a beváltó kereső-hashe a kettős-koppintás idempotenciához).
-model ChannelApprovalPrompt {
-  id                  String      @id @default(uuid()) @db.Uuid
-  /// A `callback_data` rövid, kitalálhatatlan kulcsa (nem a nyers azonosító).
-  promptId            String      @unique @map("prompt_id")
-  channelType         ChannelType @map("channel_type")
-  ticketId            String      @map("ticket_id") @db.Uuid
-  /// A kötéskor rögzített szervezet (D2). Üres = platform-szintű.
-  tenantId            String?     @map("tenant_id") @db.Uuid
-  /// A kötelező kapu azonosítója (ha van); a döntés a kapun keresztül lépteti az állapotgépet.
-  gateId              String?     @map("gate_id")
-  stepId              String?     @map("step_id")
-  /// A kért jóváhagyói szerepkör — a koppintáskori ÉLŐ jogosultság-ellenőrzéshez.
-  requiredActorRole   String?     @map("required_actor_role")
-  /// A CÍMZETT csatorna-identitása — a gomb ehhez a címzetthez van kötve (más fiók nem váltja be).
-  recipientIdentityId String      @map("recipient_identity_id") @db.Uuid
-  recipientUserId     String      @map("recipient_user_id") @db.Uuid
-  /// A kezdeményező — a „saját kérés jóváhagyása tiltott" élő ellenőrzéséhez.
-  initiatorUserId     String?     @map("initiator_user_id") @db.Uuid
-  /// A ténylegesen megjelenített (jogosultság-tudatos) döntések: az `approve`/`reject` részhalmaza.
-  allowedActions      String[]    @map("allowed_actions")
-  /// A cél-chat külső azonosítója (a döntés utáni `editMessageReplyMarkup` chat_id-ja).
-  externalThreadId    String      @map("external_thread_id")
-  /// A kiküldött gombüzenet provider-azonosítója (a döntés utáni szerkesztéshez/gombeltüntetéshez).
-  providerMessageId   String?     @map("provider_message_id")
-  /// pending | decided | superseded. A `decided` billentés atomi és verseny-biztos (egyszer-használat).
-  status              String      @default("pending")
-  decidedAction       String?     @map("decided_action")
-  /// A beváltó külső fiók kereső-hashe — a kettős-koppintás idempotens nyugtázásához.
-  decidedByLookupHash String?     @map("decided_by_lookup_hash")
-  decidedAt           DateTime?   @map("decided_at") @db.Timestamptz
-  createdAt           DateTime    @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt           DateTime    @updatedAt @map("updated_at") @db.Timestamptz
-
-  @@index([ticketId, status])
-  @@index([recipientIdentityId])
-  @@map("channel_approval_prompts")
-}
-
-/// Platform-oldali felhasználói értesítés (Telegram feature-spec #70/#72, D12 story 3).
-/// Egyelőre az összekötés tényéről szól — ha nem a felhasználó kötött, azonnal lássa és
-/// megszüntethesse. Szándékosan általános (kind + title + body + metadata), hogy később más
-/// események is ide írhassanak. A `readAt` az „elolvasva" jelölés.
-model UserNotification {
-  id        String    @id @default(uuid()) @db.Uuid
-  userId    String    @map("user_id") @db.Uuid
-  tenantId  String?   @map("tenant_id") @db.Uuid
-  kind      String
-  title     String
-  body      String
-  metadata  Json      @default("{}")
-  readAt    DateTime? @map("read_at") @db.Timestamptz
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
-
-  user User @relation("UserNotificationUser", fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId, readAt])
-  @@index([userId, createdAt])
-  @@map("user_notifications")
-}
-
-model RetentionPolicy {
-  id        String                   @id @default(uuid()) @db.Uuid
-  tenantId  String?                  @map("tenant_id") @db.Uuid
-  name      String
-  ttlDays   Int                      @map("ttl_days")
-  appliesTo RetentionPolicyAppliesTo @default(all) @map("applies_to")
-  agentId   String?                  @map("agent_id") @db.Uuid
-  createdAt DateTime                 @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime                 @updatedAt @map("updated_at") @db.Timestamptz
-
-  agent         Agent?         @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  conversations Conversation[]
-
-  @@unique([tenantId, name])
-  @@index([tenantId, appliesTo])
-  @@index([tenantId, agentId])
-  @@map("retention_policies")
-}
-
-model Ticket {
-  id                String        @id @default(uuid()) @db.Uuid
-  tenantId          String?       @map("tenant_id") @db.Uuid
-  type              TicketType
-  title             String
-  state             TicketState   @default(backlog)
-  assigneeType      AssigneeType? @map("assignee_type")
-  assigneeId        String?       @map("assignee_id") @db.Uuid
-  agentId           String?       @map("agent_id") @db.Uuid
-  payload           Json          @default("{}")
-  sourceDocumentId  String?       @map("source_document_id") @db.Uuid
-  executeAfter      DateTime?     @map("execute_after") @db.Timestamptz
-  dueBy             DateTime?     @map("due_by") @db.Timestamptz
-  lockToken         String?       @map("lock_token")
-  lockedAt          DateTime?     @map("locked_at") @db.Timestamptz
-  /** Kooperatív emergency stop a futó agent loopra (Aktív futások UI). */
-  cancelRequested     Boolean   @default(false) @map("cancel_requested")
-  cancelRequestedById String?   @map("cancel_requested_by") @db.Uuid
-  cancelRequestedAt   DateTime? @map("cancel_requested_at") @db.Timestamptz
-  playbookRef       String?       @map("playbook_ref")
-  processInstanceId String?       @map("process_instance_id") @db.Uuid
-  playbookVersionId String?       @map("playbook_version_id") @db.Uuid
-  playbookStepId    String?       @map("playbook_step_id")
-  requiredGateId    String?       @map("required_gate_id")
-  conversationId    String?       @map("conversation_id") @db.Uuid
-  projectKey        String        @default("__general__") @map("project_key")
-  source            TicketSource  @default(user)
-  createdById       String        @map("created_by") @db.Uuid
-  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt         DateTime      @updatedAt @map("updated_at") @db.Timestamptz
-
-  agent                         Agent?              @relation(fields: [agentId], references: [id])
-  sourceDocument                Document?           @relation(fields: [sourceDocumentId], references: [id])
-  conversation                  Conversation?       @relation(fields: [conversationId], references: [id])
-  createdBy                     User                @relation("TicketCreatedBy", fields: [createdById], references: [id])
-  discussionConversations       Conversation[]      @relation("ConversationContinuedFromTicket")
-  modelCalls                    ModelCall[]
-  toolCalls                     ToolCall[]
-  writeGateTokens               WriteGateToken[]
-  memoryCandidates              MemoryCandidate[]
-  transitions                   TicketTransition[]
-  trainingTicket                TrainingTicket?
-  sandboxAppVersions            SandboxAppVersion[]
-  linkedMessages                Message[]
-  scheduledTaskMaterializations ScheduledTask[]
-  attachments                   TicketAttachment[]
-  comments                      TicketComment[]
-  consequenceApprovals          ConsequenceApproval[]
-
-  @@index([source, state])
-  @@index([tenantId, state])
-  @@map("tickets")
-}
-
-/// A ticket bemeneti dokumentumai. Külön élnek a workspace kimeneti fájljaitól
-/// és a későbbi kommentek csatolmányaitól.
-model TicketAttachment {
-  id         String   @id @default(uuid()) @db.Uuid
-  ticketId   String   @map("ticket_id") @db.Uuid
-  documentId String   @map("document_id") @db.Uuid
-  seq        Int
-  filename   String
-  mimeType   String?  @map("mime_type")
-  byteSize   Int?     @map("byte_size")
-  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
-
-  ticket   Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  document Document @relation(fields: [documentId], references: [id], onDelete: Restrict)
-
-  @@unique([ticketId, seq])
-  @@unique([ticketId, documentId])
-  @@index([documentId])
-  @@map("ticket_attachments")
-}
-
-model ScheduledTask {
-  id                   String                  @id @default(uuid()) @db.Uuid
-  tenantId             String?                 @map("tenant_id") @db.Uuid
-  kind                 ScheduledTaskKind       @default(agent_task)
-  status               ScheduledTaskStatus     @default(active)
-  recurrence           ScheduledTaskRecurrence @default(none)
-  maxRuns              Int?                    @map("max_runs")
-  runCount             Int                     @default(0) @map("run_count")
-  title                String
-  agentId              String                  @map("agent_id") @db.Uuid
-  createdById          String                  @map("created_by") @db.Uuid
-  payload              Json                    @default("{}")
-  runAsUserId          String?                 @map("run_as_user_id") @db.Uuid
-  runAsAuthorizedAt    DateTime?               @map("run_as_authorized_at") @db.Timestamptz
-  runAsAuthorizedById  String?                 @map("run_as_authorized_by") @db.Uuid
-  nextRunAt            DateTime                @map("next_run_at") @db.Timestamptz
-  lastRunAt            DateTime?               @map("last_run_at") @db.Timestamptz
-  materializedTicketId String?                 @map("materialized_ticket_id") @db.Uuid
-  materializedAt       DateTime?               @map("materialized_at") @db.Timestamptz
-  createdAt            DateTime                @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt            DateTime                @updatedAt @map("updated_at") @db.Timestamptz
-
-  agent              Agent   @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  createdBy          User    @relation("ScheduledTaskCreatedBy", fields: [createdById], references: [id])
-  runAsUser          User?   @relation("ScheduledTaskRunAsUser", fields: [runAsUserId], references: [id])
-  runAsAuthorizedBy  User?   @relation("ScheduledTaskRunAsAuthorizedBy", fields: [runAsAuthorizedById], references: [id])
-  materializedTicket Ticket? @relation(fields: [materializedTicketId], references: [id])
-
-  @@index([status, nextRunAt])
-  @@map("scheduled_tasks")
-}
-
-/// Proaktív monitor-definíció (Feature-spec — Proactive Monitor §3.2).
-/// Determinisztikus, ütemezett figyelő-szabály: mit figyel, milyen küszöbbel,
-/// milyen frekvenciával, és mit tesz találatkor. A drága LLM csak a 2. lépcsőben
-/// (eszkaláció) indul — a söprés maga nulla LLM-token.
-model MonitorDefinition {
-  id          String        @id @default(uuid()) @db.Uuid
-  tenantId    String        @map("tenant_id") @db.Uuid
-  kind        MonitorKind
-  status      MonitorStatus @default(active)
-  version     Int           @default(1)
-  title       String
-  description String?
-
-  // Ütemezés (§4.11.6) — UTC-ben tárolva
-  intervalSeconds  Int                  @map("interval_seconds")
-  nextSweepAt      DateTime             @map("next_sweep_at") @db.Timestamptz
-  lastSweepAt      DateTime?            @map("last_sweep_at") @db.Timestamptz
-  activeWindowCron String?              @map("active_window_cron")
-  catchupPolicy    MonitorCatchupPolicy @default(run_late) @map("catchup_policy")
-  catchupWindowSec Int                  @default(900) @map("catchup_window_sec")
-
-  // 1. lépcső — determinisztikus collector + szűrő konfiguráció
-  collectorConfig Json @default("{}") @map("collector_config")
-  filterConfig    Json @default("{}") @map("filter_config")
-
-  // Riasztás-fáradtság elleni kontroll
-  cooldownSeconds  Int     @default(86400) @map("cooldown_seconds")
-  dedupKeyTemplate String? @map("dedup_key_template")
-
-  // 2. lépcső — eszkalációs akció
-  openTicketType  TicketType @default(monitor_alert) @map("open_ticket_type")
-  escalateAgentId String?    @map("escalate_agent_id") @db.Uuid
-  perRunBudgetUsd Decimal?   @map("per_run_budget_usd") @db.Decimal(10, 4)
-  notifyChannel   String?    @map("notify_channel")
-
-  // Lock (dupla-fire védelem — §4.11.7)
-  lockToken String?   @map("lock_token")
-  lockedAt  DateTime? @map("locked_at") @db.Timestamptz
-
-  createdById String   @map("created_by") @db.Uuid
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
-
-  escalateAgent Agent?          @relation(fields: [escalateAgentId], references: [id])
-  createdBy     User            @relation("MonitorDefinitionCreatedBy", fields: [createdById], references: [id])
-  runs          MonitorRun[]
-  signals       MonitorSignal[]
-
-  @@index([status, nextSweepAt])
-  @@index([tenantId, status])
-  @@map("monitor_definitions")
-}
-
-/// Egy söprés-végrehajtás auditmagja (§3.3). A @@unique([monitorId, scheduledFor])
-/// a §4.11.7 „dupla-fires védelem" adatbázis-szintű garanciája.
-model MonitorRun {
-  id              String            @id @default(uuid()) @db.Uuid
-  monitorId       String            @map("monitor_id") @db.Uuid
-  outcome         MonitorRunOutcome
-  startedAt       DateTime          @default(now()) @map("started_at") @db.Timestamptz
-  finishedAt      DateTime?         @map("finished_at") @db.Timestamptz
-  scheduledFor    DateTime          @map("scheduled_for") @db.Timestamptz
-  signalCount     Int               @default(0) @map("signal_count")
-  matchedCount    Int               @default(0) @map("matched_count")
-  suppressedCount Int               @default(0) @map("suppressed_count")
-  openedTicketIds String[]          @map("opened_ticket_ids") @db.Uuid
-  llmInvoked      Boolean           @default(false) @map("llm_invoked")
-  costUsd         Decimal?          @map("cost_usd") @db.Decimal(10, 4)
-  error           String?
-
-  monitor MonitorDefinition @relation(fields: [monitorId], references: [id], onDelete: Cascade)
-
-  @@unique([monitorId, scheduledFor])
-  @@index([monitorId, startedAt])
-  @@map("monitor_runs")
-}
-
-/// Cooldown / dedup nyilvántartás (§3.4): ugyanaz a jel ne nyisson ismételt
-/// tickettet a cooldown ablakon belül (riasztás-fáradtság elleni kontroll).
-model MonitorSignal {
-  id                String    @id @default(uuid()) @db.Uuid
-  monitorId         String    @map("monitor_id") @db.Uuid
-  dedupKey          String    @map("dedup_key")
-  firstSeenAt       DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz
-  lastSeenAt        DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz
-  lastEscalatedAt   DateTime? @map("last_escalated_at") @db.Timestamptz
-  escalatedTicketId String?   @map("escalated_ticket_id") @db.Uuid
-  severity          Int       @default(0)
-  payload           Json      @default("{}")
-
-  monitor MonitorDefinition @relation(fields: [monitorId], references: [id], onDelete: Cascade)
-
-  @@unique([monitorId, dedupKey])
-  @@index([monitorId, lastEscalatedAt])
-  @@map("monitor_signals")
-}
-
-model TicketTransition {
-  id           String         @id @default(uuid()) @db.Uuid
-  ticketId     String         @map("ticket_id") @db.Uuid
-  fromState    TicketState    @map("from_state")
-  toState      TicketState    @map("to_state")
-  actorType    AuditActorType @map("actor_type")
-  actorId      String?        @map("actor_id") @db.Uuid
-  agentVersion Int?           @map("agent_version")
-  note         String?
-  ts           DateTime       @default(now()) @db.Timestamptz
-
-  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-
-  @@index([ticketId, ts])
-  @@map("ticket_transitions")
-}
-
-model TicketComment {
-  id                String            @id @default(uuid()) @db.Uuid
-  ticketId          String            @map("ticket_id") @db.Uuid
-  seq               Int
-  kind              TicketCommentKind
-  authorType        AuditActorType    @map("author_type")
-  authorUserId      String?           @map("author_user_id") @db.Uuid
-  authorAgentId     String?           @map("author_agent_id") @db.Uuid
-  authorDisplayName String?           @map("author_display_name")
-  agentVersion      Int?              @map("agent_version")
-  body              String
-  structured        Json?
-  parentId          String?           @map("parent_id") @db.Uuid
-  transitionId      String?           @map("transition_id") @db.Uuid
-  createdAt         DateTime          @default(now()) @map("created_at") @db.Timestamptz
-
-  ticket      Ticket                    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  authorUser  User?                     @relation("TicketCommentAuthorUser", fields: [authorUserId], references: [id])
-  authorAgent Agent?                    @relation("TicketCommentAuthorAgent", fields: [authorAgentId], references: [id])
-  parent      TicketComment?            @relation("TicketCommentThread", fields: [parentId], references: [id])
-  children    TicketComment[]           @relation("TicketCommentThread")
-  attachments TicketCommentAttachment[]
-
-  @@unique([ticketId, seq])
-  @@index([ticketId, createdAt])
-  @@map("ticket_comments")
-}
-
-model TicketCommentAttachment {
-  id         String                      @id @default(uuid()) @db.Uuid
-  commentId  String                      @map("comment_id") @db.Uuid
-  documentId String                      @map("document_id") @db.Uuid
-  seq        Int
-  kind       TicketCommentAttachmentKind
-  filename   String
-  mimeType   String?                     @map("mime_type")
-  byteSize   Int?                        @map("byte_size")
-  createdAt  DateTime                    @default(now()) @map("created_at") @db.Timestamptz
-
-  comment  TicketComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
-  document Document      @relation(fields: [documentId], references: [id], onDelete: Restrict)
-
-  @@unique([commentId, seq])
-  @@unique([documentId])
-  @@index([documentId])
-  @@map("ticket_comment_attachments")
-}
-
-model AuditLog {
-  id             String         @id @default(uuid()) @db.Uuid
-  seq            BigInt         @default(autoincrement())
-  actorType      AuditActorType @map("actor_type")
-  actorId        String?        @map("actor_id") @db.Uuid
-  agentVersion   Int?           @map("agent_version")
-  action         String
-  targetType     String         @map("target_type")
-  targetId       String?        @map("target_id") @db.Uuid
-  modelUsed      String?        @map("model_used")
-  inputRef       String?        @map("input_ref")
-  outputRef      String?        @map("output_ref")
-  policyDecision String?        @map("policy_decision")
-  prevHash       String?        @map("prev_hash")
-  hash           String?
-  metadata       Json?
-  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
-  tenantId       String?        @map("tenant_id") @db.Uuid
-  ticketId       String?        @map("ticket_id") @db.Uuid
-  conversationId String?        @map("conversation_id") @db.Uuid
-
-  @@index([tenantId, createdAt])
-  @@index([ticketId])
-  @@index([conversationId])
-  @@map("audit_log")
-}
-
-model ModelCall {
-  id               String          @id @default(uuid()) @db.Uuid
-  agentId          String          @map("agent_id") @db.Uuid
-  agentVersion     Int?            @map("agent_version")
-  ticketId         String?         @map("ticket_id") @db.Uuid
-  conversationId   String?         @map("conversation_id") @db.Uuid
-  // issue #180 WP-2 — MELYIK FORDULÓ költötte el. E nélkül egy drága futás
-  // per-forduló költségét csak időbélyeg-illesztéssel lehetett szétszedni; ezzel
-  // egyetlen `group by agent_turn_id` megadja. Nullable: a ticket/task úton és a
-  // bevezetés előtti rekordokon nincs forduló-rekord.
-  agentTurnId      String?         @map("agent_turn_id") @db.Uuid
-  provider         String
-  model            String
-  promptTokens     Int             @map("prompt_tokens")
-  completionTokens Int             @map("completion_tokens")
-  // issue #180 WP-2 — a prompt-cache-ből (töredék áron) kiszolgált prompt-tokenek.
-  // A gateway eddig csak metrikába és naplóba tette, a rekordba nem — így utólag
-  // nem volt eldönthető, fogott-e a cache. `null` = a provider nem ad cache-adatot
-  // („nincs adat" ≠ „nem volt találat").
-  cachedPromptTokens Int?          @map("cached_prompt_tokens")
-  costEstimate     Decimal         @map("cost_estimate") @db.Decimal(12, 6)
-  latencyMs        Int             @default(0) @map("latency_ms")
-  status           ModelCallStatus @default(ok)
-  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz
-
-  agent        Agent         @relation(fields: [agentId], references: [id])
-  ticket       Ticket?       @relation(fields: [ticketId], references: [id])
-  conversation Conversation? @relation(fields: [conversationId], references: [id])
-  agentTurn    AgentTurn?    @relation(fields: [agentTurnId], references: [id], onDelete: SetNull)
-
-  @@index([createdAt])
-  @@index([agentId, createdAt])
-  @@index([ticketId])
-  @@index([conversationId])
-  // „mennyibe került ez a forduló?" — a per-forduló összesítés egyetlen indexelt lekérdezés.
-  @@index([agentTurnId])
-  @@map("model_calls")
-}
-
-// ── Fázis 2: Model Gateway routing + budget ─────────────────────────────────
-
-enum ModelRoutingScope {
-  global
-  agent
-  ticket_type
-
-  @@map("model_routing_scope")
-}
-
-enum ModelBudgetScope {
-  tenant
-  agent
-  ticket_type
-
-  @@map("model_budget_scope")
-}
-
-enum ModelBudgetPeriod {
-  day
-  week
-  month
-
-  @@map("model_budget_period")
-}
-
-model ModelRoutingPolicy {
-  id         String            @id @default(uuid()) @db.Uuid
-  tenantId   String?           @map("tenant_id") @db.Uuid
-  scope      ModelRoutingScope @default(global)
-  scopeRef   String?           @map("scope_ref")
-  model      String
-  provider   String
-  priority   Int               @default(100)
-  conditions Json?
-  createdAt  DateTime          @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt  DateTime          @updatedAt @map("updated_at") @db.Timestamptz
-
-  @@index([tenantId, scope, priority])
-  @@map("model_routing_policies")
-}
-
-model ModelBudget {
-  id            String            @id @default(uuid()) @db.Uuid
-  tenantId      String?           @map("tenant_id") @db.Uuid
-  scope         ModelBudgetScope  @default(tenant)
-  scopeRef      String?           @map("scope_ref")
-  period        ModelBudgetPeriod @default(week)
-  callLimit     Int?              @map("call_limit")
-  tokenLimit    Int?              @map("token_limit")
-  softThreshold Decimal?          @map("soft_threshold") @db.Decimal(12, 6)
-  hardCap       Boolean           @default(true) @map("hard_cap")
-  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt     DateTime          @updatedAt @map("updated_at") @db.Timestamptz
-
-  @@index([tenantId, scope])
-  @@map("model_budgets")
-}
-
-model ToolCall {
-  id             String         @id @default(uuid()) @db.Uuid
-  agentId        String         @map("agent_id") @db.Uuid
-  ticketId       String?        @map("ticket_id") @db.Uuid
-  conversationId String?        @map("conversation_id") @db.Uuid
-  // issue #237 — MELYIK FORDULÓ hívta. E nélkül a chat-futás eszközhívásait
-  // csak időbélyeg-illesztéssel lehetne a fordulóhoz rendelni. Nullable: a
-  // ticket/task úton és a bevezetés előtti rekordokon nincs forduló-rekord.
-  agentTurnId    String?        @map("agent_turn_id") @db.Uuid
-  connectorId    String?        @map("connector_id") @db.Uuid
-  toolName       String         @map("tool_name")
-  status         ToolCallStatus
-  argsMeta       Json           @default("{}") @map("args_meta")
-  resultMeta     Json?          @map("result_meta")
-  latencyMs      Int            @map("latency_ms")
-  policyDecision String?        @map("policy_decision")
-  // issue #97 — a hívás bizalmi osztálya (dedikált, indexelt oszlop a gyors
-  // audit-lekérdezéshez: „mely futásokat befolyásolt külső tartalom?"). A
-  // bevezetés utáni hívásokra töltődik; meglévő rekordokon null.
-  trustClass     TrustClass?    @map("trust_class")
-  // issue #195 — a hívás KIMENETELE a kikényszerített kimeneti szerződés szerint.
-  // Ez teszi megválaszolhatóvá: „melyik eszköz ad a leggyakrabban üres vagy
-  // részleges eredményt?" — vagyis melyik eszközt kell javítani. A bevezetés utáni
-  // hívásokra töltődik; meglévő rekordokon null.
-  outcome        ToolOutcome?   @map("outcome")
-  // issue #195 D4 — a MÉRT mellékhatás összegzése (mennyiség + egység + cél).
-  // „Sikeresen írtam" állítás önmagában nem elfogadható kimenet.
-  effectSummary  Json?          @map("effect_summary")
-  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
-
-  agent        Agent         @relation(fields: [agentId], references: [id])
-  ticket       Ticket?       @relation(fields: [ticketId], references: [id])
-  conversation Conversation? @relation(fields: [conversationId], references: [id])
-  connector    Connector?    @relation(fields: [connectorId], references: [id])
-  agentTurn    AgentTurn?    @relation(fields: [agentTurnId], references: [id], onDelete: SetNull)
-
-  @@index([trustClass, createdAt])
-  // issue #195 — „melyik eszköz ad a leggyakrabban empty/partial/failed eredményt?"
-  @@index([outcome, toolName, createdAt])
-  @@index([createdAt])
-  @@index([agentId, createdAt])
-  @@index([ticketId])
-  @@index([conversationId])
-  @@index([agentTurnId])
-  @@map("tool_calls")
-}
-
-// ── CR-MVP-001: A0 sandbox app registry ────────────────────────────────────
-
-model SandboxApp {
-  id        String  @id @default(uuid()) @db.Uuid
-  tenantId  String? @map("tenant_id") @db.Uuid
-  sandboxId String? @map("sandbox_id") @db.Uuid
-
-  name        String
-  description String?
-  level       SandboxAppLevel       @default(A0)
-  type        SandboxAppType        @default(single_html)
-  status      SandboxAppStatus      @default(draft)
-  criticality SandboxAppCriticality @default(L1)
-
-  activeVersionId String? @map("active_version_id") @db.Uuid
-
-  createdByType             SandboxCreatedByType @map("created_by_type")
-  createdByUserId           String?              @map("created_by_user_id") @db.Uuid
-  createdByAgentId          String?              @map("created_by_agent_id") @db.Uuid
-  createdFromTicketId       String?              @map("created_from_ticket_id") @db.Uuid
-  createdFromConversationId String?              @map("created_from_conversation_id") @db.Uuid
-
-  policy Json @default("{}")
-  tags   Json @default("[]")
-
-  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
-  archivedAt DateTime? @map("archived_at") @db.Timestamptz
-
-  versions SandboxAppVersion[]
-
-  @@index([tenantId, status])
-  @@index([tenantId, sandboxId])
-  @@index([tenantId, createdFromTicketId])
-  @@map("sandbox_apps")
-}
-
-model SandboxAppVersion {
-  id       String  @id @default(uuid()) @db.Uuid
-  tenantId String? @map("tenant_id") @db.Uuid
-  appId    String  @map("app_id") @db.Uuid
-
-  version       Int
-  status        SandboxAppVersionStatus @default(draft)
-  changeSummary String                  @map("change_summary")
-
-  artifactRef       String @map("artifact_ref")
-  artifactSizeBytes Int    @map("artifact_size_bytes")
-  contentHash       String @map("content_hash")
-  mimeType          String @default("text/html; charset=utf-8") @map("mime_type")
-
-  createdByType    SandboxCreatedByType @map("created_by_type")
-  createdByUserId  String?              @map("created_by_user_id") @db.Uuid
-  createdByAgentId String?              @map("created_by_agent_id") @db.Uuid
-  createdFromRunId String?              @map("created_from_run_id") @db.Uuid
-  sourceTicketId   String?              @map("source_ticket_id") @db.Uuid
-
-  validationResult Json @default("{}") @map("validation_result")
-
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-
-  app          SandboxApp @relation(fields: [appId], references: [id], onDelete: Cascade)
-  sourceTicket Ticket?    @relation(fields: [sourceTicketId], references: [id])
-
-  @@unique([appId, version])
-  @@unique([tenantId, appId, contentHash])
-  @@index([sourceTicketId])
-  @@map("sandbox_app_versions")
-}
-
-// ── Feature-spec: Sandbox verziózás, test→live promóció, graduation (§3) ────
-// A sandbox mint verziózott projekt. Kulcs-invariáns: a KÓD (commit-fa) és az
-// ADAT (point-in-time snapshot) két külön sín; a go-live promóció ember-only
-// kemény padló; a graduation-export ember-only, reprodukálható checksummal.
-
-enum SandboxEnv {
-  test
-  live
-}
-
-enum SandboxCommitSource {
-  user
-  agent
-  system
-  import
-}
-
-enum SandboxPromotionStatus {
-  pending_approval
-  approved
-  promoted
-  rejected
-  rolled_back
-}
-
-enum SandboxSnapshotKind {
-  manual
-  pre_promotion
-  scheduled
-  pre_rollback
-}
-
-enum SandboxSnapshotStatus {
-  creating
-  available
-  restoring
-  expired
-  failed
-}
-
-enum SandboxExportStatus {
-  requested
-  building
-  ready
-  delivered
-  failed
-}
-
-enum SandboxExportScope {
-  code_only
-  code_and_schema
-  full
-}
-
-enum SandboxActorType {
-  user
-  agent
-  system
-}
-
-model SandboxProject {
-  id        String  @id @default(uuid()) @db.Uuid
-  tenantId  String? @map("tenant_id") @db.Uuid
-  sandboxId String? @map("sandbox_id") @db.Uuid
-
-  name        String
-  description String?
-
-  testCommitId String? @map("test_commit_id") @db.Uuid
-  liveCommitId String? @map("live_commit_id") @db.Uuid
-  headCommitId String? @map("head_commit_id") @db.Uuid
-
-  dataBinding Json @default("{}") @map("data_binding")
-  portability Json @default("{}")
-
-  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
-  archivedAt DateTime? @map("archived_at") @db.Timestamptz
-
-  commits    SandboxCommit[]
-  promotions SandboxPromotion[]
-  snapshots  SandboxDataSnapshot[]
-  exports    SandboxExport[]
-
-  @@unique([tenantId, sandboxId, name])
-  @@index([tenantId, sandboxId])
-  @@map("sandbox_projects")
-}
-
-model SandboxCommit {
-  id        String  @id @default(uuid()) @db.Uuid
-  tenantId  String? @map("tenant_id") @db.Uuid
-  projectId String  @map("project_id") @db.Uuid
-
-  seq             Int
-  parentCommitId  String? @map("parent_commit_id") @db.Uuid
-  basedOnCommitId String? @map("based_on_commit_id") @db.Uuid
-
-  source        SandboxCommitSource
-  changeSummary String              @map("change_summary")
-
-  treeRef        String @map("tree_ref")
-  treeHash       String @map("tree_hash")
-  fileCount      Int    @map("file_count")
-  totalSizeBytes BigInt @map("total_size_bytes")
-
-  createdByType       SandboxActorType @map("created_by_type")
-  createdByUserId     String?          @map("created_by_user_id") @db.Uuid
-  createdByAgentId    String?          @map("created_by_agent_id") @db.Uuid
-  createdFromTicketId String?          @map("created_from_ticket_id") @db.Uuid
-  createdFromRunId    String?          @map("created_from_run_id") @db.Uuid
-
-  buildCost Json @default("{}") @map("build_cost")
-
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-
-  project SandboxProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-
-  @@unique([projectId, seq])
-  // NB: a tree_hash NEM unique — a rollback szándékosan új commitot hoz létre egy
-  // korábbi (azonos tartalmú) fára (invariáns 2 / SV3), ami ütközne a unique-kal.
-  @@index([tenantId, projectId, treeHash])
-  @@index([projectId])
-  @@map("sandbox_commits")
-}
-
-model SandboxPromotion {
-  id        String  @id @default(uuid()) @db.Uuid
-  tenantId  String? @map("tenant_id") @db.Uuid
-  projectId String  @map("project_id") @db.Uuid
-
-  fromCommitId           String  @map("from_commit_id") @db.Uuid
-  prevLiveCommitId       String? @map("prev_live_commit_id") @db.Uuid
-  prePromotionSnapshotId String? @map("pre_promotion_snapshot_id") @db.Uuid
-
-  status SandboxPromotionStatus @default(pending_approval)
-
-  requestedByType    SandboxActorType @map("requested_by_type")
-  requestedByUserId  String?          @map("requested_by_user_id") @db.Uuid
-  requestedByAgentId String?          @map("requested_by_agent_id") @db.Uuid
-  approvedByUserId   String?          @map("approved_by_user_id") @db.Uuid
-  reason             String?
-
-  requestedAt DateTime  @default(now()) @map("requested_at") @db.Timestamptz
-  decidedAt   DateTime? @map("decided_at") @db.Timestamptz
-  promotedAt  DateTime? @map("promoted_at") @db.Timestamptz
-
-  project SandboxProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-
-  @@index([projectId, status])
-  @@map("sandbox_promotions")
-}
-
-model SandboxDataSnapshot {
-  id        String     @id @default(uuid()) @db.Uuid
-  tenantId  String?    @map("tenant_id") @db.Uuid
-  projectId String     @map("project_id") @db.Uuid
-  env       SandboxEnv
-
-  kind   SandboxSnapshotKind
-  status SandboxSnapshotStatus @default(creating)
-
-  snapshotRef String  @map("snapshot_ref")
-  schemaHash  String  @map("schema_hash")
-  rowCount    BigInt? @map("row_count")
-  sizeBytes   BigInt? @map("size_bytes")
-
-  createdByType     SandboxActorType @map("created_by_type")
-  createdByUserId   String?          @map("created_by_user_id") @db.Uuid
-  linkedPromotionId String?          @map("linked_promotion_id") @db.Uuid
-
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  expiresAt DateTime? @map("expires_at") @db.Timestamptz
-
-  project SandboxProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-
-  @@index([projectId, env])
-  @@map("sandbox_data_snapshots")
-}
-
-model SandboxExport {
-  id        String  @id @default(uuid()) @db.Uuid
-  tenantId  String? @map("tenant_id") @db.Uuid
-  projectId String  @map("project_id") @db.Uuid
-
-  scope            SandboxExportScope
-  sourceCommitId   String             @map("source_commit_id") @db.Uuid
-  sourceSnapshotId String?            @map("source_snapshot_id") @db.Uuid
-
-  status                    SandboxExportStatus @default(requested)
-  packageRef                String?             @map("package_ref")
-  packageHash               String?             @map("package_hash")
-  manifest                  Json                @default("{}")
-  responsibilityTransferred Boolean             @default(false) @map("responsibility_transferred")
-
-  requestedByUserId String    @map("requested_by_user_id") @db.Uuid
-  requestedAt       DateTime  @default(now()) @map("requested_at") @db.Timestamptz
-  completedAt       DateTime? @map("completed_at") @db.Timestamptz
-
-  project SandboxProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-
-  @@index([projectId, status])
-  @@map("sandbox_exports")
-}
-
-// ── Fázis 2: Write-gate token ──────────────────────────────────────────────
-
-enum WriteGateTokenStatus {
-  issued
-  consumed
-  expired
-  revoked
-}
-
-model WriteGateToken {
-  id                String               @id @default(uuid()) @db.Uuid
-  // §9.4: az inline (ticket nélküli) memória-jóváhagyáshoz nullable — pontosan
-  // az egyik horgony (trainingTicketId vagy memoryCandidateId) töltött ki;
-  // az invariánst a MemoryApprovalService/TrainingService alkalmazás-szinten őrzi.
-  trainingTicketId  String?              @map("training_ticket_id") @db.Uuid
-  memoryCandidateId String?              @unique @map("memory_candidate_id") @db.Uuid
-  agentId           String               @map("agent_id") @db.Uuid
-  targetMemoryId    String               @map("target_memory_id") @db.Uuid
-  expectedDiffHash  String               @map("expected_diff_hash")
-  tokenHash         String               @map("token_hash")
-  signature         String
-  status            WriteGateTokenStatus @default(issued)
-  issuedAt          DateTime             @default(now()) @map("issued_at") @db.Timestamptz
-  expiresAt         DateTime             @map("expires_at") @db.Timestamptz
-  consumedAt        DateTime?            @map("consumed_at") @db.Timestamptz
-
-  trainingTicket  Ticket?          @relation(fields: [trainingTicketId], references: [id], onDelete: Cascade)
-  memoryCandidate MemoryCandidate? @relation(fields: [memoryCandidateId], references: [id], onDelete: Cascade)
-  agent           Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  targetMemory    Memory           @relation(fields: [targetMemoryId], references: [id], onDelete: Cascade)
-
-  @@map("write_gate_tokens")
-}
-
-// ── §4.4: tanítási ticket first-class metaadata (a write-gate köti) ─────────
-
-model TrainingTicket {
-  ticketId            String             @id @map("ticket_id") @db.Uuid
-  proposedDiff        Json               @map("proposed_diff")
-  writeGateTokenRef   String?            @map("write_gate_token_ref")
-  evalResult          Json?              @map("eval_result")
-  evalRequired        Boolean            @default(false) @map("eval_required")
-  origin              TrainingOrigin     @default(human)
-  scopeClass          TrainingScopeClass @default(memory) @map("scope_class")
-  targetMemoryVersion Int                @map("target_memory_version")
-  currentRevisionId   String?            @unique @map("current_revision_id") @db.Uuid
-
-  ticket          Ticket                      @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  currentRevision TrainingProposalRevision?   @relation("CurrentTrainingRevision", fields: [currentRevisionId], references: [id])
-  revisions       TrainingProposalRevision[]  @relation("TrainingTicketRevisions")
-
-  @@map("training_tickets")
-}
-
-model TrainingProposalRevision {
-  id                   String                         @id @default(uuid()) @db.Uuid
-  trainingTicketId     String                         @map("training_ticket_id") @db.Uuid
-  revision             Int
-  baseVersionId        String                         @map("base_version_id") @db.Uuid
-  proposedVersionRef   String                         @map("proposed_version_ref") @db.Text
-  changeSummary        Json                           @map("change_summary")
-  impactResult         Json                           @map("impact_result")
-  compositionMode      TrainingProposalCompositionMode @map("composition_mode")
-  status               TrainingProposalRevisionStatus @default(current)
-  targetMemoryVersion  Int                            @map("target_memory_version")
-  writeGateTokenRef    String?                        @map("write_gate_token_ref")
-  tokenStatus          TrainingProposalTokenStatus    @default(unissued) @map("token_status")
-  tokenExpiresAt       DateTime?                      @map("token_expires_at") @db.Timestamptz
-  createdById          String                         @map("created_by") @db.Uuid
-  createdAt            DateTime                       @default(now()) @map("created_at") @db.Timestamptz
-
-  trainingTicket TrainingTicket @relation("TrainingTicketRevisions", fields: [trainingTicketId], references: [ticketId], onDelete: Cascade)
-  currentFor     TrainingTicket? @relation("CurrentTrainingRevision")
-
-  @@unique([trainingTicketId, revision])
-  @@index([trainingTicketId, status])
-  @@map("training_proposal_revisions")
-}
-
-// ── Fázis 2: Eval-kapu ────────────────────────────────────────────────────
-
-enum EvalStatus {
-  active
-  retired
-}
-
-enum EvalRunTrigger {
-  pre_training_approval
-  scheduled
-  manual
-}
-
-model Eval {
-  id        String     @id @default(uuid()) @db.Uuid
-  agentId   String     @map("agent_id") @db.Uuid
-  name      String
-  goldenSet Json       @map("golden_set")
-  status    EvalStatus @default(active)
-
-  agent Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  runs  EvalRun[]
-
-  @@map("evals")
-}
-
-model EvalRun {
-  id              String         @id @default(uuid()) @db.Uuid
-  evalId          String         @map("eval_id") @db.Uuid
-  trigger         EvalRunTrigger
-  agentVersion    Int            @map("agent_version")
-  memoryVersionId String?        @map("memory_version_id") @db.Uuid
-  passed          Boolean
-  score           Float
-  details         Json
-  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz
-
-  eval          Eval           @relation(fields: [evalId], references: [id], onDelete: Cascade)
-  memoryVersion MemoryVersion? @relation(fields: [memoryVersionId], references: [id])
-
-  @@map("eval_runs")
-}
-
-// ── AI Privacy Gateway (spec §5–§6, D2) ──────────────────────────────────────
-
-enum SurrogateScopeType {
-  conversation
-  trace
-
-  @@map("surrogate_scope_type")
-}
-
-/// `ref` = csak forráshivatkozás, nyers érték nélkül. `val` mezői APG-19-ig üresek.
-enum SurrogateClass {
-  ref
-  val
-
-  @@map("surrogate_class")
-}
-
-/// Perzisztens álnév-leképezés (tenant + scope + entitás ↔ surrogate). Bijektív
-/// a unique kényszerekkel: egy álnév egy entitáshoz tartozik a scope-on belül,
-/// és egy entitás egy álnevet kap — párhuzamos fordulóknál is.
-model SurrogateMap {
-  id             String             @id @default(uuid()) @db.Uuid
-  tenantId       String             @map("tenant_id") @db.Uuid
-  scopeType      SurrogateScopeType @map("scope_type")
-  scopeId        String             @map("scope_id")
-  entityType     String             @map("entity_type")
-  /// Típusos álnév, pl. `[[COMPANY_1]]`. A HMAC NEM része a szövegnek.
-  surrogate      String
-  class          SurrogateClass
-  connectorId    String?            @map("connector_id") @db.Uuid
-  sourceId       String?            @map("source_id")
-  /// Csak `val` osztály; `ref` sorban CHECK tiltja. APG-19 tölti.
-  encryptedValue String?            @map("encrypted_value")
-  /// Megjelenítési másolat a trusted UI feloldásához, a beszélgetés adatkulcsával
-  /// titkosítva (spec §5 R19). Enélkül a beszélgetés újranyitása után az álnév
-  /// feloldhatatlan lenne. Mindkét osztályon opcionális.
-  displayValueEnc String?           @map("display_value_enc")
-  hmac           String
-  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-
-  @@unique([tenantId, scopeType, scopeId, surrogate], map: "surrogate_map_scope_surrogate_key")
-  @@unique([tenantId, scopeType, scopeId, entityType, connectorId, sourceId], map: "surrogate_map_entity_identity_key")
-  @@index([scopeType, scopeId], map: "surrogate_map_scope_idx")
-  @@map("surrogate_map")
-}
-
-/// Globális, runtime-állítható platform-beállítások (kulcs-érték). Pl. a dispatcher
-/// kill-switch és poll-intervallum, amit a felhős worker minden ciklusban újraolvas.
 model PlatformSetting {
   key         String   @id
   value       Json

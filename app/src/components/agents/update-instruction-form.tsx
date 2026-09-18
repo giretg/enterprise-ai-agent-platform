@@ -11,12 +11,12 @@ import { Card } from '@/components/ui/shell'
 export function UpdateInstructionForm({
   agentId,
   roleInstruction,
-  roleVersion,
+  roleVersion: _roleVersion,
   bare = false,
 }: {
   agentId: string
   roleInstruction: string
-  roleVersion: number
+  roleVersion?: number
   /** A hívó már adott keretet (címsor + doboz) — ne rajzoljunk másodikat. */
   bare?: boolean
 }) {
@@ -41,7 +41,7 @@ export function UpdateInstructionForm({
           setDone(null)
           const res = await updateAgentInstruction({ agentId, roleInstruction: nextRole })
           if (res.success) {
-            setDone(`Agent v${res.data.agentVersion} (szerep → v${res.data.roleInstructionVersion})`)
+            setDone('Munkakör frissítve')
             router.refresh()
           } else {
             setError(res.error)
@@ -50,7 +50,7 @@ export function UpdateInstructionForm({
       }}
     >
       <label className="block text-sm">
-        <span className="text-ink-soft">Munkaköri leírás (jelenleg v{roleVersion})</span>
+        <span className="text-ink-soft">Munkaköri leírás</span>
         <textarea
           name="roleInstruction"
           defaultValue={roleInstruction}

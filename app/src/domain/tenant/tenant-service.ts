@@ -1,6 +1,5 @@
 import type { PlatformRole, TenantStatus, UserRole } from '@prisma/client'
 import type {
-  AuditRepository,
   TenantRepository,
   TenantMembershipRepository,
   PlatformMembershipRepository,
@@ -29,7 +28,6 @@ export class TenantService {
     private tenants: TenantRepository,
     private memberships: TenantMembershipRepository,
     private platformMemberships: PlatformMembershipRepository,
-    private audit: AuditRepository,
   ) {}
 
   // ── Tenant lifecycle (§7.1, §7.3) ─────────────────────────────────────────
@@ -58,20 +56,7 @@ export class TenantService {
       createdById: params.createdById,
     })
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.createdById,
-      agentVersion: null,
-      action: TENANT_AUDIT_ACTIONS.create,
-      targetType: 'tenant',
-      targetId: tenant.id,
-      modelUsed: null,
-      inputRef: slug,
-      outputRef: tenant.displayName,
-      policyDecision: 'created',
-      metadata: { tenantId: tenant.id },
-      tenantId: tenant.id,
-    })
+
 
     if (params.initialAdminUserId) {
       await this.addMember({
@@ -99,20 +84,7 @@ export class TenantService {
 
     const updated = await this.tenants.update(tenant.id, { status: params.status })
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: params.action,
-      targetType: 'tenant',
-      targetId: tenant.id,
-      modelUsed: null,
-      inputRef: tenant.status,
-      outputRef: params.status,
-      policyDecision: params.decision,
-      metadata: { tenantId: tenant.id },
-      tenantId: tenant.id,
-    })
+
 
     return updated
   }
@@ -206,20 +178,7 @@ export class TenantService {
           invitedById: params.actorId,
         })
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: existing ? 'tenant.member.update' : 'tenant.member.add',
-      targetType: 'tenant_membership',
-      targetId: membership.id,
-      modelUsed: null,
-      inputRef: params.userId,
-      outputRef: params.role,
-      policyDecision: status,
-      metadata: { tenantId: params.tenantId },
-      tenantId: params.tenantId,
-    })
+
 
     return membership
   }
@@ -241,20 +200,7 @@ export class TenantService {
 
     const updated = await this.memberships.update(membership.id, { role: params.newRole })
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: 'tenant.member.role.change',
-      targetType: 'tenant_membership',
-      targetId: membership.id,
-      modelUsed: null,
-      inputRef: membership.role,
-      outputRef: params.newRole,
-      policyDecision: 'role_changed',
-      metadata: { tenantId: params.tenantId },
-      tenantId: params.tenantId,
-    })
+
 
     return updated
   }
@@ -271,20 +217,7 @@ export class TenantService {
 
     const updated = await this.memberships.update(membership.id, { status: 'suspended' })
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: 'tenant.member.suspend',
-      targetType: 'tenant_membership',
-      targetId: membership.id,
-      modelUsed: null,
-      inputRef: membership.status,
-      outputRef: 'suspended',
-      policyDecision: 'suspended',
-      metadata: { tenantId: params.tenantId },
-      tenantId: params.tenantId,
-    })
+
 
     return updated
   }
@@ -300,37 +233,11 @@ export class TenantService {
    * (soha nem impersonate, §3.3/2), `assumedTenantId` jelöli a kontextust.
    */
   async recordAssumeTenant(params: { superadminId: string; tenantId: string }) {
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.superadminId,
-      agentVersion: null,
-      action: TENANT_AUDIT_ACTIONS.assume,
-      targetType: 'tenant',
-      targetId: params.tenantId,
-      modelUsed: null,
-      inputRef: null,
-      outputRef: null,
-      policyDecision: 'assumed',
-      metadata: { assumedTenantId: params.tenantId },
-      tenantId: params.tenantId,
-    })
+
   }
 
   async recordExitTenant(params: { superadminId: string; tenantId: string }) {
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.superadminId,
-      agentVersion: null,
-      action: TENANT_AUDIT_ACTIONS.exit,
-      targetType: 'tenant',
-      targetId: params.tenantId,
-      modelUsed: null,
-      inputRef: null,
-      outputRef: null,
-      policyDecision: 'exited',
-      metadata: { assumedTenantId: params.tenantId },
-      tenantId: params.tenantId,
-    })
+
   }
 
   async listPlatformMembers() {
@@ -346,39 +253,13 @@ export class TenantService {
    */
   async grantPlatformRole(params: { userId: string; role: PlatformRole; actorId: string }) {
     const membership = await this.platformMemberships.upsert({ userId: params.userId, role: params.role })
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: 'platform.role.grant',
-      targetType: 'platform_membership',
-      targetId: membership.id,
-      modelUsed: null,
-      inputRef: params.userId,
-      outputRef: params.role,
-      policyDecision: 'granted',
-      metadata: null,
-      tenantId: null,
-    })
+
     return membership
   }
 
   async revokePlatformRole(params: { userId: string; role: PlatformRole; actorId: string }) {
     await this.platformMemberships.delete(params.userId, params.role)
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: 'platform.role.revoke',
-      targetType: 'platform_membership',
-      targetId: null,
-      modelUsed: null,
-      inputRef: params.userId,
-      outputRef: params.role,
-      policyDecision: 'revoked',
-      metadata: null,
-      tenantId: null,
-    })
+
   }
 
   // ── Belső ────────────────────────────────────────────────────────────────

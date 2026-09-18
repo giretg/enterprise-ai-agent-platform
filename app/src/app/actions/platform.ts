@@ -9,30 +9,23 @@ import { repositories } from '@/repositories/postgres'
 import { prisma } from '@/lib/db'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { fail, ok } from '@/lib/result'
-import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
+import { canReadPublishedAgent, isPrivilegedAgentReader } from '@/domain/agent-definition'
+import type { ConnectorAccessMode } from '@prisma/client'
 import { DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import {
   agentIdSchema,
   approveUserSchema,
   changeUserRoleSchema,
   createAgentSchema,
-  createBehaviorProfileSchema,
   inviteUserSchema,
-  listAuditLogSchema,
   provisionUserSchema,
   reactivateUserSchema,
   redeemInvitationSchema,
   revokeInvitationSchema,
-  setAgentBehaviorProfileSchema,
-  setUserJobDescriptionSchema,
   suspendAgentSchema,
   suspendUserSchema,
   updateAgentAvatarSchema,
   updateAgentInstructionSchema,
-  updateAgentOperatorSkillManagementSchema,
-  updateAgentOperatorVisibilitySchema,
-  updateAgentPersonaSchema,
-  updateBehaviorProfileSchema,
   updateRolePermissionSchema,
 } from '@/lib/validators/actions'
 
@@ -221,25 +214,6 @@ export async function reactivateUser(input: { targetUserId: string }) {
   }
 }
 
-export async function setUserJobDescription(input: {
-  targetUserId: string
-  jobDescription: string | null
-}) {
-  try {
-    const ctx = await requireTenantPermission('user.role.change')
-    const parsed = setUserJobDescriptionSchema.parse(input)
-    await services.iam.setJobDescription({
-      targetUserId: parsed.targetUserId,
-      jobDescription: parsed.jobDescription,
-      actorId: ctx.user.id,
-      actorTenantId: ctx.activeTenantId,
-    })
-    return ok({ updated: true })
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to update job description')
-  }
-}
-
 export async function getPermissionMatrix() {
   try {
     await requireTenantPermission('user.read')
@@ -269,13 +243,8 @@ export async function updateRolePermission(input: { permissionKey: string; minRo
 export async function listWorkspaceTenants() {
   try {
     await requireTenantRole('admin')
-    const rows = await prisma.user.findMany({
-      where: { tenantId: { not: null } },
-      select: { tenantId: true },
-      distinct: ['tenantId'],
-    })
-    const tenantIds = rows.map((row) => row.tenantId).filter((id): id is string => Boolean(id))
-    return ok({ tenantIds, includesGlobalFallback: true })
+    const tenants = await repositories.tenants.findMany()
+    return ok({ tenantIds: tenants.map((row) => row.id), includesGlobalFallback: false })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list tenants')
   }
@@ -283,39 +252,49 @@ export async function listWorkspaceTenants() {
 
 export async function purgeTenantWorkspaces(tenantId: string) {
   try {
-    const actor = await requireTenantRole('admin')
+    await requireTenantRole('admin')
     const normalized = tenantId.trim()
     if (!normalized) return fail('Tenant ID is required')
-    await repositories.audit.append({
-      actorType: 'human',
-      actorId: actor.user.id,
-      agentVersion: null,
-      action: 'workspace.tenant.purge',
-      targetType: 'tenant',
-      targetId: normalized === 'global' ? null : normalized,
-      modelUsed: null,
-      inputRef: normalized,
-      outputRef: '0',
-      policyDecision: 'allowed',
-      metadata: { deletedObjects: 0, tenantId: normalized, deferred: true },
-    })
     return ok({ deletedObjects: 0 })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Workspace purge failed')
   }
 }
 
+async function readableAgent(user: {
+  user: { id: string }
+  activeTenantId: string
+  activeTenantRole: import('@prisma/client').UserRole
+}, agentId: string) {
+  const agent = await repositories.agents.findById(agentId, user.activeTenantId)
+  if (!agent) return null
+  const grant = await repositories.resourceGrants.findAgentGrant({
+    tenantId: user.activeTenantId,
+    userId: user.user.id,
+    agentId,
+  })
+  return canReadPublishedAgent({ role: user.activeTenantRole, grant }) ? agent : null
+}
+
 export async function listAgents(input?: { limit?: number; offset?: number }) {
   try {
     const user = await requireTenantRole('viewer')
-    const subject = tenantUserSubject(user)
-    if (!subject) return ok([])
-    const accessible = await services.agentAccess.listAccessibleAgents(subject, 'view', {
-      subjectIsTenantAdmin: isTenantAdmin(user),
+    if (!user.activeTenantId) return ok([])
+    if (isPrivilegedAgentReader(user.activeTenantRole)) {
+      const page = await repositories.agents.listPage({
+        tenantId: user.activeTenantId,
+        limit: input?.limit ?? DEFAULT_LIST_LIMIT,
+        offset: input?.offset,
+      })
+      return ok(page.items)
+    }
+    const ids = await repositories.resourceGrants.listAgentIdsGrantedToUser({
+      tenantId: user.activeTenantId,
+      userId: user.user.id,
     })
     const page = await repositories.agents.listPage({
       tenantId: user.activeTenantId,
-      ids: accessible.map((a) => a.id),
+      ids,
       limit: input?.limit ?? DEFAULT_LIST_LIMIT,
       offset: input?.offset,
     })
@@ -329,15 +308,9 @@ export async function getAgent(input: { id: string }) {
   try {
     const user = await requireTenantRole('viewer')
     const { id } = agentIdSchema.parse(input)
-    const subject = tenantUserSubject(user)
-    if (!subject) return fail('Agent not found')
-    const decision = await services.agentAccess.canAccessAgent(subject, id, 'view', {
-      subjectIsTenantAdmin: isTenantAdmin(user),
-    })
-    if (!decision.allowed) return fail('Agent not found')
-    const detail = await repositories.agents.findById(id, user.activeTenantId)
-    if (!detail) return fail('Agent not found')
-    return ok(detail)
+    const agent = await readableAgent(user, id)
+    if (!agent) return fail('Agent not found')
+    return ok(agent)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to get agent')
   }
@@ -347,17 +320,11 @@ export async function getAgentGovernance(input: { agentId: string }) {
   try {
     const user = await requireTenantRole('viewer')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
-    const subject = tenantUserSubject(user)
-    if (!subject) return fail('Agent not found')
-    const decision = await services.agentAccess.canAccessAgent(subject, agentId, 'view', {
-      subjectIsTenantAdmin: isTenantAdmin(user),
-    })
-    if (!decision.allowed) return fail('Agent not found')
-    const agent = await repositories.agents.findById(agentId, user.activeTenantId)
+    const agent = await readableAgent(user, agentId)
     if (!agent) return fail('Agent not found')
     const [capabilities, connectors] = await Promise.all([
-      repositories.toolBroker.findCapabilitiesForAgent(agentId),
-      repositories.toolBroker.findConnectorsForAgent(agentId),
+      repositories.agents.findCapabilitiesForAgent(agentId),
+      repositories.agents.findConnectorsForAgent(agentId),
     ])
     return ok({ capabilities, connectors })
   } catch (e) {
@@ -365,46 +332,18 @@ export async function getAgentGovernance(input: { agentId: string }) {
   }
 }
 
-export async function createAgent(input: {
-  name: string
-  roleInstruction: string
-  behaviorProfile?: string
-  role?: 'worker' | 'orchestrator'
-}) {
+export async function createAgent(input: { name: string; roleInstruction: string }) {
   try {
     const user = await requireTenantRole('admin')
     const parsed = createAgentSchema.parse(input)
-    const result = await repositories.agents.create({
-      ...parsed,
-      modelConfig: { provider: 'none', model: 'none' },
-      createdById: user.user.id,
+    if (!user.activeTenantId) return fail('Tenant required')
+    const agent = await repositories.agents.create({
+      name: parsed.name,
+      roleInstruction: parsed.roleInstruction,
       tenantId: user.activeTenantId,
       status: 'draft',
     })
-    await repositories.audit.append({
-      actorType: 'human',
-      actorId: user.user.id,
-      agentVersion: null,
-      action: 'agent.create',
-      targetType: 'agent',
-      targetId: result.agent.id,
-      modelUsed: null,
-      inputRef: null,
-      outputRef: result.agent.name,
-      policyDecision: 'allowed',
-      metadata: { role: result.agent.role, status: result.agent.status },
-    })
-    if (user.activeTenantId) {
-      const { materializeDefaultUserAgentGrants } = await import(
-        '@/domain/agent-access/default-user-agent-grants'
-      )
-      await materializeDefaultUserAgentGrants({
-        tenantId: user.activeTenantId,
-        actorUserId: user.user.id,
-        agentId: result.agent.id,
-      }).catch(() => undefined)
-    }
-    return ok(result)
+    return ok({ agent })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create agent')
   }
@@ -420,31 +359,9 @@ export async function updateAgentInstruction(input: { agentId: string; roleInstr
       agentId: parsed.agentId,
       roleInstruction: parsed.roleInstruction,
     })
-    return ok({
-      updated: true,
-      agentVersion: updated.agentVersion,
-      roleInstructionVersion: updated.roleInstructionVersion,
-    })
+    return ok({ updated: true, roleInstruction: updated.roleInstruction })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update instruction')
-  }
-}
-
-export async function updateAgentPersona(input: {
-  agentId: string
-  personaNickname?: string | null
-  personaTrait?: string | null
-  personaGreeting?: string | null
-}) {
-  try {
-    const user = await requireTenantRole('admin')
-    const parsed = updateAgentPersonaSchema.parse(input)
-    const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
-    if (!existing) return fail('Agent not found')
-    await repositories.agents.updatePersona(parsed)
-    return ok({ updated: true })
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to update persona')
   }
 }
 
@@ -458,38 +375,6 @@ export async function updateAgentAvatar(input: { agentId: string; avatarUrl: str
     return ok({ updated: true, avatarUrl: avatar.avatarUrl })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update avatar')
-  }
-}
-
-export async function updateAgentOperatorVisibility(input: {
-  agentId: string
-  hiddenFromOperators: boolean
-}) {
-  try {
-    const user = await requireTenantRole('admin')
-    const parsed = updateAgentOperatorVisibilitySchema.parse(input)
-    const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
-    if (!existing) return fail('Agent not found')
-    await repositories.agents.updateOperatorVisibility(parsed)
-    return ok({ updated: true })
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to update visibility')
-  }
-}
-
-export async function updateAgentOperatorSkillManagement(input: {
-  agentId: string
-  operatorCanManageSkills: boolean
-}) {
-  try {
-    const user = await requireTenantRole('admin')
-    const parsed = updateAgentOperatorSkillManagementSchema.parse(input)
-    const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
-    if (!existing) return fail('Agent not found')
-    await repositories.agents.updateOperatorSkillManagement(parsed)
-    return ok({ updated: true })
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to update skill management')
   }
 }
 
@@ -510,41 +395,10 @@ export async function updateAgentCapabilities(input: {
     const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!existing) return fail('Agent not found')
     const tools = [...new Set(parsed.enabledTools ?? parsed.capabilities ?? [])]
-    await prisma.capability.deleteMany({ where: { agentId: parsed.agentId } })
-    if (tools.length > 0) {
-      await prisma.capability.createMany({
-        data: tools.map((toolName) => ({ agentId: parsed.agentId, toolName, allowed: true })),
-      })
-    }
-    return ok({
-      updated: true,
-      updatedCount: tools.length,
-      httpApiAssignmentRequired: false,
-      codeSandboxAssignmentRequired: false,
-      knowledgeBaseLinked: false,
-      workspaceLinked: false,
-      gmailLinked: false,
-      httpApiLinked: false,
-      webSearchLinked: false,
-      boardLinked: false,
-    })
+    await repositories.agents.replaceCapabilities(parsed.agentId, tools)
+    return ok({ updated: true, updatedCount: tools.length })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update capabilities')
-  }
-}
-
-export async function getBehaviorProfile(input: { profileId: string }) {
-  try {
-    const user = await requireTenantRole('viewer')
-    const parsed = z.object({ profileId: z.string().uuid() }).parse(input)
-    const profile = await repositories.behaviorProfiles.findByIdWithVersions(
-      parsed.profileId,
-      user.activeTenantId,
-    )
-    if (!profile) return fail('Profile not found')
-    return ok(profile)
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to load behavior profile')
   }
 }
 
@@ -554,11 +408,42 @@ export async function updateAgentConnectorBinding(input: {
   accessMode?: string
 }) {
   try {
-    await requireTenantRole('admin')
-    void input
+    const user = await requireTenantRole('admin')
+    const parsed = z
+      .object({
+        agentId: z.string().uuid(),
+        connectorId: z.string().uuid(),
+        accessMode: z.enum(['read', 'write']).optional(),
+      })
+      .parse(input)
+    const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
+    if (!existing) return fail('Agent not found')
+    await repositories.agents.upsertConnectorBinding({
+      agentId: parsed.agentId,
+      connectorId: parsed.connectorId,
+      accessMode: (parsed.accessMode ?? 'read') as ConnectorAccessMode,
+    })
     return ok({ updated: true })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update connector binding')
+  }
+}
+
+export async function publishAgentDefinitionAction(input: { agentId: string }) {
+  try {
+    const user = await requireTenantRole('admin')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    if (!user.activeTenantId) return fail('Tenant required')
+    const existing = await repositories.agents.findById(agentId, user.activeTenantId)
+    if (!existing) return fail('Agent not found')
+    const definition = await services.agentDefinitions.publishAgentDefinition({
+      agentId,
+      tenantId: user.activeTenantId,
+      publishedById: user.user.id,
+    })
+    return ok(definition)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to publish agent definition')
   }
 }
 
@@ -624,130 +509,5 @@ export async function deleteAgent(input: { id: string }) {
     return ok({ deleted: true })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to delete agent')
-  }
-}
-
-export async function listBehaviorProfiles() {
-  try {
-    const user = await requireTenantRole('viewer')
-    const profiles = await repositories.behaviorProfiles.findMany(user.activeTenantId)
-    return ok(profiles)
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to list behavior profiles')
-  }
-}
-
-export async function createBehaviorProfile(input: { name: string; body: string }) {
-  try {
-    const user = await requireTenantRole('admin')
-    const parsed = createBehaviorProfileSchema.parse(input)
-    const profile = await repositories.behaviorProfiles.create({
-      ...parsed,
-      tenantId: user.activeTenantId,
-      approvedById: user.user.id,
-    })
-    return ok(profile)
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to create behavior profile')
-  }
-}
-
-export async function updateBehaviorProfile(input: { profileId: string; body: string }) {
-  try {
-    const user = await requireTenantRole('admin')
-    const parsed = updateBehaviorProfileSchema.parse(input)
-    const profile = await repositories.behaviorProfiles.update({
-      profileId: parsed.profileId,
-      body: parsed.body,
-      approvedById: user.user.id,
-      tenantId: user.activeTenantId,
-    })
-    return ok(profile)
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to update behavior profile')
-  }
-}
-
-export async function setAgentBehaviorProfile(input: {
-  agentId: string
-  profileId: string | null
-  overlay?: string | null
-}) {
-  try {
-    const user = await requireTenantRole('admin')
-    const parsed = setAgentBehaviorProfileSchema.parse(input)
-    const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
-    if (!existing) return fail('Agent not found')
-    const profile = parsed.profileId
-      ? await repositories.behaviorProfiles.findByIdWithVersions(parsed.profileId, user.activeTenantId)
-      : null
-    const currentBody =
-      profile?.versions.find((version) => version.version === profile.currentVersion)?.body ??
-      existing.behaviorProfile
-    const updated = await repositories.agents.setBehaviorProfile({
-      agentId: parsed.agentId,
-      profileId: parsed.profileId,
-      profileVersion: profile?.currentVersion ?? null,
-      profileBody: currentBody,
-      overlay: parsed.overlay ?? null,
-    })
-    return ok({ updated: true, agentVersion: updated.agentVersion })
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to set behavior profile')
-  }
-}
-
-export async function listAuditLog(input?: z.infer<typeof listAuditLogSchema>) {
-  try {
-    const user = await requireTenantRole('approver')
-    const parsed = input ? listAuditLogSchema.parse(input) : {}
-    const entries = await repositories.audit.findMany({
-      tenantId: user.activeTenantId,
-      limit: parsed.limit ?? 100,
-      action: parsed.action,
-    })
-    return ok(entries)
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to list audit log')
-  }
-}
-
-export async function verifyAuditChain() {
-  try {
-    await requireTenantRole('approver')
-    const result = await services.auditChain.verifyChain()
-    return ok(result)
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Verification failed')
-  }
-}
-
-export async function exportAuditSiem(input?: { since?: string }) {
-  try {
-    const user = await requireTenantRole('admin')
-    const { since } = z.object({ since: z.coerce.date().optional() }).parse(input ?? {})
-    const jsonLines = await services.auditChain.exportJsonLines({
-      tenantId: user.activeTenantId,
-      since,
-    })
-    return ok({
-      content: jsonLines,
-      filename: `audit-siem-${new Date().toISOString().slice(0, 10)}.jsonl`,
-    })
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Export failed')
-  }
-}
-
-export async function getAccessAuditLog(input?: { limit?: number }) {
-  try {
-    const ctx = await requireTenantPermission('user.read')
-    const entries = await repositories.audit.findMany({
-      tenantId: ctx.activeTenantId,
-      limit: input?.limit ?? 50,
-    })
-    return ok(entries)
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to load access audit')
   }
 }

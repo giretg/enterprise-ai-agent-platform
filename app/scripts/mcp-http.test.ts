@@ -12,7 +12,15 @@ import type {
 import { mcpProtectedResourceMetadata } from '../src/auth/mcp-oauth-metadata'
 import { handleMcpRequest } from '../src/auth/mcp-server'
 import type { McpRuntimeDeps } from '../src/auth/mcp-server'
-import { PHASE_A_TOOL_NAME } from '../src/auth/mcp-principal'
+import {
+  canReadPublishedAgent,
+  isPrivilegedAgentReader,
+} from '../src/domain/agent-definition'
+import {
+  MCP_AGENTS_LIST_TOOL,
+  MCP_AGENT_GET_DEFINITION_TOOL,
+  MCP_WHOAMI_TOOL,
+} from '../src/auth/mcp-principal'
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
@@ -36,10 +44,8 @@ function user(overrides: Partial<User> = {}): User {
     externalAuthId: 'user_clerk_acme',
     email: 'ops@acme.test',
     name: 'Ops',
-    jobDescription: null,
     role: 'operator',
     status: 'active',
-    tenantId: TENANT_ID,
     invitedById: null,
     activatedAt: new Date('2026-01-01T00:00:00Z'),
     suspendedAt: null,
@@ -84,14 +90,46 @@ function membership(overrides: Partial<TenantMembership> = {}): TenantMembership
   }
 }
 
+const DEFINITION_ID = '55555555-5555-4555-8555-555555555555'
+const AGENT_ID = '66666666-6666-4666-8666-666666666666'
+const OTHER_DEFINITION_ID = '77777777-7777-4777-8777-777777777777'
+
+const SAMPLE_DEFINITION = {
+  definitionId: DEFINITION_ID,
+  agentId: AGENT_ID,
+  version: 1,
+  tenantId: TENANT_ID,
+  status: 'active' as const,
+  publishedAt: '2026-01-02T00:00:00.000Z',
+  snapshot: {
+    name: 'Drive assistant',
+    roleInstruction: 'Inspect Drive',
+    skills: [],
+    connectors: [],
+    capabilities: [{ toolName: 'google_drive_search', allowed: true }],
+  },
+}
+
+const PUBLISHED_LIST_ITEM = {
+  agentId: AGENT_ID,
+  name: 'Drive assistant',
+  status: 'active' as const,
+  currentDefinitionId: DEFINITION_ID,
+  currentVersion: 1,
+}
+
 function runtimeDeps(overrides: {
   membership?: TenantMembership | null
   tenant?: Tenant | null
   user?: User | null
   platform?: PlatformMembership[]
   clerkConfigured?: boolean
+  role?: TenantMembership['role']
+  grantedAgentIds?: Set<string>
 } = {}): { deps: McpRuntimeDeps; audit: Array<Record<string, unknown>> } {
   const audit: Array<Record<string, unknown>> = []
+  const role = overrides.role ?? 'operator'
+  const grantedAgentIds = overrides.grantedAgentIds ?? new Set<string>()
   return {
     audit,
     deps: {
@@ -113,7 +151,8 @@ function runtimeDeps(overrides: {
       },
       memberships: {
         async findByTenantAndUser() {
-          return overrides.membership === undefined ? membership() : overrides.membership
+          if (overrides.membership === undefined) return membership({ role })
+          return overrides.membership
         },
       },
       platformMemberships: {
@@ -121,11 +160,21 @@ function runtimeDeps(overrides: {
           return overrides.platform ?? []
         },
       },
-      audit: {
-        async append(data) {
-          audit.push(data as unknown as Record<string, unknown>)
-          return data as never
-        },
+      async listPublishedAgents({ role: principalRole }) {
+        if (isPrivilegedAgentReader(principalRole)) return [PUBLISHED_LIST_ITEM]
+        return grantedAgentIds.has(AGENT_ID) ? [PUBLISHED_LIST_ITEM] : []
+      },
+      async loadDefinition(input) {
+        if (input.definitionId === OTHER_DEFINITION_ID) return null
+        if (input.tenantId !== TENANT_ID) return null
+        if (input.definitionId && input.definitionId !== DEFINITION_ID) return null
+        return SAMPLE_DEFINITION
+      },
+      async canViewAgent({ role: principalRole, agentId }) {
+        return canReadPublishedAgent({
+          role: principalRole,
+          grant: grantedAgentIds.has(agentId) ? { accessLevel: 'view' } : null,
+        })
       },
     },
   }
@@ -198,8 +247,8 @@ async function main() {
     assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), false)
   })
 
-  await check('invalid token → 401 and mcp.auth.deny', async () => {
-    const { deps, audit } = runtimeDeps()
+  await check('invalid token → 401', async () => {
+    const { deps } = runtimeDeps()
     const res = await post(
       'acme',
       { jsonrpc: '2.0', id: 1, method: 'ping' },
@@ -207,9 +256,6 @@ async function main() {
       deps,
     )
     assert.equal(res.status, 401)
-    const deny = audit.find((row) => row.action === 'mcp.auth.deny')
-    assert.ok(deny)
-    assert.equal((deny?.metadata as { code?: string }).code, 'invalid_token')
   })
 
   await check('unknown slug after auth → 403 tenant_unavailable', async () => {
@@ -223,7 +269,6 @@ async function main() {
     assert.equal(res.status, 403)
     const body = (await readJson(res)) as { error: { code: string } }
     assert.equal(body.error.code, 'tenant_unavailable')
-    assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), true)
   })
 
   await check('inactive user → 403 user_inactive', async () => {
@@ -237,7 +282,6 @@ async function main() {
     assert.equal(res.status, 403)
     const body = (await readJson(res)) as { error: { code: string } }
     assert.equal(body.error.code, 'user_inactive')
-    assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), true)
   })
 
   await check('inactive tenant → 403 tenant_not_active', async () => {
@@ -251,7 +295,6 @@ async function main() {
     assert.equal(res.status, 403)
     const body = (await readJson(res)) as { error: { code: string } }
     assert.equal(body.error.code, 'tenant_not_active')
-    assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), true)
   })
 
   await check('non-member → 403 not_a_member', async () => {
@@ -265,7 +308,6 @@ async function main() {
     assert.equal(res.status, 403)
     const body = (await readJson(res)) as { error: { code: string } }
     assert.equal(body.error.code, 'not_a_member')
-    assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), true)
   })
 
   await check('Clerk not configured → 503 auth_not_configured', async () => {
@@ -276,7 +318,7 @@ async function main() {
     assert.equal(body.error.code, 'auth_not_configured')
   })
 
-  await check('tools/list returns only platform.whoami', async () => {
+  await check('tools/list returns whoami, list, and get_definition', async () => {
     const { deps } = runtimeDeps()
     const init = await initialize(deps)
     assert.equal(init.status, 200, `initialize HTTP ${init.status}: ${await init.clone().text()}`)
@@ -293,7 +335,7 @@ async function main() {
     }
     assert.equal(body.error, undefined, JSON.stringify(body))
     const names = (body.result?.tools ?? []).map((tool) => tool.name)
-    assert.deepEqual(names, [PHASE_A_TOOL_NAME])
+    assert.deepEqual(names, [MCP_WHOAMI_TOOL, MCP_AGENTS_LIST_TOOL, MCP_AGENT_GET_DEFINITION_TOOL])
   })
 
   await check('platform.whoami returns principal JSON and ignores extra args', async () => {
@@ -306,7 +348,7 @@ async function main() {
         id: 3,
         method: 'tools/call',
         params: {
-          name: PHASE_A_TOOL_NAME,
+          name: MCP_WHOAMI_TOOL,
           arguments: {
             userId: 'attacker-user',
             tenantId: 'attacker-tenant',
@@ -330,7 +372,6 @@ async function main() {
       role: 'operator',
       assumed: false,
     })
-    assert.equal(audit.some((row) => row.action === 'mcp.tools.call'), true)
   })
 
   await check('unknown tool → HTTP 200 tool_not_allowed isError', async () => {
@@ -354,12 +395,169 @@ async function main() {
     assert.equal(body.result?.isError, true)
     const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
     assert.equal(payload.code, 'tool_not_allowed')
-    assert.equal(audit.some((row) => row.action === 'mcp.tools.call.deny'), true)
+  })
+
+  await check('platform.agents.list ignores extra tenant keys', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 5,
+        method: 'tools/call',
+        params: {
+          name: MCP_AGENTS_LIST_TOOL,
+          arguments: { tenantId: 'attacker-tenant', tenantSlug: 'evil' },
+        },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, undefined)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      agents: Array<{ agentId: string }>
+    }
+    assert.equal(payload.agents[0]?.agentId, AGENT_ID)
+  })
+
+  await check('get_definition happy path and extra JSON cannot override tenant', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 6,
+        method: 'tools/call',
+        params: {
+          name: MCP_AGENT_GET_DEFINITION_TOOL,
+          arguments: {
+            definitionId: DEFINITION_ID,
+            tenantId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            userId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          },
+        },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, undefined)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      definitionId?: string
+      tenantId?: string
+    }
+    assert.equal(payload.definitionId, DEFINITION_ID)
+    assert.equal(payload.tenantId, TENANT_ID)
+  })
+
+  await check('operator without ResourceGrant cannot list or get a definition', async () => {
+    const { deps } = runtimeDeps({ role: 'operator' })
+    await initialize(deps)
+    const list = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: MCP_AGENTS_LIST_TOOL, arguments: {} } },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const listed = JSON.parse(
+      ((await readJson(list)) as { result?: { content?: Array<{ text: string }> } }).result?.content?.[0]
+        ?.text ?? '{}',
+    ) as { agents: unknown[] }
+    assert.deepEqual(listed.agents, [])
+
+    const get = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 9,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { definitionId: DEFINITION_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(get)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, true)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
+    assert.equal(payload.code, 'definition_not_found')
+  })
+
+  await check('operator with view grant can list and get definition', async () => {
+    const { deps } = runtimeDeps({ role: 'operator', grantedAgentIds: new Set([AGENT_ID]) })
+    await initialize(deps)
+    const list = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: MCP_AGENTS_LIST_TOOL, arguments: {} } },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const listed = JSON.parse(
+      ((await readJson(list)) as { result?: { content?: Array<{ text: string }> } }).result?.content?.[0]
+        ?.text ?? '{}',
+    ) as { agents: Array<{ agentId: string }> }
+    assert.equal(listed.agents[0]?.agentId, AGENT_ID)
+
+    const get = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 11,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { definitionId: DEFINITION_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(get)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, undefined)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { definitionId?: string }
+    assert.equal(payload.definitionId, DEFINITION_ID)
+  })
+
+  await check('other-tenant definitionId → definition_not_found', async () => {
+    const { deps } = runtimeDeps()
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: {
+          name: MCP_AGENT_GET_DEFINITION_TOOL,
+          arguments: { definitionId: OTHER_DEFINITION_ID },
+        },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, true)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
+    assert.equal(payload.code, 'definition_not_found')
   })
 
   await check('protected resource metadata resource is {origin}/api/mcp at every well-known path', async () => {
     const previous = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+    const previousApp = process.env.NEXT_PUBLIC_APP_URL
     process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = `pk_test_${Buffer.from('clerk.example.com$').toString('base64url')}`
+    delete process.env.NEXT_PUBLIC_APP_URL
     try {
       for (const url of [
         `${ORIGIN}/.well-known/oauth-protected-resource`,
@@ -382,6 +580,8 @@ async function main() {
     } finally {
       if (previous === undefined) delete process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
       else process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = previous
+      if (previousApp === undefined) delete process.env.NEXT_PUBLIC_APP_URL
+      else process.env.NEXT_PUBLIC_APP_URL = previousApp
     }
   })
 

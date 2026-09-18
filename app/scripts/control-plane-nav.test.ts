@@ -66,15 +66,15 @@ function main() {
     assert.ok(hrefs.includes('/control-plane/provisioning'))
     assert.ok(!hrefs.includes('/control-plane/system'))
     assert.ok(!hrefs.includes('/control-plane/governance'))
-    assert.ok(hrefs.includes('/control-plane/audit'))
+    assert.ok(!hrefs.includes('/control-plane/audit'))
     assert.ok(!hrefs.includes('/control-plane/platform/tenants'))
   })
 
-  check('approver sees Audit but not IAM', () => {
+  check('approver does not see IAM or Audit', () => {
     const hrefs = flattenNavHrefs(
       buildControlPlaneNav({ tenantRole: 'approver', platformRoles: [] }),
     )
-    assert.ok(hrefs.includes('/control-plane/audit'))
+    assert.ok(!hrefs.includes('/control-plane/audit'))
     assert.ok(hrefs.includes('/control-plane/account'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
     assert.ok(!hrefs.includes('/control-plane/system'))
@@ -112,7 +112,7 @@ function main() {
     const hrefs = staff.children.map((child) => child.href)
     assert.ok(!hrefs.includes('/control-plane/training'))
     assert.ok(hrefs.includes('/control-plane/skills'))
-    assert.ok(hrefs.includes('/control-plane/behavior-profiles'))
+    assert.ok(!hrefs.includes('/control-plane/behavior-profiles'))
     assert.ok(!hrefs.includes('/control-plane/apps'))
     assert.ok(!hrefs.includes('/control-plane/sandbox-versions'))
     assert.ok(!hrefs.includes('/control-plane/agents'))

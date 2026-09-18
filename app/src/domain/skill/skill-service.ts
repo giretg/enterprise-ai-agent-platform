@@ -1,5 +1,4 @@
 import type {
-  AgentSystemRole,
   Prisma,
   Skill,
   SkillCatalogScope,
@@ -8,13 +7,11 @@ import type {
   SkillSourceType,
 } from '@prisma/client'
 import type {
-  AuditRepository,
+  AgentRepository,
   AgentSkillMigration,
   SkillRepository,
   SkillWithVersions,
-  ToolBrokerRepository,
 } from '@/repositories/interfaces'
-import { signSkillVersion } from '@/lib/crypto/hash-chain'
 import {
   normalizeSkillDisplayName,
   normalizeSkillName,
@@ -37,11 +34,9 @@ import { isSkillReadableFromTenant, isSkillWritableFromTenant } from '@/lib/skil
 import {
   catalogScopeForKind,
   isSkillAssignableToAgent,
-  normalizeRequiredSystemRole,
   skillAssignDeniedMessage,
   skillKindChangeError,
   skillKindCreateAuthError,
-  skillKindInputError,
 } from '@/lib/skill/skill-kind'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { parseSkillMd } from '@/lib/skill/skill-md-adapter'
@@ -122,7 +117,7 @@ export interface ActorContext {
  * A teljes {@link AgentRepository} helyett csak a `tenantId`-t igénylő olvasás kell.
  */
 export interface SkillAgentLookup {
-  findById(id: string): Promise<{ tenantId: string | null; systemRole?: string | null } | null>
+  findById(id: string): Promise<{ tenantId: string } | null>
 }
 
 /**
@@ -156,8 +151,7 @@ export type SkillPackageImportResult =
 export class SkillService {
   constructor(
     private skills: SkillRepository,
-    private audit: AuditRepository,
-    private toolBroker: ToolBrokerRepository,
+    private agentsRepo: Pick<AgentRepository, 'findCapabilitiesForAgent'>,
     private agents: SkillAgentLookup,
   ) {}
 
@@ -177,26 +171,13 @@ export class SkillService {
   private async requireReachableAgent(
     agentId: string,
     actor: ActorContext,
-  ): Promise<{ tenantId: string | null; systemRole: string | null }> {
+  ): Promise<{ tenantId: string }> {
     const agent = await this.agents.findById(agentId)
     if (!agent || !isAgentReachableFromTenant(agent.tenantId, actor.actorTenantId)) {
-      await this.audit.append({
-        actorType: actor.actorId ? 'human' : 'system',
-        actorId: actor.actorId,
-        agentVersion: null,
-        action: 'skill.access_denied',
-        targetType: 'agent',
-        targetId: agentId,
-        modelUsed: null,
-        inputRef: null,
-        outputRef: 'tenant_mismatch',
-        policyDecision: 'tenant_mismatch',
-        tenantId: actor.actorTenantId,
-        metadata: { agentId, activeTenantId: actor.actorTenantId },
-      })
+
       throw new SkillAccessError('Agent not found')
     }
-    return { tenantId: agent.tenantId, systemRole: agent.systemRole ?? null }
+    return { tenantId: agent.tenantId }
   }
 
   private async assertAgentReachable(agentId: string, actor: ActorContext): Promise<void> {
@@ -277,7 +258,6 @@ export class SkillService {
     catalogScope: SkillCatalogScope
     tenantId: string | null
     kind: SkillKind
-    requiredSystemRole?: AgentSystemRole | null
     sourceType: SkillSourceType
     provenance: Prisma.InputJsonValue | null
     license: string | null
@@ -288,8 +268,6 @@ export class SkillService {
     attachments?: SkillAttachment[]
     actor: ActorContext
   }): Promise<{ skill: Skill; versionId: string }> {
-    const kindError = skillKindInputError(input.kind, input.requiredSystemRole)
-    if (kindError) throw new SkillAccessError(kindError)
     const authError = skillKindCreateAuthError(input.kind, input.actor.isPlatformAdmin)
     if (authError) throw new SkillAccessError(authError)
     if (catalogScopeForKind(input.kind) !== input.catalogScope) {
@@ -301,7 +279,6 @@ export class SkillService {
     if (input.kind !== 'tenant' && input.tenantId !== null) {
       throw new SkillAccessError('Kiadott vagy rendszer-skill nem lehet tenant-hoz kötve.')
     }
-    const requiredSystemRole = normalizeRequiredSystemRole(input.kind, input.requiredSystemRole)
     await this.assertSkillNameAvailable(input.name, input.tenantId)
     const attachments = input.attachments ?? []
     const contentHash = computeSkillContentHash(input.content, input.requires, attachments)
@@ -314,7 +291,6 @@ export class SkillService {
       catalogScope: input.catalogScope,
       tenantId: input.tenantId,
       kind: input.kind,
-      requiredSystemRole,
       sourceType: input.sourceType,
       provenance: input.provenance,
       license: input.license,
@@ -327,27 +303,7 @@ export class SkillService {
       contentHash,
     })
 
-    await this.audit.append({
-      actorType: input.actor.actorId ? 'human' : 'system',
-      actorId: input.actor.actorId,
-      agentVersion: null,
-      action: input.sourceType === 'imported' ? 'skill.imported' : 'skill.created',
-      targetType: 'skill',
-      targetId: skill.id,
-      modelUsed: null,
-      inputRef: skill.name,
-      outputRef: `v${version.version}`,
-      policyDecision: 'proposed',
-      tenantId: skill.tenantId,
-      metadata: {
-        skillVersionId: version.id,
-        riskTier: skill.riskTier,
-        catalogScope: skill.catalogScope,
-        kind: skill.kind,
-        requiredSystemRole: skill.requiredSystemRole,
-        contentHash,
-      },
-    })
+
 
     return { skill, versionId: version.id }
   }
@@ -361,7 +317,6 @@ export class SkillService {
     raw: string
     sourceUrl?: string
     kind: SkillKind
-    requiredSystemRole?: AgentSystemRole | null
     tenantId: string | null
     actor: ActorContext
   }): Promise<
@@ -387,7 +342,6 @@ export class SkillService {
       catalogScope,
       tenantId: catalogScope === 'global' ? null : input.tenantId,
       kind: input.kind,
-      requiredSystemRole: input.requiredSystemRole,
       sourceType: 'imported',
       provenance: parsed.provenance as unknown as Prisma.InputJsonValue,
       license: parsed.license,
@@ -420,7 +374,6 @@ export class SkillService {
     sourceUrl?: string
     sourceLabel?: string
     kind: SkillKind
-    requiredSystemRole?: AgentSystemRole | null
     tenantId: string | null
     actor: ActorContext
   }): Promise<SkillPackageImportResult> {
@@ -489,7 +442,6 @@ export class SkillService {
       catalogScope,
       tenantId: catalogScope === 'global' ? null : input.tenantId,
       kind: input.kind,
-      requiredSystemRole: input.requiredSystemRole,
       sourceType: 'imported',
       provenance: provenance as unknown as Prisma.InputJsonValue,
       license: parsed.license,
@@ -500,26 +452,7 @@ export class SkillService {
       actor: input.actor,
     })
 
-    await this.audit.append({
-      actorType: input.actor.actorId ? 'human' : 'system',
-      actorId: input.actor.actorId,
-      agentVersion: null,
-      action: 'skill.package_imported',
-      targetType: 'skill',
-      targetId: skill.id,
-      modelUsed: null,
-      inputRef: input.sourceLabel ?? input.sourceUrl ?? 'zip-upload',
-      outputRef: versionId,
-      policyDecision: 'proposed',
-      tenantId: skill.tenantId,
-      metadata: {
-        skillRoot: pkg.skillRoot,
-        attachmentCount: attachments.length,
-        attachmentBytes: attachments.reduce((sum, a) => sum + a.bytes, 0),
-        skippedCount: skipped.length,
-        skipped: skipped.map((s) => ({ path: s.path, reason: s.reason })),
-      },
-    })
+
 
     return { ok: true, skill, versionId, validation, attachments, skipped, skillRoot: pkg.skillRoot }
   }
@@ -629,25 +562,7 @@ export class SkillService {
       actor: input.actor,
     })
 
-    await this.audit.append({
-      actorType: input.actor.actorId ? 'human' : 'system',
-      actorId: input.actor.actorId,
-      agentVersion: null,
-      action: 'skill.package_version_proposed',
-      targetType: 'skill',
-      targetId: skill.id,
-      modelUsed: null,
-      inputRef: input.sourceLabel ?? input.sourceUrl ?? 'zip-upload',
-      outputRef: `v${version}`,
-      policyDecision: 'proposed',
-      tenantId: skill.tenantId,
-      metadata: {
-        skillVersionId: versionId,
-        skillRoot: pkg.skillRoot,
-        attachmentCount: attachments.length,
-        skippedCount: skipped.length,
-      },
-    })
+
 
     return {
       ok: true,
@@ -687,20 +602,7 @@ export class SkillService {
     const displayName =
       normalizeSkillDisplayName(input.displayName)?.slice(0, SKILL_NAME_MAX) ?? null
     const updated = await this.skills.updateDisplayName(skill.id, displayName)
-    await this.audit.append({
-      actorType: input.actor.actorId ? 'human' : 'system',
-      actorId: input.actor.actorId,
-      agentVersion: null,
-      action: 'skill.display_name_updated',
-      targetType: 'skill',
-      targetId: skill.id,
-      modelUsed: null,
-      inputRef: skill.name,
-      outputRef: displayName,
-      policyDecision: 'allow',
-      tenantId: skill.tenantId,
-      metadata: { displayName },
-    })
+
     return updated
   }
 
@@ -734,20 +636,7 @@ export class SkillService {
       throw new SkillAccessError(`A leírás túl hosszú (max ${SKILL_DESCRIPTION_MAX}).`)
     }
     const updated = await this.skills.updateDescription(skill.id, description)
-    await this.audit.append({
-      actorType: input.actor.actorId ? 'human' : 'system',
-      actorId: input.actor.actorId,
-      agentVersion: null,
-      action: 'skill.description_updated',
-      targetType: 'skill',
-      targetId: skill.id,
-      modelUsed: null,
-      inputRef: skill.name,
-      outputRef: description.slice(0, 200),
-      policyDecision: 'allow',
-      tenantId: skill.tenantId,
-      metadata: { descriptionLength: description.length },
-    })
+
     return updated
   }
 
@@ -759,7 +648,6 @@ export class SkillService {
   async updateKind(input: {
     skillId: string
     kind: SkillKind
-    requiredSystemRole?: AgentSystemRole | null
     actor: ActorContext
   }): Promise<Skill> {
     const skill = await this.getReadableSkill(input.actor.actorTenantId, input.skillId)
@@ -783,27 +671,8 @@ export class SkillService {
       input.actor.isPlatformAdmin,
     )
     if (changeError) throw new SkillAccessError(changeError)
-    const kindError = skillKindInputError(input.kind, input.requiredSystemRole)
-    if (kindError) throw new SkillAccessError(kindError)
-    const requiredSystemRole = normalizeRequiredSystemRole(input.kind, input.requiredSystemRole)
-    const updated = await this.skills.updateKind(skill.id, input.kind, requiredSystemRole)
-    await this.audit.append({
-      actorType: input.actor.actorId ? 'human' : 'system',
-      actorId: input.actor.actorId,
-      agentVersion: null,
-      action: 'skill.kind_updated',
-      targetType: 'skill',
-      targetId: skill.id,
-      modelUsed: null,
-      inputRef: skill.name,
-      outputRef: input.kind,
-      policyDecision: 'allow',
-      tenantId: skill.tenantId,
-      metadata: {
-        from: { kind: skill.kind, requiredSystemRole: skill.requiredSystemRole },
-        to: { kind: input.kind, requiredSystemRole },
-      },
-    })
+    const updated = await this.skills.updateKind(skill.id, input.kind)
+
     return updated
   }
 
@@ -833,20 +702,7 @@ export class SkillService {
       contentHash,
     })
 
-    await this.audit.append({
-      actorType: input.actor.actorId ? 'human' : 'system',
-      actorId: input.actor.actorId,
-      agentVersion: null,
-      action: 'skill.version.proposed',
-      targetType: 'skill',
-      targetId: input.skillId,
-      modelUsed: null,
-      inputRef: null,
-      outputRef: `v${version.version}`,
-      policyDecision: 'proposed',
-      tenantId: skill.tenantId,
-      metadata: { skillVersionId: version.id, contentHash },
-    })
+
 
     return { versionId: version.id, version: version.version }
   }
@@ -868,30 +724,11 @@ export class SkillService {
       throw new SkillAccessError()
     }
 
-    const signature = signSkillVersion({
-      skillVersionId: target.id,
-      contentHash: target.contentHash,
-      approverId: input.actor.actorId,
-    })
     const { version, agentMigrations } = await this.skills.approveVersion(input.versionId, {
       approverId: input.actor.actorId,
-      signature,
     })
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: input.actor.actorId,
-      agentVersion: null,
-      action: 'skill.version.approved',
-      targetType: 'skill',
-      targetId: target.skillId,
-      modelUsed: null,
-      inputRef: input.versionId,
-      outputRef: `v${version.version}`,
-      policyDecision: 'active',
-      tenantId: target.skill.tenantId,
-      metadata: { skillVersionId: version.id, contentHash: target.contentHash, signature },
-    })
+
 
     await this.recordAgentSkillMigrations({
       skillId: target.skillId,
@@ -929,30 +766,11 @@ export class SkillService {
       )
     }
 
-    const signature = signSkillVersion({
-      skillVersionId: target.id,
-      contentHash: target.contentHash,
-      approverId: input.actor.actorId,
-    })
     const { version, agentMigrations } = await this.skills.rollbackToVersion(input.versionId, {
       approverId: input.actor.actorId,
-      signature,
     })
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: input.actor.actorId,
-      agentVersion: null,
-      action: 'skill.rolled_back',
-      targetType: 'skill',
-      targetId: target.skillId,
-      modelUsed: null,
-      inputRef: input.versionId,
-      outputRef: `v${version.version}`,
-      policyDecision: 'active',
-      tenantId: target.skill.tenantId,
-      metadata: { skillVersionId: version.id },
-    })
+
 
     await this.recordAgentSkillMigrations({
       skillId: target.skillId,
@@ -994,20 +812,7 @@ export class SkillService {
 
     const detachedAssignmentCount = await this.skills.detachAllAssignmentsForSkill(input.skillId)
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: input.actor.actorId,
-      agentVersion: null,
-      action: 'skill.deactivated',
-      targetType: 'skill',
-      targetId: skill.id,
-      modelUsed: null,
-      inputRef: retired.id,
-      outputRef: `v${retired.version}`,
-      policyDecision: 'retired',
-      tenantId: skill.tenantId,
-      metadata: { skillVersionId: retired.id, detachedAssignmentCount },
-    })
+
 
     return { versionId: retired.id, version: retired.version, detachedAssignmentCount }
   }
@@ -1037,20 +842,7 @@ export class SkillService {
 
     await this.skills.deleteSkill(input.skillId)
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: input.actor.actorId,
-      agentVersion: null,
-      action: 'skill.deleted',
-      targetType: 'skill',
-      targetId: skill.id,
-      modelUsed: null,
-      inputRef: skill.name,
-      outputRef: null,
-      policyDecision: 'deleted',
-      tenantId: skill.tenantId,
-      metadata: { skillId: skill.id, versionCount: skill.versions.length },
-    })
+
   }
 
   // ── Hozzárendelés + readiness (WP-4) ──────────────────────────────────────
@@ -1064,7 +856,7 @@ export class SkillService {
     if (!target) throw new SkillAccessError('Skill version not found')
     // A cél-agentnek is az actor tenantjából elérhetőnek kell lennie — különben
     // egy tenant-admin idegen tenant agentjébe injektálhatna skillt.
-    const agent = await this.requireReachableAgent(input.agentId, input.actor)
+    await this.requireReachableAgent(input.agentId, input.actor)
     // Csak olvasható skill rendelhető hozzá (global vagy saját tenant).
     if (!isSkillReadableFromTenant(target.skill.tenantId, input.actor.actorTenantId)) {
       throw new SkillAccessError()
@@ -1072,12 +864,9 @@ export class SkillService {
     if (target.status !== 'active') {
       throw new SkillAccessError('Only an active skill version can be assigned')
     }
-    const skillKind = {
-      kind: target.skill.kind,
-      requiredSystemRole: target.skill.requiredSystemRole,
-    }
-    if (!isSkillAssignableToAgent(skillKind, agent)) {
-      throw new SkillAccessError(skillAssignDeniedMessage(skillKind, agent))
+    const skillKind = { kind: target.skill.kind }
+    if (!isSkillAssignableToAgent(skillKind)) {
+      throw new SkillAccessError(skillAssignDeniedMessage(skillKind))
     }
 
     const { replacedVersionIds } = await this.skills.assign({
@@ -1087,44 +876,10 @@ export class SkillService {
     })
 
     for (const replacedVersionId of replacedVersionIds) {
-      await this.audit.append({
-        actorType: input.actor.actorId ? 'human' : 'system',
-        actorId: input.actor.actorId,
-        agentVersion: null,
-        action: 'skill.unassigned',
-        targetType: 'agent',
-        targetId: input.agentId,
-        modelUsed: null,
-        inputRef: target.skillId,
-        outputRef: replacedVersionId,
-        policyDecision: 'active',
-        tenantId: input.actor.actorTenantId,
-        metadata: {
-          skillVersionId: replacedVersionId,
-          skillId: target.skillId,
-          reason: 'replaced_by_newer_version',
-        },
-      })
+
     }
 
-    await this.audit.append({
-      actorType: input.actor.actorId ? 'human' : 'system',
-      actorId: input.actor.actorId,
-      agentVersion: null,
-      action: 'skill.assigned',
-      targetType: 'agent',
-      targetId: input.agentId,
-      modelUsed: null,
-      inputRef: target.skillId,
-      outputRef: input.skillVersionId,
-      policyDecision: 'active',
-      tenantId: input.actor.actorTenantId,
-      metadata: {
-        skillId: target.skillId,
-        skillVersionId: input.skillVersionId,
-        replacedVersionIds,
-      },
-    })
+
   }
 
   async unassign(input: {
@@ -1135,20 +890,7 @@ export class SkillService {
     await this.assertAgentReachable(input.agentId, input.actor)
     await this.skills.unassign(input.agentId, input.skillVersionId)
 
-    await this.audit.append({
-      actorType: input.actor.actorId ? 'human' : 'system',
-      actorId: input.actor.actorId,
-      agentVersion: null,
-      action: 'skill.unassigned',
-      targetType: 'agent',
-      targetId: input.agentId,
-      modelUsed: null,
-      inputRef: null,
-      outputRef: input.skillVersionId,
-      policyDecision: 'active',
-      tenantId: input.actor.actorTenantId,
-      metadata: { skillVersionId: input.skillVersionId },
-    })
+
   }
 
   async setEnabled(input: {
@@ -1173,26 +915,7 @@ export class SkillService {
     if (input.agentMigrations.length === 0) return
 
     const agentIds = [...new Set(input.agentMigrations.map((m) => m.agentId))]
-    await this.audit.append({
-      actorType: 'human',
-      actorId: input.actorId,
-      agentVersion: null,
-      action: 'skill.version.agents_migrated',
-      targetType: 'skill',
-      targetId: input.skillId,
-      modelUsed: null,
-      inputRef: input.skillVersionId,
-      outputRef: `${agentIds.length} agent`,
-      policyDecision: 'active',
-      tenantId: input.tenantId,
-      metadata: {
-        skillVersionId: input.skillVersionId,
-        version: input.version,
-        trigger: input.trigger,
-        agentCount: agentIds.length,
-        migrations: input.agentMigrations,
-      },
-    })
+
   }
 
   // ── Context-assembler (progresszív betöltés, WP-5) ────────────────────────
@@ -1252,26 +975,6 @@ export class SkillService {
     }
 
     const loadableIds = orderedIds.filter((id) => Boolean(resolveLoadableSkill(index, id)))
-    const deniedIds = orderedIds.filter((id) => !resolveLoadableSkill(index, id))
-
-    await Promise.all(
-      deniedIds.map((skillVersionId) =>
-        this.audit.append({
-          actorType: 'agent',
-          actorId: input.agentId,
-          agentVersion: null,
-          action: 'skill.access_denied',
-          targetType: 'agent',
-          targetId: input.agentId,
-          modelUsed: null,
-          inputRef: skillVersionId,
-          outputRef: 'denied',
-          policyDecision: 'deny',
-          tenantId: input.actor.actorTenantId,
-          metadata: { skillVersionId, reason: 'not_assigned' },
-        }),
-      ),
-    )
 
     if (loadableIds.length === 0) {
       return { preloadedPrompts: [], loadedSkillNames: [], loadedSkillVersionIds: [], blocked: [] }
@@ -1309,20 +1012,7 @@ export class SkillService {
       const versionRequires = parseSkillRequires(version.requires)
       if (versionRequires.length === 0) sawSkillWithoutRequires = true
       requiredTools.push(...versionRequires.map((r) => r.toolName))
-      await this.audit.append({
-        actorType: 'agent',
-        actorId: input.agentId,
-        agentVersion: null,
-        action: 'skill.loaded',
-        targetType: 'skill',
-        targetId: entry.skillId,
-        modelUsed: null,
-        inputRef: skillVersionId,
-        outputRef: `v${entry.version}`,
-        policyDecision: 'allow',
-        tenantId: input.actor.actorTenantId,
-        metadata: { skillVersionId, skillId: entry.skillId },
-      })
+
       loadedSkillNames.push(entry.name)
       loadedSkillVersionIds.push(skillVersionId)
       // Level-2: az előtöltött skill mellékleteinek LISTÁJA is megy (tartalom nem).
@@ -1376,7 +1066,7 @@ export class SkillService {
   ): Promise<{ ok: true } | { ok: false; missing: string[] }> {
     const requires = parseSkillRequires(requiresJson)
     if (requires.length === 0) return { ok: true }
-    const caps = await this.toolBroker.findCapabilitiesForAgent(agentId)
+    const caps = await this.agentsRepo.findCapabilitiesForAgent(agentId)
     const allowedTools = new Set(caps.filter((c) => c.allowed).map((c) => c.toolName))
     const missing = requires
       .map((r) => r.toolName)
@@ -1401,24 +1091,7 @@ export class SkillService {
     missing: string[]
     actorTenantId: string | null
   }): Promise<void> {
-    await this.audit.append({
-      actorType: 'agent',
-      actorId: input.agentId,
-      agentVersion: null,
-      action: 'skill.blocked_unready',
-      targetType: 'skill',
-      targetId: input.skillId,
-      modelUsed: null,
-      inputRef: input.skillVersionId,
-      outputRef: `v${input.version}`,
-      policyDecision: 'deny',
-      tenantId: input.actorTenantId,
-      metadata: {
-        skillVersionId: input.skillVersionId,
-        skillId: input.skillId,
-        missingTools: input.missing,
-      },
-    })
+
   }
 
   /**
@@ -1486,20 +1159,7 @@ export class SkillService {
     const index = await this.getAssignedSkillIndex(input.agentId)
     const entry = resolveLoadableSkill(index, input.skillVersionId)
     if (!entry) {
-      await this.audit.append({
-        actorType: 'agent',
-        actorId: input.agentId,
-        agentVersion: null,
-        action: 'skill.access_denied',
-        targetType: 'agent',
-        targetId: input.agentId,
-        modelUsed: null,
-        inputRef: input.skillVersionId,
-        outputRef: 'denied',
-        policyDecision: 'deny',
-        tenantId: input.actor.actorTenantId,
-        metadata: { skillVersionId: input.skillVersionId, reason: 'not_assigned' },
-      })
+
       return { ok: false, reason: 'A skill nincs ehhez az agenthez rendelve (deny-by-default).' }
     }
 
@@ -1523,20 +1183,7 @@ export class SkillService {
       return { ok: false, reason: SkillService.unreadySkillReason(entry.name, readiness.missing) }
     }
 
-    await this.audit.append({
-      actorType: 'agent',
-      actorId: input.agentId,
-      agentVersion: null,
-      action: 'skill.loaded',
-      targetType: 'skill',
-      targetId: entry.skillId,
-      modelUsed: null,
-      inputRef: input.skillVersionId,
-      outputRef: `v${entry.version}`,
-      policyDecision: 'allow',
-      tenantId: input.actor.actorTenantId,
-      metadata: { skillVersionId: input.skillVersionId, skillId: entry.skillId },
-    })
+
 
     const requiredTools = parseSkillRequires(version.requires).map((r) => r.toolName)
     // Level-2: a melléklet LISTÁJA megy a Level-1 törzzsel (néhány sor), a
@@ -1572,24 +1219,7 @@ export class SkillService {
     const index = await this.getAssignedSkillIndex(input.agentId)
     const entry = resolveLoadableSkill(index, input.skillVersionId)
     if (!entry) {
-      await this.audit.append({
-        actorType: 'agent',
-        actorId: input.agentId,
-        agentVersion: null,
-        action: 'skill.access_denied',
-        targetType: 'agent',
-        targetId: input.agentId,
-        modelUsed: null,
-        inputRef: input.skillVersionId,
-        outputRef: 'denied',
-        policyDecision: 'deny',
-        tenantId: input.actor.actorTenantId,
-        metadata: {
-          skillVersionId: input.skillVersionId,
-          attachmentPath: input.path,
-          reason: 'not_assigned',
-        },
-      })
+
       return { ok: false, reason: 'A skill nincs ehhez az agenthez rendelve (deny-by-default).' }
     }
 
@@ -1611,25 +1241,7 @@ export class SkillService {
       }
     }
 
-    await this.audit.append({
-      actorType: 'agent',
-      actorId: input.agentId,
-      agentVersion: null,
-      action: 'skill.attachment_loaded',
-      targetType: 'skill',
-      targetId: entry.skillId,
-      modelUsed: null,
-      inputRef: input.skillVersionId,
-      outputRef: found.path,
-      policyDecision: 'allow',
-      tenantId: input.actor.actorTenantId,
-      metadata: {
-        skillVersionId: input.skillVersionId,
-        skillId: entry.skillId,
-        attachmentPath: found.path,
-        attachmentSha256: found.sha256,
-      },
-    })
+
 
     return { ok: true, path: found.path, text: formatAttachmentForPrompt(found) }
   }
@@ -1657,22 +1269,7 @@ export class SkillService {
   }): Promise<string[]> {
     const skillVersionIds = await this.getRunSkillSnapshot(input.agentId)
     if (skillVersionIds.length === 0) return []
-    await this.audit.append({
-      actorType: 'agent',
-      actorId: input.agentId,
-      agentVersion: null,
-      action: 'skill.run_snapshot',
-      targetType: 'agent',
-      targetId: input.agentId,
-      modelUsed: null,
-      inputRef: null,
-      outputRef: `${skillVersionIds.length} skill`,
-      policyDecision: 'active',
-      tenantId: input.actorTenantId,
-      ticketId: input.context.ticketId ?? null,
-      conversationId: input.context.conversationId ?? null,
-      metadata: { skillVersionIds },
-    })
+
     return skillVersionIds
   }
 
@@ -1718,7 +1315,7 @@ export class SkillService {
     const target = await this.skills.findVersionById(skillVersionId)
     if (!target) throw new SkillAccessError('Skill version not found')
     const requires = parseSkillRequires(target.requires)
-    const caps = await this.toolBroker.findCapabilitiesForAgent(agentId)
+    const caps = await this.agentsRepo.findCapabilitiesForAgent(agentId)
     const allowedTools = new Set(caps.filter((c) => c.allowed).map((c) => c.toolName))
     return computeSkillReadiness(requires, { allowedTools, knownTools: KNOWN_TOOL_NAMES })
   }
@@ -1726,7 +1323,7 @@ export class SkillService {
   /** Az agenthez rendelt skillek listája readiness-szel együtt (agent-detail panel). */
   async listAgentSkillsWithReadiness(agentId: string) {
     const assignments = await this.skills.listAgentSkills(agentId)
-    const caps = await this.toolBroker.findCapabilitiesForAgent(agentId)
+    const caps = await this.agentsRepo.findCapabilitiesForAgent(agentId)
     const allowedTools = new Set(caps.filter((c) => c.allowed).map((c) => c.toolName))
     return assignments.map((a) => {
       const requires = parseSkillRequires(a.skillVersion.requires)
@@ -1742,7 +1339,6 @@ export class SkillService {
         version: a.skillVersion.version,
         riskTier: a.skillVersion.skill.riskTier,
         kind: a.skillVersion.skill.kind,
-        requiredSystemRole: a.skillVersion.skill.requiredSystemRole,
         content: parseSkillContent(a.skillVersion.content),
         requires,
         readiness,

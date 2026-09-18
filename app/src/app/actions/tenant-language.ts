@@ -8,7 +8,6 @@ import {
   withTenantLanguage,
 } from '@/lib/tenant-language'
 import { setTenantLanguageSchema } from '@/lib/validators/actions'
-import { appendAuditInTransaction } from '@/repositories/postgres/audit-repository'
 import { repositories } from '@/repositories/postgres'
 
 export async function getTenantLanguage() {
@@ -33,20 +32,6 @@ export async function setTenantLanguage(input: unknown) {
       await tx.tenant.update({
         where: { id: ctx.activeTenantId },
         data: { settings: withTenantLanguage(tenant?.settings, parsed.language) },
-      })
-      await appendAuditInTransaction(tx, {
-        actorType: 'human',
-        actorId: ctx.user.id,
-        agentVersion: null,
-        action: 'tenant.language.update',
-        targetType: 'tenant',
-        targetId: ctx.activeTenantId,
-        modelUsed: null,
-        inputRef: null,
-        outputRef: null,
-        policyDecision: 'allowed',
-        metadata: { language: parsed.language },
-        tenantId: ctx.activeTenantId,
       })
     }, { timeout: 60_000 })
     return ok({ language: parsed.language })

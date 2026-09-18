@@ -1,19 +1,24 @@
-import type { PlatformRole, Prisma, UserRole } from '@prisma/client'
+import type { PlatformRole, UserRole } from '@prisma/client'
 import {
   isSuperadmin,
   normalizeTenantSlug,
   tenantStatusAllowsOperations,
 } from '@/lib/tenant-policy'
 import type {
-  AuditRepository,
   PlatformMembershipRepository,
   TenantMembershipRepository,
   TenantRepository,
   UserRepository,
 } from '@/repositories/interfaces'
 
-export const PHASE_A_TOOL_NAME = 'platform.whoami'
-export const PHASE_A_ALLOWED_TOOLS = [PHASE_A_TOOL_NAME] as const
+export const MCP_WHOAMI_TOOL = 'platform.whoami'
+export const MCP_AGENTS_LIST_TOOL = 'platform.agents.list'
+export const MCP_AGENT_GET_DEFINITION_TOOL = 'platform.agent.get_definition'
+export const MCP_ALLOWED_TOOLS = [
+  MCP_WHOAMI_TOOL,
+  MCP_AGENTS_LIST_TOOL,
+  MCP_AGENT_GET_DEFINITION_TOOL,
+] as const
 export const MCP_RESOURCE_PATH = '/api/mcp'
 export const MCP_RESOURCE_METADATA_PATH =
   '/.well-known/oauth-protected-resource/api/mcp'
@@ -58,7 +63,6 @@ export type McpPrincipalDeps = {
   tenants: Pick<TenantRepository, 'findBySlug'>
   memberships: Pick<TenantMembershipRepository, 'findByTenantAndUser'>
   platformMemberships: Pick<PlatformMembershipRepository, 'findByUser'>
-  audit: Pick<AuditRepository, 'append'>
 }
 
 const GENERIC_MESSAGE: Record<McpPrincipalFailureCode, string> = {
@@ -118,54 +122,13 @@ export function tokenClaimsForeignOrigin(
   return false
 }
 
-async function appendMcpAudit(
-  deps: Pick<McpPrincipalDeps, 'audit'>,
-  data: {
-    action: 'mcp.auth.ok' | 'mcp.auth.deny' | 'mcp.tools.call' | 'mcp.tools.call.deny'
-    actorId: string | null
-    tenantId?: string | null
-    targetId?: string | null
-    policyDecision: string
-    metadata: Prisma.JsonObject
-  },
-): Promise<void> {
-  await deps.audit.append({
-    actorType: 'human',
-    actorId: data.actorId,
-    agentVersion: null,
-    action: data.action,
-    targetType: 'mcp',
-    targetId: data.targetId ?? null,
-    modelUsed: null,
-    inputRef: null,
-    outputRef: null,
-    policyDecision: data.policyDecision,
-    metadata: data.metadata,
-    tenantId: data.tenantId ?? null,
-  })
-}
-
-/** Unauthenticated 401s log only; invalid_token and membership/inactive denies are audited. */
+/** Denials log to stdout. AuditLog was dropped in Phase B. */
 export async function auditMcpAuthDenied(
-  deps: Pick<McpPrincipalDeps, 'audit'>,
+  _deps: McpPrincipalDeps | Record<string, unknown>,
   failure: Pick<McpPrincipalFailure, 'code'> & { userId?: string; tenantId?: string },
   tenantSlug?: string,
 ): Promise<void> {
-  if (failure.code === 'unauthenticated') {
-    console.info('mcp.auth.deny', { code: failure.code, tenantSlug })
-    return
-  }
-  await appendMcpAudit(deps, {
-    action: 'mcp.auth.deny',
-    actorId: failure.userId ?? null,
-    tenantId: failure.tenantId ?? null,
-    targetId: failure.tenantId ?? null,
-    policyDecision: 'deny',
-    metadata: {
-      code: failure.code,
-      ...(tenantSlug ? { tenantSlug } : {}),
-    },
-  })
+  console.info('mcp.auth.deny', { code: failure.code, tenantSlug, userId: failure.userId })
 }
 
 async function deny(
@@ -265,43 +228,25 @@ export async function resolveMcpPrincipal(
     platformRoles,
   }
 
-  await appendMcpAudit(deps, {
-    action: 'mcp.auth.ok',
-    actorId: principal.userId,
-    tenantId: principal.tenantId,
-    targetId: principal.tenantId,
-    policyDecision: 'allow',
-    metadata: { tenantSlug: principal.tenantSlug, assumed: principal.assumed },
-  })
-
   return { ok: true, principal }
 }
 
 export async function auditMcpToolCall(
-  deps: Pick<McpPrincipalDeps, 'audit'>,
-  principal: McpPrincipal,
+  _deps: unknown,
+  _principal: McpPrincipal,
+  _toolName?: string,
 ): Promise<void> {
-  await appendMcpAudit(deps, {
-    action: 'mcp.tools.call',
-    actorId: principal.userId,
-    tenantId: principal.tenantId,
-    targetId: principal.tenantId,
-    policyDecision: 'allow',
-    metadata: { toolName: PHASE_A_TOOL_NAME, assumed: principal.assumed },
-  })
+  return
 }
 
 export async function auditMcpToolDenied(
-  deps: Pick<McpPrincipalDeps, 'audit'>,
+  _deps: unknown,
   principal: McpPrincipal,
   toolName: string,
 ): Promise<void> {
-  await appendMcpAudit(deps, {
-    action: 'mcp.tools.call.deny',
-    actorId: principal.userId,
-    tenantId: principal.tenantId,
-    targetId: principal.tenantId,
-    policyDecision: 'deny',
-    metadata: { toolName, code: 'tool_not_allowed' },
+  console.info('mcp.tools.call.deny', {
+    toolName,
+    code: 'tool_not_allowed',
+    tenantSlug: principal.tenantSlug,
   })
 }

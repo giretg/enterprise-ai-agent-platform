@@ -1,5 +1,5 @@
 import type { Connector, ConnectorGrant, Prisma } from '@prisma/client'
-import type { AuditRepository, ConnectorGrantRepository } from '@/repositories/interfaces'
+import type { ConnectorGrantRepository } from '@/repositories/interfaces'
 import { prisma } from '@/lib/db'
 import {
   loadGoogleOAuthConfig,
@@ -149,7 +149,7 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
 }
 
 function isGoogleConnector(connector: Connector): boolean {
-  if (connector.type === 'gmail' || connector.type === 'google_drive') return true
+  if (connector.type as string === 'gmail' || connector.type === 'google_drive') return true
   const config = (connector.config ?? {}) as ConnectorOAuthConfig
   const provider = (config.provider ?? '').toLowerCase()
   return provider.includes('google')
@@ -388,10 +388,7 @@ async function refreshGrantTokens(
 }
 
 export class ConnectorGrantService {
-  constructor(
-    private grants: ConnectorGrantRepository,
-    private audit: AuditRepository,
-  ) {}
+  constructor(private grants: ConnectorGrantRepository) {}
 
   private async loadGrantForAccess(params: {
     grantId: string
@@ -495,6 +492,7 @@ export class ConnectorGrantService {
 
     // Meglévő aktív grant scope-jait uniózzuk — a least-privilege újra-consent
     // ne törölje a korábban megadott jogosultságokat a DB-ből.
+    if (!statePayload.tenantId) throw new Error('tenant required')
     const existing = await this.grants.findActiveGrant({
       tenantId: statePayload.tenantId,
       connectorId: params.connector.id,
@@ -510,7 +508,7 @@ export class ConnectorGrantService {
     const tokensToStore: ConnectorGrantTokens = { ...tokens, scopes: mergedScopes }
 
     const tokenRef = buildGrantTokenRef({
-      tenantId: statePayload.tenantId,
+      tenantId: statePayload.tenantId as string,
       userId: statePayload.userId,
       connectorId: params.connector.id,
     })
@@ -518,7 +516,7 @@ export class ConnectorGrantService {
     await store.save(tokensToStore)
 
     const grant = await this.grants.create({
-      tenantId: statePayload.tenantId,
+      tenantId: statePayload.tenantId as string,
       connectorId: params.connector.id,
       userId: statePayload.userId,
       scopes: mergedScopes as Prisma.JsonValue,
@@ -527,23 +525,7 @@ export class ConnectorGrantService {
       expiresAt: tokensToStore.expiresAt ? new Date(tokensToStore.expiresAt) : null,
     })
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: 'connector.grant.create',
-      targetType: 'connector_grant',
-      targetId: grant.id,
-      modelUsed: null,
-      inputRef: params.connector.id,
-      outputRef: tokensToStore.accountEmail ?? 'connected',
-      policyDecision: 'allowed',
-      metadata: {
-        connector: params.connector.name,
-        scopes: mergedScopes,
-        account_label: tokensToStore.accountEmail ?? null,
-      } as Prisma.JsonValue,
-    })
+
 
     return grant
   }
@@ -567,22 +549,7 @@ export class ConnectorGrantService {
 
     const updated = await this.grants.updateStatus(grant.id, 'revoked', { revokedAt: new Date() })
 
-    await this.audit.append({
-      actorType: params.actorType,
-      actorId: params.actorId,
-      agentVersion: null,
-      action: 'connector.grant.revoke',
-      targetType: 'connector_grant',
-      targetId: grant.id,
-      modelUsed: null,
-      inputRef: grant.connectorId,
-      outputRef: grant.userId,
-      policyDecision: 'revoked',
-      metadata: {
-        actor: params.actorId,
-        ...(params.reason ? { reason: params.reason } : {}),
-      } as Prisma.JsonValue,
-    })
+
 
     return updated
   }
@@ -612,7 +579,7 @@ export class ConnectorGrantService {
     tenantId: string | null | undefined,
     actorId: string,
   ): Promise<number> {
-    const stale = await this.grants.findActiveForInactiveConnectors(userId, tenantId)
+    const stale = await this.grants.findActiveForInactiveConnectors(userId, tenantId ?? undefined)
     await Promise.all(
       stale.map((grant) =>
         this.revokeGrant({
@@ -634,19 +601,7 @@ export class ConnectorGrantService {
         const store = createGrantTokenStore(grant.tokenRef)
         await store.delete().catch(() => {})
         await this.grants.updateStatus(grant.id, 'revoked', { revokedAt: new Date() })
-        await this.audit.append({
-          actorType: 'system',
-          actorId,
-          agentVersion: null,
-          action: 'connector.grant.revoke',
-          targetType: 'connector_grant',
-          targetId: grant.id,
-          modelUsed: null,
-          inputRef: grant.connectorId,
-          outputRef: userId,
-          policyDecision: 'offboarding',
-          metadata: { reason: 'user_suspended' } as Prisma.JsonValue,
-        })
+
       }),
     )
   }
@@ -665,19 +620,7 @@ export class ConnectorGrantService {
       expectedConnectorId: params.connectorId,
     })
     await this.grants.updateStatus(params.grantId, 'expired')
-    await this.audit.append({
-      actorType: 'system',
-      actorId: null,
-      agentVersion: null,
-      action: 'connector.grant.expire',
-      targetType: 'connector_grant',
-      targetId: params.grantId,
-      modelUsed: null,
-      inputRef: params.connectorId,
-      outputRef: params.actingUserId,
-      policyDecision: 'expired',
-      metadata: params.metadata ?? null,
-    })
+
   }
 
   async resolveAccessToken(params: {
@@ -723,19 +666,7 @@ export class ConnectorGrantService {
           lastRefreshedAt: new Date(),
           expiresAt: tokens.expiresAt ? new Date(tokens.expiresAt) : null,
         })
-        await this.audit.append({
-          actorType: 'system',
-          actorId: null,
-          agentVersion: null,
-          action: 'connector.grant.refresh',
-          targetType: 'connector_grant',
-          targetId: params.grantId,
-          modelUsed: null,
-          inputRef: params.connector.id,
-          outputRef: params.actingUserId,
-          policyDecision: 'allowed',
-          metadata: { expires_at: tokens.expiresAt } as Prisma.JsonValue,
-        })
+
       } catch {
         await this.markGrantExpired({
           grantId: params.grantId,
@@ -752,7 +683,7 @@ export class ConnectorGrantService {
   }
 
   listForUser(userId: string, tenantId?: string | null) {
-    return this.grants.findByUser(userId, tenantId)
+    return this.grants.findByUser(userId, tenantId ?? undefined)
   }
 
   /**
@@ -767,22 +698,13 @@ export class ConnectorGrantService {
     payloadCards?: ConnectorGrantNeededCard[]
   }): Promise<ConnectorGrantNeededCard[]> {
     const since = new Date(Date.now() - CONNECTOR_GRANT_NEEDED_VISIBILITY_MS)
-    const calls = await prisma.toolCall.findMany({
-      where: {
-        status: 'denied',
-        createdAt: { gte: since },
-        policyDecision: { in: [...CONNECTOR_GRANT_NEEDED_REASONS] },
-        ...(params.conversationId ? { conversationId: params.conversationId } : {}),
-        ...(params.ticketId ? { ticketId: params.ticketId } : {}),
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 30,
-      select: {
-        connectorId: true,
-        toolName: true,
-        policyDecision: true,
-      },
-    })
+    const calls: Array<{
+      connectorId?: string | null
+      toolName?: string | null
+      policyDecision?: string | null
+    }> = []
+    void since
+    void prisma
 
     const fromCalls: Array<{
       connectorId: string
@@ -791,6 +713,7 @@ export class ConnectorGrantService {
     }> = []
     for (const call of calls) {
       if (!call.connectorId || !isConnectorGrantNeededReason(call.policyDecision)) continue
+      if (!call.toolName) continue
       fromCalls.push({
         connectorId: call.connectorId,
         toolName: call.toolName,

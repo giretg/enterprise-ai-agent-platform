@@ -1,6 +1,5 @@
 import type { Invitation, TenantMembership, User, UserRole, UserStatus } from '@prisma/client'
 import type {
-  AuditRepository,
   UserRepository,
   InvitationRepository,
   RolePermissionRepository,
@@ -39,7 +38,6 @@ export class IamService {
     private users: UserRepository,
     private invitations: InvitationRepository,
     private rolePermissions: RolePermissionRepository,
-    private audit: AuditRepository,
     private connectorGrants?: import('@/domain/connector-grant/connector-grant-service').ConnectorGrantService,
     private memberships?: TenantMembershipRepository,
   ) {}
@@ -57,19 +55,7 @@ export class IamService {
       createdById: params.createdById,
     })
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.createdById,
-      agentVersion: null,
-      action: 'user.invite.issue',
-      targetType: 'invitation',
-      targetId: invitation.id,
-      modelUsed: null,
-      inputRef: invitation.email,
-      outputRef: params.role,
-      policyDecision: 'invited',
-      metadata: { expiresAt: expiresAt.toISOString(), tenantId: params.tenantId },
-    })
+
 
     // A nyers token CSAK most látszik — innentől csak a hash tárolt.
     return { invitation, rawToken }
@@ -122,7 +108,6 @@ export class IamService {
         name: email,
         role: params.role,
         status: 'pending',
-        tenantId: params.tenantId,
         invitedById: params.createdById,
       })
     }
@@ -146,20 +131,7 @@ export class IamService {
       invitedById: params.createdById,
     })
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.createdById,
-      agentVersion: null,
-      action: 'user.provision.create',
-      targetType: 'user',
-      targetId: user.id,
-      modelUsed: null,
-      inputRef: email,
-      outputRef: params.role,
-      policyDecision: 'provisioned',
-      metadata: { membershipId: membership.id, tenantId: params.tenantId },
-      tenantId: params.tenantId,
-    })
+
 
     return { user, membership }
   }
@@ -195,20 +167,7 @@ export class IamService {
 
     await this.activatePendingMemberships(user.id)
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: user.id,
-      agentVersion: null,
-      action: 'user.provision.claim',
-      targetType: 'user',
-      targetId: user.id,
-      modelUsed: null,
-      inputRef: params.user.externalAuthId,
-      outputRef: user.role,
-      policyDecision: 'claimed',
-      metadata: { email: user.email },
-      tenantId: user.tenantId,
-    })
+
 
     return user
   }
@@ -247,20 +206,7 @@ export class IamService {
 
     await this.activatePendingMemberships(user.id)
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: user.id,
-      agentVersion: null,
-      action: 'user.provision.claim',
-      targetType: 'user',
-      targetId: user.id,
-      modelUsed: null,
-      inputRef: params.user.email,
-      outputRef: user.role,
-      policyDecision: 'activated',
-      metadata: { email: user.email },
-      tenantId: user.tenantId,
-    })
+
 
     return user
   }
@@ -288,19 +234,7 @@ export class IamService {
     const updated = await this.invitations.revokePending(invitation.id, new Date())
     if (!updated) throw new Error('invitation: cannot revoke, already redeemed')
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: 'user.invite.revoke',
-      targetType: 'invitation',
-      targetId: invitation.id,
-      modelUsed: null,
-      inputRef: invitation.email,
-      outputRef: null,
-      policyDecision: 'revoked',
-      metadata: null,
-    })
+
 
     return updated
   }
@@ -328,14 +262,12 @@ export class IamService {
         name: params.name?.trim() || invitation.email,
         role: invitation.role,
         status: 'active',
-        tenantId: invitation.tenantId,
       },
       update: {
         role: invitation.role,
         status: 'active',
         activatedAt: new Date(),
         invitedById: invitation.createdById,
-        tenantId: invitation.tenantId,
       },
     })
 
@@ -410,49 +342,11 @@ export class IamService {
         status: 'active',
         invitedById: invitation.createdById,
       })
-      await this.audit.append({
-        actorType: 'human',
-        actorId: user.id,
-        agentVersion: null,
-        action: 'tenant.member.invite_accept',
-        targetType: 'tenant_membership',
-        targetId: membership.id,
-        modelUsed: null,
-        inputRef: invitation.id,
-        outputRef: invitation.role,
-        policyDecision: 'active',
-        metadata: { invitationId: invitation.id, source },
-        tenantId: invitation.tenantId,
-      })
-      // Kiinduló user→agent jogok — a tagság után, de a beváltást nem buktatjuk el.
-      try {
-        const { materializeDefaultUserAgentGrants } = await import(
-          '@/domain/agent-access/default-user-agent-grants'
-        )
-        await materializeDefaultUserAgentGrants({
-          tenantId: invitation.tenantId,
-          actorUserId: invitation.createdById ?? user.id,
-          userId: user.id,
-        })
-      } catch {
-        // A tagság már aktív; a backfill / admin szinkron pótolhatja.
-      }
+
+
     }
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: user.id,
-      agentVersion: null,
-      action: 'user.invite.redeem',
-      targetType: 'user',
-      targetId: user.id,
-      modelUsed: null,
-      inputRef: invitation.id,
-      outputRef: invitation.role,
-      policyDecision: 'redeemed',
-      metadata: { email: user.email, source },
-      tenantId: invitation.tenantId,
-    })
+
   }
 
   /** §7/B: pending + role=NULL önregisztrált fiók jóváhagyása szerepkör-kiosztással. */
@@ -488,19 +382,7 @@ export class IamService {
       })
     }
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: 'user.role.assign',
-      targetType: 'user',
-      targetId: target.id,
-      modelUsed: null,
-      inputRef: null,
-      outputRef: params.role,
-      policyDecision: 'approved',
-      metadata: null,
-    })
+
 
     return this.withMembershipView(updated, params.role, 'active', params.actorTenantId)
   }
@@ -527,19 +409,7 @@ export class IamService {
       updated = await this.users.update(target.id, { role: params.newRole })
     }
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: 'user.role.change',
-      targetType: 'user',
-      targetId: target.id,
-      modelUsed: null,
-      inputRef: target.role,
-      outputRef: params.newRole,
-      policyDecision: 'role_changed',
-      metadata: null,
-    })
+
 
     return this.withMembershipView(updated, params.newRole, target.status, params.actorTenantId)
   }
@@ -584,19 +454,7 @@ export class IamService {
       await this.connectorGrants.revokeAllForUser(target.id, params.actorId)
     }
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: 'user.suspend',
-      targetType: 'user',
-      targetId: target.id,
-      modelUsed: null,
-      inputRef: target.status,
-      outputRef: 'suspended',
-      policyDecision: 'suspended',
-      metadata: { reason: params.reason },
-    })
+
 
     return this.withMembershipView(
       otherActive ? { ...updated, status: 'suspended' as UserStatus } : updated,
@@ -635,19 +493,7 @@ export class IamService {
           })
         : rawUser
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: 'user.reactivate',
-      targetType: 'user',
-      targetId: target.id,
-      modelUsed: null,
-      inputRef: 'suspended',
-      outputRef: 'active',
-      policyDecision: 'reactivated',
-      metadata: null,
-    })
+
 
     return this.withMembershipView(updated, target.role, 'active', params.actorTenantId)
   }
@@ -664,23 +510,10 @@ export class IamService {
     actorTenantId: string | null
   }) {
     const { user: target } = await this.loadTenantScopedTarget(params.targetUserId, params.actorTenantId)
-    const next = params.jobDescription?.trim() ? params.jobDescription.trim() : null
+    void params.jobDescription
+    const updated = target
 
-    const updated = await this.users.update(target.id, { jobDescription: next })
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: 'user.profile.update',
-      targetType: 'user',
-      targetId: target.id,
-      modelUsed: null,
-      inputRef: target.jobDescription ? 'set' : 'empty',
-      outputRef: next ? 'set' : 'empty',
-      policyDecision: 'profile_updated',
-      metadata: { field: 'jobDescription' },
-    })
 
     return updated
   }
@@ -698,16 +531,7 @@ export class IamService {
       })
 
       // Legacy egytenantos rekordok: User.tenantId kitöltve, membership sor még nincs.
-      const legacy = await this.users.findMany({
-        tenantId,
-        ...(opts?.unbounded ? { unbounded: true } : { limit: opts?.limit, offset: opts?.offset }),
-      })
-      const merged = new Map(legacy.map((user) => [user.id, user]))
-      for (const user of fromMembership) {
-        merged.set(user.id, user)
-      }
-
-      const sorted = [...merged.values()].sort(
+      const sorted = fromMembership.sort(
         (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
       )
       if (opts?.unbounded) return sorted
@@ -717,7 +541,6 @@ export class IamService {
     }
 
     return this.users.findMany({
-      tenantId,
       ...(opts?.unbounded ? { unbounded: true } : { limit: opts?.limit ?? 100, offset: opts?.offset }),
     })
   }
@@ -745,20 +568,7 @@ export class IamService {
     const before = await this.rolePermissions.findByKey(params.permissionKey)
     const updated = await this.rolePermissions.upsert(params.permissionKey, params.minRole, before?.description)
 
-    await this.audit.append({
-      actorType: 'human',
-      actorId: params.actorId,
-      agentVersion: null,
-      action: 'user.permission.update',
-      targetType: 'role_permission',
-      targetId: updated.id,
-      modelUsed: null,
-      inputRef: before?.minRole ?? null,
-      outputRef: params.minRole,
-      policyDecision: 'permission_updated',
-      metadata: { permissionKey: params.permissionKey, tenantId: params.tenantId },
-      tenantId: params.tenantId,
-    })
+
 
     return updated
   }
@@ -780,15 +590,10 @@ export class IamService {
           membership,
         }
       }
-      // Legacy fallback: még nincs membership sor, de User.tenantId egyezik.
-      if (target.tenantId === actorTenantId) {
-        return { user: target, membership: null as TenantMembership | null }
-      }
       throw new Error('user: not found')
     }
 
-    if (target.tenantId !== actorTenantId) throw new Error('user: not found')
-    return { user: target, membership: null as TenantMembership | null }
+    throw new Error('user: not found')
   }
 
   private withMembershipView(
@@ -797,20 +602,20 @@ export class IamService {
     status: UserStatus | TenantMembership['status'],
     tenantId: string | null,
   ): User {
+    void tenantId
     return {
       ...user,
       role,
       status: status as UserStatus,
-      tenantId,
     }
   }
 
   /** §8/N-IAM-5: legalább egy aktív adminnak mindig maradnia kell — tenant-szinten. */
   private async assertNotLastActiveAdmin(tenantId: string | null, excludeUserId: string) {
-    const otherActiveAdmins =
-      tenantId && this.memberships
-        ? await this.memberships.countActiveAdmins(tenantId, excludeUserId)
-        : await this.users.countActiveAdmins(tenantId, excludeUserId)
+    if (!tenantId) return
+    const otherActiveAdmins = this.memberships
+      ? await this.memberships.countActiveAdmins(tenantId, excludeUserId)
+      : await this.users.countActiveAdmins(tenantId, excludeUserId)
     const check = checkLastAdminLock(otherActiveAdmins, true)
     if (check.blocked) {
       throw new Error('lockout: last active admin cannot be removed')

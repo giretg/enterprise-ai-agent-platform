@@ -45,7 +45,6 @@ export class PostgresUserRepository implements UserRepository {
     const offset = skip ?? 0
     const rows = await prisma.user.findMany({
       where: {
-        ...(filter?.tenantId !== undefined ? { tenantId: filter.tenantId } : {}),
         ...(filter?.status ? { status: filter.status } : {}),
         ...(filter?.role ? { role: filter.role } : {}),
       },
@@ -63,13 +62,13 @@ export class PostgresUserRepository implements UserRepository {
     })
   }
 
-  async countActiveAdmins(tenantId: string | null, excludeUserId?: string) {
-    return prisma.user.count({
+  async countActiveAdmins(tenantId: string, excludeUserId?: string) {
+    return prisma.tenantMembership.count({
       where: {
         tenantId,
         role: 'admin',
         status: 'active',
-        ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
+        ...(excludeUserId ? { userId: { not: excludeUserId } } : {}),
       },
     })
   }
@@ -90,7 +89,6 @@ export class PostgresUserRepository implements UserRepository {
         name: data.name,
         role: data.role ?? null,
         status: data.status ?? 'pending',
-        tenantId: data.tenantId ?? null,
         invitedById: data.invitedById ?? null,
       },
     })
@@ -111,7 +109,6 @@ export class PostgresUserRepository implements UserRepository {
       lastLoginAt: Date | null
       email: string
       name: string
-      jobDescription: string | null
     }>,
   ) {
     return prisma.user.update({ where: { id }, data })
@@ -136,7 +133,6 @@ export class PostgresUserRepository implements UserRepository {
         name: params.create.name,
         role: params.create.role ?? null,
         status: params.create.status ?? 'pending',
-        tenantId: params.create.tenantId ?? null,
       },
       update: params.update,
     })
@@ -168,7 +164,6 @@ export class PostgresInvitationRepository implements InvitationRepository {
     const offset = skip ?? 0
     const rows = await prisma.invitation.findMany({
       where: {
-        ...(filter?.tenantId !== undefined ? { tenantId: filter.tenantId } : {}),
         ...(filter?.status ? { status: filter.status } : {}),
       },
       orderBy: { createdAt: 'desc' },

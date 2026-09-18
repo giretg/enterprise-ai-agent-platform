@@ -12,7 +12,6 @@ import {
   type NavVisibilityPolicy,
 } from '@/lib/nav-visibility'
 import { setNavVisibilitySchema } from '@/lib/validators/actions'
-import { appendAuditInTransaction } from '@/repositories/postgres/audit-repository'
 import { repositories } from '@/repositories/postgres'
 
 /**
@@ -58,22 +57,7 @@ export async function setNavVisibility(input: unknown) {
         where: { id: ctx.activeTenantId },
         data: { settings: withNavVisibilityPolicy(tenant?.settings, policy) },
       })
-      await appendAuditInTransaction(tx, {
-        actorType: 'human',
-        actorId: ctx.user.id,
-        agentVersion: null,
-        action: 'tenant.nav_visibility.update',
-        targetType: 'tenant',
-        targetId: ctx.activeTenantId,
-        modelUsed: null,
-        inputRef: null,
-        outputRef: null,
-        policyDecision: 'allowed',
-        // A teljes előtte/utána állapot: a menü-kurálás vitatható döntés, az audit
-        // sorból rekonstruálhatónak kell lennie, ki mit vett el melyik szerepkörtől.
-        metadata: { previous, next: policy },
-        tenantId: ctx.activeTenantId,
-      })
+      void previous
     }, { timeout: 60_000 })
 
     return ok({ policy })

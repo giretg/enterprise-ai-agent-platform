@@ -16,7 +16,7 @@ export async function GET() {
 
   const body: AgentRailStateResponse = {
     agents: agentsRes.data.map((agent) => {
-      const persona = personaFor(agent.name, agent)
+      const persona = personaFor(agent.name)
       return {
         id: agent.id,
         name: agent.name,
@@ -24,7 +24,7 @@ export async function GET() {
         personaGreeting: persona.greeting,
         avatarUrl: agent.avatarUrl,
         status: agent.status,
-        taskOnly: agent.taskOnly,
+        taskOnly: false,
         roleLabel: agent.name,
         roleDescription: agent.roleInstruction ?? '',
         liveStatus: 'idle',

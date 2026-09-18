@@ -89,7 +89,7 @@ export async function ensureTenantGmailConnector(
   const name = opts?.name ?? 'Gmail (felhasználói)'
   const connector = await upsertConnectorByTypeName(db, {
     create: {
-      type: 'gmail',
+      type: 'http_api',
       name,
       tenantId,
       authMode: 'user_delegated',

@@ -1,14 +1,121 @@
 /**
- * Phase 0 seed is a no-op so `prisma db seed` still compiles without the
- * legacy runtime graph. The previous seed lives at `legacy/prisma/seed.ts`.
- * Phase B (#539) rewrites a minimal User/Tenant/Agent/Drive-grant seed.
+ * Phase B seed: one Drive-ready tenant with a published Agent Definition.
+ *
+ * MCP mapping needs SEED_CLERK_USER_ID = the Clerk user id of the human who
+ * will run Codex / Claude Code. The placeholder id means Control Plane works;
+ * MCP resolves `user_inactive` until the Clerk id is patched.
+ *
+ * Supported reset: `prisma migrate reset`.
  */
-import { PrismaClient } from '@prisma/client'
+import { prisma } from '../src/lib/db'
+import { services } from '../src/domain/gateway-services'
+import { ensureTenantGoogleDriveConnector } from '../src/lib/seed-google-drive-connector'
 
-const prisma = new PrismaClient()
+const SEED_TENANT_SLUG = process.env.SEED_TENANT_SLUG ?? 'demo'
+const SEED_CLERK_USER_ID = process.env.SEED_CLERK_USER_ID ?? 'seed-clerk-user'
 
 async function main() {
-  console.log('Phase 0 seed: no-op. Use the existing database or later Phase B seed.')
+  const tenant = await prisma.tenant.upsert({
+    where: { slug: SEED_TENANT_SLUG },
+    update: { status: 'active', displayName: 'Demo' },
+    create: {
+      slug: SEED_TENANT_SLUG,
+      displayName: 'Demo',
+      status: 'active',
+    },
+  })
+
+  const user = await prisma.user.upsert({
+    where: { externalAuthId: SEED_CLERK_USER_ID },
+    update: { status: 'active', name: 'Demo admin', email: 'demo@example.com' },
+    create: {
+      externalAuthId: SEED_CLERK_USER_ID,
+      email: 'demo@example.com',
+      name: 'Demo admin',
+      role: 'admin',
+      status: 'active',
+      activatedAt: new Date(),
+    },
+  })
+
+  await prisma.tenantMembership.upsert({
+    where: { tenantId_userId: { tenantId: tenant.id, userId: user.id } },
+    update: { role: 'admin', status: 'active', isDefault: true },
+    create: {
+      tenantId: tenant.id,
+      userId: user.id,
+      role: 'admin',
+      status: 'active',
+      isDefault: true,
+      activatedAt: new Date(),
+    },
+  })
+
+  const connector = await ensureTenantGoogleDriveConnector(prisma, tenant.id)
+
+  await prisma.connectorGrant.upsert({
+    where: {
+      tenantId_connectorId_userId: {
+        tenantId: tenant.id,
+        connectorId: connector.id,
+        userId: user.id,
+      },
+    },
+    update: { status: 'active', tokenRef: `seed-drive-grant:${user.id}` },
+    create: {
+      tenantId: tenant.id,
+      connectorId: connector.id,
+      userId: user.id,
+      status: 'active',
+      scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+      tokenRef: `seed-drive-grant:${user.id}`,
+      accountLabel: 'seed-placeholder',
+    },
+  })
+
+  const agent = await prisma.agent.upsert({
+    where: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+    update: {
+      tenantId: tenant.id,
+      name: 'Drive assistant',
+      roleInstruction:
+        'You inspect Google Drive through MCP. Search and read files for the signed-in operator. Do not invent Drive contents.',
+      status: 'draft',
+    },
+    create: {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      tenantId: tenant.id,
+      name: 'Drive assistant',
+      roleInstruction:
+        'You inspect Google Drive through MCP. Search and read files for the signed-in operator. Do not invent Drive contents.',
+      status: 'draft',
+    },
+  })
+
+  await prisma.capability.deleteMany({ where: { agentId: agent.id } })
+  await prisma.capability.createMany({
+    data: [
+      { agentId: agent.id, toolName: 'google_drive_search', allowed: true },
+      { agentId: agent.id, toolName: 'google_drive_read_file', allowed: true },
+      { agentId: agent.id, toolName: 'google_drive_create_folder', allowed: true },
+    ],
+  })
+
+  await prisma.agentConnector.upsert({
+    where: { agentId_connectorId: { agentId: agent.id, connectorId: connector.id } },
+    update: { accessMode: 'read' },
+    create: { agentId: agent.id, connectorId: connector.id, accessMode: 'read' },
+  })
+
+  const published = await services.agentDefinitions.publishAgentDefinition({
+    agentId: agent.id,
+    tenantId: tenant.id,
+    publishedById: user.id,
+  })
+
+  console.log(
+    `Seeded tenant slug=${tenant.slug} agent=${agent.id} definition=${published.definitionId} clerk=${SEED_CLERK_USER_ID}`,
+  )
 }
 
 main()

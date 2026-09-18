@@ -144,19 +144,7 @@ export async function syncClerkUser(prisma: PrismaClient, input: ClerkUserSyncIn
   // (deny-by-default, N-IAM-2/3) — csak admin-jóváhagyás után fér bármihez.
   const allowlist = process.env.IAM_SELF_REGISTER_ALLOWED_DOMAINS
   if (!isEmailDomainAllowed(input.email, allowlist)) {
-    await repositories.audit.append({
-      actorType: 'human',
-      actorId: null,
-      agentVersion: null,
-      action: 'user.authz.deny',
-      targetType: 'user',
-      targetId: null,
-      modelUsed: null,
-      inputRef: input.email,
-      outputRef: null,
-      policyDecision: 'DOMAIN_NOT_ALLOWED',
-      metadata: { externalAuthId: input.externalAuthId, email: input.email },
-    })
+
     throw new DomainNotAllowedError(input.email)
   }
 
@@ -170,19 +158,7 @@ export async function syncClerkUser(prisma: PrismaClient, input: ClerkUserSyncIn
     },
   })
 
-  await repositories.audit.append({
-    actorType: 'human',
-    actorId: created.id,
-    agentVersion: null,
-    action: 'user.selfregister',
-    targetType: 'user',
-    targetId: created.id,
-    modelUsed: null,
-    inputRef: created.email,
-    outputRef: null,
-    policyDecision: 'pending',
-    metadata: null,
-  })
+
 
   return created
 }

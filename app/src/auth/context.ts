@@ -59,9 +59,8 @@ async function readActiveTenantCookie(): Promise<string | null> {
  * legacy `User.tenantId` + aktív szerep megvan, szintetizálunk EGY membershipet,
  * hogy az egytenantos folyamat a migráció után is működjön.
  */
-function legacyFallbackMembership(user: AuthUser): MembershipView[] {
-  if (!user.tenantId || !user.role || user.status !== 'active') return []
-  return [{ tenantId: user.tenantId, role: user.role, status: 'active', isDefault: true }]
+function legacyFallbackMembership(_user: AuthUser): MembershipView[] {
+  return []
 }
 
 async function resolveAuthContext(): Promise<AuthContext | null> {

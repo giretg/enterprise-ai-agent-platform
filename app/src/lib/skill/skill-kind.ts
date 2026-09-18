@@ -86,17 +86,11 @@ export function catalogScopeForKind(kind: SkillKind): 'global' | 'tenant' {
 }
 
 export function skillKindInputError(
-  kind: SkillKind,
-  requiredSystemRole: string | null | undefined,
+  _kind: SkillKind,
+  requiredSystemRole?: string | null,
 ): string | null {
-  if (kind === 'system') {
-    if (!isSkillSystemRole(requiredSystemRole)) {
-      return 'Rendszer-skillhez ki kell választani, melyik rendszer-agenthez tartozik.'
-    }
-    return null
-  }
   if (requiredSystemRole) {
-    return 'Csak rendszer-skillhez adható meg rendszer-agent.'
+    return 'Rendszer-agent szerep a Phase B sémában nincs.'
   }
   return null
 }
@@ -140,33 +134,16 @@ export function normalizeRequiredSystemRole(
 }
 
 /**
- * Fail-closed hozzárendelési szabály:
- *   - rendszer-skill → csak a megadott systemRole-ú agent
- *   - kiadott / tenant → csak sima (systemRole nélküli) agent
+ * Fail-closed hozzárendelési szabály Phase B után:
+ * rendszer-skillnek nincs matching Agent.systemRole, ezért nem rendelhető.
  */
-export function isSkillAssignableToAgent(
-  skill: { kind: SkillKind; requiredSystemRole: string | null },
-  agent: { systemRole: string | null },
-): boolean {
-  if (skill.kind === 'system') {
-    if (!skill.requiredSystemRole) return agent.systemRole !== null
-    return agent.systemRole === skill.requiredSystemRole
-  }
-  return agent.systemRole === null
+export function isSkillAssignableToAgent(skill: { kind: SkillKind }): boolean {
+  return skill.kind !== 'system'
 }
 
-export function skillAssignDeniedMessage(
-  skill: { kind: SkillKind; requiredSystemRole: string | null },
-  agent: { systemRole: string | null },
-): string {
+export function skillAssignDeniedMessage(skill: { kind: SkillKind }): string {
   if (skill.kind === 'system') {
-    const target = isSkillSystemRole(skill.requiredSystemRole)
-      ? SKILL_SYSTEM_ROLE_LABEL[skill.requiredSystemRole]
-      : 'a hozzá tartozó rendszer-agent'
-    return `Ez a rendszer-skill csak a(z) ${target} agenthez rendelhető.`
-  }
-  if (agent.systemRole !== null) {
-    return 'Kiadott és tenant skill csak sima (nem rendszer-) agenthez rendelhető.'
+    return 'Ez a rendszer-skill nem rendelhető agenthez — a rendszer-agent szerep kikerült.'
   }
   return 'Ez a skill ehhez az agenthez nem rendelhető.'
 }
