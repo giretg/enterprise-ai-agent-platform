@@ -138,6 +138,8 @@
     "test:public-routes": "tsx scripts/public-routes.test.ts",
     "test:mcp-principal": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mcp-principal.test.ts",
     "test:mcp-http": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mcp-http.test.ts",
+    "test:agent-definition": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-definition.test.ts",
+    "test:resource-grant": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/resource-grant.test.ts",
     "test:crawler-block": "tsx scripts/crawler-block.test.ts",
     "test:robots": "tsx scripts/robots.test.ts",
     "test:oauth-privacy-policy-page": "tsx scripts/oauth-privacy-policy-page.test.ts",

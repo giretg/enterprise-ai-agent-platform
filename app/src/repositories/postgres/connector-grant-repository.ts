@@ -1,46 +1,10 @@
 import type { ConnectorGrant, ConnectorGrantStatus, Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
-
-export interface ConnectorGrantRepository {
-  findActiveGrant(params: {
-    tenantId: string | null
-    connectorId: string
-    userId: string
-  }): Promise<ConnectorGrant | null>
-  findActiveByConnector(connectorId: string): Promise<ConnectorGrant[]>
-  findActiveForInactiveConnectors(userId: string, tenantId?: string | null): Promise<ConnectorGrant[]>
-  findByUser(
-    userId: string,
-    tenantId?: string | null,
-  ): Promise<
-    Array<
-      ConnectorGrant & {
-        connector: { id: string; name: string; type: string; lifecycleState: string }
-      }
-    >
-  >
-  create(data: {
-    tenantId: string | null
-    connectorId: string
-    userId: string
-    scopes: Prisma.JsonValue
-    tokenRef: string
-    accountLabel?: string | null
-    expiresAt?: Date | null
-  }): Promise<ConnectorGrant>
-  updateStatus(
-    id: string,
-    status: ConnectorGrantStatus,
-    extra?: { revokedAt?: Date; lastRefreshedAt?: Date; expiresAt?: Date | null },
-  ): Promise<ConnectorGrant>
-  revokeAllForUser(userId: string): Promise<number>
-  findById(id: string): Promise<ConnectorGrant | null>
-  updateMetadata(id: string, metadata: Prisma.InputJsonValue): Promise<ConnectorGrant>
-}
+import type { ConnectorGrantRepository } from '../interfaces'
 
 export class PostgresConnectorGrantRepository implements ConnectorGrantRepository {
   async findActiveGrant(params: {
-    tenantId: string | null
+    tenantId: string
     connectorId: string
     userId: string
   }): Promise<ConnectorGrant | null> {
@@ -61,22 +25,22 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
     })
   }
 
-  async findActiveForInactiveConnectors(userId: string, tenantId?: string | null) {
+  async findActiveForInactiveConnectors(userId: string, tenantId?: string) {
     return prisma.connectorGrant.findMany({
       where: {
         userId,
         status: 'active',
-        ...(tenantId !== undefined ? { tenantId } : {}),
+        ...(tenantId ? { tenantId } : {}),
         connector: { lifecycleState: { not: 'active' } },
       },
     })
   }
 
-  async findByUser(userId: string, tenantId?: string | null) {
+  async findByUser(userId: string, tenantId?: string) {
     return prisma.connectorGrant.findMany({
       where: {
         userId,
-        ...(tenantId !== undefined ? { tenantId } : {}),
+        ...(tenantId ? { tenantId } : {}),
       },
       include: {
         connector: { select: { id: true, name: true, type: true, lifecycleState: true } },
@@ -86,7 +50,7 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
   }
 
   async create(data: {
-    tenantId: string | null
+    tenantId: string
     connectorId: string
     userId: string
     scopes: Prisma.JsonValue

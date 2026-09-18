@@ -133,7 +133,6 @@ export class PostgresSkillRepository implements SkillRepository {
           catalogScope: input.catalogScope,
           tenantId: input.tenantId,
           kind: input.kind,
-          requiredSystemRole: input.requiredSystemRole ?? null,
           sourceType: input.sourceType,
           provenance: input.provenance ?? undefined,
           license: input.license,
@@ -162,14 +161,10 @@ export class PostgresSkillRepository implements SkillRepository {
     })
   }
 
-  async updateKind(
-    skillId: string,
-    kind: Skill['kind'],
-    requiredSystemRole: Skill['requiredSystemRole'],
-  ): Promise<Skill> {
+  async updateKind(skillId: string, kind: Skill['kind']): Promise<Skill> {
     return prisma.skill.update({
       where: { id: skillId },
-      data: { kind, requiredSystemRole },
+      data: { kind },
     })
   }
 
@@ -203,7 +198,7 @@ export class PostgresSkillRepository implements SkillRepository {
 
   async approveVersion(
     versionId: string,
-    params: { approverId: string; signature: string },
+    params: { approverId: string },
   ): Promise<SkillVersionActivationResult> {
     return prisma.$transaction(async (tx) => {
       const target = await tx.skillVersion.findUnique({ where: { id: versionId } })
@@ -216,7 +211,7 @@ export class PostgresSkillRepository implements SkillRepository {
 
       const version = await tx.skillVersion.update({
         where: { id: versionId },
-        data: { status: 'active', approvedById: params.approverId, signature: params.signature },
+        data: { status: 'active', approvedById: params.approverId },
       })
 
       const agentMigrations = await migrateAgentAssignmentsToVersion(
@@ -232,7 +227,7 @@ export class PostgresSkillRepository implements SkillRepository {
 
   async rollbackToVersion(
     versionId: string,
-    params: { approverId: string; signature: string },
+    params: { approverId: string },
   ): Promise<SkillVersionActivationResult> {
     return prisma.$transaction(async (tx) => {
       const target = await tx.skillVersion.findUnique({ where: { id: versionId } })
@@ -247,7 +242,7 @@ export class PostgresSkillRepository implements SkillRepository {
 
       const version = await tx.skillVersion.update({
         where: { id: versionId },
-        data: { status: 'active', approvedById: params.approverId, signature: params.signature },
+        data: { status: 'active', approvedById: params.approverId },
       })
 
       const agentMigrations = await migrateAgentAssignmentsToVersion(

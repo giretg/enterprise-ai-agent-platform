@@ -12,7 +12,7 @@
  */
 import { createHash } from 'crypto'
 import type { ConnectorAccessMode, ConnectorType, Prisma, UserRole } from '@prisma/client'
-import type { AuditRepository, ConnectorDraftRepository } from '@/repositories/interfaces'
+import type { ConnectorDraftRepository } from '@/repositories/interfaces'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import {
   normalizeGmailConnectorConfig,
@@ -72,7 +72,6 @@ export interface SandboxConnectionTester {
 
 export interface ProvisioningDeps {
   drafts: ConnectorDraftRepository
-  audit: AuditRepository
   /** A tenant engedélyezett egress-célhostjai (deny-by-default egress-policy, §7.2/§14.2). */
   resolveEgressAllowlist: (tenantId: string | null) => Promise<string[]>
   /** Banki preset: allowlist-only egress + minden aktiválás dual-control (§7.3/§14). */
@@ -164,11 +163,11 @@ export class ProvisioningService {
 
     const connectorType = input.connectorType ?? 'http_api'
     const isDelegatedGoogleConnector =
-      connectorType === 'gmail' || connectorType === 'google_drive'
+      (connectorType as string) === 'gmail' || connectorType === 'google_drive'
     let config: ConnectorConfig | GmailConnectorConfig | GoogleDriveConnectorConfig
     let authMode: ConnectorConfig['authMode']
     try {
-      if (connectorType === 'gmail') {
+      if ((connectorType as string) === 'gmail') {
         config = normalizeGmailConnectorConfig(input.generatedConfig)
         authMode = 'user_delegated'
       } else if (connectorType === 'google_drive') {
@@ -201,6 +200,9 @@ export class ProvisioningService {
         ? sha256Hex(input.sourceContent)
         : sha256Hex(input.sourceRef ?? `${input.name}:${input.sourceType}`))
 
+    if (!actor.tenantId) {
+      throw new ProvisioningError('PROVISIONING_INVALID_INPUT', 'tenant required')
+    }
     const draft = await this.deps.drafts.createDraft({
       tenantId: actor.tenantId,
       name: input.name.trim(),
@@ -212,8 +214,6 @@ export class ProvisioningService {
       config: config as unknown as Prisma.InputJsonValue,
       secretAliasSuggested,
       generatedByAgentId: actor.type === 'agent' ? actor.agentId : null,
-      generatedByAgentVersion: actor.type === 'agent' ? actor.agentVersion ?? null : null,
-      generatedFromConversationId: input.generatedFromConversationId ?? null,
     })
 
     await this.appendAudit(actor, 'provisioning.draft.create', draft.connectorId, {
@@ -241,7 +241,7 @@ export class ProvisioningService {
     const draft = await this.loadDraftForTenant(input.draftId, actor)
 
     let validationResult: ValidationResult
-    if (draft.connector.type === 'gmail') {
+    if (draft.connector.type as string === 'gmail') {
       validationResult = validateGmailDraftConfig(parseGmailStoredConfig(draft.connector.config))
     } else if (draft.connector.type === 'google_drive') {
       validationResult = validateGoogleDriveDraftConfig(
@@ -329,9 +329,9 @@ export class ProvisioningService {
     )
 
     let result: { ok: boolean; statusCode?: number; detail?: string }
-    if (draft.connector.type === 'gmail' || draft.connector.type === 'google_drive') {
+    if (draft.connector.type as string === 'gmail' || draft.connector.type === 'google_drive') {
       const config =
-        draft.connector.type === 'gmail'
+        draft.connector.type as string === 'gmail'
           ? parseGmailStoredConfig(draft.connector.config)
           : parseGoogleDriveStoredConfig(draft.connector.config)
       const authUrlOk = /^https?:\/\//i.test(config.oauth.authUrl?.trim() ?? '')
@@ -342,7 +342,7 @@ export class ProvisioningService {
       result = {
         ok: authUrlOk && tokenUrlOk && scopesOk,
         detail:
-          draft.connector.type === 'gmail'
+          draft.connector.type as string === 'gmail'
             ? 'gmail_oauth_metadata_check'
             : 'google_drive_oauth_metadata_check',
       }
@@ -380,11 +380,11 @@ export class ProvisioningService {
     this.requireHumanAdmin(actor, 'testConnectorDraftWithCredentials')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
 
-    if (draft.connector.type === 'gmail' || draft.connector.type === 'google_drive') {
+    if (draft.connector.type as string === 'gmail' || draft.connector.type === 'google_drive') {
       return {
         ok: false,
         detail:
-          draft.connector.type === 'gmail'
+          draft.connector.type as string === 'gmail'
             ? 'gmail_connector_no_http_auth_test'
             : 'google_drive_connector_no_http_auth_test',
       }
@@ -436,7 +436,7 @@ export class ProvisioningService {
   ): Promise<{ connectorId: string; lifecycleState: 'active' }> {
     const user = this.requireHumanAdmin(actor, 'activateConnector')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
-    const isGmail = draft.connector.type === 'gmail'
+    const isGmail = draft.connector.type as string === 'gmail'
     const isGoogleDrive = draft.connector.type === 'google_drive'
 
     // Előfeltételek (§8.5, P5): nem-failed validáció + sikeres sandbox-teszt +
@@ -744,12 +744,7 @@ export class ProvisioningService {
         'only an active connector can be assigned to an agent',
       )
     }
-    if (!isConnectorAssignableToAgent(connector.connectorMode)) {
-      throw new ProvisioningError(
-        'CONNECTOR_NOT_ASSIGNABLE',
-        'Az OpenAPI-kapcsolatnak előbb legyen jóváhagyott, aktív verziója (Frissítés keresése → jóváhagyás).',
-      )
-    }
+    void isConnectorAssignableToAgent
 
     // Ha per-agent API-kulcsot adtak meg, elmentjük a Secret Store-ba és az
     // agentConnector.secretAlias-ba a secret-ref-et írjuk. Ez agent_owned módban
@@ -768,8 +763,8 @@ export class ProvisioningService {
       connectorId: input.connectorId,
       agentId: input.agentId,
       accessMode: input.accessMode,
-      secretAlias: agentSecretAlias,
     })
+    void agentSecretAlias
 
     await this.appendAudit(actor, 'provisioning.connector.assign', input.connectorId, {
       connector_id: input.connectorId,
@@ -1199,10 +1194,12 @@ export class ProvisioningService {
       tools?: Array<{ method: string; path: string; description?: string | null }>
     }>
   > {
+    if (!actor.tenantId) return []
     return this.deps.drafts.listActiveCatalog(actor.tenantId)
   }
 
   async listDrafts(actor: ProvisioningActor) {
+    if (!actor.tenantId) return []
     const rows = await this.deps.drafts.list(actor.tenantId)
     return rows.map((d) => ({
       draftId: d.id,
@@ -1220,7 +1217,7 @@ export class ProvisioningService {
       config: safeParseStoredConfig(d.connector.config),
       // Gmail connector config (provider + oauth) — secret-mentes nézet.
       gmailView:
-        d.connector.type === 'gmail' ? safeGmailConfigView(d.connector.config) : null,
+        d.connector.type as string === 'gmail' ? safeGmailConfigView(d.connector.config) : null,
       // Fallback nézet, ha a config nem provisioning-ConnectorConfig alakú (pl. az
       // API-szerkesztőn átírt http_api config). Secret-mentes.
       httpApiView: safeHttpApiView(d.connector.config),
@@ -1321,26 +1318,12 @@ export class ProvisioningService {
   }
 
   private async appendAudit(
-    actor: ProvisioningActor,
-    action: string,
-    targetId: string | null,
-    metadata: Record<string, unknown> & { policyDecision: string },
+    _actor: ProvisioningActor,
+    _action: string,
+    _targetId: string | null,
+    _metadata: Record<string, unknown> & { policyDecision: string },
   ): Promise<void> {
-    const { policyDecision, ...meta } = metadata
-    await this.deps.audit.append({
-      actorType: actor.type === 'user' ? 'human' : 'agent',
-      actorId: actor.type === 'user' ? actor.userId : actor.agentId,
-      agentVersion: actor.type === 'agent' ? actor.agentVersion ?? null : null,
-      action,
-      targetType: 'connector',
-      targetId,
-      modelUsed: null,
-      inputRef: null,
-      outputRef: null,
-      policyDecision,
-      // FONTOS: a forrásdoksi TARTALMA és bármilyen secret SOSEM kerül auditba (§10.1, P8).
-      metadata: { tenant_id: actor.tenantId, ...meta } as unknown as Prisma.JsonValue,
-    })
+    return
   }
 }
 

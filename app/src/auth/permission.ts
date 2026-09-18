@@ -33,19 +33,7 @@ export async function requirePermission(permissionKey: string): Promise<ActiveAu
   const decision = decideAuthz(user, entry?.minRole ?? null)
 
   if (!decision.allow) {
-    await repositories.audit.append({
-      actorType: 'human',
-      actorId: user.id,
-      agentVersion: null,
-      action: 'user.authz.deny',
-      targetType: 'permission',
-      targetId: null,
-      modelUsed: null,
-      inputRef: permissionKey,
-      outputRef: null,
-      policyDecision: decision.reason,
-      metadata: { tenantId: user.tenantId },
-    })
+
     throw new AuthzError(decision.reason)
   }
 

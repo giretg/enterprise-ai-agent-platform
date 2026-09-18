@@ -66,12 +66,13 @@ jobs:
           npm run test:public-routes
           npm run test:mcp-principal
           npm run test:mcp-http
+          npm run test:agent-definition
+          npm run test:resource-grant
           npm run test:crawler-block
           npm run test:egress-guard
           npm run test:ttl-secret-cache
           npm run test:connector-grant-needed
           npm run test:connector-secret-alias-policy
-          npm run test:default-user-agent-grants
           npm run test:iam-tenant-boundary
           npm run test:iam-membership-scope
 
@@ -113,20 +114,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # A teljes verziózott migrációs lánc (baseline + trigger + FTS-index) hibátlanul
-      # alkalmazható egy üres Postgresre → nincs drift, nincs kézi db push függés.
+      # Greenfield 0001_init history must apply on empty Postgres.
       - name: Prisma migrate deploy
         run: npx prisma migrate deploy
 
-      # A DB sémája megegyezik a migrációk által leírttal (nincs pending / nincs eltérés).
       - name: Prisma migrate status
         run: npx prisma migrate status
-
-      - name: Agent-hozzáférési gráf DB-invariánsok
-        run: npm run test:agent-access-grant-db
-
-      - name: Default user→agent grant DB-regresszió (#344)
-        run: npm run test:default-user-agent-grants-db
 
   security-scan:
     name: Titok-szkennelés + CodeQL

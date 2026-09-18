@@ -6,13 +6,17 @@ import { isClerkEnabled } from '@/lib/clerk-config'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { repositories } from '@/repositories/postgres'
 import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
+import { services } from '@/domain/gateway-services'
+import { isPrivilegedAgentReader, type AgentDefinition } from '@/domain/agent-definition'
 import {
   auditMcpAuthDenied,
   auditMcpToolCall,
   auditMcpToolDenied,
   mcpResourceMetadataUrl,
-  PHASE_A_ALLOWED_TOOLS,
-  PHASE_A_TOOL_NAME,
+  MCP_ALLOWED_TOOLS,
+  MCP_AGENTS_LIST_TOOL,
+  MCP_AGENT_GET_DEFINITION_TOOL,
+  MCP_WHOAMI_TOOL,
   resolveMcpPrincipal,
   type McpPrincipal,
   type McpPrincipalDeps,
@@ -20,9 +24,34 @@ import {
   type VerifiedOAuthToken,
 } from './mcp-principal'
 
+export type McpAgentListItem = {
+  agentId: string
+  name: string
+  status: string
+  currentDefinitionId: string | null
+  currentVersion: number | null
+}
+
 export type McpRuntimeDeps = McpPrincipalDeps & {
   isClerkConfigured: () => boolean
   resolveOrigin: (request: Request) => string
+  listPublishedAgents: (input: {
+    tenantId: string
+    userId: string
+    role: McpPrincipal['role']
+  }) => Promise<McpAgentListItem[]>
+  loadDefinition: (input: {
+    tenantId: string
+    definitionId?: string
+    agentId?: string
+    version?: number
+  }) => Promise<AgentDefinition | null>
+  canViewAgent: (input: {
+    tenantId: string
+    userId: string
+    role: McpPrincipal['role']
+    agentId: string
+  }) => Promise<boolean>
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
@@ -51,6 +80,21 @@ export async function verifyClerkOAuthToken(bearerToken: string): Promise<Verifi
   }
 }
 
+async function canViewAgent(input: {
+  tenantId: string
+  userId: string
+  role: McpPrincipal['role']
+  agentId: string
+}): Promise<boolean> {
+  if (isPrivilegedAgentReader(input.role)) return true
+  const grant = await repositories.resourceGrants.findAgentGrant({
+    tenantId: input.tenantId,
+    userId: input.userId,
+    agentId: input.agentId,
+  })
+  return Boolean(grant)
+}
+
 export function productionMcpDeps(): McpRuntimeDeps {
   return {
     isClerkConfigured: isClerkEnabled,
@@ -60,7 +104,49 @@ export function productionMcpDeps(): McpRuntimeDeps {
     tenants: repositories.tenants,
     memberships: repositories.tenantMemberships,
     platformMemberships: repositories.platformMemberships,
-    audit: repositories.audit,
+    async listPublishedAgents({ tenantId, userId, role }) {
+      const published = await repositories.agents.findMany({
+        tenantId,
+        unbounded: true,
+      })
+      const withDefinition = published.filter((agent) => agent.currentDefinitionVersionId)
+      if (isPrivilegedAgentReader(role)) {
+        return Promise.all(
+          withDefinition.map(async (agent) => {
+            const current = agent.currentDefinitionVersionId
+              ? await repositories.agentDefinitions.findById(agent.currentDefinitionVersionId)
+              : null
+            return {
+              agentId: agent.id,
+              name: agent.name,
+              status: agent.status,
+              currentDefinitionId: agent.currentDefinitionVersionId,
+              currentVersion: current?.version ?? null,
+            }
+          }),
+        )
+      }
+      const grantedIds = new Set(
+        await repositories.resourceGrants.listAgentIdsGrantedToUser({ tenantId, userId }),
+      )
+      const visible = withDefinition.filter((agent) => grantedIds.has(agent.id))
+      return Promise.all(
+        visible.map(async (agent) => {
+          const current = agent.currentDefinitionVersionId
+            ? await repositories.agentDefinitions.findById(agent.currentDefinitionVersionId)
+            : null
+          return {
+            agentId: agent.id,
+            name: agent.name,
+            status: agent.status,
+            currentDefinitionId: agent.currentDefinitionVersionId,
+            currentVersion: current?.version ?? null,
+          }
+        }),
+      )
+    },
+    loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),
+    canViewAgent,
   }
 }
 
@@ -94,18 +180,68 @@ function whoamiPayload(principal: McpPrincipal) {
   }
 }
 
-async function whoamiToolResult(principal: McpPrincipal, deps: McpPrincipalDeps) {
-  await auditMcpToolCall(deps, principal)
+function textResult(payload: unknown, isError = false) {
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(whoamiPayload(principal)) }],
+    ...(isError ? { isError: true } : {}),
+    content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
   }
 }
 
-function createPhaseAMcpHandler(principal: McpPrincipal, deps: McpPrincipalDeps) {
+function definitionNotFound() {
+  return textResult({ code: 'definition_not_found', message: 'Agent definition not found' }, true)
+}
+
+async function whoamiToolResult(principal: McpPrincipal, deps: McpPrincipalDeps) {
+  await auditMcpToolCall(deps, principal, MCP_WHOAMI_TOOL)
+  return textResult(whoamiPayload(principal))
+}
+
+async function listAgentsToolResult(principal: McpPrincipal, deps: McpRuntimeDeps) {
+  await auditMcpToolCall(deps, principal, MCP_AGENTS_LIST_TOOL)
+  const agents = await deps.listPublishedAgents({
+    tenantId: principal.tenantId,
+    userId: principal.userId,
+    role: principal.role,
+  })
+  return textResult({ agents })
+}
+
+function asUuid(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[0-9a-f-]{36}$/i.test(value) ? value : undefined
+}
+
+function asVersion(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined
+}
+
+async function getDefinitionToolResult(
+  principal: McpPrincipal,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+) {
+  await auditMcpToolCall(deps, principal, MCP_AGENT_GET_DEFINITION_TOOL)
+  const loaded = await deps.loadDefinition({
+    tenantId: principal.tenantId,
+    definitionId: asUuid(args.definitionId),
+    agentId: asUuid(args.agentId),
+    version: asVersion(args.version),
+  })
+  if (!loaded) return definitionNotFound()
+  const allowed = await deps.canViewAgent({
+    tenantId: principal.tenantId,
+    userId: principal.userId,
+    role: principal.role,
+    agentId: loaded.agentId,
+  })
+  if (!allowed) return definitionNotFound()
+  return textResult(loaded)
+}
+
+function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps) {
   return createMcpHandler(
     (server) => {
       server.registerTool(
-        PHASE_A_TOOL_NAME,
+        MCP_WHOAMI_TOOL,
         {
           title: 'Who am I',
           description: 'Return the authenticated MCP principal for this tenant URL.',
@@ -113,29 +249,54 @@ function createPhaseAMcpHandler(principal: McpPrincipal, deps: McpPrincipalDeps)
         },
         async () => whoamiToolResult(principal, deps),
       )
+      server.registerTool(
+        MCP_AGENTS_LIST_TOOL,
+        {
+          title: 'List agents',
+          description: 'List published agent definitions visible to this principal.',
+          inputSchema: z.object({}).passthrough(),
+        },
+        async () => listAgentsToolResult(principal, deps),
+      )
+      server.registerTool(
+        MCP_AGENT_GET_DEFINITION_TOOL,
+        {
+          title: 'Get agent definition',
+          description: 'Load one published agent definition snapshot for this tenant.',
+          inputSchema: z
+            .object({
+              definitionId: z.string().uuid().optional(),
+              agentId: z.string().uuid().optional(),
+              version: z.number().int().positive().optional(),
+            })
+            .passthrough(),
+        },
+        async (args) => getDefinitionToolResult(principal, args as Record<string, unknown>, deps),
+      )
 
       server.server.setRequestHandler('tools/call', async (request) => {
         const toolName = request.params.name
-        if (!(PHASE_A_ALLOWED_TOOLS as readonly string[]).includes(toolName)) {
+        if (!(MCP_ALLOWED_TOOLS as readonly string[]).includes(toolName)) {
           await auditMcpToolDenied(deps, principal, toolName)
-          return {
-            isError: true,
-            content: [
-              {
-                type: 'text' as const,
-                text: JSON.stringify({
-                  code: 'tool_not_allowed',
-                  message: 'Tool is not allowed on this MCP endpoint',
-                }),
-              },
-            ],
-          }
+          return textResult(
+            { code: 'tool_not_allowed', message: 'Tool is not allowed on this MCP endpoint' },
+            true,
+          )
+        }
+        const rawArgs = request.params.arguments
+        const args =
+          rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+            ? (rawArgs as Record<string, unknown>)
+            : {}
+        if (toolName === MCP_AGENTS_LIST_TOOL) return listAgentsToolResult(principal, deps)
+        if (toolName === MCP_AGENT_GET_DEFINITION_TOOL) {
+          return getDefinitionToolResult(principal, args, deps)
         }
         return whoamiToolResult(principal, deps)
       })
     },
     {
-      serverInfo: { name: 'enterprise-mcp', version: 'phase-a' },
+      serverInfo: { name: 'enterprise-mcp', version: 'phase-b' },
     },
   )
 }
@@ -187,7 +348,7 @@ export async function handleMcpRequest(
       }
       return forbiddenResponse(resolved)
     }
-    return createPhaseAMcpHandler(resolved.principal, deps)(req)
+    return createMcpResourceHandler(resolved.principal, deps)(req)
   }
 
   return withMcpAuth(inner, verifyToken, {

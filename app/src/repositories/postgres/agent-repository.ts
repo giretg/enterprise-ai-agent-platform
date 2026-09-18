@@ -1,32 +1,22 @@
-import type { Agent, Document, Prisma } from '@prisma/client'
-import bcrypt from 'bcryptjs'
-import { randomBytes } from 'crypto'
+import type { Agent, ConnectorAccessMode, Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
-import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
-import { composeBehaviorProfile } from '@/lib/behavior-profile'
-import { selfEvolutionProfileSchema } from '@/lib/self-evolution-profile'
 import { assertTransition, isPhysicallyDeletable } from '@/lib/agent-lifecycle'
-import { deriveAgentApiKeyLookupHash, isAgentApiKeyFormat } from '@/lib/agent-api-key-hash'
 import { prismaPageArgs, toListPage } from '@/lib/list-pagination'
-import type { AgentListFilter, AgentRepository, DocumentRepository, ListPageResult } from '../interfaces'
-import { orderRowsByIds } from '../order-by-ids'
+import type {
+  AgentConnectorBinding,
+  AgentListFilter,
+  AgentRepository,
+  ListPageResult,
+} from '../interfaces'
 
-function agentVisibilityWhere(id: string, tenantId?: string | null): Prisma.AgentWhereInput {
+function agentVisibilityWhere(id: string, tenantId?: string): Prisma.AgentWhereInput {
   return tenantId === undefined ? { id } : { id, tenantId }
-}
-
-function serviceAccountScopesForRole(role: Agent['role']): string[] {
-  return role === 'orchestrator'
-    ? ['ticket:create']
-    : ['ticket:read', 'ticket:create', 'tool:invoke']
 }
 
 function agentListWhere(filter?: AgentListFilter): Prisma.AgentWhereInput | undefined {
   const where: Prisma.AgentWhereInput = {}
   if (filter?.tenantId !== undefined) where.tenantId = filter.tenantId
-  if (filter?.excludeHiddenFromOperators) where.hiddenFromOperators = false
-  // #142 — a gráf által engedélyezett azonosítók. Üres tömb fail-closed: nem
-  // „nincs szűrés", hanem „nincs találat".
+  if (filter?.status) where.status = filter.status
   if (filter?.ids !== undefined) where.id = { in: filter.ids }
   return Object.keys(where).length > 0 ? where : undefined
 }
@@ -52,789 +42,90 @@ export class PostgresAgentRepository implements AgentRepository {
     return toListPage(rows, pageLimit, offset)
   }
 
-  async count(filter?: {
-    tenantId?: string | null
-    status?: Agent['status']
-    excludeHiddenFromOperators?: boolean
-  }): Promise<number> {
+  async count(filter?: { tenantId?: string; status?: Agent['status'] }): Promise<number> {
     const where: Prisma.AgentWhereInput = {}
     if (filter?.tenantId !== undefined) where.tenantId = filter.tenantId
     if (filter?.status) where.status = filter.status
-    if (filter?.excludeHiddenFromOperators) where.hiddenFromOperators = false
     return prisma.agent.count({
       where: Object.keys(where).length > 0 ? where : undefined,
     })
   }
 
-  async findById(id: string, tenantId?: string | null): Promise<Agent | null> {
+  async findById(id: string, tenantId?: string): Promise<Agent | null> {
     return prisma.agent.findFirst({ where: agentVisibilityWhere(id, tenantId) })
-  }
-
-  async findByIdForRuntime(id: string, tenantId?: string | null) {
-    // Chat / task / kb_search: csak az aktuális memória — nincs versions lista,
-    // apiKeys, resources, recipe (azok a display loaderben vannak).
-    const agent = await prisma.agent.findFirst({
-      where: agentVisibilityWhere(id, tenantId),
-      include: {
-        memory: {
-          include: {
-            currentVersion: true,
-          },
-        },
-      },
-    })
-
-    if (!agent) return null
-
-    return {
-      agent,
-      memoryContent: agent.memory.currentVersion?.content ?? null,
-      memoryVersion: agent.memory.currentVersion?.version ?? null,
-    }
-  }
-
-  async findByIdForDisplay(id: string, tenantId?: string | null) {
-    const agent = await prisma.agent.findFirst({
-      where: agentVisibilityWhere(id, tenantId),
-      include: {
-        memory: {
-          include: {
-            currentVersion: true,
-            versions: { orderBy: { version: 'desc' }, take: 5 },
-          },
-        },
-        agentResources: { include: { resource: true } },
-        apiKeys: { where: { status: 'active' }, take: 1 },
-        behaviorProfileRef: { select: { id: true, name: true, currentVersion: true } },
-      },
-    })
-
-    if (!agent) return null
-
-    // A reprodukálhatósághoz (§5.3): az aktuális agent-verzióhoz fagyasztott recipe.
-    const currentAgentVersion = await prisma.agentVersion.findUnique({
-      where: { agentId_version: { agentId: agent.id, version: agent.currentVersion } },
-      include: { recipeVersion: { include: { recipe: true } } },
-    })
-    const recipeVersion = currentAgentVersion?.recipeVersion ?? null
-
-    // §3.4: a megjelenítéshez a pinnelt profil-al-verzió TÖRZSE (a "központi rész"),
-    // hogy az egyedi overlay-től elkülönítve látszódjon. A verziók append-only-k, így
-    // a pinnelt verzió törzse determinisztikusan visszakérhető (drift-mentes).
-    const pinnedProfileVersion = agent.currentBehaviorProfileId
-      ? await prisma.behaviorProfileVersion.findFirst({
-          where: {
-            profileId: agent.currentBehaviorProfileId,
-            version: agent.currentBehaviorProfileVersion,
-          },
-          select: { body: true },
-        })
-      : null
-
-    return {
-      agent,
-      memoryContent: agent.memory.currentVersion?.content ?? null,
-      memoryVersion: agent.memory.currentVersion?.version ?? null,
-      recipe: recipeVersion
-        ? {
-            name: recipeVersion.recipe.name,
-            ticketType: recipeVersion.recipe.ticketType,
-            version: recipeVersion.version,
-            status: recipeVersion.status,
-          }
-        : null,
-      resources: agent.agentResources.map((ar) => ({
-        id: ar.resource.id,
-        name: ar.resource.name,
-        type: ar.resource.type,
-        scope: ar.resource.scope,
-        version: ar.resource.version,
-        accessMode: ar.accessMode,
-      })),
-      apiKeyPreview: agent.apiKeys[0] ? 'cp_sk_•••••••• (scoped)' : null,
-      // §3.4 kaszkád: ha az agent megosztott viselkedés-profilra hivatkozik, felhozzuk
-      // a profil aktuális al-verzióját, hogy a detail-oldal jelezni tudja, ha az agent
-      // pinnelt verziója elavult, és felkínálja a befogadást (acceptBehaviorProfileUpdate).
-      behaviorProfileLink: agent.behaviorProfileRef
-        ? {
-            id: agent.behaviorProfileRef.id,
-            name: agent.behaviorProfileRef.name,
-            currentVersion: agent.behaviorProfileRef.currentVersion,
-            pinnedVersion: agent.currentBehaviorProfileVersion,
-            pinnedBody: pinnedProfileVersion?.body ?? '',
-          }
-        : null,
-    }
-  }
-
-  /** @deprecated Kompat alias → `findByIdForDisplay`. */
-  async findByIdWithDetails(id: string, tenantId?: string | null) {
-    return this.findByIdForDisplay(id, tenantId)
-  }
-
-  async findVersionSnapshot(agentId: string, version: number) {
-    const agentVersion = await prisma.agentVersion.findUnique({
-      where: { agentId_version: { agentId, version } },
-      include: {
-        recipeVersion: { include: { recipe: true } },
-        memoryVersion: true,
-      },
-    })
-    if (!agentVersion) return null
-
-    return {
-      agentVersion: agentVersion.version,
-      roleInstruction: agentVersion.roleInstructionSnapshot,
-      behaviorProfile: agentVersion.behaviorProfileSnapshot,
-      roleInstructionVersion: agentVersion.roleInstructionVersion,
-      behaviorProfileVersion: agentVersion.behaviorProfileVersion,
-      memoryVersion: agentVersion.memoryVersion?.version ?? null,
-      model: agentVersion.modelConfigSnapshot,
-      recipe: agentVersion.recipeVersion
-        ? {
-            name: agentVersion.recipeVersion.recipe.name,
-            version: agentVersion.recipeVersion.version,
-            status: agentVersion.recipeVersion.status,
-          }
-        : null,
-    }
   }
 
   async create(input: {
     name: string
     roleInstruction: string
-    behaviorProfile: string
-    modelConfig: Agent['modelConfig']
-    role?: Agent['role']
-    selfEvolutionProfile?: Agent['selfEvolutionProfile']
-    initialMemory?: string
-    createdById: string
-    tenantId?: string | null
+    tenantId: string
     status?: Agent['status']
-  }) {
-    const memory = await prisma.memory.create({ data: {} })
-
-    const memoryVersion = await prisma.memoryVersion.create({
-      data: {
-        memoryId: memory.id,
-        version: 1,
-        content: input.initialMemory ?? '',
-        status: 'active',
-        source: 'createAgent',
-        approvedById: input.createdById,
-      },
-    })
-
-    await prisma.memory.update({
-      where: { id: memory.id },
-      data: { currentVersionId: memoryVersion.id },
-    })
-
-    const agentRole = input.role ?? 'worker'
-    const selfEvolutionProfile = input.selfEvolutionProfile
-      ? (selfEvolutionProfileSchema.parse(input.selfEvolutionProfile) as Prisma.InputJsonValue)
-      : undefined
-
-    const status = input.status ?? 'active'
-    const agent = await prisma.agent.create({
+  }): Promise<Agent> {
+    return prisma.agent.create({
       data: {
         name: input.name,
-        tenantId: input.tenantId ?? null,
         roleInstruction: input.roleInstruction,
-        behaviorProfile: input.behaviorProfile,
-        // Létrehozáskor nincs megosztott profil — a megadott "hogyan" szöveg teljes
-        // egészében az agent egyedi overlay-e (§3.4). Az effektív = csak az overlay.
-        behaviorProfileOverlay: input.behaviorProfile,
-        modelConfig: input.modelConfig as Prisma.InputJsonValue,
-        status,
-        role: agentRole,
-        selfEvolutionProfile,
-        currentVersion: 1,
-        currentRoleInstructionVersion: 1,
-        currentBehaviorProfileVersion: 1,
-        memoryId: memory.id,
+        tenantId: input.tenantId,
+        status: input.status ?? 'draft',
       },
     })
-
-    // §4/I2: a `draft` agentnek MÉG nincs reprodukálhatósági snapshotja — azt az
-    // `activate` fagyasztja be. Aktívan létrehozott (walking-skeleton) agentnek
-    // viszont azonnal kell egy v1 snapshot.
-    if (status !== 'draft') {
-      await prisma.agentVersion.create({
-        data: {
-          agentId: agent.id,
-          version: 1,
-          roleInstructionSnapshot: input.roleInstruction,
-          behaviorProfileSnapshot: input.behaviorProfile,
-          roleInstructionVersion: 1,
-          behaviorProfileVersion: 1,
-          modelConfigSnapshot: input.modelConfig as Prisma.InputJsonValue,
-          memoryVersionId: memoryVersion.id,
-          selfEvolutionSnapshot: selfEvolutionProfile,
-        },
-      })
-    }
-
-    const rawKey = `cp_sk_${randomBytes(16).toString('hex')}`
-    await prisma.agentApiKey.create({
-      data: {
-        agentId: agent.id,
-        keyHash: await bcrypt.hash(rawKey, 10),
-        lookupHash: deriveAgentApiKeyLookupHash(rawKey),
-        scopes: serviceAccountScopesForRole(agentRole),
-        status: 'active',
-      },
-    })
-
-    // A Control Plane Board (kanban + agent-együttműködés: ticket_create, board_write,
-    // agent_ask/resolve/catalog, user_directory) hozzáférés NEM jár alapból: engedélyhez
-    // kötött. Az admin a capability-panelen kapcsolja be — ekkor az updateAgentCapabilities
-    // `needsBoard` ága köti be a PLATFORM (tenant-preferált, majd null) boardot. Így nem
-    // szivárog be automatikusan egy másik tenant vagy a platform kontroll-connectorja.
-    await ensureAgentKnowledgeBase(agent)
-
-    return { agent, apiKey: rawKey }
   }
 
-  async updateInstruction(input: {
-    agentId: string
-    roleInstruction?: string
-    behaviorProfile?: string
-  }) {
-    const agent = await prisma.agent.findUnique({ where: { id: input.agentId } })
-    if (!agent) throw new Error('Agent not found')
-
-    const nextRole = input.roleInstruction ?? agent.roleInstruction
-    const nextBehavior = input.behaviorProfile ?? agent.behaviorProfile
-    const roleChanged = nextRole !== agent.roleInstruction
-    const behaviorChanged = nextBehavior !== agent.behaviorProfile
-
-    if (!roleChanged && !behaviorChanged) {
-      throw new Error('No instruction change provided')
-    }
-
-    // A reprodukálhatósághoz az új snapshot örökli az aktuális agent-verzió
-    // memória- és recipe-kötését (§5.3).
-    const currentVersion = await prisma.agentVersion.findUnique({
-      where: { agentId_version: { agentId: agent.id, version: agent.currentVersion } },
-    })
-    if (!currentVersion) throw new Error('Current agent version snapshot missing')
-
-    const nextRoleVersion = agent.currentRoleInstructionVersion + (roleChanged ? 1 : 0)
-    const nextBehaviorVersion = agent.currentBehaviorProfileVersion + (behaviorChanged ? 1 : 0)
-    const nextAgentVersion = agent.currentVersion + 1
-
-    await prisma.$transaction([
-      prisma.agentVersion.create({
-        data: {
-          agentId: agent.id,
-          version: nextAgentVersion,
-          roleInstructionSnapshot: nextRole,
-          behaviorProfileSnapshot: nextBehavior,
-          roleInstructionVersion: nextRoleVersion,
-          behaviorProfileVersion: nextBehaviorVersion,
-          modelConfigSnapshot: currentVersion.modelConfigSnapshot as Prisma.InputJsonValue,
-          memoryVersionId: currentVersion.memoryVersionId,
-          recipeVersionId: currentVersion.recipeVersionId,
-          selfEvolutionSnapshot: (agent.selfEvolutionProfile ?? undefined) as Prisma.InputJsonValue | undefined,
-        },
-      }),
-      prisma.agent.update({
-        where: { id: agent.id },
-        data: {
-          roleInstruction: nextRole,
-          behaviorProfile: nextBehavior,
-          currentVersion: nextAgentVersion,
-          currentRoleInstructionVersion: nextRoleVersion,
-          currentBehaviorProfileVersion: nextBehaviorVersion,
-        },
-      }),
-    ])
-
-    return {
-      agentVersion: nextAgentVersion,
-      roleInstructionVersion: nextRoleVersion,
-      behaviorProfileVersion: nextBehaviorVersion,
-      roleChanged,
-      behaviorChanged,
-    }
-  }
-
-  async updateModelConfig(input: { agentId: string; modelConfig: Agent['modelConfig'] }) {
-    const agent = await prisma.agent.findUnique({ where: { id: input.agentId } })
-    if (!agent) throw new Error('Agent not found')
-
-    // Új snapshot örökli az aktuális szerep/viselkedés al-verziókat, memória- és
-    // recipe-kötést; csak a modell-konfig változik (reprodukálhatóság).
-    const currentVersion = await prisma.agentVersion.findUnique({
-      where: { agentId_version: { agentId: agent.id, version: agent.currentVersion } },
-    })
-    if (!currentVersion) throw new Error('Current agent version snapshot missing')
-
-    const nextAgentVersion = agent.currentVersion + 1
-
-    await prisma.$transaction([
-      prisma.agentVersion.create({
-        data: {
-          agentId: agent.id,
-          version: nextAgentVersion,
-          roleInstructionSnapshot: agent.roleInstruction,
-          behaviorProfileSnapshot: agent.behaviorProfile,
-          roleInstructionVersion: agent.currentRoleInstructionVersion,
-          behaviorProfileVersion: agent.currentBehaviorProfileVersion,
-          modelConfigSnapshot: input.modelConfig as Prisma.InputJsonValue,
-          memoryVersionId: currentVersion.memoryVersionId,
-          recipeVersionId: currentVersion.recipeVersionId,
-          selfEvolutionSnapshot: (agent.selfEvolutionProfile ?? undefined) as Prisma.InputJsonValue | undefined,
-        },
-      }),
-      prisma.agent.update({
-        where: { id: agent.id },
-        data: {
-          modelConfig: input.modelConfig as Prisma.InputJsonValue,
-          currentVersion: nextAgentVersion,
-        },
-      }),
-    ])
-
-    return { agentVersion: nextAgentVersion }
-  }
-
-  /**
-   * Sensitivity router per-agent felmentés (§4.7.2). Nem emel agent-verziót: a
-   * prompt-reprodukálhatóságot nem érinti, csak azt, hová mehet a hívás.
-   */
-  async updateSensitivityPolicy(input: {
-    agentId: string
-    allowSensitiveExternalModel: boolean
-  }): Promise<{ allowSensitiveExternalModel: boolean }> {
-    const updated = await prisma.agent.update({
-      where: { id: input.agentId },
-      data: { allowSensitiveExternalModel: input.allowSensitiveExternalModel },
-      select: { allowSensitiveExternalModel: true },
-    })
-    return updated
-  }
-
-  /**
-   * Operator-láthatóság. Nem emel agent-verziót és nem befolyásolja a dispatch-et —
-   * csak azt, hogy non-admin szerepek látják-e az agentet a UI/API listákban.
-   */
-  async updateOperatorVisibility(input: {
-    agentId: string
-    hiddenFromOperators: boolean
-  }): Promise<{ hiddenFromOperators: boolean }> {
-    const updated = await prisma.agent.update({
-      where: { id: input.agentId },
-      data: { hiddenFromOperators: input.hiddenFromOperators },
-      select: { hiddenFromOperators: true },
-    })
-    return updated
-  }
-
-  /**
-   * Feladatkör-korlátozás (#199). Nem emel agent-verziót és nem szűkíti a
-   * jogosultságokat — kizárólag azt, hogy az agent EMBERI felületén chat vagy
-   * egyetlen skill-kötött feladat-gomb jelenik-e meg.
-   */
-  async updateTaskOnly(input: {
-    agentId: string
-    taskOnly: boolean
-  }): Promise<{ taskOnly: boolean }> {
-    const updated = await prisma.agent.update({
-      where: { id: input.agentId },
-      data: { taskOnly: input.taskOnly },
-      select: { taskOnly: true },
-    })
-    return updated
-  }
-
-  /** Agent-szintű delegálás: az operátor kezelheti-e az agent skill-hozzárendeléseit. */
-  async updateOperatorSkillManagement(input: {
-    agentId: string
-    operatorCanManageSkills: boolean
-  }): Promise<{ operatorCanManageSkills: boolean }> {
-    const updated = await prisma.agent.update({
-      where: { id: input.agentId },
-      data: { operatorCanManageSkills: input.operatorCanManageSkills },
-      select: { operatorCanManageSkills: true },
-    })
-    return updated
-  }
-
-  /**
-   * Agent-hozzáférési gráf kapcsolói (Access-Policy §agent-scope, #142). Nem emel
-   * agent-verziót és nem befolyásolja a dispatch-et — csak azt, hogy a gráf melyik
-   * irányban kér explicit élt. Az előző értéket is visszaadja, hogy az
-   * `agent_access.restriction.update` audit a „miről mire" változást rögzíthesse.
-   */
-  async updateAccessRestrictions(input: {
-    agentId: string
-    inboundRestricted?: boolean
-    outboundRestricted?: boolean
-  }): Promise<{
-    previous: { inboundRestricted: boolean; outboundRestricted: boolean }
-    next: { inboundRestricted: boolean; outboundRestricted: boolean }
-  }> {
-    return prisma.$transaction(async (tx) => {
-      const before = await tx.agent.findUniqueOrThrow({
-        where: { id: input.agentId },
-        select: { inboundRestricted: true, outboundRestricted: true },
-      })
-      const after = await tx.agent.update({
-        where: { id: input.agentId },
-        data: {
-          ...(input.inboundRestricted !== undefined
-            ? { inboundRestricted: input.inboundRestricted }
-            : {}),
-          ...(input.outboundRestricted !== undefined
-            ? { outboundRestricted: input.outboundRestricted }
-            : {}),
-        },
-        select: { inboundRestricted: true, outboundRestricted: true },
-      })
-      return { previous: before, next: after }
-    })
-  }
-
-  async updatePersona(input: {
-    agentId: string
-    personaNickname?: string | null
-    personaGreeting?: string | null
-    personaTrait?: string | null
-  }) {
-    const agent = await prisma.agent.findUnique({ where: { id: input.agentId } })
-    if (!agent) throw new Error('Agent not found')
-
-    const normalize = (value: string | null | undefined) => {
-      if (value === undefined) return undefined
-      if (value === null) return null
-      const trimmed = value.trim()
-      return trimmed.length > 0 ? trimmed : null
-    }
-
+  async updateInstruction(input: { agentId: string; roleInstruction: string }): Promise<Agent> {
     return prisma.agent.update({
       where: { id: input.agentId },
-      data: {
-        ...(input.personaNickname !== undefined
-          ? { personaNickname: normalize(input.personaNickname) }
-          : {}),
-        ...(input.personaGreeting !== undefined
-          ? { personaGreeting: normalize(input.personaGreeting) }
-          : {}),
-        ...(input.personaTrait !== undefined
-          ? { personaTrait: normalize(input.personaTrait) }
-          : {}),
-      },
+      data: { roleInstruction: input.roleInstruction },
     })
   }
 
-  async updateAvatar(input: { agentId: string; avatarUrl: string | null }) {
-    const agent = await prisma.agent.findUnique({ where: { id: input.agentId } })
-    if (!agent) throw new Error('Agent not found')
-
+  async updateAvatar(input: { agentId: string; avatarUrl: string }): Promise<Agent> {
     return prisma.agent.update({
       where: { id: input.agentId },
       data: { avatarUrl: input.avatarUrl },
     })
   }
 
-  async updateSelfEvolutionProfile(input: {
-    agentId: string
-    profile: Agent['selfEvolutionProfile']
-  }) {
-    const parsed = selfEvolutionProfileSchema.parse(input.profile)
+  async setCurrentDefinitionVersionId(agentId: string, versionId: string): Promise<Agent> {
     return prisma.agent.update({
-      where: { id: input.agentId },
-      data: { selfEvolutionProfile: parsed as Prisma.InputJsonValue },
+      where: { id: agentId },
+      data: { currentDefinitionVersionId: versionId },
     })
   }
 
-  async rotateApiKey(agentId: string) {
+  async activate(agentId: string): Promise<Agent> {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } })
     if (!agent) throw new Error('Agent not found')
-
-    const rawKey = `cp_sk_${randomBytes(16).toString('hex')}`
-    const scopes = serviceAccountScopesForRole(agent.role)
-    const now = new Date()
-
-    const created = await prisma.$transaction(async (tx) => {
-      await tx.agentApiKey.updateMany({
-        where: { agentId, status: 'active' },
-        data: { status: 'revoked', rotatedAt: now },
-      })
-      return tx.agentApiKey.create({
-        data: {
-          agentId,
-          keyHash: await bcrypt.hash(rawKey, 10),
-          lookupHash: deriveAgentApiKeyLookupHash(rawKey),
-          scopes,
-          status: 'active',
-          rotatedAt: now,
-        },
-      })
-    })
-
-    return { keyId: created.id, apiKey: rawKey, scopes }
-  }
-
-  async issueEphemeralKey(agentId: string, opts?: { ttlMs?: number }) {
-    const agent = await prisma.agent.findUnique({ where: { id: agentId } })
-    if (!agent) throw new Error('Agent not found')
-
-    const rawKey = `cp_sk_${randomBytes(16).toString('hex')}`
-    const scopes = serviceAccountScopesForRole(agent.role)
-    const ttlMs = opts?.ttlMs
-    const expiresAt =
-      typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0
-        ? new Date(Date.now() + ttlMs)
-        : null
-
-    const created = await prisma.agentApiKey.create({
-      data: {
-        agentId,
-        keyHash: await bcrypt.hash(rawKey, 10),
-        lookupHash: deriveAgentApiKeyLookupHash(rawKey),
-        scopes,
-        status: 'active',
-        expiresAt,
-      },
-    })
-
-    return { id: created.id, rawKey, scopes }
-  }
-
-  async revokeKey(keyId: string) {
-    await prisma.agentApiKey.updateMany({
-      where: { id: keyId, status: 'active' },
-      data: { status: 'revoked', rotatedAt: new Date() },
-    })
-  }
-
-  async revokeApiKey(keyId: string) {
-    const existing = await prisma.agentApiKey.findUnique({ where: { id: keyId } })
-    if (!existing) throw new Error('Agent API key not found')
-
-    const revoked = await prisma.agentApiKey.update({
-      where: { id: keyId },
-      data: { status: 'revoked', rotatedAt: new Date() },
-    })
-
-    return { keyId: revoked.id, agentId: revoked.agentId }
-  }
-
-  /**
-   * Megosztott viselkedés-profil frissítésének BEFOGADÁSA (§3.4 kaszkád, I7).
-   * Explicit admin-művelet: a hivatkozó agent élő viselkedését a profil adott
-   * al-verziójára állítja, ÉS új `agent_versions` snapshotot fagyaszt — így a
-   * megosztott profil módosítása sem okoz csendes driftet a hivatkozókon.
-   */
-  async acceptBehaviorProfileUpdate(input: {
-    agentId: string
-    profileId: string
-    profileVersion: number
-    profileBody: string
-  }) {
-    const agent = await prisma.agent.findUnique({ where: { id: input.agentId } })
-    if (!agent) throw new Error('Agent not found')
-
-    const currentVersion = await prisma.agentVersion.findUnique({
-      where: { agentId_version: { agentId: agent.id, version: agent.currentVersion } },
-    })
-    if (!currentVersion) throw new Error('Current agent version snapshot missing')
-
-    const nextAgentVersion = agent.currentVersion + 1
-    // Az egyedi overlay megmarad — az effektív a friss profil-törzs + overlay (§3.4).
-    const effective = composeBehaviorProfile(input.profileBody, agent.behaviorProfileOverlay)
-
-    await prisma.$transaction([
-      prisma.agentVersion.create({
-        data: {
-          agentId: agent.id,
-          version: nextAgentVersion,
-          roleInstructionSnapshot: agent.roleInstruction,
-          behaviorProfileSnapshot: effective,
-          roleInstructionVersion: agent.currentRoleInstructionVersion,
-          behaviorProfileVersion: input.profileVersion,
-          modelConfigSnapshot: currentVersion.modelConfigSnapshot as Prisma.InputJsonValue,
-          memoryVersionId: currentVersion.memoryVersionId,
-          recipeVersionId: currentVersion.recipeVersionId,
-          selfEvolutionSnapshot: (agent.selfEvolutionProfile ?? undefined) as Prisma.InputJsonValue | undefined,
-        },
-      }),
-      prisma.agent.update({
-        where: { id: agent.id },
-        data: {
-          behaviorProfile: effective,
-          currentBehaviorProfileId: input.profileId,
-          currentBehaviorProfileVersion: input.profileVersion,
-          currentVersion: nextAgentVersion,
-        },
-      }),
-    ])
-
-    return { agentVersion: nextAgentVersion, behaviorProfileVersion: input.profileVersion }
-  }
-
-  /**
-   * A ténylegesen használt viselkedés-profil beállítása (§3.4): egy megosztott
-   * profil (vagy semmi) kiválasztása + az agent egyedi overlay-e. A kettőből
-   * komponálja az effektív "hogyan" szöveget, pinneli a profil aktuális
-   * al-verzióját, és — aktív agentnél — új reprodukálhatósági snapshotot fagyaszt.
-   * Draft agentnél (nincs snapshot) csak az élő mezőket állítja.
-   */
-  async setBehaviorProfile(input: {
-    agentId: string
-    profileId: string | null
-    profileVersion: number | null
-    profileBody: string | null
-    overlay: string | null
-  }) {
-    const agent = await prisma.agent.findUnique({ where: { id: input.agentId } })
-    if (!agent) throw new Error('Agent not found')
-
-    const overlay = input.overlay?.trim() ? input.overlay.trim() : null
-    const effective = composeBehaviorProfile(input.profileBody, overlay)
-    if (effective.length === 0) {
-      throw new Error('A munkastílus nem lehet üres — adj meg profilt vagy egyedi szöveget')
+    if (!agent.currentDefinitionVersionId) {
+      throw new Error('Cannot activate an unpublished agent')
     }
-
-    // No-op védelem: ha se a profil-kötés, se az overlay, se az effektív szöveg nem
-    // változott, ne fagyasszunk felesleges új verziót.
-    const unchanged =
-      effective === agent.behaviorProfile &&
-      (input.profileId ?? null) === (agent.currentBehaviorProfileId ?? null) &&
-      (overlay ?? '') === (agent.behaviorProfileOverlay ?? '')
-    if (unchanged) {
-      return {
-        agentVersion: agent.currentVersion,
-        behaviorProfileVersion: agent.currentBehaviorProfileVersion,
-      }
-    }
-
-    // A megosztott profilhoz kötött agentnél a viselkedés-al-verzió a profil pinnelt
-    // verziója; egyedi (profil nélküli) esetben az agent saját, növekvő al-verziója.
-    const nextBehaviorVersion =
-      input.profileId != null
-        ? (input.profileVersion ?? agent.currentBehaviorProfileVersion)
-        : agent.currentBehaviorProfileVersion + 1
-
-    const currentSnapshot = await prisma.agentVersion.findUnique({
-      where: { agentId_version: { agentId: agent.id, version: agent.currentVersion } },
-    })
-
-    // Draft agent: még nincs reprodukálhatósági snapshot (§4/I2) — csak az élő mezők.
-    if (!currentSnapshot) {
-      await prisma.agent.update({
-        where: { id: agent.id },
-        data: {
-          behaviorProfile: effective,
-          behaviorProfileOverlay: overlay,
-          currentBehaviorProfileId: input.profileId,
-          currentBehaviorProfileVersion: nextBehaviorVersion,
-        },
-      })
-      return { agentVersion: agent.currentVersion, behaviorProfileVersion: nextBehaviorVersion }
-    }
-
-    const nextAgentVersion = agent.currentVersion + 1
-
-    await prisma.$transaction([
-      prisma.agentVersion.create({
-        data: {
-          agentId: agent.id,
-          version: nextAgentVersion,
-          roleInstructionSnapshot: agent.roleInstruction,
-          behaviorProfileSnapshot: effective,
-          roleInstructionVersion: agent.currentRoleInstructionVersion,
-          behaviorProfileVersion: nextBehaviorVersion,
-          modelConfigSnapshot: currentSnapshot.modelConfigSnapshot as Prisma.InputJsonValue,
-          memoryVersionId: currentSnapshot.memoryVersionId,
-          recipeVersionId: currentSnapshot.recipeVersionId,
-          selfEvolutionSnapshot: (agent.selfEvolutionProfile ?? undefined) as Prisma.InputJsonValue | undefined,
-        },
-      }),
-      prisma.agent.update({
-        where: { id: agent.id },
-        data: {
-          behaviorProfile: effective,
-          behaviorProfileOverlay: overlay,
-          currentBehaviorProfileId: input.profileId,
-          currentBehaviorProfileVersion: nextBehaviorVersion,
-          currentVersion: nextAgentVersion,
-        },
-      }),
-    ])
-
-    return { agentVersion: nextAgentVersion, behaviorProfileVersion: nextBehaviorVersion }
-  }
-
-  /**
-   * draft → active (§4): befagyasztja az első reprodukálhatósági snapshotot
-   * (szerep + viselkedés + modell + memória + önfejlesztési profil), és aktívvá
-   * teszi az agentet. Csak `draft`-ból hívható (állapotgép-invariáns).
-   */
-  async activate(agentId: string) {
-    const agent = await prisma.agent.findUnique({ where: { id: agentId } })
-    if (!agent) throw new Error('Agent not found')
     assertTransition(agent.status, 'active')
-
-    const memory = await prisma.memory.findUnique({ where: { id: agent.memoryId } })
-    if (!memory?.currentVersionId) throw new Error('Agent memory version missing')
-
-    const existing = await prisma.agentVersion.findFirst({
-      where: { agentId: agent.id },
-      orderBy: { version: 'desc' },
+    return prisma.agent.update({
+      where: { id: agentId },
+      data: { status: 'active', retiredAt: null },
     })
-    const version = existing ? existing.version + 1 : agent.currentVersion
-
-    await prisma.$transaction([
-      prisma.agentVersion.create({
-        data: {
-          agentId: agent.id,
-          version,
-          roleInstructionSnapshot: agent.roleInstruction,
-          behaviorProfileSnapshot: agent.behaviorProfile,
-          roleInstructionVersion: agent.currentRoleInstructionVersion,
-          behaviorProfileVersion: agent.currentBehaviorProfileVersion,
-          modelConfigSnapshot: agent.modelConfig as Prisma.InputJsonValue,
-          memoryVersionId: memory.currentVersionId,
-          selfEvolutionSnapshot: (agent.selfEvolutionProfile ?? undefined) as Prisma.InputJsonValue | undefined,
-        },
-      }),
-      prisma.agent.update({
-        where: { id: agent.id },
-        data: { status: 'active', currentVersion: version },
-      }),
-    ])
-
-    return { agent: await prisma.agent.findUniqueOrThrow({ where: { id: agent.id } }), agentVersion: version }
   }
 
-  /** active → suspended (§4): új dispatch tiltott, a meglévő futások kifutnak. */
-  async suspend(agentId: string, reason: string) {
+  async suspend(agentId: string, _reason?: string): Promise<Agent> {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } })
     if (!agent) throw new Error('Agent not found')
     assertTransition(agent.status, 'suspended')
     return prisma.agent.update({
       where: { id: agentId },
-      data: { status: 'suspended', suspendedReason: reason },
+      data: { status: 'suspended' },
     })
   }
 
-  /** suspended → active (§4): nincs új snapshot, ha a konfiguráció nem változott. */
-  async resume(agentId: string) {
+  async resume(agentId: string): Promise<Agent> {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } })
     if (!agent) throw new Error('Agent not found')
     assertTransition(agent.status, 'active')
     return prisma.agent.update({
       where: { id: agentId },
-      data: { status: 'active', suspendedReason: null },
+      data: { status: 'active' },
     })
   }
 
-  /** active|suspended → retired (§4): terminális; a verziólánc megőrződik. */
-  async retire(agentId: string) {
+  async retire(agentId: string): Promise<Agent> {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } })
     if (!agent) throw new Error('Agent not found')
     assertTransition(agent.status, 'retired')
@@ -844,170 +135,60 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
-  async delete(agentId: string) {
+  async delete(agentId: string): Promise<void> {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } })
     if (!agent) throw new Error('Agent not found')
-
-    // I3: aktivált/felfüggesztett/nyugdíjazott agent fizikailag NEM törölhető —
-    // a múltbeli munkák attribútálhatósága megőrzendő; csak `retire` engedett.
     if (!isPhysicallyDeletable(agent.status)) {
-      throw new Error(
-        `Aktivált agent nem törölhető (status=${agent.status}); csak nyugdíjazható (retire).`,
-      )
+      throw new Error('Only draft agents can be deleted')
     }
-
-    const memoryId = agent.memoryId
-
-    await prisma.$transaction(async (tx) => {
-      await tx.ticket.updateMany({
-        where: { agentId },
-        data: { agentId: null },
-      })
-      await tx.ticket.updateMany({
-        where: { assigneeType: 'agent', assigneeId: agentId },
-        data: { assigneeType: null, assigneeId: null },
-      })
-      await tx.toolCall.deleteMany({ where: { agentId } })
-      await tx.modelCall.deleteMany({ where: { agentId } })
-      await tx.agent.delete({ where: { id: agentId } })
-      await tx.memory.update({
-        where: { id: memoryId },
-        data: { currentVersionId: null },
-      })
-      await tx.memoryVersion.deleteMany({ where: { memoryId } })
-      await tx.memory.delete({ where: { id: memoryId } })
-    })
-
-    return { id: agent.id, name: agent.name }
+    await prisma.agent.delete({ where: { id: agentId } })
   }
 
-  async authenticateApiKey(rawKey: string) {
-    if (!isAgentApiKeyFormat(rawKey)) return null
-
-    const now = new Date()
-
-    const keySelect = {
-      id: true,
-      agentId: true,
-      keyHash: true,
-      scopes: true,
-      status: true,
-      expiresAt: true,
-    } as const
-
-    const isUsable = (key: { status: string; expiresAt: Date | null }) =>
-      key.status === 'active' && (key.expiresAt === null || key.expiresAt > now)
-
-    // Egyetlen elfogadási pont: frissíti a lastUsedAt-ot (és opcionálisan feltölti a
-    // kereső-hash-t a legacy kulcsoknál), majd visszaadja az agent-identitást + scope-okat.
-    const accept = async (
-      key: { id: string; agentId: string; scopes: unknown },
-      backfillLookupHash?: string,
-    ) => {
-      await prisma.agentApiKey.update({
-        where: { id: key.id },
-        data: { lastUsedAt: new Date(), ...(backfillLookupHash ? { lookupHash: backfillLookupHash } : {}) },
-      })
-      return { agentId: key.agentId, scopes: key.scopes as string[] }
-    }
-
-    // Gyors út: O(1) egyedi-indexelt megkeresés a determinisztikus kereső-hash-en, majd
-    // egyetlen bcrypt-ellenőrzés mélységi védelemként. Így a hitelesítés NEM skálázódik az
-    // aktív kulcsok számával (a régi kód minden kulcson végig-bcrypt-elt → O(n) lassú hash).
-    const lookupHash = deriveAgentApiKeyLookupHash(rawKey)
-    const direct = await prisma.agentApiKey.findUnique({
-      where: { lookupHash },
-      select: keySelect,
+  async findCapabilitiesForAgent(agentId: string): Promise<{ toolName: string; allowed: boolean }[]> {
+    return prisma.capability.findMany({
+      where: { agentId },
+      select: { toolName: true, allowed: true },
+      orderBy: { toolName: 'asc' },
     })
-    if (direct) {
-      if (isUsable(direct) && (await bcrypt.compare(rawKey, direct.keyHash))) {
-        return accept(direct)
-      }
-      return null
-    }
+  }
 
-    // Visszafelé kompatibilis út: a migráció ELŐTT kiadott kulcsoknak nincs kereső-hash-ük.
-    // Csak ezeket a legacy sorokat vizsgáljuk (nem az összeset), és találatkor feltöltjük a
-    // kereső-hash-t, így a kulcs a következő használatkor már a gyors úton hitelesít.
-    const legacyKeys = await prisma.agentApiKey.findMany({
+  async findConnectorsForAgent(agentId: string): Promise<AgentConnectorBinding[]> {
+    const rows = await prisma.agentConnector.findMany({
+      where: { agentId },
+      include: { connector: true },
+      orderBy: { connectorId: 'asc' },
+    })
+    return rows.map((row) => ({ connector: row.connector, accessMode: row.accessMode }))
+  }
+
+  async replaceCapabilities(agentId: string, toolNames: string[]): Promise<void> {
+    await prisma.$transaction([
+      prisma.capability.deleteMany({ where: { agentId } }),
+      ...(toolNames.length > 0
+        ? [
+            prisma.capability.createMany({
+              data: toolNames.map((toolName) => ({ agentId, toolName, allowed: true })),
+            }),
+          ]
+        : []),
+    ])
+  }
+
+  async upsertConnectorBinding(input: {
+    agentId: string
+    connectorId: string
+    accessMode: ConnectorAccessMode
+  }): Promise<void> {
+    await prisma.agentConnector.upsert({
       where: {
-        status: 'active',
-        lookupHash: null,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        agentId_connectorId: { agentId: input.agentId, connectorId: input.connectorId },
       },
-      select: keySelect,
-    })
-
-    for (const key of legacyKeys) {
-      if (await bcrypt.compare(rawKey, key.keyHash)) {
-        return accept(key, lookupHash)
-      }
-    }
-
-    return null
-  }
-}
-
-export class PostgresDocumentRepository implements DocumentRepository {
-  async findById(id: string): Promise<Document | null> {
-    return prisma.document.findUnique({ where: { id } })
-  }
-
-  async findByIds(ids: string[]): Promise<Document[]> {
-    if (ids.length === 0) return []
-    const unique = [...new Set(ids)]
-    const rows = await prisma.document.findMany({ where: { id: { in: unique } } })
-    return orderRowsByIds(ids, rows)
-  }
-
-  async findByConnectorId(connectorId: string): Promise<Document[]> {
-    // KB lista / UI: extractedText nélkül — a teljes szöveg csak findById / search úton kell.
-    const rows = await prisma.document.findMany({
-      where: { connectorId },
-      orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        filename: true,
-        storageRef: true,
-        status: true,
-        connectorId: true,
-        uploadedById: true,
-        createdAt: true,
-        mimeType: true,
-        contentHash: true,
-        processingMode: true,
-        metadata: true,
+      create: {
+        agentId: input.agentId,
+        connectorId: input.connectorId,
+        accessMode: input.accessMode,
       },
+      update: { accessMode: input.accessMode },
     })
-    return rows.map((row) => ({ ...row, extractedText: null }))
-  }
-
-  async create(
-    data: Omit<
-      Document,
-      'id' | 'createdAt' | 'mimeType' | 'contentHash' | 'processingMode' | 'metadata'
-    > &
-      Partial<Pick<Document, 'mimeType' | 'contentHash' | 'processingMode' | 'metadata'>>,
-  ): Promise<Document> {
-    const { metadata, ...rest } = data
-    return prisma.document.create({
-      data: {
-        ...rest,
-        ...(metadata !== undefined ? { metadata: metadata as Prisma.InputJsonValue } : {}),
-      },
-    })
-  }
-
-  async update(
-    id: string,
-    data: Partial<
-      Pick<Document, 'status' | 'extractedText' | 'connectorId' | 'processingMode'>
-    >,
-  ): Promise<Document> {
-    return prisma.document.update({ where: { id }, data })
-  }
-
-  async delete(id: string): Promise<void> {
-    await prisma.document.delete({ where: { id } })
   }
 }

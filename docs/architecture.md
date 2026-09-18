@@ -1,4 +1,4 @@
-# Architecture note — Phase 0 compilation boundary + Phase A MCP gate
+# Architecture note — Phase 0 compilation boundary + Phase A MCP gate + Phase B schema
 
 This repository is being rebuilt as an Enterprise MCP control plane. Phase 0
 establishes a **clean compilation boundary**. It is not a compatibility layer
@@ -9,14 +9,21 @@ Streamable HTTP resource at `/api/mcp/{tenantSlug}`. Clerk is the OAuth
 authorization server; this app is only a resource server. The canonical OAuth
 resource identifier (token audience, if any) is `{origin}/api/mcp` — no tenant
 slug. Tenant isolation is the URL slug plus membership or superadmin assume.
-The probe tool is `platform.whoami`. See `docs/mcp-compatibility-runbook.md`.
+See `docs/mcp-compatibility-runbook.md`.
+
+**Phase B is live:** Prisma is a greenfield target schema (new `0001_init`).
+Publish creates an append-only `AgentDefinitionVersion` (stable id = version
+UUID). MCP tools `platform.whoami`, `platform.agents.list`, and
+`platform.agent.get_definition` are read-only. Control Plane is the write path.
+There is no `AuditLog` table. `GatewayOperation` / `GatewayApproval` tables
+exist for #541; the domain remains TODO.
 
 ## Entry points
 
 | Path | Role |
 |---|---|
-| `app/src/domain/gateway-services.ts` | Target composition root (IAM, tenant, audit, connector/grant, skill, provisioning) |
-| `app/src/auth/mcp-principal.ts` | MCP principal (Phase A) |
+| `app/src/domain/gateway-services.ts` | Target composition root (IAM, tenant, agent definitions, connector/grant, skill, provisioning) |
+| `app/src/auth/mcp-principal.ts` | MCP principal (Phase A/B) |
 | `app/src/app/api/mcp/[tenantSlug]/route.ts` | Tenant-scoped MCP resource URL (Phase A) |
 | `app/src/domain/agent-definition/` | Immutable Agent Definition (Phase B) |
 | `app/src/domain/enterprise-tools/` | `authorizeToolCall` + registry (Phase C) |
@@ -51,10 +58,10 @@ ESLint rule.
   Conversation / AgentTurn state for MCP.
 - There is no server-side selected-tenant / selected-agent session. Tenant is
   `/api/mcp/{tenantSlug}` plus membership or superadmin assume.
-- `tools/list` is not a security boundary. Phase A `tools/call` uses a one-tool
-  allow-list (`platform.whoami`); `authorizeToolCall` is Phase C.
+- `tools/list` is not a security boundary. `tools/call` uses an allow-list
+  (`platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`);
+  `authorizeToolCall` is Phase C.
 - Credentials never leave the server.
-- Prisma schema is still the legacy schema in Phase 0 so the control plane can
-  boot. Target schema rewrite is Phase B (`#539`).
+- Prisma is the Phase B target schema. Drive MCP tools are #540.
 
 Detailed KEEP / EXTRACT / DELETE ledger: [`docs/rebuild-surgery-manifest.md`](rebuild-surgery-manifest.md).

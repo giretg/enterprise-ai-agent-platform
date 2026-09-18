@@ -19,7 +19,7 @@ export function CreateAgentForm() {
         onSubmit={(event) => {
           event.preventDefault()
           start(async () => {
-            const result = await createAgent({ name, roleInstruction, behaviorProfile: '' })
+            const result = await createAgent({ name, roleInstruction })
             if (!result.success) {
               setError(result.error)
               return

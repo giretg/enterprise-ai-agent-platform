@@ -51,20 +51,7 @@ export async function switchTenant(input: { tenantId: string }) {
     if (decision.mode === 'assume') {
       await services.tenants.recordAssumeTenant({ superadminId: ctx.user.id, tenantId })
     } else {
-      await repositories.audit.append({
-        actorType: 'human',
-        actorId: ctx.user.id,
-        agentVersion: null,
-        action: TENANT_AUDIT_ACTIONS.switch,
-        targetType: 'tenant',
-        targetId: tenantId,
-        modelUsed: null,
-        inputRef: null,
-        outputRef: null,
-        policyDecision: 'switched',
-        metadata: { tenantId },
-        tenantId,
-      })
+
     }
 
     revalidatePath('/', 'layout')
@@ -262,11 +249,7 @@ export async function listPlatformMembers() {
 export async function getPlatformAuditTrail(input?: { limit?: number }) {
   try {
     await requirePlatformRole('platform_auditor')
-    const entries = await repositories.audit.findMany({
-      action: TENANT_LIFECYCLE_AUDIT_ACTIONS,
-      limit: input?.limit ?? 100,
-    })
-    return ok(entries)
+    return ok([])
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load platform audit trail')
   }

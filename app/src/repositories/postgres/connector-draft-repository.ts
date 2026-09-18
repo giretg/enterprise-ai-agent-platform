@@ -47,8 +47,6 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
           sourceRef: input.sourceRef,
           sourceHash: input.sourceHash,
           generatedByAgentId: input.generatedByAgentId,
-          generatedByAgentVersion: input.generatedByAgentVersion,
-          generatedFromConversationId: input.generatedFromConversationId,
           reviewStatus: 'pending',
         },
         include: { connector: true },
@@ -72,7 +70,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
     })
   }
 
-  async list(tenantId: string | null): Promise<ConnectorDraftWithConnector[]> {
+  async list(tenantId: string): Promise<ConnectorDraftWithConnector[]> {
     return prisma.connectorDraft.findMany({
       where: { tenantId },
       include: { connector: true },
@@ -114,39 +112,12 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
     authMode: ConnectorAuthMode
     secondApproverId: string | null
     config?: Prisma.InputJsonValue
-    initialSpecVersion?: {
-      rawSnapshot: Prisma.InputJsonValue
-      rawHash: string
-      capabilitySet: Prisma.InputJsonValue
-      approvedById: string
-    }
   }): Promise<Connector> {
     return prisma.$transaction(async (tx) => {
       const draft = await tx.connectorDraft.update({
         where: { id: params.draftId },
         data: { secondApproverId: params.secondApproverId },
       })
-      const latestSpecVersion = params.initialSpecVersion
-        ? await tx.connectorSpecVersion.aggregate({
-            where: { connectorId: draft.connectorId },
-            _max: { versionNo: true },
-          })
-        : null
-      const initialVersion = params.initialSpecVersion
-        ? await tx.connectorSpecVersion.create({
-            data: {
-              tenantId: draft.tenantId,
-              connectorId: draft.connectorId,
-              versionNo: (latestSpecVersion?._max.versionNo ?? 0) + 1,
-              rawSnapshot: params.initialSpecVersion.rawSnapshot,
-              rawHash: params.initialSpecVersion.rawHash,
-              capabilitySet: params.initialSpecVersion.capabilitySet,
-              status: 'approved',
-              approvedById: params.initialSpecVersion.approvedById,
-              approvedAt: new Date(),
-            },
-          })
-        : null
       return tx.connector.update({
         where: { id: draft.connectorId },
         data: {
@@ -154,7 +125,6 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
           secretAlias: params.secretAlias,
           authMode: params.authMode,
           ...(params.config !== undefined ? { config: params.config } : {}),
-          ...(initialVersion ? { activeSpecVersionId: initialVersion.id } : {}),
         },
       })
     })
@@ -172,11 +142,9 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         agentId: params.agentId,
         connectorId: params.connectorId,
         accessMode: params.accessMode,
-        ...(params.secretAlias ? { secretAlias: params.secretAlias } : {}),
       },
       update: {
         accessMode: params.accessMode,
-        ...(params.secretAlias ? { secretAlias: params.secretAlias } : {}),
       },
     })
   }
@@ -272,8 +240,6 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         tenantId: true,
         lifecycleState: true,
         secretAlias: true,
-        connectorMode: true,
-        activeSpecVersion: { select: { capabilitySet: true } },
       },
     })
     if (!row) return null
@@ -282,8 +248,6 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
       tenantId: row.tenantId,
       lifecycleState: row.lifecycleState,
       secretAlias: row.secretAlias,
-      connectorMode: row.connectorMode,
-      activeCapabilitySet: row.activeSpecVersion?.capabilitySet ?? null,
     }
   }
 
@@ -351,7 +315,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
   }
 
   async listActiveCatalog(
-    tenantId: string | null,
+    tenantId: string,
   ): Promise<
     Array<{
       id: string
@@ -368,22 +332,16 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         id: true,
         type: true,
         name: true,
-        connectorMode: true,
         config: true,
-        activeSpecVersion: { select: { capabilitySet: true } },
       },
       orderBy: { name: 'asc' },
     })
-    return rows
-      .filter((row) =>
-        isConnectorAssignableToAgent(row.connectorMode),
-      )
-      .map((row) => ({
-        id: row.id,
-        type: row.type,
-        name: row.name,
-        ...describeCatalogRow(row.type, row.config, row.activeSpecVersion?.capabilitySet ?? null),
-      }))
+    return rows.map((row) => ({
+      id: row.id,
+      type: row.type,
+      name: row.name,
+      ...describeCatalogRow(row.type, row.config, null),
+    }))
   }
 }
 
@@ -402,7 +360,7 @@ function describeCatalogRow(
   baseUrl: string | null
   tools: Array<{ method: string; path: string; description?: string | null }>
 } {
-  if (type === 'gmail') {
+  if ((type as string) === 'gmail') {
     return {
       description: 'Gmail-fiók olvasása és írása a felhasználó nevében, engedélyhez kötve.',
       baseUrl: null,

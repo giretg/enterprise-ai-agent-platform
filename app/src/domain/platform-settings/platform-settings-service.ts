@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client'
-import type { AuditRepository, PlatformSettingsRepository } from '@/repositories/interfaces'
+import type { PlatformSettingsRepository } from '@/repositories/interfaces'
 import { matchForbiddenHost } from '@/domain/net/egress-guard'
 import {
   GOOGLE_OAUTH_PLATFORM_KEY,
@@ -33,10 +33,7 @@ function normalizeEgressHost(input: string): string | null {
 }
 
 export class PlatformSettingsService {
-  constructor(
-    private settings: PlatformSettingsRepository,
-    private audit: AuditRepository,
-  ) {}
+  constructor(private settings: PlatformSettingsRepository) {}
 
   async getEgressAllowlist(tenantId: string | null): Promise<string[]> {
     const raw = (await this.settings.get(PROVISIONING_EGRESS_ALLOWLIST_KEY)) as EgressAllowlistStore | null
@@ -80,24 +77,7 @@ export class PlatformSettingsService {
       store as unknown as Prisma.InputJsonObject,
       actorId,
     )
-    await this.audit.append({
-      actorType: 'human',
-      actorId,
-      agentVersion: null,
-      action: 'connector.egress_allowlist.extend',
-      targetType: 'connector',
-      targetId: provenance?.draftId ?? null,
-      modelUsed: null,
-      inputRef: null,
-      outputRef: null,
-      policyDecision: 'allowed',
-      metadata: {
-        host: normalized,
-        tenantId: tenantId ?? null,
-        sourceType: provenance?.sourceType ?? null,
-        draftId: provenance?.draftId ?? null,
-      },
-    })
+
     return { ok: true, added: true, host: normalized, hosts: next }
   }
 
@@ -148,24 +128,7 @@ export class PlatformSettingsService {
       config as unknown as Prisma.InputJsonObject,
       actorId,
     )
-    await this.audit.append({
-      actorType: 'human',
-      actorId,
-      agentVersion: null,
-      action: 'platform.oauth.google_drive.update',
-      targetType: 'platform_setting',
-      targetId: null,
-      modelUsed: null,
-      inputRef: 'google_drive',
-      outputRef: config.clientId,
-      policyDecision: existing?.source === 'platform' ? 'updated' : 'configured',
-      metadata: {
-        settingKey: GOOGLE_OAUTH_SERVICE_KEYS.drive,
-        redirectUri: config.redirectUri ?? null,
-        secretRotated: Boolean(input.clientSecret?.trim()),
-        previousSource: existing?.source ?? null,
-      },
-    })
+
     return { config, source: 'platform' }
   }
 
@@ -182,19 +145,7 @@ export class PlatformSettingsService {
       config as unknown as Prisma.InputJsonObject,
       actorId,
     )
-    await this.audit.append({
-      actorType: 'human',
-      actorId,
-      agentVersion: null,
-      action: 'platform.oauth.google_drive_picker.update',
-      targetType: 'platform_setting',
-      targetId: null,
-      modelUsed: null,
-      inputRef: 'google_drive_picker',
-      outputRef: config.appId,
-      policyDecision: 'configured',
-      metadata: { settingKey: 'oauth.google.drive.picker', appId: config.appId },
-    })
+
     return { config, source: 'platform' }
   }
 
@@ -221,24 +172,7 @@ export class PlatformSettingsService {
       config as unknown as Prisma.InputJsonObject,
       actorId,
     )
-    await this.audit.append({
-      actorType: 'human',
-      actorId,
-      agentVersion: null,
-      action: 'platform.oauth.google.update',
-      targetType: 'platform_setting',
-      targetId: null,
-      modelUsed: null,
-      inputRef: 'google',
-      outputRef: config.clientId,
-      policyDecision: existing?.source === 'platform' ? 'updated' : 'configured',
-      metadata: {
-        settingKey: GOOGLE_OAUTH_PLATFORM_KEY,
-        redirectUri: config.redirectUri ?? null,
-        secretRotated: Boolean(input.clientSecret?.trim()),
-        previousSource: existing?.source ?? null,
-      },
-    })
+
     return { config, source: 'platform' }
   }
 }

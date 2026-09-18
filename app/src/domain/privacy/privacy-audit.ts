@@ -5,7 +5,7 @@
  * soha a nyers entitásérték. A builder allowlist-eli a mezőket; extra kulcs
  * (`displayValue`, `rawValue`, `sourceId`, tool-args) nem kerül a láncba.
  */
-import type { AuditRepository } from '@/repositories/interfaces'
+type AuditRepository = { append: (data: unknown) => Promise<unknown> }
 import { isSurrogateEntityType, parseSurrogate, type SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 import type { PrivacyScope } from '@/domain/privacy/surrogate-vault'
 import type { PrivacyGatewayMode, PrivacySpanSummary } from '@/domain/privacy/privacy-mode'

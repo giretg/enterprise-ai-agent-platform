@@ -11,7 +11,6 @@ import {
   provisionUser,
   reactivateUser,
   revokeInvitation,
-  setUserJobDescription,
   suspendUser,
   updateRolePermission,
 } from '@/app/actions/platform'
@@ -364,13 +363,13 @@ function UserRow({ user, disabled }: { user: User; disabled: boolean }) {
   const [pending, startTransition] = useTransition()
   const [role, setRole] = useState<UserRole>(user.role ?? 'viewer')
   const [reason, setReason] = useState('')
-  const [jobDescription, setJobDescription] = useState(user.jobDescription ?? '')
+  const [jobDescription, setJobDescription] = useState('')
   const [message, setMessage] = useState<string | null>(null)
   const isDisabled = disabled || pending
   const isPendingApproval = user.status === 'pending' && user.role === null
   const awaitingFirstLogin = isAwaitingFirstLogin(user)
   const loggedIn = hasCompletedFirstLogin(user)
-  const jobDescriptionDirty = jobDescription.trim() !== (user.jobDescription ?? '').trim()
+  const jobDescriptionDirty = jobDescription.trim() !== ''
   const loginAt = user.lastLoginAt ?? user.activatedAt
 
   return (
@@ -502,17 +501,8 @@ function UserRow({ user, disabled }: { user: User; disabled: boolean }) {
             className="rounded-full bg-sky/15 px-3 py-1.5 text-xs font-semibold text-sky disabled:opacity-50"
             onClick={() => {
               startTransition(async () => {
-                const result = await setUserJobDescription({
-                  targetUserId: user.id,
-                  jobDescription: jobDescription.trim() || null,
-                })
-                if (result.success) {
-                  setMessage(null)
-                  router.refresh()
-                } else {
-                  setMessage(result.error)
-                  setJobDescription(user.jobDescription ?? '')
-                }
+                setMessage(null)
+                router.refresh()
               })
             }}
           >

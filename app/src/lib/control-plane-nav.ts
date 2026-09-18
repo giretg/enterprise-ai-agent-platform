@@ -68,11 +68,6 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
     key: 'staff',
     label: 'Katalógus',
     children: [
-      {
-        key: 'staff.behavior-profiles',
-        href: '/control-plane/behavior-profiles',
-        label: 'Viselkedés-profilok',
-      },
       { key: 'staff.skills', href: '/control-plane/skills', label: 'Képességek (skill-ek)' },
     ],
   },
@@ -87,12 +82,6 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         requires: { tenantRole: 'admin' },
       },
       { key: 'admin.iam', href: '/control-plane/iam', label: 'IAM', requires: { tenantRole: 'admin' } },
-      {
-        key: 'admin.agent-access',
-        href: '/control-plane/agent-access',
-        label: 'Kapcsolatok',
-        requires: { tenantRole: 'admin' },
-      },
       {
         key: 'admin.menu-access',
         href: '/control-plane/menu-access',
@@ -117,12 +106,7 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         label: 'Platform · Beállítások',
         requires: { platformRole: 'platform_auditor' },
       },
-      {
-        key: 'admin.audit',
-        href: '/control-plane/audit',
-        label: 'Audit',
-        requires: { tenantRole: 'approver' },
-      },
+
     ],
   },
 ]

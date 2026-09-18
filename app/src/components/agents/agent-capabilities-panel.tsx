@@ -18,13 +18,13 @@ import {
 export function AgentCapabilitiesPanel({
   agentId,
   currentCapabilities,
-  isOrchestrator,
+  isOrchestrator: _isOrchestrator = false,
   suggestedTools,
   bare = false,
 }: {
   agentId: string
   currentCapabilities: Array<{ toolName: string; allowed: boolean }>
-  isOrchestrator: boolean
+  isOrchestrator?: boolean
   /** Javaslat: bejelölve, de mentésig nincs grant / connector-kötés. */
   suggestedTools?: string[]
   /** A hívó már adott keretet (címsor + doboz) — ne rajzoljunk másodikat. */
@@ -54,25 +54,7 @@ export function AgentCapabilitiesPanel({
         enabledTools: [...enabled],
       })
       if (res.success) {
-        const linked = [
-          res.data.knowledgeBaseLinked ? 'Knowledge Base connector' : null,
-          res.data.workspaceLinked ? 'Workspace connector' : null,
-          res.data.gmailLinked ? 'Gmail connector' : null,
-          res.data.httpApiLinked ? 'HTTP API connector' : null,
-          res.data.webSearchLinked ? 'Web Search connector' : null,
-          res.data.boardLinked ? 'Board connector' : null,
-        ].filter(Boolean)
-        const base = linked.length
-          ? `${res.data.updatedCount} eszköz engedélyezve — ${linked.join(', ')} automatikusan linkelve.`
-          : `${res.data.updatedCount} eszköz engedélyezve.`
-        const assignments = [
-          res.data.httpApiAssignmentRequired ? 'HTTP API' : null,
-          res.data.codeSandboxAssignmentRequired ? 'kódfuttató sandbox' : null,
-        ].filter(Boolean)
-        const msg = assignments.length
-          ? `${base} A(z) ${assignments.join(' és ')} használatához rendelj hozzá külön kapcsolatot a „Meglévő kapcsolat hozzárendelése" résznél.`
-          : base
-        setDone(msg)
+        setDone(`${res.data.updatedCount} eszköz engedélyezve.`)
         router.refresh()
       } else {
         setError(res.error)
@@ -108,7 +90,7 @@ export function AgentCapabilitiesPanel({
         groups={chatGroups}
         enabled={enabled}
         onChange={setEnabledAndClearDone}
-        isToolDisabled={(_tool, selected) => isOrchestrator && !selected.has(_tool)}
+        isToolDisabled={(_tool, selected) => _isOrchestrator && !selected.has(_tool)}
       />
       {otherGroups.length > 0 && (
         <div className="mt-8">
@@ -122,7 +104,7 @@ export function AgentCapabilitiesPanel({
             groups={otherGroups}
             enabled={enabled}
             onChange={setEnabledAndClearDone}
-            isToolDisabled={(_tool, selected) => isOrchestrator && !selected.has(_tool)}
+            isToolDisabled={(_tool, selected) => _isOrchestrator && !selected.has(_tool)}
           />
         </div>
       )}

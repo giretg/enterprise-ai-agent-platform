@@ -31,8 +31,7 @@ async function main() {
     assert.ok(filter.action.includes('user.permission.update'))
   })
 
-  await check('permission update audit carries explicit tenant attribution', async () => {
-    let capturedAudit: unknown
+  await check('permission update succeeds without AuditLog', async () => {
     const service = new IamService(
       {} as never,
       {} as never,
@@ -60,35 +59,16 @@ async function main() {
           }
         },
       } as never,
-      {
-        async append(data: unknown) {
-          capturedAudit = data
-          return data as never
-        },
-      } as never,
     )
 
-    await service.updatePermission({
+    const updated = await service.updatePermission({
       permissionKey: 'audit.read',
       minRole: 'admin',
       actorId: 'user-admin',
       tenantId: 'tenant-a',
     })
-
-    assert.deepEqual(capturedAudit, {
-      actorType: 'human',
-      actorId: 'user-admin',
-      agentVersion: null,
-      action: 'user.permission.update',
-      targetType: 'role_permission',
-      targetId: 'rp-updated',
-      modelUsed: null,
-      inputRef: 'approver',
-      outputRef: 'admin',
-      policyDecision: 'permission_updated',
-      metadata: { permissionKey: 'audit.read', tenantId: 'tenant-a' },
-      tenantId: 'tenant-a',
-    })
+    assert.equal(updated.minRole, 'admin')
+    assert.equal(updated.id, 'rp-updated')
   })
 
   console.log(`\n${failures === 0 ? 'Minden teszt zöld.' : `${failures} teszt bukott.`}`)

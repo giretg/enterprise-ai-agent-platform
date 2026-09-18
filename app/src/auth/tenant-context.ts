@@ -112,20 +112,7 @@ export async function requireTenantPermission(
   )
 
   if (!decision.allow) {
-    await repositories.audit.append({
-      actorType: 'human',
-      actorId: ctx.user.id,
-      agentVersion: null,
-      action: 'user.authz.deny',
-      targetType: 'permission',
-      targetId: null,
-      modelUsed: null,
-      inputRef: permissionKey,
-      outputRef: null,
-      policyDecision: decision.reason,
-      metadata: { tenantId: ctx.activeTenantId, assumed: ctx.assumed },
-      tenantId: ctx.activeTenantId,
-    })
+
     if (decision.reason === 'UNKNOWN_PERMISSION') {
       throw new TenantAuthError('UNKNOWN_PERMISSION')
     }

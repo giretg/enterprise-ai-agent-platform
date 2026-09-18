@@ -9,11 +9,12 @@
  * EXTRACT from the former tool-broker matrix so connector-grant KEEP can
  * decide which tools need a connector without importing the legacy broker.
  */
-import type { ConnectorAccessMode, ConnectorType } from '@prisma/client'
+import type { ConnectorAccessMode } from '@prisma/client'
 
+/** Historical tool→connector map. Prisma `ConnectorType` is google_drive | http_api. */
 export const TOOL_REQUIREMENTS: Partial<Record<
   string,
-  { connectorType: ConnectorType; accessMode: ConnectorAccessMode }
+  { connectorType: string; accessMode: ConnectorAccessMode }
 >> = {
   kb_search: { connectorType: 'knowledge_base', accessMode: 'read' },
   kb_list_index: { connectorType: 'knowledge_base', accessMode: 'read' },
@@ -98,11 +99,11 @@ export const TOOL_REQUIREMENTS: Partial<Record<
  * connector-hibára futott.
  */
 export function toolsRequiringConnector(
-  connectorType: ConnectorType,
+  connectorType: string,
   accessMode?: ConnectorAccessMode,
 ): string[] {
   return (Object.entries(TOOL_REQUIREMENTS) as Array<
-    [string, { connectorType: ConnectorType; accessMode: ConnectorAccessMode }]
+    [string, { connectorType: string; accessMode: ConnectorAccessMode }]
   >)
     .filter(
       ([, requirement]) =>

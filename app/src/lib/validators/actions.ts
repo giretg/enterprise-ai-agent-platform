@@ -8,8 +8,6 @@ export const agentIdSchema = z.object({ id: z.string().uuid() })
 export const createAgentSchema = z.object({
   name: z.string().trim().min(1).max(120),
   roleInstruction: z.string().trim().min(1).max(20_000),
-  behaviorProfile: z.string().trim().max(20_000).default(''),
-  role: z.enum(['worker', 'orchestrator']).optional(),
 })
 
 export const updateAgentInstructionSchema = z.object({

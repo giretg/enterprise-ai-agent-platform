@@ -37,10 +37,8 @@ function user(overrides: Partial<User> = {}): User {
     externalAuthId: CLERK_ID,
     email: 'ops@acme.test',
     name: 'Ops',
-    jobDescription: null,
     role: 'operator',
     status: 'active',
-    tenantId: TENANT_ID,
     invitedById: null,
     activatedAt: new Date('2026-01-01T00:00:00Z'),
     suspendedAt: null,
@@ -136,12 +134,6 @@ function deps(overrides: {
           return overrides.platform ?? []
         },
       },
-      audit: {
-        async append(data) {
-          audit.push(data as unknown as Record<string, unknown>)
-          return data as never
-        },
-      },
     },
   }
 }
@@ -168,7 +160,6 @@ async function main() {
     assert.equal(result.principal.tenantSlug, 'acme')
     assert.equal(result.principal.role, 'operator')
     assert.equal(result.principal.assumed, false)
-    assert.equal(stub.audit.some((row) => row.action === 'mcp.auth.ok'), true)
   })
 
   await check('pending membership deny (non-superadmin)', async () => {
@@ -177,7 +168,6 @@ async function main() {
     assert.equal(result.ok, false)
     if (result.ok) return
     assert.equal(result.code, 'not_a_member')
-    assert.equal(stub.audit.some((row) => row.action === 'mcp.auth.deny'), true)
   })
 
   await check('inactive user deny (same code as unknown Clerk user)', async () => {
@@ -225,13 +215,6 @@ async function main() {
     assert.equal(result.principal.assumed, true)
     assert.equal(result.principal.role, 'admin')
     assert.equal(result.principal.tenantSlug, 'acme')
-    const ok = stub.audit.find((row) => row.action === 'mcp.auth.ok')
-    assert.ok(ok)
-    assert.equal((ok?.metadata as { assumed?: boolean }).assumed, true)
-    assert.equal(
-      stub.audit.some((row) => row.action === 'tenant.assume'),
-      false,
-    )
   })
 
   await check('non-superadmin without membership → not_a_member', async () => {
@@ -257,7 +240,6 @@ async function main() {
     assert.equal(result.ok, false)
     if (result.ok) return
     assert.equal(result.code, 'invalid_token')
-    assert.equal(stub.audit.some((row) => row.action === 'mcp.auth.deny'), true)
   })
 
   await check('resource claim for a different origin → invalid_token', async () => {
