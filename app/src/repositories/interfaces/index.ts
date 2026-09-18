@@ -43,8 +43,10 @@ import type {
   UserStatus,
 } from '@prisma/client'
 import type { ListPageResult } from '@/lib/list-pagination'
+import type { AuditAppendInput } from '@/lib/audit/types'
 
 export type { ListPageResult }
+export type { AuditAppendInput }
 
 export type AgentListFilter = {
   tenantId?: string
@@ -527,13 +529,6 @@ export interface PlatformSettingsRepository {
 export type { Capability }
 
 export type { GatewayOperationStore as GatewayOperationRepository } from '@/domain/gateway-operation'
-
-export type AuditAppendInput = Omit<
-  AuditLog,
-  'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash' | 'tenantId'
-> & {
-  tenantId?: string | null
-}
 
 export type AuditListFilter = {
   action?: string | string[]

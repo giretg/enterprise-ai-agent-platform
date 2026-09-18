@@ -412,6 +412,7 @@ async function main() {
     assert.equal(res.status, 403)
     const body = (await readJson(res)) as { error: { code: string } }
     assert.equal(body.error.code, 'user_inactive')
+    assert.ok(audit.some((row) => row.action === 'mcp.auth.deny'))
   })
 
   await check('inactive tenant → 403 tenant_not_active', async () => {
@@ -425,6 +426,7 @@ async function main() {
     assert.equal(res.status, 403)
     const body = (await readJson(res)) as { error: { code: string } }
     assert.equal(body.error.code, 'tenant_not_active')
+    assert.ok(audit.some((row) => row.action === 'mcp.auth.deny'))
   })
 
   await check('non-member → 403 not_a_member', async () => {
@@ -536,6 +538,7 @@ async function main() {
     assert.equal(body.result?.isError, true)
     const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
     assert.equal(payload.code, 'tool_not_allowed')
+    assert.ok(audit.some((row) => row.action === 'mcp.tools.call.deny'))
   })
 
   await check('platform.agents.list ignores extra tenant keys', async () => {

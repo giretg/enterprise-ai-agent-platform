@@ -3,6 +3,7 @@
  *
  * Futtatás: npx tsx scripts/control-plane-nav.test.ts
  */
+import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import {
@@ -109,7 +110,7 @@ function main() {
     assert.equal(account.label, 'Kapcsolt fiókok')
   })
 
-  check('header keeps Munkatársak tools after the roster moved to the rail', () => {
+  check('header catalog keeps skills, not the deleted rail roster tools', () => {
     const nav = buildControlPlaneNav({ tenantRole: 'operator', platformRoles: [] })
     const staff = nav.find((entry) => 'children' in entry && entry.key === 'staff')
     assert.ok(staff && 'children' in staff)

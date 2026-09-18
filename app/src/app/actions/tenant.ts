@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { services } from '@/domain/gateway-services'
 import { getAuthContext, ACTIVE_TENANT_COOKIE } from '@/auth/context'
 import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
-import { decideSwitch, TENANT_AUDIT_ACTIONS } from '@/lib/tenant-policy'
+import { decideSwitch } from '@/lib/tenant-policy'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
 
