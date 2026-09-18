@@ -14,7 +14,6 @@ export {
 export { invokeEnterpriseTool, type EnterpriseToolDeps, type EnterpriseToolMcpResult } from './invoke-enterprise-tool'
 export {
   ENTERPRISE_DRIVE_TOOLS,
-  GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
   googleDriveReadFileInputSchema,

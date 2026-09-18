@@ -165,6 +165,7 @@ async function main() {
     assert.deepEqual(result, {
       allowed: true,
       connectorId: CONNECTOR_ID,
+      connector: connector(),
       grantId: GRANT_ID,
       tokenRef: 'stub-drive-token',
     })
@@ -173,15 +174,22 @@ async function main() {
   await check('capability deny uses snapshot, not a live draft', async () => {
     const result = await authorizeToolCall(authorizeDeps(), {
       principal: principal(),
-      definition: definition({
-        snapshot: {
-          name: 'Drive assistant',
-          roleInstruction: 'Inspect Drive',
-          skills: [],
-          connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'read' }],
-          capabilities: [{ toolName: GOOGLE_DRIVE_SEARCH_TOOL, allowed: false }],
-        },
-      }),
+      definition: {
+        ...definition({
+          snapshot: {
+            name: 'Drive assistant',
+            roleInstruction: 'Inspect Drive',
+            skills: [],
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'read' }],
+            capabilities: [{ toolName: GOOGLE_DRIVE_SEARCH_TOOL, allowed: false }],
+          },
+        }),
+        // Trap: live-looking extras must not override the published snapshot.
+        ...({
+          capabilities: [{ toolName: GOOGLE_DRIVE_SEARCH_TOOL, allowed: true }],
+          liveCapabilities: [{ toolName: GOOGLE_DRIVE_SEARCH_TOOL, allowed: true }],
+        } as object),
+      } as AgentDefinition,
       toolName: GOOGLE_DRIVE_SEARCH_TOOL,
       args: {},
     })
@@ -351,6 +359,44 @@ async function main() {
     })
     assert.equal(result.isError, true)
     assert.equal(parsePayload(result).code, 'definition_mismatch')
+  })
+
+  await check('non-UUID agentId is definition_mismatch, not invalid_args', async () => {
+    const result = await invokeEnterpriseTool(invokeDeps(), {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+      args: {
+        definitionId: DEFINITION_ID,
+        agentId: 'not-a-uuid',
+      },
+    })
+    assert.equal(result.isError, true)
+    assert.equal(parsePayload(result).code, 'definition_mismatch')
+  })
+
+  await check('invoke deny uses published snapshot even if live-looking extras would allow', async () => {
+    const publishedDenied = {
+      ...definition({
+        snapshot: {
+          name: 'Drive assistant',
+          roleInstruction: 'Inspect Drive',
+          skills: [],
+          connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'read' }],
+          capabilities: [{ toolName: GOOGLE_DRIVE_SEARCH_TOOL, allowed: false }],
+        },
+      }),
+      ...({
+        capabilities: [{ toolName: GOOGLE_DRIVE_SEARCH_TOOL, allowed: true }],
+        liveCapabilities: [{ toolName: GOOGLE_DRIVE_SEARCH_TOOL, allowed: true }],
+      } as object),
+    } as AgentDefinition
+    const result = await invokeEnterpriseTool(invokeDeps({ definition: publishedDenied }), {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+      args: { definitionId: DEFINITION_ID, nameContains: 'Platform' },
+    })
+    assert.equal(result.isError, true)
+    assert.equal(parsePayload(result).code, 'capability_not_allowed')
   })
 
   await check('extra JSON cannot override tenant or user', async () => {

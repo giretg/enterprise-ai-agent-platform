@@ -17,7 +17,6 @@ import {
   isPrivilegedAgentReader,
 } from '../src/domain/agent-definition'
 import {
-  GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
   invokeEnterpriseTool,
@@ -31,6 +30,7 @@ import {
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
 
+const GOOGLE_DRIVE_CREATE_FOLDER_TOOL = 'google_drive_create_folder'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
 const ORIGIN = 'https://app.example.com'
@@ -160,8 +160,25 @@ function runtimeDeps(overrides: {
   role?: TenantMembership['role']
   grantedAgentIds?: Set<string>
   grantAccessLevel?: 'view' | 'operate'
-} = {}): { deps: McpRuntimeDeps; audit: Array<Record<string, unknown>> } {
+} = {}): {
+  deps: McpRuntimeDeps
+  audit: Array<Record<string, unknown>>
+  seen: {
+    loadDefinitionTenantId?: string
+    findActiveGrantTenantId?: string
+    findActiveGrantUserId?: string
+    resolveActingUserId?: string
+    resolveTenantId?: string
+  }
+} {
   const audit: Array<Record<string, unknown>> = []
+  const seen: {
+    loadDefinitionTenantId?: string
+    findActiveGrantTenantId?: string
+    findActiveGrantUserId?: string
+    resolveActingUserId?: string
+    resolveTenantId?: string
+  } = {}
   const role = overrides.role ?? 'operator'
   const grantedAgentIds = overrides.grantedAgentIds ?? new Set<string>()
   const grantAccessLevel = overrides.grantAccessLevel ?? 'view'
@@ -171,6 +188,7 @@ function runtimeDeps(overrides: {
     agentId?: string
     version?: number
   }) {
+    seen.loadDefinitionTenantId = input.tenantId
     if (input.definitionId === OTHER_DEFINITION_ID) return null
     if (input.tenantId !== TENANT_ID) return null
     if (input.definitionId && input.definitionId !== DEFINITION_ID) return null
@@ -184,15 +202,20 @@ function runtimeDeps(overrides: {
     async findConnector() {
       return liveConnector()
     },
-    async findActiveGrant() {
+    async findActiveGrant(input) {
+      seen.findActiveGrantTenantId = input.tenantId
+      seen.findActiveGrantUserId = input.userId
       return liveGrant()
     },
-    async resolveAccessToken() {
+    async resolveAccessToken(params) {
+      seen.resolveActingUserId = params.actingUserId
+      seen.resolveTenantId = params.tenantId
       return 'stub-drive-token'
     },
   }
   return {
     audit,
+    seen,
     deps: {
       isClerkConfigured: () => overrides.clerkConfigured ?? true,
       resolveOrigin: () => ORIGIN,
@@ -618,7 +641,7 @@ async function main() {
   })
 
   await check('google_drive_search happy path with stub client; extra JSON cannot override tenant', async () => {
-    const { deps } = runtimeDeps({ role: 'admin' })
+    const { deps, seen } = runtimeDeps({ role: 'admin' })
     await initialize(deps)
     const res = await post(
       'acme',
@@ -649,6 +672,11 @@ async function main() {
     }
     assert.ok(Array.isArray(payload.files) && payload.files.length > 0)
     assert.equal((body.result?.content?.[0]?.text ?? '').includes('stub-drive-token'), false)
+    assert.equal(seen.loadDefinitionTenantId, TENANT_ID)
+    assert.equal(seen.findActiveGrantTenantId, TENANT_ID)
+    assert.equal(seen.findActiveGrantUserId, USER_ID)
+    assert.equal(seen.resolveTenantId, TENANT_ID)
+    assert.equal(seen.resolveActingUserId, USER_ID)
   })
 
   await check('google_drive_read_file happy path with stub client', async () => {

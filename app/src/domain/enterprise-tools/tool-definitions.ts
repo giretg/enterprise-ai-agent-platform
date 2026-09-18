@@ -2,7 +2,6 @@ import { z } from 'zod'
 
 export const GOOGLE_DRIVE_SEARCH_TOOL = 'google_drive_search'
 export const GOOGLE_DRIVE_READ_FILE_TOOL = 'google_drive_read_file'
-export const GOOGLE_DRIVE_CREATE_FOLDER_TOOL = 'google_drive_create_folder'
 
 export const ENTERPRISE_DRIVE_TOOLS = [
   GOOGLE_DRIVE_SEARCH_TOOL,
@@ -40,7 +39,6 @@ export const googleDriveReadFileInputSchema = z
     agentId: optionalAgentId,
     fileId: z.string().min(1).max(200),
     maxBytes: z.number().int().min(1).max(20_000_000).optional(),
-    sheetName: z.string().max(120).optional(),
   })
   .passthrough()
 

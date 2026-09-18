@@ -18,15 +18,17 @@ UUID). MCP tools `platform.whoami`, `platform.agents.list`, and
 There is no `AuditLog` table. `GatewayOperation` / `GatewayApproval` tables
 exist for #541; the domain remains TODO.
 
-**Phase C is live:** Codex and Claude Code call `google_drive_search` and
-`google_drive_read_file` on the same `/api/mcp/{tenantSlug}` resource. Policy
-comes from the published `AgentDefinitionVersion.snapshot`; live DB checks
-confirm the connector is still `active` and the principal has a delegated
-`ConnectorGrant`. `authorizeToolCall` is the single gate. Writes
-(`google_drive_create_folder`, GatewayOperation) stay on #541. Credentials are
-resolved server-side only (`resolveAccessToken`) and never appear in MCP
-payloads. Audit is structured `console.info` (`enterprise.tool.ok` /
-`denied` / `error`) — still no `AuditLog` table.
+**Phase C:** `google_drive_search` and `google_drive_read_file` are registered
+on the same `/api/mcp/{tenantSlug}` resource. Policy comes from the published
+`AgentDefinitionVersion.snapshot`; live DB checks confirm the connector is
+still `active` and the principal has a delegated `ConnectorGrant`.
+`authorizeToolCall` is the single gate. Writes (`google_drive_create_folder`,
+GatewayOperation) stay on #541. Credentials are resolved server-side only
+(`resolveAccessToken`) and never appear in MCP payloads. Audit is structured
+`console.info` (`enterprise.tool.ok` / `denied` / `error`) — still no
+`AuditLog` table. Dual-harness evidence (Codex + Claude Code CLI versions and
+Clerk instance type) is recorded on the PR when
+`docs/mcp-compatibility-runbook.md` is executed.
 
 ## Entry points
 

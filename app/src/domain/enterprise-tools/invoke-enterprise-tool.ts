@@ -125,10 +125,12 @@ export async function invokeEnterpriseTool(
     return errorResult('definition_not_found')
   }
 
-  const agentIdArg = asUuid(args.agentId)
-  if (agentIdArg && agentIdArg !== definition.agentId) {
-    auditDenied(principal, toolName, 'definition_mismatch', definitionId, definition.agentId)
-    return errorResult('definition_mismatch')
+  if (args.agentId !== undefined) {
+    const agentIdArg = asUuid(args.agentId)
+    if (!agentIdArg || agentIdArg !== definition.agentId) {
+      auditDenied(principal, toolName, 'definition_mismatch', definitionId, definition.agentId)
+      return errorResult('definition_mismatch')
+    }
   }
 
   const grant = await deps.findAgentGrant({
@@ -163,11 +165,7 @@ export async function invokeEnterpriseTool(
     return errorResult(authorized.reason)
   }
 
-  const connector = await deps.findConnector(authorized.connectorId)
-  if (!connector) {
-    auditDenied(principal, toolName, 'connector_not_active', definitionId, definition.agentId)
-    return errorResult('connector_not_active')
-  }
+  const connector = authorized.connector
 
   let accessToken: string
   try {

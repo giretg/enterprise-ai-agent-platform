@@ -20,17 +20,6 @@ export type AuthorizeToolCallInput = {
   args: Record<string, unknown>
 }
 
-export type AuthorizeToolCallDenied = { allowed: false; reason: string }
-
-export type AuthorizeToolCallAllowed = {
-  allowed: true
-  connectorId: string
-  grantId: string
-  tokenRef: string
-}
-
-export type AuthorizeToolCallResult = AuthorizeToolCallAllowed | AuthorizeToolCallDenied
-
 export type LiveConnectorRow = {
   id: string
   tenantId: string
@@ -38,6 +27,18 @@ export type LiveConnectorRow = {
   authMode: string
   lifecycleState: string
 }
+
+export type AuthorizeToolCallDenied = { allowed: false; reason: string }
+
+export type AuthorizeToolCallAllowed = {
+  allowed: true
+  connectorId: string
+  connector: LiveConnectorRow
+  grantId: string
+  tokenRef: string
+}
+
+export type AuthorizeToolCallResult = AuthorizeToolCallAllowed | AuthorizeToolCallDenied
 
 export type LiveGrantRow = {
   id: string
@@ -116,6 +117,7 @@ export async function authorizeToolCall(
   return {
     allowed: true,
     connectorId: connector.id,
+    connector,
     grantId: grant.id,
     tokenRef: grant.tokenRef,
   }
