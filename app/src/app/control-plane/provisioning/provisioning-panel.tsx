@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import {
   activateConnectorDraftPipeline,
   createConnectorFromTemplateAction,
@@ -101,10 +101,6 @@ export function ProvisioningPanel(props: {
     setDrafts(draftRes.data)
     setTemplates(templateRes.data.filter((row) => row.status === 'active'))
   }, [])
-
-  useEffect(() => {
-    void reload()
-  }, [reload])
 
   const picked = templates.find((row) => row.id === pickedId) ?? null
   const openDrafts = useMemo(
