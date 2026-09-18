@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useSyncExternalStore, type ReactNode } from 'react'
+import { useSyncExternalStore, type ReactNode } from 'react'
 import { usePathname } from 'next/navigation'
 import { AppShell, type NavEntry } from '@/components/ui/shell'
 import { AgentRail, AgentRailMobileToggle } from '@/components/agents/agent-rail'
@@ -79,28 +79,24 @@ export function ControlPlaneShell({
 
   return (
     <>
-      <Suspense fallback={null}>
-        <AppShell
-          appName="E-AI"
-          appSubtitle="Control Plane"
-          navItems={navItems}
-          accentColor="slate"
-          pathname={pathname}
-          navMode="modal"
-          layout="rail"
-          headerExtra={
-            <div className="flex items-center gap-2">
-              <AgentRailMobileToggle />
-              <TenantSwitcher />
-            </div>
-          }
-        >
-          <ControlPlaneBody canCreateAgent={canCreateAgent}>{children}</ControlPlaneBody>
-        </AppShell>
-      </Suspense>
-      <Suspense fallback={null}>
-        <RouteModalHost />
-      </Suspense>
+      <AppShell
+        appName="E-AI"
+        appSubtitle="Control Plane"
+        navItems={navItems}
+        accentColor="slate"
+        pathname={pathname}
+        navMode="modal"
+        layout="rail"
+        headerExtra={
+          <div className="flex items-center gap-2">
+            <AgentRailMobileToggle />
+            <TenantSwitcher />
+          </div>
+        }
+      >
+        <ControlPlaneBody canCreateAgent={canCreateAgent}>{children}</ControlPlaneBody>
+      </AppShell>
+      <RouteModalHost />
       <ControlPlanePanelDockHost />
     </>
   )

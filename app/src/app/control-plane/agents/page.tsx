@@ -1,14 +1,18 @@
 import Link from 'next/link'
 import { listAgents } from '@/app/actions/platform'
-import { requireTenantRole } from '@/auth/tenant-context'
+import { hasMinimumRole } from '@/auth/types'
 import { Card } from '@/components/ui/shell'
+import { requireControlPlaneTenantViewer } from '@/lib/default-agent-workspace'
+import { personaFor } from '@/lib/agent-persona'
 
 export const dynamic = 'force-dynamic'
 
 export default async function AgentsIndexPage() {
-  await requireTenantRole('viewer')
+  const ctx = await requireControlPlaneTenantViewer()
   const agentsRes = await listAgents({ limit: 100 })
   const agents = agentsRes.success ? agentsRes.data : []
+  const loadError = agentsRes.success ? null : agentsRes.error
+  const canCreateAgent = hasMinimumRole(ctx.activeTenantRole, 'admin')
 
   return (
     <div className="space-y-6">
@@ -19,18 +23,35 @@ export default async function AgentsIndexPage() {
           Definíció, skill és konnektor — a published snapshot az MCP-n olvasható.
         </p>
       </div>
-      <div className="grid gap-4 md:grid-cols-2">
-        {agents.map((agent) => (
-          <Link key={agent.id} href={`/control-plane/agents/${agent.id}`}>
-            <Card title={agent.name}>
-              <p className="text-sm text-ink-soft">{agent.status}</p>
+      {loadError ? (
+        <div className="rounded-2xl border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+          A munkatársak most nem tölthetők be.
+          <span className="mt-1 block text-xs opacity-70">{loadError}</span>
+        </div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2">
+          {agents.map((agent) => {
+            const persona = personaFor(agent.name)
+            return (
+              <Link key={agent.id} href={`/control-plane/agents/${agent.id}`}>
+                <Card title={persona.nickname || agent.name}>
+                  <p className="text-sm text-ink-soft">{agent.status}</p>
+                </Card>
+              </Link>
+            )
+          })}
+          {agents.length === 0 ? (
+            <Card title="Még nincs munkatárs">
+              <p className="text-sm text-ink-soft">
+                Ebben a szervezetben még nincs AI-munkatárs.
+                {canCreateAgent
+                  ? ' Vedd fel az elsőt a sáv „Új munkatárs” gombjával.'
+                  : ' Kérj egy admint, hogy vegyen fel egyet.'}
+              </p>
             </Card>
-          </Link>
-        ))}
-        {agents.length === 0 ? (
-          <p className="text-sm text-ink-soft">Még nincs agent ebben a szervezetben.</p>
-        ) : null}
-      </div>
+          ) : null}
+        </div>
+      )}
     </div>
   )
 }

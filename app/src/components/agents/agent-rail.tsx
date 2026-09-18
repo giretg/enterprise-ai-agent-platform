@@ -54,6 +54,7 @@ export function AgentRail({
   const selectedId = selectedAgentIdFromPath(pathname)
   const [cards, setCards] = useState<AgentRailCardState[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -67,6 +68,8 @@ export function AgentRail({
       setLoadError(null)
     } catch {
       setLoadError('A csapat állapota most nem frissíthető.')
+    } finally {
+      setLoaded(true)
     }
   }, [])
 
@@ -183,8 +186,12 @@ export function AgentRail({
       >
         {loadError ? (
           <p className="px-2 py-3 text-xs text-coral-deep">{loadError}</p>
+        ) : !loaded ? (
+          <p className="px-2 py-3 text-xs text-ink-faint">Betöltés…</p>
         ) : filtered.length === 0 ? (
-          <p className="px-2 py-3 text-xs text-ink-faint">Nincs találat erre a szűrésre.</p>
+          <p className="px-2 py-3 text-xs text-ink-faint">
+            {cards.length === 0 ? 'Még nincs munkatárs a sávban.' : 'Nincs találat erre a szűrésre.'}
+          </p>
         ) : (
           filtered.map((card) => (
             <AgentRailCard
