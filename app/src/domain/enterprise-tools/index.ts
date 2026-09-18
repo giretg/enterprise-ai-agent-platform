@@ -1,23 +1,24 @@
 /**
- * Enterprise tool gateway.
- *
- * TODO(phase-C): registry + authorizeToolCall + execution gateway.
- * Phase 0 only establishes the module boundary.
+ * Enterprise tool gateway: snapshot policy + live connector/grant checks.
+ * Drive read tools only (#540). Writes stay on #541.
  */
-export type AuthorizeToolCallInput = {
-  principalUserId: string
-  tenantId: string
-  agentId: string
-  toolName: string
-  args: Record<string, unknown>
-}
-
-export type AuthorizeToolCallResult =
-  | { allowed: true }
-  | { allowed: false; reason: string }
-
-export function authorizeToolCall(
-  _input: AuthorizeToolCallInput,
-): Promise<AuthorizeToolCallResult> {
-  return Promise.reject(new Error('TODO(phase-C): authorizeToolCall is not implemented'))
-}
+export {
+  authorizeToolCall,
+  type AuthorizeToolCallDeps,
+  type AuthorizeToolCallInput,
+  type AuthorizeToolCallResult,
+  type LiveConnectorRow,
+  type LiveGrantRow,
+  type ToolCallPrincipal,
+} from './authorize-tool-call'
+export { invokeEnterpriseTool, type EnterpriseToolDeps, type EnterpriseToolMcpResult } from './invoke-enterprise-tool'
+export {
+  ENTERPRISE_DRIVE_TOOLS,
+  GOOGLE_DRIVE_READ_FILE_TOOL,
+  GOOGLE_DRIVE_SEARCH_TOOL,
+  googleDriveReadFileInputSchema,
+  googleDriveSearchInputSchema,
+  isEnterpriseDriveTool,
+  schemaForEnterpriseDriveTool,
+  type EnterpriseDriveTool,
+} from './tool-definitions'

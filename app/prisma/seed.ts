@@ -61,14 +61,14 @@ async function main() {
         userId: user.id,
       },
     },
-    update: { status: 'active', tokenRef: `seed-drive-grant:${user.id}` },
+    update: { status: 'active', tokenRef: `stub-seed-drive-grant:${user.id}` },
     create: {
       tenantId: tenant.id,
       connectorId: connector.id,
       userId: user.id,
       status: 'active',
       scopes: ['https://www.googleapis.com/auth/drive.readonly'],
-      tokenRef: `seed-drive-grant:${user.id}`,
+      tokenRef: `stub-seed-drive-grant:${user.id}`,
       accountLabel: 'seed-placeholder',
     },
   })

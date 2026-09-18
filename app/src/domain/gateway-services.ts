@@ -9,6 +9,11 @@
 import { repositories } from '@/repositories/postgres'
 import { AgentDefinitionService } from '@/domain/agent-definition'
 import { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
+import {
+  authorizeToolCall,
+  invokeEnterpriseTool,
+  type EnterpriseToolDeps,
+} from '@/domain/enterprise-tools'
 import { IamService } from '@/domain/iam/iam-service'
 import { PlatformSettingsService } from '@/domain/platform-settings/platform-settings-service'
 import { ProvisioningService } from '@/domain/provisioning/provisioning-service'
@@ -53,6 +58,31 @@ const agentDefinitionService = new AgentDefinitionService({
   skills: repositories.skills,
 })
 
+function isStubDriveCredential(tokenRef: string): boolean {
+  return tokenRef.startsWith('stub-') || process.env.GOOGLE_DRIVE_API_STUB === 'true'
+}
+
+const enterpriseToolDeps: EnterpriseToolDeps = {
+  loadDefinition: (input) => agentDefinitionService.loadAgentDefinition(input),
+  findAgentGrant: (input) => repositories.resourceGrants.findAgentGrant(input),
+  findConnector: (id) => repositories.connectors.findById(id),
+  findActiveGrant: (input) => repositories.connectorGrants.findActiveGrant(input),
+  async resolveAccessToken(params) {
+    if (isStubDriveCredential(params.tokenRef)) {
+      return params.tokenRef.startsWith('stub-') ? params.tokenRef : `stub-${params.grantId}`
+    }
+    const connector = await repositories.connectors.findById(params.connector.id)
+    if (!connector) throw new Error('connector_not_active')
+    return connectorGrantService.resolveAccessToken({
+      connector,
+      grantId: params.grantId,
+      tokenRef: params.tokenRef,
+      actingUserId: params.actingUserId,
+      tenantId: params.tenantId,
+    })
+  },
+}
+
 export const services = {
   platformSettings: platformSettingsService,
   iam: iamService,
@@ -61,4 +91,10 @@ export const services = {
   agentDefinitions: agentDefinitionService,
   provisioning: provisioningService,
   connectorGrants: connectorGrantService,
+  enterpriseTools: {
+    authorizeToolCall: (input: Parameters<typeof authorizeToolCall>[1]) =>
+      authorizeToolCall(enterpriseToolDeps, input),
+    invoke: (input: Parameters<typeof invokeEnterpriseTool>[1]) =>
+      invokeEnterpriseTool(enterpriseToolDeps, input),
+  },
 }

@@ -17,11 +17,20 @@ import {
   isPrivilegedAgentReader,
 } from '../src/domain/agent-definition'
 import {
+  GOOGLE_DRIVE_READ_FILE_TOOL,
+  GOOGLE_DRIVE_SEARCH_TOOL,
+  invokeEnterpriseTool,
+  type EnterpriseToolDeps,
+  type LiveConnectorRow,
+  type LiveGrantRow,
+} from '../src/domain/enterprise-tools'
+import {
   MCP_AGENTS_LIST_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
 
+const GOOGLE_DRIVE_CREATE_FOLDER_TOOL = 'google_drive_create_folder'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
 const ORIGIN = 'https://app.example.com'
@@ -93,6 +102,8 @@ function membership(overrides: Partial<TenantMembership> = {}): TenantMembership
 const DEFINITION_ID = '55555555-5555-4555-8555-555555555555'
 const AGENT_ID = '66666666-6666-4666-8666-666666666666'
 const OTHER_DEFINITION_ID = '77777777-7777-4777-8777-777777777777'
+const CONNECTOR_ID = '88888888-8888-4888-8888-888888888888'
+const GRANT_ID = '99999999-9999-4999-8999-999999999999'
 
 const SAMPLE_DEFINITION = {
   definitionId: DEFINITION_ID,
@@ -105,8 +116,11 @@ const SAMPLE_DEFINITION = {
     name: 'Drive assistant',
     roleInstruction: 'Inspect Drive',
     skills: [],
-    connectors: [],
-    capabilities: [{ toolName: 'google_drive_search', allowed: true }],
+    connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'read' as const }],
+    capabilities: [
+      { toolName: GOOGLE_DRIVE_SEARCH_TOOL, allowed: true },
+      { toolName: GOOGLE_DRIVE_READ_FILE_TOOL, allowed: true },
+    ],
   },
 }
 
@@ -118,6 +132,25 @@ const PUBLISHED_LIST_ITEM = {
   currentVersion: 1,
 }
 
+function liveConnector(): LiveConnectorRow {
+  return {
+    id: CONNECTOR_ID,
+    tenantId: TENANT_ID,
+    type: 'google_drive',
+    authMode: 'user_delegated',
+    lifecycleState: 'active',
+  }
+}
+
+function liveGrant(): LiveGrantRow {
+  return {
+    id: GRANT_ID,
+    tokenRef: 'stub-drive-token',
+    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+    status: 'active',
+  }
+}
+
 function runtimeDeps(overrides: {
   membership?: TenantMembership | null
   tenant?: Tenant | null
@@ -126,12 +159,63 @@ function runtimeDeps(overrides: {
   clerkConfigured?: boolean
   role?: TenantMembership['role']
   grantedAgentIds?: Set<string>
-} = {}): { deps: McpRuntimeDeps; audit: Array<Record<string, unknown>> } {
+  grantAccessLevel?: 'view' | 'operate'
+} = {}): {
+  deps: McpRuntimeDeps
+  audit: Array<Record<string, unknown>>
+  seen: {
+    loadDefinitionTenantId?: string
+    findActiveGrantTenantId?: string
+    findActiveGrantUserId?: string
+    resolveActingUserId?: string
+    resolveTenantId?: string
+  }
+} {
   const audit: Array<Record<string, unknown>> = []
+  const seen: {
+    loadDefinitionTenantId?: string
+    findActiveGrantTenantId?: string
+    findActiveGrantUserId?: string
+    resolveActingUserId?: string
+    resolveTenantId?: string
+  } = {}
   const role = overrides.role ?? 'operator'
   const grantedAgentIds = overrides.grantedAgentIds ?? new Set<string>()
+  const grantAccessLevel = overrides.grantAccessLevel ?? 'view'
+  async function loadDefinition(input: {
+    tenantId: string
+    definitionId?: string
+    agentId?: string
+    version?: number
+  }) {
+    seen.loadDefinitionTenantId = input.tenantId
+    if (input.definitionId === OTHER_DEFINITION_ID) return null
+    if (input.tenantId !== TENANT_ID) return null
+    if (input.definitionId && input.definitionId !== DEFINITION_ID) return null
+    return SAMPLE_DEFINITION
+  }
+  const enterpriseDeps: EnterpriseToolDeps = {
+    loadDefinition: ({ tenantId, definitionId }) => loadDefinition({ tenantId, definitionId }),
+    async findAgentGrant({ agentId }) {
+      return grantedAgentIds.has(agentId) ? { accessLevel: grantAccessLevel } : null
+    },
+    async findConnector() {
+      return liveConnector()
+    },
+    async findActiveGrant(input) {
+      seen.findActiveGrantTenantId = input.tenantId
+      seen.findActiveGrantUserId = input.userId
+      return liveGrant()
+    },
+    async resolveAccessToken(params) {
+      seen.resolveActingUserId = params.actingUserId
+      seen.resolveTenantId = params.tenantId
+      return 'stub-drive-token'
+    },
+  }
   return {
     audit,
+    seen,
     deps: {
       isClerkConfigured: () => overrides.clerkConfigured ?? true,
       resolveOrigin: () => ORIGIN,
@@ -164,18 +248,14 @@ function runtimeDeps(overrides: {
         if (isPrivilegedAgentReader(principalRole)) return [PUBLISHED_LIST_ITEM]
         return grantedAgentIds.has(AGENT_ID) ? [PUBLISHED_LIST_ITEM] : []
       },
-      async loadDefinition(input) {
-        if (input.definitionId === OTHER_DEFINITION_ID) return null
-        if (input.tenantId !== TENANT_ID) return null
-        if (input.definitionId && input.definitionId !== DEFINITION_ID) return null
-        return SAMPLE_DEFINITION
-      },
+      loadDefinition,
       async canViewAgent({ role: principalRole, agentId }) {
         return canReadPublishedAgent({
           role: principalRole,
-          grant: grantedAgentIds.has(agentId) ? { accessLevel: 'view' } : null,
+          grant: grantedAgentIds.has(agentId) ? { accessLevel: grantAccessLevel } : null,
         })
       },
+      invokeEnterpriseTool: (input) => invokeEnterpriseTool(enterpriseDeps, input),
     },
   }
 }
@@ -318,7 +398,7 @@ async function main() {
     assert.equal(body.error.code, 'auth_not_configured')
   })
 
-  await check('tools/list returns whoami, list, and get_definition', async () => {
+  await check('tools/list returns platform tools and Drive read tools, not create_folder', async () => {
     const { deps } = runtimeDeps()
     const init = await initialize(deps)
     assert.equal(init.status, 200, `initialize HTTP ${init.status}: ${await init.clone().text()}`)
@@ -335,7 +415,14 @@ async function main() {
     }
     assert.equal(body.error, undefined, JSON.stringify(body))
     const names = (body.result?.tools ?? []).map((tool) => tool.name)
-    assert.deepEqual(names, [MCP_WHOAMI_TOOL, MCP_AGENTS_LIST_TOOL, MCP_AGENT_GET_DEFINITION_TOOL])
+    assert.deepEqual(names, [
+      MCP_WHOAMI_TOOL,
+      MCP_AGENTS_LIST_TOOL,
+      MCP_AGENT_GET_DEFINITION_TOOL,
+      GOOGLE_DRIVE_SEARCH_TOOL,
+      GOOGLE_DRIVE_READ_FILE_TOOL,
+    ])
+    assert.equal(names.includes(GOOGLE_DRIVE_CREATE_FOLDER_TOOL), false)
   })
 
   await check('platform.whoami returns principal JSON and ignores extra args', async () => {
@@ -551,6 +638,176 @@ async function main() {
     assert.equal(body.result?.isError, true)
     const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
     assert.equal(payload.code, 'definition_not_found')
+  })
+
+  await check('google_drive_search happy path with stub client; extra JSON cannot override tenant', async () => {
+    const { deps, seen } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 12,
+        method: 'tools/call',
+        params: {
+          name: GOOGLE_DRIVE_SEARCH_TOOL,
+          arguments: {
+            definitionId: DEFINITION_ID,
+            nameContains: 'Platform',
+            tenantId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            userId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          },
+        },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, undefined)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      files?: Array<{ id: string }>
+    }
+    assert.ok(Array.isArray(payload.files) && payload.files.length > 0)
+    assert.equal((body.result?.content?.[0]?.text ?? '').includes('stub-drive-token'), false)
+    assert.equal(seen.loadDefinitionTenantId, TENANT_ID)
+    assert.equal(seen.findActiveGrantTenantId, TENANT_ID)
+    assert.equal(seen.findActiveGrantUserId, USER_ID)
+    assert.equal(seen.resolveTenantId, TENANT_ID)
+    assert.equal(seen.resolveActingUserId, USER_ID)
+  })
+
+  await check('google_drive_read_file happy path with stub client', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 13,
+        method: 'tools/call',
+        params: {
+          name: GOOGLE_DRIVE_READ_FILE_TOOL,
+          arguments: { definitionId: DEFINITION_ID, fileId: 'stub-file-1' },
+        },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, undefined)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { text?: string }
+    assert.equal(typeof payload.text, 'string')
+  })
+
+  await check('Drive tool without definitionId → definition_not_found', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 14,
+        method: 'tools/call',
+        params: { name: GOOGLE_DRIVE_SEARCH_TOOL, arguments: { nameContains: 'Platform' } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, true)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
+    assert.equal(payload.code, 'definition_not_found')
+  })
+
+  await check('wrong-tenant definitionId on Drive tool → definition_not_found', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 15,
+        method: 'tools/call',
+        params: {
+          name: GOOGLE_DRIVE_SEARCH_TOOL,
+          arguments: { definitionId: OTHER_DEFINITION_ID },
+        },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, true)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
+    assert.equal(payload.code, 'definition_not_found')
+  })
+
+  await check('operator with view grant cannot invoke Drive tools', async () => {
+    const { deps } = runtimeDeps({
+      role: 'operator',
+      grantedAgentIds: new Set([AGENT_ID]),
+      grantAccessLevel: 'view',
+    })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 16,
+        method: 'tools/call',
+        params: {
+          name: GOOGLE_DRIVE_SEARCH_TOOL,
+          arguments: { definitionId: DEFINITION_ID },
+        },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, true)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
+    assert.equal(payload.code, 'agent_access_denied')
+  })
+
+  await check('google_drive_create_folder is tool_not_allowed', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 17,
+        method: 'tools/call',
+        params: {
+          name: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+          arguments: { definitionId: DEFINITION_ID },
+        },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, true)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
+    assert.equal(payload.code, 'tool_not_allowed')
   })
 
   await check('protected resource metadata resource is {origin}/api/mcp at every well-known path', async () => {

@@ -1,4 +1,4 @@
-# Architecture note — Phase 0 compilation boundary + Phase A MCP gate + Phase B schema
+# Architecture note — Phase 0 compilation boundary + Phase A MCP gate + Phase B schema + Phase C Drive read
 
 This repository is being rebuilt as an Enterprise MCP control plane. Phase 0
 establishes a **clean compilation boundary**. It is not a compatibility layer
@@ -18,6 +18,18 @@ UUID). MCP tools `platform.whoami`, `platform.agents.list`, and
 There is no `AuditLog` table. `GatewayOperation` / `GatewayApproval` tables
 exist for #541; the domain remains TODO.
 
+**Phase C:** `google_drive_search` and `google_drive_read_file` are registered
+on the same `/api/mcp/{tenantSlug}` resource. Policy comes from the published
+`AgentDefinitionVersion.snapshot`; live DB checks confirm the connector is
+still `active` and the principal has a delegated `ConnectorGrant`.
+`authorizeToolCall` is the single gate. Writes (`google_drive_create_folder`,
+GatewayOperation) stay on #541. Credentials are resolved server-side only
+(`resolveAccessToken`) and never appear in MCP payloads. Audit is structured
+`console.info` (`enterprise.tool.ok` / `denied` / `error`) — still no
+`AuditLog` table. Dual-harness evidence (Codex + Claude Code CLI versions and
+Clerk instance type) is recorded on the PR when
+`docs/mcp-compatibility-runbook.md` is executed.
+
 ## Entry points
 
 | Path | Role |
@@ -26,7 +38,7 @@ exist for #541; the domain remains TODO.
 | `app/src/auth/mcp-principal.ts` | MCP principal (Phase A/B) |
 | `app/src/app/api/mcp/[tenantSlug]/route.ts` | Tenant-scoped MCP resource URL (Phase A) |
 | `app/src/domain/agent-definition/` | Immutable Agent Definition (Phase B) |
-| `app/src/domain/enterprise-tools/` | `authorizeToolCall` + registry (Phase C) |
+| `app/src/domain/enterprise-tools/` | `authorizeToolCall` + Drive read gateway (Phase C) |
 | `app/src/domain/gateway-operation/` | GatewayOperation / GatewayApproval (Phase E) |
 
 Control Plane login remains Clerk (`app/src/auth/*`). Tenant membership is
@@ -59,9 +71,11 @@ ESLint rule.
 - There is no server-side selected-tenant / selected-agent session. Tenant is
   `/api/mcp/{tenantSlug}` plus membership or superadmin assume.
 - `tools/list` is not a security boundary. `tools/call` uses an allow-list
-  (`platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`);
-  `authorizeToolCall` is Phase C.
+  (`platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`,
+  `google_drive_search`, `google_drive_read_file`); every Drive `tools/call`
+  still runs `authorizeToolCall`.
 - Credentials never leave the server.
-- Prisma is the Phase B target schema. Drive MCP tools are #540.
+- Prisma is the Phase B target schema. Drive **read** MCP tools are Phase C
+  (#540). Drive **write** is #541.
 
 Detailed KEEP / EXTRACT / DELETE ledger: [`docs/rebuild-surgery-manifest.md`](rebuild-surgery-manifest.md).
