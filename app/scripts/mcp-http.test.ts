@@ -87,6 +87,7 @@ function membership(overrides: Partial<TenantMembership> = {}): TenantMembership
 function runtimeDeps(overrides: {
   membership?: TenantMembership | null
   tenant?: Tenant | null
+  user?: User | null
   platform?: PlatformMembership[]
   clerkConfigured?: boolean
 } = {}): { deps: McpRuntimeDeps; audit: Array<Record<string, unknown>> } {
@@ -100,7 +101,11 @@ function runtimeDeps(overrides: {
         if (bearerToken !== TOKEN) return null
         return { clerkUserId: 'user_clerk_acme' }
       },
-      users: { async findByExternalAuthId() { return user() } },
+      users: {
+        async findByExternalAuthId() {
+          return overrides.user === undefined ? user() : overrides.user
+        },
+      },
       tenants: {
         async findBySlug() {
           return overrides.tenant === undefined ? tenant() : overrides.tenant
@@ -183,17 +188,18 @@ async function initialize(deps: McpRuntimeDeps, slug = 'acme') {
 }
 
 async function main() {
-  await check('missing Bearer → 401 + WWW-Authenticate resource_metadata', async () => {
-    const { deps } = runtimeDeps()
+  await check('missing Bearer → 401 + WWW-Authenticate resource_metadata, not audited', async () => {
+    const { deps, audit } = runtimeDeps()
     const res = await post('acme', { jsonrpc: '2.0', id: 1, method: 'ping' }, {}, deps)
     assert.equal(res.status, 401)
     const www = res.headers.get('www-authenticate') ?? ''
     assert.match(www, /resource_metadata=/i)
     assert.match(www, /\/\.well-known\/oauth-protected-resource\/api\/mcp/)
+    assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), false)
   })
 
-  await check('invalid token → 401', async () => {
-    const { deps } = runtimeDeps()
+  await check('invalid token → 401 and mcp.auth.deny', async () => {
+    const { deps, audit } = runtimeDeps()
     const res = await post(
       'acme',
       { jsonrpc: '2.0', id: 1, method: 'ping' },
@@ -201,10 +207,13 @@ async function main() {
       deps,
     )
     assert.equal(res.status, 401)
+    const deny = audit.find((row) => row.action === 'mcp.auth.deny')
+    assert.ok(deny)
+    assert.equal((deny?.metadata as { code?: string }).code, 'invalid_token')
   })
 
   await check('unknown slug after auth → 403 tenant_unavailable', async () => {
-    const { deps } = runtimeDeps({ tenant: null })
+    const { deps, audit } = runtimeDeps({ tenant: null })
     const res = await post(
       'missing',
       { jsonrpc: '2.0', id: 1, method: 'ping' },
@@ -214,10 +223,39 @@ async function main() {
     assert.equal(res.status, 403)
     const body = (await readJson(res)) as { error: { code: string } }
     assert.equal(body.error.code, 'tenant_unavailable')
+    assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), true)
+  })
+
+  await check('inactive user → 403 user_inactive', async () => {
+    const { deps, audit } = runtimeDeps({ user: user({ status: 'suspended' }) })
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 1, method: 'ping' },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 403)
+    const body = (await readJson(res)) as { error: { code: string } }
+    assert.equal(body.error.code, 'user_inactive')
+    assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), true)
+  })
+
+  await check('inactive tenant → 403 tenant_not_active', async () => {
+    const { deps, audit } = runtimeDeps({ tenant: tenant({ status: 'suspended' }) })
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 1, method: 'ping' },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 403)
+    const body = (await readJson(res)) as { error: { code: string } }
+    assert.equal(body.error.code, 'tenant_not_active')
+    assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), true)
   })
 
   await check('non-member → 403 not_a_member', async () => {
-    const { deps } = runtimeDeps({ membership: null })
+    const { deps, audit } = runtimeDeps({ membership: null })
     const res = await post(
       'acme',
       { jsonrpc: '2.0', id: 1, method: 'ping' },
@@ -227,6 +265,7 @@ async function main() {
     assert.equal(res.status, 403)
     const body = (await readJson(res)) as { error: { code: string } }
     assert.equal(body.error.code, 'not_a_member')
+    assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), true)
   })
 
   await check('Clerk not configured → 503 auth_not_configured', async () => {

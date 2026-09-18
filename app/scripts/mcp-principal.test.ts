@@ -279,6 +279,25 @@ async function main() {
     assert.equal(result.ok, true)
   })
 
+  await check('extra token/JSON fields cannot override tenant or user ids', async () => {
+    const stub = deps({
+      token: {
+        clerkUserId: CLERK_ID,
+        claims: {
+          userId: 'attacker-user',
+          tenantId: 'attacker-tenant',
+          tenantSlug: 'other-tenant',
+        },
+      },
+    })
+    const result = await resolve('Bearer tok', 'acme', stub)
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.equal(result.principal.userId, USER_ID)
+    assert.equal(result.principal.tenantId, TENANT_ID)
+    assert.equal(result.principal.tenantSlug, 'acme')
+  })
+
   await check('tokenClaimsForeignOrigin only flags URL-shaped other origins', () => {
     assert.equal(tokenClaimsForeignOrigin(undefined, ORIGIN), false)
     assert.equal(tokenClaimsForeignOrigin({ aud: 'client_x' }, ORIGIN), false)

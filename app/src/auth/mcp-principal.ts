@@ -145,27 +145,35 @@ async function appendMcpAudit(
   })
 }
 
+/** Unauthenticated 401s log only; invalid_token and membership/inactive denies are audited. */
+export async function auditMcpAuthDenied(
+  deps: Pick<McpPrincipalDeps, 'audit'>,
+  failure: Pick<McpPrincipalFailure, 'code'> & { userId?: string; tenantId?: string },
+  tenantSlug?: string,
+): Promise<void> {
+  if (failure.code === 'unauthenticated') {
+    console.info('mcp.auth.deny', { code: failure.code, tenantSlug })
+    return
+  }
+  await appendMcpAudit(deps, {
+    action: 'mcp.auth.deny',
+    actorId: failure.userId ?? null,
+    tenantId: failure.tenantId ?? null,
+    targetId: failure.tenantId ?? null,
+    policyDecision: 'deny',
+    metadata: {
+      code: failure.code,
+      ...(tenantSlug ? { tenantSlug } : {}),
+    },
+  })
+}
+
 async function deny(
   deps: McpPrincipalDeps,
   failure: McpPrincipalFailure,
   tenantSlug?: string,
 ): Promise<McpPrincipalFailure> {
-  const shouldAudit = failure.code !== 'unauthenticated'
-  if (shouldAudit) {
-    await appendMcpAudit(deps, {
-      action: 'mcp.auth.deny',
-      actorId: failure.userId ?? null,
-      tenantId: failure.tenantId ?? null,
-      targetId: failure.tenantId ?? null,
-      policyDecision: 'deny',
-      metadata: {
-        code: failure.code,
-        ...(tenantSlug ? { tenantSlug } : {}),
-      },
-    })
-  } else {
-    console.info('mcp.auth.deny', { code: failure.code, tenantSlug })
-  }
+  await auditMcpAuthDenied(deps, failure, tenantSlug)
   return failure
 }
 

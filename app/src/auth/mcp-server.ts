@@ -5,7 +5,9 @@ import { z } from 'zod'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { repositories } from '@/repositories/postgres'
+import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
 import {
+  auditMcpAuthDenied,
   auditMcpToolCall,
   auditMcpToolDenied,
   mcpResourceMetadataUrl,
@@ -82,13 +84,6 @@ function forbiddenResponse(failure: McpPrincipalFailure): Response {
   )
 }
 
-function authNotConfiguredResponse(): Response {
-  return Response.json(
-    { error: { code: 'auth_not_configured', message: 'Authentication is not configured' } },
-    { status: 503 },
-  )
-}
-
 function whoamiPayload(principal: McpPrincipal) {
   return {
     userId: principal.userId,
@@ -96,6 +91,13 @@ function whoamiPayload(principal: McpPrincipal) {
     tenantSlug: principal.tenantSlug,
     role: principal.role,
     assumed: principal.assumed,
+  }
+}
+
+async function whoamiToolResult(principal: McpPrincipal, deps: McpPrincipalDeps) {
+  await auditMcpToolCall(deps, principal)
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(whoamiPayload(principal)) }],
   }
 }
 
@@ -109,12 +111,7 @@ function createPhaseAMcpHandler(principal: McpPrincipal, deps: McpPrincipalDeps)
           description: 'Return the authenticated MCP principal for this tenant URL.',
           inputSchema: z.object({}).passthrough(),
         },
-        async () => {
-          await auditMcpToolCall(deps, principal)
-          return {
-            content: [{ type: 'text' as const, text: JSON.stringify(whoamiPayload(principal)) }],
-          }
-        },
+        async () => whoamiToolResult(principal, deps),
       )
 
       server.server.setRequestHandler('tools/call', async (request) => {
@@ -134,10 +131,7 @@ function createPhaseAMcpHandler(principal: McpPrincipal, deps: McpPrincipalDeps)
             ],
           }
         }
-        await auditMcpToolCall(deps, principal)
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify(whoamiPayload(principal)) }],
-        }
+        return whoamiToolResult(principal, deps)
       })
     },
     {
@@ -164,13 +158,17 @@ export async function handleMcpRequest(
   tenantSlug: string,
   deps: McpRuntimeDeps = productionMcpDeps(),
 ): Promise<Response> {
-  if (!deps.isClerkConfigured()) return authNotConfiguredResponse()
+  if (!deps.isClerkConfigured()) return mcpAuthNotConfigured()
 
   const origin = deps.resolveOrigin(request)
   const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInfo | undefined> => {
     if (!bearerToken) return undefined
     const verified = await deps.verifyOAuthToken(bearerToken)
-    if (!verified) return undefined
+    if (!verified) {
+      // withMcpAuth(required) 401s here and never calls inner / resolveMcpPrincipal.
+      await auditMcpAuthDenied(deps, { code: 'invalid_token' }, tenantSlug)
+      return undefined
+    }
     return toAuthInfo(bearerToken, verified)
   }
 
