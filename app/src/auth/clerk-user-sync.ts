@@ -83,7 +83,7 @@ export async function syncClerkUser(prisma: PrismaClient, input: ClerkUserSyncIn
       existingByAuthId.role !== null &&
       !isPreProvisionedAuthId(existingByAuthId.externalAuthId)
     ) {
-      const { services } = await import('@/domain')
+      const { services } = await import('@/domain/gateway-services')
       return services.iam.activateProvisionedUser({
         user: existingByAuthId,
         name: input.name,
@@ -106,7 +106,7 @@ export async function syncClerkUser(prisma: PrismaClient, input: ClerkUserSyncIn
   if (existingByEmail) {
     if (isPreProvisionedAuthId(existingByEmail.externalAuthId)) {
       // Lazy import: avoids auth ↔ domain circular init at module load.
-      const { services } = await import('@/domain')
+      const { services } = await import('@/domain/gateway-services')
       return services.iam.claimPreProvisionedUser({
         user: existingByEmail,
         externalAuthId: input.externalAuthId,
@@ -115,7 +115,7 @@ export async function syncClerkUser(prisma: PrismaClient, input: ClerkUserSyncIn
     }
 
     if (existingByEmail.status === 'pending' && existingByEmail.role !== null) {
-      const { services } = await import('@/domain')
+      const { services } = await import('@/domain/gateway-services')
       return services.iam.activateProvisionedUser({
         user: existingByEmail,
         externalAuthId: input.externalAuthId,

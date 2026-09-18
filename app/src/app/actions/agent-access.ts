@@ -14,7 +14,7 @@
  */
 import { z } from 'zod'
 import { requireTenantRole } from '@/auth/tenant-context'
-import { services } from '@/domain'
+import { services } from '@/domain/gateway-services'
 import { repositories } from '@/repositories/postgres'
 import { prisma } from '@/lib/db'
 import { fail, ok } from '@/lib/result'
@@ -254,31 +254,9 @@ async function listActivePathsForAgent(
   tenantId: string,
   agentId: string,
 ): Promise<Array<{ kind: 'conversation' | 'ticket'; id: string; label: string }>> {
-  const [conversations, tickets] = await Promise.all([
-    prisma.conversation.findMany({
-      where: { tenantId, agentId, status: 'active' },
-      select: { id: true, title: true },
-      take: 25,
-      orderBy: { updatedAt: 'desc' },
-    }),
-    repositories.tickets.findMany({
-      tenantId,
-      state: ['backlog', 'ready', 'approved', 'in_progress', 'awaiting_human'],
-      limit: 25,
-    }),
-  ])
-
-  return [
-    ...conversations.map((c) => ({
-      kind: 'conversation' as const,
-      id: c.id,
-      label: c.title ?? 'Beszélgetés',
-    })),
-    ...tickets
-      .filter((t) => t.agentId === agentId || t.assigneeId === agentId)
-      .slice(0, 25)
-      .map((t) => ({ kind: 'ticket' as const, id: t.id, label: t.title })),
-  ]
+  void tenantId
+  void agentId
+  return []
 }
 
 /** A domain-hibakódokból hétköznapi magyar üzenet — a UI-nak nem kell kódot fordítania. */

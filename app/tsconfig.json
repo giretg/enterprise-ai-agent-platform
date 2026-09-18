@@ -39,6 +39,9 @@
     ".next-local-auth/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "scripts",
+    "e2e",
+    "infra"
   ]
 }

@@ -11,7 +11,7 @@
  */
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { getCloudRunAccessToken } from '@/domain/dispatcher/cloud-run-auth'
+import { getCloudRunAccessToken } from '@/domain/net/cloud-run-auth'
 
 const SECRET_REF_PREFIX = 'secret-ref:'
 

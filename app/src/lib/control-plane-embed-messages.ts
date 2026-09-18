@@ -1,14 +1,14 @@
-export const CP_EMBED_READY_MESSAGE = 'cp-embed-ready' as const
+export const CONTROL_PLANE_EMBED_SOURCE = 'enterprise-ai-control-plane'
+export const CP_EMBED_READY_MESSAGE = { source: CONTROL_PLANE_EMBED_SOURCE, type: 'ready' } as const
 
-export type ControlPlaneEmbedMessage = { type: typeof CP_EMBED_READY_MESSAGE }
+export type ControlPlaneEmbedMessage = {
+  source: typeof CONTROL_PLANE_EMBED_SOURCE
+  type: string
+  href?: string
+}
 
-export function isControlPlaneEmbedReadyMessage(
-  data: unknown,
-): data is ControlPlaneEmbedMessage {
-  return (
-    typeof data === 'object' &&
-    data !== null &&
-    'type' in data &&
-    (data as { type: unknown }).type === CP_EMBED_READY_MESSAGE
-  )
+export function isControlPlaneEmbedReadyMessage(value: unknown): value is ControlPlaneEmbedMessage {
+  if (!value || typeof value !== 'object') return false
+  const rec = value as Record<string, unknown>
+  return rec.source === CONTROL_PLANE_EMBED_SOURCE && rec.type === 'ready'
 }

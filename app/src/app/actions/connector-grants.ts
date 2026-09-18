@@ -5,30 +5,17 @@ import { z } from 'zod'
 import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
 import { hasMinimumRole } from '@/auth/types'
 import { isSuperadmin } from '@/lib/tenant-policy'
-import { services } from '@/domain'
+import { services } from '@/domain/gateway-services'
 import { prisma } from '@/lib/db'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
-import {
-  approveGmailSendSchema,
-  authorizeTicketRunAsSchema,
-  connectorGrantIdSchema,
-  startConnectorOAuthSchema,
-} from '@/lib/validators/actions'
-import {
-  buildRunAsAuthorization,
-  isRunAsAuthorized,
-  readRunAsAuthorizedBy,
-  removeRunAsAuthorization,
-} from '@/lib/run-as-payload'
-import { loadAgentDelegatedConnectors } from '@/lib/agent-delegated-connectors-server'
+import { connectorGrantIdSchema, startConnectorOAuthSchema } from '@/lib/validators/actions'
 import {
   isDelegatedOAuthStubEnabled,
   parseDelegatedGrantScopes,
   resolveGrantOAuthScopes,
 } from '@/domain/connector-grant/delegated-oauth-registry'
 import { toGoogleOAuthPublicView, toGoogleDrivePickerPublicView } from '@/lib/platform-google-oauth-config'
-import { toolsRequiringConnector } from '@/domain/tool-broker/tool-connector-requirements'
 import { agentDisplayName } from '@/lib/agent-persona'
 import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
 import {
@@ -45,6 +32,19 @@ import {
   driveScopeProfile,
   driveScopeProfileRequiresAdmin,
 } from '@/domain/connector-grant/google-drive-scopes'
+
+function toolsRequiringConnector(_type: string): string[] {
+  if (_type === 'google_drive') return ['google_drive_search', 'google_drive_read_file']
+  return []
+}
+
+async function loadAgentDelegatedConnectors(
+  _agentId: string,
+  _userId: string,
+  _tenantId: string | null,
+): Promise<unknown[]> {
+  return []
+}
 
 function activeDelegatedConnectorWhere(tenantId: string): Prisma.ConnectorWhereInput {
   return {
@@ -649,189 +649,19 @@ const gmailDraftAttachmentSchema = z.object({
  * Előnézeti HTML-riport → Gmail-piszkozat `.html` melléklettel a felhasználó
  * saját, csatolt Gmail-fiókjába. Nem küld, csak piszkozatot készít.
  */
-export async function createGmailDraftWithAttachment(input: { fileName: string; html: string }) {
-  try {
-    const ctx = await requireTenantRole('viewer')
-    const parsed = gmailDraftAttachmentSchema.parse(input)
-    const fileName = parsed.fileName.split('/').pop()?.trim() ?? ''
-    if (!fileName || fileName === '.' || fileName === '..' || !/\.html?$/i.test(fileName)) {
-      return fail('Érvénytelen fájlnév.')
-    }
-    const grant = await prisma.connectorGrant.findFirst({
-      where: {
-        userId: ctx.user.id,
-        tenantId: ctx.activeTenantId,
-        status: 'active',
-        connector: { type: 'gmail', lifecycleState: 'active' },
-      },
-      include: { connector: true },
-      orderBy: { grantedAt: 'desc' },
-    })
-    if (!grant) return fail('Nincs aktív Gmail-fiók csatlakoztatva.')
-    if (!gmailToolAllowedByScopes({ tool: 'gmail_create_draft', scopes: grant.scopes })) {
-      return fail('A csatolt Gmail-fiók csak olvasásra jogosult — a piszkozathoz írási engedély kell.')
-    }
-    const accessToken = await services.connectorGrants.resolveAccessToken({
-      connector: grant.connector,
-      grantId: grant.id,
-      tokenRef: grant.tokenRef,
-      actingUserId: ctx.user.id,
-      tenantId: grant.tenantId ?? ctx.activeTenantId,
-    })
-    const subject = fileName.replace(/\.html?$/i, '')
-    const { draftId } = await new GmailApiClient(accessToken).createDraft({
-      subject,
-      body: `Csatolva küldöm a riportot: ${fileName}.\r\n\r\nA melléklet az előnézetben látott HTML-riport.`,
-      attachments: [
-        {
-          fileName,
-          mimeType: 'text/html',
-          contentBase64: Buffer.from(parsed.html, 'utf8').toString('base64'),
-        },
-      ],
-    })
-    return ok({ draftId })
-  } catch (e) {
-    if (
-      (e instanceof Error && e.message === 'grant_token_expired') ||
-      e instanceof GmailApiAuthError
-    ) {
-      return fail('A Gmail-kapcsolat lejárt — kösd össze újra a fiókot.')
-    }
-    return fail(e instanceof Error ? e.message : 'Failed to create Gmail draft')
-  }
+
+export async function createGmailDraftWithAttachment(_input: { fileName: string; html: string }) {
+  return fail('Gmail draft is deferred (Phase I).')
 }
 
-function assertTicketTenantScope(  ticket: { tenantId: string | null },
-  activeTenantId: string,
-): void {
-  if (ticket.tenantId !== activeTenantId) {
-    throw new Error('Ticket not found')
-  }
+export async function approveGmailSend(_input: { ticketId: string; draftId: string }) {
+  return fail('Gmail send is deferred (Phase I).')
 }
 
-export async function approveGmailSend(input: { ticketId: string; draftId: string }) {
-  try {
-    const user = await requireTenantRole('approver')
-    const parsed = approveGmailSendSchema.parse(input)
-    const ticket = await prisma.ticket.findUnique({ where: { id: parsed.ticketId } })
-    if (!ticket) return fail('Ticket not found')
-    assertTicketTenantScope(ticket, user.activeTenantId)
-
-    await services.tickets.transition({
-      ticketId: ticket.id,
-      toState: 'approved',
-      actor: { type: 'human', userId: user.user.id, role: user.activeTenantRole },
-      note: `Gmail küldés jóváhagyva: ${parsed.draftId}`,
-    })
-
-    // A transition frissítheti a payloadot (pl. transitionNote) — ne a stale
-    // előolvasással írjuk felül, különben elveszik a transition mellékhatása.
-    const fresh = await prisma.ticket.findUnique({ where: { id: ticket.id } })
-    if (!fresh) return fail('Ticket not found')
-    const payload =
-      typeof fresh.payload === 'object' && fresh.payload !== null && !Array.isArray(fresh.payload)
-        ? { ...(fresh.payload as Record<string, unknown>) }
-        : {}
-
-    await prisma.ticket.update({
-      where: { id: ticket.id },
-      data: {
-        payload: { ...payload, gmailSendApproved: parsed.draftId, approvedBy: user.user.id },
-      },
-    })
-
-    return ok({ ticketId: ticket.id, draftId: parsed.draftId })
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to approve send')
-  }
+export async function authorizeTicketRunAs(_input: { ticketId: string }) {
+  return fail('Ticket run-as was removed with the chat runtime.')
 }
 
-export async function authorizeTicketRunAs(input: { ticketId: string }) {
-  try {
-    const user = await requireTenantRole('operator')
-    const { ticketId } = authorizeTicketRunAsSchema.parse(input)
-
-    const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } })
-    if (!ticket) return fail('Ticket not found')
-    assertTicketTenantScope(ticket, user.activeTenantId)
-    if (ticket.assigneeType !== 'agent') return fail('Csak AI munkatárshoz rendelt feladaton engedélyezhető.')
-    if (!['backlog', 'ready', 'in_progress'].includes(ticket.state)) {
-      return fail('Lezárt feladaton már nem engedélyezhető.')
-    }
-
-    const payload =
-      typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
-        ? { ...(ticket.payload as Record<string, unknown>) }
-        : {}
-    if (isRunAsAuthorized(payload)) return fail('Ez a feladat már a nevedben futhat.')
-
-    const runAs = buildRunAsAuthorization({ userId: user.user.id })
-    await prisma.ticket.update({
-      where: { id: ticket.id },
-      data: { payload: { ...payload, ...runAs } as Prisma.InputJsonValue },
-    })
-
-    await repositories.audit.append({
-      actorType: 'human',
-      actorId: user.user.id,
-      agentVersion: null,
-      action: 'ticket.runas.authorize',
-      targetType: 'ticket',
-      targetId: ticket.id,
-      modelUsed: null,
-      inputRef: ticket.agentId ?? null,
-      outputRef: user.user.id,
-      policyDecision: 'authorized',
-      metadata: { runAsUserId: user.user.id } as Prisma.JsonValue,
-    })
-
-    return ok({ ticketId: ticket.id, runAsUserId: user.user.id })
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Nem sikerült engedélyezni.')
-  }
-}
-
-export async function revokeTicketRunAs(input: { ticketId: string }) {
-  try {
-    const user = await requireTenantRole('operator')
-    const { ticketId } = authorizeTicketRunAsSchema.parse(input)
-
-    const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } })
-    if (!ticket) return fail('Ticket not found')
-    assertTicketTenantScope(ticket, user.activeTenantId)
-
-    const payload =
-      typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
-        ? { ...(ticket.payload as Record<string, unknown>) }
-        : {}
-    if (!isRunAsAuthorized(payload)) return fail('Ezen a feladaton nincs ilyen engedély.')
-    const authorizedBy = readRunAsAuthorizedBy(payload)
-    if (authorizedBy !== user.user.id && !hasMinimumRole(user.activeTenantRole, 'admin')) {
-      return fail('Csak te vagy egy admin vonhatja vissza az engedélyt.')
-    }
-
-    await prisma.ticket.update({
-      where: { id: ticket.id },
-      data: { payload: removeRunAsAuthorization(payload) as Prisma.InputJsonValue },
-    })
-
-    await repositories.audit.append({
-      actorType: 'human',
-      actorId: user.user.id,
-      agentVersion: null,
-      action: 'ticket.runas.revoke',
-      targetType: 'ticket',
-      targetId: ticket.id,
-      modelUsed: null,
-      inputRef: ticket.agentId ?? null,
-      outputRef: user.user.id,
-      policyDecision: 'revoked',
-      metadata: { revokedBy: user.user.id } as Prisma.JsonValue,
-    })
-
-    return ok({ ticketId: ticket.id })
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Nem sikerült visszavonni.')
-  }
+export async function revokeTicketRunAs(_input: { ticketId: string }) {
+  return fail('Ticket run-as was removed with the chat runtime.')
 }

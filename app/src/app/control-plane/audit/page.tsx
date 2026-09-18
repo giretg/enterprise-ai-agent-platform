@@ -69,13 +69,6 @@ export default async function AuditLogPage({
   const res = await listAuditLog({
     limit: 200,
     action,
-    actorType,
-    actorId,
-    targetType,
-    targetId,
-    ticketId,
-    conversationId,
-    since: since ? new Date(since) : undefined,
   })
   const entries = res.success ? res.data : []
   const filterParts = [

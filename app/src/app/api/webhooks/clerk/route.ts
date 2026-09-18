@@ -2,7 +2,7 @@ import { verifyWebhook } from '@clerk/nextjs/webhooks'
 import type { NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
 import { syncClerkUser, DomainNotAllowedError } from '@/auth/clerk-user-sync'
-import { services } from '@/domain'
+import { services } from '@/domain/gateway-services'
 import { logger } from '@/lib/observability'
 
 function userFromEvent(data: {

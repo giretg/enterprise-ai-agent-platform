@@ -14,7 +14,6 @@ import { createHash } from 'crypto'
 import type { ConnectorAccessMode, ConnectorType, Prisma, UserRole } from '@prisma/client'
 import type { AuditRepository, ConnectorDraftRepository } from '@/repositories/interfaces'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
-import { isConnectorAssignableToAgent } from '@/domain/connector-self-update/pinned-runtime-config'
 import {
   normalizeGmailConnectorConfig,
   type GmailConnectorConfig,
@@ -59,6 +58,14 @@ export type ProvisioningActor =
     }
 
 export type Criticality = 'L1' | 'L2' | 'L3'
+
+/** Self-updating connectors are DEFER; only canonical/fixed connectors assign in Phase 0. */
+function isConnectorAssignableToAgent(
+  connectorMode: 'fixed' | 'self_updating',
+  _activeCapabilitySet: unknown,
+): boolean {
+  return connectorMode === 'fixed'
+}
 
 /** A draft connectort sandboxban kipróbáló adapter (§8.4). F2-P-D köti be a valódi MCP-proxyt. */
 export interface SandboxConnectionTester {

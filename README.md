@@ -1,9 +1,14 @@
 # Enterprise AI Agent Platform
 
-Kontrollált Enterprise AI Agent Platform — production-oriented agent control plane (Next.js + Postgres).
+Enterprise MCP control plane (Next.js + Postgres). Phase 0 rebuild: the
+legacy chat/runtime/dispatcher stack lives under `legacy/` and is not part of
+the active application.
 
-- **Control Plane** — governance, board, ticketek, audit, agent registry
-- **Sandbox** — wiki-agent tudásbázis, citált válaszok, A0 HTML riport preview/export
+- **Control Plane** — IAM, agents, skills, connectors, audit
+- **MCP Gateway** — tenant-scoped resource URL (Phase A)
+
+See [`docs/architecture.md`](docs/architecture.md) and
+[`docs/rebuild-surgery-manifest.md`](docs/rebuild-surgery-manifest.md).
 
 ## Dokumentáció
 

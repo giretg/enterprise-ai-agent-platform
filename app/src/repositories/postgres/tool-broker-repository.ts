@@ -7,8 +7,16 @@ import type {
 } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type { AgentConnectorBinding, ToolBrokerRepository } from '../interfaces'
-import { pinnedRuntimeConfig } from '@/domain/connector-self-update/pinned-runtime-config'
 import { RUN_ANALYST_SYSTEM_ROLE } from '@/lib/platform-agent-registry'
+
+function pinnedRuntimeConfig(
+  connectorMode: 'fixed' | 'self_updating',
+  fixedConfig: unknown,
+  _activeCapabilitySet: unknown,
+): Prisma.JsonValue | null {
+  if (connectorMode === 'self_updating') return null
+  return fixedConfig as Prisma.JsonValue
+}
 
 type ConnectorWithActiveSpec = Connector & {
   activeSpecVersion: { capabilitySet: Prisma.JsonValue } | null

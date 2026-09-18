@@ -25,14 +25,8 @@ import {
   selectDistillAttachments,
 } from '@/lib/skill/skill-distill-attachments'
 import { isInternalWorkspaceFile } from '@/lib/workspace-file-visibility'
-import {
-  SkillDistillerAgent,
-  type SkillDistillDraft,
-} from '@/domain/skill/skill-distiller-agent'
-import {
-  SkillReviewAgent,
-  type SkillAdvisoryReview,
-} from '@/domain/skill/skill-review-agent'
+import { SkillDistillerAgent, type SkillDistillDraft } from '@/domain/skill/skill-distiller-agent'
+import { SkillReviewAgent, type SkillAdvisoryReview } from '@/domain/skill/skill-review-agent'
 import { signSkillVersion } from '@/lib/crypto/hash-chain'
 import {
   normalizeSkillDisplayName,
@@ -856,171 +850,16 @@ export class SkillService {
    * hardcoded validátor → `proposed` SkillVersion. Alap-scope: tenant-lokális draft,
    * sosem auto-global. A beszélgetés nem megbízható input — provenience-kedvezmény nélkül.
    */
-  async distillFromConversation(input: {
+  async distillFromConversation(_input: {
     conversationId: string
     agentId: string
-    agentVersion?: number
-    agentModelConfig?: unknown
     actor: ActorContext
     distiller: SkillDistillerAgent
-    targetSkillId?: string
-    /** Tenant kimeneti nyelv — a desztillált skill emberi szövegei. */
-    outputLanguage?: TenantLanguage
+    [key: string]: unknown
   }): Promise<SkillDistillResult> {
-    if (!this.conversations) {
-      throw new Error('SkillService: conversation repository not configured')
-    }
-
-    const conversation = await this.conversations.findByIdForTenant(
-      input.conversationId,
-      input.actor.actorTenantId,
-    )
-    if (!conversation) {
-      return { ok: false, stage: 'access', detail: 'A beszélgetés nem elérhető.' }
-    }
-    if (conversation.agentId !== input.agentId) {
-      return { ok: false, stage: 'access', detail: 'Az agent nem egyezik a beszélgetés agentjével.' }
-    }
-
-    const messages = await this.conversations.findMessages(input.conversationId)
-    const turns = conversationMessagesToTurns(messages)
-    if (turns.length === 0) {
-      return { ok: false, stage: 'empty', detail: 'A beszélgetésben nincs desztillálható szöveg.' }
-    }
-
-    const toolCalls = await this.toolBroker.listToolCallsForConversation(input.conversationId)
-    const usedTools = [...new Set(toolCalls.filter((t) => t.status === 'ok').map((t) => t.toolName))]
-    const requires = deriveRequiresFromToolCalls(toolCalls)
-
-    const candidateAttachments = await this.collectWorkspaceAttachmentCandidates({
-      tenantId: input.actor.actorTenantId,
-      conversationId: input.conversationId,
-    })
-
-    const distilled = await input.distiller.distill({
-      agentId: input.agentId,
-      agentVersion: input.agentVersion,
-      agentModelConfig: input.agentModelConfig,
-      tenantId: input.actor.actorTenantId,
-      conversationId: input.conversationId,
-      turns,
-      usedTools,
-      outputLanguage: input.outputLanguage,
-      candidateAttachmentIndex: formatDistillAttachmentIndex(candidateAttachments),
-    })
-    if (!distilled.ok) {
-      return { ok: false, stage: 'distill', detail: distilled.detail }
-    }
-
-    const attachments = selectDistillAttachments(
-      candidateAttachments,
-      distilled.draft.attachmentPaths,
-    )
-
-    const validation = validateSkill({
-      name: distilled.draft.name,
-      description: distilled.draft.description,
-      content: distilled.draft.content,
-      requires,
-    })
-    if (!validation.ok) {
-      return {
-        ok: false,
-        stage: 'validation',
-        detail: validation.errors.join(' · '),
-      }
-    }
-
-    const provenance = {
-      origin: 'distilled' as const,
-      sourceId: input.conversationId,
-      format: 'conversation',
-    }
-
-    if (input.targetSkillId) {
-      const existing = await this.getReadableSkill(input.actor.actorTenantId, input.targetSkillId)
-      if (!existing) {
-        return { ok: false, stage: 'access', detail: 'A cél-skill nem elérhető.' }
-      }
-      const { versionId } = await this.proposeVersion({
-        skillId: input.targetSkillId,
-        content: distilled.draft.content,
-        requires,
-        ...(attachments.length > 0 ? { attachments } : {}),
-        actor: input.actor,
-      })
-      return {
-        ok: true,
-        skillId: input.targetSkillId,
-        versionId,
-        riskTier: validation.riskTier,
-        draft: distilled.draft,
-        requires,
-        created: false,
-        attachments,
-      }
-    }
-
-    const { skill, versionId } = await this.createSkill({
-      name: distilled.draft.name,
-      description: distilled.draft.description,
-      catalogScope: 'tenant',
-      tenantId: input.actor.actorTenantId,
-      kind: 'tenant',
-      sourceType: 'authored',
-      provenance: provenance as unknown as Prisma.InputJsonValue,
-      license: null,
-      riskTier: validation.riskTier,
-      content: distilled.draft.content,
-      requires,
-      ...(attachments.length > 0 ? { attachments } : {}),
-      actor: input.actor,
-    })
-
-    return {
-      ok: true,
-      skillId: skill.id,
-      versionId,
-      riskTier: validation.riskTier,
-      draft: distilled.draft,
-      requires,
-      created: true,
-      attachments,
-    }
+    throw new Error('Skill distillation moved to the harness (Phase 0)')
   }
 
-  /**
-   * A beszélgetés user-facing szöveges fájljaiból skill-melléklet jelöltek.
-   * Olvasási hiba nem buktatja a desztillációt — akkor melléklet nélkül megy tovább.
-   */
-  private async collectWorkspaceAttachmentCandidates(input: {
-    tenantId: string | null
-    conversationId: string
-  }): Promise<SkillAttachment[]> {
-    if (!this.workspace || !input.tenantId) return []
-    let paths: string[]
-    try {
-      paths = await this.workspace.listUserFacing(input.tenantId, input.conversationId)
-    } catch {
-      return []
-    }
-    const files: Array<{ path: string; bytes: Uint8Array }> = []
-    for (const path of paths) {
-      if (isInternalWorkspaceFile(path)) continue
-      if (classifyPackageFile(path) !== 'reference') continue
-      let buf: Buffer | null
-      try {
-        buf = await this.workspace.read(input.tenantId, input.conversationId, path)
-      } catch {
-        continue
-      }
-      if (!buf) continue
-      files.push({ path, bytes: buf })
-    }
-    return collectDistillAttachmentCandidates(files)
-  }
-
-  /** Meglévő skill új (proposed) verziója — a write-gate kapun megy át. */
   async proposeVersion(input: {
     skillId: string
     content: SkillContent
@@ -1069,86 +908,14 @@ export class SkillService {
    * Tanácsadó LLM-review egy skill-verzióhoz (WP-3 §D5). A hardcoded validátor
    * eredménye mindig visszajön; az LLM kimenet CSAK tanácsadó — sosem kapu.
    */
-  async advisoryReviewVersion(input: {
+  async advisoryReviewVersion(_input: {
     versionId: string
-    reviewAgentId: string
-    reviewAgentVersion?: number
-    /** Provisioning Assistant Registry `modelConfig` — a „Gondolkodási motor” beállítása. */
-    reviewAgentModelConfig?: unknown
     actor: ActorContext
     reviewer: SkillReviewAgent
-  }): Promise<
-    | {
-        ok: true
-        validation: SkillValidationResult
-        review: SkillAdvisoryReview
-      }
-    | { ok: false; stage: 'access' | 'review'; detail: string; validation?: SkillValidationResult }
-  > {
-    const target = await this.skills.findVersionById(input.versionId)
-    if (!target) {
-      return { ok: false, stage: 'access', detail: 'A skill-verzió nem található.' }
-    }
-    if (
-      !isSkillReadableFromTenant(target.skill.tenantId, input.actor.actorTenantId)
-    ) {
-      return { ok: false, stage: 'access', detail: 'A skill nem olvasható ebből a tenantból.' }
-    }
-
-    const content = parseSkillContent(target.content)
-    const requires = parseSkillRequires(target.requires)
-    const validation = validateSkill({
-      name: target.skill.name,
-      description: target.skill.description,
-      content,
-      requires,
-    })
-
-    const reviewResult = await input.reviewer.review({
-      agentId: input.reviewAgentId,
-      agentVersion: input.reviewAgentVersion,
-      agentModelConfig: input.reviewAgentModelConfig,
-      tenantId: input.actor.actorTenantId,
-      name: target.skill.name,
-      description: target.skill.description,
-      content,
-      requires,
-      riskTier: target.skill.riskTier,
-      sourceType: target.skill.sourceType,
-    })
-    if (!reviewResult.ok) {
-      return {
-        ok: false,
-        stage: 'review',
-        detail: reviewResult.detail,
-        validation,
-      }
-    }
-
-    await this.audit.append({
-      actorType: input.actor.actorId ? 'human' : 'system',
-      actorId: input.actor.actorId,
-      agentVersion: input.reviewAgentVersion ?? null,
-      action: 'skill.version.reviewed',
-      targetType: 'skill',
-      targetId: target.skillId,
-      modelUsed: null,
-      inputRef: input.versionId,
-      outputRef: reviewResult.review.overallAssessment,
-      policyDecision: 'advisory',
-      tenantId: target.skill.tenantId,
-      metadata: {
-        skillVersionId: target.id,
-        overallAssessment: reviewResult.review.overallAssessment,
-        concernCount: reviewResult.review.concerns.length,
-        validationOk: validation.ok,
-      },
-    })
-
-    return { ok: true, validation, review: reviewResult.review }
+    [key: string]: unknown
+  }): Promise<{ ok: true; validation: unknown; review: SkillAdvisoryReview } | { ok: false; stage: string; detail: string }> {
+    throw new Error('Skill review moved to the harness (Phase 0)')
   }
-
-  // ── Jóváhagyás + aláírás (WP-3, WP-7) ─────────────────────────────────────
 
   async approveVersion(input: {
     versionId: string
