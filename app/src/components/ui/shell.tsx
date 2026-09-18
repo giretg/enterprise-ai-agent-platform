@@ -2,7 +2,6 @@
 
 import Image from 'next/image'
 import Link from 'next/link'
-import { useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { ShellAuth } from '@/components/auth/shell-auth'
 import { useClerkEnabled } from '@/components/auth/providers'
@@ -57,9 +56,8 @@ export function AppShell({
   const clerkEnabled = useClerkEnabled()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [openGroup, setOpenGroup] = useState<string | null>(null)
-  const searchParams = useSearchParams()
   const storePanel = useControlPlanePanelKey()
-  const activePanel = storePanel ?? searchParams.get('panel')
+  const activePanel = storePanel
 
   useEffect(() => {
     if (!openGroup) return
