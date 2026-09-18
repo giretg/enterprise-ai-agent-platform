@@ -8,8 +8,13 @@
 import assert from 'node:assert/strict'
 import {
   buildRunAsAuthorization,
+  freezeTicketIdentityPayload,
   resolveTicketActingUserId,
+  RUN_AS_AUTHORIZED_AT,
+  RUN_AS_AUTHORIZED_BY,
+  RUN_AS_USER_ID,
   SCHEDULED_TASK_ID,
+  stripTicketIdentityFromAgentPayload,
 } from '../src/lib/run-as-payload'
 
 const AGENT = 'aaaaaaaa-0000-4000-8000-aaaaaaaa0001'
@@ -222,6 +227,106 @@ test('nil createdById nem acting user', () => {
     }),
     null,
   )
+})
+
+test('agent_ask ticket nem a system-admin createdById-t adja (privilege escalation)', () => {
+  assert.equal(
+    resolveTicketActingUserId({
+      callerAgentId: AGENT,
+      ticket: ticket({
+        createdById: SYSTEM_ADMIN,
+        payload: { source: 'agent_ask', delegation: true, requesterAgentId: OTHER_AGENT },
+      }),
+    }),
+    null,
+  )
+})
+
+test('agent_ask chat-delegáció a beszélő usert adja, nem az admint', () => {
+  assert.equal(
+    resolveTicketActingUserId({
+      callerAgentId: AGENT,
+      ticket: ticket({
+        createdById: SYSTEM_ADMIN,
+        conversationId: 'conv-1',
+        payload: {
+          source: 'agent_ask',
+          delegation: true,
+          conversationId: 'conv-1',
+          requesterAgentId: OTHER_AGENT,
+        },
+      }),
+      conversation: { agentId: AGENT, createdById: USER },
+    }),
+    USER,
+  )
+})
+
+test('delegation:true agent-filed — system createdById nem acting user', () => {
+  assert.equal(
+    resolveTicketActingUserId({
+      callerAgentId: AGENT,
+      ticket: ticket({
+        createdById: SYSTEM_ADMIN,
+        payload: { delegation: true, requesterAgentId: OTHER_AGENT },
+      }),
+    }),
+    null,
+  )
+})
+
+test('freezeTicketIdentityPayload visszadobja a hamis run-as mezőket', () => {
+  const original = { source: 'board', note: 'ok' }
+  const merged = freezeTicketIdentityPayload(
+    {
+      ...original,
+      [RUN_AS_USER_ID]: OTHER_USER,
+      [RUN_AS_AUTHORIZED_AT]: '2026-08-01T00:00:00.000Z',
+      [RUN_AS_AUTHORIZED_BY]: OTHER_USER,
+      conversationId: 'stolen-conv',
+      source: 'agent_tool',
+    },
+    original,
+  )
+  assert.equal(merged[RUN_AS_USER_ID], undefined)
+  assert.equal(merged.conversationId, undefined)
+  assert.equal(merged.source, 'board')
+  assert.equal(merged.note, 'ok')
+})
+
+test('freezeTicketIdentityPayload megőrzi az eredeti run-ast', () => {
+  const original = {
+    source: 'scheduled_task',
+    [SCHEDULED_TASK_ID]: TASK,
+    ...buildRunAsAuthorization({ userId: USER }),
+  }
+  const merged = freezeTicketIdentityPayload(
+    {
+      ...original,
+      [RUN_AS_USER_ID]: OTHER_USER,
+      [RUN_AS_AUTHORIZED_BY]: OTHER_USER,
+      note: 'agent note',
+    },
+    original,
+  )
+  assert.equal(merged[RUN_AS_USER_ID], USER)
+  assert.equal(merged[RUN_AS_AUTHORIZED_BY], USER)
+  assert.equal(merged.note, 'agent note')
+})
+
+test('stripTicketIdentityFromAgentPayload kidobja a hamis run-ast ticket_create előtt', () => {
+  const stripped = stripTicketIdentityFromAgentPayload({
+    titleHint: 'x',
+    [RUN_AS_USER_ID]: OTHER_USER,
+    [RUN_AS_AUTHORIZED_AT]: '2026-08-01T00:00:00.000Z',
+    [RUN_AS_AUTHORIZED_BY]: OTHER_USER,
+    conversationId: 'forged',
+    source: 'board',
+  })
+  assert.equal(stripped.titleHint, 'x')
+  assert.equal(stripped[RUN_AS_USER_ID], undefined)
+  assert.equal(stripped.conversationId, undefined)
+  assert.equal(stripped.source, undefined)
 })
 
 if (failures > 0) {

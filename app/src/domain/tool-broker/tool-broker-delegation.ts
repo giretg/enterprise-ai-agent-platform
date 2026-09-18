@@ -72,12 +72,12 @@ import {
 } from '@/lib/playbook-v2/process-step-payload'
 import {
   buildRunAsAuthorization,
+  freezeTicketIdentityPayload,
   isRunAsAuthorized,
   readRunAsUserId,
   RUN_AS_AUTHORIZED_AT,
   RUN_AS_AUTHORIZED_BY,
-  RUN_AS_USER_ID,
-  SCHEDULED_TASK_ID,
+  stripTicketIdentityFromAgentPayload,
 } from '@/lib/run-as-payload'
 
 import {
@@ -783,15 +783,11 @@ export async function boardWrite(self: ToolBrokerService,
     if (input.args.patch.payload) {
       Object.assign(mergedPayload, input.args.patch.payload)
     }
-    // A scheduled run-as hivatkozás bizalmi adat, nem agent-módosítható output.
-    // Enélkül egy board_write nullra írhatná a task-ID-t, és megkerülhetné a
-    // Broker futáskori, visszavonható grant-ellenőrzését.
+    // Identitásmezők (run-as, conversationId, source, agent-forrás) bizalmi adat:
+    // board_write nem írhatja / törölheti őket. Enélkül az agent más user OAuth
+    // grantjét vagy a system-admin createdById-t vehetné fel acting userként.
     const originalPayload = isRecord(ticket.payload) ? ticket.payload : null
-    if (typeof originalPayload?.[SCHEDULED_TASK_ID] === 'string') {
-      for (const key of [SCHEDULED_TASK_ID, RUN_AS_USER_ID, RUN_AS_AUTHORIZED_AT, RUN_AS_AUTHORIZED_BY]) {
-        mergedPayload[key] = originalPayload[key]
-      }
-    }
+    freezeTicketIdentityPayload(mergedPayload, originalPayload)
 
     if (
       shouldCompleteDelegation(mergedPayload, input.agentId, ticket.assigneeId, input.args.patch)
@@ -815,12 +811,23 @@ export async function boardWrite(self: ToolBrokerService,
       input.args.patch.state &&
       input.args.patch.state !== ticket.state
     ) {
+      // outputPayload-ot is a fagyasztott merge-ből vesszük — különben a
+      // process-útvonal megkerülné az identitásőrét.
+      const frozenOutput =
+        input.args.patch.payload && originalPayload
+          ? freezeTicketIdentityPayload(
+              { ...originalPayload, ...input.args.patch.payload },
+              originalPayload,
+            )
+          : input.args.patch.payload
+            ? freezeTicketIdentityPayload({ ...input.args.patch.payload }, null)
+            : undefined
       await self.playbookTransitioner.transitionTicket({
         tenantId: ticket.tenantId,
         ticketId: ticket.id,
         toState: input.args.patch.state,
         actor: { type: 'agent', id: input.agentId },
-        outputPayload: input.args.patch.payload,
+        outputPayload: frozenOutput,
       })
       const fresh = await self.tickets.findById(ticket.id)
       result = { ok: true, ticketId: ticket.id, state: fresh?.state ?? input.args.patch.state }
@@ -1047,8 +1054,12 @@ export async function ticketCreate(self: ToolBrokerService,
       args.sourceDocumentId && UUID_RE.test(args.sourceDocumentId) ? args.sourceDocumentId : null
 
     const workerAgentId = args.assigneeType === 'agent' ? args.assigneeId! : input.agentId
+    // Az agent args.payload-jából az identitásmezőket kidobjuk — különben
+    // hamis run-as / conversationId kerülhetne a child ticketre.
     const payload: Record<string, unknown> = {
-      ...args.payload,
+      ...stripTicketIdentityFromAgentPayload(
+        isRecord(args.payload) ? { ...args.payload } : {},
+      ),
       source: 'agent_tool',
       createdByAgentId: input.agentId,
     }

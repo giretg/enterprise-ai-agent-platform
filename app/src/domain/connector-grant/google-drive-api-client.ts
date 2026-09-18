@@ -260,8 +260,27 @@ export class GoogleDriveApiClient {
       }
       const res = await fetchWithBackoff('google_drive.export', url, { headers: this.authHeaders() })
       if (!res.ok) throw driveApiError('google_drive.export', res.status, await res.text())
+      const contentLength = Number(res.headers.get('content-length') ?? '')
+      if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+        await res.body?.cancel().catch(() => undefined)
+        throw new GoogleDriveApiError(
+          `A kinyert tartalom túl nagy (${contentLength} bájt, max ${maxBytes}).`,
+          413,
+          'file_too_large',
+        )
+      }
       let text = await res.text()
       let truncated = false
+      // maxBytes a bájtkorlát; UTF-8 szövegnél a char-korlát is érvényes.
+      const textBytes = Buffer.byteLength(text, 'utf8')
+      if (textBytes > maxBytes) {
+        // Karakterhatárra vágás helyett fail-closed: a hívó maxBytes-ja kötelező.
+        throw new GoogleDriveApiError(
+          `A kinyert tartalom túl nagy (${textBytes} bájt, max ${maxBytes}).`,
+          413,
+          'file_too_large',
+        )
+      }
       if (text.length > MAX_TEXT_CHARS) {
         text = text.slice(0, MAX_TEXT_CHARS)
         truncated = true
@@ -286,9 +305,31 @@ export class GoogleDriveApiClient {
     const res = await fetchWithBackoff('google_drive.download', url, { headers: this.authHeaders() })
     if (!res.ok) throw driveApiError('google_drive.download', res.status, await res.text())
 
+    const contentLength = Number(res.headers.get('content-length') ?? '')
+    if (
+      (!file.size || !Number.isFinite(Number(file.size))) &&
+      Number.isFinite(contentLength) &&
+      contentLength > maxBytes
+    ) {
+      await res.body?.cancel().catch(() => undefined)
+      throw new GoogleDriveApiError(
+        `A fájl túl nagy (${contentLength} bájt, max ${maxBytes}).`,
+        413,
+        'file_too_large',
+      )
+    }
+
     const contentType = res.headers.get('content-type') ?? 'application/octet-stream'
     if (contentType.startsWith('text/') || contentType.includes('json')) {
       let text = await res.text()
+      const textBytes = Buffer.byteLength(text, 'utf8')
+      if (textBytes > maxBytes) {
+        throw new GoogleDriveApiError(
+          `A fájl túl nagy (${textBytes} bájt, max ${maxBytes}).`,
+          413,
+          'file_too_large',
+        )
+      }
       let truncated = false
       if (text.length > MAX_TEXT_CHARS) {
         text = text.slice(0, MAX_TEXT_CHARS)
@@ -298,6 +339,8 @@ export class GoogleDriveApiClient {
       return { file, contentType, text, truncated, warnings }
     }
 
+    // Bináris: body eldobása bufferelés nélkül (ne töltsük a heapet).
+    await res.body?.cancel().catch(() => undefined)
     warnings.push(
       'A bináris fájltípus közvetlen szövegként nem olvasható — használd a workspace dokumentum-olvasó eszközöket artifactRef-fel.',
     )
@@ -357,7 +400,14 @@ export class GoogleDriveApiClient {
     const existing = await this.getFile({ fileId: params.fileId })
     const url = new URL(`${DRIVE_BASE}/files/${encodeURIComponent(params.fileId)}`)
     url.searchParams.set('addParents', params.destinationFolderId)
-    if (existing.parents?.[0]) url.searchParams.set('removeParents', existing.parents[0])
+    // Minden jelenlegi szülőt el kell távolítani — csak parents[0] → a fájl
+    // a többi mappában marad (hamis „áthelyezés", ACL/láthatóság szivárog).
+    const removeParents = (existing.parents ?? []).filter(
+      (parent) => parent && parent !== params.destinationFolderId,
+    )
+    if (removeParents.length > 0) {
+      url.searchParams.set('removeParents', removeParents.join(','))
+    }
     for (const [key, value] of Object.entries(sharedDriveParams())) {
       url.searchParams.set(key, value)
     }
@@ -428,7 +478,8 @@ export class GoogleDriveApiClient {
   }): Promise<{ file: DriveFileSummary; conflict: boolean }> {
     if (params.expectedModifiedTime) {
       const existing = await this.getFile({ fileId: params.fileId })
-      if (existing.modifiedTime && existing.modifiedTime !== params.expectedModifiedTime) {
+      // modifiedTime hiányában fail-closed: ne írjuk felül „ismeretlen" bázison.
+      if (!existing.modifiedTime || existing.modifiedTime !== params.expectedModifiedTime) {
         return { file: existing, conflict: true }
       }
     }
