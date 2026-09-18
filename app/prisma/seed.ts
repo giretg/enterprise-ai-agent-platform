@@ -1,5 +1,7 @@
 /**
- * Phase B seed: one Drive-ready tenant with a published Agent Definition.
+ * Phase F seed: one Drive-ready tenant with a published, active Agent Definition
+ * and a write-bound Google Drive connector. After `prisma migrate reset` the
+ * MCP harness can run the full Core MVP scenario without a Control Plane ritual.
  *
  * MCP mapping needs SEED_CLERK_USER_ID = the Clerk user id of the human who
  * will run Codex / Claude Code. The placeholder id means Control Plane works;
@@ -122,9 +124,14 @@ async function main() {
     tenantId: tenant.id,
     publishedById: user.id,
   })
+  const activated = await services.agentDefinitions.activateAgent({
+    agentId: agent.id,
+    tenantId: tenant.id,
+    actorId: user.id,
+  })
 
   console.log(
-    `Seeded tenant slug=${tenant.slug} agent=${agent.id} definition=${published.definitionId} clerk=${SEED_CLERK_USER_ID}`,
+    `Seeded tenant slug=${tenant.slug} agent=${agent.id} status=${activated.status} definition=${published.definitionId} clerk=${SEED_CLERK_USER_ID}`,
   )
 }
 

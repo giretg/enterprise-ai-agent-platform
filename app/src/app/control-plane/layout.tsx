@@ -1,6 +1,5 @@
 import { headers } from 'next/headers'
 import { getAuthContext } from '@/auth/context'
-import { hasMinimumRole } from '@/auth/types'
 import { isControlPlaneEmbedRequest } from '@/lib/control-plane-embed'
 import { buildControlPlaneNav } from '@/lib/control-plane-nav'
 import { loadTenantNavVisibility } from '@/lib/nav-visibility-server'
@@ -19,10 +18,9 @@ export default async function ControlPlaneLayout({ children }: { children: React
     platformRoles: ctx?.platformRoles ?? [],
     navVisibility,
   })
-  const canCreateAgent = hasMinimumRole(ctx?.activeTenantRole, 'admin')
 
   return (
-    <ControlPlaneRoot embedFromServer={false} navItems={navItems} canCreateAgent={canCreateAgent}>
+    <ControlPlaneRoot embedFromServer={false} navItems={navItems}>
       {children}
     </ControlPlaneRoot>
   )

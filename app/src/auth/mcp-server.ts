@@ -145,6 +145,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
     tenants: repositories.tenants,
     memberships: repositories.tenantMemberships,
     platformMemberships: repositories.platformMemberships,
+    audit: repositories.audit,
     async listPublishedAgents({ tenantId, userId, role }) {
       const published = await repositories.agents.findMany({
         tenantId,
@@ -366,7 +367,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
       })
     },
     {
-      serverInfo: { name: 'enterprise-mcp', version: 'phase-e' },
+      serverInfo: { name: 'enterprise-mcp', version: 'phase-f' },
     },
   )
 }
@@ -377,7 +378,6 @@ async function enterpriseToolResult(
   args: Record<string, unknown>,
   deps: McpRuntimeDeps,
 ) {
-  await auditMcpToolCall(deps, principal, toolName)
   return deps.invokeEnterpriseTool({ principal, toolName, args })
 }
 

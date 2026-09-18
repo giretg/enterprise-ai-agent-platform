@@ -6,6 +6,8 @@
 **Repo:** `giretg/enterprise-mcp`  
 **Dátum:** 2026-09-18
 
+**Phase F (issue #542, 2026-09-18):** `legacy/` **nem** lett törölve — REFERENCE ONLY marad a repóban (későbbi EXTRACT: Gmail, sandbox, scheduling). A cut után `app/`-ban maradt DELETE-felület (agent rail, `GET /api/agents/rail-state`, dispatcher/harness/code-sandbox Dockerfile + GCP deploy script) itt kikerült. Az `audit_log` KEEP visszaállt (append-only trigger, hash-chain v2, event catalog, payload guard, Control Plane `/audit` + `verifyChain`) — ez felülírja a #539 „nincs AuditLog tábla” döntést. A seed publikál **és aktivál** egy write-bound Drive assistantot.
+
 Ez **nem** a rebuild terv második példánya. Egy fájlra egy döntés. Implementáció közben az architekturális besorolást **ne nyisd újra**, kivéve ha a kód bizonyítja, hogy a sor hibás — akkor javítsd itt, egy helyen.
 
 ---
@@ -43,6 +45,7 @@ app/src/domain/gateway-services.ts
 | `app/src/domain/agent-definition/` | B | Immutable Agent Definition |
 | `app/src/domain/enterprise-tools/` | C | `authorizeToolCall` + registry + gateway |
 | `app/src/domain/gateway-operation/` | E | `GatewayOperation` / `GatewayApproval` |
+| `app/src/domain/audit/` | F | `verifyChain` + tenant-scoped JSONL export |
 
 A `connectors` és `tenant/user authorization` határ nem új mappa: a meglévő KEEP `domain/connector*`, `domain/iam`, `domain/tenant`, `auth/tenant-context.ts` az. A `gateway-services.ts` exportja jelöli ki, mi tartozik a target graphba.
 

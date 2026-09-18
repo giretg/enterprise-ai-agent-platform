@@ -17,6 +17,8 @@ import {
   schemaForEnterpriseDriveTool,
   type EnterpriseDriveTool,
 } from './tool-definitions'
+import type { AuditSink } from '@/lib/audit/types'
+import { writeAudit } from '@/lib/audit/types'
 
 export type EnterpriseToolMcpResult = {
   isError?: true
@@ -50,6 +52,7 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps & {
     toolName: string
     args: Record<string, unknown>
   }) => Promise<EnterpriseToolMcpResult>
+  audit?: AuditSink
 }
 
 function textResult(payload: unknown, isError = false): EnterpriseToolMcpResult {
@@ -67,20 +70,36 @@ function errorResult(code: string, extra?: Record<string, unknown>): EnterpriseT
   return textResult({ code, message: denyMessage(code), ...extra }, true)
 }
 
-function auditDenied(
+async function auditDenied(
+  deps: EnterpriseToolDeps,
   principal: ToolCallPrincipal,
   toolName: string,
   reason: string,
   definitionId?: string,
   agentId?: string,
 ) {
-  console.info('enterprise.tool.denied', {
+  const payload = {
     toolName,
     reason,
     tenantId: principal.tenantId,
     userId: principal.userId,
     ...(definitionId ? { definitionId } : {}),
     ...(agentId ? { agentId } : {}),
+  }
+  console.info('enterprise.tool.denied', payload)
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: principal.userId,
+    agentVersion: null,
+    action: 'enterprise.tool.denied',
+    targetType: 'agent',
+    targetId: agentId ?? null,
+    modelUsed: null,
+    inputRef: toolName,
+    outputRef: reason,
+    policyDecision: 'denied',
+    metadata: payload,
+    tenantId: principal.tenantId,
   })
 }
 
@@ -95,7 +114,7 @@ export async function invokeEnterpriseTool(
   const { principal, toolName, args } = input
   const definitionId = asUuid(args.definitionId)
   if (!definitionId) {
-    auditDenied(principal, toolName, 'definition_not_found')
+    await auditDenied(deps, principal, toolName, 'definition_not_found')
     return errorResult('definition_not_found')
   }
 
@@ -104,14 +123,14 @@ export async function invokeEnterpriseTool(
     definitionId,
   })
   if (!definition) {
-    auditDenied(principal, toolName, 'definition_not_found', definitionId)
+    await auditDenied(deps, principal, toolName, 'definition_not_found', definitionId)
     return errorResult('definition_not_found')
   }
 
   if (args.agentId !== undefined) {
     const agentIdArg = asUuid(args.agentId)
     if (!agentIdArg || agentIdArg !== definition.agentId) {
-      auditDenied(principal, toolName, 'definition_mismatch', definitionId, definition.agentId)
+      await auditDenied(deps, principal, toolName, 'definition_mismatch', definitionId, definition.agentId)
       return errorResult('definition_mismatch')
     }
   }
@@ -122,26 +141,26 @@ export async function invokeEnterpriseTool(
     agentId: definition.agentId,
   })
   if (!canOperateAgent({ role: principal.role, grant, assumed: principal.assumed })) {
-    auditDenied(principal, toolName, 'agent_access_denied', definitionId, definition.agentId)
+    await auditDenied(deps, principal, toolName, 'agent_access_denied', definitionId, definition.agentId)
     return errorResult('agent_access_denied')
   }
 
   if (isEnterpriseDriveWriteTool(toolName)) {
     if (!deps.enqueueWrite) {
-      auditDenied(principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
+      await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
       return errorResult('tool_not_configured')
     }
     return deps.enqueueWrite({ principal, toolName, args })
   }
 
   if (!isEnterpriseDriveTool(toolName)) {
-    auditDenied(principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
+    await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
     return errorResult('tool_not_configured')
   }
 
   const parsed = schemaForEnterpriseDriveTool(toolName).safeParse(args)
   if (!parsed.success) {
-    auditDenied(principal, toolName, 'invalid_args', definitionId, definition.agentId)
+    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId)
     return errorResult('invalid_args')
   }
 
@@ -152,7 +171,7 @@ export async function invokeEnterpriseTool(
     args: parsed.data as Record<string, unknown>,
   })
   if (!authorized.allowed) {
-    auditDenied(principal, toolName, authorized.reason, definitionId, definition.agentId)
+    await auditDenied(deps, principal, toolName, authorized.reason, definitionId, definition.agentId)
     return errorResult(authorized.reason)
   }
 
@@ -168,7 +187,7 @@ export async function invokeEnterpriseTool(
       tenantId: principal.tenantId,
     })
   } catch {
-    console.info('enterprise.tool.error', {
+    const payload = {
       toolName,
       tenantId: principal.tenantId,
       userId: principal.userId,
@@ -176,6 +195,21 @@ export async function invokeEnterpriseTool(
       agentId: definition.agentId,
       connectorId: authorized.connectorId,
       errorCode: 'google_drive_auth_failed',
+    }
+    console.info('enterprise.tool.error', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.error',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: 'google_drive_auth_failed',
+      policyDecision: null,
+      metadata: payload,
+      tenantId: principal.tenantId,
     })
     return errorResult('google_drive_auth_failed')
   }
@@ -183,18 +217,33 @@ export async function invokeEnterpriseTool(
   const execute = deps.executeDriveTool ?? executeGoogleDriveTool
   try {
     const result = await execute(toolName, parsed.data as Record<string, unknown>, accessToken)
-    console.info('enterprise.tool.ok', {
+    const payload = {
       toolName,
       tenantId: principal.tenantId,
       userId: principal.userId,
       definitionId,
       agentId: definition.agentId,
       connectorId: authorized.connectorId,
+    }
+    console.info('enterprise.tool.ok', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.ok',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: payload,
+      tenantId: principal.tenantId,
     })
     return textResult(result)
   } catch (error) {
     const mapped = mapDriveError(error)
-    console.info('enterprise.tool.error', {
+    const payload = {
       toolName,
       tenantId: principal.tenantId,
       userId: principal.userId,
@@ -202,6 +251,21 @@ export async function invokeEnterpriseTool(
       agentId: definition.agentId,
       connectorId: authorized.connectorId,
       errorCode: mapped.code,
+    }
+    console.info('enterprise.tool.error', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.error',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: mapped.code,
+      policyDecision: null,
+      metadata: payload,
+      tenantId: principal.tenantId,
     })
     return errorResult(mapped.code, mapped.extra)
   }

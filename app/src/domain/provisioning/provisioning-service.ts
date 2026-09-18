@@ -123,6 +123,7 @@ export interface ProvisioningDeps {
    * kapcsolat a kézzel bemásolt (vagy hiányzó) mezőjelöléssel indulna.
    */
   syncPrivacyCatalog?: (connectorId: string, actorId: string | null) => Promise<void>
+  audit?: import('@/lib/audit/types').AuditSink
 }
 
 function sha256Hex(content: string): string {
@@ -1318,12 +1319,27 @@ export class ProvisioningService {
   }
 
   private async appendAudit(
-    _actor: ProvisioningActor,
-    _action: string,
-    _targetId: string | null,
-    _metadata: Record<string, unknown> & { policyDecision: string },
+    actor: ProvisioningActor,
+    action: string,
+    targetId: string | null,
+    metadata: Record<string, unknown> & { policyDecision: string },
   ): Promise<void> {
-    return
+    const { policyDecision, ...meta } = metadata
+    if (!this.deps.audit) return
+    await this.deps.audit.append({
+      actorType: actor.type === 'user' ? 'human' : 'agent',
+      actorId: actor.type === 'user' ? actor.userId : actor.agentId,
+      agentVersion: actor.type === 'agent' ? actor.agentVersion ?? null : null,
+      action,
+      targetType: 'connector',
+      targetId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision,
+      metadata: { tenant_id: actor.tenantId, ...meta } as unknown as Prisma.JsonValue,
+      tenantId: actor.tenantId,
+    })
   }
 }
 

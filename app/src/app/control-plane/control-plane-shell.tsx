@@ -3,7 +3,6 @@
 import { Suspense, useSyncExternalStore, type ReactNode } from 'react'
 import { usePathname } from 'next/navigation'
 import { AppShell, type NavEntry } from '@/components/ui/shell'
-import { AgentRail, AgentRailMobileToggle } from '@/components/agents/agent-rail'
 import { TenantSwitcher } from '@/components/tenant/tenant-switcher'
 import { ControlPlanePanelDockHost } from '@/components/ui/control-plane-panel-dock'
 import { RouteModalHost } from '@/components/ui/route-modal'
@@ -19,18 +18,16 @@ function readInIframe() {
 
 /**
  * Stabil layout-wrapper: iframe-ben (header-modál) soha ne mountolódjon a
- * teljes shell + agent-sáv.
+ * teljes shell.
  */
 export function ControlPlaneRoot({
   embedFromServer,
   navItems = [],
-  canCreateAgent = false,
   children,
 }: {
   embedFromServer: boolean
   navItems?: NavEntry[]
   canCreateAgent?: boolean
-  canCreateTicket?: boolean
   children: ReactNode
 }) {
   const inIframe = useSyncExternalStore(subscribeNever, readInIframe, () => embedFromServer)
@@ -41,39 +38,15 @@ export function ControlPlaneRoot({
       </ControlPlaneEmbedBridge>
     )
   }
-  return (
-    <ControlPlaneShell navItems={navItems} canCreateAgent={canCreateAgent}>
-      {children}
-    </ControlPlaneShell>
-  )
-}
-
-function ControlPlaneBody({
-  children,
-  canCreateAgent,
-}: {
-  children: React.ReactNode
-  canCreateAgent: boolean
-}) {
-  return (
-    <div className="flex h-full min-h-0 flex-1 overflow-hidden">
-      <AgentRail canCreateAgent={canCreateAgent} />
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="flex-1 overflow-auto px-4 py-6 sm:px-6">{children}</div>
-      </div>
-    </div>
-  )
+  return <ControlPlaneShell navItems={navItems}>{children}</ControlPlaneShell>
 }
 
 export function ControlPlaneShell({
   navItems,
   children,
-  canCreateAgent = false,
 }: {
   navItems: NavEntry[]
   children: React.ReactNode
-  canCreateAgent?: boolean
-  canCreateTicket?: boolean
 }) {
   const pathname = usePathname()
 
@@ -87,15 +60,9 @@ export function ControlPlaneShell({
           accentColor="slate"
           pathname={pathname}
           navMode="modal"
-          layout="rail"
-          headerExtra={
-            <div className="flex items-center gap-2">
-              <AgentRailMobileToggle />
-              <TenantSwitcher />
-            </div>
-          }
+          headerExtra={<TenantSwitcher />}
         >
-          <ControlPlaneBody canCreateAgent={canCreateAgent}>{children}</ControlPlaneBody>
+          {children}
         </AppShell>
       </Suspense>
       <Suspense fallback={null}>

@@ -11,6 +11,8 @@ import type {
   TenantRepository,
   UserRepository,
 } from '@/repositories/interfaces'
+import type { AuditSink } from '@/lib/audit/types'
+import { writeAudit } from '@/lib/audit/types'
 
 export const MCP_WHOAMI_TOOL = 'platform.whoami'
 export const MCP_AGENTS_LIST_TOOL = 'platform.agents.list'
@@ -67,6 +69,7 @@ export type McpPrincipalDeps = {
   tenants: Pick<TenantRepository, 'findBySlug'>
   memberships: Pick<TenantMembershipRepository, 'findByTenantAndUser'>
   platformMemberships: Pick<PlatformMembershipRepository, 'findByUser'>
+  audit?: AuditSink
 }
 
 const GENERIC_MESSAGE: Record<McpPrincipalFailureCode, string> = {
@@ -126,13 +129,28 @@ export function tokenClaimsForeignOrigin(
   return false
 }
 
-/** Denials log to stdout. AuditLog was dropped in Phase B. */
+/** Denials persist to audit_log except unauthenticated 401 (flood). */
 export async function auditMcpAuthDenied(
-  _deps: McpPrincipalDeps | Record<string, unknown>,
+  deps: McpPrincipalDeps | { audit?: AuditSink },
   failure: Pick<McpPrincipalFailure, 'code'> & { userId?: string; tenantId?: string },
   tenantSlug?: string,
 ): Promise<void> {
   console.info('mcp.auth.deny', { code: failure.code, tenantSlug, userId: failure.userId })
+  if (failure.code === 'unauthenticated') return
+  await writeAudit(deps.audit, {
+    actorType: failure.userId ? 'human' : 'system',
+    actorId: failure.userId ?? null,
+    agentVersion: null,
+    action: 'mcp.auth.deny',
+    targetType: 'mcp',
+    targetId: failure.tenantId ?? null,
+    modelUsed: null,
+    inputRef: failure.code,
+    outputRef: tenantSlug ?? null,
+    policyDecision: 'denied',
+    metadata: { code: failure.code, tenantSlug, userId: failure.userId },
+    tenantId: failure.tenantId ?? null,
+  })
 }
 
 async function deny(
@@ -232,19 +250,55 @@ export async function resolveMcpPrincipal(
     platformRoles,
   }
 
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: principal.userId,
+    agentVersion: null,
+    action: 'mcp.auth.ok',
+    targetType: 'tenant',
+    targetId: principal.tenantId,
+    modelUsed: null,
+    inputRef: principal.role,
+    outputRef: principal.tenantSlug,
+    policyDecision: 'allowed',
+    metadata: {
+      tenantSlug: principal.tenantSlug,
+      assumed: principal.assumed,
+      role: principal.role,
+    },
+    tenantId: principal.tenantId,
+  })
+
   return { ok: true, principal }
 }
 
 export async function auditMcpToolCall(
-  _deps: unknown,
-  _principal: McpPrincipal,
-  _toolName?: string,
+  deps: { audit?: AuditSink },
+  principal: McpPrincipal,
+  toolName?: string,
 ): Promise<void> {
-  return
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: principal.userId,
+    agentVersion: null,
+    action: 'mcp.tools.call',
+    targetType: 'mcp',
+    targetId: principal.tenantId,
+    modelUsed: null,
+    inputRef: toolName ?? null,
+    outputRef: null,
+    policyDecision: 'allowed',
+    metadata: {
+      toolName,
+      tenantSlug: principal.tenantSlug,
+      assumed: principal.assumed,
+    },
+    tenantId: principal.tenantId,
+  })
 }
 
 export async function auditMcpToolDenied(
-  _deps: unknown,
+  deps: { audit?: AuditSink },
   principal: McpPrincipal,
   toolName: string,
 ): Promise<void> {
@@ -252,5 +306,19 @@ export async function auditMcpToolDenied(
     toolName,
     code: 'tool_not_allowed',
     tenantSlug: principal.tenantSlug,
+  })
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: principal.userId,
+    agentVersion: null,
+    action: 'mcp.tools.call.deny',
+    targetType: 'mcp',
+    targetId: principal.tenantId,
+    modelUsed: null,
+    inputRef: toolName,
+    outputRef: null,
+    policyDecision: 'denied',
+    metadata: { toolName, code: 'tool_not_allowed', tenantSlug: principal.tenantSlug },
+    tenantId: principal.tenantId,
   })
 }

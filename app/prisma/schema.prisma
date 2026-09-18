@@ -52,6 +52,12 @@ enum PlatformMembershipStatus {
   suspended
 }
 
+enum AuditActorType {
+  human
+  agent
+  system
+}
+
 enum ResourceGrantType {
   agent
 }
@@ -266,6 +272,7 @@ model Tenant {
   connectorTemplates ConnectorTemplate[]
   resourceGrants    ResourceGrant[]
   gatewayOperations GatewayOperation[]
+  auditLogs         AuditLog[]
 
   @@index([status])
   @@map("tenants")
@@ -596,4 +603,30 @@ model PlatformSetting {
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   @@map("platform_settings")
+}
+
+model AuditLog {
+  id             String         @id @default(uuid()) @db.Uuid
+  seq            BigInt         @default(autoincrement())
+  actorType      AuditActorType @map("actor_type")
+  actorId        String?        @map("actor_id") @db.Uuid
+  agentVersion   Int?           @map("agent_version")
+  action         String
+  targetType     String         @map("target_type")
+  targetId       String?        @map("target_id") @db.Uuid
+  modelUsed      String?        @map("model_used")
+  inputRef       String?        @map("input_ref")
+  outputRef      String?        @map("output_ref")
+  policyDecision String?        @map("policy_decision")
+  prevHash       String?        @map("prev_hash")
+  hash           String?
+  metadata       Json?
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  tenantId       String?        @map("tenant_id") @db.Uuid
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_log")
 }

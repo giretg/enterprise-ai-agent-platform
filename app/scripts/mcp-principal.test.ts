@@ -134,6 +134,11 @@ function deps(overrides: {
           return overrides.platform ?? []
         },
       },
+      audit: {
+        async append(data) {
+          audit.push({ action: data.action, ...data })
+        },
+      },
     },
   }
 }
@@ -160,6 +165,7 @@ async function main() {
     assert.equal(result.principal.tenantSlug, 'acme')
     assert.equal(result.principal.role, 'operator')
     assert.equal(result.principal.assumed, false)
+    assert.ok(stub.audit.some((row) => row.action === 'mcp.auth.ok'))
   })
 
   await check('pending membership deny (non-superadmin)', async () => {
@@ -240,6 +246,7 @@ async function main() {
     assert.equal(result.ok, false)
     if (result.ok) return
     assert.equal(result.code, 'invalid_token')
+    assert.ok(stub.audit.some((row) => row.action === 'mcp.auth.deny'))
   })
 
   await check('resource claim for a different origin → invalid_token', async () => {
@@ -259,6 +266,7 @@ async function main() {
     const stub = deps({ token: { clerkUserId: CLERK_ID, claims: { aud: 'client_abc' } } })
     const result = await resolve('Bearer tok', 'acme', stub)
     assert.equal(result.ok, true)
+    assert.ok(stub.audit.some((row) => row.action === 'mcp.auth.ok'))
   })
 
   await check('extra token/JSON fields cannot override tenant or user ids', async () => {

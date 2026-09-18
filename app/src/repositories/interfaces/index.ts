@@ -2,6 +2,7 @@ import type {
   Agent,
   AgentDefinitionVersion,
   AgentSkill,
+  AuditLog,
   Capability,
   Connector,
   ConnectorAccessMode,
@@ -526,3 +527,37 @@ export interface PlatformSettingsRepository {
 export type { Capability }
 
 export type { GatewayOperationStore as GatewayOperationRepository } from '@/domain/gateway-operation'
+
+export type AuditAppendInput = Omit<
+  AuditLog,
+  'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash' | 'tenantId'
+> & {
+  tenantId?: string | null
+}
+
+export type AuditListFilter = {
+  action?: string | string[]
+  actorType?: AuditLog['actorType']
+  actorId?: string
+  targetType?: string
+  targetId?: string
+  tenantId?: string
+  since?: Date
+  until?: Date
+  order?: 'asc' | 'desc'
+  limit?: number
+}
+
+export type AuditWalkFilter = {
+  fromSeq?: bigint
+  toSeq?: bigint
+  tenantId?: string
+  since?: Date
+}
+
+export interface AuditRepository {
+  append(data: AuditAppendInput): Promise<AuditLog>
+  findMany(filter?: AuditListFilter): Promise<AuditLog[]>
+  findAll(filter?: AuditWalkFilter): Promise<AuditLog[]>
+  getActionCounts(filter?: { actions?: string[]; since?: Date }): Promise<Record<string, number>>
+}

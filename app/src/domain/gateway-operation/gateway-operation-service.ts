@@ -29,6 +29,8 @@ import type {
   GatewayOperationStore,
   GatewayOperationView,
 } from './types'
+import type { AuditSink } from '@/lib/audit/types'
+import { writeAudit } from '@/lib/audit/types'
 
 export type GatewayActor = ToolCallPrincipal
 
@@ -67,6 +69,7 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps & {
     grantId: string
     files: Array<{ fileId: string; name: string; mimeType: string }>
   }) => Promise<void>
+  audit?: AuditSink
 }
 
 const MESSAGES: Record<string, string> = {
@@ -152,6 +155,35 @@ function err(code: string): GatewayOperationErr {
   return { ok: false, code }
 }
 
+async function recordGatewayAudit(
+  deps: GatewayOperationServiceDeps,
+  input: {
+    action: string
+    actorType: 'human' | 'system'
+    actorId: string | null
+    tenantId: string
+    operationId?: string | null
+    policyDecision?: string | null
+    metadata: Record<string, unknown>
+  },
+) {
+  console.info(input.action, input.metadata)
+  await writeAudit(deps.audit, {
+    actorType: input.actorType,
+    actorId: input.actorId,
+    agentVersion: null,
+    action: input.action,
+    targetType: 'gateway_operation',
+    targetId: input.operationId ?? null,
+    modelUsed: null,
+    inputRef: typeof input.metadata.toolName === 'string' ? input.metadata.toolName : null,
+    outputRef: typeof input.metadata.errorCode === 'string' ? input.metadata.errorCode : null,
+    policyDecision: input.policyDecision ?? null,
+    metadata: input.metadata,
+    tenantId: input.tenantId,
+  })
+}
+
 function ok(view: GatewayOperationView, created?: boolean): GatewayOperationOk {
   return created === undefined ? { ok: true, view } : { ok: true, view, created }
 }
@@ -234,13 +266,20 @@ export async function enqueueGatewayOperation(
   const { principal, toolName, args } = input
   const authorized = await loadAuthorizedWrite(deps, principal, toolName, args)
   if (!authorized.ok) {
-    console.info('enterprise.tool.denied', {
-      toolName,
-      reason: authorized.code,
+    await recordGatewayAudit(deps, {
+      action: 'enterprise.tool.denied',
+      actorType: 'human',
+      actorId: principal.userId,
       tenantId: principal.tenantId,
-      userId: principal.userId,
-      ...(authorized.definitionId ? { definitionId: authorized.definitionId } : {}),
-      ...(authorized.agentId ? { agentId: authorized.agentId } : {}),
+      policyDecision: 'denied',
+      metadata: {
+        toolName,
+        reason: authorized.code,
+        tenantId: principal.tenantId,
+        userId: principal.userId,
+        ...(authorized.definitionId ? { definitionId: authorized.definitionId } : {}),
+        ...(authorized.agentId ? { agentId: authorized.agentId } : {}),
+      },
     })
     return err(authorized.code)
   }
@@ -263,13 +302,21 @@ export async function enqueueGatewayOperation(
     connectorId: authorized.connectorId,
   })
   if (inserted.created) {
-    console.info('gateway.operation.enqueued', {
-      operationId: inserted.record.id,
-      toolName,
+    await recordGatewayAudit(deps, {
+      action: 'gateway.operation.enqueued',
+      actorType: 'human',
+      actorId: principal.userId,
       tenantId: principal.tenantId,
-      userId: principal.userId,
-      definitionId: authorized.definition.definitionId,
-      idempotencyKey,
+      operationId: inserted.record.id,
+      metadata: {
+        operationId: inserted.record.id,
+        toolName,
+        tenantId: principal.tenantId,
+        userId: principal.userId,
+        definitionId: authorized.definition.definitionId,
+        agentId: authorized.definition.agentId,
+        idempotencyKey,
+      },
     })
   }
   return ok(toGatewayOperationView(inserted.record), inserted.created)
@@ -343,11 +390,19 @@ export async function rejectGatewayOperation(
   })
   if (!claimed) return err('operation_not_found')
   if (claimed.ok) {
-    console.info('gateway.operation.rejected', {
-      operationId,
-      decidedByUserId: input.actor.userId,
+    await recordGatewayAudit(deps, {
+      action: 'gateway.operation.rejected',
+      actorType: 'human',
+      actorId: input.actor.userId,
       tenantId: input.tenantId,
-      ...(input.reason ? { reason: input.reason } : {}),
+      operationId,
+      policyDecision: 'denied',
+      metadata: {
+        operationId,
+        decidedByUserId: input.actor.userId,
+        tenantId: input.tenantId,
+        ...(input.reason ? { reason: input.reason } : {}),
+      },
     })
   }
   return claimed
@@ -380,15 +435,30 @@ export async function approveGatewayOperation(
   if (!claimed) return err('operation_not_found')
   if (!claimed.ok) return claimed
 
-  console.info('gateway.operation.approved', {
-    operationId,
-    decidedByUserId: input.actor.userId,
+  await recordGatewayAudit(deps, {
+    action: 'gateway.operation.approved',
+    actorType: 'human',
+    actorId: input.actor.userId,
     tenantId: input.tenantId,
+    operationId,
+    policyDecision: 'allowed',
+    metadata: {
+      operationId,
+      decidedByUserId: input.actor.userId,
+      tenantId: input.tenantId,
+    },
   })
-  console.info('gateway.operation.executing', {
-    operationId,
-    connectorId: claimed.record.connectorId,
+  await recordGatewayAudit(deps, {
+    action: 'gateway.operation.executing',
+    actorType: 'system',
+    actorId: null,
     tenantId: input.tenantId,
+    operationId,
+    metadata: {
+      operationId,
+      connectorId: claimed.record.connectorId,
+      tenantId: input.tenantId,
+    },
   })
 
   const executed = await executeApprovedOperation(deps, claimed.record)
@@ -411,6 +481,25 @@ async function executeApprovedOperation(
       connectorId: operation.connectorId,
       tenantId: operation.tenantId,
       errorCode: code,
+    })
+    await writeAudit(deps.audit, {
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'gateway.operation.failed',
+      targetType: 'gateway_operation',
+      targetId: operation.id,
+      modelUsed: null,
+      inputRef: operation.toolName,
+      outputRef: code,
+      policyDecision: 'denied',
+      metadata: {
+        operationId: operation.id,
+        connectorId: operation.connectorId,
+        tenantId: operation.tenantId,
+        errorCode: code,
+      },
+      tenantId: operation.tenantId,
     })
     return updated ?? { ...operation, status: 'failed' as GatewayOperationStatus, errorCode: code }
   }
@@ -501,11 +590,26 @@ async function executeApprovedOperation(
       }
     }
     const file = result && typeof result === 'object' ? (result as { file?: { id?: string } }).file : undefined
-    console.info('gateway.operation.succeeded', {
+    const payload = {
       operationId: operation.id,
       connectorId: authorized.connectorId,
       tenantId: operation.tenantId,
       ...(typeof file?.id === 'string' ? { fileId: file.id } : {}),
+    }
+    console.info('gateway.operation.succeeded', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'gateway.operation.succeeded',
+      targetType: 'gateway_operation',
+      targetId: operation.id,
+      modelUsed: null,
+      inputRef: operation.toolName,
+      outputRef: typeof file?.id === 'string' ? file.id : null,
+      policyDecision: 'allowed',
+      metadata: payload,
+      tenantId: operation.tenantId,
     })
     return updated ?? { ...operation, status: 'succeeded', resultJson: result, errorCode: null }
   } catch (error) {
