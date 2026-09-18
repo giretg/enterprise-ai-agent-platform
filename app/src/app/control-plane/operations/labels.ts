@@ -9,6 +9,8 @@ export const OPERATION_ERROR_LABELS: Record<string, string> = {
   tool_execution_failed: 'A művelet végrehajtása sikertelen.',
   agent_access_denied: 'Ehhez a munkatárshoz már nincs működési jogod.',
   invalid_args: 'Érvénytelen kérés.',
+  schema_mismatch:
+    'Az adatbázis séma nem a Core MVP. A jóváhagyási sor a gateway_operations táblát igényli.',
 }
 
 export function operationErrorLabel(code: string): string {

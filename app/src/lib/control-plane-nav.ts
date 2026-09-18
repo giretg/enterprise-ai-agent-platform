@@ -89,6 +89,12 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
       },
       { key: 'admin.iam', href: '/control-plane/iam', label: 'IAM', requires: { tenantRole: 'admin' } },
       {
+        key: 'admin.settings',
+        href: '/control-plane/settings',
+        label: 'Beállítások',
+        requires: { tenantRole: 'admin' },
+      },
+      {
         key: 'admin.menu-access',
         href: '/control-plane/menu-access',
         label: 'Menü-hozzáférés',

@@ -327,7 +327,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
     }>
   > {
     const rows = await prisma.connector.findMany({
-      where: { tenantId, lifecycleState: 'active' },
+      where: { tenantId, lifecycleState: 'active', type: { in: ['google_drive', 'http_api', 'gmail'] } },
       select: {
         id: true,
         type: true,
