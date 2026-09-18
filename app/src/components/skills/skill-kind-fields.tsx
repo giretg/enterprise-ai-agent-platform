@@ -3,10 +3,7 @@
 import {
   SKILL_KIND_COPY,
   SKILL_KINDS,
-  SKILL_SYSTEM_ROLE_LABEL,
-  SKILL_SYSTEM_ROLES,
   type SkillKind,
-  type SkillSystemRole,
 } from '@/lib/skill/skill-kind'
 
 export function SkillKindLegend({ compact = false }: { compact?: boolean }) {
@@ -24,7 +21,6 @@ export function SkillKindLegend({ compact = false }: { compact?: boolean }) {
 
 export function SkillKindFields({
   kind,
-  requiredSystemRole,
   onChange,
   isPlatformAdmin,
   disabled = false,
@@ -32,8 +28,7 @@ export function SkillKindFields({
   disableKinds = [],
 }: {
   kind: SkillKind
-  requiredSystemRole: SkillSystemRole | null
-  onChange: (next: { kind: SkillKind; requiredSystemRole: SkillSystemRole | null }) => void
+  onChange: (next: { kind: SkillKind }) => void
   isPlatformAdmin: boolean
   disabled?: boolean
   name?: string
@@ -60,13 +55,7 @@ export function SkillKindFields({
                   className="mt-1"
                   checked={kind === option}
                   disabled={locked || disabled}
-                  onChange={() =>
-                    onChange({
-                      kind: option,
-                      requiredSystemRole:
-                        option === 'system' ? requiredSystemRole ?? 'run_analyst' : null,
-                    })
-                  }
+                  onChange={() => onChange({ kind: option })}
                 />
                 <span>
                   <span className="text-sm font-medium text-ink">{SKILL_KIND_COPY[option].label}</span>
@@ -82,30 +71,6 @@ export function SkillKindFields({
           )
         })}
       </div>
-      {kind === 'system' ? (
-        <label className="block text-[11px] font-medium text-ink-faint">
-          Rendszer-agent, amihez tartozik
-          <select
-            value={requiredSystemRole ?? 'run_analyst'}
-            disabled={!isPlatformAdmin || disabled}
-            onChange={(e) =>
-              onChange({
-                kind: 'system',
-                requiredSystemRole: e.target.value as SkillSystemRole,
-              })
-            }
-            className="mt-1 w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-sm text-ink"
-          >
-            {SKILL_SYSTEM_ROLES.map((role) => (
-              <option key={role} value={role}>
-                {SKILL_SYSTEM_ROLE_LABEL[role]}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : null}
     </fieldset>
   )
 }
-
-

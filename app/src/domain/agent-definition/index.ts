@@ -111,10 +111,7 @@ export class AgentDefinitionService {
       name: agent.name,
       roleInstruction: agent.roleInstruction,
       skills: enabledSkills
-        .filter((row) => {
-          const status = row.skillVersion.status
-          return status === 'approved' || status === 'active'
-        })
+        .filter((row) => row.skillVersion.status === 'approved')
         .map((row) => ({
           skillId: row.skillVersion.skillId,
           skillVersionId: row.skillVersionId,
@@ -189,4 +186,13 @@ export function loadAgentDefinition(
 
 export function isPrivilegedAgentReader(role: string): boolean {
   return role === 'admin' || role === 'approver'
+}
+
+/** Admin/approver see every tenant agent; operator/viewer need view|operate. */
+export function canReadPublishedAgent(input: {
+  role: string
+  grant: { accessLevel: string } | null
+}): boolean {
+  if (isPrivilegedAgentReader(input.role)) return true
+  return input.grant?.accessLevel === 'view' || input.grant?.accessLevel === 'operate'
 }

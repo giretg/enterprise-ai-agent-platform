@@ -13,10 +13,13 @@ import { mcpProtectedResourceMetadata } from '../src/auth/mcp-oauth-metadata'
 import { handleMcpRequest } from '../src/auth/mcp-server'
 import type { McpRuntimeDeps } from '../src/auth/mcp-server'
 import {
+  canReadPublishedAgent,
+  isPrivilegedAgentReader,
+} from '../src/domain/agent-definition'
+import {
   MCP_AGENTS_LIST_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
   MCP_WHOAMI_TOOL,
-  PHASE_A_TOOL_NAME,
 } from '../src/auth/mcp-principal'
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
@@ -107,6 +110,14 @@ const SAMPLE_DEFINITION = {
   },
 }
 
+const PUBLISHED_LIST_ITEM = {
+  agentId: AGENT_ID,
+  name: 'Drive assistant',
+  status: 'active' as const,
+  currentDefinitionId: DEFINITION_ID,
+  currentVersion: 1,
+}
+
 function runtimeDeps(overrides: {
   membership?: TenantMembership | null
   tenant?: Tenant | null
@@ -114,9 +125,11 @@ function runtimeDeps(overrides: {
   platform?: PlatformMembership[]
   clerkConfigured?: boolean
   role?: TenantMembership['role']
+  grantedAgentIds?: Set<string>
 } = {}): { deps: McpRuntimeDeps; audit: Array<Record<string, unknown>> } {
   const audit: Array<Record<string, unknown>> = []
   const role = overrides.role ?? 'operator'
+  const grantedAgentIds = overrides.grantedAgentIds ?? new Set<string>()
   return {
     audit,
     deps: {
@@ -147,16 +160,9 @@ function runtimeDeps(overrides: {
           return overrides.platform ?? []
         },
       },
-      async listPublishedAgents() {
-        return [
-          {
-            agentId: AGENT_ID,
-            name: 'Drive assistant',
-            status: 'active',
-            currentDefinitionId: DEFINITION_ID,
-            currentVersion: 1,
-          },
-        ]
+      async listPublishedAgents({ role: principalRole }) {
+        if (isPrivilegedAgentReader(principalRole)) return [PUBLISHED_LIST_ITEM]
+        return grantedAgentIds.has(AGENT_ID) ? [PUBLISHED_LIST_ITEM] : []
       },
       async loadDefinition(input) {
         if (input.definitionId === OTHER_DEFINITION_ID) return null
@@ -164,8 +170,11 @@ function runtimeDeps(overrides: {
         if (input.definitionId && input.definitionId !== DEFINITION_ID) return null
         return SAMPLE_DEFINITION
       },
-      async canViewAgent({ role: principalRole }) {
-        return principalRole === 'admin' || principalRole === 'approver' || principalRole === 'operator'
+      async canViewAgent({ role: principalRole, agentId }) {
+        return canReadPublishedAgent({
+          role: principalRole,
+          grant: grantedAgentIds.has(agentId) ? { accessLevel: 'view' } : null,
+        })
       },
     },
   }
@@ -339,7 +348,7 @@ async function main() {
         id: 3,
         method: 'tools/call',
         params: {
-          name: PHASE_A_TOOL_NAME,
+          name: MCP_WHOAMI_TOOL,
           arguments: {
             userId: 'attacker-user',
             tenantId: 'attacker-tenant',
@@ -389,7 +398,7 @@ async function main() {
   })
 
   await check('platform.agents.list ignores extra tenant keys', async () => {
-    const { deps } = runtimeDeps()
+    const { deps } = runtimeDeps({ role: 'admin' })
     await initialize(deps)
     const res = await post(
       'acme',
@@ -417,7 +426,7 @@ async function main() {
   })
 
   await check('get_definition happy path and extra JSON cannot override tenant', async () => {
-    const { deps } = runtimeDeps()
+    const { deps } = runtimeDeps({ role: 'admin' })
     await initialize(deps)
     const res = await post(
       'acme',
@@ -427,7 +436,11 @@ async function main() {
         method: 'tools/call',
         params: {
           name: MCP_AGENT_GET_DEFINITION_TOOL,
-          arguments: { definitionId: DEFINITION_ID, tenantId: TENANT_ID },
+          arguments: {
+            definitionId: DEFINITION_ID,
+            tenantId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            userId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          },
         },
       },
       { authorization: `Bearer ${TOKEN}` },
@@ -437,6 +450,79 @@ async function main() {
     const body = (await readJson(res)) as {
       result?: { isError?: boolean; content?: Array<{ text: string }> }
     }
+    assert.equal(body.result?.isError, undefined)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      definitionId?: string
+      tenantId?: string
+    }
+    assert.equal(payload.definitionId, DEFINITION_ID)
+    assert.equal(payload.tenantId, TENANT_ID)
+  })
+
+  await check('operator without ResourceGrant cannot list or get a definition', async () => {
+    const { deps } = runtimeDeps({ role: 'operator' })
+    await initialize(deps)
+    const list = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: MCP_AGENTS_LIST_TOOL, arguments: {} } },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const listed = JSON.parse(
+      ((await readJson(list)) as { result?: { content?: Array<{ text: string }> } }).result?.content?.[0]
+        ?.text ?? '{}',
+    ) as { agents: unknown[] }
+    assert.deepEqual(listed.agents, [])
+
+    const get = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 9,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { definitionId: DEFINITION_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(get)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, true)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
+    assert.equal(payload.code, 'definition_not_found')
+  })
+
+  await check('operator with view grant can list and get definition', async () => {
+    const { deps } = runtimeDeps({ role: 'operator', grantedAgentIds: new Set([AGENT_ID]) })
+    await initialize(deps)
+    const list = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: MCP_AGENTS_LIST_TOOL, arguments: {} } },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const listed = JSON.parse(
+      ((await readJson(list)) as { result?: { content?: Array<{ text: string }> } }).result?.content?.[0]
+        ?.text ?? '{}',
+    ) as { agents: Array<{ agentId: string }> }
+    assert.equal(listed.agents[0]?.agentId, AGENT_ID)
+
+    const get = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 11,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { definitionId: DEFINITION_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(get)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, undefined)
     const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { definitionId?: string }
     assert.equal(payload.definitionId, DEFINITION_ID)
   })

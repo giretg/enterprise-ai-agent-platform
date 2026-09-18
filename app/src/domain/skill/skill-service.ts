@@ -34,11 +34,9 @@ import { isSkillReadableFromTenant, isSkillWritableFromTenant } from '@/lib/skil
 import {
   catalogScopeForKind,
   isSkillAssignableToAgent,
-  normalizeRequiredSystemRole,
   skillAssignDeniedMessage,
   skillKindChangeError,
   skillKindCreateAuthError,
-  skillKindInputError,
 } from '@/lib/skill/skill-kind'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { parseSkillMd } from '@/lib/skill/skill-md-adapter'
@@ -173,13 +171,13 @@ export class SkillService {
   private async requireReachableAgent(
     agentId: string,
     actor: ActorContext,
-  ): Promise<{ tenantId: string; systemRole: string | null }> {
+  ): Promise<{ tenantId: string }> {
     const agent = await this.agents.findById(agentId)
     if (!agent || !isAgentReachableFromTenant(agent.tenantId, actor.actorTenantId)) {
 
       throw new SkillAccessError('Agent not found')
     }
-    return { tenantId: agent.tenantId, systemRole: null }
+    return { tenantId: agent.tenantId }
   }
 
   private async assertAgentReachable(agentId: string, actor: ActorContext): Promise<void> {
@@ -858,7 +856,7 @@ export class SkillService {
     if (!target) throw new SkillAccessError('Skill version not found')
     // A cél-agentnek is az actor tenantjából elérhetőnek kell lennie — különben
     // egy tenant-admin idegen tenant agentjébe injektálhatna skillt.
-    const agent = await this.requireReachableAgent(input.agentId, input.actor)
+    await this.requireReachableAgent(input.agentId, input.actor)
     // Csak olvasható skill rendelhető hozzá (global vagy saját tenant).
     if (!isSkillReadableFromTenant(target.skill.tenantId, input.actor.actorTenantId)) {
       throw new SkillAccessError()
@@ -866,12 +864,9 @@ export class SkillService {
     if (target.status !== 'active') {
       throw new SkillAccessError('Only an active skill version can be assigned')
     }
-    const skillKind = {
-      kind: target.skill.kind,
-      requiredSystemRole: null,
-    }
-    if (!isSkillAssignableToAgent(skillKind, agent)) {
-      throw new SkillAccessError(skillAssignDeniedMessage(skillKind, agent))
+    const skillKind = { kind: target.skill.kind }
+    if (!isSkillAssignableToAgent(skillKind)) {
+      throw new SkillAccessError(skillAssignDeniedMessage(skillKind))
     }
 
     const { replacedVersionIds } = await this.skills.assign({

@@ -206,7 +206,7 @@ export async function listAssignableSkillsAction(
   agentId: string,
 ): Promise<ActionResult<AssignableSkill[]>> {
   try {
-    const { ctx, agent } = await requireAgentSkillManager(agentId)
+    const { ctx } = await requireAgentSkillManager(agentId)
     const [catalog, assigned] = await Promise.all([
       services.skills.listForActor(ctx.activeTenantId),
       services.skills.listAgentSkillsWithReadiness(agentId),
@@ -216,12 +216,7 @@ export async function listAssignableSkillsAction(
     for (const skill of catalog) {
       const active = skill.versions.find((v) => v.status === 'active')
       if (!active || assignedSkillIds.has(skill.id)) continue
-      if (
-        !isSkillAssignableToAgent(
-          { kind: skill.kind, requiredSystemRole: null },
-          { systemRole: null },
-        )
-      ) {
+      if (!isSkillAssignableToAgent({ kind: skill.kind })) {
         continue
       }
       rows.push({

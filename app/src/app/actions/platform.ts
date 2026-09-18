@@ -9,7 +9,7 @@ import { repositories } from '@/repositories/postgres'
 import { prisma } from '@/lib/db'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { fail, ok } from '@/lib/result'
-import { isPrivilegedAgentReader } from '@/domain/agent-definition'
+import { canReadPublishedAgent, isPrivilegedAgentReader } from '@/domain/agent-definition'
 import type { ConnectorAccessMode } from '@prisma/client'
 import { DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import {
@@ -268,13 +268,12 @@ async function readableAgent(user: {
 }, agentId: string) {
   const agent = await repositories.agents.findById(agentId, user.activeTenantId)
   if (!agent) return null
-  if (isPrivilegedAgentReader(user.activeTenantRole)) return agent
   const grant = await repositories.resourceGrants.findAgentGrant({
     tenantId: user.activeTenantId,
     userId: user.user.id,
     agentId,
   })
-  return grant ? agent : null
+  return canReadPublishedAgent({ role: user.activeTenantRole, grant }) ? agent : null
 }
 
 export async function listAgents(input?: { limit?: number; offset?: number }) {

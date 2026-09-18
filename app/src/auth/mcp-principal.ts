@@ -11,7 +11,6 @@ import type {
   UserRepository,
 } from '@/repositories/interfaces'
 
-export const PHASE_A_TOOL_NAME = 'platform.whoami'
 export const MCP_WHOAMI_TOOL = 'platform.whoami'
 export const MCP_AGENTS_LIST_TOOL = 'platform.agents.list'
 export const MCP_AGENT_GET_DEFINITION_TOOL = 'platform.agent.get_definition'
@@ -20,7 +19,6 @@ export const MCP_ALLOWED_TOOLS = [
   MCP_AGENTS_LIST_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
 ] as const
-export const PHASE_A_ALLOWED_TOOLS = MCP_ALLOWED_TOOLS
 export const MCP_RESOURCE_PATH = '/api/mcp'
 export const MCP_RESOURCE_METADATA_PATH =
   '/.well-known/oauth-protected-resource/api/mcp'

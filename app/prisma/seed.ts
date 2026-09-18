@@ -7,26 +7,12 @@
  *
  * Supported reset: `prisma migrate reset`.
  */
-import { PrismaClient } from '@prisma/client'
-import { createHash } from 'node:crypto'
+import { prisma } from '../src/lib/db'
+import { services } from '../src/domain/gateway-services'
 import { ensureTenantGoogleDriveConnector } from '../src/lib/seed-google-drive-connector'
-
-const prisma = new PrismaClient()
 
 const SEED_TENANT_SLUG = process.env.SEED_TENANT_SLUG ?? 'demo'
 const SEED_CLERK_USER_ID = process.env.SEED_CLERK_USER_ID ?? 'seed-clerk-user'
-
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize)
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([key, nested]) => [key, canonicalize(nested)]),
-    )
-  }
-  return value
-}
 
 async function main() {
   const tenant = await prisma.tenant.upsert({
@@ -121,41 +107,14 @@ async function main() {
     create: { agentId: agent.id, connectorId: connector.id, accessMode: 'read' },
   })
 
-  const snapshot = {
-    name: agent.name,
-    roleInstruction: agent.roleInstruction,
-    skills: [] as Array<{ skillId: string; skillVersionId: string; name: string }>,
-    connectors: [{ connectorId: connector.id, type: connector.type, accessMode: 'read' as const }],
-    capabilities: [
-      { toolName: 'google_drive_search', allowed: true },
-      { toolName: 'google_drive_read_file', allowed: true },
-      { toolName: 'google_drive_create_folder', allowed: true },
-    ],
-  }
-  const contentHash = createHash('sha256').update(JSON.stringify(canonicalize(snapshot))).digest('hex')
-
-  const existing = await prisma.agentDefinitionVersion.findUnique({
-    where: { agentId_version: { agentId: agent.id, version: 1 } },
-  })
-  const version =
-    existing ??
-    (await prisma.agentDefinitionVersion.create({
-      data: {
-        agentId: agent.id,
-        version: 1,
-        snapshot,
-        contentHash,
-        publishedById: user.id,
-      },
-    }))
-
-  await prisma.agent.update({
-    where: { id: agent.id },
-    data: { currentDefinitionVersionId: version.id, status: 'active' },
+  const published = await services.agentDefinitions.publishAgentDefinition({
+    agentId: agent.id,
+    tenantId: tenant.id,
+    publishedById: user.id,
   })
 
   console.log(
-    `Seeded tenant slug=${tenant.slug} agent=${agent.id} definition=${version.id} clerk=${SEED_CLERK_USER_ID}`,
+    `Seeded tenant slug=${tenant.slug} agent=${agent.id} definition=${published.definitionId} clerk=${SEED_CLERK_USER_ID}`,
   )
 }
 

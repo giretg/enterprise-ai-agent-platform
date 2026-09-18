@@ -15,36 +15,14 @@ export const updateAgentInstructionSchema = z.object({
   roleInstruction: z.string().trim().min(1).max(20_000),
 })
 
-export const updateAgentPersonaSchema = z.object({
-  agentId: z.string().uuid(),
-  personaNickname: z.string().trim().max(80).nullable().optional(),
-  personaTrait: z.string().trim().max(200).nullable().optional(),
-  personaGreeting: z.string().trim().max(400).nullable().optional(),
-})
-
 export const updateAgentAvatarSchema = z.object({
   agentId: z.string().uuid(),
   avatarUrl: z.string().trim().max(2000),
 })
 
-export const updateAgentOperatorVisibilitySchema = z.object({
-  agentId: z.string().uuid(),
-  hiddenFromOperators: z.boolean(),
-})
-
-export const updateAgentOperatorSkillManagementSchema = z.object({
-  agentId: z.string().uuid(),
-  operatorCanManageSkills: z.boolean(),
-})
-
 export const suspendAgentSchema = z.object({
   agentId: z.string().uuid(),
   reason: z.string().trim().min(1).max(500),
-})
-
-export const listAuditLogSchema = z.object({
-  limit: z.number().int().min(1).max(200).optional(),
-  action: z.string().trim().max(200).optional(),
 })
 
 export const inviteUserSchema = z.object({
@@ -82,11 +60,6 @@ export const reactivateUserSchema = z.object({
   targetUserId: z.string().uuid(),
 })
 
-export const setUserJobDescriptionSchema = z.object({
-  targetUserId: z.string().uuid(),
-  jobDescription: z.string().trim().max(4000).nullable(),
-})
-
 export const updateRolePermissionSchema = z.object({
   permissionKey: z.string().trim().min(1),
   minRole: userRoleSchema,
@@ -108,26 +81,6 @@ export const startConnectorOAuthSchema = z.object({
       originPath: z.string().optional(),
     })
     .optional(),
-})
-
-export const createBehaviorProfileSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  body: z.string().trim().min(1).max(20_000),
-})
-
-export const updateBehaviorProfileSchema = z.object({
-  profileId: z.string().uuid(),
-  body: z.string().trim().min(1).max(20_000),
-})
-
-export const behaviorProfileIdSchema = z.object({
-  profileId: z.string().uuid(),
-})
-
-export const setAgentBehaviorProfileSchema = z.object({
-  agentId: z.string().uuid(),
-  profileId: z.string().uuid().nullable(),
-  overlay: z.string().nullable().optional(),
 })
 
 const navVisibilityKeyList = z.array(z.string().min(1).max(120)).max(200)

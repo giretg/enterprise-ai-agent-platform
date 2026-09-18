@@ -202,9 +202,7 @@
     "test:poll-coalesce": "tsx scripts/poll-coalesce.test.ts",
     "test:agent-registry": "tsx scripts/agent-registry-lifecycle.test.ts",
     "test:dispatcher-retry-loop": "tsx scripts/dispatcher-retry-loop.test.ts",
-    "test:agent-access-grant-db": "tsx scripts/agent-access-grant-db.test.ts",
-    "test:default-user-agent-grants": "tsx scripts/default-user-agent-grants.test.ts",
-    "test:default-user-agent-grants-db": "tsx scripts/default-user-agent-grants-db.test.ts",
+
     "test:run-analyst-materialization-db": "tsx --require ./scripts/_server-only-shim.cjs scripts/run-analyst-materialization-db.test.ts",
     "test:run-analyst-role": "tsx scripts/run-analyst-role.test.ts",
     "test:run-analyst-skill": "tsx scripts/run-analyst-skill.test.ts",
@@ -239,9 +237,9 @@
     "test:office-surrogate-resolve": "tsx scripts/office-surrogate-resolve.test.ts",
     "test:privacy-markdown-highlights": "tsx scripts/privacy-markdown-highlights.test.ts",
     "test:privacy-egress-matrix": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-egress-matrix.test.ts",
-    "test:agent-access-graph": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-access-graph.test.ts",
+
     "test:agent-detail-access": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-detail-access.test.ts",
-    "backfill:agent-access-grants": "tsx scripts/backfill-explicit-user-agent-access.ts",
+
     "test:iam-policy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-policy.test.ts",
     "test:iam-tenant-boundary": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-tenant-boundary.test.ts",
     "test:iam-membership-scope": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-membership-scope.test.ts",
@@ -285,7 +283,7 @@
     "test:acceptance": "tsx scripts/acceptance-e2e.ts",
     "test:sandbox-app": "SANDBOX_APP_STUB=true tsx scripts/sandbox-app-registry.test.ts",
     "test:sandbox-versioning": "SANDBOX_VERSIONING_STUB=true DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/sandbox-versioning.test.ts",
-    "test:audit-log": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/audit-log.test.ts",
+
     "test:secret-config": "tsx scripts/secret-config.test.ts",
     "test:sandbox-csp": "tsx scripts/sandbox-csp.test.ts",
     "test:observability": "tsx scripts/observability.test.ts",

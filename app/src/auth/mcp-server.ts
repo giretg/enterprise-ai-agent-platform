@@ -7,7 +7,11 @@ import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { repositories } from '@/repositories/postgres'
 import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
 import { services } from '@/domain/gateway-services'
-import { isPrivilegedAgentReader, type AgentDefinition } from '@/domain/agent-definition'
+import {
+  canReadPublishedAgent,
+  isPrivilegedAgentReader,
+  type AgentDefinition,
+} from '@/domain/agent-definition'
 import {
   auditMcpAuthDenied,
   auditMcpToolCall,
@@ -86,13 +90,30 @@ async function canViewAgent(input: {
   role: McpPrincipal['role']
   agentId: string
 }): Promise<boolean> {
-  if (isPrivilegedAgentReader(input.role)) return true
   const grant = await repositories.resourceGrants.findAgentGrant({
     tenantId: input.tenantId,
     userId: input.userId,
     agentId: input.agentId,
   })
-  return Boolean(grant)
+  return canReadPublishedAgent({ role: input.role, grant })
+}
+
+async function toPublishedListItem(agent: {
+  id: string
+  name: string
+  status: string
+  currentDefinitionVersionId: string | null
+}) {
+  const current = agent.currentDefinitionVersionId
+    ? await repositories.agentDefinitions.findById(agent.currentDefinitionVersionId)
+    : null
+  return {
+    agentId: agent.id,
+    name: agent.name,
+    status: agent.status,
+    currentDefinitionId: agent.currentDefinitionVersionId,
+    currentVersion: current?.version ?? null,
+  }
 }
 
 export function productionMcpDeps(): McpRuntimeDeps {
@@ -111,38 +132,13 @@ export function productionMcpDeps(): McpRuntimeDeps {
       })
       const withDefinition = published.filter((agent) => agent.currentDefinitionVersionId)
       if (isPrivilegedAgentReader(role)) {
-        return Promise.all(
-          withDefinition.map(async (agent) => {
-            const current = agent.currentDefinitionVersionId
-              ? await repositories.agentDefinitions.findById(agent.currentDefinitionVersionId)
-              : null
-            return {
-              agentId: agent.id,
-              name: agent.name,
-              status: agent.status,
-              currentDefinitionId: agent.currentDefinitionVersionId,
-              currentVersion: current?.version ?? null,
-            }
-          }),
-        )
+        return Promise.all(withDefinition.map(toPublishedListItem))
       }
       const grantedIds = new Set(
         await repositories.resourceGrants.listAgentIdsGrantedToUser({ tenantId, userId }),
       )
-      const visible = withDefinition.filter((agent) => grantedIds.has(agent.id))
       return Promise.all(
-        visible.map(async (agent) => {
-          const current = agent.currentDefinitionVersionId
-            ? await repositories.agentDefinitions.findById(agent.currentDefinitionVersionId)
-            : null
-          return {
-            agentId: agent.id,
-            name: agent.name,
-            status: agent.status,
-            currentDefinitionId: agent.currentDefinitionVersionId,
-            currentVersion: current?.version ?? null,
-          }
-        }),
+        withDefinition.filter((agent) => grantedIds.has(agent.id)).map(toPublishedListItem),
       )
     },
     loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),

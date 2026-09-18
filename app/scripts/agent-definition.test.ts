@@ -46,7 +46,7 @@ function agentRow(overrides: Partial<Agent> = {}): Agent {
   }
 }
 
-function memoryDeps() {
+function memoryDeps(opts?: { skillStatus?: SkillVersion['status'] }) {
   const agents = new Map<string, Agent>([[AGENT_ID, agentRow()]])
   const versions: AgentDefinitionVersion[] = []
   return {
@@ -141,7 +141,7 @@ function memoryDeps() {
             content: {},
             requires: [],
             attachments: null,
-            status: 'active',
+            status: opts?.skillStatus ?? 'approved',
             contentHash: 'abc',
             approvedById: USER_ID,
             createdAt: new Date(),
@@ -233,6 +233,16 @@ async function main() {
       definitionId: published.definitionId,
     })
     assert.equal(leaked, null)
+  })
+
+  await check('only approved skill versions are snapshotted', async () => {
+    const { service } = memoryDeps({ skillStatus: 'active' })
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    assert.deepEqual(published.snapshot.skills, [])
   })
 
   await check('contentHash is sha256 of canonical JSON', () => {
