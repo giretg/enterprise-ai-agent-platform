@@ -1,10 +1,25 @@
 'use client'
 
-import { Suspense, type ReactNode } from 'react'
+import { Suspense, useSyncExternalStore, type ReactNode } from 'react'
 import { usePathname } from 'next/navigation'
 import { AppShell, type NavEntry } from '@/components/ui/shell'
 import { AgentRail, AgentRailMobileToggle } from '@/components/agents/agent-rail'
+import { ControlPlanePanelDockHost } from '@/components/ui/control-plane-panel-dock'
+import { RouteModalHost } from '@/components/ui/route-modal'
+import { ControlPlaneEmbedBridge } from '@/lib/control-plane-embed-bridge'
 
+function subscribeNever() {
+  return () => {}
+}
+
+function readInIframe() {
+  return window.parent !== window
+}
+
+/**
+ * Stabil layout-wrapper: iframe-ben (header-modál) soha ne mountolódjon a
+ * teljes shell + agent-sáv.
+ */
 export function ControlPlaneRoot({
   embedFromServer,
   navItems = [],
@@ -17,8 +32,13 @@ export function ControlPlaneRoot({
   canCreateTicket?: boolean
   children: ReactNode
 }) {
-  if (embedFromServer) {
-    return <div className="min-h-full bg-night px-4 py-6 text-ink sm:px-6">{children}</div>
+  const inIframe = useSyncExternalStore(subscribeNever, readInIframe, () => embedFromServer)
+  if (embedFromServer || inIframe) {
+    return (
+      <ControlPlaneEmbedBridge>
+        <div className="min-h-full bg-night px-4 py-6 text-ink sm:px-6">{children}</div>
+      </ControlPlaneEmbedBridge>
+    )
   }
   return (
     <ControlPlaneShell navItems={navItems} canCreateAgent={canCreateAgent}>
@@ -57,23 +77,29 @@ export function ControlPlaneShell({
   const pathname = usePathname()
 
   return (
-    <Suspense fallback={null}>
-      <AppShell
-        appName="E-AI"
-        appSubtitle="Control Plane"
-        navItems={navItems}
-        accentColor="slate"
-        pathname={pathname}
-        navMode="modal"
-        layout="rail"
-        headerExtra={
-          <div className="flex items-center gap-2">
-            <AgentRailMobileToggle />
-          </div>
-        }
-      >
-        <ControlPlaneBody canCreateAgent={canCreateAgent}>{children}</ControlPlaneBody>
-      </AppShell>
-    </Suspense>
+    <>
+      <Suspense fallback={null}>
+        <AppShell
+          appName="E-AI"
+          appSubtitle="Control Plane"
+          navItems={navItems}
+          accentColor="slate"
+          pathname={pathname}
+          navMode="modal"
+          layout="rail"
+          headerExtra={
+            <div className="flex items-center gap-2">
+              <AgentRailMobileToggle />
+            </div>
+          }
+        >
+          <ControlPlaneBody canCreateAgent={canCreateAgent}>{children}</ControlPlaneBody>
+        </AppShell>
+      </Suspense>
+      <Suspense fallback={null}>
+        <RouteModalHost />
+      </Suspense>
+      <ControlPlanePanelDockHost />
+    </>
   )
 }
