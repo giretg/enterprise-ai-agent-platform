@@ -257,6 +257,12 @@ export class KnowledgeBaseService {
           createdById: params.actorId,
           createdByAgentId: agent.id,
         })
+      } else if (params.processingMode === 'raw_text_only') {
+        // Race / korábbi OKF-draft: ha a mód már nyers, a pending artifact ne
+        // maradjon életben — különben az approve tévesen publikálhatná.
+        for (const artifact of pendingArtifacts) {
+          await this.artifacts.update(artifact.id, { status: 'failed' })
+        }
       }
       return document
     }
@@ -320,6 +326,9 @@ export class KnowledgeBaseService {
 
     const document = await this.documents.findById(payload.documentId)
     if (!document) throw new Error('Document not found')
+    // Tenant-határ: megosztott agent ticketjén keresztül se hagyhasson jóvá
+    // idegen tenant bélyegű dokumentumot (request/setPending már őrizte).
+    await this.assertDocumentReachable(document, params.actorTenantId)
     if (!document.processingMode) {
       throw new Error('Select a processing mode before approving')
     }
@@ -330,14 +339,19 @@ export class KnowledgeBaseService {
     })
 
     // OKF-mód: a hozzá tartozó draft artifactot publikáljuk — chunk index épül,
-    // és csak innentől kereshető (§7.8). A raw_text_only út változatlan.
+    // és csak innentől kereshető (§7.8). Nyers módban soha ne publikáljunk:
+    // orphan `pending_review` draft (race / módváltás) ne indexelődjön OKF-ként.
     const pending = (await this.artifacts.findByConnector(payload.connectorId, 'pending_review'))
       .find((a) => a.sourceDocumentId === payload.documentId)
     if (pending) {
-      await this.publishArtifact({
-        artifactId: pending.id,
-        approverId: params.approverId,
-      })
+      if (document.processingMode === 'okf') {
+        await this.publishArtifact({
+          artifactId: pending.id,
+          approverId: params.approverId,
+        })
+      } else {
+        await this.artifacts.update(pending.id, { status: 'failed' })
+      }
     }
 
     await this.ticketService.transition({
@@ -382,6 +396,10 @@ export class KnowledgeBaseService {
     const payload = asKbDocumentPayload(ticket.payload)
     if (!payload) throw new Error('Not a KB document ticket')
     if (ticket.state !== 'awaiting_human') throw new Error('Ticket not awaiting approval')
+
+    const document = await this.documents.findById(payload.documentId)
+    if (!document) throw new Error('Document not found')
+    await this.assertDocumentReachable(document, params.actorTenantId)
 
     await this.documents.update(payload.documentId, { status: 'failed' })
 
