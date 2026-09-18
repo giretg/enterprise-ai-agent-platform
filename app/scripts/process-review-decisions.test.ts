@@ -139,6 +139,15 @@ function harness(overrides?: { stepTicket?: Partial<FakeTicket>; processStatus?:
       if (data.status) process.status = data.status
       return process
     },
+    updateProcessIfStatusIn: async (
+      _id: string,
+      statuses: string[],
+      data: { status?: string; completedAt?: Date | null },
+    ) => {
+      if (!statuses.includes(process.status)) return null
+      if (data.status) process.status = data.status
+      return process
+    },
   } as unknown as ProcessRepository
 
   const auditRepo = {
@@ -339,6 +348,85 @@ await test('újrafuttatás EGYSZER-HASZNÁLATOS: a második kérés nem indítja
   assert.equal(h.comments.filter((c) => c.ticketId === 't-step').length, 1)
   assert.equal(h.audits.filter((a) => a.action === 'process.step.retry').length, 1)
   assert.equal(h.tickets.find((t) => t.id === 't-review')!.state, 'done')
+})
+
+await test('cancel vs resolve: a leállítás nem támasztható fel feltétel nélküli running írással', async () => {
+  const h = harness()
+  const advancedCalls: unknown[] = []
+  h.service.advance = (async () => {
+    advancedCalls.push({})
+    return { kind: 'noop' as const, status: h.process.status as 'cancelled' }
+  }) as ProcessService['advance']
+
+  // Szimulált verseny: a review claim után, a process resume előtt az admin leállít.
+  const originalClaim = (
+    h.service as unknown as {
+      claimReviewDecision: (input: unknown) => Promise<void>
+    }
+  ).claimReviewDecision.bind(h.service)
+  ;(
+    h.service as unknown as {
+      claimReviewDecision: (input: unknown) => Promise<void>
+    }
+  ).claimReviewDecision = async (input: unknown) => {
+    await originalClaim(input)
+    await h.service.cancelProcessWithTickets({
+      tenantId: h.tenantId,
+      processInstanceId: 'proc-1',
+      reason: 'Admin leállította közben.',
+      actorUserId: 'admin-1',
+    })
+  }
+
+  await assert.rejects(
+    h.service.resolveStepFromReview({
+      tenantId: h.tenantId,
+      reviewTicketId: 't-review',
+      note: 'Rendben.',
+      actorUserId: 'approver-1',
+    }),
+    /nem vár emberi döntésre|leállították/,
+  )
+
+  assert.equal(h.process.status, 'cancelled')
+  assert.equal(advancedCalls.length, 0, 'cancelled ne léptessen cancelled folyamatot')
+  assert.equal(h.tickets.find((t) => t.id === 't-step')!.state, 'done')
+})
+
+await test('cancel vs retry: leállítás után a lépés nem kerül újra ready-be', async () => {
+  const h = harness()
+  const originalClaim = (
+    h.service as unknown as {
+      claimReviewDecision: (input: unknown) => Promise<void>
+    }
+  ).claimReviewDecision.bind(h.service)
+  ;(
+    h.service as unknown as {
+      claimReviewDecision: (input: unknown) => Promise<void>
+    }
+  ).claimReviewDecision = async (input: unknown) => {
+    await originalClaim(input)
+    await h.service.cancelProcessWithTickets({
+      tenantId: h.tenantId,
+      processInstanceId: 'proc-1',
+      reason: 'Admin leállította közben.',
+      actorUserId: 'admin-1',
+    })
+  }
+
+  await assert.rejects(
+    h.service.retryStepFromReview({
+      tenantId: h.tenantId,
+      reviewTicketId: 't-review',
+      clarification: 'Próbáld újra.',
+      actorUserId: 'operator-1',
+    }),
+    /nem vár emberi döntésre|leállították/,
+  )
+
+  assert.equal(h.process.status, 'cancelled')
+  assert.equal(h.tickets.find((t) => t.id === 't-step')!.state, 'done')
+  assert.equal(h.comments.filter((c) => c.ticketId === 't-step').length, 0)
 })
 
 await test('lezárt folyamaton már nincs döntés', async () => {
