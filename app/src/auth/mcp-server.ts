@@ -257,7 +257,12 @@ async function listAgentsToolResult(principal: McpPrincipal, deps: McpRuntimeDep
 }
 
 function asUuid(value: unknown): string | undefined {
-  return typeof value === 'string' && /^[0-9a-f-]{36}$/i.test(value) ? value : undefined
+  return (
+    typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+      ? value
+      : undefined
+  )
 }
 
 function asVersion(value: unknown): number | undefined {
@@ -323,7 +328,7 @@ async function checkoutToolResult(
     renderAgentCheckout({
       definition: loaded,
       skills,
-      mcpUrl: `${origin.replace(/\/$/, '')}/api/mcp/${principal.tenantSlug}`,
+      mcpUrl: `${origin.replace(/\/+$/, '')}/api/mcp/${principal.tenantSlug}`,
       harness: asCheckoutHarness(args.harness),
     }),
   )

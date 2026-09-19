@@ -40,7 +40,7 @@ export type CheckoutPin = {
   version: number
   contentHash: string
   tenantSlug: string
-  harness: string | null
+  harness: CheckoutHarness | null
 }
 
 export type CheckoutBundle = {
@@ -164,7 +164,7 @@ export function renderAgentCheckout(input: {
   definition: AgentDefinition
   skills: CheckoutSkill[]
   mcpUrl: string
-  harness?: string | null
+  harness?: CheckoutHarness | null
 }): CheckoutBundle {
   const warnings: string[] = []
   const snapshot = input.definition.snapshot
