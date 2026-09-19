@@ -12,7 +12,7 @@ export const metadata: Metadata = {
     template: '%s · Excellence AI',
   },
   description:
-    'Excellence AI is an enterprise MCP server. Company-managed agents, connectors, audit, and human approval — connected to any MCP-compatible AI.',
+    "Excellence AI is a secure enterprise MCP server that connects your team's AI tools to company systems — with governed access, a full audit trail, and human approval.",
 }
 
 async function documentLocale(): Promise<string> {

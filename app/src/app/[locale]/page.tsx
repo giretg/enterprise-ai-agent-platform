@@ -7,7 +7,12 @@ import { Link } from '@/i18n/navigation'
 import { VendorLogo } from '@/components/public-site/vendor-logos'
 
 const trustKeys = ['trustApproval', 'trustAudit', 'trustConnect', 'trustGdpr'] as const
-const clients = ['clientClaude', 'clientCodex', 'clientChatgpt', 'clientCursor'] as const
+const clients = [
+  { key: 'clientClaude', mark: 'CL' },
+  { key: 'clientCodex', mark: 'CX' },
+  { key: 'clientChatgpt', mark: 'GP' },
+  { key: 'clientCursor', mark: 'CU' },
+] as const
 
 const features = [
   {
@@ -70,8 +75,8 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
               <span className="h-1.5 w-1.5 rounded-full bg-sage animate-soul" />
               {t('badge')}
             </span>
-            <h1 className="mt-6 font-display text-5xl font-semibold leading-[1.02] tracking-tight text-ink sm:text-6xl">
-              <span className="whitespace-nowrap">{t('heroLine1')}</span>
+            <h1 className="mt-6 font-display text-4xl font-semibold leading-[1.02] tracking-tight text-ink sm:text-6xl">
+              <span className="sm:whitespace-nowrap">{t('heroLine1')}</span>
               <br />
               <em className="font-medium italic text-coral-deep">{t('heroLine2')}</em>
             </h1>
@@ -115,11 +120,11 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
             <div className="space-y-4 px-4 py-5 sm:px-5">
               <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint">{t('panelClientsLabel')}</p>
               <ul className="space-y-2">
-                {clients.map((key) => (
+                {clients.map(({ key, mark }) => (
                   <li key={key} className="flex items-center justify-between rounded-xl border border-line bg-card px-3.5 py-2.5">
                     <span className="flex items-center gap-2.5 text-sm font-medium text-ink">
-                      <span className="flex h-7 w-7 items-center justify-center rounded-full bg-ink text-[11px] font-semibold text-night">
-                        {t(key)[0]}
+                      <span aria-hidden className="flex h-7 w-7 items-center justify-center rounded-full bg-ink text-[11px] font-semibold text-night">
+                        {mark}
                       </span>
                       {t(key)}
                     </span>
