@@ -1,4 +1,5 @@
 import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
+import { isDispatchable } from '@/lib/agent-lifecycle'
 import {
   GoogleDriveApiAuthError,
   GoogleDriveApiError,
@@ -10,7 +11,7 @@ import {
   type ToolCallPrincipal,
 } from './authorize-tool-call'
 import { executeGoogleDriveTool } from './handlers/google-drive'
-import { asUuid, enterpriseToolErrorMessage } from './tool-error-messages'
+import { asUuid, enterpriseToolErrorPayload } from './tool-error-messages'
 import {
   isEnterpriseDriveTool,
   isEnterpriseDriveWriteTool,
@@ -19,6 +20,15 @@ import {
 } from './tool-definitions'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
+import { isAuthorizationLinkReason } from '@/domain/connector-grant/connector-grant-needed'
+
+export type StartDelegatedAuthorization = (input: {
+  connectorId: string
+  userId: string
+  tenantId: string
+  role: string
+  toolName: string
+}) => Promise<{ url: string } | null>
 
 export type EnterpriseToolMcpResult = {
   isError?: true
@@ -52,6 +62,7 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps & {
     toolName: string
     args: Record<string, unknown>
   }) => Promise<EnterpriseToolMcpResult>
+  startAuthorization?: StartDelegatedAuthorization
   audit?: AuditSink
 }
 
@@ -62,12 +73,35 @@ function textResult(payload: unknown, isError = false): EnterpriseToolMcpResult 
   }
 }
 
-function denyMessage(code: string): string {
-  return enterpriseToolErrorMessage(code)
+function errorResult(code: string, extra?: Record<string, unknown>): EnterpriseToolMcpResult {
+  return textResult(enterpriseToolErrorPayload(code, extra), true)
 }
 
-function errorResult(code: string, extra?: Record<string, unknown>): EnterpriseToolMcpResult {
-  return textResult({ code, message: denyMessage(code), ...extra }, true)
+export async function authorizationLinkFields(
+  startAuthorization: StartDelegatedAuthorization | undefined,
+  input: {
+    reason: string
+    connectorId?: string
+    userId: string
+    tenantId: string
+    role: string
+    toolName: string
+  },
+): Promise<{ authorizationUrl?: string }> {
+  if (!startAuthorization || !input.connectorId) return {}
+  if (!isAuthorizationLinkReason(input.reason)) return {}
+  try {
+    const started = await startAuthorization({
+      connectorId: input.connectorId,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      role: input.role,
+      toolName: input.toolName,
+    })
+    return started?.url ? { authorizationUrl: started.url } : {}
+  } catch {
+    return {}
+  }
 }
 
 async function auditDenied(
@@ -127,6 +161,11 @@ export async function invokeEnterpriseTool(
     return errorResult('definition_not_found')
   }
 
+  if (!isDispatchable(definition.status)) {
+    await auditDenied(deps, principal, toolName, 'agent_inactive', definitionId, definition.agentId)
+    return errorResult('agent_inactive')
+  }
+
   if (args.agentId !== undefined) {
     const agentIdArg = asUuid(args.agentId)
     if (!agentIdArg || agentIdArg !== definition.agentId) {
@@ -172,7 +211,15 @@ export async function invokeEnterpriseTool(
   })
   if (!authorized.allowed) {
     await auditDenied(deps, principal, toolName, authorized.reason, definitionId, definition.agentId)
-    return errorResult(authorized.reason)
+    const extra = await authorizationLinkFields(deps.startAuthorization, {
+      reason: authorized.reason,
+      connectorId: authorized.connectorId,
+      userId: principal.userId,
+      tenantId: principal.tenantId,
+      role: principal.role,
+      toolName,
+    })
+    return errorResult(authorized.reason, extra)
   }
 
   const connector = authorized.connector
@@ -187,6 +234,14 @@ export async function invokeEnterpriseTool(
       tenantId: principal.tenantId,
     })
   } catch {
+    const extra = await authorizationLinkFields(deps.startAuthorization, {
+      reason: 'google_drive_auth_failed',
+      connectorId: authorized.connectorId,
+      userId: principal.userId,
+      tenantId: principal.tenantId,
+      role: principal.role,
+      toolName,
+    })
     const payload = {
       toolName,
       tenantId: principal.tenantId,
@@ -211,7 +266,7 @@ export async function invokeEnterpriseTool(
       metadata: payload,
       tenantId: principal.tenantId,
     })
-    return errorResult('google_drive_auth_failed')
+    return errorResult('google_drive_auth_failed', extra)
   }
 
   const execute = deps.executeDriveTool ?? executeGoogleDriveTool
@@ -267,7 +322,15 @@ export async function invokeEnterpriseTool(
       metadata: payload,
       tenantId: principal.tenantId,
     })
-    return errorResult(mapped.code, mapped.extra)
+    const extra = await authorizationLinkFields(deps.startAuthorization, {
+      reason: mapped.code,
+      connectorId: authorized.connectorId,
+      userId: principal.userId,
+      tenantId: principal.tenantId,
+      role: principal.role,
+      toolName,
+    })
+    return errorResult(mapped.code, { ...mapped.extra, ...extra })
   }
 }
 

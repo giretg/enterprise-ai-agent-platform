@@ -12,6 +12,7 @@ import {
   isPrivilegedAgentReader,
   type AgentDefinition,
 } from '@/domain/agent-definition'
+import { isAvailableOnMcp } from '@/lib/agent-lifecycle'
 import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
@@ -152,7 +153,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
         tenantId,
         unbounded: true,
       })
-      const withDefinition = published.filter((agent) => agent.currentDefinitionVersionId)
+      const withDefinition = published.filter(isAvailableOnMcp)
       if (isPrivilegedAgentReader(role)) {
         return Promise.all(withDefinition.map(toPublishedListItem))
       }
@@ -305,8 +306,9 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
         {
           title: 'Search Google Drive',
           description:
-            'Search files visible to the delegated Google account under a published agent definition.',
+            'List or search Google Drive files. Returns file id, name, mimeType. Call this to get a fileId before google_drive_read_file. Pass definitionId from platform.agent.get_definition. Omit query to list recent files. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: googleDriveSearchInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_SEARCH_TOOL, args, deps),
       )
@@ -315,7 +317,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
         {
           title: 'Read Google Drive file',
           description:
-            'Read or export a Drive file under a published agent definition. Credentials stay on the server.',
+            'Read or export a Drive file under a published agent definition. Credentials stay on the server. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: googleDriveReadFileInputSchema,
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_READ_FILE_TOOL, args, deps),
@@ -370,6 +372,8 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
     },
     {
       serverInfo: { name: 'enterprise-mcp', version: 'phase-f' },
+      instructions:
+        'Drive files: call google_drive_search with definitionId from platform.agent.get_definition, then google_drive_read_file with the returned file id. google_drive_create_folder waits for human approval. If a tool returns authorizationUrl, show that URL to the user, wait until they finish Google consent, then retry.',
     },
   )
 }

@@ -11,6 +11,7 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   agent_access_denied: 'Operate grant required to invoke this agent',
   tool_not_configured: 'Tool is not configured',
   capability_not_allowed: 'Tool is not allowed by the published agent definition',
+  agent_inactive: 'Agent is not available on MCP until it is turned on',
   missing_google_drive_connector_read: 'Published definition has no Google Drive read connector',
   missing_google_drive_connector_write: 'Published definition has no Google Drive write connector',
   tenant_isolation: 'Connector does not belong to this tenant',
@@ -27,4 +28,21 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
 
 export function enterpriseToolErrorMessage(code: string, fallback = 'Tool call denied'): string {
   return ENTERPRISE_TOOL_ERROR_MESSAGES[code] ?? fallback
+}
+
+export function enterpriseToolErrorPayload(
+  code: string,
+  extra?: Record<string, unknown>,
+  fallback?: string,
+): Record<string, unknown> {
+  const authorizationUrl =
+    typeof extra?.authorizationUrl === 'string' ? extra.authorizationUrl : undefined
+  const base = enterpriseToolErrorMessage(code, fallback)
+  return {
+    code,
+    message: authorizationUrl
+      ? `${base}. Open this URL in a browser to connect, then retry: ${authorizationUrl}`
+      : base,
+    ...extra,
+  }
 }

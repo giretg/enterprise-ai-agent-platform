@@ -34,6 +34,14 @@ export function isDispatchable(status: AgentStatus): boolean {
   return status === 'active'
 }
 
+/** MCP-n csak közzétett ÉS aktív munkatárs látszik — ez a „Használható” kapcsoló. */
+export function isAvailableOnMcp(agent: {
+  status: AgentStatus
+  currentDefinitionVersionId: string | null
+}): boolean {
+  return Boolean(agent.currentDefinitionVersionId) && isDispatchable(agent.status)
+}
+
 /**
  * I3 (§8): aktivált/nyugdíjazott agent fizikailag nem törölhető (audit-megőrzés) —
  * csak snapshot nélküli `draft` törölhető, minden más csak `retire`-elhető.

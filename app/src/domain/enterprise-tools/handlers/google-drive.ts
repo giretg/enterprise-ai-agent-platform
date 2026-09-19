@@ -14,9 +14,14 @@ function optionalNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-function optionalStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const items = value.filter((entry): entry is string => typeof entry === 'string')
+function mimeTypeList(value: unknown): string[] | undefined {
+  const raw =
+    typeof value === 'string'
+      ? value.split(',')
+      : Array.isArray(value)
+        ? value.filter((entry): entry is string => typeof entry === 'string')
+        : []
+  const items = raw.map((entry) => entry.trim()).filter(Boolean).slice(0, 10)
   return items.length > 0 ? items : undefined
 }
 
@@ -31,7 +36,7 @@ export async function executeGoogleDriveTool(
     return drive.search({
       query: optionalString(args.query),
       nameContains: optionalString(args.nameContains),
-      mimeTypes: optionalStringArray(args.mimeTypes),
+      mimeTypes: mimeTypeList(args.mimeTypes),
       modifiedAfter: optionalString(args.modifiedAfter),
       driveId: optionalString(args.driveId),
       pageSize: optionalNumber(args.pageSize),

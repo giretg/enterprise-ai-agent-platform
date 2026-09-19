@@ -7,10 +7,6 @@ import { publicAppUrl } from '@/lib/public-app-url'
 
 export async function GET(request: Request) {
   const user = await getCurrentUser().catch(() => null)
-  if (!user) {
-    return NextResponse.redirect(publicAppUrl('/sign-in', request))
-  }
-
   const url = new URL(request.url)
   const code = url.searchParams.get('code')
   const state = url.searchParams.get('state')
@@ -25,8 +21,9 @@ export async function GET(request: Request) {
   }
 
   try {
-    const { verifyOAuthState } = await import('@/lib/crypto/oauth-state')
+    const { verifyOAuthState, resolveOAuthCallbackActor } = await import('@/lib/crypto/oauth-state')
     const statePayload = verifyOAuthState(state)
+    const actorId = resolveOAuthCallbackActor(user?.id ?? null, statePayload.userId)
     const connector = await prisma.connector.findUnique({ where: { id: statePayload.connectorId } })
     if (!connector) throw new Error('connector_not_found')
     if (connector.lifecycleState !== 'active') throw new Error('connector_not_active')
@@ -35,7 +32,7 @@ export async function GET(request: Request) {
       code,
       state,
       connector,
-      actorId: user.id,
+      actorId,
     })
 
     return redirectAfterOAuth(request, state)

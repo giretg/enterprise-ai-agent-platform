@@ -412,6 +412,29 @@ async function main() {
     assert.deepEqual(result, { ok: false, code: 'missing_google_drive_connector_write' })
   })
 
+  await check('grant missing at enqueue returns authorizationUrl', async () => {
+    const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth?state=gw'
+    const wired = deps({ grant: null })
+    const result = await enqueueGatewayOperation(
+      {
+        ...wired.deps,
+        async startAuthorization() {
+          return { url: AUTH_URL }
+        },
+      },
+      {
+        principal: principal(),
+        toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+        args: FOLDER_ARGS,
+      },
+    )
+    assert.deepEqual(result, {
+      ok: false,
+      code: 'connector_grant_missing',
+      authorizationUrl: AUTH_URL,
+    })
+  })
+
   await check('terminal Drive failure sets failed + errorCode', async () => {
     const wired = deps({
       executeDriveTool: async () => {

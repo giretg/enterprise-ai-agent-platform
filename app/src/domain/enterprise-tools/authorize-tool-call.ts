@@ -28,7 +28,11 @@ export type LiveConnectorRow = {
   lifecycleState: string
 }
 
-export type AuthorizeToolCallDenied = { allowed: false; reason: string }
+export type AuthorizeToolCallDenied = {
+  allowed: false
+  reason: string
+  connectorId?: string
+}
 
 export type AuthorizeToolCallAllowed = {
   allowed: true
@@ -110,7 +114,7 @@ export async function authorizeToolCall(
     userId: input.principal.userId,
   })
   if (!grant) {
-    return { allowed: false, reason: 'connector_grant_missing' }
+    return { allowed: false, reason: 'connector_grant_missing', connectorId: connector.id }
   }
 
   const scopes = parseDelegatedGrantScopes(grant.scopes)
@@ -122,7 +126,7 @@ export async function authorizeToolCall(
       scopes,
     })
   ) {
-    return { allowed: false, reason: 'google_drive_scope_not_granted' }
+    return { allowed: false, reason: 'google_drive_scope_not_granted', connectorId: connector.id }
   }
 
   return {

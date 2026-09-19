@@ -21,6 +21,7 @@ import {
   CONNECTOR_GRANT_NEEDED_VISIBILITY_MS,
   isConnectorGrantNeededReason,
   isScopeNotGrantedReason,
+  oauthReturnPath,
   type ConnectorGrantNeededCard,
   type ConnectorGrantNeededReason,
 } from './connector-grant-needed'
@@ -29,8 +30,10 @@ import {
   isDelegatedOAuthStubEnabled,
   isDelegatedToolAllowedByScopes,
   parseDelegatedGrantScopes,
+  resolveGrantOAuthScopes,
   scopesFromConnectorConfig,
 } from './delegated-oauth-registry'
+import { driveScopeProfileRequiresAdmin } from './google-drive-scopes'
 import { normalizeGmailScope } from './gmail-scopes'
 
 export type ConnectorOAuthConfig = {
@@ -461,6 +464,92 @@ export class ConnectorGrantService {
 
     // codeVerifier a state-ben van — callback-nál onnan jön
     return { url: url.toString(), state }
+  }
+
+  async startUserAuthorization(params: {
+    connector: Connector
+    userId: string
+    tenantId: string
+    isAdmin: boolean
+    toolName?: string
+    requestedScopes?: string[]
+    returnTo?: import('./connector-grant-needed').OAuthReturnTo
+  }): Promise<{ url: string; stub?: true }> {
+    if (params.connector.authMode !== 'user_delegated') {
+      throw new Error('connector is not user_delegated')
+    }
+    if (params.connector.lifecycleState !== 'active') {
+      throw new Error('connector_not_active')
+    }
+    if (params.connector.tenantId && params.connector.tenantId !== params.tenantId) {
+      throw new Error('connector tenant mismatch')
+    }
+
+    const requestedScopes = params.toolName
+      ? resolveGrantOAuthScopes({
+          connectorType: params.connector.type,
+          config: params.connector.config,
+          toolName: params.toolName,
+        })
+      : params.requestedScopes
+
+    const existingGrant = await this.grants.findActiveGrant({
+      tenantId: params.connector.tenantId ?? params.tenantId,
+      connectorId: params.connector.id,
+      userId: params.userId,
+    })
+    const configured = new Set(
+      resolveGrantOAuthScopes({
+        connectorType: params.connector.type,
+        config: params.connector.config,
+      }),
+    )
+    const existingScopes = parseDelegatedGrantScopes(existingGrant?.scopes).filter((scope) =>
+      configured.has(scope),
+    )
+    const mergedRequested = [...new Set([...(requestedScopes ?? []), ...existingScopes])]
+    const effectiveScopes = mergedRequested.length > 0 ? mergedRequested : undefined
+
+    if (
+      params.connector.type === 'google_drive' &&
+      driveScopeProfileRequiresAdmin(effectiveScopes ?? []) &&
+      !params.isAdmin
+    ) {
+      throw new Error(
+        'A „Teljes olvasás + írás" Google Drive hozzáférést csak tenant-admin kérheti. ' +
+          'Válaszd az „Olvasás + írás kijelölt fájlokon" profilt, és a Kapcsolt fiókok oldalon jelöld ki a szerkeszthető fájlokat.',
+      )
+    }
+
+    const successPath = params.returnTo
+      ? oauthReturnPath(params.returnTo)
+      : '/control-plane/account?connected=1'
+
+    if (isDelegatedOAuthStubEnabled()) {
+      const { state } = createOAuthState({
+        userId: params.userId,
+        connectorId: params.connector.id,
+        tenantId: params.tenantId,
+        requestedScopes: effectiveScopes,
+        ...(params.returnTo ? { returnTo: params.returnTo } : {}),
+      })
+      await this.completeOAuthCallback({
+        code: 'stub-auth-code',
+        state,
+        connector: params.connector,
+        actorId: params.userId,
+      })
+      return { url: successPath, stub: true }
+    }
+
+    const { url } = await this.buildAuthorizationUrl({
+      connector: params.connector,
+      userId: params.userId,
+      tenantId: params.tenantId,
+      requestedScopes: effectiveScopes,
+      ...(params.returnTo ? { returnTo: params.returnTo } : {}),
+    })
+    return { url }
   }
 
   async completeOAuthCallback(params: {
