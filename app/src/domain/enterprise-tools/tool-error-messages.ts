@@ -13,6 +13,8 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   capability_not_allowed: 'Tool is not allowed by the published agent definition',
   missing_google_drive_connector_read: 'Published definition has no Google Drive read connector',
   missing_google_drive_connector_write: 'Published definition has no Google Drive write connector',
+  missing_knowledge_base_connector_read: 'Published definition has no knowledge base read connector',
+  missing_knowledge_base_connector_write: 'Published definition has no knowledge base write connector',
   tenant_isolation: 'Connector does not belong to this tenant',
   connector_not_active: 'Connector is not active',
   connector_grant_missing: 'Google Drive access has not been granted',
@@ -24,6 +26,7 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
     'idempotencyKey is already used by a different principal, tool, or arguments',
   google_drive_auth_failed: 'Google Drive authentication failed',
   google_drive_api_error: 'Google Drive request failed',
+  file_too_large: 'File is too large',
   tool_execution_failed: 'Tool execution failed',
 }
 

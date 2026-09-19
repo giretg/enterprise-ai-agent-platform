@@ -10,6 +10,8 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  KB_INGEST_TOOL,
+  KB_SEARCH_TOOL,
   type AuthorizeToolCallDeps,
   type EnterpriseToolDeps,
   type LiveConnectorRow,
@@ -114,6 +116,7 @@ function invokeDeps(opts?: {
   grant?: LiveGrantRow | null
   accessToken?: string
   executeDriveTool?: EnterpriseToolDeps['executeDriveTool']
+  executeKbTool?: EnterpriseToolDeps['executeKbTool']
   resolveError?: Error
   audit?: Array<{ action: string }>
 }): EnterpriseToolDeps {
@@ -141,6 +144,7 @@ function invokeDeps(opts?: {
       return opts?.accessToken ?? 'stub-drive-token'
     },
     executeDriveTool: opts?.executeDriveTool,
+    executeKbTool: opts?.executeKbTool,
   }
 }
 
@@ -636,6 +640,88 @@ async function main() {
     assert.equal(text.includes('stub-drive-token'), false)
     assert.equal(text.includes('tokenRef'), false)
     assert.equal(parsePayload(result).code, 'google_drive_auth_failed')
+  })
+
+  const kbDefinition = definition({
+    snapshot: {
+      name: 'Wiki',
+      roleInstruction: 'Answer from the knowledge base',
+      skills: [],
+      connectors: [{ connectorId: CONNECTOR_ID, type: 'knowledge_base', accessMode: 'write' }],
+      capabilities: [
+        { toolName: KB_SEARCH_TOOL, allowed: true },
+        { toolName: KB_INGEST_TOOL, allowed: true },
+      ],
+    },
+  })
+  const kbConnector = connector({ type: 'knowledge_base', authMode: 'agent_owned' })
+
+  await check('kb_search authorizes without a user OAuth grant', async () => {
+    const result = await authorizeToolCall(
+      authorizeDeps({ connector: kbConnector, grant: null }),
+      {
+        principal: principal(),
+        definition: kbDefinition,
+        toolName: KB_SEARCH_TOOL,
+        args: {},
+      },
+    )
+    assert.equal(result.allowed, true)
+    if (result.allowed) {
+      assert.equal(result.connectorId, CONNECTOR_ID)
+      assert.equal(result.grantId, null)
+      assert.equal(result.tokenRef, null)
+    }
+  })
+
+  await check('kb_ingest requires write binding', async () => {
+    const result = await authorizeToolCall(
+      authorizeDeps({ connector: kbConnector }),
+      {
+        principal: principal(),
+        definition: definition({
+          snapshot: {
+            name: 'Wiki',
+            roleInstruction: 'Answer',
+            skills: [],
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'knowledge_base', accessMode: 'read' }],
+            capabilities: [{ toolName: KB_INGEST_TOOL, allowed: true }],
+          },
+        }),
+        toolName: KB_INGEST_TOOL,
+        args: {},
+      },
+    )
+    assert.deepEqual(result, { allowed: false, reason: 'missing_knowledge_base_connector_write' })
+  })
+
+  await check('kb_ingest invoke publishes without Drive token lookup', async () => {
+    let seen: { toolName: string; filename: string } | undefined
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: kbDefinition,
+        connector: kbConnector,
+        grant: null,
+        executeKbTool: async (toolName, args) => {
+          seen = { toolName, filename: String(args.filename) }
+          return { documentId: 'doc-1', processingMode: 'okf', searchable: true }
+        },
+      }),
+      {
+        principal: principal(),
+        toolName: KB_INGEST_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          filename: 'policy.md',
+          processingMode: 'okf',
+          content: '# Remote\nWork from home is allowed.',
+        },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    assert.equal(seen?.toolName, KB_INGEST_TOOL)
+    assert.equal(seen?.filename, 'policy.md')
+    assert.equal(parsePayload(result).searchable, true)
   })
 
   console.log(`\n${failures === 0 ? 'enterprise-tools: ok' : `enterprise-tools: ${failures} failed`}`)

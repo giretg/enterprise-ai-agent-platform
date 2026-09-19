@@ -11,6 +11,7 @@ import { fail, ok } from '@/lib/result'
 import { canReadPublishedAgent, isPrivilegedAgentReader } from '@/domain/agent-definition'
 import type { ConnectorAccessMode } from '@prisma/client'
 import { DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
+import { ensureAgentKnowledgeBase, toolsNeedKnowledgeBase } from '@/lib/agent-knowledge-base'
 import {
   agentIdSchema,
   approveUserSchema,
@@ -409,6 +410,12 @@ export async function updateAgentCapabilities(input: {
     if (!existing) return fail('Agent not found')
     const tools = [...new Set(parsed.enabledTools ?? parsed.capabilities ?? [])]
     await repositories.agents.replaceCapabilities(parsed.agentId, tools)
+    if (toolsNeedKnowledgeBase(tools) && user.activeTenantId) {
+      await ensureAgentKnowledgeBase(existing, {
+        connectors: repositories.connectors,
+        agents: repositories.agents,
+      })
+    }
     return ok({ updated: true, updatedCount: tools.length })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update capabilities')
@@ -527,5 +534,60 @@ export async function deleteAgent(input: { id: string }) {
     return ok({ deleted: true })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to delete agent')
+  }
+}
+
+export async function listKbDocuments(input: { agentId: string }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const docs = await services.knowledgeBase.listDocuments({
+      tenantId: user.activeTenantId,
+      agentId,
+    })
+    return ok(docs)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list knowledge base documents')
+  }
+}
+
+export async function ingestKbDocument(formData: FormData) {
+  try {
+    const user = await requireTenantRole('admin')
+    const agentId = agentIdSchema.parse({ id: String(formData.get('agentId') ?? '') }).id
+    const processingMode = formData.get('processingMode') === 'okf' ? 'okf' : 'raw_text_only'
+    const file = formData.get('file')
+    if (!(file instanceof File) || file.size === 0) return fail('Válassz egy fájlt')
+    const buffer = Buffer.from(await file.arrayBuffer())
+    const result = await services.knowledgeBase.ingest({
+      tenantId: user.activeTenantId,
+      agentId,
+      uploadedById: user.user.id,
+      filename: file.name,
+      mimeType: file.type || null,
+      buffer,
+      processingMode,
+    })
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to ingest document')
+  }
+}
+
+export async function deleteKbDocument(input: { agentId: string; documentId: string }) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = z
+      .object({ agentId: z.string().uuid(), documentId: z.string().uuid() })
+      .parse(input)
+    await services.knowledgeBase.deleteDocument({
+      tenantId: user.activeTenantId,
+      agentId: parsed.agentId,
+      documentId: parsed.documentId,
+      actorId: user.user.id,
+    })
+    return ok({ deleted: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to delete document')
   }
 }

@@ -19,6 +19,7 @@ export const TOOL_REQUIREMENTS: Partial<Record<
   kb_search: { connectorType: 'knowledge_base', accessMode: 'read' },
   kb_list_index: { connectorType: 'knowledge_base', accessMode: 'read' },
   kb_get_page: { connectorType: 'knowledge_base', accessMode: 'read' },
+  kb_ingest: { connectorType: 'knowledge_base', accessMode: 'write' },
   board_write: { connectorType: 'board', accessMode: 'write' },
   ticket_create: { connectorType: 'board', accessMode: 'write' },
   agent_ask: { connectorType: 'board', accessMode: 'write' },

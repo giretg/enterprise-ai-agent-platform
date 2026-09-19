@@ -24,10 +24,19 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  KB_GET_PAGE_TOOL,
+  KB_INGEST_TOOL,
+  KB_LIST_INDEX_TOOL,
+  KB_SEARCH_TOOL,
   googleDriveCreateFolderInputSchema,
   googleDriveReadFileInputSchema,
   googleDriveSearchInputSchema,
+  kbGetPageInputSchema,
+  kbIngestInputSchema,
+  kbListIndexInputSchema,
+  kbSearchInputSchema,
   isEnterpriseDriveTool,
+  isEnterpriseKbTool,
   type EnterpriseToolMcpResult,
 } from '@/domain/enterprise-tools'
 import {
@@ -417,6 +426,44 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_CREATE_FOLDER_TOOL, args, deps),
       )
       server.registerTool(
+        KB_SEARCH_TOOL,
+        {
+          title: 'Search knowledge base',
+          description:
+            'Search the agent knowledge base. Pass definitionId from platform.agent.get_definition. Use kb_list_index and kb_get_page to browse OKF wiki pages.',
+          inputSchema: kbSearchInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, KB_SEARCH_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_LIST_INDEX_TOOL,
+        {
+          title: 'List knowledge base index',
+          description: 'List published OKF wiki pages in the agent knowledge base.',
+          inputSchema: kbListIndexInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, KB_LIST_INDEX_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_GET_PAGE_TOOL,
+        {
+          title: 'Get knowledge base page',
+          description: 'Read one published OKF wiki page by path.',
+          inputSchema: kbGetPageInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, KB_GET_PAGE_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_INGEST_TOOL,
+        {
+          title: 'Ingest knowledge base file',
+          description:
+            'Load a file into the agent knowledge base. processingMode=raw_text_only keeps the extracted text; okf splits it into a wiki. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
+          inputSchema: kbIngestInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, KB_INGEST_TOOL, args, deps),
+      )
+      server.registerTool(
         MCP_GATEWAY_OPERATION_GET_TOOL,
         {
           title: 'Get gateway operation',
@@ -451,7 +498,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         if (toolName === MCP_GATEWAY_OPERATION_GET_TOOL) {
           return getGatewayOperationToolResult(principal, args, deps)
         }
-        if (isEnterpriseDriveTool(toolName)) {
+        if (isEnterpriseDriveTool(toolName) || isEnterpriseKbTool(toolName)) {
           return enterpriseToolResult(principal, toolName, args, deps)
         }
         return whoamiToolResult(principal, deps)
