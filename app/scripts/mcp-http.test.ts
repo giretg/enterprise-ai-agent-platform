@@ -20,6 +20,7 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  ENTERPRISE_TOOLS,
   invokeEnterpriseTool,
   type EnterpriseToolDeps,
   type LiveConnectorRow,
@@ -485,9 +486,7 @@ async function main() {
       MCP_WHOAMI_TOOL,
       MCP_AGENTS_LIST_TOOL,
       MCP_AGENT_GET_DEFINITION_TOOL,
-      GOOGLE_DRIVE_SEARCH_TOOL,
-      GOOGLE_DRIVE_READ_FILE_TOOL,
-      GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      ...ENTERPRISE_TOOLS,
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
     const search = tools.find((tool) => tool.name === GOOGLE_DRIVE_SEARCH_TOOL)
@@ -495,8 +494,10 @@ async function main() {
     assert.match(search.description ?? '', /fileId/i)
     const schemaJson = JSON.stringify(search.inputSchema ?? {})
     assert.ok(schemaJson.length <= 16384, `search schema ${schemaJson.length} bytes exceeds Claude.ai drop limit`)
-    for (const [field, spec] of Object.entries(search.inputSchema?.properties ?? {})) {
-      assert.notEqual(spec.type, 'array', `${field} advertised as array`)
+    for (const tool of tools) {
+      for (const [field, spec] of Object.entries(tool.inputSchema?.properties ?? {})) {
+        assert.notEqual(spec.type, 'array', `${tool.name}.${field} advertised as array`)
+      }
     }
   })
 

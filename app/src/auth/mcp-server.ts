@@ -14,13 +14,27 @@ import {
 } from '@/domain/agent-definition'
 import { isAvailableOnMcp } from '@/lib/agent-lifecycle'
 import {
+  GMAIL_GET_MESSAGE_TOOL,
+  GMAIL_SEARCH_TOOL,
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+  GOOGLE_SHEETS_WRITE_RANGE_TOOL,
+  HTTP_API_GET_ALL_TOOL,
+  HTTP_API_GET_TOOL,
+  HTTP_API_REQUEST_TOOL,
+  gmailGetMessageInputSchema,
+  gmailSearchInputSchema,
   googleDriveCreateFolderInputSchema,
   googleDriveReadFileInputSchema,
   googleDriveSearchInputSchema,
-  isEnterpriseDriveTool,
+  googleDriveUploadFileInputSchema,
+  googleSheetsWriteRangeInputSchema,
+  httpApiGetAllInputSchema,
+  httpApiGetInputSchema,
+  httpApiRequestInputSchema,
+  isEnterpriseTool,
   type EnterpriseToolMcpResult,
 } from '@/domain/enterprise-tools'
 import {
@@ -333,6 +347,80 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_CREATE_FOLDER_TOOL, args, deps),
       )
       server.registerTool(
+        GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+        {
+          title: 'Upload Google Drive file',
+          description:
+            'Request upload of a text file (HTML, CSV, JSON) to the user\'s Drive. Waits for human approval. Pass definitionId from platform.agent.get_definition.',
+          inputSchema: googleDriveUploadFileInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_UPLOAD_FILE_TOOL, args, deps),
+      )
+      server.registerTool(
+        GOOGLE_SHEETS_WRITE_RANGE_TOOL,
+        {
+          title: 'Write Google Sheet range',
+          description:
+            'Request writing cells to a Google Sheet the user can edit. values is a JSON 2D array string. Waits for human approval.',
+          inputSchema: googleSheetsWriteRangeInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, GOOGLE_SHEETS_WRITE_RANGE_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_SEARCH_TOOL,
+        {
+          title: 'Search Gmail',
+          description:
+            'Search the connected Gmail mailbox. Returns id, from, subject, snippet. Call gmail_get_message with an id to read a body. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+          inputSchema: gmailSearchInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_SEARCH_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_GET_MESSAGE_TOOL,
+        {
+          title: 'Read Gmail message',
+          description:
+            'Read one Gmail message by id from gmail_search. Credentials stay on the server. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+          inputSchema: gmailGetMessageInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_GET_MESSAGE_TOOL, args, deps),
+      )
+      server.registerTool(
+        HTTP_API_GET_TOOL,
+        {
+          title: 'HTTP API GET',
+          description:
+            'One GET against a bound company HTTP API connector. Path is relative to the connector baseUrl — do not send credentials. For large lists use http_api_get_all. If several HTTP connectors are bound, pass connectorId from the agent definition.',
+          inputSchema: httpApiGetInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, HTTP_API_GET_TOOL, args, deps),
+      )
+      server.registerTool(
+        HTTP_API_GET_ALL_TOOL,
+        {
+          title: 'HTTP API GET all pages',
+          description:
+            'Paginated GET of a company HTTP API list in one call. Required for ownerships/partners/large registers — do not page http_api_get yourself. Path is relative to the connector baseUrl.',
+          inputSchema: httpApiGetAllInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, HTTP_API_GET_ALL_TOOL, args, deps),
+      )
+      server.registerTool(
+        HTTP_API_REQUEST_TOOL,
+        {
+          title: 'HTTP API write',
+          description:
+            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Waits for human approval. body is a JSON string. Path is relative to the connector baseUrl.',
+          inputSchema: httpApiRequestInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, HTTP_API_REQUEST_TOOL, args, deps),
+      )
+      server.registerTool(
         MCP_GATEWAY_OPERATION_GET_TOOL,
         {
           title: 'Get gateway operation',
@@ -364,7 +452,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
         if (toolName === MCP_GATEWAY_OPERATION_GET_TOOL) {
           return getGatewayOperationToolResult(principal, args, deps)
         }
-        if (isEnterpriseDriveTool(toolName)) {
+        if (isEnterpriseTool(toolName)) {
           return enterpriseToolResult(principal, toolName, args, deps)
         }
         return whoamiToolResult(principal, deps)
@@ -373,7 +461,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
     {
       serverInfo: { name: 'enterprise-mcp', version: 'phase-f' },
       instructions:
-        'Drive files: call google_drive_search with definitionId from platform.agent.get_definition, then google_drive_read_file with the returned file id. google_drive_create_folder waits for human approval. If a tool returns authorizationUrl, show that URL to the user, wait until they finish Google consent, then retry.',
+        'Company systems: http_api_get / http_api_get_all / http_api_request with definitionId and a relative path — credentials stay on the connector. Gmail: gmail_search then gmail_get_message. Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval. If a tool returns authorizationUrl, show that URL to the user, wait until they finish consent, then retry.',
     },
   )
 }

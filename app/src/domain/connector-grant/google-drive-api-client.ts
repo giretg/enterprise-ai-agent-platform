@@ -346,6 +346,74 @@ export class GoogleDriveApiClient {
     return { file, created: true }
   }
 
+  async uploadFile(params: {
+    name: string
+    textContent: string
+    mimeType?: string
+    parentFolderId?: string
+    convertToGoogleType?: 'doc' | 'sheet' | 'slides'
+  }): Promise<{ file: DriveFileSummary; created: boolean }> {
+    const googleMime =
+      params.convertToGoogleType === 'doc'
+        ? 'application/vnd.google-apps.document'
+        : params.convertToGoogleType === 'sheet'
+          ? 'application/vnd.google-apps.spreadsheet'
+          : params.convertToGoogleType === 'slides'
+            ? 'application/vnd.google-apps.presentation'
+            : undefined
+    const mediaType = params.mimeType || (params.convertToGoogleType === 'sheet' ? 'text/csv' : 'text/plain')
+
+    if (this.isStub()) {
+      return {
+        file: {
+          id: `stub-upload-${Date.now()}`,
+          name: params.name,
+          mimeType: googleMime || mediaType,
+          modifiedTime: new Date().toISOString(),
+        },
+        created: true,
+      }
+    }
+
+    const metadata: Record<string, unknown> = {
+      name: params.name,
+      mimeType: googleMime || mediaType,
+    }
+    if (params.parentFolderId) metadata.parents = [params.parentFolderId]
+
+    const boundary = `platform-${Date.now().toString(36)}`
+    const body = [
+      `--${boundary}`,
+      'Content-Type: application/json; charset=UTF-8',
+      '',
+      JSON.stringify(metadata),
+      `--${boundary}`,
+      `Content-Type: ${mediaType}; charset=UTF-8`,
+      '',
+      params.textContent,
+      `--${boundary}--`,
+      '',
+    ].join('\r\n')
+
+    const url = new URL(`${UPLOAD_BASE}/files`)
+    url.searchParams.set('uploadType', 'multipart')
+    for (const [key, value] of Object.entries(sharedDriveParams())) {
+      url.searchParams.set(key, value)
+    }
+    url.searchParams.set('fields', 'id,name,mimeType,modifiedTime,size,webViewLink,driveId,parents')
+
+    const res = await fetchWithBackoff('google_drive.upload_file', url, {
+      method: 'POST',
+      headers: this.authHeaders({ 'content-type': `multipart/related; boundary=${boundary}` }),
+      body,
+    })
+    if (!res.ok) throw driveApiError('google_drive.upload_file', res.status, await res.text())
+    const raw = (await res.json()) as Record<string, unknown>
+    const file = parseFileSummary(raw)
+    if (!file) throw new Error('google_drive.upload_file: invalid payload')
+    return { file, created: true }
+  }
+
   async renameFile(params: { fileId: string; newName: string }): Promise<DriveFileSummary> {
     return this.patchMetadata(params.fileId, { name: params.newName })
   }

@@ -72,6 +72,7 @@ check('okok: grant-hiány + provider-független és Gmail-történeti scope-hiá
   assert.equal(isConnectorGrantNeededReason(null), false)
   assert.equal(isAuthorizationLinkReason('connector_grant_missing'), true)
   assert.equal(isAuthorizationLinkReason('google_drive_auth_failed'), true)
+  assert.equal(isAuthorizationLinkReason('gmail_auth_failed'), true)
   assert.equal(isAuthorizationLinkReason('capability_denied'), false)
   assert.equal(isScopeNotGrantedReason('connector_grant_missing'), false)
   assert.equal(isScopeNotGrantedReason('gmail_scope_not_granted'), true)

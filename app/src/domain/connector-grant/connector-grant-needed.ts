@@ -82,7 +82,11 @@ export function isConnectorGrantNeededReason(
 
 /** Grant-hiány / lejárt token — MCP-n consent URL-t adunk, ne a control-plane-t. */
 export function isAuthorizationLinkReason(reason: string | null | undefined): boolean {
-  return isConnectorGrantNeededReason(reason) || reason === 'google_drive_auth_failed'
+  return (
+    isConnectorGrantNeededReason(reason) ||
+    reason === 'google_drive_auth_failed' ||
+    reason === 'gmail_auth_failed'
+  )
 }
 
 export function isScopeNotGrantedReason(reason: string | null | undefined): boolean {

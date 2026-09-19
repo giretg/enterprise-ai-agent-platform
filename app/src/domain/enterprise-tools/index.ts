@@ -1,6 +1,6 @@
 /**
  * Enterprise tool gateway: snapshot policy + live connector/grant checks.
- * Drive read is synchronous; writes enqueue a GatewayOperation (#541).
+ * Drive/Gmail/HTTP reads are synchronous; writes enqueue a GatewayOperation.
  */
 export {
   authorizeToolCall,
@@ -22,15 +22,44 @@ export { asUuid, ENTERPRISE_TOOL_ERROR_MESSAGES, enterpriseToolErrorMessage, ent
 export {
   ENTERPRISE_DRIVE_TOOLS,
   ENTERPRISE_DRIVE_WRITE_TOOLS,
+  ENTERPRISE_GMAIL_TOOLS,
+  ENTERPRISE_HTTP_TOOLS,
+  ENTERPRISE_HTTP_WRITE_TOOLS,
+  ENTERPRISE_TOOLS,
+  ENTERPRISE_WRITE_TOOLS,
+  GMAIL_GET_MESSAGE_TOOL,
+  GMAIL_SEARCH_TOOL,
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+  GOOGLE_SHEETS_WRITE_RANGE_TOOL,
+  HTTP_API_GET_ALL_TOOL,
+  HTTP_API_GET_TOOL,
+  HTTP_API_REQUEST_TOOL,
+  gmailGetMessageInputSchema,
+  gmailSearchInputSchema,
   googleDriveCreateFolderInputSchema,
   googleDriveReadFileInputSchema,
   googleDriveSearchInputSchema,
+  googleDriveUploadFileInputSchema,
+  googleSheetsWriteRangeInputSchema,
+  httpApiGetAllInputSchema,
+  httpApiGetInputSchema,
+  httpApiRequestInputSchema,
   isEnterpriseDriveTool,
   isEnterpriseDriveWriteTool,
+  isEnterpriseGmailTool,
+  isEnterpriseHttpTool,
+  isEnterpriseHttpWriteTool,
+  isEnterpriseTool,
+  isEnterpriseWriteTool,
   schemaForEnterpriseDriveTool,
+  schemaForEnterpriseTool,
   type EnterpriseDriveTool,
   type EnterpriseDriveWriteTool,
+  type EnterpriseGmailTool,
+  type EnterpriseHttpTool,
+  type EnterpriseTool,
+  type EnterpriseWriteTool,
 } from './tool-definitions'
