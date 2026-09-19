@@ -18,7 +18,7 @@ const listAuditLogSchema = z.object({
 export async function listAuditLog(input?: z.infer<typeof listAuditLogSchema>) {
   try {
     const user = await requireTenantRole('approver')
-    if (!user.activeTenantId) return fail('Tenant required')
+    if (!user.activeTenantId) return fail('Nincs kiválasztott szervezet.')
     const parsed = input ? listAuditLogSchema.parse(input) : {}
     const since = parsed.since ? new Date(parsed.since) : undefined
     const entries = await services.audit.findMany({
@@ -37,26 +37,26 @@ export async function listAuditLog(input?: z.infer<typeof listAuditLogSchema>) {
         seq: entry.seq.toString(),
       })),
     )
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to list audit log')
+  } catch {
+    return fail('Az auditnapló nem tölthető be.')
   }
 }
 
 export async function verifyAuditChain() {
   try {
     const user = await requireTenantRole('approver')
-    if (!user.activeTenantId) return fail('Tenant required')
+    if (!user.activeTenantId) return fail('Nincs kiválasztott szervezet.')
     const result = await services.auditChain.verifyChain(undefined, undefined, user.activeTenantId)
     return ok(result)
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Verification failed')
+  } catch {
+    return fail('A lánc ellenőrzése nem sikerült.')
   }
 }
 
 export async function exportAuditSiem(input?: { since?: string }) {
   try {
     const user = await requireTenantRole('approver')
-    if (!user.activeTenantId) return fail('Tenant required')
+    if (!user.activeTenantId) return fail('Nincs kiválasztott szervezet.')
     const { since } = z.object({ since: z.coerce.date().optional() }).parse(input ?? {})
     const jsonLines = await services.auditChain.exportJsonLines({
       tenantId: user.activeTenantId,
@@ -66,7 +66,7 @@ export async function exportAuditSiem(input?: { since?: string }) {
       content: jsonLines,
       filename: `audit-siem-${new Date().toISOString().slice(0, 10)}.jsonl`,
     })
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Export failed')
+  } catch {
+    return fail('Az auditnapló exportja nem sikerült.')
   }
 }

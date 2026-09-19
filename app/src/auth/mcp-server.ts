@@ -24,6 +24,7 @@ import {
 } from '@/domain/enterprise-tools'
 import {
   auditMcpAuthDenied,
+  auditMcpAuthOk,
   auditMcpToolCall,
   auditMcpToolDenied,
   mcpResourceMetadataUrl,
@@ -217,6 +218,7 @@ function definitionNotFound() {
 }
 
 async function whoamiToolResult(principal: McpPrincipal, deps: McpPrincipalDeps) {
+  await auditMcpAuthOk(deps, principal)
   await auditMcpToolCall(deps, principal, MCP_WHOAMI_TOOL)
   return textResult(whoamiPayload(principal))
 }

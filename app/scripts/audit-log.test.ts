@@ -488,11 +488,21 @@ async function main() {
     assert.match(source, /requireTenantRole\('approver'\)/)
     assert.match(source, /tenantId: user\.activeTenantId/)
     assert.match(source, /exportJsonLines\(\{\s*tenantId: user\.activeTenantId/)
+    assert.match(source, /Az auditnapló nem tölthető be/)
+    assert.match(source, /A lánc ellenőrzése nem sikerült/)
+    assert.match(source, /verifyChain\(undefined, undefined, user\.activeTenantId\)/)
+    assert.doesNotMatch(source, /Failed to list audit log/)
     const page = readFileSync(
       path.join(__dirname, '..', 'src', 'app', 'control-plane', 'audit', 'page.tsx'),
       'utf8',
     )
     assert.match(page, /requireTenantRole\('approver'\)/)
+    assert.match(page, /!res\.success/)
+    const panel = readFileSync(
+      path.join(__dirname, '..', 'src', 'app', 'control-plane', 'audit', 'audit-chain-panel.tsx'),
+      'utf8',
+    )
+    assert.match(panel, /setActionError\(res\.error\)/)
   })
 
   check('platform IAM audit trail strips BigInt seq before the client panel', () => {
