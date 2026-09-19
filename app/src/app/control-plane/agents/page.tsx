@@ -16,12 +16,22 @@ export default async function AgentsIndexPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Munkatársak</p>
-        <h1 className="mt-2 font-display text-3xl font-semibold">Agentek</h1>
-        <p className="mt-1 max-w-2xl text-ink-soft">
-          Definíció, skill és konnektor — a published snapshot az MCP-n olvasható.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Munkatársak</p>
+          <h1 className="mt-2 font-display text-3xl font-semibold">Agentek</h1>
+          <p className="mt-1 max-w-2xl text-ink-soft">
+            Definíció, skill és konnektor — a published snapshot az MCP-n olvasható.
+          </p>
+        </div>
+        {canCreateAgent ? (
+          <Link
+            href="/control-plane/agents/new"
+            className="rounded-lg bg-coral px-4 py-2 text-sm font-semibold text-white hover:bg-coral/90"
+          >
+            Új munkatárs
+          </Link>
+        ) : null}
       </div>
       {loadError ? (
         <div className="rounded-2xl border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
@@ -45,7 +55,7 @@ export default async function AgentsIndexPage() {
               <p className="text-sm text-ink-soft">
                 Ebben a szervezetben még nincs AI-munkatárs.
                 {canCreateAgent
-                  ? ' Vedd fel az elsőt a sáv „Új munkatárs” gombjával.'
+                  ? ' Vedd fel az elsőt az „Új munkatárs” gombbal.'
                   : ' Kérj egy admint, hogy vegyen fel egyet.'}
               </p>
             </Card>
