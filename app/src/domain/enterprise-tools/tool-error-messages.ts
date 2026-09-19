@@ -20,6 +20,8 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   google_drive_scope_not_granted: 'Google Drive scopes are insufficient',
   invalid_args: 'Invalid tool arguments',
   idempotency_key_required: 'idempotencyKey is required',
+  idempotency_key_conflict:
+    'idempotencyKey is already used by a different principal, tool, or arguments',
   google_drive_auth_failed: 'Google Drive authentication failed',
   google_drive_api_error: 'Google Drive request failed',
   tool_execution_failed: 'Tool execution failed',
