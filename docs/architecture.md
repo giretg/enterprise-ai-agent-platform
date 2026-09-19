@@ -78,7 +78,7 @@ ESLint rule. `domain/audit` is a target module.
   `/api/mcp/{tenantSlug}` plus membership or superadmin assume.
 - `tools/list` is not a security boundary. `tools/call` uses an allow-list
   (`platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`,
-  `platform.gateway_operation.get`, `google_drive_search`,
+  `platform.agent.checkout`, `platform.gateway_operation.get`, `google_drive_search`,
   `google_drive_read_file`, `google_drive_create_folder`); every Drive
   `tools/call` still runs `authorizeToolCall`. Writes enqueue instead of
   calling Google until a human approves.
