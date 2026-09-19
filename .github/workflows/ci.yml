@@ -153,13 +153,13 @@ jobs:
       # (continue-on-error) — a gitleaks titok-szkennelés éles marad. Ha a Code scanning
       # bekapcsol, a continue-on-error eltávolítható, és a CodeQL-eredmények bekerülnek.
       - name: CodeQL init
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@v4.37.4
         continue-on-error: true
         with:
           languages: typescript
 
       - name: CodeQL analyze
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@v4.37.4
         continue-on-error: true
         with:
           category: /language:typescript
