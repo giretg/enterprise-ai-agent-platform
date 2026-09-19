@@ -471,6 +471,14 @@ function SkillDetailPanel({ skill }: { skill: SkillCatalogEntry }) {
             </option>
           ))}
         </select>
+        {versionId ? (
+          <a
+            href={`/api/control-plane/skills/versions/${versionId}/export`}
+            className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-semibold text-ink-soft hover:border-ink-soft hover:text-ink"
+          >
+            ZIP letöltése
+          </a>
+        ) : null}
         {loading && <span className="text-xs text-ink-faint">Betöltés…</span>}
       </label>
       {error && <p className="text-sm text-coral">{error}</p>}
@@ -1252,43 +1260,51 @@ function SkillVersionsPanel({
                 {new Date(v.createdAt).toLocaleDateString('hu-HU')}
               </span>
             </div>
-            {canWrite && (
-              <div className="flex flex-wrap items-center gap-2">
-                {(v.status === 'proposed' || v.status === 'approved') && (
-                  <>
-                    <SkillVersionReviewButton versionId={v.id} />
+            <div className="flex flex-wrap items-center gap-2">
+              <a
+                href={`/api/control-plane/skills/versions/${v.id}/export`}
+                className="rounded-full border border-ink-faint/30 px-3 py-1 font-medium text-ink-soft hover:border-ink-soft hover:text-ink"
+              >
+                ZIP export
+              </a>
+              {canWrite && (
+                <>
+                  {(v.status === 'proposed' || v.status === 'approved') && (
+                    <>
+                      <SkillVersionReviewButton versionId={v.id} />
+                      <button
+                        type="button"
+                        disabled={pending}
+                        onClick={() =>
+                          onRun(
+                            () => approveSkillVersionAction(v.id),
+                            `v${v.version} jóváhagyva és aktiválva.`,
+                          )
+                        }
+                        className="rounded-full bg-coral/20 px-3 py-1 font-semibold text-coral disabled:opacity-50"
+                      >
+                        Jóváhagyás
+                      </button>
+                    </>
+                  )}
+                  {(v.status === 'retired' || v.status === 'rolled_back') && (
                     <button
                       type="button"
                       disabled={pending}
                       onClick={() =>
                         onRun(
-                          () => approveSkillVersionAction(v.id),
-                          `v${v.version} jóváhagyva és aktiválva.`,
+                          () => rollbackSkillVersionAction(v.id),
+                          `Visszaállítva a v${v.version} verzióra.`,
                         )
                       }
-                      className="rounded-full bg-coral/20 px-3 py-1 font-semibold text-coral disabled:opacity-50"
+                      className="rounded-full border border-ink-faint/30 px-3 py-1 font-medium text-ink-soft disabled:opacity-50"
                     >
-                      Jóváhagyás
+                      Visszaállítás
                     </button>
-                  </>
-                )}
-                {(v.status === 'retired' || v.status === 'rolled_back') && (
-                  <button
-                    type="button"
-                    disabled={pending}
-                    onClick={() =>
-                      onRun(
-                        () => rollbackSkillVersionAction(v.id),
-                        `Visszaállítva a v${v.version} verzióra.`,
-                      )
-                    }
-                    className="rounded-full border border-ink-faint/30 px-3 py-1 font-medium text-ink-soft disabled:opacity-50"
-                  >
-                    Visszaállítás
-                  </button>
-                )}
-              </div>
-            )}
+                  )}
+                </>
+              )}
+            </div>
           </li>
         ))}
       </ul>

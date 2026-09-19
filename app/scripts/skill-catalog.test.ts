@@ -15,6 +15,8 @@ import {
   parseFrontmatter,
   splitInstructions,
 } from '../src/lib/skill/skill-md-adapter'
+import { serializeSkillMd } from '../src/lib/skill/skill-md-export'
+import { buildSkillPackageZip } from '../src/lib/skill/skill-package-export'
 import { validateSkill } from '../src/lib/skill/skill-validator'
 import { canManageAgentSkills } from '../src/lib/agent-skill-management'
 import {
@@ -85,7 +87,7 @@ import {
 import { PROVISIONING_ASSISTANT_ROLE_INSTRUCTION } from '../src/domain/provisioning/provisioning-assistant'
 import { readZipEntries, ZipReadError } from '../src/lib/skill/zip-reader'
 import { buildSkillPackage } from '../src/lib/skill/skill-package-adapter'
-import { formatAttachmentIndex } from '../src/lib/skill/skill-attachments'
+import { formatAttachmentIndex, hashAttachmentBytes } from '../src/lib/skill/skill-attachments'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -242,6 +244,62 @@ async function main() {
 
   await check('splitInstructions üres törzsre üres tömb', () => {
     assert.deepEqual(splitInstructions('   '), [])
+  })
+
+  await check('serializeSkillMd → parseSkillMd round-trip', () => {
+    const content: SkillContent = {
+      instructions: ['# Első blokk', 'Szöveg.', '## Második', 'Tovább.'],
+      triggerKeywords: ['report', 'havi'],
+      parameters: [],
+      runtimeHints: { maxWallClockMs: 120_000, preferredMode: 'task' },
+    }
+    const raw = serializeSkillMd({
+      name: 'havi-report',
+      displayName: 'Havi report',
+      description: 'Havi vezetői összefoglaló.',
+      license: 'MIT',
+      content,
+      requires: [{ toolName: 'create_html', reason: '' }],
+    })
+    const parsed = parseSkillMd(raw)
+    assert.equal(parsed.name, 'havi-report')
+    assert.equal(parsed.displayName, 'Havi report')
+    assert.equal(parsed.description, 'Havi vezetői összefoglaló.')
+    assert.deepEqual(parsed.content.triggerKeywords, ['report', 'havi'])
+    assert.equal(parsed.content.runtimeHints?.maxWallClockMs, 120_000)
+    assert.equal(parsed.content.runtimeHints?.preferredMode, 'task')
+    assert.deepEqual(parsed.suggestedRequires.map((r) => r.toolName), ['create_html'])
+    assert.ok(parsed.content.instructions.join('\n').includes('Első blokk'))
+  })
+
+  await check('buildSkillPackageZip → readZipEntries round-trip', () => {
+    const noteText = 'Segédanyag.'
+    const noteBytes = new TextEncoder().encode(noteText)
+    const { bytes } = buildSkillPackageZip({
+      name: 'demo-skill',
+      description: 'Demo leírás.',
+      content: {
+        instructions: ['Csináld meg.'],
+        triggerKeywords: [],
+        parameters: [],
+      },
+      requires: [],
+      attachments: [
+        {
+          path: 'references/notes.md',
+          text: noteText,
+          bytes: noteBytes.byteLength,
+          sha256: hashAttachmentBytes(noteBytes),
+        },
+      ],
+    })
+    const entries = readZipEntries(bytes)
+    const skillMd = new TextDecoder().decode(entries.find((e) => e.path === 'SKILL.md')!.bytes)
+    const parsed = parseSkillMd(skillMd)
+    assert.equal(parsed.name, 'demo-skill')
+    assert.equal(parsed.description, 'Demo leírás.')
+    const notes = new TextDecoder().decode(entries.find((e) => e.path === 'references/notes.md')!.bytes)
+    assert.equal(notes, noteText)
   })
 
   console.log('Hardcoded validátor')
