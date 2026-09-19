@@ -337,3 +337,24 @@ export async function auditMcpToolDenied(
     tenantId: principal.tenantId,
   })
 }
+
+export async function auditMcpResourceRead(
+  deps: { audit?: AuditSink },
+  principal: McpPrincipal,
+  uri: string,
+): Promise<void> {
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: principal.userId,
+    agentVersion: null,
+    action: 'mcp.resources.read',
+    targetType: 'mcp',
+    targetId: principal.tenantId,
+    modelUsed: null,
+    inputRef: uri,
+    outputRef: null,
+    policyDecision: 'allowed',
+    metadata: { uri, tenantSlug: principal.tenantSlug, assumed: principal.assumed },
+    tenantId: principal.tenantId,
+  })
+}

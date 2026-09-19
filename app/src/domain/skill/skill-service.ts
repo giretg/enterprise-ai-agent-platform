@@ -68,6 +68,10 @@ import {
 import { parseSkillSlashCommands } from '@/lib/skill/skill-slash-command'
 import type { SkillReferenceEntry } from '@/lib/skill/skill-reference'
 import {
+  buildMcpSkillPackage,
+  type McpSkillPackage,
+} from '@/lib/skill/mcp-skill'
+import {
   flattenToolCapabilityGroups,
   PLAYBOOK_CAPABILITY_GROUPS,
 } from '@/lib/tool-capability-catalog'
@@ -222,6 +226,34 @@ export class SkillService {
     return entries
   }
 
+  /**
+   * Tenantból olvasható aktív skillek Agent Skills csomagként (SKILL.md + mellékletek).
+   * Fail-closed, mint a `listReferenceCatalog`. Ütköző URI-névnél a tenant-skill nyer.
+   */
+  async listMcpSkillPackages(actorTenantId: string | null): Promise<McpSkillPackage[]> {
+    const skills = await this.skills.listForTenant(actorTenantId)
+    const byUri = new Map<string, McpSkillPackage>()
+    for (const skill of skills) {
+      if (skill.kind === 'system') continue
+      const active = skill.versions.find((version) => version.status === 'active')
+      if (!active) continue
+      const pkg = buildMcpSkillPackage({
+        skillId: skill.id,
+        skillVersionId: active.id,
+        name: skill.name,
+        displayName: skill.displayName,
+        description: skill.description,
+        license: skill.license,
+        content: parseSkillContent(active.content),
+        requires: parseSkillRequires(active.requires),
+        attachments: parseSkillAttachments(active.attachments),
+      })
+      if (byUri.has(pkg.uriName) && skill.tenantId === null) continue
+      byUri.set(pkg.uriName, pkg)
+    }
+    return [...byUri.values()].sort((a, b) => a.uriName.localeCompare(b.uriName))
+  }
+
   /** Fail-closed: null, ha a skill nem olvasható az actor tenantjából. */
   async getReadableSkill(
     actorTenantId: string | null,
@@ -361,10 +393,9 @@ export class SkillService {
    *
    *   - a `SKILL.md` ugyanazon a teherhordó validátoron megy át, mint az egy-fájlos
    *     import — a kapun nincs kedvezmény azért, mert csomagban jött;
-   *   - a futtatható kód-fájlok KIMARADNAK (a platform nem futtat skill-kódot),
-   *     de nem buktatják el az importot — az admin tételes jelentést kap;
-   *   - a megtartott szöveges mellékletek Level-2 tartalomként tárolódnak: nulla
-   *     bájt a promptban, amíg valaki `load_skill_attachment`-tel el nem kéri őket;
+   *   - a szöveges kód-fájlok (scripts/) BEJÖNNEK mellékletként; natív bináris kimarad;
+   *   - a megtartott mellékletek Level-2 tartalomként tárolódnak, és MCP-n a skill
+   *     csomag részeként olvashatók;
    *   - a mellékletekre is fut az injection-szűrés; a gyanús melléklet kimarad.
    */
   async importSkillPackage(input: {
@@ -404,16 +435,6 @@ export class SkillService {
     }
 
     const parsed = parseSkillMd(pkg.skillMdRaw, input.sourceUrl ? { url: input.sourceUrl } : {})
-    const validation = validateSkill({
-      name: parsed.name,
-      description: parsed.description,
-      content: parsed.content,
-      requires: parsed.suggestedRequires,
-    })
-    if (!validation.ok) {
-      return { ok: false, stage: 'validation', validation, skipped: pkg.skipped }
-    }
-
     // A melléklet ugyanolyan nem-megbízható input, mint a skill-törzs: az egyetlen
     // különbség, hogy a gyanús melléklet kimarad, nem az egész skill bukik el.
     const skipped = [...pkg.skipped]
@@ -425,6 +446,17 @@ export class SkillService {
         continue
       }
       attachments.push(attachment)
+    }
+
+    const validation = validateSkill({
+      name: parsed.name,
+      description: parsed.description,
+      content: parsed.content,
+      requires: parsed.suggestedRequires,
+      attachmentPaths: attachments.map((attachment) => attachment.path),
+    })
+    if (!validation.ok) {
+      return { ok: false, stage: 'validation', validation, skipped }
     }
 
     const provenance = {
@@ -533,16 +565,6 @@ export class SkillService {
       )
     }
 
-    const validation = validateSkill({
-      name: parsed.name,
-      description: parsed.description,
-      content: parsed.content,
-      requires: parsed.suggestedRequires,
-    })
-    if (!validation.ok) {
-      return { ok: false, stage: 'validation', validation, skipped: pkg.skipped }
-    }
-
     const skipped = [...pkg.skipped]
     const attachments: SkillAttachment[] = []
     for (const attachment of pkg.attachments) {
@@ -552,6 +574,17 @@ export class SkillService {
         continue
       }
       attachments.push(attachment)
+    }
+
+    const validation = validateSkill({
+      name: parsed.name,
+      description: parsed.description,
+      content: parsed.content,
+      requires: parsed.suggestedRequires,
+      attachmentPaths: attachments.map((attachment) => attachment.path),
+    })
+    if (!validation.ok) {
+      return { ok: false, stage: 'validation', validation, skipped }
     }
 
     const { versionId, version } = await this.proposeVersion({
