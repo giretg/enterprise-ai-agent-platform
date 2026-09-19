@@ -4,6 +4,12 @@ import {
   GoogleDriveApiAuthError,
   GoogleDriveApiError,
 } from '@/domain/connector-grant/google-drive-api-client'
+import { GmailApiAuthError } from '@/domain/connector-grant/gmail-api-client'
+import {
+  GoogleWorkspaceApiAuthError,
+  GoogleWorkspaceApiError,
+} from '@/domain/connector-grant/google-workspace-api-client'
+import { HttpApiError } from '@/domain/connector/http-api-client'
 import {
   authorizeToolCall,
   type AuthorizeToolCallDeps,
@@ -11,12 +17,18 @@ import {
   type ToolCallPrincipal,
 } from './authorize-tool-call'
 import { executeGoogleDriveTool } from './handlers/google-drive'
+import { executeGmailTool } from './handlers/gmail'
+import { executeHttpApiTool } from './handlers/http-api'
 import { asUuid, enterpriseToolErrorPayload } from './tool-error-messages'
 import {
-  isEnterpriseDriveTool,
-  isEnterpriseDriveWriteTool,
-  schemaForEnterpriseDriveTool,
+  isEnterpriseGmailTool,
+  isEnterpriseHttpTool,
+  isEnterpriseTool,
+  isEnterpriseWriteTool,
+  schemaForEnterpriseTool,
   type EnterpriseDriveTool,
+  type EnterpriseGmailTool,
+  type EnterpriseHttpTool,
 } from './tool-definitions'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
@@ -56,6 +68,17 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps & {
     toolName: EnterpriseDriveTool,
     args: Record<string, unknown>,
     accessToken: string,
+  ) => Promise<unknown>
+  executeGmailTool?: (
+    toolName: EnterpriseGmailTool,
+    args: Record<string, unknown>,
+    accessToken: string,
+  ) => Promise<unknown>
+  executeHttpApiTool?: (
+    toolName: EnterpriseHttpTool,
+    args: Record<string, unknown>,
+    connector: LiveConnectorRow,
+    accessToken?: string,
   ) => Promise<unknown>
   enqueueWrite?: (input: {
     principal: ToolCallPrincipal
@@ -137,6 +160,23 @@ async function auditDenied(
   })
 }
 
+async function resolveDelegatedToken(
+  deps: EnterpriseToolDeps,
+  principal: ToolCallPrincipal,
+  connector: LiveConnectorRow,
+  grantId: string | undefined,
+  tokenRef: string | undefined,
+): Promise<string> {
+  if (!grantId || !tokenRef) throw new Error('connector_grant_missing')
+  return deps.resolveAccessToken({
+    connector,
+    grantId,
+    tokenRef,
+    actingUserId: principal.userId,
+    tenantId: principal.tenantId,
+  })
+}
+
 export async function invokeEnterpriseTool(
   deps: EnterpriseToolDeps,
   input: {
@@ -184,7 +224,7 @@ export async function invokeEnterpriseTool(
     return errorResult('agent_access_denied')
   }
 
-  if (isEnterpriseDriveWriteTool(toolName)) {
+  if (isEnterpriseWriteTool(toolName)) {
     if (!deps.enqueueWrite) {
       await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
       return errorResult('tool_not_configured')
@@ -192,12 +232,17 @@ export async function invokeEnterpriseTool(
     return deps.enqueueWrite({ principal, toolName, args })
   }
 
-  if (!isEnterpriseDriveTool(toolName)) {
+  if (!isEnterpriseTool(toolName)) {
     await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
     return errorResult('tool_not_configured')
   }
 
-  const parsed = schemaForEnterpriseDriveTool(toolName).safeParse(args)
+  const schema = schemaForEnterpriseTool(toolName)
+  if (!schema) {
+    await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
+    return errorResult('tool_not_configured')
+  }
+  const parsed = schema.safeParse(args)
   if (!parsed.success) {
     await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId)
     return errorResult('invalid_args')
@@ -223,19 +268,27 @@ export async function invokeEnterpriseTool(
   }
 
   const connector = authorized.connector
+  const authFailedCode =
+    connector.type === 'gmail'
+      ? 'gmail_auth_failed'
+      : connector.type === 'http_api'
+        ? 'http_api_error'
+        : 'google_drive_auth_failed'
 
-  let accessToken: string
+  let accessToken: string | undefined
   try {
-    accessToken = await deps.resolveAccessToken({
-      connector,
-      grantId: authorized.grantId,
-      tokenRef: authorized.tokenRef,
-      actingUserId: principal.userId,
-      tenantId: principal.tenantId,
-    })
+    if (connector.authMode === 'user_delegated') {
+      accessToken = await resolveDelegatedToken(
+        deps,
+        principal,
+        connector,
+        authorized.grantId,
+        authorized.tokenRef,
+      )
+    }
   } catch {
     const extra = await authorizationLinkFields(deps.startAuthorization, {
-      reason: 'google_drive_auth_failed',
+      reason: authFailedCode,
       connectorId: authorized.connectorId,
       userId: principal.userId,
       tenantId: principal.tenantId,
@@ -249,7 +302,7 @@ export async function invokeEnterpriseTool(
       definitionId,
       agentId: definition.agentId,
       connectorId: authorized.connectorId,
-      errorCode: 'google_drive_auth_failed',
+      errorCode: authFailedCode,
     }
     console.info('enterprise.tool.error', payload)
     await writeAudit(deps.audit, {
@@ -261,17 +314,21 @@ export async function invokeEnterpriseTool(
       targetId: definition.agentId,
       modelUsed: null,
       inputRef: toolName,
-      outputRef: 'google_drive_auth_failed',
+      outputRef: authFailedCode,
       policyDecision: null,
       metadata: payload,
       tenantId: principal.tenantId,
     })
-    return errorResult('google_drive_auth_failed', extra)
+    return errorResult(authFailedCode, extra)
   }
 
-  const execute = deps.executeDriveTool ?? executeGoogleDriveTool
   try {
-    const result = await execute(toolName, parsed.data as Record<string, unknown>, accessToken)
+        const result = await dispatchTool(deps, {
+      toolName,
+      args: parsed.data as Record<string, unknown>,
+      connector,
+      accessToken,
+    })
     const payload = {
       toolName,
       tenantId: principal.tenantId,
@@ -297,7 +354,7 @@ export async function invokeEnterpriseTool(
     })
     return textResult(result)
   } catch (error) {
-    const mapped = mapDriveError(error)
+    const mapped = mapToolError(error, connector.type)
     const payload = {
       toolName,
       tenantId: principal.tenantId,
@@ -334,18 +391,48 @@ export async function invokeEnterpriseTool(
   }
 }
 
-function mapDriveError(error: unknown): { code: string; extra?: Record<string, unknown> } {
-  if (error instanceof GoogleDriveApiAuthError) {
+async function dispatchTool(
+  deps: EnterpriseToolDeps,
+  input: {
+    toolName: string
+    args: Record<string, unknown>
+    connector: LiveConnectorRow
+    accessToken?: string
+  },
+): Promise<unknown> {
+  if (isEnterpriseGmailTool(input.toolName)) {
+    const execute = deps.executeGmailTool ?? executeGmailTool
+    return execute(input.toolName, input.args, input.accessToken ?? '')
+  }
+  if (isEnterpriseHttpTool(input.toolName)) {
+    const execute = deps.executeHttpApiTool ?? executeHttpApiTool
+    return execute(input.toolName, input.args, input.connector, input.accessToken)
+  }
+  const execute = deps.executeDriveTool ?? executeGoogleDriveTool
+  return execute(input.toolName as EnterpriseDriveTool, input.args, input.accessToken ?? '')
+}
+
+function mapToolError(
+  error: unknown,
+  connectorType: string,
+): { code: string; extra?: Record<string, unknown> } {
+  if (error instanceof GoogleDriveApiAuthError || error instanceof GoogleWorkspaceApiAuthError) {
     return { code: 'google_drive_auth_failed', extra: { status: error.status } }
   }
-  if (error instanceof GoogleDriveApiError) {
+  if (error instanceof GmailApiAuthError) {
+    return { code: 'gmail_auth_failed', extra: { status: error.status } }
+  }
+  if (error instanceof GoogleDriveApiError || error instanceof GoogleWorkspaceApiError) {
     return {
-      code: 'google_drive_api_error',
+      code: connectorType === 'gmail' ? 'gmail_api_error' : 'google_drive_api_error',
       extra: {
         status: error.status,
-        ...(error.code ? { googleCode: error.code } : {}),
+        ...('code' in error && typeof error.code === 'string' ? { googleCode: error.code } : {}),
       },
     }
+  }
+  if (error instanceof HttpApiError) {
+    return { code: error.code === 'missing_api_key' ? 'missing_api_key' : 'http_api_error', extra: { httpCode: error.code } }
   }
   return { code: 'tool_execution_failed' }
 }

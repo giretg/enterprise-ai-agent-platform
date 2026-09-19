@@ -10,6 +10,8 @@ import {
   grantUsesSelectedWriteProfile,
 } from '@/domain/connector-grant/google-drive-write-access'
 import { executeGoogleDriveTool } from '@/domain/enterprise-tools/handlers/google-drive'
+import { executeHttpApiTool } from '@/domain/enterprise-tools/handlers/http-api'
+import { HttpApiError } from '@/domain/connector/http-api-client'
 import {
   authorizeToolCall,
   asUuid,
@@ -24,7 +26,9 @@ import {
 } from '@/domain/enterprise-tools'
 import {
   isEnterpriseDriveWriteTool,
-  schemaForEnterpriseDriveTool,
+  isEnterpriseHttpWriteTool,
+  isEnterpriseWriteTool,
+  schemaForEnterpriseTool,
 } from '@/domain/enterprise-tools/tool-definitions'
 import type {
   GatewayOperationRecord,
@@ -68,6 +72,12 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps & {
     toolName: string,
     args: Record<string, unknown>,
     accessToken: string,
+  ) => Promise<unknown>
+  executeHttpApiTool?: (
+    toolName: string,
+    args: Record<string, unknown>,
+    connector: LiveConnectorRow,
+    accessToken?: string,
   ) => Promise<unknown>
   startAuthorization?: StartDelegatedAuthorization
   recordCreatedDriveFiles?: (input: {
@@ -230,7 +240,7 @@ async function loadAuthorizedWrite(
     code,
     ...ids,
   })
-  if (!isEnterpriseDriveWriteTool(toolName)) return fail('tool_not_configured')
+  if (!isEnterpriseWriteTool(toolName)) return fail('tool_not_configured')
 
   const definitionId = asUuid(args.definitionId)
   if (!definitionId) return fail('definition_not_found')
@@ -261,7 +271,9 @@ async function loadAuthorizedWrite(
     return fail('idempotency_key_required', ids)
   }
 
-  const parsed = schemaForEnterpriseDriveTool(toolName).safeParse(args)
+  const schema = schemaForEnterpriseTool(toolName)
+  if (!schema) return fail('tool_not_configured', ids)
+  const parsed = schema.safeParse(args)
   if (!parsed.success) return fail('invalid_args', ids)
 
   const authorized = await authorizeToolCall(deps, {
@@ -570,47 +582,66 @@ async function executeApprovedOperation(
   })
   if (!authorized.allowed) return fail(authorized.reason)
 
-  const grant = await deps.findActiveGrant({
-    tenantId: operation.tenantId,
-    connectorId: authorized.connectorId,
-    userId: operation.principalUserId,
-  })
-  if (!grant) return fail('connector_grant_missing')
+  const delegated = authorized.connector.authMode === 'user_delegated'
+  const grant = delegated
+    ? await deps.findActiveGrant({
+        tenantId: operation.tenantId,
+        connectorId: authorized.connectorId,
+        userId: operation.principalUserId,
+      })
+    : null
+  if (delegated && !grant) return fail('connector_grant_missing')
 
-  try {
-    assertGoogleDriveWriteAccess({
-      tool: operation.toolName,
-      args,
-      scopes: grant.scopes as never,
-      metadata: grant.metadata as never,
-    })
-  } catch (error) {
-    if (error instanceof GoogleDriveWriteAccessError) return fail('drive_write_not_allowed')
-    return fail('tool_execution_failed')
+  if (grant && isEnterpriseDriveWriteTool(operation.toolName)) {
+    try {
+      assertGoogleDriveWriteAccess({
+        tool: operation.toolName,
+        args,
+        scopes: grant.scopes as never,
+        metadata: grant.metadata as never,
+      })
+    } catch (error) {
+      if (error instanceof GoogleDriveWriteAccessError) return fail('drive_write_not_allowed')
+      return fail('tool_execution_failed')
+    }
   }
 
-  let accessToken: string
-  try {
-    accessToken = await deps.resolveAccessToken({
-      connector: authorized.connector,
-      grantId: authorized.grantId,
-      tokenRef: authorized.tokenRef,
-      actingUserId: operation.principalUserId,
-      tenantId: operation.tenantId,
-    })
-  } catch {
-    return fail('google_drive_auth_failed')
+  let accessToken: string | undefined
+  if (grant) {
+    try {
+      accessToken = await deps.resolveAccessToken({
+        connector: authorized.connector,
+        grantId: grant.id,
+        tokenRef: grant.tokenRef,
+        actingUserId: operation.principalUserId,
+        tenantId: operation.tenantId,
+      })
+    } catch {
+      return fail(
+        authorized.connector.type === 'http_api' ? 'http_api_error' : 'google_drive_auth_failed',
+      )
+    }
   }
 
-  const execute = deps.executeDriveTool ?? executeGoogleDriveTool
   try {
-    const result = await execute(operation.toolName, args, accessToken)
+    const result = isEnterpriseHttpWriteTool(operation.toolName)
+      ? await (deps.executeHttpApiTool ?? executeHttpApiTool)(
+          operation.toolName,
+          args,
+          authorized.connector,
+          accessToken,
+        )
+      : await (deps.executeDriveTool ?? executeGoogleDriveTool)(
+          operation.toolName,
+          args,
+          accessToken ?? '',
+        )
     const updated = await deps.operations.update(operation.id, {
       status: 'succeeded',
       resultJson: result,
       errorCode: null,
     })
-    if (grantUsesSelectedWriteProfile(grant.scopes as never) && deps.recordCreatedDriveFiles) {
+    if (grant && grantUsesSelectedWriteProfile(grant.scopes as never) && deps.recordCreatedDriveFiles) {
       const created = createdDriveFilesFromResult(operation.toolName, result)
       if (created.length > 0) {
         try {
@@ -644,13 +675,14 @@ async function executeApprovedOperation(
     })
     return updated ?? { ...operation, status: 'succeeded', resultJson: result, errorCode: null }
   } catch (error) {
-    return fail(mapDriveError(error))
+    return fail(mapWriteError(error))
   }
 }
 
-function mapDriveError(error: unknown): string {
+function mapWriteError(error: unknown): string {
   if (error instanceof GoogleDriveWriteAccessError) return 'drive_write_not_allowed'
   if (error instanceof GoogleDriveApiAuthError) return 'google_drive_auth_failed'
   if (error instanceof GoogleDriveApiError) return 'google_drive_api_error'
+  if (error instanceof HttpApiError) return error.code === 'missing_api_key' ? 'missing_api_key' : 'http_api_error'
   return 'tool_execution_failed'
 }
