@@ -42,8 +42,8 @@ export type AuthorizeToolCallAllowed = {
   allowed: true
   connectorId: string
   connector: LiveConnectorRow
-  grantId?: string
-  tokenRef?: string
+  grantId?: string | null
+  tokenRef?: string | null
 }
 
 export type AuthorizeToolCallResult = AuthorizeToolCallAllowed | AuthorizeToolCallDenied
@@ -128,6 +128,16 @@ export async function authorizeToolCall(
   }
   if (connector.type !== requirement.connectorType) {
     return { allowed: false, reason: 'connector_not_active' }
+  }
+
+  if (requirement.connectorType === 'knowledge_base') {
+    return {
+      allowed: true,
+      connectorId: connector.id,
+      connector,
+      grantId: null,
+      tokenRef: null,
+    }
   }
 
   const delegated = connector.authMode === 'user_delegated'

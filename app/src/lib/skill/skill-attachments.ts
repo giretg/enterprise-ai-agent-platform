@@ -10,10 +10,9 @@ import { z } from 'zod'
  * szint külön, auditált aktus; a melléklet nulla bájt a kontextusban, amíg valaki
  * kifejezetten nem kéri.
  *
- * A melléklet SZÖVEG, nem futtatható artefakt. A csomag-importáló a kód-fájlokat
- * kihagyja (l. `skill-package-adapter`), így ide referencia-dokumentum,
- * adat-táblázat és sablon kerül — ezek a Fázis 1 „a skill instrukció, nem kód"
- * elvét nem sértik.
+ * A melléklet SZÖVEG: referencia, sablon, vagy futtatható szkript (`scripts/`).
+ * A csomag-importáló a natív binárist kihagyja (l. `skill-package-adapter`).
+ * A szkriptet a platform nem futtatja — MCP-n a kliens kapja meg a csomag részeként.
  */
 
 /** Egy melléklet maximális mérete. Efölött a fájl kimarad az importból. */

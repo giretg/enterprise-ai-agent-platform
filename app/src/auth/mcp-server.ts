@@ -12,7 +12,14 @@ import {
   isPrivilegedAgentReader,
   type AgentDefinition,
 } from '@/domain/agent-definition'
-import { isAvailableOnMcp } from '@/lib/agent-lifecycle'
+import { isAvailableOnMcp, isDispatchable } from '@/lib/agent-lifecycle'
+import {
+  asCheckoutHarness,
+  CHECKOUT_WRITE_RECIPE,
+  renderAgentCheckout,
+  type CheckoutSkill,
+} from '@/lib/agent-checkout'
+import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
 import {
   GMAIL_GET_MESSAGE_TOOL,
   GMAIL_SEARCH_TOOL,
@@ -24,6 +31,10 @@ import {
   HTTP_API_GET_ALL_TOOL,
   HTTP_API_GET_TOOL,
   HTTP_API_REQUEST_TOOL,
+  KB_GET_PAGE_TOOL,
+  KB_INGEST_TOOL,
+  KB_LIST_INDEX_TOOL,
+  KB_SEARCH_TOOL,
   gmailGetMessageInputSchema,
   gmailSearchInputSchema,
   googleDriveCreateFolderInputSchema,
@@ -34,17 +45,23 @@ import {
   httpApiGetAllInputSchema,
   httpApiGetInputSchema,
   httpApiRequestInputSchema,
+  kbGetPageInputSchema,
+  kbIngestInputSchema,
+  kbListIndexInputSchema,
+  kbSearchInputSchema,
   isEnterpriseTool,
   type EnterpriseToolMcpResult,
 } from '@/domain/enterprise-tools'
 import {
   auditMcpAuthDenied,
   auditMcpAuthOk,
+  auditMcpResourceRead,
   auditMcpToolCall,
   auditMcpToolDenied,
   mcpResourceMetadataUrl,
   MCP_ALLOWED_TOOLS,
   MCP_AGENTS_LIST_TOOL,
+  MCP_AGENT_CHECKOUT_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
   MCP_GATEWAY_OPERATION_GET_TOOL,
   MCP_WHOAMI_TOOL,
@@ -54,6 +71,12 @@ import {
   type McpPrincipalFailure,
   type VerifiedOAuthToken,
 } from './mcp-principal'
+import {
+  findPackageByUri,
+  skillFileUri,
+  toSkillsListEntry,
+  type McpSkillPackage,
+} from '@/lib/skill/mcp-skill'
 
 export type McpAgentListItem = {
   agentId: string
@@ -83,6 +106,7 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     role: McpPrincipal['role']
     agentId: string
   }) => Promise<boolean>
+  loadSkillVersions: (versionIds: string[]) => Promise<CheckoutSkill[]>
   invokeEnterpriseTool: (input: {
     principal: McpPrincipal
     toolName: string
@@ -92,6 +116,7 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     principal: McpPrincipal
     operationId: string
   }) => Promise<EnterpriseToolMcpResult>
+  listMcpSkills: (input: { tenantId: string }) => Promise<McpSkillPackage[]>
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
@@ -180,6 +205,19 @@ export function productionMcpDeps(): McpRuntimeDeps {
     },
     loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),
     canViewAgent,
+    async loadSkillVersions(versionIds) {
+      const rows = await repositories.skills.findVersionsByIds(versionIds)
+      return rows.map((row) => ({
+        skillId: row.skillId,
+        skillVersionId: row.id,
+        name: row.skill.name,
+        displayName: row.skill.displayName,
+        description: row.skill.description,
+        license: row.skill.license,
+        content: parseSkillContent(row.content),
+        requires: parseSkillRequires(row.requires),
+      }))
+    },
     invokeEnterpriseTool: (input) => services.enterpriseTools.invoke(input),
     getGatewayOperation: async (input) =>
       services.gatewayOperations.toMcpGet(
@@ -188,6 +226,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
           operationId: input.operationId,
         }),
       ),
+    listMcpSkills: ({ tenantId }) => services.skills.listMcpSkillPackages(tenantId),
   }
 }
 
@@ -232,6 +271,25 @@ function definitionNotFound() {
   return textResult({ code: 'definition_not_found', message: 'Agent definition not found' }, true)
 }
 
+const mcpSkillResourceSchema = z.object({
+  uri: z.string(),
+  digest: z.string(),
+})
+const mcpSkillEntrySchema = z.object({
+  uri: z.string(),
+  frontmatter: z.object({
+    name: z.string(),
+    description: z.string(),
+    license: z.string().optional(),
+  }),
+  resources: z.array(mcpSkillResourceSchema),
+})
+const mcpSkillsListResultSchema = z.object({
+  skills: z.array(mcpSkillEntrySchema),
+})
+const mcpSkillsListParamsSchema = z.object({ cursor: z.string().optional() })
+const mcpSkillsGetParamsSchema = z.object({ uri: z.string().min(1) })
+
 async function whoamiToolResult(principal: McpPrincipal, deps: McpPrincipalDeps) {
   await auditMcpAuthOk(deps, principal)
   await auditMcpToolCall(deps, principal, MCP_WHOAMI_TOOL)
@@ -249,7 +307,12 @@ async function listAgentsToolResult(principal: McpPrincipal, deps: McpRuntimeDep
 }
 
 function asUuid(value: unknown): string | undefined {
-  return typeof value === 'string' && /^[0-9a-f-]{36}$/i.test(value) ? value : undefined
+  return (
+    typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+      ? value
+      : undefined
+  )
 }
 
 function asVersion(value: unknown): number | undefined {
@@ -279,9 +342,52 @@ async function getDefinitionToolResult(
   return textResult(loaded)
 }
 
-function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps) {
+function invalidArgs(message: string) {
+  return textResult({ code: 'invalid_args', message }, true)
+}
+
+async function checkoutToolResult(
+  principal: McpPrincipal,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+  origin: string,
+) {
+  await auditMcpToolCall(deps, principal, MCP_AGENT_CHECKOUT_TOOL)
+  const agentId = asUuid(args.agentId)
+  if (!agentId) return invalidArgs('agentId must be a uuid')
+  if (args.version !== undefined && asVersion(args.version) === undefined) {
+    return invalidArgs('version must be a positive integer')
+  }
+  const loaded = await deps.loadDefinition({
+    tenantId: principal.tenantId,
+    agentId,
+    version: asVersion(args.version),
+  })
+  if (!loaded || !isDispatchable(loaded.status)) return definitionNotFound()
+  const allowed = await deps.canViewAgent({
+    tenantId: principal.tenantId,
+    userId: principal.userId,
+    role: principal.role,
+    agentId: loaded.agentId,
+  })
+  if (!allowed) return definitionNotFound()
+  const skills = await deps.loadSkillVersions(
+    loaded.snapshot.skills.map((skill) => skill.skillVersionId),
+  )
+  return textResult(
+    renderAgentCheckout({
+      definition: loaded,
+      skills,
+      mcpUrl: `${origin.replace(/\/+$/, '')}/api/mcp/${principal.tenantSlug}`,
+      harness: asCheckoutHarness(args.harness),
+    }),
+  )
+}
+
+function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps, origin: string) {
   return createMcpHandler(
-    (server) => {
+    async (server) => {
+      const packages = await deps.listMcpSkills({ tenantId: principal.tenantId })
       server.registerTool(
         MCP_WHOAMI_TOOL,
         {
@@ -314,6 +420,22 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
             .passthrough(),
         },
         async (args) => getDefinitionToolResult(principal, args as Record<string, unknown>, deps),
+      )
+      server.registerTool(
+        MCP_AGENT_CHECKOUT_TOOL,
+        {
+          title: 'Checkout agent',
+          description: CHECKOUT_WRITE_RECIPE,
+          inputSchema: z
+            .object({
+              agentId: z.string().uuid(),
+              version: z.number().int().positive().optional(),
+              harness: z.enum(['claude', 'codex', 'goose', 'grok']).optional(),
+            })
+            .passthrough(),
+        },
+        async (args) =>
+          checkoutToolResult(principal, args as Record<string, unknown>, deps, origin),
       )
       server.registerTool(
         GOOGLE_DRIVE_SEARCH_TOOL,
@@ -421,6 +543,44 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
         async (args) => enterpriseToolResult(principal, HTTP_API_REQUEST_TOOL, args, deps),
       )
       server.registerTool(
+        KB_SEARCH_TOOL,
+        {
+          title: 'Search knowledge base',
+          description:
+            'Search the agent knowledge base. Pass definitionId from platform.agent.get_definition. Use kb_list_index and kb_get_page to browse OKF wiki pages.',
+          inputSchema: kbSearchInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, KB_SEARCH_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_LIST_INDEX_TOOL,
+        {
+          title: 'List knowledge base index',
+          description: 'List published OKF wiki pages in the agent knowledge base.',
+          inputSchema: kbListIndexInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, KB_LIST_INDEX_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_GET_PAGE_TOOL,
+        {
+          title: 'Get knowledge base page',
+          description: 'Read one published OKF wiki page by path.',
+          inputSchema: kbGetPageInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, KB_GET_PAGE_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_INGEST_TOOL,
+        {
+          title: 'Ingest knowledge base file',
+          description:
+            'Load a file into the agent knowledge base. processingMode=raw_text_only keeps the extracted text; okf splits it into a wiki. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
+          inputSchema: kbIngestInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, KB_INGEST_TOOL, args, deps),
+      )
+      server.registerTool(
         MCP_GATEWAY_OPERATION_GET_TOOL,
         {
           title: 'Get gateway operation',
@@ -429,6 +589,40 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
         },
         async (args) =>
           getGatewayOperationToolResult(principal, args as Record<string, unknown>, deps),
+      )
+
+      for (const pkg of packages) {
+        for (const file of pkg.files) {
+          const uri = skillFileUri(pkg.uriName, file.path)
+          server.registerResource(
+            `${pkg.uriName}/${file.path}`,
+            uri,
+            {
+              title: file.path === 'SKILL.md' ? pkg.name : file.path,
+              mimeType: file.mimeType,
+              ...(file.path === 'SKILL.md' ? { description: pkg.description } : {}),
+            },
+            async () => {
+              await auditMcpResourceRead(deps, principal, uri)
+              return { contents: [{ uri, mimeType: file.mimeType, text: file.text }] }
+            },
+          )
+        }
+      }
+      server.server.setRequestHandler(
+        'skills/list',
+        { params: mcpSkillsListParamsSchema, result: mcpSkillsListResultSchema },
+        async () => ({ skills: packages.map(toSkillsListEntry) }),
+      )
+      server.server.setRequestHandler(
+        'skills/get',
+        { params: mcpSkillsGetParamsSchema, result: mcpSkillEntrySchema },
+        async (params) => {
+          const pkg = findPackageByUri(packages, params.uri)
+          if (!pkg) throw new Error('Skill not found')
+          await auditMcpResourceRead(deps, principal, params.uri)
+          return toSkillsListEntry(pkg)
+        },
       )
 
       server.server.setRequestHandler('tools/call', async (request) => {
@@ -449,6 +643,9 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
         if (toolName === MCP_AGENT_GET_DEFINITION_TOOL) {
           return getDefinitionToolResult(principal, args, deps)
         }
+        if (toolName === MCP_AGENT_CHECKOUT_TOOL) {
+          return checkoutToolResult(principal, args, deps, origin)
+        }
         if (toolName === MCP_GATEWAY_OPERATION_GET_TOOL) {
           return getGatewayOperationToolResult(principal, args, deps)
         }
@@ -461,7 +658,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
     {
       serverInfo: { name: 'enterprise-mcp', version: 'phase-f' },
       instructions:
-        'Company systems: http_api_get / http_api_get_all / http_api_request with definitionId and a relative path — credentials stay on the connector. Gmail: gmail_search then gmail_get_message. Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval. If a tool returns authorizationUrl, show that URL to the user, wait until they finish consent, then retry.',
+        'Skills: call skills/list, then resources/read on skill:// URIs. Company systems: http_api_get / http_api_get_all / http_api_request with definitionId and a relative path — credentials stay on the connector. Gmail: gmail_search then gmail_get_message. Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval. Knowledge base: kb_search, kb_list_index, kb_get_page. If a tool returns authorizationUrl, show that URL to the user, wait until they finish consent, then retry.',
     },
   )
 }
@@ -532,7 +729,7 @@ export async function handleMcpRequest(
       }
       return forbiddenResponse(resolved)
     }
-    return createMcpResourceHandler(resolved.principal, deps)(req)
+    return createMcpResourceHandler(resolved.principal, deps, origin)(req)
   }
 
   return withMcpAuth(inner, verifyToken, {

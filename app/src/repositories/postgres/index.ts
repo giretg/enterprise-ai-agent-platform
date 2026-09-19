@@ -20,6 +20,11 @@ import {
   PostgresTenantMembershipRepository,
   PostgresPlatformMembershipRepository,
 } from './tenant-repository'
+import {
+  PostgresDocumentRepository,
+  PostgresKnowledgeArtifactRepository,
+  PostgresKnowledgeChunkRepository,
+} from './knowledge-repository'
 
 export const repositories = {
   users: new PostgresUserRepository(),
@@ -40,4 +45,7 @@ export const repositories = {
   platformSettings: new PostgresPlatformSettingsRepository(),
   gatewayOperations: new PostgresGatewayOperationRepository(),
   audit: new PostgresAuditRepository(),
+  documents: new PostgresDocumentRepository(),
+  knowledgeArtifacts: new PostgresKnowledgeArtifactRepository(),
+  knowledgeChunks: new PostgresKnowledgeChunkRepository(),
 }

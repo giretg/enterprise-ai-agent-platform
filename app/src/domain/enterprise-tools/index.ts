@@ -1,6 +1,6 @@
 /**
  * Enterprise tool gateway: snapshot policy + live connector/grant checks.
- * Drive/Gmail/HTTP reads are synchronous; writes enqueue a GatewayOperation.
+ * Drive/Gmail/HTTP/KB reads are synchronous; writes enqueue a GatewayOperation.
  */
 export {
   authorizeToolCall,
@@ -25,6 +25,7 @@ export {
   ENTERPRISE_GMAIL_TOOLS,
   ENTERPRISE_HTTP_TOOLS,
   ENTERPRISE_HTTP_WRITE_TOOLS,
+  ENTERPRISE_KB_TOOLS,
   ENTERPRISE_TOOLS,
   ENTERPRISE_WRITE_TOOLS,
   GMAIL_GET_MESSAGE_TOOL,
@@ -37,6 +38,10 @@ export {
   HTTP_API_GET_ALL_TOOL,
   HTTP_API_GET_TOOL,
   HTTP_API_REQUEST_TOOL,
+  KB_GET_PAGE_TOOL,
+  KB_INGEST_TOOL,
+  KB_LIST_INDEX_TOOL,
+  KB_SEARCH_TOOL,
   gmailGetMessageInputSchema,
   gmailSearchInputSchema,
   googleDriveCreateFolderInputSchema,
@@ -47,19 +52,26 @@ export {
   httpApiGetAllInputSchema,
   httpApiGetInputSchema,
   httpApiRequestInputSchema,
+  kbGetPageInputSchema,
+  kbIngestInputSchema,
+  kbListIndexInputSchema,
+  kbSearchInputSchema,
   isEnterpriseDriveTool,
   isEnterpriseDriveWriteTool,
   isEnterpriseGmailTool,
   isEnterpriseHttpTool,
   isEnterpriseHttpWriteTool,
+  isEnterpriseKbTool,
   isEnterpriseTool,
   isEnterpriseWriteTool,
   schemaForEnterpriseDriveTool,
+  schemaForEnterpriseKbTool,
   schemaForEnterpriseTool,
   type EnterpriseDriveTool,
   type EnterpriseDriveWriteTool,
   type EnterpriseGmailTool,
   type EnterpriseHttpTool,
+  type EnterpriseKbTool,
   type EnterpriseTool,
   type EnterpriseWriteTool,
 } from './tool-definitions'

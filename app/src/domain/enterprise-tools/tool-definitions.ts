@@ -35,6 +35,18 @@ export const ENTERPRISE_HTTP_TOOLS = [
   ...ENTERPRISE_HTTP_WRITE_TOOLS,
 ] as const
 
+export const KB_SEARCH_TOOL = 'kb_search'
+export const KB_LIST_INDEX_TOOL = 'kb_list_index'
+export const KB_GET_PAGE_TOOL = 'kb_get_page'
+export const KB_INGEST_TOOL = 'kb_ingest'
+
+export const ENTERPRISE_KB_TOOLS = [
+  KB_SEARCH_TOOL,
+  KB_LIST_INDEX_TOOL,
+  KB_GET_PAGE_TOOL,
+  KB_INGEST_TOOL,
+] as const
+
 export const ENTERPRISE_WRITE_TOOLS = [
   ...ENTERPRISE_DRIVE_WRITE_TOOLS,
   ...ENTERPRISE_HTTP_WRITE_TOOLS,
@@ -44,6 +56,7 @@ export const ENTERPRISE_TOOLS = [
   ...ENTERPRISE_DRIVE_TOOLS,
   ...ENTERPRISE_GMAIL_TOOLS,
   ...ENTERPRISE_HTTP_TOOLS,
+  ...ENTERPRISE_KB_TOOLS,
 ] as const
 
 export type EnterpriseDriveWriteTool = (typeof ENTERPRISE_DRIVE_WRITE_TOOLS)[number]
@@ -51,6 +64,7 @@ export type EnterpriseDriveTool = (typeof ENTERPRISE_DRIVE_TOOLS)[number]
 export type EnterpriseGmailTool = (typeof ENTERPRISE_GMAIL_TOOLS)[number]
 export type EnterpriseHttpWriteTool = (typeof ENTERPRISE_HTTP_WRITE_TOOLS)[number]
 export type EnterpriseHttpTool = (typeof ENTERPRISE_HTTP_TOOLS)[number]
+export type EnterpriseKbTool = (typeof ENTERPRISE_KB_TOOLS)[number]
 export type EnterpriseWriteTool = (typeof ENTERPRISE_WRITE_TOOLS)[number]
 export type EnterpriseTool = (typeof ENTERPRISE_TOOLS)[number]
 
@@ -59,6 +73,7 @@ const ENTERPRISE_DRIVE_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_DRIVE_WRITE_T
 const ENTERPRISE_GMAIL_TOOL_SET = new Set<string>(ENTERPRISE_GMAIL_TOOLS)
 const ENTERPRISE_HTTP_TOOL_SET = new Set<string>(ENTERPRISE_HTTP_TOOLS)
 const ENTERPRISE_HTTP_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_HTTP_WRITE_TOOLS)
+const ENTERPRISE_KB_TOOL_SET = new Set<string>(ENTERPRISE_KB_TOOLS)
 const ENTERPRISE_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_WRITE_TOOLS)
 const ENTERPRISE_TOOL_SET = new Set<string>(ENTERPRISE_TOOLS)
 
@@ -80,6 +95,10 @@ export function isEnterpriseHttpTool(toolName: string): toolName is EnterpriseHt
 
 export function isEnterpriseHttpWriteTool(toolName: string): toolName is EnterpriseHttpWriteTool {
   return ENTERPRISE_HTTP_WRITE_TOOL_SET.has(toolName)
+}
+
+export function isEnterpriseKbTool(toolName: string): toolName is EnterpriseKbTool {
+  return ENTERPRISE_KB_TOOL_SET.has(toolName)
 }
 
 export function isEnterpriseWriteTool(toolName: string): toolName is EnterpriseWriteTool {
@@ -250,8 +269,55 @@ export function schemaForEnterpriseDriveTool(toolName: EnterpriseDriveTool) {
   return googleDriveSearchInputSchema
 }
 
+export const kbSearchInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    query: z.string().min(1).max(1000),
+    k: z.number().int().min(1).max(20).optional(),
+  })
+  .passthrough()
+
+export const kbListIndexInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    pathPrefix: z.string().max(200).optional(),
+    maxDepth: z.number().int().min(1).max(8).optional(),
+  })
+  .passthrough()
+
+export const kbGetPageInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    path: z.string().min(1).max(400),
+    artifactId: z.string().uuid().optional(),
+  })
+  .passthrough()
+
+export const kbIngestInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    filename: z.string().min(1).max(255),
+    processingMode: z.enum(['raw_text_only', 'okf']),
+    mimeType: z.string().max(200).optional(),
+    content: z.string().max(2_000_000).optional(),
+    contentBase64: z.string().max(2_800_000).optional(),
+  })
+  .passthrough()
+
+export function schemaForEnterpriseKbTool(toolName: EnterpriseKbTool) {
+  if (toolName === KB_LIST_INDEX_TOOL) return kbListIndexInputSchema
+  if (toolName === KB_GET_PAGE_TOOL) return kbGetPageInputSchema
+  if (toolName === KB_INGEST_TOOL) return kbIngestInputSchema
+  return kbSearchInputSchema
+}
+
 export function schemaForEnterpriseTool(toolName: string) {
   if (isEnterpriseDriveTool(toolName)) return schemaForEnterpriseDriveTool(toolName)
+  if (isEnterpriseKbTool(toolName)) return schemaForEnterpriseKbTool(toolName)
   if (toolName === GMAIL_GET_MESSAGE_TOOL) return gmailGetMessageInputSchema
   if (toolName === GMAIL_SEARCH_TOOL) return gmailSearchInputSchema
   if (toolName === HTTP_API_GET_ALL_TOOL) return httpApiGetAllInputSchema

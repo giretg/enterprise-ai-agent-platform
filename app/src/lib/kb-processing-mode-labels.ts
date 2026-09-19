@@ -13,12 +13,12 @@ export const KB_PROCESSING_MODE_OPTIONS: Array<{
   {
     value: 'raw_text_only',
     label: 'Egyszerű fájl feltöltés',
-    description: 'A szöveg a feltöltött formában kerül a tudásbázisba, jóváhagyás után kereshető.',
+    description: 'A szöveg a feltöltött formában kerül a tudásbázisba, és azonnal kereshető.',
   },
   {
     value: 'okf',
     label: 'Wiki formátumba alakítás',
-    description: 'Oldalakra bontott wiki-előnézet és ellenőrzés jóváhagyás előtt.',
+    description: 'Oldalakra bontott wiki, kb_list_index / kb_get_page navigációval.',
   },
 ]
 

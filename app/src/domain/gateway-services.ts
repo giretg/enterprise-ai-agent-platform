@@ -38,6 +38,8 @@ import { SelfUpdatingConnectorService } from '@/domain/connector-self-update/sel
 import { SpecSyncService } from '@/domain/connector-self-update/spec-sync'
 import { SkillService } from '@/domain/skill/skill-service'
 import { TenantService } from '@/domain/tenant/tenant-service'
+import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
+import { executeKnowledgeBaseTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
 import { lookup } from 'node:dns/promises'
 
 const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants)
@@ -119,6 +121,15 @@ const agentDefinitionService = new AgentDefinitionService({
   agents: repositories.agents,
   versions: repositories.agentDefinitions,
   skills: repositories.skills,
+  audit: repositories.audit,
+})
+
+const knowledgeBaseService = new KnowledgeBaseService({
+  documents: repositories.documents,
+  artifacts: repositories.knowledgeArtifacts,
+  chunks: repositories.knowledgeChunks,
+  agents: repositories.agents,
+  connectors: repositories.connectors,
   audit: repositories.audit,
 })
 
@@ -238,6 +249,8 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   startAuthorization,
   enqueueWrite: async (input) =>
     enqueueResultToMcp(await enqueueGatewayOperation(gatewayOperationDeps, input)),
+  executeKbTool: (toolName, args, ctx) =>
+    executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx),
 }
 
 export const services = {
@@ -249,6 +262,7 @@ export const services = {
   provisioning: provisioningService,
   selfUpdatingConnectors: selfUpdatingConnectorService,
   connectorGrants: connectorGrantService,
+  knowledgeBase: knowledgeBaseService,
   audit: repositories.audit,
   auditChain: new AuditChainService(repositories.audit),
   enterpriseTools: {

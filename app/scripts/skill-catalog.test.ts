@@ -3,8 +3,7 @@
  * (skill-catalog-spec.md, WP-1..4/7). Futtatás: npm run test:skill-catalog
  *
  * Fedi: SKILL.md adapter (frontmatter + instrukció-bontás + provenience/hash),
- * hardcoded validátor (séma/méret/injection/kód-jelenlét → T2/T3 elutasítás,
- * tier-levezetés T0/T1), fail-closed tenant-scope (olvasás/írás), readiness-check
+ * hardcoded validátor (séma/méret/injection, kód → T2), fail-closed tenant-scope (olvasás/írás), readiness-check
  * (zöld/sárga/piros), és a determinista content-hash stabilitása.
  */
 import assert from 'node:assert/strict'
@@ -149,19 +148,20 @@ async function main() {
     )
   })
 
-  await check('szabványos skill-csomag → SKILL.md + referencia bejön, kód kimarad', () => {
+  await check('szabványos skill-csomag → SKILL.md + referencia + kód bejön', () => {
     const bytes = (text: string) => new TextEncoder().encode(text)
     const pkg = buildSkillPackage([
       { path: 'my-skill/SKILL.md', bytes: bytes('---\nname: demo\ndescription: Demo skill\n---\nTedd meg.') },
       { path: 'my-skill/references/checklist.md', bytes: bytes('# Ellenőrzőlista') },
-      { path: 'my-skill/scripts/run.py', bytes: bytes('print("no")') },
+      { path: 'my-skill/scripts/run.py', bytes: bytes('print("ok")') },
     ])
 
     assert.equal(pkg.skillRoot, '')
-    assert.equal(pkg.attachments[0]?.path, 'references/checklist.md')
-    assert.deepEqual(pkg.skipped.map(({ path, reason }) => ({ path, reason })), [
-      { path: 'scripts/run.py', reason: 'code_file' },
-    ])
+    assert.deepEqual(
+      pkg.attachments.map((a) => a.path).sort(),
+      ['references/checklist.md', 'scripts/run.py'],
+    )
+    assert.deepEqual(pkg.skipped, [])
   })
 
   console.log('SKILL.md adapter')
@@ -327,25 +327,38 @@ async function main() {
     assert.equal(r.riskTier, 't1')
   })
 
-  await check('kód-fence (python) → elutasítás (T2/T3 nem F1)', () => {
+  await check('kód-fence (python) → t2, importálható', () => {
     const r = validateSkill({
       name: 'Skill',
       description: 'Leírás',
       content: { ...okContent, instructions: ['Futtasd:\n```python\nimport os\n```'] },
       requires: [],
     })
-    assert.equal(r.ok, false)
-    assert.ok(r.errors.some((e) => e.includes('Kód-hordozó')))
+    assert.equal(r.ok, true)
+    assert.equal(r.riskTier, 't2')
   })
 
-  await check('shebang → elutasítás', () => {
+  await check('scripts/*.py melléklet → t2', () => {
+    const r = validateSkill({
+      name: 'Skill',
+      description: 'Leírás',
+      content: okContent,
+      requires: [],
+      attachmentPaths: ['scripts/parse.py'],
+    })
+    assert.equal(r.ok, true)
+    assert.equal(r.riskTier, 't2')
+  })
+
+  await check('shebang az instrukcióban → t2, importálható', () => {
     const r = validateSkill({
       name: 'Skill',
       description: 'Leírás',
       content: { ...okContent, instructions: ['#!/bin/bash\necho hi'] },
       requires: [],
     })
-    assert.equal(r.ok, false)
+    assert.equal(r.ok, true)
+    assert.equal(r.riskTier, 't2')
   })
 
   await check('injection "ignore previous instructions" → elutasítás', () => {

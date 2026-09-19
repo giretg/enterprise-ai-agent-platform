@@ -23,12 +23,15 @@ import { asUuid, enterpriseToolErrorPayload } from './tool-error-messages'
 import {
   isEnterpriseGmailTool,
   isEnterpriseHttpTool,
+  isEnterpriseKbTool,
   isEnterpriseTool,
   isEnterpriseWriteTool,
+  schemaForEnterpriseKbTool,
   schemaForEnterpriseTool,
   type EnterpriseDriveTool,
   type EnterpriseGmailTool,
   type EnterpriseHttpTool,
+  type EnterpriseKbTool,
 } from './tool-definitions'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
@@ -79,6 +82,11 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps & {
     args: Record<string, unknown>,
     connector: LiveConnectorRow,
     accessToken?: string,
+  ) => Promise<unknown>
+  executeKbTool?: (
+    toolName: EnterpriseKbTool,
+    args: Record<string, unknown>,
+    ctx: { connectorId: string; tenantId: string; agentId: string; userId: string },
   ) => Promise<unknown>
   enqueueWrite?: (input: {
     principal: ToolCallPrincipal
@@ -164,8 +172,8 @@ async function resolveDelegatedToken(
   deps: EnterpriseToolDeps,
   principal: ToolCallPrincipal,
   connector: LiveConnectorRow,
-  grantId: string | undefined,
-  tokenRef: string | undefined,
+  grantId: string | null | undefined,
+  tokenRef: string | null | undefined,
 ): Promise<string> {
   if (!grantId || !tokenRef) throw new Error('connector_grant_missing')
   return deps.resolveAccessToken({
@@ -230,6 +238,16 @@ export async function invokeEnterpriseTool(
       return errorResult('tool_not_configured')
     }
     return deps.enqueueWrite({ principal, toolName, args })
+  }
+
+  if (isEnterpriseKbTool(toolName)) {
+    return invokeKbTool(deps, {
+      principal,
+      toolName,
+      args,
+      definitionId,
+      definition,
+    })
   }
 
   if (!isEnterpriseTool(toolName)) {
@@ -323,7 +341,7 @@ export async function invokeEnterpriseTool(
   }
 
   try {
-        const result = await dispatchTool(deps, {
+    const result = await dispatchTool(deps, {
       toolName,
       args: parsed.data as Record<string, unknown>,
       connector,
@@ -435,4 +453,100 @@ function mapToolError(
     return { code: error.code === 'missing_api_key' ? 'missing_api_key' : 'http_api_error', extra: { httpCode: error.code } }
   }
   return { code: 'tool_execution_failed' }
+}
+
+async function invokeKbTool(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    toolName: EnterpriseKbTool
+    args: Record<string, unknown>
+    definitionId: string
+    definition: AgentDefinition
+  },
+): Promise<EnterpriseToolMcpResult> {
+  const { principal, toolName, args, definitionId, definition } = input
+  if (!deps.executeKbTool) {
+    await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
+    return errorResult('tool_not_configured')
+  }
+  const parsed = schemaForEnterpriseKbTool(toolName).safeParse(args)
+  if (!parsed.success) {
+    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId)
+    return errorResult('invalid_args')
+  }
+  const authorized = await authorizeToolCall(deps, {
+    principal,
+    definition,
+    toolName,
+    args: parsed.data as Record<string, unknown>,
+  })
+  if (!authorized.allowed) {
+    await auditDenied(deps, principal, toolName, authorized.reason, definitionId, definition.agentId)
+    return errorResult(authorized.reason)
+  }
+  try {
+    const result = await deps.executeKbTool(toolName, parsed.data as Record<string, unknown>, {
+      connectorId: authorized.connectorId,
+      tenantId: principal.tenantId,
+      agentId: definition.agentId,
+      userId: principal.userId,
+    })
+    const payload = {
+      toolName,
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      definitionId,
+      agentId: definition.agentId,
+      connectorId: authorized.connectorId,
+    }
+    console.info('enterprise.tool.ok', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.ok',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: payload,
+      tenantId: principal.tenantId,
+    })
+    return textResult(result)
+  } catch (error) {
+    const code =
+      error instanceof Error && error.message === 'invalid_args'
+        ? 'invalid_args'
+        : error instanceof Error && error.message === 'file_too_large'
+          ? 'file_too_large'
+          : 'tool_execution_failed'
+    const payload = {
+      toolName,
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      definitionId,
+      agentId: definition.agentId,
+      connectorId: authorized.connectorId,
+      errorCode: code,
+    }
+    console.info('enterprise.tool.error', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.error',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: code,
+      policyDecision: null,
+      metadata: payload,
+      tenantId: principal.tenantId,
+    })
+    return errorResult(code)
+  }
 }

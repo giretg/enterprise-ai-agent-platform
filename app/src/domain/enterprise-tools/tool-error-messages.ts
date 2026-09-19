@@ -17,6 +17,8 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   missing_gmail_connector_read: 'Published definition has no Gmail read connector',
   missing_http_api_connector_read: 'Published definition has no HTTP API read connector',
   missing_http_api_connector_write: 'Published definition has no HTTP API write connector',
+  missing_knowledge_base_connector_read: 'Published definition has no knowledge base read connector',
+  missing_knowledge_base_connector_write: 'Published definition has no knowledge base write connector',
   tenant_isolation: 'Connector does not belong to this tenant',
   connector_not_active: 'Connector is not active',
   connector_grant_missing: 'This account has not been connected yet',
@@ -26,12 +28,15 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   gmail_scope_not_granted: 'Gmail scopes are insufficient',
   invalid_args: 'Invalid tool arguments',
   idempotency_key_required: 'idempotencyKey is required',
+  idempotency_key_conflict:
+    'idempotencyKey is already used by a different principal, tool, or arguments',
   google_drive_auth_failed: 'Google Drive authentication failed',
   google_drive_api_error: 'Google Drive request failed',
   gmail_auth_failed: 'Gmail authentication failed',
   gmail_api_error: 'Gmail request failed',
   http_api_error: 'HTTP API request failed',
   missing_api_key: 'HTTP API connector has no credential',
+  file_too_large: 'File is too large',
   tool_execution_failed: 'Tool execution failed',
 }
 

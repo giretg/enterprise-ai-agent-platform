@@ -552,13 +552,14 @@ export async function createSkillAction(
     const parsed = createSchema.parse(input)
     const ctx = await requireTenantRole('admin')
     const actor = actorFrom(ctx)
-    // A kézi szerzés is a hardcoded validátoron megy át (kód/injection tiltás,
+    // A kézi szerzés is a hardcoded validátoron megy át (injection tiltás,
     // tier-levezetés) — a puha rész sosem kap könnyített utat.
     const validation = validateSkill({
       name: parsed.name,
       description: parsed.description,
       content: parsed.content,
       requires: parsed.requires,
+      attachmentPaths: (parsed.attachments ?? []).map((attachment) => attachment.path),
     })
     if (!validation.ok) {
       return fail(`A skill nem felelt meg a validátornak: ${validation.errors.join(' · ')}`)
@@ -801,6 +802,7 @@ export async function proposeSkillVersionAction(
       description: 'placeholder',
       content: parsed.content,
       requires: parsed.requires,
+      attachmentPaths: (parsed.attachments ?? []).map((attachment) => attachment.path),
     })
     if (!validation.ok) {
       return fail(`A javasolt verzió nem felelt meg a validátornak: ${validation.errors.join(' · ')}`)
