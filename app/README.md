@@ -58,7 +58,8 @@ a `prisma/migrations/` alatt él:
 
 - `0001_init` — greenfield baseline
 - `0002_gateway_operation_result` — GatewayOperation eredményoszlop (Phase E)
-- `0003_audit_log` — `audit_log` tábla + append-only UPDATE/DELETE trigger (Phase F)
+- `0003_connector_type_gmail` — `ConnectorType.gmail`
+- `0004_audit_log` — `audit_log` tábla + append-only UPDATE/DELETE trigger (Phase F)
 
 **Munkafolyamat:**
 

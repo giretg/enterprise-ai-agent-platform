@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useSyncExternalStore, type ReactNode } from 'react'
+import { useSyncExternalStore, type ReactNode } from 'react'
 import { usePathname } from 'next/navigation'
 import { AppShell, type NavEntry } from '@/components/ui/shell'
 import { TenantSwitcher } from '@/components/tenant/tenant-switcher'
@@ -52,22 +52,18 @@ export function ControlPlaneShell({
 
   return (
     <>
-      <Suspense fallback={null}>
-        <AppShell
-          appName="E-AI"
-          appSubtitle="Control Plane"
-          navItems={navItems}
-          accentColor="slate"
-          pathname={pathname}
-          navMode="modal"
-          headerExtra={<TenantSwitcher />}
-        >
-          {children}
-        </AppShell>
-      </Suspense>
-      <Suspense fallback={null}>
-        <RouteModalHost />
-      </Suspense>
+      <AppShell
+        appName="E-AI"
+        appSubtitle="Control Plane"
+        navItems={navItems}
+        accentColor="slate"
+        pathname={pathname}
+        navMode="modal"
+        headerExtra={<TenantSwitcher />}
+      >
+        {children}
+      </AppShell>
+      <RouteModalHost />
       <ControlPlanePanelDockHost />
     </>
   )

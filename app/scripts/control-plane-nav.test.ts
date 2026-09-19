@@ -66,6 +66,7 @@ function main() {
       buildControlPlaneNav({ tenantRole: 'admin', platformRoles: [] }),
     )
     assert.ok(hrefs.includes('/control-plane/iam'))
+    assert.ok(hrefs.includes('/control-plane/settings'))
     assert.ok(hrefs.includes('/control-plane/menu-access'))
     assert.ok(hrefs.includes('/control-plane/provisioning'))
     assert.ok(hrefs.includes('/control-plane/operations'))

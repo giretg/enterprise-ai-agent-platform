@@ -27,12 +27,12 @@ function actorFrom(ctx: { user: { id: string }; activeTenantId: string; activeTe
   }
 }
 
-function mapAuthError(error: unknown): ActionResult<never> {
+function mapActionError(error: unknown): ActionResult<never> {
   if (error instanceof TenantAuthError && error.code === 'INSUFFICIENT_ROLE') {
     return fail('approver_not_authorized')
   }
   if (error instanceof TenantAuthError) return fail(error.code)
-  throw error
+  return fail('schema_mismatch')
 }
 
 export async function listPendingGatewayOperationsAction(): Promise<
@@ -43,7 +43,7 @@ export async function listPendingGatewayOperationsAction(): Promise<
     const operations = await services.gatewayOperations.listPending({ tenantId: ctx.activeTenantId })
     return ok({ operations })
   } catch (error) {
-    return mapAuthError(error)
+    return mapActionError(error)
   }
 }
 
@@ -63,7 +63,7 @@ export async function approveGatewayOperationAction(
     return ok(result.view)
   } catch (error) {
     if (error instanceof z.ZodError) return fail('invalid_args')
-    return mapAuthError(error)
+    return mapActionError(error)
   }
 }
 
@@ -84,6 +84,6 @@ export async function rejectGatewayOperationAction(
     return ok(result.view)
   } catch (error) {
     if (error instanceof z.ZodError) return fail('invalid_args')
-    return mapAuthError(error)
+    return mapActionError(error)
   }
 }

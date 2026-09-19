@@ -11,7 +11,7 @@ export class PostgresConnectorRepository implements ConnectorRepository {
 
   async listActive(tenantId: string): Promise<Connector[]> {
     return prisma.connector.findMany({
-      where: { tenantId, lifecycleState: 'active' },
+      where: { tenantId, lifecycleState: 'active', type: { in: ['google_drive', 'http_api', 'gmail'] } },
       orderBy: { name: 'asc' },
     })
   }

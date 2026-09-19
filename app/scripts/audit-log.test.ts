@@ -464,8 +464,8 @@ async function main() {
     if (result.ok) assert.equal(result.checked, 20)
   })
 
-  check('0003 migration installs append-only UPDATE/DELETE trigger', () => {
-    const sqlPath = path.join(__dirname, '..', 'prisma', 'migrations', '0003_audit_log', 'migration.sql')
+  check('0004 migration installs append-only UPDATE/DELETE trigger', () => {
+    const sqlPath = path.join(__dirname, '..', 'prisma', 'migrations', '0004_audit_log', 'migration.sql')
     assert.equal(existsSync(sqlPath), true)
     const sql = readFileSync(sqlPath, 'utf8')
     assert.match(sql, /CREATE TABLE "audit_log"/)
