@@ -4,8 +4,6 @@ import { useSyncExternalStore, type ReactNode } from 'react'
 import { usePathname } from 'next/navigation'
 import { AppShell, type NavEntry } from '@/components/ui/shell'
 import { TenantSwitcher } from '@/components/tenant/tenant-switcher'
-import { ControlPlanePanelDockHost } from '@/components/ui/control-plane-panel-dock'
-import { RouteModalHost } from '@/components/ui/route-modal'
 import { ControlPlaneEmbedBridge } from '@/lib/control-plane-embed-bridge'
 
 function subscribeNever() {
@@ -16,10 +14,7 @@ function readInIframe() {
   return window.parent !== window
 }
 
-/**
- * Stabil layout-wrapper: iframe-ben (header-modál) soha ne mountolódjon a
- * teljes shell.
- */
+/** Embed iframe (régi /embed/control-plane rewrite) soha ne kapjon teljes shellt. */
 export function ControlPlaneRoot({
   embedFromServer,
   navItems = [],
@@ -51,20 +46,15 @@ export function ControlPlaneShell({
   const pathname = usePathname()
 
   return (
-    <>
-      <AppShell
-        appName="E-AI"
-        appSubtitle="Control Plane"
-        navItems={navItems}
-        accentColor="slate"
-        pathname={pathname}
-        navMode="modal"
-        headerExtra={<TenantSwitcher />}
-      >
-        {children}
-      </AppShell>
-      <RouteModalHost />
-      <ControlPlanePanelDockHost />
-    </>
+    <AppShell
+      appName="E-AI"
+      appSubtitle="Control Plane"
+      navItems={navItems}
+      accentColor="slate"
+      pathname={pathname}
+      headerExtra={<TenantSwitcher />}
+    >
+      {children}
+    </AppShell>
   )
 }
