@@ -31,7 +31,8 @@ async function main() {
     assert.ok(filter.action.includes('user.permission.update'))
   })
 
-  await check('permission update succeeds without AuditLog', async () => {
+  await check('permission update writes user.permission.update', async () => {
+    const events: Array<{ action: string; tenantId?: string | null }> = []
     const service = new IamService(
       {} as never,
       {} as never,
@@ -59,16 +60,26 @@ async function main() {
           }
         },
       } as never,
+      undefined,
+      undefined,
+      {
+        async append(data) {
+          events.push({ action: data.action, tenantId: data.tenantId })
+        },
+      },
     )
 
     const updated = await service.updatePermission({
       permissionKey: 'audit.read',
       minRole: 'admin',
-      actorId: 'user-admin',
-      tenantId: 'tenant-a',
+      actorId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      tenantId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     })
     assert.equal(updated.minRole, 'admin')
     assert.equal(updated.id, 'rp-updated')
+    assert.equal(events.length, 1)
+    assert.equal(events[0].action, 'user.permission.update')
+    assert.equal(events[0].tenantId, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
   })
 
   console.log(`\n${failures === 0 ? 'Minden teszt zöld.' : `${failures} teszt bukott.`}`)

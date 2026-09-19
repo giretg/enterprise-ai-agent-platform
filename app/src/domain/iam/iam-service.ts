@@ -14,6 +14,8 @@ import {
   isSelfModification,
   makePreProvisionedAuthId,
 } from '@/lib/iam-policy'
+import type { AuditSink } from '@/lib/audit/types'
+import { writeAudit } from '@/lib/audit/types'
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 nap
 
@@ -40,7 +42,12 @@ export class IamService {
     private rolePermissions: RolePermissionRepository,
     private connectorGrants?: import('@/domain/connector-grant/connector-grant-service').ConnectorGrantService,
     private memberships?: TenantMembershipRepository,
+    private audit?: AuditSink,
   ) {}
+
+  private async append(data: Parameters<AuditSink['append']>[0]) {
+    await writeAudit(this.audit, data)
+  }
 
   async inviteUser(params: { email: string; role: UserRole; createdById: string; tenantId: string | null }) {
     const { rawToken, tokenHash } = generateTokenPair()
@@ -55,7 +62,20 @@ export class IamService {
       createdById: params.createdById,
     })
 
-
+    await this.append({
+      actorType: 'human',
+      actorId: params.createdById,
+      agentVersion: null,
+      action: 'user.invite.issue',
+      targetType: 'invitation',
+      targetId: invitation.id,
+      modelUsed: null,
+      inputRef: invitation.email,
+      outputRef: params.role,
+      policyDecision: 'invited',
+      metadata: { expiresAt: expiresAt.toISOString(), tenantId: params.tenantId },
+      tenantId: params.tenantId,
+    })
 
     // A nyers token CSAK most látszik — innentől csak a hash tárolt.
     return { invitation, rawToken }
@@ -131,7 +151,20 @@ export class IamService {
       invitedById: params.createdById,
     })
 
-
+    await this.append({
+      actorType: 'human',
+      actorId: params.createdById,
+      agentVersion: null,
+      action: 'user.provision.create',
+      targetType: 'user',
+      targetId: user.id,
+      modelUsed: null,
+      inputRef: email,
+      outputRef: params.role,
+      policyDecision: 'provisioned',
+      metadata: { membershipId: membership.id, tenantId: params.tenantId },
+      tenantId: params.tenantId,
+    })
 
     return { user, membership }
   }
@@ -167,7 +200,19 @@ export class IamService {
 
     await this.activatePendingMemberships(user.id)
 
-
+    await this.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'user.provision.claim',
+      targetType: 'user',
+      targetId: user.id,
+      modelUsed: null,
+      inputRef: params.user.externalAuthId,
+      outputRef: user.role,
+      policyDecision: 'claimed',
+      metadata: { email: user.email },
+    })
 
     return user
   }
@@ -206,7 +251,19 @@ export class IamService {
 
     await this.activatePendingMemberships(user.id)
 
-
+    await this.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'user.provision.claim',
+      targetType: 'user',
+      targetId: user.id,
+      modelUsed: null,
+      inputRef: params.user.email,
+      outputRef: user.role,
+      policyDecision: 'activated',
+      metadata: { email: user.email },
+    })
 
     return user
   }
@@ -234,7 +291,20 @@ export class IamService {
     const updated = await this.invitations.revokePending(invitation.id, new Date())
     if (!updated) throw new Error('invitation: cannot revoke, already redeemed')
 
-
+    await this.append({
+      actorType: 'human',
+      actorId: params.actorId,
+      agentVersion: null,
+      action: 'user.invite.revoke',
+      targetType: 'invitation',
+      targetId: invitation.id,
+      modelUsed: null,
+      inputRef: invitation.email,
+      outputRef: null,
+      policyDecision: 'revoked',
+      metadata: null,
+      tenantId: invitation.tenantId,
+    })
 
     return updated
   }
@@ -342,11 +412,36 @@ export class IamService {
         status: 'active',
         invitedById: invitation.createdById,
       })
-
-
+      await this.append({
+        actorType: 'human',
+        actorId: user.id,
+        agentVersion: null,
+        action: 'tenant.member.invite_accept',
+        targetType: 'tenant_membership',
+        targetId: membership.id,
+        modelUsed: null,
+        inputRef: invitation.id,
+        outputRef: invitation.role,
+        policyDecision: 'active',
+        metadata: { invitationId: invitation.id, source },
+        tenantId: invitation.tenantId,
+      })
     }
 
-
+    await this.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'user.invite.redeem',
+      targetType: 'user',
+      targetId: user.id,
+      modelUsed: null,
+      inputRef: invitation.id,
+      outputRef: invitation.role,
+      policyDecision: 'redeemed',
+      metadata: { email: user.email, source },
+      tenantId: invitation.tenantId,
+    })
   }
 
   /** §7/B: pending + role=NULL önregisztrált fiók jóváhagyása szerepkör-kiosztással. */
@@ -382,7 +477,20 @@ export class IamService {
       })
     }
 
-
+    await this.append({
+      actorType: 'human',
+      actorId: params.actorId,
+      agentVersion: null,
+      action: 'user.role.assign',
+      targetType: 'user',
+      targetId: target.id,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: params.role,
+      policyDecision: 'approved',
+      metadata: null,
+      tenantId: params.actorTenantId,
+    })
 
     return this.withMembershipView(updated, params.role, 'active', params.actorTenantId)
   }
@@ -409,7 +517,20 @@ export class IamService {
       updated = await this.users.update(target.id, { role: params.newRole })
     }
 
-
+    await this.append({
+      actorType: 'human',
+      actorId: params.actorId,
+      agentVersion: null,
+      action: 'user.role.change',
+      targetType: 'user',
+      targetId: target.id,
+      modelUsed: null,
+      inputRef: target.role,
+      outputRef: params.newRole,
+      policyDecision: 'role_changed',
+      metadata: null,
+      tenantId: params.actorTenantId,
+    })
 
     return this.withMembershipView(updated, params.newRole, target.status, params.actorTenantId)
   }
@@ -454,7 +575,20 @@ export class IamService {
       await this.connectorGrants.revokeAllForUser(target.id, params.actorId)
     }
 
-
+    await this.append({
+      actorType: 'human',
+      actorId: params.actorId,
+      agentVersion: null,
+      action: 'user.suspend',
+      targetType: 'user',
+      targetId: target.id,
+      modelUsed: null,
+      inputRef: target.status,
+      outputRef: 'suspended',
+      policyDecision: 'suspended',
+      metadata: { reason: params.reason },
+      tenantId: params.actorTenantId,
+    })
 
     return this.withMembershipView(
       otherActive ? { ...updated, status: 'suspended' as UserStatus } : updated,
@@ -493,7 +627,20 @@ export class IamService {
           })
         : rawUser
 
-
+    await this.append({
+      actorType: 'human',
+      actorId: params.actorId,
+      agentVersion: null,
+      action: 'user.reactivate',
+      targetType: 'user',
+      targetId: target.id,
+      modelUsed: null,
+      inputRef: 'suspended',
+      outputRef: 'active',
+      policyDecision: 'reactivated',
+      metadata: null,
+      tenantId: params.actorTenantId,
+    })
 
     return this.withMembershipView(updated, target.role, 'active', params.actorTenantId)
   }
@@ -568,7 +715,20 @@ export class IamService {
     const before = await this.rolePermissions.findByKey(params.permissionKey)
     const updated = await this.rolePermissions.upsert(params.permissionKey, params.minRole, before?.description)
 
-
+    await this.append({
+      actorType: 'human',
+      actorId: params.actorId,
+      agentVersion: null,
+      action: 'user.permission.update',
+      targetType: 'role_permission',
+      targetId: updated.id,
+      modelUsed: null,
+      inputRef: before?.minRole ?? null,
+      outputRef: params.minRole,
+      policyDecision: 'permission_updated',
+      metadata: { permissionKey: params.permissionKey, tenantId: params.tenantId },
+      tenantId: params.tenantId,
+    })
 
     return updated
   }

@@ -69,6 +69,7 @@ jobs:
           npm run test:mcp-http
           npm run test:enterprise-tools
           npm run test:gateway-operation
+          npm run test:audit-log
           npm run test:agent-definition
           npm run test:resource-grant
           npm run test:crawler-block

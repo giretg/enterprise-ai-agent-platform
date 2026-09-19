@@ -2,6 +2,7 @@ import type {
   Agent,
   AgentDefinitionVersion,
   AgentSkill,
+  AuditLog,
   Capability,
   Connector,
   ConnectorAccessMode,
@@ -42,8 +43,10 @@ import type {
   UserStatus,
 } from '@prisma/client'
 import type { ListPageResult } from '@/lib/list-pagination'
+import type { AuditAppendInput } from '@/lib/audit/types'
 
 export type { ListPageResult }
+export type { AuditAppendInput }
 
 export type AgentListFilter = {
   tenantId?: string
@@ -526,3 +529,38 @@ export interface PlatformSettingsRepository {
 export type { Capability }
 
 export type { GatewayOperationStore as GatewayOperationRepository } from '@/domain/gateway-operation'
+
+export type AuditListFilter = {
+  action?: string | string[]
+  actorType?: AuditLog['actorType']
+  actorId?: string
+  targetType?: string
+  targetId?: string
+  tenantId?: string
+  since?: Date
+  until?: Date
+  order?: 'asc' | 'desc'
+  limit?: number
+}
+
+export type AuditWalkFilter = {
+  fromSeq?: bigint
+  toSeq?: bigint
+  tenantId?: string
+  since?: Date
+  limit?: number
+}
+
+export type AuditChainLink = {
+  seq: bigint
+  hash: string | null
+}
+
+export interface AuditRepository {
+  append(data: AuditAppendInput): Promise<AuditLog>
+  findMany(filter?: AuditListFilter): Promise<AuditLog[]>
+  findAll(filter?: AuditWalkFilter): Promise<AuditLog[]>
+  /** Seq+hash only — tenant verify uses this for predecessor linkage without other-tenant metadata. */
+  listHashChain(filter?: { fromSeq?: bigint; toSeq?: bigint }): Promise<AuditChainLink[]>
+  getActionCounts(filter?: { actions?: string[]; since?: Date }): Promise<Record<string, number>>
+}

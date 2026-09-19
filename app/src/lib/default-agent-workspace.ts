@@ -2,7 +2,6 @@ import { notFound, redirect } from 'next/navigation'
 import { listAgents } from '@/app/actions/platform'
 import { getAuthContext } from '@/auth/context'
 import { TenantAuthError, requireTenantRole } from '@/auth/tenant-context'
-import { agentWorkspacePath } from '@/lib/agent-workspace-routes'
 import {
   DEFAULT_AGENT_WORKSPACE_FALLBACK,
   homePathForAuthContext,
@@ -27,7 +26,7 @@ export async function resolveDefaultAgentWorkspacePath(): Promise<string> {
   const agentsRes = await listAgents({ limit: 50 })
   if (agentsRes.success && agentsRes.data.length > 0) {
     const agent = agentsRes.data.find((row) => row.status !== 'retired') ?? agentsRes.data[0]
-    if (agent) return agentWorkspacePath(agent.id)
+    if (agent) return `/control-plane/agents/${agent.id}`
   }
 
   return DEFAULT_AGENT_WORKSPACE_FALLBACK

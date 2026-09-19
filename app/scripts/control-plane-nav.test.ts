@@ -4,6 +4,8 @@
  * Futtatás: npx tsx scripts/control-plane-nav.test.ts
  */
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
+import path from 'node:path'
 import {
   allNavKeys,
   buildControlPlaneNav,
@@ -52,6 +54,7 @@ function main() {
     assert.ok(!hrefs.includes('/control-plane/platform/tenants'))
     assert.ok(!hrefs.includes('/control-plane/menu-access'))
     assert.ok(!hrefs.includes('/control-plane/operations'))
+    assert.ok(!hrefs.includes('/control-plane/audit'))
     const account = nav.find((entry) => !('children' in entry) && entry.key === 'account')
     assert.ok(account && !('children' in account))
     assert.equal(account.label, 'Kapcsolt fiókok')
@@ -69,15 +72,15 @@ function main() {
     assert.ok(hrefs.includes('/control-plane/operations'))
     assert.ok(!hrefs.includes('/control-plane/system'))
     assert.ok(!hrefs.includes('/control-plane/governance'))
-    assert.ok(!hrefs.includes('/control-plane/audit'))
+    assert.ok(hrefs.includes('/control-plane/audit'))
     assert.ok(!hrefs.includes('/control-plane/platform/tenants'))
   })
 
-  check('approver does not see IAM or Audit', () => {
+  check('approver sees Audit and operations, not IAM', () => {
     const hrefs = flattenNavHrefs(
       buildControlPlaneNav({ tenantRole: 'approver', platformRoles: [] }),
     )
-    assert.ok(!hrefs.includes('/control-plane/audit'))
+    assert.ok(hrefs.includes('/control-plane/audit'))
     assert.ok(hrefs.includes('/control-plane/account'))
     assert.ok(hrefs.includes('/control-plane/operations'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
@@ -108,7 +111,7 @@ function main() {
     assert.equal(account.label, 'Kapcsolt fiókok')
   })
 
-  check('header keeps Munkatársak tools after the roster moved to the rail', () => {
+  check('header catalog keeps skills, not the deleted rail roster tools', () => {
     const nav = buildControlPlaneNav({ tenantRole: 'operator', platformRoles: [] })
     const staff = nav.find((entry) => 'children' in entry && entry.key === 'staff')
     assert.ok(staff && 'children' in staff)
@@ -129,6 +132,8 @@ function main() {
     const keys = allNavKeys()
     assert.equal(new Set(keys).size, keys.length)
     assert.ok(keys.includes('admin.menu-access'))
+    assert.ok(keys.includes('admin.audit'))
+    assert.ok(keys.includes('admin.operations'))
   })
 
   check('hiding legacy admin.connectors still hides Kapcsolt fiókok', () => {
@@ -277,7 +282,10 @@ function main() {
     }
   })
 
-  console.log(`\n${failures === 0 ? 'Minden teszt zöld.' : `${failures} teszt bukott.`}`)
+  check('agent rail route is gone from live app', () => {
+    const rail = path.join(__dirname, '..', 'src', 'app', 'api', 'agents', 'rail-state', 'route.ts')
+    assert.equal(existsSync(rail), false)
+  })
   if (failures > 0) process.exit(1)
 }
 

@@ -82,6 +82,12 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         requires: { tenantRole: 'approver' },
       },
       {
+        key: 'admin.audit',
+        href: '/control-plane/audit',
+        label: 'Audit',
+        requires: { tenantRole: 'approver' },
+      },
+      {
         key: 'admin.provisioning',
         href: '/control-plane/provisioning',
         label: 'Konnektorok',

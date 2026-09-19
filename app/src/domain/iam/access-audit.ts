@@ -1,4 +1,4 @@
-/** Filter shape for former access-audit queries. AuditLog was dropped in Phase B. */
+/** Filter shape for tenant-scoped access-audit queries. */
 export function buildTenantAccessAuditFilter(input: { tenantId: string; limit?: number }): {
   tenantId: string
   limit: number

@@ -1,4 +1,4 @@
-# MCP compatibility runbook (Phase A + Phase C Drive + Phase E write)
+# MCP compatibility runbook (Phase A + Phase C Drive + Phase E write + Phase F audit)
 
 Prove that **Codex and Claude Code authenticate to and use the same tenant-scoped MCP endpoint**. Do not use `mcp-remote`. Live Clerk OAuth is required; `AUTH_DISABLED` / DevAuth is not a passing path.
 
@@ -107,7 +107,7 @@ Policy is the **published snapshot**. If an admin later decommissions the connec
 
 Unauthenticated 401s are **not** written to `audit_log` (they would flood). They are logged at info. `invalid_token` and membership/assume/inactive denies **are** audited (`mcp.auth.deny`). Successful principal resolution writes `mcp.auth.ok` with `{ tenantSlug, assumed }` — not `tenant.assume` on every assumed MCP request.
 
-Drive tool invokes log `enterprise.tool.ok`, `enterprise.tool.denied`, and `enterprise.tool.error` at info. Gateway writes log `gateway.operation.enqueued` / `approved` / `rejected` / `executing` / `succeeded` / `failed`. There is still no `AuditLog` table.
+Drive tool invokes append `enterprise.tool.ok`, `enterprise.tool.denied`, and `enterprise.tool.error` (and may still `console.info` as an ops breadcrumb). Gateway writes append `gateway.operation.enqueued` / `approved` / `rejected` / `executing` / `succeeded` / `failed`. Evidence is the `audit_log` table — append-only, hash-chain v2 — browsed at Control Plane `/control-plane/audit`.
 
 ## Phase E — Controlled write + approval
 
@@ -136,6 +136,32 @@ Complete Phase C steps 1–6 first, then:
 1. Complete Phase C live OAuth so the same Clerk user has a Drive grant with write-capable scopes (`drive.file` or full Drive).
 2. Repeat steps 7–13. After approval, the folder exists in the Google account; a retry with the same `idempotencyKey` must not create a second folder.
 3. Record `codex --version`, `claude --version`, and Clerk instance type (dev/prod) in the PR.
+
+## Phase F — Core MVP acceptance (stub is the gate)
+
+Same URL as Phase A/C/E: `/api/mcp/{tenantSlug}`. No dispatcher, queue, or in-app chat. Set `GOOGLE_DRIVE_API_STUB=true`. After `prisma migrate reset` + seed the Drive assistant is **active**, published, write-bound (`accessMode: write`, `selected_write` scopes). Live Google OAuth is optional, not a closer.
+
+Complete Phase C steps 1–6 and Phase E steps 7–13 first, then prove the audit trail:
+
+| Step | Action | Expect |
+|---|---|---|
+| 1 | OAuth connect; `platform.whoami` | `tenantSlug` matches URL; `audit_log` has `mcp.auth.ok` |
+| 2 | `platform.agents.list` | Contains **Drive assistant**, `status: active`, `currentDefinitionId` set |
+| 3 | `platform.agent.get_definition` | Snapshot lists search + read_file + create_folder and a `google_drive` connector with `accessMode: write` |
+| 4 | `google_drive_search` `{ definitionId, nameContains: "Platform" }` | `files[]`; `enterprise.tool.ok` |
+| 5 | `google_drive_read_file` `{ definitionId, fileId }` | text/warnings; **no** token in payload; `enterprise.tool.ok` |
+| 6 | `google_drive_create_folder` `{ definitionId, name, idempotencyKey }` | `{ operationId, status: "awaiting_approval" }`; **no** folder yet; `gateway.operation.enqueued` |
+| 7 | Control Plane `/operations`: approve (same admin user OK) | operation `succeeded`; stub file id in result; `gateway.operation.approved` + `executing` + `succeeded` |
+| 8 | Repeat step 6 with **same** `idempotencyKey` | same `operationId`, already `succeeded`; **no** second folder; **no** second enqueue event |
+| 9 | New key; reject in Control Plane | `rejected`; no Drive side effect; `gateway.operation.rejected` |
+| 10 | Control Plane `/audit` | Steps 1–9 visible, tenant-scoped, no tokens in metadata |
+| 11 | **Lánc ellenőrzése** | `verifyChain` ok for this tenant |
+| 12 | Negative: wrong tenant / non-member | HTTP 403; `mcp.auth.deny` (not for missing Bearer 401) |
+| 13 | Negative: operator with only `view` | MCP `isError`, `agent_access_denied`, `enterprise.tool.denied` |
+
+JSONL download on `/audit` is tenant-scoped (same rows as the table). Unauthenticated 401s must **not** appear.
+
+Record `codex --version`, `claude --version`, and Clerk instance type (dev/prod) on the PR.
 
 ## Import notes
 

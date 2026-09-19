@@ -5,6 +5,7 @@ import { PostgresConnectorRepository } from './connector-repository'
 import { PostgresConnectorDraftRepository } from './connector-draft-repository'
 import { PostgresConnectorTemplateRepository } from './connector-template-repository'
 import { PostgresPlatformSettingsRepository } from './platform-settings-repository'
+import { PostgresAuditRepository } from './audit-repository'
 import { PostgresGatewayOperationRepository } from './gateway-operation-repository'
 import { PostgresResourceGrantRepository } from './resource-grant-repository'
 import { PostgresSkillRepository } from './skill-repository'
@@ -36,4 +37,5 @@ export const repositories = {
   connectorTemplates: new PostgresConnectorTemplateRepository(),
   platformSettings: new PostgresPlatformSettingsRepository(),
   gatewayOperations: new PostgresGatewayOperationRepository(),
+  audit: new PostgresAuditRepository(),
 }

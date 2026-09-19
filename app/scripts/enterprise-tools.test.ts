@@ -115,9 +115,18 @@ function invokeDeps(opts?: {
   accessToken?: string
   executeDriveTool?: EnterpriseToolDeps['executeDriveTool']
   resolveError?: Error
+  audit?: Array<{ action: string }>
 }): EnterpriseToolDeps {
+  const audit = opts?.audit
   return {
     ...authorizeDeps(opts),
+    audit: audit
+      ? {
+          async append(data) {
+            audit.push({ action: data.action })
+          },
+        }
+      : undefined,
     async loadDefinition() {
       return opts && 'definition' in opts ? (opts.definition ?? null) : definition()
     },
@@ -422,13 +431,16 @@ async function main() {
   })
 
   await check('view grant cannot invoke tools', async () => {
-    const result = await invokeEnterpriseTool(invokeDeps({ grantAccessLevel: 'view' }), {
+    const audit: Array<{ action: string }> = []
+    const result = await invokeEnterpriseTool(invokeDeps({ grantAccessLevel: 'view', audit }), {
       principal: principal(),
       toolName: GOOGLE_DRIVE_SEARCH_TOOL,
       args: { definitionId: DEFINITION_ID },
     })
     assert.equal(result.isError, true)
     assert.equal(parsePayload(result).code, 'agent_access_denied')
+    assert.ok(audit.some((row) => row.action === 'enterprise.tool.denied'))
+    assert.equal(audit.some((row) => row.action === 'enterprise.tool.ok'), false)
   })
 
   await check('mismatched agentId is definition_mismatch', async () => {

@@ -7,14 +7,14 @@
  * Futtatás: npx tsx scripts/adaptive-poll.test.ts
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import test from 'node:test'
 
 const root = resolve(import.meta.dirname, '..')
 const readSrc = (rel: string) => readFileSync(resolve(root, rel), 'utf8')
 
-const POLLERS = [
+const DELETED_POLLERS = [
   'src/components/agents/agent-rail.tsx',
   'src/components/agents/use-agent-chat-turn-liveness.ts',
   'src/components/active-runs/active-runs-panel.tsx',
@@ -43,27 +43,8 @@ test('a következő poll csak az előző befejezése után ütemeződik', () => 
   assert.match(src, /finally\s*\{[\s\S]*setTimeout\(tick, delayRef\.current\)/)
 })
 
-for (const file of POLLERS) {
-  test(`${file}: a közös adaptív hookon pollozik, nincs nyers setInterval`, () => {
-    const src = readSrc(file)
-    assert.match(src, /useAdaptivePoll\(/, 'a közös hookot használja')
-    assert.doesNotMatch(src, /setInterval\(/, 'nincs kézi poll-ciklus')
-    // Az élő ütem legfeljebb 5 mp; a korábbi 2,5 mp-es active-runs poll megszűnt.
-    assert.doesNotMatch(src, /activeMs:\s*2500\b/)
-  })
-}
-
-test('active-runs panel: nyugalmi ütem lassabb, mint az élő', () => {
-  const src = readSrc('src/components/active-runs/active-runs-panel.tsx')
-  const active = Number(/POLL_ACTIVE_MS\s*=\s*(\d+)/.exec(src)?.[1])
-  const idle = Number(/POLL_IDLE_MS\s*=\s*(\d+)/.exec(src)?.[1])
-  assert.ok(Number.isFinite(active) && Number.isFinite(idle), 'mindkét időköz definiált')
-  assert.ok(idle > active, 'a nyugalmi ütem ritkább')
-})
-
-test('chat liveness poll: 5 mp backstop, Next.js-inlinelhető NEXT_PUBLIC env', () => {
-  const src = readSrc('src/components/agents/use-agent-chat-turn-liveness.ts')
-  assert.match(src, /resolveLivenessPollMs\(/)
-  assert.match(src, /process\.env\.NEXT_PUBLIC_AGENT_TURN_LIVENESS_POLL_MS/)
-  assert.doesNotMatch(src, /activeMs:\s*2_000/)
+test('legacy rail/active-runs pollerek nincsenek a live app-ban', () => {
+  for (const file of DELETED_POLLERS) {
+    assert.equal(existsSync(resolve(root, file)), false, file)
+  }
 })

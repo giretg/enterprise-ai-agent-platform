@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { services } from '@/domain/gateway-services'
 import { getAuthContext, ACTIVE_TENANT_COOKIE } from '@/auth/context'
 import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
-import { decideSwitch, TENANT_AUDIT_ACTIONS } from '@/lib/tenant-policy'
+import { decideSwitch } from '@/lib/tenant-policy'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
 
@@ -51,7 +51,7 @@ export async function switchTenant(input: { tenantId: string }) {
     if (decision.mode === 'assume') {
       await services.tenants.recordAssumeTenant({ superadminId: ctx.user.id, tenantId })
     } else {
-
+      await services.tenants.recordSwitchTenant({ actorId: ctx.user.id, tenantId })
     }
 
     revalidatePath('/', 'layout')
@@ -249,7 +249,21 @@ export async function listPlatformMembers() {
 export async function getPlatformAuditTrail(input?: { limit?: number }) {
   try {
     await requirePlatformRole('platform_auditor')
-    return ok([])
+    const entries = await services.audit.findMany({
+      action: [...TENANT_LIFECYCLE_AUDIT_ACTIONS],
+      limit: input?.limit ?? 100,
+    })
+    return ok(
+      entries.map((entry) => ({
+        id: entry.id,
+        action: entry.action,
+        actorId: entry.actorId,
+        targetType: entry.targetType,
+        targetId: entry.targetId,
+        policyDecision: entry.policyDecision,
+        createdAt: entry.createdAt.toISOString(),
+      })),
+    )
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load platform audit trail')
   }

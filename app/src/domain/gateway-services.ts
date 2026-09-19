@@ -8,6 +8,7 @@
  */
 import { repositories } from '@/repositories/postgres'
 import { AgentDefinitionService } from '@/domain/agent-definition'
+import { AuditChainService } from '@/domain/audit/audit-chain-service'
 import { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import {
   authorizeToolCall,
@@ -44,12 +45,14 @@ const iamService = new IamService(
   repositories.rolePermissions,
   connectorGrantService,
   repositories.tenantMemberships,
+  repositories.audit,
 )
 
 const tenantService = new TenantService(
   repositories.tenants,
   repositories.tenantMemberships,
   repositories.platformMemberships,
+  repositories.audit,
 )
 
 const skillService = new SkillService(repositories.skills, repositories.agents, {
@@ -79,12 +82,14 @@ const provisioningService = new ProvisioningService({
         : await platformSettingsService.getGoogleOAuthConfig()
     return { configured: Boolean(cfg) }
   },
+  audit: repositories.audit,
 })
 
 const agentDefinitionService = new AgentDefinitionService({
   agents: repositories.agents,
   versions: repositories.agentDefinitions,
   skills: repositories.skills,
+  audit: repositories.audit,
 })
 
 function isStubDriveCredential(tokenRef: string): boolean {
@@ -139,6 +144,7 @@ const gatewayOperationDeps: GatewayOperationServiceDeps = {
   ...sharedToolLookups,
   operations: repositories.gatewayOperations,
   resolveRequester,
+  audit: repositories.audit,
   async recordCreatedDriveFiles({ grantId, files }) {
     for (const file of files) {
       await recordGoogleDriveAppCreatedFile({ grantId, ...file })
@@ -172,6 +178,7 @@ async function listPendingOperationRows(input: {
 
 const enterpriseToolDeps: EnterpriseToolDeps = {
   ...sharedToolLookups,
+  audit: repositories.audit,
   enqueueWrite: async (input) =>
     enqueueResultToMcp(await enqueueGatewayOperation(gatewayOperationDeps, input)),
 }
@@ -184,6 +191,8 @@ export const services = {
   agentDefinitions: agentDefinitionService,
   provisioning: provisioningService,
   connectorGrants: connectorGrantService,
+  audit: repositories.audit,
+  auditChain: new AuditChainService(repositories.audit),
   enterpriseTools: {
     authorizeToolCall: (input: Parameters<typeof authorizeToolCall>[1]) =>
       authorizeToolCall(enterpriseToolDeps, input),

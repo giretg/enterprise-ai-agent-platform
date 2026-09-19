@@ -122,14 +122,21 @@ function deps(opts?: {
   recordCreatedDriveFiles?: GatewayOperationServiceDeps['recordCreatedDriveFiles']
   driveCalls?: unknown[]
   executedTools?: string[]
-}): { deps: GatewayOperationServiceDeps; store: MemoryGatewayOperationStore } {
+}): { deps: GatewayOperationServiceDeps; store: MemoryGatewayOperationStore; audit: Array<{ action: string }> } {
   const store = new MemoryGatewayOperationStore()
+  const audit: Array<{ action: string }> = []
   const driveCalls = opts?.driveCalls ?? []
   const executedTools = opts?.executedTools ?? []
   return {
     store,
+    audit,
     deps: {
       operations: store,
+      audit: {
+        async append(data) {
+          audit.push({ action: data.action })
+        },
+      },
       async loadDefinition() {
         return definition()
       },
@@ -220,6 +227,7 @@ async function main() {
     if (!first.ok || !second.ok) return
     assert.equal(second.view.operationId, first.view.operationId)
     assert.equal(second.created, false)
+    assert.equal(wired.audit.filter((row) => row.action === 'gateway.operation.enqueued').length, 1)
   })
 
   await check('self-approval by admin executes Drive once and stores resultJson', async () => {
@@ -253,6 +261,9 @@ async function main() {
       assert.ok(logs.events.some((row) => row.event === 'gateway.operation.approved'))
       assert.ok(logs.events.some((row) => row.event === 'gateway.operation.executing'))
       assert.ok(logs.events.some((row) => row.event === 'gateway.operation.succeeded'))
+      assert.ok(wired.audit.some((row) => row.action === 'gateway.operation.approved'))
+      assert.ok(wired.audit.some((row) => row.action === 'gateway.operation.executing'))
+      assert.ok(wired.audit.some((row) => row.action === 'gateway.operation.succeeded'))
     } finally {
       logs.restore()
     }
@@ -321,6 +332,8 @@ async function main() {
       assert.equal(rejected.view.approval?.decision, 'rejected')
       assert.equal(driveCalls.length, 0)
       assert.ok(logs.events.some((row) => row.event === 'gateway.operation.rejected'))
+      assert.ok(wired.audit.some((row) => row.action === 'gateway.operation.rejected'))
+      assert.equal(wired.audit.filter((row) => row.action === 'gateway.operation.succeeded').length, 0)
     } finally {
       logs.restore()
     }

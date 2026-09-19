@@ -184,6 +184,11 @@ function runtimeDeps(overrides: {
   }
 } {
   const audit: Array<Record<string, unknown>> = []
+  const auditSink = {
+    async append(data: { action: string } & Record<string, unknown>) {
+      audit.push({ action: data.action, ...data })
+    },
+  }
   const seen: {
     loadDefinitionTenantId?: string
     findActiveGrantTenantId?: string
@@ -226,6 +231,7 @@ function runtimeDeps(overrides: {
       return 'stub-drive-token'
     },
     operations,
+    audit: auditSink,
     async resolveRequester() {
       return { role, assumed: false }
     },
@@ -250,6 +256,7 @@ function runtimeDeps(overrides: {
     },
     enqueueWrite: async (input) =>
       enqueueResultToMcp(await enqueueGatewayOperation(gatewayDeps, input)),
+    audit: auditSink,
   }
   return {
     audit,
@@ -282,6 +289,7 @@ function runtimeDeps(overrides: {
           return overrides.platform ?? []
         },
       },
+      audit: auditSink,
       async listPublishedAgents({ role: principalRole }) {
         if (isPrivilegedAgentReader(principalRole)) return [PUBLISHED_LIST_ITEM]
         return grantedAgentIds.has(AGENT_ID) ? [PUBLISHED_LIST_ITEM] : []
@@ -367,8 +375,8 @@ async function main() {
     assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), false)
   })
 
-  await check('invalid token → 401', async () => {
-    const { deps } = runtimeDeps()
+  await check('invalid token → 401, not audited (flood)', async () => {
+    const { deps, audit } = runtimeDeps()
     const res = await post(
       'acme',
       { jsonrpc: '2.0', id: 1, method: 'ping' },
@@ -376,6 +384,7 @@ async function main() {
       deps,
     )
     assert.equal(res.status, 401)
+    assert.equal(audit.some((row) => row.action === 'mcp.auth.deny'), false)
   })
 
   await check('unknown slug after auth → 403 tenant_unavailable', async () => {
@@ -389,6 +398,7 @@ async function main() {
     assert.equal(res.status, 403)
     const body = (await readJson(res)) as { error: { code: string } }
     assert.equal(body.error.code, 'tenant_unavailable')
+    assert.ok(audit.some((row) => row.action === 'mcp.auth.deny'))
   })
 
   await check('inactive user → 403 user_inactive', async () => {
@@ -402,6 +412,7 @@ async function main() {
     assert.equal(res.status, 403)
     const body = (await readJson(res)) as { error: { code: string } }
     assert.equal(body.error.code, 'user_inactive')
+    assert.ok(audit.some((row) => row.action === 'mcp.auth.deny'))
   })
 
   await check('inactive tenant → 403 tenant_not_active', async () => {
@@ -415,6 +426,7 @@ async function main() {
     assert.equal(res.status, 403)
     const body = (await readJson(res)) as { error: { code: string } }
     assert.equal(body.error.code, 'tenant_not_active')
+    assert.ok(audit.some((row) => row.action === 'mcp.auth.deny'))
   })
 
   await check('non-member → 403 not_a_member', async () => {
@@ -428,6 +440,7 @@ async function main() {
     assert.equal(res.status, 403)
     const body = (await readJson(res)) as { error: { code: string } }
     assert.equal(body.error.code, 'not_a_member')
+    assert.ok(audit.some((row) => row.action === 'mcp.auth.deny'))
   })
 
   await check('Clerk not configured → 503 auth_not_configured', async () => {
@@ -500,6 +513,8 @@ async function main() {
       role: 'operator',
       assumed: false,
     })
+    assert.equal(audit.filter((row) => row.action === 'mcp.auth.ok').length, 0)
+    assert.ok(audit.some((row) => row.action === 'mcp.tools.call' && row.inputRef === MCP_WHOAMI_TOOL))
   })
 
   await check('unknown tool → HTTP 200 tool_not_allowed isError', async () => {
@@ -523,6 +538,7 @@ async function main() {
     assert.equal(body.result?.isError, true)
     const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
     assert.equal(payload.code, 'tool_not_allowed')
+    assert.ok(audit.some((row) => row.action === 'mcp.tools.call.deny'))
   })
 
   await check('platform.agents.list ignores extra tenant keys', async () => {
@@ -682,7 +698,7 @@ async function main() {
   })
 
   await check('google_drive_search happy path with stub client; extra JSON cannot override tenant', async () => {
-    const { deps, seen } = runtimeDeps({ role: 'admin' })
+    const { deps, seen, audit } = runtimeDeps({ role: 'admin' })
     await initialize(deps)
     const res = await post(
       'acme',
@@ -718,6 +734,7 @@ async function main() {
     assert.equal(seen.findActiveGrantUserId, USER_ID)
     assert.equal(seen.resolveTenantId, TENANT_ID)
     assert.equal(seen.resolveActingUserId, USER_ID)
+    assert.ok(audit.some((row) => row.action === 'enterprise.tool.ok'))
   })
 
   await check('google_drive_read_file happy path with stub client', async () => {
@@ -826,7 +843,7 @@ async function main() {
   })
 
   await check('google_drive_create_folder enqueues awaiting_approval without writing', async () => {
-    const { deps } = runtimeDeps({ role: 'admin' })
+    const { deps, audit } = runtimeDeps({ role: 'admin' })
     await initialize(deps)
     const res = await post(
       'acme',
@@ -907,6 +924,7 @@ async function main() {
     ) as { operationId?: string; status?: string }
     assert.equal(replayed.operationId, payload.operationId)
     assert.equal(replayed.status, 'awaiting_approval')
+    assert.equal(audit.filter((row) => row.action === 'gateway.operation.enqueued').length, 1)
   })
 
   await check('protected resource metadata resource is {origin}/api/mcp at every well-known path', async () => {

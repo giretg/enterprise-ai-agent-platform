@@ -17,6 +17,8 @@ import type {
   AgentRepository,
   SkillRepository,
 } from '@/repositories/interfaces'
+import type { AuditSink } from '@/lib/audit/types'
+import { writeAudit } from '@/lib/audit/types'
 
 export type AgentDefinitionSnapshot = {
   name: string
@@ -43,12 +45,14 @@ export type AgentDefinitionDeps = {
     | 'setCurrentDefinitionVersionId'
     | 'findCapabilitiesForAgent'
     | 'findConnectorsForAgent'
+    | 'activate'
   >
   versions: Pick<
     AgentDefinitionRepository,
     'create' | 'findById' | 'findByAgentAndVersion' | 'findMaxVersion'
   >
   skills: Pick<SkillRepository, 'listEnabledForAgent'>
+  audit?: AuditSink
 }
 
 function sortKeys(value: unknown): unknown {
@@ -137,7 +141,46 @@ export class AgentDefinitionService {
       publishedById: input.publishedById,
     })
     const updated = await this.deps.agents.setCurrentDefinitionVersionId(agent.id, row.id)
+    await writeAudit(this.deps.audit, {
+      actorType: 'human',
+      actorId: input.publishedById,
+      agentVersion: version,
+      action: 'agent.version',
+      targetType: 'agent',
+      targetId: agent.id,
+      modelUsed: null,
+      inputRef: row.id,
+      outputRef: String(version),
+      policyDecision: 'published',
+      metadata: { definitionId: row.id, version },
+      tenantId: input.tenantId,
+    })
     return toDefinition(updated, row)
+  }
+
+  async activateAgent(input: {
+    agentId: string
+    tenantId: string
+    actorId: string
+  }): Promise<Agent> {
+    const agent = await this.deps.agents.findById(input.agentId, input.tenantId)
+    if (!agent) throw new Error('Agent not found')
+    const updated = await this.deps.agents.activate(agent.id)
+    await writeAudit(this.deps.audit, {
+      actorType: 'human',
+      actorId: input.actorId,
+      agentVersion: null,
+      action: 'agent.activated',
+      targetType: 'agent',
+      targetId: agent.id,
+      modelUsed: null,
+      inputRef: agent.status,
+      outputRef: 'active',
+      policyDecision: 'activated',
+      metadata: { definitionId: updated.currentDefinitionVersionId },
+      tenantId: input.tenantId,
+    })
+    return updated
   }
 
   async loadAgentDefinition(input: {

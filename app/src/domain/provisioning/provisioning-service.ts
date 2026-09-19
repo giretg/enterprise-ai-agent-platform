@@ -123,6 +123,7 @@ export interface ProvisioningDeps {
    * kapcsolat a kézzel bemásolt (vagy hiányzó) mezőjelöléssel indulna.
    */
   syncPrivacyCatalog?: (connectorId: string, actorId: string | null) => Promise<void>
+  audit?: import('@/lib/audit/types').AuditSink
 }
 
 function sha256Hex(content: string): string {
@@ -276,7 +277,7 @@ export class ProvisioningService {
     input: { draftId: string; decision: 'approve' | 'changes_requested' | 'reject'; note?: string },
     actor: ProvisioningActor,
   ): Promise<{ reviewStatus: string }> {
-    const user = this.requireHumanAdmin(actor, 'reviewConnectorDraft')
+    const user = await this.requireHumanAdmin(actor, 'reviewConnectorDraft')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
 
     const validation = draft.validationResult as ValidationResult | null
@@ -316,7 +317,7 @@ export class ProvisioningService {
     input: { draftId: string },
     actor: ProvisioningActor,
   ): Promise<{ ok: boolean; statusCode?: number; detail?: string }> {
-    this.requireHumanAdmin(actor, 'testConnectorDraft')
+    await this.requireHumanAdmin(actor, 'testConnectorDraft')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
     // A draftból jövő alias javaslat, tehát akár LLM-/dokumentum-influenced adat is
     // lehet. A sandbox sem oldhat fel belőle titkot, kivéve az ugyanilyen tenant-scope
@@ -377,7 +378,7 @@ export class ProvisioningService {
     },
     actor: ProvisioningActor,
   ): Promise<{ ok: boolean; statusCode?: number; detail?: string }> {
-    this.requireHumanAdmin(actor, 'testConnectorDraftWithCredentials')
+    await this.requireHumanAdmin(actor, 'testConnectorDraftWithCredentials')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
 
     if (draft.connector.type as string === 'gmail' || draft.connector.type === 'google_drive') {
@@ -434,7 +435,7 @@ export class ProvisioningService {
     },
     actor: ProvisioningActor,
   ): Promise<{ connectorId: string; lifecycleState: 'active' }> {
-    const user = this.requireHumanAdmin(actor, 'activateConnector')
+    const user = await this.requireHumanAdmin(actor, 'activateConnector')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
     const isGmail = draft.connector.type as string === 'gmail'
     const isGoogleDrive = draft.connector.type === 'google_drive'
@@ -734,7 +735,7 @@ export class ProvisioningService {
     input: { connectorId: string; agentId: string; accessMode: ConnectorAccessMode; apiKey?: string },
     actor: ProvisioningActor,
   ): Promise<{ agentId: string; connectorId: string }> {
-    this.requireHumanAdmin(actor, 'assignConnectorToAgent')
+    await this.requireHumanAdmin(actor, 'assignConnectorToAgent')
 
     await this.assertAgentInActorTenant(input.agentId, actor)
     const connector = await this.loadConnectorForTenant(input.connectorId, actor)
@@ -781,7 +782,7 @@ export class ProvisioningService {
     input: { connectorId: string; agentId: string; reason?: string },
     actor: ProvisioningActor,
   ): Promise<{ agentId: string; connectorId: string; removed: boolean }> {
-    this.requireHumanAdmin(actor, 'unassignConnectorFromAgent')
+    await this.requireHumanAdmin(actor, 'unassignConnectorFromAgent')
 
     // Defense-in-depth tenant-határ: a connectornak ÉS a cél-agentnek is az aktor
     // tenantjához kell tartoznia — különben egy tenant admin idegen tenant agentjéről
@@ -818,7 +819,7 @@ export class ProvisioningService {
     input: { draftId: string; generatedConfig: unknown },
     actor: ProvisioningActor,
   ): Promise<{ draftId: string; lifecycleState: 'draft'; config: ConnectorConfig }> {
-    this.requireHumanAdmin(actor, 'updateConnectorDraftConfig')
+    await this.requireHumanAdmin(actor, 'updateConnectorDraftConfig')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
 
     if (draft.connector.lifecycleState !== 'draft' && draft.connector.lifecycleState !== 'validated') {
@@ -891,7 +892,7 @@ export class ProvisioningService {
     input: { draftId: string },
     actor: ProvisioningActor,
   ): Promise<{ connectorId: string; lifecycleState: 'draft' }> {
-    this.requireHumanAdmin(actor, 'reopenConnector')
+    await this.requireHumanAdmin(actor, 'reopenConnector')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
 
     if (draft.connector.lifecycleState !== 'active') {
@@ -929,7 +930,7 @@ export class ProvisioningService {
     input: { draftId: string; criticality?: Criticality; approverId?: string; reason?: string },
     actor: ProvisioningActor,
   ): Promise<{ connectorId: string; lifecycleState: 'archived'; affectedAgentIds: string[] }> {
-    const user = this.requireHumanAdmin(actor, 'decommissionConnector')
+    const user = await this.requireHumanAdmin(actor, 'decommissionConnector')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
 
     if (draft.connector.lifecycleState !== 'active') {
@@ -967,7 +968,7 @@ export class ProvisioningService {
     input: { connectorId: string; criticality?: Criticality; approverId?: string; reason?: string },
     actor: ProvisioningActor,
   ): Promise<{ connectorId: string; lifecycleState: 'archived'; affectedAgentIds: string[] }> {
-    const user = this.requireHumanAdmin(actor, 'decommissionActiveConnector')
+    const user = await this.requireHumanAdmin(actor, 'decommissionActiveConnector')
     const connector = await this.loadConnectorForTenant(input.connectorId, actor)
 
     if (
@@ -1045,7 +1046,7 @@ export class ProvisioningService {
     actor: ProvisioningActor,
   ): Promise<void> {
     if (!this.deps.verifyDualControlApprover) {
-      void this.appendAudit(actor, 'provisioning.access_denied', null, {
+      await this.appendAudit(actor, 'provisioning.access_denied', null, {
         attempted_action: 'dual_control_approver_verify',
         reason: 'verifier_not_configured',
         policyDecision: 'denied',
@@ -1060,7 +1061,7 @@ export class ProvisioningService {
       tenantId: actor.tenantId,
     })
     if (!authorized) {
-      void this.appendAudit(actor, 'provisioning.access_denied', null, {
+      await this.appendAudit(actor, 'provisioning.access_denied', null, {
         attempted_action: 'dual_control_approver_verify',
         reason: 'approver_not_active_admin',
         policyDecision: 'denied',
@@ -1084,7 +1085,7 @@ export class ProvisioningService {
     if (!this.deps.resolveAgentTenantId) return
     const resolved = await this.deps.resolveAgentTenantId(agentId)
     if (!resolved.found || resolved.tenantId !== actor.tenantId) {
-      void this.appendAudit(actor, 'provisioning.access_denied', null, {
+      await this.appendAudit(actor, 'provisioning.access_denied', null, {
         attempted_action: 'bind_agent',
         agent_id: agentId,
         policyDecision: 'denied',
@@ -1151,7 +1152,7 @@ export class ProvisioningService {
     input: { draftId: string; reason?: string },
     actor: ProvisioningActor,
   ): Promise<{ draftId: string }> {
-    this.requireHumanAdmin(actor, 'deleteConnectorDraft')
+    await this.requireHumanAdmin(actor, 'deleteConnectorDraft')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
 
     if (draft.connector.lifecycleState !== 'draft' && draft.connector.lifecycleState !== 'validated') {
@@ -1234,13 +1235,13 @@ export class ProvisioningService {
    * CSAK emberi admin hívhatja. Agent-aktor → PROVISIONING_FORBIDDEN +
    * provisioning.access_denied audit (PN2, PN3).
    */
-  private requireHumanAdmin(
+  private async requireHumanAdmin(
     actor: ProvisioningActor,
     attemptedAction: string,
-  ): { userId: string } {
+  ): Promise<{ userId: string }> {
     if (actor.type !== 'user' || !PRIVILEGED_HUMAN_ROLES.has(actor.role)) {
       // best-effort audit; a hibadobás nem függ tőle
-      void this.appendAudit(actor, 'provisioning.access_denied', null, {
+      await this.appendAudit(actor, 'provisioning.access_denied', null, {
         attempted_action: attemptedAction,
         policyDecision: 'denied',
       })
@@ -1269,7 +1270,7 @@ export class ProvisioningService {
       ? await this.deps.resolveAgentCapabilities(actor.agentId)
       : []
     if (!granted.includes(capability)) {
-      void this.appendAudit(actor, 'provisioning.access_denied', null, {
+      await this.appendAudit(actor, 'provisioning.access_denied', null, {
         attempted_action: capability,
         policyDecision: 'denied',
       })
@@ -1287,7 +1288,7 @@ export class ProvisioningService {
       (connector.tenantId === actor.tenantId ||
         (connector.tenantId === null && actor.tenantId !== null))
     if (!allowed) {
-      void this.appendAudit(actor, 'provisioning.access_denied', null, {
+      await this.appendAudit(actor, 'provisioning.access_denied', null, {
         attempted_action: 'access_connector',
         connector_id: connectorId,
         policyDecision: 'denied',
@@ -1304,7 +1305,7 @@ export class ProvisioningService {
     const draft = await this.deps.drafts.findById(draftId)
     if (!draft || draft.tenantId !== actor.tenantId) {
       // Tenant-izoláció (§7.5, PN9): nem szivárogtatjuk a létezést.
-      void this.appendAudit(actor, 'provisioning.access_denied', null, {
+      await this.appendAudit(actor, 'provisioning.access_denied', null, {
         attempted_action: 'access_draft',
         draft_id: draftId,
         policyDecision: 'denied',
@@ -1318,12 +1319,27 @@ export class ProvisioningService {
   }
 
   private async appendAudit(
-    _actor: ProvisioningActor,
-    _action: string,
-    _targetId: string | null,
-    _metadata: Record<string, unknown> & { policyDecision: string },
+    actor: ProvisioningActor,
+    action: string,
+    targetId: string | null,
+    metadata: Record<string, unknown> & { policyDecision: string },
   ): Promise<void> {
-    return
+    const { policyDecision, ...meta } = metadata
+    if (!this.deps.audit) return
+    await this.deps.audit.append({
+      actorType: actor.type === 'user' ? 'human' : 'agent',
+      actorId: actor.type === 'user' ? actor.userId : actor.agentId,
+      agentVersion: actor.type === 'agent' ? actor.agentVersion ?? null : null,
+      action,
+      targetType: 'connector',
+      targetId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision,
+      metadata: { tenant_id: actor.tenantId, ...meta } as unknown as Prisma.JsonValue,
+      tenantId: actor.tenantId,
+    })
   }
 }
 

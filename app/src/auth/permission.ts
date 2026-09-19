@@ -1,5 +1,6 @@
 import { getCurrentUser } from './index'
 import { repositories } from '@/repositories/postgres'
+import { writeAudit } from '@/lib/audit/types'
 import { decideAuthz, type AuthzDenyReason } from '@/lib/iam-policy'
 import type { ActiveAuthUser } from './types'
 
@@ -33,7 +34,16 @@ export async function requirePermission(permissionKey: string): Promise<ActiveAu
   const decision = decideAuthz(user, entry?.minRole ?? null)
 
   if (!decision.allow) {
-
+    await writeAudit(repositories.audit, {
+      actorType: 'human',
+      actorId: user.id,
+      action: 'user.authz.deny',
+      targetType: 'permission',
+      targetId: null,
+      policyDecision: 'denied',
+      metadata: { permissionKey, reason: decision.reason },
+      tenantId: user.tenantId,
+    })
     throw new AuthzError(decision.reason)
   }
 

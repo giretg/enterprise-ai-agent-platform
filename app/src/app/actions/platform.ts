@@ -6,7 +6,6 @@ import { getCurrentUser } from '@/auth'
 import { requireTenantPermission, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
 import { repositories } from '@/repositories/postgres'
-import { prisma } from '@/lib/db'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { fail, ok } from '@/lib/result'
 import { canReadPublishedAgent, isPrivilegedAgentReader } from '@/domain/agent-definition'
@@ -343,6 +342,20 @@ export async function createAgent(input: { name: string; roleInstruction: string
       tenantId: user.activeTenantId,
       status: 'draft',
     })
+    await services.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'agent.create',
+      targetType: 'agent',
+      targetId: agent.id,
+      modelUsed: null,
+      inputRef: parsed.name,
+      outputRef: 'draft',
+      policyDecision: 'created',
+      metadata: { name: parsed.name },
+      tenantId: user.activeTenantId,
+    })
     return ok({ agent })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create agent')
@@ -451,9 +464,14 @@ export async function activateAgent(input: { agentId: string }) {
   try {
     const user = await requireTenantRole('admin')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    if (!user.activeTenantId) return fail('Tenant required')
     const agent = await repositories.agents.findById(agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
-    const result = await repositories.agents.activate(agentId)
+    const result = await services.agentDefinitions.activateAgent({
+      agentId,
+      tenantId: user.activeTenantId,
+      actorId: user.user.id,
+    })
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to activate agent')

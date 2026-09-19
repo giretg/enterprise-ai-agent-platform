@@ -18,6 +18,7 @@ const TARGETS = [
   'src/domain/agent-definition',
   'src/domain/enterprise-tools',
   'src/domain/gateway-operation',
+  'src/domain/audit',
 ]
 
 const FORBIDDEN = [
@@ -29,6 +30,7 @@ const FORBIDDEN = [
   /from ['"]@\/domain\/conversation/,
   /from ['"]@\/domain\/channel/,
   /from ['"]@\/harness\//,
+  /from ['"][^'"]*legacy\//,
   /AgentChatRuntime/,
   /ChatTurnLauncher/,
   /ModelGateway/,
