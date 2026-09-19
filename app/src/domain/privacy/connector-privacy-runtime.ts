@@ -11,7 +11,7 @@ export function connectorRowHasPrivacyMetadata(row: {
   config: unknown
   capabilitySet?: unknown | null
 }): boolean {
-  const pinned = pinnedRuntimeConfig(row.connectorMode, row.config)
+  const pinned = pinnedRuntimeConfig(row.connectorMode, row.config, row.capabilitySet)
   if (!pinned) return false
   return connectorHasPrivacyMetadata(effectiveConnectorRuntimeConfig(pinned))
 }

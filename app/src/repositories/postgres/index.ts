@@ -4,6 +4,7 @@ import { PostgresConnectorGrantRepository } from './connector-grant-repository'
 import { PostgresConnectorRepository } from './connector-repository'
 import { PostgresConnectorDraftRepository } from './connector-draft-repository'
 import { PostgresConnectorTemplateRepository } from './connector-template-repository'
+import { PostgresSelfUpdatingConnectorRepository } from './self-updating-connector-repository'
 import { PostgresPlatformSettingsRepository } from './platform-settings-repository'
 import { PostgresAuditRepository } from './audit-repository'
 import { PostgresGatewayOperationRepository } from './gateway-operation-repository'
@@ -35,6 +36,7 @@ export const repositories = {
   connectors: new PostgresConnectorRepository(),
   connectorDrafts: new PostgresConnectorDraftRepository(),
   connectorTemplates: new PostgresConnectorTemplateRepository(),
+  selfUpdatingConnectors: new PostgresSelfUpdatingConnectorRepository(),
   platformSettings: new PostgresPlatformSettingsRepository(),
   gatewayOperations: new PostgresGatewayOperationRepository(),
   audit: new PostgresAuditRepository(),

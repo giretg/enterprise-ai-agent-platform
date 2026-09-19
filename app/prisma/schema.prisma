@@ -112,6 +112,23 @@ enum ConnectorLifecycleState {
   @@map("connector_lifecycle_state")
 }
 
+enum ConnectorMode {
+  fixed
+  self_updating
+
+  @@map("connector_mode")
+}
+
+enum ConnectorSpecVersionStatus {
+  proposed
+  approved
+  superseded
+  rejected
+  rolled_back
+
+  @@map("connector_spec_version_status")
+}
+
 enum ConnectorDraftSourceType {
   api_doc
   openapi
@@ -455,11 +472,17 @@ model Connector {
   tenantId       String                  @map("tenant_id") @db.Uuid
   createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
-  tenant          Tenant           @relation(fields: [tenantId], references: [id])
-  agentConnectors AgentConnector[]
-  grants          ConnectorGrant[]
-  draft           ConnectorDraft?
+  connectorMode       ConnectorMode          @default(fixed) @map("connector_mode")
+  activeSpecVersionId String?                @map("active_spec_version_id") @db.Uuid
+  activeSpecVersion   ConnectorSpecVersion?  @relation("ActiveSpecVersion", fields: [activeSpecVersionId], references: [id], onDelete: SetNull)
+
+  tenant            Tenant                 @relation(fields: [tenantId], references: [id])
+  agentConnectors   AgentConnector[]
+  grants            ConnectorGrant[]
+  draft             ConnectorDraft?
   gatewayOperations GatewayOperation[]
+  specSource        ConnectorSpecSource?
+  specVersions      ConnectorSpecVersion[] @relation("SpecVersions")
 
   @@unique([tenantId, type, name])
   @@map("connectors")
@@ -507,6 +530,50 @@ model ConnectorDraft {
 
   @@unique([tenantId, connectorId])
   @@map("connector_drafts")
+}
+
+model ConnectorSpecSource {
+  id                String    @id @default(uuid()) @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  connectorId       String    @unique @map("connector_id") @db.Uuid
+  connector         Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  specUrl           String    @map("spec_url")
+  specFormat        String    @default("openapi_3") @map("spec_format")
+  urlApprovedById   String?   @map("url_approved_by") @db.Uuid
+  urlApprovedAt     DateTime? @map("url_approved_at") @db.Timestamptz
+  trustedById       String?   @map("trusted_by") @db.Uuid
+  trustedAt         DateTime? @map("trusted_at") @db.Timestamptz
+  autoApprovePolicy Json?     @map("auto_approve_policy")
+  lastSyncedAt      DateTime? @map("last_synced_at") @db.Timestamptz
+  createdById       String?   @map("created_by") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("connector_spec_sources")
+}
+
+model ConnectorSpecVersion {
+  id                String                     @id @default(uuid()) @db.Uuid
+  tenantId          String                     @map("tenant_id") @db.Uuid
+  connectorId       String                     @map("connector_id") @db.Uuid
+  connector         Connector                  @relation("SpecVersions", fields: [connectorId], references: [id], onDelete: Cascade)
+  versionNo         Int                        @map("version_no")
+  rawSnapshot       Json                       @map("raw_snapshot")
+  rawHash           String                     @map("raw_hash")
+  capabilitySet     Json                       @map("capability_set")
+  status            ConnectorSpecVersionStatus @default(proposed)
+  diffFromVersionId String?                    @map("diff_from_version_id") @db.Uuid
+  diffSummary       Json?                      @map("diff_summary")
+  fetchedAt         DateTime                   @default(now()) @map("fetched_at") @db.Timestamptz
+  approvedById      String?                    @map("approved_by") @db.Uuid
+  approvedAt        DateTime?                  @map("approved_at") @db.Timestamptz
+  createdAt         DateTime                   @default(now()) @map("created_at") @db.Timestamptz
+
+  activeForConnectors Connector[] @relation("ActiveSpecVersion")
+
+  @@unique([connectorId, versionNo])
+  @@index([connectorId, status])
+  @@map("connector_spec_versions")
 }
 
 model ConnectorGrant {
