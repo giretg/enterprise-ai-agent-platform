@@ -9,13 +9,11 @@ import {
 /**
  * Több-fájlos skill-csomag adapter (a `skill-md-adapter` egy-fájlos útjának
  * kiterjesztése). Bemenete egy kicsomagolt fájllista (ZIP vagy letöltött
- * archívum), kimenete: a `SKILL.md` nyers szövege + a megtartott Level-2
- * mellékletek + egy TÉTELES jelentés arról, mi maradt ki és miért.
+ * archívum), kimenete: a `SKILL.md` nyers szövege + a megtartott mellékletek
+ * (referencia ÉS szöveges kód) + egy TÉTELES jelentés arról, mi maradt ki.
  *
- * Alapelv (a felhasználó döntése, 2026-08-12): a futtatható kód-fájlok
- * KIMARADNAK, de nem buktatják el az egész importot — a skill használható lesz,
- * és az admin pontosan látja, mi nem jött át. Ez nem lazít a Fázis 1 kód-tiltásán:
- * a kód egyszerűen nem kerül be a rendszerbe, se tárolva, se betölthetően.
+ * A kód-fájl (scripts/*.py, …) a skill része: tároljuk, MCP-n kiszolgáljuk.
+ * Bináris / ismeretlen típus továbbra is kimarad.
  */
 
 export type SkillPackageFileKind = 'skill_md' | 'reference' | 'code' | 'unsupported'
@@ -56,20 +54,20 @@ export class SkillPackageError extends Error {
   }
 }
 
-/**
- * Futtatható kód — ezek a fájlok KIMARADNAK. A lista szándékosan bőkezű: ha egy
- * kiterjesztésről nem tudjuk biztosan, hogy adat, inkább kódnak vesszük
- * (a Fázis 1 „kétség esetén elutasít” elve fájl-szinten).
- */
+/** Szöveges kód — ezek BEJÖNNEK mellékletként (MCP skill-csomag, T2). */
 const CODE_EXTENSIONS = new Set([
-  'py', 'pyc', 'pyw', 'ipynb',
+  'py', 'pyw', 'ipynb',
   'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx',
   'sh', 'bash', 'zsh', 'fish', 'ps1', 'psm1', 'bat', 'cmd',
   'rb', 'php', 'pl', 'pm', 'lua', 'r', 'jl',
   'go', 'rs', 'java', 'kt', 'scala', 'swift', 'c', 'h', 'cpp', 'cc', 'hpp', 'cs',
   'sql', 'vbs', 'applescript', 'awk', 'sed',
-  'jar', 'exe', 'dll', 'so', 'dylib', 'wasm', 'bin',
   'makefile', 'dockerfile',
+])
+
+/** Natív bináris — ezek KIMARADNAK (a melléklet szöveg-tár). */
+const BINARY_CODE_EXTENSIONS = new Set([
+  'pyc', 'jar', 'exe', 'dll', 'so', 'dylib', 'wasm', 'bin',
 ])
 
 /** Szöveges melléklet — ezek jöhetnek be Level-2 referenciaként. */
@@ -92,6 +90,7 @@ export function classifyPackageFile(path: string): SkillPackageFileKind {
   const name = (path.split('/').pop() ?? '').toLowerCase()
   if (name === 'skill.md') return 'skill_md'
   const ext = extensionOf(path)
+  if (BINARY_CODE_EXTENSIONS.has(ext)) return 'unsupported'
   if (CODE_EXTENSIONS.has(ext)) return 'code'
   if (REFERENCE_EXTENSIONS.has(ext)) return 'reference'
   return 'unsupported'
@@ -203,10 +202,6 @@ export function buildSkillPackage(
     const size = file.bytes.byteLength
 
     if (kind === 'skill_md') continue // beágyazott al-skill: nem a mi hatókörünk
-    if (kind === 'code') {
-      skipped.push({ path: file.relPath, reason: 'code_file', bytes: size })
-      continue
-    }
     if (kind === 'unsupported') {
       skipped.push({ path: file.relPath, reason: 'unsupported_type', bytes: size })
       continue
@@ -242,7 +237,7 @@ export function buildSkillPackage(
 
 /** Közérthető indoklás a UI-nak — az admin ebből érti meg, miért maradt ki egy fájl. */
 export const SKILL_PACKAGE_SKIP_LABEL: Record<SkillPackageSkipReason, string> = {
-  code_file: 'futtatható kód — a platform nem futtat skill-kódot, ezért nem hoztuk be',
+  code_file: 'natív bináris — a skill-csomag csak szöveges kódot tárol',
   unsupported_type: 'nem szöveges melléklet-típus',
   binary_content: 'bináris tartalom',
   too_large: `nagyobb, mint a melléklet-limit (${Math.round(SKILL_ATTACHMENT_MAX_BYTES / 1024)} KB)`,

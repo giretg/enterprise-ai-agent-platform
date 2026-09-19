@@ -12,6 +12,9 @@ import type {
 import { mcpProtectedResourceMetadata } from '../src/auth/mcp-oauth-metadata'
 import { handleMcpRequest } from '../src/auth/mcp-server'
 import type { McpRuntimeDeps } from '../src/auth/mcp-server'
+import type { McpSkillPackage } from '../src/lib/skill/mcp-skill'
+import { buildMcpSkillPackage } from '../src/lib/skill/mcp-skill'
+import { hashAttachmentBytes } from '../src/lib/skill/skill-attachments'
 import {
   canReadPublishedAgent,
   isPrivilegedAgentReader,
@@ -141,6 +144,28 @@ const PUBLISHED_LIST_ITEM = {
   currentVersion: 1,
 }
 
+const SCRIPT_TEXT = 'print("ok")\n'
+const SAMPLE_SKILL = buildMcpSkillPackage({
+  skillId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+  skillVersionId: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
+  name: 'tulajdoni-lap',
+  description: 'Parse Hungarian land registry PDFs.',
+  content: {
+    instructions: ['Run scripts/parse_tulajdoni_lap.py'],
+    triggerKeywords: [],
+    parameters: [],
+  },
+  requires: [],
+  attachments: [
+    {
+      path: 'scripts/parse_tulajdoni_lap.py',
+      text: SCRIPT_TEXT,
+      bytes: SCRIPT_TEXT.length,
+      sha256: hashAttachmentBytes(new TextEncoder().encode(SCRIPT_TEXT)),
+    },
+  ],
+})
+
 function liveConnector(): LiveConnectorRow {
   return {
     id: CONNECTOR_ID,
@@ -172,6 +197,7 @@ function runtimeDeps(overrides: {
   role?: TenantMembership['role']
   grantedAgentIds?: Set<string>
   grantAccessLevel?: 'view' | 'operate'
+  skills?: McpSkillPackage[]
 } = {}): {
   deps: McpRuntimeDeps
   audit: Array<Record<string, unknown>>
@@ -304,6 +330,9 @@ function runtimeDeps(overrides: {
       invokeEnterpriseTool: (input) => invokeEnterpriseTool(enterpriseDeps, input),
       getGatewayOperation: async (input) =>
         getResultToMcp(await getGatewayOperation(gatewayDeps, input)),
+      async listMcpSkills() {
+        return overrides.skills ?? []
+      },
     },
   }
 }
@@ -925,6 +954,101 @@ async function main() {
     assert.equal(replayed.operationId, payload.operationId)
     assert.equal(replayed.status, 'awaiting_approval')
     assert.equal(audit.filter((row) => row.action === 'gateway.operation.enqueued').length, 1)
+  })
+
+  await check('skills/list is empty when the tenant has no active skills', async () => {
+    const { deps } = runtimeDeps()
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 30, method: 'skills/list', params: {} },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as { result?: { skills?: unknown[] }; error?: unknown }
+    assert.equal(body.error, undefined, JSON.stringify(body))
+    assert.deepEqual(body.result?.skills, [])
+  })
+
+  await check('skills/list and resources/read serve SKILL.md plus scripts', async () => {
+    const { deps, audit } = runtimeDeps({ skills: [SAMPLE_SKILL] })
+    await initialize(deps)
+    const listed = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 31, method: 'skills/list', params: {} },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const listBody = (await readJson(listed)) as {
+      result?: {
+        skills?: Array<{
+          uri: string
+          frontmatter?: { name?: string }
+          resources?: Array<{ uri: string; digest: string }>
+        }>
+      }
+      error?: unknown
+    }
+    assert.equal(listBody.error, undefined, JSON.stringify(listBody))
+    const entry = listBody.result?.skills?.[0]
+    assert.equal(entry?.uri, 'skill://tulajdoni-lap/SKILL.md')
+    assert.equal(entry?.frontmatter?.name, 'tulajdoni-lap')
+    const scriptUri = entry?.resources?.find((resource) =>
+      resource.uri.endsWith('scripts/parse_tulajdoni_lap.py'),
+    )
+    assert.ok(scriptUri, 'script resource missing from skills/list')
+    assert.match(scriptUri.digest, /^sha256:[0-9a-f]{64}$/)
+
+    const got = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 32, method: 'skills/get', params: { uri: entry?.uri } },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const gotBody = (await readJson(got)) as { result?: { uri?: string }; error?: unknown }
+    assert.equal(gotBody.error, undefined, JSON.stringify(gotBody))
+    assert.equal(gotBody.result?.uri, entry?.uri)
+
+    const read = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 33,
+        method: 'resources/read',
+        params: { uri: 'skill://tulajdoni-lap/scripts/parse_tulajdoni_lap.py' },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const readBody = (await readJson(read)) as {
+      result?: { contents?: Array<{ text?: string; mimeType?: string; uri?: string }> }
+      error?: unknown
+    }
+    assert.equal(readBody.error, undefined, JSON.stringify(readBody))
+    assert.equal(readBody.result?.contents?.[0]?.text, SCRIPT_TEXT)
+    assert.equal(readBody.result?.contents?.[0]?.mimeType, 'text/x-python')
+    assert.ok(
+      audit.some(
+        (row) =>
+          row.action === 'mcp.resources.read' &&
+          row.inputRef === 'skill://tulajdoni-lap/scripts/parse_tulajdoni_lap.py',
+      ),
+    )
+  })
+
+  await check('skills/get unknown uri → JSON-RPC error', async () => {
+    const { deps } = runtimeDeps()
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 34, method: 'skills/get', params: { uri: 'skill://missing/SKILL.md' } },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(res)) as { error?: { message?: string } }
+    assert.ok(body.error, JSON.stringify(body))
+    assert.match(body.error?.message ?? '', /not found/i)
   })
 
   await check('protected resource metadata resource is {origin}/api/mcp at every well-known path', async () => {
