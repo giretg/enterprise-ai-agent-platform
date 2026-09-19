@@ -71,6 +71,7 @@ async function main() {
     description: parsed.description,
     content,
     requires: parsed.suggestedRequires,
+    attachmentPaths: pkg.attachments.map((attachment) => attachment.path),
   })
   if (!validation.ok) {
     throw new Error(`validation failed: ${validation.errors.join(' · ')}`)

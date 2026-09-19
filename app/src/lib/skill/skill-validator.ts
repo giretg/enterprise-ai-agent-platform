@@ -6,12 +6,13 @@ import {
   type SkillContent,
   type SkillRequirement,
 } from './skill-content'
+import { classifyPackageFile } from './skill-package-adapter'
 
 /**
  * Hardcoded skill-validátor (spec §D5, WP-3). Ez — nem az LLM-review — a
- * TEHERHORDÓ kapu: determinista séma-, méret-, injection- és kód-jelenlét
- * ellenőrzés. Fázis 1 kizárólag T0/T1 (instrukció-only); bármilyen kód-jelenlét
- * (T2/T3) → ELUTASÍTÁS. A validátor sosem fail-open: kétség esetén elutasít.
+ * TEHERHORDÓ kapu: determinista séma-, méret- és injection-ellenőrzés.
+ * Kód (fence a SKILL.md-ben vagy scripts/ melléklet) T2, de nem elutasítás:
+ * a kód a skill-csomag része, MCP-n a kliens futtatja.
  */
 
 export interface SkillValidationInput {
@@ -19,6 +20,8 @@ export interface SkillValidationInput {
   description: string
   content: SkillContent
   requires: SkillRequirement[]
+  /** Melléklet-útvonalak (scripts/*.py) — T2 levezetéshez. */
+  attachmentPaths?: string[]
 }
 
 export interface SkillValidationResult {
@@ -78,15 +81,8 @@ export function validateSkill(input: SkillValidationInput): SkillValidationResul
     errors.push(`Az instrukció-törzs túl hosszú (max ${SKILL_INSTRUCTIONS_MAX}).`)
   }
 
-  // ── Kód-jelenlét → T2/T3 → Fázis 1-ben elutasít ───────────────────────────
-  const haystack = [description, instructionsText].join('\n\n')
-  if (CODE_FENCE_RE.test(haystack) || SHEBANG_RE.test(haystack)) {
-    errors.push(
-      'Kód-hordozó skill (futtatható kód-blokk) — ez T2/T3, ami Fázis 1-ben nem importálható.',
-    )
-  }
-
   // ── Injection-minták ──────────────────────────────────────────────────────
+  const haystack = [description, instructionsText].join('\n\n')
   for (const { re, label } of INJECTION_PATTERNS) {
     if (re.test(haystack)) {
       errors.push(`Prompt-injection gyanús minta: ${label}.`)
@@ -101,7 +97,11 @@ export function validateSkill(input: SkillValidationInput): SkillValidationResul
   }
 
   // ── Tier-levezetés (csak ha érvényes) ─────────────────────────────────────
-  const riskTier: SkillRiskTier = input.requires.length > 0 ? 't1' : 't0'
+  const hasCode =
+    CODE_FENCE_RE.test(haystack) ||
+    SHEBANG_RE.test(haystack) ||
+    (input.attachmentPaths ?? []).some((path) => classifyPackageFile(path) === 'code')
+  const riskTier: SkillRiskTier = hasCode ? 't2' : input.requires.length > 0 ? 't1' : 't0'
 
   return { ok: errors.length === 0, errors, warnings, riskTier }
 }

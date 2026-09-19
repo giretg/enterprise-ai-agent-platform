@@ -330,9 +330,9 @@ function SkillAttachmentReader({ path, text }: { path: string; text: string }) {
 }
 
 /**
- * A skillhez tartozó fájlok szerkesztése. A fájl SZÖVEG (referencia-dokumentum,
- * sablon, adat-táblázat) — futtatható kód nem kerülhet ide, ezt az importáló és a
- * szerveroldali kapu is őrzi.
+ * A skillhez tartozó fájlok szerkesztése. Szöveges melléklet: referencia,
+ * sablon, vagy futtatható szkript (`scripts/`). A platform a kódot nem futtatja —
+ * MCP-n a kliens kapja meg a csomag részeként.
  */
 function SkillAttachmentsEditor({
   attachments,
@@ -399,7 +399,7 @@ function SkillAttachmentsEditor({
           <input
             type="file"
             multiple
-            accept=".md,.txt,.html,.htm,.csv,.json,.yaml,.yml,.xml,text/*"
+            accept=".md,.txt,.html,.htm,.csv,.json,.yaml,.yml,.xml,.py,.sh,.js,.ts,.rb,text/*"
             disabled={disabled}
             className="sr-only"
             onChange={(e) => {

@@ -139,6 +139,7 @@
     "test:public-routes": "tsx scripts/public-routes.test.ts",
     "test:mcp-principal": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mcp-principal.test.ts",
     "test:mcp-http": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mcp-http.test.ts",
+    "test:mcp-skills": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mcp-skills.test.ts",
     "test:agent-checkout": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-checkout.test.ts",
     "test:enterprise-tools": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/enterprise-tools.test.ts",
     "test:gateway-operation": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/gateway-operation.test.ts",

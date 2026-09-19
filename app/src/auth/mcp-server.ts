@@ -42,6 +42,7 @@ import {
 import {
   auditMcpAuthDenied,
   auditMcpAuthOk,
+  auditMcpResourceRead,
   auditMcpToolCall,
   auditMcpToolDenied,
   mcpResourceMetadataUrl,
@@ -57,6 +58,12 @@ import {
   type McpPrincipalFailure,
   type VerifiedOAuthToken,
 } from './mcp-principal'
+import {
+  findPackageByUri,
+  skillFileUri,
+  toSkillsListEntry,
+  type McpSkillPackage,
+} from '@/lib/skill/mcp-skill'
 
 export type McpAgentListItem = {
   agentId: string
@@ -96,6 +103,7 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     principal: McpPrincipal
     operationId: string
   }) => Promise<EnterpriseToolMcpResult>
+  listMcpSkills: (input: { tenantId: string }) => Promise<McpSkillPackage[]>
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
@@ -205,6 +213,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
           operationId: input.operationId,
         }),
       ),
+    listMcpSkills: ({ tenantId }) => services.skills.listMcpSkillPackages(tenantId),
   }
 }
 
@@ -248,6 +257,25 @@ function textResult(payload: unknown, isError = false) {
 function definitionNotFound() {
   return textResult({ code: 'definition_not_found', message: 'Agent definition not found' }, true)
 }
+
+const mcpSkillResourceSchema = z.object({
+  uri: z.string(),
+  digest: z.string(),
+})
+const mcpSkillEntrySchema = z.object({
+  uri: z.string(),
+  frontmatter: z.object({
+    name: z.string(),
+    description: z.string(),
+    license: z.string().optional(),
+  }),
+  resources: z.array(mcpSkillResourceSchema),
+})
+const mcpSkillsListResultSchema = z.object({
+  skills: z.array(mcpSkillEntrySchema),
+})
+const mcpSkillsListParamsSchema = z.object({ cursor: z.string().optional() })
+const mcpSkillsGetParamsSchema = z.object({ uri: z.string().min(1) })
 
 async function whoamiToolResult(principal: McpPrincipal, deps: McpPrincipalDeps) {
   await auditMcpAuthOk(deps, principal)
@@ -345,7 +373,8 @@ async function checkoutToolResult(
 
 function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps, origin: string) {
   return createMcpHandler(
-    (server) => {
+    async (server) => {
+      const packages = await deps.listMcpSkills({ tenantId: principal.tenantId })
       server.registerTool(
         MCP_WHOAMI_TOOL,
         {
@@ -474,6 +503,40 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
           getGatewayOperationToolResult(principal, args as Record<string, unknown>, deps),
       )
 
+      for (const pkg of packages) {
+        for (const file of pkg.files) {
+          const uri = skillFileUri(pkg.uriName, file.path)
+          server.registerResource(
+            `${pkg.uriName}/${file.path}`,
+            uri,
+            {
+              title: file.path === 'SKILL.md' ? pkg.name : file.path,
+              mimeType: file.mimeType,
+              ...(file.path === 'SKILL.md' ? { description: pkg.description } : {}),
+            },
+            async () => {
+              await auditMcpResourceRead(deps, principal, uri)
+              return { contents: [{ uri, mimeType: file.mimeType, text: file.text }] }
+            },
+          )
+        }
+      }
+      server.server.setRequestHandler(
+        'skills/list',
+        { params: mcpSkillsListParamsSchema, result: mcpSkillsListResultSchema },
+        async () => ({ skills: packages.map(toSkillsListEntry) }),
+      )
+      server.server.setRequestHandler(
+        'skills/get',
+        { params: mcpSkillsGetParamsSchema, result: mcpSkillEntrySchema },
+        async (params) => {
+          const pkg = findPackageByUri(packages, params.uri)
+          if (!pkg) throw new Error('Skill not found')
+          await auditMcpResourceRead(deps, principal, params.uri)
+          return toSkillsListEntry(pkg)
+        },
+      )
+
       server.server.setRequestHandler('tools/call', async (request) => {
         const toolName = request.params.name
         if (!(MCP_ALLOWED_TOOLS as readonly string[]).includes(toolName)) {
@@ -506,6 +569,8 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
     },
     {
       serverInfo: { name: 'enterprise-mcp', version: 'phase-f' },
+      instructions:
+        'Skills: call skills/list, then resources/read on skill:// URIs. Scripts in the skill package run on the client.',
     },
   )
 }
