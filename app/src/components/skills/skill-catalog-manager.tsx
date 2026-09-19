@@ -298,8 +298,12 @@ function SkillRuntimeHintsFields({
   )
 }
 
-/** Level-2 melléklet szerkesztés alatti alakja — bytes/sha256 szerveroldalon készül. */
-type AttachmentDraft = { path: string; text: string }
+function skillVersionExportPath(skill: SkillCatalogEntry, versionId: string): string | null {
+  const version = skill.versions.find((v) => v.id === versionId)
+  if (!version) return null
+  return `/api/control-plane/skills/versions/${version.id}/export`
+}
+
 
 /**
  * Feltöltési méret-plafon a böngészőben. Tükrözi a szerveroldali
@@ -471,14 +475,17 @@ function SkillDetailPanel({ skill }: { skill: SkillCatalogEntry }) {
             </option>
           ))}
         </select>
-        {versionId ? (
-          <a
-            href={`/api/control-plane/skills/versions/${versionId}/export`}
-            className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-semibold text-ink-soft hover:border-ink-soft hover:text-ink"
-          >
-            ZIP letöltése
-          </a>
-        ) : null}
+        {(() => {
+          const exportPath = skillVersionExportPath(skill, versionId)
+          return exportPath ? (
+            <a
+              href={exportPath}
+              className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-semibold text-ink-soft hover:border-ink-soft hover:text-ink"
+            >
+              ZIP letöltése
+            </a>
+          ) : null
+        })()}
         {loading && <span className="text-xs text-ink-faint">Betöltés…</span>}
       </label>
       {error && <p className="text-sm text-coral">{error}</p>}
@@ -1246,7 +1253,9 @@ function SkillVersionsPanel({
   return (
     <div className="space-y-5">
       <ul className="space-y-2">
-        {versions.map((v) => (
+        {versions.map((v) => {
+          const exportPath = skillVersionExportPath(skill, v.id)
+          return (
           <li
             key={v.id}
             className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ink-faint/20 bg-card/50 px-3 py-2 text-xs"
@@ -1261,12 +1270,14 @@ function SkillVersionsPanel({
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <a
-                href={`/api/control-plane/skills/versions/${v.id}/export`}
-                className="rounded-full border border-ink-faint/30 px-3 py-1 font-medium text-ink-soft hover:border-ink-soft hover:text-ink"
-              >
-                ZIP export
-              </a>
+              {exportPath ? (
+                <a
+                  href={exportPath}
+                  className="rounded-full border border-ink-faint/30 px-3 py-1 font-medium text-ink-soft hover:border-ink-soft hover:text-ink"
+                >
+                  ZIP export
+                </a>
+              ) : null}
               {canWrite && (
                 <>
                   {(v.status === 'proposed' || v.status === 'approved') && (
@@ -1306,7 +1317,8 @@ function SkillVersionsPanel({
               )}
             </div>
           </li>
-        ))}
+          )
+        })}
       </ul>
 
       {versions.length >= 2 && <SkillVersionDiffPanel skill={skill} running={pending} />}
