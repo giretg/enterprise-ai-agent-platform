@@ -301,6 +301,13 @@ function SkillRuntimeHintsFields({
 /** Level-2 melléklet szerkesztés alatti alakja — bytes/sha256 szerveroldalon készül. */
 type AttachmentDraft = { path: string; text: string }
 
+function skillVersionExportPath(skill: SkillCatalogEntry, versionId: string): string | null {
+  const version = skill.versions.find((v) => v.id === versionId)
+  if (!version) return null
+  return `/api/control-plane/skills/versions/${version.id}/export`
+}
+
+
 /**
  * Feltöltési méret-plafon a böngészőben. Tükrözi a szerveroldali
  * `SKILL_ATTACHMENT_MAX_BYTES`-t; azt a konstanst nem importáljuk, mert a modulja
@@ -471,6 +478,17 @@ function SkillDetailPanel({ skill }: { skill: SkillCatalogEntry }) {
             </option>
           ))}
         </select>
+        {(() => {
+          const exportPath = skillVersionExportPath(skill, versionId)
+          return exportPath ? (
+            <a
+              href={exportPath}
+              className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-semibold text-ink-soft hover:border-ink-soft hover:text-ink"
+            >
+              ZIP letöltése
+            </a>
+          ) : null
+        })()}
         {loading && <span className="text-xs text-ink-faint">Betöltés…</span>}
       </label>
       {error && <p className="text-sm text-coral">{error}</p>}
@@ -1238,7 +1256,9 @@ function SkillVersionsPanel({
   return (
     <div className="space-y-5">
       <ul className="space-y-2">
-        {versions.map((v) => (
+        {versions.map((v) => {
+          const exportPath = skillVersionExportPath(skill, v.id)
+          return (
           <li
             key={v.id}
             className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ink-faint/20 bg-card/50 px-3 py-2 text-xs"
@@ -1252,45 +1272,56 @@ function SkillVersionsPanel({
                 {new Date(v.createdAt).toLocaleDateString('hu-HU')}
               </span>
             </div>
-            {canWrite && (
-              <div className="flex flex-wrap items-center gap-2">
-                {(v.status === 'proposed' || v.status === 'approved') && (
-                  <>
-                    <SkillVersionReviewButton versionId={v.id} />
+            <div className="flex flex-wrap items-center gap-2">
+              {exportPath ? (
+                <a
+                  href={exportPath}
+                  className="rounded-full border border-ink-faint/30 px-3 py-1 font-medium text-ink-soft hover:border-ink-soft hover:text-ink"
+                >
+                  ZIP export
+                </a>
+              ) : null}
+              {canWrite && (
+                <>
+                  {(v.status === 'proposed' || v.status === 'approved') && (
+                    <>
+                      <SkillVersionReviewButton versionId={v.id} />
+                      <button
+                        type="button"
+                        disabled={pending}
+                        onClick={() =>
+                          onRun(
+                            () => approveSkillVersionAction(v.id),
+                            `v${v.version} jóváhagyva és aktiválva.`,
+                          )
+                        }
+                        className="rounded-full bg-coral/20 px-3 py-1 font-semibold text-coral disabled:opacity-50"
+                      >
+                        Jóváhagyás
+                      </button>
+                    </>
+                  )}
+                  {(v.status === 'retired' || v.status === 'rolled_back') && (
                     <button
                       type="button"
                       disabled={pending}
                       onClick={() =>
                         onRun(
-                          () => approveSkillVersionAction(v.id),
-                          `v${v.version} jóváhagyva és aktiválva.`,
+                          () => rollbackSkillVersionAction(v.id),
+                          `Visszaállítva a v${v.version} verzióra.`,
                         )
                       }
-                      className="rounded-full bg-coral/20 px-3 py-1 font-semibold text-coral disabled:opacity-50"
+                      className="rounded-full border border-ink-faint/30 px-3 py-1 font-medium text-ink-soft disabled:opacity-50"
                     >
-                      Jóváhagyás
+                      Visszaállítás
                     </button>
-                  </>
-                )}
-                {(v.status === 'retired' || v.status === 'rolled_back') && (
-                  <button
-                    type="button"
-                    disabled={pending}
-                    onClick={() =>
-                      onRun(
-                        () => rollbackSkillVersionAction(v.id),
-                        `Visszaállítva a v${v.version} verzióra.`,
-                      )
-                    }
-                    className="rounded-full border border-ink-faint/30 px-3 py-1 font-medium text-ink-soft disabled:opacity-50"
-                  >
-                    Visszaállítás
-                  </button>
-                )}
-              </div>
-            )}
+                  )}
+                </>
+              )}
+            </div>
           </li>
-        ))}
+          )
+        })}
       </ul>
 
       {versions.length >= 2 && <SkillVersionDiffPanel skill={skill} running={pending} />}
