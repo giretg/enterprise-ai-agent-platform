@@ -298,6 +298,9 @@ function SkillRuntimeHintsFields({
   )
 }
 
+/** Level-2 melléklet szerkesztés alatti alakja — bytes/sha256 szerveroldalon készül. */
+type AttachmentDraft = { path: string; text: string }
+
 function skillVersionExportPath(skill: SkillCatalogEntry, versionId: string): string | null {
   const version = skill.versions.find((v) => v.id === versionId)
   if (!version) return null
