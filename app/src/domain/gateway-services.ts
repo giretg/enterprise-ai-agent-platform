@@ -32,8 +32,11 @@ import { IamService } from '@/domain/iam/iam-service'
 import { PlatformSettingsService } from '@/domain/platform-settings/platform-settings-service'
 import { ProvisioningService } from '@/domain/provisioning/provisioning-service'
 import { HttpSandboxConnectionTester } from '@/domain/provisioning/sandbox-connection-tester'
+import { SelfUpdatingConnectorService } from '@/domain/connector-self-update/self-update-service'
+import { SpecSyncService } from '@/domain/connector-self-update/spec-sync'
 import { SkillService } from '@/domain/skill/skill-service'
 import { TenantService } from '@/domain/tenant/tenant-service'
+import { lookup } from 'node:dns/promises'
 
 const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants)
 
@@ -65,6 +68,31 @@ const skillService = new SkillService(repositories.skills, repositories.agents, 
 const resolveEgressAllowlist = (tenantId: string | null) =>
   platformSettingsService.getEgressAllowlist(tenantId)
 const resolveBankPreset = async () => process.env.PROVISIONING_BANK_PRESET === 'true'
+
+const selfUpdatingConnectorService = new SelfUpdatingConnectorService(
+  repositories.selfUpdatingConnectors,
+  new SpecSyncService({
+    resolveHostIps: async (host) => (await lookup(host, { all: true })).map((entry) => entry.address),
+  }),
+  {
+    append: async (event) => {
+      await repositories.audit.append({
+        actorType: event.actorId ? 'human' : 'system',
+        actorId: event.actorId,
+        agentVersion: null,
+        action: event.action,
+        targetType: 'connector',
+        targetId: event.connectorId,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: null,
+        policyDecision: event.policyDecision,
+        metadata: event.metadata ?? {},
+        tenantId: event.tenantId,
+      })
+    },
+  },
+)
 
 const provisioningService = new ProvisioningService({
   drafts: repositories.connectorDrafts,
@@ -190,6 +218,7 @@ export const services = {
   skills: skillService,
   agentDefinitions: agentDefinitionService,
   provisioning: provisioningService,
+  selfUpdatingConnectors: selfUpdatingConnectorService,
   connectorGrants: connectorGrantService,
   audit: repositories.audit,
   auditChain: new AuditChainService(repositories.audit),
