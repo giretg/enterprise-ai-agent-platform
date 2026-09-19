@@ -26,16 +26,28 @@ export function isEnterpriseDriveWriteTool(toolName: string): toolName is Enterp
   return ENTERPRISE_DRIVE_WRITE_TOOL_SET.has(toolName)
 }
 
-const definitionId = z.string().uuid()
+const definitionId = z
+  .string()
+  .uuid()
+  .describe('Published agent definition id from platform.agent.get_definition')
 const optionalAgentId = z.string().uuid().optional()
 
 export const googleDriveSearchInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
-    query: z.string().max(1000).optional(),
-    nameContains: z.string().max(200).optional(),
-    mimeTypes: z.array(z.string().max(120)).max(10).optional(),
+    query: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe('Google Drive search query. Omit with nameContains to list recent files.'),
+    nameContains: z.string().max(200).optional().describe('Substring match on file name.'),
+    // ponytail: string not string[] — Claude.ai drops MCP tools whose advertised schema has arrays
+    mimeTypes: z
+      .string()
+      .max(1300)
+      .optional()
+      .describe('Comma-separated MIME types, e.g. application/pdf,image/png'),
     modifiedAfter: z.string().max(40).optional(),
     driveId: z.string().optional(),
     pageSize: z.number().int().min(1).max(100).optional(),

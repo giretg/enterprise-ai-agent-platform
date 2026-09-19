@@ -14,9 +14,12 @@ import {
   authorizeToolCall,
   asUuid,
   ENTERPRISE_TOOL_ERROR_MESSAGES,
+  authorizationLinkFields,
+  enterpriseToolErrorPayload,
   type AuthorizeToolCallDeps,
   type EnterpriseToolMcpResult,
   type LiveConnectorRow,
+  type StartDelegatedAuthorization,
   type ToolCallPrincipal,
 } from '@/domain/enterprise-tools'
 import {
@@ -36,7 +39,7 @@ import { writeAudit } from '@/lib/audit/types'
 export type GatewayActor = ToolCallPrincipal
 
 export type GatewayOperationOk = { ok: true; view: GatewayOperationView; created?: boolean }
-export type GatewayOperationErr = { ok: false; code: string }
+export type GatewayOperationErr = { ok: false; code: string; authorizationUrl?: string }
 export type GatewayOperationResult = GatewayOperationOk | GatewayOperationErr
 
 export type GatewayOperationServiceDeps = AuthorizeToolCallDeps & {
@@ -66,6 +69,7 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps & {
     args: Record<string, unknown>,
     accessToken: string,
   ) => Promise<unknown>
+  startAuthorization?: StartDelegatedAuthorization
   recordCreatedDriveFiles?: (input: {
     grantId: string
     files: Array<{ fileId: string; name: string; mimeType: string }>
@@ -133,12 +137,19 @@ function textResult(payload: unknown, isError = false): EnterpriseToolMcpResult 
   }
 }
 
-function errorMcp(code: string): EnterpriseToolMcpResult {
-  return textResult({ code, message: MESSAGES[code] ?? 'Gateway operation failed' }, true)
+function errorMcp(code: string, authorizationUrl?: string): EnterpriseToolMcpResult {
+  return textResult(
+    enterpriseToolErrorPayload(
+      code,
+      authorizationUrl ? { authorizationUrl } : undefined,
+      MESSAGES[code] ?? 'Gateway operation failed',
+    ),
+    true,
+  )
 }
 
 export function enqueueResultToMcp(result: GatewayOperationResult): EnterpriseToolMcpResult {
-  if (!result.ok) return errorMcp(result.code)
+  if (!result.ok) return errorMcp(result.code, result.authorizationUrl)
   return textResult({
     operationId: result.view.operationId,
     status: result.view.status,
@@ -148,12 +159,12 @@ export function enqueueResultToMcp(result: GatewayOperationResult): EnterpriseTo
 }
 
 export function getResultToMcp(result: GatewayOperationResult): EnterpriseToolMcpResult {
-  if (!result.ok) return errorMcp(result.code)
+  if (!result.ok) return errorMcp(result.code, result.authorizationUrl)
   return textResult(result.view)
 }
 
-function err(code: string): GatewayOperationErr {
-  return { ok: false, code }
+function err(code: string, authorizationUrl?: string): GatewayOperationErr {
+  return authorizationUrl ? { ok: false, code, authorizationUrl } : { ok: false, code }
 }
 
 async function recordGatewayAudit(
@@ -189,7 +200,13 @@ function ok(view: GatewayOperationView, created?: boolean): GatewayOperationOk {
   return created === undefined ? { ok: true, view } : { ok: true, view, created }
 }
 
-type WriteAuthFail = { ok: false; code: string; definitionId?: string; agentId?: string }
+type WriteAuthFail = {
+  ok: false
+  code: string
+  definitionId?: string
+  agentId?: string
+  connectorId?: string
+}
 
 async function loadAuthorizedWrite(
   deps: GatewayOperationServiceDeps,
@@ -205,7 +222,10 @@ async function loadAuthorizedWrite(
       parsedArgs: Record<string, unknown>
     }
 > {
-  const fail = (code: string, ids?: { definitionId?: string; agentId?: string }): WriteAuthFail => ({
+  const fail = (
+    code: string,
+    ids?: { definitionId?: string; agentId?: string; connectorId?: string },
+  ): WriteAuthFail => ({
     ok: false,
     code,
     ...ids,
@@ -250,7 +270,9 @@ async function loadAuthorizedWrite(
     toolName,
     args: parsed.data as Record<string, unknown>,
   })
-  if (!authorized.allowed) return fail(authorized.reason, ids)
+  if (!authorized.allowed) {
+    return fail(authorized.reason, { ...ids, connectorId: authorized.connectorId })
+  }
 
   return {
     ok: true,
@@ -282,7 +304,15 @@ export async function enqueueGatewayOperation(
         ...(authorized.agentId ? { agentId: authorized.agentId } : {}),
       },
     })
-    return err(authorized.code)
+    const extra = await authorizationLinkFields(deps.startAuthorization, {
+      reason: authorized.code,
+      connectorId: authorized.connectorId,
+      userId: principal.userId,
+      tenantId: principal.tenantId,
+      role: principal.role,
+      toolName,
+    })
+    return err(authorized.code, extra.authorizationUrl)
   }
 
   const idempotencyKey = String(authorized.parsedArgs.idempotencyKey)

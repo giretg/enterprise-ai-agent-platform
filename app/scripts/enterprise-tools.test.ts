@@ -115,6 +115,7 @@ function invokeDeps(opts?: {
   accessToken?: string
   executeDriveTool?: EnterpriseToolDeps['executeDriveTool']
   resolveError?: Error
+  startAuthorization?: EnterpriseToolDeps['startAuthorization']
   audit?: Array<{ action: string }>
 }): EnterpriseToolDeps {
   const audit = opts?.audit
@@ -141,6 +142,7 @@ function invokeDeps(opts?: {
       return opts?.accessToken ?? 'stub-drive-token'
     },
     executeDriveTool: opts?.executeDriveTool,
+    startAuthorization: opts?.startAuthorization,
   }
 }
 
@@ -303,7 +305,11 @@ async function main() {
       toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
       args: { name: 'Q3', idempotencyKey: 'k1' },
     })
-    assert.deepEqual(result, { allowed: false, reason: 'google_drive_scope_not_granted' })
+    assert.deepEqual(result, {
+      allowed: false,
+      reason: 'google_drive_scope_not_granted',
+      connectorId: CONNECTOR_ID,
+    })
   })
 
   await check('grant missing', async () => {
@@ -313,7 +319,11 @@ async function main() {
       toolName: GOOGLE_DRIVE_SEARCH_TOOL,
       args: {},
     })
-    assert.deepEqual(result, { allowed: false, reason: 'connector_grant_missing' })
+    assert.deepEqual(result, {
+      allowed: false,
+      reason: 'connector_grant_missing',
+      connectorId: CONNECTOR_ID,
+    })
   })
 
   await check('scope deny', async () => {
@@ -328,7 +338,11 @@ async function main() {
         args: {},
       },
     )
-    assert.deepEqual(result, { allowed: false, reason: 'google_drive_scope_not_granted' })
+    assert.deepEqual(result, {
+      allowed: false,
+      reason: 'google_drive_scope_not_granted',
+      connectorId: CONNECTOR_ID,
+    })
   })
 
   await check('tenant isolation', async () => {
@@ -441,6 +455,19 @@ async function main() {
     assert.equal(parsePayload(result).code, 'agent_access_denied')
     assert.ok(audit.some((row) => row.action === 'enterprise.tool.denied'))
     assert.equal(audit.some((row) => row.action === 'enterprise.tool.ok'), false)
+  })
+
+  await check('inactive agent cannot invoke tools', async () => {
+    const result = await invokeEnterpriseTool(
+      invokeDeps({ definition: definition({ status: 'suspended' }) }),
+      {
+        principal: principal(),
+        toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+        args: { definitionId: DEFINITION_ID },
+      },
+    )
+    assert.equal(result.isError, true)
+    assert.equal(parsePayload(result).code, 'agent_inactive')
   })
 
   await check('mismatched agentId is definition_mismatch', async () => {
@@ -636,6 +663,32 @@ async function main() {
     assert.equal(text.includes('stub-drive-token'), false)
     assert.equal(text.includes('tokenRef'), false)
     assert.equal(parsePayload(result).code, 'google_drive_auth_failed')
+  })
+
+  await check('grant missing returns authorizationUrl for MCP consent', async () => {
+    const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth?state=mcp-test'
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        grant: null,
+        startAuthorization: async (input) => {
+          assert.equal(input.connectorId, CONNECTOR_ID)
+          assert.equal(input.userId, USER_ID)
+          assert.equal(input.toolName, GOOGLE_DRIVE_SEARCH_TOOL)
+          return { url: AUTH_URL }
+        },
+      }),
+      {
+        principal: principal(),
+        toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+        args: { definitionId: DEFINITION_ID },
+      },
+    )
+    assert.equal(result.isError, true)
+    const payload = parsePayload(result)
+    assert.equal(payload.code, 'connector_grant_missing')
+    assert.equal(payload.authorizationUrl, AUTH_URL)
+    assert.match(String(payload.message), /Open this URL/)
+    assert.match(String(payload.message), /accounts\.google\.com/)
   })
 
   console.log(`\n${failures === 0 ? 'enterprise-tools: ok' : `enterprise-tools: ${failures} failed`}`)

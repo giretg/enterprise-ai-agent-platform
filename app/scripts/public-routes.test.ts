@@ -132,8 +132,15 @@ check('az alkalmazás-felület és a kezelői API VÉDETT marad', () => {
   assertProtected('/control-plane/agents')
   assertProtected('/control-plane/iam')
   assertProtected('/api/agents')
-  assertProtected('/api/connectors/oauth/callback')
   assertProtected('/api/v1/internal/other-endpoint')
+})
+
+check('a delegált OAuth callback és az MCP done page publikus (signed state, nincs Clerk-süti)', () => {
+  assertPublic('/api/connectors/oauth/callback')
+  assertPublic('/connectors/oauth/done')
+  assertProtected('/connectors/oauth')
+  assertProtected('/api/connectors/oauth')
+  assertProtected('/api/connectors/oauth/start')
 })
 
 check('az MCP resource URL és az OAuth well-known discovery publikus (Clerk-kapu előtt 401 + WWW-Authenticate)', () => {

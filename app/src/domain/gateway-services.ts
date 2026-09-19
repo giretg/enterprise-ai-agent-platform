@@ -28,6 +28,8 @@ import {
   type GatewayPendingOperationRow,
 } from '@/domain/gateway-operation'
 import { isSuperadmin } from '@/lib/tenant-policy'
+import { hasMinimumRole } from '@/lib/iam-policy'
+import type { UserRole } from '@prisma/client'
 import { IamService } from '@/domain/iam/iam-service'
 import { PlatformSettingsService } from '@/domain/platform-settings/platform-settings-service'
 import { ProvisioningService } from '@/domain/provisioning/provisioning-service'
@@ -168,10 +170,36 @@ async function resolveRequester(input: { tenantId: string; userId: string }) {
   return null
 }
 
+async function startAuthorization(input: {
+  connectorId: string
+  userId: string
+  tenantId: string
+  role: string
+  toolName: string
+}): Promise<{ url: string } | null> {
+  const connector = await repositories.connectors.findById(input.connectorId)
+  if (!connector) return null
+  if (connector.tenantId && connector.tenantId !== input.tenantId) return null
+  if (connector.authMode !== 'user_delegated' || connector.lifecycleState !== 'active') return null
+  try {
+    return await connectorGrantService.startUserAuthorization({
+      connector,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      isAdmin: hasMinimumRole(input.role as UserRole, 'admin'),
+      toolName: input.toolName,
+      returnTo: { kind: 'mcp' },
+    })
+  } catch {
+    return null
+  }
+}
+
 const gatewayOperationDeps: GatewayOperationServiceDeps = {
   ...sharedToolLookups,
   operations: repositories.gatewayOperations,
   resolveRequester,
+  startAuthorization,
   audit: repositories.audit,
   async recordCreatedDriveFiles({ grantId, files }) {
     for (const file of files) {
@@ -207,6 +235,7 @@ async function listPendingOperationRows(input: {
 const enterpriseToolDeps: EnterpriseToolDeps = {
   ...sharedToolLookups,
   audit: repositories.audit,
+  startAuthorization,
   enqueueWrite: async (input) =>
     enqueueResultToMcp(await enqueueGatewayOperation(gatewayOperationDeps, input)),
 }

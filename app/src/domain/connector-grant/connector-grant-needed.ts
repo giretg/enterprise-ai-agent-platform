@@ -32,16 +32,23 @@ export type ConnectorGrantNeededReason = (typeof CONNECTOR_GRANT_NEEDED_REASONS)
 
 export const CONNECTOR_GRANT_NEEDED_VISIBILITY_MS = 24 * 60 * 60 * 1000
 
-export type OAuthReturnTo = {
-  kind: 'conversation' | 'ticket'
-  id: string
-  agentId?: string
-  /**
-   * A chat/ticket oldala, ahonnan az OAuth indult. Csak `/control-plane…`
-   * path — a callback ide hozza vissza a usert (open redirect ellen szűrve).
-   */
-  originPath?: string
-}
+export const MCP_OAUTH_DONE_PATH = '/connectors/oauth/done'
+
+export type OAuthReturnTo =
+  | {
+      kind: 'conversation' | 'ticket'
+      id: string
+      agentId?: string
+      /**
+       * A chat/ticket oldala, ahonnan az OAuth indult. Csak `/control-plane…`
+       * path — a callback ide hozza vissza a usert (open redirect ellen szűrve).
+       */
+      originPath?: string
+    }
+  | {
+      /** MCP-kliensből indított consent — platform-login nélkül a done page-re. */
+      kind: 'mcp'
+    }
 
 export type ConnectorGrantNeededCard = {
   connectorId: string
@@ -71,6 +78,11 @@ export function isConnectorGrantNeededReason(
 ): reason is ConnectorGrantNeededReason {
   if (!reason) return false
   return reason === 'connector_grant_missing' || SCOPE_NOT_GRANTED_REASONS.has(reason)
+}
+
+/** Grant-hiány / lejárt token — MCP-n consent URL-t adunk, ne a control-plane-t. */
+export function isAuthorizationLinkReason(reason: string | null | undefined): boolean {
+  return isConnectorGrantNeededReason(reason) || reason === 'google_drive_auth_failed'
 }
 
 export function isScopeNotGrantedReason(reason: string | null | undefined): boolean {
@@ -135,6 +147,10 @@ export function oauthReturnPath(
   returnTo: OAuthReturnTo,
   result?: { error?: string },
 ): string {
+  if (returnTo.kind === 'mcp') {
+    return withQuery(MCP_OAUTH_DONE_PATH, result?.error ? { error: result.error } : { connected: '1' })
+  }
+
   // A feltételes ágak együtt union típust kapnak (az egymás ágában nem létező
   // kulcsok opcionálisak lennének), miközben a query builder csak tényleges
   // string értékeket fogad. A szerződés itt egyértelmű: pontosan egy státusz
@@ -185,6 +201,7 @@ function withQuery(pathname: string, extra: Record<string, string>): string {
 export function isSafeOAuthReturnTo(value: unknown): value is OAuthReturnTo {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const rec = value as Record<string, unknown>
+  if (rec.kind === 'mcp') return true
   if (rec.kind !== 'conversation' && rec.kind !== 'ticket') return false
   if (typeof rec.id !== 'string' || !isUuid(rec.id)) return false
   if (rec.agentId !== undefined && (typeof rec.agentId !== 'string' || !isUuid(rec.agentId))) {

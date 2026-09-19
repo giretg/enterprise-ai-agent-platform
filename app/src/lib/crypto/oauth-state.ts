@@ -24,7 +24,7 @@ export type OAuthStatePayload = {
   requestedScopes?: string[]
   codeVerifier: string
   expiresAt: number
-  /** Chat/ticket folytatás OAuth után — csak kind + uuid, nem nyers URL. */
+  /** Chat/ticket/MCP folytatás OAuth után — csak kind (+ uuid), nem nyers URL. */
   returnTo?: OAuthReturnTo
 }
 
@@ -111,4 +111,20 @@ export function verifyOAuthState(state: string): OAuthStatePayload {
 
 export function pkceChallenge(codeVerifier: string): string {
   return createHash('sha256').update(codeVerifier).digest('base64url')
+}
+
+/**
+ * Callback actor: a signed state userId-ja a grant gazdája.
+ * Ha van Clerk-session, egyeznie kell — különben idegen session köthetne grantet.
+ * Session nélkül (MCP-consent) a state a hitelesítő.
+ */
+export function resolveOAuthCallbackActor(
+  sessionUserId: string | null,
+  stateUserId: string,
+): string {
+  if (!stateUserId) throw new Error('oauth_state: user mismatch')
+  if (sessionUserId && sessionUserId !== stateUserId) {
+    throw new Error('oauth_state: user mismatch')
+  }
+  return stateUserId
 }

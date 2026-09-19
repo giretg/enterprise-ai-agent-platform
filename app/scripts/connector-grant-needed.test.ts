@@ -17,11 +17,13 @@ import {
   connectorTypeForGrantTool,
   describeConnectorGrantTargets,
   isConnectorGrantNeededReason,
+  isAuthorizationLinkReason,
   isSafeOAuthReturnTo,
   isScopeNotGrantedReason,
   oauthReturnPath,
   readConnectorGrantNeedsFromPayload,
 } from '../src/domain/connector-grant/connector-grant-needed'
+import { resolveOAuthCallbackActor } from '../src/lib/crypto/oauth-state'
 import {
   delegatedConnectorLabel,
   delegatedScopeDeniedReason,
@@ -68,6 +70,9 @@ check('okok: grant-hiány + provider-független és Gmail-történeti scope-hiá
   assert.equal(isConnectorGrantNeededReason('gmail_scope_not_granted'), true)
   assert.equal(isConnectorGrantNeededReason('capability_denied'), false)
   assert.equal(isConnectorGrantNeededReason(null), false)
+  assert.equal(isAuthorizationLinkReason('connector_grant_missing'), true)
+  assert.equal(isAuthorizationLinkReason('google_drive_auth_failed'), true)
+  assert.equal(isAuthorizationLinkReason('capability_denied'), false)
   assert.equal(isScopeNotGrantedReason('connector_grant_missing'), false)
   assert.equal(isScopeNotGrantedReason('gmail_scope_not_granted'), true)
   // A régi tool_calls sorok is felismerhetők maradnak.
@@ -227,9 +232,18 @@ check('oauth return path: ticket / conversation / origin / fallback', () => {
     ),
     `/control-plane/agents/${AGENT}?conversation=${CONV}&granted=1`,
   )
+  assert.equal(
+    oauthReturnPath({ kind: 'mcp' }),
+    '/connectors/oauth/done?connected=1',
+  )
+  assert.equal(
+    oauthReturnPath({ kind: 'mcp' }, { error: 'oauth_state: expired' }),
+    '/connectors/oauth/done?error=oauth_state%3A+expired',
+  )
 })
 
 check('returnTo: csak kind + uuid, nincs nyers URL', () => {
+  assert.equal(isSafeOAuthReturnTo({ kind: 'mcp' }), true)
   assert.equal(isSafeOAuthReturnTo({ kind: 'ticket', id: TICKET }), true)
   assert.equal(isSafeOAuthReturnTo({ kind: 'conversation', id: CONV, agentId: AGENT }), true)
   assert.equal(
@@ -241,6 +255,12 @@ check('returnTo: csak kind + uuid, nincs nyers URL', () => {
   assert.equal(isSafeOAuthReturnTo({ kind: 'evil', id: TICKET }), false)
   assert.equal(isSafeOAuthReturnTo('/control-plane/tickets/x?granted=1'), false)
   assert.equal(isSafeOAuthReturnTo({ kind: 'ticket', id: '../../evil' }), false)
+})
+
+check('OAuth callback actor: session nélkül a state userId, mismatch tiltva', () => {
+  assert.equal(resolveOAuthCallbackActor(null, CONV), CONV)
+  assert.equal(resolveOAuthCallbackActor(CONV, CONV), CONV)
+  assert.throws(() => resolveOAuthCallbackActor(TICKET, CONV), /user mismatch/)
 })
 
 check('payload kártyák: érvényes okok, típus/címke kitöltése', () => {
