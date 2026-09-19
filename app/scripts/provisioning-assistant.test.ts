@@ -1874,8 +1874,11 @@ async function run() {
     assert.equal(drafts.agentConnectors.filter((ac) => ac.connectorId === created.connectorId).length, 0)
     const ev = audit.byAction('provisioning.connector.decommission')
     assert.equal(ev.length, 1)
-    // Az indok auditba kerül, secret SOHA.
-    assert.equal((ev[0].metadata as Record<string, unknown>).reason, 'lecserélt szolgáltató')
+    // Az indok csak hash-ként kerül az auditba, secret SOHA.
+    const decommMeta = ev[0].metadata as Record<string, unknown>
+    assert.match(String(decommMeta.reasonHash), /^[a-f0-9]{64}$/)
+    assert.equal('reason' in decommMeta, false)
+    assert.doesNotMatch(JSON.stringify(decommMeta), /lecserélt szolgáltató/)
   })
 
   await test('DECOMMISSION: bank-preset → dual-control kötelező', async () => {

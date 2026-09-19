@@ -80,7 +80,7 @@ async function auditDenied(
 ) {
   const payload = {
     toolName,
-    reason,
+    reasonCode: reason,
     tenantId: principal.tenantId,
     userId: principal.userId,
     ...(definitionId ? { definitionId } : {}),

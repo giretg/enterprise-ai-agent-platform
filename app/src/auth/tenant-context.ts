@@ -120,7 +120,7 @@ export async function requireTenantPermission(
       targetType: 'permission',
       targetId: null,
       policyDecision: 'denied',
-      metadata: { permissionKey, reason: decision.reason },
+      metadata: { permissionKey, reasonCode: decision.reason },
       tenantId: ctx.activeTenantId,
     })
     if (decision.reason === 'UNKNOWN_PERMISSION') {

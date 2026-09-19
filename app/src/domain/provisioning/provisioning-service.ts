@@ -11,6 +11,7 @@
  * hozzárendelés agent-aktorral SOHA → `PROVISIONING_FORBIDDEN` + provisioning.access_denied.
  */
 import { createHash } from 'crypto'
+import { computeDiffHash } from '@/lib/crypto/hash-chain'
 import type { ConnectorAccessMode, ConnectorType, Prisma, UserRole } from '@prisma/client'
 import type { ConnectorDraftRepository } from '@/repositories/interfaces'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
@@ -800,7 +801,7 @@ export class ProvisioningService {
       connector_id: input.connectorId,
       agent_id: input.agentId,
       removed: res.removed,
-      ...(input.reason?.trim() ? { reason: input.reason.trim() } : {}),
+      ...(input.reason?.trim() ? { reasonHash: computeDiffHash(input.reason.trim()) } : {}),
       policyDecision: 'allowed',
     })
 
@@ -956,7 +957,7 @@ export class ProvisioningService {
         draft_id: draft.id,
         criticality: dualControl.criticality,
         approver_id: dualControl.dualControlRequired ? input.approverId ?? null : null,
-        reason: input.reason ?? null,
+        reasonHash: input.reason ? computeDiffHash(input.reason) : null,
       },
     })
   }
@@ -1002,7 +1003,7 @@ export class ProvisioningService {
         draft_id: null,
         criticality: dualControl.criticality,
         approver_id: dualControl.dualControlRequired ? input.approverId ?? null : null,
-        reason: input.reason ?? null,
+        reasonHash: input.reason ? computeDiffHash(input.reason) : null,
       },
     })
   }
@@ -1048,7 +1049,7 @@ export class ProvisioningService {
     if (!this.deps.verifyDualControlApprover) {
       await this.appendAudit(actor, 'provisioning.access_denied', null, {
         attempted_action: 'dual_control_approver_verify',
-        reason: 'verifier_not_configured',
+        reasonCode: 'verifier_not_configured',
         policyDecision: 'denied',
       })
       throw new ProvisioningError(
@@ -1063,7 +1064,7 @@ export class ProvisioningService {
     if (!authorized) {
       await this.appendAudit(actor, 'provisioning.access_denied', null, {
         attempted_action: 'dual_control_approver_verify',
-        reason: 'approver_not_active_admin',
+        reasonCode: 'approver_not_active_admin',
         policyDecision: 'denied',
       })
       throw new ProvisioningError(
@@ -1107,7 +1108,7 @@ export class ProvisioningService {
       draft_id: string | null
       criticality: Criticality
       approver_id: string | null
-      reason: string | null
+      reasonHash: string | null
     }
   }): Promise<{ connectorId: string; lifecycleState: 'archived'; affectedAgentIds: string[] }> {
     const { actor, connectorId, affectedAgentIds, secretAlias, auditMeta } = params
@@ -1135,7 +1136,7 @@ export class ProvisioningService {
       criticality: auditMeta.criticality,
       approver_id: auditMeta.approver_id,
       revoked_agent_links: affectedAgentIds.length,
-      reason: auditMeta.reason,
+      reasonHash: auditMeta.reasonHash,
       policyDecision: 'allowed',
     })
 
@@ -1174,7 +1175,7 @@ export class ProvisioningService {
     await this.appendAudit(actor, 'provisioning.draft.delete', connectorId, {
       draft_id: draft.id,
       connector_id: connectorId,
-      reason: input.reason ?? null,
+      reasonHash: input.reason ? computeDiffHash(input.reason) : null,
       policyDecision: 'allowed',
     })
 

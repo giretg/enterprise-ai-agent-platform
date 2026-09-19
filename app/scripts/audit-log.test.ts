@@ -80,6 +80,14 @@ check('assertAuditMetadataSafe: nyers "secret" kulcs elutasítva (nested)', () =
   )
 })
 
+check('assertAuditMetadataSafe: nyers emberi indoklás elutasítva', () => {
+  assert.throws(() => assertAuditMetadataSafe({ reason: 'ügyfél adatot tartalmaz' }), UnsafeAuditPayloadError)
+})
+
+check('assertAuditMetadataSafe: tokenRef kulcs elutasítva', () => {
+  assert.throws(() => assertAuditMetadataSafe({ tokenRef: 'stub-drive-token' }), UnsafeAuditPayloadError)
+})
+
 check('assertAuditMetadataSafe: ref/hash/alias formájú kulcsok NEM tiltottak', () => {
   assertAuditMetadataSafe({ secretAlias: 'vault:abc', contentHash: 'sha256:...', tokenHash: 'sha256:...' })
 })

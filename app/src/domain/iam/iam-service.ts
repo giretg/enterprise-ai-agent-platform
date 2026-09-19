@@ -5,7 +5,7 @@ import type {
   RolePermissionRepository,
   TenantMembershipRepository,
 } from '@/repositories/interfaces'
-import { generateTokenPair, hashOpaqueToken } from '@/lib/crypto/hash-chain'
+import { computeDiffHash, generateTokenPair, hashOpaqueToken } from '@/lib/crypto/hash-chain'
 import {
   ROLE_RANK,
   checkInvitationRedeemable,
@@ -18,6 +18,10 @@ import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 nap
+
+function emailAuditRef(email: string): string {
+  return `sha256:${computeDiffHash(email)}`
+}
 
 /**
  * IAM / RBAC domain (Feature-spec IAM-RBAC §4, §6, §7, §8).
@@ -70,7 +74,7 @@ export class IamService {
       targetType: 'invitation',
       targetId: invitation.id,
       modelUsed: null,
-      inputRef: invitation.email,
+      inputRef: emailAuditRef(invitation.email),
       outputRef: params.role,
       policyDecision: 'invited',
       metadata: { expiresAt: expiresAt.toISOString(), tenantId: params.tenantId },
@@ -159,7 +163,7 @@ export class IamService {
       targetType: 'user',
       targetId: user.id,
       modelUsed: null,
-      inputRef: email,
+      inputRef: emailAuditRef(email),
       outputRef: params.role,
       policyDecision: 'provisioned',
       metadata: { membershipId: membership.id, tenantId: params.tenantId },
@@ -211,7 +215,7 @@ export class IamService {
       inputRef: params.user.externalAuthId,
       outputRef: user.role,
       policyDecision: 'claimed',
-      metadata: { email: user.email },
+      metadata: null,
     })
 
     return user
@@ -259,10 +263,10 @@ export class IamService {
       targetType: 'user',
       targetId: user.id,
       modelUsed: null,
-      inputRef: params.user.email,
+      inputRef: emailAuditRef(params.user.email),
       outputRef: user.role,
       policyDecision: 'activated',
-      metadata: { email: user.email },
+      metadata: null,
     })
 
     return user
@@ -299,7 +303,7 @@ export class IamService {
       targetType: 'invitation',
       targetId: invitation.id,
       modelUsed: null,
-      inputRef: invitation.email,
+      inputRef: emailAuditRef(invitation.email),
       outputRef: null,
       policyDecision: 'revoked',
       metadata: null,
@@ -439,7 +443,7 @@ export class IamService {
       inputRef: invitation.id,
       outputRef: invitation.role,
       policyDecision: 'redeemed',
-      metadata: { email: user.email, source },
+      metadata: { source },
       tenantId: invitation.tenantId,
     })
   }
@@ -586,7 +590,7 @@ export class IamService {
       inputRef: target.status,
       outputRef: 'suspended',
       policyDecision: 'suspended',
-      metadata: { reason: params.reason },
+      metadata: { reasonHash: computeDiffHash(params.reason) },
       tenantId: params.actorTenantId,
     })
 

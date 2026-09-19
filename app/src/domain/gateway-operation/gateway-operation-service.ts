@@ -29,6 +29,7 @@ import type {
   GatewayOperationStore,
   GatewayOperationView,
 } from './types'
+import { computeDiffHash } from '@/lib/crypto/hash-chain'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
 
@@ -274,7 +275,7 @@ export async function enqueueGatewayOperation(
       policyDecision: 'denied',
       metadata: {
         toolName,
-        reason: authorized.code,
+        reasonCode: authorized.code,
         tenantId: principal.tenantId,
         userId: principal.userId,
         ...(authorized.definitionId ? { definitionId: authorized.definitionId } : {}),
@@ -401,7 +402,7 @@ export async function rejectGatewayOperation(
         operationId,
         decidedByUserId: input.actor.userId,
         tenantId: input.tenantId,
-        ...(input.reason ? { reason: input.reason } : {}),
+        ...(input.reason ? { reasonHash: computeDiffHash(input.reason) } : {}),
       },
     })
   }

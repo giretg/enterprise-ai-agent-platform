@@ -41,7 +41,7 @@ export async function requirePermission(permissionKey: string): Promise<ActiveAu
       targetType: 'permission',
       targetId: null,
       policyDecision: 'denied',
-      metadata: { permissionKey, reason: decision.reason },
+      metadata: { permissionKey, reasonCode: decision.reason },
       tenantId: user.tenantId,
     })
     throw new AuthzError(decision.reason)
