@@ -11,7 +11,7 @@ import {
   assembleKbHits,
   assembleKbIndex,
   assembleKbPage,
-} from '../src/domain/tool-broker/tool-broker-service'
+} from '../src/lib/kb-retrieval'
 import { toKbTsQuery } from '../src/repositories/postgres/knowledge-repository'
 import type {
   KnowledgeChunkSearchHit,

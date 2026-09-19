@@ -25,6 +25,10 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'Oldal megnyitása',
     description: 'Egy konkrét tudásbázis-oldal teljes tartalmát nyitja meg path alapján.',
   },
+  kb_ingest: {
+    label: 'Tudásbázis feltöltés',
+    description: 'Fájl betöltése a tudásbázisba sima szövegként vagy wiki (OKF) oldalakra bontva.',
+  },
 
   // Fájlkezelés / repo
   repo_prepare: {

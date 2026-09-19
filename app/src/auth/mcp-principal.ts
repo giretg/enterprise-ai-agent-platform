@@ -1,5 +1,5 @@
 import type { PlatformRole, UserRole } from '@prisma/client'
-import { ENTERPRISE_DRIVE_TOOLS } from '@/domain/enterprise-tools/tool-definitions'
+import { ENTERPRISE_DRIVE_TOOLS, ENTERPRISE_KB_TOOLS } from '@/domain/enterprise-tools/tool-definitions'
 import {
   isSuperadmin,
   normalizeTenantSlug,
@@ -24,7 +24,11 @@ export const MCP_PLATFORM_TOOLS = [
   MCP_AGENT_GET_DEFINITION_TOOL,
   MCP_GATEWAY_OPERATION_GET_TOOL,
 ] as const
-export const MCP_ALLOWED_TOOLS = [...MCP_PLATFORM_TOOLS, ...ENTERPRISE_DRIVE_TOOLS] as const
+export const MCP_ALLOWED_TOOLS = [
+  ...MCP_PLATFORM_TOOLS,
+  ...ENTERPRISE_DRIVE_TOOLS,
+  ...ENTERPRISE_KB_TOOLS,
+] as const
 export const MCP_RESOURCE_PATH = '/api/mcp'
 export const MCP_RESOURCE_METADATA_PATH =
   '/.well-known/oauth-protected-resource/api/mcp'

@@ -78,6 +78,28 @@ enum ConnectorType {
   google_drive
   http_api
   gmail
+  knowledge_base
+}
+
+enum DocumentStatus {
+  uploaded
+  processed
+  failed
+}
+
+enum KnowledgeProcessingMode {
+  raw_text_only
+  okf
+}
+
+enum KnowledgeArtifactStatus {
+  pending_review
+  published
+  failed
+}
+
+enum KnowledgeArtifactFormat {
+  okf
 }
 
 enum ConnectorAuthMode {
@@ -241,6 +263,7 @@ model User {
   publishedDefinitions        AgentDefinitionVersion[] @relation("DefinitionPublishedBy")
   gatewayOperations           GatewayOperation[]    @relation("GatewayOperationPrincipal")
   gatewayApprovalsDecided     GatewayApproval[]     @relation("GatewayApprovalDecidedBy")
+  uploadedDocuments           Document[]            @relation("DocumentUploadedBy")
 
   @@index([status])
   @@map("users")
@@ -291,6 +314,7 @@ model Tenant {
   resourceGrants    ResourceGrant[]
   gatewayOperations GatewayOperation[]
   auditLogs         AuditLog[]
+  documents         Document[]
 
   @@index([status])
   @@map("tenants")
@@ -483,6 +507,9 @@ model Connector {
   gatewayOperations GatewayOperation[]
   specSource        ConnectorSpecSource?
   specVersions      ConnectorSpecVersion[] @relation("SpecVersions")
+  documents         Document[]
+  knowledgeArtifacts KnowledgeArtifact[]
+  knowledgeChunks   KnowledgeChunk[]
 
   @@unique([tenantId, type, name])
   @@map("connectors")
@@ -621,6 +648,74 @@ model Capability {
 
   @@id([agentId, toolName])
   @@map("capabilities")
+}
+
+model Document {
+  id              String                    @id @default(uuid()) @db.Uuid
+  tenantId        String                    @map("tenant_id") @db.Uuid
+  filename        String
+  storageRef      String?                   @map("storage_ref")
+  extractedText   String?                   @map("extracted_text") @db.Text
+  mimeType        String?                   @map("mime_type")
+  contentHash     String?                   @map("content_hash")
+  status          DocumentStatus            @default(uploaded)
+  processingMode  KnowledgeProcessingMode?  @map("processing_mode")
+  metadata        Json                      @default("{}")
+  connectorId     String?                   @map("connector_id") @db.Uuid
+  uploadedById    String                    @map("uploaded_by") @db.Uuid
+  createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant     Tenant               @relation(fields: [tenantId], references: [id])
+  connector  Connector?           @relation(fields: [connectorId], references: [id], onDelete: SetNull)
+  uploadedBy User                 @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
+  artifacts  KnowledgeArtifact[]
+
+  @@index([tenantId, connectorId])
+  @@map("documents")
+}
+
+model KnowledgeArtifact {
+  id               String                   @id @default(uuid()) @db.Uuid
+  connectorId      String                   @map("connector_id") @db.Uuid
+  sourceDocumentId String?                  @map("source_document_id") @db.Uuid
+  createdByAgentId String?                  @map("created_by_agent_id") @db.Uuid
+  status           KnowledgeArtifactStatus  @default(pending_review)
+  format           KnowledgeArtifactFormat  @default(okf)
+  version          Int                      @default(1)
+  contentHash      String                   @map("content_hash")
+  bundle           Json                     @default("{}")
+  validationResult Json?                    @map("validation_result")
+  publishedAt      DateTime?                @map("published_at") @db.Timestamptz
+  createdAt        DateTime                 @default(now()) @map("created_at") @db.Timestamptz
+
+  connector      Connector         @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  sourceDocument Document?         @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+  chunks         KnowledgeChunk[]
+
+  @@index([connectorId, status])
+  @@map("knowledge_artifacts")
+}
+
+model KnowledgeChunk {
+  id          String   @id @default(uuid()) @db.Uuid
+  artifactId  String   @map("artifact_id") @db.Uuid
+  connectorId String   @map("connector_id") @db.Uuid
+  path        String
+  title       String
+  type        String
+  section     String?
+  chunkIndex  Int      @map("chunk_index")
+  text        String   @db.Text
+  sourceRef   Json?    @map("source_ref")
+  contentHash String   @map("content_hash")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  artifact  KnowledgeArtifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  connector Connector         @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+
+  @@index([connectorId])
+  @@index([artifactId, path])
+  @@map("knowledge_chunks")
 }
 
 model GatewayOperation {

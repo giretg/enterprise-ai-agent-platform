@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import { requireTenantRole, TenantAuthError } from '@/auth/tenant-context'
-import { getAgent, getAgentGovernance } from '@/app/actions/platform'
+import { hasMinimumRole } from '@/auth/types'
+import { getAgent, getAgentGovernance, listKbDocuments } from '@/app/actions/platform'
 import { getAgentSkillsAction, listAssignableSkillsAction } from '@/app/actions/skills'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
@@ -10,6 +11,7 @@ import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import { AgentLifecycleControls } from '@/components/agents/agent-lifecycle-controls'
 import { PublishAgentDefinitionForm } from '@/components/agents/publish-agent-definition-form'
 import { AgentConnectorBindingForm } from '@/components/agents/agent-connector-binding-form'
+import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { Card } from '@/components/ui/shell'
 
 export const dynamic = 'force-dynamic'
@@ -20,18 +22,20 @@ export default async function AgentDetailPage({
   params: Promise<{ agentId: string }>
 }) {
   const { agentId } = await params
+  let ctx
   try {
-    await requireTenantRole('viewer')
+    ctx = await requireTenantRole('viewer')
   } catch (error) {
     if (error instanceof TenantAuthError) notFound()
     throw error
   }
 
-  const [agentRes, govRes, skillsRes, assignableRes] = await Promise.all([
+  const [agentRes, govRes, skillsRes, assignableRes, kbRes] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
     getAgentSkillsAction(agentId),
     listAssignableSkillsAction(agentId),
+    listKbDocuments({ agentId }),
   ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
@@ -39,6 +43,8 @@ export default async function AgentDetailPage({
   const connectors = govRes.success ? govRes.data.connectors : []
   const skills = skillsRes.success ? skillsRes.data : []
   const assignable = assignableRes.success ? assignableRes.data : []
+  const kbDocs = kbRes.success ? kbRes.data : []
+  const canManage = hasMinimumRole(ctx.activeTenantRole, 'admin')
 
   return (
     <div className="space-y-6">
@@ -61,6 +67,7 @@ export default async function AgentDetailPage({
         currentDefinitionId={agent.currentDefinitionVersionId}
       />
       <AgentConnectorBindingForm agentId={agent.id} bindings={connectors} />
+      <AgentKnowledgeBasePanel agentId={agent.id} documents={kbDocs} canManage={canManage} />
       <AgentCapabilitiesPanel agentId={agent.id} currentCapabilities={capabilities} />
       <AgentSkillsPanel agentId={agent.id} assigned={skills} assignable={assignable} />
     </div>

@@ -20,6 +20,10 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  KB_GET_PAGE_TOOL,
+  KB_INGEST_TOOL,
+  KB_LIST_INDEX_TOOL,
+  KB_SEARCH_TOOL,
   invokeEnterpriseTool,
   type EnterpriseToolDeps,
   type LiveConnectorRow,
@@ -451,7 +455,7 @@ async function main() {
     assert.equal(body.error.code, 'auth_not_configured')
   })
 
-  await check('tools/list returns platform tools, Drive read+write, and gateway_operation.get', async () => {
+  await check('tools/list returns platform tools, Drive, knowledge base, and gateway_operation.get', async () => {
     const { deps } = runtimeDeps()
     const init = await initialize(deps)
     assert.equal(init.status, 200, `initialize HTTP ${init.status}: ${await init.clone().text()}`)
@@ -475,6 +479,10 @@ async function main() {
       GOOGLE_DRIVE_SEARCH_TOOL,
       GOOGLE_DRIVE_READ_FILE_TOOL,
       GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      KB_SEARCH_TOOL,
+      KB_LIST_INDEX_TOOL,
+      KB_GET_PAGE_TOOL,
+      KB_INGEST_TOOL,
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
   })

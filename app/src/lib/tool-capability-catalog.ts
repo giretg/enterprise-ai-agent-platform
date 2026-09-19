@@ -5,6 +5,10 @@ export type ToolCapabilityGroup = {
 
 export const NORMAL_TOOL_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = [
   { label: 'Google Drive', tools: ['google_drive_search', 'google_drive_read_file'] },
+  {
+    label: 'Tudásbázis',
+    tools: ['kb_search', 'kb_list_index', 'kb_get_page', 'kb_ingest'],
+  },
 ]
 
 export const CLOSED_ROLE_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = []

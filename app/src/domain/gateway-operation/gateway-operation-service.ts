@@ -561,6 +561,7 @@ async function executeApprovedOperation(
 
   let accessToken: string
   try {
+    if (!authorized.grantId || !authorized.tokenRef) return fail('connector_grant_missing')
     accessToken = await deps.resolveAccessToken({
       connector: authorized.connector,
       grantId: authorized.grantId,

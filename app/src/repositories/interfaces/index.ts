@@ -17,6 +17,8 @@ import type {
   ConnectorTemplateOrigin,
   ConnectorTemplateStatus,
   ConnectorType,
+  Document,
+  DocumentStatus,
   Invitation,
   InvitationStatus,
   PlatformMembership,
@@ -41,6 +43,10 @@ import type {
   User,
   UserRole,
   UserStatus,
+  KnowledgeArtifact,
+  KnowledgeArtifactStatus,
+  KnowledgeChunk,
+  KnowledgeProcessingMode,
 } from '@prisma/client'
 import type { ListPageResult } from '@/lib/list-pagination'
 import type { AuditAppendInput } from '@/lib/audit/types'
@@ -276,7 +282,19 @@ export interface ConnectorTemplateRepository {
 
 export interface ConnectorRepository {
   findById(id: string, tenantId?: string): Promise<Connector | null>
+  findByTenantTypeAndName(
+    tenantId: string,
+    type: ConnectorType,
+    name: string,
+  ): Promise<Connector | null>
   listActive(tenantId: string): Promise<Connector[]>
+  create(input: {
+    tenantId: string
+    type: ConnectorType
+    name: string
+    authMode: ConnectorAuthMode
+    scope: Connector['scope']
+  }): Promise<Connector>
 }
 
 export interface ConnectorDraftRepository {
@@ -527,6 +545,119 @@ export interface PlatformSettingsRepository {
 }
 
 export type { Capability }
+
+export type KnowledgeChunkSearchHit = {
+  artifactId: string
+  connectorId: string
+  path: string
+  title: string
+  type: string
+  section: string | null
+  text: string
+  sourceRef: unknown
+  score: number
+}
+
+export type KnowledgeIndexEntry = {
+  artifactId: string
+  connectorId: string
+  path: string
+  title: string
+  type: string
+}
+
+export type KnowledgePageChunk = {
+  artifactId: string
+  connectorId: string
+  path: string
+  title: string
+  type: string
+  section: string | null
+  chunkIndex: number
+  text: string
+  sourceRef: unknown
+}
+
+export type DocumentListItem = Pick<
+  Document,
+  'id' | 'filename' | 'status' | 'processingMode' | 'mimeType' | 'createdAt' | 'connectorId'
+>
+
+export interface DocumentRepository {
+  create(data: {
+    tenantId: string
+    filename: string
+    storageRef?: string | null
+    extractedText?: string | null
+    mimeType?: string | null
+    contentHash?: string | null
+    status?: DocumentStatus
+    processingMode?: KnowledgeProcessingMode | null
+    metadata?: Prisma.InputJsonValue
+    connectorId?: string | null
+    uploadedById: string
+  }): Promise<Document>
+  findById(id: string): Promise<Document | null>
+  findByConnectorId(connectorId: string): Promise<Document[]>
+  listByConnectorId(connectorId: string): Promise<DocumentListItem[]>
+  update(
+    id: string,
+    data: {
+      extractedText?: string | null
+      status?: DocumentStatus
+      processingMode?: KnowledgeProcessingMode | null
+      metadata?: Prisma.InputJsonValue
+      connectorId?: string | null
+      contentHash?: string | null
+      mimeType?: string | null
+    },
+  ): Promise<Document>
+  delete(id: string): Promise<void>
+}
+
+export interface KnowledgeArtifactRepository {
+  create(data: {
+    connectorId: string
+    sourceDocumentId?: string | null
+    createdByAgentId?: string | null
+    status?: KnowledgeArtifactStatus
+    format?: KnowledgeArtifact['format']
+    version: number
+    contentHash: string
+    bundle?: Prisma.InputJsonValue
+    validationResult?: Prisma.InputJsonValue | null
+    publishedAt?: Date | null
+  }): Promise<KnowledgeArtifact>
+  findById(id: string): Promise<KnowledgeArtifact | null>
+  findByConnector(connectorId: string, status?: KnowledgeArtifactStatus): Promise<KnowledgeArtifact[]>
+  publishedSourceDocumentIds(connectorIds: string[]): Promise<Set<string>>
+  deleteBySourceDocumentId(documentId: string): Promise<void>
+}
+
+export interface KnowledgeChunkRepository {
+  createMany(
+    rows: Array<{
+      artifactId: string
+      connectorId: string
+      path: string
+      title: string
+      type: string
+      section: string | null
+      chunkIndex: number
+      text: string
+      sourceRef: Prisma.InputJsonValue | null
+      contentHash: string
+    }>,
+  ): Promise<number>
+  searchChunks(connectorIds: string[], query: string, limit: number): Promise<KnowledgeChunkSearchHit[]>
+  listIndex(connectorIds: string[], pathPrefix?: string): Promise<KnowledgeIndexEntry[]>
+  getPageChunks(
+    connectorIds: string[],
+    path: string,
+    artifactId?: string,
+  ): Promise<KnowledgePageChunk[]>
+  deleteByArtifact(artifactId: string): Promise<void>
+}
 
 export type { GatewayOperationStore as GatewayOperationRepository } from '@/domain/gateway-operation'
 
