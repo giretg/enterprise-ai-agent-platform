@@ -296,6 +296,22 @@ function main() {
     assert.match(page, /Új munkatárs/)
     assert.doesNotMatch(page, /sáv/)
   })
+
+  check('header nav is page links, not route modals', () => {
+    const cpShell = readFileSync(
+      path.join(__dirname, '..', 'src', 'app', 'control-plane', 'control-plane-shell.tsx'),
+      'utf8',
+    )
+    assert.doesNotMatch(cpShell, /navMode/)
+    assert.doesNotMatch(cpShell, /RouteModalHost/)
+    assert.doesNotMatch(cpShell, /ControlPlanePanelDockHost/)
+    const appShell = readFileSync(
+      path.join(__dirname, '..', 'src', 'components', 'ui', 'shell.tsx'),
+      'utf8',
+    )
+    assert.doesNotMatch(appShell, /navMode/)
+    assert.doesNotMatch(appShell, /openControlPlanePanel/)
+  })
   if (failures > 0) process.exit(1)
 }
 

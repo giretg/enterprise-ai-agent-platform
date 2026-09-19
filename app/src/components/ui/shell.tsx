@@ -2,11 +2,9 @@
 
 import Image from 'next/image'
 import Link from 'next/link'
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { ShellAuth } from '@/components/auth/shell-auth'
 import { useClerkEnabled } from '@/components/auth/providers'
-import { rememberPanelOpener } from '@/components/ui/route-modal'
-import { openControlPlanePanel, useControlPlanePanelKey } from '@/lib/control-plane-panel-store'
 
 export type NavLeaf = { key?: string; href: string; label: string; exact?: boolean }
 export type NavGroup = { key?: string; label: string; children: NavLeaf[] }
@@ -29,7 +27,6 @@ export function AppShell({
   switchLink,
   pathname,
   headerExtra,
-  navMode = 'link',
   layout = 'default',
 }: {
   appName: string
@@ -41,8 +38,6 @@ export function AppShell({
   pathname: string
   /** Fejléc-slot a bal/jobb szélen (pl. tenant-switcher). */
   headerExtra?: ReactNode
-  /** Control Plane: header menük modalban nyílnak (?panel=). */
-  navMode?: 'link' | 'modal'
   /** `rail`: sáv + munkaterület elrendezés, nincs max-width a main-en. */
   layout?: 'default' | 'rail'
 }) {
@@ -56,8 +51,6 @@ export function AppShell({
   const clerkEnabled = useClerkEnabled()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [openGroup, setOpenGroup] = useState<string | null>(null)
-  const storePanel = useControlPlanePanelKey()
-  const activePanel = storePanel
 
   useEffect(() => {
     if (!openGroup) return
@@ -77,48 +70,19 @@ export function AppShell({
     }
   }, [openGroup])
 
-  const openNavPanel = useCallback(
-    (key: string, opener?: HTMLElement | null) => {
-      rememberPanelOpener(opener ?? null)
-      openControlPlanePanel(key)
-    },
-    [],
-  )
-
   const renderNavLeaf = (child: NavLeaf, childActive: boolean, onPick: () => void, compact = false) => {
-    const panelKey = child.key
     const baseClass = compact
-      ? linkClass(childActive)
+      ? `${linkClass(childActive)} block`
       : `block rounded-xl px-3 py-2 text-sm font-medium tracking-wide transition-colors ${
           childActive ? 'bg-coral/10 text-coral-deep' : 'text-ink-soft hover:bg-coral/8 hover:text-ink'
         }`
-    if (navMode === 'modal' && panelKey) {
-      const panelActive = activePanel === panelKey
-      return (
-        <button
-          key={child.href}
-          type="button"
-          role="menuitem"
-          onClick={(e) => {
-            openNavPanel(panelKey, e.currentTarget)
-            onPick()
-          }}
-          className={`${baseClass} ${compact ? 'block w-full text-left' : 'w-full text-left'}`}
-        >
-          {child.label}
-          {(panelActive || childActive) && compact ? (
-            <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
-          ) : null}
-        </button>
-      )
-    }
     return (
       <Link
         key={child.href}
         href={child.href}
         role={compact ? 'menuitem' : undefined}
         onClick={onPick}
-        className={`${baseClass} ${compact ? 'block' : linkClass(childActive)}`}
+        className={baseClass}
       >
         {child.label}
         {childActive && compact ? (
@@ -130,22 +94,6 @@ export function AppShell({
 
   const renderTopLeaf = (item: NavLeaf) => {
     const active = isActive(item.href, item.exact)
-    if (navMode === 'modal' && item.key) {
-      const panelActive = activePanel === item.key
-      return (
-        <button
-          key={item.href}
-          type="button"
-          onClick={(e) => openNavPanel(item.key!, e.currentTarget)}
-          className={linkClass(panelActive || active)}
-        >
-          {item.label}
-          {(panelActive || active) && (
-            <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
-          )}
-        </button>
-      )
-    }
     return (
       <Link key={item.href} href={item.href} className={linkClass(active)}>
         {item.label}
