@@ -135,6 +135,27 @@ const UNAUDITED_MCP_AUTH_CODES: ReadonlySet<McpPrincipalFailureCode> = new Set([
   'invalid_token',
 ])
 
+/** Successful whoami evidence. Not written from resolveMcpPrincipal — that path is every HTTP request. */
+export async function auditMcpAuthOk(
+  deps: Pick<McpPrincipalDeps, 'audit'>,
+  principal: McpPrincipal,
+): Promise<void> {
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: principal.userId,
+    agentVersion: null,
+    action: 'mcp.auth.ok',
+    targetType: 'mcp',
+    targetId: principal.tenantId,
+    modelUsed: null,
+    inputRef: null,
+    outputRef: null,
+    policyDecision: 'allowed',
+    metadata: { tenantSlug: principal.tenantSlug, assumed: principal.assumed },
+    tenantId: principal.tenantId,
+  })
+}
+
 /** Denials persist to audit_log except unauthenticated/invalid_token (flood). */
 export async function auditMcpAuthDenied(
   deps: McpPrincipalDeps | { audit?: AuditSink },

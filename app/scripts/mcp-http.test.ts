@@ -513,7 +513,7 @@ async function main() {
       role: 'operator',
       assumed: false,
     })
-    assert.equal(audit.filter((row) => row.action === 'mcp.auth.ok').length, 0)
+    assert.equal(audit.filter((row) => row.action === 'mcp.auth.ok').length, 1)
     assert.ok(audit.some((row) => row.action === 'mcp.tools.call' && row.inputRef === MCP_WHOAMI_TOOL))
   })
 

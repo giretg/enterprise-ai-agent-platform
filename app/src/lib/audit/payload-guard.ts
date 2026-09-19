@@ -14,10 +14,12 @@ const FORBIDDEN_METADATA_KEYS = new Set([
   'password',
   'prompt',
   'raw',
+  'reason',
   'response',
   'secret',
   'text',
   'token',
+  'tokenref',
 ])
 
 // Ezek a kulcsok a tiltólista szavait tartalmazhatják, de a spec engedélyezett ref/hash/alias

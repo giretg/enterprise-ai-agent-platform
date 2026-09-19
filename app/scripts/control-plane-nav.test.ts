@@ -4,7 +4,7 @@
  * Futtatás: npx tsx scripts/control-plane-nav.test.ts
  */
 import assert from 'node:assert/strict'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import {
   allNavKeys,
@@ -285,6 +285,16 @@ function main() {
   check('agent rail route is gone from live app', () => {
     const rail = path.join(__dirname, '..', 'src', 'app', 'api', 'agents', 'rail-state', 'route.ts')
     assert.equal(existsSync(rail), false)
+  })
+
+  check('agents index has Új munkatárs CTA after the rail was removed', () => {
+    const page = readFileSync(
+      path.join(__dirname, '..', 'src', 'app', 'control-plane', 'agents', 'page.tsx'),
+      'utf8',
+    )
+    assert.match(page, /href="\/control-plane\/agents\/new"/)
+    assert.match(page, /Új munkatárs/)
+    assert.doesNotMatch(page, /sáv/)
   })
   if (failures > 0) process.exit(1)
 }

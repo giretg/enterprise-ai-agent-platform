@@ -122,9 +122,9 @@ function deps(opts?: {
   recordCreatedDriveFiles?: GatewayOperationServiceDeps['recordCreatedDriveFiles']
   driveCalls?: unknown[]
   executedTools?: string[]
-}): { deps: GatewayOperationServiceDeps; store: MemoryGatewayOperationStore; audit: Array<{ action: string }> } {
+}): { deps: GatewayOperationServiceDeps; store: MemoryGatewayOperationStore; audit: Array<{ action: string; metadata?: unknown }> } {
   const store = new MemoryGatewayOperationStore()
-  const audit: Array<{ action: string }> = []
+  const audit: Array<{ action: string; metadata?: unknown }> = []
   const driveCalls = opts?.driveCalls ?? []
   const executedTools = opts?.executedTools ?? []
   return {
@@ -134,7 +134,7 @@ function deps(opts?: {
       operations: store,
       audit: {
         async append(data) {
-          audit.push({ action: data.action })
+          audit.push({ action: data.action, metadata: data.metadata })
         },
       },
       async loadDefinition() {
@@ -324,7 +324,7 @@ async function main() {
         tenantId: TENANT_ID,
         operationId: enqueued.view.operationId,
         actor: principal({ userId: APPROVER_ID, role: 'approver' }),
-        reason: 'not needed',
+        reason: 'E-mail: ugyfel@example.com; API key: sk-live-should-not-be-audit-log',
       })
       assert.equal(rejected.ok, true)
       if (!rejected.ok) return
@@ -333,6 +333,12 @@ async function main() {
       assert.equal(driveCalls.length, 0)
       assert.ok(logs.events.some((row) => row.event === 'gateway.operation.rejected'))
       assert.ok(wired.audit.some((row) => row.action === 'gateway.operation.rejected'))
+      const auditEvent = wired.audit.find((row) => row.action === 'gateway.operation.rejected')
+      const auditMetadata = auditEvent?.metadata as Record<string, unknown>
+      assert.equal(auditMetadata.operationId, enqueued.view.operationId)
+      assert.match(String(auditMetadata.reasonHash), /^[a-f0-9]{64}$/)
+      assert.equal('reason' in auditMetadata, false)
+      assert.doesNotMatch(JSON.stringify(auditMetadata), /ugyfel@example\.com|sk-live-should-not-be-audit-log/)
       assert.equal(wired.audit.filter((row) => row.action === 'gateway.operation.succeeded').length, 0)
     } finally {
       logs.restore()
