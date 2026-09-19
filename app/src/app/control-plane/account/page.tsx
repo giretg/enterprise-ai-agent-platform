@@ -16,8 +16,8 @@ export default async function LinkedAccountsPage() {
       <header>
         <h1 className="text-xl font-semibold text-ink">Kapcsolt fiókok</h1>
         <p className="mt-1 text-sm text-ink-soft">
-          Itt kötöd össze és bontod a saját fiókjaidat. Az agent csak ezekkel, a te
-          engedélyeddel járhat el.
+          Itt tudod a meglévő alkalmazásaidban lévő adatokat az AI számára elérhetővé
+          tenni.
         </p>
       </header>
       <Suspense fallback={<p className="text-sm text-ink-soft">Betöltés…</p>}>
