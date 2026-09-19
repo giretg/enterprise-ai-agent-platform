@@ -54,9 +54,12 @@ export class SkillPackageError extends Error {
   }
 }
 
-/** Szöveges kód — ezek BEJÖNNEK mellékletként (MCP skill-csomag, T2). */
-const CODE_EXTENSIONS = new Set([
-  'py', 'pyw', 'ipynb',
+/**
+ * Szöveges kód — ezek BEJÖNNEK mellékletként (MCP skill-csomag, T2).
+ * Export: agent-checkout fail-closed (nem írhat kódfájlt a checkout).
+ */
+export const CODE_EXTENSIONS = new Set([
+  'py', 'pyc', 'pyw', 'ipynb',
   'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx',
   'sh', 'bash', 'zsh', 'fish', 'ps1', 'psm1', 'bat', 'cmd',
   'rb', 'php', 'pl', 'pm', 'lua', 'r', 'jl',

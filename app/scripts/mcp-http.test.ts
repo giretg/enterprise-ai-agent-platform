@@ -23,6 +23,10 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  KB_GET_PAGE_TOOL,
+  KB_INGEST_TOOL,
+  KB_LIST_INDEX_TOOL,
+  KB_SEARCH_TOOL,
   invokeEnterpriseTool,
   type EnterpriseToolDeps,
   type LiveConnectorRow,
@@ -38,6 +42,7 @@ import {
 import { MemoryGatewayOperationStore } from './memory-gateway-operation-store'
 import {
   MCP_AGENTS_LIST_TOOL,
+  MCP_AGENT_CHECKOUT_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
   MCP_GATEWAY_OPERATION_GET_TOOL,
   MCP_WHOAMI_TOOL,
@@ -327,6 +332,9 @@ function runtimeDeps(overrides: {
           grant: grantedAgentIds.has(agentId) ? { accessLevel: grantAccessLevel } : null,
         })
       },
+      async loadSkillVersions() {
+        return []
+      },
       invokeEnterpriseTool: (input) => invokeEnterpriseTool(enterpriseDeps, input),
       getGatewayOperation: async (input) =>
         getResultToMcp(await getGatewayOperation(gatewayDeps, input)),
@@ -480,7 +488,7 @@ async function main() {
     assert.equal(body.error.code, 'auth_not_configured')
   })
 
-  await check('tools/list returns platform tools, Drive read+write, and gateway_operation.get', async () => {
+  await check('tools/list returns platform tools, Drive, knowledge base, and gateway_operation.get', async () => {
     const { deps } = runtimeDeps()
     const init = await initialize(deps)
     assert.equal(init.status, 200, `initialize HTTP ${init.status}: ${await init.clone().text()}`)
@@ -501,9 +509,14 @@ async function main() {
       MCP_WHOAMI_TOOL,
       MCP_AGENTS_LIST_TOOL,
       MCP_AGENT_GET_DEFINITION_TOOL,
+      MCP_AGENT_CHECKOUT_TOOL,
       GOOGLE_DRIVE_SEARCH_TOOL,
       GOOGLE_DRIVE_READ_FILE_TOOL,
       GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      KB_SEARCH_TOOL,
+      KB_LIST_INDEX_TOOL,
+      KB_GET_PAGE_TOOL,
+      KB_INGEST_TOOL,
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
   })
@@ -724,6 +737,115 @@ async function main() {
     assert.equal(body.result?.isError, true)
     const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
     assert.equal(payload.code, 'definition_not_found')
+  })
+
+  await check('checkout writes AGENTS.md with roleInstruction and mcpUrl; extra JSON cannot override tenant', async () => {
+    const { deps, audit } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 20,
+        method: 'tools/call',
+        params: {
+          name: MCP_AGENT_CHECKOUT_TOOL,
+          arguments: {
+            agentId: AGENT_ID,
+            tenantId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            tenantSlug: 'evil',
+            harness: 'codex',
+          },
+        },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, undefined)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      mcpUrl?: string
+      pin?: { agentId?: string; harness?: string | null; tenantSlug?: string }
+      files?: Array<{ path: string; content: string }>
+    }
+    assert.equal(payload.mcpUrl, `${ORIGIN}/api/mcp/acme`)
+    assert.equal(payload.pin?.tenantSlug, 'acme')
+    assert.equal(payload.pin?.agentId, AGENT_ID)
+    assert.equal(payload.pin?.harness, 'codex')
+    const agents = payload.files?.find((file) => file.path === 'AGENTS.md')
+    assert.ok(agents?.content.includes('Inspect Drive'))
+    assert.ok(agents?.content.includes(`${ORIGIN}/api/mcp/acme`))
+    assert.ok(
+      audit.some((row) => row.action === 'mcp.tools.call' && row.inputRef === MCP_AGENT_CHECKOUT_TOOL),
+    )
+  })
+
+  await check('checkout invalid agentId → invalid_args; no grant / inactive → definition_not_found', async () => {
+    const denied = runtimeDeps({ role: 'operator' })
+    await initialize(denied.deps)
+    const invalid = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 21,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_CHECKOUT_TOOL, arguments: { agentId: 'not-a-uuid' } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      denied.deps,
+    )
+    const invalidBody = (await readJson(invalid)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(invalidBody.result?.isError, true)
+    assert.equal(
+      JSON.parse(invalidBody.result?.content?.[0]?.text ?? '{}').code,
+      'invalid_args',
+    )
+
+    const noGrant = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 22,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_CHECKOUT_TOOL, arguments: { agentId: AGENT_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      denied.deps,
+    )
+    assert.equal(
+      JSON.parse(
+        ((await readJson(noGrant)) as { result?: { content?: Array<{ text: string }> } }).result
+          ?.content?.[0]?.text ?? '{}',
+      ).code,
+      'definition_not_found',
+    )
+
+    const inactive = runtimeDeps({ role: 'admin' })
+    inactive.deps.loadDefinition = async () => ({ ...SAMPLE_DEFINITION, status: 'draft' })
+    await initialize(inactive.deps)
+    const draft = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 23,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_CHECKOUT_TOOL, arguments: { agentId: AGENT_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      inactive.deps,
+    )
+    assert.equal(
+      JSON.parse(
+        ((await readJson(draft)) as { result?: { content?: Array<{ text: string }> } }).result
+          ?.content?.[0]?.text ?? '{}',
+      ).code,
+      'definition_not_found',
+    )
   })
 
   await check('google_drive_search happy path with stub client; extra JSON cannot override tenant', async () => {

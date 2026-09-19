@@ -91,6 +91,9 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   'privacy.connector.capability.absent',
   'privacy.connector.capability.changed',
+
+  'kb.document.ingested',
+  'kb.document.deleted',
 ])
 
 export class UnregisteredAuditActionError extends Error {

@@ -94,6 +94,10 @@ Set `GOOGLE_DRIVE_API_STUB=true`. Seed keeps a placeholder grant whose `tokenRef
 
 `definitionId` is required (published `AgentDefinitionVersion.id`). Extra JSON keys such as `tenantId` / `userId` are ignored.
 
+### Agent checkout
+
+`platform.agent.checkout` `{ agentId }` returns a file tree (`AGENTS.md`, `.enterprise-agent/manifest.json`, instruction-only `SKILL.md`) plus a write recipe. The MCP server does not write the client disk. Expect `AGENTS.md` to contain the published `roleInstruction` and the tenant `mcpUrl`. Do not expect `.mcp.json` or other native client config. Negative: other-tenant / unpublished / inactive agentId → `definition_not_found` (no existence leak). Invalid uuid/version → `invalid_args`.
+
 ### Live Google OAuth (harness)
 
 1. Seed with `SEED_CLERK_USER_ID` = the Clerk user id of the human running Codex / Claude Code.

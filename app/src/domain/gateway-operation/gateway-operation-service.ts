@@ -88,6 +88,38 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {}
 }
 
+/** Stable JSON for idempotency payload equality (key order independent). */
+function stableJsonFingerprint(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableJsonFingerprint(entry)).join(',')}]`
+  }
+  const obj = value as Record<string, unknown>
+  const keys = Object.keys(obj).sort()
+  return `{${keys
+    .map((key) => `${JSON.stringify(key)}:${stableJsonFingerprint(obj[key])}`)
+    .join(',')}}`
+}
+
+/**
+ * Tenant-unique idempotency keys must only replay the same call.
+ * Otherwise enqueue returns another user's succeeded result (bypassing get
+ * visibility) or silently drops a write with different args.
+ */
+function idempotencyReplayConflict(
+  existing: GatewayOperationRecord,
+  principal: GatewayActor,
+  toolName: string,
+  args: Record<string, unknown>,
+): GatewayOperationErr | null {
+  if (existing.principalUserId !== principal.userId) return err('idempotency_key_conflict')
+  if (existing.toolName !== toolName) return err('idempotency_key_conflict')
+  if (stableJsonFingerprint(asRecord(existing.argsJson)) !== stableJsonFingerprint(args)) {
+    return err('idempotency_key_conflict')
+  }
+  return null
+}
+
 export function canApproveGatewayOperation(actor: GatewayActor): boolean {
   if (actor.assumed) return true
   return isPrivilegedAgentReader(actor.role)
@@ -290,7 +322,16 @@ export async function enqueueGatewayOperation(
     principal.tenantId,
     idempotencyKey,
   )
-  if (existing) return ok(toGatewayOperationView(existing), false)
+  if (existing) {
+    const conflict = idempotencyReplayConflict(
+      existing,
+      principal,
+      toolName,
+      authorized.parsedArgs,
+    )
+    if (conflict) return conflict
+    return ok(toGatewayOperationView(existing), false)
+  }
 
   const inserted = await deps.operations.createAwaitingApproval({
     tenantId: principal.tenantId,
@@ -302,24 +343,32 @@ export async function enqueueGatewayOperation(
     idempotencyKey,
     connectorId: authorized.connectorId,
   })
-  if (inserted.created) {
-    await recordGatewayAudit(deps, {
-      action: 'gateway.operation.enqueued',
-      actorType: 'human',
-      actorId: principal.userId,
-      tenantId: principal.tenantId,
-      operationId: inserted.record.id,
-      metadata: {
-        operationId: inserted.record.id,
-        toolName,
-        tenantId: principal.tenantId,
-        userId: principal.userId,
-        definitionId: authorized.definition.definitionId,
-        agentId: authorized.definition.agentId,
-        idempotencyKey,
-      },
-    })
+  if (!inserted.created) {
+    const conflict = idempotencyReplayConflict(
+      inserted.record,
+      principal,
+      toolName,
+      authorized.parsedArgs,
+    )
+    if (conflict) return conflict
+    return ok(toGatewayOperationView(inserted.record), false)
   }
+  await recordGatewayAudit(deps, {
+    action: 'gateway.operation.enqueued',
+    actorType: 'human',
+    actorId: principal.userId,
+    tenantId: principal.tenantId,
+    operationId: inserted.record.id,
+    metadata: {
+      operationId: inserted.record.id,
+      toolName,
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      definitionId: authorized.definition.definitionId,
+      agentId: authorized.definition.agentId,
+      idempotencyKey,
+    },
+  })
   return ok(toGatewayOperationView(inserted.record), inserted.created)
 }
 
@@ -561,6 +610,7 @@ async function executeApprovedOperation(
 
   let accessToken: string
   try {
+    if (!authorized.grantId || !authorized.tokenRef) return fail('connector_grant_missing')
     accessToken = await deps.resolveAccessToken({
       connector: authorized.connector,
       grantId: authorized.grantId,

@@ -34,8 +34,8 @@ export type AuthorizeToolCallAllowed = {
   allowed: true
   connectorId: string
   connector: LiveConnectorRow
-  grantId: string
-  tokenRef: string
+  grantId: string | null
+  tokenRef: string | null
 }
 
 export type AuthorizeToolCallResult = AuthorizeToolCallAllowed | AuthorizeToolCallDenied
@@ -62,7 +62,10 @@ export async function authorizeToolCall(
   input: AuthorizeToolCallInput,
 ): Promise<AuthorizeToolCallResult> {
   const requirement = TOOL_REQUIREMENTS[input.toolName]
-  if (!requirement || requirement.connectorType !== 'google_drive') {
+  if (
+    !requirement ||
+    (requirement.connectorType !== 'google_drive' && requirement.connectorType !== 'knowledge_base')
+  ) {
     return { allowed: false, reason: 'tool_not_configured' }
   }
 
@@ -84,9 +87,13 @@ export async function authorizeToolCall(
     return {
       allowed: false,
       reason:
-        requirement.accessMode === 'read'
-          ? 'missing_google_drive_connector_read'
-          : 'missing_google_drive_connector_write',
+        requirement.connectorType === 'knowledge_base'
+          ? requirement.accessMode === 'read'
+            ? 'missing_knowledge_base_connector_read'
+            : 'missing_knowledge_base_connector_write'
+          : requirement.accessMode === 'read'
+            ? 'missing_google_drive_connector_read'
+            : 'missing_google_drive_connector_write',
     }
   }
 
@@ -99,6 +106,15 @@ export async function authorizeToolCall(
   }
   if (connector.lifecycleState !== 'active') {
     return { allowed: false, reason: 'connector_not_active' }
+  }
+  if (requirement.connectorType === 'knowledge_base') {
+    return {
+      allowed: true,
+      connectorId: connector.id,
+      connector,
+      grantId: null,
+      tokenRef: null,
+    }
   }
   if (connector.authMode !== 'user_delegated') {
     return { allowed: false, reason: 'acting_user_required' }

@@ -230,6 +230,55 @@ async function main() {
     assert.equal(wired.audit.filter((row) => row.action === 'gateway.operation.enqueued').length, 1)
   })
 
+  await check('idempotency key collision across users is conflict (no result leak)', async () => {
+    const wired = deps()
+    const first = await enqueueGatewayOperation(wired.deps, {
+      principal: principal({ role: 'operator' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: FOLDER_ARGS,
+    })
+    assert.equal(first.ok, true)
+    if (!first.ok) return
+    const approved = await approveGatewayOperation(wired.deps, {
+      tenantId: TENANT_ID,
+      operationId: first.view.operationId,
+      actor: principal({ userId: APPROVER_ID, role: 'admin' }),
+    })
+    assert.equal(approved.ok, true)
+    if (!approved.ok) return
+    assert.equal(approved.view.status, 'succeeded')
+    assert.ok(approved.view.result)
+
+    const other = await enqueueGatewayOperation(wired.deps, {
+      principal: principal({ userId: OTHER_USER, role: 'operator' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: FOLDER_ARGS,
+    })
+    assert.deepEqual(other, { ok: false, code: 'idempotency_key_conflict' })
+  })
+
+  await check('idempotency key reuse with different args is conflict', async () => {
+    const wired = deps()
+    const first = await enqueueGatewayOperation(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, idempotencyKey: 'idem-args' },
+    })
+    assert.equal(first.ok, true)
+    if (!first.ok) return
+    const mismatched = await enqueueGatewayOperation(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: {
+        ...FOLDER_ARGS,
+        idempotencyKey: 'idem-args',
+        name: 'Different folder',
+        parentFolderId: 'folder-other',
+      },
+    })
+    assert.deepEqual(mismatched, { ok: false, code: 'idempotency_key_conflict' })
+  })
+
   await check('self-approval by admin executes Drive once and stores resultJson', async () => {
     const driveCalls: unknown[] = []
     const executedTools: string[] = []
