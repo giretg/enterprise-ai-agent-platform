@@ -67,6 +67,7 @@ jobs:
           npm run test:public-routes
           npm run test:mcp-principal
           npm run test:mcp-http
+          npm run test:agent-checkout
           npm run test:enterprise-tools
           npm run test:gateway-operation
           npm run test:audit-log

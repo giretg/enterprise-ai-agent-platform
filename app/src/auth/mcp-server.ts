@@ -12,6 +12,14 @@ import {
   isPrivilegedAgentReader,
   type AgentDefinition,
 } from '@/domain/agent-definition'
+import { isDispatchable } from '@/lib/agent-lifecycle'
+import {
+  asCheckoutHarness,
+  CHECKOUT_WRITE_RECIPE,
+  renderAgentCheckout,
+  type CheckoutSkill,
+} from '@/lib/agent-checkout'
+import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
 import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
@@ -30,6 +38,7 @@ import {
   mcpResourceMetadataUrl,
   MCP_ALLOWED_TOOLS,
   MCP_AGENTS_LIST_TOOL,
+  MCP_AGENT_CHECKOUT_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
   MCP_GATEWAY_OPERATION_GET_TOOL,
   MCP_WHOAMI_TOOL,
@@ -68,6 +77,7 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     role: McpPrincipal['role']
     agentId: string
   }) => Promise<boolean>
+  loadSkillVersions: (versionIds: string[]) => Promise<CheckoutSkill[]>
   invokeEnterpriseTool: (input: {
     principal: McpPrincipal
     toolName: string
@@ -165,6 +175,19 @@ export function productionMcpDeps(): McpRuntimeDeps {
     },
     loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),
     canViewAgent,
+    async loadSkillVersions(versionIds) {
+      const rows = await repositories.skills.findVersionsByIds(versionIds)
+      return rows.map((row) => ({
+        skillId: row.skillId,
+        skillVersionId: row.id,
+        name: row.skill.name,
+        displayName: row.skill.displayName,
+        description: row.skill.description,
+        license: row.skill.license,
+        content: parseSkillContent(row.content),
+        requires: parseSkillRequires(row.requires),
+      }))
+    },
     invokeEnterpriseTool: (input) => services.enterpriseTools.invoke(input),
     getGatewayOperation: async (input) =>
       services.gatewayOperations.toMcpGet(
@@ -264,7 +287,49 @@ async function getDefinitionToolResult(
   return textResult(loaded)
 }
 
-function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps) {
+function invalidArgs(message: string) {
+  return textResult({ code: 'invalid_args', message }, true)
+}
+
+async function checkoutToolResult(
+  principal: McpPrincipal,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+  origin: string,
+) {
+  await auditMcpToolCall(deps, principal, MCP_AGENT_CHECKOUT_TOOL)
+  const agentId = asUuid(args.agentId)
+  if (!agentId) return invalidArgs('agentId must be a uuid')
+  if (args.version !== undefined && asVersion(args.version) === undefined) {
+    return invalidArgs('version must be a positive integer')
+  }
+  const loaded = await deps.loadDefinition({
+    tenantId: principal.tenantId,
+    agentId,
+    version: asVersion(args.version),
+  })
+  if (!loaded || !isDispatchable(loaded.status)) return definitionNotFound()
+  const allowed = await deps.canViewAgent({
+    tenantId: principal.tenantId,
+    userId: principal.userId,
+    role: principal.role,
+    agentId: loaded.agentId,
+  })
+  if (!allowed) return definitionNotFound()
+  const skills = await deps.loadSkillVersions(
+    loaded.snapshot.skills.map((skill) => skill.skillVersionId),
+  )
+  return textResult(
+    renderAgentCheckout({
+      definition: loaded,
+      skills,
+      mcpUrl: `${origin.replace(/\/$/, '')}/api/mcp/${principal.tenantSlug}`,
+      harness: asCheckoutHarness(args.harness),
+    }),
+  )
+}
+
+function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps, origin: string) {
   return createMcpHandler(
     (server) => {
       server.registerTool(
@@ -299,6 +364,22 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
             .passthrough(),
         },
         async (args) => getDefinitionToolResult(principal, args as Record<string, unknown>, deps),
+      )
+      server.registerTool(
+        MCP_AGENT_CHECKOUT_TOOL,
+        {
+          title: 'Checkout agent',
+          description: CHECKOUT_WRITE_RECIPE,
+          inputSchema: z
+            .object({
+              agentId: z.string().uuid(),
+              version: z.number().int().positive().optional(),
+              harness: z.enum(['claude', 'codex', 'goose', 'grok']).optional(),
+            })
+            .passthrough(),
+        },
+        async (args) =>
+          checkoutToolResult(principal, args as Record<string, unknown>, deps, origin),
       )
       server.registerTool(
         GOOGLE_DRIVE_SEARCH_TOOL,
@@ -358,6 +439,9 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps)
         if (toolName === MCP_AGENTS_LIST_TOOL) return listAgentsToolResult(principal, deps)
         if (toolName === MCP_AGENT_GET_DEFINITION_TOOL) {
           return getDefinitionToolResult(principal, args, deps)
+        }
+        if (toolName === MCP_AGENT_CHECKOUT_TOOL) {
+          return checkoutToolResult(principal, args, deps, origin)
         }
         if (toolName === MCP_GATEWAY_OPERATION_GET_TOOL) {
           return getGatewayOperationToolResult(principal, args, deps)
@@ -440,7 +524,7 @@ export async function handleMcpRequest(
       }
       return forbiddenResponse(resolved)
     }
-    return createMcpResourceHandler(resolved.principal, deps)(req)
+    return createMcpResourceHandler(resolved.principal, deps, origin)(req)
   }
 
   return withMcpAuth(inner, verifyToken, {

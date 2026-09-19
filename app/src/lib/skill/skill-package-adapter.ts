@@ -61,7 +61,7 @@ export class SkillPackageError extends Error {
  * kiterjesztésről nem tudjuk biztosan, hogy adat, inkább kódnak vesszük
  * (a Fázis 1 „kétség esetén elutasít” elve fájl-szinten).
  */
-const CODE_EXTENSIONS = new Set([
+export const CODE_EXTENSIONS = new Set([
   'py', 'pyc', 'pyw', 'ipynb',
   'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx',
   'sh', 'bash', 'zsh', 'fish', 'ps1', 'psm1', 'bat', 'cmd',
