@@ -244,6 +244,9 @@ function runtimeDeps(overrides: {
   const operations = new MemoryGatewayOperationStore()
   const gatewayDeps: GatewayOperationServiceDeps = {
     loadDefinition: ({ tenantId, definitionId }) => loadDefinition({ tenantId, definitionId }),
+    async findCurrentDefinitionId() {
+      return DEFINITION_ID
+    },
     async findAgentGrant({ agentId }) {
       return grantedAgentIds.has(agentId) ? { accessLevel: grantAccessLevel } : null
     },
@@ -270,6 +273,9 @@ function runtimeDeps(overrides: {
   }
   const enterpriseDeps: EnterpriseToolDeps = {
     loadDefinition: ({ tenantId, definitionId }) => loadDefinition({ tenantId, definitionId }),
+    async findCurrentDefinitionId() {
+      return DEFINITION_ID
+    },
     async findAgentGrant({ agentId }) {
       return grantedAgentIds.has(agentId) ? { accessLevel: grantAccessLevel } : null
     },
@@ -654,9 +660,11 @@ async function main() {
     const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
       definitionId?: string
       tenantId?: string
+      contentHash?: string
     }
     assert.equal(payload.definitionId, DEFINITION_ID)
     assert.equal(payload.tenantId, TENANT_ID)
+    assert.match(payload.contentHash ?? '', /^[0-9a-f]{64}$/)
   })
 
   await check('operator without ResourceGrant cannot list or get a definition', async () => {

@@ -16,6 +16,7 @@ import {
   type LiveConnectorRow,
   type ToolCallPrincipal,
 } from './authorize-tool-call'
+import { checkDefinitionPin, type DefinitionPinDeps } from './definition-pin'
 import { executeGoogleDriveTool } from './handlers/google-drive'
 import { executeGmailTool } from './handlers/gmail'
 import { executeHttpApiTool } from './handlers/http-api'
@@ -50,7 +51,8 @@ export type EnterpriseToolMcpResult = {
   content: Array<{ type: 'text'; text: string }>
 }
 
-export type EnterpriseToolDeps = AuthorizeToolCallDeps & {
+export type EnterpriseToolDeps = AuthorizeToolCallDeps &
+  DefinitionPinDeps & {
   loadDefinition: (input: {
     tenantId: string
     definitionId: string
@@ -212,6 +214,19 @@ export async function invokeEnterpriseTool(
   if (!isDispatchable(definition.status)) {
     await auditDenied(deps, principal, toolName, 'agent_inactive', definitionId, definition.agentId)
     return errorResult('agent_inactive')
+  }
+
+  const pin = await checkDefinitionPin(deps, {
+    tenantId: principal.tenantId,
+    definition,
+  })
+  if (!pin.current) {
+    await auditDenied(deps, principal, toolName, 'agent_stale', definitionId, definition.agentId)
+    return errorResult('agent_stale', {
+      agentId: definition.agentId,
+      definitionId,
+      currentDefinitionId: pin.currentDefinitionId,
+    })
   }
 
   if (args.agentId !== undefined) {

@@ -191,9 +191,30 @@ async function main() {
     assert.ok(paths.includes('.enterprise-agent/skills/search--22222222/SKILL.md'))
   })
 
-  await check('checkoutSlug empty and max 60', () => {
+  await check('checkoutSlug empty, max 60, and accented names', () => {
     assert.equal(checkoutSlug('???'), 'agent')
     assert.equal(checkoutSlug('A'.repeat(80)).length, 60)
+    assert.equal(checkoutSlug('Réka'), 'reka')
+    assert.equal(checkoutSlug('Drive asszisztens'), 'drive-asszisztens')
+  })
+
+  await check('codex harness adds Desktop open hint to writeRecipe', () => {
+    const bundle = renderAgentCheckout({
+      definition: definition(),
+      skills: [skill(SKILL_A, VER_A, 'drive-search')],
+      mcpUrl: MCP_URL,
+      harness: 'codex',
+    })
+    assert.match(bundle.writeRecipe, /codex app/)
+    assert.doesNotMatch(
+      renderAgentCheckout({
+        definition: definition(),
+        skills: [skill(SKILL_A, VER_A, 'drive-search')],
+        mcpUrl: MCP_URL,
+      }).writeRecipe,
+      /codex app/,
+    )
+    assert.match(bundle.files.find((f) => f.path === 'AGENTS.md')?.content ?? '', /agent_stale/)
   })
 
   if (failures > 0) {

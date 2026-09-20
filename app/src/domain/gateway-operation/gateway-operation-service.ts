@@ -24,6 +24,7 @@ import {
   type StartDelegatedAuthorization,
   type ToolCallPrincipal,
 } from '@/domain/enterprise-tools'
+import { checkDefinitionPin, type DefinitionPinDeps } from '@/domain/enterprise-tools/definition-pin'
 import {
   isEnterpriseDriveWriteTool,
   isEnterpriseHttpWriteTool,
@@ -46,7 +47,8 @@ export type GatewayOperationOk = { ok: true; view: GatewayOperationView; created
 export type GatewayOperationErr = { ok: false; code: string; authorizationUrl?: string }
 export type GatewayOperationResult = GatewayOperationOk | GatewayOperationErr
 
-export type GatewayOperationServiceDeps = AuthorizeToolCallDeps & {
+export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
+  DefinitionPinDeps & {
   loadDefinition: (input: {
     tenantId: string
     definitionId: string
@@ -283,6 +285,12 @@ async function loadAuthorizedWrite(
   })
   if (!definition) return fail('definition_not_found', { definitionId })
   const ids = { definitionId, agentId: definition.agentId }
+
+  const pin = await checkDefinitionPin(deps, {
+    tenantId: principal.tenantId,
+    definition,
+  })
+  if (!pin.current) return fail('agent_stale', ids)
 
   if (args.agentId !== undefined) {
     const agentIdArg = asUuid(args.agentId)

@@ -8,6 +8,8 @@ export function asUuid(value: unknown): string | undefined {
 export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   definition_not_found: 'Agent definition not found',
   definition_mismatch: 'agentId does not match the loaded definition',
+  agent_stale:
+    'Published agent changed since checkout — call platform.agent.checkout, overwrite generated paths, then retry',
   agent_access_denied: 'Operate grant required to invoke this agent',
   tool_not_configured: 'Tool is not configured',
   capability_not_allowed: 'Tool is not allowed by the published agent definition',

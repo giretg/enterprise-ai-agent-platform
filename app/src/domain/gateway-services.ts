@@ -140,6 +140,10 @@ function isStubDriveCredential(tokenRef: string): boolean {
 const sharedToolLookups = {
   loadDefinition: (input: { tenantId: string; definitionId: string }) =>
     agentDefinitionService.loadAgentDefinition(input),
+  findCurrentDefinitionId: async (input: { tenantId: string; agentId: string }) => {
+    const agent = await repositories.agents.findById(input.agentId, input.tenantId)
+    return agent?.currentDefinitionVersionId ?? null
+  },
   findAgentGrant: (input: { tenantId: string; userId: string; agentId: string }) =>
     repositories.resourceGrants.findAgentGrant(input),
   findConnector: (id: string) => repositories.connectors.findById(id),
