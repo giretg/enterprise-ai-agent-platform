@@ -262,6 +262,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Array<{
   { permissionKey: 'user.invite.revoke', minRole: 'admin', description: 'Meghívó visszavonása' },
   { permissionKey: 'user.approve', minRole: 'admin', description: 'Pending önregisztráció jóváhagyása' },
   { permissionKey: 'user.role.write', minRole: 'admin', description: 'Szerepkör módosítása' },
+  // Alias: a platform-actionök `user.role.change` kulcson kérnek (deny-by-default
+  // miatt a hiányzó kulcs minden szerepváltást/mátrix-szerkesztést tiltana).
+  { permissionKey: 'user.role.change', minRole: 'admin', description: 'Szerepkör módosítása' },
   { permissionKey: 'user.suspend', minRole: 'admin', description: 'Felfüggesztés / visszaállítás' },
   { permissionKey: 'user.read', minRole: 'admin', description: 'Felhasználólista olvasása' },
   { permissionKey: 'audit.read', minRole: 'approver', description: 'Hozzáférési audit olvasása' },

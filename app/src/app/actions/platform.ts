@@ -22,6 +22,7 @@ import {
   reactivateUserSchema,
   redeemInvitationSchema,
   revokeInvitationSchema,
+  setUserAgentAccessSchema,
   suspendAgentSchema,
   suspendUserSchema,
   updateAgentAvatarSchema,
@@ -56,6 +57,69 @@ export async function listInvitations() {
     return ok(invitations)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list invitations')
+  }
+}
+
+export async function listUserAgentAccess() {
+  try {
+    const ctx = await requireTenantPermission('user.read')
+    const users = await services.iam.listUsers(ctx.activeTenantId, { limit: 100 })
+    const entries = await Promise.all(
+      users.map(async (user) => [
+        user.id,
+        await repositories.resourceGrants.listAgentIdsGrantedToUser({
+          tenantId: ctx.activeTenantId,
+          userId: user.id,
+        }),
+      ] as const),
+    )
+    return ok({ grantsByUserId: Object.fromEntries(entries) as Record<string, string[]> })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list agent access')
+  }
+}
+
+export async function setUserAgentAccess(input: {
+  targetUserId: string
+  agentId: string
+  granted: boolean
+}) {
+  try {
+    const ctx = await requireTenantPermission('user.role.change')
+    const parsed = setUserAgentAccessSchema.parse(input)
+    // Célpont és ügynök is a hívó tenantjába kell tartozzon (N-IAM-6) —
+    // idegen tenantra "not found", nem szivárogtatunk létezést.
+    const [membership, agent] = await Promise.all([
+      repositories.tenantMemberships.findByTenantAndUser(ctx.activeTenantId, parsed.targetUserId),
+      repositories.agents.findById(parsed.agentId, ctx.activeTenantId),
+    ])
+    if (!membership) return fail('user: not found')
+    if (!agent) return fail('Agent not found')
+    if (parsed.granted) {
+      await repositories.resourceGrants.setAgentGrant({
+        tenantId: ctx.activeTenantId,
+        userId: parsed.targetUserId,
+        agentId: parsed.agentId,
+        accessLevel: 'operate',
+        grantedById: ctx.user.id,
+      })
+    } else {
+      await repositories.resourceGrants.revokeAgentGrant({
+        tenantId: ctx.activeTenantId,
+        userId: parsed.targetUserId,
+        agentId: parsed.agentId,
+      })
+    }
+    await services.iam.auditUserAgentAccessUpdate({
+      actorId: ctx.user.id,
+      tenantId: ctx.activeTenantId,
+      targetUserId: parsed.targetUserId,
+      agentId: parsed.agentId,
+      granted: parsed.granted,
+    })
+    return ok({ updated: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update agent access')
   }
 }
 

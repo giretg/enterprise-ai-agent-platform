@@ -65,6 +65,12 @@ export const updateRolePermissionSchema = z.object({
   minRole: userRoleSchema,
 })
 
+export const setUserAgentAccessSchema = z.object({
+  targetUserId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  granted: z.boolean(),
+})
+
 export const connectorGrantIdSchema = z.object({
   grantId: z.string().uuid(),
 })

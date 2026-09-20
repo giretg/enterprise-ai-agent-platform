@@ -737,6 +737,29 @@ export class IamService {
     return updated
   }
 
+  async auditUserAgentAccessUpdate(params: {
+    actorId: string
+    tenantId: string | null
+    targetUserId: string
+    agentId: string
+    granted: boolean
+  }) {
+    await this.append({
+      actorType: 'human',
+      actorId: params.actorId,
+      agentVersion: null,
+      action: 'user.agent_access.update',
+      targetType: 'agent',
+      targetId: params.agentId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: params.granted ? 'operate' : 'revoked',
+      policyDecision: params.granted ? 'granted' : 'revoked',
+      metadata: { targetUserId: params.targetUserId, tenantId: params.tenantId },
+      tenantId: params.tenantId,
+    })
+  }
+
   /**
    * N-IAM-6: minden cél-alapú User-műveletnek ezen kell átmennie — cross-tenant
    * célpontra "not found"-ot ad, nem szivárogtatja, hogy a rekord létezik-e (§8.8).

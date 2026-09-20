@@ -120,6 +120,14 @@ export interface ResourceGrantRepository {
   }): Promise<ResourceGrant | null>
   listAgentGrantsForUser(input: { tenantId: string; userId: string }): Promise<ResourceGrant[]>
   listAgentIdsGrantedToUser(input: { tenantId: string; userId: string }): Promise<string[]>
+  setAgentGrant(input: {
+    tenantId: string
+    userId: string
+    agentId: string
+    accessLevel: ResourceAccessLevel
+    grantedById: string
+  }): Promise<ResourceGrant>
+  revokeAgentGrant(input: { tenantId: string; userId: string; agentId: string }): Promise<void>
 }
 
 export type SkillWithVersions = Skill & { versions: SkillVersion[] }

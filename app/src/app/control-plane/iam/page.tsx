@@ -1,6 +1,8 @@
 import {
   getPermissionMatrix,
+  listAgents,
   listInvitations,
+  listUserAgentAccess,
   listUsers,
   listWorkspaceTenants,
 } from '@/app/actions/platform'
@@ -8,16 +10,21 @@ import { IamAdminPanel } from '@/components/iam/iam-admin-panel'
 import { WorkspaceOffboardingPanel } from '@/components/iam/workspace-offboarding-panel'
 
 export default async function IamPage() {
-  const [usersRes, invitationsRes, tenantsRes, permissionsRes] = await Promise.all([
-    listUsers(),
-    listInvitations(),
-    listWorkspaceTenants(),
-    getPermissionMatrix(),
-  ])
+  const [usersRes, invitationsRes, tenantsRes, permissionsRes, agentsRes, accessRes] =
+    await Promise.all([
+      listUsers(),
+      listInvitations(),
+      listWorkspaceTenants(),
+      getPermissionMatrix(),
+      listAgents({ limit: 100 }),
+      listUserAgentAccess(),
+    ])
   const users = usersRes.success ? usersRes.data : []
   const invitations = invitationsRes.success ? invitationsRes.data : []
   const tenantIds = tenantsRes.success ? tenantsRes.data.tenantIds : []
   const permissions = permissionsRes.success ? permissionsRes.data : []
+  const agents = agentsRes.success ? agentsRes.data : []
+  const grantsByUserId = accessRes.success ? accessRes.data.grantsByUserId : {}
   const error =
     !usersRes.success ? usersRes.error : !invitationsRes.success ? invitationsRes.error : null
 
@@ -39,7 +46,13 @@ export default async function IamPage() {
         </div>
       ) : (
         <>
-          <IamAdminPanel users={users} invitations={invitations} permissions={permissions} />
+          <IamAdminPanel
+            users={users}
+            invitations={invitations}
+            permissions={permissions}
+            agents={agents}
+            grantsByUserId={grantsByUserId}
+          />
           <WorkspaceOffboardingPanel tenantIds={tenantIds} />
         </>
       )}
