@@ -148,8 +148,16 @@ export const googleDriveReadFileInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
-    fileId: z.string().min(1).max(200),
-    maxBytes: z.number().int().min(1).max(20_000_000).optional(),
+    fileId: z.string().min(1).max(200).describe('Drive file id from google_drive_search.'),
+    maxBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(20_000_000)
+      .optional()
+      .describe(
+        'Maximum allowed file size in bytes (default 10MB). Larger files fail with 413 file_too_large. Smaller values reject more, never truncate.',
+      ),
   })
   .passthrough()
 
