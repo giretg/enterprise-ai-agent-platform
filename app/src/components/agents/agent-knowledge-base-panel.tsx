@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState, useTransition } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
   attachKnowledgeCatalogDocument,
@@ -180,9 +181,9 @@ export function AgentKnowledgeBasePanel({
           {unattachedCatalog.length === 0 ? (
             <p className="text-xs text-ink-faint">
               Nincs több hozzáköthető katalógus-elem.{' '}
-              <a href="/control-plane/knowledge" className="font-medium text-coral">
+              <Link href="/control-plane/knowledge" className="font-medium text-coral">
                 Megnyitás a katalógusban
-              </a>
+              </Link>
             </p>
           ) : (
             <form
