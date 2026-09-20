@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useSyncExternalStore, type ReactNode } from 'react'
 import { usePathname } from 'next/navigation'
 import { AppShell, type NavEntry } from '@/components/ui/shell'
 import { TenantSwitcher } from '@/components/tenant/tenant-switcher'
@@ -14,6 +14,15 @@ function readInIframe() {
   return window.parent !== window
 }
 
+function subscribeClientMounted(onStoreChange: () => void) {
+  onStoreChange()
+  return () => {}
+}
+
+function useClientMounted(): boolean {
+  return useSyncExternalStore(subscribeClientMounted, () => true, () => false)
+}
+
 /** Embed iframe (régi /embed/control-plane rewrite) soha ne kapjon teljes shellt. */
 export function ControlPlaneRoot({
   embedFromServer,
@@ -25,16 +34,13 @@ export function ControlPlaneRoot({
   canCreateAgent?: boolean
   children: ReactNode
 }) {
-  const [hydrated, setHydrated] = useState(false)
-  useEffect(() => {
-    setHydrated(true)
-  }, [])
+  const clientMounted = useClientMounted()
 
   // A szerver csak fejlécből tud embedet — preview/iframe-ben a kliens is látja.
   // Hydration előtt ne váltsunk ágakat, különben Shell ↔ EmbedBridge fiber újrahasználat
   // → „Rendered more hooks than during the previous render”.
   const inIframeLive = useSyncExternalStore(subscribeNever, readInIframe, () => false)
-  const embed = embedFromServer || (hydrated && inIframeLive)
+  const embed = embedFromServer || (clientMounted && inIframeLive)
 
   if (embed) {
     return (
@@ -59,10 +65,7 @@ export function ControlPlaneShell({
 }) {
   const pathname = usePathname()
   // TenantSwitcher useRouter()-t hív — loading.tsx + RSC redirect közben ez Router hook-hibát dob.
-  const [headerReady, setHeaderReady] = useState(false)
-  useEffect(() => {
-    setHeaderReady(true)
-  }, [])
+  const headerReady = useClientMounted()
 
   return (
     <AppShell
