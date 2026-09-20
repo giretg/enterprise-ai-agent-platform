@@ -42,6 +42,8 @@ import {
   MCP_AGENT_CHECKOUT_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
   MCP_GATEWAY_OPERATION_GET_TOOL,
+  MCP_SKILLS_LIST_TOOL,
+  MCP_SKILL_READ_TOOL,
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
@@ -526,6 +528,8 @@ async function main() {
       MCP_AGENTS_LIST_TOOL,
       MCP_AGENT_GET_DEFINITION_TOOL,
       MCP_AGENT_CHECKOUT_TOOL,
+      MCP_SKILLS_LIST_TOOL,
+      MCP_SKILL_READ_TOOL,
       ...ENTERPRISE_TOOLS,
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
@@ -577,6 +581,61 @@ async function main() {
     })
     assert.equal(audit.filter((row) => row.action === 'mcp.auth.ok').length, 1)
     assert.ok(audit.some((row) => row.action === 'mcp.tools.call' && row.inputRef === MCP_WHOAMI_TOOL))
+  })
+
+  await check('skill catalog is available through tools/list and tools/call', async () => {
+    const { deps, audit } = runtimeDeps({ skills: [SAMPLE_SKILL] })
+    await initialize(deps)
+
+    const listed = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 35,
+        method: 'tools/call',
+        params: { name: MCP_SKILLS_LIST_TOOL, arguments: {} },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const listBody = (await readJson(listed)) as {
+      result?: { content?: Array<{ text: string }>; isError?: boolean }
+    }
+    assert.equal(listBody.result?.isError, undefined)
+    const listPayload = JSON.parse(listBody.result?.content?.[0]?.text ?? '{}') as {
+      skills?: Array<{ uri?: string; resources?: Array<{ uri: string }> }>
+    }
+    const entry = listPayload.skills?.[0]
+    assert.equal(entry?.uri, 'skill://tulajdoni-lap/SKILL.md')
+    const scriptUri = entry?.resources?.find((resource) =>
+      resource.uri.endsWith('scripts/parse_tulajdoni_lap.py'),
+    )?.uri
+    assert.ok(scriptUri)
+
+    const read = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 36,
+        method: 'tools/call',
+        params: { name: MCP_SKILL_READ_TOOL, arguments: { uri: scriptUri } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const readBody = (await readJson(read)) as {
+      result?: { content?: Array<{ text: string }>; isError?: boolean }
+    }
+    assert.equal(readBody.result?.isError, undefined)
+    const readPayload = JSON.parse(readBody.result?.content?.[0]?.text ?? '{}') as {
+      contents?: Array<{ text?: string; mimeType?: string; uri?: string }>
+    }
+    assert.deepEqual(readPayload.contents?.[0], {
+      uri: scriptUri,
+      mimeType: 'text/x-python',
+      text: SCRIPT_TEXT,
+    })
+    assert.ok(audit.some((row) => row.action === 'mcp.tools.call' && row.inputRef === MCP_SKILL_READ_TOOL))
   })
 
   await check('unknown tool → HTTP 200 tool_not_allowed isError', async () => {
@@ -1212,6 +1271,23 @@ async function main() {
         (row) =>
           row.action === 'mcp.resources.read' &&
           row.inputRef === 'skill://tulajdoni-lap/scripts/parse_tulajdoni_lap.py',
+      ),
+    )
+
+    const resources = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 37, method: 'resources/list', params: {} },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const resourcesBody = (await readJson(resources)) as {
+      result?: { resources?: Array<{ uri: string; mimeType?: string }> }
+      error?: unknown
+    }
+    assert.equal(resourcesBody.error, undefined, JSON.stringify(resourcesBody))
+    assert.ok(
+      resourcesBody.result?.resources?.some(
+        (resource) => resource.uri === 'skill://tulajdoni-lap/SKILL.md',
       ),
     )
   })
