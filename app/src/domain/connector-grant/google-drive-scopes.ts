@@ -151,20 +151,20 @@ export const DRIVE_SCOPE_PROFILES = [
     id: 'readonly' as const,
     label: 'Csak olvasás',
     description: 'Keresés és olvasás a Google ACL szerint, írás nélkül.',
-    scopes: [DRIVE_SCOPES.openid, DRIVE_SCOPES.email, DRIVE_SCOPES.readonly],
+    scopes: [DRIVE_SCOPES.readonly],
   },
   {
     id: 'selected_write' as const,
     label: 'Olvasás + írás kijelölt fájlokon',
     description:
       'Teljes olvasás; írás csak az app által létrehozott vagy Pickerrel kiválasztott fájlokon.',
-    scopes: [DRIVE_SCOPES.openid, DRIVE_SCOPES.email, DRIVE_SCOPES.readonly, DRIVE_SCOPES.file],
+    scopes: [DRIVE_SCOPES.readonly, DRIVE_SCOPES.file],
   },
   {
     id: 'full_write' as const,
     label: 'Teljes olvasás + írás',
     description: 'Minden kezelhető fájl írása — csak admin engedéllyel.',
-    scopes: [DRIVE_SCOPES.openid, DRIVE_SCOPES.email, DRIVE_SCOPES.full],
+    scopes: [DRIVE_SCOPES.full],
     adminOnly: true,
   },
 ] as const
