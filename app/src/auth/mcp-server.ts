@@ -453,7 +453,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         {
           title: 'Read Google Drive file',
           description:
-            'Read or export a Drive file under a published agent definition. Credentials stay on the server. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+            'Read or export a Drive file under a published agent definition. Credentials stay on the server. maxBytes is a rejection limit (default 10MB): a larger Drive file fails with 413 file_too_large, omitting it reads the most. Native Google Docs/Sheets/Slides are exported as text and PDFs are returned as extracted text; other binary files return metadata with warnings only, no text. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: googleDriveReadFileInputSchema,
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_READ_FILE_TOOL, args, deps),
