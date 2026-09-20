@@ -37,6 +37,7 @@ type Version = {
 export type SelfUpdatingConnectorRow = {
   id: string
   lifecycleState?: 'active' | 'archived' | 'draft' | 'validated'
+  loadError?: string
   name: string; specUrl: string; urlApproved: boolean; trusted: boolean
   autoApproveEnabled: boolean; lastSyncedAt: string | null; activeSpecVersionId: string | null
   privacy: Version['privacy']
@@ -345,6 +346,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
     : 'még nem volt sync'
   const toggleOpen = () => setOpen((current) => !current)
   const archived = row.lifecycleState === 'archived'
+  const broken = Boolean(row.loadError)
 
   return (
     <div className="rounded-lg border border-ink/12 bg-paper">
@@ -358,6 +360,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
         </button>
         <Badge tone="success">OpenAPI</Badge>
         {archived ? <Badge tone="danger">megszűnt</Badge> : null}
+        {broken ? <Badge tone="danger">betöltési hiba</Badge> : null}
         <Badge tone={row.urlApproved ? 'success' : 'warning'}>
           {row.urlApproved ? 'link jóváhagyva' : 'link jóváhagyásra vár'}
         </Badge>
@@ -384,7 +387,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
           >
             {open ? 'Bezárás' : 'Részletek'}
           </button>
-          {!archived ? (
+          {!archived && !broken ? (
             <button
               type="button"
               disabled={pending || !row.urlApproved || !row.trusted}
@@ -394,7 +397,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
               Frissítés
             </button>
           ) : null}
-          {!archived ? (
+          {!archived && !broken ? (
             <button
               type="button"
               className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral"
@@ -412,6 +415,12 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
             <p className="rounded-md border border-coral/30 bg-coral/5 px-3 py-2 text-xs text-ink-soft">
               Ez a kapcsolat megszűnt (archived). Agent-hozzárendelés nem használható — a régi kötéseket
               az agent oldalán érdemes leválasztani.
+            </p>
+          ) : null}
+          {broken ? (
+            <p className="rounded-md border border-coral/30 bg-coral/5 px-3 py-2 text-xs text-ink-soft">
+              A kapcsolat metaadatai nem töltődtek be: {row.loadError}. Agenthez rendelhető marad, de
+              kezeléshez ellenőrizd a kapcsolat állapotát vagy vedd fel a kapcsolatot a platform támogatással.
             </p>
           ) : null}
           <p className="break-all text-xs text-ink-soft">{row.specUrl}</p>

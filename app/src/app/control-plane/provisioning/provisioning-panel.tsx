@@ -17,6 +17,7 @@ import {
   fetchApiDocFromUrl,
   extendEgressAllowlist,
   listConnectorTemplatesAction,
+  listConnectorCatalog,
   listProvisioningAssignableAgents,
   listProvisioningDrafts,
   reopenConnector,
@@ -498,6 +499,9 @@ export function ProvisioningPanel({
   activeTenantId: string | null
 }) {
   const [drafts, setDrafts] = useState<DraftRow[]>([])
+  const [catalogRows, setCatalogRows] = useState<
+    Array<{ id: string; name: string; type: string; connectorMode?: 'fixed' | 'self_updating' }>
+  >([])
   const [selfUpdatingRows, setSelfUpdatingRows] = useState<SelfUpdatingConnectorRow[]>([])
   const [tenantAuto, setTenantAuto] = useState(false)
   const [agents, setAgents] = useState<AgentOption[]>([])
@@ -590,13 +594,14 @@ export function ProvisioningPanel({
 
   const reload = useCallback(() => {
     startTransition(async () => {
-      const [d, a, t, g, gd, su] = await Promise.all([
+      const [d, a, t, g, gd, su, catalog] = await Promise.all([
         listProvisioningDrafts(),
         listProvisioningAssignableAgents(),
         listConnectorTemplatesAction(),
         getGoogleOAuthConfiguredStatus(),
         getGoogleDriveOAuthConfiguredStatus(),
         listSelfUpdatingConnectors(),
+        listConnectorCatalog(),
       ])
       if (d.success) setDrafts(d.data as DraftRow[])
       else setError(d.error)
@@ -611,6 +616,11 @@ export function ProvisioningPanel({
       if (su.success) {
         setSelfUpdatingRows(su.data.connectors as SelfUpdatingConnectorRow[])
         setTenantAuto(su.data.tenantAutoApproveEnabled)
+      } else if (su.error) {
+        setError(su.error)
+      }
+      if (catalog.success) {
+        setCatalogRows(catalog.data)
       }
       if (isSuperadmin) {
         const tenants = await listTenants()
@@ -747,7 +757,14 @@ export function ProvisioningPanel({
   // jóváhagyásra váró sor külön kártyába kerül — különben az „Aktív" címke
   // azt sugallná, hogy használható agent-hozzárendelésre.
   const isSelfUpdatingReady = (row: SelfUpdatingConnectorRow) =>
-    row.urlApproved && row.trusted && !!row.activeSpecVersionId
+    !row.loadError && row.urlApproved && row.trusted && !!row.activeSpecVersionId
+  const catalogGaps = useMemo(() => {
+    const listed = new Set([
+      ...drafts.map((draft) => draft.connectorId),
+      ...selfUpdatingRows.map((row) => row.id),
+    ])
+    return catalogRows.filter((row) => !listed.has(row.id))
+  }, [catalogRows, drafts, selfUpdatingRows])
   const activeSelfUpdatingRows = selfUpdatingRows.filter((row) => row.lifecycleState === 'active')
   const archivedSelfUpdatingRows = selfUpdatingRows
     .filter((row) => row.lifecycleState !== 'active')
@@ -2105,11 +2122,12 @@ export function ProvisioningPanel({
         ) : null}
       </Card>
 
-      {loadedOnce && pendingSelfUpdatingRows.length > 0 ? (
-      <Card title={`Jóváhagyásra váró OpenAPI-kapcsolatok (${pendingSelfUpdatingRows.length})`}>
+      {loadedOnce && (pendingSelfUpdatingRows.length > 0 || catalogGaps.length > 0) ? (
+      <Card title={`Jóváhagyásra váró / láthatósági rés (${pendingSelfUpdatingRows.length + catalogGaps.length})`}>
         <p className="mb-3 text-sm text-ink-soft">
-          Ezeknél még hátravan a link jóváhagyása, a partner megbízhatónak minősítése vagy az első
-          verzió átvétele — agenthez még nem rendelhetők, ezért nem az Aktív listában szerepelnek.
+          OpenAPI-kapcsolatoknál hátravan a link jóváhagyása, a partner megbízhatónak minősítése vagy az
+          első verzió átvétele. A „láthatósági rés” sorok aktívak az agent-katalógusban, de eddig nem
+          jelentek meg a Konnektorok listában.
         </p>
         <div className="space-y-3">
           {pendingSelfUpdatingRows.map((row) => (
@@ -2120,6 +2138,26 @@ export function ProvisioningPanel({
               run={run}
               onSync={syncSelfUpdating}
             />
+          ))}
+          {catalogGaps.map((row) => (
+            <div
+              key={row.id}
+              className="rounded-lg border border-honey/40 bg-honey/5 px-4 py-3 text-sm"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold">{row.name}</span>
+                <Badge tone="neutral">{row.type}</Badge>
+                {row.connectorMode === 'self_updating' ? (
+                  <Badge tone="warning">OpenAPI</Badge>
+                ) : null}
+                <Badge tone="warning">láthatósági rés</Badge>
+              </div>
+              <p className="mt-2 text-xs text-ink-soft">
+                Aktív kapcsolat — agenthez rendelhető, de nincs provisioning-draft vagy betöltött
+                önfrissítő kártya. Ha nem kell, szüntesd meg vagy vedd fel a kapcsolatot a platform
+                támogatással.
+              </p>
+            </div>
           ))}
         </div>
       </Card>
