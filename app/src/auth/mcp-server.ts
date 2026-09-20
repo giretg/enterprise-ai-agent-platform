@@ -9,6 +9,7 @@ import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
 import { services } from '@/domain/gateway-services'
 import {
   canReadPublishedAgent,
+  hashSnapshot,
   isPrivilegedAgentReader,
   type AgentDefinition,
 } from '@/domain/agent-definition'
@@ -339,7 +340,7 @@ async function getDefinitionToolResult(
     agentId: loaded.agentId,
   })
   if (!allowed) return definitionNotFound()
-  return textResult(loaded)
+  return textResult({ ...loaded, contentHash: hashSnapshot(loaded.snapshot) })
 }
 
 function invalidArgs(message: string) {

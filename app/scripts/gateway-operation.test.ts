@@ -27,6 +27,7 @@ const TENANT_ID = '22222222-2222-4222-8222-222222222222'
 const OTHER_TENANT = '23232323-2323-4232-8232-232323232323'
 const AGENT_ID = '33333333-3333-4333-8333-333333333333'
 const DEFINITION_ID = '44444444-4444-4444-8444-444444444444'
+const STALE_DEFINITION_ID = '88888888-8888-4888-8888-888888888888'
 const CONNECTOR_ID = '55555555-5555-4555-8555-555555555555'
 const GRANT_ID = '66666666-6666-4666-8666-666666666666'
 
@@ -117,6 +118,7 @@ function deps(opts?: {
   grant?: LiveGrantRow | null
   grantAccessLevel?: string | null
   requester?: { role: string; assumed: boolean } | null
+  currentDefinitionId?: string | null
   findAgentGrant?: GatewayOperationServiceDeps['findAgentGrant']
   executeDriveTool?: GatewayOperationServiceDeps['executeDriveTool']
   recordCreatedDriveFiles?: GatewayOperationServiceDeps['recordCreatedDriveFiles']
@@ -137,8 +139,15 @@ function deps(opts?: {
           audit.push({ action: data.action, metadata: data.metadata })
         },
       },
-      async loadDefinition() {
+      async loadDefinition({ definitionId }) {
+        if (definitionId === STALE_DEFINITION_ID) {
+          return { ...definition(), definitionId: STALE_DEFINITION_ID }
+        }
         return definition()
+      },
+      async findCurrentDefinitionId() {
+        if (opts && 'currentDefinitionId' in opts) return opts.currentDefinitionId ?? null
+        return DEFINITION_ID
       },
       findAgentGrant:
         opts?.findAgentGrant ??
@@ -188,6 +197,16 @@ const FOLDER_ARGS = {
 }
 
 async function main() {
+  await check('stale definitionId is agent_stale on enqueue', async () => {
+    const wired = deps({ currentDefinitionId: DEFINITION_ID })
+    const result = await enqueueGatewayOperation(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, definitionId: STALE_DEFINITION_ID },
+    })
+    assert.deepEqual(result, { ok: false, code: 'agent_stale' })
+  })
+
   await check('enqueue create_folder is awaiting_approval and does not call Drive', async () => {
     const driveCalls: unknown[] = []
     const logs = captureInfo()

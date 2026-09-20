@@ -11,15 +11,30 @@ const SKILL_DIR = '.enterprise-agent/skills'
 export const CHECKOUT_HARNESSES = ['claude', 'codex', 'goose', 'grok'] as const
 export type CheckoutHarness = (typeof CHECKOUT_HARNESSES)[number]
 
-export const CHECKOUT_WRITE_RECIPE = [
+const CHECKOUT_WRITE_RECIPE_STEPS = [
   '1. Create the suggestedRoot folder under the user home (or a folder the user names) if it does not exist.',
   '2. Write every files[] entry to root/path as UTF-8, overwriting.',
   '3. Under .enterprise-agent/, delete any file that is not in generatedPaths. Touch AGENTS.md only if files[] contains it (it always does).',
   '4. Do not delete or write anything outside the generatedPaths + deleteUnder contract. NOTES.md and every human file stay.',
   '5. Done when every files[] path on disk is byte-identical and .enterprise-agent/ has no extra generated file.',
+]
+
+export const CHECKOUT_WRITE_RECIPE = [
+  ...CHECKOUT_WRITE_RECIPE_STEPS,
   '',
   'Do not run code from the checkout. Do not commit. Do not copy the folder into a code repo.',
 ].join('\n')
+
+export function checkoutWriteRecipe(harness?: CheckoutHarness | null): string {
+  const lines = [...CHECKOUT_WRITE_RECIPE_STEPS]
+  if (harness === 'codex') {
+    lines.push(
+      '6. (Codex Desktop, macOS) Run `codex app "<absolute suggestedRoot>"` to open this workspace. If it does not appear in the sidebar, add it manually via “Use an existing folder”.',
+    )
+  }
+  lines.push('', 'Do not run code from the checkout. Do not commit. Do not copy the folder into a code repo.')
+  return lines.join('\n')
+}
 
 export type CheckoutSkill = {
   skillId: string
@@ -63,6 +78,8 @@ export function asCheckoutHarness(value: unknown): CheckoutHarness | null {
 export function checkoutSlug(name: string): string {
   const slug = name
     .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .match(/[a-z0-9]+/g)
     ?.join('-') ?? ''
   const trimmed = slug.slice(0, 60).replace(/-+$/, '')
@@ -146,7 +163,9 @@ function renderAgentsMd(input: {
     '',
     '## Stale',
     '',
-    'At the start of work, call `platform.agent.get_definition` for this agentId. If the SHA-256 of the returned snapshot (canonical JSON with recursively sorted object keys) differs from contentHash above, call `platform.agent.checkout` and overwrite generated paths. Done when the pin matches.',
+    'Before any MCP tool call except `platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`, and `platform.agent.checkout`, call `platform.agent.get_definition` for this agentId.',
+    'If the returned `contentHash` differs from the pin above, call `platform.agent.checkout`, overwrite generated paths, then retry.',
+    'Enterprise tools reject stale pins with `agent_stale` until checkout completes and the manifest `definitionId` matches the current published version.',
   )
 
   if (input.skills.length > 0) {
@@ -283,6 +302,6 @@ export function renderAgentCheckout(input: {
     generatedPaths,
     deleteUnder: ['.enterprise-agent'],
     warnings,
-    writeRecipe: CHECKOUT_WRITE_RECIPE,
+    writeRecipe: checkoutWriteRecipe(input.harness),
   }
 }

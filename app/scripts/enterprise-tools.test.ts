@@ -32,6 +32,7 @@ const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
 const AGENT_ID = '33333333-3333-4333-8333-333333333333'
 const DEFINITION_ID = '44444444-4444-4444-8444-444444444444'
+const STALE_DEFINITION_ID = '88888888-8888-4888-8888-888888888888'
 const CONNECTOR_ID = '55555555-5555-4555-8555-555555555555'
 const GRANT_ID = '66666666-6666-4666-8666-666666666666'
 const OTHER_TENANT = '77777777-7777-4777-8777-777777777777'
@@ -116,6 +117,7 @@ function authorizeDeps(opts?: {
 
 function invokeDeps(opts?: {
   definition?: AgentDefinition | null
+  currentDefinitionId?: string | null
   grantAccessLevel?: string | null
   connector?: LiveConnectorRow | null
   grant?: LiveGrantRow | null
@@ -139,6 +141,10 @@ function invokeDeps(opts?: {
       : undefined,
     async loadDefinition() {
       return opts && 'definition' in opts ? (opts.definition ?? null) : definition()
+    },
+    async findCurrentDefinitionId() {
+      if (opts && 'currentDefinitionId' in opts) return opts.currentDefinitionId ?? null
+      return DEFINITION_ID
     },
     async findAgentGrant() {
       if (opts && 'grantAccessLevel' in opts) {
@@ -479,6 +485,24 @@ async function main() {
     )
     assert.equal(result.isError, true)
     assert.equal(parsePayload(result).code, 'agent_inactive')
+  })
+
+  await check('stale definitionId is agent_stale', async () => {
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: definition({ definitionId: STALE_DEFINITION_ID }),
+        currentDefinitionId: DEFINITION_ID,
+      }),
+      {
+        principal: principal(),
+        toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+        args: { definitionId: STALE_DEFINITION_ID },
+      },
+    )
+    assert.equal(result.isError, true)
+    const payload = parsePayload(result)
+    assert.equal(payload.code, 'agent_stale')
+    assert.equal(payload.currentDefinitionId, DEFINITION_ID)
   })
 
   await check('mismatched agentId is definition_mismatch', async () => {
