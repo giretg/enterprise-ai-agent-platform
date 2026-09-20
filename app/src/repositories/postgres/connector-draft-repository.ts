@@ -333,6 +333,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         type: true,
         name: true,
         config: true,
+        connectorMode: true,
       },
       orderBy: { name: 'asc' },
     })
@@ -340,6 +341,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
       id: row.id,
       type: row.type,
       name: row.name,
+      connectorMode: row.connectorMode,
       ...describeCatalogRow(row.type, row.config, null),
     }))
   }

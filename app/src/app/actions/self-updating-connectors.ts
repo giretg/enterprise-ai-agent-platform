@@ -89,13 +89,21 @@ export async function listSelfUpdatingConnectors() {
     const ctx = await requireTenantRole('operator')
     const connectors = await prisma.connector.findMany({
       where: { tenantId: ctx.activeTenantId, connectorMode: 'self_updating' },
-      select: { id: true, lifecycleState: true },
+      select: { id: true, lifecycleState: true, name: true },
       orderBy: { createdAt: 'desc' },
     })
-    const details = await Promise.all(
+    // ponytail: egy hibás sor ne döntse el az egész listát — külön loadError stub
+    const settled = await Promise.allSettled(
       connectors.map(({ id }) => services.selfUpdatingConnectors.detail(id, actor(ctx))),
     )
-    const approverIds = [...new Set(details.flatMap(({ versions }) => versions.map((version) => version.approvedById).filter((id): id is string => Boolean(id))))]
+    const loaded = settled.map((result) => (result.status === 'fulfilled' ? result.value : null))
+    const approverIds = [
+      ...new Set(
+        loaded.flatMap((detail) =>
+          detail?.versions.map((version) => version.approvedById).filter((id): id is string => Boolean(id)) ?? [],
+        ),
+      ),
+    ]
     const approvers = approverIds.length
       ? await prisma.user.findMany({ where: { id: { in: approverIds } }, select: { id: true, name: true } })
       : []
@@ -103,9 +111,33 @@ export async function listSelfUpdatingConnectors() {
     const tenant = await prisma.tenant.findUnique({ where: { id: ctx.activeTenantId }, select: { settings: true } })
     return ok({
       tenantAutoApproveEnabled: tenantSelfUpdateAutoApproveEnabled(tenant?.settings),
-      connectors: details.map(({ context, versions }, index) => ({
+      connectors: connectors.map((row, index) => {
+        const detail = loaded[index]
+        if (!detail) {
+          const reason = settled[index]
+          const message =
+            reason?.status === 'rejected' && reason.reason instanceof Error
+              ? reason.reason.message
+              : 'Nem sikerült betölteni a kapcsolat részleteit.'
+          return {
+            id: row.id,
+            lifecycleState: row.lifecycleState,
+            name: row.name,
+            loadError: message,
+            specUrl: '',
+            urlApproved: false,
+            trusted: false,
+            autoApproveEnabled: false,
+            lastSyncedAt: null,
+            activeSpecVersionId: null,
+            privacy: null,
+            versions: [],
+          }
+        }
+        const { context, versions } = detail
+        return {
         id: context.connector.id,
-        lifecycleState: connectors[index]!.lifecycleState,
+        lifecycleState: row.lifecycleState,
         name: context.connector.name,
         specUrl: context.source.specUrl,
         urlApproved: Boolean(context.source.urlApprovedAt),
@@ -132,7 +164,8 @@ export async function listSelfUpdatingConnectors() {
             approvedByName: version.approvedById ? approverNames.get(version.approvedById) ?? 'Ismeretlen kolléga' : 'Automatikus szabály',
           }
         }),
-      })),
+        }
+      }),
     })
   } catch (error) {
     return actionError(error, 'Nem sikerült betölteni az OpenAPI-kapcsolatokat.')

@@ -16,7 +16,7 @@ test('autorefresh: az összecsukott soron is van Megszüntetés gomb (aktív kap
   const openIndex = src.indexOf('{open ? (')
   assert.ok(openIndex > 0, 'nincs open-kapu az autorefresh kártyán')
   const collapsed = src.slice(0, openIndex)
-  assert.match(collapsed, /!archived \? \([\s\S]*Megszüntetés/, 'nincs Megszüntetés gomb aktív kapcsolatnál')
+  assert.match(collapsed, /!archived && !broken \? \([\s\S]*Megszüntetés/, 'nincs Megszüntetés gomb aktív kapcsolatnál')
   assert.match(
     collapsed,
     /onClick=\{\(\) => setOpen\(true\)\}[\s\S]{0,80}Megszüntetés|Megszüntetés[\s\S]{0,80}setOpen\(true\)/,
@@ -38,8 +38,17 @@ test('archivált önfrissítő kapcsolat megjelenik a listában lifecycleState m
     /connectorMode: 'self_updating', lifecycleState: 'active'/,
     'a listázás ne szűrjön ki archivált önfrissítő kapcsolatokat',
   )
-  assert.match(actionSrc, /lifecycleState: connectors\[index\]!\.lifecycleState/)
+  assert.match(actionSrc, /lifecycleState: row\.lifecycleState/)
   assert.match(panelSrc, /archivedSelfUpdatingRows/)
+})
+
+test('önfrissítő listázás: egy hibás sor nem dönti el az egész Promise.allSettled listát', () => {
+  const actionSrc = readFileSync(
+    resolve(import.meta.dirname, '../src/app/actions/self-updating-connectors.ts'),
+    'utf8',
+  )
+  assert.match(actionSrc, /Promise\.allSettled/)
+  assert.match(actionSrc, /loadError/)
 })
 
 console.log('\nÖsszes connector-card-edit-decommission teszt zöld')

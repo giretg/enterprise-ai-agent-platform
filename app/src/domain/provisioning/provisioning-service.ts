@@ -1191,6 +1191,7 @@ export class ProvisioningService {
       id: string
       type: string
       name: string
+      connectorMode: 'fixed' | 'self_updating'
       description?: string | null
       baseUrl?: string | null
       tools?: Array<{ method: string; path: string; description?: string | null }>
