@@ -58,6 +58,11 @@ export function ControlPlaneShell({
   children: React.ReactNode
 }) {
   const pathname = usePathname()
+  // TenantSwitcher useRouter()-t hív — loading.tsx + RSC redirect közben ez Router hook-hibát dob.
+  const [headerReady, setHeaderReady] = useState(false)
+  useEffect(() => {
+    setHeaderReady(true)
+  }, [])
 
   return (
     <AppShell
@@ -66,7 +71,7 @@ export function ControlPlaneShell({
       navItems={navItems}
       accentColor="slate"
       pathname={pathname}
-      headerExtra={<TenantSwitcher />}
+      headerExtra={headerReady ? <TenantSwitcher /> : null}
     >
       {children}
     </AppShell>
