@@ -1,4 +1,4 @@
-import type { ResourceAccessLevel, ResourceGrant } from '@prisma/client'
+import type { ResourceGrant } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type { ResourceGrantRepository } from '../interfaces'
 
@@ -43,11 +43,24 @@ export class PostgresResourceGrantRepository implements ResourceGrantRepository 
     return [...new Set(rows.map((row) => row.resourceId))]
   }
 
-  async setAgentGrant(input: {
+  async listAgentGrantsForAgent(input: { tenantId: string; agentId: string }) {
+    return prisma.resourceGrant.findMany({
+      where: {
+        tenantId: input.tenantId,
+        resourceType: 'agent',
+        resourceId: input.agentId,
+        accessLevel: { in: [...VIEW_OR_OPERATE] },
+      },
+      include: { user: { select: { id: true, name: true, email: true } } },
+      orderBy: { grantedAt: 'desc' },
+    })
+  }
+
+  async upsertAgentGrant(input: {
     tenantId: string
     userId: string
     agentId: string
-    accessLevel: ResourceAccessLevel
+    accessLevel: 'view' | 'operate'
     grantedById: string
   }): Promise<ResourceGrant> {
     return prisma.resourceGrant.upsert({
@@ -59,7 +72,6 @@ export class PostgresResourceGrantRepository implements ResourceGrantRepository 
           resourceId: input.agentId,
         },
       },
-      update: { accessLevel: input.accessLevel, grantedById: input.grantedById },
       create: {
         tenantId: input.tenantId,
         userId: input.userId,
@@ -68,6 +80,7 @@ export class PostgresResourceGrantRepository implements ResourceGrantRepository 
         accessLevel: input.accessLevel,
         grantedById: input.grantedById,
       },
+      update: { accessLevel: input.accessLevel, grantedById: input.grantedById },
     })
   }
 

@@ -8,6 +8,7 @@ import {
   setSkillEnabledAction,
   type AgentSkillRow,
   type AssignableSkill,
+  type PendingSkill,
 } from '@/app/actions/skills'
 import { Badge, Card } from '@/components/ui/shell'
 import { OpenInNewWindowLink } from '@/components/ui/open-in-new-window-link'
@@ -64,6 +65,8 @@ export function AgentSkillsPanel({
   agentId,
   assigned,
   assignable,
+  pendingSkills = [],
+  loadError = null,
   suggestedSkillNames,
   canEdit = true,
   isAdmin = false,
@@ -74,6 +77,10 @@ export function AgentSkillsPanel({
   agentId: string
   assigned: AgentSkillRow[]
   assignable: AssignableSkill[]
+  /** Jóváhagyásra váró skillek — még nem rendelhetők, de látszanak, hogy miért. */
+  pendingSkills?: PendingSkill[]
+  /** A lista betöltése elhasalt (pl. jogosultság) — csend helyett kiírjuk. */
+  loadError?: string | null
   /** Javaslat: csak megjelenik; hozzárendelés külön admin-kattintás. */
   suggestedSkillNames?: string[]
   /** Operátor a listát látja; az admin ugyanitt rendel / tilt / leszerel. */
@@ -233,6 +240,30 @@ export function AgentSkillsPanel({
         <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-ink-faint">
           Képesség hozzárendelése
         </p>
+        {loadError ? (
+          <p className="mb-3 rounded-lg border border-coral/35 bg-coral/10 px-3 py-2 text-xs text-coral-deep">
+            A hozzárendelhető lista nem tölthető be: {loadError}
+          </p>
+        ) : null}
+        {pendingSkills.length > 0 ? (
+          <div className="mb-3 rounded-lg border border-ink-faint/20 bg-night-2/30 px-3 py-2">
+            <p className="text-xs font-medium text-ink">
+              Jóváhagyásra vár {pendingSkills.length} képesség — előbb a katalógusban hagyd jóvá,
+              utána rendelheted hozzá:
+            </p>
+            <ul className="mt-1 space-y-0.5">
+              {pendingSkills.map((s) => (
+                <li key={s.skillId} className="text-xs text-ink-soft">
+                  {s.displayName?.trim() || s.name}{' '}
+                  <span className="text-ink-faint">(v{s.latestVersion}, {s.latestStatus})</span>
+                </li>
+              ))}
+            </ul>
+            <OpenInNewWindowLink href={CREATE_AGENT_WIZARD_EXTERNAL_HREFS.skills}>
+              Megnyitás a katalógusban
+            </OpenInNewWindowLink>
+          </div>
+        ) : null}
         <div className="mb-3 rounded-lg border border-ink-faint/20 bg-night-2/30 px-3 py-2">
           <SkillKindLegend compact />
         </div>

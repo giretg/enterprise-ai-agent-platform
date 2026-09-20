@@ -27,6 +27,7 @@ import { writeAudit } from '@/lib/audit/types'
 export type AgentDefinitionSnapshot = {
   name: string
   roleInstruction: string
+  description?: string | null
   skills: Array<{ skillId: string; skillVersionId: string; name: string }>
   connectors: Array<{ connectorId: string; type: string; accessMode: 'read' | 'write' }>
   capabilities: Array<{ toolName: string; allowed: boolean }>
@@ -118,6 +119,7 @@ export class AgentDefinitionService {
     const snapshot: AgentDefinitionSnapshot = {
       name: agent.name,
       roleInstruction: agent.roleInstruction,
+      description: agent.description ?? null,
       skills: enabledSkills
         .filter((row) => row.skillVersion.status === 'active')
         .map((row) => ({

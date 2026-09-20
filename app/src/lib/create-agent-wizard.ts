@@ -1,30 +1,10 @@
 /** Új-agent varázsló: lépések, kapuk és a „közben eszembe jutott” új-ablakos útvonalak. */
 
-import {
-  DEFAULT_MODEL_TYPE,
-  isModelType,
-  normalizeModelForProvider,
-  type ModelProviderOption,
-  type ModelType,
-} from '@/lib/model-providers'
-
 export const CREATE_AGENT_WIZARD_STEPS = [
   {
     id: 'identity',
     label: 'Alapok',
-    hint: 'Név, szerep, munkakör',
-    phase: 'pre',
-  },
-  {
-    id: 'style',
-    label: 'Munkastílus',
-    hint: 'Hogyan dolgozik',
-    phase: 'pre',
-  },
-  {
-    id: 'model',
-    label: 'Modell',
-    hint: 'Gondolkodási motor',
+    hint: 'Név és munkakör',
     phase: 'pre',
   },
   {
@@ -46,21 +26,9 @@ export const CREATE_AGENT_WIZARD_STEPS = [
     phase: 'post',
   },
   {
-    id: 'knowledge',
-    label: 'Tudásbázis',
-    hint: 'Dokumentumok',
-    phase: 'post',
-  },
-  {
-    id: 'operation',
-    label: 'Működés',
-    hint: 'Hozzáférés és szabályok',
-    phase: 'post',
-  },
-  {
     id: 'done',
     label: 'Kész',
-    hint: 'Összegzés',
+    hint: 'Publikálás és aktiválás',
     phase: 'post',
   },
 ] as const
@@ -71,13 +39,11 @@ export const CREATE_AGENT_WIZARD_EXTERNAL_HREFS = {
   skills: '/control-plane/skills',
   connections: '/control-plane/provisioning',
   connectors: '/control-plane/account',
-  behaviorProfiles: '/control-plane/behavior-profiles',
 } as const
 
 export type CreateAgentWizardGate = {
   name: string
   roleInstruction: string
-  behaviorProfile: string
   createdAgentId: string | null
 }
 
@@ -99,12 +65,8 @@ export function isIdentityStepComplete(gate: Pick<CreateAgentWizardGate, 'name' 
   return gate.name.trim().length > 0 && gate.roleInstruction.trim().length > 0
 }
 
-export function isStyleStepComplete(gate: Pick<CreateAgentWizardGate, 'behaviorProfile'>) {
-  return gate.behaviorProfile.trim().length > 0
-}
-
 export function isPreCreateComplete(gate: CreateAgentWizardGate) {
-  return isIdentityStepComplete(gate) && isStyleStepComplete(gate)
+  return isIdentityStepComplete(gate)
 }
 
 export function canEnterCreateAgentWizardStep(
@@ -114,10 +76,7 @@ export function canEnterCreateAgentWizardStep(
   const step = CREATE_AGENT_WIZARD_STEPS.find((item) => item.id === stepId)
   if (!step) return false
   if (step.phase === 'post') return Boolean(gate.createdAgentId)
-  if (stepId === 'identity') return true
-  if (stepId === 'style') return isIdentityStepComplete(gate)
-  if (stepId === 'model') return isPreCreateComplete(gate)
-  return false
+  return stepId === 'identity'
 }
 
 export function nextCreateAgentWizardStep(
@@ -140,24 +99,6 @@ export function createAgentWizardContinueHref(
 ): string {
   const params = new URLSearchParams({ continue: agentId, step: stepId })
   return `/control-plane/agents/new?${params.toString()}`
-}
-
-/** Provisioning agent által javasolt vázlat — a varázsló űrlapjába tölthető. */
-export type CreateAgentWizardProposal = {
-  name: string
-  role: 'worker' | 'orchestrator'
-  roleInstruction: string
-  behaviorProfile: string
-  modelConfig: {
-    provider: string
-    model: string
-    modelType?: 'luna' | 'terra' | 'sol'
-    temperature?: number
-  }
-  suggestedCapabilities: string[]
-  suggestedSkills: string[]
-  suggestedConnectors?: string[]
-  summary?: string
 }
 
 export function matchAssignableSkillsByName<T extends { name: string }>(
@@ -210,61 +151,45 @@ export function toolSelectionHasChanges(
   return false
 }
 
-export function assignableConnectorsFromCatalog<T extends { id: string; type: string }>(
+export function assignableConnectorsFromCatalog<T extends { id: string }>(
   catalog: T[],
   assignedIds: Iterable<string>,
 ): T[] {
   const assigned = new Set(assignedIds)
-  return catalog.filter(
-    (connector) =>
-      (connector.type === 'http_api' || connector.type as string === 'gmail' || connector.type === 'code_sandbox') && !assigned.has(connector.id),
-  )
+  return catalog.filter((connector) => !assigned.has(connector.id))
 }
 
 /** Meglévő agent másolásához — pre-create + post-create beállítások sablonja. */
 export type CreateAgentWizardCloneTemplate = {
   sourceAgentId: string
   sourceAgentName: string
-  role: 'worker' | 'orchestrator'
   roleInstruction: string
-  behaviorProfile: string
-  behaviorProfileId: string
-  modelConfig: {
-    provider: string
-    model: string
-    modelType: ModelType
-    temperature: number
-  }
   enabledTools: string[]
   skillVersionIds: string[]
   connectors: Array<{ connectorId: string; accessMode: 'read' | 'write'; name: string }>
-  taskOnly: boolean
-  hiddenFromOperators: boolean
-  allowSensitiveExternalModel: boolean
-  selfEvolutionProfile: unknown
 }
 
-export function parseAgentModelConfigForWizard(
-  raw: unknown,
-  providers: ModelProviderOption[],
-): CreateAgentWizardCloneTemplate['modelConfig'] {
-  const fallbackProvider = providers[0]?.value ?? 'chatgpt-oauth'
-  const fallbackModel =
-    providers.find((p) => p.value === fallbackProvider)?.defaultModel ?? 'chatgpt-oauth-default'
-  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
-  const provider =
-    typeof record.provider === 'string' && providers.some((p) => p.value === record.provider)
-      ? record.provider
-      : fallbackProvider
-  const model = normalizeModelForProvider(
-    provider,
-    typeof record.model === 'string' ? record.model : fallbackModel,
-    providers,
-  )
-  const modelType = isModelType(record.modelType) ? record.modelType : DEFAULT_MODEL_TYPE
-  const temperature =
-    typeof record.temperature === 'number' && Number.isFinite(record.temperature)
-      ? record.temperature
-      : 0.2
-  return { provider, model, modelType, temperature }
+export function cloneTemplateFromAgent(source: {
+  sourceAgentId: string
+  sourceAgentName: string
+  roleInstruction: string
+  capabilities: Array<{ toolName: string; allowed: boolean }>
+  skills: Array<{ skillVersionId: string }>
+  connectors: Array<{
+    connector: { id: string; name: string }
+    accessMode: 'read' | 'write'
+  }>
+}): CreateAgentWizardCloneTemplate {
+  return {
+    sourceAgentId: source.sourceAgentId,
+    sourceAgentName: source.sourceAgentName,
+    roleInstruction: source.roleInstruction,
+    enabledTools: grantedToolNames(source.capabilities),
+    skillVersionIds: source.skills.map((skill) => skill.skillVersionId),
+    connectors: source.connectors.map((row) => ({
+      connectorId: row.connector.id,
+      accessMode: row.accessMode,
+      name: row.connector.name,
+    })),
+  }
 }

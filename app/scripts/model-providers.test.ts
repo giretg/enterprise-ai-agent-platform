@@ -96,10 +96,10 @@ check('a tartalék modell ugyanazzal a ModelSelectFielddel választódik, mint a
   assert.doesNotMatch(fallback, /<input[\s\S]*fbModel/)
 })
 
-check('az új-agent varázsló is elrejti a no-op profilválasztót', () => {
+check('az új-agent varázsló nem tartalmazza a gondolkodási motort', () => {
   const wizard = readSrc('src/components/agents/create-agent-wizard.tsx')
-  assert.match(wizard, /providerUsesThinkingProfile\(provider\)/)
-  assert.match(wizard, /ModelTypeSelectField/)
+  assert.doesNotMatch(wizard, /providerUsesThinkingProfile/)
+  assert.doesNotMatch(wizard, /ModelTypeSelectField/)
 })
 
 if (failures > 0) {

@@ -80,13 +80,14 @@ export interface AgentRepository {
     status?: Agent['status']
   }): Promise<Agent>
   updateInstruction(input: { agentId: string; roleInstruction: string }): Promise<Agent>
+  updateProfile(input: { agentId: string; name?: string; description?: string | null }): Promise<Agent>
   updateAvatar(input: { agentId: string; avatarUrl: string }): Promise<Agent>
   setCurrentDefinitionVersionId(agentId: string, versionId: string): Promise<Agent>
   activate(agentId: string): Promise<Agent>
   suspend(agentId: string, reason?: string): Promise<Agent>
   resume(agentId: string): Promise<Agent>
   retire(agentId: string): Promise<Agent>
-  delete(agentId: string): Promise<void>
+  delete(agentId: string, opts?: { force?: boolean }): Promise<void>
   findCapabilitiesForAgent(agentId: string): Promise<{ toolName: string; allowed: boolean }[]>
   findConnectorsForAgent(agentId: string): Promise<AgentConnectorBinding[]>
   replaceCapabilities(agentId: string, toolNames: string[]): Promise<void>
@@ -120,14 +121,22 @@ export interface ResourceGrantRepository {
   }): Promise<ResourceGrant | null>
   listAgentGrantsForUser(input: { tenantId: string; userId: string }): Promise<ResourceGrant[]>
   listAgentIdsGrantedToUser(input: { tenantId: string; userId: string }): Promise<string[]>
-  setAgentGrant(input: {
+  listAgentGrantsForAgent(input: {
+    tenantId: string
+    agentId: string
+  }): Promise<Array<ResourceGrant & { user: { id: string; name: string; email: string } }>>
+  upsertAgentGrant(input: {
     tenantId: string
     userId: string
     agentId: string
-    accessLevel: ResourceAccessLevel
+    accessLevel: 'view' | 'operate'
     grantedById: string
   }): Promise<ResourceGrant>
-  revokeAgentGrant(input: { tenantId: string; userId: string; agentId: string }): Promise<void>
+  revokeAgentGrant(input: {
+    tenantId: string
+    userId: string
+    agentId: string
+  }): Promise<void>
 }
 
 export type SkillWithVersions = Skill & { versions: SkillVersion[] }

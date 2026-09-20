@@ -35,6 +35,29 @@ export async function ensureAgentKnowledgeBase(
   return connector
 }
 
+export function knowledgeCatalogConnectorName(): string {
+  return 'kb:catalog'
+}
+
+export async function ensureCatalogKnowledgeBase(
+  tenantId: string,
+  deps: {
+    connectors: Pick<ConnectorRepository, 'findByTenantTypeAndName' | 'create'>
+  },
+): Promise<Connector> {
+  const name = knowledgeCatalogConnectorName()
+  return (
+    (await deps.connectors.findByTenantTypeAndName(tenantId, 'knowledge_base', name)) ??
+    (await deps.connectors.create({
+      tenantId,
+      type: 'knowledge_base',
+      name,
+      authMode: 'agent_owned',
+      scope: 'single',
+    }))
+  )
+}
+
 export function toolsNeedKnowledgeBase(toolNames: string[]): boolean {
   return toolNames.some(
     (name) =>

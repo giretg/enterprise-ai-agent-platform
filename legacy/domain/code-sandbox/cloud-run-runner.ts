@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process'
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { spawn } from "node:child_process";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import {
   chmod,
   lstat,
@@ -9,23 +9,23 @@ import {
   readdir,
   rm,
   writeFile,
-} from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
-import { z } from 'zod'
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { z } from "zod";
 import {
   isCanonicalBase64,
   relativeSandboxPath,
   type CodeSandboxLimits,
-} from './code-sandbox-types'
+} from "./code-sandbox-types";
 
 const requestSchema = z.object({
   id: z.string().uuid(),
   allowEgress: z.boolean(),
   command: z.array(z.string().min(1).max(8192)).min(1).max(64),
   timeoutMs: z.number().int().min(1).max(900_000),
-  cpuProfile: z.string().trim().min(1).max(64).default('1'),
-  memoryProfile: z.string().trim().min(1).max(64).default('512Mi'),
+  cpuProfile: z.string().trim().min(1).max(64).default("1"),
+  memoryProfile: z.string().trim().min(1).max(64).default("512Mi"),
   env: z.record(z.string(), z.string().max(8192)).default({}),
   limits: z.object({
     maxFiles: z.number().int().min(1).max(256),
@@ -66,12 +66,15 @@ const requestSchema = z.object({
       }),
     )
     .max(256),
-})
+});
 
-type RunResult = { stdout: string; stderr: string; exitCode: number }
+const SANDBOX_PATH =
+  "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+type RunResult = { stdout: string; stderr: string; exitCode: number };
 
 function sandboxBinary(): string {
-  return process.env.CODE_SANDBOX_BINARY ?? '/usr/local/gcp/bin/sandbox'
+  return process.env.CODE_SANDBOX_BINARY ?? "/usr/local/gcp/bin/sandbox";
 }
 
 function appendCapped(
@@ -80,10 +83,10 @@ function appendCapped(
   current: number,
   max: number,
 ): number {
-  if (current >= max + 1) return current
-  const remaining = max + 1 - current
-  chunks.push(chunk.subarray(0, remaining))
-  return current + Math.min(chunk.length, remaining)
+  if (current >= max + 1) return current;
+  const remaining = max + 1 - current;
+  chunks.push(chunk.subarray(0, remaining));
+  return current + Math.min(chunk.length, remaining);
 }
 
 function runProcess(
@@ -93,93 +96,93 @@ function runProcess(
   limits: CodeSandboxLimits,
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
-    const stdout: Buffer[] = []
-    const stderr: Buffer[] = []
-    let stdoutBytes = 0
-    let stderrBytes = 0
-    let timedOut = false
-    child.stdout.on('data', (chunk: Buffer) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let timedOut = false;
+    child.stdout.on("data", (chunk: Buffer) => {
       stdoutBytes = appendCapped(
         stdout,
         chunk,
         stdoutBytes,
         limits.maxStdoutBytes,
-      )
-    })
-    child.stderr.on('data', (chunk: Buffer) => {
+      );
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
       stderrBytes = appendCapped(
         stderr,
         chunk,
         stderrBytes,
         limits.maxStderrBytes,
-      )
-    })
+      );
+    });
     const timer = setTimeout(() => {
-      timedOut = true
-      child.kill('SIGKILL')
-    }, timeoutMs)
-    child.once('error', (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
-    child.once('close', (code) => {
-      clearTimeout(timer)
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
       resolve({
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
         exitCode: timedOut ? 124 : (code ?? 1),
-      })
-    })
-  })
+      });
+    });
+  });
 }
 
 function safeMountedPath(root: string, sandboxPath: string): string {
-  const relative = relativeSandboxPath(sandboxPath, '/work/in/')
-  const resolved = path.resolve(root, relative)
+  const relative = relativeSandboxPath(sandboxPath, "/work/in/");
+  const resolved = path.resolve(root, relative);
   if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`))
-    throw new Error('sandbox_input_path_escape')
-  return resolved
+    throw new Error("sandbox_input_path_escape");
+  return resolved;
 }
 
 export function buildSandboxRunArgs(input: {
-  sandboxName: string
-  inputDir: string
-  outputDir: string
-  scriptPath?: string
-  allowEgress: boolean
+  sandboxName: string;
+  inputDir: string;
+  outputDir: string;
+  scriptPath?: string;
+  allowEgress: boolean;
 }): string[] {
   const runArgs = [
-    'run',
-    '--write',
+    "run",
+    "--write",
     input.sandboxName,
-    '--detach',
-    '--mount',
+    "--detach",
+    "--mount",
     `type=bind,source=${input.inputDir},destination=/work/in,readonly`,
-    '--mount',
+    "--mount",
     `type=bind,source=${input.outputDir},destination=/work/out`,
-  ]
+  ];
   if (input.scriptPath) {
     runArgs.push(
-      '--mount',
+      "--mount",
       `type=bind,source=${input.scriptPath},destination=/work/run.py,readonly`,
-    )
+    );
   }
-  if (input.allowEgress) runArgs.push('--allow-egress')
-  runArgs.push('--', '/bin/sleep', '1000')
-  return runArgs
+  if (input.allowEgress) runArgs.push("--allow-egress");
+  runArgs.push("--", "/bin/sleep", "1000");
+  return runArgs;
 }
 
 export async function collectSandboxOutputs(
   root: string,
   limits: CodeSandboxLimits,
 ) {
-  const outputs: Array<{ path: string; contentBase64: string }> = []
-  let total = 0
+  const outputs: Array<{ path: string; contentBase64: string }> = [];
+  let total = 0;
   async function walk(dir: string): Promise<void> {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name)
-      const stat = await lstat(full)
+      const full = path.join(dir, entry.name);
+      const stat = await lstat(full);
       if (
         stat.isSymbolicLink() ||
         (!stat.isDirectory() && !stat.isFile()) ||
@@ -187,96 +190,107 @@ export async function collectSandboxOutputs(
       ) {
         throw new Error(
           `invalid_sandbox_output_type: ${path.relative(root, full)}`,
-        )
+        );
       }
       if (stat.isDirectory()) {
-        await walk(full)
-        continue
+        await walk(full);
+        continue;
       }
       if (stat.size > limits.maxFileBytes)
         throw new Error(
           `sandbox_output_file_too_large: ${path.relative(root, full)}`,
-        )
-      total += stat.size
+        );
+      total += stat.size;
       if (total > limits.maxOutputBytes)
-        throw new Error('sandbox_output_total_size_exceeded')
+        throw new Error("sandbox_output_total_size_exceeded");
       if (outputs.length >= limits.maxFiles)
-        throw new Error('sandbox_output_file_count_exceeded')
+        throw new Error("sandbox_output_file_count_exceeded");
       outputs.push({
-        path: `/work/out/${path.relative(root, full).split(path.sep).join('/')}`,
-        contentBase64: (await readFile(full)).toString('base64'),
-      })
+        path: `/work/out/${path.relative(root, full).split(path.sep).join("/")}`,
+        contentBase64: (await readFile(full)).toString("base64"),
+      });
     }
   }
-  await walk(root)
-  return { outputs, outputBytes: total }
+  await walk(root);
+  return { outputs, outputBytes: total };
 }
 
 export async function executeCloudRunSandbox(raw: unknown) {
-  const request = requestSchema.parse(raw)
+  const request = requestSchema.parse(raw);
   if (request.files.length > request.limits.maxFiles)
-    throw new Error('sandbox_input_file_count_exceeded')
-  const root = await mkdtemp(path.join(tmpdir(), 'code-sandbox-'))
-  const inputDir = path.join(root, 'in')
-  const outputDir = path.join(root, 'out')
-  const scriptDir = path.join(root, 'script')
-  const sandboxName = `exec-${randomUUID()}`
-  await Promise.all([mkdir(inputDir), mkdir(outputDir), mkdir(scriptDir)])
+    throw new Error("sandbox_input_file_count_exceeded");
+  const root = await mkdtemp(path.join(tmpdir(), "code-sandbox-"));
+  const inputDir = path.join(root, "in");
+  const outputDir = path.join(root, "out");
+  const scriptDir = path.join(root, "script");
+  const sandboxName = `exec-${randomUUID()}`;
+  await Promise.all([mkdir(inputDir), mkdir(outputDir), mkdir(scriptDir)]);
   await Promise.all([
     chmod(inputDir, 0o755),
     chmod(outputDir, 0o777),
     chmod(scriptDir, 0o755),
-  ])
-  let inputBytes = 0
-  let provisionMs = 0
-  const startedAt = Date.now()
+  ]);
+  let inputBytes = 0;
+  let provisionMs = 0;
+  const startedAt = Date.now();
   try {
     for (const file of request.files) {
-      const bytes = Buffer.from(file.contentBase64, 'base64')
+      const bytes = Buffer.from(file.contentBase64, "base64");
       if (bytes.length > request.limits.maxFileBytes)
-        throw new Error(`sandbox_input_file_too_large: ${file.path}`)
-      inputBytes += bytes.length
+        throw new Error(`sandbox_input_file_too_large: ${file.path}`);
+      inputBytes += bytes.length;
       if (inputBytes > request.limits.maxInputBytes)
-        throw new Error('sandbox_input_total_size_exceeded')
-      const rootForFile = file.path === '/work/run.py' ? scriptDir : inputDir
-      const target = safeMountedPath(rootForFile, file.path)
-      await mkdir(path.dirname(target), { recursive: true })
-      await writeFile(target, bytes, { flag: 'wx', mode: 0o400 })
-      await chmod(target, 0o444)
+        throw new Error("sandbox_input_total_size_exceeded");
+      const rootForFile = file.path === "/work/run.py" ? scriptDir : inputDir;
+      const target = safeMountedPath(rootForFile, file.path);
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, bytes, { flag: "wx", mode: 0o400 });
+      await chmod(target, 0o444);
     }
 
     const runArgs = buildSandboxRunArgs({
       sandboxName,
       inputDir,
       outputDir,
-      scriptPath: request.files.some((file) => file.path === '/work/run.py')
-        ? path.join(scriptDir, 'run.py')
+      scriptPath: request.files.some((file) => file.path === "/work/run.py")
+        ? path.join(scriptDir, "run.py")
         : undefined,
       allowEgress: request.allowEgress,
-    })
-    const provisionStarted = Date.now()
+    });
+    const provisionStarted = Date.now();
     const provision = await runProcess(
       sandboxBinary(),
       runArgs,
       30_000,
       request.limits,
-    )
-    provisionMs = Date.now() - provisionStarted
+    );
+    provisionMs = Date.now() - provisionStarted;
     if (provision.exitCode !== 0)
-      throw new Error(`sandbox_provision_failed: ${provision.stderr}`)
+      throw new Error(`sandbox_provision_failed: ${provision.stderr}`);
 
-    const execStarted = Date.now()
+    const execStarted = Date.now();
     const result = await runProcess(
       sandboxBinary(),
-      ['exec', sandboxName, '--workdir', '/work', '--', ...request.command],
+      // A Sandbox Launcher exec üres PATH-tal indít; /usr/bin/env abszolút, így
+      // a relatív parancsnév (python3) is feloldódik.
+      [
+        "exec",
+        sandboxName,
+        "--workdir",
+        "/work",
+        "--",
+        "/usr/bin/env",
+        `PATH=${SANDBOX_PATH}`,
+        ...request.command,
+      ],
       request.timeoutMs,
       request.limits,
-    )
-    const execMs = Date.now() - execStarted
+    );
+    const execMs = Date.now() - execStarted;
     const { outputs, outputBytes } = await collectSandboxOutputs(outputDir, {
       ...request.limits,
       maxFiles: request.limits.maxFiles - request.files.length,
-    })
+    });
     return {
       ...result,
       outputs,
@@ -292,29 +306,29 @@ export async function executeCloudRunSandbox(raw: unknown) {
         coldStart: null,
         exitStatus: result.exitCode,
       },
-    }
+    };
   } finally {
     await runProcess(
       sandboxBinary(),
-      ['delete', sandboxName, '--force'],
+      ["delete", sandboxName, "--force"],
       15_000,
       request.limits,
-    ).catch(() => undefined)
-    await rm(root, { recursive: true, force: true })
+    ).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
   }
 }
 
 export function authorizeSandboxRequest(header: string | undefined): boolean {
-  const expected = process.env.CODE_SANDBOX_SHARED_TOKEN
+  const expected = process.env.CODE_SANDBOX_SHARED_TOKEN;
   if (!expected) {
     // Cloud Run IAM is the outer auth boundary only on Cloud Run.
-    return Boolean(process.env.K_SERVICE)
+    return Boolean(process.env.K_SERVICE);
   }
-  const actual = header?.replace(/^Bearer\s+/i, '') ?? ''
-  const expectedBytes = Buffer.from(expected)
-  const actualBytes = Buffer.from(actual)
+  const actual = header?.replace(/^Bearer\s+/i, "") ?? "";
+  const expectedBytes = Buffer.from(expected);
+  const actualBytes = Buffer.from(actual);
   return (
     expectedBytes.length === actualBytes.length &&
     timingSafeEqual(expectedBytes, actualBytes)
-  )
+  );
 }
