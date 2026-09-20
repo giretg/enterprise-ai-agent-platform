@@ -141,7 +141,7 @@ function memoryDeps(opts?: { skillStatus?: SkillVersion['status'] }) {
             content: {},
             requires: [],
             attachments: null,
-            status: opts?.skillStatus ?? 'approved',
+            status: opts?.skillStatus ?? 'active',
             contentHash: 'abc',
             approvedById: USER_ID,
             createdAt: new Date(),
@@ -235,14 +235,24 @@ async function main() {
     assert.equal(leaked, null)
   })
 
-  await check('only approved skill versions are snapshotted', async () => {
-    const { service } = memoryDeps({ skillStatus: 'active' })
+  await check('only active skill versions are snapshotted', async () => {
+    const { service } = memoryDeps({ skillStatus: 'proposed' })
     const published = await service.publishAgentDefinition({
       agentId: AGENT_ID,
       tenantId: TENANT_A,
       publishedById: USER_ID,
     })
     assert.deepEqual(published.snapshot.skills, [])
+  })
+
+  await check('active skill versions are included in the snapshot', async () => {
+    const { service } = memoryDeps({ skillStatus: 'active' })
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    assert.equal(published.snapshot.skills[0]?.skillVersionId, SKILL_VERSION_ID)
   })
 
   await check('contentHash is sha256 of canonical JSON', () => {

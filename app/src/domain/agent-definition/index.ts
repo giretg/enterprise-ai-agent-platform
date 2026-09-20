@@ -2,10 +2,14 @@
  * Immutable Agent Definition.
  *
  * Publish snapshots the agent's draft working set (name, role instruction,
- * enabled approved skills, connector bindings, capabilities) into an
+ * enabled active skills, connector bindings, capabilities) into an
  * append-only `AgentDefinitionVersion` row. The stable identifier is the
  * version UUID. Canonical JSON for `contentHash` is SHA-256 of
  * `JSON.stringify` with object keys sorted recursively.
+ *
+ * Skill versions become `active` on approve (see SkillRepository.approveVersion);
+ * the dead `approved` enum value is never written and must not be used as the
+ * snapshot gate — otherwise every live skill is silently dropped from checkout.
  *
  * Snapshots never contain secrets, `tokenRef`, `secretAlias`, `modelConfig`,
  * memory, session, queue, or Clerk ids.
@@ -115,7 +119,7 @@ export class AgentDefinitionService {
       name: agent.name,
       roleInstruction: agent.roleInstruction,
       skills: enabledSkills
-        .filter((row) => row.skillVersion.status === 'approved')
+        .filter((row) => row.skillVersion.status === 'active')
         .map((row) => ({
           skillId: row.skillVersion.skillId,
           skillVersionId: row.skillVersionId,
