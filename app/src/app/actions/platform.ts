@@ -570,6 +570,21 @@ export async function publishAgentDefinitionAction(input: { agentId: string }) {
   }
 }
 
+export async function getAgentPublishStatus(input: { agentId: string }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    if (!user.activeTenantId) return fail('Tenant required')
+    const status = await services.agentDefinitions.getPublishStatus({
+      agentId,
+      tenantId: user.activeTenantId,
+    })
+    return ok(status)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load publish status')
+  }
+}
+
 export async function activateAgent(input: { agentId: string }) {
   try {
     const user = await requireTenantRole('admin')

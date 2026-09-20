@@ -5,6 +5,7 @@ import { hasMinimumRole } from '@/auth/types'
 import {
   getAgent,
   getAgentGovernance,
+  getAgentPublishStatus,
   listAgentAccess,
   listKbDocuments,
   listKnowledgeCatalog,
@@ -42,7 +43,7 @@ export default async function AgentDetailPage({
     throw error
   }
 
-  const [agentRes, govRes, skillsRes, assignableRes, kbRes, catalogRes, kbCatalogRes, accessRes] =
+  const [agentRes, govRes, skillsRes, assignableRes, kbRes, catalogRes, kbCatalogRes, accessRes, publishRes] =
     await Promise.all([
       getAgent({ id: agentId }),
       getAgentGovernance({ agentId }),
@@ -52,6 +53,7 @@ export default async function AgentDetailPage({
       listConnectorCatalog(),
       listKnowledgeCatalog(),
       listAgentAccess({ agentId }),
+      getAgentPublishStatus({ agentId }),
     ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
@@ -110,6 +112,8 @@ export default async function AgentDetailPage({
         status={agent.status}
         goLive
         canEdit={canManage}
+        hasUnpublishedChanges={publishRes.success ? publishRes.data.stale : false}
+        publishedVersion={publishRes.success ? publishRes.data.version : null}
       />
       <Card title="Munkakör">
         <UpdateInstructionForm agentId={agent.id} roleInstruction={agent.roleInstruction} bare />

@@ -92,6 +92,7 @@ export function SkillQuickEditModal({
     >
       {skill ? (
         <EditSkillVersionForm
+          key={skill.id}
           skill={skill}
           running={pending}
           onRun={run}
@@ -99,7 +100,7 @@ export function SkillQuickEditModal({
           onClose={onClose}
         />
       ) : error ? null : (
-        <p className="text-sm text-ink-faint">Betöltés…</p>
+        <p key="loading" className="text-sm text-ink-faint">Betöltés…</p>
       )}
     </SkillModal>
   )
