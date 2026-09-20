@@ -99,8 +99,74 @@ function toDefinition(agent: Agent, row: AgentDefinitionVersion): AgentDefinitio
   }
 }
 
+type DraftWorkingSet = {
+  name: string
+  roleInstruction: string
+  description?: string | null
+  enabledSkills: Array<{
+    skillVersionId: string
+    skillVersion: { skillId: string; status: string; skill: { name: string } }
+  }>
+  connectors: Array<{ connector: { id: string; type: string }; accessMode: 'read' | 'write' }>
+  capabilities: Array<{ toolName: string; allowed: boolean }>
+}
+
+function buildSnapshot(
+  agent: { name: string; roleInstruction: string; description?: string | null },
+  workingSet: Pick<DraftWorkingSet, 'enabledSkills' | 'connectors' | 'capabilities'>,
+): AgentDefinitionSnapshot {
+  return {
+    name: agent.name,
+    roleInstruction: agent.roleInstruction,
+    description: agent.description ?? null,
+    skills: workingSet.enabledSkills
+      .filter((row) => row.skillVersion.status === 'active')
+      .map((row) => ({
+        skillId: row.skillVersion.skillId,
+        skillVersionId: row.skillVersionId,
+        name: row.skillVersion.skill.name,
+      })),
+    connectors: workingSet.connectors.map((row) => ({
+      connectorId: row.connector.id,
+      type: row.connector.type,
+      accessMode: row.accessMode,
+    })),
+    capabilities: workingSet.capabilities.map((row) => ({
+      toolName: row.toolName,
+      allowed: row.allowed,
+    })),
+  }
+}
+
 export class AgentDefinitionService {
   constructor(private readonly deps: AgentDefinitionDeps) {}
+
+  /**
+   * Vázlat vs. közzétett verzió: az MCP a publikált snapshotot olvassa, ezért
+   * ha a vázlat (név, instrukció, skill, connector-kötés, capability) eltér
+   * tőle, az adminnak újra kell publikálnia. Sosem ír, csak összehasonlít.
+   */
+  async getPublishStatus(input: {
+    agentId: string
+    tenantId: string
+  }): Promise<{ definitionId: string | null; version: number | null; stale: boolean }> {
+    const agent = await this.deps.agents.findById(input.agentId, input.tenantId)
+    if (!agent) throw new Error('Agent not found')
+    if (!agent.currentDefinitionVersionId) return { definitionId: null, version: null, stale: false }
+    const row = await this.deps.versions.findById(agent.currentDefinitionVersionId)
+    if (!row) return { definitionId: null, version: null, stale: false }
+    const [enabledSkills, connectors, capabilities] = await Promise.all([
+      this.deps.skills.listEnabledForAgent(agent.id),
+      this.deps.agents.findConnectorsForAgent(agent.id),
+      this.deps.agents.findCapabilitiesForAgent(agent.id),
+    ])
+    const draft = buildSnapshot(agent, { enabledSkills, connectors, capabilities })
+    return {
+      definitionId: row.id,
+      version: row.version,
+      stale: hashSnapshot(draft) !== row.contentHash,
+    }
+  }
 
   async publishAgentDefinition(input: {
     agentId: string
@@ -116,27 +182,7 @@ export class AgentDefinitionService {
       this.deps.agents.findCapabilitiesForAgent(agent.id),
     ])
 
-    const snapshot: AgentDefinitionSnapshot = {
-      name: agent.name,
-      roleInstruction: agent.roleInstruction,
-      description: agent.description ?? null,
-      skills: enabledSkills
-        .filter((row) => row.skillVersion.status === 'active')
-        .map((row) => ({
-          skillId: row.skillVersion.skillId,
-          skillVersionId: row.skillVersionId,
-          name: row.skillVersion.skill.name,
-        })),
-      connectors: connectors.map((row) => ({
-        connectorId: row.connector.id,
-        type: row.connector.type,
-        accessMode: row.accessMode,
-      })),
-      capabilities: capabilities.map((row) => ({
-        toolName: row.toolName,
-        allowed: row.allowed,
-      })),
-    }
+    const snapshot = buildSnapshot(agent, { enabledSkills, connectors, capabilities })
 
     const version = (await this.deps.versions.findMaxVersion(agent.id)) + 1
     const row = await this.deps.versions.create({

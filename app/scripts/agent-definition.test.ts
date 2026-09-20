@@ -266,6 +266,21 @@ async function main() {
     assert.match(hashSnapshot(snapshot), /^[a-f0-9]{64}$/)
   })
 
+  await check('getPublishStatus jelzi, ha a vázlat eltér a közzétett verziótól', async () => {
+    const { service, agents } = memoryDeps()
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    const fresh = await service.getPublishStatus({ agentId: AGENT_ID, tenantId: TENANT_A })
+    assert.deepEqual(fresh, { definitionId: published.definitionId, version: 1, stale: false })
+    const current = agents.get(AGENT_ID)!
+    agents.set(AGENT_ID, { ...current, roleInstruction: 'Changed after publish.' })
+    const stale = await service.getPublishStatus({ agentId: AGENT_ID, tenantId: TENANT_A })
+    assert.deepEqual(stale, { definitionId: published.definitionId, version: 1, stale: true })
+  })
+
   if (failures > 0) {
     console.error(`agent-definition: ${failures} failure(s)`)
     process.exit(1)

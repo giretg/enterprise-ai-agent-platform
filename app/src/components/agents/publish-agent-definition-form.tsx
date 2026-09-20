@@ -23,6 +23,8 @@ export function PublishAgentDefinitionForm({
   canEdit = true,
   bare = false,
   onChanged,
+  hasUnpublishedChanges = false,
+  publishedVersion = null,
 }: {
   agentId: string
   currentDefinitionId: string | null
@@ -33,6 +35,9 @@ export function PublishAgentDefinitionForm({
   canEdit?: boolean
   bare?: boolean
   onChanged?: (next: { definitionId: string | null; status: AgentStatus }) => void
+  /** A vázlat eltér a közzétett verziótól — az MCP a régi verziót látja. */
+  hasUnpublishedChanges?: boolean
+  publishedVersion?: number | null
 }) {
   const router = useRouter()
   const [pending, start] = useTransition()
@@ -48,6 +53,17 @@ export function PublishAgentDefinitionForm({
     onChanged?.(next)
     router.refresh()
   }
+
+  const staleBanner =
+    hasUnpublishedChanges && definitionId ? (
+      <p className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-ink">
+        A vázlat megváltozott a közzétett verzió
+        {publishedVersion !== null ? ` (v${publishedVersion})` : ''} óta —{' '}
+        {live
+          ? 'az MCP még a régi verziót látja. Nyomd meg az „Új verzió közzététele” gombot, hogy a módosítások (jogok, kapcsolatok, munkakör) életbe lépjenek.'
+          : 'visszakapcsoláskor a régi verzió élne. Nyomd meg az „Új verzió közzététele” gombot, hogy a módosítások (jogok, kapcsolatok, munkakör) bekerüljenek a következő verzióba.'}
+      </p>
+    ) : null
 
   const switchBody = (
     <>
@@ -127,7 +143,7 @@ export function PublishAgentDefinitionForm({
           </span>
         </span>
       </label>
-      {live && canEdit ? (
+      {(live || hasUnpublishedChanges) && canEdit ? (
         <button
           type="button"
           disabled={pending}
@@ -147,6 +163,7 @@ export function PublishAgentDefinitionForm({
           {pending ? 'Közzététel…' : 'Új verzió közzététele'}
         </button>
       ) : null}
+      {staleBanner}
       {error ? <p className="mt-2 text-sm text-coral-deep">{error}</p> : null}
     </>
   )
@@ -160,6 +177,7 @@ export function PublishAgentDefinitionForm({
       <p className="mt-2 text-sm text-ink">
         {definitionId ? 'Van közzétett verzió.' : 'Még nincs közzétett verzió.'}
       </p>
+      {staleBanner}
       {canEdit ? (
         <button
           type="button"

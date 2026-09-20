@@ -433,9 +433,9 @@ export function ConfirmDialogHost() {
 
   return createPortal(
     current.kind === 'confirm' ? (
-      <ActiveConfirmDialog options={current.options} onResolve={resolveConfirm} />
+      <ActiveConfirmDialog key="confirm" options={current.options} onResolve={resolveConfirm} />
     ) : (
-      <ActivePromptDialog options={current.options} onResolve={resolvePrompt} />
+      <ActivePromptDialog key="prompt" options={current.options} onResolve={resolvePrompt} />
     ),
     document.body,
   )
