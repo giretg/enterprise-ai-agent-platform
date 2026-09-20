@@ -88,8 +88,8 @@ export async function listSelfUpdatingConnectors() {
   try {
     const ctx = await requireTenantRole('operator')
     const connectors = await prisma.connector.findMany({
-      where: { tenantId: ctx.activeTenantId, connectorMode: 'self_updating', lifecycleState: 'active' },
-      select: { id: true },
+      where: { tenantId: ctx.activeTenantId, connectorMode: 'self_updating' },
+      select: { id: true, lifecycleState: true },
       orderBy: { createdAt: 'desc' },
     })
     const details = await Promise.all(
@@ -103,8 +103,9 @@ export async function listSelfUpdatingConnectors() {
     const tenant = await prisma.tenant.findUnique({ where: { id: ctx.activeTenantId }, select: { settings: true } })
     return ok({
       tenantAutoApproveEnabled: tenantSelfUpdateAutoApproveEnabled(tenant?.settings),
-      connectors: details.map(({ context, versions }) => ({
+      connectors: details.map(({ context, versions }, index) => ({
         id: context.connector.id,
+        lifecycleState: connectors[index]!.lifecycleState,
         name: context.connector.name,
         specUrl: context.source.specUrl,
         urlApproved: Boolean(context.source.urlApprovedAt),
