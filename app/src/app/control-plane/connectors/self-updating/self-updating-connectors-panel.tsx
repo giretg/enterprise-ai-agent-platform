@@ -35,7 +35,9 @@ type Version = {
   fetchedAt: string; approvedAt: string | null; approvedByName: string
 }
 export type SelfUpdatingConnectorRow = {
-  id: string; name: string; specUrl: string; urlApproved: boolean; trusted: boolean
+  id: string
+  lifecycleState?: 'active' | 'archived' | 'draft' | 'validated'
+  name: string; specUrl: string; urlApproved: boolean; trusted: boolean
   autoApproveEnabled: boolean; lastSyncedAt: string | null; activeSpecVersionId: string | null
   privacy: Version['privacy']
   versions: Version[]
@@ -342,6 +344,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
     ? new Date(row.lastSyncedAt).toLocaleString('hu-HU')
     : 'még nem volt sync'
   const toggleOpen = () => setOpen((current) => !current)
+  const archived = row.lifecycleState === 'archived'
 
   return (
     <div className="rounded-lg border border-ink/12 bg-paper">
@@ -354,6 +357,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
           {open ? '▾' : '▸'} {row.name}
         </button>
         <Badge tone="success">OpenAPI</Badge>
+        {archived ? <Badge tone="danger">megszűnt</Badge> : null}
         <Badge tone={row.urlApproved ? 'success' : 'warning'}>
           {row.urlApproved ? 'link jóváhagyva' : 'link jóváhagyásra vár'}
         </Badge>
@@ -380,30 +384,40 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
           >
             {open ? 'Bezárás' : 'Részletek'}
           </button>
-          <button
-            type="button"
-            disabled={pending || !row.urlApproved || !row.trusted}
-            className="rounded-md border border-ink/20 px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
-            onClick={() => onSync(row.id)}
-          >
-            Frissítés
-          </button>
-          <button
-            type="button"
-            className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral"
-            onClick={() => setOpen(true)}
-          >
-            Megszüntetés
-          </button>
+          {!archived ? (
+            <button
+              type="button"
+              disabled={pending || !row.urlApproved || !row.trusted}
+              className="rounded-md border border-ink/20 px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
+              onClick={() => onSync(row.id)}
+            >
+              Frissítés
+            </button>
+          ) : null}
+          {!archived ? (
+            <button
+              type="button"
+              className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral"
+              onClick={() => setOpen(true)}
+            >
+              Megszüntetés
+            </button>
+          ) : null}
         </div>
       </div>
 
       {open ? (
         <div className="space-y-4 border-t border-ink/10 px-4 py-4 text-sm">
+          {archived ? (
+            <p className="rounded-md border border-coral/30 bg-coral/5 px-3 py-2 text-xs text-ink-soft">
+              Ez a kapcsolat megszűnt (archived). Agent-hozzárendelés nem használható — a régi kötéseket
+              az agent oldalán érdemes leválasztani.
+            </p>
+          ) : null}
           <p className="break-all text-xs text-ink-soft">{row.specUrl}</p>
 
           <div className="flex flex-wrap gap-2">
-            {!row.urlApproved ? (
+            {!archived && !row.urlApproved ? (
               <button
                 disabled={pending}
                 className="rounded-md border border-sage/40 px-3 py-1.5 text-xs font-semibold"
@@ -412,7 +426,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
                 Link jóváhagyása
               </button>
             ) : null}
-            {!row.trusted ? (
+            {!archived && !row.trusted ? (
               <button
                 disabled={pending}
                 className="rounded-md border border-sage/40 px-3 py-1.5 text-xs font-semibold"
@@ -421,13 +435,15 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
                 Megbízhatónak minősítem
               </button>
             ) : null}
-            <button
-              disabled={pending || !row.urlApproved || !row.trusted}
-              className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
-              onClick={() => onSync(row.id)}
-            >
-              Frissítés keresése
-            </button>
+            {!archived ? (
+              <button
+                disabled={pending || !row.urlApproved || !row.trusted}
+                className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
+                onClick={() => onSync(row.id)}
+              >
+                Frissítés keresése
+              </button>
+            ) : null}
             <button
               type="button"
               disabled={!active && !proposal}
@@ -438,9 +454,11 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
               {detailsOpen ? 'API részletek elrejtése' : 'API részletei'}
             </button>
           </div>
-          <p className="text-xs text-ink-soft">
-            Megmutatjuk pontosan, mi változott. Amíg nem hagyod jóvá, minden a régiben marad.
-          </p>
+          {!archived ? (
+            <p className="text-xs text-ink-soft">
+              Megmutatjuk pontosan, mi változott. Amíg nem hagyod jóvá, minden a régiben marad.
+            </p>
+          ) : null}
 
           {detailsOpen ? (
             <CapabilityList
@@ -450,6 +468,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
             />
           ) : null}
 
+          {!archived ? (
           <div className="space-y-2 border-t border-ink/10 pt-3">
             <h4 className="text-sm font-semibold">Hozzáférési kulcs cseréje</h4>
             <p className="text-xs text-ink-soft">
@@ -487,7 +506,9 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
               </button>
             </div>
           </div>
+          ) : null}
 
+          {!archived ? (
           <label className="flex items-start gap-2 border-t border-ink/10 pt-3 text-xs">
             <input
               type="checkbox"
@@ -505,8 +526,9 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
               kapcsolója is be van kapcsolva.
             </span>
           </label>
+          ) : null}
 
-          {proposal?.diffSummary ? (
+          {!archived && proposal?.diffSummary ? (
             <div className="space-y-3 border-t border-ink/10 pt-4">
               <h3 className="font-semibold">Változások a(z) „{row.name}” konnektorban</h3>
               <DiffGroup
@@ -596,7 +618,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
                         <td>{version.approvedByName}</td>
                         <td>{version.status}</td>
                         <td className="text-right">
-                          {!isActive && ['approved', 'superseded', 'rolled_back'].includes(version.status) ? (
+                          {!archived && !isActive && ['approved', 'superseded', 'rolled_back'].includes(version.status) ? (
                             <button
                               disabled={pending}
                               className="rounded border border-sage/35 px-2 py-1 font-semibold"
@@ -623,6 +645,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
             </div>
           </div>
 
+          {!archived ? (
           <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
             <h4 className="mb-2 font-semibold text-coral">Megszüntetés (auditált leszerelés)</h4>
             <p className="text-xs text-ink-soft">
@@ -705,6 +728,7 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
               </div>
             )}
           </div>
+          ) : null}
         </div>
       ) : null}
     </div>

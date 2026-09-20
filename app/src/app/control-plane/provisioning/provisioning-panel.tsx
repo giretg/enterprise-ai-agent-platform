@@ -748,10 +748,15 @@ export function ProvisioningPanel({
   // azt sugallná, hogy használható agent-hozzárendelésre.
   const isSelfUpdatingReady = (row: SelfUpdatingConnectorRow) =>
     row.urlApproved && row.trusted && !!row.activeSpecVersionId
-  const readySelfUpdatingRows = selfUpdatingRows.filter(isSelfUpdatingReady)
-  const pendingSelfUpdatingRows = selfUpdatingRows
+  const activeSelfUpdatingRows = selfUpdatingRows.filter((row) => row.lifecycleState === 'active')
+  const archivedSelfUpdatingRows = selfUpdatingRows
+    .filter((row) => row.lifecycleState !== 'active')
+    .sort((a, b) => a.name.localeCompare(b.name, 'hu'))
+  const readySelfUpdatingRows = activeSelfUpdatingRows.filter(isSelfUpdatingReady)
+  const pendingSelfUpdatingRows = activeSelfUpdatingRows
     .filter((row) => !isSelfUpdatingReady(row))
     .sort((a, b) => a.name.localeCompare(b.name, 'hu'))
+  const inactiveCount = openDrafts.length + archivedSelfUpdatingRows.length
   const activeItems = [
     ...activatedDrafts.map((draft) => ({ kind: 'provisioned' as const, name: draft.name, draft })),
     ...readySelfUpdatingRows.map((row) => ({ kind: 'self_updating' as const, name: row.name, row })),
@@ -2120,13 +2125,22 @@ export function ProvisioningPanel({
       </Card>
       ) : null}
 
-      <Card title={loadedOnce ? `Nem aktivált konnektorok (${openDrafts.length})` : 'Nem aktivált konnektorok'}>
+      <Card title={loadedOnce ? `Nem aktivált konnektorok (${inactiveCount})` : 'Nem aktivált konnektorok'}>
         {!loadedOnce ? (
           <p className="text-sm text-ink-soft">Betöltés…</p>
-        ) : openDrafts.length === 0 ? (
+        ) : inactiveCount === 0 ? (
           <p className="text-sm text-ink-soft">Nincs nem aktivált konnektor.</p>
         ) : (
           <div className="space-y-3">
+            {archivedSelfUpdatingRows.map((row) => (
+              <SelfUpdatingConnectorCard
+                key={row.id}
+                row={row}
+                pending={pending}
+                run={run}
+                onSync={syncSelfUpdating}
+              />
+            ))}
             {openDrafts.map((d) => (
               <DraftCard
                 key={d.draftId}
