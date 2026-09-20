@@ -64,6 +64,8 @@ import {
   MCP_AGENT_CHECKOUT_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
   MCP_GATEWAY_OPERATION_GET_TOOL,
+  MCP_SKILLS_LIST_TOOL,
+  MCP_SKILL_READ_TOOL,
   MCP_WHOAMI_TOOL,
   resolveMcpPrincipal,
   type McpPrincipal,
@@ -73,6 +75,8 @@ import {
 } from './mcp-principal'
 import {
   findPackageByUri,
+  findSkillFile,
+  parseSkillResourceUri,
   skillFileUri,
   toSkillsListEntry,
   type McpSkillPackage,
@@ -306,6 +310,33 @@ async function listAgentsToolResult(principal: McpPrincipal, deps: McpRuntimeDep
   return textResult({ agents })
 }
 
+async function listSkillsToolResult(
+  principal: McpPrincipal,
+  deps: McpRuntimeDeps,
+  packages: McpSkillPackage[],
+) {
+  await auditMcpToolCall(deps, principal, MCP_SKILLS_LIST_TOOL)
+  return textResult({ skills: packages.map(toSkillsListEntry) })
+}
+
+async function readSkillToolResult(
+  principal: McpPrincipal,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+  packages: McpSkillPackage[],
+) {
+  await auditMcpToolCall(deps, principal, MCP_SKILL_READ_TOOL)
+  const uri = typeof args.uri === 'string' ? args.uri : ''
+  const parsed = parseSkillResourceUri(uri)
+  const pkg = parsed ? findPackageByUri(packages, uri) : undefined
+  const file = pkg && parsed ? findSkillFile(pkg, parsed.filePath) : undefined
+  if (!file) return textResult({ code: 'skill_resource_not_found', message: 'Skill resource not found' }, true)
+  await auditMcpResourceRead(deps, principal, uri)
+  return textResult({
+    contents: [{ uri, mimeType: file.mimeType, text: file.text }],
+  })
+}
+
 function asUuid(value: unknown): string | undefined {
   return (
     typeof value === 'string' &&
@@ -436,6 +467,29 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         },
         async (args) =>
           checkoutToolResult(principal, args as Record<string, unknown>, deps, origin),
+      )
+      server.registerTool(
+        MCP_SKILLS_LIST_TOOL,
+        {
+          title: 'List skills',
+          description:
+            'List active skills available to this tenant. Each skill includes a SKILL.md URI and resource URIs. Use platform.skills.read when the MCP client cannot read resources directly.',
+          inputSchema: mcpSkillsListParamsSchema,
+          annotations: { readOnlyHint: true },
+        },
+        async () => listSkillsToolResult(principal, deps, packages),
+      )
+      server.registerTool(
+        MCP_SKILL_READ_TOOL,
+        {
+          title: 'Read skill resource',
+          description:
+            'Read a skill:// resource returned by platform.skills.list. Returns SKILL.md instructions or an attachment as text.',
+          inputSchema: mcpSkillsGetParamsSchema,
+          annotations: { readOnlyHint: true },
+        },
+        async (args) =>
+          readSkillToolResult(principal, args as Record<string, unknown>, deps, packages),
       )
       server.registerTool(
         GOOGLE_DRIVE_SEARCH_TOOL,
@@ -646,6 +700,12 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         if (toolName === MCP_AGENT_CHECKOUT_TOOL) {
           return checkoutToolResult(principal, args, deps, origin)
         }
+        if (toolName === MCP_SKILLS_LIST_TOOL) {
+          return listSkillsToolResult(principal, deps, packages)
+        }
+        if (toolName === MCP_SKILL_READ_TOOL) {
+          return readSkillToolResult(principal, args, deps, packages)
+        }
         if (toolName === MCP_GATEWAY_OPERATION_GET_TOOL) {
           return getGatewayOperationToolResult(principal, args, deps)
         }
@@ -658,7 +718,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
     {
       serverInfo: { name: 'enterprise-mcp', version: 'phase-f' },
       instructions:
-        'Skills: call skills/list, then resources/read on skill:// URIs. Company systems: http_api_get / http_api_get_all / http_api_request with definitionId and a relative path — credentials stay on the connector. Gmail: gmail_search then gmail_get_message. Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval. Knowledge base: kb_search, kb_list_index, kb_get_page. If a tool returns authorizationUrl, show that URL to the user, wait until they finish consent, then retry.',
+        'Skills: use resources/list and resources/read on skill:// URIs. If the client cannot read MCP resources directly, call platform.skills.list and then platform.skills.read. Company systems: http_api_get / http_api_get_all / http_api_request with definitionId and a relative path — credentials stay on the connector. Gmail: gmail_search then gmail_get_message. Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval. Knowledge base: kb_search, kb_list_index, kb_get_page. If a tool returns authorizationUrl, show that URL to the user and retry after they finish consent.',
     },
   )
 }

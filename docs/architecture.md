@@ -82,9 +82,11 @@ ESLint rule. `domain/audit` is a target module.
   `google_drive_read_file`, `google_drive_create_folder`); every Drive
   `tools/call` still runs `authorizeToolCall`. Writes enqueue instead of
   calling Google until a human approves.
-- Active tenant skills are MCP resources under `skill://{name}/…` (`skills/list`,
-  `skills/get`, `resources/read`). Scripts belong in the skill package and run
-  on the client. The platform does not execute skill code.
+- Active tenant skills are MCP resources under `skill://{name}/…` (`resources/list`,
+  `resources/read`). For clients that do not expose MCP resources as callable
+  operations, `platform.skills.list` and `platform.skills.read` provide the same
+  catalog and content through read-only tools. Scripts belong in the skill
+  package and run on the client. The platform does not execute skill code.
 - Credentials never leave the server.
 - Unauthenticated MCP 401s are **not** written to `audit_log` (flood).
   `invalid_token` and membership/assume/inactive denies **are** audited
