@@ -10,6 +10,10 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+  GMAIL_SEARCH_TOOL,
+  HTTP_API_GET_TOOL,
+  HTTP_API_REQUEST_TOOL,
   KB_INGEST_TOOL,
   KB_SEARCH_TOOL,
   type AuthorizeToolCallDeps,
@@ -22,6 +26,7 @@ import {
   GoogleDriveApiAuthError,
   GoogleDriveApiError,
 } from '../src/domain/connector-grant/google-drive-api-client'
+import { GMAIL_SCOPES } from '../src/domain/connector-grant/gmail-scopes'
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
@@ -116,8 +121,10 @@ function invokeDeps(opts?: {
   grant?: LiveGrantRow | null
   accessToken?: string
   executeDriveTool?: EnterpriseToolDeps['executeDriveTool']
+  executeHttpApiTool?: EnterpriseToolDeps['executeHttpApiTool']
   executeKbTool?: EnterpriseToolDeps['executeKbTool']
   resolveError?: Error
+  startAuthorization?: EnterpriseToolDeps['startAuthorization']
   audit?: Array<{ action: string }>
 }): EnterpriseToolDeps {
   const audit = opts?.audit
@@ -144,6 +151,8 @@ function invokeDeps(opts?: {
       return opts?.accessToken ?? 'stub-drive-token'
     },
     executeDriveTool: opts?.executeDriveTool,
+    startAuthorization: opts?.startAuthorization,
+    executeHttpApiTool: opts?.executeHttpApiTool,
     executeKbTool: opts?.executeKbTool,
   }
 }
@@ -307,7 +316,11 @@ async function main() {
       toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
       args: { name: 'Q3', idempotencyKey: 'k1' },
     })
-    assert.deepEqual(result, { allowed: false, reason: 'google_drive_scope_not_granted' })
+    assert.deepEqual(result, {
+      allowed: false,
+      reason: 'google_drive_scope_not_granted',
+      connectorId: CONNECTOR_ID,
+    })
   })
 
   await check('grant missing', async () => {
@@ -317,7 +330,11 @@ async function main() {
       toolName: GOOGLE_DRIVE_SEARCH_TOOL,
       args: {},
     })
-    assert.deepEqual(result, { allowed: false, reason: 'connector_grant_missing' })
+    assert.deepEqual(result, {
+      allowed: false,
+      reason: 'connector_grant_missing',
+      connectorId: CONNECTOR_ID,
+    })
   })
 
   await check('scope deny', async () => {
@@ -332,7 +349,11 @@ async function main() {
         args: {},
       },
     )
-    assert.deepEqual(result, { allowed: false, reason: 'google_drive_scope_not_granted' })
+    assert.deepEqual(result, {
+      allowed: false,
+      reason: 'google_drive_scope_not_granted',
+      connectorId: CONNECTOR_ID,
+    })
   })
 
   await check('tenant isolation', async () => {
@@ -445,6 +466,19 @@ async function main() {
     assert.equal(parsePayload(result).code, 'agent_access_denied')
     assert.ok(audit.some((row) => row.action === 'enterprise.tool.denied'))
     assert.equal(audit.some((row) => row.action === 'enterprise.tool.ok'), false)
+  })
+
+  await check('inactive agent cannot invoke tools', async () => {
+    const result = await invokeEnterpriseTool(
+      invokeDeps({ definition: definition({ status: 'suspended' }) }),
+      {
+        principal: principal(),
+        toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+        args: { definitionId: DEFINITION_ID },
+      },
+    )
+    assert.equal(result.isError, true)
+    assert.equal(parsePayload(result).code, 'agent_inactive')
   })
 
   await check('mismatched agentId is definition_mismatch', async () => {
@@ -642,6 +676,32 @@ async function main() {
     assert.equal(parsePayload(result).code, 'google_drive_auth_failed')
   })
 
+  await check('grant missing returns authorizationUrl for MCP consent', async () => {
+    const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth?state=mcp-test'
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        grant: null,
+        startAuthorization: async (input) => {
+          assert.equal(input.connectorId, CONNECTOR_ID)
+          assert.equal(input.userId, USER_ID)
+          assert.equal(input.toolName, GOOGLE_DRIVE_SEARCH_TOOL)
+          return { url: AUTH_URL }
+        },
+      }),
+      {
+        principal: principal(),
+        toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+        args: { definitionId: DEFINITION_ID },
+      },
+    )
+    assert.equal(result.isError, true)
+    const payload = parsePayload(result)
+    assert.equal(payload.code, 'connector_grant_missing')
+    assert.equal(payload.authorizationUrl, AUTH_URL)
+    assert.match(String(payload.message), /Open this URL/)
+    assert.match(String(payload.message), /accounts\.google\.com/)
+  })
+
   const kbDefinition = definition({
     snapshot: {
       name: 'Wiki',
@@ -672,6 +732,187 @@ async function main() {
       assert.equal(result.grantId, null)
       assert.equal(result.tokenRef, null)
     }
+  })
+
+  await check('http_api service connector does not require a user grant', async () => {
+    const result = await authorizeToolCall(
+      authorizeDeps({
+        connector: connector({ type: 'http_api', authMode: 'service' }),
+        grant: null,
+      }),
+      {
+        principal: principal(),
+        definition: definition({
+          snapshot: {
+            name: 'CRM',
+            roleInstruction: 'Query CRM',
+            skills: [],
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'read' }],
+            capabilities: [{ toolName: HTTP_API_GET_TOOL, allowed: true }],
+          },
+        }),
+        toolName: HTTP_API_GET_TOOL,
+        args: { path: '/reports/query' },
+      },
+    )
+    assert.equal(result.allowed, true)
+    if (result.allowed) {
+      assert.equal(result.grantId, undefined)
+    }
+  })
+
+  await check('two http_api connectors require connectorId', async () => {
+    const other = '88888888-8888-4888-8888-888888888888'
+    const result = await authorizeToolCall(authorizeDeps(), {
+      principal: principal(),
+      definition: definition({
+        snapshot: {
+          name: 'CRM',
+          roleInstruction: 'Query CRM',
+          skills: [],
+          connectors: [
+            { connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'read' },
+            { connectorId: other, type: 'http_api', accessMode: 'read' },
+          ],
+          capabilities: [{ toolName: HTTP_API_GET_TOOL, allowed: true }],
+        },
+      }),
+      toolName: HTTP_API_GET_TOOL,
+      args: { path: '/reports/query' },
+    })
+    assert.deepEqual(result, { allowed: false, reason: 'connector_id_required' })
+  })
+
+  await check('gmail search without grant is connector_grant_missing', async () => {
+    const result = await authorizeToolCall(authorizeDeps({ connector: connector({ type: 'gmail' }), grant: null }), {
+      principal: principal(),
+      definition: definition({
+        snapshot: {
+          name: 'Mail',
+          roleInstruction: 'Read mail',
+          skills: [],
+          connectors: [{ connectorId: CONNECTOR_ID, type: 'gmail', accessMode: 'read' }],
+          capabilities: [{ toolName: GMAIL_SEARCH_TOOL, allowed: true }],
+        },
+      }),
+      toolName: GMAIL_SEARCH_TOOL,
+      args: { query: 'is:unread' },
+    })
+    assert.deepEqual(result, {
+      allowed: false,
+      reason: 'connector_grant_missing',
+      connectorId: CONNECTOR_ID,
+    })
+  })
+
+  await check('invoke gmail_search stub path', async () => {
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        connector: connector({ type: 'gmail' }),
+        grant: grant({ scopes: [GMAIL_SCOPES.readonly] }),
+        definition: definition({
+          snapshot: {
+            name: 'Mail',
+            roleInstruction: 'Read mail',
+            skills: [],
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'gmail', accessMode: 'read' }],
+            capabilities: [{ toolName: GMAIL_SEARCH_TOOL, allowed: true }],
+          },
+        }),
+      }),
+      {
+        principal: principal(),
+        toolName: GMAIL_SEARCH_TOOL,
+        args: { definitionId: DEFINITION_ID, query: 'stub' },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    const payload = parsePayload(result)
+    const messages = payload.messages as Array<{ id: string }>
+    assert.ok(Array.isArray(messages) && messages.length > 0)
+  })
+
+  await check('invoke http_api_get uses connector config', async () => {
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        connector: connector({
+          type: 'http_api',
+          authMode: 'service',
+          config: { baseUrl: 'https://crm.example.test', auth: { scheme: 'none' } },
+        }),
+        grant: null,
+        definition: definition({
+          snapshot: {
+            name: 'CRM',
+            roleInstruction: 'Query CRM',
+            skills: [],
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'read' }],
+            capabilities: [{ toolName: HTTP_API_GET_TOOL, allowed: true }],
+          },
+        }),
+        executeHttpApiTool: async (_tool, args) => ({ ok: true, path: args.path, stub: true }),
+      }),
+      {
+        principal: principal(),
+        toolName: HTTP_API_GET_TOOL,
+        args: { definitionId: DEFINITION_ID, path: '/reports/query' },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    const payload = parsePayload(result)
+    assert.equal(payload.ok, true)
+    assert.equal(payload.path, '/reports/query')
+  })
+
+  await check('invoke upload and http_api_request enqueue', async () => {
+    const enqueued: string[] = []
+    const deps = {
+      ...invokeDeps({
+        definition: definition({
+          snapshot: {
+            name: 'Writer',
+            roleInstruction: 'Write',
+            skills: [],
+            connectors: [
+              { connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'write' },
+              { connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'write' },
+            ],
+            capabilities: [
+              { toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL, allowed: true },
+              { toolName: HTTP_API_REQUEST_TOOL, allowed: true },
+            ],
+          },
+        }),
+      }),
+      async enqueueWrite(input: { toolName: string }) {
+        enqueued.push(input.toolName)
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ operationId: 'op', status: 'awaiting_approval' }) }] }
+      },
+    }
+    const upload = await invokeEnterpriseTool(deps, {
+      principal: principal({ role: 'admin' }),
+      toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+      args: {
+        definitionId: DEFINITION_ID,
+        name: 'riport.html',
+        textContent: '<h1>ok</h1>',
+        idempotencyKey: 'up-1',
+      },
+    })
+    const httpWrite = await invokeEnterpriseTool(deps, {
+      principal: principal({ role: 'admin' }),
+      toolName: HTTP_API_REQUEST_TOOL,
+      args: {
+        definitionId: DEFINITION_ID,
+        method: 'POST',
+        path: '/ownerships',
+        body: '{"id":1}',
+        idempotencyKey: 'http-1',
+      },
+    })
+    assert.equal(upload.isError, undefined)
+    assert.equal(httpWrite.isError, undefined)
+    assert.deepEqual(enqueued, [GOOGLE_DRIVE_UPLOAD_FILE_TOOL, HTTP_API_REQUEST_TOOL])
   })
 
   await check('kb_ingest requires write binding', async () => {

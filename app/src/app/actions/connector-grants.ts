@@ -10,11 +10,6 @@ import { prisma } from '@/lib/db'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
 import { connectorGrantIdSchema, startConnectorOAuthSchema } from '@/lib/validators/actions'
-import {
-  isDelegatedOAuthStubEnabled,
-  parseDelegatedGrantScopes,
-  resolveGrantOAuthScopes,
-} from '@/domain/connector-grant/delegated-oauth-registry'
 import { toGoogleOAuthPublicView, toGoogleDrivePickerPublicView } from '@/lib/platform-google-oauth-config'
 import { agentDisplayName } from '@/lib/agent-persona'
 import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
@@ -30,7 +25,6 @@ import {
 } from '@/domain/connector-grant/google-drive-grant-store'
 import {
   driveScopeProfile,
-  driveScopeProfileRequiresAdmin,
 } from '@/domain/connector-grant/google-drive-scopes'
 import { toolsRequiringConnector } from '@/domain/connector-grant/tool-connector-requirements'
 
@@ -527,85 +521,16 @@ export async function startConnectorOAuth(input: {
     // Membership / superadmin assume — ne a legacy User.tenantId.
     if (connector.tenantId && connector.tenantId !== ctx.activeTenantId) return fail('Connector not found')
 
-    const { oauthReturnPath } = await import('@/domain/connector-grant/connector-grant-needed')
-    const successPath = returnTo ? oauthReturnPath(returnTo) : '/control-plane/account?connected=1'
-
-    // A kért scope forrás-igazsága a SZERVER: a `toolName` alapján a
-    // provider-regiszter a connector configjából oldja fel a legkisebb
-    // szükséges halmazt. A kliens scope-listája csak explicit admin-választásnál
-    // (Kapcsolt fiókok oldali scope-profil) érvényes, és a szerviz azt is a
-    // confighoz validálja.
-    const requestedScopes = toolName
-      ? resolveGrantOAuthScopes({
-          connectorType: connector.type,
-          config: connector.config,
-          toolName,
-        })
-      : scopes
-    // Least-privilege tool-scope + már megadott grant uniója: különben a
-    // gmail_send kártya [send]-only OAuth-ja felülírná a korábbi readonly/modify-t.
-    // Csak a connector configjában még érvényes scope-okat tartjuk meg.
-    const existingGrant = await repositories.connectorGrants.findActiveGrant({
-      tenantId: connector.tenantId ?? ctx.activeTenantId,
-      connectorId: connector.id,
-      userId: ctx.user.id,
-    })
-    const configured = new Set(
-      resolveGrantOAuthScopes({
-        connectorType: connector.type,
-        config: connector.config,
-      }),
-    )
-    const existingScopes = parseDelegatedGrantScopes(existingGrant?.scopes).filter((scope) =>
-      configured.has(scope),
-    )
-    const mergedRequested = [...new Set([...(requestedScopes ?? []), ...existingScopes])]
-    const effectiveScopes = mergedRequested.length > 0 ? mergedRequested : undefined
-
-    // A „Teljes olvasás + írás" (full `drive`) Drive-profil admin-döntés. A
-    // kliens a profil-választót elrejti a nem-adminok elől, de a server action
-    // közvetlenül is hívható (tetszőleges `scopes` tömbbel), ezért a kaput ITT,
-    // a szerveren is meg kell húzni — különben az „elrejtés" puszta UI-dísz, és
-    // egy alacsony jogú felhasználó (vagy kompromittált session) a teljes Drive
-    // írási jogát szerezhetné meg, megkerülve a Picker-alapú, kijelölt-fájlos
-    // korlátozást.
-    if (
-      connector.type === 'google_drive' &&
-      driveScopeProfileRequiresAdmin(effectiveScopes ?? []) &&
-      !hasMinimumRole(ctx.activeTenantRole, 'admin')
-    ) {
-      return fail(
-        'A „Teljes olvasás + írás" Google Drive hozzáférést csak tenant-admin kérheti. ' +
-          'Válaszd az „Olvasás + írás kijelölt fájlokon" profilt, és a Kapcsolt fiókok oldalon jelöld ki a szerkeszthető fájlokat.',
-      )
-    }
-
-    if (isDelegatedOAuthStubEnabled()) {
-      const { createOAuthState } = await import('@/lib/crypto/oauth-state')
-      const { state } = createOAuthState({
-        userId: ctx.user.id,
-        connectorId: connector.id,
-        tenantId: ctx.activeTenantId,
-        requestedScopes: effectiveScopes,
-        ...(returnTo ? { returnTo } : {}),
-      })
-      await services.connectorGrants.completeOAuthCallback({
-        code: 'stub-auth-code',
-        state,
-        connector,
-        actorId: ctx.user.id,
-      })
-      return ok({ url: successPath, stub: true })
-    }
-
-    const { url } = await services.connectorGrants.buildAuthorizationUrl({
+    const started = await services.connectorGrants.startUserAuthorization({
       connector,
       userId: ctx.user.id,
       tenantId: ctx.activeTenantId,
-      requestedScopes: effectiveScopes,
+      isAdmin: hasMinimumRole(ctx.activeTenantRole, 'admin'),
+      ...(toolName ? { toolName } : {}),
+      ...(scopes ? { requestedScopes: scopes } : {}),
       ...(returnTo ? { returnTo } : {}),
     })
-    return ok({ url })
+    return ok(started)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to start OAuth')
   }

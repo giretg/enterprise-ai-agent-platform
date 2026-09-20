@@ -58,4 +58,8 @@ export const PUBLIC_ROUTE_PATTERNS = [
   '/.well-known/oauth-protected-resource/(.*)',
   '/.well-known/oauth-authorization-server',
   '/.well-known/oauth-authorization-server/(.*)',
+  // Delegált OAuth callback: a Google ide redirectel. MCP-consentnél nincs
+  // Clerk-süti — a handler a signed OAuth state-tel hitelesít (lásd route).
+  '/api/connectors/oauth/callback',
+  '/connectors/oauth/done',
 ] as const

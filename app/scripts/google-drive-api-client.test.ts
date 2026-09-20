@@ -40,6 +40,12 @@ async function main() {
     assert.equal(res.file.mimeType, 'application/vnd.google-apps.folder')
   })
 
+  await test('upload_file stub', async () => {
+    const res = await client.uploadFile({ name: 'riport.html', textContent: '<h1>ok</h1>' })
+    assert.ok(res.created)
+    assert.equal(res.file.name, 'riport.html')
+  })
+
   await test('list_drives stub', async () => {
     const res = await client.listDrives({})
     assert.ok(res.drives.length > 0)

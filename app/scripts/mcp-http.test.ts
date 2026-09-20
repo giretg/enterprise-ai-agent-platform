@@ -23,10 +23,7 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
-  KB_GET_PAGE_TOOL,
-  KB_INGEST_TOOL,
-  KB_LIST_INDEX_TOOL,
-  KB_SEARCH_TOOL,
+  ENTERPRISE_TOOLS,
   invokeEnterpriseTool,
   type EnterpriseToolDeps,
   type LiveConnectorRow,
@@ -202,6 +199,8 @@ function runtimeDeps(overrides: {
   role?: TenantMembership['role']
   grantedAgentIds?: Set<string>
   grantAccessLevel?: 'view' | 'operate'
+  liveGrant?: LiveGrantRow | null
+  startAuthorization?: EnterpriseToolDeps['startAuthorization']
   skills?: McpSkillPackage[]
 } = {}): {
   deps: McpRuntimeDeps
@@ -254,6 +253,7 @@ function runtimeDeps(overrides: {
     async findActiveGrant(input) {
       seen.findActiveGrantTenantId = input.tenantId
       seen.findActiveGrantUserId = input.userId
+      if ('liveGrant' in overrides) return overrides.liveGrant ?? null
       return liveGrant()
     },
     async resolveAccessToken(params) {
@@ -266,6 +266,7 @@ function runtimeDeps(overrides: {
     async resolveRequester() {
       return { role, assumed: false }
     },
+    startAuthorization: overrides.startAuthorization,
   }
   const enterpriseDeps: EnterpriseToolDeps = {
     loadDefinition: ({ tenantId, definitionId }) => loadDefinition({ tenantId, definitionId }),
@@ -278,6 +279,7 @@ function runtimeDeps(overrides: {
     async findActiveGrant(input) {
       seen.findActiveGrantTenantId = input.tenantId
       seen.findActiveGrantUserId = input.userId
+      if ('liveGrant' in overrides) return overrides.liveGrant ?? null
       return liveGrant()
     },
     async resolveAccessToken(params) {
@@ -287,6 +289,7 @@ function runtimeDeps(overrides: {
     },
     enqueueWrite: async (input) =>
       enqueueResultToMcp(await enqueueGatewayOperation(gatewayDeps, input)),
+    startAuthorization: overrides.startAuthorization,
     audit: auditSink,
   }
   return {
@@ -500,25 +503,36 @@ async function main() {
     )
     assert.equal(list.status, 200)
     const body = (await readJson(list)) as {
-      result?: { tools?: Array<{ name: string }> }
+      result?: {
+        tools?: Array<{
+          name: string
+          description?: string
+          inputSchema?: { properties?: Record<string, { type?: string }> }
+        }>
+      }
       error?: unknown
     }
     assert.equal(body.error, undefined, JSON.stringify(body))
-    const names = (body.result?.tools ?? []).map((tool) => tool.name)
+    const tools = body.result?.tools ?? []
+    const names = tools.map((tool) => tool.name)
     assert.deepEqual(names, [
       MCP_WHOAMI_TOOL,
       MCP_AGENTS_LIST_TOOL,
       MCP_AGENT_GET_DEFINITION_TOOL,
       MCP_AGENT_CHECKOUT_TOOL,
-      GOOGLE_DRIVE_SEARCH_TOOL,
-      GOOGLE_DRIVE_READ_FILE_TOOL,
-      GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
-      KB_SEARCH_TOOL,
-      KB_LIST_INDEX_TOOL,
-      KB_GET_PAGE_TOOL,
-      KB_INGEST_TOOL,
+      ...ENTERPRISE_TOOLS,
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
+    const search = tools.find((tool) => tool.name === GOOGLE_DRIVE_SEARCH_TOOL)
+    assert.ok(search, 'google_drive_search missing from tools/list')
+    assert.match(search.description ?? '', /fileId/i)
+    const schemaJson = JSON.stringify(search.inputSchema ?? {})
+    assert.ok(schemaJson.length <= 16384, `search schema ${schemaJson.length} bytes exceeds Claude.ai drop limit`)
+    for (const tool of tools) {
+      for (const [field, spec] of Object.entries(tool.inputSchema?.properties ?? {})) {
+        assert.notEqual(spec.type, 'array', `${tool.name}.${field} advertised as array`)
+      }
+    }
   })
 
   await check('platform.whoami returns principal JSON and ignores extra args', async () => {
@@ -846,6 +860,41 @@ async function main() {
       ).code,
       'definition_not_found',
     )
+  })
+
+  await check('google_drive_search without grant returns authorizationUrl', async () => {
+    const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth?state=mcp-http'
+    const { deps } = runtimeDeps({
+      role: 'admin',
+      liveGrant: null,
+      startAuthorization: async () => ({ url: AUTH_URL }),
+    })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 24,
+        method: 'tools/call',
+        params: {
+          name: GOOGLE_DRIVE_SEARCH_TOOL,
+          arguments: { definitionId: DEFINITION_ID },
+        },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, true)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      code?: string
+      authorizationUrl?: string
+    }
+    assert.equal(payload.code, 'connector_grant_missing')
+    assert.equal(payload.authorizationUrl, AUTH_URL)
   })
 
   await check('google_drive_search happy path with stub client; extra JSON cannot override tenant', async () => {

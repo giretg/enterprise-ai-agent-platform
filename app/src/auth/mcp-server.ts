@@ -12,7 +12,7 @@ import {
   isPrivilegedAgentReader,
   type AgentDefinition,
 } from '@/domain/agent-definition'
-import { isDispatchable } from '@/lib/agent-lifecycle'
+import { isAvailableOnMcp, isDispatchable } from '@/lib/agent-lifecycle'
 import {
   asCheckoutHarness,
   CHECKOUT_WRITE_RECIPE,
@@ -21,22 +21,35 @@ import {
 } from '@/lib/agent-checkout'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
 import {
+  GMAIL_GET_MESSAGE_TOOL,
+  GMAIL_SEARCH_TOOL,
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+  GOOGLE_SHEETS_WRITE_RANGE_TOOL,
+  HTTP_API_GET_ALL_TOOL,
+  HTTP_API_GET_TOOL,
+  HTTP_API_REQUEST_TOOL,
   KB_GET_PAGE_TOOL,
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
+  gmailGetMessageInputSchema,
+  gmailSearchInputSchema,
   googleDriveCreateFolderInputSchema,
   googleDriveReadFileInputSchema,
   googleDriveSearchInputSchema,
+  googleDriveUploadFileInputSchema,
+  googleSheetsWriteRangeInputSchema,
+  httpApiGetAllInputSchema,
+  httpApiGetInputSchema,
+  httpApiRequestInputSchema,
   kbGetPageInputSchema,
   kbIngestInputSchema,
   kbListIndexInputSchema,
   kbSearchInputSchema,
-  isEnterpriseDriveTool,
-  isEnterpriseKbTool,
+  isEnterpriseTool,
   type EnterpriseToolMcpResult,
 } from '@/domain/enterprise-tools'
 import {
@@ -179,7 +192,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
         tenantId,
         unbounded: true,
       })
-      const withDefinition = published.filter((agent) => agent.currentDefinitionVersionId)
+      const withDefinition = published.filter(isAvailableOnMcp)
       if (isPrivilegedAgentReader(role)) {
         return Promise.all(withDefinition.map(toPublishedListItem))
       }
@@ -429,8 +442,9 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         {
           title: 'Search Google Drive',
           description:
-            'Search files visible to the delegated Google account under a published agent definition.',
+            'List or search Google Drive files. Returns file id, name, mimeType. Call this to get a fileId before google_drive_read_file. Pass definitionId from platform.agent.get_definition. Omit query to list recent files. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: googleDriveSearchInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_SEARCH_TOOL, args, deps),
       )
@@ -439,7 +453,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         {
           title: 'Read Google Drive file',
           description:
-            'Read or export a Drive file under a published agent definition. Credentials stay on the server.',
+            'Read or export a Drive file under a published agent definition. Credentials stay on the server. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: googleDriveReadFileInputSchema,
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_READ_FILE_TOOL, args, deps),
@@ -453,6 +467,80 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
           inputSchema: googleDriveCreateFolderInputSchema,
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_CREATE_FOLDER_TOOL, args, deps),
+      )
+      server.registerTool(
+        GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+        {
+          title: 'Upload Google Drive file',
+          description:
+            'Request upload of a text file (HTML, CSV, JSON) to the user\'s Drive. Waits for human approval. Pass definitionId from platform.agent.get_definition.',
+          inputSchema: googleDriveUploadFileInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_UPLOAD_FILE_TOOL, args, deps),
+      )
+      server.registerTool(
+        GOOGLE_SHEETS_WRITE_RANGE_TOOL,
+        {
+          title: 'Write Google Sheet range',
+          description:
+            'Request writing cells to a Google Sheet the user can edit. values is a JSON 2D array string. Waits for human approval.',
+          inputSchema: googleSheetsWriteRangeInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, GOOGLE_SHEETS_WRITE_RANGE_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_SEARCH_TOOL,
+        {
+          title: 'Search Gmail',
+          description:
+            'Search the connected Gmail mailbox. Returns id, from, subject, snippet. Call gmail_get_message with an id to read a body. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+          inputSchema: gmailSearchInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_SEARCH_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_GET_MESSAGE_TOOL,
+        {
+          title: 'Read Gmail message',
+          description:
+            'Read one Gmail message by id from gmail_search. Credentials stay on the server. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+          inputSchema: gmailGetMessageInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_GET_MESSAGE_TOOL, args, deps),
+      )
+      server.registerTool(
+        HTTP_API_GET_TOOL,
+        {
+          title: 'HTTP API GET',
+          description:
+            'One GET against a bound company HTTP API connector. Path is relative to the connector baseUrl — do not send credentials. For large lists use http_api_get_all. If several HTTP connectors are bound, pass connectorId from the agent definition.',
+          inputSchema: httpApiGetInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, HTTP_API_GET_TOOL, args, deps),
+      )
+      server.registerTool(
+        HTTP_API_GET_ALL_TOOL,
+        {
+          title: 'HTTP API GET all pages',
+          description:
+            'Paginated GET of a company HTTP API list in one call. Required for ownerships/partners/large registers — do not page http_api_get yourself. Path is relative to the connector baseUrl.',
+          inputSchema: httpApiGetAllInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, HTTP_API_GET_ALL_TOOL, args, deps),
+      )
+      server.registerTool(
+        HTTP_API_REQUEST_TOOL,
+        {
+          title: 'HTTP API write',
+          description:
+            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Waits for human approval. body is a JSON string. Path is relative to the connector baseUrl.',
+          inputSchema: httpApiRequestInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, HTTP_API_REQUEST_TOOL, args, deps),
       )
       server.registerTool(
         KB_SEARCH_TOOL,
@@ -561,7 +649,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         if (toolName === MCP_GATEWAY_OPERATION_GET_TOOL) {
           return getGatewayOperationToolResult(principal, args, deps)
         }
-        if (isEnterpriseDriveTool(toolName) || isEnterpriseKbTool(toolName)) {
+        if (isEnterpriseTool(toolName)) {
           return enterpriseToolResult(principal, toolName, args, deps)
         }
         return whoamiToolResult(principal, deps)
@@ -570,7 +658,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
     {
       serverInfo: { name: 'enterprise-mcp', version: 'phase-f' },
       instructions:
-        'Skills: call skills/list, then resources/read on skill:// URIs. Scripts in the skill package run on the client.',
+        'Skills: call skills/list, then resources/read on skill:// URIs. Company systems: http_api_get / http_api_get_all / http_api_request with definitionId and a relative path — credentials stay on the connector. Gmail: gmail_search then gmail_get_message. Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval. Knowledge base: kb_search, kb_list_index, kb_get_page. If a tool returns authorizationUrl, show that URL to the user, wait until they finish consent, then retry.',
     },
   )
 }
