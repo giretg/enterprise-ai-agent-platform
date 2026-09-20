@@ -1,12 +1,10 @@
 'use client'
 
-import { useMemo, useState, useTransition } from 'react'
-import Link from 'next/link'
+import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  attachKnowledgeCatalogDocument,
-  deleteKbDocument,
-  ingestKbDocument,
+  deleteKnowledgeCatalogDocument,
+  ingestKnowledgeCatalogDocument,
 } from '@/app/actions/platform'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Card } from '@/components/ui/shell'
@@ -16,7 +14,7 @@ import {
   type KbProcessingModeValue,
 } from '@/lib/kb-processing-mode-labels'
 
-export type KbDocumentRow = {
+export type KnowledgeCatalogRow = {
   id: string
   filename: string
   status: string
@@ -24,16 +22,11 @@ export type KbDocumentRow = {
   createdAt: Date | string
 }
 
-export function AgentKnowledgeBasePanel({
-  agentId,
+export function KnowledgeCatalogManager({
   documents,
-  catalog = [],
   canManage,
 }: {
-  agentId: string
-  documents: KbDocumentRow[]
-  /** Közös katalógus-elemek — innen másolható az agenthez, mint a konnektorok. */
-  catalog?: KbDocumentRow[]
+  documents: KnowledgeCatalogRow[]
   canManage: boolean
 }) {
   const router = useRouter()
@@ -42,23 +35,13 @@ export function AgentKnowledgeBasePanel({
   const [done, setDone] = useState<string | null>(null)
   const [mode, setMode] = useState<KbProcessingModeValue>('raw_text_only')
   const [fileName, setFileName] = useState<string | null>(null)
-  const attachedNames = useMemo(() => new Set(documents.map((doc) => doc.filename)), [documents])
-  const unattachedCatalog = useMemo(
-    () => catalog.filter((doc) => !attachedNames.has(doc.filename)),
-    [catalog, attachedNames],
-  )
-  const [catalogId, setCatalogId] = useState('')
 
   function refresh() {
     router.refresh()
   }
 
   return (
-    <Card title="Tudásbázis">
-      <p className="mb-4 text-xs text-ink-faint">
-        Fájl feltöltése MCP-n (`kb_ingest`) vagy innen. Sima fájl kereshető marad; wiki
-        módban oldalakra bontjuk (`kb_list_index`, `kb_get_page`).
-      </p>
+    <Card title="Katalógus-elemek">
       {canManage ? (
         <form
           className="mb-4 space-y-3"
@@ -66,15 +49,15 @@ export function AgentKnowledgeBasePanel({
             event.preventDefault()
             const form = event.currentTarget
             const data = new FormData(form)
-            data.set('agentId', agentId)
             data.set('processingMode', mode)
             start(async () => {
               setError(null)
-              const res = await ingestKbDocument(data)
+              setDone(null)
+              const res = await ingestKnowledgeCatalogDocument(data)
               if (res.success) {
                 form.reset()
                 setFileName(null)
-                setDone(`„${res.data.filename}” feltöltve.`)
+                setDone(`„${res.data.filename}” feltöltve a katalógusba.`)
                 refresh()
               } else {
                 setError(res.error)
@@ -121,14 +104,14 @@ export function AgentKnowledgeBasePanel({
           </button>
         </form>
       ) : null}
-      {error ? <p className="mb-3 text-sm text-coral-deep">{error}</p> : null}
       {done ? (
         <p className="mb-3 rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-sage">
           {done}
         </p>
       ) : null}
+      {error ? <p className="mb-3 text-sm text-coral-deep">{error}</p> : null}
       {documents.length === 0 ? (
-        <p className="text-sm text-ink-soft">Még nincs dokumentum.</p>
+        <p className="text-sm text-ink-soft">Még nincs katalógus-elem.</p>
       ) : (
         <ul className="space-y-2">
           {documents.map((doc) => (
@@ -150,13 +133,13 @@ export function AgentKnowledgeBasePanel({
                   onClick={() => {
                     start(async () => {
                       const ok = await confirmDialog({
-                        title: 'Dokumentum törlése',
-                        description: `Törlöd: ${doc.filename}?`,
+                        title: 'Katalógus-elem törlése',
+                        description: `Törlöd: ${doc.filename}? Az agenteknél lévő másolatok megmaradnak.`,
                         tone: 'danger',
                         confirmLabel: 'Törlés',
                       })
                       if (!ok) return
-                      const res = await deleteKbDocument({ agentId, documentId: doc.id })
+                      const res = await deleteKnowledgeCatalogDocument({ documentId: doc.id })
                       if (res.success) refresh()
                       else setError(res.error)
                     })
@@ -169,72 +152,6 @@ export function AgentKnowledgeBasePanel({
           ))}
         </ul>
       )}
-      {canManage ? (
-        <div className="mt-5 border-t border-line/70 pt-4">
-          <p className="mb-1 text-xs font-medium uppercase tracking-[0.14em] text-ink-faint">
-            Hozzákötés a katalógusból
-          </p>
-          <p className="mb-3 text-xs text-ink-faint">
-            A kiválasztott elem másolatként kerül az agenthez — a későbbi
-            katalógus-frissítés nem írja át.
-          </p>
-          {unattachedCatalog.length === 0 ? (
-            <p className="text-xs text-ink-faint">
-              Nincs több hozzáköthető katalógus-elem.{' '}
-              <Link href="/control-plane/knowledge" className="font-medium text-coral">
-                Megnyitás a katalógusban
-              </Link>
-            </p>
-          ) : (
-            <form
-              className="flex flex-wrap items-end gap-2"
-              onSubmit={(event) => {
-                event.preventDefault()
-                if (!catalogId) return
-                start(async () => {
-                  setError(null)
-                  setDone(null)
-                  const res = await attachKnowledgeCatalogDocument({
-                    agentId,
-                    documentId: catalogId,
-                  })
-                  if (!res.success) {
-                    setError(res.error)
-                    return
-                  }
-                  setDone(`„${res.data.filename}” hozzákötve a katalógusból.`)
-                  setCatalogId('')
-                  refresh()
-                })
-              }}
-            >
-              <label className="min-w-[12rem] flex-1 text-sm">
-                <span className="text-ink-soft">Katalógus-elem</span>
-                <select
-                  className="mt-1 block w-full rounded-lg border border-line bg-paper px-3 py-2"
-                  value={catalogId}
-                  onChange={(e) => setCatalogId(e.target.value)}
-                  required
-                >
-                  <option value="">nincs kiválasztva</option>
-                  {unattachedCatalog.map((doc) => (
-                    <option key={doc.id} value={doc.id}>
-                      {doc.filename} ({kbProcessingModeLabel(doc.processingMode)})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="submit"
-                disabled={pending || !catalogId}
-                className="rounded-lg bg-coral px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-              >
-                {pending ? 'Kötés…' : 'Hozzákötés'}
-              </button>
-            </form>
-          )}
-        </div>
-      ) : null}
     </Card>
   )
 }

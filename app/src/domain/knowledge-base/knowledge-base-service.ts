@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { KnowledgeProcessingMode } from '@prisma/client'
+import type { Connector, KnowledgeProcessingMode } from '@prisma/client'
 import type {
   AgentRepository,
   AuditRepository,
@@ -8,8 +8,18 @@ import type {
   KnowledgeArtifactRepository,
   KnowledgeChunkRepository,
 } from '@/repositories/interfaces'
-import { ensureAgentKnowledgeBase, knowledgeBaseConnectorName } from '@/lib/agent-knowledge-base'
-import { extractStructured, toExtractionMetadata, EXTRACTION_METADATA_KEY } from '@/lib/kb-extraction'
+import {
+  ensureAgentKnowledgeBase,
+  ensureCatalogKnowledgeBase,
+  knowledgeBaseConnectorName,
+  knowledgeCatalogConnectorName,
+} from '@/lib/agent-knowledge-base'
+import {
+  extractStructured,
+  toExtractionMetadata,
+  EXTRACTION_METADATA_KEY,
+  type StructuredExtraction,
+} from '@/lib/kb-extraction'
 import { assembleKbHits, assembleKbIndex, assembleKbPage } from '@/lib/kb-retrieval'
 import { buildOkfBundle, chunkOkfBundle } from '@/lib/kb-v3'
 import { validateOkfBundle } from '@/lib/kb-validator'
@@ -56,9 +66,167 @@ export class KnowledgeBaseService {
       filename,
       mimeType: input.mimeType,
     })
+    return this.store({
+      tenantId: input.tenantId,
+      connector,
+      agentId: agent.id,
+      uploadedById: input.uploadedById,
+      filename,
+      mimeType: input.mimeType,
+      buffer: input.buffer,
+      extraction,
+      processingMode: input.processingMode,
+    })
+  }
+
+  /** Közös katalógus-tár: ugyanaz a feldolgozás, mint az agent-saját, csak agent nélkül. */
+  async ingestCatalog(input: {
+    tenantId: string
+    uploadedById: string
+    filename: string
+    mimeType?: string | null
+    buffer: Buffer
+    processingMode: KnowledgeProcessingMode
+  }) {
+    if (input.buffer.byteLength === 0) throw new Error('File is empty')
+    if (input.buffer.byteLength > KB_MAX_FILE_BYTES) throw new Error('File is too large')
+    const filename = sanitizeFilename(input.filename)
+    if (!filename) throw new Error('Invalid filename')
+
+    const connector = await ensureCatalogKnowledgeBase(input.tenantId, this.deps)
+    const extraction = await extractStructured({
+      buffer: input.buffer,
+      filename,
+      mimeType: input.mimeType,
+    })
+    return this.store({
+      tenantId: input.tenantId,
+      connector,
+      agentId: null,
+      uploadedById: input.uploadedById,
+      filename,
+      mimeType: input.mimeType,
+      buffer: input.buffer,
+      extraction,
+      processingMode: input.processingMode,
+    })
+  }
+
+  async listCatalogDocuments(input: { tenantId: string }) {
+    const connector = await this.deps.connectors.findByTenantTypeAndName(
+      input.tenantId,
+      'knowledge_base',
+      knowledgeCatalogConnectorName(),
+    )
+    if (!connector) return []
+    return this.deps.documents.listByConnectorId(connector.id)
+  }
+
+  async deleteCatalogDocument(input: {
+    tenantId: string
+    documentId: string
+    actorId: string
+  }) {
+    const connector = await this.deps.connectors.findByTenantTypeAndName(
+      input.tenantId,
+      'knowledge_base',
+      knowledgeCatalogConnectorName(),
+    )
+    if (!connector) throw new Error('Document not found')
+    const document = await this.deps.documents.findById(input.documentId)
+    if (!document || document.tenantId !== input.tenantId) throw new Error('Document not found')
+    if (document.connectorId !== connector.id) throw new Error('Document not found')
+    await this.deps.artifacts.deleteBySourceDocumentId(document.id)
+    await this.deps.documents.delete(document.id)
+    await this.deps.audit.append({
+      actorType: 'human',
+      actorId: input.actorId,
+      agentVersion: null,
+      action: 'kb.document.deleted',
+      targetType: 'document',
+      targetId: document.id,
+      modelUsed: null,
+      inputRef: document.filename,
+      outputRef: connector.id,
+      policyDecision: 'deleted',
+      metadata: { catalog: true },
+      tenantId: input.tenantId,
+    })
+    return { deleted: true }
+  }
+
+  /**
+   * Katalóguselem hozzákötése agenthez: a jóváhagyott szövegről másolat készül az
+   * agent saját tárába (wiki módban az oldalak újjáépülnek). A katalógus-példány
+   * változatlan marad — a másolat nem követi a későbbi katalógus-frissítést.
+   */
+  async attachCatalogDocumentToAgent(input: {
+    tenantId: string
+    agentId: string
+    documentId: string
+    actorId: string
+  }) {
+    const agent = await this.deps.agents.findById(input.agentId, input.tenantId)
+    if (!agent) throw new Error('Agent not found')
+    const catalogConnector = await this.deps.connectors.findByTenantTypeAndName(
+      input.tenantId,
+      'knowledge_base',
+      knowledgeCatalogConnectorName(),
+    )
+    if (!catalogConnector) throw new Error('Document not found')
+    const source = await this.deps.documents.findById(input.documentId)
+    if (!source || source.tenantId !== input.tenantId) throw new Error('Document not found')
+    if (source.connectorId !== catalogConnector.id) throw new Error('Document not found')
+    if (!source.extractedText) throw new Error('A dokumentum szövege nem elérhető')
+
+    const connector = await ensureAgentKnowledgeBase(agent, this.deps)
+    const result = await this.store({
+      tenantId: input.tenantId,
+      connector,
+      agentId: agent.id,
+      uploadedById: input.actorId,
+      filename: source.filename,
+      mimeType: source.mimeType,
+      buffer: Buffer.from(source.extractedText, 'utf8'),
+      extraction: {
+        format: 'text',
+        markdown: source.extractedText,
+        blocks: [],
+      } satisfies StructuredExtraction,
+      processingMode: (source.processingMode ?? 'raw_text_only') as KnowledgeProcessingMode,
+    })
+    await this.deps.audit.append({
+      actorType: 'human',
+      actorId: input.actorId,
+      agentVersion: null,
+      action: 'kb.catalog.attached',
+      targetType: 'document',
+      targetId: result.documentId,
+      modelUsed: null,
+      inputRef: source.id,
+      outputRef: connector.id,
+      policyDecision: 'allowed',
+      metadata: { agentId: agent.id, catalogDocumentId: source.id },
+      tenantId: input.tenantId,
+    })
+    return result
+  }
+
+  private async store(input: {
+    tenantId: string
+    connector: Connector
+    agentId: string | null
+    uploadedById: string
+    filename: string
+    mimeType?: string | null
+    buffer: Buffer
+    extraction: StructuredExtraction
+    processingMode: KnowledgeProcessingMode
+  }) {
+    const { tenantId, connector, agentId, uploadedById, filename, extraction } = input
     const contentHash = createHash('sha256').update(input.buffer).digest('hex')
     const document = await this.deps.documents.create({
-      tenantId: input.tenantId,
+      tenantId,
       filename,
       extractedText: extraction.markdown,
       mimeType: input.mimeType ?? null,
@@ -67,7 +235,7 @@ export class KnowledgeBaseService {
       processingMode: input.processingMode,
       metadata: { [EXTRACTION_METADATA_KEY]: toExtractionMetadata(extraction) },
       connectorId: connector.id,
-      uploadedById: input.uploadedById,
+      uploadedById,
     })
 
     let artifactId: string | undefined
@@ -79,14 +247,14 @@ export class KnowledgeBaseService {
         extractedText: extraction.markdown,
         connectorId: connector.id,
         sourceDocumentId: document.id,
-        createdByAgentId: agent.id,
+        createdByAgentId: agentId ?? undefined,
         blocks: extraction.blocks,
       })
       const validation = validateOkfBundle(bundle, { connectorId: connector.id })
       const artifact = await this.deps.artifacts.create({
         connectorId: connector.id,
         sourceDocumentId: document.id,
-        createdByAgentId: agent.id,
+        createdByAgentId: agentId ?? undefined,
         status: 'published',
         version: 1,
         contentHash: bundle.contentHash,
@@ -115,7 +283,7 @@ export class KnowledgeBaseService {
 
     await this.deps.audit.append({
       actorType: 'human',
-      actorId: input.uploadedById,
+      actorId: uploadedById,
       agentVersion: null,
       action: 'kb.document.ingested',
       targetType: 'document',
@@ -125,12 +293,12 @@ export class KnowledgeBaseService {
       outputRef: connector.id,
       policyDecision: 'allowed',
       metadata: {
-        agentId: agent.id,
+        agentId,
         processingMode: input.processingMode,
         artifactId: artifactId ?? null,
         chunkCount,
       },
-      tenantId: input.tenantId,
+      tenantId,
     })
 
     return {

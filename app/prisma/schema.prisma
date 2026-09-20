@@ -392,6 +392,7 @@ model Agent {
   tenantId                   String      @map("tenant_id") @db.Uuid
   name                       String
   roleInstruction            String      @map("role_instruction")
+  description                String?
   status                     AgentStatus @default(draft)
   currentDefinitionVersionId String?     @unique @map("current_definition_version_id") @db.Uuid
   avatarUrl                  String?     @map("avatar_url")

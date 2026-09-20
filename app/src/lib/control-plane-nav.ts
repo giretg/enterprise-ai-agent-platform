@@ -69,6 +69,7 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
     label: 'Katalógus',
     children: [
       { key: 'staff.skills', href: '/control-plane/skills', label: 'Képességek (skill-ek)' },
+      { key: 'staff.knowledge', href: '/control-plane/knowledge', label: 'Tudásbázis' },
     ],
   },
   {

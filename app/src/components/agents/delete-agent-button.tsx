@@ -49,8 +49,7 @@ export function DeleteAgentButton({
     >
       <p className="text-xs leading-relaxed text-ink-soft">
         Biztosan törlöd <span className="font-semibold text-ink">{agentName}</span> munkatársat?
-        A memória és API kulcsok is törlődnek; a ticketek megmaradnak, de elveszítik az agent
-        hozzárendelését.
+        A definíciói is törlődnek. Ha már volt MCP-művelete, a törlés elhasalhat.
       </p>
       {error && <p className="mt-2 text-xs text-coral">{error}</p>}
       <div className="mt-3 flex flex-wrap gap-2">
@@ -63,6 +62,7 @@ export function DeleteAgentButton({
               const res = await deleteAgent({ id: agentId })
               if (res.success) {
                 setConfirming(false)
+                router.push('/control-plane/agents')
                 router.refresh()
               } else {
                 setError(res.error)
