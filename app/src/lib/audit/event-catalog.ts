@@ -56,6 +56,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.create',
   'agent.activated',
   'agent.version',
+  'agent.delete',
+  'agent.profile',
+  'agent.user.grant',
+  'agent.user.revoke',
 
   'provisioning.access_denied',
   'provisioning.connector.activate',
@@ -94,6 +98,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   'kb.document.ingested',
   'kb.document.deleted',
+  'kb.catalog.attached',
 ])
 
 export class UnregisteredAuditActionError extends Error {

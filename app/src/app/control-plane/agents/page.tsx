@@ -45,7 +45,10 @@ export default async function AgentsIndexPage() {
             return (
               <Link key={agent.id} href={`/control-plane/agents/${agent.id}`}>
                 <Card title={persona.nickname || agent.name}>
-                  <p className="text-sm text-ink-soft">{agent.status}</p>
+                  {agent.description ? (
+                    <p className="text-sm text-ink">{agent.description}</p>
+                  ) : null}
+                  <p className="mt-1 text-sm text-ink-soft">{agent.status}</p>
                 </Card>
               </Link>
             )

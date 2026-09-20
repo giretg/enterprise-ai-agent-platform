@@ -9,6 +9,7 @@ import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { fail, ok } from '@/lib/result'
 import { canReadPublishedAgent, isPrivilegedAgentReader } from '@/domain/agent-definition'
+import { isSuperadmin } from '@/lib/tenant-policy'
 import type { ConnectorAccessMode } from '@prisma/client'
 import { DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import { ensureAgentKnowledgeBase, toolsNeedKnowledgeBase } from '@/lib/agent-knowledge-base'
@@ -22,10 +23,12 @@ import {
   reactivateUserSchema,
   redeemInvitationSchema,
   revokeInvitationSchema,
+  setAgentUserAccessSchema,
   suspendAgentSchema,
   suspendUserSchema,
   updateAgentAvatarSchema,
   updateAgentInstructionSchema,
+  updateAgentProfileSchema,
   updateRolePermissionSchema,
 } from '@/lib/validators/actions'
 
@@ -379,6 +382,42 @@ export async function updateAgentInstruction(input: { agentId: string; roleInstr
   }
 }
 
+export async function updateAgentProfile(input: { agentId: string; name?: string; description?: string }) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = updateAgentProfileSchema.parse(input)
+    const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
+    if (!existing) return fail('Agent not found')
+    const updated = await repositories.agents.updateProfile({
+      agentId: parsed.agentId,
+      ...(parsed.name !== undefined ? { name: parsed.name } : {}),
+      ...(parsed.description !== undefined
+        ? { description: parsed.description.length > 0 ? parsed.description : null }
+        : {}),
+    })
+    await services.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'agent.profile',
+      targetType: 'agent',
+      targetId: updated.id,
+      modelUsed: null,
+      inputRef: existing.name,
+      outputRef: updated.name,
+      policyDecision: 'updated',
+      metadata: {
+        nameChanged: existing.name !== updated.name,
+        descriptionChanged: (existing.description ?? null) !== (updated.description ?? null),
+      },
+      tenantId: user.activeTenantId,
+    })
+    return ok({ updated: true, name: updated.name, description: updated.description })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update profile')
+  }
+}
+
 export async function updateAgentAvatar(input: { agentId: string; avatarUrl: string }) {
   try {
     const user = await requireTenantRole('admin')
@@ -530,10 +569,29 @@ export async function deleteAgent(input: { id: string }) {
     const { id } = agentIdSchema.parse(input)
     const existing = await repositories.agents.findById(id, user.activeTenantId)
     if (!existing) return fail('Agent not found')
-    await repositories.agents.delete(id)
+    const force = isSuperadmin(user.platformRoles)
+    await repositories.agents.delete(id, { force })
+    await services.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'agent.delete',
+      targetType: 'agent',
+      targetId: id,
+      modelUsed: null,
+      inputRef: existing.name,
+      outputRef: existing.status,
+      policyDecision: 'deleted',
+      metadata: { force },
+      tenantId: user.activeTenantId,
+    })
     return ok({ deleted: true })
   } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to delete agent')
+    const message = e instanceof Error ? e.message : 'Failed to delete agent'
+    if (/foreign key|P2003/i.test(message)) {
+      return fail('Nem törölhető, mert már van hozzá MCP-művelet. Kapcsold ki a Használhatót.')
+    }
+    return fail(message)
   }
 }
 
@@ -589,5 +647,170 @@ export async function deleteKbDocument(input: { agentId: string; documentId: str
     return ok({ deleted: true })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to delete document')
+  }
+}
+
+/** Közös tudásbázis-katalógus: tenant-szintű tár, innen másolható az agenthez. */
+export async function listKnowledgeCatalog() {
+  try {
+    const user = await requireTenantRole('viewer')
+    const docs = await services.knowledgeBase.listCatalogDocuments({
+      tenantId: user.activeTenantId,
+    })
+    return ok(docs)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list knowledge catalog')
+  }
+}
+
+export async function ingestKnowledgeCatalogDocument(formData: FormData) {
+  try {
+    const user = await requireTenantRole('admin')
+    const processingMode = formData.get('processingMode') === 'okf' ? 'okf' : 'raw_text_only'
+    const file = formData.get('file')
+    if (!(file instanceof File) || file.size === 0) return fail('Válassz egy fájlt')
+    const buffer = Buffer.from(await file.arrayBuffer())
+    const result = await services.knowledgeBase.ingestCatalog({
+      tenantId: user.activeTenantId,
+      uploadedById: user.user.id,
+      filename: file.name,
+      mimeType: file.type || null,
+      buffer,
+      processingMode,
+    })
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to ingest catalog document')
+  }
+}
+
+export async function deleteKnowledgeCatalogDocument(input: { documentId: string }) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = z.object({ documentId: z.string().uuid() }).parse(input)
+    await services.knowledgeBase.deleteCatalogDocument({
+      tenantId: user.activeTenantId,
+      documentId: parsed.documentId,
+      actorId: user.user.id,
+    })
+    return ok({ deleted: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to delete catalog document')
+  }
+}
+
+export async function attachKnowledgeCatalogDocument(input: {
+  agentId: string
+  documentId: string
+}) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = z
+      .object({ agentId: z.string().uuid(), documentId: z.string().uuid() })
+      .parse(input)
+    const result = await services.knowledgeBase.attachCatalogDocumentToAgent({
+      tenantId: user.activeTenantId,
+      agentId: parsed.agentId,
+      documentId: parsed.documentId,
+      actorId: user.user.id,
+    })
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to attach catalog document')
+  }
+}
+
+/**
+ * Kik használhatják az agentet: a tenant userei a grant-szintjükkel.
+ * Admin/approver alapból hozzáfér (grant nélkül is), ezért a lista az
+ * operátor/néző kör szűkítésére és bővítésére való.
+ */
+export async function listAgentAccess(input: { agentId: string }) {
+  try {
+    const user = await requireTenantRole('admin')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const agent = await repositories.agents.findById(agentId, user.activeTenantId)
+    if (!agent) return fail('Agent not found')
+    const [users, grants] = await Promise.all([
+      services.iam.listUsers(user.activeTenantId, { unbounded: true }),
+      repositories.resourceGrants.listAgentGrantsForAgent({
+        tenantId: user.activeTenantId,
+        agentId,
+      }),
+    ])
+    const grantByUserId = new Map(grants.map((grant) => [grant.userId, grant.accessLevel]))
+    return ok({
+      users: users.map((member) => ({
+        id: member.id,
+        name: member.name,
+        email: member.email,
+        role: member.role,
+        accessLevel: grantByUserId.get(member.id) ?? null,
+      })),
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list agent access')
+  }
+}
+
+export async function setAgentUserAccess(input: {
+  agentId: string
+  userId: string
+  accessLevel: 'view' | 'operate' | 'none'
+}) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = setAgentUserAccessSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
+    if (!agent) return fail('Agent not found')
+    const members = await services.iam.listUsers(user.activeTenantId, { unbounded: true })
+    const target = members.find((member) => member.id === parsed.userId)
+    if (!target) return fail('A user nem tagja ennek a szervezetnek')
+    if (parsed.accessLevel === 'none') {
+      await repositories.resourceGrants.revokeAgentGrant({
+        tenantId: user.activeTenantId,
+        userId: parsed.userId,
+        agentId: parsed.agentId,
+      })
+      await services.audit.append({
+        actorType: 'human',
+        actorId: user.user.id,
+        agentVersion: null,
+        action: 'agent.user.revoke',
+        targetType: 'agent',
+        targetId: parsed.agentId,
+        modelUsed: null,
+        inputRef: target.email,
+        outputRef: 'none',
+        policyDecision: 'revoked',
+        metadata: { userId: parsed.userId },
+        tenantId: user.activeTenantId,
+      })
+    } else {
+      await repositories.resourceGrants.upsertAgentGrant({
+        tenantId: user.activeTenantId,
+        userId: parsed.userId,
+        agentId: parsed.agentId,
+        accessLevel: parsed.accessLevel,
+        grantedById: user.user.id,
+      })
+      await services.audit.append({
+        actorType: 'human',
+        actorId: user.user.id,
+        agentVersion: null,
+        action: 'agent.user.grant',
+        targetType: 'agent',
+        targetId: parsed.agentId,
+        modelUsed: null,
+        inputRef: target.email,
+        outputRef: parsed.accessLevel,
+        policyDecision: 'granted',
+        metadata: { userId: parsed.userId, accessLevel: parsed.accessLevel },
+        tenantId: user.activeTenantId,
+      })
+    }
+    return ok({ updated: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update agent access')
   }
 }

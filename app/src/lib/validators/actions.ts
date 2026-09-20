@@ -15,6 +15,22 @@ export const updateAgentInstructionSchema = z.object({
   roleInstruction: z.string().trim().min(1).max(20_000),
 })
 
+export const updateAgentProfileSchema = z
+  .object({
+    agentId: z.string().uuid(),
+    name: z.string().trim().min(1).max(120).optional(),
+    description: z.string().trim().max(500).optional(),
+  })
+  .refine((v) => v.name !== undefined || v.description !== undefined, {
+    message: 'Nincs változás',
+  })
+
+export const setAgentUserAccessSchema = z.object({
+  agentId: z.string().uuid(),
+  userId: z.string().uuid(),
+  accessLevel: z.enum(['view', 'operate', 'none']),
+})
+
 export const updateAgentAvatarSchema = z.object({
   agentId: z.string().uuid(),
   avatarUrl: z.string().trim().max(2000),

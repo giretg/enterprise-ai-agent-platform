@@ -78,6 +78,20 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
+  async updateProfile(input: {
+    agentId: string
+    name?: string
+    description?: string | null
+  }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: {
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.description !== undefined ? { description: input.description } : {}),
+      },
+    })
+  }
+
   async updateAvatar(input: { agentId: string; avatarUrl: string }): Promise<Agent> {
     return prisma.agent.update({
       where: { id: input.agentId },
@@ -96,7 +110,7 @@ export class PostgresAgentRepository implements AgentRepository {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } })
     if (!agent) throw new Error('Agent not found')
     if (!agent.currentDefinitionVersionId) {
-      throw new Error('Cannot activate an unpublished agent')
+      throw new Error('Előbb tedd közzé a definíciót, aztán aktiválhatod.')
     }
     assertTransition(agent.status, 'active')
     return prisma.agent.update({
@@ -135,11 +149,11 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
-  async delete(agentId: string): Promise<void> {
+  async delete(agentId: string, opts?: { force?: boolean }): Promise<void> {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } })
     if (!agent) throw new Error('Agent not found')
-    if (!isPhysicallyDeletable(agent.status)) {
-      throw new Error('Only draft agents can be deleted')
+    if (!opts?.force && !isPhysicallyDeletable(agent.status)) {
+      throw new Error('Csak vázlat törölhető.')
     }
     await prisma.agent.delete({ where: { id: agentId } })
   }

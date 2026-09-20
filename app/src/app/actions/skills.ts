@@ -199,12 +199,29 @@ export interface AssignableSkill {
 }
 
 /**
+ * Jóváhagyásra váró skill: van a katalógusban, de nincs aktív verziója, ezért
+ * még nem rendelhető agenthez. Az agent-oldalon ezt külön megmutatjuk, hogy ne
+ * tűnjön üresnek a katalógus.
+ */
+export interface PendingSkill {
+  skillId: string
+  name: string
+  displayName: string | null
+  description: string
+  kind: SkillKind
+  latestVersion: number
+  latestStatus: string
+}
+
+/**
  * A hozzárendelhető skillek: a katalógusban aktív verzióval bíró, még nem
  * hozzárendelt skillek (fail-closed olvasás a saját + global scope-ra).
+ * A `pending` azokat sorolja, amik aktív verzió híján még nem rendelhetők —
+ * ezeket előbb a katalógusban kell jóváhagyni.
  */
 export async function listAssignableSkillsAction(
   agentId: string,
-): Promise<ActionResult<AssignableSkill[]>> {
+): Promise<ActionResult<{ assignable: AssignableSkill[]; pending: PendingSkill[] }>> {
   try {
     const { ctx } = await requireAgentSkillManager(agentId)
     const [catalog, assigned] = await Promise.all([
@@ -213,9 +230,25 @@ export async function listAssignableSkillsAction(
     ])
     const assignedSkillIds = new Set(assigned.map((a) => a.skillId))
     const rows: AssignableSkill[] = []
+    const pending: PendingSkill[] = []
     for (const skill of catalog) {
       const active = skill.versions.find((v) => v.status === 'active')
-      if (!active || assignedSkillIds.has(skill.id)) continue
+      if (!active) {
+        if (!assignedSkillIds.has(skill.id) && isSkillAssignableToAgent({ kind: skill.kind })) {
+          const latest = skill.versions[0]
+          pending.push({
+            skillId: skill.id,
+            name: skill.name,
+            displayName: skill.displayName,
+            description: skill.description,
+            kind: skill.kind,
+            latestVersion: latest?.version ?? 0,
+            latestStatus: latest?.status ?? 'proposed',
+          })
+        }
+        continue
+      }
+      if (assignedSkillIds.has(skill.id)) continue
       if (!isSkillAssignableToAgent({ kind: skill.kind })) {
         continue
       }
@@ -230,7 +263,7 @@ export async function listAssignableSkillsAction(
         version: active.version,
       })
     }
-    return ok(rows)
+    return ok({ assignable: rows, pending })
   } catch (err) {
     return fail(messageFrom(err))
   }
