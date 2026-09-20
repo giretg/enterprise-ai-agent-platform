@@ -2,6 +2,7 @@
  * Google Drive REST API v3 thin adapter — a Tool Broker mögött (issue #378).
  * Stub mód acceptance / dev tesztekhez (GOOGLE_DRIVE_API_STUB=true).
  */
+import { extractStructured } from '@/lib/kb-extraction'
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3'
 const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3'
 
@@ -287,6 +288,13 @@ export class GoogleDriveApiClient {
     if (!res.ok) throw driveApiError('google_drive.download', res.status, await res.text())
 
     const contentType = res.headers.get('content-type') ?? 'application/octet-stream'
+    if (
+      contentType.includes('pdf') ||
+      file.mimeType === 'application/pdf' ||
+      file.name.toLowerCase().endsWith('.pdf')
+    ) {
+      return this.readPdf(res, file, contentType, maxBytes, warnings)
+    }
     if (contentType.startsWith('text/') || contentType.includes('json')) {
       let text = await res.text()
       let truncated = false
@@ -302,6 +310,47 @@ export class GoogleDriveApiClient {
       'A bináris fájltípus közvetlen szövegként nem olvasható — használd a workspace dokumentum-olvasó eszközöket artifactRef-fel.',
     )
     return { file, contentType, truncated: false, warnings }
+  }
+
+  /** PDF-letöltés szövegkinyeréssel a meglévő KB-pipeline-nal (pdf-parse). */
+  private async readPdf(
+    res: Response,
+    file: DriveFileSummary,
+    contentType: string,
+    maxBytes: number,
+    warnings: string[],
+  ): Promise<DriveReadResult> {
+    const bytes = Buffer.from(await res.arrayBuffer())
+    if (bytes.byteLength > maxBytes) {
+      throw new GoogleDriveApiError(
+        `A fájl túl nagy (${bytes.byteLength} bájt, max ${maxBytes}).`,
+        413,
+        'file_too_large',
+      )
+    }
+    let markdown: string
+    try {
+      const extraction = await extractStructured({
+        buffer: bytes,
+        filename: file.name,
+        mimeType: file.mimeType,
+      })
+      markdown = extraction.markdown
+    } catch {
+      markdown = ''
+    }
+    if (!markdown.trim()) {
+      warnings.push('A PDF-ből nem sikerült szöveget kinyerni (pl. szkennelt képeket tartalmaz).')
+      return { file, contentType, truncated: false, warnings }
+    }
+    let text = markdown
+    let truncated = false
+    if (text.length > MAX_TEXT_CHARS) {
+      text = text.slice(0, MAX_TEXT_CHARS)
+      truncated = true
+      warnings.push('A kinyert szöveg csonkolva lett a méretkorlát miatt.')
+    }
+    return { file, contentType, text, truncated, warnings }
   }
 
   async createFolder(params: {
