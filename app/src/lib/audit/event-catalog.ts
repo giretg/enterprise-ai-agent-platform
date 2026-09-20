@@ -34,6 +34,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'user.reactivate',
   'user.role.assign',
   'user.role.change',
+  'user.agent_access.update',
   'user.suspend',
 
   'platform.role.grant',

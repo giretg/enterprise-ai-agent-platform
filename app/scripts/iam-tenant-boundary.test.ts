@@ -7,6 +7,8 @@
  * IamService permission-update audit attribúcióját ellenőrzi.
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { buildTenantAccessAuditFilter } from '../src/domain/iam/access-audit'
 import { IamService } from '../src/domain/iam/iam-service'
 
@@ -80,6 +82,44 @@ async function main() {
     assert.equal(events.length, 1)
     assert.equal(events[0].action, 'user.permission.update')
     assert.equal(events[0].tenantId, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
+  })
+
+  await check('agent access update writes user.agent_access.update', async () => {
+    const events: Array<{ action: string; outputRef?: string | null; policyDecision?: string | null }> = []
+    const service = new IamService(
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      {
+        async append(data) {
+          events.push({
+            action: data.action,
+            outputRef: data.outputRef,
+            policyDecision: data.policyDecision,
+          })
+        },
+      },
+    )
+
+    await service.auditUserAgentAccessUpdate({
+      actorId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      tenantId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      targetUserId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      agentId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      granted: true,
+    })
+    assert.equal(events.length, 1)
+    assert.equal(events[0].action, 'user.agent_access.update')
+    assert.equal(events[0].outputRef, 'operate')
+    assert.equal(events[0].policyDecision, 'granted')
+  })
+
+  await check('role-write kapu: a platform-actionök a seedelt user.role.write kulcsot kérik', () => {
+    const src = readFileSync(join(import.meta.dirname, '../src/app/actions/platform.ts'), 'utf8')
+    assert.equal(src.includes("requireTenantPermission('user.role.change')"), false)
+    assert.ok(src.includes("requireTenantPermission('user.role.write')"))
   })
 
   console.log(`\n${failures === 0 ? 'Minden teszt zöld.' : `${failures} teszt bukott.`}`)

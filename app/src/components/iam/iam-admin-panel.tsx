@@ -2,8 +2,8 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useMemo, useState, useTransition } from 'react'
-import type { Invitation, RolePermission, User, UserRole, UserStatus } from '@prisma/client'
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
+import type { Agent, Invitation, RolePermission, User, UserRole, UserStatus } from '@prisma/client'
 import {
   approveUser,
   changeUserRole,
@@ -11,6 +11,7 @@ import {
   provisionUser,
   reactivateUser,
   revokeInvitation,
+  setUserAgentAccess,
   suspendUser,
   updateRolePermission,
 } from '@/app/actions/platform'
@@ -66,22 +67,16 @@ export function IamAdminPanel({
   users,
   invitations,
   permissions,
+  agents,
+  grantsByUserId,
 }: {
   users: User[]
   invitations: Invitation[]
   permissions: RolePermission[]
+  agents: Agent[]
+  grantsByUserId: Record<string, string[]>
 }) {
-  const router = useRouter()
-  const [pending, startTransition] = useTransition()
-  const [email, setEmail] = useState('')
-  const [role, setRole] = useState<UserRole>('operator')
-  const [message, setMessage] = useState<string | null>(null)
-  const [issuedToken, setIssuedToken] = useState<string | null>(null)
-  const [clerkInvited, setClerkInvited] = useState(false)
-
-  const [provisionEmail, setProvisionEmail] = useState('')
-  const [provisionRole, setProvisionRole] = useState<UserRole>('operator')
-  const [provisionMessage, setProvisionMessage] = useState<string | null>(null)
+  const [modal, setModal] = useState<null | 'access' | 'invitations'>(null)
 
   const pendingInvitations = useMemo(
     () => invitations.filter((invitation) => invitation.status === 'pending').length,
@@ -105,8 +100,25 @@ export function IamAdminPanel({
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.8fr)]">
-        <Card title="Felhasználók">
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setModal('access')}
+          className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)]"
+        >
+          Új hozzáférés
+        </button>
+        <button
+          type="button"
+          onClick={() => setModal('invitations')}
+          className="inline-flex items-center gap-2 rounded-full border border-line bg-night-2 px-5 py-2.5 text-sm font-semibold text-ink"
+        >
+          Meghívók
+          <Badge tone={pendingInvitations > 0 ? 'warning' : 'neutral'}>{pendingInvitations}</Badge>
+        </button>
+      </div>
+
+      <Card title="Felhasználók">
           {sortedUsers.length === 0 ? (
             <p className="text-sm text-ink-faint">Nincs felhasználó.</p>
           ) : (
@@ -119,6 +131,7 @@ export function IamAdminPanel({
                     <th className="pb-3 font-semibold">Belépés</th>
                     <th className="pb-3 font-semibold">Státusz</th>
                     <th className="pb-3 font-semibold">Szerep</th>
+                    <th className="pb-3 font-semibold">Ügynök-hozzáférés</th>
                     <th className="pb-3 font-semibold">Szerep leírás</th>
                     <th className="pb-3 font-semibold">Létrehozva</th>
                   </tr>
@@ -128,7 +141,8 @@ export function IamAdminPanel({
                     <UserRow
                       key={`${user.id}-${new Date(user.updatedAt).getTime()}`}
                       user={user}
-                      disabled={pending}
+                      agents={agents}
+                      grantedAgentIds={grantsByUserId[user.id] ?? []}
                     />
                   ))}
                 </tbody>
@@ -136,161 +150,6 @@ export function IamAdminPanel({
             </div>
           )}
         </Card>
-
-        <div className="space-y-6">
-          <Card title="Felhasználó előkészítése">
-            <p className="mb-3 text-xs text-ink-faint">
-              Email + szerep, meghívó email nélkül. Az előkészített felhasználó azonnal megjelenik a
-              listában „Nem lépett be” státusszal; az első Google/Clerk belépéskor automatikusan
-              aktiválódik.
-            </p>
-            <div className="space-y-3">
-              <label className="block text-sm text-ink-soft">
-                Email
-                <input
-                  value={provisionEmail}
-                  onChange={(event) => setProvisionEmail(event.target.value)}
-                  type="email"
-                  className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
-                  placeholder="kollega@ceg.hu"
-                />
-              </label>
-              <label className="block text-sm text-ink-soft">
-                Szerep
-                <select
-                  value={provisionRole}
-                  onChange={(event) => setProvisionRole(event.target.value as UserRole)}
-                  className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
-                >
-                  {ROLES.map((option) => (
-                    <option key={option} value={option}>
-                      {roleLabel[option]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                disabled={pending || !provisionEmail.trim()}
-                className="w-full rounded-full bg-coral px-4 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)] disabled:opacity-50"
-                onClick={() => {
-                  startTransition(async () => {
-                    const result = await provisionUser({ email: provisionEmail, role: provisionRole })
-                    if (result.success) {
-                      setProvisionEmail('')
-                      setProvisionMessage('Felhasználó előkészítve — vár első belépésre.')
-                      router.refresh()
-                    } else {
-                      setProvisionMessage(result.error)
-                    }
-                  })
-                }}
-              >
-                Előkészítés
-              </button>
-            </div>
-            {provisionMessage && <p className="mt-3 text-sm text-ink-soft">{provisionMessage}</p>}
-          </Card>
-
-          <Card title="Új meghívó">
-            <p className="mb-3 text-xs text-ink-faint">
-              Meghívó token / Clerk invitation email. Később, ha az email-küldés kész, ez lesz az
-              alapértelmezett onboarding.
-            </p>
-            <div className="space-y-3">
-              <label className="block text-sm text-ink-soft">
-                Email
-                <input
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  type="email"
-                  className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
-                  placeholder="kollega@ceg.hu"
-                />
-              </label>
-              <label className="block text-sm text-ink-soft">
-                Szerep
-                <select
-                  value={role}
-                  onChange={(event) => setRole(event.target.value as UserRole)}
-                  className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
-                >
-                  {ROLES.map((option) => (
-                    <option key={option} value={option}>
-                      {roleLabel[option]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                disabled={pending || !email.trim()}
-                className="w-full rounded-full border border-line bg-night-2 px-4 py-2.5 text-sm font-semibold text-ink disabled:opacity-50"
-                onClick={() => {
-                  startTransition(async () => {
-                    setIssuedToken(null)
-                    const result = await inviteUser({ email, role })
-                    if (result.success) {
-                      setEmail('')
-                      setClerkInvited(result.data.clerkInvited)
-                      setMessage(
-                        result.data.clerkInvited
-                          ? 'Meghívó e-mail kiküldve (Clerk).'
-                          : 'Meghívó létrehozva.',
-                      )
-                      setIssuedToken(result.data.token)
-                      router.refresh()
-                    } else {
-                      setMessage(result.error)
-                    }
-                  })
-                }}
-              >
-                Meghívó létrehozása
-              </button>
-            </div>
-
-            {issuedToken && (
-              <div className="mt-4 rounded-lg border border-honey/35 bg-honey/10 p-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-honey">
-                  {clerkInvited ? 'Belső token (fallback)' : 'Egyszer látható token'}
-                </p>
-                <p className="mt-1 text-xs text-ink-faint">
-                  {clerkInvited
-                    ? 'A meghívott e-mailben kap Clerk-linket — a regisztrációkor a szerepkör automatikusan beáll. Ezt a tokent nem kell kézzel megosztani; csak belső/dev fallback.'
-                    : 'Oszd meg ezt a tokent a meghívottal a beváltó oldalhoz.'}
-                </p>
-                <code className="mt-2 block break-all rounded bg-night-2 p-2 font-mono text-xs text-ink-soft">
-                  {issuedToken}
-                </code>
-                <Link
-                  href={`/control-plane/iam/redeem?token=${encodeURIComponent(issuedToken)}`}
-                  className="mt-3 inline-flex text-sm font-semibold text-coral-deep hover:underline"
-                >
-                  Beváltó oldal megnyitása
-                </Link>
-              </div>
-            )}
-
-            {message && <p className="mt-3 text-sm text-ink-soft">{message}</p>}
-          </Card>
-
-          <Card title="Meghívók">
-            <div className="mb-3 flex items-center justify-between text-sm">
-              <span className="text-ink-soft">Függőben</span>
-              <Badge tone={pendingInvitations > 0 ? 'warning' : 'neutral'}>{pendingInvitations}</Badge>
-            </div>
-            <ul className="max-h-[520px] space-y-3 overflow-auto pr-1">
-              {invitations.map((invitation) => (
-                <InvitationRow key={invitation.id} invitation={invitation} disabled={pending} />
-              ))}
-              {invitations.length === 0 && (
-                <li className="text-sm text-ink-faint">Még nincs meghívó.</li>
-              )}
-            </ul>
-          </Card>
-        </div>
-      </div>
 
       <PermissionMatrixCard permissions={permissions} />
 
@@ -311,15 +170,225 @@ export function IamAdminPanel({
           nézetben.
         </p>
       </Card>
+
+      {modal === 'access' && <AccessModal onClose={() => setModal(null)} />}
+      {modal === 'invitations' && (
+        <Modal title="Meghívók" onClose={() => setModal(null)}>
+          <div className="mb-3 flex items-center justify-between text-sm">
+            <span className="text-ink-soft">Függőben</span>
+            <Badge tone={pendingInvitations > 0 ? 'warning' : 'neutral'}>
+              {pendingInvitations}
+            </Badge>
+          </div>
+          <ul className="max-h-[50vh] space-y-3 overflow-auto pr-1">
+            {invitations.map((invitation) => (
+              <InvitationRow key={invitation.id} invitation={invitation} />
+            ))}
+            {invitations.length === 0 && (
+              <li className="text-sm text-ink-faint">Még nincs meghívó.</li>
+            )}
+          </ul>
+        </Modal>
+      )}
     </div>
   )
 }
 
-function InvitationRow({ invitation, disabled }: { invitation: Invitation; disabled: boolean }) {
+function Modal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string
+  onClose: () => void
+  children: React.ReactNode
+}) {
+  const closeRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    closeRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-[400] flex items-center justify-center bg-ink/50 p-4 backdrop-blur-[2px]"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="atelier-card max-h-[90vh] w-full max-w-lg overflow-auto p-5"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <h2 className="font-display text-lg font-semibold tracking-tight">{title}</h2>
+          <button
+            ref={closeRef}
+            type="button"
+            onClick={onClose}
+            aria-label="Bezárás"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-line text-sm text-ink-soft hover:bg-night-2"
+          >
+            ✕
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function AccessModal({ onClose }: { onClose: () => void }) {
+  const router = useRouter()
+  const [pending, startTransition] = useTransition()
+  const [mode, setMode] = useState<'invite' | 'provision'>('invite')
+  const [email, setEmail] = useState('')
+  const [role, setRole] = useState<UserRole>('operator')
+  const [message, setMessage] = useState<string | null>(null)
+  const [issuedToken, setIssuedToken] = useState<string | null>(null)
+  const [clerkInvited, setClerkInvited] = useState(false)
+
+  const submit = () => {
+    startTransition(async () => {
+      setMessage(null)
+      setIssuedToken(null)
+      if (mode === 'provision') {
+        const result = await provisionUser({ email, role })
+        if (result.success) {
+          setEmail('')
+          setMessage('Felhasználó előkészítve — vár első belépésre.')
+          router.refresh()
+        } else {
+          setMessage(result.error)
+        }
+        return
+      }
+      const result = await inviteUser({ email, role })
+      if (result.success) {
+        setEmail('')
+        setClerkInvited(result.data.clerkInvited)
+        setMessage(
+          result.data.clerkInvited ? 'Meghívó e-mail kiküldve (Clerk).' : 'Meghívó létrehozva.',
+        )
+        setIssuedToken(result.data.token)
+        router.refresh()
+      } else {
+        setMessage(result.error)
+      }
+    })
+  }
+
+  return (
+    <Modal title="Új hozzáférés" onClose={onClose}>
+      <div className="mb-4 grid gap-2">
+        <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-line p-3 has-checked:border-coral/50">
+          <input
+            type="radio"
+            name="access-mode"
+            value="invite"
+            checked={mode === 'invite'}
+            onChange={() => setMode('invite')}
+            className="mt-1 accent-[#b23a55]"
+          />
+          <span>
+            <span className="block text-sm font-semibold">Meghívó</span>
+            <span className="mt-0.5 block text-xs text-ink-faint">
+              Meghívó token / Clerk invitation email. Beváltás után jelenik meg a listában.
+            </span>
+          </span>
+        </label>
+        <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-line p-3 has-checked:border-coral/50">
+          <input
+            type="radio"
+            name="access-mode"
+            value="provision"
+            checked={mode === 'provision'}
+            onChange={() => setMode('provision')}
+            className="mt-1 accent-[#b23a55]"
+          />
+          <span>
+            <span className="block text-sm font-semibold">Csendes előkészítés</span>
+            <span className="mt-0.5 block text-xs text-ink-faint">
+              Email nélkül, azonnal a listában „Vár első belépésre” státusszal; az első
+              Google/Clerk belépéskor aktiválódik.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div className="space-y-3">
+        <label className="block text-sm text-ink-soft">
+          Email
+          <input
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            type="email"
+            className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
+            placeholder="kollega@ceg.hu"
+          />
+        </label>
+        <label className="block text-sm text-ink-soft">
+          Szerep
+          <select
+            value={role}
+            onChange={(event) => setRole(event.target.value as UserRole)}
+            className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
+          >
+            {ROLES.map((option) => (
+              <option key={option} value={option}>
+                {roleLabel[option]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          disabled={pending || !email.trim()}
+          className="w-full rounded-full bg-coral px-4 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)] disabled:opacity-50"
+          onClick={submit}
+        >
+          {mode === 'invite' ? 'Meghívó létrehozása' : 'Előkészítés'}
+        </button>
+      </div>
+
+      {issuedToken && (
+        <div className="mt-4 rounded-lg border border-honey/35 bg-honey/10 p-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-honey">
+            {clerkInvited ? 'Belső token (fallback)' : 'Egyszer látható token'}
+          </p>
+          <p className="mt-1 text-xs text-ink-faint">
+            {clerkInvited
+              ? 'A meghívott e-mailben kap Clerk-linket — a regisztrációkor a szerepkör automatikusan beáll.'
+              : 'Oszd meg ezt a tokent a meghívottal a beváltó oldalhoz.'}
+          </p>
+          <code className="mt-2 block break-all rounded bg-night-2 p-2 font-mono text-xs text-ink-soft">
+            {issuedToken}
+          </code>
+          <Link
+            href={`/control-plane/iam/redeem?token=${encodeURIComponent(issuedToken)}`}
+            className="mt-3 inline-flex text-sm font-semibold text-coral-deep hover:underline"
+          >
+            Beváltó oldal megnyitása
+          </Link>
+        </div>
+      )}
+
+      {message && <p className="mt-3 text-sm text-ink-soft">{message}</p>}
+    </Modal>
+  )
+}
+
+function InvitationRow({ invitation }: { invitation: Invitation }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<string | null>(null)
-  const isDisabled = disabled || pending
+  const isDisabled = pending
 
   return (
     <li className="atelier-soft p-3 text-sm">
@@ -358,14 +427,107 @@ function InvitationRow({ invitation, disabled }: { invitation: Invitation; disab
   )
 }
 
-function UserRow({ user, disabled }: { user: User; disabled: boolean }) {
+function AgentAccessEditor({
+  user,
+  agents,
+  grantedAgentIds,
+  disabled,
+}: {
+  user: User
+  agents: Agent[]
+  grantedAgentIds: string[]
+  disabled: boolean
+}) {
+  const router = useRouter()
+  const [open, setOpen] = useState(false)
+  const [busyAgentId, setBusyAgentId] = useState<string | null>(null)
+  const [grantPending, startGrantTransition] = useTransition()
+  const [message, setMessage] = useState<string | null>(null)
+  const granted = useMemo(() => new Set(grantedAgentIds), [grantedAgentIds])
+  // Admin/jóváhagyó mindent lát grant nélkül is — a lista csak az explicit
+  // hozzáféréseket mutatja (operátor/olvasó szerephez számítanak).
+  const seesEverything = user.role === 'admin' || user.role === 'approver'
+  const busy = disabled || grantPending
+
+  const toggle = (agentId: string, has: boolean) => {
+    setBusyAgentId(agentId)
+    startGrantTransition(async () => {
+      const result = await setUserAgentAccess({
+        targetUserId: user.id,
+        agentId,
+        granted: !has,
+      })
+      if (result.success) {
+        setMessage(null)
+        router.refresh()
+      } else {
+        setMessage(result.error)
+      }
+      setBusyAgentId(null)
+    })
+  }
+
+  return (
+    <div className="min-w-44">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="rounded-full bg-sky/15 px-3 py-1.5 text-xs font-semibold text-sky"
+      >
+        Ügynökök · {grantedAgentIds.length}{open ? ' ▴' : ' ▾'}
+      </button>
+      {seesEverything && <p className="mt-1 text-[11px] text-ink-faint">Mindent lát.</p>}
+      {open && (
+        <div className="mt-2 space-y-1.5">
+          {agents.length === 0 && (
+            <p className="text-xs text-ink-faint">Nincs ügynök ebben a tenantban.</p>
+          )}
+          {agents.map((agent) => {
+            const has = granted.has(agent.id)
+            const agentBusy = busyAgentId === agent.id
+            return (
+              <label
+                key={agent.id}
+                className="flex cursor-pointer items-center gap-2 text-xs text-ink-soft"
+              >
+                <input
+                  type="checkbox"
+                  checked={has}
+                  disabled={busy}
+                  onChange={() => toggle(agent.id, has)}
+                  className="h-3.5 w-3.5 accent-[#3a7ca5]"
+                />
+                <span className="truncate">
+                  {agent.name}
+                  {agentBusy ? ' …' : ''}
+                </span>
+              </label>
+            )
+          })}
+          {message && <p className="text-xs text-coral-deep">{message}</p>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function UserRow({
+  user,
+  agents,
+  grantedAgentIds,
+}: {
+  user: User
+  agents: Agent[]
+  grantedAgentIds: string[]
+}) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [role, setRole] = useState<UserRole>(user.role ?? 'viewer')
   const [reason, setReason] = useState('')
   const [jobDescription, setJobDescription] = useState('')
   const [message, setMessage] = useState<string | null>(null)
-  const isDisabled = disabled || pending
+  const isDisabled = pending
   const isPendingApproval = user.status === 'pending' && user.role === null
   const awaitingFirstLogin = isAwaitingFirstLogin(user)
   const loggedIn = hasCompletedFirstLogin(user)
@@ -483,6 +645,14 @@ function UserRow({ user, disabled }: { user: User; disabled: boolean }) {
             {isPendingApproval ? 'Jóváhagyás' : 'Mentés'}
           </button>
         </div>
+      </td>
+      <td className="py-3 pr-4">
+        <AgentAccessEditor
+          user={user}
+          agents={agents}
+          grantedAgentIds={grantedAgentIds}
+          disabled={isDisabled}
+        />
       </td>
       <td className="py-3 pr-4">
         <div className="flex items-start gap-2">
