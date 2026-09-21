@@ -123,6 +123,9 @@ function deps(overrides: {
         async findBySlug() {
           return overrides.tenant === undefined ? tenant() : overrides.tenant
         },
+        async findById() {
+          return overrides.tenant === undefined ? tenant() : overrides.tenant
+        },
       },
       memberships: {
         async findByTenantAndUser() {

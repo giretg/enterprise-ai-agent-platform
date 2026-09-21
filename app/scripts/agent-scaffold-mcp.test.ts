@@ -343,6 +343,21 @@ function stubMcpDeps(
           updatedAt: new Date(),
         }
       },
+      async findById(id: string) {
+        if (id !== TENANT_ID) return null
+        return {
+          id: TENANT_ID,
+          slug: 'acme',
+          displayName: 'Acme',
+          legalName: null,
+          status: 'active',
+          domainAllowlist: [],
+          settings: {},
+          createdById: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }
+      },
     },
     memberships: {
       async findByTenantAndUser() {
