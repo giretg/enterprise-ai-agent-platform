@@ -1,5 +1,7 @@
 import type { AgentDefinition } from '@/domain/agent-definition'
 import { hashSnapshot } from '@/domain/agent-definition'
+import type { AgentConnectorCatalog } from '@/domain/connector/http-api-connector-catalog'
+import { formatAgentConnectorCatalogMarkdown } from '@/domain/connector/http-api-connector-catalog'
 import { CODE_EXTENSIONS } from '@/lib/skill/skill-package-adapter'
 import { serializeSkillMd } from '@/lib/skill/skill-md-export'
 import type { SkillContent, SkillRequirement } from '@/lib/skill/skill-content'
@@ -126,6 +128,7 @@ function renderAgentsMd(input: {
   contentHash: string
   mcpUrl: string
   skills: Array<{ name: string; description: string; triggers: string[]; path: string }>
+  connectorCatalog?: AgentConnectorCatalog | null
 }): string {
   const snapshot = input.definition.snapshot
   const lines = [
@@ -158,6 +161,9 @@ function renderAgentsMd(input: {
   if (snapshot.connectors.some((row) => row.type === 'google_drive')) {
     lines.push('', 'This agent has a Google Drive connector. Use the Drive MCP tools by name.')
   }
+  if (input.connectorCatalog && input.connectorCatalog.connectors.length > 0) {
+    lines.push('', formatAgentConnectorCatalogMarkdown(input.connectorCatalog).trimEnd())
+  }
 
   lines.push(
     '',
@@ -184,6 +190,7 @@ export function renderAgentCheckout(input: {
   skills: CheckoutSkill[]
   mcpUrl: string
   harness?: CheckoutHarness | null
+  connectorCatalog?: AgentConnectorCatalog | null
 }): CheckoutBundle {
   const warnings: string[] = []
   const snapshot = input.definition.snapshot
@@ -288,6 +295,7 @@ export function renderAgentCheckout(input: {
         contentHash,
         mcpUrl: input.mcpUrl,
         skills: skillPointers,
+        connectorCatalog: input.connectorCatalog,
       }),
     },
     { path: manifestPath, content: `${JSON.stringify(manifest, null, 2)}\n` },
