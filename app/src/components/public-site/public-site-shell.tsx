@@ -1,5 +1,4 @@
 import Image from 'next/image'
-import NextLink from 'next/link'
 import type { ReactNode } from 'react'
 import { getTranslations } from 'next-intl/server'
 import { Link } from '@/i18n/navigation'
@@ -47,12 +46,13 @@ export async function PublicSiteShell({ children }: { children: ReactNode }) {
               </Link>
             ))}
             <LocaleSwitcher />
-            <NextLink
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- hard nav off the [locale] tree; Next.js Link soft-nav shows "This page couldn't load" */}
+            <a
               href="/sign-in"
               className="rounded-full bg-coral px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-coral-deep"
             >
               {t('signIn')}
-            </NextLink>
+            </a>
           </nav>
         </div>
       </header>
@@ -70,9 +70,10 @@ export async function PublicSiteShell({ children }: { children: ReactNode }) {
             <Link href="/gtc" className="hover:text-ink">
               {footer('terms')}
             </Link>
-            <NextLink href="/sign-in" className="hover:text-ink">
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- hard nav off the [locale] tree; Next.js Link soft-nav shows "This page couldn't load" */}
+            <a href="/sign-in" className="hover:text-ink">
               {footer('signIn')}
-            </NextLink>
+            </a>
           </div>
         </div>
       </footer>

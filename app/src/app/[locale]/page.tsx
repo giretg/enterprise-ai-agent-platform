@@ -1,4 +1,3 @@
-import NextLink from 'next/link'
 import { getTranslations, setRequestLocale } from 'next-intl/server'
 import { PublicSiteShell } from '@/components/public-site/public-site-shell'
 import { isAppLocale } from '@/i18n/config'
@@ -82,13 +81,14 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
             </h1>
             <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-soft sm:text-xl">{t('heroBody')}</p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
-              <NextLink
+              {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- hard nav off the [locale] tree; Next.js Link soft-nav shows "This page couldn't load" */}
+              <a
                 href="/sign-in"
                 className="group inline-flex items-center gap-2 rounded-full bg-coral px-6 py-3 text-sm font-semibold text-white shadow-[0_12px_30px_-12px_rgba(178,58,85,0.6)] transition-all hover:-translate-y-0.5 hover:bg-coral-deep"
               >
                 {t('ctaSignIn')}
                 <span className="transition-transform group-hover:translate-x-0.5">→</span>
-              </NextLink>
+              </a>
               <a
                 href="#how"
                 className="rounded-full border border-line bg-card px-6 py-3 text-sm font-semibold text-ink transition-colors hover:border-coral/40"
@@ -237,12 +237,13 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
         <div className="mt-16 overflow-hidden rounded-3xl bg-ink px-8 py-12 text-center text-night sm:px-12">
           <h2 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">{t('ctaTitle')}</h2>
           <p className="mx-auto mt-3 max-w-xl text-night/70">{t('ctaBody')}</p>
-          <NextLink
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- hard nav off the [locale] tree; Next.js Link soft-nav shows "This page couldn't load" */}
+          <a
             href="/sign-in"
             className="mt-8 inline-flex items-center gap-2 rounded-full bg-coral px-7 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose"
           >
             {t('ctaButton')}
-          </NextLink>
+          </a>
         </div>
       </section>
     </PublicSiteShell>
