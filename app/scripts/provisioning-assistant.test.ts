@@ -285,7 +285,12 @@ class FakeDraftRepo implements ConnectorDraftRepository {
           (d.connector as Connector & { activeCapabilitySet?: unknown }).activeCapabilitySet ?? null,
         ),
       )
-      .map((d) => ({ id: d.connectorId, type: d.connector.type, name: d.connector.name }))
+      .map((d) => ({
+        id: d.connectorId,
+        type: d.connector.type,
+        name: d.connector.name,
+        connectorMode: d.connector.connectorMode,
+      }))
   }
   async findConnectorById(connectorId: string) {
     const draft = [...this.drafts.values()].find((d) => d.connectorId === connectorId)

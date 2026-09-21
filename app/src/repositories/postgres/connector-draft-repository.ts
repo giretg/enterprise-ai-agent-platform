@@ -321,6 +321,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
       id: string
       type: ConnectorType
       name: string
+      connectorMode: 'fixed' | 'self_updating'
       description?: string | null
       baseUrl?: string | null
       tools?: Array<{ method: string; path: string; description?: string | null }>
