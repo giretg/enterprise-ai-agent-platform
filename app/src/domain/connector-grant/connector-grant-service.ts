@@ -221,12 +221,16 @@ function resolveGrantedScopes(params: {
   const grantedScopes = [...new Set(params.responseScope.split(' ').map(normalize).filter(Boolean))]
   // A connector config a felső korlát: a grant csak ebből tárol. Google a token
   // `scope` mezőjébe belerakja az identity scope-okat (openid / userinfo.*) és
-  // — include_granted_scopes=true mellett — korábbi, más Google-szolgáltatásra
-  // adott jogosultságokat is (pl. Drive a Gmail callbackben). Ezeket eldobjuk,
-  // nem buktatjuk a callbacket; a mögöttes token ettől még szélesebb lehet.
+  // ugyanazon OAuth kliens korábbi, más szolgáltatásra adott jogosultságait is.
+  // Ezeket eldobjuk; a kért connector-scope hiánya hibát dob.
   const configured = new Set(readOAuthConfig(params.connector).scopes.map(normalize))
   const usable = grantedScopes.filter((scope) => configured.has(scope))
   if (usable.length === 0) {
+    if (expectedScopes.length > 0) {
+      throw new Error(
+        `connector_oauth_scopes_not_granted: requested ${expectedScopes.join(', ')}; provider returned ${grantedScopes.join(', ')}`,
+      )
+    }
     throw new Error(`OAuth provider returned unrequested scope: ${grantedScopes.join(', ')}`)
   }
   return usable
@@ -452,11 +456,9 @@ export class ConnectorGrantService {
     for (const [key, value] of Object.entries(oauth.offlineParams)) {
       url.searchParams.set(key, value)
     }
-    // Google incremental auth: a korábban megadott scope-ok is a tokenben maradnak,
-    // ha a consent csak a hiányzó scope-ot kéri (különben a DB unió hazudna a tokenről).
-    if (isGoogleConnector(params.connector) && !url.searchParams.has('include_granted_scopes')) {
-      url.searchParams.set('include_granted_scopes', 'true')
-    }
+    // Nem include_granted_scopes: ugyanazon Google OAuth kliensnél (pl. Gmail+Drive)
+    // ez a korábbi szolgáltatás scope-jait húzná be a callbackbe. A startUserAuthorization
+    // már uniózza a meglévő grant scope-jait a kérésbe — elég explicit scope param.
     url.searchParams.set('prompt', 'consent')
     url.searchParams.set('state', state)
     url.searchParams.set('code_challenge', pkceChallenge(codeVerifier))

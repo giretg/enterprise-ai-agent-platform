@@ -41,6 +41,24 @@ export function driveGrantScopeSummary(scopes: unknown): ScopeProfileSummary {
   }
 }
 
+export function connectorOAuthErrorMessage(error: string): string {
+  if (error.startsWith('connector_oauth_scopes_not_granted')) {
+    return (
+      'A Google nem adta meg a kért szolgáltatás jogosultságát — a válasz csak korábbi ' +
+      '(pl. Drive) hozzáférést tartalmaz. Próbáld újra az Összekötés gombbal, és a consent ' +
+      'képernyőn engedélyezd a Gmail hozzáférést is. Ha Gmail és Drive ugyanazt a Google OAuth ' +
+      'appot használja, érdemes külön kliensbe szétválasztani őket (Platform → Beállítások).'
+    )
+  }
+  if (error.includes('unrequested scope')) {
+    return (
+      'Az OAuth válasz nem tartalmazza a kért szolgáltatás jogosultságát. Próbáld újra, ' +
+      'vagy bontsd a másik Google-összekötést, ha ugyanazt az OAuth appot használják.'
+    )
+  }
+  return error
+}
+
 export function connectorScopeProfileDescription(
   connectorType: string,
   profileId: string,

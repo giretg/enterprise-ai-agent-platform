@@ -508,7 +508,7 @@ await test('buildAuthorizationUrl: Google/Gmail connector explicit configból ka
   })
   const parsed = new URL(url)
   assert.equal(parsed.searchParams.get('access_type'), 'offline')
-  assert.equal(parsed.searchParams.get('include_granted_scopes'), 'true')
+  assert.equal(parsed.searchParams.get('include_granted_scopes'), null)
   // a Gmail scope-alias teljes URL-re normalizálódik
   assert.equal(parsed.searchParams.get('scope'), GMAIL_SCOPES.readonly)
 })
@@ -834,7 +834,7 @@ await test('completeOAuthCallback: ha a tokenben nincs a connectorhoz tartozó s
             actorId: 'user-Y',
           }),
       ),
-    /OAuth provider returned unrequested scope/,
+    /connector_oauth_scopes_not_granted/,
   )
   assert.equal(created.length, 0)
 })
