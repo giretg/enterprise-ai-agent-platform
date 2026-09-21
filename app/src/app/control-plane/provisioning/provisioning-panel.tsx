@@ -33,12 +33,15 @@ import { startConnectorOAuth, getGoogleOAuthConfiguredStatus, getGoogleDriveOAut
 import { listTenants } from '@/app/actions/tenant'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
+  approveSelfUpdatingSource,
+  approveSelfUpdatingVersion,
   createSelfUpdatingConnector,
   createSelfUpdatingConnectorsFromCatalog,
   listSelfUpdatingConnectors,
   previewSelfUpdatingCatalog,
   setTenantSelfUpdatingAutoApprove,
   syncSelfUpdatingConnector,
+  trustSelfUpdatingPartner,
 } from '@/app/actions/self-updating-connectors'
 import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'
 import { OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES } from '@/domain/connector-template/custom-template-seeds'
@@ -223,7 +226,8 @@ type DiscoverData =
       sensitivity: SensitivityReviewData
     }
 
-type CreateStep = 'basics' | 'source' | 'review'
+type CreateStep = 'basics' | 'source' | 'review' | 'su_link' | 'su_trust' | 'su_sync' | 'su_version'
+const SELF_UPDATING_ACTIVATION_STEPS: CreateStep[] = ['su_link', 'su_trust', 'su_sync', 'su_version']
 type ConnectionKind = 'fixed' | 'self_updating'
 type SourceMethod = 'document' | 'manual' | 'template'
 type DraftManageStep = 'inspect' | 'validate' | 'review' | 'sandbox' | 'activate'
@@ -536,6 +540,10 @@ export function ProvisioningPanel({
   const [catalogSharedKey, setCatalogSharedKey] = useState('')
   const [catalogLeafKeys, setCatalogLeafKeys] = useState<Record<string, string>>({})
   const [catalogBatch, setCatalogBatch] = useState<CatalogBatchRow[] | null>(null)
+  const [suWizardConnectorId, setSuWizardConnectorId] = useState<string | null>(null)
+  const [suWizardVersionId, setSuWizardVersionId] = useState<string | null>(null)
+  const [suWizardRow, setSuWizardRow] = useState<SelfUpdatingConnectorRow | null>(null)
+  const [suWizardMaxStepIndex, setSuWizardMaxStepIndex] = useState(1)
   const [sourceType, setSourceType] = useState<'api_doc' | 'openapi' | 'manual' | 'template'>('api_doc')
   const [configText, setConfigText] = useState('')
   const [createStep, setCreateStep] = useState<CreateStep>('basics')
@@ -825,7 +833,28 @@ export function ProvisioningPanel({
     setCatalogSharedKey('')
     setCatalogLeafKeys({})
     setCatalogBatch(null)
+    setSuWizardConnectorId(null)
+    setSuWizardVersionId(null)
+    setSuWizardRow(null)
+    setSuWizardMaxStepIndex(1)
   }, [])
+
+  const refreshSuWizardRow = useCallback(async (connectorId: string) => {
+    const result = await listSelfUpdatingConnectors()
+    if (!result.success) return null
+    const row = (result.data.connectors as SelfUpdatingConnectorRow[]).find((item) => item.id === connectorId) ?? null
+    setSuWizardRow(row)
+    return row
+  }, [])
+
+  const finishSuWizard = useCallback(
+    (okMsg: string) => {
+      setNotice(okMsg)
+      closeCreateDraftForm()
+      reload()
+    },
+    [closeCreateDraftForm, reload],
+  )
 
   const checkCatalog = useCallback(() => {
     const url = selfUpdatingSpecUrl.trim()
@@ -914,15 +943,26 @@ export function ProvisioningPanel({
         setError('Ez gyűjtőindex (katalógus) — önálló kapcsolat nem hozható létre belőle. Használd a fenti „Kiválasztott kapcsolatok létrehozása” gombot.')
         return
       }
-      run(async () => {
+      setError(null)
+      setNotice(null)
+      startTransition(async () => {
         const result = await createSelfUpdatingConnector({
           name,
           apiKey: selfUpdatingApiKey,
           specUrl: selfUpdatingSpecUrl,
         })
-        if (result.success) closeCreateDraftForm()
-        return result
-      }, 'A konnektor létrejött. Jóvá kell hagyni a linket és a partner megbízhatóságát, mielőtt frissítést kereshetsz.')
+        if (!result.success) {
+          setError(result.error ?? 'A kapcsolat létrehozása nem sikerült.')
+          return
+        }
+        const connectorId = (result.data as { connectorId: string }).connectorId
+        setSuWizardConnectorId(connectorId)
+        setSuWizardVersionId(null)
+        setSuWizardMaxStepIndex(stepOrder.indexOf('su_link'))
+        setCreateStep('su_link')
+        setNotice('Kapcsolat létrehozva — jóvá kell hagyni a linket.')
+        await refreshSuWizardRow(connectorId)
+      })
       return
     }
     if (isTemplatePath) {
@@ -987,9 +1027,10 @@ export function ProvisioningPanel({
 
   const stepOrder: CreateStep[] =
     connectionKind === 'self_updating'
-      ? ['basics', 'source']
+      ? ['basics', 'source', ...SELF_UPDATING_ACTIVATION_STEPS]
       : ['basics', 'source', 'review']
   const activeStepIndex = stepOrder.indexOf(createStep)
+  const suWizardProposal = suWizardRow?.versions.find((version) => version.id === suWizardVersionId) ?? null
   const canEnterSource =
     connectionKind === 'self_updating'
       ? name.trim().length > 0
@@ -1005,6 +1046,8 @@ export function ProvisioningPanel({
   const setWizardStep = (step: CreateStep) => {
     if (step === 'source' && !canEnterSource) return
     if (step === 'review' && !canEnterReview) return
+    if (SELF_UPDATING_ACTIVATION_STEPS.includes(step) && !suWizardConnectorId) return
+    if (stepOrder.indexOf(step) > suWizardMaxStepIndex) return
     setCreateStep(step)
   }
   const createDisabledReason = pending
@@ -1023,6 +1066,99 @@ export function ProvisioningPanel({
             ? 'Előbb generálj vagy adj meg config-deskriptort.'
             : null
   const reviewProvenanceHint = draftSourceProvenanceLabel(sourceType, isTemplatePath ? 'template' : sourceMethod)
+
+  const advanceSuWizard = (step: CreateStep, noticeText: string) => {
+    const nextIndex = stepOrder.indexOf(step)
+    setSuWizardMaxStepIndex((current) => Math.max(current, nextIndex))
+    setCreateStep(step)
+    setNotice(noticeText)
+  }
+
+  const runSuActivateLink = () => {
+    if (!suWizardConnectorId) return
+    setError(null)
+    setNotice(null)
+    startTransition(async () => {
+      const result = await approveSelfUpdatingSource({ connectorId: suWizardConnectorId })
+      if (!result.success) {
+        setError(result.error ?? 'A link jóváhagyása nem sikerült.')
+        return
+      }
+      advanceSuWizard('su_trust', 'A link jóváhagyva.')
+      await refreshSuWizardRow(suWizardConnectorId)
+    })
+  }
+
+  const runSuActivateTrust = () => {
+    if (!suWizardConnectorId) return
+    setError(null)
+    setNotice(null)
+    startTransition(async () => {
+      const result = await trustSelfUpdatingPartner({ connectorId: suWizardConnectorId })
+      if (!result.success) {
+        setError(result.error ?? 'A partner megbízhatónak minősítése nem sikerült.')
+        return
+      }
+      advanceSuWizard('su_sync', 'A partner megbízhatónak minősítve.')
+      await refreshSuWizardRow(suWizardConnectorId)
+    })
+  }
+
+  const runSuActivateSync = () => {
+    if (!suWizardConnectorId) return
+    setError(null)
+    setNotice(null)
+    startTransition(async () => {
+      const result = await syncSelfUpdatingConnector({ connectorId: suWizardConnectorId })
+      if (!result.success) {
+        setError(result.error ?? 'A frissítés nem sikerült.')
+        return
+      }
+      const data = result.data as {
+        kind: string
+        autoApproved?: boolean
+        versionId?: string
+        reason?: string
+      }
+      const feedback = selfUpdatingSyncFeedback(data)
+      if (data.kind === 'failed') {
+        setError(feedback.message)
+        return
+      }
+      const row = await refreshSuWizardRow(suWizardConnectorId)
+      if (data.kind === 'proposed' && data.autoApproved) {
+        finishSuWizard('Az OpenAPI-kapcsolat aktív és használható.')
+        return
+      }
+      if (data.kind === 'proposed' && data.versionId) {
+        setSuWizardVersionId(data.versionId)
+        advanceSuWizard('su_version', feedback.message)
+        return
+      }
+      if (row?.activeSpecVersionId) {
+        finishSuWizard('Az OpenAPI-kapcsolat aktív és használható.')
+        return
+      }
+      setNotice(feedback.message)
+    })
+  }
+
+  const runSuActivateVersion = () => {
+    if (!suWizardConnectorId || !suWizardVersionId) return
+    setError(null)
+    setNotice(null)
+    startTransition(async () => {
+      const result = await approveSelfUpdatingVersion({
+        connectorId: suWizardConnectorId,
+        versionId: suWizardVersionId,
+      })
+      if (!result.success) {
+        setError(result.error ?? 'A változások átvétele nem sikerült.')
+        return
+      }
+      finishSuWizard('Az OpenAPI-kapcsolat aktív és használható.')
+    })
+  }
 
   const syncSelfUpdating = (connectorId: string) => {
     setError(null)
@@ -1101,7 +1237,12 @@ export function ProvisioningPanel({
                       : 'Kézi JSON',
               },
               ...(connectionKind === 'self_updating'
-                ? []
+                ? [
+                    { id: 'su_link' as const, label: 'Link jóváhagyása', hint: 'Partner API-cím' },
+                    { id: 'su_trust' as const, label: 'Partner bizalma', hint: 'Megbízható minősítés' },
+                    { id: 'su_sync' as const, label: 'Frissítés keresése', hint: 'OpenAPI letöltés' },
+                    { id: 'su_version' as const, label: 'Változások átvétele', hint: 'Első verzió élesítése' },
+                  ]
                 : [
                     {
                       id: 'review' as const,
@@ -1111,12 +1252,21 @@ export function ProvisioningPanel({
                   ]),
             ].map((step, index) => {
               const active = createStep === step.id
+              const stepIdx = stepOrder.indexOf(step.id)
               const complete =
+                stepIdx < activeStepIndex ||
                 (step.id === 'basics' && canEnterSource) ||
-                (step.id === 'source' && canEnterReview) ||
-                (step.id === 'review' && !createDisabledReason)
+                (step.id === 'source' && canEnterReview && !suWizardConnectorId) ||
+                (step.id === 'review' && !createDisabledReason) ||
+                (step.id === 'su_link' && Boolean(suWizardRow?.urlApproved)) ||
+                (step.id === 'su_trust' && Boolean(suWizardRow?.trusted)) ||
+                (step.id === 'su_sync' && Boolean(suWizardRow?.activeSpecVersionId || suWizardVersionId)) ||
+                (step.id === 'su_version' && Boolean(suWizardRow?.activeSpecVersionId))
               const locked =
-                (step.id === 'source' && !canEnterSource) || (step.id === 'review' && !canEnterReview)
+                (step.id === 'source' && !canEnterSource) ||
+                (step.id === 'review' && !canEnterReview) ||
+                (SELF_UPDATING_ACTIVATION_STEPS.includes(step.id) && !suWizardConnectorId) ||
+                stepIdx > suWizardMaxStepIndex
               return (
                 <li key={step.id}>
                   <button
@@ -1281,8 +1431,8 @@ export function ProvisioningPanel({
                   <h3 className="text-base font-semibold">2. API-leírás és kulcs</h3>
                   <p className="mt-1 text-xs text-ink-soft">
                     A nyilvános API-leírás linkje kell; kulcs csak akkor, ha a partner
-                    API-ja kér. A képességeket csak akkor olvassuk ki, amikor a Frissítés
-                    gombot megnyomod.
+                    API-ja kér. A létrehozás után a varázsló végigvezet a link-jóváhagyás,
+                    partner-bizalom, frissítés-keresés és első verzió átvétel lépésein.
                   </p>
                 </div>
                 <label className="block text-sm">
@@ -1311,7 +1461,7 @@ export function ProvisioningPanel({
                     placeholder="https://partner.example/openapi.json"
                   />
                   <span className="mt-1 block text-xs text-ink-soft">
-                    Innen olvassuk ki a képességeket, de csak amikor megnyomod a Frissítés gombot — sosem magától.
+                    A képességlistát a varázsló „Frissítés keresése” lépésénél töltjük le.
                   </span>
                 </label>
                 <div className="rounded-md border border-ink/12 bg-card p-3">
@@ -1473,8 +1623,84 @@ export function ProvisioningPanel({
                 <p className="rounded-md border border-honey/35 bg-honey/8 p-3 text-xs">
                   A linket általában egy másik kollégának kell jóváhagynia, mielőtt élesítjük — így biztos,
                   hogy nem elgépelt vagy hamis címről olvasunk. Platform-superadmin egyedül is jóváhagyhatja
-                  és élesítheti.
+                  és élesítheti. A varázsló lépései ugyanazok, mint a kártyán a Részletek alatt.
                 </p>
+              </div>
+            ) : null}
+
+            {createStep === 'su_link' && connectionKind === 'self_updating' ? (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-base font-semibold">3. Link jóváhagyása</h3>
+                  <p className="mt-1 text-xs text-ink-soft">
+                    Ellenőrizd, hogy a partner API-leírásának címe helyes és megbízható forrásból származik.
+                  </p>
+                </div>
+                <p className="break-all rounded-md border border-ink/12 bg-card px-3 py-2 font-mono text-xs">
+                  {suWizardRow?.specUrl ?? selfUpdatingSpecUrl}
+                </p>
+                {suWizardRow?.urlApproved ? (
+                  <p className="text-xs text-sage">✓ A link már jóváhagyva.</p>
+                ) : null}
+              </div>
+            ) : null}
+
+            {createStep === 'su_trust' && connectionKind === 'self_updating' ? (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-base font-semibold">4. Partner megbízhatónak minősítése</h3>
+                  <p className="mt-1 text-xs text-ink-soft">
+                    Csak megbízhatónak minősített partnernél töltjük le és élesítjük az API-változásokat.
+                  </p>
+                </div>
+                {suWizardRow?.trusted ? (
+                  <p className="text-xs text-sage">✓ A partner már megbízhatónak minősített.</p>
+                ) : null}
+              </div>
+            ) : null}
+
+            {createStep === 'su_sync' && connectionKind === 'self_updating' ? (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-base font-semibold">5. Frissítés keresése</h3>
+                  <p className="mt-1 text-xs text-ink-soft">
+                    Letöltjük a partner OpenAPI-leírását, és javasolt képességlistát készítünk az első
+                    éles verzióhoz.
+                  </p>
+                </div>
+                {suWizardRow?.activeSpecVersionId ? (
+                  <p className="text-xs text-sage">✓ Van már átvett verzió — a kapcsolat használható.</p>
+                ) : null}
+              </div>
+            ) : null}
+
+            {createStep === 'su_version' && connectionKind === 'self_updating' ? (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-base font-semibold">6. Változások átvétele</h3>
+                  <p className="mt-1 text-xs text-ink-soft">
+                    Nézd át az első képességlistát. Amíg nem hagyod jóvá, a kapcsolat nem lesz agenthez
+                    rendelhető.
+                  </p>
+                </div>
+                {suWizardProposal ? (
+                  <div className="rounded-md border border-ink/12 bg-card p-3 text-xs">
+                    <p className="font-semibold">
+                      Javasolt verzió v{suWizardProposal.versionNo}
+                    </p>
+                    <p className="mt-1 text-ink-soft">
+                      {suWizardProposal.capabilities.length} képesség
+                      {suWizardProposal.diffSummary?.added.length
+                        ? ` · ${suWizardProposal.diffSummary.added.length} új`
+                        : ''}
+                      {suWizardProposal.diffSummary?.breaking.length
+                        ? ` · ${suWizardProposal.diffSummary.breaking.length} törésveszélyes`
+                        : ''}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-ink-soft">Előbb futtasd a frissítés-keresést.</p>
+                )}
               </div>
             ) : null}
 
@@ -1892,15 +2118,83 @@ export function ProvisioningPanel({
                 Vissza
               </button>
               {createStep === 'review' ||
-              (connectionKind === 'self_updating' &&
-                createStep === 'source') ? (
+              (connectionKind === 'self_updating' && createStep === 'source') ? (
                 <button
                   type="button"
-                  disabled={!!createDisabledReason}
+                  disabled={!!createDisabledReason || pending}
                   onClick={onCreate}
                   className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
                 >
-                  Konnektor létrehozása
+                  {connectionKind === 'self_updating' ? 'Létrehozás és aktiválás' : 'Konnektor létrehozása'}
+                </button>
+              ) : createStep === 'su_link' ? (
+                suWizardRow?.urlApproved ? (
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => advanceSuWizard('su_trust', '')}
+                    className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
+                  >
+                    Tovább
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={pending || !suWizardConnectorId}
+                    onClick={runSuActivateLink}
+                    className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
+                  >
+                    Link jóváhagyása
+                  </button>
+                )
+              ) : createStep === 'su_trust' ? (
+                suWizardRow?.trusted ? (
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => advanceSuWizard('su_sync', '')}
+                    className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
+                  >
+                    Tovább
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={pending || !suWizardConnectorId}
+                    onClick={runSuActivateTrust}
+                    className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
+                  >
+                    Megbízhatónak minősítem
+                  </button>
+                )
+              ) : createStep === 'su_sync' ? (
+                suWizardRow?.activeSpecVersionId ? (
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => finishSuWizard('Az OpenAPI-kapcsolat aktív és használható.')}
+                    className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
+                  >
+                    Befejezés
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={pending || !suWizardConnectorId}
+                    onClick={runSuActivateSync}
+                    className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
+                  >
+                    Frissítés keresése
+                  </button>
+                )
+              ) : createStep === 'su_version' ? (
+                <button
+                  type="button"
+                  disabled={pending || !suWizardConnectorId || !suWizardVersionId}
+                  onClick={runSuActivateVersion}
+                  className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
+                >
+                  Változások jóváhagyása
                 </button>
               ) : (
                 <button
@@ -2087,6 +2381,7 @@ export function ProvisioningPanel({
                   pending={pending}
                   run={run}
                   onSync={syncSelfUpdating}
+                  isSuperadmin={isSuperadmin}
                 />
               ) : (
                 <DraftCard
@@ -2099,6 +2394,7 @@ export function ProvisioningPanel({
                   googleDriveOauthConfigured={googleDriveOauthConfigured}
                   pending={pending}
                   run={run}
+                  isSuperadmin={isSuperadmin}
                 />
               ),
             )}
@@ -2137,6 +2433,7 @@ export function ProvisioningPanel({
               pending={pending}
               run={run}
               onSync={syncSelfUpdating}
+              isSuperadmin={isSuperadmin}
             />
           ))}
           {catalogGaps.map((row) => (
@@ -2177,6 +2474,7 @@ export function ProvisioningPanel({
                 pending={pending}
                 run={run}
                 onSync={syncSelfUpdating}
+                isSuperadmin={isSuperadmin}
               />
             ))}
             {openDrafts.map((d) => (
@@ -2190,6 +2488,7 @@ export function ProvisioningPanel({
                 googleDriveOauthConfigured={googleDriveOauthConfigured}
                 pending={pending}
                 run={run}
+                isSuperadmin={isSuperadmin}
               />
             ))}
           </div>
@@ -2263,6 +2562,7 @@ function DraftCard({
   googleDriveOauthConfigured,
   pending,
   run,
+  isSuperadmin,
 }: {
   draft: DraftRow
   agents: AgentOption[]
@@ -2272,6 +2572,7 @@ function DraftCard({
   googleDriveOauthConfigured: boolean
   pending: boolean
   run: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
+  isSuperadmin: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [secretAlias, setSecretAlias] = useState(draft.secretAliasSuggested ?? '')
@@ -2507,7 +2808,10 @@ function DraftCard({
   ) : null
 
   const canDeleteDraft =
-    !isActive && (draft.lifecycleState === 'draft' || draft.lifecycleState === 'validated')
+    !isActive &&
+    (draft.lifecycleState === 'draft' ||
+      draft.lifecycleState === 'validated' ||
+      (isSuperadmin && draft.lifecycleState === 'archived'))
   const toggleOpen = () => setOpen((current) => !current)
   const handleDeleteFromList = async () => {
     const confirmed = await confirmDialog({
@@ -2849,8 +3153,7 @@ function DraftCard({
           {configEditor}
 
           {/* Takarítás: sosem aktivált draft hard-delete-je (auditált). */}
-          {!isActive &&
-          (draft.lifecycleState === 'draft' || draft.lifecycleState === 'validated') ? (
+          {canDeleteDraft ? (
             <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
               <h4 className="mb-1 font-semibold text-coral">Draft törlése</h4>
               <p className="mb-2 text-xs text-ink-soft">

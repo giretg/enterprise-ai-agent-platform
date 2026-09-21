@@ -298,19 +298,34 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
     return { connectorId, affectedAgentIds }
   }
 
-  async deleteDraft(params: { draftId: string }): Promise<void> {
+  async deleteDraft(params: { draftId: string; allowArchived?: boolean }): Promise<void> {
     await prisma.$transaction(async (tx) => {
       const draft = await tx.connectorDraft.findUnique({
         where: { id: params.draftId },
         include: { connector: true },
       })
       if (!draft) throw new Error('draft not found')
-      // Csak SOSEM aktivált draft törölhető véglegesen (aktív connectorra archiválás jár).
-      if (draft.connector.lifecycleState !== 'draft' && draft.connector.lifecycleState !== 'validated') {
+      const state = draft.connector.lifecycleState
+      const deletable =
+        state === 'draft' ||
+        state === 'validated' ||
+        (params.allowArchived === true && state === 'archived')
+      if (!deletable) {
         throw new Error('only a never-activated draft can be hard-deleted')
       }
       // A connector-sor törlése kaszkádban viszi a draftot, agent_connectors/grantek sorait.
       await tx.connector.delete({ where: { id: draft.connectorId } })
+    })
+  }
+
+  async hardDeleteArchivedConnector(params: { connectorId: string }): Promise<void> {
+    await prisma.$transaction(async (tx) => {
+      const connector = await tx.connector.findUnique({ where: { id: params.connectorId } })
+      if (!connector) throw new Error('connector not found')
+      if (connector.lifecycleState !== 'archived') {
+        throw new Error('only an archived connector can be hard-deleted')
+      }
+      await tx.connector.delete({ where: { id: params.connectorId } })
     })
   }
 
