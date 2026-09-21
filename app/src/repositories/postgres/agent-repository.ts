@@ -169,7 +169,13 @@ export class PostgresAgentRepository implements AgentRepository {
   async findConnectorsForAgent(agentId: string): Promise<AgentConnectorBinding[]> {
     const rows = await prisma.agentConnector.findMany({
       where: { agentId },
-      include: { connector: true },
+      include: {
+        connector: {
+          include: {
+            activeSpecVersion: { select: { capabilitySet: true } },
+          },
+        },
+      },
       orderBy: { connectorId: 'asc' },
     })
     return rows.map((row) => ({ connector: row.connector, accessMode: row.accessMode }))

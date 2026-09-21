@@ -387,6 +387,9 @@ function stubMcpDeps(
     async listMcpSkills() {
       return []
     },
+    async loadConnectorCatalog() {
+      return { summary: '', connectors: [] }
+    },
     agentScaffold: scaffold,
   }
 }

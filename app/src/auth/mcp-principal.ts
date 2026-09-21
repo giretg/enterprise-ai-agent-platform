@@ -17,6 +17,7 @@ import { writeAudit } from '@/lib/audit/types'
 export const MCP_WHOAMI_TOOL = 'platform.whoami'
 export const MCP_AGENTS_LIST_TOOL = 'platform.agents.list'
 export const MCP_AGENT_GET_DEFINITION_TOOL = 'platform.agent.get_definition'
+export const MCP_CONNECTOR_DESCRIBE_TOOL = 'platform.connector.describe'
 export const MCP_AGENT_CHECKOUT_TOOL = 'platform.agent.checkout'
 export const MCP_AGENT_CREATE_DRAFT_TOOL = 'platform.agent.create_draft'
 export const MCP_AGENT_GET_WORKING_SET_TOOL = 'platform.agent.get_working_set'
@@ -28,6 +29,7 @@ export const MCP_PLATFORM_TOOLS = [
   MCP_WHOAMI_TOOL,
   MCP_AGENTS_LIST_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
+  MCP_CONNECTOR_DESCRIBE_TOOL,
   MCP_AGENT_CHECKOUT_TOOL,
   MCP_AGENT_CREATE_DRAFT_TOOL,
   MCP_AGENT_GET_WORKING_SET_TOOL,

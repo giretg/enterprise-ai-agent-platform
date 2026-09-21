@@ -44,6 +44,7 @@ import {
   MCP_AGENT_GET_DEFINITION_TOOL,
   MCP_AGENT_GET_WORKING_SET_TOOL,
   MCP_AGENT_PUBLISH_TOOL,
+  MCP_CONNECTOR_DESCRIBE_TOOL,
   MCP_GATEWAY_OPERATION_GET_TOOL,
   MCP_SKILLS_LIST_TOOL,
   MCP_SKILL_READ_TOOL,
@@ -355,6 +356,9 @@ function runtimeDeps(overrides: {
       async listMcpSkills() {
         return overrides.skills ?? []
       },
+      async loadConnectorCatalog() {
+        return { summary: 'stub catalog', connectors: [] }
+      },
       agentScaffold: {
         agents: {
           async create() {
@@ -588,6 +592,7 @@ async function main() {
       MCP_WHOAMI_TOOL,
       MCP_AGENTS_LIST_TOOL,
       MCP_AGENT_GET_DEFINITION_TOOL,
+      MCP_CONNECTOR_DESCRIBE_TOOL,
       MCP_AGENT_CHECKOUT_TOOL,
       MCP_AGENT_CREATE_DRAFT_TOOL,
       MCP_AGENT_GET_WORKING_SET_TOOL,
@@ -784,10 +789,60 @@ async function main() {
       definitionId?: string
       tenantId?: string
       contentHash?: string
+      connectorCatalog?: { summary: string; connectors: unknown[] }
     }
     assert.equal(payload.definitionId, DEFINITION_ID)
     assert.equal(payload.tenantId, TENANT_ID)
     assert.match(payload.contentHash ?? '', /^[0-9a-f]{64}$/)
+    assert.ok(payload.connectorCatalog)
+    assert.equal(typeof payload.connectorCatalog?.summary, 'string')
+    assert.ok(Array.isArray(payload.connectorCatalog?.connectors))
+  })
+
+  await check('connector.describe returns bound connector catalog entry', async () => {
+    const crmCatalog = {
+      summary: 'CRM catalog',
+      connectors: [
+        {
+          connectorId: CONNECTOR_ID,
+          name: 'CRM',
+          type: 'http_api',
+          accessMode: 'read',
+          baseUrl: 'https://crm.example/api/connector/v1',
+          endpoints: [{ method: 'GET', path: '/quotes', risk: 'read', callable: true }],
+          guide: 'GET /quotes',
+        },
+      ],
+    }
+    const { deps } = runtimeDeps({ role: 'admin' })
+    deps.loadConnectorCatalog = async () => crmCatalog
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 61,
+        method: 'tools/call',
+        params: {
+          name: MCP_CONNECTOR_DESCRIBE_TOOL,
+          arguments: { agentId: AGENT_ID, connectorId: CONNECTOR_ID },
+        },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.equal(body.result?.isError, undefined)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      connectorId?: string
+      path?: string
+      endpoints?: Array<{ path: string }>
+    }
+    assert.equal(payload.connectorId, CONNECTOR_ID)
+    assert.equal(payload.endpoints?.[0]?.path, '/quotes')
   })
 
   await check('operator without ResourceGrant cannot list or get a definition', async () => {

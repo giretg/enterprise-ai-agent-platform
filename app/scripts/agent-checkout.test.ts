@@ -10,6 +10,7 @@ import {
   renderAgentCheckout,
   type CheckoutSkill,
 } from '../src/lib/agent-checkout'
+import { buildAgentConnectorCatalog } from '../src/domain/connector/http-api-connector-catalog'
 import type { SkillContent } from '../src/lib/skill/skill-content'
 
 let failures = 0
@@ -105,6 +106,47 @@ async function main() {
       bundle.files.map((file) => file.path),
       bundle.generatedPaths,
     )
+  })
+
+  await check('http_api connector catalog appears in AGENTS.md', () => {
+    const catalog = buildAgentConnectorCatalog([
+      {
+        connector: {
+          id: 'crm-connector-id',
+          name: 'Ostorosbor CRM',
+          type: 'http_api',
+          connectorMode: 'fixed',
+          config: {
+            baseUrl: 'https://crm.example/api/connector/v1',
+            auth: { scheme: 'bearer' },
+            proposedTools: [
+              {
+                method: 'GET',
+                path: '/quotes',
+                access: 'read',
+                description: 'Ajanlatlista lekerdezese.',
+              },
+            ],
+          },
+        },
+        accessMode: 'read',
+      },
+    ])
+    const bundle = renderAgentCheckout({
+      definition: definition({
+        snapshot: {
+          ...definition().snapshot,
+          connectors: [{ connectorId: 'crm-connector-id', type: 'http_api', accessMode: 'read' }],
+        },
+      }),
+      skills: [skill(SKILL_A, VER_A, 'drive-search')],
+      mcpUrl: MCP_URL,
+      connectorCatalog: catalog,
+    })
+    const agents = bundle.files.find((file) => file.path === 'AGENTS.md')
+    assert.ok(agents)
+    assert.match(agents.content, /Connector API katalógus/)
+    assert.match(agents.content, /GET \/quotes/)
   })
 
   await check('skill pin vs live: snapshot pins only, missing version warns', () => {

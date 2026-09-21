@@ -76,6 +76,7 @@ import {
   MCP_AGENT_GET_DEFINITION_TOOL,
   MCP_AGENT_GET_WORKING_SET_TOOL,
   MCP_AGENT_PUBLISH_TOOL,
+  MCP_CONNECTOR_DESCRIBE_TOOL,
   MCP_GATEWAY_OPERATION_GET_TOOL,
   MCP_SKILLS_LIST_TOOL,
   MCP_SKILL_READ_TOOL,
@@ -86,6 +87,10 @@ import {
   type McpPrincipalFailure,
   type VerifiedOAuthToken,
 } from './mcp-principal'
+import {
+  buildAgentConnectorCatalogFromBindings,
+  type AgentConnectorCatalog,
+} from '@/domain/connector/http-api-connector-catalog'
 import {
   findPackageByUri,
   findSkillFile,
@@ -134,6 +139,7 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     operationId: string
   }) => Promise<EnterpriseToolMcpResult>
   listMcpSkills: (input: { tenantId: string }) => Promise<McpSkillPackage[]>
+  loadConnectorCatalog: (input: { agentId: string }) => Promise<AgentConnectorCatalog>
   agentScaffold: AgentScaffoldDeps
 }
 
@@ -245,6 +251,10 @@ export function productionMcpDeps(): McpRuntimeDeps {
         }),
       ),
     listMcpSkills: ({ tenantId }) => services.skills.listMcpSkillPackages(tenantId),
+    async loadConnectorCatalog({ agentId }) {
+      const bindings = await repositories.agents.findConnectorsForAgent(agentId)
+      return buildAgentConnectorCatalogFromBindings(bindings)
+    },
     agentScaffold: {
       agents: repositories.agents,
       versions: repositories.agentDefinitions,
@@ -391,7 +401,49 @@ async function getDefinitionToolResult(
     agentId: loaded.agentId,
   })
   if (!allowed) return definitionNotFound()
-  return textResult({ ...loaded, contentHash: hashSnapshot(loaded.snapshot) })
+  const connectorCatalog = await deps.loadConnectorCatalog({ agentId: loaded.agentId })
+  return textResult({
+    ...loaded,
+    contentHash: hashSnapshot(loaded.snapshot),
+    connectorCatalog,
+  })
+}
+
+async function describeConnectorToolResult(
+  principal: McpPrincipal,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+) {
+  await auditMcpToolCall(deps, principal, MCP_CONNECTOR_DESCRIBE_TOOL)
+  const connectorId = asUuid(args.connectorId)
+  const agentId = asUuid(args.agentId)
+  if (!connectorId) return invalidArgs('connectorId must be a uuid')
+  if (!agentId) return invalidArgs('agentId must be a uuid')
+
+  const loaded = await deps.loadDefinition({
+    tenantId: principal.tenantId,
+    agentId,
+  })
+  if (!loaded || !isDispatchable(loaded.status)) return definitionNotFound()
+  const allowed = await deps.canViewAgent({
+    tenantId: principal.tenantId,
+    userId: principal.userId,
+    role: principal.role,
+    agentId: loaded.agentId,
+  })
+  if (!allowed) return definitionNotFound()
+
+  const binding = loaded.snapshot.connectors.find((row) => row.connectorId === connectorId)
+  if (!binding) {
+    return textResult({ code: 'connector_not_bound', message: 'Connector is not bound to this agent' }, true)
+  }
+
+  const catalog = await deps.loadConnectorCatalog({ agentId: loaded.agentId })
+  const entry = catalog.connectors.find((row) => row.connectorId === connectorId)
+  if (!entry) {
+    return textResult({ code: 'connector_not_found', message: 'Connector catalog entry not found' }, true)
+  }
+  return textResult({ connectorId, agentId: loaded.agentId, definitionId: loaded.definitionId, ...entry })
 }
 
 function invalidArgs(message: string) {
@@ -538,12 +590,14 @@ async function checkoutToolResult(
   const skills = await deps.loadSkillVersions(
     loaded.snapshot.skills.map((skill) => skill.skillVersionId),
   )
+  const connectorCatalog = await deps.loadConnectorCatalog({ agentId: loaded.agentId })
   return textResult(
     renderAgentCheckout({
       definition: loaded,
       skills,
       mcpUrl: `${origin.replace(/\/+$/, '')}/api/mcp/${principal.tenantSlug}`,
       harness: asCheckoutHarness(args.harness),
+      connectorCatalog,
     }),
   )
 }
@@ -584,6 +638,21 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
             .passthrough(),
         },
         async (args) => getDefinitionToolResult(principal, args as Record<string, unknown>, deps),
+      )
+      server.registerTool(
+        MCP_CONNECTOR_DESCRIBE_TOOL,
+        {
+          title: 'Describe connector API',
+          description:
+            'Return the OpenAPI-derived endpoint catalog for one connector bound to an agent. Use before http_api_get when paths or query params are unknown.',
+          inputSchema: z
+            .object({
+              agentId: z.string().uuid(),
+              connectorId: z.string().uuid(),
+            })
+            .passthrough(),
+        },
+        async (args) => describeConnectorToolResult(principal, args as Record<string, unknown>, deps),
       )
       server.registerTool(
         MCP_AGENT_CHECKOUT_TOOL,
@@ -739,7 +808,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         {
           title: 'HTTP API GET',
           description:
-            'One GET against a bound company HTTP API connector. Path is relative to the connector baseUrl — do not send credentials. For large lists use http_api_get_all. If several HTTP connectors are bound, pass connectorId from the agent definition.',
+            'One GET against a bound company HTTP API connector. Path is relative to the connector baseUrl — do not send credentials. Read connectorCatalog from platform.agent.get_definition (or platform.connector.describe) for allowed paths and query params — do not guess endpoints. For large lists use http_api_get_all. If several HTTP connectors are bound, pass connectorId from the agent definition.',
           inputSchema: httpApiGetInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -867,6 +936,9 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         if (toolName === MCP_AGENT_GET_DEFINITION_TOOL) {
           return getDefinitionToolResult(principal, args, deps)
         }
+        if (toolName === MCP_CONNECTOR_DESCRIBE_TOOL) {
+          return describeConnectorToolResult(principal, args, deps)
+        }
         if (toolName === MCP_AGENT_CHECKOUT_TOOL) {
           return checkoutToolResult(principal, args, deps, origin)
         }
@@ -897,7 +969,7 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
     {
       serverInfo: { name: 'enterprise-mcp', version: 'phase-f' },
       instructions:
-        'Skills: use resources/list and resources/read on skill:// URIs. If the client cannot read MCP resources directly, call platform.skills.list and then platform.skills.read. Company systems: http_api_get / http_api_get_all / http_api_request with definitionId and a relative path — credentials stay on the connector. Gmail: gmail_search then gmail_get_message. Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval. Knowledge base: kb_search, kb_list_index, kb_get_page. If a tool returns authorizationUrl, show that URL to the user and retry after they finish consent.',
+        'Skills: use resources/list and resources/read on skill:// URIs. If the client cannot read MCP resources directly, call platform.skills.list and then platform.skills.read. Company HTTP APIs: call platform.agent.get_definition first — connectorCatalog lists each bound connector\'s endpoints (method, path, query params) from the stored OpenAPI snapshot. Use only documented paths with http_api_get / http_api_get_all / http_api_request; credentials stay on the connector. For one connector\'s full guide use platform.connector.describe. Gmail: gmail_search then gmail_get_message. Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval. Knowledge base: kb_search, kb_list_index, kb_get_page. If a tool returns authorizationUrl, show that URL to the user and retry after they finish consent.',
     },
   )
 }
