@@ -25,6 +25,19 @@ export const CHECKOUT_WRITE_RECIPE = [
   'Do not run code from the checkout. Do not commit. Do not copy the folder into a code repo.',
 ].join('\n')
 
+/** MCP tools/list + tools/call — purpose and client workflow (not the post-call writeRecipe). */
+export const CHECKOUT_TOOL_DESCRIPTION = [
+  'Sync a published AI coworker into a local Claude Desktop / Codex / Goose project folder.',
+  'Returns files[], suggestedRoot, pin, and writeRecipe — this tool does not write disk; you create or update the folder from the payload.',
+  'When the user asks to checkout, sync, or set up a local workspace:',
+  '(1) If agentId is unknown, call platform.agents.list.',
+  '(2) If exactly one coworker is visible, use that agentId — do not ask which agent.',
+  '(3) Check whether suggestedRoot (or ~/Agents/<slug>) exists: missing = first checkout (create folder); present = re-sync (overwrite generated files only).',
+  '(4) Call platform.agent.checkout { agentId }; pass version only when the user names a specific published version.',
+  '(5) Write every files[] entry under suggestedRoot, then follow writeRecipe from the response.',
+  'Optional harness: claude | codex | goose | grok (stored only in v1).',
+].join(' ')
+
 export function checkoutWriteRecipe(harness?: CheckoutHarness | null): string {
   const lines = [...CHECKOUT_WRITE_RECIPE_STEPS]
   if (harness === 'codex') {

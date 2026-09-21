@@ -25,7 +25,7 @@ import {
 import { isAvailableOnMcp, isDispatchable } from '@/lib/agent-lifecycle'
 import {
   asCheckoutHarness,
-  CHECKOUT_WRITE_RECIPE,
+  CHECKOUT_TOOL_DESCRIPTION,
   renderAgentCheckout,
   type CheckoutSkill,
 } from '@/lib/agent-checkout'
@@ -634,8 +634,8 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
       server.registerTool(
         MCP_AGENT_CHECKOUT_TOOL,
         {
-          title: 'Checkout agent',
-          description: CHECKOUT_WRITE_RECIPE,
+          title: 'Checkout agent workspace',
+          description: CHECKOUT_TOOL_DESCRIPTION,
           inputSchema: z
             .object({
               agentId: z.string().uuid(),

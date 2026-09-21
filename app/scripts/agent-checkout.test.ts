@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import { hashSnapshot, type AgentDefinition } from '../src/domain/agent-definition'
 import {
   assertSafeCheckoutPath,
+  CHECKOUT_TOOL_DESCRIPTION,
   checkoutSlug,
   renderAgentCheckout,
   type CheckoutSkill,
@@ -196,6 +197,12 @@ async function main() {
     assert.equal(checkoutSlug('A'.repeat(80)).length, 60)
     assert.equal(checkoutSlug('Réka'), 'reka')
     assert.equal(checkoutSlug('Drive asszisztens'), 'drive-asszisztens')
+  })
+
+  await check('CHECKOUT_TOOL_DESCRIPTION tells MCP clients not to ask when one coworker', () => {
+    assert.match(CHECKOUT_TOOL_DESCRIPTION, /exactly one coworker/)
+    assert.match(CHECKOUT_TOOL_DESCRIPTION, /do not ask which agent/)
+    assert.match(CHECKOUT_TOOL_DESCRIPTION, /first checkout \(create folder\)/)
   })
 
   await check('codex harness adds Desktop open hint to writeRecipe', () => {
