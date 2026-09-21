@@ -1,5 +1,4 @@
 import Image from 'next/image'
-import NextLink from 'next/link'
 import type { ReactNode } from 'react'
 import { getTranslations } from 'next-intl/server'
 import { Link } from '@/i18n/navigation'
@@ -58,19 +57,21 @@ export async function PublicSiteShell({ children }: { children: ReactNode }) {
               </svg>
             </Link>
             <LocaleSwitcher />
-            <NextLink
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- hard nav off the [locale] tree; NextLink soft-nav to Clerk shows "This page couldn't load" */}
+            <a
               href="/sign-up"
               className="hidden px-3 py-1.5 text-sm font-semibold text-ink-soft transition-colors hover:text-ink sm:inline"
             >
               {t('signUp')}
-            </NextLink>
-            <NextLink
+            </a>
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- hard nav off the [locale] tree; NextLink soft-nav to Clerk shows "This page couldn't load" */}
+            <a
               href="/sign-in"
               className="signal-btn rounded border border-ink bg-ink px-2.5 py-2 text-sm font-semibold text-white sm:px-4"
             >
               <span className="sm:hidden">{t('signInShort')}</span>
               <span className="hidden sm:inline">{t('signIn')}</span>
-            </NextLink>
+            </a>
           </nav>
         </div>
         <div data-progress className="absolute -bottom-px left-0 h-0.5 w-0 bg-coral" />
@@ -89,9 +90,10 @@ export async function PublicSiteShell({ children }: { children: ReactNode }) {
             <Link href="/gtc" className="hover:text-ink">
               {footer('terms')}
             </Link>
-            <NextLink href="/sign-in" className="hover:text-ink">
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- hard nav off the [locale] tree; NextLink soft-nav to Clerk shows "This page couldn't load" */}
+            <a href="/sign-in" className="hover:text-ink">
               {footer('signIn')}
-            </NextLink>
+            </a>
             <Link href="/contact" className="hover:text-ink">
               {footer('contact')}
             </Link>
