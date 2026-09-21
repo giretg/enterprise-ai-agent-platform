@@ -147,6 +147,8 @@ const PUBLISHED_LIST_ITEM = {
   agentId: AGENT_ID,
   name: 'Drive assistant',
   status: 'active' as const,
+  description: null,
+  roleInstructionPreview: 'Inspect Drive',
   currentDefinitionId: DEFINITION_ID,
   currentVersion: 1,
 }
@@ -320,6 +322,9 @@ function runtimeDeps(overrides: {
       },
       tenants: {
         async findBySlug() {
+          return overrides.tenant === undefined ? tenant() : overrides.tenant
+        },
+        async findById() {
           return overrides.tenant === undefined ? tenant() : overrides.tenant
         },
       },
@@ -560,6 +565,26 @@ async function main() {
     assert.equal(body.error.code, 'auth_not_configured')
   })
 
+  await check('initialize returns tenant-aware instructions and server name', async () => {
+    const { deps } = runtimeDeps({
+      tenant: tenant({
+        displayName: 'Acme',
+        legalName: 'Acme Corp.',
+        settings: { mcpIntro: 'Widget maker tenant.' },
+      }),
+      grantedAgentIds: new Set([AGENT_ID]),
+    })
+    const init = await initialize(deps)
+    assert.equal(init.status, 200)
+    const body = (await readJson(init)) as {
+      result?: { serverInfo?: { name?: string }; instructions?: string }
+    }
+    assert.equal(body.result?.serverInfo?.name, 'Acme · Excellence AI')
+    assert.match(body.result?.instructions ?? '', /Acme Corp\./)
+    assert.match(body.result?.instructions ?? '', /Widget maker tenant\./)
+    assert.match(body.result?.instructions ?? '', /Drive assistant/)
+  })
+
   await check('tools/list returns platform tools, Drive, knowledge base, and gateway_operation.get', async () => {
     const { deps } = runtimeDeps()
     const init = await initialize(deps)
@@ -610,7 +635,7 @@ async function main() {
   })
 
   await check('platform.whoami returns principal JSON and ignores extra args', async () => {
-    const { deps, audit } = runtimeDeps()
+    const { deps, audit } = runtimeDeps({ grantedAgentIds: new Set([AGENT_ID]) })
     await initialize(deps)
     const res = await post(
       'acme',
@@ -642,6 +667,11 @@ async function main() {
       tenantSlug: 'acme',
       role: 'operator',
       assumed: false,
+      tenantDisplayName: 'Acme',
+      tenantLegalName: null,
+      organizationLabel: 'Acme',
+      mcpIntro: null,
+      coworkers: [PUBLISHED_LIST_ITEM],
     })
     assert.equal(audit.filter((row) => row.action === 'mcp.auth.ok').length, 1)
     assert.ok(audit.some((row) => row.action === 'mcp.tools.call' && row.inputRef === MCP_WHOAMI_TOOL))

@@ -119,3 +119,7 @@ export const setNavVisibilitySchema = z.object({
 export const setTenantLanguageSchema = z.object({
   language: z.enum(['hu', 'en']),
 })
+
+export const setTenantMcpIntroSchema = z.object({
+  mcpIntro: z.string().max(4000),
+})

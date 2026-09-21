@@ -94,14 +94,16 @@ import {
   toSkillsListEntry,
   type McpSkillPackage,
 } from '@/lib/skill/mcp-skill'
+import {
+  buildMcpServerInstructions,
+  buildTenantContextPayload,
+  mcpServerDisplayName,
+  previewRoleInstruction,
+  type McpCoworkerSummary,
+} from '@/lib/mcp-tenant-context'
+import type { AgentDefinitionSnapshot } from '@/domain/agent-definition'
 
-export type McpAgentListItem = {
-  agentId: string
-  name: string
-  status: string
-  currentDefinitionId: string | null
-  currentVersion: number | null
-}
+export type McpAgentListItem = McpCoworkerSummary
 
 export type McpRuntimeDeps = McpPrincipalDeps & {
   isClerkConfigured: () => boolean
@@ -177,19 +179,30 @@ async function canViewAgent(input: {
   return canReadPublishedAgent({ role: input.role, grant })
 }
 
+function snapshotFromDefinition(row: { snapshot: unknown } | null | undefined): AgentDefinitionSnapshot | null {
+  if (!row?.snapshot || typeof row.snapshot !== 'object' || Array.isArray(row.snapshot)) return null
+  return row.snapshot as AgentDefinitionSnapshot
+}
+
 async function toPublishedListItem(agent: {
   id: string
   name: string
   status: string
+  description: string | null
+  roleInstruction: string
   currentDefinitionVersionId: string | null
-}) {
+}): Promise<McpAgentListItem> {
   const current = agent.currentDefinitionVersionId
     ? await repositories.agentDefinitions.findById(agent.currentDefinitionVersionId)
     : null
+  const snapshot = snapshotFromDefinition(current)
+  const roleInstruction = snapshot?.roleInstruction ?? agent.roleInstruction
   return {
     agentId: agent.id,
     name: agent.name,
     status: agent.status,
+    description: agent.description ?? snapshot?.description ?? null,
+    roleInstructionPreview: previewRoleInstruction(roleInstruction),
     currentDefinitionId: agent.currentDefinitionVersionId,
     currentVersion: current?.version ?? null,
   }
@@ -275,13 +288,21 @@ function forbiddenResponse(failure: McpPrincipalFailure): Response {
   )
 }
 
-function whoamiPayload(principal: McpPrincipal) {
+function whoamiPayload(
+  principal: McpPrincipal,
+  tenantContext: ReturnType<typeof buildTenantContextPayload>,
+) {
   return {
     userId: principal.userId,
     tenantId: principal.tenantId,
     tenantSlug: principal.tenantSlug,
     role: principal.role,
     assumed: principal.assumed,
+    tenantDisplayName: tenantContext.tenantDisplayName,
+    tenantLegalName: tenantContext.tenantLegalName,
+    organizationLabel: tenantContext.organizationLabel,
+    mcpIntro: tenantContext.mcpIntro,
+    coworkers: tenantContext.coworkers,
   }
 }
 
@@ -315,20 +336,36 @@ const mcpSkillsListResultSchema = z.object({
 const mcpSkillsListParamsSchema = z.object({ cursor: z.string().optional() })
 const mcpSkillsGetParamsSchema = z.object({ uri: z.string().min(1) })
 
-async function whoamiToolResult(principal: McpPrincipal, deps: McpPrincipalDeps) {
+async function loadTenantContext(principal: McpPrincipal, deps: McpRuntimeDeps) {
+  const [tenant, coworkers] = await Promise.all([
+    deps.tenants.findById(principal.tenantId),
+    deps.listPublishedAgents({
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      role: principal.role,
+    }),
+  ])
+  return {
+    tenant,
+    context: buildTenantContextPayload({
+      tenant,
+      tenantSlug: principal.tenantSlug,
+      coworkers,
+    }),
+  }
+}
+
+async function whoamiToolResult(principal: McpPrincipal, deps: McpRuntimeDeps) {
   await auditMcpAuthOk(deps, principal)
   await auditMcpToolCall(deps, principal, MCP_WHOAMI_TOOL)
-  return textResult(whoamiPayload(principal))
+  const { context } = await loadTenantContext(principal, deps)
+  return textResult(whoamiPayload(principal, context))
 }
 
 async function listAgentsToolResult(principal: McpPrincipal, deps: McpRuntimeDeps) {
   await auditMcpToolCall(deps, principal, MCP_AGENTS_LIST_TOOL)
-  const agents = await deps.listPublishedAgents({
-    tenantId: principal.tenantId,
-    userId: principal.userId,
-    role: principal.role,
-  })
-  return textResult({ agents })
+  const { context } = await loadTenantContext(principal, deps)
+  return textResult({ agents: context.coworkers })
 }
 
 async function listSkillsToolResult(
@@ -548,7 +585,14 @@ async function checkoutToolResult(
   )
 }
 
-function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps, origin: string) {
+async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps, origin: string) {
+  const { tenant, context } = await loadTenantContext(principal, deps)
+  const instructions = buildMcpServerInstructions({
+    tenant,
+    tenantSlug: principal.tenantSlug,
+    coworkers: context.coworkers,
+  })
+
   return createMcpHandler(
     async (server) => {
       const packages = await deps.listMcpSkills({ tenantId: principal.tenantId })
@@ -556,7 +600,8 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         MCP_WHOAMI_TOOL,
         {
           title: 'Who am I',
-          description: 'Return the authenticated MCP principal for this tenant URL.',
+          description:
+            'Return the authenticated MCP principal, tenant organization context, and visible coworkers for this tenant URL.',
           inputSchema: z.object({}).passthrough(),
         },
         async () => whoamiToolResult(principal, deps),
@@ -565,7 +610,8 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         MCP_AGENTS_LIST_TOOL,
         {
           title: 'List agents',
-          description: 'List published agent definitions visible to this principal.',
+          description:
+            'List published AI coworkers visible to this principal, including short descriptions and role previews.',
           inputSchema: z.object({}).passthrough(),
         },
         async () => listAgentsToolResult(principal, deps),
@@ -895,9 +941,8 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
       })
     },
     {
-      serverInfo: { name: 'enterprise-mcp', version: 'phase-f' },
-      instructions:
-        'Skills: use resources/list and resources/read on skill:// URIs. If the client cannot read MCP resources directly, call platform.skills.list and then platform.skills.read. Company systems: http_api_get / http_api_get_all / http_api_request with definitionId and a relative path — credentials stay on the connector. Gmail: gmail_search then gmail_get_message. Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval. Knowledge base: kb_search, kb_list_index, kb_get_page. If a tool returns authorizationUrl, show that URL to the user and retry after they finish consent.',
+      serverInfo: { name: mcpServerDisplayName(tenant), version: '1.0' },
+      instructions,
     },
   )
 }
@@ -968,7 +1013,8 @@ export async function handleMcpRequest(
       }
       return forbiddenResponse(resolved)
     }
-    return createMcpResourceHandler(resolved.principal, deps, origin)(req)
+    const handler = await createMcpResourceHandler(resolved.principal, deps, origin)
+    return handler(req)
   }
 
   return withMcpAuth(inner, verifyToken, {

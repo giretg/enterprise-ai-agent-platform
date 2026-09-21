@@ -1,11 +1,13 @@
 import { requireTenantRole } from '@/auth/tenant-context'
 import { getTenantLanguage } from '@/app/actions/tenant-language'
+import { getTenantMcpIntro } from '@/app/actions/tenant-mcp-intro'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { TenantLanguagePanel } from './tenant-language-panel'
+import { TenantMcpIntroPanel } from './tenant-mcp-intro-panel'
 
 export default async function TenantSettingsPage() {
   await requireTenantRole('admin')
-  const language = await getTenantLanguage()
+  const [language, mcpIntro] = await Promise.all([getTenantLanguage(), getTenantMcpIntro()])
 
   return (
     <div className="space-y-6">
@@ -20,6 +22,15 @@ export default async function TenantSettingsPage() {
       <SettingsSectionShell
         ariaLabel="Tenant beállítások"
         sections={[
+          {
+            id: 'mcp-intro',
+            label: 'MCP bemutatkozó',
+            content: mcpIntro.success ? (
+              <TenantMcpIntroPanel initialIntro={mcpIntro.data.mcpIntro} canEdit />
+            ) : (
+              <p className="text-sm text-coral-deep">{mcpIntro.error}</p>
+            ),
+          },
           {
             id: 'language',
             label: 'Nyelv',
