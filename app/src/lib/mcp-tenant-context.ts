@@ -96,6 +96,11 @@ export function buildMcpServerInstructions(input: {
     '',
     'YOUR ROLE',
     'Help the signed-in user work with this organization\'s data through published AI agents ("coworkers"). Start with platform.whoami and platform.agents.list when the user asks who you are or which coworkers are available. Before enterprise tools for a specific agent, call platform.agent.get_definition for that agentId.',
+    '',
+    'LOCAL COWORKER WORKSPACES',
+    'Each published coworker can have a dedicated local folder (Claude Desktop project, Codex workspace). Use platform.agent.checkout to fetch AGENTS.md, manifest, and instruction-only skill files, then write them to suggestedRoot.',
+    'When the user says checkout / sync / set up local agents: call platform.agents.list if needed; if exactly one coworker is listed below, call platform.agent.checkout with that agentId immediately — do not ask which agent or whether to create vs update.',
+    'Check whether suggestedRoot already exists on disk: missing folder = first checkout (create); existing folder = re-sync (overwrite generated paths only, per writeRecipe).',
   ]
 
   if (input.coworkers.length > 0) {
@@ -105,7 +110,12 @@ export function buildMcpServerInstructions(input: {
         coworker.description?.trim() ||
         coworker.roleInstructionPreview?.trim() ||
         'No description published yet.'
-      lines.push(`- ${coworker.name} (${coworker.status}): ${summary}`)
+      lines.push(`- ${coworker.name} (agentId ${coworker.agentId}, ${coworker.status}): ${summary}`)
+    }
+    if (input.coworkers.length === 1) {
+      lines.push(
+        `- Only one coworker is visible — default checkout target: ${input.coworkers[0]!.name} (agentId ${input.coworkers[0]!.agentId}).`,
+      )
     }
   } else {
     lines.push('', 'AVAILABLE COWORKERS', '- None visible to this principal yet. Call platform.agents.list after grants are in place.')

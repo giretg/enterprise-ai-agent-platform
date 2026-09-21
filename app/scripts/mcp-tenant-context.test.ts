@@ -73,7 +73,31 @@ check('buildMcpServerInstructions includes org intro and coworkers', () => {
   assert.match(text, /Ostorosbor Zrt\./)
   assert.match(text, /Magyar borász cég\./)
   assert.match(text, /CRM asszisztens/)
+  assert.match(text, /agentId agent-1/)
   assert.match(text, /platform\.agents\.list/)
+  assert.match(text, /platform\.agent\.checkout/)
+  assert.match(text, /LOCAL COWORKER WORKSPACES/)
+})
+
+check('buildMcpServerInstructions marks single coworker as default checkout target', () => {
+  const text = buildMcpServerInstructions({
+    tenant: { displayName: 'Ostorosbor', legalName: null, slug: 'ostorosbor', settings: {} },
+    tenantSlug: 'ostorosbor',
+    coworkers: [
+      {
+        agentId: 'reka-id',
+        name: 'Réka',
+        status: 'active',
+        description: 'Borászati asszisztens.',
+        roleInstructionPreview: null,
+        currentDefinitionId: 'def-10',
+        currentVersion: 10,
+      },
+    ],
+  })
+  assert.match(text, /Only one coworker is visible/)
+  assert.match(text, /Réka \(agentId reka-id/)
+  assert.match(text, /default checkout target: Réka \(agentId reka-id\)/)
 })
 
 if (failures > 0) {
