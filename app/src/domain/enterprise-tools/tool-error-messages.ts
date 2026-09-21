@@ -9,7 +9,7 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   definition_not_found: 'Agent definition not found',
   definition_mismatch: 'agentId does not match the loaded definition',
   agent_stale:
-    'The agent was republished — call platform.agent.get_definition to load the new version, then retry with currentDefinitionId (with a local checkout, also re-run platform.agent.checkout)',
+    'The agent was republished — call platform.agent.get_definition to load the new version, then retry with currentDefinitionId and the same idempotencyKey (with a local checkout, also re-run platform.agent.checkout)',
   agent_access_denied: 'Operate grant required to invoke this agent',
   tool_not_configured: 'Tool is not configured',
   capability_not_allowed: 'Tool is not allowed by the published agent definition',
