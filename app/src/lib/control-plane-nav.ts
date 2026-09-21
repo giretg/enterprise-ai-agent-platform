@@ -57,6 +57,12 @@ const isGroup = (entry: ControlPlaneNavEntry): entry is ControlPlaneNavGroup => 
  * Adminisztráció a tenant-admin / approver / platform szerepre megy.
  */
 export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] = [
+  {
+    key: 'get-started',
+    href: '/control-plane/get-started',
+    label: 'Első lépések',
+    requires: { tenantRole: 'viewer' },
+  },
   { key: 'agents', href: '/control-plane/agents', label: 'Munkatársak' },
   {
     key: 'account',

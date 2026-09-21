@@ -159,6 +159,7 @@
     "test:agent-scaffold": "tsx scripts/agent-scaffold.test.ts",
     "test:clerk-config": "tsx scripts/clerk-config.test.ts",
     "test:default-agent-workspace": "tsx scripts/default-agent-workspace.test.ts",
+    "test:mcp-client-setup": "tsx scripts/mcp-client-setup.test.ts",
     "test:resume-last-agent-conversation": "tsx scripts/resume-last-agent-conversation.test.ts",
     "test:agent-workspace-board": "tsx scripts/agent-workspace-board.test.ts",
     "test:board-tab-badge": "tsx scripts/board-tab-badge.test.ts",
