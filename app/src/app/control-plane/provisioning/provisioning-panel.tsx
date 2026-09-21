@@ -2087,6 +2087,7 @@ export function ProvisioningPanel({
                   pending={pending}
                   run={run}
                   onSync={syncSelfUpdating}
+                  isSuperadmin={isSuperadmin}
                 />
               ) : (
                 <DraftCard
@@ -2099,6 +2100,7 @@ export function ProvisioningPanel({
                   googleDriveOauthConfigured={googleDriveOauthConfigured}
                   pending={pending}
                   run={run}
+                  isSuperadmin={isSuperadmin}
                 />
               ),
             )}
@@ -2137,6 +2139,7 @@ export function ProvisioningPanel({
               pending={pending}
               run={run}
               onSync={syncSelfUpdating}
+              isSuperadmin={isSuperadmin}
             />
           ))}
           {catalogGaps.map((row) => (
@@ -2177,6 +2180,7 @@ export function ProvisioningPanel({
                 pending={pending}
                 run={run}
                 onSync={syncSelfUpdating}
+                isSuperadmin={isSuperadmin}
               />
             ))}
             {openDrafts.map((d) => (
@@ -2190,6 +2194,7 @@ export function ProvisioningPanel({
                 googleDriveOauthConfigured={googleDriveOauthConfigured}
                 pending={pending}
                 run={run}
+                isSuperadmin={isSuperadmin}
               />
             ))}
           </div>
@@ -2263,6 +2268,7 @@ function DraftCard({
   googleDriveOauthConfigured,
   pending,
   run,
+  isSuperadmin,
 }: {
   draft: DraftRow
   agents: AgentOption[]
@@ -2272,6 +2278,7 @@ function DraftCard({
   googleDriveOauthConfigured: boolean
   pending: boolean
   run: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
+  isSuperadmin: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [secretAlias, setSecretAlias] = useState(draft.secretAliasSuggested ?? '')
@@ -2507,7 +2514,10 @@ function DraftCard({
   ) : null
 
   const canDeleteDraft =
-    !isActive && (draft.lifecycleState === 'draft' || draft.lifecycleState === 'validated')
+    !isActive &&
+    (draft.lifecycleState === 'draft' ||
+      draft.lifecycleState === 'validated' ||
+      (isSuperadmin && draft.lifecycleState === 'archived'))
   const toggleOpen = () => setOpen((current) => !current)
   const handleDeleteFromList = async () => {
     const confirmed = await confirmDialog({
@@ -2849,8 +2859,7 @@ function DraftCard({
           {configEditor}
 
           {/* Takarítás: sosem aktivált draft hard-delete-je (auditált). */}
-          {!isActive &&
-          (draft.lifecycleState === 'draft' || draft.lifecycleState === 'validated') ? (
+          {canDeleteDraft ? (
             <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
               <h4 className="mb-1 font-semibold text-coral">Draft törlése</h4>
               <p className="mb-2 text-xs text-ink-soft">

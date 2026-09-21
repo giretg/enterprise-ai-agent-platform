@@ -1,9 +1,10 @@
 'use client'
 
 import { useCallback, useEffect, useState, useTransition } from 'react'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card } from '@/components/ui/shell'
 import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
-import { decommissionActiveConnector } from '@/app/actions/provisioning'
+import { decommissionActiveConnector, deleteArchivedConnector } from '@/app/actions/provisioning'
 import {
   approveSelfUpdatingSource,
   approveSelfUpdatingVersion,
@@ -318,10 +319,18 @@ export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: b
   )
 }
 
-export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
-  row: SelfUpdatingConnectorRow; pending: boolean
+export function SelfUpdatingConnectorCard({
+  row,
+  pending,
+  run,
+  onSync,
+  isSuperadmin = false,
+}: {
+  row: SelfUpdatingConnectorRow
+  pending: boolean
   run: (operation: () => Promise<{ success: boolean; error?: string }>, success: string) => void
   onSync: (connectorId: string) => void
+  isSuperadmin?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -347,6 +356,18 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
   const toggleOpen = () => setOpen((current) => !current)
   const archived = row.lifecycleState === 'archived'
   const broken = Boolean(row.loadError)
+  const canHardDelete = archived && isSuperadmin
+  const handleHardDelete = async () => {
+    const confirmed = await confirmDialog({
+      title: 'Konnektor törlése',
+      description:
+        'Végleges törlés — az archivált kapcsolat és a verzió-előzmények törlődnek; ez nem visszavonható.',
+      confirmLabel: 'Törlés',
+      tone: 'danger',
+    })
+    if (!confirmed) return
+    run(() => deleteArchivedConnector({ connectorId: row.id }), 'Konnektor törölve.')
+  }
 
   return (
     <div className="rounded-lg border border-ink/12 bg-paper">
@@ -404,6 +425,16 @@ export function SelfUpdatingConnectorCard({ row, pending, run, onSync }: {
               onClick={() => setOpen(true)}
             >
               Megszüntetés
+            </button>
+          ) : null}
+          {canHardDelete ? (
+            <button
+              type="button"
+              disabled={pending}
+              className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral disabled:opacity-50"
+              onClick={() => void handleHardDelete()}
+            >
+              Törlés
             </button>
           ) : null}
         </div>

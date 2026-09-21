@@ -359,7 +359,8 @@ export interface ConnectorDraftRepository {
   decommissionByConnectorId(params: {
     connectorId: string
   }): Promise<{ connectorId: string; affectedAgentIds: string[] }>
-  deleteDraft(params: { draftId: string }): Promise<void>
+  deleteDraft(params: { draftId: string; allowArchived?: boolean }): Promise<void>
+  hardDeleteArchivedConnector(params: { connectorId: string }): Promise<void>
   listActiveCatalog(tenantId: string): Promise<
     Array<{
       id: string

@@ -1155,8 +1155,13 @@ export class ProvisioningService {
   ): Promise<{ draftId: string }> {
     await this.requireHumanAdmin(actor, 'deleteConnectorDraft')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
-
-    if (draft.connector.lifecycleState !== 'draft' && draft.connector.lifecycleState !== 'validated') {
+    const state = draft.connector.lifecycleState
+    const superadminPurge = actor.type === 'user' && actor.canManagePlatformConnectors === true
+    const deletable =
+      state === 'draft' ||
+      state === 'validated' ||
+      (superadminPurge && state === 'archived')
+    if (!deletable) {
       throw new ProvisioningError(
         'DRAFT_ALREADY_ACTIVATED',
         'only a never-activated draft can be hard-deleted; decommission an active connector instead',
@@ -1170,7 +1175,10 @@ export class ProvisioningService {
       actorType: 'human',
       reason: 'connector_draft_deleted',
     })
-    await this.deps.drafts.deleteDraft({ draftId: draft.id })
+    await this.deps.drafts.deleteDraft({
+      draftId: draft.id,
+      allowArchived: superadminPurge && state === 'archived',
+    })
 
     await this.appendAudit(actor, 'provisioning.draft.delete', connectorId, {
       draft_id: draft.id,
@@ -1180,6 +1188,45 @@ export class ProvisioningService {
     })
 
     return { draftId: draft.id }
+  }
+
+  /**
+   * Archivált konnektor végleges törlése (draft nélkül, pl. self_updating) — csak superadmin.
+   */
+  async deleteArchivedConnector(
+    input: { connectorId: string; reason?: string },
+    actor: ProvisioningActor,
+  ): Promise<{ connectorId: string }> {
+    await this.requireHumanAdmin(actor, 'deleteArchivedConnector')
+    if (actor.type !== 'user' || !actor.canManagePlatformConnectors) {
+      throw new ProvisioningError(
+        'PROVISIONING_FORBIDDEN',
+        'only a platform superadmin can hard-delete an archived connector',
+      )
+    }
+    const connector = await this.loadConnectorForTenant(input.connectorId, actor)
+    if (connector.lifecycleState !== 'archived') {
+      throw new ProvisioningError(
+        'CONNECTOR_NOT_ACTIVE',
+        'only an archived connector can be hard-deleted',
+      )
+    }
+
+    await this.deps.connectorGrants?.revokeActiveGrantsForConnector({
+      connectorId: connector.id,
+      actorId: actor.userId,
+      actorType: 'human',
+      reason: 'connector_archived_deleted',
+    })
+    await this.deps.drafts.hardDeleteArchivedConnector({ connectorId: connector.id })
+
+    await this.appendAudit(actor, 'provisioning.connector.delete', connector.id, {
+      connector_id: connector.id,
+      reasonHash: input.reason ? computeDiffHash(input.reason) : null,
+      policyDecision: 'allowed',
+    })
+
+    return { connectorId: connector.id }
   }
 
   // ── §9 catalog.read (meglévő connector-metaadat, secret nélkül) ───────────

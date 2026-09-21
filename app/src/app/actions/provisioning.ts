@@ -692,6 +692,17 @@ export async function deleteConnectorDraft(input: unknown) {
   }
 }
 
+export async function deleteArchivedConnector(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = decommissionActiveConnectorSchema.parse(input)
+    const res = await services.provisioning.deleteArchivedConnector(parsed, actorOf(user))
+    return ok(res)
+  } catch (e) {
+    return toFail(e, 'Nem sikerült törölni a konnektort')
+  }
+}
+
 export async function upsertConnectorTemplateAction(input: unknown) {
   try {
     const parsed = upsertConnectorTemplateSchema.parse(input)

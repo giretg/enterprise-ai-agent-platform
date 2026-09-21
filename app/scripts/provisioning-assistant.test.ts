@@ -271,10 +271,24 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     if (!draft) throw new Error('connector not found')
     return this.decommission({ draftId: draft.id })
   }
-  async deleteDraft(params: { draftId: string }) {
+  async deleteDraft(params: { draftId: string; allowArchived?: boolean }) {
     const d = this.drafts.get(params.draftId)!
+    const state = d.connector.lifecycleState
+    const deletable =
+      state === 'draft' ||
+      state === 'validated' ||
+      (params.allowArchived === true && state === 'archived')
+    if (!deletable) throw new Error('only a never-activated draft can be hard-deleted')
     this.agentConnectors = this.agentConnectors.filter((ac) => ac.connectorId !== d.connectorId)
     this.drafts.delete(params.draftId)
+  }
+  async hardDeleteArchivedConnector(params: { connectorId: string }) {
+    const draft = [...this.drafts.values()].find((d) => d.connectorId === params.connectorId)
+    if (!draft || draft.connector.lifecycleState !== 'archived') {
+      throw new Error('only an archived connector can be hard-deleted')
+    }
+    this.agentConnectors = this.agentConnectors.filter((ac) => ac.connectorId !== params.connectorId)
+    this.drafts.delete(draft.id)
   }
   async listActiveCatalog(tenantId: string | null) {
     return [...this.drafts.values()]
@@ -331,6 +345,11 @@ const adminActor: ProvisioningActor = {
   userId: 'user-admin',
   role: 'admin',
   tenantId: TENANT,
+}
+const superadminActor: ProvisioningActor = {
+  ...adminActor,
+  userId: 'user-superadmin',
+  canManagePlatformConnectors: true,
 }
 const agentActor: ProvisioningActor = {
   type: 'agent',
@@ -1946,6 +1965,21 @@ async function run() {
     await expectError('DRAFT_ALREADY_ACTIVATED', () =>
       svc.deleteConnectorDraft({ draftId: created.draftId }, adminActor),
     )
+  })
+
+  await test('DELETE: archivált draft — sima admin tiltva, superadmin törölheti', async () => {
+    const { svc, drafts } = makeService()
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
+      adminActor,
+    )
+    await svc.decommissionConnector({ draftId: created.draftId, reason: 'teszt' }, adminActor)
+    await expectError('DRAFT_ALREADY_ACTIVATED', () =>
+      svc.deleteConnectorDraft({ draftId: created.draftId }, adminActor),
+    )
+    await svc.deleteConnectorDraft({ draftId: created.draftId }, superadminActor)
+    assert.equal(drafts.drafts.get(created.draftId), undefined)
   })
 
   await test('DELETE: agent-aktor SOHA (kemény padló)', async () => {
