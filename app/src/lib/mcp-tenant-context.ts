@@ -1,0 +1,121 @@
+import type { Prisma, Tenant } from '@prisma/client'
+import { settingsRecord } from '@/lib/tenant-settings'
+
+export const TENANT_MCP_INTRO_SETTING = 'mcpIntro'
+
+const ROLE_INSTRUCTION_PREVIEW_MAX = 240
+
+const MCP_TOOLING_INSTRUCTIONS = [
+  'Skills: use resources/list and resources/read on skill:// URIs. If the client cannot read MCP resources directly, call platform.skills.list and then platform.skills.read.',
+  'Company HTTP APIs: call platform.agent.get_definition first — connectorCatalog lists each bound connector\'s endpoints (method, path, query params) from the stored OpenAPI snapshot. Use only documented paths with http_api_get / http_api_get_all / http_api_request; credentials stay on the connector. For one connector\'s full guide use platform.connector.describe.',
+  'Gmail: gmail_search then gmail_get_message.',
+  'Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval.',
+  'Knowledge base: kb_search, kb_list_index, kb_get_page.',
+  'If a tool returns authorizationUrl, show that URL to the user and retry after they finish consent.',
+].join(' ')
+
+export type McpCoworkerSummary = {
+  agentId: string
+  name: string
+  status: string
+  description?: string | null
+  roleInstructionPreview?: string | null
+  currentDefinitionId: string | null
+  currentVersion: number | null
+}
+
+export function readTenantMcpIntro(settings: unknown): string | null {
+  const raw = settingsRecord(settings)[TENANT_MCP_INTRO_SETTING]
+  if (typeof raw !== 'string') return null
+  const trimmed = raw.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+export function withTenantMcpIntro(settings: unknown, intro: string | null): Prisma.InputJsonValue {
+  const next = { ...settingsRecord(settings) }
+  const trimmed = intro?.trim() ?? ''
+  if (trimmed.length > 0) next[TENANT_MCP_INTRO_SETTING] = trimmed
+  else delete next[TENANT_MCP_INTRO_SETTING]
+  return next
+}
+
+export function previewRoleInstruction(value: string | null | undefined, max = ROLE_INSTRUCTION_PREVIEW_MAX): string | null {
+  if (!value) return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (trimmed.length <= max) return trimmed
+  return `${trimmed.slice(0, max - 1).trimEnd()}…`
+}
+
+export function tenantDisplayLabel(tenant: Pick<Tenant, 'displayName' | 'legalName' | 'slug'> | null | undefined): string {
+  if (!tenant) return 'this organization'
+  if (tenant.legalName?.trim()) return tenant.legalName.trim()
+  if (tenant.displayName?.trim()) return tenant.displayName.trim()
+  return tenant.slug
+}
+
+export function buildTenantContextPayload(input: {
+  tenant: Pick<Tenant, 'displayName' | 'legalName' | 'slug' | 'settings'> | null | undefined
+  tenantSlug: string
+  coworkers: McpCoworkerSummary[]
+}) {
+  const tenant = input.tenant
+  return {
+    tenantSlug: input.tenantSlug,
+    tenantDisplayName: tenant?.displayName ?? null,
+    tenantLegalName: tenant?.legalName ?? null,
+    organizationLabel: tenantDisplayLabel(tenant),
+    mcpIntro: readTenantMcpIntro(tenant?.settings),
+    coworkers: input.coworkers.map((coworker) => ({
+      agentId: coworker.agentId,
+      name: coworker.name,
+      status: coworker.status,
+      description: coworker.description ?? null,
+      roleInstructionPreview: coworker.roleInstructionPreview ?? null,
+      currentDefinitionId: coworker.currentDefinitionId,
+      currentVersion: coworker.currentVersion,
+    })),
+  }
+}
+
+export function buildMcpServerInstructions(input: {
+  tenant: Pick<Tenant, 'displayName' | 'legalName' | 'slug' | 'settings'> | null | undefined
+  tenantSlug: string
+  coworkers: McpCoworkerSummary[]
+}): string {
+  const organization = tenantDisplayLabel(input.tenant)
+  const intro =
+    readTenantMcpIntro(input.tenant?.settings) ??
+    `This MCP endpoint serves ${organization} (${input.tenantSlug}). Published AI agents are the user's coworkers — list them with platform.agents.list, load one with platform.agent.get_definition, or check out a workspace with platform.agent.checkout.`
+
+  const lines = [
+    `You are connected to Excellence AI for ${organization} (tenant slug: ${input.tenantSlug}).`,
+    '',
+    'ORGANIZATION',
+    intro,
+    '',
+    'YOUR ROLE',
+    'Help the signed-in user work with this organization\'s data through published AI agents ("coworkers"). Start with platform.whoami and platform.agents.list when the user asks who you are or which coworkers are available. Before enterprise tools for a specific agent, call platform.agent.get_definition for that agentId.',
+  ]
+
+  if (input.coworkers.length > 0) {
+    lines.push('', 'AVAILABLE COWORKERS')
+    for (const coworker of input.coworkers) {
+      const summary =
+        coworker.description?.trim() ||
+        coworker.roleInstructionPreview?.trim() ||
+        'No description published yet.'
+      lines.push(`- ${coworker.name} (${coworker.status}): ${summary}`)
+    }
+  } else {
+    lines.push('', 'AVAILABLE COWORKERS', '- None visible to this principal yet. Call platform.agents.list after grants are in place.')
+  }
+
+  lines.push('', 'TOOLING', MCP_TOOLING_INSTRUCTIONS)
+  return lines.join('\n')
+}
+
+export function mcpServerDisplayName(tenant: Pick<Tenant, 'displayName'> | null | undefined): string {
+  const name = tenant?.displayName?.trim()
+  return name ? `${name} · Excellence AI` : 'Excellence AI'
+}
