@@ -7,6 +7,7 @@ import {
   type LinkedConnectorView,
   type LinkedGrantView,
 } from '@/components/account/connector-connection-card'
+import { connectorOAuthErrorMessage } from '@/components/account/delegated-oauth-ui'
 
 function AccountGroup({
   id,
@@ -79,7 +80,7 @@ export function LinkedAccountsPanel({
       ) : null}
       {error ? (
         <p className="rounded-lg border border-coral/35 bg-coral/10 px-3 py-2 text-sm text-coral-deep">
-          {error}
+          {connectorOAuthErrorMessage(error)}
         </p>
       ) : null}
 

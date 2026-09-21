@@ -78,7 +78,7 @@ export type VerifiedOAuthToken = {
 export type McpPrincipalDeps = {
   verifyOAuthToken: (bearerToken: string) => Promise<VerifiedOAuthToken | null>
   users: Pick<UserRepository, 'findByExternalAuthId'>
-  tenants: Pick<TenantRepository, 'findBySlug'>
+  tenants: Pick<TenantRepository, 'findBySlug' | 'findById'>
   memberships: Pick<TenantMembershipRepository, 'findByTenantAndUser'>
   platformMemberships: Pick<PlatformMembershipRepository, 'findByUser'>
   audit?: AuditSink

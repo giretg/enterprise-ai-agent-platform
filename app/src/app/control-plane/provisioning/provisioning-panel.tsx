@@ -936,6 +936,11 @@ export function ProvisioningPanel({
     })
   }, [catalogLeaves, catalogSelected, catalogNames, catalogKeyMode, catalogSharedKey, catalogLeafKeys, reload])
 
+  const stepOrder: CreateStep[] =
+    connectionKind === 'self_updating'
+      ? ['basics', 'source', ...SELF_UPDATING_ACTIVATION_STEPS]
+      : ['basics', 'source', 'review']
+
   const onCreate = useCallback(() => {
     if (connectionKind === 'self_updating') {
       // Gyűjtőindexből nem születhet önálló kapcsolat: a leaf-választó a helyes út.
@@ -1023,12 +1028,10 @@ export function ProvisioningPanel({
     sourceType,
     templateSecretAliases,
     templateValues,
+    stepOrder,
+    refreshSuWizardRow,
   ])
 
-  const stepOrder: CreateStep[] =
-    connectionKind === 'self_updating'
-      ? ['basics', 'source', ...SELF_UPDATING_ACTIVATION_STEPS]
-      : ['basics', 'source', 'review']
   const activeStepIndex = stepOrder.indexOf(createStep)
   const suWizardProposal = suWizardRow?.versions.find((version) => version.id === suWizardVersionId) ?? null
   const canEnterSource =
