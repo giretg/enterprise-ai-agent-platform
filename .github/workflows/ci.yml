@@ -63,6 +63,7 @@ jobs:
           npm run test:iam-policy
           npm run test:control-plane-nav
           npm run test:default-agent-workspace
+          npm run test:mcp-client-setup
           npm run test:health-endpoints
           npm run test:public-routes
           npm run test:mcp-principal

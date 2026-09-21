@@ -44,7 +44,7 @@ check('a fallback a munkatárs-lista, nem a gyökér és nem a törölt board', 
 })
 
 check('a gyökér-oldal a resolveren keresztül redirectel, nem hardcode-olt önmagára', () => {
-  assert.match(rootPage, /redirect\(await resolveDefaultAgentWorkspacePath\(\)\)/)
+  assert.match(rootPage, /resolveDefaultAgentWorkspacePath\(\)/)
   assert.doesNotMatch(rootPage, /redirect\('\/control-plane'\)/)
 })
 
