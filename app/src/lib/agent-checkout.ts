@@ -166,6 +166,7 @@ function renderAgentsMd(input: {
     'Before any MCP tool call except `platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`, and `platform.agent.checkout`, call `platform.agent.get_definition` for this agentId.',
     'If the returned `contentHash` differs from the pin above, call `platform.agent.checkout`, overwrite generated paths, then retry.',
     'Enterprise tools reject stale pins with `agent_stale` until checkout completes and the manifest `definitionId` matches the current published version.',
+    'When retrying a write after checkout, reuse the same `idempotencyKey` and only update `definitionId` — a new key can enqueue a duplicate side effect.',
   )
 
   if (input.skills.length > 0) {

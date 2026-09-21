@@ -118,6 +118,17 @@ function stableJsonFingerprint(value: unknown): string {
 }
 
 /**
+ * Idempotency compares the write payload, not the published pin.
+ * `definitionId` changes on every republish; treating it as part of the
+ * fingerprint forced agents to mint a new key after checkout and duplicate
+ * side effects. `agentId` still binds the key to one agent.
+ */
+function idempotencyPayload(args: Record<string, unknown>): Record<string, unknown> {
+  const { definitionId: _omit, ...rest } = args
+  return rest
+}
+
+/**
  * Tenant-unique idempotency keys must only replay the same call.
  * Otherwise enqueue returns another user's succeeded result (bypassing get
  * visibility) or silently drops a write with different args.
@@ -127,10 +138,15 @@ function idempotencyReplayConflict(
   principal: GatewayActor,
   toolName: string,
   args: Record<string, unknown>,
+  agentId: string,
 ): GatewayOperationErr | null {
   if (existing.principalUserId !== principal.userId) return err('idempotency_key_conflict')
   if (existing.toolName !== toolName) return err('idempotency_key_conflict')
-  if (stableJsonFingerprint(asRecord(existing.argsJson)) !== stableJsonFingerprint(args)) {
+  if (existing.agentId !== agentId) return err('idempotency_key_conflict')
+  if (
+    stableJsonFingerprint(idempotencyPayload(asRecord(existing.argsJson))) !==
+    stableJsonFingerprint(idempotencyPayload(args))
+  ) {
     return err('idempotency_key_conflict')
   }
   return null
@@ -334,11 +350,61 @@ async function loadAuthorizedWrite(
   }
 }
 
+/**
+ * Replay an existing op even when its pin is no longer current.
+ * Pin checks gate *new* writes only — otherwise a republish turns a safe
+ * retry into agent_stale / key conflict and a duplicate side effect.
+ */
+async function tryIdempotentReplay(
+  deps: GatewayOperationServiceDeps,
+  input: { principal: GatewayActor; toolName: string; args: Record<string, unknown> },
+): Promise<GatewayOperationResult | null> {
+  const { principal, toolName, args } = input
+  if (!isEnterpriseWriteTool(toolName)) return null
+
+  const idempotencyKey = args.idempotencyKey
+  if (typeof idempotencyKey !== 'string' || idempotencyKey.length === 0) return null
+
+  const definitionId = asUuid(args.definitionId)
+  if (!definitionId) return null
+
+  const existing = await deps.operations.findByTenantAndIdempotencyKey(
+    principal.tenantId,
+    idempotencyKey,
+  )
+  if (!existing) return null
+
+  const definition = await deps.loadDefinition({
+    tenantId: principal.tenantId,
+    definitionId,
+  })
+  if (!definition) return null
+
+  const schema = schemaForEnterpriseTool(toolName)
+  if (!schema) return null
+  const parsed = schema.safeParse(args)
+  if (!parsed.success) return null
+
+  const conflict = idempotencyReplayConflict(
+    existing,
+    principal,
+    toolName,
+    parsed.data as Record<string, unknown>,
+    definition.agentId,
+  )
+  if (conflict) return conflict
+  return ok(toGatewayOperationView(existing), false)
+}
+
 export async function enqueueGatewayOperation(
   deps: GatewayOperationServiceDeps,
   input: { principal: GatewayActor; toolName: string; args: Record<string, unknown> },
 ): Promise<GatewayOperationResult> {
   const { principal, toolName, args } = input
+
+  const replay = await tryIdempotentReplay(deps, input)
+  if (replay) return replay
+
   const authorized = await loadAuthorizedWrite(deps, principal, toolName, args)
   if (!authorized.ok) {
     await recordGatewayAudit(deps, {
@@ -378,6 +444,7 @@ export async function enqueueGatewayOperation(
       principal,
       toolName,
       authorized.parsedArgs,
+      authorized.definition.agentId,
     )
     if (conflict) return conflict
     return ok(toGatewayOperationView(existing), false)
@@ -399,6 +466,7 @@ export async function enqueueGatewayOperation(
       principal,
       toolName,
       authorized.parsedArgs,
+      authorized.definition.agentId,
     )
     if (conflict) return conflict
     return ok(toGatewayOperationView(inserted.record), false)
