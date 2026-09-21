@@ -76,6 +76,7 @@ jobs:
           npm run test:gateway-operation
           npm run test:audit-log
           npm run test:agent-definition
+          npm run test:agent-scaffold-mcp
           npm run test:resource-grant
           npm run test:crawler-block
           npm run test:egress-guard

@@ -40,7 +40,10 @@ import { MemoryGatewayOperationStore } from './memory-gateway-operation-store'
 import {
   MCP_AGENTS_LIST_TOOL,
   MCP_AGENT_CHECKOUT_TOOL,
+  MCP_AGENT_CREATE_DRAFT_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
+  MCP_AGENT_GET_WORKING_SET_TOOL,
+  MCP_AGENT_PUBLISH_TOOL,
   MCP_GATEWAY_OPERATION_GET_TOOL,
   MCP_SKILLS_LIST_TOOL,
   MCP_SKILL_READ_TOOL,
@@ -352,6 +355,64 @@ function runtimeDeps(overrides: {
       async listMcpSkills() {
         return overrides.skills ?? []
       },
+      agentScaffold: {
+        agents: {
+          async create() {
+            throw new Error('agentScaffold stub')
+          },
+          async findById() {
+            return null
+          },
+          async updateProfile() {
+            throw new Error('agentScaffold stub')
+          },
+          async replaceCapabilities() {},
+          async findCapabilitiesForAgent() {
+            return []
+          },
+          async findConnectorsForAgent() {
+            return []
+          },
+          async upsertConnectorBinding() {},
+          async setCurrentDefinitionVersionId() {
+            throw new Error('agentScaffold stub')
+          },
+          async activate() {
+            throw new Error('agentScaffold stub')
+          },
+        },
+        versions: {
+          async create() {
+            throw new Error('agentScaffold stub')
+          },
+          async findById() {
+            return null
+          },
+          async findByAgentAndVersion() {
+            return null
+          },
+          async findMaxVersion() {
+            return 0
+          },
+        },
+        skills: {
+          async findByNameInScope() {
+            return null
+          },
+          async findById() {
+            return null
+          },
+          async assign() {},
+          async listEnabledForAgent() {
+            return []
+          },
+        },
+        connectors: {
+          async listForTenant() {
+            return []
+          },
+        },
+      },
     },
   }
 }
@@ -528,6 +589,9 @@ async function main() {
       MCP_AGENTS_LIST_TOOL,
       MCP_AGENT_GET_DEFINITION_TOOL,
       MCP_AGENT_CHECKOUT_TOOL,
+      MCP_AGENT_CREATE_DRAFT_TOOL,
+      MCP_AGENT_GET_WORKING_SET_TOOL,
+      MCP_AGENT_PUBLISH_TOOL,
       MCP_SKILLS_LIST_TOOL,
       MCP_SKILL_READ_TOOL,
       ...ENTERPRISE_TOOLS,

@@ -304,6 +304,8 @@ export interface ConnectorRepository {
     type: ConnectorType,
     name: string,
   ): Promise<Connector | null>
+  findByNameInTenant(tenantId: string, name: string): Promise<Connector[]>
+  listForTenant(tenantId: string): Promise<Connector[]>
   listActive(tenantId: string): Promise<Connector[]>
   create(input: {
     tenantId: string
