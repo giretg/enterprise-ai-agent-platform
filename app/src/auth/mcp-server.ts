@@ -5,14 +5,23 @@ import { z } from 'zod'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { repositories } from '@/repositories/postgres'
+import type { AgentScaffoldDeps } from '@/domain/agent-scaffold'
 import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
 import { services } from '@/domain/gateway-services'
 import {
+  AgentDefinitionService,
   canReadPublishedAgent,
   hashSnapshot,
   isPrivilegedAgentReader,
   type AgentDefinition,
 } from '@/domain/agent-definition'
+import {
+  AgentScaffoldError,
+  canMcpScaffoldRead,
+  canMcpScaffoldWrite,
+  createDraftAgent,
+  publishAgentWorkingSet,
+} from '@/domain/agent-scaffold'
 import { isAvailableOnMcp, isDispatchable } from '@/lib/agent-lifecycle'
 import {
   asCheckoutHarness,
@@ -63,7 +72,10 @@ import {
   MCP_ALLOWED_TOOLS,
   MCP_AGENTS_LIST_TOOL,
   MCP_AGENT_CHECKOUT_TOOL,
+  MCP_AGENT_CREATE_DRAFT_TOOL,
   MCP_AGENT_GET_DEFINITION_TOOL,
+  MCP_AGENT_GET_WORKING_SET_TOOL,
+  MCP_AGENT_PUBLISH_TOOL,
   MCP_GATEWAY_OPERATION_GET_TOOL,
   MCP_SKILLS_LIST_TOOL,
   MCP_SKILL_READ_TOOL,
@@ -122,6 +134,7 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     operationId: string
   }) => Promise<EnterpriseToolMcpResult>
   listMcpSkills: (input: { tenantId: string }) => Promise<McpSkillPackage[]>
+  agentScaffold: AgentScaffoldDeps
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
@@ -232,6 +245,13 @@ export function productionMcpDeps(): McpRuntimeDeps {
         }),
       ),
     listMcpSkills: ({ tenantId }) => services.skills.listMcpSkillPackages(tenantId),
+    agentScaffold: {
+      agents: repositories.agents,
+      versions: repositories.agentDefinitions,
+      skills: repositories.skills,
+      connectors: repositories.connectors,
+      audit: repositories.audit,
+    },
   }
 }
 
@@ -378,6 +398,118 @@ function invalidArgs(message: string) {
   return textResult({ code: 'invalid_args', message }, true)
 }
 
+function scaffoldWriteDenied(principal: McpPrincipal, deps: McpRuntimeDeps, toolName: string) {
+  return auditMcpToolDenied(deps, principal, toolName).then(() =>
+    textResult({ code: 'tool_not_allowed', message: 'Admin membership required' }, true),
+  )
+}
+
+async function createDraftToolResult(
+  principal: McpPrincipal,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+) {
+  if (!canMcpScaffoldWrite(principal.role, principal.assumed)) {
+    return scaffoldWriteDenied(principal, deps, MCP_AGENT_CREATE_DRAFT_TOOL)
+  }
+  const name = typeof args.name === 'string' ? args.name : ''
+  const roleInstruction = typeof args.roleInstruction === 'string' ? args.roleInstruction : ''
+  const description = typeof args.description === 'string' ? args.description : undefined
+  const capabilities = Array.isArray(args.capabilities)
+    ? args.capabilities.filter((row): row is string => typeof row === 'string')
+    : undefined
+  const skills = Array.isArray(args.skills)
+    ? args.skills.filter((row): row is string => typeof row === 'string')
+    : undefined
+  const connectors = Array.isArray(args.connectors)
+    ? args.connectors
+        .filter((row): row is Record<string, unknown> => row && typeof row === 'object' && !Array.isArray(row))
+        .map((row) => ({
+          name: typeof row.name === 'string' ? row.name : '',
+          accessMode:
+            row.accessMode === 'read' || row.accessMode === 'write'
+              ? (row.accessMode as 'read' | 'write')
+              : undefined,
+        }))
+        .filter((row) => row.name.trim().length > 0)
+    : undefined
+
+  await auditMcpToolCall(deps, principal, MCP_AGENT_CREATE_DRAFT_TOOL)
+  try {
+    const result = await createDraftAgent(deps.agentScaffold, {
+      tenantId: principal.tenantId,
+      actorId: principal.userId,
+      name,
+      roleInstruction,
+      description,
+      capabilities,
+      skills,
+      connectors,
+    })
+    return textResult(result)
+  } catch (error) {
+    if (error instanceof AgentScaffoldError && error.code === 'invalid_args') {
+      return invalidArgs(error.message)
+    }
+    throw error
+  }
+}
+
+async function getWorkingSetToolResult(
+  principal: McpPrincipal,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+) {
+  if (!canMcpScaffoldRead(principal.role)) return definitionNotFound()
+  const agentId = asUuid(args.agentId)
+  if (!agentId) return invalidArgs('agentId must be a uuid')
+  const definitionService = new AgentDefinitionService({
+    agents: deps.agentScaffold.agents,
+    versions: deps.agentScaffold.versions,
+    skills: deps.agentScaffold.skills,
+    audit: deps.agentScaffold.audit,
+  })
+  await auditMcpToolCall(deps, principal, MCP_AGENT_GET_WORKING_SET_TOOL)
+  try {
+    const result = await definitionService.getWorkingSet({
+      agentId,
+      tenantId: principal.tenantId,
+    })
+    return textResult(result)
+  } catch {
+    return definitionNotFound()
+  }
+}
+
+async function publishAgentToolResult(
+  principal: McpPrincipal,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+) {
+  if (!canMcpScaffoldWrite(principal.role, principal.assumed)) {
+    return definitionNotFound()
+  }
+  const agentId = asUuid(args.agentId)
+  if (!agentId) return invalidArgs('agentId must be a uuid')
+  await auditMcpToolCall(deps, principal, MCP_AGENT_PUBLISH_TOOL)
+  try {
+    const result = await publishAgentWorkingSet(deps.agentScaffold, {
+      agentId,
+      tenantId: principal.tenantId,
+      publishedById: principal.userId,
+    })
+    return textResult(result)
+  } catch (error) {
+    if (error instanceof AgentScaffoldError) {
+      if (error.code === 'not_found') return definitionNotFound()
+      if (error.code === 'invalid_state') {
+        return textResult({ code: 'invalid_state', message: error.message }, true)
+      }
+    }
+    throw error
+  }
+}
+
 async function checkoutToolResult(
   principal: McpPrincipal,
   args: Record<string, unknown>,
@@ -468,6 +600,43 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         },
         async (args) =>
           checkoutToolResult(principal, args as Record<string, unknown>, deps, origin),
+      )
+      server.registerTool(
+        MCP_AGENT_CREATE_DRAFT_TOOL,
+        {
+          title: 'Create agent draft',
+          description:
+            'Persist a tenant agent draft with the full working set. Admin only — operators are denied at tools/call.',
+          inputSchema: z
+            .object({
+              name: z.string().min(1).max(120),
+              roleInstruction: z.string().min(1).max(20_000),
+              description: z.string().max(2000).optional(),
+            })
+            .passthrough(),
+        },
+        async (args) => createDraftToolResult(principal, args as Record<string, unknown>, deps),
+      )
+      server.registerTool(
+        MCP_AGENT_GET_WORKING_SET_TOOL,
+        {
+          title: 'Get agent working set',
+          description:
+            'Return the exact unpublished or stale working-set snapshot for an agent. Admin or approver only.',
+          inputSchema: z.object({ agentId: z.string().uuid() }).passthrough(),
+          annotations: { readOnlyHint: true },
+        },
+        async (args) => getWorkingSetToolResult(principal, args as Record<string, unknown>, deps),
+      )
+      server.registerTool(
+        MCP_AGENT_PUBLISH_TOOL,
+        {
+          title: 'Publish agent',
+          description:
+            'Publish the working set and activate draft agents. Admin only — existence is hidden from non-admins.',
+          inputSchema: z.object({ agentId: z.string().uuid() }).passthrough(),
+        },
+        async (args) => publishAgentToolResult(principal, args as Record<string, unknown>, deps),
       )
       server.registerTool(
         MCP_SKILLS_LIST_TOOL,
@@ -700,6 +869,15 @@ function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps,
         }
         if (toolName === MCP_AGENT_CHECKOUT_TOOL) {
           return checkoutToolResult(principal, args, deps, origin)
+        }
+        if (toolName === MCP_AGENT_CREATE_DRAFT_TOOL) {
+          return createDraftToolResult(principal, args, deps)
+        }
+        if (toolName === MCP_AGENT_GET_WORKING_SET_TOOL) {
+          return getWorkingSetToolResult(principal, args, deps)
+        }
+        if (toolName === MCP_AGENT_PUBLISH_TOOL) {
+          return publishAgentToolResult(principal, args, deps)
         }
         if (toolName === MCP_SKILLS_LIST_TOOL) {
           return listSkillsToolResult(principal, deps, packages)

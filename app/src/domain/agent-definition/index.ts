@@ -146,6 +146,35 @@ export class AgentDefinitionService {
    * ha a vázlat (név, instrukció, skill, connector-kötés, capability) eltér
    * tőle, az adminnak újra kell publikálnia. Sosem ír, csak összehasonlít.
    */
+  async getWorkingSet(input: { agentId: string; tenantId: string }): Promise<{
+    agentId: string
+    status: AgentStatus
+    currentDefinitionId: string | null
+    currentVersion: number | null
+    stale: boolean
+    workingSet: AgentDefinitionSnapshot
+    contentHash: string
+  }> {
+    const agent = await this.deps.agents.findById(input.agentId, input.tenantId)
+    if (!agent) throw new Error('Agent not found')
+    const publishStatus = await this.getPublishStatus(input)
+    const [enabledSkills, connectors, capabilities] = await Promise.all([
+      this.deps.skills.listEnabledForAgent(agent.id),
+      this.deps.agents.findConnectorsForAgent(agent.id),
+      this.deps.agents.findCapabilitiesForAgent(agent.id),
+    ])
+    const workingSet = buildSnapshot(agent, { enabledSkills, connectors, capabilities })
+    return {
+      agentId: agent.id,
+      status: agent.status,
+      currentDefinitionId: publishStatus.definitionId,
+      currentVersion: publishStatus.version,
+      stale: publishStatus.stale,
+      workingSet,
+      contentHash: hashSnapshot(workingSet),
+    }
+  }
+
   async getPublishStatus(input: {
     agentId: string
     tenantId: string

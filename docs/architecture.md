@@ -78,10 +78,14 @@ ESLint rule. `domain/audit` is a target module.
   `/api/mcp/{tenantSlug}` plus membership or superadmin assume.
 - `tools/list` is not a security boundary. `tools/call` uses an allow-list
   (`platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`,
-  `platform.agent.checkout`, `platform.gateway_operation.get`, `google_drive_search`,
+  `platform.agent.checkout`, `platform.agent.create_draft`,
+  `platform.agent.get_working_set`, `platform.agent.publish`,
+  `platform.gateway_operation.get`, `google_drive_search`,
   `google_drive_read_file`, `google_drive_create_folder`); every Drive
   `tools/call` still runs `authorizeToolCall`. Writes enqueue instead of
-  calling Google until a human approves.
+  calling Google until a human approves. Agent Scaffold draft tools are admin
+  write (`create_draft`, `publish`) or admin/approver read (`get_working_set`);
+  assumed superadmin is read-only for scaffold writes.
 - Active tenant skills are MCP resources under `skill://{name}/…` (`resources/list`,
   `resources/read`). For clients that do not expose MCP resources as callable
   operations, `platform.skills.list` and `platform.skills.read` provide the same

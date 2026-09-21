@@ -19,6 +19,22 @@ export class PostgresConnectorRepository implements ConnectorRepository {
     })
   }
 
+  async findByNameInTenant(tenantId: string, name: string): Promise<Connector[]> {
+    const trimmed = name.trim()
+    if (!trimmed) return this.listForTenant(tenantId)
+    return prisma.connector.findMany({
+      where: { tenantId, name: { equals: trimmed, mode: 'insensitive' } },
+      orderBy: { name: 'asc' },
+    })
+  }
+
+  async listForTenant(tenantId: string): Promise<Connector[]> {
+    return prisma.connector.findMany({
+      where: { tenantId },
+      orderBy: { name: 'asc' },
+    })
+  }
+
   async listActive(tenantId: string): Promise<Connector[]> {
     return prisma.connector.findMany({
       where: { tenantId, lifecycleState: 'active', type: { in: ['google_drive', 'http_api', 'gmail'] } },

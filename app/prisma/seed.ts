@@ -12,6 +12,8 @@
 import { prisma } from '../src/lib/db'
 import { services } from '../src/domain/gateway-services'
 import { ensureTenantGoogleDriveConnector } from '../src/lib/seed-google-drive-connector'
+import { ensureTenantAgentScaffold } from '../src/domain/agent-scaffold-materialization'
+import { repositories } from '../src/repositories/postgres'
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
 import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
 import type { TemplateDescriptor } from '../src/domain/connector-template/template-descriptor'
@@ -167,8 +169,17 @@ async function main() {
     actorId: user.id,
   })
 
+  const scaffold = await ensureTenantAgentScaffold(
+    {
+      agents: repositories.agents,
+      versions: repositories.agentDefinitions,
+      skills: repositories.skills,
+    },
+    { tenantId: tenant.id, publishedById: user.id },
+  )
+
   console.log(
-    `Seeded tenant slug=${tenant.slug} agent=${agent.id} status=${activated.status} definition=${published.definitionId} clerk=${SEED_CLERK_USER_ID}`,
+    `Seeded tenant slug=${tenant.slug} agent=${agent.id} status=${activated.status} definition=${published.definitionId} scaffold=${scaffold.id} clerk=${SEED_CLERK_USER_ID}`,
   )
 }
 
