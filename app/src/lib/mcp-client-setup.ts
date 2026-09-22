@@ -7,6 +7,7 @@ export type McpClientSetup = {
   mcpUrl: string
   codexCommand: string
   claudeCommand: string
+  grokCommand: string
   cursorInstallHref: string
 }
 
@@ -36,6 +37,10 @@ export function claudeMcpAddCommand(serverName: string, mcpUrl: string): string 
   return `claude mcp add --transport http ${serverName} ${mcpUrl}`
 }
 
+export function grokMcpAddCommand(serverName: string, mcpUrl: string): string {
+  return `grok mcp add --transport http ${serverName} ${mcpUrl}`
+}
+
 export function buildMcpClientSetup(input: { origin: string; tenantSlug: string }): McpClientSetup {
   const mcpUrl = mcpUrlForTenant(input.origin, input.tenantSlug)
   const serverName = mcpClientName(input.tenantSlug)
@@ -45,6 +50,7 @@ export function buildMcpClientSetup(input: { origin: string; tenantSlug: string 
     mcpUrl,
     codexCommand: codexMcpSetupCommand(serverName, mcpUrl),
     claudeCommand: claudeMcpAddCommand(serverName, mcpUrl),
+    grokCommand: grokMcpAddCommand(serverName, mcpUrl),
     cursorInstallHref: cursorMcpInstallHref(serverName, mcpUrl),
   }
 }
