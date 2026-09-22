@@ -674,6 +674,11 @@ export async function deleteAgent(input: { id: string }) {
   }
 }
 
+function formPurpose(formData: FormData): string | null {
+  const value = formData.get('purpose')
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
 export async function listKbDocuments(input: { agentId: string }) {
   try {
     const user = await requireTenantRole('viewer')
@@ -693,6 +698,7 @@ export async function ingestKbDocument(formData: FormData) {
     const user = await requireTenantRole('admin')
     const agentId = agentIdSchema.parse({ id: String(formData.get('agentId') ?? '') }).id
     const processingMode = formData.get('processingMode') === 'okf' ? 'okf' : 'raw_text_only'
+    const purpose = formPurpose(formData)
     const file = formData.get('file')
     if (!(file instanceof File) || file.size === 0) return fail('Válassz egy fájlt')
     const buffer = Buffer.from(await file.arrayBuffer())
@@ -704,6 +710,7 @@ export async function ingestKbDocument(formData: FormData) {
       mimeType: file.type || null,
       buffer,
       processingMode,
+      purpose,
     })
     return ok(result)
   } catch (e) {
@@ -746,6 +753,7 @@ export async function ingestKnowledgeCatalogDocument(formData: FormData) {
   try {
     const user = await requireTenantRole('admin')
     const processingMode = formData.get('processingMode') === 'okf' ? 'okf' : 'raw_text_only'
+    const purpose = formPurpose(formData)
     const file = formData.get('file')
     if (!(file instanceof File) || file.size === 0) return fail('Válassz egy fájlt')
     const buffer = Buffer.from(await file.arrayBuffer())
@@ -756,6 +764,7 @@ export async function ingestKnowledgeCatalogDocument(formData: FormData) {
       mimeType: file.type || null,
       buffer,
       processingMode,
+      purpose,
     })
     return ok(result)
   } catch (e) {

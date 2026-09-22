@@ -20,7 +20,18 @@ import {
   EXTRACTION_METADATA_KEY,
   type StructuredExtraction,
 } from '@/lib/kb-extraction'
-import { assembleKbHits, assembleKbIndex, assembleKbPage } from '@/lib/kb-retrieval'
+import {
+  assembleKbCatalog,
+  assembleKbDocument,
+  assembleKbHits,
+  assembleKbIndex,
+  assembleKbPage,
+  mergeKbHits,
+  normalizeKbPurpose,
+  okfIndexFile,
+  readKbPurpose,
+  type KbGetPageResult,
+} from '@/lib/kb-retrieval'
 import { buildOkfBundle, chunkOkfBundle } from '@/lib/kb-v3'
 import { validateOkfBundle } from '@/lib/kb-validator'
 
@@ -51,6 +62,7 @@ export class KnowledgeBaseService {
     mimeType?: string | null
     buffer: Buffer
     processingMode: KnowledgeProcessingMode
+    purpose?: string | null
   }) {
     if (input.buffer.byteLength === 0) throw new Error('File is empty')
     if (input.buffer.byteLength > KB_MAX_FILE_BYTES) throw new Error('File is too large')
@@ -76,6 +88,7 @@ export class KnowledgeBaseService {
       buffer: input.buffer,
       extraction,
       processingMode: input.processingMode,
+      purpose: input.purpose,
     })
   }
 
@@ -87,6 +100,7 @@ export class KnowledgeBaseService {
     mimeType?: string | null
     buffer: Buffer
     processingMode: KnowledgeProcessingMode
+    purpose?: string | null
   }) {
     if (input.buffer.byteLength === 0) throw new Error('File is empty')
     if (input.buffer.byteLength > KB_MAX_FILE_BYTES) throw new Error('File is too large')
@@ -109,6 +123,7 @@ export class KnowledgeBaseService {
       buffer: input.buffer,
       extraction,
       processingMode: input.processingMode,
+      purpose: input.purpose,
     })
   }
 
@@ -194,6 +209,7 @@ export class KnowledgeBaseService {
         blocks: [],
       } satisfies StructuredExtraction,
       processingMode: (source.processingMode ?? 'raw_text_only') as KnowledgeProcessingMode,
+      purpose: readKbPurpose(source.metadata),
     })
     await this.deps.audit.append({
       actorType: 'human',
@@ -222,9 +238,11 @@ export class KnowledgeBaseService {
     buffer: Buffer
     extraction: StructuredExtraction
     processingMode: KnowledgeProcessingMode
+    purpose?: string | null
   }) {
     const { tenantId, connector, agentId, uploadedById, filename, extraction } = input
     const contentHash = createHash('sha256').update(input.buffer).digest('hex')
+    const purpose = normalizeKbPurpose(input.purpose)
     const document = await this.deps.documents.create({
       tenantId,
       filename,
@@ -233,7 +251,10 @@ export class KnowledgeBaseService {
       contentHash,
       status: 'processed',
       processingMode: input.processingMode,
-      metadata: { [EXTRACTION_METADATA_KEY]: toExtractionMetadata(extraction) },
+      metadata: {
+        [EXTRACTION_METADATA_KEY]: toExtractionMetadata(extraction),
+        ...(purpose ? { purpose } : {}),
+      },
       connectorId: connector.id,
       uploadedById,
     })
@@ -362,38 +383,125 @@ export class KnowledgeBaseService {
   async search(input: { connectorId: string; query: string; k?: number }) {
     const k = Math.min(Math.max(input.k ?? 5, 1), 20)
     const connectorIds = [input.connectorId]
-    const [okfChunkHits, docs, supersededDocIds] = await Promise.all([
+    const [okfChunkHits, rawHits] = await Promise.all([
       this.deps.chunks.searchChunks(connectorIds, input.query, k),
-      this.deps.documents.findByConnectorId(input.connectorId),
-      this.deps.artifacts.publishedSourceDocumentIds(connectorIds),
+      this.deps.documents.searchRaw(input.connectorId, input.query, k),
     ])
-    return assembleKbHits({
+    const okfHits = assembleKbHits({
       query: input.query,
       k,
       memoryContent: '',
       memoryId: null,
       memoryVersion: null,
       okfChunkHits,
-      docs: docs.map((doc) => ({
-        id: doc.id,
-        filename: doc.filename,
-        extractedText: doc.extractedText,
-      })),
-      supersededDocIds,
+      docs: [],
+      supersededDocIds: new Set(),
     })
+    const fileHits = rawHits.map((hit) => ({
+      docId: `doc:${hit.id}`,
+      snippet: hit.snippet,
+      sourceRef: `doc:${hit.id}:${hit.filename}`,
+      memoryVersion: null,
+      title: hit.filename,
+      score: hit.score,
+    }))
+    return mergeKbHits([...okfHits, ...fileHits], k)
   }
 
-  async listIndex(input: { connectorId: string; pathPrefix?: string; maxDepth?: number }) {
-    const entries = await this.deps.chunks.listIndex([input.connectorId], input.pathPrefix)
+  async listIndex(input: {
+    connectorId: string
+    pathPrefix?: string
+    maxDepth?: number
+    artifactId?: string
+  }) {
+    const pathPrefix = input.pathPrefix?.trim() || undefined
+    const artifactId = input.artifactId?.trim() || undefined
+    if (!pathPrefix && !artifactId) {
+      const [docs, artifacts, entries] = await Promise.all([
+        this.deps.documents.listCatalog(input.connectorId),
+        this.deps.artifacts.findByConnector(input.connectorId, 'published'),
+        this.deps.chunks.listIndex([input.connectorId]),
+      ])
+      return assembleKbCatalog({ docs, artifacts, entries })
+    }
+    const entries = await this.deps.chunks.listIndex([input.connectorId], pathPrefix, artifactId)
     return assembleKbIndex(entries, input.maxDepth)
   }
 
   async getPage(input: { connectorId: string; path: string; artifactId?: string }) {
+    if (input.path === 'index.md') return this.readIndexPage(input)
     const chunks = await this.deps.chunks.getPageChunks(
       [input.connectorId],
       input.path,
       input.artifactId,
     )
     return assembleKbPage(input.path, chunks)
+  }
+
+  private async readIndexPage(input: {
+    connectorId: string
+    artifactId?: string
+  }): Promise<
+    KbGetPageResult | { found: false; path: string; candidates: Array<{ artifactId: string; title: string }> }
+  > {
+    const published = await this.deps.artifacts.findByConnector(input.connectorId, 'published')
+    const matches = published.filter((artifact) => okfIndexFile(artifact.bundle))
+    const chosen = input.artifactId
+      ? matches.filter((artifact) => artifact.id === input.artifactId)
+      : matches
+    if (chosen.length === 1) {
+      const artifact = chosen[0]
+      const file = okfIndexFile(artifact.bundle)
+      if (!file) return { found: false, path: 'index.md' }
+      return {
+        found: true,
+        path: 'index.md',
+        title: file.title,
+        type: 'Index',
+        artifactId: artifact.id,
+        text: file.text,
+        source: {
+          documentId: artifact.sourceDocumentId ?? undefined,
+          filename: file.title,
+        },
+      }
+    }
+    if (chosen.length === 0) return { found: false, path: 'index.md' }
+    return {
+      found: false,
+      path: 'index.md',
+      candidates: chosen.map((artifact) => ({
+        artifactId: artifact.id,
+        title: okfIndexFile(artifact.bundle)?.title ?? 'index.md',
+      })),
+    }
+  }
+
+  async getDocument(input: { connectorId: string; documentId: string; section?: string }) {
+    const document = await this.deps.documents.findById(input.documentId)
+    if (!document || document.connectorId !== input.connectorId || document.status !== 'processed') {
+      return { found: false, documentId: input.documentId }
+    }
+    const superseded = await this.deps.artifacts.publishedSourceDocumentIds([input.connectorId])
+    if (superseded.has(document.id)) {
+      const published = await this.deps.artifacts.findByConnector(input.connectorId, 'published')
+      const artifact = published.find((row) => row.sourceDocumentId === document.id)
+      return {
+        found: true as const,
+        kind: 'wiki' as const,
+        documentId: document.id,
+        filename: document.filename,
+        purpose: readKbPurpose(document.metadata),
+        artifactId: artifact?.id ?? null,
+        hint: 'Wiki. Call kb_get_page with path index.md and this artifactId, then open one page.',
+      }
+    }
+    return assembleKbDocument({
+      documentId: document.id,
+      filename: document.filename,
+      purpose: readKbPurpose(document.metadata),
+      text: document.extractedText ?? '',
+      section: input.section,
+    })
   }
 }

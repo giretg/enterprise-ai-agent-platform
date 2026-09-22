@@ -1,5 +1,6 @@
 import type { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
 import {
+  KB_GET_DOCUMENT_TOOL,
   KB_GET_PAGE_TOOL,
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
@@ -45,6 +46,7 @@ export async function executeKnowledgeBaseTool(
       mimeType: typeof args.mimeType === 'string' ? args.mimeType : null,
       buffer: decodeIngestBuffer(args),
       processingMode: args.processingMode === 'okf' ? 'okf' : 'raw_text_only',
+      purpose: typeof args.purpose === 'string' ? args.purpose : undefined,
     })
   }
   if (toolName === KB_LIST_INDEX_TOOL) {
@@ -52,6 +54,14 @@ export async function executeKnowledgeBaseTool(
       connectorId: ctx.connectorId,
       pathPrefix: typeof args.pathPrefix === 'string' ? args.pathPrefix : undefined,
       maxDepth: typeof args.maxDepth === 'number' ? args.maxDepth : undefined,
+      artifactId: typeof args.artifactId === 'string' ? args.artifactId : undefined,
+    })
+  }
+  if (toolName === KB_GET_DOCUMENT_TOOL) {
+    return service.getDocument({
+      connectorId: ctx.connectorId,
+      documentId: String(args.documentId),
+      section: typeof args.section === 'string' ? args.section : undefined,
     })
   }
   if (toolName === KB_GET_PAGE_TOOL) {

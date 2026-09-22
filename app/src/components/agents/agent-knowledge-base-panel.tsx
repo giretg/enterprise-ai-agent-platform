@@ -21,6 +21,7 @@ export type KbDocumentRow = {
   filename: string
   status: string
   processingMode: KbProcessingModeValue | null
+  purpose: string | null
   createdAt: Date | string
 }
 
@@ -56,8 +57,8 @@ export function AgentKnowledgeBasePanel({
   return (
     <Card title="Tudásbázis">
       <p className="mb-4 text-xs text-ink-faint">
-        Fájl feltöltése MCP-n (`kb_ingest`) vagy innen. Sima fájl kereshető marad; wiki
-        módban oldalakra bontjuk (`kb_list_index`, `kb_get_page`).
+        Az agent először a katalógust látja (fájlnév, mire való, méret), és csak egy oldalt
+        vagy egy fájlt nyit meg. A „mire való” sor segít választani anélkül, hogy belenézne.
       </p>
       {canManage ? (
         <form
@@ -112,6 +113,14 @@ export function AgentKnowledgeBasePanel({
               </label>
             ))}
           </fieldset>
+          <label className="block text-sm">
+            <span className="mb-1 block text-xs text-ink-faint">Mire való (egy sor, opcionális)</span>
+            <input
+              name="purpose"
+              maxLength={240}
+              className="w-full rounded-lg border border-line/70 px-3 py-1.5 text-sm"
+            />
+          </label>
           <button
             type="submit"
             disabled={pending}
@@ -141,6 +150,9 @@ export function AgentKnowledgeBasePanel({
                 <span className="text-xs text-ink-faint">
                   ({kbProcessingModeLabel(doc.processingMode)} · {doc.status})
                 </span>
+                {doc.purpose ? (
+                  <span className="block text-xs text-ink-faint">{doc.purpose}</span>
+                ) : null}
               </span>
               {canManage ? (
                 <button

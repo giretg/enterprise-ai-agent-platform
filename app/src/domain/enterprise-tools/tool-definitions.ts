@@ -38,12 +38,14 @@ export const ENTERPRISE_HTTP_TOOLS = [
 export const KB_SEARCH_TOOL = 'kb_search'
 export const KB_LIST_INDEX_TOOL = 'kb_list_index'
 export const KB_GET_PAGE_TOOL = 'kb_get_page'
+export const KB_GET_DOCUMENT_TOOL = 'kb_get_document'
 export const KB_INGEST_TOOL = 'kb_ingest'
 
 export const ENTERPRISE_KB_TOOLS = [
   KB_SEARCH_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_GET_PAGE_TOOL,
+  KB_GET_DOCUMENT_TOOL,
   KB_INGEST_TOOL,
 ] as const
 
@@ -292,6 +294,7 @@ export const kbListIndexInputSchema = z
     agentId: optionalAgentId,
     pathPrefix: z.string().max(200).optional(),
     maxDepth: z.number().int().min(1).max(8).optional(),
+    artifactId: z.string().uuid().optional(),
   })
   .passthrough()
 
@@ -304,6 +307,15 @@ export const kbGetPageInputSchema = z
   })
   .passthrough()
 
+export const kbGetDocumentInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    documentId: z.string().uuid(),
+    section: z.string().max(200).optional(),
+  })
+  .passthrough()
+
 export const kbIngestInputSchema = z
   .object({
     definitionId,
@@ -311,6 +323,7 @@ export const kbIngestInputSchema = z
     filename: z.string().min(1).max(255),
     processingMode: z.enum(['raw_text_only', 'okf']),
     mimeType: z.string().max(200).optional(),
+    purpose: z.string().max(240).optional(),
     content: z.string().max(2_000_000).optional(),
     contentBase64: z.string().max(2_800_000).optional(),
   })
@@ -319,6 +332,7 @@ export const kbIngestInputSchema = z
 export function schemaForEnterpriseKbTool(toolName: EnterpriseKbTool) {
   if (toolName === KB_LIST_INDEX_TOOL) return kbListIndexInputSchema
   if (toolName === KB_GET_PAGE_TOOL) return kbGetPageInputSchema
+  if (toolName === KB_GET_DOCUMENT_TOOL) return kbGetDocumentInputSchema
   if (toolName === KB_INGEST_TOOL) return kbIngestInputSchema
   return kbSearchInputSchema
 }

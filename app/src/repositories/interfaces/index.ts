@@ -602,7 +602,22 @@ export type KnowledgePageChunk = {
 export type DocumentListItem = Pick<
   Document,
   'id' | 'filename' | 'status' | 'processingMode' | 'mimeType' | 'createdAt' | 'connectorId'
->
+> & { purpose: string | null }
+
+export type KnowledgeCatalogDocument = {
+  id: string
+  filename: string
+  processingMode: Document['processingMode']
+  metadata: Prisma.JsonValue
+  chars: number
+}
+
+export type KnowledgeRawHit = {
+  id: string
+  filename: string
+  snippet: string
+  score: number
+}
 
 export interface DocumentRepository {
   create(data: {
@@ -621,6 +636,8 @@ export interface DocumentRepository {
   findById(id: string): Promise<Document | null>
   findByConnectorId(connectorId: string): Promise<Document[]>
   listByConnectorId(connectorId: string): Promise<DocumentListItem[]>
+  listCatalog(connectorId: string): Promise<KnowledgeCatalogDocument[]>
+  searchRaw(connectorId: string, query: string, limit: number): Promise<KnowledgeRawHit[]>
   update(
     id: string,
     data: {
@@ -671,7 +688,11 @@ export interface KnowledgeChunkRepository {
     }>,
   ): Promise<number>
   searchChunks(connectorIds: string[], query: string, limit: number): Promise<KnowledgeChunkSearchHit[]>
-  listIndex(connectorIds: string[], pathPrefix?: string): Promise<KnowledgeIndexEntry[]>
+  listIndex(
+    connectorIds: string[],
+    pathPrefix?: string,
+    artifactId?: string,
+  ): Promise<KnowledgeIndexEntry[]>
   getPageChunks(
     connectorIds: string[],
     path: string,

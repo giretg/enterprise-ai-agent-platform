@@ -15,15 +15,19 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   // Tudásbázis
   kb_search: {
     label: 'Tudásbázis-keresés',
-    description: 'Kulcsszóval keres a belső tudásbázisban (OKF-oldalak, dokumentumok, memória).',
+    description: 'Kulcsszavas keresés, ha a katalógus nem nevezi meg a forrást. Rövid részleteket ad vissza.',
   },
   kb_list_index: {
-    label: 'Oldalindex listázása',
-    description: 'Listázza a tudásbázis (OKF) elérhető oldalait path és cím szerint navigációhoz.',
+    label: 'Tudásbázis-katalógus',
+    description: 'Először a forrásokat listázza (fájlnév, mire való, méret). Oldalakat csak pathPrefix vagy artifactId mellett.',
   },
   kb_get_page: {
     label: 'Oldal megnyitása',
-    description: 'Egy konkrét tudásbázis-oldal teljes tartalmát nyitja meg path alapján.',
+    description: 'Egy wiki-oldal teljes tartalmát nyitja meg. A tartalomjegyzék path-ja: index.md.',
+  },
+  kb_get_document: {
+    label: 'Fájl megnyitása',
+    description: 'Egy sima tudásbázis-fájlt nyit meg. Nagy fájlnál vázlatot ad, sectionnel egy fejezetet.',
   },
   kb_ingest: {
     label: 'Tudásbázis feltöltés',

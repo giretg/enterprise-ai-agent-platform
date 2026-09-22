@@ -14,6 +14,7 @@ import {
   GMAIL_SEARCH_TOOL,
   HTTP_API_GET_TOOL,
   HTTP_API_REQUEST_TOOL,
+  KB_GET_DOCUMENT_TOOL,
   KB_INGEST_TOOL,
   KB_SEARCH_TOOL,
   type AuthorizeToolCallDeps,
@@ -758,6 +759,19 @@ async function main() {
       assert.equal(result.grantId, null)
       assert.equal(result.tokenRef, null)
     }
+  })
+
+  await check('kb_get_document rides an existing knowledge-base read capability', async () => {
+    const result = await authorizeToolCall(
+      authorizeDeps({ connector: kbConnector, grant: null }),
+      {
+        principal: principal(),
+        definition: kbDefinition,
+        toolName: KB_GET_DOCUMENT_TOOL,
+        args: {},
+      },
+    )
+    assert.equal(result.allowed, true)
   })
 
   await check('http_api service connector does not require a user grant', async () => {
