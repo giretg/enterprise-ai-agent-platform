@@ -28,3 +28,24 @@ export function producerSkillAssignmentError(
   if (hasMinimumRole(role, 'admin')) return null
   return 'A gyártó skillt csak tenant admin rendelheti agenthez, és csak ő kapcsolhatja be.'
 }
+
+export const PRODUCER_SKILL_TAKEN =
+  'Ebben a tenantban már van gyártó skill. Második létrehozását a platform elutasítja.'
+
+/** A jelölőt csak a katalógus admin-művelete teheti rá. Tenantonként egy. */
+export function producerSkillMarkerError(input: {
+  requested: boolean
+  kind: 'tenant' | 'published' | 'system'
+  existingProducerSkillId: string | null
+  skillId?: string | null
+}): string | null {
+  if (!input.requested) return null
+  if (input.kind !== 'tenant') return 'Gyártó skill csak tenant-skill lehet.'
+  if (
+    input.existingProducerSkillId &&
+    input.existingProducerSkillId !== (input.skillId ?? null)
+  ) {
+    return PRODUCER_SKILL_TAKEN
+  }
+  return null
+}

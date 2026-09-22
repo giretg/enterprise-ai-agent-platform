@@ -37,6 +37,11 @@ CREATE UNIQUE INDEX "conversation_skill_proposals_one_open"
   ON "conversation_skill_proposals" ("requested_by", "agent_id")
   WHERE "status" = 'open';
 
+-- Nyitott javaslat neve tenanton belül egy. Az elutasított sor nem foglal.
+CREATE UNIQUE INDEX "conversation_skill_proposals_open_name"
+  ON "conversation_skill_proposals" ("tenant_id", lower("name"))
+  WHERE "status" = 'open';
+
 ALTER TABLE "conversation_skill_proposals"
   ADD CONSTRAINT "conversation_skill_proposals_tenant_id_fkey"
   FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE CASCADE ON UPDATE CASCADE;

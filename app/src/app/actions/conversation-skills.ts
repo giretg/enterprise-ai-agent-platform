@@ -6,8 +6,6 @@ import { requireTenantRole } from '@/auth/tenant-context'
 import {
   decideConversationSkillProposal,
   reviseConversationSkillProposal,
-  submitConversationSkill,
-  type ConversationSkillOutcome,
 } from '@/domain/skill/conversation-skill'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import {
@@ -97,19 +95,4 @@ export async function decideConversationSkillProposalAction(input: {
   } catch (err) {
     return fail(err instanceof Error ? err.message : 'A bírálat sikertelen.')
   }
-}
-
-export async function submitConversationSkillForPrincipal(input: {
-  userId: string
-  tenantId: string
-  role: 'viewer' | 'operator' | 'approver' | 'admin'
-  assumed: boolean
-  agentId: string
-  name: string
-  description: string
-  instructions: string
-  requires?: Array<{ toolName: string; reason: string }>
-  attachments?: Array<{ path: string; text: string }>
-}): Promise<ConversationSkillOutcome> {
-  return submitConversationSkill(input, ports())
 }

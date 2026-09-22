@@ -41,22 +41,8 @@ export function conversationSkillRecord(): {
   return { producesSkills: false, kind: 'tenant', catalogScope: 'tenant' }
 }
 
-export function producerSkillMarkerError(input: {
-  requested: boolean
-  kind: 'tenant' | 'published' | 'system'
-  existingProducerSkillId: string | null
-  skillId?: string | null
-}): string | null {
-  if (!input.requested) return null
-  if (input.kind !== 'tenant') return 'Gyártó skill csak tenant-skill lehet.'
-  if (
-    input.existingProducerSkillId &&
-    input.existingProducerSkillId !== (input.skillId ?? null)
-  ) {
-    return 'Ebben a tenantban már van gyártó skill. Második létrehozását a platform elutasítja.'
-  }
-  return null
-}
+const NAME_TAKEN_MESSAGE =
+  'Elutasítva: ez a név foglalt (aktív skill vagy nyitott javaslat). Semmi nem került tárolásra. Hívj újra másik névvel.'
 
 const attachmentInputSchema = z.object({
   path: z.string().min(1).max(300),
@@ -329,12 +315,7 @@ export async function submitConversationSkill(
     exceptProposalId,
   })
   if (taken) {
-    return {
-      outcome: 'rejected',
-      reason: 'name_taken',
-      message:
-        'Elutasítva: ez a név foglalt (aktív skill vagy nyitott javaslat). Semmi nem került tárolásra. Hívj újra másik névvel.',
-    }
+    return { outcome: 'rejected', reason: 'name_taken', message: NAME_TAKEN_MESSAGE }
   }
 
   const missingTools = missingToolNames(
@@ -350,12 +331,7 @@ export async function submitConversationSkill(
       draft: prepared.draft,
     })
     if (!created.ok) {
-      return {
-        outcome: 'rejected',
-        reason: 'name_taken',
-        message:
-          'Elutasítva: ez a név foglalt (aktív skill vagy nyitott javaslat). Semmi nem került tárolásra. Hívj újra másik névvel.',
-      }
+      return { outcome: 'rejected', reason: 'name_taken', message: NAME_TAKEN_MESSAGE }
     }
     await ports.audit({
       action: CONVERSATION_SKILL_AUDIT.created,
@@ -384,12 +360,7 @@ export async function submitConversationSkill(
     draft: prepared.draft,
   })
   if (!queued.ok) {
-    return {
-      outcome: 'rejected',
-      reason: 'name_taken',
-      message:
-        'Elutasítva: ez a név foglalt (aktív skill vagy nyitott javaslat). Semmi nem került tárolásra. Hívj újra másik névvel.',
-    }
+    return { outcome: 'rejected', reason: 'name_taken', message: NAME_TAKEN_MESSAGE }
   }
   await ports.audit({
     action: queued.overwritten

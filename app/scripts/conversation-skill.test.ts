@@ -6,14 +6,16 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { REGISTERED_AUDIT_ACTIONS } from '../src/lib/audit/event-catalog'
-import { producerSkillAssignmentError } from '../src/lib/agent-skill-management'
+import {
+  producerSkillAssignmentError,
+  producerSkillMarkerError,
+} from '../src/lib/agent-skill-management'
 import {
   CONVERSATION_SKILL_AUDIT,
   conversationSkillRecord,
   conversationSkillSubmitSchema,
   decideConversationSkillProposal,
   prepareConversationSkillDraft,
-  producerSkillMarkerError,
   reviseConversationSkillProposal,
   submitConversationSkill,
   type ConversationSkillDraft,

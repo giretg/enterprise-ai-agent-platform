@@ -15,6 +15,12 @@ import { repositories } from './index'
 
 type Db = Prisma.TransactionClient | typeof prisma
 
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: string }).code === 'P2002'
+}
+
+// ponytail: az aktív skill neve check-then-insert, unique index nélkül (a státusz a verzión van).
+// Két párhuzamos admin-hívás ugyanarra a névre mindkettő írhat. Partial unique, ha ez előjön.
 async function nameTaken(
   db: Db,
   input: { tenantId: string; name: string; exceptProposalId?: string },
@@ -171,46 +177,61 @@ export function buildConversationSkillPorts(): ConversationSkillPorts {
       })
     },
     async upsertOpen(input) {
-      return prisma.$transaction(async (tx) => {
-        const existing = await tx.conversationSkillProposal.findFirst({
-          where: {
-            tenantId: input.tenantId,
-            agentId: input.agentId,
-            requestedById: input.userId,
-            status: 'open',
-          },
-        })
-        if (
-          await nameTaken(tx, {
-            tenantId: input.tenantId,
-            name: input.draft.name,
-            exceptProposalId: existing?.id,
+      const write = (overwritten: boolean) =>
+        prisma.$transaction(async (tx) => {
+          const existing = await tx.conversationSkillProposal.findFirst({
+            where: {
+              tenantId: input.tenantId,
+              agentId: input.agentId,
+              requestedById: input.userId,
+              status: 'open',
+            },
           })
-        ) {
+          if (
+            await nameTaken(tx, {
+              tenantId: input.tenantId,
+              name: input.draft.name,
+              exceptProposalId: existing?.id,
+            })
+          ) {
+            return { ok: false as const, reason: 'name_taken' as const }
+          }
+          const data = {
+            name: input.draft.name,
+            description: input.draft.description,
+            content: input.draft.content as unknown as Prisma.InputJsonValue,
+            requires: input.draft.requires as unknown as Prisma.InputJsonValue,
+            attachments: input.draft.attachments as unknown as Prisma.InputJsonValue,
+          }
+          if (existing) {
+            await tx.conversationSkillProposal.update({ where: { id: existing.id }, data })
+            return { ok: true as const, proposalId: existing.id, overwritten: true }
+          }
+          if (overwritten) return { ok: false as const, reason: 'name_taken' as const }
+          const created = await tx.conversationSkillProposal.create({
+            data: {
+              ...data,
+              tenantId: input.tenantId,
+              agentId: input.agentId,
+              requestedById: input.userId,
+              status: 'open',
+            },
+          })
+          return { ok: true as const, proposalId: created.id, overwritten: false }
+        })
+      try {
+        return await write(false)
+      } catch (err) {
+        // A nyitott javaslat unique indexe közben létrejött sor: a második hívás felülír.
+        // Névütközésnél a második tranzakció is unique-ra fut, és semmi nem íródik.
+        if (!isUniqueViolation(err)) throw err
+        try {
+          return await write(true)
+        } catch (retryErr) {
+          if (!isUniqueViolation(retryErr)) throw retryErr
           return { ok: false, reason: 'name_taken' }
         }
-        const data = {
-          name: input.draft.name,
-          description: input.draft.description,
-          content: input.draft.content as unknown as Prisma.InputJsonValue,
-          requires: input.draft.requires as unknown as Prisma.InputJsonValue,
-          attachments: input.draft.attachments as unknown as Prisma.InputJsonValue,
-        }
-        if (existing) {
-          await tx.conversationSkillProposal.update({ where: { id: existing.id }, data })
-          return { ok: true as const, proposalId: existing.id, overwritten: true }
-        }
-        const created = await tx.conversationSkillProposal.create({
-          data: {
-            ...data,
-            tenantId: input.tenantId,
-            agentId: input.agentId,
-            requestedById: input.userId,
-            status: 'open',
-          },
-        })
-        return { ok: true as const, proposalId: created.id, overwritten: false }
-      })
+      }
     },
     async getOpen(input) {
       const row = await prisma.conversationSkillProposal.findFirst({

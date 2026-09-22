@@ -6,8 +6,12 @@ import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
 import { repositories } from '@/repositories/postgres'
 import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
-import { canManageAgentSkills, producerSkillAssignmentError } from '@/lib/agent-skill-management'
-import { producerSkillMarkerError } from '@/domain/skill/conversation-skill'
+import {
+  canManageAgentSkills,
+  PRODUCER_SKILL_TAKEN,
+  producerSkillAssignmentError,
+  producerSkillMarkerError,
+} from '@/lib/agent-skill-management'
 import {
   findProducerSkillId,
   setProducesSkills,
@@ -66,9 +70,6 @@ function messageFrom(err: unknown): string {
   if (err instanceof Error) return err.message
   return 'Ismeretlen hiba a skill-műveletben.'
 }
-
-const PRODUCER_SKILL_TAKEN =
-  'Ebben a tenantban már van gyártó skill. Második létrehozását a platform elutasítja.'
 
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: string }).code === 'P2002'
