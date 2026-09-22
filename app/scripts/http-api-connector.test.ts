@@ -103,7 +103,12 @@ async function main() {
     const client = new HttpApiClient(baseConfig, 'stub-api-key')
     await assert.rejects(
       client.request({ method: 'DELETE', path: '/banks/507f1f77bcf86cd799439011/contacts/abc' }),
-      (e: unknown) => e instanceof HttpApiError && e.code === 'endpoint_not_allowed',
+      (e: unknown) =>
+        e instanceof HttpApiError
+        && e.code === 'endpoint_not_allowed'
+        && Array.isArray(e.allowedEndpoints)
+        && e.allowedEndpoints.length > 0
+        && !JSON.stringify(e.allowedEndpoints).includes('stub-api-key'),
     )
   })
 

@@ -7,7 +7,7 @@ const ROLE_INSTRUCTION_PREVIEW_MAX = 240
 
 const MCP_TOOLING_INSTRUCTIONS = [
   'Skills: use resources/list and resources/read on skill:// URIs. If the client cannot read MCP resources directly, call platform.skills.list and then platform.skills.read.',
-  'Company HTTP APIs: platform.agent.get_definition lists each coworker\'s bound connectors by id, type and access mode only — it does not enumerate endpoints. Use http_api_get / http_api_get_all / http_api_request only with paths the coworker\'s own role instruction or the user already named; an unlisted path is rejected. Credentials stay on the connector.',
+  'Company HTTP APIs: platform.agent.get_definition lists each coworker\'s bound http_api connectors, and for each one an endpoints array (method, path, description, params) — call get_definition first and use only those paths with http_api_get / http_api_get_all / http_api_request. Do not guess paths (e.g. plausible REST conventions); an unlisted path is rejected with endpoint_not_allowed, which also echoes the allowed list. A connector with no endpoints array is unprovisioned — ask a human to complete its setup rather than guessing. Credentials stay on the connector.',
   'Gmail: gmail_search then gmail_get_message.',
   'Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval.',
   'Knowledge base: kb_search, kb_list_index, kb_get_page.',
