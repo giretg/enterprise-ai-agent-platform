@@ -19,17 +19,33 @@ import type { Agent, AgentDefinitionVersion, AgentStatus, Prisma } from '@prisma
 import type {
   AgentDefinitionRepository,
   AgentRepository,
+  ConnectorRepository,
   SkillRepository,
 } from '@/repositories/interfaces'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
+import {
+  parseHttpApiConfig,
+  summarizeHttpApiEndpoints,
+  type HttpApiEndpointSummary,
+} from '@/domain/connector/http-api-client'
 
 export type AgentDefinitionSnapshot = {
   name: string
   roleInstruction: string
   description?: string | null
   skills: Array<{ skillId: string; skillVersionId: string; name: string }>
-  connectors: Array<{ connectorId: string; type: string; accessMode: 'read' | 'write' }>
+  connectors: Array<{
+    connectorId: string
+    type: string
+    accessMode: 'read' | 'write'
+    /**
+     * `http_api` connectoroknál az engedélyezett végpont-katalógus (path, method,
+     * paraméterek) — a hívó félnek enélkül nincs módja kitalálni, mely path-ok
+     * engedélyezettek. Hiányzik, ha a connector configja hibás/hiányos (fail-soft).
+     */
+    endpoints?: HttpApiEndpointSummary[]
+  }>
   capabilities: Array<{ toolName: string; allowed: boolean }>
 }
 
@@ -57,6 +73,8 @@ export type AgentDefinitionDeps = {
     'create' | 'findById' | 'findByAgentAndVersion' | 'findMaxVersion'
   >
   skills: Pick<SkillRepository, 'listEnabledForAgent'>
+  /** Opcionális: http_api connectorok végpont-katalógusának feloldásához a snapshotban. */
+  connectors?: Pick<ConnectorRepository, 'findById'>
   audit?: AuditSink
 }
 
@@ -111,10 +129,42 @@ type DraftWorkingSet = {
   capabilities: Array<{ toolName: string; allowed: boolean }>
 }
 
-function buildSnapshot(
-  agent: { name: string; roleInstruction: string; description?: string | null },
+/**
+ * `http_api` connector engedélyezett végpontjai a definíció-snapshothoz. Fail-soft:
+ * hibás/hiányos configú connectornál (pl. self-updating spec még nincs jóváhagyva)
+ * `undefined`-ot ad — nem buktatja el a teljes snapshotot egy connector miatt.
+ */
+async function resolveHttpApiEndpoints(
+  connectors: Pick<ConnectorRepository, 'findById'>,
+  connectorId: string,
+  tenantId: string,
+): Promise<HttpApiEndpointSummary[] | undefined> {
+  try {
+    const resolved = await connectors.findById(connectorId, tenantId)
+    if (!resolved) return undefined
+    return summarizeHttpApiEndpoints(parseHttpApiConfig(resolved.config).endpoints)
+  } catch {
+    return undefined
+  }
+}
+
+async function buildSnapshot(
+  agent: { tenantId: string; name: string; roleInstruction: string; description?: string | null },
   workingSet: Pick<DraftWorkingSet, 'enabledSkills' | 'connectors' | 'capabilities'>,
-): AgentDefinitionSnapshot {
+  connectors?: Pick<ConnectorRepository, 'findById'>,
+): Promise<AgentDefinitionSnapshot> {
+  const connectorEntries = await Promise.all(
+    workingSet.connectors.map(async (row) => {
+      const base = {
+        connectorId: row.connector.id,
+        type: row.connector.type,
+        accessMode: row.accessMode,
+      }
+      if (row.connector.type !== 'http_api' || !connectors) return base
+      const endpoints = await resolveHttpApiEndpoints(connectors, row.connector.id, agent.tenantId)
+      return endpoints ? { ...base, endpoints } : base
+    }),
+  )
   return {
     name: agent.name,
     roleInstruction: agent.roleInstruction,
@@ -126,11 +176,7 @@ function buildSnapshot(
         skillVersionId: row.skillVersionId,
         name: row.skillVersion.skill.name,
       })),
-    connectors: workingSet.connectors.map((row) => ({
-      connectorId: row.connector.id,
-      type: row.connector.type,
-      accessMode: row.accessMode,
-    })),
+    connectors: connectorEntries,
     capabilities: workingSet.capabilities.map((row) => ({
       toolName: row.toolName,
       allowed: row.allowed,
@@ -163,7 +209,11 @@ export class AgentDefinitionService {
       this.deps.agents.findConnectorsForAgent(agent.id),
       this.deps.agents.findCapabilitiesForAgent(agent.id),
     ])
-    const workingSet = buildSnapshot(agent, { enabledSkills, connectors, capabilities })
+    const workingSet = await buildSnapshot(
+      agent,
+      { enabledSkills, connectors, capabilities },
+      this.deps.connectors,
+    )
     return {
       agentId: agent.id,
       status: agent.status,
@@ -189,7 +239,11 @@ export class AgentDefinitionService {
       this.deps.agents.findConnectorsForAgent(agent.id),
       this.deps.agents.findCapabilitiesForAgent(agent.id),
     ])
-    const draft = buildSnapshot(agent, { enabledSkills, connectors, capabilities })
+    const draft = await buildSnapshot(
+      agent,
+      { enabledSkills, connectors, capabilities },
+      this.deps.connectors,
+    )
     return {
       definitionId: row.id,
       version: row.version,
@@ -211,7 +265,11 @@ export class AgentDefinitionService {
       this.deps.agents.findCapabilitiesForAgent(agent.id),
     ])
 
-    const snapshot = buildSnapshot(agent, { enabledSkills, connectors, capabilities })
+    const snapshot = await buildSnapshot(
+      agent,
+      { enabledSkills, connectors, capabilities },
+      this.deps.connectors,
+    )
 
     const version = (await this.deps.versions.findMaxVersion(agent.id)) + 1
     const row = await this.deps.versions.create({

@@ -484,7 +484,13 @@ function mapToolError(
     }
   }
   if (error instanceof HttpApiError) {
-    return { code: error.code === 'missing_api_key' ? 'missing_api_key' : 'http_api_error', extra: { httpCode: error.code } }
+    return {
+      code: error.code === 'missing_api_key' ? 'missing_api_key' : 'http_api_error',
+      extra: {
+        httpCode: error.code,
+        ...(error.allowedEndpoints?.length ? { allowedEndpoints: error.allowedEndpoints } : {}),
+      },
+    }
   }
   return { code: 'tool_execution_failed' }
 }

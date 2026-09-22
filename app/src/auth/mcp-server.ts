@@ -504,6 +504,7 @@ async function getWorkingSetToolResult(
     agents: deps.agentScaffold.agents,
     versions: deps.agentScaffold.versions,
     skills: deps.agentScaffold.skills,
+    connectors: deps.agentScaffold.connectors,
     audit: deps.agentScaffold.audit,
   })
   await auditMcpToolCall(deps, principal, MCP_AGENT_GET_WORKING_SET_TOOL)
@@ -785,7 +786,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'HTTP API GET',
           description:
-            'One GET against a bound company HTTP API connector. Path is relative to the connector baseUrl — do not send credentials. For large lists use http_api_get_all. If several HTTP connectors are bound, pass connectorId from the agent definition.',
+            'One GET against a bound company HTTP API connector. Path is relative to the connector baseUrl — do not send credentials. For large lists use http_api_get_all. If several HTTP connectors are bound, pass connectorId from the agent definition. Before guessing a path, check platform.agent.get_definition — each http_api connector lists its allowed endpoints (method, path, params) under connectors[].endpoints; an unlisted path fails with endpoint_not_allowed, whose response also echoes the allowed list.',
           inputSchema: httpApiGetInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -796,7 +797,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'HTTP API GET all pages',
           description:
-            'Paginated GET of a company HTTP API list in one call. Required for ownerships/partners/large registers — do not page http_api_get yourself. Path is relative to the connector baseUrl.',
+            'Paginated GET of a company HTTP API list in one call. Required for ownerships/partners/large registers — do not page http_api_get yourself. Path is relative to the connector baseUrl. Allowed paths are listed under connectors[].endpoints in platform.agent.get_definition.',
           inputSchema: httpApiGetAllInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -807,7 +808,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'HTTP API write',
           description:
-            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Waits for human approval. body is a JSON string. Path is relative to the connector baseUrl.',
+            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Waits for human approval. body is a JSON string. Path is relative to the connector baseUrl. Allowed paths and required body fields are listed under connectors[].endpoints in platform.agent.get_definition.',
           inputSchema: httpApiRequestInputSchema,
         },
         async (args) => enterpriseToolResult(principal, HTTP_API_REQUEST_TOOL, args, deps),

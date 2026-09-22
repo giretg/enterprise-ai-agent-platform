@@ -58,6 +58,35 @@ export type HttpApiEndpointParam = {
   description?: string
 }
 
+/** Végpont-katalógus sor a modellnek/MCP-kliensnek — titkot sosem tartalmaz. */
+export type HttpApiEndpointSummary = {
+  method: string
+  path: string
+  access?: 'read' | 'write'
+  description?: string
+  queryParams?: HttpApiEndpointParam[]
+  pathParams?: HttpApiEndpointParam[]
+}
+
+/**
+ * A connector engedélyezett végpontjai emberi/modell-olvasható alakban — ugyanaz
+ * a lista, ami a hívást is engedélyezi (`config.endpoints`), csak titok nélkül.
+ * Ezt kapja meg az agent-definíció (proaktív felfedezés) és az `endpoint_not_allowed`
+ * hiba is (reaktív felfedezés, ha mégis rossz path-ot próbált).
+ */
+export function summarizeHttpApiEndpoints(
+  endpoints: HttpApiEndpoint[] | undefined,
+): HttpApiEndpointSummary[] {
+  return (endpoints ?? []).map((endpoint) => ({
+    method: endpoint.method,
+    path: endpoint.path,
+    ...(endpoint.access ? { access: endpoint.access } : {}),
+    ...(endpoint.description ? { description: endpoint.description } : {}),
+    ...(endpoint.queryParams?.length ? { queryParams: endpoint.queryParams } : {}),
+    ...(endpoint.pathParams?.length ? { pathParams: endpoint.pathParams } : {}),
+  }))
+}
+
 export type HttpApiEndpoint = {
   method: string
   path: string
@@ -602,6 +631,8 @@ export class HttpApiError extends Error {
   constructor(
     message: string,
     readonly code: string,
+    /** `endpoint_not_allowed`-nál a valódi engedélyezett katalógus (reaktív felfedezés). */
+    readonly allowedEndpoints?: HttpApiEndpointSummary[],
   ) {
     super(message)
     this.name = 'HttpApiError'
@@ -679,7 +710,11 @@ export class HttpApiClient {
         ) {
           return continuationEndpoint
         }
-        throw new HttpApiError(`endpoint not allowed: ${method} ${path}`, 'endpoint_not_allowed')
+        throw new HttpApiError(
+          `endpoint not allowed: ${method} ${path}`,
+          'endpoint_not_allowed',
+          summarizeHttpApiEndpoints(this.config.endpoints),
+        )
       }
     }
     return endpoint

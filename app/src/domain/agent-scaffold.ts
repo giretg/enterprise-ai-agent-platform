@@ -53,7 +53,7 @@ export type AgentScaffoldDeps = {
     'create' | 'findById' | 'findByAgentAndVersion' | 'findMaxVersion'
   >
   skills: Pick<SkillRepository, 'findByNameInScope' | 'findById' | 'assign' | 'listEnabledForAgent'>
-  connectors: Pick<ConnectorRepository, 'listForTenant'>
+  connectors: Pick<ConnectorRepository, 'listForTenant' | 'findById'>
   audit?: AuditSink
 }
 
@@ -213,6 +213,7 @@ export async function createDraftAgent(
     agents: deps.agents,
     versions: deps.versions,
     skills: deps.skills,
+    connectors: deps.connectors,
     audit: deps.audit,
   })
   const workingSet = await definitionService.getWorkingSet({
@@ -276,6 +277,7 @@ export async function publishAgentWorkingSet(
     agents: deps.agents,
     versions: deps.versions,
     skills: deps.skills,
+    connectors: deps.connectors,
     audit: deps.audit,
   })
   const published = await definitionService.publishAgentDefinition({

@@ -121,6 +121,7 @@ const agentDefinitionService = new AgentDefinitionService({
   agents: repositories.agents,
   versions: repositories.agentDefinitions,
   skills: repositories.skills,
+  connectors: repositories.connectors,
   audit: repositories.audit,
 })
 

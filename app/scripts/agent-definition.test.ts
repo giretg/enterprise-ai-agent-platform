@@ -3,7 +3,15 @@
  * Futtatás: npm run test:agent-definition
  */
 import assert from 'node:assert/strict'
-import type { Agent, AgentDefinitionVersion, AgentSkill, Prisma, Skill, SkillVersion } from '@prisma/client'
+import type {
+  Agent,
+  AgentDefinitionVersion,
+  AgentSkill,
+  Connector,
+  Prisma,
+  Skill,
+  SkillVersion,
+} from '@prisma/client'
 import {
   AgentDefinitionService,
   hashSnapshot,
@@ -46,13 +54,35 @@ function agentRow(overrides: Partial<Agent> = {}): Agent {
   }
 }
 
-function memoryDeps(opts?: { skillStatus?: SkillVersion['status'] }) {
+function memoryDeps(opts?: {
+  skillStatus?: SkillVersion['status']
+  connectorType?: Connector['type']
+  connectorConfig?: Prisma.JsonValue
+}) {
   const agents = new Map<string, Agent>([[AGENT_ID, agentRow()]])
   const versions: AgentDefinitionVersion[] = []
   return {
     agents,
     versions,
     service: new AgentDefinitionService({
+      connectors: {
+        async findById(id: string) {
+          if (id !== CONNECTOR_ID) return null
+          return {
+            id: CONNECTOR_ID,
+            type: opts?.connectorType ?? 'google_drive',
+            name: 'Test connector',
+            authMode: 'service',
+            scope: 'single',
+            secretAlias: 'secret://test',
+            version: 1,
+            config: opts?.connectorConfig ?? {},
+            lifecycleState: 'active',
+            tenantId: TENANT_A,
+            createdAt: new Date(),
+          } as AgentConnectorBinding['connector']
+        },
+      },
       agents: {
         async findById(id, tenantId) {
           const row = agents.get(id) ?? null
@@ -79,7 +109,7 @@ function memoryDeps(opts?: { skillStatus?: SkillVersion['status'] }) {
               accessMode: 'read',
               connector: {
                 id: CONNECTOR_ID,
-                type: 'google_drive',
+                type: opts?.connectorType ?? 'google_drive',
                 name: 'Google Drive',
                 authMode: 'user_delegated',
                 scope: 'single',
@@ -279,6 +309,38 @@ async function main() {
     agents.set(AGENT_ID, { ...current, roleInstruction: 'Changed after publish.' })
     const stale = await service.getPublishStatus({ agentId: AGENT_ID, tenantId: TENANT_A })
     assert.deepEqual(stale, { definitionId: published.definitionId, version: 1, stale: true })
+  })
+
+  await check('http_api connector publishes its endpoint catalog into the snapshot', async () => {
+    const { service } = memoryDeps({
+      connectorType: 'http_api',
+      connectorConfig: {
+        baseUrl: 'https://example.test',
+        auth: { scheme: 'header', header: 'X-Api-Key' },
+        restrictToEndpoints: true,
+        endpoints: [{ method: 'GET', path: '/things', description: 'List things' }],
+      },
+    })
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    assert.deepEqual(published.snapshot.connectors[0]?.endpoints, [
+      { method: 'GET', path: '/things', description: 'List things' },
+    ])
+    const json = JSON.stringify(published.snapshot)
+    assert.equal(json.includes('X-Api-Key'), false)
+  })
+
+  await check('http_api connector with a broken config publishes without endpoints (fail-soft)', async () => {
+    const { service } = memoryDeps({ connectorType: 'http_api', connectorConfig: {} })
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    assert.equal(published.snapshot.connectors[0]?.endpoints, undefined)
   })
 
   if (failures > 0) {
