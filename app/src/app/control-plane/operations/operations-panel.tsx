@@ -85,7 +85,8 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
           return (
             <li
               key={row.operationId}
-              className="rounded-xl border border-ink/10 bg-white/50 p-4 shadow-sm"
+              id={row.operationId}
+              className="rounded-xl border border-ink/10 bg-white/50 p-4 shadow-sm target:ring-2 target:ring-coral"
             >
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <p className="font-medium text-ink">{formatToolUiName(row.toolName)}</p>

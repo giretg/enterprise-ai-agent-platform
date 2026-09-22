@@ -98,6 +98,7 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     principal: ToolCallPrincipal
     toolName: string
     args: Record<string, unknown>
+    origin?: string
   }) => Promise<EnterpriseToolMcpResult>
   startAuthorization?: StartDelegatedAuthorization
   audit?: AuditSink
@@ -197,9 +198,10 @@ export async function invokeEnterpriseTool(
     principal: ToolCallPrincipal
     toolName: string
     args: Record<string, unknown>
+    origin?: string
   },
 ): Promise<EnterpriseToolMcpResult> {
-  const { principal, toolName, args } = input
+  const { principal, toolName, args, origin } = input
   const definitionId = asUuid(args.definitionId)
   if (!definitionId) {
     await auditDenied(deps, principal, toolName, 'definition_not_found')
@@ -256,7 +258,7 @@ export async function invokeEnterpriseTool(
       await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
       return errorResult('tool_not_configured')
     }
-    return deps.enqueueWrite({ principal, toolName, args })
+    return deps.enqueueWrite({ principal, toolName, args, origin })
   }
 
   if (isEnterpriseKbTool(toolName)) {
