@@ -139,6 +139,7 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     principal: McpPrincipal
     toolName: string
     args: Record<string, unknown>
+    origin?: string
   }) => Promise<EnterpriseToolMcpResult>
   getGatewayOperation: (input: {
     principal: McpPrincipal
@@ -795,7 +796,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Create Google Drive folder',
           description:
-            'Request creation of a Drive folder under a published agent definition. Does not call Google until a human approves the operation.',
+            'Request creation of a Drive folder under a published agent definition. Does not call Google until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
           inputSchema: googleDriveCreateFolderInputSchema,
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_CREATE_FOLDER_TOOL, args, deps),
@@ -805,7 +806,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Upload Google Drive file',
           description:
-            'Request upload of a text file (HTML, CSV, JSON) to the user\'s Drive. Waits for human approval. Pass definitionId from platform.agent.get_definition.',
+            'Request upload of a text file (HTML, CSV, JSON) to the user\'s Drive. Pass definitionId from platform.agent.get_definition. Does not call Google until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
           inputSchema: googleDriveUploadFileInputSchema,
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_UPLOAD_FILE_TOOL, args, deps),
@@ -815,7 +816,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Write Google Sheet range',
           description:
-            'Request writing cells to a Google Sheet the user can edit. values is a JSON 2D array string. Waits for human approval.',
+            'Request writing cells to a Google Sheet the user can edit. values is a JSON 2D array string. Does not write until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
           inputSchema: googleSheetsWriteRangeInputSchema,
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_SHEETS_WRITE_RANGE_TOOL, args, deps),
@@ -869,7 +870,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'HTTP API write',
           description:
-            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Requires definitionId from platform.agent.get_definition. Waits for human approval. body is a JSON string. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when several APIs are bound.',
+            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Requires definitionId from platform.agent.get_definition. body is a JSON string. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when several APIs are bound. Does not call the API until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
           inputSchema: httpApiRequestInputSchema,
         },
         async (args) => enterpriseToolResult(principal, HTTP_API_REQUEST_TOOL, args, deps),
@@ -1013,7 +1014,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
           return getGatewayOperationToolResult(principal, args, deps)
         }
         if (isEnterpriseTool(toolName)) {
-          return enterpriseToolResult(principal, toolName, args, deps)
+          return enterpriseToolResult(principal, toolName, args, deps, origin)
         }
         return whoamiToolResult(principal, deps)
       })
@@ -1030,8 +1031,9 @@ async function enterpriseToolResult(
   toolName: string,
   args: Record<string, unknown>,
   deps: McpRuntimeDeps,
+  origin?: string,
 ) {
-  return deps.invokeEnterpriseTool({ principal, toolName, args })
+  return deps.invokeEnterpriseTool({ principal, toolName, args, origin })
 }
 
 async function getGatewayOperationToolResult(

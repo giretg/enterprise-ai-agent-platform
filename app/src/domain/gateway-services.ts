@@ -257,7 +257,7 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   audit: repositories.audit,
   startAuthorization,
   enqueueWrite: async (input) =>
-    enqueueResultToMcp(await enqueueGatewayOperation(gatewayOperationDeps, input)),
+    enqueueResultToMcp(await enqueueGatewayOperation(gatewayOperationDeps, input), input.origin),
   executeKbTool: (toolName, args, ctx) =>
     executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx),
 }

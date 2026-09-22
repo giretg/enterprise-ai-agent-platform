@@ -205,13 +205,19 @@ function errorMcp(code: string, authorizationUrl?: string): EnterpriseToolMcpRes
   )
 }
 
-export function enqueueResultToMcp(result: GatewayOperationResult): EnterpriseToolMcpResult {
+export function enqueueResultToMcp(
+  result: GatewayOperationResult,
+  origin?: string,
+): EnterpriseToolMcpResult {
   if (!result.ok) return errorMcp(result.code, result.authorizationUrl)
   return textResult({
     operationId: result.view.operationId,
     status: result.view.status,
     idempotencyKey: result.view.idempotencyKey,
     toolName: result.view.toolName,
+    ...(origin
+      ? { approvalUrl: `${origin.replace(/\/+$/, '')}/control-plane/operations#${result.view.operationId}` }
+      : {}),
   })
 }
 
