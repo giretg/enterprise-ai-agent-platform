@@ -107,6 +107,7 @@ import {
 import type { AgentDefinitionSnapshot } from '@/domain/agent-definition'
 import {
   conversationSkillSubmitSchema,
+  parseConversationSkillJsonLists,
   submitConversationSkill,
 } from '@/domain/skill/conversation-skill'
 import { buildConversationSkillPorts } from '@/repositories/postgres/conversation-skill-repository'
@@ -417,6 +418,14 @@ async function submitSkillToolResult(
       message: `Elutasítva: ${parsed.error.issues.map((issue) => issue.message).join(' · ')} Semmi nem került tárolásra.`,
     })
   }
+  const lists = parseConversationSkillJsonLists(parsed.data)
+  if (!lists.ok) {
+    return textResult({
+      outcome: 'rejected',
+      reason: 'validation',
+      message: `Elutasítva: ${lists.message} Semmi nem került tárolásra.`,
+    })
+  }
   const outcome = await submitConversationSkill(
     {
       userId: principal.userId,
@@ -427,8 +436,8 @@ async function submitSkillToolResult(
       name: parsed.data.name,
       description: parsed.data.description,
       instructions: parsed.data.instructions,
-      requires: parsed.data.requires,
-      attachments: parsed.data.attachments,
+      requires: lists.requires,
+      attachments: lists.attachments,
     },
     buildConversationSkillPorts(),
   )
@@ -753,7 +762,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Submit skill from conversation',
           description:
-            'Submit a new tenant skill written in this conversation for the named agentId. The server decides the outcome and the text must be relayed to the user: created (live, assigned, enabled), pending_approval, or rejected with a reason (no_producer_skill, cannot_use_agent, validation, name_taken). A tenant admin gets a live skill without opening the web UI. Anyone else who can operate the agent gets one open proposal (a new call overwrites it). Viewers and agents without an enabled producer skill are rejected and nothing is stored. Missing tools are listed; this call does not grant them. This tool cannot create or mark a producer skill.',
+            'Submit a new tenant skill written in this conversation for the named agentId. requires and attachments are JSON strings, not arrays. The server decides the outcome and the text must be relayed to the user: created (live, assigned, enabled), pending_approval, or rejected with a reason (no_producer_skill, cannot_use_agent, validation, name_taken). A tenant admin gets a live skill without opening the web UI. Anyone else who can operate the agent gets one open proposal (a new call overwrites it). Viewers and agents without an enabled producer skill are rejected and nothing is stored. Missing tools are listed; this call does not grant them. This tool cannot create or mark a producer skill.',
           inputSchema: conversationSkillSubmitSchema,
         },
         async (args) =>

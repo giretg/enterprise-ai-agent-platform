@@ -47,6 +47,7 @@ import {
   MCP_GATEWAY_OPERATION_GET_TOOL,
   MCP_SKILLS_LIST_TOOL,
   MCP_SKILL_READ_TOOL,
+  MCP_SKILL_SUBMIT_TOOL,
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
@@ -619,9 +620,13 @@ async function main() {
       MCP_AGENT_PUBLISH_TOOL,
       MCP_SKILLS_LIST_TOOL,
       MCP_SKILL_READ_TOOL,
+      MCP_SKILL_SUBMIT_TOOL,
       ...ENTERPRISE_TOOLS,
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
+    const submit = tools.find((tool) => tool.name === MCP_SKILL_SUBMIT_TOOL)
+    assert.equal(submit?.inputSchema?.properties?.requires?.type, 'string')
+    assert.equal(submit?.inputSchema?.properties?.attachments?.type, 'string')
     const search = tools.find((tool) => tool.name === GOOGLE_DRIVE_SEARCH_TOOL)
     assert.ok(search, 'google_drive_search missing from tools/list')
     assert.match(search.description ?? '', /fileId/i)

@@ -49,14 +49,67 @@ const attachmentInputSchema = z.object({
   text: z.string(),
 })
 
+const attachmentListSchema = z.array(attachmentInputSchema).max(SKILL_ATTACHMENT_MAX_COUNT)
+
 export const conversationSkillSubmitSchema = z.object({
   agentId: z.string().uuid(),
   name: z.string().min(1).max(SKILL_NAME_MAX),
   description: z.string().min(1).max(SKILL_DESCRIPTION_MAX),
   instructions: z.string().min(1).max(SKILL_INSTRUCTIONS_MAX),
-  requires: skillRequiresSchema.optional(),
-  attachments: z.array(attachmentInputSchema).max(SKILL_ATTACHMENT_MAX_COUNT).optional(),
+  // ponytail: string, not array — Claude.ai drops advertised array schemas.
+  // Attachments cap is 2× the text budget so JSON quotes fit; the real byte cap is applied after parse.
+  requires: z
+    .string()
+    .max(20_000)
+    .describe(
+      'JSON array of {toolName, reason}. Omit if none. Example: [{"toolName":"kb_search","reason":"olvasas"}]',
+    )
+    .optional(),
+  attachments: z
+    .string()
+    .max(SKILL_ATTACHMENTS_TOTAL_MAX_BYTES * 2)
+    .describe(
+      'JSON array of {path, text}. Omit if none. Example: [{"path":"scripts/report.py","text":"print(1)\\n"}]',
+    )
+    .optional(),
 })
+
+function decodeJsonList<T>(
+  label: string,
+  raw: string | undefined,
+  schema: z.ZodType<T>,
+): { ok: true; data: T | undefined } | { ok: false; message: string } {
+  if (raw == null || raw.trim() === '') return { ok: true, data: undefined }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { ok: false, message: `A(z) ${label} nem érvényes JSON.` }
+  }
+  const result = schema.safeParse(parsed)
+  if (!result.success) {
+    return { ok: false, message: result.error.issues.map((issue) => issue.message).join(' · ') }
+  }
+  return { ok: true, data: result.data }
+}
+
+/** A hirdetett MCP-séma szöveg. A tömböt csak a szerver bontja ki. */
+export function parseConversationSkillJsonLists(input: {
+  requires?: string
+  attachments?: string
+}):
+  | {
+      ok: true
+      requires: SkillRequirement[] | undefined
+      attachments: Array<{ path: string; text: string }> | undefined
+    }
+  | { ok: false; message: string } {
+  const requires = decodeJsonList('requires', input.requires, skillRequiresSchema)
+  if (!requires.ok) return requires
+  const attachments = decodeJsonList('attachments', input.attachments, attachmentListSchema)
+  if (!attachments.ok) return attachments
+  return { ok: true, requires: requires.data, attachments: attachments.data }
+}
 
 export type ConversationSkillDraft = {
   name: string

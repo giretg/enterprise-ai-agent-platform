@@ -69,6 +69,7 @@ jobs:
           npm run test:mcp-principal
           npm run test:mcp-http
           npm run test:mcp-skills
+          npm run test:conversation-skill
           npm run test:agent-checkout
           npm run test:enterprise-tools
           npm run test:kb-gate

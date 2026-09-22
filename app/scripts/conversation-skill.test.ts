@@ -14,6 +14,7 @@ import {
   CONVERSATION_SKILL_AUDIT,
   conversationSkillRecord,
   conversationSkillSubmitSchema,
+  parseConversationSkillJsonLists,
   decideConversationSkillProposal,
   prepareConversationSkillDraft,
   reviseConversationSkillProposal,
@@ -515,8 +516,26 @@ async function main() {
       agentId: AGENT,
       ...draftInput,
       producesSkills: true,
+      requires: JSON.stringify([{ toolName: 'kb_search', reason: 'olvasas' }]),
+      attachments: JSON.stringify([{ path: 'scripts/report.py', text: 'print(1)\n' }]),
     })
     assert.equal('producesSkills' in parsed, false)
+    assert.equal(typeof parsed.requires, 'string')
+    const lists = parseConversationSkillJsonLists(parsed)
+    assert.equal(lists.ok, true)
+    if (lists.ok) {
+      assert.deepEqual(lists.requires, [{ toolName: 'kb_search', reason: 'olvasas' }])
+      assert.equal(lists.attachments?.[0]?.path, 'scripts/report.py')
+    }
+    assert.equal(
+      conversationSkillSubmitSchema.safeParse({
+        agentId: AGENT,
+        ...draftInput,
+        requires: [{ toolName: 'kb_search', reason: 'olvasas' }],
+      }).success,
+      false,
+    )
+    assert.equal(parseConversationSkillJsonLists({ requires: '{' }).ok, false)
     assert.equal(
       producerSkillMarkerError({
         requested: true,
