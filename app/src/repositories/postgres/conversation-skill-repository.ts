@@ -11,6 +11,7 @@ import { prisma } from '@/lib/db'
 import { parseSkillAttachments } from '@/lib/skill/skill-attachments'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
 import { computeSkillContentHash } from '@/lib/skill/skill-content-hash'
+import { producerSkillWhere } from '@/lib/skill/skill-producer'
 import { repositories } from './index'
 
 type Db = Prisma.TransactionClient | typeof prisma
@@ -141,9 +142,10 @@ export function buildConversationSkillPorts(): ConversationSkillPorts {
         where: {
           agentId: input.agentId,
           enabled: true,
+          agent: { tenantId: input.tenantId },
           skillVersion: {
             status: 'active',
-            skill: { producesSkills: true, tenantId: input.tenantId },
+            skill: producerSkillWhere(input.tenantId),
           },
         },
         select: { agentId: true },
