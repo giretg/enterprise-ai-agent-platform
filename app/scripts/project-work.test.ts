@@ -301,6 +301,19 @@ await check('direct mode writes immediately with the caller as conversation part
   assert.equal(written.item.withUserId, ANNA)
 })
 
+await check('approved replace of an already-superseded item fails at commit', async () => {
+  const { svc } = harness('direct')
+  const base = { tenantId: TENANT, agentId: AGENT, kind: 'decision', withUserId: ANNA }
+  const first = await svc.writeMemory({ ...base, title: 'v1', body: 'v1', mode: 'direct' })
+  assert.ok(first.ok && first.status === 'written')
+  if (!first.ok || first.status !== 'written') return
+  const pending = await svc.writeMemory({ ...base, title: 'v2a', body: 'v2a', replaceId: first.item.id, mode: 'approval' })
+  assert.ok(pending.ok && pending.status === 'needs_approval')
+  if (!pending.ok || pending.status !== 'needs_approval') return
+  await svc.writeMemory({ ...base, title: 'v2b', body: 'v2b', replaceId: first.item.id, mode: 'direct' })
+  await assert.rejects(svc.commitMemory(pending.draft), /memory_not_found/)
+})
+
 await check('Béla sees Anna tagged; mine=true returns only Béla', async () => {
   const { svc } = harness('direct')
   await svc.writeMemory({

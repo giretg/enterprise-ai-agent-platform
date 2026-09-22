@@ -288,11 +288,18 @@ export class ProjectWorkService {
     if (input.mode === 'approval') {
       return ok({ status: 'needs_approval' as const, draft: prepared.draft })
     }
-    const item = await this.commitMemory(prepared.draft)
+    const item = await this.insertMemory(prepared.draft)
     return ok({ status: 'written' as const, item })
   }
 
+  /** Approved draft → re-validated at commit time (project may be archived, replaceId superseded since enqueue). */
   async commitMemory(draft: Omit<MemoryWriteInput, 'mode'>): Promise<MemoryView> {
+    const prepared = await this.prepareMemoryWrite({ ...draft, mode: 'direct' })
+    if (!prepared.ok) throw new Error(prepared.code)
+    return this.insertMemory(prepared.draft)
+  }
+
+  private async insertMemory(draft: Omit<MemoryWriteInput, 'mode'>): Promise<MemoryView> {
     const row = await this.memory.insertActive({
       tenantId: draft.tenantId,
       agentId: draft.agentId,
