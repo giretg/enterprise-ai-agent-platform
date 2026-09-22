@@ -73,6 +73,13 @@ export type HttpApiEndpoint = {
   access?: 'read' | 'write'
   headers?: Record<string, string>
   headerParams?: Array<{ name: string; required: boolean }>
+  /**
+   * Platform-sablon fejlécek (requestHeaders/writeHeaders/headers), amiket EZ az
+   * endpoint az OpenAPI-ja szerint `required: false`-nak jelöl (pl. X-Acting-User,
+   * ha nincs bejelentkezett actingUser). Ha a sablon nem tud feloldódni, ezekre
+   * NEM dobunk hibát — a fejlécet egyszerűen kihagyjuk a hívásból.
+   */
+  optionalPlatformHeaders?: ReadonlySet<string>
   /** Dokumentált query paraméterek — a modell elé kerülnek a tool loopban. */
   queryParams?: HttpApiEndpointParam[]
   /** Dokumentált path paraméterek (template mellett). */
@@ -272,6 +279,7 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
             platformHeaders.add(IDEMPOTENCY_HEADER_LOWER)
           }
           const headerParams = parseEndpointHeaderParams(e, platformHeaders)
+          const optionalPlatformHeaders = parseOptionalPlatformHeaders(e, platformHeaders)
           const queryParams = parseEndpointLocationParams(e, 'query')
           const pathParams = parseEndpointLocationParams(e, 'path')
           const paginationResult = httpPaginationSchema.safeParse(e.pagination)
@@ -285,6 +293,7 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
             ...(access ? { access } : {}),
             headers,
             ...(headerParams ? { headerParams } : {}),
+            ...(optionalPlatformHeaders ? { optionalPlatformHeaders } : {}),
             ...(queryParams ? { queryParams } : {}),
             ...(pathParams ? { pathParams } : {}),
             ...(paginationResult.success ? { pagination: paginationResult.data } : {}),
@@ -417,6 +426,31 @@ function parseEndpointHeaderParams(
     byName.set(lower, param)
   }
   return byName.size > 0 ? [...byName.values()] : undefined
+}
+
+/**
+ * A platform-sablon fejlécek (X-Agent-Id, X-Acting-User, stb.) közül melyeket
+ * jelöl EZ az endpoint `required: false`-nak a saját OpenAPI-jában. `parseEndpointHeaderParams`
+ * pont ezeket zárja ki (azok a modellnek szóló, nem-platform fejlécek) — itt a
+ * fordítottja kell: csak a platform-fejlécek, hogy tudjuk melyiket lehet kihagyni,
+ * ha a sablon-értéke (pl. actingUser.email) nem áll rendelkezésre.
+ */
+function parseOptionalPlatformHeaders(
+  endpoint: Record<string, unknown>,
+  platformHeaders: Set<string>,
+): Set<string> | undefined {
+  const params = Array.isArray(endpoint.parameters)
+    ? endpoint.parameters.filter(
+        (param): param is Record<string, unknown> =>
+          isRecord(param) && param.in === 'header' && typeof param.name === 'string',
+      )
+    : []
+  const optional = new Set<string>()
+  for (const param of params) {
+    const lower = String(param.name).toLowerCase()
+    if (platformHeaders.has(lower) && param.required !== true) optional.add(lower)
+  }
+  return optional.size > 0 ? optional : undefined
 }
 
 function parseOptionalAbsoluteUrl(raw: unknown, field: string): string | undefined {
@@ -737,9 +771,10 @@ export class HttpApiClient {
     context: HttpApiTemplateContext | undefined,
   ): Record<string, string> {
     const headers: Record<string, string> = {}
-    applyHeaderTemplates(headers, this.config.requestHeaders, context)
-    if (!READ_METHODS.has(method)) applyHeaderTemplates(headers, this.config.writeHeaders, context)
-    applyHeaderTemplates(headers, endpoint?.headers, context)
+    const optional = endpoint?.optionalPlatformHeaders
+    applyHeaderTemplates(headers, this.config.requestHeaders, context, optional)
+    if (!READ_METHODS.has(method)) applyHeaderTemplates(headers, this.config.writeHeaders, context, optional)
+    applyHeaderTemplates(headers, endpoint?.headers, context, optional)
 
     if (endpoint?.idempotent && !READ_METHODS.has(method) && !hasHeader(headers, IDEMPOTENCY_HEADER_LOWER)) {
       if (!context) throw new HttpApiError('idempotent endpoint requires call context', 'missing_context')
@@ -1086,11 +1121,25 @@ function applyHeaderTemplates(
   target: Record<string, string>,
   templates: Record<string, string> | undefined,
   context: HttpApiTemplateContext | undefined,
+  optionalHeaders?: ReadonlySet<string>,
 ): void {
   if (!templates) return
   if (!context) throw new HttpApiError('header templates require call context', 'missing_context')
   for (const [name, template] of Object.entries(templates)) {
-    target[name] = renderTemplate(template, context)
+    try {
+      target[name] = renderTemplate(template, context)
+    } catch (error) {
+      // Az endpoint saját OpenAPI-ja szerint opcionális fejléc (pl. X-Acting-User
+      // actingUser nélküli MCP-hívásnál) — kihagyjuk, nem buktatjuk a hívást.
+      if (
+        error instanceof HttpApiError &&
+        error.code === 'template_variable_missing' &&
+        optionalHeaders?.has(name.toLowerCase())
+      ) {
+        continue
+      }
+      throw error
+    }
   }
 }
 
