@@ -23,8 +23,6 @@ function ports() {
   return buildConversationSkillPorts()
 }
 
-export type { OpenConversationSkillListRow }
-
 export async function listConversationSkillProposalsAction(): Promise<
   ActionResult<OpenConversationSkillListRow[]>
 > {

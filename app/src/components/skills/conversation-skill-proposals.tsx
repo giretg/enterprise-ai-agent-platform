@@ -4,8 +4,8 @@ import { useState, useTransition } from 'react'
 import {
   decideConversationSkillProposalAction,
   reviseConversationSkillProposalAction,
-  type OpenConversationSkillListRow,
 } from '@/app/actions/conversation-skills'
+import type { OpenConversationSkillListRow } from '@/repositories/postgres/conversation-skill-repository'
 import { Card } from '@/components/ui/shell'
 
 export function ConversationSkillProposals({
