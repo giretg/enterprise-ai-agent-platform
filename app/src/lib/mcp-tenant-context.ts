@@ -7,7 +7,7 @@ const ROLE_INSTRUCTION_PREVIEW_MAX = 240
 
 const MCP_TOOLING_INSTRUCTIONS = [
   'Skills: use resources/list and resources/read on skill:// URIs. If the client cannot read MCP resources directly, call platform.skills.list and then platform.skills.read.',
-  'Company HTTP APIs: call platform.agent.get_definition first — connectorCatalog lists each bound connector\'s endpoints (method, path, query params) from the stored OpenAPI snapshot. Use only documented paths with http_api_get / http_api_get_all / http_api_request; credentials stay on the connector. For one connector\'s full guide use platform.connector.describe.',
+  'Company HTTP APIs: platform.agent.get_definition lists each coworker\'s bound connectors by id, type and access mode only — it does not enumerate endpoints. Use http_api_get / http_api_get_all / http_api_request only with paths the coworker\'s own role instruction or the user already named; an unlisted path is rejected. Credentials stay on the connector.',
   'Gmail: gmail_search then gmail_get_message.',
   'Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval.',
   'Knowledge base: kb_search, kb_list_index, kb_get_page.',
@@ -96,6 +96,7 @@ export function buildMcpServerInstructions(input: {
     '',
     'YOUR ROLE',
     'Help the signed-in user work with this organization\'s data through published AI agents ("coworkers"). Start with platform.whoami and platform.agents.list when the user asks who you are or which coworkers are available. Before enterprise tools for a specific agent, call platform.agent.get_definition for that agentId.',
+    'When you tell the user what this connection is or does, answer in plain business language: name the organization and the coworker(s) by what they help with. Never recite tool names, connector hostnames, agentIds, or other technical internals — the user does not know or need this — unless they explicitly ask for technical detail.',
     '',
     'LOCAL COWORKER WORKSPACES',
     'Each published coworker can have a dedicated local folder (Claude Desktop project, Codex workspace). Use platform.agent.checkout to fetch AGENTS.md, manifest, and instruction-only skill files, then write them to suggestedRoot.',
