@@ -125,9 +125,20 @@ export function McpSetupLanding({
           </section>
 
           <section>
-            <h3 className="font-semibold text-ink">Claude Code</h3>
+            <h3 className="font-semibold text-ink">Claude Desktop</h3>
+            <p className="mt-1 text-sm text-ink-soft">
+              A Claude desktop appban: <span className="font-mono text-ink">Settings → Connectors → Add custom connector</span>.
+              Névnek írd be: <span className="font-mono text-ink">{setup.serverName}</span>, URL-nek másold be:
+            </p>
             <div className="mt-3">
-              <CodeBlock value={setup.claudeCommand} copyLabel="Parancs másolása" />
+              <CodeBlock value={setup.mcpUrl} copyLabel="URL másolása" />
+            </div>
+            <p className="mt-2 text-xs text-ink-faint">
+              Az alábbi <span className="font-mono text-ink">claude mcp add</span> parancs csak a Claude Code
+              CLI-t köti be — a desktop appban nem jelenik meg tőle, mert a kettő külön konfigot használ.
+            </p>
+            <div className="mt-3">
+              <CodeBlock value={setup.claudeCommand} copyLabel="Parancs másolása (Claude Code)" />
             </div>
           </section>
         </div>
