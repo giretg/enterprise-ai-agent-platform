@@ -86,7 +86,7 @@ export class PostgresDocumentRepository implements DocumentRepository {
       SELECT id, filename, processing_mode, metadata,
              char_length(coalesce(extracted_text, ''))::int AS chars
       FROM documents
-      WHERE connector_id = ${connectorId}
+      WHERE connector_id = ${connectorId}::uuid
         AND status = CAST('processed' AS "DocumentStatus")
       ORDER BY filename ASC
     `
@@ -118,7 +118,7 @@ export class PostgresDocumentRepository implements DocumentRepository {
                'MaxWords=40, MinWords=12, MaxFragments=1, StartSel="", StopSel=""'
              ) AS snippet
       FROM documents d
-      WHERE d.connector_id = ${connectorId}
+      WHERE d.connector_id = ${connectorId}::uuid
         AND d.status = CAST('processed' AS "DocumentStatus")
         AND NOT EXISTS (
           SELECT 1 FROM knowledge_artifacts a
@@ -228,7 +228,7 @@ export class PostgresKnowledgeChunkRepository implements KnowledgeChunkRepositor
              ) AS score
       FROM knowledge_chunks c
       INNER JOIN knowledge_artifacts a ON a.id = c.artifact_id
-      WHERE c.connector_id IN (${Prisma.join(connectorIds)})
+      WHERE c.connector_id IN (${Prisma.join(connectorIds.map((id) => Prisma.sql`${id}::uuid`))})
         AND a.status = CAST('published' AS "KnowledgeArtifactStatus")
         AND to_tsvector('simple', coalesce(c.title, '') || ' ' || c.text) @@ to_tsquery('simple', ${tsquery})
       ORDER BY score DESC
