@@ -41,7 +41,6 @@ import { validateGoogleDriveDraftConfig } from './google-drive-draft-validator'
 import { ProvisioningError } from './errors'
 import { isResolvableSecretAlias } from './secret-alias'
 import { isConnectorOwnedSecretRef } from './connector-secret-alias-policy'
-import { isConnectorAssignableToAgent } from '@/domain/connector/runtime-config'
 
 export type ProvisioningActor =
   | {
@@ -746,8 +745,12 @@ export class ProvisioningService {
         'only an active connector can be assigned to an agent',
       )
     }
-    void isConnectorAssignableToAgent
-
+    if (!(await this.deps.drafts.isAssignableToAgent(input.connectorId))) {
+      throw new ProvisioningError(
+        'CONNECTOR_NOT_ASSIGNABLE',
+        'only an approved, operationally ready connector can be assigned to an agent',
+      )
+    }
     // Ha per-agent API-kulcsot adtak meg, elmentjük a Secret Store-ba és az
     // agentConnector.secretAlias-ba a secret-ref-et írjuk. Ez agent_owned módban
     // minden agent a saját kulcsát használja a megosztott connector-kulcs helyett.

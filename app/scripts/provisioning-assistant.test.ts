@@ -320,6 +320,15 @@ class FakeDraftRepo implements ConnectorDraftRepository {
         null,
     }
   }
+  async isAssignableToAgent(connectorId: string) {
+    const draft = [...this.drafts.values()].find((d) => d.connectorId === connectorId)
+    if (!draft || draft.connector.lifecycleState !== 'active') return false
+    return isConnectorAssignableToAgent(
+      draft.connector.connectorMode,
+      (draft.connector as Connector & { activeCapabilitySet?: unknown }).activeCapabilitySet ??
+        null,
+    )
+  }
 }
 
 const okTester: SandboxConnectionTester = {

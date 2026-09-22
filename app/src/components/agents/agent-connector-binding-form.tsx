@@ -18,6 +18,40 @@ export type ConnectorCatalogOption = {
   type: string
   name: string
   description?: string | null
+  baseUrl?: string | null
+  tools?: Array<{ method: string; path: string; description?: string | null }>
+}
+
+function ConnectorCatalogDetail({ connector }: { connector: ConnectorCatalogOption }) {
+  const tools = connector.tools ?? []
+  return (
+    <div className="rounded-lg border border-line/60 bg-paper/80 px-3 py-2">
+      {connector.description ? (
+        <p className="text-sm leading-relaxed text-ink-soft">{connector.description}</p>
+      ) : (
+        <p className="text-sm italic text-ink-faint">Ehhez a kapcsolathoz nincs leírás.</p>
+      )}
+      <p className="mt-1 text-xs text-ink-faint">
+        {connector.type}
+        {connector.baseUrl ? ` · ${connector.baseUrl}` : ''}
+        {tools.length > 0 ? ` · ${tools.length} művelet` : ''}
+      </p>
+      {tools.length > 0 ? (
+        <ul className="mt-2 space-y-1">
+          {tools.slice(0, 6).map((t) => (
+            <li key={`${t.method} ${t.path}`} className="text-xs text-ink-soft">
+              <span className="font-mono font-semibold">{t.method}</span>{' '}
+              <span className="font-mono">{t.path}</span>
+              {t.description ? <span className="text-ink-faint"> — {t.description}</span> : null}
+            </li>
+          ))}
+          {tools.length > 6 ? (
+            <li className="text-xs text-ink-faint">…és még {tools.length - 6} művelet</li>
+          ) : null}
+        </ul>
+      ) : null}
+    </div>
+  )
 }
 
 type Binding = {
@@ -55,7 +89,10 @@ export function AgentConnectorBindingForm({
   }, [catalog, suggested])
   const [connectorId, setConnectorId] = useState(suggested[0]?.id ?? catalog[0]?.id ?? '')
   const [accessMode, setAccessMode] = useState<'read' | 'write'>('read')
-  const selected = ordered.find((item) => item.id === connectorId)
+  const selected = useMemo(
+    () => ordered.find((item) => item.id === connectorId),
+    [connectorId, ordered],
+  )
 
   function refresh() {
     onAssigned?.()
@@ -178,8 +215,10 @@ export function AgentConnectorBindingForm({
           </button>
         </form>
       )}
-      {selected?.description ? (
-        <p className="mt-2 text-xs text-ink-soft">{selected.description}</p>
+      {selected ? (
+        <div className="mt-3">
+          <ConnectorCatalogDetail connector={selected} />
+        </div>
       ) : null}
       {done ? (
         <p className="mt-2 rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-sage">
