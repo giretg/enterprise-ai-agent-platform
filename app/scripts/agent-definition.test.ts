@@ -316,6 +316,7 @@ async function main() {
       connectorType: 'http_api',
       connectorConfig: {
         baseUrl: 'https://example.test',
+        description: 'Example things API.',
         auth: { scheme: 'header', header: 'X-Api-Key' },
         restrictToEndpoints: true,
         endpoints: [{ method: 'GET', path: '/things', description: 'List things' }],
@@ -326,6 +327,7 @@ async function main() {
       tenantId: TENANT_A,
       publishedById: USER_ID,
     })
+    assert.equal(published.snapshot.connectors[0]?.description, 'Example things API.')
     assert.deepEqual(published.snapshot.connectors[0]?.endpoints, [
       { method: 'GET', path: '/things', description: 'List things' },
     ])

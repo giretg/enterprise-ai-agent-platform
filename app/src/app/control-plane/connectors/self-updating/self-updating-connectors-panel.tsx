@@ -39,7 +39,9 @@ export type SelfUpdatingConnectorRow = {
   id: string
   lifecycleState?: 'active' | 'archived' | 'draft' | 'validated'
   loadError?: string
-  name: string; specUrl: string; urlApproved: boolean; trusted: boolean
+  name: string
+  catalogDescription?: string | null
+  specUrl: string; urlApproved: boolean; trusted: boolean
   autoApproveEnabled: boolean; lastSyncedAt: string | null; activeSpecVersionId: string | null
   privacy: Version['privacy']
   versions: Version[]
@@ -501,11 +503,18 @@ export function SelfUpdatingConnectorCard({
           ) : null}
 
           {detailsOpen ? (
-            <CapabilityList
-              title={detailsTitle}
-              capabilities={detailsCapabilities}
-              emptyHint="Ehhez a konnektorhoz még nincs átvett vagy javasolt képességlista. Először keress frissítést."
-            />
+            <>
+              {row.catalogDescription ? (
+                <p className="rounded-md border border-ink/10 bg-paper/60 px-3 py-2 text-sm text-ink-soft">
+                  {row.catalogDescription}
+                </p>
+              ) : null}
+              <CapabilityList
+                title={detailsTitle}
+                capabilities={detailsCapabilities}
+                emptyHint="Ehhez a konnektorhoz még nincs átvett vagy javasolt képességlista. Először keress frissítést."
+              />
+            </>
           ) : null}
 
           {!archived ? (
