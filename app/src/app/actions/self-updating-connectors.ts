@@ -142,7 +142,7 @@ export async function listSelfUpdatingConnectors() {
           ?? null
         const catalogDescription = describeConnectorCatalog(
           'http_api',
-          context.connector.config,
+          null,
           activeCapabilitySet,
         ).description
         return {
