@@ -69,7 +69,10 @@ import { parseSkillSlashCommands } from '@/lib/skill/skill-slash-command'
 import type { SkillReferenceEntry } from '@/lib/skill/skill-reference'
 import {
   buildMcpSkillPackage,
+  dedupeMcpSkillPackagesByUri,
+  skillUriName,
   type McpSkillPackage,
+  type McpSkillPackageCandidate,
 } from '@/lib/skill/mcp-skill'
 import {
   flattenToolCapabilityGroups,
@@ -228,11 +231,13 @@ export class SkillService {
 
   /**
    * Tenantból olvasható aktív skillek Agent Skills csomagként (SKILL.md + mellékletek).
-   * Fail-closed, mint a `listReferenceCatalog`. Ütköző URI-névnél a tenant-skill nyer.
+   * Fail-closed, mint a `listReferenceCatalog`. Ütköző URI-névnél a tenant-skill nyer a
+   * platform felett; azonos hatókörű URI-ütközésnél egyik csomag sem kerül ki
+   * (ne szolgáljunk ki csendben rossz scriptet).
    */
   async listMcpSkillPackages(actorTenantId: string | null): Promise<McpSkillPackage[]> {
     const skills = await this.skills.listForTenant(actorTenantId)
-    const byUri = new Map<string, McpSkillPackage>()
+    const candidates: McpSkillPackageCandidate[] = []
     for (const skill of skills) {
       if (skill.kind === 'system') continue
       const active = skill.versions.find((version) => version.status === 'active')
@@ -248,10 +253,9 @@ export class SkillService {
         requires: parseSkillRequires(active.requires),
         attachments: parseSkillAttachments(active.attachments),
       })
-      if (byUri.has(pkg.uriName) && skill.tenantId === null) continue
-      byUri.set(pkg.uriName, pkg)
+      candidates.push({ ...pkg, tenantId: skill.tenantId })
     }
-    return [...byUri.values()].sort((a, b) => a.uriName.localeCompare(b.uriName))
+    return dedupeMcpSkillPackagesByUri(candidates)
   }
 
   /** Fail-closed: null, ha a skill nem olvasható az actor tenantjából. */
@@ -279,6 +283,29 @@ export class SkillService {
     if (existing && existing.id !== excludeSkillId) {
       throw new SkillAccessError(
         `Már létezik „${existing.name}” nevű skill ebben a hatókörben. Használd az „Új verzió” gombot a meglévő skillnél, vagy töröld a duplikátumot.`,
+      )
+    }
+    await this.assertSkillUriAvailable(normalized, tenantId, excludeSkillId)
+  }
+
+  /**
+   * MCP `skill://` URI-slug egyediség ugyanabban a hatókörben (`tulajdoni_lap` vs
+   * `tulajdoni-lap` → ugyanaz a slug). Platform skill árnyékolása tenantból megengedett.
+   */
+  private async assertSkillUriAvailable(
+    name: string,
+    tenantId: string | null,
+    excludeSkillId?: string,
+  ): Promise<void> {
+    const uri = skillUriName(name)
+    if (!uri) return
+    const skills = await this.skills.listForTenant(tenantId)
+    for (const skill of skills) {
+      if (skill.id === excludeSkillId) continue
+      if (skill.tenantId !== tenantId) continue
+      if (skillUriName(skill.name) !== uri) continue
+      throw new SkillAccessError(
+        `A „${name}” skill MCP URI-neve („${uri}”) ütközik a már létező „${skill.name}” skilllel ebben a hatókörben. Válassz olyan nevet, ami más skill:// slugot ad.`,
       )
     }
   }

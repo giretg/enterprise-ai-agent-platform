@@ -138,6 +138,44 @@ export function findPackageByUri(
   return packages.find((pkg) => pkg.uriName === parsed.uriName)
 }
 
+/**
+ * MCP `skill://` URI-név ütközés feloldása.
+ * Bemenet sorrendje: újabb → régebbi (`createdAt desc`).
+ * - Tenant skill felülírja a platform (tenantId null) skillt ugyanarra az URI-ra.
+ * - Azonos hatókörű ütközés (tenant–tenant vagy platform–platform): fail-closed —
+ *   egyik csomag sem kerül ki, hogy ne szolgáljunk ki csendben rossz scriptet.
+ */
+export type McpSkillPackageCandidate = McpSkillPackage & { tenantId: string | null }
+
+export function dedupeMcpSkillPackagesByUri(
+  candidates: readonly McpSkillPackageCandidate[],
+): McpSkillPackage[] {
+  const byUri = new Map<string, McpSkillPackageCandidate>()
+  const collided = new Set<string>()
+  for (const candidate of candidates) {
+    const { uriName } = candidate
+    if (collided.has(uriName)) continue
+    const existing = byUri.get(uriName)
+    if (!existing) {
+      byUri.set(uriName, candidate)
+      continue
+    }
+    // Platform sosem ír felül tenantot / meglévő platformot (utóbbi → collision alább)
+    if (candidate.tenantId === null && existing.tenantId !== null) continue
+    // Tenant felülírja a platformot
+    if (candidate.tenantId !== null && existing.tenantId === null) {
+      byUri.set(uriName, candidate)
+      continue
+    }
+    // Azonos hatókör: fail-closed — mindkettőt eldobjuk
+    byUri.delete(uriName)
+    collided.add(uriName)
+  }
+  return [...byUri.values()]
+    .map(({ tenantId: _tenantId, ...pkg }) => pkg)
+    .sort((a, b) => a.uriName.localeCompare(b.uriName))
+}
+
 export function findSkillFile(
   pkg: McpSkillPackage,
   filePath: string,
