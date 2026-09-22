@@ -64,8 +64,9 @@ export function McpSetupLanding({
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Első lépések</p>
         <h1 className="mt-2 font-display text-3xl font-semibold">Kösd be az AI-eszközödet</h1>
         <p className="mt-2 max-w-2xl text-ink-soft">
-          A platform nem egy külön chat. Codexből, Cursorból vagy Claude Code-ból éred el a
-          céges munkatársakat — egyszer telepíted az MCP-t, utána ugyanott dolgozol, ahol eddig.
+          A platform nem egy külön chat. Codexből, Cursorból, Grok Buildből vagy Claude Code-ból
+          éred el a céges munkatársakat — egyszer telepíted az MCP-t, utána ugyanott dolgozol,
+          ahol eddig.
         </p>
       </header>
 
@@ -103,6 +104,18 @@ export function McpSetupLanding({
               Telepítés Cursorba
               <span aria-hidden>→</span>
             </a>
+          </section>
+
+          <section>
+            <h3 className="font-semibold text-ink">Grok Build CLI</h3>
+            <p className="mt-1 text-sm text-ink-soft">
+              Másold be a terminálba. Az első csatlakozáskor a böngészőben ugyanazzal a fiókkal
+              lépj be, amivel itt vagy (<span className="font-mono text-ink">/mcps</span> →
+              szerver → <span className="font-mono text-ink">i</span> is megnyitja).
+            </p>
+            <div className="mt-3">
+              <CodeBlock value={setup.grokCommand} copyLabel="Parancs másolása" />
+            </div>
           </section>
 
           <section>

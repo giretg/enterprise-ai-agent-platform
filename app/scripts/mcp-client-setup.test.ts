@@ -12,6 +12,7 @@ import {
   buildMcpClientSetup,
   claudeMcpAddCommand,
   codexMcpSetupCommand,
+  grokMcpAddCommand,
   cursorMcpInstallHref,
   firstRunGetStartedPath,
   mcpClientName,
@@ -57,6 +58,12 @@ function main() {
     const cmd = claudeMcpAddCommand('ea-acme', setup.mcpUrl)
     assert.equal(cmd, 'claude mcp add --transport http ea-acme https://app.example.com/api/mcp/acme')
     assert.equal(setup.claudeCommand, cmd)
+  })
+
+  check('Grok Build CLI uses HTTP transport like Claude', () => {
+    const cmd = grokMcpAddCommand('ea-acme', setup.mcpUrl)
+    assert.equal(cmd, 'grok mcp add --transport http ea-acme https://app.example.com/api/mcp/acme')
+    assert.equal(setup.grokCommand, cmd)
   })
 
   check('Cursor install link is one-click and encodes {url} as base64 JSON', () => {
