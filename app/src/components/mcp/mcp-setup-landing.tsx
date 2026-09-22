@@ -99,11 +99,17 @@ export function McpSetupLanding({
             </p>
             <a
               href={setup.cursorInstallHref}
+              target="_blank"
+              rel="noopener noreferrer"
               className="mt-3 inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-coral-deep"
             >
               Telepítés Cursorba
               <span aria-hidden>→</span>
             </a>
+            <p className="mt-2 text-xs text-ink-faint">
+              Ha a gomb nem nyitná meg a Cursort, másold az URL-t:{" "}
+              <span className="break-all font-mono text-[11px] text-ink-soft">{setup.mcpUrl}</span>
+            </p>
           </section>
 
           <section>

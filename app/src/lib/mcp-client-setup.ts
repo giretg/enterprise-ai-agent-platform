@@ -26,7 +26,7 @@ function base64Json(value: unknown): string {
 /** Cursor one-click install (browser → Cursor). Config = mcp.json transport object. */
 export function cursorMcpInstallHref(serverName: string, mcpUrl: string): string {
   const config = encodeURIComponent(base64Json({ type: 'http', url: mcpUrl }))
-  return `https://cursor.com/en/install-mcp?name=${encodeURIComponent(serverName)}&config=${config}`
+  return `https://cursor.com/install-mcp?name=${encodeURIComponent(serverName)}&config=${config}`
 }
 
 export function codexMcpSetupCommand(serverName: string, mcpUrl: string): string {
