@@ -51,6 +51,40 @@ export type EnterpriseToolMcpResult = {
   content: Array<{ type: 'text'; text: string }>
 }
 
+/** MCP 2026-07-28 multi-round-trip result: the client asks the user, then retries the call (#618). */
+export type InputRequiredToolResult = {
+  resultType: 'input_required'
+  inputRequests: Record<string, unknown>
+  requestState: string
+}
+
+/** `requestState` payload of a write confirmation, HMAC-sealed by the MCP layer (#618 D6). */
+export type WriteConfirmState = {
+  v: 1
+  operationId: string
+  tenantId: string
+  userId: string
+  tool: string
+  argsHash: string
+  iat: number
+  exp: number
+}
+
+/**
+ * Write confirmation inputs the MCP layer read off the request (#618).
+ * `mint` is null when the form branch is off: 2025 request, no form capability,
+ * or no `MCP_REQUEST_STATE_KEY`. `retry` is set when the client retried with
+ * `inputResponses` / `requestState`; `state` is the verified payload or the raw
+ * wire string when no verifier is configured (never trusted then).
+ */
+export type WriteConfirmInput = {
+  mint: ((state: WriteConfirmState) => Promise<string>) | null
+  retry?: {
+    state: unknown
+    response: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> } | null
+  }
+}
+
 export type HttpApiActingUser = { id: string; email: string; tenantId: string | null } | null
 
 export type EnterpriseToolDeps = AuthorizeToolCallDeps &
@@ -99,7 +133,8 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     toolName: string
     args: Record<string, unknown>
     origin?: string
-  }) => Promise<EnterpriseToolMcpResult>
+    confirm?: WriteConfirmInput
+  }) => Promise<EnterpriseToolMcpResult | InputRequiredToolResult>
   startAuthorization?: StartDelegatedAuthorization
   audit?: AuditSink
 }
@@ -199,9 +234,10 @@ export async function invokeEnterpriseTool(
     toolName: string
     args: Record<string, unknown>
     origin?: string
+    confirm?: WriteConfirmInput
   },
-): Promise<EnterpriseToolMcpResult> {
-  const { principal, toolName, args, origin } = input
+): Promise<EnterpriseToolMcpResult | InputRequiredToolResult> {
+  const { principal, toolName, args, origin, confirm } = input
   const definitionId = asUuid(args.definitionId)
   if (!definitionId) {
     await auditDenied(deps, principal, toolName, 'definition_not_found')
@@ -258,7 +294,7 @@ export async function invokeEnterpriseTool(
       await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
       return errorResult('tool_not_configured')
     }
-    return deps.enqueueWrite({ principal, toolName, args, origin })
+    return deps.enqueueWrite({ principal, toolName, args, origin, confirm })
   }
 
   if (isEnterpriseKbTool(toolName)) {

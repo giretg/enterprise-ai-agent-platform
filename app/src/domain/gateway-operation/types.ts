@@ -86,7 +86,7 @@ export interface GatewayOperationStore {
   createAwaitingApproval(
     input: GatewayOperationCreateInput,
   ): Promise<{ record: GatewayOperationRecord; created: boolean }>
-  listAwaitingApproval(tenantId: string): Promise<GatewayOperationRecord[]>
+  listAwaitingApproval(tenantId: string, principalUserId?: string): Promise<GatewayOperationRecord[]>
   withLockedOperation<T>(
     operationId: string,
     fn: (

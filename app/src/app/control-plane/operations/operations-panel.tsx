@@ -17,6 +17,8 @@ function agentDefinitionLabel(row: PendingOperationRow): string {
 }
 
 function argsSummary(args: Record<string, unknown>): string {
+  if (typeof args.method === 'string') return `${args.method} ${String(args.path ?? '')}`
+  if (typeof args.range === 'string') return `${String(args.fileId ?? '—')} · ${args.range}`
   const name = typeof args.name === 'string' ? args.name : '—'
   const parent = typeof args.parentFolderId === 'string' && args.parentFolderId
     ? `szülő: ${args.parentFolderId}`

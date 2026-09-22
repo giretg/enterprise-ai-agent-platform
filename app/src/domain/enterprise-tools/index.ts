@@ -16,7 +16,10 @@ export {
   authorizationLinkFields,
   type EnterpriseToolDeps,
   type EnterpriseToolMcpResult,
+  type InputRequiredToolResult,
   type StartDelegatedAuthorization,
+  type WriteConfirmInput,
+  type WriteConfirmState,
 } from './invoke-enterprise-tool'
 export { asUuid, ENTERPRISE_TOOL_ERROR_MESSAGES, enterpriseToolErrorMessage, enterpriseToolErrorPayload } from './tool-error-messages'
 export {

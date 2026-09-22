@@ -104,9 +104,12 @@ export class PostgresGatewayOperationRepository implements GatewayOperationStore
     }
   }
 
-  async listAwaitingApproval(tenantId: string): Promise<GatewayOperationRecord[]> {
+  async listAwaitingApproval(
+    tenantId: string,
+    principalUserId?: string,
+  ): Promise<GatewayOperationRecord[]> {
     const rows = await prisma.gatewayOperation.findMany({
-      where: { tenantId, status: 'awaiting_approval' },
+      where: { tenantId, status: 'awaiting_approval', ...(principalUserId ? { principalUserId } : {}) },
       include: INCLUDE,
       orderBy: { createdAt: 'desc' },
     })

@@ -1,5 +1,15 @@
 import { auth } from '@clerk/nextjs/server'
-import type { AuthInfo } from '@modelcontextprotocol/server'
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  createRequestStateCodec,
+  inputResponse,
+  PROTOCOL_VERSION_META_KEY,
+  type AuthInfo,
+  type CallToolResult,
+  type InputRequiredResult,
+  type RequestStateCodec,
+  type ServerContext,
+} from '@modelcontextprotocol/server'
 import { createMcpHandler, withMcpAuth } from 'mcp-handler'
 import { z } from 'zod'
 import { isClerkEnabled } from '@/lib/clerk-config'
@@ -62,8 +72,13 @@ import {
   kbListIndexInputSchema,
   kbSearchInputSchema,
   isEnterpriseTool,
+  isEnterpriseWriteTool,
   type EnterpriseToolMcpResult,
+  type InputRequiredToolResult,
+  type WriteConfirmInput,
+  type WriteConfirmState,
 } from '@/domain/enterprise-tools'
+import { WRITE_CONFIRM_KEY } from '@/domain/gateway-operation'
 import {
   auditMcpAuthDenied,
   auditMcpAuthOk,
@@ -140,7 +155,10 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     toolName: string
     args: Record<string, unknown>
     origin?: string
-  }) => Promise<EnterpriseToolMcpResult>
+    confirm?: WriteConfirmInput
+  }) => Promise<EnterpriseToolMcpResult | InputRequiredToolResult>
+  /** HMAC key for the write-confirmation `requestState` (#618); missing → link only. */
+  requestStateKey?: string
   getGatewayOperation: (input: {
     principal: McpPrincipal
     operationId: string
@@ -260,6 +278,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
       }))
     },
     invokeEnterpriseTool: (input) => services.enterpriseTools.invoke(input),
+    requestStateKey: process.env.MCP_REQUEST_STATE_KEY,
     getGatewayOperation: async (input) =>
       services.gatewayOperations.toMcpGet(
         await services.gatewayOperations.get({
@@ -636,6 +655,52 @@ async function checkoutToolResult(
   )
 }
 
+const MRTR_PROTOCOL_VERSION = '2026-07-28'
+
+function requestStateCodec(key: string | undefined): RequestStateCodec<WriteConfirmState> | null {
+  if (!key) return null
+  try {
+    // ponytail: codec TTL well past the 15-minute payload `exp`, so an expired but
+    // authentic state reaches the handler and falls back to the link (#618) instead of -32602.
+    return createRequestStateCodec<WriteConfirmState>({ key, ttlSeconds: 24 * 60 * 60 })
+  } catch {
+    return null // shorter than 32 bytes: fail closed to the link
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** #618 branch selection: a form only for a 2026-07-28 request that declares form elicitation. */
+function writeConfirmInput(
+  ctx: ServerContext,
+  codec: RequestStateCodec<WriteConfirmState> | null,
+): WriteConfirmInput {
+  const envelope: Record<string, unknown> = ctx.mcpReq.envelope ?? {}
+  const capabilities = envelope[CLIENT_CAPABILITIES_META_KEY]
+  const elicitation = isRecord(capabilities) ? capabilities.elicitation : undefined
+  const formCapable =
+    envelope[PROTOCOL_VERSION_META_KEY] === MRTR_PROTOCOL_VERSION &&
+    isRecord(elicitation) &&
+    ('form' in elicitation || !('url' in elicitation))
+  const state = ctx.mcpReq.requestState()
+  const responses = ctx.mcpReq.inputResponses
+  const answer = inputResponse(responses, WRITE_CONFIRM_KEY)
+  return {
+    mint: formCapable && codec ? (payload) => codec.mint(payload) : null,
+    ...(state !== undefined || responses !== undefined
+      ? {
+          retry: {
+            state,
+            response:
+              answer.kind === 'elicit' ? { action: answer.action, content: answer.content } : null,
+          },
+        }
+      : {}),
+  }
+}
+
 async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps, origin: string) {
   const { tenant, context } = await loadTenantContext(principal, deps)
   const instructions = buildMcpServerInstructions({
@@ -643,6 +708,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
     tenantSlug: principal.tenantSlug,
     coworkers: context.coworkers,
   })
+  const codec = requestStateCodec(deps.requestStateKey)
 
   return createMcpHandler(
     async (server) => {
@@ -971,7 +1037,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         },
       )
 
-      server.server.setRequestHandler('tools/call', async (request) => {
+      server.server.setRequestHandler('tools/call', async (request, ctx) => {
         const toolName = request.params.name
         if (!(MCP_ALLOWED_TOOLS as readonly string[]).includes(toolName)) {
           await auditMcpToolDenied(deps, principal, toolName)
@@ -1014,7 +1080,8 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
           return getGatewayOperationToolResult(principal, args, deps)
         }
         if (isEnterpriseTool(toolName)) {
-          return enterpriseToolResult(principal, toolName, args, deps, origin)
+          const confirm = isEnterpriseWriteTool(toolName) ? writeConfirmInput(ctx, codec) : undefined
+          return enterpriseToolResult(principal, toolName, args, deps, origin, confirm)
         }
         return whoamiToolResult(principal, deps)
       })
@@ -1022,6 +1089,10 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
     {
       serverInfo: { name: mcpServerDisplayName(tenant), version: '1.0' },
       instructions,
+      // #618 D3: we pick the link branch ourselves; the shim would try a live
+      // server→client elicitation on 2025 requests, which stalls on stateless HTTP.
+      inputRequired: { legacyShim: false },
+      ...(codec ? { requestState: { verify: codec.verify } } : {}),
     },
   )
 }
@@ -1032,8 +1103,12 @@ async function enterpriseToolResult(
   args: Record<string, unknown>,
   deps: McpRuntimeDeps,
   origin?: string,
+  confirm?: WriteConfirmInput,
 ) {
-  return deps.invokeEnterpriseTool({ principal, toolName, args, origin })
+  // InputRequiredToolResult is the wire shape of the SDK's InputRequiredResult.
+  return deps.invokeEnterpriseTool({ principal, toolName, args, origin, confirm }) as Promise<
+    CallToolResult | InputRequiredResult
+  >
 }
 
 async function getGatewayOperationToolResult(
