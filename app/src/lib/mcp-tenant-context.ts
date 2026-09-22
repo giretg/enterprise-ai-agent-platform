@@ -10,7 +10,7 @@ const MCP_TOOLING_INSTRUCTIONS = [
   'Company HTTP APIs: platform.agent.get_definition lists each coworker\'s bound http_api connectors, and for each one an endpoints array (method, path, description, params) — call get_definition first and use only those paths with http_api_get / http_api_get_all / http_api_request. Do not guess paths (e.g. plausible REST conventions); an unlisted path is rejected with endpoint_not_allowed, which also echoes the allowed list. A connector with no endpoints array is unprovisioned — ask a human to complete its setup rather than guessing. Credentials stay on the connector.',
   'Gmail: gmail_search then gmail_get_message.',
   'Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval.',
-  'Knowledge base: kb_search, kb_list_index, kb_get_page.',
+  'Knowledge base: call kb_list_index first. Then kb_get_page for one wiki page (path index.md is the table of contents; pass artifactId) or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
   'If a tool returns authorizationUrl, show that URL to the user and retry after they finish consent.',
 ].join(' ')
 

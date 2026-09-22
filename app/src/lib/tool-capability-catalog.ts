@@ -18,7 +18,7 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = [
   { label: 'Céges API', tools: ['http_api_get', 'http_api_get_all', 'http_api_request'] },
   {
     label: 'Tudásbázis',
-    tools: ['kb_search', 'kb_list_index', 'kb_get_page', 'kb_ingest'],
+    tools: ['kb_search', 'kb_list_index', 'kb_get_page', 'kb_get_document', 'kb_ingest'],
   },
 ]
 

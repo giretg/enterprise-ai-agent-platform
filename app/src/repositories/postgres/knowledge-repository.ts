@@ -1,13 +1,16 @@
 import { Prisma, type Document, type KnowledgeArtifact, type KnowledgeArtifactStatus } from '@prisma/client'
 import { prisma } from '@/lib/db'
+import { readKbPurpose, snippet } from '@/lib/kb-retrieval'
 import type {
   DocumentListItem,
   DocumentRepository,
   KnowledgeArtifactRepository,
+  KnowledgeCatalogDocument,
   KnowledgeChunkRepository,
   KnowledgeChunkSearchHit,
   KnowledgeIndexEntry,
   KnowledgePageChunk,
+  KnowledgeRawHit,
 } from '../interfaces'
 
 export function toKbTsQuery(query: string): string {
@@ -53,7 +56,7 @@ export class PostgresDocumentRepository implements DocumentRepository {
   }
 
   async listByConnectorId(connectorId: string): Promise<DocumentListItem[]> {
-    return prisma.document.findMany({
+    const rows = await prisma.document.findMany({
       where: { connectorId },
       select: {
         id: true,
@@ -63,9 +66,76 @@ export class PostgresDocumentRepository implements DocumentRepository {
         mimeType: true,
         createdAt: true,
         connectorId: true,
+        metadata: true,
       },
       orderBy: { createdAt: 'desc' },
     })
+    return rows.map(({ metadata, ...row }) => ({ ...row, purpose: readKbPurpose(metadata) }))
+  }
+
+  async listCatalog(connectorId: string): Promise<KnowledgeCatalogDocument[]> {
+    const rows = await prisma.$queryRaw<
+      Array<{
+        id: string
+        filename: string
+        processing_mode: KnowledgeCatalogDocument['processingMode']
+        metadata: Prisma.JsonValue
+        chars: number
+      }>
+    >`
+      SELECT id, filename, processing_mode, metadata,
+             char_length(coalesce(extracted_text, ''))::int AS chars
+      FROM documents
+      WHERE connector_id = ${connectorId}
+        AND status = CAST('processed' AS "DocumentStatus")
+      ORDER BY filename ASC
+    `
+    return rows.map((row) => ({
+      id: row.id,
+      filename: row.filename,
+      processingMode: row.processing_mode,
+      metadata: row.metadata,
+      chars: Number(row.chars),
+    }))
+  }
+
+  async searchRaw(connectorId: string, query: string, limit: number): Promise<KnowledgeRawHit[]> {
+    const tsquery = toKbTsQuery(query)
+    if (!tsquery || limit <= 0) return []
+    // ponytail: sequential scan; GIN index on documents if raw search gets slow.
+    const rows = await prisma.$queryRaw<
+      Array<{ id: string; filename: string; snippet: string | null; score: number }>
+    >`
+      SELECT d.id, d.filename,
+             ts_rank(
+               to_tsvector('simple', coalesce(d.filename, '') || ' ' || coalesce(d.extracted_text, '')),
+               to_tsquery('simple', ${tsquery})
+             ) AS score,
+             ts_headline(
+               'simple',
+               coalesce(d.extracted_text, ''),
+               to_tsquery('simple', ${tsquery}),
+               'MaxWords=40, MinWords=12, MaxFragments=1, StartSel="", StopSel=""'
+             ) AS snippet
+      FROM documents d
+      WHERE d.connector_id = ${connectorId}
+        AND d.status = CAST('processed' AS "DocumentStatus")
+        AND NOT EXISTS (
+          SELECT 1 FROM knowledge_artifacts a
+          WHERE a.source_document_id = d.id
+            AND a.status = CAST('published' AS "KnowledgeArtifactStatus")
+        )
+        AND to_tsvector('simple', coalesce(d.filename, '') || ' ' || coalesce(d.extracted_text, ''))
+            @@ to_tsquery('simple', ${tsquery})
+      ORDER BY score DESC
+      LIMIT ${limit}
+    `
+    return rows.map((row) => ({
+      id: row.id,
+      filename: row.filename,
+      snippet: snippet(row.snippet?.trim() || row.filename),
+      score: Number(row.score),
+    }))
   }
 
   async update(id: string, data: Parameters<DocumentRepository['update']>[1]): Promise<Document> {
@@ -177,13 +247,18 @@ export class PostgresKnowledgeChunkRepository implements KnowledgeChunkRepositor
     }))
   }
 
-  async listIndex(connectorIds: string[], pathPrefix?: string): Promise<KnowledgeIndexEntry[]> {
+  async listIndex(
+    connectorIds: string[],
+    pathPrefix?: string,
+    artifactId?: string,
+  ): Promise<KnowledgeIndexEntry[]> {
     if (connectorIds.length === 0) return []
     const rows = await prisma.knowledgeChunk.findMany({
       where: {
         connectorId: { in: connectorIds },
         artifact: { status: 'published' },
         ...(pathPrefix ? { path: { startsWith: pathPrefix } } : {}),
+        ...(artifactId ? { artifactId } : {}),
       },
       distinct: ['artifactId', 'path'],
       select: {

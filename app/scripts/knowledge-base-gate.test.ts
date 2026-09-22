@@ -38,6 +38,7 @@ function makeFakes() {
   const agents = new Map<string, { id: string; name: string; tenantId: string }>()
   const audits: Array<{ action: string; tenantId?: string | null }> = []
 
+  let fullScans = 0
   const documentRepo = {
     async create(data: Record<string, unknown>) {
       const doc = {
@@ -54,9 +55,24 @@ function makeFakes() {
       return documents.get(id) ?? null
     },
     async findByConnectorId(connectorId: string) {
+      fullScans += 1
       return [...documents.values()].filter(
         (doc) => doc.connectorId === connectorId && doc.status === 'processed',
       )
+    },
+    async listCatalog(connectorId: string) {
+      return [...documents.values()]
+        .filter((doc) => doc.connectorId === connectorId && doc.status === 'processed')
+        .map((doc) => ({
+          id: doc.id,
+          filename: doc.filename,
+          processingMode: doc.processingMode,
+          metadata: doc.metadata,
+          chars: doc.extractedText?.length ?? 0,
+        }))
+    },
+    async searchRaw() {
+      return []
     },
     async listByConnectorId(connectorId: string) {
       return [...documents.values()].filter((doc) => doc.connectorId === connectorId)
@@ -127,8 +143,31 @@ function makeFakes() {
     async searchChunks() {
       return []
     },
-    async listIndex() {
-      return []
+    async listIndex(connectorIds: string[], pathPrefix?: string, artifactId?: string) {
+      const seen = new Set<string>()
+      const out: Array<{
+        artifactId: string
+        connectorId: string
+        path: string
+        title: string
+        type: string
+      }> = []
+      for (const chunk of chunks.values()) {
+        if (!connectorIds.includes(chunk.connectorId)) continue
+        if (pathPrefix && !chunk.path.startsWith(pathPrefix)) continue
+        if (artifactId && chunk.artifactId !== artifactId) continue
+        const key = `${chunk.artifactId}:${chunk.path}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push({
+          artifactId: chunk.artifactId,
+          connectorId: chunk.connectorId,
+          path: chunk.path,
+          title: chunk.title,
+          type: chunk.type,
+        })
+      }
+      return out
     },
     async getPageChunks() {
       return []
@@ -179,7 +218,7 @@ function makeFakes() {
     audit: auditRepo,
   })
 
-  return { kb, documents, artifacts, chunks, connectors, agents, audits }
+  return { kb, documents, artifacts, chunks, connectors, agents, audits, fullScans: () => fullScans }
 }
 
 async function run() {
@@ -254,6 +293,58 @@ async function run() {
       actorId: USER_ID,
     })
     assert.equal(documents.size, 0)
+  })
+
+  await check('catalog first: index.md readable, raw file opens alone, search does not scan every doc', async () => {
+    const { kb, documents, agents, fullScans } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', tenantId: TENANT_A })
+    const raw = await kb.ingest({
+      tenantId: TENANT_A,
+      agentId: 'agent-1',
+      uploadedById: USER_ID,
+      filename: 'szabaly.md',
+      buffer: Buffer.from('# Távmunka\nOtthonról lehet.'),
+      processingMode: 'raw_text_only',
+      purpose: 'Távmunka szabály',
+    })
+    const wiki = await kb.ingest({
+      tenantId: TENANT_A,
+      agentId: 'agent-1',
+      uploadedById: USER_ID,
+      filename: 'policy.md',
+      buffer: Buffer.from('# Remote Work\nAllowed.\n\n# Onboarding\nHR handles it.'),
+      processingMode: 'okf',
+    })
+    const connectorId = documents.get(raw.documentId)?.connectorId
+    assert.ok(connectorId)
+    const catalog = await kb.listIndex({ connectorId })
+    assert.ok('sources' in catalog)
+    if (!('sources' in catalog)) return
+    const file = catalog.sources.find((row) => row.documentId === raw.documentId)
+    const wikiRow = catalog.sources.find((row) => row.documentId === wiki.documentId)
+    assert.equal(file?.kind, 'file')
+    assert.equal(file?.purpose, 'Távmunka szabály')
+    assert.equal(wikiRow?.kind, 'wiki')
+    assert.ok((wikiRow?.pageCount ?? 0) >= 2)
+    assert.equal(wiki.artifactId, wikiRow?.artifactId)
+
+    const index = await kb.getPage({
+      connectorId,
+      path: 'index.md',
+      artifactId: wiki.artifactId ?? undefined,
+    })
+    assert.equal(index.found, true)
+    if (index.found) assert.match(index.text, /Remote Work/)
+
+    const opened = await kb.getDocument({ connectorId, documentId: raw.documentId })
+    assert.equal(opened.found, true)
+    if (opened.found && opened.kind === 'file') assert.match(opened.text ?? '', /Otthonról/)
+    const wikiDoc = await kb.getDocument({ connectorId, documentId: wiki.documentId })
+    assert.equal(wikiDoc.found, true)
+    if (wikiDoc.found) assert.equal(wikiDoc.kind, 'wiki')
+
+    await kb.search({ connectorId, query: 'távmunka' })
+    assert.equal(fullScans(), 0)
   })
 
   console.log(failures === 0 ? '\nkb-gate: ok' : `\nkb-gate: ${failures} failed`)

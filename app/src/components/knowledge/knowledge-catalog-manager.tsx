@@ -19,6 +19,7 @@ export type KnowledgeCatalogRow = {
   filename: string
   status: string
   processingMode: KbProcessingModeValue | null
+  purpose: string | null
   createdAt: Date | string
 }
 
@@ -95,6 +96,14 @@ export function KnowledgeCatalogManager({
               </label>
             ))}
           </fieldset>
+          <label className="block text-sm">
+            <span className="mb-1 block text-xs text-ink-faint">Mire való (egy sor, opcionális)</span>
+            <input
+              name="purpose"
+              maxLength={240}
+              className="w-full rounded-lg border border-line/70 px-3 py-1.5 text-sm"
+            />
+          </label>
           <button
             type="submit"
             disabled={pending}
@@ -124,6 +133,9 @@ export function KnowledgeCatalogManager({
                 <span className="text-xs text-ink-faint">
                   ({kbProcessingModeLabel(doc.processingMode)} · {doc.status})
                 </span>
+                {doc.purpose ? (
+                  <span className="block text-xs text-ink-faint">{doc.purpose}</span>
+                ) : null}
               </span>
               {canManage ? (
                 <button

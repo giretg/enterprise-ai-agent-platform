@@ -6,6 +6,14 @@ import {
 } from '@/domain/connector-grant/delegated-oauth-registry'
 import { TOOL_REQUIREMENTS } from '@/domain/connector-grant/tool-connector-requirements'
 import { asUuid } from './tool-error-messages'
+import {
+  KB_GET_DOCUMENT_TOOL,
+  KB_GET_PAGE_TOOL,
+  KB_LIST_INDEX_TOOL,
+  KB_SEARCH_TOOL,
+} from './tool-definitions'
+
+const KB_READ_TOOLS = [KB_GET_DOCUMENT_TOOL, KB_GET_PAGE_TOOL, KB_LIST_INDEX_TOOL, KB_SEARCH_TOOL]
 
 export type ToolCallPrincipal = {
   userId: string
@@ -99,8 +107,10 @@ export async function authorizeToolCall(
     return { allowed: false, reason: 'tool_not_configured' }
   }
 
+  const accepted =
+    input.toolName === KB_GET_DOCUMENT_TOOL ? KB_READ_TOOLS : [input.toolName]
   const capability = input.definition.snapshot.capabilities.find(
-    (row) => row.toolName === input.toolName && row.allowed,
+    (row) => accepted.includes(row.toolName) && row.allowed,
   )
   if (!capability) {
     return { allowed: false, reason: 'capability_not_allowed' }

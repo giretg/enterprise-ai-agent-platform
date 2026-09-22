@@ -8,9 +8,14 @@
  */
 import assert from 'node:assert/strict'
 import {
+  assembleKbCatalog,
+  assembleKbDocument,
   assembleKbHits,
   assembleKbIndex,
   assembleKbPage,
+  KB_DOCUMENT_INLINE_CHARS,
+  mergeKbHits,
+  okfIndexFile,
 } from '../src/lib/kb-retrieval'
 import { toKbTsQuery } from '../src/repositories/postgres/knowledge-repository'
 import type {
@@ -271,6 +276,96 @@ async function run() {
     assert.equal(result.found, false)
     assert.equal(result.path, 'pages/99-nincs.md')
     assert.equal(result.text, undefined)
+  })
+
+  await check('assembleKbCatalog: fájl és wiki külön sor, purpose megmarad', () => {
+    const result = assembleKbCatalog({
+      docs: [
+        {
+          id: 'doc-file',
+          filename: 'szabaly.md',
+          processingMode: 'raw_text_only',
+          metadata: { purpose: 'Távmunka szabály' },
+          chars: 40,
+        },
+        {
+          id: 'doc-wiki',
+          filename: 'policy.md',
+          processingMode: 'okf',
+          metadata: {},
+          chars: 80,
+        },
+      ],
+      artifacts: [{ id: 'art-1', sourceDocumentId: 'doc-wiki', status: 'published' }],
+      entries: [
+        indexEntry({ path: 'pages/02-onboarding.md', title: 'Onboarding' }),
+        indexEntry(),
+      ],
+    })
+    assert.equal(result.sources.length, 2)
+    assert.equal(result.sources[0].kind, 'wiki')
+    assert.equal(result.sources[0].pageCount, 2)
+    assert.equal(result.sources[0].pages?.[0].path, 'pages/01-remote-work.md')
+    assert.equal(result.sources[1].kind, 'file')
+    assert.equal(result.sources[1].purpose, 'Távmunka szabály')
+    assert.equal(result.sources[1].pages, undefined)
+  })
+
+  await check('okfIndexFile: a bundle index.md törzsét adja, frontmatter nélkül', () => {
+    const file = okfIndexFile({
+      files: [
+        {
+          path: 'index.md',
+          content: '---\ntype: Index\ntitle: "policy.md"\n---\n\n# policy.md\n\n## Pages\n- [Remote](pages/01.md)\n',
+        },
+      ],
+    })
+    assert.equal(file?.title, 'policy.md')
+    assert.match(file?.text ?? '', /Remote/)
+    assert.equal(file?.text.includes('type: Index'), false)
+  })
+
+  await check('assembleKbDocument: rövid fájl teljes, hosszú csak vázlat, section egy fejezet', () => {
+    const short = assembleKbDocument({
+      documentId: 'd1',
+      filename: 'a.md',
+      purpose: null,
+      text: '# Egy\nRövid.',
+    })
+    assert.equal(short.truncated, false)
+    assert.match(short.text ?? '', /Rövid/)
+
+    const long = assembleKbDocument({
+      documentId: 'd2',
+      filename: 'b.md',
+      purpose: null,
+      text: `# Alpha\n${'a'.repeat(KB_DOCUMENT_INLINE_CHARS)}\n\n# Beta\nvege`,
+    })
+    assert.equal(long.truncated, true)
+    assert.deepEqual(long.outline, ['Alpha', 'Beta'])
+    assert.equal(long.text, undefined)
+
+    const section = assembleKbDocument({
+      documentId: 'd2',
+      filename: 'b.md',
+      purpose: null,
+      text: `# Alpha\n${'a'.repeat(100)}\n\n# Beta\nvege`,
+      section: 'beta',
+    })
+    assert.equal(section.sectionFound, true)
+    assert.equal(section.text, 'vege')
+  })
+
+  await check('mergeKbHits: score szerint vág', () => {
+    const hits = mergeKbHits(
+      [
+        { docId: 'a', snippet: 'alacsony', sourceRef: 'a', memoryVersion: null, score: 0.1 },
+        { docId: 'b', snippet: 'magas', sourceRef: 'b', memoryVersion: null, score: 2 },
+      ],
+      1,
+    )
+    assert.equal(hits.length, 1)
+    assert.equal(hits[0].docId, 'b')
   })
 
   await check('assembleKbPage: section fallback a forrás-linkhez, ha nincs page', () => {

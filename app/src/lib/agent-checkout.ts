@@ -159,7 +159,8 @@ function renderAgentsMd(input: {
     '',
     'Writes (for example creating a Drive folder) enqueue and wait for Control Plane approval. Do not bypass approval.',
     '',
-    'Project memory and knowledge base, if needed, are MCP tools. Do not create a local memory file.',
+    'Project memory, if needed, is an MCP tool. Do not create a local memory file.',
+    'Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
     '',
     'If the work needs runnable skill code, call the MCP sandbox with the skillVersionId. Do not run skill code from this workspace, and do not upload a local file into the sandbox.',
   ]

@@ -244,3 +244,201 @@ export function assembleKbPage(path: string, chunks: KnowledgePageChunk[]): KbGe
     source: toKbSource(first.sourceRef, first.section),
   }
 }
+
+export function mergeKbHits(hits: KbHit[], k: number): KbHit[] {
+  return [...hits].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, k)
+}
+
+const PURPOSE_MAX = 240
+
+export function normalizeKbPurpose(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? ''
+  if (!trimmed) return null
+  return trimmed.slice(0, PURPOSE_MAX)
+}
+
+export function readKbPurpose(metadata: unknown): string | null {
+  if (!isRecord(metadata)) return null
+  return normalizeKbPurpose(typeof metadata.purpose === 'string' ? metadata.purpose : null)
+}
+
+export type KbCatalogPage = { path: string; title: string }
+
+export type KbCatalogSource = {
+  documentId: string
+  filename: string
+  kind: 'file' | 'wiki'
+  purpose: string | null
+  chars: number
+  artifactId?: string
+  pageCount?: number
+  pages?: KbCatalogPage[]
+}
+
+export type KbCatalogResult = { sources: KbCatalogSource[] }
+
+export function assembleKbCatalog(input: {
+  docs: Array<{
+    id: string
+    filename: string
+    processingMode: string | null
+    metadata: unknown
+    chars: number
+  }>
+  artifacts: Array<{ id: string; sourceDocumentId: string | null; status: string }>
+  entries: KnowledgeIndexEntry[]
+}): KbCatalogResult {
+  const artifactByDoc = new Map<string, string>()
+  for (const artifact of input.artifacts) {
+    if (artifact.status !== 'published' || !artifact.sourceDocumentId) continue
+    artifactByDoc.set(artifact.sourceDocumentId, artifact.id)
+  }
+  const pagesByArtifact = new Map<string, KbCatalogPage[]>()
+  for (const entry of input.entries) {
+    if (entry.path === 'index.md') continue
+    const pages = pagesByArtifact.get(entry.artifactId) ?? []
+    pages.push({ path: entry.path, title: entry.title })
+    pagesByArtifact.set(entry.artifactId, pages)
+  }
+  const sources = input.docs
+    .map((doc): KbCatalogSource => {
+      const purpose = readKbPurpose(doc.metadata)
+      const artifactId = artifactByDoc.get(doc.id)
+      if (artifactId && doc.processingMode === 'okf') {
+        const pages = (pagesByArtifact.get(artifactId) ?? []).sort((a, b) => a.path.localeCompare(b.path))
+        return {
+          documentId: doc.id,
+          filename: doc.filename,
+          kind: 'wiki',
+          purpose,
+          chars: doc.chars,
+          artifactId,
+          pageCount: pages.length,
+          pages,
+        }
+      }
+      return {
+        documentId: doc.id,
+        filename: doc.filename,
+        kind: 'file',
+        purpose,
+        chars: doc.chars,
+      }
+    })
+    .sort((a, b) => a.filename.localeCompare(b.filename))
+  return { sources }
+}
+
+function unquoteYaml(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.startsWith('"')) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown
+      return typeof parsed === 'string' ? parsed : trimmed
+    } catch {
+      return trimmed.replace(/^"|"$/g, '')
+    }
+  }
+  return trimmed
+}
+
+/** Az OKF bundle `index.md` törzse. A chunkok közé szándékosan nem kerül. */
+export function okfIndexFile(bundle: unknown): { title: string; text: string } | null {
+  if (!isRecord(bundle) || !Array.isArray(bundle.files)) return null
+  const file = bundle.files.find(
+    (entry) => isRecord(entry) && entry.path === 'index.md' && typeof entry.content === 'string',
+  )
+  if (!file || !isRecord(file) || typeof file.content !== 'string') return null
+  const content = file.content
+  const fm = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/)
+  const titleLine = (fm?.[1] ?? content).match(/^title:\s*(.+)$/m)
+  const title = titleLine ? unquoteYaml(titleLine[1]) : 'index.md'
+  const text = (fm ? fm[2] : content).trim()
+  if (!text) return null
+  return { title, text }
+}
+
+/** ponytail: heading-split only; page offsets if a raw file has no headings. */
+export const KB_DOCUMENT_INLINE_CHARS = 8_000
+
+type OutlineSection = { title: string; body: string }
+
+function outlineSections(text: string): OutlineSection[] {
+  const sections: OutlineSection[] = []
+  let current: OutlineSection | null = null
+  for (const line of text.split('\n')) {
+    const heading = line.match(/^#{1,3}\s+(.*)$/)
+    if (heading) {
+      if (current) sections.push(current)
+      current = { title: heading[1].trim(), body: '' }
+    } else if (current) {
+      current.body += (current.body ? '\n' : '') + line
+    }
+  }
+  if (current) sections.push(current)
+  return sections.map((section) => ({ title: section.title, body: section.body.trim() }))
+}
+
+export type KbDocumentResult =
+  | { found: false; documentId: string }
+  | {
+      found: true
+      kind: 'wiki'
+      documentId: string
+      filename: string
+      purpose: string | null
+      artifactId: string | null
+      hint: string
+    }
+  | {
+      found: true
+      kind: 'file'
+      documentId: string
+      filename: string
+      purpose: string | null
+      chars: number
+      truncated: boolean
+      outline?: string[]
+      text?: string
+      section?: string
+      sectionFound?: boolean
+    }
+
+export function assembleKbDocument(input: {
+  documentId: string
+  filename: string
+  purpose: string | null
+  text: string
+  section?: string
+}): Exclude<KbDocumentResult, { found: false } | { kind: 'wiki' }> {
+  const sections = outlineSections(input.text)
+  const outline = sections.map((section) => section.title)
+  const base = {
+    found: true as const,
+    kind: 'file' as const,
+    documentId: input.documentId,
+    filename: input.filename,
+    purpose: input.purpose,
+    chars: input.text.length,
+  }
+  const section = input.section?.trim()
+  if (section) {
+    const needle = section.toLowerCase()
+    const hit = sections.find((item) => item.title.toLowerCase().includes(needle))
+    if (!hit) {
+      return { ...base, truncated: true, outline, section, sectionFound: false }
+    }
+    const truncated = hit.body.length > KB_DOCUMENT_INLINE_CHARS
+    return {
+      ...base,
+      truncated,
+      section,
+      sectionFound: true,
+      text: truncated ? hit.body.slice(0, KB_DOCUMENT_INLINE_CHARS) : hit.body,
+    }
+  }
+  if (input.text.length <= KB_DOCUMENT_INLINE_CHARS) {
+    return { ...base, truncated: false, text: input.text }
+  }
+  return { ...base, truncated: true, outline }
+}

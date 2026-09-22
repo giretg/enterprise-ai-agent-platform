@@ -41,6 +41,7 @@ import {
   HTTP_API_GET_ALL_TOOL,
   HTTP_API_GET_TOOL,
   HTTP_API_REQUEST_TOOL,
+  KB_GET_DOCUMENT_TOOL,
   KB_GET_PAGE_TOOL,
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
@@ -55,6 +56,7 @@ import {
   httpApiGetAllInputSchema,
   httpApiGetInputSchema,
   httpApiRequestInputSchema,
+  kbGetDocumentInputSchema,
   kbGetPageInputSchema,
   kbIngestInputSchema,
   kbListIndexInputSchema,
@@ -818,7 +820,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Search knowledge base',
           description:
-            'Search the agent knowledge base. Pass definitionId from platform.agent.get_definition. Use kb_list_index and kb_get_page to browse OKF wiki pages.',
+            'Keyword search when kb_list_index does not name the source. Returns short snippets, not full documents. Pass definitionId from platform.agent.get_definition.',
           inputSchema: kbSearchInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_SEARCH_TOOL, args, deps),
@@ -827,7 +829,8 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         KB_LIST_INDEX_TOOL,
         {
           title: 'List knowledge base index',
-          description: 'List published OKF wiki pages in the agent knowledge base.',
+          description:
+            'Call this first. With no pathPrefix or artifactId, returns one row per source (filename, purpose, size; wiki rows include page titles). Pass pathPrefix or artifactId to list wiki pages.',
           inputSchema: kbListIndexInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_LIST_INDEX_TOOL, args, deps),
@@ -836,17 +839,29 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         KB_GET_PAGE_TOOL,
         {
           title: 'Get knowledge base page',
-          description: 'Read one published OKF wiki page by path.',
+          description:
+            'Read one wiki page by path. For the table of contents pass path "index.md" and artifactId from kb_list_index. Do not open every page.',
           inputSchema: kbGetPageInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_GET_PAGE_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_GET_DOCUMENT_TOOL,
+        {
+          title: 'Get knowledge base file',
+          description:
+            'Read one raw file by documentId from kb_list_index. Files over 8000 characters return an outline; pass section to read one heading. Wiki sources return artifactId instead of the full text.',
+          inputSchema: kbGetDocumentInputSchema,
+          annotations: { readOnlyHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, KB_GET_DOCUMENT_TOOL, args, deps),
       )
       server.registerTool(
         KB_INGEST_TOOL,
         {
           title: 'Ingest knowledge base file',
           description:
-            'Load a file into the agent knowledge base. processingMode=raw_text_only keeps the extracted text; okf splits it into a wiki. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
+            'Load a file into the agent knowledge base. processingMode=raw_text_only keeps the extracted text; okf splits it into a wiki. Optional purpose is one line on what the file is for. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
           inputSchema: kbIngestInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_INGEST_TOOL, args, deps),
