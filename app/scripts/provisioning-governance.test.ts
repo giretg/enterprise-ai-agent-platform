@@ -86,6 +86,7 @@ function fakeDrafts(overrides: Partial<ConnectorDraftRepository> = {}): Connecto
     }),
     assignToAgent: async () => {},
     unassignFromAgent: async () => ({ removed: true }),
+    isAssignableToAgent: async () => true,
     ...overrides,
   } as unknown as ConnectorDraftRepository
 }

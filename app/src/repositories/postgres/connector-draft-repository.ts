@@ -17,6 +17,18 @@ import type {
   CreateConnectorDraftInput,
 } from '../interfaces'
 
+/** Agent-kötés dropdown és assign: ugyanaz a fail-closed szabály, mint a runtime listán. */
+function isProvisioningCatalogConnectorAssignable(
+  connectorMode: 'fixed' | 'self_updating',
+  activeCapabilitySet: unknown,
+  specSource: { urlApprovedAt: Date | null; trustedAt: Date | null } | null,
+): boolean {
+  if (connectorMode === 'self_updating') {
+    if (!specSource?.urlApprovedAt || !specSource?.trustedAt) return false
+  }
+  return isConnectorAssignableToAgent(connectorMode, activeCapabilitySet)
+}
+
 /**
  * Postgres implementáció a provisioning draft-réteghez
  * (Feature-spec — Provisioning-Assistant §4.1, §4.2, §8). A provisioning-asszisztens
@@ -252,6 +264,23 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
     }
   }
 
+  async isAssignableToAgent(connectorId: string): Promise<boolean> {
+    const row = await prisma.connector.findUnique({
+      where: { id: connectorId },
+      select: {
+        connectorMode: true,
+        activeSpecVersion: { select: { capabilitySet: true } },
+        specSource: { select: { urlApprovedAt: true, trustedAt: true } },
+      },
+    })
+    if (!row) return false
+    return isProvisioningCatalogConnectorAssignable(
+      row.connectorMode,
+      row.activeSpecVersion?.capabilitySet ?? null,
+      row.specSource,
+    )
+  }
+
   async decommission(params: {
     draftId: string
   }): Promise<{ connectorId: string; affectedAgentIds: string[] }> {
@@ -352,14 +381,16 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         config: true,
         connectorMode: true,
         activeSpecVersion: { select: { capabilitySet: true } },
+        specSource: { select: { urlApprovedAt: true, trustedAt: true } },
       },
       orderBy: { name: 'asc' },
     })
     return rows
       .filter((row) =>
-        isConnectorAssignableToAgent(
+        isProvisioningCatalogConnectorAssignable(
           row.connectorMode,
           row.activeSpecVersion?.capabilitySet ?? null,
+          row.specSource,
         ),
       )
       .map((row) => ({
