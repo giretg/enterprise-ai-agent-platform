@@ -1,5 +1,4 @@
 import { notFound, redirect } from 'next/navigation'
-import { listAgents } from '@/app/actions/platform'
 import { getAuthContext } from '@/auth/context'
 import { TenantAuthError, requireTenantRole } from '@/auth/tenant-context'
 import {
@@ -15,20 +14,14 @@ export {
 } from '@/lib/control-plane-entry'
 
 /**
- * Alapértelmezett munkaterület belépéskor: van-e tenant, van-e munkatárs.
- * Chat/conversation a Phase 0 cut után nem része a target graphnak.
+ * Alapértelmezett belépési útvonal: van-e tenant-kontextus egyáltalán.
+ * Aktív tenant-userre ez mindig a dashboard — az listázza a jóváhagyásokat
+ * és a munkatársakat, nem kell itt agentet keresgélni.
  */
 export async function resolveDefaultAgentWorkspacePath(): Promise<string> {
   const ctx = await getAuthContext()
   const fixed = homePathForAuthContext(ctx)
   if (fixed) return fixed
-
-  const agentsRes = await listAgents({ limit: 50 })
-  if (agentsRes.success && agentsRes.data.length > 0) {
-    const agent = agentsRes.data.find((row) => row.status !== 'retired') ?? agentsRes.data[0]
-    if (agent) return `/control-plane/agents/${agent.id}`
-  }
-
   return DEFAULT_AGENT_WORKSPACE_FALLBACK
 }
 

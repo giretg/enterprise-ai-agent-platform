@@ -7,7 +7,13 @@ import {
   type NavVisibilityPolicy,
 } from '@/lib/nav-visibility'
 
-export type ControlPlaneNavLeaf = { key: string; href: string; label: string; exact?: boolean }
+export type ControlPlaneNavLeaf = {
+  key: string
+  href: string
+  label: string
+  exact?: boolean
+  badge?: number
+}
 export type ControlPlaneNavGroup = { key: string; label: string; children: ControlPlaneNavLeaf[] }
 export type ControlPlaneNavEntry = ControlPlaneNavLeaf | ControlPlaneNavGroup
 
@@ -36,6 +42,8 @@ export type ControlPlaneNavContext = {
   platformRoles: PlatformRole[]
   /** Szerepkörönkénti menü-elrejtés (`tenants.settings.navVisibility`). */
   navVisibility?: NavVisibilityPolicy
+  /** Jóváhagyásra váró műveletek száma — badge a Jóváhagyások menüponton. */
+  pendingApprovalsCount?: number
 }
 
 const isCatalogGroup = (
@@ -65,6 +73,12 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
   },
   { key: 'agents', href: '/control-plane/agents', label: 'Munkatársak' },
   {
+    key: 'admin.operations',
+    href: '/control-plane/operations',
+    label: 'Jóváhagyások',
+    requires: { tenantRole: 'approver' },
+  },
+  {
     key: 'account',
     href: '/control-plane/account',
     label: 'Kapcsolt fiókok',
@@ -82,12 +96,6 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
     key: 'admin',
     label: 'Adminisztráció',
     children: [
-      {
-        key: 'admin.operations',
-        href: '/control-plane/operations',
-        label: 'Jóváhagyások',
-        requires: { tenantRole: 'approver' },
-      },
       {
         key: 'admin.audit',
         href: '/control-plane/audit',
@@ -148,9 +156,10 @@ function meetsRequirement(
   return true
 }
 
-function toLeaf(entry: ControlPlaneNavCatalogLeaf): ControlPlaneNavLeaf {
+function toLeaf(entry: ControlPlaneNavCatalogLeaf, badge?: number): ControlPlaneNavLeaf {
   const leaf: ControlPlaneNavLeaf = { key: entry.key, href: entry.href, label: entry.label }
   if (entry.exact) leaf.exact = true
+  if (badge) leaf.badge = badge
   return leaf
 }
 
@@ -170,7 +179,10 @@ export function buildControlPlaneNav(ctx: ControlPlaneNavContext): ControlPlaneN
   for (const entry of CONTROL_PLANE_NAV_CATALOG) {
     if (!visible(entry.key)) continue
     if (!isCatalogGroup(entry)) {
-      if (meetsRequirement(ctx, entry.requires)) nav.push(toLeaf(entry))
+      if (meetsRequirement(ctx, entry.requires)) {
+        const badge = entry.key === 'admin.operations' ? ctx.pendingApprovalsCount : undefined
+        nav.push(toLeaf(entry, badge))
+      }
       continue
     }
     const children = entry.children

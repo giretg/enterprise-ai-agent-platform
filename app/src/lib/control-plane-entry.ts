@@ -1,7 +1,10 @@
 import type { AuthContext } from '@/auth/context'
 
-/** A gyökér (`/control-plane`) mindig továbbredirectel — önmagára esni loop. */
-export const DEFAULT_AGENT_WORKSPACE_FALLBACK = '/control-plane/agents'
+/**
+ * A gyökér (`/control-plane`) mindig továbbredirectel — önmagára esni loop.
+ * Aktív tenant-userre ez a kezdőlap (jóváhagyások + munkatársak áttekintése).
+ */
+export const DEFAULT_AGENT_WORKSPACE_FALLBACK = '/control-plane/dashboard'
 export const CONTROL_PLANE_PENDING_PATH = '/control-plane/pending'
 export const CONTROL_PLANE_PLATFORM_HOME = '/control-plane/platform/tenants'
 

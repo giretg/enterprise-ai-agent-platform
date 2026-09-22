@@ -2,7 +2,9 @@ import { headers } from 'next/headers'
 import { getAuthContext } from '@/auth/context'
 import { isControlPlaneEmbedRequest } from '@/lib/control-plane-embed'
 import { buildControlPlaneNav } from '@/lib/control-plane-nav'
+import { hasMinimumRole } from '@/lib/iam-policy'
 import { loadTenantNavVisibility } from '@/lib/nav-visibility-server'
+import { listPendingGatewayOperationsAction } from '@/app/actions/gateway-operation'
 import { ControlPlaneRoot } from './control-plane-shell'
 
 export default async function ControlPlaneLayout({ children }: { children: React.ReactNode }) {
@@ -12,11 +14,16 @@ export default async function ControlPlaneLayout({ children }: { children: React
   }
 
   const ctx = await getAuthContext()
-  const navVisibility = await loadTenantNavVisibility(ctx?.activeTenantId ?? null)
+  const canApprove = hasMinimumRole(ctx?.activeTenantRole ?? null, 'approver')
+  const [navVisibility, pendingRes] = await Promise.all([
+    loadTenantNavVisibility(ctx?.activeTenantId ?? null),
+    canApprove ? listPendingGatewayOperationsAction() : Promise.resolve(null),
+  ])
   const navItems = buildControlPlaneNav({
     tenantRole: ctx?.activeTenantRole ?? null,
     platformRoles: ctx?.platformRoles ?? [],
     navVisibility,
+    pendingApprovalsCount: pendingRes?.success ? pendingRes.data.operations.length : undefined,
   })
 
   return (
