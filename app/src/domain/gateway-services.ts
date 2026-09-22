@@ -18,6 +18,7 @@ import {
 import { recordGoogleDriveAppCreatedFile } from '@/domain/connector-grant/google-drive-grant-store'
 import {
   enqueueGatewayOperation,
+  enqueueResultToMcp,
   enqueueWriteForMcp,
   getGatewayOperation,
   getResultToMcp,
