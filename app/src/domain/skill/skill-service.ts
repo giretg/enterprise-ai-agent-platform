@@ -294,6 +294,7 @@ export class SkillService {
     provenance: Prisma.InputJsonValue | null
     license: string | null
     riskTier: SkillRiskTier
+    producesSkills?: boolean
     content: SkillContent
     requires: SkillRequirement[]
     /** Level-2 mellékletek (csomag-import); üres lista = nincs melléklet. */
@@ -327,6 +328,7 @@ export class SkillService {
       provenance: input.provenance,
       license: input.license,
       riskTier: input.riskTier,
+      producesSkills: input.producesSkills ?? false,
       content: input.content as unknown as Prisma.InputJsonValue,
       requires: input.requires as unknown as Prisma.InputJsonValue,
       ...(attachments.length > 0

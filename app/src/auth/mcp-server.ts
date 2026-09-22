@@ -81,6 +81,7 @@ import {
   MCP_GATEWAY_OPERATION_GET_TOOL,
   MCP_SKILLS_LIST_TOOL,
   MCP_SKILL_READ_TOOL,
+  MCP_SKILL_SUBMIT_TOOL,
   MCP_WHOAMI_TOOL,
   resolveMcpPrincipal,
   type McpPrincipal,
@@ -104,6 +105,12 @@ import {
   type McpCoworkerSummary,
 } from '@/lib/mcp-tenant-context'
 import type { AgentDefinitionSnapshot } from '@/domain/agent-definition'
+import {
+  conversationSkillSubmitSchema,
+  parseConversationSkillJsonLists,
+  submitConversationSkill,
+} from '@/domain/skill/conversation-skill'
+import { buildConversationSkillPorts } from '@/repositories/postgres/conversation-skill-repository'
 
 export type McpAgentListItem = McpCoworkerSummary
 
@@ -395,6 +402,46 @@ async function readSkillToolResult(
   return textResult({
     contents: [{ uri, mimeType: file.mimeType, text: file.text }],
   })
+}
+
+async function submitSkillToolResult(
+  principal: McpPrincipal,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+) {
+  await auditMcpToolCall(deps, principal, MCP_SKILL_SUBMIT_TOOL)
+  const parsed = conversationSkillSubmitSchema.safeParse(args)
+  if (!parsed.success) {
+    return textResult({
+      outcome: 'rejected',
+      reason: 'validation',
+      message: `Elutasítva: ${parsed.error.issues.map((issue) => issue.message).join(' · ')} Semmi nem került tárolásra.`,
+    })
+  }
+  const lists = parseConversationSkillJsonLists(parsed.data)
+  if (!lists.ok) {
+    return textResult({
+      outcome: 'rejected',
+      reason: 'validation',
+      message: `Elutasítva: ${lists.message} Semmi nem került tárolásra.`,
+    })
+  }
+  const outcome = await submitConversationSkill(
+    {
+      userId: principal.userId,
+      tenantId: principal.tenantId,
+      role: principal.role,
+      assumed: principal.assumed,
+      agentId: parsed.data.agentId,
+      name: parsed.data.name,
+      description: parsed.data.description,
+      instructions: parsed.data.instructions,
+      requires: lists.requires,
+      attachments: lists.attachments,
+    },
+    buildConversationSkillPorts(),
+  )
+  return textResult(outcome)
 }
 
 function asUuid(value: unknown): string | undefined {
@@ -712,6 +759,17 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
           readSkillToolResult(principal, args as Record<string, unknown>, deps, packages),
       )
       server.registerTool(
+        MCP_SKILL_SUBMIT_TOOL,
+        {
+          title: 'Submit skill from conversation',
+          description:
+            'Submit a new tenant skill written in this conversation for the named agentId. requires and attachments are JSON strings, not arrays. The server decides the outcome and the text must be relayed to the user: created (live, assigned, enabled), pending_approval, or rejected with a reason (no_producer_skill, cannot_use_agent, validation, name_taken). A tenant admin gets a live skill without opening the web UI. Anyone else who can operate the agent gets one open proposal (a new call overwrites it). Viewers and agents without an enabled producer skill are rejected and nothing is stored. Missing tools are listed; this call does not grant them. This tool cannot create or mark a producer skill.',
+          inputSchema: conversationSkillSubmitSchema,
+        },
+        async (args) =>
+          submitSkillToolResult(principal, args as Record<string, unknown>, deps),
+      )
+      server.registerTool(
         GOOGLE_DRIVE_SEARCH_TOOL,
         {
           title: 'Search Google Drive',
@@ -947,6 +1005,9 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         }
         if (toolName === MCP_SKILL_READ_TOOL) {
           return readSkillToolResult(principal, args, deps, packages)
+        }
+        if (toolName === MCP_SKILL_SUBMIT_TOOL) {
+          return submitSkillToolResult(principal, args, deps)
         }
         if (toolName === MCP_GATEWAY_OPERATION_GET_TOOL) {
           return getGatewayOperationToolResult(principal, args, deps)

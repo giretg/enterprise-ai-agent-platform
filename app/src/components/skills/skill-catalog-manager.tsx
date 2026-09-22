@@ -18,6 +18,7 @@ import {
   importSkillPackageVersionAction,
   listSkillCatalogAction,
   createSkillAction,
+  setSkillProducesSkillsAction,
   updateSkillDisplayNameAction,
   updateSkillKindAction,
   updateSkillDescriptionAction,
@@ -763,6 +764,7 @@ function SkillCatalogRow({
               </Badge>
             ) : null}
             <Badge tone={kindTone}>{kindLabel}</Badge>
+            {skill.producesSkills ? <Badge tone="warning">gyártó</Badge> : null}
             {kind === 'system' ? <Badge tone="neutral">system</Badge> : null}
           </div>
           <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-ink-soft">
@@ -1355,6 +1357,9 @@ function SkillVersionsPanel({
                   isPlatformAdmin={isPlatformAdmin}
                 />
                 <SkillDescriptionEditor skill={skill} running={pending} onRun={onRun} />
+                {skill.catalogScope === 'tenant' && skill.kind === 'tenant' ? (
+                  <ProducerSkillToggle skill={skill} running={pending} onRun={onRun} />
+                ) : null}
               </div>
             )}
           </div>
@@ -2246,6 +2251,42 @@ function SkillDisplayNameEditor({
   )
 }
 
+function ProducerSkillToggle({
+  skill,
+  running,
+  onRun,
+}: {
+  skill: SkillCatalogEntry
+  running: boolean
+  onRun: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
+}) {
+  return (
+    <label className="mt-3 flex items-start gap-2 text-sm text-ink-soft">
+      <input
+        type="checkbox"
+        className="mt-1"
+        checked={skill.producesSkills}
+        disabled={running}
+        onChange={(event) =>
+          onRun(
+            () =>
+              setSkillProducesSkillsAction({
+                skillId: skill.id,
+                producesSkills: event.target.checked,
+              }),
+            event.target.checked
+              ? 'Ez most a gyártó skill. Csak admin rendelheti agenthez és kapcsolhatja be.'
+              : 'A gyártó jelölő lekerült. A már beküldött javaslatok a sorban maradnak.',
+          )
+        }
+      />
+      <span>
+        Gyártó skill. A jelölő azonosítja, nem a név. Operátor nem tudja agentre tenni.
+      </span>
+    </label>
+  )
+}
+
 function SkillDescriptionEditor({
   skill,
   running,
@@ -2331,6 +2372,7 @@ function CreateSkillForm({
   const [displayName, setDisplayName] = useState('')
   const [description, setDescription] = useState('')
   const [kind, setKind] = useState<SkillKind>('tenant')
+  const [producesSkills, setProducesSkills] = useState(false)
   const [draft, setDraft] = useState<SkillContentDraft>(EMPTY_CONTENT_DRAFT)
 
   function submit() {
@@ -2341,6 +2383,7 @@ function CreateSkillForm({
         displayName: displayName.trim() || null,
         description,
         kind,
+        producesSkills: kind === 'tenant' && producesSkills,
         ...contentDraftPayload(draft),
       })
       if (res.success) {
@@ -2410,8 +2453,24 @@ function CreateSkillForm({
           disabled={pending}
           onChange={(next) => {
             setKind(next.kind)
+            if (next.kind !== 'tenant') setProducesSkills(false)
           }}
         />
+        {kind === 'tenant' ? (
+          <label className="mt-3 flex items-start gap-2 text-sm text-ink-soft">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={producesSkills}
+              disabled={pending}
+              onChange={(event) => setProducesSkills(event.target.checked)}
+            />
+            <span>
+              Gyártó skill. Ha be van kapcsolva egy agenten, a beszélgetésből skill
+              készülhet. Tenantonként egy lehet, és csak admin teheti agentre.
+            </span>
+          </label>
+        ) : null}
       </FormSection>
 
       <SkillContentFields draft={draft} onChange={setDraft} disabled={pending} />

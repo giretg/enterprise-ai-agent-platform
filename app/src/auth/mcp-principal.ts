@@ -23,6 +23,7 @@ export const MCP_AGENT_GET_WORKING_SET_TOOL = 'platform.agent.get_working_set'
 export const MCP_AGENT_PUBLISH_TOOL = 'platform.agent.publish'
 export const MCP_SKILLS_LIST_TOOL = 'platform.skills.list'
 export const MCP_SKILL_READ_TOOL = 'platform.skills.read'
+export const MCP_SKILL_SUBMIT_TOOL = 'platform.skills.submit'
 export const MCP_GATEWAY_OPERATION_GET_TOOL = 'platform.gateway_operation.get'
 export const MCP_PLATFORM_TOOLS = [
   MCP_WHOAMI_TOOL,
@@ -34,6 +35,7 @@ export const MCP_PLATFORM_TOOLS = [
   MCP_AGENT_PUBLISH_TOOL,
   MCP_SKILLS_LIST_TOOL,
   MCP_SKILL_READ_TOOL,
+  MCP_SKILL_SUBMIT_TOOL,
   MCP_GATEWAY_OPERATION_GET_TOOL,
 ] as const
 export const MCP_ALLOWED_TOOLS = [...MCP_PLATFORM_TOOLS, ...ENTERPRISE_TOOLS] as const

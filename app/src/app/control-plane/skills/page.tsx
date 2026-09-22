@@ -1,7 +1,9 @@
 import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { Card } from '@/components/ui/shell'
+import { listConversationSkillProposalsAction } from '@/app/actions/conversation-skills'
 import { listSkillCatalogAction } from '@/app/actions/skills'
+import { ConversationSkillProposals } from '@/components/skills/conversation-skill-proposals'
 import { SkillCatalogManager } from '@/components/skills/skill-catalog-manager'
 
 function CatalogLoadError({ error }: { error: string }) {
@@ -60,6 +62,8 @@ export default async function SkillCatalogPage() {
     return <CatalogLoadError error={res.error ?? 'A képességek betöltése sikertelen.'} />
   }
 
+  const proposals = isAdmin ? await listConversationSkillProposalsAction() : null
+
   return (
     <div className="space-y-8">
       <div className="animate-rise">
@@ -79,6 +83,15 @@ export default async function SkillCatalogPage() {
           éles (<em>active</em>) — a korábbi verzióra bármikor visszaállhatsz.
         </p>
       </div>
+
+      {isAdmin && proposals?.success ? (
+        <ConversationSkillProposals proposals={proposals.data} />
+      ) : null}
+      {isAdmin && proposals && !proposals.success ? (
+        <Card>
+          <p className="text-sm text-coral">{proposals.error}</p>
+        </Card>
+      ) : null}
 
       <SkillCatalogManager skills={res.data} isAdmin={isAdmin} isPlatformAdmin={isPlatformAdmin} />
     </div>

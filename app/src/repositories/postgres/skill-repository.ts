@@ -137,6 +137,7 @@ export class PostgresSkillRepository implements SkillRepository {
           provenance: input.provenance ?? undefined,
           license: input.license,
           riskTier: input.riskTier,
+          producesSkills: input.producesSkills ?? false,
         },
       })
       const version = await tx.skillVersion.create({
