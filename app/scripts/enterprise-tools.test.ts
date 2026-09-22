@@ -801,8 +801,9 @@ async function main() {
     }
   })
 
-  await check('two http_api connectors require connectorId', async () => {
+  await check('two http_api connectors require connectorId when path is ambiguous', async () => {
     const other = '88888888-8888-4888-8888-888888888888'
+    const endpoints = [{ method: 'GET', path: '/reports/query' }]
     const result = await authorizeToolCall(authorizeDeps(), {
       principal: principal(),
       definition: definition({
@@ -811,8 +812,13 @@ async function main() {
           roleInstruction: 'Query CRM',
           skills: [],
           connectors: [
-            { connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'read' },
-            { connectorId: other, type: 'http_api', accessMode: 'read' },
+            {
+              connectorId: CONNECTOR_ID,
+              type: 'http_api',
+              accessMode: 'read',
+              endpoints,
+            },
+            { connectorId: other, type: 'http_api', accessMode: 'read', endpoints },
           ],
           capabilities: [{ toolName: HTTP_API_GET_TOOL, allowed: true }],
         },
@@ -820,7 +826,93 @@ async function main() {
       toolName: HTTP_API_GET_TOOL,
       args: { path: '/reports/query' },
     })
-    assert.deepEqual(result, { allowed: false, reason: 'connector_id_required' })
+    assert.equal(result.allowed, false)
+    if (!result.allowed) {
+      assert.equal(result.reason, 'connector_id_required')
+      assert.equal(result.connectorChoices?.length, 2)
+    }
+  })
+
+  await check('two http_api connectors resolve by connectorName', async () => {
+    const other = '99999999-9999-4999-8999-999999999999'
+    const result = await authorizeToolCall(
+      authorizeDeps({ connector: connector({ type: 'http_api', authMode: 'service' }) }),
+      {
+        principal: principal(),
+        definition: definition({
+          snapshot: {
+            name: 'CRM',
+            roleInstruction: 'Query CRM',
+            skills: [],
+            connectors: [
+              {
+                connectorId: CONNECTOR_ID,
+                name: 'Posnavigator API',
+                type: 'http_api',
+                accessMode: 'write',
+                endpoints: [{ method: 'PATCH', path: '/api/v1/preset-filters' }],
+              },
+              {
+                connectorId: other,
+                name: 'Posnavigator blogs',
+                type: 'http_api',
+                accessMode: 'write',
+                endpoints: [{ method: 'GET', path: '/api/v1/blogs' }],
+              },
+            ],
+            capabilities: [{ toolName: HTTP_API_REQUEST_TOOL, allowed: true }],
+          },
+        }),
+        toolName: HTTP_API_REQUEST_TOOL,
+        args: {
+          connectorName: 'Posnavigator API',
+          path: '/api/v1/preset-filters',
+          method: 'PATCH',
+        },
+      },
+    )
+    assert.equal(result.allowed, true)
+    if (result.allowed) {
+      assert.equal(result.connectorId, CONNECTOR_ID)
+    }
+  })
+
+  await check('two http_api connectors auto-pick by unique endpoint path', async () => {
+    const other = '99999999-9999-4999-8999-999999999999'
+    const result = await authorizeToolCall(
+      authorizeDeps({ connector: connector({ type: 'http_api', authMode: 'service' }) }),
+      {
+      principal: principal(),
+      definition: definition({
+        snapshot: {
+          name: 'CRM',
+          roleInstruction: 'Query CRM',
+          skills: [],
+          connectors: [
+            {
+              connectorId: CONNECTOR_ID,
+              type: 'http_api',
+              accessMode: 'write',
+              endpoints: [{ method: 'PATCH', path: '/api/v1/preset-filters' }],
+            },
+            {
+              connectorId: other,
+              type: 'http_api',
+              accessMode: 'write',
+              endpoints: [{ method: 'GET', path: '/api/v1/blogs' }],
+            },
+          ],
+          capabilities: [{ toolName: HTTP_API_REQUEST_TOOL, allowed: true }],
+        },
+      }),
+        toolName: HTTP_API_REQUEST_TOOL,
+        args: { path: '/api/v1/preset-filters', method: 'PATCH' },
+      },
+    )
+    assert.equal(result.allowed, true)
+    if (result.allowed) {
+      assert.equal(result.connectorId, CONNECTOR_ID)
+    }
   })
 
   await check('gmail search without grant is connector_grant_missing', async () => {

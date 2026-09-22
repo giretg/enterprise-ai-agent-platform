@@ -70,11 +70,14 @@ export function CreateAgentWizard({
   initialStep,
   continuation = null,
   catalog = [],
+  catalogDetails = [],
 }: {
   cloneableAgents?: CreateAgentWizardCloneOption[]
   initialStep?: string
   continuation?: CreateAgentWizardContinuation | null
   catalog?: ConnectorCatalogOption[]
+  /** Teljes connector-katalógus (kötött kapcsolatok leírásához). */
+  catalogDetails?: ConnectorCatalogOption[]
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -97,6 +100,9 @@ export function CreateAgentWizard({
   const [connectors, setConnectors] = useState(continuation?.connectors ?? [])
   const [assignableConnectors, setAssignableConnectors] = useState(
     continuation?.assignableConnectors ?? catalog,
+  )
+  const [connectorCatalogDetails, setConnectorCatalogDetails] = useState(
+    catalogDetails.length > 0 ? catalogDetails : catalog,
   )
   const [cloneSourceId, setCloneSourceId] = useState('')
   const [cloneTemplate, setCloneTemplate] = useState<CreateAgentWizardCloneTemplate | null>(null)
@@ -122,6 +128,7 @@ export function CreateAgentWizard({
         setConnectors(govRes.data.connectors)
         const assignedIds = govRes.data.connectors.map((row) => row.connector.id)
         const nextCatalog = catalogRes.success ? catalogRes.data : assignableConnectors
+        if (catalogRes.success) setConnectorCatalogDetails(catalogRes.data)
         setAssignableConnectors(nextCatalog.filter((item) => !assignedIds.includes(item.id)))
       }
     })
@@ -488,6 +495,7 @@ export function CreateAgentWizard({
                 agentId={createdAgentId}
                 bindings={connectors}
                 catalog={assignableConnectors}
+                catalogDetails={connectorCatalogDetails}
                 suggestedConnectorNames={cloneTemplate?.connectors.map((item) => item.name)}
                 bare
                 onAssigned={refreshCatalogs}

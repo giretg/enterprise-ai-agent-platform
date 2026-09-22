@@ -13,7 +13,13 @@ import {
 import { listConnectorCatalog } from '@/app/actions/provisioning'
 import { getAgentSkillsAction, listAssignableSkillsAction } from '@/app/actions/skills'
 import { assignableConnectorsFromCatalog } from '@/lib/create-agent-wizard'
+import {
+  AGENT_DETAIL_SECTION_LABELS,
+  isAgentDetailSectionId,
+  type AgentDetailSectionId,
+} from '@/lib/agent-detail-sections'
 import { isSuperadmin } from '@/lib/tenant-policy'
+import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
@@ -29,12 +35,26 @@ import { Card } from '@/components/ui/shell'
 
 export const dynamic = 'force-dynamic'
 
+const SECTION_DESCRIPTIONS: Partial<Record<AgentDetailSectionId, string>> = {
+  elesites: 'Melyik definíció fut élesben, és van-e még nem publikált változás.',
+  kapcsolatok: 'API-k, levelezés, Drive és egyéb külső rendszerek — olvasási vagy írási módban.',
+  tudasbazis: 'Dokumentumok és katalógus, amiből a munkatárs dolgozik.',
+  eszkozok: 'Milyen platform-eszközöket használhat a publikált definíció.',
+  skillek: 'Előre összeállított utasítás-csomagok ehhez az agenthez.',
+  hozzaferes: 'Ki indíthat chatet vagy ticketet ezzel a munkatárssal.',
+}
+
 export default async function AgentDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ agentId: string }>
+  searchParams: Promise<{ section?: string }>
 }) {
   const { agentId } = await params
+  const query = await searchParams
+  const initialSection = isAgentDetailSectionId(query.section) ? query.section : undefined
+
   let ctx
   try {
     ctx = await requireTenantRole('viewer')
@@ -66,12 +86,122 @@ export default async function AgentDetailPage({
   const kbDocs = kbRes.success ? kbRes.data : []
   const kbCatalog = kbCatalogRes.success ? kbCatalogRes.data : []
   const accessUsers = accessRes.success ? accessRes.data.users : null
+  const connectorCatalog = catalogRes.success ? catalogRes.data : []
   const catalog = assignableConnectorsFromCatalog(
-    catalogRes.success ? catalogRes.data : [],
+    connectorCatalog,
     connectors.map((row) => row.connector.id),
   )
   const canManage = hasMinimumRole(ctx.activeTenantRole, 'admin')
   const canDelete = isSuperadmin(ctx.platformRoles)
+
+  const sections: Array<{
+    id: AgentDetailSectionId
+    label: string
+    description?: string
+    content: React.ReactNode
+  }> = [
+    {
+      id: 'elesites',
+      label: AGENT_DETAIL_SECTION_LABELS.elesites,
+      description: SECTION_DESCRIPTIONS.elesites,
+      content: (
+        <PublishAgentDefinitionForm
+          agentId={agent.id}
+          currentDefinitionId={agent.currentDefinitionVersionId}
+          status={agent.status}
+          goLive
+          canEdit={canManage}
+          hasUnpublishedChanges={publishRes.success ? publishRes.data.stale : false}
+          publishedVersion={publishRes.success ? publishRes.data.version : null}
+        />
+      ),
+    },
+    ...(canManage
+      ? [
+          {
+            id: 'profil' as const,
+            label: AGENT_DETAIL_SECTION_LABELS.profil,
+            content: (
+              <Card title={AGENT_DETAIL_SECTION_LABELS.profil}>
+                <UpdateAgentProfileForm
+                  agentId={agent.id}
+                  name={agent.name}
+                  description={agent.description}
+                  bare
+                />
+              </Card>
+            ),
+          },
+        ]
+      : []),
+    {
+      id: 'munkakor',
+      label: AGENT_DETAIL_SECTION_LABELS.munkakor,
+      content: (
+        <Card title={AGENT_DETAIL_SECTION_LABELS.munkakor}>
+          <UpdateInstructionForm agentId={agent.id} roleInstruction={agent.roleInstruction} bare />
+        </Card>
+      ),
+    },
+    {
+      id: 'kapcsolatok',
+      label: AGENT_DETAIL_SECTION_LABELS.kapcsolatok,
+      description: SECTION_DESCRIPTIONS.kapcsolatok,
+      content: (
+        <AgentConnectorBindingForm
+          agentId={agent.id}
+          bindings={connectors}
+          catalog={catalog}
+          catalogDetails={connectorCatalog}
+        />
+      ),
+    },
+    {
+      id: 'tudasbazis',
+      label: AGENT_DETAIL_SECTION_LABELS.tudasbazis,
+      description: SECTION_DESCRIPTIONS.tudasbazis,
+      content: (
+        <AgentKnowledgeBasePanel
+          agentId={agent.id}
+          documents={kbDocs}
+          catalog={kbCatalog}
+          canManage={canManage}
+        />
+      ),
+    },
+    {
+      id: 'eszkozok',
+      label: AGENT_DETAIL_SECTION_LABELS.eszkozok,
+      description: SECTION_DESCRIPTIONS.eszkozok,
+      content: <AgentCapabilitiesPanel agentId={agent.id} currentCapabilities={capabilities} />,
+    },
+    {
+      id: 'skillek',
+      label: AGENT_DETAIL_SECTION_LABELS.skillek,
+      description: SECTION_DESCRIPTIONS.skillek,
+      content: (
+        <AgentSkillsPanel
+          agentId={agent.id}
+          assigned={skills}
+          assignable={assignable}
+          pendingSkills={pendingSkills}
+          loadError={assignableError}
+          canEdit={canManage}
+          isAdmin={canManage}
+        />
+      ),
+    },
+    ...(canManage && accessUsers
+      ? [
+          {
+            id: 'hozzaferes' as const,
+            label: AGENT_DETAIL_SECTION_LABELS.hozzaferes,
+            description: SECTION_DESCRIPTIONS.hozzaferes,
+            content: <AgentAccessPanel agentId={agent.id} users={accessUsers} />,
+          },
+        ]
+      : []),
+  ]
 
   return (
     <div className="space-y-6">
@@ -95,49 +225,17 @@ export default async function AgentDetailPage({
         {canDelete ? <DeleteAgentButton agentId={agent.id} agentName={agent.name} /> : null}
       </div>
 
-      {canManage ? (
-        <Card title="Név és bemutatkozás">
-          <UpdateAgentProfileForm
-            agentId={agent.id}
-            name={agent.name}
-            description={agent.description}
-            bare
-          />
-        </Card>
-      ) : null}
+      <p className="max-w-2xl text-sm text-ink-soft">
+        Válassz témát a bal oldalon — egyszerre egy terület jelenik meg, így nem kell végiggörgetni
+        az egész adatlapot.
+      </p>
 
-      <PublishAgentDefinitionForm
-        agentId={agent.id}
-        currentDefinitionId={agent.currentDefinitionVersionId}
-        status={agent.status}
-        goLive
-        canEdit={canManage}
-        hasUnpublishedChanges={publishRes.success ? publishRes.data.stale : false}
-        publishedVersion={publishRes.success ? publishRes.data.version : null}
+      <SettingsSectionShell
+        ariaLabel="Agent beállítások"
+        navHeading="Beállítások"
+        initialId={initialSection}
+        sections={sections}
       />
-      <Card title="Munkakör">
-        <UpdateInstructionForm agentId={agent.id} roleInstruction={agent.roleInstruction} bare />
-      </Card>
-      <AgentConnectorBindingForm agentId={agent.id} bindings={connectors} catalog={catalog} />
-      <AgentKnowledgeBasePanel
-        agentId={agent.id}
-        documents={kbDocs}
-        catalog={kbCatalog}
-        canManage={canManage}
-      />
-      <AgentCapabilitiesPanel agentId={agent.id} currentCapabilities={capabilities} />
-      <AgentSkillsPanel
-        agentId={agent.id}
-        assigned={skills}
-        assignable={assignable}
-        pendingSkills={pendingSkills}
-        loadError={assignableError}
-        canEdit={canManage}
-        isAdmin={canManage}
-      />
-      {canManage && accessUsers ? (
-        <AgentAccessPanel agentId={agent.id} users={accessUsers} />
-      ) : null}
     </div>
   )
 }

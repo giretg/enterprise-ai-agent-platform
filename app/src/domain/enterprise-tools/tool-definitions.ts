@@ -120,7 +120,14 @@ const optionalConnectorId = z
   .string()
   .uuid()
   .optional()
-  .describe('Required when the agent has more than one matching connector')
+  .describe('Required when the agent has more than one matching connector and path/name routing is ambiguous')
+const optionalConnectorName = z
+  .string()
+  .max(200)
+  .optional()
+  .describe(
+    'Human connector name from the published agent definition (connectors[].name). Prefer this over connectorId when several HTTP APIs are bound.',
+  )
 const scalarMap = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
 
 export const googleDriveSearchInputSchema = z
@@ -233,6 +240,7 @@ export const httpApiGetInputSchema = z
     definitionId,
     agentId: optionalAgentId,
     connectorId: optionalConnectorId,
+    connectorName: optionalConnectorName,
     path: z
       .string()
       .min(1)
@@ -247,6 +255,7 @@ export const httpApiGetAllInputSchema = z
     definitionId,
     agentId: optionalAgentId,
     connectorId: optionalConnectorId,
+    connectorName: optionalConnectorName,
     path: z.string().min(1).max(1000),
     query: scalarMap.optional(),
     pageSize: z.number().int().min(1).max(500).optional(),
@@ -259,6 +268,7 @@ export const httpApiRequestInputSchema = z
     definitionId,
     agentId: optionalAgentId,
     connectorId: optionalConnectorId,
+    connectorName: optionalConnectorName,
     method: z.enum(['POST', 'PUT', 'PATCH', 'DELETE']),
     path: z.string().min(1).max(1000),
     query: scalarMap.optional(),

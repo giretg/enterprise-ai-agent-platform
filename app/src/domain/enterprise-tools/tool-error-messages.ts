@@ -24,7 +24,8 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   tenant_isolation: 'Connector does not belong to this tenant',
   connector_not_active: 'Connector is not active',
   connector_grant_missing: 'This account has not been connected yet',
-  connector_id_required: 'Multiple connectors match; pass connectorId from the agent definition',
+  connector_id_required:
+    'Multiple HTTP API connectors match; pass connectorName (from connectors[].name in the published definition), connectorId, or a path that appears on only one connector\'s endpoint list (see connectors in the error payload)',
   acting_user_required: 'This tool requires a delegated user grant',
   google_drive_scope_not_granted: 'Google Drive scopes are insufficient',
   gmail_scope_not_granted: 'Gmail scopes are insufficient',

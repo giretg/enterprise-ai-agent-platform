@@ -15,10 +15,12 @@ export type SettingsSection = {
 export function SettingsSectionShell({
   sections,
   ariaLabel = 'Beállítási témák',
+  navHeading = 'Témák',
   initialId,
 }: {
   sections: SettingsSection[]
   ariaLabel?: string
+  navHeading?: string
   initialId?: string
 }) {
   const fallbackId =
@@ -40,7 +42,7 @@ export function SettingsSectionShell({
         className="shrink-0 rounded-xl border border-line/60 bg-panel/40 p-2 lg:sticky lg:top-4 lg:w-56"
       >
         <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
-          Témák
+          {navHeading}
         </p>
         <div className="flex gap-1 overflow-x-auto lg:flex-col lg:overflow-visible">
           {sections.map((section) => {

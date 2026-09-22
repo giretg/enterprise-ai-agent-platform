@@ -70,6 +70,7 @@ export default async function NewAgentPage({
             ? continuation.assignableConnectors
             : catalog
         }
+        catalogDetails={catalog}
       />
     </div>
   )

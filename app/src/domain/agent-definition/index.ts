@@ -38,6 +38,8 @@ export type AgentDefinitionSnapshot = {
   skills: Array<{ skillId: string; skillVersionId: string; name: string }>
   connectors: Array<{
     connectorId: string
+    /** Admin által adott név — több http_api kötésnél a tool hívásban is használható. */
+    name?: string
     type: string
     accessMode: 'read' | 'write'
     /** `http_api`: OpenAPI info / katalógus-összefoglaló, titok nélkül. */
@@ -170,6 +172,7 @@ async function buildSnapshot(
     workingSet.connectors.map(async (row) => {
       const base = {
         connectorId: row.connector.id,
+        name: row.connector.name,
         type: row.connector.type,
         accessMode: row.accessMode,
       }
