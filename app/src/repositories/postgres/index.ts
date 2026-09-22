@@ -25,6 +25,11 @@ import {
   PostgresKnowledgeArtifactRepository,
   PostgresKnowledgeChunkRepository,
 } from './knowledge-repository'
+import {
+  PostgresProjectMemoryRepository,
+  PostgresWorkFileRepository,
+  PostgresWorkProjectRepository,
+} from './project-work-repository'
 
 export const repositories = {
   users: new PostgresUserRepository(),
@@ -48,4 +53,7 @@ export const repositories = {
   documents: new PostgresDocumentRepository(),
   knowledgeArtifacts: new PostgresKnowledgeArtifactRepository(),
   knowledgeChunks: new PostgresKnowledgeChunkRepository(),
+  workProjects: new PostgresWorkProjectRepository(),
+  workFiles: new PostgresWorkFileRepository(),
+  projectMemory: new PostgresProjectMemoryRepository(),
 }

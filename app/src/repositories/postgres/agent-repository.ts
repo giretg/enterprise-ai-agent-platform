@@ -99,6 +99,16 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
+  async updateMemoryWriteMode(input: {
+    agentId: string
+    memoryWriteMode: Agent['memoryWriteMode']
+  }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: { memoryWriteMode: input.memoryWriteMode },
+    })
+  }
+
   async setCurrentDefinitionVersionId(agentId: string, versionId: string): Promise<Agent> {
     return prisma.agent.update({
       where: { id: agentId },

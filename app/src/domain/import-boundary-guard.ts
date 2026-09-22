@@ -19,6 +19,7 @@ const TARGETS = [
   'src/domain/enterprise-tools',
   'src/domain/gateway-operation',
   'src/domain/audit',
+  'src/domain/project-work',
 ]
 
 const FORBIDDEN = [

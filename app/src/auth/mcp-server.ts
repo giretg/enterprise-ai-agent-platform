@@ -111,6 +111,25 @@ import {
   submitConversationSkill,
 } from '@/domain/skill/conversation-skill'
 import { buildConversationSkillPorts } from '@/repositories/postgres/conversation-skill-repository'
+import {
+  isProjectWorkTool,
+  MCP_PROJECTS_CREATE_TOOL,
+  MCP_PROJECTS_LIST_TOOL,
+  MCP_PROJECT_MEMORY_READ_TOOL,
+  MCP_PROJECT_MEMORY_WRITE_TOOL,
+  MCP_WORK_FILE_DELETE_TOOL,
+  MCP_WORK_FILE_LIST_TOOL,
+  MCP_WORK_FILE_READ_TOOL,
+  MCP_WORK_FILE_WRITE_TOOL,
+  projectMemoryReadInputSchema,
+  projectMemoryWriteInputSchema,
+  projectsCreateInputSchema,
+  projectsListInputSchema,
+  workFileDeleteInputSchema,
+  workFileListInputSchema,
+  workFileReadInputSchema,
+  workFileWriteInputSchema,
+} from '@/domain/project-work/mcp'
 
 export type McpAgentListItem = McpCoworkerSummary
 
@@ -144,6 +163,12 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
   getGatewayOperation: (input: {
     principal: McpPrincipal
     operationId: string
+  }) => Promise<EnterpriseToolMcpResult>
+  invokeProjectWork: (input: {
+    principal: McpPrincipal
+    toolName: string
+    args: Record<string, unknown>
+    origin?: string
   }) => Promise<EnterpriseToolMcpResult>
   listMcpSkills: (input: { tenantId: string }) => Promise<McpSkillPackage[]>
   agentScaffold: AgentScaffoldDeps
@@ -267,6 +292,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
           operationId: input.operationId,
         }),
       ),
+    invokeProjectWork: (input) => services.projectWork.invoke(input),
     listMcpSkills: ({ tenantId }) => services.skills.listMcpSkillPackages(tenantId),
     agentScaffold: {
       agents: repositories.agents,
@@ -771,6 +797,89 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
           submitSkillToolResult(principal, args as Record<string, unknown>, deps),
       )
       server.registerTool(
+        MCP_PROJECTS_LIST_TOOL,
+        {
+          title: 'List work projects',
+          description:
+            'List named projects in this tenant plus the built-in __general__ project. Pass the same projectKey on work_file and project_memory calls. Pass definitionId from platform.agent.get_definition.',
+          inputSchema: projectsListInputSchema,
+          annotations: { readOnlyHint: true },
+        },
+        async (args) => projectWorkToolResult(principal, MCP_PROJECTS_LIST_TOOL, args, deps),
+      )
+      server.registerTool(
+        MCP_PROJECTS_CREATE_TOOL,
+        {
+          title: 'Create work project',
+          description:
+            'Create a named project for durable work files and project memory. Returns the projectKey to pass on later calls. Pass definitionId from platform.agent.get_definition.',
+          inputSchema: projectsCreateInputSchema,
+        },
+        async (args) => projectWorkToolResult(principal, MCP_PROJECTS_CREATE_TOOL, args, deps),
+      )
+      server.registerTool(
+        MCP_WORK_FILE_LIST_TOOL,
+        {
+          title: 'List work files',
+          description:
+            'List work files for a project (plans, notes, drafts). Shared across agents on the same project. Optional prefix. Pass projectKey; omit for __general__. These files are not injected into the prompt.',
+          inputSchema: workFileListInputSchema,
+          annotations: { readOnlyHint: true },
+        },
+        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_LIST_TOOL, args, deps),
+      )
+      server.registerTool(
+        MCP_WORK_FILE_READ_TOOL,
+        {
+          title: 'Read work file',
+          description:
+            'Read one work file by path under the project. No approval. Pass projectKey; omit for __general__.',
+          inputSchema: workFileReadInputSchema,
+          annotations: { readOnlyHint: true },
+        },
+        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_READ_TOOL, args, deps),
+      )
+      server.registerTool(
+        MCP_WORK_FILE_WRITE_TOOL,
+        {
+          title: 'Write work file',
+          description:
+            'Create or overwrite a work file under the project (plans, notes, drafts). No approval; quota-capped. Do not write these into the checkout folder. Pass projectKey; omit for __general__.',
+          inputSchema: workFileWriteInputSchema,
+        },
+        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_WRITE_TOOL, args, deps),
+      )
+      server.registerTool(
+        MCP_WORK_FILE_DELETE_TOOL,
+        {
+          title: 'Delete work file',
+          description: 'Delete a work file under the project prefix. No approval. Pass projectKey; omit for __general__.',
+          inputSchema: workFileDeleteInputSchema,
+        },
+        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_DELETE_TOOL, args, deps),
+      )
+      server.registerTool(
+        MCP_PROJECT_MEMORY_READ_TOOL,
+        {
+          title: 'Read project memory',
+          description:
+            'Read this agent\'s project-memory items (decisions, open tasks, findings, handoffs, artifact pointers). Each item is tagged with the conversation partner (withUserId / withUserName) stamped by the server. Pass mine=true to filter to the calling user. Ask which project, then pass the same projectKey. Do not store personal facts unless they constrain the project.',
+          inputSchema: projectMemoryReadInputSchema,
+          annotations: { readOnlyHint: true },
+        },
+        async (args) => projectWorkToolResult(principal, MCP_PROJECT_MEMORY_READ_TOOL, args, deps),
+      )
+      server.registerTool(
+        MCP_PROJECT_MEMORY_WRITE_TOOL,
+        {
+          title: 'Write project memory',
+          description:
+            'Write a project-memory item for this agent (decision, open_task, finding, constraint, artifact, handoff_summary). The work plan itself belongs in a work file; store only a pointer here. The server stamps the calling user as conversation partner — do not name them. Cannot change trained operating rules. Approval-mode agents return awaiting_approval + approvalUrl; direct-mode agents write immediately. Personal facts (vacation, private preference) do not belong here unless they constrain the project.',
+          inputSchema: projectMemoryWriteInputSchema,
+        },
+        async (args) => projectWorkToolResult(principal, MCP_PROJECT_MEMORY_WRITE_TOOL, args, deps),
+      )
+      server.registerTool(
         GOOGLE_DRIVE_SEARCH_TOOL,
         {
           title: 'Search Google Drive',
@@ -1010,6 +1119,9 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         if (toolName === MCP_SKILL_SUBMIT_TOOL) {
           return submitSkillToolResult(principal, args, deps)
         }
+        if (isProjectWorkTool(toolName)) {
+          return projectWorkToolResult(principal, toolName, args, deps, origin)
+        }
         if (toolName === MCP_GATEWAY_OPERATION_GET_TOOL) {
           return getGatewayOperationToolResult(principal, args, deps)
         }
@@ -1034,6 +1146,16 @@ async function enterpriseToolResult(
   origin?: string,
 ) {
   return deps.invokeEnterpriseTool({ principal, toolName, args, origin })
+}
+
+async function projectWorkToolResult(
+  principal: McpPrincipal,
+  toolName: string,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+  origin?: string,
+) {
+  return deps.invokeProjectWork({ principal, toolName, args, origin })
 }
 
 async function getGatewayOperationToolResult(
