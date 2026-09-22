@@ -773,6 +773,56 @@ async function main() {
     }
   })
 
+  await test('runtime: endpoint saját OpenAPI-ja szerint opcionális X-Acting-User → kihagyva, nem hasal el', async () => {
+    const calls: Array<{ init: RequestInit }> = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_input, init) => {
+      calls.push({ init: init ?? {} })
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as typeof fetch
+    try {
+      // Ez az Ostorosbor CRM valódi `listOrders` endpointjának alakja: az OpenAPI
+      // maga jelöli az X-Acting-User-t required:false-nak — nincs actingUser és
+      // defaultActingUserEmail sem, ez ettől még nem hibázhat el.
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://crm.example/api/connector/v1',
+        auth: { scheme: 'bearer' },
+        requestHeaders: {
+          'X-Agent-Id': '{{agent.id}}',
+          'X-Acting-User': '{{actingUser.email}}',
+          'X-Connector-Call-Id': '{{call.id}}',
+        },
+        endpoints: [
+          {
+            method: 'GET',
+            path: '/orders',
+            parameters: [
+              { in: 'header', name: 'X-Acting-User', required: false },
+              { in: 'header', name: 'X-Agent-Id', required: true },
+              { in: 'header', name: 'X-Connector-Call-Id', required: true },
+            ],
+          },
+        ],
+        restrictToEndpoints: true,
+      })
+      const client = new HttpApiClient(config, 'crm_key')
+      const res = await client.request({
+        method: 'GET',
+        path: '/orders',
+        context: { ...crmTraceContext, actingUser: null },
+      })
+      assert.equal(res.ok, true)
+      const headers = calls[0].init.headers as Record<string, string>
+      assert.equal(headers['X-Acting-User'], undefined)
+      assert.ok(headers['X-Agent-Id'] !== undefined)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   await test('runtime: hívó által beadott platform-injektált header → platform_injected_header', async () => {
     const config = parseHttpApiConfig({
       baseUrl: 'https://crm.example/api/v1',
