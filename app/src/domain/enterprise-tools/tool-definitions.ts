@@ -114,7 +114,7 @@ export function isEnterpriseTool(toolName: string): toolName is EnterpriseTool {
 const definitionId = z
   .string()
   .uuid()
-  .describe('Published agent definition id from platform.agent.get_definition')
+  .describe('Published agent definition id — from platform.agent.get_definition for the chosen agentId (required on every enterprise tool)')
 const optionalAgentId = z.string().uuid().optional()
 const optionalConnectorId = z
   .string()

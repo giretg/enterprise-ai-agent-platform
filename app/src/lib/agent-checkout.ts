@@ -27,11 +27,11 @@ export const CHECKOUT_WRITE_RECIPE = [
 
 /** MCP tools/list + tools/call — purpose and client workflow (not the post-call writeRecipe). */
 export const CHECKOUT_TOOL_DESCRIPTION = [
-  'Sync a published AI coworker into a local Claude Desktop / Codex / Goose project folder.',
+  'Sync a published agent definition into a local Claude Desktop / Codex / Goose project folder (instructions only — work still runs via this MCP URL).',
   'Returns files[], suggestedRoot, pin, and writeRecipe — this tool does not write disk; you create or update the folder from the payload.',
   'When the user asks to checkout, sync, or set up a local workspace:',
   '(1) If agentId is unknown, call platform.agents.list.',
-  '(2) If exactly one coworker is visible, use that agentId — do not ask which agent.',
+  '(2) If exactly one published agent is visible, use that agentId — do not ask which agent.',
   '(3) Check whether suggestedRoot (or ~/Agents/<slug>) exists: missing = first checkout (create folder); present = re-sync (overwrite generated files only).',
   '(4) Call platform.agent.checkout { agentId }; pass version only when the user names a specific published version.',
   '(5) Write every files[] entry under suggestedRoot, then follow writeRecipe from the response.',
@@ -155,9 +155,11 @@ function renderAgentsMd(input: {
     '',
     '## MCP routing',
     '',
-    'Call MCP tools for resources, connectors, and enterprise tools. Credentials stay on the server.',
+    'All work for this agent runs through the mcpUrl above — there is no separate in-platform chat runtime. Call MCP tools for skills, connectors, and enterprise tools. Credentials stay on the server.',
     '',
-    'Writes (for example creating a Drive folder) enqueue and wait for Control Plane approval. Do not bypass approval.',
+    'Before enterprise tools: call platform.agent.get_definition for this agentId and pass definitionId on every tool. For several HTTP API connectors, use connectors[].name as connectorName or connectors[].connectorId when method+path is ambiguous.',
+    '',
+    'Writes (for example creating a Drive folder or http_api_request) enqueue and wait for Control Plane approval. Do not bypass approval.',
     '',
     'Project memory, if needed, is an MCP tool. Do not create a local memory file.',
     'Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
@@ -173,11 +175,23 @@ function renderAgentsMd(input: {
     lines.push('', 'This agent has a Google Drive connector. Use the Drive MCP tools by name.')
   }
 
+  const httpApis = snapshot.connectors.filter((row) => row.type === 'http_api')
+  if (httpApis.length > 0) {
+    lines.push('', '## HTTP API connectors', '')
+    lines.push(
+      'Endpoint allowlists live in platform.agent.get_definition → snapshot.connectors[].endpoints. Use only listed method+path values.',
+    )
+    for (const row of httpApis) {
+      const label = row.name?.trim() || row.connectorId
+      lines.push(`- ${label} (${row.accessMode}, connectorId ${row.connectorId})`)
+    }
+  }
+
   lines.push(
     '',
     '## Stale',
     '',
-    'Before any MCP tool call except `platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`, and `platform.agent.checkout`, call `platform.agent.get_definition` for this agentId.',
+    'Before any enterprise tool (Drive, Gmail, http_api_*, kb_*), call `platform.agent.get_definition` for this agentId and use its definitionId. Exempt: `platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`, `platform.agent.checkout`.',
     'If the returned `contentHash` differs from the pin above, call `platform.agent.checkout`, overwrite generated paths, then retry.',
     'Enterprise tools reject stale pins with `agent_stale` until checkout completes and the manifest `definitionId` matches the current published version.',
   )

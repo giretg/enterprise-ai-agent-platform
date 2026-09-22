@@ -7,7 +7,7 @@ const ROLE_INSTRUCTION_PREVIEW_MAX = 240
 
 const MCP_TOOLING_INSTRUCTIONS = [
   'Skills: use resources/list and resources/read on skill:// URIs. If the client cannot read MCP resources directly, call platform.skills.list and then platform.skills.read.',
-  'Company HTTP APIs: platform.agent.get_definition lists each coworker\'s bound http_api connectors; each may include a connector-level description (OpenAPI info) and an endpoints array (method, path, description, params) — call get_definition first and use only those paths with http_api_get / http_api_get_all / http_api_request. Do not guess paths (e.g. plausible REST conventions); an unlisted path is rejected with endpoint_not_allowed, which also echoes the allowed list. A connector with no endpoints array is unprovisioned — ask a human to complete its setup rather than guessing. Credentials stay on the connector.',
+  'Company HTTP APIs (MCP only — there is no separate in-platform agent runtime): for a chosen published agent, call platform.agent.get_definition first. Use definitionId on every enterprise tool. The snapshot lists each bound http_api connector (name, connectorId, endpoints). Call http_api_get / http_api_get_all / http_api_request only with paths from connectors[].endpoints. With several HTTP connectors, the server usually picks the connector from method+path; if not, pass connectorName (connectors[].name) or connectorId. Do not guess REST paths — unlisted paths return endpoint_not_allowed with the allowed list. Missing endpoints means unfinished connector setup — ask a human. Credentials stay on the connector.',
   'Gmail: gmail_search then gmail_get_message.',
   'Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval.',
   'Knowledge base: call kb_list_index first. Then kb_get_page for one wiki page (path index.md is the table of contents; pass artifactId) or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
@@ -86,7 +86,7 @@ export function buildMcpServerInstructions(input: {
   const organization = tenantDisplayLabel(input.tenant)
   const intro =
     readTenantMcpIntro(input.tenant?.settings) ??
-    `This MCP endpoint serves ${organization} (${input.tenantSlug}). Published AI agents are the user's coworkers — list them with platform.agents.list, load one with platform.agent.get_definition, or check out a workspace with platform.agent.checkout.`
+    `This MCP endpoint serves ${organization} (${input.tenantSlug}). Published AI agents are configured here; you reach them only through these MCP tools — list with platform.agents.list, load a snapshot with platform.agent.get_definition, or sync a local workspace with platform.agent.checkout.`
 
   const lines = [
     `You are connected to Excellence AI for ${organization} (tenant slug: ${input.tenantSlug}).`,
@@ -95,17 +95,17 @@ export function buildMcpServerInstructions(input: {
     intro,
     '',
     'YOUR ROLE',
-    'Help the signed-in user work with this organization\'s data through published AI agents ("coworkers"). Start with platform.whoami and platform.agents.list when the user asks who you are or which coworkers are available. Before enterprise tools for a specific agent, call platform.agent.get_definition for that agentId.',
-    'When you tell the user what this connection is or does, answer in plain business language: name the organization and the coworker(s) by what they help with. Never recite tool names, connector hostnames, agentIds, or other technical internals — the user does not know or need this — unless they explicitly ask for technical detail.',
+    'You are the MCP-connected assistant (Cursor, Codex, Claude Desktop, etc.) — not a second runtime inside the platform. Help the user through published agent definitions: platform.whoami, platform.agents.list, then platform.agent.get_definition for the agentId you will use. Pass definitionId on every enterprise tool (Drive, Gmail, http_api_*, kb_*).',
+    'When you tell the user what this connection is or does, answer in plain business language: name the organization and each published agent by what it helps with. Never recite tool names, connector hostnames, agentIds, or other technical internals — the user does not need this — unless they explicitly ask for technical detail.',
     '',
-    'LOCAL COWORKER WORKSPACES',
-    'Each published coworker can have a dedicated local folder (Claude Desktop project, Codex workspace). Use platform.agent.checkout to fetch AGENTS.md, manifest, and instruction-only skill files, then write them to suggestedRoot.',
-    'When the user says checkout / sync / set up local agents: call platform.agents.list if needed; if exactly one coworker is listed below, call platform.agent.checkout with that agentId immediately — do not ask which agent or whether to create vs update.',
+    'LOCAL AGENT WORKSPACES (optional)',
+    'A published agent may have a local folder (Claude Desktop project, Codex workspace). Use platform.agent.checkout to fetch AGENTS.md, manifest, and instruction-only skill files, then write them to suggestedRoot. The same MCP URL and tools apply — checkout files are instructions, not a separate agent process.',
+    'When the user says checkout / sync / set up local agents: call platform.agents.list if needed; if exactly one agent is listed below, call platform.agent.checkout with that agentId immediately — do not ask which agent or whether to create vs update.',
     'Check whether suggestedRoot already exists on disk: missing folder = first checkout (create); existing folder = re-sync (overwrite generated paths only, per writeRecipe).',
   ]
 
   if (input.coworkers.length > 0) {
-    lines.push('', 'AVAILABLE COWORKERS')
+    lines.push('', 'PUBLISHED AGENTS (MCP)')
     for (const coworker of input.coworkers) {
       const summary =
         coworker.description?.trim() ||
@@ -115,11 +115,11 @@ export function buildMcpServerInstructions(input: {
     }
     if (input.coworkers.length === 1) {
       lines.push(
-        `- Only one coworker is visible — default checkout target: ${input.coworkers[0]!.name} (agentId ${input.coworkers[0]!.agentId}).`,
+        `- Only one agent is visible — default checkout target: ${input.coworkers[0]!.name} (agentId ${input.coworkers[0]!.agentId}).`,
       )
     }
   } else {
-    lines.push('', 'AVAILABLE COWORKERS', '- None visible to this principal yet. Call platform.agents.list after grants are in place.')
+    lines.push('', 'PUBLISHED AGENTS (MCP)', '- None visible to this principal yet. Call platform.agents.list after grants are in place.')
   }
 
   lines.push('', 'TOOLING', MCP_TOOLING_INSTRUCTIONS)

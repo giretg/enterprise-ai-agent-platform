@@ -199,8 +199,30 @@ async function main() {
     assert.equal(checkoutSlug('Drive asszisztens'), 'drive-asszisztens')
   })
 
-  await check('CHECKOUT_TOOL_DESCRIPTION tells MCP clients not to ask when one coworker', () => {
-    assert.match(CHECKOUT_TOOL_DESCRIPTION, /exactly one coworker/)
+  await check('AGENTS.md lists http_api connectors when bound', () => {
+    const def = definition({
+      snapshot: {
+        ...definition().snapshot,
+        connectors: [
+          {
+            connectorId: 'c-http',
+            name: 'Posnavigator API',
+            type: 'http_api',
+            accessMode: 'write',
+            endpoints: [{ method: 'GET', path: '/api/v1/blogs' }],
+          },
+        ],
+      },
+    })
+    const bundle = renderAgentCheckout({ definition: def, skills: [], mcpUrl: MCP_URL })
+    const agents = bundle.files.find((file) => file.path === 'AGENTS.md')?.content ?? ''
+    assert.match(agents, /HTTP API connectors/)
+    assert.match(agents, /Posnavigator API/)
+    assert.match(agents, /platform\.agent\.get_definition/)
+  })
+
+  await check('CHECKOUT_TOOL_DESCRIPTION tells MCP clients not to ask when one agent', () => {
+    assert.match(CHECKOUT_TOOL_DESCRIPTION, /exactly one published agent/)
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /do not ask which agent/)
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /first checkout \(create folder\)/)
   })
