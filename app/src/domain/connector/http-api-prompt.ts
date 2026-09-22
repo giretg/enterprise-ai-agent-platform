@@ -1,6 +1,6 @@
 /**
  * HTTP API connector → modellnek szóló katalógus / hiba / hatékonysági szöveg.
- * Tiszta függvények — a chat-tool-loop és a HttpApiClient ezeket hívja.
+ * Tiszta függvények — MCP enterprise tool hívások és a HttpApiClient ezeket hívja.
  */
 
 import { COMMON_HTTP_PAGE_SIZES, requiresHttpApiGetAll } from '@/lib/http-api-pagination-signals'

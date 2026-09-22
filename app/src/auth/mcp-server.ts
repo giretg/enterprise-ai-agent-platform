@@ -623,7 +623,8 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         MCP_AGENT_GET_DEFINITION_TOOL,
         {
           title: 'Get agent definition',
-          description: 'Load one published agent definition snapshot for this tenant.',
+          description:
+            'Load one published agent definition snapshot (capabilities, connectors with names/connectorIds, http_api endpoints). Call this before enterprise tools and pass definitionId on each call. Use agentId or definitionId; optional version.',
           inputSchema: z
             .object({
               definitionId: z.string().uuid().optional(),
@@ -788,7 +789,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'HTTP API GET',
           description:
-            'One GET against a bound company HTTP API connector. Path is relative to the connector baseUrl — do not send credentials. For large lists use http_api_get_all. If several HTTP connectors are bound, pass connectorId from the agent definition. Before guessing a path, check platform.agent.get_definition — each http_api connector lists its allowed endpoints (method, path, params) under connectors[].endpoints; an unlisted path fails with endpoint_not_allowed, whose response also echoes the allowed list.',
+            'One GET against a bound company HTTP API connector. Requires definitionId from platform.agent.get_definition. Path is relative to the connector baseUrl — do not send credentials. For large lists use http_api_get_all. Allowed paths are under connectors[].endpoints in get_definition. With several HTTP connectors, the server usually picks by method+path; otherwise pass connectorName (connectors[].name) or connectorId. Unlisted paths return endpoint_not_allowed with the allowed list.',
           inputSchema: httpApiGetInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -799,7 +800,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'HTTP API GET all pages',
           description:
-            'Paginated GET of a company HTTP API list in one call. Required for ownerships/partners/large registers — do not page http_api_get yourself. Path is relative to the connector baseUrl. Allowed paths are listed under connectors[].endpoints in platform.agent.get_definition.',
+            'Paginated GET of a company HTTP API list in one call. Requires definitionId from platform.agent.get_definition. Required for ownerships/partners/large registers — do not page http_api_get yourself. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when needed.',
           inputSchema: httpApiGetAllInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -810,7 +811,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'HTTP API write',
           description:
-            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Waits for human approval. body is a JSON string. Path is relative to the connector baseUrl. Allowed paths and required body fields are listed under connectors[].endpoints in platform.agent.get_definition.',
+            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Requires definitionId from platform.agent.get_definition. Waits for human approval. body is a JSON string. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when several APIs are bound.',
           inputSchema: httpApiRequestInputSchema,
         },
         async (args) => enterpriseToolResult(principal, HTTP_API_REQUEST_TOOL, args, deps),
