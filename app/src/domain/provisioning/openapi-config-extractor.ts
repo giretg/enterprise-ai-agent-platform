@@ -791,6 +791,15 @@ function providerFromSpec(spec: OpenApiSpec, providerHint?: string): string {
   return 'api'
 }
 
+function apiDescriptionFromSpec(spec: OpenApiSpec): string | undefined {
+  const info = isRecord(spec.info) ? spec.info : {}
+  const description = typeof info.description === 'string' ? info.description.trim() : ''
+  if (description) return description.slice(0, 2000)
+  const summary = typeof info.summary === 'string' ? info.summary.trim() : ''
+  if (summary) return summary.slice(0, 2000)
+  return undefined
+}
+
 export function extractConnectorConfigFromOpenApiSpec(
   spec: OpenApiSpec,
   providerHint?: string,
@@ -838,9 +847,11 @@ export function extractConnectorConfigFromOpenApiSpec(
               : authMapping.auth.secretAliasSuggested ?? secretAliasForProvider(provider),
         }
 
+  const apiDescription = apiDescriptionFromSpec(spec)
   const rawConfig = {
     capabilitySchemaVersion: OPENAPI_CAPABILITY_SCHEMA_VERSION,
     provider,
+    ...(apiDescription ? { description: apiDescription } : {}),
     baseUrl,
     egressHosts,
     authMode: authMapping.authMode,

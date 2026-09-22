@@ -131,6 +131,8 @@ const connectorConfigObjectSchema = z.object({
   /** Az extractor szemantikai verziója; ugyanaz a nyers spec új capability-t adhat. */
   capabilitySchemaVersion: z.number().int().positive().optional(),
   provider: z.string().min(1),
+  /** OpenAPI `info.description` / `info.summary` — emberi API-leírás, titok nélkül. */
+  description: z.string().optional(),
   baseUrl: z.string().url(),
   egressHosts: z.array(z.string().min(1)).min(1),
   authMode: z.enum(['service', 'user_delegated', 'agent_owned']),

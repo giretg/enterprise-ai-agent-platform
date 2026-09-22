@@ -530,6 +530,20 @@ async function run() {
     assert.equal(idempotentWrites.length, 71, '71/73 írási művelet idempotens az Ostoros specben')
   })
 
+  await test('extractConnectorConfigFromOpenApiSpec — info.description → config.description', () => {
+    const result = extractConnectorConfigFromOpenApiSpec({
+      openapi: '3.0.0',
+      info: { title: 'Banks API', description: 'Banki adatok olvasása.' },
+      servers: [{ url: 'https://example.test' }],
+      paths: {
+        '/banks': { get: { summary: 'List banks', responses: { 200: { description: 'ok' } } } },
+      },
+    })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.equal(result.config.description, 'Banki adatok olvasása.')
+  })
+
   await test('extractConnectorConfigFromOpenApiSpec — hiányzó server → unsupported', () => {
     const result = extractConnectorConfigFromOpenApiSpec({ openapi: '3.0.0', paths: {} })
     assert.equal(result.ok, false)

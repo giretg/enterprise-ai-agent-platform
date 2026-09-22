@@ -24,6 +24,7 @@ import type {
 } from '@/repositories/interfaces'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
+import { describeConnectorCatalog } from '@/domain/connector/catalog-description'
 import {
   parseHttpApiConfig,
   summarizeHttpApiEndpoints,
@@ -39,6 +40,8 @@ export type AgentDefinitionSnapshot = {
     connectorId: string
     type: string
     accessMode: 'read' | 'write'
+    /** `http_api`: OpenAPI info / katalógus-összefoglaló, titok nélkül. */
+    description?: string | null
     /**
      * `http_api` connectoroknál az engedélyezett végpont-katalógus (path, method,
      * paraméterek) — a hívó félnek enélkül nincs módja kitalálni, mely path-ok
@@ -134,15 +137,25 @@ type DraftWorkingSet = {
  * hibás/hiányos configú connectornál (pl. self-updating spec még nincs jóváhagyva)
  * `undefined`-ot ad — nem buktatja el a teljes snapshotot egy connector miatt.
  */
-async function resolveHttpApiEndpoints(
+async function resolveHttpApiConnectorMeta(
   connectors: Pick<ConnectorRepository, 'findById'>,
   connectorId: string,
   tenantId: string,
-): Promise<HttpApiEndpointSummary[] | undefined> {
+): Promise<{ endpoints?: HttpApiEndpointSummary[]; description?: string | null } | undefined> {
   try {
     const resolved = await connectors.findById(connectorId, tenantId)
     if (!resolved) return undefined
-    return summarizeHttpApiEndpoints(parseHttpApiConfig(resolved.config).endpoints)
+    const parsed = parseHttpApiConfig(resolved.config)
+    const catalog = describeConnectorCatalog(resolved.type, resolved.config, null)
+    const description =
+      catalog.description ??
+      (typeof parsed.description === 'string' && parsed.description.trim()
+        ? parsed.description.trim().slice(0, 500)
+        : null)
+    return {
+      endpoints: summarizeHttpApiEndpoints(parsed.endpoints),
+      ...(description ? { description } : {}),
+    }
   } catch {
     return undefined
   }
@@ -161,8 +174,8 @@ async function buildSnapshot(
         accessMode: row.accessMode,
       }
       if (row.connector.type !== 'http_api' || !connectors) return base
-      const endpoints = await resolveHttpApiEndpoints(connectors, row.connector.id, agent.tenantId)
-      return endpoints ? { ...base, endpoints } : base
+      const meta = await resolveHttpApiConnectorMeta(connectors, row.connector.id, agent.tenantId)
+      return meta ? { ...base, ...meta } : base
     }),
   )
   return {

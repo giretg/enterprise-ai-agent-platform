@@ -5,6 +5,7 @@ import { lookup } from 'node:dns/promises'
 import { z } from 'zod'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
+import { describeConnectorCatalog } from '@/domain/connector/catalog-description'
 import { parseCapabilitySet } from '@/domain/connector-self-update/capability-set'
 import {
   extractCatalogLeaves,
@@ -135,10 +136,20 @@ export async function listSelfUpdatingConnectors() {
           }
         }
         const { context, versions } = detail
+        const activeCapabilitySet =
+          versions.find((version) => version.id === context.connector.activeSpecVersionId)?.capabilitySet
+          ?? versions.find((version) => version.status === 'proposed')?.capabilitySet
+          ?? null
+        const catalogDescription = describeConnectorCatalog(
+          'http_api',
+          context.connector.config,
+          activeCapabilitySet,
+        ).description
         return {
         id: context.connector.id,
         lifecycleState: row.lifecycleState,
         name: context.connector.name,
+        catalogDescription,
         specUrl: context.source.specUrl,
         urlApproved: Boolean(context.source.urlApprovedAt),
         trusted: Boolean(context.source.trustedAt),
