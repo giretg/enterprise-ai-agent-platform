@@ -22,6 +22,7 @@ import { isSuperadmin } from '@/lib/tenant-policy'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
+import { PublishStaleDraftButton } from '@/components/agents/publish-stale-draft-button'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
@@ -220,7 +221,15 @@ export default async function AgentDetailPage({
             <p className="mt-1 text-ink-soft">{agent.description}</p>
           ) : null}
           <p className="mt-1 text-ink-soft">{agent.status}</p>
-          <AgentIdCopyButton agentId={agent.id} />
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <AgentIdCopyButton agentId={agent.id} />
+            {canManage && publishRes.success && publishRes.data.stale ? (
+              <PublishStaleDraftButton
+                agentId={agent.id}
+                publishedVersion={publishRes.data.version}
+              />
+            ) : null}
+          </div>
         </div>
         {canDelete ? <DeleteAgentButton agentId={agent.id} agentName={agent.name} /> : null}
       </div>
