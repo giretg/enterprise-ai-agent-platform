@@ -50,6 +50,7 @@ import {
   MCP_SKILL_SUBMIT_TOOL,
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
+import { PROJECT_WORK_TOOLS } from '../src/domain/project-work/mcp'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
 const ORIGIN = 'https://app.example.com'
@@ -358,6 +359,9 @@ function runtimeDeps(overrides: {
       invokeEnterpriseTool: (input) => invokeEnterpriseTool(enterpriseDeps, input),
       getGatewayOperation: async (input) =>
         getResultToMcp(await getGatewayOperation(gatewayDeps, input)),
+      async invokeProjectWork() {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true }) }] }
+      },
       async listMcpSkills() {
         return overrides.skills ?? []
       },
@@ -621,6 +625,7 @@ async function main() {
       MCP_SKILLS_LIST_TOOL,
       MCP_SKILL_READ_TOOL,
       MCP_SKILL_SUBMIT_TOOL,
+      ...PROJECT_WORK_TOOLS,
       ...ENTERPRISE_TOOLS,
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])

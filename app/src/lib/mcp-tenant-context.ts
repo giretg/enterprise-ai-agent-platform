@@ -11,6 +11,7 @@ const MCP_TOOLING_INSTRUCTIONS = [
   'Gmail: gmail_search then gmail_get_message.',
   'Drive: google_drive_search then google_drive_read_file; upload/sheets/create_folder wait for human approval.',
   'Knowledge base: call kb_list_index first. Then kb_get_page for one wiki page (path index.md is the table of contents; pass artifactId) or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
+  'Project work: list or create a project with platform.projects.*, then pass the same projectKey on platform.work_file.* and platform.project_memory.* (omit projectKey for __general__). Work files are the plan/notes — write them freely, do not put them in the checkout folder. Project memory is continuity (decision, open_task, pointer to a work file), tagged with the calling user by the server. Approval-mode memory writes return awaiting_approval; direct mode writes immediately. Trained operating rules are never written by these tools.',
   'If a tool returns authorizationUrl, show that URL to the user and retry after they finish consent.',
 ].join(' ')
 

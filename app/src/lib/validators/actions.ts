@@ -15,6 +15,11 @@ export const updateAgentInstructionSchema = z.object({
   roleInstruction: z.string().trim().min(1).max(20_000),
 })
 
+export const updateAgentMemoryWriteModeSchema = z.object({
+  agentId: z.string().uuid(),
+  memoryWriteMode: z.enum(['approval', 'direct']),
+})
+
 export const updateAgentProfileSchema = z
   .object({
     agentId: z.string().uuid(),

@@ -29,6 +29,7 @@ import {
   suspendUserSchema,
   updateAgentAvatarSchema,
   updateAgentInstructionSchema,
+  updateAgentMemoryWriteModeSchema,
   updateAgentProfileSchema,
   updateRolePermissionSchema,
 } from '@/lib/validators/actions'
@@ -443,6 +444,39 @@ export async function updateAgentInstruction(input: { agentId: string; roleInstr
     return ok({ updated: true, roleInstruction: updated.roleInstruction })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update instruction')
+  }
+}
+
+export async function updateAgentMemoryWriteMode(input: {
+  agentId: string
+  memoryWriteMode: 'approval' | 'direct'
+}) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = updateAgentMemoryWriteModeSchema.parse(input)
+    const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
+    if (!existing) return fail('Agent not found')
+    const updated = await repositories.agents.updateMemoryWriteMode({
+      agentId: parsed.agentId,
+      memoryWriteMode: parsed.memoryWriteMode,
+    })
+    await services.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'agent.memory_write_mode',
+      targetType: 'agent',
+      targetId: updated.id,
+      modelUsed: null,
+      inputRef: parsed.memoryWriteMode,
+      outputRef: existing.memoryWriteMode,
+      policyDecision: 'updated',
+      metadata: { memoryWriteMode: parsed.memoryWriteMode },
+      tenantId: user.activeTenantId,
+    })
+    return ok({ memoryWriteMode: updated.memoryWriteMode })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update memory write mode')
   }
 }
 

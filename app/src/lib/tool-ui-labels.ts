@@ -34,6 +34,39 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description: 'Fájl betöltése a tudásbázisba sima szövegként vagy wiki (OKF) oldalakra bontva.',
   },
 
+  'platform.projects.list': {
+    label: 'Projektek',
+    description: 'A tenant projektjei, plusz a beépített Általános (__general__).',
+  },
+  'platform.projects.create': {
+    label: 'Projekt létrehozása',
+    description: 'Névvel ellátott projekt a közös munkafájlokhoz és a projektmemóriához.',
+  },
+  'platform.work_file.list': {
+    label: 'Munkafájlok',
+    description: 'A projekt tervei, jegyzetei, piszkozatai. Agentek között közös.',
+  },
+  'platform.work_file.read': {
+    label: 'Munkafájl olvasása',
+    description: 'Egy munkafájl tartalma a projekt prefixén.',
+  },
+  'platform.work_file.write': {
+    label: 'Munkafájl írása',
+    description: 'Terv vagy jegyzet mentése jóváhagyás nélkül, kvótával.',
+  },
+  'platform.work_file.delete': {
+    label: 'Munkafájl törlése',
+    description: 'Munkafájl törlése a projekt prefixén.',
+  },
+  'platform.project_memory.read': {
+    label: 'Projektmemória',
+    description: 'Döntések, nyitott feladatok, beszélgetőpartnerrel címkézve.',
+  },
+  'platform.project_memory.write': {
+    label: 'Projektmemória írása',
+    description: 'Folytonossági emlék. Jóváhagyásos agentnél javaslat, közvetlen módban azonnali írás.',
+  },
+
   // Fájlkezelés / repo
   repo_prepare: {
     label: 'Repo előkészítése',
