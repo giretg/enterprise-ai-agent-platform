@@ -11,6 +11,7 @@ import {
   createConnectorFromTemplateAction,
   createConnectorDraft,
   deprecateConnectorTemplateAction,
+  decommissionActiveConnector,
   decommissionConnector,
   deleteConnectorDraft,
   draftConfigFromOpenApi,
@@ -2422,44 +2423,58 @@ export function ProvisioningPanel({
       </Card>
 
       {loadedOnce && (pendingSelfUpdatingRows.length > 0 || catalogGaps.length > 0) ? (
-      <Card title={`Jóváhagyásra váró / láthatósági rés (${pendingSelfUpdatingRows.length + catalogGaps.length})`}>
-        <p className="mb-3 text-sm text-ink-soft">
-          OpenAPI-kapcsolatoknál hátravan a link jóváhagyása, a partner megbízhatónak minősítése vagy az
-          első verzió átvétele. A „láthatósági rés” sorok aktívak az agent-katalógusban, de eddig nem
-          jelentek meg a Konnektorok listában.
-        </p>
-        <div className="space-y-3">
-          {pendingSelfUpdatingRows.map((row) => (
-            <SelfUpdatingConnectorCard
-              key={row.id}
-              row={row}
-              pending={pending}
-              run={run}
-              onSync={syncSelfUpdating}
-              isSuperadmin={isSuperadmin}
-            />
-          ))}
-          {catalogGaps.map((row) => (
-            <div
-              key={row.id}
-              className="rounded-lg border border-honey/40 bg-honey/5 px-4 py-3 text-sm"
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-semibold">{row.name}</span>
-                <Badge tone="neutral">{row.type}</Badge>
-                {row.connectorMode === 'self_updating' ? (
-                  <Badge tone="warning">OpenAPI</Badge>
-                ) : null}
-                <Badge tone="warning">láthatósági rés</Badge>
-              </div>
-              <p className="mt-2 text-xs text-ink-soft">
-                Aktív kapcsolat — agenthez rendelhető, de nincs provisioning-draft vagy betöltött
-                önfrissítő kártya. Ha nem kell, szüntesd meg vagy vedd fel a kapcsolatot a platform
-                támogatással.
+      <Card
+        title={
+          pendingSelfUpdatingRows.length > 0 && catalogGaps.length > 0
+            ? `Jóváhagyásra váró és kezelés nélküli kapcsolatok (${pendingSelfUpdatingRows.length + catalogGaps.length})`
+            : pendingSelfUpdatingRows.length > 0
+              ? `Jóváhagyásra váró OpenAPI-kapcsolatok (${pendingSelfUpdatingRows.length})`
+              : `Kezelés nélküli aktív kapcsolatok (${catalogGaps.length})`
+        }
+      >
+        {pendingSelfUpdatingRows.length > 0 ? (
+          <div className="space-y-3">
+            {pendingSelfUpdatingRows.length > 0 && catalogGaps.length > 0 ? (
+              <p className="text-sm text-ink-soft">
+                OpenAPI-kapcsolatoknál hátravan a link jóváhagyása, a partner megbízhatónak minősítése
+                vagy az első verzió átvétele. Nyisd meg a kártyát a lépésekhez.
               </p>
-            </div>
-          ))}
-        </div>
+            ) : (
+              <p className="text-sm text-ink-soft">
+                Hátravan a link jóváhagyása, a partner megbízhatónak minősítése vagy az első verzió
+                átvétele. Nyisd meg a kártyát a lépésekhez.
+              </p>
+            )}
+            {pendingSelfUpdatingRows.map((row) => (
+              <SelfUpdatingConnectorCard
+                key={row.id}
+                row={row}
+                pending={pending}
+                run={run}
+                onSync={syncSelfUpdating}
+                isSuperadmin={isSuperadmin}
+              />
+            ))}
+          </div>
+        ) : null}
+        {catalogGaps.length > 0 ? (
+          <div className={pendingSelfUpdatingRows.length > 0 ? 'mt-6 space-y-3 border-t border-ink/10 pt-4' : 'space-y-3'}>
+            {pendingSelfUpdatingRows.length > 0 ? (
+              <h3 className="text-sm font-semibold text-ink">
+                Kezelés nélküli aktív kapcsolatok ({catalogGaps.length})
+              </h3>
+            ) : null}
+            <p className="text-sm text-ink-soft">
+              Ezek az adatbázisban aktív kapcsolatok, de nincs hozzájuk provisioning-draft vagy
+              önfrissítő kezelőkártya (gyakran migráció vagy régi seed maradvány). Agenthez még
+              rendelhetők lehetnek; ha feleslegesek, szüntesd meg őket — auditált archiválás, nem
+              hard-delete.
+            </p>
+            {catalogGaps.map((row) => (
+              <CatalogGapCard key={row.id} row={row} pending={pending} run={run} />
+            ))}
+          </div>
+        ) : null}
       </Card>
       ) : null}
 
@@ -2552,6 +2567,145 @@ function ErrorDialog({ message, onClose }: { message: string | null; onClose: ()
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+function CatalogGapCard({
+  row,
+  pending,
+  run,
+}: {
+  row: { id: string; name: string; type: string; connectorMode?: 'fixed' | 'self_updating' }
+  pending: boolean
+  run: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [confirmDecomm, setConfirmDecomm] = useState(false)
+  const [decommReason, setDecommReason] = useState('')
+  const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
+  const [decommApprover, setDecommApprover] = useState('')
+  const toggleOpen = () => setOpen((current) => !current)
+
+  return (
+    <div className="rounded-lg border border-honey/40 bg-honey/5 text-sm">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-3">
+        <button type="button" className="font-semibold hover:underline" onClick={toggleOpen}>
+          {open ? '▾' : '▸'} {row.name}
+        </button>
+        <Badge tone="neutral">{row.type}</Badge>
+        {row.connectorMode === 'self_updating' ? <Badge tone="warning">OpenAPI</Badge> : null}
+        <Badge tone="warning">kezelés nélküli</Badge>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="rounded-md border border-ink/20 px-2.5 py-1 text-xs font-semibold"
+            onClick={toggleOpen}
+            aria-expanded={open}
+          >
+            {open ? 'Bezárás' : 'Részletek'}
+          </button>
+          <button
+            type="button"
+            className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral"
+            onClick={() => setOpen(true)}
+          >
+            Megszüntetés
+          </button>
+        </div>
+      </div>
+      {open ? (
+        <div className="space-y-3 border-t border-honey/30 px-4 py-3">
+          <p className="text-xs text-ink-soft">
+            Nincs kezelőfelület ehhez a sorhoz ezen az oldalon — csak megszüntetés vagy platform
+            támogatás (ha vissza kell állítani draft/OpenAPI-útra).
+          </p>
+          <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
+            <h4 className="mb-2 font-semibold text-coral">Megszüntetés (auditált leszerelés)</h4>
+            <p className="text-xs text-ink-soft">
+              Nem hard-delete: az agent-hozzárendelések levétele és a menedzselt secret-ref törlése után a
+              kapcsolat <code>archived</code> állapotba kerül. Bank-preset / L2–L3 esetén második jóváhagyó
+              kell.
+            </p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <label className="text-xs sm:col-span-2">
+                <span className="mb-1 block text-ink-soft">Indok (auditba kerül)</span>
+                <input
+                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                  value={decommReason}
+                  onChange={(e) => setDecommReason(e.target.value)}
+                  placeholder="Pl. migrációs maradvány, felesleges http_api kapcsolat"
+                />
+              </label>
+              <label className="text-xs">
+                <span className="mb-1 block text-ink-soft">Kritikusság</span>
+                <select
+                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                  value={decommCriticality}
+                  onChange={(e) => setDecommCriticality(e.target.value as typeof decommCriticality)}
+                >
+                  <option value="L1">L1</option>
+                  <option value="L2">L2 (dual-control)</option>
+                  <option value="L3">L3 (dual-control)</option>
+                </select>
+              </label>
+              <label className="text-xs">
+                <span className="mb-1 block text-ink-soft">2. jóváhagyó (≠ te)</span>
+                <input
+                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                  value={decommApprover}
+                  onChange={(e) => setDecommApprover(e.target.value)}
+                  placeholder="user-id (dual-control esetén)"
+                />
+              </label>
+            </div>
+            {!confirmDecomm ? (
+              <button
+                type="button"
+                className="mt-3 rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral"
+                onClick={() => setConfirmDecomm(true)}
+              >
+                Megszüntetés
+              </button>
+            ) : (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-coral">
+                  Biztos? „{row.name}” leszerelődik és archiválódik.
+                </span>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() =>
+                    run(async () => {
+                      const res = await decommissionActiveConnector({
+                        connectorId: row.id,
+                        criticality: decommCriticality,
+                        approverId: decommApprover.trim() || undefined,
+                        reason:
+                          decommReason.trim() ||
+                          'provisioning: kezelés nélküli aktív kapcsolat megszüntetése',
+                      })
+                      if (!res.success) return res
+                      setConfirmDecomm(false)
+                      return res
+                    }, 'Kapcsolat megszüntetve (archived).')
+                  }
+                  className="rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
+                >
+                  Igen, szüntesd meg
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDecomm(false)}
+                  className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
+                >
+                  Mégse
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
