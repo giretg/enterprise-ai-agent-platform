@@ -356,6 +356,8 @@ export interface ConnectorDraftRepository {
     lifecycleState: string
     secretAlias: string | null
   } | null>
+  /** Üzemi kész: aktivált + (önfrissítőnél) jóváhagyott link/bizalom + valid snapshot. */
+  isAssignableToAgent(connectorId: string): Promise<boolean>
   decommissionByConnectorId(params: {
     connectorId: string
   }): Promise<{ connectorId: string; affectedAgentIds: string[] }>
