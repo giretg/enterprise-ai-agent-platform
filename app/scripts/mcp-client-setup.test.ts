@@ -70,7 +70,7 @@ function main() {
     const href = cursorMcpInstallHref('ea-acme', setup.mcpUrl)
     assert.equal(setup.cursorInstallHref, href)
     const url = new URL(href)
-    assert.equal(url.origin + url.pathname, 'https://cursor.com/en/install-mcp')
+    assert.equal(url.origin + url.pathname, 'https://cursor.com/install-mcp')
     assert.equal(url.searchParams.get('name'), 'ea-acme')
     const config = url.searchParams.get('config')
     assert.ok(config)
