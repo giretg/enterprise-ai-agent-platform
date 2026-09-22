@@ -130,7 +130,10 @@ type DraftWorkingSet = {
     skillVersionId: string
     skillVersion: { skillId: string; status: string; skill: { name: string } }
   }>
-  connectors: Array<{ connector: { id: string; type: string }; accessMode: 'read' | 'write' }>
+  connectors: Array<{
+    connector: { id: string; name: string; type: string }
+    accessMode: 'read' | 'write'
+  }>
   capabilities: Array<{ toolName: string; allowed: boolean }>
 }
 
