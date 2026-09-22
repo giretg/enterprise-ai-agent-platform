@@ -80,7 +80,9 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     args: Record<string, unknown>,
     connector: LiveConnectorRow,
     accessToken?: string,
+    actingUser?: { id: string; email: string; tenantId: string | null } | null,
   ) => Promise<unknown>
+  resolveActingUser?: (input: { userId: string }) => Promise<{ id: string; email: string } | null>
   startAuthorization?: StartDelegatedAuthorization
   recordCreatedDriveFiles?: (input: {
     grantId: string
@@ -179,6 +181,17 @@ function textResult(payload: unknown, isError = false): EnterpriseToolMcpResult 
     ...(isError ? { isError: true as const } : {}),
     content: [{ type: 'text', text: JSON.stringify(payload) }],
   }
+}
+
+/** Resolves the operation's original requester for X-Acting-User audit templates; null for background/scheduled runs with no resolver. */
+async function resolveHttpActingUser(
+  deps: GatewayOperationServiceDeps,
+  principalUserId: string,
+  tenantId: string,
+): Promise<{ id: string; email: string; tenantId: string | null } | null> {
+  if (!deps.resolveActingUser) return null
+  const resolved = await deps.resolveActingUser({ userId: principalUserId })
+  return resolved ? { id: resolved.id, email: resolved.email, tenantId } : null
 }
 
 function errorMcp(code: string, authorizationUrl?: string): EnterpriseToolMcpResult {
@@ -687,6 +700,7 @@ async function executeApprovedOperation(
           args,
           authorized.connector,
           accessToken,
+          await resolveHttpActingUser(deps, operation.principalUserId, operation.tenantId),
         )
       : await (deps.executeDriveTool ?? executeGoogleDriveTool)(
           operation.toolName,

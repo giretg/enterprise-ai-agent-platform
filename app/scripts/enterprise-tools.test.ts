@@ -125,6 +125,7 @@ function invokeDeps(opts?: {
   executeDriveTool?: EnterpriseToolDeps['executeDriveTool']
   executeHttpApiTool?: EnterpriseToolDeps['executeHttpApiTool']
   executeKbTool?: EnterpriseToolDeps['executeKbTool']
+  resolveActingUser?: EnterpriseToolDeps['resolveActingUser']
   resolveError?: Error
   startAuthorization?: EnterpriseToolDeps['startAuthorization']
   audit?: Array<{ action: string }>
@@ -160,6 +161,7 @@ function invokeDeps(opts?: {
     startAuthorization: opts?.startAuthorization,
     executeHttpApiTool: opts?.executeHttpApiTool,
     executeKbTool: opts?.executeKbTool,
+    resolveActingUser: opts?.resolveActingUser,
   }
 }
 
@@ -886,6 +888,81 @@ async function main() {
     const payload = parsePayload(result)
     assert.equal(payload.ok, true)
     assert.equal(payload.path, '/reports/query')
+  })
+
+  await check('invoke http_api_get resolves the real caller email into actingUser', async () => {
+    let receivedActingUser: unknown
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        connector: connector({
+          type: 'http_api',
+          authMode: 'service',
+          config: { baseUrl: 'https://crm.example.test', auth: { scheme: 'none' } },
+        }),
+        grant: null,
+        definition: definition({
+          snapshot: {
+            name: 'CRM',
+            roleInstruction: 'Query CRM',
+            skills: [],
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'read' }],
+            capabilities: [{ toolName: HTTP_API_GET_TOOL, allowed: true }],
+          },
+        }),
+        resolveActingUser: async ({ userId }) => {
+          assert.equal(userId, USER_ID)
+          return { id: USER_ID, email: 'gergely.giret@excellencepay.com' }
+        },
+        executeHttpApiTool: async (_tool, args, _connector, _accessToken, actingUser) => {
+          receivedActingUser = actingUser
+          return { ok: true, path: args.path }
+        },
+      }),
+      {
+        principal: principal(),
+        toolName: HTTP_API_GET_TOOL,
+        args: { definitionId: DEFINITION_ID, path: '/reports/query' },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    assert.deepEqual(receivedActingUser, {
+      id: USER_ID,
+      email: 'gergely.giret@excellencepay.com',
+      tenantId: TENANT_ID,
+    })
+  })
+
+  await check('invoke http_api_get falls back to no actingUser without a resolver', async () => {
+    let receivedActingUser: unknown = 'unset'
+    await invokeEnterpriseTool(
+      invokeDeps({
+        connector: connector({
+          type: 'http_api',
+          authMode: 'service',
+          config: { baseUrl: 'https://crm.example.test', auth: { scheme: 'none' } },
+        }),
+        grant: null,
+        definition: definition({
+          snapshot: {
+            name: 'CRM',
+            roleInstruction: 'Query CRM',
+            skills: [],
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'read' }],
+            capabilities: [{ toolName: HTTP_API_GET_TOOL, allowed: true }],
+          },
+        }),
+        executeHttpApiTool: async (_tool, args, _connector, _accessToken, actingUser) => {
+          receivedActingUser = actingUser
+          return { ok: true, path: args.path }
+        },
+      }),
+      {
+        principal: principal(),
+        toolName: HTTP_API_GET_TOOL,
+        args: { definitionId: DEFINITION_ID, path: '/reports/query' },
+      },
+    )
+    assert.equal(receivedActingUser, null)
   })
 
   await check('invoke upload and http_api_request enqueue', async () => {
