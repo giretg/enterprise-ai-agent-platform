@@ -1,12 +1,31 @@
-import type { Connector } from '@prisma/client'
+import type { Connector, Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type { ConnectorRepository } from '@/repositories/interfaces'
+import { pinnedRuntimeConfig } from '@/domain/connector/runtime-config'
+
+/**
+ * Self-updating connectorok `config` oszlopa üres ({}) — a valódi baseUrl/auth/
+ * endpoint-lista a jóváhagyott spec-verzió capability_set-jéből pinnelődik.
+ * Enélkül minden futásidejű hívás (pl. http_api_get) üres baseUrl-lel bukik el,
+ * miközben az admin UI és a listázás helyesen látja a kapcsolatot aktívnak.
+ */
+export function resolveRuntimeConnector(
+  row: Connector & { activeSpecVersion: { capabilitySet: Prisma.JsonValue } | null },
+): Connector | null {
+  const { activeSpecVersion, ...connector } = row
+  if (connector.connectorMode !== 'self_updating') return connector
+  const pinned = pinnedRuntimeConfig('self_updating', connector.config, activeSpecVersion?.capabilitySet ?? null)
+  if (pinned === null) return null
+  return { ...connector, config: pinned }
+}
 
 export class PostgresConnectorRepository implements ConnectorRepository {
   async findById(id: string, tenantId?: string): Promise<Connector | null> {
-    return prisma.connector.findFirst({
+    const row = await prisma.connector.findFirst({
       where: tenantId ? { id, tenantId } : { id },
+      include: { activeSpecVersion: { select: { capabilitySet: true } } },
     })
+    return row ? resolveRuntimeConnector(row) : null
   }
 
   async findByTenantTypeAndName(

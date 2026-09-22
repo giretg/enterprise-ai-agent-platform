@@ -227,6 +227,7 @@
     "test:privacy-resolve-scope": "tsx scripts/privacy-resolve-scope.test.ts",
     "test:surrogate-engine": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/surrogate-engine.test.ts",
     "test:connector-privacy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/connector-privacy.test.ts",
+    "test:connector-runtime-pinning": "tsx scripts/connector-runtime-pinning.test.ts",
     "test:structured-output-privacy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/structured-output-privacy.test.ts",
     "test:privacy-observe": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-observe.test.ts",
     "test:privacy-category-policy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/privacy-category-policy.test.ts",
