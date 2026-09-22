@@ -301,6 +301,9 @@ export async function invokeEnterpriseTool(
       role: principal.role,
       toolName,
     })
+    if (authorized.connectorChoices?.length) {
+      extra.connectors = authorized.connectorChoices
+    }
     return errorResult(authorized.reason, extra)
   }
 

@@ -24,6 +24,7 @@ import {
 } from './google-drive-scopes'
 import type { DriveTool } from './google-drive-scopes'
 import { toolsRequiringConnector } from '@/domain/connector-grant/tool-connector-requirements'
+import { connectorDisplayLabel } from '@/lib/connector-display-label'
 
 /** Provider-független ok, ha a grant megvan, de a scope-ja kevés. */
 export const GENERIC_SCOPE_DENIED_REASON = 'connector_scope_not_granted'
@@ -119,7 +120,8 @@ export function delegatedConnectorLabel(
   const provider = delegatedOAuthProvider(connectorType)
   if (provider) return provider.label
   const name = connectorName?.trim()
-  return name || GENERIC_CONNECTOR_LABEL
+  if (name) return connectorDisplayLabel(connectorType ?? '', name)
+  return GENERIC_CONNECTOR_LABEL
 }
 
 /** Melyik delegált connector-típushoz tartozik az eszköz (ha ismert provider). */
