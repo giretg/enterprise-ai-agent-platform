@@ -100,6 +100,12 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'kb.document.ingested',
   'kb.document.deleted',
   'kb.catalog.attached',
+
+  'skill.conversation.created',
+  'skill.conversation.proposed',
+  'skill.conversation.proposal.overwritten',
+  'skill.conversation.approved',
+  'skill.conversation.rejected',
 ])
 
 export class UnregisteredAuditActionError extends Error {

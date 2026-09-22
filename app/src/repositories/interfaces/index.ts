@@ -155,6 +155,7 @@ export interface CreateSkillInput {
   provenance: Prisma.InputJsonValue | null
   license: string | null
   riskTier: SkillRiskTier
+  producesSkills?: boolean
   content: Prisma.InputJsonValue
   requires: Prisma.InputJsonValue
   attachments?: Prisma.InputJsonValue

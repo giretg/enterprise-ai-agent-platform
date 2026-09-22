@@ -6,7 +6,12 @@ import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
 import { repositories } from '@/repositories/postgres'
 import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
-import { canManageAgentSkills } from '@/lib/agent-skill-management'
+import { canManageAgentSkills, producerSkillAssignmentError } from '@/lib/agent-skill-management'
+import { producerSkillMarkerError } from '@/domain/skill/conversation-skill'
+import {
+  findProducerSkillId,
+  setProducesSkills,
+} from '@/repositories/postgres/conversation-skill-repository'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { SkillAccessError, type ActorContext } from '@/domain/skill/skill-service'
 import {
@@ -62,6 +67,13 @@ function messageFrom(err: unknown): string {
   return 'Ismeretlen hiba a skill-műveletben.'
 }
 
+const PRODUCER_SKILL_TAKEN =
+  'Ebben a tenantban már van gyártó skill. Második létrehozását a platform elutasítja.'
+
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: string }).code === 'P2002'
+}
+
 /**
  * Tenant-határ egy agent-célzó skill-olvasáshoz. A reachability-szabályt a közös
  * {@link assertAgentTenantReachable} helper dönti el (egy forrás, egy igazság — a
@@ -94,6 +106,15 @@ async function requireAgentSkillManager(agentId: string) {
     )
   }
   return { ctx, agent }
+}
+
+async function blockProducerSkillMutation(
+  role: TenantAuthContext['activeTenantRole'],
+  skillVersionId: string,
+): Promise<string | null> {
+  const version = await repositories.skills.findVersionById(skillVersionId)
+  if (!version?.skill.producesSkills) return null
+  return producerSkillAssignmentError(role)
 }
 
 // ── WP-4: agent-detail skill panel (readiness + hozzárendelés) ────────────────
@@ -233,6 +254,7 @@ export async function listAssignableSkillsAction(
     const pending: PendingSkill[] = []
     for (const skill of catalog) {
       const active = skill.versions.find((v) => v.status === 'active')
+      if (skill.producesSkills && producerSkillAssignmentError(ctx.activeTenantRole)) continue
       if (!active) {
         if (!assignedSkillIds.has(skill.id) && isSkillAssignableToAgent({ kind: skill.kind })) {
           const latest = skill.versions[0]
@@ -275,6 +297,8 @@ export async function assignSkillAction(input: {
 }): Promise<ActionResult<null>> {
   try {
     const { ctx } = await requireAgentSkillManager(input.agentId)
+    const blocked = await blockProducerSkillMutation(ctx.activeTenantRole, input.skillVersionId)
+    if (blocked) return fail(blocked)
     await services.skills.assign({
       agentId: input.agentId,
       skillVersionId: input.skillVersionId,
@@ -293,6 +317,8 @@ export async function unassignSkillAction(input: {
 }): Promise<ActionResult<null>> {
   try {
     const { ctx } = await requireAgentSkillManager(input.agentId)
+    const blocked = await blockProducerSkillMutation(ctx.activeTenantRole, input.skillVersionId)
+    if (blocked) return fail(blocked)
     await services.skills.unassign({
       agentId: input.agentId,
       skillVersionId: input.skillVersionId,
@@ -312,6 +338,8 @@ export async function setSkillEnabledAction(input: {
 }): Promise<ActionResult<null>> {
   try {
     const { ctx } = await requireAgentSkillManager(input.agentId)
+    const blocked = await blockProducerSkillMutation(ctx.activeTenantRole, input.skillVersionId)
+    if (blocked) return fail(blocked)
     await services.skills.setEnabled({ ...input, actor: actorFrom(ctx) })
     revalidatePath(`/control-plane/agents/${input.agentId}`)
     return ok(null)
@@ -332,6 +360,8 @@ export interface SkillCatalogEntry {
   sourceType: 'authored' | 'imported'
   riskTier: SkillRiskTier
   license: string | null
+  /** Gyártó skill: beszélgetésből skill készülhet, ha be van kapcsolva egy agenten. */
+  producesSkills: boolean
   /** Az aktív verzió futási kerete — a listában olvasható jelzés (issue #161). */
   runtimeHints: SkillContent['runtimeHints']
   versions: Array<{
@@ -359,6 +389,7 @@ export async function listSkillCatalogAction(): Promise<ActionResult<SkillCatalo
         sourceType: s.sourceType,
         riskTier: s.riskTier,
         license: s.license,
+        producesSkills: s.producesSkills,
         runtimeHints: parseSkillContent(
           s.versions.find((v) => v.status === 'active')?.content,
         ).runtimeHints,
@@ -571,6 +602,7 @@ const createSchema = z.object({
   kind: skillKindSchema.default('tenant'),
   content: skillContentSchema,
   requires: skillRequiresSchema,
+  producesSkills: z.boolean().optional().default(false),
   /** Level-2 fájlok kézi szerzésnél is — ugyanaz a szerveroldali kapu, mint a javaslatnál. */
   attachments: z
     .array(z.object({ path: z.string().min(1).max(300), text: z.string() }))
@@ -597,6 +629,15 @@ export async function createSkillAction(
     if (!validation.ok) {
       return fail(`A skill nem felelt meg a validátornak: ${validation.errors.join(' · ')}`)
     }
+    const markerError = producerSkillMarkerError({
+      requested: parsed.producesSkills,
+      kind: parsed.kind,
+      existingProducerSkillId:
+        parsed.producesSkills && ctx.activeTenantId
+          ? await findProducerSkillId(ctx.activeTenantId)
+          : null,
+    })
+    if (markerError) return fail(markerError)
     const catalogScope = catalogScopeForKind(parsed.kind)
     const createAttachments = materializeAttachments(parsed.attachments)
     const { skill, versionId } = await services.skills.createSkill({
@@ -610,6 +651,7 @@ export async function createSkillAction(
       provenance: { origin: 'authored' },
       license: null,
       riskTier: validation.riskTier,
+      producesSkills: parsed.producesSkills,
       content: parsed.content,
       requires: parsed.requires,
       ...(createAttachments ? { attachments: createAttachments } : {}),
@@ -618,6 +660,37 @@ export async function createSkillAction(
     revalidatePath('/control-plane/skills')
     return ok({ skillId: skill.id, versionId })
   } catch (err) {
+    if (isUniqueViolation(err)) return fail(PRODUCER_SKILL_TAKEN)
+    return fail(messageFrom(err))
+  }
+}
+
+const producesSkillsSchema = z.object({
+  skillId: z.string().uuid(),
+  producesSkills: z.boolean(),
+})
+
+export async function setSkillProducesSkillsAction(
+  input: z.input<typeof producesSkillsSchema>,
+): Promise<ActionResult<{ producesSkills: boolean }>> {
+  try {
+    const parsed = producesSkillsSchema.parse(input)
+    const ctx = await requireTenantRole('admin')
+    if (!ctx.activeTenantId) return fail('Nincs aktív tenant.')
+    const skill = await services.skills.getReadableSkill(ctx.activeTenantId, parsed.skillId)
+    if (!skill || skill.tenantId !== ctx.activeTenantId) return fail('A skill nem található.')
+    const markerError = producerSkillMarkerError({
+      requested: parsed.producesSkills,
+      kind: skill.kind,
+      existingProducerSkillId: await findProducerSkillId(ctx.activeTenantId),
+      skillId: skill.id,
+    })
+    if (markerError) return fail(markerError)
+    await setProducesSkills(skill.id, parsed.producesSkills)
+    revalidatePath('/control-plane/skills')
+    return ok({ producesSkills: parsed.producesSkills })
+  } catch (err) {
+    if (isUniqueViolation(err)) return fail(PRODUCER_SKILL_TAKEN)
     return fail(messageFrom(err))
   }
 }

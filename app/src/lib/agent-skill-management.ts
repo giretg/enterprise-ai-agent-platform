@@ -20,3 +20,11 @@ export function canManageAgentSkills(
   if (hasMinimumRole(role, 'admin')) return true
   return operatorCanManageSkills && hasMinimumRole(role, 'operator')
 }
+
+/** A gyártó skillre az operátori kezelés nem terjed ki: csak tenant admin. */
+export function producerSkillAssignmentError(
+  role: UserRole | null | undefined,
+): string | null {
+  if (hasMinimumRole(role, 'admin')) return null
+  return 'A gyártó skillt csak tenant admin rendelheti agenthez, és csak ő kapcsolhatja be.'
+}

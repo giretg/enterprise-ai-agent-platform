@@ -215,6 +215,14 @@ enum SkillVersionStatus {
   rolled_back
 }
 
+enum ConversationSkillProposalStatus {
+  open
+  rejected
+  approved
+
+  @@map("conversation_skill_proposal_status")
+}
+
 enum GatewayOperationStatus {
   requested
   awaiting_approval
@@ -252,6 +260,8 @@ model User {
   suspendedBy                 User?                 @relation("UserSuspendedBy", fields: [suspendedById], references: [id])
   suspendedUsers              User[]                @relation("UserSuspendedBy")
   approvedSkillVersions       SkillVersion[]        @relation("SkillApprovedBy")
+  conversationSkillsRequested ConversationSkillProposal[] @relation("ConversationSkillRequestedBy")
+  conversationSkillsDecided   ConversationSkillProposal[] @relation("ConversationSkillDecidedBy")
   createdInvitations          Invitation[]          @relation("InvitationCreatedBy")
   connectorGrants             ConnectorGrant[]
   resourceGrantsReceived      ResourceGrant[]       @relation("ResourceGrantUser")
@@ -307,6 +317,7 @@ model Tenant {
   invitations       Invitation[]
   agents            Agent[]
   skills            Skill[]
+  conversationSkillProposals ConversationSkillProposal[]
   connectors        Connector[]
   connectorGrants   ConnectorGrant[]
   connectorDrafts   ConnectorDraft[]
@@ -406,6 +417,7 @@ model Agent {
   agentConnectors   AgentConnector[]
   capabilities      Capability[]
   agentSkills       AgentSkill[]
+  conversationSkillProposals ConversationSkillProposal[]
 
   @@index([tenantId, status])
   @@map("agents")
@@ -441,10 +453,12 @@ model Skill {
   provenance   Json?
   license      String?
   riskTier     SkillRiskTier
+  producesSkills Boolean         @default(false) @map("produces_skills")
   createdAt    DateTime          @default(now()) @map("created_at") @db.Timestamptz
 
   tenant   Tenant?        @relation(fields: [tenantId], references: [id])
   versions SkillVersion[]
+  conversationProposals ConversationSkillProposal[]
 
   @@index([tenantId])
   @@map("skills")
@@ -482,6 +496,34 @@ model AgentSkill {
 
   @@id([agentId, skillVersionId])
   @@map("agent_skills")
+}
+
+model ConversationSkillProposal {
+  id            String                          @id @default(uuid()) @db.Uuid
+  tenantId      String                          @map("tenant_id") @db.Uuid
+  agentId       String                          @map("agent_id") @db.Uuid
+  requestedById String                          @map("requested_by") @db.Uuid
+  name          String
+  description   String
+  content       Json
+  requires      Json
+  attachments   Json?
+  status        ConversationSkillProposalStatus @default(open)
+  createdAt     DateTime                        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime                        @updatedAt @map("updated_at") @db.Timestamptz
+  decidedAt     DateTime?                       @map("decided_at") @db.Timestamptz
+  decidedById   String?                         @map("decided_by") @db.Uuid
+  skillId       String?                         @map("skill_id") @db.Uuid
+
+  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent       Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  requestedBy User   @relation("ConversationSkillRequestedBy", fields: [requestedById], references: [id])
+  decidedBy   User?  @relation("ConversationSkillDecidedBy", fields: [decidedById], references: [id])
+  skill       Skill? @relation(fields: [skillId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, status])
+  @@index([agentId, requestedById, status])
+  @@map("conversation_skill_proposals")
 }
 
 model Connector {
