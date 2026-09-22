@@ -70,6 +70,7 @@ export async function executeHttpApiTool(
   args: Record<string, unknown>,
   connector: LiveConnectorRow,
   delegatedAccessToken?: string,
+  actingUser?: { id: string; email: string; tenantId: string | null } | null,
 ): Promise<unknown> {
   if (
     toolName !== HTTP_API_GET_TOOL &&
@@ -100,6 +101,7 @@ export async function executeHttpApiTool(
     agent: { id: agentId },
     connector: { id: connector.id, name: connector.name ?? connector.id },
     tenant: connector.tenantId ? { id: connector.tenantId } : null,
+    actingUser: actingUser ?? null,
     defaultActingUserEmail: config.defaultActingUserEmail,
     call: {
       id: callId,

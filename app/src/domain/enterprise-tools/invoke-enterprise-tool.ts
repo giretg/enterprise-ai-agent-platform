@@ -51,6 +51,8 @@ export type EnterpriseToolMcpResult = {
   content: Array<{ type: 'text'; text: string }>
 }
 
+export type HttpApiActingUser = { id: string; email: string; tenantId: string | null } | null
+
 export type EnterpriseToolDeps = AuthorizeToolCallDeps &
   DefinitionPinDeps & {
   loadDefinition: (input: {
@@ -84,7 +86,9 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     args: Record<string, unknown>,
     connector: LiveConnectorRow,
     accessToken?: string,
+    actingUser?: HttpApiActingUser,
   ) => Promise<unknown>
+  resolveActingUser?: (input: { userId: string }) => Promise<{ id: string; email: string } | null>
   executeKbTool?: (
     toolName: EnterpriseKbTool,
     args: Record<string, unknown>,
@@ -356,11 +360,15 @@ export async function invokeEnterpriseTool(
   }
 
   try {
+    const actingUser = isEnterpriseHttpTool(toolName)
+      ? await resolveHttpActingUser(deps, principal)
+      : null
     const result = await dispatchTool(deps, {
       toolName,
       args: parsed.data as Record<string, unknown>,
       connector,
       accessToken,
+      actingUser,
     })
     const payload = {
       toolName,
@@ -431,6 +439,7 @@ async function dispatchTool(
     args: Record<string, unknown>
     connector: LiveConnectorRow
     accessToken?: string
+    actingUser?: HttpApiActingUser
   },
 ): Promise<unknown> {
   if (isEnterpriseGmailTool(input.toolName)) {
@@ -439,10 +448,20 @@ async function dispatchTool(
   }
   if (isEnterpriseHttpTool(input.toolName)) {
     const execute = deps.executeHttpApiTool ?? executeHttpApiTool
-    return execute(input.toolName, input.args, input.connector, input.accessToken)
+    return execute(input.toolName, input.args, input.connector, input.accessToken, input.actingUser)
   }
   const execute = deps.executeDriveTool ?? executeGoogleDriveTool
   return execute(input.toolName as EnterpriseDriveTool, input.args, input.accessToken ?? '')
+}
+
+/** Resolves the real caller's email for X-Acting-User audit templates; null for background/scheduled runs with no resolver. */
+async function resolveHttpActingUser(
+  deps: EnterpriseToolDeps,
+  principal: ToolCallPrincipal,
+): Promise<HttpApiActingUser> {
+  if (!deps.resolveActingUser) return null
+  const resolved = await deps.resolveActingUser({ userId: principal.userId })
+  return resolved ? { id: resolved.id, email: resolved.email, tenantId: principal.tenantId } : null
 }
 
 function mapToolError(
