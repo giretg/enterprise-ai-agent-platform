@@ -19,6 +19,14 @@ function agentDefinitionLabel(row: PendingOperationRow): string {
 function argsSummary(args: Record<string, unknown>): string {
   if (typeof args.method === 'string') return `${args.method} ${String(args.path ?? '')}`
   if (typeof args.range === 'string') return `${String(args.fileId ?? '—')} · ${args.range}`
+  if (typeof args.title === 'string' && args.title.trim()) {
+    const kind = typeof args.kind === 'string' ? args.kind : 'emlék'
+    const project = typeof args.projectKey === 'string' && args.projectKey ? args.projectKey : '__general__'
+    return `${kind}: ${args.title} (${project})`
+  }
+  if (typeof args.path === 'string' && args.path.trim()) {
+    return args.path
+  }
   const name = typeof args.name === 'string' ? args.name : '—'
   const parent = typeof args.parentFolderId === 'string' && args.parentFolderId
     ? `szülő: ${args.parentFolderId}`

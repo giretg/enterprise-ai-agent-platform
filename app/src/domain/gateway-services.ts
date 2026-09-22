@@ -40,6 +40,11 @@ import { SkillService } from '@/domain/skill/skill-service'
 import { TenantService } from '@/domain/tenant/tenant-service'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
 import { executeKnowledgeBaseTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { ProjectWorkService } from '@/domain/project-work/project-work-service'
+import {
+  invokeProjectWork,
+  MCP_PROJECT_MEMORY_WRITE_TOOL,
+} from '@/domain/project-work/mcp'
 import { lookup } from 'node:dns/promises'
 
 const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants)
@@ -134,6 +139,22 @@ const knowledgeBaseService = new KnowledgeBaseService({
   audit: repositories.audit,
 })
 
+const projectWorkService = new ProjectWorkService(
+  repositories.workProjects,
+  repositories.workFiles,
+  repositories.projectMemory,
+  {
+    async findMemoryWriteMode(agentId, tenantId) {
+      const agent = await repositories.agents.findById(agentId, tenantId)
+      return agent?.memoryWriteMode ?? null
+    },
+    async updateMemoryWriteMode(agentId, memoryWriteMode) {
+      await repositories.agents.updateMemoryWriteMode({ agentId, memoryWriteMode })
+    },
+  },
+  repositories.users,
+)
+
 function isStubDriveCredential(tokenRef: string): boolean {
   return tokenRef.startsWith('stub-') || process.env.GOOGLE_DRIVE_API_STUB === 'true'
 }
@@ -226,6 +247,20 @@ const gatewayOperationDeps: GatewayOperationServiceDeps = {
       await recordGoogleDriveAppCreatedFile({ grantId, ...file })
     }
   },
+  async commitProjectMemory({ tenantId, agentId, args }) {
+    const withUserId = typeof args.withUserId === 'string' ? args.withUserId : ''
+    return projectWorkService.commitMemory({
+      tenantId,
+      agentId,
+      projectKey: typeof args.projectKey === 'string' ? args.projectKey : undefined,
+      kind: String(args.kind ?? ''),
+      title: String(args.title ?? ''),
+      body: String(args.body ?? ''),
+      artifactPath: typeof args.artifactPath === 'string' ? args.artifactPath : undefined,
+      replaceId: typeof args.replaceId === 'string' ? args.replaceId : undefined,
+      withUserId,
+    })
+  },
 }
 
 async function listPendingOperationRows(input: {
@@ -272,6 +307,27 @@ export const services = {
   selfUpdatingConnectors: selfUpdatingConnectorService,
   connectorGrants: connectorGrantService,
   knowledgeBase: knowledgeBaseService,
+  projectWork: {
+    service: projectWorkService,
+    invoke: (input: Parameters<typeof invokeProjectWork>[1]) =>
+      invokeProjectWork(
+        {
+          ...sharedToolLookups,
+          projectWork: projectWorkService,
+          enqueueMemoryWrite: async (enqueueInput) =>
+            enqueueResultToMcp(
+              await enqueueGatewayOperation(gatewayOperationDeps, {
+                principal: enqueueInput.principal,
+                toolName: MCP_PROJECT_MEMORY_WRITE_TOOL,
+                args: enqueueInput.args,
+              }),
+              enqueueInput.origin,
+            ),
+          audit: repositories.audit,
+        },
+        input,
+      ),
+  },
   audit: repositories.audit,
   auditChain: new AuditChainService(repositories.audit),
   enterpriseTools: {

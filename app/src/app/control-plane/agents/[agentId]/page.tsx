@@ -24,6 +24,7 @@ import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
 import { PublishStaleDraftButton } from '@/components/agents/publish-stale-draft-button'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
+import { UpdateMemoryWriteModeForm } from '@/components/agents/update-memory-write-mode-form'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
 import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
@@ -42,6 +43,7 @@ const SECTION_DESCRIPTIONS: Partial<Record<AgentDetailSectionId, string>> = {
   tudasbazis: 'Dokumentumok és katalógus, amiből a munkatárs dolgozik.',
   eszkozok: 'Milyen platform-eszközöket használhat a publikált definíció.',
   skillek: 'Előre összeállított utasítás-csomagok ehhez az agenthez.',
+  memoriairas: 'A projektmemóriát jóváhagyással vagy közvetlenül írja. A betanított szabályt ez nem nyitja ki.',
   hozzaferes: 'Ki indíthat chatet vagy ticketet ezzel a munkatárssal.',
 }
 
@@ -190,6 +192,20 @@ export default async function AgentDetailPage({
           canEdit={canManage}
           isAdmin={canManage}
         />
+      ),
+    },
+    {
+      id: 'memoriairas',
+      label: AGENT_DETAIL_SECTION_LABELS.memoriairas,
+      description: SECTION_DESCRIPTIONS.memoriairas,
+      content: (
+        <Card title={AGENT_DETAIL_SECTION_LABELS.memoriairas}>
+          <UpdateMemoryWriteModeForm
+            agentId={agent.id}
+            memoryWriteMode={agent.memoryWriteMode}
+            canEdit={canManage}
+          />
+        </Card>
       ),
     },
     ...(canManage && accessUsers

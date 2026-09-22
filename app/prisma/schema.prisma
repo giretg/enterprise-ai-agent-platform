@@ -74,6 +74,25 @@ enum AgentStatus {
   retired
 }
 
+enum MemoryWriteMode {
+  approval
+  direct
+}
+
+enum ProjectMemoryKind {
+  decision
+  open_task
+  finding
+  constraint
+  artifact
+  handoff_summary
+}
+
+enum ProjectMemoryStatus {
+  active
+  superseded
+}
+
 enum ConnectorType {
   google_drive
   http_api
@@ -274,6 +293,9 @@ model User {
   gatewayOperations           GatewayOperation[]    @relation("GatewayOperationPrincipal")
   gatewayApprovalsDecided     GatewayApproval[]     @relation("GatewayApprovalDecidedBy")
   uploadedDocuments           Document[]            @relation("DocumentUploadedBy")
+  workProjectsCreated         WorkProject[]         @relation("WorkProjectCreatedBy")
+  workFilesWritten            WorkFile[]            @relation("WorkFileLastWriter")
+  projectMemoryItems          ProjectMemoryItem[]   @relation("ProjectMemoryWithUser")
 
   @@index([status])
   @@map("users")
@@ -326,6 +348,9 @@ model Tenant {
   gatewayOperations GatewayOperation[]
   auditLogs         AuditLog[]
   documents         Document[]
+  workProjects      WorkProject[]
+  workFiles         WorkFile[]
+  projectMemoryItems ProjectMemoryItem[]
 
   @@index([status])
   @@map("tenants")
@@ -407,6 +432,7 @@ model Agent {
   status                     AgentStatus @default(draft)
   currentDefinitionVersionId String?     @unique @map("current_definition_version_id") @db.Uuid
   avatarUrl                  String?     @map("avatar_url")
+  memoryWriteMode            MemoryWriteMode @default(approval) @map("memory_write_mode")
   createdAt                  DateTime    @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime    @updatedAt @map("updated_at") @db.Timestamptz
   retiredAt                  DateTime?   @map("retired_at") @db.Timestamptz
@@ -418,6 +444,7 @@ model Agent {
   capabilities      Capability[]
   agentSkills       AgentSkill[]
   conversationSkillProposals ConversationSkillProposal[]
+  projectMemoryItems ProjectMemoryItem[]
 
   @@index([tenantId, status])
   @@map("agents")
@@ -759,6 +786,69 @@ model KnowledgeChunk {
   @@index([connectorId])
   @@index([artifactId, path])
   @@map("knowledge_chunks")
+}
+
+model WorkProject {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  key         String
+  name        String
+  description String?
+  createdById String    @map("created_by") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  archivedAt  DateTime? @map("archived_at") @db.Timestamptz
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id])
+  createdBy User   @relation("WorkProjectCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([tenantId, key])
+  @@index([tenantId, archivedAt])
+  @@map("work_projects")
+}
+
+model WorkFile {
+  id               String   @id @default(uuid()) @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+  projectKey       String   @map("project_key")
+  path             String
+  content          String   @db.Text
+  byteSize         Int      @map("byte_size")
+  lastWriterUserId String   @map("last_writer_user_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant     Tenant @relation(fields: [tenantId], references: [id])
+  lastWriter User   @relation("WorkFileLastWriter", fields: [lastWriterUserId], references: [id])
+
+  @@unique([tenantId, projectKey, path])
+  @@index([tenantId, projectKey])
+  @@map("work_files")
+}
+
+model ProjectMemoryItem {
+  id           String               @id @default(uuid()) @db.Uuid
+  tenantId     String               @map("tenant_id") @db.Uuid
+  agentId      String               @map("agent_id") @db.Uuid
+  projectKey   String               @map("project_key")
+  kind         ProjectMemoryKind
+  title        String
+  body         String               @db.Text
+  artifactPath String?              @map("artifact_path")
+  withUserId   String               @map("with_user_id") @db.Uuid
+  status       ProjectMemoryStatus  @default(active)
+  supersedesId String?              @map("supersedes_id") @db.Uuid
+  createdAt    DateTime             @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant     Tenant              @relation(fields: [tenantId], references: [id])
+  agent      Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  withUser   User                @relation("ProjectMemoryWithUser", fields: [withUserId], references: [id])
+  supersedes ProjectMemoryItem?  @relation("ProjectMemorySupersedes", fields: [supersedesId], references: [id], onDelete: SetNull)
+  supersededBy ProjectMemoryItem[] @relation("ProjectMemorySupersedes")
+
+  @@index([tenantId, agentId, projectKey, status])
+  @@index([withUserId])
+  @@map("project_memory_items")
 }
 
 model GatewayOperation {

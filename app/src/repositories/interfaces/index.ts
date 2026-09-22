@@ -82,6 +82,10 @@ export interface AgentRepository {
   updateInstruction(input: { agentId: string; roleInstruction: string }): Promise<Agent>
   updateProfile(input: { agentId: string; name?: string; description?: string | null }): Promise<Agent>
   updateAvatar(input: { agentId: string; avatarUrl: string }): Promise<Agent>
+  updateMemoryWriteMode(input: {
+    agentId: string
+    memoryWriteMode: Agent['memoryWriteMode']
+  }): Promise<Agent>
   setCurrentDefinitionVersionId(agentId: string, versionId: string): Promise<Agent>
   activate(agentId: string): Promise<Agent>
   suspend(agentId: string, reason?: string): Promise<Agent>

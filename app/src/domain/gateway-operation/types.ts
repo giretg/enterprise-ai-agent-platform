@@ -62,7 +62,7 @@ export type GatewayOperationCreateInput = {
   toolName: string
   argsJson: unknown
   idempotencyKey: string
-  connectorId: string
+  connectorId: string | null
 }
 
 export type GatewayOperationPatch = {

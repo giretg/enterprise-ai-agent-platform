@@ -86,7 +86,7 @@ export class PostgresGatewayOperationRepository implements GatewayOperationStore
           argsJson: jsonValue(input.argsJson),
           idempotencyKey: input.idempotencyKey,
           status: 'awaiting_approval',
-          connectorId: input.connectorId,
+          connectorId: input.connectorId ?? null,
           approval: { create: { decision: 'pending' } },
         },
         include: INCLUDE,

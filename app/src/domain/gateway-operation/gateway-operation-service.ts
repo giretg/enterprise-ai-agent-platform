@@ -31,6 +31,11 @@ import {
   isEnterpriseWriteTool,
   schemaForEnterpriseTool,
 } from '@/domain/enterprise-tools/tool-definitions'
+import {
+  isProjectMemoryWriteTool,
+  schemaForProjectWorkTool,
+} from '@/domain/project-work/mcp'
+import type { MemoryView } from '@/domain/project-work/project-work-service'
 import type {
   GatewayOperationRecord,
   GatewayOperationStatus,
@@ -88,6 +93,11 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     grantId: string
     files: Array<{ fileId: string; name: string; mimeType: string }>
   }) => Promise<void>
+  commitProjectMemory?: (input: {
+    tenantId: string
+    agentId: string
+    args: Record<string, unknown>
+  }) => Promise<MemoryView>
   audit?: AuditSink
 }
 
@@ -286,7 +296,7 @@ async function loadAuthorizedWrite(
   | {
       ok: true
       definition: AgentDefinition
-      connectorId: string
+      connectorId: string | null
       parsedArgs: Record<string, unknown>
     }
 > {
@@ -298,7 +308,8 @@ async function loadAuthorizedWrite(
     code,
     ...ids,
   })
-  if (!isEnterpriseWriteTool(toolName)) return fail('tool_not_configured')
+  const memoryWrite = isProjectMemoryWriteTool(toolName)
+  if (!memoryWrite && !isEnterpriseWriteTool(toolName)) return fail('tool_not_configured')
 
   const definitionId = asUuid(args.definitionId)
   if (!definitionId) return fail('definition_not_found')
@@ -335,16 +346,26 @@ async function loadAuthorizedWrite(
     return fail('idempotency_key_required', ids)
   }
 
-  const schema = schemaForEnterpriseTool(toolName)
+  const schema = memoryWrite ? schemaForProjectWorkTool(toolName) : schemaForEnterpriseTool(toolName)
   if (!schema) return fail('tool_not_configured', ids)
   const parsed = schema.safeParse(args)
   if (!parsed.success) return fail('invalid_args', ids)
+  const parsedArgs = parsed.data as Record<string, unknown>
+
+  if (memoryWrite) {
+    return {
+      ok: true,
+      definition,
+      connectorId: null,
+      parsedArgs: { ...parsedArgs, withUserId: principal.userId },
+    }
+  }
 
   const authorized = await authorizeToolCall(deps, {
     principal,
     definition,
     toolName,
-    args: parsed.data as Record<string, unknown>,
+    args: parsedArgs,
   })
   if (!authorized.allowed) {
     return fail(authorized.reason, { ...ids, connectorId: authorized.connectorId })
@@ -354,7 +375,7 @@ async function loadAuthorizedWrite(
     ok: true,
     definition,
     connectorId: authorized.connectorId,
-    parsedArgs: parsed.data as Record<string, unknown>,
+    parsedArgs,
   }
 }
 
@@ -670,6 +691,48 @@ async function executeApprovedOperation(
   })
   if (!canOperateAgent({ role: requester.role, grant: agentGrant, assumed: requester.assumed })) {
     return fail('agent_access_denied')
+  }
+
+  if (isProjectMemoryWriteTool(operation.toolName)) {
+    if (!deps.commitProjectMemory) return fail('tool_not_configured')
+    try {
+      const result = await deps.commitProjectMemory({
+        tenantId: operation.tenantId,
+        agentId: definition.agentId,
+        args,
+      })
+      const updated = await deps.operations.update(operation.id, {
+        status: 'succeeded',
+        resultJson: result,
+        errorCode: null,
+      })
+      console.info('gateway.operation.succeeded', {
+        operationId: operation.id,
+        tenantId: operation.tenantId,
+        toolName: operation.toolName,
+      })
+      await writeAudit(deps.audit, {
+        actorType: 'system',
+        actorId: null,
+        agentVersion: null,
+        action: 'gateway.operation.succeeded',
+        targetType: 'gateway_operation',
+        targetId: operation.id,
+        modelUsed: null,
+        inputRef: operation.toolName,
+        outputRef: null,
+        policyDecision: 'allowed',
+        metadata: {
+          operationId: operation.id,
+          tenantId: operation.tenantId,
+          toolName: operation.toolName,
+        },
+        tenantId: operation.tenantId,
+      })
+      return updated ?? { ...operation, status: 'succeeded' as GatewayOperationStatus, resultJson: result }
+    } catch {
+      return fail('tool_execution_failed')
+    }
   }
 
   const authorized = await authorizeToolCall(deps, {
