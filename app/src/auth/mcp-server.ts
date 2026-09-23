@@ -523,7 +523,52 @@ async function getDefinitionToolResult(
     agentId: loaded.agentId,
   })
   if (!allowed) return definitionNotFound()
-  return textResult({ ...loaded, contentHash: hashSnapshot(loaded.snapshot) })
+  const generalMemory = await readGeneralMemory(principal, loaded.definitionId, deps)
+  return textResult({
+    ...loaded,
+    contentHash: hashSnapshot(loaded.snapshot),
+    ...(generalMemory ? { generalMemory } : {}),
+  })
+}
+
+const GENERAL_MEMORY_MAX_ITEMS = 40
+const GENERAL_MEMORY_MAX_CHARS = 8000
+
+/**
+ * Push the agent's __general__ memory into get_definition so the client has the
+ * company facts before its first enterprise tool call, instead of having to
+ * remember to read them. Goes through invokeProjectWork, so the same operate
+ * check + audit as platform.project_memory.read apply; denied → omitted.
+ */
+async function readGeneralMemory(principal: McpPrincipal, definitionId: string, deps: McpRuntimeDeps) {
+  const result = await deps.invokeProjectWork({
+    principal,
+    toolName: MCP_PROJECT_MEMORY_READ_TOOL,
+    args: { definitionId },
+  })
+  if (result.isError) return null
+  let all: unknown[] = []
+  try {
+    const parsed = JSON.parse(result.content[0]?.text ?? '{}') as { items?: unknown }
+    if (Array.isArray(parsed.items)) all = parsed.items
+  } catch {
+    return null
+  }
+  const items: unknown[] = []
+  let chars = 0
+  for (const item of all.slice(0, GENERAL_MEMORY_MAX_ITEMS)) {
+    chars += JSON.stringify(item).length
+    if (chars > GENERAL_MEMORY_MAX_CHARS && items.length > 0) break
+    items.push(item)
+  }
+  const truncated = items.length < all.length
+  return {
+    note:
+      'This is the agent\'s memory (__general__ project): company facts, decisions and locations valid now. It overrides search results — if Drive/KB/API results contradict it, follow the memory and say so.' +
+      (truncated ? ' Truncated: call platform.project_memory.read for the rest.' : ''),
+    items,
+    truncated,
+  }
 }
 
 function invalidArgs(message: string) {
@@ -744,7 +789,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Who am I',
           description:
-            'Return the authenticated MCP principal, tenant organization context, and visible coworkers for this tenant URL.',
+            'Return the authenticated MCP principal, tenant organization context, and visible coworkers for this tenant URL. Next step: platform.agent.get_definition — its response carries the agent\'s memory (company facts) that you need before answering company questions.',
           inputSchema: z.object({}).passthrough(),
         },
         async () => whoamiToolResult(principal, deps),
@@ -764,7 +809,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Get agent definition',
           description:
-            'Load one published agent definition snapshot (capabilities, connectors with names/connectorIds, http_api endpoints). Call this before enterprise tools and pass definitionId on each call. Use agentId or definitionId; optional version.',
+            'Load one published agent definition snapshot (capabilities, connectors with names/connectorIds, http_api endpoints) plus generalMemory: the agent\'s current company facts, decisions and locations. Call this at the start of the conversation, before enterprise tools, and pass definitionId on each call. Read generalMemory before answering — it overrides search results. Use agentId or definitionId; optional version.',
           inputSchema: z
             .object({
               definitionId: z.string().uuid().optional(),
@@ -929,7 +974,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Read project memory',
           description:
-            'Read this agent\'s project-memory items (decisions, open tasks, findings, handoffs, artifact pointers). Each item is tagged with the conversation partner (withUserId / withUserName) stamped by the server. Pass mine=true to filter to the calling user. Always call this before platform.project_memory.write so you can update an existing item instead of duplicating it. Ask which project, then pass the same projectKey. Do not store personal facts unless they constrain the project.',
+            'Read this agent\'s memory: company facts, decisions, locations, open tasks, findings, handoffs, artifact pointers. Read it before answering any company-specific question (where is X, who owns Y, how do we do Z) and before searching Drive/KB — memory overrides search results. Each item is tagged with the conversation partner (withUserId / withUserName) stamped by the server. Pass mine=true to filter to the calling user. Always call this before platform.project_memory.write so you can update an existing item instead of duplicating it. Omit projectKey for the general memory — do not ask the user which project; pass a projectKey only when the conversation is about a named project. Do not store personal facts unless they constrain the project.',
           inputSchema: projectMemoryReadInputSchema,
           annotations: { readOnlyHint: true },
         },

@@ -992,6 +992,53 @@ async function main() {
     assert.match(payload.contentHash ?? '', /^[0-9a-f]{64}$/)
   })
 
+  await check('get_definition carries general memory; denied memory read is omitted', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const calls: Array<{ toolName: string; args: Record<string, unknown> }> = []
+    let denied = false
+    deps.invokeProjectWork = async ({ toolName, args }) => {
+      calls.push({ toolName, args })
+      if (denied) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'agent_access_denied' }) }] }
+      }
+      const items = Array.from({ length: 50 }, (_, i) => ({ id: `m${i}`, title: `fact ${i}`, body: 'x'.repeat(100) }))
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, items }) }] }
+    }
+    await initialize(deps)
+    const getDefinition = async (id: number) => {
+      const res = await post(
+        'acme',
+        {
+          jsonrpc: '2.0',
+          id,
+          method: 'tools/call',
+          params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { definitionId: DEFINITION_ID } },
+        },
+        { authorization: `Bearer ${TOKEN}` },
+        deps,
+      )
+      const body = (await readJson(res)) as { result?: { isError?: boolean; content?: Array<{ text: string }> } }
+      assert.equal(body.result?.isError, undefined)
+      return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+        definitionId?: string
+        generalMemory?: { items: Array<{ id: string }>; truncated: boolean; note: string }
+      }
+    }
+
+    const payload = await getDefinition(60)
+    assert.equal(calls[0]?.toolName, 'platform.project_memory.read')
+    assert.deepEqual(calls[0]?.args, { definitionId: DEFINITION_ID })
+    assert.equal(payload.generalMemory?.items[0]?.id, 'm0')
+    assert.equal(payload.generalMemory?.truncated, true)
+    assert.ok((payload.generalMemory?.items.length ?? 0) <= 40)
+    assert.match(payload.generalMemory?.note ?? '', /overrides search results/)
+
+    denied = true
+    const withoutMemory = await getDefinition(61)
+    assert.equal(withoutMemory.definitionId, DEFINITION_ID)
+    assert.equal(withoutMemory.generalMemory, undefined)
+  })
+
   await check('operator without ResourceGrant cannot list or get a definition', async () => {
     const { deps } = runtimeDeps({ role: 'operator' })
     await initialize(deps)
