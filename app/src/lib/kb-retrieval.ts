@@ -358,10 +358,22 @@ export function okfIndexFile(bundle: unknown): { title: string; text: string } |
   return { title, text }
 }
 
-/** ponytail: heading-split only; page offsets if a raw file has no headings. */
 export const KB_DOCUMENT_INLINE_CHARS = 8_000
 
 type OutlineSection = { title: string; body: string }
+
+/** Fix méretű lapozás, ha a nyers fájlnak nincs `#`/`##`/`###` headingje. */
+function windowSections(text: string): OutlineSection[] {
+  const windows: OutlineSection[] = []
+  for (let start = 0; start < text.length; start += KB_DOCUMENT_INLINE_CHARS) {
+    const end = Math.min(start + KB_DOCUMENT_INLINE_CHARS, text.length)
+    windows.push({
+      title: `Part ${windows.length + 1} (chars ${start + 1}-${end})`,
+      body: text.slice(start, end),
+    })
+  }
+  return windows
+}
 
 function outlineSections(text: string): OutlineSection[] {
   const sections: OutlineSection[] = []
@@ -376,6 +388,7 @@ function outlineSections(text: string): OutlineSection[] {
     }
   }
   if (current) sections.push(current)
+  if (sections.length === 0) return text.trim() ? windowSections(text) : []
   return sections.map((section) => ({ title: section.title, body: section.body.trim() }))
 }
 

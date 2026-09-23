@@ -356,6 +356,32 @@ async function run() {
     assert.equal(section.text, 'vege')
   })
 
+  await check(
+    'assembleKbDocument: heading nélküli hosszú raw fájl karakter-ablakokra lapoz (nem üres outline)',
+    () => {
+      const noHeadings = 'x'.repeat(KB_DOCUMENT_INLINE_CHARS * 2 + 500)
+      const outline = assembleKbDocument({
+        documentId: 'd3',
+        filename: 'napi-riport.md',
+        purpose: null,
+        text: noHeadings,
+      })
+      assert.equal(outline.truncated, true)
+      assert.equal(outline.text, undefined)
+      assert.equal(outline.outline?.length, 3, 'a teljes szöveg egyik ablakban se vesszen el')
+
+      const part2 = assembleKbDocument({
+        documentId: 'd3',
+        filename: 'napi-riport.md',
+        purpose: null,
+        text: noHeadings,
+        section: 'Part 2',
+      })
+      assert.equal(part2.sectionFound, true)
+      assert.equal(part2.text?.length, KB_DOCUMENT_INLINE_CHARS)
+    },
+  )
+
   await check('mergeKbHits: score szerint vág', () => {
     const hits = mergeKbHits(
       [
