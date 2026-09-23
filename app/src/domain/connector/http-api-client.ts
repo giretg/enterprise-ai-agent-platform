@@ -633,6 +633,8 @@ export class HttpApiError extends Error {
     readonly code: string,
     /** `endpoint_not_allowed`-nál a valódi engedélyezett katalógus (reaktív felfedezés). */
     readonly allowedEndpoints?: HttpApiEndpointSummary[],
+    /** `endpoint_not_allowed`-nál: miért nem illeszkedett (modellnek, titok nélkül). */
+    readonly reason?: string,
   ) {
     super(message)
     this.name = 'HttpApiError'
@@ -710,10 +712,12 @@ export class HttpApiClient {
         ) {
           return continuationEndpoint
         }
+        const reason = explainHttpApiEndpointMiss(this.config, method, path)
         throw new HttpApiError(
-          `endpoint not allowed: ${method} ${path}`,
+          `endpoint not allowed: ${method} ${path} — ${reason}`,
           'endpoint_not_allowed',
           summarizeHttpApiEndpoints(this.config.endpoints),
+          reason,
         )
       }
     }
@@ -1206,16 +1210,18 @@ function templateValue(key: string, context: HttpApiTemplateContext): string | n
 }
 
 /**
- * Egyszerű path-egyezés placeholderekkel. Kétféle jelölést fogadunk el, mert a
- * kézi „API-kapcsolat" a `:param` alakot használja (pl. /banks/:bankId/crm), a
+ * Path-egyezés placeholderekkel. Kétféle jelölést fogadunk el, mert a kézi
+ * „API-kapcsolat" a `:param` alakot használja (pl. /banks/:bankId/crm), a
  * sablonból materializált configok viszont a `{param}` alakot (pl. /accounts/{id}).
- * Mindkét forma egyetlen path-szegmensre illeszkedő joker.
+ * A `{param}` szegmensen BELÜL is állhat fix előtaggal/utótaggal (pl. `act_{id}`,
+ * `{id}.json`, `Customers('{id}')`); a `:param` csak teljes szegmens lehet, mert a
+ * kettőspont sok API-ban literál (pl. `/v1/items:batchGet`).
  */
 export function httpApiPathMatches(template: string, actual: string): boolean {
   const t = template.split('/').filter(Boolean)
   const a = actual.split('/').filter(Boolean)
   if (t.length !== a.length) return false
-  return t.every((seg, i) => isPathParamSegment(seg) || seg === a[i])
+  return t.every((seg, i) => segmentMatches(seg, a[i]))
 }
 
 /** Közös endpoint-feloldás a kliens és a get_all lapozási terv számára. */
@@ -1226,11 +1232,104 @@ export function findHttpApiEndpoint(
 ): HttpApiEndpoint | undefined {
   const normalized = path.split('?')[0]
   const upperMethod = method.toUpperCase()
-  return (config.endpoints ?? []).find(
-    (endpoint) => endpoint.method === upperMethod && httpApiPathMatches(endpoint.path, normalized),
-  )
+  // Több illeszkedő sablonnál a legspecifikusabb nyer (a `/act_{id}` a `/{id}` előtt),
+  // különben a tágabb sablon kockázati/lapozási beállítása érvényesülne.
+  let best: HttpApiEndpoint | undefined
+  let bestScore = -1
+  for (const endpoint of config.endpoints ?? []) {
+    if (endpoint.method !== upperMethod || !httpApiPathMatches(endpoint.path, normalized)) continue
+    const score = templateLiteralLength(endpoint.path)
+    if (score > bestScore) {
+      best = endpoint
+      bestScore = score
+    }
+  }
+  return best
 }
+
+/**
+ * Miért nem illeszkedett a hívás? Modellnek szóló, titokmentes magyarázat az
+ * `endpoint_not_allowed` hibához, hogy ne vakon próbálkozzon újabb alakokkal.
+ */
+export function explainHttpApiEndpointMiss(
+  config: Pick<HttpApiConfig, 'endpoints'>,
+  method: string,
+  path: string,
+): string {
+  const normalized = path.split('?')[0]
+  const otherMethods = [
+    ...new Set(
+      (config.endpoints ?? [])
+        .filter((endpoint) => httpApiPathMatches(endpoint.path, normalized))
+        .map((endpoint) => endpoint.method),
+    ),
+  ]
+  if (otherMethods.length > 0) {
+    return `path matches an allowed endpoint, but method ${method.toUpperCase()} is not allowed there (allowed: ${otherMethods.join(', ')})`
+  }
+  return 'no allowed endpoint template matches this path — substitute {param} placeholders only, keep every literal segment and prefix (e.g. act_{id} → act_123)'
+}
+
+/**
+ * Azonos metódusú sablonpárok, amelyekre ugyanaz a konkrét path illeszkedhet
+ * (pl. `GET /{campaignId}` és `GET /act_{adAccountId}`). A futásidő ilyenkor a
+ * specifikusabbat választja, de a tágabb sablon csendben mást is enged — ezért
+ * konfiguráláskor figyelmeztetünk rá.
+ */
+export function findOverlappingHttpApiEndpoints(
+  endpoints: ReadonlyArray<Pick<HttpApiEndpoint, 'method' | 'path'>>,
+): Array<[string, string]> {
+  const pairs: Array<[string, string]> = []
+  for (let i = 0; i < endpoints.length; i++) {
+    for (let j = i + 1; j < endpoints.length; j++) {
+      const a = endpoints[i]
+      const b = endpoints[j]
+      if (a.method.toUpperCase() !== b.method.toUpperCase() || a.path === b.path) continue
+      if (templatesOverlap(a.path, b.path)) {
+        pairs.push([`${a.method.toUpperCase()} ${a.path}`, `${b.method.toUpperCase()} ${b.path}`])
+      }
+    }
+  }
+  return pairs
+}
+
+function templatesOverlap(left: string, right: string): boolean {
+  const l = left.split('/').filter(Boolean)
+  const r = right.split('/').filter(Boolean)
+  if (l.length !== r.length) return false
+  return l.every((seg, i) => {
+    const other = r[i]
+    if (!hasPathParam(seg)) return segmentMatches(other, seg)
+    if (!hasPathParam(other)) return segmentMatches(seg, other)
+    // ponytail: két vegyes szegmens (pl. act_{a} vs cmp_{b}) átfedését nem bizonyítjuk,
+    // átfedőnek vesszük — legfeljebb egy fölösleges figyelmeztetés.
+    return true
+  })
+}
+
+const BRACE_PARAM = /\{[^{}/]+\}/g
 
 function isPathParamSegment(segment: string): boolean {
   return segment.startsWith(':') || (segment.startsWith('{') && segment.endsWith('}'))
+}
+
+function hasPathParam(segment: string): boolean {
+  return segment.startsWith(':') || /\{[^{}/]+\}/.test(segment)
+}
+
+function segmentMatches(templateSegment: string, actual: string): boolean {
+  if (isPathParamSegment(templateSegment)) return actual.length > 0
+  if (!templateSegment.includes('{')) return templateSegment === actual
+  const pattern = templateSegment
+    .split(BRACE_PARAM)
+    .map((literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('[^/]+')
+  return new RegExp(`^${pattern}$`).test(actual)
+}
+
+function templateLiteralLength(template: string): number {
+  return template
+    .split('/')
+    .filter(Boolean)
+    .reduce((sum, seg) => sum + (seg.startsWith(':') ? 0 : seg.replace(BRACE_PARAM, '').length), 0)
 }
