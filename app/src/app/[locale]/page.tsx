@@ -1,4 +1,5 @@
 import NextLink from 'next/link'
+import Image from 'next/image'
 import { getTranslations, setRequestLocale } from 'next-intl/server'
 import { PublicSiteShell } from '@/components/public-site/public-site-shell'
 import { isAppLocale } from '@/i18n/config'
@@ -8,10 +9,10 @@ import { VendorLogo } from '@/components/public-site/vendor-logos'
 
 const trustKeys = ['trustApproval', 'trustAudit', 'trustConnect', 'trustGdpr'] as const
 const clients = [
-  { key: 'clientClaude', mark: 'CL' },
-  { key: 'clientCodex', mark: 'CX' },
-  { key: 'clientChatgpt', mark: 'GP' },
-  { key: 'clientCursor', mark: 'CU' },
+  { key: 'clientClaude', logo: '/mcp-clients/claudecode.svg', background: 'bg-[#f8ede5]' },
+  { key: 'clientCodex', logo: '/mcp-clients/codex.svg', background: 'bg-[#e6eee9]' },
+  { key: 'clientChatgpt', logo: null, background: 'bg-[#e6eee9]' },
+  { key: 'clientCursor', logo: '/mcp-clients/cursor.svg', background: 'bg-[#eeece8]' },
 ] as const
 
 const features = [
@@ -120,11 +121,15 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
             <div className="space-y-4 px-4 py-5 sm:px-5">
               <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint">{t('panelClientsLabel')}</p>
               <ul className="space-y-2">
-                {clients.map(({ key, mark }) => (
+                {clients.map(({ key, logo, background }) => (
                   <li key={key} className="flex items-center justify-between rounded-xl border border-line bg-card px-3.5 py-2.5">
                     <span className="flex items-center gap-2.5 text-sm font-medium text-ink">
-                      <span aria-hidden className="flex h-7 w-7 items-center justify-center rounded-full bg-ink text-[11px] font-semibold text-night">
-                        {mark}
+                      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${background}`}>
+                        {logo ? (
+                          <Image src={logo} alt="" width={20} height={20} className="h-5 w-5 object-contain" />
+                        ) : (
+                          <VendorLogo name="OpenAI" className="h-5 w-5" />
+                        )}
                       </span>
                       {t(key)}
                     </span>
