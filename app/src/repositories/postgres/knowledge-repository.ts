@@ -113,7 +113,7 @@ export class PostgresDocumentRepository implements DocumentRepository {
              ) AS score,
              ts_headline(
                'simple',
-               coalesce(d.extracted_text, ''),
+               coalesce(d.filename, '') || ' ' || coalesce(d.extracted_text, ''),
                to_tsquery('simple', ${tsquery}),
                'MaxWords=40, MinWords=12, MaxFragments=1, StartSel="", StopSel=""'
              ) AS snippet
