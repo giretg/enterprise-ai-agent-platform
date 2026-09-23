@@ -76,7 +76,7 @@ async function ensurePickerLoaded(): Promise<void> {
   })
 }
 
-function selectionLabel(mimeType: string): string {
+export function selectionLabel(mimeType: string): string {
   return mimeType === 'application/vnd.google-apps.folder' ? 'mappa' : 'fájl'
 }
 
@@ -168,31 +168,26 @@ export function GoogleDrivePickerPanel({
   }
 
   const selections = metadata.pickerSelections
-  const appCreated = metadata.appCreated
 
   return (
-    <div className="space-y-3 rounded-xl border border-line/70 bg-night-2/20 p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-ink">Írható fájlok és mappák</p>
-          <p className="mt-1 text-xs leading-5 text-ink-soft">
-            Ha „olvasás + írás kijelölt fájlokon” profilt választottál, itt jelölheted meg, mely
-            fájlokat és mappákat módosíthat az agent. Az app által létrehozott fájlok automatikusan
-            írhatók maradnak.
-          </p>
-        </div>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="max-w-xl text-xs leading-5 text-ink-soft">
+          Ezeket a fájlokat és mappákat módosíthatja az agent. Az általa létrehozott fájlok
+          automatikusan írhatók.
+        </p>
         <button
           type="button"
           disabled={pending || !pickerConfigured}
-          className="rounded-full border border-coral/40 px-4 py-2 text-sm font-semibold text-coral-deep disabled:opacity-50"
+          className="rounded-full border border-coral/40 px-3.5 py-1.5 text-xs font-semibold text-coral-deep transition-colors hover:bg-coral/5 disabled:opacity-50"
           onClick={openPicker}
         >
-          {pending ? 'Betöltés…' : 'Írható fájlok kiválasztása'}
+          {pending ? 'Betöltés…' : '+ Fájlok kiválasztása'}
         </button>
       </div>
 
       {!pickerConfigured ? (
-        <p className="rounded-lg border border-amber/35 bg-amber/10 px-3 py-2 text-xs leading-5 text-ink-soft">
+        <p className="rounded-lg bg-honey/10 px-3 py-2 text-xs leading-5 text-ink-soft">
           A fájlválasztó még nincs beállítva a platformon. Kérd meg az admint, hogy adja meg a
           Picker API kulcsot és az App ID-t a{' '}
           <span className="font-medium text-ink">Platform → Beállítások → Google Drive OAuth</span>{' '}
@@ -224,27 +219,8 @@ export function GoogleDrivePickerPanel({
           ))}
         </ul>
       ) : (
-        <p className="text-xs text-ink-faint">Még nincs Pickerrel kiválasztott írható cél.</p>
+        <p className="text-xs text-ink-faint">Még nincs kiválasztott írható fájl vagy mappa.</p>
       )}
-
-      {appCreated.length > 0 ? (
-        <div className="border-t border-line/50 pt-3">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-faint">
-            Az agent által létrehozott ({appCreated.length})
-          </p>
-          <ul className="space-y-1 text-xs text-ink-soft">
-            {appCreated.slice(0, 8).map((entry) => (
-              <li key={entry.fileId}>
-                {entry.name}{' '}
-                <span className="text-ink-faint">· {selectionLabel(entry.mimeType)}</span>
-              </li>
-            ))}
-            {appCreated.length > 8 ? (
-              <li className="text-ink-faint">… és még {appCreated.length - 8}</li>
-            ) : null}
-          </ul>
-        </div>
-      ) : null}
 
       {message ? (
         <p

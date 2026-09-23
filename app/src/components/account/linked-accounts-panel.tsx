@@ -40,7 +40,7 @@ function AccountGroup({
         </div>
       </div>
       {count > 0 ? (
-        <div className="space-y-4">{children}</div>
+        <div className="space-y-2.5">{children}</div>
       ) : (
         <div className="rounded-2xl border border-dashed border-line bg-night-2/30 px-5 py-4 text-sm text-ink-soft">
           {emptyText}
