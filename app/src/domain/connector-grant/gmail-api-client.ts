@@ -139,12 +139,22 @@ function dropBlocks(html: string, tag: string): string {
   }
 }
 
+/** Minden `<…>` kihagyása karakterenként; lezáratlan `<` után a maradék is kiesik. */
+function stripTags(html: string): string {
+  let out = ''
+  let inTag = false
+  for (const ch of html) {
+    if (ch === '<') inTag = true
+    else if (ch === '>') inTag = false
+    else if (!inTag) out += ch
+  }
+  return out
+}
+
 function htmlToText(html: string): string {
-  const text = dropBlocks(dropBlocks(html, 'script'), 'style')
-    .replace(/<br\s*\/?>|<\/(p|div|tr|li|h[1-6])>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
-    // Maradék csonka tag-töredék se maradjon; a valódi `<` entitásként (&lt;) jön.
-    .replace(/[<>]/g, '')
+  const text = stripTags(
+    dropBlocks(dropBlocks(html, 'script'), 'style').replace(/<br\s*\/?>|<\/(p|div|tr|li|h[1-6])>/gi, '\n'),
+  )
   // Egy menetben dekódolunk: `&amp;lt;` → `&lt;`, nem `<`.
   return text
     .replace(/&(nbsp|amp|lt|gt|quot|#39);/g, (_, entity: string) => HTML_ENTITIES[entity] ?? '')
