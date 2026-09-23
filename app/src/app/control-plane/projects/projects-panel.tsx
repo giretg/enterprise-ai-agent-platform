@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   createWorkProjectAction,
   deleteWorkFileAction,
@@ -36,7 +36,7 @@ const MEMORY_KIND_META: Record<MemoryKind, { label: string; hint: string; badge:
   },
   constraint: {
     label: 'Korlát',
-    hint: 'Be nem tartandó szabály, tiltás.',
+    hint: 'Betartandó szabály, tiltás.',
     badge: 'bg-ink/5 text-ink-soft',
   },
   artifact: {
@@ -183,6 +183,7 @@ export function ProjectsPanel({
   const [savingFile, setSavingFile] = useState(false)
   const [showNewFile, setShowNewFile] = useState(false)
   const [newPath, setNewPath] = useState('')
+  const [newFileContent, setNewFileContent] = useState('')
 
   const [showNewProject, setShowNewProject] = useState(false)
   const [newProject, setNewProject] = useState({ name: '', key: '', description: '' })
@@ -191,32 +192,40 @@ export function ProjectsPanel({
   const selectedProject = projects.find((p) => p.key === projectKey)
   const selectedAgent = agents.find((a) => a.id === agentId)
 
-  const loadAll = useCallback(async (pKey: string, aId: string) => {
-    setMemLoading(true)
-    setFilesLoading(true)
-    setError(null)
-    const [memRes, fileRes] = await Promise.all([
-      aId ? listProjectMemoryAction({ agentId: aId, projectKey: pKey }) : null,
-      listWorkFilesAction({ projectKey: pKey }),
-    ])
-    setMemLoading(false)
-    setFilesLoading(false)
-    if (memRes) {
-      if (memRes.success) setMemories(memRes.data.items)
-      else setError(projectWorkErrorLabel(memRes.error))
-    } else {
-      setMemories([])
-    }
-    if (fileRes?.success) setFiles(fileRes.data.files)
-    else if (fileRes) setError(projectWorkErrorLabel(fileRes.error))
-  }, [])
-
-  useEffect(() => {
+  function clearTransientUi() {
     setExpandedId(null)
     setEditingId(null)
     setSelectedPath(null)
-    void loadAll(projectKey, agentId)
-  }, [projectKey, agentId, loadAll])
+    setShowNewMemory(false)
+    setShowNewFile(false)
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      setMemLoading(true)
+      setFilesLoading(true)
+      setError(null)
+      const [memRes, fileRes] = await Promise.all([
+        agentId ? listProjectMemoryAction({ agentId, projectKey }) : null,
+        listWorkFilesAction({ projectKey }),
+      ])
+      if (cancelled) return
+      setMemLoading(false)
+      setFilesLoading(false)
+      if (memRes) {
+        if (memRes.success) setMemories(memRes.data.items)
+        else setError(projectWorkErrorLabel(memRes.error))
+      } else {
+        setMemories([])
+      }
+      if (fileRes?.success) setFiles(fileRes.data.files)
+      else if (fileRes) setError(projectWorkErrorLabel(fileRes.error))
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [projectKey, agentId])
 
   const visibleMemories = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -272,6 +281,7 @@ export function ProjectsPanel({
   }
 
   async function onSelectFile(path: string) {
+    setShowNewFile(false)
     setSelectedPath(path)
     setFileLoading(true)
     setError(null)
@@ -301,6 +311,7 @@ export function ProjectsPanel({
     if (isNew) {
       setShowNewFile(false)
       setNewPath('')
+      setNewFileContent('')
     }
     setNotice('Munkafájl mentve.')
   }
@@ -337,6 +348,7 @@ export function ProjectsPanel({
     }
     setProjects((current) => [...current, res.data.project])
     setProjectKey(res.data.project.key)
+    clearTransientUi()
     setNewProject({ name: '', key: '', description: '' })
     setShowNewProject(false)
     setNotice('Projekt létrehozva.')
@@ -368,7 +380,10 @@ export function ProjectsPanel({
                 <button
                   key={project.key}
                   type="button"
-                  onClick={() => setProjectKey(project.key)}
+                  onClick={() => {
+                    setProjectKey(project.key)
+                    clearTransientUi()
+                  }}
                   title={project.description ?? project.key}
                   className={`whitespace-nowrap rounded-lg px-3 py-2 text-left text-sm transition-colors ${
                     selected
@@ -442,7 +457,10 @@ export function ProjectsPanel({
               <select
                 className={inputClass + ' mt-1'}
                 value={agentId}
-                onChange={(e) => setAgentId(e.target.value)}
+                onChange={(e) => {
+                  setAgentId(e.target.value)
+                  clearTransientUi()
+                }}
               >
                 {agents.map((agent) => (
                   <option key={agent.id} value={agent.id}>
@@ -627,7 +645,16 @@ export function ProjectsPanel({
                 promptba nem kerülnek be maguktól.
               </p>
               {canEdit && !showNewFile ? (
-                <button type="button" onClick={() => setShowNewFile(true)} className={primaryBtnClass}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNewFile(true)
+                    setSelectedPath(null)
+                    setNewPath('')
+                    setNewFileContent('')
+                  }}
+                  className={primaryBtnClass}
+                >
                   + Új munkafájl
                 </button>
               ) : null}
@@ -643,14 +670,14 @@ export function ProjectsPanel({
                     className={inputClass}
                     rows={6}
                     placeholder="Tartalom…"
-                    value={fileContent}
-                    onChange={(e) => setFileContent(e.target.value)}
+                    value={newFileContent}
+                    onChange={(e) => setNewFileContent(e.target.value)}
                   />
                   <div className="flex gap-2">
                     <button
                       type="button"
                       disabled={savingFile}
-                      onClick={() => void onSaveFile(newPath, fileContent, true)}
+                      onClick={() => void onSaveFile(newPath, newFileContent, true)}
                       className={primaryBtnClass}
                     >
                       {savingFile ? 'Mentés…' : 'Fájl mentése'}
@@ -660,6 +687,7 @@ export function ProjectsPanel({
                       onClick={() => {
                         setShowNewFile(false)
                         setNewPath('')
+                        setNewFileContent('')
                       }}
                       className={ghostBtnClass}
                     >
