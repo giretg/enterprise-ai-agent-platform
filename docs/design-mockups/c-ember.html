@@ -203,7 +203,14 @@
   document.querySelectorAll('.reveal').forEach((el, i) => { el.style.transitionDelay = (i % 4) * 90 + 'ms'; io.observe(el); });
 
   const mf = document.getElementById('mf');
-  mf.innerHTML = mf.textContent.split(' ').map(w => `<span>${w}</span>`).join(' ');
+  const parts = mf.textContent.split(' ');
+  mf.replaceChildren();
+  parts.forEach((w, i) => {
+    if (i) mf.append(' ');
+    const span = document.createElement('span');
+    span.textContent = w;
+    mf.append(span);
+  });
   const words = [...mf.children], track = document.getElementById('track'), hs = document.getElementById('hs');
   function onScroll() {
     const r = mf.getBoundingClientRect(), p = Math.min(Math.max((innerHeight * .85 - r.top) / (r.height + innerHeight * .35), 0), 1);
