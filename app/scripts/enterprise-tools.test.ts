@@ -996,6 +996,35 @@ async function main() {
     assert.equal(payload.path, '/reports/query')
   })
 
+  await check('invoke http_api_get marks upstream HTTP failures as MCP errors', async () => {
+    const audit: Array<{ action: string }> = []
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        audit,
+        connector: connector({ type: 'http_api', authMode: 'service' }),
+        grant: null,
+        definition: definition({
+          snapshot: {
+            name: 'CRM',
+            roleInstruction: 'Query CRM',
+            skills: [],
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'read' }],
+            capabilities: [{ toolName: HTTP_API_GET_TOOL, allowed: true }],
+          },
+        }),
+        executeHttpApiTool: async () => ({ ok: false, status: 401, body: { error: 'Invalid API key' } }),
+      }),
+      {
+        principal: principal(),
+        toolName: HTTP_API_GET_TOOL,
+        args: { definitionId: DEFINITION_ID, path: '/reports/query' },
+      },
+    )
+    assert.equal(result.isError, true)
+    assert.equal(parsePayload(result).status, 401)
+    assert.deepEqual(audit, [{ action: 'enterprise.tool.error' }])
+  })
+
   await check('invoke http_api_get resolves the real caller email into actingUser', async () => {
     let receivedActingUser: unknown
     const result = await invokeEnterpriseTool(

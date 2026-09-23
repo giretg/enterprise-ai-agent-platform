@@ -79,6 +79,8 @@ check('buildMcpServerInstructions includes org intro and coworkers', () => {
   assert.match(text, /LOCAL AGENT WORKSPACES/)
   assert.match(text, /platform\.agent\.get_definition/)
   assert.match(text, /no separate in-platform/)
+  assert.match(text, /tools\/list as the callable tool list/)
+  assert.match(text, /http_api_get_all only when the endpoint has pagination/)
 })
 
 check('buildMcpServerInstructions marks single coworker as default checkout target', () => {

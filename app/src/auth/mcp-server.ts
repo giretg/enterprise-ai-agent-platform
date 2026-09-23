@@ -968,7 +968,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'HTTP API GET all pages',
           description:
-            'Paginated GET of a company HTTP API list in one call. Requires definitionId from platform.agent.get_definition. Required for ownerships/partners/large registers — do not page http_api_get yourself. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when needed.',
+            'Paginated GET of a company HTTP API list in one call. Requires definitionId from platform.agent.get_definition and pagination on the chosen connectors[].endpoints entry; without it the call returns an error. Required for ownerships/partners/large registers — do not page http_api_get yourself. Path is relative to the connector baseUrl. Disambiguate with connectorName or connectorId when needed.',
           inputSchema: httpApiGetAllInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
