@@ -86,6 +86,8 @@ jobs:
           npm run test:connector-grant-needed
           npm run test:connector-secret-alias-policy
           npm run test:connector-manager-wizard
+          npm run test:provisioning
+          npm run test:web-discovery
           npm run test:iam-tenant-boundary
           npm run test:iam-membership-scope
 
