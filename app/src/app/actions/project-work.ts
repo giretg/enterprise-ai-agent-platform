@@ -243,6 +243,7 @@ export async function saveProjectMemoryAction(
       body: parsed.body,
       artifactPath: parsed.artifactPath?.trim() ? parsed.artifactPath.trim() : undefined,
       replaceId: parsed.replaceId,
+      confirmNew: true,
       withUserId: ctx.user.id,
       mode: 'direct',
     })

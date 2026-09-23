@@ -929,7 +929,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Read project memory',
           description:
-            'Read this agent\'s project-memory items (decisions, open tasks, findings, handoffs, artifact pointers). Each item is tagged with the conversation partner (withUserId / withUserName) stamped by the server. Pass mine=true to filter to the calling user. Ask which project, then pass the same projectKey. Do not store personal facts unless they constrain the project.',
+            'Read this agent\'s project-memory items (decisions, open tasks, findings, handoffs, artifact pointers). Each item is tagged with the conversation partner (withUserId / withUserName) stamped by the server. Pass mine=true to filter to the calling user. Always call this before platform.project_memory.write so you can update an existing item instead of duplicating it. Ask which project, then pass the same projectKey. Do not store personal facts unless they constrain the project.',
           inputSchema: projectMemoryReadInputSchema,
           annotations: { readOnlyHint: true },
         },
@@ -940,7 +940,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Write project memory',
           description:
-            'Write a project-memory item for this agent (decision, open_task, finding, constraint, artifact, handoff_summary). The work plan itself belongs in a work file; store only a pointer here. The server stamps the calling user as conversation partner — do not name them. Cannot change trained operating rules. Approval-mode agents return awaiting_approval + approvalUrl; direct-mode agents write immediately. Personal facts (vacation, private preference) do not belong here unless they constrain the project.',
+            'Write a project-memory item for this agent (decision, open_task, finding, constraint, artifact, handoff_summary). First call platform.project_memory.read for the same projectKey: if an item already covers this subject (including when the user corrects or changes it), pass its id as replaceId with the merged, current text — do not add a second item. Without replaceId the server may answer possible_duplicate with candidates and write nothing; then retry with replaceId, or confirmNew=true if none match. The work plan itself belongs in a work file; store only a pointer here. The server stamps the calling user as conversation partner — do not name them. Cannot change trained operating rules. Approval-mode agents return awaiting_approval + approvalUrl; direct-mode agents write immediately. Personal facts (vacation, private preference) do not belong here unless they constrain the project.',
           inputSchema: projectMemoryWriteInputSchema,
         },
         async (args) => projectWorkToolResult(principal, MCP_PROJECT_MEMORY_WRITE_TOOL, args, deps),
