@@ -300,18 +300,24 @@ export class ProjectWorkService {
   }
 
   private async insertMemory(draft: Omit<MemoryWriteInput, 'mode'>): Promise<MemoryView> {
-    const row = await this.memory.insertActive({
+    const projectKey = effectiveWorkProjectKey(draft.projectKey)
+    const base = {
       tenantId: draft.tenantId,
       agentId: draft.agentId,
-      projectKey: effectiveWorkProjectKey(draft.projectKey),
+      projectKey,
       kind: draft.kind as ProjectMemoryKind,
       title: draft.title,
       body: draft.body,
       artifactPath: draft.artifactPath ?? null,
       withUserId: draft.withUserId,
-      supersedesId: draft.replaceId ?? null,
-    })
-    if (draft.replaceId) await this.memory.supersede(draft.replaceId)
+    }
+    // Replace must claim the predecessor in the same write as the insert.
+    // Insert-then-supersede left two active rows when two replaces raced;
+    // supersede-then-insert could orphan the predecessor if create failed.
+    const row = draft.replaceId
+      ? await this.memory.replaceActive({ ...base, replaceId: draft.replaceId })
+      : await this.memory.insertActive({ ...base, supersedesId: null })
+    if (!row) throw new Error('memory_not_found')
     const [user] = await this.users.findManyByIds([row.withUserId])
     return {
       id: row.id,

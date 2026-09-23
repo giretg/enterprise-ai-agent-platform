@@ -150,9 +150,30 @@ class MemMemory implements ProjectMemoryStore {
     this.rows.set(row.id, row)
     return row
   }
-  async supersede(id: string) {
-    const row = this.rows.get(id)
-    if (row) this.rows.set(id, { ...row, status: 'superseded' })
+  async replaceActive(input: {
+    tenantId: string
+    agentId: string
+    projectKey: string
+    kind: ProjectMemoryKind
+    title: string
+    body: string
+    artifactPath: string | null
+    withUserId: string
+    replaceId: string
+  }) {
+    const previous = this.rows.get(input.replaceId)
+    if (!previous || previous.status !== 'active') return null
+    this.rows.set(input.replaceId, { ...previous, status: 'superseded' })
+    const { replaceId, ...data } = input
+    const row: ProjectMemoryRecord = {
+      id: globalThis.crypto.randomUUID(),
+      ...data,
+      supersedesId: replaceId,
+      status: 'active',
+      createdAt: new Date(),
+    }
+    this.rows.set(row.id, row)
+    return row
   }
 }
 
@@ -312,6 +333,46 @@ await check('approved replace of an already-superseded item fails at commit', as
   if (!pending.ok || pending.status !== 'needs_approval') return
   await svc.writeMemory({ ...base, title: 'v2b', body: 'v2b', replaceId: first.item.id, mode: 'direct' })
   await assert.rejects(svc.commitMemory(pending.draft), /memory_not_found/)
+})
+
+await check('concurrent replace of the same active item leaves exactly one successor', async () => {
+  const { svc, memory } = harness('direct')
+  const base = { tenantId: TENANT, agentId: AGENT, kind: 'decision' as const, withUserId: ANNA }
+  const first = await svc.writeMemory({ ...base, title: 'v1', body: 'v1', mode: 'direct' })
+  assert.ok(first.ok && first.status === 'written')
+  if (!first.ok || first.status !== 'written') return
+  const replaceId = first.item.id
+  // Both drafts pass prepare while the target is still active (two pending approvals).
+  const a = await svc.writeMemory({
+    ...base,
+    title: 'v2a',
+    body: 'from A',
+    replaceId,
+    mode: 'approval',
+  })
+  const b = await svc.writeMemory({
+    ...base,
+    title: 'v2b',
+    body: 'from B',
+    replaceId,
+    mode: 'approval',
+  })
+  assert.ok(a.ok && a.status === 'needs_approval')
+  assert.ok(b.ok && b.status === 'needs_approval')
+  if (!a.ok || a.status !== 'needs_approval' || !b.ok || b.status !== 'needs_approval') return
+
+  const results = await Promise.allSettled([svc.commitMemory(a.draft), svc.commitMemory(b.draft)])
+  const fulfilled = results.filter((row) => row.status === 'fulfilled')
+  const rejected = results.filter((row) => row.status === 'rejected')
+  assert.equal(fulfilled.length, 1)
+  assert.equal(rejected.length, 1)
+  assert.match(String((rejected[0] as PromiseRejectedResult).reason), /memory_not_found/)
+
+  const active = [...memory.rows.values()].filter((row) => row.status === 'active')
+  assert.equal(active.length, 1)
+  assert.equal(active[0]?.supersedesId, replaceId)
+  const old = memory.rows.get(replaceId)
+  assert.equal(old?.status, 'superseded')
 })
 
 await check('Béla sees Anna tagged; mine=true returns only Béla', async () => {
