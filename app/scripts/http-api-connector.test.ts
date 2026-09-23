@@ -10,6 +10,8 @@ import assert from 'node:assert/strict'
 import {
   HttpApiClient,
   HttpApiError,
+  findHttpApiEndpoint,
+  findOverlappingHttpApiEndpoints,
   parseHttpApiConfig,
   resolveConnectorApiKey,
   type HttpApiConfig,
@@ -137,6 +139,64 @@ async function main() {
       client.request({ method: 'GET', path: '/customers' }),
       (e: unknown) => e instanceof HttpApiError && e.code === 'endpoint_not_allowed',
     )
+  })
+
+  await test('allowlist: szegmensen belüli {param} (előtag/utótag) illeszkedik, a legspecifikusabb nyer', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://graph.example/v1',
+      auth: { scheme: 'bearer' },
+      endpoints: [
+        { method: 'GET', path: '/{objectId}', description: 'tág' },
+        { method: 'GET', path: '/act_{accountId}', description: 'fiók' },
+        { method: 'GET', path: '/act_{accountId}/campaigns' },
+        { method: 'POST', path: '/act_{accountId}/campaigns' },
+        { method: 'GET', path: '/files/{id}.json' },
+      ],
+      restrictToEndpoints: true,
+    })
+    assert.equal(findHttpApiEndpoint(config, 'GET', '/act_123')?.description, 'fiók')
+    assert.equal(findHttpApiEndpoint(config, 'GET', '/999')?.description, 'tág')
+    assert.equal(findHttpApiEndpoint(config, 'GET', '/act_123/campaigns?limit=5')?.path, '/act_{accountId}/campaigns')
+    assert.equal(findHttpApiEndpoint(config, 'POST', '/act_123/campaigns')?.method, 'POST')
+    assert.ok(findHttpApiEndpoint(config, 'GET', '/files/7.json'))
+    assert.equal(findHttpApiEndpoint(config, 'GET', '/files/7.xml'), undefined)
+    assert.equal(findHttpApiEndpoint(config, 'GET', '/act_/campaigns'), undefined)
+    const client = new HttpApiClient(config, 'stub-api-key')
+    assert.equal((await client.request({ method: 'GET', path: '/act_123/campaigns' })).ok, true)
+  })
+
+  await test('endpoint_not_allowed: reason megmondja, ha csak a metódus rossz', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://api.example/v1',
+      auth: { scheme: 'bearer' },
+      endpoints: [{ method: 'GET', path: '/items/{id}' }],
+      restrictToEndpoints: true,
+    })
+    const client = new HttpApiClient(config, 'stub-api-key')
+    await assert.rejects(
+      client.request({ method: 'DELETE', path: '/items/1' }),
+      (e: unknown) => e instanceof HttpApiError && /method DELETE .*allowed: GET/.test(e.reason ?? ''),
+    )
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/other' }),
+      (e: unknown) => e instanceof HttpApiError && /no allowed endpoint template/.test(e.reason ?? ''),
+    )
+  })
+
+  await test('átfedő sablonok felismerése (azonos metódus, közös konkrét path)', () => {
+    const pairs = findOverlappingHttpApiEndpoints([
+      { method: 'GET', path: '/{campaignId}' },
+      { method: 'GET', path: '/act_{adAccountId}' },
+      { method: 'GET', path: '/me' },
+      { method: 'POST', path: '/act_{adAccountId}' },
+      { method: 'GET', path: '/act_{adAccountId}/campaigns' },
+      { method: 'GET', path: '/items/{id}' },
+      { method: 'GET', path: '/users/{id}' },
+    ])
+    assert.deepEqual(pairs, [
+      ['GET /{campaignId}', 'GET /act_{adAccountId}'],
+      ['GET /{campaignId}', 'GET /me'],
+    ])
   })
 
   await test('allowlist: next_link endpoint szerver által adott relatív continuation pathja hívható', async () => {

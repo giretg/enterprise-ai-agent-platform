@@ -495,6 +495,7 @@ function mapToolError(
       code: error.code === 'missing_api_key' ? 'missing_api_key' : 'http_api_error',
       extra: {
         httpCode: error.code,
+        ...(error.reason ? { reason: error.reason } : {}),
         ...(error.allowedEndpoints?.length ? { allowedEndpoints: error.allowedEndpoints } : {}),
       },
     }
