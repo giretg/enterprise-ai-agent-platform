@@ -105,5 +105,27 @@ check('a hu és en üzenetfájlok kulcskészlete megegyezik', () => {
   assert.deepEqual(messageKeys(hu).sort(), messageKeys(en).sort())
 })
 
+check('a belépés a locale-fáról natív <a href="/sign-in">, ne next/link (soft-nav → Next.js error page)', () => {
+  const files = [
+    join(root, 'src/app/[locale]/page.tsx'),
+    join(root, 'src/components/public-site/public-site-shell.tsx'),
+  ]
+  for (const file of files) {
+    const src = readFileSync(file, 'utf8')
+    assert.equal(/from ['"]next\/link['"]/.test(src), false, `${file} next/link-et importál — soft-nav a /sign-in-re`)
+    assert.match(src, /<a\b[^>]*href="\/sign-in"/, `${file} natív <a href="/sign-in"> kell`)
+  }
+})
+
+check('a TenantSwitcher a control-plane héjon csak useEffect után mountol, ne useSyncExternalStore-ral', () => {
+  const src = readFileSync(join(root, 'src/app/control-plane/control-plane-shell.tsx'), 'utf8')
+  assert.match(src, /setHeaderReady\(true\)/)
+  assert.doesNotMatch(
+    src,
+    /const headerReady = useSyncExternalStore/,
+    'useSyncExternalStore az első kliens-renderen true — belépéskor újra elszáll a router hook',
+  )
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
