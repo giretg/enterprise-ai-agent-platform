@@ -21,8 +21,13 @@ const ABBREVIATED_SCOPES: Record<string, string> = {
 export type GmailTool =
   | 'gmail_search'
   | 'gmail_get_message'
+  | 'gmail_get_thread'
+  | 'gmail_list_labels'
+  | 'gmail_list_drafts'
   | 'gmail_create_draft'
   | 'gmail_send'
+  | 'gmail_modify_labels'
+  | 'gmail_trash'
   | 'mailbox_count'
 
 export function normalizeGmailScope(scope: string): string {
@@ -50,16 +55,38 @@ export function gmailToolAllowedByScopes(params: {
   const scopes = parseGmailScopes(params.scopes)
   if (scopes.length === 0) return false
 
-  if (params.tool === 'gmail_search' || params.tool === 'gmail_get_message' || params.tool === 'mailbox_count') {
-    return hasAnyScope(scopes, [GMAIL_SCOPES.full, GMAIL_SCOPES.modify, GMAIL_SCOPES.readonly])
+  const canRead = hasAnyScope(scopes, [GMAIL_SCOPES.full, GMAIL_SCOPES.modify, GMAIL_SCOPES.readonly])
+  // Válasznál az eredeti levél fejléceit is olvassuk — puszta gmail.send/compose ehhez kevés.
+  const replyReadOk = !params.args?.replyToMessageId || canRead
+
+  if (
+    params.tool === 'gmail_search' ||
+    params.tool === 'gmail_get_message' ||
+    params.tool === 'gmail_get_thread' ||
+    params.tool === 'gmail_list_labels' ||
+    params.tool === 'mailbox_count'
+  ) {
+    return canRead
+  }
+
+  if (params.tool === 'gmail_list_drafts') {
+    return hasAnyScope(scopes, [GMAIL_SCOPES.full, GMAIL_SCOPES.modify, GMAIL_SCOPES.compose, GMAIL_SCOPES.readonly])
   }
 
   if (params.tool === 'gmail_create_draft') {
-    return hasAnyScope(scopes, [GMAIL_SCOPES.full, GMAIL_SCOPES.modify, GMAIL_SCOPES.compose])
+    return replyReadOk && hasAnyScope(scopes, [GMAIL_SCOPES.full, GMAIL_SCOPES.modify, GMAIL_SCOPES.compose])
   }
 
+  // Google: gmail.modify és gmail.compose is enged küldést (nem csak gmail.send).
   if (params.tool === 'gmail_send') {
-    return hasAnyScope(scopes, [GMAIL_SCOPES.full, GMAIL_SCOPES.send])
+    return (
+      replyReadOk &&
+      hasAnyScope(scopes, [GMAIL_SCOPES.full, GMAIL_SCOPES.send, GMAIL_SCOPES.compose, GMAIL_SCOPES.modify])
+    )
+  }
+
+  if (params.tool === 'gmail_modify_labels' || params.tool === 'gmail_trash') {
+    return hasAnyScope(scopes, [GMAIL_SCOPES.full, GMAIL_SCOPES.modify])
   }
 
   return false

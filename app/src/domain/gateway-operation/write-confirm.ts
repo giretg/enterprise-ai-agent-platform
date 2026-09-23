@@ -8,6 +8,10 @@
  */
 import {
   enterpriseToolErrorPayload,
+  GMAIL_CREATE_DRAFT_TOOL,
+  GMAIL_MODIFY_LABELS_TOOL,
+  GMAIL_SEND_TOOL,
+  GMAIL_TRASH_TOOL,
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
   GOOGLE_SHEETS_WRITE_RANGE_TOOL,
@@ -87,6 +91,24 @@ function str(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
+function gmailComposeTarget(args: Record<string, unknown>): string {
+  if (str(args.draftId)) return `Gmail piszkozat elküldése: ${str(args.draftId)}`
+  const parts = [
+    str(args.replyToMessageId)
+      ? `Gmail válasz a(z) ${str(args.replyToMessageId)} levélre${args.replyAll === true ? ' (mindenkinek)' : ''}`
+      : 'Gmail új levél',
+    str(args.to) ? `címzett: ${str(args.to)}` : str(args.replyToMessageId) ? 'címzett: az eredeti feladó' : '',
+    str(args.cc) ? `másolat: ${str(args.cc)}` : '',
+    str(args.bcc) ? `titkos másolat: ${str(args.bcc)}` : '',
+    str(args.subject) ? `tárgy: ${str(args.subject)}` : '',
+  ]
+  return parts.filter(Boolean).join(', ')
+}
+
+function gmailItemTarget(args: Record<string, unknown>): string {
+  return str(args.threadId) ? `Gmail levélváltás ${str(args.threadId)}` : `Gmail levél ${str(args.messageId)}`
+}
+
 async function confirmMessage(
   deps: GatewayOperationServiceDeps,
   tenantId: string,
@@ -111,6 +133,19 @@ async function confirmMessage(
   } else if (view.toolName === GOOGLE_DRIVE_UPLOAD_FILE_TOOL) {
     target = `Google Drive fájl: ${str(args.name)}`
     content = str(args.textContent)
+  } else if (view.toolName === GMAIL_SEND_TOOL || view.toolName === GMAIL_CREATE_DRAFT_TOOL) {
+    target = gmailComposeTarget(args)
+    content = str(args.body)
+  } else if (view.toolName === GMAIL_MODIFY_LABELS_TOOL) {
+    target = [
+      gmailItemTarget(args),
+      str(args.addLabelIds) ? `hozzáad: ${str(args.addLabelIds)}` : '',
+      str(args.removeLabelIds) ? `levesz: ${str(args.removeLabelIds)}` : '',
+    ]
+      .filter(Boolean)
+      .join(', ')
+  } else if (view.toolName === GMAIL_TRASH_TOOL) {
+    target = `${gmailItemTarget(args)} → kuka`
   } else if (view.toolName === GOOGLE_SHEETS_WRITE_RANGE_TOOL) {
     target = `Táblázat: ${str(args.fileId)}, tartomány: ${str(args.range)}`
     content = str(args.values)

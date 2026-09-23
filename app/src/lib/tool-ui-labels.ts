@@ -234,13 +234,33 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'Postafiók-számláló',
     description: 'Postafiók üzenetszámának lekérdezése (monitor / összesítő).',
   },
+  gmail_get_thread: {
+    label: 'Levélváltás megnyitása',
+    description: 'Egy Gmail levélváltás (szál) összes levelének lekérése.',
+  },
+  gmail_list_labels: {
+    label: 'Címkék listázása',
+    description: 'A postafiók címkéinek (mappáinak) listája.',
+  },
+  gmail_list_drafts: {
+    label: 'Piszkozatok listázása',
+    description: 'A postafiók mentett piszkozatainak listája.',
+  },
   gmail_create_draft: {
     label: 'Piszkozat készítése',
-    description: 'Gmail piszkozat létrehozása címzettel, tárggyal és törzzsel.',
+    description: 'Gmail piszkozat (új levél vagy válasz) — jóváhagyás után jön létre, nem küldi el.',
   },
   gmail_send: {
     label: 'Levél küldése',
-    description: 'Gmail küldés — jóváhagyott ticket mellett (piszkozatból vagy közvetlenül).',
+    description: 'Új levél, válasz egy levélre (ugyanabban a levélváltásban) vagy piszkozat elküldése — emberi jóváhagyás után.',
+  },
+  gmail_modify_labels: {
+    label: 'Címkézés / archiválás',
+    description: 'Olvasottnak jelölés, archiválás, csillagozás, címke hozzáadása vagy levétele — jóváhagyás után.',
+  },
+  gmail_trash: {
+    label: 'Kukába helyezés',
+    description: 'Levél vagy levélváltás kukába helyezése (30 napig visszaállítható) — jóváhagyás után.',
   },
 
   // Google Drive

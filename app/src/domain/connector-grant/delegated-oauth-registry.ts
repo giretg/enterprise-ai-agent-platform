@@ -73,6 +73,9 @@ const GMAIL_PROVIDER: DelegatedOAuthProvider = {
     if (toolName === 'gmail_create_draft') {
       return [GMAIL_SCOPES.compose, GMAIL_SCOPES.modify, GMAIL_SCOPES.full]
     }
+    if (toolName === 'gmail_modify_labels' || toolName === 'gmail_trash') {
+      return [GMAIL_SCOPES.modify, GMAIL_SCOPES.full]
+    }
     if (GMAIL_TOOL_NAMES.includes(toolName)) {
       return [GMAIL_SCOPES.readonly, GMAIL_SCOPES.modify, GMAIL_SCOPES.full]
     }

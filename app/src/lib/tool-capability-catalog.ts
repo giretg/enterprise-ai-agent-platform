@@ -14,7 +14,20 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = [
       'google_sheets_write_range',
     ],
   },
-  { label: 'Gmail', tools: ['gmail_search', 'gmail_get_message'] },
+  {
+    label: 'Gmail',
+    tools: [
+      'gmail_search',
+      'gmail_get_message',
+      'gmail_get_thread',
+      'gmail_list_labels',
+      'gmail_list_drafts',
+      'gmail_send',
+      'gmail_create_draft',
+      'gmail_modify_labels',
+      'gmail_trash',
+    ],
+  },
   { label: 'Céges API', tools: ['http_api_get', 'http_api_get_all', 'http_api_request'] },
   {
     label: 'Tudásbázis',

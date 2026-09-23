@@ -73,6 +73,7 @@ jobs:
           npm run test:conversation-skill
           npm run test:agent-checkout
           npm run test:enterprise-tools
+          npm run test:gmail-mcp-tools
           npm run test:kb-gate
           npm run test:kb-retrieval
           npm run test:gateway-operation

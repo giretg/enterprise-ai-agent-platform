@@ -41,8 +41,16 @@ import {
 } from '@/lib/agent-checkout'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
 import {
+  GMAIL_CREATE_DRAFT_TOOL,
   GMAIL_GET_MESSAGE_TOOL,
+  GMAIL_GET_THREAD_TOOL,
+  GMAIL_LIST_DRAFTS_TOOL,
+  GMAIL_LIST_LABELS_TOOL,
+  GMAIL_MCP_INPUT_SCHEMAS,
+  GMAIL_MODIFY_LABELS_TOOL,
   GMAIL_SEARCH_TOOL,
+  GMAIL_SEND_TOOL,
+  GMAIL_TRASH_TOOL,
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
@@ -57,6 +65,9 @@ import {
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
   gmailGetMessageInputSchema,
+  gmailGetThreadInputSchema,
+  gmailListDraftsInputSchema,
+  gmailListLabelsInputSchema,
   gmailSearchInputSchema,
   googleDriveCreateFolderInputSchema,
   googleDriveReadFileInputSchema,
@@ -1046,7 +1057,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Search Gmail',
           description:
-            'Search the connected Gmail mailbox. Returns id, from, subject, snippet. Call gmail_get_message with an id to read a body. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+            'Search the connected Gmail mailbox. Returns id, threadId, from, subject, snippet. Call gmail_get_message with an id to read a body, gmail_get_thread for the whole conversation. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: gmailSearchInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -1057,11 +1068,87 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Read Gmail message',
           description:
-            'Read one Gmail message by id from gmail_search. Credentials stay on the server. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+            'Read one Gmail message by id from gmail_search: from, to, cc, subject, body, labelIds and attachment names. Credentials stay on the server. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: gmailGetMessageInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
         async (args) => enterpriseToolResult(principal, GMAIL_GET_MESSAGE_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_GET_THREAD_TOOL,
+        {
+          title: 'Read Gmail thread',
+          description:
+            'Read every message of one Gmail conversation (threadId from gmail_search or gmail_get_message), oldest first. Use before replying so the answer fits the whole conversation.',
+          inputSchema: gmailGetThreadInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_GET_THREAD_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_LIST_LABELS_TOOL,
+        {
+          title: 'List Gmail labels',
+          description:
+            'List the mailbox labels (system labels like INBOX, UNREAD, STARRED and user labels with their ids) for gmail_modify_labels.',
+          inputSchema: gmailListLabelsInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_LIST_LABELS_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_LIST_DRAFTS_TOOL,
+        {
+          title: 'List Gmail drafts',
+          description: 'List saved Gmail drafts (draftId, to, subject, snippet). Send one with gmail_send draftId.',
+          inputSchema: gmailListDraftsInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_LIST_DRAFTS_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_SEND_TOOL,
+        {
+          title: 'Send Gmail message',
+          description:
+            'Send an email from the connected Gmail account. To reply to a message pass replyToMessageId (from gmail_search) and body: the reply stays in the same thread, subject becomes "Re: …" and it goes to the original sender unless you pass to (replyAll=true adds the other recipients). For a new message pass to, subject, body. To send an existing draft pass only draftId. Use this whenever the user asks to send, reply or answer an email — do not just show a draft. Does not call Gmail until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+          inputSchema: GMAIL_MCP_INPUT_SCHEMAS[GMAIL_SEND_TOOL],
+          annotations: { destructiveHint: false, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_SEND_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_CREATE_DRAFT_TOOL,
+        {
+          title: 'Create Gmail draft',
+          description:
+            'Save a Gmail draft without sending it (new message, or a reply with replyToMessageId — same fields as gmail_send). Use when the user wants to review or finish the email in Gmail. Does not call Gmail until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+          inputSchema: GMAIL_MCP_INPUT_SCHEMAS[GMAIL_CREATE_DRAFT_TOOL],
+          annotations: { destructiveHint: false, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_CREATE_DRAFT_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_MODIFY_LABELS_TOOL,
+        {
+          title: 'Label / archive Gmail message',
+          description:
+            'Change labels of one message (messageId) or a whole thread (threadId). Mark read: removeLabelIds=UNREAD. Mark unread: addLabelIds=UNREAD. Archive: removeLabelIds=INBOX. Star: addLabelIds=STARRED. User label ids come from gmail_list_labels. Does not call Gmail until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+          inputSchema: GMAIL_MCP_INPUT_SCHEMAS[GMAIL_MODIFY_LABELS_TOOL],
+          annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_MODIFY_LABELS_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_TRASH_TOOL,
+        {
+          title: 'Move Gmail message to trash',
+          description:
+            'Move one message (messageId) or a whole thread (threadId) to the trash; Gmail keeps it restorable for 30 days. There is no permanent delete. Does not call Gmail until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+          inputSchema: GMAIL_MCP_INPUT_SCHEMAS[GMAIL_TRASH_TOOL],
+          annotations: { destructiveHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_TRASH_TOOL, args, deps),
       )
       server.registerTool(
         HTTP_API_GET_TOOL,

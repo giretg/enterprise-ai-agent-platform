@@ -17,6 +17,8 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   missing_google_drive_connector_read: 'Published definition has no Google Drive read connector',
   missing_google_drive_connector_write: 'Published definition has no Google Drive write connector',
   missing_gmail_connector_read: 'Published definition has no Gmail read connector',
+  missing_gmail_connector_write:
+    'Published definition has no Gmail connector in write mode — set the Gmail connector to write on the agent and publish',
   missing_http_api_connector_read: 'Published definition has no HTTP API read connector',
   missing_http_api_connector_write: 'Published definition has no HTTP API write connector',
   missing_knowledge_base_connector_read: 'Published definition has no knowledge base read connector',
