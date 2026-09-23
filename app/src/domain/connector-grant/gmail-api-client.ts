@@ -134,6 +134,8 @@ function htmlToText(html: string): string {
     previous = text
     text = text.replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, '').replace(/<[^>]*>/g, '')
   } while (text !== previous)
+  // Maradék csonka tag-töredék (`<scri`) se maradjon; a valódi `<` entitásként (&lt;) jön.
+  text = text.replace(/[<>]/g, '')
   // Egy menetben dekódolunk: `&amp;lt;` → `&lt;`, nem `<`.
   return text
     .replace(/&(nbsp|amp|lt|gt|quot|#39);/g, (_, entity: string) => HTML_ENTITIES[entity] ?? '')
