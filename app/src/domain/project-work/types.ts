@@ -98,7 +98,17 @@ export interface ProjectMemoryStore {
     withUserId: string
     supersedesId: string | null
   }): Promise<ProjectMemoryRecord>
-  supersede(id: string): Promise<void>
+  replaceActive(input: {
+    tenantId: string
+    agentId: string
+    projectKey: string
+    kind: ProjectMemoryKind
+    title: string
+    body: string
+    artifactPath: string | null
+    withUserId: string
+    supersedesId: string
+  }): Promise<ProjectMemoryRecord | null>
 }
 
 export interface ProjectWorkUserLookup {

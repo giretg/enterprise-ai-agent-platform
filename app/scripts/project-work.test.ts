@@ -150,9 +150,34 @@ class MemMemory implements ProjectMemoryStore {
     this.rows.set(row.id, row)
     return row
   }
-  async supersede(id: string) {
-    const row = this.rows.get(id)
-    if (row) this.rows.set(id, { ...row, status: 'superseded' })
+  async replaceActive(input: {
+    tenantId: string
+    agentId: string
+    projectKey: string
+    kind: ProjectMemoryKind
+    title: string
+    body: string
+    artifactPath: string | null
+    withUserId: string
+    supersedesId: string
+  }) {
+    const previous = this.rows.get(input.supersedesId)
+    if (
+      !previous ||
+      previous.tenantId !== input.tenantId ||
+      previous.agentId !== input.agentId ||
+      previous.projectKey !== input.projectKey ||
+      previous.status !== 'active'
+    ) return null
+    this.rows.set(previous.id, { ...previous, status: 'superseded' })
+    const row: ProjectMemoryRecord = {
+      id: globalThis.crypto.randomUUID(),
+      ...input,
+      status: 'active',
+      createdAt: new Date(),
+    }
+    this.rows.set(row.id, row)
+    return row
   }
 }
 
@@ -312,6 +337,25 @@ await check('approved replace of an already-superseded item fails at commit', as
   if (!pending.ok || pending.status !== 'needs_approval') return
   await svc.writeMemory({ ...base, title: 'v2b', body: 'v2b', replaceId: first.item.id, mode: 'direct' })
   await assert.rejects(svc.commitMemory(pending.draft), /memory_not_found/)
+})
+
+await check('parallel replacements produce exactly one active memory item', async () => {
+  const { svc } = harness('direct')
+  const base = { tenantId: TENANT, agentId: AGENT, kind: 'decision', withUserId: ANNA }
+  const first = await svc.writeMemory({ ...base, title: 'v1', body: 'v1', mode: 'direct' })
+  assert.ok(first.ok && first.status === 'written')
+  if (!first.ok || first.status !== 'written') return
+  const [left, right] = await Promise.all([
+    svc.writeMemory({ ...base, title: 'v2a', body: 'v2a', replaceId: first.item.id, mode: 'approval' }),
+    svc.writeMemory({ ...base, title: 'v2b', body: 'v2b', replaceId: first.item.id, mode: 'approval' }),
+  ])
+  assert.ok(left.ok && left.status === 'needs_approval')
+  assert.ok(right.ok && right.status === 'needs_approval')
+  if (!left.ok || left.status !== 'needs_approval' || !right.ok || right.status !== 'needs_approval') return
+  const settled = await Promise.allSettled([svc.commitMemory(left.draft), svc.commitMemory(right.draft)])
+  assert.equal(settled.filter((result) => result.status === 'fulfilled').length, 1)
+  const active = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
+  assert.equal(active.ok && active.items.length, 1)
 })
 
 await check('Béla sees Anna tagged; mine=true returns only Béla', async () => {
