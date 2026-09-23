@@ -300,7 +300,7 @@ export class ProjectWorkService {
   }
 
   private async insertMemory(draft: Omit<MemoryWriteInput, 'mode'>): Promise<MemoryView> {
-    const row = await this.memory.insertActive({
+    const input = {
       tenantId: draft.tenantId,
       agentId: draft.agentId,
       projectKey: effectiveWorkProjectKey(draft.projectKey),
@@ -310,8 +310,11 @@ export class ProjectWorkService {
       artifactPath: draft.artifactPath ?? null,
       withUserId: draft.withUserId,
       supersedesId: draft.replaceId ?? null,
-    })
-    if (draft.replaceId) await this.memory.supersede(draft.replaceId)
+    }
+    const row = draft.replaceId
+      ? await this.memory.replaceActive({ ...input, supersedesId: draft.replaceId })
+      : await this.memory.insertActive(input)
+    if (!row) throw new Error('memory_not_found')
     const [user] = await this.users.findManyByIds([row.withUserId])
     return {
       id: row.id,
