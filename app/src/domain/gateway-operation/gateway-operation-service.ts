@@ -233,6 +233,14 @@ export function enqueueResultToMcp(
     ...(origin
       ? { approvalUrl: `${origin.replace(/\/+$/, '')}/control-plane/operations#${result.view.operationId}` }
       : {}),
+    // Approving the link executes the write immediately but out-of-band: the
+    // caller only learns the outcome by asking again. Without this the model
+    // tends to take "I approved it" as success and never checks.
+    ...(result.view.status === 'awaiting_approval'
+      ? {
+          note: 'Approving this link runs the write right away; it can still fail there (e.g. the target API rejects the payload). Once the user says they approved it, call get_gateway_operation with this operationId and report its actual status — do not assume success.',
+        }
+      : {}),
   })
 }
 
