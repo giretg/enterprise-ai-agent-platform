@@ -259,7 +259,7 @@ const gatewayOperationDeps: GatewayOperationServiceDeps = {
       body: String(args.body ?? ''),
       artifactPath: typeof args.artifactPath === 'string' ? args.artifactPath : undefined,
       replaceId: typeof args.replaceId === 'string' ? args.replaceId : undefined,
-      mergeIds: Array.isArray(args.mergeIds) ? args.mergeIds.map(String) : undefined,
+      mergeIds: typeof args.mergeIds === 'string' ? args.mergeIds.split(',').map((id) => id.trim()).filter(Boolean) : undefined,
       withUserId,
     })
   },

@@ -510,8 +510,30 @@ await check('two outdated items + one change: replacing only one is refused, mer
   if (!partial.ok || partial.status !== 'possible_duplicate') return
   assert.deepEqual(partial.candidates.map((c) => c.id), [b.item.id])
 
-  const merged = await svc.writeMemory({ ...change, replaceId: a.item.id, mergeIds: [b.item.id] })
-  assert.equal(merged.ok && merged.status, 'written')
+  const merged = parsePayload(
+    await invokeProjectWork(
+      {
+        loadDefinition: async () => definition,
+        findCurrentDefinitionId: async () => DEF,
+        findAgentGrant: async () => ({ accessLevel: 'operate' }),
+        projectWork: svc,
+      },
+      {
+        principal: { userId: ANNA, tenantId: TENANT, role: 'operator', assumed: false },
+        toolName: 'platform.project_memory.write',
+        args: {
+          definitionId: DEF,
+          kind: 'constraint',
+          title: change.title,
+          body: change.body,
+          replaceId: a.item.id,
+          mergeIds: ` ${b.item.id} `,
+          idempotencyKey: 'merge',
+        },
+      },
+    ),
+  )
+  assert.equal(merged.status, 'written')
   const after = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
   assert.deepEqual(after.ok && after.items.map((item) => item.title), [change.title])
 })

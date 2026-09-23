@@ -43,6 +43,10 @@ export function isProjectMemoryWriteTool(toolName: string): boolean {
   return toolName === MCP_PROJECT_MEMORY_WRITE_TOOL
 }
 
+function splitIds(value: string): string[] {
+  return value.split(',').map((id) => id.trim()).filter(Boolean)
+}
+
 const definitionId = z
   .string()
   .uuid()
@@ -120,12 +124,14 @@ export const projectMemoryWriteInputSchema = z
       .describe(
         'id of an existing item (from platform.project_memory.read) that this write updates or corrects. The old item is retired. Use it whenever the new fact is about the same subject — never leave an outdated item next to its correction.',
       ),
+    // Nem tömb: a Claude.ai tömb-mezős tool-sémát nem kezel jól (mcp-http teszt őrzi).
     mergeIds: z
-      .array(z.string().uuid())
-      .max(10)
+      .string()
+      .max(400)
+      .refine((value) => splitIds(value).every((id) => z.string().uuid().safeParse(id).success))
       .optional()
       .describe(
-        'Further existing item ids about the same subject that this write consolidates. They are retired together with replaceId, leaving one current item. Use this instead of writing one correction per outdated item.',
+        'Comma-separated ids of further existing items about the same subject that this write consolidates. They are retired together with replaceId, leaving one current item. Use this instead of writing one correction per outdated item.',
       ),
     confirmNew: z
       .boolean()
@@ -363,7 +369,7 @@ export async function invokeProjectWork(
       body: String(parsed.body),
       artifactPath: typeof parsed.artifactPath === 'string' ? parsed.artifactPath : undefined,
       replaceId: typeof parsed.replaceId === 'string' ? parsed.replaceId : undefined,
-      mergeIds: Array.isArray(parsed.mergeIds) ? parsed.mergeIds.map(String) : undefined,
+      mergeIds: typeof parsed.mergeIds === 'string' ? splitIds(parsed.mergeIds) : undefined,
       confirmNew: parsed.confirmNew === true,
       withUserId: principal.userId,
       mode: modeRes.mode,
@@ -378,7 +384,7 @@ export async function invokeProjectWork(
         written: false,
         candidates: written.candidates,
         next:
-          'Nothing was written. Candidates about the same subject must end up in ONE current item: call again with replaceId=<one candidate id>, mergeIds=[<the other matching ids>] (keep any replaceId/mergeIds you already sent) and a merged, up-to-date title/body that states only what is valid now. Only if no candidate is about the same subject, call again with confirmNew=true.',
+          'Nothing was written. Candidates about the same subject must end up in ONE current item: call again with replaceId=<one candidate id>, mergeIds="<other matching ids, comma-separated>" (keep any replaceId/mergeIds you already sent) and a merged, up-to-date title/body that states only what is valid now. Only if no candidate is about the same subject, call again with confirmNew=true.',
       })
     }
     if (written.status === 'needs_approval') {
@@ -393,7 +399,7 @@ export async function invokeProjectWork(
           body: written.draft.body,
           ...(written.draft.artifactPath ? { artifactPath: written.draft.artifactPath } : {}),
           ...(written.draft.replaceId ? { replaceId: written.draft.replaceId } : {}),
-          ...(written.draft.mergeIds ? { mergeIds: written.draft.mergeIds } : {}),
+          ...(written.draft.mergeIds ? { mergeIds: written.draft.mergeIds.join(',') } : {}),
           idempotencyKey: String(parsed.idempotencyKey),
           withUserId: principal.userId,
         },
