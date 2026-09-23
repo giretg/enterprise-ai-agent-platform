@@ -113,7 +113,19 @@ export const projectMemoryWriteInputSchema = z
       .max(240)
       .optional()
       .describe('Work-file path this memory points at (the plan lives in the file, not here).'),
-    replaceId: z.string().uuid().optional(),
+    replaceId: z
+      .string()
+      .uuid()
+      .optional()
+      .describe(
+        'id of an existing item (from platform.project_memory.read) that this write updates or corrects. The old item is retired. Use it whenever the new fact is about the same subject — never leave an outdated item next to its correction.',
+      ),
+    confirmNew: z
+      .boolean()
+      .optional()
+      .describe(
+        'Set true only after a possible_duplicate response, when none of the returned candidates is about the same subject.',
+      ),
     idempotencyKey: z.string().min(1).max(200),
   })
   .passthrough()
@@ -344,12 +356,22 @@ export async function invokeProjectWork(
       body: String(parsed.body),
       artifactPath: typeof parsed.artifactPath === 'string' ? parsed.artifactPath : undefined,
       replaceId: typeof parsed.replaceId === 'string' ? parsed.replaceId : undefined,
+      confirmNew: parsed.confirmNew === true,
       withUserId: principal.userId,
       mode: modeRes.mode,
     })
     if (!written.ok) {
       await auditDenied(deps, principal, toolName, written.code, definition.definitionId, definition.agentId)
       return errorResult(written.code)
+    }
+    if (written.status === 'possible_duplicate') {
+      return textResult({
+        status: 'possible_duplicate',
+        written: false,
+        candidates: written.candidates,
+        next:
+          'Nothing was written. If a candidate covers the same subject, call again with replaceId=<its id> and a merged, up-to-date title/body. Only if none does, call again with confirmNew=true.',
+      })
     }
     if (written.status === 'needs_approval') {
       if (!deps.enqueueMemoryWrite) return errorResult('tool_not_configured')
