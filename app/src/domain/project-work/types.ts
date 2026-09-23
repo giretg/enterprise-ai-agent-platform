@@ -87,7 +87,7 @@ export interface ProjectMemoryStore {
     withUserId?: string
   }): Promise<ProjectMemoryRecord[]>
   findById(id: string): Promise<ProjectMemoryRecord | null>
-  /** supersedesId → a régi elem atomikusan „superseded” lesz; ha már nem aktív, `memory_not_found` hibát dob. */
+  /** supersedesId + alsoSupersedeIds → a régi elemek atomikusan „superseded” lesznek; ha bármelyik már nem aktív, `memory_not_found` hibát dob. */
   insertActive(input: {
     tenantId: string
     agentId: string
@@ -98,6 +98,7 @@ export interface ProjectMemoryStore {
     artifactPath: string | null
     withUserId: string
     supersedesId: string | null
+    alsoSupersedeIds: string[]
   }): Promise<ProjectMemoryRecord>
 }
 
