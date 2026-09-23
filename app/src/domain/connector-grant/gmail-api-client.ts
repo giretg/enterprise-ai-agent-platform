@@ -126,16 +126,25 @@ function findPartData(part: GmailPart, mimeType: string): string | null {
 
 const HTML_ENTITIES: Record<string, string> = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }
 
+/** `<tag …>…</tag>` blokkok kivágása (a tartalmuk sem szöveg: CSS/JS). */
+function dropBlocks(html: string, tag: string): string {
+  let out = html
+  for (;;) {
+    const lower = out.toLowerCase()
+    const open = lower.indexOf(`<${tag}`)
+    if (open === -1) return out
+    const close = lower.indexOf(`</${tag}`, open)
+    const closeEnd = close === -1 ? -1 : lower.indexOf('>', close)
+    out = out.slice(0, open) + (closeEnd === -1 ? '' : out.slice(closeEnd + 1))
+  }
+}
+
 function htmlToText(html: string): string {
-  let text = html.replace(/<br\s*\/?>|<\/(p|div|tr|li|h[1-6])>/gi, '\n')
-  // Addig szűrünk, amíg változik — egymásba ágyazott `<scr<script>ipt>` sem marad.
-  let previous: string
-  do {
-    previous = text
-    text = text.replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, '').replace(/<[^>]*>/g, '')
-  } while (text !== previous)
-  // Maradék csonka tag-töredék (`<scri`) se maradjon; a valódi `<` entitásként (&lt;) jön.
-  text = text.replace(/[<>]/g, '')
+  const text = dropBlocks(dropBlocks(html, 'script'), 'style')
+    .replace(/<br\s*\/?>|<\/(p|div|tr|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    // Maradék csonka tag-töredék se maradjon; a valódi `<` entitásként (&lt;) jön.
+    .replace(/[<>]/g, '')
   // Egy menetben dekódolunk: `&amp;lt;` → `&lt;`, nem `<`.
   return text
     .replace(/&(nbsp|amp|lt|gt|quot|#39);/g, (_, entity: string) => HTML_ENTITIES[entity] ?? '')
