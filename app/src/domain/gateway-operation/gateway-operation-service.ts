@@ -11,6 +11,8 @@ import {
 } from '@/domain/connector-grant/google-drive-write-access'
 import { executeGoogleDriveTool } from '@/domain/enterprise-tools/handlers/google-drive'
 import { executeHttpApiTool } from '@/domain/enterprise-tools/handlers/http-api'
+import { executeGmailTool } from '@/domain/enterprise-tools/handlers/gmail'
+import { GmailApiAuthError, GmailApiError } from '@/domain/connector-grant/gmail-api-client'
 import { HttpApiError } from '@/domain/connector/http-api-client'
 import {
   authorizeToolCall,
@@ -27,6 +29,7 @@ import {
 import { checkDefinitionPin, type DefinitionPinDeps } from '@/domain/enterprise-tools/definition-pin'
 import {
   isEnterpriseDriveWriteTool,
+  isEnterpriseGmailWriteTool,
   isEnterpriseHttpWriteTool,
   isEnterpriseWriteTool,
   schemaForEnterpriseTool,
@@ -76,6 +79,11 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     userId: string
   }) => Promise<{ role: string; assumed: boolean } | null>
   executeDriveTool?: (
+    toolName: string,
+    args: Record<string, unknown>,
+    accessToken: string,
+  ) => Promise<unknown>
+  executeGmailTool?: (
     toolName: string,
     args: Record<string, unknown>,
     accessToken: string,
@@ -787,7 +795,11 @@ async function executeApprovedOperation(
       })
     } catch {
       return fail(
-        authorized.connector.type === 'http_api' ? 'http_api_error' : 'google_drive_auth_failed',
+        authorized.connector.type === 'http_api'
+          ? 'http_api_error'
+          : authorized.connector.type === 'gmail'
+            ? 'gmail_auth_failed'
+            : 'google_drive_auth_failed',
       )
     }
   }
@@ -801,7 +813,9 @@ async function executeApprovedOperation(
           accessToken,
           await resolveHttpActingUser(deps, operation.principalUserId, operation.tenantId),
         )
-      : await (deps.executeDriveTool ?? executeGoogleDriveTool)(
+      : isEnterpriseGmailWriteTool(operation.toolName)
+        ? await (deps.executeGmailTool ?? executeGmailTool)(operation.toolName, args, accessToken ?? '')
+        : await (deps.executeDriveTool ?? executeGoogleDriveTool)(
           operation.toolName,
           args,
           accessToken ?? '',
@@ -853,6 +867,8 @@ function mapWriteError(error: unknown): string {
   if (error instanceof GoogleDriveWriteAccessError) return 'drive_write_not_allowed'
   if (error instanceof GoogleDriveApiAuthError) return 'google_drive_auth_failed'
   if (error instanceof GoogleDriveApiError) return 'google_drive_api_error'
+  if (error instanceof GmailApiAuthError) return 'gmail_auth_failed'
+  if (error instanceof GmailApiError) return 'gmail_api_error'
   if (error instanceof HttpApiError) return error.code === 'missing_api_key' ? 'missing_api_key' : 'http_api_error'
   return 'tool_execution_failed'
 }
