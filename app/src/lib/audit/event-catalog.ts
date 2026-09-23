@@ -19,6 +19,7 @@ export const CORE_MVP_AUDIT_ACTIONS = [
   'gateway.operation.executing',
   'gateway.operation.succeeded',
   'gateway.operation.failed',
+  'gateway.operation.confirm_mismatch',
 ] as const
 
 export const REGISTERED_AUDIT_ACTIONS = new Set<string>([

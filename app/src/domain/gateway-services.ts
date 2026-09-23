@@ -19,6 +19,7 @@ import { recordGoogleDriveAppCreatedFile } from '@/domain/connector-grant/google
 import {
   enqueueGatewayOperation,
   enqueueResultToMcp,
+  enqueueWriteForMcp,
   getGatewayOperation,
   getResultToMcp,
   approveGatewayOperation,
@@ -265,6 +266,7 @@ const gatewayOperationDeps: GatewayOperationServiceDeps = {
 
 async function listPendingOperationRows(input: {
   tenantId: string
+  principalUserId?: string
 }): Promise<GatewayPendingOperationRow[]> {
   const pending = await listPendingGatewayOperations(gatewayOperationDeps, input)
   return Promise.all(
@@ -291,8 +293,7 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   ...sharedToolLookups,
   audit: repositories.audit,
   startAuthorization,
-  enqueueWrite: async (input) =>
-    enqueueResultToMcp(await enqueueGatewayOperation(gatewayOperationDeps, input), input.origin),
+  enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
   executeKbTool: (toolName, args, ctx) =>
     executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx),
 }
@@ -345,7 +346,8 @@ export const services = {
       approveGatewayOperation(gatewayOperationDeps, input),
     reject: (input: Parameters<typeof rejectGatewayOperation>[1]) =>
       rejectGatewayOperation(gatewayOperationDeps, input),
-    listPending: (input: { tenantId: string }) => listPendingOperationRows(input),
+    listPending: (input: { tenantId: string; principalUserId?: string }) =>
+      listPendingOperationRows(input),
     toMcpGet: getResultToMcp,
   },
 }

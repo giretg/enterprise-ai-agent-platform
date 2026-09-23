@@ -10,6 +10,7 @@ export type {
 export {
   approveGatewayOperation,
   canApproveGatewayOperation,
+  canDecideGatewayOperation,
   canSeeGatewayOperation,
   enqueueGatewayOperation,
   enqueueResultToMcp,
@@ -26,3 +27,4 @@ export type {
   GatewayPendingOperation,
   GatewayPendingOperationRow,
 } from './gateway-operation-service'
+export { enqueueWriteForMcp, WRITE_CONFIRM_KEY, WRITE_CONFIRM_TTL_MS } from './write-confirm'

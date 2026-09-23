@@ -30,8 +30,7 @@ import {
   type LiveGrantRow,
 } from '../src/domain/enterprise-tools'
 import {
-  enqueueGatewayOperation,
-  enqueueResultToMcp,
+  enqueueWriteForMcp,
   getGatewayOperation,
   getResultToMcp,
   type GatewayOperationServiceDeps,
@@ -211,6 +210,8 @@ function runtimeDeps(overrides: {
   liveGrant?: LiveGrantRow | null
   startAuthorization?: EnterpriseToolDeps['startAuthorization']
   skills?: McpSkillPackage[]
+  requestStateKey?: string
+  driveCalls?: unknown[]
 } = {}): {
   deps: McpRuntimeDeps
   audit: Array<Record<string, unknown>>
@@ -279,6 +280,10 @@ function runtimeDeps(overrides: {
       return { role, assumed: false }
     },
     startAuthorization: overrides.startAuthorization,
+    async executeDriveTool(_tool, args) {
+      overrides.driveCalls?.push(args)
+      return { file: { id: 'folder-1', name: 'Q3', mimeType: 'application/vnd.google-apps.folder' } }
+    },
   }
   const enterpriseDeps: EnterpriseToolDeps = {
     loadDefinition: ({ tenantId, definitionId }) => loadDefinition({ tenantId, definitionId }),
@@ -302,8 +307,7 @@ function runtimeDeps(overrides: {
       seen.resolveTenantId = params.tenantId
       return 'stub-drive-token'
     },
-    enqueueWrite: async (input) =>
-      enqueueResultToMcp(await enqueueGatewayOperation(gatewayDeps, input)),
+    enqueueWrite: (input) => enqueueWriteForMcp(gatewayDeps, input),
     startAuthorization: overrides.startAuthorization,
     audit: auditSink,
   }
@@ -357,6 +361,7 @@ function runtimeDeps(overrides: {
         return []
       },
       invokeEnterpriseTool: (input) => invokeEnterpriseTool(enterpriseDeps, input),
+      requestStateKey: overrides.requestStateKey,
       getGatewayOperation: async (input) =>
         getResultToMcp(await getGatewayOperation(gatewayDeps, input)),
       async invokeProjectWork() {
@@ -483,7 +488,164 @@ async function initialize(deps: McpRuntimeDeps, slug = 'acme') {
   return res
 }
 
+const STATE_KEY = 'k'.repeat(32)
+const FOLDER_CALL_ARGS = { definitionId: DEFINITION_ID, name: 'Q3 reports', idempotencyKey: 'idem-mrtr' }
+
+/** A stateless 2026-07-28 tools/call: no initialize, the envelope rides in `_meta` (#618). */
+async function call2026(
+  deps: McpRuntimeDeps,
+  capabilities: Record<string, unknown>,
+  extra: Record<string, unknown> = {},
+) {
+  const res = await post(
+    'acme',
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+        arguments: FOLDER_CALL_ARGS,
+        ...extra,
+        _meta: {
+          'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+          'io.modelcontextprotocol/clientInfo': { name: 'mrtr-test', version: '1.0.0' },
+          'io.modelcontextprotocol/clientCapabilities': capabilities,
+        },
+      },
+    },
+    {
+      authorization: `Bearer ${TOKEN}`,
+      'mcp-protocol-version': '2026-07-28',
+      'mcp-method': 'tools/call',
+      'mcp-name': GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+    },
+    deps,
+  )
+  assert.equal(res.status, 200)
+  return (await readJson(res)) as {
+    result?: {
+      resultType?: string
+      isError?: boolean
+      content?: Array<{ text: string }>
+      inputRequests?: Record<string, { method: string; params: { mode: string } }>
+      requestState?: string
+    }
+    error?: { code: number; message: string }
+  }
+}
+
+function writerDeps(extra: { requestStateKey?: string; driveCalls?: unknown[] } = {}) {
+  return runtimeDeps({
+    role: 'operator',
+    grantedAgentIds: new Set([AGENT_ID]),
+    grantAccessLevel: 'operate',
+    ...extra,
+  })
+}
+
 async function main() {
+  await check('#618 2026 + elicitation.form → input_required form', async () => {
+    const { deps } = writerDeps({ requestStateKey: STATE_KEY })
+    const body = await call2026(deps, { elicitation: { form: {} } })
+    assert.equal(body.result?.resultType, 'input_required')
+    assert.equal(body.result?.inputRequests?.confirm_write?.method, 'elicitation/create')
+    assert.equal(body.result?.inputRequests?.confirm_write?.params.mode, 'form')
+    assert.match(body.result?.requestState ?? '', /^v1\./)
+  })
+
+  await check('#618 2026 + empty elicitation {} → input_required (form is the default mode)', async () => {
+    const { deps } = writerDeps({ requestStateKey: STATE_KEY })
+    const body = await call2026(deps, { elicitation: {} })
+    assert.equal(body.result?.resultType, 'input_required')
+  })
+
+  for (const [label, capabilities, key] of [
+    ['2026 + url-only elicitation', { elicitation: { url: {} } }, STATE_KEY],
+    ['2026 without elicitation', {}, STATE_KEY],
+    ['missing MCP_REQUEST_STATE_KEY', { elicitation: { form: {} } }, undefined],
+    ['too-short MCP_REQUEST_STATE_KEY', { elicitation: { form: {} } }, 'short'],
+  ] as const) {
+    await check(`#618 ${label} → link, not isError`, async () => {
+      const { deps } = writerDeps({ requestStateKey: key })
+      const body = await call2026(deps, capabilities)
+      assert.equal(body.result?.resultType, 'complete')
+      assert.equal(body.result?.isError, undefined)
+      const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+        status?: string
+        approvalUrl?: string
+      }
+      assert.equal(payload.status, 'awaiting_approval')
+      assert.match(payload.approvalUrl ?? '', /\/control-plane\/operations#/)
+    })
+  }
+
+  await check('#618 form round-trip approve → one Drive call, succeeded', async () => {
+    const driveCalls: unknown[] = []
+    const { deps, audit } = writerDeps({ requestStateKey: STATE_KEY, driveCalls })
+    const first = await call2026(deps, { elicitation: { form: {} } })
+    const requestState = first.result?.requestState
+    assert.ok(requestState)
+    const retry = await call2026(
+      deps,
+      { elicitation: { form: {} } },
+      {
+        inputResponses: { confirm_write: { action: 'accept', content: { decision: 'approve' } } },
+        requestState,
+      },
+    )
+    assert.equal(retry.result?.resultType, 'complete')
+    const payload = JSON.parse(retry.result?.content?.[0]?.text ?? '{}') as { status?: string }
+    assert.equal(payload.status, 'succeeded')
+    assert.equal(driveCalls.length, 1)
+    const approved = audit.find((row) => row.action === 'gateway.operation.approved') as
+      | { metadata?: Record<string, unknown> }
+      | undefined
+    assert.equal(approved?.metadata?.channel, 'mcp_form')
+    assert.equal(approved?.metadata?.selfDecided, true)
+  })
+
+  await check('#618 forged requestState → -32602, nothing executed', async () => {
+    const driveCalls: unknown[] = []
+    const { deps } = writerDeps({ requestStateKey: STATE_KEY, driveCalls })
+    const first = await call2026(deps, { elicitation: { form: {} } })
+    const [v, body, mac] = (first.result?.requestState ?? '').split('.')
+    const forged = `${v}.${body}.${mac?.startsWith('A') ? 'B' : 'A'}${mac?.slice(1)}`
+    const retry = await call2026(
+      deps,
+      { elicitation: { form: {} } },
+      {
+        inputResponses: { confirm_write: { action: 'accept', content: { decision: 'approve' } } },
+        requestState: forged,
+      },
+    )
+    assert.equal(retry.error?.code, -32602)
+    assert.equal(driveCalls.length, 0)
+  })
+
+  await check('#618 2025 session with key configured still gets the link', async () => {
+    const { deps } = writerDeps({ requestStateKey: STATE_KEY })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: GOOGLE_DRIVE_CREATE_FOLDER_TOOL, arguments: FOLDER_CALL_ARGS },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(res)) as {
+      result?: { resultType?: string; isError?: boolean; content?: Array<{ text: string }> }
+    }
+    assert.notEqual(body.result?.resultType, 'input_required')
+    assert.equal(body.result?.isError, undefined)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { status?: string }
+    assert.equal(payload.status, 'awaiting_approval')
+  })
+
   await check('missing Bearer → 401 + WWW-Authenticate resource_metadata, not audited', async () => {
     const { deps, audit } = runtimeDeps()
     const res = await post('acme', { jsonrpc: '2.0', id: 1, method: 'ping' }, {}, deps)

@@ -4,7 +4,7 @@ import { operationErrorLabel } from './labels'
 import { OperationsPanel } from './operations-panel'
 
 export default async function OperationsPage() {
-  await requireTenantRole('approver')
+  await requireTenantRole('viewer')
   const listed = await listPendingGatewayOperationsAction()
   const operations = listed.success ? listed.data.operations : []
   const error = listed.success ? null : listed.error
@@ -15,8 +15,9 @@ export default async function OperationsPage() {
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Jóváhagyások</p>
         <h1 className="mt-2 font-display text-3xl font-semibold">Jóváhagyásra váró műveletek</h1>
         <p className="mt-1 max-w-2xl text-ink-soft">
-          A munkatárs mappát szeretne létrehozni a Google Drive-on. A jóváhagyás után a rendszer
-          egyszer végrehajtja a kérést; elutasításnál nem történik írás.
+          Itt azok az írások várnak, amelyeket a munkatárs a te nevedben küldene el (például
+          API-hívás vagy Google Drive-fájl). Jóváhagyás után a rendszer egyszer végrehajtja a
+          kérést; elutasításnál nem történik írás.
         </p>
       </div>
       {error ? (

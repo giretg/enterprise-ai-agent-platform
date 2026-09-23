@@ -7,6 +7,7 @@ import type { AgentDefinition } from '../src/domain/agent-definition'
 import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
   type LiveConnectorRow,
   type LiveGrantRow,
   type ToolCallPrincipal,
@@ -14,10 +15,13 @@ import {
 import {
   approveGatewayOperation,
   enqueueGatewayOperation,
+  enqueueWriteForMcp,
   getGatewayOperation,
+  listPendingGatewayOperations,
   rejectGatewayOperation,
   type GatewayOperationServiceDeps,
 } from '../src/domain/gateway-operation'
+import type { WriteConfirmInput, WriteConfirmState } from '../src/domain/enterprise-tools'
 import { MemoryGatewayOperationStore } from './memory-gateway-operation-store'
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
@@ -439,7 +443,7 @@ async function main() {
     assert.equal(admin.ok, true)
   })
 
-  await check('operator cannot approve', async () => {
+  await check('operator cannot approve another user\'s operation (not_found, no leak)', async () => {
     const wired = deps()
     const enqueued = await enqueueGatewayOperation(wired.deps, {
       principal: principal(),
@@ -453,7 +457,303 @@ async function main() {
       operationId: enqueued.view.operationId,
       actor: principal({ userId: OTHER_USER, role: 'operator' }),
     })
-    assert.deepEqual(result, { ok: false, code: 'approver_not_authorized' })
+    assert.deepEqual(result, { ok: false, code: 'operation_not_found' })
+    const rejected = await rejectGatewayOperation(wired.deps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal({ userId: OTHER_USER, role: 'operator' }),
+    })
+    assert.deepEqual(rejected, { ok: false, code: 'operation_not_found' })
+  })
+
+  // ── #618 WP-1: the requester confirms their own write ─────────────────────
+
+  await check('operator confirms own operation without approver role', async () => {
+    const driveCalls: unknown[] = []
+    const wired = deps({ driveCalls, requester: { role: 'operator', assumed: false } })
+    const enqueued = await enqueueGatewayOperation(wired.deps, {
+      principal: principal({ role: 'operator' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: FOLDER_ARGS,
+    })
+    assert.equal(enqueued.ok, true)
+    if (!enqueued.ok) return
+    const approved = await approveGatewayOperation(wired.deps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal({ role: 'operator' }),
+    })
+    assert.equal(approved.ok && approved.view.status, 'succeeded')
+    assert.equal(driveCalls.length, 1)
+    const audit = wired.audit.find((row) => row.action === 'gateway.operation.approved')
+    assert.deepEqual(
+      {
+        channel: (audit?.metadata as Record<string, unknown>).channel,
+        selfDecided: (audit?.metadata as Record<string, unknown>).selfDecided,
+      },
+      { channel: 'control_plane', selfDecided: true },
+    )
+  })
+
+  await check('approver still rejects another user\'s operation; audit selfDecided=false', async () => {
+    const wired = deps()
+    const enqueued = await enqueueGatewayOperation(wired.deps, {
+      principal: principal({ role: 'operator' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: FOLDER_ARGS,
+    })
+    if (!enqueued.ok) throw new Error('enqueue failed')
+    const rejected = await rejectGatewayOperation(wired.deps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal({ userId: APPROVER_ID, role: 'approver' }),
+    })
+    assert.equal(rejected.ok && rejected.view.status, 'rejected')
+    const audit = wired.audit.find((row) => row.action === 'gateway.operation.rejected')
+    assert.equal((audit?.metadata as Record<string, unknown>).selfDecided, false)
+  })
+
+  await check('pending list filtered to principal for non-approvers', async () => {
+    const wired = deps()
+    await enqueueGatewayOperation(wired.deps, {
+      principal: principal({ role: 'operator' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: FOLDER_ARGS,
+    })
+    await enqueueGatewayOperation(wired.deps, {
+      principal: principal({ userId: OTHER_USER, role: 'operator' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, idempotencyKey: 'idem-other' },
+    })
+    const all = await listPendingGatewayOperations(wired.deps, { tenantId: TENANT_ID })
+    const own = await listPendingGatewayOperations(wired.deps, {
+      tenantId: TENANT_ID,
+      principalUserId: USER_ID,
+    })
+    assert.equal(all.length, 2)
+    assert.deepEqual(
+      own.map((row) => row.principalUserId),
+      [USER_ID],
+    )
+  })
+
+  await check('write access revoked while pending → failed after self-confirm, no call', async () => {
+    const driveCalls: unknown[] = []
+    const wired = deps({ driveCalls, requester: null })
+    const enqueued = await enqueueGatewayOperation(wired.deps, {
+      principal: principal({ role: 'operator' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: FOLDER_ARGS,
+    })
+    if (!enqueued.ok) throw new Error('enqueue failed')
+    const approved = await approveGatewayOperation(wired.deps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal({ role: 'operator' }),
+    })
+    assert.equal(approved.ok && approved.view.status, 'failed')
+    assert.equal(driveCalls.length, 0)
+  })
+
+  // ── #618 WP-2: MRTR form rounds (enqueueWriteForMcp) ──────────────────────
+
+  const minted: WriteConfirmState[] = []
+  const confirmOn: WriteConfirmInput = {
+    async mint(state) {
+      minted.push(state)
+      return `state-${minted.length}`
+    },
+  }
+  const formRound = async (wired: ReturnType<typeof deps>, args = FOLDER_ARGS) => {
+    const result = await enqueueWriteForMcp(wired.deps, {
+      principal: principal({ role: 'operator' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args,
+      origin: 'https://app.example.com',
+      confirm: confirmOn,
+    })
+    assert.equal('resultType' in result && result.resultType, 'input_required')
+    return minted[minted.length - 1]!
+  }
+  const retry = (
+    wired: ReturnType<typeof deps>,
+    state: unknown,
+    response: NonNullable<WriteConfirmInput['retry']>['response'],
+    overrides: { args?: Record<string, unknown>; userId?: string } = {},
+  ) =>
+    enqueueWriteForMcp(wired.deps, {
+      principal: principal({ role: 'operator', ...(overrides.userId ? { userId: overrides.userId } : {}) }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: overrides.args ?? FOLDER_ARGS,
+      origin: 'https://app.example.com',
+      confirm: { mint: confirmOn.mint, retry: { state, response } },
+    })
+  const payloadOf = (result: Awaited<ReturnType<typeof enqueueWriteForMcp>>) => {
+    assert.ok('content' in result, 'expected a complete tool result')
+    return { isError: result.isError, ...(JSON.parse(result.content[0]!.text) as Record<string, unknown>) }
+  }
+  const APPROVE = { action: 'accept' as const, content: { decision: 'approve' } }
+
+  await check('no mint → #617 link answer, not isError', async () => {
+    const wired = deps()
+    const result = await enqueueWriteForMcp(wired.deps, {
+      principal: principal({ role: 'operator' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: FOLDER_ARGS,
+      origin: 'https://app.example.com',
+      confirm: { mint: null },
+    })
+    const payload = payloadOf(result)
+    assert.equal(payload.isError, undefined)
+    assert.equal(payload.status, 'awaiting_approval')
+    assert.match(String(payload.approvalUrl), /\/control-plane\/operations#/)
+  })
+
+  await check('form round: input_required with one decision field and bound state', async () => {
+    const wired = deps()
+    const result = await enqueueWriteForMcp(wired.deps, {
+      principal: principal({ role: 'operator' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: FOLDER_ARGS,
+      confirm: confirmOn,
+    })
+    assert.ok('resultType' in result)
+    const request = result.inputRequests.confirm_write as {
+      method: string
+      params: { mode: string; message: string; requestedSchema: { required: string[] } }
+    }
+    assert.equal(request.method, 'elicitation/create')
+    assert.equal(request.params.mode, 'form')
+    assert.deepEqual(request.params.requestedSchema.required, ['decision'])
+    assert.match(request.params.message, /Q3 reports/)
+    const state = minted[minted.length - 1]!
+    assert.equal(result.requestState, `state-${minted.length}`)
+    assert.equal(state.userId, USER_ID)
+    assert.equal(state.tenantId, TENANT_ID)
+    assert.ok(state.exp - state.iat === 15 * 60_000)
+  })
+
+  await check('long content is cut at 2000 chars with the link', async () => {
+    const wired = deps()
+    const withUpload: GatewayOperationServiceDeps = {
+      ...wired.deps,
+      async loadDefinition() {
+        const base = definition()
+        return {
+          ...base,
+          snapshot: {
+            ...base.snapshot,
+            capabilities: [
+              ...base.snapshot.capabilities,
+              { toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL, allowed: true },
+            ],
+          },
+        }
+      },
+    }
+    const result = await enqueueWriteForMcp(withUpload, {
+      principal: principal({ role: 'operator' }),
+      toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+      args: { definitionId: DEFINITION_ID, name: 'r.csv', textContent: 'x'.repeat(5000), idempotencyKey: 'idem-up' },
+      origin: 'https://app.example.com',
+      confirm: confirmOn,
+    })
+    assert.ok('resultType' in result, JSON.stringify(result))
+    const message = (result.inputRequests.confirm_write as { params: { message: string } }).params.message
+    assert.ok(!message.includes('x'.repeat(2001)))
+    assert.match(message, /a teljes tartalom a linken: https:\/\/app\.example\.com/)
+  })
+
+  await check('retry approve → exactly one call, succeeded; second retry does not re-execute', async () => {
+    const driveCalls: unknown[] = []
+    const wired = deps({ driveCalls, requester: { role: 'operator', assumed: false } })
+    const state = await formRound(wired)
+    const first = payloadOf(await retry(wired, state, APPROVE))
+    assert.equal(first.status, 'succeeded')
+    const second = payloadOf(await retry(wired, state, APPROVE))
+    assert.equal(second.status, 'succeeded')
+    assert.equal(driveCalls.length, 1)
+    const audit = wired.audit.find((row) => row.action === 'gateway.operation.approved')
+    assert.equal((audit?.metadata as Record<string, unknown>).channel, 'mcp_form')
+  })
+
+  for (const [label, response] of [
+    ['reject', { action: 'accept' as const, content: { decision: 'reject' } }],
+    ['decline', { action: 'decline' as const }],
+  ] as const) {
+    await check(`retry ${label} → rejected, no call, not an error`, async () => {
+      const driveCalls: unknown[] = []
+      const wired = deps({ driveCalls })
+      const state = await formRound(wired)
+      const payload = payloadOf(await retry(wired, state, response))
+      assert.equal(payload.isError, undefined)
+      assert.equal(payload.status, 'rejected')
+      assert.equal(driveCalls.length, 0)
+    })
+  }
+
+  await check('retry cancel / missing answer → stays awaiting_approval with link', async () => {
+    const wired = deps()
+    const state = await formRound(wired)
+    for (const response of [{ action: 'cancel' as const }, null]) {
+      const payload = payloadOf(await retry(wired, state, response))
+      assert.equal(payload.status, 'awaiting_approval')
+      assert.ok(payload.approvalUrl)
+    }
+  })
+
+  await check('modified arguments → request_state_mismatch, no call, audited', async () => {
+    const driveCalls: unknown[] = []
+    const wired = deps({ driveCalls })
+    const state = await formRound(wired)
+    const payload = payloadOf(
+      await retry(wired, state, APPROVE, { args: { ...FOLDER_ARGS, name: 'Other folder' } }),
+    )
+    assert.equal(payload.isError, true)
+    assert.equal(payload.code, 'request_state_mismatch')
+    assert.equal(driveCalls.length, 0)
+    assert.ok(wired.audit.some((row) => row.action === 'gateway.operation.confirm_mismatch'))
+  })
+
+  await check('another user\'s state → request_state_mismatch, no call', async () => {
+    const driveCalls: unknown[] = []
+    const wired = deps({ driveCalls })
+    const state = await formRound(wired)
+    const payload = payloadOf(await retry(wired, state, APPROVE, { userId: OTHER_USER }))
+    assert.equal(payload.code, 'request_state_mismatch')
+    assert.equal(driveCalls.length, 0)
+  })
+
+  await check('expired state → link, operation still pending, no call', async () => {
+    const driveCalls: unknown[] = []
+    const wired = deps({ driveCalls })
+    const state = await formRound(wired)
+    const payload = payloadOf(await retry(wired, { ...state, exp: Date.now() - 1 }, APPROVE))
+    assert.equal(payload.status, 'awaiting_approval')
+    assert.equal(driveCalls.length, 0)
+  })
+
+  await check('unverified (raw string) state → link, no call', async () => {
+    const driveCalls: unknown[] = []
+    const wired = deps({ driveCalls })
+    await formRound(wired)
+    const payload = payloadOf(await retry(wired, 'v1.forged', APPROVE))
+    assert.equal(payload.status, 'awaiting_approval')
+    assert.equal(driveCalls.length, 0)
+  })
+
+  await check('decided on the link meanwhile → current state, no second decision', async () => {
+    const driveCalls: unknown[] = []
+    const wired = deps({ driveCalls })
+    const state = await formRound(wired)
+    await rejectGatewayOperation(wired.deps, {
+      tenantId: TENANT_ID,
+      operationId: state.operationId,
+      actor: principal({ role: 'operator' }),
+    })
+    const payload = payloadOf(await retry(wired, state, APPROVE))
+    assert.equal(payload.status, 'rejected')
+    assert.equal(driveCalls.length, 0)
   })
 
   await check('missing write binding is denied at enqueue', async () => {

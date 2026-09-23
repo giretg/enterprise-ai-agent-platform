@@ -127,13 +127,19 @@ Complete Phase C steps 1–6 first, then:
 |---|---|---|
 | 7 | `google_drive_create_folder` `{ definitionId, name, idempotencyKey }` | `{ operationId, status: "awaiting_approval" }`; **no folder yet** |
 | 8 | `platform.gateway_operation.get` `{ operationId }` | `status: "awaiting_approval"`, `approval.decision: "pending"` |
-| 9 | Control Plane → **Jóváhagyások**: approve (same user OK if admin/approver) | operation → `succeeded`; `result.file.id` present |
+| 9 | Control Plane → **Jóváhagyások**: approve (the requester themself, or an admin/approver) | operation → `succeeded`; `result.file.id` present |
 | 10 | Repeat step 7 with **same** `idempotencyKey` | same `operationId`, `status: "succeeded"`; **no second folder** |
 | 11 | Repeat step 7 with **new** key; reject in Control Plane | `status: "rejected"`; no Drive side effect |
 | 12 | Negative: operator without `operate` grant | MCP `isError: true`, `agent_access_denied` |
-| 13 | Negative: non-privileged user tries to approve | Control Plane error `approver_not_authorized` |
+| 13 | Negative: non-privileged user tries to approve **another user's** operation | Control Plane error `operation_not_found` (existence is not leaked) |
 
 `awaiting_approval` is a successful enqueue (`isError` omitted/false), not a policy deny.
+
+### In-chat confirmation (#618, MCP 2026-07-28)
+
+A write call carrying `_meta["io.modelcontextprotocol/protocolVersion"] = "2026-07-28"` and form elicitation in `_meta["io.modelcontextprotocol/clientCapabilities"].elicitation` (`form`, or empty `{}`) gets `resultType: "input_required"` with one `confirm_write` form (Jóváhagyom / Elutasítom). The client retries the same call with `inputResponses.confirm_write` and the unchanged `requestState`; approve runs the operation once, reject/decline writes nothing, cancel leaves it `awaiting_approval`. Every other request (2025 protocol, no form capability, URL-only) gets the step 7 link answer.
+
+Needs `MCP_REQUEST_STATE_KEY` (≥ 32 bytes, identical on every instance, from Secret Manager). Without it the form is off and the link answer is used. The `requestState` is HMAC-signed and bound to tenant, user, tool and arguments; it expires after 15 minutes (then: link).
 
 ### Live Google OAuth (harness)
 

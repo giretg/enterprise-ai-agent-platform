@@ -55,7 +55,8 @@ function main() {
     assert.ok(!hrefs.includes('/control-plane/audit'))
     assert.ok(!hrefs.includes('/control-plane/platform/tenants'))
     assert.ok(!hrefs.includes('/control-plane/menu-access'))
-    assert.ok(!hrefs.includes('/control-plane/operations'))
+    // #618: own pending writes are confirmed by the requester, no approver role needed.
+    assert.ok(hrefs.includes('/control-plane/operations'))
     assert.ok(!hrefs.includes('/control-plane/audit'))
     const account = nav.find((entry) => !('children' in entry) && entry.key === 'account')
     assert.ok(account && !('children' in account))

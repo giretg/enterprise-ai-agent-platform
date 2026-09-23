@@ -151,6 +151,12 @@ env:
     availability:
       - BUILD
       - RUNTIME
+  # MCP requestState HMAC (#618, MRTR űrlap) — OPCIONÁLIS: hiányában link-fallback,
+  # nincs űrlap. Érték: openssl rand -hex 32. Minden instance-on ugyanaz.
+  - variable: MCP_REQUEST_STATE_KEY
+    secret: MCP_REQUEST_STATE_KEY
+    availability:
+      - RUNTIME
   # Connector API-kulcsok (web_search custom + platform-hosted) — Secret Manager.
   - variable: CONNECTOR_SECRET_PREFIX
     value: "projects/346824017066/secrets"

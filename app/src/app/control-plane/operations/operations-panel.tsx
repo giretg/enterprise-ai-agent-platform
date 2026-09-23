@@ -17,6 +17,8 @@ function agentDefinitionLabel(row: PendingOperationRow): string {
 }
 
 function argsSummary(args: Record<string, unknown>): string {
+  if (typeof args.method === 'string') return `${args.method} ${String(args.path ?? '')}`
+  if (typeof args.range === 'string') return `${String(args.fileId ?? '—')} · ${args.range}`
   if (typeof args.title === 'string' && args.title.trim()) {
     const kind = typeof args.kind === 'string' ? args.kind : 'emlék'
     const project = typeof args.projectKey === 'string' && args.projectKey ? args.projectKey : '__general__'
@@ -40,6 +42,7 @@ function formatWhen(iso: string): string {
 
 export function OperationsPanel({ operations }: { operations: PendingOperationRow[] }) {
   const [message, setMessage] = useState<string | null>(null)
+  const [messageKind, setMessageKind] = useState<'info' | 'error'>('info')
   const [busyId, setBusyId] = useState<string | null>(null)
   const [reason, setReason] = useState<Record<string, string>>({})
 
@@ -49,13 +52,27 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
     const result = await approveGatewayOperationAction({ operationId })
     setBusyId(null)
     if (!result.success) {
+      setMessageKind('error')
       setMessage(operationErrorLabel(result.error))
+      return
+    }
+    // Approve executes the write synchronously — the operation can come back
+    // 'failed' (e.g. the target API rejected the payload) even though the
+    // approve call itself succeeded. Surface that here instead of only in
+    // the operation's own status text, or a failed write looks identical to
+    // a successful one.
+    if (result.data.status === 'failed') {
+      setMessageKind('error')
+      setMessage(
+        `Jóváhagyva, de a végrehajtás sikertelen: ${operationErrorLabel(result.data.errorCode ?? 'tool_execution_failed')}`,
+      )
       return
     }
     const fileId =
       result.data.result && typeof result.data.result === 'object'
         ? (result.data.result as { file?: { id?: string } }).file?.id
         : undefined
+    setMessageKind('info')
     setMessage(
       fileId
         ? `Jóváhagyva. Mappa azonosító: ${fileId}`
@@ -72,9 +89,11 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
     })
     setBusyId(null)
     if (!result.success) {
+      setMessageKind('error')
       setMessage(operationErrorLabel(result.error))
       return
     }
+    setMessageKind('info')
     setMessage('Elutasítva. A Google Drive-on nem jött létre mappa.')
   }
 
@@ -85,7 +104,15 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
   return (
     <div className="space-y-4">
       {message ? (
-        <p className="rounded-lg border border-ink/10 bg-white/40 px-3 py-2 text-sm text-ink">{message}</p>
+        <p
+          className={
+            messageKind === 'error'
+              ? 'rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800'
+              : 'rounded-lg border border-ink/10 bg-white/40 px-3 py-2 text-sm text-ink'
+          }
+        >
+          {message}
+        </p>
       ) : null}
       <ul className="space-y-3">
         {operations.map((row) => {
