@@ -65,6 +65,12 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
   },
   { key: 'agents', href: '/control-plane/agents', label: 'Munkatársak' },
   {
+    key: 'projects',
+    href: '/control-plane/projects',
+    label: 'Projektek',
+    requires: { tenantRole: 'viewer' },
+  },
+  {
     key: 'account',
     href: '/control-plane/account',
     label: 'Kapcsolt fiókok',

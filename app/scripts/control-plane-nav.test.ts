@@ -46,6 +46,7 @@ function main() {
     assert.ok(hrefs.includes('/control-plane/account'))
     assert.ok(hrefs.includes('/control-plane/agents'))
     assert.ok(hrefs.includes('/control-plane/get-started'))
+    assert.ok(hrefs.includes('/control-plane/projects'))
     assert.ok(!hrefs.includes('/control-plane/connectors'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
     assert.ok(!hrefs.includes('/control-plane/provisioning'))
