@@ -30,6 +30,7 @@ export const WORK_FILE_MAX_PROJECT_BYTES = 5_000_000
 export const WORK_FILE_MAX_COUNT = 200
 export const MEMORY_TITLE_MAX = 200
 export const MEMORY_BODY_MAX = 8_000
+export const MEMORY_MERGE_MAX = 10
 
 export type ProjectWorkErr = { ok: false; code: string; message: string }
 export type ProjectWorkOk<T> = { ok: true } & T
@@ -89,10 +90,17 @@ export type MemoryWriteInput = {
   body: string
   artifactPath?: string
   replaceId?: string
+  /** További, ugyanerről szóló elemek, amelyeket ez az írás összevon és kivezet a replaceId mellett. */
+  mergeIds?: string[]
   /** Az író tudatosan új elemet kér, bár hasonló már van. Ember (UI) mindig true. */
   confirmNew?: boolean
   withUserId: string
   mode: MemoryWriteModeValue
+}
+
+/** replaceId + mergeIds egy listában, duplikátum nélkül; az első lesz a supersedesId. */
+function retiredIds(input: { replaceId?: string; mergeIds?: string[] }): string[] {
+  return [...new Set([input.replaceId, ...(input.mergeIds ?? [])].filter((id): id is string => !!id))]
 }
 
 export type MemoryDuplicateCandidate = Pick<MemoryView, 'id' | 'kind' | 'title' | 'body' | 'createdAt'>
@@ -324,13 +332,18 @@ export class ProjectWorkService {
   > {
     const prepared = await this.prepareMemoryWrite(input)
     if (!prepared.ok) return prepared
-    if (!input.replaceId && !input.confirmNew) {
+    // Cserénél is: ha a kivezetetteken kívül marad hasonló aktív elem, azt is össze kell vonni.
+    if (!input.confirmNew) {
+      const retiring = new Set(retiredIds(prepared.draft))
       const active = await this.memory.listActive({
         tenantId: input.tenantId,
         agentId: input.agentId,
         projectKey: effectiveWorkProjectKey(prepared.draft.projectKey),
       })
-      const similar = findSimilarMemories(prepared.draft, active)
+      const similar = findSimilarMemories(
+        prepared.draft,
+        active.filter((row) => !retiring.has(row.id)),
+      )
       if (similar.length > 0) {
         return ok({
           status: 'possible_duplicate' as const,
@@ -369,6 +382,7 @@ export class ProjectWorkService {
       artifactPath: draft.artifactPath ?? null,
       withUserId: draft.withUserId,
       supersedesId: draft.replaceId ?? null,
+      alsoSupersedeIds: draft.mergeIds ?? [],
     })
     const [user] = await this.users.findManyByIds([row.withUserId])
     return {
@@ -418,8 +432,10 @@ export class ProjectWorkService {
       if (!path) return err('invalid_path')
       artifactPath = path
     }
-    if (input.replaceId) {
-      const previous = await this.memory.findById(input.replaceId)
+    const [replaceId, ...mergeIds] = retiredIds(input)
+    if (mergeIds.length > MEMORY_MERGE_MAX) return err('memory_not_found', 'too many mergeIds')
+    for (const id of [replaceId, ...mergeIds].filter(Boolean)) {
+      const previous = await this.memory.findById(id)
       if (
         !previous ||
         previous.tenantId !== input.tenantId ||
@@ -439,7 +455,8 @@ export class ProjectWorkService {
         title,
         body,
         artifactPath,
-        replaceId: input.replaceId,
+        replaceId,
+        ...(mergeIds.length > 0 ? { mergeIds } : {}),
         withUserId: input.withUserId,
       },
     })
