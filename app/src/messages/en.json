@@ -92,6 +92,26 @@
     "aboutCardRest": "The service is a closed, invitation-only enterprise workspace, not a public chatbot. External account connections are always optional; see the <privacy>Privacy Policy</privacy> and <terms>Terms</terms> for details.",
     "ctaTitle": "Every MCP-compatible AI. One control point.",
     "ctaBody": "Sign in and connect your team's AI tools to company systems.",
-    "ctaButton": "Sign in to Excellence AI →"
+    "ctaButton": "Sign in to Excellence AI →",
+    "termTitle": "claude-code — acme",
+    "termPrompt": "Create a folder for the Q3 contracts",
+    "termTool": "google_drive.create_folder",
+    "termPath": "path: Q3 / Client contracts",
+    "termPending": "▲ Awaiting approval — Anna Kovács",
+    "termApproved": "✓ Approved 14:02 · audit #4812",
+    "termDone": "Folder created.",
+    "archEyebrow": "Architecture",
+    "hubCaption": "approval · audit",
+    "systemDrive": "Google Drive",
+    "systemGmail": "Gmail",
+    "systemCrm": "CRM",
+    "systemKb": "Knowledge base",
+    "featuresEyebrow": "Capabilities",
+    "ruleDrive": "Google Drive · read",
+    "ruleGmail": "Gmail · send email",
+    "ruleCrm": "CRM · update",
+    "ruleAllowed": "allowed",
+    "ruleApproval": "needs approval",
+    "stepLabel": "{n} / {total}"
   }
 }

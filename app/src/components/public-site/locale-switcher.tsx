@@ -13,7 +13,7 @@ export function LocaleSwitcher() {
     <div
       role="navigation"
       aria-label={t('label')}
-      className="inline-flex rounded-full border border-line bg-card p-0.5"
+      className="inline-flex rounded border border-ink bg-card p-0.5"
     >
       {locales.map((code) => {
         const active = code === locale
@@ -24,8 +24,8 @@ export function LocaleSwitcher() {
             locale={code}
             hrefLang={code}
             title={code === 'hu' ? 'Magyar' : 'English'}
-            className={`rounded-full px-2.5 py-1 text-xs font-semibold tracking-wide transition-colors ${
-              active ? 'bg-coral text-white' : 'text-ink-soft hover:text-ink'
+            className={`rounded-sm px-2.5 py-1 font-mono text-xs font-semibold tracking-wide transition-colors ${
+              active ? 'bg-ink text-white' : 'text-ink-soft hover:text-ink'
             }`}
             aria-current={active ? 'true' : undefined}
           >

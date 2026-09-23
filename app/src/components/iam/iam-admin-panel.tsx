@@ -104,7 +104,7 @@ export function IamAdminPanel({
         <button
           type="button"
           onClick={() => setModal('access')}
-          className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)]"
+          className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(43,80,255,0.6)]"
         >
           Új hozzáférés
         </button>
@@ -294,7 +294,7 @@ function AccessModal({ onClose }: { onClose: () => void }) {
             value="invite"
             checked={mode === 'invite'}
             onChange={() => setMode('invite')}
-            className="mt-1 accent-[#b23a55]"
+            className="mt-1 accent-[#2b50ff]"
           />
           <span>
             <span className="block text-sm font-semibold">Meghívó</span>
@@ -310,7 +310,7 @@ function AccessModal({ onClose }: { onClose: () => void }) {
             value="provision"
             checked={mode === 'provision'}
             onChange={() => setMode('provision')}
-            className="mt-1 accent-[#b23a55]"
+            className="mt-1 accent-[#2b50ff]"
           />
           <span>
             <span className="block text-sm font-semibold">Csendes előkészítés</span>
@@ -350,7 +350,7 @@ function AccessModal({ onClose }: { onClose: () => void }) {
         <button
           type="button"
           disabled={pending || !email.trim()}
-          className="w-full rounded-full bg-coral px-4 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)] disabled:opacity-50"
+          className="w-full rounded-full bg-coral px-4 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(43,80,255,0.6)] disabled:opacity-50"
           onClick={submit}
         >
           {mode === 'invite' ? 'Meghívó létrehozása' : 'Előkészítés'}

@@ -33,6 +33,14 @@ export function AuthProviders({
         signInFallbackRedirectUrl="/control-plane"
         signUpFallbackRedirectUrl="/control-plane"
         afterSignOutUrl="/"
+        appearance={{
+          variables: {
+            colorPrimary: '#0b0b0c',
+            colorForeground: '#0b0b0c',
+            fontFamily: "'Space Grotesk', system-ui, sans-serif",
+            borderRadius: '0.375rem',
+          },
+        }}
       >
         {children}
       </ClerkProvider>
