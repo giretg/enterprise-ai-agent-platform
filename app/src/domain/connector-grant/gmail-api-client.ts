@@ -124,17 +124,19 @@ function findPartData(part: GmailPart, mimeType: string): string | null {
   return null
 }
 
+const HTML_ENTITIES: Record<string, string> = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }
+
 function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, '')
-    .replace(/<br\s*\/?>|<\/(p|div|tr|li|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+  let text = html.replace(/<br\s*\/?>|<\/(p|div|tr|li|h[1-6])>/gi, '\n')
+  // Addig szűrünk, amíg változik — egymásba ágyazott `<scr<script>ipt>` sem marad.
+  let previous: string
+  do {
+    previous = text
+    text = text.replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, '').replace(/<[^>]*>/g, '')
+  } while (text !== previous)
+  // Egy menetben dekódolunk: `&amp;lt;` → `&lt;`, nem `<`.
+  return text
+    .replace(/&(nbsp|amp|lt|gt|quot|#39);/g, (_, entity: string) => HTML_ENTITIES[entity] ?? '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
