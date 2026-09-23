@@ -98,7 +98,25 @@ export interface ProjectMemoryStore {
     withUserId: string
     supersedesId: string | null
   }): Promise<ProjectMemoryRecord>
-  supersede(id: string): Promise<void>
+  /**
+   * Atomically supersede `replaceId` (only if still active) and insert the
+   * successor. Returns null when another writer already claimed the replace —
+   * never leaves two active rows, and never orphans a superseded predecessor
+   * without a successor if insert fails mid-flight.
+   */
+  replaceActive(
+    input: {
+      tenantId: string
+      agentId: string
+      projectKey: string
+      kind: ProjectMemoryKind
+      title: string
+      body: string
+      artifactPath: string | null
+      withUserId: string
+      replaceId: string
+    },
+  ): Promise<ProjectMemoryRecord | null>
 }
 
 export interface ProjectWorkUserLookup {
