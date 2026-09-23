@@ -10,8 +10,10 @@ import {
   listKbDocuments,
   listKnowledgeCatalog,
 } from '@/app/actions/platform'
+import { listWorkProjectsAction } from '@/app/actions/project-work'
 import { listConnectorCatalog } from '@/app/actions/provisioning'
 import { getAgentSkillsAction, listAssignableSkillsAction } from '@/app/actions/skills'
+import { AgentProjectMemoryBrowser } from '@/app/control-plane/projects/project-memory-panel'
 import { assignableConnectorsFromCatalog } from '@/lib/create-agent-wizard'
 import {
   AGENT_DETAIL_SECTION_LABELS,
@@ -43,7 +45,8 @@ const SECTION_DESCRIPTIONS: Partial<Record<AgentDetailSectionId, string>> = {
   tudasbazis: 'Dokumentumok és katalógus, amiből a munkatárs dolgozik.',
   eszkozok: 'Milyen platform-eszközöket használhat a publikált definíció.',
   skillek: 'Előre összeállított utasítás-csomagok ehhez az agenthez.',
-  memoriairas: 'A projektmemóriát jóváhagyással vagy közvetlenül írja. A betanított szabályt ez nem nyitja ki.',
+  memoriairas:
+    'Írásmód, és az ehhez a munkatárshoz tartozó projektmemória. Válassz projektet, nézegesd vagy szerkeszd az emlékeket. A betanított szabályt ez nem nyitja ki.',
   hozzaferes: 'Ki indíthat chatet vagy ticketet ezzel a munkatárssal.',
 }
 
@@ -66,18 +69,29 @@ export default async function AgentDetailPage({
     throw error
   }
 
-  const [agentRes, govRes, skillsRes, assignableRes, kbRes, catalogRes, kbCatalogRes, accessRes, publishRes] =
-    await Promise.all([
-      getAgent({ id: agentId }),
-      getAgentGovernance({ agentId }),
-      getAgentSkillsAction(agentId),
-      listAssignableSkillsAction(agentId),
-      listKbDocuments({ agentId }),
-      listConnectorCatalog(),
-      listKnowledgeCatalog(),
-      listAgentAccess({ agentId }),
-      getAgentPublishStatus({ agentId }),
-    ])
+  const [
+    agentRes,
+    govRes,
+    skillsRes,
+    assignableRes,
+    kbRes,
+    catalogRes,
+    kbCatalogRes,
+    accessRes,
+    publishRes,
+    projectsRes,
+  ] = await Promise.all([
+    getAgent({ id: agentId }),
+    getAgentGovernance({ agentId }),
+    getAgentSkillsAction(agentId),
+    listAssignableSkillsAction(agentId),
+    listKbDocuments({ agentId }),
+    listConnectorCatalog(),
+    listKnowledgeCatalog(),
+    listAgentAccess({ agentId }),
+    getAgentPublishStatus({ agentId }),
+    listWorkProjectsAction(),
+  ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
   const capabilities = govRes.success ? govRes.data.capabilities : []
@@ -95,7 +109,10 @@ export default async function AgentDetailPage({
     connectors.map((row) => row.connector.id),
   )
   const canManage = hasMinimumRole(ctx.activeTenantRole, 'admin')
+  const canEditMemory = hasMinimumRole(ctx.activeTenantRole, 'approver')
   const canDelete = isSuperadmin(ctx.platformRoles)
+  const projects = projectsRes.success ? projectsRes.data.projects : []
+  const projectsError = projectsRes.success ? null : projectsRes.error
 
   const sections: Array<{
     id: AgentDetailSectionId
@@ -199,13 +216,24 @@ export default async function AgentDetailPage({
       label: AGENT_DETAIL_SECTION_LABELS.memoriairas,
       description: SECTION_DESCRIPTIONS.memoriairas,
       content: (
-        <Card title={AGENT_DETAIL_SECTION_LABELS.memoriairas}>
-          <UpdateMemoryWriteModeForm
-            agentId={agent.id}
-            memoryWriteMode={agent.memoryWriteMode}
-            canEdit={canManage}
-          />
-        </Card>
+        <div className="space-y-4">
+          <Card title={AGENT_DETAIL_SECTION_LABELS.memoriairas}>
+            <UpdateMemoryWriteModeForm
+              agentId={agent.id}
+              memoryWriteMode={agent.memoryWriteMode}
+              canEdit={canManage}
+            />
+          </Card>
+          <Card title="Projektmemória">
+            <AgentProjectMemoryBrowser
+              agentId={agent.id}
+              agentName={agent.name}
+              projects={projects}
+              canEdit={canEditMemory}
+              initialError={projectsError}
+            />
+          </Card>
+        </div>
       ),
     },
     ...(canManage && accessUsers

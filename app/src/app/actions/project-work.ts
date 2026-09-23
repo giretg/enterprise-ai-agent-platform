@@ -82,7 +82,8 @@ export async function createWorkProjectAction(
       agentVersion: null,
       action: 'project.create',
       targetType: 'project',
-      targetId: created.project.key,
+      // AuditLog.target_id is UUID; projectKey is a slug (`__general__`, `ugyfel-x`).
+      targetId: null,
       modelUsed: null,
       inputRef: created.project.name,
       outputRef: null,
@@ -152,12 +153,12 @@ export async function saveWorkFileAction(
       agentVersion: null,
       action: 'project.work_file.write',
       targetType: 'project',
-      targetId: parsed.projectKey,
+      targetId: null,
       modelUsed: null,
       inputRef: saved.file.path,
       outputRef: null,
       policyDecision: 'written',
-      metadata: { path: saved.file.path, byteSize: saved.file.byteSize },
+      metadata: { projectKey: parsed.projectKey, path: saved.file.path, byteSize: saved.file.byteSize },
       tenantId: ctx.activeTenantId,
     })
     revalidatePath('/control-plane/projects')
@@ -185,12 +186,12 @@ export async function deleteWorkFileAction(
       agentVersion: null,
       action: 'project.work_file.delete',
       targetType: 'project',
-      targetId: parsed.projectKey,
+      targetId: null,
       modelUsed: null,
       inputRef: parsed.path,
       outputRef: null,
       policyDecision: 'deleted',
-      metadata: { path: parsed.path },
+      metadata: { projectKey: parsed.projectKey, path: parsed.path },
       tenantId: ctx.activeTenantId,
     })
     revalidatePath('/control-plane/projects')
@@ -253,13 +254,14 @@ export async function saveProjectMemoryAction(
       agentVersion: null,
       action: 'project.project_memory.write',
       targetType: 'project',
-      targetId: parsed.projectKey,
+      targetId: written.item.id,
       modelUsed: null,
       inputRef: written.item.title,
       outputRef: parsed.replaceId ? 'replaced' : 'created',
       policyDecision: 'written',
       metadata: {
         agentId: parsed.agentId,
+        projectKey: parsed.projectKey,
         kind: parsed.kind,
         memoryId: written.item.id,
         replaceId: parsed.replaceId ?? null,
@@ -267,6 +269,7 @@ export async function saveProjectMemoryAction(
       tenantId: ctx.activeTenantId,
     })
     revalidatePath('/control-plane/projects')
+    revalidatePath(`/control-plane/agents/${parsed.agentId}`)
     return ok({ item: written.item })
   } catch (error) {
     return mapActionError(error)
