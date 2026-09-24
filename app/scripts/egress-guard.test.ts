@@ -6,6 +6,7 @@
  */
 import assert from 'node:assert/strict'
 import {
+  allowlistForOAuthEndpoint,
   guardEgressUrl,
   isForbiddenHost,
   isPrivateOrReservedIp,
@@ -155,6 +156,55 @@ async function main() {
     const r = await guardEgressUrl({ url: 'not a url', allowlistHosts: ALLOW })
     assert.equal(r.ok, false)
     assert.equal(!r.ok && r.reason, 'invalid_url')
+  })
+
+  await test('OAuth: Gmail/Drive üres tenant-listánál is a saját hostjára pinelődik', () => {
+    assert.deepEqual(
+      allowlistForOAuthEndpoint({
+        connectorType: 'gmail',
+        url: 'https://oauth2.googleapis.com/token',
+        tenantAllowlist: [],
+      }),
+      ['oauth2.googleapis.com'],
+    )
+    assert.deepEqual(
+      allowlistForOAuthEndpoint({
+        connectorType: 'google_drive',
+        url: 'https://www.googleapis.com/oauth2/v2/userinfo',
+        tenantAllowlist: [],
+      }),
+      ['www.googleapis.com'],
+    )
+  })
+
+  await test('OAuth: tenant HTTP connector a tenant-listát kapja, üres listán deny', () => {
+    assert.deepEqual(
+      allowlistForOAuthEndpoint({
+        connectorType: 'http_api',
+        url: 'https://auth.crm.example/token',
+        tenantAllowlist: ['api.crm.example'],
+      }),
+      ['api.crm.example'],
+    )
+    assert.deepEqual(
+      allowlistForOAuthEndpoint({
+        connectorType: 'http_api',
+        url: 'https://auth.crm.example/token',
+        tenantAllowlist: [],
+      }),
+      [],
+    )
+  })
+
+  await test('OAuth: feloldó nélkül a HTTP connector SSRF-only pin a végpont hostjára', () => {
+    assert.deepEqual(
+      allowlistForOAuthEndpoint({
+        connectorType: 'http_api',
+        url: 'https://auth.crm.example/token',
+        tenantAllowlist: null,
+      }),
+      ['auth.crm.example'],
+    )
   })
 
   if (failures > 0) {
