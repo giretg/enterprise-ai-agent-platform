@@ -52,7 +52,7 @@ export function SettingsSectionShell({
                 key={section.id}
                 type="button"
                 onClick={() => setActiveId(section.id)}
-                className={`whitespace-nowrap rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                className={`w-full break-words rounded-lg px-3 py-2 text-left text-sm transition-colors ${
                   selected
                     ? 'bg-coral/15 font-medium text-coral-deep'
                     : 'text-ink-soft hover:bg-night/30 hover:text-ink'
