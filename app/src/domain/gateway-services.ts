@@ -59,9 +59,12 @@ import {
 import { findHttpApiEndpoint, parseHttpApiConfig } from '@/domain/connector/http-api-client'
 import { lookup } from 'node:dns/promises'
 
-const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants)
-
 const platformSettingsService = new PlatformSettingsService(repositories.platformSettings)
+
+const resolveEgressAllowlist = (tenantId: string | null) =>
+  platformSettingsService.getEgressAllowlist(tenantId)
+
+const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, resolveEgressAllowlist)
 
 const iamService = new IamService(
   repositories.users,
@@ -86,8 +89,6 @@ const skillService = new SkillService(repositories.skills, repositories.agents, 
   },
 })
 
-const resolveEgressAllowlist = (tenantId: string | null) =>
-  platformSettingsService.getEgressAllowlist(tenantId)
 const resolveBankPreset = async () => process.env.PROVISIONING_BANK_PRESET === 'true'
 
 const selfUpdatingConnectorService = new SelfUpdatingConnectorService(
@@ -297,6 +298,7 @@ async function startAuthorization(input: {
 
 const gatewayOperationDeps: GatewayOperationServiceDeps = {
   ...sharedToolLookups,
+  resolveEgressAllowlist,
   operations: repositories.gatewayOperations,
   resolveRequester,
   resolveDesignatedApprover,
@@ -436,6 +438,7 @@ async function listGatewayOperationHistoryRows(input: {
 
 const enterpriseToolDeps: EnterpriseToolDeps = {
   ...sharedToolLookups,
+  resolveEgressAllowlist,
   audit: repositories.audit,
   startAuthorization,
   findAgentOutputFolder: async ({ agentId, tenantId }) => {

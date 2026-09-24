@@ -561,6 +561,14 @@ async function run() {
     assert.equal(audit.byAction('provisioning.connector.activate').length, 1)
   })
 
+  await test('P5-neg: nem allowlistelt egress-hosttal a jóváhagyott draft sem aktiválható', async () => {
+    const { svc } = makeService({ allowlist: [] })
+    const created = await draftToActivatable(svc)
+    await expectError('DRAFT_VALIDATION_FAILED', () =>
+      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' }, adminActor),
+    )
+  })
+
   await test('P5/APG-03: CRM privacy capability append-only spec-verzióba kerül', async () => {
     const { svc, drafts } = makeService()
     const created = await draftToActivatable(svc, adminActor, {
@@ -698,7 +706,8 @@ async function run() {
   // (auth.scheme=bearer + oauth blokk), különben a http-api-kliens SERVICE oauth2-ként
   // értelmezné és a per-user Bearer-injekció kimaradna → minden tool-hívás elhasalna.
   await test('oauth2 delegated: aktiváláskor runtime-alakra normalizálódik (auth.scheme=bearer + oauth blokk)', async () => {
-    const { svc, drafts } = makeService()
+    const oauthHosts = ['accounts.google.com', 'oauth2.googleapis.com', 'www.googleapis.com']
+    const { svc, drafts } = makeService({ allowlist: [...ALLOWLIST, ...oauthHosts] })
     const created = await svc.createConnectorDraft(
       {
         name: 'Google Search Console',
@@ -708,6 +717,7 @@ async function run() {
           ...cleanConfig(),
           provider: 'google_search_console',
           authMode: 'user_delegated',
+          egressHosts: [...ALLOWLIST, ...oauthHosts],
           scopesSuggested: ['https://www.googleapis.com/auth/webmasters.readonly'],
           auth: {
             type: 'oauth2',

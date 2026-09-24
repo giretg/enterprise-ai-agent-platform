@@ -447,10 +447,10 @@ export class ProvisioningService {
     // Előfeltételek (§8.5, P5): nem-failed validáció + sikeres sandbox-teszt +
     // approved review + (secretAlias VAGY apiKey).
     const validation = draft.validationResult as ValidationResult | null
-    if (!validation || validation.status === 'failed') {
+    if (!validation || validation.status === 'failed' || validation.checks.egressAllowlist !== 'passed') {
       throw new ProvisioningError(
         'DRAFT_VALIDATION_FAILED',
-        'validation_result must be passed/warned (not failed)',
+        'validation_result must pass the tenant egress allowlist before activation',
       )
     }
     if (draft.sandboxTestOk !== true) {
