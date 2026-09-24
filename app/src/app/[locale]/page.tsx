@@ -2,6 +2,7 @@ import NextLink from 'next/link'
 import Image from 'next/image'
 import { getTranslations, setRequestLocale } from 'next-intl/server'
 import { PublicSiteShell } from '@/components/public-site/public-site-shell'
+import { ScrollEffects, TypedTerminal } from '@/components/public-site/signal-motion'
 import { isAppLocale } from '@/i18n/config'
 import { publicPageMetadata } from '@/i18n/metadata'
 import { Link } from '@/i18n/navigation'
@@ -9,11 +10,12 @@ import { VendorLogo } from '@/components/public-site/vendor-logos'
 
 const trustKeys = ['trustApproval', 'trustAudit', 'trustConnect', 'trustGdpr'] as const
 const clients = [
-  { key: 'clientClaude', logo: '/mcp-clients/claudecode.svg', background: 'bg-[#f8ede5]' },
-  { key: 'clientCodex', logo: '/mcp-clients/codex.svg', background: 'bg-[#e6eee9]' },
-  { key: 'clientChatgpt', logo: null, background: 'bg-[#e6eee9]' },
-  { key: 'clientCursor', logo: '/mcp-clients/cursor.svg', background: 'bg-[#eeece8]' },
+  { key: 'clientClaude', logo: '/mcp-clients/claudecode.svg' },
+  { key: 'clientCodex', logo: '/mcp-clients/codex.svg' },
+  { key: 'clientChatgpt', logo: null },
+  { key: 'clientCursor', logo: '/mcp-clients/cursor.svg' },
 ] as const
+const systems = ['systemDrive', 'systemGmail', 'systemCrm', 'systemKb'] as const
 
 const features = [
   {
@@ -36,11 +38,31 @@ const features = [
 
 const vendors = ['OpenAI', 'Anthropic', 'Google', 'xAI', 'OpenRouter']
 
+// Diagram geometry (viewBox 1000×340): 4 clients → hub → 4 systems.
+const rowsY = [46, 128, 210, 292]
+const clientWires = rowsY.map((y, i) => `M180 ${y} C300 ${y} 290 ${140 + i * 20} 400 ${140 + i * 20}`)
+const systemWires = rowsY.map((y, i) => `M600 ${140 + i * 20} C710 ${140 + i * 20} 700 ${y} 820 ${y}`)
+
+const btnPrimary =
+  'signal-btn inline-flex items-center gap-2.5 rounded border border-ink bg-ink px-5 py-3.5 text-sm font-semibold text-white'
+const btnGhost =
+  'signal-btn inline-flex items-center gap-2.5 rounded border border-ink bg-card px-5 py-3.5 text-sm font-semibold text-ink [--sweep:var(--color-lime)]'
+const eyebrow =
+  "font-mono text-xs uppercase tracking-[0.12em] text-coral before:text-ink-faint before:content-['//_']"
+
 function Icon({ d }: { d: string }) {
   return (
     <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d={d} />
     </svg>
+  )
+}
+
+function ClientMark({ logo }: { logo: string | null }) {
+  return logo ? (
+    <Image src={logo} alt="" width={20} height={20} className="h-5 w-5 object-contain" />
+  ) : (
+    <VendorLogo name="OpenAI" className="h-5 w-5" />
   )
 }
 
@@ -65,127 +87,134 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
     { title: t('howStep2Title'), body: t('howStep2Body') },
     { title: t('howStep3Title'), body: t('howStep3Body') },
   ]
+  const marquee = [...clients.map((c) => t(c.key)), ...systems.map((s) => t(s))]
 
   return (
     <PublicSiteShell>
-      <section className="relative overflow-hidden">
-        <div className="pointer-events-none absolute inset-0 -z-10 opacity-[0.35] [background-image:linear-gradient(var(--color-line)_1px,transparent_1px),linear-gradient(90deg,var(--color-line)_1px,transparent_1px)] [background-size:56px_56px] [mask-image:radial-gradient(60rem_30rem_at_50%_0%,black,transparent)]" />
-        <div className="mx-auto grid max-w-6xl items-center gap-12 px-5 pb-16 pt-16 sm:pt-24 lg:grid-cols-[1fr_1fr] lg:gap-10 lg:pb-24">
-          <div className="animate-rise">
-            <span className="inline-flex items-center gap-2 rounded-full border border-line bg-card px-3 py-1 text-xs font-medium text-ink-soft">
-              <span className="h-1.5 w-1.5 rounded-full bg-sage animate-soul" />
-              {t('badge')}
-            </span>
-            <h1 className="mt-6 font-display text-4xl font-semibold leading-[1.02] tracking-tight text-ink sm:text-6xl">
-              <span className="sm:whitespace-nowrap">{t('heroLine1')}</span>
-              <br />
-              <em className="font-medium italic text-coral-deep">{t('heroLine2')}</em>
-            </h1>
-            <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-soft sm:text-xl">{t('heroBody')}</p>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
-              <NextLink
-                href="/sign-in"
-                className="group inline-flex items-center gap-2 rounded-full bg-coral px-6 py-3 text-sm font-semibold text-white shadow-[0_12px_30px_-12px_rgba(178,58,85,0.6)] transition-all hover:-translate-y-0.5 hover:bg-coral-deep"
-              >
-                {t('ctaSignIn')}
-                <span className="transition-transform group-hover:translate-x-0.5">→</span>
-              </NextLink>
-              <a
-                href="#how"
-                className="rounded-full border border-line bg-card px-6 py-3 text-sm font-semibold text-ink transition-colors hover:border-coral/40"
-              >
-                {t('ctaHow')}
-              </a>
-            </div>
-            <ul className="mt-8 flex flex-wrap gap-x-5 gap-y-2 text-sm text-ink-faint">
-              {trustKeys.map((key) => (
-                <li key={key} className="flex items-center gap-1.5">
-                  <span className="text-sage">✓</span>
-                  {t(key)}
-                </li>
-              ))}
-            </ul>
-          </div>
+      <ScrollEffects />
 
-          <div className="atelier-card animate-rise overflow-hidden [animation-delay:120ms]">
-            <div className="flex items-center justify-between border-b border-line bg-card-2/60 px-5 py-3">
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-ink">{t('panelTitle')}</p>
-                <p className="mt-0.5 truncate font-mono text-[11px] text-ink-faint">{t('panelUrl')}</p>
-              </div>
-              <span className="flex shrink-0 items-center gap-1.5 rounded-full bg-sage/10 px-2.5 py-1 text-[11px] font-medium text-sage">
-                <span className="h-1.5 w-1.5 rounded-full bg-sage animate-soul" />
-                {t('panelStatus')}
-              </span>
-            </div>
-            <div className="space-y-4 px-4 py-5 sm:px-5">
-              <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint">{t('panelClientsLabel')}</p>
-              <ul className="space-y-2">
-                {clients.map(({ key, logo, background }) => (
-                  <li key={key} className="flex items-center justify-between rounded-xl border border-line bg-card px-3.5 py-2.5">
-                    <span className="flex items-center gap-2.5 text-sm font-medium text-ink">
-                      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${background}`}>
-                        {logo ? (
-                          <Image src={logo} alt="" width={20} height={20} className="h-5 w-5 object-contain" />
-                        ) : (
-                          <VendorLogo name="OpenAI" className="h-5 w-5" />
-                        )}
-                      </span>
-                      {t(key)}
-                    </span>
-                    <span className="text-[11px] font-medium text-sage">{t('clientConnected')}</span>
-                  </li>
-                ))}
-              </ul>
-              <div className="rounded-lg border border-honey/40 bg-honey/10 p-3.5">
-                <div className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-honey" />
-                  <p className="text-xs font-semibold text-ink">{t('approvalTitle')}</p>
-                </div>
-                <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                  <dt className="text-ink-faint">{t('approvalTool')}</dt>
-                  <dd className="font-mono text-ink">{t('approvalToolValue')}</dd>
-                  <dt className="text-ink-faint">{t('approvalPath')}</dt>
-                  <dd className="text-ink">{t('approvalPathValue')}</dd>
-                  <dt className="text-ink-faint">{t('approvalVia')}</dt>
-                  <dd className="text-ink">{t('approvalViaValue')}</dd>
-                </dl>
-                <div className="mt-3 flex gap-2">
-                  <span className="rounded-full bg-sage/20 px-4 py-1.5 text-[11px] font-semibold text-sage">{t('approvalApprove')}</span>
-                  <span className="rounded-full bg-card px-4 py-1.5 text-[11px] font-semibold text-ink-faint">{t('approvalReject')}</span>
-                </div>
-              </div>
-            </div>
+      {/* Hero */}
+      <section className="mx-auto grid max-w-6xl items-center gap-12 px-5 pb-16 pt-16 sm:pt-24 lg:grid-cols-[1.1fr_0.9fr]">
+        <div>
+          <span data-reveal className="inline-flex items-center gap-2.5 border border-ink bg-card px-2.5 py-1.5 font-mono text-xs uppercase tracking-[0.08em]">
+            <span className="h-2 w-2 rounded-full bg-sage animate-blink" />
+            {t('badge')}
+          </span>
+          <h1 data-reveal className="mt-6 text-5xl font-bold leading-[0.95] tracking-[-0.05em] sm:text-7xl lg:text-[5.5rem]">
+            {t('heroLine1')}
+            <br />
+            <mark className="signal-mark text-inherit">{t('heroLine2')}</mark>
+          </h1>
+          <p data-reveal className="mt-6 max-w-xl text-lg leading-relaxed text-ink-soft">{t('heroBody')}</p>
+          <div data-reveal className="mt-8 flex flex-wrap items-center gap-3">
+            <NextLink href="/sign-in" className={btnPrimary}>
+              {t('ctaSignIn')}
+              <span aria-hidden className="rounded-sm border border-current px-1.5 font-mono text-[11px] opacity-70">↵</span>
+            </NextLink>
+            <a href="#how" className={btnGhost}>
+              {t('ctaHow')}
+            </a>
           </div>
+          <ul data-reveal className="mt-7 flex flex-wrap gap-x-5 gap-y-2 font-mono text-[13px] text-ink-soft">
+            {trustKeys.map((key) => (
+              <li key={key} className="before:text-coral before:content-['■_']">
+                {t(key)}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div data-reveal>
+          <TypedTerminal
+            title={t('termTitle')}
+            lines={[
+              { tone: 'dim', text: '$ ' },
+              { text: `${t('termPrompt')}\n\n` },
+              { tone: 'accent', text: '● excellence-ai' },
+              { tone: 'dim', text: ` · ${t('termTool')}\n` },
+              { text: `  ${t('termPath')}\n\n` },
+              { tone: 'warn', text: `${t('termPending')}\n` },
+              { tone: 'dim', text: '  …\n' },
+              { tone: 'ok', text: `${t('termApproved')}\n` },
+              { text: `  ${t('termDone')}\n` },
+            ]}
+          />
         </div>
       </section>
 
-      <section className="mx-auto max-w-6xl px-5 py-20">
-        <p className="font-mono text-[12px] uppercase tracking-[0.16em] text-coral-deep">{t('whyEyebrow')}</p>
-        <h2 className="mt-3 max-w-2xl font-display text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
+      {/* Marquee */}
+      <div className="overflow-hidden whitespace-nowrap border-y border-ink bg-ink py-3.5 font-mono text-sm uppercase tracking-[0.1em] text-white" aria-hidden>
+        <div className="inline-block animate-marquee">
+          {[...marquee, ...marquee].map((label, i) => (
+            <span key={i} className="mx-7 before:text-lime before:content-['✦_']">
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Architecture */}
+      <section className="mx-auto max-w-6xl px-5 py-24 sm:py-28">
+        <p data-reveal className={eyebrow}>{t('archEyebrow')}</p>
+        <h2 data-reveal className="mt-4 max-w-[16ch] text-4xl font-bold leading-none tracking-[-0.04em] sm:text-6xl">
           {t('whyTitle')}
         </h2>
-        <div className="mt-10 grid gap-4 sm:grid-cols-2">
-          {features.map((f) => (
-            <div key={f.key} className="atelier-card p-6 transition-transform hover:-translate-y-0.5 sm:p-7">
-              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-coral/10 text-coral-deep">
+        <div data-reveal className="mt-12 overflow-x-auto border border-ink bg-card p-6 sm:p-8">
+          <svg data-draw viewBox="0 0 1000 340" role="img" aria-label={t('whyTitle')} className="group block w-full min-w-[640px]">
+            {clients.map((c, i) => (
+              <g key={c.key}>
+                <rect x="10" y={rowsY[i] - 26} width="170" height="52" rx="3" className="fill-card stroke-ink" />
+                <text x="30" y={rowsY[i] + 5} className="fill-ink text-[14px] font-medium">{t(c.key)}</text>
+              </g>
+            ))}
+            <rect x="400" y="110" width="200" height="120" rx="3" className="fill-ink" />
+            <text x="428" y="160" className="fill-white text-[14px] font-medium">Excellence AI</text>
+            <text x="428" y="186" className="fill-lime font-mono text-[12px]">{t('hubCaption')}</text>
+            {systems.map((s, i) => (
+              <g key={s}>
+                <rect x="820" y={rowsY[i] - 26} width="170" height="52" rx="3" className="fill-card stroke-ink" />
+                <text x="840" y={rowsY[i] + 5} className="fill-ink text-[14px] font-medium">{t(s)}</text>
+              </g>
+            ))}
+            {[...clientWires, ...systemWires].map((d, i) => (
+              <g key={d}>
+                <path
+                  d={d}
+                  pathLength={1}
+                  className="fill-none stroke-ink [stroke-dasharray:1] [stroke-dashoffset:calc(1-var(--draw,0))] [stroke-width:1.5]"
+                />
+                <circle r="4" className={`opacity-0 transition-opacity group-[.is-drawn]:opacity-100 ${i === 5 ? 'fill-honey' : 'fill-coral'}`}>
+                  <animateMotion dur={`${2 + i * 0.3}s`} repeatCount="indefinite" path={d} />
+                </circle>
+              </g>
+            ))}
+          </svg>
+        </div>
+      </section>
+
+      {/* Capabilities */}
+      <section className="mx-auto max-w-6xl px-5 pb-24">
+        <p data-reveal className={eyebrow}>{t('featuresEyebrow')}</p>
+        <div data-reveal className="mt-8 grid border border-ink bg-card sm:grid-cols-2">
+          {features.map((f, i) => (
+            <div
+              key={f.key}
+              className={`group border-line p-7 transition-colors hover:bg-card-2 border-b ${i % 2 === 0 ? 'sm:border-r' : ''}`}
+            >
+              <span className="flex h-10 w-10 items-center justify-center border border-ink bg-card text-ink transition-colors group-hover:bg-lime">
                 <Icon d={f.icon} />
               </span>
-              <h3 className="mt-5 font-display text-xl font-semibold text-ink">{t(`feature${f.key}Title`)}</h3>
-              <p className="mt-2 text-sm leading-relaxed text-ink-soft">{t(`feature${f.key}Body`)}</p>
+              <h3 className="mt-5 text-xl font-semibold tracking-[-0.02em]">{t(`feature${f.key}Title`)}</h3>
+              <p className="mt-2 text-[15px] leading-relaxed text-ink-soft">{t(`feature${f.key}Body`)}</p>
             </div>
           ))}
-          <div className="atelier-card p-6 sm:col-span-2 sm:p-7 lg:flex lg:items-center lg:justify-between lg:gap-10">
+          <div className="p-7 sm:col-span-2 lg:flex lg:items-center lg:justify-between lg:gap-10">
             <div className="max-w-xl">
-              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-coral/10 text-coral-deep">
-                <Icon d="M4 7h16M4 12h16M4 17h16M8 4v3M16 9v3M11 14v3" />
-              </span>
-              <h3 className="mt-5 font-display text-xl font-semibold text-ink">{t('featureModelsTitle')}</h3>
-              <p className="mt-2 text-sm leading-relaxed text-ink-soft">{t('featureModelsBody')}</p>
+              <h3 className="text-xl font-semibold tracking-[-0.02em]">{t('featureModelsTitle')}</h3>
+              <p className="mt-2 text-[15px] leading-relaxed text-ink-soft">{t('featureModelsBody')}</p>
             </div>
-            <ul className="mt-6 flex flex-wrap gap-2 lg:mt-0 lg:max-w-xs lg:justify-end">
+            <ul className="mt-6 flex flex-wrap gap-2 lg:mt-0">
               {vendors.map((v) => (
-                <li key={v} title={v} className="flex h-11 w-11 items-center justify-center rounded-full border border-line bg-card text-ink-soft">
+                <li key={v} title={v} className="flex h-11 w-11 items-center justify-center border border-line bg-card text-ink-soft transition-colors hover:border-ink hover:text-ink">
                   <VendorLogo name={v} className="h-5 w-5" />
                   <span className="sr-only">{v}</span>
                 </li>
@@ -195,28 +224,82 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
         </div>
       </section>
 
-      <section id="how" className="mx-auto max-w-6xl scroll-mt-20 px-5 pb-20">
-        <div className="atelier-card p-8 sm:p-10">
-          <p className="font-mono text-[12px] uppercase tracking-[0.16em] text-coral-deep">{t('howEyebrow')}</p>
-          <div className="mt-6 grid gap-8 sm:grid-cols-3">
+      {/* How it works — sticky steps */}
+      <section id="how" className="mx-auto max-w-6xl scroll-mt-20 px-5 pb-24">
+        <p data-reveal className={eyebrow}>{t('howEyebrow')}</p>
+        <div className="mt-10 grid gap-10 lg:grid-cols-2 lg:gap-16">
+          <div>
             {steps.map((s, i) => (
-              <div key={s.title}>
-                <p className="font-display text-4xl font-semibold text-coral/40">{i + 1}</p>
-                <h3 className="mt-2 font-semibold text-ink">{s.title}</h3>
-                <p className="mt-1 text-sm leading-relaxed text-ink-soft">{s.body}</p>
+              <div
+                key={s.title}
+                data-step
+                className="flex flex-col justify-center border-l-2 border-line py-6 pl-7 transition-[border-color,opacity] duration-300 lg:min-h-[60vh] lg:opacity-35 [&.is-on]:border-coral [&.is-on]:opacity-100"
+              >
+                <span className="font-mono text-[13px] text-coral">{t('stepLabel', { n: `0${i + 1}`, total: '03' })}</span>
+                <h3 className="mt-2 text-3xl font-bold tracking-[-0.03em]">{s.title}</h3>
+                <p className="mt-2.5 max-w-[42ch] text-ink-soft">{s.body}</p>
               </div>
             ))}
+          </div>
+          <div className="hidden lg:block">
+            <div className="sticky top-28 min-h-[340px] border border-ink bg-card p-6">
+              {/* 1 — rules */}
+              <div data-screen className="absolute inset-6 translate-y-3 opacity-0 transition duration-400 [&.is-on]:translate-y-0 [&.is-on]:opacity-100">
+                {(
+                  [
+                    ['ruleDrive', 'ruleAllowed', 'text-sage'],
+                    ['ruleGmail', 'ruleApproval', 'text-honey'],
+                    ['ruleCrm', 'ruleApproval', 'text-honey'],
+                  ] as const
+                ).map(([rule, status, tone]) => (
+                  <div key={rule} className="mb-2 flex items-center gap-3 border border-line bg-card px-3.5 py-3 text-sm">
+                    {t(rule)}
+                    <span className={`ml-auto font-mono text-xs ${tone}`}>● {t(status)}</span>
+                  </div>
+                ))}
+              </div>
+              {/* 2 — connected clients */}
+              <div data-screen className="absolute inset-6 translate-y-3 opacity-0 transition duration-400 [&.is-on]:translate-y-0 [&.is-on]:opacity-100">
+                <p className="mb-3 truncate font-mono text-xs text-ink-faint">{t('panelUrl')}</p>
+                {clients.map((c) => (
+                  <div key={c.key} className="mb-2 flex items-center gap-3 border border-line bg-card px-3.5 py-2.5 text-sm">
+                    <ClientMark logo={c.logo} />
+                    {t(c.key)}
+                    <span className="ml-auto font-mono text-xs text-sage">● {t('clientConnected')}</span>
+                  </div>
+                ))}
+              </div>
+              {/* 3 — approval */}
+              <div data-screen className="absolute inset-6 translate-y-3 opacity-0 transition duration-400 [&.is-on]:translate-y-0 [&.is-on]:opacity-100">
+                <div className="border border-l-4 border-honey bg-honey/5 p-4">
+                  <p className="text-sm font-semibold text-honey">▲ {t('approvalTitle')}</p>
+                  <dl className="mb-4 mt-3 grid grid-cols-[90px_1fr] gap-x-3 gap-y-1 text-[13px]">
+                    <dt className="font-mono text-xs uppercase text-ink-faint">{t('approvalTool')}</dt>
+                    <dd>{t('approvalToolValue')}</dd>
+                    <dt className="font-mono text-xs uppercase text-ink-faint">{t('approvalPath')}</dt>
+                    <dd>{t('approvalPathValue')}</dd>
+                    <dt className="font-mono text-xs uppercase text-ink-faint">{t('approvalVia')}</dt>
+                    <dd>{t('approvalViaValue')}</dd>
+                  </dl>
+                  <div className="flex gap-2">
+                    <span className="rounded border border-sage bg-sage px-3.5 py-2 text-[13px] font-semibold text-white">{t('approvalApprove')}</span>
+                    <span className="rounded border border-ink bg-card px-3.5 py-2 text-[13px] font-semibold">{t('approvalReject')}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
+      {/* About + CTA */}
       <section className="mx-auto max-w-6xl px-5 pb-24">
-        <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
+        <div data-reveal className="grid gap-6 lg:grid-cols-2">
           <div>
-            <h2 className="font-display text-2xl font-semibold text-ink">{t('aboutTitle')}</h2>
+            <h2 className="text-3xl font-bold tracking-[-0.03em]">{t('aboutTitle')}</h2>
             <p className="mt-4 leading-relaxed text-ink-soft">{t('aboutBody')}</p>
           </div>
-          <div className="atelier-soft p-6 text-sm leading-relaxed text-ink-soft">
+          <div className="border border-line bg-card p-6 text-sm leading-relaxed text-ink-soft">
             <p>
               {t.rich('aboutCardLead', {
                 brand: (chunks) => <strong className="font-semibold text-ink">{chunks}</strong>,
@@ -239,12 +322,12 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
           </div>
         </div>
 
-        <div className="mt-16 overflow-hidden rounded-3xl bg-ink px-8 py-12 text-center text-night sm:px-12">
-          <h2 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">{t('ctaTitle')}</h2>
-          <p className="mx-auto mt-3 max-w-xl text-night/70">{t('ctaBody')}</p>
+        <div data-reveal className="mt-16 border border-ink bg-ink px-8 py-14 text-center text-white shadow-[10px_10px_0_var(--color-coral)] sm:px-12">
+          <h2 className="mx-auto max-w-2xl text-3xl font-bold tracking-[-0.04em] sm:text-5xl">{t('ctaTitle')}</h2>
+          <p className="mx-auto mt-4 max-w-xl text-white/70">{t('ctaBody')}</p>
           <NextLink
             href="/sign-in"
-            className="mt-8 inline-flex items-center gap-2 rounded-full bg-coral px-7 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose"
+            className="signal-btn mt-8 inline-flex items-center gap-2 rounded border border-lime bg-lime px-7 py-3.5 text-sm font-semibold text-ink [--sweep:white]"
           >
             {t('ctaButton')}
           </NextLink>

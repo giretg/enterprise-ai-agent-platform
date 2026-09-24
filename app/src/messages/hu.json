@@ -92,6 +92,26 @@
     "aboutCardRest": "A szolgáltatás zárt, meghívásos vállalati munkatér, nem nyilvános chatbot. A külső fiókok csatlakoztatása mindig opcionális; a részleteket az <privacy>adatkezelési tájékoztató</privacy> és az <terms>ÁSZF</terms> tartalmazza.",
     "ctaTitle": "Minden MCP-kompatibilis AI. Egy helyen felügyelve.",
     "ctaBody": "Lépj be, és csatlakoztasd a csapat AI-eszközeit a céges rendszerekhez.",
-    "ctaButton": "Belépés az Excellence AI-ba →"
+    "ctaButton": "Belépés az Excellence AI-ba →",
+    "termTitle": "claude-code — acme",
+    "termPrompt": "Hozz létre mappát a Q3 szerződéseknek",
+    "termTool": "google_drive.create_folder",
+    "termPath": "útvonal: Q3 / Ügyfélszerződések",
+    "termPending": "▲ Jóváhagyásra vár — Kovács Anna",
+    "termApproved": "✓ Jóváhagyva 14:02 · audit #4812",
+    "termDone": "Mappa létrehozva.",
+    "archEyebrow": "Architektúra",
+    "hubCaption": "jóváhagyás · audit",
+    "systemDrive": "Google Drive",
+    "systemGmail": "Gmail",
+    "systemCrm": "CRM",
+    "systemKb": "Tudásbázis",
+    "featuresEyebrow": "Képességek",
+    "ruleDrive": "Google Drive · olvasás",
+    "ruleGmail": "Gmail · levélküldés",
+    "ruleCrm": "CRM · módosítás",
+    "ruleAllowed": "engedélyezve",
+    "ruleApproval": "jóváhagyással",
+    "stepLabel": "{n} / {total}"
   }
 }

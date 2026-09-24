@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>C · Ember — Excellence AI látványterv</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
+<style>
+  @property --ang { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+  :root {
+    --bg: #fbf7f4; --bg-2: #f3ece6; --card: #ffffff; --ink: #1a1216; --ink-soft: #6b5d63; --ink-faint: #a8999f; --line: #ebe1da;
+    --brand: #c2185b; --brand-2: #ff6a3d; --brand-3: #7c3aed; --ok: #16a34a; --warn: #ea580c;
+    --grad: linear-gradient(120deg, var(--brand-3), var(--brand) 45%, var(--brand-2));
+    --shadow: 0 1px 2px rgba(26,18,22,.04), 0 12px 40px -12px rgba(194,24,91,.18);
+  }
+  [data-theme="dark"] {
+    --bg: #120d10; --bg-2: #1b1418; --card: #211a1e; --ink: #f7eef1; --ink-soft: #b7a8ae; --ink-faint: #7a6b71; --line: #33282d;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 40px -12px rgba(255,106,61,.25);
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--bg); color: var(--ink); font: 16px/1.6 Manrope, system-ui, sans-serif; overflow-x: hidden; transition: background .5s, color .5s; }
+  .serif { font-family: "Instrument Serif", serif; font-weight: 400; font-style: italic; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding-inline: 28px; }
+
+  nav { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; align-items: center; gap: 22px; padding: 8px 8px 8px 20px; border-radius: 99px; background: color-mix(in srgb, var(--card) 75%, transparent); backdrop-filter: blur(14px); box-shadow: var(--shadow), 0 0 0 1px var(--line) inset; width: min(1100px, calc(100% - 32px)); }
+  .logo { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: -.02em; }
+  .logo i { width: 24px; height: 24px; border-radius: 50%; background: conic-gradient(from 200deg, var(--brand-3), var(--brand), var(--brand-2), var(--brand-3)); }
+  nav a { color: var(--ink-soft); text-decoration: none; font-size: 14px; font-weight: 500; }
+  nav a:hover { color: var(--ink); }
+  nav .spacer { flex: 1; }
+  .theme { border: 0; background: var(--bg-2); color: var(--ink); width: 38px; height: 38px; border-radius: 50%; cursor: pointer; font-size: 16px; }
+
+  /* gombok: forgó átmenetes keret */
+  .btn { --b: 2px; display: inline-flex; align-items: center; gap: 10px; font: 700 15px/1 inherit; padding: 15px 24px; border-radius: 99px; border: 0; cursor: pointer; text-decoration: none; transition: transform .25s cubic-bezier(.3,1.6,.5,1), box-shadow .3s; }
+  .btn:active { transform: scale(.97); }
+  .btn-primary { color: #fff; background: var(--grad); box-shadow: 0 10px 30px -10px var(--brand); }
+  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 16px 40px -10px var(--brand-2); }
+  .btn-ghost { color: var(--ink); background: linear-gradient(var(--card), var(--card)) padding-box, conic-gradient(from var(--ang), var(--line), var(--brand), var(--brand-2), var(--line) 60%) border-box; border: var(--b) solid transparent; }
+  .btn-ghost:hover { animation: spin 2.5s linear infinite; }
+  @keyframes spin { to { --ang: 360deg; } }
+  .btn-sm { padding: 10px 16px; font-size: 13px; }
+  .btn-ok { color: #fff; background: var(--ok); }
+  .btn .arr { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: rgba(255,255,255,.22); transition: transform .25s; }
+  .btn:hover .arr { transform: translateX(3px) rotate(-45deg); }
+
+  /* hero orb */
+  .hero { min-height: 100vh; display: grid; place-items: center; text-align: center; padding: 140px 0 80px; position: relative; }
+  .orb { position: absolute; width: 620px; height: 620px; left: 50%; top: 46%; translate: -50% -50%; border-radius: 50%; z-index: -1;
+    background: conic-gradient(from var(--ang), var(--brand-3), var(--brand), var(--brand-2), #ffc26b, var(--brand-3)); filter: blur(70px); opacity: .45; animation: spin 14s linear infinite; }
+  .orb::after { content: ""; position: absolute; inset: 22%; border-radius: 50%; background: var(--bg); filter: blur(40px); }
+  .chip { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; padding: 7px 14px; border-radius: 99px; background: var(--card); box-shadow: var(--shadow), 0 0 0 1px var(--line) inset; }
+  .chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 20%, transparent); }
+  h1 { font-size: clamp(56px, 9vw, 128px); line-height: .92; letter-spacing: -.055em; font-weight: 800; margin-top: 28px; }
+  h1 .serif { letter-spacing: -.02em; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; padding-right: .08em; }
+  h1 .w { display: inline-block; opacity: 0; transform: translateY(40%) rotate(4deg); animation: up .9s cubic-bezier(.2,.8,.2,1) forwards; }
+  @keyframes up { to { opacity: 1; transform: none; } }
+  .lead { color: var(--ink-soft); font-size: 20px; max-width: 600px; margin: 28px auto 0; }
+  .cta { display: flex; gap: 12px; justify-content: center; margin-top: 36px; flex-wrap: wrap; }
+  .scrollhint { position: absolute; bottom: 32px; left: 50%; translate: -50% 0; font-size: 12px; color: var(--ink-faint); letter-spacing: .15em; text-transform: uppercase; }
+  .scrollhint::after { content: ""; display: block; width: 1px; height: 40px; margin: 10px auto 0; background: linear-gradient(var(--brand), transparent); animation: drop 1.8s ease-in-out infinite; transform-origin: top; }
+  @keyframes drop { 0% { transform: scaleY(0); } 60% { transform: scaleY(1); } 100% { transform: scaleY(1); opacity: 0; } }
+
+  /* szavanként kigyulladó manifesztó */
+  .manifesto { padding: 160px 0; }
+  .manifesto p { font-size: clamp(30px, 4.2vw, 56px); line-height: 1.15; letter-spacing: -.03em; font-weight: 700; max-width: 22ch; }
+  .manifesto span { opacity: .15; transition: opacity .3s; }
+  .manifesto span.lit { opacity: 1; }
+
+  /* vízszintes, rögzített kártyasáv */
+  .hscroll { height: 300vh; position: relative; }
+  .hscroll .pin { position: sticky; top: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column; justify-content: center; }
+  .hscroll h2 { padding: 0 max(28px, calc(50vw - 562px)); }
+  .track { display: flex; gap: 24px; padding: 48px max(28px, calc(50vw - 562px)) 0; will-change: transform; }
+  .card { flex: 0 0 420px; height: 440px; border-radius: 28px; padding: 32px; background: var(--card); box-shadow: var(--shadow), 0 0 0 1px var(--line) inset; display: flex; flex-direction: column; position: relative; overflow: hidden; }
+  .card .num { font-size: 88px; line-height: 1; font-weight: 800; letter-spacing: -.05em; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .card h3 { font-size: 26px; letter-spacing: -.03em; margin-top: auto; }
+  .card p { color: var(--ink-soft); margin-top: 8px; }
+  .card.dark { background: #1a1216; color: #f7eef1; }
+  .card.dark p { color: #b7a8ae; }
+  h2 { font-size: clamp(38px, 5vw, 68px); letter-spacing: -.045em; line-height: 1; font-weight: 800; }
+
+  /* komponensek */
+  section { padding: 120px 0; }
+  .eyebrow { font-size: 13px; font-weight: 700; color: var(--brand); letter-spacing: .06em; }
+  .kit { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 48px; }
+  .panel { padding: 28px; border-radius: 24px; background: var(--card); box-shadow: var(--shadow), 0 0 0 1px var(--line) inset; }
+  .panel > small { display: block; font-size: 12px; font-weight: 700; color: var(--ink-faint); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 18px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; padding: 5px 11px; border-radius: 99px; margin: 14px 6px 0 0; }
+  .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 16px; background: var(--bg); margin-bottom: 8px; font-weight: 600; font-size: 14px; }
+  .row img { width: 22px; height: 22px; }
+  [data-theme="dark"] .row img { filter: invert(1); }
+  .row .st { margin-left: auto; font-size: 12px; color: var(--ok); }
+  .approval { border-radius: 20px; padding: 18px; background: linear-gradient(135deg, color-mix(in srgb, var(--brand-2) 12%, var(--card)), color-mix(in srgb, var(--brand) 8%, var(--card))); box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand-2) 35%, transparent) inset; }
+  .approval h4 { font-size: 15px; }
+  .approval dl { display: grid; grid-template-columns: 90px 1fr; gap: 4px 12px; margin: 12px 0 16px; font-size: 14px; }
+  .approval dt { color: var(--ink-faint); }
+  .field { display: grid; gap: 6px; font-size: 13px; font-weight: 600; color: var(--ink-soft); margin-bottom: 14px; }
+  .field input { font: inherit; font-weight: 500; font-size: 15px; color: var(--ink); background: var(--bg); border: 0; border-radius: 14px; padding: 13px 16px; outline: none; box-shadow: 0 0 0 1px var(--line) inset; transition: box-shadow .2s; }
+  .field input:focus { box-shadow: 0 0 0 2px var(--brand) inset, 0 0 0 5px color-mix(in srgb, var(--brand) 15%, transparent); }
+  .toggle { display: flex; align-items: center; gap: 12px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .toggle input { appearance: none; width: 48px; height: 28px; border-radius: 99px; background: var(--line); position: relative; cursor: pointer; transition: background .3s; }
+  .toggle input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0,0,0,.2); transition: transform .35s cubic-bezier(.3,1.6,.5,1); }
+  .toggle input:checked { background: var(--grad); }
+  .toggle input:checked::after { transform: translateX(20px); }
+  :root { interpolate-size: allow-keywords; }
+  details { border-radius: 18px; background: var(--bg); margin-bottom: 10px; transition: background .3s, box-shadow .3s; }
+  details[open] { background: var(--card); box-shadow: var(--shadow), 0 0 0 1px var(--line) inset; }
+  summary { list-style: none; cursor: pointer; padding: 16px 18px; display: flex; align-items: center; gap: 12px; font-weight: 700; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: ""; margin-left: auto; width: 28px; height: 28px; border-radius: 50%; background: var(--card) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23c2185b' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") center/16px no-repeat; box-shadow: 0 0 0 1px var(--line) inset; transition: transform .4s cubic-bezier(.3,1.6,.5,1); }
+  details[open] summary::after { transform: rotate(180deg); }
+  details::details-content { block-size: 0; overflow: clip; transition: block-size .45s cubic-bezier(.2,.8,.2,1), content-visibility .45s allow-discrete; }
+  details[open]::details-content { block-size: auto; }
+  details p { padding: 0 18px 18px; color: var(--ink-soft); }
+
+  footer { padding: 60px 0; color: var(--ink-faint); font-size: 13px; }
+
+  .reveal { opacity: 0; transform: translateY(40px) scale(.98); transition: opacity .9s, transform .9s cubic-bezier(.2,.8,.2,1); }
+  .reveal.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } .reveal, h1 .w { opacity: 1; transform: none; } .manifesto span { opacity: 1; } }
+  @media (max-width: 860px) { .kit { grid-template-columns: 1fr; } .card { flex-basis: 300px; } nav a { display: none; } .orb { width: 380px; height: 380px; } }
+</style>
+</head>
+<body>
+<nav>
+  <div class="logo"><i></i>Excellence AI</div>
+  <a href="#">Termék</a><a href="#">Biztonság</a><a href="#">Adatkezelés</a>
+  <div class="spacer"></div>
+  <button class="theme" id="theme" title="Téma váltása">☾</button>
+  <a class="btn btn-primary btn-sm" href="#">Bejelentkezés</a>
+</nav>
+
+<header class="hero">
+  <div class="orb"></div>
+  <div class="wrap">
+    <span class="chip reveal"><i></i> Vállalati MCP-szerver · EU-ban üzemeltetve</span>
+    <h1><span class="w">Az&nbsp;</span><span class="w" style="animation-delay:.08s">AI&nbsp;</span><span class="w" style="animation-delay:.16s">dolgozik.</span><br /><span class="w serif" style="animation-delay:.3s">A cég irányít.</span></h1>
+    <p class="lead reveal">A csapat AI-eszközei biztonságosan elérik a céges rendszereket. A megszokott felület marad — a hozzáférés, a jóváhagyás és az audit a cégé.</p>
+    <div class="cta reveal">
+      <a class="btn btn-primary" href="#">Belépés <span class="arr">→</span></a>
+      <a class="btn btn-ghost" href="#">Hogyan működik?</a>
+    </div>
+  </div>
+  <div class="scrollhint">görgess</div>
+</header>
+
+<div class="manifesto wrap"><p id="mf">Az AI javasol. Az ember dönt. Minden írás jóváhagyókártyára érkezik, minden lépés naplóba kerül, és az adat az EU-ban marad.</p></div>
+
+<div class="hscroll" id="hs">
+  <div class="pin">
+    <h2>Egy kapcsolat. <span class="serif" style="color:var(--brand)">Teljes felügyelet.</span></h2>
+    <div class="track" id="track">
+      <div class="card"><div class="num">01</div><h3>Csatlakozás</h3><p>Egy céges MCP-cím — Claude, ChatGPT, Codex és Cursor ugyanazon a kapun.</p></div>
+      <div class="card"><div class="num">02</div><h3>Hozzáférés</h3><p>Az AI csak azt látja a Drive-ból, Gmailből, CRM-ből, amihez a munkatárs joga engedi.</p></div>
+      <div class="card dark"><div class="approval" style="margin-bottom:auto">
+        <h4>● Mappalétrehozás — jóváhagyásra vár</h4>
+        <dl><dt>Művelet</dt><dd>Mappa létrehozása</dd><dt>Útvonal</dt><dd>Q3 / Ügyfélszerződések</dd><dt>AI-eszköz</dt><dd>Claude Code</dd></dl>
+        <button class="btn btn-ok btn-sm">Jóváhagyom</button>
+      </div><h3>Jóváhagyás</h3><p>Az írás csak emberi igen után történik meg.</p></div>
+      <div class="card"><div class="num">04</div><h3>Audit</h3><p>Ki, mit, mikor, melyik AI-eszközzel — visszakereshetően.</p></div>
+      <div class="card"><div class="num">EU</div><h3>GDPR</h3><p>EU-hosztolás, érzékeny mezők tokenizálva a modellek felé.</p></div>
+    </div>
+  </div>
+</div>
+
+<section class="wrap">
+  <div class="eyebrow reveal">KOMPONENS-NYELV</div>
+  <h2 class="reveal" style="margin-top:12px">Ugyanez <span class="serif" style="color:var(--brand)">az egész platformon.</span></h2>
+  <div class="kit">
+    <div class="panel reveal">
+      <small>Gombok</small>
+      <div class="btns"><button class="btn btn-primary">Elsődleges <span class="arr">→</span></button><button class="btn btn-ghost">Másodlagos</button></div>
+      <span class="badge" style="background:color-mix(in srgb,var(--ok) 14%,transparent);color:var(--ok)">aktív</span><span class="badge" style="background:color-mix(in srgb,var(--warn) 14%,transparent);color:var(--warn)">vár</span><span class="badge" style="background:color-mix(in srgb,var(--brand-3) 14%,transparent);color:var(--brand-3)">vázlat</span>
+    </div>
+    <div class="panel reveal">
+      <small>Űrlap</small>
+      <label class="field">Munkatárs neve<input value="Pénzügyi asszisztens" /></label>
+      <label class="toggle"><input type="checkbox" checked /> Írás jóváhagyáshoz kötve</label>
+    </div>
+    <div class="panel reveal">
+      <small>Csatlakozott eszközök</small>
+      <div class="row"><img src="../../app/public/mcp-clients/claudecode.svg" alt="">Claude Code<span class="st">● csatlakozva</span></div>
+      <div class="row"><img src="../../app/public/mcp-clients/codex.svg" alt="">Codex<span class="st">● csatlakozva</span></div>
+      <div class="row"><img src="../../app/public/mcp-clients/cursor.svg" alt="">Cursor<span class="st">● csatlakozva</span></div>
+    </div>
+    <div class="panel reveal">
+      <small>Összecsukható dobozok</small>
+      <details open><summary>Claude Code beállítása</summary><p>Futtasd a /mcps parancsot, válaszd a szervert, és jelentkezz be.</p></details>
+      <details><summary>ChatGPT beállítása</summary><p>Settings → Connectors → Add custom connector.</p></details>
+      <details><summary>Cursor beállítása</summary><p>Beállítások → MCP → új szerver.</p></details>
+    </div>
+  </div>
+</section>
+
+<footer class="wrap">C · Ember — a mostani bordó márkaszín továbbgondolva: lila→bordó→narancs átmenet, meleg világos + sötét téma.</footer>
+
+<script>
+  const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } }), { threshold: .15 });
+  document.querySelectorAll('.reveal').forEach((el, i) => { el.style.transitionDelay = (i % 4) * 90 + 'ms'; io.observe(el); });
+
+  const mf = document.getElementById('mf');
+  const parts = mf.textContent.split(' ');
+  mf.replaceChildren();
+  parts.forEach((w, i) => {
+    if (i) mf.append(' ');
+    const span = document.createElement('span');
+    span.textContent = w;
+    mf.append(span);
+  });
+  const words = [...mf.children], track = document.getElementById('track'), hs = document.getElementById('hs');
+  function onScroll() {
+    const r = mf.getBoundingClientRect(), p = Math.min(Math.max((innerHeight * .85 - r.top) / (r.height + innerHeight * .35), 0), 1);
+    words.forEach((w, i) => w.classList.toggle('lit', i / words.length < p));
+    const h = hs.getBoundingClientRect(), q = Math.min(Math.max(-h.top / (h.height - innerHeight), 0), 1);
+    track.style.transform = `translateX(${-q * Math.max(track.scrollWidth - innerWidth, 0)}px)`;
+  }
+  addEventListener('scroll', onScroll, { passive: true }); onScroll();
+
+  document.getElementById('theme').onclick = e => { const d = document.documentElement, dark = d.dataset.theme !== 'dark'; d.dataset.theme = dark ? 'dark' : ''; e.target.textContent = dark ? '☀' : '☾'; };
+</script>
+</body>
+</html>
