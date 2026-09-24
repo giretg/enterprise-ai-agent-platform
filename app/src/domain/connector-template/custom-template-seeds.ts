@@ -180,6 +180,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         type: 'secret',
         required: true,
         secretAliasHint: 'github-personal-access-token',
+        hiddenInProvisioning: true,
         target: 'auth.secretAliasSuggested',
       },
     ],
