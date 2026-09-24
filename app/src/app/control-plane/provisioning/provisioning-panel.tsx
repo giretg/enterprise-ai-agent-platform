@@ -248,11 +248,18 @@ type TemplateDescriptor = {
     type: 'string' | 'secret' | 'scopeSelection' | 'endpointSelection' | 'enum'
     required?: boolean
     secretAliasHint?: string
+    hiddenInProvisioning?: boolean
     enumValues?: string[]
   }>
   scopeCatalog: Array<{ value: string; label: string; description?: string; default?: boolean }>
   endpoints: Array<{ name: string; method: string; path: string; access: 'read' | 'write'; description?: string; default?: boolean }>
 }
+function provisioningVisibleInstanceFields(
+  fields: TemplateDescriptor['instanceFields'],
+): TemplateDescriptor['instanceFields'] {
+  return fields.filter((field) => !field.hiddenInProvisioning)
+}
+
 type ConnectorTemplateRow = {
   id: string
   key: string
@@ -1779,9 +1786,12 @@ export function ProvisioningPanel({
                               </div>
                             </div>
 
-                            {selectedTemplateDescriptor.instanceFields.length > 0 && !isGmailTemplate ? (
+                            {provisioningVisibleInstanceFields(selectedTemplateDescriptor.instanceFields)
+                              .length > 0 && !isGmailTemplate ? (
                               <div className="grid gap-3 sm:grid-cols-2">
-                                {selectedTemplateDescriptor.instanceFields.map((field) => {
+                                {provisioningVisibleInstanceFields(
+                                  selectedTemplateDescriptor.instanceFields,
+                                ).map((field) => {
                                   const value =
                                     field.type === 'secret'
                                       ? templateSecretAliases[field.name] ?? ''
@@ -2075,7 +2085,9 @@ export function ProvisioningPanel({
                       <div>
                         <h4 className="font-semibold">Mezők</h4>
                         <ul className="mt-1 space-y-1">
-                          {selectedTemplateDescriptor.instanceFields.map((field) => (
+                          {provisioningVisibleInstanceFields(
+                            selectedTemplateDescriptor.instanceFields,
+                          ).map((field) => (
                             <li key={field.name} className="flex justify-between gap-2">
                               <span className="text-ink-soft">{field.label}</span>
                               <code className="truncate">
@@ -2085,6 +2097,13 @@ export function ProvisioningPanel({
                               </code>
                             </li>
                           ))}
+                          {selectedTemplateDescriptor.instanceFields.some(
+                            (field) => field.hiddenInProvisioning,
+                          ) ? (
+                            <li className="text-ink-soft">
+                              A hitelesítő titok az aktiváláskor kerül megadásra (menedzselt titoktár).
+                            </li>
+                          ) : null}
                         </ul>
                       </div>
                       <div>

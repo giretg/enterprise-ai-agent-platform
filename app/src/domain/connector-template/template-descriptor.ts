@@ -21,6 +21,8 @@ export const instanceFieldSchema = z.object({
     })
     .optional(),
   secretAliasHint: z.string().optional(),
+  /** Sablon-varázslóban ne jelenjen meg — érték a secretAliasHint-ből / aktiváláskor jön. */
+  hiddenInProvisioning: z.boolean().optional(),
   enumValues: z.array(z.string()).optional(),
   target: z.string().min(1),
 })
