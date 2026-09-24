@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client'
+import { isPlatformGoogleApiConnectorProvider } from '@/lib/platform-google-api-connectors'
 
-export type GoogleOAuthService = 'gmail' | 'drive'
+export type GoogleOAuthService = 'gmail' | 'drive' | 'api'
 
 /** Történeti kulcs — Gmail platform OAuth (backward compat). */
 export const GOOGLE_OAUTH_PLATFORM_KEY = 'oauth.google'
@@ -8,6 +9,7 @@ export const GOOGLE_OAUTH_PLATFORM_KEY = 'oauth.google'
 export const GOOGLE_OAUTH_SERVICE_KEYS: Record<GoogleOAuthService, string> = {
   gmail: 'oauth.google.gmail',
   drive: 'oauth.google.drive',
+  api: 'oauth.google.api',
 }
 
 export type GoogleOAuthConfig = {
@@ -71,11 +73,40 @@ export function readGoogleOAuthConfigFromEnv(service: GoogleOAuthService = 'gmai
       redirectUri: process.env.GOOGLE_DRIVE_OAUTH_REDIRECT_URI,
     })
   }
+  if (service === 'api') {
+    return parseGoogleOAuthFields({
+      clientId: process.env.GOOGLE_API_OAUTH_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_API_OAUTH_CLIENT_SECRET,
+      redirectUri: process.env.GOOGLE_API_OAUTH_REDIRECT_URI,
+    })
+  }
   return parseGoogleOAuthFields({
     clientId: process.env.GMAIL_OAUTH_CLIENT_ID,
     clientSecret: process.env.GMAIL_OAUTH_CLIENT_SECRET,
     redirectUri: process.env.GMAIL_OAUTH_REDIRECT_URI,
   })
+}
+
+export function googleOAuthServiceForConnector(input: {
+  connectorType: string
+  provider?: string | null
+}): GoogleOAuthService {
+  const fromType = googleOAuthServiceForConnectorType(input.connectorType)
+  if (fromType) return fromType
+  if (isPlatformGoogleApiConnectorProvider(input.provider ?? '')) return 'api'
+  return 'gmail'
+}
+
+export function googleOAuthRedirectUriFromEnv(service: GoogleOAuthService): string | undefined {
+  if (service === 'drive') return process.env.GOOGLE_DRIVE_OAUTH_REDIRECT_URI?.trim()
+  if (service === 'api') return process.env.GOOGLE_API_OAUTH_REDIRECT_URI?.trim()
+  return process.env.GMAIL_OAUTH_REDIRECT_URI?.trim()
+}
+
+export function googleOAuthClientSecretFromEnv(service: GoogleOAuthService): string | undefined {
+  if (service === 'drive') return process.env.GOOGLE_DRIVE_OAUTH_CLIENT_SECRET
+  if (service === 'api') return process.env.GOOGLE_API_OAUTH_CLIENT_SECRET
+  return process.env.GMAIL_OAUTH_CLIENT_SECRET
 }
 
 export function readGoogleDrivePickerFromEnv(): GoogleDrivePickerConfig | null {
@@ -134,11 +165,12 @@ export async function loadGoogleOAuthConfig(opts?: {
     !parseGoogleOAuthFields(platformValue) &&
     !parseGoogleOAuthFields(legacyPlatformValue) &&
     !envConfig
-  const tenantSettings = needsHarvest
-    ? opts?.listTenantSettings
-      ? await opts.listTenantSettings()
-      : (await prisma.tenant.findMany({ select: { settings: true } })).map((row) => row.settings)
-    : undefined
+  const tenantSettings =
+    needsHarvest && service !== 'api'
+      ? opts?.listTenantSettings
+        ? await opts.listTenantSettings()
+        : (await prisma.tenant.findMany({ select: { settings: true } })).map((row) => row.settings)
+      : undefined
   return resolveGoogleOAuthConfig({
     platformValue,
     legacyPlatformValue,

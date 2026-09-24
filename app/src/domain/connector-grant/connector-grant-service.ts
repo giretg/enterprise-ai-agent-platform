@@ -4,7 +4,9 @@ import { prisma } from '@/lib/db'
 import {
   loadGoogleOAuthConfig,
   readGoogleOAuthConfigFromEnv,
-  googleOAuthServiceForConnectorType,
+  googleOAuthServiceForConnector,
+  googleOAuthClientSecretFromEnv,
+  googleOAuthRedirectUriFromEnv,
   type GoogleOAuthConfig,
   type GoogleOAuthService,
 } from '@/lib/platform-google-oauth-config'
@@ -136,10 +138,7 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
       oauth.redirectUri ??
       (() => {
         const service = googleOAuthService(connector)
-        const envRedirect =
-          service === 'drive'
-            ? process.env.GOOGLE_DRIVE_OAUTH_REDIRECT_URI?.trim()
-            : process.env.GMAIL_OAUTH_REDIRECT_URI?.trim()
+        const envRedirect = googleOAuthRedirectUriFromEnv(service)
         return (
           envRedirect ||
           `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/api/connectors/oauth/callback`
@@ -159,7 +158,11 @@ function isGoogleConnector(connector: Connector): boolean {
 }
 
 function googleOAuthService(connector: Connector): GoogleOAuthService {
-  return googleOAuthServiceForConnectorType(connector.type) ?? 'gmail'
+  const config = (connector.config ?? {}) as ConnectorOAuthConfig
+  return googleOAuthServiceForConnector({
+    connectorType: connector.type,
+    provider: config.provider,
+  })
 }
 
 async function resolvePlatformGoogleOAuthConfig(
@@ -257,11 +260,7 @@ async function resolveClientSecret(connector: Connector): Promise<string> {
 
   const envKey = alias.replace(/^secret:\/\//, '').replace(/\//g, '_').toUpperCase()
   const service = googleOAuthService(connector)
-  const fromEnv =
-    process.env[envKey] ??
-    (service === 'drive'
-      ? process.env.GOOGLE_DRIVE_OAUTH_CLIENT_SECRET
-      : process.env.GMAIL_OAUTH_CLIENT_SECRET)
+  const fromEnv = process.env[envKey] ?? googleOAuthClientSecretFromEnv(service)
   if (!fromEnv) throw new Error(`Missing OAuth client secret for ${alias}`)
   return fromEnv
 }

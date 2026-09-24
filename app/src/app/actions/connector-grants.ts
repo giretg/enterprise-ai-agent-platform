@@ -250,6 +250,16 @@ export async function getGoogleDriveOAuthConfiguredStatus() {
   }
 }
 
+export async function getGoogleApiOAuthConfiguredStatus() {
+  try {
+    await requireTenantRole('viewer')
+    const resolved = await services.platformSettings.getGoogleApiOAuthConfig()
+    return ok({ configured: Boolean(resolved) })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load Google API OAuth status')
+  }
+}
+
 export async function upsertPlatformGoogleOAuth(input: {
   clientId: string
   clientSecret?: string
@@ -311,6 +321,43 @@ export async function upsertPlatformGoogleDriveOAuth(input: {
     return ok(toGoogleOAuthPublicView(resolved))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to save platform Google Drive OAuth config')
+  }
+}
+
+export async function getPlatformGoogleApiOAuth() {
+  try {
+    await requirePlatformRole('platform_auditor')
+    const resolved = await services.platformSettings.getGoogleApiOAuthConfig()
+    return ok(toGoogleOAuthPublicView(resolved))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load platform Google API OAuth config')
+  }
+}
+
+export async function upsertPlatformGoogleApiOAuth(input: {
+  clientId: string
+  clientSecret?: string
+  redirectUri?: string
+}) {
+  try {
+    const ctx = await requirePlatformRole('superadmin')
+    const parsed = z.object({
+      clientId: z.string().trim().min(1),
+      clientSecret: z.string().trim().optional(),
+      redirectUri: z.union([z.literal(''), z.string().trim().url()]).optional(),
+    }).parse(input)
+
+    const resolved = await services.platformSettings.upsertGoogleApiOAuthConfig(
+      {
+        clientId: parsed.clientId,
+        ...(parsed.clientSecret ? { clientSecret: parsed.clientSecret } : {}),
+        redirectUri: parsed.redirectUri,
+      },
+      ctx.user.id,
+    )
+    return ok(toGoogleOAuthPublicView(resolved))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to save platform Google API OAuth config')
   }
 }
 
