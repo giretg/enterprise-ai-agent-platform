@@ -14,6 +14,7 @@ import {
   FORBIDDEN_PATH_PATTERNS,
   SECRET_LIKE_PATTERNS,
 } from '@/domain/net/untrusted-patterns'
+import { findOverlappingHttpApiEndpoints } from '@/domain/connector/http-api-client'
 import { WRITE_METHODS, type ConnectorConfig, type HttpMethod } from './connector-config'
 
 export type CheckStatus = 'passed' | 'warned' | 'failed'
@@ -133,6 +134,13 @@ export function validateDraftConfig(
   if (writeTools.length > 0) {
     writeToolsFlagged = 'warned'
     warnings.push(`write_tools_present: ${writeTools.map((t) => t.name).join(', ')}`)
+  }
+
+  // 4b) Átfedő végpont-sablonok: pl. `GET /{id}` minden egyszegmenses GET-et enged,
+  //     a `GET /act_{id}`-t is. Futásidőben a specifikusabb nyer, de a tág sablon
+  //     szélesebb allowlistet ad, mint amit az admin valószínűleg szánt — jelzés.
+  for (const [a, b] of findOverlappingHttpApiEndpoints(config.proposedTools)) {
+    warnings.push(`endpoint_templates_overlap: ${a} ↔ ${b}`)
   }
 
   // 5) Scope-minimalizálás: minden kért scope indokolt-e a proposedTools-hoz?

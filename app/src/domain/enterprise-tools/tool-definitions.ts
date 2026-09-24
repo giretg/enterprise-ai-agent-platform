@@ -8,6 +8,13 @@ export const GOOGLE_SHEETS_WRITE_RANGE_TOOL = 'google_sheets_write_range'
 
 export const GMAIL_SEARCH_TOOL = 'gmail_search'
 export const GMAIL_GET_MESSAGE_TOOL = 'gmail_get_message'
+export const GMAIL_GET_THREAD_TOOL = 'gmail_get_thread'
+export const GMAIL_LIST_LABELS_TOOL = 'gmail_list_labels'
+export const GMAIL_LIST_DRAFTS_TOOL = 'gmail_list_drafts'
+export const GMAIL_SEND_TOOL = 'gmail_send'
+export const GMAIL_CREATE_DRAFT_TOOL = 'gmail_create_draft'
+export const GMAIL_MODIFY_LABELS_TOOL = 'gmail_modify_labels'
+export const GMAIL_TRASH_TOOL = 'gmail_trash'
 
 export const HTTP_API_GET_TOOL = 'http_api_get'
 export const HTTP_API_GET_ALL_TOOL = 'http_api_get_all'
@@ -25,7 +32,21 @@ export const ENTERPRISE_DRIVE_TOOLS = [
   ...ENTERPRISE_DRIVE_WRITE_TOOLS,
 ] as const
 
-export const ENTERPRISE_GMAIL_TOOLS = [GMAIL_SEARCH_TOOL, GMAIL_GET_MESSAGE_TOOL] as const
+export const ENTERPRISE_GMAIL_WRITE_TOOLS = [
+  GMAIL_SEND_TOOL,
+  GMAIL_CREATE_DRAFT_TOOL,
+  GMAIL_MODIFY_LABELS_TOOL,
+  GMAIL_TRASH_TOOL,
+] as const
+
+export const ENTERPRISE_GMAIL_TOOLS = [
+  GMAIL_SEARCH_TOOL,
+  GMAIL_GET_MESSAGE_TOOL,
+  GMAIL_GET_THREAD_TOOL,
+  GMAIL_LIST_LABELS_TOOL,
+  GMAIL_LIST_DRAFTS_TOOL,
+  ...ENTERPRISE_GMAIL_WRITE_TOOLS,
+] as const
 
 export const ENTERPRISE_HTTP_WRITE_TOOLS = [HTTP_API_REQUEST_TOOL] as const
 
@@ -51,6 +72,7 @@ export const ENTERPRISE_KB_TOOLS = [
 
 export const ENTERPRISE_WRITE_TOOLS = [
   ...ENTERPRISE_DRIVE_WRITE_TOOLS,
+  ...ENTERPRISE_GMAIL_WRITE_TOOLS,
   ...ENTERPRISE_HTTP_WRITE_TOOLS,
 ] as const
 
@@ -64,6 +86,7 @@ export const ENTERPRISE_TOOLS = [
 export type EnterpriseDriveWriteTool = (typeof ENTERPRISE_DRIVE_WRITE_TOOLS)[number]
 export type EnterpriseDriveTool = (typeof ENTERPRISE_DRIVE_TOOLS)[number]
 export type EnterpriseGmailTool = (typeof ENTERPRISE_GMAIL_TOOLS)[number]
+export type EnterpriseGmailWriteTool = (typeof ENTERPRISE_GMAIL_WRITE_TOOLS)[number]
 export type EnterpriseHttpWriteTool = (typeof ENTERPRISE_HTTP_WRITE_TOOLS)[number]
 export type EnterpriseHttpTool = (typeof ENTERPRISE_HTTP_TOOLS)[number]
 export type EnterpriseKbTool = (typeof ENTERPRISE_KB_TOOLS)[number]
@@ -73,6 +96,7 @@ export type EnterpriseTool = (typeof ENTERPRISE_TOOLS)[number]
 const ENTERPRISE_DRIVE_TOOL_SET = new Set<string>(ENTERPRISE_DRIVE_TOOLS)
 const ENTERPRISE_DRIVE_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_DRIVE_WRITE_TOOLS)
 const ENTERPRISE_GMAIL_TOOL_SET = new Set<string>(ENTERPRISE_GMAIL_TOOLS)
+const ENTERPRISE_GMAIL_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_GMAIL_WRITE_TOOLS)
 const ENTERPRISE_HTTP_TOOL_SET = new Set<string>(ENTERPRISE_HTTP_TOOLS)
 const ENTERPRISE_HTTP_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_HTTP_WRITE_TOOLS)
 const ENTERPRISE_KB_TOOL_SET = new Set<string>(ENTERPRISE_KB_TOOLS)
@@ -89,6 +113,10 @@ export function isEnterpriseDriveWriteTool(toolName: string): toolName is Enterp
 
 export function isEnterpriseGmailTool(toolName: string): toolName is EnterpriseGmailTool {
   return ENTERPRISE_GMAIL_TOOL_SET.has(toolName)
+}
+
+export function isEnterpriseGmailWriteTool(toolName: string): toolName is EnterpriseGmailWriteTool {
+  return ENTERPRISE_GMAIL_WRITE_TOOL_SET.has(toolName)
 }
 
 export function isEnterpriseHttpTool(toolName: string): toolName is EnterpriseHttpTool {
@@ -235,6 +263,127 @@ export const gmailGetMessageInputSchema = z
   })
   .passthrough()
 
+export const gmailGetThreadInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    threadId: z.string().min(1).max(200).describe('Gmail threadId from gmail_search or gmail_get_message'),
+  })
+  .passthrough()
+
+export const gmailListLabelsInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+  })
+  .passthrough()
+
+export const gmailListDraftsInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    maxResults: z.number().int().min(1).max(25).optional(),
+  })
+  .passthrough()
+
+// ponytail: comma-separated strings not string[] — Claude.ai drops advertised array schemas
+const emailList = (what: string) =>
+  z.string().max(2000).optional().describe(`${what}: comma-separated addresses, e.g. "Anna <anna@x.hu>, bela@y.hu"`)
+
+const composeFields = {
+  definitionId,
+  agentId: optionalAgentId,
+  to: emailList('Recipients. Omit when replying — defaults to the original sender (all participants with replyAll)'),
+  cc: emailList('Cc'),
+  bcc: emailList('Bcc'),
+  subject: z.string().max(1000).optional().describe('Required for a new message; omit when replying ("Re: <original>")'),
+  body: z.string().max(100_000).optional().describe('Plain-text message body'),
+  replyToMessageId: z
+    .string()
+    .max(200)
+    .optional()
+    .describe('Gmail message id (from gmail_search/gmail_get_message) to reply to — keeps the reply in the same thread'),
+  replyAll: z.boolean().optional().describe('With replyToMessageId: also address the original To/Cc recipients'),
+  idempotencyKey: z.string().min(1).max(200),
+}
+
+const gmailSendObject = z
+  .object({
+    ...composeFields,
+    draftId: z.string().max(200).optional().describe('Send an existing draft (from gmail_create_draft / gmail_list_drafts) instead of composing'),
+  })
+  .passthrough()
+
+function composeIssue(args: { to?: string; subject?: string; body?: string; replyToMessageId?: string }): string | null {
+  if (!args.body?.trim()) return 'body is required'
+  if (args.replyToMessageId) return null
+  if (!args.to?.trim()) return 'to is required for a new message'
+  if (!args.subject?.trim()) return 'subject is required for a new message'
+  return null
+}
+
+export const gmailSendInputSchema = gmailSendObject.superRefine((args, ctx) => {
+  if (args.draftId) return
+  const issue = composeIssue(args)
+  if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue })
+})
+
+const gmailCreateDraftObject = z.object(composeFields).passthrough()
+
+export const gmailCreateDraftInputSchema = gmailCreateDraftObject.superRefine((args, ctx) => {
+  const issue = composeIssue(args)
+  if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue })
+})
+
+const messageOrThread = {
+  definitionId,
+  agentId: optionalAgentId,
+  messageId: z.string().max(200).optional().describe('One Gmail message id'),
+  threadId: z.string().max(200).optional().describe('Whole thread id (use instead of messageId)'),
+  idempotencyKey: z.string().min(1).max(200),
+}
+
+function exactlyOneTarget(args: { messageId?: string; threadId?: string }, ctx: z.RefinementCtx) {
+  if (Boolean(args.messageId) === Boolean(args.threadId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'pass exactly one of messageId or threadId' })
+  }
+}
+
+const gmailModifyLabelsObject = z
+  .object({
+    ...messageOrThread,
+    addLabelIds: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe('Comma-separated label ids to add, e.g. STARRED, IMPORTANT, UNREAD, or a user label id from gmail_list_labels'),
+    removeLabelIds: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe('Comma-separated label ids to remove. Archive = INBOX, mark read = UNREAD'),
+  })
+  .passthrough()
+
+export const gmailModifyLabelsInputSchema = gmailModifyLabelsObject.superRefine((args, ctx) => {
+  exactlyOneTarget(args, ctx)
+  if (!args.addLabelIds?.trim() && !args.removeLabelIds?.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'addLabelIds or removeLabelIds is required' })
+  }
+})
+
+const gmailTrashObject = z.object(messageOrThread).passthrough()
+
+export const gmailTrashInputSchema = gmailTrashObject.superRefine(exactlyOneTarget)
+
+/** MCP `registerTool` needs a plain object schema; refinements run in `schemaForEnterpriseTool`. */
+export const GMAIL_MCP_INPUT_SCHEMAS = {
+  [GMAIL_SEND_TOOL]: gmailSendObject,
+  [GMAIL_CREATE_DRAFT_TOOL]: gmailCreateDraftObject,
+  [GMAIL_MODIFY_LABELS_TOOL]: gmailModifyLabelsObject,
+  [GMAIL_TRASH_TOOL]: gmailTrashObject,
+} as const
+
 export const httpApiGetInputSchema = z
   .object({
     definitionId,
@@ -352,6 +501,13 @@ export function schemaForEnterpriseTool(toolName: string) {
   if (isEnterpriseKbTool(toolName)) return schemaForEnterpriseKbTool(toolName)
   if (toolName === GMAIL_GET_MESSAGE_TOOL) return gmailGetMessageInputSchema
   if (toolName === GMAIL_SEARCH_TOOL) return gmailSearchInputSchema
+  if (toolName === GMAIL_GET_THREAD_TOOL) return gmailGetThreadInputSchema
+  if (toolName === GMAIL_LIST_LABELS_TOOL) return gmailListLabelsInputSchema
+  if (toolName === GMAIL_LIST_DRAFTS_TOOL) return gmailListDraftsInputSchema
+  if (toolName === GMAIL_SEND_TOOL) return gmailSendInputSchema
+  if (toolName === GMAIL_CREATE_DRAFT_TOOL) return gmailCreateDraftInputSchema
+  if (toolName === GMAIL_MODIFY_LABELS_TOOL) return gmailModifyLabelsInputSchema
+  if (toolName === GMAIL_TRASH_TOOL) return gmailTrashInputSchema
   if (toolName === HTTP_API_GET_ALL_TOOL) return httpApiGetAllInputSchema
   if (toolName === HTTP_API_REQUEST_TOOL) return httpApiRequestInputSchema
   if (toolName === HTTP_API_GET_TOOL) return httpApiGetInputSchema

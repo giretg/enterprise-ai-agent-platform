@@ -4,8 +4,11 @@ import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { revokeConnectorGrant, startConnectorOAuth } from '@/app/actions/connector-grants'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
-import { ConnectionCard } from '@/components/account/connection-card'
-import { GoogleDrivePickerPanel } from '@/components/account/google-drive-picker-panel'
+import { ConnectionCard, StatusDot } from '@/components/account/connection-card'
+import {
+  GoogleDrivePickerPanel,
+  selectionLabel,
+} from '@/components/account/google-drive-picker-panel'
 import { GMAIL_SCOPES } from '@/domain/connector-grant/gmail-scopes'
 import {
   DRIVE_SCOPE_PROFILES,
@@ -137,6 +140,11 @@ function grantMetadata(raw: unknown): GoogleDriveGrantMetadata {
   return parseGoogleDriveGrantMetadata(raw as never)
 }
 
+type DetailTab = 'overview' | 'files' | 'created' | 'history'
+
+const pillButton =
+  'rounded-full border border-line px-3.5 py-1.5 text-xs font-semibold text-ink transition-colors hover:bg-ink/5 disabled:opacity-50'
+
 export function ConnectorConnectionCard({
   connector,
   grants,
@@ -155,6 +163,8 @@ export function ConnectorConnectionCard({
     connectorConfiguredScopes(connector),
   )
   const [localGrants, setLocalGrants] = useState(grants)
+  const [open, setOpen] = useState(false)
+  const [tab, setTab] = useState<DetailTab>('overview')
 
   const activeGrant = localGrants.find((g) => g.connectorId === connector.id && g.status === 'active')
   const history = localGrants.filter((g) => g !== activeGrant)
@@ -164,80 +174,88 @@ export function ConnectorConnectionCard({
     scopeProfiles[0] ??
     GMAIL_SCOPE_PROFILES[0]
   const usage = connectorUsageStatus(connector)
+  const isGoogle = connector.type === 'gmail' || connector.type === 'google_drive'
   const showDrivePicker =
     connector.type === 'google_drive' &&
     activeGrant &&
     driveScopeProfile(parseDriveScopes(activeGrant.scopes as never)) === 'selected_write'
+  const driveMetadata =
+    connector.type === 'google_drive' && activeGrant
+      ? grantMetadata(activeGrant.metadata ?? emptyGoogleDriveGrantMetadata())
+      : null
+  const appCreated = driveMetadata?.appCreated ?? []
 
-  return (
-    <ConnectionCard
-      name={delegatedConnectorLabel(connector.type, connector.name)}
-      provider={connector.type}
-      description={connectorDescription(connector)}
-      connected={Boolean(activeGrant)}
-      connectedDetail={
-        activeGrant ? connectedGrantSummary(connector, activeGrant) : undefined
+  const tabs: { id: DetailTab; label: string }[] = [
+    { id: 'overview', label: 'Áttekintés' },
+    ...(showDrivePicker ? [{ id: 'files' as const, label: 'Írható fájlok' }] : []),
+    ...(appCreated.length > 0
+      ? [{ id: 'created' as const, label: `Létrehozott (${appCreated.length})` }]
+      : []),
+    ...(history.length > 0 ? [{ id: 'history' as const, label: 'Előzmények' }] : []),
+  ]
+
+  const revoke = () =>
+    startTransition(async () => {
+      if (!activeGrant) return
+      const res = await revokeConnectorGrant({ grantId: activeGrant.id })
+      if (res.success) {
+        setLocalGrants((prev) =>
+          prev.map((g) => (g.id === activeGrant.id ? { ...g, status: 'revoked' } : g)),
+        )
+        setMessage({ ok: true, text: 'Az összekötést megszüntettük.' })
+        router.refresh()
+      } else {
+        setMessage({ ok: false, text: res.error })
       }
+    })
+
+  const connect = () =>
+    startTransition(async () => {
+      const res = await startConnectorOAuth({
+        connectorId: connector.id,
+        scopes: isGoogle ? selectedScopes : undefined,
+      })
+      if (res.success) {
+        if ('stub' in res.data && res.data.stub) {
+          router.refresh()
+          setMessage({ ok: true, text: 'Fiók sikeresen összekötve (stub).' })
+        } else {
+          navigateToOAuth(res.data.url)
+        }
+      } else {
+        setMessage({ ok: false, text: res.error })
+      }
+    })
+
+  const messageBox = message ? (
+    <p
+      className={`rounded-lg px-3 py-2 text-xs ${
+        message.ok ? 'bg-sage/10 text-sage' : 'bg-coral/10 text-coral-deep'
+      }`}
     >
-      {activeGrant ? (
-        <div className="space-y-3">
-          <p
-            className={`rounded-lg border px-3 py-2 text-sm ${
-              usage.usable
-                ? 'border-sage/35 bg-sage/10 text-sage'
-                : 'border-amber/40 bg-amber/10 text-ink-soft'
-            }`}
-          >
-            {usage.text}
-          </p>
-          {connector.type === 'google_drive' && activeGrant ? (
-            <p className="text-xs leading-5 text-ink-soft">
-              {driveGrantScopeSummary(activeGrant.scopes).description}
-            </p>
-          ) : null}
-          {showDrivePicker ? (
-            <GoogleDrivePickerPanel
-              grantId={activeGrant.id}
-              initialMetadata={grantMetadata(activeGrant.metadata ?? emptyGoogleDriveGrantMetadata())}
-              pickerConfigured={drivePickerConfigured}
-            />
-          ) : null}
-          {(connector.type === 'gmail' || connector.type === 'google_drive') && (
-            <p className="text-xs text-ink-faint">
-              Más jogosultsági profilhoz bontsd az összekötést, válaszd ki az új profilt, majd kösd
-              újra össze.
-            </p>
-          )}
-          <button
-            type="button"
-            disabled={pending}
-            className="rounded-full border border-coral/50 px-4 py-2 text-sm font-semibold text-coral-deep disabled:opacity-50"
-            onClick={() =>
-              startTransition(async () => {
-                const res = await revokeConnectorGrant({ grantId: activeGrant.id })
-                if (res.success) {
-                  setLocalGrants((prev) =>
-                    prev.map((g) => (g.id === activeGrant.id ? { ...g, status: 'revoked' } : g)),
-                  )
-                  setMessage({ ok: true, text: 'Az összekötést megszüntettük.' })
-                  router.refresh()
-                } else {
-                  setMessage({ ok: false, text: res.error })
-                }
-              })
-            }
-          >
-            Összekötés megszüntetése
-          </button>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            {(connector.type === 'gmail' || connector.type === 'google_drive') && (
+      {message.text}
+    </p>
+  ) : null
+
+  if (!activeGrant) {
+    const hint =
+      connector.type === 'google_drive'
+        ? connectorScopeProfileDescription(connector.type, currentProfile.id)
+        : null
+    return (
+      <ConnectionCard
+        name={delegatedConnectorLabel(connector.type, connector.name)}
+        provider={connector.type}
+        summary={<span title={hint ?? undefined}>{connectorDescription(connector)}</span>}
+        actions={
+          <>
+            {isGoogle && (
               <select
                 value={currentProfile.id}
                 disabled={pending}
-                className="rounded-lg border border-line bg-panel px-2 py-1.5 text-sm text-ink"
+                aria-label="Hozzáférés szintje"
+                title={hint ?? undefined}
+                className="rounded-full border border-line bg-panel px-3 py-1.5 text-xs text-ink"
                 onChange={(event) => {
                   const profile =
                     scopeProfiles.find((p) => p.id === event.target.value) ?? scopeProfiles[0]
@@ -254,70 +272,131 @@ export function ConnectorConnectionCard({
             <button
               type="button"
               disabled={pending}
-              className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)] disabled:opacity-50"
-              onClick={() =>
-                startTransition(async () => {
-                  const res = await startConnectorOAuth({
-                    connectorId: connector.id,
-                    scopes:
-                      connector.type === 'gmail' || connector.type === 'google_drive'
-                        ? selectedScopes
-                        : undefined,
-                  })
-                  if (res.success) {
-                    if ('stub' in res.data && res.data.stub) {
-                      router.refresh()
-                      setMessage({ ok: true, text: 'Fiók sikeresen összekötve (stub).' })
-                    } else {
-                      navigateToOAuth(res.data.url)
-                    }
-                  } else {
-                    setMessage({ ok: false, text: res.error })
-                  }
-                })
-              }
+              className="rounded-full bg-coral px-4 py-1.5 text-xs font-semibold text-card shadow-sm transition-opacity hover:opacity-90 disabled:opacity-50"
+              onClick={connect}
             >
               Összekötés
             </button>
-          </div>
-          {connector.type === 'google_drive' ? (
-            <p className="max-w-2xl text-xs leading-5 text-ink-soft">
-              {connectorScopeProfileDescription(connector.type, currentProfile.id) ??
-                'Válaszd ki, milyen Drive-hozzáférést adsz az agentnek.'}
-            </p>
-          ) : null}
-        </div>
-      )}
+          </>
+        }
+      >
+        {messageBox}
+      </ConnectionCard>
+    )
+  }
 
-      {message && (
-        <div
-          className={`rounded-lg border p-3 text-sm ${
-            message.ok
-              ? 'border-sage/35 bg-sage/10 text-sage'
-              : 'border-coral/35 bg-coral/10 text-coral-deep'
-          }`}
+  return (
+    <ConnectionCard
+      name={delegatedConnectorLabel(connector.type, connector.name)}
+      provider={connector.type}
+      status={
+        <StatusDot tone={usage.usable ? 'ok' : 'warn'}>
+          {usage.usable ? 'Összekötve' : 'Nincs használatban'}
+        </StatusDot>
+      }
+      summary={connectedGrantSummary(connector, activeGrant)}
+      actions={
+        <button
+          type="button"
+          aria-expanded={open}
+          className={pillButton}
+          onClick={() => setOpen((v) => !v)}
         >
-          {message.text}
-        </div>
-      )}
+          Részletek
+          <span
+            aria-hidden="true"
+            className={`ml-1.5 inline-block transition-transform ${open ? 'rotate-180' : ''}`}
+          >
+            ▾
+          </span>
+        </button>
+      }
+    >
+      {open || message ? (
+        <div className="space-y-4">
+          {open && tabs.length > 1 ? (
+            <div role="tablist" className="flex gap-1 border-b border-line/60">
+              {tabs.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === t.id}
+                  className={`-mb-px border-b-2 px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    tab === t.id
+                      ? 'border-coral text-ink'
+                      : 'border-transparent text-ink-soft hover:text-ink'
+                  }`}
+                  onClick={() => setTab(t.id)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
 
-      {history.length > 0 && (
-        <div className="border-t border-line/60 pt-4">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-faint">
-            Korábbi összekötések
-          </p>
-          <ul className="space-y-1 text-sm text-ink-soft">
-            {history.map((grant) => (
-              <li key={grant.id} className="flex flex-wrap justify-between gap-x-3">
-                <span>
-                  {grant.accountLabel ?? '—'} ({grant.status})
-                </span>
-                <span>{new Date(grant.grantedAt).toLocaleString('hu-HU')}</span>
-              </li>
-            ))}
-          </ul>
+          {open && tab === 'overview' ? (
+            <div className="space-y-3 text-xs leading-5 text-ink-soft">
+              <p>{connectorDescription(connector)}</p>
+              <p className={usage.usable ? 'text-sage' : 'text-honey'}>{usage.text}</p>
+              {connector.type === 'google_drive' ? (
+                <p>{driveGrantScopeSummary(activeGrant.scopes).description}</p>
+              ) : null}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line/50 pt-3">
+                {isGoogle ? (
+                  <p className="text-ink-faint">
+                    Más hozzáférési szinthez bontsd az összekötést, majd kösd újra.
+                  </p>
+                ) : (
+                  <span />
+                )}
+                <button
+                  type="button"
+                  disabled={pending}
+                  className="rounded-full px-3 py-1.5 text-xs font-semibold text-coral-deep transition-colors hover:bg-coral/10 disabled:opacity-50"
+                  onClick={revoke}
+                >
+                  Összekötés megszüntetése
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {open && tab === 'files' && showDrivePicker && driveMetadata ? (
+            <GoogleDrivePickerPanel
+              grantId={activeGrant.id}
+              initialMetadata={driveMetadata}
+              pickerConfigured={drivePickerConfigured}
+            />
+          ) : null}
+
+          {open && tab === 'created' ? (
+            <ul className="divide-y divide-line/50 text-xs">
+              {appCreated.map((entry) => (
+                <li key={entry.fileId} className="flex justify-between gap-3 py-1.5" title={entry.fileId}>
+                  <span className="truncate text-ink">{entry.name}</span>
+                  <span className="shrink-0 text-ink-faint">{selectionLabel(entry.mimeType)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          {open && tab === 'history' ? (
+            <ul className="divide-y divide-line/50 text-xs text-ink-soft">
+              {history.map((grant) => (
+                <li key={grant.id} className="flex flex-wrap justify-between gap-x-3 py-1.5">
+                  <span>
+                    {grant.accountLabel ?? '—'} ({grant.status})
+                  </span>
+                  <span>{new Date(grant.grantedAt).toLocaleString('hu-HU')}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          {messageBox}
         </div>
-      )}
+      ) : null}
     </ConnectionCard>
   )
 }

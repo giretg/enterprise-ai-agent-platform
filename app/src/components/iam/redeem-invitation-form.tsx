@@ -38,7 +38,7 @@ export function RedeemInvitationForm({ initialToken }: { initialToken: string })
         <button
           type="button"
           disabled={pending || !token.trim()}
-          className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)] disabled:opacity-50"
+          className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(43,80,255,0.6)] disabled:opacity-50"
           onClick={() => {
             startTransition(async () => {
               const result = await redeemInvitation({

@@ -1,34 +1,37 @@
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;0,9..144,900;1,9..144,400;1,9..144,500&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
+/* Signal design system — crisp paper, black ink, electric-blue accent, lime highlight.
+   Token names are kept from the previous theme so every screen picks this up. */
 @theme {
-  --font-sans: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
-  --font-display: 'Fraunces', Georgia, serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --font-sans: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 
-  /* ── Surfaces: warm ivory estate paper (light) ───────────────── */
-  --color-night: #f8f2e6;      /* page base — warm cream */
-  --color-night-2: #f1e8d6;    /* recessed cream (inputs, wells) */
-  --color-card: #fffdf8;       /* primary card — warm white */
-  --color-card-2: #fbf4e6;     /* secondary card / hover cream */
-  --color-paper: #fffdf8;      /* alias — input / form surfaces */
-  --color-wash: #eef4ec;       /* recessed well tint */
-  --color-line: #e8dcc4;       /* hairline border, warm sand */
+  /* ── Surfaces ─────────────────────────────────────────────────── */
+  --color-night: #fafaf8;      /* page base — paper */
+  --color-night-2: #f1f1ed;    /* recessed (inputs, wells) */
+  --color-card: #ffffff;       /* primary card */
+  --color-card-2: #f7f7f4;     /* secondary card / hover */
+  --color-paper: #ffffff;      /* alias — input / form surfaces */
+  --color-wash: #eef1ff;       /* recessed well tint */
+  --color-line: #e4e4e0;       /* hairline border */
 
-  /* ── Ink: deep wine-brown reading colour ─────────────────────── */
-  --color-ink: #2c1e17;        /* near-black espresso */
-  --color-ink-soft: #6c574a;   /* warm brown body */
-  --color-ink-faint: #9d8a78;  /* muted caption */
+  /* ── Ink ──────────────────────────────────────────────────────── */
+  --color-ink: #0b0b0c;
+  --color-ink-soft: #55565c;
+  --color-ink-faint: #8e8f95;
 
-  /* ── Estate accents (cellar palette) ─────────────────────────── */
-  --color-coral: #b23a55;      /* primary — bordeaux rose */
-  --color-coral-deep: #8c2840; /* deep wine */
-  --color-accent: #b23a55;     /* alias of primary (bordeaux) — bg/text/border-accent */
-  --color-honey: #b07d24;      /* harvest gold */
-  --color-sage: #5d8a4f;       /* vineyard green */
-  --color-rose: #c25f7d;       /* rosé */
-  --color-sky: #4d86a6;        /* river sky */
-  --color-grape: #7d5fae;      /* grape must */
+  /* ── Accents (legacy names → Signal roles) ────────────────────── */
+  --color-coral: #2b50ff;      /* primary — electric blue */
+  --color-coral-deep: #1a37d6; /* primary pressed / link */
+  --color-accent: #2b50ff;
+  --color-lime: #c8f53c;       /* highlight */
+  --color-honey: #ff7a00;      /* warning / pending */
+  --color-sage: #0f9d58;       /* success */
+  --color-rose: #e5484d;       /* danger */
+  --color-sky: #0ea5e9;        /* info / running */
+  --color-grape: #7c5cff;      /* secondary accent */
 }
 
 @layer base {
@@ -41,55 +44,96 @@
     font-family: var(--font-sans);
     color: var(--color-ink);
     background-color: var(--color-night);
-    /* Sun-through-the-cellar warmth: rosé, gold and vineyard washes */
-    background-image:
-      radial-gradient(60rem 42rem at 6% -10%, rgba(178, 58, 85, 0.07), transparent 60%),
-      radial-gradient(52rem 38rem at 104% 2%, rgba(176, 125, 36, 0.09), transparent 58%),
-      radial-gradient(64rem 52rem at 50% 120%, rgba(93, 138, 79, 0.06), transparent 60%);
-    background-attachment: fixed;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
 
   ::selection {
-    background: rgba(178, 58, 85, 0.18);
-    color: var(--color-coral-deep);
+    background: var(--color-lime);
+    color: var(--color-ink);
   }
 
-  /* Display serif: high optical-size contrast, like an estate label */
   .font-display {
-    font-optical-sizing: auto;
-    font-variation-settings: 'opsz' 120;
-    letter-spacing: -0.012em;
+    letter-spacing: -0.03em;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-coral);
+    outline-offset: 2px;
   }
 }
 
 @layer components {
-  /* Estate card — warm paper, hairline edge, soft cellar shadow */
+  /* Card — white paper, hairline edge, crisp shadow */
   .atelier-card {
-    background:
-      linear-gradient(168deg, var(--color-card), var(--color-card-2));
+    background: var(--color-card);
     border: 1px solid var(--color-line);
-    border-radius: 1.25rem;
-    box-shadow:
-      0 1px 0 0 rgba(255, 255, 255, 0.7) inset,
-      0 1px 2px -1px rgba(70, 45, 30, 0.10),
-      0 22px 44px -34px rgba(90, 55, 35, 0.40);
+    border-radius: 0.75rem;
+    box-shadow: 0 1px 2px rgba(11, 11, 12, 0.04), 0 12px 32px -24px rgba(11, 11, 12, 0.25);
   }
 
-  /* Soft inset well — a slip of cream inside a card */
+  /* Soft inset well */
   .atelier-soft {
-    background: rgba(241, 232, 214, 0.55);
-    border: 1px solid rgba(214, 196, 164, 0.55);
-    border-radius: 1rem;
+    background: var(--color-night-2);
+    border: 1px solid var(--color-line);
+    border-radius: 0.625rem;
   }
 
-  /* A hairline gold rule, like the estate's foil line */
   .estate-rule {
     height: 1px;
-    background: linear-gradient(90deg, transparent, var(--color-line) 18%, var(--color-line) 82%, transparent);
+    background: var(--color-line);
   }
+
+  /* Engineering grid backdrop (public pages) */
+  .signal-grid {
+    background-image:
+      linear-gradient(var(--color-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--color-line) 1px, transparent 1px);
+    background-size: 64px 64px;
+    background-position: center -1px;
+  }
+
+  /* Signal button: a colour sweep fills from the left on hover */
+  .signal-btn {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+  }
+  .signal-btn::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background: var(--sweep, var(--color-coral));
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.35s cubic-bezier(0.7, 0, 0.2, 1);
+  }
+  .signal-btn:hover::before,
+  .signal-btn:focus-visible::before { transform: scaleX(1); }
+
+  /* Lime marker highlight that draws in */
+  .signal-mark {
+    background: linear-gradient(transparent 58%, var(--color-lime) 58%) no-repeat;
+    background-size: 0 100%;
+    animation: signal-mark 1s 0.5s cubic-bezier(0.7, 0, 0.2, 1) forwards;
+    padding: 0 0.06em;
+  }
+
+  /* Scroll reveal — toggled by <ScrollEffects /> */
+  [data-reveal] {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  [data-reveal].is-in { opacity: 1; transform: none; }
 }
+
+@keyframes signal-mark { to { background-size: 100% 100%; } }
+@keyframes signal-marquee { to { transform: translateX(-50%); } }
+.animate-marquee { animation: signal-marquee 32s linear infinite; }
+@keyframes signal-blink { 50% { opacity: 0.2; } }
+.animate-blink { animation: signal-blink 1s steps(2) infinite; }
 
 /* ── Living motion — agents that breathe and have a soul ───────── */
 @keyframes breathe {
@@ -152,7 +196,10 @@
 
 @media (prefers-reduced-motion: reduce) {
   .animate-breathe, .animate-soul, .animate-rise,
-  .animate-activity-run-dot, .animate-activity-run-row { animation: none !important; }
+  .animate-activity-run-dot, .animate-activity-run-row,
+  .animate-marquee, .animate-blink, .signal-mark { animation: none !important; }
+  .signal-mark { background-size: 100% 100%; }
+  [data-reveal] { opacity: 1; transform: none; transition: none; }
   .chat-typing-dot { animation: none; opacity: 0.6; }
   .animate-activity-run-row { background-color: rgba(77, 134, 166, 0.12); }
 }

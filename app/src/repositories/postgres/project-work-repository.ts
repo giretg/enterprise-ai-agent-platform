@@ -202,18 +202,22 @@ export class PostgresProjectMemoryRepository implements ProjectMemoryStore {
     artifactPath: string | null
     withUserId: string
     supersedesId: string | null
+    alsoSupersedeIds: string[]
   }): Promise<ProjectMemoryRecord> {
-    const row = await prisma.projectMemoryItem.create({
-      data: { ...input, status: 'active' },
+    const { alsoSupersedeIds, ...data } = input
+    const retire = [...new Set([data.supersedesId, ...alsoSupersedeIds].filter((id): id is string => !!id))]
+    const row = await prisma.$transaction(async (tx) => {
+      if (retire.length > 0) {
+        // CAS: két párhuzamos csere közül csak az egyik nyerhet.
+        const { count } = await tx.projectMemoryItem.updateMany({
+          where: { id: { in: retire }, status: 'active' },
+          data: { status: 'superseded' },
+        })
+        if (count !== retire.length) throw new Error('memory_not_found')
+      }
+      return tx.projectMemoryItem.create({ data: { ...data, status: 'active' } })
     })
     return mapMemory(row)
-  }
-
-  async supersede(id: string): Promise<void> {
-    await prisma.projectMemoryItem.update({
-      where: { id },
-      data: { status: 'superseded' },
-    })
   }
 }
 

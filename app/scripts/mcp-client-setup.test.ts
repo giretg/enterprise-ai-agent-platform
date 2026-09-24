@@ -6,9 +6,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { McpSetupLanding } from '../src/components/mcp/mcp-setup-landing'
 import {
   CONTROL_PLANE_GET_STARTED_PATH,
-  MCP_SETUP_SEEN_COOKIE,
   buildMcpClientSetup,
   claudeMcpAddCommand,
   codexMcpSetupCommand,
@@ -101,6 +103,22 @@ function main() {
     assert.match(nav, /key: 'get-started'/)
     assert.match(nav, /href: '\/control-plane\/get-started'/)
     assert.match(nav, /label: 'Első lépések'/)
+  })
+
+  check('client guides render as closed, branded cards with Goose Desktop setup', () => {
+    const html = renderToStaticMarkup(createElement(McpSetupLanding, {
+      setup,
+      continueHref: '/control-plane',
+    }))
+    assert.equal((html.match(/<details\b/g) ?? []).length, 6)
+    assert.doesNotMatch(html, /<details[^>]*\sopen(?:\s|=|>)/)
+    for (const client of ['codex', 'cursor', 'grok', 'claude', 'claudecode', 'goose']) {
+      assert.match(html, new RegExp(`/mcp-clients/${client}\\.svg`))
+    }
+    assert.match(html, /Goose Desktop/)
+    assert.match(html, /Streamable HTTP/)
+    assert.match(html, /Extensions → Add custom extension/)
+    assert.match(html, /https:\/\/app\.example\.com\/api\/mcp\/acme/)
   })
 
   if (failures > 0) {

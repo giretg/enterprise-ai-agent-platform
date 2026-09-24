@@ -1000,6 +1000,7 @@ Az agent képes egyszerű, egyfájlos HTML alkalmazásokat generálni (A0 szint)
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Lokális Ollama végpont |
 | `OPENROUTER_API_KEY` | — | OpenRouter API kulcs |
 | `WRITE_GATE_SECRET` | — | HMAC secret a write-gate token aláíráshoz |
+| `MCP_REQUEST_STATE_KEY` | — | HMAC secret az MCP `requestState` tokenhez (#618); hiányában link-fallback, nincs űrlap |
 | `DEV_USER_ID` | — | Dev auth: felhasználó ID (Clerk nélkül) |
 | `DEV_USER_ROLE` | `admin` | Dev auth: felhasználó szerepköre |
 | `AUTH_PROVIDER` | auto | `clerk` / `dev` |

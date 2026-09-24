@@ -11,6 +11,8 @@ import {
 } from '@/domain/connector-grant/google-drive-write-access'
 import { executeGoogleDriveTool } from '@/domain/enterprise-tools/handlers/google-drive'
 import { executeHttpApiTool } from '@/domain/enterprise-tools/handlers/http-api'
+import { executeGmailTool } from '@/domain/enterprise-tools/handlers/gmail'
+import { GmailApiAuthError, GmailApiError } from '@/domain/connector-grant/gmail-api-client'
 import { HttpApiError } from '@/domain/connector/http-api-client'
 import {
   authorizeToolCall,
@@ -27,6 +29,7 @@ import {
 import { checkDefinitionPin, type DefinitionPinDeps } from '@/domain/enterprise-tools/definition-pin'
 import {
   isEnterpriseDriveWriteTool,
+  isEnterpriseGmailWriteTool,
   isEnterpriseHttpWriteTool,
   isEnterpriseWriteTool,
   schemaForEnterpriseTool,
@@ -80,6 +83,11 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     args: Record<string, unknown>,
     accessToken: string,
   ) => Promise<unknown>
+  executeGmailTool?: (
+    toolName: string,
+    args: Record<string, unknown>,
+    accessToken: string,
+  ) => Promise<unknown>
   executeHttpApiTool?: (
     toolName: string,
     args: Record<string, unknown>,
@@ -117,7 +125,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 /** Stable JSON for idempotency payload equality (key order independent). */
-function stableJsonFingerprint(value: unknown): string {
+export function stableJsonFingerprint(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
   if (Array.isArray(value)) {
     return `[${value.map((entry) => stableJsonFingerprint(entry)).join(',')}]`
@@ -160,6 +168,11 @@ export function canSeeGatewayOperation(
   if (actor.userId === operation.principalUserId) return true
   return canApproveGatewayOperation(actor)
 }
+
+/** #618 D4: the requester confirms their own call; approver/admin may decide anyone's. */
+export const canDecideGatewayOperation = canSeeGatewayOperation
+
+export type GatewayDecisionChannel = 'mcp_form' | 'control_plane'
 
 export function toGatewayOperationView(row: GatewayOperationRecord): GatewayOperationView {
   return {
@@ -227,6 +240,14 @@ export function enqueueResultToMcp(
     toolName: result.view.toolName,
     ...(origin
       ? { approvalUrl: `${origin.replace(/\/+$/, '')}/control-plane/operations#${result.view.operationId}` }
+      : {}),
+    // Approving the link executes the write immediately but out-of-band: the
+    // caller only learns the outcome by asking again. Without this the model
+    // tends to take "I approved it" as success and never checks.
+    ...(result.view.status === 'awaiting_approval'
+      ? {
+          note: 'Approving this link runs the write right away; it can still fail there (e.g. the target API rejects the payload). Once the user says they approved it, call get_gateway_operation with this operationId and report its actual status — do not assume success.',
+        }
       : {}),
   })
 }
@@ -486,9 +507,9 @@ export type GatewayPendingOperationRow = GatewayPendingOperation & {
 
 export async function listPendingGatewayOperations(
   deps: GatewayOperationServiceDeps,
-  input: { tenantId: string },
+  input: { tenantId: string; principalUserId?: string },
 ): Promise<GatewayPendingOperation[]> {
-  const rows = await deps.operations.listAwaitingApproval(input.tenantId)
+  const rows = await deps.operations.listAwaitingApproval(input.tenantId, input.principalUserId)
   return rows.map((row) => ({
     ...toGatewayOperationView(row),
     args: asRecord(row.argsJson),
@@ -498,8 +519,11 @@ export async function listPendingGatewayOperations(
 function pendingDecisionError(
   row: GatewayOperationRecord,
   tenantId: string,
+  actor: GatewayActor,
 ): GatewayOperationErr | null {
   if (row.tenantId !== tenantId) return err('operation_not_found')
+  // not_found, not approver_not_authorized: another user's operation must not leak.
+  if (!canDecideGatewayOperation(actor, row)) return err('operation_not_found')
   if (row.status !== 'awaiting_approval') return err('operation_not_awaiting_approval')
   if (row.approval && row.approval.decision !== 'pending') return err('approval_already_decided')
   return null
@@ -507,15 +531,20 @@ function pendingDecisionError(
 
 export async function rejectGatewayOperation(
   deps: GatewayOperationServiceDeps,
-  input: { tenantId: string; operationId: string; actor: GatewayActor; reason?: string },
+  input: {
+    tenantId: string
+    operationId: string
+    actor: GatewayActor
+    reason?: string
+    channel?: GatewayDecisionChannel
+  },
 ): Promise<GatewayOperationResult> {
-  if (!canApproveGatewayOperation(input.actor)) return err('approver_not_authorized')
   const operationId = asUuid(input.operationId)
   if (!operationId) return err('operation_not_found')
 
   const decidedAt = new Date()
   const claimed = await deps.operations.withLockedOperation(operationId, async (row, save) => {
-    const denied = pendingDecisionError(row, input.tenantId)
+    const denied = pendingDecisionError(row, input.tenantId, input.actor)
     if (denied) return denied
     const updated = await save({
       status: 'rejected',
@@ -541,6 +570,8 @@ export async function rejectGatewayOperation(
         operationId,
         decidedByUserId: input.actor.userId,
         tenantId: input.tenantId,
+        channel: input.channel ?? 'control_plane',
+        selfDecided: input.actor.userId === claimed.view.principalUserId,
         ...(input.reason ? { reasonHash: computeDiffHash(input.reason) } : {}),
       },
     })
@@ -550,15 +581,20 @@ export async function rejectGatewayOperation(
 
 export async function approveGatewayOperation(
   deps: GatewayOperationServiceDeps,
-  input: { tenantId: string; operationId: string; actor: GatewayActor; reason?: string },
+  input: {
+    tenantId: string
+    operationId: string
+    actor: GatewayActor
+    reason?: string
+    channel?: GatewayDecisionChannel
+  },
 ): Promise<GatewayOperationResult> {
-  if (!canApproveGatewayOperation(input.actor)) return err('approver_not_authorized')
   const operationId = asUuid(input.operationId)
   if (!operationId) return err('operation_not_found')
 
   const decidedAt = new Date()
   const claimed = await deps.operations.withLockedOperation(operationId, async (row, save) => {
-    const denied = pendingDecisionError(row, input.tenantId)
+    const denied = pendingDecisionError(row, input.tenantId, input.actor)
     if (denied) return denied
     await save({
       status: 'approved',
@@ -586,6 +622,8 @@ export async function approveGatewayOperation(
       operationId,
       decidedByUserId: input.actor.userId,
       tenantId: input.tenantId,
+      channel: input.channel ?? 'control_plane',
+      selfDecided: input.actor.userId === claimed.record.principalUserId,
     },
   })
   await recordGatewayAudit(deps, {
@@ -757,7 +795,11 @@ async function executeApprovedOperation(
       })
     } catch {
       return fail(
-        authorized.connector.type === 'http_api' ? 'http_api_error' : 'google_drive_auth_failed',
+        authorized.connector.type === 'http_api'
+          ? 'http_api_error'
+          : authorized.connector.type === 'gmail'
+            ? 'gmail_auth_failed'
+            : 'google_drive_auth_failed',
       )
     }
   }
@@ -771,7 +813,9 @@ async function executeApprovedOperation(
           accessToken,
           await resolveHttpActingUser(deps, operation.principalUserId, operation.tenantId),
         )
-      : await (deps.executeDriveTool ?? executeGoogleDriveTool)(
+      : isEnterpriseGmailWriteTool(operation.toolName)
+        ? await (deps.executeGmailTool ?? executeGmailTool)(operation.toolName, args, accessToken ?? '')
+        : await (deps.executeDriveTool ?? executeGoogleDriveTool)(
           operation.toolName,
           args,
           accessToken ?? '',
@@ -823,6 +867,8 @@ function mapWriteError(error: unknown): string {
   if (error instanceof GoogleDriveWriteAccessError) return 'drive_write_not_allowed'
   if (error instanceof GoogleDriveApiAuthError) return 'google_drive_auth_failed'
   if (error instanceof GoogleDriveApiError) return 'google_drive_api_error'
+  if (error instanceof GmailApiAuthError) return 'gmail_auth_failed'
+  if (error instanceof GmailApiError) return 'gmail_api_error'
   if (error instanceof HttpApiError) return error.code === 'missing_api_key' ? 'missing_api_key' : 'http_api_error'
   return 'tool_execution_failed'
 }

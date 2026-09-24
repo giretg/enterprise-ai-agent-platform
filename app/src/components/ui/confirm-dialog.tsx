@@ -261,7 +261,7 @@ function ActiveConfirmDialog({
             onClick={() => onResolve(true)}
             className={
               tone === 'danger'
-                ? 'rounded-full bg-coral px-4 py-2 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)] transition hover:bg-coral/90'
+                ? 'rounded-full bg-coral px-4 py-2 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(43,80,255,0.6)] transition hover:bg-coral/90'
                 : 'rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent/90'
             }
           >
@@ -359,7 +359,7 @@ function ActivePromptDialog({
             onClick={() => onResolve(trimmed)}
             className={
               tone === 'danger'
-                ? 'rounded-full bg-coral px-4 py-2 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)] transition hover:bg-coral/90 disabled:opacity-50'
+                ? 'rounded-full bg-coral px-4 py-2 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(43,80,255,0.6)] transition hover:bg-coral/90 disabled:opacity-50'
                 : 'rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent/90 disabled:opacity-50'
             }
           >

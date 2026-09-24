@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>A · Aurora — Excellence AI látványterv</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #07060d; --bg-2: #0e0c18; --card: rgba(255,255,255,.04); --line: rgba(255,255,255,.09);
+    --ink: #f3f1fa; --ink-soft: #a9a3bf; --ink-faint: #6d6785;
+    --violet: #8b5cf6; --indigo: #6366f1; --fuchsia: #d946ef; --cyan: #22d3ee; --ok: #34d399; --warn: #fbbf24;
+    --grad: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--bg); color: var(--ink); font: 16px/1.6 "Inter Tight", system-ui, sans-serif; overflow-x: hidden; }
+  .mono { font-family: "JetBrains Mono", monospace; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding-inline: 28px; }
+
+  /* aurora háttér */
+  .aurora { position: fixed; inset: -20% -10% auto; height: 110vh; z-index: -1; filter: blur(90px); opacity: .55; pointer-events: none; }
+  .aurora span { position: absolute; border-radius: 50%; mix-blend-mode: screen; animation: drift 18s ease-in-out infinite alternate; }
+  .aurora span:nth-child(1) { width: 46vw; height: 46vw; left: 8%; top: 0; background: #4f46e5; }
+  .aurora span:nth-child(2) { width: 38vw; height: 38vw; left: 42%; top: 10%; background: #a21caf; animation-delay: -6s; }
+  .aurora span:nth-child(3) { width: 30vw; height: 30vw; left: 65%; top: -8%; background: #0891b2; animation-delay: -12s; }
+  @keyframes drift { to { transform: translate(6vw, 8vh) scale(1.15); } }
+  .grain { position: fixed; inset: 0; z-index: -1; background-image: radial-gradient(rgba(255,255,255,.06) 1px, transparent 1px); background-size: 3px 3px; opacity: .35; pointer-events: none; }
+
+  /* nav */
+  nav { position: sticky; top: 0; z-index: 10; backdrop-filter: blur(16px) saturate(140%); background: rgba(7,6,13,.55); border-bottom: 1px solid var(--line); }
+  nav .wrap { display: flex; align-items: center; gap: 32px; height: 64px; }
+  .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -.01em; }
+  .logo i { width: 26px; height: 26px; border-radius: 8px; background: var(--grad); box-shadow: 0 0 24px rgba(168,85,247,.6); }
+  nav a { color: var(--ink-soft); text-decoration: none; font-size: 14px; transition: color .2s; }
+  nav a:hover { color: var(--ink); }
+  nav .spacer { flex: 1; }
+
+  /* gombok */
+  .btn { display: inline-flex; align-items: center; gap: 8px; border: 0; cursor: pointer; font: 600 14px/1 inherit; padding: 12px 20px; border-radius: 10px; transition: transform .2s, box-shadow .3s, background .3s; text-decoration: none; }
+  .btn-primary { color: #fff; background: var(--grad); background-size: 200% 200%; box-shadow: 0 0 0 1px rgba(255,255,255,.12) inset, 0 8px 30px -8px rgba(168,85,247,.7); }
+  .btn-primary:hover { transform: translateY(-1px); background-position: 100% 0; box-shadow: 0 0 0 1px rgba(255,255,255,.2) inset, 0 12px 40px -6px rgba(236,72,153,.7); }
+  .btn-ghost { color: var(--ink); background: rgba(255,255,255,.05); box-shadow: 0 0 0 1px var(--line) inset; }
+  .btn-ghost:hover { background: rgba(255,255,255,.09); }
+  .btn-sm { padding: 8px 14px; font-size: 13px; }
+  .btn-ok { color: #052e1f; background: var(--ok); }
+  .btn .arrow { transition: transform .2s; }
+  .btn:hover .arrow { transform: translateX(3px); }
+
+  /* hero */
+  .hero { padding: 120px 0 80px; text-align: center; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px 6px 6px; border-radius: 99px; background: rgba(255,255,255,.05); box-shadow: 0 0 0 1px var(--line) inset; font-size: 13px; color: var(--ink-soft); }
+  .pill b { background: var(--grad); color: #fff; padding: 3px 9px; border-radius: 99px; font-size: 11px; font-weight: 600; }
+  h1 { font-size: clamp(48px, 7.5vw, 96px); line-height: .98; letter-spacing: -.045em; font-weight: 700; margin: 28px auto 0; max-width: 14ch; }
+  h1 .g { background: linear-gradient(90deg, #a5b4fc, #e879f9, #67e8f9, #a5b4fc); background-size: 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shine 8s linear infinite; }
+  @keyframes shine { to { background-position: 300% 0; } }
+  .lead { color: var(--ink-soft); font-size: 19px; max-width: 620px; margin: 24px auto 0; }
+  .cta { display: flex; gap: 12px; justify-content: center; margin-top: 36px; }
+
+  /* termék-ablak */
+  .window { margin: 72px auto 0; max-width: 980px; border-radius: 18px; background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.02)); box-shadow: 0 0 0 1px var(--line) inset, 0 40px 120px -30px rgba(99,102,241,.55); padding: 10px; transform: perspective(1400px) rotateX(18deg) scale(.94); transform-origin: top; transition: transform .1s linear; }
+  .window-inner { border-radius: 12px; background: var(--bg-2); display: grid; grid-template-columns: 220px 1fr; min-height: 380px; overflow: hidden; text-align: left; }
+  .side { border-right: 1px solid var(--line); padding: 18px 14px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-soft); }
+  .side div { padding: 8px 10px; border-radius: 8px; }
+  .side .on { background: rgba(139,92,246,.14); color: var(--ink); box-shadow: 0 0 0 1px rgba(139,92,246,.35) inset; }
+  .main { padding: 22px; display: grid; gap: 12px; align-content: start; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 10px; background: var(--card); box-shadow: 0 0 0 1px var(--line) inset; font-size: 14px; }
+  .row img { width: 22px; height: 22px; filter: invert(1); opacity: .9; }
+  .row .st { margin-left: auto; font-size: 12px; color: var(--ok); display: flex; align-items: center; gap: 6px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .approval { border-radius: 12px; padding: 16px; background: linear-gradient(135deg, rgba(251,191,36,.08), rgba(236,72,153,.06)); box-shadow: 0 0 0 1px rgba(251,191,36,.3) inset; }
+  .approval h4 { font-size: 14px; display: flex; gap: 8px; align-items: center; color: var(--warn); }
+  .approval dl { display: grid; grid-template-columns: 90px 1fr; gap: 4px 12px; margin: 12px 0 14px; font-size: 13px; }
+  .approval dt { color: var(--ink-faint); }
+
+  /* szekciók */
+  section { padding: 120px 0; }
+  .eyebrow { font: 500 12px "JetBrains Mono", monospace; letter-spacing: .18em; text-transform: uppercase; color: #c4b5fd; }
+  h2 { font-size: clamp(36px, 4.8vw, 60px); letter-spacing: -.035em; line-height: 1.05; margin-top: 14px; max-width: 18ch; }
+  .bento { display: grid; grid-template-columns: repeat(6, 1fr); gap: 16px; margin-top: 56px; }
+  .tile { position: relative; grid-column: span 2; padding: 28px; border-radius: 18px; background: var(--card); box-shadow: 0 0 0 1px var(--line) inset; overflow: hidden; min-height: 220px; }
+  .tile.w3 { grid-column: span 3; } .tile.w4 { grid-column: span 4; }
+  .tile::before { content: ""; position: absolute; inset: 0; background: radial-gradient(400px circle at var(--mx, 50%) var(--my, 50%), rgba(168,85,247,.18), transparent 60%); opacity: 0; transition: opacity .3s; }
+  .tile:hover::before { opacity: 1; }
+  .tile h3 { font-size: 20px; letter-spacing: -.02em; margin-top: 18px; }
+  .tile p { color: var(--ink-soft); font-size: 15px; margin-top: 8px; }
+  .ico { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; background: rgba(139,92,246,.15); box-shadow: 0 0 0 1px rgba(139,92,246,.35) inset; font-size: 20px; }
+
+  /* számláló sáv */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 56px; }
+  .stat b { display: block; font-size: 52px; letter-spacing: -.04em; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .stat span { color: var(--ink-soft); font-size: 14px; }
+
+  /* komponens-készlet */
+  .kit { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 48px; }
+  .panel { padding: 24px; border-radius: 16px; background: var(--card); box-shadow: 0 0 0 1px var(--line) inset; }
+  .panel > small { display: block; color: var(--ink-faint); font: 500 11px "JetBrains Mono", monospace; letter-spacing: .14em; text-transform: uppercase; margin-bottom: 16px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; }
+  details { border-radius: 12px; background: rgba(255,255,255,.03); box-shadow: 0 0 0 1px var(--line) inset; margin-bottom: 8px; transition: box-shadow .3s, background .3s; }
+  details[open] { background: rgba(139,92,246,.07); box-shadow: 0 0 0 1px rgba(139,92,246,.4) inset; }
+  summary { list-style: none; cursor: pointer; padding: 14px 16px; display: flex; justify-content: space-between; font-weight: 500; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; color: var(--ink-faint); transition: transform .3s; font-size: 20px; line-height: 1; }
+  details[open] summary::after { transform: rotate(45deg); color: #c4b5fd; }
+  details p { padding: 0 16px 16px; color: var(--ink-soft); font-size: 14px; }
+  details::details-content { block-size: 0; overflow: clip; transition: block-size .35s ease, content-visibility .35s allow-discrete; }
+  details[open]::details-content { block-size: auto; }
+  :root { interpolate-size: allow-keywords; }
+  .field { display: grid; gap: 6px; margin-bottom: 12px; font-size: 13px; color: var(--ink-soft); }
+  .field input { font: inherit; color: var(--ink); background: rgba(0,0,0,.3); border: 0; border-radius: 10px; padding: 11px 14px; box-shadow: 0 0 0 1px var(--line) inset; outline: none; transition: box-shadow .2s; }
+  .field input:focus { box-shadow: 0 0 0 1px var(--violet) inset, 0 0 0 4px rgba(139,92,246,.2); }
+  .toggle { display: flex; align-items: center; gap: 12px; font-size: 14px; cursor: pointer; }
+  .toggle input { appearance: none; width: 40px; height: 22px; border-radius: 99px; background: rgba(255,255,255,.12); position: relative; cursor: pointer; transition: background .25s; }
+  .toggle input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .25s cubic-bezier(.5,1.6,.5,1); }
+  .toggle input:checked { background: var(--grad); }
+  .toggle input:checked::after { transform: translateX(18px); }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+  .badge { font-size: 12px; padding: 4px 10px; border-radius: 99px; box-shadow: 0 0 0 1px currentColor inset; }
+
+  footer { padding: 60px 0; color: var(--ink-faint); font-size: 13px; border-top: 1px solid var(--line); }
+
+  /* görgetés-animáció */
+  .reveal { opacity: 0; transform: translateY(28px); filter: blur(6px); transition: opacity .8s ease, transform .8s cubic-bezier(.2,.7,.2,1), filter .8s; }
+  .reveal.in { opacity: 1; transform: none; filter: none; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } .reveal { opacity: 1; transform: none; filter: none; } .window { transform: none; } }
+  @media (max-width: 860px) { .bento, .kit, .stats { grid-template-columns: 1fr; } .tile, .tile.w3, .tile.w4 { grid-column: auto; } .window-inner { grid-template-columns: 1fr; } .side { display: none; } nav a { display: none; } }
+</style>
+</head>
+<body>
+<div class="aurora"><span></span><span></span><span></span></div>
+<div class="grain"></div>
+
+<nav><div class="wrap">
+  <div class="logo"><i></i>Excellence AI</div>
+  <a href="#">Termék</a><a href="#">Biztonság</a><a href="#">Adatkezelés</a><a href="#">ÁSZF</a>
+  <div class="spacer"></div>
+  <a href="#">HU / EN</a>
+  <a class="btn btn-primary btn-sm" href="#">Bejelentkezés</a>
+</div></nav>
+
+<header class="hero wrap">
+  <span class="pill reveal"><b>ÚJ</b> Vállalati MCP-szerver · EU-ban üzemeltetve</span>
+  <h1 class="reveal">Az AI dolgozik. <span class="g">A cég irányít.</span></h1>
+  <p class="lead reveal">Biztonságosan összeköti a csapat AI-eszközeit a céges rendszerekkel. A csapat marad a megszokott felületen — a hozzáférést, a jóváhagyást és az auditot a cég kezeli.</p>
+  <div class="cta reveal">
+    <a class="btn btn-primary" href="#">Belépés <span class="arrow">→</span></a>
+    <a class="btn btn-ghost" href="#">Hogyan működik?</a>
+  </div>
+
+  <div class="window" id="win">
+    <div class="window-inner">
+      <div class="side">
+        <div class="on">Acme Kft.</div><div>Munkatársak</div><div>Jóváhagyások</div><div>Audit-napló</div><div>Kapcsolatok</div>
+      </div>
+      <div class="main">
+        <div class="mono" style="font-size:12px;color:var(--ink-faint)">https://ai.excellencepay.com/api/mcp/acme</div>
+        <div class="row"><img src="../../app/public/mcp-clients/claudecode.svg" alt="">Claude Code<span class="st"><i class="dot"></i>csatlakozva</span></div>
+        <div class="row"><img src="../../app/public/mcp-clients/codex.svg" alt="">Codex<span class="st"><i class="dot"></i>csatlakozva</span></div>
+        <div class="row"><img src="../../app/public/mcp-clients/cursor.svg" alt="">Cursor<span class="st"><i class="dot"></i>csatlakozva</span></div>
+        <div class="approval">
+          <h4><i class="dot"></i> Mappalétrehozás — jóváhagyásra vár</h4>
+          <dl><dt>Művelet</dt><dd>Mappa létrehozása</dd><dt>Útvonal</dt><dd>Q3 / Ügyfélszerződések</dd><dt>AI-eszköz</dt><dd>Claude Code</dd></dl>
+          <button class="btn btn-ok btn-sm">Jóváhagyom</button> <button class="btn btn-ghost btn-sm">Elutasítom</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section class="wrap">
+  <div class="eyebrow reveal">Miért Excellence AI</div>
+  <h2 class="reveal">Egy kapcsolat. Teljes vállalati felügyelet.</h2>
+  <div class="bento">
+    <div class="tile w4 reveal"><div class="ico">⛨</div><h3>Emberi jóváhagyás minden írásnál</h3><p>Az AI javasol, a felelős ember dönt. Minden kockázatos lépés egy kattintásos jóváhagyókártyán jelenik meg.</p></div>
+    <div class="tile reveal"><div class="ico">≡</div><h3>Teljes audit-napló</h3><p>Ki, mit, mikor, melyik AI-eszközzel.</p></div>
+    <div class="tile reveal"><div class="ico">⚿</div><h3>Céges kapcsolatok</h3><p>Drive, Gmail, CRM — egy helyen.</p></div>
+    <div class="tile w4 reveal"><div class="ico">◎</div><h3>GDPR · EU-adatkezelés</h3><p>Az adatok az EU-ban maradnak, az érzékeny mezők tokenizálva mennek a modellekhez.</p></div>
+  </div>
+  <div class="stats">
+    <div class="stat reveal"><b data-count="4">0</b><span>AI-eszköz egy végponton</span></div>
+    <div class="stat reveal"><b data-count="100" data-suffix="%">0</b><span>auditált írás</span></div>
+    <div class="stat reveal"><b data-count="0">0</b><span>megosztott jelszó</span></div>
+    <div class="stat reveal"><b data-count="24" data-suffix="/7">0</b><span>EU-hosztolt üzem</span></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="eyebrow reveal">Komponens-nyelv · az egész alkalmazásra</div>
+  <h2 class="reveal">Így néz ki a platform belül is.</h2>
+  <div class="kit">
+    <div class="panel reveal">
+      <small>Gombok</small>
+      <div class="btns">
+        <button class="btn btn-primary">Elsődleges <span class="arrow">→</span></button>
+        <button class="btn btn-ghost">Másodlagos</button>
+        <button class="btn btn-ok btn-sm">Jóváhagyom</button>
+      </div>
+      <div class="badges">
+        <span class="badge" style="color:var(--ok)">aktív</span>
+        <span class="badge" style="color:var(--warn)">jóváhagyásra vár</span>
+        <span class="badge" style="color:#f472b6">hiba</span>
+        <span class="badge" style="color:#c4b5fd">vázlat</span>
+      </div>
+    </div>
+    <div class="panel reveal">
+      <small>Űrlap</small>
+      <label class="field">Munkatárs neve<input value="Pénzügyi asszisztens" /></label>
+      <label class="toggle"><input type="checkbox" checked /> Írási műveletek jóváhagyáshoz kötve</label>
+    </div>
+    <div class="panel reveal" style="grid-column: 1 / -1">
+      <small>Összecsukható dobozok</small>
+      <details open><summary>Claude Code beállítása</summary><p>Futtasd a <span class="mono">/mcps</span> parancsot, válaszd a szervert, és jelentkezz be a céges fiókoddal.</p></details>
+      <details><summary>ChatGPT beállítása</summary><p>Settings → Connectors → Add custom connector, majd illeszd be a céges MCP-címet.</p></details>
+      <details><summary>Cursor beállítása</summary><p>Beállítások → MCP → új szerver; a cím ugyanaz.</p></details>
+    </div>
+  </div>
+</section>
+
+<footer><div class="wrap">A · Aurora — sötét, üveghatású, lila–pink átmenet, „mesterséges fény” hangulat.</div></footer>
+
+<script>
+  const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } }), { threshold: .15 });
+  document.querySelectorAll('.reveal').forEach((el, i) => { el.style.transitionDelay = (i % 4) * 80 + 'ms'; io.observe(el); });
+  // termék-ablak kiegyenesedik görgetésre
+  const win = document.getElementById('win');
+  addEventListener('scroll', () => { const p = Math.min(scrollY / 400, 1); win.style.transform = `perspective(1400px) rotateX(${18 - 18 * p}deg) scale(${.94 + .06 * p})`; }, { passive: true });
+  // kártya-fény az egér alatt
+  document.querySelectorAll('.tile').forEach(t => t.addEventListener('pointermove', e => { const r = t.getBoundingClientRect(); t.style.setProperty('--mx', e.clientX - r.left + 'px'); t.style.setProperty('--my', e.clientY - r.top + 'px'); }));
+  // számlálók
+  const cio = new IntersectionObserver(es => es.forEach(e => { if (!e.isIntersecting) return; const el = e.target, to = +el.dataset.count, s = el.dataset.suffix || ''; let t0; const step = t => { t0 ??= t; const p = Math.min((t - t0) / 1200, 1); el.textContent = Math.round(to * (1 - (1 - p) ** 3)) + s; if (p < 1) requestAnimationFrame(step); }; requestAnimationFrame(step); cio.unobserve(el); }));
+  document.querySelectorAll('[data-count]').forEach(el => cio.observe(el));
+</script>
+</body>
+</html>

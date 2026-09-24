@@ -140,19 +140,20 @@ class MemMemory implements ProjectMemoryStore {
     artifactPath: string | null
     withUserId: string
     supersedesId: string | null
+    alsoSupersedeIds: string[]
   }) {
+    const { alsoSupersedeIds, ...data } = input
+    const retire = [data.supersedesId, ...alsoSupersedeIds].filter((id): id is string => !!id)
+    if (retire.some((id) => this.rows.get(id)?.status !== 'active')) throw new Error('memory_not_found')
+    for (const id of retire) this.rows.set(id, { ...this.rows.get(id)!, status: 'superseded' })
     const row: ProjectMemoryRecord = {
       id: globalThis.crypto.randomUUID(),
-      ...input,
+      ...data,
       status: 'active',
       createdAt: new Date(),
     }
     this.rows.set(row.id, row)
     return row
-  }
-  async supersede(id: string) {
-    const row = this.rows.get(id)
-    if (row) this.rows.set(id, { ...row, status: 'superseded' })
   }
 }
 
@@ -433,6 +434,108 @@ await check('MCP stamps withUserId from the principal, not from tool args', asyn
   const item = payload.item as { withUserId: string; withUserName: string }
   assert.equal(item.withUserId, ANNA)
   assert.equal(item.withUserName, 'Anna')
+})
+
+await check('correcting a fact via MCP: duplicate is refused with candidates, replaceId retires the old item', async () => {
+  const { svc } = harness('direct')
+  const deps = {
+    loadDefinition: async () => definition,
+    findCurrentDefinitionId: async () => DEF,
+    findAgentGrant: async () => ({ accessLevel: 'operate' }),
+    projectWork: svc,
+  }
+  const principal = { userId: ANNA, tenantId: TENANT, role: 'operator' as const, assumed: false }
+  const write = (args: Record<string, unknown>) =>
+    invokeProjectWork(deps, {
+      principal,
+      toolName: 'platform.project_memory.write',
+      args: { definitionId: DEF, kind: 'constraint', idempotencyKey: globalThis.crypto.randomUUID(), ...args },
+    })
+  const first = parsePayload(
+    await write({
+      title: 'Marketing anyagok mentési helye: Drive/POSnavigator/Marketing',
+      body: 'A Google Drive-on a POSnavigator könyvtáron belül van egy "Marketing" mappa. A marketing tevékenységgel kapcsolatos anyagokat ebben a mappában gyűjtjük.',
+    }),
+  )
+  assert.equal(first.status, 'written')
+  const oldId = (first.item as { id: string }).id
+  const correction = {
+    title: 'Google Drive marketing mappa neve: "Marketing AI"',
+    body: 'A Google Drive-on a POSnavigator könyvtáron belül NEM a "Marketing" mappa, hanem a "Marketing AI" mappa a helyes hely a marketinggel kapcsolatos anyagok tárolására.',
+  }
+
+  const dup = await write(correction)
+  const dupPayload = parsePayload(dup)
+  assert.equal(dup.isError, undefined)
+  assert.equal(dupPayload.status, 'possible_duplicate')
+  assert.deepEqual((dupPayload.candidates as { id: string }[]).map((c) => c.id), [oldId])
+  const unchanged = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
+  assert.equal(unchanged.ok && unchanged.items.length, 1)
+
+  const replaced = parsePayload(await write({ ...correction, replaceId: oldId }))
+  assert.equal(replaced.status, 'written')
+  const after = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
+  assert.deepEqual(after.ok && after.items.map((item) => item.title), [correction.title])
+
+  const unrelated = parsePayload(await write({ title: 'Heti riport péntekenként', body: 'A vezetőségnek minden pénteken összesítő készül.' }))
+  assert.equal(unrelated.status, 'written')
+  const forced = parsePayload(await write({ ...correction, confirmNew: true }))
+  assert.equal(forced.status, 'written')
+})
+
+await check('two outdated items + one change: replacing only one is refused, mergeIds leaves a single current item', async () => {
+  const { svc } = harness('direct')
+  const base = { tenantId: TENANT, agentId: AGENT, kind: 'constraint', withUserId: ANNA, mode: 'direct' as const, confirmNew: true }
+  const a = await svc.writeMemory({
+    ...base,
+    title: 'Marketing anyagok mentési helye: Drive/POSnavigator/Marketing',
+    body: 'A POSnavigator Drive könyvtáron belül a "Marketing" mappában gyűjtjük a marketing anyagokat.',
+  })
+  const b = await svc.writeMemory({
+    ...base,
+    title: 'Google Drive marketing mappa neve: "Marketing AI"',
+    body: 'A POSnavigator Drive könyvtáron belül a "Marketing AI" mappa a helyes hely a marketing anyagoknak.',
+  })
+  assert.ok(a.ok && a.status === 'written' && b.ok && b.status === 'written')
+  if (!a.ok || a.status !== 'written' || !b.ok || b.status !== 'written') return
+  const change = {
+    ...base,
+    confirmNew: false,
+    title: 'Google Drive marketing mappa neve: "Marketing AI 2"',
+    body: 'A POSnavigator Drive könyvtáron belül a "Marketing AI 2" mappa a helyes hely a marketing anyagoknak.',
+  }
+
+  const partial = await svc.writeMemory({ ...change, replaceId: a.item.id })
+  assert.ok(partial.ok && partial.status === 'possible_duplicate')
+  if (!partial.ok || partial.status !== 'possible_duplicate') return
+  assert.deepEqual(partial.candidates.map((c) => c.id), [b.item.id])
+
+  const merged = parsePayload(
+    await invokeProjectWork(
+      {
+        loadDefinition: async () => definition,
+        findCurrentDefinitionId: async () => DEF,
+        findAgentGrant: async () => ({ accessLevel: 'operate' }),
+        projectWork: svc,
+      },
+      {
+        principal: { userId: ANNA, tenantId: TENANT, role: 'operator', assumed: false },
+        toolName: 'platform.project_memory.write',
+        args: {
+          definitionId: DEF,
+          kind: 'constraint',
+          title: change.title,
+          body: change.body,
+          replaceId: a.item.id,
+          mergeIds: ` ${b.item.id} `,
+          idempotencyKey: 'merge',
+        },
+      },
+    ),
+  )
+  assert.equal(merged.status, 'written')
+  const after = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
+  assert.deepEqual(after.ok && after.items.map((item) => item.title), [change.title])
 })
 
   console.log(failures === 0 ? '\nOK project-work' : `\nFAIL ${failures}`)

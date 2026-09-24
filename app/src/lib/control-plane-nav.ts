@@ -65,9 +65,23 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
   },
   { key: 'agents', href: '/control-plane/agents', label: 'Munkatársak' },
   {
+    key: 'projects',
+    href: '/control-plane/projects',
+    label: 'Projektek',
+    requires: { tenantRole: 'viewer' },
+  },
+  {
     key: 'account',
     href: '/control-plane/account',
     label: 'Kapcsolt fiókok',
+    requires: { tenantRole: 'viewer' },
+  },
+  // #618: everyone confirms their own pending writes here; the key predates the move
+  // out of Adminisztráció and stays stable for stored nav-visibility policies.
+  {
+    key: 'admin.operations',
+    href: '/control-plane/operations',
+    label: 'Jóváhagyások',
     requires: { tenantRole: 'viewer' },
   },
   {
@@ -82,12 +96,6 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
     key: 'admin',
     label: 'Adminisztráció',
     children: [
-      {
-        key: 'admin.operations',
-        href: '/control-plane/operations',
-        label: 'Jóváhagyások',
-        requires: { tenantRole: 'approver' },
-      },
       {
         key: 'admin.audit',
         href: '/control-plane/audit',

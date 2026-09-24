@@ -1,5 +1,15 @@
 import { auth } from '@clerk/nextjs/server'
-import type { AuthInfo } from '@modelcontextprotocol/server'
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  createRequestStateCodec,
+  inputResponse,
+  PROTOCOL_VERSION_META_KEY,
+  type AuthInfo,
+  type CallToolResult,
+  type InputRequiredResult,
+  type RequestStateCodec,
+  type ServerContext,
+} from '@modelcontextprotocol/server'
 import { createMcpHandler, withMcpAuth } from 'mcp-handler'
 import { z } from 'zod'
 import { isClerkEnabled } from '@/lib/clerk-config'
@@ -31,8 +41,16 @@ import {
 } from '@/lib/agent-checkout'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
 import {
+  GMAIL_CREATE_DRAFT_TOOL,
   GMAIL_GET_MESSAGE_TOOL,
+  GMAIL_GET_THREAD_TOOL,
+  GMAIL_LIST_DRAFTS_TOOL,
+  GMAIL_LIST_LABELS_TOOL,
+  GMAIL_MCP_INPUT_SCHEMAS,
+  GMAIL_MODIFY_LABELS_TOOL,
   GMAIL_SEARCH_TOOL,
+  GMAIL_SEND_TOOL,
+  GMAIL_TRASH_TOOL,
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
@@ -47,6 +65,9 @@ import {
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
   gmailGetMessageInputSchema,
+  gmailGetThreadInputSchema,
+  gmailListDraftsInputSchema,
+  gmailListLabelsInputSchema,
   gmailSearchInputSchema,
   googleDriveCreateFolderInputSchema,
   googleDriveReadFileInputSchema,
@@ -62,8 +83,13 @@ import {
   kbListIndexInputSchema,
   kbSearchInputSchema,
   isEnterpriseTool,
+  isEnterpriseWriteTool,
   type EnterpriseToolMcpResult,
+  type InputRequiredToolResult,
+  type WriteConfirmInput,
+  type WriteConfirmState,
 } from '@/domain/enterprise-tools'
+import { WRITE_CONFIRM_KEY } from '@/domain/gateway-operation'
 import {
   auditMcpAuthDenied,
   auditMcpAuthOk,
@@ -159,7 +185,10 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     toolName: string
     args: Record<string, unknown>
     origin?: string
-  }) => Promise<EnterpriseToolMcpResult>
+    confirm?: WriteConfirmInput
+  }) => Promise<EnterpriseToolMcpResult | InputRequiredToolResult>
+  /** HMAC key for the write-confirmation `requestState` (#618); missing → link only. */
+  requestStateKey?: string
   getGatewayOperation: (input: {
     principal: McpPrincipal
     operationId: string
@@ -285,6 +314,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
       }))
     },
     invokeEnterpriseTool: (input) => services.enterpriseTools.invoke(input),
+    requestStateKey: process.env.MCP_REQUEST_STATE_KEY,
     getGatewayOperation: async (input) =>
       services.gatewayOperations.toMcpGet(
         await services.gatewayOperations.get({
@@ -504,7 +534,52 @@ async function getDefinitionToolResult(
     agentId: loaded.agentId,
   })
   if (!allowed) return definitionNotFound()
-  return textResult({ ...loaded, contentHash: hashSnapshot(loaded.snapshot) })
+  const generalMemory = await readGeneralMemory(principal, loaded.definitionId, deps)
+  return textResult({
+    ...loaded,
+    contentHash: hashSnapshot(loaded.snapshot),
+    ...(generalMemory ? { generalMemory } : {}),
+  })
+}
+
+const GENERAL_MEMORY_MAX_ITEMS = 40
+const GENERAL_MEMORY_MAX_CHARS = 8000
+
+/**
+ * Push the agent's __general__ memory into get_definition so the client has the
+ * company facts before its first enterprise tool call, instead of having to
+ * remember to read them. Goes through invokeProjectWork, so the same operate
+ * check + audit as platform.project_memory.read apply; denied → omitted.
+ */
+async function readGeneralMemory(principal: McpPrincipal, definitionId: string, deps: McpRuntimeDeps) {
+  const result = await deps.invokeProjectWork({
+    principal,
+    toolName: MCP_PROJECT_MEMORY_READ_TOOL,
+    args: { definitionId },
+  })
+  if (result.isError) return null
+  let all: unknown[] = []
+  try {
+    const parsed = JSON.parse(result.content[0]?.text ?? '{}') as { items?: unknown }
+    if (Array.isArray(parsed.items)) all = parsed.items
+  } catch {
+    return null
+  }
+  const items: unknown[] = []
+  let chars = 0
+  for (const item of all.slice(0, GENERAL_MEMORY_MAX_ITEMS)) {
+    chars += JSON.stringify(item).length
+    if (chars > GENERAL_MEMORY_MAX_CHARS && items.length > 0) break
+    items.push(item)
+  }
+  const truncated = items.length < all.length
+  return {
+    note:
+      'This is the agent\'s memory (__general__ project): company facts, decisions and locations valid now. It overrides search results — if Drive/KB/API results contradict it, follow the memory and say so.' +
+      (truncated ? ' Truncated: call platform.project_memory.read for the rest.' : ''),
+    items,
+    truncated,
+  }
 }
 
 function invalidArgs(message: string) {
@@ -662,6 +737,52 @@ async function checkoutToolResult(
   )
 }
 
+const MRTR_PROTOCOL_VERSION = '2026-07-28'
+
+function requestStateCodec(key: string | undefined): RequestStateCodec<WriteConfirmState> | null {
+  if (!key) return null
+  try {
+    // ponytail: codec TTL well past the 15-minute payload `exp`, so an expired but
+    // authentic state reaches the handler and falls back to the link (#618) instead of -32602.
+    return createRequestStateCodec<WriteConfirmState>({ key, ttlSeconds: 24 * 60 * 60 })
+  } catch {
+    return null // shorter than 32 bytes: fail closed to the link
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** #618 branch selection: a form only for a 2026-07-28 request that declares form elicitation. */
+function writeConfirmInput(
+  ctx: ServerContext,
+  codec: RequestStateCodec<WriteConfirmState> | null,
+): WriteConfirmInput {
+  const envelope: Record<string, unknown> = ctx.mcpReq.envelope ?? {}
+  const capabilities = envelope[CLIENT_CAPABILITIES_META_KEY]
+  const elicitation = isRecord(capabilities) ? capabilities.elicitation : undefined
+  const formCapable =
+    envelope[PROTOCOL_VERSION_META_KEY] === MRTR_PROTOCOL_VERSION &&
+    isRecord(elicitation) &&
+    ('form' in elicitation || !('url' in elicitation))
+  const state = ctx.mcpReq.requestState()
+  const responses = ctx.mcpReq.inputResponses
+  const answer = inputResponse(responses, WRITE_CONFIRM_KEY)
+  return {
+    mint: formCapable && codec ? (payload) => codec.mint(payload) : null,
+    ...(state !== undefined || responses !== undefined
+      ? {
+          retry: {
+            state,
+            response:
+              answer.kind === 'elicit' ? { action: answer.action, content: answer.content } : null,
+          },
+        }
+      : {}),
+  }
+}
+
 async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps, origin: string) {
   const { tenant, context } = await loadTenantContext(principal, deps)
   const instructions = buildMcpServerInstructions({
@@ -669,6 +790,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
     tenantSlug: principal.tenantSlug,
     coworkers: context.coworkers,
   })
+  const codec = requestStateCodec(deps.requestStateKey)
 
   return createMcpHandler(
     async (server) => {
@@ -678,7 +800,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Who am I',
           description:
-            'Return the authenticated MCP principal, tenant organization context, and visible coworkers for this tenant URL.',
+            'Return the authenticated MCP principal, tenant organization context, and visible coworkers for this tenant URL. Next step: platform.agent.get_definition — its response carries the agent\'s memory (company facts) that you need before answering company questions.',
           inputSchema: z.object({}).passthrough(),
         },
         async () => whoamiToolResult(principal, deps),
@@ -698,7 +820,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Get agent definition',
           description:
-            'Load one published agent definition snapshot (capabilities, connectors with names/connectorIds, http_api endpoints). Call this before enterprise tools and pass definitionId on each call. Use agentId or definitionId; optional version.',
+            'Load one published agent definition snapshot (capabilities, connectors with names/connectorIds, http_api endpoints) plus generalMemory: the agent\'s current company facts, decisions and locations. Call this at the start of the conversation, before enterprise tools, and pass definitionId on each call. Read generalMemory before answering — it overrides search results. Use agentId or definitionId; optional version.',
           inputSchema: z
             .object({
               definitionId: z.string().uuid().optional(),
@@ -863,7 +985,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Read project memory',
           description:
-            'Read this agent\'s project-memory items (decisions, open tasks, findings, handoffs, artifact pointers). Each item is tagged with the conversation partner (withUserId / withUserName) stamped by the server. Pass mine=true to filter to the calling user. Ask which project, then pass the same projectKey. Do not store personal facts unless they constrain the project.',
+            'Read this agent\'s memory: company facts, decisions, locations, open tasks, findings, handoffs, artifact pointers. Read it before answering any company-specific question (where is X, who owns Y, how do we do Z) and before searching Drive/KB — memory overrides search results. Each item is tagged with the conversation partner (withUserId / withUserName) stamped by the server. Pass mine=true to filter to the calling user. Always call this before platform.project_memory.write so you can update an existing item instead of duplicating it. Omit projectKey for the general memory — do not ask the user which project; pass a projectKey only when the conversation is about a named project. Do not store personal facts unless they constrain the project.',
           inputSchema: projectMemoryReadInputSchema,
           annotations: { readOnlyHint: true },
         },
@@ -874,7 +996,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Write project memory',
           description:
-            'Write a project-memory item for this agent (decision, open_task, finding, constraint, artifact, handoff_summary). The work plan itself belongs in a work file; store only a pointer here. The server stamps the calling user as conversation partner — do not name them. Cannot change trained operating rules. Approval-mode agents return awaiting_approval + approvalUrl; direct-mode agents write immediately. Personal facts (vacation, private preference) do not belong here unless they constrain the project.',
+            'Write a project-memory item for this agent (decision, open_task, finding, constraint, artifact, handoff_summary). First call platform.project_memory.read for the same projectKey: if an item already covers this subject (including when the user corrects or changes it), pass its id as replaceId with the merged, current text — do not add a second item. If several items are outdated by the same change, write ONE item: replaceId for one, mergeIds for the rest. Write only what is valid now; do not keep "this is outdated" notes. If other similar active items would remain, the server answers possible_duplicate with candidates and writes nothing; then retry with replaceId/mergeIds, or confirmNew=true if none match. The work plan itself belongs in a work file; store only a pointer here. The server stamps the calling user as conversation partner — do not name them. Cannot change trained operating rules. Approval-mode agents return awaiting_approval + approvalUrl; direct-mode agents write immediately. Personal facts (vacation, private preference) do not belong here unless they constrain the project.',
           inputSchema: projectMemoryWriteInputSchema,
         },
         async (args) => projectWorkToolResult(principal, MCP_PROJECT_MEMORY_WRITE_TOOL, args, deps),
@@ -935,7 +1057,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Search Gmail',
           description:
-            'Search the connected Gmail mailbox. Returns id, from, subject, snippet. Call gmail_get_message with an id to read a body. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+            'Search the connected Gmail mailbox. Returns id, threadId, from, subject, snippet. Call gmail_get_message with an id to read a body, gmail_get_thread for the whole conversation. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: gmailSearchInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -946,11 +1068,87 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Read Gmail message',
           description:
-            'Read one Gmail message by id from gmail_search. Credentials stay on the server. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+            'Read one Gmail message by id from gmail_search: from, to, cc, subject, body, labelIds and attachment names. Credentials stay on the server. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: gmailGetMessageInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
         async (args) => enterpriseToolResult(principal, GMAIL_GET_MESSAGE_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_GET_THREAD_TOOL,
+        {
+          title: 'Read Gmail thread',
+          description:
+            'Read every message of one Gmail conversation (threadId from gmail_search or gmail_get_message), oldest first. Use before replying so the answer fits the whole conversation.',
+          inputSchema: gmailGetThreadInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_GET_THREAD_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_LIST_LABELS_TOOL,
+        {
+          title: 'List Gmail labels',
+          description:
+            'List the mailbox labels (system labels like INBOX, UNREAD, STARRED and user labels with their ids) for gmail_modify_labels.',
+          inputSchema: gmailListLabelsInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_LIST_LABELS_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_LIST_DRAFTS_TOOL,
+        {
+          title: 'List Gmail drafts',
+          description: 'List saved Gmail drafts (draftId, to, subject, snippet). Send one with gmail_send draftId.',
+          inputSchema: gmailListDraftsInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_LIST_DRAFTS_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_SEND_TOOL,
+        {
+          title: 'Send Gmail message',
+          description:
+            'Send an email from the connected Gmail account. To reply to a message pass replyToMessageId (from gmail_search) and body: the reply stays in the same thread, subject becomes "Re: …" and it goes to the original sender unless you pass to (replyAll=true adds the other recipients). For a new message pass to, subject, body. To send an existing draft pass only draftId. Use this whenever the user asks to send, reply or answer an email — do not just show a draft. Does not call Gmail until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+          inputSchema: GMAIL_MCP_INPUT_SCHEMAS[GMAIL_SEND_TOOL],
+          annotations: { destructiveHint: false, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_SEND_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_CREATE_DRAFT_TOOL,
+        {
+          title: 'Create Gmail draft',
+          description:
+            'Save a Gmail draft without sending it (new message, or a reply with replyToMessageId — same fields as gmail_send). Use when the user wants to review or finish the email in Gmail. Does not call Gmail until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+          inputSchema: GMAIL_MCP_INPUT_SCHEMAS[GMAIL_CREATE_DRAFT_TOOL],
+          annotations: { destructiveHint: false, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_CREATE_DRAFT_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_MODIFY_LABELS_TOOL,
+        {
+          title: 'Label / archive Gmail message',
+          description:
+            'Change labels of one message (messageId) or a whole thread (threadId). Mark read: removeLabelIds=UNREAD. Mark unread: addLabelIds=UNREAD. Archive: removeLabelIds=INBOX. Star: addLabelIds=STARRED. User label ids come from gmail_list_labels. Does not call Gmail until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+          inputSchema: GMAIL_MCP_INPUT_SCHEMAS[GMAIL_MODIFY_LABELS_TOOL],
+          annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_MODIFY_LABELS_TOOL, args, deps),
+      )
+      server.registerTool(
+        GMAIL_TRASH_TOOL,
+        {
+          title: 'Move Gmail message to trash',
+          description:
+            'Move one message (messageId) or a whole thread (threadId) to the trash; Gmail keeps it restorable for 30 days. There is no permanent delete. Does not call Gmail until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+          inputSchema: GMAIL_MCP_INPUT_SCHEMAS[GMAIL_TRASH_TOOL],
+          annotations: { destructiveHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, GMAIL_TRASH_TOOL, args, deps),
       )
       server.registerTool(
         HTTP_API_GET_TOOL,
@@ -1080,7 +1278,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         },
       )
 
-      server.server.setRequestHandler('tools/call', async (request) => {
+      server.server.setRequestHandler('tools/call', async (request, ctx) => {
         const toolName = request.params.name
         if (!(MCP_ALLOWED_TOOLS as readonly string[]).includes(toolName)) {
           await auditMcpToolDenied(deps, principal, toolName)
@@ -1126,7 +1324,8 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
           return getGatewayOperationToolResult(principal, args, deps)
         }
         if (isEnterpriseTool(toolName)) {
-          return enterpriseToolResult(principal, toolName, args, deps, origin)
+          const confirm = isEnterpriseWriteTool(toolName) ? writeConfirmInput(ctx, codec) : undefined
+          return enterpriseToolResult(principal, toolName, args, deps, origin, confirm)
         }
         return whoamiToolResult(principal, deps)
       })
@@ -1134,6 +1333,10 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
     {
       serverInfo: { name: mcpServerDisplayName(tenant), version: '1.0' },
       instructions,
+      // #618 D3: we pick the link branch ourselves; the shim would try a live
+      // server→client elicitation on 2025 requests, which stalls on stateless HTTP.
+      inputRequired: { legacyShim: false },
+      ...(codec ? { requestState: { verify: codec.verify } } : {}),
     },
   )
 }
@@ -1144,8 +1347,12 @@ async function enterpriseToolResult(
   args: Record<string, unknown>,
   deps: McpRuntimeDeps,
   origin?: string,
+  confirm?: WriteConfirmInput,
 ) {
-  return deps.invokeEnterpriseTool({ principal, toolName, args, origin })
+  // InputRequiredToolResult is the wire shape of the SDK's InputRequiredResult.
+  return deps.invokeEnterpriseTool({ principal, toolName, args, origin, confirm }) as Promise<
+    CallToolResult | InputRequiredResult
+  >
 }
 
 async function projectWorkToolResult(

@@ -30,6 +30,7 @@ export const WORK_FILE_MAX_PROJECT_BYTES = 5_000_000
 export const WORK_FILE_MAX_COUNT = 200
 export const MEMORY_TITLE_MAX = 200
 export const MEMORY_BODY_MAX = 8_000
+export const MEMORY_MERGE_MAX = 10
 
 export type ProjectWorkErr = { ok: false; code: string; message: string }
 export type ProjectWorkOk<T> = { ok: true } & T
@@ -89,8 +90,53 @@ export type MemoryWriteInput = {
   body: string
   artifactPath?: string
   replaceId?: string
+  /** További, ugyanerről szóló elemek, amelyeket ez az írás összevon és kivezet a replaceId mellett. */
+  mergeIds?: string[]
+  /** Az író tudatosan új elemet kér, bár hasonló már van. Ember (UI) mindig true. */
+  confirmNew?: boolean
   withUserId: string
   mode: MemoryWriteModeValue
+}
+
+/** replaceId + mergeIds egy listában, duplikátum nélkül; az első lesz a supersedesId. */
+function retiredIds(input: { replaceId?: string; mergeIds?: string[] }): string[] {
+  return [...new Set([input.replaceId, ...(input.mergeIds ?? [])].filter((id): id is string => !!id))]
+}
+
+export type MemoryDuplicateCandidate = Pick<MemoryView, 'id' | 'kind' | 'title' | 'body' | 'createdAt'>
+
+const MIN_TOKEN_LENGTH = 4
+const DUPLICATE_MIN_SHARED = 3
+const DUPLICATE_MIN_OVERLAP = 0.35
+const DUPLICATE_MAX_CANDIDATES = 5
+const CANDIDATE_BODY_PREVIEW = 400
+
+function memoryTokens(text: string): Set<string> {
+  const folded = text.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
+  return new Set(folded.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= MIN_TOKEN_LENGTH))
+}
+
+/**
+ * Ugyanarról szóló aktív emlékek (Mem0-féle „ADD vs UPDATE” előszűrés): közös szavak aránya
+ * a rövidebb szöveghez mérve. ponytail: lexikális egyezés; ha téves riasztás/kihagyás gyakori, embedding-hasonlóság.
+ */
+export function findSimilarMemories(
+  draft: { title: string; body: string },
+  items: readonly ProjectMemoryRecord[],
+): ProjectMemoryRecord[] {
+  const mine = memoryTokens(`${draft.title} ${draft.body}`)
+  if (mine.size === 0) return []
+  return items
+    .map((item) => {
+      const theirs = memoryTokens(`${item.title} ${item.body}`)
+      let shared = 0
+      for (const word of theirs) if (mine.has(word)) shared++
+      return { item, shared, overlap: shared / Math.max(1, Math.min(mine.size, theirs.size)) }
+    })
+    .filter((row) => row.shared >= DUPLICATE_MIN_SHARED && row.overlap >= DUPLICATE_MIN_OVERLAP)
+    .sort((a, b) => b.overlap - a.overlap)
+    .slice(0, DUPLICATE_MAX_CANDIDATES)
+    .map((row) => row.item)
 }
 
 export class ProjectWorkService {
@@ -281,10 +327,36 @@ export class ProjectWorkService {
     ProjectWorkResult<
       | { status: 'written'; item: MemoryView }
       | { status: 'needs_approval'; draft: Omit<MemoryWriteInput, 'mode'> }
+      | { status: 'possible_duplicate'; candidates: MemoryDuplicateCandidate[] }
     >
   > {
     const prepared = await this.prepareMemoryWrite(input)
     if (!prepared.ok) return prepared
+    // Cserénél is: ha a kivezetetteken kívül marad hasonló aktív elem, azt is össze kell vonni.
+    if (!input.confirmNew) {
+      const retiring = new Set(retiredIds(prepared.draft))
+      const active = await this.memory.listActive({
+        tenantId: input.tenantId,
+        agentId: input.agentId,
+        projectKey: effectiveWorkProjectKey(prepared.draft.projectKey),
+      })
+      const similar = findSimilarMemories(
+        prepared.draft,
+        active.filter((row) => !retiring.has(row.id)),
+      )
+      if (similar.length > 0) {
+        return ok({
+          status: 'possible_duplicate' as const,
+          candidates: similar.map((row) => ({
+            id: row.id,
+            kind: row.kind,
+            title: row.title,
+            body: row.body.length > CANDIDATE_BODY_PREVIEW ? `${row.body.slice(0, CANDIDATE_BODY_PREVIEW)}…` : row.body,
+            createdAt: row.createdAt.toISOString(),
+          })),
+        })
+      }
+    }
     if (input.mode === 'approval') {
       return ok({ status: 'needs_approval' as const, draft: prepared.draft })
     }
@@ -310,8 +382,8 @@ export class ProjectWorkService {
       artifactPath: draft.artifactPath ?? null,
       withUserId: draft.withUserId,
       supersedesId: draft.replaceId ?? null,
+      alsoSupersedeIds: draft.mergeIds ?? [],
     })
-    if (draft.replaceId) await this.memory.supersede(draft.replaceId)
     const [user] = await this.users.findManyByIds([row.withUserId])
     return {
       id: row.id,
@@ -360,8 +432,10 @@ export class ProjectWorkService {
       if (!path) return err('invalid_path')
       artifactPath = path
     }
-    if (input.replaceId) {
-      const previous = await this.memory.findById(input.replaceId)
+    const [replaceId, ...mergeIds] = retiredIds(input)
+    if (mergeIds.length > MEMORY_MERGE_MAX) return err('memory_not_found', 'too many mergeIds')
+    for (const id of [replaceId, ...mergeIds].filter(Boolean)) {
+      const previous = await this.memory.findById(id)
       if (
         !previous ||
         previous.tenantId !== input.tenantId ||
@@ -381,7 +455,8 @@ export class ProjectWorkService {
         title,
         body,
         artifactPath,
-        replaceId: input.replaceId,
+        replaceId,
+        ...(mergeIds.length > 0 ? { mergeIds } : {}),
         withUserId: input.withUserId,
       },
     })

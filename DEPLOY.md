@@ -36,6 +36,9 @@ npx -y firebase-tools@latest apphosting:secrets:set CLERK_WEBHOOK_SIGNING_SECRET
 
 # Fázis 2 — write-gate
 npx -y firebase-tools@latest apphosting:secrets:set WRITE_GATE_SECRET
+
+# MCP requestState (#618, MRTR űrlap) — opcionális; hiányában link-fallback
+npx -y firebase-tools@latest apphosting:secrets:set MCP_REQUEST_STATE_KEY
 ```
 
 A backend hozzáférést kap automatikusan az `apphosting.yaml`-ban felsorolt secret-ekhez.

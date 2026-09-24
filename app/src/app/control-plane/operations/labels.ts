@@ -7,6 +7,8 @@ export const OPERATION_ERROR_LABELS: Record<string, string> = {
   google_drive_auth_failed: 'A Google Drive bejelentkezés sikertelen.',
   google_drive_api_error: 'A Google Drive kérés sikertelen.',
   tool_execution_failed: 'A művelet végrehajtása sikertelen.',
+  http_api_error: 'A célrendszer elutasította a kérést.',
+  missing_api_key: 'A connectorhoz nincs beállítva API-kulcs.',
   agent_access_denied: 'Ehhez a munkatárshoz már nincs működési jogod.',
   invalid_args: 'Érvénytelen kérés.',
   schema_mismatch:

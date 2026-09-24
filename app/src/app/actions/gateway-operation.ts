@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { requireTenantRole, TenantAuthError } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
+import { canApproveGatewayOperation } from '@/domain/gateway-operation'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import type {
   GatewayOperationView,
@@ -39,8 +40,13 @@ export async function listPendingGatewayOperationsAction(): Promise<
   ActionResult<{ operations: GatewayPendingOperationRow[] }>
 > {
   try {
-    const ctx = await requireTenantRole('approver')
-    const operations = await services.gatewayOperations.listPending({ tenantId: ctx.activeTenantId })
+    const ctx = await requireTenantRole('viewer')
+    const actor = actorFrom(ctx)
+    // #618 D4: approver/admin sees every pending write, anyone else only their own.
+    const operations = await services.gatewayOperations.listPending({
+      tenantId: ctx.activeTenantId,
+      ...(canApproveGatewayOperation(actor) ? {} : { principalUserId: actor.userId }),
+    })
     return ok({ operations })
   } catch (error) {
     return mapActionError(error)
@@ -52,7 +58,7 @@ export async function approveGatewayOperationAction(
 ): Promise<ActionResult<GatewayOperationView>> {
   try {
     const parsed = operationIdSchema.parse(input)
-    const ctx = await requireTenantRole('approver')
+    const ctx = await requireTenantRole('viewer')
     const result = await services.gatewayOperations.approve({
       tenantId: ctx.activeTenantId,
       operationId: parsed.operationId,
@@ -72,7 +78,7 @@ export async function rejectGatewayOperationAction(
 ): Promise<ActionResult<GatewayOperationView>> {
   try {
     const parsed = rejectSchema.parse(input)
-    const ctx = await requireTenantRole('approver')
+    const ctx = await requireTenantRole('viewer')
     const result = await services.gatewayOperations.reject({
       tenantId: ctx.activeTenantId,
       operationId: parsed.operationId,

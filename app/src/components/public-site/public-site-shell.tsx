@@ -15,23 +15,23 @@ export async function PublicSiteShell({ children }: { children: ReactNode }) {
   ]
 
   return (
-    <div className="flex min-h-screen flex-col text-ink">
-      <header className="sticky top-0 z-20 border-b border-line bg-night/80 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-5 py-3.5">
+    <div className="signal-grid flex min-h-screen flex-col text-ink">
+      <header className="sticky top-0 z-20 border-b border-ink bg-night/85 backdrop-blur-md">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-3.5">
           <Link href="/" className="flex min-w-0 items-center gap-3">
             <Image
               src="/excellence-ai-logo.png"
               alt="Excellence AI"
               width={44}
               height={44}
-              className="h-10 w-10 rounded-2xl object-cover"
+              className="h-9 w-9 rounded-md object-cover"
               priority
             />
             <div className="min-w-0">
-              <p className="font-display text-[1.25rem] font-semibold leading-none tracking-tight">
+              <p className="whitespace-nowrap text-lg font-bold leading-none tracking-[-0.03em]">
                 Excellence AI
               </p>
-              <p className="mt-1 hidden text-[11px] uppercase tracking-[0.16em] text-ink-faint sm:block">
+              <p className="mt-1 hidden font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint sm:block">
                 {t('tagline')}
               </p>
             </div>
@@ -41,7 +41,7 @@ export async function PublicSiteShell({ children }: { children: ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
-                className="hidden rounded-full px-3 py-1.5 text-sm font-medium text-ink-soft hover:bg-coral/8 hover:text-ink sm:inline"
+                className="hidden px-3 py-1.5 text-sm font-medium text-ink-soft transition-colors hover:text-ink sm:inline"
               >
                 {item.label}
               </Link>
@@ -49,16 +49,17 @@ export async function PublicSiteShell({ children }: { children: ReactNode }) {
             <LocaleSwitcher />
             <NextLink
               href="/sign-in"
-              className="rounded-full bg-coral px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-coral-deep"
+              className="signal-btn rounded border border-ink bg-ink px-4 py-2 text-sm font-semibold text-white"
             >
               {t('signIn')}
             </NextLink>
           </nav>
         </div>
+        <div data-progress className="absolute -bottom-px left-0 h-0.5 w-0 bg-coral" />
       </header>
       <main className="flex-1">{children}</main>
-      <footer className="border-t border-line bg-night-2/60">
-        <div className="mx-auto flex max-w-5xl flex-col gap-3 px-5 py-8 text-sm text-ink-soft sm:flex-row sm:items-center sm:justify-between">
+      <footer className="border-t border-ink bg-card">
+        <div className="mx-auto flex max-w-6xl flex-col gap-3 px-5 py-8 text-sm text-ink-soft sm:flex-row sm:items-center sm:justify-between">
           <p>
             © {new Date().getFullYear()} Excellence Pay Kft. ·{' '}
             <span className="font-medium text-ink">Excellence AI</span>
@@ -95,8 +96,8 @@ export async function LegalPage({
   return (
     <PublicSiteShell>
       <article className="mx-auto max-w-3xl px-5 py-14 sm:py-20">
-        <p className="text-sm font-medium uppercase tracking-[0.16em] text-ink-faint">Excellence AI</p>
-        <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-ink">{title}</h1>
+        <p className="font-mono text-xs uppercase tracking-[0.12em] text-coral">Excellence AI</p>
+        <h1 className="mt-3 text-4xl font-bold tracking-[-0.04em] text-ink sm:text-5xl">{title}</h1>
         {description ? <p className="mt-4 text-lg leading-relaxed text-ink-soft">{description}</p> : null}
         <p className="mt-3 text-sm text-ink-faint">{t('updated', { date: updated })}</p>
         <div className="mt-10 space-y-4 text-[15px] leading-7 text-ink-soft [&_a]:text-coral-deep [&_a]:underline [&_a]:underline-offset-2 [&_code]:rounded [&_code]:bg-night-2 [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[13px] [&_code]:text-ink [&_h2]:mt-10 [&_h2]:font-display [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:text-ink [&_h3]:mt-6 [&_h3]:text-lg [&_h3]:font-semibold [&_h3]:text-ink [&_li]:mt-1 [&_strong]:font-semibold [&_strong]:text-ink [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-5">

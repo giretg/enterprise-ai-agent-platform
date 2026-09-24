@@ -161,7 +161,7 @@ function renderAgentsMd(input: {
     '',
     'Writes (for example creating a Drive folder or http_api_request) enqueue and wait for Control Plane approval. Do not bypass approval.',
     '',
-    'Project memory, if needed, is an MCP tool (platform.project_memory.read / write). Work files (plans, notes) are platform.work_file.* under a projectKey. Do not create a local memory file, and do not keep durable work in this checkout folder.',
+    'Memory first: this agent\'s memory (company facts, decisions, locations) lives on the server. platform.agent.get_definition returns it as generalMemory; read it at the start of every conversation and before answering company questions or searching — it overrides search results. More: platform.project_memory.read / write (omit projectKey for general memory). Work files (plans, notes) are platform.work_file.* under a projectKey. Do not create a local memory file, and do not keep durable work in this checkout folder.',
     'Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
     '',
     'If the work needs runnable skill code, call the MCP sandbox with the skillVersionId. Do not run skill code from this workspace, and do not upload a local file into the sandbox.',
