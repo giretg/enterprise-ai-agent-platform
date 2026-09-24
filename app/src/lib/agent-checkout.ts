@@ -194,6 +194,7 @@ function renderAgentsMd(input: {
     'Before any enterprise tool (Drive, Gmail, http_api_*, kb_*), call `platform.agent.get_definition` for this agentId and use its definitionId. Exempt: `platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`, `platform.agent.checkout`.',
     'If the returned `contentHash` differs from the pin above, call `platform.agent.checkout`, overwrite generated paths, then retry.',
     'Enterprise tools reject stale pins with `agent_stale` until checkout completes and the manifest `definitionId` matches the current published version.',
+    'When retrying a write after checkout, reuse the same `idempotencyKey` and only update `definitionId` — a new key can enqueue a duplicate side effect.',
   )
 
   if (input.skills.length > 0) {

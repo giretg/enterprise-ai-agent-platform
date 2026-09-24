@@ -244,6 +244,10 @@ async function main() {
       /codex app/,
     )
     assert.match(bundle.files.find((f) => f.path === 'AGENTS.md')?.content ?? '', /agent_stale/)
+    assert.match(
+      bundle.files.find((f) => f.path === 'AGENTS.md')?.content ?? '',
+      /same `idempotencyKey`/,
+    )
   })
 
   if (failures > 0) {

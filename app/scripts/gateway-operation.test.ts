@@ -211,6 +211,40 @@ async function main() {
     assert.deepEqual(result, { ok: false, code: 'agent_stale' })
   })
 
+  await check('idempotent replay survives republish with stale or new pin', async () => {
+    const wired = deps({ currentDefinitionId: STALE_DEFINITION_ID })
+    const created = await enqueueGatewayOperation(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, definitionId: STALE_DEFINITION_ID, idempotencyKey: 'idem-stale' },
+    })
+    assert.equal(created.ok, true)
+    if (!created.ok) return
+
+    // Republish: current pin moves to DEFINITION_ID; retry with old pin + same key.
+    wired.deps.findCurrentDefinitionId = async () => DEFINITION_ID
+    const replayStale = await enqueueGatewayOperation(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, definitionId: STALE_DEFINITION_ID, idempotencyKey: 'idem-stale' },
+    })
+    assert.equal(replayStale.ok, true)
+    if (!replayStale.ok) return
+    assert.equal(replayStale.view.operationId, created.view.operationId)
+    assert.equal(replayStale.created, false)
+
+    // Checkout retry: new definitionId, same key and write args → same op (no duplicate).
+    const replayCurrent = await enqueueGatewayOperation(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, definitionId: DEFINITION_ID, idempotencyKey: 'idem-stale' },
+    })
+    assert.equal(replayCurrent.ok, true)
+    if (!replayCurrent.ok) return
+    assert.equal(replayCurrent.view.operationId, created.view.operationId)
+    assert.equal(replayCurrent.created, false)
+  })
+
   await check('enqueue create_folder is awaiting_approval and does not call Drive', async () => {
     const driveCalls: unknown[] = []
     const logs = captureInfo()
