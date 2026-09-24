@@ -7,6 +7,83 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-09-24 — MCP resource-server írási felület (Gmail send/reply/draft/label/trash, #637): bizalmi határ + jóváhagyás-kötés + fejléc-injekció
+
+**Scope-választás (kockázati alapon):** `gh pr list` + ledger után az utolsó bejegyzés
+(09-17) óta egy **nagy MCP-hullám** ment main-re: **#637 teljes Gmail-írás az MCP-n**
+(küldés/válasz/piszkozat/címke/kuka), #631 http_api path-illesztés, #635/#634/#632
+projektmemória, #627 KB raw_text. Az egész **MCP resource-server** (`/api/mcp/[tenantSlug]`)
+— külső, OAuth-hitelesített, most **író képességű** támadási felület — **nem szerepelt a
+ledgerben**, és a #637 a legmagasabb új blast-radiusú változás (agent által vezérelt,
+emberi jóváhagyás mögötti valós e-mail-küldés/kuka). Ez volt a legnagyobb nem-auditált kockázat.
+
+**Coverage (teljes bizalmi-határ trace, kézi end-to-end):**
+`route.ts` → `handleMcpRequest` (`withMcpAuth`, Clerk OAuth verify) →
+`resolveMcpPrincipal` (token-verify → **foreign `aud`/`resource`-origin elutasítás** →
+aktív user → **URL-slug szerinti tenant** → tenant-státusz → **aktív tenant-membership**
+kötelező, különben `not_a_member`; superadmin → `assumed`; `userId`/`tenantId` SOHA a
+tool-JSON-ból) → `tools/call` (allowlist-kapu `MCP_ALLOWED_TOOLS`) →
+`invokeEnterpriseTool` (definitionId-kapu, `isDispatchable`, definition-pin/`agent_stale`,
+`args.agentId` egyeztetés, `canOperateAgent` grant-kapu) → írónál `enqueueWrite`
+(`enqueueGatewayOperation` → `loadAuthorizedWrite`: séma + `authorizeToolCall` connector/scope-
+kapu + kötelező `idempotencyKey`) → jóváhagyás (`approveGatewayOperation`
+`withLockedOperation` egyszer-használat, `pendingDecisionError` státusz+döntés-kapu) →
+`executeApprovedOperation` (**újra-authorizál a kérő élő szerepével**, tenant-kötött,
+token a kérő grantjából) → `executeGmailTool`/`GmailApiClient`. Melléksávok: write-confirm
+MRTR-űrlap (#618, `argsHash`+`operationId`+principal-kötés a `requestState`-ben),
+`gmail-api-client` MIME-építés, http_api path-allowlist (#631), read-oldali méret-kapuk.
+
+### Biztonsági megállapítás — a bizalmi határ helytáll (nincs ≥ high-confidence finding)
+
+Minden vizsgált kontroll explicit verifikálva (nem feltételezve):
+- **Cross-tenant izoláció.** A tenant kizárólag az URL-slugból + kötelező aktív
+  membershipből oldódik; idegen tenant URL-jére hitelesített nem-tag `not_a_member`-t kap.
+  Token-`aud`/`resource` idegen originre elutasítva.
+- **Jóváhagyás egyszer-használat + confused-deputy.** A gateway-operation zárolt
+  státuszátmenettel egyszer fut; `canDecideGatewayOperation` csak a kérő vagy admin/approver;
+  idegen tenant/operáció `operation_not_found` (nem szivárog). Végrehajtáskor **újra-authorizál**
+  a kérő élő szerepével és grantjával — az approver jogai nem emelik a műveletet.
+- **Fejléc-injekció (SMTP/MIME).** `headerValue` minden `To/Cc/Bcc/In-Reply-To/References`
+  értékből kiszűri a CR/LF-et; a `Subject` RFC 2047 encoded-word (a nyers érték előbb CRLF-mentes).
+  A válasz `In-Reply-To`/`References` az eredeti (támadó-vezérelt) levél fejléceiből jön, de
+  ugyanazon a CRLF-szűrőn megy át. A MIME-boundary szerver-generált, nem input.
+- **Scope-kapu.** Readonly Gmail-grant `gmail_scope_not_granted`-tal **már az enqueue-nál**
+  elutasítva (teszttel igazolva).
+- **http_api path-allowlist (#631).** A sablon adminvezérelt; a `{param}` szegmensen belüli
+  regex `[^/]+` (nem lép szegmenshatárt), a szegmensszám egyeznie kell, a literál részek
+  escape-eltek és `^…$`-horgonyzottak → a modellvezérelt `path` nem illeszt nem szándékolt
+  endpointra. Traverzál (`..`) a szegmensszám-kapu miatt nem szökik ki a baseUrl-ből.
+- **Read-oldali amplifikáció.** `gmail_search maxResults` ≤ 50, `list_drafts` ≤ 25 — az N+1
+  metadata-lehívás korlátos.
+
+### Residual risk / következő audithoz
+- **🟠 Következmény-kapu láthatósági rés a Gmail-válasznál és piszkozat-küldésnél
+  (transzparencia).** A write-confirm űrlap (#618) és a control-plane kártya a tárolt
+  args-ból épül. **Válasznál** (`replyToMessageId`, nincs explicit `to`) a jóváhagyó csak
+  „címzett: az eredeti feladó" / „(mindenkinek)" szöveget lát, a **konkrét címzett(ek)et
+  nem** — az `resolveCompose` a valós címzettet csak *végrehajtáskor* oldja fel a Gmailből.
+  **`gmail_send({draftId})`** esetén a kártyán csak az átlátszatlan draftId látszik, tartalom
+  nélkül. Egy (akár prompt-injektált) modell így olyan levelet küldethet jóvá, amelynek
+  címzettjét/tartalmát az ember nem látja — az „auditálható, ember által kontrollált AI-írás"
+  ígéret réselődik. Azonos osztály, mint a korábban jegyzett `code-review-consequence-card-
+  outbound-content`. **Nem lett kódmódosítás:** a rés bezárása a jóváhagyási úton élő
+  Gmail-olvasást (token-feloldás az enqueue/confirm ágon) igényel — nem „lazy", viselkedést
+  változtató fix, amit felügyelet nélküli futásban szándékosan nem erőltettem; felhasználói
+  döntést kér (címzett/tárgy felbontása enqueue-kor vs. külön előnézeti hívás).
+- **Válasz compose-only scope-pal fail-closed.** Ha egy grant csak `gmail.compose`, a válasz
+  `getReplyContext` (messages.get) végrehajtáskor 403-mal bukik → `gmail_auth_failed`,
+  művelet `failed`. Biztonságos hibamód, de rossz UX; érdemes az enqueue-scope-kapuban a
+  `replyToMessageId` jelenlétekor olvasó scope-ot is megkövetelni (fail-fast).
+- **`security-review` diff-eszköz nem futott** — a #637 már merged, a jelenlegi ág
+  (feat/signal-design) nem tartalmazza; a felderítés a kézi end-to-end trace + a `gmail-mcp-tools`
+  tesztfuttatás volt (precedens: 09-17 üres-diff eset).
+
+### Ellenőrzések
+- `npm run test:gmail-mcp-tools` — **zöld** (küldés jóváhagyás után pontosan egyszer;
+  readonly grant enqueue-nál elutasítva; multipart body/cc/attachment olvasás).
+
+---
+
 ## 2026-09-17 — Külső gateway (`POST /v1/chat/completions`): agent-API bizalmi határ + `x-agent-version` NaN költség-/audit-rés
 
 **Scope-választás (kockázati alapon):** `gh pr list` + ledger után az előző körök az
