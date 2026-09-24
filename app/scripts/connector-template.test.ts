@@ -267,12 +267,11 @@ async function main() {
       {
         authMethodKind: 'user_delegated_oauth2',
         instanceValues: {
-          clientId: 'google-ads-client-id.apps.googleusercontent.com',
           developerToken: 'dev-token-example',
           loginCustomerId: '1234567890',
         },
       },
-      { clientSecret: 'secret-ref:google-ads-oauth-client-secret' },
+      {},
     )
     const runtime = parseHttpApiConfig(config)
     assert.equal(runtime.baseUrl, 'https://googleads.googleapis.com')

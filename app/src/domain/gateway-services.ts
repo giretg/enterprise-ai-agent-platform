@@ -40,6 +40,12 @@ import { SpecSyncService } from '@/domain/connector-self-update/spec-sync'
 import { SkillService } from '@/domain/skill/skill-service'
 import { TenantService } from '@/domain/tenant/tenant-service'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
+import {
+  applyApprovedMemoryWrite,
+  invokeProjectWorkTool,
+  type ProjectWorkDeps,
+} from '@/domain/project-work'
+import { parseMemoryWriteMode } from '@/lib/memory-write-mode'
 import { executeKnowledgeBaseTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
 import {
@@ -110,14 +116,16 @@ const provisioningService = new ProvisioningService({
   resolveEgressAllowlist,
   resolveBankPreset,
   sandboxTester: new HttpSandboxConnectionTester({ resolveEgressAllowlist, resolveBankPreset }),
-  resolvePlatformGoogleOAuth: async (service = 'gmail') => {
+  resolvePlatformGoogleOAuth: async (service: 'gmail' | 'drive' | 'api' = 'gmail') => {
     if (process.env.GOOGLE_DRIVE_API_STUB === 'true' && service === 'drive') {
       return { configured: true }
     }
     const cfg =
       service === 'drive'
         ? await platformSettingsService.getGoogleDriveOAuthConfig()
-        : await platformSettingsService.getGoogleOAuthConfig()
+        : service === 'api'
+          ? await platformSettingsService.getGoogleApiOAuthConfig()
+          : await platformSettingsService.getGoogleOAuthConfig()
     return { configured: Boolean(cfg) }
   },
   audit: repositories.audit,
@@ -243,6 +251,8 @@ const gatewayOperationDeps: GatewayOperationServiceDeps = {
   resolveRequester,
   startAuthorization,
   audit: repositories.audit,
+  executeInternalWrite: (operation) =>
+    applyApprovedMemoryWrite({ chunks: repositories.memoryChunks }, operation),
   async recordCreatedDriveFiles({ grantId, files }) {
     for (const file of files) {
       await recordGoogleDriveAppCreatedFile({ grantId, ...file })
@@ -263,6 +273,27 @@ const gatewayOperationDeps: GatewayOperationServiceDeps = {
       withUserId,
     })
   },
+}
+
+const projectWorkDeps: ProjectWorkDeps = {
+  projects: repositories.workProjects,
+  files: repositories.workFiles,
+  chunks: repositories.memoryChunks,
+  operations: repositories.gatewayOperations,
+  loadDefinition: (input) => agentDefinitionService.loadAgentDefinition(input),
+  findCurrentDefinitionId: sharedToolLookups.findCurrentDefinitionId,
+  findAgentGrant: sharedToolLookups.findAgentGrant,
+  async loadMemoryWriteMode(agentId) {
+    const agent = await repositories.agents.findById(agentId)
+    return parseMemoryWriteMode(agent?.memoryWriteMode)
+  },
+  async resolveUserNames(ids) {
+    const unique = [...new Set(ids)]
+    if (unique.length === 0) return {}
+    const users = await repositories.users.findManyByIds(unique)
+    return Object.fromEntries(users.map((user) => [user.id, user.name || user.email]))
+  },
+  audit: repositories.audit,
 }
 
 async function listPendingOperationRows(input: {
@@ -350,5 +381,9 @@ export const services = {
     listPending: (input: { tenantId: string; principalUserId?: string }) =>
       listPendingOperationRows(input),
     toMcpGet: getResultToMcp,
+  },
+  projectWork: {
+    invoke: (input: Parameters<typeof invokeProjectWorkTool>[1]) =>
+      invokeProjectWorkTool(projectWorkDeps, input),
   },
 }

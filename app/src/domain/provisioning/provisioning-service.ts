@@ -15,6 +15,7 @@ import { computeDiffHash } from '@/lib/crypto/hash-chain'
 import type { ConnectorAccessMode, ConnectorType, Prisma, UserRole } from '@prisma/client'
 import type { ConnectorDraftRepository } from '@/repositories/interfaces'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
+import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
 import {
   normalizeGmailConnectorConfig,
   type GmailConnectorConfig,
@@ -116,7 +117,7 @@ export interface ProvisioningDeps {
    * Gmail aktiváláskor a platform Google OAuth alkalmazás (Client ID + Secret)
    * kell, nem tenant-szintű creds. Hiányzó resolver = nincs beállítva (fail-closed).
    */
-  resolvePlatformGoogleOAuth?: (service?: 'gmail' | 'drive') => Promise<{ configured: boolean }>
+  resolvePlatformGoogleOAuth?: (service?: 'gmail' | 'drive' | 'api') => Promise<{ configured: boolean }>
   /**
    * Aktiválás után a forrás privacy-katalógusának behúzása (issue #320). Best-effort:
    * a hibája nem bukhatja el az aktiválást, de a kimenete auditálva van. Enélkül az új
@@ -439,6 +440,10 @@ export class ProvisioningService {
     const draft = await this.loadDraftForTenant(input.draftId, actor)
     const isGmail = draft.connector.type as string === 'gmail'
     const isGoogleDrive = draft.connector.type === 'google_drive'
+    const draftConfigForOAuth = parseStoredConfig(draft.connector.config)
+    const usesPlatformGoogleApiOAuth = isPlatformGoogleApiConnectorTemplateKey(
+      draftConfigForOAuth.provenance?.templateKey,
+    )
 
     // Előfeltételek (§8.5, P5): nem-failed validáció + sikeres sandbox-teszt +
     // approved review + (secretAlias VAGY apiKey).
@@ -465,10 +470,10 @@ export class ProvisioningService {
     )
 
     const hasCredentials = hasApiKey || Boolean(approvedAlias)
-    const usesPlatformGoogleOAuth = isGmail || isGoogleDrive
+    const usesPlatformGoogleOAuth = isGmail || isGoogleDrive || usesPlatformGoogleApiOAuth
 
     if (usesPlatformGoogleOAuth) {
-      const oauthService = isGoogleDrive ? 'drive' : 'gmail'
+      const oauthService = isGoogleDrive ? 'drive' : usesPlatformGoogleApiOAuth ? 'api' : 'gmail'
       const platformGoogle = this.deps.resolvePlatformGoogleOAuth
         ? await this.deps.resolvePlatformGoogleOAuth(oauthService)
         : { configured: false }
@@ -477,7 +482,9 @@ export class ProvisioningService {
           'PLATFORM_GOOGLE_OAUTH_MISSING',
           isGoogleDrive
             ? 'A Google Drive connector a platform Google Drive OAuth alkalmazását használja — állítsd be a Platform · Beállítások → Google Drive OAuth oldalon.'
-            : 'A Gmail connector a platform Google OAuth alkalmazását használja — állítsd be a Platform · Beállítások → Google OAuth oldalon.',
+            : usesPlatformGoogleApiOAuth
+              ? 'A Google Analytics / Search Console / Ads konnektorok a platform Google API OAuth alkalmazását használják — állítsd be a Platform · Beállítások → Google Analytics / Search Console / Ads OAuth oldalon.'
+              : 'A Gmail connector a platform Google OAuth alkalmazását használja — állítsd be a Platform · Beállítások → Google OAuth oldalon.',
         )
       }
     } else if (!hasCredentials) {

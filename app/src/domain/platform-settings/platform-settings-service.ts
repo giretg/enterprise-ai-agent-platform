@@ -96,6 +96,13 @@ export class PlatformSettingsService {
     })
   }
 
+  async getGoogleApiOAuthConfig(): Promise<GoogleOAuthResolved | null> {
+    return loadGoogleOAuthConfig({
+      service: 'api',
+      getPlatformValue: () => this.settings.get(GOOGLE_OAUTH_SERVICE_KEYS.api),
+    })
+  }
+
   async getGoogleDrivePickerConfig(): Promise<{
     config: GoogleDrivePickerConfig
     source: GoogleOAuthResolved['source']
@@ -125,6 +132,33 @@ export class PlatformSettingsService {
     }
     await this.settings.set(
       GOOGLE_OAUTH_SERVICE_KEYS.drive,
+      config as unknown as Prisma.InputJsonObject,
+      actorId,
+    )
+
+    return { config, source: 'platform' }
+  }
+
+  async upsertGoogleApiOAuthConfig(
+    input: { clientId: string; clientSecret?: string; redirectUri?: string },
+    actorId: string,
+  ): Promise<GoogleOAuthResolved> {
+    const existing = await this.getGoogleApiOAuthConfig()
+    const clientSecret = input.clientSecret?.trim() || existing?.config.clientSecret
+    if (!clientSecret) {
+      throw new Error('Client Secret szükséges az első beállításhoz.')
+    }
+    const redirectUri =
+      input.redirectUri === undefined
+        ? existing?.config.redirectUri
+        : input.redirectUri.trim() || undefined
+    const config: GoogleOAuthConfig = {
+      clientId: input.clientId.trim(),
+      clientSecret,
+      ...(redirectUri ? { redirectUri } : {}),
+    }
+    await this.settings.set(
+      GOOGLE_OAUTH_SERVICE_KEYS.api,
       config as unknown as Prisma.InputJsonObject,
       actorId,
     )

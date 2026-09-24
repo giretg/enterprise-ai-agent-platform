@@ -30,7 +30,8 @@ import {
   validateConnectorDraft,
   type FetchApiDocFromUrlData,
 } from '@/app/actions/provisioning'
-import { startConnectorOAuth, getGoogleOAuthConfiguredStatus, getGoogleDriveOAuthConfiguredStatus } from '@/app/actions/connector-grants'
+import { startConnectorOAuth, getGoogleOAuthConfiguredStatus, getGoogleDriveOAuthConfiguredStatus, getGoogleApiOAuthConfiguredStatus } from '@/app/actions/connector-grants'
+import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
 import { listTenants } from '@/app/actions/tenant'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
@@ -513,6 +514,7 @@ export function ProvisioningPanel({
   const [templates, setTemplates] = useState<ConnectorTemplateRow[]>([])
   const [googleOauthConfigured, setGoogleOauthConfigured] = useState(false)
   const [googleDriveOauthConfigured, setGoogleDriveOauthConfigured] = useState(false)
+  const [googleApiOauthConfigured, setGoogleApiOauthConfigured] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [loadedOnce, setLoadedOnce] = useState(false)
@@ -603,12 +605,13 @@ export function ProvisioningPanel({
 
   const reload = useCallback(() => {
     startTransition(async () => {
-      const [d, a, t, g, gd, su, catalog] = await Promise.all([
+      const [d, a, t, g, gd, ga, su, catalog] = await Promise.all([
         listProvisioningDrafts(),
         listProvisioningAssignableAgents(),
         listConnectorTemplatesAction(),
         getGoogleOAuthConfiguredStatus(),
         getGoogleDriveOAuthConfiguredStatus(),
+        getGoogleApiOAuthConfiguredStatus(),
         listSelfUpdatingConnectors(),
         listConnectorCatalog(),
       ])
@@ -622,6 +625,7 @@ export function ProvisioningPanel({
       }
       if (g.success) setGoogleOauthConfigured(g.data.configured)
       if (gd.success) setGoogleDriveOauthConfigured(gd.data.configured)
+      if (ga.success) setGoogleApiOauthConfigured(ga.data.configured)
       if (su.success) {
         setSelfUpdatingRows(su.data.connectors as SelfUpdatingConnectorRow[])
         setTenantAuto(su.data.tenantAutoApproveEnabled)
@@ -803,6 +807,7 @@ export function ProvisioningPanel({
   const selectedTemplateDescriptor = selectedTemplate?.descriptor
   const isGmailTemplate = selectedTemplateDescriptor?.connectorType === 'gmail'
   const isGoogleDriveTemplate = selectedTemplateDescriptor?.connectorType === 'google_drive'
+  const isGoogleApiTemplate = isPlatformGoogleApiConnectorTemplateKey(selectedTemplateDescriptor?.key)
   const effectiveTemplateAuthMethod =
     selectedTemplateDescriptor?.authMethods.find((m) => m.kind === templateAuthMethod)?.kind ??
     selectedTemplateDescriptor?.authMethods[0]?.kind ??
@@ -1740,6 +1745,13 @@ export function ProvisioningPanel({
                                 (Platform · Beállítások → Google Drive OAuth).
                               </p>
                             ) : null}
+                            {isGoogleApiTemplate && !googleApiOauthConfigured ? (
+                              <p className="rounded-md border border-amber/35 bg-amber/10 px-3 py-2 text-xs text-ink-soft">
+                                A Google Analytics / Search Console / Ads sablonokhoz a platform
+                                Google API OAuth beállítása kell (Platform · Beállítások → Google
+                                Analytics / Search Console / Ads).
+                              </p>
+                            ) : null}
                             {selectedTemplate.description ? (
                               <p className="text-xs text-ink-soft">{selectedTemplate.description}</p>
                             ) : null}
@@ -2396,6 +2408,7 @@ export function ProvisioningPanel({
                   latestTemplateVersions={latestTemplateVersions}
                   googleOauthConfigured={googleOauthConfigured}
                   googleDriveOauthConfigured={googleDriveOauthConfigured}
+                  googleApiOauthConfigured={googleApiOauthConfigured}
                   pending={pending}
                   run={run}
                   isSuperadmin={isSuperadmin}
@@ -2504,6 +2517,7 @@ export function ProvisioningPanel({
                 latestTemplateVersions={latestTemplateVersions}
                 googleOauthConfigured={googleOauthConfigured}
                 googleDriveOauthConfigured={googleDriveOauthConfigured}
+                googleApiOauthConfigured={googleApiOauthConfigured}
                 pending={pending}
                 run={run}
                 isSuperadmin={isSuperadmin}
@@ -2717,6 +2731,7 @@ function DraftCard({
   latestTemplateVersions,
   googleOauthConfigured,
   googleDriveOauthConfigured,
+  googleApiOauthConfigured,
   pending,
   run,
   isSuperadmin,
@@ -2727,6 +2742,7 @@ function DraftCard({
   latestTemplateVersions: Record<string, number>
   googleOauthConfigured: boolean
   googleDriveOauthConfigured: boolean
+  googleApiOauthConfigured: boolean
   pending: boolean
   run: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
   isSuperadmin: boolean
@@ -2786,7 +2802,9 @@ function DraftCard({
       : undefined)
   const isGmailConnector = draft.connectorType === 'gmail'
   const isGoogleDriveConnector = draft.connectorType === 'google_drive'
-  const isPlatformGoogleConnector = isGmailConnector || isGoogleDriveConnector
+  const isPlatformGoogleApiConnector = isPlatformGoogleApiConnectorTemplateKey(provenance?.templateKey)
+  const isPlatformGoogleConnector =
+    isGmailConnector || isGoogleDriveConnector || isPlatformGoogleApiConnector
   const activationHelp = templateDescriptor?.activationHelp?.trim() ?? ''
   const isActive = draft.lifecycleState === 'active'
   const isUserDelegated =
@@ -2806,7 +2824,9 @@ function DraftCard({
   const hasActivationCredentials = isPlatformGoogleConnector
     ? isGmailConnector
       ? googleOauthConfigured
-      : googleDriveOauthConfigured
+      : isGoogleDriveConnector
+        ? googleDriveOauthConfigured
+        : googleApiOauthConfigured
     : !!apiKey.trim() ||
       (!!secretAlias.trim() && isResolvableSecretAlias(secretAlias.trim()))
   const hasInvalidSecretAlias =
@@ -2817,11 +2837,9 @@ function DraftCard({
 
   const buildActivationInput = (confirmKeyless?: boolean) => ({
     draftId: draft.draftId,
-    ...(isGmailConnector
+    ...(isGmailConnector || isGoogleDriveConnector || isPlatformGoogleApiConnector
       ? {}
-      : isGoogleDriveConnector
-        ? {}
-        : apiKey.trim()
+      : apiKey.trim()
         ? { apiKey: apiKey.trim() }
         : secretAlias.trim()
           ? { secretAlias: secretAlias.trim() }
@@ -2839,6 +2857,7 @@ function DraftCard({
     if (hasInvalidSecretAlias) return
     if (isGmailConnector && !googleOauthConfigured) return
     if (isGoogleDriveConnector && !googleDriveOauthConfigured) return
+    if (isPlatformGoogleApiConnector && !googleApiOauthConfigured) return
     if (!isPlatformGoogleConnector && !hasActivationCredentials) {
       void (async () => {
         const confirmed = await confirmDialog({
@@ -3620,6 +3639,22 @@ function DraftCard({
                       </p>
                     )}
                   </div>
+                ) : isPlatformGoogleApiConnector ? (
+                  <div className="text-xs sm:col-span-2">
+                    {googleApiOauthConfigured ? (
+                      <p className="flex items-center gap-2 text-sage">
+                        <span aria-hidden className="h-2 w-2 rounded-full bg-sage" />
+                        A platform Google API OAuth alkalmazása be van állítva (Analytics / Search
+                        Console / Ads) — Client ID és Secret nem kell tenant szinten.
+                      </p>
+                    ) : (
+                      <p className="text-honey">
+                        A Google Analytics / Search Console / Ads konnektor a platform Google API
+                        OAuth appját használja. Aktiválás előtt állítsd be a Platform · Beállítások →
+                        Google Analytics / Search Console / Ads oldalon.
+                      </p>
+                    )}
+                  </div>
                 ) : (
                   <>
                 <label className="text-xs sm:col-span-2">
@@ -3801,7 +3836,8 @@ function DraftCard({
                     !activationReady ||
                     hasInvalidSecretAlias ||
                     (isGmailConnector && !googleOauthConfigured) ||
-                    (isGoogleDriveConnector && !googleDriveOauthConfigured)
+                    (isGoogleDriveConnector && !googleDriveOauthConfigured) ||
+                    (isPlatformGoogleApiConnector && !googleApiOauthConfigured)
                   }
                   onClick={handleActivate}
                   className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
@@ -3816,7 +3852,8 @@ function DraftCard({
                       !activationReady ||
                       hasInvalidSecretAlias ||
                       (isGmailConnector && !googleOauthConfigured) ||
-                      (isGoogleDriveConnector && !googleDriveOauthConfigured)
+                      (isGoogleDriveConnector && !googleDriveOauthConfigured) ||
+                      (isPlatformGoogleApiConnector && !googleApiOauthConfigured)
                     }
                     onClick={() => {
                       void (async () => {

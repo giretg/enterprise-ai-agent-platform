@@ -485,11 +485,10 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
 2. Válaszd ki vagy hozd létre a projektet.
 3. APIs & Services → Library → engedélyezd a „Google Search Console API” szolgáltatást.
 4. APIs & Services → OAuth consent screen → állítsd be (Internal vagy External; teszthez add hozzá a tesztfelhasználókat). Vedd fel a webmasters.readonly vagy webmasters scope-ot.
-5. APIs & Services → Credentials → Create credentials → OAuth client ID, típus: Web application.
-6. Authorized redirect URIs: add meg a platform redirect URI-ját (az aktiválásnál másolható: …/api/connectors/oauth/callback).
-7. Másold ki a Client ID-t és a Client secretet — ezeket az aktiválásnál add meg.
-8. A hívott felhasználónak verified owner/user jog kell a Search Console property-n.
-9. A siteUrl path-paramétert URL-kódolni kell: https://www.example.com/ → https%3A%2F%2Fwww.example.com%2F; domain-property: sc-domain:example.com.`,
+5. APIs & Services → Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
+6. Client ID + secret: Platform · Beállítások → Google Analytics / Search Console / Ads OAuth (egy app mindhárom marketing sablonhoz).
+7. A hívott felhasználónak verified owner/user jog kell a Search Console property-n.
+8. A siteUrl path-paramétert URL-kódolni kell: https://www.example.com/ → https%3A%2F%2Fwww.example.com%2F; domain-property: sc-domain:example.com.`,
     baseUrl: 'https://searchconsole.googleapis.com',
     egressHosts: ['searchconsole.googleapis.com', ...GOOGLE_OAUTH_EGRESS_HOSTS],
     authMethods: [{ ...GOOGLE_USER_DELEGATED_OAUTH }],
@@ -594,7 +593,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         default: false,
       },
     ],
-    instanceFields: googleOauthClientFields('google-search-console-oauth-client-secret'),
+    instanceFields: [],
     rateLimit: { rps: 5, burst: 10 },
   },
   {
@@ -607,10 +606,9 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
 2. Válaszd ki vagy hozd létre a projektet.
 3. APIs & Services → Library → engedélyezd a „Google Analytics Data API” szolgáltatást.
 4. APIs & Services → OAuth consent screen → állítsd be, és vedd fel az analytics.readonly (vagy analytics) scope-ot.
-5. APIs & Services → Credentials → Create credentials → OAuth client ID, típus: Web application.
-6. Authorized redirect URIs: add meg a platform redirect URI-ját (az aktiválásnál másolható: …/api/connectors/oauth/callback).
-7. Másold ki a Client ID-t és a Client secretet — ezeket az aktiválásnál add meg.
-8. A csatlakoztatott Google-fióknak legalább Viewer joga kell a GA4 property-n.
+5. APIs & Services → Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
+6. Client ID + secret: Platform · Beállítások → Google Analytics / Search Console / Ads OAuth.
+7. A csatlakoztatott Google-fióknak legalább Viewer joga kell a GA4 property-n.
 9. A property ID a GA Admin → Property settings oldalon látható (szám, pl. 123456789). A path-ben: /v1beta/properties/{propertyId}:runReport — a properties/ előtagot a path már tartalmazza, csak a számot add meg.`,
     baseUrl: 'https://analyticsdata.googleapis.com',
     egressHosts: ['analyticsdata.googleapis.com', ...GOOGLE_OAUTH_EGRESS_HOSTS],
@@ -685,7 +683,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         default: false,
       },
     ],
-    instanceFields: googleOauthClientFields('google-analytics-oauth-client-secret'),
+    instanceFields: [],
     rateLimit: { rps: 5, burst: 10 },
   },
   {
@@ -698,9 +696,9 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
 2. Teszt-hozzáférésű token csak tesztfiókra megy; éles fiókhoz Basic/Standard jóváhagyás kell.
 3. Nyisd meg a Google Cloud Console-t: https://console.cloud.google.com/
 4. APIs & Services → Library → engedélyezd a „Google Ads API” szolgáltatást.
-5. OAuth consent screen + Credentials → OAuth client ID, típus: Web application.
-6. Authorized redirect URIs: add meg a platform redirect URI-ját (az aktiválásnál másolható: …/api/connectors/oauth/callback).
-7. Aktiváláskor add meg: Client ID, Client secret, developer token. MCC alatti kliensfiókhoz a login-customer-id-t is (kötőjel nélkül, pl. 1234567890).
+5. OAuth consent screen + Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
+6. Client ID + secret: Platform · Beállítások → Google Analytics / Search Console / Ads OAuth.
+7. Aktiváláskor add meg: developer token (Google Ads API Center). MCC alatti kliensfiókhoz opcionálisan login-customer-id (kötőjel nélkül).
 8. A customerId path-paraméter mindig kötőjel nélküli 10 jegyű szám.
 9. Olvasáshoz a googleAds:search GAQL-t használd; a mutate végpontok írnak.`,
     baseUrl: 'https://googleads.googleapis.com',
@@ -780,7 +778,6 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
       },
     ],
     instanceFields: [
-      ...googleOauthClientFields('google-ads-oauth-client-secret'),
       {
         name: 'developerToken',
         label: 'Google Ads developer token (API Center)',

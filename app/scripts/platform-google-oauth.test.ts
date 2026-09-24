@@ -14,6 +14,7 @@ import {
   readTenantGoogleOAuthConfig,
   resolveGoogleOAuthConfig,
   toGoogleOAuthPublicView,
+  googleOAuthServiceForConnector,
 } from '../src/lib/platform-google-oauth-config'
 
 let failures = 0
@@ -189,6 +190,22 @@ async function main() {
     )
     assert.equal(events[0].targetId, null)
     assert.equal((events[0].metadata as { settingKey: string }).settingKey, 'oauth.google.drive.picker')
+  })
+
+  await checkAsync('upsertGoogleApiOAuthConfig persists oauth.google.api', async () => {
+    const { svc, store } = inMemoryPlatformSettings()
+    await svc.upsertGoogleApiOAuthConfig(
+      { clientId: 'api-client', clientSecret: 'api-secret' },
+      'aaaaaaaa-bbbb-4000-8000-000000000001',
+    )
+    assert.equal(store.has(GOOGLE_OAUTH_SERVICE_KEYS.api), true)
+  })
+
+  check('googleOAuthServiceForConnector maps marketing templates to api service', () => {
+    assert.equal(
+      googleOAuthServiceForConnector({ connectorType: 'http_api', provider: 'google-analytics' }),
+      'api',
+    )
   })
 
   if (failures > 0) {
