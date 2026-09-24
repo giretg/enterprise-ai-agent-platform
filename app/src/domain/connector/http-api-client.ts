@@ -151,6 +151,8 @@ export type HttpApiConfig = {
   maxResponseChars?: number
   /** Önfrissítő snapshotból materializált config: minden hívásnál egress-őr. */
   selfUpdatingPinned?: boolean
+  /** A hívó által feloldott, aktuális tenant egress-policy. */
+  allowedEgressHosts?: string[]
 }
 
 const HTTP_API_RISKS = new Set<HttpApiRisk>(['read', 'write', 'danger'])
@@ -659,6 +661,11 @@ export type HttpApiCredentials =
       resolveProfileApiKey?: (profile: string, secretAlias: string) => Promise<string>
     }
 
+type ResolveHostIps = (host: string) => Promise<string[]>
+
+const defaultResolveHostIps: ResolveHostIps = async (host) =>
+  (await lookup(host, { all: true })).map((entry) => entry.address)
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -675,6 +682,7 @@ export class HttpApiClient {
   constructor(
     private config: HttpApiConfig,
     credentials: HttpApiCredentials,
+    private readonly resolveHostIps: ResolveHostIps = defaultResolveHostIps,
   ) {
     if (typeof credentials === 'string') {
       this.defaultApiKey = credentials
@@ -778,7 +786,7 @@ export class HttpApiClient {
       const key = this.resolveProfileApiKey
         ? await this.resolveProfileApiKey(profileName, profile.secretAlias)
         : await resolveConnectorApiKey(profile.secretAlias)
-      return buildAuthHeaders(profile.auth ?? this.config.auth, key)
+      return buildAuthHeaders(profile.auth ?? this.config.auth, key, this.resolveHostIps)
     }
 
     if (this.config.auth.scheme === 'none') return {}
@@ -786,7 +794,7 @@ export class HttpApiClient {
     if (!this.defaultApiKey) {
       throw new HttpApiError('http_api connector has no default API key', 'missing_api_key')
     }
-    return buildAuthHeaders(this.config.auth, this.defaultApiKey)
+    return buildAuthHeaders(this.config.auth, this.defaultApiKey, this.resolveHostIps)
   }
 
   private platformInjectedHeaderNames(
@@ -976,15 +984,13 @@ export class HttpApiClient {
     // azonos-hostnevű, de más PORTRA mutató (pl. `:2375` belső admin/docker) vagy `https→http`
     // downgrade átirányítás különben átcsúszna a puszta hostname-egyezésen.
     const connectorOrigin = connectorUrl.origin
-    if (this.config.selfUpdatingPinned) {
-      const guard = await guardEgressUrl({
-        url: input.toString(),
-        allowlistHosts: [connectorHost],
-        resolveHostIps: async (host) => (await lookup(host, { all: true })).map((entry) => entry.address),
-      })
-      if (!guard.ok || guard.host !== connectorHost) {
-        throw new HttpApiError(`runtime egress blocked: ${guard.ok ? 'host_mismatch' : guard.reason}`, 'egress_blocked')
-      }
+    const guard = await guardEgressUrl({
+      url: input.toString(),
+      allowlistHosts: this.config.allowedEgressHosts ?? [connectorHost],
+      resolveHostIps: this.resolveHostIps,
+    })
+    if (!guard.ok || guard.host !== connectorHost) {
+      throw new HttpApiError(`runtime egress blocked: ${guard.ok ? 'host_mismatch' : guard.reason}`, 'egress_blocked')
     }
     // Host-pinning a redirecteken is: a `fetch` alapból KÖVETI a 3xx-eket, ezért egy
     // allowlistolt host egyetlen átirányítással kivihetné a hívást egy belső szolgáltatásra
@@ -1099,12 +1105,23 @@ function oauth2CacheKey(auth: Extract<HttpApiAuthConfig, { scheme: 'oauth2' }>, 
 async function resolveOAuth2AccessToken(
   auth: Extract<HttpApiAuthConfig, { scheme: 'oauth2' }>,
   credentialsJson: string,
+  resolveHostIps: ResolveHostIps,
 ): Promise<string> {
   const { clientSecret, refreshToken } = parseOAuth2Credentials(credentialsJson)
   const cacheKey = oauth2CacheKey(auth, refreshToken)
   const cached = oauth2TokenCache.get(cacheKey)
   if (cached && cached.expiresAt - OAUTH2_EXPIRY_SKEW_MS > Date.now()) {
     return cached.accessToken
+  }
+
+  const tokenHost = new URL(auth.tokenUrl).hostname
+  const guard = await guardEgressUrl({
+    url: auth.tokenUrl,
+    allowlistHosts: [tokenHost],
+    resolveHostIps,
+  })
+  if (!guard.ok || guard.host !== tokenHost) {
+    throw new HttpApiError('oauth2 token endpoint is blocked by egress policy', 'egress_blocked')
   }
 
   const body = new URLSearchParams({
@@ -1114,11 +1131,15 @@ async function resolveOAuth2AccessToken(
     client_secret: clientSecret,
     ...(auth.scope ? { scope: auth.scope } : {}),
   })
-  const res = await fetch(auth.tokenUrl, {
+  const res = await fetch(guard.url, {
     method: 'POST',
+    redirect: 'manual',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
   })
+  if (res.status >= 300 && res.status < 400) {
+    throw new HttpApiError('oauth2 token endpoint redirect is blocked', 'egress_blocked')
+  }
   if (!res.ok) {
     // Az OAuth-szerver error/error_description mezői NEM titkosak (RFC 6749 §5.2) —
     // ezek a diagnózishoz kellenek; a client_secret/refresh_token SOSEM kerül ide.
@@ -1141,12 +1162,16 @@ async function resolveOAuth2AccessToken(
   return data.access_token
 }
 
-async function buildAuthHeaders(auth: HttpApiAuthConfig, apiKey: string): Promise<Record<string, string>> {
+async function buildAuthHeaders(
+  auth: HttpApiAuthConfig,
+  apiKey: string,
+  resolveHostIps: ResolveHostIps,
+): Promise<Record<string, string>> {
   if (auth.scheme === 'none') return {}
   if (auth.scheme === 'bearer') return { authorization: `Bearer ${apiKey}` }
   if (auth.scheme === 'basic') return { authorization: `Basic ${apiKey}` }
   if (auth.scheme === 'oauth2') {
-    const accessToken = await resolveOAuth2AccessToken(auth, apiKey)
+    const accessToken = await resolveOAuth2AccessToken(auth, apiKey, resolveHostIps)
     return { authorization: `Bearer ${accessToken}` }
   }
   return { [auth.header]: apiKey }

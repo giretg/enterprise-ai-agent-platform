@@ -58,8 +58,8 @@ async function defaultApiKey(
   return undefined
 }
 
-function clientFor(config: HttpApiConfig, apiKey: string | undefined): HttpApiClient {
-  return new HttpApiClient(config, {
+function clientFor(config: HttpApiConfig, apiKey: string | undefined, allowedEgressHosts?: string[]): HttpApiClient {
+  return new HttpApiClient({ ...config, ...(allowedEgressHosts ? { allowedEgressHosts } : {}) }, {
     defaultApiKey: apiKey,
     resolveProfileApiKey: (_profile, secretAlias) => resolveConnectorApiKey(secretAlias),
   })
@@ -71,6 +71,7 @@ export async function executeHttpApiTool(
   connector: LiveConnectorRow,
   delegatedAccessToken?: string,
   actingUser?: { id: string; email: string; tenantId: string | null } | null,
+  allowedEgressHosts?: string[],
 ): Promise<unknown> {
   if (
     toolName !== HTTP_API_GET_TOOL &&
@@ -94,7 +95,7 @@ export async function executeHttpApiTool(
 
   const config = parseHttpApiConfig(connector.config)
   const apiKey = await defaultApiKey(connector, delegatedAccessToken)
-  const client = clientFor(config, apiKey)
+  const client = clientFor(config, apiKey, allowedEgressHosts)
   const callId = randomUUID()
   const agentId = optionalString(args.agentId) ?? ''
   const context = {

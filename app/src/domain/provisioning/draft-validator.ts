@@ -10,10 +10,10 @@
  * a `warnings`/`errors` üzenetekbe rövidített/sanitizált formában mehetnek.
  */
 import {
-  FORBIDDEN_HOST_PATTERNS,
   FORBIDDEN_PATH_PATTERNS,
   SECRET_LIKE_PATTERNS,
 } from '@/domain/net/untrusted-patterns'
+import { matchForbiddenHost } from '@/domain/net/egress-guard'
 import { findOverlappingHttpApiEndpoints } from '@/domain/connector/http-api-client'
 import { WRITE_METHODS, type ConnectorConfig, type HttpMethod } from './connector-config'
 
@@ -81,6 +81,10 @@ export function validateDraftConfig(
   const declaredHosts = new Set<string>(config.egressHosts.map((h) => h.toLowerCase()))
   const baseHost = hostOf(config.baseUrl)
   if (baseHost) declaredHosts.add(baseHost)
+  for (const url of [config.auth.tokenUrl, config.auth.userInfoUrl]) {
+    const host = typeof url === 'string' ? hostOf(url) : null
+    if (host) declaredHosts.add(host)
+  }
 
   const unknownHosts: string[] = []
   for (const host of declaredHosts) {
@@ -100,11 +104,10 @@ export function validateDraftConfig(
   // 2) Tiltott minták: gyanús host / path (exfil-szerű). Mindig `failed`.
   let forbiddenPatterns: CheckStatus = 'passed'
   for (const host of declaredHosts) {
-    for (const rule of FORBIDDEN_HOST_PATTERNS) {
-      if (rule.pattern.test(host)) {
-        forbiddenPatterns = 'failed'
-        errors.push(`forbidden_host_pattern:${rule.name}`)
-      }
+    const forbidden = matchForbiddenHost(host)
+    if (forbidden) {
+      forbiddenPatterns = 'failed'
+      errors.push(`forbidden_host_pattern:${forbidden}`)
     }
   }
   for (const tool of config.proposedTools) {

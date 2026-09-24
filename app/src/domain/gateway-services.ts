@@ -48,9 +48,12 @@ import {
 } from '@/domain/project-work/mcp'
 import { lookup } from 'node:dns/promises'
 
-const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants)
-
 const platformSettingsService = new PlatformSettingsService(repositories.platformSettings)
+
+const resolveEgressAllowlist = (tenantId: string | null) =>
+  platformSettingsService.getEgressAllowlist(tenantId)
+
+const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, resolveEgressAllowlist)
 
 const iamService = new IamService(
   repositories.users,
@@ -75,8 +78,6 @@ const skillService = new SkillService(repositories.skills, repositories.agents, 
   },
 })
 
-const resolveEgressAllowlist = (tenantId: string | null) =>
-  platformSettingsService.getEgressAllowlist(tenantId)
 const resolveBankPreset = async () => process.env.PROVISIONING_BANK_PRESET === 'true'
 
 const selfUpdatingConnectorService = new SelfUpdatingConnectorService(
@@ -292,6 +293,7 @@ async function listPendingOperationRows(input: {
 
 const enterpriseToolDeps: EnterpriseToolDeps = {
   ...sharedToolLookups,
+  resolveEgressAllowlist,
   audit: repositories.audit,
   startAuthorization,
   enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
