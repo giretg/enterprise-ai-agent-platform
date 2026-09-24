@@ -18,6 +18,7 @@ import {
 } from '@/repositories/postgres/conversation-skill-repository'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { SkillAccessError, type ActorContext } from '@/domain/skill/skill-service'
+import { ensurePublishedProducerSkillOnce } from '@/domain/skill/ensure-producer-skill'
 import {
   SKILL_DESCRIPTION_MAX,
   SKILL_NAME_MAX,
@@ -378,6 +379,7 @@ export interface SkillCatalogEntry {
 export async function listSkillCatalogAction(): Promise<ActionResult<SkillCatalogEntry[]>> {
   try {
     const ctx = await requireTenantRole('operator')
+    await ensurePublishedProducerSkillOnce()
     const skills = await services.skills.listForActor(ctx.activeTenantId)
     return ok(
       skills.map((s) => ({

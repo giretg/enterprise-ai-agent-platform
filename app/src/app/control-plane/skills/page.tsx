@@ -77,6 +77,8 @@ export default async function SkillCatalogPage() {
           A képesség (skill) egy leírt munkamenet: elmondja az AI-munkatársnak, hogyan
           csináljon meg egy visszatérő feladatot. Önmagában tehetetlen — hogy mit tud{' '}
           <em>megtenni</em>, azt az agentnek adott jogosultságok döntik el.
+          A Skill készítő minden tenantban ott van: ha egy agenthez hozzá van rendelve
+          és be van kapcsolva, abból a beszélgetésből új skill készülhet.
         </p>
         <p className="mt-2 max-w-2xl text-sm text-ink-faint">
           Minden módosítás előbb javaslat (<em>proposed</em>), és csak jóváhagyás után lesz

@@ -30,6 +30,7 @@ import {
   type SkillRuntimeHints,
 } from '@/lib/skill/skill-content'
 import { computeSkillContentHash } from '@/lib/skill/skill-content-hash'
+import { ensurePublishedProducerSkillOnce } from '@/domain/skill/ensure-producer-skill'
 import { isSkillReadableFromTenant, isSkillWritableFromTenant } from '@/lib/skill/skill-scope'
 import {
   catalogScopeForKind,
@@ -231,6 +232,7 @@ export class SkillService {
    * Fail-closed, mint a `listReferenceCatalog`. Ütköző URI-névnél a tenant-skill nyer.
    */
   async listMcpSkillPackages(actorTenantId: string | null): Promise<McpSkillPackage[]> {
+    await ensurePublishedProducerSkillOnce()
     const skills = await this.skills.listForTenant(actorTenantId)
     const byUri = new Map<string, McpSkillPackage>()
     for (const skill of skills) {

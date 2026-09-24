@@ -16,6 +16,7 @@ import { ensureTenantAgentScaffold } from '../src/domain/agent-scaffold-material
 import { repositories } from '../src/repositories/postgres'
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
 import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
+import { ensurePublishedProducerSkill } from '../src/domain/skill/ensure-producer-skill'
 import type { TemplateDescriptor } from '../src/domain/connector-template/template-descriptor'
 import type { Prisma } from '@prisma/client'
 
@@ -178,8 +179,9 @@ async function main() {
     { tenantId: tenant.id, publishedById: user.id },
   )
 
+  const producer = await ensurePublishedProducerSkill()
   console.log(
-    `Seeded tenant slug=${tenant.slug} agent=${agent.id} status=${activated.status} definition=${published.definitionId} scaffold=${scaffold.id} clerk=${SEED_CLERK_USER_ID}`,
+    `Seeded tenant slug=${tenant.slug} agent=${agent.id} status=${activated.status} definition=${published.definitionId} scaffold=${scaffold.id} producer=${producer} clerk=${SEED_CLERK_USER_ID}`,
   )
 }
 

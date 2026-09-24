@@ -10,6 +10,13 @@ import {
   producerSkillAssignmentError,
   producerSkillMarkerError,
 } from '../src/lib/agent-skill-management'
+import { validateSkill } from '../src/lib/skill/skill-validator'
+import {
+  SKILL_PRODUCER_DESCRIPTION,
+  SKILL_PRODUCER_NAME,
+  producerSkillWhere,
+  skillProducerContent,
+} from '../src/lib/skill/skill-producer'
 import {
   CONVERSATION_SKILL_AUDIT,
   conversationSkillRecord,
@@ -581,6 +588,23 @@ async function main() {
     for (const action of Object.values(CONVERSATION_SKILL_AUDIT)) {
       assert.equal(REGISTERED_AUDIT_ACTIONS.has(action), true, action)
     }
+  })
+
+  await check('a kiadott skill készítő a kapu, és a validátoron átmegy', () => {
+    const content = skillProducerContent()
+    const validation = validateSkill({
+      name: SKILL_PRODUCER_NAME,
+      description: SKILL_PRODUCER_DESCRIPTION,
+      content,
+      requires: [],
+    })
+    assert.equal(validation.ok, true, validation.errors.join(' · '))
+    assert.equal(validation.riskTier, 't0')
+    assert.equal(content.instructions.length, 1)
+    assert.match(content.instructions[0] ?? '', /platform\.skills\.submit/)
+    const where = producerSkillWhere(TENANT)
+    assert.equal(where.producesSkills, true)
+    assert.deepEqual(where.OR, [{ tenantId: TENANT }, { tenantId: null }])
   })
 
   await check('a kódos validátor a kézi úttal azonos: T2, injection hiba', () => {
