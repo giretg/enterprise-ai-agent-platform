@@ -413,6 +413,12 @@ export async function invokeEnterpriseTool(
       accessToken,
       actingUser,
     })
+    const upstreamFailure =
+      isEnterpriseHttpTool(toolName) &&
+      result !== null &&
+      typeof result === 'object' &&
+      'ok' in result &&
+      result.ok === false
     const payload = {
       toolName,
       tenantId: principal.tenantId,
@@ -421,12 +427,12 @@ export async function invokeEnterpriseTool(
       agentId: definition.agentId,
       connectorId: authorized.connectorId,
     }
-    console.info('enterprise.tool.ok', payload)
+    console.info(upstreamFailure ? 'enterprise.tool.error' : 'enterprise.tool.ok', payload)
     await writeAudit(deps.audit, {
       actorType: 'human',
       actorId: principal.userId,
       agentVersion: null,
-      action: 'enterprise.tool.ok',
+      action: upstreamFailure ? 'enterprise.tool.error' : 'enterprise.tool.ok',
       targetType: 'agent',
       targetId: definition.agentId,
       modelUsed: null,
@@ -436,7 +442,7 @@ export async function invokeEnterpriseTool(
       metadata: payload,
       tenantId: principal.tenantId,
     })
-    return textResult(result)
+    return textResult(result, upstreamFailure)
   } catch (error) {
     const mapped = mapToolError(error, connector.type)
     const payload = {
