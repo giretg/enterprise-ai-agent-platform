@@ -440,9 +440,8 @@ export class ProvisioningService {
     const draft = await this.loadDraftForTenant(input.draftId, actor)
     const isGmail = draft.connector.type as string === 'gmail'
     const isGoogleDrive = draft.connector.type === 'google_drive'
-    const draftConfigForOAuth = parseStoredConfig(draft.connector.config)
     const usesPlatformGoogleApiOAuth = isPlatformGoogleApiConnectorTemplateKey(
-      draftConfigForOAuth.provenance?.templateKey,
+      readConnectorTemplateKey(draft.connector.config),
     )
 
     // Előfeltételek (§8.5, P5): nem-failed validáció + sikeres sandbox-teszt +
@@ -1400,6 +1399,14 @@ export class ProvisioningService {
       tenantId: actor.tenantId,
     })
   }
+}
+
+function readConnectorTemplateKey(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const provenance = (raw as Record<string, unknown>).provenance
+  if (!provenance || typeof provenance !== 'object') return undefined
+  const templateKey = (provenance as Record<string, unknown>).templateKey
+  return typeof templateKey === 'string' ? templateKey : undefined
 }
 
 function normalizeSourceHash(value: string): string {
