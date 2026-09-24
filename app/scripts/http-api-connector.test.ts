@@ -975,6 +975,56 @@ async function main() {
     )
   })
 
+  await test('SSRF: hostname, ami privát IPv6-ra oldódik, hálózat előtt blokkol', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://api.example.com/v1',
+      auth: { scheme: 'none' },
+      endpoints: [{ method: 'GET', path: '/records' }],
+      restrictToEndpoints: true,
+    })
+    await assert.rejects(
+      new RuntimeHttpApiClient(config, {}, async () => ['fd00::1']).request({
+        method: 'GET',
+        path: '/records',
+      }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+    )
+  })
+
+  await test('OAuth token host nincs a tenant allowlisten → hitelesítő nem megy ki', async () => {
+    const calls: string[] = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (input) => {
+      calls.push(String(input))
+      return new Response('should-not-run', { status: 500 })
+    }
+    try {
+      const config = {
+        ...parseHttpApiConfig({
+          baseUrl: 'https://api.example.com/v1',
+          auth: {
+            scheme: 'oauth2',
+            tokenUrl: 'https://tokens.attacker.example/token',
+            clientId: 'client-id',
+          },
+          endpoints: [{ method: 'GET', path: '/records' }],
+          restrictToEndpoints: true,
+        }),
+        allowedEgressHosts: ['api.example.com'],
+      }
+      await assert.rejects(
+        new HttpApiClient(config, '{"clientSecret":"secret","refreshToken":"refresh"}').request({
+          method: 'GET',
+          path: '/records',
+        }),
+        (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+      )
+      assert.equal(calls.length, 0)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   await test('redirect: azonos-host átirányítást KÖVET, majd a 200-at adja vissza', async () => {
     const calls: string[] = []
     const fakeFetch: typeof fetch = async (input) => {

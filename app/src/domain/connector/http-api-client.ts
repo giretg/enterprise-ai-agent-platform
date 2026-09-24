@@ -10,7 +10,6 @@
  * eszközzel hív; az endpoint-katalógus (config.endpoints + config.description)
  * a tool loopban kerül a modell elé.
  */
-import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { getCloudRunAccessToken } from '@/domain/net/cloud-run-auth'
 import { guardEgressUrl } from '@/domain/net/egress-guard'
@@ -786,7 +785,7 @@ export class HttpApiClient {
       const key = this.resolveProfileApiKey
         ? await this.resolveProfileApiKey(profileName, profile.secretAlias)
         : await resolveConnectorApiKey(profile.secretAlias)
-      return buildAuthHeaders(profile.auth ?? this.config.auth, key, this.resolveHostIps)
+      return buildAuthHeaders(profile.auth ?? this.config.auth, key, this.resolveHostIps, this.config.allowedEgressHosts)
     }
 
     if (this.config.auth.scheme === 'none') return {}
@@ -794,7 +793,7 @@ export class HttpApiClient {
     if (!this.defaultApiKey) {
       throw new HttpApiError('http_api connector has no default API key', 'missing_api_key')
     }
-    return buildAuthHeaders(this.config.auth, this.defaultApiKey, this.resolveHostIps)
+    return buildAuthHeaders(this.config.auth, this.defaultApiKey, this.resolveHostIps, this.config.allowedEgressHosts)
   }
 
   private platformInjectedHeaderNames(
@@ -1094,7 +1093,8 @@ const oauth2TokenCache = new Map<string, CachedOAuth2Token>()
 const OAUTH2_EXPIRY_SKEW_MS = 60_000
 
 function oauth2CacheKey(auth: Extract<HttpApiAuthConfig, { scheme: 'oauth2' }>, refreshToken: string): string {
-  return createHash('sha256').update(`${auth.tokenUrl}::${auth.clientId}::${refreshToken}`).digest('hex')
+  // In-process cache identity, not a password digest — CodeQL must not treat this as hashing.
+  return `${auth.tokenUrl}\0${auth.clientId}\0${refreshToken}`
 }
 
 /**
@@ -1106,6 +1106,7 @@ async function resolveOAuth2AccessToken(
   auth: Extract<HttpApiAuthConfig, { scheme: 'oauth2' }>,
   credentialsJson: string,
   resolveHostIps: ResolveHostIps,
+  allowedEgressHosts?: string[],
 ): Promise<string> {
   const { clientSecret, refreshToken } = parseOAuth2Credentials(credentialsJson)
   const cacheKey = oauth2CacheKey(auth, refreshToken)
@@ -1114,10 +1115,10 @@ async function resolveOAuth2AccessToken(
     return cached.accessToken
   }
 
-  const tokenHost = new URL(auth.tokenUrl).hostname
+  const tokenHost = new URL(auth.tokenUrl).hostname.toLowerCase()
   const guard = await guardEgressUrl({
     url: auth.tokenUrl,
-    allowlistHosts: [tokenHost],
+    allowlistHosts: allowedEgressHosts ?? [tokenHost],
     resolveHostIps,
   })
   if (!guard.ok || guard.host !== tokenHost) {
@@ -1166,12 +1167,13 @@ async function buildAuthHeaders(
   auth: HttpApiAuthConfig,
   apiKey: string,
   resolveHostIps: ResolveHostIps,
+  allowedEgressHosts?: string[],
 ): Promise<Record<string, string>> {
   if (auth.scheme === 'none') return {}
   if (auth.scheme === 'bearer') return { authorization: `Bearer ${apiKey}` }
   if (auth.scheme === 'basic') return { authorization: `Basic ${apiKey}` }
   if (auth.scheme === 'oauth2') {
-    const accessToken = await resolveOAuth2AccessToken(auth, apiKey, resolveHostIps)
+    const accessToken = await resolveOAuth2AccessToken(auth, apiKey, resolveHostIps, allowedEgressHosts)
     return { authorization: `Bearer ${accessToken}` }
   }
   return { [auth.header]: apiKey }

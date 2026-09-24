@@ -94,7 +94,9 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     connector: LiveConnectorRow,
     accessToken?: string,
     actingUser?: { id: string; email: string; tenantId: string | null } | null,
+    allowedEgressHosts?: string[],
   ) => Promise<unknown>
+  resolveEgressAllowlist?: (tenantId: string | null) => Promise<string[]>
   resolveActingUser?: (input: { userId: string }) => Promise<{ id: string; email: string } | null>
   startAuthorization?: StartDelegatedAuthorization
   recordCreatedDriveFiles?: (input: {
@@ -812,6 +814,9 @@ async function executeApprovedOperation(
           authorized.connector,
           accessToken,
           await resolveHttpActingUser(deps, operation.principalUserId, operation.tenantId),
+          deps.resolveEgressAllowlist
+            ? await deps.resolveEgressAllowlist(authorized.connector.tenantId)
+            : undefined,
         )
       : isEnterpriseGmailWriteTool(operation.toolName)
         ? await (deps.executeGmailTool ?? executeGmailTool)(operation.toolName, args, accessToken ?? '')

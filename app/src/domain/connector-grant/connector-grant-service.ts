@@ -36,7 +36,7 @@ import {
 import { driveScopeProfileRequiresAdmin } from './google-drive-scopes'
 import { normalizeGmailScope } from './gmail-scopes'
 import { lookup } from 'node:dns/promises'
-import { guardEgressUrl } from '@/domain/net/egress-guard'
+import { allowlistForOAuthEndpoint, guardEgressUrl } from '@/domain/net/egress-guard'
 
 export type ConnectorOAuthConfig = {
   provider?: string
@@ -268,15 +268,24 @@ async function resolveClientSecret(connector: Connector): Promise<string> {
   return fromEnv
 }
 
+type OAuthEgressPolicy = {
+  connectorType: string
+  tenantAllowlist: string[] | null
+}
+
 async function fetchOAuthEndpoint(
   url: string,
   init: RequestInit,
-  allowlistHosts: string[],
+  policy: OAuthEgressPolicy,
 ): Promise<Response> {
-  const host = new URL(url).hostname
+  const host = new URL(url).hostname.toLowerCase()
   const guard = await guardEgressUrl({
     url,
-    allowlistHosts,
+    allowlistHosts: allowlistForOAuthEndpoint({
+      connectorType: policy.connectorType,
+      url,
+      tenantAllowlist: policy.tenantAllowlist,
+    }),
     resolveHostIps: async (name) => (await lookup(name, { all: true })).map((entry) => entry.address),
   })
   if (!guard.ok || guard.host !== host) throw new Error('OAuth endpoint blocked by egress policy')
@@ -292,7 +301,7 @@ async function exchangeCodeForTokens(params: {
   code: string
   codeVerifier: string
   requestedScopes?: string[]
-  allowlistHosts: string[]
+  tenantAllowlist: string[] | null
 }): Promise<ConnectorGrantTokens> {
   const oauth = await resolveOAuthConfig(params.connector)
   const fallbackScopes = resolveRequestedScopes(params.connector, params.requestedScopes)
@@ -317,11 +326,15 @@ async function exchangeCodeForTokens(params: {
     code_verifier: params.codeVerifier,
   })
 
+  const oauthPolicy: OAuthEgressPolicy = {
+    connectorType: params.connector.type,
+    tenantAllowlist: params.tenantAllowlist,
+  }
   const res = await fetchOAuthEndpoint(oauth.tokenUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body,
-  }, params.allowlistHosts)
+  }, oauthPolicy)
   if (!res.ok) throw new Error(`OAuth token exchange failed: ${await oauthErrorDetail(res)}`)
   const data = (await res.json()) as {
     access_token?: string
@@ -345,7 +358,7 @@ async function exchangeCodeForTokens(params: {
     try {
       const profileRes = await fetchOAuthEndpoint(oauth.userInfoUrl, {
         headers: { authorization: `Bearer ${data.access_token}` },
-      }, params.allowlistHosts)
+      }, oauthPolicy)
       if (profileRes.ok) {
         const profile = (await profileRes.json()) as Record<string, unknown>
         const raw = profile[oauth.accountEmailField]
@@ -376,7 +389,7 @@ async function exchangeCodeForTokens(params: {
 async function refreshGrantTokens(
   connector: Connector,
   current: ConnectorGrantTokens,
-  allowlistHosts: string[],
+  tenantAllowlist: string[] | null,
 ): Promise<ConnectorGrantTokens> {
   if (isDelegatedOAuthStubEnabled()) {
     return {
@@ -400,7 +413,7 @@ async function refreshGrantTokens(
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body,
-  }, allowlistHosts)
+  }, { connectorType: connector.type, tenantAllowlist })
   if (!res.ok) throw new Error(`OAuth refresh failed: ${res.status}`)
   const data = (await res.json()) as { access_token?: string; expires_in?: number; refresh_token?: string }
   if (!data.access_token) throw new Error('OAuth refresh missing access_token')
@@ -423,11 +436,9 @@ export class ConnectorGrantService {
     private readonly resolveEgressAllowlist?: (tenantId: string | null) => Promise<string[]>,
   ) {}
 
-  private async egressAllowlist(connector: Connector): Promise<string[]> {
-    if (this.resolveEgressAllowlist) return this.resolveEgressAllowlist(connector.tenantId)
-    const config = (connector.config ?? {}) as ConnectorOAuthConfig
-    const baseUrl = config.baseUrl ? new URL(config.baseUrl).hostname : ''
-    return baseUrl ? [baseUrl] : []
+  private async tenantAllowlistOrNull(connector: Connector): Promise<string[] | null> {
+    if (!this.resolveEgressAllowlist) return null
+    return this.resolveEgressAllowlist(connector.tenantId)
   }
 
   private async loadGrantForAccess(params: {
@@ -612,7 +623,7 @@ export class ConnectorGrantService {
       code: params.code,
       codeVerifier: statePayload.codeVerifier,
       requestedScopes: statePayload.requestedScopes,
-      allowlistHosts: await this.egressAllowlist(params.connector),
+      tenantAllowlist: await this.tenantAllowlistOrNull(params.connector),
     })
 
     // Meglévő aktív grant scope-jait uniózzuk — a least-privilege újra-consent
@@ -788,7 +799,7 @@ export class ConnectorGrantService {
         tokens = await refreshGrantTokens(
           params.connector,
           tokens,
-          await this.egressAllowlist(params.connector),
+          await this.tenantAllowlistOrNull(params.connector),
         )
         await store.save(tokens)
         await this.grants.updateStatus(params.grantId, 'active', {

@@ -240,6 +240,7 @@ async function startAuthorization(input: {
 
 const gatewayOperationDeps: GatewayOperationServiceDeps = {
   ...sharedToolLookups,
+  resolveEgressAllowlist,
   operations: repositories.gatewayOperations,
   resolveRequester,
   startAuthorization,
