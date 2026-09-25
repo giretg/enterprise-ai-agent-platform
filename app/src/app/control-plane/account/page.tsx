@@ -1,4 +1,5 @@
 import { Suspense } from 'react'
+import { getTranslations } from 'next-intl/server'
 import { listConnectorsPanelContext } from '@/app/actions/connector-grants'
 import { LinkedAccountsPanel } from '@/components/account/linked-accounts-panel'
 import type {
@@ -11,16 +12,15 @@ import type {
  * A szervezeti admin-beállítások a Rendszer oldalon élnek.
  */
 export default async function LinkedAccountsPage() {
+  const t = await getTranslations('ControlPlane.account')
+  const loading = await getTranslations('Common')
   return (
     <div className="space-y-8">
       <header>
-        <h1 className="text-xl font-semibold text-ink">Kapcsolt fiókok</h1>
-        <p className="mt-1 text-sm text-ink-soft">
-          Itt tudod a meglévő alkalmazásaidban lévő adatokat az AI számára elérhetővé
-          tenni.
-        </p>
+        <h1 className="text-xl font-semibold text-ink">{t('title')}</h1>
+        <p className="mt-1 text-sm text-ink-soft">{t('body')}</p>
       </header>
-      <Suspense fallback={<p className="text-sm text-ink-soft">Betöltés…</p>}>
+      <Suspense fallback={<p className="text-sm text-ink-soft">{loading('loading')}</p>}>
         <LinkedAccountsContent />
       </Suspense>
     </div>

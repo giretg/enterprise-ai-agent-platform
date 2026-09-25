@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import { setTenantLanguage } from '@/app/actions/tenant-language'
 import { Card } from '@/components/ui/shell'
 import {
@@ -15,6 +16,7 @@ export function TenantLanguagePanel({
   initialLanguage: TenantLanguage
   canEdit: boolean
 }) {
+  const t = useTranslations('ControlPlane.settings')
   const [language, setLanguage] = useState<TenantLanguage>(initialLanguage)
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
@@ -28,7 +30,7 @@ export function TenantLanguagePanel({
         const label =
           TENANT_LANGUAGE_OPTIONS.find((option) => option.value === res.data.language)?.label ??
           res.data.language
-        setMessage({ tone: 'ok', text: `A tenant nyelve mostantól: ${label}.` })
+        setMessage({ tone: 'ok', text: t('languageSaved', { label }) })
       } else {
         setMessage({ tone: 'error', text: res.error })
       }
@@ -36,12 +38,9 @@ export function TenantLanguagePanel({
   }
 
   return (
-    <Card title="Tenant nyelv">
+    <Card title={t('languageTitle')}>
       <div className="space-y-4">
-        <p className="text-sm text-ink-soft">
-          A skill-leírások és egyéb emberi szövegek ezen a nyelven készülnek. A JSON kulcsok
-          angolul maradnak.
-        </p>
+        <p className="text-sm text-ink-soft">{t('languageBody')}</p>
         <div className="flex flex-wrap gap-2">
           {TENANT_LANGUAGE_OPTIONS.map((option) => {
             const active = language === option.value

@@ -9,6 +9,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react'
+import { useTranslations } from 'next-intl'
 import { createPortal } from 'react-dom'
 
 export type ConfirmTone = 'default' | 'danger'
@@ -203,8 +204,9 @@ function ActiveConfirmDialog({
   const cancelRef = useRef<HTMLButtonElement>(null)
   const confirmRef = useRef<HTMLButtonElement>(null)
   const tone = options.tone ?? 'default'
-  const cancelLabel = options.cancelLabel ?? 'Mégse'
-  const confirmLabel = options.confirmLabel ?? (tone === 'danger' ? 'Törlés' : 'Megerősít')
+  const t = useTranslations('Confirm')
+  const cancelLabel = options.cancelLabel ?? t('cancel')
+  const confirmLabel = options.confirmLabel ?? (tone === 'danger' ? t('delete') : t('confirm'))
 
   useEffect(() => {
     const focusTarget = tone === 'danger' ? cancelRef.current : confirmRef.current
@@ -289,8 +291,9 @@ function ActivePromptDialog({
   const [value, setValue] = useState(options.initialValue ?? '')
   const tone = options.tone ?? 'default'
   const required = options.required !== false
-  const cancelLabel = options.cancelLabel ?? 'Mégse'
-  const confirmLabel = options.confirmLabel ?? 'Megerősít'
+  const t = useTranslations('Confirm')
+  const cancelLabel = options.cancelLabel ?? t('cancel')
+  const confirmLabel = options.confirmLabel ?? t('confirm')
   const trimmed = value.trim()
   const canConfirm = !required || trimmed.length > 0
 
@@ -374,7 +377,7 @@ function ActivePromptDialog({
         </label>
       ) : (
         <label htmlFor={inputId} className="sr-only">
-          {options.placeholder ?? 'Szöveg'}
+          {options.placeholder ?? t('text')}
         </label>
       )}
       {options.multiline ? (

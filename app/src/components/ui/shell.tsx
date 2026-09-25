@@ -3,6 +3,7 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { useEffect, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { ShellAuth } from '@/components/auth/shell-auth'
 import { useClerkEnabled } from '@/components/auth/providers'
 
@@ -49,6 +50,7 @@ export function AppShell({
     group.children.some((child) => isActive(child.href, child.exact))
 
   const clerkEnabled = useClerkEnabled()
+  const t = useTranslations('ControlPlane.shell')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [openGroup, setOpenGroup] = useState<string | null>(null)
 
@@ -139,7 +141,7 @@ export function AppShell({
               </div>
             </div>
 
-            <nav aria-label="Fő navigáció" className="hidden items-center gap-1 lg:flex">
+            <nav aria-label={t('navAria')} className="hidden items-center gap-1 lg:flex">
               {navItems.map((item) => {
                 if (isGroup(item)) {
                   const active = isGroupActive(item)
@@ -203,7 +205,7 @@ export function AppShell({
               )}
               <button
                 type="button"
-                aria-label={mobileMenuOpen ? 'Menü bezárása' : 'Menü megnyitása'}
+                aria-label={mobileMenuOpen ? t('menuClose') : t('menuOpen')}
                 aria-expanded={mobileMenuOpen}
                 aria-controls="mobile-main-navigation"
                 onClick={() => setMobileMenuOpen((open) => !open)}
@@ -220,7 +222,7 @@ export function AppShell({
 
           <nav
             id="mobile-main-navigation"
-            aria-label="Mobil fő navigáció"
+            aria-label={t('mobileNavAria')}
             className={`-mx-4 mt-3 border-t border-line/70 px-4 pt-3 lg:hidden ${
               mobileMenuOpen ? 'grid gap-1' : 'hidden'
             }`}

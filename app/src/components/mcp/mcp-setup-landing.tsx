@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
+import { useTranslations } from 'next-intl'
 import { Card } from '@/components/ui/shell'
 import { MCP_SETUP_SEEN_COOKIE, type McpClientSetup } from '@/lib/mcp-client-setup'
 
@@ -13,6 +14,7 @@ function markSetupSeen() {
 
 function CopyButton({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
+  const t = useTranslations('Common')
 
   function copy() {
     void navigator.clipboard.writeText(value).then(() => {
@@ -27,7 +29,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
       onClick={copy}
       className="shrink-0 rounded-full border border-line bg-card px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-coral-deep"
     >
-      {copied ? 'Másolva ✓' : label}
+      {copied ? t('copied') : label}
     </button>
   )
 }
@@ -78,6 +80,7 @@ function ClientCard({
 }
 
 export function McpSetupLanding({ setup, continueHref }: { setup: McpClientSetup; continueHref: string }) {
+  const t = useTranslations('GetStarted')
   useEffect(() => {
     markSetupSeen()
   }, [])
@@ -85,89 +88,81 @@ export function McpSetupLanding({ setup, continueHref }: { setup: McpClientSetup
   return (
     <div className="mx-auto max-w-4xl space-y-8 pb-8">
       <header className="max-w-2xl">
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-coral">Első lépések</p>
-        <h1 className="mt-3 font-display text-3xl font-semibold leading-tight sm:text-4xl">
-          Dolgozz a kedvenc AI-eszközödben
-        </h1>
-        <p className="mt-3 text-base leading-relaxed text-ink-soft">
-          Kapcsold össze a platformot Codexszel, Cursorral, Grokkal, Claude-dal vagy Goose-szal.
-          Válaszd ki az alkalmazásodat, és kövesd a rövid telepítési lépéseket.
-        </p>
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
+        <h1 className="mt-3 font-display text-3xl font-semibold leading-tight sm:text-4xl">{t('title')}</h1>
+        <p className="mt-3 text-base leading-relaxed text-ink-soft">{t('body')}</p>
       </header>
 
       <section aria-labelledby="install-title" className="space-y-5">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-coral">01 / Csatlakozás</p>
-          <h2 id="install-title" className="mt-1 font-display text-2xl font-semibold">Telepítsd az MCP-szervert</h2>
-          <p className="mt-1 text-sm text-ink-soft">Ugyanazt a szervercímet használhatod mindegyik alkalmazásban.</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-coral">{t('step1Eyebrow')}</p>
+          <h2 id="install-title" className="mt-1 font-display text-2xl font-semibold">{t('step1Title')}</h2>
+          <p className="mt-1 text-sm text-ink-soft">{t('step1Body')}</p>
         </div>
 
         <div className="atelier-card flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6 sm:p-5">
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-faint">A szervezeted MCP-címe</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-faint">{t('orgUrl')}</p>
             <p className="mt-1 break-all font-mono text-sm text-ink">{setup.mcpUrl}</p>
           </div>
-          <CopyButton value={setup.mcpUrl} label="URL másolása" />
+          <CopyButton value={setup.mcpUrl} label={t('copyUrl')} />
         </div>
 
         <div className="space-y-3">
-          <ClientCard name="Codex" description="Terminálból, egy paranccsal" logo="/mcp-clients/codex.svg" logoBackground="bg-[#e6eee9]">
-            <p>Másold be a parancsot a terminálba. Megnyílik a böngészős belépés; ugyanazzal a fiókkal lépj be, amellyel itt vagy.</p>
-            <CodeBlock value={setup.codexCommand} copyLabel="Parancs másolása" />
+          <ClientCard name="Codex" description={t('codexDesc')} logo="/mcp-clients/codex.svg" logoBackground="bg-[#e6eee9]">
+            <p>{t('codexBody')}</p>
+            <CodeBlock value={setup.codexCommand} copyLabel={t('copyCommand')} />
           </ClientCard>
 
-          <ClientCard name="Cursor" description="Telepítés egy kattintással" logo="/mcp-clients/cursor.svg" logoBackground="bg-[#eeece8]">
-            <p>A gomb megnyitja a Cursort, és felajánlja a szerver telepítését. Ezután jelentkezz be a böngészőben.</p>
+          <ClientCard name="Cursor" description={t('cursorDesc')} logo="/mcp-clients/cursor.svg" logoBackground="bg-[#eeece8]">
+            <p>{t('cursorBody')}</p>
             <a href={setup.cursorInstallHref} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 font-semibold text-white transition-colors hover:bg-coral-deep">
-              Telepítés Cursorba <span aria-hidden="true">→</span>
+              {t('cursorInstall')} <span aria-hidden="true">→</span>
             </a>
-            <p className="text-xs text-ink-faint">Ha a gomb nem működik, a fenti MCP-címet kézzel is felveheted a Cursor beállításaiban.</p>
+            <p className="text-xs text-ink-faint">{t('cursorFallback')}</p>
           </ClientCard>
 
-          <ClientCard name="Grok Build CLI" description="Terminálból, egy paranccsal" logo="/mcp-clients/grok.svg" logoBackground="bg-[#eeebf4]">
-            <p>Másold be a parancsot a terminálba. Az első csatlakozáskor a böngészőben lépj be a platformos fiókoddal.</p>
-            <CodeBlock value={setup.grokCommand} copyLabel="Parancs másolása" />
-            <p className="text-xs text-ink-faint">A Grokban a <span className="font-mono text-ink">/mcps</span> → szerver → <span className="font-mono text-ink">i</span> útvonalon is megnyithatod a belépést.</p>
+          <ClientCard name="Grok Build CLI" description={t('grokDesc')} logo="/mcp-clients/grok.svg" logoBackground="bg-[#eeebf4]">
+            <p>{t('grokBody')}</p>
+            <CodeBlock value={setup.grokCommand} copyLabel={t('copyCommand')} />
+            <p className="text-xs text-ink-faint">{t('grokHint')}</p>
           </ClientCard>
 
-          <ClientCard name="Claude Desktop" description="Csatlakozó felvétele az alkalmazásban" logo="/mcp-clients/claude.svg" logoBackground="bg-[#f8ede5]">
-            <p>Nyisd meg a <span className="font-medium text-ink">Settings → Connectors → Add custom connector</span> menüt. Névnek írd be: <span className="font-mono text-ink">{setup.serverName}</span>, URL-nek pedig másold be:</p>
-            <CodeBlock value={setup.mcpUrl} copyLabel="URL másolása" />
-            <p>Ezután jelentkezz be ugyanazzal a fiókkal, amellyel itt vagy.</p>
+          <ClientCard name="Claude Desktop" description={t('claudeDesc')} logo="/mcp-clients/claude.svg" logoBackground="bg-[#f8ede5]">
+            <p>{t('claudeBody', { name: setup.serverName })}</p>
+            <CodeBlock value={setup.mcpUrl} copyLabel={t('copyUrl')} />
+            <p>{t('claudeAfter')}</p>
           </ClientCard>
 
-          <ClientCard name="Claude Code" description="Terminálból, egy paranccsal" logo="/mcp-clients/claudecode.svg" logoBackground="bg-[#f8ede5]">
-            <p>Másold be a parancsot a terminálba, majd a Claude Code-ban végezd el a felkínált bejelentkezést.</p>
-            <CodeBlock value={setup.claudeCommand} copyLabel="Parancs másolása" />
-            <p className="text-xs text-ink-faint">Ez a parancs a Claude Code-hoz szól. A Claude Desktophoz a fenti külön útmutatót használd.</p>
+          <ClientCard name="Claude Code" description={t('claudeCodeDesc')} logo="/mcp-clients/claudecode.svg" logoBackground="bg-[#f8ede5]">
+            <p>{t('claudeCodeBody')}</p>
+            <CodeBlock value={setup.claudeCommand} copyLabel={t('copyCommand')} />
+            <p className="text-xs text-ink-faint">{t('claudeCodeHint')}</p>
           </ClientCard>
 
-          <ClientCard name="Goose Desktop" description="Távoli MCP-bővítmény az alkalmazásban" logo="/mcp-clients/goose.svg" logoBackground="bg-[#e7eff1]">
+          <ClientCard name="Goose Desktop" description={t('gooseDesc')} logo="/mcp-clients/goose.svg" logoBackground="bg-[#e7eff1]">
             <ol className="list-decimal space-y-1 pl-5">
-              <li>Nyisd meg a Goose oldalsávját, majd válaszd az <span className="font-medium text-ink">Extensions → Add custom extension</span> menüt.</li>
-              <li>Típusnak válaszd a <span className="font-medium text-ink">Streamable HTTP</span> távoli bővítményt.</li>
-              <li>Azonosítóként add meg: <span className="font-mono text-ink">{setup.serverName}</span>; névnek: <span className="font-medium text-ink">Excellence AI</span>. A szerver URL-je:</li>
+              <li>{t('gooseStep1')}</li>
+              <li>{t('gooseStep2')}</li>
+              <li>{t('gooseStep3', { name: setup.serverName })}</li>
             </ol>
-            <CodeBlock value={setup.mcpUrl} copyLabel="URL másolása" />
-            <p>Kattints az <span className="font-medium text-ink">Add</span> gombra, majd a megnyíló böngészőben jelentkezz be a platformos fiókoddal.</p>
+            <CodeBlock value={setup.mcpUrl} copyLabel={t('copyUrl')} />
+            <p>{t('gooseAfter')}</p>
           </ClientCard>
         </div>
       </section>
 
       <Card className="p-5 sm:p-6">
-        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-coral">02 / Első próba</p>
-        <h2 className="mt-1 font-display text-2xl font-semibold">Kezdj el dolgozni</h2>
-        <p className="mt-2 text-sm leading-relaxed text-ink-soft">
-          Nyisd meg az összekapcsolt AI-eszközt, és kérdezd meg: <em className="text-ink">„Ki vagyok, és milyen AI-munkatársaim vannak?”</em>
-          {' '}Ha megjelennek a munkatársaid, a kapcsolat működik.
-        </p>
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-coral">{t('step2Eyebrow')}</p>
+        <h2 className="mt-1 font-display text-2xl font-semibold">{t('step2Title')}</h2>
+        <p className="mt-2 text-sm leading-relaxed text-ink-soft">{t('step2Body')}</p>
       </Card>
 
       <div className="flex flex-wrap items-center gap-3">
         <Link href={continueHref} onClick={markSetupSeen} className="inline-flex items-center gap-2 rounded-full bg-coral px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-coral-deep">
-          Tovább a munkatársakhoz <span aria-hidden="true">→</span>
+          {t('continue')} <span aria-hidden="true">→</span>
         </Link>
-        <p className="text-sm text-ink-faint">Ezt az oldalt a fejlécből bármikor újra megnyithatod.</p>
+        <p className="text-sm text-ink-faint">{t('reopenHint')}</p>
       </div>
     </div>
   )

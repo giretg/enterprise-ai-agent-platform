@@ -1,3 +1,4 @@
+import { getTranslations } from 'next-intl/server'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { getTenantLanguage } from '@/app/actions/tenant-language'
 import { getTenantMcpIntro } from '@/app/actions/tenant-mcp-intro'
@@ -8,23 +9,21 @@ import { TenantMcpIntroPanel } from './tenant-mcp-intro-panel'
 export default async function TenantSettingsPage() {
   await requireTenantRole('admin')
   const [language, mcpIntro] = await Promise.all([getTenantLanguage(), getTenantMcpIntro()])
+  const t = await getTranslations('ControlPlane.settings')
 
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Beállítások</p>
-        <h1 className="mt-2 font-display text-3xl font-semibold">Tenant beállítások</h1>
-        <p className="mt-1 max-w-2xl text-ink-soft">
-          A tenant saját magatartása. A Google OAuth kliens a Platform · Beállítások alatt él, a
-          menü-láthatóság a Menü-hozzáférés oldalon.
-        </p>
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
+        <h1 className="mt-2 font-display text-3xl font-semibold">{t('title')}</h1>
+        <p className="mt-1 max-w-2xl text-ink-soft">{t('body')}</p>
       </div>
       <SettingsSectionShell
-        ariaLabel="Tenant beállítások"
+        ariaLabel={t('aria')}
         sections={[
           {
             id: 'mcp-intro',
-            label: 'MCP bemutatkozó',
+            label: t('mcpIntro'),
             content: mcpIntro.success ? (
               <TenantMcpIntroPanel initialIntro={mcpIntro.data.mcpIntro} canEdit />
             ) : (
@@ -33,7 +32,7 @@ export default async function TenantSettingsPage() {
           },
           {
             id: 'language',
-            label: 'Nyelv',
+            label: t('language'),
             content: language.success ? (
               <TenantLanguagePanel initialLanguage={language.data.language} canEdit />
             ) : (

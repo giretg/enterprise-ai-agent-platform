@@ -1,10 +1,12 @@
 'use client'
 
 import { useState } from 'react'
+import { useLocale, useTranslations } from 'next-intl'
 import {
   approveGatewayOperationAction,
   rejectGatewayOperationAction,
 } from '@/app/actions/gateway-operation'
+import { asTranslate, type TranslateFn } from '@/i18n/translate'
 import { formatToolUiName } from '@/lib/tool-ui-labels'
 import { operationErrorLabel } from './labels'
 import type { PendingOperationRow } from './types'
@@ -16,11 +18,11 @@ function agentDefinitionLabel(row: PendingOperationRow): string {
   return row.agentName
 }
 
-function argsSummary(args: Record<string, unknown>): string {
+function argsSummary(args: Record<string, unknown>, t: TranslateFn): string {
   if (typeof args.method === 'string') return `${args.method} ${String(args.path ?? '')}`
   if (typeof args.range === 'string') return `${String(args.fileId ?? '—')} · ${args.range}`
   if (typeof args.title === 'string' && args.title.trim()) {
-    const kind = typeof args.kind === 'string' ? args.kind : 'emlék'
+    const kind = typeof args.kind === 'string' ? args.kind : t('memoryKind')
     const project = typeof args.projectKey === 'string' && args.projectKey ? args.projectKey : '__general__'
     return `${kind}: ${args.title} (${project})`
   }
@@ -29,18 +31,20 @@ function argsSummary(args: Record<string, unknown>): string {
   }
   const name = typeof args.name === 'string' ? args.name : '—'
   const parent = typeof args.parentFolderId === 'string' && args.parentFolderId
-    ? `szülő: ${args.parentFolderId}`
-    : 'gyökér'
+    ? t('parentFolder', { id: args.parentFolderId })
+    : t('parentRoot')
   return `${name} (${parent})`
 }
 
-function formatWhen(iso: string): string {
+function formatWhen(iso: string, locale: string): string {
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return iso
-  return date.toLocaleString('hu-HU')
+  return date.toLocaleString(locale === 'en' ? 'en-GB' : 'hu-HU')
 }
 
 export function OperationsPanel({ operations }: { operations: PendingOperationRow[] }) {
+  const t = asTranslate(useTranslations('ControlPlane.operations'))
+  const locale = useLocale()
   const [message, setMessage] = useState<string | null>(null)
   const [messageKind, setMessageKind] = useState<'info' | 'error'>('info')
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -53,7 +57,7 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
     setBusyId(null)
     if (!result.success) {
       setMessageKind('error')
-      setMessage(operationErrorLabel(result.error))
+      setMessage(operationErrorLabel(result.error, t))
       return
     }
     // Approve executes the write synchronously — the operation can come back
@@ -64,7 +68,9 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
     if (result.data.status === 'failed') {
       setMessageKind('error')
       setMessage(
-        `Jóváhagyva, de a végrehajtás sikertelen: ${operationErrorLabel(result.data.errorCode ?? 'tool_execution_failed')}`,
+        t('approvedFailed', {
+          error: operationErrorLabel(result.data.errorCode ?? 'tool_execution_failed', t),
+        }),
       )
       return
     }
@@ -75,8 +81,8 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
     setMessageKind('info')
     setMessage(
       fileId
-        ? `Jóváhagyva. Mappa azonosító: ${fileId}`
-        : `Jóváhagyva. Állapot: ${result.data.status}`,
+        ? t('approvedFile', { fileId })
+        : t('approvedStatus', { status: result.data.status }),
     )
   }
 
@@ -90,15 +96,15 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
     setBusyId(null)
     if (!result.success) {
       setMessageKind('error')
-      setMessage(operationErrorLabel(result.error))
+      setMessage(operationErrorLabel(result.error, t))
       return
     }
     setMessageKind('info')
-    setMessage('Elutasítva. A Google Drive-on nem jött létre mappa.')
+    setMessage(t('rejected'))
   }
 
   if (operations.length === 0) {
-    return <p className="text-sm text-ink-soft">Nincs jóváhagyásra váró művelet.</p>
+    return <p className="text-sm text-ink-soft">{t('empty')}</p>
   }
 
   return (
@@ -125,14 +131,14 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
             >
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <p className="font-medium text-ink">{formatToolUiName(row.toolName)}</p>
-                <p className="text-xs text-ink-faint">{formatWhen(row.createdAt)}</p>
+                <p className="text-xs text-ink-faint">{formatWhen(row.createdAt, locale)}</p>
               </div>
               <p className="mt-1 text-sm text-ink-soft">
                 {agentDefinitionLabel(row)} · {row.requesterName}
               </p>
-              <p className="mt-1 text-sm text-ink">{argsSummary(row.args)}</p>
+              <p className="mt-1 text-sm text-ink">{argsSummary(row.args, t)}</p>
               <label className="mt-3 block text-xs text-ink-soft">
-                Elutasítás indoka (opcionális)
+                {t('rejectReason')}
                 <textarea
                   className="mt-1 w-full rounded-md border border-ink/15 bg-white px-2 py-1 text-sm text-ink"
                   rows={2}
@@ -149,7 +155,7 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
                   onClick={() => void onApprove(row.operationId)}
                   className="rounded-md bg-ink px-3 py-1.5 text-sm text-white disabled:opacity-50"
                 >
-                  Jóváhagyás
+                  {t('approve')}
                 </button>
                 <button
                   type="button"
@@ -157,7 +163,7 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
                   onClick={() => void onReject(row.operationId)}
                   className="rounded-md border border-ink/20 px-3 py-1.5 text-sm text-ink disabled:opacity-50"
                 >
-                  Elutasítás
+                  {t('reject')}
                 </button>
               </div>
             </li>

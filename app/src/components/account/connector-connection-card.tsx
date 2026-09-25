@@ -1,7 +1,10 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
+import { useLocale, useTranslations } from 'next-intl'
 import { useState, useTransition } from 'react'
+import { formatDateTime } from '@/i18n/format'
+import { asTranslate } from '@/i18n/translate'
 import { revokeConnectorGrant, startConnectorOAuth } from '@/app/actions/connector-grants'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import { ConnectionCard, StatusDot } from '@/components/account/connection-card'
@@ -49,6 +52,26 @@ export type LinkedGrantView = {
   grantedAt: string
   metadata?: unknown
 }
+
+const GMAIL_LABEL_KEYS = {
+  modify: 'gmailModify',
+  readonly: 'gmailReadonly',
+  compose: 'gmailCompose',
+  send: 'gmailSend',
+  full: 'gmailFull',
+} as const
+
+const DRIVE_LABEL_KEYS = {
+  readonly: 'driveReadonly',
+  selected_write: 'driveSelectedWrite',
+  full_write: 'driveFullWrite',
+} as const
+
+const DRIVE_DESC_KEYS = {
+  readonly: 'driveReadonlyDesc',
+  selected_write: 'driveSelectedWriteDesc',
+  full_write: 'driveFullWriteDesc',
+} as const
 
 const GMAIL_SCOPE_PROFILES = [
   {
@@ -107,33 +130,43 @@ function sameScopes(a: readonly string[], b: readonly string[]) {
   return [...a].sort().every((scope, index) => scope === [...b].sort()[index])
 }
 
-function scopeSummary(connectorType: string, scopes: unknown): string {
+function scopeSummary(
+  connectorType: string,
+  scopes: unknown,
+  t: (key: string) => string,
+): string {
   if (connectorType === 'google_drive') {
-    return driveGrantScopeSummary(scopes).label
+    const id = driveScopeProfile(parseDriveScopes(scopes as never))
+    const key = id && id in DRIVE_LABEL_KEYS ? DRIVE_LABEL_KEYS[id as keyof typeof DRIVE_LABEL_KEYS] : null
+    return key ? t(key) : t('unknownProfile')
   }
   if (connectorType === 'gmail') {
-    return gmailGrantScopeSummary(scopes).label
+    const label = gmailGrantScopeSummary(scopes).label
+    const match = (Object.keys(GMAIL_LABEL_KEYS) as Array<keyof typeof GMAIL_LABEL_KEYS>).find(
+      (id) => GMAIL_SCOPE_PROFILES.find((p) => p.id === id)?.label === label,
+    )
+    return match ? t(GMAIL_LABEL_KEYS[match]) : t('gmailCustom')
   }
-  if (!Array.isArray(scopes)) return 'nincs scope adat'
+  if (!Array.isArray(scopes)) return t('noScope')
   const labels = scopes
     .filter((scope): scope is string => typeof scope === 'string')
     .map((scope) => scope.replace('https://www.googleapis.com/auth/', '').replace('https://', ''))
-  return labels.length > 0 ? labels.join(', ') : 'nincs scope adat'
+  return labels.length > 0 ? labels.join(', ') : t('noScope')
 }
 
-function connectedGrantSummary(connector: LinkedConnectorView, grant: LinkedGrantView): string {
-  const account = grant.accountLabel ?? 'Fiók'
-  return `${account} · ${scopeSummary(connector.type, grant.scopes)}`
+function connectedGrantSummary(
+  connector: LinkedConnectorView,
+  grant: LinkedGrantView,
+  t: (key: string) => string,
+): string {
+  const account = grant.accountLabel ?? t('account')
+  return `${account} · ${scopeSummary(connector.type, grant.scopes, t)}`
 }
 
-function connectorDescription(connector: LinkedConnectorView): string {
-  if (connector.type === 'gmail') {
-    return 'AI munkatárs a te Gmail-fiókoddal olvas és ír — csak a te engedélyeddel, a te nevedben.'
-  }
-  if (connector.type === 'google_drive') {
-    return 'Az AI munkatárs a te engedélyeddel kereshet és olvashat Drive-fájlokat. Ha írási profilt választasz, a jóváhagyási szabályok szerint létrehozhat vagy módosíthat fájlokat is.'
-  }
-  return `Az agent a te ${delegatedConnectorLabel(connector.type, connector.name)} fiókoddal jár el.`
+function connectorDescription(connector: LinkedConnectorView, t: (key: string, values?: Record<string, string>) => string): string {
+  if (connector.type === 'gmail') return t('gmailDesc')
+  if (connector.type === 'google_drive') return t('driveDesc')
+  return t('genericDesc', { name: delegatedConnectorLabel(connector.type, connector.name) })
 }
 
 function grantMetadata(raw: unknown): GoogleDriveGrantMetadata {
@@ -156,6 +189,8 @@ export function ConnectorConnectionCard({
   isAdmin?: boolean
   drivePickerConfigured?: boolean
 }) {
+  const t = asTranslate(useTranslations('Account'))
+  const locale = useLocale()
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
@@ -173,7 +208,14 @@ export function ConnectorConnectionCard({
     scopeProfiles.find((profile) => sameScopes(profile.scopes, selectedScopes)) ??
     scopeProfiles[0] ??
     GMAIL_SCOPE_PROFILES[0]
-  const usage = connectorUsageStatus(connector)
+  const usage = connectorUsageStatus(connector, {
+    and: t('and'),
+    capableOne: (list) => t('usageCapableOne', { list }),
+    capableMany: (list) => t('usageCapableMany', { list }),
+    capableCount: (count) => t('usageCapableCount', { count }),
+    missingCapability: t('usageMissingCapability'),
+    unassigned: t('usageUnassigned'),
+  })
   const isGoogle = connector.type === 'gmail' || connector.type === 'google_drive'
   const showDrivePicker =
     connector.type === 'google_drive' &&
@@ -186,12 +228,12 @@ export function ConnectorConnectionCard({
   const appCreated = driveMetadata?.appCreated ?? []
 
   const tabs: { id: DetailTab; label: string }[] = [
-    { id: 'overview', label: 'Áttekintés' },
-    ...(showDrivePicker ? [{ id: 'files' as const, label: 'Írható fájlok' }] : []),
+    { id: 'overview', label: t('tabOverview') },
+    ...(showDrivePicker ? [{ id: 'files' as const, label: t('tabFiles') }] : []),
     ...(appCreated.length > 0
-      ? [{ id: 'created' as const, label: `Létrehozott (${appCreated.length})` }]
+      ? [{ id: 'created' as const, label: t('tabCreated', { count: appCreated.length }) }]
       : []),
-    ...(history.length > 0 ? [{ id: 'history' as const, label: 'Előzmények' }] : []),
+    ...(history.length > 0 ? [{ id: 'history' as const, label: t('tabHistory') }] : []),
   ]
 
   const revoke = () =>
@@ -202,7 +244,7 @@ export function ConnectorConnectionCard({
         setLocalGrants((prev) =>
           prev.map((g) => (g.id === activeGrant.id ? { ...g, status: 'revoked' } : g)),
         )
-        setMessage({ ok: true, text: 'Az összekötést megszüntettük.' })
+        setMessage({ ok: true, text: t('revoked') })
         router.refresh()
       } else {
         setMessage({ ok: false, text: res.error })
@@ -218,7 +260,7 @@ export function ConnectorConnectionCard({
       if (res.success) {
         if ('stub' in res.data && res.data.stub) {
           router.refresh()
-          setMessage({ ok: true, text: 'Fiók sikeresen összekötve (stub).' })
+          setMessage({ ok: true, text: t('stubConnected') })
         } else {
           navigateToOAuth(res.data.url)
         }
@@ -246,14 +288,14 @@ export function ConnectorConnectionCard({
       <ConnectionCard
         name={delegatedConnectorLabel(connector.type, connector.name)}
         provider={connector.type}
-        summary={<span title={hint ?? undefined}>{connectorDescription(connector)}</span>}
+        summary={<span title={hint ?? undefined}>{connectorDescription(connector, t)}</span>}
         actions={
           <>
             {isGoogle && (
               <select
                 value={currentProfile.id}
                 disabled={pending}
-                aria-label="Hozzáférés szintje"
+                aria-label={t('accessLevel')}
                 title={hint ?? undefined}
                 className="rounded-full border border-line bg-panel px-3 py-1.5 text-xs text-ink"
                 onChange={(event) => {
@@ -264,7 +306,11 @@ export function ConnectorConnectionCard({
               >
                 {scopeProfiles.map((profile) => (
                   <option key={profile.id} value={profile.id}>
-                    {profile.label}
+                    {profile.id in GMAIL_LABEL_KEYS
+                      ? t(GMAIL_LABEL_KEYS[profile.id as keyof typeof GMAIL_LABEL_KEYS])
+                      : profile.id in DRIVE_LABEL_KEYS
+                        ? t(DRIVE_LABEL_KEYS[profile.id as keyof typeof DRIVE_LABEL_KEYS])
+                        : profile.label}
                   </option>
                 ))}
               </select>
@@ -275,7 +321,7 @@ export function ConnectorConnectionCard({
               className="rounded-full bg-coral px-4 py-1.5 text-xs font-semibold text-card shadow-sm transition-opacity hover:opacity-90 disabled:opacity-50"
               onClick={connect}
             >
-              Összekötés
+              {t('connect')}
             </button>
           </>
         }
@@ -291,10 +337,10 @@ export function ConnectorConnectionCard({
       provider={connector.type}
       status={
         <StatusDot tone={usage.usable ? 'ok' : 'warn'}>
-          {usage.usable ? 'Összekötve' : 'Nincs használatban'}
+          {usage.usable ? t('connected') : t('unused')}
         </StatusDot>
       }
-      summary={connectedGrantSummary(connector, activeGrant)}
+      summary={connectedGrantSummary(connector, activeGrant, t)}
       actions={
         <button
           type="button"
@@ -302,7 +348,7 @@ export function ConnectorConnectionCard({
           className={pillButton}
           onClick={() => setOpen((v) => !v)}
         >
-          Részletek
+          {t('details')}
           <span
             aria-hidden="true"
             className={`ml-1.5 inline-block transition-transform ${open ? 'rotate-180' : ''}`}
@@ -337,15 +383,22 @@ export function ConnectorConnectionCard({
 
           {open && tab === 'overview' ? (
             <div className="space-y-3 text-xs leading-5 text-ink-soft">
-              <p>{connectorDescription(connector)}</p>
+              <p>{connectorDescription(connector, t)}</p>
               <p className={usage.usable ? 'text-sage' : 'text-honey'}>{usage.text}</p>
               {connector.type === 'google_drive' ? (
-                <p>{driveGrantScopeSummary(activeGrant.scopes).description}</p>
+                <p>
+                  {(() => {
+                    const id = driveScopeProfile(parseDriveScopes(activeGrant.scopes as never))
+                    return id && id in DRIVE_DESC_KEYS
+                      ? t(DRIVE_DESC_KEYS[id as keyof typeof DRIVE_DESC_KEYS])
+                      : driveGrantScopeSummary(activeGrant.scopes).description
+                  })()}
+                </p>
               ) : null}
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line/50 pt-3">
                 {isGoogle ? (
                   <p className="text-ink-faint">
-                    Más hozzáférési szinthez bontsd az összekötést, majd kösd újra.
+                    {t('changeLevelHint')}
                   </p>
                 ) : (
                   <span />
@@ -356,7 +409,7 @@ export function ConnectorConnectionCard({
                   className="rounded-full px-3 py-1.5 text-xs font-semibold text-coral-deep transition-colors hover:bg-coral/10 disabled:opacity-50"
                   onClick={revoke}
                 >
-                  Összekötés megszüntetése
+                  {t('disconnect')}
                 </button>
               </div>
             </div>
@@ -375,7 +428,9 @@ export function ConnectorConnectionCard({
               {appCreated.map((entry) => (
                 <li key={entry.fileId} className="flex justify-between gap-3 py-1.5" title={entry.fileId}>
                   <span className="truncate text-ink">{entry.name}</span>
-                  <span className="shrink-0 text-ink-faint">{selectionLabel(entry.mimeType)}</span>
+                  <span className="shrink-0 text-ink-faint">
+                    {selectionLabel(entry.mimeType, t('folder'), t('file'))}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -388,7 +443,7 @@ export function ConnectorConnectionCard({
                   <span>
                     {grant.accountLabel ?? '—'} ({grant.status})
                   </span>
-                  <span>{new Date(grant.grantedAt).toLocaleString('hu-HU')}</span>
+                  <span>{formatDateTime(grant.grantedAt, locale)}</span>
                 </li>
               ))}
             </ul>

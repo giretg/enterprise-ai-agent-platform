@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import {
   createTenant,
   suspendTenant,
@@ -41,6 +42,7 @@ export function PlatformTenantPanel({
   users: PlatformUserOption[]
   canManageMemberships: boolean
 }) {
+  const copy = useTranslations('PlatformTenants')
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -57,7 +59,7 @@ export function PlatformTenantPanel({
     setError(null)
     startTransition(async () => {
       const res = await fn()
-      if (!res.success) setError(res.error ?? 'Ismeretlen hiba')
+      if (!res.success) setError(res.error ?? copy('unknownError'))
       else router.refresh()
     })
   }
@@ -94,10 +96,10 @@ export function PlatformTenantPanel({
         <div className="rounded-lg border border-coral/35 bg-coral/10 p-3 text-sm text-coral-deep">{error}</div>
       )}
 
-      <Card title="Új tenant létrehozása">
+      <Card title={copy('createTitle')}>
         <form onSubmit={submitCreate} className="grid gap-3 sm:grid-cols-2">
           <label className="text-sm">
-            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">Slug</span>
+            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">{copy('slug')}</span>
             <input
               required
               value={form.slug}
@@ -107,7 +109,7 @@ export function PlatformTenantPanel({
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">Megjelenített név</span>
+            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">{copy('displayName')}</span>
             <input
               required
               value={form.displayName}
@@ -117,7 +119,7 @@ export function PlatformTenantPanel({
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">Jogi név (opc.)</span>
+            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">{copy('legalName')}</span>
             <input
               value={form.legalName}
               onChange={(e) => setForm((f) => ({ ...f, legalName: e.target.value }))}
@@ -125,7 +127,7 @@ export function PlatformTenantPanel({
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">Domain allowlist (vesszővel)</span>
+            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">{copy('domains')}</span>
             <input
               value={form.domainAllowlist}
               onChange={(e) => setForm((f) => ({ ...f, domainAllowlist: e.target.value }))}
@@ -135,14 +137,14 @@ export function PlatformTenantPanel({
           </label>
           <label className="text-sm sm:col-span-2">
             <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">
-              Első tenant-admin (opc.)
+              {copy('firstAdmin')}
             </span>
             <select
               value={form.initialAdminUserId}
               onChange={(e) => setForm((f) => ({ ...f, initialAdminUserId: e.target.value }))}
               className={inputClass}
             >
-              <option value="">Nincs — később adom hozzá</option>
+              <option value="">{copy('noAdminYet')}</option>
               {users.map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.name} ({u.email})
@@ -156,24 +158,24 @@ export function PlatformTenantPanel({
               disabled={pending}
               className="rounded-full border border-coral/35 bg-coral/10 px-4 py-2 text-sm font-semibold text-coral-deep transition-colors hover:border-coral/55 disabled:opacity-50"
             >
-              Tenant létrehozása
+              {copy('create')}
             </button>
           </div>
         </form>
       </Card>
 
-      <Card title={`Tenantok (${tenants.length})`}>
+      <Card title={copy('listTitle', { count: tenants.length })}>
         {tenants.length === 0 ? (
-          <p className="text-sm text-ink-faint">Még nincs tenant.</p>
+          <p className="text-sm text-ink-faint">{copy('empty')}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint">
-                  <th className="py-2 pr-3">Tenant</th>
-                  <th className="py-2 pr-3">Slug</th>
-                  <th className="py-2 pr-3">Státusz</th>
-                  <th className="py-2 pr-3 text-right">Műveletek</th>
+                  <th className="py-2 pr-3">{copy('colTenant')}</th>
+                  <th className="py-2 pr-3">{copy('colSlug')}</th>
+                  <th className="py-2 pr-3">{copy('colStatus')}</th>
+                  <th className="py-2 pr-3 text-right">{copy('colActions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -195,26 +197,26 @@ export function PlatformTenantPanel({
                           className={btnClass}
                           onClick={() => setSelectedTenantId((cur) => (cur === t.id ? null : t.id))}
                         >
-                          {selectedTenantId === t.id ? 'Tagok ▲' : 'Tagok'}
+                          {selectedTenantId === t.id ? copy('membersOpen') : copy('members')}
                         </button>
                         {t.status === 'active' && (
                           <>
                             <button disabled={pending} className={btnClass} onClick={() => run(() => suspendTenant({ tenantId: t.id }))}>
-                              Felfüggeszt
+                              {copy('suspend')}
                             </button>
                             <button disabled={pending} className={btnClass} onClick={() => run(() => offboardTenant({ tenantId: t.id }))}>
-                              Offboarding
+                              {copy('offboard')}
                             </button>
                           </>
                         )}
                         {(t.status === 'suspended' || t.status === 'offboarding') && (
                           <button disabled={pending} className={btnClass} onClick={() => run(() => reactivateTenant({ tenantId: t.id }))}>
-                            Visszaállít
+                            {copy('reactivate')}
                           </button>
                         )}
                         {t.status === 'offboarding' && (
                           <button disabled={pending} className={btnClass} onClick={() => run(() => archiveTenant({ tenantId: t.id }))}>
-                            Archivál
+                            {copy('archive')}
                           </button>
                         )}
                         {t.status === 'archived' && <span className="text-xs text-ink-faint">—</span>}

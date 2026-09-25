@@ -2,7 +2,9 @@
 
 import { useSyncExternalStore, type ReactNode } from 'react'
 import { usePathname } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { AppShell, type NavEntry } from '@/components/ui/shell'
+import { LocaleSwitcher } from '@/components/public-site/locale-switcher'
 import { TenantSwitcher } from '@/components/tenant/tenant-switcher'
 import { ControlPlaneEmbedBridge } from '@/lib/control-plane-embed-bridge'
 
@@ -59,17 +61,25 @@ export function ControlPlaneShell({
   children: React.ReactNode
 }) {
   const pathname = usePathname()
+  const t = useTranslations('ControlPlane.shell')
   // TenantSwitcher useRouter()-t hív — loading.tsx + RSC redirect közben ez Router hook-hibát dob.
   const headerReady = useSyncExternalStore(subscribeNever, readClientMounted, () => false)
 
   return (
     <AppShell
-      appName="E-AI"
-      appSubtitle="Control Plane"
+      appName={t('appName')}
+      appSubtitle={t('appSubtitle')}
       navItems={navItems}
       accentColor="slate"
       pathname={pathname}
-      headerExtra={headerReady ? <TenantSwitcher /> : null}
+      headerExtra={
+        headerReady ? (
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <LocaleSwitcher />
+            <TenantSwitcher />
+          </div>
+        ) : null
+      }
     >
       {children}
     </AppShell>

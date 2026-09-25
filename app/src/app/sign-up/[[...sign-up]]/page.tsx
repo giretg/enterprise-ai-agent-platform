@@ -1,9 +1,10 @@
 import { SignUp } from '@clerk/nextjs'
+import { AuthLocaleShell } from '@/components/auth/auth-locale-shell'
 
 export default function SignUpPage() {
   return (
-    <div className="signal-grid flex min-h-screen items-center justify-center px-4">
+    <AuthLocaleShell>
       <SignUp routing="path" path="/sign-up" signInUrl="/sign-in" />
-    </div>
+    </AuthLocaleShell>
   )
 }

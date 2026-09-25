@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { getTranslations } from 'next-intl/server'
 import { listAgents } from '@/app/actions/platform'
 import { hasMinimumRole } from '@/auth/types'
 import { Card } from '@/components/ui/shell'
@@ -13,29 +14,28 @@ export default async function AgentsIndexPage() {
   const agents = agentsRes.success ? agentsRes.data : []
   const loadError = agentsRes.success ? null : agentsRes.error
   const canCreateAgent = hasMinimumRole(ctx.activeTenantRole, 'admin')
+  const t = await getTranslations('ControlPlane.agents')
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Munkatársak</p>
-          <h1 className="mt-2 font-display text-3xl font-semibold">Agentek</h1>
-          <p className="mt-1 max-w-2xl text-ink-soft">
-            Definíció, skill és konnektor — a published snapshot az MCP-n olvasható.
-          </p>
+          <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
+          <h1 className="mt-2 font-display text-3xl font-semibold">{t('title')}</h1>
+          <p className="mt-1 max-w-2xl text-ink-soft">{t('body')}</p>
         </div>
         {canCreateAgent ? (
           <Link
             href="/control-plane/agents/new"
             className="rounded-lg bg-coral px-4 py-2 text-sm font-semibold text-white hover:bg-coral/90"
           >
-            Új munkatárs
+            {t('new')}
           </Link>
         ) : null}
       </div>
       {loadError ? (
         <div className="rounded-2xl border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          A munkatársak most nem tölthetők be.
+          {t('loadError')}
           <span className="mt-1 block text-xs opacity-70">{loadError}</span>
         </div>
       ) : (
@@ -54,12 +54,9 @@ export default async function AgentsIndexPage() {
             )
           })}
           {agents.length === 0 ? (
-            <Card title="Még nincs munkatárs">
+            <Card title={t('emptyTitle')}>
               <p className="text-sm text-ink-soft">
-                Ebben a szervezetben még nincs AI-munkatárs.
-                {canCreateAgent
-                  ? ' Vedd fel az elsőt az „Új munkatárs” gombbal.'
-                  : ' Kérj egy admint, hogy vegyen fel egyet.'}
+                {canCreateAgent ? t('emptyCanCreate') : t('emptyNoCreate')}
               </p>
             </Card>
           ) : null}
