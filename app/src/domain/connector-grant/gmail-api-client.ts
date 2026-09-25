@@ -85,18 +85,29 @@ async function fetchWithBackoff(
   operation: string,
   input: RequestInfo | URL,
   init?: RequestInit,
+  opts?: { retryServerErrors?: boolean },
 ): Promise<Response> {
+  // 429 is safe to retry even for a non-idempotent write: the request was rejected,
+  // not processed. A 5xx is ambiguous — the write may already have committed at
+  // Gmail — so a non-idempotent POST (send / create_draft) must NOT retry it: Gmail
+  // accepts no client idempotency token, and retrying after a committed 5xx sends the
+  // message (or creates the draft) twice. Reads and idempotent writes (modify/trash)
+  // keep the default 5xx retry.
+  const retryable = opts?.retryServerErrors === false ? [429] : [429, 500, 502, 503, 504]
   const delays = [250, 750]
   for (let attempt = 0; attempt <= delays.length; attempt += 1) {
     const res = await fetch(input, init)
     if (res.ok || res.status === 401 || res.status === 403) return res
-    if (![429, 500, 502, 503, 504].includes(res.status) || attempt === delays.length) {
+    if (!retryable.includes(res.status) || attempt === delays.length) {
       return res
     }
     await sleep(delays[attempt])
   }
   throw new Error(`${operation} failed before response`)
 }
+
+/** Non-idempotent Gmail writes must not replay an ambiguous 5xx (duplicate send/draft). */
+const NO_5XX_RETRY = { retryServerErrors: false } as const
 
 function decodeBase64Url(data: string): string {
   const normalized = data.replace(/-/g, '+').replace(/_/g, '/')
@@ -603,7 +614,7 @@ export class GmailApiClient {
       },
       body: JSON.stringify({ message }),
       signal: params.signal,
-    })
+    }, NO_5XX_RETRY)
     if (!res.ok) throw gmailApiError('gmail.create_draft', res.status)
     const data = (await res.json()) as { id?: string }
     return { draftId: data.id ?? 'unknown' }
@@ -647,7 +658,7 @@ export class GmailApiClient {
           'content-type': 'application/json',
         },
         body: JSON.stringify({ id: params.draftId }),
-      })
+      }, NO_5XX_RETRY)
       if (!res.ok) throw gmailApiError('gmail.send', res.status)
       const data = (await res.json()) as { id?: string; threadId?: string }
       return { messageId: data.id ?? 'unknown', ...(data.threadId ? { threadId: data.threadId } : {}) }
@@ -677,7 +688,7 @@ export class GmailApiClient {
         'content-type': 'application/json',
       },
       body: JSON.stringify(message),
-    })
+    }, NO_5XX_RETRY)
     if (!res.ok) throw gmailApiError('gmail.send', res.status)
     const data = (await res.json()) as { id?: string; threadId?: string }
     return { messageId: data.id ?? 'unknown', ...(data.threadId ? { threadId: data.threadId } : {}) }
