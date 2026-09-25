@@ -297,8 +297,12 @@ function main() {
       path.join(__dirname, '..', 'src', 'app', 'control-plane', 'agents', 'page.tsx'),
       'utf8',
     )
+    const hu = JSON.parse(
+      readFileSync(path.join(__dirname, '..', 'src', 'messages', 'hu.json'), 'utf8'),
+    ) as { ControlPlane: { agents: { new: string } } }
     assert.match(page, /href="\/control-plane\/agents\/new"/)
-    assert.match(page, /Új munkatárs/)
+    assert.match(page, /t\('new'\)/)
+    assert.equal(hu.ControlPlane.agents.new, 'Új munkatárs')
     assert.doesNotMatch(page, /sáv/)
   })
 

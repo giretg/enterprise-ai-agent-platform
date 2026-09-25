@@ -2,6 +2,8 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { useLocale, useTranslations } from 'next-intl'
+import { formatDateTime } from '@/i18n/format'
 import { grantPlatformRole, revokePlatformRole } from '@/app/actions/tenant'
 import { Badge, Card } from '@/components/ui/shell'
 
@@ -44,6 +46,8 @@ export function PlatformIamPanel({
   audit: PlatformAuditRow[]
   canManage: boolean
 }) {
+  const t = useTranslations('PlatformIam')
+  const locale = useLocale()
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -56,7 +60,7 @@ export function PlatformIamPanel({
     setError(null)
     startTransition(async () => {
       const res = await fn()
-      if (!res.success) setError(res.error ?? 'Ismeretlen hiba')
+      if (!res.success) setError(res.error ?? t('unknownError'))
       else router.refresh()
     })
   }
@@ -73,7 +77,7 @@ export function PlatformIamPanel({
       )}
 
       {canManage && (
-        <Card title="Platform-szerep kiosztása">
+        <Card title={t('grantTitle')}>
           <form
             onSubmit={(e) => {
               e.preventDefault()
@@ -86,7 +90,7 @@ export function PlatformIamPanel({
             className="grid gap-3 sm:grid-cols-2"
           >
             <label className="text-sm">
-              <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">User ID (UUID)</span>
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">{t('userId')}</span>
               <input
                 required
                 value={form.userId}
@@ -96,7 +100,7 @@ export function PlatformIamPanel({
               />
             </label>
             <label className="text-sm">
-              <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">Platform-szerep</span>
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">{t('role')}</span>
               <select
                 value={form.role}
                 onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as (typeof PLATFORM_ROLES)[number] }))}
@@ -115,25 +119,25 @@ export function PlatformIamPanel({
                 disabled={pending}
                 className="rounded-full border border-coral/35 bg-coral/10 px-4 py-2 text-sm font-semibold text-coral-deep transition-colors hover:border-coral/55 disabled:opacity-50"
               >
-                Szerep kiosztása
+                {t('grant')}
               </button>
             </div>
           </form>
         </Card>
       )}
 
-      <Card title={`Platform-tagok (${members.length})`}>
+      <Card title={t('membersTitle', { count: members.length })}>
         {members.length === 0 ? (
-          <p className="text-sm text-ink-faint">Még nincs platform-tag.</p>
+          <p className="text-sm text-ink-faint">{t('noMembers')}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint">
-                  <th className="py-2 pr-3">Tag</th>
-                  <th className="py-2 pr-3">Szerep</th>
-                  <th className="py-2 pr-3">Státusz</th>
-                  {canManage && <th className="py-2 pr-3 text-right">Művelet</th>}
+                  <th className="py-2 pr-3">{t('colMember')}</th>
+                  <th className="py-2 pr-3">{t('colRole')}</th>
+                  <th className="py-2 pr-3">{t('colStatus')}</th>
+                  {canManage && <th className="py-2 pr-3 text-right">{t('colAction')}</th>}
                 </tr>
               </thead>
               <tbody>
@@ -154,7 +158,7 @@ export function PlatformIamPanel({
                           className={btnClass}
                           onClick={() => run(() => revokePlatformRole({ userId: m.userId, role: m.role as (typeof PLATFORM_ROLES)[number] }))}
                         >
-                          Megvonás
+                          {t('revoke')}
                         </button>
                       </td>
                     )}
@@ -166,25 +170,25 @@ export function PlatformIamPanel({
         )}
       </Card>
 
-      <Card title="Platform audit-napló (tenant lifecycle + assume)">
+      <Card title={t('auditTitle')}>
         {audit.length === 0 ? (
-          <p className="text-sm text-ink-faint">Nincs esemény.</p>
+          <p className="text-sm text-ink-faint">{t('noEvents')}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint">
-                  <th className="py-2 pr-3">Idő</th>
-                  <th className="py-2 pr-3">Esemény</th>
-                  <th className="py-2 pr-3">Cél</th>
-                  <th className="py-2 pr-3">Döntés</th>
+                  <th className="py-2 pr-3">{t('colTime')}</th>
+                  <th className="py-2 pr-3">{t('colEvent')}</th>
+                  <th className="py-2 pr-3">{t('colTarget')}</th>
+                  <th className="py-2 pr-3">{t('colDecision')}</th>
                 </tr>
               </thead>
               <tbody>
                 {audit.map((a) => (
                   <tr key={a.id} className="border-b border-line/50">
                     <td className="py-2 pr-3 font-mono text-xs text-ink-faint">
-                      {new Date(a.createdAt).toLocaleString('hu-HU')}
+                      {formatDateTime(a.createdAt, locale)}
                     </td>
                     <td className="py-2 pr-3 font-mono text-xs text-ink-soft">{a.action}</td>
                     <td className="py-2 pr-3 font-mono text-xs text-ink-faint">

@@ -8,6 +8,7 @@
  * kulturált, márka-illesztett UI-t ad `reset()`-tel újrapróbálkozáshoz.
  */
 import { useEffect } from 'react'
+import { useTranslations } from 'next-intl'
 import { CP_EMBED_READY_MESSAGE } from '@/lib/control-plane-embed-messages'
 import { captureException } from '@/lib/observability'
 
@@ -27,22 +28,22 @@ export default function Error({
     }
   }, [error])
 
+  const t = useTranslations('Errors')
+  const common = useTranslations('Common')
   return (
     <div className="flex min-h-[60vh] items-center justify-center px-6">
       <div className="w-full max-w-md rounded-2xl border border-line bg-card p-8 text-center shadow-sm">
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Hiba</p>
-        <h2 className="mt-2 font-display text-2xl font-semibold text-ink">Valami félresiklott</h2>
-        <p className="mt-3 text-sm text-ink-soft">
-          Váratlan hiba történt. A hivatkozási azonosítót megadva a support gyorsabban tud segíteni.
-        </p>
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('errorKicker')}</p>
+        <h2 className="mt-2 font-display text-2xl font-semibold text-ink">{t('errorTitle')}</h2>
+        <p className="mt-3 text-sm text-ink-soft">{t('errorBody')}</p>
         <p className="mt-4 font-mono text-xs text-ink-faint">
-          Hivatkozás: {error.digest ?? '—'}
+          {t('errorRef', { digest: error.digest ?? '—' })}
         </p>
         <button
           onClick={reset}
           className="mt-6 rounded-lg bg-coral px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-coral-deep"
         >
-          Újrapróbálkozás
+          {common('retry')}
         </button>
       </div>
     </div>

@@ -1,8 +1,10 @@
 'use client'
 
 import { ClerkProvider } from '@clerk/nextjs'
+import { enUS, huHU } from '@clerk/localizations'
 import { createContext, useContext, type ReactNode } from 'react'
 import { ConfirmDialogHost } from '@/components/ui/confirm-dialog'
+import type { AppLocale } from '@/i18n/config'
 
 const ClerkEnabledContext = createContext(false)
 
@@ -14,6 +16,7 @@ export function useClerkEnabled() {
 export function AuthProviders({
   children,
   clerkEnabled = false,
+  locale = 'hu',
 }: {
   children: ReactNode
   /**
@@ -22,12 +25,14 @@ export function AuthProviders({
    * magában is a Clerk beléptetőre visz, és a DevAuth soha nem fut a böngészőben.
    */
   clerkEnabled?: boolean
+  locale?: AppLocale
 }) {
   const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
   const tree =
     clerkEnabled && publishableKey ? (
       <ClerkProvider
         publishableKey={publishableKey}
+        localization={locale === 'en' ? enUS : huHU}
         signInUrl="/sign-in"
         signUpUrl="/sign-up"
         signInFallbackRedirectUrl="/control-plane"

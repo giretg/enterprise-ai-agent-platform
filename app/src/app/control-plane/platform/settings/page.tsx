@@ -1,3 +1,4 @@
+import { getTranslations } from 'next-intl/server'
 import { getAuthContext } from '@/auth/context'
 import {
   getPlatformGoogleOAuth,
@@ -22,22 +23,20 @@ export default async function PlatformSettingsPage() {
     getPlatformGoogleDrivePickerConfig(),
   ])
 
+  const t = await getTranslations('ControlPlane.platformSettings')
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Platform</p>
-        <h1 className="mt-2 font-display text-3xl font-semibold">Beállítások</h1>
-        <p className="mt-1 max-w-2xl text-ink-soft">
-          Clerk/OAuth, Google Drive és Google Analytics / Search Console / Ads kliensbeállítások.
-          Modell-routing és budget kikerült.
-        </p>
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
+        <h1 className="mt-2 font-display text-3xl font-semibold">{t('title')}</h1>
+        <p className="mt-1 max-w-2xl text-ink-soft">{t('body')}</p>
       </div>
       <SettingsSectionShell
-        ariaLabel="Platform beállítások"
+        ariaLabel={t('aria')}
         sections={[
           {
             id: 'gmail-oauth',
-            label: 'Google OAuth',
+            label: t('gmail'),
             content: gmail.success ? (
               <GoogleOAuthControlPanel initial={gmail.data} canEdit={canEdit} />
             ) : (
@@ -46,7 +45,7 @@ export default async function PlatformSettingsPage() {
           },
           {
             id: 'drive-oauth',
-            label: 'Google Drive OAuth',
+            label: t('drive'),
             content: drive.success ? (
               <GoogleDriveOAuthControlPanel initial={drive.data} canEdit={canEdit} />
             ) : (
@@ -55,7 +54,7 @@ export default async function PlatformSettingsPage() {
           },
           {
             id: 'google-api-oauth',
-            label: 'Google Analytics / Search Console / Ads',
+            label: t('googleApi'),
             content: googleApi.success ? (
               <GoogleApiOAuthControlPanel initial={googleApi.data} canEdit={canEdit} />
             ) : (
@@ -64,7 +63,7 @@ export default async function PlatformSettingsPage() {
           },
           {
             id: 'drive-picker',
-            label: 'Drive Picker',
+            label: t('picker'),
             content: picker.success ? (
               <GoogleDrivePickerControlPanel initial={picker.data} canEdit={canEdit} />
             ) : (

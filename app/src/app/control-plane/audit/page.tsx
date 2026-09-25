@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { getLocale, getTranslations } from 'next-intl/server'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { listAuditLog } from '@/app/actions/audit'
 import { Badge, Card } from '@/components/ui/shell'
@@ -53,12 +54,15 @@ export default async function AuditLogPage({
     targetId,
     since,
   })
+  const t = await getTranslations('ControlPlane.audit')
+  const common = await getTranslations('Common')
+  const locale = await getLocale()
   if (!res.success) {
     return (
       <div className="space-y-6">
         <div>
-          <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Audit</p>
-          <h1 className="mt-2 font-display text-3xl font-semibold">Audit napló</h1>
+          <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
+          <h1 className="mt-2 font-display text-3xl font-semibold">{t('title')}</h1>
         </div>
         <p className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
           {res.error}
@@ -80,23 +84,20 @@ export default async function AuditLogPage({
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Audit</p>
-          <h1 className="mt-2 font-display text-3xl font-semibold">Audit napló</h1>
-          <p className="mt-1 max-w-2xl text-ink-soft">
-            Append-only, hash-láncolt eseménynapló az organisation MCP- és jóváhagyási
-            műveleteiről. Tokenek és titkok nem kerülnek a metaadatba.
-          </p>
+          <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
+          <h1 className="mt-2 font-display text-3xl font-semibold">{t('title')}</h1>
+          <p className="mt-1 max-w-2xl text-ink-soft">{t('body')}</p>
         </div>
         <div className="flex items-center gap-3">
           {isFiltered && (
             <div className="flex items-center gap-2 rounded-full border border-honey/30 bg-honey/10 px-3 py-1 text-xs text-honey">
-              <span>Szűrés: {filterParts.join(' · ')}</span>
-              <Link href="/control-plane/audit" className="font-bold hover:text-honey/70" title="Szűrő törlése">
+              <span>{t('filter', { parts: filterParts.join(' · ') })}</span>
+              <Link href="/control-plane/audit" className="font-bold hover:text-honey/70" title={t('clearFilter')}>
                 ✕
               </Link>
             </div>
           )}
-          <Badge tone="success">Hash-lánc: aktív</Badge>
+          <Badge tone="success">{t('hashActive')}</Badge>
         </div>
       </div>
 
@@ -105,38 +106,38 @@ export default async function AuditLogPage({
       <Card>
         <form className="mb-4 flex flex-wrap items-end gap-3 text-xs" action="/control-plane/audit">
           <label className="flex flex-col gap-1">
-            <span className="text-ink-faint">Action</span>
+            <span className="text-ink-faint">{t('action')}</span>
             <input
               name="action"
               defaultValue={action ?? ''}
-              placeholder="pl. mcp.auth.ok"
+              placeholder={t('actionPlaceholder')}
               className="rounded border border-line bg-transparent px-2 py-1 font-mono text-[11px]"
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-ink-faint">Actor típus</span>
+            <span className="text-ink-faint">{t('actorType')}</span>
             <select
               name="actorType"
               defaultValue={actorType ?? ''}
               className="rounded border border-line bg-transparent px-2 py-1"
             >
-              <option value="">bármely</option>
+              <option value="">{common('any')}</option>
               <option value="human">human</option>
               <option value="agent">agent</option>
               <option value="system">system</option>
             </select>
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-ink-faint">Target típus</span>
+            <span className="text-ink-faint">{t('targetType')}</span>
             <input
               name="targetType"
               defaultValue={targetType ?? ''}
-              placeholder="pl. user"
+              placeholder={t('targetPlaceholder')}
               className="rounded border border-line bg-transparent px-2 py-1 font-mono text-[11px]"
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-ink-faint">Target ID</span>
+            <span className="text-ink-faint">{t('targetId')}</span>
             <input
               name="targetId"
               defaultValue={targetId ?? ''}
@@ -144,7 +145,7 @@ export default async function AuditLogPage({
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-ink-faint">Ettől</span>
+            <span className="text-ink-faint">{t('since')}</span>
             <input
               type="date"
               name="since"
@@ -153,27 +154,27 @@ export default async function AuditLogPage({
             />
           </label>
           <button type="submit" className="rounded bg-honey/15 px-3 py-1.5 font-medium text-honey hover:bg-honey/25">
-            Szűrés
+            {t('applyFilter')}
           </button>
         </form>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-line text-ink-faint">
-                <th className="pb-2 pr-4 text-xs">Idő</th>
-                <th className="pb-2 pr-4 text-xs">Actor</th>
-                <th className="pb-2 pr-4 text-xs">Action</th>
-                <th className="pb-2 pr-4 text-xs">Target</th>
-                <th className="pb-2 pr-4 text-xs">Meta</th>
-                <th className="pb-2 pr-4 text-xs">Policy</th>
-                <th className="pb-2 text-xs">Hash</th>
+                <th className="pb-2 pr-4 text-xs">{t('colTime')}</th>
+                <th className="pb-2 pr-4 text-xs">{t('colActor')}</th>
+                <th className="pb-2 pr-4 text-xs">{t('colAction')}</th>
+                <th className="pb-2 pr-4 text-xs">{t('colTarget')}</th>
+                <th className="pb-2 pr-4 text-xs">{t('colMeta')}</th>
+                <th className="pb-2 pr-4 text-xs">{t('colPolicy')}</th>
+                <th className="pb-2 text-xs">{t('colHash')}</th>
               </tr>
             </thead>
             <tbody>
               {entries.map((entry) => (
                 <tr key={entry.id} className="border-b border-line/50 hover:bg-card/50">
                   <td className="py-2 pr-4 font-mono text-[11px] text-ink-soft">
-                    {new Date(entry.createdAt).toLocaleString('hu-HU')}
+                    {new Date(entry.createdAt).toLocaleString(locale === 'en' ? 'en-GB' : 'hu-HU')}
                   </td>
                   <td className="py-2 pr-4">
                     <span className="text-xs">{entry.actorType}</span>
@@ -206,7 +207,7 @@ export default async function AuditLogPage({
             </tbody>
           </table>
           {entries.length === 0 && (
-            <p className="py-8 text-center text-ink-faint">Ehhez a szervezethez még nincs audit bejegyzés.</p>
+            <p className="py-8 text-center text-ink-faint">{t('empty')}</p>
           )}
         </div>
       </Card>

@@ -99,6 +99,13 @@ check('a robots allow-lista a gyökeret, a locale-home-ot és a jogi oldalakat e
   assert.ok(allow.includes('/en/'))
 })
 
+check('a control-plane cookie neve megegyezik a routing cookie-val', () => {
+  const routing = readFileSync(join(root, 'src/i18n/routing.ts'), 'utf8')
+  const cookie = readFileSync(join(root, 'src/i18n/locale-cookie.ts'), 'utf8')
+  assert.match(routing, /name: 'NEXT_LOCALE'/)
+  assert.match(cookie, /export const LOCALE_COOKIE = 'NEXT_LOCALE'/)
+})
+
 check('a hu és en üzenetfájlok kulcskészlete megegyezik', () => {
   const hu = JSON.parse(readFileSync(join(root, 'src/messages/hu.json'), 'utf8')) as unknown
   const en = JSON.parse(readFileSync(join(root, 'src/messages/en.json'), 'utf8')) as unknown

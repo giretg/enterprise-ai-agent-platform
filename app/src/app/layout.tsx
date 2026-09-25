@@ -1,8 +1,9 @@
 import type { Metadata } from 'next'
 import { headers } from 'next/headers'
-import { getLocale } from 'next-intl/server'
+import { NextIntlClientProvider } from 'next-intl'
+import { getLocale, getMessages } from 'next-intl/server'
 import { AuthProviders } from '@/components/auth/providers'
-import { defaultLocale, isAppLocale } from '@/i18n/config'
+import { defaultLocale, isAppLocale, type AppLocale } from '@/i18n/config'
 import { isClerkClientEnabledForRequest } from '@/lib/control-plane-embed'
 import './globals.css'
 
@@ -15,11 +16,12 @@ export const metadata: Metadata = {
     "Excellence AI is a secure enterprise MCP server that connects your team's AI tools to company systems — with governed access, a full audit trail, and human approval.",
 }
 
-async function documentLocale(): Promise<string> {
+async function documentLocale(): Promise<AppLocale> {
   const fromHeader = (await headers()).get('x-next-intl-locale')
   if (fromHeader && isAppLocale(fromHeader)) return fromHeader
   try {
-    return await getLocale()
+    const locale = await getLocale()
+    return isAppLocale(locale) ? locale : defaultLocale
   } catch {
     return defaultLocale
   }
@@ -29,11 +31,16 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const headerList = await headers()
   const clerkEnabled = isClerkClientEnabledForRequest(headerList)
   const locale = await documentLocale()
+  const messages = await getMessages()
 
   return (
     <html lang={locale} suppressHydrationWarning>
       <body>
-        <AuthProviders clerkEnabled={clerkEnabled}>{children}</AuthProviders>
+        <NextIntlClientProvider locale={locale} messages={messages}>
+          <AuthProviders clerkEnabled={clerkEnabled} locale={locale}>
+            {children}
+          </AuthProviders>
+        </NextIntlClientProvider>
       </body>
     </html>
   )

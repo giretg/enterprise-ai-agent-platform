@@ -3,7 +3,9 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
+import { useLocale, useTranslations } from 'next-intl'
 import type { Agent, Invitation, RolePermission, User, UserRole, UserStatus } from '@prisma/client'
+import { formatDateTime } from '@/i18n/format'
 import {
   approveUser,
   changeUserRole,
@@ -20,17 +22,17 @@ import { isPreProvisionedAuthId } from '@/lib/iam-policy'
 
 const ROLES: UserRole[] = ['viewer', 'operator', 'approver', 'admin']
 
-const roleLabel: Record<UserRole, string> = {
-  admin: 'Admin',
-  approver: 'Jóváhagyó',
-  operator: 'Operátor',
-  viewer: 'Olvasó',
+const ROLE_KEYS: Record<UserRole, 'roleAdmin' | 'roleApprover' | 'roleOperator' | 'roleViewer'> = {
+  admin: 'roleAdmin',
+  approver: 'roleApprover',
+  operator: 'roleOperator',
+  viewer: 'roleViewer',
 }
 
-const statusLabel: Record<UserStatus, string> = {
-  active: 'Aktív',
-  pending: 'Függőben',
-  suspended: 'Felfüggesztve',
+const STATUS_KEYS: Record<UserStatus, 'statusActive' | 'statusPending' | 'statusSuspended'> = {
+  active: 'statusActive',
+  pending: 'statusPending',
+  suspended: 'statusSuspended',
 }
 
 const invitationStatusTone: Record<Invitation['status'], 'neutral' | 'success' | 'warning' | 'danger'> = {
@@ -40,12 +42,15 @@ const invitationStatusTone: Record<Invitation['status'], 'neutral' | 'success' |
   revoked: 'danger',
 }
 
-function formatDate(value: Date | string | null) {
-  if (!value) return '—'
-  return new Intl.DateTimeFormat('hu-HU', {
-    dateStyle: 'short',
-    timeStyle: 'short',
-  }).format(new Date(value))
+function useIamCopy() {
+  const t = useTranslations('IamPanel')
+  const locale = useLocale()
+  return {
+    t,
+    role: (role: UserRole) => t(ROLE_KEYS[role]),
+    status: (status: UserStatus) => t(STATUS_KEYS[status]),
+    date: (value: Date | string | null) => formatDateTime(value, locale),
+  }
 }
 
 function userStatusTone(status: UserStatus): 'neutral' | 'success' | 'warning' | 'danger' {
@@ -78,6 +83,7 @@ export function IamAdminPanel({
 }) {
   const [modal, setModal] = useState<null | 'access' | 'invitations'>(null)
 
+  const { t } = useIamCopy()
   const pendingInvitations = useMemo(
     () => invitations.filter((invitation) => invitation.status === 'pending').length,
     [invitations],
@@ -106,34 +112,34 @@ export function IamAdminPanel({
           onClick={() => setModal('access')}
           className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(43,80,255,0.6)]"
         >
-          Új hozzáférés
+          {t('newAccess')}
         </button>
         <button
           type="button"
           onClick={() => setModal('invitations')}
           className="inline-flex items-center gap-2 rounded-full border border-line bg-night-2 px-5 py-2.5 text-sm font-semibold text-ink"
         >
-          Meghívók
+          {t('invitations')}
           <Badge tone={pendingInvitations > 0 ? 'warning' : 'neutral'}>{pendingInvitations}</Badge>
         </button>
       </div>
 
-      <Card title="Felhasználók">
+      <Card title={t('users')}>
           {sortedUsers.length === 0 ? (
-            <p className="text-sm text-ink-faint">Nincs felhasználó.</p>
+            <p className="text-sm text-ink-faint">{t('noUsers')}</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full min-w-[820px] text-left text-sm">
                 <thead className="border-b border-line text-xs uppercase tracking-[0.14em] text-ink-faint">
                   <tr>
-                    <th className="pb-3 font-semibold">Név</th>
-                    <th className="pb-3 font-semibold">Email</th>
-                    <th className="pb-3 font-semibold">Belépés</th>
-                    <th className="pb-3 font-semibold">Státusz</th>
-                    <th className="pb-3 font-semibold">Szerep</th>
-                    <th className="pb-3 font-semibold">Ügynök-hozzáférés</th>
-                    <th className="pb-3 font-semibold">Szerep leírás</th>
-                    <th className="pb-3 font-semibold">Létrehozva</th>
+                    <th className="pb-3 font-semibold">{t('colName')}</th>
+                    <th className="pb-3 font-semibold">{t('colEmail')}</th>
+                    <th className="pb-3 font-semibold">{t('colLogin')}</th>
+                    <th className="pb-3 font-semibold">{t('colStatus')}</th>
+                    <th className="pb-3 font-semibold">{t('colRole')}</th>
+                    <th className="pb-3 font-semibold">{t('colAgentAccess')}</th>
+                    <th className="pb-3 font-semibold">{t('colJob')}</th>
+                    <th className="pb-3 font-semibold">{t('colCreated')}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-line">
@@ -153,29 +159,28 @@ export function IamAdminPanel({
 
       <PermissionMatrixCard permissions={permissions} />
 
-      <Card title="Hozzáférési audit">
+      <Card title={t('auditTitle')}>
         <p className="text-sm text-ink-soft">
-          Meghívás, beváltás, szerepkör- és státuszváltás, valamint elutasított jogosultság-kísérletek —
-          teljes napló a{' '}
+          {t('auditBodyLead')}{' '}
           <Link href="/control-plane/audit?targetType=user" className="font-semibold text-coral-deep hover:underline">
-            felhasználói
+            {t('auditUsers')}
           </Link>{' '}
-          és a{' '}
+          {t('auditAnd')}{' '}
           <Link
             href="/control-plane/audit?targetType=invitation"
             className="font-semibold text-coral-deep hover:underline"
           >
-            meghívó
+            {t('auditInvites')}
           </Link>{' '}
-          nézetben.
+          {t('auditBodyTail')}
         </p>
       </Card>
 
       {modal === 'access' && <AccessModal onClose={() => setModal(null)} />}
       {modal === 'invitations' && (
-        <Modal title="Meghívók" onClose={() => setModal(null)}>
+        <Modal title={t('invitations')} onClose={() => setModal(null)}>
           <div className="mb-3 flex items-center justify-between text-sm">
-            <span className="text-ink-soft">Függőben</span>
+            <span className="text-ink-soft">{t('pending')}</span>
             <Badge tone={pendingInvitations > 0 ? 'warning' : 'neutral'}>
               {pendingInvitations}
             </Badge>
@@ -185,7 +190,7 @@ export function IamAdminPanel({
               <InvitationRow key={invitation.id} invitation={invitation} />
             ))}
             {invitations.length === 0 && (
-              <li className="text-sm text-ink-faint">Még nincs meghívó.</li>
+              <li className="text-sm text-ink-faint">{t('noInvites')}</li>
             )}
           </ul>
         </Modal>
@@ -203,6 +208,7 @@ function Modal({
   onClose: () => void
   children: React.ReactNode
 }) {
+  const { t } = useIamCopy()
   const closeRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -232,7 +238,7 @@ function Modal({
             ref={closeRef}
             type="button"
             onClick={onClose}
-            aria-label="Bezárás"
+            aria-label={t('close')}
             className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-line text-sm text-ink-soft hover:bg-night-2"
           >
             ✕
@@ -245,6 +251,7 @@ function Modal({
 }
 
 function AccessModal({ onClose }: { onClose: () => void }) {
+  const { t, role: roleName } = useIamCopy()
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [mode, setMode] = useState<'invite' | 'provision'>('invite')
@@ -262,7 +269,7 @@ function AccessModal({ onClose }: { onClose: () => void }) {
         const result = await provisionUser({ email, role })
         if (result.success) {
           setEmail('')
-          setMessage('Felhasználó előkészítve — vár első belépésre.')
+          setMessage(t('provisioned'))
           router.refresh()
         } else {
           setMessage(result.error)
@@ -274,7 +281,7 @@ function AccessModal({ onClose }: { onClose: () => void }) {
         setEmail('')
         setClerkInvited(result.data.clerkInvited)
         setMessage(
-          result.data.clerkInvited ? 'Meghívó e-mail kiküldve (Clerk).' : 'Meghívó létrehozva.',
+          result.data.clerkInvited ? t('inviteSent') : t('inviteCreated'),
         )
         setIssuedToken(result.data.token)
         router.refresh()
@@ -285,7 +292,7 @@ function AccessModal({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <Modal title="Új hozzáférés" onClose={onClose}>
+    <Modal title={t('newAccess')} onClose={onClose}>
       <div className="mb-4 grid gap-2">
         <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-line p-3 has-checked:border-coral/50">
           <input
@@ -297,9 +304,9 @@ function AccessModal({ onClose }: { onClose: () => void }) {
             className="mt-1 accent-[#2b50ff]"
           />
           <span>
-            <span className="block text-sm font-semibold">Meghívó</span>
+            <span className="block text-sm font-semibold">{t('inviteMode')}</span>
             <span className="mt-0.5 block text-xs text-ink-faint">
-              Meghívó token / Clerk invitation email. Beváltás után jelenik meg a listában.
+              {t('inviteModeHint')}
             </span>
           </span>
         </label>
@@ -313,10 +320,9 @@ function AccessModal({ onClose }: { onClose: () => void }) {
             className="mt-1 accent-[#2b50ff]"
           />
           <span>
-            <span className="block text-sm font-semibold">Csendes előkészítés</span>
+            <span className="block text-sm font-semibold">{t('provisionMode')}</span>
             <span className="mt-0.5 block text-xs text-ink-faint">
-              Email nélkül, azonnal a listában „Vár első belépésre” státusszal; az első
-              Google/Clerk belépéskor aktiválódik.
+              {t('provisionModeHint')}
             </span>
           </span>
         </label>
@@ -324,17 +330,17 @@ function AccessModal({ onClose }: { onClose: () => void }) {
 
       <div className="space-y-3">
         <label className="block text-sm text-ink-soft">
-          Email
+          {t('email')}
           <input
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             type="email"
             className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
-            placeholder="kollega@ceg.hu"
+            placeholder={t('emailPlaceholder')}
           />
         </label>
         <label className="block text-sm text-ink-soft">
-          Szerep
+          {t('role')}
           <select
             value={role}
             onChange={(event) => setRole(event.target.value as UserRole)}
@@ -342,7 +348,7 @@ function AccessModal({ onClose }: { onClose: () => void }) {
           >
             {ROLES.map((option) => (
               <option key={option} value={option}>
-                {roleLabel[option]}
+                {roleName(option)}
               </option>
             ))}
           </select>
@@ -353,19 +359,17 @@ function AccessModal({ onClose }: { onClose: () => void }) {
           className="w-full rounded-full bg-coral px-4 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(43,80,255,0.6)] disabled:opacity-50"
           onClick={submit}
         >
-          {mode === 'invite' ? 'Meghívó létrehozása' : 'Előkészítés'}
+          {mode === 'invite' ? t('createInvite') : t('provision')}
         </button>
       </div>
 
       {issuedToken && (
         <div className="mt-4 rounded-lg border border-honey/35 bg-honey/10 p-3">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-honey">
-            {clerkInvited ? 'Belső token (fallback)' : 'Egyszer látható token'}
+            {clerkInvited ? t('tokenFallback') : t('tokenOnce')}
           </p>
           <p className="mt-1 text-xs text-ink-faint">
-            {clerkInvited
-              ? 'A meghívott e-mailben kap Clerk-linket — a regisztrációkor a szerepkör automatikusan beáll.'
-              : 'Oszd meg ezt a tokent a meghívottal a beváltó oldalhoz.'}
+            {clerkInvited ? t('tokenFallbackHint') : t('tokenOnceHint')}
           </p>
           <code className="mt-2 block break-all rounded bg-night-2 p-2 font-mono text-xs text-ink-soft">
             {issuedToken}
@@ -374,7 +378,7 @@ function AccessModal({ onClose }: { onClose: () => void }) {
             href={`/control-plane/iam/redeem?token=${encodeURIComponent(issuedToken)}`}
             className="mt-3 inline-flex text-sm font-semibold text-coral-deep hover:underline"
           >
-            Beváltó oldal megnyitása
+            {t('openRedeem')}
           </Link>
         </div>
       )}
@@ -385,6 +389,7 @@ function AccessModal({ onClose }: { onClose: () => void }) {
 }
 
 function InvitationRow({ invitation }: { invitation: Invitation }) {
+  const { t, role, date } = useIamCopy()
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<string | null>(null)
@@ -396,12 +401,12 @@ function InvitationRow({ invitation }: { invitation: Invitation }) {
         <div className="min-w-0">
           <p className="truncate font-medium">{invitation.email}</p>
           <p className="mt-1 text-xs text-ink-faint">
-            {roleLabel[invitation.role]} · lejár: {formatDate(invitation.expiresAt)}
+            {role(invitation.role)} · {t('expires', { date: date(invitation.expiresAt) })}
           </p>
         </div>
         <Badge tone={invitationStatusTone[invitation.status]}>{invitation.status}</Badge>
       </div>
-      <p className="mt-2 text-xs text-ink-faint">Létrehozva: {formatDate(invitation.createdAt)}</p>
+      <p className="mt-2 text-xs text-ink-faint">{t('created', { date: date(invitation.createdAt) })}</p>
       {invitation.status === 'pending' && (
         <button
           type="button"
@@ -419,7 +424,7 @@ function InvitationRow({ invitation }: { invitation: Invitation }) {
             })
           }}
         >
-          Visszavonás
+          {t('revoke')}
         </button>
       )}
       {message && <p className="mt-2 text-xs text-coral-deep">{message}</p>}
@@ -447,6 +452,7 @@ function AgentAccessEditor({
   // Admin/jóváhagyó mindent lát grant nélkül is — a lista csak az explicit
   // hozzáféréseket mutatja (operátor/olvasó szerephez számítanak).
   const seesEverything = user.role === 'admin' || user.role === 'approver'
+  const { t } = useIamCopy()
   const busy = disabled || grantPending
 
   const toggle = (agentId: string, has: boolean) => {
@@ -475,13 +481,14 @@ function AgentAccessEditor({
         aria-expanded={open}
         className="rounded-full bg-sky/15 px-3 py-1.5 text-xs font-semibold text-sky"
       >
-        Ügynökök · {grantedAgentIds.length}{open ? ' ▴' : ' ▾'}
+        {t('agentsCount', { count: grantedAgentIds.length })}
+        {open ? ' ▴' : ' ▾'}
       </button>
-      {seesEverything && <p className="mt-1 text-[11px] text-ink-faint">Mindent lát.</p>}
+      {seesEverything && <p className="mt-1 text-[11px] text-ink-faint">{t('seesEverything')}</p>}
       {open && (
         <div className="mt-2 space-y-1.5">
           {agents.length === 0 && (
-            <p className="text-xs text-ink-faint">Nincs ügynök ebben a tenantban.</p>
+            <p className="text-xs text-ink-faint">{t('noAgents')}</p>
           )}
           {agents.map((agent) => {
             const has = granted.has(agent.id)
@@ -532,6 +539,7 @@ function UserRow({
   const awaitingFirstLogin = isAwaitingFirstLogin(user)
   const loggedIn = hasCompletedFirstLogin(user)
   const jobDescriptionDirty = jobDescription.trim() !== ''
+  const { t, role: roleName, status: statusName, date } = useIamCopy()
   const loginAt = user.lastLoginAt ?? user.activatedAt
 
   return (
@@ -545,17 +553,17 @@ function UserRow({
       <td className="py-3 pr-4">
         <div className="flex flex-col gap-1">
           <Badge tone={loggedIn ? 'success' : 'warning'}>
-            {loggedIn ? 'Belépett' : 'Nem lépett be'}
+            {loggedIn ? t('loggedIn') : t('notLoggedIn')}
           </Badge>
           {loggedIn && loginAt ? (
-            <p className="text-[11px] text-ink-faint">{formatDate(loginAt)}</p>
+            <p className="text-[11px] text-ink-faint">{date(loginAt)}</p>
           ) : null}
         </div>
       </td>
       <td className="py-3 pr-4">
         <div className="flex flex-col gap-2">
           <Badge tone={userStatusTone(user.status)}>
-            {awaitingFirstLogin ? 'Vár első belépésre' : statusLabel[user.status]}
+            {awaitingFirstLogin ? t('awaitingFirstLogin') : statusName(user.status)}
           </Badge>
           {user.status === 'active' && (
             <div className="flex items-center gap-2">
@@ -563,7 +571,7 @@ function UserRow({
                 value={reason}
                 onChange={(event) => setReason(event.target.value)}
                 disabled={isDisabled}
-                placeholder="Felfüggesztés indoka"
+                placeholder={t('suspendReason')}
                 className="w-40 rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs"
               />
               <button
@@ -583,7 +591,7 @@ function UserRow({
                   })
                 }}
               >
-                Felfüggesztés
+                {t('suspend')}
               </button>
             </div>
           )}
@@ -604,7 +612,7 @@ function UserRow({
                 })
               }}
             >
-              Visszaállítás
+              {t('reactivate')}
             </button>
           )}
         </div>
@@ -619,7 +627,7 @@ function UserRow({
           >
             {ROLES.map((option) => (
               <option key={option} value={option}>
-                {roleLabel[option]}
+                {roleName(option)}
               </option>
             ))}
           </select>
@@ -642,7 +650,7 @@ function UserRow({
               })
             }}
           >
-            {isPendingApproval ? 'Jóváhagyás' : 'Mentés'}
+            {isPendingApproval ? t('approve') : t('save')}
           </button>
         </div>
       </td>
@@ -662,7 +670,7 @@ function UserRow({
             onChange={(event) => setJobDescription(event.target.value)}
             rows={2}
             maxLength={280}
-            placeholder="pl. marketing vezető"
+            placeholder={t('jobPlaceholder')}
             className="w-48 rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs"
           />
           <button
@@ -676,32 +684,31 @@ function UserRow({
               })
             }}
           >
-            Mentés
+            {t('save')}
           </button>
         </div>
       </td>
-      <td className="py-3 text-ink-faint">{formatDate(user.createdAt)}</td>
+      <td className="py-3 text-ink-faint">{date(user.createdAt)}</td>
     </tr>
   )
 }
 
 function PermissionMatrixCard({ permissions }: { permissions: RolePermission[] }) {
+  const { t, role: roleName } = useIamCopy()
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<string | null>(null)
 
   return (
-    <Card title="Permission-mátrix">
-      <p className="mb-3 text-xs text-ink-faint">
-        Deklaratív művelet → minimális szerep leképezés. Ismeretlen kulcs mindig tiltott (deny-by-default).
-      </p>
+    <Card title={t('matrixTitle')}>
+      <p className="mb-3 text-xs text-ink-faint">{t('matrixHint')}</p>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[520px] text-left text-sm">
           <thead className="border-b border-line text-xs uppercase tracking-[0.14em] text-ink-faint">
             <tr>
-              <th className="pb-2 font-semibold">Kulcs</th>
-              <th className="pb-2 font-semibold">Leírás</th>
-              <th className="pb-2 font-semibold">Min. szerep</th>
+              <th className="pb-2 font-semibold">{t('colKey')}</th>
+              <th className="pb-2 font-semibold">{t('colDescription')}</th>
+              <th className="pb-2 font-semibold">{t('colMinRole')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
@@ -732,7 +739,7 @@ function PermissionMatrixCard({ permissions }: { permissions: RolePermission[] }
                   >
                     {ROLES.map((option) => (
                       <option key={option} value={option}>
-                        {roleLabel[option]}
+                        {roleName(option)}
                       </option>
                     ))}
                   </select>

@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import {
   createWorkProjectAction,
   deleteWorkFileAction,
@@ -10,6 +11,7 @@ import {
   type WorkFileListItem,
 } from '@/app/actions/project-work'
 import type { ProjectListItem } from '@/domain/project-work/project-work-service'
+import { asTranslate } from '@/i18n/translate'
 import { projectWorkErrorLabel } from './labels'
 import {
   ProjectMemoryPanel,
@@ -33,6 +35,7 @@ export function ProjectsPanel({
   canEdit: boolean
   initialError: string | null
 }) {
+  const t = asTranslate(useTranslations('ControlPlane.projects'))
   const [projects, setProjects] = useState(initialProjects)
   const [projectKey, setProjectKey] = useState(initialProjects[0]?.key ?? '__general__')
   const [agentId, setAgentId] = useState(agents[0]?.id ?? '')
@@ -42,7 +45,7 @@ export function ProjectsPanel({
   const [filesLoading, setFilesLoading] = useState(false)
 
   const [notice, setNotice] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(initialError ? projectWorkErrorLabel(initialError) : null)
+  const [error, setError] = useState<string | null>(initialError ? projectWorkErrorLabel(initialError, (key) => t(key)) : null)
 
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [fileContent, setFileContent] = useState('')
@@ -74,7 +77,7 @@ export function ProjectsPanel({
       if (cancelled) return
       setFilesLoading(false)
       if (fileRes.success) setFiles(fileRes.data.files)
-      else setError(projectWorkErrorLabel(fileRes.error))
+      else setError(projectWorkErrorLabel(fileRes.error, (key) => t(key)))
     })()
     return () => {
       cancelled = true
@@ -89,7 +92,7 @@ export function ProjectsPanel({
     const res = await readWorkFileAction({ projectKey, path })
     setFileLoading(false)
     if (!res.success) {
-      setError(projectWorkErrorLabel(res.error))
+      setError(projectWorkErrorLabel(res.error, (key) => t(key)))
       return
     }
     setFileContent(res.data.content)
@@ -103,7 +106,7 @@ export function ProjectsPanel({
     const res = await saveWorkFileAction({ projectKey, path: path.trim(), content })
     setSavingFile(false)
     if (!res.success) {
-      setError(projectWorkErrorLabel(res.error))
+      setError(projectWorkErrorLabel(res.error, (key) => t(key)))
       return
     }
     const listed = await listWorkFilesAction({ projectKey })
@@ -114,15 +117,15 @@ export function ProjectsPanel({
       setNewPath('')
       setNewFileContent('')
     }
-    setNotice('Munkafájl mentve.')
+    setNotice(t('fileSaved'))
   }
 
   async function onDeleteFile(path: string) {
-    if (!window.confirm(`Törlöd a(z) ${path} munkafájlt?`)) return
+    if (!window.confirm(t('deleteFileConfirm', { path }))) return
     setError(null)
     const res = await deleteWorkFileAction({ projectKey, path })
     if (!res.success) {
-      setError(projectWorkErrorLabel(res.error))
+      setError(projectWorkErrorLabel(res.error, (key) => t(key)))
       return
     }
     setFiles((current) => current.filter((f) => f.path !== path))
@@ -130,7 +133,7 @@ export function ProjectsPanel({
       setSelectedPath(null)
       setFileContent('')
     }
-    setNotice('Munkafájl törölve.')
+    setNotice(t('fileDeleted'))
   }
 
   async function onCreateProject() {
@@ -144,7 +147,7 @@ export function ProjectsPanel({
     })
     setSavingProject(false)
     if (!res.success) {
-      setError(projectWorkErrorLabel(res.error))
+      setError(projectWorkErrorLabel(res.error, (key) => t(key)))
       return
     }
     setProjects((current) => [...current, res.data.project])
@@ -152,7 +155,7 @@ export function ProjectsPanel({
     clearFileUi()
     setNewProject({ name: '', key: '', description: '' })
     setShowNewProject(false)
-    setNotice('Projekt létrehozva.')
+    setNotice(t('projectCreated'))
   }
 
   return (
@@ -181,19 +184,19 @@ export function ProjectsPanel({
                 <div className="space-y-2">
                   <input
                     className={projectWorkFieldClass}
-                    placeholder="Projekt neve"
+                    placeholder={t('projectName')}
                     value={newProject.name}
                     onChange={(e) => setNewProject({ ...newProject, name: e.target.value })}
                   />
                   <input
                     className={projectWorkFieldClass}
-                    placeholder="Kulcs (opcionális, pl. ugyfel-x)"
+                    placeholder={t('projectKey')}
                     value={newProject.key}
                     onChange={(e) => setNewProject({ ...newProject, key: e.target.value })}
                   />
                   <input
                     className={projectWorkFieldClass}
-                    placeholder="Leírás (opcionális)"
+                    placeholder={t('projectDesc')}
                     value={newProject.description}
                     onChange={(e) => setNewProject({ ...newProject, description: e.target.value })}
                   />
@@ -204,14 +207,14 @@ export function ProjectsPanel({
                       onClick={() => void onCreateProject()}
                       className={projectWorkPrimaryBtnClass}
                     >
-                      {savingProject ? 'Mentés…' : 'Létrehozás'}
+                      {savingProject ? t('saving') : t('create')}
                     </button>
                     <button
                       type="button"
                       onClick={() => setShowNewProject(false)}
                       className={projectWorkGhostBtnClass}
                     >
-                      Mégse
+                      {t('cancel')}
                     </button>
                   </div>
                 </div>
@@ -221,7 +224,7 @@ export function ProjectsPanel({
                   onClick={() => setShowNewProject(true)}
                   className="w-full rounded-lg px-3 py-2 text-left text-sm text-ink-soft hover:bg-night/30 hover:text-ink"
                 >
-                  + Új projekt
+                  {t('newProject')}
                 </button>
               )}
             </div>
@@ -232,9 +235,9 @@ export function ProjectsPanel({
           <div className="flex flex-wrap items-end gap-3">
             <label
               className="min-w-52 flex-1 text-xs text-ink-soft"
-              title="A projektmemória munkatársonként él — válaszd ki, kinek az emlékeit nézed"
+              title={t('teammateHint')}
             >
-              Munkatárs
+              {t('teammate')}
               <select
                 className={projectWorkFieldClass + ' mt-1'}
                 value={agentId}
@@ -253,23 +256,23 @@ export function ProjectsPanel({
             <div className="flex gap-1 rounded-full border border-line/60 bg-panel/40 p-1" role="tablist">
               {(
                 [
-                  { id: 'memory', label: 'Projektmemória' },
-                  { id: 'files', label: 'Munkafájlok' },
-                ] as const
-              ).map((t) => (
+                  { id: 'memory' as const, label: t('tabMemory') },
+                  { id: 'files' as const, label: t('tabFiles') },
+                ]
+              ).map((item) => (
                 <button
-                  key={t.id}
+                  key={item.id}
                   type="button"
                   role="tab"
-                  aria-selected={tab === t.id}
-                  onClick={() => setTab(t.id)}
+                  aria-selected={tab === item.id}
+                  onClick={() => setTab(item.id)}
                   className={`rounded-full px-4 py-1.5 text-sm transition-colors ${
-                    tab === t.id
+                    tab === item.id
                       ? 'bg-coral/15 font-medium text-coral-deep'
                       : 'text-ink-soft hover:text-ink'
                   }`}
                 >
-                  {t.label}
+                  {item.label}
                 </button>
               ))}
             </div>
@@ -277,7 +280,7 @@ export function ProjectsPanel({
 
           {!canEdit ? (
             <p className="rounded-lg border border-ink/10 bg-white/40 px-3 py-2 text-sm text-ink-soft">
-              Nézegetni szabad; íráshoz és szerkesztéshez jóváhagyói szerep kell.
+              {t('viewOnly')}
             </p>
           ) : null}
 
@@ -291,11 +294,8 @@ export function ProjectsPanel({
               canEdit={canEdit}
             />
           ) : (
-            <section className="space-y-3" aria-label="Munkafájlok">
-              <p className="text-sm text-ink-soft">
-                A munka termékei: tervek, jegyzetek, piszkozatok. A munkatársak közösen írják; a
-                promptba nem kerülnek be maguktól.
-              </p>
+            <section className="space-y-3" aria-label={t('tabFiles')}>
+              <p className="text-sm text-ink-soft">{t('filesHint')}</p>
               {canEdit && !showNewFile ? (
                 <button
                   type="button"
@@ -307,21 +307,21 @@ export function ProjectsPanel({
                   }}
                   className={projectWorkPrimaryBtnClass}
                 >
-                  + Új munkafájl
+                  {t('newFile')}
                 </button>
               ) : null}
               {showNewFile ? (
                 <div className="space-y-2 rounded-xl border border-ink/10 bg-white/50 p-4 shadow-sm">
                   <input
                     className={projectWorkFieldClass}
-                    placeholder="Útvonal, pl. tervek/bevezetes.md"
+                    placeholder={t('filePath')}
                     value={newPath}
                     onChange={(e) => setNewPath(e.target.value)}
                   />
                   <textarea
                     className={projectWorkFieldClass}
                     rows={6}
-                    placeholder="Tartalom…"
+                    placeholder={t('fileContent')}
                     value={newFileContent}
                     onChange={(e) => setNewFileContent(e.target.value)}
                   />
@@ -332,7 +332,7 @@ export function ProjectsPanel({
                       onClick={() => void onSaveFile(newPath, newFileContent, true)}
                       className={projectWorkPrimaryBtnClass}
                     >
-                      {savingFile ? 'Mentés…' : 'Fájl mentése'}
+                      {savingFile ? t('saving') : t('saveFile')}
                     </button>
                     <button
                       type="button"
@@ -343,7 +343,7 @@ export function ProjectsPanel({
                       }}
                       className={projectWorkGhostBtnClass}
                     >
-                      Mégse
+                      {t('cancel')}
                     </button>
                   </div>
                 </div>
@@ -351,9 +351,9 @@ export function ProjectsPanel({
               <div className="flex flex-col gap-4 md:flex-row md:items-start">
                 <ul className="w-full shrink-0 space-y-1 md:w-64">
                   {filesLoading ? (
-                    <li className="text-sm text-ink-soft">Betöltés…</li>
+                    <li className="text-sm text-ink-soft">{t('loading')}</li>
                   ) : files.length === 0 ? (
-                    <li className="text-sm text-ink-soft">Ebben a projektben még nincs munkafájl.</li>
+                    <li className="text-sm text-ink-soft">{t('noFiles')}</li>
                   ) : (
                     files.map((file) => (
                       <li key={file.path}>
@@ -375,9 +375,9 @@ export function ProjectsPanel({
                 </ul>
                 <div className="min-w-0 flex-1">
                   {!selectedPath ? (
-                    <p className="text-sm text-ink-soft">Válassz fájlt a listából.</p>
+                    <p className="text-sm text-ink-soft">{t('pickFile')}</p>
                   ) : fileLoading ? (
-                    <p className="text-sm text-ink-soft">Betöltés…</p>
+                    <p className="text-sm text-ink-soft">{t('loading')}</p>
                   ) : (
                     <div className="space-y-2 rounded-xl border border-ink/10 bg-white/50 p-4 shadow-sm">
                       <p className="truncate font-medium text-ink" title={selectedPath}>
@@ -398,14 +398,14 @@ export function ProjectsPanel({
                             onClick={() => void onSaveFile(selectedPath, fileContent, false)}
                             className={projectWorkPrimaryBtnClass}
                           >
-                            {savingFile ? 'Mentés…' : 'Mentés'}
+                            {savingFile ? t('saving') : t('save')}
                           </button>
                           <button
                             type="button"
                             onClick={() => void onDeleteFile(selectedPath)}
                             className="rounded-full px-4 py-1.5 text-sm text-coral-deep hover:bg-coral/10"
                           >
-                            Törlés
+                            {t('delete')}
                           </button>
                         </div>
                       ) : null}

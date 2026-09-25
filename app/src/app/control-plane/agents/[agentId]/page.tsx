@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
+import { getTranslations } from 'next-intl/server'
 import { requireTenantRole, TenantAuthError } from '@/auth/tenant-context'
 import { hasMinimumRole } from '@/auth/types'
 import {
@@ -16,7 +17,6 @@ import { getAgentSkillsAction, listAssignableSkillsAction } from '@/app/actions/
 import { AgentProjectMemoryBrowser } from '@/app/control-plane/projects/project-memory-panel'
 import { assignableConnectorsFromCatalog } from '@/lib/create-agent-wizard'
 import {
-  AGENT_DETAIL_SECTION_LABELS,
   isAgentDetailSectionId,
   type AgentDetailSectionId,
 } from '@/lib/agent-detail-sections'
@@ -39,15 +39,14 @@ import { Card } from '@/components/ui/shell'
 
 export const dynamic = 'force-dynamic'
 
-const SECTION_DESCRIPTIONS: Partial<Record<AgentDetailSectionId, string>> = {
-  elesites: 'Melyik definíció fut élesben, és van-e még nem publikált változás.',
-  kapcsolatok: 'API-k, levelezés, Drive és egyéb külső rendszerek — olvasási vagy írási módban.',
-  tudasbazis: 'Dokumentumok és katalógus, amiből a munkatárs dolgozik.',
-  eszkozok: 'Milyen platform-eszközöket használhat a publikált definíció.',
-  skillek: 'Előre összeállított utasítás-csomagok ehhez az agenthez.',
-  memoriairas:
-    'Írásmód, és az ehhez a munkatárshoz tartozó projektmemória. Válassz projektet, nézegesd vagy szerkeszd az emlékeket. A betanított szabályt ez nem nyitja ki.',
-  hozzaferes: 'Ki indíthat chatet vagy ticketet ezzel a munkatárssal.',
+const SECTION_DESC_KEYS: Partial<Record<AgentDetailSectionId, string>> = {
+  elesites: 'elesitesDesc',
+  kapcsolatok: 'kapcsolatokDesc',
+  tudasbazis: 'tudasbazisDesc',
+  eszkozok: 'eszkozokDesc',
+  skillek: 'skillekDesc',
+  memoriairas: 'memoriairasDesc',
+  hozzaferes: 'hozzaferesDesc',
 }
 
 export default async function AgentDetailPage({
@@ -113,6 +112,12 @@ export default async function AgentDetailPage({
   const canDelete = isSuperadmin(ctx.platformRoles)
   const projects = projectsRes.success ? projectsRes.data.projects : []
   const projectsError = projectsRes.success ? null : projectsRes.error
+  const t = await getTranslations('ControlPlane.agentDetail')
+  const sectionLabel = (id: AgentDetailSectionId) => t(`sections.${id}` as 'sections.elesites')
+  const sectionDesc = (id: AgentDetailSectionId) => {
+    const key = SECTION_DESC_KEYS[id]
+    return key ? t(`sections.${key}` as 'sections.elesitesDesc') : undefined
+  }
 
   const sections: Array<{
     id: AgentDetailSectionId
@@ -122,8 +127,8 @@ export default async function AgentDetailPage({
   }> = [
     {
       id: 'elesites',
-      label: AGENT_DETAIL_SECTION_LABELS.elesites,
-      description: SECTION_DESCRIPTIONS.elesites,
+      label: sectionLabel('elesites'),
+      description: sectionDesc('elesites'),
       content: (
         <PublishAgentDefinitionForm
           agentId={agent.id}
@@ -140,9 +145,9 @@ export default async function AgentDetailPage({
       ? [
           {
             id: 'profil' as const,
-            label: AGENT_DETAIL_SECTION_LABELS.profil,
+            label: sectionLabel('profil'),
             content: (
-              <Card title={AGENT_DETAIL_SECTION_LABELS.profil}>
+              <Card title={sectionLabel('profil')}>
                 <UpdateAgentProfileForm
                   agentId={agent.id}
                   name={agent.name}
@@ -156,17 +161,17 @@ export default async function AgentDetailPage({
       : []),
     {
       id: 'munkakor',
-      label: AGENT_DETAIL_SECTION_LABELS.munkakor,
+      label: sectionLabel('munkakor'),
       content: (
-        <Card title={AGENT_DETAIL_SECTION_LABELS.munkakor}>
+        <Card title={sectionLabel('munkakor')}>
           <UpdateInstructionForm agentId={agent.id} roleInstruction={agent.roleInstruction} bare />
         </Card>
       ),
     },
     {
       id: 'kapcsolatok',
-      label: AGENT_DETAIL_SECTION_LABELS.kapcsolatok,
-      description: SECTION_DESCRIPTIONS.kapcsolatok,
+      label: sectionLabel('kapcsolatok'),
+      description: sectionDesc('kapcsolatok'),
       content: (
         <AgentConnectorBindingForm
           agentId={agent.id}
@@ -178,8 +183,8 @@ export default async function AgentDetailPage({
     },
     {
       id: 'tudasbazis',
-      label: AGENT_DETAIL_SECTION_LABELS.tudasbazis,
-      description: SECTION_DESCRIPTIONS.tudasbazis,
+      label: sectionLabel('tudasbazis'),
+      description: sectionDesc('tudasbazis'),
       content: (
         <AgentKnowledgeBasePanel
           agentId={agent.id}
@@ -191,14 +196,14 @@ export default async function AgentDetailPage({
     },
     {
       id: 'eszkozok',
-      label: AGENT_DETAIL_SECTION_LABELS.eszkozok,
-      description: SECTION_DESCRIPTIONS.eszkozok,
+      label: sectionLabel('eszkozok'),
+      description: sectionDesc('eszkozok'),
       content: <AgentCapabilitiesPanel agentId={agent.id} currentCapabilities={capabilities} />,
     },
     {
       id: 'skillek',
-      label: AGENT_DETAIL_SECTION_LABELS.skillek,
-      description: SECTION_DESCRIPTIONS.skillek,
+      label: sectionLabel('skillek'),
+      description: sectionDesc('skillek'),
       content: (
         <AgentSkillsPanel
           agentId={agent.id}
@@ -213,18 +218,18 @@ export default async function AgentDetailPage({
     },
     {
       id: 'memoriairas',
-      label: AGENT_DETAIL_SECTION_LABELS.memoriairas,
-      description: SECTION_DESCRIPTIONS.memoriairas,
+      label: sectionLabel('memoriairas'),
+      description: sectionDesc('memoriairas'),
       content: (
         <div className="space-y-4">
-          <Card title={AGENT_DETAIL_SECTION_LABELS.memoriairas}>
+          <Card title={sectionLabel('memoriairas')}>
             <UpdateMemoryWriteModeForm
               agentId={agent.id}
               memoryWriteMode={agent.memoryWriteMode}
               canEdit={canManage}
             />
           </Card>
-          <Card title="Projektmemória">
+          <Card title={t('projectMemory')}>
             <AgentProjectMemoryBrowser
               agentId={agent.id}
               agentName={agent.name}
@@ -240,8 +245,8 @@ export default async function AgentDetailPage({
       ? [
           {
             id: 'hozzaferes' as const,
-            label: AGENT_DETAIL_SECTION_LABELS.hozzaferes,
-            description: SECTION_DESCRIPTIONS.hozzaferes,
+            label: sectionLabel('hozzaferes'),
+            description: sectionDesc('hozzaferes'),
             content: <AgentAccessPanel agentId={agent.id} users={accessUsers} />,
           },
         ]
@@ -254,12 +259,12 @@ export default async function AgentDetailPage({
         href="/control-plane/agents"
         className="inline-flex items-center gap-1 text-sm font-medium text-ink-soft hover:text-ink"
       >
-        ← Vissza a munkatársakhoz
+        {t('back')}
       </Link>
       <div className="flex flex-wrap items-start gap-4">
         <AgentAvatar name={agent.name} avatarUrl={agent.avatarUrl} size="lg" />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Agent</p>
+          <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
           <h1 className="mt-1 font-display text-3xl font-semibold">{agent.name}</h1>
           {agent.description ? (
             <p className="mt-1 text-ink-soft">{agent.description}</p>
@@ -278,14 +283,11 @@ export default async function AgentDetailPage({
         {canDelete ? <DeleteAgentButton agentId={agent.id} agentName={agent.name} /> : null}
       </div>
 
-      <p className="max-w-2xl text-sm text-ink-soft">
-        Válassz témát a bal oldalon — egyszerre egy terület jelenik meg, így nem kell végiggörgetni
-        az egész adatlapot.
-      </p>
+      <p className="max-w-2xl text-sm text-ink-soft">{t('pickTopic')}</p>
 
       <SettingsSectionShell
-        ariaLabel="Agent beállítások"
-        navHeading="Beállítások"
+        ariaLabel={t('aria')}
+        navHeading={t('navHeading')}
         initialId={initialSection}
         sections={sections}
       />

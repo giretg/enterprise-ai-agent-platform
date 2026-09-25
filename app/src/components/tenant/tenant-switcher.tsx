@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { getTenantSwitcherState, switchTenant, exitTenant } from '@/app/actions/tenant'
 
 /**
@@ -35,6 +36,7 @@ const statusTone: Record<string, string> = {
 }
 
 export function TenantSwitcher() {
+  const t = useTranslations('TenantSwitcher')
   const router = useRouter()
   const [state, setState] = useState<SwitcherState | null>(null)
   const [open, setOpen] = useState(false)
@@ -58,7 +60,7 @@ export function TenantSwitcher() {
   if (!state) return null
 
   const active = state.tenants.find((t) => t.id === state.activeTenantId) ?? null
-  const label = active?.displayName ?? (state.kind === 'platform' ? 'Platform' : 'Nincs tenant')
+  const label = active?.displayName ?? (state.kind === 'platform' ? t('platform') : t('noTenant'))
   // A tenant selector only adds value when there is actually another tenant
   // to switch to. Keep the header quiet for the common single-tenant case.
   if (state.tenants.length < 2) return null
@@ -131,10 +133,10 @@ export function TenantSwitcher() {
           <button type="button" aria-hidden tabIndex={-1} onClick={() => setOpen(false)} className="fixed inset-0 z-30 cursor-default" />
           <div role="menu" className="absolute right-0 top-full z-40 mt-2 min-w-[15rem] rounded-2xl border border-line bg-night/95 p-1.5 shadow-xl backdrop-blur-xl">
             <p className="px-3 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-faint">
-              Tenant kiválasztása
+              {t('pick')}
             </p>
             {state.tenants.length === 0 && (
-              <p className="px-3 py-2 text-xs text-ink-faint">Nincs elérhető tenant-tagságod.</p>
+              <p className="px-3 py-2 text-xs text-ink-faint">{t('empty')}</p>
             )}
             {state.tenants.map((t) => {
               const isActive = t.id === state.activeTenantId && !state.assumed
@@ -181,7 +183,7 @@ export function TenantSwitcher() {
                   onClick={doExit}
                   className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-medium text-ink-soft transition-colors hover:bg-coral/8 hover:text-ink disabled:opacity-60"
                 >
-                  ← Kilépés platform-módba
+                  {t('exitPlatform')}
                 </button>
               </>
             )}

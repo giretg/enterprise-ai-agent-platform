@@ -15,6 +15,10 @@ export const OPERATION_ERROR_LABELS: Record<string, string> = {
     'Az adatbázis séma nem a Core MVP. A jóváhagyási sor a gateway_operations táblát igényli.',
 }
 
-export function operationErrorLabel(code: string): string {
+export function operationErrorLabel(code: string, t?: (key: string) => string): string {
+  if (t) {
+    const key = `errors.${code}`
+    return code in OPERATION_ERROR_LABELS ? t(key) : t('errors.fallback')
+  }
   return OPERATION_ERROR_LABELS[code] ?? 'A művelet nem sikerült.'
 }

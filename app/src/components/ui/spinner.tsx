@@ -1,4 +1,7 @@
+'use client'
+
 import type { ComponentProps } from 'react'
+import { useTranslations } from 'next-intl'
 
 const SIZE_CLASS = {
   sm: 'h-3.5 w-3.5',
@@ -35,7 +38,7 @@ export function Spinner({
 
 /** Középre igazított betöltés-blokk (Suspense fallback, üres panel, stb.). */
 export function LoadingState({
-  label = 'Betöltés…',
+  label,
   size = 'md',
   className = '',
 }: {
@@ -43,6 +46,8 @@ export function LoadingState({
   size?: SpinnerSize
   className?: string
 }) {
+  const t = useTranslations('Common')
+  const text = label ?? t('loading')
   return (
     <div
       className={`flex flex-col items-center justify-center gap-3 px-6 py-12 text-center ${className}`}
@@ -51,14 +56,14 @@ export function LoadingState({
       aria-busy="true"
     >
       <Spinner size={size} className="text-coral" />
-      {label ? <p className="text-sm text-ink-soft">{label}</p> : null}
+      {text ? <p className="text-sm text-ink-soft">{text}</p> : null}
     </div>
   )
 }
 
 /** Abszolút kitöltő overlay — pl. modal iframe betöltéséhez. */
 export function LoadingOverlay({
-  label = 'Betöltés…',
+  label,
   size = 'lg',
 }: {
   label?: string

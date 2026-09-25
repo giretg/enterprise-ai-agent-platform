@@ -1,3 +1,4 @@
+import { getTranslations } from 'next-intl/server'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { getAgent, getAgentGovernance, listAgents } from '@/app/actions/platform'
 import { listConnectorCatalog } from '@/app/actions/provisioning'
@@ -52,14 +53,13 @@ export default async function NewAgentPage({
     }
   }
 
+  const t = await getTranslations('ControlPlane.agentNew')
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Új agent</p>
-        <h1 className="mt-2 font-display text-3xl font-semibold">Munkatárs létrehozása</h1>
-        <p className="mt-1 max-w-2xl text-sm text-ink-soft">
-          Vázlatként jön létre, aztán eszközöket, skilleket és kapcsolatokat adhatsz hozzá.
-        </p>
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
+        <h1 className="mt-2 font-display text-3xl font-semibold">{t('title')}</h1>
+        <p className="mt-1 max-w-2xl text-sm text-ink-soft">{t('body')}</p>
       </div>
       <CreateAgentWizard
         cloneableAgents={cloneableAgents}

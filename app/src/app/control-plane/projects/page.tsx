@@ -1,3 +1,4 @@
+import { getTranslations } from 'next-intl/server'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { hasMinimumRole } from '@/lib/iam-policy'
 import { listAgents } from '@/app/actions/platform'
@@ -20,16 +21,13 @@ export default async function ProjectsPage() {
   const error = projectsRes.success ? null : projectsRes.error
   const canEdit = hasMinimumRole(ctx.activeTenantRole, 'approver')
 
+  const t = await getTranslations('ControlPlane.projects')
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Projektek</p>
-        <h1 className="mt-2 font-display text-3xl font-semibold">Projektek és projektmemória</h1>
-        <p className="mt-1 max-w-2xl text-ink-soft">
-          Egy projekt összefogja a közös munkafájlokat (tervek, jegyzetek, piszkozatok) és a
-          munkatársak jóváhagyott folytonossági tudását: döntéseket, nyitott feladatokat,
-          megállapításokat. Válassz projektet és munkatársat, nézegesd vagy szerkeszd az emlékeket.
-        </p>
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
+        <h1 className="mt-2 font-display text-3xl font-semibold">{t('title')}</h1>
+        <p className="mt-1 max-w-2xl text-ink-soft">{t('body')}</p>
       </div>
       <ProjectsPanel
         initialProjects={projects}

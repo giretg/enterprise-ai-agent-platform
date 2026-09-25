@@ -21,6 +21,10 @@ export const PROJECT_WORK_ERROR_LABELS: Record<string, string> = {
   'Agent not found': 'A munkatárs nem található.',
 }
 
-export function projectWorkErrorLabel(code: string): string {
+export function projectWorkErrorLabel(code: string, t?: (key: string) => string): string {
+  if (t) {
+    const key = `errors.${code}`
+    return code in PROJECT_WORK_ERROR_LABELS ? t(key) : t('errors.fallback')
+  }
   return PROJECT_WORK_ERROR_LABELS[code] ?? 'A művelet nem sikerült.'
 }
