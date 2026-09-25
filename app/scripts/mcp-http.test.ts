@@ -1177,6 +1177,55 @@ async function main() {
     )
   })
 
+  await check('checkout excludes a skill retired after the definition was published', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    deps.loadDefinition = async () => ({
+      ...SAMPLE_DEFINITION,
+      snapshot: {
+        ...SAMPLE_DEFINITION.snapshot,
+        skills: [
+          {
+            skillId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+            skillVersionId: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
+            name: 'retired-procedure',
+          },
+        ],
+      },
+    })
+    deps.loadSkillVersions = async () => [
+      {
+        skillId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+        skillVersionId: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
+        status: 'retired',
+        name: 'retired-procedure',
+        description: 'Must not be written to a fresh checkout.',
+        content: { instructions: ['Do not expose this retired instruction.'], triggerKeywords: [], parameters: [] },
+        requires: [],
+      },
+    ]
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 201,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_CHECKOUT_TOOL, arguments: { agentId: AGENT_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(res)) as { result?: { content?: Array<{ text?: string }> } }
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      files?: Array<{ path: string; content: string }>
+    }
+    assert.equal(payload.files?.some((file) => file.path.includes('retired-procedure')), false)
+    assert.equal(
+      payload.files?.some((file) => file.content.includes('Do not expose this retired instruction.')),
+      false,
+    )
+  })
+
   await check('checkout invalid agentId → invalid_args; no grant / inactive → definition_not_found', async () => {
     const denied = runtimeDeps({ role: 'operator' })
     await initialize(denied.deps)

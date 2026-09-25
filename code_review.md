@@ -1,5 +1,14 @@
 # Enterprise code review log
 
+## 2026-09-25 - Külső MCP agent-checkout: visszavont skill újra kiadható volt helyi munkakönyvtárba
+
+- Áttekintett, korábban külön nem naplózott komponens: a **tenant-scoped Streamable HTTP MCP transport és helyi agent-checkout út** — az OAuth-principal feloldás, tenant- és agent-hozzáférés, `platform.agent.get_definition`, `platform.agent.checkout`, a snapshotból épülő fájlkészlet, valamint a skill-verziók élő státuszának feloldása. Ez a külső AI-kliensek (Codex, Claude, Goose) belépési pontja: innen kerülnek a jóváhagyott agent-instrukciók egy új helyi munkakönyvtárba.
+- Rendben talált kontrollok: minden MCP kérés OAuth-tokenhez kötött; a tenant kizárólag az URL-slugból és adatbázis-kapuból származik; inaktív tenant és tagság elutasul; az operator csak explicit agent-granttal láthat agentet; az enterprise eszközök a szerveroldali agent-definition és operate-kapu mögött maradnak.
+- **Lelet (magas, governance és adatvédelem):** a publisholt agent-definition megőriz egy történeti skill-snapshotot. A skill deaktiválása ugyan leválasztja az élő hozzárendeléseket és `retired` állapotba teszi a verziót, de egy korábbi definition snapshot még hivatkozhat rá. Az MCP `platform.agent.checkout` korábban a snapshot minden skilljét visszaírta volna egy friss helyi checkoutba, mert a betöltött adatbázis-verzió élő státuszát nem ellenőrizte. Így egy incidens vagy policy-változás miatt visszavont üzleti utasítás újra megjelenhetett egy felhasználó helyi agent-projektjében.
+- Javítás: a checkout-adatforrás a skill-verzió státuszát is továbbítja, a kiadási pont pedig fail-closed módon kizárólag `active` skillt ad át a fájl-renderelőnek. A történeti definition és audit-nyom változatlanul megmarad; a felhasználó friss checkoutja viszont már nem kap letiltott instrukciót.
+- Üzleti hatás: egy admin „Deaktiválás” döntése most a külső MCP-s agent-kiosztásnál is érvényesül. Ez csökkenti annak kockázatát, hogy visszavont ügyfélkezelési, adatvédelmi vagy integrációs eljárás a vállalat jóváhagyása nélkül visszakerüljön egy munkatárs AI-eszközébe.
+- Ellenőrzés: új MCP HTTP regresszió előbb publisholt, majd `retired` skillt próbál checkoutba juttatni, és igazolja, hogy sem skill-fájl, sem az instrukció szövege nem kerül a válaszba. `test:mcp-http`, `test:mcp-principal`, `test:agent-checkout`, célzott ESLint, `tsc --noEmit` és `git diff --check` zöld.
+
 ## 2026-09-19 - Hash-láncolt auditnapló: emberi indoklások és e-mail címek változatlan, exportálható tárolása
 
 - Áttekintett, korábban külön nem naplózott komponens: a **Phase F hash-láncolt auditnapló teljes aktív útja** — az append-only PostgreSQL-tár és a v2 hash-verifikáció, a metadata-őrség, a tenant-scope-os Control Plane/SIEM export, valamint az MCP-, Drive Gateway-, IAM- és provisioning-írók. Ez az enterprise működés bizonyítékrétege: innen kell biztonságosan visszakereshetőnek lennie annak, hogy ki milyen hozzáférést vagy külső műveletet hagyott jóvá.
