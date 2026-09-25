@@ -8,6 +8,7 @@
 - Javítás: a checkout-adatforrás a skill-verzió státuszát is továbbítja, a kiadási pont pedig fail-closed módon kizárólag `active` skillt ad át a fájl-renderelőnek. A történeti definition és audit-nyom változatlanul megmarad; a felhasználó friss checkoutja viszont már nem kap letiltott instrukciót.
 - Üzleti hatás: egy admin „Deaktiválás” döntése most a külső MCP-s agent-kiosztásnál is érvényesül. Ez csökkenti annak kockázatát, hogy visszavont ügyfélkezelési, adatvédelmi vagy integrációs eljárás a vállalat jóváhagyása nélkül visszakerüljön egy munkatárs AI-eszközébe.
 - Ellenőrzés: új MCP HTTP regresszió előbb publisholt, majd `retired` skillt próbál checkoutba juttatni, és igazolja, hogy sem skill-fájl, sem az instrukció szövege nem kerül a válaszba. `test:mcp-http`, `test:mcp-principal`, `test:agent-checkout`, célzott ESLint, `tsc --noEmit` és `git diff --check` zöld.
+- PR: https://github.com/giretg/enterprise-ai-agent-platform/pull/673 (`codex`, `codex-automation`, `security`).
 
 ## 2026-09-19 - Hash-láncolt auditnapló: emberi indoklások és e-mail címek változatlan, exportálható tárolása
 
