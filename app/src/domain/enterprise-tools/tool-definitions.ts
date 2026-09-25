@@ -310,7 +310,13 @@ const composeFields = {
 const gmailSendObject = z
   .object({
     ...composeFields,
-    draftId: z.string().max(200).optional().describe('Send an existing draft (from gmail_create_draft / gmail_list_drafts) instead of composing'),
+    draftId: z
+      .string()
+      .max(200)
+      .optional()
+      .describe(
+        'Send an existing draft (from gmail_create_draft / gmail_list_drafts). When set, omit to/cc/bcc/subject/body/replyToMessageId/replyAll — those fields are not sent and must not appear on the approval card.',
+      ),
   })
   .passthrough()
 
@@ -322,8 +328,35 @@ function composeIssue(args: { to?: string; subject?: string; body?: string; repl
   return null
 }
 
+/** Compose fields that must not accompany draftId — execute ignores them, so a decoy would lie on the confirm card. */
+const GMAIL_SEND_DRAFT_EXCLUSIVE_KEYS = [
+  'to',
+  'cc',
+  'bcc',
+  'subject',
+  'body',
+  'replyToMessageId',
+  'replyAll',
+] as const
+
+function draftExclusiveIssue(args: Record<string, unknown>): string | null {
+  const present = GMAIL_SEND_DRAFT_EXCLUSIVE_KEYS.filter((key) => {
+    const value = args[key]
+    if (value === undefined || value === null) return false
+    if (typeof value === 'string') return value.trim().length > 0
+    if (typeof value === 'boolean') return value === true
+    return true
+  })
+  if (present.length === 0) return null
+  return `draftId cannot be combined with ${present.join(', ')} — pass only draftId to send a draft`
+}
+
 export const gmailSendInputSchema = gmailSendObject.superRefine((args, ctx) => {
-  if (args.draftId) return
+  if (args.draftId?.trim()) {
+    const issue = draftExclusiveIssue(args as Record<string, unknown>)
+    if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue })
+    return
+  }
   const issue = composeIssue(args)
   if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue })
 })
