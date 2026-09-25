@@ -2490,12 +2490,7 @@ export function ProvisioningPanel({
                 {t('unmanagedActive', { count: catalogGaps.length })}
               </h3>
             ) : null}
-            <p className="text-sm text-ink-soft">
-              Ezek az adatbázisban aktív kapcsolatok, de nincs hozzájuk provisioning-draft vagy
-              önfrissítő kezelőkártya (gyakran migráció vagy régi seed maradvány). Agenthez még
-              rendelhetők lehetnek; ha feleslegesek, szüntesd meg őket — auditált archiválás, nem
-              hard-delete.
-            </p>
+            <p className="text-sm text-ink-soft">{t('gapsHint')}</p>
             {catalogGaps.map((row) => (
               <CatalogGapCard key={row.id} row={row} pending={pending} run={run} />
             ))}
@@ -2959,16 +2954,13 @@ function DraftCard({
             className="text-xs font-semibold text-sage hover:underline"
             onClick={startConfigEdit}
           >
-            Szerkesztés
+            {t('edit')}
           </button>
         ) : null}
       </div>
       {editingConfig ? (
         <div className="mt-2 space-y-2">
-          <p className="text-xs text-honey">
-            A mentés resetteli a kaput: a validáció, a review és a sandbox-teszt is újra
-            lefut majd, mielőtt a konnektor aktiválható lenne.
-          </p>
+          <p className="text-xs text-honey">{t('editResetsGates')}</p>
           <textarea
             className="h-64 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
             value={configDraft}
@@ -2981,7 +2973,7 @@ function DraftCard({
               onClick={saveConfigEdit}
               className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
             >
-              Config mentése
+              {t('saveConfig')}
             </button>
             <button
               type="button"
@@ -3056,7 +3048,7 @@ function DraftCard({
               className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral disabled:opacity-50"
               onClick={() => void handleDeleteFromList()}
             >
-              Törlés
+              {t('delete')}
             </button>
           ) : null}
           {isActive ? (
@@ -3220,8 +3212,7 @@ function DraftCard({
             // „API-kapcsolat" szerkesztőn átírt http_api config). Secret-mentes read-only nézet.
             <div className="rounded-md bg-honey/5 p-3 text-xs">
               <p className="mb-2 text-ink-soft">
-                Ez a konnektor az „API-konnektor&rdquo; szerkesztőn keresztül lett beállítva
-                (http_api futásidejű config).
+                {t('httpApiViaEditor')}
                 {draft.httpApiView.isDelegated
                   ? ` ${t('delegatedOauth')}`
                   : ''}
@@ -3286,7 +3277,7 @@ function DraftCard({
           ) : null}
 
           <p className="text-xs text-ink-soft">
-            forrás: {draft.sourceType} · hash: <code>{draft.sourceHash}</code>
+            {t('sourceHash', { type: draft.sourceType })} <code>{draft.sourceHash}</code>
           </p>
 
           {provenance?.templateKey ? (
@@ -3428,10 +3419,7 @@ function DraftCard({
               {(v.checks.egressAllowlist === 'warned' || v.checks.egressAllowlist === 'failed') &&
               (v.unknownHosts?.length ?? 0) > 0 ? (
                 <div className="mt-2 rounded border border-honey/40 bg-honey/5 p-2">
-                  <p className="text-xs text-ink-soft">
-                    Új egress-host(ok) — aktiválás előtt add hozzá az allowlisthez (§9, auditált
-                    admin-aktus):
-                  </p>
+                  <p className="text-xs text-ink-soft">{t('newEgressHosts')}</p>
                   <div className="mt-1 flex flex-wrap gap-2">
                     {v.unknownHosts!.map((h) => (
                       <button
@@ -3589,7 +3577,7 @@ function DraftCard({
                 }
                 className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
               >
-                Auto-consent kezdeményezése
+                {t('startAutoConsent')}
               </button>
             </div>
           ) : null}
@@ -3615,14 +3603,11 @@ function DraftCard({
                     {googleOauthConfigured ? (
                       <p className="flex items-center gap-2 text-sage">
                         <span aria-hidden className="h-2 w-2 rounded-full bg-sage" />
-                        A platform Google OAuth alkalmazása be van állítva — Client ID és Secret
-                        nem kell tenant szinten.
+                        {t('gmailOauthOk')}
                       </p>
                     ) : (
                       <p className="text-honey">
-                        A Gmail konnektor a platform Google OAuth alkalmazását használja. Aktiválás
-                        előtt a platform-adminnak be kell állítania a Platform · Beállítások →
-                        Google OAuth oldalon.
+                        {t('gmailOauthNeed')}
                       </p>
                     )}
                   </div>
@@ -3631,14 +3616,11 @@ function DraftCard({
                     {googleDriveOauthConfigured ? (
                       <p className="flex items-center gap-2 text-sage">
                         <span aria-hidden className="h-2 w-2 rounded-full bg-sage" />
-                        A platform Google Drive OAuth alkalmazása be van állítva — Client ID és
-                        Secret nem kell tenant szinten.
+                        {t('driveOauthOk')}
                       </p>
                     ) : (
                       <p className="text-honey">
-                        A Google Drive konnektor a platform Drive OAuth alkalmazását használja.
-                        Aktiválás előtt a platform-adminnak be kell állítania a Platform ·
-                        Beállítások → Google Drive OAuth oldalon.
+                        {t('driveOauthNeed')}
                       </p>
                     )}
                   </div>
@@ -3647,14 +3629,11 @@ function DraftCard({
                     {googleApiOauthConfigured ? (
                       <p className="flex items-center gap-2 text-sage">
                         <span aria-hidden className="h-2 w-2 rounded-full bg-sage" />
-                        A platform Google API OAuth alkalmazása be van állítva (Analytics / Search
-                        Console / Ads) — Client ID és Secret nem kell tenant szinten.
+                        {t('googleApiOauthOk')}
                       </p>
                     ) : (
                       <p className="text-honey">
-                        A Google Analytics / Search Console / Ads konnektor a platform Google API
-                        OAuth appját használja. Aktiválás előtt állítsd be a Platform · Beállítások →
-                        Google Analytics / Search Console / Ads oldalon.
+                        {t('googleApiOauthNeed')}
                       </p>
                     )}
                   </div>
@@ -3662,7 +3641,7 @@ function DraftCard({
                   <>
                 <label className="text-xs sm:col-span-2">
                   <span className="mb-1 block text-ink-soft">
-                    {isUserDelegated ? 'OAuth client secret' : 'API kulcs'}
+                    {isUserDelegated ? t('oauthClientSecret') : t('apiKey')}
                   </span>
                   <input
                     type="password"
@@ -3676,23 +3655,15 @@ function DraftCard({
                     }
                   />
                   <span className="mt-1 block text-ink/50">
-                    {isUserDelegated
-                      ? t('oauthSecretHint') + ' '
-                      : t('rawKeyHint') + ' '}
-                    A kulcs titkosítva tárolódik, sosem kerül az adatbázisba.
+                    {isUserDelegated ? t('oauthSecretHint') : t('rawKeyHint')}
                   </span>
                 </label>
                 <details className="text-xs sm:col-span-2">
                   <summary className="cursor-pointer text-ink-soft">
-                    Meglévő titok hivatkozása (haladó)
+                    {t('existingSecret')}
                   </summary>
                   <div className="mt-2 rounded-md border border-ink/12 bg-wash/40 p-2">
-                    <p className="mb-2 text-ink/60">
-                      Ha a titkot már máshol tárolod, itt hivatkozhatsz rá kulcs beírása helyett.
-                      Elfogadott formák: <code>env:NÉV</code>,{' '}
-                      <code>secret-manager:projects/…/secrets/&lt;id&gt;</code>,{' '}
-                      <code>secret-ref:&lt;id&gt;</code>. Egyébként hagyd üresen és írd be fent a kulcsot.
-                    </p>
+                    <p className="mb-2 text-ink/60">{t('existingSecretHint')}</p>
                     <input
                       className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5 disabled:opacity-40"
                       value={secretAlias}
@@ -3701,18 +3672,14 @@ function DraftCard({
                       disabled={!!apiKey.trim()}
                     />
                     {!apiKey.trim() && secretAlias.trim() && !isResolvableSecretAlias(secretAlias.trim()) ? (
-                      <p className="mt-1 text-coral">
-                        Nem elfogadott alias-forma. Használj <code>env:</code>,{' '}
-                        <code>secret-manager:</code> vagy <code>secret-ref:</code> előtagot — vagy hagyd
-                        üresen és írd be fent a kulcsot.
-                      </p>
+                      <p className="mt-1 text-coral">{t('badAlias')}</p>
                     ) : null}
                   </div>
                 </details>
                 {isOstorosborCrm ? (
                   <label className="text-xs sm:col-span-2">
                     <span className="mb-1 block text-ink-soft">
-                      Acting user e-mail (CRM-ben regisztrált — X-Acting-User fejléc)
+                      {t('actingUser')}
                     </span>
                     <input
                       type="email"
@@ -3723,7 +3690,7 @@ function DraftCard({
                     />
                     {!actingUserEmail.trim() ? (
                       <p className="mt-1 text-honey">
-                        A kulcsos teszthez kötelező CRM-ben regisztrált acting user e-mail.
+                        {t('actingUserNeeded')}
                       </p>
                     ) : null}
                   </label>
@@ -3793,13 +3760,10 @@ function DraftCard({
                 </label>
               </div>
               {!isGmailConnector && !hasActivationCredentials ? (
-                <p className="mt-2 text-xs text-honey">
-                  Kulcs nélkül is aktiválhatsz, de megerősítést kérünk — az agent addig nem fog
-                  sikeresen hívni.
-                </p>
+                <p className="mt-2 text-xs text-honey">{t('keylessWarn')}</p>
               ) : null}
               {authTestDetail ? (
-                <p className="mt-2 text-xs text-ink-soft">Kulcsos teszt: {authTestDetail}</p>
+                <p className="mt-2 text-xs text-ink-soft">{t('keyTest', { detail: authTestDetail })}</p>
               ) : null}
               <div className="mt-2 flex flex-wrap gap-2">
                 {hasActivationCredentials && !isPlatformGoogleConnector ? (
@@ -3927,7 +3891,7 @@ function DraftCard({
                   <span className="mb-1 block text-ink-soft">
                     Per-agent API kulcs{' '}
                     <span className="font-normal text-ink-soft/70">
-                      (agent_owned — elhagyható, ha a connector megosztott kulcsát használod)
+                      {t('perAgentKeyHint')}
                     </span>
                   </span>
                   <input
@@ -3964,13 +3928,7 @@ function DraftCard({
           {isActive && selectedStep === 'revoke' ? (
             <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
               <h4 className="mb-2 font-semibold text-coral">{t('decommissionTitle')}</h4>
-              <p className="text-xs text-ink-soft">
-                Nem hard-delete: az agent-hozzárendelések levétele, az érintett agentek http_api
-                capability-jeinek újraszámítása, az aktív user-grantek visszavonása és a
-                menedzselt secret-ref törlése után a connector <code>archived</code> állapotba kerül
-                — a connector-sor és az audit-előzmény megmarad. A művelet visszafordíthatatlan
-                (újra kellene aktiválni). Bank-preset / L2–L3 esetén második jóváhagyó kell.
-              </p>
+              <p className="text-xs text-ink-soft">{t('decommissionActiveBody')}</p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
                 <label className="text-xs sm:col-span-2">
                   <span className="mb-1 block text-ink-soft">{t('reason')}</span>
