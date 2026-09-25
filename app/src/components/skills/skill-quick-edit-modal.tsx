@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import {
   listSkillCatalogAction,
   type SkillCatalogEntry,
@@ -27,6 +28,7 @@ export function SkillQuickEditModal({
   onClose: () => void
 }) {
   const router = useRouter()
+  const t = useTranslations('SkillCatalog')
   const [pending, startTransition] = useTransition()
   const [skill, setSkill] = useState<SkillCatalogEntry | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -43,7 +45,7 @@ export function SkillQuickEditModal({
       }
       const found = res.data.find((s) => s.id === skillId) ?? null
       if (!found) {
-        setError('A skill nem érhető el a katalógusban.')
+        setError(t('notInCatalog'))
         return
       }
       setSkill(found)
@@ -72,7 +74,7 @@ export function SkillQuickEditModal({
       setNotice(null)
       const res = await fn()
       if (!res.success) {
-        setError(res.error ?? 'Ismeretlen hiba.')
+        setError(res.error ?? t('unknownError'))
         return
       }
       setNotice(okMsg)
@@ -83,9 +85,9 @@ export function SkillQuickEditModal({
 
   return (
     <SkillModal
-      eyebrow="Képesség szerkesztése"
-      title={skill ? skillDisplayLabel(skill) : 'Betöltés…'}
-      subtitle="A mentés új verziót javasol — élessé a katalógusban tett jóváhagyás teszi."
+      eyebrow={t('quickEditEyebrow')}
+      title={skill ? skillDisplayLabel(skill) : t('loading')}
+      subtitle={t('quickEditSubtitle')}
       onClose={onClose}
       error={error}
       notice={notice}
@@ -100,7 +102,7 @@ export function SkillQuickEditModal({
           onClose={onClose}
         />
       ) : error ? null : (
-        <p key="loading" className="text-sm text-ink-faint">Betöltés…</p>
+        <p key="loading" className="text-sm text-ink-faint">{t('loading')}</p>
       )}
     </SkillModal>
   )
