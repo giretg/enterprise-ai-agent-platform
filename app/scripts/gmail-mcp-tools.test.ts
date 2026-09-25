@@ -261,6 +261,42 @@ async function main() {
     }
   })
 
+  await check('gmail_send by draftId does NOT replay a 5xx either (drafts/send branch)', async () => {
+    const original = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      return new Response('service unavailable', { status: 503 })
+    }) as typeof fetch
+    try {
+      await assert.rejects(
+        new GmailApiClient('real-token').send({ draftId: 'draft-9' }),
+        /gmail\.send failed: 503/,
+      )
+      assert.equal(calls, 1)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  await check('gmail_create_draft does NOT replay a 5xx (no duplicate draft)', async () => {
+    const original = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      return new Response('bad gateway', { status: 502 })
+    }) as typeof fetch
+    try {
+      await assert.rejects(
+        new GmailApiClient('real-token').createDraft({ to: 'a@b.hu', subject: 's', body: 'x' }),
+        /gmail\.create_draft failed: 502/,
+      )
+      assert.equal(calls, 1)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
   await check('gmail_send still retries a 429 (rejected, not processed) and then succeeds', async () => {
     const original = globalThis.fetch
     let calls = 0
