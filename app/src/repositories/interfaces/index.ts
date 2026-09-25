@@ -583,7 +583,10 @@ export type KnowledgeChunkSearchHit = {
   section: string | null
   text: string
   sourceRef: unknown
+  /** Postgres `ts_rank` (holtverseny-bontó). */
   score: number
+  /** A találatban szereplő kérdésszavak (IDF-újrarangsoroláshoz). */
+  matched?: string[]
 }
 
 export type KnowledgeIndexEntry = {
@@ -622,8 +625,11 @@ export type KnowledgeCatalogDocument = {
 export type KnowledgeRawHit = {
   id: string
   filename: string
+  /** A találó heading-szakasz útvonala (a `kb_get_document` `section` paramétere). */
+  section?: string
   snippet: string
   score: number
+  matched?: string[]
 }
 
 export interface DocumentRepository {

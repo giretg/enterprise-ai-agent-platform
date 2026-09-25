@@ -21,7 +21,7 @@ import { loadPdfParse } from './pdf-parse'
  * döntés (D-G/D7) — itt oldal/section/cella a granularitás.
  */
 
-export type ExtractionFormat = 'pdf' | 'docx' | 'xlsx' | 'text'
+export type ExtractionFormat = 'pdf' | 'docx' | 'xlsx' | 'html' | 'text'
 
 /** A `Document.metadata` alkulcsa, ahol a strukturált extraction eltárolódik (§8.2). */
 export const EXTRACTION_METADATA_KEY = 'extraction'
@@ -39,6 +39,7 @@ function detectFormat(filename: string, mimeType?: string | null): ExtractionFor
   if (ext === '.pdf' || mimeType === 'application/pdf') return 'pdf'
   if (ext === '.docx' || mimeType?.includes('wordprocessingml')) return 'docx'
   if (ext === '.xlsx' || ext === '.xlsm' || mimeType?.includes('spreadsheetml')) return 'xlsx'
+  if (ext === '.html' || ext === '.htm' || mimeType === 'text/html') return 'html'
   return 'text'
 }
 
@@ -59,6 +60,8 @@ export async function extractStructured(input: {
       return extractDocx(input.buffer)
     case 'xlsx':
       return extractXlsx(input.buffer)
+    case 'html':
+      return extractHtml(input.buffer.toString('utf8'))
     default:
       return extractPlainText(input.buffer.toString('utf8'))
   }
@@ -161,6 +164,20 @@ async function extractDocx(buffer: Buffer): Promise<StructuredExtraction> {
   return { format: 'docx', markdown, blocks }
 }
 
+// ── HTML (heading-szekciók, markup nélkül) ───────────────────────────────────
+
+/**
+ * Önálló HTML-oldal → heading-szekciók. A `<head>`/`<style>`/`<script>`/`<svg>`
+ * tartalma nem szöveg: nélkülük a kereső és az agent kontextusa CSS/JS helyett
+ * a tényleges tartalmat kapja.
+ */
+export function extractHtml(html: string): StructuredExtraction {
+  const body = html.replace(/<(head|style|script|svg|noscript|template)\b[\s\S]*?<\/\1\s*>/gi, '')
+  const blocks = htmlToSections(body)
+  const markdown = blocks.map((b) => `## ${b.heading}\n\n${b.text}`).join('\n\n')
+  return { format: 'html', markdown, blocks }
+}
+
 /**
  * DOCX HTML → heading-szekciók (§4.7 DOCX = section-út). A `<h1..h6>` headingek
  * mentén vág; a heading előtti bevezető törzs „Bevezetés" szekcióba kerül.
@@ -173,7 +190,8 @@ export function htmlToSections(html: string): ExtractedBlock[] {
   let match: RegExpExecArray | null
   while ((match = headingRe.exec(html)) !== null) {
     sections.push({
-      heading: htmlToText(match[2]).trim() || 'Szekció',
+      // Inline tag (pl. `<span>1</span>Cím`) szóközzé, hogy a szavak ne tapadjanak.
+      heading: htmlToText(match[2].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim() || 'Szekció',
       startBody: headingRe.lastIndex,
       endHeading: match.index,
     })
@@ -214,6 +232,7 @@ function htmlToText(html: string): string {
         .replace(/<\s*br\s*\/?\s*>/gi, '\n')
         .replace(/<\s*li[^>]*>/gi, '\n- ')
         .replace(/<\/\s*(p|div|h[1-6]|li|tr|ul|ol|table)\s*>/gi, '\n')
+        .replace(/<\/\s*(td|th)\s*>/gi, ' | ')
         .replace(/<[^>]+>/g, ''),
     ),
   )
