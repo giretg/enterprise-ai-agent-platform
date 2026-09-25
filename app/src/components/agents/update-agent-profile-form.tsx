@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import { updateAgentProfile } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
 
@@ -21,6 +22,7 @@ export function UpdateAgentProfileForm({
   bare?: boolean
 }) {
   const router = useRouter()
+  const t = useTranslations('AgentProfile')
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
@@ -36,7 +38,7 @@ export function UpdateAgentProfileForm({
         const nextName = String(fd.get('name')).trim()
         const nextDescription = String(fd.get('description')).trim()
         if (nextName === name && nextDescription === (description ?? '')) {
-          setError('Nincs változás')
+          setError(t('noChange'))
           return
         }
         startTransition(async () => {
@@ -48,7 +50,7 @@ export function UpdateAgentProfileForm({
             description: nextDescription,
           })
           if (res.success) {
-            setDone('Mentve — a név a következő közzétételkor lép életbe az MCP-n')
+            setDone(t('saved'))
             router.refresh()
           } else {
             setError(res.error)
@@ -57,7 +59,7 @@ export function UpdateAgentProfileForm({
       }}
     >
       <label className="block text-sm">
-        <span className="text-ink-soft">Név</span>
+        <span className="text-ink-soft">{t('name')}</span>
         <input
           name="name"
           defaultValue={name}
@@ -67,13 +69,13 @@ export function UpdateAgentProfileForm({
         />
       </label>
       <label className="block text-sm">
-        <span className="text-ink-soft">Bemutatkozó szöveg (a listán a név alatt)</span>
+        <span className="text-ink-soft">{t('description')}</span>
         <textarea
           name="description"
           defaultValue={description ?? ''}
           rows={3}
           maxLength={500}
-          placeholder="Miben tud segíteni ez a munkatárs?"
+          placeholder={t('placeholder')}
           className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
         />
       </label>
@@ -88,11 +90,11 @@ export function UpdateAgentProfileForm({
         disabled={pending}
         className="rounded-full bg-coral/20 px-5 py-2 text-sm font-semibold text-coral disabled:opacity-50"
       >
-        {pending ? 'Mentés...' : 'Mentés'}
+        {pending ? t('saving') : t('save')}
       </button>
     </form>
   )
 
   if (bare) return form
-  return <Card title="Név és bemutatkozás">{form}</Card>
+  return <Card title={t('title')}>{form}</Card>
 }

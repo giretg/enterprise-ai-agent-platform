@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import { publishAgentDefinitionAction } from '@/app/actions/platform'
 
 /**
@@ -17,6 +18,7 @@ export function PublishStaleDraftButton({
   publishedVersion: number | null
 }) {
   const router = useRouter()
+  const t = useTranslations('AgentPublish')
   const [pending, start] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const versionLabel = publishedVersion !== null ? ` (v${publishedVersion})` : ''
@@ -26,7 +28,7 @@ export function PublishStaleDraftButton({
       <button
         type="button"
         disabled={pending}
-        title={`A vázlat megváltozott a közzétett verzió${versionLabel} óta — az MCP még a régit látja. Kattints, és az új verzió életbe lép.`}
+        title={t('staleButtonTitle', { version: versionLabel })}
         className="rounded-full border border-amber-600/50 bg-amber-500/15 px-3 py-1.5 text-xs font-semibold text-ink transition-colors hover:border-amber-700 hover:bg-amber-500/25 disabled:opacity-60"
         onClick={() => {
           start(async () => {
@@ -40,7 +42,7 @@ export function PublishStaleDraftButton({
           })
         }}
       >
-        {pending ? 'Közzététel…' : 'Új verzió közzététele'}
+        {pending ? t('publishing') : t('publishNew')}
       </button>
       {error ? <span className="text-xs text-coral-deep">{error}</span> : null}
     </span>

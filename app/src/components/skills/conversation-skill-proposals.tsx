@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useTransition } from 'react'
+import { useLocale, useTranslations } from 'next-intl'
+import { formatDateTime } from '@/i18n/format'
 import {
   decideConversationSkillProposalAction,
   reviseConversationSkillProposalAction,
@@ -13,6 +15,7 @@ export function ConversationSkillProposals({
 }: {
   proposals: OpenConversationSkillListRow[]
 }) {
+  const t = useTranslations('SkillCatalog')
   const [rows, setRows] = useState(proposals)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -20,16 +23,13 @@ export function ConversationSkillProposals({
   return (
     <Card>
       <h2 className="font-display text-lg font-semibold tracking-tight">
-        Jóváhagyásra vár ({rows.length})
+        {t('proposalsTitle', { count: rows.length })}
       </h2>
-      <p className="mt-1 text-sm text-ink-faint">
-        Beszélgetésből beküldött skill. Csak tenant admin bírálja. Jóváhagyás után
-        a megnevezett agenten él és be van kapcsolva.
-      </p>
+      <p className="mt-1 text-sm text-ink-faint">{t('proposalsBody')}</p>
       {error ? <p className="mt-3 text-sm text-coral">{error}</p> : null}
       {notice ? <p className="mt-3 text-sm text-ink-soft">{notice}</p> : null}
       {rows.length === 0 ? (
-        <p className="mt-4 text-sm text-ink-faint">Nincs jóváhagyásra váró skill.</p>
+        <p className="mt-4 text-sm text-ink-faint">{t('proposalsEmpty')}</p>
       ) : (
         <ul className="mt-4 space-y-4">
           {rows.map((proposal) => (
@@ -47,7 +47,7 @@ export function ConversationSkillProposals({
                 }}
                 onSaved={(next) => {
                   setError(null)
-                  setNotice('Javaslat mentve.')
+                  setNotice(t('proposalSaved'))
                   setRows((current) => current.map((row) => (row.id === next.id ? next : row)))
                 }}
               />
@@ -70,6 +70,8 @@ function ProposalCard({
   onError: (message: string) => void
   onSaved: (proposal: OpenConversationSkillListRow) => void
 }) {
+  const t = useTranslations('SkillCatalog')
+  const locale = useLocale()
   const [pending, startTransition] = useTransition()
   const [name, setName] = useState(proposal.name)
   const [description, setDescription] = useState(proposal.description)
@@ -84,7 +86,7 @@ function ProposalCard({
         instructions,
       })
       if (!res.success) {
-        onError(res.error ?? 'A mentés sikertelen.')
+        onError(res.error ?? t('saveFailed'))
         return
       }
       onSaved({ ...proposal, name, description, instructions })
@@ -101,7 +103,7 @@ function ProposalCard({
           instructions,
         })
         if (!saved.success) {
-          onError(saved.error ?? 'A mentés sikertelen.')
+          onError(saved.error ?? t('saveFailed'))
           return
         }
       }
@@ -110,14 +112,16 @@ function ProposalCard({
         decision,
       })
       if (!res.success) {
-        onError(res.error ?? 'A bírálat sikertelen.')
+        onError(res.error ?? t('reviewFailed'))
         return
       }
       const missing = res.data.missingTools ?? []
       onDone(
         decision === 'approve'
-          ? `Jóváhagyva, bekapcsolva${missing.length > 0 ? `. Hiányzó eszközök: ${missing.join(', ')}` : '.'}`
-          : 'Elutasítva. A skill nem használható, a név felszabadult.',
+          ? missing.length > 0
+            ? t('approvedMissing', { tools: missing.join(', ') })
+            : t('approvedOn')
+          : t('rejected'),
       )
     })
   }
@@ -126,10 +130,10 @@ function ProposalCard({
     <div className="rounded-xl border border-ink-faint/20 p-4">
       <p className="text-xs text-ink-faint">
         {proposal.requestedByName} · {proposal.agentName} ·{' '}
-        {new Date(proposal.updatedAt).toLocaleString('hu-HU')}
+        {formatDateTime(proposal.updatedAt, locale)}
       </p>
       <label className="mt-3 block text-xs font-medium text-ink-faint" htmlFor={`proposal-name-${proposal.id}`}>
-        Név
+        {t('name')}
       </label>
       <input
         id={`proposal-name-${proposal.id}`}
@@ -139,7 +143,7 @@ function ProposalCard({
         className="mt-1 w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-1.5 text-sm"
       />
       <label className="mt-3 block text-xs font-medium text-ink-faint" htmlFor={`proposal-description-${proposal.id}`}>
-        Leírás
+        {t('description')}
       </label>
       <textarea
         id={`proposal-description-${proposal.id}`}
@@ -150,7 +154,7 @@ function ProposalCard({
         className="mt-1 w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-sm"
       />
       <label className="mt-3 block text-xs font-medium text-ink-faint" htmlFor={`proposal-instructions-${proposal.id}`}>
-        Instrukció
+        {t('instructions')}
       </label>
       <textarea
         id={`proposal-instructions-${proposal.id}`}
@@ -161,9 +165,9 @@ function ProposalCard({
         className="mt-1 w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-sm"
       />
       <div className="mt-3">
-        <p className="text-xs font-medium text-ink-faint">Melléklet — a beküldött marad</p>
+        <p className="text-xs font-medium text-ink-faint">{t('attachmentKept')}</p>
         {proposal.attachments.length === 0 ? (
-          <p className="mt-1 text-sm text-ink-faint">Nincs melléklet.</p>
+          <p className="mt-1 text-sm text-ink-faint">{t('noAttachment')}</p>
         ) : (
           proposal.attachments.map((attachment) => (
             <pre
@@ -177,7 +181,7 @@ function ProposalCard({
           ))
         )}
       </div>
-      <p className="mt-3 text-xs text-ink-faint">Agent: {proposal.agentName}. Jóváhagyáskor nem cserélhető.</p>
+      <p className="mt-3 text-xs text-ink-faint">{t('proposalAgent', { name: proposal.agentName })}</p>
       <div className="mt-3 flex flex-wrap gap-2">
         <button
           type="button"
@@ -185,7 +189,7 @@ function ProposalCard({
           onClick={save}
           className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-medium text-ink-soft disabled:opacity-50"
         >
-          Mentés
+          {t('save')}
         </button>
         <button
           type="button"
@@ -193,7 +197,7 @@ function ProposalCard({
           onClick={() => decide('approve')}
           className="rounded-full bg-coral px-3 py-1 text-xs font-semibold text-white disabled:opacity-50"
         >
-          Jóváhagyás
+          {t('approve')}
         </button>
         <button
           type="button"
@@ -201,7 +205,7 @@ function ProposalCard({
           onClick={() => decide('reject')}
           className="rounded-full border border-coral/40 px-3 py-1 text-xs font-medium text-coral disabled:opacity-50"
         >
-          Elutasítás
+          {t('reject')}
         </button>
       </div>
     </div>

@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import {
   activateAgent,
   publishAgentDefinitionAction,
@@ -40,6 +41,7 @@ export function PublishAgentDefinitionForm({
   publishedVersion?: number | null
 }) {
   const router = useRouter()
+  const t = useTranslations('AgentPublish')
   const [pending, start] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [definitionId, setDefinitionId] = useState(currentDefinitionId)
@@ -57,11 +59,9 @@ export function PublishAgentDefinitionForm({
   const staleBanner =
     hasUnpublishedChanges && definitionId ? (
       <p className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-ink">
-        A vázlat megváltozott a közzétett verzió
-        {publishedVersion !== null ? ` (v${publishedVersion})` : ''} óta —{' '}
-        {live
-          ? 'az MCP még a régi verziót látja. Nyomd meg az „Új verzió közzététele” gombot, hogy a módosítások (jogok, kapcsolatok, munkakör) életbe lépjenek.'
-          : 'visszakapcsoláskor a régi verzió élne. Nyomd meg az „Új verzió közzététele” gombot, hogy a módosítások (jogok, kapcsolatok, munkakör) bekerüljenek a következő verzióba.'}
+        {t('stalePrefix')}
+        {publishedVersion !== null ? ` (v${publishedVersion})` : ''} {t('staleSince')}{' '}
+        {live ? t('staleLive') : t('staleOff')}
       </p>
     ) : null
 
@@ -69,20 +69,11 @@ export function PublishAgentDefinitionForm({
     <>
       {wizard ? (
         <>
-          <p className="text-sm text-ink">
-            A vázlat már mentve — név, munkakör, eszközök, skillek és kapcsolatok az előző
-            lépéseken rögzültek. Itt nincs külön Mentés.
-          </p>
-          <p className="mt-2 text-sm text-ink-soft">
-            A kapcsoló az MCP-n teszi elérhetővé a munkatársat. Bekapcsolva közzéteszi a
-            vázlatot és aktiválja; kikapcsolva levesszük a listáról.
-          </p>
+          <p className="text-sm text-ink">{t('wizardSaved')}</p>
+          <p className="mt-2 text-sm text-ink-soft">{t('wizardSwitch')}</p>
         </>
       ) : (
-        <p className="text-sm text-ink-soft">
-          Bekapcsolva a munkatárs az MCP-n is elérhető. Kikapcsolva levesszük a listáról —
-          a vázlat megmarad, bármikor vissza lehet kapcsolni.
-        </p>
+        <p className="text-sm text-ink-soft">{t('switchHelp')}</p>
       )}
       <label className="mt-4 flex items-center gap-3 rounded-lg border border-line bg-paper px-3 py-3">
         <input
@@ -131,15 +122,15 @@ export function PublishAgentDefinitionForm({
           }}
         />
         <span>
-          <span className="block text-sm font-semibold">Használható az MCP-n</span>
+          <span className="block text-sm font-semibold">{t('mcpSwitchTitle')}</span>
           <span className="block text-xs text-ink-soft">
             {retired
-              ? 'Nyugdíjazott munkatárs — nem kapcsolható vissza.'
+              ? t('retired')
               : live
-                ? 'Látszik az MCP-listán, a közzétett verzió hívható.'
+                ? t('liveHint')
                 : pending
-                  ? 'Mentés…'
-                  : 'Kikapcsolva csak vázlat / felfüggesztve, az MCP nem listázza.'}
+                  ? t('saving')
+                  : t('offHint')}
           </span>
         </span>
       </label>
@@ -160,7 +151,7 @@ export function PublishAgentDefinitionForm({
             })
           }}
         >
-          {pending ? 'Közzététel…' : 'Új verzió közzététele'}
+          {pending ? t('publishing') : t('publishNew')}
         </button>
       ) : null}
       {staleBanner}
@@ -170,12 +161,9 @@ export function PublishAgentDefinitionForm({
 
   const publishOnlyBody = (
     <>
-      <p className="text-sm text-ink-soft">
-        A vázlat folyamatosan mentődik, ahogy szerkeszted. A közzététel ettől külön:
-        rögzít egy verziót, amit az MCP olvashat.
-      </p>
+      <p className="text-sm text-ink-soft">{t('publishOnlyBody')}</p>
       <p className="mt-2 text-sm text-ink">
-        {definitionId ? 'Van közzétett verzió.' : 'Még nincs közzétett verzió.'}
+        {definitionId ? t('hasPublished') : t('noPublished')}
       </p>
       {staleBanner}
       {canEdit ? (
@@ -195,7 +183,7 @@ export function PublishAgentDefinitionForm({
             })
           }}
         >
-          {pending ? 'Közzététel…' : definitionId ? 'Új verzió közzététele' : 'Közzététel'}
+          {pending ? t('publishing') : definitionId ? t('publishNew') : t('publish')}
         </button>
       ) : null}
       {error ? <p className="mt-2 text-sm text-coral-deep">{error}</p> : null}
@@ -204,5 +192,5 @@ export function PublishAgentDefinitionForm({
 
   const body = goLive ? switchBody : publishOnlyBody
   if (bare) return body
-  return <Card title={goLive ? 'Használható az MCP-n' : 'Közzététel'}>{body}</Card>
+  return <Card title={goLive ? t('cardLive') : t('cardPublish')}>{body}</Card>
 }

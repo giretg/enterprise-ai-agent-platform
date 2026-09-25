@@ -2,6 +2,8 @@
 
 import { useRouter } from 'next/navigation'
 import { useCallback, useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
+import { asTranslate } from '@/i18n/translate'
 import {
   createAgent,
   getAgent,
@@ -80,6 +82,7 @@ export function CreateAgentWizard({
   catalogDetails?: ConnectorCatalogOption[]
 }) {
   const router = useRouter()
+  const t = asTranslate(useTranslations('AgentCreate'))
   const [pending, startTransition] = useTransition()
   const [refreshing, startRefresh] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -206,11 +209,11 @@ export function CreateAgentWizard({
         agentId,
         enabledTools: template.enabledTools,
       })
-      if (!res.success) warnings.push(`eszközök: ${res.error}`)
+      if (!res.success) warnings.push(t('cloneTools', { error: res.error }))
     }
     for (const skillVersionId of template.skillVersionIds) {
       const res = await assignSkillAction({ agentId, skillVersionId })
-      if (!res.success) warnings.push(`skill: ${res.error}`)
+      if (!res.success) warnings.push(t('cloneSkill', { error: res.error }))
     }
     for (const connector of template.connectors) {
       const res = await assignConnectorToAgent({
@@ -218,7 +221,7 @@ export function CreateAgentWizard({
         connectorId: connector.connectorId,
         accessMode: connector.accessMode,
       })
-      if (!res.success) warnings.push(`kapcsolat (${connector.name}): ${res.error}`)
+      if (!res.success) warnings.push(t('cloneConnector', { name: connector.name, error: res.error }))
     }
     return warnings
   }
@@ -238,7 +241,7 @@ export function CreateAgentWizard({
       if (cloneTemplate) {
         const warnings = await applyCloneSettings(agentId, cloneTemplate)
         if (warnings.length > 0) {
-          setError(`A munkatárs létrejött, de a másolás nem lett teljes: ${warnings.join(' ')}`)
+          setError(t('clonePartial', { warnings: warnings.join(' ') }))
         }
       }
       const [skillsRes, assignableRes, govRes, catalogRes] = await Promise.all([
@@ -267,7 +270,7 @@ export function CreateAgentWizard({
   function handleNext() {
     if (step === 'identity' && !createdAgentId) {
       if (!isIdentityStepComplete(gate)) {
-        setError('Add meg a nevet és a munkaköri leírást.')
+        setError(t('nameRequired'))
         return
       }
       createAndContinue()
@@ -291,11 +294,11 @@ export function CreateAgentWizard({
   const nextLabel =
     step === 'identity' && !createdAgentId
       ? pending
-        ? 'Létrehozás…'
-        : 'Létrehozás és tovább'
+        ? t('creating')
+        : t('createAndContinue')
       : step === 'done'
         ? null
-        : 'Tovább'
+        : t('next')
 
   return (
     <Card>
@@ -303,8 +306,10 @@ export function CreateAgentWizard({
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-ink-faint">
           {stepNumber} / {CREATE_AGENT_WIZARD_STEPS.length}
         </p>
-        <h2 className="mt-1 font-display text-xl font-semibold tracking-tight">{stepMeta.label}</h2>
-        <p className="mt-1 text-sm text-ink-soft">{stepMeta.hint}</p>
+        <h2 className="mt-1 font-display text-xl font-semibold tracking-tight">
+          {t(`steps.${stepMeta.id}.label`)}
+        </h2>
+        <p className="mt-1 text-sm text-ink-soft">{t(`steps.${stepMeta.id}.hint`)}</p>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[15rem_1fr]">
@@ -343,8 +348,8 @@ export function CreateAgentWizard({
                     {complete ? '✓' : index + 1}
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-sm font-semibold">{item.label}</span>
-                    <span className="block truncate text-xs text-ink-soft">{item.hint}</span>
+                    <span className="block text-sm font-semibold">{t(`steps.${item.id}.label`)}</span>
+                    <span className="block truncate text-xs text-ink-soft">{t(`steps.${item.id}.hint`)}</span>
                   </span>
                 </button>
               </li>
@@ -355,8 +360,7 @@ export function CreateAgentWizard({
         <div className="min-w-0 space-y-5 rounded-md border border-ink/12 bg-wash/35 p-4">
           {createdAgentId && step === 'identity' ? (
             <p className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-sage">
-              A munkatárs már létrejött vázlatként. Az alapokat itt átnézheted; a további
-              lépéseken eszközöket, skilleket és kapcsolatokat adhatsz hozzá.
+              {t('alreadyCreated')}
             </p>
           ) : null}
 
@@ -365,21 +369,18 @@ export function CreateAgentWizard({
               {!createdAgentId ? (
                 <div className="space-y-3 rounded-md border border-ink/12 bg-paper px-3 py-3">
                   <div>
-                    <p className="text-sm font-semibold">Másolás meglévő munkatársból</p>
-                    <p className="mt-1 text-xs text-ink-soft">
-                      Válassz egy agentet sablonnak — a munkakör, eszközök, skillek és
-                      kapcsolatok átmásolódnak. Csak az új nevet kell megadnod.
-                    </p>
+                    <p className="text-sm font-semibold">{t('cloneTitle')}</p>
+                    <p className="mt-1 text-xs text-ink-soft">{t('cloneBody')}</p>
                   </div>
                   <label className="block text-sm">
-                    <span className="text-ink-soft">Sablon agent</span>
+                    <span className="text-ink-soft">{t('cloneSelect')}</span>
                     <select
                       value={cloneSourceId}
                       onChange={(e) => void handleCloneSourceChange(e.target.value)}
                       disabled={loadingClone || pending || cloneableAgents.length === 0}
                       className={INPUT}
                     >
-                      <option value="">Nincs — üres űrlap</option>
+                      <option value="">{t('cloneNone')}</option>
                       {cloneableAgents.map((agent) => (
                         <option key={agent.id} value={agent.id}>
                           {agentDisplayName(agent.name)}
@@ -390,36 +391,33 @@ export function CreateAgentWizard({
                   {loadingClone ? (
                     <p className="inline-flex items-center gap-2 text-xs text-ink-soft">
                       <Spinner size="sm" />
-                      Sablon betöltése…
+                      {t('cloneLoading')}
                     </p>
                   ) : null}
                   {cloneTemplate ? (
                     <div className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-ink">
                       <p className="font-semibold text-sage">
-                        „{cloneTemplate.sourceAgentName}” sablonja betöltve — add meg az új
-                        nevet, majd lépj tovább.
+                        {t('cloneLoaded', { name: cloneTemplate.sourceAgentName })}
                       </p>
-                      <p className="mt-1 text-ink-soft">
-                        Eszközök, skillek és kapcsolatok a létrehozáskor másolódnak.
-                      </p>
+                      <p className="mt-1 text-ink-soft">{t('cloneCopied')}</p>
                     </div>
                   ) : null}
                 </div>
               ) : null}
 
               <label className="block text-sm">
-                <span className="text-ink-soft">Név</span>
+                <span className="text-ink-soft">{t('name')}</span>
                 <input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   required
                   disabled={Boolean(createdAgentId)}
                   className={INPUT}
-                  placeholder="Wiki agent"
+                  placeholder={t('namePlaceholder')}
                 />
               </label>
               <label className="block text-sm">
-                <span className="text-ink-soft">Munkakör</span>
+                <span className="text-ink-soft">{t('role')}</span>
                 <textarea
                   value={roleInstruction}
                   onChange={(e) => setRoleInstruction(e.target.value)}
@@ -427,15 +425,11 @@ export function CreateAgentWizard({
                   rows={8}
                   disabled={Boolean(createdAgentId)}
                   className={INPUT}
-                  placeholder="Te a belső tudás-asszisztens vagy. Kizárólag a jóváhagyott dokumentumokból válaszolsz, magyarul, forráshivatkozással."
+                  placeholder={t('rolePlaceholder')}
                 />
               </label>
               {!createdAgentId ? (
-                <p className="text-xs text-ink-faint">
-                  A tovább gomb itt hozza létre a munkatársat vázlatként. Utána eszközöket,
-                  skilleket és kapcsolatokat adhatsz hozzá — ha közben újat kell
-                  definiálnod, az új ablakban nyílik.
-                </p>
+                <p className="text-xs text-ink-faint">{t('identityHint')}</p>
               ) : null}
             </div>
           ) : null}
@@ -452,8 +446,8 @@ export function CreateAgentWizard({
                 links={[
                   {
                     href: CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connections,
-                    label: 'Új kapcsolat a konnektoroknál',
-                    description: 'Ha egy eszközhöz még nincs connector, itt hozod létre.',
+                    label: t('newConnector'),
+                    description: t('newConnectorHint'),
                   },
                 ]}
                 onRefresh={refreshCatalogs}
@@ -478,9 +472,8 @@ export function CreateAgentWizard({
                 links={[
                   {
                     href: CREATE_AGENT_WIZARD_EXTERNAL_HREFS.skills,
-                    label: 'Új képesség a katalógusban',
-                    description:
-                      'Importálás vagy appon belüli skill — jóváhagyás után itt hozzárendeled.',
+                    label: t('newSkill'),
+                    description: t('newSkillHint'),
                   },
                 ]}
                 onRefresh={refreshCatalogs}
@@ -504,13 +497,13 @@ export function CreateAgentWizard({
                 links={[
                   {
                     href: CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connections,
-                    label: 'Új kapcsolat definiálása',
-                    description: 'Draft connector a konnektor-varázslóban, új ablakban.',
+                    label: t('defineConnector'),
+                    description: t('defineConnectorHint'),
                   },
                   {
                     href: CREATE_AGENT_WIZARD_EXTERNAL_HREFS.connectors,
-                    label: 'Kapcsolt fiókok',
-                    description: 'Saját Gmail / Drive összekötés, ha a munkatárs delegált fiókot használ.',
+                    label: t('linkedAccounts'),
+                    description: t('linkedAccountsHint'),
                   },
                 ]}
                 onRefresh={refreshCatalogs}
@@ -522,7 +515,7 @@ export function CreateAgentWizard({
           {step === 'done' && createdAgentId ? (
             <div className="space-y-4">
               <p className="text-sm text-ink">
-                <strong>{name || 'A munkatárs'}</strong> vázlata kész.
+                {t('draftReady', { name: name || t('draftReadyFallback') })}
               </p>
               <PublishAgentDefinitionForm
                 agentId={createdAgentId}
@@ -543,7 +536,7 @@ export function CreateAgentWizard({
                 onClick={() => router.push(`/control-plane/agents/${createdAgentId}`)}
                 className="rounded-full bg-sage/20 px-4 py-2 text-sm font-semibold text-sage"
               >
-                Agent megnyitása →
+                {t('openAgent')}
               </button>
             </div>
           ) : null}
@@ -557,7 +550,7 @@ export function CreateAgentWizard({
               disabled={!prevCreateAgentWizardStep(step) || pending}
               className="rounded-full border border-line px-4 py-2 text-sm font-semibold text-ink-soft disabled:opacity-50"
             >
-              Vissza
+              {t('back')}
             </button>
             {nextLabel ? (
               <button
