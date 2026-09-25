@@ -135,7 +135,9 @@ async function confirmMessage(
     content = str(args.textContent)
   } else if (view.toolName === GMAIL_SEND_TOOL || view.toolName === GMAIL_CREATE_DRAFT_TOOL) {
     target = gmailComposeTarget(args)
-    content = str(args.body)
+    // draftId send ignores compose fields at execute time — never surface args.body as "Tartalom"
+    // or a decoy body would be what the human approves while a different draft is sent.
+    content = view.toolName === GMAIL_SEND_TOOL && str(args.draftId) ? '' : str(args.body)
   } else if (view.toolName === GMAIL_MODIFY_LABELS_TOOL) {
     target = [
       gmailItemTarget(args),

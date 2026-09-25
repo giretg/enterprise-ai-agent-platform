@@ -14,6 +14,7 @@ import {
 } from '../src/domain/enterprise-tools'
 import { resolveCompose } from '../src/domain/enterprise-tools/handlers/gmail'
 import { approveGatewayOperation, enqueueGatewayOperation, type GatewayOperationServiceDeps } from '../src/domain/gateway-operation'
+import { enqueueWriteForMcp } from '../src/domain/gateway-operation/write-confirm'
 import { GMAIL_SCOPES, gmailToolAllowedByScopes } from '../src/domain/connector-grant/gmail-scopes'
 import { buildRawMessage, GmailApiClient } from '../src/domain/connector-grant/gmail-api-client'
 import { MemoryGatewayOperationStore } from './memory-gateway-operation-store'
@@ -108,6 +109,27 @@ async function main() {
     assert.equal(schema.safeParse({ ...base, draftId: 'd1' }).success, true)
   })
 
+  await check('send schema: draftId cannot be combined with compose fields (no decoy on confirm card)', () => {
+    const schema = schemaForEnterpriseTool(GMAIL_SEND_TOOL)!
+    const base = { definitionId: DEFINITION_ID, idempotencyKey: 'k', draftId: 'd1' }
+    for (const extra of [
+      { body: 'Harmless note to Bob' },
+      { to: 'bob@example.com' },
+      { subject: 'OK' },
+      { cc: 'cc@x.hu' },
+      { bcc: 'bcc@x.hu' },
+      { replyToMessageId: 'm1' },
+      { replyAll: true },
+      { to: 'bob@example.com', subject: 'OK', body: 'Harmless' },
+    ] as const) {
+      const parsed = schema.safeParse({ ...base, ...extra })
+      assert.equal(parsed.success, false, `expected reject for ${JSON.stringify(extra)}`)
+      if (!parsed.success) {
+        assert.match(parsed.error.issues[0]?.message ?? '', /draftId cannot be combined/)
+      }
+    }
+  })
+
   await check('modify/trash schema: exactly one of messageId/threadId', () => {
     const base = { definitionId: DEFINITION_ID, idempotencyKey: 'k' }
     const trash = schemaForEnterpriseTool(GMAIL_TRASH_TOOL)!
@@ -181,6 +203,49 @@ async function main() {
     assert.equal(approved.view.status, 'succeeded')
     assert.deepEqual(calls.map((c) => c.tool), [GMAIL_SEND_TOOL])
     assert.equal(calls[0]?.args.replyToMessageId, 'm1')
+  })
+
+  await check('gmail_send draftId confirm card never shows a compose body as Tartalom', async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = []
+    const wired = deps(modifyGrant, calls)
+    const result = await enqueueWriteForMcp(wired, {
+      principal,
+      toolName: GMAIL_SEND_TOOL,
+      args: { definitionId: DEFINITION_ID, draftId: 'draft-secret', idempotencyKey: 'send-draft-1' },
+      origin: 'https://app.example.com',
+      confirm: {
+        async mint(state) {
+          return `state-${state.operationId}`
+        },
+      },
+    })
+    assert.equal('resultType' in result && result.resultType, 'input_required')
+    if (!('resultType' in result) || result.resultType !== 'input_required') return
+    const message = (
+      result.inputRequests.confirm_write as { params: { message: string } }
+    ).params.message
+    assert.match(message, /piszkozat elküldése: draft-secret/)
+    assert.doesNotMatch(message, /Tartalom/)
+  })
+
+  await check('gmail_send with decoy body+draftId is rejected at enqueue (HITL cannot approve a lie)', async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = []
+    const result = await enqueueGatewayOperation(deps(modifyGrant, calls), {
+      principal,
+      toolName: GMAIL_SEND_TOOL,
+      args: {
+        definitionId: DEFINITION_ID,
+        draftId: 'draft-secret',
+        body: 'Harmless note to Bob',
+        to: 'bob@example.com',
+        subject: 'OK',
+        idempotencyKey: 'send-decoy',
+      },
+    })
+    assert.equal(result.ok, false)
+    if (result.ok) return
+    assert.equal(result.code, 'invalid_args')
+    assert.equal(calls.length, 0)
   })
 
   await check('gmail_send with a readonly grant is denied at enqueue', async () => {
