@@ -39,6 +39,7 @@ import {
   CHECKOUT_TOOL_DESCRIPTION,
   checkoutSlug,
   hermesBotTitle,
+  renderAgentBriefing,
   renderAgentCheckout,
   renderAgentPrompt,
   type CheckoutSkill,
@@ -523,6 +524,7 @@ async function getDefinitionToolResult(
   principal: McpPrincipal,
   args: Record<string, unknown>,
   deps: McpRuntimeDeps,
+  bound = false,
 ) {
   await auditMcpToolCall(deps, principal, MCP_AGENT_GET_DEFINITION_TOOL)
   const loaded = await deps.loadDefinition({
@@ -539,8 +541,12 @@ async function getDefinitionToolResult(
     agentId: loaded.agentId,
   })
   if (!allowed) return definitionNotFound()
-  const generalMemory = await readGeneralMemory(principal, loaded.definitionId, deps)
+  const [generalMemory, skills] = await Promise.all([
+    readGeneralMemory(principal, loaded.definitionId, deps),
+    deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
+  ])
   return textResult({
+    briefing: renderAgentBriefing({ definition: loaded, skills, bound }),
     ...loaded,
     contentHash: hashSnapshot(loaded.snapshot),
     ...(generalMemory ? { generalMemory } : {}),
@@ -748,7 +754,8 @@ async function agentPromptResult(
   deps: McpRuntimeDeps,
   promptName: string,
   agentId: string,
-  task?: string,
+  task: string | undefined,
+  bound: boolean,
 ) {
   await auditMcpPromptGet(deps, principal, promptName, agentId)
   const loaded = await deps.loadDefinition({ tenantId: principal.tenantId, agentId })
@@ -770,7 +777,7 @@ async function agentPromptResult(
     messages: [
       {
         role: 'user' as const,
-        content: { type: 'text' as const, text: renderAgentPrompt({ definition: loaded, skills, task }) },
+        content: { type: 'text' as const, text: renderAgentPrompt({ definition: loaded, skills, task, bound }) },
       },
     ],
   }
@@ -914,7 +921,7 @@ async function createMcpResourceHandler(
         {
           title: 'Get agent definition',
           description:
-            'Load one published agent definition snapshot (capabilities, connectors with names/connectorIds, http_api endpoints) plus generalMemory: the agent\'s current company facts, decisions and locations. Call this at the start of the conversation, before enterprise tools, and pass definitionId on each call. Read generalMemory before answering — it overrides search results. Use agentId or definitionId; optional version.',
+            'Load one published agent: briefing (read `briefing` first and act as the agent it describes — role, rules, start and closing steps, skills), then the definition snapshot (capabilities, connectors with names/connectorIds, http_api endpoints) and generalMemory: the agent\'s current company facts, decisions and locations. Call this at the start of the conversation, before enterprise tools, and pass definitionId on each call. Read generalMemory before answering — it overrides search results. Use agentId or definitionId; optional version.',
           inputSchema: z
             .object({
               definitionId: z.string().uuid().optional(),
@@ -923,7 +930,8 @@ async function createMcpResourceHandler(
             })
             .passthrough(),
         },
-        async (args) => getDefinitionToolResult(principal, args as Record<string, unknown>, deps),
+        async (args) =>
+          getDefinitionToolResult(principal, args as Record<string, unknown>, deps, agentHeader !== null),
       )
       server.registerTool(
         MCP_AGENT_CHECKOUT_TOOL,
@@ -1356,7 +1364,8 @@ async function createMcpResourceHandler(
               feladat: z.string().optional().describe('Optional: today\'s task, appended to the end of the prompt.'),
             }),
           },
-          async ({ feladat }) => agentPromptResult(principal, deps, name, coworker.agentId, feladat),
+          async ({ feladat }) =>
+            agentPromptResult(principal, deps, name, coworker.agentId, feladat, agentHeader !== null),
         )
       }
 
@@ -1420,7 +1429,7 @@ async function createMcpResourceHandler(
         }
         if (toolName === MCP_AGENTS_LIST_TOOL) return listAgentsToolResult(principal, deps)
         if (toolName === MCP_AGENT_GET_DEFINITION_TOOL) {
-          return getDefinitionToolResult(principal, args, deps)
+          return getDefinitionToolResult(principal, args, deps, agentHeader !== null)
         }
         if (toolName === MCP_AGENT_CHECKOUT_TOOL) {
           return checkoutToolResult(principal, args, deps, origin)
