@@ -1765,6 +1765,14 @@ export function ProvisioningPanel({
                             {selectedTemplate.description ? (
                               <p className="text-xs text-ink-soft">{selectedTemplate.description}</p>
                             ) : null}
+                            {selectedTemplateDescriptor.activationHelp ? (
+                              <details open className="rounded-md border border-sage/30 bg-sage/8 p-3 text-xs">
+                                <summary className="cursor-pointer font-semibold text-sage">{t('setupHelp')}</summary>
+                                <p className="mt-2 whitespace-pre-line text-ink-soft">
+                                  {selectedTemplateDescriptor.activationHelp}
+                                </p>
+                              </details>
+                            ) : null}
 
                             <div>
                               <span className="mb-1 block text-xs font-semibold text-ink-soft">Auth method</span>

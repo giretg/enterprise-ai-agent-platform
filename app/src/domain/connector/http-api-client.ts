@@ -215,8 +215,12 @@ function safeJsonLength(value: unknown, fallback: number): number {
 /**
  * A connector `config` JSON validálása. Hibás konfigot dob — a Broker ezt
  * `tool_call_failed`-ként jelenti, nem szivárogtat kulcsot.
+ * `allowMissingOAuthClientId` csak delegált draftra: service-oauth2-nél a refresh a clientId-t igényli.
  */
-export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
+export function parseHttpApiConfig(
+  raw: unknown,
+  opts?: { allowMissingOAuthClientId?: boolean },
+): HttpApiConfig {
   if (!isRecord(raw)) throw new Error('http_api connector config must be an object')
 
   const baseUrl = raw.baseUrl
@@ -242,7 +246,7 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
       throw new Error('http_api config.auth.tokenUrl must be an absolute http(s) URL for scheme "oauth2"')
     }
     const clientId = typeof authRaw.clientId === 'string' ? authRaw.clientId.trim() : ''
-    if (!clientId) {
+    if (!clientId && !opts?.allowMissingOAuthClientId) {
       throw new Error('http_api config.auth.clientId is required for scheme "oauth2"')
     }
     const scope = typeof authRaw.scope === 'string' && authRaw.scope.trim() ? authRaw.scope.trim() : undefined

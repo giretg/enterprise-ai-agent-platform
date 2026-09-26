@@ -487,7 +487,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
 3. APIs & Services → Library → engedélyezd a „Google Search Console API” szolgáltatást.
 4. APIs & Services → OAuth consent screen → állítsd be (Internal vagy External; teszthez add hozzá a tesztfelhasználókat). Vedd fel a webmasters.readonly vagy webmasters scope-ot.
 5. APIs & Services → Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
-6. Client ID + secret: Platform · Beállítások → Google Analytics / Search Console / Ads OAuth (egy app mindhárom marketing sablonhoz).
+6. Client ID + secret: Platform · Beállítások → Google API OAuth (egy app az Analytics / Search Console / Ads / Calendar / Sheets sablonokhoz).
 7. A hívott felhasználónak verified owner/user jog kell a Search Console property-n.
 8. A siteUrl path-paramétert URL-kódolni kell: https://www.example.com/ → https%3A%2F%2Fwww.example.com%2F; domain-property: sc-domain:example.com.`,
     baseUrl: 'https://searchconsole.googleapis.com',
@@ -608,7 +608,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
 3. APIs & Services → Library → engedélyezd a „Google Analytics Data API” szolgáltatást.
 4. APIs & Services → OAuth consent screen → állítsd be, és vedd fel az analytics.readonly (vagy analytics) scope-ot.
 5. APIs & Services → Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
-6. Client ID + secret: Platform · Beállítások → Google Analytics / Search Console / Ads OAuth.
+6. Client ID + secret: Platform · Beállítások → Google API OAuth.
 7. A csatlakoztatott Google-fióknak legalább Viewer joga kell a GA4 property-n.
 9. A property ID a GA Admin → Property settings oldalon látható (szám, pl. 123456789). A path-ben: /v1beta/properties/{propertyId}:runReport — a properties/ előtagot a path már tartalmazza, csak a számot add meg.`,
     baseUrl: 'https://analyticsdata.googleapis.com',
@@ -698,7 +698,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
 3. Nyisd meg a Google Cloud Console-t: https://console.cloud.google.com/
 4. APIs & Services → Library → engedélyezd a „Google Ads API” szolgáltatást.
 5. OAuth consent screen + Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
-6. Client ID + secret: Platform · Beállítások → Google Analytics / Search Console / Ads OAuth.
+6. Client ID + secret: Platform · Beállítások → Google API OAuth.
 7. Aktiváláskor add meg: developer token (Google Ads API Center). MCC alatti kliensfiókhoz opcionálisan login-customer-id (kötőjel nélkül).
 8. A customerId path-paraméter mindig kötőjel nélküli 10 jegyű szám.
 9. Olvasáshoz a googleAds:search GAQL-t használd; a mutate végpontok írnak.`,
@@ -976,6 +976,298 @@ Az adAccountId path-paraméter a numerikus fiókazonosító, act_ nélkül. Éle
         type: 'secret',
         required: true,
         secretAliasHint: 'meta-ads-access-token',
+        target: 'auth.secretAliasSuggested',
+      },
+    ],
+    rateLimit: { rps: 2, burst: 5 },
+  },
+  {
+    key: 'google-calendar',
+    displayName: 'Google Calendar',
+    connectorType: 'http_api',
+    description:
+      'Google Calendar API v3: naptárak, események keresése, szabad időpont, esemény létrehozása és módosítása. Delegált felhasználói OAuth.',
+    activationHelp: `Nincs szükség saját Google Cloud-projektre — a platform Google API OAuth appját használja. Lépések sorban:
+1. Platform · Beállítások → Google API OAuth: ellenőrizd, hogy be van-e állítva (Client ID + secret). Ha nincs, előbb azt kérd a platform-üzemeltetőtől — enélkül nem megy tovább.
+2. A Google Cloud-projektben legyen engedélyezve a „Google Calendar API” (ezt is a platform-üzemeltető végzi, egyszer kell).
+3. Scope-ok: a „Csak olvasás” elég kereséshez és szabad időpontokhoz. Ha az agent időpontot is foglalhat, pipáld be MELLÉ az „Eseményírás” scope-ot, és a végpontok közül a create_event / update_event (és ha kell, delete_event) sort is.
+4. Aktiválás után minden felhasználó a saját Google-fiókjával köti be a naptárát (Kapcsolt fiókok) — az agent mindig az ő naptárát látja.
+5. Tipp: a saját naptár azonosítója primary; más naptárét a list_calendars adja meg.`,
+    baseUrl: 'https://www.googleapis.com',
+    egressHosts: ['www.googleapis.com', ...GOOGLE_OAUTH_EGRESS_HOSTS],
+    authMethods: [{ ...GOOGLE_USER_DELEGATED_OAUTH }],
+    scopeCatalog: [
+      {
+        value: 'https://www.googleapis.com/auth/calendar.readonly',
+        label: 'Csak olvasás',
+        description: 'Naptárak, események és szabad/foglalt időpontok olvasása. Kezdd ezzel.',
+        default: true,
+      },
+      {
+        value: 'https://www.googleapis.com/auth/calendar.events',
+        label: 'Eseményírás',
+        description:
+          'Események létrehozása, módosítása, törlése. A „Csak olvasás” MELLÉ pipáld be — önmagában nem ad naptárlistát és szabad/foglalt lekérdezést.',
+        default: false,
+      },
+      {
+        value: 'https://www.googleapis.com/auth/calendar',
+        label: 'Teljes naptár-hozzáférés',
+        description: 'Naptárlista-kezelés is. Csak ha a readonly/event scope nem elég.',
+        default: false,
+      },
+    ],
+    endpoints: [
+      {
+        name: 'list_calendars',
+        method: 'GET',
+        path: '/calendar/v3/users/me/calendarList',
+        access: 'read',
+        description: 'A felhasználó naptárainak listája (id, summary, timeZone). Ezzel kezdj: innen jön a calendarId.',
+        default: true,
+      },
+      {
+        name: 'list_events',
+        method: 'GET',
+        path: '/calendar/v3/calendars/{calendarId}/events',
+        access: 'read',
+        description:
+          'Események listázása. calendarId = primary vagy a list_calendars-ból. Query: timeMin, timeMax (RFC3339, pl. 2026-09-28T00:00:00+02:00), q (keresőkifejezés), singleEvents=true, orderBy=startTime.',
+        default: true,
+      },
+      {
+        name: 'get_event',
+        method: 'GET',
+        path: '/calendar/v3/calendars/{calendarId}/events/{eventId}',
+        access: 'read',
+        description: 'Egy esemény részletei (mikor, hol, kik a résztvevők).',
+        default: true,
+      },
+      {
+        name: 'query_freebusy',
+        method: 'POST',
+        path: '/calendar/v3/freeBusy',
+        access: 'read',
+        description:
+          'Szabad/foglalt időpontok. Body: {"timeMin":"...","timeMax":"...","items":[{"id":"primary"}]}. Időpont-kereséshez használd.',
+        default: true,
+      },
+      {
+        name: 'create_event',
+        method: 'POST',
+        path: '/calendar/v3/calendars/{calendarId}/events',
+        access: 'write',
+        description:
+          'Esemény létrehozása. Body: {"summary":"Megbeszélés","start":{"dateTime":"2026-09-29T10:00:00+02:00"},"end":{"dateTime":"2026-09-29T11:00:00+02:00"},"attendees":[{"email":"partner@example.hu"}]}. calendar.events scope kell.',
+        default: false,
+      },
+      {
+        name: 'update_event',
+        method: 'PATCH',
+        path: '/calendar/v3/calendars/{calendarId}/events/{eventId}',
+        access: 'write',
+        description: 'Esemény módosítása (időpont, résztvevők, leírás). Csak a változó mezőket küldd. calendar.events scope kell.',
+        default: false,
+      },
+      {
+        name: 'delete_event',
+        method: 'DELETE',
+        path: '/calendar/v3/calendars/{calendarId}/events/{eventId}',
+        access: 'write',
+        description: 'Esemény törlése. Végleges — csak emberi jóváhagyással. calendar.events scope kell.',
+        default: false,
+      },
+    ],
+    instanceFields: [],
+    rateLimit: { rps: 5, burst: 10 },
+  },
+  {
+    key: 'google-sheets',
+    displayName: 'Google Sheets',
+    connectorType: 'http_api',
+    description:
+      'Google Sheets API v4: táblázatok olvasása, sorok keresése, hozzáadása és módosítása. Delegált felhasználói OAuth.',
+    activationHelp: `Nincs szükség saját Google Cloud-projektre — a platform Google API OAuth appját használja. Lépések sorban:
+1. Platform · Beállítások → Google API OAuth: ellenőrizd, hogy be van-e állítva. Ha nincs, előbb azt kérd a platform-üzemeltetőtől.
+2. A Google Cloud-projektben legyen engedélyezve a „Google Sheets API” (egyszeri platform-üzemeltetői lépés).
+3. Scope-ok: a „Csak olvasás” elég riportokhoz és kereséshez. Sorok írásához válaszd a „Teljes írás” scope-ot, és a végpontok közül az append_values / update_values sort is pipáld be.
+4. Aktiválás után minden felhasználó a saját Google-fiókjával köti be (Kapcsolt fiókok) — az agent az ő táblázatait látja.
+5. Tipp: a táblázat azonosítója (spreadsheetId) a Docs-URL középső része (/d/<spreadsheetId>/edit); előbb olvasd ki a lap nevét, utána írj bele.`,
+    baseUrl: 'https://sheets.googleapis.com',
+    egressHosts: ['sheets.googleapis.com', ...GOOGLE_OAUTH_EGRESS_HOSTS],
+    authMethods: [{ ...GOOGLE_USER_DELEGATED_OAUTH }],
+    scopeCatalog: [
+      {
+        value: 'https://www.googleapis.com/auth/spreadsheets.readonly',
+        label: 'Csak olvasás',
+        description: 'Táblázatok és cellatartományok olvasása. Kezdd ezzel.',
+        default: true,
+      },
+      {
+        value: 'https://www.googleapis.com/auth/spreadsheets',
+        label: 'Teljes írás',
+        description: 'Sorok hozzáadása, módosítása és törlése is. Csak ha az agent írhat a táblázatba.',
+        default: false,
+      },
+    ],
+    endpoints: [
+      {
+        name: 'get_spreadsheet',
+        method: 'GET',
+        path: '/v4/spreadsheets/{spreadsheetId}',
+        access: 'read',
+        description:
+          'Táblázat szerkezete (lapnevek, sor/oszlopszám). Ezzel kezdj: innen jön a lap neve a tartományokhoz. Query: includeGridData=false.',
+        default: true,
+      },
+      {
+        name: 'get_values',
+        method: 'GET',
+        path: '/v4/spreadsheets/{spreadsheetId}/values/{range}',
+        access: 'read',
+        description:
+          'Cellatartomány olvasása. range példa: Munka1!A1:D100 (a lapnevet URL-kódold, ha szóközt tartalmaz).',
+        default: true,
+      },
+      {
+        name: 'batch_get_values',
+        method: 'GET',
+        path: '/v4/spreadsheets/{spreadsheetId}/values:batchGet',
+        access: 'read',
+        description:
+          'Több tartomány egy hívásban. Query: ranges=Munka1!A1:A100&ranges=Munka1!C1:C100. Nagy táblánál ezt használd.',
+        default: true,
+      },
+      {
+        name: 'append_values',
+        method: 'POST',
+        path: '/v4/spreadsheets/{spreadsheetId}/values/{range}:append',
+        access: 'write',
+        description:
+          'Sorok hozzáfűzése a tábla végére. Query: valueInputOption=USER_ENTERED. Body: {"values":[["név","email","123456"]]}. Teljes írás scope kell.',
+        default: false,
+      },
+      {
+        name: 'update_values',
+        method: 'PUT',
+        path: '/v4/spreadsheets/{spreadsheetId}/values/{range}',
+        access: 'write',
+        description:
+          'Cellatartomány felülírása. Query: valueInputOption=USER_ENTERED. Body: {"values":[["új érték"]]}. Teljes írás scope kell.',
+        default: false,
+      },
+      {
+        name: 'clear_values',
+        method: 'POST',
+        path: '/v4/spreadsheets/{spreadsheetId}/values/{range}:clear',
+        access: 'write',
+        description: 'Cellatartomány ürítése (a sorok megmaradnak). Teljes írás scope kell.',
+        default: false,
+      },
+    ],
+    instanceFields: [],
+    rateLimit: { rps: 5, burst: 10 },
+  },
+  {
+    key: 'billingo',
+    displayName: 'Billingo',
+    connectorType: 'http_api',
+    description:
+      'Billingo API v3: partnerek, termékek, számlatömbök és bizonylatok (számla, díjbekérő, piszkozat) olvasása és kiállítása API-kulccsal.',
+    activationHelp: `Csak egy titok kell: a Billingo API-kulcs. Lépések sorban:
+1. Lépj be a Billingo-fiókba, és a Beállítások → API oldalon hozz létre egy API-kulcsot (v3). Ha a menüpont nem látszik, a Billingo-csomagod nem tartalmaz API-hozzáférést.
+2. A sablon „API-kulcs” mezőjét HAGYD az alapértelmezett alias-néven — ide NE másold a kulcsot.
+3. Sandbox-teszt: a kapcsolat elérhetőségi próbája kulcs nélkül fut (nem a te kulcsodat küldi).
+4. Aktiváláskor az „API kulcs” mezőbe illeszd a nyers kulcsot, előtag nélkül. A platform ezzel egy valódi olvasó hívást is kipróbál.
+5. Kezdd olvasással. Ha az agent számlázhat is, a végpontok közül pipáld be a create_document (és ha kell, create_partner) sort; a kiállított bizonylat emberi jóváhagyás után megy ki.`,
+    baseUrl: 'https://api.billingo.hu/v3',
+    egressHosts: ['api.billingo.hu'],
+    authMethods: [{ kind: 'api_key', header: 'X-API-KEY' }],
+    scopeCatalog: [],
+    endpoints: [
+      {
+        name: 'list_partners',
+        method: 'GET',
+        path: '/partners',
+        access: 'read',
+        description: 'Partnerek listája. Query: page, per_page (max 100), query (név/adószám keresés). Ezzel kezdj egyeztetéskor.',
+        default: true,
+      },
+      {
+        name: 'get_partner',
+        method: 'GET',
+        path: '/partners/{id}',
+        access: 'read',
+        description: 'Egy partner adatai (számlázási cím, adószám, fizetési mód).',
+        default: true,
+      },
+      {
+        name: 'create_partner',
+        method: 'POST',
+        path: '/partners',
+        access: 'write',
+        description:
+          'Új partner. Body: {"name":"Minta Kft.","address":{"country_code":"HU","post_code":"1111","city":"Budapest","address":"Fő utca 1."},"emails":["info@example.hu"],"taxcode":"12345678-2-41"}. Előtte list_partners query-vel ellenőrizd, hogy nincs-e már meg.',
+        default: false,
+      },
+      {
+        name: 'list_products',
+        method: 'GET',
+        path: '/products',
+        access: 'read',
+        description: 'Termékek/szolgáltatások listája. Query: page, per_page, query.',
+        default: true,
+      },
+      {
+        name: 'get_product',
+        method: 'GET',
+        path: '/products/{id}',
+        access: 'read',
+        description: 'Egy termék adatai (nettó ár, ÁFA-kulcs, mennyiségi egység).',
+        default: true,
+      },
+      {
+        name: 'list_documents',
+        method: 'GET',
+        path: '/documents',
+        access: 'read',
+        description:
+          'Bizonylatok listája. Query: page, per_page, query, partner_id, type (invoice|proforma|draft|advance), payment_status (paid|outstanding|expired|partially_paid), start_date, end_date (YYYY-MM-DD).',
+        default: true,
+      },
+      {
+        name: 'list_document_blocks',
+        method: 'GET',
+        path: '/document-blocks',
+        access: 'read',
+        description: 'Számlatömbök listája. A create_document kötelező block_id mezője innen jön.',
+        default: true,
+      },
+      {
+        name: 'get_document',
+        method: 'GET',
+        path: '/documents/{id}',
+        access: 'read',
+        description: 'Egy bizonylat részletei (tételek, összegek, fizetési állapot).',
+        default: true,
+      },
+      {
+        name: 'create_document',
+        method: 'POST',
+        path: '/documents',
+        access: 'write',
+        description:
+          'Bizonylat létrehozása; a type dönti el: draft (piszkozat, ezzel kezdj), proforma (díjbekérő), invoice (éles számla, NAV-hoz kerül). Kötelező: partner_id, block_id, type, fulfillment_date, due_date, payment_method, language, currency. Példa: {"partner_id":123,"block_id":456,"type":"draft","fulfillment_date":"2026-09-28","due_date":"2026-10-06","payment_method":"wire_transfer","language":"hu","currency":"HUF","items":[{"name":"Tanácsadás","unit_price":50000,"unit_price_type":"net","quantity":1,"unit":"óra","vat":"27%"}]}.',
+        default: false,
+      },
+    ],
+    instanceFields: [
+      {
+        name: 'apiKey',
+        label: 'Billingo API-kulcs (Beállítások → API oldalon generált v3 kulcs)',
+        type: 'secret',
+        required: true,
+        secretAliasHint: 'billingo-api-key',
         target: 'auth.secretAliasSuggested',
       },
     ],

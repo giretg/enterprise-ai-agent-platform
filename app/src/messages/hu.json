@@ -515,12 +515,12 @@
     "platformSettings": {
       "eyebrow": "Platform",
       "title": "Beállítások",
-      "body": "Clerk/OAuth, Google Drive és Google Analytics / Search Console / Ads kliensbeállítások. Modell-routing és budget kikerült.",
+      "body": "Clerk/OAuth, Google Drive és Google API (Analytics / Search Console / Ads / Calendar / Sheets) kliensbeállítások. Modell-routing és budget kikerült.",
       "aria": "Platform beállítások",
       "gmail": "Google OAuth",
       "drive": "Google Drive OAuth",
       "picker": "Drive Picker",
-      "googleApi": "Google Analytics / Search Console / Ads"
+      "googleApi": "Google API (Analytics / Ads / Calendar / Sheets)"
     }
   },
   "GetStarted": {
@@ -1241,7 +1241,7 @@
     "step2TemplateBody": "{name} — állítsd be az auth-módot és a kötelező mezőket. A konnektor a sablon nevét kapja.",
     "templateSelfContained": "A sablon provider-metaadatból és instance-mezőkből önhordó draft configot készít.",
     "driveOauthNeeded": "A Google Drive sablonhoz a platform Drive OAuth beállítása kell (Platform · Beállítások → Google Drive OAuth).",
-    "googleApiOauthNeeded": "A Google Analytics / Search Console / Ads sablonokhoz a platform Google API OAuth beállítása kell (Platform · Beállítások → Google Analytics / Search Console / Ads).",
+    "googleApiOauthNeeded": "A Google API sablonokhoz (Analytics / Search Console / Ads / Calendar / Sheets) a platform Google API OAuth beállítása kell (Platform · Beállítások → Google API).",
     "step2Custom": "2. Egyéb kapcsolat forrása",
     "step2CustomBody": "A folyamat egy config-jelöltig visz. A draftot csak a következő lépésben hozod létre.",
     "openapi": "OpenAPI",
@@ -1453,8 +1453,8 @@
     "gmailOauthNeed": "A Gmail konnektor a platform Google OAuth alkalmazását használja. Aktiválás előtt a platform-adminnak be kell állítania a Platform · Beállítások → Google OAuth oldalon.",
     "driveOauthOk": "A platform Google Drive OAuth alkalmazása be van állítva — Client ID és Secret nem kell tenant szinten.",
     "driveOauthNeed": "A Google Drive konnektor a platform Drive OAuth alkalmazását használja. Aktiválás előtt a platform-adminnak be kell állítania a Platform · Beállítások → Google Drive OAuth oldalon.",
-    "googleApiOauthOk": "A platform Google API OAuth alkalmazása be van állítva (Analytics / Search Console / Ads) — Client ID és Secret nem kell tenant szinten.",
-    "googleApiOauthNeed": "A Google Analytics / Search Console / Ads konnektor a platform Google API OAuth appját használja. Aktiválás előtt állítsd be a Platform · Beállítások → Google Analytics / Search Console / Ads oldalon.",
+    "googleApiOauthOk": "A platform Google API OAuth alkalmazása be van állítva (Analytics / Search Console / Ads / Calendar / Sheets) — Client ID és Secret nem kell tenant szinten.",
+    "googleApiOauthNeed": "A Google API konnektor a platform Google API OAuth appját használja. Aktiválás előtt állítsd be a Platform · Beállítások → Google API oldalon.",
     "existingSecret": "Meglévő titok hivatkozása (haladó)",
     "existingSecretHint": "Ha a titkot már máshol tárolod, itt hivatkozhatsz rá kulcs beírása helyett. Elfogadott formák: env:NÉV, secret-manager:projects/…/secrets/<id>, secret-ref:<id>. Egyébként hagyd üresen és írd be fent a kulcsot.",
     "badAlias": "Nem elfogadott alias-forma. Használj env:, secret-manager: vagy secret-ref: előtagot — vagy hagyd üresen és írd be fent a kulcsot.",

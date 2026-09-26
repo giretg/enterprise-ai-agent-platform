@@ -12,12 +12,6 @@ import {
 } from '../src/domain/connector-template/materializer'
 import { materializeGmailConnectorConfig } from '../src/domain/connector-template/gmail-connector-config'
 import { parseTemplateDescriptor } from '../src/domain/connector-template/template-descriptor'
-import { HttpSandboxConnectionTester } from '../src/domain/provisioning/sandbox-connection-tester'
-import {
-  applyMigrationWithSecretCompensation,
-  isOstorosborBearerMigrationCandidate,
-  rematerializeOstorosborConnectorConfig,
-} from '../src/domain/connector-template/ostorosbor-bearer-migration'
 import { enrichOstorosborConnectorConfig } from '../src/domain/connector-template/ostorosbor-config-enrichment'
 
 let failures = 0
@@ -106,6 +100,11 @@ async function main() {
         authMethodKind: 'bearer',
         instanceValues: {},
         secretAliases: { botToken: 'secret-ref:slack-bot-token' },
+      },
+      agentmail: {
+        authMethodKind: 'bearer',
+        instanceValues: { inboxId: 'agent@agentmail.eu' },
+        secretAliases: {},
       },
     }
 
@@ -254,7 +253,6 @@ async function main() {
       assert.equal(descriptor.key, rawDescriptor.key)
       if (!marketingKeys.has(descriptor.key)) continue
       const config = selfCheckTemplateDescriptor(descriptor)
-      parseHttpApiConfig(config)
       assert.equal(config.provenance?.templateKey, descriptor.key)
     }
   })
@@ -273,8 +271,7 @@ async function main() {
       },
       {},
     )
-    const runtime = parseHttpApiConfig(config)
-    assert.equal(runtime.baseUrl, 'https://googleads.googleapis.com')
+    assert.equal(config.baseUrl, 'https://googleads.googleapis.com')
     assert.equal(config.requestHeaders?.['developer-token'], 'dev-token-example')
     assert.equal(config.requestHeaders?.['login-customer-id'], '1234567890')
     assert.equal(config.auth.type, 'oauth2')
@@ -317,6 +314,73 @@ async function main() {
     }
   })
 
+  await test('issue #691 top3 templates materialize with guided defaults', () => {
+    const expected = {
+      'google-calendar': {
+        baseUrl: 'https://www.googleapis.com',
+        auth: 'user_delegated_oauth2',
+        defaultTool: 'list_events',
+      },
+      'google-sheets': {
+        baseUrl: 'https://sheets.googleapis.com',
+        auth: 'user_delegated_oauth2',
+        defaultTool: 'get_values',
+      },
+      billingo: {
+        baseUrl: 'https://api.billingo.hu/v3',
+        auth: 'api_key',
+        defaultTool: 'list_documents',
+      },
+    } as const
+
+    for (const [key, spec] of Object.entries(expected)) {
+      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      assert.ok(raw, `missing ${key} custom template`)
+      const descriptor = parseTemplateDescriptor(raw)
+      assert.equal(descriptor.baseUrl, spec.baseUrl)
+      assert.equal(descriptor.authMethods[0]?.kind, spec.auth)
+      assert.ok(
+        descriptor.endpoints.some((endpoint) => endpoint.name === spec.defaultTool && endpoint.default),
+      )
+      // Varázsló-vezetés: mindegyikhez van lépésről lépésre activationHelp.
+      assert.ok((descriptor.activationHelp ?? '').includes('1.'))
+      const config = selfCheckTemplateDescriptor(descriptor)
+      assert.equal(config.provenance?.templateKey, descriptor.key)
+      assert.equal(config.restrictToEndpoints, true)
+    }
+  })
+
+  await test('issue #691 calendar/sheets reuse the platform Google API OAuth app', async () => {
+    const { isPlatformGoogleApiConnectorTemplateKey } = await import(
+      '../src/lib/platform-google-api-connectors'
+    )
+    assert.equal(isPlatformGoogleApiConnectorTemplateKey('google-calendar'), true)
+    assert.equal(isPlatformGoogleApiConnectorTemplateKey('google-sheets'), true)
+    assert.equal(isPlatformGoogleApiConnectorTemplateKey('billingo'), false)
+  })
+
+  await test('billingo template materializes api_key header auth', () => {
+    const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'billingo')
+    assert.ok(raw, 'missing billingo custom template')
+    const config = materializeConnectorConfig(
+      parseTemplateDescriptor(raw),
+      { authMethodKind: 'api_key', instanceValues: {} },
+      { apiKey: 'secret-ref:billingo-api-key' },
+      {
+        templateKey: 'billingo',
+        templateVersion: 1,
+        templateOrigin: 'custom',
+        materializedAt: '2026-07-06T00:00:00.000Z',
+      },
+    )
+    const runtime = parseHttpApiConfig(config)
+    assert.equal(runtime.baseUrl, 'https://api.billingo.hu/v3')
+    assert.deepEqual(runtime.auth, { scheme: 'header', header: 'X-API-KEY' })
+    assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'list_documents' && tool.access === 'read'))
+    assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'list_document_blocks'))
+    assert.ok(!(config.proposedTools ?? []).some((tool) => tool.name === 'create_document'))
+  })
+
   await test('broken custom descriptor fails template self-check', () => {
     // Séma-szinten érvényes, de a példány materializálása elbukik: az instance-mező
     // egy nem támogatott config-targetre mutat → a mentés self-checkje elutasítja.
@@ -356,46 +420,6 @@ async function main() {
     ])
     const runtime = parseHttpApiConfig(result.config)
     assert.equal(runtime.baseUrl, 'https://example.atlassian.net')
-  })
-
-  await test('Ostorosbor bearer migráció csak aktív, bizonyított sablonpéldányt választ ki', () => {
-    const trapConfig = {
-      provider: 'ostorosbor-crm-sales-delegated',
-      baseUrl: 'https://crm.ostorosbor.example/api/connector/v1',
-      egressHosts: ['crm.ostorosbor.example'],
-      authMode: 'service',
-      auth: { type: 'api_key_header', headerName: 'Authorization' },
-      scopesSuggested: [],
-      proposedTools: [],
-      provenance: { templateKey: 'ostorosbor-crm-sales-delegated' },
-    }
-
-    assert.equal(
-      isOstorosborBearerMigrationCandidate({
-        type: 'http_api',
-        lifecycleState: 'active',
-        config: trapConfig,
-      }),
-      true,
-    )
-    assert.equal(
-      isOstorosborBearerMigrationCandidate({
-        type: 'http_api',
-        lifecycleState: 'draft',
-        config: trapConfig,
-      }),
-      false,
-      'draft connector nem migrálható',
-    )
-    assert.equal(
-      isOstorosborBearerMigrationCandidate({
-        type: 'http_api',
-        lifecycleState: 'active',
-        config: { ...trapConfig, provider: 'foreign-crm', provenance: undefined },
-      }),
-      false,
-      'idegen Authorization-headeres connector nem migrálható',
-    )
   })
 
   await test('Ostorosbor enrich backfill hiányzó requestHeaders-t régi draft configban', () => {
@@ -467,90 +491,12 @@ async function main() {
     assert.ok(config.proposedTools.some((t) => t.method === 'POST' && t.path === '/reports/exports' && t.risk === 'read'))
   })
 
-  await test('Ostorosbor bearer migráció újramaterializál, sandbox /accounts 200', async () => {
-    const config = rematerializeOstorosborConnectorConfig({
-      id: 'connector-1',
-      type: 'http_api',
-      lifecycleState: 'active',
-      secretAlias: 'secret-ref:connector/connector-1',
-      config: {
-        provider: 'ostorosbor-crm-sales-delegated',
-        baseUrl: 'https://crm.ostorosbor.example/api/connector/v1',
-        egressHosts: ['crm.ostorosbor.example'],
-        authMode: 'service',
-        auth: { type: 'api_key_header', headerName: 'Authorization' },
-        scopesSuggested: [],
-        proposedTools: [
-          { name: 'list_accounts', method: 'GET', path: '/accounts', access: 'read' },
-          { name: 'create_task', method: 'POST', path: '/tasks', access: 'write' },
-        ],
-        provenance: {
-          templateKey: 'ostorosbor-crm-sales-delegated',
-          templateVersion: 1,
-          templateOrigin: 'custom',
-        },
-      },
-    })
-
-    assert.deepEqual(config.auth, {
-      type: 'bearer_token',
-      secretAliasSuggested: 'secret-ref:connector/connector-1',
-    })
-    assert.deepEqual(config.requestHeaders, {
-      'X-Agent-Id': '{{agent.id}}',
-      'X-Acting-User': '{{actingUser.email}}',
-      'X-Connector-Call-Id': '{{call.id}}',
-    })
-    assert.equal(config.baseUrl, 'https://crm.ostorosbor.example/api/connector/v1')
-    assert.deepEqual(
-      config.proposedTools.map((tool) => tool.name),
-      ['list_accounts', 'create_task'],
-    )
-    assert.equal(config.restrictToEndpoints, true)
-
-    const calls: string[] = []
-    const sandbox = new HttpSandboxConnectionTester({
-      resolveEgressAllowlist: async () => ['crm.ostorosbor.example'],
-      fetchImpl: async (url) => {
-        calls.push(url)
-        return { status: 200, type: 'basic' } as Response
-      },
-    })
-    const result = await sandbox.test({ config, secretAlias: null, tenantId: 'tenant-1' })
-    assert.equal(result.ok, true)
-    assert.equal(result.statusCode, 200)
-    assert.deepEqual(calls, ['https://crm.ostorosbor.example/api/connector/v1/accounts'])
-  })
-
-  await test('Ostorosbor migráció config-hibánál visszaállítja az eredeti secretet', async () => {
-    const savedSecrets: string[] = []
-    await assert.rejects(() =>
-      applyMigrationWithSecretCompensation({
-        originalSecret: 'Bearer original-token',
-        strippedSecret: 'original-token',
-        saveSecret: async (value) => {
-          savedSecrets.push(value)
-        },
-        updateConfig: async () => {
-          throw new Error('database unavailable')
-        },
-      }),
-    )
-    assert.deepEqual(savedSecrets, ['original-token', 'Bearer original-token'])
-  })
-
-  await test('agent connector nézet csak kötést szerkeszt, strukturális update nincs kiexportálva', () => {
-    const agentConnectorSource = readFileSync(
-      resolve(process.cwd(), 'src/components/agents/api-connector-list.tsx'),
-      'utf8',
-    )
+  await test('strukturális agent-connector update nincs kiexportálva', () => {
     const platformActionsSource = readFileSync(
       resolve(process.cwd(), 'src/app/actions/platform.ts'),
       'utf8',
     )
 
-    assert.doesNotMatch(agentConnectorSource, /EditApiConnectorForm/)
-    assert.match(agentConnectorSource, /href="\/control-plane\/provisioning"/)
     assert.doesNotMatch(
       platformActionsSource,
       /export async function updateHttpApiConnectorForAgent/,

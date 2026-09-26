@@ -515,12 +515,12 @@
     "platformSettings": {
       "eyebrow": "Platform",
       "title": "Settings",
-      "body": "Clerk/OAuth, Google Drive, and Google Analytics / Search Console / Ads client settings. Model routing and budget have been removed.",
+      "body": "Clerk/OAuth, Google Drive, and Google API (Analytics / Search Console / Ads / Calendar / Sheets) client settings. Model routing and budget have been removed.",
       "aria": "Platform settings",
       "gmail": "Google OAuth",
       "drive": "Google Drive OAuth",
       "picker": "Drive Picker",
-      "googleApi": "Google Analytics / Search Console / Ads"
+      "googleApi": "Google API (Analytics / Ads / Calendar / Sheets)"
     }
   },
   "GetStarted": {
@@ -1241,7 +1241,7 @@
     "step2TemplateBody": "{name} — set the auth mode and required fields. The connector takes the template name.",
     "templateSelfContained": "The template builds a self-contained draft config from provider metadata and instance fields.",
     "driveOauthNeeded": "The Google Drive template needs the platform Drive OAuth setup (Platform · Settings → Google Drive OAuth).",
-    "googleApiOauthNeeded": "The Google Analytics / Search Console / Ads templates need the platform Google API OAuth setup (Platform · Settings → Google Analytics / Search Console / Ads).",
+    "googleApiOauthNeeded": "The Google API templates (Analytics / Search Console / Ads / Calendar / Sheets) need the platform Google API OAuth setup (Platform · Settings → Google API).",
     "step2Custom": "2. Source of the custom connection",
     "step2CustomBody": "The flow takes you to a config candidate. You only create the draft in the next step.",
     "openapi": "OpenAPI",
@@ -1453,8 +1453,8 @@
     "gmailOauthNeed": "The Gmail connector uses the platform Google OAuth app. Before activation a platform admin must set it on Platform · Settings → Google OAuth.",
     "driveOauthOk": "The platform Google Drive OAuth app is configured — Client ID and Secret are not needed at workspace level.",
     "driveOauthNeed": "The Google Drive connector uses the platform Drive OAuth app. Before activation a platform admin must set it on Platform · Settings → Google Drive OAuth.",
-    "googleApiOauthOk": "The platform Google API OAuth app is configured (Analytics / Search Console / Ads) — Client ID and Secret are not needed at workspace level.",
-    "googleApiOauthNeed": "The Google Analytics / Search Console / Ads connector uses the platform Google API OAuth app. Before activation set it on Platform · Settings → Google Analytics / Search Console / Ads.",
+    "googleApiOauthOk": "The platform Google API OAuth app is configured (Analytics / Search Console / Ads / Calendar / Sheets) — Client ID and Secret are not needed at workspace level.",
+    "googleApiOauthNeed": "The Google API connector uses the platform Google API OAuth app. Before activation set it on Platform · Settings → Google API.",
     "existingSecret": "Reference an existing secret (advanced)",
     "existingSecretHint": "If you already store the secret elsewhere, reference it here instead of typing a key. Accepted forms: env:NAME, secret-manager:projects/…/secrets/<id>, secret-ref:<id>. Otherwise leave empty and type the key above.",
     "badAlias": "Alias form not accepted. Use an env:, secret-manager:, or secret-ref: prefix — or leave empty and type the key above.",

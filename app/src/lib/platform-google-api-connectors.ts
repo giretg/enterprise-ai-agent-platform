@@ -3,6 +3,8 @@ export const PLATFORM_GOOGLE_API_CONNECTOR_TEMPLATE_KEYS = [
   'google-analytics',
   'google-search-console',
   'google-ads',
+  'google-calendar',
+  'google-sheets',
 ] as const
 
 export type PlatformGoogleApiConnectorTemplateKey =
