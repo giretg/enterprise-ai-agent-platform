@@ -5,7 +5,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { useTranslations } from 'next-intl'
 import { Card } from '@/components/ui/shell'
-import { MCP_SETUP_SEEN_COOKIE, type McpClientSetup } from '@/lib/mcp-client-setup'
+import { HERMES_LINKS, MCP_SETUP_SEEN_COOKIE, type McpClientSetup } from '@/lib/mcp-client-setup'
 
 function markSetupSeen() {
   const secure = window.location.protocol === 'https:' ? '; Secure' : ''
@@ -50,22 +50,33 @@ function ClientCard({
   description,
   logo,
   logoBackground,
+  badge,
+  defaultOpen,
   children,
 }: {
   name: string
   description: string
   logo: string
   logoBackground: string
+  badge?: string
+  defaultOpen?: boolean
   children: ReactNode
 }) {
   return (
-    <details className="group overflow-hidden rounded-2xl border border-line bg-card shadow-sm transition-colors hover:border-coral/35 open:border-coral/40">
+    <details open={defaultOpen} className="group overflow-hidden rounded-2xl border border-line bg-card shadow-sm transition-colors hover:border-coral/35 open:border-coral/40">
       <summary className="flex cursor-pointer list-none items-center gap-4 px-4 py-3.5 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-coral sm:px-5 [&::-webkit-details-marker]:hidden">
         <span className={`flex size-12 shrink-0 items-center justify-center rounded-xl ${logoBackground}`}>
           <Image src={logo} alt="" width={28} height={28} className="size-7 object-contain" />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-base font-semibold text-ink">{name}</span>
+          <span className="flex items-center gap-2 text-base font-semibold text-ink">
+            {name}
+            {badge ? (
+              <span className="rounded-full bg-coral/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-coral-deep">
+                {badge}
+              </span>
+            ) : null}
+          </span>
           <span className="block text-sm text-ink-soft">{description}</span>
         </span>
         <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" className="size-5 shrink-0 text-ink-faint transition-transform group-open:rotate-180">
@@ -76,6 +87,20 @@ function ClientCard({
         {children}
       </div>
     </details>
+  )
+}
+
+function HermesStep({ n, title, children }: { n: number; title: string; children: ReactNode }) {
+  return (
+    <li className="flex gap-3">
+      <span aria-hidden="true" className="flex size-6 shrink-0 items-center justify-center rounded-full bg-coral/10 text-xs font-semibold text-coral-deep">
+        {n}
+      </span>
+      <div className="min-w-0 flex-1 space-y-2">
+        <p className="font-semibold text-ink">{title}</p>
+        {children}
+      </div>
+    </li>
   )
 }
 
@@ -109,6 +134,67 @@ export function McpSetupLanding({ setup, continueHref }: { setup: McpClientSetup
         </div>
 
         <div className="space-y-3">
+          <ClientCard
+            name="Hermes Desktop"
+            description={t('hermesDesc')}
+            logo="/mcp-clients/hermes.svg"
+            logoBackground="bg-[#ececf2]"
+            badge={t('hermesBadge')}
+            defaultOpen
+          >
+            <p>{t('hermesIntro')}</p>
+            <ol className="space-y-4">
+              <HermesStep n={1} title={t('hermesStep1Title')}>
+                <p>{t('hermesStep1Body')}</p>
+                <a href={HERMES_LINKS.download} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 font-semibold text-white transition-colors hover:bg-coral-deep">
+                  {t('hermesDownload')} <span aria-hidden="true">↗</span>
+                </a>
+              </HermesStep>
+              <HermesStep n={2} title={t('hermesStep2Title')}>
+                <p>{t('hermesStep2Body')}</p>
+                <CodeBlock value="hermes model" copyLabel={t('copyCommand')} />
+                <p className="text-xs text-ink-faint">{t('hermesStep2Hint')}</p>
+              </HermesStep>
+              <HermesStep n={3} title={t('hermesStep3Title')}>
+                <p>{t('hermesStep3Body')}</p>
+                <CodeBlock value={setup.hermesCommand} copyLabel={t('copyCommand')} />
+                <p className="text-xs text-ink-faint">{t('hermesStep3Hint')}</p>
+              </HermesStep>
+              <HermesStep n={4} title={t('hermesStep4Title')}>
+                <p>{t('hermesStep4Body')}</p>
+                <CodeBlock value={setup.hermesSyncPrompt} copyLabel={t('copyPrompt')} />
+                <p className="text-xs text-ink-faint">{t('hermesStep4Hint')}</p>
+              </HermesStep>
+              <HermesStep n={5} title={t('hermesStep5Title')}>
+                <p>{t('hermesStep5Body')}</p>
+                <p className="text-xs text-ink-faint">{t('hermesApprovalHint')}</p>
+              </HermesStep>
+            </ol>
+            <div className="rounded-xl border border-line bg-card p-3">
+              <p className="font-semibold text-ink">{t('hermesUpdateTitle')}</p>
+              <p className="mt-1">{t('hermesUpdateBody')}</p>
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-faint">{t('hermesLinksTitle')}</p>
+              <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                {(
+                  [
+                    ['hermesLinkDocs', HERMES_LINKS.docs],
+                    ['hermesLinkBotMode', HERMES_LINKS.botMode],
+                    ['hermesLinkMcp', HERMES_LINKS.mcp],
+                    ['hermesLinkProfiles', HERMES_LINKS.profileDistributions],
+                  ] as const
+                ).map(([key, href]) => (
+                  <li key={key}>
+                    <a href={href} target="_blank" rel="noopener noreferrer" className="font-semibold text-coral-deep underline-offset-2 hover:underline">
+                      {t(key)} ↗
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </ClientCard>
+
           <ClientCard name="Codex" description={t('codexDesc')} logo="/mcp-clients/codex.svg" logoBackground="bg-[#e6eee9]">
             <p>{t('codexBody')}</p>
             <CodeBlock value={setup.codexCommand} copyLabel={t('copyCommand')} />
