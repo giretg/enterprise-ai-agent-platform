@@ -6,6 +6,7 @@ import {
   approveGatewayOperationAction,
   rejectGatewayOperationAction,
 } from '@/app/actions/gateway-operation'
+import { pendingArgsSummary } from '@/domain/gateway-operation/pending-args-summary'
 import { asTranslate, type TranslateFn } from '@/i18n/translate'
 import { formatToolUiName } from '@/lib/tool-ui-labels'
 import { operationErrorLabel } from './labels'
@@ -18,22 +19,12 @@ function agentDefinitionLabel(row: PendingOperationRow): string {
   return row.agentName
 }
 
-function argsSummary(args: Record<string, unknown>, t: TranslateFn): string {
-  if (typeof args.method === 'string') return `${args.method} ${String(args.path ?? '')}`
-  if (typeof args.range === 'string') return `${String(args.fileId ?? '—')} · ${args.range}`
-  if (typeof args.title === 'string' && args.title.trim()) {
-    const kind = typeof args.kind === 'string' ? args.kind : t('memoryKind')
-    const project = typeof args.projectKey === 'string' && args.projectKey ? args.projectKey : '__general__'
-    return `${kind}: ${args.title} (${project})`
-  }
-  if (typeof args.path === 'string' && args.path.trim()) {
-    return args.path
-  }
-  const name = typeof args.name === 'string' ? args.name : '—'
-  const parent = typeof args.parentFolderId === 'string' && args.parentFolderId
-    ? t('parentFolder', { id: args.parentFolderId })
-    : t('parentRoot')
-  return `${name} (${parent})`
+function argsSummary(toolName: string, args: Record<string, unknown>, t: TranslateFn): string {
+  return pendingArgsSummary(toolName, args, {
+    memoryKind: t('memoryKind'),
+    parentRoot: t('parentRoot'),
+    parentFolder: (id) => t('parentFolder', { id }),
+  })
 }
 
 function formatWhen(iso: string, locale: string): string {
@@ -136,7 +127,9 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
               <p className="mt-1 text-sm text-ink-soft">
                 {agentDefinitionLabel(row)} · {row.requesterName}
               </p>
-              <p className="mt-1 text-sm text-ink">{argsSummary(row.args, t)}</p>
+              <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink">
+                {argsSummary(row.toolName, row.args, t)}
+              </p>
               <label className="mt-3 block text-xs text-ink-soft">
                 {t('rejectReason')}
                 <textarea
