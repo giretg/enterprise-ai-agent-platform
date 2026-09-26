@@ -13,21 +13,15 @@ import {
 import {
   AGENTMAIL_API_BASE,
   AGENTMAIL_EU_API_BASE,
-  AGENTMAIL_EU_HOST,
   AGENTMAIL_GLOBAL_API_BASE,
-  AGENTMAIL_GLOBAL_HOST,
 } from '@/domain/connector-template/builtin-templates'
+import {
+  AGENTMAIL_REGIONS,
+  parseAgentMailRegion,
+  type AgentMailRegion,
+} from '@/lib/agentmail-region'
 
-export type AgentMailRegion = 'eu' | 'global'
-
-export const AGENTMAIL_REGIONS: Record<AgentMailRegion, { apiBase: string; host: string; label: string }> = {
-  eu: { apiBase: AGENTMAIL_EU_API_BASE, host: AGENTMAIL_EU_HOST, label: 'EU (api.agentmail.eu)' },
-  global: { apiBase: AGENTMAIL_GLOBAL_API_BASE, host: AGENTMAIL_GLOBAL_HOST, label: 'Global (api.agentmail.to)' },
-}
-
-export function parseAgentMailRegion(value: unknown): AgentMailRegion {
-  return value === 'global' ? 'global' : 'eu'
-}
+export { AGENTMAIL_REGIONS, parseAgentMailRegion, type AgentMailRegion } from '@/lib/agentmail-region'
 
 export function agentMailApiBase(region: AgentMailRegion): string {
   return AGENTMAIL_REGIONS[region].apiBase
