@@ -17,15 +17,22 @@ import { parseTemplateDescriptor } from '@/domain/connector-template/template-de
 import { materializeConnectorConfig } from '@/domain/connector-template/materializer'
 import {
   AgentMailApiError,
+  AGENTMAIL_REGIONS,
+  agentMailApiBase,
   agentMailConnectorDescription,
+  agentMailEgressHost,
   agentMailInboxPathSegment,
   createAgentInboxApiKey,
   createAgentMailInbox,
   inboxIdFromConnectorBaseUrl,
   listAgentMailInboxes,
   loadAgentMailOrgKey,
+  loadAgentMailRegion,
+  parseAgentMailRegion,
   saveAgentMailOrgKey,
+  saveAgentMailRegion,
   type AgentMailInbox,
+  type AgentMailRegion,
 } from '@/lib/agentmail'
 
 export type AgentMailInboxRow = AgentMailInbox & {
@@ -37,6 +44,7 @@ export type AgentMailInboxRow = AgentMailInbox & {
 
 export type AgentMailOverview = {
   configured: boolean
+  region: AgentMailRegion
   loadError: string | null
   inboxes: AgentMailInboxRow[]
   agents: Array<{ id: string; name: string }>
@@ -54,11 +62,12 @@ function actorOf(user: AdminUser): ProvisioningActor {
   }
 }
 
-function toFail(e: unknown, fallback: string) {
+function toFail(e: unknown, fallback: string, region?: AgentMailRegion) {
   if (e instanceof AgentMailApiError) {
     if (e.status === 401 || e.status === 403) {
+      const where = region ? AGENTMAIL_REGIONS[region].label : 'a választott régió'
       return fail(
-        'Az AgentMail elutasította a kulcsot. Ellenőrizd, hogy EU régiós (api.agentmail.eu) szervezet teljes jogú kulcsát adtad meg.',
+        `Az AgentMail elutasította a kulcsot. Ellenőrizd, hogy ${where} szervezet teljes jogú kulcsát adtad meg.`,
       )
     }
     return fail(`AgentMail: ${e.message}`)
@@ -67,10 +76,10 @@ function toFail(e: unknown, fallback: string) {
   return fail(e instanceof Error ? e.message : fallback)
 }
 
-async function requireOrgKey(tenantId: string): Promise<string> {
-  const key = await loadAgentMailOrgKey(tenantId)
+async function requireOrgKey(tenantId: string): Promise<{ key: string; region: AgentMailRegion }> {
+  const [key, region] = await Promise.all([loadAgentMailOrgKey(tenantId), loadAgentMailRegion(tenantId)])
   if (!key) throw new Error('Előbb add meg az AgentMail API kulcsot.')
-  return key
+  return { key, region }
 }
 
 function agentMailConnectors(tenantId: string) {
@@ -110,8 +119,9 @@ export async function getAgentMailOverview() {
   try {
     const user = await requireTenantRole('admin')
     const tenantId = user.activeTenantId
-    const [orgKey, connectors, agents] = await Promise.all([
+    const [orgKey, region, connectors, agents] = await Promise.all([
       loadAgentMailOrgKey(tenantId),
+      loadAgentMailRegion(tenantId),
       agentMailConnectors(tenantId),
       repositories.agents.findMany({ tenantId }),
     ])
@@ -120,9 +130,9 @@ export async function getAgentMailOverview() {
     let loadError: string | null = null
     if (orgKey) {
       try {
-        remote = await listAgentMailInboxes(orgKey)
+        remote = await listAgentMailInboxes(orgKey, agentMailApiBase(region))
       } catch (e) {
-        const failed = toFail(e, 'Nem sikerült lekérni a postafiókokat')
+        const failed = toFail(e, 'Nem sikerült lekérni a postafiókokat', region)
         loadError = failed.success ? null : failed.error
       }
     }
@@ -158,6 +168,7 @@ export async function getAgentMailOverview() {
 
     return ok<AgentMailOverview>({
       configured: Boolean(orgKey),
+      region,
       loadError,
       inboxes: rows,
       agents: agents
@@ -170,20 +181,34 @@ export async function getAgentMailOverview() {
 }
 
 export async function saveAgentMailApiKeyAction(input: unknown) {
+  const parsed = z
+    .object({
+      apiKey: z.string().trim().min(10).max(500),
+      region: z.enum(['eu', 'global']).optional().default('eu'),
+    })
+    .parse(input)
+  const region = parseAgentMailRegion(parsed.region)
+  const apiBase = agentMailApiBase(region)
   try {
     const user = await requireTenantRole('admin')
-    const { apiKey } = z.object({ apiKey: z.string().trim().min(10).max(500) }).parse(input)
-    await listAgentMailInboxes(apiKey)
-    await saveAgentMailOrgKey(user.activeTenantId, apiKey)
-    await audit(user, 'connector.agentmail.org_key.set', null, { region: 'eu' })
+    await listAgentMailInboxes(parsed.apiKey, apiBase)
+    await saveAgentMailOrgKey(user.activeTenantId, parsed.apiKey)
+    await saveAgentMailRegion(user.activeTenantId, region)
+    await audit(user, 'connector.agentmail.org_key.set', null, { region })
     return ok({ saved: true })
   } catch (e) {
-    return toFail(e, 'Nem sikerült menteni az AgentMail kulcsot')
+    return toFail(e, 'Nem sikerült menteni az AgentMail kulcsot', region)
   }
 }
 
-async function connectInbox(user: AdminUser, inbox: AgentMailInbox, orgKey: string): Promise<string> {
+async function connectInbox(
+  user: AdminUser,
+  inbox: AgentMailInbox,
+  orgKey: string,
+  region: AgentMailRegion,
+): Promise<string> {
   const tenantId = user.activeTenantId
+  const apiBase = agentMailApiBase(region)
   const existing = (await agentMailConnectors(tenantId)).find(
     (c) => inboxIdFromConnectorBaseUrl((c.config as { baseUrl?: unknown } | null)?.baseUrl) === inbox.inboxId,
   )
@@ -197,12 +222,13 @@ async function connectInbox(user: AdminUser, inbox: AgentMailInbox, orgKey: stri
     {},
     { templateKey: descriptor.key, templateVersion: 1, templateOrigin: 'builtin' },
   )
+  // A sablon EU bázissal materializál; a választott régió bázisára cseréljük.
+  const regionBaseUrl = `${apiBase}/inboxes/${agentMailInboxPathSegment(inbox.inboxId)}`
+  const regionConfig = { ...config, baseUrl: regionBaseUrl }
 
-  for (const host of descriptor.egressHosts) {
-    await services.platformSettings.extendEgressAllowlist(tenantId, host, user.user.id, {
-      sourceType: 'official',
-    })
-  }
+  await services.platformSettings.extendEgressAllowlist(tenantId, agentMailEgressHost(region), user.user.id, {
+    sourceType: 'official',
+  })
 
   const actor = actorOf(user)
   const draft = await services.provisioning.createConnectorDraft(
@@ -210,7 +236,7 @@ async function connectInbox(user: AdminUser, inbox: AgentMailInbox, orgKey: stri
       name: `AgentMail · ${inbox.email}`,
       sourceType: 'template',
       sourceRef: `${descriptor.key}@1`,
-      generatedConfig: { ...config, description: agentMailConnectorDescription(inbox) },
+      generatedConfig: { ...regionConfig, description: agentMailConnectorDescription(inbox) },
       connectorType: 'http_api',
     },
     actor,
@@ -220,12 +246,13 @@ async function connectInbox(user: AdminUser, inbox: AgentMailInbox, orgKey: stri
   if (!tested.ok) throw new Error(`Az AgentMail nem érhető el (${tested.detail ?? tested.statusCode ?? '?'}).`)
   await services.provisioning.reviewConnectorDraft({ draftId: draft.draftId, decision: 'approve' }, actor)
 
-  const inboxKey = await createAgentInboxApiKey(orgKey, inbox.inboxId, `platform · ${inbox.email}`)
+  const inboxKey = await createAgentInboxApiKey(orgKey, inbox.inboxId, `platform · ${inbox.email}`, apiBase)
   await services.provisioning.activateConnector({ draftId: draft.draftId, apiKey: inboxKey }, actor)
   await audit(user, 'connector.materialize', draft.connectorId, {
     templateKey: descriptor.key,
     templateVersion: 1,
     templateOrigin: 'builtin',
+    region,
     inboxEmail: inbox.email,
   })
   return draft.connectorId
@@ -235,10 +262,10 @@ export async function connectAgentMailInboxAction(input: unknown) {
   try {
     const user = await requireTenantRole('admin')
     const { inboxId } = z.object({ inboxId: z.string().trim().min(1).max(320) }).parse(input)
-    const orgKey = await requireOrgKey(user.activeTenantId)
-    const inbox = (await listAgentMailInboxes(orgKey)).find((row) => row.inboxId === inboxId)
+    const { key: orgKey, region } = await requireOrgKey(user.activeTenantId)
+    const inbox = (await listAgentMailInboxes(orgKey, agentMailApiBase(region))).find((row) => row.inboxId === inboxId)
     if (!inbox) return fail('Ez a postafiók nem található az AgentMail fiókban.')
-    return ok({ connectorId: await connectInbox(user, inbox, orgKey) })
+    return ok({ connectorId: await connectInbox(user, inbox, orgKey, region) })
   } catch (e) {
     return toFail(e, 'Nem sikerült bekötni a postafiókot')
   }
@@ -260,14 +287,19 @@ export async function createAgentMailInboxAction(input: unknown) {
         displayName: z.string().trim().max(120).optional().or(z.literal('')),
       })
       .parse(input)
-    const orgKey = await requireOrgKey(user.activeTenantId)
-    const inbox = await createAgentMailInbox(orgKey, {
-      username: parsed.username || undefined,
-      domain: parsed.domain || undefined,
-      displayName: parsed.displayName || undefined,
-    })
-    await audit(user, 'connector.agentmail.inbox.create', null, { inboxEmail: inbox.email })
-    return ok({ inbox, connectorId: await connectInbox(user, inbox, orgKey) })
+    const { key: orgKey, region } = await requireOrgKey(user.activeTenantId)
+    const apiBase = agentMailApiBase(region)
+    const inbox = await createAgentMailInbox(
+      orgKey,
+      {
+        username: parsed.username || undefined,
+        domain: parsed.domain || undefined,
+        displayName: parsed.displayName || undefined,
+      },
+      apiBase,
+    )
+    await audit(user, 'connector.agentmail.inbox.create', null, { region, inboxEmail: inbox.email })
+    return ok({ inbox, connectorId: await connectInbox(user, inbox, orgKey, region) })
   } catch (e) {
     return toFail(e, 'Nem sikerült létrehozni a postafiókot')
   }
