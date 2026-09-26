@@ -272,6 +272,7 @@
     "test:web-research-pipeline": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/web-research-pipeline.test.ts",
     "test:audited-web-fetch": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/audited-web-fetch.test.ts",
     "test:web-discovery": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/provisioning-web-discovery.test.ts",
+    "test:agentmail-connector": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agentmail-connector.test.ts",
     "test:connector-template": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/connector-template.test.ts",
     "test:egress-allowlist": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/egress-allowlist-extend.test.ts",
     "test:http-api": "tsx scripts/http-api-connector.test.ts",

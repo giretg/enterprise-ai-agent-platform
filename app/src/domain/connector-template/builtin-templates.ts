@@ -1,5 +1,8 @@
 import type { TemplateDescriptor } from './template-descriptor'
 
+export const AGENTMAIL_TEMPLATE_KEY = 'agentmail'
+export const AGENTMAIL_API_BASE = 'https://api.agentmail.eu/v0'
+
 export const BUILTIN_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
   {
     key: 'google-workspace',
@@ -380,5 +383,77 @@ Aktiválás után a felhasználók a saját Google-fiókjukkal kötik be a Drive
         target: 'auth.secretAliasSuggested',
       },
     ],
+  },
+  {
+    key: AGENTMAIL_TEMPLATE_KEY,
+    connectorType: 'http_api',
+    displayName: 'AgentMail (agent saját postafiókja)',
+    description:
+      'Az agent saját e-mail címe az AgentMailben (EU régió): a saját nevében küld, olvas és válaszol. Nem a felhasználó postafiókja — arra a Gmail (felhasználói) kapcsolat való.',
+    activationHelp: `Ezt a kapcsolatot a Konnektorok → Agent postafiókok oldalon állítod be, nem ebben a varázslóban.
+
+1. Hozz létre API kulcsot az AgentMail konzolban, EU régiós (api.agentmail.eu) szervezetben.
+2. Az Agent postafiókok oldalon add meg egyszer — a platform titkosítva tárolja.
+3. Hozz létre vagy köss be postafiókot; a platform minden postafiókhoz külön, csak arra a postafiókra érvényes (olvasás + küldés) kulcsot generál.
+4. Válaszd ki, melyik agent használhatja. Minden kimenő levél emberi jóváhagyás után megy ki.`,
+    baseUrl: `${AGENTMAIL_API_BASE}/inboxes/{inboxId}`,
+    egressHosts: ['api.agentmail.eu'],
+    authMethods: [{ kind: 'bearer' }],
+    scopeCatalog: [],
+    endpoints: [
+      {
+        name: 'list_messages',
+        method: 'GET',
+        path: '/messages',
+        access: 'read',
+        description:
+          'A saját postafiók leveleinek listája (legújabb elöl). Query: limit, page_token, labels (pl. received, sent, unread).',
+        default: true,
+      },
+      {
+        name: 'get_message',
+        method: 'GET',
+        path: '/messages/{message_id}',
+        access: 'read',
+        description: 'Egy levél teljes tartalma (feladó, címzettek, tárgy, text/html, thread_id).',
+        default: true,
+      },
+      {
+        name: 'list_threads',
+        method: 'GET',
+        path: '/threads',
+        access: 'read',
+        description: 'Levélváltások listája. Query: limit, page_token, labels.',
+        default: true,
+      },
+      {
+        name: 'get_thread',
+        method: 'GET',
+        path: '/threads/{thread_id}',
+        access: 'read',
+        description: 'Egy levélváltás összes üzenete időrendben.',
+        default: true,
+      },
+      {
+        name: 'send_message',
+        method: 'POST',
+        path: '/messages/send',
+        access: 'write',
+        description:
+          'Új levél küldése a saját címedről. Body: {"to":["cimzett@example.com"],"subject":"...","text":"..."}; opcionális: cc, bcc, html, reply_to. Emberi jóváhagyás után megy ki.',
+        default: true,
+      },
+      {
+        name: 'reply_to_message',
+        method: 'POST',
+        path: '/messages/{message_id}/reply',
+        access: 'write',
+        description:
+          'Válasz egy beérkezett levélre ugyanabban a levélváltásban. Body: {"text":"..."}; opcionális: html, reply_all (true = mindenkinek), cc, bcc. Emberi jóváhagyás után megy ki.',
+        default: true,
+      },
+    ],
+    instanceFields: [],
+    rateLimit: { rps: 2, burst: 5 },
   },
 ]
