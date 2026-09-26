@@ -8,6 +8,7 @@ import {
   assertSafeCheckoutPath,
   CHECKOUT_TOOL_DESCRIPTION,
   checkoutSlug,
+  hermesBotTitle,
   renderAgentCheckout,
   type CheckoutSkill,
 } from '../src/lib/agent-checkout'
@@ -296,7 +297,9 @@ async function main() {
     assert.match(dist, /version: 3\.0\.0/)
     const owned = dist.slice(dist.indexOf('distribution_owned'))
     assert.doesNotMatch(owned, /config\.yaml|profile\.yaml/)
-    assert.match(content('profile.yaml'), /title: Drive asszisztens/)
+    const profileYaml = content('profile.yaml')
+    assert.match(profileYaml, /display_name: Drive asszisztens \(Inspect Drive through MCP\)/)
+    assert.match(profileYaml, /title: Drive asszisztens \(Inspect Drive through MCP\)/)
 
     const soul = content('SOUL.md')
     assert.match(soul, /do not pass definitionId/)
@@ -304,8 +307,28 @@ async function main() {
     assert.doesNotMatch(soul, /agent_stale/)
     assert.match(bundle.writeRecipe, /hermes profile install "\$HOME\/\.hermes\/excellence\/acme\/drive-asszisztens" --name exc-drive-asszisztens -y/)
     assert.match(bundle.writeRecipe, /hermes profile update exc-drive-asszisztens -y/)
+    assert.match(bundle.writeRecipe, /display_name and ui_meta\.hermes-bots\.title/)
     assert.doesNotMatch(bundle.writeRecipe, /hermes profile delete exc/)
     assert.equal(JSON.parse(content('.enterprise-agent/manifest.json')).pin.harness, 'hermes')
+  })
+
+  await check('hermes Bot title is name (role), not the exc- profile id', () => {
+    assert.equal(
+      hermesBotTitle({ name: 'Zoli', roleInstruction: 'POSnavigator marketing lead.\nHosszú utasítás.' }),
+      'Zoli (POSnavigator marketing lead)',
+    )
+    assert.equal(
+      hermesBotTitle({
+        name: 'Ági',
+        description: 'POS marketing',
+        roleInstruction: 'Egy egész oldalnyi szerep-utasítás, amit a címkébe nem írunk.',
+      }),
+      'Ági (POS marketing)',
+    )
+    assert.equal(hermesBotTitle({ name: 'Drive asszisztens', roleInstruction: 'Drive asszisztens' }), 'Drive asszisztens')
+    const titled = hermesBotTitle({ name: 'Kati', roleInstruction: 'A'.repeat(80) })
+    assert.match(titled, /^Kati \(.+…\)$/)
+    assert.ok(titled.length <= 56)
   })
 
   if (failures > 0) {
