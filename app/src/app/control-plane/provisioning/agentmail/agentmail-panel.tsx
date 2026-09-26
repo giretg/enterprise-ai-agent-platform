@@ -9,6 +9,7 @@ import {
   type AgentMailInboxRow,
   type AgentMailOverview,
 } from '@/app/actions/agentmail'
+import { AGENTMAIL_REGIONS, type AgentMailRegion } from '@/lib/agentmail'
 import { assignConnectorToAgent, unassignConnectorFromAgent } from '@/app/actions/provisioning'
 import { Badge, Card } from '@/components/ui/shell'
 
@@ -50,17 +51,18 @@ function MailIcon() {
   )
 }
 
-function OrgKeyCard({ configured }: { configured: boolean }) {
+function OrgKeyCard({ configured, region }: { configured: boolean; region: AgentMailRegion }) {
   const router = useRouter()
   const [editing, setEditing] = useState(!configured)
   const [apiKey, setApiKey] = useState('')
+  const [selectedRegion, setSelectedRegion] = useState<AgentMailRegion>(region)
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
 
   function save() {
     start(async () => {
       setError(null)
-      const res = await saveAgentMailApiKeyAction({ apiKey })
+      const res = await saveAgentMailApiKeyAction({ apiKey, region: selectedRegion })
       if (!res.success) return setError(res.error)
       setApiKey('')
       setEditing(false)
@@ -78,11 +80,32 @@ function OrgKeyCard({ configured }: { configured: boolean }) {
             kezelésére használja — az agentek soha nem kapják meg.
           </p>
         </div>
-        {configured ? <Badge tone="success">Csatlakoztatva · EU</Badge> : <Badge tone="warning">Nincs beállítva</Badge>}
+        {configured ? (
+          <Badge tone="success">Csatlakoztatva · {region === 'global' ? 'Global' : 'EU'}</Badge>
+        ) : (
+          <Badge tone="warning">Nincs beállítva</Badge>
+        )}
       </div>
 
       {editing ? (
         <div className="mt-4 space-y-2">
+          <label className="block text-sm">
+            <span className="mb-1 block font-semibold">Régió</span>
+            <select
+              value={selectedRegion}
+              onChange={(e) => setSelectedRegion(e.target.value as AgentMailRegion)}
+              className={inputClass}
+            >
+              {(Object.keys(AGENTMAIL_REGIONS) as AgentMailRegion[]).map((value) => (
+                <option key={value} value={value}>
+                  {AGENTMAIL_REGIONS[value].label}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-xs text-ink-soft">
+              A kulcsnak a választott régió szervezetéhez kell tartoznia — a két régió kulcsai nem cserélhetők.
+            </span>
+          </label>
           <label className="block text-sm">
             <span className="mb-1 block font-semibold">AgentMail API kulcs</span>
             <input
@@ -94,7 +117,7 @@ function OrgKeyCard({ configured }: { configured: boolean }) {
               placeholder="am_…"
             />
             <span className="mt-1 block text-xs text-ink-soft">
-              Az AgentMail konzolban hozd létre, EU régiós (api.agentmail.eu) szervezetben. Mentés előtt
+              Az AgentMail konzolban hozd létre, a fent választott régió szervezetében. Mentés előtt
               ellenőrizzük, hogy működik.
             </span>
           </label>
@@ -373,7 +396,7 @@ export function AgentMailPanel({ overview }: { overview: AgentMailOverview }) {
   const [notice, setNotice] = useState<string | null>(null)
   return (
     <div className="space-y-6">
-      <OrgKeyCard configured={overview.configured} />
+      <OrgKeyCard configured={overview.configured} region={overview.region} />
       {overview.configured ? (
         <Card>
           <div className="flex flex-wrap items-start justify-between gap-3">

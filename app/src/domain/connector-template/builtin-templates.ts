@@ -1,7 +1,12 @@
 import type { TemplateDescriptor } from './template-descriptor'
 
 export const AGENTMAIL_TEMPLATE_KEY = 'agentmail'
-export const AGENTMAIL_API_BASE = 'https://api.agentmail.eu/v0'
+export const AGENTMAIL_EU_API_BASE = 'https://api.agentmail.eu/v0'
+export const AGENTMAIL_GLOBAL_API_BASE = 'https://api.agentmail.to/v0'
+/** Backward-compat: a meglévő EU-s kapcsolatok bázisa. */
+export const AGENTMAIL_API_BASE = AGENTMAIL_EU_API_BASE
+export const AGENTMAIL_EU_HOST = 'api.agentmail.eu'
+export const AGENTMAIL_GLOBAL_HOST = 'api.agentmail.to'
 
 export const BUILTIN_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
   {
@@ -389,15 +394,15 @@ Aktiválás után a felhasználók a saját Google-fiókjukkal kötik be a Drive
     connectorType: 'http_api',
     displayName: 'AgentMail (agent saját postafiókja)',
     description:
-      'Az agent saját e-mail címe az AgentMailben (EU régió): a saját nevében küld, olvas és válaszol. Nem a felhasználó postafiókja — arra a Gmail (felhasználói) kapcsolat való.',
+      'Az agent saját e-mail címe az AgentMailben (EU vagy global régió): a saját nevében küld, olvas és válaszol. Nem a felhasználó postafiókja — arra a Gmail (felhasználói) kapcsolat való.',
     activationHelp: `Ezt a kapcsolatot a Konnektorok → Agent postafiókok oldalon állítod be, nem ebben a varázslóban.
 
-1. Hozz létre API kulcsot az AgentMail konzolban, EU régiós (api.agentmail.eu) szervezetben.
-2. Az Agent postafiókok oldalon add meg egyszer — a platform titkosítva tárolja.
+1. Hozz létre API kulcsot az AgentMail konzolban, a választott régió szervezetében (EU: api.agentmail.eu, global: api.agentmail.to).
+2. Az Agent postafiókok oldalon válaszd ki a régiót és add meg egyszer — a platform titkosítva tárolja.
 3. Hozz létre vagy köss be postafiókot; a platform minden postafiókhoz külön, csak arra a postafiókra érvényes (olvasás + küldés) kulcsot generál.
 4. Válaszd ki, melyik agent használhatja. Minden kimenő levél emberi jóváhagyás után megy ki.`,
     baseUrl: `${AGENTMAIL_API_BASE}/inboxes/{inboxId}`,
-    egressHosts: ['api.agentmail.eu'],
+    egressHosts: [AGENTMAIL_EU_HOST, AGENTMAIL_GLOBAL_HOST],
     authMethods: [{ kind: 'bearer' }],
     scopeCatalog: [],
     endpoints: [
