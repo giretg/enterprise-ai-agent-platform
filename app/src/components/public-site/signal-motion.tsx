@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
 /**
  * Scroll-driven motion for the public Signal pages. The page stays a server
@@ -65,4 +65,36 @@ export function ScrollEffects() {
     }
   }, [])
   return null
+}
+
+export type ChatFrame = { node: ReactNode; from: number; to?: number }
+
+/**
+ * Plays a scripted chat: after `delays[s]` ms the step advances, and every
+ * frame with from <= step < to is shown. Loops after the last step; reduced
+ * motion shows the final state only.
+ */
+export function ChatSequence({ frames, delays }: { frames: ChatFrame[]; delays: number[] }) {
+  const last = delays.length
+  const [step, setStep] = useState(0)
+
+  useEffect(() => {
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduced && step === last) return
+    const next = () => setStep((s) => (reduced ? last : s >= last ? 0 : s + 1))
+    const timer = setTimeout(next, reduced ? 0 : step >= last ? 5000 : delays[step])
+    return () => clearTimeout(timer)
+  }, [step, last, delays])
+
+  return (
+    <>
+      {frames.map((f, i) =>
+        f.from <= step && (f.to === undefined || step < f.to) ? (
+          <div key={`${i}-${f.from}`} className="animate-rise">
+            {f.node}
+          </div>
+        ) : null,
+      )}
+    </>
+  )
 }

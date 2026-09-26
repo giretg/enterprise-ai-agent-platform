@@ -124,7 +124,10 @@
     "chatApprovalSubject": "Tárgy",
     "chatApprovalSubjectValue": "Heti kampányriport — 39. hét",
     "chatApprovalAudit": "audit-naplóba kerül",
-    "chatComposer": "Írj Katinak…"
+    "chatComposer": "Írj Katinak…",
+    "chatApprovedTitle": "Jóváhagyva",
+    "chatApprovedMeta": "Te · 14:02 · audit #4812",
+    "chatAgentDone": "Elküldtem Csillának. A levél és a jóváhagyás az audit-naplóban is megvan."
   },
   "Common": {
     "loading": "Betöltés…",

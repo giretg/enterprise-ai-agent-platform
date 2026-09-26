@@ -1,6 +1,7 @@
 import { getTranslations } from 'next-intl/server'
+import { ChatSequence } from '@/components/public-site/signal-motion'
 
-// Static hero mock: a Hermes-style chat with company AI co-workers, where an
+// Hero mock (scripted, loops): a Hermes-style chat with company AI co-workers, where an
 // outbound action is approved inline in the client (no link to the platform).
 const agents = [
   { name: 'Kati', role: 'chatRoleKati', color: 'bg-[#ff4f8b]', icon: 'M3 11v2a1 1 0 001 1h2l5 4V6L6 10H4a1 1 0 00-1 1zm13-3a5 5 0 010 8m2.5-10.5a8.5 8.5 0 010 13' },
@@ -28,6 +29,42 @@ function Avatar({ agent, size = 'h-8 w-8' }: { agent: (typeof agents)[number]; s
 export async function AgentChatDemo() {
   const t = await getTranslations('Home')
   const kati = agents[0]
+  const typing = (
+    <span className="inline-flex gap-1 rounded-lg bg-card-2 px-3 py-2.5" aria-hidden>
+      <span className="chat-typing-dot" />
+      <span className="chat-typing-dot chat-typing-dot--2" />
+      <span className="chat-typing-dot chat-typing-dot--3" />
+    </span>
+  )
+  // Inline approval form, rendered by the client itself (no link to the platform).
+  const approval = (state: 'pending' | 'pressed' | 'approved') => (
+    <div className={`rounded-md border border-l-4 p-3 ${state === 'approved' ? 'border-sage bg-sage/5' : 'border-honey bg-honey/5'}`}>
+      <p className={`text-[12px] font-semibold ${state === 'approved' ? 'text-sage' : 'text-honey'}`}>
+        {state === 'approved' ? `✓ ${t('chatApprovedTitle')}` : `▲ ${t('chatApprovalTitle')}`}
+      </p>
+      <dl className="mt-2 grid grid-cols-[72px_1fr] gap-x-3 gap-y-0.5 text-[12px]">
+        <dt className="font-mono text-[11px] uppercase text-ink-faint">{t('approvalTool')}</dt>
+        <dd>{t('chatApprovalAction')}</dd>
+        <dt className="font-mono text-[11px] uppercase text-ink-faint">{t('chatApprovalTo')}</dt>
+        <dd className="truncate">{t('chatApprovalToValue')}</dd>
+        <dt className="font-mono text-[11px] uppercase text-ink-faint">{t('chatApprovalSubject')}</dt>
+        <dd className="truncate">{t('chatApprovalSubjectValue')}</dd>
+      </dl>
+      {state === 'approved' ? (
+        <p className="mt-3 font-mono text-[11px] text-sage">{t('chatApprovedMeta')}</p>
+      ) : (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span
+            className={`rounded border border-sage bg-sage px-3 py-1.5 text-[12px] font-semibold text-white transition ${state === 'pressed' ? 'scale-95 ring-4 ring-sage/30' : ''}`}
+          >
+            {t('approvalApprove')}
+          </span>
+          <span className="rounded border border-ink bg-card px-3 py-1.5 text-[12px] font-semibold">{t('approvalReject')}</span>
+          <span className="ml-auto font-mono text-[11px] text-ink-faint">{t('chatApprovalAudit')}</span>
+        </div>
+      )}
+    </div>
+  )
 
   return (
     <div className="overflow-hidden rounded-md border border-ink bg-card text-[13px] leading-relaxed shadow-[10px_10px_0_var(--color-coral)]">
@@ -61,42 +98,39 @@ export async function AgentChatDemo() {
             <span className="ml-auto h-2 w-2 rounded-full bg-sage" aria-hidden />
           </div>
 
-          <div className="space-y-3 px-4 py-4">
-            <p className="ml-auto w-fit max-w-[85%] rounded-lg bg-card-2 px-3 py-2">{t('chatUser')}</p>
-
-            <div>
-              <p>{t('chatAgentIntro')}</p>
-              <table className="mt-2 w-full border border-line text-[12px]">
-                <tbody>
-                  {stats.map(([key, value, delta]) => (
-                    <tr key={key} className="border-b border-line last:border-0">
-                      <td className="px-2.5 py-1.5 text-ink-soft">{t(key)}</td>
-                      <td className="px-2.5 py-1.5 text-right font-semibold">{value}</td>
-                      <td className="px-2.5 py-1.5 text-right font-mono text-sage">{delta}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <p className="mt-2">{t('chatAgentAsk')}</p>
-            </div>
-
-            {/* Inline approval form, rendered by the client itself */}
-            <div className="rounded-md border border-l-4 border-honey bg-honey/5 p-3">
-              <p className="text-[12px] font-semibold text-honey">▲ {t('chatApprovalTitle')}</p>
-              <dl className="mt-2 grid grid-cols-[72px_1fr] gap-x-3 gap-y-0.5 text-[12px]">
-                <dt className="font-mono text-[11px] uppercase text-ink-faint">{t('approvalTool')}</dt>
-                <dd>{t('chatApprovalAction')}</dd>
-                <dt className="font-mono text-[11px] uppercase text-ink-faint">{t('chatApprovalTo')}</dt>
-                <dd className="truncate">{t('chatApprovalToValue')}</dd>
-                <dt className="font-mono text-[11px] uppercase text-ink-faint">{t('chatApprovalSubject')}</dt>
-                <dd className="truncate">{t('chatApprovalSubjectValue')}</dd>
-              </dl>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className="rounded border border-sage bg-sage px-3 py-1.5 text-[12px] font-semibold text-white">{t('approvalApprove')}</span>
-                <span className="rounded border border-ink bg-card px-3 py-1.5 text-[12px] font-semibold">{t('approvalReject')}</span>
-                <span className="ml-auto font-mono text-[11px] text-ink-faint">{t('chatApprovalAudit')}</span>
-              </div>
-            </div>
+          <div className="min-h-[410px] space-y-3 px-4 py-4">
+            <ChatSequence
+              delays={[700, 1300, 1600, 1600, 500, 900, 1100]}
+              frames={[
+                { from: 0, node: <p className="ml-auto w-fit max-w-[85%] rounded-lg bg-card-2 px-3 py-2">{t('chatUser')}</p> },
+                { from: 1, to: 2, node: typing },
+                {
+                  from: 2,
+                  node: (
+                    <>
+                      <p>{t('chatAgentIntro')}</p>
+                      <table className="mt-2 w-full border border-line text-[12px]">
+                        <tbody>
+                          {stats.map(([key, value, delta]) => (
+                            <tr key={key} className="border-b border-line last:border-0">
+                              <td className="px-2.5 py-1.5 text-ink-soft">{t(key)}</td>
+                              <td className="px-2.5 py-1.5 text-right font-semibold">{value}</td>
+                              <td className="px-2.5 py-1.5 text-right font-mono text-sage">{delta}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <p className="mt-2">{t('chatAgentAsk')}</p>
+                    </>
+                  ),
+                },
+                { from: 3, to: 4, node: approval('pending') },
+                { from: 4, to: 5, node: approval('pressed') },
+                { from: 5, node: approval('approved') },
+                { from: 6, to: 7, node: typing },
+                { from: 7, node: <p>✓ {t('chatAgentDone')}</p> },
+              ]}
+            />
           </div>
 
           <div className="mx-3 mb-3 mt-auto flex items-center gap-2 rounded-md border border-line px-3 py-2 text-ink-faint">

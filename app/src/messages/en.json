@@ -124,7 +124,10 @@
     "chatApprovalSubject": "Subject",
     "chatApprovalSubjectValue": "Weekly campaign report — week 39",
     "chatApprovalAudit": "logged to audit",
-    "chatComposer": "Message Kati…"
+    "chatComposer": "Message Kati…",
+    "chatApprovedTitle": "Approved",
+    "chatApprovedMeta": "You · 14:02 · audit #4812",
+    "chatAgentDone": "Sent to Csilla. The email and your approval are in the audit log."
   },
   "Common": {
     "loading": "Loading…",
