@@ -1186,22 +1186,6 @@ export function ProvisioningPanel({
     })
   }
 
-  const syncSelfUpdating = (connectorId: string) => {
-    setError(null)
-    setNotice(null)
-    startTransition(async () => {
-      const result = await syncSelfUpdatingConnector({ connectorId })
-      if (!result.success) {
-        setError(result.error ?? t('syncFailed'))
-        return
-      }
-      const feedback = selfUpdatingSyncFeedback(result.data)
-      if (feedback.ok) setNotice(feedback.message)
-      else setError(feedback.message)
-      reload()
-    })
-  }
-
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2411,7 +2395,7 @@ export function ProvisioningPanel({
                   row={item.row}
                   pending={pending}
                   run={run}
-                  onSync={syncSelfUpdating}
+                  onReload={reload}
                   isSuperadmin={isSuperadmin}
                 />
               ) : (
@@ -2477,7 +2461,7 @@ export function ProvisioningPanel({
                 row={row}
                 pending={pending}
                 run={run}
-                onSync={syncSelfUpdating}
+                onReload={reload}
                 isSuperadmin={isSuperadmin}
               />
             ))}
@@ -2512,7 +2496,7 @@ export function ProvisioningPanel({
                 row={row}
                 pending={pending}
                 run={run}
-                onSync={syncSelfUpdating}
+                onReload={reload}
                 isSuperadmin={isSuperadmin}
               />
             ))}
