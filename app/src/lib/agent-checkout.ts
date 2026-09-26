@@ -230,6 +230,25 @@ export function renderAgentBriefing(input: {
   const { agentId, snapshot } = input.definition
   const description = snapshot.description?.trim()
   const httpApis = snapshot.connectors.filter((row) => row.type === 'http_api')
+  const loaded = new Map(input.skills.map((skill) => [skill.skillVersionId, skill]))
+  const skills = snapshot.skills
+    .flatMap((pin) => {
+      const skill = loaded.get(pin.skillVersionId)
+      return skill ? [{ pin, skill }] : []
+    })
+    .sort((a, b) => Number(Boolean(b.pin.entry)) - Number(Boolean(a.pin.entry)))
+  const entry = skills[0]?.pin.entry ? skills[0].pin : null
+  const skillUri = (name: string) => `\`${skillFileUri(skillUriName(name), 'SKILL.md')}\``
+  const start = [
+    input.bound
+      ? 'Call platform.agent.get_definition (no arguments) and read generalMemory — this agent\'s memory. If you are reading this in that response, it is already loaded.'
+      : `Call platform.agent.get_definition { "agentId": "${agentId}" } and read generalMemory — this agent's memory. If you are reading this in that response, it is already loaded.`,
+    'Check open work: platform.work_file.list for plans and open tasks.',
+    ...(entry
+      ? [`For every new task, first read the entry skill ${entry.name} (${skillUri(entry.name)}) and follow it — it tells you which other skill to use.`]
+      : []),
+    'Then continue with the user\'s request.',
+  ]
   const lines = [
     '## Who you are',
     '',
@@ -252,11 +271,7 @@ export function renderAgentBriefing(input: {
     '',
     '## Start',
     '',
-    input.bound
-      ? '1. Call platform.agent.get_definition (no arguments) and read generalMemory — this agent\'s memory. If you are reading this in that response, it is already loaded.'
-      : `1. Call platform.agent.get_definition { "agentId": "${agentId}" } and read generalMemory — this agent's memory. If you are reading this in that response, it is already loaded.`,
-    '2. Check open work: platform.work_file.list for plans and open tasks.',
-    '3. Then continue with the user\'s request.',
+    ...start.map((step, index) => `${index + 1}. ${step}`),
     '',
     '## Knowledge, memory, skills',
     '',
@@ -281,18 +296,18 @@ export function renderAgentBriefing(input: {
     }
   }
 
-  const loaded = new Map(input.skills.map((skill) => [skill.skillVersionId, skill]))
-  const skills = snapshot.skills.flatMap((pin) => {
-    const skill = loaded.get(pin.skillVersionId)
-    return skill ? [{ pin, skill }] : []
-  })
   if (skills.length > 0) {
-    lines.push('', 'Skills — read the SKILL.md before you do that kind of work:', '')
+    lines.push(
+      '',
+      `Skills — only these belong to this agent; read the SKILL.md before you do that kind of work (resources/read, or platform.skills.read { uri${input.bound ? '' : ', definitionId'} }):`,
+      '',
+    )
     for (const { pin, skill } of skills.slice(0, BRIEFING_MAX_SKILLS)) {
       const triggers = skill.content.triggerKeywords.slice(0, BRIEFING_MAX_TRIGGERS)
       const trigger = triggers.length > 0 ? ` Triggers: ${triggers.join(', ')}.` : ''
       const text = clipLabel(skill.description.trim().replace(/\s+/g, ' '), BRIEFING_SKILL_DESCRIPTION_MAX)
-      lines.push(`- ${pin.name}: ${text}${trigger} \`${skillFileUri(skillUriName(pin.name), 'SKILL.md')}\``)
+      const label = pin.entry ? ' (entry skill — read first on every new task)' : ''
+      lines.push(`- ${pin.name}${label}: ${text}${trigger} ${skillUri(pin.name)}`)
     }
     if (skills.length > BRIEFING_MAX_SKILLS) {
       lines.push(`- …and ${skills.length - BRIEFING_MAX_SKILLS} more in platform.agent.get_definition → snapshot.skills.`)

@@ -35,7 +35,8 @@ export type AgentDefinitionSnapshot = {
   name: string
   roleInstruction: string
   description?: string | null
-  skills: Array<{ skillId: string; skillVersionId: string; name: string }>
+  /** entry: the agent's entry (orchestrating) skill — every new task starts by reading it. */
+  skills: Array<{ skillId: string; skillVersionId: string; name: string; entry?: true }>
   connectors: Array<{
     connectorId: string
     /** Admin által adott név — több http_api kötésnél a tool hívásban is használható. */
@@ -128,6 +129,7 @@ type DraftWorkingSet = {
   description?: string | null
   enabledSkills: Array<{
     skillVersionId: string
+    entry?: boolean
     skillVersion: { skillId: string; status: string; skill: { name: string } }
   }>
   connectors: Array<{
@@ -194,6 +196,8 @@ async function buildSnapshot(
         skillId: row.skillVersion.skillId,
         skillVersionId: row.skillVersionId,
         name: row.skillVersion.skill.name,
+        // Omitted when false so snapshots published before #653 keep their contentHash.
+        ...(row.entry ? { entry: true as const } : {}),
       })),
     connectors: connectorEntries,
     capabilities: workingSet.capabilities.map((row) => ({

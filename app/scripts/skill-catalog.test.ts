@@ -1201,11 +1201,13 @@ async function main() {
       assign: string[]
       unassign: string[]
       setEnabled: string[]
+      setEntry: string[]
       audit: Array<Record<string, unknown>>
     } = {
       assign: [],
       unassign: [],
       setEnabled: [],
+      setEntry: [],
       audit: [],
     }
     const skillsRepo = {
@@ -1231,6 +1233,9 @@ async function main() {
       },
       setEnabled: async (_agentId: string, v: string, enabled: boolean) => {
         calls.setEnabled.push(`${v}:${enabled}`)
+      },
+      setEntry: async (_agentId: string, v: string, entry: boolean) => {
+        calls.setEntry.push(`${v}:${entry}`)
       },
     }
     const auditRepo = {
@@ -1347,6 +1352,15 @@ async function main() {
       /Agent not found/,
     )
     assert.equal(calls.setEnabled.length, 0, 'idegen agent skilljét NEM lehet ki/bekapcsolni')
+  })
+
+  await check('setEntry IDEGEN tenant agentjén → elutasítva, nincs állapotváltás', async () => {
+    const { svc, calls } = makeAgentBoundSvc({ agentTenantId: TENANT_B })
+    await assert.rejects(
+      () => svc.setEntry({ agentId: 'agent-b', skillVersionId: 'v1', entry: true, actor: adminA }),
+      /Agent not found/,
+    )
+    assert.equal(calls.setEntry.length, 0, 'idegen agent belépő skilljét NEM lehet állítani')
   })
 
   console.log('')

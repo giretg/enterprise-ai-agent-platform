@@ -217,6 +217,8 @@ export interface SkillRepository {
   }): Promise<{ assignment: AgentSkill; replacedVersionIds: string[] }>
   unassign(agentId: string, skillVersionId: string): Promise<void>
   setEnabled(agentId: string, skillVersionId: string, enabled: boolean): Promise<AgentSkill>
+  /** entry=true clears the flag on the agent's other skills (at most one entry skill per agent). */
+  setEntry(agentId: string, skillVersionId: string, entry: boolean): Promise<void>
   listAgentSkills(agentId: string): Promise<AgentSkillWithVersion[]>
   listEnabledForAgent(agentId: string): Promise<AgentSkillWithVersion[]>
   findAssignment(agentId: string, skillVersionId: string): Promise<AgentSkillWithVersion | null>

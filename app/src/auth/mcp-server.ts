@@ -205,7 +205,8 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     args: Record<string, unknown>
     origin?: string
   }) => Promise<EnterpriseToolMcpResult>
-  listMcpSkills: (input: { tenantId: string }) => Promise<McpSkillPackage[]>
+  /** skillVersionIds: exactly these pinned versions (#653); omitted → the tenant's active skills. */
+  listMcpSkills: (input: { tenantId: string; skillVersionIds?: string[] }) => Promise<McpSkillPackage[]>
   agentScaffold: AgentScaffoldDeps
 }
 
@@ -329,7 +330,8 @@ export function productionMcpDeps(): McpRuntimeDeps {
         }),
       ),
     invokeProjectWork: (input) => services.projectWork.invoke(input),
-    listMcpSkills: ({ tenantId }) => services.skills.listMcpSkillPackages(tenantId),
+    listMcpSkills: ({ tenantId, skillVersionIds }) =>
+      services.skills.listMcpSkillPackages(tenantId, skillVersionIds),
     agentScaffold: {
       agents: repositories.agents,
       versions: repositories.agentDefinitions,
@@ -407,6 +409,15 @@ const mcpSkillsListResultSchema = z.object({
 })
 const mcpSkillsListParamsSchema = z.object({ cursor: z.string().optional() })
 const mcpSkillsGetParamsSchema = z.object({ uri: z.string().min(1) })
+const agentScopeSchema = {
+  definitionId: z.string().uuid().optional(),
+  agentId: z.string().uuid().optional(),
+}
+const skillsListToolSchema = mcpSkillsListParamsSchema.extend({
+  ...agentScopeSchema,
+  includeOtherSkills: z.boolean().optional(),
+})
+const skillReadToolSchema = mcpSkillsGetParamsSchema.extend(agentScopeSchema)
 
 async function loadTenantContext(principal: McpPrincipal, deps: McpRuntimeDeps) {
   const [tenant, coworkers] = await Promise.all([
@@ -440,30 +451,103 @@ async function listAgentsToolResult(principal: McpPrincipal, deps: McpRuntimeDep
   return textResult({ agents: context.coworkers })
 }
 
+type AgentSkills = { packages: McpSkillPackage[]; entrySkillVersionId: string | null }
+
+/**
+ * #653: definitionId / agentId → exactly the skill versions pinned in that
+ * published definition (not the skill's current active version). null = no
+ * agent named; 'not_found' = unknown or not visible to this user.
+ */
+async function loadAgentSkills(
+  principal: McpPrincipal,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+): Promise<AgentSkills | null | 'not_found'> {
+  if (args.definitionId === undefined && args.agentId === undefined) return null
+  const definitionId = asUuid(args.definitionId)
+  const agentId = asUuid(args.agentId)
+  if (!definitionId && !agentId) return 'not_found'
+  const loaded = await deps.loadDefinition({ tenantId: principal.tenantId, definitionId, agentId })
+  if (
+    !loaded ||
+    !(await deps.canViewAgent({
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      role: principal.role,
+      agentId: loaded.agentId,
+    }))
+  ) {
+    return 'not_found'
+  }
+  const pins = loaded.snapshot.skills
+  const entrySkillVersionId = pins.find((pin) => pin.entry)?.skillVersionId ?? null
+  const packages = [
+    ...(await deps.listMcpSkills({
+      tenantId: principal.tenantId,
+      skillVersionIds: pins.map((pin) => pin.skillVersionId),
+    })),
+  ]
+  if (entrySkillVersionId) {
+    packages.sort(
+      (a, b) =>
+        Number(b.skillVersionId === entrySkillVersionId) -
+        Number(a.skillVersionId === entrySkillVersionId),
+    )
+  }
+  return { packages, entrySkillVersionId }
+}
+
 async function listSkillsToolResult(
   principal: McpPrincipal,
+  args: Record<string, unknown>,
   deps: McpRuntimeDeps,
-  packages: McpSkillPackage[],
+  tenantPackages: McpSkillPackage[],
 ) {
   await auditMcpToolCall(deps, principal, MCP_SKILLS_LIST_TOOL)
-  return textResult({ skills: packages.map(toSkillsListEntry) })
+  const agent = await loadAgentSkills(principal, args, deps)
+  if (agent === 'not_found') return definitionNotFound()
+  if (!agent) return textResult({ skills: tenantPackages.map(toSkillsListEntry) })
+  const own = new Set(agent.packages.map((pkg) => pkg.uriName))
+  return textResult({
+    skills: [
+      ...agent.packages.map((pkg) => ({
+        ...toSkillsListEntry(pkg),
+        ...(pkg.skillVersionId === agent.entrySkillVersionId ? { entry: true } : {}),
+      })),
+      ...(args.includeOtherSkills === true
+        ? tenantPackages
+            .filter((pkg) => !own.has(pkg.uriName))
+            .map((pkg) => ({ ...toSkillsListEntry(pkg), assignedToAgent: false }))
+        : []),
+    ],
+  })
 }
 
 async function readSkillToolResult(
   principal: McpPrincipal,
   args: Record<string, unknown>,
   deps: McpRuntimeDeps,
-  packages: McpSkillPackage[],
+  tenantPackages: McpSkillPackage[],
 ) {
   await auditMcpToolCall(deps, principal, MCP_SKILL_READ_TOOL)
+  const agent = await loadAgentSkills(principal, args, deps)
+  if (agent === 'not_found') return definitionNotFound()
   const uri = typeof args.uri === 'string' ? args.uri : ''
   const parsed = parseSkillResourceUri(uri)
-  const pkg = parsed ? findPackageByUri(packages, uri) : undefined
+  const own = parsed ? findPackageByUri(agent?.packages ?? tenantPackages, uri) : undefined
+  // Another skill of the tenant only by explicit uri, and the answer says so.
+  const pkg = own ?? (agent && parsed ? findPackageByUri(tenantPackages, uri) : undefined)
   const file = pkg && parsed ? findSkillFile(pkg, parsed.filePath) : undefined
   if (!file) return textResult({ code: 'skill_resource_not_found', message: 'Skill resource not found' }, true)
   await auditMcpResourceRead(deps, principal, uri)
   return textResult({
     contents: [{ uri, mimeType: file.mimeType, text: file.text }],
+    ...(own
+      ? {}
+      : {
+          assignedToAgent: false,
+          note: 'This skill is not assigned to the selected agent. Use it only because the user asked for it explicitly, and tell them.',
+        }),
   })
 }
 
@@ -895,7 +979,16 @@ async function createMcpResourceHandler(
 
   return createMcpHandler(
     async (server) => {
-      const packages = await deps.listMcpSkills({ tenantId: principal.tenantId })
+      const tenantPackages = await deps.listMcpSkills({ tenantId: principal.tenantId })
+      // A client bound to one agent lists only that agent's skills (resources/list, skills/list).
+      const boundSkills = agentHeader
+        ? await loadAgentSkills(principal, { agentId: agentHeader }, deps)
+        : null
+      const packages = !agentHeader
+        ? tenantPackages
+        : boundSkills && boundSkills !== 'not_found'
+          ? boundSkills.packages
+          : []
       server.registerTool(
         MCP_WHOAMI_TOOL,
         {
@@ -991,23 +1084,24 @@ async function createMcpResourceHandler(
         {
           title: 'List skills',
           description:
-            'List active skills available to this tenant. Each skill includes a SKILL.md URI and resource URIs. Use platform.skills.read when the MCP client cannot read resources directly.',
-          inputSchema: mcpSkillsListParamsSchema,
+            'List skills. Pass definitionId (or agentId) from platform.agent.get_definition: then only that agent\'s skills come back, in the exact versions pinned in its definition, and the entry skill (read it first on every new task) has entry: true. includeOtherSkills=true adds the tenant\'s other skills marked assignedToAgent: false — only when the user explicitly asks for one. Without definitionId: every active skill of the tenant. Each skill includes a SKILL.md URI and resource URIs. Use platform.skills.read when the MCP client cannot read resources directly.',
+          inputSchema: skillsListToolSchema,
           annotations: { readOnlyHint: true },
         },
-        async () => listSkillsToolResult(principal, deps, packages),
+        async (args) =>
+          listSkillsToolResult(principal, args as Record<string, unknown>, deps, tenantPackages),
       )
       server.registerTool(
         MCP_SKILL_READ_TOOL,
         {
           title: 'Read skill resource',
           description:
-            'Read a skill:// resource returned by platform.skills.list. Returns SKILL.md instructions or an attachment as text.',
-          inputSchema: mcpSkillsGetParamsSchema,
+            'Read a skill:// resource returned by platform.skills.list. Returns SKILL.md instructions or an attachment as text. Pass definitionId so you get the version pinned for the agent; a skill outside the agent comes back with assignedToAgent: false.',
+          inputSchema: skillReadToolSchema,
           annotations: { readOnlyHint: true },
         },
         async (args) =>
-          readSkillToolResult(principal, args as Record<string, unknown>, deps, packages),
+          readSkillToolResult(principal, args as Record<string, unknown>, deps, tenantPackages),
       )
       server.registerTool(
         MCP_SKILL_SUBMIT_TOOL,
@@ -1420,6 +1514,8 @@ async function createMcpResourceHandler(
         if (
           agentHeader &&
           (toolName === MCP_AGENT_GET_DEFINITION_TOOL ||
+            toolName === MCP_SKILLS_LIST_TOOL ||
+            toolName === MCP_SKILL_READ_TOOL ||
             isProjectWorkTool(toolName) ||
             isEnterpriseTool(toolName))
         ) {
@@ -1444,10 +1540,10 @@ async function createMcpResourceHandler(
           return publishAgentToolResult(principal, args, deps)
         }
         if (toolName === MCP_SKILLS_LIST_TOOL) {
-          return listSkillsToolResult(principal, deps, packages)
+          return listSkillsToolResult(principal, args, deps, tenantPackages)
         }
         if (toolName === MCP_SKILL_READ_TOOL) {
-          return readSkillToolResult(principal, args, deps, packages)
+          return readSkillToolResult(principal, args, deps, tenantPackages)
         }
         if (toolName === MCP_SKILL_SUBMIT_TOOL) {
           return submitSkillToolResult(principal, args, deps)

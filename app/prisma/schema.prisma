@@ -515,6 +515,8 @@ model AgentSkill {
   agentId        String   @map("agent_id") @db.Uuid
   skillVersionId String   @map("skill_version_id") @db.Uuid
   enabled        Boolean  @default(true)
+  /// Belépő (orkesztráló) skill: minden új feladat ezzel indul. Agentenként legfeljebb egy (részleges unique index a migrációban).
+  entry          Boolean  @default(false)
   assignedById   String?  @map("assigned_by") @db.Uuid
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
 
