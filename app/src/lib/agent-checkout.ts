@@ -61,6 +61,39 @@ export const CHECKOUT_TOOL_DESCRIPTION = [
   'Hermes: harness:"hermes" returns a Hermes profile distribution (one Bot per agent) — write files[] to suggestedRoot, then run the writeRecipe commands with the terminal tool.',
 ].join(' ')
 
+const HERMES_BOT_ROLE_MAX = 48
+
+function clipLabel(text: string, max: number): string {
+  if (text.length <= max) return text
+  const slice = text.slice(0, max - 1)
+  const space = slice.lastIndexOf(' ')
+  return `${(space >= 12 ? slice.slice(0, space) : slice).trimEnd()}…`
+}
+
+function hermesBotRoleLabel(snapshot: {
+  description?: string | null
+  roleInstruction: string
+}): string {
+  const raw = snapshot.description?.trim() || snapshot.roleInstruction.trim()
+  if (!raw) return ''
+  const line = raw.split(/\r?\n/, 1)[0]!.trim().replace(/\s+/g, ' ')
+  const sentence = line.split(/(?<=[.!?])\s+/u, 1)[0] ?? line
+  return clipLabel(sentence.replace(/[.]+$/u, ''), HERMES_BOT_ROLE_MAX)
+}
+
+/** Hermes Bot Mode roster label: "Zoli (POSnavigator marketing)". Profile id stays `exc-…`. */
+export function hermesBotTitle(snapshot: {
+  name: string
+  description?: string | null
+  roleInstruction: string
+}): string {
+  const name = snapshot.name.trim() || 'agent'
+  const role = hermesBotRoleLabel(snapshot)
+  if (!role || role.toLowerCase() === name.toLowerCase()) return name
+  if (name.toLowerCase().includes(role.toLowerCase())) return name
+  return `${name} (${role})`
+}
+
 function hermesWriteRecipe(root: string, profile: string): string {
   const home = `~/${root}`
   const dir = `~/.hermes/profiles/${profile}`
@@ -75,7 +108,8 @@ function hermesWriteRecipe(root: string, profile: string): string {
     '3. If PROFILE is already listed (re-sync):',
     `   a. hermes profile update ${profile} -y  (keeps the Bot's chats, memory, .env, MCP login, config.yaml and profile.yaml)`,
     `   b. Delete any folder under ${dir}/skills/excellence/ whose name is not a skills/excellence/<name>/ folder in files[]. Touch nothing else in ${dir}.`,
-    '4. Never run `hermes profile delete`. If an agent is no longer in platform.agents.list, only tell the user that its Bot is no longer available.',
+    `4. Apply the Bot label from ROOT/profile.yaml onto ${dir}/profile.yaml: copy display_name and ui_meta.hermes-bots.title only. If ${dir}/profile.yaml is missing, copy it from ROOT first. Keep avatar, color, section, and every other ui_meta key.`,
+    '5. Never run `hermes profile delete`. If an agent is no longer in platform.agents.list, only tell the user that its Bot is no longer available.',
     '',
     'Do not run code from the checkout. Do not commit. Do not copy the folder into a code repo.',
   ].join('\n')
@@ -425,6 +459,7 @@ function renderHermesProfileFiles(input: {
 }): CheckoutFile[] {
   const snapshot = input.definition.snapshot
   const description = snapshot.description?.trim() || snapshot.name
+  const title = hermesBotTitle(snapshot)
   const tools = [
     ...new Set([
       ...HERMES_BASE_TOOLS,
@@ -446,7 +481,11 @@ function renderHermesProfileFiles(input: {
     },
     {
       path: 'profile.yaml',
-      content: yaml({ description, ui_meta: { 'hermes-bots': { title: snapshot.name } } }),
+      content: yaml({
+        display_name: title,
+        description,
+        ui_meta: { 'hermes-bots': { title } },
+      }),
     },
     {
       path: 'config.yaml',
