@@ -89,7 +89,10 @@ export function materializeConnectorConfig(
   })
 
   // Contract check: the same stored config must be valid for the runtime HTTP engine.
-  parseHttpApiConfig(normalized)
+  // Delegált módban a clientId grantkor a platform OAuth appból jöhet, a draftban üres lehet.
+  parseHttpApiConfig(normalized, {
+    allowMissingOAuthClientId: normalized.authMode === 'user_delegated',
+  })
   return normalized
 }
 
