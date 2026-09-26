@@ -16,33 +16,12 @@ import { ensureTenantAgentScaffold } from '../src/domain/agent-scaffold-material
 import { repositories } from '../src/repositories/postgres'
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
 import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
-import {
-  MAX_TEMPLATE_ICON_DATA_URL_LENGTH,
-  type TemplateDescriptor,
-} from '../src/domain/connector-template/template-descriptor'
+import type { TemplateDescriptor } from '../src/domain/connector-template/template-descriptor'
 import type { Prisma } from '@prisma/client'
-import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { withTemplateIcon } from './template-icons'
 
 const SEED_TENANT_SLUG = process.env.SEED_TENANT_SLUG ?? 'demo'
 const SEED_CLERK_USER_ID = process.env.SEED_CLERK_USER_ID ?? 'seed-clerk-user'
-
-const TEMPLATE_ICON_DIR = resolve(__dirname, '../connector-template-icons')
-/** Több sablon osztozhat egy ikonfájlon. */
-const TEMPLATE_ICON_FILE_BY_KEY: Record<string, string> = {
-  'ostorosbor-crm-sales-delegated': 'ostorosbor-crm.svg',
-  'ostorosbor-crm-service-insight': 'ostorosbor-crm.svg',
-}
-
-/** A sablon ikonfájlja data URL-ként, vagy undefined ha nincs / túl nagy. */
-function iconDataUrlForKey(key: string): string | undefined {
-  const file = TEMPLATE_ICON_FILE_BY_KEY[key] ?? `${key}.svg`
-  const path = resolve(TEMPLATE_ICON_DIR, file)
-  if (!existsSync(path)) return undefined
-  const dataUrl = `data:image/svg+xml;base64,${readFileSync(path).toString('base64')}`
-  if (dataUrl.length > MAX_TEMPLATE_ICON_DATA_URL_LENGTH) return undefined
-  return dataUrl
-}
 
 async function upsertTemplates(
   origin: 'builtin' | 'custom',
@@ -52,13 +31,7 @@ async function upsertTemplates(
     const existing = await prisma.connectorTemplate.findFirst({
       where: { key: descriptor.key, version: 1, tenantId: null, origin },
     })
-    // A már feltöltött egyedi ikont nem írjuk felül — csak a hiányzót pótoljuk.
-    const existingIcon = (existing?.descriptor as { iconDataUrl?: unknown } | null)?.iconDataUrl
-    const iconDataUrl =
-      typeof existingIcon === 'string' && existingIcon.length > 0
-        ? existingIcon
-        : (descriptor.iconDataUrl ?? iconDataUrlForKey(descriptor.key))
-    const withIcon: TemplateDescriptor = iconDataUrl ? { ...descriptor, iconDataUrl } : descriptor
+    const withIcon = withTemplateIcon(descriptor, existing?.descriptor)
     const data = {
       displayName: withIcon.displayName,
       description: withIcon.description ?? null,

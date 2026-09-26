@@ -5,7 +5,9 @@ import {
   getPlatformGoogleDriveOAuthConfig,
   getPlatformGoogleApiOAuth,
   getPlatformGoogleDrivePickerConfig,
+  getPlatformNavSoftware,
 } from '@/app/actions/connector-grants'
+import { NavOnlineInvoiceControlPanel } from '@/app/control-plane/system/nav-online-invoice-control-panel'
 import { GoogleOAuthControlPanel } from '@/app/control-plane/system/google-oauth-control-panel'
 import { GoogleDriveOAuthControlPanel } from '@/app/control-plane/system/google-drive-oauth-control-panel'
 import { GoogleApiOAuthControlPanel } from '@/app/control-plane/system/google-api-oauth-control-panel'
@@ -16,11 +18,12 @@ import { hasMinimumPlatformRole } from '@/lib/tenant-policy'
 export default async function PlatformSettingsPage() {
   const ctx = await getAuthContext()
   const canEdit = hasMinimumPlatformRole(ctx?.platformRoles ?? [], 'platform_operator')
-  const [gmail, drive, googleApi, picker] = await Promise.all([
+  const [gmail, drive, googleApi, picker, nav] = await Promise.all([
     getPlatformGoogleOAuth(),
     getPlatformGoogleDriveOAuthConfig(),
     getPlatformGoogleApiOAuth(),
     getPlatformGoogleDrivePickerConfig(),
+    getPlatformNavSoftware(),
   ])
 
   const t = await getTranslations('ControlPlane.platformSettings')
@@ -68,6 +71,15 @@ export default async function PlatformSettingsPage() {
               <GoogleDrivePickerControlPanel initial={picker.data} canEdit={canEdit} />
             ) : (
               <p className="text-sm text-coral-deep">{picker.error}</p>
+            ),
+          },
+          {
+            id: 'nav-online-invoice',
+            label: t('nav'),
+            content: nav.success ? (
+              <NavOnlineInvoiceControlPanel initial={nav.data} canEdit={canEdit} />
+            ) : (
+              <p className="text-sm text-coral-deep">{nav.error}</p>
             ),
           },
         ]}

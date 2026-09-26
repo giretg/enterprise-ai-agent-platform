@@ -15,7 +15,9 @@ import { lookup } from 'node:dns/promises'
 import { getCloudRunAccessToken } from '@/domain/net/cloud-run-auth'
 import { guardEgressUrl } from '@/domain/net/egress-guard'
 import {
+  HTTP_API_PROTOCOLS,
   httpPaginationSchema,
+  type HttpApiProtocol,
   type HttpPagination,
 } from '@/domain/provisioning/connector-config'
 import {
@@ -29,11 +31,13 @@ import {
   buildHttpApiOversizedResponseHint,
   buildHttpApiTruncationBody,
 } from './http-api-prompt'
+import { buildProtocolRequest, parseProtocolResponse } from './xml-protocols'
 
 export type HttpApiAuthConfig =
   | { scheme: 'header'; header: string }
   | { scheme: 'bearer' }
-  | { scheme: 'basic' }
+  /** `username` nélkül a titok már base64(`felhasználó:jelszó`); vele a titok a jelszó. */
+  | { scheme: 'basic'; username?: string }
   | { scheme: 'none' }
   | {
       scheme: 'oauth2'
@@ -151,6 +155,10 @@ export type HttpApiConfig = {
   maxResponseChars?: number
   /** Önfrissítő snapshotból materializált config: minden hívásnál egress-őr. */
   selfUpdatingPinned?: boolean
+  /** XML-alapú API adaptere (xml-protocols.ts); hiányában sima JSON REST. */
+  protocol?: HttpApiProtocol
+  /** NAV Online Számla: a lekérdező adózó 8 jegyű törzsszáma. */
+  nav?: { taxNumber: string }
 }
 
 const HTTP_API_RISKS = new Set<HttpApiRisk>(['read', 'write', 'danger'])
@@ -239,7 +247,8 @@ export function parseHttpApiConfig(
     }
     auth = { scheme: 'header', header: authRaw.header.trim() }
   } else if (authRaw.scheme === 'basic' || authRaw.type === 'basic') {
-    auth = { scheme: 'basic' }
+    const username = typeof authRaw.username === 'string' ? authRaw.username.trim() : ''
+    auth = username ? { scheme: 'basic', username } : { scheme: 'basic' }
   } else if (authRaw.scheme === 'oauth2' || authRaw.type === 'oauth2') {
     const tokenUrl = typeof authRaw.tokenUrl === 'string' ? authRaw.tokenUrl.trim() : ''
     if (!/^https?:\/\//i.test(tokenUrl)) {
@@ -339,8 +348,12 @@ export function parseHttpApiConfig(
   const githubRepositoryAccess = parseGitHubRepositoryAccessConfig(raw.githubRepositoryAccess)
 
   const defaultRisk = parseHttpApiRisk(raw.defaultRisk)
+  const protocol = HTTP_API_PROTOCOLS.find((p) => p === raw.protocol)
+  const navTaxNumber = isRecord(raw.nav) && typeof raw.nav.taxNumber === 'string' ? raw.nav.taxNumber.trim() : ''
 
   return {
+    ...(protocol ? { protocol } : {}),
+    ...(navTaxNumber ? { nav: { taxNumber: navTaxNumber } } : {}),
     baseUrl: baseUrl.replace(/\/+$/, ''),
     auth,
     ...(authProfiles ? { authProfiles } : {}),
@@ -629,6 +642,8 @@ export type HttpApiResponse = {
   truncated?: boolean
   /** RFC 8288 lapozáshoz; csak a Link fejléc, más response header nem kerül tovább. */
   linkHeader?: string
+  /** XML-protokolloknál a szolgáltató saját hibakódja (pl. Számlázz.hu `hibakod`). */
+  errorCode?: string
 }
 
 export class HttpApiError extends Error {
@@ -879,6 +894,8 @@ export class HttpApiClient {
       }
     }
 
+    if (this.config.protocol) return this.requestViaProtocol(this.config.protocol, method, params)
+
     const url = this.buildUrl(params.path, params.query)
     const hasBody = params.body !== undefined && !READ_METHODS.has(method)
     // Sorrend: caller paraméterek → platform sablon → auth. A sablon/auth soha
@@ -973,7 +990,40 @@ export class HttpApiClient {
     }
   }
 
-  private async fetchWithBackoff(input: URL, init: RequestInit): Promise<Response> {
+  private async requestViaProtocol(
+    protocol: HttpApiProtocol,
+    method: string,
+    params: HttpApiRequestParams,
+  ): Promise<HttpApiResponse> {
+    if (!this.defaultApiKey) {
+      throw new HttpApiError('http_api connector has no default API key', 'missing_api_key')
+    }
+    let request: Awaited<ReturnType<typeof buildProtocolRequest>>
+    try {
+      request = await buildProtocolRequest(
+        protocol,
+        this.config.baseUrl,
+        { method, path: params.path, query: params.query, body: params.body },
+        this.defaultApiKey,
+        { navTaxNumber: this.config.nav?.taxNumber },
+      )
+    } catch (e) {
+      const code = (e as { code?: unknown }).code
+      throw new HttpApiError(e instanceof Error ? e.message : String(e), typeof code === 'string' ? code : 'invalid_args')
+    }
+    // Író hívás (pl. számla-kiállítás) 5xx után sem ismételhető: kettős bizonylatot okozhatna.
+    const res = await this.fetchWithBackoff(new URL(request.url), request.init, READ_METHODS.has(method))
+    const result = await parseProtocolResponse(protocol, res)
+    return {
+      status: res.status,
+      ok: result.ok,
+      body: result.body,
+      ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+      ...(result.hint ? { hint: result.hint } : {}),
+    }
+  }
+
+  private async fetchWithBackoff(input: URL, init: RequestInit, retry = true): Promise<Response> {
     const connectorUrl = new URL(this.config.baseUrl)
     const connectorHost = connectorUrl.hostname.toLowerCase()
     // A redirect-pinning ORIGIN-szinten köt (séma + host + port), nem csak hostname-en: egy
@@ -997,7 +1047,7 @@ export class HttpApiClient {
     // `redirect: 'manual'`, és a redirecteket kézzel, a connector SAJÁT hostjára pinnelve
     // követjük; idegen hostra mutató átirányítás → blokk.
     const guardedInit: RequestInit = { ...init, redirect: 'manual' }
-    const delays = [250, 750]
+    const delays = retry ? [250, 750] : []
     for (let attempt = 0; attempt <= delays.length; attempt += 1) {
       const res = await this.fetchFollowingSameOriginRedirects(input, guardedInit, connectorOrigin)
       // 429 / 5xx → korlátozott backoff; minden mást (a 4xx-eket is) felfelé adunk
@@ -1148,7 +1198,10 @@ async function resolveOAuth2AccessToken(
 async function buildAuthHeaders(auth: HttpApiAuthConfig, apiKey: string): Promise<Record<string, string>> {
   if (auth.scheme === 'none') return {}
   if (auth.scheme === 'bearer') return { authorization: `Bearer ${apiKey}` }
-  if (auth.scheme === 'basic') return { authorization: `Basic ${apiKey}` }
+  if (auth.scheme === 'basic') {
+    const token = auth.username ? Buffer.from(`${auth.username}:${apiKey}`).toString('base64') : apiKey
+    return { authorization: `Basic ${token}` }
+  }
   if (auth.scheme === 'oauth2') {
     const accessToken = await resolveOAuth2AccessToken(auth, apiKey)
     return { authorization: `Bearer ${accessToken}` }

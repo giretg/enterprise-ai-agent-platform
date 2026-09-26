@@ -5,6 +5,7 @@
 import { config } from 'dotenv'
 import { resolve } from 'node:path'
 import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
+import { withTemplateIcon } from '../prisma/template-icons'
 
 config({ path: resolve(process.cwd(), '.env.local') })
 config({ path: resolve(process.cwd(), '.env') })
@@ -21,10 +22,11 @@ if (!useProduction && testDbUrl) {
 
 async function main() {
   const { prisma } = await import('../src/lib/db')
-  for (const descriptor of GLOBAL_CUSTOM_CONNECTOR_TEMPLATES) {
+  for (const seed of GLOBAL_CUSTOM_CONNECTOR_TEMPLATES) {
     const existing = await prisma.connectorTemplate.findFirst({
-      where: { key: descriptor.key, version: 1, tenantId: null, origin: 'custom' },
+      where: { key: seed.key, version: 1, tenantId: null, origin: 'custom' },
     })
+    const descriptor = withTemplateIcon(seed, existing?.descriptor)
     if (!existing) {
       await prisma.connectorTemplate.create({
         data: {

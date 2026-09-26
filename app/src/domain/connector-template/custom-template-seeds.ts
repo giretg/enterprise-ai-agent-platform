@@ -1273,4 +1273,344 @@ Az adAccountId path-paraméter a numerikus fiókazonosító, act_ nélkül. Éle
     ],
     rateLimit: { rps: 2, burst: 5 },
   },
+  {
+    key: 'szamlazz-hu',
+    displayName: 'Számlázz.hu',
+    connectorType: 'http_api',
+    description:
+      'Számlázz.hu Számla Agent: számlák lekérdezése, adózó-ellenőrzés, és jóváhagyás után számla-kiállítás, sztornó és jóváírás egyetlen Agent-kulccsal.',
+    activationHelp: `Csak egy titok kell: a Számla Agent kulcs. Lépések sorban:
+1. Lépj be a Számlázz.hu-fiókodba, és a Beállítások → Számla Agent kulcsok oldalon hozz létre egy új kulcsot (pl. „AI agent” néven).
+2. Itt a varázslóban nincs kitöltendő mező — a kulcsot csak aktiváláskor kérjük.
+3. Sandbox-teszt: kulcs nélkül nem hívjuk a Számlázz.hu-t, ez a lépés automatikusan átmegy.
+4. Aktiváláskor az „API kulcs” mezőbe illeszd a Számla Agent kulcsot. A platform ezzel egy valódi, nem módosító lekérdezést futtat — ha a kulcs rossz, itt kiderül.
+5. Kezdd olvasással. Ha az agent számlázhat is, pipáld be a create_invoice (és ha kell, reverse_invoice / register_payment) sort; minden kiállítás emberi jóváhagyás után megy ki, és a számla azonnal a NAV-hoz kerül.`,
+    baseUrl: 'https://www.szamlazz.hu/szamla',
+    egressHosts: ['www.szamlazz.hu'],
+    protocol: 'szamlazz_agent',
+    authMethods: [{ kind: 'bearer' }],
+    scopeCatalog: [],
+    endpoints: [
+      {
+        name: 'get_invoice',
+        method: 'GET',
+        path: '/invoice',
+        access: 'read',
+        description:
+          'Egy számla adatai XML-ben (fejléc, eladó, vevő, tételek, összegek, fizetési állapot; PDF nélkül). Query: szamlaszam VAGY rendelesSzam VAGY szamlaKulsoAzon. Ismeretlen számlánál 7-es hibakód jön.',
+        default: true,
+      },
+      {
+        name: 'get_taxpayer',
+        method: 'GET',
+        path: '/taxpayer',
+        access: 'read',
+        description:
+          'Magyar adózó NAV-adatai (név, cím, érvényesség) a Számlázz.hu-n át. Query: torzsszam (az adószám első 8 jegye). Kiállítás előtt ezzel ellenőrizd a vevő adószámát.',
+        default: true,
+      },
+      {
+        name: 'create_invoice',
+        method: 'POST',
+        path: '/invoice',
+        access: 'write',
+        description:
+          'Számla (vagy "dijbekero": true esetén díjbekérő) kiállítása; éles számla azonnal a NAV-hoz kerül. Az összegeket neked kell kiszámolnod: nettoErtek = nettoEgysegar × mennyiseg, afaErtek = nettoErtek × afakulcs/100, bruttoErtek = nettoErtek + afaErtek. Példa: {"fejlec":{"keltDatum":"2026-09-28","teljesitesDatum":"2026-09-28","fizetesiHataridoDatum":"2026-10-06","fizmod":"Átutalás","penznem":"HUF","szamlaNyelve":"hu","rendelesSzam":"R-123"},"vevo":{"nev":"Minta Kft.","irsz":"1111","telepules":"Budapest","cim":"Fő utca 1.","email":"info@example.hu","sendEmail":false,"adoszam":"12345678-2-41"},"tetelek":[{"megnevezes":"Tanácsadás","mennyiseg":1,"mennyisegiEgyseg":"óra","nettoEgysegar":50000,"afakulcs":"27","nettoErtek":50000,"afaErtek":13500,"bruttoErtek":63500}]}. A válasz a számlaszámot adja vissza.',
+        default: false,
+      },
+      {
+        name: 'reverse_invoice',
+        method: 'POST',
+        path: '/invoice/reverse',
+        access: 'write',
+        description:
+          'Sztornó számla egy meglévő számlára. Body: {"fejlec":{"szamlaszam":"E-ABC-2026-1","keltDatum":"2026-09-28","teljesitesDatum":"2026-09-28"}}.',
+        default: false,
+      },
+      {
+        name: 'register_payment',
+        method: 'POST',
+        path: '/invoice/payment',
+        access: 'write',
+        description:
+          'Jóváírás (kifizetés rögzítése) egy számlán. Body: {"szamlaszam":"E-ABC-2026-1","kifizetes":[{"datum":"2026-09-28","jogcim":"átutalás","osszeg":63500}]}. "additiv": false felülírja a korábbi jóváírásokat.',
+        default: false,
+      },
+    ],
+    instanceFields: [
+      {
+        name: 'agentKey',
+        label: 'Számla Agent kulcs (Beállítások → Számla Agent kulcsok)',
+        type: 'secret',
+        required: true,
+        secretAliasHint: 'szamlazz-hu-agent-key',
+        hiddenInProvisioning: true,
+        target: 'auth.secretAliasSuggested',
+      },
+    ],
+    rateLimit: { rps: 1, burst: 3 },
+  },
+  {
+    key: 'nav-online-szamla',
+    displayName: 'NAV Online Számla',
+    connectorType: 'http_api',
+    description:
+      'NAV Online Számla 3.0 lekérdezések: kimenő és bejövő számlák listája és teljes tartalma, számlalánc, adószám-ellenőrzés. Csak olvasás.',
+    activationHelp: `Két előfeltétel és egy technikai felhasználó kell. Lépések sorban:
+1. Platform-előfeltétel (egyszer, superadmin): Platform · Beállítások → NAV Online Számla oldalon add meg a szoftver azonosítóját (fejlesztő neve, adószáma, elérhetősége). Enélkül a NAV minden hívást elutasít.
+2. Lépj be az onlineszamla.nav.gov.hu oldalra a cég elsődleges felhasználójaként, és a Felhasználók menüben hozz létre egy új, „Technikai felhasználó” típusú felhasználót. Jogosultságnak elég a „Számlák lekérdezése”.
+3. A technikai felhasználónál kattints a Kulcsgenerálás gombra: az „XML aláírókulcs” kell (a cserekulcs nem).
+4. Itt a varázslóban válaszd ki a környezetet (éles vagy teszt), és add meg a cég adószámának első 8 jegyét.
+5. Aktiváláskor külön mezőkben kérjük a technikai felhasználó nevét, jelszavát és az aláírókulcsot. A platform ezekkel egy valódi adószám-lekérdezést futtat — ha bármelyik rossz, itt kiderül.`,
+    baseUrl: 'https://api.onlineszamla.nav.gov.hu/invoiceService/v3',
+    egressHosts: ['api.onlineszamla.nav.gov.hu'],
+    protocol: 'nav_online_invoice',
+    authMethods: [{ kind: 'bearer' }],
+    credentialFields: [
+      { name: 'login', label: 'Technikai felhasználó neve' },
+      { name: 'password', label: 'Technikai felhasználó jelszava', secret: true },
+      { name: 'signKey', label: 'XML aláírókulcs', secret: true },
+    ],
+    scopeCatalog: [],
+    endpoints: [
+      {
+        name: 'get_taxpayer',
+        method: 'GET',
+        path: '/taxpayer',
+        access: 'read',
+        description: 'Adózó NAV-adatai (név, cím, érvényesség). Query: taxNumber (az adószám első 8 jegye).',
+        default: true,
+      },
+      {
+        name: 'list_invoices',
+        method: 'GET',
+        path: '/invoices',
+        access: 'read',
+        description:
+          'Számlák kivonatos listája kiállítási dátum szerint. Query: direction (OUTBOUND = kimenő, INBOUND = bejövő), dateFrom, dateTo (YYYY-MM-DD, legfeljebb 35 nap), page (1-től), opcionálisan partnerTaxNumber, partnerName.',
+        default: true,
+      },
+      {
+        name: 'get_invoice',
+        method: 'GET',
+        path: '/invoice',
+        access: 'read',
+        description:
+          'Egy számla teljes tartalma (invoiceXml: tételek, összegek). Query: invoiceNumber, direction; bejövő számlánál supplierTaxNumber (a kiállító 8 jegyű adószáma) is kell.',
+        default: true,
+      },
+      {
+        name: 'check_invoice',
+        method: 'GET',
+        path: '/invoice/check',
+        access: 'read',
+        description: 'Igaz/hamis: be van-e jelentve a számla a NAV-hoz. Query: invoiceNumber, direction, (bejövőnél) supplierTaxNumber.',
+        default: true,
+      },
+      {
+        name: 'get_invoice_chain',
+        method: 'GET',
+        path: '/invoice/chain',
+        access: 'read',
+        description:
+          'Számlalánc (alapszámla + módosító/sztornó számlák). Query: invoiceNumber, direction, (bejövőnél) taxNumber = a kiállító adószáma, page.',
+        default: true,
+      },
+    ],
+    instanceFields: [
+      {
+        name: 'environment',
+        label: 'NAV környezet: éles (api.onlineszamla…) vagy teszt (api-test.onlineszamla…)',
+        type: 'enum',
+        required: true,
+        enumValues: [
+          'https://api.onlineszamla.nav.gov.hu/invoiceService/v3',
+          'https://api-test.onlineszamla.nav.gov.hu/invoiceService/v3',
+        ],
+        target: 'baseUrl',
+      },
+      {
+        name: 'taxNumber',
+        label: 'A cég adószámának első 8 jegye',
+        type: 'string',
+        required: true,
+        validation: { pattern: '^\\d{8}$' },
+        example: '12345678',
+        target: 'nav.taxNumber',
+      },
+      {
+        name: 'credentials',
+        label: 'Technikai felhasználó (név, jelszó, aláírókulcs)',
+        type: 'secret',
+        required: true,
+        secretAliasHint: 'nav-online-szamla-credentials',
+        hiddenInProvisioning: true,
+        target: 'auth.secretAliasSuggested',
+      },
+    ],
+    rateLimit: { rps: 1, burst: 3 },
+  },
+  {
+    key: 'minicrm',
+    displayName: 'MiniCRM',
+    connectorType: 'http_api',
+    description:
+      'MiniCRM R3 API: modulok, projektek (adatlapok), kontaktok, teendők és e-mailek olvasása; jóváhagyás után létrehozás és módosítás.',
+    activationHelp: `Két adat kell: a System ID és az API-kulcs. Lépések sorban:
+1. Lépj be a MiniCRM-be adminisztrátorként, és a Beállítások → Rendszer oldalon generálj API-kulcsot.
+2. A System ID a MiniCRM címében látszik: r3.minicrm.hu/<System ID>/… — ezt írd be a varázslóban.
+3. Sandbox-teszt: a kapcsolat elérhetőségi próbája kulcs nélkül fut.
+4. Aktiváláskor az „API kulcs” mezőbe illeszd az API-kulcsot. A platform ezzel egy valódi olvasó hívást futtat.
+5. Kezdd olvasással. Ha az agent írhat is, pipáld be a create_/update_ sorokat; minden módosítás emberi jóváhagyás után megy ki. A MiniCRM percenként legfeljebb 60 hívást enged.`,
+    baseUrl: 'https://r3.minicrm.hu/Api/R3',
+    egressHosts: ['r3.minicrm.hu'],
+    authMethods: [{ kind: 'basic' }],
+    scopeCatalog: [],
+    endpoints: [
+      {
+        name: 'list_categories',
+        method: 'GET',
+        path: '/Category',
+        access: 'read',
+        description: 'Modulok (kategóriák) listája {CategoryId: név}. Ezzel kezdj: minden projekt egy modulhoz tartozik.',
+        default: true,
+      },
+      {
+        name: 'get_project_schema',
+        method: 'GET',
+        path: '/Schema/Project/{categoryId}',
+        access: 'read',
+        description: 'Egy modul mezői, státuszai és egyedi mezői. Írás előtt ebből derül ki a mezőnév és a StatusId.',
+        default: true,
+      },
+      {
+        name: 'search_projects',
+        method: 'GET',
+        path: '/Project',
+        access: 'read',
+        description:
+          'Projektek (adatlapok) keresése. Query: CategoryId, StatusId, StatusGroup (Lead|Open|Success|Failed), UserId, UpdatedSince (YYYY-MM-DD HH:MM:SS), Query (szabad szöveg), Page (0-tól, 100/oldal). Válasz: {Count, Results}.',
+        default: true,
+      },
+      {
+        name: 'get_project',
+        method: 'GET',
+        path: '/Project/{id}',
+        access: 'read',
+        description: 'Egy projekt összes mezője.',
+        default: true,
+      },
+      {
+        name: 'search_contacts',
+        method: 'GET',
+        path: '/Contact',
+        access: 'read',
+        description: 'Kontaktok (cégek, személyek) keresése. Query: Query (név, e-mail vagy telefonszám), Page. Válasz: {Count, Results}.',
+        default: true,
+      },
+      {
+        name: 'get_contact',
+        method: 'GET',
+        path: '/Contact/{id}',
+        access: 'read',
+        description: 'Egy kontakt adatai.',
+        default: true,
+      },
+      {
+        name: 'list_todos',
+        method: 'GET',
+        path: '/ToDoList/{projectId}',
+        access: 'read',
+        description: 'Egy projekt teendői. Query: Status (Open|Closed|All).',
+        default: true,
+      },
+      {
+        name: 'get_todo',
+        method: 'GET',
+        path: '/ToDo/{id}',
+        access: 'read',
+        description: 'Egy teendő részletei.',
+        default: true,
+      },
+      {
+        name: 'list_emails',
+        method: 'GET',
+        path: '/EmailList/{projectId}',
+        access: 'read',
+        description: 'Egy projekthez tartozó e-mailek listája.',
+        default: true,
+      },
+      {
+        name: 'create_project',
+        method: 'PUT',
+        path: '/Project',
+        access: 'write',
+        description:
+          'Új projekt. Kötelező: CategoryId, ContactId. Példa: {"CategoryId":1,"ContactId":123,"Name":"Ajánlatkérés","StatusId":2500}. Előtte search_projects-szel ellenőrizd, hogy nincs-e már meg.',
+        default: false,
+      },
+      {
+        name: 'update_project',
+        method: 'PUT',
+        path: '/Project/{id}',
+        access: 'write',
+        description: 'Projekt módosítása; csak a változó mezőket küldd. Példa: {"StatusId":2501}.',
+        default: false,
+      },
+      {
+        name: 'create_contact',
+        method: 'PUT',
+        path: '/Contact',
+        access: 'write',
+        description:
+          'Új kontakt. Személy: {"Type":"Person","FirstName":"Anna","LastName":"Kiss","Email":"anna@example.hu","Phone":"+36301234567"}; cég: {"Type":"Business","Name":"Minta Kft."}. Előtte search_contacts.',
+        default: false,
+      },
+      {
+        name: 'update_contact',
+        method: 'PUT',
+        path: '/Contact/{id}',
+        access: 'write',
+        description: 'Kontakt módosítása; csak a változó mezőket küldd.',
+        default: false,
+      },
+      {
+        name: 'create_todo',
+        method: 'PUT',
+        path: '/ToDo',
+        access: 'write',
+        description: 'Új teendő egy projekten. Példa: {"ProjectId":123,"Comment":"Visszahívni","Deadline":"2026-10-01 10:00:00","UserId":45}.',
+        default: false,
+      },
+      {
+        name: 'update_todo',
+        method: 'PUT',
+        path: '/ToDo/{id}',
+        access: 'write',
+        description: 'Nyitott teendő módosítása vagy lezárása. Példa: {"Status":"Closed"}.',
+        default: false,
+      },
+    ],
+    instanceFields: [
+      {
+        name: 'systemId',
+        label: 'MiniCRM System ID (a címben: r3.minicrm.hu/<System ID>/)',
+        type: 'string',
+        required: true,
+        validation: { pattern: '^\\d{1,7}$' },
+        example: '12345',
+        target: 'auth.username',
+      },
+      {
+        name: 'apiKey',
+        label: 'MiniCRM API-kulcs (Beállítások → Rendszer)',
+        type: 'secret',
+        required: true,
+        secretAliasHint: 'minicrm-api-key',
+        hiddenInProvisioning: true,
+        target: 'auth.secretAliasSuggested',
+      },
+    ],
+    rateLimit: { rps: 1, burst: 5 },
+  },
 ]

@@ -515,12 +515,13 @@
     "platformSettings": {
       "eyebrow": "Platform",
       "title": "Beállítások",
-      "body": "Clerk/OAuth, Google Drive és Google API (Analytics / Search Console / Ads / Calendar / Sheets) kliensbeállítások. Modell-routing és budget kikerült.",
+      "body": "Clerk/OAuth, Google Drive és Google API (Analytics / Search Console / Ads / Calendar / Sheets) kliensbeállítások, valamint a NAV Online Számla szoftver-azonosító. Modell-routing és budget kikerült.",
       "aria": "Platform beállítások",
       "gmail": "Google OAuth",
       "drive": "Google Drive OAuth",
       "picker": "Drive Picker",
-      "googleApi": "Google API (Analytics / Ads / Calendar / Sheets)"
+      "googleApi": "Google API (Analytics / Ads / Calendar / Sheets)",
+      "nav": "NAV Online Számla"
     }
   },
   "GetStarted": {
