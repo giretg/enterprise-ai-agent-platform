@@ -10,6 +10,7 @@ export const CORE_MVP_AUDIT_ACTIONS = [
   'mcp.tools.call',
   'mcp.tools.call.deny',
   'mcp.resources.read',
+  'mcp.prompts.get',
   'enterprise.tool.ok',
   'enterprise.tool.denied',
   'enterprise.tool.error',

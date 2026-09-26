@@ -37,7 +37,10 @@ import {
   asCheckoutHarness,
   CHECKOUT_HARNESSES,
   CHECKOUT_TOOL_DESCRIPTION,
+  checkoutSlug,
+  hermesBotTitle,
   renderAgentCheckout,
+  renderAgentPrompt,
   type CheckoutSkill,
 } from '@/lib/agent-checkout'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
@@ -94,6 +97,7 @@ import { WRITE_CONFIRM_KEY } from '@/domain/gateway-operation'
 import {
   auditMcpAuthDenied,
   auditMcpAuthOk,
+  auditMcpPromptGet,
   auditMcpResourceRead,
   auditMcpToolCall,
   auditMcpToolDenied,
@@ -738,6 +742,40 @@ async function checkoutToolResult(
   )
 }
 
+/** prompts/get for one agent (#651): always the current published definition, re-checked for visibility. */
+async function agentPromptResult(
+  principal: McpPrincipal,
+  deps: McpRuntimeDeps,
+  promptName: string,
+  agentId: string,
+  task?: string,
+) {
+  await auditMcpPromptGet(deps, principal, promptName, agentId)
+  const loaded = await deps.loadDefinition({ tenantId: principal.tenantId, agentId })
+  if (
+    !loaded ||
+    !isDispatchable(loaded.status) ||
+    !(await deps.canViewAgent({
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      role: principal.role,
+      agentId: loaded.agentId,
+    }))
+  ) {
+    throw new Error('Agent not found')
+  }
+  const skills = await deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId))
+  return {
+    description: hermesBotTitle(loaded.snapshot),
+    messages: [
+      {
+        role: 'user' as const,
+        content: { type: 'text' as const, text: renderAgentPrompt({ definition: loaded, skills, task }) },
+      },
+    ],
+  }
+}
+
 /** Per-client agent binding (#682 WP-2): Hermes Bots etc. send it on every MCP request. */
 export const MCP_AGENT_ID_HEADER = 'x-excellence-agent-id'
 
@@ -1299,6 +1337,28 @@ async function createMcpResourceHandler(
         async (args) =>
           getGatewayOperationToolResult(principal, args as Record<string, unknown>, deps),
       )
+
+      const promptNames = new Set<string>()
+      for (const coworker of context.coworkers) {
+        const slug = checkoutSlug(coworker.name)
+        const name = promptNames.has(slug) ? `${slug}-${coworker.agentId.slice(0, 8)}` : slug
+        promptNames.add(name)
+        server.registerPrompt(
+          name,
+          {
+            title: hermesBotTitle({
+              name: coworker.name,
+              description: coworker.description,
+              roleInstruction: coworker.roleInstructionPreview ?? '',
+            }),
+            description: `Work as ${coworker.name}: loads the agent's role, rules and skills from its current published definition.`,
+            argsSchema: z.object({
+              feladat: z.string().optional().describe('Optional: today\'s task, appended to the end of the prompt.'),
+            }),
+          },
+          async ({ feladat }) => agentPromptResult(principal, deps, name, coworker.agentId, feladat),
+        )
+      }
 
       for (const pkg of packages) {
         for (const file of pkg.files) {

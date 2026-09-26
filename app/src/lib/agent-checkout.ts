@@ -3,6 +3,7 @@ import type { AgentDefinition } from '@/domain/agent-definition'
 import { hashSnapshot } from '@/domain/agent-definition'
 import { CODE_EXTENSIONS } from '@/lib/skill/skill-package-adapter'
 import { serializeSkillMd } from '@/lib/skill/skill-md-export'
+import { skillFileUri, skillUriName } from '@/lib/skill/mcp-skill'
 import type { SkillContent, SkillRequirement } from '@/lib/skill/skill-content'
 
 const CHECKOUT_EXTENSIONS = new Set(['md', 'json', 'yaml'])
@@ -211,29 +212,23 @@ function skillFolderName(skill: CheckoutSkill, colliding: boolean): string {
   return `${slug}--${skill.skillId.replace(/-/g, '').slice(0, 8)}`
 }
 
-function renderAgentsMd(input: {
-  definition: AgentDefinition
-  contentHash: string
-  mcpUrl: string
-  skills: Array<{ name: string; description: string; triggers: string[]; path: string }>
+export type BriefingSkill = { name: string; description: string; triggers: string[]; path: string }
+
+/** Role, MCP working rules and skill pointers: one text for checkout AGENTS.md and the MCP agent prompt. */
+export function renderAgentBriefing(input: {
+  snapshot: AgentDefinition['snapshot']
+  skills: BriefingSkill[]
   hermes?: boolean
-}): string {
-  const snapshot = input.definition.snapshot
+}): string[] {
+  const snapshot = input.snapshot
   const lines = [
-    `# ${snapshot.name}`,
-    '',
-    `agentId: ${input.definition.agentId}`,
-    `version: ${input.definition.version}`,
-    `contentHash: ${input.contentHash}`,
-    `mcpUrl: ${input.mcpUrl}`,
-    '',
     '## Role',
     '',
     snapshot.roleInstruction,
     '',
     '## MCP routing',
     '',
-    'All work for this agent runs through the mcpUrl above — there is no separate in-platform chat runtime. Call MCP tools for skills, connectors, and enterprise tools. Credentials stay on the server.',
+    'All work for this agent runs through this MCP server (mcpUrl) — there is no separate in-platform chat runtime. Call MCP tools for skills, connectors, and enterprise tools. Credentials stay on the server.',
     '',
     input.hermes
       ? `This Bot is bound to this agent by the ${AGENT_ID_HEADER} header on every MCP request: do not pass definitionId or agentId — the server uses the agent's current published definition. For several HTTP API connectors, use connectors[].name as connectorName or connectors[].connectorId when method+path is ambiguous.`
@@ -241,7 +236,7 @@ function renderAgentsMd(input: {
     '',
     'Writes (for example creating a Drive folder or http_api_request) enqueue and wait for Control Plane approval. Do not bypass approval.',
     '',
-    'Memory first: this agent\'s memory (company facts, decisions, locations) lives on the server. platform.agent.get_definition returns it as generalMemory; read it at the start of every conversation and before answering company questions or searching — it overrides search results. More: platform.project_memory.read / write (omit projectKey for general memory). Work files (plans, notes) are platform.work_file.* under a projectKey. Do not create a local memory file, and do not keep durable work in this checkout folder.',
+    'Memory first: this agent\'s memory (company facts, decisions, locations) lives on the server. platform.agent.get_definition returns it as generalMemory; read it at the start of every conversation and before answering company questions or searching — it overrides search results. More: platform.project_memory.read / write (omit projectKey for general memory). Work files (plans, notes) are platform.work_file.* under a projectKey. Do not create a local memory file, and do not keep durable work in a local folder.',
     ...(input.hermes ? ['Local Hermes memory is off for this Bot on purpose; remember things with platform.project_memory.write.'] : []),
     'Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
     '',
@@ -268,6 +263,74 @@ function renderAgentsMd(input: {
     }
   }
 
+  if (input.skills.length > 0) {
+    lines.push('', '## Skills', '')
+    for (const skill of input.skills) {
+      const trigger = skill.triggers.length > 0 ? ` Triggers: ${skill.triggers.join(', ')}.` : ''
+      lines.push(`- ${skill.name}: ${skill.description}${trigger} See \`${skill.path}\`.`)
+    }
+  }
+  return lines
+}
+
+/** MCP prompt text (#651): the first message that puts the client AI into this agent's role. */
+export function renderAgentPrompt(input: {
+  definition: AgentDefinition
+  skills: CheckoutSkill[]
+  task?: string
+}): string {
+  const { agentId, definitionId, version, snapshot } = input.definition
+  const loaded = new Map(input.skills.map((skill) => [skill.skillVersionId, skill]))
+  const skills = snapshot.skills.flatMap((pin) => {
+    const skill = loaded.get(pin.skillVersionId)
+    if (!skill) return []
+    return [
+      {
+        name: pin.name,
+        description: skill.description,
+        triggers: skill.content.triggerKeywords,
+        path: skillFileUri(skillUriName(pin.name), 'SKILL.md'),
+      },
+    ]
+  })
+  const description = snapshot.description?.trim()
+  const lines = [
+    `You are now ${snapshot.name}${description ? ` — ${description}` : ''}. Take on this agent's role for the whole conversation and work by its rules below. Do not ask which agent to use; introduce yourself in this role in your first reply.`,
+    '',
+    `agentId: ${agentId}`,
+    `definitionId: ${definitionId} (version ${version})`,
+    '',
+    ...renderAgentBriefing({ snapshot, skills }),
+    '',
+    '## Start',
+    '',
+    `1. Call platform.agent.get_definition { "agentId": "${agentId}" } and read generalMemory (this agent's memory) before anything else.`,
+    '2. Check open work: platform.work_file.list for plans and open tasks.',
+    '3. Then continue with the user\'s request.',
+  ]
+  const task = input.task?.trim()
+  if (task) lines.push('', "## Today's task", '', task)
+  return `${lines.join('\n')}\n`
+}
+
+function renderAgentsMd(input: {
+  definition: AgentDefinition
+  contentHash: string
+  mcpUrl: string
+  skills: BriefingSkill[]
+  hermes?: boolean
+}): string {
+  const lines = [
+    `# ${input.definition.snapshot.name}`,
+    '',
+    `agentId: ${input.definition.agentId}`,
+    `version: ${input.definition.version}`,
+    `contentHash: ${input.contentHash}`,
+    `mcpUrl: ${input.mcpUrl}`,
+    '',
+    ...renderAgentBriefing({ snapshot: input.definition.snapshot, skills: input.skills, hermes: input.hermes }),
+  ]
+
   if (input.hermes) {
     lines.push(
       '',
@@ -285,14 +348,6 @@ function renderAgentsMd(input: {
       'If the returned `contentHash` differs from the pin above, call `platform.agent.checkout`, overwrite generated paths, then retry.',
       'Enterprise tools reject stale pins with `agent_stale` until checkout completes and the manifest `definitionId` matches the current published version.',
     )
-  }
-
-  if (input.skills.length > 0) {
-    lines.push('', '## Skills', '')
-    for (const skill of input.skills) {
-      const trigger = skill.triggers.length > 0 ? ` Triggers: ${skill.triggers.join(', ')}.` : ''
-      lines.push(`- ${skill.name}: ${skill.description}${trigger} See \`${skill.path}\`.`)
-    }
   }
 
   return `${lines.join('\n')}\n`
