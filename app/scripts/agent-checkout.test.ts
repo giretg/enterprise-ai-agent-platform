@@ -238,7 +238,10 @@ async function main() {
       '## Approvals and handoffs',
     ])
     assert.match(briefing, /^## Who you are\n\nYou are now Drive asszisztens\./)
-    assert.match(briefing, /- drive-search: drive-search description Triggers: drive, search\. `skill:\/\/drive-search\/SKILL\.md`/)
+    assert.match(
+      briefing,
+      /- drive-search: drive-search description Triggers: drive, search\. `skill:\/\/drive-search\/SKILL\.md`/,
+    )
 
     const agents = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL }).files.find((f) => f.path === 'AGENTS.md')
     assert.ok(agents?.content.includes(briefing))
@@ -251,6 +254,29 @@ async function main() {
     )
     assert.ok(soul?.content.includes(bound))
     assert.ok(renderAgentPrompt({ definition: def, skills, bound: true }).includes(bound))
+  })
+
+  await check('#653 briefing leads with the entry skill and names it in Start', () => {
+    const def = definition({
+      snapshot: {
+        ...definition().snapshot,
+        skills: [
+          { skillId: SKILL_B, skillVersionId: VER_B, name: 'drive-write' },
+          { skillId: SKILL_A, skillVersionId: VER_A, name: 'drive-search', entry: true },
+        ],
+      },
+    })
+    const skills = [skill(SKILL_A, VER_A, 'drive-search'), skill(SKILL_B, VER_B, 'drive-write')]
+    const briefing = renderAgentBriefing({ definition: def, skills })
+    assert.match(
+      briefing,
+      /3\. For every new task, first read the entry skill drive-search \(`skill:\/\/drive-search\/SKILL\.md`\)/,
+    )
+    assert.match(briefing, /- drive-search \(entry skill — read first on every new task\):[^\n]*\n- drive-write:/)
+    const agents = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL }).files.find(
+      (f) => f.path === 'AGENTS.md',
+    )
+    assert.ok(agents?.content.includes(briefing))
   })
 
   await check('#652 briefing size: tables of contents only, bounded besides roleInstruction', () => {

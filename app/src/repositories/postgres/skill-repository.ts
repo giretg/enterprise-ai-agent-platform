@@ -26,26 +26,33 @@ async function migrateAgentAssignmentsToVersion(
       skillVersion: { skillId },
       NOT: { skillVersionId: activeVersionId },
     },
-    select: { agentId: true, skillVersionId: true, enabled: true },
+    select: { agentId: true, skillVersionId: true, enabled: true, entry: true },
   })
   const plan = planAgentSkillMigrations(stale, activeVersionId)
   if (plan.length === 0) return []
 
-  const byAgent = new Map<string, { enabled: boolean; fromVersionIds: string[] }>()
+  const byAgent = new Map<string, { enabled: boolean; entry: boolean; fromVersionIds: string[] }>()
   for (const row of stale) {
-    const cur = byAgent.get(row.agentId) ?? { enabled: false, fromVersionIds: [] }
+    const cur = byAgent.get(row.agentId) ?? { enabled: false, entry: false, fromVersionIds: [] }
     cur.enabled = cur.enabled || row.enabled
+    cur.entry = cur.entry || row.entry
     cur.fromVersionIds.push(row.skillVersionId)
     byAgent.set(row.agentId, cur)
   }
 
   const migrations: AgentSkillMigration[] = []
-  for (const [agentId, { enabled, fromVersionIds }] of byAgent) {
+  for (const [agentId, { enabled, entry, fromVersionIds }] of byAgent) {
     const existing = await tx.agentSkill.findUnique({
       where: { agentId_skillVersionId: { agentId, skillVersionId: activeVersionId } },
-      select: { enabled: true },
+      select: { enabled: true, entry: true },
     })
     const finalEnabled = mergedEnabledForAgent(existing?.enabled, enabled)
+    const finalEntry = Boolean(existing?.entry) || entry
+
+    // Delete before upsert: the one-entry-per-agent index would reject a second entry row.
+    await tx.agentSkill.deleteMany({
+      where: { agentId, skillVersionId: { in: fromVersionIds } },
+    })
 
     await tx.agentSkill.upsert({
       where: { agentId_skillVersionId: { agentId, skillVersionId: activeVersionId } },
@@ -53,13 +60,10 @@ async function migrateAgentAssignmentsToVersion(
         agentId,
         skillVersionId: activeVersionId,
         enabled: finalEnabled,
+        entry: finalEntry,
         assignedById,
       },
-      update: { enabled: finalEnabled, assignedById },
-    })
-
-    await tx.agentSkill.deleteMany({
-      where: { agentId, skillVersionId: { in: fromVersionIds } },
+      update: { enabled: finalEnabled, entry: finalEntry, assignedById },
     })
 
     for (const fromVersionId of fromVersionIds) {
@@ -330,9 +334,10 @@ export class PostgresSkillRepository implements SkillRepository {
           skillVersion: { skillId: target.skillId },
           NOT: { skillVersionId: input.skillVersionId },
         },
-        select: { skillVersionId: true },
+        select: { skillVersionId: true, entry: true },
       })
       const replacedVersionIds = stale.map((row) => row.skillVersionId)
+      const entry = stale.some((row) => row.entry)
 
       if (replacedVersionIds.length > 0) {
         await tx.agentSkill.deleteMany({
@@ -355,8 +360,9 @@ export class PostgresSkillRepository implements SkillRepository {
           skillVersionId: input.skillVersionId,
           assignedById: input.assignedById,
           enabled: true,
+          entry,
         },
-        update: { enabled: true, assignedById: input.assignedById },
+        update: { enabled: true, assignedById: input.assignedById, ...(entry ? { entry } : {}) },
       })
 
       return { assignment, replacedVersionIds }
@@ -371,6 +377,18 @@ export class PostgresSkillRepository implements SkillRepository {
     return prisma.agentSkill.update({
       where: { agentId_skillVersionId: { agentId, skillVersionId } },
       data: { enabled },
+    })
+  }
+
+  async setEntry(agentId: string, skillVersionId: string, entry: boolean): Promise<void> {
+    await prisma.$transaction(async (tx) => {
+      if (entry) {
+        await tx.agentSkill.updateMany({ where: { agentId, entry: true }, data: { entry: false } })
+      }
+      await tx.agentSkill.update({
+        where: { agentId_skillVersionId: { agentId, skillVersionId } },
+        data: { entry },
+      })
     })
   }
 

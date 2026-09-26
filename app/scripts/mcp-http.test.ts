@@ -1839,6 +1839,108 @@ async function main() {
     assert.ok(hermes.files.find((f) => f.path === 'SOUL.md')?.content.includes(boundBriefing))
   })
 
+  await check('#653 skills are scoped to the agent, pinned version, entry skill in briefing and checkout', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const skillPkg = (name: string, skillVersionId: string, step: string) =>
+      buildMcpSkillPackage({
+        skillId: `${skillVersionId.slice(0, 35)}f`,
+        skillVersionId,
+        name,
+        description: `${name} skill.`,
+        content: { instructions: [step], triggerKeywords: [], parameters: [] },
+        requires: [],
+        attachments: [],
+      })
+    const workflowV1 = skillPkg('marketing-workflow', '10000000-0000-4000-8000-000000000001', 'v1 steps')
+    const workflowV2 = skillPkg('marketing-workflow', '10000000-0000-4000-8000-000000000002', 'v2 steps')
+    const seo = skillPkg('near-win-seo', '10000000-0000-4000-8000-000000000003', 'seo steps')
+    const sales = skillPkg('sales-pipeline', '10000000-0000-4000-8000-000000000004', 'sales steps')
+    const allVersions = [workflowV1, workflowV2, seo, sales]
+    deps.listMcpSkills = async ({ skillVersionIds }) =>
+      skillVersionIds
+        ? allVersions.filter((pkg) => skillVersionIds.includes(pkg.skillVersionId))
+        : [workflowV2, seo, sales]
+    const pin = (pkg: McpSkillPackage, entry = false) => ({
+      skillId: pkg.skillId,
+      skillVersionId: pkg.skillVersionId,
+      name: pkg.name,
+      ...(entry ? { entry: true as const } : {}),
+    })
+    const kati = {
+      ...SAMPLE_DEFINITION,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, name: 'Kati', skills: [pin(seo), pin(workflowV1, true)] },
+    }
+    const salesAgent = {
+      ...SAMPLE_DEFINITION,
+      definitionId: FOREIGN_DEFINITION_ID,
+      agentId: FOREIGN_AGENT_ID,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, name: 'Sales', skills: [pin(sales)] },
+    }
+    deps.loadDefinition = async ({ definitionId, agentId }) => {
+      if (definitionId === FOREIGN_DEFINITION_ID || agentId === FOREIGN_AGENT_ID) return salesAgent
+      if (definitionId && definitionId !== DEFINITION_ID) return null
+      return kati
+    }
+    await initialize(deps)
+    const uris = (payload: Record<string, unknown>) =>
+      (payload.skills as Array<{ uri: string }>).map((row) => row.uri)
+    const read = async (args: Record<string, unknown>, header = '') =>
+      (await callWithAgentHeader(deps, MCP_SKILL_READ_TOOL, args, header)).payload as {
+        contents?: Array<{ text: string }>
+        assignedToAgent?: boolean
+      }
+
+    const katiList = (await callWithAgentHeader(deps, MCP_SKILLS_LIST_TOOL, { definitionId: DEFINITION_ID }, '')).payload
+    assert.deepEqual(uris(katiList), ['skill://marketing-workflow/SKILL.md', 'skill://near-win-seo/SKILL.md'])
+    assert.equal((katiList.skills as Array<{ entry?: boolean }>)[0]?.entry, true)
+    const salesList = (await callWithAgentHeader(deps, MCP_SKILLS_LIST_TOOL, { agentId: FOREIGN_AGENT_ID }, '')).payload
+    assert.deepEqual(uris(salesList), ['skill://sales-pipeline/SKILL.md'])
+    const tenantList = (await callWithAgentHeader(deps, MCP_SKILLS_LIST_TOOL, {}, '')).payload
+    assert.equal(uris(tenantList).length, 3, 'no definitionId → every active tenant skill, as before')
+
+    const workflowUri = 'skill://marketing-workflow/SKILL.md'
+    assert.match((await read({ uri: workflowUri, definitionId: DEFINITION_ID })).contents?.[0]?.text ?? '', /v1 steps/)
+    assert.match((await read({ uri: workflowUri })).contents?.[0]?.text ?? '', /v2 steps/)
+    const outside = await read({ uri: 'skill://sales-pipeline/SKILL.md', definitionId: DEFINITION_ID })
+    assert.equal(outside.assignedToAgent, false)
+    assert.match(outside.contents?.[0]?.text ?? '', /sales steps/)
+    const withOthers = (
+      await callWithAgentHeader(deps, MCP_SKILLS_LIST_TOOL, { definitionId: DEFINITION_ID, includeOtherSkills: true }, '')
+    ).payload.skills as Array<{ uri: string; assignedToAgent?: boolean }>
+    assert.deepEqual(withOthers.find((row) => row.uri === 'skill://sales-pipeline/SKILL.md')?.assignedToAgent, false)
+
+    const boundList = (await callWithAgentHeader(deps, MCP_SKILLS_LIST_TOOL, {}, AGENT_ID)).payload
+    assert.deepEqual(uris(boundList), uris(katiList))
+    assert.match((await read({ uri: workflowUri }, AGENT_ID)).contents?.[0]?.text ?? '', /v1 steps/)
+    const resources = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 50, method: 'resources/list', params: {} },
+      { authorization: `Bearer ${TOKEN}`, 'x-excellence-agent-id': AGENT_ID },
+      deps,
+    )
+    const resourceUris = (
+      (await readJson(resources)) as { result?: { resources?: Array<{ uri: string }> } }
+    ).result?.resources?.map((row) => row.uri)
+    assert.deepEqual(resourceUris?.sort(), ['skill://marketing-workflow/SKILL.md', 'skill://near-win-seo/SKILL.md'])
+
+    const checkoutSkills = [workflowV1, seo].map((pkg) => ({
+      skillId: pkg.skillId,
+      skillVersionId: pkg.skillVersionId,
+      name: pkg.name,
+      description: pkg.description,
+      content: { instructions: ['x'], triggerKeywords: [], parameters: [] },
+      requires: [],
+    }))
+    deps.loadSkillVersions = async () => checkoutSkills
+    const briefing = (await callWithAgentHeader(deps, MCP_AGENT_GET_DEFINITION_TOOL, { agentId: AGENT_ID }, '')).payload
+      .briefing as string
+    assert.match(briefing, /3\. For every new task, first read the entry skill marketing-workflow \(`skill:\/\/marketing-workflow\/SKILL\.md`\)/)
+    assert.match(briefing, /- marketing-workflow \(entry skill — read first on every new task\):[^\n]*\n- near-win-seo:/)
+    const agentsMd = renderAgentCheckout({ definition: kati, skills: checkoutSkills, mcpUrl: 'https://app.example.com/api/mcp/acme' })
+      .files.find((f) => f.path === 'AGENTS.md')?.content
+    assert.ok(agentsMd?.includes(briefing))
+  })
+
   await check('#651 agent not visible to the user → no prompt listed, prompts/get fails', async () => {
     const { deps } = runtimeDeps({ role: 'operator' })
     const list = await listPrompts(deps)

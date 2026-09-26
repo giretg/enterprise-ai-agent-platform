@@ -241,6 +241,7 @@ function memoryScaffoldDeps(opts?: {
           agentId: input.agentId,
           skillVersionId: input.skillVersionId,
           enabled: true,
+          entry: false,
           assignedById: input.assignedById,
           createdAt: new Date(),
         }

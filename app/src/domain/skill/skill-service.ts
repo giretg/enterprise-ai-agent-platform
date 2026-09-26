@@ -229,24 +229,36 @@ export class SkillService {
   /**
    * Tenantból olvasható aktív skillek Agent Skills csomagként (SKILL.md + mellékletek).
    * Fail-closed, mint a `listReferenceCatalog`. Ütköző URI-névnél a tenant-skill nyer.
+   *
+   * `skillVersionIds` (#653): egy agent-definíció pinjei — PONTOSAN ezek a verziók
+   * jönnek vissza, akkor is, ha közben a skillnek új aktív verziója lett.
    */
-  async listMcpSkillPackages(actorTenantId: string | null): Promise<McpSkillPackage[]> {
-    const skills = await this.skills.listForTenant(actorTenantId)
+  async listMcpSkillPackages(
+    actorTenantId: string | null,
+    skillVersionIds?: string[],
+  ): Promise<McpSkillPackage[]> {
+    const rows = skillVersionIds
+      ? (await this.skills.findVersionsByIds(skillVersionIds)).map((version) => ({
+          skill: version.skill,
+          version,
+        }))
+      : (await this.skills.listForTenant(actorTenantId)).flatMap((skill) => {
+          const version = skill.versions.find((row) => row.status === 'active')
+          return version && skill.kind !== 'system' ? [{ skill, version }] : []
+        })
     const byUri = new Map<string, McpSkillPackage>()
-    for (const skill of skills) {
-      if (skill.kind === 'system') continue
-      const active = skill.versions.find((version) => version.status === 'active')
-      if (!active) continue
+    for (const { skill, version } of rows) {
+      if (!isSkillReadableFromTenant(skill.tenantId, actorTenantId)) continue
       const pkg = buildMcpSkillPackage({
         skillId: skill.id,
-        skillVersionId: active.id,
+        skillVersionId: version.id,
         name: skill.name,
         displayName: skill.displayName,
         description: skill.description,
         license: skill.license,
-        content: parseSkillContent(active.content),
-        requires: parseSkillRequires(active.requires),
-        attachments: parseSkillAttachments(active.attachments),
+        content: parseSkillContent(version.content),
+        requires: parseSkillRequires(version.requires),
+        attachments: parseSkillAttachments(version.attachments),
       })
       if (byUri.has(pkg.uriName) && skill.tenantId === null) continue
       byUri.set(pkg.uriName, pkg)
@@ -938,6 +950,17 @@ export class SkillService {
     return this.skills.setEnabled(input.agentId, input.skillVersionId, input.enabled)
   }
 
+  /** Belépő (orkesztráló) skill jelölése (#653); a többi skillről lekerül a jelölés. */
+  async setEntry(input: {
+    agentId: string
+    skillVersionId: string
+    entry: boolean
+    actor: ActorContext
+  }): Promise<void> {
+    await this.assertAgentReachable(input.agentId, input.actor)
+    await this.skills.setEntry(input.agentId, input.skillVersionId, input.entry)
+  }
+
   private async recordAgentSkillMigrations(input: {
     skillId: string
     skillVersionId: string
@@ -1367,6 +1390,7 @@ export class SkillService {
         agentId: a.agentId,
         skillVersionId: a.skillVersionId,
         enabled: a.enabled,
+        entry: a.entry,
         skillId: a.skillVersion.skill.id,
         name: a.skillVersion.skill.name,
         displayName: a.skillVersion.skill.displayName,

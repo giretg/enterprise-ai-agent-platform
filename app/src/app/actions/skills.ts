@@ -124,6 +124,8 @@ export interface AgentSkillRow {
   agentId: string
   skillVersionId: string
   enabled: boolean
+  /** Belépő (orkesztráló) skill: az MCP-briefing szerint minden új feladat ezzel indul (#653). */
+  entry: boolean
   skillId: string
   name: string
   /** Embernek szóló feladatnév — select / modál. Hiányzik → `name`. */
@@ -154,6 +156,7 @@ export async function getAgentSkillsAction(
         agentId: r.agentId,
         skillVersionId: r.skillVersionId,
         enabled: r.enabled,
+        entry: r.entry,
         skillId: r.skillId,
         name: r.name,
         displayName: r.displayName,
@@ -342,6 +345,21 @@ export async function setSkillEnabledAction(input: {
     const blocked = await blockProducerSkillMutation(ctx.activeTenantRole, input.skillVersionId)
     if (blocked) return fail(blocked)
     await services.skills.setEnabled({ ...input, actor: actorFrom(ctx) })
+    revalidatePath(`/control-plane/agents/${input.agentId}`)
+    return ok(null)
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
+export async function setSkillEntryAction(input: {
+  agentId: string
+  skillVersionId: string
+  entry: boolean
+}): Promise<ActionResult<null>> {
+  try {
+    const { ctx } = await requireAgentSkillManager(input.agentId)
+    await services.skills.setEntry({ ...input, actor: actorFrom(ctx) })
     revalidatePath(`/control-plane/agents/${input.agentId}`)
     return ok(null)
   } catch (err) {
