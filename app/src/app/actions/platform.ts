@@ -400,7 +400,7 @@ export async function getAgentGovernance(input: { agentId: string }) {
   }
 }
 
-export async function createAgent(input: { name: string; roleInstruction: string }) {
+export async function createAgent(input: { name: string; roleInstruction: string; description: string }) {
   try {
     const user = await requireTenantRole('admin')
     const parsed = createAgentSchema.parse(input)
@@ -408,6 +408,7 @@ export async function createAgent(input: { name: string; roleInstruction: string
     const agent = await repositories.agents.create({
       name: parsed.name,
       roleInstruction: parsed.roleInstruction,
+      description: parsed.description,
       tenantId: user.activeTenantId,
       status: 'draft',
     })
@@ -489,9 +490,7 @@ export async function updateAgentProfile(input: { agentId: string; name?: string
     const updated = await repositories.agents.updateProfile({
       agentId: parsed.agentId,
       ...(parsed.name !== undefined ? { name: parsed.name } : {}),
-      ...(parsed.description !== undefined
-        ? { description: parsed.description.length > 0 ? parsed.description : null }
-        : {}),
+      ...(parsed.description !== undefined ? { description: parsed.description } : {}),
     })
     await services.audit.append({
       actorType: 'human',

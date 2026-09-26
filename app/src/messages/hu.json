@@ -262,7 +262,7 @@
       "sections": {
         "elesites": "Élesítés",
         "elesitesDesc": "Melyik definíció fut élesben, és van-e még nem publikált változás.",
-        "profil": "Név és bemutatkozás",
+        "profil": "Név és felelősségi kör",
         "munkakor": "Munkakör",
         "kapcsolatok": "Konnektorok",
         "kapcsolatokDesc": "API-k, levelezés, Drive és egyéb külső rendszerek — olvasási vagy írási módban.",
@@ -841,7 +841,7 @@
     "steps": {
       "identity": {
         "label": "Alapok",
-        "hint": "Név és munkakör"
+        "hint": "Név, felelősségi kör, munkakör"
       },
       "tools": {
         "label": "Eszközök",
@@ -864,7 +864,7 @@
     "next": "Tovább",
     "creating": "Létrehozás…",
     "createAndContinue": "Létrehozás és tovább",
-    "nameRequired": "Add meg a nevet és a munkaköri leírást.",
+    "nameRequired": "Add meg a nevet, a felelősségi kört és a munkaköri leírást.",
     "clonePartial": "A munkatárs létrejött, de a másolás nem lett teljes: {warnings}",
     "cloneTools": "eszközök: {error}",
     "cloneSkill": "skill: {error}",
@@ -878,6 +878,8 @@
     "cloneLoaded": "„{name}” sablonja betöltve — add meg az új nevet, majd lépj tovább.",
     "cloneCopied": "Eszközök, skillek és kapcsolatok a létrehozáskor másolódnak.",
     "name": "Név",
+    "scope": "Felelősségi kör (mikor ezt a munkatársat hívd)",
+    "scopePlaceholder": "Marketing, SEO, tartalom. Sales lead → Gábor.",
     "role": "Munkakör",
     "namePlaceholder": "Wiki agent",
     "rolePlaceholder": "Te a belső tudás-asszisztens vagy. Kizárólag a jóváhagyott dokumentumokból válaszolsz, magyarul, forráshivatkozással.",
@@ -922,12 +924,12 @@
     "staleButtonTitle": "A vázlat megváltozott a közzétett verzió{version} óta — az MCP még a régit látja. Kattints, és az új verzió életbe lép."
   },
   "AgentProfile": {
-    "title": "Név és bemutatkozás",
+    "title": "Név és felelősségi kör",
     "noChange": "Nincs változás",
     "saved": "Mentve — a név a következő közzétételkor lép életbe az MCP-n",
     "name": "Név",
-    "description": "Bemutatkozó szöveg (a listán a név alatt)",
-    "placeholder": "Miben tud segíteni ez a munkatárs?",
+    "description": "Felelősségi kör — mikor ezt a munkatársat hívd (MCP-n ebből választ a kliens)",
+    "placeholder": "Marketing, SEO, tartalom. Sales lead → Gábor.",
     "saving": "Mentés...",
     "save": "Mentés"
   },

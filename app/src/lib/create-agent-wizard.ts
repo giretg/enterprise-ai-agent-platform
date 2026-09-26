@@ -4,7 +4,7 @@ export const CREATE_AGENT_WIZARD_STEPS = [
   {
     id: 'identity',
     label: 'Alapok',
-    hint: 'Név és munkakör',
+    hint: 'Név, felelősségi kör, munkakör',
     phase: 'pre',
   },
   {
@@ -44,6 +44,7 @@ export const CREATE_AGENT_WIZARD_EXTERNAL_HREFS = {
 export type CreateAgentWizardGate = {
   name: string
   roleInstruction: string
+  description: string
   createdAgentId: string | null
 }
 
@@ -61,8 +62,14 @@ export function createAgentWizardStepIndex(id: CreateAgentWizardStepId): number 
   return CREATE_AGENT_WIZARD_STEPS.findIndex((step) => step.id === id)
 }
 
-export function isIdentityStepComplete(gate: Pick<CreateAgentWizardGate, 'name' | 'roleInstruction'>) {
-  return gate.name.trim().length > 0 && gate.roleInstruction.trim().length > 0
+export function isIdentityStepComplete(
+  gate: Pick<CreateAgentWizardGate, 'name' | 'roleInstruction' | 'description'>,
+) {
+  return (
+    gate.name.trim().length > 0 &&
+    gate.roleInstruction.trim().length > 0 &&
+    gate.description.trim().length > 0
+  )
 }
 
 export function isPreCreateComplete(gate: CreateAgentWizardGate) {
@@ -164,6 +171,7 @@ export type CreateAgentWizardCloneTemplate = {
   sourceAgentId: string
   sourceAgentName: string
   roleInstruction: string
+  description: string
   enabledTools: string[]
   skillVersionIds: string[]
   connectors: Array<{ connectorId: string; accessMode: 'read' | 'write'; name: string }>
@@ -173,6 +181,7 @@ export function cloneTemplateFromAgent(source: {
   sourceAgentId: string
   sourceAgentName: string
   roleInstruction: string
+  description?: string | null
   capabilities: Array<{ toolName: string; allowed: boolean }>
   skills: Array<{ skillVersionId: string }>
   connectors: Array<{
@@ -184,6 +193,7 @@ export function cloneTemplateFromAgent(source: {
     sourceAgentId: source.sourceAgentId,
     sourceAgentName: source.sourceAgentName,
     roleInstruction: source.roleInstruction,
+    description: source.description?.trim() ?? '',
     enabledTools: grantedToolNames(source.capabilities),
     skillVersionIds: source.skills.map((skill) => skill.skillVersionId),
     connectors: source.connectors.map((row) => ({

@@ -1,6 +1,9 @@
 /** Kanonikus név — azonosítás név + seedelt published definition, nem systemRole. */
 export const AGENT_SCAFFOLD_AGENT_NAME = 'Agent Scaffold' as const
 
+export const AGENT_SCAFFOLD_DESCRIPTION =
+  'Call when designing or publishing a new tenant agent from an admin description. Not a business coworker.'
+
 export const AGENT_SCAFFOLD_ROLE_INSTRUCTION = `You are the Agent Scaffold — an admin MCP colleague that helps design new tenant agents from natural language.
 
 Your job:

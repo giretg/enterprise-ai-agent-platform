@@ -44,6 +44,7 @@ function agentRow(overrides: Partial<Agent> = {}): Agent {
     tenantId: TENANT_A,
     name: 'Drive assistant',
     roleInstruction: 'Inspect Drive through MCP.',
+    description: 'Inspect Drive files through MCP.',
     status: 'draft',
     currentDefinitionVersionId: null,
     avatarUrl: null,
@@ -214,6 +215,21 @@ async function main() {
     assert.equal(json.includes('secretAlias'), false)
     assert.equal(json.includes('modelConfig'), false)
     assert.equal(json.includes(USER_ID), false)
+    assert.equal(published.snapshot.description, 'Inspect Drive files through MCP.')
+  })
+
+  await check('publish without responsibility (description) is rejected', async () => {
+    const { service, agents } = memoryDeps()
+    agents.set(AGENT_ID, { ...agents.get(AGENT_ID)!, description: null })
+    await assert.rejects(
+      () =>
+        service.publishAgentDefinition({
+          agentId: AGENT_ID,
+          tenantId: TENANT_A,
+          publishedById: USER_ID,
+        }),
+      /felelősségi kört/,
+    )
   })
 
   await check('second publish does not mutate v1 bytes', async () => {
