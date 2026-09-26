@@ -26,7 +26,7 @@ import {
   assembleKbHits,
   assembleKbIndex,
   assembleKbPage,
-  mergeKbHits,
+  rankKbHits,
   normalizeKbPurpose,
   okfIndexFile,
   readKbPurpose,
@@ -382,14 +382,16 @@ export class KnowledgeBaseService {
 
   async search(input: { connectorId: string; query: string; k?: number }) {
     const k = Math.min(Math.max(input.k ?? 5, 1), 20)
+    // Bővebb jelölt-halmaz, hogy az IDF-rangsor legyen miből válogasson.
+    const candidates = Math.max(k * 4, 20)
     const connectorIds = [input.connectorId]
     const [okfChunkHits, rawHits] = await Promise.all([
-      this.deps.chunks.searchChunks(connectorIds, input.query, k),
-      this.deps.documents.searchRaw(input.connectorId, input.query, k),
+      this.deps.chunks.searchChunks(connectorIds, input.query, candidates),
+      this.deps.documents.searchRaw(input.connectorId, input.query, candidates),
     ])
     const okfHits = assembleKbHits({
       query: input.query,
-      k,
+      k: okfChunkHits.length,
       memoryContent: '',
       memoryId: null,
       memoryVersion: null,
@@ -397,15 +399,28 @@ export class KnowledgeBaseService {
       docs: [],
       supersededDocIds: new Set(),
     })
-    const fileHits = rawHits.map((hit) => ({
-      docId: `doc:${hit.id}`,
-      snippet: hit.snippet,
-      sourceRef: `doc:${hit.id}:${hit.filename}`,
-      memoryVersion: null,
-      title: hit.filename,
-      score: hit.score,
-    }))
-    return mergeKbHits([...okfHits, ...fileHits], k)
+    return rankKbHits(
+      [
+        ...okfHits.map((hit, i) => ({
+          hit,
+          matched: okfChunkHits[i].matched ?? [],
+          rank: okfChunkHits[i].score,
+        })),
+        ...rawHits.map((hit) => ({
+          hit: {
+            docId: `doc:${hit.id}`,
+            snippet: hit.snippet,
+            sourceRef: `doc:${hit.id}:${hit.filename}`,
+            memoryVersion: null,
+            title: hit.section ?? hit.filename,
+            source: { documentId: hit.id, filename: hit.filename, section: hit.section },
+          },
+          matched: hit.matched ?? [],
+          rank: hit.score,
+        })),
+      ],
+      k,
+    )
   }
 
   async listIndex(input: {

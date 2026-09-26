@@ -245,8 +245,31 @@ export function assembleKbPage(path: string, chunks: KnowledgePageChunk[]): KbGe
   }
 }
 
-export function mergeKbHits(hits: KbHit[], k: number): KbHit[] {
-  return [...hits].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, k)
+/**
+ * Közös rangsor a wiki-oldal és a raw fájl-szakasz jelöltekre: a találatban
+ * szereplő kérdésszavak IDF-súlyának összege (a jelölt-halmazon mért ritkaság),
+ * holtversenyben ts_rank. Így a ritka, tartalmi szó („TCO") többet ér, mint a
+ * mindenhol előforduló („oldal"), és a hosszú fájl nem nyer a hossza miatt.
+ */
+export function rankKbHits(
+  candidates: Array<{ hit: KbHit; matched: string[]; rank: number }>,
+  k: number,
+): KbHit[] {
+  const df = new Map<string, number>()
+  for (const c of candidates) {
+    for (const term of new Set(c.matched)) df.set(term, (df.get(term) ?? 0) + 1)
+  }
+  const n = candidates.length
+  return candidates
+    .map((c) => ({
+      hit: c.hit,
+      score:
+        [...new Set(c.matched)].reduce((sum, term) => sum + Math.log(1 + n / df.get(term)!), 0) +
+        Math.min(c.rank, 0.99) / 10,
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, k)
+    .map(({ hit, score }) => ({ ...hit, score: Math.round(score * 1000) / 1000 }))
 }
 
 const PURPOSE_MAX = 240
@@ -375,21 +398,81 @@ function windowSections(text: string): OutlineSection[] {
   return windows
 }
 
-function outlineSections(text: string): OutlineSection[] {
-  const sections: OutlineSection[] = []
-  let current: OutlineSection | null = null
-  for (const line of text.split('\n')) {
-    const heading = line.match(/^#{1,3}\s+(.*)$/)
-    if (heading) {
-      if (current) sections.push(current)
-      current = { title: heading[1].trim(), body: '' }
-    } else if (current) {
-      current.body += (current.body ? '\n' : '') + line
-    }
+/**
+ * A raw szöveg szeletei `#`/`##`/`###` heading-sorok mentén. A `searchRaw` SQL-je
+ * (`KB_SECTION_SPLIT_SQL`) UGYANEZT a vágást végzi, így a találat sorszáma
+ * (`ord`, 1-től) ebbe a tömbbe indexel.
+ */
+export function splitKbSegments(text: string): string[] {
+  return text.split(/\n(?=#{1,3}[ \t])/)
+}
+
+/** Postgres ARE megfelelője a `splitKbSegments` regexének. */
+export const KB_SECTION_SPLIT_SQL = '\\n(?=#{1,3}[ \\t])'
+
+export const KB_SECTION_PATH_SEPARATOR = ' › '
+
+type KbSection = OutlineSection & { segment: number }
+
+/**
+ * Heading-szakaszok egyedi, útvonal-szerű címmel (`Szülő › Gyerek`); a törzs a
+ * teljes részfa (al-headingekkel együtt). Egyetlen, legfelső `#` cím nem kerül
+ * minden útvonal elejére. Heading nélküli szövegnél fix ablakok.
+ */
+function outlineSections(text: string): KbSection[] {
+  const segments = splitKbSegments(text)
+  const headed: Array<{ segment: number; level: number; title: string }> = []
+  segments.forEach((seg, segment) => {
+    const heading = seg.replace(/^\n+/, '').split('\n', 1)[0].match(/^(#{1,3})[ \t]+(.*)$/)
+    if (heading) headed.push({ segment, level: heading[1].length, title: heading[2].trim() })
+  })
+  if (headed.length === 0) {
+    return text.trim() ? windowSections(text).map((w) => ({ ...w, segment: -1 })) : []
   }
-  if (current) sections.push(current)
-  if (sections.length === 0) return text.trim() ? windowSections(text) : []
-  return sections.map((section) => ({ title: section.title, body: section.body.trim() }))
+  const soleRoot = headed.filter((h) => h.level === 1).length === 1 && headed[0].level === 1
+  const stack: Array<{ level: number; title: string }> = []
+  const seen = new Map<string, number>()
+  return headed.map((h, i) => {
+    while (stack.length > 0 && stack[stack.length - 1].level >= h.level) stack.pop()
+    const ancestors = stack.filter((a, idx) => !(soleRoot && idx === 0 && a.level === 1))
+    stack.push({ level: h.level, title: h.title })
+    let path = [...ancestors.map((a) => a.title), h.title].join(KB_SECTION_PATH_SEPARATOR)
+    const count = (seen.get(path) ?? 0) + 1
+    seen.set(path, count)
+    if (count > 1) path = `${path} (${count})`
+    // A részfa a következő azonos/magasabb szintű headingig tart.
+    const next = headed.slice(i + 1).find((later) => later.level <= h.level)
+    const end = next ? next.segment : segments.length
+    const own = segments[h.segment].replace(/^\n*[^\n]*\n?/, '')
+    const body = [own, ...segments.slice(h.segment + 1, end)].join('\n').trim()
+    return { title: path, body, segment: h.segment }
+  })
+}
+
+/** A `splitKbSegments` szerinti szelet szakasz-útvonala (keresési találathoz). */
+export function kbSectionForSegment(text: string, segment: number): string | undefined {
+  return outlineSections(text).find((section) => section.segment === segment)?.title
+}
+
+function normalizeSectionNeedle(value: string): string {
+  return value.trim().toLowerCase().replace(/\s*(›|>)\s*/g, KB_SECTION_PATH_SEPARATOR)
+}
+
+/** Pontos útvonal → egyedi pontos utolsó cím → egyedi részleges egyezés. */
+function findSection(
+  sections: KbSection[],
+  query: string,
+): { hit: KbSection } | { matches: string[] } {
+  const needle = normalizeSectionNeedle(query)
+  const exact = sections.find((s) => s.title.toLowerCase() === needle)
+  if (exact) return { hit: exact }
+  const leaf = (s: KbSection) => s.title.split(KB_SECTION_PATH_SEPARATOR).pop()!.toLowerCase()
+  const byLeaf = sections.filter((s) => leaf(s) === needle)
+  if (byLeaf.length === 1) return { hit: byLeaf[0] }
+  if (byLeaf.length > 1) return { matches: byLeaf.map((s) => s.title) }
+  const partial = sections.filter((s) => s.title.toLowerCase().includes(needle))
+  if (partial.length === 1) return { hit: partial[0] }
+  return { matches: partial.map((s) => s.title) }
 }
 
 export type KbDocumentResult =
@@ -415,6 +498,8 @@ export type KbDocumentResult =
       text?: string
       section?: string
       sectionFound?: boolean
+      /** Több szakaszra illő `section`: ezek közül kell pontosan egyet kérni. */
+      matches?: string[]
     }
 
 export function assembleKbDocument(input: {
@@ -436,11 +521,18 @@ export function assembleKbDocument(input: {
   }
   const section = input.section?.trim()
   if (section) {
-    const needle = section.toLowerCase()
-    const hit = sections.find((item) => item.title.toLowerCase().includes(needle))
-    if (!hit) {
-      return { ...base, truncated: true, outline, section, sectionFound: false }
+    const found = findSection(sections, section)
+    if (!('hit' in found)) {
+      return {
+        ...base,
+        truncated: true,
+        section,
+        sectionFound: false,
+        // Többértelmű név: csak a jelöltek, nem a teljes vázlat.
+        ...(found.matches.length > 0 ? { matches: found.matches } : { outline }),
+      }
     }
+    const hit = found.hit
     const truncated = hit.body.length > KB_DOCUMENT_INLINE_CHARS
     return {
       ...base,
