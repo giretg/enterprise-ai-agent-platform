@@ -112,7 +112,8 @@ check('az AppShell nem suspendel useSearchParams miatt a teljes héjon', () => {
 })
 
 check('van gyökér betöltő képernyő, ne krém-üres első festés', () => {
-  assert.match(rootLoading, /Betöltés/)
+  assert.match(rootLoading, /LoadingState/)
+  assert.match(rootLoading, /min-h-dvh/)
 })
 
 if (failures > 0) {
