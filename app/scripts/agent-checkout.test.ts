@@ -4,6 +4,7 @@
  */
 import assert from 'node:assert/strict'
 import { hashSnapshot, type AgentDefinition } from '../src/domain/agent-definition'
+import { MCP_ALLOWED_TOOLS } from '../src/auth/mcp-principal'
 import {
   assertSafeCheckoutPath,
   CHECKOUT_TOOL_DESCRIPTION,
@@ -79,6 +80,22 @@ function skill(
     content,
     requires: [],
   }
+}
+
+function mentionedMcpToolNames(text: string): string[] {
+  const names = new Set<string>()
+  for (const match of text.matchAll(/\bplatform(?:\.[a-z][a-z0-9_]*)+/g)) {
+    names.add(match[0]!)
+  }
+  for (const match of text.matchAll(/\b(?:google_drive|gmail|http_api|kb)(?:_[a-z0-9]+)*\b/g)) {
+    names.add(match[0]!)
+  }
+  return [...names]
+}
+
+function isMcpAllowedMention(name: string): boolean {
+  const allowed = MCP_ALLOWED_TOOLS as readonly string[]
+  return allowed.includes(name) || allowed.some((tool) => tool.startsWith(`${name}.`) || tool.startsWith(`${name}_`))
 }
 
 async function main() {
@@ -299,6 +316,29 @@ async function main() {
     assert.ok(briefing.includes(roleInstruction))
     assert.ok(briefing.length - roleInstruction.length < 16000, `${briefing.length - roleInstruction.length}`)
     assert.match(briefing, /…and 175 more/)
+  })
+
+  await check('#655 AGENTS.md tool names are all in MCP_ALLOWED_TOOLS', () => {
+    const def = definition({
+      snapshot: {
+        ...definition().snapshot,
+        capabilities: [
+          { toolName: 'google_drive_search', allowed: true },
+          { toolName: 'sandbox_exec', allowed: true },
+        ],
+      },
+    })
+    const agents =
+      renderAgentCheckout({
+        definition: def,
+        skills: [skill(SKILL_A, VER_A, 'drive-search')],
+        mcpUrl: MCP_URL,
+      }).files.find((f) => f.path === 'AGENTS.md')?.content ?? ''
+    assert.match(agents, /MCP tools: google_drive_search\./)
+    assert.doesNotMatch(agents, /sandbox/i)
+    for (const name of mentionedMcpToolNames(agents)) {
+      assert.ok(isMcpAllowedMention(name), `${name} is not in MCP_ALLOWED_TOOLS`)
+    }
   })
 
   await check('CHECKOUT_TOOL_DESCRIPTION tells MCP clients not to ask when one agent', () => {

@@ -1,10 +1,13 @@
 import { dump as yamlDump } from 'js-yaml'
+import { MCP_ALLOWED_TOOLS } from '@/auth/mcp-principal'
 import type { AgentDefinition } from '@/domain/agent-definition'
 import { hashSnapshot } from '@/domain/agent-definition'
 import { CODE_EXTENSIONS } from '@/lib/skill/skill-package-adapter'
 import { serializeSkillMd } from '@/lib/skill/skill-md-export'
 import { skillFileUri, skillUriName } from '@/lib/skill/mcp-skill'
 import type { SkillContent, SkillRequirement } from '@/lib/skill/skill-content'
+
+const MCP_TOOL_SET = new Set<string>(MCP_ALLOWED_TOOLS)
 
 const CHECKOUT_EXTENSIONS = new Set(['md', 'json', 'yaml'])
 const MANIFEST_KIND = 'enterprise-agent-checkout'
@@ -216,6 +219,20 @@ const BRIEFING_MAX_SKILLS = 25
 const BRIEFING_SKILL_DESCRIPTION_MAX = 240
 const BRIEFING_MAX_TRIGGERS = 8
 
+function mcpToolNames(capabilities: Array<{ toolName: string; allowed: boolean }>): string[] {
+  return capabilities.filter((row) => row.allowed && MCP_TOOL_SET.has(row.toolName)).map((row) => row.toolName)
+}
+
+function sandboxMcpRule(capabilities: Array<{ toolName: string; allowed: boolean }>): string {
+  const sandboxTool = mcpToolNames(capabilities).find(
+    (name) => name === 'sandbox_run' || name === 'sandbox_exec',
+  )
+  if (sandboxTool) {
+    return `- Runnable skill code runs only via \`${sandboxTool}\` with the skillVersionId. Do not run skill code on this machine, and do not upload a local file into the sandbox.`
+  }
+  return '- Do not run skill code on this machine.'
+}
+
 /**
  * The agent briefing (#652): one text for get_definition.briefing, the MCP
  * prompt and the checkout AGENTS.md / SOUL.md, so every channel loads the same
@@ -266,7 +283,7 @@ export function renderAgentBriefing(input: {
     ...(httpApis.length > 0
       ? ['- HTTP APIs: use only the method+path values listed in platform.agent.get_definition → snapshot.connectors[].endpoints.']
       : []),
-    '- Runnable skill code runs only in the MCP sandbox with the skillVersionId. Do not run skill code on this machine, and do not upload a local file into the sandbox.',
+    sandboxMcpRule(snapshot.capabilities),
     '- Keep durable work on the platform: no local memory (file or client memory), no durable work in a local folder. Credentials stay on the server.',
     '',
     '## Start',
@@ -282,7 +299,7 @@ export function renderAgentBriefing(input: {
     '- Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
   ]
 
-  const tools = snapshot.capabilities.filter((row) => row.allowed).map((row) => row.toolName)
+  const tools = mcpToolNames(snapshot.capabilities)
   if (tools.length > 0) lines.push(`- MCP tools: ${tools.join(', ')}.`)
   if (snapshot.connectors.some((row) => row.type === 'google_drive')) {
     lines.push('- Google Drive connector: use the Drive MCP tools by name.')
