@@ -107,7 +107,7 @@ function main() {
     assert.match(nav, /label: 'Első lépések'/)
   })
 
-  check('Hermes is first and open; other client guides are closed, branded cards', () => {
+  check('Hermes is first; every client guide starts collapsed, branded cards', () => {
     const html = renderToStaticMarkup(
       createElement(
         NextIntlClientProvider,
@@ -117,8 +117,7 @@ function main() {
     )
     const details = html.match(/<details\b[^>]*>/g) ?? []
     assert.equal(details.length, 7)
-    assert.match(details[0]!, /\sopen(?:\s|=|>|"")/)
-    assert.equal(details.slice(1).some((tag) => /\sopen(?:\s|=|>)/.test(tag)), false)
+    assert.equal(details.some((tag) => /\sopen(?:\s|=|>|"")/.test(tag)), false)
     assert.ok(html.indexOf('>Hermes Desktop') < html.indexOf('>Codex<'))
     assert.match(html, /hermes mcp add excellence --url https:\/\/app\.example\.com\/api\/mcp\/acme --auth oauth &amp;&amp; hermes mcp login excellence/)
     assert.match(html, /Szinkronizáld az Excellence agenteimet/)

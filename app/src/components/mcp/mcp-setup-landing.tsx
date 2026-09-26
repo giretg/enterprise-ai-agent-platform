@@ -51,7 +51,6 @@ function ClientCard({
   logo,
   logoBackground,
   badge,
-  defaultOpen,
   children,
 }: {
   name: string
@@ -59,11 +58,10 @@ function ClientCard({
   logo: string
   logoBackground: string
   badge?: string
-  defaultOpen?: boolean
   children: ReactNode
 }) {
   return (
-    <details open={defaultOpen} className="group overflow-hidden rounded-2xl border border-line bg-card shadow-sm transition-colors hover:border-coral/35 open:border-coral/40">
+    <details className="group overflow-hidden rounded-2xl border border-line bg-card shadow-sm transition-colors hover:border-coral/35 open:border-coral/40">
       <summary className="flex cursor-pointer list-none items-center gap-4 px-4 py-3.5 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-coral sm:px-5 [&::-webkit-details-marker]:hidden">
         <span className={`flex size-12 shrink-0 items-center justify-center rounded-xl ${logoBackground}`}>
           <Image src={logo} alt="" width={28} height={28} className="size-7 object-contain" />
@@ -140,7 +138,6 @@ export function McpSetupLanding({ setup, continueHref }: { setup: McpClientSetup
             logo="/mcp-clients/hermes.svg"
             logoBackground="bg-[#ececf2]"
             badge={t('hermesBadge')}
-            defaultOpen
           >
             <p>{t('hermesIntro')}</p>
             <ol className="space-y-4">
