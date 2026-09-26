@@ -49,6 +49,8 @@ import {
 } from '@/app/actions/self-updating-connectors'
 import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'
 import { OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES } from '@/domain/connector-template/custom-template-seeds'
+import { AGENTMAIL_TEMPLATE_KEY } from '@/domain/connector-template/builtin-templates'
+import Link from 'next/link'
 import {
   SelfUpdatingConnectorCard,
   TenantAutoApproveSwitch,
@@ -821,6 +823,7 @@ export function ProvisioningPanel({
   const isGmailTemplate = selectedTemplateDescriptor?.connectorType === 'gmail'
   const isGoogleDriveTemplate = selectedTemplateDescriptor?.connectorType === 'google_drive'
   const isGoogleApiTemplate = isPlatformGoogleApiConnectorTemplateKey(selectedTemplateDescriptor?.key)
+  const isAgentMailTemplate = isTemplatePath && selectedTemplateDescriptor?.key === AGENTMAIL_TEMPLATE_KEY
   const effectiveTemplateAuthMethod =
     selectedTemplateDescriptor?.authMethods.find((m) => m.kind === templateAuthMethod)?.kind ??
     selectedTemplateDescriptor?.authMethods[0]?.kind ??
@@ -1057,7 +1060,7 @@ export function ProvisioningPanel({
     connectionKind === 'self_updating'
       ? name.trim().length > 0
       : isTemplatePath
-        ? !!selectedTemplate
+        ? !!selectedTemplate && !isAgentMailTemplate
         : name.trim().length > 0
   const selfUpdatingReady =
     canEnterSource && !!selfUpdatingSpecUrl.trim()
@@ -1195,13 +1198,21 @@ export function ProvisioningPanel({
           )}
         </div>
         {!showCreateDraftForm ? (
-          <button
-            type="button"
-            onClick={() => setShowCreateDraftForm(true)}
-            className="ml-auto inline-flex shrink-0 items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-card transition hover:bg-coral-deep"
-          >
-            {t('newConnector')}
-          </button>
+          <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
+            <Link
+              href="/control-plane/provisioning/agentmail"
+              className="inline-flex items-center rounded-md border border-ink/15 px-4 py-2 text-sm font-semibold text-ink-soft transition hover:border-coral/40 hover:text-ink"
+            >
+              Agent postafiókok
+            </Link>
+            <button
+              type="button"
+              onClick={() => setShowCreateDraftForm(true)}
+              className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-card transition hover:bg-coral-deep"
+            >
+              {t('newConnector')}
+            </button>
+          </div>
         ) : null}
       </div>
 
@@ -1409,6 +1420,19 @@ export function ProvisioningPanel({
                     </label>
                     {templates.length === 0 ? (
                       <p className="text-xs text-ink-soft">{t('noConnectorTemplates')}</p>
+                    ) : isAgentMailTemplate ? (
+                      <div className="rounded-md border border-coral/30 bg-coral/8 px-3 py-3 text-sm">
+                        <p className="text-ink">
+                          Az agent saját postafiókjait (AgentMail) egy külön, egyszerűbb oldalon állítod be:
+                          API kulcs, postafiók létrehozása, és hogy melyik agent használhatja.
+                        </p>
+                        <Link
+                          href="/control-plane/provisioning/agentmail"
+                          className="mt-2 inline-block rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-white"
+                        >
+                          Agent postafiókok beállítása →
+                        </Link>
+                      </div>
                     ) : (
                       <p className="text-xs text-ink-soft">
                         {t('usesTemplateName', { name: selectedTemplate?.displayName ?? '' })}

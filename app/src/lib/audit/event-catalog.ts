@@ -80,6 +80,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'provisioning.doc.fetch.blocked',
   'connector.egress_allowlist.extend',
   'connector.materialize',
+  'connector.agentmail.org_key.set',
+  'connector.agentmail.inbox.create',
   'connector.template.create',
   'connector.template.deprecate',
   'connector.self_update.create',
