@@ -515,12 +515,13 @@
     "platformSettings": {
       "eyebrow": "Platform",
       "title": "Settings",
-      "body": "Clerk/OAuth, Google Drive, and Google API (Analytics / Search Console / Ads / Calendar / Sheets) client settings. Model routing and budget have been removed.",
+      "body": "Clerk/OAuth, Google Drive, and Google API (Analytics / Search Console / Ads / Calendar / Sheets) client settings, plus the NAV Online Invoice software identity. Model routing and budget have been removed.",
       "aria": "Platform settings",
       "gmail": "Google OAuth",
       "drive": "Google Drive OAuth",
       "picker": "Drive Picker",
-      "googleApi": "Google API (Analytics / Ads / Calendar / Sheets)"
+      "googleApi": "Google API (Analytics / Ads / Calendar / Sheets)",
+      "nav": "NAV Online Invoice"
     }
   },
   "GetStarted": {

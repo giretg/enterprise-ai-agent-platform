@@ -381,6 +381,134 @@ async function main() {
     assert.ok(!(config.proposedTools ?? []).some((tool) => tool.name === 'create_document'))
   })
 
+  await test('issue #691 szamlazz / nav / minicrm templates materialize for the runtime', () => {
+    const materialize = (key: string, authMethodKind: 'bearer' | 'basic', instanceValues: Record<string, string>) => {
+      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      assert.ok(raw, `missing ${key} custom template`)
+      const descriptor = parseTemplateDescriptor(raw)
+      assert.ok((descriptor.activationHelp ?? '').includes('1.'))
+      selfCheckTemplateDescriptor(descriptor)
+      const aliases = Object.fromEntries(
+        descriptor.instanceFields
+          .filter((field) => field.type === 'secret')
+          .map((field) => [field.name, `secret-ref:${field.secretAliasHint}`]),
+      )
+      const config = materializeConnectorConfig(descriptor, { authMethodKind, instanceValues }, aliases)
+      const runtime = parseHttpApiConfig(backfillHttpApiConnectorConfig(config).config)
+      return { config, runtime }
+    }
+
+    const szamlazz = materialize('szamlazz-hu', 'bearer', {})
+    assert.equal(szamlazz.runtime.protocol, 'szamlazz_agent')
+    assert.ok(szamlazz.config.proposedTools.some((t) => t.name === 'get_invoice' && t.access === 'read'))
+    assert.ok(!szamlazz.config.proposedTools.some((t) => t.name === 'create_invoice'))
+
+    const nav = materialize('nav-online-szamla', 'bearer', {
+      environment: 'https://api-test.onlineszamla.nav.gov.hu/invoiceService/v3',
+      taxNumber: '12345678',
+    })
+    assert.equal(nav.runtime.protocol, 'nav_online_invoice')
+    assert.deepEqual(nav.runtime.nav, { taxNumber: '12345678' })
+    assert.equal(nav.runtime.baseUrl, 'https://api-test.onlineszamla.nav.gov.hu/invoiceService/v3')
+    assert.ok(nav.config.egressHosts.includes('api-test.onlineszamla.nav.gov.hu'))
+    assert.ok(nav.config.proposedTools.every((t) => t.access === 'read'))
+    assert.throws(() =>
+      materialize('nav-online-szamla', 'bearer', {
+        environment: 'https://api.onlineszamla.nav.gov.hu/invoiceService/v3',
+        taxNumber: '1234',
+      }),
+    )
+
+    const minicrm = materialize('minicrm', 'basic', { systemId: '12345' })
+    assert.deepEqual(minicrm.runtime.auth, { scheme: 'basic', username: '12345' })
+    assert.equal(minicrm.config.proposedTools[0]?.path, '/Category')
+  })
+
+  await test('xml-protocols build signed NAV and ordered Számlázz.hu requests', async () => {
+    const { buildProtocolRequest, parseProtocolResponse, xmlElement } = await import(
+      '../src/domain/connector/xml-protocols'
+    )
+    const software = {
+      softwareId: 'HU12345678-AGENT01',
+      softwareName: 'Test',
+      softwareMainVersion: '1.0',
+      softwareDevName: 'Dev Kft.',
+      softwareDevContact: 'dev@example.hu',
+      softwareDevCountryCode: 'HU',
+      softwareDevTaxNumber: '12345678-2-41',
+    }
+    const secret = JSON.stringify({ login: 'tech1', password: 'pw', signKey: 'sign-key' })
+    const nav = await buildProtocolRequest(
+      'nav_online_invoice',
+      'https://api-test.onlineszamla.nav.gov.hu/invoiceService/v3',
+      { method: 'GET', path: '/invoices', query: { direction: 'inbound', dateFrom: '2026-09-01', dateTo: '2026-09-26' } },
+      secret,
+      { navTaxNumber: '12345678', loadNavSoftware: async () => software, now: new Date('2026-09-26T10:11:12.345Z') },
+    )
+    assert.equal(nav.url, 'https://api-test.onlineszamla.nav.gov.hu/invoiceService/v3/queryInvoiceDigest')
+    const requestId = nav.xml.match(/<common:requestId>([^<]+)</)?.[1] ?? ''
+    assert.match(requestId, /^[+a-zA-Z0-9_]{1,30}$/)
+    const { createHash } = await import('node:crypto')
+    const expectedSignature = createHash('sha3-512')
+      .update(`${requestId}20260926101112sign-key`)
+      .digest('hex')
+      .toUpperCase()
+    assert.ok(nav.xml.includes(`<common:requestSignature cryptoType="SHA3-512">${expectedSignature}<`))
+    assert.ok(nav.xml.includes(createHash('sha512').update('pw').digest('hex').toUpperCase()))
+    assert.ok(nav.xml.includes('<invoiceDirection>INBOUND</invoiceDirection>'))
+    assert.ok(!nav.xml.includes('sign-key') && !nav.xml.includes('>pw<'))
+    await assert.rejects(
+      buildProtocolRequest('nav_online_invoice', 'https://x', { method: 'GET', path: '/taxpayer', query: { taxNumber: '1' } }, secret, {
+        navTaxNumber: '12345678',
+        loadNavSoftware: async () => null,
+      }),
+      /Platform · Beállítások/,
+    )
+
+    const szamlazz = await buildProtocolRequest(
+      'szamlazz_agent',
+      'https://www.szamlazz.hu/szamla',
+      {
+        method: 'POST',
+        path: '/invoice',
+        body: {
+          beallitasok: { szamlaagentkulcs: 'attacker', szamlaLetoltes: true },
+          vevo: { cim: 'Fő u. 1', nev: 'A & B <Kft>', irsz: '1111', telepules: 'Budapest' },
+          fejlec: { penznem: 'HUF', keltDatum: '2026-09-26' },
+          tetelek: [{ megnevezes: 'X', mennyiseg: 1 }],
+        },
+      },
+      'real-key',
+    )
+    assert.ok(szamlazz.xml.includes('<szamlaagentkulcs>real-key</szamlaagentkulcs>'))
+    assert.ok(!szamlazz.xml.includes('attacker'))
+    assert.ok(szamlazz.xml.includes('<szamlaLetoltes>false</szamlaLetoltes>'))
+    assert.ok(szamlazz.xml.includes('<vevo><nev>A &amp; B &lt;Kft&gt;</nev><irsz>1111</irsz><telepules>Budapest</telepules><cim>'))
+    assert.ok(szamlazz.xml.indexOf('<beallitasok>') < szamlazz.xml.indexOf('<fejlec>'))
+    assert.ok(szamlazz.xml.includes('<fejlec><keltDatum>2026-09-26</keltDatum>'))
+    assert.ok(szamlazz.xml.includes('<tetelek><tetel><megnevezes>X</megnevezes>'))
+    assert.throws(() => xmlElement('bad name', 'x'))
+
+    const failed = await parseProtocolResponse(
+      'szamlazz_agent',
+      new Response('<xmlszamlavalasz><sikeres>false</sikeres><hibakod>7</hibakod><hibauzenet>Nincs ilyen számla</hibauzenet></xmlszamlavalasz>'),
+    )
+    assert.equal(failed.ok, false)
+    assert.equal(failed.errorCode, '7')
+    assert.match(failed.hint ?? '', /Nincs ilyen számla/)
+
+    const { gzipSync } = await import('node:zlib')
+    const invoiceData = gzipSync(Buffer.from('<InvoiceData>ok</InvoiceData>')).toString('base64')
+    const navRes = await parseProtocolResponse(
+      'nav_online_invoice',
+      new Response(
+        `<QueryInvoiceDataResponse><result><funcCode>OK</funcCode></result><invoiceDataResult><invoiceData>${invoiceData}</invoiceData><compressedContentIndicator>true</compressedContentIndicator></invoiceDataResult></QueryInvoiceDataResponse>`,
+      ),
+    )
+    assert.equal(navRes.ok, true)
+    assert.equal((navRes.body as { invoiceXml: string }).invoiceXml, '<InvoiceData>ok</InvoiceData>')
+  })
+
   await test('broken custom descriptor fails template self-check', () => {
     // Séma-szinten érvényes, de a példány materializálása elbukik: az instance-mező
     // egy nem támogatott config-targetre mutat → a mentés self-checkje elutasítja.

@@ -48,6 +48,7 @@ export function materializeConnectorConfig(
     ...(descriptor.rateLimit ? { rateLimit: descriptor.rateLimit } : {}),
     proposedTools: chooseEndpoints(descriptor, chosen.selectedEndpoints),
     ...(descriptor.requestHeaders ? { requestHeaders: { ...descriptor.requestHeaders } } : {}),
+    ...(descriptor.protocol ? { protocol: descriptor.protocol } : {}),
     ...(descriptor.privacy ? { privacy: descriptor.privacy } : {}),
     ...(descriptor.fields ? { fields: descriptor.fields } : {}),
     provenance: {
@@ -197,6 +198,7 @@ export function selfCheckTemplateDescriptor(
 
 function sampleValueForField(field: InstanceFieldDescriptor, key: string): string {
   if (field.enumValues?.[0]) return field.enumValues[0]
+  if (field.example) return field.example
   if (field.validation?.format === 'url') return `https://api.${key}.example`
   if (field.validation?.format === 'host') return `api.${key}.example`
   if (field.validation?.format === 'hostList') return `api.${key}.example`
@@ -343,6 +345,14 @@ function assignTarget(
   }
   if (target === 'auth.headerName') {
     config.auth.headerName = interpolated
+    return
+  }
+  if (target === 'auth.username') {
+    config.auth.username = interpolated
+    return
+  }
+  if (target === 'nav.taxNumber') {
+    config.nav = { taxNumber: interpolated }
     return
   }
   if (target === 'github.repositoryAccess') {

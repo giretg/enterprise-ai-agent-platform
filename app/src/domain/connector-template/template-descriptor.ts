@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { HTTP_METHODS } from '@/domain/provisioning/connector-config'
+import { HTTP_API_PROTOCOLS, HTTP_METHODS } from '@/domain/provisioning/connector-config'
 import {
   connectorFieldsPrivacySchema,
   privacyCapabilityDeclarationSchema,
@@ -24,6 +24,8 @@ export const instanceFieldSchema = z.object({
   /** Sablon-varázslóban ne jelenjen meg — érték a secretAliasHint-ből / aktiváláskor jön. */
   hiddenInProvisioning: z.boolean().optional(),
   enumValues: z.array(z.string()).optional(),
+  /** Mintaérték: a varázsló placeholdere és a sablon self-check mintája. */
+  example: z.string().optional(),
   target: z.string().min(1),
 })
 export type InstanceFieldDescriptor = z.infer<typeof instanceFieldSchema>
@@ -108,6 +110,15 @@ export const templateDescriptorSchema = z.object({
   rateLimit: z.object({ rps: z.number().nonnegative(), burst: z.number().nonnegative() }).optional(),
   /** Minden hívásra injektált sablonfejlécek (pl. CRM audit/trace fejlécek). */
   requestHeaders: z.record(z.string(), z.string()).optional(),
+  /** XML-alapú API adaptere (Számlázz.hu Agent, NAV Online Számla); hiányában JSON REST. */
+  protocol: z.enum(HTTP_API_PROTOCOLS).optional(),
+  /**
+   * Több részből álló titok (pl. NAV: login + jelszó + aláírókulcs): aktiváláskor
+   * mezőnként kérjük be, és JSON-objektumként egyetlen secretként tároljuk.
+   */
+  credentialFields: z
+    .array(z.object({ name: z.string().min(1), label: z.string().min(1), secret: z.boolean().optional() }))
+    .optional(),
   instanceFields: z.array(instanceFieldSchema).default([]),
   /**
    * Privacy interface contract (spec §11) — materializáláskor a connector configba kerül.

@@ -256,7 +256,9 @@ type TemplateDescriptor = {
     secretAliasHint?: string
     hiddenInProvisioning?: boolean
     enumValues?: string[]
+    example?: string
   }>
+  credentialFields?: Array<{ name: string; label: string; secret?: boolean }>
   scopeCatalog: Array<{ value: string; label: string; description?: string; default?: boolean }>
   endpoints: Array<{ name: string; method: string; path: string; access: 'read' | 'write'; description?: string; default?: boolean }>
 }
@@ -1855,7 +1857,7 @@ export function ProvisioningPanel({
                                           placeholder={
                                             field.type === 'secret'
                                               ? field.secretAliasHint ?? 'secret-alias'
-                                              : field.name
+                                              : field.example ?? field.name
                                           }
                                         />
                                       )}
@@ -2892,6 +2894,7 @@ function DraftCard({
   const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [confirmDecomm, setConfirmDecomm] = useState(false)
   const [authTestDetail, setAuthTestDetail] = useState<string | null>(null)
+  const [credentialValues, setCredentialValues] = useState<Record<string, string>>({})
 
   const v = draft.validationResult
   const cfg = draft.config
@@ -2930,6 +2933,7 @@ function DraftCard({
   const isPlatformGoogleConnector =
     isGmailConnector || isGoogleDriveConnector || isPlatformGoogleApiConnector
   const activationHelp = templateDescriptor?.activationHelp?.trim() ?? ''
+  const credentialFields = templateDescriptor?.credentialFields
   const isActive = draft.lifecycleState === 'active'
   const isUserDelegated =
     isPlatformGoogleConnector ||
@@ -3762,7 +3766,23 @@ function DraftCard({
                   </div>
                 ) : (
                   <>
-                <label className="text-xs sm:col-span-2">
+                {credentialFields?.map((field) => (
+                  <label key={field.name} className="text-xs sm:col-span-2">
+                    <span className="mb-1 block text-ink-soft">{field.label}</span>
+                    <input
+                      type={field.secret ? 'password' : 'text'}
+                      autoComplete="off"
+                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                      value={credentialValues[field.name] ?? ''}
+                      onChange={(e) => {
+                        const next = { ...credentialValues, [field.name]: e.target.value }
+                        setCredentialValues(next)
+                        setApiKey(credentialFields.every((f) => next[f.name]?.trim()) ? JSON.stringify(next) : '')
+                      }}
+                    />
+                  </label>
+                ))}
+                <label className={`text-xs sm:col-span-2 ${credentialFields ? 'hidden' : ''}`}>
                   <span className="mb-1 block text-ink-soft">
                     {isUserDelegated ? t('oauthClientSecret') : t('apiKey')}
                   </span>
