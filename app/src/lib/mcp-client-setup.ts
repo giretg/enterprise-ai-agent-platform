@@ -9,6 +9,7 @@ export type McpClientSetup = {
   claudeCommand: string
   grokCommand: string
   cursorInstallHref: string
+  hermesInstallHref: string
   hermesCommand: string
   hermesSyncPrompt: string
 }
@@ -58,6 +59,12 @@ export function hermesMcpSetupCommand(mcpUrl: string): string {
   return `hermes mcp add ${HERMES_MCP_SERVER_NAME} --url ${mcpUrl} --auth oauth && hermes mcp login ${HERMES_MCP_SERVER_NAME}`
 }
 
+/** Hermes Desktop one-click MCP install (hermes:// deep link). */
+export function hermesMcpInstallHref(mcpUrl: string): string {
+  const config = encodeURIComponent(base64Json({ url: mcpUrl, auth: 'oauth' }))
+  return `hermes://mcp/install?name=${encodeURIComponent(HERMES_MCP_SERVER_NAME)}&config=${config}`
+}
+
 export function buildMcpClientSetup(input: { origin: string; tenantSlug: string }): McpClientSetup {
   const mcpUrl = mcpUrlForTenant(input.origin, input.tenantSlug)
   const serverName = mcpClientName(input.tenantSlug)
@@ -69,6 +76,7 @@ export function buildMcpClientSetup(input: { origin: string; tenantSlug: string 
     claudeCommand: claudeMcpAddCommand(serverName, mcpUrl),
     grokCommand: grokMcpAddCommand(serverName, mcpUrl),
     cursorInstallHref: cursorMcpInstallHref(serverName, mcpUrl),
+    hermesInstallHref: hermesMcpInstallHref(mcpUrl),
     hermesCommand: hermesMcpSetupCommand(mcpUrl),
     hermesSyncPrompt: HERMES_SYNC_PROMPT,
   }

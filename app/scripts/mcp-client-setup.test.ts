@@ -18,6 +18,7 @@ import {
   codexMcpSetupCommand,
   grokMcpAddCommand,
   cursorMcpInstallHref,
+  hermesMcpInstallHref,
   firstRunGetStartedPath,
   mcpClientName,
   mcpUrlForTenant,
@@ -70,6 +71,21 @@ function main() {
     assert.equal(setup.grokCommand, cmd)
   })
 
+  check('Hermes install link is one-click and encodes OAuth HTTP config', () => {
+    const href = hermesMcpInstallHref(setup.mcpUrl)
+    assert.equal(setup.hermesInstallHref, href)
+    assert.match(href, /^hermes:\/\/mcp\/install\?name=excellence&config=/)
+    const url = new URL(href)
+    const config = url.searchParams.get('config')
+    assert.ok(config)
+    const decoded = JSON.parse(Buffer.from(decodeURIComponent(config), 'base64').toString('utf8')) as {
+      url?: string
+      auth?: string
+    }
+    assert.equal(decoded.url, setup.mcpUrl)
+    assert.equal(decoded.auth, 'oauth')
+  })
+
   check('Cursor install link is one-click and encodes {url} as base64 JSON', () => {
     const href = cursorMcpInstallHref('ea-acme', setup.mcpUrl)
     assert.equal(setup.cursorInstallHref, href)
@@ -116,9 +132,10 @@ function main() {
       ),
     )
     const details = html.match(/<details\b[^>]*>/g) ?? []
-    assert.equal(details.length, 7)
+    assert.equal(details.length, 9)
     assert.equal(details.some((tag) => /\sopen(?:\s|=|>|"")/.test(tag)), false)
     assert.ok(html.indexOf('>Hermes Desktop') < html.indexOf('>Codex<'))
+    assert.match(html, /hermes:\/\/mcp\/install\?name=excellence/)
     assert.match(html, /hermes mcp add excellence --url https:\/\/app\.example\.com\/api\/mcp\/acme --auth oauth &amp;&amp; hermes mcp login excellence/)
     assert.match(html, /Szinkronizáld az Excellence agenteimet/)
     assert.match(html, /hermes-agent\.nousresearch\.com\/#downloads/)

@@ -102,6 +102,19 @@ function HermesStep({ n, title, children }: { n: number; title: string; children
   )
 }
 
+function HermesTerminalFallback({ command }: { command: string }) {
+  const t = useTranslations('GetStarted')
+  return (
+    <details className="rounded-xl border border-line bg-card/40 text-xs text-ink-soft">
+      <summary className="cursor-pointer px-3 py-2 font-semibold text-ink">{t('hermesAdvancedTerminal')}</summary>
+      <div className="space-y-2 border-t border-line px-3 py-2">
+        <p>{t('hermesAdvancedTerminalBody')}</p>
+        <CodeBlock value={command} copyLabel={t('copyCommand')} />
+      </div>
+    </details>
+  )
+}
+
 export function McpSetupLanding({ setup, continueHref }: { setup: McpClientSetup; continueHref: string }) {
   const t = useTranslations('GetStarted')
   useEffect(() => {
@@ -149,12 +162,16 @@ export function McpSetupLanding({ setup, continueHref }: { setup: McpClientSetup
               </HermesStep>
               <HermesStep n={2} title={t('hermesStep2Title')}>
                 <p>{t('hermesStep2Body')}</p>
-                <CodeBlock value="hermes model" copyLabel={t('copyCommand')} />
                 <p className="text-xs text-ink-faint">{t('hermesStep2Hint')}</p>
+                <HermesTerminalFallback command="hermes model" />
               </HermesStep>
               <HermesStep n={3} title={t('hermesStep3Title')}>
                 <p>{t('hermesStep3Body')}</p>
-                <CodeBlock value={setup.hermesCommand} copyLabel={t('copyCommand')} />
+                <a href={setup.hermesInstallHref} className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 font-semibold text-white transition-colors hover:bg-coral-deep">
+                  {t('hermesInstall')} <span aria-hidden="true">→</span>
+                </a>
+                <p className="text-xs text-ink-faint">{t('hermesStep3Manual')}</p>
+                <HermesTerminalFallback command={setup.hermesCommand} />
                 <p className="text-xs text-ink-faint">{t('hermesStep3Hint')}</p>
               </HermesStep>
               <HermesStep n={4} title={t('hermesStep4Title')}>
