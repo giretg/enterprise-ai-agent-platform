@@ -424,6 +424,92 @@ async function main() {
     assert.equal(minicrm.config.proposedTools[0]?.path, '/Category')
   })
 
+  await test('issue #691 pipedrive / woocommerce / shoprenter templates materialize for the runtime', () => {
+    const expected = {
+      pipedrive: { auth: 'api_key', defaultTool: 'list_deals' },
+      woocommerce: { auth: 'basic', defaultTool: 'list_orders' },
+      shoprenter: { auth: 'basic', defaultTool: 'list_orders' },
+    } as const
+
+    for (const [key, spec] of Object.entries(expected)) {
+      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      assert.ok(raw, `missing ${key} custom template`)
+      const descriptor = parseTemplateDescriptor(raw)
+      assert.equal(descriptor.authMethods[0]?.kind, spec.auth)
+      assert.ok((descriptor.activationHelp ?? '').includes('1.'))
+      assert.ok(descriptor.endpoints.some((endpoint) => endpoint.name === spec.defaultTool && endpoint.default))
+      assert.ok(!descriptor.endpoints.some((endpoint) => endpoint.access === 'write' && endpoint.default))
+      selfCheckTemplateDescriptor(descriptor)
+    }
+
+    const pipedriveRaw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'pipedrive')
+    assert.ok(pipedriveRaw)
+    const pipedrive = materializeConnectorConfig(
+      parseTemplateDescriptor(pipedriveRaw),
+      { authMethodKind: 'api_key', instanceValues: { companyHost: 'ceged.pipedrive.com' } },
+      { apiToken: 'secret-ref:pipedrive-api-token' },
+    )
+    const pipedriveRuntime = parseHttpApiConfig(pipedrive)
+    assert.equal(pipedriveRuntime.baseUrl, 'https://ceged.pipedrive.com/api/v2')
+    assert.deepEqual(pipedriveRuntime.auth, { scheme: 'header', header: 'x-api-token' })
+    assert.ok(pipedrive.egressHosts.includes('ceged.pipedrive.com'))
+    assert.ok(pipedrive.proposedTools.some((t) => t.name === 'list_users' && t.access === 'read'))
+    assert.ok(!pipedrive.proposedTools.some((t) => t.name === 'create_deal'))
+    assert.throws(() =>
+      materializeConnectorConfig(
+        parseTemplateDescriptor(pipedriveRaw),
+        { authMethodKind: 'api_key', instanceValues: { companyHost: 'evil.example.com' } },
+        { apiToken: 'secret-ref:pipedrive-api-token' },
+      ),
+    )
+
+    const wooRaw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'woocommerce')
+    assert.ok(wooRaw)
+    const woo = materializeConnectorConfig(
+      parseTemplateDescriptor(wooRaw),
+      {
+        authMethodKind: 'basic',
+        instanceValues: { storeHost: 'shop.example.hu', consumerKey: 'ck_0123456789abcdef0123456789abcdef' },
+      },
+      { consumerSecret: 'secret-ref:woocommerce-consumer-secret' },
+    )
+    const wooRuntime = parseHttpApiConfig(woo)
+    assert.equal(wooRuntime.baseUrl, 'https://shop.example.hu/wp-json/wc/v3')
+    assert.deepEqual(wooRuntime.auth, { scheme: 'basic', username: 'ck_0123456789abcdef0123456789abcdef' })
+    assert.ok(woo.proposedTools.some((t) => t.name === 'list_orders' && t.access === 'read'))
+    assert.ok(!woo.proposedTools.some((t) => t.name === 'update_order'))
+    assert.throws(() =>
+      materializeConnectorConfig(
+        parseTemplateDescriptor(wooRaw),
+        {
+          authMethodKind: 'basic',
+          instanceValues: { storeHost: 'shop.example.hu', consumerKey: 'not-a-ck-key' },
+        },
+        { consumerSecret: 'secret-ref:woocommerce-consumer-secret' },
+      ),
+    )
+
+    const shopRaw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'shoprenter')
+    assert.ok(shopRaw)
+    const shop = materializeConnectorConfig(
+      parseTemplateDescriptor(shopRaw),
+      { authMethodKind: 'basic', instanceValues: { shopHost: 'boltod.shoprenter.hu', username: 'api' } },
+      { apiPassword: 'secret-ref:shoprenter-api-password' },
+    )
+    const shopRuntime = parseHttpApiConfig(shop)
+    assert.equal(shopRuntime.baseUrl, 'https://boltod.shoprenter.hu/api')
+    assert.deepEqual(shopRuntime.auth, { scheme: 'basic', username: 'api' })
+    assert.equal(shop.proposedTools[0]?.name, 'list_order_statuses')
+    assert.ok(!shop.proposedTools.some((t) => t.name === 'update_order'))
+    assert.throws(() =>
+      materializeConnectorConfig(
+        parseTemplateDescriptor(shopRaw),
+        { authMethodKind: 'basic', instanceValues: { shopHost: 'shop.example.hu', username: 'api' } },
+        { apiPassword: 'secret-ref:shoprenter-api-password' },
+      ),
+    )
+  })
+
   await test('xml-protocols build signed NAV and ordered Számlázz.hu requests', async () => {
     const { buildProtocolRequest, parseProtocolResponse, xmlElement } = await import(
       '../src/domain/connector/xml-protocols'
