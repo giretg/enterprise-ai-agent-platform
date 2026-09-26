@@ -121,7 +121,9 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     connector: LiveConnectorRow,
     accessToken?: string,
     actingUser?: HttpApiActingUser,
+    allowedEgressHosts?: string[],
   ) => Promise<unknown>
+  resolveEgressAllowlist?: (tenantId: string | null) => Promise<string[]>
   resolveActingUser?: (input: { userId: string }) => Promise<{ id: string; email: string } | null>
   executeKbTool?: (
     toolName: EnterpriseKbTool,
@@ -497,7 +499,10 @@ async function dispatchTool(
   }
   if (isEnterpriseHttpTool(input.toolName)) {
     const execute = deps.executeHttpApiTool ?? executeHttpApiTool
-    return execute(input.toolName, input.args, input.connector, input.accessToken, input.actingUser)
+    const allowedEgressHosts = deps.resolveEgressAllowlist
+      ? await deps.resolveEgressAllowlist(input.connector.tenantId)
+      : undefined
+    return execute(input.toolName, input.args, input.connector, input.accessToken, input.actingUser, allowedEgressHosts)
   }
   const execute = deps.executeDriveTool ?? executeGoogleDriveTool
   return execute(input.toolName as EnterpriseDriveTool, input.args, input.accessToken ?? '')

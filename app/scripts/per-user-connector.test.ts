@@ -27,7 +27,6 @@ import {
 } from '../src/domain/tool-broker/tool-broker-service'
 import type {
   AgentRepository,
-  AuditRepository,
   ConnectorGrantRepository,
   ToolBrokerRepository,
 } from '../src/repositories/interfaces'
@@ -194,13 +193,7 @@ function buildGrantService(initialGrant: ConnectorGrant | null = grant()) {
     },
     revokeAllForUser: async () => 0,
   } as unknown as ConnectorGrantRepository
-  const audit = {
-    append: async (event: unknown) => {
-      auditEvents.push(event)
-      return event
-    },
-  } as unknown as AuditRepository
-  return { service: new ConnectorGrantService(grants, audit), auditEvents, created, getGrant: () => currentGrant }
+  return { service: new ConnectorGrantService(grants), auditEvents, created, getGrant: () => currentGrant }
 }
 
 // ---- §10.1 Funkcionális elfogadás ------------------------------------------

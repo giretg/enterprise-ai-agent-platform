@@ -8,14 +8,21 @@
  */
 import assert from 'node:assert/strict'
 import {
-  HttpApiClient,
+  HttpApiClient as RuntimeHttpApiClient,
   HttpApiError,
   findHttpApiEndpoint,
   findOverlappingHttpApiEndpoints,
   parseHttpApiConfig,
   resolveConnectorApiKey,
   type HttpApiConfig,
+  type HttpApiCredentials,
 } from '../src/domain/connector/http-api-client'
+
+class HttpApiClient extends RuntimeHttpApiClient {
+  constructor(config: HttpApiConfig, credentials: HttpApiCredentials) {
+    super(config, credentials, async () => ['8.8.8.8'])
+  }
+}
 
 let failures = 0
 function pass(name: string) {
@@ -124,7 +131,7 @@ async function main() {
     // A sablonból materializált configok `{id}` alakot használnak — a korlát ezekre
     // is működik, nem csak a kézi form `:param` alakjára.
     const config = parseHttpApiConfig({
-      baseUrl: 'https://crm.example/api/v1',
+      baseUrl: 'https://example.com/api/v1',
       auth: { scheme: 'bearer' },
       endpoints: [
         { method: 'GET', path: '/accounts' },
@@ -386,7 +393,7 @@ async function main() {
     globalThis.fetch = fakeFetch
     try {
       const config = parseHttpApiConfig({
-        baseUrl: 'https://crm.example/api/connector/v1',
+        baseUrl: 'https://example.com/api/connector/v1',
         auth: { scheme: 'bearer' },
         requestHeaders: {
           'X-Agent-Id': '{{agent.id}}',
@@ -439,7 +446,7 @@ async function main() {
     globalThis.fetch = fakeFetch
     try {
       const config = parseHttpApiConfig({
-        baseUrl: 'https://crm.example/api/connector/v1',
+        baseUrl: 'https://example.com/api/connector/v1',
         auth: { scheme: 'bearer' },
         authProfiles: {
           delegated: { secretAlias: 'env:CRM_DELEGATED_TEST_KEY' },
@@ -475,9 +482,9 @@ async function main() {
   await test('parseHttpApiConfig elfogadja az oauth2 sémát (tokenUrl+clientId)', () => {
     const c = parseHttpApiConfig({
       baseUrl: 'https://x.io',
-      auth: { type: 'oauth2', tokenUrl: 'https://oauth2.example/token', clientId: 'abc' },
+      auth: { type: 'oauth2', tokenUrl: 'https://example.com/token', clientId: 'abc' },
     })
-    assert.deepEqual(c.auth, { scheme: 'oauth2', tokenUrl: 'https://oauth2.example/token', clientId: 'abc' })
+    assert.deepEqual(c.auth, { scheme: 'oauth2', tokenUrl: 'https://example.com/token', clientId: 'abc' })
   })
 
   await test('parseHttpApiConfig elutasítja az oauth2-t tokenUrl nélkül', () => {
@@ -517,7 +524,7 @@ async function main() {
     let tokenCalls = 0
     const apiCalls: RequestInit[] = []
     const fakeFetch: typeof fetch = async (input, init) => {
-      if (String(input) === 'https://oauth2.example/token') {
+      if (String(input) === 'https://example.com/token') {
         tokenCalls += 1
         return new Response(JSON.stringify({ access_token: `tok-${tokenCalls}`, expires_in: 3600 }), {
           status: 200,
@@ -535,7 +542,7 @@ async function main() {
     try {
       const config = parseHttpApiConfig({
         baseUrl: 'https://x.io',
-        auth: { scheme: 'oauth2', tokenUrl: 'https://oauth2.example/token', clientId: 'client-abc' },
+        auth: { scheme: 'oauth2', tokenUrl: 'https://example.com/token', clientId: 'client-abc' },
       })
       const credentials = JSON.stringify({ clientSecret: 'shh', refreshToken: 'rt-1' })
       const client = new HttpApiClient(config, credentials)
@@ -552,7 +559,7 @@ async function main() {
   await test('oauth2: hibás JSON secret esetén tiszta hiba, nem nyers stringet küld tokenként', async () => {
     const config = parseHttpApiConfig({
       baseUrl: 'https://x.io',
-      auth: { scheme: 'oauth2', tokenUrl: 'https://oauth2.example/token', clientId: 'client-abc' },
+      auth: { scheme: 'oauth2', tokenUrl: 'https://example.com/token', clientId: 'client-abc' },
     })
     const client = new HttpApiClient(config, 'not-json-at-all')
     await assert.rejects(
@@ -572,7 +579,7 @@ async function main() {
 
   await test('parse: requestHeaders-ben lévő kötelező OpenAPI header nem kerül headerParams-ba', () => {
     const config = parseHttpApiConfig({
-      baseUrl: 'https://crm.example/api/v1',
+      baseUrl: 'https://example.com/api/v1',
       auth: { scheme: 'bearer' },
       requestHeaders: {
         'X-Agent-Id': '{{agent.id}}',
@@ -603,7 +610,7 @@ async function main() {
       { name: 'Idempotency-Key', in: 'header', required: true },
     ]
     const config = parseHttpApiConfig({
-      baseUrl: 'https://crm.example/api/v1',
+      baseUrl: 'https://example.com/api/v1',
       auth: { scheme: 'bearer' },
       writeHeaders: { 'X-Write-Token': '{{call.id}}' },
       endpoints: [
@@ -634,7 +641,7 @@ async function main() {
       // szimulációja) — a runtime sablon alapján akkor sem követeli a hívótól.
       const config: HttpApiConfig = {
         ...parseHttpApiConfig({
-          baseUrl: 'https://crm.example/api/v1',
+          baseUrl: 'https://example.com/api/v1',
           auth: { scheme: 'bearer' },
           requestHeaders: {
             'X-Agent-Id': '{{agent.id}}',
@@ -766,7 +773,7 @@ async function main() {
     }) as typeof fetch
     try {
       const config = parseHttpApiConfig({
-        baseUrl: 'https://crm.example/api/connector/v1',
+        baseUrl: 'https://example.com/api/connector/v1',
         auth: { scheme: 'bearer' },
         requestHeaders: {
           'X-Agent-Id': '{{agent.id}}',
@@ -809,7 +816,7 @@ async function main() {
     }) as typeof fetch
     try {
       const config = parseHttpApiConfig({
-        baseUrl: 'https://crm.example/api/connector/v1',
+        baseUrl: 'https://example.com/api/connector/v1',
         auth: { scheme: 'bearer' },
         defaultActingUserEmail: 'fallback@ostorosbor.hu',
         requestHeaders: {
@@ -853,7 +860,7 @@ async function main() {
       // maga jelöli az X-Acting-User-t required:false-nak — nincs actingUser és
       // defaultActingUserEmail sem, ez ettől még nem hibázhat el.
       const config = parseHttpApiConfig({
-        baseUrl: 'https://crm.example/api/connector/v1',
+        baseUrl: 'https://example.com/api/connector/v1',
         auth: { scheme: 'bearer' },
         requestHeaders: {
           'X-Agent-Id': '{{agent.id}}',
@@ -890,7 +897,7 @@ async function main() {
 
   await test('runtime: hívó által beadott platform-injektált header → platform_injected_header', async () => {
     const config = parseHttpApiConfig({
-      baseUrl: 'https://crm.example/api/v1',
+      baseUrl: 'https://example.com/api/v1',
       auth: { scheme: 'bearer' },
       requestHeaders: { 'X-Agent-Id': '{{agent.id}}' },
       endpoints: [{ method: 'GET', path: '/orders' }],
@@ -930,6 +937,89 @@ async function main() {
       // Csak az eredeti host lett meghívva; a metadata hostra SOSEM ment ki kérés.
       assert.equal(calls.length, 1)
       assert.ok(calls[0].startsWith('https://posnavigator.eu/'))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('SSRF: a hagyományos connector privát IPv6 célját a hálózat előtt blokkolja', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://[fd00::1]/api',
+      auth: { scheme: 'none' },
+      endpoints: [{ method: 'GET', path: '/records' }],
+      restrictToEndpoints: true,
+    })
+    await assert.rejects(
+      new HttpApiClient(config, {}).request({ method: 'GET', path: '/records' }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+    )
+  })
+
+  await test('SSRF: az OAuth token endpoint privát IPv6 címe nem kap hitelesítőt', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://api.example/v1',
+      auth: {
+        scheme: 'oauth2',
+        tokenUrl: 'https://[fd00::1]/token',
+        clientId: 'client-id',
+      },
+      endpoints: [{ method: 'GET', path: '/records' }],
+      restrictToEndpoints: true,
+    })
+    await assert.rejects(
+      new HttpApiClient(config, '{"clientSecret":"secret","refreshToken":"refresh"}').request({
+        method: 'GET',
+        path: '/records',
+      }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+    )
+  })
+
+  await test('SSRF: hostname, ami privát IPv6-ra oldódik, hálózat előtt blokkol', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://api.example.com/v1',
+      auth: { scheme: 'none' },
+      endpoints: [{ method: 'GET', path: '/records' }],
+      restrictToEndpoints: true,
+    })
+    await assert.rejects(
+      new RuntimeHttpApiClient(config, {}, async () => ['fd00::1']).request({
+        method: 'GET',
+        path: '/records',
+      }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+    )
+  })
+
+  await test('OAuth token host nincs a tenant allowlisten → hitelesítő nem megy ki', async () => {
+    const calls: string[] = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (input) => {
+      calls.push(String(input))
+      return new Response('should-not-run', { status: 500 })
+    }
+    try {
+      const config = {
+        ...parseHttpApiConfig({
+          baseUrl: 'https://api.example.com/v1',
+          auth: {
+            scheme: 'oauth2',
+            tokenUrl: 'https://tokens.attacker.example/token',
+            clientId: 'client-id',
+          },
+          endpoints: [{ method: 'GET', path: '/records' }],
+          restrictToEndpoints: true,
+        }),
+        allowedEgressHosts: ['api.example.com'],
+      }
+      await assert.rejects(
+        new HttpApiClient(config, '{"clientSecret":"secret","refreshToken":"refresh"}').request({
+          method: 'GET',
+          path: '/records',
+        }),
+        (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+      )
+      assert.equal(calls.length, 0)
     } finally {
       globalThis.fetch = originalFetch
     }

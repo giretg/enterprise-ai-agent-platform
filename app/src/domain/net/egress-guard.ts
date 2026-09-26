@@ -188,6 +188,23 @@ export type EgressGuardResult =
   | { ok: true; host: string; url: string }
   | { ok: false; reason: EgressBlockReason; detail?: string }
 
+/**
+ * OAuth token/userinfo cél allowlistje.
+ * Gmail/Drive platform-OAuth: a tenant provisioning-listától független, a végpont
+ * saját hostjára pinelve (SSRF/privát IP + redirect továbbra is tiltott).
+ * Tenant HTTP/OpenAPI OAuth: a feloldott tenant-lista; ha nincs feloldó, SSRF-only pin.
+ */
+export function allowlistForOAuthEndpoint(params: {
+  connectorType: string
+  url: string
+  tenantAllowlist: string[] | null
+}): string[] {
+  const host = new URL(params.url).hostname
+  const platformGoogle = params.connectorType === 'gmail' || params.connectorType === 'google_drive'
+  if (platformGoogle || params.tenantAllowlist == null) return [host]
+  return params.tenantAllowlist
+}
+
 export type EgressGuardInput = {
   url: string
   /** A megengedett cél-hostnevek (deny-by-default). Pontos hostname-egyezés, kisbetűsítve. */
