@@ -7,6 +7,68 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-09-25 — MCP Gmail írási felület (#637), reliability-kör: non-idempotens küldés retry-duplikátum
+
+**Scope-választás (kockázati alapon):** a **09-24-i kör** (lentebb) a #637 MCP Gmail
+*írási* felületét már mélyen auditálta a **bizalmi-határ / auth / jóváhagyás /
+fejléc-injekció / scope** tengelyen, és high-confidence biztonsági findingot nem talált
+(a `draftId`/válasz következmény-kártya-rés residualként jegyezve; #668 DRAFT javítja). Az
+a kör azonban a `GmailApiClient` **hálózati megbízhatósági viselkedését (retry-politika)
+nem vizsgálta** — ez maradt a felület legnagyobb nem-auditált kockázata, és mivel a kimenő
+e-mail visszavonhatatlan, külső hatású, ezt a reliability-tengelyt auditáltam.
+
+**Coverage:** `GmailApiClient.fetchWithBackoff` retry-mátrixa és minden hívási helye
+(search/get/list olvasások, `send` messages/send + drafts/send, `create_draft`,
+`modify_labels`, `trash`, `delete_draft`, `getReplyContext`, `count`). Kereszt-ellenőrzés a
+művelet-szintű idempotenciával (`enqueueGatewayOperation` idempotencyKey-dedup) — az a
+kliens *teljes-művelet* újraküldését fedi, az egyetlen végrehajtáson belüli HTTP-retryt nem.
+
+### Bizonyított finding (reliability / correctness) — javítva
+**Non-idempotens küldés újrapróbálja az ambivalens 5xx-et → dupla kimenő e-mail.** A
+`fetchWithBackoff` a 429 mellett **minden 5xx-re** (500/502/503/504) újrapróbál. Olvasásnál
+és idempotens írásnál (címke/kuka) ez helyes, de a **küldés POST nem idempotens**, és a
+Gmail nem fogad kliens-idempotencia tokent: ha egy `502` után a levél valójában már kiment,
+a retry **mégegyszer elküldi** — a címzett két azonos levelet kap. A művelet-szintű
+`idempotencyKey` csak a teljes-művelet kliens-újraküldést szűri; ezt a HTTP-szintű retryt
+**nem** fedi. A 09-24-i kör MIME-építést és fejléc-injekciót nézett a `gmail-api-client`-ben,
+a retry-viselkedést nem — így ez **net-új** finding, nem az előző kör duplikátuma. Üzleti
+hatás: dupla megrendelés-visszaigazolás / fizetési felszólítás → kettős cselekvés,
+bizalomvesztés.
+
+**Root-cause javítás a határon** (PR **#674**, ág `fix/gmail-send-no-5xx-retry-duplicate`,
+külön git worktree-ben — a felhasználó i18n-WIP-je érintetlen):
+- `fetchWithBackoff` új `retryServerErrors` kapcsoló: `false` esetén **csak a 429-et**
+  ismétli (elutasított = fel nem dolgozott, biztonságos), az ambivalens 5xx-et nem.
+- A három nem-idempotens create/send POST (`gmail_send` messages/send + drafts/send,
+  `gmail_create_draft`) a nem-retryző ágra kerül; 5xx-en a művelet **hangosan elbukik**
+  (`gateway.operation.failed`) → dupla helyett nulla, a user új művelettel újraküld.
+- `gmail_modify_labels`/`gmail_trash` idempotens → marad a default 5xx-retry.
+
+### Ellenőrzések
+- `npm run test:gmail-mcp-tools` — **zöld**, 5 új regressziós eset: send / draftId-send /
+  create_draft egyszer fut 5xx-en (nincs dupla), send 429-en még újrapróbál és sikeres,
+  olvasás 5xx-en továbbra is retryz.
+- `tsc --noEmit` és `eslint` tiszta a módosított fájlokra.
+- Matt Pocock `/code-review` (Standards + Spec, párhuzamos sub-agentek): mindkét tengely
+  „a mechanizmus helyes és minimálisan scope-olt". Standards: 1 soft nit (angol kommentek
+  magyar-kommentelt fájlban) → **átvezetve**. Spec: 0 scope-creep, 0 hibás implementáció;
+  teszt-lefedettségi rés (draftId-send + create_draft) → **átvezetve** (2 új call-count teszt).
+
+### Residual risk / következő audithoz
+- **🟠 HTTP/Drive/Sheets write POST-ok ugyanezen retry-mintája (más kliensek).** A
+  non-idempotens retry-duplikátum máshol is fennállhat — pl. `google_sheets_write_range`,
+  `google_drive_upload_file`, `http_api_request` POST/PUT — külön `fetchWithBackoff`-szerű
+  helper nélkül vagy azzal. **Prioritált követő kör:** a Drive/Sheets/HTTP írási kliensek
+  retry-politikájának ugyanilyen auditja.
+- **`create_draft` 5xx→bukás:** a piszkozat-létrehozás is elbukik átmeneti 5xx-en (retry
+  nélkül). A duplikátum-mentesség fontosabb; ha a megbízhatóság gond lesz, a Gmail
+  draft-létrehozás felülírható ugyanarra a threadId-re — YAGNI most.
+- **09-24-i residualok továbbra is nyitva:** következmény-kártya címzett-láthatóság
+  válasznál/draftId-nél (#668 részben), reply compose-only scope fail-closed UX,
+  `getProfileEmail` csak primary (send-as alias nem kizárva reply-all self-szűrésnél).
+
+---
+
 ## 2026-09-24 — MCP resource-server írási felület (Gmail send/reply/draft/label/trash, #637): bizalmi határ + jóváhagyás-kötés + fejléc-injekció
 
 **Scope-választás (kockázati alapon):** `gh pr list` + ledger után az utolsó bejegyzés
