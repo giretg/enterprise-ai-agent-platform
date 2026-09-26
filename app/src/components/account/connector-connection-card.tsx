@@ -38,6 +38,8 @@ export type LinkedConnectorView = {
   authMode: string
   tenantId: string | null
   config: unknown
+  /** Sablonból készült konnektornál a sablon ikonja; egyébként generikus ikon látszik. */
+  iconDataUrl?: string | null
   assignedAgentCount: number
   capableAgentCount: number
   capableAgentDisplayNames: string[]
@@ -288,6 +290,7 @@ export function ConnectorConnectionCard({
       <ConnectionCard
         name={delegatedConnectorLabel(connector.type, connector.name)}
         provider={connector.type}
+        iconDataUrl={connector.iconDataUrl}
         summary={<span title={hint ?? undefined}>{connectorDescription(connector, t)}</span>}
         actions={
           <>
@@ -335,6 +338,7 @@ export function ConnectorConnectionCard({
     <ConnectionCard
       name={delegatedConnectorLabel(connector.type, connector.name)}
       provider={connector.type}
+      iconDataUrl={connector.iconDataUrl}
       status={
         <StatusDot tone={usage.usable ? 'ok' : 'warn'}>
           {usage.usable ? t('connected') : t('unused')}

@@ -48,6 +48,7 @@ import {
   trustSelfUpdatingPartner,
 } from '@/app/actions/self-updating-connectors'
 import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'
+import { ConnectorTemplateIcon } from '@/components/account/provider-icon'
 import { OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES } from '@/domain/connector-template/custom-template-seeds'
 import { AGENTMAIL_TEMPLATE_KEY } from '@/domain/connector-template/builtin-templates'
 import Link from 'next/link'
@@ -244,6 +245,7 @@ type TemplateDescriptor = {
   displayName: string
   description?: string
   activationHelp?: string
+  iconDataUrl?: string
   connectorType: 'gmail' | 'google_drive' | 'http_api'
   authMethods: Array<{ kind: 'api_key' | 'bearer' | 'basic' | 'service_oauth2' | 'user_delegated_oauth2' }>
   instanceFields: Array<{
@@ -337,6 +339,13 @@ function TemplateCatalogList({
         templates.map((template) => (
           <div key={template.id} className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
             <div className="flex flex-wrap items-center gap-2">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink/10 bg-white">
+                <ConnectorTemplateIcon
+                  iconDataUrl={template.descriptor.iconDataUrl}
+                  provider={template.key}
+                  className="h-5 w-5"
+                />
+              </span>
               <span className="font-semibold">{template.displayName}</span>
               <Badge tone="neutral">v{template.version}</Badge>
               <Badge tone={template.origin === 'builtin' ? 'success' : 'warning'}>
@@ -594,6 +603,10 @@ export function ProvisioningPanel({
   // Sablon scope: platform (tenantId null) vagy tenant-szintű.
   const [templateScope, setTemplateScope] = useState<'platform' | 'tenant'>('platform')
   const [templateTenantId, setTemplateTenantId] = useState('')
+  // Sablon ikon (feltöltött kép data URL-ként, a descriptorba mentve).
+  const [templateIconDataUrl, setTemplateIconDataUrl] = useState<string | null>(null)
+  const [templateIconTouched, setTemplateIconTouched] = useState(false)
+  const [templateIconError, setTemplateIconError] = useState<string | null>(null)
   const [tenantOptions, setTenantOptions] = useState<Array<{ id: string; name: string }>>([])
 
   const applyTemplateSelection = useCallback((template: ConnectorTemplateRow) => {
@@ -2333,6 +2346,81 @@ export function ProvisioningPanel({
                 ) : null}
               </div>
             ) : null}
+            <div className="flex flex-wrap items-center gap-3 rounded-md border border-ink/12 bg-wash/40 p-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink/10 bg-white">
+                <ConnectorTemplateIcon
+                  iconDataUrl={templateIconDataUrl}
+                  provider=""
+                  className="h-6 w-6"
+                />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold">{t('templateIcon')}</p>
+                <p className="text-xs text-ink-soft">{t('templateIconHint')}</p>
+                {templateIconError ? (
+                  <p className="text-xs text-coral">{templateIconError}</p>
+                ) : null}
+              </div>
+              <label className="cursor-pointer rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold">
+                {t('templateIconUpload')}
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    e.target.value = ''
+                    if (!file) return
+                    if (!file.type.startsWith('image/')) {
+                      setTemplateIconError(t('templateIconInvalid'))
+                      return
+                    }
+                    if (file.size > 150 * 1024) {
+                      setTemplateIconError(t('templateIconTooBig'))
+                      return
+                    }
+                    setTemplateIconError(null)
+                    const reader = new FileReader()
+                    reader.onload = () => {
+                      if (typeof reader.result !== 'string') return
+                      const dataUrl = reader.result
+                      setTemplateIconDataUrl(dataUrl)
+                      setTemplateIconTouched(true)
+                      setTemplateEditorText((prev) => {
+                        try {
+                          const parsed = JSON.parse(prev) as Record<string, unknown>
+                          return JSON.stringify({ ...parsed, iconDataUrl: dataUrl }, null, 2)
+                        } catch {
+                          return prev
+                        }
+                      })
+                    }
+                    reader.readAsDataURL(file)
+                  }}
+                />
+              </label>
+              {templateIconDataUrl ? (
+                <button
+                  type="button"
+                  className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
+                  onClick={() => {
+                    setTemplateIconDataUrl(null)
+                    setTemplateIconTouched(true)
+                    setTemplateEditorText((prev) => {
+                      try {
+                        const parsed = JSON.parse(prev) as Record<string, unknown>
+                        delete parsed.iconDataUrl
+                        return JSON.stringify(parsed, null, 2)
+                      } catch {
+                        return prev
+                      }
+                    })
+                  }}
+                >
+                  {t('templateIconRemove')}
+                </button>
+              ) : null}
+            </div>
             <textarea
               className="h-80 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
               value={templateEditorText}
@@ -2358,6 +2446,13 @@ export function ProvisioningPanel({
                     setError(t('pickTenantForTemplate'))
                     return
                   }
+                  if (templateIconTouched && typeof descriptor === 'object' && descriptor !== null) {
+                    if (templateIconDataUrl) {
+                      ;(descriptor as Record<string, unknown>).iconDataUrl = templateIconDataUrl
+                    } else {
+                      delete (descriptor as Record<string, unknown>).iconDataUrl
+                    }
+                  }
                   run(
                     () =>
                       upsertConnectorTemplateAction({
@@ -2382,7 +2477,12 @@ export function ProvisioningPanel({
             templates={templates}
             pending={pending}
             canManage
-            onLoad={(template) => setTemplateEditorText(JSON.stringify(template.descriptor, null, 2))}
+            onLoad={(template) => {
+              setTemplateEditorText(JSON.stringify(template.descriptor, null, 2))
+              setTemplateIconDataUrl(template.descriptor.iconDataUrl ?? null)
+              setTemplateIconTouched(true)
+              setTemplateIconError(null)
+            }}
             onDeprecate={(templateId) =>
               run(
                 () => deprecateConnectorTemplateAction({ templateId }),
@@ -3016,6 +3116,13 @@ function DraftCard({
   return (
     <div className="rounded-lg border border-ink/12 bg-paper">
       <div className="flex flex-wrap items-center gap-2 px-4 py-3">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink/10 bg-white">
+          <ConnectorTemplateIcon
+            iconDataUrl={templateDescriptor?.iconDataUrl}
+            provider={provenance?.templateKey ?? draft.connectorType ?? ''}
+            className="h-5 w-5"
+          />
+        </span>
         <button
           type="button"
           className="font-semibold hover:underline"

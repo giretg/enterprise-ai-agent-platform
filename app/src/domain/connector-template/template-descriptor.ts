@@ -77,10 +77,26 @@ export const templateConnectorTypeSchema = z
   .enum(['http_api', 'gmail', 'google_drive'])
   .default('http_api')
 
+export const MAX_TEMPLATE_ICON_DATA_URL_LENGTH = 200_000
+
+export const templateIconDataUrlSchema = z
+  .string()
+  .min(1)
+  .max(
+    MAX_TEMPLATE_ICON_DATA_URL_LENGTH,
+    'template icon must be smaller than ~150KB',
+  )
+  .refine(
+    (value) => /^data:image\/(png|jpeg|gif|webp|svg\+xml);base64,/.test(value),
+    'template icon must be a base64 image data URL',
+  )
+
 export const templateDescriptorSchema = z.object({
   key: connectorTemplateKeySchema,
   displayName: z.string().min(1),
   description: z.string().optional(),
+  /** A szolgáltatás ikonja data URL-ként (DB-ben tárolva); hiányában generikus ikon látszik. */
+  iconDataUrl: templateIconDataUrlSchema.optional(),
   activationHelp: z.string().min(1).optional(),
   /** A materializált connector Prisma `type` mezője. Alapértelmezés: http_api. */
   connectorType: templateConnectorTypeSchema.default('http_api'),
