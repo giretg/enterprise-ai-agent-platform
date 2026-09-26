@@ -31,6 +31,10 @@ import {
   type HttpApiEndpointSummary,
 } from '@/domain/connector/http-api-client'
 
+/** Publish needs a short "when to call me" so MCP clients can pick among teammates. */
+export const AGENT_SCOPE_REQUIRED =
+  'A közzétételhez add meg a felelősségi kört: mikor ezt a munkatársat hívd.'
+
 export type AgentDefinitionSnapshot = {
   name: string
   roleInstruction: string
@@ -281,6 +285,7 @@ export class AgentDefinitionService {
   }): Promise<AgentDefinition> {
     const agent = await this.deps.agents.findById(input.agentId, input.tenantId)
     if (!agent) throw new Error('Agent not found')
+    if (!agent.description?.trim()) throw new Error(AGENT_SCOPE_REQUIRED)
 
     const [enabledSkills, connectors, capabilities] = await Promise.all([
       this.deps.skills.listEnabledForAgent(agent.id),

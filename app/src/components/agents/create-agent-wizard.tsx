@@ -55,6 +55,7 @@ export type CreateAgentWizardContinuation = {
   agentId: string
   name: string
   roleInstruction: string
+  description: string | null
   status: 'draft' | 'active' | 'suspended' | 'retired'
   currentDefinitionVersionId: string | null
   capabilities: Array<{ toolName: string; allowed: boolean }>
@@ -92,6 +93,7 @@ export function CreateAgentWizard({
   )
   const [name, setName] = useState(continuation?.name ?? '')
   const [roleInstruction, setRoleInstruction] = useState(continuation?.roleInstruction ?? '')
+  const [description, setDescription] = useState(continuation?.description ?? '')
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(continuation?.agentId ?? null)
   const [agentStatus, setAgentStatus] = useState(continuation?.status ?? 'draft')
   const [currentDefinitionId, setCurrentDefinitionId] = useState(
@@ -111,7 +113,7 @@ export function CreateAgentWizard({
   const [cloneTemplate, setCloneTemplate] = useState<CreateAgentWizardCloneTemplate | null>(null)
   const [loadingClone, setLoadingClone] = useState(false)
 
-  const gate = { name, roleInstruction, createdAgentId }
+  const gate = { name, roleInstruction, description, createdAgentId }
   const stepMeta = CREATE_AGENT_WIZARD_STEPS.find((item) => item.id === step) ?? CREATE_AGENT_WIZARD_STEPS[0]
   const stepNumber = createAgentWizardStepIndex(step) + 1
 
@@ -149,6 +151,7 @@ export function CreateAgentWizard({
     setCloneTemplate(template)
     setName('')
     setRoleInstruction(template.roleInstruction)
+    setDescription(template.description)
   }
 
   function clearCloneTemplate() {
@@ -156,6 +159,7 @@ export function CreateAgentWizard({
     setCloneSourceId('')
     setName('')
     setRoleInstruction('')
+    setDescription('')
   }
 
   async function handleCloneSourceChange(nextSourceId: string) {
@@ -192,6 +196,7 @@ export function CreateAgentWizard({
           sourceAgentId: agentRes.data.id,
           sourceAgentName: agentRes.data.name,
           roleInstruction: agentRes.data.roleInstruction,
+          description: agentRes.data.description,
           capabilities: govRes.data.capabilities,
           skills: skillsRes.data,
           connectors: govRes.data.connectors,
@@ -232,6 +237,7 @@ export function CreateAgentWizard({
       const res = await createAgent({
         name: name.trim(),
         roleInstruction: roleInstruction.trim(),
+        description: description.trim(),
       })
       if (!res.success) {
         setError(res.error)
@@ -414,6 +420,19 @@ export function CreateAgentWizard({
                   disabled={Boolean(createdAgentId)}
                   className={INPUT}
                   placeholder={t('namePlaceholder')}
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-ink-soft">{t('scope')}</span>
+                <textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  required
+                  rows={3}
+                  maxLength={500}
+                  disabled={Boolean(createdAgentId)}
+                  className={INPUT}
+                  placeholder={t('scopePlaceholder')}
                 />
               </label>
               <label className="block text-sm">

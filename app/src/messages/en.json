@@ -262,7 +262,7 @@
       "sections": {
         "elesites": "Go live",
         "elesitesDesc": "Which definition is live, and whether unpublished changes remain.",
-        "profil": "Name and intro",
+        "profil": "Name and responsibility",
         "munkakor": "Role",
         "kapcsolatok": "Connectors",
         "kapcsolatokDesc": "APIs, mail, Drive, and other external systems — in read or write mode.",
@@ -841,7 +841,7 @@
     "steps": {
       "identity": {
         "label": "Basics",
-        "hint": "Name and role"
+        "hint": "Name, responsibility, role"
       },
       "tools": {
         "label": "Tools",
@@ -864,7 +864,7 @@
     "next": "Continue",
     "creating": "Creating…",
     "createAndContinue": "Create and continue",
-    "nameRequired": "Enter a name and a role description.",
+    "nameRequired": "Enter a name, a responsibility, and a role description.",
     "clonePartial": "The teammate was created, but copying was incomplete: {warnings}",
     "cloneTools": "tools: {error}",
     "cloneSkill": "skill: {error}",
@@ -878,6 +878,8 @@
     "cloneLoaded": "“{name}” template loaded — enter the new name, then continue.",
     "cloneCopied": "Tools, skills, and connections are copied when the teammate is created.",
     "name": "Name",
+    "scope": "Responsibility (when to call this teammate)",
+    "scopePlaceholder": "Marketing, SEO, content. Sales leads → Gábor.",
     "role": "Role",
     "namePlaceholder": "Wiki agent",
     "rolePlaceholder": "You are the internal knowledge assistant. Answer only from approved documents, in English, with source citations.",
@@ -922,12 +924,12 @@
     "staleButtonTitle": "The draft has changed since published version{version} — MCP still sees the old one. Click to put the new version live."
   },
   "AgentProfile": {
-    "title": "Name and introduction",
+    "title": "Name and responsibility",
     "noChange": "No changes",
     "saved": "Saved — the name takes effect on MCP at the next publish",
     "name": "Name",
-    "description": "Introduction (shown under the name in the list)",
-    "placeholder": "How can this teammate help?",
+    "description": "Responsibility — when to call this teammate (MCP clients pick from this)",
+    "placeholder": "Marketing, SEO, content. Sales leads → Gábor.",
     "saving": "Saving...",
     "save": "Save"
   },

@@ -73,6 +73,7 @@ export function UpdateAgentProfileForm({
         <textarea
           name="description"
           defaultValue={description ?? ''}
+          required
           rows={3}
           maxLength={500}
           placeholder={t('placeholder')}

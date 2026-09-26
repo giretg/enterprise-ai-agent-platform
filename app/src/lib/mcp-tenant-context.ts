@@ -41,6 +41,18 @@ export function withTenantMcpIntro(settings: unknown, intro: string | null): Pri
   return next
 }
 
+function coworkerScope(coworker: McpCoworkerSummary): string {
+  return (
+    coworker.description?.trim() ||
+    coworker.roleInstructionPreview?.trim() ||
+    'No description published yet.'
+  )
+}
+
+function coworkerInstructionLine(coworker: McpCoworkerSummary): string {
+  return `- ${coworker.name} (agentId ${coworker.agentId}, ${coworker.status}): Call when: ${coworkerScope(coworker)}`
+}
+
 export function previewRoleInstruction(value: string | null | undefined, max = ROLE_INSTRUCTION_PREVIEW_MAX): string | null {
   if (!value) return null
   const trimmed = value.trim()
@@ -100,7 +112,7 @@ export function buildMcpServerInstructions(input: {
     `This server holds the AI agents' memory and knowledge about ${organization}. You can only answer company questions correctly with it. At the start of every conversation call platform.agent.get_definition — its generalMemory field is the agent's current memory. Before answering any company-specific question (where is X, who owns Y, how do we do Z) and before searching Drive, Gmail, KB or APIs, check that memory (or platform.project_memory.read; omit projectKey for general memory, do not ask the user which project). Memory overrides search results: if a search finds something else, follow the memory, search for the name it gives, and tell the user about the conflict. When the user corrects a fact, update the memory.`,
     '',
     'YOUR ROLE',
-    'You are the MCP-connected assistant (Cursor, Codex, Claude Desktop, etc.) — not a second runtime inside the platform. Help the user through published agent definitions: platform.whoami, platform.agents.list, then platform.agent.get_definition for the agentId you will use (this also loads its memory). Pass definitionId on every enterprise tool (Drive, Gmail, http_api_*, kb_*).',
+    'You are the MCP-connected assistant (Cursor, Codex, Claude Desktop, etc.) — not a second runtime inside the platform. Help the user through published agent definitions: platform.whoami, platform.agents.list, then platform.agent.get_definition for the agentId you picked (this also loads its memory). Pass definitionId on every enterprise tool (Drive, Gmail, http_api_*, kb_*).',
     'When you tell the user what this connection is or does, answer in plain business language: name the organization and each published agent by what it helps with. Never recite tool names, connector hostnames, agentIds, or other technical internals — the user does not need this — unless they explicitly ask for technical detail.',
     '',
     'LOCAL AGENT WORKSPACES (optional)',
@@ -113,15 +125,19 @@ export function buildMcpServerInstructions(input: {
   if (input.coworkers.length > 0) {
     lines.push('', 'PUBLISHED AGENTS (MCP)')
     for (const coworker of input.coworkers) {
-      const summary =
-        coworker.description?.trim() ||
-        coworker.roleInstructionPreview?.trim() ||
-        'No description published yet.'
-      lines.push(`- ${coworker.name} (agentId ${coworker.agentId}, ${coworker.status}): ${summary}`)
+      lines.push(coworkerInstructionLine(coworker))
     }
     if (input.coworkers.length === 1) {
+      const only = input.coworkers[0]!
       lines.push(
-        `- Only one agent is visible — default checkout target: ${input.coworkers[0]!.name} (agentId ${input.coworkers[0]!.agentId}).`,
+        `- Only one agent is visible — load ${only.name} (agentId ${only.agentId}) with platform.agent.get_definition and stay in that role. Default checkout target: ${only.name}.`,
+      )
+    } else {
+      lines.push(
+        '',
+        'CHOOSE AND STAY',
+        'Pick the agent whose "Call when" matches the user\'s request. Do not ask which agent to use. Call platform.agent.get_definition for that agentId, then work in that role for the rest of the conversation. Introduce yourself in business language — name the teammate and what they help with (example: "Kati, the marketing teammate, will take this."). Do not mix roles. If a later request belongs to another agent, tell the user and hand off — do not switch silently.',
+        'A slash prompt named after an agent is an explicit choice — load that agent.',
       )
     }
   } else {

@@ -60,6 +60,7 @@ export class PostgresAgentRepository implements AgentRepository {
     roleInstruction: string
     tenantId: string
     status?: Agent['status']
+    description?: string | null
   }): Promise<Agent> {
     return prisma.agent.create({
       data: {
@@ -67,6 +68,7 @@ export class PostgresAgentRepository implements AgentRepository {
         roleInstruction: input.roleInstruction,
         tenantId: input.tenantId,
         status: input.status ?? 'draft',
+        ...(input.description !== undefined ? { description: input.description } : {}),
       },
     })
   }

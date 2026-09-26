@@ -1453,7 +1453,9 @@ async function createMcpResourceHandler(
               description: coworker.description,
               roleInstruction: coworker.roleInstructionPreview ?? '',
             }),
-            description: `Work as ${coworker.name}: loads the agent's role, rules and skills from its current published definition.`,
+            description: coworker.description?.trim()
+              ? `Call when: ${coworker.description.trim()}`
+              : `Work as ${coworker.name}: loads the agent's role, rules and skills from its current published definition.`,
             argsSchema: z.object({
               feladat: z.string().optional().describe('Optional: today\'s task, appended to the end of the prompt.'),
             }),

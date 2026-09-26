@@ -78,6 +78,7 @@ export interface AgentRepository {
     roleInstruction: string
     tenantId: string
     status?: Agent['status']
+    description?: string | null
   }): Promise<Agent>
   updateInstruction(input: { agentId: string; roleInstruction: string }): Promise<Agent>
   updateProfile(input: { agentId: string; name?: string; description?: string | null }): Promise<Agent>

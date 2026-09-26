@@ -40,12 +40,14 @@ function check(name: string, fn: () => void) {
 const emptyGate = {
   name: '',
   roleInstruction: '',
+  description: '',
   createdAgentId: null,
 }
 
 const filledPre = {
   name: 'Wiki',
   roleInstruction: 'Tudástárból válaszolsz.',
+  description: 'Belső wiki kérdések.',
   createdAgentId: null,
 }
 
@@ -65,6 +67,7 @@ function main() {
 
   check('kitöltött alapok még nem nyitják az eszközöket — előbb létre kell hozni', () => {
     assert.equal(isIdentityStepComplete(filledPre), true)
+    assert.equal(isIdentityStepComplete({ ...filledPre, description: '' }), false)
     assert.equal(isPreCreateComplete(filledPre), true)
     assert.equal(canEnterCreateAgentWizardStep('tools', filledPre), false)
     assert.equal(canEnterCreateAgentWizardStep('skills', filledPre), false)
@@ -175,6 +178,7 @@ function main() {
       sourceAgentId: 'src',
       sourceAgentName: 'Wiki',
       roleInstruction: 'Tudástárból válaszolsz.',
+      description: 'Belső wiki kérdések.',
       capabilities: [
         { toolName: 'kb_search', allowed: true },
         { toolName: 'web_search', allowed: false },
@@ -184,6 +188,8 @@ function main() {
         { connector: { id: 'c1', name: 'Drive' }, accessMode: 'read' },
       ],
     })
+    assert.equal(template.roleInstruction, 'Tudástárból válaszolsz.')
+    assert.equal(template.description, 'Belső wiki kérdések.')
     assert.deepEqual(template.enabledTools, ['kb_search'])
     assert.deepEqual(template.skillVersionIds, ['sv-1'])
     assert.deepEqual(template.connectors, [

@@ -68,6 +68,8 @@ jobs:
           npm run test:public-routes
           npm run test:mcp-principal
           npm run test:mcp-http
+          npm run test:mcp-tenant-context
+          npm run test:create-agent-wizard
           npm run test:project-work
           npm run test:mcp-skills
           npm run test:conversation-skill

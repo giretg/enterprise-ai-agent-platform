@@ -131,6 +131,7 @@ async function main() {
     update: {
       tenantId: tenant.id,
       name: 'Drive assistant',
+      description: 'Call when searching or reading Drive files, or requesting a folder.',
       roleInstruction:
         'You inspect Google Drive through MCP. Search and read files, and request folder creation for the signed-in operator. Folder writes wait for human approval. Do not invent Drive contents.',
       status: 'draft',
@@ -139,6 +140,7 @@ async function main() {
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       tenantId: tenant.id,
       name: 'Drive assistant',
+      description: 'Call when searching or reading Drive files, or requesting a folder.',
       roleInstruction:
         'You inspect Google Drive through MCP. Search and read files, and request folder creation for the signed-in operator. Folder writes wait for human approval. Do not invent Drive contents.',
       status: 'draft',

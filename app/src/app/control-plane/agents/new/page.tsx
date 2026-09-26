@@ -39,6 +39,7 @@ export default async function NewAgentPage({
         agentId: agentRes.data.id,
         name: agentRes.data.name,
         roleInstruction: agentRes.data.roleInstruction,
+        description: agentRes.data.description,
         status: agentRes.data.status,
         currentDefinitionVersionId: agentRes.data.currentDefinitionVersionId,
         capabilities: govRes.success ? govRes.data.capabilities : [],
