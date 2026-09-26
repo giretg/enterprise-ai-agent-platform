@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import test from 'node:test'
+import { resolveSelfUpdatingSyncModalState } from '../src/app/control-plane/connectors/self-updating/self-updating-connectors-panel.tsx'
 
 const src = readFileSync(
   resolve(import.meta.dirname, '../src/app/control-plane/connectors/self-updating/self-updating-connectors-panel.tsx'),
@@ -49,6 +50,59 @@ test('önfrissítő listázás: egy hibás sor nem dönti el az egész Promise.a
   )
   assert.match(actionSrc, /Promise\.allSettled/)
   assert.match(actionSrc, /loadError/)
+})
+
+test('frissítés után modal állapot: unchanged vs jóváhagyásra váró diff', () => {
+  const row = {
+    id: 'c1',
+    name: 'API',
+    specUrl: 'https://example.com/openapi.json',
+    urlApproved: true,
+    trusted: true,
+    autoApproveEnabled: false,
+    lastSyncedAt: null,
+    activeSpecVersionId: 'v1',
+    privacy: null,
+    versions: [
+      {
+        id: 'v1',
+        versionNo: 1,
+        status: 'approved',
+        diffSummary: null,
+        capabilities: [],
+        privacy: null,
+        fetchedAt: '2026-01-01T00:00:00.000Z',
+        approvedAt: '2026-01-01T00:00:00.000Z',
+        approvedByName: 'admin',
+      },
+      {
+        id: 'v2',
+        versionNo: 2,
+        status: 'proposed',
+        diffSummary: { added: [{ op: 'GET /x', risk: 'low', change: 'added' }], breaking: [], narrowed: [], auth: [] },
+        capabilities: [],
+        privacy: null,
+        fetchedAt: '2026-02-01T00:00:00.000Z',
+        approvedAt: null,
+        approvedByName: '',
+      },
+    ],
+  }
+  const unchanged = resolveSelfUpdatingSyncModalState({ kind: 'unchanged' }, row)
+  assert.equal(unchanged.variant, 'message')
+  assert.equal(unchanged.tone, 'success')
+  assert.match(unchanged.message, /nem változott/i)
+
+  const proposed = resolveSelfUpdatingSyncModalState({ kind: 'proposed', autoApproved: false }, row)
+  assert.equal(proposed.variant, 'proposal')
+  if (proposed.variant === 'proposal') assert.equal(proposed.row.id, 'c1')
+})
+
+test('frissítés gomb a kártyán belül sync modalt nyit (nem csak panel-szintű üzenet)', () => {
+  assert.match(src, /SelfUpdatingSyncResultModal/)
+  assert.match(src, /resolveSelfUpdatingSyncModalState/)
+  assert.match(src, /onReload/)
+  assert.doesNotMatch(src, /onSync=/)
 })
 
 console.log('\nÖsszes connector-card-edit-decommission teszt zöld')

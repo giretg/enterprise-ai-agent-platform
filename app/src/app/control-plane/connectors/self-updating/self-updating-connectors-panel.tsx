@@ -1,6 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useState, useTransition } from 'react'
+import { useCallback, useEffect, useState, useTransition, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card } from '@/components/ui/shell'
 import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
@@ -174,6 +175,31 @@ function CapabilityList({ title, capabilities, emptyHint }: {
   )
 }
 
+export type SelfUpdatingSyncModalState =
+  | { variant: 'message'; tone: 'error' | 'success' | 'neutral'; title: string; message: string }
+  | { variant: 'proposal'; row: SelfUpdatingConnectorRow; message: string }
+
+export function resolveSelfUpdatingSyncModalState(
+  data: { kind: string; reason?: string; autoApproved?: boolean },
+  row: SelfUpdatingConnectorRow,
+): SelfUpdatingSyncModalState {
+  const feedback = selfUpdatingSyncFeedback(data)
+  if (data.kind === 'failed' || !feedback.ok) {
+    return { variant: 'message', tone: 'error', title: 'Frissítés sikertelen', message: feedback.message }
+  }
+  if (data.kind === 'unchanged') {
+    return { variant: 'message', tone: 'success', title: 'Már naprakész', message: feedback.message }
+  }
+  if (data.autoApproved) {
+    return { variant: 'message', tone: 'success', title: 'Frissítés átvéve', message: feedback.message }
+  }
+  const proposal = row.versions.find((version) => version.status === 'proposed')
+  if (proposal?.diffSummary) {
+    return { variant: 'proposal', row, message: feedback.message }
+  }
+  return { variant: 'message', tone: 'neutral', title: 'Frissítés', message: feedback.message }
+}
+
 export function selfUpdatingSyncFeedback(data: {
   kind: string
   reason?: string
@@ -203,6 +229,146 @@ export function selfUpdatingSyncFeedback(data: {
     return { ok: true, message: 'Az új, csak olvasási képességeket a jóváhagyott szabály szerint automatikusan átvettük.' }
   }
   return { ok: true, message: 'Változást találtunk. Nézd át az alábbi listát; addig minden a régiben marad.' }
+}
+
+function SelfUpdatingProposalDiff({
+  row,
+  pending,
+  onReject,
+  onApprove,
+}: {
+  row: SelfUpdatingConnectorRow
+  pending: boolean
+  onReject: () => void
+  onApprove: () => void
+}) {
+  const proposal = row.versions.find((version) => version.status === 'proposed')
+  const active = row.versions.find((version) => version.id === row.activeSpecVersionId)
+  if (!proposal?.diffSummary) return null
+  const diffCapabilities = [...(proposal.capabilities ?? []), ...(active?.capabilities ?? [])]
+  return (
+    <div className="space-y-3">
+      <DiffGroup
+        title="🟢 Új képességek"
+        tone="success"
+        items={proposal.diffSummary.added}
+        capabilities={diffCapabilities}
+      />
+      <DiffGroup
+        title="🔴 Törésveszélyes változások"
+        tone="danger"
+        items={proposal.diffSummary.breaking}
+        capabilities={diffCapabilities}
+      />
+      <DiffGroup
+        title="🟠 Visszavont képességek"
+        tone="warning"
+        items={proposal.diffSummary.narrowed}
+        capabilities={diffCapabilities}
+      />
+      <DiffGroup
+        title="🔴 Beléptetési vagy kötelező fejléc-változások"
+        tone="danger"
+        items={proposal.diffSummary.auth}
+        capabilities={diffCapabilities}
+      />
+      <CapabilityList
+        title="Teljes funkciólista a javasolt frissítés után"
+        capabilities={proposal.capabilities ?? []}
+        emptyHint="A javasolt verzióhoz nem sikerült kiolvasni a képességlistát."
+      />
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={pending}
+          className="rounded-md border border-ink/20 px-3 py-2 text-xs font-semibold"
+          onClick={onReject}
+        >
+          Mégse — minden marad a régiben
+        </button>
+        <button
+          type="button"
+          disabled={pending}
+          className="rounded-md bg-coral px-3 py-2 text-xs font-semibold text-white"
+          onClick={onApprove}
+        >
+          Jóváhagyom ezeket a változásokat
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SelfUpdatingSyncResultModal({
+  state,
+  pending,
+  onClose,
+  onReject,
+  onApprove,
+}: {
+  state: SelfUpdatingSyncModalState
+  pending: boolean
+  onClose: () => void
+  onReject: () => void
+  onApprove: () => void
+}) {
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client portal mount gate
+    setMounted(true)
+  }, [])
+  if (!mounted) return null
+
+  const title = state.variant === 'message' ? state.title : `Változások — ${state.row.name}`
+  const description = state.message
+  const toneBorder =
+    state.variant === 'message' && state.tone === 'error'
+      ? 'border-coral/40'
+      : state.variant === 'message' && state.tone === 'success'
+        ? 'border-sage/35'
+        : 'border-ink/15'
+
+  const footer: ReactNode =
+    state.variant === 'proposal' ? null : (
+      <button
+        type="button"
+        className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card"
+        onClick={onClose}
+      >
+        Rendben
+      </button>
+    )
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[400] flex items-center justify-center bg-ink/50 p-4 backdrop-blur-[2px]"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        className={`atelier-card flex max-h-[min(90vh,48rem)] w-full max-w-3xl flex-col overflow-hidden p-0 shadow-2xl border ${toneBorder}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="border-b border-line px-5 py-4">
+          <h3 className="font-display text-lg font-semibold text-ink">{title}</h3>
+          <p className="mt-1 text-sm text-ink-soft">{description}</p>
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4 text-sm">
+          {state.variant === 'proposal' ? (
+            <SelfUpdatingProposalDiff
+              row={state.row}
+              pending={pending}
+              onReject={onReject}
+              onApprove={onApprove}
+            />
+          ) : null}
+        </div>
+        {footer ? <div className="flex justify-end gap-2 border-t border-line px-5 py-4">{footer}</div> : null}
+      </div>
+    </div>,
+    document.body,
+  )
 }
 
 export function TenantAutoApproveSwitch({
@@ -266,18 +432,6 @@ export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: b
     })
   }
 
-  const syncOne = (connectorId: string) => {
-    setError(null); setMessage(null)
-    startTransition(async () => {
-      const result = await syncSelfUpdatingConnector({ connectorId })
-      if (!result.success) { setError(result.error); return }
-      const feedback = selfUpdatingSyncFeedback(result.data)
-      if (feedback.ok) setMessage(feedback.message)
-      else setError(feedback.message)
-      await reload()
-    })
-  }
-
   return (
     <div id="onfrissito" className="space-y-6 scroll-mt-6">
       {!embedded ? (
@@ -312,7 +466,7 @@ export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: b
         ) : (
           <div className="space-y-3">
             {rows.map((row) => (
-              <SelfUpdatingConnectorCard key={row.id} row={row} pending={pending} run={run} onSync={syncOne} />
+              <SelfUpdatingConnectorCard key={row.id} row={row} pending={pending} run={run} onReload={reload} />
             ))}
           </div>
         )}
@@ -325,16 +479,18 @@ export function SelfUpdatingConnectorCard({
   row,
   pending,
   run,
-  onSync,
+  onReload,
   isSuperadmin = false,
 }: {
   row: SelfUpdatingConnectorRow
   pending: boolean
   run: (operation: () => Promise<{ success: boolean; error?: string }>, success: string) => void
-  onSync: (connectorId: string) => void
+  onReload?: () => void | Promise<void>
   isSuperadmin?: boolean
 }) {
   const [open, setOpen] = useState(false)
+  const [syncModal, setSyncModal] = useState<SelfUpdatingSyncModalState | null>(null)
+  const [syncPending, startSyncTransition] = useTransition()
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [newApiKey, setNewApiKey] = useState('')
   const [confirmDecomm, setConfirmDecomm] = useState(false)
@@ -351,7 +507,6 @@ export function SelfUpdatingConnectorCard({
     : active
       ? `Jelenlegi API részletei (v${active.versionNo})`
       : 'API részletei'
-  const diffCapabilities = [...(proposal?.capabilities ?? []), ...(active?.capabilities ?? [])]
   const lastSyncedLabel = row.lastSyncedAt
     ? new Date(row.lastSyncedAt).toLocaleString('hu-HU')
     : 'még nem volt sync'
@@ -369,6 +524,66 @@ export function SelfUpdatingConnectorCard({
     })
     if (!confirmed) return
     run(() => deleteArchivedConnector({ connectorId: row.id }), 'Konnektor törölve.')
+  }
+
+  const busy = pending || syncPending
+
+  const runSync = () => {
+    startSyncTransition(async () => {
+      const result = await syncSelfUpdatingConnector({ connectorId: row.id })
+      if (!result.success) {
+        setSyncModal({
+          variant: 'message',
+          tone: 'error',
+          title: 'Frissítés sikertelen',
+          message: result.error ?? 'Nem sikerült frissítést keresni.',
+        })
+        return
+      }
+      const list = await listSelfUpdatingConnectors()
+      const freshRow =
+        list.success
+          ? ((list.data.connectors as SelfUpdatingConnectorRow[]).find((item) => item.id === row.id) ?? row)
+          : row
+      if (list.success) await onReload?.()
+      setSyncModal(resolveSelfUpdatingSyncModalState(result.data, freshRow))
+    })
+  }
+
+  const closeSyncModal = () => setSyncModal(null)
+
+  const rejectFromSyncModal = () => {
+    if (syncModal?.variant !== 'proposal') return
+    const proposalVersion = syncModal.row.versions.find((version) => version.status === 'proposed')
+    if (!proposalVersion) {
+      closeSyncModal()
+      return
+    }
+    run(async () => {
+      const res = await rejectSelfUpdatingVersion({
+        connectorId: syncModal.row.id,
+        versionId: proposalVersion.id,
+      })
+      if (res.success) closeSyncModal()
+      return res
+    }, 'A változásokat elutasítottad; minden a régiben maradt.')
+  }
+
+  const approveFromSyncModal = () => {
+    if (syncModal?.variant !== 'proposal') return
+    const proposalVersion = syncModal.row.versions.find((version) => version.status === 'proposed')
+    if (!proposalVersion) {
+      closeSyncModal()
+      return
+    }
+    run(async () => {
+      const res = await approveSelfUpdatingVersion({
+        connectorId: syncModal.row.id,
+        versionId: proposalVersion.id,
+      })
+      if (res.success) closeSyncModal()
+      return res
+    }, 'A változások jóváhagyva és rögzítve.')
   }
 
   return (
@@ -413,9 +628,9 @@ export function SelfUpdatingConnectorCard({
           {!archived && !broken ? (
             <button
               type="button"
-              disabled={pending || !row.urlApproved || !row.trusted}
+              disabled={busy || !row.urlApproved || !row.trusted}
               className="rounded-md border border-ink/20 px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
-              onClick={() => onSync(row.id)}
+              onClick={runSync}
             >
               Frissítés
             </button>
@@ -479,9 +694,9 @@ export function SelfUpdatingConnectorCard({
             ) : null}
             {!archived ? (
               <button
-                disabled={pending || !row.urlApproved || !row.trusted}
+                disabled={busy || !row.urlApproved || !row.trusted}
                 className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
-                onClick={() => onSync(row.id)}
+                onClick={runSync}
               >
                 Frissítés keresése
               </button>
@@ -580,61 +795,22 @@ export function SelfUpdatingConnectorCard({
           {!archived && proposal?.diffSummary ? (
             <div className="space-y-3 border-t border-ink/10 pt-4">
               <h3 className="font-semibold">Változások a(z) „{row.name}” konnektorban</h3>
-              <DiffGroup
-                title="🟢 Új képességek"
-                tone="success"
-                items={proposal.diffSummary.added}
-                capabilities={diffCapabilities}
+              <SelfUpdatingProposalDiff
+                row={row}
+                pending={pending}
+                onReject={() =>
+                  run(
+                    () => rejectSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }),
+                    'A változásokat elutasítottad; minden a régiben maradt.',
+                  )
+                }
+                onApprove={() =>
+                  run(
+                    () => approveSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }),
+                    'A változások jóváhagyva és rögzítve.',
+                  )
+                }
               />
-              <DiffGroup
-                title="🔴 Törésveszélyes változások"
-                tone="danger"
-                items={proposal.diffSummary.breaking}
-                capabilities={diffCapabilities}
-              />
-              <DiffGroup
-                title="🟠 Visszavont képességek"
-                tone="warning"
-                items={proposal.diffSummary.narrowed}
-                capabilities={diffCapabilities}
-              />
-              <DiffGroup
-                title="🔴 Beléptetési vagy kötelező fejléc-változások"
-                tone="danger"
-                items={proposal.diffSummary.auth}
-                capabilities={diffCapabilities}
-              />
-              <CapabilityList
-                title="Teljes funkciólista a javasolt frissítés után"
-                capabilities={proposal.capabilities ?? []}
-                emptyHint="A javasolt verzióhoz nem sikerült kiolvasni a képességlistát."
-              />
-              <div className="flex flex-wrap gap-2">
-                <button
-                  disabled={pending}
-                  className="rounded-md border border-ink/20 px-3 py-2 text-xs font-semibold"
-                  onClick={() =>
-                    run(
-                      () => rejectSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }),
-                      'A változásokat elutasítottad; minden a régiben maradt.',
-                    )
-                  }
-                >
-                  Mégse — minden marad a régiben
-                </button>
-                <button
-                  disabled={pending}
-                  className="rounded-md bg-coral px-3 py-2 text-xs font-semibold text-white"
-                  onClick={() =>
-                    run(
-                      () => approveSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }),
-                      'A változások jóváhagyva és rögzítve.',
-                    )
-                  }
-                >
-                  Jóváhagyom ezeket a változásokat
-                </button>
-              </div>
             </div>
           ) : null}
 
@@ -779,6 +955,15 @@ export function SelfUpdatingConnectorCard({
           </div>
           ) : null}
         </div>
+      ) : null}
+      {syncModal ? (
+        <SelfUpdatingSyncResultModal
+          state={syncModal}
+          pending={busy}
+          onClose={closeSyncModal}
+          onReject={rejectFromSyncModal}
+          onApprove={approveFromSyncModal}
+        />
       ) : null}
     </div>
   )
