@@ -51,6 +51,7 @@ import {
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
 import { PROJECT_WORK_TOOLS } from '../src/domain/project-work/mcp'
+import { renderAgentBriefing } from '../src/lib/agent-checkout'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
 const ORIGIN = 'https://app.example.com'
@@ -1723,6 +1724,84 @@ async function main() {
     const body = (await readJson(res)) as { error?: { message?: string } }
     assert.ok(body.error, JSON.stringify(body))
     assert.match(body.error?.message ?? '', /not found/i)
+  })
+
+  async function listPrompts(deps: McpRuntimeDeps) {
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 40, method: 'prompts/list', params: {} },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    return (await readJson(res)) as {
+      result?: { prompts?: Array<{ name: string; title?: string; arguments?: Array<{ name: string }> }> }
+      error?: unknown
+    }
+  }
+
+  async function getPrompt(deps: McpRuntimeDeps, args: Record<string, string> = {}) {
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 41, method: 'prompts/get', params: { name: 'drive-assistant', arguments: args } },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    return (await readJson(res)) as {
+      result?: { messages?: Array<{ role: string; content: { type: string; text: string } }> }
+      error?: { message?: string }
+    }
+  }
+
+  await check('#651 visible agent → /drive-assistant prompt in its role, with feladat, audited', async () => {
+    const { deps, audit } = runtimeDeps({ role: 'operator', grantedAgentIds: new Set([AGENT_ID]) })
+    const list = await listPrompts(deps)
+    assert.equal(list.error, undefined, JSON.stringify(list))
+    const prompt = list.result?.prompts?.find((row) => row.name === 'drive-assistant')
+    assert.ok(prompt, JSON.stringify(list))
+    assert.equal(prompt.title, 'Drive assistant (Inspect Drive)')
+    assert.deepEqual(prompt.arguments?.map((row) => row.name), ['feladat'])
+
+    const body = await getPrompt(deps, { feladat: 'Q3 riport' })
+    assert.equal(body.error, undefined, JSON.stringify(body))
+    const text = body.result?.messages?.[0]?.content.text ?? ''
+    assert.equal(body.result?.messages?.[0]?.role, 'user')
+    assert.match(text, /^You are now Drive assistant\./)
+    assert.match(text, /Do not ask which agent to use/)
+    assert.ok(text.includes(renderAgentBriefing({ snapshot: SAMPLE_DEFINITION.snapshot, skills: [] }).join('\n')))
+    assert.match(text, /## Today's task\n\nQ3 riport\n$/)
+    assert.ok(
+      audit.some(
+        (row) =>
+          row.action === 'mcp.prompts.get' &&
+          row.inputRef === 'drive-assistant' &&
+          (row.metadata as { agentId?: string }).agentId === AGENT_ID,
+      ),
+    )
+  })
+
+  await check('#651 prompt follows the current published definition', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const before = (await getPrompt(deps)).result?.messages?.[0]?.content.text ?? ''
+    assert.match(before, /version 1\)/)
+    deps.loadDefinition = async () => ({
+      ...SAMPLE_DEFINITION,
+      definitionId: OTHER_DEFINITION_ID,
+      version: 2,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, roleInstruction: 'Inspect Drive, v2 rules' },
+    })
+    const after = (await getPrompt(deps)).result?.messages?.[0]?.content.text ?? ''
+    assert.match(after, /version 2\)/)
+    assert.match(after, /Inspect Drive, v2 rules/)
+    assert.ok(!after.includes(`definitionId: ${DEFINITION_ID}`))
+  })
+
+  await check('#651 agent not visible to the user → no prompt listed, prompts/get fails', async () => {
+    const { deps } = runtimeDeps({ role: 'operator' })
+    const list = await listPrompts(deps)
+    assert.ok(!list.result?.prompts?.some((row) => row.name === 'drive-assistant'), JSON.stringify(list))
+    const body = await getPrompt(deps)
+    assert.ok(body.error, JSON.stringify(body))
+    assert.equal(body.result, undefined)
   })
 
   await check('protected resource metadata resource is {origin}/api/mcp at every well-known path', async () => {

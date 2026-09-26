@@ -322,6 +322,28 @@ export async function auditMcpToolCall(
   })
 }
 
+export async function auditMcpPromptGet(
+  deps: { audit?: AuditSink },
+  principal: McpPrincipal,
+  promptName: string,
+  agentId: string,
+): Promise<void> {
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: principal.userId,
+    agentVersion: null,
+    action: 'mcp.prompts.get',
+    targetType: 'mcp',
+    targetId: principal.tenantId,
+    modelUsed: null,
+    inputRef: promptName,
+    outputRef: null,
+    policyDecision: 'allowed',
+    metadata: { promptName, agentId, tenantSlug: principal.tenantSlug, assumed: principal.assumed },
+    tenantId: principal.tenantId,
+  })
+}
+
 export async function auditMcpToolDenied(
   deps: { audit?: AuditSink },
   principal: McpPrincipal,
