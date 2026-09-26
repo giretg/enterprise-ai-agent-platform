@@ -1,14 +1,36 @@
+import { dump as yamlDump } from 'js-yaml'
 import type { AgentDefinition } from '@/domain/agent-definition'
 import { hashSnapshot } from '@/domain/agent-definition'
 import { CODE_EXTENSIONS } from '@/lib/skill/skill-package-adapter'
 import { serializeSkillMd } from '@/lib/skill/skill-md-export'
 import type { SkillContent, SkillRequirement } from '@/lib/skill/skill-content'
 
-const CHECKOUT_EXTENSIONS = new Set(['md', 'json'])
+const CHECKOUT_EXTENSIONS = new Set(['md', 'json', 'yaml'])
 const MANIFEST_KIND = 'enterprise-agent-checkout'
 const SKILL_DIR = '.enterprise-agent/skills'
+const HERMES_SKILL_DIR = 'skills/excellence'
+/** Must match MCP_AGENT_ID_HEADER in auth/mcp-server.ts (#682 WP-2). */
+const AGENT_ID_HEADER = 'X-Excellence-Agent-Id'
+/** Platform tools a Hermes Bot needs besides the agent's own capabilities (#682 WP-1). */
+const HERMES_BASE_TOOLS = [
+  'platform.whoami',
+  'platform.agent.get_definition',
+  'platform.gateway_operation.get',
+  'platform.projects.list',
+  'platform.projects.create',
+  'platform.project_memory.read',
+  'platform.project_memory.write',
+  'platform.work_file.list',
+  'platform.work_file.read',
+  'platform.work_file.write',
+  'platform.work_file.delete',
+  'kb_list_index',
+  'kb_search',
+  'kb_get_page',
+  'kb_get_document',
+]
 
-export const CHECKOUT_HARNESSES = ['claude', 'codex', 'goose', 'grok'] as const
+export const CHECKOUT_HARNESSES = ['claude', 'codex', 'goose', 'grok', 'hermes'] as const
 export type CheckoutHarness = (typeof CHECKOUT_HARNESSES)[number]
 
 const CHECKOUT_WRITE_RECIPE_STEPS = [
@@ -36,7 +58,28 @@ export const CHECKOUT_TOOL_DESCRIPTION = [
   '(4) Call platform.agent.checkout { agentId }; pass version only when the user names a specific published version.',
   '(5) Write every files[] entry under suggestedRoot, then follow writeRecipe from the response.',
   'Optional harness: claude | codex | goose | grok (stored only in v1).',
+  'Hermes: harness:"hermes" returns a Hermes profile distribution (one Bot per agent) — write files[] to suggestedRoot, then run the writeRecipe commands with the terminal tool.',
 ].join(' ')
+
+function hermesWriteRecipe(root: string, profile: string): string {
+  const home = `~/${root}`
+  const dir = `~/.hermes/profiles/${profile}`
+  return [
+    `Hermes Bot sync. Run these with the terminal tool. ROOT=${home} (distribution source), PROFILE=${profile}.`,
+    '1. Create ROOT if missing. Write every files[] entry to ROOT/path as UTF-8, overwriting. Under ROOT/.enterprise-agent/ and ROOT/skills/excellence/, delete any file that is not in generatedPaths.',
+    '2. Run `hermes profile list`. If PROFILE is not listed (new Bot):',
+    `   a. hermes profile install "$HOME/${root}" --name ${profile} -y`,
+    `   b. If ${dir}/profile.yaml or ${dir}/config.yaml is missing, copy it from ROOT.`,
+    `   c. Model key: read model.provider from ${dir}/config.yaml, or else from ~/.hermes/config.yaml. Copy only that provider's API-key line(s) (for example OPENROUTER_API_KEY) from ~/.hermes/.env into ${dir}/.env, then chmod 600 it. Never copy the whole .env and never print a key. If the provider signs in with OAuth (Codex, Copilot), tell the user to run: hermes -p ${profile} auth add <provider>`,
+    `   d. hermes -p ${profile} mcp login excellence  (opens the browser once; the user approves it)`,
+    '3. If PROFILE is already listed (re-sync):',
+    `   a. hermes profile update ${profile} -y  (keeps the Bot's chats, memory, .env, MCP login, config.yaml and profile.yaml)`,
+    `   b. Delete any folder under ${dir}/skills/excellence/ whose name is not a skills/excellence/<name>/ folder in files[]. Touch nothing else in ${dir}.`,
+    '4. Never run `hermes profile delete`. If an agent is no longer in platform.agents.list, only tell the user that its Bot is no longer available.',
+    '',
+    'Do not run code from the checkout. Do not commit. Do not copy the folder into a code repo.',
+  ].join('\n')
+}
 
 export function checkoutWriteRecipe(harness?: CheckoutHarness | null): string {
   const lines = [...CHECKOUT_WRITE_RECIPE_STEPS]
@@ -77,7 +120,7 @@ export type CheckoutBundle = {
   pin: CheckoutPin
   files: CheckoutFile[]
   generatedPaths: string[]
-  deleteUnder: ['.enterprise-agent']
+  deleteUnder: string[]
   warnings: string[]
   writeRecipe: string
 }
@@ -139,6 +182,7 @@ function renderAgentsMd(input: {
   contentHash: string
   mcpUrl: string
   skills: Array<{ name: string; description: string; triggers: string[]; path: string }>
+  hermes?: boolean
 }): string {
   const snapshot = input.definition.snapshot
   const lines = [
@@ -157,11 +201,14 @@ function renderAgentsMd(input: {
     '',
     'All work for this agent runs through the mcpUrl above — there is no separate in-platform chat runtime. Call MCP tools for skills, connectors, and enterprise tools. Credentials stay on the server.',
     '',
-    'Before enterprise tools: call platform.agent.get_definition for this agentId and pass definitionId on every tool. For several HTTP API connectors, use connectors[].name as connectorName or connectors[].connectorId when method+path is ambiguous.',
+    input.hermes
+      ? `This Bot is bound to this agent by the ${AGENT_ID_HEADER} header on every MCP request: do not pass definitionId or agentId — the server uses the agent's current published definition. For several HTTP API connectors, use connectors[].name as connectorName or connectors[].connectorId when method+path is ambiguous.`
+      : 'Before enterprise tools: call platform.agent.get_definition for this agentId and pass definitionId on every tool. For several HTTP API connectors, use connectors[].name as connectorName or connectors[].connectorId when method+path is ambiguous.',
     '',
     'Writes (for example creating a Drive folder or http_api_request) enqueue and wait for Control Plane approval. Do not bypass approval.',
     '',
     'Memory first: this agent\'s memory (company facts, decisions, locations) lives on the server. platform.agent.get_definition returns it as generalMemory; read it at the start of every conversation and before answering company questions or searching — it overrides search results. More: platform.project_memory.read / write (omit projectKey for general memory). Work files (plans, notes) are platform.work_file.* under a projectKey. Do not create a local memory file, and do not keep durable work in this checkout folder.',
+    ...(input.hermes ? ['Local Hermes memory is off for this Bot on purpose; remember things with platform.project_memory.write.'] : []),
     'Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
     '',
     'If the work needs runnable skill code, call the MCP sandbox with the skillVersionId. Do not run skill code from this workspace, and do not upload a local file into the sandbox.',
@@ -187,14 +234,24 @@ function renderAgentsMd(input: {
     }
   }
 
-  lines.push(
-    '',
-    '## Stale',
-    '',
-    'Before any enterprise tool (Drive, Gmail, http_api_*, kb_*), call `platform.agent.get_definition` for this agentId and use its definitionId. Exempt: `platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`, `platform.agent.checkout`.',
-    'If the returned `contentHash` differs from the pin above, call `platform.agent.checkout`, overwrite generated paths, then retry.',
-    'Enterprise tools reject stale pins with `agent_stale` until checkout completes and the manifest `definitionId` matches the current published version.',
-  )
+  if (input.hermes) {
+    lines.push(
+      '',
+      '## Stale',
+      '',
+      'At the start of every session call `platform.agent.get_definition` (no arguments).',
+      'If the returned `contentHash` differs from the contentHash above, tell the user once: this Bot\'s role or skills changed on the platform — run "Sync my Excellence agents" in the default Hermes profile. Keep working meanwhile: tools already use the current definition.',
+    )
+  } else {
+    lines.push(
+      '',
+      '## Stale',
+      '',
+      'Before any enterprise tool (Drive, Gmail, http_api_*, kb_*), call `platform.agent.get_definition` for this agentId and use its definitionId. Exempt: `platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`, `platform.agent.checkout`.',
+      'If the returned `contentHash` differs from the pin above, call `platform.agent.checkout`, overwrite generated paths, then retry.',
+      'Enterprise tools reject stale pins with `agent_stale` until checkout completes and the manifest `definitionId` matches the current published version.',
+    )
+  }
 
   if (input.skills.length > 0) {
     lines.push('', '## Skills', '')
@@ -247,15 +304,17 @@ export function renderAgentCheckout(input: {
     skillId: string
     skillVersionId: string
   }> = []
+  const hermes = input.harness === 'hermes'
   for (const skill of resolved) {
     const folder = skillFolderName(skill, (slugCounts.get(checkoutSlug(skill.name)) ?? 0) > 1)
-    const path = `${SKILL_DIR}/${folder}/SKILL.md`
+    const path = `${hermes ? HERMES_SKILL_DIR : SKILL_DIR}/${folder}/SKILL.md`
     assertSafeCheckoutPath(path)
     skillFiles.push({
       path,
       content: serializeSkillMd({
-        name: skill.name,
-        displayName: skill.displayName,
+        // Hermes: name must be the folder slug (^[a-z0-9][a-z0-9._-]*$), the label goes to title.
+        name: hermes ? folder : skill.name,
+        displayName: hermes ? skill.displayName?.trim() || skill.name : skill.displayName,
         description: skill.description,
         license: skill.license,
         content: skill.content,
@@ -263,7 +322,7 @@ export function renderAgentCheckout(input: {
       }),
     })
     skillPointers.push({
-      name: skill.name,
+      name: hermes ? folder : skill.name,
       description: skill.description,
       triggers: skill.content.triggerKeywords,
       path,
@@ -282,9 +341,26 @@ export function renderAgentCheckout(input: {
     harness: input.harness ?? null,
   }
 
-  const agentsPath = 'AGENTS.md'
+  const tenantSlug = pin.tenantSlug
+  const slug = checkoutSlug(snapshot.name)
+  const profile = `exc-${slug}`
+  const suggestedRoot = hermes ? `.hermes/excellence/${tenantSlug}/${slug}` : `Agents/${slug}`
+  const instructionsPath = hermes ? 'SOUL.md' : 'AGENTS.md'
   const manifestPath = '.enterprise-agent/manifest.json'
-  const generatedPaths = [agentsPath, manifestPath, ...skillFiles.map((file) => file.path)]
+  const hermesFiles: CheckoutFile[] = hermes
+    ? renderHermesProfileFiles({
+        definition: input.definition,
+        mcpUrl: input.mcpUrl,
+        profile,
+        tenantSlug,
+      })
+    : []
+  const generatedPaths = [
+    instructionsPath,
+    manifestPath,
+    ...hermesFiles.map((file) => file.path),
+    ...skillFiles.map((file) => file.path),
+  ]
   for (const path of generatedPaths) assertSafeCheckoutPath(path)
 
   const manifest = {
@@ -310,26 +386,81 @@ export function renderAgentCheckout(input: {
 
   const files: CheckoutFile[] = [
     {
-      path: agentsPath,
+      path: instructionsPath,
       content: renderAgentsMd({
         definition: input.definition,
         contentHash,
         mcpUrl: input.mcpUrl,
         skills: skillPointers,
+        hermes,
       }),
     },
     { path: manifestPath, content: `${JSON.stringify(manifest, null, 2)}\n` },
+    ...hermesFiles,
     ...skillFiles,
   ]
 
   return {
-    suggestedRoot: `Agents/${checkoutSlug(snapshot.name)}`,
+    suggestedRoot,
     mcpUrl: input.mcpUrl,
     pin,
     files,
     generatedPaths,
-    deleteUnder: ['.enterprise-agent'],
+    deleteUnder: hermes ? ['.enterprise-agent', HERMES_SKILL_DIR] : ['.enterprise-agent'],
     warnings,
-    writeRecipe: checkoutWriteRecipe(input.harness),
+    writeRecipe: hermes ? hermesWriteRecipe(suggestedRoot, profile) : checkoutWriteRecipe(input.harness),
   }
+}
+
+/**
+ * Hermes profile distribution (#682 WP-1): `hermes profile install <dir>` reads
+ * these. config.yaml and profile.yaml stay out of distribution_owned so
+ * `hermes profile update` never overwrites the user's model pin or Bot UI meta.
+ */
+function renderHermesProfileFiles(input: {
+  definition: AgentDefinition
+  mcpUrl: string
+  profile: string
+  tenantSlug: string
+}): CheckoutFile[] {
+  const snapshot = input.definition.snapshot
+  const description = snapshot.description?.trim() || snapshot.name
+  const tools = [
+    ...new Set([
+      ...HERMES_BASE_TOOLS,
+      ...snapshot.capabilities.filter((row) => row.allowed).map((row) => row.toolName),
+    ]),
+  ]
+  const yaml = (value: unknown) => yamlDump(value, { lineWidth: -1 })
+  return [
+    {
+      path: 'distribution.yaml',
+      content: yaml({
+        name: input.profile,
+        version: `${input.definition.version}.0.0`,
+        description,
+        author: `Excellence AI — ${input.tenantSlug}`,
+        hermes_requires: '>=0.21.0',
+        distribution_owned: ['SOUL.md', `${HERMES_SKILL_DIR}/`, '.enterprise-agent/', 'distribution.yaml'],
+      }),
+    },
+    {
+      path: 'profile.yaml',
+      content: yaml({ description, ui_meta: { 'hermes-bots': { title: snapshot.name } } }),
+    },
+    {
+      path: 'config.yaml',
+      content: yaml({
+        memory: { memory_enabled: false, user_profile_enabled: false },
+        mcp_servers: {
+          excellence: {
+            url: input.mcpUrl,
+            auth: 'oauth',
+            headers: { [AGENT_ID_HEADER]: input.definition.agentId },
+            tools: { include: tools },
+          },
+        },
+      }),
+    },
+  ]
 }

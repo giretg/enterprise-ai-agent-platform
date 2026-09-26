@@ -107,6 +107,7 @@ export function buildMcpServerInstructions(input: {
     'A published agent may have a local folder (Claude Desktop project, Codex workspace). Use platform.agent.checkout to fetch AGENTS.md, manifest, and instruction-only skill files, then write them to suggestedRoot. The same MCP URL and tools apply — checkout files are instructions, not a separate agent process.',
     'When the user says checkout / sync / set up local agents: call platform.agents.list if needed; if exactly one agent is listed below, call platform.agent.checkout with that agentId immediately — do not ask which agent or whether to create vs update.',
     'Check whether suggestedRoot already exists on disk: missing folder = first checkout (create); existing folder = re-sync (overwrite generated paths only, per writeRecipe).',
+    'Hermes: "sync my Excellence agents" means one Bot per agent — for every agent in platform.agents.list call platform.agent.checkout with harness:"hermes", write files[] to suggestedRoot, then run the writeRecipe commands with the terminal tool.',
   ]
 
   if (input.coworkers.length > 0) {

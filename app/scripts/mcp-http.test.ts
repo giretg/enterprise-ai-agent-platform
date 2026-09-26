@@ -23,6 +23,7 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  KB_LIST_INDEX_TOOL,
   ENTERPRISE_TOOLS,
   invokeEnterpriseTool,
   type EnterpriseToolDeps,
@@ -123,6 +124,8 @@ const AGENT_ID = '66666666-6666-4666-8666-666666666666'
 const OTHER_DEFINITION_ID = '77777777-7777-4777-8777-777777777777'
 const CONNECTOR_ID = '88888888-8888-4888-8888-888888888888'
 const GRANT_ID = '99999999-9999-4999-8999-999999999999'
+const FOREIGN_AGENT_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const FOREIGN_DEFINITION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 
 const SAMPLE_DEFINITION = {
   definitionId: DEFINITION_ID,
@@ -248,7 +251,11 @@ function runtimeDeps(overrides: {
     seen.loadDefinitionTenantId = input.tenantId
     if (input.definitionId === OTHER_DEFINITION_ID) return null
     if (input.tenantId !== TENANT_ID) return null
+    if (input.definitionId === FOREIGN_DEFINITION_ID) {
+      return { ...SAMPLE_DEFINITION, definitionId: FOREIGN_DEFINITION_ID, agentId: FOREIGN_AGENT_ID }
+    }
     if (input.definitionId && input.definitionId !== DEFINITION_ID) return null
+    if (!input.definitionId && input.agentId && input.agentId !== AGENT_ID) return null
     return SAMPLE_DEFINITION
   }
   const operations = new MemoryGatewayOperationStore()
@@ -1420,6 +1427,105 @@ async function main() {
     assert.equal(body.result?.isError, true)
     const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { code?: string }
     assert.equal(payload.code, 'agent_access_denied')
+  })
+
+  async function callWithAgentHeader(
+    deps: McpRuntimeDeps,
+    name: string,
+    args: Record<string, unknown>,
+    agentHeader: string,
+  ) {
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 40, method: 'tools/call', params: { name, arguments: args } },
+      { authorization: `Bearer ${TOKEN}`, 'x-excellence-agent-id': agentHeader },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    return {
+      isError: body.result?.isError,
+      payload: JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>,
+    }
+  }
+
+  await check('#682 agent header only → current definition, audit records the agent', async () => {
+    const { deps, audit } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const out = await callWithAgentHeader(deps, GOOGLE_DRIVE_SEARCH_TOOL, { nameContains: 'x' }, AGENT_ID)
+    assert.equal(out.isError, undefined)
+    const ok = audit.find((row) => row.action === 'enterprise.tool.ok')
+    assert.ok(ok)
+    assert.ok(JSON.stringify(ok).includes(DEFINITION_ID))
+    const def = await callWithAgentHeader(deps, MCP_AGENT_GET_DEFINITION_TOOL, {}, AGENT_ID)
+    assert.equal(def.payload.definitionId, DEFINITION_ID)
+  })
+
+  await check('#682 agent header + matching definitionId → OK', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const out = await callWithAgentHeader(
+      deps,
+      GOOGLE_DRIVE_SEARCH_TOOL,
+      { definitionId: DEFINITION_ID },
+      AGENT_ID,
+    )
+    assert.equal(out.isError, undefined)
+  })
+
+  await check('#682 agent header + other agent definitionId / agentId → agent_mismatch, audited', async () => {
+    const { deps, audit } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const out = await callWithAgentHeader(
+      deps,
+      GOOGLE_DRIVE_SEARCH_TOOL,
+      { definitionId: FOREIGN_DEFINITION_ID },
+      AGENT_ID,
+    )
+    assert.equal(out.isError, true)
+    assert.equal(out.payload.code, 'agent_mismatch')
+    const def = await callWithAgentHeader(
+      deps,
+      MCP_AGENT_GET_DEFINITION_TOOL,
+      { agentId: FOREIGN_AGENT_ID },
+      AGENT_ID,
+    )
+    assert.equal(def.payload.code, 'agent_mismatch')
+    assert.ok(
+      audit.some(
+        (row) =>
+          row.action === 'mcp.tools.call.deny' &&
+          (row.metadata as { code?: string }).code === 'agent_mismatch',
+      ),
+    )
+    assert.equal(audit.some((row) => row.action === 'enterprise.tool.ok'), false)
+  })
+
+  await check('#682 unknown / other-tenant / malformed agent header → agent_not_found, audited', async () => {
+    const { deps, audit } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    for (const header of [FOREIGN_AGENT_ID, 'not-a-uuid']) {
+      const out = await callWithAgentHeader(deps, GOOGLE_DRIVE_SEARCH_TOOL, {}, header)
+      assert.equal(out.isError, true)
+      assert.equal(out.payload.code, 'agent_not_found')
+    }
+    assert.equal(
+      audit.filter(
+        (row) =>
+          row.action === 'mcp.tools.call.deny' &&
+          (row.metadata as { code?: string }).code === 'agent_not_found',
+      ).length,
+      2,
+    )
+  })
+
+  await check('#682 agent header after access is revoked → agent_not_found', async () => {
+    const { deps } = runtimeDeps({ role: 'operator', grantedAgentIds: new Set() })
+    await initialize(deps)
+    const out = await callWithAgentHeader(deps, KB_LIST_INDEX_TOOL, {}, AGENT_ID)
+    assert.equal(out.payload.code, 'agent_not_found')
   })
 
   await check('google_drive_create_folder enqueues awaiting_approval without writing', async () => {

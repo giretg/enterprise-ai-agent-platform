@@ -35,6 +35,7 @@ import {
 import { isAvailableOnMcp, isDispatchable } from '@/lib/agent-lifecycle'
 import {
   asCheckoutHarness,
+  CHECKOUT_HARNESSES,
   CHECKOUT_TOOL_DESCRIPTION,
   renderAgentCheckout,
   type CheckoutSkill,
@@ -737,6 +738,56 @@ async function checkoutToolResult(
   )
 }
 
+/** Per-client agent binding (#682 WP-2): Hermes Bots etc. send it on every MCP request. */
+export const MCP_AGENT_ID_HEADER = 'x-excellence-agent-id'
+
+/**
+ * The header is only input: it picks the agent, it never widens access. The
+ * agent must be in this tenant, published and visible to the user; the tool's
+ * own gate (capability, connector grant, approval) still runs afterwards.
+ * No definitionId in args → the agent's current published definition.
+ * definitionId / agentId of another agent → agent_mismatch.
+ */
+async function bindAgentHeader(
+  principal: McpPrincipal,
+  deps: McpRuntimeDeps,
+  toolName: string,
+  args: Record<string, unknown>,
+  header: string,
+): Promise<{ ok: true; args: Record<string, unknown> } | { ok: false; result: CallToolResult }> {
+  const deny = async (code: string) => {
+    await auditMcpToolDenied(deps, principal, toolName, code, { headerAgentId: header.slice(0, 64) })
+    return { ok: false as const, result: textResult({ code, message: `${MCP_AGENT_ID_HEADER}: ${code}` }, true) }
+  }
+  const agentId = asUuid(header)
+  const current = agentId ? await deps.loadDefinition({ tenantId: principal.tenantId, agentId }) : null
+  if (
+    !current ||
+    !isDispatchable(current.status) ||
+    !(await deps.canViewAgent({
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      role: principal.role,
+      agentId: current.agentId,
+    }))
+  ) {
+    return deny('agent_not_found')
+  }
+  if (args.agentId !== undefined && args.agentId !== current.agentId) return deny('agent_mismatch')
+  if (args.definitionId !== undefined && args.definitionId !== current.definitionId) {
+    const definitionId = asUuid(args.definitionId)
+    const pinned = definitionId
+      ? await deps.loadDefinition({ tenantId: principal.tenantId, definitionId })
+      : null
+    if (pinned?.agentId !== current.agentId) return deny('agent_mismatch')
+    return { ok: true, args }
+  }
+  if (toolName === MCP_AGENT_GET_DEFINITION_TOOL) {
+    return { ok: true, args: args.definitionId ? args : { ...args, agentId: current.agentId } }
+  }
+  return { ok: true, args: { ...args, definitionId: current.definitionId } }
+}
+
 const MRTR_PROTOCOL_VERSION = '2026-07-28'
 
 function requestStateCodec(key: string | undefined): RequestStateCodec<WriteConfirmState> | null {
@@ -783,7 +834,12 @@ function writeConfirmInput(
   }
 }
 
-async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps, origin: string) {
+async function createMcpResourceHandler(
+  principal: McpPrincipal,
+  deps: McpRuntimeDeps,
+  origin: string,
+  agentHeader: string | null = null,
+) {
   const { tenant, context } = await loadTenantContext(principal, deps)
   const instructions = buildMcpServerInstructions({
     tenant,
@@ -840,7 +896,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
             .object({
               agentId: z.string().uuid(),
               version: z.number().int().positive().optional(),
-              harness: z.enum(['claude', 'codex', 'goose', 'grok']).optional(),
+              harness: z.enum(CHECKOUT_HARNESSES).optional(),
             })
             .passthrough(),
         },
@@ -1288,10 +1344,20 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
           )
         }
         const rawArgs = request.params.arguments
-        const args =
+        let args =
           rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
             ? (rawArgs as Record<string, unknown>)
             : {}
+        if (
+          agentHeader &&
+          (toolName === MCP_AGENT_GET_DEFINITION_TOOL ||
+            isProjectWorkTool(toolName) ||
+            isEnterpriseTool(toolName))
+        ) {
+          const bound = await bindAgentHeader(principal, deps, toolName, args, agentHeader)
+          if (!bound.ok) return bound.result
+          args = bound.args
+        }
         if (toolName === MCP_AGENTS_LIST_TOOL) return listAgentsToolResult(principal, deps)
         if (toolName === MCP_AGENT_GET_DEFINITION_TOOL) {
           return getDefinitionToolResult(principal, args, deps)
@@ -1422,7 +1488,12 @@ export async function handleMcpRequest(
       }
       return forbiddenResponse(resolved)
     }
-    const handler = await createMcpResourceHandler(resolved.principal, deps, origin)
+    const handler = await createMcpResourceHandler(
+      resolved.principal,
+      deps,
+      origin,
+      req.headers.get(MCP_AGENT_ID_HEADER)?.trim() || null,
+    )
     return handler(req)
   }
 
