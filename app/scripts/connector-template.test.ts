@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { backfillHttpApiConnectorConfig } from '../src/domain/connector/canonical-config'
 import { parseHttpApiConfig } from '../src/domain/connector/http-api-client'
@@ -553,6 +553,38 @@ async function main() {
       offlineParams: { access_type: 'offline' },
       scopeTransform: 'gmailAlias',
     })
+  })
+
+  await test('template icon is optional but validated when present', () => {
+    const base = BUILTIN_CONNECTOR_TEMPLATES[0]
+    assert.equal(parseTemplateDescriptor(base).iconDataUrl, undefined)
+    const withIcon = parseTemplateDescriptor({
+      ...base,
+      iconDataUrl: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',
+    })
+    assert.ok(withIcon.iconDataUrl?.startsWith('data:image/svg+xml;base64,'))
+    assert.throws(() =>
+      parseTemplateDescriptor({ ...base, iconDataUrl: 'https://example.com/icon.png' }),
+    )
+    assert.throws(() =>
+      parseTemplateDescriptor({ ...base, iconDataUrl: 'data:text/plain;base64,Zm9v' }),
+    )
+  })
+
+  await test('every seeded template has an icon file', () => {
+    const dir = resolve(__dirname, '../connector-template-icons')
+    const shared: Record<string, string> = {
+      'ostorosbor-crm-sales-delegated': 'ostorosbor-crm.svg',
+      'ostorosbor-crm-service-insight': 'ostorosbor-crm.svg',
+    }
+    for (const descriptor of [...BUILTIN_CONNECTOR_TEMPLATES, ...GLOBAL_CUSTOM_CONNECTOR_TEMPLATES]) {
+      const file = shared[descriptor.key] ?? `${descriptor.key}.svg`
+      const path = resolve(dir, file)
+      assert.ok(existsSync(path), `missing icon file for template ${descriptor.key}: ${file}`)
+      const dataUrl = `data:image/svg+xml;base64,${readFileSync(path).toString('base64')}`
+      // A seed ugyanezt teszi a DB-be — a séma engedje át.
+      parseTemplateDescriptor({ ...descriptor, iconDataUrl: dataUrl })
+    }
   })
 
   if (failures > 0) {

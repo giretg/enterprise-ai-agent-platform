@@ -174,10 +174,33 @@ export async function listConnectorsPanelContext() {
       googleOAuthSummary(),
       services.platformSettings.getGoogleDrivePickerConfig(),
     ])
+    // Sablonból készült konnektorokhoz a sablon feltöltött ikonja; a többit a
+    // kliens generikus ikonnal mutatja.
+    const templates = await repositories.connectorTemplates.listVisible({
+      tenantId: user.activeTenantId,
+    })
+    const iconByTemplateKey = new Map<string, string>()
+    for (const template of templates) {
+      const descriptor = template.descriptor as { iconDataUrl?: unknown } | null
+      const icon =
+        descriptor && typeof descriptor.iconDataUrl === 'string' ? descriptor.iconDataUrl : null
+      if (icon) {
+        if (template.tenantId) iconByTemplateKey.set(template.key, icon)
+        else if (!iconByTemplateKey.has(template.key)) iconByTemplateKey.set(template.key, icon)
+      }
+    }
+    const connectorsWithIcons = connectors.map((connector) => {
+      const config = connector.config as { provenance?: { templateKey?: unknown } } | null
+      const key = config?.provenance?.templateKey
+      return {
+        ...connector,
+        iconDataUrl: typeof key === 'string' ? (iconByTemplateKey.get(key) ?? null) : null,
+      }
+    })
     const connectorUsage = await delegatedConnectorUsage(connectors, user.activeTenantId)
     return ok({
       grants,
-      connectors,
+      connectors: connectorsWithIcons,
       connectorUsage,
       isAdmin,
       canManagePlatformOauth: isSuperadmin(user.platformRoles),
