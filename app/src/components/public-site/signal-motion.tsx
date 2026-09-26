@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 /**
  * Scroll-driven motion for the public Signal pages. The page stays a server
@@ -77,6 +77,7 @@ export type ChatFrame = { node: ReactNode; from: number; to?: number }
 export function ChatSequence({ frames, delays }: { frames: ChatFrame[]; delays: number[] }) {
   const last = delays.length
   const [step, setStep] = useState(0)
+  const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -85,6 +86,15 @@ export function ChatSequence({ frames, delays }: { frames: ChatFrame[]; delays: 
     const timer = setTimeout(next, reduced ? 0 : step >= last ? 5000 : delays[step])
     return () => clearTimeout(timer)
   }, [step, last, delays])
+
+  useEffect(() => {
+    const anchor = endRef.current
+    const panel = anchor?.closest<HTMLElement>('[data-chat-scroll]')
+    if (!panel) return
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
+    const behavior: ScrollBehavior = reduced ? 'auto' : 'smooth'
+    panel.scrollTo({ top: step === 0 ? 0 : panel.scrollHeight, behavior })
+  }, [step])
 
   return (
     <>
@@ -95,6 +105,7 @@ export function ChatSequence({ frames, delays }: { frames: ChatFrame[]; delays: 
           </div>
         ) : null,
       )}
+      <div ref={endRef} aria-hidden className="h-px shrink-0" />
     </>
   )
 }

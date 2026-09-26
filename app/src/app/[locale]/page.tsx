@@ -87,7 +87,11 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
     { title: t('howStep1Title'), body: t('howStep1Body') },
     { title: t('howStep2Title'), body: t('howStep2Body') },
     { title: t('howStep3Title'), body: t('howStep3Body') },
+    { title: t('howStep4Title'), body: t('howStep4Body') },
+    { title: t('howStep5Title'), body: t('howStep5Body') },
+    { title: t('howStep6Title'), body: t('howStep6Body') },
   ]
+  const stepTotal = String(steps.length).padStart(2, '0')
   const marquee = [...clients.map((c) => t(c.key)), ...systems.map((s) => t(s))]
 
   return (
@@ -223,7 +227,9 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
                 data-step
                 className="flex flex-col justify-center border-l-2 border-line py-6 pl-7 transition-[border-color,opacity] duration-300 lg:min-h-[60vh] lg:opacity-35 [&.is-on]:border-coral [&.is-on]:opacity-100"
               >
-                <span className="font-mono text-[13px] text-coral">{t('stepLabel', { n: `0${i + 1}`, total: '03' })}</span>
+                <span className="font-mono text-[13px] text-coral">
+                  {t('stepLabel', { n: String(i + 1).padStart(2, '0'), total: stepTotal })}
+                </span>
                 <h3 className="mt-2 text-3xl font-bold tracking-[-0.03em]">{s.title}</h3>
                 <p className="mt-2.5 max-w-[42ch] text-ink-soft">{s.body}</p>
               </div>
@@ -231,8 +237,11 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
           </div>
           <div className="hidden lg:block">
             <div className="sticky top-28 min-h-[340px] border border-ink bg-card p-6">
-              {/* 1 — rules */}
+              {/* 1 — AI teammate */}
               <div data-screen className="absolute inset-6 translate-y-3 opacity-0 transition duration-400 [&.is-on]:translate-y-0 [&.is-on]:opacity-100">
+                <p className="text-sm font-semibold">{t('howDemoAgentName')}</p>
+                <p className="mt-1 font-mono text-xs text-ink-faint">{t('howDemoAgentModel')}</p>
+                <p className="mt-3 text-[13px] leading-relaxed text-ink-soft">{t('howDemoAgentRole')}</p>
                 {(
                   [
                     ['ruleDrive', 'ruleAllowed', 'text-sage'],
@@ -240,13 +249,31 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
                     ['ruleCrm', 'ruleApproval', 'text-honey'],
                   ] as const
                 ).map(([rule, status, tone]) => (
-                  <div key={rule} className="mb-2 flex items-center gap-3 border border-line bg-card px-3.5 py-3 text-sm">
+                  <div key={rule} className="mb-2 mt-3 flex items-center gap-3 border border-line bg-card px-3.5 py-3 text-sm">
                     {t(rule)}
                     <span className={`ml-auto font-mono text-xs ${tone}`}>● {t(status)}</span>
                   </div>
                 ))}
               </div>
-              {/* 2 — connected clients */}
+              {/* 2 — reports */}
+              <div data-screen className="absolute inset-6 translate-y-3 opacity-0 transition duration-400 [&.is-on]:translate-y-0 [&.is-on]:opacity-100">
+                <p className="mb-3 text-sm font-semibold">{t('howDemoTeamLead')}</p>
+                {(
+                  [
+                    ['howDemoMember1', 'howDemoMember1Role'],
+                    ['howDemoMember2', 'howDemoMember2Role'],
+                  ] as const
+                ).map(([name, role]) => (
+                  <div key={name} className="mb-2 flex items-center gap-3 border border-line bg-card px-3.5 py-3 text-sm">
+                    <span>
+                      {t(name)}
+                      <span className="block font-mono text-xs text-ink-faint">{t(role)}</span>
+                    </span>
+                    <span className="ml-auto font-mono text-xs text-coral">● {t('howDemoMemberStatus')}</span>
+                  </div>
+                ))}
+              </div>
+              {/* 3 — connected clients */}
               <div data-screen className="absolute inset-6 translate-y-3 opacity-0 transition duration-400 [&.is-on]:translate-y-0 [&.is-on]:opacity-100">
                 <p className="mb-3 truncate font-mono text-xs text-ink-faint">{t('panelUrl')}</p>
                 {clients.map((c) => (
@@ -257,7 +284,7 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
                   </div>
                 ))}
               </div>
-              {/* 3 — approval */}
+              {/* 4 — approval */}
               <div data-screen className="absolute inset-6 translate-y-3 opacity-0 transition duration-400 [&.is-on]:translate-y-0 [&.is-on]:opacity-100">
                 <div className="border border-l-4 border-honey bg-honey/5 p-4">
                   <p className="text-sm font-semibold text-honey">▲ {t('approvalTitle')}</p>
@@ -274,6 +301,29 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
                     <span className="rounded border border-ink bg-card px-3.5 py-2 text-[13px] font-semibold">{t('approvalReject')}</span>
                   </div>
                 </div>
+              </div>
+              {/* 5 — audit */}
+              <div data-screen className="absolute inset-6 translate-y-3 opacity-0 transition duration-400 [&.is-on]:translate-y-0 [&.is-on]:opacity-100">
+                <p className="mb-3 font-mono text-xs uppercase tracking-wide text-ink-faint">{t('howDemoAuditTitle')}</p>
+                {[t('howDemoAudit1'), t('howDemoAudit2')].map((line) => (
+                  <div key={line} className="mb-2 border border-line bg-card px-3.5 py-3 font-mono text-[13px]">
+                    {line}
+                  </div>
+                ))}
+                <div className="mt-4 flex items-center justify-between border border-ink bg-card-2 px-3.5 py-3 text-sm">
+                  <span className="font-mono text-xs uppercase text-ink-faint">{t('howDemoAuditCost')}</span>
+                  <span className="font-semibold">{t('howDemoAuditCostValue')}</span>
+                </div>
+              </div>
+              {/* 6 — training */}
+              <div data-screen className="absolute inset-6 translate-y-3 opacity-0 transition duration-400 [&.is-on]:translate-y-0 [&.is-on]:opacity-100">
+                <p className="mb-3 text-sm font-semibold">{t('howDemoTrainTitle')}</p>
+                {[t('howDemoTrain1'), t('howDemoTrain2')].map((item) => (
+                  <div key={item} className="mb-2 flex items-center gap-3 border border-line bg-card px-3.5 py-3 text-sm">
+                    {item}
+                    <span className="ml-auto font-mono text-xs text-sage">● {t('howDemoTrainStatus')}</span>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
