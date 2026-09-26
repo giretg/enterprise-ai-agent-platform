@@ -9,7 +9,7 @@ import {
   type AgentMailInboxRow,
   type AgentMailOverview,
 } from '@/app/actions/agentmail'
-import { AGENTMAIL_REGIONS, type AgentMailRegion } from '@/lib/agentmail'
+import { AGENTMAIL_REGIONS, type AgentMailRegion } from '@/lib/agentmail-region'
 import { assignConnectorToAgent, unassignConnectorFromAgent } from '@/app/actions/provisioning'
 import { Badge, Card } from '@/components/ui/shell'
 
