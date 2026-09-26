@@ -51,7 +51,7 @@ import {
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
 import { PROJECT_WORK_TOOLS } from '../src/domain/project-work/mcp'
-import { renderAgentBriefing } from '../src/lib/agent-checkout'
+import { renderAgentBriefing, renderAgentCheckout } from '../src/lib/agent-checkout'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
 const ORIGIN = 'https://app.example.com'
@@ -1765,9 +1765,9 @@ async function main() {
     assert.equal(body.error, undefined, JSON.stringify(body))
     const text = body.result?.messages?.[0]?.content.text ?? ''
     assert.equal(body.result?.messages?.[0]?.role, 'user')
-    assert.match(text, /^You are now Drive assistant\./)
+    assert.match(text, /\n## Who you are\n\nYou are now Drive assistant\./)
     assert.match(text, /Do not ask which agent to use/)
-    assert.ok(text.includes(renderAgentBriefing({ snapshot: SAMPLE_DEFINITION.snapshot, skills: [] }).join('\n')))
+    assert.ok(text.includes(renderAgentBriefing({ definition: SAMPLE_DEFINITION, skills: [] })))
     assert.match(text, /## Today's task\n\nQ3 riport\n$/)
     assert.ok(
       audit.some(
@@ -1793,6 +1793,50 @@ async function main() {
     assert.match(after, /version 2\)/)
     assert.match(after, /Inspect Drive, v2 rules/)
     assert.ok(!after.includes(`definitionId: ${DEFINITION_ID}`))
+  })
+
+  await check('#652 get_definition: briefing is the first key, same text as the prompt and checkout', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const skillVersionId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    const skill = {
+      skillId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      skillVersionId,
+      name: 'napi-riport',
+      description: 'Daily marketing report.',
+      content: { instructions: ['Write the report.'], triggerKeywords: ['riport'], parameters: [] },
+      requires: [],
+    }
+    const definition = {
+      ...SAMPLE_DEFINITION,
+      snapshot: {
+        ...SAMPLE_DEFINITION.snapshot,
+        skills: [{ skillId: skill.skillId, skillVersionId, name: skill.name }],
+      },
+    }
+    deps.loadDefinition = async () => definition
+    deps.loadSkillVersions = async () => [skill]
+    await initialize(deps)
+
+    const unbound = await callWithAgentHeader(deps, MCP_AGENT_GET_DEFINITION_TOOL, { agentId: AGENT_ID }, '')
+    assert.equal(Object.keys(unbound.payload)[0], 'briefing')
+    const briefing = unbound.payload.briefing as string
+    assert.equal(briefing, renderAgentBriefing({ definition, skills: [skill] }))
+    assert.match(briefing, /skill:\/\/napi-riport\/SKILL\.md/)
+    const prompt = (await getPrompt(deps)).result?.messages?.[0]?.content.text ?? ''
+    assert.ok(prompt.includes(briefing))
+    const checkout = renderAgentCheckout({ definition, skills: [skill], mcpUrl: 'https://app.example.com/api/mcp/acme' })
+    assert.ok(checkout.files.find((f) => f.path === 'AGENTS.md')?.content.includes(briefing))
+
+    const bound = await callWithAgentHeader(deps, MCP_AGENT_GET_DEFINITION_TOOL, {}, AGENT_ID)
+    const boundBriefing = bound.payload.briefing as string
+    assert.match(boundBriefing, /do not pass definitionId/)
+    const hermes = renderAgentCheckout({
+      definition,
+      skills: [skill],
+      mcpUrl: 'https://app.example.com/api/mcp/acme',
+      harness: 'hermes',
+    })
+    assert.ok(hermes.files.find((f) => f.path === 'SOUL.md')?.content.includes(boundBriefing))
   })
 
   await check('#651 agent not visible to the user → no prompt listed, prompts/get fails', async () => {

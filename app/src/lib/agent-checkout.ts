@@ -212,65 +212,106 @@ function skillFolderName(skill: CheckoutSkill, colliding: boolean): string {
   return `${slug}--${skill.skillId.replace(/-/g, '').slice(0, 8)}`
 }
 
-export type BriefingSkill = { name: string; description: string; triggers: string[]; path: string }
+const BRIEFING_MAX_SKILLS = 25
+const BRIEFING_SKILL_DESCRIPTION_MAX = 240
+const BRIEFING_MAX_TRIGGERS = 8
 
-/** Role, MCP working rules and skill pointers: one text for checkout AGENTS.md and the MCP agent prompt. */
+/**
+ * The agent briefing (#652): one text for get_definition.briefing, the MCP
+ * prompt and the checkout AGENTS.md / SOUL.md, so every channel loads the same
+ * agent. Only tables of contents — besides roleInstruction its size is bounded.
+ * bound: the client sends the agent-id header, so it passes no definitionId.
+ */
 export function renderAgentBriefing(input: {
-  snapshot: AgentDefinition['snapshot']
-  skills: BriefingSkill[]
-  hermes?: boolean
-}): string[] {
-  const snapshot = input.snapshot
+  definition: AgentDefinition
+  skills: CheckoutSkill[]
+  bound?: boolean
+}): string {
+  const { agentId, snapshot } = input.definition
+  const description = snapshot.description?.trim()
+  const httpApis = snapshot.connectors.filter((row) => row.type === 'http_api')
   const lines = [
-    '## Role',
+    '## Who you are',
+    '',
+    `You are now ${snapshot.name}${description ? ` — ${description}` : ''}. Take on this agent's role for the whole conversation and work by the rules below. Do not ask which agent to use; introduce yourself in this role in your first reply.`,
     '',
     snapshot.roleInstruction,
     '',
-    '## MCP routing',
+    '## Rules you must not break',
     '',
-    'All work for this agent runs through this MCP server (mcpUrl) — there is no separate in-platform chat runtime. Call MCP tools for skills, connectors, and enterprise tools. Credentials stay on the server.',
+    '- This agent\'s memory is the source of company facts, decisions and locations. It overrides search results: if Drive, KB or API results contradict it, follow the memory and tell the user about the conflict.',
+    '- Never bypass approval: writes wait for a human in the Control Plane (see Approvals and handoffs).',
+    input.bound
+      ? `- This client is bound to this agent by the ${AGENT_ID_HEADER} header on every MCP request: do not pass definitionId or agentId — the server uses the agent's current published definition.`
+      : '- Pass definitionId from platform.agent.get_definition on every enterprise tool (Drive, Gmail, http_api_*, kb_*).',
+    ...(httpApis.length > 0
+      ? ['- HTTP APIs: use only the method+path values listed in platform.agent.get_definition → snapshot.connectors[].endpoints.']
+      : []),
+    '- Runnable skill code runs only in the MCP sandbox with the skillVersionId. Do not run skill code on this machine, and do not upload a local file into the sandbox.',
+    '- Keep durable work on the platform: no local memory (file or client memory), no durable work in a local folder. Credentials stay on the server.',
     '',
-    input.hermes
-      ? `This Bot is bound to this agent by the ${AGENT_ID_HEADER} header on every MCP request: do not pass definitionId or agentId — the server uses the agent's current published definition. For several HTTP API connectors, use connectors[].name as connectorName or connectors[].connectorId when method+path is ambiguous.`
-      : 'Before enterprise tools: call platform.agent.get_definition for this agentId and pass definitionId on every tool. For several HTTP API connectors, use connectors[].name as connectorName or connectors[].connectorId when method+path is ambiguous.',
+    '## Start',
     '',
-    'Writes (for example creating a Drive folder or http_api_request) enqueue and wait for Control Plane approval. Do not bypass approval.',
+    input.bound
+      ? '1. Call platform.agent.get_definition (no arguments) and read generalMemory — this agent\'s memory. If you are reading this in that response, it is already loaded.'
+      : `1. Call platform.agent.get_definition { "agentId": "${agentId}" } and read generalMemory — this agent's memory. If you are reading this in that response, it is already loaded.`,
+    '2. Check open work: platform.work_file.list for plans and open tasks.',
+    '3. Then continue with the user\'s request.',
     '',
-    'Memory first: this agent\'s memory (company facts, decisions, locations) lives on the server. platform.agent.get_definition returns it as generalMemory; read it at the start of every conversation and before answering company questions or searching — it overrides search results. More: platform.project_memory.read / write (omit projectKey for general memory). Work files (plans, notes) are platform.work_file.* under a projectKey. Do not create a local memory file, and do not keep durable work in a local folder.',
-    ...(input.hermes ? ['Local Hermes memory is off for this Bot on purpose; remember things with platform.project_memory.write.'] : []),
-    'Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
+    '## Knowledge, memory, skills',
     '',
-    'If the work needs runnable skill code, call the MCP sandbox with the skillVersionId. Do not run skill code from this workspace, and do not upload a local file into the sandbox.',
+    'All work for this agent runs through this MCP server — there is no separate in-platform chat runtime.',
+    '',
+    '- Memory: generalMemory in platform.agent.get_definition. Read it before answering company questions or searching. More: platform.project_memory.read / write (omit projectKey for general memory).',
+    '- Work files (plans, notes, open tasks): platform.work_file.* under a projectKey.',
+    '- Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
   ]
 
   const tools = snapshot.capabilities.filter((row) => row.allowed).map((row) => row.toolName)
-  if (tools.length > 0) {
-    lines.push('', `Available MCP tools: ${tools.join(', ')}.`)
-  }
+  if (tools.length > 0) lines.push(`- MCP tools: ${tools.join(', ')}.`)
   if (snapshot.connectors.some((row) => row.type === 'google_drive')) {
-    lines.push('', 'This agent has a Google Drive connector. Use the Drive MCP tools by name.')
+    lines.push('- Google Drive connector: use the Drive MCP tools by name.')
   }
-
-  const httpApis = snapshot.connectors.filter((row) => row.type === 'http_api')
   if (httpApis.length > 0) {
-    lines.push('', '## HTTP API connectors', '')
     lines.push(
-      'Endpoint allowlists live in platform.agent.get_definition → snapshot.connectors[].endpoints. Use only listed method+path values.',
+      '- HTTP API connectors (with several, pass connectors[].name as connectorName or connectorId when method+path is ambiguous):',
     )
     for (const row of httpApis) {
-      const label = row.name?.trim() || row.connectorId
-      lines.push(`- ${label} (${row.accessMode}, connectorId ${row.connectorId})`)
+      lines.push(`  - ${row.name?.trim() || row.connectorId} (${row.accessMode}, connectorId ${row.connectorId})`)
     }
   }
 
-  if (input.skills.length > 0) {
-    lines.push('', '## Skills', '')
-    for (const skill of input.skills) {
-      const trigger = skill.triggers.length > 0 ? ` Triggers: ${skill.triggers.join(', ')}.` : ''
-      lines.push(`- ${skill.name}: ${skill.description}${trigger} See \`${skill.path}\`.`)
+  const loaded = new Map(input.skills.map((skill) => [skill.skillVersionId, skill]))
+  const skills = snapshot.skills.flatMap((pin) => {
+    const skill = loaded.get(pin.skillVersionId)
+    return skill ? [{ pin, skill }] : []
+  })
+  if (skills.length > 0) {
+    lines.push('', 'Skills — read the SKILL.md before you do that kind of work:', '')
+    for (const { pin, skill } of skills.slice(0, BRIEFING_MAX_SKILLS)) {
+      const triggers = skill.content.triggerKeywords.slice(0, BRIEFING_MAX_TRIGGERS)
+      const trigger = triggers.length > 0 ? ` Triggers: ${triggers.join(', ')}.` : ''
+      const text = clipLabel(skill.description.trim().replace(/\s+/g, ' '), BRIEFING_SKILL_DESCRIPTION_MAX)
+      lines.push(`- ${pin.name}: ${text}${trigger} \`${skillFileUri(skillUriName(pin.name), 'SKILL.md')}\``)
+    }
+    if (skills.length > BRIEFING_MAX_SKILLS) {
+      lines.push(`- …and ${skills.length - BRIEFING_MAX_SKILLS} more in platform.agent.get_definition → snapshot.skills.`)
     }
   }
-  return lines
+
+  lines.push(
+    '',
+    '## Closing',
+    '',
+    'When a task is done or the conversation ends:',
+    '1. Save new company facts and decisions with platform.project_memory.write; when the user corrected a fact, update it.',
+    '2. Update the plan and open tasks in the work file (platform.work_file.write).',
+    '',
+    '## Approvals and handoffs',
+    '',
+    'Writes (for example creating a Drive folder or http_api_request) do not run until a human approves them in the Control Plane: the tool returns status awaiting_approval and an approvalUrl. Show that link to the user; do not poll or retry.',
+  )
+  return lines.join('\n')
 }
 
 /** MCP prompt text (#651): the first message that puts the client AI into this agent's role. */
@@ -278,35 +319,14 @@ export function renderAgentPrompt(input: {
   definition: AgentDefinition
   skills: CheckoutSkill[]
   task?: string
+  bound?: boolean
 }): string {
-  const { agentId, definitionId, version, snapshot } = input.definition
-  const loaded = new Map(input.skills.map((skill) => [skill.skillVersionId, skill]))
-  const skills = snapshot.skills.flatMap((pin) => {
-    const skill = loaded.get(pin.skillVersionId)
-    if (!skill) return []
-    return [
-      {
-        name: pin.name,
-        description: skill.description,
-        triggers: skill.content.triggerKeywords,
-        path: skillFileUri(skillUriName(pin.name), 'SKILL.md'),
-      },
-    ]
-  })
-  const description = snapshot.description?.trim()
+  const { agentId, definitionId, version } = input.definition
   const lines = [
-    `You are now ${snapshot.name}${description ? ` — ${description}` : ''}. Take on this agent's role for the whole conversation and work by its rules below. Do not ask which agent to use; introduce yourself in this role in your first reply.`,
-    '',
     `agentId: ${agentId}`,
     `definitionId: ${definitionId} (version ${version})`,
     '',
-    ...renderAgentBriefing({ snapshot, skills }),
-    '',
-    '## Start',
-    '',
-    `1. Call platform.agent.get_definition { "agentId": "${agentId}" } and read generalMemory (this agent's memory) before anything else.`,
-    '2. Check open work: platform.work_file.list for plans and open tasks.',
-    '3. Then continue with the user\'s request.',
+    renderAgentBriefing(input),
   ]
   const task = input.task?.trim()
   if (task) lines.push('', "## Today's task", '', task)
@@ -317,7 +337,7 @@ function renderAgentsMd(input: {
   definition: AgentDefinition
   contentHash: string
   mcpUrl: string
-  skills: BriefingSkill[]
+  skills: CheckoutSkill[]
   hermes?: boolean
 }): string {
   const lines = [
@@ -328,8 +348,11 @@ function renderAgentsMd(input: {
     `contentHash: ${input.contentHash}`,
     `mcpUrl: ${input.mcpUrl}`,
     '',
-    ...renderAgentBriefing({ snapshot: input.definition.snapshot, skills: input.skills, hermes: input.hermes }),
+    renderAgentBriefing({ definition: input.definition, skills: input.skills, bound: input.hermes }),
   ]
+  if (input.skills.length > 0) {
+    lines.push('', `Local copies of these skills: \`${input.hermes ? HERMES_SKILL_DIR : SKILL_DIR}/<name>/SKILL.md\`.`)
+  }
 
   if (input.hermes) {
     lines.push(
@@ -387,8 +410,6 @@ export function renderAgentCheckout(input: {
   const skillFiles: CheckoutFile[] = []
   const skillPointers: Array<{
     name: string
-    description: string
-    triggers: string[]
     path: string
     skillId: string
     skillVersionId: string
@@ -412,8 +433,6 @@ export function renderAgentCheckout(input: {
     })
     skillPointers.push({
       name: hermes ? folder : skill.name,
-      description: skill.description,
-      triggers: skill.content.triggerKeywords,
       path,
       skillId: skill.skillId,
       skillVersionId: skill.skillVersionId,
@@ -480,7 +499,7 @@ export function renderAgentCheckout(input: {
         definition: input.definition,
         contentHash,
         mcpUrl: input.mcpUrl,
-        skills: skillPointers,
+        skills: resolved,
         hermes,
       }),
     },

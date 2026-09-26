@@ -9,7 +9,9 @@ import {
   CHECKOUT_TOOL_DESCRIPTION,
   checkoutSlug,
   hermesBotTitle,
+  renderAgentBriefing,
   renderAgentCheckout,
+  renderAgentPrompt,
   type CheckoutSkill,
 } from '../src/lib/agent-checkout'
 import type { SkillContent } from '../src/lib/skill/skill-content'
@@ -220,6 +222,57 @@ async function main() {
     assert.match(agents, /HTTP API connectors/)
     assert.match(agents, /Posnavigator API/)
     assert.match(agents, /platform\.agent\.get_definition/)
+  })
+
+  await check('#652 briefing: fixed sections, same text in prompt, AGENTS.md and SOUL.md', () => {
+    const def = definition()
+    const skills = [skill(SKILL_A, VER_A, 'drive-search'), skill(SKILL_B, VER_B, 'drive-write')]
+    const briefing = renderAgentBriefing({ definition: def, skills })
+    const headings = briefing.match(/^## .+$/gm)
+    assert.deepEqual(headings, [
+      '## Who you are',
+      '## Rules you must not break',
+      '## Start',
+      '## Knowledge, memory, skills',
+      '## Closing',
+      '## Approvals and handoffs',
+    ])
+    assert.match(briefing, /^## Who you are\n\nYou are now Drive asszisztens\./)
+    assert.match(briefing, /- drive-search: drive-search description Triggers: drive, search\. `skill:\/\/drive-search\/SKILL\.md`/)
+
+    const agents = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL }).files.find((f) => f.path === 'AGENTS.md')
+    assert.ok(agents?.content.includes(briefing))
+    assert.ok(renderAgentPrompt({ definition: def, skills }).includes(briefing))
+
+    const bound = renderAgentBriefing({ definition: def, skills, bound: true })
+    assert.notEqual(bound, briefing)
+    const soul = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'hermes' }).files.find(
+      (f) => f.path === 'SOUL.md',
+    )
+    assert.ok(soul?.content.includes(bound))
+    assert.ok(renderAgentPrompt({ definition: def, skills, bound: true }).includes(bound))
+  })
+
+  await check('#652 briefing size: tables of contents only, bounded besides roleInstruction', () => {
+    const many = Array.from({ length: 200 }, (_, i) => {
+      const id = `${String(i).padStart(8, '0')}-0000-4000-8000-000000000000`
+      return {
+        ...skill(id, id, `skill-${i}`, { ...pinnedBody, triggerKeywords: Array.from({ length: 50 }, (_, t) => `trigger-${t}`) }),
+        description: 'x'.repeat(5000),
+      }
+    })
+    const roleInstruction = 'r'.repeat(20000)
+    const def = definition({
+      snapshot: {
+        ...definition().snapshot,
+        roleInstruction,
+        skills: many.map((row) => ({ skillId: row.skillId, skillVersionId: row.skillVersionId, name: row.name })),
+      },
+    })
+    const briefing = renderAgentBriefing({ definition: def, skills: many })
+    assert.ok(briefing.includes(roleInstruction))
+    assert.ok(briefing.length - roleInstruction.length < 16000, `${briefing.length - roleInstruction.length}`)
+    assert.match(briefing, /…and 175 more/)
   })
 
   await check('CHECKOUT_TOOL_DESCRIPTION tells MCP clients not to ask when one agent', () => {
