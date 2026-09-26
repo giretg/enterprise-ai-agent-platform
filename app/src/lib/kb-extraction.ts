@@ -172,7 +172,12 @@ async function extractDocx(buffer: Buffer): Promise<StructuredExtraction> {
  * a tényleges tartalmat kapja.
  */
 export function extractHtml(html: string): StructuredExtraction {
-  const body = html.replace(/<(head|style|script|svg|noscript|template)\b[\s\S]*?<\/\1\s*>/gi, '')
+  const blockRe = /<(head|style|script|svg|noscript|template)\b[\s\S]*?<\/\1\s*>/gi
+  let body = html
+  for (let prev = ''; body !== prev; ) {
+    prev = body
+    body = body.replace(blockRe, '')
+  }
   const blocks = htmlToSections(body)
   const markdown = blocks.map((b) => `## ${b.heading}\n\n${b.text}`).join('\n\n')
   return { format: 'html', markdown, blocks }
