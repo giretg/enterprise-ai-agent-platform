@@ -2,7 +2,8 @@ import NextLink from 'next/link'
 import Image from 'next/image'
 import { getTranslations, setRequestLocale } from 'next-intl/server'
 import { PublicSiteShell } from '@/components/public-site/public-site-shell'
-import { ScrollEffects, TypedTerminal } from '@/components/public-site/signal-motion'
+import { ScrollEffects } from '@/components/public-site/signal-motion'
+import { AgentChatDemo } from '@/components/public-site/agent-chat-demo'
 import { isAppLocale } from '@/i18n/config'
 import { publicPageMetadata } from '@/i18n/metadata'
 import { Link } from '@/i18n/navigation'
@@ -11,7 +12,7 @@ import { VendorLogo } from '@/components/public-site/vendor-logos'
 const trustKeys = ['trustApproval', 'trustAudit', 'trustConnect', 'trustGdpr'] as const
 const clients = [
   { key: 'clientClaude', logo: '/mcp-clients/claudecode.svg' },
-  { key: 'clientCodex', logo: '/mcp-clients/codex.svg' },
+  { key: 'clientHermes', logo: '/mcp-clients/hermes.svg' },
   { key: 'clientChatgpt', logo: null },
   { key: 'clientCursor', logo: '/mcp-clients/cursor.svg' },
 ] as const
@@ -124,20 +125,7 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
           </ul>
         </div>
         <div data-reveal>
-          <TypedTerminal
-            title={t('termTitle')}
-            lines={[
-              { tone: 'dim', text: '$ ' },
-              { text: `${t('termPrompt')}\n\n` },
-              { tone: 'accent', text: '● excellence-ai' },
-              { tone: 'dim', text: ` · ${t('termTool')}\n` },
-              { text: `  ${t('termPath')}\n\n` },
-              { tone: 'warn', text: `${t('termPending')}\n` },
-              { tone: 'dim', text: '  …\n' },
-              { tone: 'ok', text: `${t('termApproved')}\n` },
-              { text: `  ${t('termDone')}\n` },
-            ]}
-          />
+          <AgentChatDemo />
         </div>
       </section>
 
