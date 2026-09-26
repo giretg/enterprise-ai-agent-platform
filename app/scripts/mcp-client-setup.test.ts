@@ -7,6 +7,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createElement } from 'react'
+import { NextIntlClientProvider } from 'next-intl'
+import huMessages from '../src/messages/hu.json'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { McpSetupLanding } from '../src/components/mcp/mcp-setup-landing'
 import {
@@ -105,14 +107,24 @@ function main() {
     assert.match(nav, /label: 'Első lépések'/)
   })
 
-  check('client guides render as closed, branded cards with Goose Desktop setup', () => {
-    const html = renderToStaticMarkup(createElement(McpSetupLanding, {
-      setup,
-      continueHref: '/control-plane',
-    }))
-    assert.equal((html.match(/<details\b/g) ?? []).length, 6)
-    assert.doesNotMatch(html, /<details[^>]*\sopen(?:\s|=|>)/)
-    for (const client of ['codex', 'cursor', 'grok', 'claude', 'claudecode', 'goose']) {
+  check('Hermes is first and open; other client guides are closed, branded cards', () => {
+    const html = renderToStaticMarkup(
+      createElement(
+        NextIntlClientProvider,
+        { locale: 'hu', messages: huMessages },
+        createElement(McpSetupLanding, { setup, continueHref: '/control-plane' }),
+      ),
+    )
+    const details = html.match(/<details\b[^>]*>/g) ?? []
+    assert.equal(details.length, 7)
+    assert.match(details[0]!, /\sopen(?:\s|=|>|"")/)
+    assert.equal(details.slice(1).some((tag) => /\sopen(?:\s|=|>)/.test(tag)), false)
+    assert.ok(html.indexOf('>Hermes Desktop') < html.indexOf('>Codex<'))
+    assert.match(html, /hermes mcp add excellence --url https:\/\/app\.example\.com\/api\/mcp\/acme --auth oauth &amp;&amp; hermes mcp login excellence/)
+    assert.match(html, /Szinkronizáld az Excellence agenteimet/)
+    assert.match(html, /hermes-agent\.nousresearch\.com\/#downloads/)
+    assert.match(html, /user-guide\/bot-mode/)
+    for (const client of ['hermes', 'codex', 'cursor', 'grok', 'claude', 'claudecode', 'goose']) {
       assert.match(html, new RegExp(`/mcp-clients/${client}\\.svg`))
     }
     assert.match(html, /Goose Desktop/)

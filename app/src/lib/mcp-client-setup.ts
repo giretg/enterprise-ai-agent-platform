@@ -9,7 +9,20 @@ export type McpClientSetup = {
   claudeCommand: string
   grokCommand: string
   cursorInstallHref: string
+  hermesCommand: string
+  hermesSyncPrompt: string
 }
+
+/** The Hermes Bot profiles from platform.agent.checkout (#682) expect this exact server name. */
+export const HERMES_MCP_SERVER_NAME = 'excellence'
+export const HERMES_SYNC_PROMPT = 'Szinkronizáld az Excellence agenteimet'
+export const HERMES_LINKS = {
+  download: 'https://hermes-agent.nousresearch.com/#downloads',
+  docs: 'https://nousresearch.github.io/hermes-agent/docs/',
+  botMode: 'https://nousresearch.github.io/hermes-agent/docs/user-guide/bot-mode',
+  mcp: 'https://nousresearch.github.io/hermes-agent/docs/user-guide/features/mcp',
+  profileDistributions: 'https://nousresearch.github.io/hermes-agent/docs/user-guide/profile-distributions',
+} as const
 
 export function mcpClientName(tenantSlug: string): string {
   return `ea-${tenantSlug}`
@@ -41,6 +54,10 @@ export function grokMcpAddCommand(serverName: string, mcpUrl: string): string {
   return `grok mcp add --transport http ${serverName} ${mcpUrl}`
 }
 
+export function hermesMcpSetupCommand(mcpUrl: string): string {
+  return `hermes mcp add ${HERMES_MCP_SERVER_NAME} --url ${mcpUrl} --auth oauth && hermes mcp login ${HERMES_MCP_SERVER_NAME}`
+}
+
 export function buildMcpClientSetup(input: { origin: string; tenantSlug: string }): McpClientSetup {
   const mcpUrl = mcpUrlForTenant(input.origin, input.tenantSlug)
   const serverName = mcpClientName(input.tenantSlug)
@@ -52,6 +69,8 @@ export function buildMcpClientSetup(input: { origin: string; tenantSlug: string 
     claudeCommand: claudeMcpAddCommand(serverName, mcpUrl),
     grokCommand: grokMcpAddCommand(serverName, mcpUrl),
     cursorInstallHref: cursorMcpInstallHref(serverName, mcpUrl),
+    hermesCommand: hermesMcpSetupCommand(mcpUrl),
+    hermesSyncPrompt: HERMES_SYNC_PROMPT,
   }
 }
 

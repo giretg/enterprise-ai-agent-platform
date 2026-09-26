@@ -29,6 +29,12 @@ const COPY = {
   },
 } as const
 
+function localeFromCookie(): 'hu' | 'en' {
+  if (typeof document === 'undefined') return 'hu'
+  const match = document.cookie.match(new RegExp(`(?:^|; )${LOCALE_COOKIE}=(hu|en)(?:;|$)`))
+  return match?.[1] === 'en' || match?.[1] === 'hu' ? match[1] : 'hu'
+}
+
 export default function GlobalError({
   error,
   reset,
@@ -36,11 +42,9 @@ export default function GlobalError({
   error: Error & { digest?: string }
   reset: () => void
 }) {
-  const [locale, setLocale] = useState<'hu' | 'en'>('hu')
+  const [locale] = useState(localeFromCookie)
   useEffect(() => {
     captureException(error, { source: 'app-global-error-boundary', digest: error.digest ?? null })
-    const match = document.cookie.match(new RegExp(`(?:^|; )${LOCALE_COOKIE}=(hu|en)(?:;|$)`))
-    if (match?.[1] === 'en' || match?.[1] === 'hu') setLocale(match[1])
   }, [error])
   const copy = COPY[locale]
 
