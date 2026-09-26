@@ -326,10 +326,12 @@ export async function auditMcpToolDenied(
   deps: { audit?: AuditSink },
   principal: McpPrincipal,
   toolName: string,
+  code = 'tool_not_allowed',
+  extra: Record<string, unknown> = {},
 ): Promise<void> {
   console.info('mcp.tools.call.deny', {
     toolName,
-    code: 'tool_not_allowed',
+    code,
     tenantSlug: principal.tenantSlug,
   })
   await writeAudit(deps.audit, {
@@ -343,7 +345,7 @@ export async function auditMcpToolDenied(
     inputRef: toolName,
     outputRef: null,
     policyDecision: 'denied',
-    metadata: { toolName, code: 'tool_not_allowed', tenantSlug: principal.tenantSlug },
+    metadata: { toolName, code, tenantSlug: principal.tenantSlug, ...extra },
     tenantId: principal.tenantId,
   })
 }

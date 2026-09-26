@@ -246,6 +246,68 @@ async function main() {
     assert.match(bundle.files.find((f) => f.path === 'AGENTS.md')?.content ?? '', /agent_stale/)
   })
 
+  await check('hermes harness → profile distribution (#682 WP-1)', () => {
+    const def = definition()
+    const bundle = renderAgentCheckout({
+      definition: def,
+      skills: [skill(SKILL_A, VER_A, 'Napi Marketing Riport'), skill(SKILL_B, VER_B, 'drive-write')],
+      mcpUrl: MCP_URL,
+      harness: 'hermes',
+    })
+    // Pins decide the skill label; give the snapshot a non-slug name too.
+    const napi = renderAgentCheckout({
+      definition: definition({
+        snapshot: {
+          ...def.snapshot,
+          skills: [{ skillId: SKILL_A, skillVersionId: VER_A, name: 'Napi Marketing Riport' }],
+        },
+      }),
+      skills: [skill(SKILL_A, VER_A, 'Napi Marketing Riport')],
+      mcpUrl: MCP_URL,
+      harness: 'hermes',
+    })
+    const napiSkill = napi.files.find((f) => f.path.startsWith('skills/excellence/'))
+    assert.equal(napiSkill?.path, 'skills/excellence/napi-marketing-riport/SKILL.md')
+    assert.match(napiSkill?.content ?? '', /^---\nname: napi-marketing-riport\ntitle: Napi Marketing Riport\n/)
+
+    assert.equal(bundle.suggestedRoot, '.hermes/excellence/acme/drive-asszisztens')
+    assert.deepEqual(bundle.files.map((f) => f.path), bundle.generatedPaths)
+    for (const path of bundle.generatedPaths) assertSafeCheckoutPath(path)
+    assert.ok(bundle.generatedPaths.includes('SOUL.md'))
+    assert.ok(!bundle.generatedPaths.includes('AGENTS.md'))
+    for (const file of bundle.files.filter((f) => f.path.startsWith('skills/excellence/'))) {
+      const name = /^name: (.+)$/m.exec(file.content)?.[1] ?? ''
+      assert.match(name, /^[a-z0-9][a-z0-9._-]*$/)
+      assert.equal(file.path, `skills/excellence/${name}/SKILL.md`)
+    }
+
+    const content = (path: string) => bundle.files.find((f) => f.path === path)?.content ?? ''
+    const config = content('config.yaml')
+    assert.match(config, /memory_enabled: false/)
+    assert.match(config, /user_profile_enabled: false/)
+    assert.match(config, new RegExp(`X-Excellence-Agent-Id: ${AGENT_ID}`))
+    assert.match(config, /auth: oauth/)
+    assert.match(config, /- google_drive_search/)
+    assert.match(config, /- platform\.agent\.get_definition/)
+    assert.doesNotMatch(config, /platform\.agent\.publish|platform\.agent\.create_draft/)
+
+    const dist = content('distribution.yaml')
+    assert.match(dist, /name: exc-drive-asszisztens/)
+    assert.match(dist, /version: 3\.0\.0/)
+    const owned = dist.slice(dist.indexOf('distribution_owned'))
+    assert.doesNotMatch(owned, /config\.yaml|profile\.yaml/)
+    assert.match(content('profile.yaml'), /title: Drive asszisztens/)
+
+    const soul = content('SOUL.md')
+    assert.match(soul, /do not pass definitionId/)
+    assert.match(soul, new RegExp(`contentHash: ${hashSnapshot(def.snapshot)}`))
+    assert.doesNotMatch(soul, /agent_stale/)
+    assert.match(bundle.writeRecipe, /hermes profile install "\$HOME\/\.hermes\/excellence\/acme\/drive-asszisztens" --name exc-drive-asszisztens -y/)
+    assert.match(bundle.writeRecipe, /hermes profile update exc-drive-asszisztens -y/)
+    assert.doesNotMatch(bundle.writeRecipe, /hermes profile delete exc/)
+    assert.equal(JSON.parse(content('.enterprise-agent/manifest.json')).pin.harness, 'hermes')
+  })
+
   if (failures > 0) {
     console.error(`${failures} failed`)
     process.exit(1)
