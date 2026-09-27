@@ -30,6 +30,7 @@ export function UpdateOutputFolderForm({
   )
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sync when agent props refresh after save
     setFolderId(outputDriveFolderId ?? '')
     setFolderLabel(outputDriveFolderId ?? null)
   }, [outputDriveFolderId])
