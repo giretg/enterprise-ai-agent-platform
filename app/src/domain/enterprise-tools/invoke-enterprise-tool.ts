@@ -232,18 +232,18 @@ async function resolveDelegatedToken(
 
 /**
  * Tiszta write-gate döntés (#661): az agent saját output-mappájába töltve nincs
- * jóváhagyás, minden más Drive-írás approval-köteles. Egységtesztelt.
+ * jóváhagyás, minden más Drive-írás approval-köteles. Hiányzó/üres
+ * parentFolderId = a beállított output-mappa (az agent nem kapja meg az id-t
+ * máshonnan). Egységtesztelt.
  */
 export function isOutputFolderWrite(input: {
   toolName: string
   parentFolderId?: string
   outputFolderId: string | null | undefined
 }): boolean {
-  return (
-    input.toolName === GOOGLE_DRIVE_UPLOAD_FILE_TOOL &&
-    !!input.outputFolderId &&
-    input.parentFolderId === input.outputFolderId
-  )
+  if (input.toolName !== GOOGLE_DRIVE_UPLOAD_FILE_TOOL || !input.outputFolderId) return false
+  const parent = input.parentFolderId?.trim()
+  return !parent || parent === input.outputFolderId
 }
 
 /**
@@ -272,6 +272,8 @@ async function tryDirectOutputFolderWrite(
     tenantId: principal.tenantId,
   })
   if (!isOutputFolderWrite({ toolName, parentFolderId, outputFolderId })) return null
+  // Hiányzó parent → a fájl tényleg a mappába menjen, ne a Drive gyökerébe.
+  parsedArgs.parentFolderId = outputFolderId
   const authorized = await authorizeToolCall(deps, { principal, definition, toolName, args: parsedArgs })
   if (!authorized.allowed) {
     await auditDenied(deps, principal, toolName, authorized.reason, definitionId, definition.agentId)

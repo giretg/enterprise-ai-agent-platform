@@ -4,7 +4,12 @@
  */
 import assert from 'node:assert/strict'
 import { executeGoogleDriveTool } from '../src/domain/enterprise-tools/handlers/google-drive'
-import { isOutputFolderWrite } from '../src/domain/enterprise-tools/invoke-enterprise-tool'
+import {
+  GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+  invokeEnterpriseTool,
+  isOutputFolderWrite,
+  type EnterpriseToolDeps,
+} from '../src/domain/enterprise-tools'
 import {
   ProjectWorkService,
   WORK_FILE_MAX_BYTES,
@@ -15,6 +20,8 @@ import type { WorkFileRecord } from '../src/domain/project-work/types'
 const TENANT = '11111111-1111-4111-8111-111111111111'
 const AGENT = '22222222-2222-4222-8222-222222222222'
 const ANNA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const DEFINITION = '44444444-4444-4444-8444-444444444444'
+const CONNECTOR = '55555555-5555-4555-8555-555555555555'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -166,10 +173,12 @@ await check('érvénytelen törzs: üres / mindkettő / egyik sem / bináris →
   assert.equal(res.code, 'invalid_content')
 })
 
-await check('isOutputFolderWrite: csak mappán belüli upload', () => {
+await check('isOutputFolderWrite: mappán belüli vagy hiányzó parent, különben nem', () => {
   assert.equal(isOutputFolderWrite({ toolName: 'google_drive_upload_file', parentFolderId: 'mappa1', outputFolderId: 'mappa1' }), true)
+  assert.equal(isOutputFolderWrite({ toolName: 'google_drive_upload_file', parentFolderId: undefined, outputFolderId: 'mappa1' }), true)
+  assert.equal(isOutputFolderWrite({ toolName: 'google_drive_upload_file', parentFolderId: '  ', outputFolderId: 'mappa1' }), true)
   assert.equal(isOutputFolderWrite({ toolName: 'google_drive_upload_file', parentFolderId: 'masik', outputFolderId: 'mappa1' }), false)
-  assert.equal(isOutputFolderWrite({ toolName: 'google_drive_upload_file', parentFolderId: undefined, outputFolderId: 'mappa1' }), false)
+  assert.equal(isOutputFolderWrite({ toolName: 'google_drive_upload_file', parentFolderId: undefined, outputFolderId: null }), false)
   assert.equal(isOutputFolderWrite({ toolName: 'google_drive_upload_file', parentFolderId: 'mappa1', outputFolderId: null }), false)
   assert.equal(isOutputFolderWrite({ toolName: 'google_sheets_write_range', parentFolderId: 'mappa1', outputFolderId: 'mappa1' }), false)
   assert.equal(isOutputFolderWrite({ toolName: 'gmail_send', parentFolderId: 'mappa1', outputFolderId: 'mappa1' }), false)
@@ -192,6 +201,90 @@ await check('drive upload: textContent és contentBase64 stubbal', async () => {
   await assert.rejects(() =>
     executeGoogleDriveTool('google_drive_upload_file', { name: 'semmi.txt' }, 'stub-token'),
   )
+})
+
+await check('output-mappa upload: hiányzó parent azonnal fut, más mappa approval', async () => {
+  const FOLDER = 'mappa1'
+  const writer = {
+    snapshot: {
+      name: 'Writer',
+      roleInstruction: 'Write',
+      skills: [],
+      connectors: [{ connectorId: CONNECTOR, type: 'google_drive', accessMode: 'write' }],
+      capabilities: [{ toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL, allowed: true }],
+    },
+  }
+  function uploadDeps(outputFolderId: string | null): {
+    deps: EnterpriseToolDeps
+    uploaded: Array<Record<string, unknown>>
+    enqueued: string[]
+  } {
+    const uploaded: Array<Record<string, unknown>> = []
+    const enqueued: string[] = []
+    const deps: EnterpriseToolDeps = {
+      async findConnector() {
+        return { id: CONNECTOR, tenantId: TENANT, type: 'google_drive', authMode: 'user_delegated', lifecycleState: 'active' }
+      },
+      async findActiveGrant() {
+        return { id: 'grant', tokenRef: 'stub-drive-token', scopes: ['https://www.googleapis.com/auth/drive'], status: 'active' }
+      },
+      async loadDefinition() {
+        return { definitionId: DEFINITION, agentId: AGENT, version: 1, tenantId: TENANT, status: 'active', publishedAt: '2026-01-02T00:00:00.000Z', ...writer }
+      },
+      async findCurrentDefinitionId() {
+        return DEFINITION
+      },
+      async findAgentGrant() {
+        return { accessLevel: 'operate' }
+      },
+      async resolveAccessToken() {
+        return 'stub-drive-token'
+      },
+      async findAgentOutputFolder() {
+        return outputFolderId
+      },
+      async executeDriveTool(_tool, args) {
+        uploaded.push(args)
+        return { file: { name: args.name } }
+      },
+      async enqueueWrite(input) {
+        enqueued.push(input.toolName)
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ status: 'awaiting_approval' }) }] }
+      },
+    }
+    return { deps, uploaded, enqueued }
+  }
+  const principal = { userId: ANNA, tenantId: TENANT, role: 'admin', assumed: false }
+  const body = { definitionId: DEFINITION, name: 'riport.html', textContent: '<h1>ok</h1>', idempotencyKey: 'up-1' }
+
+  const inside = uploadDeps(FOLDER)
+  const direct = await invokeEnterpriseTool(inside.deps, {
+    principal,
+    toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+    args: body,
+  })
+  assert.equal(direct.isError, undefined)
+  assert.equal(inside.enqueued.length, 0)
+  assert.equal(inside.uploaded[0]?.parentFolderId, FOLDER)
+
+  const outside = uploadDeps(FOLDER)
+  const queued = await invokeEnterpriseTool(outside.deps, {
+    principal,
+    toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+    args: { ...body, parentFolderId: 'masik', idempotencyKey: 'up-2' },
+  })
+  assert.equal(queued.isError, undefined)
+  assert.deepEqual(outside.enqueued, [GOOGLE_DRIVE_UPLOAD_FILE_TOOL])
+  assert.equal(outside.uploaded.length, 0)
+
+  const none = uploadDeps(null)
+  const alsoQueued = await invokeEnterpriseTool(none.deps, {
+    principal,
+    toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+    args: body,
+  })
+  assert.equal(alsoQueued.isError, undefined)
+  assert.deepEqual(none.enqueued, [GOOGLE_DRIVE_UPLOAD_FILE_TOOL])
 })
 
 await check('get/setOutputFolder: érvényesítés', async () => {
