@@ -221,6 +221,31 @@ async function resolveRequester(input: { tenantId: string; userId: string }) {
   return null
 }
 
+/**
+ * #663: megnevezett jóváhagyó feloldása (konnektor > agent). Csak aktív
+ * tenant-tagság esetén érvényes; a nevet pillanatképként adjuk a művelethez.
+ */
+async function resolveDesignatedApprover(input: {
+  tenantId: string
+  agentId: string
+  connectorId: string | null
+}): Promise<{ userId: string; name: string } | null> {
+  const [agent, connector] = await Promise.all([
+    repositories.agents.findById(input.agentId, input.tenantId),
+    input.connectorId
+      ? repositories.connectors.findById(input.connectorId, input.tenantId)
+      : Promise.resolve(null),
+  ])
+  const approverUserId = connector?.approverUserId ?? agent?.approverUserId ?? null
+  if (!approverUserId) return null
+  const [membership, user] = await Promise.all([
+    repositories.tenantMemberships.findByTenantAndUser(input.tenantId, approverUserId),
+    repositories.users.findById(approverUserId),
+  ])
+  if (membership?.status !== 'active' || !user) return null
+  return { userId: user.id, name: user.name || user.email }
+}
+
 async function startAuthorization(input: {
   connectorId: string
   userId: string
@@ -250,6 +275,7 @@ const gatewayOperationDeps: GatewayOperationServiceDeps = {
   ...sharedToolLookups,
   operations: repositories.gatewayOperations,
   resolveRequester,
+  resolveDesignatedApprover,
   startAuthorization,
   audit: repositories.audit,
   async recordCreatedDriveFiles({ grantId, files }) {

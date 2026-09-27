@@ -187,6 +187,8 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     role: McpPrincipal['role']
     agentId: string
   }) => Promise<boolean>
+  /** #663: az agent megnevezett jóváhagyójának neve a briefing Jóváhagyások blokkjához. */
+  loadAgentApproverName?: (input: { tenantId: string; agentId: string }) => Promise<string | null>
   loadSkillVersions: (versionIds: string[]) => Promise<CheckoutSkill[]>
   invokeEnterpriseTool: (input: {
     principal: McpPrincipal
@@ -309,6 +311,12 @@ export function productionMcpDeps(): McpRuntimeDeps {
     },
     loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),
     canViewAgent,
+    loadAgentApproverName: async ({ tenantId, agentId }) => {
+      const agent = await repositories.agents.findById(agentId, tenantId)
+      if (!agent?.approverUserId) return null
+      const user = await repositories.users.findById(agent.approverUserId)
+      return user ? user.name || user.email : null
+    },
     async loadSkillVersions(versionIds) {
       const rows = await repositories.skills.findVersionsByIds(versionIds)
       return rows.map((row) => ({
@@ -631,12 +639,17 @@ async function getDefinitionToolResult(
     readMemoryContext(principal, loaded.definitionId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
   ])
+  const approverName = await deps.loadAgentApproverName?.({
+    tenantId: principal.tenantId,
+    agentId: loaded.agentId,
+  })
   return textResult({
     briefing: renderAgentBriefing({
       definition: loaded,
       skills,
       bound,
       recentSessionLogs: memoryContext.recentSessionLogs?.entries,
+      approverName: approverName ?? null,
     }),
     ...loaded,
     contentHash: hashSnapshot(loaded.snapshot),

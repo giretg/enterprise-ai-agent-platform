@@ -18,6 +18,9 @@ export type GatewayOperationView = {
   agentId: string
   principalUserId: string
   connectorId: string | null
+  /** #663: megnevezett jóváhagyó pillanatképe (konnektor > agent); null = általános sor. */
+  designatedApproverUserId: string | null
+  designatedApproverName: string | null
   errorCode: string | null
   result: unknown | null
   approval: {
@@ -41,6 +44,8 @@ export type GatewayOperationRecord = {
   idempotencyKey: string
   status: GatewayOperationStatus
   connectorId: string | null
+  designatedApproverUserId: string | null
+  designatedApproverName: string | null
   errorCode: string | null
   resultJson: unknown | null
   createdAt: Date
@@ -63,6 +68,8 @@ export type GatewayOperationCreateInput = {
   argsJson: unknown
   idempotencyKey: string
   connectorId: string | null
+  designatedApproverUserId?: string | null
+  designatedApproverName?: string | null
 }
 
 export type GatewayOperationPatch = {
