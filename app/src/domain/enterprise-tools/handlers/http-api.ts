@@ -152,6 +152,7 @@ export async function executeHttpApiTool(
     const outcome = await paginateHttpApiGet({
       plan,
       path,
+      baseUrl: config.baseUrl,
       baseQuery: scalarQuery(args.query),
       language,
       fetchPage: async (query, pagePath) => {
