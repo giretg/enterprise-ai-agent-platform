@@ -111,6 +111,13 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
+  async updateOutputFolder(input: { agentId: string; folderId: string | null }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: { outputDriveFolderId: input.folderId },
+    })
+  }
+
   async setCurrentDefinitionVersionId(agentId: string, versionId: string): Promise<Agent> {
     return prisma.agent.update({
       where: { id: agentId },

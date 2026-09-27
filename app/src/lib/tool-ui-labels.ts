@@ -54,6 +54,10 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'Munkafájl írása',
     description: 'Terv vagy jegyzet mentése jóváhagyás nélkül, kvótával.',
   },
+  'platform.work_file.append': {
+    label: 'Munkafájl bővítése',
+    description: 'Szöveg hozzáfűzése munkafájl végéhez jóváhagyás nélkül, kvótával.',
+  },
   'platform.work_file.delete': {
     label: 'Munkafájl törlése',
     description: 'Munkafájl törlése a projekt prefixén.',

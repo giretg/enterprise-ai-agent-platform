@@ -286,7 +286,7 @@ export function renderAgentBriefing(input: {
     '## Rules you must not break',
     '',
     '- This agent\'s memory is the source of company facts, decisions and locations. It overrides search results: if Drive, KB or API results contradict it, follow the memory and tell the user about the conflict.',
-    '- Never bypass approval: writes wait for a human in the Control Plane (see Approvals and handoffs).',
+    '- Never bypass approval: writes wait for a human in the Control Plane (see Approvals and handoffs). Exception: google_drive_upload_file into this agent\'s configured output folder (omit parentFolderId) runs immediately.',
     input.bound
       ? `- This client is bound to this agent by the ${AGENT_ID_HEADER} header on every MCP request: do not pass definitionId or agentId — the server uses the agent's current published definition.`
       : '- Pass definitionId from platform.agent.get_definition on every enterprise tool (Drive, Gmail, http_api_*, kb_*).',
@@ -373,7 +373,7 @@ export function renderAgentBriefing(input: {
     '',
     '## Approvals and handoffs',
     '',
-    'Writes (for example creating a Drive folder or http_api_request) do not run until a human approves them in the Control Plane: the tool returns status awaiting_approval and an approvalUrl. Show that link to the user; do not poll or retry.',
+    'Writes (for example creating a Drive folder or http_api_request) do not run until a human approves them in the Control Plane: the tool returns status awaiting_approval and an approvalUrl. Show that link to the user; do not poll or retry. Exception: google_drive_upload_file with no parentFolderId (or the agent\'s output folder id) runs immediately when an output folder is configured.',
   )
   return lines.join('\n')
 }

@@ -30,6 +30,7 @@ import {
   updateAgentAvatarSchema,
   updateAgentInstructionSchema,
   updateAgentMemoryWriteModeSchema,
+  updateAgentOutputFolderSchema,
   updateAgentProfileSchema,
   updateRolePermissionSchema,
 } from '@/lib/validators/actions'
@@ -478,6 +479,37 @@ export async function updateAgentMemoryWriteMode(input: {
     return ok({ memoryWriteMode: updated.memoryWriteMode })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update memory write mode')
+  }
+}
+
+export async function updateAgentOutputFolder(input: { agentId: string; folderId: string }) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = updateAgentOutputFolderSchema.parse(input)
+    const folderId = parsed.folderId || null
+    const saved = await services.projectWork.service.setOutputFolder(
+      parsed.agentId,
+      user.activeTenantId,
+      folderId,
+    )
+    if (!saved.ok) return fail(saved.code === 'invalid_path' ? 'Érvénytelen Drive mappa-id' : saved.message)
+    await services.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'agent.output_folder',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: folderId,
+      outputRef: null,
+      policyDecision: 'updated',
+      metadata: { folderId },
+      tenantId: user.activeTenantId,
+    })
+    return ok({ folderId: saved.folderId })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update output folder')
   }
 }
 

@@ -21,6 +21,12 @@ export const updateAgentMemoryWriteModeSchema = z.object({
   memoryWriteMode: z.enum(['approval', 'direct']),
 })
 
+export const updateAgentOutputFolderSchema = z.object({
+  agentId: z.string().uuid(),
+  /** Drive mappa-id; üres string = törlés. */
+  folderId: z.string().trim().max(200),
+})
+
 export const updateAgentProfileSchema = z
   .object({
     agentId: z.string().uuid(),

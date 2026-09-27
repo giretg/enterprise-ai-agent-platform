@@ -13,6 +13,7 @@ export {
 } from './authorize-tool-call'
 export {
   invokeEnterpriseTool,
+  isOutputFolderWrite,
   authorizationLinkFields,
   type EnterpriseToolDeps,
   type EnterpriseToolMcpResult,
