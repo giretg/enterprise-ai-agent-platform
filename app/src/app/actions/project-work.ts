@@ -214,9 +214,10 @@ export async function listProjectMemoryAction(
       agentId: parsed.agentId,
       projectKey: parsed.projectKey,
       callerUserId: ctx.user.id,
+      full: true,
     })
     if (!read.ok) return fail(read.code)
-    return ok({ items: read.items })
+    return ok({ items: read.items ?? [] })
   } catch (error) {
     return mapActionError(error)
   }

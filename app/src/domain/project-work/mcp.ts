@@ -103,6 +103,25 @@ export const projectMemoryReadInputSchema = z
       .boolean()
       .optional()
       .describe('If true, only return items stamped with the calling user (this conversation partner).'),
+    ids: z
+      .string()
+      .max(4_000)
+      .refine((value) => splitIds(value).every((id) => z.string().uuid().safeParse(id).success))
+      .optional()
+      .describe(
+        'Comma-separated item ids (from memoryIndex or a prior read). Returns full text for those items only.',
+      ),
+    query: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('Search titles and bodies; returns matching items with full text.'),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe('Pagination offset when listing the memory catalog (id, kind, title, createdAt).'),
   })
   .passthrough()
 export const projectMemoryWriteInputSchema = z
@@ -365,6 +384,9 @@ export async function invokeProjectWork(
       projectKey,
       mine: parsed.mine === true,
       callerUserId: principal.userId,
+      ids: typeof parsed.ids === 'string' ? splitIds(parsed.ids) : undefined,
+      query: typeof parsed.query === 'string' ? parsed.query : undefined,
+      offset: typeof parsed.offset === 'number' ? parsed.offset : undefined,
     })
   } else {
     const modeRes = await svc.getWriteMode(definition.agentId, tenantId)
