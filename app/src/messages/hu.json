@@ -353,6 +353,8 @@
       "kindArtifactHint": "Munkafájlra mutató emlék (a terv a fájlban él).",
       "kindHandoff": "Átadás",
       "kindHandoffHint": "Átadási állapot a következő futásnak.",
+      "kindFocus": "Jelenlegi fókusz",
+      "kindFocusHint": "Min dolgozunk most, mi a következő lépés, mire várunk. Agentenként/projektenként egyetlen aktív elem: az új írás felülírja.",
       "allKinds": "Mind",
       "fileSaved": "Munkafájl mentve.",
       "fileDeleted": "Munkafájl törölve.",

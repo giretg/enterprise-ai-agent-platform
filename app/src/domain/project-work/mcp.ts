@@ -109,9 +109,21 @@ export const projectMemoryWriteInputSchema = z
   .object({
     definitionId,
     projectKey,
-    kind: z.enum(['decision', 'open_task', 'finding', 'constraint', 'artifact', 'handoff_summary']),
-    title: z.string().min(1).max(200),
-    body: z.string().min(1).max(8_000),
+    kind: z
+      .enum(['decision', 'open_task', 'finding', 'constraint', 'artifact', 'handoff_summary', 'focus'])
+      .describe(
+        'focus = the agent\'s current state (what we are doing now, the next step, what we wait for). There is only ever one active focus per agent and project: this write always replaces it. Any other kind is a durable fact or decision.',
+      ),
+    title: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('Short label. Optional for focus (defaults to "Fókusz").'),
+    body: z
+      .string()
+      .min(1)
+      .max(8_000)
+      .describe('Max 3000 characters for focus.'),
     artifactPath: z
       .string()
       .max(240)
@@ -365,7 +377,8 @@ export async function invokeProjectWork(
       agentId: definition.agentId,
       projectKey,
       kind: String(parsed.kind),
-      title: String(parsed.title),
+      // title: focusednél elhagyható (a service ad alapértelmezést), más típusnál kötelező.
+      title: typeof parsed.title === 'string' ? parsed.title : '',
       body: String(parsed.body),
       artifactPath: typeof parsed.artifactPath === 'string' ? parsed.artifactPath : undefined,
       replaceId: typeof parsed.replaceId === 'string' ? parsed.replaceId : undefined,

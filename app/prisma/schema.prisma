@@ -86,6 +86,7 @@ enum ProjectMemoryKind {
   constraint
   artifact
   handoff_summary
+  focus
 }
 
 enum ProjectMemoryStatus {

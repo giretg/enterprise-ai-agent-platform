@@ -18,6 +18,7 @@ const MEMORY_KIND_BADGE: Record<MemoryKind, string> = {
   constraint: 'bg-ink/5 text-ink-soft',
   artifact: 'bg-ink/5 text-ink-soft',
   handoff_summary: 'bg-ink/5 text-ink-soft',
+  focus: 'bg-coral/25 text-coral-deep',
 }
 
 const MEMORY_KIND_KEYS: Record<MemoryKind, { label: string; hint: string }> = {
@@ -27,6 +28,7 @@ const MEMORY_KIND_KEYS: Record<MemoryKind, { label: string; hint: string }> = {
   constraint: { label: 'kindConstraint', hint: 'kindConstraintHint' },
   artifact: { label: 'kindArtifact', hint: 'kindArtifactHint' },
   handoff_summary: { label: 'kindHandoff', hint: 'kindHandoffHint' },
+  focus: { label: 'kindFocus', hint: 'kindFocusHint' },
 }
 
 export const MEMORY_KIND_META: Record<MemoryKind, { label: string; hint: string; badge: string }> = {
@@ -59,6 +61,11 @@ export const MEMORY_KIND_META: Record<MemoryKind, { label: string; hint: string;
     label: 'Átadás',
     hint: 'Átadási állapot a következő futásnak.',
     badge: 'bg-ink/5 text-ink-soft',
+  },
+  focus: {
+    label: 'Jelenlegi fókusz',
+    hint: 'Min dolgozunk most, mi a következő lépés, mire várunk. Agentenként egyetlen aktív elem: az új írás felülírja.',
+    badge: MEMORY_KIND_BADGE.focus,
   },
 }
 
@@ -264,15 +271,18 @@ export function ProjectMemoryPanel({
 
   const visibleMemories = useMemo(() => {
     const q = search.trim().toLowerCase()
-    return memories.filter((item) => {
-      if (kindFilter !== 'all' && item.kind !== kindFilter) return false
-      if (!q) return true
-      return (
-        item.title.toLowerCase().includes(q) ||
-        item.body.toLowerCase().includes(q) ||
-        item.withUserName.toLowerCase().includes(q)
-      )
-    })
+    return memories
+      .filter((item) => {
+        if (kindFilter !== 'all' && item.kind !== kindFilter) return false
+        if (!q) return true
+        return (
+          item.title.toLowerCase().includes(q) ||
+          item.body.toLowerCase().includes(q) ||
+          item.withUserName.toLowerCase().includes(q)
+        )
+      })
+      // A fókusz mindig elöl: ez az agent mostani állapota, a többi elem háttér.
+      .sort((a, b) => Number(b.kind === 'focus') - Number(a.kind === 'focus'))
   }, [memories, search, kindFilter])
 
   async function onSaveMemory(replaceId?: string) {

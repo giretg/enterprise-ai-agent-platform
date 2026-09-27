@@ -7,6 +7,7 @@ import type { MemoryWriteMode, ProjectMemoryKind } from '@prisma/client'
 import { scanMemoryContentForSecrets } from '../src/domain/memory/memory-content-guard'
 import { invokeProjectWork } from '../src/domain/project-work/mcp'
 import {
+  MEMORY_FOCUS_MAX,
   ProjectWorkService,
   WORK_FILE_MAX_BYTES,
 } from '../src/domain/project-work/project-work-service'
@@ -536,6 +537,53 @@ await check('two outdated items + one change: replacing only one is refused, mer
   assert.equal(merged.status, 'written')
   const after = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
   assert.deepEqual(after.ok && after.items.map((item) => item.title), [change.title])
+})
+
+await check('#656 focus: the second write replaces the first, no second item, over MCP too', async () => {
+  const { svc, memory } = harness('direct')
+  const write = (args: Record<string, unknown>) =>
+    invokeProjectWork(
+      {
+        loadDefinition: async () => definition,
+        findCurrentDefinitionId: async () => DEF,
+        findAgentGrant: async () => ({ accessLevel: 'operate' }),
+        projectWork: svc,
+      },
+      {
+        principal: { userId: ANNA, tenantId: TENANT, role: 'operator', assumed: false },
+        toolName: 'platform.project_memory.write',
+        args: { definitionId: DEF, kind: 'focus', idempotencyKey: globalThis.crypto.randomUUID(), ...args },
+      },
+    )
+  const first = parsePayload(
+    await write({
+      title: 'Fókusz',
+      body: 'Most: a 4. szakasz átvázlása. Következő: jóváhagyás Anna részéről. Várunk: számla a beszállítótól.',
+    }),
+  )
+  assert.equal(first.status, 'written')
+  const firstId = (first.item as { id: string }).id
+
+  // Szándékosan szinte azonos szöveg: a fókusznál nincs duplikátum-kapu, mindig replace.
+  const second = parsePayload(
+    await write({
+      body: 'Most: a 4. szakasz átvázlása kész. Következő: bekérés a beszállítótól. Várunk: válasz a beszállítótól.',
+    }),
+  )
+  assert.equal(second.status, 'written')
+  const secondId = (second.item as { id: string }).id
+  assert.notEqual(secondId, firstId)
+  assert.equal((second.item as { title: string }).title, 'Fókusz')
+
+  const items = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
+  assert.equal(items.ok && items.items.length, 1)
+  if (!items.ok) return
+  assert.equal(items.items[0]?.id, secondId)
+  assert.equal(items.items[0]?.kind, 'focus')
+  assert.equal(memory.rows.get(firstId)?.status, 'superseded')
+
+  const tooLong = parsePayload(await write({ body: 'x'.repeat(MEMORY_FOCUS_MAX + 1) }))
+  assert.equal(tooLong.code, 'invalid_memory_kind')
 })
 
   console.log(failures === 0 ? '\nOK project-work' : `\nFAIL ${failures}`)
