@@ -451,7 +451,11 @@ async function listAgentsToolResult(principal: McpPrincipal, deps: McpRuntimeDep
   return textResult({ agents: context.coworkers })
 }
 
-type AgentSkills = { packages: McpSkillPackage[]; entrySkillVersionId: string | null }
+type AgentSkills = {
+  agentId: string
+  packages: McpSkillPackage[]
+  entrySkillVersionId: string | null
+}
 
 /**
  * #653: definitionId / agentId → exactly the skill versions pinned in that
@@ -494,7 +498,7 @@ async function loadAgentSkills(
         Number(a.skillVersionId === entrySkillVersionId),
     )
   }
-  return { packages, entrySkillVersionId }
+  return { agentId: loaded.agentId, packages, entrySkillVersionId }
 }
 
 async function listSkillsToolResult(
@@ -832,16 +836,21 @@ async function checkoutToolResult(
   )
 }
 
-/** prompts/get for one agent (#651): always the current published definition, re-checked for visibility. */
+/**
+ * prompts/get for one agent (#651): always the current published definition, re-checked for visibility.
+ * `boundAgentId` is the agent the {@link MCP_AGENT_ID_HEADER} pins this client to — a prompt for any
+ * other agent is refused, because every tool call would still run on the bound agent's definition.
+ */
 async function agentPromptResult(
   principal: McpPrincipal,
   deps: McpRuntimeDeps,
   promptName: string,
   agentId: string,
   task: string | undefined,
-  bound: boolean,
+  boundAgentId: string | null,
 ) {
   await auditMcpPromptGet(deps, principal, promptName, agentId)
+  if (boundAgentId && boundAgentId !== agentId) throw new Error('Agent not found')
   const loaded = await deps.loadDefinition({ tenantId: principal.tenantId, agentId })
   if (
     !loaded ||
@@ -861,7 +870,10 @@ async function agentPromptResult(
     messages: [
       {
         role: 'user' as const,
-        content: { type: 'text' as const, text: renderAgentPrompt({ definition: loaded, skills, task, bound }) },
+        content: {
+          type: 'text' as const,
+          text: renderAgentPrompt({ definition: loaded, skills, task, bound: boundAgentId !== null }),
+        },
       },
     ],
   }
@@ -970,10 +982,23 @@ async function createMcpResourceHandler(
   agentHeader: string | null = null,
 ) {
   const { tenant, context } = await loadTenantContext(principal, deps)
+  const boundSkills = agentHeader
+    ? await loadAgentSkills(principal, { agentId: agentHeader }, deps)
+    : null
+  const boundAgentId = boundSkills && boundSkills !== 'not_found' ? boundSkills.agentId : null
+  /**
+   * A client bound by {@link MCP_AGENT_ID_HEADER} can only work as that one agent — `bindAgentHeader`
+   * denies every other agentId. So the instructions and the slash prompts must offer that agent only,
+   * otherwise the client takes on a teammate's role while the server keeps running the bound one.
+   */
+  const coworkers = agentHeader
+    ? context.coworkers.filter((row) => row.agentId === boundAgentId)
+    : context.coworkers
   const instructions = buildMcpServerInstructions({
     tenant,
     tenantSlug: principal.tenantSlug,
-    coworkers: context.coworkers,
+    coworkers,
+    bound: agentHeader !== null,
   })
   const codec = requestStateCodec(deps.requestStateKey)
 
@@ -981,9 +1006,6 @@ async function createMcpResourceHandler(
     async (server) => {
       const tenantPackages = await deps.listMcpSkills({ tenantId: principal.tenantId })
       // A client bound to one agent lists only that agent's skills (resources/list, skills/list).
-      const boundSkills = agentHeader
-        ? await loadAgentSkills(principal, { agentId: agentHeader }, deps)
-        : null
       const packages = !agentHeader
         ? tenantPackages
         : boundSkills && boundSkills !== 'not_found'
@@ -1441,7 +1463,7 @@ async function createMcpResourceHandler(
       )
 
       const promptNames = new Set<string>()
-      for (const coworker of context.coworkers) {
+      for (const coworker of coworkers) {
         const slug = checkoutSlug(coworker.name)
         const name = promptNames.has(slug) ? `${slug}-${coworker.agentId.slice(0, 8)}` : slug
         promptNames.add(name)
@@ -1461,7 +1483,7 @@ async function createMcpResourceHandler(
             }),
           },
           async ({ feladat }) =>
-            agentPromptResult(principal, deps, name, coworker.agentId, feladat, agentHeader !== null),
+            agentPromptResult(principal, deps, name, coworker.agentId, feladat, boundAgentId),
         )
       }
 
