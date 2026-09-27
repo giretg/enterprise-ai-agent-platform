@@ -1,14 +1,18 @@
 import { getTranslations } from 'next-intl/server'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { listPendingGatewayOperationsAction } from '@/app/actions/gateway-operation'
+import { listHandoffInboxAction } from '@/app/actions/handoff'
 import { asTranslate } from '@/i18n/translate'
 import { operationErrorLabel } from './labels'
 import { OperationsPanel } from './operations-panel'
+import { HandoffsPanel } from './handoffs-panel'
 
 export default async function OperationsPage() {
   await requireTenantRole('viewer')
   const listed = await listPendingGatewayOperationsAction()
+  const inbox = await listHandoffInboxAction()
   const operations = listed.success ? listed.data.operations : []
+  const handoffs = inbox.success ? inbox.data.handoffs : []
   const error = listed.success ? null : listed.error
   const t = await getTranslations('ControlPlane.operations')
 
@@ -26,6 +30,7 @@ export default async function OperationsPage() {
       ) : (
         <OperationsPanel operations={operations} />
       )}
+      <HandoffsPanel handoffs={handoffs} />
     </div>
   )
 }

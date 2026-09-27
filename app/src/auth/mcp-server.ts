@@ -145,6 +145,8 @@ import {
 import { buildConversationSkillPorts } from '@/repositories/postgres/conversation-skill-repository'
 import {
   isProjectWorkTool,
+  MCP_HANDOFF_ACK_TOOL,
+  MCP_HANDOFF_TOOL,
   MCP_PROJECTS_CREATE_TOOL,
   MCP_PROJECTS_LIST_TOOL,
   MCP_PROJECT_MEMORY_READ_TOOL,
@@ -154,6 +156,8 @@ import {
   MCP_WORK_FILE_READ_TOOL,
   MCP_WORK_FILE_WRITE_TOOL,
   MCP_WORK_FILE_APPEND_TOOL,
+  handoffAckInputSchema,
+  handoffInputSchema,
   projectMemoryReadInputSchema,
   projectMemoryWriteInputSchema,
   projectsCreateInputSchema,
@@ -210,6 +214,15 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
   /** skillVersionIds: exactly these pinned versions (#653); omitted → the tenant's active skills. */
   listMcpSkills: (input: { tenantId: string; skillVersionIds?: string[] }) => Promise<McpSkillPackage[]>
   agentScaffold: AgentScaffoldDeps
+  listOpenHandoffs?: (input: { tenantId: string; agentId: string }) => Promise<HandoffHeadline[]>
+}
+
+export type HandoffHeadline = {
+  id: string
+  title: string
+  projectKey: string
+  createdAt: string
+  fromAgentName: string | null
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
@@ -332,6 +345,21 @@ export function productionMcpDeps(): McpRuntimeDeps {
         }),
       ),
     invokeProjectWork: (input) => services.projectWork.invoke(input),
+    listOpenHandoffs: async (input) => {
+      const rows = await services.projectWork.handoffs.listOpenForAgent(input.tenantId, input.agentId, 10)
+      return Promise.all(
+        rows.map(async (row) => {
+          const from = await repositories.agents.findById(row.fromAgentId, input.tenantId)
+          return {
+            id: row.id,
+            title: row.title,
+            projectKey: row.projectKey,
+            createdAt: row.createdAt.toISOString(),
+            fromAgentName: from?.name ?? null,
+          }
+        }),
+      )
+    },
     listMcpSkills: ({ tenantId, skillVersionIds }) =>
       services.skills.listMcpSkillPackages(tenantId, skillVersionIds),
     agentScaffold: {
@@ -628,7 +656,7 @@ async function getDefinitionToolResult(
   })
   if (!allowed) return definitionNotFound()
   const [memoryContext, skills] = await Promise.all([
-    readMemoryContext(principal, loaded.definitionId, deps),
+    readMemoryContext(principal, loaded.definitionId, loaded.agentId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
   ])
   return textResult({
@@ -637,6 +665,7 @@ async function getDefinitionToolResult(
       skills,
       bound,
       recentSessionLogs: memoryContext.recentSessionLogs?.entries,
+      handoffs: memoryContext.handoffs?.entries,
     }),
     ...loaded,
     contentHash: hashSnapshot(loaded.snapshot),
@@ -666,6 +695,10 @@ type MemoryContext = {
     note: string
     entries: Array<{ id: string; title: string; createdAt: string; withUserName: string }>
   }
+  handoffs?: {
+    note: string
+    entries: HandoffHeadline[]
+  }
   memoryIndex?: {
     note: string
     entries: unknown[]
@@ -678,14 +711,29 @@ type MemoryContext = {
 async function readMemoryContext(
   principal: McpPrincipal,
   definitionId: string,
+  agentId: string,
   deps: McpRuntimeDeps,
 ): Promise<MemoryContext> {
-  const result = await deps.invokeProjectWork({
-    principal,
-    toolName: MCP_PROJECT_MEMORY_READ_TOOL,
-    args: { definitionId },
-  })
-  if (result.isError) return {}
+  const [result, handoffs] = await Promise.all([
+    deps.invokeProjectWork({
+      principal,
+      toolName: MCP_PROJECT_MEMORY_READ_TOOL,
+      args: { definitionId },
+    }),
+    (deps.listOpenHandoffs
+      ? deps.listOpenHandoffs({ tenantId: principal.tenantId, agentId }).catch(() => [] as HandoffHeadline[])
+      : Promise.resolve([] as HandoffHeadline[])),
+  ])
+  const handoffBlock =
+    handoffs.length > 0
+      ? {
+          handoffs: {
+            note: 'Open tasks handed off to this agent by a coworker. The briefing "Handed-off work" block mirrors this list. Full text: platform.project_memory.read with query="<title>". Acknowledge with platform.handoff_ack { handoffId, decision: accepted|done|rejected }.',
+            entries: handoffs,
+          },
+        }
+      : {}
+  if (result.isError) return { ...handoffBlock }
   type MemoryReadPayload = {
     items?: unknown[]
     recentSessionLogs?: Array<{ id: string; title: string; createdAt: string; withUserName: string }>
@@ -695,16 +743,17 @@ async function readMemoryContext(
   try {
     payload = JSON.parse(result.content[0]?.text ?? '{}') as MemoryReadPayload
   } catch {
-    return {}
+    return { ...handoffBlock }
   }
 
   const index = payload.index
-  if (!index) return {}
+  if (!index) return { ...handoffBlock }
 
   const focusItems = Array.isArray(payload.items) ? payload.items.filter(isFocusMemoryItem) : []
   const recentSessionLogs = Array.isArray(payload.recentSessionLogs) ? payload.recentSessionLogs : []
   const paginated = index.nextOffset != null
   return {
+    ...handoffBlock,
     ...(focusItems.length > 0
       ? {
           focus: {
@@ -1266,6 +1315,26 @@ async function createMcpResourceHandler(
           inputSchema: projectMemoryWriteInputSchema,
         },
         async (args) => projectWorkToolResult(principal, MCP_PROJECT_MEMORY_WRITE_TOOL, args, deps),
+      )
+      server.registerTool(
+        MCP_HANDOFF_TOOL,
+        {
+          title: 'Hand off work',
+          description:
+            'Hand off a task outside this agent\'s responsibility to another AI coworker or a human. Agent recipient: pass toAgentId (from platform.agents.list) — the task lands as an open_task in their memory and in their next get_definition briefing ("Handed-off work"). Human recipient: pass toUserId — they see it in the Control Plane inbox. Pass definitionId from platform.agent.get_definition, a short title, summary (what, why, expected outcome), optional projectKey (defaults to __general__), and optional links as a comma-separated string ("label | work_file:/path, label | https://…"). Exactly one of toAgentId / toUserId.',
+          inputSchema: handoffInputSchema,
+        },
+        async (args) => projectWorkToolResult(principal, MCP_HANDOFF_TOOL, args, deps),
+      )
+      server.registerTool(
+        MCP_HANDOFF_ACK_TOOL,
+        {
+          title: 'Acknowledge handoff',
+          description:
+            'Accept, complete, or reject a handed-off task addressed to this agent. Pass definitionId from platform.agent.get_definition, the handoffId from the briefing, and decision accepted|done|rejected.',
+          inputSchema: handoffAckInputSchema,
+        },
+        async (args) => projectWorkToolResult(principal, MCP_HANDOFF_ACK_TOOL, args, deps),
       )
       server.registerTool(
         GOOGLE_DRIVE_SEARCH_TOOL,

@@ -312,7 +312,12 @@
         "agent_access_denied": "You no longer have operating rights for this teammate.",
         "invalid_args": "Invalid request.",
         "schema_mismatch": "The database schema is not Core MVP. The approval queue needs the gateway_operations table."
-      }
+      },
+      "handoffsTitle": "Tasks handed off to you",
+      "handoff_accepted": "Accept",
+      "handoff_done": "Done",
+      "handoff_rejected": "Reject",
+      "handoffDecided": "Handoff status: {status}"
     },
     "projects": {
       "eyebrow": "Projects",

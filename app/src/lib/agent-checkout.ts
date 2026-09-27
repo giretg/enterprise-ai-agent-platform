@@ -247,6 +247,7 @@ export function renderAgentBriefing(input: {
   skills: CheckoutSkill[]
   bound?: boolean
   recentSessionLogs?: SessionLogHeadline[]
+  handoffs?: Array<{ id: string; title: string; projectKey: string; createdAt: string; fromAgentName: string | null }>
 }): string {
   const { agentId, snapshot } = input.definition
   const description = snapshot.description?.trim()
@@ -359,6 +360,23 @@ export function renderAgentBriefing(input: {
       lines.push(`- ${day}: ${row.title} (${row.withUserName}) — id \`${row.id}\``)
     }
     lines.push('', 'Full entries: platform.project_memory.read with ids="<comma-separated ids>".')
+  }
+
+  const handoffs = input.handoffs?.filter((row) => row.title.trim())
+  if (handoffs && handoffs.length > 0) {
+    lines.push(
+      '',
+      '## Handed-off work',
+      '',
+      'Open tasks handed off to you by a coworker (full text is an open_task in your memory — load it with platform.project_memory.read before starting):',
+      '',
+    )
+    for (const row of handoffs) {
+      const day = row.createdAt.slice(0, 10)
+      const from = row.fromAgentName ? ` from ${row.fromAgentName}` : ''
+      lines.push(`- ${day}${from} [${row.projectKey}]: ${row.title} — handoffId \`${row.id}\``)
+    }
+    lines.push('', 'Acknowledge with platform.handoff_ack { handoffId, decision: accepted|done|rejected }.')
   }
 
   lines.push(

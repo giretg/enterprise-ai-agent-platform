@@ -312,7 +312,12 @@
         "agent_access_denied": "Ehhez a munkatárshoz már nincs működési jogod.",
         "invalid_args": "Érvénytelen kérés.",
         "schema_mismatch": "Az adatbázis séma nem a Core MVP. A jóváhagyási sor a gateway_operations táblát igényli."
-      }
+      },
+      "handoffsTitle": "Neked átadott ügyek",
+      "handoff_accepted": "Elfogadom",
+      "handoff_done": "Kész",
+      "handoff_rejected": "Elutasítom",
+      "handoffDecided": "Átadás státusza: {status}"
     },
     "projects": {
       "eyebrow": "Projektek",

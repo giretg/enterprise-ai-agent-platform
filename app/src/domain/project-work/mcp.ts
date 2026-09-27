@@ -21,6 +21,8 @@ export const MCP_WORK_FILE_APPEND_TOOL = 'platform.work_file.append'
 export const MCP_WORK_FILE_DELETE_TOOL = 'platform.work_file.delete'
 export const MCP_PROJECT_MEMORY_READ_TOOL = 'platform.project_memory.read'
 export const MCP_PROJECT_MEMORY_WRITE_TOOL = 'platform.project_memory.write'
+export const MCP_HANDOFF_TOOL = 'platform.handoff'
+export const MCP_HANDOFF_ACK_TOOL = 'platform.handoff_ack'
 
 export const PROJECT_WORK_TOOLS = [
   MCP_PROJECTS_LIST_TOOL,
@@ -32,6 +34,8 @@ export const PROJECT_WORK_TOOLS = [
   MCP_WORK_FILE_DELETE_TOOL,
   MCP_PROJECT_MEMORY_READ_TOOL,
   MCP_PROJECT_MEMORY_WRITE_TOOL,
+  MCP_HANDOFF_TOOL,
+  MCP_HANDOFF_ACK_TOOL,
 ] as const
 
 export type ProjectWorkTool = (typeof PROJECT_WORK_TOOLS)[number]
@@ -219,20 +223,79 @@ export function schemaForProjectWorkTool(toolName: string) {
   if (toolName === MCP_WORK_FILE_DELETE_TOOL) return workFileDeleteInputSchema
   if (toolName === MCP_PROJECT_MEMORY_READ_TOOL) return projectMemoryReadInputSchema
   if (toolName === MCP_PROJECT_MEMORY_WRITE_TOOL) return projectMemoryWriteInputSchema
+  if (toolName === MCP_HANDOFF_TOOL) return handoffInputSchema
+  if (toolName === MCP_HANDOFF_ACK_TOOL) return handoffAckInputSchema
   return projectsListInputSchema
 }
+
+export const handoffInputSchema = z
+  .object({
+    definitionId,
+    projectKey,
+    toAgentId: z.string().uuid().optional().describe('Recipient agent id (from platform.agents.list). Exactly one of toAgentId / toUserId.'),
+    toUserId: z.string().uuid().optional().describe('Recipient human user id. Exactly one of toAgentId / toUserId.'),
+    title: z.string().min(1).max(200),
+    summary: z.string().min(1).max(8_000),
+    // ponytail: string not string[] — Claude.ai drops MCP tools whose advertised schema has arrays
+    links: z
+      .string()
+      .max(2_000)
+      .optional()
+      .describe('Comma-separated links: "label | work_file:/path, label | https://…"'),
+    idempotencyKey: z.string().min(1).max(200),
+  })
+  .passthrough()
+
+export const handoffAckInputSchema = z
+  .object({
+    definitionId,
+    handoffId: z.string().uuid(),
+    decision: z.enum(['accepted', 'done', 'rejected']),
+  })
+  .passthrough()
 
 export type ProjectWorkMcpDeps = DefinitionPinDeps & {
   loadDefinition: (input: {
     tenantId: string
     definitionId: string
   }) => Promise<AgentDefinition | null>
+  loadDefinitionByAgent?: (input: {
+    tenantId: string
+    agentId: string
+  }) => Promise<AgentDefinition | null>
   findAgentGrant: (input: {
     tenantId: string
     userId: string
     agentId: string
   }) => Promise<{ accessLevel: string } | null>
+  canViewAgent?: (input: { tenantId: string; userId: string; role: string; agentId: string }) => Promise<boolean>
+  findUserById?: (userId: string) => Promise<{ id: string; tenantId?: string } | null>
+  isTenantMember?: (input: { tenantId: string; userId: string }) => Promise<boolean>
   projectWork: ProjectWorkService
+  handoffs?: {
+    insert(input: {
+      tenantId: string
+      fromAgentId: string
+      fromDefinitionId: string
+      toAgentId: string | null
+      toUserId: string | null
+      projectKey: string
+      title: string
+      summary: string
+      links: string | null
+      createdById: string
+    }): Promise<{ id: string }>
+    findById(id: string): Promise<{
+      id: string
+      tenantId: string
+      fromAgentId: string
+      toAgentId: string | null
+      toUserId: string | null
+      status: string
+    } | null>
+    attachMemory(id: string, memoryId: string): Promise<void>
+    decide(id: string, status: 'accepted' | 'done' | 'rejected', decidedById: string): Promise<unknown | null>
+  }
   enqueueMemoryWrite?: (input: {
     principal: ToolCallPrincipal
     args: Record<string, unknown>
@@ -435,6 +498,10 @@ export async function invokeProjectWork(
       query: typeof parsed.query === 'string' ? parsed.query : undefined,
       offset: typeof parsed.offset === 'number' ? parsed.offset : undefined,
     })
+  } else if (toolName === MCP_HANDOFF_TOOL) {
+    return invokeHandoff(deps, principal, definition, parsed)
+  } else if (toolName === MCP_HANDOFF_ACK_TOOL) {
+    return invokeHandoffAck(deps, principal, definition, parsed)
   } else {
     const modeRes = await svc.getWriteMode(definition.agentId, tenantId)
     if (!modeRes.ok) {
@@ -509,4 +576,182 @@ export async function invokeProjectWork(
   }
   await auditOk(deps, principal, toolName, definition.definitionId, definition.agentId)
   return textResult(outcome)
+}
+
+async function invokeHandoff(
+  deps: ProjectWorkMcpDeps,
+  principal: ToolCallPrincipal,
+  definition: AgentDefinition,
+  parsed: Record<string, unknown>,
+): Promise<EnterpriseToolMcpResult> {
+  if (!deps.handoffs || !deps.loadDefinitionByAgent) return errorResult('tool_not_configured')
+  const { validateHandoffInput, normalizeHandoffProjectKey, formatHandoffMemoryBody } = await import(
+    '@/domain/handoff/handoff-service'
+  )
+  const validated = validateHandoffInput({
+    toAgentId: parsed.toAgentId,
+    toUserId: parsed.toUserId,
+    title: parsed.title,
+    summary: parsed.summary,
+    links: parsed.links,
+  })
+  if (!validated.ok) {
+    await auditDenied(deps, principal, MCP_HANDOFF_TOOL, validated.code, definition.definitionId, definition.agentId)
+    return errorResult(validated.code)
+  }
+  const toAgentId = typeof parsed.toAgentId === 'string' && parsed.toAgentId.trim() ? parsed.toAgentId.trim() : null
+  const toUserId = typeof parsed.toUserId === 'string' && parsed.toUserId.trim() ? parsed.toUserId.trim() : null
+  const projectKey = normalizeHandoffProjectKey(parsed.projectKey)
+
+  if (toAgentId) {
+    const target = await deps.loadDefinitionByAgent({ tenantId: principal.tenantId, agentId: toAgentId })
+    if (!target) {
+      await auditDenied(deps, principal, MCP_HANDOFF_TOOL, 'definition_not_found', definition.definitionId, definition.agentId)
+      return errorResult('definition_not_found')
+    }
+    if (!isDispatchable(target.status)) {
+      await auditDenied(deps, principal, MCP_HANDOFF_TOOL, 'agent_inactive', definition.definitionId, definition.agentId)
+      return errorResult('agent_inactive')
+    }
+    if (deps.canViewAgent) {
+      const visible = await deps.canViewAgent({
+        tenantId: principal.tenantId,
+        userId: principal.userId,
+        role: principal.role,
+        agentId: toAgentId,
+      })
+      if (!visible) {
+        await auditDenied(deps, principal, MCP_HANDOFF_TOOL, 'agent_access_denied', definition.definitionId, definition.agentId)
+        return errorResult('agent_access_denied')
+      }
+    }
+    if (toAgentId === definition.agentId) {
+      await auditDenied(deps, principal, MCP_HANDOFF_TOOL, 'invalid_args', definition.definitionId, definition.agentId)
+      return errorResult('invalid_args')
+    }
+  }
+  if (toUserId && deps.isTenantMember) {
+    const member = await deps.isTenantMember({ tenantId: principal.tenantId, userId: toUserId })
+    if (!member) {
+      await auditDenied(deps, principal, MCP_HANDOFF_TOOL, 'agent_access_denied', definition.definitionId, definition.agentId)
+      return errorResult('agent_access_denied')
+    }
+  }
+
+  const handoff = await deps.handoffs.insert({
+    tenantId: principal.tenantId,
+    fromAgentId: definition.agentId,
+    fromDefinitionId: definition.definitionId,
+    toAgentId,
+    toUserId,
+    projectKey,
+    title: validated.title,
+    summary: validated.summary,
+    links: validated.links,
+    createdById: principal.userId,
+  })
+
+  // Trusted intra-tenant write: bypasses the recipient's approval mode so the
+  // handed-off task is visible immediately; the source is stamped in the body.
+  let memoryId: string | null = null
+  if (toAgentId) {
+    const written = await deps.projectWork.writeMemory({
+      tenantId: principal.tenantId,
+      agentId: toAgentId,
+      projectKey,
+      kind: 'open_task',
+      title: validated.title,
+      body: formatHandoffMemoryBody({
+        fromAgentName: definition.snapshot.name,
+        summary: validated.summary,
+        links: validated.links,
+        handoffId: handoff.id,
+      }),
+      withUserId: principal.userId,
+      confirmNew: true,
+      mode: 'direct',
+    })
+    if (written.ok && written.status === 'written') {
+      memoryId = written.item.id
+      await deps.handoffs.attachMemory(handoff.id, written.item.id)
+    }
+  }
+
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: principal.userId,
+    agentVersion: null,
+    action: 'handoff.created',
+    targetType: 'agent',
+    targetId: toAgentId ?? null,
+    modelUsed: null,
+    inputRef: MCP_HANDOFF_TOOL,
+    outputRef: handoff.id,
+    policyDecision: 'allowed',
+    metadata: {
+      toolName: MCP_HANDOFF_TOOL,
+      tenantId: principal.tenantId,
+      fromAgentId: definition.agentId,
+      fromDefinitionId: definition.definitionId,
+      toAgentId,
+      toUserId,
+      projectKey,
+      memoryId,
+    },
+    tenantId: principal.tenantId,
+  })
+  await auditOk(deps, principal, MCP_HANDOFF_TOOL, definition.definitionId, definition.agentId)
+  return textResult({ ok: true, handoffId: handoff.id, memoryId, projectKey, notified: toAgentId ? 'agent_memory' : 'inbox' })
+}
+
+async function invokeHandoffAck(
+  deps: ProjectWorkMcpDeps,
+  principal: ToolCallPrincipal,
+  definition: AgentDefinition,
+  parsed: Record<string, unknown>,
+): Promise<EnterpriseToolMcpResult> {
+  if (!deps.handoffs) return errorResult('tool_not_configured')
+  const handoffId = asUuid(parsed.handoffId)
+  if (!handoffId) {
+    await auditDenied(deps, principal, MCP_HANDOFF_ACK_TOOL, 'invalid_args', definition.definitionId, definition.agentId)
+    return errorResult('invalid_args')
+  }
+  const row = await deps.handoffs.findById(handoffId)
+  if (!row || row.tenantId !== principal.tenantId) {
+    await auditDenied(deps, principal, MCP_HANDOFF_ACK_TOOL, 'definition_not_found', definition.definitionId, definition.agentId)
+    return errorResult('definition_not_found')
+  }
+  const decision = String(parsed.decision)
+  if (decision !== 'accepted' && decision !== 'done' && decision !== 'rejected') {
+    await auditDenied(deps, principal, MCP_HANDOFF_ACK_TOOL, 'invalid_args', definition.definitionId, definition.agentId)
+    return errorResult('invalid_args')
+  }
+  // Only the recipient side (or anyone operating the recipient agent) may ack.
+  const isRecipientAgent = row.toAgentId === definition.agentId
+  const isRecipientUser = row.toUserId === principal.userId
+  if (!isRecipientAgent && !isRecipientUser) {
+    await auditDenied(deps, principal, MCP_HANDOFF_ACK_TOOL, 'agent_access_denied', definition.definitionId, definition.agentId)
+    return errorResult('agent_access_denied')
+  }
+  const updated = await deps.handoffs.decide(handoffId, decision, principal.userId)
+  if (!updated) {
+    await auditDenied(deps, principal, MCP_HANDOFF_ACK_TOOL, 'invalid_args', definition.definitionId, definition.agentId)
+    return errorResult('invalid_args')
+  }
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: principal.userId,
+    agentVersion: null,
+    action: 'handoff.acknowledged',
+    targetType: 'agent',
+    targetId: row.toAgentId ?? null,
+    modelUsed: null,
+    inputRef: MCP_HANDOFF_ACK_TOOL,
+    outputRef: handoffId,
+    policyDecision: 'allowed',
+    metadata: { toolName: MCP_HANDOFF_ACK_TOOL, tenantId: principal.tenantId, decision, handoffId },
+    tenantId: principal.tenantId,
+  })
+  await auditOk(deps, principal, MCP_HANDOFF_ACK_TOOL, definition.definitionId, definition.agentId)
+  return textResult({ ok: true, handoffId, status: decision })
 }
