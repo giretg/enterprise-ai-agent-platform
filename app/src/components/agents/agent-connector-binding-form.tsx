@@ -14,6 +14,7 @@ import {
   matchAssignableConnectorsByName,
 } from '@/lib/create-agent-wizard'
 import { connectorDisplayLabel } from '@/lib/connector-display-label'
+import { UpdateApproverForm } from '@/components/agents/update-approver-form'
 
 export type ConnectorCatalogOption = {
   id: string
@@ -72,7 +73,7 @@ function ConnectorCatalogDetail({
 }
 
 type Binding = {
-  connector: { id: string; name: string; type: string }
+  connector: { id: string; name: string; type: string; approverUserId?: string | null }
   accessMode: 'read' | 'write'
 }
 
@@ -296,6 +297,7 @@ export function AgentConnectorBindingForm({
   catalogDetails,
   suggestedConnectorNames,
   bare = false,
+  canManageApprovers = false,
   onAssigned,
 }: {
   agentId: string
@@ -305,6 +307,8 @@ export function AgentConnectorBindingForm({
   catalogDetails?: ConnectorCatalogOption[]
   suggestedConnectorNames?: string[]
   bare?: boolean
+  /** Tenant admin: konnektoronkénti megnevezett jóváhagyó (kimenő eszközhívások). */
+  canManageApprovers?: boolean
   onAssigned?: () => void
 }) {
   const router = useRouter()
@@ -403,8 +407,22 @@ export function AgentConnectorBindingForm({
                   </button>
                 </div>
                 {expanded ? (
-                  <div className="mt-2 border-t border-line/50 pt-2">
+                  <div className="mt-2 space-y-3 border-t border-line/50 pt-2">
                     <ConnectorCatalogDetail connector={detail} accessMode={row.accessMode} />
+                    {canManageApprovers || row.connector.approverUserId ? (
+                      <div className="rounded-lg border border-line/60 bg-panel/80 px-3 py-2">
+                        <p className="mb-2 text-xs font-semibold text-ink">Kimenő műveletek jóváhagyója</p>
+                        <p className="mb-2 text-xs text-ink-soft">
+                          Ha be van állítva, az ezen a kapcsolaton (pl. blog API, Drive írás) keresztül induló
+                          jóváhagyások ehhez a személyhez kerülnek — felülírja az agent memóriaírás-jóváhagyóját.
+                        </p>
+                        <UpdateApproverForm
+                          entity={{ kind: 'connector', connectorId: row.connector.id }}
+                          currentApproverUserId={row.connector.approverUserId ?? null}
+                          canEdit={canManageApprovers}
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </li>
