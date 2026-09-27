@@ -32,6 +32,7 @@ export function UpdateMemoryWriteModeForm({
   const [approver, setApprover] = useState(approverUserId ?? '')
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sync when agent props refresh after save
     setMode(memoryWriteMode)
     setApprover(approverUserId ?? '')
   }, [memoryWriteMode, approverUserId])
