@@ -308,3 +308,61 @@ export function Badge({
     </span>
   )
 }
+
+const ICON_PATHS = {
+  info: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 11v5M12 7.5h.01',
+  refresh: 'M20.5 12a8.5 8.5 0 1 1-2.2-5.8M20.5 3.5V9h-5.5',
+  power: 'M12 3v9M17 6.6a7.5 7.5 0 1 1-10 0',
+  trash: 'M4 7h16M9.5 7V4.5h5V7M6.5 7l1 12.5h9L17.5 7',
+  chevron: 'm6 9.5 6 6 6-6',
+} as const
+
+export type IconName = keyof typeof ICON_PATHS
+
+/** Ikonos gomb: a `label` szolgálja a tooltipet és a képernyőolvasó szövegét. */
+export function IconButton({
+  icon,
+  label,
+  tone = 'neutral',
+  active = false,
+  disabled = false,
+  onClick,
+}: {
+  icon: IconName
+  label: string
+  tone?: 'neutral' | 'danger'
+  active?: boolean
+  disabled?: boolean
+  onClick?: () => void
+}) {
+  const tones = {
+    neutral: active
+      ? 'border-ink/30 bg-ink/8 text-ink'
+      : 'border-ink/20 text-ink-soft hover:border-ink/40 hover:text-ink',
+    danger: 'border-coral/40 bg-coral/10 text-coral hover:bg-coral/20',
+  }
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-pressed={active || undefined}
+      disabled={disabled}
+      onClick={onClick}
+      className={`flex h-8 w-8 items-center justify-center rounded-md border transition disabled:opacity-40 ${tones[tone]}`}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        className="h-4 w-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.8}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d={ICON_PATHS[icon]} />
+      </svg>
+    </button>
+  )
+}
