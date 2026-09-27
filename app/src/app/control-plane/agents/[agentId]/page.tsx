@@ -27,6 +27,7 @@ import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
 import { PublishStaleDraftButton } from '@/components/agents/publish-stale-draft-button'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdateMemoryWriteModeForm } from '@/components/agents/update-memory-write-mode-form'
+import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder-form'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
 import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
@@ -226,6 +227,13 @@ export default async function AgentDetailPage({
             <UpdateMemoryWriteModeForm
               agentId={agent.id}
               memoryWriteMode={agent.memoryWriteMode}
+              canEdit={canManage}
+            />
+          </Card>
+          <Card title="Drive output-mappa">
+            <UpdateOutputFolderForm
+              agentId={agent.id}
+              outputDriveFolderId={agent.outputDriveFolderId ?? null}
               canEdit={canManage}
             />
           </Card>

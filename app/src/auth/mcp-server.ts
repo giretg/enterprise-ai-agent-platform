@@ -153,10 +153,12 @@ import {
   MCP_WORK_FILE_LIST_TOOL,
   MCP_WORK_FILE_READ_TOOL,
   MCP_WORK_FILE_WRITE_TOOL,
+  MCP_WORK_FILE_APPEND_TOOL,
   projectMemoryReadInputSchema,
   projectMemoryWriteInputSchema,
   projectsCreateInputSchema,
   projectsListInputSchema,
+  workFileAppendInputSchema,
   workFileDeleteInputSchema,
   workFileListInputSchema,
   workFileReadInputSchema,
@@ -1226,6 +1228,16 @@ async function createMcpResourceHandler(
         async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_WRITE_TOOL, args, deps),
       )
       server.registerTool(
+        MCP_WORK_FILE_APPEND_TOOL,
+        {
+          title: 'Append work file',
+          description:
+            'Append text to the end of a work file under the project (metrics JSONL, changelog CSV). Creates the file when missing. No approval; the quota applies to the resulting file size. Pass projectKey; omit for __general__.',
+          inputSchema: workFileAppendInputSchema,
+        },
+        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_APPEND_TOOL, args, deps),
+      )
+      server.registerTool(
         MCP_WORK_FILE_DELETE_TOOL,
         {
           title: 'Delete work file',
@@ -1291,7 +1303,7 @@ async function createMcpResourceHandler(
         {
           title: 'Upload Google Drive file',
           description:
-            'Request upload of a text file (HTML, CSV, JSON) to the user\'s Drive — finished deliverables for humans (see Where to save what table). Pass definitionId from platform.agent.get_definition. Does not call Google until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+            'Request upload of a file (HTML, CSV, JSON, image, PDF) to the user\'s Drive — finished deliverables for humans (see Where to save what table). Pass textContent for text or contentBase64 for binary bytes. Pass definitionId from platform.agent.get_definition. Uploads into the agent\'s configured output folder run immediately without approval; anything else does not call Google until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
           inputSchema: googleDriveUploadFileInputSchema,
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_UPLOAD_FILE_TOOL, args, deps),

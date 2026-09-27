@@ -80,11 +80,20 @@ export async function executeGoogleDriveTool(
   }
   if (toolName === GOOGLE_DRIVE_UPLOAD_FILE_TOOL) {
     const name = optionalString(args.name) ?? ''
-    const textContent = optionalString(args.textContent) ?? ''
+    const textContent = optionalString(args.textContent)
+    const base64 = optionalString(args.contentBase64)
     const convert = optionalString(args.convertToGoogleType)
+    if ((textContent == null) === (base64 == null)) {
+      throw new Error('google_drive_upload_file requires exactly one of textContent or contentBase64')
+    }
+    // ponytail: ~10 MB cap decoded; larger deliverables do not belong in a chat-tool call.
+    if (base64 != null && base64.length > 14_000_000) {
+      throw new Error('google_drive_upload_file contentBase64 exceeds the size limit')
+    }
     return drive.uploadFile({
       name,
-      textContent,
+      ...(textContent != null ? { textContent } : {}),
+      ...(base64 != null ? { binaryBytes: Buffer.from(base64, 'base64') } : {}),
       mimeType: optionalString(args.mimeType),
       parentFolderId: optionalString(args.parentFolderId),
       convertToGoogleType:

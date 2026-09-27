@@ -217,7 +217,16 @@ export const googleDriveUploadFileInputSchema = z
       .string()
       .min(1)
       .max(200_000)
+      .optional()
       .describe('File body as text. For HTML reports, CSV, JSON, or plain text.'),
+    // ponytail: plain string, not a union — Claude.ai drops MCP tools whose schema has arrays/unions.
+    contentBase64: z
+      .string()
+      .max(14_000_000)
+      .optional()
+      .describe(
+        'Base64-encoded file bytes instead of textContent (image, PDF, HTML). Pass exactly one of textContent or contentBase64.',
+      ),
     mimeType: z.string().max(200).optional(),
     parentFolderId: z.string().max(200).optional(),
     convertToGoogleType: z.enum(['doc', 'sheet', 'slides']).optional(),

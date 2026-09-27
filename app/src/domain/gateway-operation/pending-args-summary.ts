@@ -113,6 +113,7 @@ export function pendingArgsSummary(
         : labels.parentRoot
     const lines = [`${str(args.name) || '—'} (${parent})`]
     if (str(args.textContent)) lines.push(clip(str(args.textContent)))
+    if (str(args.contentBase64)) lines.push(`[base64 tartalom, ${str(args.contentBase64).length} karakter]`)
     return lines.join('\n')
   }
 

@@ -33,10 +33,14 @@ import { detectMisplacedMemoryWrite, type KnowledgePlacementTarget } from '@/lib
 export type { MemoryWriteModeValue, ProjectMemoryRecord, WorkFileRecord, WorkProjectRecord }
 export type { MemoryIndexPage } from './memory-index'
 
-// ponytail: per-project byte+count caps; split per-file GCS if a project grows past a few MB.
+// ponytail: per-call append cap = file cap; sequential MCP appends stay ordered because calls run one at a time.
 export const WORK_FILE_MAX_BYTES = 200_000
 export const WORK_FILE_MAX_PROJECT_BYTES = 5_000_000
 export const WORK_FILE_MAX_COUNT = 200
+/** base64 ≈ 4/3 overhead a 200_000 bájtos fájlkorláthoz. */
+export const WORK_FILE_MAX_BASE64_CHARS = 270_000
+/** Drive mappa-id (Google file id): betű, szám, kötőjel, aláhúzás (#661). */
+const DRIVE_FOLDER_ID_RE = /^[\w-]{1,200}$/
 export const MEMORY_TITLE_MAX = 200
 export const MEMORY_BODY_MAX = 8_000
 /** Fókusz: rövid állapotblokk, agentenként/projektenként egyetlen aktív elem (#656). */
@@ -53,10 +57,40 @@ export type SessionLogHeadline = {
   createdAt: string
   withUserName: string
 }
-
 export type ProjectWorkErr = { ok: false; code: string; message: string }
 export type ProjectWorkOk<T> = { ok: true } & T
 export type ProjectWorkResult<T> = ProjectWorkOk<T> | ProjectWorkErr
+
+/**
+ * Work-file törzs feloldása: `content` (utf8 szöveg) vagy `contentBase64` (base64-ben
+ * kódolt utf8 szöveg: HTML-riport, CSV, JSON). Valódi bináris (kép, PDF) nem ide való,
+ * hanem a `google_drive_upload_file` `contentBase64` mezőjébe (#661).
+ */
+export function resolveWorkFileBody(input: {
+  content?: string
+  contentBase64?: string
+}): { ok: true; content: string } | { ok: false; code: string } {
+  const hasText = typeof input.content === 'string'
+  const hasB64 = typeof input.contentBase64 === 'string'
+  if (hasText === hasB64) return { ok: false, code: 'invalid_content' }
+  if (hasText) return { ok: true, content: input.content as string }
+  const raw = (input.contentBase64 as string).trim().replace(/\s+/g, '')
+  if (!raw || raw.length > WORK_FILE_MAX_BASE64_CHARS || !/^[A-Za-z0-9+/]*={0,2}$/.test(raw)) {
+    return { ok: false, code: 'invalid_content' }
+  }
+  const bytes = Buffer.from(raw, 'base64')
+  if (bytes.length === 0) return { ok: false, code: 'invalid_content' }
+  const content = bytes.toString('utf8')
+  if (Buffer.byteLength(content, 'utf8') !== bytes.length) return { ok: false, code: 'invalid_content' }
+  return { ok: true, content }
+}
+
+function quotaAfter(quota: { count: number; bytes: number }, existingBytes: number, nextBytes: number, isNew: boolean) {
+  return {
+    nextCount: quota.count + (isNew ? 1 : 0),
+    nextBytes: quota.bytes - existingBytes + nextBytes,
+  }
+}
 
 const MESSAGES: Record<string, string> = {
   invalid_project_key: 'Invalid projectKey',
@@ -64,6 +98,7 @@ const MESSAGES: Record<string, string> = {
   unknown_project: 'Unknown projectKey — call platform.projects.create first, or use __general__',
   project_key_taken: 'A project with this key already exists',
   invalid_path: 'Invalid work file path',
+  invalid_content: 'Invalid work file content',
   file_not_found: 'Work file not found',
   file_too_large: 'Work file exceeds the size quota',
   quota_exceeded: 'Project work-file quota exceeded',
@@ -272,21 +307,64 @@ export class ProjectWorkService {
     tenantId: string
     projectKey?: string
     path: string
-    content: string
+    content?: string
+    contentBase64?: string
     userId: string
   }): Promise<ProjectWorkResult<{ file: { path: string; byteSize: number; lastWriterUserId: string } }>> {
     const scoped = await this.assertProject(input.tenantId, input.projectKey)
     if (!scoped.ok) return scoped
     const path = normalizeWorkFilePath(input.path)
     if (!path) return err('invalid_path')
-    const content = input.content
-    const byteSize = Buffer.byteLength(content, 'utf8')
+    const body = resolveWorkFileBody({ content: input.content, contentBase64: input.contentBase64 })
+    if (!body.ok) return err(body.code)
+    const byteSize = Buffer.byteLength(body.content, 'utf8')
     if (byteSize > WORK_FILE_MAX_BYTES) return err('file_too_large')
     const existing = await this.files.find(input.tenantId, scoped.projectKey, path)
     const quota = await this.files.quota(input.tenantId, scoped.projectKey)
-    const nextCount = quota.count + (existing ? 0 : 1)
-    const nextBytes = quota.bytes - (existing?.byteSize ?? 0) + byteSize
-    if (nextCount > WORK_FILE_MAX_COUNT || nextBytes > WORK_FILE_MAX_PROJECT_BYTES) return err('quota_exceeded')
+    const next = quotaAfter(quota, existing?.byteSize ?? 0, byteSize, !existing)
+    if (next.nextCount > WORK_FILE_MAX_COUNT || next.nextBytes > WORK_FILE_MAX_PROJECT_BYTES) {
+      return err('quota_exceeded')
+    }
+    const row = await this.files.upsert({
+      tenantId: input.tenantId,
+      projectKey: scoped.projectKey,
+      path,
+      content: body.content,
+      byteSize,
+      lastWriterUserId: input.userId,
+    })
+    return ok({
+      file: { path: row.path, byteSize: row.byteSize, lastWriterUserId: row.lastWriterUserId },
+    })
+  }
+
+  /**
+   * Hozzáfűzés szöveges work file végéhez (#661: jsonl-metrikák, változásnapló).
+   * Hiányzó fájlt létrehozza. Kvóta a létrejövő teljes fájlméretre érvényesül.
+   */
+  async appendFile(input: {
+    tenantId: string
+    projectKey?: string
+    path: string
+    content?: string
+    contentBase64?: string
+    userId: string
+  }): Promise<ProjectWorkResult<{ file: { path: string; byteSize: number; lastWriterUserId: string } }>> {
+    const scoped = await this.assertProject(input.tenantId, input.projectKey)
+    if (!scoped.ok) return scoped
+    const path = normalizeWorkFilePath(input.path)
+    if (!path) return err('invalid_path')
+    const chunk = resolveWorkFileBody({ content: input.content, contentBase64: input.contentBase64 })
+    if (!chunk.ok) return err(chunk.code)
+    const existing = await this.files.find(input.tenantId, scoped.projectKey, path)
+    const content = `${existing?.content ?? ''}${chunk.content}`
+    const byteSize = Buffer.byteLength(content, 'utf8')
+    if (byteSize > WORK_FILE_MAX_BYTES) return err('file_too_large')
+    const quota = await this.files.quota(input.tenantId, scoped.projectKey)
+    const next = quotaAfter(quota, existing?.byteSize ?? 0, byteSize, !existing)
+    if (next.nextCount > WORK_FILE_MAX_COUNT || next.nextBytes > WORK_FILE_MAX_PROJECT_BYTES) {
+      return err('quota_exceeded')
+    }
     const row = await this.files.upsert({
       tenantId: input.tenantId,
       projectKey: scoped.projectKey,
@@ -298,6 +376,31 @@ export class ProjectWorkService {
     return ok({
       file: { path: row.path, byteSize: row.byteSize, lastWriterUserId: row.lastWriterUserId },
     })
+  }
+
+  /** Agent output Drive-mappa (#661): ide írva a Drive-feltöltés jóváhagyás nélkül fut. */
+  async getOutputFolder(
+    agentId: string,
+    tenantId: string,
+  ): Promise<ProjectWorkResult<{ folderId: string | null }>> {
+    if (!this.agents.findOutputFolder) return ok({ folderId: null })
+    const mode = await this.agents.findMemoryWriteMode(agentId, tenantId)
+    if (!mode) return err('agent_not_found')
+    return ok({ folderId: await this.agents.findOutputFolder(agentId, tenantId) })
+  }
+
+  async setOutputFolder(
+    agentId: string,
+    tenantId: string,
+    folderId: string | null,
+  ): Promise<ProjectWorkResult<{ folderId: string | null }>> {
+    if (!this.agents.updateOutputFolder) return err('agent_not_found')
+    const mode = await this.agents.findMemoryWriteMode(agentId, tenantId)
+    if (!mode) return err('agent_not_found')
+    const next = folderId?.trim() || null
+    if (next && !DRIVE_FOLDER_ID_RE.test(next)) return err('invalid_path', 'output folder')
+    await this.agents.updateOutputFolder(agentId, next)
+    return ok({ folderId: next })
   }
 
   async deleteFile(input: {

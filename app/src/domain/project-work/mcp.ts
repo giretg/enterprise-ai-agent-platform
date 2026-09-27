@@ -17,6 +17,7 @@ export const MCP_PROJECTS_CREATE_TOOL = 'platform.projects.create'
 export const MCP_WORK_FILE_LIST_TOOL = 'platform.work_file.list'
 export const MCP_WORK_FILE_READ_TOOL = 'platform.work_file.read'
 export const MCP_WORK_FILE_WRITE_TOOL = 'platform.work_file.write'
+export const MCP_WORK_FILE_APPEND_TOOL = 'platform.work_file.append'
 export const MCP_WORK_FILE_DELETE_TOOL = 'platform.work_file.delete'
 export const MCP_PROJECT_MEMORY_READ_TOOL = 'platform.project_memory.read'
 export const MCP_PROJECT_MEMORY_WRITE_TOOL = 'platform.project_memory.write'
@@ -27,6 +28,7 @@ export const PROJECT_WORK_TOOLS = [
   MCP_WORK_FILE_LIST_TOOL,
   MCP_WORK_FILE_READ_TOOL,
   MCP_WORK_FILE_WRITE_TOOL,
+  MCP_WORK_FILE_APPEND_TOOL,
   MCP_WORK_FILE_DELETE_TOOL,
   MCP_PROJECT_MEMORY_READ_TOOL,
   MCP_PROJECT_MEMORY_WRITE_TOOL,
@@ -81,12 +83,30 @@ export const workFileReadInputSchema = z
     path: z.string().min(1).max(240),
   })
   .passthrough()
+const workFileBody = {
+  content: z.string().max(200_000).optional().describe('File body as text.'),
+  contentBase64: z
+    .string()
+    .max(270_000)
+    .optional()
+    .describe(
+      'Base64-encoded UTF-8 text (HTML report, CSV, JSON) instead of content. Pass exactly one of content or contentBase64. Real binary (image, PDF) belongs in google_drive_upload_file.',
+    ),
+}
 export const workFileWriteInputSchema = z
   .object({
     definitionId,
     projectKey,
     path: z.string().min(1).max(240),
-    content: z.string().max(200_000),
+    ...workFileBody,
+  })
+  .passthrough()
+export const workFileAppendInputSchema = z
+  .object({
+    definitionId,
+    projectKey,
+    path: z.string().min(1).max(240),
+    ...workFileBody,
   })
   .passthrough()
 export const workFileDeleteInputSchema = z
@@ -195,6 +215,7 @@ export function schemaForProjectWorkTool(toolName: string) {
   if (toolName === MCP_WORK_FILE_LIST_TOOL) return workFileListInputSchema
   if (toolName === MCP_WORK_FILE_READ_TOOL) return workFileReadInputSchema
   if (toolName === MCP_WORK_FILE_WRITE_TOOL) return workFileWriteInputSchema
+  if (toolName === MCP_WORK_FILE_APPEND_TOOL) return workFileAppendInputSchema
   if (toolName === MCP_WORK_FILE_DELETE_TOOL) return workFileDeleteInputSchema
   if (toolName === MCP_PROJECT_MEMORY_READ_TOOL) return projectMemoryReadInputSchema
   if (toolName === MCP_PROJECT_MEMORY_WRITE_TOOL) return projectMemoryWriteInputSchema
@@ -388,7 +409,17 @@ export async function invokeProjectWork(
       tenantId,
       projectKey,
       path: String(parsed.path),
-      content: String(parsed.content),
+      ...(typeof parsed.content === 'string' ? { content: parsed.content } : {}),
+      ...(typeof parsed.contentBase64 === 'string' ? { contentBase64: parsed.contentBase64 } : {}),
+      userId: principal.userId,
+    })
+  } else if (toolName === MCP_WORK_FILE_APPEND_TOOL) {
+    outcome = await svc.appendFile({
+      tenantId,
+      projectKey,
+      path: String(parsed.path),
+      ...(typeof parsed.content === 'string' ? { content: parsed.content } : {}),
+      ...(typeof parsed.contentBase64 === 'string' ? { contentBase64: parsed.contentBase64 } : {}),
       userId: principal.userId,
     })
   } else if (toolName === MCP_WORK_FILE_DELETE_TOOL) {

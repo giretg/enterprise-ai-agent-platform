@@ -87,6 +87,7 @@ export interface AgentRepository {
     agentId: string
     memoryWriteMode: Agent['memoryWriteMode']
   }): Promise<Agent>
+  updateOutputFolder(input: { agentId: string; folderId: string | null }): Promise<Agent>
   setCurrentDefinitionVersionId(agentId: string, versionId: string): Promise<Agent>
   activate(agentId: string): Promise<Agent>
   suspend(agentId: string, reason?: string): Promise<Agent>

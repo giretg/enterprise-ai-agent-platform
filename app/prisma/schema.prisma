@@ -439,6 +439,8 @@ model Agent {
   currentDefinitionVersionId String?     @unique @map("current_definition_version_id") @db.Uuid
   avatarUrl                  String?     @map("avatar_url")
   memoryWriteMode            MemoryWriteMode @default(approval) @map("memory_write_mode")
+  /** Agent saját Drive output-mappája (#661): ide a feltöltés jóváhagyás nélkül, auditáltan fut. */
+  outputDriveFolderId        String?         @map("output_drive_folder_id")
   createdAt                  DateTime    @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime    @updatedAt @map("updated_at") @db.Timestamptz
   retiredAt                  DateTime?   @map("retired_at") @db.Timestamptz

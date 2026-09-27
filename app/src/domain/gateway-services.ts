@@ -154,6 +154,13 @@ const projectWorkService = new ProjectWorkService(
     async updateMemoryWriteMode(agentId, memoryWriteMode) {
       await repositories.agents.updateMemoryWriteMode({ agentId, memoryWriteMode })
     },
+    async findOutputFolder(agentId, tenantId) {
+      const agent = await repositories.agents.findById(agentId, tenantId)
+      return agent?.outputDriveFolderId ?? null
+    },
+    async updateOutputFolder(agentId, folderId) {
+      await repositories.agents.updateOutputFolder({ agentId, folderId })
+    },
   },
   repositories.users,
 )
@@ -296,6 +303,10 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   ...sharedToolLookups,
   audit: repositories.audit,
   startAuthorization,
+  findAgentOutputFolder: async ({ agentId, tenantId }) => {
+    const agent = await repositories.agents.findById(agentId, tenantId)
+    return agent?.outputDriveFolderId ?? null
+  },
   enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
   executeKbTool: (toolName, args, ctx) =>
     executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx),

@@ -16,7 +16,7 @@ export const KNOWLEDGE_PLACEMENT_TABLE = `| What | Where | Tool |
 | Company fact, decision, location (true now) | memory | \`platform.project_memory.write\` (replaceId when it changed) |
 | Operating rule or procedure ("how we do it") | skill — propose for approval | \`platform.skills.submit\` |
 | Reference document, knowledge material | knowledge base | \`kb_ingest\` |
-| Work plan, notes, draft | work file | \`platform.work_file.write\` |
+| Work plan, notes, draft | work file | \`platform.work_file.write\` (growing log: \`platform.work_file.append\`) |
 | Finished deliverable for humans | agent Drive folder | \`google_drive_upload_file\` |
 | What happened today | session log | \`platform.project_memory.write\` kind \`session_log\` |
 | What we are working on now | focus | \`platform.project_memory.write\` kind \`focus\` |`

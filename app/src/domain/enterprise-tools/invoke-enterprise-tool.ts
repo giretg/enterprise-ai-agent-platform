@@ -22,6 +22,7 @@ import { executeGmailTool } from './handlers/gmail'
 import { executeHttpApiTool } from './handlers/http-api'
 import { asUuid, enterpriseToolErrorPayload } from './tool-error-messages'
 import {
+  GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
   isEnterpriseGmailTool,
   isEnterpriseHttpTool,
   isEnterpriseKbTool,
@@ -135,6 +136,8 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     origin?: string
     confirm?: WriteConfirmInput
   }) => Promise<EnterpriseToolMcpResult | InputRequiredToolResult>
+  /** Agent saját Drive output-mappája (#661). Hiányában minden Drive-írás jóváhagyást kér. */
+  findAgentOutputFolder?: (input: { agentId: string; tenantId: string }) => Promise<string | null>
   startAuthorization?: StartDelegatedAuthorization
   audit?: AuditSink
 }
@@ -227,6 +230,114 @@ async function resolveDelegatedToken(
   })
 }
 
+/**
+ * Tiszta write-gate döntés (#661): az agent saját output-mappájába töltve nincs
+ * jóváhagyás, minden más Drive-írás approval-köteles. Egységtesztelt.
+ */
+export function isOutputFolderWrite(input: {
+  toolName: string
+  parentFolderId?: string
+  outputFolderId: string | null | undefined
+}): boolean {
+  return (
+    input.toolName === GOOGLE_DRIVE_UPLOAD_FILE_TOOL &&
+    !!input.outputFolderId &&
+    input.parentFolderId === input.outputFolderId
+  )
+}
+
+/**
+ * Output-mappán belüli Drive-feltöltés: capability- és connector-ellenőrzéssel,
+ * de jóváhagyás nélkül, auditáltan fut. Minden más esetben null (→ enqueue).
+ */
+async function tryDirectOutputFolderWrite(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    definition: AgentDefinition
+    definitionId: string
+    toolName: string
+    args: Record<string, unknown>
+  },
+): Promise<EnterpriseToolMcpResult | null> {
+  const { principal, definition, definitionId, toolName, args } = input
+  if (toolName !== GOOGLE_DRIVE_UPLOAD_FILE_TOOL || !deps.findAgentOutputFolder) return null
+  const parsed = schemaForEnterpriseTool(toolName)?.safeParse(args)
+  if (!parsed?.success) return null
+  const parsedArgs = parsed.data as Record<string, unknown>
+  const parentFolderId =
+    typeof parsedArgs.parentFolderId === 'string' ? parsedArgs.parentFolderId : undefined
+  const outputFolderId = await deps.findAgentOutputFolder({
+    agentId: definition.agentId,
+    tenantId: principal.tenantId,
+  })
+  if (!isOutputFolderWrite({ toolName, parentFolderId, outputFolderId })) return null
+  const authorized = await authorizeToolCall(deps, { principal, definition, toolName, args: parsedArgs })
+  if (!authorized.allowed) {
+    await auditDenied(deps, principal, toolName, authorized.reason, definitionId, definition.agentId)
+    const extra = await authorizationLinkFields(deps.startAuthorization, {
+      reason: authorized.reason,
+      connectorId: authorized.connectorId,
+      userId: principal.userId,
+      tenantId: principal.tenantId,
+      role: principal.role,
+      toolName,
+    })
+    return errorResult(authorized.reason, {
+      ...extra,
+      ...(authorized.connectorChoices?.length ? { connectors: authorized.connectorChoices } : {}),
+    })
+  }
+  const connector = authorized.connector
+  let accessToken: string | undefined
+  try {
+    if (connector.authMode === 'user_delegated') {
+      accessToken = await resolveDelegatedToken(deps, principal, connector, authorized.grantId, authorized.tokenRef)
+    }
+  } catch {
+    await auditDenied(deps, principal, toolName, 'google_drive_auth_failed', definitionId, definition.agentId)
+    return errorResult('google_drive_auth_failed')
+  }
+  try {
+    const result = await dispatchTool(deps, {
+      toolName,
+      args: parsedArgs,
+      connector,
+      accessToken,
+      actingUser: null,
+    })
+    const payload = {
+      toolName,
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      definitionId,
+      agentId: definition.agentId,
+      connectorId: authorized.connectorId,
+      approvalBypass: 'agent_output_folder',
+    }
+    console.info('enterprise.tool.ok', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.ok',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: payload,
+      tenantId: principal.tenantId,
+    })
+    return textResult(result)
+  } catch (error) {
+    const mapped = mapToolError(error, connector.type)
+    await auditDenied(deps, principal, toolName, mapped.code, definitionId, definition.agentId)
+    return errorResult(mapped.code, mapped.extra)
+  }
+}
+
 export async function invokeEnterpriseTool(
   deps: EnterpriseToolDeps,
   input: {
@@ -294,6 +405,8 @@ export async function invokeEnterpriseTool(
       await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
       return errorResult('tool_not_configured')
     }
+    const direct = await tryDirectOutputFolderWrite(deps, { principal, definition, definitionId, toolName, args })
+    if (direct) return direct
     return deps.enqueueWrite({ principal, toolName, args, origin, confirm })
   }
 
