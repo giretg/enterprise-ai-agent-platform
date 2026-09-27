@@ -495,6 +495,23 @@ async function main() {
     assert.equal(JSON.parse(content('.enterprise-agent/manifest.json')).pin.harness, 'hermes')
   })
 
+  await check('hermes profile name stays within 60 chars for long agent names', () => {
+    const long = renderAgentCheckout({
+      definition: definition({
+        snapshot: { ...definition().snapshot, name: 'A'.repeat(80) },
+      }),
+      skills: [],
+      mcpUrl: MCP_URL,
+      harness: 'hermes',
+    })
+    const distName = /^name: (.+)$/m.exec(
+      long.files.find((f) => f.path === 'distribution.yaml')?.content ?? '',
+    )?.[1]?.trim().replace(/^['"]|['"]$/g, '')
+    assert.ok(distName?.startsWith('exc-'))
+    assert.ok((distName?.length ?? 99) <= 60, distName)
+    assert.match(long.writeRecipe, new RegExp(`--name ${distName} -y`))
+  })
+
   await check('hermes Bot title is name (role), not the exc- profile id', () => {
     assert.equal(
       hermesBotTitle({ name: 'Zoli', roleInstruction: 'POSnavigator marketing lead.\nHosszú utasítás.' }),
