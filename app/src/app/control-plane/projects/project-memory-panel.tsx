@@ -2,7 +2,11 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
-import { listProjectMemoryAction, saveProjectMemoryAction } from '@/app/actions/project-work'
+import {
+  deleteProjectMemoryAction,
+  listProjectMemoryAction,
+  saveProjectMemoryAction,
+} from '@/app/actions/project-work'
 import { PROJECT_MEMORY_KINDS } from '@/domain/project-work/types'
 import type { MemoryView, ProjectListItem } from '@/domain/project-work/project-work-service'
 import { GENERAL_WORK_PROJECT_KEY } from '@/lib/work-project'
@@ -100,6 +104,7 @@ function MemoryEditor({
   onChange,
   onSubmit,
   onCancel,
+  onDelete,
   busy,
   submitLabel,
 }: {
@@ -107,6 +112,7 @@ function MemoryEditor({
   onChange: (next: MemoryDraft) => void
   onSubmit: () => void
   onCancel: () => void
+  onDelete?: () => void
   busy: boolean
   submitLabel: string
 }) {
@@ -168,6 +174,16 @@ function MemoryEditor({
         <button type="button" disabled={busy} onClick={onCancel} className={projectWorkGhostBtnClass}>
           {t('cancel')}
         </button>
+        {onDelete ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onDelete}
+            className="rounded-full border border-coral/40 px-4 py-1.5 text-sm font-semibold text-coral-deep disabled:opacity-50"
+          >
+            {t('deleteMemory')}
+          </button>
+        ) : null}
       </div>
     </div>
   )
@@ -224,12 +240,14 @@ export function ProjectMemoryPanel({
   projectKey,
   projectName,
   canEdit,
+  canDeleteMemory = false,
 }: {
   agentId: string
   agentName?: string
   projectKey: string
   projectName?: string
   canEdit: boolean
+  canDeleteMemory?: boolean
 }) {
   const t = asTranslate(useTranslations('ControlPlane.projects'))
   const kindMeta = (kind: MemoryKind) => {
@@ -300,6 +318,24 @@ export function ProjectMemoryPanel({
       // A fókusz mindig elöl: ez az agent mostani állapota, a többi elem háttér.
       .sort((a, b) => Number(b.kind === 'focus') - Number(a.kind === 'focus'))
   }, [memories, search, kindFilter])
+
+  async function onDeleteMemory(memoryId: string, title: string) {
+    if (!canDeleteMemory || !agentId) return
+    if (!window.confirm(t('deleteMemoryConfirm', { title }))) return
+    setSaving(true)
+    setError(null)
+    setNotice(null)
+    const res = await deleteProjectMemoryAction({ agentId, projectKey, memoryId })
+    setSaving(false)
+    if (!res.success) {
+      setError(projectWorkErrorLabel(res.error, (key) => t(key)))
+      return
+    }
+    setMemories((current) => current.filter((m) => m.id !== memoryId))
+    setEditingId(null)
+    setExpandedId(null)
+    setNotice(t('memoryDeleted'))
+  }
 
   async function onSaveMemory(replaceId?: string) {
     const draft = replaceId ? editDraft : newDraft
@@ -488,6 +524,11 @@ export function ProjectMemoryPanel({
                     onChange={setEditDraft}
                     onSubmit={() => void onSaveMemory(item.id)}
                     onCancel={() => setEditingId(null)}
+                    onDelete={
+                      canDeleteMemory && item.kind !== 'session_log'
+                        ? () => void onDeleteMemory(item.id, item.title)
+                        : undefined
+                    }
                     busy={saving}
                     submitLabel={t('saveChanges')}
                   />
@@ -506,12 +547,14 @@ export function AgentProjectMemoryBrowser({
   agentName,
   projects,
   canEdit,
+  canDeleteMemory = false,
   initialError,
 }: {
   agentId: string
   agentName: string
   projects: ProjectListItem[]
   canEdit: boolean
+  canDeleteMemory?: boolean
   initialError: string | null
 }) {
   const t = asTranslate(useTranslations('ControlPlane.projects'))
@@ -540,6 +583,7 @@ export function AgentProjectMemoryBrowser({
             projectKey={projectKey}
             projectName={selected?.name}
             canEdit={canEdit}
+            canDeleteMemory={canDeleteMemory}
           />
         </div>
       </div>

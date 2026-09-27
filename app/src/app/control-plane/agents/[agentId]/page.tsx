@@ -12,6 +12,7 @@ import {
   listKnowledgeCatalog,
 } from '@/app/actions/platform'
 import { listWorkProjectsAction } from '@/app/actions/project-work'
+import { getMyGoogleDriveGrantForPicker } from '@/app/actions/connector-grants'
 import { listConnectorCatalog } from '@/app/actions/provisioning'
 import { getAgentSkillsAction, listAssignableSkillsAction } from '@/app/actions/skills'
 import { AgentProjectMemoryBrowser } from '@/app/control-plane/projects/project-memory-panel'
@@ -27,7 +28,6 @@ import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
 import { PublishStaleDraftButton } from '@/components/agents/publish-stale-draft-button'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdateMemoryWriteModeForm } from '@/components/agents/update-memory-write-mode-form'
-import { UpdateApproverForm } from '@/components/agents/update-approver-form'
 import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder-form'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
@@ -81,6 +81,7 @@ export default async function AgentDetailPage({
     accessRes,
     publishRes,
     projectsRes,
+    drivePickerCtxRes,
   ] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
@@ -92,6 +93,7 @@ export default async function AgentDetailPage({
     listAgentAccess({ agentId }),
     getAgentPublishStatus({ agentId }),
     listWorkProjectsAction(),
+    getMyGoogleDriveGrantForPicker(),
   ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
@@ -110,6 +112,7 @@ export default async function AgentDetailPage({
     connectors.map((row) => row.connector.id),
   )
   const canManage = hasMinimumRole(ctx.activeTenantRole, 'admin')
+  const drivePickerCtx = drivePickerCtxRes.success ? drivePickerCtxRes.data : null
   const canEditMemory = hasMinimumRole(ctx.activeTenantRole, 'approver')
   const canDelete = isSuperadmin(ctx.platformRoles)
   const projects = projectsRes.success ? projectsRes.data.projects : []
@@ -228,6 +231,7 @@ export default async function AgentDetailPage({
             <UpdateMemoryWriteModeForm
               agentId={agent.id}
               memoryWriteMode={agent.memoryWriteMode}
+              approverUserId={agent.approverUserId ?? null}
               canEdit={canManage}
             />
           </Card>
@@ -235,13 +239,8 @@ export default async function AgentDetailPage({
             <UpdateOutputFolderForm
               agentId={agent.id}
               outputDriveFolderId={agent.outputDriveFolderId ?? null}
-              canEdit={canManage}
-            />
-          </Card>
-          <Card title="Jóváhagyó">
-            <UpdateApproverForm
-              entity={{ kind: 'agent', agentId: agent.id }}
-              currentApproverUserId={agent.approverUserId ?? null}
+              driveGrantId={drivePickerCtx?.grantId ?? null}
+              drivePickerConfigured={drivePickerCtx?.pickerConfigured ?? false}
               canEdit={canManage}
             />
           </Card>
@@ -251,6 +250,7 @@ export default async function AgentDetailPage({
               agentName={agent.name}
               projects={projects}
               canEdit={canEditMemory}
+              canDeleteMemory={canManage}
               initialError={projectsError}
             />
           </Card>

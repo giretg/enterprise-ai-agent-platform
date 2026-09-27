@@ -160,6 +160,29 @@ export async function listConnectorGrants() {
   }
 }
 
+/** Agent output-mappa Pickerhez: az aktuális admin saját aktív Drive-grantje. */
+export async function getMyGoogleDriveGrantForPicker() {
+  try {
+    const ctx = await requireTenantRole('admin')
+    await services.connectorGrants.revokeGrantsForNonActiveConnectors(
+      ctx.user.id,
+      ctx.activeTenantId,
+      ctx.user.id,
+    )
+    const grants = await services.connectorGrants.listForUser(ctx.user.id, ctx.activeTenantId)
+    const driveGrant = grants.find(
+      (g) => g.status === 'active' && g.connector?.type === 'google_drive',
+    )
+    const pickerConfig = await services.platformSettings.getGoogleDrivePickerConfig()
+    return ok({
+      grantId: driveGrant?.id ?? null,
+      pickerConfigured: Boolean(pickerConfig),
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load Drive grant')
+  }
+}
+
 export async function listConnectorsPanelContext() {
   try {
     const user = await requireTenantRole('viewer')

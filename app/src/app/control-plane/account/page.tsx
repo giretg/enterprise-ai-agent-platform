@@ -43,7 +43,6 @@ async function LinkedAccountsContent() {
         tenantId: c.tenantId,
         config: c.config,
         iconDataUrl: 'iconDataUrl' in c && typeof c.iconDataUrl === 'string' ? c.iconDataUrl : null,
-        approverUserId: c.approverUserId ?? null,
         assignedAgentCount: connectorsRes.data.connectorUsage[c.id]?.assignedAgentCount ?? 0,
         capableAgentCount: connectorsRes.data.connectorUsage[c.id]?.capableAgentCount ?? 0,
         capableAgentDisplayNames:

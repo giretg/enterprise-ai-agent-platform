@@ -28,11 +28,13 @@ export function ProjectsPanel({
   initialProjects,
   agents,
   canEdit,
+  canDeleteMemory = false,
   initialError,
 }: {
   initialProjects: ProjectListItem[]
   agents: AgentOption[]
   canEdit: boolean
+  canDeleteMemory?: boolean
   initialError: string | null
 }) {
   const t = asTranslate(useTranslations('ControlPlane.projects'))
@@ -292,6 +294,7 @@ export function ProjectsPanel({
               projectKey={projectKey}
               projectName={selectedProject?.name}
               canEdit={canEdit}
+              canDeleteMemory={canDeleteMemory}
             />
           ) : (
             <section className="space-y-3" aria-label={t('tabFiles')}>

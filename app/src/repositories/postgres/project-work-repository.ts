@@ -219,6 +219,19 @@ export class PostgresProjectMemoryRepository implements ProjectMemoryStore {
     })
     return mapMemory(row)
   }
+
+  async retireActive(input: { tenantId: string; agentId: string; id: string }): Promise<boolean> {
+    const { count } = await prisma.projectMemoryItem.updateMany({
+      where: {
+        id: input.id,
+        tenantId: input.tenantId,
+        agentId: input.agentId,
+        status: 'active',
+      },
+      data: { status: 'superseded' },
+    })
+    return count === 1
+  }
 }
 
 export async function findAgentMemoryWriteMode(
