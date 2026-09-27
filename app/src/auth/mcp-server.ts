@@ -1166,7 +1166,7 @@ async function createMcpResourceHandler(
         {
           title: 'Submit skill from conversation',
           description:
-            'Submit a new tenant skill written in this conversation for the named agentId. requires and attachments are JSON strings, not arrays. The server decides the outcome and the text must be relayed to the user: created (live, assigned, enabled), pending_approval, or rejected with a reason (no_producer_skill, cannot_use_agent, validation, name_taken). A tenant admin gets a live skill without opening the web UI. Anyone else who can operate the agent gets one open proposal (a new call overwrites it). Viewers and agents without an enabled producer skill are rejected and nothing is stored. Missing tools are listed; this call does not grant them. This tool cannot create or mark a producer skill.',
+            'Submit a new tenant skill written in this conversation for the named agentId — use for operating rules and procedures ("how we do it"), not for one-off facts (see Where to save what table). requires and attachments are JSON strings, not arrays. The server decides the outcome and the text must be relayed to the user: created (live, assigned, enabled), pending_approval, or rejected with a reason (no_producer_skill, cannot_use_agent, validation, name_taken). A tenant admin gets a live skill without opening the web UI. Anyone else who can operate the agent gets one open proposal (a new call overwrites it). Viewers and agents without an enabled producer skill are rejected and nothing is stored. Missing tools are listed; this call does not grant them. This tool cannot create or mark a producer skill.',
           inputSchema: conversationSkillSubmitSchema,
         },
         async (args) =>
@@ -1220,7 +1220,7 @@ async function createMcpResourceHandler(
         {
           title: 'Write work file',
           description:
-            'Create or overwrite a work file under the project (plans, notes, drafts). No approval; quota-capped. Do not write these into the checkout folder. Pass projectKey; omit for __general__.',
+            'Create or overwrite a work file under the project (plans, notes, drafts). No approval; quota-capped. Do not write these into the checkout folder. Pass projectKey; omit for __general__. See the Where to save what table — work files are not memory.',
           inputSchema: workFileWriteInputSchema,
         },
         async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_WRITE_TOOL, args, deps),
@@ -1250,7 +1250,7 @@ async function createMcpResourceHandler(
         {
           title: 'Write project memory',
           description:
-            'Write a project-memory item for this agent (decision, open_task, finding, constraint, artifact, handoff_summary, focus, session_log). First call platform.project_memory.read for the same projectKey: if an item already covers this subject (including when the user corrects or changes it), pass its id as replaceId with the merged, current text — do not add a second item. If several items are outdated by the same change, write ONE item: replaceId for one, mergeIds for the rest. Write only what is valid now; do not keep "this is outdated" notes. If other similar active items would remain, the server answers possible_duplicate with candidates and writes nothing; then retry with replaceId/mergeIds, or confirmNew=true if none match. focus is the current state (what we are doing now, the next step, what we wait for), at most 3000 characters: there is only ever one active focus per agent and project, and this write always replaces it — no replaceId, no duplicate check. Rewrite it when a task closes or the direction changes. session_log is append-only when a task or conversation ends (what you did, outcome, where outputs live, next step): never replaceId, no duplicate check. The work plan itself belongs in a work file; store only a pointer here. The server stamps the calling user as conversation partner — do not name them. Cannot change trained operating rules. Approval-mode agents return awaiting_approval + approvalUrl; direct-mode agents write immediately. Personal facts (vacation, private preference) do not belong here unless they constrain the project.',
+            'Write a project-memory item for this agent (decision, open_task, finding, constraint, artifact, handoff_summary, focus, session_log). See the Where to save what table before writing — short facts and decisions only; operating rules belong in platform.skills.submit, reference material in kb_ingest, plans in platform.work_file.write. The server returns wrong_placement when the body looks like a rule or long document. First call platform.project_memory.read for the same projectKey: if an item already covers this subject (including when the user corrects or changes it), pass its id as replaceId with the merged, current text — do not add a second item. If several items are outdated by the same change, write ONE item: replaceId for one, mergeIds for the rest. Write only what is valid now; do not keep "this is outdated" notes. If other similar active items would remain, the server answers possible_duplicate with candidates and writes nothing; then retry with replaceId/mergeIds, or confirmNew=true if none match. focus is the current state (what we are doing now, the next step, what we wait for), at most 3000 characters: there is only ever one active focus per agent and project, and this write always replaces it — no replaceId, no duplicate check. Rewrite it when a task closes or the direction changes. session_log is append-only when a task or conversation ends (what you did, outcome, where outputs live, next step): never replaceId, no duplicate check. The work plan itself belongs in a work file; store only a pointer here. The server stamps the calling user as conversation partner — do not name them. Cannot change trained operating rules. Approval-mode agents return awaiting_approval + approvalUrl; direct-mode agents write immediately. Personal facts (vacation, private preference) do not belong here unless they constrain the project.',
           inputSchema: projectMemoryWriteInputSchema,
         },
         async (args) => projectWorkToolResult(principal, MCP_PROJECT_MEMORY_WRITE_TOOL, args, deps),
@@ -1291,7 +1291,7 @@ async function createMcpResourceHandler(
         {
           title: 'Upload Google Drive file',
           description:
-            'Request upload of a text file (HTML, CSV, JSON) to the user\'s Drive. Pass definitionId from platform.agent.get_definition. Does not call Google until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+            'Request upload of a text file (HTML, CSV, JSON) to the user\'s Drive — finished deliverables for humans (see Where to save what table). Pass definitionId from platform.agent.get_definition. Does not call Google until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
           inputSchema: googleDriveUploadFileInputSchema,
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_UPLOAD_FILE_TOOL, args, deps),
@@ -1482,7 +1482,7 @@ async function createMcpResourceHandler(
         {
           title: 'Ingest knowledge base file',
           description:
-            'Load a file into the agent knowledge base. processingMode=raw_text_only keeps the extracted text; okf splits it into a wiki. Optional purpose is one line on what the file is for. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
+            'Load a file into the agent knowledge base (reference documents and knowledge material — see Where to save what table). processingMode=raw_text_only keeps the extracted text; okf splits it into a wiki. Optional purpose is one line on what the file is for. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
           inputSchema: kbIngestInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_INGEST_TOOL, args, deps),

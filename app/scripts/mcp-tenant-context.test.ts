@@ -85,6 +85,8 @@ check('buildMcpServerInstructions includes org intro and coworkers', () => {
   assert.match(text, /http_api_get_all only when the endpoint has pagination/)
   assert.match(text, /gmail_send/)
   assert.match(text, /never answer that email sending is unavailable/)
+  assert.match(text, /WHERE TO SAVE WHAT/)
+  assert.match(text, /platform\.skills\.submit/)
 })
 
 check('buildMcpServerInstructions marks single coworker as default checkout target', () => {
