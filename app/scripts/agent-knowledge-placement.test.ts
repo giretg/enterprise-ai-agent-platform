@@ -4,10 +4,10 @@
  */
 import assert from 'node:assert/strict'
 import {
-  classifyKnowledgeSaveIntent,
   detectMisplacedMemoryWrite,
   KNOWLEDGE_PLACEMENT_TABLE,
   renderKnowledgePlacementBlock,
+  type KnowledgePlacementTarget,
 } from '../src/lib/agent-knowledge-placement'
 import { buildMcpServerInstructions } from '../src/lib/mcp-tenant-context'
 import { renderAgentBriefing } from '../src/lib/agent-checkout'
@@ -94,8 +94,51 @@ check('detectMisplacedMemoryWrite allows short fact', () => {
   )
 })
 
+// Harness-eval-only keyword classifier: the prod path warns via
+// detectMisplacedMemoryWrite, it never routes on these keywords.
+const SAVE_STOP = new Set(['meg', 'ment', 'mentsd', 'jegyezd', 'tedd', 'the', 'and', 'for', 'hogy', 'egy'])
+
+function saveTokens(value: string): string[] {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((token) => token.length > 2 && !SAVE_STOP.has(token))
+}
+
+function hayHasAny(hay: Set<string>, needles: string[]): boolean {
+  return needles.some((needle) => hay.has(needle) || [...hay].some((token) => token.includes(needle)))
+}
+
+function classifyKnowledgeSaveIntent(request: string): KnowledgePlacementTarget {
+  const hay = new Set(saveTokens(request))
+  const raw = request.toLowerCase()
+
+  if (hayHasAny(hay, ['fokusz', 'focus', 'most', 'dolgozunk', 'working', 'now'])) {
+    if (hayHasAny(hay, ['most', 'dolgozunk', 'working', 'folyamatban', 'now'])) return 'focus'
+  }
+  if (hayHasAny(hay, ['ma', 'today', 'tortent', 'happened', 'naplo', 'session'])) return 'session_log'
+  if (hayHasAny(hay, ['drive', 'feltolt', 'upload', 'kesz', 'deliverable', 'human'])) return 'drive'
+  if (
+    hayHasAny(hay, ['tudasbazis', 'knowledge', 'dokumentacio', 'documentation', 'pdf', 'wiki', 'anyag', 'referencia'])
+  ) {
+    return 'knowledge_base'
+  }
+  if (hayHasAny(hay, ['terv', 'plan', 'jegyzet', 'notes', 'draft', 'piszkozat', 'munkafajl', 'workfile'])) {
+    return 'work_file'
+  }
+  if (
+    hayHasAny(hay, ['szabaly', 'rule', 'eljaras', 'procedure', 'policy', 'mindig', 'kovetendo', 'operating']) ||
+    /így csináljuk|how we do/i.test(raw)
+  ) {
+    return 'skill'
+  }
+  return 'project_memory'
+}
+
 check('#659 eval: 10 save/remember requests, at least 9/10 pick the right target', () => {
-  const cases: Array<[string, ReturnType<typeof classifyKnowledgeSaveIntent>]> = [
+  const cases: Array<[string, KnowledgePlacementTarget]> = [
     ['Jegyezd meg, a főiroda Szegeden van.', 'project_memory'],
     ['Mentsd el: mindig két review kell a blog előtt', 'skill'],
     ['Töltsd fel a havi riport PDF-et a tudásbázisba', 'knowledge_base'],

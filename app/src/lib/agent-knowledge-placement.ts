@@ -33,48 +33,6 @@ export function renderKnowledgePlacementBlock(): string {
   ].join('\n')
 }
 
-/** ponytail: keyword/heuristic classifier for harness eval only; upgrade path = labeled eval set + model router. */
-const SAVE_STOP = new Set(['meg', 'ment', 'mentsd', 'jegyezd', 'tedd', 'the', 'and', 'for', 'hogy', 'egy'])
-
-function saveTokens(value: string): string[] {
-  return value
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter((token) => token.length > 2 && !SAVE_STOP.has(token))
-}
-
-function hayHasAny(hay: Set<string>, needles: string[]): boolean {
-  return needles.some((needle) => hay.has(needle) || [...hay].some((token) => token.includes(needle)))
-}
-
-export function classifyKnowledgeSaveIntent(request: string): KnowledgePlacementTarget {
-  const hay = new Set(saveTokens(request))
-  const raw = request.toLowerCase()
-
-  if (hayHasAny(hay, ['fokusz', 'focus', 'most', 'dolgozunk', 'working', 'now'])) {
-    if (hayHasAny(hay, ['most', 'dolgozunk', 'working', 'folyamatban', 'now'])) return 'focus'
-  }
-  if (hayHasAny(hay, ['ma', 'today', 'tortent', 'happened', 'naplo', 'session'])) return 'session_log'
-  if (hayHasAny(hay, ['drive', 'feltolt', 'upload', 'kesz', 'deliverable', 'human'])) return 'drive'
-  if (
-    hayHasAny(hay, ['tudasbazis', 'knowledge', 'dokumentacio', 'documentation', 'pdf', 'wiki', 'anyag', 'referencia'])
-  ) {
-    return 'knowledge_base'
-  }
-  if (hayHasAny(hay, ['terv', 'plan', 'jegyzet', 'notes', 'draft', 'piszkozat', 'munkafajl', 'workfile'])) {
-    return 'work_file'
-  }
-  if (
-    hayHasAny(hay, ['szabaly', 'rule', 'eljaras', 'procedure', 'policy', 'mindig', 'kovetendo', 'operating']) ||
-    /így csináljuk|how we do/i.test(raw)
-  ) {
-    return 'skill'
-  }
-  return 'project_memory'
-}
-
 export type MisplacedMemoryWrite = {
   suggest: KnowledgePlacementTarget
   reason: 'procedure' | 'document'
