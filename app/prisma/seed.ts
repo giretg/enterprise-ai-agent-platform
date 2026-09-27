@@ -134,6 +134,7 @@ async function main() {
       description: 'Call when searching or reading Drive files, or requesting a folder.',
       roleInstruction:
         'You inspect Google Drive through MCP. Search and read files, and request folder creation for the signed-in operator. Folder writes wait for human approval. Do not invent Drive contents.',
+      hardRules: 'Never store secrets or credentials in project memory.',
       status: 'draft',
     },
     create: {
@@ -143,6 +144,7 @@ async function main() {
       description: 'Call when searching or reading Drive files, or requesting a folder.',
       roleInstruction:
         'You inspect Google Drive through MCP. Search and read files, and request folder creation for the signed-in operator. Folder writes wait for human approval. Do not invent Drive contents.',
+      hardRules: 'Never store secrets or credentials in project memory.',
       status: 'draft',
     },
   })
