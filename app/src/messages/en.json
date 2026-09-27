@@ -820,7 +820,13 @@
     "modeRawDesc": "The text goes into the knowledge base as uploaded, and is searchable immediately.",
     "modeWiki": "Convert to wiki format",
     "modeWikiDesc": "A wiki split into pages, with kb_list_index / kb_get_page navigation.",
-    "modeUnset": "Mode not selected"
+    "modeUnset": "Mode not selected",
+    "languageTitle": "Knowledge base language",
+    "languageBody": "Search is most accurate in this language; stemming and stop-word filtering follow it.",
+    "languageTenantNote": "Defaults to the tenant language (currently: {label}), but can be set independently here.",
+    "languageSaved": "Knowledge base language is now: {label}.",
+    "docLanguageLabel": "Language:",
+    "docLanguageInherited": "Knowledge base language (inherited)"
   },
   "PlatformIam": {
     "grantTitle": "Grant a platform role",

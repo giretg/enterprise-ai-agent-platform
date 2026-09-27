@@ -4,6 +4,7 @@
  */
 
 import { COMMON_HTTP_PAGE_SIZES, requiresHttpApiGetAll } from '@/lib/http-api-pagination-signals'
+import type { TenantLanguage } from '@/lib/tenant-language'
 
 export type HttpApiCatalogParam = {
   name: string
@@ -34,11 +35,12 @@ export type HttpApiCatalogEndpoint = {
 /** Query param lista emberi formában (katalógus / 4xx hint). */
 export function formatHttpApiQueryParamsHint(
   params: readonly HttpApiCatalogParam[] | undefined,
+  language: TenantLanguage = 'hu',
 ): string {
   if (!params || params.length === 0) return ''
   const parts = params.map((p) => {
     const type = p.type ? `:${p.type}` : ''
-    const req = p.required ? ', kötelező' : ''
+    const req = p.required ? (language === 'en' ? ', required' : ', kötelező') : ''
     const desc = p.description ? ` — ${p.description}` : ''
     return `${p.name}${type}${req}${desc}`
   })
@@ -61,12 +63,15 @@ export function formatHttpApiPathParamsHint(
  * Endpoint sor a modell-katalógushoz: method path, description, query/path/header.
  * Titkot nem tartalmaz.
  */
-export function formatHttpApiEndpointCatalogSuffix(endpoint: HttpApiCatalogEndpoint): string {
+export function formatHttpApiEndpointCatalogSuffix(
+  endpoint: HttpApiCatalogEndpoint,
+  language: TenantLanguage = 'hu',
+): string {
   const query =
-    formatHttpApiQueryParamsHint(resolveQueryParams(endpoint)) ||
+    formatHttpApiQueryParamsHint(resolveQueryParams(endpoint), language) ||
     ''
   const pathParams = formatHttpApiPathParamsHint(resolvePathParams(endpoint))
-  const headers = formatCallerHeaderHint(endpoint)
+  const headers = formatCallerHeaderHint(endpoint, language)
   const bits = [query, pathParams, headers].filter(Boolean)
   return bits.length > 0 ? ` — ${bits.join(' | ')}` : ''
 }
@@ -76,30 +81,45 @@ export function buildHttpApiClientErrorHint(input: {
   status: number
   endpoint?: HttpApiCatalogEndpoint | null
   usedQueryKeys?: readonly string[]
+  /** #717 B réteg — alapértelmezés `hu` = mai szöveg. */
+  language?: TenantLanguage
 }): string | undefined {
+  const language: TenantLanguage = input.language ?? 'hu'
+  const en = language === 'en'
   if (input.status < 400 || input.status >= 500) return undefined
   const allowed = resolveQueryParams(input.endpoint ?? undefined)
   if (!allowed || allowed.length === 0) {
     if (input.status === 422 || input.status === 400) {
-      return (
-        'A kérés elutasítva. Ne találj ki új query mezőneveket — csak a connector ' +
-        'endpoint-katalógusában szereplő paramétereket használd. Ha nincs dokumentált ' +
-        'szűrő, aggregált/report végpontot keress, ne dumpold a teljes listát.'
-      )
+      return en
+        ? 'Request rejected. Do not invent new query field names — use only parameters ' +
+          'from the connector endpoint catalog. If no documented filter exists, ' +
+          'look for an aggregated/report endpoint instead of dumping the whole list.'
+        : 'A kérés elutasítva. Ne találj ki új query mezőneveket — csak a connector ' +
+          'endpoint-katalógusában szereplő paramétereket használd. Ha nincs dokumentált ' +
+          'szűrő, aggregált/report végpontot keress, ne dumpold a teljes listát.'
     }
     return undefined
   }
-  const allowedHint = formatHttpApiQueryParamsHint(allowed)
+  const allowedHint = formatHttpApiQueryParamsHint(allowed, language)
   const used = (input.usedQueryKeys ?? []).filter(Boolean)
   const unknown = used.filter(
     (k) => !allowed.some((p) => p.name.toLowerCase() === k.toLowerCase()),
   )
-  const parts = [
-    `Engedélyezett query paraméterek ezen az endpointon: ${allowedHint}.`,
-    'Ne tippelj más mezőneveket.',
-  ]
+  const parts = en
+    ? [
+        `Allowed query parameters on this endpoint: ${allowedHint}.`,
+        'Do not guess other field names.',
+      ]
+    : [
+        `Engedélyezett query paraméterek ezen az endpointon: ${allowedHint}.`,
+        'Ne tippelj más mezőneveket.',
+      ]
   if (unknown.length > 0) {
-    parts.push(`Ismeretlen / nem dokumentált query kulcsok a hívásban: ${unknown.join(', ')}.`)
+    parts.push(
+      en
+        ? `Unknown / undocumented query keys in the call: ${unknown.join(', ')}.`
+        : `Ismeretlen / nem dokumentált query kulcsok a hívásban: ${unknown.join(', ')}.`,
+    )
   }
   return parts.join(' ')
 }
@@ -108,7 +128,16 @@ export function buildHttpApiClientErrorHint(input: {
 export function buildHttpApiOversizedResponseHint(input: {
   originalChars: number
   maxChars: number
+  language?: TenantLanguage
 }): string {
+  if ((input.language ?? 'hu') === 'en') {
+    return (
+      `Large response (${input.originalChars} chars, soft limit ${input.maxChars}). ` +
+      'The full body is preserved for the tool pipeline (get_all / archive). For the model: ' +
+      "don't dump it into context — use the documented query/filter, http_api_get_all, " +
+      'or tool_result_extract on the workspace copy; no chunked file_read.'
+    )
+  }
   return (
     `A válasz nagy (${input.originalChars} karakter, soft limit ${input.maxChars}). ` +
     'A teljes body megmaradt a tool-pipeline számára (get_all / archive). A modellnek: ' +
@@ -125,6 +154,7 @@ export function buildHttpApiTruncationBody(input: {
   originalChars: number
   maxChars: number
   preview: string
+  language?: TenantLanguage
 }): {
   truncated: true
   originalChars: number
@@ -132,16 +162,21 @@ export function buildHttpApiTruncationBody(input: {
   preview: string
   hint: string
 } {
+  const en = (input.language ?? 'hu') === 'en'
   return {
     truncated: true,
     originalChars: input.originalChars,
     maxChars: input.maxChars,
     preview: input.preview,
-    hint:
-      `A válasz túl nagy (${input.originalChars} karakter, limit ${input.maxChars}), és nem sikerült ` +
-      'teljes JSON-ként megőrizni. Használj: (1) dokumentált query/szűrőt, ' +
-      '(2) http_api_get_all kisebb pageSize-zal, (3) specifikusabb path-ot (egyedi rekord), ' +
-      '(4) ha lista kell: tool_result_extract a munkaterületi másolaton.',
+    hint: en
+      ? `Response too large (${input.originalChars} chars, limit ${input.maxChars}), and it could not be ` +
+        'preserved as full JSON. Use: (1) a documented query/filter, ' +
+        '(2) http_api_get_all with a smaller pageSize, (3) a more specific path (single record), ' +
+        '(4) for a list: tool_result_extract on the workspace copy.'
+      : `A válasz túl nagy (${input.originalChars} karakter, limit ${input.maxChars}), és nem sikerült ` +
+        'teljes JSON-ként megőrizni. Használj: (1) dokumentált query/szűrőt, ' +
+        '(2) http_api_get_all kisebb pageSize-zal, (3) specifikusabb path-ot (egyedi rekord), ' +
+        '(4) ha lista kell: tool_result_extract a munkaterületi másolaton.',
   }
 }
 
@@ -149,7 +184,18 @@ export function buildHttpApiTruncationBody(input: {
  * Minden körben látható HTTP hatékonysági útmutató (nem connector-specifikus).
  * Analitikus / multi-period feladatokra is általános.
  */
-export function buildHttpApiEfficiencyGuidance(): string {
+export function buildHttpApiEfficiencyGuidance(language: TenantLanguage = 'hu'): string {
+  if (language === 'en') {
+    return [
+      'Efficient HTTP API use:',
+      '- First use the documented query/path parameters from the connector endpoint catalog — never invent field names (not after 422/400 either).',
+      '- For a large paged list use http_api_get_all (one call), not a page=1,2,3… http_api_get series.',
+      '- Ownership / partner / ownerships / large rosters: http_api_get_all is MANDATORY — plain get often returns only the first page (e.g. 50 rows).',
+      '- Period / comparison / top-N analytics: aggregated or report/query endpoint + period params; do NOT dump the full order/account list, and do NOT substitute another proxy metric (e.g. rolling health) when the requested period data is missing — say so.',
+      '- After an unfiltered listing, do not walk through dozens of individual detail endpoints; top-N / search / filter first.',
+      '- After archiving a large JSON: tool_result_extract (arrayPath if needed) → reconcile/xlsx; NEVER chunk the same file with file_read. For ownership reconciliation the get_all tool-output path works directly too.',
+    ].join('\n')
+  }
   return [
     'Hatékony HTTP API használat:',
     '- Először a connector endpoint-katalógus dokumentált query/path paramétereit használd — ne találj ki mezőneveket (422/400 után sem).',
@@ -169,7 +215,9 @@ export function buildHttpApiLikelyPaginatedHint(input: {
   path: string
   body: unknown
   itemCount?: number | null
+  language?: TenantLanguage
 }): string | null {
+  const en = (input.language ?? 'hu') === 'en'
   const path = (input.path ?? '').trim()
   if (!path) return null
 
@@ -186,13 +234,17 @@ export function buildHttpApiLikelyPaginatedHint(input: {
   if (!listPath && count < 20) return null
 
   if (listPath || roundPage) {
-    return (
-      `FIGYELEM: a(z) "${path}" válasz ${count} sort tartalmaz` +
-      (roundPage ? ` (gyakori pageSize: ${count})` : '') +
-      '. Ez gyakran CSAK az első oldal. Nagy névsor / ownership listához hívd ÚJRA ' +
-      'http_api_get_all-lal ugyanezzel a path-dal — ne tool_result_extract-eld ezt egyeztetéshez, ' +
-      'amíg a teljes lista nincs meg.'
-    )
+    return en
+      ? `WARNING: "${path}" returned ${count} rows` +
+          (roundPage ? ` (common pageSize: ${count})` : '') +
+          '. This is often ONLY the first page. For a large roster / ownership list call ' +
+          'http_api_get_all again with the same path — do not tool_result_extract this for reconciliation ' +
+          'until the full list is in.'
+      : `FIGYELEM: a(z) "${path}" válasz ${count} sort tartalmaz` +
+          (roundPage ? ` (gyakori pageSize: ${count})` : '') +
+          '. Ez gyakran CSAK az első oldal. Nagy névsor / ownership listához hívd ÚJRA ' +
+          'http_api_get_all-lal ugyanezzel a path-dal — ne tool_result_extract-eld ezt egyeztetéshez, ' +
+          'amíg a teljes lista nincs meg.'
   }
   return null
 }
@@ -246,7 +298,8 @@ function paramsWithIn(
   return out.length > 0 ? out : undefined
 }
 
-function formatCallerHeaderHint(endpoint: HttpApiCatalogEndpoint): string {
+function formatCallerHeaderHint(endpoint: HttpApiCatalogEndpoint, language: TenantLanguage = 'hu'): string {
+  const en = language === 'en'
   const source = Array.isArray(endpoint.headerParams)
     ? endpoint.headerParams
     : Array.isArray(endpoint.parameters)
@@ -254,7 +307,8 @@ function formatCallerHeaderHint(endpoint: HttpApiCatalogEndpoint): string {
       : []
   const headers = source.flatMap((param) => {
     if (!param || typeof param.name !== 'string' || !param.name.trim()) return []
-    return [`${param.name}${param.required === true ? ' (kötelező)' : ' (opcionális)'}`]
+    const req = param.required === true ? (en ? ' (required)' : ' (kötelező)') : en ? ' (optional)' : ' (opcionális)'
+    return [`${param.name}${req}`]
   })
-  return headers.length > 0 ? `Hívói fejlécek: ${headers.join(', ')}` : ''
+  return headers.length > 0 ? (en ? `Caller headers: ${headers.join(', ')}` : `Hívói fejlécek: ${headers.join(', ')}`) : ''
 }

@@ -16,6 +16,7 @@ import {
   GENERIC_SCOPE_DENIED_REASON,
   registeredDelegatedProviderTypes,
 } from './delegated-oauth-registry'
+import type { TenantLanguage } from '@/lib/tenant-language'
 
 /**
  * A grant-kapu okai. A `connector_scope_not_granted` a kanonikus scope-hiány;
@@ -229,6 +230,29 @@ export const CONNECTOR_GRANT_NEEDED_CHAT_PROMPT =
 
 export const CONNECTOR_GRANT_NEEDED_TICKET_NOTE =
   'Hozzáférés megadva — folytasd a feladatot a korábban elutasított külső fiókos lépéssel; ne kezdd elölről.'
+
+/**
+ * #717 B réteg: a fenti két modellnek szóló szöveg a tenant nyelvén.
+ * Alapértelmezés `hu` = a fenti konstansok.
+ */
+export function connectorGrantNeededChatPrompt(language: TenantLanguage = 'hu'): string {
+  if (language === 'en') {
+    return (
+      'The user has granted the requested account access (OAuth). ' +
+      'The previously refused delegated tools can now run. ' +
+      'Continue the task: call the needed tool again and finish what you started. ' +
+      "Don't ask for access again, don't say the account is not connected."
+    )
+  }
+  return CONNECTOR_GRANT_NEEDED_CHAT_PROMPT
+}
+
+export function connectorGrantNeededTicketNote(language: TenantLanguage = 'hu'): string {
+  if (language === 'en') {
+    return 'Access granted — continue the task with the previously refused external-account step; do not start over.'
+  }
+  return CONNECTOR_GRANT_NEEDED_TICKET_NOTE
+}
 
 export function readConnectorGrantNeedsFromPayload(payload: unknown): ConnectorGrantNeededCard[] {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return []

@@ -45,6 +45,7 @@ import {
 } from '@/lib/agent-checkout'
 import { localRootsDefinitionBlock, withLocalRootsMemoryNote } from '@/lib/agent-local-roots'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
+import { readTenantLanguage } from '@/lib/tenant-language'
 import {
   GMAIL_CREATE_DRAFT_TOOL,
   GMAIL_GET_MESSAGE_TOOL,
@@ -682,9 +683,10 @@ async function getDefinitionToolResult(
     agentId: loaded.agentId,
   })
   if (!allowed) return definitionNotFound()
-  const [memoryContext, skills] = await Promise.all([
+  const [memoryContext, skills, tenant] = await Promise.all([
     readMemoryContext(principal, loaded.definitionId, loaded.agentId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
+    deps.tenants.findById(principal.tenantId),
   ])
   const approverName = await deps.loadAgentApproverName?.({
     tenantId: principal.tenantId,
@@ -705,6 +707,8 @@ async function getDefinitionToolResult(
       recentSessionLogs: memoryContext.recentSessionLogs?.entries,
       handoffs: memoryContext.handoffs?.entries,
       approverName: approverName ?? null,
+      // #717 B réteg: a briefing platform-szövegei a tenant kimeneti nyelvén.
+      language: readTenantLanguage(tenant?.settings),
     }),
     ...loaded,
     contentHash: hashSnapshot(loaded.snapshot),
@@ -1007,12 +1011,22 @@ async function agentPromptResult(
     throw new Error('Agent not found')
   }
   const skills = await deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId))
+  const tenant = await deps.tenants.findById(principal.tenantId)
   return {
     description: hermesBotTitle(loaded.snapshot),
     messages: [
       {
         role: 'user' as const,
-        content: { type: 'text' as const, text: renderAgentPrompt({ definition: loaded, skills, task, bound }) },
+        content: {
+          type: 'text' as const,
+          text: renderAgentPrompt({
+            definition: loaded,
+            skills,
+            task,
+            bound,
+            language: readTenantLanguage(tenant?.settings),
+          }),
+        },
       },
     ],
   }
