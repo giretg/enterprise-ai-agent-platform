@@ -680,6 +680,50 @@ await check('#657 memory index lists every item; ids return only requested bodie
   assert.equal(empty.nextOffset, null)
 })
 
+await check('#658 session_log: append-only, excluded from index, recent headlines', async () => {
+  const { svc, memory } = harness('direct')
+  const write = (args: Record<string, unknown>) =>
+    svc.writeMemory({
+      tenantId: TENANT,
+      agentId: AGENT,
+      withUserId: ANNA,
+      mode: 'direct',
+      kind: 'session_log',
+      title: String(args.title ?? ''),
+      body: String(args.body),
+      replaceId: typeof args.replaceId === 'string' ? args.replaceId : undefined,
+    })
+
+  const first = await write({ title: 'POS riport kész', body: 'Elkészült a heti riport. Következő: küldés.' })
+  assert.equal(first.ok && first.status, 'written')
+  const second = await write({ title: 'Riport elküldve', body: 'Anna jóváhagyta a küldést.' })
+  assert.equal(second.ok && second.status, 'written')
+  if (!first.ok || !second.ok || first.status !== 'written' || second.status !== 'written') return
+  assert.notEqual(first.item.id, second.item.id)
+  assert.match(first.item.body, /Anna$/)
+
+  const blocked = await write({ title: 'Nem megy', body: 'replace tiltva', replaceId: first.item.id })
+  assert.equal(blocked.ok, false)
+  if (blocked.ok) return
+  assert.equal(blocked.code, 'invalid_memory_kind')
+
+  const read = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
+  assert.equal(read.ok && read.recentSessionLogs?.length, 2)
+  const titles = read.ok ? new Set(read.recentSessionLogs?.map((row) => row.title)) : new Set()
+  assert.deepEqual(titles, new Set(['POS riport kész', 'Riport elküldve']))
+  assert.equal(read.ok && read.index?.totalCount, 0)
+
+  const ids = await svc.readMemory({
+    tenantId: TENANT,
+    agentId: AGENT,
+    callerUserId: ANNA,
+    ids: [first.item.id],
+  })
+  assert.equal(ids.ok && ids.items?.length, 1)
+  assert.equal(memory.rows.get(first.item.id)?.status, 'active')
+  assert.equal(memory.rows.get(second.item.id)?.status, 'active')
+})
+
   console.log(failures === 0 ? '\nOK project-work' : `\nFAIL ${failures}`)
   if (failures > 0) process.exit(1)
 }

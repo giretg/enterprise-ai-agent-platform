@@ -1,0 +1,2 @@
+ALTER TABLE "agents" ADD COLUMN "hard_rules" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "agents" ADD COLUMN "trained_rules" TEXT NOT NULL DEFAULT '';

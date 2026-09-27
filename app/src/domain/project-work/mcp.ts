@@ -130,15 +130,24 @@ export const projectMemoryWriteInputSchema = z
     definitionId,
     projectKey,
     kind: z
-      .enum(['decision', 'open_task', 'finding', 'constraint', 'artifact', 'handoff_summary', 'focus'])
+      .enum([
+        'decision',
+        'open_task',
+        'finding',
+        'constraint',
+        'artifact',
+        'handoff_summary',
+        'focus',
+        'session_log',
+      ])
       .describe(
-        `focus = current state (see ${KNOWLEDGE_PLACEMENT_TABLE_REF}). Any other kind is a short company fact or decision — not a rule, plan, or document; those return wrong_placement with the suggested tool.`,
+        `focus = the agent's current state (what we are doing now, the next step, what we wait for). There is only ever one active focus per agent and project: this write always replaces it. session_log = append-only work journal when a task or conversation ends (what you did, outcome, next step) — never use replaceId. Any other kind is a short company fact or decision — not a rule, plan, or document; those return wrong_placement with the suggested tool. ${KNOWLEDGE_PLACEMENT_TABLE_REF}`,
       ),
     title: z
       .string()
       .max(200)
       .optional()
-      .describe('Short label. Optional for focus (defaults to "Fókusz").'),
+      .describe('Short label. Optional for focus (defaults to "Fókusz") and session_log (defaults to "Session log").'),
     body: z
       .string()
       .min(1)
