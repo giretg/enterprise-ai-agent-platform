@@ -275,6 +275,25 @@ async function main() {
     assert.ok(renderAgentPrompt({ definition: def, skills, bound: true }).includes(bound))
   })
 
+  await check('#660 briefing includes published rules in full with override hint (blog / Csilla eval)', () => {
+    const csillaRule = 'Do not publish blog posts without Csilla approval.'
+    const def = definition({
+      snapshot: {
+        ...definition().snapshot,
+        rules: [
+          { text: csillaRule, source: 'hard' },
+          { text: 'Never store secrets in project memory.', source: 'hard' },
+        ],
+      },
+    })
+    const briefing = renderAgentBriefing({ definition: def, skills: [] })
+    assert.match(briefing, /## Published agent rules/)
+    assert.match(briefing, /override a conflicting user request/)
+    assert.match(briefing, /stop, name the rule/)
+    assert.ok(briefing.includes(csillaRule))
+    assert.match(briefing, /Never store secrets in project memory\./)
+  })
+
   await check('#658 briefing lists recent session log titles when provided', () => {
     const def = definition()
     const skills = [skill(SKILL_A, VER_A, 'drive-search')]

@@ -12,10 +12,14 @@
  * snapshot gate — otherwise every live skill is silently dropped from checkout.
  *
  * Snapshots never contain secrets, `tokenRef`, `secretAlias`, `modelConfig`,
- * memory, session, queue, or Clerk ids.
+ * session, queue, or Clerk ids. They may contain published hard/trained rule text.
  */
 import { createHash } from 'node:crypto'
 import type { Agent, AgentDefinitionVersion, AgentStatus, Prisma } from '@prisma/client'
+import {
+  collectSnapshotRules,
+  type AgentDefinitionSnapshotRule,
+} from '@/domain/agent-definition/snapshot-rules'
 import type {
   AgentDefinitionRepository,
   AgentRepository,
@@ -35,10 +39,15 @@ import {
 export const AGENT_SCOPE_REQUIRED =
   'A közzétételhez add meg a felelősségi kört: mikor ezt a munkatársat hívd.'
 
+export type { AgentDefinitionSnapshotRule, AgentDefinitionRuleSource } from '@/domain/agent-definition/snapshot-rules'
+export { collectSnapshotRules, renderSnapshotRulesBriefingBlock, SNAPSHOT_RULES_OVERRIDE_HINT } from '@/domain/agent-definition/snapshot-rules'
+
 export type AgentDefinitionSnapshot = {
   name: string
   roleInstruction: string
   description?: string | null
+  /** Befagyasztott megszeghetetlen + betanított szabályok (#660). Hiányzik a régi snapshotokban. */
+  rules?: AgentDefinitionSnapshotRule[]
   /** entry: the agent's entry (orchestrating) skill — every new task starts by reading it. */
   skills: Array<{ skillId: string; skillVersionId: string; name: string; entry?: true }>
   connectors: Array<{
@@ -173,7 +182,14 @@ async function resolveHttpApiConnectorMeta(
 }
 
 async function buildSnapshot(
-  agent: { tenantId: string; name: string; roleInstruction: string; description?: string | null },
+  agent: {
+    tenantId: string
+    name: string
+    roleInstruction: string
+    description?: string | null
+    hardRules?: string
+    trainedRules?: string
+  },
   workingSet: Pick<DraftWorkingSet, 'enabledSkills' | 'connectors' | 'capabilities'>,
   connectors?: Pick<ConnectorRepository, 'findById'>,
 ): Promise<AgentDefinitionSnapshot> {
@@ -194,6 +210,7 @@ async function buildSnapshot(
     name: agent.name,
     roleInstruction: agent.roleInstruction,
     description: agent.description ?? null,
+    rules: collectSnapshotRules(agent),
     skills: workingSet.enabledSkills
       .filter((row) => row.skillVersion.status === 'active')
       .map((row) => ({
