@@ -68,8 +68,8 @@ export type AgentDefinitionSnapshot = {
   }>
   capabilities: Array<{ toolName: string; allowed: boolean }>
   /**
-   * Operator-machine coding folders (#729). Hint, not a grant. Omitted when empty
-   * so snapshots published before this field keep their contentHash.
+   * Candidate coding folders across machines (#729). Hints, not a grant, not ranked.
+   * Omitted when empty so snapshots published before this field keep their contentHash.
    */
   localRoots?: string[]
 }

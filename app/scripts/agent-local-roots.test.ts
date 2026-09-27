@@ -51,6 +51,7 @@ function main() {
     assert.deepEqual(localRootsDefinitionBlock([]), {})
     const block = localRootsDefinitionBlock(['~/Projects/platform'])
     assert.deepEqual(block.localRoots?.paths, ['~/Projects/platform'])
+    assert.match(block.localRoots?.note ?? '', /across machines/)
     assert.match(block.localRoots?.note ?? '', /Hints, not a grant/)
     assert.equal(withLocalRootsMemoryNote('Catalog.', []), 'Catalog.')
     assert.match(withLocalRootsMemoryNote('Catalog.', ['~/x']), /see localRoots/)

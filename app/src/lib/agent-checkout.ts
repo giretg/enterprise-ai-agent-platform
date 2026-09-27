@@ -122,7 +122,7 @@ function hermesWriteRecipe(root: string, profile: string, localRoots: readonly s
   ]
   if (localRoots.length > 0) {
     lines.push(
-      `6. Coding folders (hints, not a grant): ${localRoots.map((path) => `\`${path}\``).join(', ')}. Ask the user to allow them in Hermes. If Excellence Guard is present, allowlist these paths (also in ROOT/.enterprise-agent/local-roots.json). Do not copy ROOT into those repos.`,
+      `6. Coding folders are candidate hints for different machines, not a grant and not ranked: ${localRoots.map((path) => `\`${path}\``).join(', ')}. On THIS host, check which paths exist and open only those (typically one git clone). If none exist, ask where the repo is — do not guess. Guard may allowlist the union (also in ROOT/.enterprise-agent/local-roots.json) but still only touch paths that exist here. Do not copy ROOT into those repos.`,
     )
   }
   lines.push('', 'Do not run code from the checkout. Do not commit. Do not copy the folder into a code repo.')
@@ -142,18 +142,18 @@ export function checkoutWriteRecipe(
   if (localRoots.length > 0) {
     const listed = localRoots.map((path) => `\`${path}\``).join(', ')
     lines.push(
-      `6. Coding folders (localRoots, hints — the user grants access): ${listed}. Instruction cache stays in suggestedRoot; do not copy it into these repos.`,
+      `6. Coding folders are candidate hints for different machines, not a grant and not ranked: ${listed}. On THIS host, check which paths exist and open only those (typically one git clone). If none exist, ask where the repo is — do not guess, do not open suggestedRoot as the product repo. Instruction cache stays in suggestedRoot.`,
     )
     if (harness === 'codex') {
       lines.push(
-        '   Codex: open the first coding folder with `codex app "<absolute path>"` or “Use an existing folder”. Keep this MCP connection.',
+        '   Codex: `codex app "<absolute path that exists>"` or “Use an existing folder”. Keep this MCP connection.',
       )
     } else if (harness === 'claude') {
-      lines.push('   Claude: File → Open folder (or add a working directory) for each coding folder.')
+      lines.push('   Claude: File → Open folder for the path that exists on this machine.')
     } else if (harness === 'goose') {
-      lines.push('   Goose: set the session working directory to the coding folder.')
+      lines.push('   Goose: set the session working directory to the path that exists on this machine.')
     } else {
-      lines.push('   Open these folders in this app so the agent can read and edit the product git.')
+      lines.push('   Open the path that exists on this machine so the agent can edit the product git.')
     }
   }
   lines.push('', 'Do not run code from the checkout. Do not commit. Do not copy the folder into a code repo.')
@@ -355,7 +355,7 @@ export function renderAgentBriefing(input: {
       '',
       '## Local coding folders',
       '',
-      'This agent may edit product git on the operator machine at these paths (hints — the user must open or grant them in this app):',
+      'Candidate git locations across machines — hints, not a grant, not ranked. On this host use only the paths that exist (typically one clone). If none exist, ask where the repo is on this computer:',
       '',
       ...roots.map((path) => `- \`${path}\``),
       '',

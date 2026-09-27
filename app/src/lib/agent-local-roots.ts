@@ -9,7 +9,7 @@ export const LOCAL_ROOTS_INVALID =
   'Érvénytelen útvonal: soronként egy ~/… vagy abszolút útvonal (pl. ~/Projects/platform). Ne legyen a teljes home, ne tartalmazzon ..-t, és ne legyen relatív.'
 
 export const LOCAL_ROOTS_DEFINITION_NOTE =
-  'Coding folders on the operator machine. Hints, not a grant — the desktop app must open or allow these paths. Instruction checkout stays in suggestedRoot; do not copy it into these repos. Company memory stays on MCP.'
+  'Candidate git locations across machines (laptop, office, WSL). Hints, not a grant, not ranked. On this host use only the paths that exist — typically one clone. If none exist, ask where the repo is on this computer. Instruction checkout stays in suggestedRoot; do not copy it into these repos. Company memory stays on MCP.'
 
 export function isValidLocalRoot(path: string): boolean {
   if (path.length === 0 || path.length > LOCAL_ROOT_MAX_LEN) return false
@@ -56,7 +56,7 @@ export function localRootsDefinitionBlock(paths: readonly string[] | undefined):
 
 export function withLocalRootsMemoryNote(note: string, paths: readonly string[] | undefined): string {
   if (!paths?.length) return note
-  return `${note} Local coding folders: see localRoots on this response (always in full; not catalog items).`
+  return `${note} Candidate coding folders across machines: see localRoots on this response (always in full; not catalog items). Use only a path that exists on this host.`
 }
 
 export function localRootsCheckoutFile(paths: readonly string[]): {

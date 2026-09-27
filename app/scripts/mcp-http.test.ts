@@ -1144,7 +1144,7 @@ async function main() {
     assert.deepEqual(payload.localRoots?.paths, ['~/Projects/platform'])
     assert.match(payload.localRoots?.note ?? '', /Hints, not a grant/)
     assert.match(payload.memoryIndex?.note ?? '', /see localRoots/)
-    assert.match(payload.briefing ?? '', /Local coding folders/)
+    assert.match(payload.briefing ?? '', /across machines/)
     assert.deepEqual(payload.snapshot?.localRoots, ['~/Projects/platform'])
   })
 
