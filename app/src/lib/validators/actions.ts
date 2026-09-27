@@ -27,6 +27,18 @@ export const updateAgentOutputFolderSchema = z.object({
   folderId: z.string().trim().max(200),
 })
 
+export const updateAgentApproverSchema = z.object({
+  agentId: z.string().uuid(),
+  /** Tenant-tag user-id; null = megnevezett jóváhagyó törlése. */
+  approverUserId: z.string().uuid().nullable(),
+})
+
+export const updateConnectorApproverSchema = z.object({
+  connectorId: z.string().uuid(),
+  /** Tenant-tag user-id; null = megnevezett jóváhagyó törlése. */
+  approverUserId: z.string().uuid().nullable(),
+})
+
 export const updateAgentProfileSchema = z
   .object({
     agentId: z.string().uuid(),

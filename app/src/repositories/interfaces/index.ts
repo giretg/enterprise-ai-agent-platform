@@ -88,6 +88,7 @@ export interface AgentRepository {
     memoryWriteMode: Agent['memoryWriteMode']
   }): Promise<Agent>
   updateOutputFolder(input: { agentId: string; folderId: string | null }): Promise<Agent>
+  updateApprover(input: { agentId: string; approverUserId: string | null }): Promise<Agent>
   setCurrentDefinitionVersionId(agentId: string, versionId: string): Promise<Agent>
   activate(agentId: string): Promise<Agent>
   suspend(agentId: string, reason?: string): Promise<Agent>
@@ -322,7 +323,9 @@ export interface ConnectorRepository {
     name: string
     authMode: ConnectorAuthMode
     scope: Connector['scope']
+    config?: Prisma.InputJsonValue
   }): Promise<Connector>
+  updateApprover(input: { connectorId: string; approverUserId: string | null }): Promise<Connector>
 }
 
 export interface ConnectorDraftRepository {

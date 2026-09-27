@@ -127,6 +127,14 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
               <p className="mt-1 text-sm text-ink-soft">
                 {agentDefinitionLabel(row)} · {row.requesterName}
               </p>
+              {row.designatedApproverName ? (
+                <p className="mt-1 text-sm font-medium text-coral-deep">
+                  {row.designatedApproverName} jóváhagyására vár
+                  {row.designatedApproverUserId === row.principalUserId
+                    ? ' — a kérelmező saját magának is jóváhagyhatja'
+                    : ''}
+                </p>
+              ) : null}
               <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink">
                 {argsSummary(row.toolName, row.args, t)}
               </p>

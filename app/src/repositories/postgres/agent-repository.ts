@@ -118,6 +118,13 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
+  async updateApprover(input: { agentId: string; approverUserId: string | null }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: { approverUserId: input.approverUserId },
+    })
+  }
+
   async setCurrentDefinitionVersionId(agentId: string, versionId: string): Promise<Agent> {
     return prisma.agent.update({
       where: { id: agentId },

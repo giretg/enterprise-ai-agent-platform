@@ -7,6 +7,99 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-09-26 — KB-keresés/-olvasás MCP-n (#678, `9be5b023`): nyers FTS-SQL, tenant-határ, HTML-ingest
+
+**Scope-választás (kockázati alapon):** `gh pr list` + ledger után a legmagasabb **nem-auditált**
+felület a **tudásbázis-lekérdezés MCP-n** (`kb_search`/`kb_get_document`/`kb_get_page`/`kb_ingest`/
+`kb_list_index`) — külső, OAuth-hitelesített, **adat-kiszivárgás-osztályú** olvasó felület, amely a
+napi ledgerben eddig **nem szerepelt** (csak a 09-24 MCP-írás-kör érintette a read-oldali méret-kapukat).
+Egyúttal ez a felület kapta a legfrissebb, **legnagyobb** kódváltozást (#678 / `9be5b023`, +334 sor):
+új nyers Postgres FTS-SQL (`hungarian` regconfig, `regexp_split_to_table` szakasz-vágás, IDF-rangsor),
+szakasz-szintű raw-keresés és HTML-ingest. Friss + komplex + adat-felület = a legnagyobb új kockázat.
+
+**Coverage (teljes bizalmi-határ + adatfolyam-trace, kézi end-to-end + kötelező scoped security scan):**
+`executeKnowledgeBaseTool` (handlers/knowledge-base.ts — a `connectorId`/`tenantId` **szerver-feloldott**
+`ctx`-ből, SOHA a tool-argsból; csak `documentId`/`path`/`section`/`query`/ingest-tartalom
+támadó-vezérelt) → `KnowledgeBaseService.search`/`getDocument`/`getPage`/`listIndex`/`ingest` →
+`PostgresDocumentRepository.searchRaw` + `PostgresKnowledgeChunkRepository.searchChunks` (nyers
+`$queryRaw`), `assembleKbHits`/`rankKbHits`/`outlineSections`, `extractHtml`/`htmlToText`, 0011 migráció
++ apply-kb-fts index-script.
+
+### Biztonsági megállapítás — NINCS finding (≥8 konfidencia); a felület helytáll
+
+A kötelező scoped security scan (`/security-review`, dedikált felderítő + false-positive szűrő
+sub-agent) **és** a független kézi end-to-end trace **egyaránt 0 bizonyítható, ≥8-konfidenciájú
+kihasználható hibát** talált. Tételesen verifikálva (nem feltételezve):
+
+- **SQL-injekció — nincs.** Minden támadó-befolyásolt érték **bound paraméterként** vagy **futásidejű
+  függvény-argumentumként** jut a Postgresbe, sosem SQL-szövegbe fűzve. `KB_FTS_CONFIG =
+  Prisma.sql`'hungarian'::regconfig`` konstans (nincs benne interpoláció). `tsquery` (`toKbTsQuery`)
+  és a `terms` (`kbQueryTerms`) **csak `\p{L}\p{N}` tokeneket** enged (`token:*`/`unnest($n::text[])`),
+  Prisma `$n`-ként köti — a `to_tsquery`/`regexp_split_to_table`/`unnest` mind adatként kapja.
+  `KB_SECTION_SPLIT_SQL` modul-konstans, kötve. `connectorId`/`connectorIds` `::uuid`, kötve + trusted.
+  Nincs malformed-tsquery hibaút sem (a token sosem üres). Az egyetlen `$executeRawUnsafe`
+  (apply-kb-fts) hardcode-olt, dev/ops-only.
+- **Cross-tenant / cross-connector — nincs.** `searchRaw`: `WHERE d.connector_id = ${connectorId}::uuid`;
+  `searchChunks`: `c.connector_id IN (...)`; `getDocument`: `document.connectorId !== input.connectorId
+  → found:false`; `getPage`/`listIndex`: `[connectorId]`-scope. Mindegyik `connectorId` a szerver-feloldott
+  `ctx.connectorId`-ból (agent KB-connectora, tenant-kötött), nem argsból → hamisított `documentId`/`path`
+  nem lép ki a connector-határból.
+- **Adat-kiszivárgás a SELECT-ben — nincs.** Az újonnan lekért `d.extracted_text` **csak szerveroldalon**
+  fogy (a szakasz-cím `kbSectionForSegment` számításához), nem kerül a visszaadott `KnowledgeRawHit`-be.
+  A `matched` a hívó **saját** kérdésszavaiból származik; a `section` ugyanazon connector heading-útvonala.
+- **HTML-ingest (XXE/SSRF/RCE/stored-XSS) — nincs.** `extractHtml` tisztán regex-`String.replace`
+  (nincs XML/DOM-parser → nincs XXE; nincs hálózat → nincs SSRF; nincs `eval` → nincs RCE). A kimenet
+  **minden tag-et eltávolít** (`htmlToText` záró `<[^>]+>`→''), és **szövegként** tárolódik/adódik vissza,
+  nem renderelt HTML-ként → nincs stored-XSS a KB-tartalmon keresztül.
+
+### Reliability / correctness — átvizsgálva, nincs adatvesztés/hibás-működés finding
+
+- **SQL↔JS szakasz-vágás paritás.** A raw-találat `section`-je a SQL `regexp_split_to_table(...,
+  KB_SECTION_SPLIT_SQL) WITH ORDINALITY` `ord`-ját a JS `splitKbSegments`-be indexeli (`ord-1`).
+  Verifikálva: a Postgres ARE **támogatja** a `(?=…)` lookaheadet (a delimiter egyetlen `\n`,
+  zero-width constraint-tel), így a vágás element-for-element egyezik a JS `String.split`-tel
+  (vezető/köztes üres-szegmens szemantika is), beleértve a `\r\n` és a headingnélküli/vezető-heading
+  eseteket. A round-trip (`kbSectionForSegment` → `kb_get_document({section})` → `findSection` exact/leaf/
+  partial + `(n)` dedup) zárt.
+- **IDF-rangsor pozíciós illesztés.** A service `k: okfChunkHits.length`-szel hívja az `assembleKbHits`-et,
+  üres `memoryContent`/`docs` mellett → a visszaadott `okfHits` **hossza és sorrendje azonos** az
+  `okfChunkHits`-szel, így a `okfHits[i] ↔ okfChunkHits[i]` (matched/rank) illesztés helytáll; a
+  `rankKbHits` DF-je minden `matched` termre tartalmaz kulcsot (`df.get(term)!` biztonságos).
+- **Migráció-drift-ellenállás (kapcsolódik a visszatérő 🔴 „deploy nem migrál" incidenshez).** A 0011
+  GIN-index **csak teljesítmény** — a keresés **korrektsége index nélkül is helyes** (seq scan), a migráció
+  explicit így dokumentálja. Az index-kifejezés `to_tsvector('hungarian'::regconfig, …)` **IMMUTABLE**
+  (2-argumentumú, explicit regconfig) → az index-építés nem bukik. A `hungarian` snowball beépített (Neon).
+
+### Ellenőrzések
+- `npm run test:kb-retrieval` — **zöld** (21 assert; köztük `kbSectionForSegment` SQL↔JS mapping,
+  `rankKbHits` IDF, egyedi útvonal-címek + jelöltlista, superseded raw-elrejtés).
+- Kötelező scoped security scan (`/security-review`): dedikált felderítő sub-agent + FP-szűrés →
+  **0 finding ≥8 konfidencián**, a fenti SAFE-kontrollok tételes (soronkénti) verifikációjával.
+- **Nettó kód-változás e körből: 0** — nincs bizonyítható finding, ezért a szabály szerint (`csak
+  bizonyítható finding alapján módosíts`) nincs kód-módosítás, nincs fix-PR és nincs `/code-review`
+  (az a *létrehozott változtatásra* való). Precedens: 09-16 sandbox 0-finding kör. Az érték a **coverage**:
+  a KB-lekérdezés/-ingest felület első dokumentált biztonsági + reliability-verifikációja, és a friss,
+  magas kockázatú #678 változás igazolása.
+
+### Residual risk / következő audithoz
+- **🟡 SQL↔JS vágás-paritás csak JS-oldalon tesztelt.** A `test:kb-retrieval` a JS `splitKbSegments`-et
+  futtatja, a **valódi** `regexp_split_to_table` viselkedést nem (stub-DB). A paritás elemzéssel igazolt
+  (Postgres ARE lookahead-támogatás), de egy jövőbeli Postgres-verzióváltás vagy a regex/`KB_SECTION_SPLIT_SQL`
+  konstans szétdriftelése **néma szakasz-félrecímkézést** okozhatna. Olcsó follow-up: egy `test:kb-gate`
+  (valódi Neon-kompat. Postgres) paritás-assert (`regexp_split_to_table` ↔ `splitKbSegments`). Nem e-kör-
+  finding (nem bizonyított hiba), de a legérdemesebb megerősítés.
+- **🟡 `rankKbHits` pozíciós illesztés törékeny.** Ma helyes, de az `assembleKbHits` belső viselkedésére
+  (üres memory/docs, okf-first, nincs átrendezés) épül; ha az `assembleKbHits` valaha szűr/átrendez, a
+  matched/rank metaadat elcsúszhat. Defenzív alternatíva: a matched/rank a `hit` objektumon utazzon
+  (nem külön párhuzamos tömbben). Nem bizonyított hiba → nincs e-kör-módosítás (ponytail: nincs spekulatív
+  hardening).
+- **Raw-keresés seq scan + szakaszonkénti `to_tsvector`** (ponytail-komment jelzi): korrekt, de a raw-korpusz
+  növekedésével lassul; GIN/tárolt szakaszok az upgrade-út. DoS-osztály, scope-on kívül.
+- **`kb_ingest` fájltípus-hamisítás/tartalom-vizsgálat** (magic-bytes/AV) változatlanul nyitva — l. idea #447;
+  önálló, tágabb scope.
+
+---
+
 ## 2026-09-24 — MCP resource-server írási felület (Gmail send/reply/draft/label/trash, #637): bizalmi határ + jóváhagyás-kötés + fejléc-injekció
 
 **Scope-választás (kockázati alapon):** `gh pr list` + ledger után az utolsó bejegyzés

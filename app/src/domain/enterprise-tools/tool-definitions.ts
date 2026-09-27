@@ -70,6 +70,9 @@ export const ENTERPRISE_KB_TOOLS = [
   KB_INGEST_TOOL,
 ] as const
 
+export const SANDBOX_RUN_TOOL = 'sandbox_run'
+export const ENTERPRISE_SANDBOX_TOOLS = [SANDBOX_RUN_TOOL] as const
+
 export const ENTERPRISE_WRITE_TOOLS = [
   ...ENTERPRISE_DRIVE_WRITE_TOOLS,
   ...ENTERPRISE_GMAIL_WRITE_TOOLS,
@@ -81,6 +84,7 @@ export const ENTERPRISE_TOOLS = [
   ...ENTERPRISE_GMAIL_TOOLS,
   ...ENTERPRISE_HTTP_TOOLS,
   ...ENTERPRISE_KB_TOOLS,
+  ...ENTERPRISE_SANDBOX_TOOLS,
 ] as const
 
 export type EnterpriseDriveWriteTool = (typeof ENTERPRISE_DRIVE_WRITE_TOOLS)[number]
@@ -90,6 +94,7 @@ export type EnterpriseGmailWriteTool = (typeof ENTERPRISE_GMAIL_WRITE_TOOLS)[num
 export type EnterpriseHttpWriteTool = (typeof ENTERPRISE_HTTP_WRITE_TOOLS)[number]
 export type EnterpriseHttpTool = (typeof ENTERPRISE_HTTP_TOOLS)[number]
 export type EnterpriseKbTool = (typeof ENTERPRISE_KB_TOOLS)[number]
+export type EnterpriseSandboxTool = (typeof ENTERPRISE_SANDBOX_TOOLS)[number]
 export type EnterpriseWriteTool = (typeof ENTERPRISE_WRITE_TOOLS)[number]
 export type EnterpriseTool = (typeof ENTERPRISE_TOOLS)[number]
 
@@ -100,6 +105,7 @@ const ENTERPRISE_GMAIL_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_GMAIL_WRITE_T
 const ENTERPRISE_HTTP_TOOL_SET = new Set<string>(ENTERPRISE_HTTP_TOOLS)
 const ENTERPRISE_HTTP_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_HTTP_WRITE_TOOLS)
 const ENTERPRISE_KB_TOOL_SET = new Set<string>(ENTERPRISE_KB_TOOLS)
+const ENTERPRISE_SANDBOX_TOOL_SET = new Set<string>(ENTERPRISE_SANDBOX_TOOLS)
 const ENTERPRISE_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_WRITE_TOOLS)
 const ENTERPRISE_TOOL_SET = new Set<string>(ENTERPRISE_TOOLS)
 
@@ -129,6 +135,10 @@ export function isEnterpriseHttpWriteTool(toolName: string): toolName is Enterpr
 
 export function isEnterpriseKbTool(toolName: string): toolName is EnterpriseKbTool {
   return ENTERPRISE_KB_TOOL_SET.has(toolName)
+}
+
+export function isEnterpriseSandboxTool(toolName: string): toolName is EnterpriseSandboxTool {
+  return ENTERPRISE_SANDBOX_TOOL_SET.has(toolName)
 }
 
 export function isEnterpriseWriteTool(toolName: string): toolName is EnterpriseWriteTool {
@@ -505,9 +515,41 @@ export function schemaForEnterpriseKbTool(toolName: EnterpriseKbTool) {
   return kbSearchInputSchema
 }
 
+export const sandboxRunInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    skillVersionId: z
+      .string()
+      .uuid()
+      .describe('Pinned skill version id from platform.agent.get_definition → snapshot.skills[].skillVersionId'),
+    entry: z
+      .string()
+      .min(1)
+      .max(300)
+      .describe('Skill-relative script path, e.g. scripts/run_napi_marketing_riport.py'),
+    // ponytail: string not string[] — Claude.ai drops MCP tools whose advertised schema has arrays
+    args: z
+      .string()
+      .max(2000)
+      .optional()
+      .describe('Whitespace-separated argv for the script. Do not put credentials here.'),
+    projectKey: z
+      .string()
+      .max(120)
+      .optional()
+      .describe('Work-file project for outputs. Omit for __general__.'),
+  })
+  .passthrough()
+
+export function schemaForEnterpriseSandboxTool(_toolName: EnterpriseSandboxTool) {
+  return sandboxRunInputSchema
+}
+
 export function schemaForEnterpriseTool(toolName: string) {
   if (isEnterpriseDriveTool(toolName)) return schemaForEnterpriseDriveTool(toolName)
   if (isEnterpriseKbTool(toolName)) return schemaForEnterpriseKbTool(toolName)
+  if (isEnterpriseSandboxTool(toolName)) return schemaForEnterpriseSandboxTool(toolName)
   if (toolName === GMAIL_GET_MESSAGE_TOOL) return gmailGetMessageInputSchema
   if (toolName === GMAIL_SEARCH_TOOL) return gmailSearchInputSchema
   if (toolName === GMAIL_GET_THREAD_TOOL) return gmailGetThreadInputSchema

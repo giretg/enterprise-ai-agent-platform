@@ -107,6 +107,7 @@ enum ConnectorType {
   http_api
   gmail
   knowledge_base
+  code_sandbox
 }
 
 enum DocumentStatus {
@@ -449,6 +450,8 @@ model Agent {
   currentDefinitionVersionId String?     @unique @map("current_definition_version_id") @db.Uuid
   avatarUrl                  String?     @map("avatar_url")
   memoryWriteMode            MemoryWriteMode @default(approval) @map("memory_write_mode")
+  /** Megnevezett jóváhagyó (#663): a tenant egyik usere; az írások elsősorban hozzá kerülnek. */
+  approverUserId             String?         @map("approver_user_id") @db.Uuid
   /** Agent saját Drive output-mappája (#661): ide a feltöltés jóváhagyás nélkül, auditáltan fut. */
   outputDriveFolderId        String?         @map("output_drive_folder_id")
   createdAt                  DateTime    @default(now()) @map("created_at") @db.Timestamptz
@@ -586,6 +589,8 @@ model Connector {
   config         Json                    @default("{}")
   lifecycleState ConnectorLifecycleState @default(active) @map("lifecycle_state")
   tenantId       String                  @map("tenant_id") @db.Uuid
+  /** Megnevezett jóváhagyó (#663): az agent-szintűt felülírja. */
+  approverUserId String?                 @map("approver_user_id") @db.Uuid
   createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
   connectorMode       ConnectorMode          @default(fixed) @map("connector_mode")
@@ -883,6 +888,9 @@ model GatewayOperation {
   idempotencyKey            String                 @map("idempotency_key")
   status                    GatewayOperationStatus
   connectorId               String?                @map("connector_id") @db.Uuid
+  /** #663: enqueue-kori pillanatkép a megnevezett jóváhagyóról (konnektor > agent). */
+  designatedApproverUserId  String?                @map("designated_approver_user_id") @db.Uuid
+  designatedApproverName    String?                @map("designated_approver_name")
   errorCode                 String?                @map("error_code")
   resultJson                Json?                  @map("result_json")
   createdAt                 DateTime               @default(now()) @map("created_at") @db.Timestamptz

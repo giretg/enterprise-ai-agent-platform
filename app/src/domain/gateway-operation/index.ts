@@ -16,6 +16,7 @@ export {
   enqueueResultToMcp,
   getGatewayOperation,
   getResultToMcp,
+  isDesignatedDecider,
   listPendingGatewayOperations,
   rejectGatewayOperation,
   toGatewayOperationView,

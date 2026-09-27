@@ -156,6 +156,11 @@ async function confirmMessage(
   }
 
   const lines = [`${agentName} írni szeretne: ${formatToolUiName(view.toolName)}.`]
+  if (view.designatedApproverName) {
+    lines.push(
+      `Jóváhagyó: ${view.designatedApproverName} — csak ő (vagy egy admin) hagyhatja jóvá.`,
+    )
+  }
   if (target) lines.push(`Cél: ${target}`)
   if (content) {
     const url = approvalUrl(origin, view.operationId)

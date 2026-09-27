@@ -1,6 +1,7 @@
 'use server'
 
 import { z } from 'zod'
+import { revalidatePath } from 'next/cache'
 import { clerkClient } from '@clerk/nextjs/server'
 import { getCurrentUser } from '@/auth'
 import { requireTenantPermission, requireTenantRole } from '@/auth/tenant-context'
@@ -13,6 +14,7 @@ import { isSuperadmin } from '@/lib/tenant-policy'
 import type { ConnectorAccessMode } from '@prisma/client'
 import { DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import { ensureAgentKnowledgeBase, toolsNeedKnowledgeBase } from '@/lib/agent-knowledge-base'
+import { ensureAgentCodeSandbox, toolsNeedCodeSandbox } from '@/lib/agent-code-sandbox'
 import {
   agentIdSchema,
   approveUserSchema,
@@ -27,11 +29,13 @@ import {
   setUserAgentAccessSchema,
   suspendAgentSchema,
   suspendUserSchema,
+  updateAgentApproverSchema,
   updateAgentAvatarSchema,
   updateAgentInstructionSchema,
   updateAgentMemoryWriteModeSchema,
   updateAgentOutputFolderSchema,
   updateAgentProfileSchema,
+  updateConnectorApproverSchema,
   updateRolePermissionSchema,
 } from '@/lib/validators/actions'
 
@@ -513,6 +517,106 @@ export async function updateAgentOutputFolder(input: { agentId: string; folderId
   }
 }
 
+/**
+ * #663: megnevezett jóváhagyó agenthez vagy konnektorhoz, a tenant tagjai közül.
+ * A megnevezett a saját kérését is jóváhagyhatja; másnak approver_not_authorized.
+ */
+async function resolveApproverTarget(tenantId: string, approverUserId: string | null) {
+  if (!approverUserId) return null
+  const [membership, user] = await Promise.all([
+    repositories.tenantMemberships.findByTenantAndUser(tenantId, approverUserId),
+    repositories.users.findById(approverUserId),
+  ])
+  if (membership?.status !== 'active' || !user) return 'not-member' as const
+  return user
+}
+
+export async function listApproverCandidates() {
+  try {
+    const user = await requireTenantRole('admin')
+    const members = await services.iam.listUsers(user.activeTenantId, { unbounded: true })
+    return ok({
+      users: members.map((member) => ({
+        id: member.id,
+        name: member.name,
+        email: member.email,
+        role: member.role,
+      })),
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list approver candidates')
+  }
+}
+
+export async function updateAgentApprover(input: { agentId: string; approverUserId: string | null }) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = updateAgentApproverSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
+    if (!agent) return fail('Agent not found')
+    const target = await resolveApproverTarget(user.activeTenantId, parsed.approverUserId)
+    if (target === 'not-member') return fail('A jóváhagyó nem tagja ennek a szervezetnek')
+    const updated = await repositories.agents.updateApprover({
+      agentId: parsed.agentId,
+      approverUserId: parsed.approverUserId,
+    })
+    await services.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'agent.approver',
+      targetType: 'agent',
+      targetId: updated.id,
+      modelUsed: null,
+      inputRef: target ? target.email : null,
+      outputRef: null,
+      policyDecision: 'updated',
+      metadata: { approverUserId: parsed.approverUserId },
+      tenantId: user.activeTenantId,
+    })
+    revalidatePath(`/control-plane/agents/${parsed.agentId}`)
+    return ok({ approverUserId: updated.approverUserId })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update approver')
+  }
+}
+
+export async function updateConnectorApprover(input: {
+  connectorId: string
+  approverUserId: string | null
+}) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = updateConnectorApproverSchema.parse(input)
+    const connector = await repositories.connectors.findById(parsed.connectorId, user.activeTenantId)
+    if (!connector) return fail('Connector not found')
+    const target = await resolveApproverTarget(user.activeTenantId, parsed.approverUserId)
+    if (target === 'not-member') return fail('A jóváhagyó nem tagja ennek a szervezetnek')
+    const updated = await repositories.connectors.updateApprover({
+      connectorId: parsed.connectorId,
+      approverUserId: parsed.approverUserId,
+    })
+    await services.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'connector.approver',
+      targetType: 'connector',
+      targetId: updated.id,
+      modelUsed: null,
+      inputRef: target ? target.email : null,
+      outputRef: null,
+      policyDecision: 'updated',
+      metadata: { approverUserId: parsed.approverUserId },
+      tenantId: user.activeTenantId,
+    })
+    revalidatePath('/control-plane/account')
+    return ok({ approverUserId: updated.approverUserId })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update approver')
+  }
+}
+
 export async function updateAgentProfile(input: { agentId: string; name?: string; description?: string }) {
   try {
     const user = await requireTenantRole('admin')
@@ -580,6 +684,12 @@ export async function updateAgentCapabilities(input: {
     await repositories.agents.replaceCapabilities(parsed.agentId, tools)
     if (toolsNeedKnowledgeBase(tools) && user.activeTenantId) {
       await ensureAgentKnowledgeBase(existing, {
+        connectors: repositories.connectors,
+        agents: repositories.agents,
+      })
+    }
+    if (toolsNeedCodeSandbox(tools) && user.activeTenantId) {
+      await ensureAgentCodeSandbox(existing, {
         connectors: repositories.connectors,
         agents: repositories.agents,
       })

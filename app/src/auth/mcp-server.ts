@@ -69,6 +69,8 @@ import {
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
+  SANDBOX_RUN_TOOL,
+  sandboxRunInputSchema,
   gmailGetMessageInputSchema,
   gmailGetThreadInputSchema,
   gmailListDraftsInputSchema,
@@ -191,6 +193,8 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     role: McpPrincipal['role']
     agentId: string
   }) => Promise<boolean>
+  /** #663: az agent megnevezett jóváhagyójának neve a briefing Jóváhagyások blokkjához. */
+  loadAgentApproverName?: (input: { tenantId: string; agentId: string }) => Promise<string | null>
   loadSkillVersions: (versionIds: string[]) => Promise<CheckoutSkill[]>
   invokeEnterpriseTool: (input: {
     principal: McpPrincipal
@@ -322,6 +326,12 @@ export function productionMcpDeps(): McpRuntimeDeps {
     },
     loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),
     canViewAgent,
+    loadAgentApproverName: async ({ tenantId, agentId }) => {
+      const agent = await repositories.agents.findById(agentId, tenantId)
+      if (!agent?.approverUserId) return null
+      const user = await repositories.users.findById(agent.approverUserId)
+      return user ? user.name || user.email : null
+    },
     async loadSkillVersions(versionIds) {
       const rows = await repositories.skills.findVersionsByIds(versionIds)
       return rows.map((row) => ({
@@ -659,6 +669,10 @@ async function getDefinitionToolResult(
     readMemoryContext(principal, loaded.definitionId, loaded.agentId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
   ])
+  const approverName = await deps.loadAgentApproverName?.({
+    tenantId: principal.tenantId,
+    agentId: loaded.agentId,
+  })
   return textResult({
     briefing: renderAgentBriefing({
       definition: loaded,
@@ -666,6 +680,7 @@ async function getDefinitionToolResult(
       bound,
       recentSessionLogs: memoryContext.recentSessionLogs?.entries,
       handoffs: memoryContext.handoffs?.entries,
+      approverName: approverName ?? null,
     }),
     ...loaded,
     contentHash: hashSnapshot(loaded.snapshot),
@@ -1567,6 +1582,16 @@ async function createMcpResourceHandler(
           inputSchema: kbIngestInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_INGEST_TOOL, args, deps),
+      )
+      server.registerTool(
+        SANDBOX_RUN_TOOL,
+        {
+          title: 'Run pinned skill script',
+          description:
+            'Run a Python script that belongs to a skill pinned on this published agent, inside the platform sandbox. Pass skillVersionId and entry from snapshot.skills. Do not run skill code on this machine. Outputs are written to work files under sandbox-output/. Credentials stay on the server.',
+          inputSchema: sandboxRunInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, SANDBOX_RUN_TOOL, args, deps),
       )
       server.registerTool(
         MCP_GATEWAY_OPERATION_GET_TOOL,

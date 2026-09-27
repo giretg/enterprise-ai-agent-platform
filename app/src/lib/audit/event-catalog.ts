@@ -63,6 +63,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.profile',
   'agent.memory_write_mode',
   'agent.output_folder',
+  'agent.approver',
   'agent.user.grant',
   'agent.user.revoke',
 
@@ -81,6 +82,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'provisioning.doc.fetch',
   'provisioning.doc.fetch.blocked',
   'connector.egress_allowlist.extend',
+  'connector.approver',
   'connector.materialize',
   'connector.agentmail.org_key.set',
   'connector.agentmail.inbox.create',

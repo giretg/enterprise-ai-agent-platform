@@ -41,6 +41,7 @@ import { SkillService } from '@/domain/skill/skill-service'
 import { TenantService } from '@/domain/tenant/tenant-service'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
 import { executeKnowledgeBaseTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
 import { PostgresHandoffRepository } from '@/repositories/postgres/handoff-repository'
 import { canReadPublishedAgent } from '@/domain/agent-definition'
@@ -225,6 +226,31 @@ async function resolveRequester(input: { tenantId: string; userId: string }) {
   return null
 }
 
+/**
+ * #663: megnevezett jóváhagyó feloldása (konnektor > agent). Csak aktív
+ * tenant-tagság esetén érvényes; a nevet pillanatképként adjuk a művelethez.
+ */
+async function resolveDesignatedApprover(input: {
+  tenantId: string
+  agentId: string
+  connectorId: string | null
+}): Promise<{ userId: string; name: string } | null> {
+  const [agent, connector] = await Promise.all([
+    repositories.agents.findById(input.agentId, input.tenantId),
+    input.connectorId
+      ? repositories.connectors.findById(input.connectorId, input.tenantId)
+      : Promise.resolve(null),
+  ])
+  const approverUserId = connector?.approverUserId ?? agent?.approverUserId ?? null
+  if (!approverUserId) return null
+  const [membership, user] = await Promise.all([
+    repositories.tenantMemberships.findByTenantAndUser(input.tenantId, approverUserId),
+    repositories.users.findById(approverUserId),
+  ])
+  if (membership?.status !== 'active' || !user) return null
+  return { userId: user.id, name: user.name || user.email }
+}
+
 async function startAuthorization(input: {
   connectorId: string
   userId: string
@@ -254,6 +280,7 @@ const gatewayOperationDeps: GatewayOperationServiceDeps = {
   ...sharedToolLookups,
   operations: repositories.gatewayOperations,
   resolveRequester,
+  resolveDesignatedApprover,
   startAuthorization,
   audit: repositories.audit,
   async recordCreatedDriveFiles({ grantId, files }) {
@@ -314,6 +341,21 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
   executeKbTool: (toolName, args, ctx) =>
     executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx),
+  loadSkillVersion: async (skillVersionId) => {
+    const version = await repositories.skills.findVersionById(skillVersionId)
+    if (!version) return null
+    return {
+      attachments: version.attachments,
+      status: version.status,
+      tenantId: version.skill.tenantId,
+    }
+  },
+  executeSandboxRun,
+  writeWorkFile: async (input) => {
+    const written = await projectWorkService.writeFile(input)
+    if (!written.ok) throw new Error(written.code) // quota_exceeded | file_too_large | invalid_path
+    return { path: written.file.path }
+  },
 }
 
 export const services = {
