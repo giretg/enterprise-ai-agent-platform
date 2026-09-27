@@ -95,6 +95,13 @@ enum ProjectMemoryStatus {
   superseded
 }
 
+enum HandoffStatus {
+  open
+  accepted
+  done
+  rejected
+}
+
 enum ConnectorType {
   google_drive
   http_api
@@ -299,6 +306,8 @@ model User {
   workProjectsCreated         WorkProject[]         @relation("WorkProjectCreatedBy")
   workFilesWritten            WorkFile[]            @relation("WorkFileLastWriter")
   projectMemoryItems          ProjectMemoryItem[]   @relation("ProjectMemoryWithUser")
+  handoffsCreated             Handoff[]             @relation("HandoffCreatedBy")
+  handoffsReceived            Handoff[]             @relation("HandoffToUser")
 
   @@index([status])
   @@map("users")
@@ -354,6 +363,7 @@ model Tenant {
   workProjects      WorkProject[]
   workFiles         WorkFile[]
   projectMemoryItems ProjectMemoryItem[]
+  handoffs          Handoff[]
 
   @@index([status])
   @@map("tenants")
@@ -456,6 +466,8 @@ model Agent {
   agentSkills       AgentSkill[]
   conversationSkillProposals ConversationSkillProposal[]
   projectMemoryItems ProjectMemoryItem[]
+  handoffsSent     Handoff[] @relation("HandoffFromAgent")
+  handoffsReceived Handoff[] @relation("HandoffToAgent")
 
   @@index([tenantId, status])
   @@map("agents")
@@ -943,4 +955,34 @@ model AuditLog {
   @@index([tenantId, createdAt])
   @@index([action, createdAt])
   @@map("audit_log")
+}
+
+model Handoff {
+  id               String        @id @default(uuid()) @db.Uuid
+  tenantId         String        @map("tenant_id") @db.Uuid
+  fromAgentId      String        @map("from_agent_id") @db.Uuid
+  fromDefinitionId String        @map("from_definition_id") @db.Uuid
+  toAgentId        String?       @map("to_agent_id") @db.Uuid
+  toUserId         String?       @map("to_user_id") @db.Uuid
+  projectKey       String        @map("project_key")
+  title            String
+  summary          String        @db.Text
+  links            String?
+  status           HandoffStatus @default(open)
+  memoryId         String?       @map("memory_id") @db.Uuid
+  createdById      String        @map("created_by_id") @db.Uuid
+  decidedById      String?       @map("decided_by_id") @db.Uuid
+  decidedAt        DateTime?     @map("decided_at") @db.Timestamptz
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id])
+  fromAgent Agent  @relation("HandoffFromAgent", fields: [fromAgentId], references: [id], onDelete: Cascade)
+  toAgent   Agent? @relation("HandoffToAgent", fields: [toAgentId], references: [id], onDelete: Cascade)
+  toUser    User?  @relation("HandoffToUser", fields: [toUserId], references: [id], onDelete: Cascade)
+  createdBy User   @relation("HandoffCreatedBy", fields: [createdById], references: [id])
+
+  @@index([tenantId, toAgentId, status])
+  @@index([tenantId, toUserId, status])
+  @@map("handoffs")
 }

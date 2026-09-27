@@ -81,7 +81,7 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
   {
     key: 'admin.operations',
     href: '/control-plane/operations',
-    label: 'Jóváhagyások',
+    label: 'Teendők',
     requires: { tenantRole: 'viewer' },
   },
   {

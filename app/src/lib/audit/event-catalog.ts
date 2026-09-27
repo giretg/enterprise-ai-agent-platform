@@ -119,6 +119,9 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'project.work_file.write',
   'project.work_file.delete',
   'project.project_memory.write',
+
+  'handoff.created',
+  'handoff.acknowledged',
 ])
 
 export class UnregisteredAuditActionError extends Error {

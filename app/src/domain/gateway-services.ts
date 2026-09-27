@@ -43,6 +43,8 @@ import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-ser
 import { executeKnowledgeBaseTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
+import { PostgresHandoffRepository } from '@/repositories/postgres/handoff-repository'
+import { canReadPublishedAgent } from '@/domain/agent-definition'
 import {
   invokeProjectWork,
   MCP_PROJECT_MEMORY_WRITE_TOOL,
@@ -165,6 +167,8 @@ const projectWorkService = new ProjectWorkService(
   },
   repositories.users,
 )
+
+const handoffRepository = new PostgresHandoffRepository()
 
 function isStubDriveCredential(tokenRef: string): boolean {
   return tokenRef.startsWith('stub-') || process.env.GOOGLE_DRIVE_API_STUB === 'true'
@@ -366,11 +370,29 @@ export const services = {
   knowledgeBase: knowledgeBaseService,
   projectWork: {
     service: projectWorkService,
+    handoffs: handoffRepository,
     invoke: (input: Parameters<typeof invokeProjectWork>[1]) =>
       invokeProjectWork(
         {
           ...sharedToolLookups,
+          loadDefinitionByAgent: (lookup) => agentDefinitionService.loadAgentDefinition(lookup),
+          canViewAgent: async (lookup) => {
+            const grant = await repositories.resourceGrants.findAgentGrant({
+              tenantId: lookup.tenantId,
+              userId: lookup.userId,
+              agentId: lookup.agentId,
+            })
+            return canReadPublishedAgent({ role: lookup.role as UserRole, grant })
+          },
+          isTenantMember: async (lookup) => {
+            const membership = await repositories.tenantMemberships.findByTenantAndUser(
+              lookup.tenantId,
+              lookup.userId,
+            )
+            return membership?.status === 'active'
+          },
           projectWork: projectWorkService,
+          handoffs: handoffRepository,
           enqueueMemoryWrite: async (enqueueInput) =>
             enqueueResultToMcp(
               await enqueueGatewayOperation(gatewayOperationDeps, {

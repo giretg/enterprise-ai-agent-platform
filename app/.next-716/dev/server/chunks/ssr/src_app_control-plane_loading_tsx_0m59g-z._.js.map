@@ -1,0 +1,6 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 4, "column": 0}, "map": {"version":3,"sources":["file:///Users/giretgergely/Projects/eaap-664/app/src/app/control-plane/loading.tsx"],"sourcesContent":["import { LoadingState } from '@/components/ui/spinner'\n\n/** A héj (layout) alatt, amíg az oldaladat megjön. */\nexport default function ControlPlaneLoading() {\n  return <LoadingState className=\"min-h-[40vh]\" />\n}\n"],"names":["ControlPlaneLoading","className"],"mappings":";;;;;AAAA;;;AAGe,SAASA;IACtB,qBAAO,8OAAC,mJAAY;QAACC,WAAU;;;;;;AACjC"}}]
+}
