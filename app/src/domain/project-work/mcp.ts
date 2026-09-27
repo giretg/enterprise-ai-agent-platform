@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { KNOWLEDGE_PLACEMENT_TABLE_REF, suggestToolForPlacement } from '@/lib/agent-knowledge-placement'
 import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
 import { checkDefinitionPin, type DefinitionPinDeps } from '@/domain/enterprise-tools/definition-pin'
 import {
@@ -131,7 +132,7 @@ export const projectMemoryWriteInputSchema = z
     kind: z
       .enum(['decision', 'open_task', 'finding', 'constraint', 'artifact', 'handoff_summary', 'focus'])
       .describe(
-        'focus = the agent\'s current state (what we are doing now, the next step, what we wait for). There is only ever one active focus per agent and project: this write always replaces it. Any other kind is a durable fact or decision.',
+        `focus = current state (see ${KNOWLEDGE_PLACEMENT_TABLE_REF}). Any other kind is a short company fact or decision — not a rule, plan, or document; those return wrong_placement with the suggested tool.`,
       ),
     title: z
       .string()
@@ -169,6 +170,12 @@ export const projectMemoryWriteInputSchema = z
       .optional()
       .describe(
         'Set true only after a possible_duplicate response, when none of the returned candidates is about the same subject.',
+      ),
+    confirmMisplaced: z
+      .boolean()
+      .optional()
+      .describe(
+        'Set true only after wrong_placement when the text is genuinely a short fact that belongs in memory despite the heuristic.',
       ),
     idempotencyKey: z.string().min(1).max(200),
   })
@@ -406,6 +413,7 @@ export async function invokeProjectWork(
       replaceId: typeof parsed.replaceId === 'string' ? parsed.replaceId : undefined,
       mergeIds: typeof parsed.mergeIds === 'string' ? splitIds(parsed.mergeIds) : undefined,
       confirmNew: parsed.confirmNew === true,
+      confirmMisplaced: parsed.confirmMisplaced === true,
       withUserId: principal.userId,
       mode: modeRes.mode,
     })
@@ -420,6 +428,16 @@ export async function invokeProjectWork(
         candidates: written.candidates,
         next:
           'Nothing was written. Candidates about the same subject must end up in ONE current item: call again with replaceId=<one candidate id>, mergeIds="<other matching ids, comma-separated>" (keep any replaceId/mergeIds you already sent) and a merged, up-to-date title/body that states only what is valid now. Only if no candidate is about the same subject, call again with confirmNew=true.',
+      })
+    }
+    if (written.status === 'wrong_placement') {
+      return textResult({
+        status: 'wrong_placement',
+        written: false,
+        reason: written.reason,
+        suggest: written.suggest,
+        useTool: suggestToolForPlacement(written.suggest),
+        next: `Nothing was written. This text looks like ${written.reason === 'procedure' ? 'an operating rule or procedure' : 'a long document or plan'}, not a short memory fact. Use ${suggestToolForPlacement(written.suggest)} instead (${KNOWLEDGE_PLACEMENT_TABLE_REF}). Only if it is truly a short fact, retry with confirmMisplaced=true.`,
       })
     }
     if (written.status === 'needs_approval') {

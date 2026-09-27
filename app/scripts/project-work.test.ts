@@ -440,6 +440,48 @@ await check('MCP stamps withUserId from the principal, not from tool args', asyn
   assert.equal(item.withUserName, 'Anna')
 })
 
+await check('#659 wrong_placement blocks procedural memory write until confirmMisplaced', async () => {
+  const { svc } = harness('direct')
+  const deps = {
+    loadDefinition: async () => definition,
+    findCurrentDefinitionId: async () => DEF,
+    findAgentGrant: async () => ({ accessLevel: 'operate' }),
+    projectWork: svc,
+  }
+  const principal = { userId: ANNA, tenantId: TENANT, role: 'operator' as const, assumed: false }
+  const body = ['Approval path', '1. Draft', '2. Always review', '3. Never skip legal', '4. Publish'].join('\n')
+  const blocked = parsePayload(
+    await invokeProjectWork(deps, {
+      principal,
+      toolName: 'platform.project_memory.write',
+      args: {
+        definitionId: DEF,
+        kind: 'constraint',
+        title: 'Email approval',
+        body,
+        idempotencyKey: 'misplaced-1',
+      },
+    }),
+  )
+  assert.equal(blocked.status, 'wrong_placement')
+  assert.equal(blocked.suggest, 'skill')
+  const forced = parsePayload(
+    await invokeProjectWork(deps, {
+      principal,
+      toolName: 'platform.project_memory.write',
+      args: {
+        definitionId: DEF,
+        kind: 'constraint',
+        title: 'Email approval',
+        body,
+        confirmMisplaced: true,
+        idempotencyKey: 'misplaced-2',
+      },
+    }),
+  )
+  assert.equal(forced.status, 'written')
+})
+
 await check('correcting a fact via MCP: duplicate is refused with candidates, replaceId retires the old item', async () => {
   const { svc } = harness('direct')
   const deps = {

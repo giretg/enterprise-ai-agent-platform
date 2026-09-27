@@ -27,6 +27,7 @@ import {
   toMemoryIndexEntry,
   type MemoryIndexPage,
 } from './memory-index'
+import { detectMisplacedMemoryWrite, type KnowledgePlacementTarget } from '@/lib/agent-knowledge-placement'
 
 export type { MemoryWriteModeValue, ProjectMemoryRecord, WorkFileRecord, WorkProjectRecord }
 export type { MemoryIndexPage } from './memory-index'
@@ -104,6 +105,8 @@ export type MemoryWriteInput = {
   mergeIds?: string[]
   /** Az író tudatosan új elemet kér, bár hasonló már van. Ember (UI) mindig true. */
   confirmNew?: boolean
+  /** After wrong_placement, set true only when the text is a short fact and belongs in memory. */
+  confirmMisplaced?: boolean
   withUserId: string
   mode: MemoryWriteModeValue
 }
@@ -373,10 +376,25 @@ export class ProjectWorkService {
       | { status: 'written'; item: MemoryView }
       | { status: 'needs_approval'; draft: Omit<MemoryWriteInput, 'mode'> }
       | { status: 'possible_duplicate'; candidates: MemoryDuplicateCandidate[] }
+      | { status: 'wrong_placement'; suggest: KnowledgePlacementTarget; reason: 'procedure' | 'document' }
     >
   > {
     const prepared = await this.prepareMemoryWrite(input)
     if (!prepared.ok) return prepared
+    if (!input.confirmMisplaced) {
+      const misplaced = detectMisplacedMemoryWrite({
+        kind: prepared.draft.kind,
+        title: prepared.draft.title,
+        body: prepared.draft.body,
+      })
+      if (misplaced) {
+        return ok({
+          status: 'wrong_placement' as const,
+          suggest: misplaced.suggest,
+          reason: misplaced.reason,
+        })
+      }
+    }
     // Cserénél is: ha a kivezetetteken kívül marad hasonló aktív elem, azt is össze kell vonni.
     // Kivétel a fókusz: állapotblokk, mindig az egyetlen aktív példányt írja felül.
     if (!input.confirmNew && prepared.draft.kind !== 'focus') {

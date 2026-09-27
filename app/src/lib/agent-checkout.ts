@@ -6,6 +6,7 @@ import { CODE_EXTENSIONS } from '@/lib/skill/skill-package-adapter'
 import { serializeSkillMd } from '@/lib/skill/skill-md-export'
 import { skillFileUri, skillUriName } from '@/lib/skill/mcp-skill'
 import type { SkillContent, SkillRequirement } from '@/lib/skill/skill-content'
+import { renderKnowledgePlacementBlock } from '@/lib/agent-knowledge-placement'
 
 const MCP_TOOL_SET = new Set<string>(MCP_ALLOWED_TOOLS)
 
@@ -293,6 +294,8 @@ export function renderAgentBriefing(input: {
     '## Knowledge, memory, skills',
     '',
     'All work for this agent runs through this MCP server — there is no separate in-platform chat runtime.',
+    '',
+    renderKnowledgePlacementBlock(),
     '',
     '- Memory: memoryIndex in platform.agent.get_definition; full text via platform.project_memory.read (ids or query). Read before answering company questions or searching. Write: platform.project_memory.write (omit projectKey for general memory).',
     '- Current focus: the `focus` field in platform.agent.get_definition — always in full, before the memory list. Only one active focus per agent and project: platform.project_memory.write with kind "focus" replaces it.',
