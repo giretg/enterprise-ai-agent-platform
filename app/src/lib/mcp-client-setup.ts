@@ -16,7 +16,7 @@ export type McpClientSetup = {
 
 /** The Hermes Bot profiles from platform.agent.checkout (#682) expect this exact server name. */
 export const HERMES_MCP_SERVER_NAME = 'excellence'
-export const HERMES_SYNC_PROMPT = 'Szinkronizáld az Excellence agenteimet'
+export const HERMES_SYNC_PROMPT = 'Töltsd le az AI munkatársaimat'
 export const HERMES_LINKS = {
   download: 'https://hermes-agent.nousresearch.com/#downloads',
   docs: 'https://nousresearch.github.io/hermes-agent/docs/',
