@@ -1,5 +1,3 @@
-import { DEFAULT_TENANT_LANGUAGE } from './tenant-language'
-
 /**
  * KB-keresés nyelvi registry — EGYETLEN forrás a tudástár nyelvéhez.
  * Kulcs: üzleti nyelv-kód (connector/document/tenant szinten tárolt érték).
@@ -42,19 +40,4 @@ export function resolveKbLanguage(value: unknown): KbLanguage {
 export function kbPgConfig(language: unknown): KbPgConfig {
   if (!isKbLanguage(language)) return KB_PG_FALLBACK
   return KB_LANGUAGE_REGISTRY[language].pgConfig
-}
-
-/**
- * Effektív KB-nyelv egy chunkra/dokumentumra:
- * `override ?? connector ?? tenant ?? 'hu'`.
- */
-export function resolveEffectiveKbLanguage(input: {
-  override?: unknown
-  connector?: unknown
-  tenant?: unknown
-}): KbLanguage {
-  if (isKbLanguage(input.override)) return input.override
-  if (isKbLanguage(input.connector)) return input.connector
-  if (isKbLanguage(input.tenant)) return input.tenant
-  return DEFAULT_TENANT_LANGUAGE
 }

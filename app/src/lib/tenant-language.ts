@@ -35,6 +35,24 @@ export function withTenantLanguage(
 }
 
 /**
+ * #717: a modellnek szóló szövegek nyelve a tenant kimeneti nyelve. A
+ * resolver opcionális (a hívó függőségei között lehet), és ha hibát dob,
+ * az alapértelmezésre esik vissza — a nyelv sosem lehet a hívás bukásának
+ * oka. Így a hívók nem ismétlik a `try/catch`-et.
+ */
+export async function tenantLanguageOrDefault(
+  resolve: ((tenantId: string) => Promise<TenantLanguage>) | undefined,
+  tenantId: string,
+): Promise<TenantLanguage> {
+  if (!resolve) return DEFAULT_TENANT_LANGUAGE
+  try {
+    return await resolve(tenantId)
+  } catch {
+    return DEFAULT_TENANT_LANGUAGE
+  }
+}
+
+/**
  * System-prompt utasítás propose-not-apply agenteknek: emberi szövegek a tenant
  * nyelvén, JSON kulcsok / séma mezőnevek angolul maradnak.
  */
