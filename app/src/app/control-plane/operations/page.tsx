@@ -6,6 +6,7 @@ import { asTranslate } from '@/i18n/translate'
 import { operationErrorLabel } from './labels'
 import { OperationsPanel } from './operations-panel'
 import { HandoffsPanel } from './handoffs-panel'
+import { OperationsHistoryPanel } from './operations-history-panel'
 
 export default async function OperationsPage() {
   await requireTenantRole('viewer')
@@ -15,6 +16,8 @@ export default async function OperationsPage() {
   const handoffs = inbox.success ? inbox.data.handoffs : []
   const operationsError = listed.success ? null : listed.error
   const inboxError = inbox.success ? null : inbox.error
+  const showInboxError =
+    inboxError && inboxError !== 'schema_mismatch' && inboxError !== 'handoffs_unavailable'
   const t = await getTranslations('ControlPlane.operations')
   const tFn = asTranslate(t)
 
@@ -38,13 +41,14 @@ export default async function OperationsPage() {
           <OperationsPanel operations={operations} />
         )}
       </section>
-      {inboxError ? (
+      {showInboxError ? (
         <p className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          {operationErrorLabel(inboxError, tFn)}
+          {operationErrorLabel(inboxError!, tFn)}
         </p>
       ) : (
         <HandoffsPanel handoffs={handoffs} />
       )}
+      <OperationsHistoryPanel />
     </div>
   )
 }

@@ -13,6 +13,7 @@ import { connectorGrantIdSchema, startConnectorOAuthSchema } from '@/lib/validat
 import { navSoftwareSchema } from '@/lib/nav-online-invoice-software'
 import { toGoogleOAuthPublicView, toGoogleDrivePickerPublicView } from '@/lib/platform-google-oauth-config'
 import { agentDisplayName } from '@/lib/agent-persona'
+import { iconDataUrlByTemplateKey, provenanceTemplateKey } from '@/lib/connector-template-icon-map'
 import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
 import {
   GmailApiAuthError,
@@ -203,22 +204,12 @@ export async function listConnectorsPanelContext() {
     const templates = await repositories.connectorTemplates.listVisible({
       tenantId: user.activeTenantId,
     })
-    const iconByTemplateKey = new Map<string, string>()
-    for (const template of templates) {
-      const descriptor = template.descriptor as { iconDataUrl?: unknown } | null
-      const icon =
-        descriptor && typeof descriptor.iconDataUrl === 'string' ? descriptor.iconDataUrl : null
-      if (icon) {
-        if (template.tenantId) iconByTemplateKey.set(template.key, icon)
-        else if (!iconByTemplateKey.has(template.key)) iconByTemplateKey.set(template.key, icon)
-      }
-    }
+    const iconByTemplateKey = iconDataUrlByTemplateKey(templates)
     const connectorsWithIcons = connectors.map((connector) => {
-      const config = connector.config as { provenance?: { templateKey?: unknown } } | null
-      const key = config?.provenance?.templateKey
+      const key = provenanceTemplateKey(connector.config)
       return {
         ...connector,
-        iconDataUrl: typeof key === 'string' ? (iconByTemplateKey.get(key) ?? null) : null,
+        iconDataUrl: key ? (iconByTemplateKey.get(key) ?? null) : null,
       }
     })
     const connectorUsage = await delegatedConnectorUsage(connectors, user.activeTenantId)

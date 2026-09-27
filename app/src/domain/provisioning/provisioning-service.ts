@@ -1248,6 +1248,8 @@ export class ProvisioningService {
       type: string
       name: string
       connectorMode: 'fixed' | 'self_updating'
+      templateKey?: string | null
+      iconDataUrl?: string | null
       description?: string | null
       baseUrl?: string | null
       tools?: Array<{ method: string; path: string; description?: string | null }>

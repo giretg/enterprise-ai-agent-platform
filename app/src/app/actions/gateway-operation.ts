@@ -36,6 +36,25 @@ function mapActionError(error: unknown): ActionResult<never> {
   return fail('schema_mismatch')
 }
 
+export async function listGatewayOperationHistoryAction(input: {
+  page?: number
+}): Promise<
+  ActionResult<{ rows: GatewayPendingOperationRow[]; total: number; page: number; pageSize: number }>
+> {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const page = input.page ?? 1
+    const result = await services.gatewayOperations.listHistory({
+      tenantId: ctx.activeTenantId,
+      actor: actorFrom(ctx),
+      page,
+    })
+    return ok({ ...result, page: Math.max(1, page) })
+  } catch (error) {
+    return mapActionError(error)
+  }
+}
+
 export async function listPendingGatewayOperationsAction(): Promise<
   ActionResult<{ operations: GatewayPendingOperationRow[] }>
 > {

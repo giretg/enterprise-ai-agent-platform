@@ -95,6 +95,11 @@ export interface GatewayOperationStore {
   ): Promise<{ record: GatewayOperationRecord; created: boolean }>
   /** `visibleToUserId` = saját kérések + a rá megnevezett jóváhagyóként várók (#663). */
   listAwaitingApproval(tenantId: string, visibleToUserId?: string): Promise<GatewayOperationRecord[]>
+  listDecidedHistory(
+    tenantId: string,
+    visibleToUserId: string | undefined,
+    page: { limit: number; offset: number },
+  ): Promise<{ rows: GatewayOperationRecord[]; total: number }>
   withLockedOperation<T>(
     operationId: string,
     fn: (

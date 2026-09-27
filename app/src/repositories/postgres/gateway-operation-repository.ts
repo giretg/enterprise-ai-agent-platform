@@ -131,6 +131,38 @@ export class PostgresGatewayOperationRepository implements GatewayOperationStore
     return rows.map(mapRow)
   }
 
+  async listDecidedHistory(
+    tenantId: string,
+    visibleToUserId: string | undefined,
+    page: { limit: number; offset: number },
+  ): Promise<{ rows: GatewayOperationRecord[]; total: number }> {
+    const where: Prisma.GatewayOperationWhereInput = {
+      tenantId,
+      status: { not: 'awaiting_approval' },
+      approval: { is: { decision: { in: ['approved', 'rejected'] } } },
+      ...(visibleToUserId
+        ? {
+            OR: [
+              { principalUserId: visibleToUserId },
+              { designatedApproverUserId: visibleToUserId },
+              { approval: { is: { decidedByUserId: visibleToUserId } } },
+            ],
+          }
+        : {}),
+    }
+    const [rows, total] = await Promise.all([
+      prisma.gatewayOperation.findMany({
+        where,
+        include: INCLUDE,
+        orderBy: { updatedAt: 'desc' },
+        skip: page.offset,
+        take: page.limit,
+      }),
+      prisma.gatewayOperation.count({ where }),
+    ])
+    return { rows: rows.map(mapRow), total }
+  }
+
   async withLockedOperation<T>(
     operationId: string,
     fn: (

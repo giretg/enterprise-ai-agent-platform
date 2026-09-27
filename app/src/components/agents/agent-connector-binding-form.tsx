@@ -15,6 +15,7 @@ import {
 } from '@/lib/create-agent-wizard'
 import { connectorDisplayLabel } from '@/lib/connector-display-label'
 import { UpdateApproverForm } from '@/components/agents/update-approver-form'
+import { ConnectorTemplateIcon } from '@/components/account/provider-icon'
 
 export type ConnectorCatalogOption = {
   id: string
@@ -22,7 +23,23 @@ export type ConnectorCatalogOption = {
   name: string
   description?: string | null
   baseUrl?: string | null
+  templateKey?: string | null
+  iconDataUrl?: string | null
   tools?: Array<{ method: string; path: string; description?: string | null }>
+}
+
+function ConnectorListIcon({
+  iconDataUrl,
+  provider,
+}: {
+  iconDataUrl?: string | null
+  provider: string
+}) {
+  return (
+    <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink/10 bg-white">
+      <ConnectorTemplateIcon iconDataUrl={iconDataUrl} provider={provider} className="h-5 w-5" />
+    </span>
+  )
 }
 
 function accessModeRoleLine(mode: 'read' | 'write'): string {
@@ -231,6 +248,10 @@ function AddConnectorBindingsDialog({
                         checked={checked}
                         onChange={(e) => togglePick(item.id, e.target.checked)}
                       />
+                      <ConnectorListIcon
+                        iconDataUrl={item.iconDataUrl}
+                        provider={item.templateKey ?? item.type}
+                      />
                       <span className="min-w-0">
                         <span className="font-medium text-ink">
                           {suggestedIds.has(item.id) ? 'Javasolt · ' : ''}
@@ -355,6 +376,7 @@ export function AgentConnectorBindingForm({
                 description: null,
               }
             const detail = { ...detailBase, name: displayName }
+            const iconProvider = detail.templateKey ?? row.connector.type
             return (
               <li
                 key={row.connector.id}
@@ -363,16 +385,21 @@ export function AgentConnectorBindingForm({
                 }`}
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    className="min-w-0 flex-1 text-left"
-                    aria-expanded={expanded}
-                    onClick={() =>
-                      setExpandedBindingId((prev) =>
-                        prev === row.connector.id ? null : row.connector.id,
-                      )
-                    }
-                  >
+                  <div className="flex min-w-0 flex-1 items-start gap-3">
+                    <ConnectorListIcon
+                      iconDataUrl={detail.iconDataUrl}
+                      provider={iconProvider}
+                    />
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 text-left"
+                      aria-expanded={expanded}
+                      onClick={() =>
+                        setExpandedBindingId((prev) =>
+                          prev === row.connector.id ? null : row.connector.id,
+                        )
+                      }
+                    >
                     <span className="font-medium text-ink">{displayName}</span>
                     <span className="ml-1 text-xs text-ink-faint">
                       ({row.connector.type} · {row.accessMode === 'write' ? 'írás' : 'olvasás'})
@@ -381,6 +408,7 @@ export function AgentConnectorBindingForm({
                       {expanded ? 'Leírás elrejtése' : 'Koppints a szerep és leírás megtekintéséhez'}
                     </span>
                   </button>
+                  </div>
                   <button
                     type="button"
                     disabled={pending}

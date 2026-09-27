@@ -590,7 +590,12 @@ export type GatewayPendingOperationRow = GatewayPendingOperation & {
   requesterName: string
   agentName: string
   definitionLabel: string
+  connectorName: string | null
+  connectorIconDataUrl: string | null
+  connectorIconProvider: string
 }
+
+export type GatewayOperationHistoryRow = GatewayPendingOperationRow
 
 export async function listPendingGatewayOperations(
   deps: GatewayOperationServiceDeps,

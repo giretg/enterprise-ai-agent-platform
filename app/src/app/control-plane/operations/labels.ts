@@ -11,8 +11,10 @@ export const OPERATION_ERROR_LABELS: Record<string, string> = {
   missing_api_key: 'A connectorhoz nincs beállítva API-kulcs.',
   agent_access_denied: 'Ehhez a munkatárshoz már nincs működési jogod.',
   invalid_args: 'Érvénytelen kérés.',
+  handoffs_unavailable:
+    'Az átadások funkciója még nincs telepítve ezen a környezeten. Futtasd a hiányzó adatbázis-migrációkat (0016_handoff).',
   schema_mismatch:
-    'Az adatbázis séma nem a Core MVP. A jóváhagyási sor a gateway_operations táblát igényli.',
+    'A lista most nem tölthető be. Ha friss telepítésről van szó, futtasd a hiányzó adatbázis-migrációkat.',
 }
 
 export function operationErrorLabel(code: string, t?: (key: string) => string): string {

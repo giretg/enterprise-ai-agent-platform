@@ -8,6 +8,7 @@ import type {
 } from '@prisma/client'
 import { Prisma } from '@prisma/client'
 import { describeConnectorCatalog } from '@/domain/connector/catalog-description'
+import { provenanceTemplateKey } from '@/lib/connector-template-icon-map'
 import { isConnectorAssignableToAgent } from '@/domain/connector/runtime-config'
 import { prisma } from '@/lib/db'
 import { withConnectorPrivacySlot } from '@/lib/privacy-slot'
@@ -398,6 +399,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         type: row.type,
         name: row.name,
         connectorMode: row.connectorMode,
+        templateKey: provenanceTemplateKey(row.config),
         ...describeConnectorCatalog(
           row.type,
           row.config,

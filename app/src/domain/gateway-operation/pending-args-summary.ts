@@ -1,3 +1,5 @@
+import { formatToolUiName } from '@/lib/tool-ui-labels'
+
 /**
  * Human-readable summary of a pending GatewayOperation's args for HITL approval.
  * Must surface every field execute will use — otherwise the approver can rubber-stamp
@@ -63,6 +65,36 @@ function gmailItemLines(args: Record<string, unknown>): string[] {
  * One multi-line summary for the control-plane approval card / tests.
  * Prefer `toolName` over shape heuristics so Gmail never falls through to Drive chrome.
  */
+export function pendingOperationHeadline(
+  toolName: string,
+  args: Record<string, unknown>,
+  options?: { connectorName?: string },
+): string {
+  const connectorName = str(args.connectorName) || options?.connectorName || 'HTTP API'
+  if (toolName === 'http_api_request') {
+    const query = formatScalarQuery(args.query)
+    return `${connectorName}: ${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`
+  }
+  if (toolName === 'google_drive_upload_file') {
+    return `Google Drive fájl: ${str(args.name) || '—'}`
+  }
+  if (toolName === 'google_drive_create_folder') {
+    return `Google Drive mappa: ${str(args.name) || '—'}`
+  }
+  if (toolName === 'gmail_send' || toolName === 'gmail_create_draft') {
+    if (str(args.draftId)) return `Gmail piszkozat elküldése: ${str(args.draftId)}`
+    const parts = [
+      str(args.replyToMessageId) ? `Gmail válasz` : 'Gmail új levél',
+      str(args.subject) ? `tárgy: ${str(args.subject)}` : '',
+    ].filter(Boolean)
+    return parts.join(', ')
+  }
+  if (toolName === 'platform.project_memory.write') {
+    return `${str(args.kind) || 'emlék'}: ${str(args.title) || '—'}`
+  }
+  return formatToolUiName(toolName)
+}
+
 export function pendingArgsSummary(
   toolName: string,
   args: Record<string, unknown>,

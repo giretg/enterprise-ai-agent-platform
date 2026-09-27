@@ -16,6 +16,8 @@ const page = readFileSync(
 )
 
 assert.match(form, /canManageApprovers/)
+assert.match(form, /ConnectorTemplateIcon/)
+assert.match(form, /ConnectorListIcon/)
 assert.match(form, /kind: 'connector'/)
 assert.match(page, /canManageApprovers=\{canManage\}/)
 console.log('connector-approver-binding-ui.test.ts: ok')
