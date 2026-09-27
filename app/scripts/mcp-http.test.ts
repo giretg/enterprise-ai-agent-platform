@@ -857,6 +857,31 @@ async function main() {
     assert.ok(audit.some((row) => row.action === 'mcp.tools.call' && row.inputRef === MCP_WHOAMI_TOOL))
   })
 
+  await check('#666 mcp-session-id + user-agent pecsét az audit-sorra', async () => {
+    const { deps, audit } = runtimeDeps()
+    await initialize(deps)
+    await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 301,
+        method: 'tools/call',
+        params: { name: MCP_WHOAMI_TOOL, arguments: {} },
+      },
+      {
+        authorization: `Bearer ${TOKEN}`,
+        'mcp-session-id': 'sess-1001',
+        'user-agent': 'Claude-Desktop/1.0',
+      },
+      deps,
+    )
+    const row = audit.find(
+      (r) => r.action === 'mcp.tools.call' && r.inputRef === MCP_WHOAMI_TOOL,
+    ) as { metadata?: Record<string, unknown> } | undefined
+    assert.equal(row?.metadata?.sessionId, 'sess-1001')
+    assert.equal(row?.metadata?.clientName, 'claude')
+  })
+
   await check('skill catalog is available through tools/list and tools/call', async () => {
     const { deps, audit } = runtimeDeps({ skills: [SAMPLE_SKILL] })
     await initialize(deps)

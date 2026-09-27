@@ -68,6 +68,8 @@ jobs:
           npm run test:public-routes
           npm run test:mcp-principal
           npm run test:mcp-http
+          npm run test:mcp-parity
+          npm run test:mcp-parity-eval
           npm run test:mcp-tenant-context
           npm run test:agent-knowledge-placement
           npm run test:create-agent-wizard

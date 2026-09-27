@@ -103,6 +103,12 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         requires: { tenantRole: 'approver' },
       },
       {
+        key: 'admin.mcp-parity',
+        href: '/control-plane/mcp-parity',
+        label: 'MCP-paritás',
+        requires: { tenantRole: 'approver' },
+      },
+      {
         key: 'admin.provisioning',
         href: '/control-plane/provisioning',
         label: 'Konnektorok',

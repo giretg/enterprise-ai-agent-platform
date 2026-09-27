@@ -58,6 +58,7 @@ function main() {
     // #618: own pending writes are confirmed by the requester, no approver role needed.
     assert.ok(hrefs.includes('/control-plane/operations'))
     assert.ok(!hrefs.includes('/control-plane/audit'))
+    assert.ok(!hrefs.includes('/control-plane/mcp-parity'))
     const account = nav.find((entry) => !('children' in entry) && entry.key === 'account')
     assert.ok(account && !('children' in account))
     assert.equal(account.label, 'Kapcsolt fiókok')
@@ -76,6 +77,7 @@ function main() {
     assert.ok(!hrefs.includes('/control-plane/system'))
     assert.ok(!hrefs.includes('/control-plane/governance'))
     assert.ok(hrefs.includes('/control-plane/audit'))
+    assert.ok(hrefs.includes('/control-plane/mcp-parity'))
     assert.ok(!hrefs.includes('/control-plane/platform/tenants'))
   })
 
@@ -84,6 +86,7 @@ function main() {
       buildControlPlaneNav({ tenantRole: 'approver', platformRoles: [] }),
     )
     assert.ok(hrefs.includes('/control-plane/audit'))
+    assert.ok(hrefs.includes('/control-plane/mcp-parity'))
     assert.ok(hrefs.includes('/control-plane/account'))
     assert.ok(hrefs.includes('/control-plane/operations'))
     assert.ok(!hrefs.includes('/control-plane/iam'))

@@ -294,6 +294,8 @@
     "test:kb-validator": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/kb-validator.test.ts",
     "test:kb-eval": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/kb-eval.test.ts",
     "test:prompt-eval": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/prompt-eval.test.ts",
+    "test:mcp-parity": "tsx scripts/mcp-parity.test.ts",
+    "test:mcp-parity-eval": "tsx scripts/mcp-parity-eval.test.ts",
     "test:skill-catalog": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/skill-catalog.test.ts",
     "test:conversation-skill": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/conversation-skill.test.ts",
     "smoke:kb-nav": "tsx scripts/kb-nav-live-smoke.ts",
