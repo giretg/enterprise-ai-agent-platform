@@ -15,7 +15,7 @@ import {
   knowledgeCatalogConnectorName,
 } from '@/lib/agent-knowledge-base'
 import { isKbLanguage, resolveKbLanguage, type KbLanguage } from '@/lib/kb-language'
-import { DEFAULT_TENANT_LANGUAGE, type TenantLanguage } from '@/lib/tenant-language'
+import { tenantLanguageOrDefault, type TenantLanguage } from '@/lib/tenant-language'
 import {
   extractStructured,
   toExtractionMetadata,
@@ -62,13 +62,8 @@ export class KnowledgeBaseService {
   constructor(private deps: KnowledgeBaseDeps) {}
 
   /** #717: tenant kimeneti nyelv (új KB-connector alapértelmezése); resolver nélkül `hu`. */
-  private async tenantLanguage(tenantId: string): Promise<TenantLanguage> {
-    if (!this.deps.resolveTenantLanguage) return DEFAULT_TENANT_LANGUAGE
-    try {
-      return await this.deps.resolveTenantLanguage(tenantId)
-    } catch {
-      return DEFAULT_TENANT_LANGUAGE
-    }
+  private tenantLanguage(tenantId: string): Promise<TenantLanguage> {
+    return tenantLanguageOrDefault(this.deps.resolveTenantLanguage, tenantId)
   }
 
   async ingest(input: {

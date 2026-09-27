@@ -144,6 +144,12 @@ const agentDefinitionService = new AgentDefinitionService({
   audit: repositories.audit,
 })
 
+/** #717: a modellnek szóló szövegek nyelve a tenant kimeneti nyelve — az UI-locale soha nem. */
+const resolveTenantLanguage = async (tenantId: string) => {
+  const tenant = await repositories.tenants.findById(tenantId)
+  return readTenantLanguage(tenant?.settings)
+}
+
 const knowledgeBaseService = new KnowledgeBaseService({
   documents: repositories.documents,
   artifacts: repositories.knowledgeArtifacts,
@@ -151,10 +157,7 @@ const knowledgeBaseService = new KnowledgeBaseService({
   agents: repositories.agents,
   connectors: repositories.connectors,
   audit: repositories.audit,
-  async resolveTenantLanguage(tenantId) {
-    const tenant = await repositories.tenants.findById(tenantId)
-    return readTenantLanguage(tenant?.settings)
-  },
+  resolveTenantLanguage,
 })
 
 const projectWorkService = new ProjectWorkService(
@@ -204,6 +207,8 @@ const sharedToolLookups = {
     const user = await repositories.users.findById(input.userId)
     return user ? { id: user.id, email: user.email } : null
   },
+  // #717: briefing, KB-találat, http_api hintek — ugyanaz a feloldás.
+  resolveTenantLanguage,
   async resolveAccessToken(params: {
     connector: { id: string }
     grantId: string

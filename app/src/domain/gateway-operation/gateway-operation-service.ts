@@ -15,6 +15,7 @@ import { executeHttpApiTool } from '@/domain/enterprise-tools/handlers/http-api'
 import { executeGmailTool } from '@/domain/enterprise-tools/handlers/gmail'
 import { GmailApiAuthError, GmailApiError } from '@/domain/connector-grant/gmail-api-client'
 import { HttpApiError } from '@/domain/connector/http-api-client'
+import { tenantLanguageOrDefault, type TenantLanguage } from '@/lib/tenant-language'
 import {
   authorizeToolCall,
   asUuid,
@@ -102,7 +103,11 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     accessToken?: string,
     actingUser?: { id: string; email: string; tenantId: string | null } | null,
     agent?: { id: string; version?: number },
+    /** #717: a modellnek szóló http_api hintek nyelve. */
+    language?: TenantLanguage,
   ) => Promise<unknown>
+  /** #717: a tenant kimeneti nyelve (a modellnek szóló szövegekhez). Hiányában `hu`. */
+  resolveTenantLanguage?: (tenantId: string) => Promise<TenantLanguage>
   resolveActingUser?: (input: { userId: string }) => Promise<{ id: string; email: string } | null>
   startAuthorization?: StartDelegatedAuthorization
   recordCreatedDriveFiles?: (input: {
@@ -909,6 +914,8 @@ async function executeApprovedOperation(
           accessToken,
           await resolveHttpActingUser(deps, operation.principalUserId, operation.tenantId),
           { id: definition.agentId, version: definition.version },
+          // #717: a hintek/hibák a tenant nyelvén.
+          await tenantLanguageOrDefault(deps.resolveTenantLanguage, operation.tenantId),
         )
       : isEnterpriseGmailWriteTool(operation.toolName)
         ? await (deps.executeGmailTool ?? executeGmailTool)(operation.toolName, args, accessToken ?? '')
