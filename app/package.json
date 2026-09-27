@@ -148,6 +148,7 @@
     "test:agent-checkout": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-checkout.test.ts",
     "test:agent-knowledge-placement": "tsx scripts/agent-knowledge-placement.test.ts",
     "test:enterprise-tools": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/enterprise-tools.test.ts",
+    "test:sandbox-run": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/sandbox-run.test.ts",
     "test:gmail-mcp-tools": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/gmail-mcp-tools.test.ts",
     "test:gateway-operation": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/gateway-operation.test.ts",
     "test:audit-log": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/audit-log.test.ts",

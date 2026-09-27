@@ -243,7 +243,7 @@ export async function authorizeToolCall(
     return { allowed: false, reason: 'connector_not_active' }
   }
 
-  if (requirement.connectorType === 'knowledge_base') {
+  if (requirement.connectorType === 'knowledge_base' || requirement.connectorType === 'code_sandbox') {
     return {
       allowed: true,
       connectorId: connector.id,

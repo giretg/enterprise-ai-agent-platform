@@ -100,6 +100,7 @@ enum ConnectorType {
   http_api
   gmail
   knowledge_base
+  code_sandbox
 }
 
 enum DocumentStatus {

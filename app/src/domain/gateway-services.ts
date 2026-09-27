@@ -41,6 +41,7 @@ import { SkillService } from '@/domain/skill/skill-service'
 import { TenantService } from '@/domain/tenant/tenant-service'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
 import { executeKnowledgeBaseTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
 import {
   invokeProjectWork,
@@ -310,6 +311,21 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
   executeKbTool: (toolName, args, ctx) =>
     executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx),
+  loadSkillVersion: async (skillVersionId) => {
+    const version = await repositories.skills.findVersionById(skillVersionId)
+    if (!version) return null
+    return {
+      attachments: version.attachments,
+      status: version.status,
+      tenantId: version.skill.tenantId,
+    }
+  },
+  executeSandboxRun,
+  writeWorkFile: async (input) => {
+    const written = await projectWorkService.writeFile(input)
+    if (!written.ok) throw new Error(written.code) // quota_exceeded | file_too_large | invalid_path
+    return { path: written.file.path }
+  },
 }
 
 export const services = {

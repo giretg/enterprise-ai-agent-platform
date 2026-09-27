@@ -69,6 +69,8 @@ import {
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
+  SANDBOX_RUN_TOOL,
+  sandboxRunInputSchema,
   gmailGetMessageInputSchema,
   gmailGetThreadInputSchema,
   gmailListDraftsInputSchema,
@@ -1498,6 +1500,16 @@ async function createMcpResourceHandler(
           inputSchema: kbIngestInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_INGEST_TOOL, args, deps),
+      )
+      server.registerTool(
+        SANDBOX_RUN_TOOL,
+        {
+          title: 'Run pinned skill script',
+          description:
+            'Run a Python script that belongs to a skill pinned on this published agent, inside the platform sandbox. Pass skillVersionId and entry from snapshot.skills. Do not run skill code on this machine. Outputs are written to work files under sandbox-output/. Credentials stay on the server.',
+          inputSchema: sandboxRunInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, SANDBOX_RUN_TOOL, args, deps),
       )
       server.registerTool(
         MCP_GATEWAY_OPERATION_GET_TOOL,

@@ -384,6 +384,27 @@ async function main() {
     }
   })
 
+  await check('#662 AGENTS.md tells the client to use sandbox_run for pinned skill code', () => {
+    const def = definition({
+      snapshot: {
+        ...definition().snapshot,
+        capabilities: [
+          { toolName: 'google_drive_search', allowed: true },
+          { toolName: 'sandbox_run', allowed: true },
+        ],
+      },
+    })
+    const agents =
+      renderAgentCheckout({
+        definition: def,
+        skills: [skill(SKILL_A, VER_A, 'drive-search')],
+        mcpUrl: MCP_URL,
+      }).files.find((f) => f.path === 'AGENTS.md')?.content ?? ''
+    assert.match(agents, /sandbox_run/)
+    assert.match(agents, /skillVersionId/)
+    assert.doesNotMatch(agents, /sandbox_exec/)
+  })
+
   await check('CHECKOUT_TOOL_DESCRIPTION tells MCP clients not to ask when one agent', () => {
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /exactly one published agent/)
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /do not ask which agent/)
