@@ -45,6 +45,8 @@ function agentRow(overrides: Partial<Agent> = {}): Agent {
     name: 'Drive assistant',
     roleInstruction: 'Inspect Drive through MCP.',
     description: 'Inspect Drive files through MCP.',
+    hardRules: '',
+    trainedRules: '',
     status: 'draft',
     currentDefinitionVersionId: null,
     avatarUrl: null,
@@ -318,6 +320,7 @@ async function main() {
     const snapshot: AgentDefinitionSnapshot = {
       name: 'A',
       roleInstruction: 'B',
+      rules: [],
       skills: [],
       connectors: [],
       capabilities: [{ toolName: 'google_drive_search', allowed: true }],
@@ -372,6 +375,42 @@ async function main() {
       publishedById: USER_ID,
     })
     assert.equal(published.snapshot.connectors[0]?.endpoints, undefined)
+  })
+
+  await check('#660 publish freezes hard and trained rules into snapshot.rules', async () => {
+    const { service, agents } = memoryDeps()
+    agents.set(AGENT_ID, {
+      ...agentRow(),
+      hardRules: 'Do not publish without Csilla approval.\nNo secrets in memory.',
+      trainedRules: 'Always answer in Hungarian.\nUse POSnavigator tone.',
+    })
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    assert.deepEqual(published.snapshot.rules, [
+      { text: 'Do not publish without Csilla approval.', source: 'hard' },
+      { text: 'No secrets in memory.', source: 'hard' },
+      { text: 'Always answer in Hungarian.\nUse POSnavigator tone.', source: 'trained' },
+    ])
+  })
+
+  await check('#660 trained rule change marks publish stale until republish', async () => {
+    const { service, agents } = memoryDeps()
+    agents.set(AGENT_ID, {
+      ...agentRow(),
+      trainedRules: 'Version one.',
+    })
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    assert.equal(published.snapshot.rules?.[0]?.text, 'Version one.')
+    agents.set(AGENT_ID, { ...agents.get(AGENT_ID)!, trainedRules: 'Version two.' })
+    const stale = await service.getPublishStatus({ agentId: AGENT_ID, tenantId: TENANT_A })
+    assert.equal(stale.stale, true)
   })
 
   if (failures > 0) {

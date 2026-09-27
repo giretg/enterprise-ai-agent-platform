@@ -1,6 +1,7 @@
 import { dump as yamlDump } from 'js-yaml'
 import { MCP_ALLOWED_TOOLS } from '@/auth/mcp-principal'
 import type { AgentDefinition } from '@/domain/agent-definition'
+import { renderSnapshotRulesBriefingBlock } from '@/domain/agent-definition/snapshot-rules'
 import { hashSnapshot } from '@/domain/agent-definition'
 import { CODE_EXTENSIONS } from '@/lib/skill/skill-package-adapter'
 import { serializeSkillMd } from '@/lib/skill/skill-md-export'
@@ -273,6 +274,12 @@ export function renderAgentBriefing(input: {
     '',
     snapshot.roleInstruction,
     '',
+  ]
+  const rulesBlock = renderSnapshotRulesBriefingBlock(snapshot.rules ?? [])
+  if (rulesBlock) {
+    lines.push(rulesBlock, '')
+  }
+  lines.push(
     '## Rules you must not break',
     '',
     '- This agent\'s memory is the source of company facts, decisions and locations. It overrides search results: if Drive, KB or API results contradict it, follow the memory and tell the user about the conflict.',
@@ -298,7 +305,7 @@ export function renderAgentBriefing(input: {
     '- Current focus: the `focus` field in platform.agent.get_definition — always in full, before the memory list. Only one active focus per agent and project: platform.project_memory.write with kind "focus" replaces it.',
     '- Work files (plans, notes, open tasks): platform.work_file.* under a projectKey.',
     '- Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
-  ]
+  )
 
   const tools = mcpToolNames(snapshot.capabilities)
   if (tools.length > 0) lines.push(`- MCP tools: ${tools.join(', ')}.`)
