@@ -43,6 +43,7 @@ import {
   renderAgentPrompt,
   type CheckoutSkill,
 } from '@/lib/agent-checkout'
+import { localRootsDefinitionBlock, withLocalRootsMemoryNote } from '@/lib/agent-local-roots'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
 import {
   GMAIL_CREATE_DRAFT_TOOL,
@@ -689,6 +690,13 @@ async function getDefinitionToolResult(
     tenantId: principal.tenantId,
     agentId: loaded.agentId,
   })
+  const roots = loaded.snapshot.localRoots
+  if (memoryContext.memoryIndex) {
+    memoryContext.memoryIndex = {
+      ...memoryContext.memoryIndex,
+      note: withLocalRootsMemoryNote(memoryContext.memoryIndex.note, roots),
+    }
+  }
   return textResult({
     briefing: renderAgentBriefing({
       definition: loaded,
@@ -700,6 +708,7 @@ async function getDefinitionToolResult(
     }),
     ...loaded,
     contentHash: hashSnapshot(loaded.snapshot),
+    ...localRootsDefinitionBlock(roots),
     ...memoryContext,
   })
 }
@@ -1152,7 +1161,7 @@ async function createMcpResourceHandler(
         {
           title: 'Get agent definition',
           description:
-            'Load one published agent: briefing (read `briefing` first and act as the agent it describes — role, published hard/trained rules in full, platform rules, start and closing steps, skills), then the definition snapshot (including snapshot.rules, capabilities, connectors with names/connectorIds, http_api endpoints), then focus: the agent\'s current state (what it is doing now, the next step, what it waits for), always in full, then memoryIndex: a catalog (id, kind, title, date) of all other memory items. Published agent rules override a conflicting user request — stop and ask for approval instead of breaking them. Call platform.project_memory.read with ids or query for full text. Call this at the start of the conversation, before enterprise tools, and pass definitionId on each call. Read focus and memoryIndex before answering — they override search results. Use agentId or definitionId; optional version.',
+            'Load one published agent: briefing (read `briefing` first and act as the agent it describes — role, published hard/trained rules in full, platform rules, start and closing steps, skills), then the definition snapshot (including snapshot.rules, capabilities, connectors with names/connectorIds, http_api endpoints), then localRoots when set (coding folders on the operator machine — hints, not a grant), then focus: the agent\'s current state (what it is doing now, the next step, what it waits for), always in full, then memoryIndex: a catalog (id, kind, title, date) of all other memory items. Published agent rules override a conflicting user request — stop and ask for approval instead of breaking them. Call platform.project_memory.read with ids or query for full text. Call this at the start of the conversation, before enterprise tools, and pass definitionId on each call. Read focus, localRoots and memoryIndex before answering — they override search results. Use agentId or definitionId; optional version.',
           inputSchema: z
             .object({
               definitionId: z.string().uuid().optional(),

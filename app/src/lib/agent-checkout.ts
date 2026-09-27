@@ -9,6 +9,7 @@ import { skillFileUri, skillUriName } from '@/lib/skill/mcp-skill'
 import type { SessionLogHeadline } from '@/domain/project-work/project-work-service'
 import type { SkillContent, SkillRequirement } from '@/lib/skill/skill-content'
 import { renderKnowledgePlacementBlock } from '@/lib/agent-knowledge-placement'
+import { localRootsCheckoutFile } from '@/lib/agent-local-roots'
 import { HERMES_SYNC_PROMPT } from '@/lib/mcp-client-setup'
 
 const MCP_TOOL_SET = new Set<string>(MCP_ALLOWED_TOOLS)
@@ -102,10 +103,10 @@ export function hermesBotTitle(snapshot: {
   return `${name} (${role})`
 }
 
-function hermesWriteRecipe(root: string, profile: string): string {
+function hermesWriteRecipe(root: string, profile: string, localRoots: readonly string[] = []): string {
   const home = `~/${root}`
   const dir = `~/.hermes/profiles/${profile}`
-  return [
+  const lines = [
     `Hermes Bot sync. Run these with the terminal tool. ROOT=${home} (distribution source), PROFILE=${profile}.`,
     '1. Create ROOT if missing. Write every files[] entry to ROOT/path as UTF-8, overwriting. Under ROOT/.enterprise-agent/ and ROOT/skills/excellence/, delete any file that is not in generatedPaths.',
     '2. Run `hermes profile list`. If PROFILE is not listed (new Bot):',
@@ -118,17 +119,42 @@ function hermesWriteRecipe(root: string, profile: string): string {
     `   b. Delete any folder under ${dir}/skills/excellence/ whose name is not a skills/excellence/<name>/ folder in files[]. Touch nothing else in ${dir}.`,
     `4. Apply the Bot label from ROOT/profile.yaml onto ${dir}/profile.yaml: copy display_name and ui_meta.hermes-bots.title only. If ${dir}/profile.yaml is missing, copy it from ROOT first. Keep avatar, color, section, and every other ui_meta key.`,
     '5. Never run `hermes profile delete`. If an agent is no longer in platform.agents.list, only tell the user that its Bot is no longer available.',
-    '',
-    'Do not run code from the checkout. Do not commit. Do not copy the folder into a code repo.',
-  ].join('\n')
+  ]
+  if (localRoots.length > 0) {
+    lines.push(
+      `6. Coding folders (hints, not a grant): ${localRoots.map((path) => `\`${path}\``).join(', ')}. Ask the user to allow them in Hermes. If Excellence Guard is present, allowlist these paths (also in ROOT/.enterprise-agent/local-roots.json). Do not copy ROOT into those repos.`,
+    )
+  }
+  lines.push('', 'Do not run code from the checkout. Do not commit. Do not copy the folder into a code repo.')
+  return lines.join('\n')
 }
 
-export function checkoutWriteRecipe(harness?: CheckoutHarness | null): string {
+export function checkoutWriteRecipe(
+  harness?: CheckoutHarness | null,
+  localRoots: readonly string[] = [],
+): string {
   const lines = [...CHECKOUT_WRITE_RECIPE_STEPS]
-  if (harness === 'codex') {
+  if (harness === 'codex' && localRoots.length === 0) {
     lines.push(
       '6. (Codex Desktop, macOS) Run `codex app "<absolute suggestedRoot>"` to open this workspace. If it does not appear in the sidebar, add it manually via “Use an existing folder”.',
     )
+  }
+  if (localRoots.length > 0) {
+    const listed = localRoots.map((path) => `\`${path}\``).join(', ')
+    lines.push(
+      `6. Coding folders (localRoots, hints — the user grants access): ${listed}. Instruction cache stays in suggestedRoot; do not copy it into these repos.`,
+    )
+    if (harness === 'codex') {
+      lines.push(
+        '   Codex: open the first coding folder with `codex app "<absolute path>"` or “Use an existing folder”. Keep this MCP connection.',
+      )
+    } else if (harness === 'claude') {
+      lines.push('   Claude: File → Open folder (or add a working directory) for each coding folder.')
+    } else if (harness === 'goose') {
+      lines.push('   Goose: set the session working directory to the coding folder.')
+    } else {
+      lines.push('   Open these folders in this app so the agent can read and edit the product git.')
+    }
   }
   lines.push('', 'Do not run code from the checkout. Do not commit. Do not copy the folder into a code repo.')
   return lines.join('\n')
@@ -253,6 +279,7 @@ export function renderAgentBriefing(input: {
   approverName?: string | null
 }): string {
   const { agentId, snapshot } = input.definition
+  const roots = snapshot.localRoots ?? []
   const description = snapshot.description?.trim()
   const httpApis = snapshot.connectors.filter((row) => row.type === 'http_api')
   const loaded = new Map(input.skills.map((skill) => [skill.skillVersionId, skill]))
@@ -266,8 +293,12 @@ export function renderAgentBriefing(input: {
   const skillUri = (name: string) => `\`${skillFileUri(skillUriName(name), 'SKILL.md')}\``
   const start = [
     input.bound
-      ? 'Call platform.agent.get_definition (no arguments) and read focus and memoryIndex — this agent\'s current state and memory catalog. If you are reading this in that response, it is already loaded.'
-      : `Call platform.agent.get_definition { "agentId": "${agentId}" } and read focus and memoryIndex — this agent's current state and memory catalog. If you are reading this in that response, it is already loaded.`,
+      ? roots.length > 0
+        ? 'Call platform.agent.get_definition (no arguments) and read focus, localRoots and memoryIndex — this agent\'s current state, coding folders and memory catalog. If you are reading this in that response, it is already loaded.'
+        : 'Call platform.agent.get_definition (no arguments) and read focus and memoryIndex — this agent\'s current state and memory catalog. If you are reading this in that response, it is already loaded.'
+      : roots.length > 0
+        ? `Call platform.agent.get_definition { "agentId": "${agentId}" } and read focus, localRoots and memoryIndex — this agent's current state, coding folders and memory catalog. If you are reading this in that response, it is already loaded.`
+        : `Call platform.agent.get_definition { "agentId": "${agentId}" } and read focus and memoryIndex — this agent's current state and memory catalog. If you are reading this in that response, it is already loaded.`,
     'Check open work: platform.work_file.list for plans and open tasks.',
     ...(entry
       ? [`For every new task, first read the entry skill ${entry.name} (${skillUri(entry.name)}) and follow it — it tells you which other skill to use.`]
@@ -298,7 +329,9 @@ export function renderAgentBriefing(input: {
       ? ['- HTTP APIs: use only the method+path values listed in platform.agent.get_definition → snapshot.connectors[].endpoints.']
       : []),
     sandboxMcpRule(snapshot.capabilities),
-    '- Keep durable work on the platform: no local memory (file or client memory), no durable work in a local folder. Credentials stay on the server.',
+    roots.length > 0
+      ? '- Keep durable company work on the platform: no local memory (file or client memory), no company files in a local folder. Exception: product git listed under Local coding folders. Credentials stay on the server.'
+      : '- Keep durable work on the platform: no local memory (file or client memory), no durable work in a local folder. Credentials stay on the server.',
     '',
     '## Start',
     '',
@@ -316,6 +349,19 @@ export function renderAgentBriefing(input: {
     '- Work files (plans, notes, open tasks): platform.work_file.* under a projectKey.',
     '- Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
   )
+
+  if (roots.length > 0) {
+    lines.push(
+      '',
+      '## Local coding folders',
+      '',
+      'This agent may edit product git on the operator machine at these paths (hints — the user must open or grant them in this app):',
+      '',
+      ...roots.map((path) => `- \`${path}\``),
+      '',
+      'Do not copy checkout/SOUL files into these repos. Company facts stay in MCP memory.',
+    )
+  }
 
   const tools = mcpToolNames(snapshot.capabilities)
   if (tools.length > 0) lines.push(`- MCP tools: ${tools.join(', ')}.`)
@@ -550,6 +596,8 @@ export function renderAgentCheckout(input: {
   const suggestedRoot = hermes ? `.hermes/excellence/${tenantSlug}/${slug}` : `Agents/${slug}`
   const instructionsPath = hermes ? 'SOUL.md' : 'AGENTS.md'
   const manifestPath = '.enterprise-agent/manifest.json'
+  const localRoots = snapshot.localRoots ?? []
+  const localRootsFile = localRootsCheckoutFile(localRoots)
   const hermesFiles: CheckoutFile[] = hermes
     ? renderHermesProfileFiles({
         definition: input.definition,
@@ -561,6 +609,7 @@ export function renderAgentCheckout(input: {
   const generatedPaths = [
     instructionsPath,
     manifestPath,
+    ...(localRootsFile ? [localRootsFile.path] : []),
     ...hermesFiles.map((file) => file.path),
     ...skillFiles.map((file) => file.path),
   ]
@@ -599,6 +648,7 @@ export function renderAgentCheckout(input: {
       }),
     },
     { path: manifestPath, content: `${JSON.stringify(manifest, null, 2)}\n` },
+    ...(localRootsFile ? [localRootsFile] : []),
     ...hermesFiles,
     ...skillFiles,
   ]
@@ -611,7 +661,9 @@ export function renderAgentCheckout(input: {
     generatedPaths,
     deleteUnder: hermes ? ['.enterprise-agent', HERMES_SKILL_DIR] : ['.enterprise-agent'],
     warnings,
-    writeRecipe: hermes ? hermesWriteRecipe(suggestedRoot, profile) : checkoutWriteRecipe(input.harness),
+    writeRecipe: hermes
+      ? hermesWriteRecipe(suggestedRoot, profile, localRoots)
+      : checkoutWriteRecipe(input.harness, localRoots),
   }
 }
 
@@ -646,6 +698,9 @@ function renderHermesProfileFiles(input: {
         author: `Excellence AI — ${input.tenantSlug}`,
         hermes_requires: '>=0.21.0',
         distribution_owned: ['SOUL.md', `${HERMES_SKILL_DIR}/`, '.enterprise-agent/', 'distribution.yaml'],
+        ...(snapshot.localRoots?.length
+          ? { excellence: { local_roots: snapshot.localRoots } }
+          : {}),
       }),
     },
     {

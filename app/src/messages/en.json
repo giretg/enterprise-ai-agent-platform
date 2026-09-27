@@ -272,6 +272,7 @@
         "elesites": "Go live",
         "elesitesDesc": "Which definition is live, and whether unpublished changes remain.",
         "profil": "Name and responsibility",
+        "localRoots": "Local coding folders",
         "munkakor": "Role",
         "kapcsolatok": "Connectors",
         "kapcsolatokDesc": "APIs, mail, Drive, and other external systems — in read or write mode.",
@@ -972,6 +973,17 @@
     "placeholder": "Marketing, SEO, content. Sales leads → Gábor.",
     "saving": "Saving...",
     "save": "Save"
+  },
+  "AgentLocalRoots": {
+    "title": "Local coding folders",
+    "help": "If this teammate works in a git repo on your machine, list the folders — one per line, for example ~/Projects/platform. This is not a permission: in Codex, Claude, and Goose the user opens the folder. In Hermes, Guard can turn it into an allowlist. Company memory stays on MCP. It takes effect at the next publish.",
+    "placeholder": "~/Projects/platform",
+    "label": "Folders (one ~/… or absolute path per line)",
+    "noChange": "No changes",
+    "saved": "Saved — takes effect on MCP at the next publish",
+    "saving": "Saving...",
+    "save": "Save",
+    "empty": "No local coding folder — this teammate works only through MCP."
   },
   "SkillCatalog": {
     "crash": "The catalog failed to render: {message}",

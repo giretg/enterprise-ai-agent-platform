@@ -1103,6 +1103,51 @@ async function main() {
     assert.equal(withoutMemory.memoryIndex, undefined)
   })
 
+  await check('#729 get_definition localRoots sibling and memory note', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    deps.loadDefinition = async () => ({
+      ...SAMPLE_DEFINITION,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, localRoots: ['~/Projects/platform'] },
+    })
+    deps.invokeProjectWork = async () => ({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            ok: true,
+            items: [],
+            index: { entries: [{ id: 'm0', kind: 'finding', title: 'fact' }], totalCount: 1, offset: 0, nextOffset: null },
+          }),
+        },
+      ],
+    })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 62,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { definitionId: DEFINITION_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(res)) as { result?: { isError?: boolean; content?: Array<{ text: string }> } }
+    assert.equal(body.result?.isError, undefined)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      localRoots?: { paths: string[]; note: string }
+      memoryIndex?: { note: string }
+      briefing?: string
+      snapshot?: { localRoots?: string[] }
+    }
+    assert.deepEqual(payload.localRoots?.paths, ['~/Projects/platform'])
+    assert.match(payload.localRoots?.note ?? '', /Hints, not a grant/)
+    assert.match(payload.memoryIndex?.note ?? '', /see localRoots/)
+    assert.match(payload.briefing ?? '', /Local coding folders/)
+    assert.deepEqual(payload.snapshot?.localRoots, ['~/Projects/platform'])
+  })
+
   await check('#658 get_definition: recent session logs in briefing and recentSessionLogs block', async () => {
     const { deps } = runtimeDeps({ role: 'admin' })
     deps.invokeProjectWork = async () => ({

@@ -146,6 +146,7 @@
     "test:mcp-tenant-context": "tsx scripts/mcp-tenant-context.test.ts",
     "test:mcp-skills": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mcp-skills.test.ts",
     "test:agent-checkout": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-checkout.test.ts",
+    "test:agent-local-roots": "tsx scripts/agent-local-roots.test.ts",
     "test:agent-knowledge-placement": "tsx scripts/agent-knowledge-placement.test.ts",
     "test:enterprise-tools": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/enterprise-tools.test.ts",
     "test:sandbox-run": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/sandbox-run.test.ts",

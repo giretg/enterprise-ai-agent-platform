@@ -272,6 +272,7 @@
         "elesites": "Élesítés",
         "elesitesDesc": "Melyik definíció fut élesben, és van-e még nem publikált változás.",
         "profil": "Név és felelősségi kör",
+        "localRoots": "Helyi kódmappák",
         "munkakor": "Munkakör",
         "kapcsolatok": "Konnektorok",
         "kapcsolatokDesc": "API-k, levelezés, Drive és egyéb külső rendszerek — olvasási vagy írási módban.",
@@ -972,6 +973,17 @@
     "placeholder": "Marketing, SEO, tartalom. Sales lead → Gábor.",
     "saving": "Mentés...",
     "save": "Mentés"
+  },
+  "AgentLocalRoots": {
+    "title": "Helyi kódmappák",
+    "help": "Ha ez a munkatárs a gépeden lévő git-repóban dolgozik, írd ide a mappákat — soronként egyet, például ~/Projects/platform. Ez nem jogosultság: Codexben, Claude-ban és Goose-ban a felhasználó nyitja ki a mappát. Hermesben a Guard ebből allowlistet készíthet. A céges memória az MCP-n marad. Életbe a következő közzétételkor lép.",
+    "placeholder": "~/Projects/platform",
+    "label": "Mappák (soronként egy ~/… vagy abszolút útvonal)",
+    "noChange": "Nincs változás",
+    "saved": "Mentve — a következő közzétételkor lép életbe az MCP-n",
+    "saving": "Mentés...",
+    "save": "Mentés",
+    "empty": "Nincs helyi kódmappa — ez a munkatárs csak az MCP-n dolgozik."
   },
   "SkillCatalog": {
     "crash": "A katalógus megjelenítése elhasalt: {message}",

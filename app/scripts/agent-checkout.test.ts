@@ -531,6 +531,36 @@ async function main() {
     assert.ok(titled.length <= 56)
   })
 
+  await check('#729 localRoots in briefing, json, and harness recipes', () => {
+    const def = definition({
+      snapshot: { ...definition().snapshot, localRoots: ['~/Projects/platform'] },
+    })
+    const skills = [skill(SKILL_A, VER_A, 'drive-search')]
+    const base = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL })
+    assert.match(base.files.find((file) => file.path === 'AGENTS.md')?.content ?? '', /## Local coding folders/)
+    assert.match(base.files.find((file) => file.path === 'AGENTS.md')?.content ?? '', /~\/Projects\/platform/)
+    assert.ok(base.generatedPaths.includes('.enterprise-agent/local-roots.json'))
+    const json = base.files.find((file) => file.path === '.enterprise-agent/local-roots.json')
+    assert.deepEqual(JSON.parse(json?.content ?? '{}').paths, ['~/Projects/platform'])
+    assert.match(base.writeRecipe, /Coding folders \(localRoots/)
+    assert.match(base.writeRecipe, /Open these folders in this app/)
+
+    const codex = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'codex' })
+    assert.match(codex.writeRecipe, /codex app/)
+    assert.doesNotMatch(codex.writeRecipe, /absolute suggestedRoot/)
+
+    const claude = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'claude' })
+    assert.match(claude.writeRecipe, /File → Open folder/)
+
+    const goose = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'goose' })
+    assert.match(goose.writeRecipe, /session working directory/)
+
+    const hermes = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'hermes' })
+    assert.match(hermes.writeRecipe, /Excellence Guard/)
+    assert.match(hermes.files.find((file) => file.path === 'SOUL.md')?.content ?? '', /Local coding folders/)
+    assert.match(hermes.files.find((file) => file.path === 'distribution.yaml')?.content ?? '', /local_roots/)
+  })
+
   if (failures > 0) {
     console.error(`${failures} failed`)
     process.exit(1)
