@@ -565,6 +565,25 @@ export class ProjectWorkService {
     return this.insertMemory(prepared.draft)
   }
 
+  async deleteMemory(input: {
+    tenantId: string
+    agentId: string
+    memoryId: string
+  }): Promise<ProjectWorkResult<{ deleted: true }>> {
+    const row = await this.memory.findById(input.memoryId)
+    if (!row || row.tenantId !== input.tenantId || row.agentId !== input.agentId) {
+      return err('memory_not_found')
+    }
+    if (row.status !== 'active') return err('memory_not_found')
+    const retired = await this.memory.retireActive({
+      tenantId: input.tenantId,
+      agentId: input.agentId,
+      id: input.memoryId,
+    })
+    if (!retired) return err('memory_not_found')
+    return ok({ deleted: true as const })
+  }
+
   private async insertMemory(draft: Omit<MemoryWriteInput, 'mode'>): Promise<MemoryView> {
     const [writer] = await this.users.findManyByIds([draft.withUserId])
     const writerName = writer?.name ?? draft.withUserId

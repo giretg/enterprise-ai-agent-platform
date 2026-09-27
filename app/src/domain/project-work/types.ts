@@ -102,6 +102,8 @@ export interface ProjectMemoryStore {
     supersedesId: string | null
     alsoSupersedeIds: string[]
   }): Promise<ProjectMemoryRecord>
+  /** Aktív elem kivezetése (superseded) — tenant + agent határ. */
+  retireActive(input: { tenantId: string; agentId: string; id: string }): Promise<boolean>
 }
 
 export interface ProjectWorkUserLookup {

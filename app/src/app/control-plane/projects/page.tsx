@@ -20,6 +20,7 @@ export default async function ProjectsPage() {
     : []
   const error = projectsRes.success ? null : projectsRes.error
   const canEdit = hasMinimumRole(ctx.activeTenantRole, 'approver')
+  const canDeleteMemory = hasMinimumRole(ctx.activeTenantRole, 'admin')
 
   const t = await getTranslations('ControlPlane.projects')
   return (
@@ -33,6 +34,7 @@ export default async function ProjectsPage() {
         initialProjects={projects}
         agents={agents}
         canEdit={canEdit}
+        canDeleteMemory={canDeleteMemory}
         initialError={error}
       />
     </div>
