@@ -544,7 +544,8 @@ export function renderAgentCheckout(input: {
 
   const tenantSlug = pin.tenantSlug
   const slug = checkoutSlug(snapshot.name)
-  const profile = `exc-${slug}`
+  // #682: the Hermes profile name (exc- + slug) must stay within 60 chars.
+  const profile = `exc-${slug}`.slice(0, 60).replace(/-+$/, '')
   const suggestedRoot = hermes ? `.hermes/excellence/${tenantSlug}/${slug}` : `Agents/${slug}`
   const instructionsPath = hermes ? 'SOUL.md' : 'AGENTS.md'
   const manifestPath = '.enterprise-agent/manifest.json'
