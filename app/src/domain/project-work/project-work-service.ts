@@ -22,6 +22,7 @@ import {
   type WorkProjectStore,
 } from './types'
 import {
+  memoryDisplayTitle,
   memoryMatchesQuery,
   paginateMemoryIndex,
   toMemoryIndexEntry,
@@ -40,7 +41,17 @@ export const MEMORY_BODY_MAX = 8_000
 /** Fókusz: rövid állapotblokk, agentenként/projektenként egyetlen aktív elem (#656). */
 export const MEMORY_FOCUS_MAX = 3_000
 const MEMORY_FOCUS_DEFAULT_TITLE = 'Fókusz'
+/** Append-only work journal (#658); titles surface in get_definition briefing. */
+export const MEMORY_SESSION_LOG_DEFAULT_TITLE = 'Session log'
+export const SESSION_LOG_BRIEFING_MAX = 5
 export const MEMORY_MERGE_MAX = 10
+
+export type SessionLogHeadline = {
+  id: string
+  title: string
+  createdAt: string
+  withUserName: string
+}
 
 export type ProjectWorkErr = { ok: false; code: string; message: string }
 export type ProjectWorkOk<T> = { ok: true } & T
@@ -311,7 +322,9 @@ export class ProjectWorkService {
     ids?: string[]
     query?: string
     offset?: number
-  }): Promise<ProjectWorkResult<{ items?: MemoryView[]; index?: MemoryIndexPage }>> {
+  }): Promise<
+    ProjectWorkResult<{ items?: MemoryView[]; index?: MemoryIndexPage; recentSessionLogs?: SessionLogHeadline[] }>
+  > {
     const scoped = await this.assertProject(input.tenantId, input.projectKey)
     if (!scoped.ok) return scoped
     const rows = await this.memory.listActive({
@@ -350,7 +363,11 @@ export class ProjectWorkService {
     }
 
     const focusRows = rows.filter((row) => row.kind === 'focus')
-    const catalogRows = rows.filter((row) => row.kind !== 'focus')
+    const sessionLogRows = rows
+      .filter((row) => row.kind === 'session_log')
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, SESSION_LOG_BRIEFING_MAX)
+    const catalogRows = rows.filter((row) => row.kind !== 'focus' && row.kind !== 'session_log')
     const entries = catalogRows.map((row) =>
       toMemoryIndexEntry({
         id: row.id,
@@ -362,6 +379,16 @@ export class ProjectWorkService {
     )
     return ok({
       ...(focusRows.length > 0 ? { items: focusRows.map(toView) } : {}),
+      ...(sessionLogRows.length > 0
+        ? {
+            recentSessionLogs: sessionLogRows.map((row) => ({
+              id: row.id,
+              title: memoryDisplayTitle(row.title, row.body),
+              createdAt: row.createdAt.toISOString(),
+              withUserName: byId.get(row.withUserId) ?? row.withUserId,
+            })),
+          }
+        : {}),
       index: paginateMemoryIndex(entries, input.offset ?? 0),
     })
   }
@@ -379,7 +406,7 @@ export class ProjectWorkService {
     if (!prepared.ok) return prepared
     // Cserénél is: ha a kivezetetteken kívül marad hasonló aktív elem, azt is össze kell vonni.
     // Kivétel a fókusz: állapotblokk, mindig az egyetlen aktív példányt írja felül.
-    if (!input.confirmNew && prepared.draft.kind !== 'focus') {
+    if (!input.confirmNew && prepared.draft.kind !== 'focus' && prepared.draft.kind !== 'session_log') {
       const retiring = new Set(retiredIds(prepared.draft))
       const active = await this.memory.listActive({
         tenantId: input.tenantId,
@@ -388,7 +415,7 @@ export class ProjectWorkService {
       })
       const similar = findSimilarMemories(
         prepared.draft,
-        active.filter((row) => !retiring.has(row.id)),
+        active.filter((row) => !retiring.has(row.id) && row.kind !== 'session_log'),
       )
       if (similar.length > 0) {
         return ok({
@@ -418,19 +445,24 @@ export class ProjectWorkService {
   }
 
   private async insertMemory(draft: Omit<MemoryWriteInput, 'mode'>): Promise<MemoryView> {
+    const [writer] = await this.users.findManyByIds([draft.withUserId])
+    const writerName = writer?.name ?? draft.withUserId
+    const body =
+      draft.kind === 'session_log'
+        ? `${draft.body.trimEnd()}\n\n---\n${new Date().toISOString()} · ${writerName}`
+        : draft.body
     const row = await this.memory.insertActive({
       tenantId: draft.tenantId,
       agentId: draft.agentId,
       projectKey: effectiveWorkProjectKey(draft.projectKey),
       kind: draft.kind as ProjectMemoryKind,
       title: draft.title,
-      body: draft.body,
+      body,
       artifactPath: draft.artifactPath ?? null,
       withUserId: draft.withUserId,
       supersedesId: draft.replaceId ?? null,
       alsoSupersedeIds: draft.mergeIds ?? [],
     })
-    const [user] = await this.users.findManyByIds([row.withUserId])
     return {
       id: row.id,
       kind: row.kind,
@@ -438,7 +470,7 @@ export class ProjectWorkService {
       body: row.body,
       artifactPath: row.artifactPath,
       withUserId: row.withUserId,
-      withUserName: user?.name ?? row.withUserId,
+      withUserName: writerName,
       createdAt: row.createdAt.toISOString(),
     }
   }
@@ -467,7 +499,13 @@ export class ProjectWorkService {
     if (!scoped.ok) return scoped
     if (!isProjectMemoryKind(input.kind)) return err('invalid_memory_kind')
     const isFocus = input.kind === 'focus'
-    const title = input.title.trim() || (isFocus ? MEMORY_FOCUS_DEFAULT_TITLE : '')
+    const isSessionLog = input.kind === 'session_log'
+    if (isSessionLog && (input.replaceId || (input.mergeIds?.length ?? 0) > 0)) {
+      return err('invalid_memory_kind', 'session_log is append-only')
+    }
+    const title =
+      input.title.trim() ||
+      (isFocus ? MEMORY_FOCUS_DEFAULT_TITLE : isSessionLog ? MEMORY_SESSION_LOG_DEFAULT_TITLE : '')
     const body = input.body.trim()
     if (!title || title.length > MEMORY_TITLE_MAX) return err('invalid_memory_kind', 'title')
     if (!body || body.length > (isFocus ? MEMORY_FOCUS_MAX : MEMORY_BODY_MAX)) {

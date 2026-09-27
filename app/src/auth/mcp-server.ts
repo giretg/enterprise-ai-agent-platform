@@ -630,7 +630,12 @@ async function getDefinitionToolResult(
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
   ])
   return textResult({
-    briefing: renderAgentBriefing({ definition: loaded, skills, bound }),
+    briefing: renderAgentBriefing({
+      definition: loaded,
+      skills,
+      bound,
+      recentSessionLogs: memoryContext.recentSessionLogs?.entries,
+    }),
     ...loaded,
     contentHash: hashSnapshot(loaded.snapshot),
     ...memoryContext,
@@ -653,7 +658,26 @@ const MEMORY_INDEX_NOTE =
  * The focus (#656) is the agent's current state: returned before memoryIndex,
  * in full. The memory catalog lists every non-focus item (#657); bodies load on demand.
  */
-async function readMemoryContext(principal: McpPrincipal, definitionId: string, deps: McpRuntimeDeps) {
+type MemoryContext = {
+  focus?: { note: string; items: unknown[] }
+  recentSessionLogs?: {
+    note: string
+    entries: Array<{ id: string; title: string; createdAt: string; withUserName: string }>
+  }
+  memoryIndex?: {
+    note: string
+    entries: unknown[]
+    totalCount: number
+    offset: number
+    nextOffset: number | null
+  }
+}
+
+async function readMemoryContext(
+  principal: McpPrincipal,
+  definitionId: string,
+  deps: McpRuntimeDeps,
+): Promise<MemoryContext> {
   const result = await deps.invokeProjectWork({
     principal,
     toolName: MCP_PROJECT_MEMORY_READ_TOOL,
@@ -662,6 +686,7 @@ async function readMemoryContext(principal: McpPrincipal, definitionId: string, 
   if (result.isError) return {}
   type MemoryReadPayload = {
     items?: unknown[]
+    recentSessionLogs?: Array<{ id: string; title: string; createdAt: string; withUserName: string }>
     index?: { entries: unknown[]; totalCount: number; offset: number; nextOffset: number | null }
   }
   let payload: MemoryReadPayload = {}
@@ -675,6 +700,7 @@ async function readMemoryContext(principal: McpPrincipal, definitionId: string, 
   if (!index) return {}
 
   const focusItems = Array.isArray(payload.items) ? payload.items.filter(isFocusMemoryItem) : []
+  const recentSessionLogs = Array.isArray(payload.recentSessionLogs) ? payload.recentSessionLogs : []
   const paginated = index.nextOffset != null
   return {
     ...(focusItems.length > 0
@@ -683,6 +709,15 @@ async function readMemoryContext(principal: McpPrincipal, definitionId: string, 
             note:
               'The agent\'s current focus, always loaded in full before memoryIndex: what it is doing now, the next step, what it is waiting for. It overrides the rest of the memory. Rewrite it with platform.project_memory.write kind="focus" (it replaces the previous one) when a task closes or the direction changes.',
             items: focusItems,
+          },
+        }
+      : {}),
+    ...(recentSessionLogs.length > 0
+      ? {
+          recentSessionLogs: {
+            note:
+              'Append-only session journal (titles only here). The briefing "Recently" block mirrors this list. Full text: platform.project_memory.read with ids. Write new entries with platform.project_memory.write kind="session_log" when a task or conversation ends.',
+            entries: recentSessionLogs,
           },
         }
       : {}),
@@ -1204,7 +1239,7 @@ async function createMcpResourceHandler(
         {
           title: 'Read project memory',
           description:
-            'Read this agent\'s memory: company facts, decisions, locations, open tasks, findings, handoffs, artifact pointers. Default: memoryIndex catalog (every item id/kind/title/date; focus returned in full in items). Pass ids (comma-separated) for full text of those items, or query to search title/body. Use offset when nextOffset is set. Read before answering company-specific questions and before searching Drive/KB — memory overrides search results. Each full item includes withUserId / withUserName. Pass mine=true to filter to the calling user. Call before platform.project_memory.write to update via replaceId. Omit projectKey for general memory.',
+            'Read this agent\'s memory: company facts, decisions, locations, open tasks, findings, handoffs, artifact pointers. Default: memoryIndex catalog (every item id/kind/title/date; focus in full in items; recent session_log titles in recentSessionLogs). Pass ids (comma-separated) for full text of those items, or query to search title/body. Use offset when nextOffset is set. Read before answering company-specific questions and before searching Drive/KB — memory overrides search results. Each full item includes withUserId / withUserName. Pass mine=true to filter to the calling user. Call before platform.project_memory.write to update via replaceId. Omit projectKey for general memory.',
           inputSchema: projectMemoryReadInputSchema,
           annotations: { readOnlyHint: true },
         },
@@ -1215,7 +1250,7 @@ async function createMcpResourceHandler(
         {
           title: 'Write project memory',
           description:
-            'Write a project-memory item for this agent (decision, open_task, finding, constraint, artifact, handoff_summary, focus). First call platform.project_memory.read for the same projectKey: if an item already covers this subject (including when the user corrects or changes it), pass its id as replaceId with the merged, current text — do not add a second item. If several items are outdated by the same change, write ONE item: replaceId for one, mergeIds for the rest. Write only what is valid now; do not keep "this is outdated" notes. If other similar active items would remain, the server answers possible_duplicate with candidates and writes nothing; then retry with replaceId/mergeIds, or confirmNew=true if none match. focus is the current state (what we are doing now, the next step, what we wait for), at most 3000 characters: there is only ever one active focus per agent and project, and this write always replaces it — no replaceId, no duplicate check. Rewrite it when a task closes or the direction changes. The work plan itself belongs in a work file; store only a pointer here. The server stamps the calling user as conversation partner — do not name them. Cannot change trained operating rules. Approval-mode agents return awaiting_approval + approvalUrl; direct-mode agents write immediately. Personal facts (vacation, private preference) do not belong here unless they constrain the project.',
+            'Write a project-memory item for this agent (decision, open_task, finding, constraint, artifact, handoff_summary, focus, session_log). First call platform.project_memory.read for the same projectKey: if an item already covers this subject (including when the user corrects or changes it), pass its id as replaceId with the merged, current text — do not add a second item. If several items are outdated by the same change, write ONE item: replaceId for one, mergeIds for the rest. Write only what is valid now; do not keep "this is outdated" notes. If other similar active items would remain, the server answers possible_duplicate with candidates and writes nothing; then retry with replaceId/mergeIds, or confirmNew=true if none match. focus is the current state (what we are doing now, the next step, what we wait for), at most 3000 characters: there is only ever one active focus per agent and project, and this write always replaces it — no replaceId, no duplicate check. Rewrite it when a task closes or the direction changes. session_log is append-only when a task or conversation ends (what you did, outcome, where outputs live, next step): never replaceId, no duplicate check. The work plan itself belongs in a work file; store only a pointer here. The server stamps the calling user as conversation partner — do not name them. Cannot change trained operating rules. Approval-mode agents return awaiting_approval + approvalUrl; direct-mode agents write immediately. Personal facts (vacation, private preference) do not belong here unless they constrain the project.',
           inputSchema: projectMemoryWriteInputSchema,
         },
         async (args) => projectWorkToolResult(principal, MCP_PROJECT_MEMORY_WRITE_TOOL, args, deps),

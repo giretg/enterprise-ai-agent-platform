@@ -8,6 +8,7 @@ export const PROJECT_MEMORY_KINDS = [
   'artifact',
   'handoff_summary',
   'focus',
+  'session_log',
 ] as const satisfies readonly ProjectMemoryKind[]
 
 export type MemoryWriteModeValue = MemoryWriteMode

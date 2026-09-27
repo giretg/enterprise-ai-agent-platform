@@ -254,6 +254,8 @@ async function main() {
       '## Closing',
       '## Approvals and handoffs',
     ])
+    assert.match(briefing, /kind "session_log"/)
+    assert.match(briefing, /4\. Append a session log/)
     assert.match(briefing, /^## Who you are\n\nYou are now Drive asszisztens\./)
     assert.match(
       briefing,
@@ -271,6 +273,26 @@ async function main() {
     )
     assert.ok(soul?.content.includes(bound))
     assert.ok(renderAgentPrompt({ definition: def, skills, bound: true }).includes(bound))
+  })
+
+  await check('#658 briefing lists recent session log titles when provided', () => {
+    const def = definition()
+    const skills = [skill(SKILL_A, VER_A, 'drive-search')]
+    const briefing = renderAgentBriefing({
+      definition: def,
+      skills,
+      recentSessionLogs: [
+        {
+          id: 'log-1',
+          title: 'Riport elküldve',
+          createdAt: '2026-09-20T10:00:00.000Z',
+          withUserName: 'Anna',
+        },
+      ],
+    })
+    assert.match(briefing, /## Recently/)
+    assert.match(briefing, /Riport elküldve/)
+    assert.match(briefing, /log-1/)
   })
 
   await check('#653 briefing leads with the entry skill and names it in Start', () => {
