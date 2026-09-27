@@ -71,7 +71,7 @@ export const MEMORY_KIND_META: Record<MemoryKind, { label: string; hint: string;
   },
   session_log: {
     label: 'Munkamenet-napló',
-    hint: 'Append-only: mit csináltál, mi lett az eredmény, mi a következő lépés.',
+    hint: 'Csak hozzáfűzhető: mit csináltál, mi lett az eredmény, mi a következő lépés.',
     badge: MEMORY_KIND_BADGE.session_log,
   },
 }

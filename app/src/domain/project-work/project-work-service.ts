@@ -322,7 +322,9 @@ export class ProjectWorkService {
     ids?: string[]
     query?: string
     offset?: number
-  }): Promise<ProjectWorkResult<{ items?: MemoryView[]; index?: MemoryIndexPage }>> {
+  }): Promise<
+    ProjectWorkResult<{ items?: MemoryView[]; index?: MemoryIndexPage; recentSessionLogs?: SessionLogHeadline[] }>
+  > {
     const scoped = await this.assertProject(input.tenantId, input.projectKey)
     if (!scoped.ok) return scoped
     const rows = await this.memory.listActive({

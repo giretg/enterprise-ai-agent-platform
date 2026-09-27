@@ -629,9 +629,13 @@ async function getDefinitionToolResult(
     readMemoryContext(principal, loaded.definitionId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
   ])
-  const recentSessionLogs = memoryContext.recentSessionLogs?.entries
   return textResult({
-    briefing: renderAgentBriefing({ definition: loaded, skills, bound, recentSessionLogs }),
+    briefing: renderAgentBriefing({
+      definition: loaded,
+      skills,
+      bound,
+      recentSessionLogs: memoryContext.recentSessionLogs?.entries,
+    }),
     ...loaded,
     contentHash: hashSnapshot(loaded.snapshot),
     ...memoryContext,
@@ -654,7 +658,26 @@ const MEMORY_INDEX_NOTE =
  * The focus (#656) is the agent's current state: returned before memoryIndex,
  * in full. The memory catalog lists every non-focus item (#657); bodies load on demand.
  */
-async function readMemoryContext(principal: McpPrincipal, definitionId: string, deps: McpRuntimeDeps) {
+type MemoryContext = {
+  focus?: { note: string; items: unknown[] }
+  recentSessionLogs?: {
+    note: string
+    entries: Array<{ id: string; title: string; createdAt: string; withUserName: string }>
+  }
+  memoryIndex?: {
+    note: string
+    entries: unknown[]
+    totalCount: number
+    offset: number
+    nextOffset: number | null
+  }
+}
+
+async function readMemoryContext(
+  principal: McpPrincipal,
+  definitionId: string,
+  deps: McpRuntimeDeps,
+): Promise<MemoryContext> {
   const result = await deps.invokeProjectWork({
     principal,
     toolName: MCP_PROJECT_MEMORY_READ_TOOL,
