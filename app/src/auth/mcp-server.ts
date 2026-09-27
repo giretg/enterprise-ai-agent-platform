@@ -116,11 +116,13 @@ import {
   MCP_SKILL_SUBMIT_TOOL,
   MCP_WHOAMI_TOOL,
   resolveMcpPrincipal,
+  type McpAuditCtx,
   type McpPrincipal,
   type McpPrincipalDeps,
   type McpPrincipalFailure,
   type VerifiedOAuthToken,
 } from './mcp-principal'
+import { getMcpRequestContext, scopeMcpAuditSink } from '@/lib/mcp-session'
 import {
   findPackageByUri,
   findSkillFile,
@@ -513,7 +515,7 @@ async function listSkillsToolResult(
   deps: McpRuntimeDeps,
   tenantPackages: McpSkillPackage[],
 ) {
-  await auditMcpToolCall(deps, principal, MCP_SKILLS_LIST_TOOL)
+  await auditMcpToolCall(deps, principal, MCP_SKILLS_LIST_TOOL, agentCtx(args))
   const agent = await loadAgentSkills(principal, args, deps)
   if (agent === 'not_found') return definitionNotFound()
   if (!agent) return textResult({ skills: tenantPackages.map(toSkillsListEntry) })
@@ -539,7 +541,7 @@ async function readSkillToolResult(
   deps: McpRuntimeDeps,
   tenantPackages: McpSkillPackage[],
 ) {
-  await auditMcpToolCall(deps, principal, MCP_SKILL_READ_TOOL)
+  await auditMcpToolCall(deps, principal, MCP_SKILL_READ_TOOL, agentCtx(args))
   const agent = await loadAgentSkills(principal, args, deps)
   if (agent === 'not_found') return definitionNotFound()
   const uri = typeof args.uri === 'string' ? args.uri : ''
@@ -610,6 +612,12 @@ function asUuid(value: unknown): string | undefined {
   )
 }
 
+/** Paritás-telemetria (#666): ha az args hordoz agentId-t, pecsételjük az audit-sorba. */
+function agentCtx(args: Record<string, unknown>): McpAuditCtx | undefined {
+  const agentId = asUuid(args.agentId)
+  return agentId ? { agentId } : undefined
+}
+
 function asVersion(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined
 }
@@ -620,7 +628,7 @@ async function getDefinitionToolResult(
   deps: McpRuntimeDeps,
   bound = false,
 ) {
-  await auditMcpToolCall(deps, principal, MCP_AGENT_GET_DEFINITION_TOOL)
+  await auditMcpToolCall(deps, principal, MCP_AGENT_GET_DEFINITION_TOOL, agentCtx(args))
   const loaded = await deps.loadDefinition({
     tenantId: principal.tenantId,
     definitionId: asUuid(args.definitionId),
@@ -826,7 +834,7 @@ async function getWorkingSetToolResult(
     connectors: deps.agentScaffold.connectors,
     audit: deps.agentScaffold.audit,
   })
-  await auditMcpToolCall(deps, principal, MCP_AGENT_GET_WORKING_SET_TOOL)
+  await auditMcpToolCall(deps, principal, MCP_AGENT_GET_WORKING_SET_TOOL, agentId ? { agentId } : undefined)
   try {
     const result = await definitionService.getWorkingSet({
       agentId,
@@ -848,7 +856,7 @@ async function publishAgentToolResult(
   }
   const agentId = asUuid(args.agentId)
   if (!agentId) return invalidArgs('agentId must be a uuid')
-  await auditMcpToolCall(deps, principal, MCP_AGENT_PUBLISH_TOOL)
+  await auditMcpToolCall(deps, principal, MCP_AGENT_PUBLISH_TOOL, agentId ? { agentId } : undefined)
   try {
     const result = await publishAgentWorkingSet(deps.agentScaffold, {
       agentId,
@@ -873,7 +881,7 @@ async function checkoutToolResult(
   deps: McpRuntimeDeps,
   origin: string,
 ) {
-  await auditMcpToolCall(deps, principal, MCP_AGENT_CHECKOUT_TOOL)
+  await auditMcpToolCall(deps, principal, MCP_AGENT_CHECKOUT_TOOL, agentCtx(args))
   const agentId = asUuid(args.agentId)
   if (!agentId) return invalidArgs('agentId must be a uuid')
   if (args.version !== undefined && asVersion(args.version) === undefined) {
@@ -1740,7 +1748,8 @@ export async function handleMcpRequest(
     }
     const handler = await createMcpResourceHandler(
       resolved.principal,
-      deps,
+      // #666: per-request audit-hatókör — sessionId + kliens minden sor metadata-jába.
+      { ...deps, audit: scopeMcpAuditSink(deps.audit, getMcpRequestContext(req.headers)) },
       origin,
       req.headers.get(MCP_AGENT_ID_HEADER)?.trim() || null,
     )

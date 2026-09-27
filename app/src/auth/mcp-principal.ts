@@ -297,10 +297,18 @@ export async function resolveMcpPrincipal(
   }
 }
 
+/** Opcionális agent-kötés a paritás-telemetriához (#666): melyik agentre vonatkozott a hívás. */
+export type McpAuditCtx = { agentId?: string | null }
+
+function agentMeta(ctx?: McpAuditCtx): Record<string, unknown> {
+  return ctx?.agentId ? { agentId: ctx.agentId.slice(0, 64) } : {}
+}
+
 export async function auditMcpToolCall(
   deps: { audit?: AuditSink },
   principal: McpPrincipal,
   toolName?: string,
+  ctx?: McpAuditCtx,
 ): Promise<void> {
   await writeAudit(deps.audit, {
     actorType: 'human',
@@ -317,6 +325,7 @@ export async function auditMcpToolCall(
       toolName,
       tenantSlug: principal.tenantSlug,
       assumed: principal.assumed,
+      ...agentMeta(ctx),
     },
     tenantId: principal.tenantId,
   })
@@ -376,6 +385,7 @@ export async function auditMcpResourceRead(
   deps: { audit?: AuditSink },
   principal: McpPrincipal,
   uri: string,
+  ctx?: McpAuditCtx,
 ): Promise<void> {
   await writeAudit(deps.audit, {
     actorType: 'human',
@@ -388,7 +398,7 @@ export async function auditMcpResourceRead(
     inputRef: uri,
     outputRef: null,
     policyDecision: 'allowed',
-    metadata: { uri, tenantSlug: principal.tenantSlug, assumed: principal.assumed },
+    metadata: { uri, tenantSlug: principal.tenantSlug, assumed: principal.assumed, ...agentMeta(ctx) },
     tenantId: principal.tenantId,
   })
 }
