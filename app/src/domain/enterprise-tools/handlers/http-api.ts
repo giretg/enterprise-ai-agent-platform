@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { TenantLanguage } from '@/lib/tenant-language'
 import {
   findHttpApiEndpoint,
   HttpApiClient,
@@ -67,11 +68,19 @@ async function defaultApiKey(
   return undefined
 }
 
-function clientFor(config: HttpApiConfig, apiKey: string | undefined): HttpApiClient {
-  return new HttpApiClient(config, {
-    defaultApiKey: apiKey,
-    resolveProfileApiKey: (_profile, secretAlias) => resolveConnectorApiKey(secretAlias),
-  })
+function clientFor(
+  config: HttpApiConfig,
+  apiKey: string | undefined,
+  language?: TenantLanguage,
+): HttpApiClient {
+  return new HttpApiClient(
+    config,
+    {
+      defaultApiKey: apiKey,
+      resolveProfileApiKey: (_profile, secretAlias) => resolveConnectorApiKey(secretAlias),
+    },
+    language ? { language } : undefined,
+  )
 }
 
 /** A published definition agentje — nem a modell args.agentId-je. */
@@ -84,6 +93,10 @@ export async function executeHttpApiTool(
   delegatedAccessToken?: string,
   actingUser?: { id: string; email: string; tenantId: string | null } | null,
   agent?: HttpApiCallAgent,
+  /**
+   * #717 B réteg: a modellnek szóló hintek nyelve. Opcionális — hiányában `hu`.
+   */
+  language?: TenantLanguage,
 ): Promise<unknown> {
   if (
     toolName !== HTTP_API_GET_TOOL &&
@@ -100,14 +113,17 @@ export async function executeHttpApiTool(
       status: 400,
       body: null,
       hint:
-        `A(z) "${path}" teljes nyilvántartásnak tűnik. ` +
-        'Ehhez kötelező a http_api_get_all; a sima http_api_get csak egy oldalt adhat vissza.',
+        language === 'en'
+          ? `The "${path}" looks like a full registry. ` +
+            'http_api_get_all is mandatory here; plain http_api_get may return just one page.'
+          : `A(z) "${path}" teljes nyilvántartásnak tűnik. ` +
+            'Ehhez kötelező a http_api_get_all; a sima http_api_get csak egy oldalt adhat vissza.',
     }
   }
 
   const config = parseHttpApiConfig(connector.config)
   const apiKey = await defaultApiKey(connector, delegatedAccessToken)
-  const client = clientFor(config, apiKey)
+  const client = clientFor(config, apiKey, language)
   const callId = randomUUID()
   // X-Agent-Id a published definitionből jön. args.agentId csak akkor esik be,
   // ha egy hívó (régi teszt / kötött kliens) még nem adta át a 6. paramétert —
@@ -141,8 +157,11 @@ export async function executeHttpApiTool(
         itemCount: 0,
         items: [],
         error:
-          'A végponthoz nincs megbízható lapozási szerződés. ' +
-          'Frissítsd a connector OpenAPI snapshotját, vagy add meg az endpoint.pagination konfigurációt.',
+          language === 'en'
+            ? 'No reliable pagination contract for this endpoint. ' +
+              'Refresh the connector OpenAPI snapshot, or provide the endpoint.pagination config.'
+            : 'A végponthoz nincs megbízható lapozási szerződés. ' +
+              'Frissítsd a connector OpenAPI snapshotját, vagy add meg az endpoint.pagination konfigurációt.',
       }
     }
     const outcome = await paginateHttpApiGet({
@@ -150,6 +169,7 @@ export async function executeHttpApiTool(
       path,
       baseUrl: config.baseUrl,
       baseQuery: scalarQuery(args.query),
+      language,
       fetchPage: async (query, pagePath) => {
         const page = await client.request({
           method: 'GET',
