@@ -1,4 +1,5 @@
 import { auth } from '@clerk/nextjs/server'
+import type { SkillVersionStatus } from '@prisma/client'
 import {
   CLIENT_CAPABILITIES_META_KEY,
   createRequestStateCodec,
@@ -175,6 +176,10 @@ import {
 
 export type McpAgentListItem = McpCoworkerSummary
 
+type McpCheckoutSkill = CheckoutSkill & {
+  status: SkillVersionStatus
+}
+
 export type McpRuntimeDeps = McpPrincipalDeps & {
   isClerkConfigured: () => boolean
   resolveOrigin: (request: Request) => string
@@ -197,7 +202,7 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
   }) => Promise<boolean>
   /** #663: az agent megnevezett jóváhagyójának neve a briefing Jóváhagyások blokkjához. */
   loadAgentApproverName?: (input: { tenantId: string; agentId: string }) => Promise<string | null>
-  loadSkillVersions: (versionIds: string[]) => Promise<CheckoutSkill[]>
+  loadSkillVersions: (versionIds: string[]) => Promise<McpCheckoutSkill[]>
   invokeEnterpriseTool: (input: {
     principal: McpPrincipal
     toolName: string
@@ -339,6 +344,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
       return rows.map((row) => ({
         skillId: row.skillId,
         skillVersionId: row.id,
+        status: row.status,
         name: row.skill.name,
         displayName: row.skill.displayName,
         description: row.skill.description,
@@ -954,10 +960,12 @@ async function checkoutToolResult(
   const skills = await deps.loadSkillVersions(
     loaded.snapshot.skills.map((skill) => skill.skillVersionId),
   )
+  // A published snapshot történeti bizonyíték: a később visszavont skill csak
+  // akkor kerülhetne újra helyi checkoutba, ha itt nem ellenőriznénk az élő státuszát.
   return textResult(
     renderAgentCheckout({
       definition: loaded,
-      skills,
+      skills: skills.filter((skill) => skill.status === 'active'),
       mcpUrl: `${origin.replace(/\/+$/, '')}/api/mcp/${principal.tenantSlug}`,
       harness: asCheckoutHarness(args.harness),
     }),
