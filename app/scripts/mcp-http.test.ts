@@ -1078,6 +1078,49 @@ async function main() {
     assert.equal(withoutMemory.memoryIndex, undefined)
   })
 
+  await check('#658 get_definition: recent session logs in briefing and recentSessionLogs block', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    deps.invokeProjectWork = async () => ({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            ok: true,
+            recentSessionLogs: [
+              {
+                id: 'log-1',
+                title: 'Riport elküldve',
+                createdAt: '2026-09-20T10:00:00.000Z',
+                withUserName: 'Anna',
+              },
+            ],
+            index: { entries: [], totalCount: 0, offset: 0, nextOffset: null },
+          }),
+        },
+      ],
+    })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 62,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { definitionId: DEFINITION_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(res)) as { result?: { content?: Array<{ text: string }> } }
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      briefing?: string
+      recentSessionLogs?: { entries: Array<{ id: string; title: string }> }
+    }
+    assert.match(payload.briefing ?? '', /## Recently/)
+    assert.match(payload.briefing ?? '', /Riport elküldve/)
+    assert.equal(payload.recentSessionLogs?.entries[0]?.id, 'log-1')
+  })
+
   await check('operator without ResourceGrant cannot list or get a definition', async () => {
     const { deps } = runtimeDeps({ role: 'operator' })
     await initialize(deps)

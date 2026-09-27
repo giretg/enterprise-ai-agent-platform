@@ -87,6 +87,7 @@ enum ProjectMemoryKind {
   artifact
   handoff_summary
   focus
+  session_log
 }
 
 enum ProjectMemoryStatus {
