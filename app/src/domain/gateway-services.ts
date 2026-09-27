@@ -29,6 +29,7 @@ import {
   type GatewayPendingOperationRow,
 } from '@/domain/gateway-operation'
 import { isSuperadmin } from '@/lib/tenant-policy'
+import { readTenantLanguage } from '@/lib/tenant-language'
 import { hasMinimumRole } from '@/lib/iam-policy'
 import type { UserRole } from '@prisma/client'
 import { IamService } from '@/domain/iam/iam-service'
@@ -140,6 +141,10 @@ const knowledgeBaseService = new KnowledgeBaseService({
   agents: repositories.agents,
   connectors: repositories.connectors,
   audit: repositories.audit,
+  async resolveTenantLanguage(tenantId) {
+    const tenant = await repositories.tenants.findById(tenantId)
+    return readTenantLanguage(tenant?.settings)
+  },
 })
 
 const projectWorkService = new ProjectWorkService(

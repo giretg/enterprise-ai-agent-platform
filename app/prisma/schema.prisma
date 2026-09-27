@@ -578,6 +578,8 @@ model Connector {
   tenantId       String                  @map("tenant_id") @db.Uuid
   /** Megnevezett jóváhagyó (#663): az agent-szintűt felülírja. */
   approverUserId String?                 @map("approver_user_id") @db.Uuid
+  /** KB-keresés nyelve (#717 A réteg): `hu`/`en`, más típusnál figyelmen kívül. */
+  kbLanguage     String                  @default("hu") @map("kb_language")
   createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
   connectorMode       ConnectorMode          @default(fixed) @map("connector_mode")
@@ -747,6 +749,8 @@ model Document {
   metadata        Json                      @default("{}")
   connectorId     String?                   @map("connector_id") @db.Uuid
   uploadedById    String                    @map("uploaded_by") @db.Uuid
+  /** KB-nyelv felülírás (#717): NULL = öröklés a connectorról. */
+  kbLanguageOverride String?                @map("kb_language_override")
   createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamptz
 
   tenant     Tenant               @relation(fields: [tenantId], references: [id])

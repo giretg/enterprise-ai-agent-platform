@@ -617,7 +617,14 @@ export type KnowledgePageChunk = {
 
 export type DocumentListItem = Pick<
   Document,
-  'id' | 'filename' | 'status' | 'processingMode' | 'mimeType' | 'createdAt' | 'connectorId'
+  | 'id'
+  | 'filename'
+  | 'status'
+  | 'processingMode'
+  | 'mimeType'
+  | 'createdAt'
+  | 'connectorId'
+  | 'kbLanguageOverride'
 > & { purpose: string | null }
 
 export type KnowledgeCatalogDocument = {
@@ -667,6 +674,8 @@ export interface DocumentRepository {
       connectorId?: string | null
       contentHash?: string | null
       mimeType?: string | null
+      /** #717: dokumentum-szintű KB-nyelv felülírás; `null` = öröklés. */
+      kbLanguageOverride?: string | null
     },
   ): Promise<Document>
   delete(id: string): Promise<void>

@@ -108,6 +108,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'kb.document.ingested',
   'kb.document.deleted',
   'kb.catalog.attached',
+  'kb.language.set',
 
   'skill.conversation.created',
   'skill.conversation.proposed',

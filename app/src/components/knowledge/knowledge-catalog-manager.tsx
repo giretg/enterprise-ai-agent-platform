@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl'
 import {
   deleteKnowledgeCatalogDocument,
   ingestKnowledgeCatalogDocument,
+  setKnowledgeCatalogDocumentLanguage,
 } from '@/app/actions/platform'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Card } from '@/components/ui/shell'
@@ -14,6 +15,8 @@ import {
   type KbProcessingModeValue,
 } from '@/lib/kb-processing-mode-labels'
 
+import { KB_LANGUAGE_OPTIONS, isKbLanguage, type KbLanguage } from '@/lib/kb-language'
+
 export type KnowledgeCatalogRow = {
   id: string
   filename: string
@@ -21,6 +24,8 @@ export type KnowledgeCatalogRow = {
   processingMode: KbProcessingModeValue | null
   purpose: string | null
   createdAt: Date | string
+  /** `null` = a tudástár nyelvét örökli. */
+  kbLanguageOverride: KbLanguage | string | null
 }
 
 export function KnowledgeCatalogManager({
@@ -148,27 +153,55 @@ export function KnowledgeCatalogManager({
                 ) : null}
               </span>
               {canManage ? (
-                <button
-                  type="button"
-                  disabled={pending}
-                  className="text-xs text-coral-deep"
-                  onClick={() => {
-                    start(async () => {
-                      const ok = await confirmDialog({
-                        title: t('deleteTitle'),
-                        description: t('deleteBody', { filename: doc.filename }),
-                        tone: 'danger',
-                        confirmLabel: t('delete'),
+                <span className="flex items-center gap-2">
+                  <label className="flex items-center gap-1 text-xs text-ink-faint">
+                    {t('docLanguageLabel')}
+                    <select
+                      disabled={pending}
+                      value={isKbLanguage(doc.kbLanguageOverride) ? doc.kbLanguageOverride : ''}
+                      onChange={(event) => {
+                        const value = event.target.value
+                        start(async () => {
+                          const res = await setKnowledgeCatalogDocumentLanguage({
+                            documentId: doc.id,
+                            kbLanguageOverride: value === '' ? null : value,
+                          })
+                          if (res.success) refresh()
+                          else setError(res.error)
+                        })
+                      }}
+                      className="rounded-md border border-line/70 bg-panel px-1.5 py-1 text-xs"
+                    >
+                      <option value="">{t('docLanguageInherited')}</option>
+                      {KB_LANGUAGE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    className="text-xs text-coral-deep"
+                    onClick={() => {
+                      start(async () => {
+                        const ok = await confirmDialog({
+                          title: t('deleteTitle'),
+                          description: t('deleteBody', { filename: doc.filename }),
+                          tone: 'danger',
+                          confirmLabel: t('delete'),
+                        })
+                        if (!ok) return
+                        const res = await deleteKnowledgeCatalogDocument({ documentId: doc.id })
+                        if (res.success) refresh()
+                        else setError(res.error)
                       })
-                      if (!ok) return
-                      const res = await deleteKnowledgeCatalogDocument({ documentId: doc.id })
-                      if (res.success) refresh()
-                      else setError(res.error)
-                    })
-                  }}
-                >
-                  {t('delete')}
-                </button>
+                    }}
+                  >
+                    {t('delete')}
+                  </button>
+                </span>
               ) : null}
             </li>
           ))}

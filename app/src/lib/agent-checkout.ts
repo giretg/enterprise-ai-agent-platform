@@ -3,6 +3,7 @@ import { MCP_ALLOWED_TOOLS } from '@/auth/mcp-principal'
 import type { AgentDefinition } from '@/domain/agent-definition'
 import { renderSnapshotRulesBriefingBlock } from '@/domain/agent-definition/snapshot-rules'
 import { hashSnapshot } from '@/domain/agent-definition'
+import { outputLanguageInstruction, type TenantLanguage } from '@/lib/tenant-language'
 import { CODE_EXTENSIONS } from '@/lib/skill/skill-package-adapter'
 import { serializeSkillMd } from '@/lib/skill/skill-md-export'
 import { skillFileUri, skillUriName } from '@/lib/skill/mcp-skill'
@@ -249,7 +250,15 @@ export function renderAgentBriefing(input: {
   recentSessionLogs?: SessionLogHeadline[]
   /** #663: az agent megnevezett jóváhagyója (üzleti nyelven a Jóváhagyások blokkba). */
   approverName?: string | null
+  /**
+   * #717 B réteg: a platform generálta, modellnek szóló szövegek nyelve.
+   * Alapértelmezés `hu` = a mai render (byte-ra azonos). `en` mellett nincs
+   * magyar mondat a kimenetben; az UI-locale (`NEXT_LOCALE`) sose vezérli.
+   */
+  language?: TenantLanguage
 }): string {
+  const language: TenantLanguage = input.language ?? 'hu'
+  const en = language === 'en'
   const { agentId, snapshot } = input.definition
   const description = snapshot.description?.trim()
   const httpApis = snapshot.connectors.filter((row) => row.type === 'http_api')
@@ -283,6 +292,11 @@ export function renderAgentBriefing(input: {
   const rulesBlock = renderSnapshotRulesBriefingBlock(snapshot.rules ?? [])
   if (rulesBlock) {
     lines.push(rulesBlock, '')
+  }
+  // #717 B réteg: az admin-szövegek nyelvét rögzítő utasítás — csak `en`
+  // mellett (a `hu` render byte-ra azonos marad a maival).
+  if (en) {
+    lines.push(outputLanguageInstruction(language), '')
   }
   lines.push(
     '## Rules you must not break',
@@ -379,12 +393,21 @@ export function renderAgentBriefing(input: {
   )
   const approverName = input.approverName?.trim()
   if (approverName) {
-    lines.push(
-      '',
-      '## Jóváhagyások',
-      '',
-      `Ennek az agentnek a megnevezett jóváhagyója: ${approverName}. Az írásaid az ő jóváhagyására várnak — a kliensválaszban nevezd meg, hogy kire vár a művelet ("${approverName} jóváhagyására vár"). Ha ${approverName} dolgozik veled, a saját kérését is jóváhagyhatja.`,
-    )
+    if (en) {
+      lines.push(
+        '',
+        '## Approvals',
+        '',
+        `This agent's named approver: ${approverName}. Your writes wait for their approval — in the client response name who the operation is waiting for ("waiting for ${approverName}'s approval"). If ${approverName} is working with you, they may approve their own request.`,
+      )
+    } else {
+      lines.push(
+        '',
+        '## Jóváhagyások',
+        '',
+        `Ennek az agentnek a megnevezett jóváhagyója: ${approverName}. Az írásaid az ő jóváhagyására várnak — a kliensválaszban nevezd meg, hogy kire vár a művelet ("${approverName} jóváhagyására vár"). Ha ${approverName} dolgozik veled, a saját kérését is jóváhagyhatja.`,
+      )
+    }
   }
   return lines.join('\n')
 }
@@ -395,6 +418,8 @@ export function renderAgentPrompt(input: {
   skills: CheckoutSkill[]
   task?: string
   bound?: boolean
+  /** #717 B réteg — lásd `renderAgentBriefing`. */
+  language?: TenantLanguage
 }): string {
   const { agentId, definitionId, version } = input.definition
   const lines = [
