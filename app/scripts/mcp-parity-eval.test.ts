@@ -1,28 +1,15 @@
 /**
- * MCP-paritás eval-készlet (#666) — ÉLŐ DB-s integrációs.
- * Futtatás: npm run test:mcp-parity-eval  (Neon teszt-branch kell: DATABASE_URL_TEST)
+ * MCP-paritás eval-készlet (#666) — DB nélkül, a valódi service ellen.
+ * Futtatás: npm run test:mcp-parity-eval
  *
- * 9 Kati-forgatókönyv (szintetikus fixture) valós audit-sorokon át:
- * blog-draft Csilla-kapuval, céges tény memóriával, átadás Gábornak,
- * "jegyezd meg" kérés + 3 hibaosztály. A riport-láncot (audit → riport →
- * admin-aggregáció) éles Postgresen vizsgáztatja, ezért kell az élő DB.
- * Az audit append-only: takarítani nem kell, a futás egyedi sessionId
- * prefixet használ és `since` szűr.
+ * 9 Kati-forgatókönyv (szintetikus tool-nyom): a riport-láncot
+ * (audit → session-metrika → admin-aggregáció) vizsgálja. Nem LLM-eval:
+ * azt méri, hogy a nyom jól pontozódik — briefing-regressziót a #35
+ * prompt-eval adja, ha egyszer van élő MCP-hívó.
  */
-import { config } from 'dotenv'
-import { resolve } from 'node:path'
 import assert from 'node:assert/strict'
-
-config({ path: resolve(process.cwd(), '.env.local') })
-
-const testDbUrl = process.env.DATABASE_URL_TEST?.trim()
-const testDirectUrl = process.env.DIRECT_URL_TEST?.trim()
-if (!testDbUrl || !testDirectUrl) {
-  console.error('Hiányzik DATABASE_URL_TEST / DIRECT_URL_TEST (.env.local) — kihagyva.')
-  process.exit(1)
-}
-process.env.DATABASE_URL = testDbUrl
-process.env.DIRECT_URL = testDirectUrl
+import { getMcpParityReport } from '../src/domain/mcp-parity/mcp-parity-service'
+import type { AuditListFilter, AuditRepository } from '../src/repositories/interfaces'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -37,6 +24,7 @@ function check(name: string, fn: () => void | Promise<void>) {
 
 const KATI = 'kati'
 const GABOR = 'gabor'
+const TENANT = 'tenant-eval'
 
 type Row = {
   action: string
@@ -46,31 +34,50 @@ type Row = {
   client: string
 }
 
-async function main() {
-  const { prisma } = await import('../src/lib/db')
-  const { PostgresAuditRepository } = await import(
-    '../src/repositories/postgres/audit-repository'
-  )
-  const { getMcpParityReport } = await import(
-    '../src/domain/mcp-parity/mcp-parity-service'
-  )
-  const { computeSessionMetrics, groupMcpSessions } = await import('../src/lib/mcp-parity')
+type Stored = {
+  action: string
+  inputRef: string | null
+  outputRef: string | null
+  policyDecision: string | null
+  metadata: Record<string, unknown>
+  createdAt: Date
+  actorId: string | null
+  tenantId: string
+}
 
-  const tenant = await prisma.tenant.findFirst({ select: { id: true } })
-  assert.ok(tenant?.id, 'a teszt-DB-ben nincs tenant — futtasd: npm run db:seed:test')
-  const tenantId: string = tenant.id
-  const audit = new PostgresAuditRepository()
+function memAudit(): Pick<AuditRepository, 'findMany'> & { rows: Stored[]; lastFilter?: AuditListFilter } {
+  const rows: Stored[] = []
+  const store: Pick<AuditRepository, 'findMany'> & { rows: Stored[]; lastFilter?: AuditListFilter } = {
+    rows,
+    async findMany(filter?: AuditListFilter) {
+      store.lastFilter = filter
+      const actions = filter?.action
+        ? new Set(Array.isArray(filter.action) ? filter.action : [filter.action])
+        : null
+      return rows
+        .filter((r) => !filter?.tenantId || r.tenantId === filter.tenantId)
+        .filter((r) => !filter?.since || r.createdAt >= filter.since)
+        .filter((r) => !actions || actions.has(r.action))
+        .slice(0, filter?.limit ?? 100) as Awaited<ReturnType<AuditRepository['findMany']>>
+    },
+  }
+  return store
+}
+
+async function main() {
+  const audit = memAudit()
   const run = `eval-${Date.now().toString(36)}`
   const since = new Date()
+  let seq = since.getTime()
 
   async function session(name: string, rows: Row[]) {
     const sessionId = `${run}-${name}`
     for (const r of rows) {
-      await audit.append({
-        actorType: 'human',
+      seq += 1
+      audit.rows.push({
         action: r.action,
-        targetType: 'mcp',
         inputRef: r.tool,
+        outputRef: null,
         policyDecision: r.action.includes('deny') || r.action.includes('denied') ? 'denied' : 'allowed',
         metadata: {
           ...(r.tool ? { toolName: r.tool } : {}),
@@ -79,15 +86,17 @@ async function main() {
           clientName: r.client,
           sessionId,
         },
-        tenantId,
+        createdAt: new Date(seq),
+        actorId: null,
+        tenantId: TENANT,
       })
     }
     return sessionId
   }
 
-  console.log('=== mcp-parity eval (élő DB): 9 Kati-forgatókönyv ===')
+  console.log('=== mcp-parity eval: 9 Kati-forgatókönyv (in-memory) ===')
 
-  // 1. Blog-draft Csilla-kapuval: mintaszerű sorrend → minden zöld.
+  // 1. Blog-draft: mintaszerű sorrend → minden zöld.
   await session('blog-ok', [
     { action: 'mcp.tools.call', tool: 'platform.agent.get_definition', agentId: KATI, client: 'claude' },
     { action: 'mcp.tools.call', tool: 'platform.project_memory.read', agentId: KATI, client: 'claude' },
@@ -96,7 +105,7 @@ async function main() {
     { action: 'mcp.tools.call', tool: 'platform.work_file.write', agentId: KATI, client: 'claude' },
   ])
 
-  // 2. Céges tényre vonatkozó kérdés memóriával: definíció+memória, keresés nélkül is ír.
+  // 2. Céges tény memóriával: definíció+memória, keresés, memória-írás.
   await session('fact-memory', [
     { action: 'mcp.tools.call', tool: 'platform.agent.get_definition', agentId: KATI, client: 'cursor' },
     { action: 'mcp.tools.call', tool: 'platform.project_memory.read', agentId: KATI, client: 'cursor' },
@@ -155,11 +164,30 @@ async function main() {
     { action: 'enterprise.tool.denied', tool: 'http_api_request', code: 'endpoint_not_allowed', agentId: KATI, client: 'goose' },
   ])
 
-  const report = await getMcpParityReport(audit, { tenantId, since, limit: 5000 })
+  // Zaj: nem-MCP audit-sor ne legyen 10. munkamenet.
+  audit.rows.push({
+    action: 'user.role.change',
+    inputRef: null,
+    outputRef: null,
+    policyDecision: 'allowed',
+    metadata: { sessionId: `${run}-noise`, clientName: 'claude' },
+    createdAt: new Date(seq + 1),
+    actorId: null,
+    tenantId: TENANT,
+  })
+
+  const report = await getMcpParityReport(audit, { tenantId: TENANT, since, limit: 5000 })
   const byId = new Map(report.sessionsDetail.map((s) => [s.sessionId, s]))
 
-  await check('9 forgatókönyv = 9 munkamenet az élő riportban', () => {
+  await check('findMany action-szűrővel hív (ne keveredjen a 5000-es sapka)', () => {
+    const actions = audit.lastFilter?.action
+    assert.ok(Array.isArray(actions) && actions.includes('mcp.tools.call'))
+    assert.ok(Array.isArray(actions) && !actions.includes('user.role.change'))
+  })
+
+  await check('9 forgatókönyv = 9 munkamenet, a zaj kiesik', () => {
     assert.equal(report.sessions, 9)
+    assert.equal(byId.has(`${run}-noise`), false)
   })
 
   await check('1. blog-ok: minden jelző zöld', () => {
@@ -212,28 +240,16 @@ async function main() {
 
   await check('admin-aggregáció: cellák + trend az élő adatokból', () => {
     assert.ok(report.cells.length >= 5, `várható ≥5 cella, kapott: ${report.cells.length}`)
-    const claude = report.cells.find((c) => c.clientName === 'claude')
-    assert.ok(claude && claude.sessions >= 3)
+    const claudeSessions = report.cells
+      .filter((c) => c.clientName === 'claude')
+      .reduce((n, c) => n + c.sessions, 0)
+    assert.ok(claudeSessions >= 3, `claude munkamenet ≥3, kapott: ${claudeSessions}`)
     assert.ok(report.trend.length >= 1)
     assert.ok(
       report.trend.every((t) => t.pctGood === null || (t.pctGood >= 0 && t.pctGood <= 100)),
     )
   })
 
-  await check('az eval nem lát bele más futások munkameneteibe (since-szűrés)', async () => {
-    const rows = await audit.findMany({ tenantId, since, limit: 5000 })
-    const groups = groupMcpSessions(
-      rows.map((r) => ({
-        action: r.action,
-        inputRef: r.inputRef,
-        metadata: (r.metadata ?? {}) as Record<string, unknown>,
-      })),
-    )
-    assert.ok(groups.length >= 9)
-    void computeSessionMetrics
-  })
-
-  await prisma.$disconnect()
   console.log(failures === 0 ? '\nMinden eval-forgatókönyv zöld.' : `\n${failures} eval bukott.`)
   process.exit(failures === 0 ? 0 : 1)
 }

@@ -63,10 +63,12 @@ export async function getMcpParityReport(
   audit: Pick<AuditRepository, 'findMany'>,
   input: { tenantId: string; since?: Date; limit?: number },
 ): Promise<McpParityReport & { sessionsDetail: McpSessionMetrics[] }> {
+  // ponytail: 5000-row cap; paginate / session-index if MCP traffic exceeds this.
   const rows = await audit.findMany({
     tenantId: input.tenantId,
     since: input.since,
     order: 'asc',
+    action: PARITY_ACTIONS,
     limit: input.limit ?? 5000,
   })
   const parityRows = rows.filter((r) => PARITY_ACTIONS.includes(r.action))

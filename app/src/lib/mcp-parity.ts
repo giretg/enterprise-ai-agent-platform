@@ -72,7 +72,15 @@ const MEMORY_READ_TOOLS = new Set([
 
 const SKILL_READ_ACTIONS = new Set(['mcp.prompts.get', 'mcp.resources.read'])
 
-const SKILL_READ_TOOLS = new Set(['platform.skills.read', 'platform.skills.list'])
+const SKILL_READ_TOOLS = new Set(['platform.skills.read'])
+
+const SEARCH_TOOLS = new Set([
+  'kb_search',
+  'kb_list_index',
+  'kb_get_page',
+  'kb_get_document',
+  'google_drive_search',
+])
 
 const LOG_WRITE_TOOLS = new Set([
   'platform.work_file.write',
@@ -98,13 +106,7 @@ function codeOf(e: McpParityEvent): string {
 }
 
 function isSearchTool(tool: string): boolean {
-  const t = tool.toLowerCase()
-  return (
-    t.includes('search') ||
-    t.startsWith('kb_') ||
-    t === 'platform.work_file.list' ||
-    t === 'platform.work_file.read'
-  )
+  return SEARCH_TOOLS.has(tool)
 }
 
 function isSkillRead(e: McpParityEvent): boolean {

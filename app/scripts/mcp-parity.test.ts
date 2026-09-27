@@ -227,6 +227,37 @@ async function main() {
     assert.equal(ctx.headerAgentId, 'agent-9')
   })
 
+  await check('szótár = valódi MCP tool-nevek (get_definition + memory.read + skills.read + kb_search)', () => {
+    const m = computeSessionMetrics('s', [
+      ev('mcp.tools.call', 'platform.agent.get_definition', { sessionId: 's' }),
+      ev('mcp.tools.call', 'platform.project_memory.read', { sessionId: 's' }),
+      ev('mcp.tools.call', 'platform.skills.read', { sessionId: 's' }),
+      ev('mcp.tools.call', 'kb_list_index', { sessionId: 's' }),
+      ev('mcp.tools.call', 'platform.work_file.write', { sessionId: 's' }),
+    ])
+    assert.equal(m.definitionBeforeSearch, true)
+    assert.equal(m.memoryBeforeSearch, true)
+    assert.equal(m.entrySkillRead, true)
+    assert.equal(m.hasSearch, true)
+  })
+
+  await check('NEGATÍV: kb_ingest nem keresés (írás, ne húzza előre a sapkát)', () => {
+    const m = computeSessionMetrics('s', [
+      ev('mcp.tools.call', 'kb_ingest', { sessionId: 's' }),
+      ev('mcp.tools.call', DEF, { sessionId: 's' }),
+    ])
+    assert.equal(m.hasSearch, false)
+  })
+
+  await check('NEGATÍV: skills.list nem belépő-skill olvasás', () => {
+    const m = computeSessionMetrics('s', [
+      ev('mcp.tools.call', DEF, { sessionId: 's' }),
+      ev('mcp.tools.call', 'platform.skills.list', { sessionId: 's' }),
+      ev('mcp.tools.call', SEARCH, { sessionId: 's' }),
+    ])
+    assert.equal(m.entrySkillRead, false)
+  })
+
   await check('scoped sink: session+kliens minden sorba, meglévőt nem ír felül', async () => {
     const written: { metadata?: unknown }[] = []
     const scoped = scopeMcpAuditSink(
