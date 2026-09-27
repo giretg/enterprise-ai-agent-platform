@@ -19,7 +19,6 @@ import {
   KB_PG_FALLBACK,
   isKbLanguage,
   kbPgConfig,
-  resolveEffectiveKbLanguage,
   resolveKbLanguage,
 } from '../src/lib/kb-language'
 import { kbRegconfig } from '../src/repositories/postgres/knowledge-repository'
@@ -123,12 +122,14 @@ async function main() {
     assert.equal(resolveKbLanguage('xx'), 'hu')
   })
 
-  await check('effektív nyelv: override ?? connector ?? tenant ?? hu', () => {
-    assert.equal(resolveEffectiveKbLanguage({ override: 'en', connector: 'hu', tenant: 'hu' }), 'en')
-    assert.equal(resolveEffectiveKbLanguage({ connector: 'en', tenant: 'hu' }), 'en')
-    assert.equal(resolveEffectiveKbLanguage({ tenant: 'en' }), 'en')
-    assert.equal(resolveEffectiveKbLanguage({}), 'hu')
-    assert.equal(resolveEffectiveKbLanguage({ override: 'de', connector: 'de', tenant: 'de' }), 'hu')
+  await check('tárolt érték normalizálás = amit a SQL COALESCE lát', () => {
+    // A `kbLanguageGroups` a connector tárolt értékét a `COALESCE`-hez
+    // igazítja; a tenant-nyelv nem SQL-látható, ezért nincs benne.
+    assert.equal(resolveKbLanguage('en'), 'en')
+    assert.equal(resolveKbLanguage('hu'), 'hu')
+    assert.equal(resolveKbLanguage('de'), 'hu')
+    assert.equal(resolveKbLanguage(null), 'hu')
+    assert.equal(resolveKbLanguage(undefined), 'hu')
   })
 
   await check('formatHitsForPrompt: hu = mai render, en = nincs magyar', () => {

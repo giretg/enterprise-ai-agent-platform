@@ -1,12 +1,6 @@
 import { Prisma, type Document, type KnowledgeArtifact, type KnowledgeArtifactStatus } from '@prisma/client'
 import { prisma } from '@/lib/db'
-import {
-  isKbLanguage,
-  kbPgConfig,
-  resolveEffectiveKbLanguage,
-  type KbLanguage,
-} from '@/lib/kb-language'
-import { readTenantLanguage } from '@/lib/tenant-language'
+import { isKbLanguage, kbPgConfig, resolveKbLanguage, type KbLanguage } from '@/lib/kb-language'
 import { KB_SECTION_SPLIT_SQL, kbSectionForSegment, readKbPurpose, snippet } from '@/lib/kb-retrieval'
 import type {
   DocumentListItem,
@@ -77,12 +71,12 @@ function kbCandidateOrderSql(
 }
 
 /**
- * Connectorok effektív KB-nyelve + a dokumentum-felülírásokból adódó nyelvi
- * csoportok: nyelv → az adott nyelven keresendő connectorok. Az effektív nyelv
- * sor-szinten `override ?? connector ?? tenant ?? hu`, de a `regconfig`
- * csoportonként konstans — a csoport-SQL a
+ * Connectorok KB-nyelve + a dokumentum-felülírásokból adódó nyelvi csoportok:
+ * nyelv → az adott nyelven keresendő connectorok. A feloldás itt szándékosan
+ * ugyanaz, amit a `regconfig`-ot kérő SQL lát:
  * `COALESCE(d.kb_language_override, co.kb_language, 'hu') = <nyelv>`
- * érték-predikátummal szűr (ez kötött paraméter, nem regconfig).
+ * (a `regconfig` csoportonként konstans; az érték-predikátum kötött
+ * paraméter, nem interpolált SQL).
  */
 async function kbLanguageGroups(
   connectorIds: string[],
@@ -90,19 +84,16 @@ async function kbLanguageGroups(
   if (connectorIds.length === 0) return []
   const connectors = await prisma.connector.findMany({
     where: { id: { in: connectorIds } },
-    select: { id: true, kbLanguage: true, tenantId: true },
+    select: { id: true, kbLanguage: true },
   })
-  const tenants = await prisma.tenant.findMany({
-    where: { id: { in: [...new Set(connectors.map((c) => c.tenantId))] } },
-    select: { id: true, settings: true },
-  })
-  const tenantLang = new Map(tenants.map((t) => [t.id, readTenantLanguage(t.settings)]))
-  const connectorLang = new Map(
-    connectors.map((c) => [
-      c.id,
-      resolveEffectiveKbLanguage({ connector: c.kbLanguage, tenant: tenantLang.get(c.tenantId) }),
-    ]),
-  )
+  // ponytail: nincs tenant-ág a feloldásban. A `kb_language` NOT NULL, és
+  // minden írási út registry-értéket ír bele (zod enum, DB-default `hu`,
+  // migrációs backfill csak `hu`/`en`), így a tenant-nyelv a connector
+  // létrehozásakor materializálódik (`createKbConnector`). Ha itt mégis
+  // tenant-nyelvet számolnánk, a JS és a SQL `COALESCE` eltérne, és a
+  // nem-registry értékű sorok csendben kimaradnának a keresésből — az
+  // egyetlen nyelv, amit a SQL lát, az `override ?? connector`.
+  const connectorLang = new Map(connectors.map((c) => [c.id, resolveKbLanguage(c.kbLanguage)]))
   const overrides = await prisma.document.findMany({
     where: { connectorId: { in: connectorIds }, kbLanguageOverride: { not: null } },
     select: { connectorId: true, kbLanguageOverride: true },

@@ -190,6 +190,12 @@ const sharedToolLookups = {
     const user = await repositories.users.findById(input.userId)
     return user ? { id: user.id, email: user.email } : null
   },
+  // #717: a modellnek szóló szövegek (briefing, KB-találat, http_api hintek)
+  // nyelve a tenant kimeneti nyelve — az UI-locale soha nem.
+  async resolveTenantLanguage(tenantId: string) {
+    const tenant = await repositories.tenants.findById(tenantId)
+    return readTenantLanguage(tenant?.settings)
+  },
   async resolveAccessToken(params: {
     connector: { id: string }
     grantId: string
