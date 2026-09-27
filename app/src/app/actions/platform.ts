@@ -25,6 +25,8 @@ import {
   redeemInvitationSchema,
   revokeInvitationSchema,
   setAgentUserAccessSchema,
+  setKbDocumentLanguageSchema,
+  setKbLanguageSchema,
   setUserAgentAccessSchema,
   suspendAgentSchema,
   suspendUserSchema,
@@ -973,6 +975,53 @@ export async function attachKnowledgeCatalogDocument(input: {
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to attach catalog document')
+  }
+}
+
+/** #717 F3: a katalógus-tár keresési nyelve + dokumentum-felülírások (olvasás). */
+export async function getKnowledgeCatalogLanguage() {
+  try {
+    const user = await requireTenantRole('viewer')
+    const data = await services.knowledgeBase.getCatalogLanguage({
+      tenantId: user.activeTenantId,
+    })
+    return ok(data)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load knowledge base language')
+  }
+}
+
+/** #717 F3: tudástár-admin művelet (meglévő KB-jogosultság = admin, nem új szerep). */
+export async function setKnowledgeCatalogLanguage(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = setKbLanguageSchema.parse(input)
+    const result = await services.knowledgeBase.setCatalogLanguage({
+      tenantId: user.activeTenantId,
+      kbLanguage: parsed.kbLanguage,
+      actorId: user.user.id,
+    })
+    revalidatePath('/control-plane/knowledge')
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to set knowledge base language')
+  }
+}
+
+export async function setKnowledgeCatalogDocumentLanguage(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = setKbDocumentLanguageSchema.parse(input)
+    const result = await services.knowledgeBase.setCatalogDocumentLanguage({
+      tenantId: user.activeTenantId,
+      documentId: parsed.documentId,
+      kbLanguageOverride: parsed.kbLanguageOverride,
+      actorId: user.user.id,
+    })
+    revalidatePath('/control-plane/knowledge')
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to set document language')
   }
 }
 

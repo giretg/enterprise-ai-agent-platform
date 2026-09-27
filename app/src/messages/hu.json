@@ -770,7 +770,13 @@
     "modeRawDesc": "A szöveg a feltöltött formában kerül a tudásbázisba, és azonnal kereshető.",
     "modeWiki": "Wiki formátumba alakítás",
     "modeWikiDesc": "Oldalakra bontott wiki, kb_list_index / kb_get_page navigációval.",
-    "modeUnset": "Mód nincs kiválasztva"
+    "modeUnset": "Mód nincs kiválasztva",
+    "languageTitle": "A tudástár nyelve",
+    "languageBody": "Ezen a nyelven keres a legpontosabban; a szótövezés és a töltelékszavak szűrése ehhez igazodik.",
+    "languageTenantNote": "Alapértelmezés a tenant nyelvéből jön (most: {label}), de itt függetlenül állítható.",
+    "languageSaved": "A tudástár nyelve mostantól: {label}.",
+    "docLanguageLabel": "Nyelv:",
+    "docLanguageInherited": "A tudástár nyelve (örökölt)"
   },
   "PlatformIam": {
     "grantTitle": "Platform-szerep kiosztása",

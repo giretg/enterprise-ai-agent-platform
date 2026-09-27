@@ -144,6 +144,19 @@ export const setTenantLanguageSchema = z.object({
   language: z.enum(['hu', 'en']),
 })
 
+/** #717: KB-nyelv űrlap-határ (a `KB_LANGUAGE_REGISTRY` kulcsaival egyezik — unit-teszt őrzi). */
+export const KB_LANGUAGE_VALUES = ['hu', 'en'] as const
+
+export const setKbLanguageSchema = z.object({
+  kbLanguage: z.enum(KB_LANGUAGE_VALUES),
+})
+
+export const setKbDocumentLanguageSchema = z.object({
+  documentId: z.string().uuid(),
+  /** `null` = öröklés a tudástár nyelvéről. */
+  kbLanguageOverride: z.enum(KB_LANGUAGE_VALUES).nullable(),
+})
+
 export const setTenantMcpIntroSchema = z.object({
   mcpIntro: z.string().max(4000),
 })

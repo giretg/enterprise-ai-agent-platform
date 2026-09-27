@@ -89,4 +89,12 @@ export class PostgresConnectorRepository implements ConnectorRepository {
       data: { approverUserId: input.approverUserId },
     })
   }
+
+  /** #717 A réteg: a tudástár-connector keresési nyelve (üzleti kód: `hu`/`en`). */
+  async setKbLanguage(connectorId: string, kbLanguage: string): Promise<Connector> {
+    return prisma.connector.update({
+      where: { id: connectorId },
+      data: { kbLanguage },
+    })
+  }
 }
