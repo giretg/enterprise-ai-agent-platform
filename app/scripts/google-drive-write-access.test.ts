@@ -100,6 +100,39 @@ test('selected_write: create_folder tiltott szülő DENY', () => {
   )
 })
 
+test('fail-closed: hiányzó parentFolderId → DENY (ne írjon Drive rootba)', () => {
+  for (const tool of [
+    'google_drive_create_folder',
+    'google_drive_upload_file',
+    'google_drive_copy_file',
+  ]) {
+    assert.throws(
+      () =>
+        assertGoogleDriveWriteAccess({
+          tool,
+          args: { name: 'x', fileId: 'file-allowed' },
+          scopes: selectedWriteScopes,
+          metadata: metadataWithPicker,
+        }),
+      (error: unknown) => error instanceof GoogleDriveWriteAccessError,
+      `${tool} parent nélkül a Drive rootba kerülne`,
+    )
+  }
+})
+
+test('fail-closed: hiányzó destinationFolderId → DENY (move)', () => {
+  assert.throws(
+    () =>
+      assertGoogleDriveWriteAccess({
+        tool: 'google_drive_move_file',
+        args: { fileId: 'file-allowed' },
+        scopes: selectedWriteScopes,
+        metadata: metadataWithPicker,
+      }),
+    (error: unknown) => error instanceof GoogleDriveWriteAccessError,
+  )
+})
+
 test('fail-closed: hiányzó fileId → DENY (nem csúszhat át a share_file sem)', () => {
   for (const tool of ['google_drive_share_file', 'google_drive_update_file', 'google_drive_move_file']) {
     assert.throws(
