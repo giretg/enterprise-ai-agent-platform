@@ -20,8 +20,8 @@ test('autorefresh: az összecsukott soron is van Megszüntetés gomb (aktív kap
   assert.match(collapsed, /!archived && !broken \? \([\s\S]*Megszüntetés/, 'nincs Megszüntetés gomb aktív kapcsolatnál')
   assert.match(
     collapsed,
-    /onClick=\{\(\) => setOpen\(true\)\}[\s\S]{0,80}Megszüntetés|Megszüntetés[\s\S]{0,80}setOpen\(true\)/,
-    'a Megszüntetés gomb nem nyitja meg a részleteket',
+    /label="Megszüntetés"[\s\S]{0,120}openTab\('decommission'\)/,
+    'a Megszüntetés gomb nem nyitja meg a megszüntetés fület',
   )
 })
 

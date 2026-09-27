@@ -90,7 +90,7 @@ export async function listSelfUpdatingConnectors() {
     const ctx = await requireTenantRole('operator')
     const connectors = await prisma.connector.findMany({
       where: { tenantId: ctx.activeTenantId, connectorMode: 'self_updating' },
-      select: { id: true, lifecycleState: true, name: true },
+      select: { id: true, lifecycleState: true, name: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
     })
     // ponytail: egy hibás sor ne döntse el az egész listát — külön loadError stub
@@ -124,6 +124,7 @@ export async function listSelfUpdatingConnectors() {
             id: row.id,
             lifecycleState: row.lifecycleState,
             name: row.name,
+            createdAt: row.createdAt.toISOString(),
             loadError: message,
             specUrl: '',
             urlApproved: false,
@@ -149,6 +150,7 @@ export async function listSelfUpdatingConnectors() {
         id: context.connector.id,
         lifecycleState: row.lifecycleState,
         name: context.connector.name,
+        createdAt: row.createdAt.toISOString(),
         catalogDescription,
         specUrl: context.source.specUrl,
         urlApproved: Boolean(context.source.urlApprovedAt),

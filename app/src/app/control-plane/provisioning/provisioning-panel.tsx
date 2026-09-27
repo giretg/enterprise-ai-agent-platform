@@ -4,7 +4,7 @@ import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useS
 import { useTranslations } from 'next-intl'
 import { asTranslate, type TranslateFn } from '@/i18n/translate'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
-import { Badge, Card } from '@/components/ui/shell'
+import { Badge, Card, IconButton } from '@/components/ui/shell'
 import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import {
@@ -3127,74 +3127,70 @@ function DraftCard({
 
   return (
     <div className="rounded-lg border border-ink/12 bg-paper">
-      <div className="flex flex-wrap items-center gap-2 px-4 py-3">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink/10 bg-white">
+      <div className="flex items-center gap-3 px-4 py-3">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink/10 bg-white text-ink-soft">
           <ConnectorTemplateIcon
             iconDataUrl={templateDescriptor?.iconDataUrl}
             provider={provenance?.templateKey ?? draft.connectorType ?? ''}
             className="h-5 w-5"
           />
         </span>
-        <button
-          type="button"
-          className="font-semibold hover:underline"
-          onClick={toggleOpen}
-        >
-          {open ? '▾' : '▸'} {draft.name}
-        </button>
-        <Badge tone={lifecycleTone(draft.lifecycleState)}>{draft.lifecycleState}</Badge>
-        {isActive ? (
-          <Badge tone="success">{t('reviewClosed')}</Badge>
-        ) : (
-          <Badge tone={reviewTone(draft.reviewStatus)}>review: {draft.reviewStatus}</Badge>
-        )}
-        {v ? <Badge tone={statusTone(v.status)}>validation: {v.status}</Badge> : (
-          <Badge tone="neutral">validation: —</Badge>
-        )}
-        {draft.sandboxTestOk === true ? <Badge tone="success">sandbox: ok</Badge> : null}
-        {draft.sandboxTestOk === false ? <Badge tone="danger">sandbox: fail</Badge> : null}
-        {writeTools.length > 0 ? <Badge tone="warning">{writeTools.length} write-tool</Badge> : null}
-        {provenance?.templateKey ? (
-          <Badge tone={templateOutdated ? 'warning' : 'neutral'}>
-            {provenance.templateKey} v{provenance.templateVersion ?? '?'}
-          </Badge>
-        ) : null}
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className="rounded-md border border-ink/20 px-2.5 py-1 text-xs font-semibold"
+        <h3 className="min-w-0 truncate font-semibold">{draft.name}</h3>
+        <Badge tone="neutral">
+          {`Létrehozva: ${new Date(draft.createdAt).toLocaleString('hu-HU')}`}
+        </Badge>
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <IconButton
+            icon="info"
+            label={open ? t('close') : t('details')}
+            active={open}
             onClick={toggleOpen}
-            aria-expanded={open}
-          >
-            {open ? t('close') : t('details')}
-          </button>
+          />
           {canDeleteDraft ? (
-            <button
-              type="button"
+            <IconButton
+              icon="trash"
+              label={t('delete')}
+              tone="danger"
               disabled={pending}
-              className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral disabled:opacity-50"
               onClick={() => void handleDeleteFromList()}
-            >
-              {t('delete')}
-            </button>
+            />
           ) : null}
           {isActive ? (
-            <button
-              type="button"
-              className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral"
+            <IconButton
+              icon="power"
+              label={t('decommission')}
+              tone="danger"
               onClick={() => {
                 setOpen(true)
                 setActiveStep('revoke')
               }}
-            >
-              {t('decommission')}
-            </button>
+            />
           ) : null}
         </div>
       </div>
 
       {open ? (
         <div className="space-y-4 border-t border-ink/10 px-4 py-4 text-sm">
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-ink/12 bg-wash/35 px-3 py-2">
+            <span className="text-xs font-semibold text-ink-soft">{t('status')}</span>
+            <Badge tone={lifecycleTone(draft.lifecycleState)}>{draft.lifecycleState}</Badge>
+            {isActive ? (
+              <Badge tone="success">{t('reviewClosed')}</Badge>
+            ) : (
+              <Badge tone={reviewTone(draft.reviewStatus)}>review: {draft.reviewStatus}</Badge>
+            )}
+            {v ? <Badge tone={statusTone(v.status)}>validation: {v.status}</Badge> : (
+              <Badge tone="neutral">validation: —</Badge>
+            )}
+            {draft.sandboxTestOk === true ? <Badge tone="success">sandbox: ok</Badge> : null}
+            {draft.sandboxTestOk === false ? <Badge tone="danger">sandbox: fail</Badge> : null}
+            {writeTools.length > 0 ? <Badge tone="warning">{writeTools.length} write-tool</Badge> : null}
+            {provenance?.templateKey ? (
+              <Badge tone={templateOutdated ? 'warning' : 'neutral'}>
+                {provenance.templateKey} v{provenance.templateVersion ?? '?'}
+              </Badge>
+            ) : null}
+          </div>
           <div className="grid gap-4 lg:grid-cols-[14rem_1fr]">
             <ol className="space-y-2">
               {visibleSteps.map((step, index) => {
