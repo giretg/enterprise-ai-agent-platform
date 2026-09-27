@@ -7,7 +7,7 @@ import { useTranslations } from 'next-intl'
 import { ShellAuth } from '@/components/auth/shell-auth'
 import { useClerkEnabled } from '@/components/auth/providers'
 
-export type NavLeaf = { key?: string; href: string; label: string; exact?: boolean }
+export type NavLeaf = { key?: string; href: string; label: string; exact?: boolean; badge?: number }
 export type NavGroup = { key?: string; label: string; children: NavLeaf[] }
 export type NavEntry = NavLeaf | NavGroup
 
@@ -97,8 +97,13 @@ export function AppShell({
   const renderTopLeaf = (item: NavLeaf) => {
     const active = isActive(item.href, item.exact)
     return (
-      <Link key={item.href} href={item.href} className={linkClass(active)}>
+      <Link key={item.href} href={item.href} className={`${linkClass(active)} inline-flex items-center`}>
         {item.label}
+        {item.badge ? (
+          <span className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-coral px-1 text-[10px] font-semibold leading-none text-white">
+            {item.badge > 99 ? '99+' : item.badge}
+          </span>
+        ) : null}
         {active && (
           <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
         )}

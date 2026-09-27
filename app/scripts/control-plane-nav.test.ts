@@ -12,6 +12,7 @@ import {
   flattenNavHrefs,
   CONTROL_PLANE_NAV_CATALOG,
 } from '../src/lib/control-plane-nav'
+import { localizeControlPlaneNav } from '../src/lib/control-plane-nav-i18n'
 import {
   NAV_KEYS_LOCKED_FOR_ADMIN,
   emptyNavVisibilityPolicy,
@@ -309,6 +310,35 @@ function main() {
     assert.doesNotMatch(page, /sáv/)
   })
 
+  check('Teendők badge is the pending count and survives localization', () => {
+    const nav = buildControlPlaneNav({
+      tenantRole: 'viewer',
+      platformRoles: [],
+      pendingTasksCount: 3,
+    })
+    const tasks = nav.find((entry) => !('children' in entry) && entry.key === 'admin.operations')
+    assert.ok(tasks && !('children' in tasks))
+    assert.equal(tasks.badge, 3)
+    for (const entry of nav) {
+      if ('children' in entry || entry.key === 'admin.operations') continue
+      assert.equal(entry.badge, undefined)
+    }
+    const localized = localizeControlPlaneNav(nav, (key) => key)
+    const localizedTasks = localized.find(
+      (entry) => !('children' in entry) && entry.key === 'admin.operations',
+    )
+    assert.ok(localizedTasks && !('children' in localizedTasks))
+    assert.equal(localizedTasks.badge, 3)
+
+    const zero = buildControlPlaneNav({
+      tenantRole: 'viewer',
+      platformRoles: [],
+      pendingTasksCount: 0,
+    }).find((entry) => !('children' in entry) && entry.key === 'admin.operations')
+    assert.ok(zero && !('children' in zero))
+    assert.equal(zero.badge, undefined)
+  })
+
   check('header nav is page links, not route modals', () => {
     const cpShell = readFileSync(
       path.join(__dirname, '..', 'src', 'app', 'control-plane', 'control-plane-shell.tsx'),
@@ -323,6 +353,7 @@ function main() {
     )
     assert.doesNotMatch(appShell, /navMode/)
     assert.doesNotMatch(appShell, /openControlPlanePanel/)
+    assert.match(appShell, /item\.badge/)
   })
   if (failures > 0) process.exit(1)
 }

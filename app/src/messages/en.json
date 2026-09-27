@@ -247,6 +247,15 @@
       "emptyCanCreate": "This organization has no AI teammate yet. Add the first one with the “New teammate” button.",
       "emptyNoCreate": "This organization has no AI teammate yet. Ask an admin to add one."
     },
+    "dashboard": {
+      "eyebrow": "Home",
+      "title": "Overview",
+      "tasksTitle": "To-dos",
+      "tasksEmpty": "Nothing is waiting on you.",
+      "tasksAll": "All to-dos →",
+      "agentsTitle": "Teammates",
+      "agentsAll": "All teammates →"
+    },
     "agentNew": {
       "eyebrow": "New agent",
       "title": "Create a teammate",
