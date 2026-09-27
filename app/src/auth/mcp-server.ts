@@ -625,55 +625,75 @@ async function getDefinitionToolResult(
     agentId: loaded.agentId,
   })
   if (!allowed) return definitionNotFound()
-  const [generalMemory, skills] = await Promise.all([
-    readGeneralMemory(principal, loaded.definitionId, deps),
+  const [memoryContext, skills] = await Promise.all([
+    readMemoryContext(principal, loaded.definitionId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
   ])
   return textResult({
     briefing: renderAgentBriefing({ definition: loaded, skills, bound }),
     ...loaded,
     contentHash: hashSnapshot(loaded.snapshot),
-    ...(generalMemory ? { generalMemory } : {}),
+    ...memoryContext,
   })
 }
 
 const GENERAL_MEMORY_MAX_ITEMS = 40
 const GENERAL_MEMORY_MAX_CHARS = 8000
 
+function isFocusMemoryItem(item: unknown): boolean {
+  return typeof item === 'object' && item !== null && (item as { kind?: unknown }).kind === 'focus'
+}
+
 /**
  * Push the agent's __general__ memory into get_definition so the client has the
  * company facts before its first enterprise tool call, instead of having to
  * remember to read them. Goes through invokeProjectWork, so the same operate
  * check + audit as platform.project_memory.read apply; denied → omitted.
+ *
+ * The focus (#656) is the agent's current state: returned before generalMemory,
+ * in full, never truncated — a stale-looking memory list must not push it out.
  */
-async function readGeneralMemory(principal: McpPrincipal, definitionId: string, deps: McpRuntimeDeps) {
+async function readMemoryContext(principal: McpPrincipal, definitionId: string, deps: McpRuntimeDeps) {
   const result = await deps.invokeProjectWork({
     principal,
     toolName: MCP_PROJECT_MEMORY_READ_TOOL,
     args: { definitionId },
   })
-  if (result.isError) return null
+  if (result.isError) return {}
   let all: unknown[] = []
   try {
     const parsed = JSON.parse(result.content[0]?.text ?? '{}') as { items?: unknown }
     if (Array.isArray(parsed.items)) all = parsed.items
   } catch {
-    return null
+    return {}
   }
+  const focus = all.filter(isFocusMemoryItem)
+  const facts = all.filter((item) => !isFocusMemoryItem(item))
   const items: unknown[] = []
   let chars = 0
-  for (const item of all.slice(0, GENERAL_MEMORY_MAX_ITEMS)) {
+  for (const item of facts.slice(0, GENERAL_MEMORY_MAX_ITEMS)) {
     chars += JSON.stringify(item).length
     if (chars > GENERAL_MEMORY_MAX_CHARS && items.length > 0) break
     items.push(item)
   }
-  const truncated = items.length < all.length
+  const truncated = items.length < facts.length
   return {
-    note:
-      'This is the agent\'s memory (__general__ project): company facts, decisions and locations valid now. It overrides search results — if Drive/KB/API results contradict it, follow the memory and say so.' +
-      (truncated ? ' Truncated: call platform.project_memory.read for the rest.' : ''),
-    items,
-    truncated,
+    ...(focus.length > 0
+      ? {
+          focus: {
+            note:
+              'The agent\'s current focus, always loaded in full before generalMemory: what it is doing now, the next step, what it is waiting for. It overrides the rest of the memory. Rewrite it with platform.project_memory.write kind="focus" (it replaces the previous one) when a task closes or the direction changes.',
+            items: focus,
+          },
+        }
+      : {}),
+    generalMemory: {
+      note:
+        'This is the agent\'s memory (__general__ project): company facts, decisions and locations valid now. It overrides search results — if Drive/KB/API results contradict it, follow the memory and say so.' +
+        (truncated ? ' Truncated: call platform.project_memory.read for the rest.' : ''),
+      items,
+      truncated,
+    },
   }
 }
 
@@ -1014,7 +1034,7 @@ async function createMcpResourceHandler(
         {
           title: 'Get agent definition',
           description:
-            'Load one published agent: briefing (read `briefing` first and act as the agent it describes — role, rules, start and closing steps, skills), then the definition snapshot (capabilities, connectors with names/connectorIds, http_api endpoints) and generalMemory: the agent\'s current company facts, decisions and locations. Call this at the start of the conversation, before enterprise tools, and pass definitionId on each call. Read generalMemory before answering — it overrides search results. Use agentId or definitionId; optional version.',
+            'Load one published agent: briefing (read `briefing` first and act as the agent it describes — role, rules, start and closing steps, skills), then the definition snapshot (capabilities, connectors with names/connectorIds, http_api endpoints), then focus: the agent\'s current state (what it is doing now, the next step, what it waits for), always in full, then generalMemory: the agent\'s current company facts, decisions and locations. Call this at the start of the conversation, before enterprise tools, and pass definitionId on each call. Read focus and generalMemory before answering — they override search results. Use agentId or definitionId; optional version.',
           inputSchema: z
             .object({
               definitionId: z.string().uuid().optional(),
@@ -1192,7 +1212,7 @@ async function createMcpResourceHandler(
         {
           title: 'Write project memory',
           description:
-            'Write a project-memory item for this agent (decision, open_task, finding, constraint, artifact, handoff_summary). First call platform.project_memory.read for the same projectKey: if an item already covers this subject (including when the user corrects or changes it), pass its id as replaceId with the merged, current text — do not add a second item. If several items are outdated by the same change, write ONE item: replaceId for one, mergeIds for the rest. Write only what is valid now; do not keep "this is outdated" notes. If other similar active items would remain, the server answers possible_duplicate with candidates and writes nothing; then retry with replaceId/mergeIds, or confirmNew=true if none match. The work plan itself belongs in a work file; store only a pointer here. The server stamps the calling user as conversation partner — do not name them. Cannot change trained operating rules. Approval-mode agents return awaiting_approval + approvalUrl; direct-mode agents write immediately. Personal facts (vacation, private preference) do not belong here unless they constrain the project.',
+            'Write a project-memory item for this agent (decision, open_task, finding, constraint, artifact, handoff_summary, focus). First call platform.project_memory.read for the same projectKey: if an item already covers this subject (including when the user corrects or changes it), pass its id as replaceId with the merged, current text — do not add a second item. If several items are outdated by the same change, write ONE item: replaceId for one, mergeIds for the rest. Write only what is valid now; do not keep "this is outdated" notes. If other similar active items would remain, the server answers possible_duplicate with candidates and writes nothing; then retry with replaceId/mergeIds, or confirmNew=true if none match. focus is the current state (what we are doing now, the next step, what we wait for), at most 3000 characters: there is only ever one active focus per agent and project, and this write always replaces it — no replaceId, no duplicate check. Rewrite it when a task closes or the direction changes. The work plan itself belongs in a work file; store only a pointer here. The server stamps the calling user as conversation partner — do not name them. Cannot change trained operating rules. Approval-mode agents return awaiting_approval + approvalUrl; direct-mode agents write immediately. Personal facts (vacation, private preference) do not belong here unless they constrain the project.',
           inputSchema: projectMemoryWriteInputSchema,
         },
         async (args) => projectWorkToolResult(principal, MCP_PROJECT_MEMORY_WRITE_TOOL, args, deps),

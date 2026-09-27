@@ -353,6 +353,8 @@
       "kindArtifactHint": "A memory pointing at a work file (the plan lives in the file).",
       "kindHandoff": "Handoff",
       "kindHandoffHint": "Handoff state for the next run.",
+      "kindFocus": "Current focus",
+      "kindFocusHint": "What we are doing now, the next step, what we are waiting for. One active item per agent and project: a new write replaces it.",
       "allKinds": "All",
       "fileSaved": "Work file saved.",
       "fileDeleted": "Work file deleted.",

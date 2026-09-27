@@ -24,7 +24,7 @@ const agentIdSchema = z.object({ agentId: z.string().uuid() })
 const listMemorySchema = agentIdSchema.extend({ projectKey: projectKeySchema })
 const saveMemorySchema = agentIdSchema.extend({
   projectKey: projectKeySchema,
-  kind: z.enum(['decision', 'open_task', 'finding', 'constraint', 'artifact', 'handoff_summary']),
+  kind: z.enum(['decision', 'open_task', 'finding', 'constraint', 'artifact', 'handoff_summary', 'focus']),
   title: z.string().trim().min(1).max(200),
   body: z.string().trim().min(1).max(8_000),
   artifactPath: z.string().trim().max(500).optional(),

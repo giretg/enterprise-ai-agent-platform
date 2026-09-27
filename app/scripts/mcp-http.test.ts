@@ -1009,7 +1009,11 @@ async function main() {
       if (denied) {
         return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'agent_access_denied' }) }] }
       }
-      const items = Array.from({ length: 50 }, (_, i) => ({ id: `m${i}`, title: `fact ${i}`, body: 'x'.repeat(100) }))
+      // A fókusz a lista végén érkezik, hogy a csonkolás ne szoríthatja ki (#656).
+      const items = [
+        ...Array.from({ length: 50 }, (_, i) => ({ id: `m${i}`, kind: 'finding', title: `fact ${i}`, body: 'x'.repeat(100) })),
+        { id: 'focus-1', kind: 'focus', title: 'Fókusz', body: 'Most: a 4. szakasz.' },
+      ]
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true, items }) }] }
     }
     await initialize(deps)
@@ -1029,6 +1033,7 @@ async function main() {
       assert.equal(body.result?.isError, undefined)
       return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
         definitionId?: string
+        focus?: { items: Array<{ id: string; body: string }>; note: string }
         generalMemory?: { items: Array<{ id: string }>; truncated: boolean; note: string }
       }
     }
@@ -1040,6 +1045,13 @@ async function main() {
     assert.equal(payload.generalMemory?.truncated, true)
     assert.ok((payload.generalMemory?.items.length ?? 0) <= 40)
     assert.match(payload.generalMemory?.note ?? '', /overrides search results/)
+
+    // #656: a fókusz teljes terjedelemben, a memória-lista előtt, csonkolás nélkül.
+    const keys = Object.keys(payload)
+    assert.deepEqual(payload.focus?.items.map((item) => item.id), ['focus-1'])
+    assert.equal(payload.focus?.items[0]?.body, 'Most: a 4. szakasz.')
+    assert.ok(keys.indexOf('focus') < keys.indexOf('generalMemory'))
+    assert.equal(payload.generalMemory?.items.some((item) => item.id === 'focus-1'), false)
 
     denied = true
     const withoutMemory = await getDefinition(61)

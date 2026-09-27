@@ -30,6 +30,9 @@ export const WORK_FILE_MAX_PROJECT_BYTES = 5_000_000
 export const WORK_FILE_MAX_COUNT = 200
 export const MEMORY_TITLE_MAX = 200
 export const MEMORY_BODY_MAX = 8_000
+/** Fókusz: rövid állapotblokk, agentenként/projektenként egyetlen aktív elem (#656). */
+export const MEMORY_FOCUS_MAX = 3_000
+const MEMORY_FOCUS_DEFAULT_TITLE = 'Fókusz'
 export const MEMORY_MERGE_MAX = 10
 
 export type ProjectWorkErr = { ok: false; code: string; message: string }
@@ -333,7 +336,8 @@ export class ProjectWorkService {
     const prepared = await this.prepareMemoryWrite(input)
     if (!prepared.ok) return prepared
     // Cserénél is: ha a kivezetetteken kívül marad hasonló aktív elem, azt is össze kell vonni.
-    if (!input.confirmNew) {
+    // Kivétel a fókusz: állapotblokk, mindig az egyetlen aktív példányt írja felül.
+    if (!input.confirmNew && prepared.draft.kind !== 'focus') {
       const retiring = new Set(retiredIds(prepared.draft))
       const active = await this.memory.listActive({
         tenantId: input.tenantId,
@@ -420,10 +424,13 @@ export class ProjectWorkService {
     const scoped = await this.assertProject(input.tenantId, input.projectKey)
     if (!scoped.ok) return scoped
     if (!isProjectMemoryKind(input.kind)) return err('invalid_memory_kind')
-    const title = input.title.trim()
+    const isFocus = input.kind === 'focus'
+    const title = input.title.trim() || (isFocus ? MEMORY_FOCUS_DEFAULT_TITLE : '')
     const body = input.body.trim()
     if (!title || title.length > MEMORY_TITLE_MAX) return err('invalid_memory_kind', 'title')
-    if (!body || body.length > MEMORY_BODY_MAX) return err('invalid_memory_kind', 'body')
+    if (!body || body.length > (isFocus ? MEMORY_FOCUS_MAX : MEMORY_BODY_MAX)) {
+      return err('invalid_memory_kind', 'body')
+    }
     const scan = scanMemoryContentForSecrets([title, body, input.artifactPath])
     if (scan.secrets.length > 0) return err('secret_blocked', scan.secrets.join(','))
     let artifactPath: string | undefined
@@ -432,9 +439,19 @@ export class ProjectWorkService {
       if (!path) return err('invalid_path')
       artifactPath = path
     }
-    const [replaceId, ...mergeIds] = retiredIds(input)
+    const [retired, ...mergeIds] = retiredIds(input)
+    // Fókusz: mindig az aktuális fókuszt írja felül, új elem soha (#656).
+    let replaceId: string | undefined = retired
+    if (isFocus && !replaceId) {
+      const active = await this.memory.listActive({
+        tenantId: input.tenantId,
+        agentId: input.agentId,
+        projectKey: scoped.projectKey,
+      })
+      replaceId = active.find((row) => row.kind === 'focus')?.id
+    }
     if (mergeIds.length > MEMORY_MERGE_MAX) return err('memory_not_found', 'too many mergeIds')
-    for (const id of [replaceId, ...mergeIds].filter(Boolean)) {
+    for (const id of [replaceId, ...mergeIds].filter((id): id is string => !!id)) {
       const previous = await this.memory.findById(id)
       if (
         !previous ||
