@@ -150,6 +150,7 @@
     "test:enterprise-tools": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/enterprise-tools.test.ts",
     "test:gmail-mcp-tools": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/gmail-mcp-tools.test.ts",
     "test:gateway-operation": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/gateway-operation.test.ts",
+    "test:named-approver": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/named-approver.test.ts",
     "test:audit-log": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/audit-log.test.ts",
     "test:agent-definition": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-definition.test.ts",
     "test:resource-grant": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/resource-grant.test.ts",

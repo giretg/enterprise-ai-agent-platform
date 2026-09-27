@@ -110,10 +110,21 @@ export class PostgresGatewayOperationRepository implements GatewayOperationStore
 
   async listAwaitingApproval(
     tenantId: string,
-    principalUserId?: string,
+    visibleToUserId?: string,
   ): Promise<GatewayOperationRecord[]> {
     const rows = await prisma.gatewayOperation.findMany({
-      where: { tenantId, status: 'awaiting_approval', ...(principalUserId ? { principalUserId } : {}) },
+      where: {
+        tenantId,
+        status: 'awaiting_approval',
+        ...(visibleToUserId
+          ? {
+              OR: [
+                { principalUserId: visibleToUserId },
+                { designatedApproverUserId: visibleToUserId },
+              ],
+            }
+          : {}),
+      },
       include: INCLUDE,
       orderBy: { createdAt: 'desc' },
     })

@@ -20,6 +20,7 @@ import {
   canSeeGatewayOperation,
   enqueueGatewayOperation,
   enqueueResultToMcp,
+  listPendingGatewayOperations,
   type GatewayOperationServiceDeps,
 } from '../src/domain/gateway-operation'
 import { MemoryGatewayOperationStore } from './memory-gateway-operation-store'
@@ -198,6 +199,22 @@ async function main() {
       ),
       false,
     )
+  })
+
+  await check('a megnevezett operator a sorban látja a rá váró idegen kérést', async () => {
+    const wired = deps()
+    const view = await enqueue(wired, 'idem-named-queue')
+    const forCsilla = await listPendingGatewayOperations(wired.deps, {
+      tenantId: TENANT_ID,
+      principalUserId: CSILLA_ID,
+    })
+    const forOther = await listPendingGatewayOperations(wired.deps, {
+      tenantId: TENANT_ID,
+      principalUserId: OTHER_ID,
+    })
+    assert.equal(forCsilla.length, 1)
+    assert.equal(forCsilla[0]?.operationId, view.operationId)
+    assert.equal(forOther.length, 0)
   })
 
   await check('az MCP-válasz megnevezi, kire vár', async () => {

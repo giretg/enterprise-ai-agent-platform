@@ -42,7 +42,8 @@ export async function listPendingGatewayOperationsAction(): Promise<
   try {
     const ctx = await requireTenantRole('viewer')
     const actor = actorFrom(ctx)
-    // #618 D4: approver/admin sees every pending write, anyone else only their own.
+    // #618 D4: approver/admin lát minden pending írást; más csak a sajátját.
+    // #663: a megnevezett jóváhagyó a rá váró idegen kéréseket is (operator is).
     const operations = await services.gatewayOperations.listPending({
       tenantId: ctx.activeTenantId,
       ...(canApproveGatewayOperation(actor) ? {} : { principalUserId: actor.userId }),

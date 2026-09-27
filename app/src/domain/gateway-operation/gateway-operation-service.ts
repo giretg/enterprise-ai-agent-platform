@@ -563,6 +563,7 @@ export async function listPendingGatewayOperations(
   deps: GatewayOperationServiceDeps,
   input: { tenantId: string; principalUserId?: string },
 ): Promise<GatewayPendingOperation[]> {
+  // principalUserId = láthatóság: saját kérések + a rá megnevezettként várók.
   const rows = await deps.operations.listAwaitingApproval(input.tenantId, input.principalUserId)
   return rows.map((row) => ({
     ...toGatewayOperationView(row),

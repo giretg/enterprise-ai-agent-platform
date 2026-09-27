@@ -93,7 +93,8 @@ export interface GatewayOperationStore {
   createAwaitingApproval(
     input: GatewayOperationCreateInput,
   ): Promise<{ record: GatewayOperationRecord; created: boolean }>
-  listAwaitingApproval(tenantId: string, principalUserId?: string): Promise<GatewayOperationRecord[]>
+  /** `visibleToUserId` = saját kérések + a rá megnevezett jóváhagyóként várók (#663). */
+  listAwaitingApproval(tenantId: string, visibleToUserId?: string): Promise<GatewayOperationRecord[]>
   withLockedOperation<T>(
     operationId: string,
     fn: (

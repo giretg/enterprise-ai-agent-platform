@@ -82,6 +82,7 @@ jobs:
           npm run test:kb-gate
           npm run test:kb-retrieval
           npm run test:gateway-operation
+          npm run test:named-approver
           npm run test:audit-log
           npm run test:agent-definition
           npm run test:agent-scaffold-mcp

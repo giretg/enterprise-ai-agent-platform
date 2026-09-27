@@ -57,10 +57,15 @@ export class MemoryGatewayOperationStore implements GatewayOperationStore {
     return { record, created: true }
   }
 
-  async listAwaitingApproval(tenantId: string, principalUserId?: string) {
+  async listAwaitingApproval(tenantId: string, visibleToUserId?: string) {
     return [...this.rows.values()]
       .filter((row) => row.tenantId === tenantId && row.status === 'awaiting_approval')
-      .filter((row) => !principalUserId || row.principalUserId === principalUserId)
+      .filter(
+        (row) =>
+          !visibleToUserId ||
+          row.principalUserId === visibleToUserId ||
+          row.designatedApproverUserId === visibleToUserId,
+      )
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
   }
 
