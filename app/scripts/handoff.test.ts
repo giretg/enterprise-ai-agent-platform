@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import type { ProjectMemoryKind, ProjectMemoryRecord, ProjectMemoryStore } from '../src/domain/project-work/types'
 import { invokeProjectWork } from '../src/domain/project-work/mcp'
 import { ProjectWorkService } from '../src/domain/project-work/project-work-service'
-import { validateHandoffInput, formatHandoffMemoryBody } from '../src/domain/handoff/handoff-service'
+import { validateHandoffInput, formatHandoffMemoryBody, parseHandoffLinks } from '../src/domain/handoff/handoff-service'
 import { renderAgentBriefing } from '../src/lib/agent-checkout'
 import type { AgentDefinition } from '../src/domain/agent-definition'
 
@@ -330,6 +330,16 @@ async function main() {
   await check('memory body format stamps the source agent', () => {
     const body = formatHandoffMemoryBody({ fromAgentName: 'Kati', summary: 'S', links: null, handoffId: 'h-1' })
     assert.ok(body.includes('Kati') && body.includes('h-1'))
+  })
+
+  await check('parseHandoffLinks splits label | href pairs', () => {
+    const parsed = parseHandoffLinks('Ajánlat | work_file:/plans/acme.md, Doc | https://example.com/x, sima')
+    assert.equal(parsed.length, 3)
+    assert.equal(parsed[0]?.kind, 'work_file')
+    assert.equal(parsed[1]?.kind, 'url')
+    assert.equal(parsed[1]?.href, 'https://example.com/x')
+    assert.equal(parsed[2]?.kind, 'other')
+    assert.deepEqual(parseHandoffLinks(null), [])
   })
 
   if (failures > 0) {

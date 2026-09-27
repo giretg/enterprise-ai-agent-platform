@@ -70,6 +70,30 @@ export function formatHandoffMemoryBody(input: { fromAgentName: string; summary:
   return `[átadás innen: ${input.fromAgentName}]\n${input.summary}${linksLine}\n(handoffId: ${input.handoffId})`
 }
 
+export type ParsedHandoffLink = { label: string; href: string; kind: 'url' | 'work_file' | 'other' }
+
+/** `"címke | https://…, terv | work_file:/path"` → kattintható elemek. */
+export function parseHandoffLinks(links: string | null): ParsedHandoffLink[] {
+  if (!links) return []
+  const parts = links
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+  return parts.flatMap((part) => {
+    const sep = part.indexOf('|')
+    const label = (sep >= 0 ? part.slice(0, sep) : part).trim()
+    const href = (sep >= 0 ? part.slice(sep + 1) : part).trim()
+    if (!label && !href) return []
+    const target = href || label
+    const kind: ParsedHandoffLink['kind'] = /^https?:\/\//i.test(target)
+      ? 'url'
+      : target.startsWith('work_file:')
+        ? 'work_file'
+        : 'other'
+    return [{ label: label || target, href: target, kind }]
+  })
+}
+
 export function handoffHeadline(row: Pick<HandoffRecord, 'id' | 'title' | 'projectKey' | 'createdAt'> & { fromAgentName?: string | null }): { id: string; title: string; projectKey: string; createdAt: string; fromAgentName: string | null } {
   return {
     id: row.id,
