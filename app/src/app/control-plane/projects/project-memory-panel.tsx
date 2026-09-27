@@ -19,6 +19,7 @@ const MEMORY_KIND_BADGE: Record<MemoryKind, string> = {
   artifact: 'bg-ink/5 text-ink-soft',
   handoff_summary: 'bg-ink/5 text-ink-soft',
   focus: 'bg-coral/25 text-coral-deep',
+  session_log: 'bg-sage/10 text-sage',
 }
 
 const MEMORY_KIND_KEYS: Record<MemoryKind, { label: string; hint: string }> = {
@@ -29,6 +30,7 @@ const MEMORY_KIND_KEYS: Record<MemoryKind, { label: string; hint: string }> = {
   artifact: { label: 'kindArtifact', hint: 'kindArtifactHint' },
   handoff_summary: { label: 'kindHandoff', hint: 'kindHandoffHint' },
   focus: { label: 'kindFocus', hint: 'kindFocusHint' },
+  session_log: { label: 'kindSessionLog', hint: 'kindSessionLogHint' },
 }
 
 export const MEMORY_KIND_META: Record<MemoryKind, { label: string; hint: string; badge: string }> = {
@@ -66,6 +68,11 @@ export const MEMORY_KIND_META: Record<MemoryKind, { label: string; hint: string;
     label: 'Jelenlegi fókusz',
     hint: 'Min dolgozunk most, mi a következő lépés, mire várunk. Agentenként egyetlen aktív elem: az új írás felülírja.',
     badge: MEMORY_KIND_BADGE.focus,
+  },
+  session_log: {
+    label: 'Munkamenet-napló',
+    hint: 'Append-only: mit csináltál, mi lett az eredmény, mi a következő lépés.',
+    badge: MEMORY_KIND_BADGE.session_log,
   },
 }
 
@@ -269,10 +276,19 @@ export function ProjectMemoryPanel({
     }
   }, [projectKey, agentId])
 
+  const sessionLogs = useMemo(
+    () =>
+      memories
+        .filter((item) => item.kind === 'session_log')
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    [memories],
+  )
+
   const visibleMemories = useMemo(() => {
     const q = search.trim().toLowerCase()
     return memories
       .filter((item) => {
+        if (kindFilter === 'all' && item.kind === 'session_log') return false
         if (kindFilter !== 'all' && item.kind !== kindFilter) return false
         if (!q) return true
         return (
@@ -360,6 +376,27 @@ export function ProjectMemoryPanel({
         </div>
       </div>
 
+      {agentName && sessionLogs.length > 0 ? (
+        <div className="rounded-xl border border-ink/10 bg-white/50 p-4 shadow-sm">
+          <p className="text-sm font-semibold text-ink">{t('sessionLogTimeline')}</p>
+          <p className="mt-1 text-xs text-ink-soft">{t('sessionLogTimelineHint')}</p>
+          <ol className="mt-3 space-y-3 border-l-2 border-sage/40 pl-4">
+            {sessionLogs.map((item) => (
+              <li key={item.id} className="relative">
+                <span className="absolute -left-[1.35rem] top-1.5 h-2 w-2 rounded-full bg-sage" aria-hidden />
+                <p className="text-xs text-ink-faint">{formatWhen(item.createdAt)} · {item.withUserName}</p>
+                <p className="font-medium text-ink">{item.title}</p>
+                <p className="mt-1 whitespace-pre-wrap text-sm text-ink-soft">
+                  {item.body.length > BODY_PREVIEW_CHARS
+                    ? `${item.body.slice(0, BODY_PREVIEW_CHARS)}…`
+                    : item.body}
+                </p>
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
+
       {canEdit && !showNewMemory ? (
         <button type="button" onClick={() => setShowNewMemory(true)} className={projectWorkPrimaryBtnClass}>
           {t('newMemory')}
@@ -435,7 +472,7 @@ export function ProjectMemoryPanel({
                       {expanded ? t('hide') : t('fullText')}
                     </button>
                   ) : null}
-                  {canEdit ? (
+                  {canEdit && item.kind !== 'session_log' ? (
                     <button
                       type="button"
                       onClick={() => startEdit(item)}

@@ -5,6 +5,7 @@ import { hashSnapshot } from '@/domain/agent-definition'
 import { CODE_EXTENSIONS } from '@/lib/skill/skill-package-adapter'
 import { serializeSkillMd } from '@/lib/skill/skill-md-export'
 import { skillFileUri, skillUriName } from '@/lib/skill/mcp-skill'
+import type { SessionLogHeadline } from '@/domain/project-work/project-work-service'
 import type { SkillContent, SkillRequirement } from '@/lib/skill/skill-content'
 
 const MCP_TOOL_SET = new Set<string>(MCP_ALLOWED_TOOLS)
@@ -243,6 +244,7 @@ export function renderAgentBriefing(input: {
   definition: AgentDefinition
   skills: CheckoutSkill[]
   bound?: boolean
+  recentSessionLogs?: SessionLogHeadline[]
 }): string {
   const { agentId, snapshot } = input.definition
   const description = snapshot.description?.trim()
@@ -296,6 +298,7 @@ export function renderAgentBriefing(input: {
     '',
     '- Memory: memoryIndex in platform.agent.get_definition; full text via platform.project_memory.read (ids or query). Read before answering company questions or searching. Write: platform.project_memory.write (omit projectKey for general memory).',
     '- Current focus: the `focus` field in platform.agent.get_definition — always in full, before the memory list. Only one active focus per agent and project: platform.project_memory.write with kind "focus" replaces it.',
+    '- Session log: append-only work journal with kind "session_log" (what you did, outcome, where artifacts live, next step). Never replace old session logs.',
     '- Work files (plans, notes, open tasks): platform.work_file.* under a projectKey.',
     '- Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
   ]
@@ -332,6 +335,22 @@ export function renderAgentBriefing(input: {
     }
   }
 
+  const recent = input.recentSessionLogs?.filter((row) => row.title.trim())
+  if (recent && recent.length > 0) {
+    lines.push(
+      '',
+      '## Recently',
+      '',
+      'Prior sessions for this agent (titles only — load full text before repeating work):',
+      '',
+    )
+    for (const row of recent) {
+      const day = row.createdAt.slice(0, 10)
+      lines.push(`- ${day}: ${row.title} (${row.withUserName}) — id \`${row.id}\``)
+    }
+    lines.push('', 'Full entries: platform.project_memory.read with ids="<comma-separated ids>".')
+  }
+
   lines.push(
     '',
     '## Closing',
@@ -340,6 +359,7 @@ export function renderAgentBriefing(input: {
     '1. Save new company facts and decisions with platform.project_memory.write; when the user corrected a fact, update it.',
     '2. Rewrite the focus if it changed: platform.project_memory.write, kind "focus", one short text (max 3000 characters) with what you are doing now, the next step and what you are waiting for. It replaces the previous focus — never keep an outdated one.',
     '3. Update the plan and open tasks in the work file (platform.work_file.write).',
+    '4. Append a session log: platform.project_memory.write, kind "session_log", short title plus what you did, the outcome, where outputs live, and the next step. Always append — never replace prior session logs.',
     '',
     '## Approvals and handoffs',
     '',
