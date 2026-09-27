@@ -9,6 +9,7 @@ import { skillFileUri, skillUriName } from '@/lib/skill/mcp-skill'
 import type { SessionLogHeadline } from '@/domain/project-work/project-work-service'
 import type { SkillContent, SkillRequirement } from '@/lib/skill/skill-content'
 import { renderKnowledgePlacementBlock } from '@/lib/agent-knowledge-placement'
+import { HERMES_SYNC_PROMPT } from '@/lib/mcp-client-setup'
 
 const MCP_TOOL_SET = new Set<string>(MCP_ALLOWED_TOOLS)
 
@@ -453,7 +454,7 @@ function renderAgentsMd(input: {
       '## Stale',
       '',
       'At the start of every session call `platform.agent.get_definition` (no arguments).',
-      'If the returned `contentHash` differs from the contentHash above, tell the user once: this Bot\'s role or skills changed on the platform — run "Sync my Excellence agents" in the default Hermes profile. Keep working meanwhile: tools already use the current definition.',
+      `If the returned \`contentHash\` differs from the contentHash above, tell the user once: this Bot's role or skills changed on the platform — run "${HERMES_SYNC_PROMPT}" in the default Hermes profile. Keep working meanwhile: tools already use the current definition.`,
     )
   } else {
     lines.push(

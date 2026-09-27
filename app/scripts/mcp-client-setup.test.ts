@@ -137,7 +137,7 @@ function main() {
     assert.ok(html.indexOf('>Hermes Desktop') < html.indexOf('>Codex<'))
     assert.match(html, /hermes:\/\/mcp\/install\?name=excellence/)
     assert.match(html, /hermes mcp add excellence --url https:\/\/app\.example\.com\/api\/mcp\/acme --auth oauth &amp;&amp; hermes mcp login excellence/)
-    assert.match(html, /Szinkronizáld az Excellence agenteimet/)
+    assert.match(html, /Töltsd le az AI munkatársaimat/)
     assert.match(html, /hermes-agent\.nousresearch\.com\/#downloads/)
     assert.match(html, /user-guide\/bot-mode/)
     for (const client of ['hermes', 'codex', 'cursor', 'grok', 'claude', 'claudecode', 'goose']) {
