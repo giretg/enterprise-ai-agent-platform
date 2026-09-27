@@ -258,8 +258,8 @@ export function renderAgentBriefing(input: {
   const skillUri = (name: string) => `\`${skillFileUri(skillUriName(name), 'SKILL.md')}\``
   const start = [
     input.bound
-      ? 'Call platform.agent.get_definition (no arguments) and read focus and generalMemory — this agent\'s current state and memory. If you are reading this in that response, it is already loaded.'
-      : `Call platform.agent.get_definition { "agentId": "${agentId}" } and read focus and generalMemory — this agent's current state and memory. If you are reading this in that response, it is already loaded.`,
+      ? 'Call platform.agent.get_definition (no arguments) and read focus and memoryIndex — this agent\'s current state and memory catalog. If you are reading this in that response, it is already loaded.'
+      : `Call platform.agent.get_definition { "agentId": "${agentId}" } and read focus and memoryIndex — this agent's current state and memory catalog. If you are reading this in that response, it is already loaded.`,
     'Check open work: platform.work_file.list for plans and open tasks.',
     ...(entry
       ? [`For every new task, first read the entry skill ${entry.name} (${skillUri(entry.name)}) and follow it — it tells you which other skill to use.`]
@@ -294,7 +294,7 @@ export function renderAgentBriefing(input: {
     '',
     'All work for this agent runs through this MCP server — there is no separate in-platform chat runtime.',
     '',
-    '- Memory: generalMemory in platform.agent.get_definition. Read it before answering company questions or searching. More: platform.project_memory.read / write (omit projectKey for general memory).',
+    '- Memory: memoryIndex in platform.agent.get_definition; full text via platform.project_memory.read (ids or query). Read before answering company questions or searching. Write: platform.project_memory.write (omit projectKey for general memory).',
     '- Current focus: the `focus` field in platform.agent.get_definition — always in full, before the memory list. Only one active focus per agent and project: platform.project_memory.write with kind "focus" replaces it.',
     '- Work files (plans, notes, open tasks): platform.work_file.* under a projectKey.',
     '- Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',

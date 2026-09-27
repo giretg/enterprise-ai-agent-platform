@@ -637,12 +637,12 @@ async function getDefinitionToolResult(
   })
 }
 
-const GENERAL_MEMORY_MAX_ITEMS = 40
-const GENERAL_MEMORY_MAX_CHARS = 8000
-
 function isFocusMemoryItem(item: unknown): boolean {
   return typeof item === 'object' && item !== null && (item as { kind?: unknown }).kind === 'focus'
 }
+
+const MEMORY_INDEX_NOTE =
+  'Catalog of the agent\'s __general__ memory (company facts, decisions, locations). It overrides search results — if Drive/KB/API results contradict it, follow the memory and say so. Full text: platform.project_memory.read with ids="<comma-separated ids>" or query="…".'
 
 /**
  * Push the agent's __general__ memory into get_definition so the client has the
@@ -650,8 +650,8 @@ function isFocusMemoryItem(item: unknown): boolean {
  * remember to read them. Goes through invokeProjectWork, so the same operate
  * check + audit as platform.project_memory.read apply; denied → omitted.
  *
- * The focus (#656) is the agent's current state: returned before generalMemory,
- * in full, never truncated — a stale-looking memory list must not push it out.
+ * The focus (#656) is the agent's current state: returned before memoryIndex,
+ * in full. The memory catalog lists every non-focus item (#657); bodies load on demand.
  */
 async function readMemoryContext(principal: McpPrincipal, definitionId: string, deps: McpRuntimeDeps) {
   const result = await deps.invokeProjectWork({
@@ -660,39 +660,42 @@ async function readMemoryContext(principal: McpPrincipal, definitionId: string, 
     args: { definitionId },
   })
   if (result.isError) return {}
-  let all: unknown[] = []
+  type MemoryReadPayload = {
+    items?: unknown[]
+    index?: { entries: unknown[]; totalCount: number; offset: number; nextOffset: number | null }
+  }
+  let payload: MemoryReadPayload = {}
   try {
-    const parsed = JSON.parse(result.content[0]?.text ?? '{}') as { items?: unknown }
-    if (Array.isArray(parsed.items)) all = parsed.items
+    payload = JSON.parse(result.content[0]?.text ?? '{}') as MemoryReadPayload
   } catch {
     return {}
   }
-  const focus = all.filter(isFocusMemoryItem)
-  const facts = all.filter((item) => !isFocusMemoryItem(item))
-  const items: unknown[] = []
-  let chars = 0
-  for (const item of facts.slice(0, GENERAL_MEMORY_MAX_ITEMS)) {
-    chars += JSON.stringify(item).length
-    if (chars > GENERAL_MEMORY_MAX_CHARS && items.length > 0) break
-    items.push(item)
-  }
-  const truncated = items.length < facts.length
+
+  const index = payload.index
+  if (!index) return {}
+
+  const focusItems = Array.isArray(payload.items) ? payload.items.filter(isFocusMemoryItem) : []
+  const paginated = index.nextOffset != null
   return {
-    ...(focus.length > 0
+    ...(focusItems.length > 0
       ? {
           focus: {
             note:
-              'The agent\'s current focus, always loaded in full before generalMemory: what it is doing now, the next step, what it is waiting for. It overrides the rest of the memory. Rewrite it with platform.project_memory.write kind="focus" (it replaces the previous one) when a task closes or the direction changes.',
-            items: focus,
+              'The agent\'s current focus, always loaded in full before memoryIndex: what it is doing now, the next step, what it is waiting for. It overrides the rest of the memory. Rewrite it with platform.project_memory.write kind="focus" (it replaces the previous one) when a task closes or the direction changes.',
+            items: focusItems,
           },
         }
       : {}),
-    generalMemory: {
+    memoryIndex: {
       note:
-        'This is the agent\'s memory (__general__ project): company facts, decisions and locations valid now. It overrides search results — if Drive/KB/API results contradict it, follow the memory and say so.' +
-        (truncated ? ' Truncated: call platform.project_memory.read for the rest.' : ''),
-      items,
-      truncated,
+        MEMORY_INDEX_NOTE +
+        (paginated
+          ? ` More catalog rows: platform.project_memory.read with offset=${index.nextOffset}.`
+          : ''),
+      entries: index.entries,
+      totalCount: index.totalCount,
+      offset: index.offset,
+      nextOffset: index.nextOffset,
     },
   }
 }
@@ -1034,7 +1037,7 @@ async function createMcpResourceHandler(
         {
           title: 'Get agent definition',
           description:
-            'Load one published agent: briefing (read `briefing` first and act as the agent it describes — role, rules, start and closing steps, skills), then the definition snapshot (capabilities, connectors with names/connectorIds, http_api endpoints), then focus: the agent\'s current state (what it is doing now, the next step, what it waits for), always in full, then generalMemory: the agent\'s current company facts, decisions and locations. Call this at the start of the conversation, before enterprise tools, and pass definitionId on each call. Read focus and generalMemory before answering — they override search results. Use agentId or definitionId; optional version.',
+            'Load one published agent: briefing (read `briefing` first and act as the agent it describes — role, rules, start and closing steps, skills), then the definition snapshot (capabilities, connectors with names/connectorIds, http_api endpoints), then focus: the agent\'s current state (what it is doing now, the next step, what it waits for), always in full, then memoryIndex: a catalog (id, kind, title, date) of all other memory items. Call platform.project_memory.read with ids or query for full text. Call this at the start of the conversation, before enterprise tools, and pass definitionId on each call. Read focus and memoryIndex before answering — they override search results. Use agentId or definitionId; optional version.',
           inputSchema: z
             .object({
               definitionId: z.string().uuid().optional(),
@@ -1201,7 +1204,7 @@ async function createMcpResourceHandler(
         {
           title: 'Read project memory',
           description:
-            'Read this agent\'s memory: company facts, decisions, locations, open tasks, findings, handoffs, artifact pointers. Read it before answering any company-specific question (where is X, who owns Y, how do we do Z) and before searching Drive/KB — memory overrides search results. Each item is tagged with the conversation partner (withUserId / withUserName) stamped by the server. Pass mine=true to filter to the calling user. Always call this before platform.project_memory.write so you can update an existing item instead of duplicating it. Omit projectKey for the general memory — do not ask the user which project; pass a projectKey only when the conversation is about a named project. Do not store personal facts unless they constrain the project.',
+            'Read this agent\'s memory: company facts, decisions, locations, open tasks, findings, handoffs, artifact pointers. Default: memoryIndex catalog (every item id/kind/title/date; focus returned in full in items). Pass ids (comma-separated) for full text of those items, or query to search title/body. Use offset when nextOffset is set. Read before answering company-specific questions and before searching Drive/KB — memory overrides search results. Each full item includes withUserId / withUserName. Pass mine=true to filter to the calling user. Call before platform.project_memory.write to update via replaceId. Omit projectKey for general memory.',
           inputSchema: projectMemoryReadInputSchema,
           annotations: { readOnlyHint: true },
         },

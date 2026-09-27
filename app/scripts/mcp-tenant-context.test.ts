@@ -78,7 +78,7 @@ check('buildMcpServerInstructions includes org intro and coworkers', () => {
   assert.match(text, /platform\.agent\.checkout/)
   assert.match(text, /LOCAL AGENT WORKSPACES/)
   assert.ok(text.indexOf("MEMORY FIRST") < text.indexOf("YOUR ROLE"), "memory rule precedes role")
-  assert.match(text, /generalMemory/)
+  assert.match(text, /memoryIndex/)
   assert.match(text, /platform\.agent\.get_definition/)
   assert.match(text, /no separate in-platform/)
   assert.match(text, /tools\/list as the callable tool list/)

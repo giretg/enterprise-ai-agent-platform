@@ -21,8 +21,15 @@ import {
   type WorkProjectRecord,
   type WorkProjectStore,
 } from './types'
+import {
+  memoryMatchesQuery,
+  paginateMemoryIndex,
+  toMemoryIndexEntry,
+  type MemoryIndexPage,
+} from './memory-index'
 
 export type { MemoryWriteModeValue, ProjectMemoryRecord, WorkFileRecord, WorkProjectRecord }
+export type { MemoryIndexPage } from './memory-index'
 
 // ponytail: per-project byte+count caps; split per-file GCS if a project grows past a few MB.
 export const WORK_FILE_MAX_BYTES = 200_000
@@ -299,7 +306,12 @@ export class ProjectWorkService {
     projectKey?: string
     mine?: boolean
     callerUserId: string
-  }): Promise<ProjectWorkResult<{ items: MemoryView[] }>> {
+    /** UI: return every item with full body (legacy shape). MCP omits this. */
+    full?: boolean
+    ids?: string[]
+    query?: string
+    offset?: number
+  }): Promise<ProjectWorkResult<{ items?: MemoryView[]; index?: MemoryIndexPage }>> {
     const scoped = await this.assertProject(input.tenantId, input.projectKey)
     if (!scoped.ok) return scoped
     const rows = await this.memory.listActive({
@@ -310,17 +322,47 @@ export class ProjectWorkService {
     })
     const names = await this.users.findManyByIds([...new Set(rows.map((row) => row.withUserId))])
     const byId = new Map(names.map((row) => [row.id, row.name]))
-    return ok({
-      items: rows.map((row) => ({
+    const toView = (row: ProjectMemoryRecord): MemoryView => ({
+      id: row.id,
+      kind: row.kind,
+      title: row.title,
+      body: row.body,
+      artifactPath: row.artifactPath,
+      withUserId: row.withUserId,
+      withUserName: byId.get(row.withUserId) ?? row.withUserId,
+      createdAt: row.createdAt.toISOString(),
+    })
+
+    if (input.full) {
+      return ok({ items: rows.map(toView) })
+    }
+
+    const idSet = input.ids?.length ? new Set(input.ids) : null
+    if (idSet) {
+      const items = rows.filter((row) => idSet.has(row.id)).map(toView)
+      return ok({ items })
+    }
+
+    const q = input.query?.trim()
+    if (q) {
+      const items = rows.filter((row) => memoryMatchesQuery(row, q)).map(toView)
+      return ok({ items })
+    }
+
+    const focusRows = rows.filter((row) => row.kind === 'focus')
+    const catalogRows = rows.filter((row) => row.kind !== 'focus')
+    const entries = catalogRows.map((row) =>
+      toMemoryIndexEntry({
         id: row.id,
         kind: row.kind,
         title: row.title,
         body: row.body,
-        artifactPath: row.artifactPath,
-        withUserId: row.withUserId,
-        withUserName: byId.get(row.withUserId) ?? row.withUserId,
         createdAt: row.createdAt.toISOString(),
-      })),
+      }),
+    )
+    return ok({
+      ...(focusRows.length > 0 ? { items: focusRows.map(toView) } : {}),
+      index: paginateMemoryIndex(entries, input.offset ?? 0),
     })
   }
 

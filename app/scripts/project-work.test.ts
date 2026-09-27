@@ -271,7 +271,7 @@ await check('approval mode proposes; item is invisible until commit; author is t
     projectKey: 'atvilagitas',
     callerUserId: BELA,
   })
-  assert.equal(before.ok && before.items.length, 0)
+  assert.equal(before.ok && (before.index?.totalCount ?? 0), 0)
   if (proposed.status !== 'needs_approval') return
   const item = await svc.commitMemory(proposed.draft)
   assert.equal(item.withUserId, ANNA)
@@ -281,8 +281,9 @@ await check('approval mode proposes; item is invisible until commit; author is t
     agentId: AGENT,
     projectKey: 'atvilagitas',
     callerUserId: BELA,
+    full: true,
   })
-  assert.equal(after.ok && after.items[0]?.withUserName, 'Anna')
+  assert.equal(after.ok && after.items?.[0]?.withUserName, 'Anna')
 })
 
 await check('direct mode writes immediately with the caller as conversation partner', async () => {
@@ -340,18 +341,20 @@ await check('Béla sees Anna tagged; mine=true returns only Béla', async () => 
     tenantId: TENANT,
     agentId: AGENT,
     callerUserId: BELA,
+    full: true,
   })
-  assert.equal(all.ok && all.items.length, 2)
+  assert.equal(all.ok && all.items?.length, 2)
   const mine = await svc.readMemory({
     tenantId: TENANT,
     agentId: AGENT,
     mine: true,
     callerUserId: BELA,
+    full: true,
   })
-  assert.equal(mine.ok && mine.items.length, 1)
+  assert.equal(mine.ok && mine.items?.length, 1)
   if (!mine.ok) return
-  assert.equal(mine.items[0]?.withUserId, BELA)
-  assert.equal(mine.items[0]?.title, 'Béla feladata')
+  assert.equal(mine.items?.[0]?.withUserId, BELA)
+  assert.equal(mine.items?.[0]?.title, 'Béla feladata')
 })
 
 await check('secret-looking memory is blocked in both modes', async () => {
@@ -470,13 +473,13 @@ await check('correcting a fact via MCP: duplicate is refused with candidates, re
   assert.equal(dup.isError, undefined)
   assert.equal(dupPayload.status, 'possible_duplicate')
   assert.deepEqual((dupPayload.candidates as { id: string }[]).map((c) => c.id), [oldId])
-  const unchanged = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
-  assert.equal(unchanged.ok && unchanged.items.length, 1)
+  const unchanged = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA, full: true })
+  assert.equal(unchanged.ok && unchanged.items?.length, 1)
 
   const replaced = parsePayload(await write({ ...correction, replaceId: oldId }))
   assert.equal(replaced.status, 'written')
-  const after = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
-  assert.deepEqual(after.ok && after.items.map((item) => item.title), [correction.title])
+  const after = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA, full: true })
+  assert.deepEqual(after.ok && after.items?.map((item) => item.title), [correction.title])
 
   const unrelated = parsePayload(await write({ title: 'Heti riport péntekenként', body: 'A vezetőségnek minden pénteken összesítő készül.' }))
   assert.equal(unrelated.status, 'written')
@@ -535,8 +538,8 @@ await check('two outdated items + one change: replacing only one is refused, mer
     ),
   )
   assert.equal(merged.status, 'written')
-  const after = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
-  assert.deepEqual(after.ok && after.items.map((item) => item.title), [change.title])
+  const after = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA, full: true })
+  assert.deepEqual(after.ok && after.items?.map((item) => item.title), [change.title])
 })
 
 await check('#656 focus: the second write replaces the first, no second item, over MCP too', async () => {
@@ -576,14 +579,63 @@ await check('#656 focus: the second write replaces the first, no second item, ov
   assert.equal((second.item as { title: string }).title, 'Fókusz')
 
   const items = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
-  assert.equal(items.ok && items.items.length, 1)
+  assert.equal(items.ok && items.items?.length, 1)
   if (!items.ok) return
-  assert.equal(items.items[0]?.id, secondId)
-  assert.equal(items.items[0]?.kind, 'focus')
+  assert.equal(items.items?.[0]?.id, secondId)
+  assert.equal(items.items?.[0]?.kind, 'focus')
   assert.equal(memory.rows.get(firstId)?.status, 'superseded')
 
   const tooLong = parsePayload(await write({ body: 'x'.repeat(MEMORY_FOCUS_MAX + 1) }))
   assert.equal(tooLong.code, 'invalid_memory_kind')
+})
+
+await check('#657 memory index lists every item; ids return only requested bodies', async () => {
+  const { svc } = harness('direct')
+  const { memoryDisplayTitle, paginateMemoryIndex, MEMORY_INDEX_PAGE_MAX_CHARS } = await import(
+    '../src/domain/project-work/memory-index'
+  )
+  assert.equal(memoryDisplayTitle('', 'Első sor a törzsben.\nMásodik.'), 'Első sor a törzsben.')
+
+  for (let i = 0; i < 200; i++) {
+    await svc.writeMemory({
+      tenantId: TENANT,
+      agentId: AGENT,
+      kind: 'finding',
+      title: `fact-${i}`,
+      body: `body-${i}`,
+      withUserId: ANNA,
+      mode: 'direct',
+    })
+  }
+
+  const catalog = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
+  assert.equal(catalog.ok && catalog.index?.totalCount, 200)
+  if (!catalog.ok || !catalog.index) return
+  const ids = new Set<string>()
+  let offset: number | undefined = 0
+  while (offset !== undefined) {
+    const page = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA, offset })
+    assert.ok(page.ok && page.index)
+    if (!page.ok || !page.index) return
+    for (const entry of page.index.entries) ids.add(entry.id)
+    assert.ok(JSON.stringify(page.index.entries).length <= MEMORY_INDEX_PAGE_MAX_CHARS)
+    offset = page.index.nextOffset ?? undefined
+  }
+  assert.equal(ids.size, 200)
+
+  const one = await svc.readMemory({
+    tenantId: TENANT,
+    agentId: AGENT,
+    callerUserId: ANNA,
+    ids: [catalog.index.entries[0]!.id, catalog.index.entries[1]!.id],
+  })
+  assert.equal(one.ok && one.items?.length, 2)
+  if (!one.ok || !one.items) return
+  assert.ok(one.items.every((item) => item.body.startsWith('body-')))
+  assert.ok(!one.index)
+
+  const empty = paginateMemoryIndex([], 0)
+  assert.equal(empty.nextOffset, null)
 })
 
   console.log(failures === 0 ? '\nOK project-work' : `\nFAIL ${failures}`)
