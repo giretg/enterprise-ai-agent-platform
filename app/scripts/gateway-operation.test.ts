@@ -602,12 +602,16 @@ async function main() {
       toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
       args: FOLDER_ARGS,
       origin: 'https://app.example.com',
-      confirm: { mint: null },
+      confirm: { mint: null, linkReason: 'protocol_not_2026_07_28' },
     })
     const payload = payloadOf(result)
     assert.equal(payload.isError, undefined)
     assert.equal(payload.status, 'awaiting_approval')
     assert.match(String(payload.approvalUrl), /\/control-plane\/operations#/)
+    const enqueued = wired.audit.find((row) => row.action === 'gateway.operation.enqueued')
+    const meta = enqueued?.metadata as Record<string, unknown>
+    assert.equal(meta?.confirmBranch, 'link')
+    assert.equal(meta?.confirmBranchReason, 'protocol_not_2026_07_28')
   })
 
   await check('form round: input_required with one decision field and bound state', async () => {
@@ -632,6 +636,10 @@ async function main() {
     assert.equal(state.userId, USER_ID)
     assert.equal(state.tenantId, TENANT_ID)
     assert.ok(state.exp - state.iat === 15 * 60_000)
+    const enqueued = wired.audit.find((row) => row.action === 'gateway.operation.enqueued')
+    const meta = enqueued?.metadata as Record<string, unknown>
+    assert.equal(meta?.confirmBranch, 'form')
+    assert.equal(meta?.confirmBranchReason, 'mrtr_form')
   })
 
   await check('long content is cut at 2000 chars with honest truncation (no false full-content promise)', async () => {

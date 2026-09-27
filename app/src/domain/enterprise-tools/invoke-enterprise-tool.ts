@@ -1,4 +1,5 @@
 import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
+import type { WriteConfirmLinkReason } from '@/domain/gateway-operation/write-confirm-branch'
 import { isDispatchable } from '@/lib/agent-lifecycle'
 import {
   GoogleDriveApiAuthError,
@@ -90,6 +91,8 @@ export type WriteConfirmState = {
  */
 export type WriteConfirmInput = {
   mint: ((state: WriteConfirmState) => Promise<string>) | null
+  /** Set when `mint` is null — why the client gets the approval link (#618 audit). */
+  linkReason?: WriteConfirmLinkReason
   retry?: {
     state: unknown
     response: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> } | null
