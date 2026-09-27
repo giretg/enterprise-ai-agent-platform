@@ -247,6 +247,15 @@
       "emptyCanCreate": "Ebben a szervezetben még nincs AI-munkatárs. Vedd fel az elsőt az „Új munkatárs” gombbal.",
       "emptyNoCreate": "Ebben a szervezetben még nincs AI-munkatárs. Kérj egy admint, hogy vegyen fel egyet."
     },
+    "dashboard": {
+      "eyebrow": "Kezdőlap",
+      "title": "Áttekintés",
+      "tasksTitle": "Teendők",
+      "tasksEmpty": "Nincs rád váró teendő.",
+      "tasksAll": "Összes teendő →",
+      "agentsTitle": "Munkatársak",
+      "agentsAll": "Összes munkatárs →"
+    },
     "agentNew": {
       "eyebrow": "Új agent",
       "title": "Munkatárs létrehozása",
