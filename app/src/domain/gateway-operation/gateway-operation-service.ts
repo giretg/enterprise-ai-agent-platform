@@ -441,9 +441,48 @@ async function loadAuthorizedWrite(
   }
 }
 
+export async function recordGatewayOperationEnqueued(
+  deps: GatewayOperationServiceDeps,
+  input: {
+    principal: GatewayActor
+    operationId: string
+    toolName: string
+    definitionId: string
+    agentId: string
+    idempotencyKey: string
+    designatedApproverUserId?: string | null
+    extras?: Record<string, unknown>
+  },
+): Promise<void> {
+  const { principal, extras, designatedApproverUserId, ...ids } = input
+  await recordGatewayAudit(deps, {
+    action: 'gateway.operation.enqueued',
+    actorType: 'human',
+    actorId: principal.userId,
+    tenantId: principal.tenantId,
+    operationId: ids.operationId,
+    metadata: {
+      operationId: ids.operationId,
+      toolName: ids.toolName,
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      definitionId: ids.definitionId,
+      agentId: ids.agentId,
+      idempotencyKey: ids.idempotencyKey,
+      ...(designatedApproverUserId ? { designatedApproverUserId } : {}),
+      ...extras,
+    },
+  })
+}
+
 export async function enqueueGatewayOperation(
   deps: GatewayOperationServiceDeps,
-  input: { principal: GatewayActor; toolName: string; args: Record<string, unknown> },
+  input: {
+    principal: GatewayActor
+    toolName: string
+    args: Record<string, unknown>
+    deferEnqueueAudit?: boolean
+  },
 ): Promise<GatewayOperationResult> {
   const { principal, toolName, args } = input
   const authorized = await loadAuthorizedWrite(deps, principal, toolName, args)
@@ -517,23 +556,17 @@ export async function enqueueGatewayOperation(
     if (conflict) return conflict
     return ok(toGatewayOperationView(inserted.record), false)
   }
-  await recordGatewayAudit(deps, {
-    action: 'gateway.operation.enqueued',
-    actorType: 'human',
-    actorId: principal.userId,
-    tenantId: principal.tenantId,
-    operationId: inserted.record.id,
-    metadata: {
+  if (!input.deferEnqueueAudit) {
+    await recordGatewayOperationEnqueued(deps, {
+      principal,
       operationId: inserted.record.id,
       toolName,
-      tenantId: principal.tenantId,
-      userId: principal.userId,
       definitionId: authorized.definition.definitionId,
-        agentId: authorized.definition.agentId,
-        idempotencyKey,
-        ...(designated ? { designatedApproverUserId: designated.userId } : {}),
-      },
-  })
+      agentId: authorized.definition.agentId,
+      idempotencyKey,
+      designatedApproverUserId: designated?.userId ?? null,
+    })
+  }
   return ok(toGatewayOperationView(inserted.record), inserted.created)
 }
 

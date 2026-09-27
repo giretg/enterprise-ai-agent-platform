@@ -29,11 +29,13 @@ import {
   enqueueGatewayOperation,
   enqueueResultToMcp,
   getGatewayOperation,
+  recordGatewayOperationEnqueued,
   rejectGatewayOperation,
   stableJsonFingerprint,
   type GatewayOperationResult,
   type GatewayOperationServiceDeps,
 } from './gateway-operation-service'
+import { resolveWriteConfirmOffer } from './write-confirm-branch'
 import { formatScalarQuery } from './pending-args-summary'
 import type { GatewayOperationView } from './types'
 
@@ -275,6 +277,32 @@ async function decide(
   return enqueueResultToMcp(result, input.origin)
 }
 
+async function enqueueWithMcpWriteConfirmAudit(
+  deps: GatewayOperationServiceDeps,
+  input: WriteInput,
+): Promise<GatewayOperationResult> {
+  const enqueued = await enqueueGatewayOperation(deps, { ...input, deferEnqueueAudit: true })
+  if (enqueued.ok && enqueued.created) {
+    const offer = resolveWriteConfirmOffer(input.confirm, enqueued)
+    await recordGatewayOperationEnqueued(deps, {
+      principal: input.principal,
+      operationId: enqueued.view.operationId,
+      toolName: enqueued.view.toolName,
+      definitionId: enqueued.view.definitionId,
+      agentId: enqueued.view.agentId,
+      idempotencyKey: enqueued.view.idempotencyKey,
+      designatedApproverUserId: enqueued.view.designatedApproverUserId,
+      extras: offer
+        ? {
+            confirmBranch: offer.confirmBranch,
+            confirmBranchReason: offer.confirmBranchReason,
+          }
+        : undefined,
+    })
+  }
+  return enqueued
+}
+
 async function retryRound(
   deps: GatewayOperationServiceDeps,
   input: WriteInput,
@@ -283,7 +311,7 @@ async function retryRound(
   const { principal, toolName, args, origin } = input
   const state = asState(retry.state)
   // No verified state (missing, or no key configured): fall back to the link.
-  if (!state) return enqueueResultToMcp(await enqueueGatewayOperation(deps, input), origin)
+  if (!state) return enqueueResultToMcp(await enqueueWithMcpWriteConfirmAudit(deps, input), origin)
   if (state.tenantId !== principal.tenantId || state.userId !== principal.userId) {
     return mismatch(deps, principal, toolName, 'principal')
   }
@@ -291,7 +319,7 @@ async function retryRound(
     return mismatch(deps, principal, toolName, 'args')
   }
 
-  const enqueued = await enqueueGatewayOperation(deps, input)
+  const enqueued = await enqueueWithMcpWriteConfirmAudit(deps, input)
   if (!enqueued.ok) return enqueueResultToMcp(enqueued, origin)
   if (enqueued.view.operationId !== state.operationId) {
     return mismatch(deps, principal, toolName, 'operation')
@@ -315,7 +343,7 @@ export async function enqueueWriteForMcp(
   const retry = input.confirm?.retry
   if (retry) return retryRound(deps, input, retry)
 
-  const enqueued = await enqueueGatewayOperation(deps, input)
+  const enqueued = await enqueueWithMcpWriteConfirmAudit(deps, input)
   const mint = input.confirm?.mint
   if (!enqueued.ok || !mint || enqueued.view.status !== 'awaiting_approval') {
     return enqueueResultToMcp(enqueued, input.origin)

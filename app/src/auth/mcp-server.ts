@@ -1,10 +1,8 @@
 import { auth } from '@clerk/nextjs/server'
 import type { SkillVersionStatus } from '@prisma/client'
 import {
-  CLIENT_CAPABILITIES_META_KEY,
   createRequestStateCodec,
   inputResponse,
-  PROTOCOL_VERSION_META_KEY,
   type AuthInfo,
   type CallToolResult,
   type InputRequiredResult,
@@ -98,6 +96,10 @@ import {
   type WriteConfirmState,
 } from '@/domain/enterprise-tools'
 import { WRITE_CONFIRM_KEY } from '@/domain/gateway-operation'
+import {
+  formElicitationCapable,
+  writeConfirmLinkReason,
+} from '@/domain/gateway-operation/write-confirm-branch'
 import {
   auditMcpAuthDenied,
   auditMcpAuthOk,
@@ -1057,8 +1059,6 @@ async function bindAgentHeader(
   return { ok: true, args: { ...args, definitionId: current.definitionId } }
 }
 
-const MRTR_PROTOCOL_VERSION = '2026-07-28'
-
 function requestStateCodec(key: string | undefined): RequestStateCodec<WriteConfirmState> | null {
   if (!key) return null
   try {
@@ -1080,17 +1080,15 @@ function writeConfirmInput(
   codec: RequestStateCodec<WriteConfirmState> | null,
 ): WriteConfirmInput {
   const envelope: Record<string, unknown> = ctx.mcpReq.envelope ?? {}
-  const capabilities = envelope[CLIENT_CAPABILITIES_META_KEY]
-  const elicitation = isRecord(capabilities) ? capabilities.elicitation : undefined
-  const formCapable =
-    envelope[PROTOCOL_VERSION_META_KEY] === MRTR_PROTOCOL_VERSION &&
-    isRecord(elicitation) &&
-    ('form' in elicitation || !('url' in elicitation))
+  const formCapable = formElicitationCapable(envelope)
   const state = ctx.mcpReq.requestState()
   const responses = ctx.mcpReq.inputResponses
   const answer = inputResponse(responses, WRITE_CONFIRM_KEY)
+  const mint =
+    formCapable && codec ? (payload: WriteConfirmState) => codec.mint(payload) : null
   return {
-    mint: formCapable && codec ? (payload) => codec.mint(payload) : null,
+    mint,
+    ...(mint ? {} : { linkReason: writeConfirmLinkReason(envelope, codec !== null) }),
     ...(state !== undefined || responses !== undefined
       ? {
           retry: {
