@@ -8,6 +8,7 @@ import { asTranslate } from '@/i18n/translate'
 import { revokeConnectorGrant, startConnectorOAuth } from '@/app/actions/connector-grants'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import { ConnectionCard, StatusDot } from '@/components/account/connection-card'
+import { UpdateApproverForm } from '@/components/agents/update-approver-form'
 import {
   GoogleDrivePickerPanel,
   selectionLabel,
@@ -43,6 +44,8 @@ export type LinkedConnectorView = {
   assignedAgentCount: number
   capableAgentCount: number
   capableAgentDisplayNames: string[]
+  /** #663: megnevezett jóváhagyó; felülírja az agent-szintűt. */
+  approverUserId?: string | null
 }
 
 export type LinkedGrantView = {
@@ -389,6 +392,16 @@ export function ConnectorConnectionCard({
             <div className="space-y-3 text-xs leading-5 text-ink-soft">
               <p>{connectorDescription(connector, t)}</p>
               <p className={usage.usable ? 'text-sage' : 'text-honey'}>{usage.text}</p>
+              {isAdmin ? (
+                <div className="rounded-xl border border-line/60 bg-panel px-3 py-2">
+                  <p className="mb-1 text-xs font-semibold text-ink">Jóváhagyó</p>
+                  <UpdateApproverForm
+                    entity={{ kind: 'connector', connectorId: connector.id }}
+                    currentApproverUserId={connector.approverUserId ?? null}
+                    canEdit={isAdmin}
+                  />
+                </div>
+              ) : null}
               {connector.type === 'google_drive' ? (
                 <p>
                   {(() => {

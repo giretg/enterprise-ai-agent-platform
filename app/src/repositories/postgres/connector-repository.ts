@@ -85,4 +85,14 @@ export class PostgresConnectorRepository implements ConnectorRepository {
       },
     })
   }
+
+  async updateApprover(input: {
+    connectorId: string
+    approverUserId: string | null
+  }): Promise<Connector> {
+    return prisma.connector.update({
+      where: { id: input.connectorId },
+      data: { approverUserId: input.approverUserId },
+    })
+  }
 }

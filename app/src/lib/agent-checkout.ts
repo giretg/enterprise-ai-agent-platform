@@ -247,6 +247,8 @@ export function renderAgentBriefing(input: {
   skills: CheckoutSkill[]
   bound?: boolean
   recentSessionLogs?: SessionLogHeadline[]
+  /** #663: az agent megnevezett jóváhagyója (üzleti nyelven a Jóváhagyások blokkba). */
+  approverName?: string | null
 }): string {
   const { agentId, snapshot } = input.definition
   const description = snapshot.description?.trim()
@@ -375,6 +377,15 @@ export function renderAgentBriefing(input: {
     '',
     'Writes (for example creating a Drive folder or http_api_request) do not run until a human approves them in the Control Plane: the tool returns status awaiting_approval and an approvalUrl. Show that link to the user; do not poll or retry. Exception: google_drive_upload_file with no parentFolderId (or the agent\'s output folder id) runs immediately when an output folder is configured.',
   )
+  const approverName = input.approverName?.trim()
+  if (approverName) {
+    lines.push(
+      '',
+      '## Jóváhagyások',
+      '',
+      `Ennek az agentnek a megnevezett jóváhagyója: ${approverName}. Az írásaid az ő jóváhagyására várnak — a kliensválaszban nevezd meg, hogy kire vár a művelet ("${approverName} jóváhagyására vár"). Ha ${approverName} dolgozik veled, a saját kérését is jóváhagyhatja.`,
+    )
+  }
   return lines.join('\n')
 }
 

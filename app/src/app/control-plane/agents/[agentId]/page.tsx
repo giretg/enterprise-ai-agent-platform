@@ -27,6 +27,7 @@ import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
 import { PublishStaleDraftButton } from '@/components/agents/publish-stale-draft-button'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdateMemoryWriteModeForm } from '@/components/agents/update-memory-write-mode-form'
+import { UpdateApproverForm } from '@/components/agents/update-approver-form'
 import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder-form'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
@@ -234,6 +235,13 @@ export default async function AgentDetailPage({
             <UpdateOutputFolderForm
               agentId={agent.id}
               outputDriveFolderId={agent.outputDriveFolderId ?? null}
+              canEdit={canManage}
+            />
+          </Card>
+          <Card title="Jóváhagyó">
+            <UpdateApproverForm
+              entity={{ kind: 'agent', agentId: agent.id }}
+              currentApproverUserId={agent.approverUserId ?? null}
               canEdit={canManage}
             />
           </Card>
