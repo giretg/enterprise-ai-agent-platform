@@ -332,8 +332,9 @@ export class PostgresKnowledgeChunkRepository implements KnowledgeChunkRepositor
     const tsquery = toKbTsQuery(query)
     if (!tsquery || connectorIds.length === 0 || limit <= 0) return []
     // #717: nyelvi csoportonként külön SQL (egy csoport = egy nyelv = egy élő
-    // GIN-index), majd összefésülés limitig. Az effektív nyelv sor-szintű
-    // (`override ?? connector ?? tenant`), a joinolt sorokon szűrve.
+    // GIN-index), majd összefésülés limitig. A csoport-kulcs = amit a
+    // `COALESCE(d.kb_language_override, co.kb_language, 'hu')` lát
+    // (lásd `kbLanguageGroups`).
     const groups = await kbLanguageGroups(connectorIds)
     const perGroup = await Promise.all(
       groups.map(async ({ language, connectorIds: ids }) => {
