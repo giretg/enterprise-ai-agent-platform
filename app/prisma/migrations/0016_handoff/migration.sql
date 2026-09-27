@@ -23,3 +23,9 @@ CREATE TABLE "handoffs" (
 
 CREATE INDEX "handoffs_tenant_id_to_agent_id_status_idx" ON "handoffs"("tenant_id", "to_agent_id", "status");
 CREATE INDEX "handoffs_tenant_id_to_user_id_status_idx" ON "handoffs"("tenant_id", "to_user_id", "status");
+
+ALTER TABLE "handoffs" ADD CONSTRAINT "handoffs_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "handoffs" ADD CONSTRAINT "handoffs_from_agent_id_fkey" FOREIGN KEY ("from_agent_id") REFERENCES "agents"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "handoffs" ADD CONSTRAINT "handoffs_to_agent_id_fkey" FOREIGN KEY ("to_agent_id") REFERENCES "agents"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "handoffs" ADD CONSTRAINT "handoffs_to_user_id_fkey" FOREIGN KEY ("to_user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "handoffs" ADD CONSTRAINT "handoffs_created_by_id_fkey" FOREIGN KEY ("created_by_id") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
