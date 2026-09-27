@@ -611,6 +611,7 @@ export async function updateConnectorApprover(input: {
       tenantId: user.activeTenantId,
     })
     revalidatePath('/control-plane/account')
+    revalidatePath('/control-plane/agents', 'layout')
     return ok({ approverUserId: updated.approverUserId })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update approver')

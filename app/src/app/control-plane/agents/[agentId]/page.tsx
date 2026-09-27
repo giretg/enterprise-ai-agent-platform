@@ -183,6 +183,7 @@ export default async function AgentDetailPage({
           bindings={connectors}
           catalog={catalog}
           catalogDetails={connectorCatalog}
+          canManageApprovers={canManage}
         />
       ),
     },
