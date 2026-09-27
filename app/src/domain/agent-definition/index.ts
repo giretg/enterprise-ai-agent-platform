@@ -28,6 +28,7 @@ import type {
 } from '@/repositories/interfaces'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
+import { snapshotLocalRoots } from '@/lib/agent-local-roots'
 import { describeConnectorCatalog } from '@/domain/connector/catalog-description'
 import {
   parseHttpApiConfig,
@@ -66,6 +67,11 @@ export type AgentDefinitionSnapshot = {
     endpoints?: HttpApiEndpointSummary[]
   }>
   capabilities: Array<{ toolName: string; allowed: boolean }>
+  /**
+   * Candidate coding folders across machines (#729). Hints, not a grant, not ranked.
+   * Omitted when empty so snapshots published before this field keep their contentHash.
+   */
+  localRoots?: string[]
 }
 
 export type AgentDefinition = {
@@ -189,6 +195,7 @@ async function buildSnapshot(
     description?: string | null
     hardRules?: string
     trainedRules?: string
+    localRoots?: string
   },
   workingSet: Pick<DraftWorkingSet, 'enabledSkills' | 'connectors' | 'capabilities'>,
   connectors?: Pick<ConnectorRepository, 'findById'>,
@@ -206,11 +213,13 @@ async function buildSnapshot(
       return meta ? { ...base, ...meta } : base
     }),
   )
+  const localRoots = snapshotLocalRoots(agent.localRoots)
   return {
     name: agent.name,
     roleInstruction: agent.roleInstruction,
     description: agent.description ?? null,
     rules: collectSnapshotRules(agent),
+    ...(localRoots ? { localRoots } : {}),
     skills: workingSet.enabledSkills
       .filter((row) => row.skillVersion.status === 'active')
       .map((row) => ({

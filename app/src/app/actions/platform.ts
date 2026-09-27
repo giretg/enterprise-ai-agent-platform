@@ -9,6 +9,7 @@ import { services } from '@/domain/gateway-services'
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { fail, ok } from '@/lib/result'
+import { parseLocalRoots, serializeLocalRoots } from '@/lib/agent-local-roots'
 import { canReadPublishedAgent, isPrivilegedAgentReader } from '@/domain/agent-definition'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import type { ConnectorAccessMode } from '@prisma/client'
@@ -34,6 +35,7 @@ import {
   updateAgentInstructionSchema,
   updateAgentMemoryWriteModeSchema,
   updateAgentOutputFolderSchema,
+  updateAgentLocalRootsSchema,
   updateAgentProfileSchema,
   updateConnectorApproverSchema,
   updateRolePermissionSchema,
@@ -514,6 +516,38 @@ export async function updateAgentOutputFolder(input: { agentId: string; folderId
     return ok({ folderId: saved.folderId })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update output folder')
+  }
+}
+
+export async function updateAgentLocalRoots(input: { agentId: string; localRoots: string }) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = updateAgentLocalRootsSchema.parse(input)
+    const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
+    if (!existing) return fail('Agent not found')
+    const stored = serializeLocalRoots(parseLocalRoots(parsed.localRoots))
+    const updated = await repositories.agents.updateLocalRoots({
+      agentId: parsed.agentId,
+      localRoots: stored,
+    })
+    await services.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'agent.local_roots',
+      targetType: 'agent',
+      targetId: updated.id,
+      modelUsed: null,
+      inputRef: existing.localRoots || null,
+      outputRef: stored || null,
+      policyDecision: 'updated',
+      metadata: { count: stored ? stored.split('\n').length : 0 },
+      tenantId: user.activeTenantId,
+    })
+    revalidatePath(`/control-plane/agents/${parsed.agentId}`)
+    return ok({ localRoots: updated.localRoots })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update local roots')
   }
 }
 

@@ -53,6 +53,7 @@ function agentRow(overrides: Partial<Agent> = {}): Agent {
     createdAt: new Date('2026-01-01T00:00:00Z'),
     updatedAt: new Date('2026-01-01T00:00:00Z'),
     retiredAt: null,
+    localRoots: '',
     ...overrides,
   }
 }
@@ -409,6 +410,30 @@ async function main() {
     })
     assert.equal(published.snapshot.rules?.[0]?.text, 'Version one.')
     agents.set(AGENT_ID, { ...agents.get(AGENT_ID)!, trainedRules: 'Version two.' })
+    const stale = await service.getPublishStatus({ agentId: AGENT_ID, tenantId: TENANT_A })
+    assert.equal(stale.stale, true)
+  })
+
+  await check('#729 empty localRoots omitted from snapshot', async () => {
+    const { service } = memoryDeps()
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    assert.equal(published.snapshot.localRoots, undefined)
+  })
+
+  await check('#729 localRoots publish into snapshot and mark stale on change', async () => {
+    const { service, agents } = memoryDeps()
+    agents.set(AGENT_ID, { ...agentRow(), localRoots: '~/Projects/platform\n~/Projects/other' })
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    assert.deepEqual(published.snapshot.localRoots, ['~/Projects/platform', '~/Projects/other'])
+    agents.set(AGENT_ID, { ...agents.get(AGENT_ID)!, localRoots: '~/Projects/platform' })
     const stale = await service.getPublishStatus({ agentId: AGENT_ID, tenantId: TENANT_A })
     assert.equal(stale.stale, true)
   })

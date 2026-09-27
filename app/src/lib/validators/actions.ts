@@ -27,6 +27,12 @@ export const updateAgentOutputFolderSchema = z.object({
   folderId: z.string().trim().max(200),
 })
 
+export const updateAgentLocalRootsSchema = z.object({
+  agentId: z.string().uuid(),
+  /** Soronként egy path; üres = törlés. */
+  localRoots: z.string().max(4200),
+})
+
 export const updateAgentApproverSchema = z.object({
   agentId: z.string().uuid(),
   /** Tenant-tag user-id; null = megnevezett jóváhagyó törlése. */

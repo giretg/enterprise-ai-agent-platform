@@ -30,6 +30,7 @@ import { UpdateInstructionForm } from '@/components/agents/update-instruction-fo
 import { UpdateMemoryWriteModeForm } from '@/components/agents/update-memory-write-mode-form'
 import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder-form'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
+import { UpdateLocalRootsForm } from '@/components/agents/update-local-roots-form'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
 import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import { PublishAgentDefinitionForm } from '@/components/agents/publish-agent-definition-form'
@@ -152,14 +153,19 @@ export default async function AgentDetailPage({
             id: 'profil' as const,
             label: sectionLabel('profil'),
             content: (
-              <Card title={sectionLabel('profil')}>
-                <UpdateAgentProfileForm
-                  agentId={agent.id}
-                  name={agent.name}
-                  description={agent.description}
-                  bare
-                />
-              </Card>
+              <div className="space-y-4">
+                <Card title={sectionLabel('profil')}>
+                  <UpdateAgentProfileForm
+                    agentId={agent.id}
+                    name={agent.name}
+                    description={agent.description}
+                    bare
+                  />
+                </Card>
+                <Card title={t('sections.localRoots')}>
+                  <UpdateLocalRootsForm agentId={agent.id} localRoots={agent.localRoots} bare />
+                </Card>
+              </div>
             ),
           },
         ]

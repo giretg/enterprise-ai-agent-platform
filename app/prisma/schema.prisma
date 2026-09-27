@@ -454,6 +454,8 @@ model Agent {
   approverUserId             String?         @map("approver_user_id") @db.Uuid
   /** Agent saját Drive output-mappája (#661): ide a feltöltés jóváhagyás nélkül, auditáltan fut. */
   outputDriveFolderId        String?         @map("output_drive_folder_id")
+  /** Helyi kódmappa-hint (#729): soronként egy jelölt ~/… vagy abszolút path (több gép); publikáláskor a snapshotba. */
+  localRoots                 String          @default("") @map("local_roots")
   createdAt                  DateTime    @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime    @updatedAt @map("updated_at") @db.Timestamptz
   retiredAt                  DateTime?   @map("retired_at") @db.Timestamptz

@@ -78,6 +78,7 @@ jobs:
           npm run test:mcp-skills
           npm run test:conversation-skill
           npm run test:agent-checkout
+          npm run test:agent-local-roots
           npm run test:enterprise-tools
           npm run test:sandbox-run
           npm run test:gmail-mcp-tools
