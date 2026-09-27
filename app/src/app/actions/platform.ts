@@ -13,6 +13,7 @@ import { isSuperadmin } from '@/lib/tenant-policy'
 import type { ConnectorAccessMode } from '@prisma/client'
 import { DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import { ensureAgentKnowledgeBase, toolsNeedKnowledgeBase } from '@/lib/agent-knowledge-base'
+import { ensureAgentCodeSandbox, toolsNeedCodeSandbox } from '@/lib/agent-code-sandbox'
 import {
   agentIdSchema,
   approveUserSchema,
@@ -580,6 +581,12 @@ export async function updateAgentCapabilities(input: {
     await repositories.agents.replaceCapabilities(parsed.agentId, tools)
     if (toolsNeedKnowledgeBase(tools) && user.activeTenantId) {
       await ensureAgentKnowledgeBase(existing, {
+        connectors: repositories.connectors,
+        agents: repositories.agents,
+      })
+    }
+    if (toolsNeedCodeSandbox(tools) && user.activeTenantId) {
+      await ensureAgentCodeSandbox(existing, {
         connectors: repositories.connectors,
         agents: repositories.agents,
       })

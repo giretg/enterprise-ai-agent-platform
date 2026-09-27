@@ -322,6 +322,7 @@ export interface ConnectorRepository {
     name: string
     authMode: ConnectorAuthMode
     scope: Connector['scope']
+    config?: Prisma.InputJsonValue
   }): Promise<Connector>
 }
 

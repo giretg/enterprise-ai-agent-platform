@@ -20,21 +20,31 @@ import { checkDefinitionPin, type DefinitionPinDeps } from './definition-pin'
 import { executeGoogleDriveTool } from './handlers/google-drive'
 import { executeGmailTool } from './handlers/gmail'
 import { executeHttpApiTool } from './handlers/http-api'
+import { executeSandboxRun as defaultExecuteSandboxRun } from './handlers/sandbox-run'
 import { asUuid, enterpriseToolErrorPayload } from './tool-error-messages'
 import {
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
   isEnterpriseGmailTool,
   isEnterpriseHttpTool,
   isEnterpriseKbTool,
+  isEnterpriseSandboxTool,
   isEnterpriseTool,
   isEnterpriseWriteTool,
   schemaForEnterpriseKbTool,
+  schemaForEnterpriseSandboxTool,
   schemaForEnterpriseTool,
   type EnterpriseDriveTool,
   type EnterpriseGmailTool,
   type EnterpriseHttpTool,
   type EnterpriseKbTool,
 } from './tool-definitions'
+import type { SandboxRunResult } from '@/domain/code-sandbox/code-sandbox-service'
+import { CodeSandboxDeniedError } from '@/domain/code-sandbox/code-sandbox-service'
+import {
+  resolvePinnedSkillScript,
+  sandboxWorkFilePrefix,
+  splitSandboxArgs,
+} from '@/domain/code-sandbox/skill-script'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
 import { isAuthorizationLinkReason } from '@/domain/connector-grant/connector-grant-needed'
@@ -129,6 +139,27 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     args: Record<string, unknown>,
     ctx: { connectorId: string; tenantId: string; agentId: string; userId: string },
   ) => Promise<unknown>
+  loadSkillVersion?: (skillVersionId: string) => Promise<{
+    attachments: unknown
+    status: string
+    tenantId: string | null
+  } | null>
+  executeSandboxRun?: (
+    input: {
+      tenantId: string
+      scopeKey: string
+      command: string[]
+      files: Array<{ sandboxPath: string; bytes: Uint8Array }>
+    },
+    connector: LiveConnectorRow,
+  ) => Promise<SandboxRunResult>
+  writeWorkFile?: (input: {
+    tenantId: string
+    userId: string
+    projectKey?: string
+    path: string
+    contentBase64: string
+  }) => Promise<{ path: string }>
   enqueueWrite?: (input: {
     principal: ToolCallPrincipal
     toolName: string
@@ -414,6 +445,16 @@ export async function invokeEnterpriseTool(
 
   if (isEnterpriseKbTool(toolName)) {
     return invokeKbTool(deps, {
+      principal,
+      toolName,
+      args,
+      definitionId,
+      definition,
+    })
+  }
+
+  if (isEnterpriseSandboxTool(toolName)) {
+    return invokeSandboxTool(deps, {
       principal,
       toolName,
       args,
@@ -727,6 +768,171 @@ async function invokeKbTool(
         ? 'invalid_args'
         : error instanceof Error && error.message === 'file_too_large'
           ? 'file_too_large'
+          : 'tool_execution_failed'
+    const payload = {
+      toolName,
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      definitionId,
+      agentId: definition.agentId,
+      connectorId: authorized.connectorId,
+      errorCode: code,
+    }
+    console.info('enterprise.tool.error', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.error',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: code,
+      policyDecision: null,
+      metadata: payload,
+      tenantId: principal.tenantId,
+    })
+    return errorResult(code)
+  }
+}
+
+async function invokeSandboxTool(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    toolName: string
+    args: Record<string, unknown>
+    definitionId: string
+    definition: AgentDefinition
+  },
+): Promise<EnterpriseToolMcpResult> {
+  const { principal, toolName, args, definitionId, definition } = input
+  const parsed = schemaForEnterpriseSandboxTool('sandbox_run').safeParse(args)
+  if (!parsed.success) {
+    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId)
+    return errorResult('invalid_args')
+  }
+  const parsedArgs = parsed.data
+  const authorized = await authorizeToolCall(deps, {
+    principal,
+    definition,
+    toolName,
+    args: parsedArgs as Record<string, unknown>,
+  })
+  if (!authorized.allowed) {
+    await auditDenied(deps, principal, toolName, authorized.reason, definitionId, definition.agentId)
+    return errorResult(authorized.reason)
+  }
+  const writeWorkFile = deps.writeWorkFile
+  if (!deps.loadSkillVersion || !writeWorkFile) {
+    await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
+    return errorResult('tool_not_configured')
+  }
+  const version = await deps.loadSkillVersion(parsedArgs.skillVersionId)
+  if (!version) {
+    await auditDenied(deps, principal, toolName, 'skill_not_found', definitionId, definition.agentId)
+    return errorResult('skill_not_found')
+  }
+  if (version.tenantId && version.tenantId !== principal.tenantId) {
+    await auditDenied(deps, principal, toolName, 'skill_not_pinned', definitionId, definition.agentId)
+    return errorResult('skill_not_pinned')
+  }
+  if (version.status !== 'active') {
+    await auditDenied(deps, principal, toolName, 'skill_not_active', definitionId, definition.agentId)
+    return errorResult('skill_not_active')
+  }
+  const resolved = resolvePinnedSkillScript({
+    definition,
+    skillVersionId: parsedArgs.skillVersionId,
+    entry: parsedArgs.entry,
+    attachments: version.attachments,
+  })
+  if (!resolved.ok) {
+    await auditDenied(deps, principal, toolName, resolved.reason, definitionId, definition.agentId)
+    return errorResult(resolved.reason)
+  }
+
+  const files = [
+    { sandboxPath: `/work/in/skill/${resolved.script.entry.path}`, bytes: Buffer.from(resolved.script.entry.text, 'utf8') },
+    { sandboxPath: '/work/run.py', bytes: Buffer.from(resolved.script.entry.text, 'utf8') },
+    ...resolved.script.helpers.map((helper) => ({
+      sandboxPath: `/work/in/skill/${helper.path}`,
+      bytes: Buffer.from(helper.text, 'utf8'),
+    })),
+  ]
+  const execute = deps.executeSandboxRun ?? defaultExecuteSandboxRun
+  try {
+    const ran = await execute(
+      {
+        tenantId: principal.tenantId,
+        scopeKey: definitionId,
+        command: ['python3', `/work/in/skill/${resolved.script.entry.path}`, ...splitSandboxArgs(parsedArgs.args)],
+        files,
+      },
+      authorized.connector,
+    )
+    const prefix = sandboxWorkFilePrefix(resolved.script.skillName)
+    const outputs: string[] = []
+    for (const file of ran.outputFiles) {
+      const written = await writeWorkFile({
+        tenantId: principal.tenantId,
+        userId: principal.userId,
+        projectKey: parsedArgs.projectKey,
+        path: `${prefix}/${file.path}`,
+        contentBase64: Buffer.from(file.bytes).toString('base64'),
+      })
+      outputs.push(written.path)
+    }
+    const payload = {
+      toolName,
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      definitionId,
+      agentId: definition.agentId,
+      connectorId: authorized.connectorId,
+      skillVersionId: parsedArgs.skillVersionId,
+      scriptPath: resolved.script.entry.path,
+      scriptSha256: resolved.script.entry.sha256,
+    }
+    console.info('enterprise.tool.ok', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.ok',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: resolved.script.entry.sha256,
+      policyDecision: 'allowed',
+      metadata: payload,
+      tenantId: principal.tenantId,
+    })
+    return textResult({
+      exitCode: ran.exitCode,
+      stdout: ran.stdout,
+      stderr: ran.stderr,
+      stdoutTruncated: ran.stdoutTruncated,
+      stderrTruncated: ran.stderrTruncated,
+      outputs,
+      skillVersionId: parsedArgs.skillVersionId,
+      scriptPath: resolved.script.entry.path,
+      scriptSha256: resolved.script.entry.sha256,
+    })
+  } catch (error) {
+    const code =
+      error instanceof CodeSandboxDeniedError
+        ? error.reason.split(':')[0]!
+        : error instanceof Error &&
+            (error.message === 'code_sandbox_disabled' ||
+              error.message === 'code_sandbox_base_url_missing' ||
+              error.message === 'invalid_sandbox_command' ||
+              error.message === 'quota_exceeded' ||
+              error.message === 'file_too_large' ||
+              error.message === 'invalid_path')
+          ? error.message
           : 'tool_execution_failed'
     const payload = {
       toolName,

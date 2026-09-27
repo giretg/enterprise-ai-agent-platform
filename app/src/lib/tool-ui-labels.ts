@@ -390,6 +390,10 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'Kód futtatása',
     description: 'Izolált, hívásonként új sandbox futtatása kontrollált workspace inputtal és outputtal.',
   },
+  sandbox_run: {
+    label: 'Skill-script futtatása',
+    description: 'Az agenthez pinnelt skill scriptjének futtatása a platform sandboxában.',
+  },
 
   // Webes kutatás
   web_search: {

@@ -23,6 +23,16 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   missing_http_api_connector_write: 'Published definition has no HTTP API write connector',
   missing_knowledge_base_connector_read: 'Published definition has no knowledge base read connector',
   missing_knowledge_base_connector_write: 'Published definition has no knowledge base write connector',
+  missing_code_sandbox_connector_read: 'Published definition has no code sandbox connector',
+  missing_code_sandbox_connector_write:
+    'Published definition has no code sandbox connector — grant sandbox_run and publish after the sandbox connection is bound',
+  skill_not_pinned: 'This skill version is not pinned on the published agent definition',
+  skill_not_found: 'Skill version not found',
+  skill_not_active: 'Skill version is not active',
+  skill_entry_not_found: 'The skill version has no attachment at this entry path',
+  skill_entry_not_runnable: 'Only a pinned .py skill script can run in the sandbox',
+  code_sandbox_disabled: 'Code sandbox is disabled',
+  code_sandbox_base_url_missing: 'Code sandbox connector has no provider URL',
   tenant_isolation: 'Connector does not belong to this tenant',
   connector_not_active: 'Connector is not active',
   connector_grant_missing: 'This account has not been connected yet',
@@ -42,6 +52,8 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   http_api_error: 'HTTP API request failed',
   missing_api_key: 'HTTP API connector has no credential',
   file_too_large: 'File is too large',
+  quota_exceeded: 'Work-file quota exceeded',
+  invalid_path: 'Invalid work-file path',
   tool_execution_failed: 'Tool execution failed',
 }
 
