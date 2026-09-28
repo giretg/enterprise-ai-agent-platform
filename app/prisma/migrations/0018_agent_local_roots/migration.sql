@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "local_roots" TEXT NOT NULL DEFAULT '';

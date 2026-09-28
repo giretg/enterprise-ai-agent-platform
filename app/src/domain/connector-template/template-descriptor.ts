@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { HTTP_METHODS } from '@/domain/provisioning/connector-config'
+import { HTTP_API_PROTOCOLS, HTTP_METHODS } from '@/domain/provisioning/connector-config'
 import {
   connectorFieldsPrivacySchema,
   privacyCapabilityDeclarationSchema,
@@ -24,6 +24,8 @@ export const instanceFieldSchema = z.object({
   /** Sablon-varázslóban ne jelenjen meg — érték a secretAliasHint-ből / aktiváláskor jön. */
   hiddenInProvisioning: z.boolean().optional(),
   enumValues: z.array(z.string()).optional(),
+  /** Mintaérték: a varázsló placeholdere és a sablon self-check mintája. */
+  example: z.string().optional(),
   target: z.string().min(1),
 })
 export type InstanceFieldDescriptor = z.infer<typeof instanceFieldSchema>
@@ -77,10 +79,26 @@ export const templateConnectorTypeSchema = z
   .enum(['http_api', 'gmail', 'google_drive'])
   .default('http_api')
 
+export const MAX_TEMPLATE_ICON_DATA_URL_LENGTH = 200_000
+
+export const templateIconDataUrlSchema = z
+  .string()
+  .min(1)
+  .max(
+    MAX_TEMPLATE_ICON_DATA_URL_LENGTH,
+    'template icon must be smaller than ~150KB',
+  )
+  .refine(
+    (value) => /^data:image\/(png|jpeg|gif|webp|svg\+xml);base64,/.test(value),
+    'template icon must be a base64 image data URL',
+  )
+
 export const templateDescriptorSchema = z.object({
   key: connectorTemplateKeySchema,
   displayName: z.string().min(1),
   description: z.string().optional(),
+  /** A szolgáltatás ikonja data URL-ként (DB-ben tárolva); hiányában generikus ikon látszik. */
+  iconDataUrl: templateIconDataUrlSchema.optional(),
   activationHelp: z.string().min(1).optional(),
   /** A materializált connector Prisma `type` mezője. Alapértelmezés: http_api. */
   connectorType: templateConnectorTypeSchema.default('http_api'),
@@ -92,6 +110,15 @@ export const templateDescriptorSchema = z.object({
   rateLimit: z.object({ rps: z.number().nonnegative(), burst: z.number().nonnegative() }).optional(),
   /** Minden hívásra injektált sablonfejlécek (pl. CRM audit/trace fejlécek). */
   requestHeaders: z.record(z.string(), z.string()).optional(),
+  /** XML-alapú API adaptere (Számlázz.hu Agent, NAV Online Számla); hiányában JSON REST. */
+  protocol: z.enum(HTTP_API_PROTOCOLS).optional(),
+  /**
+   * Több részből álló titok (pl. NAV: login + jelszó + aláírókulcs): aktiváláskor
+   * mezőnként kérjük be, és JSON-objektumként egyetlen secretként tároljuk.
+   */
+  credentialFields: z
+    .array(z.object({ name: z.string().min(1), label: z.string().min(1), secret: z.boolean().optional() }))
+    .optional(),
   instanceFields: z.array(instanceFieldSchema).default([]),
   /**
    * Privacy interface contract (spec §11) — materializáláskor a connector configba kerül.

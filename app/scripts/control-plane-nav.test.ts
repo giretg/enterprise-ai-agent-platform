@@ -12,6 +12,7 @@ import {
   flattenNavHrefs,
   CONTROL_PLANE_NAV_CATALOG,
 } from '../src/lib/control-plane-nav'
+import { localizeControlPlaneNav } from '../src/lib/control-plane-nav-i18n'
 import {
   NAV_KEYS_LOCKED_FOR_ADMIN,
   emptyNavVisibilityPolicy,
@@ -58,6 +59,7 @@ function main() {
     // #618: own pending writes are confirmed by the requester, no approver role needed.
     assert.ok(hrefs.includes('/control-plane/operations'))
     assert.ok(!hrefs.includes('/control-plane/audit'))
+    assert.ok(!hrefs.includes('/control-plane/mcp-parity'))
     const account = nav.find((entry) => !('children' in entry) && entry.key === 'account')
     assert.ok(account && !('children' in account))
     assert.equal(account.label, 'Kapcsolt fiókok')
@@ -76,6 +78,7 @@ function main() {
     assert.ok(!hrefs.includes('/control-plane/system'))
     assert.ok(!hrefs.includes('/control-plane/governance'))
     assert.ok(hrefs.includes('/control-plane/audit'))
+    assert.ok(hrefs.includes('/control-plane/mcp-parity'))
     assert.ok(!hrefs.includes('/control-plane/platform/tenants'))
   })
 
@@ -84,6 +87,7 @@ function main() {
       buildControlPlaneNav({ tenantRole: 'approver', platformRoles: [] }),
     )
     assert.ok(hrefs.includes('/control-plane/audit'))
+    assert.ok(hrefs.includes('/control-plane/mcp-parity'))
     assert.ok(hrefs.includes('/control-plane/account'))
     assert.ok(hrefs.includes('/control-plane/operations'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
@@ -297,9 +301,42 @@ function main() {
       path.join(__dirname, '..', 'src', 'app', 'control-plane', 'agents', 'page.tsx'),
       'utf8',
     )
+    const hu = JSON.parse(
+      readFileSync(path.join(__dirname, '..', 'src', 'messages', 'hu.json'), 'utf8'),
+    ) as { ControlPlane: { agents: { new: string } } }
     assert.match(page, /href="\/control-plane\/agents\/new"/)
-    assert.match(page, /Új munkatárs/)
+    assert.match(page, /t\('new'\)/)
+    assert.equal(hu.ControlPlane.agents.new, 'Új munkatárs')
     assert.doesNotMatch(page, /sáv/)
+  })
+
+  check('Teendők badge is the pending count and survives localization', () => {
+    const nav = buildControlPlaneNav({
+      tenantRole: 'viewer',
+      platformRoles: [],
+      pendingTasksCount: 3,
+    })
+    const tasks = nav.find((entry) => !('children' in entry) && entry.key === 'admin.operations')
+    assert.ok(tasks && !('children' in tasks))
+    assert.equal(tasks.badge, 3)
+    for (const entry of nav) {
+      if ('children' in entry || entry.key === 'admin.operations') continue
+      assert.equal(entry.badge, undefined)
+    }
+    const localized = localizeControlPlaneNav(nav, (key) => key)
+    const localizedTasks = localized.find(
+      (entry) => !('children' in entry) && entry.key === 'admin.operations',
+    )
+    assert.ok(localizedTasks && !('children' in localizedTasks))
+    assert.equal(localizedTasks.badge, 3)
+
+    const zero = buildControlPlaneNav({
+      tenantRole: 'viewer',
+      platformRoles: [],
+      pendingTasksCount: 0,
+    }).find((entry) => !('children' in entry) && entry.key === 'admin.operations')
+    assert.ok(zero && !('children' in zero))
+    assert.equal(zero.badge, undefined)
   })
 
   check('header nav is page links, not route modals', () => {
@@ -316,6 +353,7 @@ function main() {
     )
     assert.doesNotMatch(appShell, /navMode/)
     assert.doesNotMatch(appShell, /openControlPlanePanel/)
+    assert.match(appShell, /item\.badge/)
   })
   if (failures > 0) process.exit(1)
 }

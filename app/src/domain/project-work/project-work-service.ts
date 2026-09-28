@@ -21,20 +21,76 @@ import {
   type WorkProjectRecord,
   type WorkProjectStore,
 } from './types'
+import {
+  memoryDisplayTitle,
+  memoryMatchesQuery,
+  paginateMemoryIndex,
+  toMemoryIndexEntry,
+  type MemoryIndexPage,
+} from './memory-index'
+import { detectMisplacedMemoryWrite, type KnowledgePlacementTarget } from '@/lib/agent-knowledge-placement'
 
 export type { MemoryWriteModeValue, ProjectMemoryRecord, WorkFileRecord, WorkProjectRecord }
+export type { MemoryIndexPage } from './memory-index'
 
-// ponytail: per-project byte+count caps; split per-file GCS if a project grows past a few MB.
+// ponytail: per-call append cap = file cap; sequential MCP appends stay ordered because calls run one at a time.
 export const WORK_FILE_MAX_BYTES = 200_000
 export const WORK_FILE_MAX_PROJECT_BYTES = 5_000_000
 export const WORK_FILE_MAX_COUNT = 200
+/** base64 ≈ 4/3 overhead a 200_000 bájtos fájlkorláthoz. */
+export const WORK_FILE_MAX_BASE64_CHARS = 270_000
+/** Drive mappa-id (Google file id): betű, szám, kötőjel, aláhúzás (#661). */
+const DRIVE_FOLDER_ID_RE = /^[\w-]{1,200}$/
 export const MEMORY_TITLE_MAX = 200
 export const MEMORY_BODY_MAX = 8_000
+/** Fókusz: rövid állapotblokk, agentenként/projektenként egyetlen aktív elem (#656). */
+export const MEMORY_FOCUS_MAX = 3_000
+const MEMORY_FOCUS_DEFAULT_TITLE = 'Fókusz'
+/** Append-only work journal (#658); titles surface in get_definition briefing. */
+export const MEMORY_SESSION_LOG_DEFAULT_TITLE = 'Session log'
+export const SESSION_LOG_BRIEFING_MAX = 5
 export const MEMORY_MERGE_MAX = 10
 
+export type SessionLogHeadline = {
+  id: string
+  title: string
+  createdAt: string
+  withUserName: string
+}
 export type ProjectWorkErr = { ok: false; code: string; message: string }
 export type ProjectWorkOk<T> = { ok: true } & T
 export type ProjectWorkResult<T> = ProjectWorkOk<T> | ProjectWorkErr
+
+/**
+ * Work-file törzs feloldása: `content` (utf8 szöveg) vagy `contentBase64` (base64-ben
+ * kódolt utf8 szöveg: HTML-riport, CSV, JSON). Valódi bináris (kép, PDF) nem ide való,
+ * hanem a `google_drive_upload_file` `contentBase64` mezőjébe (#661).
+ */
+export function resolveWorkFileBody(input: {
+  content?: string
+  contentBase64?: string
+}): { ok: true; content: string } | { ok: false; code: string } {
+  const hasText = typeof input.content === 'string'
+  const hasB64 = typeof input.contentBase64 === 'string'
+  if (hasText === hasB64) return { ok: false, code: 'invalid_content' }
+  if (hasText) return { ok: true, content: input.content as string }
+  const raw = (input.contentBase64 as string).trim().replace(/\s+/g, '')
+  if (!raw || raw.length > WORK_FILE_MAX_BASE64_CHARS || !/^[A-Za-z0-9+/]*={0,2}$/.test(raw)) {
+    return { ok: false, code: 'invalid_content' }
+  }
+  const bytes = Buffer.from(raw, 'base64')
+  if (bytes.length === 0) return { ok: false, code: 'invalid_content' }
+  const content = bytes.toString('utf8')
+  if (Buffer.byteLength(content, 'utf8') !== bytes.length) return { ok: false, code: 'invalid_content' }
+  return { ok: true, content }
+}
+
+function quotaAfter(quota: { count: number; bytes: number }, existingBytes: number, nextBytes: number, isNew: boolean) {
+  return {
+    nextCount: quota.count + (isNew ? 1 : 0),
+    nextBytes: quota.bytes - existingBytes + nextBytes,
+  }
+}
 
 const MESSAGES: Record<string, string> = {
   invalid_project_key: 'Invalid projectKey',
@@ -42,6 +98,7 @@ const MESSAGES: Record<string, string> = {
   unknown_project: 'Unknown projectKey — call platform.projects.create first, or use __general__',
   project_key_taken: 'A project with this key already exists',
   invalid_path: 'Invalid work file path',
+  invalid_content: 'Invalid work file content',
   file_not_found: 'Work file not found',
   file_too_large: 'Work file exceeds the size quota',
   quota_exceeded: 'Project work-file quota exceeded',
@@ -94,6 +151,8 @@ export type MemoryWriteInput = {
   mergeIds?: string[]
   /** Az író tudatosan új elemet kér, bár hasonló már van. Ember (UI) mindig true. */
   confirmNew?: boolean
+  /** After wrong_placement, set true only when the text is a short fact and belongs in memory. */
+  confirmMisplaced?: boolean
   withUserId: string
   mode: MemoryWriteModeValue
 }
@@ -248,21 +307,64 @@ export class ProjectWorkService {
     tenantId: string
     projectKey?: string
     path: string
-    content: string
+    content?: string
+    contentBase64?: string
     userId: string
   }): Promise<ProjectWorkResult<{ file: { path: string; byteSize: number; lastWriterUserId: string } }>> {
     const scoped = await this.assertProject(input.tenantId, input.projectKey)
     if (!scoped.ok) return scoped
     const path = normalizeWorkFilePath(input.path)
     if (!path) return err('invalid_path')
-    const content = input.content
-    const byteSize = Buffer.byteLength(content, 'utf8')
+    const body = resolveWorkFileBody({ content: input.content, contentBase64: input.contentBase64 })
+    if (!body.ok) return err(body.code)
+    const byteSize = Buffer.byteLength(body.content, 'utf8')
     if (byteSize > WORK_FILE_MAX_BYTES) return err('file_too_large')
     const existing = await this.files.find(input.tenantId, scoped.projectKey, path)
     const quota = await this.files.quota(input.tenantId, scoped.projectKey)
-    const nextCount = quota.count + (existing ? 0 : 1)
-    const nextBytes = quota.bytes - (existing?.byteSize ?? 0) + byteSize
-    if (nextCount > WORK_FILE_MAX_COUNT || nextBytes > WORK_FILE_MAX_PROJECT_BYTES) return err('quota_exceeded')
+    const next = quotaAfter(quota, existing?.byteSize ?? 0, byteSize, !existing)
+    if (next.nextCount > WORK_FILE_MAX_COUNT || next.nextBytes > WORK_FILE_MAX_PROJECT_BYTES) {
+      return err('quota_exceeded')
+    }
+    const row = await this.files.upsert({
+      tenantId: input.tenantId,
+      projectKey: scoped.projectKey,
+      path,
+      content: body.content,
+      byteSize,
+      lastWriterUserId: input.userId,
+    })
+    return ok({
+      file: { path: row.path, byteSize: row.byteSize, lastWriterUserId: row.lastWriterUserId },
+    })
+  }
+
+  /**
+   * Hozzáfűzés szöveges work file végéhez (#661: jsonl-metrikák, változásnapló).
+   * Hiányzó fájlt létrehozza. Kvóta a létrejövő teljes fájlméretre érvényesül.
+   */
+  async appendFile(input: {
+    tenantId: string
+    projectKey?: string
+    path: string
+    content?: string
+    contentBase64?: string
+    userId: string
+  }): Promise<ProjectWorkResult<{ file: { path: string; byteSize: number; lastWriterUserId: string } }>> {
+    const scoped = await this.assertProject(input.tenantId, input.projectKey)
+    if (!scoped.ok) return scoped
+    const path = normalizeWorkFilePath(input.path)
+    if (!path) return err('invalid_path')
+    const chunk = resolveWorkFileBody({ content: input.content, contentBase64: input.contentBase64 })
+    if (!chunk.ok) return err(chunk.code)
+    const existing = await this.files.find(input.tenantId, scoped.projectKey, path)
+    const content = `${existing?.content ?? ''}${chunk.content}`
+    const byteSize = Buffer.byteLength(content, 'utf8')
+    if (byteSize > WORK_FILE_MAX_BYTES) return err('file_too_large')
+    const quota = await this.files.quota(input.tenantId, scoped.projectKey)
+    const next = quotaAfter(quota, existing?.byteSize ?? 0, byteSize, !existing)
+    if (next.nextCount > WORK_FILE_MAX_COUNT || next.nextBytes > WORK_FILE_MAX_PROJECT_BYTES) {
+      return err('quota_exceeded')
+    }
     const row = await this.files.upsert({
       tenantId: input.tenantId,
       projectKey: scoped.projectKey,
@@ -274,6 +376,31 @@ export class ProjectWorkService {
     return ok({
       file: { path: row.path, byteSize: row.byteSize, lastWriterUserId: row.lastWriterUserId },
     })
+  }
+
+  /** Agent output Drive-mappa (#661): ide írva a Drive-feltöltés jóváhagyás nélkül fut. */
+  async getOutputFolder(
+    agentId: string,
+    tenantId: string,
+  ): Promise<ProjectWorkResult<{ folderId: string | null }>> {
+    if (!this.agents.findOutputFolder) return ok({ folderId: null })
+    const mode = await this.agents.findMemoryWriteMode(agentId, tenantId)
+    if (!mode) return err('agent_not_found')
+    return ok({ folderId: await this.agents.findOutputFolder(agentId, tenantId) })
+  }
+
+  async setOutputFolder(
+    agentId: string,
+    tenantId: string,
+    folderId: string | null,
+  ): Promise<ProjectWorkResult<{ folderId: string | null }>> {
+    if (!this.agents.updateOutputFolder) return err('agent_not_found')
+    const mode = await this.agents.findMemoryWriteMode(agentId, tenantId)
+    if (!mode) return err('agent_not_found')
+    const next = folderId?.trim() || null
+    if (next && !DRIVE_FOLDER_ID_RE.test(next)) return err('invalid_path', 'output folder')
+    await this.agents.updateOutputFolder(agentId, next)
+    return ok({ folderId: next })
   }
 
   async deleteFile(input: {
@@ -296,7 +423,14 @@ export class ProjectWorkService {
     projectKey?: string
     mine?: boolean
     callerUserId: string
-  }): Promise<ProjectWorkResult<{ items: MemoryView[] }>> {
+    /** UI: return every item with full body (legacy shape). MCP omits this. */
+    full?: boolean
+    ids?: string[]
+    query?: string
+    offset?: number
+  }): Promise<
+    ProjectWorkResult<{ items?: MemoryView[]; index?: MemoryIndexPage; recentSessionLogs?: SessionLogHeadline[] }>
+  > {
     const scoped = await this.assertProject(input.tenantId, input.projectKey)
     if (!scoped.ok) return scoped
     const rows = await this.memory.listActive({
@@ -307,17 +441,61 @@ export class ProjectWorkService {
     })
     const names = await this.users.findManyByIds([...new Set(rows.map((row) => row.withUserId))])
     const byId = new Map(names.map((row) => [row.id, row.name]))
-    return ok({
-      items: rows.map((row) => ({
+    const toView = (row: ProjectMemoryRecord): MemoryView => ({
+      id: row.id,
+      kind: row.kind,
+      title: row.title,
+      body: row.body,
+      artifactPath: row.artifactPath,
+      withUserId: row.withUserId,
+      withUserName: byId.get(row.withUserId) ?? row.withUserId,
+      createdAt: row.createdAt.toISOString(),
+    })
+
+    if (input.full) {
+      return ok({ items: rows.map(toView) })
+    }
+
+    const idSet = input.ids?.length ? new Set(input.ids) : null
+    if (idSet) {
+      const items = rows.filter((row) => idSet.has(row.id)).map(toView)
+      return ok({ items })
+    }
+
+    const q = input.query?.trim()
+    if (q) {
+      const items = rows.filter((row) => memoryMatchesQuery(row, q)).map(toView)
+      return ok({ items })
+    }
+
+    const focusRows = rows.filter((row) => row.kind === 'focus')
+    const sessionLogRows = rows
+      .filter((row) => row.kind === 'session_log')
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, SESSION_LOG_BRIEFING_MAX)
+    const catalogRows = rows.filter((row) => row.kind !== 'focus' && row.kind !== 'session_log')
+    const entries = catalogRows.map((row) =>
+      toMemoryIndexEntry({
         id: row.id,
         kind: row.kind,
         title: row.title,
         body: row.body,
-        artifactPath: row.artifactPath,
-        withUserId: row.withUserId,
-        withUserName: byId.get(row.withUserId) ?? row.withUserId,
         createdAt: row.createdAt.toISOString(),
-      })),
+      }),
+    )
+    return ok({
+      ...(focusRows.length > 0 ? { items: focusRows.map(toView) } : {}),
+      ...(sessionLogRows.length > 0
+        ? {
+            recentSessionLogs: sessionLogRows.map((row) => ({
+              id: row.id,
+              title: memoryDisplayTitle(row.title, row.body),
+              createdAt: row.createdAt.toISOString(),
+              withUserName: byId.get(row.withUserId) ?? row.withUserId,
+            })),
+          }
+        : {}),
+      index: paginateMemoryIndex(entries, input.offset ?? 0),
     })
   }
 
@@ -328,12 +506,28 @@ export class ProjectWorkService {
       | { status: 'written'; item: MemoryView }
       | { status: 'needs_approval'; draft: Omit<MemoryWriteInput, 'mode'> }
       | { status: 'possible_duplicate'; candidates: MemoryDuplicateCandidate[] }
+      | { status: 'wrong_placement'; suggest: KnowledgePlacementTarget; reason: 'procedure' | 'document' }
     >
   > {
     const prepared = await this.prepareMemoryWrite(input)
     if (!prepared.ok) return prepared
+    if (!input.confirmMisplaced) {
+      const misplaced = detectMisplacedMemoryWrite({
+        kind: prepared.draft.kind,
+        title: prepared.draft.title,
+        body: prepared.draft.body,
+      })
+      if (misplaced) {
+        return ok({
+          status: 'wrong_placement' as const,
+          suggest: misplaced.suggest,
+          reason: misplaced.reason,
+        })
+      }
+    }
     // Cserénél is: ha a kivezetetteken kívül marad hasonló aktív elem, azt is össze kell vonni.
-    if (!input.confirmNew) {
+    // Kivétel a fókusz: állapotblokk, mindig az egyetlen aktív példányt írja felül.
+    if (!input.confirmNew && prepared.draft.kind !== 'focus' && prepared.draft.kind !== 'session_log') {
       const retiring = new Set(retiredIds(prepared.draft))
       const active = await this.memory.listActive({
         tenantId: input.tenantId,
@@ -342,7 +536,7 @@ export class ProjectWorkService {
       })
       const similar = findSimilarMemories(
         prepared.draft,
-        active.filter((row) => !retiring.has(row.id)),
+        active.filter((row) => !retiring.has(row.id) && row.kind !== 'session_log'),
       )
       if (similar.length > 0) {
         return ok({
@@ -371,20 +565,44 @@ export class ProjectWorkService {
     return this.insertMemory(prepared.draft)
   }
 
+  async deleteMemory(input: {
+    tenantId: string
+    agentId: string
+    memoryId: string
+  }): Promise<ProjectWorkResult<{ deleted: true }>> {
+    const row = await this.memory.findById(input.memoryId)
+    if (!row || row.tenantId !== input.tenantId || row.agentId !== input.agentId) {
+      return err('memory_not_found')
+    }
+    if (row.status !== 'active') return err('memory_not_found')
+    const retired = await this.memory.retireActive({
+      tenantId: input.tenantId,
+      agentId: input.agentId,
+      id: input.memoryId,
+    })
+    if (!retired) return err('memory_not_found')
+    return ok({ deleted: true as const })
+  }
+
   private async insertMemory(draft: Omit<MemoryWriteInput, 'mode'>): Promise<MemoryView> {
+    const [writer] = await this.users.findManyByIds([draft.withUserId])
+    const writerName = writer?.name ?? draft.withUserId
+    const body =
+      draft.kind === 'session_log'
+        ? `${draft.body.trimEnd()}\n\n---\n${new Date().toISOString()} · ${writerName}`
+        : draft.body
     const row = await this.memory.insertActive({
       tenantId: draft.tenantId,
       agentId: draft.agentId,
       projectKey: effectiveWorkProjectKey(draft.projectKey),
       kind: draft.kind as ProjectMemoryKind,
       title: draft.title,
-      body: draft.body,
+      body,
       artifactPath: draft.artifactPath ?? null,
       withUserId: draft.withUserId,
       supersedesId: draft.replaceId ?? null,
       alsoSupersedeIds: draft.mergeIds ?? [],
     })
-    const [user] = await this.users.findManyByIds([row.withUserId])
     return {
       id: row.id,
       kind: row.kind,
@@ -392,7 +610,7 @@ export class ProjectWorkService {
       body: row.body,
       artifactPath: row.artifactPath,
       withUserId: row.withUserId,
-      withUserName: user?.name ?? row.withUserId,
+      withUserName: writerName,
       createdAt: row.createdAt.toISOString(),
     }
   }
@@ -420,10 +638,19 @@ export class ProjectWorkService {
     const scoped = await this.assertProject(input.tenantId, input.projectKey)
     if (!scoped.ok) return scoped
     if (!isProjectMemoryKind(input.kind)) return err('invalid_memory_kind')
-    const title = input.title.trim()
+    const isFocus = input.kind === 'focus'
+    const isSessionLog = input.kind === 'session_log'
+    if (isSessionLog && (input.replaceId || (input.mergeIds?.length ?? 0) > 0)) {
+      return err('invalid_memory_kind', 'session_log is append-only')
+    }
+    const title =
+      input.title.trim() ||
+      (isFocus ? MEMORY_FOCUS_DEFAULT_TITLE : isSessionLog ? MEMORY_SESSION_LOG_DEFAULT_TITLE : '')
     const body = input.body.trim()
     if (!title || title.length > MEMORY_TITLE_MAX) return err('invalid_memory_kind', 'title')
-    if (!body || body.length > MEMORY_BODY_MAX) return err('invalid_memory_kind', 'body')
+    if (!body || body.length > (isFocus ? MEMORY_FOCUS_MAX : MEMORY_BODY_MAX)) {
+      return err('invalid_memory_kind', 'body')
+    }
     const scan = scanMemoryContentForSecrets([title, body, input.artifactPath])
     if (scan.secrets.length > 0) return err('secret_blocked', scan.secrets.join(','))
     let artifactPath: string | undefined
@@ -432,9 +659,19 @@ export class ProjectWorkService {
       if (!path) return err('invalid_path')
       artifactPath = path
     }
-    const [replaceId, ...mergeIds] = retiredIds(input)
+    const [retired, ...mergeIds] = retiredIds(input)
+    // Fókusz: mindig az aktuális fókuszt írja felül, új elem soha (#656).
+    let replaceId: string | undefined = retired
+    if (isFocus && !replaceId) {
+      const active = await this.memory.listActive({
+        tenantId: input.tenantId,
+        agentId: input.agentId,
+        projectKey: scoped.projectKey,
+      })
+      replaceId = active.find((row) => row.kind === 'focus')?.id
+    }
     if (mergeIds.length > MEMORY_MERGE_MAX) return err('memory_not_found', 'too many mergeIds')
-    for (const id of [replaceId, ...mergeIds].filter(Boolean)) {
+    for (const id of [replaceId, ...mergeIds].filter((id): id is string => !!id)) {
       const previous = await this.memory.findById(id)
       if (
         !previous ||

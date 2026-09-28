@@ -29,11 +29,14 @@ import {
   enqueueGatewayOperation,
   enqueueResultToMcp,
   getGatewayOperation,
+  recordGatewayOperationEnqueued,
   rejectGatewayOperation,
   stableJsonFingerprint,
   type GatewayOperationResult,
   type GatewayOperationServiceDeps,
 } from './gateway-operation-service'
+import { resolveWriteConfirmOffer } from './write-confirm-branch'
+import { formatScalarQuery } from './pending-args-summary'
 import type { GatewayOperationView } from './types'
 
 export const WRITE_CONFIRM_KEY = 'confirm_write'
@@ -126,7 +129,8 @@ async function confirmMessage(
   let target = ''
   let content = ''
   if (view.toolName === HTTP_API_REQUEST_TOOL) {
-    target = `${connectorName}: ${str(args.method)} ${str(args.path)}`
+    const query = formatScalarQuery(args.query)
+    target = `${connectorName}: ${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`
     content = str(args.body)
   } else if (view.toolName === GOOGLE_DRIVE_CREATE_FOLDER_TOOL) {
     target = `Google Drive mappa: ${str(args.name)}`
@@ -135,7 +139,9 @@ async function confirmMessage(
     content = str(args.textContent)
   } else if (view.toolName === GMAIL_SEND_TOOL || view.toolName === GMAIL_CREATE_DRAFT_TOOL) {
     target = gmailComposeTarget(args)
-    content = str(args.body)
+    // draftId send ignores compose fields at execute time — never surface args.body as "Tartalom"
+    // or a decoy body would be what the human approves while a different draft is sent (#668).
+    content = view.toolName === GMAIL_SEND_TOOL && str(args.draftId) ? '' : str(args.body)
   } else if (view.toolName === GMAIL_MODIFY_LABELS_TOOL) {
     target = [
       gmailItemTarget(args),
@@ -152,13 +158,25 @@ async function confirmMessage(
   }
 
   const lines = [`${agentName} írni szeretne: ${formatToolUiName(view.toolName)}.`]
+  if (view.designatedApproverName) {
+    lines.push(
+      `Jóváhagyó: ${view.designatedApproverName} — csak ő (vagy egy admin) hagyhatja jóvá.`,
+    )
+  }
   if (target) lines.push(`Cél: ${target}`)
   if (content) {
     const url = approvalUrl(origin, view.operationId)
     const cut = content.length > MESSAGE_CONTENT_LIMIT
+    // Do not promise the control-plane link shows the remainder — it used to omit
+    // body entirely. Point to the link for the approval decision UI; if truncated,
+    // say so honestly so a decoy prefix cannot hide a harmful suffix.
     lines.push(
       `Tartalom:\n${content.slice(0, MESSAGE_CONTENT_LIMIT)}${
-        cut ? `\n…a teljes tartalom a linken${url ? `: ${url}` : '.'}` : ''
+        cut
+          ? `\n…vágva (${MESSAGE_CONTENT_LIMIT}/${content.length} karakter). Ha a folytatás számít, utasítsd el${
+              url ? `, vagy nézd meg a jóváhagyási oldalon: ${url}` : '.'
+            }`
+          : ''
       }`,
     )
   }
@@ -259,6 +277,32 @@ async function decide(
   return enqueueResultToMcp(result, input.origin)
 }
 
+async function enqueueWithMcpWriteConfirmAudit(
+  deps: GatewayOperationServiceDeps,
+  input: WriteInput,
+): Promise<GatewayOperationResult> {
+  const enqueued = await enqueueGatewayOperation(deps, { ...input, deferEnqueueAudit: true })
+  if (enqueued.ok && enqueued.created) {
+    const offer = resolveWriteConfirmOffer(input.confirm, enqueued)
+    await recordGatewayOperationEnqueued(deps, {
+      principal: input.principal,
+      operationId: enqueued.view.operationId,
+      toolName: enqueued.view.toolName,
+      definitionId: enqueued.view.definitionId,
+      agentId: enqueued.view.agentId,
+      idempotencyKey: enqueued.view.idempotencyKey,
+      designatedApproverUserId: enqueued.view.designatedApproverUserId,
+      extras: offer
+        ? {
+            confirmBranch: offer.confirmBranch,
+            confirmBranchReason: offer.confirmBranchReason,
+          }
+        : undefined,
+    })
+  }
+  return enqueued
+}
+
 async function retryRound(
   deps: GatewayOperationServiceDeps,
   input: WriteInput,
@@ -267,7 +311,7 @@ async function retryRound(
   const { principal, toolName, args, origin } = input
   const state = asState(retry.state)
   // No verified state (missing, or no key configured): fall back to the link.
-  if (!state) return enqueueResultToMcp(await enqueueGatewayOperation(deps, input), origin)
+  if (!state) return enqueueResultToMcp(await enqueueWithMcpWriteConfirmAudit(deps, input), origin)
   if (state.tenantId !== principal.tenantId || state.userId !== principal.userId) {
     return mismatch(deps, principal, toolName, 'principal')
   }
@@ -275,7 +319,7 @@ async function retryRound(
     return mismatch(deps, principal, toolName, 'args')
   }
 
-  const enqueued = await enqueueGatewayOperation(deps, input)
+  const enqueued = await enqueueWithMcpWriteConfirmAudit(deps, input)
   if (!enqueued.ok) return enqueueResultToMcp(enqueued, origin)
   if (enqueued.view.operationId !== state.operationId) {
     return mismatch(deps, principal, toolName, 'operation')
@@ -299,7 +343,7 @@ export async function enqueueWriteForMcp(
   const retry = input.confirm?.retry
   if (retry) return retryRound(deps, input, retry)
 
-  const enqueued = await enqueueGatewayOperation(deps, input)
+  const enqueued = await enqueueWithMcpWriteConfirmAudit(deps, input)
   const mint = input.confirm?.mint
   if (!enqueued.ok || !mint || enqueued.view.status !== 'awaiting_approval') {
     return enqueueResultToMcp(enqueued, input.origin)

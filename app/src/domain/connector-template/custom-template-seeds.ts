@@ -487,7 +487,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
 3. APIs & Services → Library → engedélyezd a „Google Search Console API” szolgáltatást.
 4. APIs & Services → OAuth consent screen → állítsd be (Internal vagy External; teszthez add hozzá a tesztfelhasználókat). Vedd fel a webmasters.readonly vagy webmasters scope-ot.
 5. APIs & Services → Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
-6. Client ID + secret: Platform · Beállítások → Google Analytics / Search Console / Ads OAuth (egy app mindhárom marketing sablonhoz).
+6. Client ID + secret: Platform · Beállítások → Google API OAuth (egy app az Analytics / Search Console / Ads / Calendar / Sheets sablonokhoz).
 7. A hívott felhasználónak verified owner/user jog kell a Search Console property-n.
 8. A siteUrl path-paramétert URL-kódolni kell: https://www.example.com/ → https%3A%2F%2Fwww.example.com%2F; domain-property: sc-domain:example.com.`,
     baseUrl: 'https://searchconsole.googleapis.com',
@@ -608,7 +608,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
 3. APIs & Services → Library → engedélyezd a „Google Analytics Data API” szolgáltatást.
 4. APIs & Services → OAuth consent screen → állítsd be, és vedd fel az analytics.readonly (vagy analytics) scope-ot.
 5. APIs & Services → Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
-6. Client ID + secret: Platform · Beállítások → Google Analytics / Search Console / Ads OAuth.
+6. Client ID + secret: Platform · Beállítások → Google API OAuth.
 7. A csatlakoztatott Google-fióknak legalább Viewer joga kell a GA4 property-n.
 9. A property ID a GA Admin → Property settings oldalon látható (szám, pl. 123456789). A path-ben: /v1beta/properties/{propertyId}:runReport — a properties/ előtagot a path már tartalmazza, csak a számot add meg.`,
     baseUrl: 'https://analyticsdata.googleapis.com',
@@ -698,7 +698,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
 3. Nyisd meg a Google Cloud Console-t: https://console.cloud.google.com/
 4. APIs & Services → Library → engedélyezd a „Google Ads API” szolgáltatást.
 5. OAuth consent screen + Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
-6. Client ID + secret: Platform · Beállítások → Google Analytics / Search Console / Ads OAuth.
+6. Client ID + secret: Platform · Beállítások → Google API OAuth.
 7. Aktiváláskor add meg: developer token (Google Ads API Center). MCC alatti kliensfiókhoz opcionálisan login-customer-id (kötőjel nélkül).
 8. A customerId path-paraméter mindig kötőjel nélküli 10 jegyű szám.
 9. Olvasáshoz a googleAds:search GAQL-t használd; a mutate végpontok írnak.`,
@@ -980,5 +980,1144 @@ Az adAccountId path-paraméter a numerikus fiókazonosító, act_ nélkül. Éle
       },
     ],
     rateLimit: { rps: 2, burst: 5 },
+  },
+  {
+    key: 'google-calendar',
+    displayName: 'Google Calendar',
+    connectorType: 'http_api',
+    description:
+      'Google Calendar API v3: naptárak, események keresése, szabad időpont, esemény létrehozása és módosítása. Delegált felhasználói OAuth.',
+    activationHelp: `Nincs szükség saját Google Cloud-projektre — a platform Google API OAuth appját használja. Lépések sorban:
+1. Platform · Beállítások → Google API OAuth: ellenőrizd, hogy be van-e állítva (Client ID + secret). Ha nincs, előbb azt kérd a platform-üzemeltetőtől — enélkül nem megy tovább.
+2. A Google Cloud-projektben legyen engedélyezve a „Google Calendar API” (ezt is a platform-üzemeltető végzi, egyszer kell).
+3. Scope-ok: a „Csak olvasás” elég kereséshez és szabad időpontokhoz. Ha az agent időpontot is foglalhat, pipáld be MELLÉ az „Eseményírás” scope-ot, és a végpontok közül a create_event / update_event (és ha kell, delete_event) sort is.
+4. Aktiválás után minden felhasználó a saját Google-fiókjával köti be a naptárát (Kapcsolt fiókok) — az agent mindig az ő naptárát látja.
+5. Tipp: a saját naptár azonosítója primary; más naptárét a list_calendars adja meg.`,
+    baseUrl: 'https://www.googleapis.com',
+    egressHosts: ['www.googleapis.com', ...GOOGLE_OAUTH_EGRESS_HOSTS],
+    authMethods: [{ ...GOOGLE_USER_DELEGATED_OAUTH }],
+    scopeCatalog: [
+      {
+        value: 'https://www.googleapis.com/auth/calendar.readonly',
+        label: 'Csak olvasás',
+        description: 'Naptárak, események és szabad/foglalt időpontok olvasása. Kezdd ezzel.',
+        default: true,
+      },
+      {
+        value: 'https://www.googleapis.com/auth/calendar.events',
+        label: 'Eseményírás',
+        description:
+          'Események létrehozása, módosítása, törlése. A „Csak olvasás” MELLÉ pipáld be — önmagában nem ad naptárlistát és szabad/foglalt lekérdezést.',
+        default: false,
+      },
+      {
+        value: 'https://www.googleapis.com/auth/calendar',
+        label: 'Teljes naptár-hozzáférés',
+        description: 'Naptárlista-kezelés is. Csak ha a readonly/event scope nem elég.',
+        default: false,
+      },
+    ],
+    endpoints: [
+      {
+        name: 'list_calendars',
+        method: 'GET',
+        path: '/calendar/v3/users/me/calendarList',
+        access: 'read',
+        description: 'A felhasználó naptárainak listája (id, summary, timeZone). Ezzel kezdj: innen jön a calendarId.',
+        default: true,
+      },
+      {
+        name: 'list_events',
+        method: 'GET',
+        path: '/calendar/v3/calendars/{calendarId}/events',
+        access: 'read',
+        description:
+          'Események listázása. calendarId = primary vagy a list_calendars-ból. Query: timeMin, timeMax (RFC3339, pl. 2026-09-28T00:00:00+02:00), q (keresőkifejezés), singleEvents=true, orderBy=startTime.',
+        default: true,
+      },
+      {
+        name: 'get_event',
+        method: 'GET',
+        path: '/calendar/v3/calendars/{calendarId}/events/{eventId}',
+        access: 'read',
+        description: 'Egy esemény részletei (mikor, hol, kik a résztvevők).',
+        default: true,
+      },
+      {
+        name: 'query_freebusy',
+        method: 'POST',
+        path: '/calendar/v3/freeBusy',
+        access: 'read',
+        description:
+          'Szabad/foglalt időpontok. Body: {"timeMin":"...","timeMax":"...","items":[{"id":"primary"}]}. Időpont-kereséshez használd.',
+        default: true,
+      },
+      {
+        name: 'create_event',
+        method: 'POST',
+        path: '/calendar/v3/calendars/{calendarId}/events',
+        access: 'write',
+        description:
+          'Esemény létrehozása. Body: {"summary":"Megbeszélés","start":{"dateTime":"2026-09-29T10:00:00+02:00"},"end":{"dateTime":"2026-09-29T11:00:00+02:00"},"attendees":[{"email":"partner@example.hu"}]}. calendar.events scope kell.',
+        default: false,
+      },
+      {
+        name: 'update_event',
+        method: 'PATCH',
+        path: '/calendar/v3/calendars/{calendarId}/events/{eventId}',
+        access: 'write',
+        description: 'Esemény módosítása (időpont, résztvevők, leírás). Csak a változó mezőket küldd. calendar.events scope kell.',
+        default: false,
+      },
+      {
+        name: 'delete_event',
+        method: 'DELETE',
+        path: '/calendar/v3/calendars/{calendarId}/events/{eventId}',
+        access: 'write',
+        description: 'Esemény törlése. Végleges — csak emberi jóváhagyással. calendar.events scope kell.',
+        default: false,
+      },
+    ],
+    instanceFields: [],
+    rateLimit: { rps: 5, burst: 10 },
+  },
+  {
+    key: 'google-sheets',
+    displayName: 'Google Sheets',
+    connectorType: 'http_api',
+    description:
+      'Google Sheets API v4: táblázatok olvasása, sorok keresése, hozzáadása és módosítása. Delegált felhasználói OAuth.',
+    activationHelp: `Nincs szükség saját Google Cloud-projektre — a platform Google API OAuth appját használja. Lépések sorban:
+1. Platform · Beállítások → Google API OAuth: ellenőrizd, hogy be van-e állítva. Ha nincs, előbb azt kérd a platform-üzemeltetőtől.
+2. A Google Cloud-projektben legyen engedélyezve a „Google Sheets API” (egyszeri platform-üzemeltetői lépés).
+3. Scope-ok: a „Csak olvasás” elég riportokhoz és kereséshez. Sorok írásához válaszd a „Teljes írás” scope-ot, és a végpontok közül az append_values / update_values sort is pipáld be.
+4. Aktiválás után minden felhasználó a saját Google-fiókjával köti be (Kapcsolt fiókok) — az agent az ő táblázatait látja.
+5. Tipp: a táblázat azonosítója (spreadsheetId) a Docs-URL középső része (/d/<spreadsheetId>/edit); előbb olvasd ki a lap nevét, utána írj bele.`,
+    baseUrl: 'https://sheets.googleapis.com',
+    egressHosts: ['sheets.googleapis.com', ...GOOGLE_OAUTH_EGRESS_HOSTS],
+    authMethods: [{ ...GOOGLE_USER_DELEGATED_OAUTH }],
+    scopeCatalog: [
+      {
+        value: 'https://www.googleapis.com/auth/spreadsheets.readonly',
+        label: 'Csak olvasás',
+        description: 'Táblázatok és cellatartományok olvasása. Kezdd ezzel.',
+        default: true,
+      },
+      {
+        value: 'https://www.googleapis.com/auth/spreadsheets',
+        label: 'Teljes írás',
+        description: 'Sorok hozzáadása, módosítása és törlése is. Csak ha az agent írhat a táblázatba.',
+        default: false,
+      },
+    ],
+    endpoints: [
+      {
+        name: 'get_spreadsheet',
+        method: 'GET',
+        path: '/v4/spreadsheets/{spreadsheetId}',
+        access: 'read',
+        description:
+          'Táblázat szerkezete (lapnevek, sor/oszlopszám). Ezzel kezdj: innen jön a lap neve a tartományokhoz. Query: includeGridData=false.',
+        default: true,
+      },
+      {
+        name: 'get_values',
+        method: 'GET',
+        path: '/v4/spreadsheets/{spreadsheetId}/values/{range}',
+        access: 'read',
+        description:
+          'Cellatartomány olvasása. range példa: Munka1!A1:D100 (a lapnevet URL-kódold, ha szóközt tartalmaz).',
+        default: true,
+      },
+      {
+        name: 'batch_get_values',
+        method: 'GET',
+        path: '/v4/spreadsheets/{spreadsheetId}/values:batchGet',
+        access: 'read',
+        description:
+          'Több tartomány egy hívásban. Query: ranges=Munka1!A1:A100&ranges=Munka1!C1:C100. Nagy táblánál ezt használd.',
+        default: true,
+      },
+      {
+        name: 'append_values',
+        method: 'POST',
+        path: '/v4/spreadsheets/{spreadsheetId}/values/{range}:append',
+        access: 'write',
+        description:
+          'Sorok hozzáfűzése a tábla végére. Query: valueInputOption=USER_ENTERED. Body: {"values":[["név","email","123456"]]}. Teljes írás scope kell.',
+        default: false,
+      },
+      {
+        name: 'update_values',
+        method: 'PUT',
+        path: '/v4/spreadsheets/{spreadsheetId}/values/{range}',
+        access: 'write',
+        description:
+          'Cellatartomány felülírása. Query: valueInputOption=USER_ENTERED. Body: {"values":[["új érték"]]}. Teljes írás scope kell.',
+        default: false,
+      },
+      {
+        name: 'clear_values',
+        method: 'POST',
+        path: '/v4/spreadsheets/{spreadsheetId}/values/{range}:clear',
+        access: 'write',
+        description: 'Cellatartomány ürítése (a sorok megmaradnak). Teljes írás scope kell.',
+        default: false,
+      },
+    ],
+    instanceFields: [],
+    rateLimit: { rps: 5, burst: 10 },
+  },
+  {
+    key: 'billingo',
+    displayName: 'Billingo',
+    connectorType: 'http_api',
+    description:
+      'Billingo API v3: partnerek, termékek, számlatömbök és bizonylatok (számla, díjbekérő, piszkozat) olvasása és kiállítása API-kulccsal.',
+    activationHelp: `Csak egy titok kell: a Billingo API-kulcs. Lépések sorban:
+1. Lépj be a Billingo-fiókba, és a Beállítások → API oldalon hozz létre egy API-kulcsot (v3). Ha a menüpont nem látszik, a Billingo-csomagod nem tartalmaz API-hozzáférést.
+2. A sablon „API-kulcs” mezőjét HAGYD az alapértelmezett alias-néven — ide NE másold a kulcsot.
+3. Sandbox-teszt: a kapcsolat elérhetőségi próbája kulcs nélkül fut (nem a te kulcsodat küldi).
+4. Aktiváláskor az „API kulcs” mezőbe illeszd a nyers kulcsot, előtag nélkül. A platform ezzel egy valódi olvasó hívást is kipróbál.
+5. Kezdd olvasással. Ha az agent számlázhat is, a végpontok közül pipáld be a create_document (és ha kell, create_partner) sort; a kiállított bizonylat emberi jóváhagyás után megy ki.`,
+    baseUrl: 'https://api.billingo.hu/v3',
+    egressHosts: ['api.billingo.hu'],
+    authMethods: [{ kind: 'api_key', header: 'X-API-KEY' }],
+    scopeCatalog: [],
+    endpoints: [
+      {
+        name: 'list_partners',
+        method: 'GET',
+        path: '/partners',
+        access: 'read',
+        description: 'Partnerek listája. Query: page, per_page (max 100), query (név/adószám keresés). Ezzel kezdj egyeztetéskor.',
+        default: true,
+      },
+      {
+        name: 'get_partner',
+        method: 'GET',
+        path: '/partners/{id}',
+        access: 'read',
+        description: 'Egy partner adatai (számlázási cím, adószám, fizetési mód).',
+        default: true,
+      },
+      {
+        name: 'create_partner',
+        method: 'POST',
+        path: '/partners',
+        access: 'write',
+        description:
+          'Új partner. Body: {"name":"Minta Kft.","address":{"country_code":"HU","post_code":"1111","city":"Budapest","address":"Fő utca 1."},"emails":["info@example.hu"],"taxcode":"12345678-2-41"}. Előtte list_partners query-vel ellenőrizd, hogy nincs-e már meg.',
+        default: false,
+      },
+      {
+        name: 'list_products',
+        method: 'GET',
+        path: '/products',
+        access: 'read',
+        description: 'Termékek/szolgáltatások listája. Query: page, per_page, query.',
+        default: true,
+      },
+      {
+        name: 'get_product',
+        method: 'GET',
+        path: '/products/{id}',
+        access: 'read',
+        description: 'Egy termék adatai (nettó ár, ÁFA-kulcs, mennyiségi egység).',
+        default: true,
+      },
+      {
+        name: 'list_documents',
+        method: 'GET',
+        path: '/documents',
+        access: 'read',
+        description:
+          'Bizonylatok listája. Query: page, per_page, query, partner_id, type (invoice|proforma|draft|advance), payment_status (paid|outstanding|expired|partially_paid), start_date, end_date (YYYY-MM-DD).',
+        default: true,
+      },
+      {
+        name: 'list_document_blocks',
+        method: 'GET',
+        path: '/document-blocks',
+        access: 'read',
+        description: 'Számlatömbök listája. A create_document kötelező block_id mezője innen jön.',
+        default: true,
+      },
+      {
+        name: 'get_document',
+        method: 'GET',
+        path: '/documents/{id}',
+        access: 'read',
+        description: 'Egy bizonylat részletei (tételek, összegek, fizetési állapot).',
+        default: true,
+      },
+      {
+        name: 'create_document',
+        method: 'POST',
+        path: '/documents',
+        access: 'write',
+        description:
+          'Bizonylat létrehozása; a type dönti el: draft (piszkozat, ezzel kezdj), proforma (díjbekérő), invoice (éles számla, NAV-hoz kerül). Kötelező: partner_id, block_id, type, fulfillment_date, due_date, payment_method, language, currency. Példa: {"partner_id":123,"block_id":456,"type":"draft","fulfillment_date":"2026-09-28","due_date":"2026-10-06","payment_method":"wire_transfer","language":"hu","currency":"HUF","items":[{"name":"Tanácsadás","unit_price":50000,"unit_price_type":"net","quantity":1,"unit":"óra","vat":"27%"}]}.',
+        default: false,
+      },
+    ],
+    instanceFields: [
+      {
+        name: 'apiKey',
+        label: 'Billingo API-kulcs (Beállítások → API oldalon generált v3 kulcs)',
+        type: 'secret',
+        required: true,
+        secretAliasHint: 'billingo-api-key',
+        target: 'auth.secretAliasSuggested',
+      },
+    ],
+    rateLimit: { rps: 2, burst: 5 },
+  },
+  {
+    key: 'szamlazz-hu',
+    displayName: 'Számlázz.hu',
+    connectorType: 'http_api',
+    description:
+      'Számlázz.hu Számla Agent: számlák lekérdezése, adózó-ellenőrzés, és jóváhagyás után számla-kiállítás, sztornó és jóváírás egyetlen Agent-kulccsal.',
+    activationHelp: `Csak egy titok kell: a Számla Agent kulcs. Lépések sorban:
+1. Lépj be a Számlázz.hu-fiókodba, és a Beállítások → Számla Agent kulcsok oldalon hozz létre egy új kulcsot (pl. „AI agent” néven).
+2. Itt a varázslóban nincs kitöltendő mező — a kulcsot csak aktiváláskor kérjük.
+3. Sandbox-teszt: kulcs nélkül nem hívjuk a Számlázz.hu-t, ez a lépés automatikusan átmegy.
+4. Aktiváláskor az „API kulcs” mezőbe illeszd a Számla Agent kulcsot. A platform ezzel egy valódi, nem módosító lekérdezést futtat — ha a kulcs rossz, itt kiderül.
+5. Kezdd olvasással. Ha az agent számlázhat is, pipáld be a create_invoice (és ha kell, reverse_invoice / register_payment) sort; minden kiállítás emberi jóváhagyás után megy ki, és a számla azonnal a NAV-hoz kerül.`,
+    baseUrl: 'https://www.szamlazz.hu/szamla',
+    egressHosts: ['www.szamlazz.hu'],
+    protocol: 'szamlazz_agent',
+    authMethods: [{ kind: 'bearer' }],
+    scopeCatalog: [],
+    endpoints: [
+      {
+        name: 'get_invoice',
+        method: 'GET',
+        path: '/invoice',
+        access: 'read',
+        description:
+          'Egy számla adatai XML-ben (fejléc, eladó, vevő, tételek, összegek, fizetési állapot; PDF nélkül). Query: szamlaszam VAGY rendelesSzam VAGY szamlaKulsoAzon. Ismeretlen számlánál 7-es hibakód jön.',
+        default: true,
+      },
+      {
+        name: 'get_taxpayer',
+        method: 'GET',
+        path: '/taxpayer',
+        access: 'read',
+        description:
+          'Magyar adózó NAV-adatai (név, cím, érvényesség) a Számlázz.hu-n át. Query: torzsszam (az adószám első 8 jegye). Kiállítás előtt ezzel ellenőrizd a vevő adószámát.',
+        default: true,
+      },
+      {
+        name: 'create_invoice',
+        method: 'POST',
+        path: '/invoice',
+        access: 'write',
+        description:
+          'Számla (vagy "dijbekero": true esetén díjbekérő) kiállítása; éles számla azonnal a NAV-hoz kerül. Az összegeket neked kell kiszámolnod: nettoErtek = nettoEgysegar × mennyiseg, afaErtek = nettoErtek × afakulcs/100, bruttoErtek = nettoErtek + afaErtek. Példa: {"fejlec":{"keltDatum":"2026-09-28","teljesitesDatum":"2026-09-28","fizetesiHataridoDatum":"2026-10-06","fizmod":"Átutalás","penznem":"HUF","szamlaNyelve":"hu","rendelesSzam":"R-123"},"vevo":{"nev":"Minta Kft.","irsz":"1111","telepules":"Budapest","cim":"Fő utca 1.","email":"info@example.hu","sendEmail":false,"adoszam":"12345678-2-41"},"tetelek":[{"megnevezes":"Tanácsadás","mennyiseg":1,"mennyisegiEgyseg":"óra","nettoEgysegar":50000,"afakulcs":"27","nettoErtek":50000,"afaErtek":13500,"bruttoErtek":63500}]}. A válasz a számlaszámot adja vissza.',
+        default: false,
+      },
+      {
+        name: 'reverse_invoice',
+        method: 'POST',
+        path: '/invoice/reverse',
+        access: 'write',
+        description:
+          'Sztornó számla egy meglévő számlára. Body: {"fejlec":{"szamlaszam":"E-ABC-2026-1","keltDatum":"2026-09-28","teljesitesDatum":"2026-09-28"}}.',
+        default: false,
+      },
+      {
+        name: 'register_payment',
+        method: 'POST',
+        path: '/invoice/payment',
+        access: 'write',
+        description:
+          'Jóváírás (kifizetés rögzítése) egy számlán. Body: {"szamlaszam":"E-ABC-2026-1","kifizetes":[{"datum":"2026-09-28","jogcim":"átutalás","osszeg":63500}]}. "additiv": false felülírja a korábbi jóváírásokat.',
+        default: false,
+      },
+    ],
+    instanceFields: [
+      {
+        name: 'agentKey',
+        label: 'Számla Agent kulcs (Beállítások → Számla Agent kulcsok)',
+        type: 'secret',
+        required: true,
+        secretAliasHint: 'szamlazz-hu-agent-key',
+        hiddenInProvisioning: true,
+        target: 'auth.secretAliasSuggested',
+      },
+    ],
+    rateLimit: { rps: 1, burst: 3 },
+  },
+  {
+    key: 'nav-online-szamla',
+    displayName: 'NAV Online Számla',
+    connectorType: 'http_api',
+    description:
+      'NAV Online Számla 3.0 lekérdezések: kimenő és bejövő számlák listája és teljes tartalma, számlalánc, adószám-ellenőrzés. Csak olvasás.',
+    activationHelp: `Két előfeltétel és egy technikai felhasználó kell. Lépések sorban:
+1. Platform-előfeltétel (egyszer, superadmin): Platform · Beállítások → NAV Online Számla oldalon add meg a szoftver azonosítóját (fejlesztő neve, adószáma, elérhetősége). Enélkül a NAV minden hívást elutasít.
+2. Lépj be az onlineszamla.nav.gov.hu oldalra a cég elsődleges felhasználójaként, és a Felhasználók menüben hozz létre egy új, „Technikai felhasználó” típusú felhasználót. Jogosultságnak elég a „Számlák lekérdezése”.
+3. A technikai felhasználónál kattints a Kulcsgenerálás gombra: az „XML aláírókulcs” kell (a cserekulcs nem).
+4. Itt a varázslóban válaszd ki a környezetet (éles vagy teszt), és add meg a cég adószámának első 8 jegyét.
+5. Aktiváláskor külön mezőkben kérjük a technikai felhasználó nevét, jelszavát és az aláírókulcsot. A platform ezekkel egy valódi adószám-lekérdezést futtat — ha bármelyik rossz, itt kiderül.`,
+    baseUrl: 'https://api.onlineszamla.nav.gov.hu/invoiceService/v3',
+    egressHosts: ['api.onlineszamla.nav.gov.hu'],
+    protocol: 'nav_online_invoice',
+    authMethods: [{ kind: 'bearer' }],
+    credentialFields: [
+      { name: 'login', label: 'Technikai felhasználó neve' },
+      { name: 'password', label: 'Technikai felhasználó jelszava', secret: true },
+      { name: 'signKey', label: 'XML aláírókulcs', secret: true },
+    ],
+    scopeCatalog: [],
+    endpoints: [
+      {
+        name: 'get_taxpayer',
+        method: 'GET',
+        path: '/taxpayer',
+        access: 'read',
+        description: 'Adózó NAV-adatai (név, cím, érvényesség). Query: taxNumber (az adószám első 8 jegye).',
+        default: true,
+      },
+      {
+        name: 'list_invoices',
+        method: 'GET',
+        path: '/invoices',
+        access: 'read',
+        description:
+          'Számlák kivonatos listája kiállítási dátum szerint. Query: direction (OUTBOUND = kimenő, INBOUND = bejövő), dateFrom, dateTo (YYYY-MM-DD, legfeljebb 35 nap), page (1-től), opcionálisan partnerTaxNumber, partnerName.',
+        default: true,
+      },
+      {
+        name: 'get_invoice',
+        method: 'GET',
+        path: '/invoice',
+        access: 'read',
+        description:
+          'Egy számla teljes tartalma (invoiceXml: tételek, összegek). Query: invoiceNumber, direction; bejövő számlánál supplierTaxNumber (a kiállító 8 jegyű adószáma) is kell.',
+        default: true,
+      },
+      {
+        name: 'check_invoice',
+        method: 'GET',
+        path: '/invoice/check',
+        access: 'read',
+        description: 'Igaz/hamis: be van-e jelentve a számla a NAV-hoz. Query: invoiceNumber, direction, (bejövőnél) supplierTaxNumber.',
+        default: true,
+      },
+      {
+        name: 'get_invoice_chain',
+        method: 'GET',
+        path: '/invoice/chain',
+        access: 'read',
+        description:
+          'Számlalánc (alapszámla + módosító/sztornó számlák). Query: invoiceNumber, direction, (bejövőnél) taxNumber = a kiállító adószáma, page.',
+        default: true,
+      },
+    ],
+    instanceFields: [
+      {
+        name: 'environment',
+        label: 'NAV környezet: éles (api.onlineszamla…) vagy teszt (api-test.onlineszamla…)',
+        type: 'enum',
+        required: true,
+        enumValues: [
+          'https://api.onlineszamla.nav.gov.hu/invoiceService/v3',
+          'https://api-test.onlineszamla.nav.gov.hu/invoiceService/v3',
+        ],
+        target: 'baseUrl',
+      },
+      {
+        name: 'taxNumber',
+        label: 'A cég adószámának első 8 jegye',
+        type: 'string',
+        required: true,
+        validation: { pattern: '^\\d{8}$' },
+        example: '12345678',
+        target: 'nav.taxNumber',
+      },
+      {
+        name: 'credentials',
+        label: 'Technikai felhasználó (név, jelszó, aláírókulcs)',
+        type: 'secret',
+        required: true,
+        secretAliasHint: 'nav-online-szamla-credentials',
+        hiddenInProvisioning: true,
+        target: 'auth.secretAliasSuggested',
+      },
+    ],
+    rateLimit: { rps: 1, burst: 3 },
+  },
+  {
+    key: 'minicrm',
+    displayName: 'MiniCRM',
+    connectorType: 'http_api',
+    description:
+      'MiniCRM R3 API: modulok, projektek (adatlapok), kontaktok, teendők és e-mailek olvasása; jóváhagyás után létrehozás és módosítás.',
+    activationHelp: `Két adat kell: a System ID és az API-kulcs. Lépések sorban:
+1. Lépj be a MiniCRM-be adminisztrátorként, és a Beállítások → Rendszer oldalon generálj API-kulcsot.
+2. A System ID a MiniCRM címében látszik: r3.minicrm.hu/<System ID>/… — ezt írd be a varázslóban.
+3. Sandbox-teszt: a kapcsolat elérhetőségi próbája kulcs nélkül fut.
+4. Aktiváláskor az „API kulcs” mezőbe illeszd az API-kulcsot. A platform ezzel egy valódi olvasó hívást futtat.
+5. Kezdd olvasással. Ha az agent írhat is, pipáld be a create_/update_ sorokat; minden módosítás emberi jóváhagyás után megy ki. A MiniCRM percenként legfeljebb 60 hívást enged.`,
+    baseUrl: 'https://r3.minicrm.hu/Api/R3',
+    egressHosts: ['r3.minicrm.hu'],
+    authMethods: [{ kind: 'basic' }],
+    scopeCatalog: [],
+    endpoints: [
+      {
+        name: 'list_categories',
+        method: 'GET',
+        path: '/Category',
+        access: 'read',
+        description: 'Modulok (kategóriák) listája {CategoryId: név}. Ezzel kezdj: minden projekt egy modulhoz tartozik.',
+        default: true,
+      },
+      {
+        name: 'get_project_schema',
+        method: 'GET',
+        path: '/Schema/Project/{categoryId}',
+        access: 'read',
+        description: 'Egy modul mezői, státuszai és egyedi mezői. Írás előtt ebből derül ki a mezőnév és a StatusId.',
+        default: true,
+      },
+      {
+        name: 'search_projects',
+        method: 'GET',
+        path: '/Project',
+        access: 'read',
+        description:
+          'Projektek (adatlapok) keresése. Query: CategoryId, StatusId, StatusGroup (Lead|Open|Success|Failed), UserId, UpdatedSince (YYYY-MM-DD HH:MM:SS), Query (szabad szöveg), Page (0-tól, 100/oldal). Válasz: {Count, Results}.',
+        default: true,
+      },
+      {
+        name: 'get_project',
+        method: 'GET',
+        path: '/Project/{id}',
+        access: 'read',
+        description: 'Egy projekt összes mezője.',
+        default: true,
+      },
+      {
+        name: 'search_contacts',
+        method: 'GET',
+        path: '/Contact',
+        access: 'read',
+        description: 'Kontaktok (cégek, személyek) keresése. Query: Query (név, e-mail vagy telefonszám), Page. Válasz: {Count, Results}.',
+        default: true,
+      },
+      {
+        name: 'get_contact',
+        method: 'GET',
+        path: '/Contact/{id}',
+        access: 'read',
+        description: 'Egy kontakt adatai.',
+        default: true,
+      },
+      {
+        name: 'list_todos',
+        method: 'GET',
+        path: '/ToDoList/{projectId}',
+        access: 'read',
+        description: 'Egy projekt teendői. Query: Status (Open|Closed|All).',
+        default: true,
+      },
+      {
+        name: 'get_todo',
+        method: 'GET',
+        path: '/ToDo/{id}',
+        access: 'read',
+        description: 'Egy teendő részletei.',
+        default: true,
+      },
+      {
+        name: 'list_emails',
+        method: 'GET',
+        path: '/EmailList/{projectId}',
+        access: 'read',
+        description: 'Egy projekthez tartozó e-mailek listája.',
+        default: true,
+      },
+      {
+        name: 'create_project',
+        method: 'PUT',
+        path: '/Project',
+        access: 'write',
+        description:
+          'Új projekt. Kötelező: CategoryId, ContactId. Példa: {"CategoryId":1,"ContactId":123,"Name":"Ajánlatkérés","StatusId":2500}. Előtte search_projects-szel ellenőrizd, hogy nincs-e már meg.',
+        default: false,
+      },
+      {
+        name: 'update_project',
+        method: 'PUT',
+        path: '/Project/{id}',
+        access: 'write',
+        description: 'Projekt módosítása; csak a változó mezőket küldd. Példa: {"StatusId":2501}.',
+        default: false,
+      },
+      {
+        name: 'create_contact',
+        method: 'PUT',
+        path: '/Contact',
+        access: 'write',
+        description:
+          'Új kontakt. Személy: {"Type":"Person","FirstName":"Anna","LastName":"Kiss","Email":"anna@example.hu","Phone":"+36301234567"}; cég: {"Type":"Business","Name":"Minta Kft."}. Előtte search_contacts.',
+        default: false,
+      },
+      {
+        name: 'update_contact',
+        method: 'PUT',
+        path: '/Contact/{id}',
+        access: 'write',
+        description: 'Kontakt módosítása; csak a változó mezőket küldd.',
+        default: false,
+      },
+      {
+        name: 'create_todo',
+        method: 'PUT',
+        path: '/ToDo',
+        access: 'write',
+        description: 'Új teendő egy projekten. Példa: {"ProjectId":123,"Comment":"Visszahívni","Deadline":"2026-10-01 10:00:00","UserId":45}.',
+        default: false,
+      },
+      {
+        name: 'update_todo',
+        method: 'PUT',
+        path: '/ToDo/{id}',
+        access: 'write',
+        description: 'Nyitott teendő módosítása vagy lezárása. Példa: {"Status":"Closed"}.',
+        default: false,
+      },
+    ],
+    instanceFields: [
+      {
+        name: 'systemId',
+        label: 'MiniCRM System ID (a címben: r3.minicrm.hu/<System ID>/)',
+        type: 'string',
+        required: true,
+        validation: { pattern: '^\\d{1,7}$' },
+        example: '12345',
+        target: 'auth.username',
+      },
+      {
+        name: 'apiKey',
+        label: 'MiniCRM API-kulcs (Beállítások → Rendszer)',
+        type: 'secret',
+        required: true,
+        secretAliasHint: 'minicrm-api-key',
+        hiddenInProvisioning: true,
+        target: 'auth.secretAliasSuggested',
+      },
+    ],
+    rateLimit: { rps: 1, burst: 5 },
+  },
+  {
+    key: 'pipedrive',
+    displayName: 'Pipedrive',
+    connectorType: 'http_api',
+    description:
+      'Pipedrive CRM API v2: dealek, személyek, szervezetek, pipeline-ok, aktivitások, leadek és termékek olvasása; jóváhagyás után létrehozás és módosítás. API-tokennel, a cég saját Pipedrive-címén.',
+    activationHelp: `Csak két adat kell: a cég Pipedrive-címe és egy API-token. Lépések sorban:
+1. Lépj be a Pipedrive-ba, és nézd meg a címsort: https://ceged.pipedrive.com/… — a „ceged.pipedrive.com” részt írd be ide (https nélkül).
+2. Ugyanott: Beállítások (fogaskerék) → Személyes beállítások → API. Másold ki a személyes API-tokent. A token a te felhasználód adatait látja — ha az agent a cég egész pipeline-ját kell hogy lássa, egy admin-felhasználó tokenjét add meg.
+3. Sandbox-teszt: a kapcsolat elérhetőségi próbája token nélkül fut.
+4. Aktiváláskor az „API kulcs” mezőbe illeszd a tokent, előtag nélkül. A platform ezzel egy valódi, nem módosító hívást futtat (felhasználók listája).
+5. Kezdd olvasással. Ha az agent írhat is, pipáld be a create_/update_ sorokat; minden módosítás emberi jóváhagyás után megy ki.`,
+    baseUrl: 'https://{companyHost}/api/v2',
+    egressHosts: ['{companyHost}'],
+    authMethods: [{ kind: 'api_key', header: 'x-api-token' }],
+    scopeCatalog: [],
+    endpoints: [
+      {
+        name: 'list_users',
+        method: 'GET',
+        path: '/users',
+        access: 'read',
+        description: 'Felhasználók (owner_id innen jön). A kapcsolat próbájához ezt hívjuk.',
+        default: true,
+      },
+      {
+        name: 'list_pipelines',
+        method: 'GET',
+        path: '/pipelines',
+        access: 'read',
+        description: 'Pipeline-ok. A stage_id és a deal pipeline_id mezője innen derül ki.',
+        default: true,
+      },
+      {
+        name: 'list_stages',
+        method: 'GET',
+        path: '/stages',
+        access: 'read',
+        description: 'Szakaszok. Query: pipeline_id. Deal létrehozása/mozgatása előtt ezt nézd meg.',
+        default: true,
+      },
+      {
+        name: 'search_deals',
+        method: 'GET',
+        path: '/deals/search',
+        access: 'read',
+        description: 'Dealek keresése. Query: term (kötelező, min. 2 karakter), limit, cursor, exact_match (true|false).',
+        default: true,
+      },
+      {
+        name: 'list_deals',
+        method: 'GET',
+        path: '/deals',
+        access: 'read',
+        description:
+          'Dealek listája. Query: status (open|won|lost), pipeline_id, stage_id, owner_id, filter_id, updated_since (RFC3339), sort_by, sort_direction (asc|desc), limit (max 500), cursor.',
+        default: true,
+      },
+      {
+        name: 'get_deal',
+        method: 'GET',
+        path: '/deals/{id}',
+        access: 'read',
+        description: 'Egy deal részletei (érték, szakasz, kapcsolódó személy/szervezet).',
+        default: true,
+      },
+      {
+        name: 'search_persons',
+        method: 'GET',
+        path: '/persons/search',
+        access: 'read',
+        description: 'Személyek keresése név/e-mail alapján. Query: term (kötelező), limit, cursor, exact_match.',
+        default: true,
+      },
+      {
+        name: 'list_persons',
+        method: 'GET',
+        path: '/persons',
+        access: 'read',
+        description: 'Személyek listája. Query: owner_id, filter_id, updated_since, limit, cursor.',
+        default: true,
+      },
+      {
+        name: 'get_person',
+        method: 'GET',
+        path: '/persons/{id}',
+        access: 'read',
+        description: 'Egy személy adatai (e-mail, telefon, szervezet).',
+        default: true,
+      },
+      {
+        name: 'search_organizations',
+        method: 'GET',
+        path: '/organizations/search',
+        access: 'read',
+        description: 'Szervezetek keresése. Query: term (kötelező), limit, cursor, exact_match.',
+        default: true,
+      },
+      {
+        name: 'list_organizations',
+        method: 'GET',
+        path: '/organizations',
+        access: 'read',
+        description: 'Szervezetek listája. Query: owner_id, filter_id, updated_since, limit, cursor.',
+        default: true,
+      },
+      {
+        name: 'get_organization',
+        method: 'GET',
+        path: '/organizations/{id}',
+        access: 'read',
+        description: 'Egy szervezet adatai.',
+        default: true,
+      },
+      {
+        name: 'list_leads',
+        method: 'GET',
+        path: '/leads',
+        access: 'read',
+        description: 'Leadek (még nem deal). Query: owner_id, filter_id, updated_since, limit, cursor.',
+        default: true,
+      },
+      {
+        name: 'list_activities',
+        method: 'GET',
+        path: '/activities',
+        access: 'read',
+        description:
+          'Aktivitások (hívás, meeting, feladat). Query: owner_id, deal_id, person_id, org_id, done (true|false), updated_since, limit, cursor.',
+        default: true,
+      },
+      {
+        name: 'list_products',
+        method: 'GET',
+        path: '/products',
+        access: 'read',
+        description: 'Termékek/szolgáltatások. Query: owner_id, filter_id, ids, limit, cursor.',
+        default: true,
+      },
+      {
+        name: 'create_deal',
+        method: 'POST',
+        path: '/deals',
+        access: 'write',
+        description:
+          'Új deal. Kötelező: title. Példa: {"title":"Ajánlat — Minta Kft.","value":500000,"currency":"HUF","pipeline_id":1,"stage_id":2,"person_id":10,"org_id":20,"status":"open","expected_close_date":"2026-10-15"}. Előtte search_persons / search_organizations, és list_stages a stage_id-hoz.',
+        default: false,
+      },
+      {
+        name: 'update_deal',
+        method: 'PATCH',
+        path: '/deals/{id}',
+        access: 'write',
+        description:
+          'Deal módosítása; csak a változó mezőket küldd. Példa: {"stage_id":3} vagy {"status":"won","won_time":"2026-09-26T12:00:00Z"}.',
+        default: false,
+      },
+      {
+        name: 'create_person',
+        method: 'POST',
+        path: '/persons',
+        access: 'write',
+        description:
+          'Új személy. Kötelező: name. Példa: {"name":"Kiss Anna","emails":[{"value":"anna@example.hu","primary":true,"label":"work"}],"phones":[{"value":"+36301234567","primary":true,"label":"mobile"}],"org_id":20}. Előtte search_persons.',
+        default: false,
+      },
+      {
+        name: 'update_person',
+        method: 'PATCH',
+        path: '/persons/{id}',
+        access: 'write',
+        description: 'Személy módosítása; csak a változó mezőket küldd.',
+        default: false,
+      },
+      {
+        name: 'create_organization',
+        method: 'POST',
+        path: '/organizations',
+        access: 'write',
+        description: 'Új szervezet. Kötelező: name. Példa: {"name":"Minta Kft."}. Előtte search_organizations.',
+        default: false,
+      },
+      {
+        name: 'update_organization',
+        method: 'PATCH',
+        path: '/organizations/{id}',
+        access: 'write',
+        description: 'Szervezet módosítása; csak a változó mezőket küldd.',
+        default: false,
+      },
+      {
+        name: 'create_activity',
+        method: 'POST',
+        path: '/activities',
+        access: 'write',
+        description:
+          'Új aktivitás. Példa: {"subject":"Visszahívás","type":"call","due_date":"2026-10-01","due_time":"10:00","deal_id":123,"person_id":10,"owner_id":1}.',
+        default: false,
+      },
+      {
+        name: 'update_activity',
+        method: 'PATCH',
+        path: '/activities/{id}',
+        access: 'write',
+        description: 'Aktivitás módosítása vagy lezárása. Példa: {"done":true}.',
+        default: false,
+      },
+    ],
+    instanceFields: [
+      {
+        name: 'companyHost',
+        label: 'Pipedrive cégcím (https nélkül, pl. ceged.pipedrive.com)',
+        type: 'string',
+        required: true,
+        validation: { format: 'host', pattern: '^[a-z0-9][a-z0-9-]*\\.pipedrive\\.com$' },
+        example: 'ceged.pipedrive.com',
+        target: 'egressHosts',
+      },
+      {
+        name: 'apiToken',
+        label: 'Pipedrive API-token (Beállítások → Személyes → API)',
+        type: 'secret',
+        required: true,
+        secretAliasHint: 'pipedrive-api-token',
+        hiddenInProvisioning: true,
+        target: 'auth.secretAliasSuggested',
+      },
+    ],
+    rateLimit: { rps: 4, burst: 8 },
+  },
+  {
+    key: 'woocommerce',
+    displayName: 'WooCommerce',
+    connectorType: 'http_api',
+    description:
+      'WooCommerce REST API v3: rendelések, termékek, vevők és értékesítési jelentés. Consumer key + secret (Basic auth) a webshop saját címén.',
+    activationHelp: `Három adat kell: a webshop címe, a consumer key és a consumer secret. Lépések sorban:
+1. A webshop WordPress-ében: WooCommerce → Beállítások → Speciális → REST API → Kulcs hozzáadása. Név pl. „AI agent”, jogosultság: Olvasás (írás csak ha az agent státuszt is módosíthat).
+2. A consumer key (ck_…) ide kerül a varázslóba; a consumer secretet (cs_…) csak aktiváláskor kérjük.
+3. A host a webshop címe https nélkül, almappa nélkül — pl. shop.example.hu (ne wp-admin, ne /wp-json). HTTPS kell; HTTP-n a WooCommerce Basic autht nem fogadja.
+4. Sandbox-teszt: a kapcsolat elérhetőségi próbája kulcs nélkül fut.
+5. Aktiváláskor a consumer secretet illeszd az „API kulcs” mezőbe. A platform egy valódi rendelés-listázást futtat — ha 401 jön, a kulcspár vagy a host rossz.
+6. Kezdd olvasással. Ha az agent írhat is (pl. rendelés státusz), pipáld be az update_/create_ sorokat; minden módosítás emberi jóváhagyás után megy ki.`,
+    baseUrl: 'https://{storeHost}/wp-json/wc/v3',
+    egressHosts: ['{storeHost}'],
+    authMethods: [{ kind: 'basic' }],
+    scopeCatalog: [],
+    endpoints: [
+      {
+        name: 'list_orders',
+        method: 'GET',
+        path: '/orders',
+        access: 'read',
+        description:
+          'Rendelések listája. Query: status (pending|processing|on-hold|completed|cancelled|refunded|failed|any), after/before (ISO8601), customer (vevő-azonosító), search, page, per_page (max 100), orderby (date|id|modified), order (asc|desc).',
+        default: true,
+      },
+      {
+        name: 'get_order',
+        method: 'GET',
+        path: '/orders/{id}',
+        access: 'read',
+        description: 'Egy rendelés (tételek, vevő, fizetés, státusz, totál).',
+        default: true,
+      },
+      {
+        name: 'list_products',
+        method: 'GET',
+        path: '/products',
+        access: 'read',
+        description:
+          'Termékek listája. Query: search, sku, status (publish|draft|pending|private), stock_status (instock|outofstock|onbackorder), category, page, per_page (max 100).',
+        default: true,
+      },
+      {
+        name: 'get_product',
+        method: 'GET',
+        path: '/products/{id}',
+        access: 'read',
+        description: 'Egy termék (ár, készlet, SKU, kategóriák).',
+        default: true,
+      },
+      {
+        name: 'list_customers',
+        method: 'GET',
+        path: '/customers',
+        access: 'read',
+        description: 'Vevők listája. Query: search (név/e-mail), email, role, page, per_page (max 100).',
+        default: true,
+      },
+      {
+        name: 'get_customer',
+        method: 'GET',
+        path: '/customers/{id}',
+        access: 'read',
+        description: 'Egy vevő (számlázási/szállítási cím, rendelésszám).',
+        default: true,
+      },
+      {
+        name: 'get_sales_report',
+        method: 'GET',
+        path: '/reports/sales',
+        access: 'read',
+        description:
+          'Értékesítési összesítő. Query: date_min, date_max (YYYY-MM-DD), period (week|month|last_month|year).',
+        default: true,
+      },
+      {
+        name: 'update_order',
+        method: 'PUT',
+        path: '/orders/{id}',
+        access: 'write',
+        description:
+          'Rendelés módosítása. Státusz példa: {"status":"completed"}. Megengedett státusz: pending, processing, on-hold, completed, cancelled, refunded, failed. Más mezőt (tétel, összeg) csak ha az admin ezt kérte.',
+        default: false,
+      },
+      {
+        name: 'create_order',
+        method: 'POST',
+        path: '/orders',
+        access: 'write',
+        description:
+          'Új rendelés. Példa: {"status":"pending","billing":{"first_name":"Anna","last_name":"Kiss","email":"anna@example.hu"},"line_items":[{"product_id":15,"quantity":1}]}. Előtte list_products sku/search-csel.',
+        default: false,
+      },
+      {
+        name: 'update_product',
+        method: 'PUT',
+        path: '/products/{id}',
+        access: 'write',
+        description: 'Termék módosítása; csak a változó mezőket küldd. Példa: {"stock_quantity":12} vagy {"regular_price":"9900"}.',
+        default: false,
+      },
+    ],
+    instanceFields: [
+      {
+        name: 'storeHost',
+        label: 'Webshop host (https nélkül, pl. shop.example.hu)',
+        type: 'string',
+        required: true,
+        validation: { format: 'host' },
+        example: 'shop.example.hu',
+        target: 'egressHosts',
+      },
+      {
+        name: 'consumerKey',
+        label: 'Consumer key (ck_…, WooCommerce → Beállítások → Speciális → REST API)',
+        type: 'string',
+        required: true,
+        validation: { pattern: '^ck_[a-zA-Z0-9]+$' },
+        example: 'ck_0123456789abcdef0123456789abcdef',
+        target: 'auth.username',
+      },
+      {
+        name: 'consumerSecret',
+        label: 'Consumer secret (cs_…)',
+        type: 'secret',
+        required: true,
+        secretAliasHint: 'woocommerce-consumer-secret',
+        hiddenInProvisioning: true,
+        target: 'auth.secretAliasSuggested',
+      },
+    ],
+    rateLimit: { rps: 2, burst: 5 },
+  },
+  {
+    key: 'shoprenter',
+    displayName: 'Shoprenter',
+    connectorType: 'http_api',
+    description:
+      'Shoprenter REST API: rendelések, termékek, vevők, kategóriák, készlet és rendelési státuszok. HTTP Basic auth a bolt *.shoprenter.hu API-címén.',
+    activationHelp: `Három adat kell: a bolt Shoprenter-hostja, az API-felhasználónév és az API-jelszó. Lépések sorban:
+1. A Shoprenter adminban: Beállítások → Rendszer → API. Kapcsold be az API-t, állíts felhasználónevet és jelszót, majd ments.
+2. A host mindig a *.shoprenter.hu cím — még akkor is, ha a webshop saját domainen fut. A címsorban: https://boltod.shoprenter.hu/admin → ide „boltod.shoprenter.hu” kerül (https nélkül).
+3. Az API-felhasználónevet írd be a varázslóba. Az API-jelszót csak aktiváláskor kérjük.
+4. Sandbox-teszt: a kapcsolat elérhetőségi próbája jelszó nélkül fut.
+5. Aktiváláskor az API-jelszót illeszd az „API kulcs” mezőbe. A platform a rendelési státuszok listáját kéri le — ha 401 jön, a host vagy a jelszó rossz.
+6. Kezdd olvasással. Ha az agent írhat is (pl. rendelés státusz), pipáld be az update_ sorokat; minden módosítás emberi jóváhagyás után megy ki. A Shoprenter JSON:API formátumot vár: {"data":{"type":"orders","id":"123",…}}.`,
+    baseUrl: 'https://{shopHost}/api',
+    egressHosts: ['{shopHost}'],
+    authMethods: [{ kind: 'basic' }],
+    scopeCatalog: [],
+    endpoints: [
+      {
+        name: 'list_order_statuses',
+        method: 'GET',
+        path: '/orderStatuses',
+        access: 'read',
+        description:
+          'Rendelési státuszok {id, name}. Ezzel kezdj: az update_order status-id-ja innen jön. A kapcsolat próbájához is ezt hívjuk.',
+        default: true,
+      },
+      {
+        name: 'list_orders',
+        method: 'GET',
+        path: '/orders',
+        access: 'read',
+        description:
+          'Rendelések listája. Query: page, limit (max 25), extend (pl. orderStatus,customer,orderProducts). Szűrés: filter[orderNumber]=R-1001.',
+        default: true,
+      },
+      {
+        name: 'get_order',
+        method: 'GET',
+        path: '/orders/{id}',
+        access: 'read',
+        description: 'Egy rendelés. Query: extend=orderStatus,customer,orderProducts,shippingMode,paymentMode.',
+        default: true,
+      },
+      {
+        name: 'list_products',
+        method: 'GET',
+        path: '/products',
+        access: 'read',
+        description:
+          'Termékek listája. Query: page, limit, extend (productDescriptions,productImages,stock). Szűrés: filter[sku]=ABC-1.',
+        default: true,
+      },
+      {
+        name: 'get_product',
+        method: 'GET',
+        path: '/products/{id}',
+        access: 'read',
+        description: 'Egy termék. Query: extend=productDescriptions,productImages,stock,productClass.',
+        default: true,
+      },
+      {
+        name: 'list_customers',
+        method: 'GET',
+        path: '/customers',
+        access: 'read',
+        description: 'Vevők listája. Query: page, limit. Szűrés: filter[email]=anna@example.hu.',
+        default: true,
+      },
+      {
+        name: 'get_customer',
+        method: 'GET',
+        path: '/customers/{id}',
+        access: 'read',
+        description: 'Egy vevő. Query: extend=customerAddresses.',
+        default: true,
+      },
+      {
+        name: 'list_categories',
+        method: 'GET',
+        path: '/productClasses',
+        access: 'read',
+        description: 'Termékkategóriák. Query: page, limit, extend=productClassDescriptions.',
+        default: true,
+      },
+      {
+        name: 'list_stocks',
+        method: 'GET',
+        path: '/stocks',
+        access: 'read',
+        description: 'Készletek. Query: page, limit. A termék stock kapcsolatán át is elérhető.',
+        default: true,
+      },
+      {
+        name: 'update_order',
+        method: 'PATCH',
+        path: '/orders/{id}',
+        access: 'write',
+        description:
+          'Rendelés módosítása (jellemzően státusz). JSON:API body. Példa: {"data":{"type":"orders","id":"123","relationships":{"orderStatus":{"data":{"type":"orderStatuses","id":"5"}}}}}. Az id-t a list_order_statuses adja.',
+        default: false,
+      },
+      {
+        name: 'update_product',
+        method: 'PATCH',
+        path: '/products/{id}',
+        access: 'write',
+        description:
+          'Termék módosítása. JSON:API body. Példa: {"data":{"type":"products","id":"45","attributes":{"price":9900}}}.',
+        default: false,
+      },
+    ],
+    instanceFields: [
+      {
+        name: 'shopHost',
+        label: 'Shoprenter host (https nélkül, pl. boltod.shoprenter.hu)',
+        type: 'string',
+        required: true,
+        validation: { format: 'host', pattern: '^[a-z0-9][a-z0-9-]*\\.shoprenter\\.hu$' },
+        example: 'boltod.shoprenter.hu',
+        target: 'egressHosts',
+      },
+      {
+        name: 'username',
+        label: 'API felhasználónév (Beállítások → Rendszer → API)',
+        type: 'string',
+        required: true,
+        example: 'api',
+        target: 'auth.username',
+      },
+      {
+        name: 'apiPassword',
+        label: 'API jelszó',
+        type: 'secret',
+        required: true,
+        secretAliasHint: 'shoprenter-api-password',
+        hiddenInProvisioning: true,
+        target: 'auth.secretAliasSuggested',
+      },
+    ],
+    rateLimit: { rps: 1, burst: 3 },
   },
 ]

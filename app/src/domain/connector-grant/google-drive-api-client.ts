@@ -397,7 +397,9 @@ export class GoogleDriveApiClient {
 
   async uploadFile(params: {
     name: string
-    textContent: string
+    textContent?: string
+    /** Raw bytes (decoded from the MCP contentBase64 field). Exactly one of textContent / binaryBytes. */
+    binaryBytes?: Uint8Array
     mimeType?: string
     parentFolderId?: string
     convertToGoogleType?: 'doc' | 'sheet' | 'slides'
@@ -410,7 +412,13 @@ export class GoogleDriveApiClient {
           : params.convertToGoogleType === 'slides'
             ? 'application/vnd.google-apps.presentation'
             : undefined
-    const mediaType = params.mimeType || (params.convertToGoogleType === 'sheet' ? 'text/csv' : 'text/plain')
+    const mediaType =
+      params.mimeType ||
+      (params.convertToGoogleType === 'sheet'
+        ? 'text/csv'
+        : params.binaryBytes
+          ? 'application/octet-stream'
+          : 'text/plain')
 
     if (this.isStub()) {
       return {
@@ -431,18 +439,28 @@ export class GoogleDriveApiClient {
     if (params.parentFolderId) metadata.parents = [params.parentFolderId]
 
     const boundary = `platform-${Date.now().toString(36)}`
-    const body = [
-      `--${boundary}`,
-      'Content-Type: application/json; charset=UTF-8',
-      '',
-      JSON.stringify(metadata),
-      `--${boundary}`,
-      `Content-Type: ${mediaType}; charset=UTF-8`,
-      '',
-      params.textContent,
-      `--${boundary}--`,
-      '',
-    ].join('\r\n')
+    // ponytail: binary goes in as raw bytes (multipart/related), no base64 envelope — Drive expects the bytes.
+    const chunks = [
+      Buffer.from(
+        [
+          `--${boundary}`,
+          'Content-Type: application/json; charset=UTF-8',
+          '',
+          JSON.stringify(metadata),
+          `--${boundary}`,
+          params.binaryBytes
+            ? `Content-Type: ${mediaType}`
+            : `Content-Type: ${mediaType}; charset=UTF-8`,
+          '',
+        ].join('\r\n'),
+        'utf8',
+      ),
+      params.binaryBytes
+        ? Buffer.from(params.binaryBytes)
+        : Buffer.from(params.textContent ?? '', 'utf8'),
+      Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8'),
+    ]
+    const body = Buffer.concat(chunks)
 
     const url = new URL(`${UPLOAD_BASE}/files`)
     url.searchParams.set('uploadType', 'multipart')

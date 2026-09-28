@@ -25,9 +25,14 @@ import {
   approveGatewayOperation,
   rejectGatewayOperation,
   listPendingGatewayOperations,
+  canApproveGatewayOperation,
+  toGatewayOperationView,
   type GatewayOperationServiceDeps,
   type GatewayPendingOperationRow,
+  type GatewayOperationHistoryRow,
 } from '@/domain/gateway-operation'
+import type { GatewayOperationRecord } from '@/domain/gateway-operation/types'
+import { iconDataUrlByTemplateKey, provenanceTemplateKey } from '@/lib/connector-template-icon-map'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import { hasMinimumRole } from '@/lib/iam-policy'
 import type { UserRole } from '@prisma/client'
@@ -41,7 +46,10 @@ import { SkillService } from '@/domain/skill/skill-service'
 import { TenantService } from '@/domain/tenant/tenant-service'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
 import { executeKnowledgeBaseTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
+import { PostgresHandoffRepository } from '@/repositories/postgres/handoff-repository'
+import { canReadPublishedAgent } from '@/domain/agent-definition'
 import {
   invokeProjectWork,
   MCP_PROJECT_MEMORY_WRITE_TOOL,
@@ -154,9 +162,18 @@ const projectWorkService = new ProjectWorkService(
     async updateMemoryWriteMode(agentId, memoryWriteMode) {
       await repositories.agents.updateMemoryWriteMode({ agentId, memoryWriteMode })
     },
+    async findOutputFolder(agentId, tenantId) {
+      const agent = await repositories.agents.findById(agentId, tenantId)
+      return agent?.outputDriveFolderId ?? null
+    },
+    async updateOutputFolder(agentId, folderId) {
+      await repositories.agents.updateOutputFolder({ agentId, folderId })
+    },
   },
   repositories.users,
 )
+
+const handoffRepository = new PostgresHandoffRepository()
 
 function isStubDriveCredential(tokenRef: string): boolean {
   return tokenRef.startsWith('stub-') || process.env.GOOGLE_DRIVE_API_STUB === 'true'
@@ -214,6 +231,31 @@ async function resolveRequester(input: { tenantId: string; userId: string }) {
   return null
 }
 
+/**
+ * #663: megnevezett jóváhagyó feloldása (konnektor > agent). Csak aktív
+ * tenant-tagság esetén érvényes; a nevet pillanatképként adjuk a művelethez.
+ */
+async function resolveDesignatedApprover(input: {
+  tenantId: string
+  agentId: string
+  connectorId: string | null
+}): Promise<{ userId: string; name: string } | null> {
+  const [agent, connector] = await Promise.all([
+    repositories.agents.findById(input.agentId, input.tenantId),
+    input.connectorId
+      ? repositories.connectors.findById(input.connectorId, input.tenantId)
+      : Promise.resolve(null),
+  ])
+  const approverUserId = connector?.approverUserId ?? agent?.approverUserId ?? null
+  if (!approverUserId) return null
+  const [membership, user] = await Promise.all([
+    repositories.tenantMemberships.findByTenantAndUser(input.tenantId, approverUserId),
+    repositories.users.findById(approverUserId),
+  ])
+  if (membership?.status !== 'active' || !user) return null
+  return { userId: user.id, name: user.name || user.email }
+}
+
 async function startAuthorization(input: {
   connectorId: string
   userId: string
@@ -243,6 +285,7 @@ const gatewayOperationDeps: GatewayOperationServiceDeps = {
   ...sharedToolLookups,
   operations: repositories.gatewayOperations,
   resolveRequester,
+  resolveDesignatedApprover,
   startAuthorization,
   audit: repositories.audit,
   async recordCreatedDriveFiles({ grantId, files }) {
@@ -267,38 +310,113 @@ const gatewayOperationDeps: GatewayOperationServiceDeps = {
   },
 }
 
-async function listPendingOperationRows(input: {
-  tenantId: string
-  principalUserId?: string
-}): Promise<GatewayPendingOperationRow[]> {
-  const pending = await listPendingGatewayOperations(gatewayOperationDeps, input)
+function operationArgs(row: GatewayOperationRecord): Record<string, unknown> {
+  if (row.argsJson && typeof row.argsJson === 'object' && !Array.isArray(row.argsJson)) {
+    return row.argsJson as Record<string, unknown>
+  }
+  return {}
+}
+
+async function enrichGatewayOperationRows(
+  tenantId: string,
+  rows: Array<Awaited<ReturnType<typeof listPendingGatewayOperations>>[number]>,
+): Promise<GatewayPendingOperationRow[]> {
+  const templates = await repositories.connectorTemplates.listVisible({ tenantId })
+  const iconByTemplateKey = iconDataUrlByTemplateKey(templates)
+  const connectorIds = [
+    ...new Set(rows.map((row) => row.connectorId).filter((id): id is string => Boolean(id))),
+  ]
+  const connectors = await Promise.all(
+    connectorIds.map((id) => repositories.connectors.findById(id, tenantId)),
+  )
+  const connectorById = new Map(connectorIds.map((id, index) => [id, connectors[index]] as const))
+
   return Promise.all(
-    pending.map(async (row) => {
+    rows.map(async (row) => {
       const [user, agent, definition] = await Promise.all([
         repositories.users.findById(row.principalUserId),
-        repositories.agents.findById(row.agentId, input.tenantId),
+        repositories.agents.findById(row.agentId, tenantId),
         agentDefinitionService.loadAgentDefinition({
-          tenantId: input.tenantId,
+          tenantId,
           definitionId: row.definitionId,
         }),
       ])
+      const connector = row.connectorId ? (connectorById.get(row.connectorId) ?? null) : null
+      const templateKey = connector ? provenanceTemplateKey(connector.config) : null
       return {
         ...row,
         requesterName: user?.name || user?.email || row.principalUserId,
         agentName: agent?.name || row.agentId,
         definitionLabel: definition?.snapshot.name || row.definitionId,
+        connectorName: connector?.name ?? null,
+        connectorIconDataUrl: templateKey ? (iconByTemplateKey.get(templateKey) ?? null) : null,
+        connectorIconProvider: templateKey ?? connector?.type ?? row.toolName,
       }
     }),
   )
+}
+
+async function listPendingOperationRows(input: {
+  tenantId: string
+  principalUserId?: string
+}): Promise<GatewayPendingOperationRow[]> {
+  const pending = await listPendingGatewayOperations(gatewayOperationDeps, input)
+  return enrichGatewayOperationRows(input.tenantId, pending)
+}
+
+const HISTORY_PAGE_SIZE = 10
+
+async function listGatewayOperationHistoryRows(input: {
+  tenantId: string
+  actor: { userId: string; tenantId: string; role: string; assumed: boolean }
+  page: number
+}): Promise<{ rows: GatewayOperationHistoryRow[]; total: number; pageSize: number }> {
+  const actor = {
+    userId: input.actor.userId,
+    tenantId: input.actor.tenantId,
+    role: input.actor.role,
+    assumed: input.actor.assumed,
+  }
+  const visibleToUserId = canApproveGatewayOperation(actor) ? undefined : actor.userId
+  const page = Math.max(1, input.page)
+  const { rows, total } = await repositories.gatewayOperations.listDecidedHistory(
+    input.tenantId,
+    visibleToUserId,
+    { limit: HISTORY_PAGE_SIZE, offset: (page - 1) * HISTORY_PAGE_SIZE },
+  )
+  const enriched = await enrichGatewayOperationRows(
+    input.tenantId,
+    rows.map((row) => ({ ...toGatewayOperationView(row), args: operationArgs(row) })),
+  )
+  return { rows: enriched, total, pageSize: HISTORY_PAGE_SIZE }
 }
 
 const enterpriseToolDeps: EnterpriseToolDeps = {
   ...sharedToolLookups,
   audit: repositories.audit,
   startAuthorization,
+  findAgentOutputFolder: async ({ agentId, tenantId }) => {
+    const agent = await repositories.agents.findById(agentId, tenantId)
+    return agent?.outputDriveFolderId ?? null
+  },
   enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
   executeKbTool: (toolName, args, ctx) =>
     executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx),
+  loadSkillVersion: async (skillVersionId) => {
+    const version = await repositories.skills.findVersionById(skillVersionId)
+    if (!version) return null
+    return {
+      attachments: version.attachments,
+      status: version.status,
+      tenantId: version.skill.tenantId,
+    }
+  },
+  executeSandboxRun,
+  writeWorkFile: async (input) => {
+    const written = await projectWorkService.writeFile(input)
+    if (!written.ok) throw new Error(written.code) // quota_exceeded | file_too_large | invalid_path
+    return { path: written.file.path }
+  },
 }
 
 export const services = {
@@ -313,11 +431,29 @@ export const services = {
   knowledgeBase: knowledgeBaseService,
   projectWork: {
     service: projectWorkService,
+    handoffs: handoffRepository,
     invoke: (input: Parameters<typeof invokeProjectWork>[1]) =>
       invokeProjectWork(
         {
           ...sharedToolLookups,
+          loadDefinitionByAgent: (lookup) => agentDefinitionService.loadAgentDefinition(lookup),
+          canViewAgent: async (lookup) => {
+            const grant = await repositories.resourceGrants.findAgentGrant({
+              tenantId: lookup.tenantId,
+              userId: lookup.userId,
+              agentId: lookup.agentId,
+            })
+            return canReadPublishedAgent({ role: lookup.role as UserRole, grant })
+          },
+          isTenantMember: async (lookup) => {
+            const membership = await repositories.tenantMemberships.findByTenantAndUser(
+              lookup.tenantId,
+              lookup.userId,
+            )
+            return membership?.status === 'active'
+          },
           projectWork: projectWorkService,
+          handoffs: handoffRepository,
           enqueueMemoryWrite: async (enqueueInput) =>
             enqueueResultToMcp(
               await enqueueGatewayOperation(gatewayOperationDeps, {
@@ -351,6 +487,11 @@ export const services = {
       rejectGatewayOperation(gatewayOperationDeps, input),
     listPending: (input: { tenantId: string; principalUserId?: string }) =>
       listPendingOperationRows(input),
+    listHistory: (input: {
+      tenantId: string
+      actor: { userId: string; tenantId: string; role: string; assumed: boolean }
+      page: number
+    }) => listGatewayOperationHistoryRows(input),
     toMcpGet: getResultToMcp,
   },
 }

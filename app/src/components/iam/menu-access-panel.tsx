@@ -15,6 +15,7 @@
  *     befoglaló Adminisztráció menü, különben a beállítás visszavonhatatlan lenne.
  */
 import { useMemo, useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import type { UserRole } from '@prisma/client'
 import { setNavVisibility } from '@/app/actions/menu-access'
 import { Badge, Card } from '@/components/ui/shell'
@@ -24,10 +25,11 @@ import {
   type ControlPlaneNavCatalogGroup,
   type ControlPlaneNavCatalogLeaf,
 } from '@/lib/control-plane-nav'
+import { asTranslate } from '@/i18n/translate'
+import { navMessageKey } from '@/lib/control-plane-nav-i18n'
 import { hasMinimumRole } from '@/lib/iam-policy'
 import {
   NAV_VISIBILITY_ROLES,
-  NAV_VISIBILITY_ROLE_LABELS,
   emptyNavVisibilityPolicy,
   isNavKeyLockedFor,
   isNavVisibilityPolicyEmpty,
@@ -122,6 +124,10 @@ function togglePolicy(
 }
 
 export function MenuAccessPanel({ initialPolicy }: { initialPolicy: NavVisibilityPolicy }) {
+  const t = useTranslations('ControlPlane.menuAccess')
+  const tNav = asTranslate(useTranslations('ControlPlane.nav'))
+  const roleLabel = (role: UserRole) => t(`roles.${role}` as 'roles.admin')
+  const itemLabel = (key: string) => tNav(navMessageKey(key))
   const [saved, setSaved] = useState<NavVisibilityPolicy>(initialPolicy)
   const [draft, setDraft] = useState<NavVisibilityPolicy>(initialPolicy)
   const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
@@ -154,8 +160,8 @@ export function MenuAccessPanel({ initialPolicy }: { initialPolicy: NavVisibilit
         setMessage({
           tone: 'ok',
           text: isNavVisibilityPolicyEmpty(res.data.policy)
-            ? 'Mentve. Minden szerepkör a teljes (jogosultsága szerinti) menüt látja.'
-            : 'Mentve. Az érintett felhasználóknál a következő oldalbetöltéstől érvényes.',
+            ? t('savedEmpty')
+            : t('saved'),
         })
       } else {
         setMessage({ tone: 'error', text: res.error })
@@ -164,23 +170,18 @@ export function MenuAccessPanel({ initialPolicy }: { initialPolicy: NavVisibilit
   }
 
   return (
-    <Card title="Menüpontok szerepkörönként">
+    <Card title={t('cardTitle')}>
       <div className="space-y-5">
-        <p className="text-sm text-ink-soft">
-          A pipa azt jelenti, hogy az adott szerepkör <strong>látja</strong> a menüpontot a
-          fejlécben. A pipa levétele csak a menüből veszi ki — az oldal jogosultsági kapuja
-          változatlan marad, ezért ez rendrakás, nem hozzáférés-korlátozás. Aki egy menüpontot
-          amúgy sem érhet el a szerepköre miatt, annál a cella nem szerkeszthető.
-        </p>
+        <p className="text-sm text-ink-soft">{t('help')}</p>
 
         <div className="overflow-x-auto">
           <table className="w-full min-w-[44rem] border-collapse text-sm">
             <thead>
               <tr className="border-b border-line text-left">
-                <th className="py-2 pr-4 font-semibold">Menüpont</th>
+                <th className="py-2 pr-4 font-semibold">{t('colItem')}</th>
                 {NAV_VISIBILITY_ROLES.map((role) => (
                   <th key={role} className="w-28 px-2 py-2 text-center font-semibold">
-                    {NAV_VISIBILITY_ROLE_LABELS[role]}
+                    {roleLabel(role)}
                   </th>
                 ))}
               </tr>
@@ -194,10 +195,10 @@ export function MenuAccessPanel({ initialPolicy }: { initialPolicy: NavVisibilit
                       row.isGroup ? 'font-semibold text-ink' : 'text-ink-soft'
                     }`}
                   >
-                    <span className={row.depth === 1 ? 'pl-5' : ''}>{row.label}</span>
+                    <span className={row.depth === 1 ? 'pl-5' : ''}>{itemLabel(row.key)}</span>
                     {row.requires?.platformRole ? (
                       <span className="ml-2 align-middle">
-                        <Badge tone="neutral">platform szerep</Badge>
+                        <Badge tone="neutral">{t('platformRole')}</Badge>
                       </span>
                     ) : null}
                   </th>
@@ -205,11 +206,11 @@ export function MenuAccessPanel({ initialPolicy }: { initialPolicy: NavVisibilit
                     const state = cellState(row, role, draft)
                     const cellId = `${row.key}--${role}`
                     if (state.kind !== 'editable') {
-                      const text = state.kind === 'locked' ? 'kötelező' : 'nincs joga'
+                      const text = state.kind === 'locked' ? t('locked') : t('noAccess')
                       const title =
                         state.kind === 'locked'
-                          ? 'Az adminisztrátor elől nem rejthető el — különben nem lehetne visszaállítani a menüt.'
-                          : `A(z) ${NAV_VISIBILITY_ROLE_LABELS[role]} szerepkör a jogosultsága miatt sem látja ezt az oldalt.`
+                          ? t('lockedTitle')
+                          : t('noAccessTitle', { role: roleLabel(role) })
                       return (
                         <td key={role} className="px-2 py-2 text-center">
                           <span className="text-xs text-ink-faint" title={title}>
@@ -230,7 +231,7 @@ export function MenuAccessPanel({ initialPolicy }: { initialPolicy: NavVisibilit
                             onChange={(e) => toggle(row, role, e.target.checked)}
                           />
                           <span className="sr-only">
-                            {row.label} látható a(z) {NAV_VISIBILITY_ROLE_LABELS[role]} szerepkörnek
+                            {t('visibleFor', { item: itemLabel(row.key), role: roleLabel(role) })}
                           </span>
                         </label>
                       </td>

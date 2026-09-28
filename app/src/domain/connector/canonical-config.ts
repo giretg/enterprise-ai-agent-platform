@@ -86,7 +86,7 @@ function canonicalAuth(
   }
   if (authRaw.scheme === 'bearer') return { value: { scheme: 'bearer' }, addedGoogleOauthDefaults }
   if (authRaw.scheme === 'basic' || authRaw.type === 'basic') {
-    return { value: { scheme: 'basic' }, addedGoogleOauthDefaults }
+    return { value: { scheme: 'basic', username: authRaw.username }, addedGoogleOauthDefaults }
   }
   if (authRaw.type === 'api_key_header') {
     return {

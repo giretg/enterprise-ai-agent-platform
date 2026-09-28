@@ -56,7 +56,11 @@ export class PostgresConnectorRepository implements ConnectorRepository {
 
   async listActive(tenantId: string): Promise<Connector[]> {
     return prisma.connector.findMany({
-      where: { tenantId, lifecycleState: 'active', type: { in: ['google_drive', 'http_api', 'gmail'] } },
+      where: {
+        tenantId,
+        lifecycleState: 'active',
+        type: { in: ['google_drive', 'http_api', 'gmail', 'knowledge_base', 'code_sandbox'] },
+      },
       orderBy: { name: 'asc' },
     })
   }
@@ -67,6 +71,7 @@ export class PostgresConnectorRepository implements ConnectorRepository {
     name: string
     authMode: Connector['authMode']
     scope: Connector['scope']
+    config?: Prisma.InputJsonValue
   }): Promise<Connector> {
     return prisma.connector.create({
       data: {
@@ -76,7 +81,18 @@ export class PostgresConnectorRepository implements ConnectorRepository {
         authMode: input.authMode,
         scope: input.scope,
         lifecycleState: 'active',
+        ...(input.config !== undefined ? { config: input.config } : {}),
       },
+    })
+  }
+
+  async updateApprover(input: {
+    connectorId: string
+    approverUserId: string | null
+  }): Promise<Connector> {
+    return prisma.connector.update({
+      where: { id: input.connectorId },
+      data: { approverUserId: input.approverUserId },
     })
   }
 }

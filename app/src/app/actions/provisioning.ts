@@ -26,6 +26,7 @@ import { connectorConfigSchema } from '@/domain/provisioning/connector-config'
 import { tryExtractConnectorConfigFromOpenApiAsync } from '@/domain/provisioning/openapi-config-extractor'
 import { SpecSyncService } from '@/domain/connector-self-update/spec-sync'
 import { toolsRequiringConnector } from '@/domain/connector-grant/tool-connector-requirements'
+import { iconDataUrlByTemplateKey } from '@/lib/connector-template-icon-map'
 
 function actorOf(user: Awaited<ReturnType<typeof requireTenantRole>>): ProvisioningActor {
   return {
@@ -226,8 +227,17 @@ async function syncConnectorRemovalCapabilities(agentIds: string[]) {
 export async function listConnectorCatalog() {
   try {
     const user = await requireTenantRole('viewer')
-    const catalog = await services.provisioning.listCatalog(actorOf(user))
-    return ok(catalog)
+    const [catalog, templates] = await Promise.all([
+      services.provisioning.listCatalog(actorOf(user)),
+      repositories.connectorTemplates.listVisible({ tenantId: user.activeTenantId }),
+    ])
+    const iconByTemplateKey = iconDataUrlByTemplateKey(templates)
+    return ok(
+      catalog.map((item) => ({
+        ...item,
+        iconDataUrl: item.templateKey ? (iconByTemplateKey.get(item.templateKey) ?? null) : null,
+      })),
+    )
   } catch (e) {
     return toFail(e, 'Nem sikerült betölteni a connector-katalógust')
   }

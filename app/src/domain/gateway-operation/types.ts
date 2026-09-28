@@ -18,6 +18,9 @@ export type GatewayOperationView = {
   agentId: string
   principalUserId: string
   connectorId: string | null
+  /** #663: megnevezett jóváhagyó pillanatképe (konnektor > agent); null = általános sor. */
+  designatedApproverUserId: string | null
+  designatedApproverName: string | null
   errorCode: string | null
   result: unknown | null
   approval: {
@@ -41,6 +44,8 @@ export type GatewayOperationRecord = {
   idempotencyKey: string
   status: GatewayOperationStatus
   connectorId: string | null
+  designatedApproverUserId: string | null
+  designatedApproverName: string | null
   errorCode: string | null
   resultJson: unknown | null
   createdAt: Date
@@ -63,6 +68,8 @@ export type GatewayOperationCreateInput = {
   argsJson: unknown
   idempotencyKey: string
   connectorId: string | null
+  designatedApproverUserId?: string | null
+  designatedApproverName?: string | null
 }
 
 export type GatewayOperationPatch = {
@@ -86,7 +93,13 @@ export interface GatewayOperationStore {
   createAwaitingApproval(
     input: GatewayOperationCreateInput,
   ): Promise<{ record: GatewayOperationRecord; created: boolean }>
-  listAwaitingApproval(tenantId: string, principalUserId?: string): Promise<GatewayOperationRecord[]>
+  /** `visibleToUserId` = saját kérések + a rá megnevezett jóváhagyóként várók (#663). */
+  listAwaitingApproval(tenantId: string, visibleToUserId?: string): Promise<GatewayOperationRecord[]>
+  listDecidedHistory(
+    tenantId: string,
+    visibleToUserId: string | undefined,
+    page: { limit: number; offset: number },
+  ): Promise<{ rows: GatewayOperationRecord[]; total: number }>
   withLockedOperation<T>(
     operationId: string,
     fn: (

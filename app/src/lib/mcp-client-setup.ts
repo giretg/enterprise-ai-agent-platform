@@ -9,7 +9,21 @@ export type McpClientSetup = {
   claudeCommand: string
   grokCommand: string
   cursorInstallHref: string
+  hermesInstallHref: string
+  hermesCommand: string
+  hermesSyncPrompt: string
 }
+
+/** The Hermes Bot profiles from platform.agent.checkout (#682) expect this exact server name. */
+export const HERMES_MCP_SERVER_NAME = 'excellence'
+export const HERMES_SYNC_PROMPT = 'Töltsd le az AI munkatársaimat'
+export const HERMES_LINKS = {
+  download: 'https://hermes-agent.nousresearch.com/#downloads',
+  docs: 'https://nousresearch.github.io/hermes-agent/docs/',
+  botMode: 'https://nousresearch.github.io/hermes-agent/docs/user-guide/bot-mode',
+  mcp: 'https://nousresearch.github.io/hermes-agent/docs/user-guide/features/mcp',
+  profileDistributions: 'https://nousresearch.github.io/hermes-agent/docs/user-guide/profile-distributions',
+} as const
 
 export function mcpClientName(tenantSlug: string): string {
   return `ea-${tenantSlug}`
@@ -41,6 +55,16 @@ export function grokMcpAddCommand(serverName: string, mcpUrl: string): string {
   return `grok mcp add --transport http ${serverName} ${mcpUrl}`
 }
 
+export function hermesMcpSetupCommand(mcpUrl: string): string {
+  return `hermes mcp add ${HERMES_MCP_SERVER_NAME} --url ${mcpUrl} --auth oauth && hermes mcp login ${HERMES_MCP_SERVER_NAME}`
+}
+
+/** Hermes Desktop one-click MCP install (hermes:// deep link). */
+export function hermesMcpInstallHref(mcpUrl: string): string {
+  const config = encodeURIComponent(base64Json({ url: mcpUrl, auth: 'oauth' }))
+  return `hermes://mcp/install?name=${encodeURIComponent(HERMES_MCP_SERVER_NAME)}&config=${config}`
+}
+
 export function buildMcpClientSetup(input: { origin: string; tenantSlug: string }): McpClientSetup {
   const mcpUrl = mcpUrlForTenant(input.origin, input.tenantSlug)
   const serverName = mcpClientName(input.tenantSlug)
@@ -52,6 +76,9 @@ export function buildMcpClientSetup(input: { origin: string; tenantSlug: string 
     claudeCommand: claudeMcpAddCommand(serverName, mcpUrl),
     grokCommand: grokMcpAddCommand(serverName, mcpUrl),
     cursorInstallHref: cursorMcpInstallHref(serverName, mcpUrl),
+    hermesInstallHref: hermesMcpInstallHref(mcpUrl),
+    hermesCommand: hermesMcpSetupCommand(mcpUrl),
+    hermesSyncPrompt: HERMES_SYNC_PROMPT,
   }
 }
 

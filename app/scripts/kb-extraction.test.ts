@@ -17,12 +17,19 @@ import {
   extractStructured,
   extractTextContent,
   htmlToSections,
+  extractHtml,
   columnLetter,
   toExtractionMetadata,
   readExtractionBlocks,
 } from '../src/lib/kb-extraction'
 import { buildOkfBundle, chunkOkfBundle, type OkfSourceRef } from '../src/lib/kb-v3'
-import { xlsxCreate } from '../src/domain/file-editor/adapters/xlsx-adapter'
+import ExcelJS from 'exceljs'
+
+async function xlsxCreate(sheets: Array<{ name: string; rows: unknown[][] }>): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook()
+  for (const sheet of sheets) workbook.addWorksheet(sheet.name).addRows(sheet.rows)
+  return Buffer.from(await workbook.xlsx.writeBuffer())
+}
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -37,6 +44,20 @@ function check(name: string, fn: () => void | Promise<void>) {
 
 async function run() {
   console.log('=== KB-v3 Sprint 2 extraction pipeline teszt ===')
+
+  await check('extractHtml: CSS/SVG/script nélkül, headingek mentén, cellák elválasztva', async () => {
+    const html = `<!doctype html><html><head><title>t</title><style>:root{--lila:#5834B2}</style></head>
+<body><h1>Branding guide</h1><p>Bevezető</p>
+<h2><span class="num">1</span>Színpaletta</h2><table><tr><td>Mély lila</td><td>#5834B2</td></tr></table>
+<svg><text>SVGZAJ</text></svg><script>var zaj = 1</script></body></html>`
+    const out = extractHtml(html)
+    assert.equal(out.format, 'html')
+    assert.deepEqual(out.blocks.map((b) => b.heading), ['Branding guide', '1 Színpaletta'])
+    assert.doesNotMatch(out.markdown, /--lila|SVGZAJ|var zaj|<\w/)
+    assert.match(out.markdown, /Mély lila \| #5834B2/)
+    const viaUpload = await extractStructured({ buffer: Buffer.from(html), filename: 'guide.html' })
+    assert.equal(viaUpload.format, 'html')
+  })
 
   await check('columnLetter: 1→A, 26→Z, 27→AA', () => {
     assert.equal(columnLetter(1), 'A')

@@ -1,3 +1,4 @@
+import { getTranslations } from 'next-intl/server'
 import {
   getPermissionMatrix,
   listAgents,
@@ -28,15 +29,14 @@ export default async function IamPage() {
   const error =
     !usersRes.success ? usersRes.error : !invitationsRes.success ? invitationsRes.error : null
 
+  const t = await getTranslations('ControlPlane.iam')
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">IAM</p>
-          <h1 className="mt-2 font-display text-3xl font-semibold">Hozzáférések</h1>
-          <p className="mt-1 max-w-2xl text-ink-soft">
-            Meghívók, szerepkörök, felfüggesztés és lock-out védelem egy helyen.
-          </p>
+          <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
+          <h1 className="mt-2 font-display text-3xl font-semibold">{t('title')}</h1>
+          <p className="mt-1 max-w-2xl text-ink-soft">{t('body')}</p>
         </div>
       </div>
 

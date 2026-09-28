@@ -1,3 +1,4 @@
+import { getTranslations } from 'next-intl/server'
 import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { Card } from '@/components/ui/shell'
@@ -6,23 +7,17 @@ import { listSkillCatalogAction } from '@/app/actions/skills'
 import { ConversationSkillProposals } from '@/components/skills/conversation-skill-proposals'
 import { SkillCatalogManager } from '@/components/skills/skill-catalog-manager'
 
-function CatalogLoadError({ error }: { error: string }) {
+async function CatalogLoadError({ error }: { error: string }) {
+  const t = await getTranslations('ControlPlane.skills')
   return (
     <div className="space-y-8">
       <div className="animate-rise">
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">
-          Jóváhagyott munkamenetek
-        </p>
-        <h1 className="mt-2 font-display text-[2.4rem] font-semibold leading-tight">
-          Képességek (skill-ek)
-        </h1>
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
+        <h1 className="mt-2 font-display text-[2.4rem] font-semibold leading-tight">{t('title')}</h1>
       </div>
       <Card>
         <p className="text-sm text-coral">{error}</p>
-        <p className="mt-2 text-sm text-ink-soft">
-          Ha friss kódot húztál, futtasd a migrációt (<code>npx prisma migrate deploy</code>),
-          majd indítsd újra a dev szervert.
-        </p>
+        <p className="mt-2 text-sm text-ink-soft">{t('migrateHint')}</p>
       </Card>
     </div>
   )
@@ -35,9 +30,10 @@ export default async function SkillCatalogPage() {
     ctx = await getAuthContext()
     res = await listSkillCatalogAction()
   } catch (err) {
+    const t = await getTranslations('ControlPlane.skills')
     return (
       <CatalogLoadError
-        error={err instanceof Error ? err.message : 'A képességek betöltése sikertelen.'}
+        error={err instanceof Error ? err.message : t('loadFailed')}
       />
     )
   }
@@ -47,19 +43,18 @@ export default async function SkillCatalogPage() {
     ctx?.platformRoles?.some((r) => r === 'superadmin' || r === 'platform_operator'),
   )
   const canView = hasMinimumRole(ctx?.activeTenantRole, 'operator')
+  const t = await getTranslations('ControlPlane.skills')
 
   if (!canView) {
     return (
       <Card>
-        <p className="text-sm text-ink-faint">
-          A képességek megtekintéséhez legalább operátor jogosultság szükséges.
-        </p>
+        <p className="text-sm text-ink-faint">{t('needOperator')}</p>
       </Card>
     )
   }
 
   if (!res.success) {
-    return <CatalogLoadError error={res.error ?? 'A képességek betöltése sikertelen.'} />
+    return <CatalogLoadError error={res.error ?? t('loadFailed')} />
   }
 
   const proposals = isAdmin ? await listConversationSkillProposalsAction() : null
@@ -67,21 +62,10 @@ export default async function SkillCatalogPage() {
   return (
     <div className="space-y-8">
       <div className="animate-rise">
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">
-          Jóváhagyott munkamenetek
-        </p>
-        <h1 className="mt-2 font-display text-[2.4rem] font-semibold leading-tight">
-          Képességek (skill-ek)
-        </h1>
-        <p className="mt-2 max-w-2xl text-ink-soft">
-          A képesség (skill) egy leírt munkamenet: elmondja az AI-munkatársnak, hogyan
-          csináljon meg egy visszatérő feladatot. Önmagában tehetetlen — hogy mit tud{' '}
-          <em>megtenni</em>, azt az agentnek adott jogosultságok döntik el.
-        </p>
-        <p className="mt-2 max-w-2xl text-sm text-ink-faint">
-          Minden módosítás előbb javaslat (<em>proposed</em>), és csak jóváhagyás után lesz
-          éles (<em>active</em>) — a korábbi verzióra bármikor visszaállhatsz.
-        </p>
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
+        <h1 className="mt-2 font-display text-[2.4rem] font-semibold leading-tight">{t('title')}</h1>
+        <p className="mt-2 max-w-2xl text-ink-soft">{t('body')}</p>
+        <p className="mt-2 max-w-2xl text-sm text-ink-faint">{t('hint')}</p>
       </div>
 
       {isAdmin && proposals?.success ? (

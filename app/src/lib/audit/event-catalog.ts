@@ -10,6 +10,7 @@ export const CORE_MVP_AUDIT_ACTIONS = [
   'mcp.tools.call',
   'mcp.tools.call.deny',
   'mcp.resources.read',
+  'mcp.prompts.get',
   'enterprise.tool.ok',
   'enterprise.tool.denied',
   'enterprise.tool.error',
@@ -61,6 +62,9 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.delete',
   'agent.profile',
   'agent.memory_write_mode',
+  'agent.output_folder',
+  'agent.local_roots',
+  'agent.approver',
   'agent.user.grant',
   'agent.user.revoke',
 
@@ -79,7 +83,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'provisioning.doc.fetch',
   'provisioning.doc.fetch.blocked',
   'connector.egress_allowlist.extend',
+  'connector.approver',
   'connector.materialize',
+  'connector.agentmail.org_key.set',
+  'connector.agentmail.inbox.create',
   'connector.template.create',
   'connector.template.deprecate',
   'connector.self_update.create',
@@ -113,6 +120,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'project.work_file.write',
   'project.work_file.delete',
   'project.project_memory.write',
+  'project.project_memory.delete',
+
+  'handoff.created',
+  'handoff.acknowledged',
 ])
 
 export class UnregisteredAuditActionError extends Error {

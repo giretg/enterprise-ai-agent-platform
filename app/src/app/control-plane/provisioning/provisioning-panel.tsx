@@ -1,8 +1,10 @@
 'use client'
 
 import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState, useSyncExternalStore, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
+import { asTranslate, type TranslateFn } from '@/i18n/translate'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
-import { Badge, Card } from '@/components/ui/shell'
+import { Badge, Card, IconButton } from '@/components/ui/shell'
 import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import {
@@ -46,7 +48,10 @@ import {
   trustSelfUpdatingPartner,
 } from '@/app/actions/self-updating-connectors'
 import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'
+import { ConnectorTemplateIcon } from '@/components/account/provider-icon'
 import { OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES } from '@/domain/connector-template/custom-template-seeds'
+import { AGENTMAIL_TEMPLATE_KEY } from '@/domain/connector-template/builtin-templates'
+import Link from 'next/link'
 import {
   SelfUpdatingConnectorCard,
   TenantAutoApproveSwitch,
@@ -163,21 +168,21 @@ type DraftConfigFromDocData =
       sensitivity: SensitivityReviewData
     }
 
+function useProvT(): TranslateFn {
+  return asTranslate(useTranslations('Provisioning'))
+}
+
 function SensitivityReviewBanner(props: {
   findings: SensitivityFinding[]
   pending: boolean
   busy: boolean
   onAccept: () => void
 }) {
+  const t = useProvT()
   return (
     <div className="mt-2 rounded-md border border-honey/40 bg-honey/10 p-3 text-xs text-ink">
-      <p className="font-semibold text-honey">
-        Érzékeny mintát találtunk a tartalomban (pl. email, TAJ, adószám).
-      </p>
-      <p className="mt-1 text-ink-soft">
-        Alapból csak helyi modell dolgozhatná fel — de gyakran dummy/példa adat szerepel API-doksikban.
-        Ha biztos vagy benne, hogy nem valódi érzékeny adat, folytathatod külső modelllel is.
-      </p>
+      <p className="font-semibold text-honey">{t('sensitivityTitle')}</p>
+      <p className="mt-1 text-ink-soft">{t('sensitivityBody')}</p>
       <div className="mt-2 space-y-1">
         {props.findings.map((finding, index) => (
           <div
@@ -187,7 +192,7 @@ function SensitivityReviewBanner(props: {
             <span className="font-semibold">{finding.category}</span>
             <span className="text-ink-soft">
               {' '}
-              - {finding.line}. sor, {finding.column}. oszlop
+              {t('sensitivityLine', { line: finding.line, column: finding.column })}
             </span>
             <code className="mt-1 block break-all font-mono text-[11px] text-ink-soft">
               {finding.snippet}
@@ -202,7 +207,7 @@ function SensitivityReviewBanner(props: {
           onClick={props.onAccept}
           className="rounded-md border border-honey/50 bg-paper px-3 py-1.5 font-semibold text-honey disabled:opacity-50"
         >
-          Folytatás — dummy/példa adat
+          {t('continueDummy')}
         </button>
       </div>
     </div>
@@ -240,6 +245,7 @@ type TemplateDescriptor = {
   displayName: string
   description?: string
   activationHelp?: string
+  iconDataUrl?: string
   connectorType: 'gmail' | 'google_drive' | 'http_api'
   authMethods: Array<{ kind: 'api_key' | 'bearer' | 'basic' | 'service_oauth2' | 'user_delegated_oauth2' }>
   instanceFields: Array<{
@@ -250,7 +256,9 @@ type TemplateDescriptor = {
     secretAliasHint?: string
     hiddenInProvisioning?: boolean
     enumValues?: string[]
+    example?: string
   }>
+  credentialFields?: Array<{ name: string; label: string; secret?: boolean }>
   scopeCatalog: Array<{ value: string; label: string; description?: string; default?: boolean }>
   endpoints: Array<{ name: string; method: string; path: string; access: 'read' | 'write'; description?: string; default?: boolean }>
 }
@@ -283,25 +291,26 @@ function ProvisioningTopicShell({
   canManageCatalog: boolean
   isSuperadmin: boolean
 }) {
+  const t = useProvT()
   return (
     <SettingsSectionShell
-      ariaLabel="Konnektorok témái"
+      ariaLabel={t('topicsAria')}
       initialId="kapcsolatok"
       sections={[
         {
           id: 'kapcsolatok',
-          label: 'Konnektorok',
-          description: 'Az aktív konnektorok és a még nem aktivált draftok.',
+          label: t('tabConnectors'),
+          description: t('tabConnectorsDesc'),
           content: connections,
         },
         {
           id: 'sablonok',
-          label: 'Konnektor-sablonok',
+          label: t('tabTemplates'),
           description: canManageCatalog
             ? isSuperadmin
-              ? 'Platform- és tenant-katalógus. Superadmin platformra vagy bármely tenantra vehet fel sablont; tenant-admin csak a sajátjára.'
-              : 'Sablon-katalógus. Tenant-admin a saját tenantjára vehet fel új sablont.'
-            : 'Sablon-katalógus. Ezekből a sablonokból hozhatsz létre új konnektort.',
+              ? t('tabTemplatesSuper')
+              : t('tabTemplatesAdmin')
+            : t('tabTemplatesView'),
           content: templates,
         },
       ]}
@@ -322,15 +331,23 @@ function TemplateCatalogList({
   onLoad?: (template: ConnectorTemplateRow) => void
   onDeprecate?: (templateId: string) => void
 }) {
+  const t = useProvT()
   return (
     <div className="space-y-2">
-      <h3 className="text-base font-semibold">Elérhető sablonok</h3>
+      <h3 className="text-base font-semibold">{t('availableTemplates')}</h3>
       {templates.length === 0 ? (
-        <p className="text-sm text-ink-soft">Nincs elérhető sablon.</p>
+        <p className="text-sm text-ink-soft">{t('noTemplates')}</p>
       ) : (
         templates.map((template) => (
           <div key={template.id} className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
             <div className="flex flex-wrap items-center gap-2">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink/10 bg-white">
+                <ConnectorTemplateIcon
+                  iconDataUrl={template.descriptor.iconDataUrl}
+                  provider={template.key}
+                  className="h-5 w-5"
+                />
+              </span>
               <span className="font-semibold">{template.displayName}</span>
               <Badge tone="neutral">v{template.version}</Badge>
               <Badge tone={template.origin === 'builtin' ? 'success' : 'warning'}>
@@ -354,7 +371,7 @@ function TemplateCatalogList({
                   className="rounded-md border border-ink/20 px-2 py-1 font-semibold"
                   onClick={() => onLoad?.(template)}
                 >
-                  Betöltés
+                  {t('load')}
                 </button>
                 {template.origin === 'custom' && template.status === 'active' ? (
                   <button
@@ -455,23 +472,24 @@ function inferDocSourceType(sourceRef: string, contentType?: string): 'openapi' 
   return 'api_doc'
 }
 
-function sourceMethodLabel(method: SourceMethod): string {
+function sourceMethodLabel(method: SourceMethod, t: TranslateFn): string {
   switch (method) {
     case 'template':
-      return 'Sablon-katalógus'
+      return t('sourceTemplate')
     case 'document':
-      return 'OpenAPI'
+      return t('sourceOpenApi')
     case 'manual':
-      return 'Kézi JSON'
+      return t('sourceManual')
   }
 }
 
 function draftSourceProvenanceLabel(
   sourceType: 'api_doc' | 'openapi' | 'manual' | 'template',
   sourceMethod: SourceMethod,
+  t: TranslateFn,
 ): string | null {
   if (sourceMethod === 'document' && sourceType === 'openapi') {
-    return 'OpenAPI spec (automatikusan felismerve)'
+    return t('openapiAuto')
   }
   return null
 }
@@ -511,6 +529,7 @@ export function ProvisioningPanel({
   isSuperadmin: boolean
   activeTenantId: string | null
 }) {
+  const t = useProvT()
   const [drafts, setDrafts] = useState<DraftRow[]>([])
   const [catalogRows, setCatalogRows] = useState<
     Array<{ id: string; name: string; type: string; connectorMode?: 'fixed' | 'self_updating' }>
@@ -586,6 +605,10 @@ export function ProvisioningPanel({
   // Sablon scope: platform (tenantId null) vagy tenant-szintű.
   const [templateScope, setTemplateScope] = useState<'platform' | 'tenant'>('platform')
   const [templateTenantId, setTemplateTenantId] = useState('')
+  // Sablon ikon (feltöltött kép data URL-ként, a descriptorba mentve).
+  const [templateIconDataUrl, setTemplateIconDataUrl] = useState<string | null>(null)
+  const [templateIconTouched, setTemplateIconTouched] = useState(false)
+  const [templateIconError, setTemplateIconError] = useState<string | null>(null)
   const [tenantOptions, setTenantOptions] = useState<Array<{ id: string; name: string }>>([])
 
   const applyTemplateSelection = useCallback((template: ConnectorTemplateRow) => {
@@ -693,7 +716,7 @@ export function ProvisioningPanel({
         if (data.requiresSensitivityReview) {
           setSensitivityFindings(data.sensitivity.findings)
           setNotice(
-            'Érzékeny mintát találtunk a dokumentumban. Ha dummy/példa adat, folytathatod a gombbal.',
+            t('sensitiveFound'),
           )
           return
         }
@@ -706,7 +729,7 @@ export function ProvisioningPanel({
           setSourceType('openapi')
         }
         setNotice(
-          'OpenAPI spec felismerve — config-jelölt determinisztikusan kinyerve. Nézd át, majd hozd létre a draftot.',
+          t('openapiExtracted'),
         )
         setCreateStep('review')
       } else {
@@ -718,7 +741,7 @@ export function ProvisioningPanel({
   const onFetchDocFromUrl = useCallback(() => {
     const url = docUrl.trim()
     if (!url) {
-      setError('Add meg az API-doksi vagy OpenAPI URL-jét.')
+      setError(t('needDocUrl'))
       return
     }
     setError(null)
@@ -736,8 +759,8 @@ export function ProvisioningPanel({
         setSourceType(inferDocSourceType(data.sourceUrl, data.contentType))
         setNotice(
           data.truncated
-            ? 'Dokumentum letöltve (csonkolva a méretlimit miatt). Ellenőrizd a tartalmat, majd generálj config-jelöltet.'
-            : 'Dokumentum letöltve. Ellenőrizd a tartalmat alább, majd kattints a Config-jelölt generálására.',
+            ? t('docFetchedTrunc')
+            : t('docFetched'),
         )
       } else {
         setError(res.error)
@@ -750,12 +773,12 @@ export function ProvisioningPanel({
     event.target.value = ''
     if (!file) return
     if (file.size > MAX_API_DOC_FILE_BYTES) {
-      setError('A fájl nagyobb, mint 2 MiB.')
+      setError(t('fileTooBig'))
       return
     }
     const ext = `.${(file.name.split('.').pop() ?? '').toLowerCase()}`
     if (!(API_DOC_FILE_EXTENSIONS as readonly string[]).includes(ext)) {
-      setError('Csak OpenAPI JSON/YAML fájl tölthető fel.')
+      setError(t('onlyOpenApiFile'))
       return
     }
     setError(null)
@@ -766,7 +789,7 @@ export function ProvisioningPanel({
       setDocTruncated(false)
       setSensitivityFindings([])
       setSourceType(inferDocSourceType(file.name, file.type))
-      setNotice('Fájl betöltve. Ellenőrizd a tartalmat, majd generálj config-jelöltet.')
+      setNotice(t('fileLoaded'))
     })
   }, [])
 
@@ -815,6 +838,7 @@ export function ProvisioningPanel({
   const isGmailTemplate = selectedTemplateDescriptor?.connectorType === 'gmail'
   const isGoogleDriveTemplate = selectedTemplateDescriptor?.connectorType === 'google_drive'
   const isGoogleApiTemplate = isPlatformGoogleApiConnectorTemplateKey(selectedTemplateDescriptor?.key)
+  const isAgentMailTemplate = isTemplatePath && selectedTemplateDescriptor?.key === AGENTMAIL_TEMPLATE_KEY
   const effectiveTemplateAuthMethod =
     selectedTemplateDescriptor?.authMethods.find((m) => m.kind === templateAuthMethod)?.kind ??
     selectedTemplateDescriptor?.authMethods[0]?.kind ??
@@ -872,7 +896,7 @@ export function ProvisioningPanel({
   const checkCatalog = useCallback(() => {
     const url = selfUpdatingSpecUrl.trim()
     if (!url) {
-      setError('Add meg az API-leírás linkjét.')
+      setError(t('needSpecUrl'))
       return
     }
     setError(null)
@@ -883,7 +907,7 @@ export function ProvisioningPanel({
       const result = await previewSelfUpdatingCatalog({ catalogUrl: url })
       setCatalogChecking(false)
       if (!result.success) {
-        setError(result.error ?? 'A link vizsgálata nem sikerült.')
+        setError(result.error ?? t('linkCheckFailed'))
         return
       }
       const data = result.data as { isCatalog: boolean; leaves: CatalogLeafRow[] }
@@ -891,7 +915,7 @@ export function ProvisioningPanel({
       setCatalogIsCatalog(data.isCatalog)
       if (!data.isCatalog) {
         setCatalogLeaves([])
-        setNotice('Ez egyetlen API leírása, nem gyűjtőindex — mehet a sima „Konnektor létrehozása”.')
+        setNotice(t('singleNotCatalog'))
         return
       }
       setCatalogLeaves(data.leaves)
@@ -904,19 +928,19 @@ export function ProvisioningPanel({
           data.leaves.map((leaf) => [leaf.specUrl, prefix ? `${prefix} – ${leaf.name}` : leaf.name]),
         ),
       )
-      setNotice(`Gyűjtőindex: ${data.leaves.length} API-leírás található benne. Válaszd ki, melyikből legyen kapcsolat.`)
+      setNotice(t('catalogFound', { count: data.leaves.length }))
     })
   }, [selfUpdatingSpecUrl, name])
 
   const createFromCatalog = useCallback(() => {
     const selected = catalogLeaves.filter((leaf) => catalogSelected[leaf.specUrl])
     if (selected.length === 0) {
-      setError('Válassz legalább egy API-leírást a listából.')
+      setError(t('needAtLeastOne'))
       return
     }
     for (const leaf of selected) {
       if (!(catalogNames[leaf.specUrl] ?? '').trim()) {
-        setError('Minden kiválasztott sornak adj nevet.')
+        setError(t('needLeafNames'))
         return
       }
     }
@@ -934,7 +958,7 @@ export function ProvisioningPanel({
         sharedApiKey: catalogKeyMode === 'shared' ? catalogSharedKey.trim() || undefined : undefined,
       })
       if (!result.success) {
-        setError(result.error ?? 'A kapcsolatok létrehozása nem sikerült.')
+        setError(result.error ?? t('batchFailed'))
         return
       }
       const data = result.data as { items: CatalogBatchRow[] }
@@ -942,8 +966,8 @@ export function ProvisioningPanel({
       const okCount = data.items.filter((item) => item.ok).length
       setNotice(
         okCount === data.items.length
-          ? `${okCount} kapcsolat létrejött. A panelen jóvá kell hagyni a linkeket és a partner megbízhatóságát, mielőtt frissítést kereshetsz.`
-          : `${okCount}/${data.items.length} kapcsolat jött létre — a hibás sorokat lásd alább.`,
+          ? t('batchAllOk', { count: okCount })
+          : t('batchPartial', { ok: okCount, total: data.items.length }),
       )
       reload()
     })
@@ -958,7 +982,7 @@ export function ProvisioningPanel({
     if (connectionKind === 'self_updating') {
       // Gyűjtőindexből nem születhet önálló kapcsolat: a leaf-választó a helyes út.
       if (catalogChecked && catalogIsCatalog) {
-        setError('Ez gyűjtőindex (katalógus) — önálló kapcsolat nem hozható létre belőle. Használd a fenti „Kiválasztott kapcsolatok létrehozása” gombot.')
+        setError(t('catalogNotSoloCreate'))
         return
       }
       setError(null)
@@ -970,7 +994,7 @@ export function ProvisioningPanel({
           specUrl: selfUpdatingSpecUrl,
         })
         if (!result.success) {
-          setError(result.error ?? 'A kapcsolat létrehozása nem sikerült.')
+          setError(result.error ?? t('createFailed'))
           return
         }
         const connectorId = (result.data as { connectorId: string }).connectorId
@@ -978,14 +1002,14 @@ export function ProvisioningPanel({
         setSuWizardVersionId(null)
         setSuWizardMaxStepIndex(stepOrder.indexOf('su_link'))
         setCreateStep('su_link')
-        setNotice('Kapcsolat létrehozva — jóvá kell hagyni a linket.')
+        setNotice(t('createdNeedLink'))
         await refreshSuWizardRow(connectorId)
       })
       return
     }
     if (isTemplatePath) {
       if (!selectedTemplate) {
-        setError('Válassz konnektor-sablont.')
+        setError(t('pickTemplate'))
         return
       }
       run(async () => {
@@ -1000,14 +1024,14 @@ export function ProvisioningPanel({
         })
         if (result.success) closeCreateDraftForm()
         return result
-      }, 'Sablonból draft konnektor létrehozva.')
+      }, t('draftFromTemplate'))
       return
     }
     let parsed: unknown
     try {
       parsed = JSON.parse(configText)
     } catch {
-      setError('A config nem érvényes JSON.')
+      setError(t('invalidJson'))
       return
     }
     run(async () => {
@@ -1020,7 +1044,7 @@ export function ProvisioningPanel({
       })
       if (result.success) closeCreateDraftForm()
       return result
-    }, 'Konnektor létrehozva.')
+    }, t('connectorCreated'))
   }, [
     catalogChecked,
     catalogIsCatalog,
@@ -1051,7 +1075,7 @@ export function ProvisioningPanel({
     connectionKind === 'self_updating'
       ? name.trim().length > 0
       : isTemplatePath
-        ? !!selectedTemplate
+        ? !!selectedTemplate && !isAgentMailTemplate
         : name.trim().length > 0
   const selfUpdatingReady =
     canEnterSource && !!selfUpdatingSpecUrl.trim()
@@ -1067,21 +1091,25 @@ export function ProvisioningPanel({
     setCreateStep(step)
   }
   const createDisabledReason = pending
-    ? 'Folyamatban lévő művelet miatt várakozik.'
+    ? t('pendingOp')
     : connectionKind === 'fixed' && isTemplatePath && !selectedTemplate
-      ? 'Válassz konnektor-sablont.'
+      ? t('pickTemplate')
       : !isTemplatePath && connectionKind !== 'self_updating' && !name.trim()
-        ? 'Adj nevet a konnektornak.'
+        ? t('needName')
         : connectionKind === 'self_updating' && !selfUpdatingSpecUrl.trim()
-          ? 'Add meg az API-leírás linkjét.'
+          ? t('needSpecUrl')
         : connectionKind === 'self_updating' && catalogChecked && catalogIsCatalog
-          ? 'Ez gyűjtőindex — a fenti leaf-választóval hozd létre a kapcsolatokat, önálló „Konnektor létrehozása” itt nem mehet.'
+          ? t('catalogNoSolo')
         : connectionKind === 'fixed' && isTemplatePath && !templateReady
-          ? 'Töltsd ki a sablon kötelező mezőit.'
+          ? t('fillRequired')
           : connectionKind === 'fixed' && !isTemplatePath && !configText.trim()
-            ? 'Előbb generálj vagy adj meg config-deskriptort.'
+            ? t('needConfig')
             : null
-  const reviewProvenanceHint = draftSourceProvenanceLabel(sourceType, isTemplatePath ? 'template' : sourceMethod)
+  const reviewProvenanceHint = draftSourceProvenanceLabel(
+    sourceType,
+    isTemplatePath ? 'template' : sourceMethod,
+    t,
+  )
 
   const advanceSuWizard = (step: CreateStep, noticeText: string) => {
     const nextIndex = stepOrder.indexOf(step)
@@ -1097,10 +1125,10 @@ export function ProvisioningPanel({
     startTransition(async () => {
       const result = await approveSelfUpdatingSource({ connectorId: suWizardConnectorId })
       if (!result.success) {
-        setError(result.error ?? 'A link jóváhagyása nem sikerült.')
+        setError(result.error ?? t('linkApproveFailed'))
         return
       }
-      advanceSuWizard('su_trust', 'A link jóváhagyva.')
+      advanceSuWizard('su_trust', t('linkApproved'))
       await refreshSuWizardRow(suWizardConnectorId)
     })
   }
@@ -1112,10 +1140,10 @@ export function ProvisioningPanel({
     startTransition(async () => {
       const result = await trustSelfUpdatingPartner({ connectorId: suWizardConnectorId })
       if (!result.success) {
-        setError(result.error ?? 'A partner megbízhatónak minősítése nem sikerült.')
+        setError(result.error ?? t('trustFailed'))
         return
       }
-      advanceSuWizard('su_sync', 'A partner megbízhatónak minősítve.')
+      advanceSuWizard('su_sync', t('trusted'))
       await refreshSuWizardRow(suWizardConnectorId)
     })
   }
@@ -1127,7 +1155,7 @@ export function ProvisioningPanel({
     startTransition(async () => {
       const result = await syncSelfUpdatingConnector({ connectorId: suWizardConnectorId })
       if (!result.success) {
-        setError(result.error ?? 'A frissítés nem sikerült.')
+        setError(result.error ?? t('syncFailed'))
         return
       }
       const data = result.data as {
@@ -1143,7 +1171,7 @@ export function ProvisioningPanel({
       }
       const row = await refreshSuWizardRow(suWizardConnectorId)
       if (data.kind === 'proposed' && data.autoApproved) {
-        finishSuWizard('Az OpenAPI-kapcsolat aktív és használható.')
+        finishSuWizard(t('openapiLive'))
         return
       }
       if (data.kind === 'proposed' && data.versionId) {
@@ -1152,7 +1180,7 @@ export function ProvisioningPanel({
         return
       }
       if (row?.activeSpecVersionId) {
-        finishSuWizard('Az OpenAPI-kapcsolat aktív és használható.')
+        finishSuWizard(t('openapiLive'))
         return
       }
       setNotice(feedback.message)
@@ -1169,26 +1197,10 @@ export function ProvisioningPanel({
         versionId: suWizardVersionId,
       })
       if (!result.success) {
-        setError(result.error ?? 'A változások átvétele nem sikerült.')
+        setError(result.error ?? t('applyFailed'))
         return
       }
-      finishSuWizard('Az OpenAPI-kapcsolat aktív és használható.')
-    })
-  }
-
-  const syncSelfUpdating = (connectorId: string) => {
-    setError(null)
-    setNotice(null)
-    startTransition(async () => {
-      const result = await syncSelfUpdatingConnector({ connectorId })
-      if (!result.success) {
-        setError(result.error ?? 'A frissítés nem sikerült.')
-        return
-      }
-      const feedback = selfUpdatingSyncFeedback(result.data)
-      if (feedback.ok) setNotice(feedback.message)
-      else setError(feedback.message)
-      reload()
+      finishSuWizard(t('openapiLive'))
     })
   }
 
@@ -1197,17 +1209,25 @@ export function ProvisioningPanel({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           {inPanelModal ? null : (
-            <h1 className="font-display text-2xl font-semibold tracking-tight">Konnektorok</h1>
+            <h1 className="font-display text-2xl font-semibold tracking-tight">{t('title')}</h1>
           )}
         </div>
         {!showCreateDraftForm ? (
-          <button
-            type="button"
-            onClick={() => setShowCreateDraftForm(true)}
-            className="ml-auto inline-flex shrink-0 items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-card transition hover:bg-coral-deep"
-          >
-            Új konnektor
-          </button>
+          <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
+            <Link
+              href="/control-plane/provisioning/agentmail"
+              className="inline-flex items-center rounded-md border border-ink/15 px-4 py-2 text-sm font-semibold text-ink-soft transition hover:border-coral/40 hover:text-ink"
+            >
+              Agent postafiókok
+            </Link>
+            <button
+              type="button"
+              onClick={() => setShowCreateDraftForm(true)}
+              className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-card transition hover:bg-coral-deep"
+            >
+              {t('newConnector')}
+            </button>
+          </div>
         ) : null}
       </div>
 
@@ -1219,14 +1239,14 @@ export function ProvisioningPanel({
       ) : null}
 
       {showCreateDraftForm ? (
-      <Card title="Új konnektor">
+      <Card title={t('newConnector')}>
         <div className="mb-4 flex justify-end">
           <button
             type="button"
             onClick={closeCreateDraftForm}
             className="rounded-md border border-ink/15 px-3 py-1.5 text-xs font-semibold text-ink-soft transition hover:border-ink/30 hover:text-ink"
           >
-            Bezárás
+            {t('close')}
           </button>
         </div>
         <div className="grid gap-5 lg:grid-cols-[15rem_1fr]">
@@ -1234,36 +1254,36 @@ export function ProvisioningPanel({
             {[
               {
                 id: 'basics' as const,
-                label: 'Alapadatok',
+                label: t('basics'),
                 hint:
                   `${connectionKind === 'self_updating'
                     ? 'OpenAPI'
-                    : 'Általános konnektor'}${effectiveName.trim() ? ` · ${effectiveName.trim()}` : ''}`,
+                    : t('generalKind')}${effectiveName.trim() ? ` · ${effectiveName.trim()}` : ''}`,
               },
               {
                 id: 'source' as const,
-                label: 'Forrás',
+                label: t('source'),
                 hint:
                   connectionKind === 'self_updating'
-                    ? 'API-leírás + kulcs (opcionális)'
+                    ? t('sourceApiKey')
                     : isTemplatePath
-                    ? `Sablon · ${selectedTemplate?.displayName ?? '—'}`
+                    ? t('templateDot', { name: selectedTemplate?.displayName ?? '—' })
                     : sourceMethod === 'document'
                       ? 'OpenAPI'
-                      : 'Kézi JSON',
+                      : t('sourceManual'),
               },
               ...(connectionKind === 'self_updating'
                 ? [
-                    { id: 'su_link' as const, label: 'Link jóváhagyása', hint: 'Partner API-cím' },
-                    { id: 'su_trust' as const, label: 'Partner bizalma', hint: 'Megbízható minősítés' },
-                    { id: 'su_sync' as const, label: 'Frissítés keresése', hint: 'OpenAPI letöltés' },
-                    { id: 'su_version' as const, label: 'Változások átvétele', hint: 'Első verzió élesítése' },
+                    { id: 'su_link' as const, label: t('suLink'), hint: t('suLinkHint') },
+                    { id: 'su_trust' as const, label: t('suTrust'), hint: t('suTrustHint') },
+                    { id: 'su_sync' as const, label: t('suSync'), hint: t('suSyncHint') },
+                    { id: 'su_version' as const, label: t('suVersion'), hint: t('suVersionHint') },
                   ]
                 : [
                     {
                       id: 'review' as const,
-                      label: 'Ellenőrzés',
-                      hint: configText.trim() ? 'Config-jelölt kész' : 'Config-jelölt kell',
+                      label: t('review'),
+                      hint: configText.trim() ? t('configReady') : t('configNeeded'),
                     },
                   ]),
             ].map((step, index) => {
@@ -1318,10 +1338,9 @@ export function ProvisioningPanel({
             {createStep === 'basics' ? (
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-base font-semibold">1. Milyen konnektort hozol létre?</h3>
+                  <h3 className="text-base font-semibold">{t('step1Title')}</h3>
                   <p className="mt-1 text-xs text-ink-soft">
-                    Először válaszd ki a típust. Sablonból a konnektor a sablon nevét kapja;
-                    nevet csak egyéb kapcsolatnál kell adni.
+                    {t('step1Body')}
                   </p>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -1334,10 +1353,9 @@ export function ProvisioningPanel({
                         : 'border-ink/12 bg-paper hover:border-coral/25'
                     }`}
                   >
-                    <span className="block text-sm font-semibold">Általános konnektor</span>
+                    <span className="block text-sm font-semibold">{t('general')}</span>
                     <span className="mt-1 block text-xs text-ink-soft">
-                      Sablon-katalógusból vagy egyedi kapcsolatként, a szokásos onboarding
-                      folyamatban.
+                      {t('generalHint')}
                     </span>
                   </button>
                   <button
@@ -1351,8 +1369,7 @@ export function ProvisioningPanel({
                   >
                     <span className="block text-sm font-semibold">OpenAPI-kapcsolat</span>
                     <span className="mt-1 block text-xs text-ink-soft">
-                      A partner API-leírásának linkje kell; kulcs csak akkor, ha az API
-                      kér. A későbbi változásokat egy gombbal, átnézés után veheted át.
+                      {t('openapiKindHint')}
                     </span>
                   </button>
                 </div>
@@ -1371,9 +1388,9 @@ export function ProvisioningPanel({
                           : 'border-ink/12 bg-paper hover:border-coral/25'
                       }`}
                     >
-                      <span className="block text-sm font-semibold">Sablonból</span>
+                      <span className="block text-sm font-semibold">{t('fromTemplate')}</span>
                       <span className="mt-1 block text-xs text-ink-soft">
-                        Válassz a sablon-katalógusból — a konnektor a sablon nevét kapja.
+                        {t('fromTemplateHint')}
                       </span>
                     </button>
                     <button
@@ -1389,9 +1406,9 @@ export function ProvisioningPanel({
                           : 'border-ink/12 bg-paper hover:border-coral/25'
                       }`}
                     >
-                      <span className="block text-sm font-semibold">Egyéb kapcsolat</span>
+                      <span className="block text-sm font-semibold">{t('customConnection')}</span>
                       <span className="mt-1 block text-xs text-ink-soft">
-                        Nincs hozzá sablon — egyedi onboarding felfedezéssel vagy doksiból.
+                        {t('customConnectionHint')}
                       </span>
                     </button>
                   </div>
@@ -1399,7 +1416,7 @@ export function ProvisioningPanel({
                 {connectionKind === 'fixed' && fixedSource === 'template' ? (
                   <div className="space-y-2">
                     <label className="block text-sm">
-                      <span className="mb-1 block text-ink-soft">Sablon-katalógus</span>
+                      <span className="mb-1 block text-ink-soft">{t('templateCatalog')}</span>
                       <select
                         className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
                         value={selectedTemplate?.id ?? ''}
@@ -1417,11 +1434,23 @@ export function ProvisioningPanel({
                       </select>
                     </label>
                     {templates.length === 0 ? (
-                      <p className="text-xs text-ink-soft">Nincs elérhető konnektor-sablon.</p>
+                      <p className="text-xs text-ink-soft">{t('noConnectorTemplates')}</p>
+                    ) : isAgentMailTemplate ? (
+                      <div className="rounded-md border border-coral/30 bg-coral/8 px-3 py-3 text-sm">
+                        <p className="text-ink">
+                          Az agent saját postafiókjait (AgentMail) egy külön, egyszerűbb oldalon állítod be:
+                          API kulcs, postafiók létrehozása, és hogy melyik agent használhatja.
+                        </p>
+                        <Link
+                          href="/control-plane/provisioning/agentmail"
+                          className="mt-2 inline-block rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-white"
+                        >
+                          Agent postafiókok beállítása →
+                        </Link>
+                      </div>
                     ) : (
                       <p className="text-xs text-ink-soft">
-                        Név: <span className="font-semibold">{selectedTemplate?.displayName}</span>{' '}
-                        — a sablon nevét használjuk, külön nevet nem kell adni.
+                        {t('usesTemplateName', { name: selectedTemplate?.displayName ?? '' })}
                       </p>
                     )}
                   </div>
@@ -1429,7 +1458,7 @@ export function ProvisioningPanel({
                 {connectionKind === 'self_updating' ||
                 (connectionKind === 'fixed' && fixedSource === 'custom') ? (
                   <label className="block text-sm">
-                    <span className="mb-1 block text-ink-soft">Név</span>
+                    <span className="mb-1 block text-ink-soft">{t('name')}</span>
                     <input
                       className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
                       value={name}
@@ -1444,15 +1473,13 @@ export function ProvisioningPanel({
             {createStep === 'source' && connectionKind === 'self_updating' ? (
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-base font-semibold">2. API-leírás és kulcs</h3>
+                  <h3 className="text-base font-semibold">{t('step2ApiTitle')}</h3>
                   <p className="mt-1 text-xs text-ink-soft">
-                    A nyilvános API-leírás linkje kell; kulcs csak akkor, ha a partner
-                    API-ja kér. A létrehozás után a varázsló végigvezet a link-jóváhagyás,
-                    partner-bizalom, frissítés-keresés és első verzió átvétel lépésein.
+                    {t('step2ApiBody')}
                   </p>
                 </div>
                 <label className="block text-sm">
-                  <span className="mb-1 block font-semibold">Hozzáférési kulcs (opcionális)</span>
+                  <span className="mb-1 block font-semibold">{t('accessKeyOptional')}</span>
                   <input
                     type="password"
                     value={selfUpdatingApiKey}
@@ -1461,11 +1488,11 @@ export function ProvisioningPanel({
                     autoComplete="new-password"
                   />
                   <span className="mt-1 block text-xs text-ink-soft">
-                    Csak akkor kell, ha a partner API-ja kulcsot kér. Biztonságos titoktárolóban marad; az adatbázisba soha nem kerül. Kulcs nélküli, nyilvános API-nál üresen hagyható.
+                    {t('accessKeyHint')}
                   </span>
                 </label>
                 <label className="block text-sm">
-                  <span className="mb-1 block font-semibold">API-leírás linkje</span>
+                  <span className="mb-1 block font-semibold">{t('specLink')}</span>
                   <input
                     value={selfUpdatingSpecUrl}
                     onChange={(e) => {
@@ -1477,7 +1504,7 @@ export function ProvisioningPanel({
                     placeholder="https://partner.example/openapi.json"
                   />
                   <span className="mt-1 block text-xs text-ink-soft">
-                    A képességlistát a varázsló „Frissítés keresése” lépésénél töltjük le.
+                    {t('capabilityOnSync')}
                   </span>
                 </label>
                 <div className="rounded-md border border-ink/12 bg-card p-3">
@@ -1488,23 +1515,23 @@ export function ProvisioningPanel({
                       onClick={checkCatalog}
                       className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
                     >
-                      {catalogChecking ? 'Vizsgálat…' : 'Gyűjtőindex? — link vizsgálata'}
+                      {catalogChecking ? t('checking') : t('checkCatalog')}
                     </button>
                     <span className="text-xs text-ink-soft">
-                      Ha a link katalógust (több API-leírást) tartalmaz, itt választhatod ki, melyikből legyen kapcsolat.
+                      {t('catalogHelp')}
                     </span>
                   </div>
 
                   {catalogChecked && !catalogIsCatalog ? (
                     <p className="mt-2 text-xs text-ink-soft">
-                      Ez egyetlen API leírása — a lenti „Konnektor létrehozása” gombbal hozd létre.
+                      {t('singleApi')}
                     </p>
                   ) : null}
 
                   {catalogChecked && catalogIsCatalog ? (
                     <div className="mt-3 space-y-3">
                       <p className="text-xs font-semibold">
-                        Gyűjtőindex ({catalogLeaves.length} API-leírás) — válaszd ki, melyikből legyen kapcsolat:
+                        {t('catalogLeaves', { count: catalogLeaves.length })}
                       </p>
                       <div className="max-h-64 space-y-2 overflow-y-auto">
                         {catalogLeaves.map((leaf) => (
@@ -1537,7 +1564,7 @@ export function ProvisioningPanel({
                             </label>
                             {catalogKeyMode === 'per_leaf' && (catalogSelected[leaf.specUrl] ?? false) ? (
                               <label className="mt-2 block text-xs">
-                                <span className="mb-1 block text-ink-soft">Kulcs ehhez a kapcsolathoz (opcionális)</span>
+                                <span className="mb-1 block text-ink-soft">{t('leafKey')}</span>
                                 <input
                                   type="password"
                                   value={catalogLeafKeys[leaf.specUrl] ?? ''}
@@ -1554,7 +1581,7 @@ export function ProvisioningPanel({
                       </div>
 
                       <div className="space-y-2 text-sm">
-                        <span className="block text-xs font-semibold">Hozzáférési kulcsok</span>
+                        <span className="block text-xs font-semibold">{t('accessKeys')}</span>
                         <label className="flex items-start gap-2 text-xs">
                           <input
                             type="radio"
@@ -1563,10 +1590,9 @@ export function ProvisioningPanel({
                             className="mt-0.5"
                           />
                           <span>
-                            <strong>Közös kulcs minden kapcsolathoz</strong>
+                            <strong>{t('sharedKey')}</strong>
                             <span className="block text-ink-soft">
-                              Egy kulcs (pl. POSnavigator pn_-kulcs) minden kiválasztott API-ra. Minden kapcsolat a
-                              saját titok-slotjába kapja — később egyenként cserélhető.
+                              {t('sharedKeyHint')}
                             </span>
                           </span>
                         </label>
@@ -1576,7 +1602,7 @@ export function ProvisioningPanel({
                             value={catalogSharedKey}
                             onChange={(e) => setCatalogSharedKey(e.target.value)}
                             autoComplete="new-password"
-                            placeholder="Közös hozzáférési kulcs (opcionális)"
+                            placeholder={t('sharedKeyPlaceholder')}
                             className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm"
                           />
                         ) : null}
@@ -1588,8 +1614,8 @@ export function ProvisioningPanel({
                             className="mt-0.5"
                           />
                           <span>
-                            <strong>Külön kulcs kapcsolatonként</strong>
-                            <span className="block text-ink-soft">Minden kiválasztott sor alatt külön kulcs adható meg.</span>
+                            <strong>{t('perLeafKey')}</strong>
+                            <span className="block text-ink-soft">{t('perLeafKeyHint')}</span>
                           </span>
                         </label>
                         <label className="flex items-start gap-2 text-xs">
@@ -1600,8 +1626,8 @@ export function ProvisioningPanel({
                             className="mt-0.5"
                           />
                           <span>
-                            <strong>Kulcs nélkül</strong>
-                            <span className="block text-ink-soft">Nyilvános, kulcsot nem kérő API-khoz.</span>
+                            <strong>{t('noKey')}</strong>
+                            <span className="block text-ink-soft">{t('noKeyHint')}</span>
                           </span>
                         </label>
                       </div>
@@ -1612,7 +1638,7 @@ export function ProvisioningPanel({
                         onClick={createFromCatalog}
                         className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
                       >
-                        Kiválasztott kapcsolatok létrehozása
+                        {t('createSelected')}
                       </button>
 
                       {catalogBatch ? (
@@ -1625,9 +1651,9 @@ export function ProvisioningPanel({
                               }`}
                             >
                               {item.ok ? (
-                                <span>✓ <strong>{item.name}</strong> létrejött — link-jóváhagyás és bizalom még hátravan.</span>
+                                <span>✓ {t('itemCreated', { name: item.name })}</span>
                               ) : (
-                                <span>✗ <strong>{item.name}</strong>: {item.error ?? 'nem sikerült'}</span>
+                                <span>✗ {t('itemFailed', { name: item.name, error: item.error ?? t('failedFallback') })}</span>
                               )}
                             </li>
                           ))}
@@ -1637,9 +1663,7 @@ export function ProvisioningPanel({
                   ) : null}
                 </div>
                 <p className="rounded-md border border-honey/35 bg-honey/8 p-3 text-xs">
-                  A linket általában egy másik kollégának kell jóváhagynia, mielőtt élesítjük — így biztos,
-                  hogy nem elgépelt vagy hamis címről olvasunk. Platform-superadmin egyedül is jóváhagyhatja
-                  és élesítheti. A varázsló lépései ugyanazok, mint a kártyán a Részletek alatt.
+                  {t('dualControlHint')}
                 </p>
               </div>
             ) : null}
@@ -1647,16 +1671,16 @@ export function ProvisioningPanel({
             {createStep === 'su_link' && connectionKind === 'self_updating' ? (
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-base font-semibold">3. Link jóváhagyása</h3>
+                  <h3 className="text-base font-semibold">{t('step3Link')}</h3>
                   <p className="mt-1 text-xs text-ink-soft">
-                    Ellenőrizd, hogy a partner API-leírásának címe helyes és megbízható forrásból származik.
+                    {t('step3LinkBody')}
                   </p>
                 </div>
                 <p className="break-all rounded-md border border-ink/12 bg-card px-3 py-2 font-mono text-xs">
                   {suWizardRow?.specUrl ?? selfUpdatingSpecUrl}
                 </p>
                 {suWizardRow?.urlApproved ? (
-                  <p className="text-xs text-sage">✓ A link már jóváhagyva.</p>
+                  <p className="text-xs text-sage">{t('linkAlready')}</p>
                 ) : null}
               </div>
             ) : null}
@@ -1664,13 +1688,13 @@ export function ProvisioningPanel({
             {createStep === 'su_trust' && connectionKind === 'self_updating' ? (
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-base font-semibold">4. Partner megbízhatónak minősítése</h3>
+                  <h3 className="text-base font-semibold">{t('step4Trust')}</h3>
                   <p className="mt-1 text-xs text-ink-soft">
-                    Csak megbízhatónak minősített partnernél töltjük le és élesítjük az API-változásokat.
+                    {t('step4TrustBody')}
                   </p>
                 </div>
                 {suWizardRow?.trusted ? (
-                  <p className="text-xs text-sage">✓ A partner már megbízhatónak minősített.</p>
+                  <p className="text-xs text-sage">{t('trustAlready')}</p>
                 ) : null}
               </div>
             ) : null}
@@ -1678,14 +1702,13 @@ export function ProvisioningPanel({
             {createStep === 'su_sync' && connectionKind === 'self_updating' ? (
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-base font-semibold">5. Frissítés keresése</h3>
+                  <h3 className="text-base font-semibold">{t('step5Sync')}</h3>
                   <p className="mt-1 text-xs text-ink-soft">
-                    Letöltjük a partner OpenAPI-leírását, és javasolt képességlistát készítünk az első
-                    éles verzióhoz.
+                    {t('step5SyncBody')}
                   </p>
                 </div>
                 {suWizardRow?.activeSpecVersionId ? (
-                  <p className="text-xs text-sage">✓ Van már átvett verzió — a kapcsolat használható.</p>
+                  <p className="text-xs text-sage">{t('versionAlready')}</p>
                 ) : null}
               </div>
             ) : null}
@@ -1693,29 +1716,28 @@ export function ProvisioningPanel({
             {createStep === 'su_version' && connectionKind === 'self_updating' ? (
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-base font-semibold">6. Változások átvétele</h3>
+                  <h3 className="text-base font-semibold">{t('step6Apply')}</h3>
                   <p className="mt-1 text-xs text-ink-soft">
-                    Nézd át az első képességlistát. Amíg nem hagyod jóvá, a kapcsolat nem lesz agenthez
-                    rendelhető.
+                    {t('step6ApplyBody')}
                   </p>
                 </div>
                 {suWizardProposal ? (
                   <div className="rounded-md border border-ink/12 bg-card p-3 text-xs">
                     <p className="font-semibold">
-                      Javasolt verzió v{suWizardProposal.versionNo}
+                      {t('proposedVersion', { version: suWizardProposal.versionNo })}
                     </p>
                     <p className="mt-1 text-ink-soft">
-                      {suWizardProposal.capabilities.length} képesség
+                      {t('capabilityCount', { count: suWizardProposal.capabilities.length })}
                       {suWizardProposal.diffSummary?.added.length
-                        ? ` · ${suWizardProposal.diffSummary.added.length} új`
+                        ? t('addedCount', { count: suWizardProposal.diffSummary.added.length })
                         : ''}
                       {suWizardProposal.diffSummary?.breaking.length
-                        ? ` · ${suWizardProposal.diffSummary.breaking.length} törésveszélyes`
+                        ? t('breakingCount', { count: suWizardProposal.diffSummary.breaking.length })
                         : ''}
                     </p>
                   </div>
                 ) : (
-                  <p className="text-xs text-ink-soft">Előbb futtasd a frissítés-keresést.</p>
+                  <p className="text-xs text-ink-soft">{t('runSyncFirst')}</p>
                 )}
               </div>
             ) : null}
@@ -1723,10 +1745,9 @@ export function ProvisioningPanel({
             {createStep === 'source' && connectionKind === 'fixed' && isTemplatePath ? (
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-base font-semibold">2. Sablon beállításai</h3>
+                  <h3 className="text-base font-semibold">{t('step2Template')}</h3>
                   <p className="mt-1 text-xs text-ink-soft">
-                    {selectedTemplate?.displayName} — állítsd be az auth-módot és a kötelező
-                    mezőket. A konnektor a sablon nevét kapja.
+                    {t('step2TemplateBody', { name: selectedTemplate?.displayName ?? '' })}
                   </p>
                 </div>
                 <div className="space-y-3 rounded-md border border-sage/25 bg-sage/5 p-3">
@@ -1734,33 +1755,38 @@ export function ProvisioningPanel({
                     <div>
                       <span className="block text-sm font-semibold">Konnektor-sablonok</span>
                       <p className="mt-1 text-xs text-ink-soft">
-                        A sablon provider-metaadatból és instance-mezőkből önhordó draft configot készít.
+                        {t('templateSelfContained')}
                       </p>
                     </div>
                     <Badge tone="neutral">{templates.length} sablon</Badge>
                   </div>
 
                   {templates.length === 0 ? (
-                    <p className="text-xs text-ink-soft">Nincs elérhető konnektor-sablon.</p>
+                    <p className="text-xs text-ink-soft">{t('noConnectorTemplates')}</p>
                   ) : null}
 
                   {selectedTemplateDescriptor ? (
                           <div className="space-y-3">
                             {isGoogleDriveTemplate && !googleDriveOauthConfigured ? (
                               <p className="rounded-md border border-amber/35 bg-amber/10 px-3 py-2 text-xs text-ink-soft">
-                                A Google Drive sablonhoz a platform Drive OAuth beállítása kell
-                                (Platform · Beállítások → Google Drive OAuth).
+                                {t('driveOauthNeeded')}
                               </p>
                             ) : null}
                             {isGoogleApiTemplate && !googleApiOauthConfigured ? (
                               <p className="rounded-md border border-amber/35 bg-amber/10 px-3 py-2 text-xs text-ink-soft">
-                                A Google Analytics / Search Console / Ads sablonokhoz a platform
-                                Google API OAuth beállítása kell (Platform · Beállítások → Google
-                                Analytics / Search Console / Ads).
+                                {t('googleApiOauthNeeded')}
                               </p>
                             ) : null}
                             {selectedTemplate.description ? (
                               <p className="text-xs text-ink-soft">{selectedTemplate.description}</p>
+                            ) : null}
+                            {selectedTemplateDescriptor.activationHelp ? (
+                              <details open className="rounded-md border border-sage/30 bg-sage/8 p-3 text-xs">
+                                <summary className="cursor-pointer font-semibold text-sage">{t('setupHelp')}</summary>
+                                <p className="mt-2 whitespace-pre-line text-ink-soft">
+                                  {selectedTemplateDescriptor.activationHelp}
+                                </p>
+                              </details>
                             ) : null}
 
                             <div>
@@ -1800,7 +1826,7 @@ export function ProvisioningPanel({
                                     <label key={field.name} className="text-xs">
                                       <span className="mb-1 block text-ink-soft">
                                         {field.label}
-                                        {field.required === false ? ' (opcionális)' : ''}
+                                        {field.required === false ? t('optional') : ''}
                                       </span>
                                       {field.type === 'enum' && field.enumValues ? (
                                         <select
@@ -1810,7 +1836,7 @@ export function ProvisioningPanel({
                                             setTemplateValues((prev) => ({ ...prev, [field.name]: e.target.value }))
                                           }
                                         >
-                                          <option value="">Válassz…</option>
+                                          <option value="">{t('choose')}</option>
                                           {field.enumValues.map((option) => (
                                             <option key={option} value={option}>
                                               {option}
@@ -1831,7 +1857,7 @@ export function ProvisioningPanel({
                                           placeholder={
                                             field.type === 'secret'
                                               ? field.secretAliasHint ?? 'secret-alias'
-                                              : field.name
+                                              : field.example ?? field.name
                                           }
                                         />
                                       )}
@@ -1913,15 +1939,15 @@ export function ProvisioningPanel({
               {createStep === 'source' && connectionKind === 'fixed' && !isTemplatePath ? (
                 <div className="space-y-4">
                   <div>
-                    <h3 className="text-base font-semibold">2. Egyéb kapcsolat forrása</h3>
+                    <h3 className="text-base font-semibold">{t('step2Custom')}</h3>
                     <p className="mt-1 text-xs text-ink-soft">
-                      A folyamat egy config-jelöltig visz. A draftot csak a következő lépésben hozod létre.
+                      {t('step2CustomBody')}
                     </p>
                   </div>
                   <div className="grid gap-2 sm:grid-cols-3">
                     {[
-                      { id: 'document' as const, label: 'OpenAPI', hint: 'Spec feltöltés vagy URL' },
-                      { id: 'manual' as const, label: 'Kézi JSON', hint: 'Saját deszkriptor' },
+                      { id: 'document' as const, label: t('openapi'), hint: t('openapiHint') },
+                      { id: 'manual' as const, label: t('sourceManual'), hint: t('manualJsonHint') },
                     ].map((method) => (
                       <button
                         key={method.id}
@@ -1949,15 +1975,14 @@ export function ProvisioningPanel({
                 {sourceMethod === 'document' ? (
                   <div className="rounded-md border border-ink/12 bg-paper p-3">
                     <span className="mb-1 block text-sm font-semibold">
-                      Generálás API-doksiból (provisioning-asszisztens)
+                      {t('fromDoc')}
                     </span>
                     <div className="mb-3 rounded-md border border-sage/25 bg-sage/5 p-3">
                       <span className="mb-1 block text-xs font-semibold text-ink">
-                        1. lépés — letöltés URL-ről
+                        {t('fetchStep')}
                       </span>
                       <p className="mb-2 text-xs text-ink-soft">
-                        Add meg a publikus OpenAPI vagy API-doksi URL-t. A platform letölti, te
-                        átnézed a tartalmat, majd a provisioning-asszisztens generál config-jelöltet.
+                        {t('fetchStepBody')}
                       </p>
                       <div className="flex flex-col gap-2 sm:flex-row">
                         <input
@@ -1965,7 +1990,7 @@ export function ProvisioningPanel({
                           className="min-w-0 flex-1 rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
                           value={docUrl}
                           onChange={(e) => setDocUrl(e.target.value)}
-                          placeholder="https://példa.app/api/v1/openapi.json"
+                          placeholder={t('docUrlPlaceholder')}
                         />
                         <button
                           type="button"
@@ -1973,14 +1998,14 @@ export function ProvisioningPanel({
                           onClick={onFetchDocFromUrl}
                           className="shrink-0 rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
                         >
-                          {fetchingDoc ? 'Letöltés…' : 'Letöltés'}
+                          {fetchingDoc ? t('fetching') : t('fetch')}
                         </button>
                       </div>
                     </div>
                     <div className="mb-2 flex flex-col gap-1 text-xs text-ink-soft sm:flex-row sm:items-center sm:justify-between">
-                      <span className="font-semibold text-ink">2. lépés — átnézés vagy fájlfeltöltés</span>
+                      <span className="font-semibold text-ink">{t('reviewOrUpload')}</span>
                       <label className="inline-flex w-fit cursor-pointer items-center rounded-md border border-ink/15 bg-paper px-3 py-1.5 font-semibold text-ink hover:border-sage/50">
-                        <span>API-doksi fájl feltöltése</span>
+                        <span>{t('uploadApiDoc')}</span>
                         <input
                           type="file"
                           accept={API_DOC_FILE_ACCEPT}
@@ -1990,7 +2015,7 @@ export function ProvisioningPanel({
                       </label>
                     </div>
                     <p className="mb-2 text-xs text-ink-soft">
-                      Csak OpenAPI JSON/YAML. Szabad szöveges doksiból most nem nyerünk configot.
+                      {t('onlyOpenApi')}
                     </p>
                     <textarea
                       className="h-40 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
@@ -2005,10 +2030,10 @@ export function ProvisioningPanel({
                     />
                     {docSourceRef ? (
                       <p className="mt-1 text-xs text-ink-soft">
-                        Forrás: {docSourceRef}
+                        {t('docSource', { ref: docSourceRef })}
                         {docTruncated ? (
                           <span className="ml-2 font-semibold text-honey">
-                            (csonkolva — a teljes spec túl nagy volt)
+                            {t('truncated')}
                           </span>
                         ) : null}
                       </p>
@@ -2027,23 +2052,23 @@ export function ProvisioningPanel({
                       onClick={() => onGenerate(false)}
                       className="mt-2 rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
                     >
-                      {generating ? 'Generálás…' : '3. lépés — Config-jelölt generálása'}
+                      {generating ? t('generating') : t('generateConfig')}
                     </button>
                   </div>
                 ) : null}
 
                 {sourceMethod === 'manual' ? (
                   <div className="rounded-md border border-ink/12 bg-paper p-3">
-                    <span className="mb-1 block text-sm font-semibold">Kézi config-deszkriptor</span>
+                    <span className="mb-1 block text-sm font-semibold">{t('manualDescriptor')}</span>
                     <p className="mb-2 text-xs text-ink-soft">
-                      Illeszd be a JSON-t, vagy töltsd be a példát, majd lépj tovább ellenőrzésre.
+                      {t('manualDescriptorHint')}
                     </p>
                     <button
                       type="button"
                       className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage"
                       onClick={() => setConfigText(EXAMPLE_CONFIG)}
                     >
-                      Példa betöltése
+                      {t('loadExample')}
                     </button>
                   </div>
                 ) : null}
@@ -2053,9 +2078,9 @@ export function ProvisioningPanel({
             {createStep === 'review' ? (
               <div className="space-y-3">
                 <div>
-                  <h3 className="text-base font-semibold">3. Ellenőrzés és létrehozás</h3>
+                  <h3 className="text-base font-semibold">{t('step3Review')}</h3>
                   <p className="mt-1 text-xs text-ink-soft">
-                    A secret SOSEM kerül ide, csak a Secret Managerbe szánt alias neve javasolt.
+                    {t('secretNeverHere')}
                   </p>
                 </div>
                 <dl className="grid gap-2 rounded-md border border-ink/12 bg-paper px-3 py-2 text-xs sm:grid-cols-2">
@@ -2064,8 +2089,10 @@ export function ProvisioningPanel({
                     <dd className="font-semibold">{effectiveName.trim() || '—'}</dd>
                   </div>
                   <div>
-                    <dt className="text-ink-soft">Forrás</dt>
-                    <dd className="font-semibold">{sourceMethodLabel(isTemplatePath ? 'template' : sourceMethod)}</dd>
+                    <dt className="text-ink-soft">{t('source')}</dt>
+                    <dd className="font-semibold">
+                      {sourceMethodLabel(isTemplatePath ? 'template' : sourceMethod, t)}
+                    </dd>
                     {reviewProvenanceHint ? (
                       <dd className="mt-0.5 text-ink-soft">{reviewProvenanceHint}</dd>
                     ) : null}
@@ -2083,7 +2110,7 @@ export function ProvisioningPanel({
                     </div>
                     <div className="mt-3 grid gap-3 sm:grid-cols-2">
                       <div>
-                        <h4 className="font-semibold">Mezők</h4>
+                        <h4 className="font-semibold">{t('fields')}</h4>
                         <ul className="mt-1 space-y-1">
                           {provisioningVisibleInstanceFields(
                             selectedTemplateDescriptor.instanceFields,
@@ -2101,18 +2128,18 @@ export function ProvisioningPanel({
                             (field) => field.hiddenInProvisioning,
                           ) ? (
                             <li className="text-ink-soft">
-                              A hitelesítő titok az aktiváláskor kerül megadásra (menedzselt titoktár).
+                              {t('secretOnActivate')}
                             </li>
                           ) : null}
                         </ul>
                       </div>
                       <div>
-                        <h4 className="font-semibold">Kiválasztás</h4>
+                        <h4 className="font-semibold">{t('selection')}</h4>
                         <p className="mt-1 text-ink-soft">
                           Scope: {selectedScopes.length || 0} · endpoint: {selectedEndpoints.length || 0}
                         </p>
                         <p className="mt-1 text-ink-soft">
-                          A materializer szerveroldalon validálja a mezőket, majd ugyanazt a draft-kaput hívja.
+                          {t('materializerHint')}
                         </p>
                       </div>
                     </div>
@@ -2120,13 +2147,13 @@ export function ProvisioningPanel({
                 ) : (
                   <label className="block text-sm">
                     <span className="mb-1 flex items-center justify-between text-ink-soft">
-                      <span>Generált config-deskriptor (JSON, §4.3)</span>
+                      <span>{t('generatedJson')}</span>
                       <button
                         type="button"
                         className="text-xs font-semibold text-sage hover:underline"
                         onClick={() => setConfigText(EXAMPLE_CONFIG)}
                       >
-                        Példa betöltése
+                        {t('loadExample')}
                       </button>
                     </span>
                     <textarea
@@ -2160,7 +2187,7 @@ export function ProvisioningPanel({
                   onClick={onCreate}
                   className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
                 >
-                  {connectionKind === 'self_updating' ? 'Létrehozás és aktiválás' : 'Konnektor létrehozása'}
+                  {connectionKind === 'self_updating' ? t('createAndActivate') : t('createConnector')}
                 </button>
               ) : createStep === 'su_link' ? (
                 suWizardRow?.urlApproved ? (
@@ -2170,7 +2197,7 @@ export function ProvisioningPanel({
                     onClick={() => advanceSuWizard('su_trust', '')}
                     className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
                   >
-                    Tovább
+                    {t('next')}
                   </button>
                 ) : (
                   <button
@@ -2179,7 +2206,7 @@ export function ProvisioningPanel({
                     onClick={runSuActivateLink}
                     className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
                   >
-                    Link jóváhagyása
+                    {t('approveLink')}
                   </button>
                 )
               ) : createStep === 'su_trust' ? (
@@ -2190,7 +2217,7 @@ export function ProvisioningPanel({
                     onClick={() => advanceSuWizard('su_sync', '')}
                     className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
                   >
-                    Tovább
+                    {t('next')}
                   </button>
                 ) : (
                   <button
@@ -2199,7 +2226,7 @@ export function ProvisioningPanel({
                     onClick={runSuActivateTrust}
                     className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
                   >
-                    Megbízhatónak minősítem
+                    {t('trustPartner')}
                   </button>
                 )
               ) : createStep === 'su_sync' ? (
@@ -2207,10 +2234,10 @@ export function ProvisioningPanel({
                   <button
                     type="button"
                     disabled={pending}
-                    onClick={() => finishSuWizard('Az OpenAPI-kapcsolat aktív és használható.')}
+                    onClick={() => finishSuWizard(t('openapiLive'))}
                     className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
                   >
-                    Befejezés
+                    {t('finish')}
                   </button>
                 ) : (
                   <button
@@ -2219,7 +2246,7 @@ export function ProvisioningPanel({
                     onClick={runSuActivateSync}
                     className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
                   >
-                    Frissítés keresése
+                    {t('searchUpdates')}
                   </button>
                 )
               ) : createStep === 'su_version' ? (
@@ -2229,7 +2256,7 @@ export function ProvisioningPanel({
                   onClick={runSuActivateVersion}
                   className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
                 >
-                  Változások jóváhagyása
+                  {t('approveChanges')}
                 </button>
               ) : (
                 <button
@@ -2238,7 +2265,7 @@ export function ProvisioningPanel({
                   onClick={() => setCreateStep(stepOrder[Math.min(stepOrder.length - 1, activeStepIndex + 1)])}
                   className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
                 >
-                  Tovább
+                  {t('next')}
                 </button>
               )}
             </div>
@@ -2258,33 +2285,33 @@ export function ProvisioningPanel({
             onClick={() => setTemplateEditorOpen(true)}
             className="inline-flex items-center gap-2 rounded-md border border-ink/15 bg-card px-4 py-2 text-sm font-semibold text-ink transition hover:border-coral/40 hover:text-coral-deep"
           >
-            Katalógus szerkesztése
+            {t('editCatalog')}
           </button>
-          <Card title="Konnektor-sablonok">
+          <Card title={t('templateCard')}>
             <TemplateCatalogList templates={templates} pending={pending} canManage={false} />
           </Card>
         </div>
       ) : null}
       {canManageCatalog && templateEditorOpen ? (
-      <Card title="Konnektor-sablonok">
+      <Card title={t('templateCard')}>
         <div className="mb-4 flex justify-end">
           <button
             type="button"
             onClick={() => setTemplateEditorOpen(false)}
             className="rounded-md border border-ink/15 px-3 py-1.5 text-xs font-semibold text-ink-soft transition hover:border-ink/30 hover:text-ink"
           >
-            Bezárás
+            {t('close')}
           </button>
         </div>
         <div className="grid gap-4 lg:grid-cols-[1fr_24rem]">
           <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h3 className="text-base font-semibold">Sablon descriptor</h3>
+                <h3 className="text-base font-semibold">{t('templateDescriptor')}</h3>
                 <p className="mt-1 text-xs text-ink-soft">
                   {isSuperadmin
-                    ? 'Válaszd ki, platform- vagy tenant-szintű legyen. Mentéskor új verzió jön létre, és lefut a materializer self-check.'
-                    : 'A sablon a saját tenantod katalógusába kerül. Mentéskor új verzió jön létre, és lefut a materializer self-check.'}
+                    ? t('templateScopeSuper')
+                    : t('templateScopeTenant')}
                 </p>
               </div>
               <button
@@ -2292,7 +2319,7 @@ export function ProvisioningPanel({
                 className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage"
                 onClick={() => setTemplateEditorText(EXAMPLE_TEMPLATE_DESCRIPTOR)}
               >
-                Példa betöltése
+                {t('loadExample')}
               </button>
             </div>
             {isSuperadmin ? (
@@ -2303,7 +2330,7 @@ export function ProvisioningPanel({
                     checked={templateScope === 'platform'}
                     onChange={() => setTemplateScope('platform')}
                   />
-                  Platform-szintű
+                  {t('platformScope')}
                 </label>
                 <label className="inline-flex items-center gap-2 font-semibold">
                   <input
@@ -2311,7 +2338,7 @@ export function ProvisioningPanel({
                     checked={templateScope === 'tenant'}
                     onChange={() => setTemplateScope('tenant')}
                   />
-                  Tenant-szintű
+                  {t('tenantScope')}
                 </label>
                 {templateScope === 'tenant' ? (
                   <select
@@ -2319,7 +2346,7 @@ export function ProvisioningPanel({
                     value={templateTenantId}
                     onChange={(e) => setTemplateTenantId(e.target.value)}
                   >
-                    <option value="">Válassz tenantot…</option>
+                    <option value="">{t('chooseTenant')}</option>
                     {tenantOptions.map((tn) => (
                       <option key={tn.id} value={tn.id}>
                         {tn.name}
@@ -2329,6 +2356,81 @@ export function ProvisioningPanel({
                 ) : null}
               </div>
             ) : null}
+            <div className="flex flex-wrap items-center gap-3 rounded-md border border-ink/12 bg-wash/40 p-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink/10 bg-white">
+                <ConnectorTemplateIcon
+                  iconDataUrl={templateIconDataUrl}
+                  provider=""
+                  className="h-6 w-6"
+                />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold">{t('templateIcon')}</p>
+                <p className="text-xs text-ink-soft">{t('templateIconHint')}</p>
+                {templateIconError ? (
+                  <p className="text-xs text-coral">{templateIconError}</p>
+                ) : null}
+              </div>
+              <label className="cursor-pointer rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold">
+                {t('templateIconUpload')}
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    e.target.value = ''
+                    if (!file) return
+                    if (!file.type.startsWith('image/')) {
+                      setTemplateIconError(t('templateIconInvalid'))
+                      return
+                    }
+                    if (file.size > 150 * 1024) {
+                      setTemplateIconError(t('templateIconTooBig'))
+                      return
+                    }
+                    setTemplateIconError(null)
+                    const reader = new FileReader()
+                    reader.onload = () => {
+                      if (typeof reader.result !== 'string') return
+                      const dataUrl = reader.result
+                      setTemplateIconDataUrl(dataUrl)
+                      setTemplateIconTouched(true)
+                      setTemplateEditorText((prev) => {
+                        try {
+                          const parsed = JSON.parse(prev) as Record<string, unknown>
+                          return JSON.stringify({ ...parsed, iconDataUrl: dataUrl }, null, 2)
+                        } catch {
+                          return prev
+                        }
+                      })
+                    }
+                    reader.readAsDataURL(file)
+                  }}
+                />
+              </label>
+              {templateIconDataUrl ? (
+                <button
+                  type="button"
+                  className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
+                  onClick={() => {
+                    setTemplateIconDataUrl(null)
+                    setTemplateIconTouched(true)
+                    setTemplateEditorText((prev) => {
+                      try {
+                        const parsed = JSON.parse(prev) as Record<string, unknown>
+                        delete parsed.iconDataUrl
+                        return JSON.stringify(parsed, null, 2)
+                      } catch {
+                        return prev
+                      }
+                    })
+                  }}
+                >
+                  {t('templateIconRemove')}
+                </button>
+              ) : null}
+            </div>
             <textarea
               className="h-80 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
               value={templateEditorText}
@@ -2347,12 +2449,19 @@ export function ProvisioningPanel({
                   try {
                     descriptor = JSON.parse(templateEditorText)
                   } catch {
-                    setError('A sablon descriptor nem érvényes JSON.')
+                    setError(t('invalidTemplateJson'))
                     return
                   }
                   if (isSuperadmin && templateScope === 'tenant' && !templateTenantId) {
-                    setError('Tenant-szintű sablonhoz válassz tenantot.')
+                    setError(t('pickTenantForTemplate'))
                     return
+                  }
+                  if (templateIconTouched && typeof descriptor === 'object' && descriptor !== null) {
+                    if (templateIconDataUrl) {
+                      ;(descriptor as Record<string, unknown>).iconDataUrl = templateIconDataUrl
+                    } else {
+                      delete (descriptor as Record<string, unknown>).iconDataUrl
+                    }
                   }
                   run(
                     () =>
@@ -2364,12 +2473,12 @@ export function ProvisioningPanel({
                             : null
                           : (activeTenantId ?? null),
                       }),
-                    'Konnektor-sablon mentve új verzióként.',
+                    t('templateSaved'),
                   )
                 }}
                 className="rounded-md bg-ink px-4 py-2 text-xs font-semibold text-card disabled:opacity-50"
               >
-                Sablon mentése
+                {t('saveTemplate')}
               </button>
             </div>
           </div>
@@ -2378,11 +2487,16 @@ export function ProvisioningPanel({
             templates={templates}
             pending={pending}
             canManage
-            onLoad={(template) => setTemplateEditorText(JSON.stringify(template.descriptor, null, 2))}
+            onLoad={(template) => {
+              setTemplateEditorText(JSON.stringify(template.descriptor, null, 2))
+              setTemplateIconDataUrl(template.descriptor.iconDataUrl ?? null)
+              setTemplateIconTouched(true)
+              setTemplateIconError(null)
+            }}
             onDeprecate={(templateId) =>
               run(
                 () => deprecateConnectorTemplateAction({ templateId }),
-                'Konnektor-sablon deprecated állapotba került.',
+                t('templateDeprecated'),
               )
             }
           />
@@ -2390,9 +2504,9 @@ export function ProvisioningPanel({
       </Card>
       ) : null}
       {!canManageCatalog ? (
-        <Card title="Konnektor-sablonok">
+        <Card title={t('templateCard')}>
           <p className="mb-4 text-sm text-ink-soft">
-            Ezekből a sablonokból hozhatsz létre konnektort.
+            {t('templatesFromThese')}
           </p>
           <TemplateCatalogList templates={templates} pending={pending} canManage={false} />
         </Card>
@@ -2401,11 +2515,11 @@ export function ProvisioningPanel({
         }
         connections={
           <div className="space-y-6">
-      <Card title={loadedOnce ? `Aktív konnektorok (${activeItems.length})` : 'Aktív konnektorok'}>
+      <Card title={loadedOnce ? t('activeTitleCount', { count: activeItems.length }) : t('activeTitle')}>
         {!loadedOnce ? (
-          <p className="text-sm text-ink-soft">Betöltés…</p>
+          <p className="text-sm text-ink-soft">{t('loading')}</p>
         ) : activeItems.length === 0 ? (
-          <p className="text-sm text-ink-soft">Még nincs aktív konnektor.</p>
+          <p className="text-sm text-ink-soft">{t('noActive')}</p>
         ) : (
           <div className="space-y-3">
             {activeItems.map((item) =>
@@ -2415,7 +2529,7 @@ export function ProvisioningPanel({
                   row={item.row}
                   pending={pending}
                   run={run}
-                  onSync={syncSelfUpdating}
+                  onReload={reload}
                   isSuperadmin={isSuperadmin}
                 />
               ) : (
@@ -2445,8 +2559,8 @@ export function ProvisioningPanel({
                 run(
                   () => setTenantSelfUpdatingAutoApprove({ enabled }),
                   enabled
-                    ? 'A tenant engedélyezte a korlátozott automatikus átvételt.'
-                    : 'Az automatikus átvétel tenant-szinten kikapcsolva.',
+                    ? t('autoApproveOn')
+                    : t('autoApproveOff'),
                 )
               }
             />
@@ -2458,23 +2572,21 @@ export function ProvisioningPanel({
       <Card
         title={
           pendingSelfUpdatingRows.length > 0 && catalogGaps.length > 0
-            ? `Jóváhagyásra váró és kezelés nélküli kapcsolatok (${pendingSelfUpdatingRows.length + catalogGaps.length})`
+            ? t('pendingAndGaps', { count: pendingSelfUpdatingRows.length + catalogGaps.length })
             : pendingSelfUpdatingRows.length > 0
-              ? `Jóváhagyásra váró OpenAPI-kapcsolatok (${pendingSelfUpdatingRows.length})`
-              : `Kezelés nélküli aktív kapcsolatok (${catalogGaps.length})`
+              ? t('pendingOpenApi', { count: pendingSelfUpdatingRows.length })
+              : t('unmanagedActive', { count: catalogGaps.length })
         }
       >
         {pendingSelfUpdatingRows.length > 0 ? (
           <div className="space-y-3">
             {pendingSelfUpdatingRows.length > 0 && catalogGaps.length > 0 ? (
               <p className="text-sm text-ink-soft">
-                OpenAPI-kapcsolatoknál hátravan a link jóváhagyása, a partner megbízhatónak minősítése
-                vagy az első verzió átvétele. Nyisd meg a kártyát a lépésekhez.
+                {t('pendingHintMixed')}
               </p>
             ) : (
               <p className="text-sm text-ink-soft">
-                Hátravan a link jóváhagyása, a partner megbízhatónak minősítése vagy az első verzió
-                átvétele. Nyisd meg a kártyát a lépésekhez.
+                {t('pendingHint')}
               </p>
             )}
             {pendingSelfUpdatingRows.map((row) => (
@@ -2483,7 +2595,7 @@ export function ProvisioningPanel({
                 row={row}
                 pending={pending}
                 run={run}
-                onSync={syncSelfUpdating}
+                onReload={reload}
                 isSuperadmin={isSuperadmin}
               />
             ))}
@@ -2493,15 +2605,10 @@ export function ProvisioningPanel({
           <div className={pendingSelfUpdatingRows.length > 0 ? 'mt-6 space-y-3 border-t border-ink/10 pt-4' : 'space-y-3'}>
             {pendingSelfUpdatingRows.length > 0 ? (
               <h3 className="text-sm font-semibold text-ink">
-                Kezelés nélküli aktív kapcsolatok ({catalogGaps.length})
+                {t('unmanagedActive', { count: catalogGaps.length })}
               </h3>
             ) : null}
-            <p className="text-sm text-ink-soft">
-              Ezek az adatbázisban aktív kapcsolatok, de nincs hozzájuk provisioning-draft vagy
-              önfrissítő kezelőkártya (gyakran migráció vagy régi seed maradvány). Agenthez még
-              rendelhetők lehetnek; ha feleslegesek, szüntesd meg őket — auditált archiválás, nem
-              hard-delete.
-            </p>
+            <p className="text-sm text-ink-soft">{t('gapsHint')}</p>
             {catalogGaps.map((row) => (
               <CatalogGapCard key={row.id} row={row} pending={pending} run={run} />
             ))}
@@ -2510,11 +2617,11 @@ export function ProvisioningPanel({
       </Card>
       ) : null}
 
-      <Card title={loadedOnce ? `Nem aktivált konnektorok (${inactiveCount})` : 'Nem aktivált konnektorok'}>
+      <Card title={loadedOnce ? t('inactiveTitleCount', { count: inactiveCount }) : t('inactiveTitle')}>
         {!loadedOnce ? (
-          <p className="text-sm text-ink-soft">Betöltés…</p>
+          <p className="text-sm text-ink-soft">{t('loading')}</p>
         ) : inactiveCount === 0 ? (
-          <p className="text-sm text-ink-soft">Nincs nem aktivált konnektor.</p>
+          <p className="text-sm text-ink-soft">{t('noInactive')}</p>
         ) : (
           <div className="space-y-3">
             {archivedSelfUpdatingRows.map((row) => (
@@ -2523,7 +2630,7 @@ export function ProvisioningPanel({
                 row={row}
                 pending={pending}
                 run={run}
-                onSync={syncSelfUpdating}
+                onReload={reload}
                 isSuperadmin={isSuperadmin}
               />
             ))}
@@ -2554,6 +2661,7 @@ export function ProvisioningPanel({
 }
 
 function ErrorDialog({ message, onClose }: { message: string | null; onClose: () => void }) {
+  const t = useProvT()
   useEffect(() => {
     if (!message) return
     const onKey = (e: KeyboardEvent) => {
@@ -2585,7 +2693,7 @@ function ErrorDialog({ message, onClose }: { message: string | null; onClose: ()
             !
           </span>
           <div className="min-w-0 flex-1">
-            <h3 className="text-base font-semibold text-ink">Hiba</h3>
+            <h3 className="text-base font-semibold text-ink">{t('error')}</h3>
             <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink-soft">{message}</p>
           </div>
         </div>
@@ -2596,7 +2704,7 @@ function ErrorDialog({ message, onClose }: { message: string | null; onClose: ()
             onClick={onClose}
             className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card"
           >
-            Értem
+            {t('gotIt')}
           </button>
         </div>
       </div>
@@ -2618,6 +2726,7 @@ function CatalogGapCard({
   const [decommReason, setDecommReason] = useState('')
   const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [decommApprover, setDecommApprover] = useState('')
+  const t = useProvT()
   const toggleOpen = () => setOpen((current) => !current)
 
   return (
@@ -2628,7 +2737,7 @@ function CatalogGapCard({
         </button>
         <Badge tone="neutral">{row.type}</Badge>
         {row.connectorMode === 'self_updating' ? <Badge tone="warning">OpenAPI</Badge> : null}
-        <Badge tone="warning">kezelés nélküli</Badge>
+        <Badge tone="warning">{t('unmanaged')}</Badge>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -2636,42 +2745,39 @@ function CatalogGapCard({
             onClick={toggleOpen}
             aria-expanded={open}
           >
-            {open ? 'Bezárás' : 'Részletek'}
+            {open ? t('close') : t('details')}
           </button>
           <button
             type="button"
             className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral"
             onClick={() => setOpen(true)}
           >
-            Megszüntetés
+            {t('decommission')}
           </button>
         </div>
       </div>
       {open ? (
         <div className="space-y-3 border-t border-honey/30 px-4 py-3">
           <p className="text-xs text-ink-soft">
-            Nincs kezelőfelület ehhez a sorhoz ezen az oldalon — csak megszüntetés vagy platform
-            támogatás (ha vissza kell állítani draft/OpenAPI-útra).
+            {t('unmanagedHint')}
           </p>
           <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
-            <h4 className="mb-2 font-semibold text-coral">Megszüntetés (auditált leszerelés)</h4>
+            <h4 className="mb-2 font-semibold text-coral">{t('decommissionTitle')}</h4>
             <p className="text-xs text-ink-soft">
-              Nem hard-delete: az agent-hozzárendelések levétele és a menedzselt secret-ref törlése után a
-              kapcsolat <code>archived</code> állapotba kerül. Bank-preset / L2–L3 esetén második jóváhagyó
-              kell.
+              {t('decommissionGapBody')}
             </p>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <label className="text-xs sm:col-span-2">
-                <span className="mb-1 block text-ink-soft">Indok (auditba kerül)</span>
+                <span className="mb-1 block text-ink-soft">{t('reason')}</span>
                 <input
                   className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
                   value={decommReason}
                   onChange={(e) => setDecommReason(e.target.value)}
-                  placeholder="Pl. migrációs maradvány, felesleges http_api kapcsolat"
+                  placeholder={t('reasonGapPlaceholder')}
                 />
               </label>
               <label className="text-xs">
-                <span className="mb-1 block text-ink-soft">Kritikusság</span>
+                <span className="mb-1 block text-ink-soft">{t('criticality')}</span>
                 <select
                   className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
                   value={decommCriticality}
@@ -2683,12 +2789,12 @@ function CatalogGapCard({
                 </select>
               </label>
               <label className="text-xs">
-                <span className="mb-1 block text-ink-soft">2. jóváhagyó (≠ te)</span>
+                <span className="mb-1 block text-ink-soft">{t('secondApproverYou')}</span>
                 <input
                   className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
                   value={decommApprover}
                   onChange={(e) => setDecommApprover(e.target.value)}
-                  placeholder="user-id (dual-control esetén)"
+                  placeholder={t('userIdPlaceholder')}
                 />
               </label>
             </div>
@@ -2698,12 +2804,12 @@ function CatalogGapCard({
                 className="mt-3 rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral"
                 onClick={() => setConfirmDecomm(true)}
               >
-                Megszüntetés
+                {t('decommission')}
               </button>
             ) : (
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <span className="text-xs font-semibold text-coral">
-                  Biztos? „{row.name}” leszerelődik és archiválódik.
+                  {t('confirmDecommNamed', { name: row.name })}
                 </span>
                 <button
                   type="button"
@@ -2721,18 +2827,18 @@ function CatalogGapCard({
                       if (!res.success) return res
                       setConfirmDecomm(false)
                       return res
-                    }, 'Kapcsolat megszüntetve (archived).')
+                    }, t('decommissionedArchived'))
                   }
                   className="rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
                 >
-                  Igen, szüntesd meg
+                  {t('yesDecommission')}
                 </button>
                 <button
                   type="button"
                   onClick={() => setConfirmDecomm(false)}
                   className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
                 >
-                  Mégse
+                  {t('cancel')}
                 </button>
               </div>
             )}
@@ -2766,6 +2872,7 @@ function DraftCard({
   run: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
   isSuperadmin: boolean
 }) {
+  const t = useProvT()
   const [open, setOpen] = useState(false)
   const [secretAlias, setSecretAlias] = useState(draft.secretAliasSuggested ?? '')
   const [apiKey, setApiKey] = useState('')
@@ -2787,6 +2894,7 @@ function DraftCard({
   const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [confirmDecomm, setConfirmDecomm] = useState(false)
   const [authTestDetail, setAuthTestDetail] = useState<string | null>(null)
+  const [credentialValues, setCredentialValues] = useState<Record<string, string>>({})
 
   const v = draft.validationResult
   const cfg = draft.config
@@ -2825,6 +2933,7 @@ function DraftCard({
   const isPlatformGoogleConnector =
     isGmailConnector || isGoogleDriveConnector || isPlatformGoogleApiConnector
   const activationHelp = templateDescriptor?.activationHelp?.trim() ?? ''
+  const credentialFields = templateDescriptor?.credentialFields
   const isActive = draft.lifecycleState === 'active'
   const isUserDelegated =
     isPlatformGoogleConnector ||
@@ -2880,18 +2989,18 @@ function DraftCard({
     if (!isPlatformGoogleConnector && !hasActivationCredentials) {
       void (async () => {
         const confirmed = await confirmDialog({
-          title: 'Aktiválás kulcs nélkül',
+          title: t('activateKeylessTitle'),
           description:
-            'Nem adtál meg API-kulcsot vagy érvényes titok-hivatkozást. Biztosan kulcs nélkül aktiválod? Az agent hívásai addig auth hibát fognak adni.',
-          confirmLabel: 'Aktiválás',
+            t('activateKeylessBody'),
+          confirmLabel: t('activate'),
           tone: 'danger',
         })
         if (!confirmed) return
-        run(() => activateConnector(buildActivationInput(true)), 'Konnektor aktiválva (kulcs nélkül).')
+        run(() => activateConnector(buildActivationInput(true)), t('activatedKeyless'))
       })()
       return
     }
-    run(() => activateConnector(buildActivationInput()), 'Konnektor aktiválva.')
+    run(() => activateConnector(buildActivationInput()), t('activated'))
   }
 
   const writeTools = useMemo(
@@ -2904,26 +3013,26 @@ function DraftCard({
   const sandboxReady = draft.sandboxTestOk === true
   const activationReady = validationReady && sandboxReady && reviewApproved
   const draftSteps: Array<{ id: DraftManageStep; label: string; hint: string; done: boolean }> = [
-    { id: 'inspect', label: 'Áttekintés', hint: 'Config és toolok', done: !!cfg || !!draft.httpApiView || !!gmailView },
-    { id: 'validate', label: 'Validáció', hint: v ? v.status : 'Még nem futott', done: validationReady },
+    { id: 'inspect', label: t('inspect'), hint: t('inspectHint'), done: !!cfg || !!draft.httpApiView || !!gmailView },
+    { id: 'validate', label: t('validate'), hint: v ? v.status : t('notRunYet'), done: validationReady },
     {
       id: 'sandbox',
       label: 'Sandbox',
-      hint: draft.sandboxTestOk === true ? 'ok' : draft.sandboxTestOk === false ? 'fail' : 'Még nem futott',
+      hint: draft.sandboxTestOk === true ? 'ok' : draft.sandboxTestOk === false ? 'fail' : t('notRunYet'),
       done: sandboxReady,
     },
     { id: 'review', label: 'Review', hint: draft.reviewStatus, done: reviewApproved },
     {
       id: 'activate',
-      label: 'Aktiválás',
-      hint: activationReady ? 'Készen áll' : 'Előfeltételek kellenek',
+      label: t('activateStep'),
+      hint: activationReady ? t('ready') : t('needPrereqs'),
       done: isActive,
     },
   ]
   const activeSteps: Array<{ id: ActiveManageStep; label: string; hint: string; done: boolean }> = [
-    { id: 'inspect', label: 'Állapot', hint: 'Aktív konnektor', done: true },
-    { id: 'assign', label: 'Hozzárendelés', hint: 'Agent jog', done: false },
-    { id: 'revoke', label: 'Megszüntetés', hint: 'Leszerelés + archiválás', done: false },
+    { id: 'inspect', label: t('status'), hint: t('activeConnector'), done: true },
+    { id: 'assign', label: t('assign'), hint: t('assignHint'), done: false },
+    { id: 'revoke', label: t('decommission'), hint: t('decommissionHint'), done: false },
   ]
   const visibleSteps = isActive ? activeSteps : draftSteps
   const selectedStep = isActive ? activeStep : draftStep
@@ -2941,7 +3050,7 @@ function DraftCard({
     try {
       parsed = JSON.parse(configDraft)
     } catch {
-      run(async () => ({ success: false, error: 'A config nem érvényes JSON.' }), '')
+      run(async () => ({ success: false, error: t('invalidJson') }), '')
       return
     }
     run(async () => {
@@ -2953,28 +3062,25 @@ function DraftCard({
       setEditingConfig(false)
       setDraftStep('validate')
       return res
-    }, 'Config frissítve — a validáció/review/sandbox resetelve, futtasd újra a kaput.')
+    }, t('configUpdated'))
   }
   const configEditor = !isActive && cfg ? (
     <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
       <div className="flex items-center justify-between">
-        <h4 className="font-semibold">Config szerkesztése</h4>
+        <h4 className="font-semibold">{t('editConfig')}</h4>
         {!editingConfig ? (
           <button
             type="button"
             className="text-xs font-semibold text-sage hover:underline"
             onClick={startConfigEdit}
           >
-            Szerkesztés
+            {t('edit')}
           </button>
         ) : null}
       </div>
       {editingConfig ? (
         <div className="mt-2 space-y-2">
-          <p className="text-xs text-honey">
-            A mentés resetteli a kaput: a validáció, a review és a sandbox-teszt is újra
-            lefut majd, mielőtt a konnektor aktiválható lenne.
-          </p>
+          <p className="text-xs text-honey">{t('editResetsGates')}</p>
           <textarea
             className="h-64 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
             value={configDraft}
@@ -2987,14 +3093,14 @@ function DraftCard({
               onClick={saveConfigEdit}
               className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
             >
-              Config mentése
+              {t('saveConfig')}
             </button>
             <button
               type="button"
               onClick={() => setEditingConfig(false)}
               className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
             >
-              Mégse
+              {t('cancel')}
             </button>
           </div>
         </div>
@@ -3010,79 +3116,81 @@ function DraftCard({
   const toggleOpen = () => setOpen((current) => !current)
   const handleDeleteFromList = async () => {
     const confirmed = await confirmDialog({
-      title: 'Konnektor törlése',
-      description:
-        'Végleges törlés — csak sosem aktivált konnektorra. Az elrontott konnektor és a draft-sor törlődik; ez nem visszavonható.',
-      confirmLabel: 'Törlés',
+      title: t('deleteConnectorTitle'),
+      description: t('deleteNeverActivated'),
+      confirmLabel: t('delete'),
       tone: 'danger',
     })
     if (!confirmed) return
-    run(() => deleteConnectorDraft({ draftId: draft.draftId }), 'Konnektor törölve.')
+    run(() => deleteConnectorDraft({ draftId: draft.draftId }), t('connectorDeleted'))
   }
 
   return (
     <div className="rounded-lg border border-ink/12 bg-paper">
-      <div className="flex flex-wrap items-center gap-2 px-4 py-3">
-        <button
-          type="button"
-          className="font-semibold hover:underline"
-          onClick={toggleOpen}
-        >
-          {open ? '▾' : '▸'} {draft.name}
-        </button>
-        <Badge tone={lifecycleTone(draft.lifecycleState)}>{draft.lifecycleState}</Badge>
-        {isActive ? (
-          <Badge tone="success">review: lezárt</Badge>
-        ) : (
-          <Badge tone={reviewTone(draft.reviewStatus)}>review: {draft.reviewStatus}</Badge>
-        )}
-        {v ? <Badge tone={statusTone(v.status)}>validation: {v.status}</Badge> : (
-          <Badge tone="neutral">validation: —</Badge>
-        )}
-        {draft.sandboxTestOk === true ? <Badge tone="success">sandbox: ok</Badge> : null}
-        {draft.sandboxTestOk === false ? <Badge tone="danger">sandbox: fail</Badge> : null}
-        {writeTools.length > 0 ? <Badge tone="warning">{writeTools.length} write-tool</Badge> : null}
-        {provenance?.templateKey ? (
-          <Badge tone={templateOutdated ? 'warning' : 'neutral'}>
-            {provenance.templateKey} v{provenance.templateVersion ?? '?'}
-          </Badge>
-        ) : null}
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className="rounded-md border border-ink/20 px-2.5 py-1 text-xs font-semibold"
+      <div className="flex items-center gap-3 px-4 py-3">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink/10 bg-white text-ink-soft">
+          <ConnectorTemplateIcon
+            iconDataUrl={templateDescriptor?.iconDataUrl}
+            provider={provenance?.templateKey ?? draft.connectorType ?? ''}
+            className="h-5 w-5"
+          />
+        </span>
+        <h3 className="min-w-0 truncate font-semibold">{draft.name}</h3>
+        <Badge tone="neutral">
+          {`Létrehozva: ${new Date(draft.createdAt).toLocaleString('hu-HU')}`}
+        </Badge>
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <IconButton
+            icon="info"
+            label={open ? t('close') : t('details')}
+            active={open}
             onClick={toggleOpen}
-            aria-expanded={open}
-          >
-            {open ? 'Bezárás' : 'Részletek'}
-          </button>
+          />
           {canDeleteDraft ? (
-            <button
-              type="button"
+            <IconButton
+              icon="trash"
+              label={t('delete')}
+              tone="danger"
               disabled={pending}
-              className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral disabled:opacity-50"
               onClick={() => void handleDeleteFromList()}
-            >
-              Törlés
-            </button>
+            />
           ) : null}
           {isActive ? (
-            <button
-              type="button"
-              className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral"
+            <IconButton
+              icon="power"
+              label={t('decommission')}
+              tone="danger"
               onClick={() => {
                 setOpen(true)
                 setActiveStep('revoke')
               }}
-            >
-              Megszüntetés
-            </button>
+            />
           ) : null}
         </div>
       </div>
 
       {open ? (
         <div className="space-y-4 border-t border-ink/10 px-4 py-4 text-sm">
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-ink/12 bg-wash/35 px-3 py-2">
+            <span className="text-xs font-semibold text-ink-soft">{t('status')}</span>
+            <Badge tone={lifecycleTone(draft.lifecycleState)}>{draft.lifecycleState}</Badge>
+            {isActive ? (
+              <Badge tone="success">{t('reviewClosed')}</Badge>
+            ) : (
+              <Badge tone={reviewTone(draft.reviewStatus)}>review: {draft.reviewStatus}</Badge>
+            )}
+            {v ? <Badge tone={statusTone(v.status)}>validation: {v.status}</Badge> : (
+              <Badge tone="neutral">validation: —</Badge>
+            )}
+            {draft.sandboxTestOk === true ? <Badge tone="success">sandbox: ok</Badge> : null}
+            {draft.sandboxTestOk === false ? <Badge tone="danger">sandbox: fail</Badge> : null}
+            {writeTools.length > 0 ? <Badge tone="warning">{writeTools.length} write-tool</Badge> : null}
+            {provenance?.templateKey ? (
+              <Badge tone={templateOutdated ? 'warning' : 'neutral'}>
+                {provenance.templateKey} v{provenance.templateVersion ?? '?'}
+              </Badge>
+            ) : null}
+          </div>
           <div className="grid gap-4 lg:grid-cols-[14rem_1fr]">
             <ol className="space-y-2">
               {visibleSteps.map((step, index) => {
@@ -3128,7 +3236,7 @@ function DraftCard({
           {cfg ? (
             <div className="grid gap-4 md:grid-cols-2">
               <div>
-                <h4 className="mb-1 font-semibold">Egress-célhostok</h4>
+                <h4 className="mb-1 font-semibold">{t('egressHosts')}</h4>
                 <ul className="font-mono text-xs">
                   {cfg.egressHosts.map((h) => (
                     <li key={h}>{h}</li>
@@ -3191,7 +3299,7 @@ function DraftCard({
                     {gmailView.clientId?.trim() ? (
                       <code>{gmailView.clientId}</code>
                     ) : (
-                      <span className="text-ink-soft">platform Google OAuth alkalmazás</span>
+                      <span className="text-ink-soft">{t('platformGoogleOauth')}</span>
                     )}
                   </li>
                 </ul>
@@ -3227,10 +3335,9 @@ function DraftCard({
             // „API-kapcsolat" szerkesztőn átírt http_api config). Secret-mentes read-only nézet.
             <div className="rounded-md bg-honey/5 p-3 text-xs">
               <p className="mb-2 text-ink-soft">
-                Ez a konnektor az „API-konnektor&rdquo; szerkesztőn keresztül lett beállítva
-                (http_api futásidejű config).
+                {t('httpApiViaEditor')}
                 {draft.httpApiView.isDelegated
-                  ? ' Automatikus hozzájárulású (user-delegált) OAuth.'
+                  ? ` ${t('delegatedOauth')}`
                   : ''}
               </p>
               {draft.httpApiView.baseUrl ? (
@@ -3256,7 +3363,7 @@ function DraftCard({
               ) : null}
             </div>
           ) : (
-            <p className="text-coral">A tárolt config nem értelmezhető.</p>
+            <p className="text-coral">{t('unreadableConfig')}</p>
           )}
 
           {cfg ? (
@@ -3265,24 +3372,24 @@ function DraftCard({
               <table className="w-full text-left text-xs">
                 <thead className="text-ink-soft">
                   <tr>
-                    <th className="py-1">Név</th>
+                    <th className="py-1">{t('name')}</th>
                     <th>Method</th>
                     <th>Path</th>
                     <th>Access</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {cfg.proposedTools.map((t) => (
+                  {cfg.proposedTools.map((tool) => (
                     <tr
-                      key={t.name}
-                      className={t.access === 'write' ? 'bg-honey/10' : undefined}
+                      key={tool.name}
+                      className={tool.access === 'write' ? 'bg-honey/10' : undefined}
                     >
-                      <td className="py-1 font-mono">{t.name}</td>
-                      <td>{t.method}</td>
-                      <td className="font-mono">{t.path}</td>
+                      <td className="py-1 font-mono">{tool.name}</td>
+                      <td>{tool.method}</td>
+                      <td className="font-mono">{tool.path}</td>
                       <td>
-                        <Badge tone={t.access === 'write' ? 'warning' : 'neutral'}>
-                          {t.access}
+                        <Badge tone={tool.access === 'write' ? 'warning' : 'neutral'}>
+                          {tool.access}
                         </Badge>
                       </td>
                     </tr>
@@ -3293,7 +3400,7 @@ function DraftCard({
           ) : null}
 
           <p className="text-xs text-ink-soft">
-            forrás: {draft.sourceType} · hash: <code>{draft.sourceHash}</code>
+            {t('sourceHash', { type: draft.sourceType })} <code>{draft.sourceHash}</code>
           </p>
 
           {provenance?.templateKey ? (
@@ -3305,7 +3412,7 @@ function DraftCard({
                 </Badge>
                 <Badge tone="neutral">v{provenance.templateVersion ?? '?'}</Badge>
                 {templateOutdated ? (
-                  <Badge tone="warning">újabb: v{latestTemplateVersion}</Badge>
+                  <Badge tone="warning">{t('newerTemplate', { version: latestTemplateVersion })}</Badge>
                 ) : null}
               </div>
               <p className="mt-2 font-mono text-[11px] text-ink-soft">
@@ -3313,7 +3420,7 @@ function DraftCard({
                 {provenance.templateId ? ` · ${provenance.templateId}` : ''}
               </p>
               {provenance.materializedAt ? (
-                <p className="mt-1 text-ink-soft">Materializálva: {provenance.materializedAt}</p>
+                <p className="mt-1 text-ink-soft">{t('materialized', { at: provenance.materializedAt })}</p>
               ) : null}
             </div>
           ) : null}
@@ -3321,12 +3428,9 @@ function DraftCard({
           {/* Javítás: aktív connector visszanyitása draftba szerkesztéshez (auditált). */}
           {isActive ? (
             <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
-              <h4 className="mb-1 font-semibold">Szerkesztés / javítás</h4>
+              <h4 className="mb-1 font-semibold">{t('editFix')}</h4>
               <p className="mb-2 text-xs text-ink-soft">
-                Aktív konnektor configját nem lehet élesben átírni. A javításhoz nyisd vissza
-                draftba: a konnektor offline lesz (a Tool Broker nem oldja fel), majd a módosítás
-                után újra végig kell menni a valid→review→sandbox→aktiválás kapun. Az
-                agent-hozzárendelések megmaradnak, és újraaktiváláskor visszaállnak.
+                {t('cannotEditLive')}
               </p>
               <button
                 type="button"
@@ -3334,12 +3438,12 @@ function DraftCard({
                 onClick={() =>
                   run(
                     () => reopenConnector({ draftId: draft.draftId }),
-                    'Konnektor visszanyitva draftba — szerkeszd, majd aktiváld újra.',
+                    t('reopened'),
                   )
                 }
                 className="rounded-md border border-honey/50 bg-honey/10 px-3 py-1.5 text-xs font-semibold text-honey disabled:opacity-50"
               >
-                Szerkesztés (visszanyitás draftba)
+                {t('reopenDraft')}
               </button>
             </div>
           ) : null}
@@ -3350,10 +3454,9 @@ function DraftCard({
           {/* Takarítás: sosem aktivált draft hard-delete-je (auditált). */}
           {canDeleteDraft ? (
             <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
-              <h4 className="mb-1 font-semibold text-coral">Draft törlése</h4>
+              <h4 className="mb-1 font-semibold text-coral">{t('deleteDraft')}</h4>
               <p className="mb-2 text-xs text-ink-soft">
-                Végleges hard-delete — csak sosem aktivált draftra. Az elrontott draft konnektor és
-                a draft-sor véglegesen törlődik (a törlés ténye auditba kerül).
+                {t('deleteDraftBody')}
               </p>
               {!confirmDelete ? (
                 <button
@@ -3361,30 +3464,30 @@ function DraftCard({
                   className="rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral"
                   onClick={() => setConfirmDelete(true)}
                 >
-                  Draft törlése
+                  {t('deleteDraft')}
                 </button>
               ) : (
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-semibold text-coral">Biztos? Ez nem visszavonható.</span>
+                  <span className="text-xs font-semibold text-coral">{t('confirmIrreversible')}</span>
                   <button
                     type="button"
                     disabled={pending}
                     onClick={() =>
                       run(
                         () => deleteConnectorDraft({ draftId: draft.draftId }),
-                        'Draft törölve.',
+                        t('draftDeleted'),
                       )
                     }
                     className="rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
                   >
-                    Igen, töröld
+                    {t('yesDelete')}
                   </button>
                   <button
                     type="button"
                     onClick={() => setConfirmDelete(false)}
                     className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
                   >
-                    Mégse
+                    {t('cancel')}
                   </button>
                 </div>
               )}
@@ -3398,7 +3501,7 @@ function DraftCard({
           {/* Validációs eredmény */}
           {v ? (
             <div>
-              <h4 className="mb-1 font-semibold">Determinisztikus validáció</h4>
+              <h4 className="mb-1 font-semibold">{t('deterministicValidation')}</h4>
               <div className="flex flex-wrap gap-1">
                 {Object.entries(v.checks).map(([k, s]) => (
                   <Badge key={k} tone={statusTone(s)}>
@@ -3423,8 +3526,7 @@ function DraftCard({
               {v.warnings.length > 0 && cfg ? (
                 <div className="mt-3 rounded border border-honey/40 bg-honey/5 p-2">
                   <p className="text-xs text-ink-soft">
-                    A warningok egy része a draft configban javítható. A módosítás után a kapuk
-                    újraindulnak, így az új configot újra kell validálni.
+                    {t('warningsFixable')}
                   </p>
                   {!editingConfig ? (
                     <button
@@ -3432,7 +3534,7 @@ function DraftCard({
                       className="mt-2 rounded-md border border-honey/50 bg-paper px-3 py-1.5 text-xs font-semibold text-honey"
                       onClick={startConfigEdit}
                     >
-                      Config szerkesztése
+                      {t('editConfig')}
                     </button>
                   ) : null}
                 </div>
@@ -3440,10 +3542,7 @@ function DraftCard({
               {(v.checks.egressAllowlist === 'warned' || v.checks.egressAllowlist === 'failed') &&
               (v.unknownHosts?.length ?? 0) > 0 ? (
                 <div className="mt-2 rounded border border-honey/40 bg-honey/5 p-2">
-                  <p className="text-xs text-ink-soft">
-                    Új egress-host(ok) — aktiválás előtt add hozzá az allowlisthez (§9, auditált
-                    admin-aktus):
-                  </p>
+                  <p className="text-xs text-ink-soft">{t('newEgressHosts')}</p>
                   <div className="mt-1 flex flex-wrap gap-2">
                     {v.unknownHosts!.map((h) => (
                       <button
@@ -3456,7 +3555,7 @@ function DraftCard({
                             const ext = await extendEgressAllowlist({ host: h, draftId: draft.draftId })
                             if (!ext.success) return ext
                             return validateConnectorDraft({ draftId: draft.draftId })
-                          }, `Egress-host hozzáadva az allowlisthez: ${h} — újravalidálva.`)
+                          }, t('egressAdded', { host: h }))
                         }
                       >
                         + {h}
@@ -3468,10 +3567,9 @@ function DraftCard({
             </div>
           ) : (
             <div>
-              <h4 className="mb-1 font-semibold">Determinisztikus validáció</h4>
+              <h4 className="mb-1 font-semibold">{t('deterministicValidation')}</h4>
               <p className="text-xs text-ink-soft">
-                A draft még nincs validálva. Futtasd le a validátort, mielőtt sandbox-teszt,
-                review vagy aktiválás következne.
+                {t('notValidatedYet')}
               </p>
             </div>
           )}
@@ -3485,11 +3583,11 @@ function DraftCard({
                 type="button"
                 disabled={pending}
                 onClick={() =>
-                  run(() => validateConnectorDraft({ draftId: draft.draftId }), 'Validáció lefutott.')
+                  run(() => validateConnectorDraft({ draftId: draft.draftId }), t('validated'))
                 }
                 className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
               >
-                Validálás
+                {t('runValidate')}
               </button>
             </div>
           ) : null}
@@ -3497,11 +3595,9 @@ function DraftCard({
           {!isActive && selectedStep === 'review' ? (
             <div className="space-y-3 border-t border-ink/10 pt-3">
               <div>
-                <h4 className="font-semibold">Review döntés</h4>
+                <h4 className="font-semibold">{t('reviewDecision')}</h4>
                 <p className="mt-1 text-xs text-ink-soft">
-                  A sandbox-teszt eredményét is figyelembe vevő végső emberi jóváhagyás. Ez csak
-                  draft állapotban értelmezett kapu. Aktív konnektornál visszavonás vagy új verzió
-                  kell, nem utólagos review-átírás.
+                  {t('reviewBody')}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -3511,12 +3607,12 @@ function DraftCard({
                   onClick={() =>
                     run(
                       () => reviewConnectorDraft({ draftId: draft.draftId, decision: 'approve' }),
-                      'Jóváhagyva.',
+                      t('approved'),
                     )
                   }
                   className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
                 >
-                  Jóváhagyás
+                  {t('approve')}
                 </button>
                 <button
                   type="button"
@@ -3525,12 +3621,12 @@ function DraftCard({
                     run(
                       () =>
                         reviewConnectorDraft({ draftId: draft.draftId, decision: 'changes_requested' }),
-                      'Módosítás kérve.',
+                      t('changesRequested'),
                     )
                   }
                   className="rounded-md border border-honey/40 bg-honey/10 px-3 py-1.5 text-xs font-semibold text-honey disabled:opacity-50"
                 >
-                  Módosítás kérése
+                  {t('requestChanges')}
                 </button>
                 <button
                   type="button"
@@ -3538,12 +3634,12 @@ function DraftCard({
                   onClick={() =>
                     run(
                       () => reviewConnectorDraft({ draftId: draft.draftId, decision: 'reject' }),
-                      'Elutasítva.',
+                      t('rejected'),
                     )
                   }
                   className="rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral disabled:opacity-50"
                 >
-                  Elutasítás
+                  {t('reject')}
                 </button>
               </div>
             </div>
@@ -3554,7 +3650,7 @@ function DraftCard({
               <div>
                 <h4 className="font-semibold">Sandbox konnektor-teszt</h4>
                 <p className="mt-1 text-xs text-ink-soft">
-                  Szűk jogú, nem éles próbahívás. Sikeres teszt nélkül az aktiválás blokkolva marad.
+                  {t('sandboxBody')}
                 </p>
               </div>
               <button
@@ -3600,11 +3696,11 @@ function DraftCard({
                       navigateToOAuth(res.data.url)
                     }
                     return { success: true }
-                  }, 'Consent-flow elindítva.')
+                  }, t('consentStarted'))
                 }
                 className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
               >
-                Auto-consent kezdeményezése
+                {t('startAutoConsent')}
               </button>
             </div>
           ) : null}
@@ -3612,17 +3708,16 @@ function DraftCard({
           {/* Aktiválás — emberi admin-aktus */}
           {!isActive && selectedStep === 'activate' ? (
             <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
-              <h4 className="mb-2 font-semibold">Aktiválás (emberi admin-aktus)</h4>
+              <h4 className="mb-2 font-semibold">{t('activateHuman')}</h4>
               {activationHelp ? (
                 <div className="mb-3 rounded-md border border-sage/30 bg-sage/8 p-3 text-xs">
-                  <p className="mb-1 font-semibold text-sage">Beállítási segítség ehhez az API-hoz</p>
+                  <p className="mb-1 font-semibold text-sage">{t('setupHelp')}</p>
                   <p className="whitespace-pre-line text-ink-soft">{activationHelp}</p>
                 </div>
               ) : null}
               {!activationReady ? (
                 <p className="mb-3 text-xs text-honey">
-                  Az aktiválás feltétele: nem-failed validáció, sikeres sandbox-teszt és approved
-                  review.
+                  {t('activatePrereqs')}
                 </p>
               ) : null}
               <div className="grid gap-2 sm:grid-cols-2">
@@ -3631,14 +3726,11 @@ function DraftCard({
                     {googleOauthConfigured ? (
                       <p className="flex items-center gap-2 text-sage">
                         <span aria-hidden className="h-2 w-2 rounded-full bg-sage" />
-                        A platform Google OAuth alkalmazása be van állítva — Client ID és Secret
-                        nem kell tenant szinten.
+                        {t('gmailOauthOk')}
                       </p>
                     ) : (
                       <p className="text-honey">
-                        A Gmail konnektor a platform Google OAuth alkalmazását használja. Aktiválás
-                        előtt a platform-adminnak be kell állítania a Platform · Beállítások →
-                        Google OAuth oldalon.
+                        {t('gmailOauthNeed')}
                       </p>
                     )}
                   </div>
@@ -3647,14 +3739,11 @@ function DraftCard({
                     {googleDriveOauthConfigured ? (
                       <p className="flex items-center gap-2 text-sage">
                         <span aria-hidden className="h-2 w-2 rounded-full bg-sage" />
-                        A platform Google Drive OAuth alkalmazása be van állítva — Client ID és
-                        Secret nem kell tenant szinten.
+                        {t('driveOauthOk')}
                       </p>
                     ) : (
                       <p className="text-honey">
-                        A Google Drive konnektor a platform Drive OAuth alkalmazását használja.
-                        Aktiválás előtt a platform-adminnak be kell állítania a Platform ·
-                        Beállítások → Google Drive OAuth oldalon.
+                        {t('driveOauthNeed')}
                       </p>
                     )}
                   </div>
@@ -3663,22 +3752,35 @@ function DraftCard({
                     {googleApiOauthConfigured ? (
                       <p className="flex items-center gap-2 text-sage">
                         <span aria-hidden className="h-2 w-2 rounded-full bg-sage" />
-                        A platform Google API OAuth alkalmazása be van állítva (Analytics / Search
-                        Console / Ads) — Client ID és Secret nem kell tenant szinten.
+                        {t('googleApiOauthOk')}
                       </p>
                     ) : (
                       <p className="text-honey">
-                        A Google Analytics / Search Console / Ads konnektor a platform Google API
-                        OAuth appját használja. Aktiválás előtt állítsd be a Platform · Beállítások →
-                        Google Analytics / Search Console / Ads oldalon.
+                        {t('googleApiOauthNeed')}
                       </p>
                     )}
                   </div>
                 ) : (
                   <>
-                <label className="text-xs sm:col-span-2">
+                {credentialFields?.map((field) => (
+                  <label key={field.name} className="text-xs sm:col-span-2">
+                    <span className="mb-1 block text-ink-soft">{field.label}</span>
+                    <input
+                      type={field.secret ? 'password' : 'text'}
+                      autoComplete="off"
+                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                      value={credentialValues[field.name] ?? ''}
+                      onChange={(e) => {
+                        const next = { ...credentialValues, [field.name]: e.target.value }
+                        setCredentialValues(next)
+                        setApiKey(credentialFields.every((f) => next[f.name]?.trim()) ? JSON.stringify(next) : '')
+                      }}
+                    />
+                  </label>
+                ))}
+                <label className={`text-xs sm:col-span-2 ${credentialFields ? 'hidden' : ''}`}>
                   <span className="mb-1 block text-ink-soft">
-                    {isUserDelegated ? 'OAuth client secret' : 'API kulcs'}
+                    {isUserDelegated ? t('oauthClientSecret') : t('apiKey')}
                   </span>
                   <input
                     type="password"
@@ -3687,28 +3789,20 @@ function DraftCard({
                     onChange={(e) => setApiKey(e.target.value)}
                     placeholder={
                       isUserDelegated
-                        ? 'A szolgáltatónál regisztrált OAuth-app client secret-je'
-                        : 'A külső rendszerben generált nyers kulcs'
+                        ? t('oauthSecretPlaceholder')
+                        : t('rawKeyPlaceholder')
                     }
                   />
                   <span className="mt-1 block text-ink/50">
-                    {isUserDelegated
-                      ? 'A client secret a menedzselt titok-tárba kerül (secret-ref). '
-                      : 'Csak a nyers kulcsot írd be — a „Bearer " előtagot a rendszer adja hozzá (bearer sémánál). '}
-                    A kulcs titkosítva tárolódik, sosem kerül az adatbázisba.
+                    {isUserDelegated ? t('oauthSecretHint') : t('rawKeyHint')}
                   </span>
                 </label>
                 <details className="text-xs sm:col-span-2">
                   <summary className="cursor-pointer text-ink-soft">
-                    Meglévő titok hivatkozása (haladó)
+                    {t('existingSecret')}
                   </summary>
                   <div className="mt-2 rounded-md border border-ink/12 bg-wash/40 p-2">
-                    <p className="mb-2 text-ink/60">
-                      Ha a titkot már máshol tárolod, itt hivatkozhatsz rá kulcs beírása helyett.
-                      Elfogadott formák: <code>env:NÉV</code>,{' '}
-                      <code>secret-manager:projects/…/secrets/&lt;id&gt;</code>,{' '}
-                      <code>secret-ref:&lt;id&gt;</code>. Egyébként hagyd üresen és írd be fent a kulcsot.
-                    </p>
+                    <p className="mb-2 text-ink/60">{t('existingSecretHint')}</p>
                     <input
                       className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5 disabled:opacity-40"
                       value={secretAlias}
@@ -3717,18 +3811,14 @@ function DraftCard({
                       disabled={!!apiKey.trim()}
                     />
                     {!apiKey.trim() && secretAlias.trim() && !isResolvableSecretAlias(secretAlias.trim()) ? (
-                      <p className="mt-1 text-coral">
-                        Nem elfogadott alias-forma. Használj <code>env:</code>,{' '}
-                        <code>secret-manager:</code> vagy <code>secret-ref:</code> előtagot — vagy hagyd
-                        üresen és írd be fent a kulcsot.
-                      </p>
+                      <p className="mt-1 text-coral">{t('badAlias')}</p>
                     ) : null}
                   </div>
                 </details>
                 {isOstorosborCrm ? (
                   <label className="text-xs sm:col-span-2">
                     <span className="mb-1 block text-ink-soft">
-                      Acting user e-mail (CRM-ben regisztrált — X-Acting-User fejléc)
+                      {t('actingUser')}
                     </span>
                     <input
                       type="email"
@@ -3739,7 +3829,7 @@ function DraftCard({
                     />
                     {!actingUserEmail.trim() ? (
                       <p className="mt-1 text-honey">
-                        A kulcsos teszthez kötelező CRM-ben regisztrált acting user e-mail.
+                        {t('actingUserNeeded')}
                       </p>
                     ) : null}
                   </label>
@@ -3748,7 +3838,7 @@ function DraftCard({
                   <div className="text-xs sm:col-span-2">
                     <span className="mb-1 block text-ink-soft">
                       Authorized redirect URI{' '}
-                      <span className="text-ink/50">(add hozzá az OAuth-app beállításaihoz)</span>
+                      <span className="text-ink/50">{t('addToOauthApp')}</span>
                     </span>
                     <div className="flex items-center gap-1.5">
                       <code className="flex-1 rounded-md border border-ink/15 bg-wash px-2 py-1.5 font-mono text-xs select-all">
@@ -3766,7 +3856,7 @@ function DraftCard({
                           )
                         }
                       >
-                        Másolás
+                        {t('copy')}
                       </button>
                     </div>
                   </div>
@@ -3780,14 +3870,14 @@ function DraftCard({
                       className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
                       value={clientId}
                       onChange={(e) => setClientId(e.target.value)}
-                      placeholder="a szolgáltatónál regisztrált OAuth-app client_id-ja"
+                      placeholder={t('clientIdPlaceholder')}
                     />
                   </label>
                 ) : null}
                   </>
                 )}
                 <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">Kritikusság</span>
+                  <span className="mb-1 block text-ink-soft">{t('criticality')}</span>
                   <select
                     className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
                     value={criticality}
@@ -3799,23 +3889,20 @@ function DraftCard({
                   </select>
                 </label>
                 <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">2. jóváhagyó (≠ reviewer)</span>
+                  <span className="mb-1 block text-ink-soft">{t('secondApproverReviewer')}</span>
                   <input
                     className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
                     value={approverId}
                     onChange={(e) => setApproverId(e.target.value)}
-                    placeholder="user-id (dual-control esetén)"
+                    placeholder={t('userIdPlaceholder')}
                   />
                 </label>
               </div>
               {!isGmailConnector && !hasActivationCredentials ? (
-                <p className="mt-2 text-xs text-honey">
-                  Kulcs nélkül is aktiválhatsz, de megerősítést kérünk — az agent addig nem fog
-                  sikeresen hívni.
-                </p>
+                <p className="mt-2 text-xs text-honey">{t('keylessWarn')}</p>
               ) : null}
               {authTestDetail ? (
-                <p className="mt-2 text-xs text-ink-soft">Kulcsos teszt: {authTestDetail}</p>
+                <p className="mt-2 text-xs text-ink-soft">{t('keyTest', { detail: authTestDetail })}</p>
               ) : null}
               <div className="mt-2 flex flex-wrap gap-2">
                 {hasActivationCredentials && !isPlatformGoogleConnector ? (
@@ -3861,7 +3948,7 @@ function DraftCard({
                   onClick={handleActivate}
                   className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
                 >
-                  Aktiválás
+                  {t('activate')}
                 </button>
                 {isUserDelegated ? (
                   <button
@@ -3878,10 +3965,9 @@ function DraftCard({
                       void (async () => {
                         if (!isPlatformGoogleConnector && !hasActivationCredentials) {
                           const confirmed = await confirmDialog({
-                            title: 'Aktiválás kulcs nélkül',
-                            description:
-                              'Nem adtál meg API-kulcsot vagy érvényes titok-hivatkozást. Biztosan kulcs nélkül aktiválod?',
-                            confirmLabel: 'Aktiválás',
+                            title: t('activateKeylessTitle'),
+                            description: t('activateKeylessShort'),
+                            confirmLabel: t('activate'),
                             tone: 'danger',
                           })
                           if (!confirmed) return
@@ -3898,12 +3984,12 @@ function DraftCard({
                             navigateToOAuth(consent.data.url)
                           }
                           return { success: true }
-                        }, 'Konnektor aktiválva, consent-flow elindítva.')
+                        }, t('activatedConsent'))
                       })()
                     }}
                     className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
                   >
-                    Aktiválás és auto-consent indítása
+                    {t('activateAndConsent')}
                   </button>
                 ) : null}
               </div>
@@ -3912,7 +3998,7 @@ function DraftCard({
 
           {isActive && selectedStep === 'assign' ? (
             <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
-              <h4 className="mb-2 font-semibold">Hozzárendelés agenthez (emberi admin-aktus)</h4>
+              <h4 className="mb-2 font-semibold">{t('assignToAgent')}</h4>
               <div className="grid gap-2 sm:grid-cols-2">
                 <label className="text-xs">
                   <span className="mb-1 block text-ink-soft">Agent</span>
@@ -3921,7 +4007,7 @@ function DraftCard({
                     value={agentId}
                     onChange={(e) => setAgentId(e.target.value)}
                   >
-                    <option value="">Válassz agentet…</option>
+                    <option value="">{t('chooseAgent')}</option>
                     {agents.map((agent) => (
                       <option key={agent.id} value={agent.id}>
                         {agent.name}
@@ -3930,7 +4016,7 @@ function DraftCard({
                   </select>
                 </label>
                 <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">Hozzáférés</span>
+                  <span className="mb-1 block text-ink-soft">{t('access')}</span>
                   <select
                     className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
                     value={accessMode}
@@ -3944,7 +4030,7 @@ function DraftCard({
                   <span className="mb-1 block text-ink-soft">
                     Per-agent API kulcs{' '}
                     <span className="font-normal text-ink-soft/70">
-                      (agent_owned — elhagyható, ha a connector megosztott kulcsát használod)
+                      {t('perAgentKeyHint')}
                     </span>
                   </span>
                   <input
@@ -3952,7 +4038,7 @@ function DraftCard({
                     className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
                     value={agentApiKey}
                     onChange={(e) => setAgentApiKey(e.target.value)}
-                    placeholder="Kulcs megadása → ez az agent saját kulcsát kapja"
+                    placeholder={t('agentOwnedKey')}
                   />
                 </label>
               </div>
@@ -3968,38 +4054,32 @@ function DraftCard({
                         accessMode,
                         ...(agentApiKey.trim() ? { apiKey: agentApiKey.trim() } : {}),
                       }),
-                    selectedAgent ? `Hozzárendelve: ${selectedAgent.name}.` : 'Hozzárendelve.',
+                    selectedAgent ? t('assignedNamed', { name: selectedAgent.name }) : t('assigned'),
                   )
                 }
                 className="mt-2 rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
               >
-                Hozzárendelés
+                {t('assign')}
               </button>
             </div>
           ) : null}
 
           {isActive && selectedStep === 'revoke' ? (
             <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
-              <h4 className="mb-2 font-semibold text-coral">Megszüntetés (auditált leszerelés)</h4>
-              <p className="text-xs text-ink-soft">
-                Nem hard-delete: az agent-hozzárendelések levétele, az érintett agentek http_api
-                capability-jeinek újraszámítása, az aktív user-grantek visszavonása és a
-                menedzselt secret-ref törlése után a connector <code>archived</code> állapotba kerül
-                — a connector-sor és az audit-előzmény megmarad. A művelet visszafordíthatatlan
-                (újra kellene aktiválni). Bank-preset / L2–L3 esetén második jóváhagyó kell.
-              </p>
+              <h4 className="mb-2 font-semibold text-coral">{t('decommissionTitle')}</h4>
+              <p className="text-xs text-ink-soft">{t('decommissionActiveBody')}</p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
                 <label className="text-xs sm:col-span-2">
-                  <span className="mb-1 block text-ink-soft">Indok (auditba kerül)</span>
+                  <span className="mb-1 block text-ink-soft">{t('reason')}</span>
                   <input
                     className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
                     value={decommReason}
                     onChange={(e) => setDecommReason(e.target.value)}
-                    placeholder="Pl. félrekonfigurált egress-host, lecserélt szolgáltató"
+                    placeholder={t('reasonActivePlaceholder')}
                   />
                 </label>
                 <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">Kritikusság</span>
+                  <span className="mb-1 block text-ink-soft">{t('criticality')}</span>
                   <select
                     className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
                     value={decommCriticality}
@@ -4011,12 +4091,12 @@ function DraftCard({
                   </select>
                 </label>
                 <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">2. jóváhagyó (≠ te)</span>
+                  <span className="mb-1 block text-ink-soft">{t('secondApproverYou')}</span>
                   <input
                     className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
                     value={decommApprover}
                     onChange={(e) => setDecommApprover(e.target.value)}
-                    placeholder="user-id (dual-control esetén)"
+                    placeholder={t('userIdPlaceholder')}
                   />
                 </label>
               </div>
@@ -4026,12 +4106,12 @@ function DraftCard({
                   className="mt-3 rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral"
                   onClick={() => setConfirmDecomm(true)}
                 >
-                  Megszüntetés
+                  {t('decommission')}
                 </button>
               ) : (
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <span className="text-xs font-semibold text-coral">
-                    Biztos? A connector leszerelődik és archiválódik.
+                    {t('confirmDecomm')}
                   </span>
                   <button
                     type="button"
@@ -4047,18 +4127,18 @@ function DraftCard({
                         if (!res.success) return res
                         setConfirmDecomm(false)
                         return res
-                      }, 'Konnektor megszüntetve (archived).')
+                      }, t('connectorDecommissioned'))
                     }
                     className="rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
                   >
-                    Igen, szüntesd meg
+                    {t('yesDecommission')}
                   </button>
                   <button
                     type="button"
                     onClick={() => setConfirmDecomm(false)}
                     className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
                   >
-                    Mégse
+                    {t('cancel')}
                   </button>
                 </div>
               )}

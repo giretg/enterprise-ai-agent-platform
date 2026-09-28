@@ -60,6 +60,7 @@ export class PostgresAgentRepository implements AgentRepository {
     roleInstruction: string
     tenantId: string
     status?: Agent['status']
+    description?: string | null
   }): Promise<Agent> {
     return prisma.agent.create({
       data: {
@@ -67,6 +68,7 @@ export class PostgresAgentRepository implements AgentRepository {
         roleInstruction: input.roleInstruction,
         tenantId: input.tenantId,
         status: input.status ?? 'draft',
+        ...(input.description !== undefined ? { description: input.description } : {}),
       },
     })
   }
@@ -106,6 +108,27 @@ export class PostgresAgentRepository implements AgentRepository {
     return prisma.agent.update({
       where: { id: input.agentId },
       data: { memoryWriteMode: input.memoryWriteMode },
+    })
+  }
+
+  async updateOutputFolder(input: { agentId: string; folderId: string | null }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: { outputDriveFolderId: input.folderId },
+    })
+  }
+
+  async updateLocalRoots(input: { agentId: string; localRoots: string }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: { localRoots: input.localRoots },
+    })
+  }
+
+  async updateApprover(input: { agentId: string; approverUserId: string | null }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: { approverUserId: input.approverUserId },
     })
   }
 

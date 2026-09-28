@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { ProviderIcon } from '@/components/account/provider-icon'
+import { ConnectorTemplateIcon } from '@/components/account/provider-icon'
 
 /**
  * Egy kapcsolt fiók kompakt sora — ikon, név, egysoros összegzés, jobbra az
@@ -8,6 +8,7 @@ import { ProviderIcon } from '@/components/account/provider-icon'
 export function ConnectionCard({
   name,
   provider,
+  iconDataUrl,
   summary,
   status,
   actions,
@@ -15,6 +16,8 @@ export function ConnectionCard({
 }: {
   name: string
   provider: string
+  /** Sablonból készült konnektornál a sablon feltöltött ikonja; egyébként generikus. */
+  iconDataUrl?: string | null
   summary: ReactNode
   status?: ReactNode
   actions?: ReactNode
@@ -23,8 +26,8 @@ export function ConnectionCard({
   return (
     <section className="overflow-hidden rounded-2xl border border-line/70 bg-card/80 shadow-sm transition-shadow hover:shadow-md">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-3 px-4 py-3 sm:flex-nowrap">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-line/80 bg-white shadow-sm">
-          <ProviderIcon provider={provider} className="h-5 w-5" />
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-line/80 bg-white shadow-sm">
+          <ConnectorTemplateIcon provider={provider} iconDataUrl={iconDataUrl} className="h-5 w-5" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">

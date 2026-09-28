@@ -482,7 +482,7 @@ export class ProvisioningService {
           isGoogleDrive
             ? 'A Google Drive connector a platform Google Drive OAuth alkalmazását használja — állítsd be a Platform · Beállítások → Google Drive OAuth oldalon.'
             : usesPlatformGoogleApiOAuth
-              ? 'A Google Analytics / Search Console / Ads konnektorok a platform Google API OAuth alkalmazását használják — állítsd be a Platform · Beállítások → Google Analytics / Search Console / Ads OAuth oldalon.'
+              ? 'A Google API konnektorok (Analytics / Search Console / Ads / Calendar / Sheets) a platform Google API OAuth alkalmazását használják — állítsd be a Platform · Beállítások → Google API OAuth oldalon.'
               : 'A Gmail connector a platform Google OAuth alkalmazását használja — állítsd be a Platform · Beállítások → Google OAuth oldalon.',
         )
       }
@@ -1248,6 +1248,8 @@ export class ProvisioningService {
       type: string
       name: string
       connectorMode: 'fixed' | 'self_updating'
+      templateKey?: string | null
+      iconDataUrl?: string | null
       description?: string | null
       baseUrl?: string | null
       tools?: Array<{ method: string; path: string; description?: string | null }>

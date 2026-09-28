@@ -1,10 +1,11 @@
 /**
- * Public-site locale catalog.
+ * Locale catalog.
  *
- * First step of bilingualization: only the marketing surface (`/`, `/privacy`,
- * `/gtc`) is localized. The control-plane stays unprefixed. To add a public
- * page later, append it to `publicPathnames` and add `app/[locale]/…/page.tsx`
- * plus matching keys in `src/messages/{hu,en}.json`.
+ * Public marketing pages (`/`, `/privacy`, `/gtc`) are locale-prefixed
+ * (`/hu`, `/en/privacy`). The control plane and auth stay unprefixed; their
+ * UI language follows the `NEXT_LOCALE` cookie (same HU/EN switcher). To add
+ * a public page later, append it to `publicPathnames` and add
+ * `app/[locale]/…/page.tsx` plus matching keys in `src/messages/{hu,en}.json`.
  */
 export const locales = ['hu', 'en'] as const
 export type AppLocale = (typeof locales)[number]

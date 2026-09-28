@@ -3,10 +3,12 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import { redeemInvitation } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
 
 export function RedeemInvitationForm({ initialToken }: { initialToken: string }) {
+  const t = useTranslations('ControlPlane.redeem')
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [token, setToken] = useState(initialToken)
@@ -15,10 +17,10 @@ export function RedeemInvitationForm({ initialToken }: { initialToken: string })
   const [success, setSuccess] = useState(false)
 
   return (
-    <Card title="Token beváltása">
+    <Card title={t('cardTitle')}>
       <div className="space-y-4">
         <label className="block text-sm text-ink-soft">
-          Meghívó token
+          {t('token')}
           <textarea
             value={token}
             onChange={(event) => setToken(event.target.value)}
@@ -27,12 +29,12 @@ export function RedeemInvitationForm({ initialToken }: { initialToken: string })
           />
         </label>
         <label className="block text-sm text-ink-soft">
-          Megjelenített név
+          {t('displayName')}
           <input
             value={name}
             onChange={(event) => setName(event.target.value)}
             className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
-            placeholder="Név"
+            placeholder={t('namePlaceholder')}
           />
         </label>
         <button
@@ -47,7 +49,7 @@ export function RedeemInvitationForm({ initialToken }: { initialToken: string })
               })
               if (result.success) {
                 setSuccess(true)
-                setMessage(`Aktiválva: ${result.data.role}`)
+                setMessage(t('activated', { role: result.data.role ?? '' }))
                 router.refresh()
               } else {
                 setSuccess(false)
@@ -56,7 +58,7 @@ export function RedeemInvitationForm({ initialToken }: { initialToken: string })
             })
           }}
         >
-          Aktiválás
+          {t('activate')}
         </button>
       </div>
 
@@ -71,7 +73,7 @@ export function RedeemInvitationForm({ initialToken }: { initialToken: string })
           {message}
           {success && (
             <Link href="/control-plane" className="ml-2 font-semibold hover:underline">
-              Tovább a Control Plane-re
+              {t('continue')}
             </Link>
           )}
         </div>

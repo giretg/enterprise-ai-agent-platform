@@ -19,6 +19,10 @@ import {
 export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
 export type HttpMethod = (typeof HTTP_METHODS)[number]
 
+/** XML-alapú API adapterek (domain/connector/xml-protocols.ts). */
+export const HTTP_API_PROTOCOLS = ['szamlazz_agent', 'nav_online_invoice'] as const
+export type HttpApiProtocol = (typeof HTTP_API_PROTOCOLS)[number]
+
 /** Az írni tudó (mutáló) metódusok — ezek `access: write` jelölést kapnak (§4.3). */
 export const WRITE_METHODS: ReadonlySet<HttpMethod> = new Set<HttpMethod>([
   'POST',
@@ -102,6 +106,8 @@ export type ProposedTool = z.infer<typeof proposedToolSchema>
 export const connectorAuthSchema = z.object({
   type: z.enum(['api_key_header', 'bearer_token', 'basic', 'oauth2', 'none']),
   headerName: z.string().optional(),
+  /** `type: 'basic'`: nem titkos felhasználónév (pl. MiniCRM System ID); a titok a jelszó. */
+  username: z.string().optional(),
   /** A secret SOSEM kerül ide — csak a Secret Managerbe szánt alias NEVE javasolt. */
   secretAliasSuggested: z.string().optional(),
   /**
@@ -154,6 +160,10 @@ const connectorConfigObjectSchema = z.object({
   /** CRM acting user fallback, ha a runtime actingUser.email hiányzik (Ostorosbor). */
   defaultActingUserEmail: z.string().email().optional(),
   githubRepositoryAccess: githubRepositoryAccessSchema.optional(),
+  /** XML-alapú API adaptere (Számlázz.hu Agent, NAV Online Számla); hiányában JSON REST. */
+  protocol: z.enum(HTTP_API_PROTOCOLS).optional(),
+  /** NAV Online Számla: a lekérdező adózó 8 jegyű törzsszáma. */
+  nav: z.object({ taxNumber: z.string().regex(/^\d{8}$/) }).optional(),
   /**
    * Privacy interface contract (spec §11). Hiányában a connector működik, de a
    * platform alacsonyabb privacy capability-t jelez (UI + audit).

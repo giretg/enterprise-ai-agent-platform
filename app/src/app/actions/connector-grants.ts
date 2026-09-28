@@ -10,8 +10,10 @@ import { prisma } from '@/lib/db'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
 import { connectorGrantIdSchema, startConnectorOAuthSchema } from '@/lib/validators/actions'
+import { navSoftwareSchema } from '@/lib/nav-online-invoice-software'
 import { toGoogleOAuthPublicView, toGoogleDrivePickerPublicView } from '@/lib/platform-google-oauth-config'
 import { agentDisplayName } from '@/lib/agent-persona'
+import { iconDataUrlByTemplateKey, provenanceTemplateKey } from '@/lib/connector-template-icon-map'
 import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
 import {
   GmailApiAuthError,
@@ -159,6 +161,29 @@ export async function listConnectorGrants() {
   }
 }
 
+/** Agent output-mappa Pickerhez: az aktuális admin saját aktív Drive-grantje. */
+export async function getMyGoogleDriveGrantForPicker() {
+  try {
+    const ctx = await requireTenantRole('admin')
+    await services.connectorGrants.revokeGrantsForNonActiveConnectors(
+      ctx.user.id,
+      ctx.activeTenantId,
+      ctx.user.id,
+    )
+    const grants = await services.connectorGrants.listForUser(ctx.user.id, ctx.activeTenantId)
+    const driveGrant = grants.find(
+      (g) => g.status === 'active' && g.connector?.type === 'google_drive',
+    )
+    const pickerConfig = await services.platformSettings.getGoogleDrivePickerConfig()
+    return ok({
+      grantId: driveGrant?.id ?? null,
+      pickerConfigured: Boolean(pickerConfig),
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load Drive grant')
+  }
+}
+
 export async function listConnectorsPanelContext() {
   try {
     const user = await requireTenantRole('viewer')
@@ -174,10 +199,23 @@ export async function listConnectorsPanelContext() {
       googleOAuthSummary(),
       services.platformSettings.getGoogleDrivePickerConfig(),
     ])
+    // Sablonból készült konnektorokhoz a sablon feltöltött ikonja; a többit a
+    // kliens generikus ikonnal mutatja.
+    const templates = await repositories.connectorTemplates.listVisible({
+      tenantId: user.activeTenantId,
+    })
+    const iconByTemplateKey = iconDataUrlByTemplateKey(templates)
+    const connectorsWithIcons = connectors.map((connector) => {
+      const key = provenanceTemplateKey(connector.config)
+      return {
+        ...connector,
+        iconDataUrl: key ? (iconByTemplateKey.get(key) ?? null) : null,
+      }
+    })
     const connectorUsage = await delegatedConnectorUsage(connectors, user.activeTenantId)
     return ok({
       grants,
-      connectors,
+      connectors: connectorsWithIcons,
       connectorUsage,
       isAdmin,
       canManagePlatformOauth: isSuperadmin(user.platformRoles),
@@ -384,6 +422,26 @@ export async function upsertPlatformGoogleDrivePickerConfig(input: { apiKey: str
     return ok(toGoogleDrivePickerPublicView({ config: resolved.config, source: resolved.source }))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to save Google Drive Picker config')
+  }
+}
+
+export async function getPlatformNavSoftware() {
+  try {
+    await requirePlatformRole('platform_auditor')
+    return ok(await services.platformSettings.getNavSoftware())
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load NAV Online Számla software settings')
+  }
+}
+
+export async function upsertPlatformNavSoftware(input: unknown) {
+  try {
+    const ctx = await requirePlatformRole('superadmin')
+    const parsed = navSoftwareSchema.safeParse(input)
+    if (!parsed.success) return fail(parsed.error.issues[0]?.message ?? 'Hibás NAV szoftveradat.')
+    return ok(await services.platformSettings.upsertNavSoftware(parsed.data, ctx.user.id))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to save NAV Online Számla software settings')
   }
 }
 

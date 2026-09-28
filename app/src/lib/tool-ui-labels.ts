@@ -54,6 +54,10 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'Munkafájl írása',
     description: 'Terv vagy jegyzet mentése jóváhagyás nélkül, kvótával.',
   },
+  'platform.work_file.append': {
+    label: 'Munkafájl bővítése',
+    description: 'Szöveg hozzáfűzése munkafájl végéhez jóváhagyás nélkül, kvótával.',
+  },
   'platform.work_file.delete': {
     label: 'Munkafájl törlése',
     description: 'Munkafájl törlése a projekt prefixén.',
@@ -385,6 +389,10 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   sandbox_exec: {
     label: 'Kód futtatása',
     description: 'Izolált, hívásonként új sandbox futtatása kontrollált workspace inputtal és outputtal.',
+  },
+  sandbox_run: {
+    label: 'Skill-script futtatása',
+    description: 'Az agenthez pinnelt skill scriptjének futtatása a platform sandboxában.',
   },
 
   // Webes kutatás

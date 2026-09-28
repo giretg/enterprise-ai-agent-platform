@@ -8,6 +8,7 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+  HTTP_API_REQUEST_TOOL,
   type LiveConnectorRow,
   type LiveGrantRow,
   type ToolCallPrincipal,
@@ -601,12 +602,16 @@ async function main() {
       toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
       args: FOLDER_ARGS,
       origin: 'https://app.example.com',
-      confirm: { mint: null },
+      confirm: { mint: null, linkReason: 'protocol_not_2026_07_28' },
     })
     const payload = payloadOf(result)
     assert.equal(payload.isError, undefined)
     assert.equal(payload.status, 'awaiting_approval')
     assert.match(String(payload.approvalUrl), /\/control-plane\/operations#/)
+    const enqueued = wired.audit.find((row) => row.action === 'gateway.operation.enqueued')
+    const meta = enqueued?.metadata as Record<string, unknown>
+    assert.equal(meta?.confirmBranch, 'link')
+    assert.equal(meta?.confirmBranchReason, 'protocol_not_2026_07_28')
   })
 
   await check('form round: input_required with one decision field and bound state', async () => {
@@ -631,9 +636,13 @@ async function main() {
     assert.equal(state.userId, USER_ID)
     assert.equal(state.tenantId, TENANT_ID)
     assert.ok(state.exp - state.iat === 15 * 60_000)
+    const enqueued = wired.audit.find((row) => row.action === 'gateway.operation.enqueued')
+    const meta = enqueued?.metadata as Record<string, unknown>
+    assert.equal(meta?.confirmBranch, 'form')
+    assert.equal(meta?.confirmBranchReason, 'mrtr_form')
   })
 
-  await check('long content is cut at 2000 chars with the link', async () => {
+  await check('long content is cut at 2000 chars with honest truncation (no false full-content promise)', async () => {
     const wired = deps()
     const withUpload: GatewayOperationServiceDeps = {
       ...wired.deps,
@@ -661,7 +670,51 @@ async function main() {
     assert.ok('resultType' in result, JSON.stringify(result))
     const message = (result.inputRequests.confirm_write as { params: { message: string } }).params.message
     assert.ok(!message.includes('x'.repeat(2001)))
-    assert.match(message, /a teljes tartalom a linken: https:\/\/app\.example\.com/)
+    assert.match(message, /vágva \(2000\/5000 karakter\)/)
+    assert.ok(!message.includes('a teljes tartalom a linken'))
+    assert.match(message, /https:\/\/app\.example\.com\/control-plane\/operations#/)
+  })
+
+  await check('http_api_request confirm surfaces query params execute will send', async () => {
+    const wired = deps()
+    const withHttp: GatewayOperationServiceDeps = {
+      ...wired.deps,
+      async loadDefinition() {
+        const base = definition()
+        return {
+          ...base,
+          snapshot: {
+            ...base.snapshot,
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'write', name: 'CRM' }],
+            capabilities: [
+              ...base.snapshot.capabilities,
+              { toolName: HTTP_API_REQUEST_TOOL, allowed: true },
+            ],
+          },
+        }
+      },
+      async findConnector() {
+        return connector({ type: 'http_api', authMode: 'api_key' })
+      },
+    }
+    const result = await enqueueWriteForMcp(withHttp, {
+      principal: principal({ role: 'operator' }),
+      toolName: HTTP_API_REQUEST_TOOL,
+      args: {
+        definitionId: DEFINITION_ID,
+        method: 'POST',
+        path: '/v1/users',
+        query: { admin: 'true', role: 'owner' },
+        body: '{"name":"Bob"}',
+        idempotencyKey: 'idem-http-q',
+      },
+      origin: 'https://app.example.com',
+      confirm: confirmOn,
+    })
+    assert.ok('resultType' in result, JSON.stringify(result))
+    const message = (result.inputRequests.confirm_write as { params: { message: string } }).params.message
+    assert.match(message, /POST \/v1\/users\?admin=true&role=owner/)
+    assert.match(message, /"name":"Bob"/)
   })
 
   await check('retry approve → exactly one call, succeeded; second retry does not re-execute', async () => {

@@ -147,10 +147,8 @@ export async function createDraftAgent(
     roleInstruction,
     tenantId: input.tenantId,
     status: 'draft',
+    ...(description ? { description } : {}),
   })
-  if (description !== null) {
-    await deps.agents.updateProfile({ agentId: agent.id, description })
-  }
   await deps.agents.replaceCapabilities(agent.id, [...new Set(keptCapabilities)])
 
   for (const skillName of input.skills ?? []) {

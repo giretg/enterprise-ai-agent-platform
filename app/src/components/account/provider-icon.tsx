@@ -75,3 +75,21 @@ export function ProviderIcon({ provider, className = 'h-7 w-7' }: ProviderIconPr
   if (visual === 'microsoft') return <MicrosoftIcon className={className} />
   return <GenericProviderIcon className={className} />
 }
+
+/**
+ * Sablon-ikon: ha a sablonhoz feltöltött kép (data URL) van, azt mutatja,
+ * különben a provider-ikont, végső esetben az általános konnektor-ikont.
+ */
+export function ConnectorTemplateIcon({
+  iconDataUrl,
+  provider,
+  className = 'h-7 w-7',
+}: ProviderIconProps & { iconDataUrl?: string | null }) {
+  if (iconDataUrl?.startsWith('data:image')) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={iconDataUrl} alt="" aria-hidden="true" className={`${className} object-contain`} />
+    )
+  }
+  return <ProviderIcon provider={provider} className={className} />
+}

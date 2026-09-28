@@ -18,6 +18,7 @@ import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/bu
 import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
 import type { TemplateDescriptor } from '../src/domain/connector-template/template-descriptor'
 import type { Prisma } from '@prisma/client'
+import { withTemplateIcon } from './template-icons'
 
 const SEED_TENANT_SLUG = process.env.SEED_TENANT_SLUG ?? 'demo'
 const SEED_CLERK_USER_ID = process.env.SEED_CLERK_USER_ID ?? 'seed-clerk-user'
@@ -30,10 +31,11 @@ async function upsertTemplates(
     const existing = await prisma.connectorTemplate.findFirst({
       where: { key: descriptor.key, version: 1, tenantId: null, origin },
     })
+    const withIcon = withTemplateIcon(descriptor, existing?.descriptor)
     const data = {
-      displayName: descriptor.displayName,
-      description: descriptor.description ?? null,
-      descriptor: descriptor as Prisma.InputJsonValue,
+      displayName: withIcon.displayName,
+      description: withIcon.description ?? null,
+      descriptor: withIcon as Prisma.InputJsonValue,
       status: 'active' as const,
     }
     if (!existing) {
@@ -129,16 +131,20 @@ async function main() {
     update: {
       tenantId: tenant.id,
       name: 'Drive assistant',
+      description: 'Call when searching or reading Drive files, or requesting a folder.',
       roleInstruction:
         'You inspect Google Drive through MCP. Search and read files, and request folder creation for the signed-in operator. Folder writes wait for human approval. Do not invent Drive contents.',
+      hardRules: 'Never store secrets or credentials in project memory.',
       status: 'draft',
     },
     create: {
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       tenantId: tenant.id,
       name: 'Drive assistant',
+      description: 'Call when searching or reading Drive files, or requesting a folder.',
       roleInstruction:
         'You inspect Google Drive through MCP. Search and read files, and request folder creation for the signed-in operator. Folder writes wait for human approval. Do not invent Drive contents.',
+      hardRules: 'Never store secrets or credentials in project memory.',
       status: 'draft',
     },
   })

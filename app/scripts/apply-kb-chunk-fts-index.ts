@@ -3,10 +3,10 @@
  * §8.4/§10). A `prisma db push` NEM hoz létre expression-alapú tsvector GIN indexet,
  * ezért — az audit append-only triggerhez hasonlóan — nyers SQL-ként telepítjük.
  *
- * Az index a `to_tsvector('simple', title || ' ' || text)` kifejezésre épül; a
- * `kb_search v2` (`searchChunks`) pontosan ezt a kifejezést kérdezi `@@ to_tsquery(...)`
- * mintával, `ts_rank` sorrenddel. A `simple` config determinisztikus, extension nélkül
- * működik Neonon (nincs stemmer/unaccent függés — §10.1).
+ * Az index a `to_tsvector('hungarian', title || ' ' || text)` kifejezésre épül; a
+ * `kb_search` (`searchChunks`) pontosan ezt a kifejezést kérdezi. A `hungarian`
+ * snowball config beépített (extension nélkül megy Neonon): szótövez és a magyar
+ * töltelékszavakat kiszűri. Ugyanez a 0011_kb_hungarian_fts migráció.
  *
  * Futtatás: npm run db:apply-kb-fts        (DATABASE_URL — dev)
  *           npm run db:apply-kb-fts:test   (DATABASE_URL_TEST)
@@ -21,10 +21,11 @@ import { PrismaClient } from '@prisma/client'
 
 // Postgres prepared statementenként egyetlen parancsot enged — külön hívások kellenek.
 export const KB_CHUNK_FTS_STATEMENTS = [
+  `DROP INDEX IF EXISTS knowledge_chunks_fts_idx;`,
   `
-CREATE INDEX IF NOT EXISTS knowledge_chunks_fts_idx
+CREATE INDEX IF NOT EXISTS knowledge_chunks_fts_hu_idx
   ON knowledge_chunks
-  USING GIN (to_tsvector('simple', coalesce(title, '') || ' ' || text));
+  USING GIN (to_tsvector('hungarian'::regconfig, coalesce(title, '') || ' ' || text));
 `,
 ]
 
@@ -34,7 +35,7 @@ async function apply(databaseUrl: string, label: string) {
     for (const statement of KB_CHUNK_FTS_STATEMENTS) {
       await prisma.$executeRawUnsafe(statement)
     }
-    console.log(`  ✓ [${label}] knowledge_chunks_fts_idx GIN index telepítve`)
+    console.log(`  ✓ [${label}] knowledge_chunks_fts_hu_idx GIN index telepítve`)
   } finally {
     await prisma.$disconnect()
   }

@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation'
 import { useCallback, useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import {
   getGoogleDrivePickerSession,
   removeGoogleDrivePickerSelectionAction,
@@ -76,8 +77,8 @@ async function ensurePickerLoaded(): Promise<void> {
   })
 }
 
-export function selectionLabel(mimeType: string): string {
-  return mimeType === 'application/vnd.google-apps.folder' ? 'mappa' : 'fájl'
+export function selectionLabel(mimeType: string, folderWord = 'mappa', fileWord = 'fájl'): string {
+  return mimeType === 'application/vnd.google-apps.folder' ? folderWord : fileWord
 }
 
 export function GoogleDrivePickerPanel({
@@ -89,6 +90,7 @@ export function GoogleDrivePickerPanel({
   initialMetadata: GoogleDriveGrantMetadata
   pickerConfigured: boolean
 }) {
+  const t = useTranslations('DrivePicker')
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
@@ -107,7 +109,7 @@ export function GoogleDrivePickerPanel({
         const { accessToken, apiKey, appId, origin } = sessionRes.data
         const pickerApi = window.google?.picker
         if (!pickerApi) {
-          setMessage({ ok: false, text: 'A Google Picker API nem töltődött be.' })
+          setMessage({ ok: false, text: t('apiMissing') })
           return
         }
 
@@ -137,7 +139,7 @@ export function GoogleDrivePickerPanel({
               setMetadata(saveRes.data.metadata)
               setMessage({
                 ok: true,
-                text: `${data.docs.length} írható cél mentve.`,
+                text: t('saved', { count: data.docs.length }),
               })
               router.refresh()
             } else {
@@ -148,7 +150,7 @@ export function GoogleDrivePickerPanel({
       } catch (e) {
         setMessage({
           ok: false,
-          text: e instanceof Error ? e.message : 'A Picker megnyitása sikertelen.',
+          text: e instanceof Error ? e.message : t('openFailed'),
         })
       }
     })
@@ -173,8 +175,7 @@ export function GoogleDrivePickerPanel({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="max-w-xl text-xs leading-5 text-ink-soft">
-          Ezeket a fájlokat és mappákat módosíthatja az agent. Az általa létrehozott fájlok
-          automatikusan írhatók.
+          {t('help')}
         </p>
         <button
           type="button"
@@ -182,16 +183,13 @@ export function GoogleDrivePickerPanel({
           className="rounded-full border border-coral/40 px-3.5 py-1.5 text-xs font-semibold text-coral-deep transition-colors hover:bg-coral/5 disabled:opacity-50"
           onClick={openPicker}
         >
-          {pending ? 'Betöltés…' : '+ Fájlok kiválasztása'}
+          {pending ? t('loading') : t('pick')}
         </button>
       </div>
 
       {!pickerConfigured ? (
         <p className="rounded-lg bg-honey/10 px-3 py-2 text-xs leading-5 text-ink-soft">
-          A fájlválasztó még nincs beállítva a platformon. Kérd meg az admint, hogy adja meg a
-          Picker API kulcsot és az App ID-t a{' '}
-          <span className="font-medium text-ink">Platform → Beállítások → Google Drive OAuth</span>{' '}
-          szekcióban.
+          {t('notConfigured')}
         </p>
       ) : null}
 
@@ -205,7 +203,9 @@ export function GoogleDrivePickerPanel({
             >
               <span>
                 <span className="font-medium text-ink">{entry.name}</span>
-                <span className="ml-2 text-xs text-ink-faint">{selectionLabel(entry.mimeType)}</span>
+                <span className="ml-2 text-xs text-ink-faint">
+                  {selectionLabel(entry.mimeType, t('folder'), t('file'))}
+                </span>
               </span>
               <button
                 type="button"
@@ -213,13 +213,13 @@ export function GoogleDrivePickerPanel({
                 className="text-xs font-semibold text-coral-deep disabled:opacity-50"
                 onClick={() => removeSelection(entry.fileId)}
               >
-                Eltávolítás
+                {t('remove')}
               </button>
             </li>
           ))}
         </ul>
       ) : (
-        <p className="text-xs text-ink-faint">Még nincs kiválasztott írható fájl vagy mappa.</p>
+        <p className="text-xs text-ink-faint">{t('empty')}</p>
       )}
 
       {message ? (

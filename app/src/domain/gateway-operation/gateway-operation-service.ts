@@ -78,6 +78,12 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     tenantId: string
     userId: string
   }) => Promise<{ role: string; assumed: boolean } | null>
+  /** #663: konnektor > agent sorrendben a megnevezett jóváhagyó; null = általános sor. */
+  resolveDesignatedApprover?: (input: {
+    tenantId: string
+    agentId: string
+    connectorId: string | null
+  }) => Promise<{ userId: string; name: string } | null>
   executeDriveTool?: (
     toolName: string,
     args: Record<string, unknown>,
@@ -163,14 +169,41 @@ export function canApproveGatewayOperation(actor: GatewayActor): boolean {
 
 export function canSeeGatewayOperation(
   actor: GatewayActor,
-  operation: { principalUserId: string },
+  operation: { principalUserId: string; designatedApproverUserId?: string | null },
 ): boolean {
   if (actor.userId === operation.principalUserId) return true
+  if (
+    operation.designatedApproverUserId &&
+    actor.userId === operation.designatedApproverUserId
+  ) {
+    return true
+  }
   return canApproveGatewayOperation(actor)
 }
 
-/** #618 D4: the requester confirms their own call; approver/admin may decide anyone's. */
-export const canDecideGatewayOperation = canSeeGatewayOperation
+/** #663: megnevezett jóváhagyó esetén csak ő, egy admin vagy assumált superadmin dönthet. */
+export function isDesignatedDecider(
+  actor: GatewayActor,
+  operation: { designatedApproverUserId?: string | null },
+): boolean {
+  if (!operation.designatedApproverUserId) return true
+  if (actor.userId === operation.designatedApproverUserId) return true
+  if (actor.assumed) return true
+  return actor.role === 'admin'
+}
+
+/**
+ * #618 D4: a kérelmező a saját hívását igazolja; approver/admin bárkiét.
+ * #663: megnevezett jóváhagyó esetén a kérelmező is csak akkor dönthet, ha ő
+ * a megnevezett — a megnevezett viszont a saját kérését is jóváhagyhatja.
+ */
+export function canDecideGatewayOperation(
+  actor: GatewayActor,
+  operation: { principalUserId: string; designatedApproverUserId?: string | null },
+): boolean {
+  if (!canSeeGatewayOperation(actor, operation)) return false
+  return isDesignatedDecider(actor, operation)
+}
 
 export type GatewayDecisionChannel = 'mcp_form' | 'control_plane'
 
@@ -184,6 +217,8 @@ export function toGatewayOperationView(row: GatewayOperationRecord): GatewayOper
     agentId: row.agentId,
     principalUserId: row.principalUserId,
     connectorId: row.connectorId,
+    designatedApproverUserId: row.designatedApproverUserId,
+    designatedApproverName: row.designatedApproverName,
     errorCode: row.errorCode,
     result: row.status === 'succeeded' ? row.resultJson : null,
     approval: row.approval
@@ -233,11 +268,22 @@ export function enqueueResultToMcp(
   origin?: string,
 ): EnterpriseToolMcpResult {
   if (!result.ok) return errorMcp(result.code, result.authorizationUrl)
+  const waitingFor =
+    result.view.status === 'awaiting_approval' && result.view.designatedApproverName
+      ? {
+          waitingForApprover: {
+            userId: result.view.designatedApproverUserId,
+            name: result.view.designatedApproverName,
+          },
+          message: `${result.view.designatedApproverName} jóváhagyására vár.`,
+        }
+      : {}
   return textResult({
     operationId: result.view.operationId,
     status: result.view.status,
     idempotencyKey: result.view.idempotencyKey,
     toolName: result.view.toolName,
+    ...waitingFor,
     ...(origin
       ? { approvalUrl: `${origin.replace(/\/+$/, '')}/control-plane/operations#${result.view.operationId}` }
       : {}),
@@ -395,9 +441,48 @@ async function loadAuthorizedWrite(
   }
 }
 
+export async function recordGatewayOperationEnqueued(
+  deps: GatewayOperationServiceDeps,
+  input: {
+    principal: GatewayActor
+    operationId: string
+    toolName: string
+    definitionId: string
+    agentId: string
+    idempotencyKey: string
+    designatedApproverUserId?: string | null
+    extras?: Record<string, unknown>
+  },
+): Promise<void> {
+  const { principal, extras, designatedApproverUserId, ...ids } = input
+  await recordGatewayAudit(deps, {
+    action: 'gateway.operation.enqueued',
+    actorType: 'human',
+    actorId: principal.userId,
+    tenantId: principal.tenantId,
+    operationId: ids.operationId,
+    metadata: {
+      operationId: ids.operationId,
+      toolName: ids.toolName,
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      definitionId: ids.definitionId,
+      agentId: ids.agentId,
+      idempotencyKey: ids.idempotencyKey,
+      ...(designatedApproverUserId ? { designatedApproverUserId } : {}),
+      ...extras,
+    },
+  })
+}
+
 export async function enqueueGatewayOperation(
   deps: GatewayOperationServiceDeps,
-  input: { principal: GatewayActor; toolName: string; args: Record<string, unknown> },
+  input: {
+    principal: GatewayActor
+    toolName: string
+    args: Record<string, unknown>
+    deferEnqueueAudit?: boolean
+  },
 ): Promise<GatewayOperationResult> {
   const { principal, toolName, args } = input
   const authorized = await loadAuthorizedWrite(deps, principal, toolName, args)
@@ -429,6 +514,11 @@ export async function enqueueGatewayOperation(
   }
 
   const idempotencyKey = String(authorized.parsedArgs.idempotencyKey)
+  const designated = await deps.resolveDesignatedApprover?.({
+    tenantId: principal.tenantId,
+    agentId: authorized.definition.agentId,
+    connectorId: authorized.connectorId,
+  })
   const existing = await deps.operations.findByTenantAndIdempotencyKey(
     principal.tenantId,
     idempotencyKey,
@@ -453,6 +543,8 @@ export async function enqueueGatewayOperation(
     argsJson: authorized.parsedArgs,
     idempotencyKey,
     connectorId: authorized.connectorId,
+    designatedApproverUserId: designated?.userId ?? null,
+    designatedApproverName: designated?.name ?? null,
   })
   if (!inserted.created) {
     const conflict = idempotencyReplayConflict(
@@ -464,22 +556,17 @@ export async function enqueueGatewayOperation(
     if (conflict) return conflict
     return ok(toGatewayOperationView(inserted.record), false)
   }
-  await recordGatewayAudit(deps, {
-    action: 'gateway.operation.enqueued',
-    actorType: 'human',
-    actorId: principal.userId,
-    tenantId: principal.tenantId,
-    operationId: inserted.record.id,
-    metadata: {
+  if (!input.deferEnqueueAudit) {
+    await recordGatewayOperationEnqueued(deps, {
+      principal,
       operationId: inserted.record.id,
       toolName,
-      tenantId: principal.tenantId,
-      userId: principal.userId,
       definitionId: authorized.definition.definitionId,
       agentId: authorized.definition.agentId,
       idempotencyKey,
-    },
-  })
+      designatedApproverUserId: designated?.userId ?? null,
+    })
+  }
   return ok(toGatewayOperationView(inserted.record), inserted.created)
 }
 
@@ -503,12 +590,18 @@ export type GatewayPendingOperationRow = GatewayPendingOperation & {
   requesterName: string
   agentName: string
   definitionLabel: string
+  connectorName: string | null
+  connectorIconDataUrl: string | null
+  connectorIconProvider: string
 }
+
+export type GatewayOperationHistoryRow = GatewayPendingOperationRow
 
 export async function listPendingGatewayOperations(
   deps: GatewayOperationServiceDeps,
   input: { tenantId: string; principalUserId?: string },
 ): Promise<GatewayPendingOperation[]> {
+  // principalUserId = láthatóság: saját kérések + a rá megnevezettként várók.
   const rows = await deps.operations.listAwaitingApproval(input.tenantId, input.principalUserId)
   return rows.map((row) => ({
     ...toGatewayOperationView(row),
@@ -523,9 +616,11 @@ function pendingDecisionError(
 ): GatewayOperationErr | null {
   if (row.tenantId !== tenantId) return err('operation_not_found')
   // not_found, not approver_not_authorized: another user's operation must not leak.
-  if (!canDecideGatewayOperation(actor, row)) return err('operation_not_found')
+  if (!canSeeGatewayOperation(actor, row)) return err('operation_not_found')
   if (row.status !== 'awaiting_approval') return err('operation_not_awaiting_approval')
   if (row.approval && row.approval.decision !== 'pending') return err('approval_already_decided')
+  // #663: látható, de nem a megnevezett jóváhagyó (és nem admin-helyettes) → tiltva, nem rejtve.
+  if (!isDesignatedDecider(actor, row)) return err('approver_not_authorized')
   return null
 }
 

@@ -1,29 +1,57 @@
 'use client'
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { listProjectMemoryAction, saveProjectMemoryAction } from '@/app/actions/project-work'
+import { useTranslations } from 'next-intl'
+import {
+  deleteProjectMemoryAction,
+  listProjectMemoryAction,
+  saveProjectMemoryAction,
+} from '@/app/actions/project-work'
 import { PROJECT_MEMORY_KINDS } from '@/domain/project-work/types'
 import type { MemoryView, ProjectListItem } from '@/domain/project-work/project-work-service'
 import { GENERAL_WORK_PROJECT_KEY } from '@/lib/work-project'
+import { asTranslate } from '@/i18n/translate'
 import { projectWorkErrorLabel } from './labels'
 
 export type MemoryKind = (typeof PROJECT_MEMORY_KINDS)[number]
+
+const MEMORY_KIND_BADGE: Record<MemoryKind, string> = {
+  decision: 'bg-coral/15 text-coral-deep',
+  open_task: 'bg-sage/15 text-sage',
+  finding: 'bg-ink/5 text-ink-soft',
+  constraint: 'bg-ink/5 text-ink-soft',
+  artifact: 'bg-ink/5 text-ink-soft',
+  handoff_summary: 'bg-ink/5 text-ink-soft',
+  focus: 'bg-coral/25 text-coral-deep',
+  session_log: 'bg-sage/10 text-sage',
+}
+
+const MEMORY_KIND_KEYS: Record<MemoryKind, { label: string; hint: string }> = {
+  decision: { label: 'kindDecision', hint: 'kindDecisionHint' },
+  open_task: { label: 'kindOpenTask', hint: 'kindOpenTaskHint' },
+  finding: { label: 'kindFinding', hint: 'kindFindingHint' },
+  constraint: { label: 'kindConstraint', hint: 'kindConstraintHint' },
+  artifact: { label: 'kindArtifact', hint: 'kindArtifactHint' },
+  handoff_summary: { label: 'kindHandoff', hint: 'kindHandoffHint' },
+  focus: { label: 'kindFocus', hint: 'kindFocusHint' },
+  session_log: { label: 'kindSessionLog', hint: 'kindSessionLogHint' },
+}
 
 export const MEMORY_KIND_META: Record<MemoryKind, { label: string; hint: string; badge: string }> = {
   decision: {
     label: 'Döntés',
     hint: 'Meghozott döntés és indoka.',
-    badge: 'bg-coral/15 text-coral-deep',
+    badge: MEMORY_KIND_BADGE.decision,
   },
   open_task: {
     label: 'Nyitott feladat',
     hint: 'Még el nem végzett teendő.',
-    badge: 'bg-sage/15 text-sage',
+    badge: MEMORY_KIND_BADGE.open_task,
   },
   finding: {
     label: 'Megállapítás',
     hint: 'Felismert tény, tanulság.',
-    badge: 'bg-ink/5 text-ink-soft',
+    badge: MEMORY_KIND_BADGE.finding,
   },
   constraint: {
     label: 'Korlát',
@@ -39,6 +67,16 @@ export const MEMORY_KIND_META: Record<MemoryKind, { label: string; hint: string;
     label: 'Átadás',
     hint: 'Átadási állapot a következő futásnak.',
     badge: 'bg-ink/5 text-ink-soft',
+  },
+  focus: {
+    label: 'Jelenlegi fókusz',
+    hint: 'Min dolgozunk most, mi a következő lépés, mire várunk. Agentenként egyetlen aktív elem: az új írás felülírja.',
+    badge: MEMORY_KIND_BADGE.focus,
+  },
+  session_log: {
+    label: 'Munkamenet-napló',
+    hint: 'Csak hozzáfűzhető: mit csináltál, mi lett az eredmény, mi a következő lépés.',
+    badge: MEMORY_KIND_BADGE.session_log,
   },
 }
 
@@ -66,6 +104,7 @@ function MemoryEditor({
   onChange,
   onSubmit,
   onCancel,
+  onDelete,
   busy,
   submitLabel,
 }: {
@@ -73,62 +112,78 @@ function MemoryEditor({
   onChange: (next: MemoryDraft) => void
   onSubmit: () => void
   onCancel: () => void
+  onDelete?: () => void
   busy: boolean
   submitLabel: string
 }) {
+  const t = asTranslate(useTranslations('ControlPlane.projects'))
+  const kindMeta = (kind: MemoryKind) => {
+    const keys = MEMORY_KIND_KEYS[kind]
+    return { label: t(keys.label), hint: t(keys.hint) }
+  }
   return (
     <div className="mt-3 space-y-3 rounded-lg border border-ink/10 bg-white/60 p-3">
       <label className="block text-xs text-ink-soft">
-        Fajta
+        {t('kind')}
         <select
           className={projectWorkFieldClass + ' mt-1'}
           value={draft.kind}
           onChange={(e) => onChange({ ...draft, kind: e.target.value as MemoryKind })}
         >
           {PROJECT_MEMORY_KINDS.map((kind) => (
-            <option key={kind} value={kind} title={MEMORY_KIND_META[kind].hint}>
-              {MEMORY_KIND_META[kind].label} — {MEMORY_KIND_META[kind].hint}
+            <option key={kind} value={kind} title={kindMeta(kind).hint}>
+              {kindMeta(kind).label} — {kindMeta(kind).hint}
             </option>
           ))}
         </select>
       </label>
       <label className="block text-xs text-ink-soft">
-        Cím
+        {t('titleField')}
         <input
           className={projectWorkFieldClass + ' mt-1'}
           value={draft.title}
           maxLength={200}
-          placeholder="Rövid, kereshető cím"
+          placeholder={t('titlePlaceholder')}
           onChange={(e) => onChange({ ...draft, title: e.target.value })}
         />
       </label>
       <label className="block text-xs text-ink-soft">
-        Tartalom
+        {t('bodyField')}
         <textarea
           className={projectWorkFieldClass + ' mt-1'}
           rows={5}
           value={draft.body}
           maxLength={8000}
-          placeholder="A lényeg: mi, miért, kivel egyeztetve"
+          placeholder={t('bodyPlaceholder')}
           onChange={(e) => onChange({ ...draft, body: e.target.value })}
         />
       </label>
-      <label className="block text-xs text-ink-soft" title="Opcionális: melyik munkafájlban él a részletes terv">
-        Munkafájl-hivatkozás (opcionális)
+      <label className="block text-xs text-ink-soft">
+        {t('artifactRef')}
         <input
           className={projectWorkFieldClass + ' mt-1'}
           value={draft.artifactPath}
-          placeholder="pl. tervek/bevezetes.md"
+          placeholder={t('filePath')}
           onChange={(e) => onChange({ ...draft, artifactPath: e.target.value })}
         />
       </label>
       <div className="flex flex-wrap gap-2">
         <button type="button" disabled={busy} onClick={onSubmit} className={projectWorkPrimaryBtnClass}>
-          {busy ? 'Mentés…' : submitLabel}
+          {busy ? t('saving') : submitLabel}
         </button>
         <button type="button" disabled={busy} onClick={onCancel} className={projectWorkGhostBtnClass}>
-          Mégse
+          {t('cancel')}
         </button>
+        {onDelete ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onDelete}
+            className="rounded-full border border-coral/40 px-4 py-1.5 text-sm font-semibold text-coral-deep disabled:opacity-50"
+          >
+            {t('deleteMemory')}
+          </button>
+        ) : null}
       </div>
     </div>
   )
@@ -185,13 +240,25 @@ export function ProjectMemoryPanel({
   projectKey,
   projectName,
   canEdit,
+  canDeleteMemory = false,
 }: {
   agentId: string
   agentName?: string
   projectKey: string
   projectName?: string
   canEdit: boolean
+  canDeleteMemory?: boolean
 }) {
+  const t = asTranslate(useTranslations('ControlPlane.projects'))
+  const kindMeta = (kind: MemoryKind) => {
+    const keys = MEMORY_KIND_KEYS[kind]
+    const fallback = MEMORY_KIND_META[kind]
+    return {
+      label: t(keys.label),
+      hint: t(keys.hint),
+      badge: fallback.badge,
+    }
+  }
   const [memories, setMemories] = useState<MemoryView[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -220,25 +287,55 @@ export function ProjectMemoryPanel({
       if (cancelled) return
       setLoading(false)
       if (res.success) setMemories(res.data.items)
-      else setError(projectWorkErrorLabel(res.error))
+      else setError(projectWorkErrorLabel(res.error, (key) => t(key)))
     })()
     return () => {
       cancelled = true
     }
   }, [projectKey, agentId])
 
+  const sessionLogs = useMemo(
+    () =>
+      memories
+        .filter((item) => item.kind === 'session_log')
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    [memories],
+  )
+
   const visibleMemories = useMemo(() => {
     const q = search.trim().toLowerCase()
-    return memories.filter((item) => {
-      if (kindFilter !== 'all' && item.kind !== kindFilter) return false
-      if (!q) return true
-      return (
-        item.title.toLowerCase().includes(q) ||
-        item.body.toLowerCase().includes(q) ||
-        item.withUserName.toLowerCase().includes(q)
-      )
-    })
+    return memories
+      .filter((item) => {
+        if (kindFilter === 'all' && item.kind === 'session_log') return false
+        if (kindFilter !== 'all' && item.kind !== kindFilter) return false
+        if (!q) return true
+        return (
+          item.title.toLowerCase().includes(q) ||
+          item.body.toLowerCase().includes(q) ||
+          item.withUserName.toLowerCase().includes(q)
+        )
+      })
+      // A fókusz mindig elöl: ez az agent mostani állapota, a többi elem háttér.
+      .sort((a, b) => Number(b.kind === 'focus') - Number(a.kind === 'focus'))
   }, [memories, search, kindFilter])
+
+  async function onDeleteMemory(memoryId: string, title: string) {
+    if (!canDeleteMemory || !agentId) return
+    if (!window.confirm(t('deleteMemoryConfirm', { title }))) return
+    setSaving(true)
+    setError(null)
+    setNotice(null)
+    const res = await deleteProjectMemoryAction({ agentId, projectKey, memoryId })
+    setSaving(false)
+    if (!res.success) {
+      setError(projectWorkErrorLabel(res.error, (key) => t(key)))
+      return
+    }
+    setMemories((current) => current.filter((m) => m.id !== memoryId))
+    setEditingId(null)
+    setExpandedId(null)
+    setNotice(t('memoryDeleted'))
+  }
 
   async function onSaveMemory(replaceId?: string) {
     const draft = replaceId ? editDraft : newDraft
@@ -257,7 +354,7 @@ export function ProjectMemoryPanel({
     })
     setSaving(false)
     if (!res.success) {
-      setError(projectWorkErrorLabel(res.error))
+      setError(projectWorkErrorLabel(res.error, (key) => t(key)))
       return
     }
     setMemories((current) => {
@@ -267,7 +364,7 @@ export function ProjectMemoryPanel({
     setEditingId(null)
     setShowNewMemory(false)
     setNewDraft(emptyDraft)
-    setNotice(replaceId ? 'Emlék frissítve — a régi változat lecserélődött.' : 'Új emlék mentve.')
+    setNotice(replaceId ? t('memoryUpdated') : t('memoryCreated'))
   }
 
   function startEdit(item: MemoryView) {
@@ -281,7 +378,7 @@ export function ProjectMemoryPanel({
   }
 
   return (
-    <section className="space-y-3" aria-label="Projektmemória">
+    <section className="space-y-3" aria-label={t('tabMemory')}>
       {notice ? (
         <p className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-sm text-sage">{notice}</p>
       ) : null}
@@ -293,7 +390,7 @@ export function ProjectMemoryPanel({
       <div className="flex flex-wrap items-center gap-2">
         <input
           className={projectWorkFieldClass + ' min-w-52 flex-1'}
-          placeholder="Keresés cím, tartalom vagy beszélgetőpartner alapján…"
+          placeholder={t('searchPlaceholder')}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -309,22 +406,43 @@ export function ProjectMemoryPanel({
                   : 'border border-ink/15 text-ink-soft hover:text-ink'
               }`}
             >
-              {kind === 'all' ? 'Mind' : MEMORY_KIND_META[kind].label}
+              {kind === 'all' ? t('allKinds') : kindMeta(kind).label}
             </button>
           ))}
         </div>
       </div>
 
+      {agentName && sessionLogs.length > 0 ? (
+        <div className="rounded-xl border border-ink/10 bg-white/50 p-4 shadow-sm">
+          <p className="text-sm font-semibold text-ink">{t('sessionLogTimeline')}</p>
+          <p className="mt-1 text-xs text-ink-soft">{t('sessionLogTimelineHint')}</p>
+          <ol className="mt-3 space-y-3 border-l-2 border-sage/40 pl-4">
+            {sessionLogs.map((item) => (
+              <li key={item.id} className="relative">
+                <span className="absolute -left-[1.35rem] top-1.5 h-2 w-2 rounded-full bg-sage" aria-hidden />
+                <p className="text-xs text-ink-faint">{formatWhen(item.createdAt)} · {item.withUserName}</p>
+                <p className="font-medium text-ink">{item.title}</p>
+                <p className="mt-1 whitespace-pre-wrap text-sm text-ink-soft">
+                  {item.body.length > BODY_PREVIEW_CHARS
+                    ? `${item.body.slice(0, BODY_PREVIEW_CHARS)}…`
+                    : item.body}
+                </p>
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
+
       {canEdit && !showNewMemory ? (
         <button type="button" onClick={() => setShowNewMemory(true)} className={projectWorkPrimaryBtnClass}>
-          + Új emlék
+          {t('newMemory')}
         </button>
       ) : null}
       {showNewMemory ? (
         <div className="rounded-xl border border-ink/10 bg-white/50 p-4 shadow-sm">
-          <p className="font-medium text-ink">Új emlék</p>
+          <p className="font-medium text-ink">{t('newMemoryTitle')}</p>
           <p className="text-xs text-ink-soft">
-            {projectName} · {agentName} · azonnal bekerül, verzióval és naplóval.
+            {t('memoryImmediate', { project: projectName ?? '', agent: agentName ?? '' })}
           </p>
           <MemoryEditor
             draft={newDraft}
@@ -335,20 +453,18 @@ export function ProjectMemoryPanel({
               setNewDraft(emptyDraft)
             }}
             busy={saving}
-            submitLabel="Emlék mentése"
+            submitLabel={t('saveMemory')}
           />
         </div>
       ) : null}
 
       {loading ? (
-        <p className="text-sm text-ink-soft">Betöltés…</p>
+        <p className="text-sm text-ink-soft">{t('loading')}</p>
       ) : !agentId ? (
-        <p className="text-sm text-ink-soft">Nincs munkatárs — a projektmemória munkatársonként él.</p>
+        <p className="text-sm text-ink-soft">{t('noAgentMemory')}</p>
       ) : visibleMemories.length === 0 ? (
         <p className="text-sm text-ink-soft">
-          {memories.length === 0
-            ? 'Ehhez a projekthez ennél a munkatársnál még nincs projektmemória.'
-            : 'A keresésnek nincs találata.'}
+          {memories.length === 0 ? t('noMemory') : t('noSearchHits')}
         </p>
       ) : (
         <ul className="space-y-3">
@@ -378,10 +494,10 @@ export function ProjectMemoryPanel({
                 <p className="mt-1 whitespace-pre-wrap text-sm text-ink-soft">{body}</p>
                 {item.artifactPath ? (
                   <p className="mt-1 text-xs text-ink-faint" title="A részletes terv ebben a munkafájlban él">
-                    Hivatkozott fájl: {item.artifactPath}
+                    {t('artifactFile', { path: item.artifactPath })}
                   </p>
                 ) : null}
-                <p className="mt-2 text-xs text-ink-faint">Beszélgetőpartner: {item.withUserName}</p>
+                <p className="mt-2 text-xs text-ink-faint">{t('withUser', { name: item.withUserName })}</p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {item.body.length > BODY_PREVIEW_CHARS ? (
                     <button
@@ -389,16 +505,16 @@ export function ProjectMemoryPanel({
                       onClick={() => setExpandedId(expanded ? null : item.id)}
                       className="rounded-full px-3 py-1 text-xs text-ink-soft hover:text-ink"
                     >
-                      {expanded ? 'Elrejtés' : 'Teljes szöveg'}
+                      {expanded ? t('hide') : t('fullText')}
                     </button>
                   ) : null}
-                  {canEdit ? (
+                  {canEdit && item.kind !== 'session_log' ? (
                     <button
                       type="button"
                       onClick={() => startEdit(item)}
                       className="rounded-full px-3 py-1 text-xs text-ink-soft hover:text-ink"
                     >
-                      Szerkesztés
+                      {t('edit')}
                     </button>
                   ) : null}
                 </div>
@@ -408,8 +524,13 @@ export function ProjectMemoryPanel({
                     onChange={setEditDraft}
                     onSubmit={() => void onSaveMemory(item.id)}
                     onCancel={() => setEditingId(null)}
+                    onDelete={
+                      canDeleteMemory && item.kind !== 'session_log'
+                        ? () => void onDeleteMemory(item.id, item.title)
+                        : undefined
+                    }
                     busy={saving}
-                    submitLabel="Változások mentése"
+                    submitLabel={t('saveChanges')}
                   />
                 ) : null}
               </li>
@@ -426,14 +547,17 @@ export function AgentProjectMemoryBrowser({
   agentName,
   projects,
   canEdit,
+  canDeleteMemory = false,
   initialError,
 }: {
   agentId: string
   agentName: string
   projects: ProjectListItem[]
   canEdit: boolean
+  canDeleteMemory?: boolean
   initialError: string | null
 }) {
+  const t = asTranslate(useTranslations('ControlPlane.projects'))
   const [projectKey, setProjectKey] = useState(projects[0]?.key ?? GENERAL_WORK_PROJECT_KEY)
   const selected = projects.find((p) => p.key === projectKey)
 
@@ -441,12 +565,12 @@ export function AgentProjectMemoryBrowser({
     <div className="space-y-4">
       {initialError ? (
         <p className="rounded-lg border border-coral/35 bg-coral/10 px-3 py-2 text-sm text-coral-deep">
-          {projectWorkErrorLabel(initialError)}
+          {projectWorkErrorLabel(initialError, (key) => t(key))}
         </p>
       ) : null}
       {!canEdit ? (
         <p className="rounded-lg border border-ink/10 bg-white/40 px-3 py-2 text-sm text-ink-soft">
-          Nézegetni szabad; íráshoz és szerkesztéshez jóváhagyói szerep kell.
+          {t('viewOnly')}
         </p>
       ) : null}
       <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
@@ -459,6 +583,7 @@ export function AgentProjectMemoryBrowser({
             projectKey={projectKey}
             projectName={selected?.name}
             canEdit={canEdit}
+            canDeleteMemory={canDeleteMemory}
           />
         </div>
       </div>

@@ -78,6 +78,7 @@ export interface AgentRepository {
     roleInstruction: string
     tenantId: string
     status?: Agent['status']
+    description?: string | null
   }): Promise<Agent>
   updateInstruction(input: { agentId: string; roleInstruction: string }): Promise<Agent>
   updateProfile(input: { agentId: string; name?: string; description?: string | null }): Promise<Agent>
@@ -86,6 +87,9 @@ export interface AgentRepository {
     agentId: string
     memoryWriteMode: Agent['memoryWriteMode']
   }): Promise<Agent>
+  updateOutputFolder(input: { agentId: string; folderId: string | null }): Promise<Agent>
+  updateLocalRoots(input: { agentId: string; localRoots: string }): Promise<Agent>
+  updateApprover(input: { agentId: string; approverUserId: string | null }): Promise<Agent>
   setCurrentDefinitionVersionId(agentId: string, versionId: string): Promise<Agent>
   activate(agentId: string): Promise<Agent>
   suspend(agentId: string, reason?: string): Promise<Agent>
@@ -217,6 +221,8 @@ export interface SkillRepository {
   }): Promise<{ assignment: AgentSkill; replacedVersionIds: string[] }>
   unassign(agentId: string, skillVersionId: string): Promise<void>
   setEnabled(agentId: string, skillVersionId: string, enabled: boolean): Promise<AgentSkill>
+  /** entry=true clears the flag on the agent's other skills (at most one entry skill per agent). */
+  setEntry(agentId: string, skillVersionId: string, entry: boolean): Promise<void>
   listAgentSkills(agentId: string): Promise<AgentSkillWithVersion[]>
   listEnabledForAgent(agentId: string): Promise<AgentSkillWithVersion[]>
   findAssignment(agentId: string, skillVersionId: string): Promise<AgentSkillWithVersion | null>
@@ -318,7 +324,9 @@ export interface ConnectorRepository {
     name: string
     authMode: ConnectorAuthMode
     scope: Connector['scope']
+    config?: Prisma.InputJsonValue
   }): Promise<Connector>
+  updateApprover(input: { connectorId: string; approverUserId: string | null }): Promise<Connector>
 }
 
 export interface ConnectorDraftRepository {
@@ -374,6 +382,7 @@ export interface ConnectorDraftRepository {
       type: ConnectorType
       name: string
       connectorMode: 'fixed' | 'self_updating'
+      templateKey?: string | null
       description?: string | null
       baseUrl?: string | null
       tools?: Array<{ method: string; path: string; description?: string | null }>
@@ -583,7 +592,10 @@ export type KnowledgeChunkSearchHit = {
   section: string | null
   text: string
   sourceRef: unknown
+  /** Postgres `ts_rank` (holtverseny-bontó). */
   score: number
+  /** A találatban szereplő kérdésszavak (IDF-újrarangsoroláshoz). */
+  matched?: string[]
 }
 
 export type KnowledgeIndexEntry = {
@@ -622,8 +634,11 @@ export type KnowledgeCatalogDocument = {
 export type KnowledgeRawHit = {
   id: string
   filename: string
+  /** A találó heading-szakasz útvonala (a `kb_get_document` `section` paramétere). */
+  section?: string
   snippet: string
   score: number
+  matched?: string[]
 }
 
 export interface DocumentRepository {

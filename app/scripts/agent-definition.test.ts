@@ -44,18 +44,23 @@ function agentRow(overrides: Partial<Agent> = {}): Agent {
     tenantId: TENANT_A,
     name: 'Drive assistant',
     roleInstruction: 'Inspect Drive through MCP.',
+    description: 'Inspect Drive files through MCP.',
+    hardRules: '',
+    trainedRules: '',
     status: 'draft',
     currentDefinitionVersionId: null,
     avatarUrl: null,
     createdAt: new Date('2026-01-01T00:00:00Z'),
     updatedAt: new Date('2026-01-01T00:00:00Z'),
     retiredAt: null,
+    localRoots: '',
     ...overrides,
   }
 }
 
 function memoryDeps(opts?: {
   skillStatus?: SkillVersion['status']
+  skillEntry?: boolean
   connectorType?: Connector['type']
   connectorConfig?: Prisma.JsonValue
 }) {
@@ -180,6 +185,7 @@ function memoryDeps(opts?: {
             agentId: AGENT_ID,
             skillVersionId: SKILL_VERSION_ID,
             enabled: true,
+            entry: opts?.skillEntry ?? false,
             assignedById: USER_ID,
             createdAt: new Date(),
           }
@@ -212,6 +218,21 @@ async function main() {
     assert.equal(json.includes('secretAlias'), false)
     assert.equal(json.includes('modelConfig'), false)
     assert.equal(json.includes(USER_ID), false)
+    assert.equal(published.snapshot.description, 'Inspect Drive files through MCP.')
+  })
+
+  await check('publish without responsibility (description) is rejected', async () => {
+    const { service, agents } = memoryDeps()
+    agents.set(AGENT_ID, { ...agents.get(AGENT_ID)!, description: null })
+    await assert.rejects(
+      () =>
+        service.publishAgentDefinition({
+          agentId: AGENT_ID,
+          tenantId: TENANT_A,
+          publishedById: USER_ID,
+        }),
+      /felelősségi kört/,
+    )
   })
 
   await check('second publish does not mutate v1 bytes', async () => {
@@ -283,12 +304,24 @@ async function main() {
       publishedById: USER_ID,
     })
     assert.equal(published.snapshot.skills[0]?.skillVersionId, SKILL_VERSION_ID)
+    assert.equal('entry' in (published.snapshot.skills[0] ?? {}), false)
+  })
+
+  await check('#653 publish snapshot marks the entry skill', async () => {
+    const { service } = memoryDeps({ skillEntry: true })
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    assert.equal(published.snapshot.skills[0]?.entry, true)
   })
 
   await check('contentHash is sha256 of canonical JSON', () => {
     const snapshot: AgentDefinitionSnapshot = {
       name: 'A',
       roleInstruction: 'B',
+      rules: [],
       skills: [],
       connectors: [],
       capabilities: [{ toolName: 'google_drive_search', allowed: true }],
@@ -343,6 +376,66 @@ async function main() {
       publishedById: USER_ID,
     })
     assert.equal(published.snapshot.connectors[0]?.endpoints, undefined)
+  })
+
+  await check('#660 publish freezes hard and trained rules into snapshot.rules', async () => {
+    const { service, agents } = memoryDeps()
+    agents.set(AGENT_ID, {
+      ...agentRow(),
+      hardRules: 'Do not publish without Csilla approval.\nNo secrets in memory.',
+      trainedRules: 'Always answer in Hungarian.\nUse POSnavigator tone.',
+    })
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    assert.deepEqual(published.snapshot.rules, [
+      { text: 'Do not publish without Csilla approval.', source: 'hard' },
+      { text: 'No secrets in memory.', source: 'hard' },
+      { text: 'Always answer in Hungarian.\nUse POSnavigator tone.', source: 'trained' },
+    ])
+  })
+
+  await check('#660 trained rule change marks publish stale until republish', async () => {
+    const { service, agents } = memoryDeps()
+    agents.set(AGENT_ID, {
+      ...agentRow(),
+      trainedRules: 'Version one.',
+    })
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    assert.equal(published.snapshot.rules?.[0]?.text, 'Version one.')
+    agents.set(AGENT_ID, { ...agents.get(AGENT_ID)!, trainedRules: 'Version two.' })
+    const stale = await service.getPublishStatus({ agentId: AGENT_ID, tenantId: TENANT_A })
+    assert.equal(stale.stale, true)
+  })
+
+  await check('#729 empty localRoots omitted from snapshot', async () => {
+    const { service } = memoryDeps()
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    assert.equal(published.snapshot.localRoots, undefined)
+  })
+
+  await check('#729 localRoots publish into snapshot and mark stale on change', async () => {
+    const { service, agents } = memoryDeps()
+    agents.set(AGENT_ID, { ...agentRow(), localRoots: '~/Projects/platform\n~/Projects/other' })
+    const published = await service.publishAgentDefinition({
+      agentId: AGENT_ID,
+      tenantId: TENANT_A,
+      publishedById: USER_ID,
+    })
+    assert.deepEqual(published.snapshot.localRoots, ['~/Projects/platform', '~/Projects/other'])
+    agents.set(AGENT_ID, { ...agents.get(AGENT_ID)!, localRoots: '~/Projects/platform' })
+    const stale = await service.getPublishStatus({ agentId: AGENT_ID, tenantId: TENANT_A })
+    assert.equal(stale.stale, true)
   })
 
   if (failures > 0) {

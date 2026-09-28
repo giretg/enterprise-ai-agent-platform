@@ -1,9 +1,8 @@
 import { auth } from '@clerk/nextjs/server'
+import type { SkillVersionStatus } from '@prisma/client'
 import {
-  CLIENT_CAPABILITIES_META_KEY,
   createRequestStateCodec,
   inputResponse,
-  PROTOCOL_VERSION_META_KEY,
   type AuthInfo,
   type CallToolResult,
   type InputRequiredResult,
@@ -35,10 +34,16 @@ import {
 import { isAvailableOnMcp, isDispatchable } from '@/lib/agent-lifecycle'
 import {
   asCheckoutHarness,
+  CHECKOUT_HARNESSES,
   CHECKOUT_TOOL_DESCRIPTION,
+  checkoutSlug,
+  hermesBotTitle,
+  renderAgentBriefing,
   renderAgentCheckout,
+  renderAgentPrompt,
   type CheckoutSkill,
 } from '@/lib/agent-checkout'
+import { localRootsDefinitionBlock, withLocalRootsMemoryNote } from '@/lib/agent-local-roots'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
 import {
   GMAIL_CREATE_DRAFT_TOOL,
@@ -64,6 +69,8 @@ import {
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
+  SANDBOX_RUN_TOOL,
+  sandboxRunInputSchema,
   gmailGetMessageInputSchema,
   gmailGetThreadInputSchema,
   gmailListDraftsInputSchema,
@@ -91,8 +98,13 @@ import {
 } from '@/domain/enterprise-tools'
 import { WRITE_CONFIRM_KEY } from '@/domain/gateway-operation'
 import {
+  formElicitationCapable,
+  writeConfirmLinkReason,
+} from '@/domain/gateway-operation/write-confirm-branch'
+import {
   auditMcpAuthDenied,
   auditMcpAuthOk,
+  auditMcpPromptGet,
   auditMcpResourceRead,
   auditMcpToolCall,
   auditMcpToolDenied,
@@ -110,11 +122,13 @@ import {
   MCP_SKILL_SUBMIT_TOOL,
   MCP_WHOAMI_TOOL,
   resolveMcpPrincipal,
+  type McpAuditCtx,
   type McpPrincipal,
   type McpPrincipalDeps,
   type McpPrincipalFailure,
   type VerifiedOAuthToken,
 } from './mcp-principal'
+import { getMcpRequestContext, scopeMcpAuditSink } from '@/lib/mcp-session'
 import {
   findPackageByUri,
   findSkillFile,
@@ -139,6 +153,8 @@ import {
 import { buildConversationSkillPorts } from '@/repositories/postgres/conversation-skill-repository'
 import {
   isProjectWorkTool,
+  MCP_HANDOFF_ACK_TOOL,
+  MCP_HANDOFF_TOOL,
   MCP_PROJECTS_CREATE_TOOL,
   MCP_PROJECTS_LIST_TOOL,
   MCP_PROJECT_MEMORY_READ_TOOL,
@@ -147,10 +163,14 @@ import {
   MCP_WORK_FILE_LIST_TOOL,
   MCP_WORK_FILE_READ_TOOL,
   MCP_WORK_FILE_WRITE_TOOL,
+  MCP_WORK_FILE_APPEND_TOOL,
+  handoffAckInputSchema,
+  handoffInputSchema,
   projectMemoryReadInputSchema,
   projectMemoryWriteInputSchema,
   projectsCreateInputSchema,
   projectsListInputSchema,
+  workFileAppendInputSchema,
   workFileDeleteInputSchema,
   workFileListInputSchema,
   workFileReadInputSchema,
@@ -158,6 +178,10 @@ import {
 } from '@/domain/project-work/mcp'
 
 export type McpAgentListItem = McpCoworkerSummary
+
+type McpCheckoutSkill = CheckoutSkill & {
+  status: SkillVersionStatus
+}
 
 export type McpRuntimeDeps = McpPrincipalDeps & {
   isClerkConfigured: () => boolean
@@ -179,7 +203,9 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     role: McpPrincipal['role']
     agentId: string
   }) => Promise<boolean>
-  loadSkillVersions: (versionIds: string[]) => Promise<CheckoutSkill[]>
+  /** #663: az agent megnevezett jóváhagyójának neve a briefing Jóváhagyások blokkjához. */
+  loadAgentApproverName?: (input: { tenantId: string; agentId: string }) => Promise<string | null>
+  loadSkillVersions: (versionIds: string[]) => Promise<McpCheckoutSkill[]>
   invokeEnterpriseTool: (input: {
     principal: McpPrincipal
     toolName: string
@@ -199,8 +225,18 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     args: Record<string, unknown>
     origin?: string
   }) => Promise<EnterpriseToolMcpResult>
-  listMcpSkills: (input: { tenantId: string }) => Promise<McpSkillPackage[]>
+  /** skillVersionIds: exactly these pinned versions (#653); omitted → the tenant's active skills. */
+  listMcpSkills: (input: { tenantId: string; skillVersionIds?: string[] }) => Promise<McpSkillPackage[]>
   agentScaffold: AgentScaffoldDeps
+  listOpenHandoffs?: (input: { tenantId: string; agentId: string }) => Promise<HandoffHeadline[]>
+}
+
+export type HandoffHeadline = {
+  id: string
+  title: string
+  projectKey: string
+  createdAt: string
+  fromAgentName: string | null
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
@@ -300,11 +336,18 @@ export function productionMcpDeps(): McpRuntimeDeps {
     },
     loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),
     canViewAgent,
+    loadAgentApproverName: async ({ tenantId, agentId }) => {
+      const agent = await repositories.agents.findById(agentId, tenantId)
+      if (!agent?.approverUserId) return null
+      const user = await repositories.users.findById(agent.approverUserId)
+      return user ? user.name || user.email : null
+    },
     async loadSkillVersions(versionIds) {
       const rows = await repositories.skills.findVersionsByIds(versionIds)
       return rows.map((row) => ({
         skillId: row.skillId,
         skillVersionId: row.id,
+        status: row.status,
         name: row.skill.name,
         displayName: row.skill.displayName,
         description: row.skill.description,
@@ -323,7 +366,23 @@ export function productionMcpDeps(): McpRuntimeDeps {
         }),
       ),
     invokeProjectWork: (input) => services.projectWork.invoke(input),
-    listMcpSkills: ({ tenantId }) => services.skills.listMcpSkillPackages(tenantId),
+    listOpenHandoffs: async (input) => {
+      const rows = await services.projectWork.handoffs.listOpenForAgent(input.tenantId, input.agentId, 10)
+      return Promise.all(
+        rows.map(async (row) => {
+          const from = await repositories.agents.findById(row.fromAgentId, input.tenantId)
+          return {
+            id: row.id,
+            title: row.title,
+            projectKey: row.projectKey,
+            createdAt: row.createdAt.toISOString(),
+            fromAgentName: from?.name ?? null,
+          }
+        }),
+      )
+    },
+    listMcpSkills: ({ tenantId, skillVersionIds }) =>
+      services.skills.listMcpSkillPackages(tenantId, skillVersionIds),
     agentScaffold: {
       agents: repositories.agents,
       versions: repositories.agentDefinitions,
@@ -401,6 +460,15 @@ const mcpSkillsListResultSchema = z.object({
 })
 const mcpSkillsListParamsSchema = z.object({ cursor: z.string().optional() })
 const mcpSkillsGetParamsSchema = z.object({ uri: z.string().min(1) })
+const agentScopeSchema = {
+  definitionId: z.string().uuid().optional(),
+  agentId: z.string().uuid().optional(),
+}
+const skillsListToolSchema = mcpSkillsListParamsSchema.extend({
+  ...agentScopeSchema,
+  includeOtherSkills: z.boolean().optional(),
+})
+const skillReadToolSchema = mcpSkillsGetParamsSchema.extend(agentScopeSchema)
 
 async function loadTenantContext(principal: McpPrincipal, deps: McpRuntimeDeps) {
   const [tenant, coworkers] = await Promise.all([
@@ -434,30 +502,103 @@ async function listAgentsToolResult(principal: McpPrincipal, deps: McpRuntimeDep
   return textResult({ agents: context.coworkers })
 }
 
+type AgentSkills = { packages: McpSkillPackage[]; entrySkillVersionId: string | null }
+
+/**
+ * #653: definitionId / agentId → exactly the skill versions pinned in that
+ * published definition (not the skill's current active version). null = no
+ * agent named; 'not_found' = unknown or not visible to this user.
+ */
+async function loadAgentSkills(
+  principal: McpPrincipal,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+): Promise<AgentSkills | null | 'not_found'> {
+  if (args.definitionId === undefined && args.agentId === undefined) return null
+  const definitionId = asUuid(args.definitionId)
+  const agentId = asUuid(args.agentId)
+  if (!definitionId && !agentId) return 'not_found'
+  const loaded = await deps.loadDefinition({ tenantId: principal.tenantId, definitionId, agentId })
+  if (
+    !loaded ||
+    !(await deps.canViewAgent({
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      role: principal.role,
+      agentId: loaded.agentId,
+    }))
+  ) {
+    return 'not_found'
+  }
+  const pins = loaded.snapshot.skills
+  const entrySkillVersionId = pins.find((pin) => pin.entry)?.skillVersionId ?? null
+  const packages = [
+    ...(await deps.listMcpSkills({
+      tenantId: principal.tenantId,
+      skillVersionIds: pins.map((pin) => pin.skillVersionId),
+    })),
+  ]
+  if (entrySkillVersionId) {
+    packages.sort(
+      (a, b) =>
+        Number(b.skillVersionId === entrySkillVersionId) -
+        Number(a.skillVersionId === entrySkillVersionId),
+    )
+  }
+  return { packages, entrySkillVersionId }
+}
+
 async function listSkillsToolResult(
   principal: McpPrincipal,
+  args: Record<string, unknown>,
   deps: McpRuntimeDeps,
-  packages: McpSkillPackage[],
+  tenantPackages: McpSkillPackage[],
 ) {
-  await auditMcpToolCall(deps, principal, MCP_SKILLS_LIST_TOOL)
-  return textResult({ skills: packages.map(toSkillsListEntry) })
+  await auditMcpToolCall(deps, principal, MCP_SKILLS_LIST_TOOL, agentCtx(args))
+  const agent = await loadAgentSkills(principal, args, deps)
+  if (agent === 'not_found') return definitionNotFound()
+  if (!agent) return textResult({ skills: tenantPackages.map(toSkillsListEntry) })
+  const own = new Set(agent.packages.map((pkg) => pkg.uriName))
+  return textResult({
+    skills: [
+      ...agent.packages.map((pkg) => ({
+        ...toSkillsListEntry(pkg),
+        ...(pkg.skillVersionId === agent.entrySkillVersionId ? { entry: true } : {}),
+      })),
+      ...(args.includeOtherSkills === true
+        ? tenantPackages
+            .filter((pkg) => !own.has(pkg.uriName))
+            .map((pkg) => ({ ...toSkillsListEntry(pkg), assignedToAgent: false }))
+        : []),
+    ],
+  })
 }
 
 async function readSkillToolResult(
   principal: McpPrincipal,
   args: Record<string, unknown>,
   deps: McpRuntimeDeps,
-  packages: McpSkillPackage[],
+  tenantPackages: McpSkillPackage[],
 ) {
-  await auditMcpToolCall(deps, principal, MCP_SKILL_READ_TOOL)
+  await auditMcpToolCall(deps, principal, MCP_SKILL_READ_TOOL, agentCtx(args))
+  const agent = await loadAgentSkills(principal, args, deps)
+  if (agent === 'not_found') return definitionNotFound()
   const uri = typeof args.uri === 'string' ? args.uri : ''
   const parsed = parseSkillResourceUri(uri)
-  const pkg = parsed ? findPackageByUri(packages, uri) : undefined
+  const own = parsed ? findPackageByUri(agent?.packages ?? tenantPackages, uri) : undefined
+  // Another skill of the tenant only by explicit uri, and the answer says so.
+  const pkg = own ?? (agent && parsed ? findPackageByUri(tenantPackages, uri) : undefined)
   const file = pkg && parsed ? findSkillFile(pkg, parsed.filePath) : undefined
   if (!file) return textResult({ code: 'skill_resource_not_found', message: 'Skill resource not found' }, true)
   await auditMcpResourceRead(deps, principal, uri)
   return textResult({
     contents: [{ uri, mimeType: file.mimeType, text: file.text }],
+    ...(own
+      ? {}
+      : {
+          assignedToAgent: false,
+          note: 'This skill is not assigned to the selected agent. Use it only because the user asked for it explicitly, and tell them.',
+        }),
   })
 }
 
@@ -510,6 +651,12 @@ function asUuid(value: unknown): string | undefined {
   )
 }
 
+/** Paritás-telemetria (#666): ha az args hordoz agentId-t, pecsételjük az audit-sorba. */
+function agentCtx(args: Record<string, unknown>): McpAuditCtx | undefined {
+  const agentId = asUuid(args.agentId)
+  return agentId ? { agentId } : undefined
+}
+
 function asVersion(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined
 }
@@ -518,8 +665,9 @@ async function getDefinitionToolResult(
   principal: McpPrincipal,
   args: Record<string, unknown>,
   deps: McpRuntimeDeps,
+  bound = false,
 ) {
-  await auditMcpToolCall(deps, principal, MCP_AGENT_GET_DEFINITION_TOOL)
+  await auditMcpToolCall(deps, principal, MCP_AGENT_GET_DEFINITION_TOOL, agentCtx(args))
   const loaded = await deps.loadDefinition({
     tenantId: principal.tenantId,
     definitionId: asUuid(args.definitionId),
@@ -534,51 +682,147 @@ async function getDefinitionToolResult(
     agentId: loaded.agentId,
   })
   if (!allowed) return definitionNotFound()
-  const generalMemory = await readGeneralMemory(principal, loaded.definitionId, deps)
+  const [memoryContext, skills] = await Promise.all([
+    readMemoryContext(principal, loaded.definitionId, loaded.agentId, deps),
+    deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
+  ])
+  const approverName = await deps.loadAgentApproverName?.({
+    tenantId: principal.tenantId,
+    agentId: loaded.agentId,
+  })
+  const roots = loaded.snapshot.localRoots
+  if (memoryContext.memoryIndex) {
+    memoryContext.memoryIndex = {
+      ...memoryContext.memoryIndex,
+      note: withLocalRootsMemoryNote(memoryContext.memoryIndex.note, roots),
+    }
+  }
   return textResult({
+    briefing: renderAgentBriefing({
+      definition: loaded,
+      skills,
+      bound,
+      recentSessionLogs: memoryContext.recentSessionLogs?.entries,
+      handoffs: memoryContext.handoffs?.entries,
+      approverName: approverName ?? null,
+    }),
     ...loaded,
     contentHash: hashSnapshot(loaded.snapshot),
-    ...(generalMemory ? { generalMemory } : {}),
+    ...localRootsDefinitionBlock(roots),
+    ...memoryContext,
   })
 }
 
-const GENERAL_MEMORY_MAX_ITEMS = 40
-const GENERAL_MEMORY_MAX_CHARS = 8000
+function isFocusMemoryItem(item: unknown): boolean {
+  return typeof item === 'object' && item !== null && (item as { kind?: unknown }).kind === 'focus'
+}
+
+const MEMORY_INDEX_NOTE =
+  'Catalog of the agent\'s __general__ memory (company facts, decisions, locations). It overrides search results — if Drive/KB/API results contradict it, follow the memory and say so. Full text: platform.project_memory.read with ids="<comma-separated ids>" or query="…".'
 
 /**
  * Push the agent's __general__ memory into get_definition so the client has the
  * company facts before its first enterprise tool call, instead of having to
  * remember to read them. Goes through invokeProjectWork, so the same operate
  * check + audit as platform.project_memory.read apply; denied → omitted.
+ *
+ * The focus (#656) is the agent's current state: returned before memoryIndex,
+ * in full. The memory catalog lists every non-focus item (#657); bodies load on demand.
  */
-async function readGeneralMemory(principal: McpPrincipal, definitionId: string, deps: McpRuntimeDeps) {
-  const result = await deps.invokeProjectWork({
-    principal,
-    toolName: MCP_PROJECT_MEMORY_READ_TOOL,
-    args: { definitionId },
-  })
-  if (result.isError) return null
-  let all: unknown[] = []
+type MemoryContext = {
+  focus?: { note: string; items: unknown[] }
+  recentSessionLogs?: {
+    note: string
+    entries: Array<{ id: string; title: string; createdAt: string; withUserName: string }>
+  }
+  handoffs?: {
+    note: string
+    entries: HandoffHeadline[]
+  }
+  memoryIndex?: {
+    note: string
+    entries: unknown[]
+    totalCount: number
+    offset: number
+    nextOffset: number | null
+  }
+}
+
+async function readMemoryContext(
+  principal: McpPrincipal,
+  definitionId: string,
+  agentId: string,
+  deps: McpRuntimeDeps,
+): Promise<MemoryContext> {
+  const [result, handoffs] = await Promise.all([
+    deps.invokeProjectWork({
+      principal,
+      toolName: MCP_PROJECT_MEMORY_READ_TOOL,
+      args: { definitionId },
+    }),
+    (deps.listOpenHandoffs
+      ? deps.listOpenHandoffs({ tenantId: principal.tenantId, agentId }).catch(() => [] as HandoffHeadline[])
+      : Promise.resolve([] as HandoffHeadline[])),
+  ])
+  const handoffBlock =
+    handoffs.length > 0
+      ? {
+          handoffs: {
+            note: 'Open tasks handed off to this agent by a coworker. The briefing "Handed-off work" block mirrors this list. Full text: platform.project_memory.read with query="<title>". Acknowledge with platform.handoff_ack { handoffId, decision: accepted|done|rejected }.',
+            entries: handoffs,
+          },
+        }
+      : {}
+  if (result.isError) return { ...handoffBlock }
+  type MemoryReadPayload = {
+    items?: unknown[]
+    recentSessionLogs?: Array<{ id: string; title: string; createdAt: string; withUserName: string }>
+    index?: { entries: unknown[]; totalCount: number; offset: number; nextOffset: number | null }
+  }
+  let payload: MemoryReadPayload = {}
   try {
-    const parsed = JSON.parse(result.content[0]?.text ?? '{}') as { items?: unknown }
-    if (Array.isArray(parsed.items)) all = parsed.items
+    payload = JSON.parse(result.content[0]?.text ?? '{}') as MemoryReadPayload
   } catch {
-    return null
+    return { ...handoffBlock }
   }
-  const items: unknown[] = []
-  let chars = 0
-  for (const item of all.slice(0, GENERAL_MEMORY_MAX_ITEMS)) {
-    chars += JSON.stringify(item).length
-    if (chars > GENERAL_MEMORY_MAX_CHARS && items.length > 0) break
-    items.push(item)
-  }
-  const truncated = items.length < all.length
+
+  const index = payload.index
+  if (!index) return { ...handoffBlock }
+
+  const focusItems = Array.isArray(payload.items) ? payload.items.filter(isFocusMemoryItem) : []
+  const recentSessionLogs = Array.isArray(payload.recentSessionLogs) ? payload.recentSessionLogs : []
+  const paginated = index.nextOffset != null
   return {
-    note:
-      'This is the agent\'s memory (__general__ project): company facts, decisions and locations valid now. It overrides search results — if Drive/KB/API results contradict it, follow the memory and say so.' +
-      (truncated ? ' Truncated: call platform.project_memory.read for the rest.' : ''),
-    items,
-    truncated,
+    ...handoffBlock,
+    ...(focusItems.length > 0
+      ? {
+          focus: {
+            note:
+              'The agent\'s current focus, always loaded in full before memoryIndex: what it is doing now, the next step, what it is waiting for. It overrides the rest of the memory. Rewrite it with platform.project_memory.write kind="focus" (it replaces the previous one) when a task closes or the direction changes.',
+            items: focusItems,
+          },
+        }
+      : {}),
+    ...(recentSessionLogs.length > 0
+      ? {
+          recentSessionLogs: {
+            note:
+              'Append-only session journal (titles only here). The briefing "Recently" block mirrors this list. Full text: platform.project_memory.read with ids. Write new entries with platform.project_memory.write kind="session_log" when a task or conversation ends.',
+            entries: recentSessionLogs,
+          },
+        }
+      : {}),
+    memoryIndex: {
+      note:
+        MEMORY_INDEX_NOTE +
+        (paginated
+          ? ` More catalog rows: platform.project_memory.read with offset=${index.nextOffset}.`
+          : ''),
+      entries: index.entries,
+      totalCount: index.totalCount,
+      offset: index.offset,
+      nextOffset: index.nextOffset,
+    },
   }
 }
 
@@ -658,7 +902,7 @@ async function getWorkingSetToolResult(
     connectors: deps.agentScaffold.connectors,
     audit: deps.agentScaffold.audit,
   })
-  await auditMcpToolCall(deps, principal, MCP_AGENT_GET_WORKING_SET_TOOL)
+  await auditMcpToolCall(deps, principal, MCP_AGENT_GET_WORKING_SET_TOOL, agentId ? { agentId } : undefined)
   try {
     const result = await definitionService.getWorkingSet({
       agentId,
@@ -680,7 +924,7 @@ async function publishAgentToolResult(
   }
   const agentId = asUuid(args.agentId)
   if (!agentId) return invalidArgs('agentId must be a uuid')
-  await auditMcpToolCall(deps, principal, MCP_AGENT_PUBLISH_TOOL)
+  await auditMcpToolCall(deps, principal, MCP_AGENT_PUBLISH_TOOL, agentId ? { agentId } : undefined)
   try {
     const result = await publishAgentWorkingSet(deps.agentScaffold, {
       agentId,
@@ -705,7 +949,7 @@ async function checkoutToolResult(
   deps: McpRuntimeDeps,
   origin: string,
 ) {
-  await auditMcpToolCall(deps, principal, MCP_AGENT_CHECKOUT_TOOL)
+  await auditMcpToolCall(deps, principal, MCP_AGENT_CHECKOUT_TOOL, agentCtx(args))
   const agentId = asUuid(args.agentId)
   if (!agentId) return invalidArgs('agentId must be a uuid')
   if (args.version !== undefined && asVersion(args.version) === undefined) {
@@ -727,17 +971,102 @@ async function checkoutToolResult(
   const skills = await deps.loadSkillVersions(
     loaded.snapshot.skills.map((skill) => skill.skillVersionId),
   )
+  // A published snapshot történeti bizonyíték: a később visszavont skill csak
+  // akkor kerülhetne újra helyi checkoutba, ha itt nem ellenőriznénk az élő státuszát.
   return textResult(
     renderAgentCheckout({
       definition: loaded,
-      skills,
+      skills: skills.filter((skill) => skill.status === 'active'),
       mcpUrl: `${origin.replace(/\/+$/, '')}/api/mcp/${principal.tenantSlug}`,
       harness: asCheckoutHarness(args.harness),
     }),
   )
 }
 
-const MRTR_PROTOCOL_VERSION = '2026-07-28'
+/** prompts/get for one agent (#651): always the current published definition, re-checked for visibility. */
+async function agentPromptResult(
+  principal: McpPrincipal,
+  deps: McpRuntimeDeps,
+  promptName: string,
+  agentId: string,
+  task: string | undefined,
+  bound: boolean,
+) {
+  await auditMcpPromptGet(deps, principal, promptName, agentId)
+  const loaded = await deps.loadDefinition({ tenantId: principal.tenantId, agentId })
+  if (
+    !loaded ||
+    !isDispatchable(loaded.status) ||
+    !(await deps.canViewAgent({
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      role: principal.role,
+      agentId: loaded.agentId,
+    }))
+  ) {
+    throw new Error('Agent not found')
+  }
+  const skills = await deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId))
+  return {
+    description: hermesBotTitle(loaded.snapshot),
+    messages: [
+      {
+        role: 'user' as const,
+        content: { type: 'text' as const, text: renderAgentPrompt({ definition: loaded, skills, task, bound }) },
+      },
+    ],
+  }
+}
+
+/** Per-client agent binding (#682 WP-2): Hermes Bots etc. send it on every MCP request. */
+export const MCP_AGENT_ID_HEADER = 'x-excellence-agent-id'
+
+/**
+ * The header is only input: it picks the agent, it never widens access. The
+ * agent must be in this tenant, published and visible to the user; the tool's
+ * own gate (capability, connector grant, approval) still runs afterwards.
+ * No definitionId in args → the agent's current published definition.
+ * definitionId / agentId of another agent → agent_mismatch.
+ */
+async function bindAgentHeader(
+  principal: McpPrincipal,
+  deps: McpRuntimeDeps,
+  toolName: string,
+  args: Record<string, unknown>,
+  header: string,
+): Promise<{ ok: true; args: Record<string, unknown> } | { ok: false; result: CallToolResult }> {
+  const deny = async (code: string) => {
+    await auditMcpToolDenied(deps, principal, toolName, code, { headerAgentId: header.slice(0, 64) })
+    return { ok: false as const, result: textResult({ code, message: `${MCP_AGENT_ID_HEADER}: ${code}` }, true) }
+  }
+  const agentId = asUuid(header)
+  const current = agentId ? await deps.loadDefinition({ tenantId: principal.tenantId, agentId }) : null
+  if (
+    !current ||
+    !isDispatchable(current.status) ||
+    !(await deps.canViewAgent({
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      role: principal.role,
+      agentId: current.agentId,
+    }))
+  ) {
+    return deny('agent_not_found')
+  }
+  if (args.agentId !== undefined && args.agentId !== current.agentId) return deny('agent_mismatch')
+  if (args.definitionId !== undefined && args.definitionId !== current.definitionId) {
+    const definitionId = asUuid(args.definitionId)
+    const pinned = definitionId
+      ? await deps.loadDefinition({ tenantId: principal.tenantId, definitionId })
+      : null
+    if (pinned?.agentId !== current.agentId) return deny('agent_mismatch')
+    return { ok: true, args }
+  }
+  if (toolName === MCP_AGENT_GET_DEFINITION_TOOL) {
+    return { ok: true, args: args.definitionId ? args : { ...args, agentId: current.agentId } }
+  }
+  return { ok: true, args: { ...args, definitionId: current.definitionId } }
+}
 
 function requestStateCodec(key: string | undefined): RequestStateCodec<WriteConfirmState> | null {
   if (!key) return null
@@ -760,17 +1089,15 @@ function writeConfirmInput(
   codec: RequestStateCodec<WriteConfirmState> | null,
 ): WriteConfirmInput {
   const envelope: Record<string, unknown> = ctx.mcpReq.envelope ?? {}
-  const capabilities = envelope[CLIENT_CAPABILITIES_META_KEY]
-  const elicitation = isRecord(capabilities) ? capabilities.elicitation : undefined
-  const formCapable =
-    envelope[PROTOCOL_VERSION_META_KEY] === MRTR_PROTOCOL_VERSION &&
-    isRecord(elicitation) &&
-    ('form' in elicitation || !('url' in elicitation))
+  const formCapable = formElicitationCapable(envelope)
   const state = ctx.mcpReq.requestState()
   const responses = ctx.mcpReq.inputResponses
   const answer = inputResponse(responses, WRITE_CONFIRM_KEY)
+  const mint =
+    formCapable && codec ? (payload: WriteConfirmState) => codec.mint(payload) : null
   return {
-    mint: formCapable && codec ? (payload) => codec.mint(payload) : null,
+    mint,
+    ...(mint ? {} : { linkReason: writeConfirmLinkReason(envelope, codec !== null) }),
     ...(state !== undefined || responses !== undefined
       ? {
           retry: {
@@ -783,7 +1110,12 @@ function writeConfirmInput(
   }
 }
 
-async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntimeDeps, origin: string) {
+async function createMcpResourceHandler(
+  principal: McpPrincipal,
+  deps: McpRuntimeDeps,
+  origin: string,
+  agentHeader: string | null = null,
+) {
   const { tenant, context } = await loadTenantContext(principal, deps)
   const instructions = buildMcpServerInstructions({
     tenant,
@@ -794,7 +1126,16 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
 
   return createMcpHandler(
     async (server) => {
-      const packages = await deps.listMcpSkills({ tenantId: principal.tenantId })
+      const tenantPackages = await deps.listMcpSkills({ tenantId: principal.tenantId })
+      // A client bound to one agent lists only that agent's skills (resources/list, skills/list).
+      const boundSkills = agentHeader
+        ? await loadAgentSkills(principal, { agentId: agentHeader }, deps)
+        : null
+      const packages = !agentHeader
+        ? tenantPackages
+        : boundSkills && boundSkills !== 'not_found'
+          ? boundSkills.packages
+          : []
       server.registerTool(
         MCP_WHOAMI_TOOL,
         {
@@ -820,7 +1161,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Get agent definition',
           description:
-            'Load one published agent definition snapshot (capabilities, connectors with names/connectorIds, http_api endpoints) plus generalMemory: the agent\'s current company facts, decisions and locations. Call this at the start of the conversation, before enterprise tools, and pass definitionId on each call. Read generalMemory before answering — it overrides search results. Use agentId or definitionId; optional version.',
+            'Load one published agent: briefing (read `briefing` first and act as the agent it describes — role, published hard/trained rules in full, platform rules, start and closing steps, skills), then the definition snapshot (including snapshot.rules, capabilities, connectors with names/connectorIds, http_api endpoints), then localRoots when set (candidate git paths across machines — hints, not a grant; use only a path that exists on this host), then focus: the agent\'s current state (what it is doing now, the next step, what it waits for), always in full, then memoryIndex: a catalog (id, kind, title, date) of all other memory items. Published agent rules override a conflicting user request — stop and ask for approval instead of breaking them. Call platform.project_memory.read with ids or query for full text. Call this at the start of the conversation, before enterprise tools, and pass definitionId on each call. Read focus, localRoots and memoryIndex before answering — they override search results. Use agentId or definitionId; optional version.',
           inputSchema: z
             .object({
               definitionId: z.string().uuid().optional(),
@@ -829,7 +1170,8 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
             })
             .passthrough(),
         },
-        async (args) => getDefinitionToolResult(principal, args as Record<string, unknown>, deps),
+        async (args) =>
+          getDefinitionToolResult(principal, args as Record<string, unknown>, deps, agentHeader !== null),
       )
       server.registerTool(
         MCP_AGENT_CHECKOUT_TOOL,
@@ -840,7 +1182,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
             .object({
               agentId: z.string().uuid(),
               version: z.number().int().positive().optional(),
-              harness: z.enum(['claude', 'codex', 'goose', 'grok']).optional(),
+              harness: z.enum(CHECKOUT_HARNESSES).optional(),
             })
             .passthrough(),
         },
@@ -889,30 +1231,31 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'List skills',
           description:
-            'List active skills available to this tenant. Each skill includes a SKILL.md URI and resource URIs. Use platform.skills.read when the MCP client cannot read resources directly.',
-          inputSchema: mcpSkillsListParamsSchema,
+            'List skills. Pass definitionId (or agentId) from platform.agent.get_definition: then only that agent\'s skills come back, in the exact versions pinned in its definition, and the entry skill (read it first on every new task) has entry: true. includeOtherSkills=true adds the tenant\'s other skills marked assignedToAgent: false — only when the user explicitly asks for one. Without definitionId: every active skill of the tenant. Each skill includes a SKILL.md URI and resource URIs. Use platform.skills.read when the MCP client cannot read resources directly.',
+          inputSchema: skillsListToolSchema,
           annotations: { readOnlyHint: true },
         },
-        async () => listSkillsToolResult(principal, deps, packages),
+        async (args) =>
+          listSkillsToolResult(principal, args as Record<string, unknown>, deps, tenantPackages),
       )
       server.registerTool(
         MCP_SKILL_READ_TOOL,
         {
           title: 'Read skill resource',
           description:
-            'Read a skill:// resource returned by platform.skills.list. Returns SKILL.md instructions or an attachment as text.',
-          inputSchema: mcpSkillsGetParamsSchema,
+            'Read a skill:// resource returned by platform.skills.list. Returns SKILL.md instructions or an attachment as text. Pass definitionId so you get the version pinned for the agent; a skill outside the agent comes back with assignedToAgent: false.',
+          inputSchema: skillReadToolSchema,
           annotations: { readOnlyHint: true },
         },
         async (args) =>
-          readSkillToolResult(principal, args as Record<string, unknown>, deps, packages),
+          readSkillToolResult(principal, args as Record<string, unknown>, deps, tenantPackages),
       )
       server.registerTool(
         MCP_SKILL_SUBMIT_TOOL,
         {
           title: 'Submit skill from conversation',
           description:
-            'Submit a new tenant skill written in this conversation for the named agentId. requires and attachments are JSON strings, not arrays. The server decides the outcome and the text must be relayed to the user: created (live, assigned, enabled), pending_approval, or rejected with a reason (no_producer_skill, cannot_use_agent, validation, name_taken). A tenant admin gets a live skill without opening the web UI. Anyone else who can operate the agent gets one open proposal (a new call overwrites it). Viewers and agents without an enabled producer skill are rejected and nothing is stored. Missing tools are listed; this call does not grant them. This tool cannot create or mark a producer skill.',
+            'Submit a new tenant skill written in this conversation for the named agentId — use for operating rules and procedures ("how we do it"), not for one-off facts (see Where to save what table). requires and attachments are JSON strings, not arrays. The server decides the outcome and the text must be relayed to the user: created (live, assigned, enabled), pending_approval, or rejected with a reason (no_producer_skill, cannot_use_agent, validation, name_taken). A tenant admin gets a live skill without opening the web UI. Anyone else who can operate the agent gets one open proposal (a new call overwrites it). Viewers and agents without an enabled producer skill are rejected and nothing is stored. Missing tools are listed; this call does not grant them. This tool cannot create or mark a producer skill.',
           inputSchema: conversationSkillSubmitSchema,
         },
         async (args) =>
@@ -966,10 +1309,20 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Write work file',
           description:
-            'Create or overwrite a work file under the project (plans, notes, drafts). No approval; quota-capped. Do not write these into the checkout folder. Pass projectKey; omit for __general__.',
+            'Create or overwrite a work file under the project (plans, notes, drafts). No approval; quota-capped. Do not write these into the checkout folder. Pass projectKey; omit for __general__. See the Where to save what table — work files are not memory.',
           inputSchema: workFileWriteInputSchema,
         },
         async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_WRITE_TOOL, args, deps),
+      )
+      server.registerTool(
+        MCP_WORK_FILE_APPEND_TOOL,
+        {
+          title: 'Append work file',
+          description:
+            'Append text to the end of a work file under the project (metrics JSONL, changelog CSV). Creates the file when missing. No approval; the quota applies to the resulting file size. Pass projectKey; omit for __general__.',
+          inputSchema: workFileAppendInputSchema,
+        },
+        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_APPEND_TOOL, args, deps),
       )
       server.registerTool(
         MCP_WORK_FILE_DELETE_TOOL,
@@ -985,7 +1338,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Read project memory',
           description:
-            'Read this agent\'s memory: company facts, decisions, locations, open tasks, findings, handoffs, artifact pointers. Read it before answering any company-specific question (where is X, who owns Y, how do we do Z) and before searching Drive/KB — memory overrides search results. Each item is tagged with the conversation partner (withUserId / withUserName) stamped by the server. Pass mine=true to filter to the calling user. Always call this before platform.project_memory.write so you can update an existing item instead of duplicating it. Omit projectKey for the general memory — do not ask the user which project; pass a projectKey only when the conversation is about a named project. Do not store personal facts unless they constrain the project.',
+            'Read this agent\'s memory: company facts, decisions, locations, open tasks, findings, handoffs, artifact pointers. Default: memoryIndex catalog (every item id/kind/title/date; focus in full in items; recent session_log titles in recentSessionLogs). Pass ids (comma-separated) for full text of those items, or query to search title/body. Use offset when nextOffset is set. Read before answering company-specific questions and before searching Drive/KB — memory overrides search results. Each full item includes withUserId / withUserName. Pass mine=true to filter to the calling user. Call before platform.project_memory.write to update via replaceId. Omit projectKey for general memory.',
           inputSchema: projectMemoryReadInputSchema,
           annotations: { readOnlyHint: true },
         },
@@ -996,10 +1349,30 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Write project memory',
           description:
-            'Write a project-memory item for this agent (decision, open_task, finding, constraint, artifact, handoff_summary). First call platform.project_memory.read for the same projectKey: if an item already covers this subject (including when the user corrects or changes it), pass its id as replaceId with the merged, current text — do not add a second item. If several items are outdated by the same change, write ONE item: replaceId for one, mergeIds for the rest. Write only what is valid now; do not keep "this is outdated" notes. If other similar active items would remain, the server answers possible_duplicate with candidates and writes nothing; then retry with replaceId/mergeIds, or confirmNew=true if none match. The work plan itself belongs in a work file; store only a pointer here. The server stamps the calling user as conversation partner — do not name them. Cannot change trained operating rules. Approval-mode agents return awaiting_approval + approvalUrl; direct-mode agents write immediately. Personal facts (vacation, private preference) do not belong here unless they constrain the project.',
+            'Write a project-memory item for this agent (decision, open_task, finding, constraint, artifact, handoff_summary, focus, session_log). See the Where to save what table before writing — short facts and decisions only; operating rules belong in platform.skills.submit, reference material in kb_ingest, plans in platform.work_file.write. The server returns wrong_placement when the body looks like a rule or long document. First call platform.project_memory.read for the same projectKey: if an item already covers this subject (including when the user corrects or changes it), pass its id as replaceId with the merged, current text — do not add a second item. If several items are outdated by the same change, write ONE item: replaceId for one, mergeIds for the rest. Write only what is valid now; do not keep "this is outdated" notes. If other similar active items would remain, the server answers possible_duplicate with candidates and writes nothing; then retry with replaceId/mergeIds, or confirmNew=true if none match. focus is the current state (what we are doing now, the next step, what we wait for), at most 3000 characters: there is only ever one active focus per agent and project, and this write always replaces it — no replaceId, no duplicate check. Rewrite it when a task closes or the direction changes. session_log is append-only when a task or conversation ends (what you did, outcome, where outputs live, next step): never replaceId, no duplicate check. The work plan itself belongs in a work file; store only a pointer here. The server stamps the calling user as conversation partner — do not name them. Cannot change trained operating rules. Approval-mode agents return awaiting_approval + approvalUrl; direct-mode agents write immediately. Personal facts (vacation, private preference) do not belong here unless they constrain the project.',
           inputSchema: projectMemoryWriteInputSchema,
         },
         async (args) => projectWorkToolResult(principal, MCP_PROJECT_MEMORY_WRITE_TOOL, args, deps),
+      )
+      server.registerTool(
+        MCP_HANDOFF_TOOL,
+        {
+          title: 'Hand off work',
+          description:
+            'Hand off a task outside this agent\'s responsibility to another AI coworker or a human. Agent recipient: pass toAgentId (from platform.agents.list) — the task lands as an open_task in their memory and in their next get_definition briefing ("Handed-off work"). Human recipient: pass toUserId — they see it in the Control Plane inbox. Pass definitionId from platform.agent.get_definition, a short title, summary (what, why, expected outcome), optional projectKey (defaults to __general__), and optional links as a comma-separated string ("label | work_file:/path, label | https://…"). Exactly one of toAgentId / toUserId.',
+          inputSchema: handoffInputSchema,
+        },
+        async (args) => projectWorkToolResult(principal, MCP_HANDOFF_TOOL, args, deps),
+      )
+      server.registerTool(
+        MCP_HANDOFF_ACK_TOOL,
+        {
+          title: 'Acknowledge handoff',
+          description:
+            'Accept, complete, or reject a handed-off task addressed to this agent. Pass definitionId from platform.agent.get_definition, the handoffId from the briefing, and decision accepted|done|rejected.',
+          inputSchema: handoffAckInputSchema,
+        },
+        async (args) => projectWorkToolResult(principal, MCP_HANDOFF_ACK_TOOL, args, deps),
       )
       server.registerTool(
         GOOGLE_DRIVE_SEARCH_TOOL,
@@ -1037,7 +1410,7 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Upload Google Drive file',
           description:
-            'Request upload of a text file (HTML, CSV, JSON) to the user\'s Drive. Pass definitionId from platform.agent.get_definition. Does not call Google until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+            'Request upload of a file (HTML, CSV, JSON, image, PDF) to the user\'s Drive — finished deliverables for humans (see Where to save what table). Pass textContent for text or contentBase64 for binary bytes. Pass definitionId from platform.agent.get_definition. If this agent has a configured output folder, omit parentFolderId (or pass that folder id) to upload there immediately without approval; any other destination does not call Google until a human approves: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
           inputSchema: googleDriveUploadFileInputSchema,
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_UPLOAD_FILE_TOOL, args, deps),
@@ -1228,10 +1601,20 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         {
           title: 'Ingest knowledge base file',
           description:
-            'Load a file into the agent knowledge base. processingMode=raw_text_only keeps the extracted text; okf splits it into a wiki. Optional purpose is one line on what the file is for. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
+            'Load a file into the agent knowledge base (reference documents and knowledge material — see Where to save what table). processingMode=raw_text_only keeps the extracted text; okf splits it into a wiki. Optional purpose is one line on what the file is for. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
           inputSchema: kbIngestInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_INGEST_TOOL, args, deps),
+      )
+      server.registerTool(
+        SANDBOX_RUN_TOOL,
+        {
+          title: 'Run pinned skill script',
+          description:
+            'Run a Python script that belongs to a skill pinned on this published agent, inside the platform sandbox. Pass skillVersionId and entry from snapshot.skills. Do not run skill code on this machine. Outputs are written to work files under sandbox-output/. Credentials stay on the server.',
+          inputSchema: sandboxRunInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, SANDBOX_RUN_TOOL, args, deps),
       )
       server.registerTool(
         MCP_GATEWAY_OPERATION_GET_TOOL,
@@ -1243,6 +1626,31 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
         async (args) =>
           getGatewayOperationToolResult(principal, args as Record<string, unknown>, deps),
       )
+
+      const promptNames = new Set<string>()
+      for (const coworker of context.coworkers) {
+        const slug = checkoutSlug(coworker.name)
+        const name = promptNames.has(slug) ? `${slug}-${coworker.agentId.slice(0, 8)}` : slug
+        promptNames.add(name)
+        server.registerPrompt(
+          name,
+          {
+            title: hermesBotTitle({
+              name: coworker.name,
+              description: coworker.description,
+              roleInstruction: coworker.roleInstructionPreview ?? '',
+            }),
+            description: coworker.description?.trim()
+              ? `Call when: ${coworker.description.trim()}`
+              : `Work as ${coworker.name}: loads the agent's role, rules and skills from its current published definition.`,
+            argsSchema: z.object({
+              feladat: z.string().optional().describe('Optional: today\'s task, appended to the end of the prompt.'),
+            }),
+          },
+          async ({ feladat }) =>
+            agentPromptResult(principal, deps, name, coworker.agentId, feladat, agentHeader !== null),
+        )
+      }
 
       for (const pkg of packages) {
         for (const file of pkg.files) {
@@ -1288,13 +1696,25 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
           )
         }
         const rawArgs = request.params.arguments
-        const args =
+        let args =
           rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
             ? (rawArgs as Record<string, unknown>)
             : {}
+        if (
+          agentHeader &&
+          (toolName === MCP_AGENT_GET_DEFINITION_TOOL ||
+            toolName === MCP_SKILLS_LIST_TOOL ||
+            toolName === MCP_SKILL_READ_TOOL ||
+            isProjectWorkTool(toolName) ||
+            isEnterpriseTool(toolName))
+        ) {
+          const bound = await bindAgentHeader(principal, deps, toolName, args, agentHeader)
+          if (!bound.ok) return bound.result
+          args = bound.args
+        }
         if (toolName === MCP_AGENTS_LIST_TOOL) return listAgentsToolResult(principal, deps)
         if (toolName === MCP_AGENT_GET_DEFINITION_TOOL) {
-          return getDefinitionToolResult(principal, args, deps)
+          return getDefinitionToolResult(principal, args, deps, agentHeader !== null)
         }
         if (toolName === MCP_AGENT_CHECKOUT_TOOL) {
           return checkoutToolResult(principal, args, deps, origin)
@@ -1309,10 +1729,10 @@ async function createMcpResourceHandler(principal: McpPrincipal, deps: McpRuntim
           return publishAgentToolResult(principal, args, deps)
         }
         if (toolName === MCP_SKILLS_LIST_TOOL) {
-          return listSkillsToolResult(principal, deps, packages)
+          return listSkillsToolResult(principal, args, deps, tenantPackages)
         }
         if (toolName === MCP_SKILL_READ_TOOL) {
-          return readSkillToolResult(principal, args, deps, packages)
+          return readSkillToolResult(principal, args, deps, tenantPackages)
         }
         if (toolName === MCP_SKILL_SUBMIT_TOOL) {
           return submitSkillToolResult(principal, args, deps)
@@ -1422,7 +1842,13 @@ export async function handleMcpRequest(
       }
       return forbiddenResponse(resolved)
     }
-    const handler = await createMcpResourceHandler(resolved.principal, deps, origin)
+    const handler = await createMcpResourceHandler(
+      resolved.principal,
+      // #666: per-request audit-hatókör — sessionId + kliens minden sor metadata-jába.
+      { ...deps, audit: scopeMcpAuditSink(deps.audit, getMcpRequestContext(req.headers)) },
+      origin,
+      req.headers.get(MCP_AGENT_ID_HEADER)?.trim() || null,
+    )
     return handler(req)
   }
 

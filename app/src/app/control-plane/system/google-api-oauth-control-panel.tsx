@@ -49,15 +49,33 @@ export function GoogleApiOAuthControlPanel({
   }
 
   return (
-    <Card title="Google Analytics / Search Console / Ads OAuth">
+    <Card title="Google API OAuth">
       <div className="space-y-4">
         <p className="text-sm text-ink-soft">
-          Egy közös Google Cloud OAuth Web application a platform Google Analytics, Search Console
-          és Google Ads konnektor-sablonjaihoz. A tenantok csak konnektort provisionelnek és
-          delegált grantet adnak — Client ID/secret nem kell tenant szinten. A GCP-projektben
-          engedélyezd a szükséges API-kat (Analytics Data API, Search Console API, Google Ads API)
-          és a consent screenen vedd fel a választott scope-okat.
+          Egy közös Google Cloud OAuth Web application a platform Google Analytics, Search Console,
+          Google Ads, Calendar és Sheets konnektor-sablonjaihoz. Egyszer kell beállítani; utána a
+          tenantok csak konnektort hoznak létre és a felhasználók a saját Google-fiókjukkal kötnek be —
+          Client ID/secret nem kell tenant szinten.
         </p>
+        <ol className="list-decimal space-y-1 pl-5 text-sm text-ink-soft">
+          <li>
+            Google Cloud Console → APIs &amp; Services → Library: engedélyezd, amit a tenantok használni
+            fognak — Google Analytics Data API, Google Search Console API, Google Ads API, Google
+            Calendar API, Google Sheets API.
+          </li>
+          <li>
+            OAuth consent screen: vedd fel a sablonok scope-jait (pl. calendar.readonly,
+            calendar.events, spreadsheets.readonly, spreadsheets). External appnál teszteléshez add
+            hozzá a tesztfelhasználókat.
+          </li>
+          <li>
+            Credentials → Create OAuth client ID, típus: Web application. Authorized redirect URI:{' '}
+            <code className="break-all text-ink">
+              {process.env.NEXT_PUBLIC_APP_URL ?? ''}/api/connectors/oauth/callback
+            </code>
+          </li>
+          <li>Másold ide a Client ID-t és a Client Secretet, majd mentsd.</li>
+        </ol>
 
         {view.configured ? (
           <p className="flex items-center gap-2 text-sm text-emerald-300">
@@ -67,7 +85,7 @@ export function GoogleApiOAuthControlPanel({
           </p>
         ) : (
           <p className="text-sm text-ink-soft">
-            Még nincs platform-szintű Google API OAuth client (Analytics / Search Console / Ads).
+            Még nincs platform-szintű Google API OAuth client (Analytics / Search Console / Ads / Calendar / Sheets).
           </p>
         )}
 

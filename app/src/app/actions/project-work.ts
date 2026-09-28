@@ -7,6 +7,7 @@ import { services } from '@/domain/gateway-services'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import type { ProjectListItem, MemoryView } from '@/domain/project-work/project-work-service'
+import { effectiveWorkProjectKey } from '@/lib/work-project'
 
 const projectKeySchema = z.string().min(1).max(120)
 const filePathSchema = z.string().min(1).max(500)
@@ -24,11 +25,24 @@ const agentIdSchema = z.object({ agentId: z.string().uuid() })
 const listMemorySchema = agentIdSchema.extend({ projectKey: projectKeySchema })
 const saveMemorySchema = agentIdSchema.extend({
   projectKey: projectKeySchema,
-  kind: z.enum(['decision', 'open_task', 'finding', 'constraint', 'artifact', 'handoff_summary']),
+  kind: z.enum([
+    'decision',
+    'open_task',
+    'finding',
+    'constraint',
+    'artifact',
+    'handoff_summary',
+    'focus',
+    'session_log',
+  ]),
   title: z.string().trim().min(1).max(200),
   body: z.string().trim().min(1).max(8_000),
   artifactPath: z.string().trim().max(500).optional(),
   replaceId: z.string().uuid().optional(),
+})
+const deleteMemorySchema = agentIdSchema.extend({
+  projectKey: projectKeySchema,
+  memoryId: z.string().uuid(),
 })
 
 const createProjectSchema = z.object({
@@ -214,9 +228,10 @@ export async function listProjectMemoryAction(
       agentId: parsed.agentId,
       projectKey: parsed.projectKey,
       callerUserId: ctx.user.id,
+      full: true,
     })
     if (!read.ok) return fail(read.code)
-    return ok({ items: read.items })
+    return ok({ items: read.items ?? [] })
   } catch (error) {
     return mapActionError(error)
   }
@@ -226,6 +241,56 @@ export async function listProjectMemoryAction(
  * Emberi felületről az írás mindig közvetlen (verzióval és naplóval) —
  * nincs jóváhagyási kör, mert maga az ember a döntéshozó.
  */
+export async function deleteProjectMemoryAction(
+  input: z.infer<typeof deleteMemorySchema>,
+): Promise<ActionResult<{ deleted: true }>> {
+  try {
+    const parsed = deleteMemorySchema.parse(input)
+    const ctx = await requireTenantRole('admin')
+    const agent = await scopedAgent(parsed.agentId, ctx.activeTenantId)
+    if (!agent) return fail('agent_not_found')
+    const row = await repositories.projectMemory.findById(parsed.memoryId)
+    if (
+      !row ||
+      row.tenantId !== ctx.activeTenantId ||
+      row.agentId !== parsed.agentId ||
+      row.projectKey !== effectiveWorkProjectKey(parsed.projectKey)
+    ) {
+      return fail('memory_not_found')
+    }
+    const deleted = await services.projectWork.service.deleteMemory({
+      tenantId: ctx.activeTenantId,
+      agentId: parsed.agentId,
+      memoryId: parsed.memoryId,
+    })
+    if (!deleted.ok) return fail(deleted.code)
+    await services.audit.append({
+      actorType: 'human',
+      actorId: ctx.user.id,
+      agentVersion: null,
+      action: 'project.project_memory.delete',
+      targetType: 'project',
+      targetId: parsed.memoryId,
+      modelUsed: null,
+      inputRef: row.title,
+      outputRef: row.kind,
+      policyDecision: 'deleted',
+      metadata: {
+        agentId: parsed.agentId,
+        projectKey: parsed.projectKey,
+        memoryId: parsed.memoryId,
+        kind: row.kind,
+      },
+      tenantId: ctx.activeTenantId,
+    })
+    revalidatePath('/control-plane/projects')
+    revalidatePath(`/control-plane/agents/${parsed.agentId}`)
+    return ok({ deleted: true as const })
+  } catch (error) {
+    return mapActionError(error)
+  }
+}
+
 export async function saveProjectMemoryAction(
   input: z.infer<typeof saveMemorySchema>,
 ): Promise<ActionResult<{ item: MemoryView }>> {

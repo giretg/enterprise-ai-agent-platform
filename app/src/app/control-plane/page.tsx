@@ -8,7 +8,7 @@ import {
 import { resolveDefaultAgentWorkspacePath } from '@/lib/default-agent-workspace'
 import { firstRunGetStartedPath, MCP_SETUP_SEEN_COOKIE } from '@/lib/mcp-client-setup'
 
-/** Gyökér: új user → MCP landing; különben tenant-home / első munkatárs / pending. */
+/** Gyökér: új user → MCP landing; különben kezdőlap / pending / platform. */
 export default async function ControlPlaneRootPage() {
   const me = await getCurrentUser()
   if (me && (me.status !== 'active' || !me.role)) {

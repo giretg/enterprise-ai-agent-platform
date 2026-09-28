@@ -10,6 +10,7 @@ import {
   type GoogleOAuthConfig,
   type GoogleOAuthResolved,
 } from '@/lib/platform-google-oauth-config'
+import { NAV_SOFTWARE_PLATFORM_KEY, parseNavSoftware, type NavSoftware } from '@/lib/nav-online-invoice-software'
 
 export const PROVISIONING_EGRESS_ALLOWLIST_KEY = 'provisioning.egress_allowlist'
 const EGRESS_GLOBAL_BUCKET = '__global__'
@@ -164,6 +165,15 @@ export class PlatformSettingsService {
     )
 
     return { config, source: 'platform' }
+  }
+
+  async getNavSoftware(): Promise<NavSoftware | null> {
+    return parseNavSoftware(await this.settings.get(NAV_SOFTWARE_PLATFORM_KEY))
+  }
+
+  async upsertNavSoftware(input: NavSoftware, actorId: string): Promise<NavSoftware> {
+    await this.settings.set(NAV_SOFTWARE_PLATFORM_KEY, input as unknown as Prisma.InputJsonObject, actorId)
+    return input
   }
 
   async upsertGoogleDrivePickerConfig(
