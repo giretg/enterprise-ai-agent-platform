@@ -41,7 +41,12 @@ export interface HandoffStore {
   listOpenForAgent(tenantId: string, agentId: string, limit?: number): Promise<HandoffRecord[]>
   listOpenForUser(tenantId: string, userId: string): Promise<HandoffRecord[]>
   attachMemory(id: string, memoryId: string): Promise<void>
-  decide(id: string, status: Extract<HandoffStatus, 'accepted' | 'done' | 'rejected'>, decidedById: string): Promise<HandoffRecord | null>
+  decide(input: {
+    id: string
+    expectedStatus: Extract<HandoffStatus, 'open' | 'accepted'>
+    status: Extract<HandoffStatus, 'accepted' | 'done' | 'rejected'>
+    decidedById: string
+  }): Promise<HandoffRecord | null>
 }
 
 export function normalizeHandoffProjectKey(value: unknown): string {

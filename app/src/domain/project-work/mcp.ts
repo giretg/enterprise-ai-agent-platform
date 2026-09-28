@@ -294,7 +294,12 @@ export type ProjectWorkMcpDeps = DefinitionPinDeps & {
       status: string
     } | null>
     attachMemory(id: string, memoryId: string): Promise<void>
-    decide(id: string, status: 'accepted' | 'done' | 'rejected', decidedById: string): Promise<unknown | null>
+    decide(input: {
+      id: string
+      expectedStatus: 'open' | 'accepted'
+      status: 'accepted' | 'done' | 'rejected'
+      decidedById: string
+    }): Promise<unknown | null>
   }
   enqueueMemoryWrite?: (input: {
     principal: ToolCallPrincipal
@@ -733,10 +738,19 @@ async function invokeHandoffAck(
     await auditDenied(deps, principal, MCP_HANDOFF_ACK_TOOL, 'agent_access_denied', definition.definitionId, definition.agentId)
     return errorResult('agent_access_denied')
   }
-  const updated = await deps.handoffs.decide(handoffId, decision, principal.userId)
+  if (row.status !== 'open' && row.status !== 'accepted') {
+    await auditDenied(deps, principal, MCP_HANDOFF_ACK_TOOL, 'approval_already_decided', definition.definitionId, definition.agentId)
+    return errorResult('approval_already_decided')
+  }
+  const updated = await deps.handoffs.decide({
+    id: handoffId,
+    expectedStatus: row.status,
+    status: decision,
+    decidedById: principal.userId,
+  })
   if (!updated) {
-    await auditDenied(deps, principal, MCP_HANDOFF_ACK_TOOL, 'invalid_args', definition.definitionId, definition.agentId)
-    return errorResult('invalid_args')
+    await auditDenied(deps, principal, MCP_HANDOFF_ACK_TOOL, 'approval_already_decided', definition.definitionId, definition.agentId)
+    return errorResult('approval_already_decided')
   }
   await writeAudit(deps.audit, {
     actorType: 'human',
