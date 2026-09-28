@@ -8,6 +8,7 @@
  * - admin-helyettes és assumált superadmin dönthet,
  * - az MCP-válasz megnevezi, kire vár a művelet,
  * - inaktív/hiányzó megnevezett → approver_unavailable (ne fail-open self-approve).
+ * - idegen megnevezettnél a chat-form helyett Control Plane link megy (nem hazudik Approve gombot).
  */
 import assert from 'node:assert/strict'
 import type { AgentDefinition } from '../src/domain/agent-definition'
@@ -15,12 +16,14 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   type LiveConnectorRow,
   type ToolCallPrincipal,
+  type WriteConfirmInput,
 } from '../src/domain/enterprise-tools'
 import {
   approveGatewayOperation,
   canSeeGatewayOperation,
   enqueueGatewayOperation,
   enqueueResultToMcp,
+  enqueueWriteForMcp,
   listPendingGatewayOperations,
   resolveDesignatedApproverBinding,
   type DesignatedApproverResolution,
@@ -90,9 +93,14 @@ function deps(
   },
 ) {
   const store = new MemoryGatewayOperationStore()
+  const audit: Array<{ action: string; metadata?: unknown }> = []
   const serviceDeps: GatewayOperationServiceDeps = {
     operations: store,
-    audit: { async append() {} },
+    audit: {
+      async append(data) {
+        audit.push({ action: data.action, metadata: data.metadata })
+      },
+    },
     async loadDefinition() {
       return definition()
     },
@@ -129,7 +137,7 @@ function deps(
       return { file: { id: 'folder-1' } }
     },
   }
-  return { store, deps: serviceDeps }
+  return { store, deps: serviceDeps, audit }
 }
 
 const ARGS = { definitionId: DEFINITION_ID, name: 'Q3 reports', idempotencyKey: 'idem-named-1' }
@@ -280,6 +288,62 @@ async function main() {
       }),
       { kind: 'unavailable' },
     )
+  })
+
+  await check('idegen megnevezettnél mint ellenére Control Plane link megy, nem form', async () => {
+    const wired = deps()
+    let minted = 0
+    const confirm: WriteConfirmInput = {
+      async mint() {
+        minted += 1
+        return 'state-1'
+      },
+    }
+    const result = await enqueueWriteForMcp(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...ARGS, idempotencyKey: 'idem-named-form-link' },
+      origin: 'https://app.example',
+      confirm,
+    })
+    assert.equal(minted, 0)
+    assert.ok('content' in result, 'expected link tool result, not input_required')
+    const payload = JSON.parse(result.content[0]!.text) as {
+      status?: string
+      approvalUrl?: string
+      waitingForApprover?: { name?: string }
+    }
+    assert.equal(payload.status, 'awaiting_approval')
+    assert.match(String(payload.approvalUrl), /\/control-plane\/operations/)
+    assert.equal(payload.waitingForApprover?.name, 'Csilla')
+    const enqueued = wired.audit.find((row) => row.action === 'gateway.operation.enqueued')
+    const meta = enqueued?.metadata as Record<string, unknown>
+    assert.equal(meta?.confirmBranch, 'link')
+    assert.equal(meta?.confirmBranchReason, 'designated_approver_other')
+  })
+
+  await check('megnevezett = kérelmező: form továbbra is megy', async () => {
+    const wired = deps({ kind: 'designated', userId: REQUESTER_ID, name: 'Kérelmező' })
+    let minted = 0
+    const confirm: WriteConfirmInput = {
+      async mint() {
+        minted += 1
+        return 'state-self'
+      },
+    }
+    const result = await enqueueWriteForMcp(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...ARGS, idempotencyKey: 'idem-named-form-self' },
+      origin: 'https://app.example',
+      confirm,
+    })
+    assert.equal(minted, 1)
+    assert.equal('resultType' in result && result.resultType, 'input_required')
+    const enqueued = wired.audit.find((row) => row.action === 'gateway.operation.enqueued')
+    const meta = enqueued?.metadata as Record<string, unknown>
+    assert.equal(meta?.confirmBranch, 'form')
+    assert.equal(meta?.confirmBranchReason, 'mrtr_form')
   })
 
   console.log(`\nnamed-approver: ${failures === 0 ? 'ok' : `${failures} failed`}`)
