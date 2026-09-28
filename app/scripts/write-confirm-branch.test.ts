@@ -31,4 +31,46 @@ assert.equal(
   'no_form_elicitation',
 )
 
+import { resolveWriteConfirmOffer } from '../src/domain/gateway-operation/write-confirm-branch'
+
+const awaiting = {
+  ok: true as const,
+  view: {
+    operationId: 'op-1',
+    status: 'awaiting_approval' as const,
+    toolName: 'google_drive_create_folder',
+    idempotencyKey: 'k',
+    definitionId: 'd',
+    agentId: 'a',
+    principalUserId: 'requester',
+    connectorId: null,
+    designatedApproverUserId: 'csilla',
+    designatedApproverName: 'Csilla',
+    errorCode: null,
+    result: null,
+    approval: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
+}
+const mint = async () => 'state'
+assert.deepEqual(
+  resolveWriteConfirmOffer({ mint }, awaiting, {
+    userId: 'requester',
+    tenantId: 't',
+    role: 'operator',
+    assumed: false,
+  }),
+  { confirmBranch: 'link', confirmBranchReason: 'designated_approver_other' },
+)
+assert.deepEqual(
+  resolveWriteConfirmOffer({ mint }, awaiting, {
+    userId: 'csilla',
+    tenantId: 't',
+    role: 'operator',
+    assumed: false,
+  }),
+  { confirmBranch: 'form', confirmBranchReason: 'mrtr_form' },
+)
+
 console.log('write-confirm-branch.test.ts: ok')

@@ -26,6 +26,7 @@ import { writeAudit } from '@/lib/audit/types'
 import { formatToolUiName } from '@/lib/tool-ui-labels'
 import {
   approveGatewayOperation,
+  canDecideGatewayOperation,
   enqueueGatewayOperation,
   enqueueResultToMcp,
   getGatewayOperation,
@@ -283,7 +284,7 @@ async function enqueueWithMcpWriteConfirmAudit(
 ): Promise<GatewayOperationResult> {
   const enqueued = await enqueueGatewayOperation(deps, { ...input, deferEnqueueAudit: true })
   if (enqueued.ok && enqueued.created) {
-    const offer = resolveWriteConfirmOffer(input.confirm, enqueued)
+    const offer = resolveWriteConfirmOffer(input.confirm, enqueued, input.principal)
     await recordGatewayOperationEnqueued(deps, {
       principal: input.principal,
       operationId: enqueued.view.operationId,
@@ -345,7 +346,13 @@ export async function enqueueWriteForMcp(
 
   const enqueued = await enqueueWithMcpWriteConfirmAudit(deps, input)
   const mint = input.confirm?.mint
-  if (!enqueued.ok || !mint || enqueued.view.status !== 'awaiting_approval') {
+  // Form only when this chat user can actually decide (#663 designated approver).
+  if (
+    !enqueued.ok ||
+    !mint ||
+    enqueued.view.status !== 'awaiting_approval' ||
+    !canDecideGatewayOperation(input.principal, enqueued.view)
+  ) {
     return enqueueResultToMcp(enqueued, input.origin)
   }
   const now = Date.now()
