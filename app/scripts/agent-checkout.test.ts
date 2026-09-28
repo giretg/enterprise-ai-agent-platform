@@ -409,6 +409,8 @@ async function main() {
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /exactly one published agent/)
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /do not ask which agent/)
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /first checkout \(create folder\)/)
+    assert.match(CHECKOUT_TOOL_DESCRIPTION, /claude \| codex \| goose \| grok \| hermes/)
+    assert.match(CHECKOUT_TOOL_DESCRIPTION, /harness:"hermes"/)
   })
 
   await check('codex harness adds Desktop open hint to writeRecipe', () => {

@@ -161,6 +161,36 @@ check('buildMcpServerInstructions with several agents: choose, stay, handoff, Ca
   assert.doesNotMatch(text, /Hosszú marketing szerep-utasítás/)
 })
 
+check('bound client: only the bound agent, no choose-among-teammates instruction', () => {
+  const text = buildMcpServerInstructions({
+    tenant: { displayName: 'POSnavigator', legalName: null, slug: 'posnavigator', settings: {} },
+    tenantSlug: 'posnavigator',
+    coworkers: [POS_COWORKERS[0]!],
+    bound: true,
+  })
+  assert.match(text, /BOUND TO ONE AGENT/)
+  assert.match(text, /bound to Kati by the X-Excellence-Agent-Id header/)
+  assert.match(text, /never another agentId/)
+  assert.match(text, /default Hermes profile/)
+  assert.doesNotMatch(text, /CHOOSE AND STAY/)
+  assert.doesNotMatch(text, /slash prompt named after an agent/)
+  assert.doesNotMatch(text, /Gábor/)
+  assert.doesNotMatch(text, /Márk/)
+  assert.doesNotMatch(text, /harness:"hermes"/)
+})
+
+check('bound client with an unusable header: says so instead of listing teammates', () => {
+  const text = buildMcpServerInstructions({
+    tenant: { displayName: 'POSnavigator', legalName: null, slug: 'posnavigator', settings: {} },
+    tenantSlug: 'posnavigator',
+    coworkers: [],
+    bound: true,
+  })
+  assert.match(text, /not published or not visible to you/)
+  assert.doesNotMatch(text, /CHOOSE AND STAY/)
+  assert.doesNotMatch(text, /harness:"hermes"/)
+})
+
 const STOP = new Set(['and', 'the', 'for', 'nem', 'egy'])
 
 function tokens(value: string): string[] {

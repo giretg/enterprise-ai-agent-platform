@@ -1722,6 +1722,105 @@ async function main() {
     assert.equal(out.payload.code, 'agent_not_found')
   })
 
+  await check('#682 agent header + other agent checkout / working set → agent_mismatch', async () => {
+    const { deps, audit } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const checkout = await callWithAgentHeader(
+      deps,
+      MCP_AGENT_CHECKOUT_TOOL,
+      { agentId: FOREIGN_AGENT_ID, harness: 'hermes' },
+      AGENT_ID,
+    )
+    assert.equal(checkout.isError, true)
+    assert.equal(checkout.payload.code, 'agent_mismatch')
+    const own = await callWithAgentHeader(
+      deps,
+      MCP_AGENT_CHECKOUT_TOOL,
+      { agentId: AGENT_ID, harness: 'hermes' },
+      AGENT_ID,
+    )
+    assert.equal(own.isError, undefined)
+    const workingSet = await callWithAgentHeader(
+      deps,
+      MCP_AGENT_GET_WORKING_SET_TOOL,
+      { agentId: FOREIGN_AGENT_ID },
+      AGENT_ID,
+    )
+    assert.equal(workingSet.isError, true)
+    assert.equal(workingSet.payload.code, 'agent_mismatch')
+    assert.ok(audit.some((row) => row.action === 'mcp.tools.call.deny'))
+  })
+
+  await check('agent header: another agent\'s prompt is refused and not listed, instructions stay on the bound agent', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const salesItem = {
+      ...PUBLISHED_LIST_ITEM,
+      agentId: FOREIGN_AGENT_ID,
+      name: 'Sales',
+      currentDefinitionId: FOREIGN_DEFINITION_ID,
+    }
+    deps.listPublishedAgents = async () => [PUBLISHED_LIST_ITEM, salesItem]
+    const salesDefinition = {
+      ...SAMPLE_DEFINITION,
+      definitionId: FOREIGN_DEFINITION_ID,
+      agentId: FOREIGN_AGENT_ID,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, name: 'Sales', roleInstruction: 'Sell things' },
+    }
+    deps.loadDefinition = async ({ definitionId, agentId }) =>
+      definitionId === FOREIGN_DEFINITION_ID || agentId === FOREIGN_AGENT_ID
+        ? salesDefinition
+        : SAMPLE_DEFINITION
+
+    const boundPrompts = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 60, method: 'prompts/list', params: {} },
+      { authorization: `Bearer ${TOKEN}`, 'x-excellence-agent-id': AGENT_ID },
+      deps,
+    )
+    const boundNames = (
+      (await readJson(boundPrompts)) as { result?: { prompts?: Array<{ name: string }> } }
+    ).result?.prompts?.map((row) => row.name)
+    assert.deepEqual(boundNames, ['drive-assistant'], 'a bound client sees only its own agent prompt')
+
+    const foreign = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 61, method: 'prompts/get', params: { name: 'sales', arguments: {} } },
+      { authorization: `Bearer ${TOKEN}`, 'x-excellence-agent-id': AGENT_ID },
+      deps,
+    )
+    const foreignBody = (await readJson(foreign)) as {
+      result?: { messages?: Array<{ content: { text: string } }> }
+      error?: { message?: string }
+    }
+    assert.equal(foreignBody.result, undefined, JSON.stringify(foreignBody))
+    assert.ok(foreignBody.error, 'prompts/get for another agent must fail while the header binds this one')
+
+    const init = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 62,
+        method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } },
+      },
+      { authorization: `Bearer ${TOKEN}`, 'x-excellence-agent-id': AGENT_ID },
+      deps,
+    )
+    const instructions =
+      ((await readJson(init)) as { result?: { instructions?: string } }).result?.instructions ?? ''
+    assert.match(instructions, /BOUND TO ONE AGENT/)
+    assert.doesNotMatch(instructions, /CHOOSE AND STAY/)
+    assert.doesNotMatch(instructions, /Sales/)
+    assert.doesNotMatch(instructions, /harness:"hermes"/)
+
+    const openPrompts = await listPrompts(deps)
+    assert.deepEqual(openPrompts.result?.prompts?.map((row) => row.name).sort(), [
+      'drive-assistant',
+      'sales',
+    ])
+  })
+
   await check('google_drive_create_folder enqueues awaiting_approval without writing', async () => {
     const { deps, audit } = runtimeDeps({ role: 'admin' })
     await initialize(deps)
