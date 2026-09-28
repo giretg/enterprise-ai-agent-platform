@@ -5,7 +5,7 @@
  * Lefedi (§6.1 + elfogadási #5–8):
  * - registry az egyetlen forrás (zod-értékek paritása),
  * - `kbRegconfig` allowlist (nem-allowlist/injekciós input → `simple`),
- * - effektívnyelv-feloldás (`override ?? connector ?? tenant ?? hu`),
+ * - tárolt érték normalizálás (amit a SQL COALESCE lát: override ?? connector),
  * - `formatHitsForPrompt` hu = mai render, en = nincs magyar mondat,
  * - `readDocumentPages` hintek mindkét nyelven,
  * - briefing hu = byte-ra azonos, en = nincs magyar mondat + OUTPUT LANGUAGE,
