@@ -45,6 +45,7 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   idempotency_key_required: 'idempotencyKey is required',
   idempotency_key_conflict:
     'idempotencyKey is already used by a different principal, tool, or arguments',
+  approval_already_decided: 'This handoff has already been decided',
   google_drive_auth_failed: 'Google Drive authentication failed',
   google_drive_api_error: 'Google Drive request failed',
   gmail_auth_failed: 'Gmail authentication failed',

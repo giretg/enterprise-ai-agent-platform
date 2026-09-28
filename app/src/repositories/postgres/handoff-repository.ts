@@ -67,13 +67,18 @@ export class PostgresHandoffRepository implements HandoffStore {
     await prisma.handoff.update({ where: { id }, data: { memoryId } })
   }
 
-  async decide(id: string, status: Extract<HandoffStatus, 'accepted' | 'done' | 'rejected'>, decidedById: string): Promise<HandoffRecord | null> {
-    const current = await prisma.handoff.findUnique({ where: { id } })
-    if (!current || current.status === 'done' || current.status === 'rejected') return null
-    const row = await prisma.handoff.update({
-      where: { id },
-      data: { status, decidedById, decidedAt: new Date() },
+  async decide(input: {
+    id: string
+    expectedStatus: Extract<HandoffStatus, 'open' | 'accepted'>
+    status: Extract<HandoffStatus, 'accepted' | 'done' | 'rejected'>
+    decidedById: string
+  }): Promise<HandoffRecord | null> {
+    if (input.expectedStatus === 'accepted' && input.status === 'accepted') return null
+    const updated = await prisma.handoff.updateMany({
+      where: { id: input.id, status: input.expectedStatus },
+      data: { status: input.status, decidedById: input.decidedById, decidedAt: new Date() },
     })
-    return mapRow(row)
+    if (updated.count !== 1) return null
+    return this.findById(input.id)
   }
 }

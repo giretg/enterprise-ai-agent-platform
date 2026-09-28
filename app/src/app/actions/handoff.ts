@@ -73,8 +73,14 @@ export async function decideHandoffAction(
     if (!row || row.tenantId !== ctx.activeTenantId || row.toUserId !== ctx.user.id) {
       return fail('approver_not_authorized')
     }
-    const updated = await services.projectWork.handoffs.decide(parsed.handoffId, parsed.decision, ctx.user.id)
-    if (!updated) return fail('invalid_args')
+    if (row.status !== 'open' && row.status !== 'accepted') return fail('approval_already_decided')
+    const updated = await services.projectWork.handoffs.decide({
+      id: parsed.handoffId,
+      expectedStatus: row.status,
+      status: parsed.decision,
+      decidedById: ctx.user.id,
+    })
+    if (!updated) return fail('approval_already_decided')
     revalidatePath('/control-plane/operations')
     return ok({ status: updated.status })
   } catch (error) {

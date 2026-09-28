@@ -110,11 +110,20 @@ class MemHandoffs {
     const row = this.rows.get(id)
     if (row) row.memoryId = memoryId
   }
-  async decide(id: string, status: 'accepted' | 'done' | 'rejected', decidedById: string) {
-    const row = this.rows.get(id)
-    if (!row || row.status === 'done' || row.status === 'rejected') return null
-    row.status = status
-    row.decidedById = decidedById
+  async decide(input: {
+    id: string
+    expectedStatus: 'open' | 'accepted'
+    status: 'accepted' | 'done' | 'rejected'
+    decidedById: string
+  }) {
+    const row = this.rows.get(input.id)
+    if (
+      !row ||
+      row.status !== input.expectedStatus ||
+      (input.expectedStatus === 'accepted' && input.status === 'accepted')
+    ) return null
+    row.status = input.status
+    row.decidedById = input.decidedById
     return row
   }
 }
@@ -298,6 +307,45 @@ async function main() {
     )
     assert.equal(done.ok, true)
     assert.equal((await handoffs.findById(handoffId))?.status, 'done')
+    const again = parsePayload(
+      await invokeProjectWork(gaborArgs, {
+        principal: { userId: ANNA, tenantId: TENANT, role: 'operator', assumed: false },
+        toolName: 'platform.handoff_ack',
+        args: { definitionId: GABOR_DEF, handoffId, decision: 'rejected' },
+      }),
+    )
+    assert.equal(again.code, 'approval_already_decided')
+  })
+
+  await check('stale acknowledgement cannot overwrite the first terminal decision', async () => {
+    const { handoffs } = deps()
+    const row = await handoffs.insert({
+      tenantId: TENANT,
+      fromAgentId: KATI,
+      fromDefinitionId: KATI_DEF,
+      toAgentId: GABOR,
+      toUserId: null,
+      projectKey: '__general__',
+      title: 'Race',
+      summary: 'Only one decision may win.',
+      links: null,
+      createdById: ANNA,
+    })
+    const winner = await handoffs.decide({
+      id: row.id,
+      expectedStatus: 'open',
+      status: 'done',
+      decidedById: ANNA,
+    })
+    const staleLoser = await handoffs.decide({
+      id: row.id,
+      expectedStatus: 'open',
+      status: 'rejected',
+      decidedById: ANNA,
+    })
+    assert.equal(winner?.status, 'done')
+    assert.equal(staleLoser, null)
+    assert.equal((await handoffs.findById(row.id))?.status, 'done')
   })
 
   await check('cross-tenant handoff row is invisible', async () => {
