@@ -1988,6 +1988,75 @@ async function main() {
     assert.ok(!after.includes(`definitionId: ${DEFINITION_ID}`))
   })
 
+  await check('agent header: another agent\'s prompt is refused and not listed, instructions stay on the bound agent', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const salesItem = {
+      ...PUBLISHED_LIST_ITEM,
+      agentId: FOREIGN_AGENT_ID,
+      name: 'Sales',
+      currentDefinitionId: FOREIGN_DEFINITION_ID,
+    }
+    deps.listPublishedAgents = async () => [PUBLISHED_LIST_ITEM, salesItem]
+    const salesDefinition = {
+      ...SAMPLE_DEFINITION,
+      definitionId: FOREIGN_DEFINITION_ID,
+      agentId: FOREIGN_AGENT_ID,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, name: 'Sales', roleInstruction: 'Sell things' },
+    }
+    deps.loadDefinition = async ({ definitionId, agentId }) =>
+      definitionId === FOREIGN_DEFINITION_ID || agentId === FOREIGN_AGENT_ID
+        ? salesDefinition
+        : SAMPLE_DEFINITION
+
+    const boundPrompts = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 60, method: 'prompts/list', params: {} },
+      { authorization: `Bearer ${TOKEN}`, 'x-excellence-agent-id': AGENT_ID },
+      deps,
+    )
+    const boundNames = (
+      (await readJson(boundPrompts)) as { result?: { prompts?: Array<{ name: string }> } }
+    ).result?.prompts?.map((row) => row.name)
+    assert.deepEqual(boundNames, ['drive-assistant'], 'a bound client sees only its own agent prompt')
+
+    const foreign = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 61, method: 'prompts/get', params: { name: 'sales', arguments: {} } },
+      { authorization: `Bearer ${TOKEN}`, 'x-excellence-agent-id': AGENT_ID },
+      deps,
+    )
+    const foreignBody = (await readJson(foreign)) as {
+      result?: { messages?: Array<{ content: { text: string } }> }
+      error?: { message?: string }
+    }
+    assert.equal(foreignBody.result, undefined, JSON.stringify(foreignBody))
+    assert.ok(foreignBody.error, 'prompts/get for another agent must fail while the header binds this one')
+
+    const init = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 62,
+        method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } },
+      },
+      { authorization: `Bearer ${TOKEN}`, 'x-excellence-agent-id': AGENT_ID },
+      deps,
+    )
+    const instructions =
+      ((await readJson(init)) as { result?: { instructions?: string } }).result?.instructions ?? ''
+    assert.match(instructions, /BOUND TO ONE AGENT/)
+    assert.doesNotMatch(instructions, /CHOOSE AND STAY/)
+    assert.doesNotMatch(instructions, /Sales/)
+
+    // Unbound: both prompts stay available.
+    const openPrompts = await listPrompts(deps)
+    assert.deepEqual(openPrompts.result?.prompts?.map((row) => row.name).sort(), [
+      'drive-assistant',
+      'sales',
+    ])
+  })
+
   await check('#652 get_definition: briefing is the first key, same text as the prompt and checkout', async () => {
     const { deps } = runtimeDeps({ role: 'admin' })
     const skillVersionId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
