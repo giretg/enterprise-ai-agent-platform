@@ -33,6 +33,8 @@ function mapRow(row: LoadedRow): GatewayOperationRecord {
     idempotencyKey: row.idempotencyKey,
     status: row.status,
     connectorId: row.connectorId,
+    designatedApproverUserId: row.designatedApproverUserId,
+    designatedApproverName: row.designatedApproverName,
     errorCode: row.errorCode,
     resultJson: row.resultJson,
     createdAt: row.createdAt,
@@ -87,6 +89,8 @@ export class PostgresGatewayOperationRepository implements GatewayOperationStore
           idempotencyKey: input.idempotencyKey,
           status: 'awaiting_approval',
           connectorId: input.connectorId ?? null,
+          designatedApproverUserId: input.designatedApproverUserId ?? null,
+          designatedApproverName: input.designatedApproverName ?? null,
           approval: { create: { decision: 'pending' } },
         },
         include: INCLUDE,
@@ -106,14 +110,57 @@ export class PostgresGatewayOperationRepository implements GatewayOperationStore
 
   async listAwaitingApproval(
     tenantId: string,
-    principalUserId?: string,
+    visibleToUserId?: string,
   ): Promise<GatewayOperationRecord[]> {
     const rows = await prisma.gatewayOperation.findMany({
-      where: { tenantId, status: 'awaiting_approval', ...(principalUserId ? { principalUserId } : {}) },
+      where: {
+        tenantId,
+        status: 'awaiting_approval',
+        ...(visibleToUserId
+          ? {
+              OR: [
+                { principalUserId: visibleToUserId },
+                { designatedApproverUserId: visibleToUserId },
+              ],
+            }
+          : {}),
+      },
       include: INCLUDE,
       orderBy: { createdAt: 'desc' },
     })
     return rows.map(mapRow)
+  }
+
+  async listDecidedHistory(
+    tenantId: string,
+    visibleToUserId: string | undefined,
+    page: { limit: number; offset: number },
+  ): Promise<{ rows: GatewayOperationRecord[]; total: number }> {
+    const where: Prisma.GatewayOperationWhereInput = {
+      tenantId,
+      status: { not: 'awaiting_approval' },
+      approval: { is: { decision: { in: ['approved', 'rejected'] } } },
+      ...(visibleToUserId
+        ? {
+            OR: [
+              { principalUserId: visibleToUserId },
+              { designatedApproverUserId: visibleToUserId },
+              { approval: { is: { decidedByUserId: visibleToUserId } } },
+            ],
+          }
+        : {}),
+    }
+    const [rows, total] = await Promise.all([
+      prisma.gatewayOperation.findMany({
+        where,
+        include: INCLUDE,
+        orderBy: { updatedAt: 'desc' },
+        skip: page.offset,
+        take: page.limit,
+      }),
+      prisma.gatewayOperation.count({ where }),
+    ])
+    return { rows: rows.map(mapRow), total }
   }
 
   async withLockedOperation<T>(

@@ -14,7 +14,9 @@ import {
   assembleKbIndex,
   assembleKbPage,
   KB_DOCUMENT_INLINE_CHARS,
-  mergeKbHits,
+  rankKbHits,
+  kbSectionForSegment,
+  splitKbSegments,
   okfIndexFile,
 } from '../src/lib/kb-retrieval'
 import { toKbTsQuery } from '../src/repositories/postgres/knowledge-repository'
@@ -200,6 +202,7 @@ async function run() {
     assert.equal(toKbTsQuery('a az work work'), 'az:* | work:*')
     assert.equal(toKbTsQuery('   '), '')
     assert.equal(toKbTsQuery('!!! ???'), '')
+    assert.equal(toKbTsQuery('4 éves TCO-t'), 'éves:* | tco:*', 'kötőjelnél vág, nem tapaszt')
   })
 
   // ── kb_list_index (assembleKbIndex, §9.3) ─────────────────────────────────
@@ -382,16 +385,70 @@ async function run() {
     },
   )
 
-  await check('mergeKbHits: score szerint vág', () => {
-    const hits = mergeKbHits(
+  await check('assembleKbDocument: egyedi útvonal-címek, részfa-törzs, többértelmű név jelöltlistát ad', () => {
+    const text = [
+      '# Szabályok',
+      'Bevezető.',
+      '## API-k használata',
+      '### Alapelv',
+      'API előbb.',
+      '### Mikor',
+      'Díjaknál.',
+      '## Belső hivatkozások',
+      '### Alapelv',
+      'Linkelj.',
+      '## Kötelező alapelvek',
+      '- natív magyar',
+    ].join('\n')
+    const doc = (section?: string) =>
+      assembleKbDocument({ documentId: 'd', filename: 'b.md', purpose: null, text, section })
+
+    assert.equal(doc().truncated, false, "rövid fájl egyben jön")
+    const miss = doc('nincs ilyen')
+    assert.deepEqual(miss.outline, [
+      'Szabályok',
+      'API-k használata',
+      'API-k használata › Alapelv',
+      'API-k használata › Mikor',
+      'Belső hivatkozások',
+      'Belső hivatkozások › Alapelv',
+      'Kötelező alapelvek',
+    ])
+
+    const ambiguous = doc('Alapelv')
+    assert.equal(ambiguous.sectionFound, false)
+    assert.deepEqual(ambiguous.matches, ['API-k használata › Alapelv', 'Belső hivatkozások › Alapelv'])
+    assert.equal(ambiguous.outline, undefined, 'jelöltlistánál nem kell a teljes vázlat')
+
+    assert.equal(doc('Belső hivatkozások > Alapelv').text, 'Linkelj.')
+    const parent = doc('API-k használata')
+    assert.equal(parent.sectionFound, true)
+    assert.equal(parent.text, '### Alapelv\nAPI előbb.\n### Mikor\nDíjaknál.', 'a szülő a gyerekeit is hozza')
+    assert.equal(doc('kötelező').text, '- natív magyar')
+  })
+
+  await check('kbSectionForSegment: a SQL-oldali vágás sorszáma ugyanarra a szakaszra mutat', () => {
+    const text = 'Előszó\n# Cím\n## A\nszöveg\n#### nem heading\n## A\nmásik'
+    assert.deepEqual(splitKbSegments(text), ['Előszó', '# Cím', '## A\nszöveg\n#### nem heading', '## A\nmásik'])
+    assert.equal(kbSectionForSegment(text, 0), undefined)
+    assert.equal(kbSectionForSegment(text, 2), 'A')
+    assert.equal(kbSectionForSegment(text, 3), 'A (2)')
+  })
+
+  await check('rankKbHits: ritka kérdésszó többet ér, mint a mindenhol előforduló', () => {
+    const hit = (docId: string) => ({ docId, snippet: docId, sourceRef: docId, memoryVersion: null })
+    const hits = rankKbHits(
       [
-        { docId: 'a', snippet: 'alacsony', sourceRef: 'a', memoryVersion: null, score: 0.1 },
-        { docId: 'b', snippet: 'magas', sourceRef: 'b', memoryVersion: null, score: 2 },
+        { hit: hit('zaj-1'), matched: ['oldal', 'éves'], rank: 0.9 },
+        { hit: hit('zaj-2'), matched: ['oldal'], rank: 0.5 },
+        { hit: hit('zaj-3'), matched: ['oldal', 'éves'], rank: 0.8 },
+        { hit: hit('tco'), matched: ['éves', 'tco'], rank: 0.1 },
       ],
-      1,
+      2,
     )
-    assert.equal(hits.length, 1)
-    assert.equal(hits[0].docId, 'b')
+    assert.equal(hits.length, 2)
+    assert.equal(hits[0].docId, 'tco')
+    assert.equal(hits[1].docId, 'zaj-1', 'holtversenyben a ts_rank dönt')
   })
 
   await check('assembleKbPage: section fallback a forrás-linkhez, ha nincs page', () => {

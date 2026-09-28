@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import { getTenantMcpIntro, setTenantMcpIntro } from '@/app/actions/tenant-mcp-intro'
 import { Card } from '@/components/ui/shell'
 
@@ -11,6 +12,8 @@ export function TenantMcpIntroPanel({
   initialIntro: string
   canEdit: boolean
 }) {
+  const t = useTranslations('ControlPlane.settings')
+  const common = useTranslations('Common')
   const [intro, setIntro] = useState(initialIntro)
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
@@ -21,7 +24,7 @@ export function TenantMcpIntroPanel({
       const res = await setTenantMcpIntro({ mcpIntro: intro })
       if (res.success) {
         setIntro(res.data.mcpIntro)
-        setMessage({ tone: 'ok', text: 'Az MCP bemutatkozó mentve. Az AI kliensek a következő csatlakozáskor látják.' })
+        setMessage({ tone: 'ok', text: t('mcpIntroSaved') })
       } else {
         setMessage({ tone: 'error', text: res.error })
       }
@@ -29,20 +32,16 @@ export function TenantMcpIntroPanel({
   }
 
   return (
-    <Card title="MCP bemutatkozó">
+    <Card title={t('mcpIntroTitle')}>
       <div className="space-y-4">
-        <p className="text-sm text-ink-soft">
-          Ez a szöveg jelenik meg az MCP initialize utasításában és a{' '}
-          <span className="font-mono text-[12px] text-ink">platform.whoami</span> válaszában. Írd le,
-          milyen céghez csatlakozik az AI, és hogyan értelmezze a publikált munkatárs-agenteket.
-        </p>
+        <p className="text-sm text-ink-soft">{t('mcpIntroBody')}</p>
         <textarea
           value={intro}
           onChange={(event) => setIntro(event.target.value)}
           disabled={!canEdit || pending}
           rows={8}
           maxLength={4000}
-          placeholder="Példa: Az Ostorosbor Zrt. magyar borászat. A munkatársak publikált AI agentek — CRM, értékesítés, tudásbázis."
+          placeholder={t('mcpIntroPlaceholder')}
           className="w-full rounded-xl border border-line bg-panel px-4 py-3 text-sm text-ink outline-none transition focus:border-coral/50 disabled:opacity-60"
         />
         <div className="flex flex-wrap items-center gap-3">
@@ -52,7 +51,7 @@ export function TenantMcpIntroPanel({
             disabled={!canEdit || pending}
             className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-coral-deep disabled:opacity-50"
           >
-            Mentés
+            {common('save')}
           </button>
           <button
             type="button"
@@ -62,7 +61,7 @@ export function TenantMcpIntroPanel({
                 const res = await getTenantMcpIntro()
                 if (res.success) {
                   setIntro(res.data.mcpIntro)
-                  setMessage({ tone: 'ok', text: 'Frissítve a szerverről.' })
+                  setMessage({ tone: 'ok', text: t('reloaded') })
                 } else {
                   setMessage({ tone: 'error', text: res.error })
                 }
@@ -70,7 +69,7 @@ export function TenantMcpIntroPanel({
             }}
             className="rounded-full border border-line bg-card px-4 py-2 text-sm font-medium text-ink-soft transition hover:border-coral/40 hover:text-ink disabled:opacity-50"
           >
-            Újratöltés
+            {t('reload')}
           </button>
         </div>
         {message ? (

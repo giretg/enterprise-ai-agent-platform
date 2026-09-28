@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import { deleteAgent } from '@/app/actions/platform'
 
 export function DeleteAgentButton({
@@ -13,6 +14,7 @@ export function DeleteAgentButton({
   agentName: string
   compact?: boolean
 }) {
+  const t = useTranslations('AgentUi')
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [confirming, setConfirming] = useState(false)
@@ -34,7 +36,7 @@ export function DeleteAgentButton({
             : 'rounded-full border border-coral/30 px-4 py-2 text-sm font-semibold text-coral transition-colors hover:bg-coral/10'
         }
       >
-        Törlés
+        {t('delete')}
       </button>
     )
   }
@@ -48,8 +50,7 @@ export function DeleteAgentButton({
       }}
     >
       <p className="text-xs leading-relaxed text-ink-soft">
-        Biztosan törlöd <span className="font-semibold text-ink">{agentName}</span> munkatársat?
-        A definíciói is törlődnek. Ha már volt MCP-művelete, a törlés elhasalhat.
+        {t('confirmDelete', { name: agentName })}
       </p>
       {error && <p className="mt-2 text-xs text-coral">{error}</p>}
       <div className="mt-3 flex flex-wrap gap-2">
@@ -71,7 +72,7 @@ export function DeleteAgentButton({
           }}
           className="rounded-full bg-coral px-3 py-1 text-xs font-semibold text-card disabled:opacity-50"
         >
-          {pending ? 'Törlés...' : 'Igen, törlöm'}
+          {pending ? t('deleting') : t('confirmYes')}
         </button>
         <button
           type="button"
@@ -82,7 +83,7 @@ export function DeleteAgentButton({
           }}
           className="rounded-full border border-line px-3 py-1 text-xs font-semibold text-ink-soft disabled:opacity-50"
         >
-          Mégse
+          {t('cancel')}
         </button>
       </div>
     </div>

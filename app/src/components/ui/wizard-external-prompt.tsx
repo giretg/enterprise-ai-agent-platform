@@ -1,3 +1,6 @@
+'use client'
+
+import { useTranslations } from 'next-intl'
 import { OpenInNewWindowLink } from '@/components/ui/open-in-new-window-link'
 
 export type WizardExternalLink = {
@@ -16,17 +19,15 @@ export function WizardExternalPrompt({
   onRefresh?: () => void
   refreshing?: boolean
 }) {
+  const t = useTranslations('AgentCreate')
   if (links.length === 0) return null
 
   return (
     <div className="rounded-lg border border-line bg-night-2/40 px-4 py-3">
       <p className="text-xs font-semibold uppercase tracking-wide text-ink-soft">
-        Közben eszedbe jutott valami?
+        {t('externalTitle')}
       </p>
-      <p className="mt-1 text-xs text-ink-faint">
-        Új böngészőablakban nyílik — ez a varázsló itt marad. Ha ott létrehoztál
-        valamit, frissítsd a listát.
-      </p>
+      <p className="mt-1 text-xs text-ink-faint">{t('externalBody')}</p>
       <ul className="mt-3 space-y-2">
         {links.map((link) => (
           <li key={link.href}>
@@ -42,7 +43,7 @@ export function WizardExternalPrompt({
           disabled={refreshing}
           className="mt-3 rounded-full border border-line px-3 py-1 text-xs font-semibold text-ink-soft hover:border-coral/40 hover:text-ink disabled:opacity-50"
         >
-          {refreshing ? 'Frissítés…' : 'Lista frissítése'}
+          {refreshing ? t('refreshing') : t('refreshList')}
         </button>
       ) : null}
     </div>

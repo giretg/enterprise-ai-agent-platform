@@ -7,6 +7,7 @@ import type { MemoryWriteMode, ProjectMemoryKind } from '@prisma/client'
 import { scanMemoryContentForSecrets } from '../src/domain/memory/memory-content-guard'
 import { invokeProjectWork } from '../src/domain/project-work/mcp'
 import {
+  MEMORY_FOCUS_MAX,
   ProjectWorkService,
   WORK_FILE_MAX_BYTES,
 } from '../src/domain/project-work/project-work-service'
@@ -270,7 +271,7 @@ await check('approval mode proposes; item is invisible until commit; author is t
     projectKey: 'atvilagitas',
     callerUserId: BELA,
   })
-  assert.equal(before.ok && before.items.length, 0)
+  assert.equal(before.ok && (before.index?.totalCount ?? 0), 0)
   if (proposed.status !== 'needs_approval') return
   const item = await svc.commitMemory(proposed.draft)
   assert.equal(item.withUserId, ANNA)
@@ -280,8 +281,9 @@ await check('approval mode proposes; item is invisible until commit; author is t
     agentId: AGENT,
     projectKey: 'atvilagitas',
     callerUserId: BELA,
+    full: true,
   })
-  assert.equal(after.ok && after.items[0]?.withUserName, 'Anna')
+  assert.equal(after.ok && after.items?.[0]?.withUserName, 'Anna')
 })
 
 await check('direct mode writes immediately with the caller as conversation partner', async () => {
@@ -339,18 +341,20 @@ await check('Béla sees Anna tagged; mine=true returns only Béla', async () => 
     tenantId: TENANT,
     agentId: AGENT,
     callerUserId: BELA,
+    full: true,
   })
-  assert.equal(all.ok && all.items.length, 2)
+  assert.equal(all.ok && all.items?.length, 2)
   const mine = await svc.readMemory({
     tenantId: TENANT,
     agentId: AGENT,
     mine: true,
     callerUserId: BELA,
+    full: true,
   })
-  assert.equal(mine.ok && mine.items.length, 1)
+  assert.equal(mine.ok && mine.items?.length, 1)
   if (!mine.ok) return
-  assert.equal(mine.items[0]?.withUserId, BELA)
-  assert.equal(mine.items[0]?.title, 'Béla feladata')
+  assert.equal(mine.items?.[0]?.withUserId, BELA)
+  assert.equal(mine.items?.[0]?.title, 'Béla feladata')
 })
 
 await check('secret-looking memory is blocked in both modes', async () => {
@@ -436,6 +440,48 @@ await check('MCP stamps withUserId from the principal, not from tool args', asyn
   assert.equal(item.withUserName, 'Anna')
 })
 
+await check('#659 wrong_placement blocks procedural memory write until confirmMisplaced', async () => {
+  const { svc } = harness('direct')
+  const deps = {
+    loadDefinition: async () => definition,
+    findCurrentDefinitionId: async () => DEF,
+    findAgentGrant: async () => ({ accessLevel: 'operate' }),
+    projectWork: svc,
+  }
+  const principal = { userId: ANNA, tenantId: TENANT, role: 'operator' as const, assumed: false }
+  const body = ['Approval path', '1. Draft', '2. Always review', '3. Never skip legal', '4. Publish'].join('\n')
+  const blocked = parsePayload(
+    await invokeProjectWork(deps, {
+      principal,
+      toolName: 'platform.project_memory.write',
+      args: {
+        definitionId: DEF,
+        kind: 'constraint',
+        title: 'Email approval',
+        body,
+        idempotencyKey: 'misplaced-1',
+      },
+    }),
+  )
+  assert.equal(blocked.status, 'wrong_placement')
+  assert.equal(blocked.suggest, 'skill')
+  const forced = parsePayload(
+    await invokeProjectWork(deps, {
+      principal,
+      toolName: 'platform.project_memory.write',
+      args: {
+        definitionId: DEF,
+        kind: 'constraint',
+        title: 'Email approval',
+        body,
+        confirmMisplaced: true,
+        idempotencyKey: 'misplaced-2',
+      },
+    }),
+  )
+  assert.equal(forced.status, 'written')
+})
+
 await check('correcting a fact via MCP: duplicate is refused with candidates, replaceId retires the old item', async () => {
   const { svc } = harness('direct')
   const deps = {
@@ -469,13 +515,13 @@ await check('correcting a fact via MCP: duplicate is refused with candidates, re
   assert.equal(dup.isError, undefined)
   assert.equal(dupPayload.status, 'possible_duplicate')
   assert.deepEqual((dupPayload.candidates as { id: string }[]).map((c) => c.id), [oldId])
-  const unchanged = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
-  assert.equal(unchanged.ok && unchanged.items.length, 1)
+  const unchanged = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA, full: true })
+  assert.equal(unchanged.ok && unchanged.items?.length, 1)
 
   const replaced = parsePayload(await write({ ...correction, replaceId: oldId }))
   assert.equal(replaced.status, 'written')
-  const after = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
-  assert.deepEqual(after.ok && after.items.map((item) => item.title), [correction.title])
+  const after = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA, full: true })
+  assert.deepEqual(after.ok && after.items?.map((item) => item.title), [correction.title])
 
   const unrelated = parsePayload(await write({ title: 'Heti riport péntekenként', body: 'A vezetőségnek minden pénteken összesítő készül.' }))
   assert.equal(unrelated.status, 'written')
@@ -534,8 +580,148 @@ await check('two outdated items + one change: replacing only one is refused, mer
     ),
   )
   assert.equal(merged.status, 'written')
-  const after = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
-  assert.deepEqual(after.ok && after.items.map((item) => item.title), [change.title])
+  const after = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA, full: true })
+  assert.deepEqual(after.ok && after.items?.map((item) => item.title), [change.title])
+})
+
+await check('#656 focus: the second write replaces the first, no second item, over MCP too', async () => {
+  const { svc, memory } = harness('direct')
+  const write = (args: Record<string, unknown>) =>
+    invokeProjectWork(
+      {
+        loadDefinition: async () => definition,
+        findCurrentDefinitionId: async () => DEF,
+        findAgentGrant: async () => ({ accessLevel: 'operate' }),
+        projectWork: svc,
+      },
+      {
+        principal: { userId: ANNA, tenantId: TENANT, role: 'operator', assumed: false },
+        toolName: 'platform.project_memory.write',
+        args: { definitionId: DEF, kind: 'focus', idempotencyKey: globalThis.crypto.randomUUID(), ...args },
+      },
+    )
+  const first = parsePayload(
+    await write({
+      title: 'Fókusz',
+      body: 'Most: a 4. szakasz átvázlása. Következő: jóváhagyás Anna részéről. Várunk: számla a beszállítótól.',
+    }),
+  )
+  assert.equal(first.status, 'written')
+  const firstId = (first.item as { id: string }).id
+
+  // Szándékosan szinte azonos szöveg: a fókusznál nincs duplikátum-kapu, mindig replace.
+  const second = parsePayload(
+    await write({
+      body: 'Most: a 4. szakasz átvázlása kész. Következő: bekérés a beszállítótól. Várunk: válasz a beszállítótól.',
+    }),
+  )
+  assert.equal(second.status, 'written')
+  const secondId = (second.item as { id: string }).id
+  assert.notEqual(secondId, firstId)
+  assert.equal((second.item as { title: string }).title, 'Fókusz')
+
+  const items = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
+  assert.equal(items.ok && items.items?.length, 1)
+  if (!items.ok) return
+  assert.equal(items.items?.[0]?.id, secondId)
+  assert.equal(items.items?.[0]?.kind, 'focus')
+  assert.equal(memory.rows.get(firstId)?.status, 'superseded')
+
+  const tooLong = parsePayload(await write({ body: 'x'.repeat(MEMORY_FOCUS_MAX + 1) }))
+  assert.equal(tooLong.code, 'invalid_memory_kind')
+})
+
+await check('#657 memory index lists every item; ids return only requested bodies', async () => {
+  const { svc } = harness('direct')
+  const { memoryDisplayTitle, paginateMemoryIndex, MEMORY_INDEX_PAGE_MAX_CHARS } = await import(
+    '../src/domain/project-work/memory-index'
+  )
+  assert.equal(memoryDisplayTitle('', 'Első sor a törzsben.\nMásodik.'), 'Első sor a törzsben.')
+
+  for (let i = 0; i < 200; i++) {
+    await svc.writeMemory({
+      tenantId: TENANT,
+      agentId: AGENT,
+      kind: 'finding',
+      title: `fact-${i}`,
+      body: `body-${i}`,
+      withUserId: ANNA,
+      mode: 'direct',
+    })
+  }
+
+  const catalog = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
+  assert.equal(catalog.ok && catalog.index?.totalCount, 200)
+  if (!catalog.ok || !catalog.index) return
+  const ids = new Set<string>()
+  let offset: number | undefined = 0
+  while (offset !== undefined) {
+    const page = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA, offset })
+    assert.ok(page.ok && page.index)
+    if (!page.ok || !page.index) return
+    for (const entry of page.index.entries) ids.add(entry.id)
+    assert.ok(JSON.stringify(page.index.entries).length <= MEMORY_INDEX_PAGE_MAX_CHARS)
+    offset = page.index.nextOffset ?? undefined
+  }
+  assert.equal(ids.size, 200)
+
+  const one = await svc.readMemory({
+    tenantId: TENANT,
+    agentId: AGENT,
+    callerUserId: ANNA,
+    ids: [catalog.index.entries[0]!.id, catalog.index.entries[1]!.id],
+  })
+  assert.equal(one.ok && one.items?.length, 2)
+  if (!one.ok || !one.items) return
+  assert.ok(one.items.every((item) => item.body.startsWith('body-')))
+  assert.ok(!one.index)
+
+  const empty = paginateMemoryIndex([], 0)
+  assert.equal(empty.nextOffset, null)
+})
+
+await check('#658 session_log: append-only, excluded from index, recent headlines', async () => {
+  const { svc, memory } = harness('direct')
+  const write = (args: Record<string, unknown>) =>
+    svc.writeMemory({
+      tenantId: TENANT,
+      agentId: AGENT,
+      withUserId: ANNA,
+      mode: 'direct',
+      kind: 'session_log',
+      title: String(args.title ?? ''),
+      body: String(args.body),
+      replaceId: typeof args.replaceId === 'string' ? args.replaceId : undefined,
+    })
+
+  const first = await write({ title: 'POS riport kész', body: 'Elkészült a heti riport. Következő: küldés.' })
+  assert.equal(first.ok && first.status, 'written')
+  const second = await write({ title: 'Riport elküldve', body: 'Anna jóváhagyta a küldést.' })
+  assert.equal(second.ok && second.status, 'written')
+  if (!first.ok || !second.ok || first.status !== 'written' || second.status !== 'written') return
+  assert.notEqual(first.item.id, second.item.id)
+  assert.match(first.item.body, /Anna$/)
+
+  const blocked = await write({ title: 'Nem megy', body: 'replace tiltva', replaceId: first.item.id })
+  assert.equal(blocked.ok, false)
+  if (blocked.ok) return
+  assert.equal(blocked.code, 'invalid_memory_kind')
+
+  const read = await svc.readMemory({ tenantId: TENANT, agentId: AGENT, callerUserId: ANNA })
+  assert.equal(read.ok && read.recentSessionLogs?.length, 2)
+  const titles = read.ok ? new Set(read.recentSessionLogs?.map((row) => row.title)) : new Set()
+  assert.deepEqual(titles, new Set(['POS riport kész', 'Riport elküldve']))
+  assert.equal(read.ok && read.index?.totalCount, 0)
+
+  const ids = await svc.readMemory({
+    tenantId: TENANT,
+    agentId: AGENT,
+    callerUserId: ANNA,
+    ids: [first.item.id],
+  })
+  assert.equal(ids.ok && ids.items?.length, 1)
+  assert.equal(memory.rows.get(first.item.id)?.status, 'active')
+  assert.equal(memory.rows.get(second.item.id)?.status, 'active')
 })
 
   console.log(failures === 0 ? '\nOK project-work' : `\nFAIL ${failures}`)

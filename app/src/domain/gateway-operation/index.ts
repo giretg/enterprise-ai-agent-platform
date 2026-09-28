@@ -14,8 +14,10 @@ export {
   canSeeGatewayOperation,
   enqueueGatewayOperation,
   enqueueResultToMcp,
+  recordGatewayOperationEnqueued,
   getGatewayOperation,
   getResultToMcp,
+  isDesignatedDecider,
   listPendingGatewayOperations,
   rejectGatewayOperation,
   toGatewayOperationView,
@@ -26,5 +28,14 @@ export type {
   GatewayOperationServiceDeps,
   GatewayPendingOperation,
   GatewayPendingOperationRow,
+  GatewayOperationHistoryRow,
 } from './gateway-operation-service'
 export { enqueueWriteForMcp, WRITE_CONFIRM_KEY, WRITE_CONFIRM_TTL_MS } from './write-confirm'
+export {
+  formElicitationCapable,
+  MRTR_PROTOCOL_VERSION,
+  resolveWriteConfirmOffer,
+  writeConfirmLinkReason,
+  type WriteConfirmLinkReason,
+  type WriteConfirmOffer,
+} from './write-confirm-branch'

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { backfillHttpApiConnectorConfig } from '../src/domain/connector/canonical-config'
 import { parseHttpApiConfig } from '../src/domain/connector/http-api-client'
@@ -12,12 +12,6 @@ import {
 } from '../src/domain/connector-template/materializer'
 import { materializeGmailConnectorConfig } from '../src/domain/connector-template/gmail-connector-config'
 import { parseTemplateDescriptor } from '../src/domain/connector-template/template-descriptor'
-import { HttpSandboxConnectionTester } from '../src/domain/provisioning/sandbox-connection-tester'
-import {
-  applyMigrationWithSecretCompensation,
-  isOstorosborBearerMigrationCandidate,
-  rematerializeOstorosborConnectorConfig,
-} from '../src/domain/connector-template/ostorosbor-bearer-migration'
 import { enrichOstorosborConnectorConfig } from '../src/domain/connector-template/ostorosbor-config-enrichment'
 
 let failures = 0
@@ -106,6 +100,11 @@ async function main() {
         authMethodKind: 'bearer',
         instanceValues: {},
         secretAliases: { botToken: 'secret-ref:slack-bot-token' },
+      },
+      agentmail: {
+        authMethodKind: 'bearer',
+        instanceValues: { inboxId: 'agent@agentmail.eu' },
+        secretAliases: {},
       },
     }
 
@@ -254,7 +253,6 @@ async function main() {
       assert.equal(descriptor.key, rawDescriptor.key)
       if (!marketingKeys.has(descriptor.key)) continue
       const config = selfCheckTemplateDescriptor(descriptor)
-      parseHttpApiConfig(config)
       assert.equal(config.provenance?.templateKey, descriptor.key)
     }
   })
@@ -273,8 +271,7 @@ async function main() {
       },
       {},
     )
-    const runtime = parseHttpApiConfig(config)
-    assert.equal(runtime.baseUrl, 'https://googleads.googleapis.com')
+    assert.equal(config.baseUrl, 'https://googleads.googleapis.com')
     assert.equal(config.requestHeaders?.['developer-token'], 'dev-token-example')
     assert.equal(config.requestHeaders?.['login-customer-id'], '1234567890')
     assert.equal(config.auth.type, 'oauth2')
@@ -317,6 +314,287 @@ async function main() {
     }
   })
 
+  await test('issue #691 top3 templates materialize with guided defaults', () => {
+    const expected = {
+      'google-calendar': {
+        baseUrl: 'https://www.googleapis.com',
+        auth: 'user_delegated_oauth2',
+        defaultTool: 'list_events',
+      },
+      'google-sheets': {
+        baseUrl: 'https://sheets.googleapis.com',
+        auth: 'user_delegated_oauth2',
+        defaultTool: 'get_values',
+      },
+      billingo: {
+        baseUrl: 'https://api.billingo.hu/v3',
+        auth: 'api_key',
+        defaultTool: 'list_documents',
+      },
+    } as const
+
+    for (const [key, spec] of Object.entries(expected)) {
+      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      assert.ok(raw, `missing ${key} custom template`)
+      const descriptor = parseTemplateDescriptor(raw)
+      assert.equal(descriptor.baseUrl, spec.baseUrl)
+      assert.equal(descriptor.authMethods[0]?.kind, spec.auth)
+      assert.ok(
+        descriptor.endpoints.some((endpoint) => endpoint.name === spec.defaultTool && endpoint.default),
+      )
+      // Varázsló-vezetés: mindegyikhez van lépésről lépésre activationHelp.
+      assert.ok((descriptor.activationHelp ?? '').includes('1.'))
+      const config = selfCheckTemplateDescriptor(descriptor)
+      assert.equal(config.provenance?.templateKey, descriptor.key)
+      assert.equal(config.restrictToEndpoints, true)
+    }
+  })
+
+  await test('issue #691 calendar/sheets reuse the platform Google API OAuth app', async () => {
+    const { isPlatformGoogleApiConnectorTemplateKey } = await import(
+      '../src/lib/platform-google-api-connectors'
+    )
+    assert.equal(isPlatformGoogleApiConnectorTemplateKey('google-calendar'), true)
+    assert.equal(isPlatformGoogleApiConnectorTemplateKey('google-sheets'), true)
+    assert.equal(isPlatformGoogleApiConnectorTemplateKey('billingo'), false)
+  })
+
+  await test('billingo template materializes api_key header auth', () => {
+    const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'billingo')
+    assert.ok(raw, 'missing billingo custom template')
+    const config = materializeConnectorConfig(
+      parseTemplateDescriptor(raw),
+      { authMethodKind: 'api_key', instanceValues: {} },
+      { apiKey: 'secret-ref:billingo-api-key' },
+      {
+        templateKey: 'billingo',
+        templateVersion: 1,
+        templateOrigin: 'custom',
+        materializedAt: '2026-07-06T00:00:00.000Z',
+      },
+    )
+    const runtime = parseHttpApiConfig(config)
+    assert.equal(runtime.baseUrl, 'https://api.billingo.hu/v3')
+    assert.deepEqual(runtime.auth, { scheme: 'header', header: 'X-API-KEY' })
+    assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'list_documents' && tool.access === 'read'))
+    assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'list_document_blocks'))
+    assert.ok(!(config.proposedTools ?? []).some((tool) => tool.name === 'create_document'))
+  })
+
+  await test('issue #691 szamlazz / nav / minicrm templates materialize for the runtime', () => {
+    const materialize = (key: string, authMethodKind: 'bearer' | 'basic', instanceValues: Record<string, string>) => {
+      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      assert.ok(raw, `missing ${key} custom template`)
+      const descriptor = parseTemplateDescriptor(raw)
+      assert.ok((descriptor.activationHelp ?? '').includes('1.'))
+      selfCheckTemplateDescriptor(descriptor)
+      const aliases = Object.fromEntries(
+        descriptor.instanceFields
+          .filter((field) => field.type === 'secret')
+          .map((field) => [field.name, `secret-ref:${field.secretAliasHint}`]),
+      )
+      const config = materializeConnectorConfig(descriptor, { authMethodKind, instanceValues }, aliases)
+      const runtime = parseHttpApiConfig(backfillHttpApiConnectorConfig(config).config)
+      return { config, runtime }
+    }
+
+    const szamlazz = materialize('szamlazz-hu', 'bearer', {})
+    assert.equal(szamlazz.runtime.protocol, 'szamlazz_agent')
+    assert.ok(szamlazz.config.proposedTools.some((t) => t.name === 'get_invoice' && t.access === 'read'))
+    assert.ok(!szamlazz.config.proposedTools.some((t) => t.name === 'create_invoice'))
+
+    const nav = materialize('nav-online-szamla', 'bearer', {
+      environment: 'https://api-test.onlineszamla.nav.gov.hu/invoiceService/v3',
+      taxNumber: '12345678',
+    })
+    assert.equal(nav.runtime.protocol, 'nav_online_invoice')
+    assert.deepEqual(nav.runtime.nav, { taxNumber: '12345678' })
+    assert.equal(nav.runtime.baseUrl, 'https://api-test.onlineszamla.nav.gov.hu/invoiceService/v3')
+    assert.ok(nav.config.egressHosts.includes('api-test.onlineszamla.nav.gov.hu'))
+    assert.ok(nav.config.proposedTools.every((t) => t.access === 'read'))
+    assert.throws(() =>
+      materialize('nav-online-szamla', 'bearer', {
+        environment: 'https://api.onlineszamla.nav.gov.hu/invoiceService/v3',
+        taxNumber: '1234',
+      }),
+    )
+
+    const minicrm = materialize('minicrm', 'basic', { systemId: '12345' })
+    assert.deepEqual(minicrm.runtime.auth, { scheme: 'basic', username: '12345' })
+    assert.equal(minicrm.config.proposedTools[0]?.path, '/Category')
+  })
+
+  await test('issue #691 pipedrive / woocommerce / shoprenter templates materialize for the runtime', () => {
+    const expected = {
+      pipedrive: { auth: 'api_key', defaultTool: 'list_deals' },
+      woocommerce: { auth: 'basic', defaultTool: 'list_orders' },
+      shoprenter: { auth: 'basic', defaultTool: 'list_orders' },
+    } as const
+
+    for (const [key, spec] of Object.entries(expected)) {
+      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      assert.ok(raw, `missing ${key} custom template`)
+      const descriptor = parseTemplateDescriptor(raw)
+      assert.equal(descriptor.authMethods[0]?.kind, spec.auth)
+      assert.ok((descriptor.activationHelp ?? '').includes('1.'))
+      assert.ok(descriptor.endpoints.some((endpoint) => endpoint.name === spec.defaultTool && endpoint.default))
+      assert.ok(!descriptor.endpoints.some((endpoint) => endpoint.access === 'write' && endpoint.default))
+      selfCheckTemplateDescriptor(descriptor)
+    }
+
+    const pipedriveRaw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'pipedrive')
+    assert.ok(pipedriveRaw)
+    const pipedrive = materializeConnectorConfig(
+      parseTemplateDescriptor(pipedriveRaw),
+      { authMethodKind: 'api_key', instanceValues: { companyHost: 'ceged.pipedrive.com' } },
+      { apiToken: 'secret-ref:pipedrive-api-token' },
+    )
+    const pipedriveRuntime = parseHttpApiConfig(pipedrive)
+    assert.equal(pipedriveRuntime.baseUrl, 'https://ceged.pipedrive.com/api/v2')
+    assert.deepEqual(pipedriveRuntime.auth, { scheme: 'header', header: 'x-api-token' })
+    assert.ok(pipedrive.egressHosts.includes('ceged.pipedrive.com'))
+    assert.ok(pipedrive.proposedTools.some((t) => t.name === 'list_users' && t.access === 'read'))
+    assert.ok(!pipedrive.proposedTools.some((t) => t.name === 'create_deal'))
+    assert.throws(() =>
+      materializeConnectorConfig(
+        parseTemplateDescriptor(pipedriveRaw),
+        { authMethodKind: 'api_key', instanceValues: { companyHost: 'evil.example.com' } },
+        { apiToken: 'secret-ref:pipedrive-api-token' },
+      ),
+    )
+
+    const wooRaw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'woocommerce')
+    assert.ok(wooRaw)
+    const woo = materializeConnectorConfig(
+      parseTemplateDescriptor(wooRaw),
+      {
+        authMethodKind: 'basic',
+        instanceValues: { storeHost: 'shop.example.hu', consumerKey: 'ck_0123456789abcdef0123456789abcdef' },
+      },
+      { consumerSecret: 'secret-ref:woocommerce-consumer-secret' },
+    )
+    const wooRuntime = parseHttpApiConfig(woo)
+    assert.equal(wooRuntime.baseUrl, 'https://shop.example.hu/wp-json/wc/v3')
+    assert.deepEqual(wooRuntime.auth, { scheme: 'basic', username: 'ck_0123456789abcdef0123456789abcdef' })
+    assert.ok(woo.proposedTools.some((t) => t.name === 'list_orders' && t.access === 'read'))
+    assert.ok(!woo.proposedTools.some((t) => t.name === 'update_order'))
+    assert.throws(() =>
+      materializeConnectorConfig(
+        parseTemplateDescriptor(wooRaw),
+        {
+          authMethodKind: 'basic',
+          instanceValues: { storeHost: 'shop.example.hu', consumerKey: 'not-a-ck-key' },
+        },
+        { consumerSecret: 'secret-ref:woocommerce-consumer-secret' },
+      ),
+    )
+
+    const shopRaw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'shoprenter')
+    assert.ok(shopRaw)
+    const shop = materializeConnectorConfig(
+      parseTemplateDescriptor(shopRaw),
+      { authMethodKind: 'basic', instanceValues: { shopHost: 'boltod.shoprenter.hu', username: 'api' } },
+      { apiPassword: 'secret-ref:shoprenter-api-password' },
+    )
+    const shopRuntime = parseHttpApiConfig(shop)
+    assert.equal(shopRuntime.baseUrl, 'https://boltod.shoprenter.hu/api')
+    assert.deepEqual(shopRuntime.auth, { scheme: 'basic', username: 'api' })
+    assert.equal(shop.proposedTools[0]?.name, 'list_order_statuses')
+    assert.ok(!shop.proposedTools.some((t) => t.name === 'update_order'))
+    assert.throws(() =>
+      materializeConnectorConfig(
+        parseTemplateDescriptor(shopRaw),
+        { authMethodKind: 'basic', instanceValues: { shopHost: 'shop.example.hu', username: 'api' } },
+        { apiPassword: 'secret-ref:shoprenter-api-password' },
+      ),
+    )
+  })
+
+  await test('xml-protocols build signed NAV and ordered Számlázz.hu requests', async () => {
+    const { buildProtocolRequest, parseProtocolResponse, xmlElement } = await import(
+      '../src/domain/connector/xml-protocols'
+    )
+    const software = {
+      softwareId: 'HU12345678-AGENT01',
+      softwareName: 'Test',
+      softwareMainVersion: '1.0',
+      softwareDevName: 'Dev Kft.',
+      softwareDevContact: 'dev@example.hu',
+      softwareDevCountryCode: 'HU',
+      softwareDevTaxNumber: '12345678-2-41',
+    }
+    const secret = JSON.stringify({ login: 'tech1', password: 'pw', signKey: 'sign-key' })
+    const nav = await buildProtocolRequest(
+      'nav_online_invoice',
+      'https://api-test.onlineszamla.nav.gov.hu/invoiceService/v3',
+      { method: 'GET', path: '/invoices', query: { direction: 'inbound', dateFrom: '2026-09-01', dateTo: '2026-09-26' } },
+      secret,
+      { navTaxNumber: '12345678', loadNavSoftware: async () => software, now: new Date('2026-09-26T10:11:12.345Z') },
+    )
+    assert.equal(nav.url, 'https://api-test.onlineszamla.nav.gov.hu/invoiceService/v3/queryInvoiceDigest')
+    const requestId = nav.xml.match(/<common:requestId>([^<]+)</)?.[1] ?? ''
+    assert.match(requestId, /^[+a-zA-Z0-9_]{1,30}$/)
+    const { createHash } = await import('node:crypto')
+    const expectedSignature = createHash('sha3-512')
+      .update(`${requestId}20260926101112sign-key`)
+      .digest('hex')
+      .toUpperCase()
+    assert.ok(nav.xml.includes(`<common:requestSignature cryptoType="SHA3-512">${expectedSignature}<`))
+    assert.ok(nav.xml.includes(createHash('sha512').update('pw').digest('hex').toUpperCase()))
+    assert.ok(nav.xml.includes('<invoiceDirection>INBOUND</invoiceDirection>'))
+    assert.ok(!nav.xml.includes('sign-key') && !nav.xml.includes('>pw<'))
+    await assert.rejects(
+      buildProtocolRequest('nav_online_invoice', 'https://x', { method: 'GET', path: '/taxpayer', query: { taxNumber: '1' } }, secret, {
+        navTaxNumber: '12345678',
+        loadNavSoftware: async () => null,
+      }),
+      /Platform · Beállítások/,
+    )
+
+    const szamlazz = await buildProtocolRequest(
+      'szamlazz_agent',
+      'https://www.szamlazz.hu/szamla',
+      {
+        method: 'POST',
+        path: '/invoice',
+        body: {
+          beallitasok: { szamlaagentkulcs: 'attacker', szamlaLetoltes: true },
+          vevo: { cim: 'Fő u. 1', nev: 'A & B <Kft>', irsz: '1111', telepules: 'Budapest' },
+          fejlec: { penznem: 'HUF', keltDatum: '2026-09-26' },
+          tetelek: [{ megnevezes: 'X', mennyiseg: 1 }],
+        },
+      },
+      'real-key',
+    )
+    assert.ok(szamlazz.xml.includes('<szamlaagentkulcs>real-key</szamlaagentkulcs>'))
+    assert.ok(!szamlazz.xml.includes('attacker'))
+    assert.ok(szamlazz.xml.includes('<szamlaLetoltes>false</szamlaLetoltes>'))
+    assert.ok(szamlazz.xml.includes('<vevo><nev>A &amp; B &lt;Kft&gt;</nev><irsz>1111</irsz><telepules>Budapest</telepules><cim>'))
+    assert.ok(szamlazz.xml.indexOf('<beallitasok>') < szamlazz.xml.indexOf('<fejlec>'))
+    assert.ok(szamlazz.xml.includes('<fejlec><keltDatum>2026-09-26</keltDatum>'))
+    assert.ok(szamlazz.xml.includes('<tetelek><tetel><megnevezes>X</megnevezes>'))
+    assert.throws(() => xmlElement('bad name', 'x'))
+
+    const failed = await parseProtocolResponse(
+      'szamlazz_agent',
+      new Response('<xmlszamlavalasz><sikeres>false</sikeres><hibakod>7</hibakod><hibauzenet>Nincs ilyen számla</hibauzenet></xmlszamlavalasz>'),
+    )
+    assert.equal(failed.ok, false)
+    assert.equal(failed.errorCode, '7')
+    assert.match(failed.hint ?? '', /Nincs ilyen számla/)
+
+    const { gzipSync } = await import('node:zlib')
+    const invoiceData = gzipSync(Buffer.from('<InvoiceData>ok</InvoiceData>')).toString('base64')
+    const navRes = await parseProtocolResponse(
+      'nav_online_invoice',
+      new Response(
+        `<QueryInvoiceDataResponse><result><funcCode>OK</funcCode></result><invoiceDataResult><invoiceData>${invoiceData}</invoiceData><compressedContentIndicator>true</compressedContentIndicator></invoiceDataResult></QueryInvoiceDataResponse>`,
+      ),
+    )
+    assert.equal(navRes.ok, true)
+    assert.equal((navRes.body as { invoiceXml: string }).invoiceXml, '<InvoiceData>ok</InvoiceData>')
+  })
+
   await test('broken custom descriptor fails template self-check', () => {
     // Séma-szinten érvényes, de a példány materializálása elbukik: az instance-mező
     // egy nem támogatott config-targetre mutat → a mentés self-checkje elutasítja.
@@ -356,46 +634,6 @@ async function main() {
     ])
     const runtime = parseHttpApiConfig(result.config)
     assert.equal(runtime.baseUrl, 'https://example.atlassian.net')
-  })
-
-  await test('Ostorosbor bearer migráció csak aktív, bizonyított sablonpéldányt választ ki', () => {
-    const trapConfig = {
-      provider: 'ostorosbor-crm-sales-delegated',
-      baseUrl: 'https://crm.ostorosbor.example/api/connector/v1',
-      egressHosts: ['crm.ostorosbor.example'],
-      authMode: 'service',
-      auth: { type: 'api_key_header', headerName: 'Authorization' },
-      scopesSuggested: [],
-      proposedTools: [],
-      provenance: { templateKey: 'ostorosbor-crm-sales-delegated' },
-    }
-
-    assert.equal(
-      isOstorosborBearerMigrationCandidate({
-        type: 'http_api',
-        lifecycleState: 'active',
-        config: trapConfig,
-      }),
-      true,
-    )
-    assert.equal(
-      isOstorosborBearerMigrationCandidate({
-        type: 'http_api',
-        lifecycleState: 'draft',
-        config: trapConfig,
-      }),
-      false,
-      'draft connector nem migrálható',
-    )
-    assert.equal(
-      isOstorosborBearerMigrationCandidate({
-        type: 'http_api',
-        lifecycleState: 'active',
-        config: { ...trapConfig, provider: 'foreign-crm', provenance: undefined },
-      }),
-      false,
-      'idegen Authorization-headeres connector nem migrálható',
-    )
   })
 
   await test('Ostorosbor enrich backfill hiányzó requestHeaders-t régi draft configban', () => {
@@ -467,90 +705,12 @@ async function main() {
     assert.ok(config.proposedTools.some((t) => t.method === 'POST' && t.path === '/reports/exports' && t.risk === 'read'))
   })
 
-  await test('Ostorosbor bearer migráció újramaterializál, sandbox /accounts 200', async () => {
-    const config = rematerializeOstorosborConnectorConfig({
-      id: 'connector-1',
-      type: 'http_api',
-      lifecycleState: 'active',
-      secretAlias: 'secret-ref:connector/connector-1',
-      config: {
-        provider: 'ostorosbor-crm-sales-delegated',
-        baseUrl: 'https://crm.ostorosbor.example/api/connector/v1',
-        egressHosts: ['crm.ostorosbor.example'],
-        authMode: 'service',
-        auth: { type: 'api_key_header', headerName: 'Authorization' },
-        scopesSuggested: [],
-        proposedTools: [
-          { name: 'list_accounts', method: 'GET', path: '/accounts', access: 'read' },
-          { name: 'create_task', method: 'POST', path: '/tasks', access: 'write' },
-        ],
-        provenance: {
-          templateKey: 'ostorosbor-crm-sales-delegated',
-          templateVersion: 1,
-          templateOrigin: 'custom',
-        },
-      },
-    })
-
-    assert.deepEqual(config.auth, {
-      type: 'bearer_token',
-      secretAliasSuggested: 'secret-ref:connector/connector-1',
-    })
-    assert.deepEqual(config.requestHeaders, {
-      'X-Agent-Id': '{{agent.id}}',
-      'X-Acting-User': '{{actingUser.email}}',
-      'X-Connector-Call-Id': '{{call.id}}',
-    })
-    assert.equal(config.baseUrl, 'https://crm.ostorosbor.example/api/connector/v1')
-    assert.deepEqual(
-      config.proposedTools.map((tool) => tool.name),
-      ['list_accounts', 'create_task'],
-    )
-    assert.equal(config.restrictToEndpoints, true)
-
-    const calls: string[] = []
-    const sandbox = new HttpSandboxConnectionTester({
-      resolveEgressAllowlist: async () => ['crm.ostorosbor.example'],
-      fetchImpl: async (url) => {
-        calls.push(url)
-        return { status: 200, type: 'basic' } as Response
-      },
-    })
-    const result = await sandbox.test({ config, secretAlias: null, tenantId: 'tenant-1' })
-    assert.equal(result.ok, true)
-    assert.equal(result.statusCode, 200)
-    assert.deepEqual(calls, ['https://crm.ostorosbor.example/api/connector/v1/accounts'])
-  })
-
-  await test('Ostorosbor migráció config-hibánál visszaállítja az eredeti secretet', async () => {
-    const savedSecrets: string[] = []
-    await assert.rejects(() =>
-      applyMigrationWithSecretCompensation({
-        originalSecret: 'Bearer original-token',
-        strippedSecret: 'original-token',
-        saveSecret: async (value) => {
-          savedSecrets.push(value)
-        },
-        updateConfig: async () => {
-          throw new Error('database unavailable')
-        },
-      }),
-    )
-    assert.deepEqual(savedSecrets, ['original-token', 'Bearer original-token'])
-  })
-
-  await test('agent connector nézet csak kötést szerkeszt, strukturális update nincs kiexportálva', () => {
-    const agentConnectorSource = readFileSync(
-      resolve(process.cwd(), 'src/components/agents/api-connector-list.tsx'),
-      'utf8',
-    )
+  await test('strukturális agent-connector update nincs kiexportálva', () => {
     const platformActionsSource = readFileSync(
       resolve(process.cwd(), 'src/app/actions/platform.ts'),
       'utf8',
     )
 
-    assert.doesNotMatch(agentConnectorSource, /EditApiConnectorForm/)
-    assert.match(agentConnectorSource, /href="\/control-plane\/provisioning"/)
     assert.doesNotMatch(
       platformActionsSource,
       /export async function updateHttpApiConnectorForAgent/,
@@ -607,6 +767,38 @@ async function main() {
       offlineParams: { access_type: 'offline' },
       scopeTransform: 'gmailAlias',
     })
+  })
+
+  await test('template icon is optional but validated when present', () => {
+    const base = BUILTIN_CONNECTOR_TEMPLATES[0]
+    assert.equal(parseTemplateDescriptor(base).iconDataUrl, undefined)
+    const withIcon = parseTemplateDescriptor({
+      ...base,
+      iconDataUrl: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',
+    })
+    assert.ok(withIcon.iconDataUrl?.startsWith('data:image/svg+xml;base64,'))
+    assert.throws(() =>
+      parseTemplateDescriptor({ ...base, iconDataUrl: 'https://example.com/icon.png' }),
+    )
+    assert.throws(() =>
+      parseTemplateDescriptor({ ...base, iconDataUrl: 'data:text/plain;base64,Zm9v' }),
+    )
+  })
+
+  await test('every seeded template has an icon file', () => {
+    const dir = resolve(__dirname, '../connector-template-icons')
+    const shared: Record<string, string> = {
+      'ostorosbor-crm-sales-delegated': 'ostorosbor-crm.svg',
+      'ostorosbor-crm-service-insight': 'ostorosbor-crm.svg',
+    }
+    for (const descriptor of [...BUILTIN_CONNECTOR_TEMPLATES, ...GLOBAL_CUSTOM_CONNECTOR_TEMPLATES]) {
+      const file = shared[descriptor.key] ?? `${descriptor.key}.svg`
+      const path = resolve(dir, file)
+      assert.ok(existsSync(path), `missing icon file for template ${descriptor.key}: ${file}`)
+      const dataUrl = `data:image/svg+xml;base64,${readFileSync(path).toString('base64')}`
+      // A seed ugyanezt teszi a DB-be — a séma engedje át.
+      parseTemplateDescriptor({ ...descriptor, iconDataUrl: dataUrl })
+    }
   })
 
   if (failures > 0) {

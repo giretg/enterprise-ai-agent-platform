@@ -12,10 +12,14 @@
  * snapshot gate — otherwise every live skill is silently dropped from checkout.
  *
  * Snapshots never contain secrets, `tokenRef`, `secretAlias`, `modelConfig`,
- * memory, session, queue, or Clerk ids.
+ * session, queue, or Clerk ids. They may contain published hard/trained rule text.
  */
 import { createHash } from 'node:crypto'
 import type { Agent, AgentDefinitionVersion, AgentStatus, Prisma } from '@prisma/client'
+import {
+  collectSnapshotRules,
+  type AgentDefinitionSnapshotRule,
+} from '@/domain/agent-definition/snapshot-rules'
 import type {
   AgentDefinitionRepository,
   AgentRepository,
@@ -24,6 +28,7 @@ import type {
 } from '@/repositories/interfaces'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
+import { snapshotLocalRoots } from '@/lib/agent-local-roots'
 import { describeConnectorCatalog } from '@/domain/connector/catalog-description'
 import {
   parseHttpApiConfig,
@@ -31,11 +36,21 @@ import {
   type HttpApiEndpointSummary,
 } from '@/domain/connector/http-api-client'
 
+/** Publish needs a short "when to call me" so MCP clients can pick among teammates. */
+export const AGENT_SCOPE_REQUIRED =
+  'A közzétételhez add meg a felelősségi kört: mikor ezt a munkatársat hívd.'
+
+export type { AgentDefinitionSnapshotRule, AgentDefinitionRuleSource } from '@/domain/agent-definition/snapshot-rules'
+export { collectSnapshotRules, renderSnapshotRulesBriefingBlock, SNAPSHOT_RULES_OVERRIDE_HINT } from '@/domain/agent-definition/snapshot-rules'
+
 export type AgentDefinitionSnapshot = {
   name: string
   roleInstruction: string
   description?: string | null
-  skills: Array<{ skillId: string; skillVersionId: string; name: string }>
+  /** Befagyasztott megszeghetetlen + betanított szabályok (#660). Hiányzik a régi snapshotokban. */
+  rules?: AgentDefinitionSnapshotRule[]
+  /** entry: the agent's entry (orchestrating) skill — every new task starts by reading it. */
+  skills: Array<{ skillId: string; skillVersionId: string; name: string; entry?: true }>
   connectors: Array<{
     connectorId: string
     /** Admin által adott név — több http_api kötésnél a tool hívásban is használható. */
@@ -52,6 +67,11 @@ export type AgentDefinitionSnapshot = {
     endpoints?: HttpApiEndpointSummary[]
   }>
   capabilities: Array<{ toolName: string; allowed: boolean }>
+  /**
+   * Candidate coding folders across machines (#729). Hints, not a grant, not ranked.
+   * Omitted when empty so snapshots published before this field keep their contentHash.
+   */
+  localRoots?: string[]
 }
 
 export type AgentDefinition = {
@@ -128,6 +148,7 @@ type DraftWorkingSet = {
   description?: string | null
   enabledSkills: Array<{
     skillVersionId: string
+    entry?: boolean
     skillVersion: { skillId: string; status: string; skill: { name: string } }
   }>
   connectors: Array<{
@@ -167,7 +188,15 @@ async function resolveHttpApiConnectorMeta(
 }
 
 async function buildSnapshot(
-  agent: { tenantId: string; name: string; roleInstruction: string; description?: string | null },
+  agent: {
+    tenantId: string
+    name: string
+    roleInstruction: string
+    description?: string | null
+    hardRules?: string
+    trainedRules?: string
+    localRoots?: string
+  },
   workingSet: Pick<DraftWorkingSet, 'enabledSkills' | 'connectors' | 'capabilities'>,
   connectors?: Pick<ConnectorRepository, 'findById'>,
 ): Promise<AgentDefinitionSnapshot> {
@@ -184,16 +213,21 @@ async function buildSnapshot(
       return meta ? { ...base, ...meta } : base
     }),
   )
+  const localRoots = snapshotLocalRoots(agent.localRoots)
   return {
     name: agent.name,
     roleInstruction: agent.roleInstruction,
     description: agent.description ?? null,
+    rules: collectSnapshotRules(agent),
+    ...(localRoots ? { localRoots } : {}),
     skills: workingSet.enabledSkills
       .filter((row) => row.skillVersion.status === 'active')
       .map((row) => ({
         skillId: row.skillVersion.skillId,
         skillVersionId: row.skillVersionId,
         name: row.skillVersion.skill.name,
+        // Omitted when false so snapshots published before #653 keep their contentHash.
+        ...(row.entry ? { entry: true as const } : {}),
       })),
     connectors: connectorEntries,
     capabilities: workingSet.capabilities.map((row) => ({
@@ -277,6 +311,7 @@ export class AgentDefinitionService {
   }): Promise<AgentDefinition> {
     const agent = await this.deps.agents.findById(input.agentId, input.tenantId)
     if (!agent) throw new Error('Agent not found')
+    if (!agent.description?.trim()) throw new Error(AGENT_SCOPE_REQUIRED)
 
     const [enabledSkills, connectors, capabilities] = await Promise.all([
       this.deps.skills.listEnabledForAgent(agent.id),

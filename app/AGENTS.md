@@ -20,6 +20,9 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - magyarul kommunikálj
 - a problémákat úgy fogalmazd meg, hogy azok üzleti (UX)hatása legyen világos, a kódot a felhasználó nem ismeri!
 - A felhasználó chat ablakban vagy feladat ticketben tud feladatot adni agentnek. Minden funkciónak műkdöni kell mindkét úton adott feladatok esetén
+- Specifikációt mindig GitHub issue-ként készíts (lásd `docs/agents/issue-tracker.md`), ne külön fájlként
+- Új feature-höz külön git worktree-t nyiss, hogy a párhuzamos fejlesztések ne zavarják egymást; a munkát PR-okba rendezve szállítsd
+- UI-szöveget üzleti felhasználónak írj: közérthetően, zsargon nélkül; bonyolult funkciónál adj magyarázatot (`?` ikon hover/kattintás szöveggel, vagy ha muszáj, közvetlenül a felületen)
 
 
 <!-- END:nextjs-agent-rules -->

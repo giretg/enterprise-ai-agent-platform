@@ -2,6 +2,7 @@
 
 import { useSearchParams } from 'next/navigation'
 import type { ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import {
   ConnectorConnectionCard,
   type LinkedConnectorView,
@@ -61,6 +62,7 @@ export function LinkedAccountsPanel({
   isAdmin?: boolean
   drivePickerConfigured?: boolean
 }) {
+  const t = useTranslations('Account')
   const searchParams = useSearchParams()
   const connected = searchParams.get('connected') === '1'
   const error = searchParams.get('error')
@@ -75,22 +77,22 @@ export function LinkedAccountsPanel({
     <div className="space-y-4">
       {connected ? (
         <p className="rounded-lg border border-sage/35 bg-sage/10 px-3 py-2 text-sm text-sage">
-          Fiók sikeresen összekötve.
+          {t('connectedOk')}
         </p>
       ) : null}
       {error ? (
         <p className="rounded-lg border border-coral/35 bg-coral/10 px-3 py-2 text-sm text-coral-deep">
-          {connectorOAuthErrorMessage(error)}
+          {connectorOAuthErrorMessage(error, t)}
         </p>
       ) : null}
 
       <div className="space-y-8">
         <AccountGroup
           id="connected-accounts-heading"
-          title="Összekötött fiókok"
-          description="Ezekhez a fiókokhoz aktív felhasználói engedély tartozik; az agentenkénti használhatóságot a kártyák jelzik."
+          title={t('connectedTitle')}
+          description={t('connectedBody')}
           count={connectedConnectors.length}
-          emptyText="Még nincs összekötött fiókod. Az elérhető szolgáltatások közül választhatsz lent."
+          emptyText={t('connectedEmpty')}
         >
           {connectedConnectors.map((connector) => (
             <ConnectorConnectionCard
@@ -105,10 +107,10 @@ export function LinkedAccountsPanel({
 
         <AccountGroup
           id="available-accounts-heading"
-          title="További fiókok"
-          description="Kösd össze azokat a szolgáltatásokat, amelyeket használni szeretnél."
+          title={t('availableTitle')}
+          description={t('availableBody')}
           count={disconnectedConnectors.length}
-          emptyText="Minden jelenleg elérhető fiók össze van kötve."
+          emptyText={t('availableEmpty')}
         >
           {disconnectedConnectors.map((connector) => (
             <ConnectorConnectionCard

@@ -20,10 +20,13 @@
 import {
   normalizeConnectorConfig,
   type ConnectorConfig,
+  type HttpApiProtocol,
   type ProposedTool,
 } from './connector-config'
 import { validateDraftConfig } from './draft-validator'
 import { isForbiddenHost } from '@/domain/net/egress-guard'
+import { HttpApiClient, HttpApiError, parseHttpApiConfig } from '@/domain/connector/http-api-client'
+import { protocolProbe } from '@/domain/connector/xml-protocols'
 import type { SandboxConnectionTester } from './provisioning-service'
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>
@@ -95,7 +98,9 @@ function authHeaderFor(
     case 'oauth2':
       return { Authorization: `Bearer ${token}` }
     case 'basic':
-      return { Authorization: `Basic ${token}` }
+      return {
+        Authorization: `Basic ${config.auth.username ? Buffer.from(`${config.auth.username}:${token}`).toString('base64') : token}`,
+      }
     default:
       return {}
   }
@@ -145,7 +150,9 @@ function authFailureDetail(config: ConnectorConfig, status: number): string {
     case 'api_key_header':
       return `${prefix} — a kulcs változtatás nélkül a \`${config.auth.headerName || 'X-Api-Key'}\` fejlécbe kerül; ellenőrizd a fejléc nevét és a kulcs alakját. Ha a szerver \`Bearer\`-t vár, a tárolt értéknek is \`Bearer <kulcs>\`-nek kell lennie.${headerHint}`
     case 'basic':
-      return `${prefix} — Basic auth; a tárolt értéknek a base64(\`felhasználó:jelszó\`) alaknak kell lennie.${headerHint}`
+      return config.auth.username
+        ? `${prefix} — Basic auth a(z) \`${config.auth.username}\` felhasználóval; ellenőrizd az azonosítót és az API-kulcsot.${headerHint}`
+        : `${prefix} — Basic auth; a tárolt értéknek a base64(\`felhasználó:jelszó\`) alaknak kell lennie.${headerHint}`
     default:
       return `${prefix} — ellenőrizd a kulcs formátumát, a \`Bearer\` előtagot és a hitelesítő fejléc nevét.${headerHint}`
   }
@@ -155,6 +162,28 @@ function actingUserNotFoundDetail(config: ConnectorConfig): string {
   const email = config.defaultActingUserEmail?.trim()
   const who = email ? `\`${email}\`` : 'a megadott acting user e-mail'
   return `Az acting user (${who}) nem található vagy inaktív a CRM-ben — adj meg egy regisztrált, aktív felhasználó e-mail címét az „Acting user e-mail” mezőben.`
+}
+
+/**
+ * XML-protokollos connector (Számlázz.hu, NAV): kulcs nélkül nincs értelmes próbahívás,
+ * a valódi hitelesítést az aktiváláskori kulcsos teszt végzi egy nem módosító lekérdezéssel.
+ */
+async function probeXmlProtocol(
+  config: ConnectorConfig,
+  protocol: HttpApiProtocol,
+  token: string | null,
+): Promise<{ ok: boolean; statusCode?: number; detail?: string }> {
+  if (!token) return { ok: true, detail: 'protocol_probe_on_activation' }
+  const probe = protocolProbe(protocol, config.nav?.taxNumber)
+  try {
+    const res = await new HttpApiClient(parseHttpApiConfig(config), token).request(probe.call)
+    if (res.ok || (res.errorCode && probe.acceptErrorCodes.includes(res.errorCode))) {
+      return { ok: true, statusCode: res.status, detail: 'authenticated' }
+    }
+    return { ok: false, statusCode: res.status, detail: res.hint ?? `http_${res.status}` }
+  } catch (e) {
+    return { ok: false, detail: e instanceof HttpApiError ? e.message : 'request_failed' }
+  }
 }
 
 export class HttpSandboxConnectionTester implements SandboxConnectionTester {
@@ -204,10 +233,6 @@ export class HttpSandboxConnectionTester implements SandboxConnectionTester {
     }
 
     // (4) Token feloldása (opcionális). A token SOHA nem kerül naplóba.
-    let headers: Record<string, string> = {
-      Accept: 'application/json',
-      ...renderSandboxRequestHeaders(config.requestHeaders, config.defaultActingUserEmail),
-    }
     const token =
       input.token ??
       ((await this.deps.resolveSandboxToken?.({
@@ -215,6 +240,12 @@ export class HttpSandboxConnectionTester implements SandboxConnectionTester {
         tenantId: input.tenantId,
       })) ??
         null)
+    if (config.protocol) return probeXmlProtocol(config, config.protocol, token)
+
+    let headers: Record<string, string> = {
+      Accept: 'application/json',
+      ...renderSandboxRequestHeaders(config.requestHeaders, config.defaultActingUserEmail),
+    }
     if (token) {
       headers = { ...headers, ...authHeaderFor(config, token) }
     }

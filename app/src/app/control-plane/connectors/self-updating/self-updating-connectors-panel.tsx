@@ -1,8 +1,10 @@
 'use client'
 
-import { useCallback, useEffect, useState, useTransition } from 'react'
+import { useCallback, useEffect, useState, useTransition, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
-import { Badge, Card } from '@/components/ui/shell'
+import { Badge, Card, IconButton } from '@/components/ui/shell'
+import { ConnectorTemplateIcon } from '@/components/account/provider-icon'
 import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
 import { decommissionActiveConnector, deleteArchivedConnector } from '@/app/actions/provisioning'
 import {
@@ -41,11 +43,14 @@ export type SelfUpdatingConnectorRow = {
   loadError?: string
   name: string
   catalogDescription?: string | null
+  createdAt?: string | null
   specUrl: string; urlApproved: boolean; trusted: boolean
   autoApproveEnabled: boolean; lastSyncedAt: string | null; activeSpecVersionId: string | null
   privacy: Version['privacy']
   versions: Version[]
 }
+
+type CardTab = 'status' | 'api' | 'versions' | 'settings' | 'decommission'
 
 function friendlyChange(item: DiffItem) {
   if (item.change?.startsWith('required_param_added')) return `Új kötelező adat szükséges: ${item.change.split(': ').slice(1).join(': ')}.`
@@ -174,6 +179,31 @@ function CapabilityList({ title, capabilities, emptyHint }: {
   )
 }
 
+export type SelfUpdatingSyncModalState =
+  | { variant: 'message'; tone: 'error' | 'success' | 'neutral'; title: string; message: string }
+  | { variant: 'proposal'; row: SelfUpdatingConnectorRow; message: string }
+
+export function resolveSelfUpdatingSyncModalState(
+  data: { kind: string; reason?: string; autoApproved?: boolean },
+  row: SelfUpdatingConnectorRow,
+): SelfUpdatingSyncModalState {
+  const feedback = selfUpdatingSyncFeedback(data)
+  if (data.kind === 'failed' || !feedback.ok) {
+    return { variant: 'message', tone: 'error', title: 'Frissítés sikertelen', message: feedback.message }
+  }
+  if (data.kind === 'unchanged') {
+    return { variant: 'message', tone: 'success', title: 'Már naprakész', message: feedback.message }
+  }
+  if (data.autoApproved) {
+    return { variant: 'message', tone: 'success', title: 'Frissítés átvéve', message: feedback.message }
+  }
+  const proposal = row.versions.find((version) => version.status === 'proposed')
+  if (proposal?.diffSummary) {
+    return { variant: 'proposal', row, message: feedback.message }
+  }
+  return { variant: 'message', tone: 'neutral', title: 'Frissítés', message: feedback.message }
+}
+
 export function selfUpdatingSyncFeedback(data: {
   kind: string
   reason?: string
@@ -203,6 +233,146 @@ export function selfUpdatingSyncFeedback(data: {
     return { ok: true, message: 'Az új, csak olvasási képességeket a jóváhagyott szabály szerint automatikusan átvettük.' }
   }
   return { ok: true, message: 'Változást találtunk. Nézd át az alábbi listát; addig minden a régiben marad.' }
+}
+
+function SelfUpdatingProposalDiff({
+  row,
+  pending,
+  onReject,
+  onApprove,
+}: {
+  row: SelfUpdatingConnectorRow
+  pending: boolean
+  onReject: () => void
+  onApprove: () => void
+}) {
+  const proposal = row.versions.find((version) => version.status === 'proposed')
+  const active = row.versions.find((version) => version.id === row.activeSpecVersionId)
+  if (!proposal?.diffSummary) return null
+  const diffCapabilities = [...(proposal.capabilities ?? []), ...(active?.capabilities ?? [])]
+  return (
+    <div className="space-y-3">
+      <DiffGroup
+        title="🟢 Új képességek"
+        tone="success"
+        items={proposal.diffSummary.added}
+        capabilities={diffCapabilities}
+      />
+      <DiffGroup
+        title="🔴 Törésveszélyes változások"
+        tone="danger"
+        items={proposal.diffSummary.breaking}
+        capabilities={diffCapabilities}
+      />
+      <DiffGroup
+        title="🟠 Visszavont képességek"
+        tone="warning"
+        items={proposal.diffSummary.narrowed}
+        capabilities={diffCapabilities}
+      />
+      <DiffGroup
+        title="🔴 Beléptetési vagy kötelező fejléc-változások"
+        tone="danger"
+        items={proposal.diffSummary.auth}
+        capabilities={diffCapabilities}
+      />
+      <CapabilityList
+        title="Teljes funkciólista a javasolt frissítés után"
+        capabilities={proposal.capabilities ?? []}
+        emptyHint="A javasolt verzióhoz nem sikerült kiolvasni a képességlistát."
+      />
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={pending}
+          className="rounded-md border border-ink/20 px-3 py-2 text-xs font-semibold"
+          onClick={onReject}
+        >
+          Mégse — minden marad a régiben
+        </button>
+        <button
+          type="button"
+          disabled={pending}
+          className="rounded-md bg-coral px-3 py-2 text-xs font-semibold text-white"
+          onClick={onApprove}
+        >
+          Jóváhagyom ezeket a változásokat
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SelfUpdatingSyncResultModal({
+  state,
+  pending,
+  onClose,
+  onReject,
+  onApprove,
+}: {
+  state: SelfUpdatingSyncModalState
+  pending: boolean
+  onClose: () => void
+  onReject: () => void
+  onApprove: () => void
+}) {
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client portal mount gate
+    setMounted(true)
+  }, [])
+  if (!mounted) return null
+
+  const title = state.variant === 'message' ? state.title : `Változások — ${state.row.name}`
+  const description = state.message
+  const toneBorder =
+    state.variant === 'message' && state.tone === 'error'
+      ? 'border-coral/40'
+      : state.variant === 'message' && state.tone === 'success'
+        ? 'border-sage/35'
+        : 'border-ink/15'
+
+  const footer: ReactNode =
+    state.variant === 'proposal' ? null : (
+      <button
+        type="button"
+        className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card"
+        onClick={onClose}
+      >
+        Rendben
+      </button>
+    )
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[400] flex items-center justify-center bg-ink/50 p-4 backdrop-blur-[2px]"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        className={`atelier-card flex max-h-[min(90vh,48rem)] w-full max-w-3xl flex-col overflow-hidden p-0 shadow-2xl border ${toneBorder}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="border-b border-line px-5 py-4">
+          <h3 className="font-display text-lg font-semibold text-ink">{title}</h3>
+          <p className="mt-1 text-sm text-ink-soft">{description}</p>
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4 text-sm">
+          {state.variant === 'proposal' ? (
+            <SelfUpdatingProposalDiff
+              row={state.row}
+              pending={pending}
+              onReject={onReject}
+              onApprove={onApprove}
+            />
+          ) : null}
+        </div>
+        {footer ? <div className="flex justify-end gap-2 border-t border-line px-5 py-4">{footer}</div> : null}
+      </div>
+    </div>,
+    document.body,
+  )
 }
 
 export function TenantAutoApproveSwitch({
@@ -266,18 +436,6 @@ export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: b
     })
   }
 
-  const syncOne = (connectorId: string) => {
-    setError(null); setMessage(null)
-    startTransition(async () => {
-      const result = await syncSelfUpdatingConnector({ connectorId })
-      if (!result.success) { setError(result.error); return }
-      const feedback = selfUpdatingSyncFeedback(result.data)
-      if (feedback.ok) setMessage(feedback.message)
-      else setError(feedback.message)
-      await reload()
-    })
-  }
-
   return (
     <div id="onfrissito" className="space-y-6 scroll-mt-6">
       {!embedded ? (
@@ -312,7 +470,7 @@ export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: b
         ) : (
           <div className="space-y-3">
             {rows.map((row) => (
-              <SelfUpdatingConnectorCard key={row.id} row={row} pending={pending} run={run} onSync={syncOne} />
+              <SelfUpdatingConnectorCard key={row.id} row={row} pending={pending} run={run} onReload={reload} />
             ))}
           </div>
         )}
@@ -325,17 +483,19 @@ export function SelfUpdatingConnectorCard({
   row,
   pending,
   run,
-  onSync,
+  onReload,
   isSuperadmin = false,
 }: {
   row: SelfUpdatingConnectorRow
   pending: boolean
   run: (operation: () => Promise<{ success: boolean; error?: string }>, success: string) => void
-  onSync: (connectorId: string) => void
+  onReload?: () => void | Promise<void>
   isSuperadmin?: boolean
 }) {
   const [open, setOpen] = useState(false)
-  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [syncModal, setSyncModal] = useState<SelfUpdatingSyncModalState | null>(null)
+  const [syncPending, startSyncTransition] = useTransition()
+  const [tab, setTab] = useState<CardTab>('status')
   const [newApiKey, setNewApiKey] = useState('')
   const [confirmDecomm, setConfirmDecomm] = useState(false)
   const [decommReason, setDecommReason] = useState('')
@@ -351,11 +511,12 @@ export function SelfUpdatingConnectorCard({
     : active
       ? `Jelenlegi API részletei (v${active.versionNo})`
       : 'API részletei'
-  const diffCapabilities = [...(proposal?.capabilities ?? []), ...(active?.capabilities ?? [])]
-  const lastSyncedLabel = row.lastSyncedAt
-    ? new Date(row.lastSyncedAt).toLocaleString('hu-HU')
-    : 'még nem volt sync'
+  const stamp = (value: string) => new Date(value).toLocaleString('hu-HU')
   const toggleOpen = () => setOpen((current) => !current)
+  const openTab = (next: CardTab) => {
+    setTab(next)
+    setOpen(true)
+  }
   const archived = row.lifecycleState === 'archived'
   const broken = Boolean(row.loadError)
   const canHardDelete = archived && isSuperadmin
@@ -371,414 +532,466 @@ export function SelfUpdatingConnectorCard({
     run(() => deleteArchivedConnector({ connectorId: row.id }), 'Konnektor törölve.')
   }
 
+  const busy = pending || syncPending
+
+  const runSync = () => {
+    startSyncTransition(async () => {
+      const result = await syncSelfUpdatingConnector({ connectorId: row.id })
+      if (!result.success) {
+        setSyncModal({
+          variant: 'message',
+          tone: 'error',
+          title: 'Frissítés sikertelen',
+          message: result.error ?? 'Nem sikerült frissítést keresni.',
+        })
+        return
+      }
+      const list = await listSelfUpdatingConnectors()
+      const freshRow =
+        list.success
+          ? ((list.data.connectors as SelfUpdatingConnectorRow[]).find((item) => item.id === row.id) ?? row)
+          : row
+      if (list.success) await onReload?.()
+      setSyncModal(resolveSelfUpdatingSyncModalState(result.data, freshRow))
+    })
+  }
+
+  const closeSyncModal = () => setSyncModal(null)
+
+  const rejectFromSyncModal = () => {
+    if (syncModal?.variant !== 'proposal') return
+    const proposalVersion = syncModal.row.versions.find((version) => version.status === 'proposed')
+    if (!proposalVersion) {
+      closeSyncModal()
+      return
+    }
+    run(async () => {
+      const res = await rejectSelfUpdatingVersion({
+        connectorId: syncModal.row.id,
+        versionId: proposalVersion.id,
+      })
+      if (res.success) closeSyncModal()
+      return res
+    }, 'A változásokat elutasítottad; minden a régiben maradt.')
+  }
+
+  const approveFromSyncModal = () => {
+    if (syncModal?.variant !== 'proposal') return
+    const proposalVersion = syncModal.row.versions.find((version) => version.status === 'proposed')
+    if (!proposalVersion) {
+      closeSyncModal()
+      return
+    }
+    run(async () => {
+      const res = await approveSelfUpdatingVersion({
+        connectorId: syncModal.row.id,
+        versionId: proposalVersion.id,
+      })
+      if (res.success) closeSyncModal()
+      return res
+    }, 'A változások jóváhagyva és rögzítve.')
+  }
+
+  const tabs: Array<{ id: CardTab; label: string }> = [
+    { id: 'status', label: 'Állapot' },
+    { id: 'api', label: 'API' },
+    { id: 'versions', label: 'Korábbi állapotok' },
+    ...(archived
+      ? []
+      : ([
+          { id: 'settings', label: 'Beállítások' },
+          { id: 'decommission', label: 'Megszüntetés' },
+        ] as Array<{ id: CardTab; label: string }>)),
+  ]
+  const privacyBadge = privacyCapabilityUi(privacyCapabilityLevel(row.privacy))
+
   return (
     <div className="rounded-lg border border-ink/12 bg-paper">
-      <div className="flex flex-wrap items-center gap-2 px-4 py-3">
-        <button
-          type="button"
-          className="font-semibold hover:underline"
-          onClick={toggleOpen}
-        >
-          {open ? '▾' : '▸'} {row.name}
-        </button>
-        <Badge tone="success">OpenAPI</Badge>
-        {archived ? <Badge tone="danger">megszűnt</Badge> : null}
-        {broken ? <Badge tone="danger">betöltési hiba</Badge> : null}
-        <Badge tone={row.urlApproved ? 'success' : 'warning'}>
-          {row.urlApproved ? 'link jóváhagyva' : 'link jóváhagyásra vár'}
+      <div className="flex items-center gap-3 px-4 py-3">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink/10 bg-white text-ink-soft">
+          <ConnectorTemplateIcon provider={row.name} className="h-5 w-5" />
+        </span>
+        <h3 className="min-w-0 truncate font-semibold">{row.name}</h3>
+        <Badge tone="neutral">
+          {row.lastSyncedAt
+            ? `Utolsó szinkron: ${stamp(row.lastSyncedAt)}`
+            : `Létrehozva: ${row.createdAt ? stamp(row.createdAt) : 'ismeretlen'}`}
         </Badge>
-        <Badge tone={row.trusted ? 'success' : 'warning'}>
-          {row.trusted ? 'megbízható partner' : 'bizalom nincs jóváhagyva'}
-        </Badge>
-        {(() => {
-          const ui = privacyCapabilityUi(privacyCapabilityLevel(row.privacy))
-          return (
-            <Badge tone={ui.tone} title={ui.title}>
-              {ui.label}
-            </Badge>
-          )
-        })()}
-        {proposal ? <Badge tone="warning">frissítés vár</Badge> : null}
-        {active ? <Badge tone="neutral">v{active.versionNo}</Badge> : null}
-        <Badge tone="neutral">sync: {lastSyncedLabel}</Badge>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className="rounded-md border border-ink/20 px-2.5 py-1 text-xs font-semibold"
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <IconButton
+            icon="info"
+            label={open ? 'Bezárás' : 'Részletek'}
+            active={open}
             onClick={toggleOpen}
-            aria-expanded={open}
-          >
-            {open ? 'Bezárás' : 'Részletek'}
-          </button>
+          />
           {!archived && !broken ? (
-            <button
-              type="button"
-              disabled={pending || !row.urlApproved || !row.trusted}
-              className="rounded-md border border-ink/20 px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
-              onClick={() => onSync(row.id)}
-            >
-              Frissítés
-            </button>
+            <IconButton
+              icon="refresh"
+              label="Frissítés"
+              disabled={busy || !row.urlApproved || !row.trusted}
+              onClick={runSync}
+            />
           ) : null}
           {!archived && !broken ? (
-            <button
-              type="button"
-              className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral"
-              onClick={() => setOpen(true)}
-            >
-              Megszüntetés
-            </button>
+            <IconButton
+              icon="power"
+              label="Megszüntetés"
+              tone="danger"
+              onClick={() => openTab('decommission')}
+            />
           ) : null}
           {canHardDelete ? (
-            <button
-              type="button"
+            <IconButton
+              icon="trash"
+              label="Törlés"
+              tone="danger"
               disabled={pending}
-              className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral disabled:opacity-50"
               onClick={() => void handleHardDelete()}
-            >
-              Törlés
-            </button>
+            />
           ) : null}
         </div>
       </div>
 
       {open ? (
         <div className="space-y-4 border-t border-ink/10 px-4 py-4 text-sm">
-          {archived ? (
-            <p className="rounded-md border border-coral/30 bg-coral/5 px-3 py-2 text-xs text-ink-soft">
-              Ez a kapcsolat megszűnt (archived). Agent-hozzárendelés nem használható — a régi kötéseket
-              az agent oldalán érdemes leválasztani.
-            </p>
-          ) : null}
-          {broken ? (
-            <p className="rounded-md border border-coral/30 bg-coral/5 px-3 py-2 text-xs text-ink-soft">
-              A kapcsolat metaadatai nem töltődtek be: {row.loadError}. Agenthez rendelhető marad, de
-              kezeléshez ellenőrizd a kapcsolat állapotát vagy vedd fel a kapcsolatot a platform támogatással.
-            </p>
-          ) : null}
-          <p className="break-all text-xs text-ink-soft">{row.specUrl}</p>
-
-          <div className="flex flex-wrap gap-2">
-            {!archived && !row.urlApproved ? (
+          <div className="flex flex-wrap gap-1" role="tablist">
+            {tabs.map((item) => (
               <button
-                disabled={pending}
-                className="rounded-md border border-sage/40 px-3 py-1.5 text-xs font-semibold"
-                onClick={() => run(() => approveSelfUpdatingSource({ connectorId: row.id }), 'A link jóváhagyva.')}
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === item.id}
+                onClick={() => setTab(item.id)}
+                className={`rounded-md border px-3 py-1.5 text-xs font-semibold ${
+                  tab === item.id
+                    ? 'border-ink/25 bg-ink/8 text-ink'
+                    : 'border-transparent text-ink-soft hover:text-ink'
+                }`}
               >
-                Link jóváhagyása
+                {item.label}
               </button>
-            ) : null}
-            {!archived && !row.trusted ? (
-              <button
-                disabled={pending}
-                className="rounded-md border border-sage/40 px-3 py-1.5 text-xs font-semibold"
-                onClick={() => run(() => trustSelfUpdatingPartner({ connectorId: row.id }), 'A partner megbízhatónak minősítve.')}
-              >
-                Megbízhatónak minősítem
-              </button>
-            ) : null}
-            {!archived ? (
-              <button
-                disabled={pending || !row.urlApproved || !row.trusted}
-                className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
-                onClick={() => onSync(row.id)}
-              >
-                Frissítés keresése
-              </button>
-            ) : null}
-            <button
-              type="button"
-              disabled={!active && !proposal}
-              className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
-              onClick={() => setDetailsOpen((open) => !open)}
-              aria-expanded={detailsOpen}
-            >
-              {detailsOpen ? 'API részletek elrejtése' : 'API részletei'}
-            </button>
+            ))}
           </div>
-          {!archived ? (
-            <p className="text-xs text-ink-soft">
-              Megmutatjuk pontosan, mi változott. Amíg nem hagyod jóvá, minden a régiben marad.
-            </p>
-          ) : null}
 
-          {detailsOpen ? (
-            <>
-              {row.catalogDescription ? (
-                <p className="rounded-md border border-ink/10 bg-paper/60 px-3 py-2 text-sm text-ink-soft">
-                  {row.catalogDescription}
+          <div className="rounded-md border border-ink/12 bg-wash/35 p-4">
+            {tab === 'status' ? (
+              <div className="space-y-4">
+                {archived ? (
+                  <p className="rounded-md border border-coral/30 bg-coral/5 px-3 py-2 text-xs text-ink-soft">
+                    Ez a kapcsolat megszűnt (archived). Agent-hozzárendelés nem használható — a régi kötéseket
+                    az agent oldalán érdemes leválasztani.
+                  </p>
+                ) : null}
+                {broken ? (
+                  <p className="rounded-md border border-coral/30 bg-coral/5 px-3 py-2 text-xs text-ink-soft">
+                    A kapcsolat metaadatai nem töltődtek be: {row.loadError}. Agenthez rendelhető marad, de
+                    kezeléshez ellenőrizd a kapcsolat állapotát vagy vedd fel a kapcsolatot a platform támogatással.
+                  </p>
+                ) : null}
+                <p className="break-all text-xs text-ink-soft">{row.specUrl}</p>
+
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold">Állapot</h4>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge tone="success">OpenAPI</Badge>
+                    {archived ? <Badge tone="danger">megszűnt</Badge> : null}
+                    {broken ? <Badge tone="danger">betöltési hiba</Badge> : null}
+                    <Badge tone={row.urlApproved ? 'success' : 'warning'}>
+                      {row.urlApproved ? 'link jóváhagyva' : 'link jóváhagyásra vár'}
+                    </Badge>
+                    <Badge tone={row.trusted ? 'success' : 'warning'}>
+                      {row.trusted ? 'megbízható partner' : 'bizalom nincs jóváhagyva'}
+                    </Badge>
+                    <Badge tone={privacyBadge.tone} title={privacyBadge.title}>
+                      {privacyBadge.label}
+                    </Badge>
+                    {proposal ? <Badge tone="warning">frissítés vár</Badge> : null}
+                    {active ? <Badge tone="neutral">v{active.versionNo}</Badge> : null}
+                  </div>
+                </div>
+
+                {!archived ? (
+                  <div className="flex flex-wrap gap-2">
+                    {!row.urlApproved ? (
+                      <button
+                        disabled={pending}
+                        className="rounded-md border border-sage/40 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+                        onClick={() => run(() => approveSelfUpdatingSource({ connectorId: row.id }), 'A link jóváhagyva.')}
+                      >
+                        Link jóváhagyása
+                      </button>
+                    ) : null}
+                    {!row.trusted ? (
+                      <button
+                        disabled={pending}
+                        className="rounded-md border border-sage/40 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+                        onClick={() => run(() => trustSelfUpdatingPartner({ connectorId: row.id }), 'A partner megbízhatónak minősítve.')}
+                      >
+                        Megbízhatónak minősítem
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {!archived ? (
+                  <p className="text-xs text-ink-soft">
+                    A frissítés megmutatja pontosan, mi változott. Amíg nem hagyod jóvá, minden a régiben marad.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
+            {tab === 'api' ? (
+              <div className="space-y-3">
+                {row.catalogDescription ? (
+                  <p className="rounded-md border border-ink/10 bg-paper/60 px-3 py-2 text-sm text-ink-soft">
+                    {row.catalogDescription}
+                  </p>
+                ) : null}
+                <CapabilityList
+                  title={detailsTitle}
+                  capabilities={detailsCapabilities}
+                  emptyHint="Ehhez a konnektorhoz még nincs átvett vagy javasolt képességlista. Először keress frissítést."
+                />
+              </div>
+            ) : null}
+
+            {tab === 'versions' ? (
+              <div className="space-y-5">
+                {proposal?.diffSummary ? (
+                  <div className="space-y-3">
+                    <h3 className="font-semibold">Változások a(z) „{row.name}” konnektorban</h3>
+                    <SelfUpdatingProposalDiff
+                      row={row}
+                      pending={pending}
+                      onReject={() =>
+                        run(
+                          () => rejectSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }),
+                          'A változásokat elutasítottad; minden a régiben maradt.',
+                        )
+                      }
+                      onApprove={() =>
+                        run(
+                          () => approveSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }),
+                          'A változások jóváhagyva és rögzítve.',
+                        )
+                      }
+                    />
+                  </div>
+                ) : null}
+
+                <div>
+                  <h4 className="font-semibold">Korábbi állapotok</h4>
+                  <p className="mt-1 text-xs text-ink-soft">
+                    Minden átvett frissítést megőrzünk. Ha gondot okoz, egy kattintással visszaállíthatod.
+                  </p>
+                  <div className="mt-2 overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="text-ink-soft">
+                          <th className="py-2">Verzió</th>
+                          <th>Átvéve</th>
+                          <th>Ki hagyta jóvá</th>
+                          <th>Állapot</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {row.versions.map((version) => {
+                          const isActive = version.id === row.activeSpecVersionId
+                          return (
+                            <tr key={version.id} className="border-t border-ink/8">
+                              <td className="py-2">
+                                v{version.versionNo}
+                                {isActive ? ' (jelenlegi)' : ''}
+                              </td>
+                              <td>{new Date(version.approvedAt ?? version.fetchedAt).toLocaleString('hu-HU')}</td>
+                              <td>{version.approvedByName}</td>
+                              <td>{version.status}</td>
+                              <td className="text-right">
+                                {!archived && !isActive && ['approved', 'superseded', 'rolled_back'].includes(version.status) ? (
+                                  <button
+                                    disabled={pending}
+                                    className="rounded border border-sage/35 px-2 py-1 font-semibold disabled:opacity-50"
+                                    onClick={() =>
+                                      run(
+                                        () =>
+                                          rollbackSelfUpdatingVersion({
+                                            connectorId: row.id,
+                                            versionId: version.id,
+                                          }),
+                                        `A konnektor visszaállt a v${version.versionNo} állapotra.`,
+                                      )
+                                    }
+                                  >
+                                    Visszaállítás
+                                  </button>
+                                ) : null}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {tab === 'settings' && !archived ? (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold">Hozzáférési kulcs cseréje</h4>
+                  <p className="text-xs text-ink-soft">
+                    Az új kulcs azonnal felülírja a régit a titoktárolóban, és a következő hívástól ez lesz érvényben.
+                    A képességlista és a verziók nem változnak. Mentés után a fejléc Frissítés gombjával ellenőrizhető,
+                    hogy a partner elfogadja-e az új kulcsot.
+                  </p>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <label className="min-w-[16rem] flex-1 text-xs">
+                      <span className="mb-1 block font-semibold">Új hozzáférési kulcs</span>
+                      <input
+                        type="password"
+                        value={newApiKey}
+                        onChange={(e) => setNewApiKey(e.target.value)}
+                        disabled={pending}
+                        autoComplete="new-password"
+                        placeholder="A partnertől kapott új kulcs"
+                        className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm disabled:opacity-50"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      disabled={pending || !newApiKey.trim()}
+                      className="rounded-md border border-ink/20 px-3 py-2 text-xs font-semibold disabled:opacity-50"
+                      onClick={() => {
+                        const apiKey = newApiKey.trim()
+                        run(async () => {
+                          const result = await updateSelfUpdatingConnectorApiKey({ connectorId: row.id, apiKey })
+                          if (result.success) setNewApiKey('')
+                          return result
+                        }, 'A hozzáférési kulcs frissült.')
+                      }}
+                    >
+                      Kulcs mentése
+                    </button>
+                  </div>
+                </div>
+
+                <label className="flex items-start gap-2 border-t border-ink/10 pt-3 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={row.autoApproveEnabled}
+                    disabled={pending}
+                    onChange={(e) =>
+                      run(
+                        () => setSelfUpdatingAutoApprove({ connectorId: row.id, enabled: e.target.checked }),
+                        'A konnektor automatikus átvételi szabálya frissült.',
+                      )
+                    }
+                  />
+                  <span>
+                    Ennél a konnektornál a kizárólag új, csak olvasási képességek automatikusan átvehetők, ha a tenant
+                    kapcsolója is be van kapcsolva.
+                  </span>
+                </label>
+              </div>
+            ) : null}
+
+            {tab === 'decommission' && !archived ? (
+              <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
+                <h4 className="mb-2 font-semibold text-coral">Megszüntetés (auditált leszerelés)</h4>
+                <p className="text-xs text-ink-soft">
+                  Nem hard-delete: az agent-hozzárendelések levétele és a menedzselt secret-ref törlése után a
+                  kapcsolat <code>archived</code> állapotba kerül — a sor és az audit-előzmény megmarad.
+                  Bank-preset / L2–L3 esetén második jóváhagyó kell.
                 </p>
-              ) : null}
-              <CapabilityList
-                title={detailsTitle}
-                capabilities={detailsCapabilities}
-                emptyHint="Ehhez a konnektorhoz még nincs átvett vagy javasolt képességlista. Először keress frissítést."
-              />
-            </>
-          ) : null}
-
-          {!archived ? (
-          <div className="space-y-2 border-t border-ink/10 pt-3">
-            <h4 className="text-sm font-semibold">Hozzáférési kulcs cseréje</h4>
-            <p className="text-xs text-ink-soft">
-              Az új kulcs azonnal felülírja a régit a titoktárolóban, és a következő hívástól ez lesz érvényben.
-              A képességlista és a verziók nem változnak. Mentés után a „Frissítés keresése” gombbal ellenőrizhető,
-              hogy a partner elfogadja-e az új kulcsot.
-            </p>
-            <div className="flex flex-wrap items-end gap-2">
-              <label className="min-w-[16rem] flex-1 text-xs">
-                <span className="mb-1 block font-semibold">Új hozzáférési kulcs</span>
-                <input
-                  type="password"
-                  value={newApiKey}
-                  onChange={(e) => setNewApiKey(e.target.value)}
-                  disabled={pending}
-                  autoComplete="new-password"
-                  placeholder="A partnertől kapott új kulcs"
-                  className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm disabled:opacity-50"
-                />
-              </label>
-              <button
-                type="button"
-                disabled={pending || !newApiKey.trim()}
-                className="rounded-md border border-ink/20 px-3 py-2 text-xs font-semibold disabled:opacity-50"
-                onClick={() => {
-                  const apiKey = newApiKey.trim()
-                  run(async () => {
-                    const result = await updateSelfUpdatingConnectorApiKey({ connectorId: row.id, apiKey })
-                    if (result.success) setNewApiKey('')
-                    return result
-                  }, 'A hozzáférési kulcs frissült.')
-                }}
-              >
-                Kulcs mentése
-              </button>
-            </div>
-          </div>
-          ) : null}
-
-          {!archived ? (
-          <label className="flex items-start gap-2 border-t border-ink/10 pt-3 text-xs">
-            <input
-              type="checkbox"
-              checked={row.autoApproveEnabled}
-              disabled={pending}
-              onChange={(e) =>
-                run(
-                  () => setSelfUpdatingAutoApprove({ connectorId: row.id, enabled: e.target.checked }),
-                  'A konnektor automatikus átvételi szabálya frissült.',
-                )
-              }
-            />
-            <span>
-              Ennél a konnektornál a kizárólag új, csak olvasási képességek automatikusan átvehetők, ha a tenant
-              kapcsolója is be van kapcsolva.
-            </span>
-          </label>
-          ) : null}
-
-          {!archived && proposal?.diffSummary ? (
-            <div className="space-y-3 border-t border-ink/10 pt-4">
-              <h3 className="font-semibold">Változások a(z) „{row.name}” konnektorban</h3>
-              <DiffGroup
-                title="🟢 Új képességek"
-                tone="success"
-                items={proposal.diffSummary.added}
-                capabilities={diffCapabilities}
-              />
-              <DiffGroup
-                title="🔴 Törésveszélyes változások"
-                tone="danger"
-                items={proposal.diffSummary.breaking}
-                capabilities={diffCapabilities}
-              />
-              <DiffGroup
-                title="🟠 Visszavont képességek"
-                tone="warning"
-                items={proposal.diffSummary.narrowed}
-                capabilities={diffCapabilities}
-              />
-              <DiffGroup
-                title="🔴 Beléptetési vagy kötelező fejléc-változások"
-                tone="danger"
-                items={proposal.diffSummary.auth}
-                capabilities={diffCapabilities}
-              />
-              <CapabilityList
-                title="Teljes funkciólista a javasolt frissítés után"
-                capabilities={proposal.capabilities ?? []}
-                emptyHint="A javasolt verzióhoz nem sikerült kiolvasni a képességlistát."
-              />
-              <div className="flex flex-wrap gap-2">
-                <button
-                  disabled={pending}
-                  className="rounded-md border border-ink/20 px-3 py-2 text-xs font-semibold"
-                  onClick={() =>
-                    run(
-                      () => rejectSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }),
-                      'A változásokat elutasítottad; minden a régiben maradt.',
-                    )
-                  }
-                >
-                  Mégse — minden marad a régiben
-                </button>
-                <button
-                  disabled={pending}
-                  className="rounded-md bg-coral px-3 py-2 text-xs font-semibold text-white"
-                  onClick={() =>
-                    run(
-                      () => approveSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }),
-                      'A változások jóváhagyva és rögzítve.',
-                    )
-                  }
-                >
-                  Jóváhagyom ezeket a változásokat
-                </button>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <label className="text-xs sm:col-span-2">
+                    <span className="mb-1 block text-ink-soft">Indok (auditba kerül)</span>
+                    <input
+                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                      value={decommReason}
+                      onChange={(e) => setDecommReason(e.target.value)}
+                      placeholder="Pl. lecserélt szolgáltató, felesleges leaf"
+                    />
+                  </label>
+                  <label className="text-xs">
+                    <span className="mb-1 block text-ink-soft">Kritikusság</span>
+                    <select
+                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                      value={decommCriticality}
+                      onChange={(e) => setDecommCriticality(e.target.value as typeof decommCriticality)}
+                    >
+                      <option value="L1">L1</option>
+                      <option value="L2">L2 (dual-control)</option>
+                      <option value="L3">L3 (dual-control)</option>
+                    </select>
+                  </label>
+                  <label className="text-xs">
+                    <span className="mb-1 block text-ink-soft">2. jóváhagyó (≠ te)</span>
+                    <input
+                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                      value={decommApprover}
+                      onChange={(e) => setDecommApprover(e.target.value)}
+                      placeholder="user-id (dual-control esetén)"
+                    />
+                  </label>
+                </div>
+                {!confirmDecomm ? (
+                  <button
+                    type="button"
+                    className="mt-3 rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral"
+                    onClick={() => setConfirmDecomm(true)}
+                  >
+                    Megszüntetés
+                  </button>
+                ) : (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-semibold text-coral">
+                      Biztos? A kapcsolat leszerelődik és archiválódik.
+                    </span>
+                    <button
+                      type="button"
+                      disabled={pending}
+                      onClick={() =>
+                        run(async () => {
+                          const res = await decommissionActiveConnector({
+                            connectorId: row.id,
+                            criticality: decommCriticality,
+                            approverId: decommApprover.trim() || undefined,
+                            reason: decommReason.trim() || undefined,
+                          })
+                          if (!res.success) return res
+                          setConfirmDecomm(false)
+                          return res
+                        }, 'Kapcsolat megszüntetve (archived).')
+                      }
+                      className="rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
+                    >
+                      Igen, szüntesd meg
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDecomm(false)}
+                      className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
+                    >
+                      Mégse
+                    </button>
+                  </div>
+                )}
               </div>
-            </div>
-          ) : null}
-
-          <div className="border-t border-ink/10 pt-4">
-            <h4 className="font-semibold">Korábbi állapotok</h4>
-            <p className="mt-1 text-xs text-ink-soft">
-              Minden átvett frissítést megőrzünk. Ha gondot okoz, egy kattintással visszaállíthatod.
-            </p>
-            <div className="mt-2 overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="text-ink-soft">
-                    <th className="py-2">Verzió</th>
-                    <th>Átvéve</th>
-                    <th>Ki hagyta jóvá</th>
-                    <th>Állapot</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {row.versions.map((version) => {
-                    const isActive = version.id === row.activeSpecVersionId
-                    return (
-                      <tr key={version.id} className="border-t border-ink/8">
-                        <td className="py-2">
-                          v{version.versionNo}
-                          {isActive ? ' (jelenlegi)' : ''}
-                        </td>
-                        <td>{new Date(version.approvedAt ?? version.fetchedAt).toLocaleString('hu-HU')}</td>
-                        <td>{version.approvedByName}</td>
-                        <td>{version.status}</td>
-                        <td className="text-right">
-                          {!archived && !isActive && ['approved', 'superseded', 'rolled_back'].includes(version.status) ? (
-                            <button
-                              disabled={pending}
-                              className="rounded border border-sage/35 px-2 py-1 font-semibold"
-                              onClick={() =>
-                                run(
-                                  () =>
-                                    rollbackSelfUpdatingVersion({
-                                      connectorId: row.id,
-                                      versionId: version.id,
-                                    }),
-                                  `A konnektor visszaállt a v${version.versionNo} állapotra.`,
-                                )
-                              }
-                            >
-                              Visszaállítás
-                            </button>
-                          ) : null}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+            ) : null}
           </div>
-
-          {!archived ? (
-          <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
-            <h4 className="mb-2 font-semibold text-coral">Megszüntetés (auditált leszerelés)</h4>
-            <p className="text-xs text-ink-soft">
-              Nem hard-delete: az agent-hozzárendelések levétele és a menedzselt secret-ref törlése után a
-              kapcsolat <code>archived</code> állapotba kerül — a sor és az audit-előzmény megmarad.
-              Bank-preset / L2–L3 esetén második jóváhagyó kell.
-            </p>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              <label className="text-xs sm:col-span-2">
-                <span className="mb-1 block text-ink-soft">Indok (auditba kerül)</span>
-                <input
-                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                  value={decommReason}
-                  onChange={(e) => setDecommReason(e.target.value)}
-                  placeholder="Pl. lecserélt szolgáltató, felesleges leaf"
-                />
-              </label>
-              <label className="text-xs">
-                <span className="mb-1 block text-ink-soft">Kritikusság</span>
-                <select
-                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                  value={decommCriticality}
-                  onChange={(e) => setDecommCriticality(e.target.value as typeof decommCriticality)}
-                >
-                  <option value="L1">L1</option>
-                  <option value="L2">L2 (dual-control)</option>
-                  <option value="L3">L3 (dual-control)</option>
-                </select>
-              </label>
-              <label className="text-xs">
-                <span className="mb-1 block text-ink-soft">2. jóváhagyó (≠ te)</span>
-                <input
-                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                  value={decommApprover}
-                  onChange={(e) => setDecommApprover(e.target.value)}
-                  placeholder="user-id (dual-control esetén)"
-                />
-              </label>
-            </div>
-            {!confirmDecomm ? (
-              <button
-                type="button"
-                className="mt-3 rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral"
-                onClick={() => setConfirmDecomm(true)}
-              >
-                Megszüntetés
-              </button>
-            ) : (
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className="text-xs font-semibold text-coral">
-                  Biztos? A kapcsolat leszerelődik és archiválódik.
-                </span>
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() =>
-                    run(async () => {
-                      const res = await decommissionActiveConnector({
-                        connectorId: row.id,
-                        criticality: decommCriticality,
-                        approverId: decommApprover.trim() || undefined,
-                        reason: decommReason.trim() || undefined,
-                      })
-                      if (!res.success) return res
-                      setConfirmDecomm(false)
-                      return res
-                    }, 'Kapcsolat megszüntetve (archived).')
-                  }
-                  className="rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
-                >
-                  Igen, szüntesd meg
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmDecomm(false)}
-                  className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
-                >
-                  Mégse
-                </button>
-              </div>
-            )}
-          </div>
-          ) : null}
         </div>
+      ) : null}
+      {syncModal ? (
+        <SelfUpdatingSyncResultModal
+          state={syncModal}
+          pending={busy}
+          onClose={closeSyncModal}
+          onReject={rejectFromSyncModal}
+          onApprove={approveFromSyncModal}
+        />
       ) : null}
     </div>
   )

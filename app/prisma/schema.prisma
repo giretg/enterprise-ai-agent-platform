@@ -86,6 +86,8 @@ enum ProjectMemoryKind {
   constraint
   artifact
   handoff_summary
+  focus
+  session_log
 }
 
 enum ProjectMemoryStatus {
@@ -93,11 +95,19 @@ enum ProjectMemoryStatus {
   superseded
 }
 
+enum HandoffStatus {
+  open
+  accepted
+  done
+  rejected
+}
+
 enum ConnectorType {
   google_drive
   http_api
   gmail
   knowledge_base
+  code_sandbox
 }
 
 enum DocumentStatus {
@@ -296,6 +306,8 @@ model User {
   workProjectsCreated         WorkProject[]         @relation("WorkProjectCreatedBy")
   workFilesWritten            WorkFile[]            @relation("WorkFileLastWriter")
   projectMemoryItems          ProjectMemoryItem[]   @relation("ProjectMemoryWithUser")
+  handoffsCreated             Handoff[]             @relation("HandoffCreatedBy")
+  handoffsReceived            Handoff[]             @relation("HandoffToUser")
 
   @@index([status])
   @@map("users")
@@ -351,6 +363,7 @@ model Tenant {
   workProjects      WorkProject[]
   workFiles         WorkFile[]
   projectMemoryItems ProjectMemoryItem[]
+  handoffs          Handoff[]
 
   @@index([status])
   @@map("tenants")
@@ -428,11 +441,21 @@ model Agent {
   tenantId                   String      @map("tenant_id") @db.Uuid
   name                       String
   roleInstruction            String      @map("role_instruction")
+  /** Megszeghetetlen szabályok — soronként egy bejegyzés; publikáláskor befagy a snapshot.rules-ba. */
+  hardRules                  String      @default("") @map("hard_rules")
+  /** Jóváhagyott betanított működési szabályok; új tanítás csak újrapublikáláskor érvényes MCP-n. */
+  trainedRules               String      @default("") @map("trained_rules")
   description                String?
   status                     AgentStatus @default(draft)
   currentDefinitionVersionId String?     @unique @map("current_definition_version_id") @db.Uuid
   avatarUrl                  String?     @map("avatar_url")
   memoryWriteMode            MemoryWriteMode @default(approval) @map("memory_write_mode")
+  /** Megnevezett jóváhagyó (#663): a tenant egyik usere; az írások elsősorban hozzá kerülnek. */
+  approverUserId             String?         @map("approver_user_id") @db.Uuid
+  /** Agent saját Drive output-mappája (#661): ide a feltöltés jóváhagyás nélkül, auditáltan fut. */
+  outputDriveFolderId        String?         @map("output_drive_folder_id")
+  /** Helyi kódmappa-hint (#729): soronként egy jelölt ~/… vagy abszolút path (több gép); publikáláskor a snapshotba. */
+  localRoots                 String          @default("") @map("local_roots")
   createdAt                  DateTime    @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime    @updatedAt @map("updated_at") @db.Timestamptz
   retiredAt                  DateTime?   @map("retired_at") @db.Timestamptz
@@ -445,6 +468,8 @@ model Agent {
   agentSkills       AgentSkill[]
   conversationSkillProposals ConversationSkillProposal[]
   projectMemoryItems ProjectMemoryItem[]
+  handoffsSent     Handoff[] @relation("HandoffFromAgent")
+  handoffsReceived Handoff[] @relation("HandoffToAgent")
 
   @@index([tenantId, status])
   @@map("agents")
@@ -515,6 +540,8 @@ model AgentSkill {
   agentId        String   @map("agent_id") @db.Uuid
   skillVersionId String   @map("skill_version_id") @db.Uuid
   enabled        Boolean  @default(true)
+  /// Belépő (orkesztráló) skill: minden új feladat ezzel indul. Agentenként legfeljebb egy (részleges unique index a migrációban).
+  entry          Boolean  @default(false)
   assignedById   String?  @map("assigned_by") @db.Uuid
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
 
@@ -564,6 +591,8 @@ model Connector {
   config         Json                    @default("{}")
   lifecycleState ConnectorLifecycleState @default(active) @map("lifecycle_state")
   tenantId       String                  @map("tenant_id") @db.Uuid
+  /** Megnevezett jóváhagyó (#663): az agent-szintűt felülírja. */
+  approverUserId String?                 @map("approver_user_id") @db.Uuid
   createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
   connectorMode       ConnectorMode          @default(fixed) @map("connector_mode")
@@ -861,6 +890,9 @@ model GatewayOperation {
   idempotencyKey            String                 @map("idempotency_key")
   status                    GatewayOperationStatus
   connectorId               String?                @map("connector_id") @db.Uuid
+  /** #663: enqueue-kori pillanatkép a megnevezett jóváhagyóról (konnektor > agent). */
+  designatedApproverUserId  String?                @map("designated_approver_user_id") @db.Uuid
+  designatedApproverName    String?                @map("designated_approver_name")
   errorCode                 String?                @map("error_code")
   resultJson                Json?                  @map("result_json")
   createdAt                 DateTime               @default(now()) @map("created_at") @db.Timestamptz
@@ -925,4 +957,34 @@ model AuditLog {
   @@index([tenantId, createdAt])
   @@index([action, createdAt])
   @@map("audit_log")
+}
+
+model Handoff {
+  id               String        @id @default(uuid()) @db.Uuid
+  tenantId         String        @map("tenant_id") @db.Uuid
+  fromAgentId      String        @map("from_agent_id") @db.Uuid
+  fromDefinitionId String        @map("from_definition_id") @db.Uuid
+  toAgentId        String?       @map("to_agent_id") @db.Uuid
+  toUserId         String?       @map("to_user_id") @db.Uuid
+  projectKey       String        @map("project_key")
+  title            String
+  summary          String        @db.Text
+  links            String?
+  status           HandoffStatus @default(open)
+  memoryId         String?       @map("memory_id") @db.Uuid
+  createdById      String        @map("created_by_id") @db.Uuid
+  decidedById      String?       @map("decided_by_id") @db.Uuid
+  decidedAt        DateTime?     @map("decided_at") @db.Timestamptz
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id])
+  fromAgent Agent  @relation("HandoffFromAgent", fields: [fromAgentId], references: [id], onDelete: Cascade)
+  toAgent   Agent? @relation("HandoffToAgent", fields: [toAgentId], references: [id], onDelete: Cascade)
+  toUser    User?  @relation("HandoffToUser", fields: [toUserId], references: [id], onDelete: Cascade)
+  createdBy User   @relation("HandoffCreatedBy", fields: [createdById], references: [id])
+
+  @@index([tenantId, toAgentId, status])
+  @@index([tenantId, toUserId, status])
+  @@map("handoffs")
 }

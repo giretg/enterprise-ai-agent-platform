@@ -33,6 +33,7 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = [
     label: 'Tudásbázis',
     tools: ['kb_search', 'kb_list_index', 'kb_get_page', 'kb_get_document', 'kb_ingest'],
   },
+  { label: 'Kódfuttatás', tools: ['sandbox_run'] },
 ]
 
 export const CLOSED_ROLE_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = []

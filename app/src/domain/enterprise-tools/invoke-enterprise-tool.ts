@@ -1,4 +1,5 @@
 import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
+import type { WriteConfirmLinkReason } from '@/domain/gateway-operation/write-confirm-branch'
 import { isDispatchable } from '@/lib/agent-lifecycle'
 import {
   GoogleDriveApiAuthError,
@@ -20,20 +21,31 @@ import { checkDefinitionPin, type DefinitionPinDeps } from './definition-pin'
 import { executeGoogleDriveTool } from './handlers/google-drive'
 import { executeGmailTool } from './handlers/gmail'
 import { executeHttpApiTool } from './handlers/http-api'
+import { executeSandboxRun as defaultExecuteSandboxRun } from './handlers/sandbox-run'
 import { asUuid, enterpriseToolErrorPayload } from './tool-error-messages'
 import {
+  GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
   isEnterpriseGmailTool,
   isEnterpriseHttpTool,
   isEnterpriseKbTool,
+  isEnterpriseSandboxTool,
   isEnterpriseTool,
   isEnterpriseWriteTool,
   schemaForEnterpriseKbTool,
+  schemaForEnterpriseSandboxTool,
   schemaForEnterpriseTool,
   type EnterpriseDriveTool,
   type EnterpriseGmailTool,
   type EnterpriseHttpTool,
   type EnterpriseKbTool,
 } from './tool-definitions'
+import type { SandboxRunResult } from '@/domain/code-sandbox/code-sandbox-service'
+import { CodeSandboxDeniedError } from '@/domain/code-sandbox/code-sandbox-service'
+import {
+  resolvePinnedSkillScript,
+  sandboxWorkFilePrefix,
+  splitSandboxArgs,
+} from '@/domain/code-sandbox/skill-script'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
 import { isAuthorizationLinkReason } from '@/domain/connector-grant/connector-grant-needed'
@@ -79,6 +91,8 @@ export type WriteConfirmState = {
  */
 export type WriteConfirmInput = {
   mint: ((state: WriteConfirmState) => Promise<string>) | null
+  /** Set when `mint` is null — why the client gets the approval link (#618 audit). */
+  linkReason?: WriteConfirmLinkReason
   retry?: {
     state: unknown
     response: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> } | null
@@ -128,6 +142,27 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     args: Record<string, unknown>,
     ctx: { connectorId: string; tenantId: string; agentId: string; userId: string },
   ) => Promise<unknown>
+  loadSkillVersion?: (skillVersionId: string) => Promise<{
+    attachments: unknown
+    status: string
+    tenantId: string | null
+  } | null>
+  executeSandboxRun?: (
+    input: {
+      tenantId: string
+      scopeKey: string
+      command: string[]
+      files: Array<{ sandboxPath: string; bytes: Uint8Array }>
+    },
+    connector: LiveConnectorRow,
+  ) => Promise<SandboxRunResult>
+  writeWorkFile?: (input: {
+    tenantId: string
+    userId: string
+    projectKey?: string
+    path: string
+    contentBase64: string
+  }) => Promise<{ path: string }>
   enqueueWrite?: (input: {
     principal: ToolCallPrincipal
     toolName: string
@@ -135,6 +170,8 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     origin?: string
     confirm?: WriteConfirmInput
   }) => Promise<EnterpriseToolMcpResult | InputRequiredToolResult>
+  /** Agent saját Drive output-mappája (#661). Hiányában minden Drive-írás jóváhagyást kér. */
+  findAgentOutputFolder?: (input: { agentId: string; tenantId: string }) => Promise<string | null>
   startAuthorization?: StartDelegatedAuthorization
   audit?: AuditSink
 }
@@ -227,6 +264,116 @@ async function resolveDelegatedToken(
   })
 }
 
+/**
+ * Tiszta write-gate döntés (#661): az agent saját output-mappájába töltve nincs
+ * jóváhagyás, minden más Drive-írás approval-köteles. Hiányzó/üres
+ * parentFolderId = a beállított output-mappa (az agent nem kapja meg az id-t
+ * máshonnan). Egységtesztelt.
+ */
+export function isOutputFolderWrite(input: {
+  toolName: string
+  parentFolderId?: string
+  outputFolderId: string | null | undefined
+}): boolean {
+  if (input.toolName !== GOOGLE_DRIVE_UPLOAD_FILE_TOOL || !input.outputFolderId) return false
+  const parent = input.parentFolderId?.trim()
+  return !parent || parent === input.outputFolderId
+}
+
+/**
+ * Output-mappán belüli Drive-feltöltés: capability- és connector-ellenőrzéssel,
+ * de jóváhagyás nélkül, auditáltan fut. Minden más esetben null (→ enqueue).
+ */
+async function tryDirectOutputFolderWrite(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    definition: AgentDefinition
+    definitionId: string
+    toolName: string
+    args: Record<string, unknown>
+  },
+): Promise<EnterpriseToolMcpResult | null> {
+  const { principal, definition, definitionId, toolName, args } = input
+  if (toolName !== GOOGLE_DRIVE_UPLOAD_FILE_TOOL || !deps.findAgentOutputFolder) return null
+  const parsed = schemaForEnterpriseTool(toolName)?.safeParse(args)
+  if (!parsed?.success) return null
+  const parsedArgs = parsed.data as Record<string, unknown>
+  const parentFolderId =
+    typeof parsedArgs.parentFolderId === 'string' ? parsedArgs.parentFolderId : undefined
+  const outputFolderId = await deps.findAgentOutputFolder({
+    agentId: definition.agentId,
+    tenantId: principal.tenantId,
+  })
+  if (!isOutputFolderWrite({ toolName, parentFolderId, outputFolderId })) return null
+  // Hiányzó parent → a fájl tényleg a mappába menjen, ne a Drive gyökerébe.
+  parsedArgs.parentFolderId = outputFolderId
+  const authorized = await authorizeToolCall(deps, { principal, definition, toolName, args: parsedArgs })
+  if (!authorized.allowed) {
+    await auditDenied(deps, principal, toolName, authorized.reason, definitionId, definition.agentId)
+    const extra = await authorizationLinkFields(deps.startAuthorization, {
+      reason: authorized.reason,
+      connectorId: authorized.connectorId,
+      userId: principal.userId,
+      tenantId: principal.tenantId,
+      role: principal.role,
+      toolName,
+    })
+    return errorResult(authorized.reason, {
+      ...extra,
+      ...(authorized.connectorChoices?.length ? { connectors: authorized.connectorChoices } : {}),
+    })
+  }
+  const connector = authorized.connector
+  let accessToken: string | undefined
+  try {
+    if (connector.authMode === 'user_delegated') {
+      accessToken = await resolveDelegatedToken(deps, principal, connector, authorized.grantId, authorized.tokenRef)
+    }
+  } catch {
+    await auditDenied(deps, principal, toolName, 'google_drive_auth_failed', definitionId, definition.agentId)
+    return errorResult('google_drive_auth_failed')
+  }
+  try {
+    const result = await dispatchTool(deps, {
+      toolName,
+      args: parsedArgs,
+      connector,
+      accessToken,
+      actingUser: null,
+    })
+    const payload = {
+      toolName,
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      definitionId,
+      agentId: definition.agentId,
+      connectorId: authorized.connectorId,
+      approvalBypass: 'agent_output_folder',
+    }
+    console.info('enterprise.tool.ok', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.ok',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: payload,
+      tenantId: principal.tenantId,
+    })
+    return textResult(result)
+  } catch (error) {
+    const mapped = mapToolError(error, connector.type)
+    await auditDenied(deps, principal, toolName, mapped.code, definitionId, definition.agentId)
+    return errorResult(mapped.code, mapped.extra)
+  }
+}
+
 export async function invokeEnterpriseTool(
   deps: EnterpriseToolDeps,
   input: {
@@ -294,11 +441,23 @@ export async function invokeEnterpriseTool(
       await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
       return errorResult('tool_not_configured')
     }
+    const direct = await tryDirectOutputFolderWrite(deps, { principal, definition, definitionId, toolName, args })
+    if (direct) return direct
     return deps.enqueueWrite({ principal, toolName, args, origin, confirm })
   }
 
   if (isEnterpriseKbTool(toolName)) {
     return invokeKbTool(deps, {
+      principal,
+      toolName,
+      args,
+      definitionId,
+      definition,
+    })
+  }
+
+  if (isEnterpriseSandboxTool(toolName)) {
+    return invokeSandboxTool(deps, {
       principal,
       toolName,
       args,
@@ -612,6 +771,171 @@ async function invokeKbTool(
         ? 'invalid_args'
         : error instanceof Error && error.message === 'file_too_large'
           ? 'file_too_large'
+          : 'tool_execution_failed'
+    const payload = {
+      toolName,
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      definitionId,
+      agentId: definition.agentId,
+      connectorId: authorized.connectorId,
+      errorCode: code,
+    }
+    console.info('enterprise.tool.error', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.error',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: code,
+      policyDecision: null,
+      metadata: payload,
+      tenantId: principal.tenantId,
+    })
+    return errorResult(code)
+  }
+}
+
+async function invokeSandboxTool(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    toolName: string
+    args: Record<string, unknown>
+    definitionId: string
+    definition: AgentDefinition
+  },
+): Promise<EnterpriseToolMcpResult> {
+  const { principal, toolName, args, definitionId, definition } = input
+  const parsed = schemaForEnterpriseSandboxTool('sandbox_run').safeParse(args)
+  if (!parsed.success) {
+    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId)
+    return errorResult('invalid_args')
+  }
+  const parsedArgs = parsed.data
+  const authorized = await authorizeToolCall(deps, {
+    principal,
+    definition,
+    toolName,
+    args: parsedArgs as Record<string, unknown>,
+  })
+  if (!authorized.allowed) {
+    await auditDenied(deps, principal, toolName, authorized.reason, definitionId, definition.agentId)
+    return errorResult(authorized.reason)
+  }
+  const writeWorkFile = deps.writeWorkFile
+  if (!deps.loadSkillVersion || !writeWorkFile) {
+    await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
+    return errorResult('tool_not_configured')
+  }
+  const version = await deps.loadSkillVersion(parsedArgs.skillVersionId)
+  if (!version) {
+    await auditDenied(deps, principal, toolName, 'skill_not_found', definitionId, definition.agentId)
+    return errorResult('skill_not_found')
+  }
+  if (version.tenantId && version.tenantId !== principal.tenantId) {
+    await auditDenied(deps, principal, toolName, 'skill_not_pinned', definitionId, definition.agentId)
+    return errorResult('skill_not_pinned')
+  }
+  if (version.status !== 'active') {
+    await auditDenied(deps, principal, toolName, 'skill_not_active', definitionId, definition.agentId)
+    return errorResult('skill_not_active')
+  }
+  const resolved = resolvePinnedSkillScript({
+    definition,
+    skillVersionId: parsedArgs.skillVersionId,
+    entry: parsedArgs.entry,
+    attachments: version.attachments,
+  })
+  if (!resolved.ok) {
+    await auditDenied(deps, principal, toolName, resolved.reason, definitionId, definition.agentId)
+    return errorResult(resolved.reason)
+  }
+
+  const files = [
+    { sandboxPath: `/work/in/skill/${resolved.script.entry.path}`, bytes: Buffer.from(resolved.script.entry.text, 'utf8') },
+    { sandboxPath: '/work/run.py', bytes: Buffer.from(resolved.script.entry.text, 'utf8') },
+    ...resolved.script.helpers.map((helper) => ({
+      sandboxPath: `/work/in/skill/${helper.path}`,
+      bytes: Buffer.from(helper.text, 'utf8'),
+    })),
+  ]
+  const execute = deps.executeSandboxRun ?? defaultExecuteSandboxRun
+  try {
+    const ran = await execute(
+      {
+        tenantId: principal.tenantId,
+        scopeKey: definitionId,
+        command: ['python3', `/work/in/skill/${resolved.script.entry.path}`, ...splitSandboxArgs(parsedArgs.args)],
+        files,
+      },
+      authorized.connector,
+    )
+    const prefix = sandboxWorkFilePrefix(resolved.script.skillName)
+    const outputs: string[] = []
+    for (const file of ran.outputFiles) {
+      const written = await writeWorkFile({
+        tenantId: principal.tenantId,
+        userId: principal.userId,
+        projectKey: parsedArgs.projectKey,
+        path: `${prefix}/${file.path}`,
+        contentBase64: Buffer.from(file.bytes).toString('base64'),
+      })
+      outputs.push(written.path)
+    }
+    const payload = {
+      toolName,
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      definitionId,
+      agentId: definition.agentId,
+      connectorId: authorized.connectorId,
+      skillVersionId: parsedArgs.skillVersionId,
+      scriptPath: resolved.script.entry.path,
+      scriptSha256: resolved.script.entry.sha256,
+    }
+    console.info('enterprise.tool.ok', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.ok',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: resolved.script.entry.sha256,
+      policyDecision: 'allowed',
+      metadata: payload,
+      tenantId: principal.tenantId,
+    })
+    return textResult({
+      exitCode: ran.exitCode,
+      stdout: ran.stdout,
+      stderr: ran.stderr,
+      stdoutTruncated: ran.stdoutTruncated,
+      stderrTruncated: ran.stderrTruncated,
+      outputs,
+      skillVersionId: parsedArgs.skillVersionId,
+      scriptPath: resolved.script.entry.path,
+      scriptSha256: resolved.script.entry.sha256,
+    })
+  } catch (error) {
+    const code =
+      error instanceof CodeSandboxDeniedError
+        ? error.reason.split(':')[0]!
+        : error instanceof Error &&
+            (error.message === 'code_sandbox_disabled' ||
+              error.message === 'code_sandbox_base_url_missing' ||
+              error.message === 'invalid_sandbox_command' ||
+              error.message === 'quota_exceeded' ||
+              error.message === 'file_too_large' ||
+              error.message === 'invalid_path')
+          ? error.message
           : 'tool_execution_failed'
     const payload = {
       toolName,

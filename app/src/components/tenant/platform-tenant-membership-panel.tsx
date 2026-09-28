@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import type { UserRole } from '@prisma/client'
 import {
   addPlatformTenantMember,
@@ -29,11 +30,11 @@ export type TenantMemberRow = {
 
 const ROLES: UserRole[] = ['admin', 'approver', 'operator', 'viewer']
 
-const roleLabel: Record<UserRole, string> = {
-  admin: 'Admin',
-  approver: 'Jóváhagyó',
-  operator: 'Operátor',
-  viewer: 'Olvasó',
+const ROLE_KEYS: Record<UserRole, 'roleAdmin' | 'roleApprover' | 'roleOperator' | 'roleViewer'> = {
+  admin: 'roleAdmin',
+  approver: 'roleApprover',
+  operator: 'roleOperator',
+  viewer: 'roleViewer',
 }
 
 const roleTone: Record<string, 'success' | 'warning' | 'danger' | 'neutral'> = {
@@ -58,6 +59,8 @@ type Props = {
 }
 
 export function PlatformTenantMembershipPanel({ tenantId, tenantLabel, users, canManage, onClose }: Props) {
+  const t = useTranslations('PlatformMembers')
+  const roleName = (role: UserRole) => t(ROLE_KEYS[role])
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [snapshot, setSnapshot] = useState<{
@@ -82,7 +85,7 @@ export function PlatformTenantMembershipPanel({ tenantId, tenantLabel, users, ca
         setSnapshot({
           tenantId,
           members: [],
-          error: res.error ?? 'Nem sikerült betölteni a tagokat',
+          error: res.error ?? t('loadFailed'),
           loading: false,
         })
       }
@@ -125,9 +128,9 @@ export function PlatformTenantMembershipPanel({ tenantId, tenantLabel, users, ca
   return (
     <Card>
       <div className="mb-4 flex items-center justify-between gap-3">
-        <h2 className="font-display text-lg font-semibold tracking-tight">Tenant tagok — {tenantLabel}</h2>
+        <h2 className="font-display text-lg font-semibold tracking-tight">{t('title', { label: tenantLabel })}</h2>
         <button type="button" onClick={onClose} className={btnClass}>
-          Bezárás
+          {t('close')}
         </button>
       </div>
       <div className="space-y-4">
@@ -149,14 +152,14 @@ export function PlatformTenantMembershipPanel({ tenantId, tenantLabel, users, ca
             className="grid gap-3 sm:grid-cols-[minmax(0,1.4fr)_minmax(140px,0.6fr)_auto]"
           >
             <label className="text-sm">
-              <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">Felhasználó</span>
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">{t('user')}</span>
               <select
                 required
                 value={form.userId}
                 onChange={(e) => setForm((f) => ({ ...f, userId: e.target.value }))}
                 className={inputClass}
               >
-                <option value="">Válassz felhasználót…</option>
+                <option value="">{t('pickUser')}</option>
                 {availableUsers.map((u) => (
                   <option key={u.id} value={u.id}>
                     {u.name} ({u.email})
@@ -165,7 +168,7 @@ export function PlatformTenantMembershipPanel({ tenantId, tenantLabel, users, ca
               </select>
             </label>
             <label className="text-sm">
-              <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">Szerep</span>
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">{t('role')}</span>
               <select
                 value={form.role}
                 onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as UserRole }))}
@@ -173,7 +176,7 @@ export function PlatformTenantMembershipPanel({ tenantId, tenantLabel, users, ca
               >
                 {ROLES.map((r) => (
                   <option key={r} value={r}>
-                    {roleLabel[r]}
+                    {roleName(r)}
                   </option>
                 ))}
               </select>
@@ -184,25 +187,25 @@ export function PlatformTenantMembershipPanel({ tenantId, tenantLabel, users, ca
                 disabled={pending || !form.userId || availableUsers.length === 0}
                 className="rounded-full border border-coral/35 bg-coral/10 px-4 py-2 text-sm font-semibold text-coral-deep transition-colors hover:border-coral/55 disabled:opacity-50"
               >
-                Tag hozzáadása
+                {t('add')}
               </button>
             </div>
           </form>
         )}
 
         {loading ? (
-          <p className="text-sm text-ink-faint">Betöltés…</p>
+          <p className="text-sm text-ink-faint">{t('loading')}</p>
         ) : members.length === 0 ? (
-          <p className="text-sm text-ink-faint">Ehhez a tenanthoz még nincs tag.</p>
+          <p className="text-sm text-ink-faint">{t('empty')}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint">
-                  <th className="py-2 pr-3">Tag</th>
-                  <th className="py-2 pr-3">Szerep</th>
-                  <th className="py-2 pr-3">Státusz</th>
-                  {canManage && <th className="py-2 pr-3 text-right">Művelet</th>}
+                  <th className="py-2 pr-3">{t('colMember')}</th>
+                  <th className="py-2 pr-3">{t('colRole')}</th>
+                  <th className="py-2 pr-3">{t('colStatus')}</th>
+                  {canManage && <th className="py-2 pr-3 text-right">{t('colAction')}</th>}
                 </tr>
               </thead>
               <tbody>
@@ -230,12 +233,14 @@ export function PlatformTenantMembershipPanel({ tenantId, tenantLabel, users, ca
                         >
                           {ROLES.map((r) => (
                             <option key={r} value={r}>
-                              {roleLabel[r]}
+                              {roleName(r)}
                             </option>
                           ))}
                         </select>
                       ) : (
-                        <Badge tone={roleTone[m.role] ?? 'neutral'}>{roleLabel[m.role as UserRole] ?? m.role}</Badge>
+                        <Badge tone={roleTone[m.role] ?? 'neutral'}>
+                          {m.role in ROLE_KEYS ? roleName(m.role as UserRole) : m.role}
+                        </Badge>
                       )}
                     </td>
                     <td className="py-2.5 pr-3">
@@ -251,7 +256,7 @@ export function PlatformTenantMembershipPanel({ tenantId, tenantLabel, users, ca
                               run(() => suspendPlatformTenantMember({ tenantId, targetUserId: m.userId }))
                             }
                           >
-                            Felfüggeszt
+                            {t('suspend')}
                           </button>
                         )}
                         {m.status === 'suspended' && (
@@ -268,7 +273,7 @@ export function PlatformTenantMembershipPanel({ tenantId, tenantLabel, users, ca
                               )
                             }
                           >
-                            Visszaállít
+                            {t('reactivate')}
                           </button>
                         )}
                       </td>

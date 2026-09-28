@@ -1,5 +1,5 @@
 import type { Agent } from '@prisma/client'
-import { AGENT_SCAFFOLD_AGENT_NAME, AGENT_SCAFFOLD_ROLE_INSTRUCTION } from '@/lib/agent-scaffold'
+import { AGENT_SCAFFOLD_AGENT_NAME, AGENT_SCAFFOLD_DESCRIPTION, AGENT_SCAFFOLD_ROLE_INSTRUCTION } from '@/lib/agent-scaffold'
 import { AgentDefinitionService } from '@/domain/agent-definition'
 import type {
   AgentDefinitionRepository,
@@ -13,6 +13,7 @@ export type AgentScaffoldMaterializationDeps = {
     | 'findMany'
     | 'findById'
     | 'create'
+    | 'updateProfile'
     | 'setCurrentDefinitionVersionId'
     | 'activate'
     | 'findCapabilitiesForAgent'
@@ -42,14 +43,21 @@ export async function ensureTenantAgentScaffold(
     return existing
   }
 
-  const agent =
+  const created =
     existing ??
     (await deps.agents.create({
       tenantId: input.tenantId,
       name: AGENT_SCAFFOLD_AGENT_NAME,
       roleInstruction: AGENT_SCAFFOLD_ROLE_INSTRUCTION,
+      description: AGENT_SCAFFOLD_DESCRIPTION,
       status: 'draft',
     }))
+  const agent = created.description?.trim()
+    ? created
+    : await deps.agents.updateProfile({
+        agentId: created.id,
+        description: AGENT_SCAFFOLD_DESCRIPTION,
+      })
 
   const definitionService = new AgentDefinitionService({
     agents: deps.agents,

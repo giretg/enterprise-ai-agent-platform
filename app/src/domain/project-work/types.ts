@@ -7,6 +7,8 @@ export const PROJECT_MEMORY_KINDS = [
   'constraint',
   'artifact',
   'handoff_summary',
+  'focus',
+  'session_log',
 ] as const satisfies readonly ProjectMemoryKind[]
 
 export type MemoryWriteModeValue = MemoryWriteMode
@@ -100,6 +102,8 @@ export interface ProjectMemoryStore {
     supersedesId: string | null
     alsoSupersedeIds: string[]
   }): Promise<ProjectMemoryRecord>
+  /** Aktív elem kivezetése (superseded) — tenant + agent határ. */
+  retireActive(input: { tenantId: string; agentId: string; id: string }): Promise<boolean>
 }
 
 export interface ProjectWorkUserLookup {
@@ -109,4 +113,7 @@ export interface ProjectWorkUserLookup {
 export interface AgentMemoryWriteModeStore {
   findMemoryWriteMode(agentId: string, tenantId: string): Promise<MemoryWriteModeValue | null>
   updateMemoryWriteMode(agentId: string, memoryWriteMode: MemoryWriteModeValue): Promise<void>
+  /** Agent output Drive-mappa (#661). Hiányzó implementációnál minden Drive-írás jóváhagyást kér. */
+  findOutputFolder?(agentId: string, tenantId: string): Promise<string | null>
+  updateOutputFolder?(agentId: string, folderId: string | null): Promise<void>
 }

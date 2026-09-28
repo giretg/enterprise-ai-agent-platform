@@ -3,10 +3,11 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { useEffect, useState, type ReactNode } from 'react'
+import { useTranslations } from 'next-intl'
 import { ShellAuth } from '@/components/auth/shell-auth'
 import { useClerkEnabled } from '@/components/auth/providers'
 
-export type NavLeaf = { key?: string; href: string; label: string; exact?: boolean }
+export type NavLeaf = { key?: string; href: string; label: string; exact?: boolean; badge?: number }
 export type NavGroup = { key?: string; label: string; children: NavLeaf[] }
 export type NavEntry = NavLeaf | NavGroup
 
@@ -49,6 +50,7 @@ export function AppShell({
     group.children.some((child) => isActive(child.href, child.exact))
 
   const clerkEnabled = useClerkEnabled()
+  const t = useTranslations('ControlPlane.shell')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [openGroup, setOpenGroup] = useState<string | null>(null)
 
@@ -95,8 +97,13 @@ export function AppShell({
   const renderTopLeaf = (item: NavLeaf) => {
     const active = isActive(item.href, item.exact)
     return (
-      <Link key={item.href} href={item.href} className={linkClass(active)}>
+      <Link key={item.href} href={item.href} className={`${linkClass(active)} inline-flex items-center`}>
         {item.label}
+        {item.badge ? (
+          <span className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-coral px-1 text-[10px] font-semibold leading-none text-white">
+            {item.badge > 99 ? '99+' : item.badge}
+          </span>
+        ) : null}
         {active && (
           <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
         )}
@@ -139,7 +146,7 @@ export function AppShell({
               </div>
             </div>
 
-            <nav aria-label="Fő navigáció" className="hidden items-center gap-1 lg:flex">
+            <nav aria-label={t('navAria')} className="hidden items-center gap-1 lg:flex">
               {navItems.map((item) => {
                 if (isGroup(item)) {
                   const active = isGroupActive(item)
@@ -203,7 +210,7 @@ export function AppShell({
               )}
               <button
                 type="button"
-                aria-label={mobileMenuOpen ? 'Menü bezárása' : 'Menü megnyitása'}
+                aria-label={mobileMenuOpen ? t('menuClose') : t('menuOpen')}
                 aria-expanded={mobileMenuOpen}
                 aria-controls="mobile-main-navigation"
                 onClick={() => setMobileMenuOpen((open) => !open)}
@@ -220,7 +227,7 @@ export function AppShell({
 
           <nav
             id="mobile-main-navigation"
-            aria-label="Mobil fő navigáció"
+            aria-label={t('mobileNavAria')}
             className={`-mx-4 mt-3 border-t border-line/70 px-4 pt-3 lg:hidden ${
               mobileMenuOpen ? 'grid gap-1' : 'hidden'
             }`}
@@ -304,5 +311,63 @@ export function Badge({
     <span title={title} className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${tones[tone]}`}>
       {children}
     </span>
+  )
+}
+
+const ICON_PATHS = {
+  info: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 11v5M12 7.5h.01',
+  refresh: 'M20.5 12a8.5 8.5 0 1 1-2.2-5.8M20.5 3.5V9h-5.5',
+  power: 'M12 3v9M17 6.6a7.5 7.5 0 1 1-10 0',
+  trash: 'M4 7h16M9.5 7V4.5h5V7M6.5 7l1 12.5h9L17.5 7',
+  chevron: 'm6 9.5 6 6 6-6',
+} as const
+
+export type IconName = keyof typeof ICON_PATHS
+
+/** Ikonos gomb: a `label` szolgálja a tooltipet és a képernyőolvasó szövegét. */
+export function IconButton({
+  icon,
+  label,
+  tone = 'neutral',
+  active = false,
+  disabled = false,
+  onClick,
+}: {
+  icon: IconName
+  label: string
+  tone?: 'neutral' | 'danger'
+  active?: boolean
+  disabled?: boolean
+  onClick?: () => void
+}) {
+  const tones = {
+    neutral: active
+      ? 'border-ink/30 bg-ink/8 text-ink'
+      : 'border-ink/20 text-ink-soft hover:border-ink/40 hover:text-ink',
+    danger: 'border-coral/40 bg-coral/10 text-coral hover:bg-coral/20',
+  }
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-pressed={active || undefined}
+      disabled={disabled}
+      onClick={onClick}
+      className={`flex h-8 w-8 items-center justify-center rounded-md border transition disabled:opacity-40 ${tones[tone]}`}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        className="h-4 w-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.8}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d={ICON_PATHS[icon]} />
+      </svg>
+    </button>
   )
 }

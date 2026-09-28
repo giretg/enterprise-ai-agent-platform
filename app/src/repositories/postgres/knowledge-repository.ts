@@ -1,6 +1,6 @@
 import { Prisma, type Document, type KnowledgeArtifact, type KnowledgeArtifactStatus } from '@prisma/client'
 import { prisma } from '@/lib/db'
-import { readKbPurpose, snippet } from '@/lib/kb-retrieval'
+import { KB_SECTION_SPLIT_SQL, kbSectionForSegment, readKbPurpose, snippet } from '@/lib/kb-retrieval'
 import type {
   DocumentListItem,
   DocumentRepository,
@@ -13,16 +13,40 @@ import type {
   KnowledgeRawHit,
 } from '../interfaces'
 
-export function toKbTsQuery(query: string): string {
+/** A keresőkifejezés szavai: kisbetű, nem-betű/szám karakternél vágva, dedup, min. 2 karakter. */
+export function kbQueryTerms(query: string): string[] {
   const seen = new Set<string>()
-  const tokens: string[] = []
-  for (const raw of query.toLowerCase().split(/\s+/)) {
-    const token = raw.replace(/[^\p{L}\p{N}]+/gu, '')
-    if (token.length < 2 || seen.has(token)) continue
-    seen.add(token)
-    tokens.push(token)
+  for (const token of query.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+    if (token.length >= 2) seen.add(token)
   }
-  return tokens.map((token) => `${token}:*`).join(' | ')
+  return [...seen]
+}
+
+export function toKbTsQuery(query: string): string {
+  return kbQueryTerms(query)
+    .map((token) => `${token}:*`)
+    .join(' | ')
+}
+
+/**
+ * Magyar szótövezés + stopszó-szűrés (Postgres `hungarian` snowball): a
+ * „színkódot" a „színkód"-ot is megtalálja, a „hogyan/az/milyen" kiesik. A
+ * `knowledge_chunks_fts_hu_idx` ugyanerre a kifejezésre épül.
+ */
+const KB_FTS_CONFIG = Prisma.sql`'hungarian'::regconfig`
+
+/** A kérdésszavak közül azok, amelyek a szakaszban szerepelnek (IDF-újrarangsoroláshoz). */
+function kbMatchedTermsSql(vector: Prisma.Sql, terms: string[]): Prisma.Sql {
+  return Prisma.sql`ARRAY(
+    SELECT t.term FROM unnest(${terms}::text[]) AS t(term)
+    WHERE ${vector} @@ to_tsquery(${KB_FTS_CONFIG}, t.term || ':*')
+  )`
+}
+
+/** Jelölt-sorrend: több fedett kérdésszó előbb, holtversenyben ts_rank. */
+function kbCandidateOrderSql(vector: Prisma.Sql, terms: string[], tsquery: string): Prisma.Sql {
+  return Prisma.sql`cardinality(${kbMatchedTermsSql(vector, terms)}) DESC,
+    ts_rank(${vector}, to_tsquery(${KB_FTS_CONFIG}, ${tsquery})) DESC`
 }
 
 export class PostgresDocumentRepository implements DocumentRepository {
@@ -100,24 +124,36 @@ export class PostgresDocumentRepository implements DocumentRepository {
   }
 
   async searchRaw(connectorId: string, query: string, limit: number): Promise<KnowledgeRawHit[]> {
+    const terms = kbQueryTerms(query)
     const tsquery = toKbTsQuery(query)
     if (!tsquery || limit <= 0) return []
-    // ponytail: sequential scan; GIN index on documents if raw search gets slow.
+    // Szakasz-szintű keresés: a raw fájl heading-szakaszai külön versenyeznek,
+    // hogy egy hosszú fájl ne nyerjen pusztán a hossza miatt.
+    // ponytail: sequential scan + futásidejű vágás; GIN/tárolt szakaszok, ha a raw korpusz nő.
+    const vector = Prisma.sql`to_tsvector(${KB_FTS_CONFIG}, s.body)`
     const rows = await prisma.$queryRaw<
-      Array<{ id: string; filename: string; snippet: string | null; score: number }>
+      Array<{
+        id: string
+        filename: string
+        extracted_text: string
+        ord: bigint
+        snippet: string | null
+        score: number
+        matched: string[]
+      }>
     >`
-      SELECT d.id, d.filename,
-             ts_rank(
-               to_tsvector('simple', coalesce(d.filename, '') || ' ' || coalesce(d.extracted_text, '')),
-               to_tsquery('simple', ${tsquery})
-             ) AS score,
+      SELECT d.id, d.filename, d.extracted_text, s.ord,
+             ts_rank(${vector}, to_tsquery(${KB_FTS_CONFIG}, ${tsquery})) AS score,
+             ${kbMatchedTermsSql(vector, terms)} AS matched,
              ts_headline(
-               'simple',
-               coalesce(d.filename, '') || ' ' || coalesce(d.extracted_text, ''),
-               to_tsquery('simple', ${tsquery}),
+               ${KB_FTS_CONFIG},
+               s.body,
+               to_tsquery(${KB_FTS_CONFIG}, ${tsquery}),
                'MaxWords=40, MinWords=12, MaxFragments=1, StartSel="", StopSel=""'
              ) AS snippet
       FROM documents d
+      CROSS JOIN LATERAL regexp_split_to_table(coalesce(d.extracted_text, ''), ${KB_SECTION_SPLIT_SQL})
+        WITH ORDINALITY AS s(body, ord)
       WHERE d.connector_id = ${connectorId}::uuid
         AND d.status = CAST('processed' AS "DocumentStatus")
         AND NOT EXISTS (
@@ -125,16 +161,17 @@ export class PostgresDocumentRepository implements DocumentRepository {
           WHERE a.source_document_id = d.id
             AND a.status = CAST('published' AS "KnowledgeArtifactStatus")
         )
-        AND to_tsvector('simple', coalesce(d.filename, '') || ' ' || coalesce(d.extracted_text, ''))
-            @@ to_tsquery('simple', ${tsquery})
-      ORDER BY score DESC
+        AND ${vector} @@ to_tsquery(${KB_FTS_CONFIG}, ${tsquery})
+      ORDER BY ${kbCandidateOrderSql(vector, terms, tsquery)}
       LIMIT ${limit}
     `
     return rows.map((row) => ({
       id: row.id,
       filename: row.filename,
+      section: kbSectionForSegment(row.extracted_text, Number(row.ord) - 1),
       snippet: snippet(row.snippet?.trim() || row.filename),
       score: Number(row.score),
+      matched: row.matched,
     }))
   }
 
@@ -206,8 +243,10 @@ export class PostgresKnowledgeChunkRepository implements KnowledgeChunkRepositor
     query: string,
     limit: number,
   ): Promise<KnowledgeChunkSearchHit[]> {
+    const terms = kbQueryTerms(query)
     const tsquery = toKbTsQuery(query)
     if (!tsquery || connectorIds.length === 0 || limit <= 0) return []
+    const vector = Prisma.sql`to_tsvector(${KB_FTS_CONFIG}, coalesce(c.title, '') || ' ' || c.text)`
     const rows = await prisma.$queryRaw<
       Array<{
         artifact_id: string
@@ -219,19 +258,18 @@ export class PostgresKnowledgeChunkRepository implements KnowledgeChunkRepositor
         text: string
         source_ref: Prisma.JsonValue
         score: number
+        matched: string[]
       }>
     >`
       SELECT c.artifact_id, c.connector_id, c.path, c.title, c.type, c.section, c.text, c.source_ref,
-             ts_rank(
-               to_tsvector('simple', coalesce(c.title, '') || ' ' || c.text),
-               to_tsquery('simple', ${tsquery})
-             ) AS score
+             ts_rank(${vector}, to_tsquery(${KB_FTS_CONFIG}, ${tsquery})) AS score,
+             ${kbMatchedTermsSql(vector, terms)} AS matched
       FROM knowledge_chunks c
       INNER JOIN knowledge_artifacts a ON a.id = c.artifact_id
       WHERE c.connector_id IN (${Prisma.join(connectorIds.map((id) => Prisma.sql`${id}::uuid`))})
         AND a.status = CAST('published' AS "KnowledgeArtifactStatus")
-        AND to_tsvector('simple', coalesce(c.title, '') || ' ' || c.text) @@ to_tsquery('simple', ${tsquery})
-      ORDER BY score DESC
+        AND ${vector} @@ to_tsquery(${KB_FTS_CONFIG}, ${tsquery})
+      ORDER BY ${kbCandidateOrderSql(vector, terms, tsquery)}
       LIMIT ${limit}
     `
     return rows.map((row) => ({
@@ -244,6 +282,7 @@ export class PostgresKnowledgeChunkRepository implements KnowledgeChunkRepositor
       text: row.text,
       sourceRef: row.source_ref,
       score: Number(row.score),
+      matched: row.matched,
     }))
   }
 

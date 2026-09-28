@@ -6,6 +6,7 @@ import {
   assignSkillAction,
   unassignSkillAction,
   setSkillEnabledAction,
+  setSkillEntryAction,
   type AgentSkillRow,
   type AssignableSkill,
   type PendingSkill,
@@ -149,6 +150,7 @@ export function AgentSkillsPanel({
                   <Badge tone={READINESS_TONE[s.readiness.color]}>
                     {READINESS_LABEL[s.readiness.color]}
                   </Badge>
+                  {s.entry && s.enabled ? <Badge tone="success">belépő</Badge> : null}
                   {!s.enabled && <Badge tone="neutral">letiltva</Badge>}
                 </div>
               </div>
@@ -193,6 +195,25 @@ export function AgentSkillsPanel({
                   >
                     {s.enabled ? 'Letiltás' : 'Engedélyezés'}
                   </button>
+                  {s.enabled ? (
+                    <button
+                      type="button"
+                      disabled={pending}
+                      title="A belépő skill az agent munkamenet-leírása: MCP-n a kliens-AI minden új feladatnál ezt olvassa el először, és ebből tudja, melyik másik skillt használja. Agentenként legfeljebb egy lehet; a változás újrapublikálás után él."
+                      onClick={() =>
+                        run(() =>
+                          setSkillEntryAction({
+                            agentId,
+                            skillVersionId: s.skillVersionId,
+                            entry: !s.entry,
+                          }),
+                        )
+                      }
+                      className="rounded-full border border-ink-faint/30 px-3 py-1 text-xs font-medium text-ink-soft disabled:opacity-50"
+                    >
+                      {s.entry ? 'Belépő jelölés levétele' : 'Legyen belépő skill'}
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     disabled={pending}
@@ -209,6 +230,14 @@ export function AgentSkillsPanel({
           ))}
         </ul>
       )}
+
+      {canEdit && assigned.length > 0 ? (
+        <p className="mt-2 text-xs text-ink-faint">
+          Belépő skill: opcionális. Ha bejelölöd, az MCP-kliens minden új feladatnál ezt olvassa el
+          először. A platform-szabályok (memória, jóváhagyás, zárás) a briefingben vannak — nem kell
+          skillbe másolni. Újrapublikálás után él.
+        </p>
+      ) : null}
 
       {canEdit && suggestedAssignable.length > 0 ? (
         <div className="mt-4 rounded-lg border border-sage/30 bg-sage/10 px-3 py-3">

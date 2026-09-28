@@ -36,13 +36,33 @@ function mapActionError(error: unknown): ActionResult<never> {
   return fail('schema_mismatch')
 }
 
+export async function listGatewayOperationHistoryAction(input: {
+  page?: number
+}): Promise<
+  ActionResult<{ rows: GatewayPendingOperationRow[]; total: number; page: number; pageSize: number }>
+> {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const page = input.page ?? 1
+    const result = await services.gatewayOperations.listHistory({
+      tenantId: ctx.activeTenantId,
+      actor: actorFrom(ctx),
+      page,
+    })
+    return ok({ ...result, page: Math.max(1, page) })
+  } catch (error) {
+    return mapActionError(error)
+  }
+}
+
 export async function listPendingGatewayOperationsAction(): Promise<
   ActionResult<{ operations: GatewayPendingOperationRow[] }>
 > {
   try {
     const ctx = await requireTenantRole('viewer')
     const actor = actorFrom(ctx)
-    // #618 D4: approver/admin sees every pending write, anyone else only their own.
+    // #618 D4: approver/admin lát minden pending írást; más csak a sajátját.
+    // #663: a megnevezett jóváhagyó a rá váró idegen kéréseket is (operator is).
     const operations = await services.gatewayOperations.listPending({
       tenantId: ctx.activeTenantId,
       ...(canApproveGatewayOperation(actor) ? {} : { principalUserId: actor.userId }),

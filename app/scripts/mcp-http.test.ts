@@ -23,6 +23,7 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  KB_LIST_INDEX_TOOL,
   ENTERPRISE_TOOLS,
   invokeEnterpriseTool,
   type EnterpriseToolDeps,
@@ -50,6 +51,7 @@ import {
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
 import { PROJECT_WORK_TOOLS } from '../src/domain/project-work/mcp'
+import { renderAgentBriefing, renderAgentCheckout } from '../src/lib/agent-checkout'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
 const ORIGIN = 'https://app.example.com'
@@ -123,6 +125,8 @@ const AGENT_ID = '66666666-6666-4666-8666-666666666666'
 const OTHER_DEFINITION_ID = '77777777-7777-4777-8777-777777777777'
 const CONNECTOR_ID = '88888888-8888-4888-8888-888888888888'
 const GRANT_ID = '99999999-9999-4999-8999-999999999999'
+const FOREIGN_AGENT_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const FOREIGN_DEFINITION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 
 const SAMPLE_DEFINITION = {
   definitionId: DEFINITION_ID,
@@ -248,7 +252,11 @@ function runtimeDeps(overrides: {
     seen.loadDefinitionTenantId = input.tenantId
     if (input.definitionId === OTHER_DEFINITION_ID) return null
     if (input.tenantId !== TENANT_ID) return null
+    if (input.definitionId === FOREIGN_DEFINITION_ID) {
+      return { ...SAMPLE_DEFINITION, definitionId: FOREIGN_DEFINITION_ID, agentId: FOREIGN_AGENT_ID }
+    }
     if (input.definitionId && input.definitionId !== DEFINITION_ID) return null
+    if (!input.definitionId && input.agentId && input.agentId !== AGENT_ID) return null
     return SAMPLE_DEFINITION
   }
   const operations = new MemoryGatewayOperationStore()
@@ -849,6 +857,31 @@ async function main() {
     assert.ok(audit.some((row) => row.action === 'mcp.tools.call' && row.inputRef === MCP_WHOAMI_TOOL))
   })
 
+  await check('#666 mcp-session-id + user-agent pecsét az audit-sorra', async () => {
+    const { deps, audit } = runtimeDeps()
+    await initialize(deps)
+    await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 301,
+        method: 'tools/call',
+        params: { name: MCP_WHOAMI_TOOL, arguments: {} },
+      },
+      {
+        authorization: `Bearer ${TOKEN}`,
+        'mcp-session-id': 'sess-1001',
+        'user-agent': 'Claude-Desktop/1.0',
+      },
+      deps,
+    )
+    const row = audit.find(
+      (r) => r.action === 'mcp.tools.call' && r.inputRef === MCP_WHOAMI_TOOL,
+    ) as { metadata?: Record<string, unknown> } | undefined
+    assert.equal(row?.metadata?.sessionId, 'sess-1001')
+    assert.equal(row?.metadata?.clientName, 'claude')
+  })
+
   await check('skill catalog is available through tools/list and tools/call', async () => {
     const { deps, audit } = runtimeDeps({ skills: [SAMPLE_SKILL] })
     await initialize(deps)
@@ -992,7 +1025,7 @@ async function main() {
     assert.match(payload.contentHash ?? '', /^[0-9a-f]{64}$/)
   })
 
-  await check('get_definition carries general memory; denied memory read is omitted', async () => {
+  await check('get_definition carries memory index; denied memory read is omitted', async () => {
     const { deps } = runtimeDeps({ role: 'admin' })
     const calls: Array<{ toolName: string; args: Record<string, unknown> }> = []
     let denied = false
@@ -1001,8 +1034,25 @@ async function main() {
       if (denied) {
         return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'agent_access_denied' }) }] }
       }
-      const items = Array.from({ length: 50 }, (_, i) => ({ id: `m${i}`, title: `fact ${i}`, body: 'x'.repeat(100) }))
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, items }) }] }
+      const focus = { id: 'focus-1', kind: 'focus', title: 'Fókusz', body: 'Most: a 4. szakasz.' }
+      const entries = Array.from({ length: 50 }, (_, i) => ({
+        id: `m${i}`,
+        kind: 'finding',
+        title: `fact ${i}`,
+        createdAt: '2026-01-01T00:00:00.000Z',
+      }))
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              items: [focus],
+              index: { entries, totalCount: 50, offset: 0, nextOffset: null },
+            }),
+          },
+        ],
+      }
     }
     await initialize(deps)
     const getDefinition = async (id: number) => {
@@ -1021,22 +1071,124 @@ async function main() {
       assert.equal(body.result?.isError, undefined)
       return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
         definitionId?: string
-        generalMemory?: { items: Array<{ id: string }>; truncated: boolean; note: string }
+        focus?: { items: Array<{ id: string; body: string }>; note: string }
+        memoryIndex?: {
+          entries: Array<{ id: string; body?: string }>
+          totalCount: number
+          nextOffset: number | null
+          note: string
+        }
       }
     }
 
     const payload = await getDefinition(60)
     assert.equal(calls[0]?.toolName, 'platform.project_memory.read')
     assert.deepEqual(calls[0]?.args, { definitionId: DEFINITION_ID })
-    assert.equal(payload.generalMemory?.items[0]?.id, 'm0')
-    assert.equal(payload.generalMemory?.truncated, true)
-    assert.ok((payload.generalMemory?.items.length ?? 0) <= 40)
-    assert.match(payload.generalMemory?.note ?? '', /overrides search results/)
+    assert.equal(payload.memoryIndex?.entries[0]?.id, 'm0')
+    assert.equal(payload.memoryIndex?.totalCount, 50)
+    assert.equal(payload.memoryIndex?.nextOffset, null)
+    assert.match(payload.memoryIndex?.note ?? '', /overrides search results/)
+
+    // #656: a fókusz teljes terjedelemben, a memória-lista előtt, csonkolás nélkül.
+    const keys = Object.keys(payload)
+    assert.deepEqual(payload.focus?.items.map((item) => item.id), ['focus-1'])
+    assert.equal(payload.focus?.items[0]?.body, 'Most: a 4. szakasz.')
+    assert.ok(keys.indexOf('focus') < keys.indexOf('memoryIndex'))
+    assert.equal(payload.memoryIndex?.entries.some((item) => item.id === 'focus-1'), false)
+    assert.equal(payload.memoryIndex?.entries[0]?.body, undefined)
 
     denied = true
     const withoutMemory = await getDefinition(61)
     assert.equal(withoutMemory.definitionId, DEFINITION_ID)
-    assert.equal(withoutMemory.generalMemory, undefined)
+    assert.equal(withoutMemory.memoryIndex, undefined)
+  })
+
+  await check('#729 get_definition localRoots sibling and memory note', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    deps.loadDefinition = async () => ({
+      ...SAMPLE_DEFINITION,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, localRoots: ['~/Projects/platform'] },
+    })
+    deps.invokeProjectWork = async () => ({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            ok: true,
+            items: [],
+            index: { entries: [{ id: 'm0', kind: 'finding', title: 'fact' }], totalCount: 1, offset: 0, nextOffset: null },
+          }),
+        },
+      ],
+    })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 62,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { definitionId: DEFINITION_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(res)) as { result?: { isError?: boolean; content?: Array<{ text: string }> } }
+    assert.equal(body.result?.isError, undefined)
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      localRoots?: { paths: string[]; note: string }
+      memoryIndex?: { note: string }
+      briefing?: string
+      snapshot?: { localRoots?: string[] }
+    }
+    assert.deepEqual(payload.localRoots?.paths, ['~/Projects/platform'])
+    assert.match(payload.localRoots?.note ?? '', /Hints, not a grant/)
+    assert.match(payload.memoryIndex?.note ?? '', /see localRoots/)
+    assert.match(payload.briefing ?? '', /across machines/)
+    assert.deepEqual(payload.snapshot?.localRoots, ['~/Projects/platform'])
+  })
+
+  await check('#658 get_definition: recent session logs in briefing and recentSessionLogs block', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    deps.invokeProjectWork = async () => ({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            ok: true,
+            recentSessionLogs: [
+              {
+                id: 'log-1',
+                title: 'Riport elküldve',
+                createdAt: '2026-09-20T10:00:00.000Z',
+                withUserName: 'Anna',
+              },
+            ],
+            index: { entries: [], totalCount: 0, offset: 0, nextOffset: null },
+          }),
+        },
+      ],
+    })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 62,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { definitionId: DEFINITION_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(res)) as { result?: { content?: Array<{ text: string }> } }
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      briefing?: string
+      recentSessionLogs?: { entries: Array<{ id: string; title: string }> }
+    }
+    assert.match(payload.briefing ?? '', /## Recently/)
+    assert.match(payload.briefing ?? '', /Riport elküldve/)
+    assert.equal(payload.recentSessionLogs?.entries[0]?.id, 'log-1')
   })
 
   await check('operator without ResourceGrant cannot list or get a definition', async () => {
@@ -1174,6 +1326,55 @@ async function main() {
     assert.ok(agents?.content.includes(`${ORIGIN}/api/mcp/acme`))
     assert.ok(
       audit.some((row) => row.action === 'mcp.tools.call' && row.inputRef === MCP_AGENT_CHECKOUT_TOOL),
+    )
+  })
+
+  await check('checkout excludes a skill retired after the definition was published', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    deps.loadDefinition = async () => ({
+      ...SAMPLE_DEFINITION,
+      snapshot: {
+        ...SAMPLE_DEFINITION.snapshot,
+        skills: [
+          {
+            skillId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+            skillVersionId: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
+            name: 'retired-procedure',
+          },
+        ],
+      },
+    })
+    deps.loadSkillVersions = async () => [
+      {
+        skillId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+        skillVersionId: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
+        status: 'retired',
+        name: 'retired-procedure',
+        description: 'Must not be written to a fresh checkout.',
+        content: { instructions: ['Do not expose this retired instruction.'], triggerKeywords: [], parameters: [] },
+        requires: [],
+      },
+    ]
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 201,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_CHECKOUT_TOOL, arguments: { agentId: AGENT_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(res)) as { result?: { content?: Array<{ text?: string }> } }
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as {
+      files?: Array<{ path: string; content: string }>
+    }
+    assert.equal(payload.files?.some((file) => file.path.includes('retired-procedure')), false)
+    assert.equal(
+      payload.files?.some((file) => file.content.includes('Do not expose this retired instruction.')),
+      false,
     )
   })
 
@@ -1422,6 +1623,105 @@ async function main() {
     assert.equal(payload.code, 'agent_access_denied')
   })
 
+  async function callWithAgentHeader(
+    deps: McpRuntimeDeps,
+    name: string,
+    args: Record<string, unknown>,
+    agentHeader: string,
+  ) {
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 40, method: 'tools/call', params: { name, arguments: args } },
+      { authorization: `Bearer ${TOKEN}`, 'x-excellence-agent-id': agentHeader },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }> }
+    }
+    return {
+      isError: body.result?.isError,
+      payload: JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>,
+    }
+  }
+
+  await check('#682 agent header only → current definition, audit records the agent', async () => {
+    const { deps, audit } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const out = await callWithAgentHeader(deps, GOOGLE_DRIVE_SEARCH_TOOL, { nameContains: 'x' }, AGENT_ID)
+    assert.equal(out.isError, undefined)
+    const ok = audit.find((row) => row.action === 'enterprise.tool.ok')
+    assert.ok(ok)
+    assert.ok(JSON.stringify(ok).includes(DEFINITION_ID))
+    const def = await callWithAgentHeader(deps, MCP_AGENT_GET_DEFINITION_TOOL, {}, AGENT_ID)
+    assert.equal(def.payload.definitionId, DEFINITION_ID)
+  })
+
+  await check('#682 agent header + matching definitionId → OK', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const out = await callWithAgentHeader(
+      deps,
+      GOOGLE_DRIVE_SEARCH_TOOL,
+      { definitionId: DEFINITION_ID },
+      AGENT_ID,
+    )
+    assert.equal(out.isError, undefined)
+  })
+
+  await check('#682 agent header + other agent definitionId / agentId → agent_mismatch, audited', async () => {
+    const { deps, audit } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const out = await callWithAgentHeader(
+      deps,
+      GOOGLE_DRIVE_SEARCH_TOOL,
+      { definitionId: FOREIGN_DEFINITION_ID },
+      AGENT_ID,
+    )
+    assert.equal(out.isError, true)
+    assert.equal(out.payload.code, 'agent_mismatch')
+    const def = await callWithAgentHeader(
+      deps,
+      MCP_AGENT_GET_DEFINITION_TOOL,
+      { agentId: FOREIGN_AGENT_ID },
+      AGENT_ID,
+    )
+    assert.equal(def.payload.code, 'agent_mismatch')
+    assert.ok(
+      audit.some(
+        (row) =>
+          row.action === 'mcp.tools.call.deny' &&
+          (row.metadata as { code?: string }).code === 'agent_mismatch',
+      ),
+    )
+    assert.equal(audit.some((row) => row.action === 'enterprise.tool.ok'), false)
+  })
+
+  await check('#682 unknown / other-tenant / malformed agent header → agent_not_found, audited', async () => {
+    const { deps, audit } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    for (const header of [FOREIGN_AGENT_ID, 'not-a-uuid']) {
+      const out = await callWithAgentHeader(deps, GOOGLE_DRIVE_SEARCH_TOOL, {}, header)
+      assert.equal(out.isError, true)
+      assert.equal(out.payload.code, 'agent_not_found')
+    }
+    assert.equal(
+      audit.filter(
+        (row) =>
+          row.action === 'mcp.tools.call.deny' &&
+          (row.metadata as { code?: string }).code === 'agent_not_found',
+      ).length,
+      2,
+    )
+  })
+
+  await check('#682 agent header after access is revoked → agent_not_found', async () => {
+    const { deps } = runtimeDeps({ role: 'operator', grantedAgentIds: new Set() })
+    await initialize(deps)
+    const out = await callWithAgentHeader(deps, KB_LIST_INDEX_TOOL, {}, AGENT_ID)
+    assert.equal(out.payload.code, 'agent_not_found')
+  })
+
   await check('google_drive_create_folder enqueues awaiting_approval without writing', async () => {
     const { deps, audit } = runtimeDeps({ role: 'admin' })
     await initialize(deps)
@@ -1617,6 +1917,230 @@ async function main() {
     const body = (await readJson(res)) as { error?: { message?: string } }
     assert.ok(body.error, JSON.stringify(body))
     assert.match(body.error?.message ?? '', /not found/i)
+  })
+
+  async function listPrompts(deps: McpRuntimeDeps) {
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 40, method: 'prompts/list', params: {} },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    return (await readJson(res)) as {
+      result?: { prompts?: Array<{ name: string; title?: string; arguments?: Array<{ name: string }> }> }
+      error?: unknown
+    }
+  }
+
+  async function getPrompt(deps: McpRuntimeDeps, args: Record<string, string> = {}) {
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 41, method: 'prompts/get', params: { name: 'drive-assistant', arguments: args } },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    return (await readJson(res)) as {
+      result?: { messages?: Array<{ role: string; content: { type: string; text: string } }> }
+      error?: { message?: string }
+    }
+  }
+
+  await check('#651 visible agent → /drive-assistant prompt in its role, with feladat, audited', async () => {
+    const { deps, audit } = runtimeDeps({ role: 'operator', grantedAgentIds: new Set([AGENT_ID]) })
+    const list = await listPrompts(deps)
+    assert.equal(list.error, undefined, JSON.stringify(list))
+    const prompt = list.result?.prompts?.find((row) => row.name === 'drive-assistant')
+    assert.ok(prompt, JSON.stringify(list))
+    assert.equal(prompt.title, 'Drive assistant (Inspect Drive)')
+    assert.deepEqual(prompt.arguments?.map((row) => row.name), ['feladat'])
+
+    const body = await getPrompt(deps, { feladat: 'Q3 riport' })
+    assert.equal(body.error, undefined, JSON.stringify(body))
+    const text = body.result?.messages?.[0]?.content.text ?? ''
+    assert.equal(body.result?.messages?.[0]?.role, 'user')
+    assert.match(text, /\n## Who you are\n\nYou are now Drive assistant\./)
+    assert.match(text, /Do not ask which agent to use/)
+    assert.ok(text.includes(renderAgentBriefing({ definition: SAMPLE_DEFINITION, skills: [] })))
+    assert.match(text, /## Today's task\n\nQ3 riport\n$/)
+    assert.ok(
+      audit.some(
+        (row) =>
+          row.action === 'mcp.prompts.get' &&
+          row.inputRef === 'drive-assistant' &&
+          (row.metadata as { agentId?: string }).agentId === AGENT_ID,
+      ),
+    )
+  })
+
+  await check('#651 prompt follows the current published definition', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const before = (await getPrompt(deps)).result?.messages?.[0]?.content.text ?? ''
+    assert.match(before, /version 1\)/)
+    deps.loadDefinition = async () => ({
+      ...SAMPLE_DEFINITION,
+      definitionId: OTHER_DEFINITION_ID,
+      version: 2,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, roleInstruction: 'Inspect Drive, v2 rules' },
+    })
+    const after = (await getPrompt(deps)).result?.messages?.[0]?.content.text ?? ''
+    assert.match(after, /version 2\)/)
+    assert.match(after, /Inspect Drive, v2 rules/)
+    assert.ok(!after.includes(`definitionId: ${DEFINITION_ID}`))
+  })
+
+  await check('#652 get_definition: briefing is the first key, same text as the prompt and checkout', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const skillVersionId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    const skill = {
+      skillId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      skillVersionId,
+      name: 'napi-riport',
+      description: 'Daily marketing report.',
+      content: { instructions: ['Write the report.'], triggerKeywords: ['riport'], parameters: [] },
+      requires: [],
+    }
+    const definition = {
+      ...SAMPLE_DEFINITION,
+      snapshot: {
+        ...SAMPLE_DEFINITION.snapshot,
+        skills: [{ skillId: skill.skillId, skillVersionId, name: skill.name }],
+      },
+    }
+    deps.loadDefinition = async () => definition
+    deps.loadSkillVersions = async () => [skill]
+    await initialize(deps)
+
+    const unbound = await callWithAgentHeader(deps, MCP_AGENT_GET_DEFINITION_TOOL, { agentId: AGENT_ID }, '')
+    assert.equal(Object.keys(unbound.payload)[0], 'briefing')
+    const briefing = unbound.payload.briefing as string
+    assert.equal(briefing, renderAgentBriefing({ definition, skills: [skill] }))
+    assert.match(briefing, /skill:\/\/napi-riport\/SKILL\.md/)
+    const prompt = (await getPrompt(deps)).result?.messages?.[0]?.content.text ?? ''
+    assert.ok(prompt.includes(briefing))
+    const checkout = renderAgentCheckout({ definition, skills: [skill], mcpUrl: 'https://app.example.com/api/mcp/acme' })
+    assert.ok(checkout.files.find((f) => f.path === 'AGENTS.md')?.content.includes(briefing))
+
+    const bound = await callWithAgentHeader(deps, MCP_AGENT_GET_DEFINITION_TOOL, {}, AGENT_ID)
+    const boundBriefing = bound.payload.briefing as string
+    assert.match(boundBriefing, /do not pass definitionId/)
+    const hermes = renderAgentCheckout({
+      definition,
+      skills: [skill],
+      mcpUrl: 'https://app.example.com/api/mcp/acme',
+      harness: 'hermes',
+    })
+    assert.ok(hermes.files.find((f) => f.path === 'SOUL.md')?.content.includes(boundBriefing))
+  })
+
+  await check('#653 skills are scoped to the agent, pinned version, entry skill in briefing and checkout', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const skillPkg = (name: string, skillVersionId: string, step: string) =>
+      buildMcpSkillPackage({
+        skillId: `${skillVersionId.slice(0, 35)}f`,
+        skillVersionId,
+        name,
+        description: `${name} skill.`,
+        content: { instructions: [step], triggerKeywords: [], parameters: [] },
+        requires: [],
+        attachments: [],
+      })
+    const workflowV1 = skillPkg('marketing-workflow', '10000000-0000-4000-8000-000000000001', 'v1 steps')
+    const workflowV2 = skillPkg('marketing-workflow', '10000000-0000-4000-8000-000000000002', 'v2 steps')
+    const seo = skillPkg('near-win-seo', '10000000-0000-4000-8000-000000000003', 'seo steps')
+    const sales = skillPkg('sales-pipeline', '10000000-0000-4000-8000-000000000004', 'sales steps')
+    const allVersions = [workflowV1, workflowV2, seo, sales]
+    deps.listMcpSkills = async ({ skillVersionIds }) =>
+      skillVersionIds
+        ? allVersions.filter((pkg) => skillVersionIds.includes(pkg.skillVersionId))
+        : [workflowV2, seo, sales]
+    const pin = (pkg: McpSkillPackage, entry = false) => ({
+      skillId: pkg.skillId,
+      skillVersionId: pkg.skillVersionId,
+      name: pkg.name,
+      ...(entry ? { entry: true as const } : {}),
+    })
+    const kati = {
+      ...SAMPLE_DEFINITION,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, name: 'Kati', skills: [pin(seo), pin(workflowV1, true)] },
+    }
+    const salesAgent = {
+      ...SAMPLE_DEFINITION,
+      definitionId: FOREIGN_DEFINITION_ID,
+      agentId: FOREIGN_AGENT_ID,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, name: 'Sales', skills: [pin(sales)] },
+    }
+    deps.loadDefinition = async ({ definitionId, agentId }) => {
+      if (definitionId === FOREIGN_DEFINITION_ID || agentId === FOREIGN_AGENT_ID) return salesAgent
+      if (definitionId && definitionId !== DEFINITION_ID) return null
+      return kati
+    }
+    await initialize(deps)
+    const uris = (payload: Record<string, unknown>) =>
+      (payload.skills as Array<{ uri: string }>).map((row) => row.uri)
+    const read = async (args: Record<string, unknown>, header = '') =>
+      (await callWithAgentHeader(deps, MCP_SKILL_READ_TOOL, args, header)).payload as {
+        contents?: Array<{ text: string }>
+        assignedToAgent?: boolean
+      }
+
+    const katiList = (await callWithAgentHeader(deps, MCP_SKILLS_LIST_TOOL, { definitionId: DEFINITION_ID }, '')).payload
+    assert.deepEqual(uris(katiList), ['skill://marketing-workflow/SKILL.md', 'skill://near-win-seo/SKILL.md'])
+    assert.equal((katiList.skills as Array<{ entry?: boolean }>)[0]?.entry, true)
+    const salesList = (await callWithAgentHeader(deps, MCP_SKILLS_LIST_TOOL, { agentId: FOREIGN_AGENT_ID }, '')).payload
+    assert.deepEqual(uris(salesList), ['skill://sales-pipeline/SKILL.md'])
+    const tenantList = (await callWithAgentHeader(deps, MCP_SKILLS_LIST_TOOL, {}, '')).payload
+    assert.equal(uris(tenantList).length, 3, 'no definitionId → every active tenant skill, as before')
+
+    const workflowUri = 'skill://marketing-workflow/SKILL.md'
+    assert.match((await read({ uri: workflowUri, definitionId: DEFINITION_ID })).contents?.[0]?.text ?? '', /v1 steps/)
+    assert.match((await read({ uri: workflowUri })).contents?.[0]?.text ?? '', /v2 steps/)
+    const outside = await read({ uri: 'skill://sales-pipeline/SKILL.md', definitionId: DEFINITION_ID })
+    assert.equal(outside.assignedToAgent, false)
+    assert.match(outside.contents?.[0]?.text ?? '', /sales steps/)
+    const withOthers = (
+      await callWithAgentHeader(deps, MCP_SKILLS_LIST_TOOL, { definitionId: DEFINITION_ID, includeOtherSkills: true }, '')
+    ).payload.skills as Array<{ uri: string; assignedToAgent?: boolean }>
+    assert.deepEqual(withOthers.find((row) => row.uri === 'skill://sales-pipeline/SKILL.md')?.assignedToAgent, false)
+
+    const boundList = (await callWithAgentHeader(deps, MCP_SKILLS_LIST_TOOL, {}, AGENT_ID)).payload
+    assert.deepEqual(uris(boundList), uris(katiList))
+    assert.match((await read({ uri: workflowUri }, AGENT_ID)).contents?.[0]?.text ?? '', /v1 steps/)
+    const resources = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 50, method: 'resources/list', params: {} },
+      { authorization: `Bearer ${TOKEN}`, 'x-excellence-agent-id': AGENT_ID },
+      deps,
+    )
+    const resourceUris = (
+      (await readJson(resources)) as { result?: { resources?: Array<{ uri: string }> } }
+    ).result?.resources?.map((row) => row.uri)
+    assert.deepEqual(resourceUris?.sort(), ['skill://marketing-workflow/SKILL.md', 'skill://near-win-seo/SKILL.md'])
+
+    const checkoutSkills = [workflowV1, seo].map((pkg) => ({
+      skillId: pkg.skillId,
+      skillVersionId: pkg.skillVersionId,
+      name: pkg.name,
+      description: pkg.description,
+      content: { instructions: ['x'], triggerKeywords: [], parameters: [] },
+      requires: [],
+    }))
+    deps.loadSkillVersions = async () => checkoutSkills
+    const briefing = (await callWithAgentHeader(deps, MCP_AGENT_GET_DEFINITION_TOOL, { agentId: AGENT_ID }, '')).payload
+      .briefing as string
+    assert.match(briefing, /3\. For every new task, first read the entry skill marketing-workflow \(`skill:\/\/marketing-workflow\/SKILL\.md`\)/)
+    assert.match(briefing, /- marketing-workflow \(entry skill — read first on every new task\):[^\n]*\n- near-win-seo:/)
+    const agentsMd = renderAgentCheckout({ definition: kati, skills: checkoutSkills, mcpUrl: 'https://app.example.com/api/mcp/acme' })
+      .files.find((f) => f.path === 'AGENTS.md')?.content
+    assert.ok(agentsMd?.includes(briefing))
+  })
+
+  await check('#651 agent not visible to the user → no prompt listed, prompts/get fails', async () => {
+    const { deps } = runtimeDeps({ role: 'operator' })
+    const list = await listPrompts(deps)
+    assert.ok(!list.result?.prompts?.some((row) => row.name === 'drive-assistant'), JSON.stringify(list))
+    const body = await getPrompt(deps)
+    assert.ok(body.error, JSON.stringify(body))
+    assert.equal(body.result, undefined)
   })
 
   await check('protected resource metadata resource is {origin}/api/mcp at every well-known path', async () => {

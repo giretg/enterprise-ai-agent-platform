@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation'
+import { getTranslations } from 'next-intl/server'
 import { getAuthContext } from '@/auth/context'
 import { Card } from '@/components/ui/shell'
 import {
@@ -27,23 +28,23 @@ export default async function PendingApprovalPage() {
   }
 
   const hasRole = Boolean(user?.status === 'active' && user.role)
+  const t = await getTranslations('ControlPlane.pending')
+  const email = user?.email ?? ''
 
   return (
     <div className="mx-auto max-w-xl">
-      <Card title={hasRole ? 'Nincs szervezet-tagságod' : 'Admin-jóváhagyásra vár'}>
+      <Card title={hasRole ? t('titleNoMembership') : t('titleAwaiting')}>
         <p className="text-sm text-ink-soft">
           {hasRole
-            ? `A fiókod (${user?.email}) aktív, de még nincs szervezethez rendelve. Egy adminisztrátornak tenanthoz kell adnia, mielőtt a munkatársakat látnád.`
+            ? t('bodyNoMembership', { email })
             : user
-              ? `A fiókod (${user.email}) regisztrálva van, de még nincs hozzá szerepkör kiosztva. Egy adminisztrátornak jóvá kell hagynia a hozzáférést, mielőtt bármit láthatnál a Control Plane-en.`
-              : 'A fiókod regisztrálva van, de még nincs hozzá szerepkör kiosztva. Egy adminisztrátornak jóvá kell hagynia a hozzáférést, mielőtt bármit láthatnál a Control Plane-en.'}
+              ? t('bodyAwaitingKnown', { email })
+              : t('bodyAwaitingUnknown')}
         </p>
         {user?.status === 'suspended' && (
-          <p className="mt-3 text-sm text-coral-deep">A fiókod fel van függesztve.</p>
+          <p className="mt-3 text-sm text-coral-deep">{t('suspended')}</p>
         )}
-        <p className="mt-4 text-xs text-ink-faint">
-          Ha úgy gondolod, hogy ez tévedés, keresd meg a rendszergazdát.
-        </p>
+        <p className="mt-4 text-xs text-ink-faint">{t('hint')}</p>
       </Card>
     </div>
   )

@@ -1,14 +1,45 @@
+import { dump as yamlDump } from 'js-yaml'
+import { MCP_ALLOWED_TOOLS } from '@/auth/mcp-principal'
 import type { AgentDefinition } from '@/domain/agent-definition'
+import { renderSnapshotRulesBriefingBlock } from '@/domain/agent-definition/snapshot-rules'
 import { hashSnapshot } from '@/domain/agent-definition'
 import { CODE_EXTENSIONS } from '@/lib/skill/skill-package-adapter'
 import { serializeSkillMd } from '@/lib/skill/skill-md-export'
+import { skillFileUri, skillUriName } from '@/lib/skill/mcp-skill'
+import type { SessionLogHeadline } from '@/domain/project-work/project-work-service'
 import type { SkillContent, SkillRequirement } from '@/lib/skill/skill-content'
+import { renderKnowledgePlacementBlock } from '@/lib/agent-knowledge-placement'
+import { localRootsCheckoutFile } from '@/lib/agent-local-roots'
+import { HERMES_SYNC_PROMPT } from '@/lib/mcp-client-setup'
 
-const CHECKOUT_EXTENSIONS = new Set(['md', 'json'])
+const MCP_TOOL_SET = new Set<string>(MCP_ALLOWED_TOOLS)
+
+const CHECKOUT_EXTENSIONS = new Set(['md', 'json', 'yaml'])
 const MANIFEST_KIND = 'enterprise-agent-checkout'
 const SKILL_DIR = '.enterprise-agent/skills'
+const HERMES_SKILL_DIR = 'skills/excellence'
+/** Must match MCP_AGENT_ID_HEADER in auth/mcp-server.ts (#682 WP-2). */
+const AGENT_ID_HEADER = 'X-Excellence-Agent-Id'
+/** Platform tools a Hermes Bot needs besides the agent's own capabilities (#682 WP-1). */
+const HERMES_BASE_TOOLS = [
+  'platform.whoami',
+  'platform.agent.get_definition',
+  'platform.gateway_operation.get',
+  'platform.projects.list',
+  'platform.projects.create',
+  'platform.project_memory.read',
+  'platform.project_memory.write',
+  'platform.work_file.list',
+  'platform.work_file.read',
+  'platform.work_file.write',
+  'platform.work_file.delete',
+  'kb_list_index',
+  'kb_search',
+  'kb_get_page',
+  'kb_get_document',
+]
 
-export const CHECKOUT_HARNESSES = ['claude', 'codex', 'goose', 'grok'] as const
+export const CHECKOUT_HARNESSES = ['claude', 'codex', 'goose', 'grok', 'hermes'] as const
 export type CheckoutHarness = (typeof CHECKOUT_HARNESSES)[number]
 
 const CHECKOUT_WRITE_RECIPE_STEPS = [
@@ -36,14 +67,94 @@ export const CHECKOUT_TOOL_DESCRIPTION = [
   '(4) Call platform.agent.checkout { agentId }; pass version only when the user names a specific published version.',
   '(5) Write every files[] entry under suggestedRoot, then follow writeRecipe from the response.',
   'Optional harness: claude | codex | goose | grok (stored only in v1).',
+  'Hermes: harness:"hermes" returns a Hermes profile distribution (one Bot per agent) — write files[] to suggestedRoot, then run the writeRecipe commands with the terminal tool.',
 ].join(' ')
 
-export function checkoutWriteRecipe(harness?: CheckoutHarness | null): string {
+const HERMES_BOT_ROLE_MAX = 48
+
+function clipLabel(text: string, max: number): string {
+  if (text.length <= max) return text
+  const slice = text.slice(0, max - 1)
+  const space = slice.lastIndexOf(' ')
+  return `${(space >= 12 ? slice.slice(0, space) : slice).trimEnd()}…`
+}
+
+function hermesBotRoleLabel(snapshot: {
+  description?: string | null
+  roleInstruction: string
+}): string {
+  const raw = snapshot.description?.trim() || snapshot.roleInstruction.trim()
+  if (!raw) return ''
+  const line = raw.split(/\r?\n/, 1)[0]!.trim().replace(/\s+/g, ' ')
+  const sentence = line.split(/(?<=[.!?])\s+/u, 1)[0] ?? line
+  return clipLabel(sentence.replace(/[.]+$/u, ''), HERMES_BOT_ROLE_MAX)
+}
+
+/** Hermes Bot Mode roster label: "Zoli (POSnavigator marketing)". Profile id stays `exc-…`. */
+export function hermesBotTitle(snapshot: {
+  name: string
+  description?: string | null
+  roleInstruction: string
+}): string {
+  const name = snapshot.name.trim() || 'agent'
+  const role = hermesBotRoleLabel(snapshot)
+  if (!role || role.toLowerCase() === name.toLowerCase()) return name
+  if (name.toLowerCase().includes(role.toLowerCase())) return name
+  return `${name} (${role})`
+}
+
+function hermesWriteRecipe(root: string, profile: string, localRoots: readonly string[] = []): string {
+  const home = `~/${root}`
+  const dir = `~/.hermes/profiles/${profile}`
+  const lines = [
+    `Hermes Bot sync. Run these with the terminal tool. ROOT=${home} (distribution source), PROFILE=${profile}.`,
+    '1. Create ROOT if missing. Write every files[] entry to ROOT/path as UTF-8, overwriting. Under ROOT/.enterprise-agent/ and ROOT/skills/excellence/, delete any file that is not in generatedPaths.',
+    '2. Run `hermes profile list`. If PROFILE is not listed (new Bot):',
+    `   a. hermes profile install "$HOME/${root}" --name ${profile} -y`,
+    `   b. If ${dir}/profile.yaml or ${dir}/config.yaml is missing, copy it from ROOT.`,
+    `   c. Model key: read model.provider from ${dir}/config.yaml, or else from ~/.hermes/config.yaml. Copy only that provider's API-key line(s) (for example OPENROUTER_API_KEY) from ~/.hermes/.env into ${dir}/.env, then chmod 600 it. Never copy the whole .env and never print a key. If the provider signs in with OAuth (Codex, Copilot), tell the user to run: hermes -p ${profile} auth add <provider>`,
+    `   d. hermes -p ${profile} mcp login excellence  (opens the browser once; the user approves it)`,
+    '3. If PROFILE is already listed (re-sync):',
+    `   a. hermes profile update ${profile} -y  (keeps the Bot's chats, memory, .env, MCP login, config.yaml and profile.yaml)`,
+    `   b. Delete any folder under ${dir}/skills/excellence/ whose name is not a skills/excellence/<name>/ folder in files[]. Touch nothing else in ${dir}.`,
+    `4. Apply the Bot label from ROOT/profile.yaml onto ${dir}/profile.yaml: copy display_name and ui_meta.hermes-bots.title only. If ${dir}/profile.yaml is missing, copy it from ROOT first. Keep avatar, color, section, and every other ui_meta key.`,
+    '5. Never run `hermes profile delete`. If an agent is no longer in platform.agents.list, only tell the user that its Bot is no longer available.',
+  ]
+  if (localRoots.length > 0) {
+    lines.push(
+      `6. Coding folders are candidate hints for different machines, not a grant and not ranked: ${localRoots.map((path) => `\`${path}\``).join(', ')}. On THIS host, check which paths exist and open only those (typically one git clone). If none exist, ask where the repo is — do not guess. Guard may allowlist the union (also in ROOT/.enterprise-agent/local-roots.json) but still only touch paths that exist here. Do not copy ROOT into those repos.`,
+    )
+  }
+  lines.push('', 'Do not run code from the checkout. Do not commit. Do not copy the folder into a code repo.')
+  return lines.join('\n')
+}
+
+export function checkoutWriteRecipe(
+  harness?: CheckoutHarness | null,
+  localRoots: readonly string[] = [],
+): string {
   const lines = [...CHECKOUT_WRITE_RECIPE_STEPS]
-  if (harness === 'codex') {
+  if (harness === 'codex' && localRoots.length === 0) {
     lines.push(
       '6. (Codex Desktop, macOS) Run `codex app "<absolute suggestedRoot>"` to open this workspace. If it does not appear in the sidebar, add it manually via “Use an existing folder”.',
     )
+  }
+  if (localRoots.length > 0) {
+    const listed = localRoots.map((path) => `\`${path}\``).join(', ')
+    lines.push(
+      `6. Coding folders are candidate hints for different machines, not a grant and not ranked: ${listed}. On THIS host, check which paths exist and open only those (typically one git clone). If none exist, ask where the repo is — do not guess, do not open suggestedRoot as the product repo. Instruction cache stays in suggestedRoot.`,
+    )
+    if (harness === 'codex') {
+      lines.push(
+        '   Codex: `codex app "<absolute path that exists>"` or “Use an existing folder”. Keep this MCP connection.',
+      )
+    } else if (harness === 'claude') {
+      lines.push('   Claude: File → Open folder for the path that exists on this machine.')
+    } else if (harness === 'goose') {
+      lines.push('   Goose: set the session working directory to the path that exists on this machine.')
+    } else {
+      lines.push('   Open the path that exists on this machine so the agent can edit the product git.')
+    }
   }
   lines.push('', 'Do not run code from the checkout. Do not commit. Do not copy the folder into a code repo.')
   return lines.join('\n')
@@ -77,7 +188,7 @@ export type CheckoutBundle = {
   pin: CheckoutPin
   files: CheckoutFile[]
   generatedPaths: string[]
-  deleteUnder: ['.enterprise-agent']
+  deleteUnder: string[]
   warnings: string[]
   writeRecipe: string
 }
@@ -134,74 +245,272 @@ function skillFolderName(skill: CheckoutSkill, colliding: boolean): string {
   return `${slug}--${skill.skillId.replace(/-/g, '').slice(0, 8)}`
 }
 
+const BRIEFING_MAX_SKILLS = 25
+const BRIEFING_SKILL_DESCRIPTION_MAX = 240
+const BRIEFING_MAX_TRIGGERS = 8
+
+function mcpToolNames(capabilities: Array<{ toolName: string; allowed: boolean }>): string[] {
+  return capabilities.filter((row) => row.allowed && MCP_TOOL_SET.has(row.toolName)).map((row) => row.toolName)
+}
+
+function sandboxMcpRule(capabilities: Array<{ toolName: string; allowed: boolean }>): string {
+  const sandboxTool = mcpToolNames(capabilities).find(
+    (name) => name === 'sandbox_run' || name === 'sandbox_exec',
+  )
+  if (sandboxTool) {
+    return `- Runnable skill code runs only via \`${sandboxTool}\` with the skillVersionId. Do not run skill code on this machine, and do not upload a local file into the sandbox.`
+  }
+  return '- Do not run skill code on this machine.'
+}
+
+/**
+ * The agent briefing (#652): one text for get_definition.briefing, the MCP
+ * prompt and the checkout AGENTS.md / SOUL.md, so every channel loads the same
+ * agent. Only tables of contents — besides roleInstruction its size is bounded.
+ * bound: the client sends the agent-id header, so it passes no definitionId.
+ */
+export function renderAgentBriefing(input: {
+  definition: AgentDefinition
+  skills: CheckoutSkill[]
+  bound?: boolean
+  recentSessionLogs?: SessionLogHeadline[]
+  handoffs?: Array<{ id: string; title: string; projectKey: string; createdAt: string; fromAgentName: string | null }>
+  /** #663: az agent megnevezett jóváhagyója (üzleti nyelven a Jóváhagyások blokkba). */
+  approverName?: string | null
+}): string {
+  const { agentId, snapshot } = input.definition
+  const roots = snapshot.localRoots ?? []
+  const description = snapshot.description?.trim()
+  const httpApis = snapshot.connectors.filter((row) => row.type === 'http_api')
+  const loaded = new Map(input.skills.map((skill) => [skill.skillVersionId, skill]))
+  const skills = snapshot.skills
+    .flatMap((pin) => {
+      const skill = loaded.get(pin.skillVersionId)
+      return skill ? [{ pin, skill }] : []
+    })
+    .sort((a, b) => Number(Boolean(b.pin.entry)) - Number(Boolean(a.pin.entry)))
+  const entry = skills[0]?.pin.entry ? skills[0].pin : null
+  const skillUri = (name: string) => `\`${skillFileUri(skillUriName(name), 'SKILL.md')}\``
+  const start = [
+    input.bound
+      ? roots.length > 0
+        ? 'Call platform.agent.get_definition (no arguments) and read focus, localRoots and memoryIndex — this agent\'s current state, coding folders and memory catalog. If you are reading this in that response, it is already loaded.'
+        : 'Call platform.agent.get_definition (no arguments) and read focus and memoryIndex — this agent\'s current state and memory catalog. If you are reading this in that response, it is already loaded.'
+      : roots.length > 0
+        ? `Call platform.agent.get_definition { "agentId": "${agentId}" } and read focus, localRoots and memoryIndex — this agent's current state, coding folders and memory catalog. If you are reading this in that response, it is already loaded.`
+        : `Call platform.agent.get_definition { "agentId": "${agentId}" } and read focus and memoryIndex — this agent's current state and memory catalog. If you are reading this in that response, it is already loaded.`,
+    'Check open work: platform.work_file.list for plans and open tasks.',
+    ...(entry
+      ? [`For every new task, first read the entry skill ${entry.name} (${skillUri(entry.name)}) and follow it — it tells you which other skill to use.`]
+      : []),
+    'Then continue with the user\'s request.',
+  ]
+  const lines = [
+    '## Who you are',
+    '',
+    `You are now ${snapshot.name}${description ? ` — ${description}` : ''}. Take on this agent's role for the whole conversation and work by the rules below. Do not ask which agent to use; introduce yourself in this role in your first reply.`,
+    '',
+    snapshot.roleInstruction,
+    '',
+  ]
+  const rulesBlock = renderSnapshotRulesBriefingBlock(snapshot.rules ?? [])
+  if (rulesBlock) {
+    lines.push(rulesBlock, '')
+  }
+  lines.push(
+    '## Rules you must not break',
+    '',
+    '- This agent\'s memory is the source of company facts, decisions and locations. It overrides search results: if Drive, KB or API results contradict it, follow the memory and tell the user about the conflict.',
+    '- Never bypass approval: writes wait for a human in the Control Plane (see Approvals and handoffs). Exception: google_drive_upload_file into this agent\'s configured output folder (omit parentFolderId) runs immediately.',
+    input.bound
+      ? `- This client is bound to this agent by the ${AGENT_ID_HEADER} header on every MCP request: do not pass definitionId or agentId — the server uses the agent's current published definition.`
+      : '- Pass definitionId from platform.agent.get_definition on every enterprise tool (Drive, Gmail, http_api_*, kb_*).',
+    ...(httpApis.length > 0
+      ? ['- HTTP APIs: use only the method+path values listed in platform.agent.get_definition → snapshot.connectors[].endpoints.']
+      : []),
+    sandboxMcpRule(snapshot.capabilities),
+    roots.length > 0
+      ? '- Keep durable company work on the platform: no local memory (file or client memory), no company files in a local folder. Exception: product git listed under Local coding folders. Credentials stay on the server.'
+      : '- Keep durable work on the platform: no local memory (file or client memory), no durable work in a local folder. Credentials stay on the server.',
+    '',
+    '## Start',
+    '',
+    ...start.map((step, index) => `${index + 1}. ${step}`),
+    '',
+    '## Knowledge, memory, skills',
+    '',
+    'All work for this agent runs through this MCP server — there is no separate in-platform chat runtime.',
+    '',
+    renderKnowledgePlacementBlock(),
+    '',
+    '- Memory: memoryIndex in platform.agent.get_definition; full text via platform.project_memory.read (ids or query). Read before answering company questions or searching. Write: platform.project_memory.write (omit projectKey for general memory).',
+    '- Current focus: the `focus` field in platform.agent.get_definition — always in full, before the memory list. Only one active focus per agent and project: platform.project_memory.write with kind "focus" replaces it.',
+    '- Session log: append-only work journal with kind "session_log" (what you did, outcome, where artifacts live, next step). Never replace old session logs.',
+    '- Work files (plans, notes, open tasks): platform.work_file.* under a projectKey.',
+    '- Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
+  )
+
+  if (roots.length > 0) {
+    lines.push(
+      '',
+      '## Local coding folders',
+      '',
+      'Candidate git locations across machines — hints, not a grant, not ranked. On this host use only the paths that exist (typically one clone). If none exist, ask where the repo is on this computer:',
+      '',
+      ...roots.map((path) => `- \`${path}\``),
+      '',
+      'Do not copy checkout/SOUL files into these repos. Company facts stay in MCP memory.',
+    )
+  }
+
+  const tools = mcpToolNames(snapshot.capabilities)
+  if (tools.length > 0) lines.push(`- MCP tools: ${tools.join(', ')}.`)
+  if (snapshot.connectors.some((row) => row.type === 'google_drive')) {
+    lines.push('- Google Drive connector: use the Drive MCP tools by name.')
+  }
+  if (httpApis.length > 0) {
+    lines.push(
+      '- HTTP API connectors (with several, pass connectors[].name as connectorName or connectorId when method+path is ambiguous):',
+    )
+    for (const row of httpApis) {
+      lines.push(`  - ${row.name?.trim() || row.connectorId} (${row.accessMode}, connectorId ${row.connectorId})`)
+    }
+  }
+
+  if (skills.length > 0) {
+    lines.push(
+      '',
+      `Skills — only these belong to this agent; read the SKILL.md before you do that kind of work (resources/read, or platform.skills.read { uri${input.bound ? '' : ', definitionId'} }):`,
+      '',
+    )
+    for (const { pin, skill } of skills.slice(0, BRIEFING_MAX_SKILLS)) {
+      const triggers = skill.content.triggerKeywords.slice(0, BRIEFING_MAX_TRIGGERS)
+      const trigger = triggers.length > 0 ? ` Triggers: ${triggers.join(', ')}.` : ''
+      const text = clipLabel(skill.description.trim().replace(/\s+/g, ' '), BRIEFING_SKILL_DESCRIPTION_MAX)
+      const label = pin.entry ? ' (entry skill — read first on every new task)' : ''
+      lines.push(`- ${pin.name}${label}: ${text}${trigger} ${skillUri(pin.name)}`)
+    }
+    if (skills.length > BRIEFING_MAX_SKILLS) {
+      lines.push(`- …and ${skills.length - BRIEFING_MAX_SKILLS} more in platform.agent.get_definition → snapshot.skills.`)
+    }
+  }
+
+  const recent = input.recentSessionLogs?.filter((row) => row.title.trim())
+  if (recent && recent.length > 0) {
+    lines.push(
+      '',
+      '## Recently',
+      '',
+      'Prior sessions for this agent (titles only — load full text before repeating work):',
+      '',
+    )
+    for (const row of recent) {
+      const day = row.createdAt.slice(0, 10)
+      lines.push(`- ${day}: ${row.title} (${row.withUserName}) — id \`${row.id}\``)
+    }
+    lines.push('', 'Full entries: platform.project_memory.read with ids="<comma-separated ids>".')
+  }
+
+  const handoffs = input.handoffs?.filter((row) => row.title.trim())
+  if (handoffs && handoffs.length > 0) {
+    lines.push(
+      '',
+      '## Handed-off work',
+      '',
+      'Open tasks handed off to you by a coworker (full text is an open_task in your memory — load it with platform.project_memory.read before starting):',
+      '',
+    )
+    for (const row of handoffs) {
+      const day = row.createdAt.slice(0, 10)
+      const from = row.fromAgentName ? ` from ${row.fromAgentName}` : ''
+      lines.push(`- ${day}${from} [${row.projectKey}]: ${row.title} — handoffId \`${row.id}\``)
+    }
+    lines.push('', 'Acknowledge with platform.handoff_ack { handoffId, decision: accepted|done|rejected }.')
+  }
+
+  lines.push(
+    '',
+    '## Closing',
+    '',
+    'When a task is done or the conversation ends:',
+    '1. Save new company facts and decisions with platform.project_memory.write; when the user corrected a fact, update it.',
+    '2. Rewrite the focus if it changed: platform.project_memory.write, kind "focus", one short text (max 3000 characters) with what you are doing now, the next step and what you are waiting for. It replaces the previous focus — never keep an outdated one.',
+    '3. Update the plan and open tasks in the work file (platform.work_file.write).',
+    '4. Append a session log: platform.project_memory.write, kind "session_log", short title plus what you did, the outcome, where outputs live, and the next step. Always append — never replace prior session logs.',
+    '',
+    '## Approvals and handoffs',
+    '',
+    'Writes (for example creating a Drive folder or http_api_request) do not run until a human approves them in the Control Plane: the tool returns status awaiting_approval and an approvalUrl. Show that link to the user; do not poll or retry. Exception: google_drive_upload_file with no parentFolderId (or the agent\'s output folder id) runs immediately when an output folder is configured.',
+  )
+  const approverName = input.approverName?.trim()
+  if (approverName) {
+    lines.push(
+      '',
+      '## Jóváhagyások',
+      '',
+      `Ennek az agentnek a megnevezett jóváhagyója: ${approverName}. Az írásaid az ő jóváhagyására várnak — a kliensválaszban nevezd meg, hogy kire vár a művelet ("${approverName} jóváhagyására vár"). Ha ${approverName} dolgozik veled, a saját kérését is jóváhagyhatja.`,
+    )
+  }
+  return lines.join('\n')
+}
+
+/** MCP prompt text (#651): the first message that puts the client AI into this agent's role. */
+export function renderAgentPrompt(input: {
+  definition: AgentDefinition
+  skills: CheckoutSkill[]
+  task?: string
+  bound?: boolean
+}): string {
+  const { agentId, definitionId, version } = input.definition
+  const lines = [
+    `agentId: ${agentId}`,
+    `definitionId: ${definitionId} (version ${version})`,
+    '',
+    renderAgentBriefing(input),
+  ]
+  const task = input.task?.trim()
+  if (task) lines.push('', "## Today's task", '', task)
+  return `${lines.join('\n')}\n`
+}
+
 function renderAgentsMd(input: {
   definition: AgentDefinition
   contentHash: string
   mcpUrl: string
-  skills: Array<{ name: string; description: string; triggers: string[]; path: string }>
+  skills: CheckoutSkill[]
+  hermes?: boolean
 }): string {
-  const snapshot = input.definition.snapshot
   const lines = [
-    `# ${snapshot.name}`,
+    `# ${input.definition.snapshot.name}`,
     '',
     `agentId: ${input.definition.agentId}`,
     `version: ${input.definition.version}`,
     `contentHash: ${input.contentHash}`,
     `mcpUrl: ${input.mcpUrl}`,
     '',
-    '## Role',
-    '',
-    snapshot.roleInstruction,
-    '',
-    '## MCP routing',
-    '',
-    'All work for this agent runs through the mcpUrl above — there is no separate in-platform chat runtime. Call MCP tools for skills, connectors, and enterprise tools. Credentials stay on the server.',
-    '',
-    'Before enterprise tools: call platform.agent.get_definition for this agentId and pass definitionId on every tool. For several HTTP API connectors, use connectors[].name as connectorName or connectors[].connectorId when method+path is ambiguous.',
-    '',
-    'Writes (for example creating a Drive folder or http_api_request) enqueue and wait for Control Plane approval. Do not bypass approval.',
-    '',
-    'Memory first: this agent\'s memory (company facts, decisions, locations) lives on the server. platform.agent.get_definition returns it as generalMemory; read it at the start of every conversation and before answering company questions or searching — it overrides search results. More: platform.project_memory.read / write (omit projectKey for general memory). Work files (plans, notes) are platform.work_file.* under a projectKey. Do not create a local memory file, and do not keep durable work in this checkout folder.',
-    'Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
-    '',
-    'If the work needs runnable skill code, call the MCP sandbox with the skillVersionId. Do not run skill code from this workspace, and do not upload a local file into the sandbox.',
+    renderAgentBriefing({ definition: input.definition, skills: input.skills, bound: input.hermes }),
   ]
-
-  const tools = snapshot.capabilities.filter((row) => row.allowed).map((row) => row.toolName)
-  if (tools.length > 0) {
-    lines.push('', `Available MCP tools: ${tools.join(', ')}.`)
-  }
-  if (snapshot.connectors.some((row) => row.type === 'google_drive')) {
-    lines.push('', 'This agent has a Google Drive connector. Use the Drive MCP tools by name.')
-  }
-
-  const httpApis = snapshot.connectors.filter((row) => row.type === 'http_api')
-  if (httpApis.length > 0) {
-    lines.push('', '## HTTP API connectors', '')
-    lines.push(
-      'Endpoint allowlists live in platform.agent.get_definition → snapshot.connectors[].endpoints. Use only listed method+path values.',
-    )
-    for (const row of httpApis) {
-      const label = row.name?.trim() || row.connectorId
-      lines.push(`- ${label} (${row.accessMode}, connectorId ${row.connectorId})`)
-    }
-  }
-
-  lines.push(
-    '',
-    '## Stale',
-    '',
-    'Before any enterprise tool (Drive, Gmail, http_api_*, kb_*), call `platform.agent.get_definition` for this agentId and use its definitionId. Exempt: `platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`, `platform.agent.checkout`.',
-    'If the returned `contentHash` differs from the pin above, call `platform.agent.checkout`, overwrite generated paths, then retry.',
-    'Enterprise tools reject stale pins with `agent_stale` until checkout completes and the manifest `definitionId` matches the current published version.',
-  )
-
   if (input.skills.length > 0) {
-    lines.push('', '## Skills', '')
-    for (const skill of input.skills) {
-      const trigger = skill.triggers.length > 0 ? ` Triggers: ${skill.triggers.join(', ')}.` : ''
-      lines.push(`- ${skill.name}: ${skill.description}${trigger} See \`${skill.path}\`.`)
-    }
+    lines.push('', `Local copies of these skills: \`${input.hermes ? HERMES_SKILL_DIR : SKILL_DIR}/<name>/SKILL.md\`.`)
+  }
+
+  if (input.hermes) {
+    lines.push(
+      '',
+      '## Stale',
+      '',
+      'At the start of every session call `platform.agent.get_definition` (no arguments).',
+      `If the returned \`contentHash\` differs from the contentHash above, tell the user once: this Bot's role or skills changed on the platform — run "${HERMES_SYNC_PROMPT}" in the default Hermes profile. Keep working meanwhile: tools already use the current definition.`,
+    )
+  } else {
+    lines.push(
+      '',
+      '## Stale',
+      '',
+      'Before any enterprise tool (Drive, Gmail, http_api_*, kb_*), call `platform.agent.get_definition` for this agentId and use its definitionId. Exempt: `platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`, `platform.agent.checkout`.',
+      'If the returned `contentHash` differs from the pin above, call `platform.agent.checkout`, overwrite generated paths, then retry.',
+      'Enterprise tools reject stale pins with `agent_stale` until checkout completes and the manifest `definitionId` matches the current published version.',
+    )
   }
 
   return `${lines.join('\n')}\n`
@@ -241,21 +550,21 @@ export function renderAgentCheckout(input: {
   const skillFiles: CheckoutFile[] = []
   const skillPointers: Array<{
     name: string
-    description: string
-    triggers: string[]
     path: string
     skillId: string
     skillVersionId: string
   }> = []
+  const hermes = input.harness === 'hermes'
   for (const skill of resolved) {
     const folder = skillFolderName(skill, (slugCounts.get(checkoutSlug(skill.name)) ?? 0) > 1)
-    const path = `${SKILL_DIR}/${folder}/SKILL.md`
+    const path = `${hermes ? HERMES_SKILL_DIR : SKILL_DIR}/${folder}/SKILL.md`
     assertSafeCheckoutPath(path)
     skillFiles.push({
       path,
       content: serializeSkillMd({
-        name: skill.name,
-        displayName: skill.displayName,
+        // Hermes: name must be the folder slug (^[a-z0-9][a-z0-9._-]*$), the label goes to title.
+        name: hermes ? folder : skill.name,
+        displayName: hermes ? skill.displayName?.trim() || skill.name : skill.displayName,
         description: skill.description,
         license: skill.license,
         content: skill.content,
@@ -263,9 +572,7 @@ export function renderAgentCheckout(input: {
       }),
     })
     skillPointers.push({
-      name: skill.name,
-      description: skill.description,
-      triggers: skill.content.triggerKeywords,
+      name: hermes ? folder : skill.name,
       path,
       skillId: skill.skillId,
       skillVersionId: skill.skillVersionId,
@@ -282,9 +589,30 @@ export function renderAgentCheckout(input: {
     harness: input.harness ?? null,
   }
 
-  const agentsPath = 'AGENTS.md'
+  const tenantSlug = pin.tenantSlug
+  const slug = checkoutSlug(snapshot.name)
+  // #682: the Hermes profile name (exc- + slug) must stay within 60 chars.
+  const profile = `exc-${slug}`.slice(0, 60).replace(/-+$/, '')
+  const suggestedRoot = hermes ? `.hermes/excellence/${tenantSlug}/${slug}` : `Agents/${slug}`
+  const instructionsPath = hermes ? 'SOUL.md' : 'AGENTS.md'
   const manifestPath = '.enterprise-agent/manifest.json'
-  const generatedPaths = [agentsPath, manifestPath, ...skillFiles.map((file) => file.path)]
+  const localRoots = snapshot.localRoots ?? []
+  const localRootsFile = localRootsCheckoutFile(localRoots)
+  const hermesFiles: CheckoutFile[] = hermes
+    ? renderHermesProfileFiles({
+        definition: input.definition,
+        mcpUrl: input.mcpUrl,
+        profile,
+        tenantSlug,
+      })
+    : []
+  const generatedPaths = [
+    instructionsPath,
+    manifestPath,
+    ...(localRootsFile ? [localRootsFile.path] : []),
+    ...hermesFiles.map((file) => file.path),
+    ...skillFiles.map((file) => file.path),
+  ]
   for (const path of generatedPaths) assertSafeCheckoutPath(path)
 
   const manifest = {
@@ -310,26 +638,92 @@ export function renderAgentCheckout(input: {
 
   const files: CheckoutFile[] = [
     {
-      path: agentsPath,
+      path: instructionsPath,
       content: renderAgentsMd({
         definition: input.definition,
         contentHash,
         mcpUrl: input.mcpUrl,
-        skills: skillPointers,
+        skills: resolved,
+        hermes,
       }),
     },
     { path: manifestPath, content: `${JSON.stringify(manifest, null, 2)}\n` },
+    ...(localRootsFile ? [localRootsFile] : []),
+    ...hermesFiles,
     ...skillFiles,
   ]
 
   return {
-    suggestedRoot: `Agents/${checkoutSlug(snapshot.name)}`,
+    suggestedRoot,
     mcpUrl: input.mcpUrl,
     pin,
     files,
     generatedPaths,
-    deleteUnder: ['.enterprise-agent'],
+    deleteUnder: hermes ? ['.enterprise-agent', HERMES_SKILL_DIR] : ['.enterprise-agent'],
     warnings,
-    writeRecipe: checkoutWriteRecipe(input.harness),
+    writeRecipe: hermes
+      ? hermesWriteRecipe(suggestedRoot, profile, localRoots)
+      : checkoutWriteRecipe(input.harness, localRoots),
   }
+}
+
+/**
+ * Hermes profile distribution (#682 WP-1): `hermes profile install <dir>` reads
+ * these. config.yaml and profile.yaml stay out of distribution_owned so
+ * `hermes profile update` never overwrites the user's model pin or Bot UI meta.
+ */
+function renderHermesProfileFiles(input: {
+  definition: AgentDefinition
+  mcpUrl: string
+  profile: string
+  tenantSlug: string
+}): CheckoutFile[] {
+  const snapshot = input.definition.snapshot
+  const description = snapshot.description?.trim() || snapshot.name
+  const title = hermesBotTitle(snapshot)
+  const tools = [
+    ...new Set([
+      ...HERMES_BASE_TOOLS,
+      ...snapshot.capabilities.filter((row) => row.allowed).map((row) => row.toolName),
+    ]),
+  ]
+  const yaml = (value: unknown) => yamlDump(value, { lineWidth: -1 })
+  return [
+    {
+      path: 'distribution.yaml',
+      content: yaml({
+        name: input.profile,
+        version: `${input.definition.version}.0.0`,
+        description,
+        author: `Excellence AI — ${input.tenantSlug}`,
+        hermes_requires: '>=0.21.0',
+        distribution_owned: ['SOUL.md', `${HERMES_SKILL_DIR}/`, '.enterprise-agent/', 'distribution.yaml'],
+        ...(snapshot.localRoots?.length
+          ? { excellence: { local_roots: snapshot.localRoots } }
+          : {}),
+      }),
+    },
+    {
+      path: 'profile.yaml',
+      content: yaml({
+        display_name: title,
+        description,
+        ui_meta: { 'hermes-bots': { title } },
+      }),
+    },
+    {
+      path: 'config.yaml',
+      content: yaml({
+        memory: { memory_enabled: false, user_profile_enabled: false },
+        mcp_servers: {
+          excellence: {
+            url: input.mcpUrl,
+            auth: 'oauth',
+            headers: { [AGENT_ID_HEADER]: input.definition.agentId },
+            tools: { include: tools },
+          },
+        },
+      }),
+    },
+  ]
 }

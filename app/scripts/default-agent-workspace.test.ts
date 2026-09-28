@@ -33,14 +33,15 @@ const shell = readFileSync(resolve(process.cwd(), 'src/app/control-plane/control
 const appShell = readFileSync(resolve(process.cwd(), 'src/components/ui/shell.tsx'), 'utf8')
 const rootLoading = readFileSync(resolve(process.cwd(), 'src/app/loading.tsx'), 'utf8')
 
-check('a fallback a munkatárs-lista, nem a gyökér és nem a törölt board', () => {
-  assert.equal(DEFAULT_AGENT_WORKSPACE_FALLBACK, '/control-plane/agents')
+check('a fallback a kezdőlap, nem a gyökér és nem egy agent adatlapja', () => {
+  assert.equal(DEFAULT_AGENT_WORKSPACE_FALLBACK, '/control-plane/dashboard')
   assert.match(
     entrySrc,
-    /export const DEFAULT_AGENT_WORKSPACE_FALLBACK = '\/control-plane\/agents'/,
+    /export const DEFAULT_AGENT_WORKSPACE_FALLBACK = '\/control-plane\/dashboard'/,
   )
   assert.doesNotMatch(entrySrc, /return ['"]\/control-plane['"]/)
   assert.doesNotMatch(src, /\/control-plane\/board/)
+  assert.doesNotMatch(src, /listAgents/)
 })
 
 check('a gyökér-oldal a resolveren keresztül redirectel, nem hardcode-olt önmagára', () => {
@@ -48,8 +49,8 @@ check('a gyökér-oldal a resolveren keresztül redirectel, nem hardcode-olt ön
   assert.doesNotMatch(rootPage, /redirect\('\/control-plane'\)/)
 })
 
-check('a resolver minden üres ágon a fallback konstanst adja vissza', () => {
-  assert.match(src, /return DEFAULT_AGENT_WORKSPACE_FALLBACK/)
+check('a resolver tenant-kontextusban a fallback konstanst adja vissza', () => {
+  assert.match(src, /\?\? DEFAULT_AGENT_WORKSPACE_FALLBACK/)
 })
 
 check('platform-mód a tenant-registryre megy, ne a munkatárs-listára', () => {
@@ -82,7 +83,7 @@ check('jóváhagyásra váró fiók pendingre megy', () => {
   )
 })
 
-check('tenant-kontextusban a resolver az első agent felé mehet (null = folytasd)', () => {
+check('tenant-kontextusban a homePath null, a kezdőlap a fallback', () => {
   assert.equal(
     homePathForAuthContext({
       kind: 'tenant',
@@ -112,7 +113,8 @@ check('az AppShell nem suspendel useSearchParams miatt a teljes héjon', () => {
 })
 
 check('van gyökér betöltő képernyő, ne krém-üres első festés', () => {
-  assert.match(rootLoading, /Betöltés/)
+  assert.match(rootLoading, /LoadingState/)
+  assert.match(rootLoading, /min-h-dvh/)
 })
 
 if (failures > 0) {

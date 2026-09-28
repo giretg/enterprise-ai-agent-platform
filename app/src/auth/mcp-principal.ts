@@ -297,10 +297,18 @@ export async function resolveMcpPrincipal(
   }
 }
 
+/** Opcionális agent-kötés a paritás-telemetriához (#666): melyik agentre vonatkozott a hívás. */
+export type McpAuditCtx = { agentId?: string | null }
+
+function agentMeta(ctx?: McpAuditCtx): Record<string, unknown> {
+  return ctx?.agentId ? { agentId: ctx.agentId.slice(0, 64) } : {}
+}
+
 export async function auditMcpToolCall(
   deps: { audit?: AuditSink },
   principal: McpPrincipal,
   toolName?: string,
+  ctx?: McpAuditCtx,
 ): Promise<void> {
   await writeAudit(deps.audit, {
     actorType: 'human',
@@ -317,7 +325,30 @@ export async function auditMcpToolCall(
       toolName,
       tenantSlug: principal.tenantSlug,
       assumed: principal.assumed,
+      ...agentMeta(ctx),
     },
+    tenantId: principal.tenantId,
+  })
+}
+
+export async function auditMcpPromptGet(
+  deps: { audit?: AuditSink },
+  principal: McpPrincipal,
+  promptName: string,
+  agentId: string,
+): Promise<void> {
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: principal.userId,
+    agentVersion: null,
+    action: 'mcp.prompts.get',
+    targetType: 'mcp',
+    targetId: principal.tenantId,
+    modelUsed: null,
+    inputRef: promptName,
+    outputRef: null,
+    policyDecision: 'allowed',
+    metadata: { promptName, agentId, tenantSlug: principal.tenantSlug, assumed: principal.assumed },
     tenantId: principal.tenantId,
   })
 }
@@ -326,10 +357,12 @@ export async function auditMcpToolDenied(
   deps: { audit?: AuditSink },
   principal: McpPrincipal,
   toolName: string,
+  code = 'tool_not_allowed',
+  extra: Record<string, unknown> = {},
 ): Promise<void> {
   console.info('mcp.tools.call.deny', {
     toolName,
-    code: 'tool_not_allowed',
+    code,
     tenantSlug: principal.tenantSlug,
   })
   await writeAudit(deps.audit, {
@@ -343,7 +376,7 @@ export async function auditMcpToolDenied(
     inputRef: toolName,
     outputRef: null,
     policyDecision: 'denied',
-    metadata: { toolName, code: 'tool_not_allowed', tenantSlug: principal.tenantSlug },
+    metadata: { toolName, code, tenantSlug: principal.tenantSlug, ...extra },
     tenantId: principal.tenantId,
   })
 }
@@ -352,6 +385,7 @@ export async function auditMcpResourceRead(
   deps: { audit?: AuditSink },
   principal: McpPrincipal,
   uri: string,
+  ctx?: McpAuditCtx,
 ): Promise<void> {
   await writeAudit(deps.audit, {
     actorType: 'human',
@@ -364,7 +398,7 @@ export async function auditMcpResourceRead(
     inputRef: uri,
     outputRef: null,
     policyDecision: 'allowed',
-    metadata: { uri, tenantSlug: principal.tenantSlug, assumed: principal.assumed },
+    metadata: { uri, tenantSlug: principal.tenantSlug, assumed: principal.assumed, ...agentMeta(ctx) },
     tenantId: principal.tenantId,
   })
 }

@@ -66,6 +66,7 @@ function agentRow(overrides: Partial<Agent> = {}): Agent {
     createdAt: new Date('2026-01-01T00:00:00Z'),
     updatedAt: new Date('2026-01-01T00:00:00Z'),
     retiredAt: null,
+    localRoots: '',
     ...overrides,
   }
 }
@@ -129,6 +130,7 @@ function memoryScaffoldDeps(opts?: {
           id: nextAgentId(),
           name: input.name,
           roleInstruction: input.roleInstruction,
+          description: input.description ?? null,
           tenantId: input.tenantId,
           status: input.status ?? 'draft',
         })
@@ -241,6 +243,7 @@ function memoryScaffoldDeps(opts?: {
           agentId: input.agentId,
           skillVersionId: input.skillVersionId,
           enabled: true,
+          entry: false,
           assignedById: input.assignedById,
           createdAt: new Date(),
         }
@@ -529,6 +532,7 @@ async function main() {
       actorId: USER_ID,
       name: 'Listed agent',
       roleInstruction: 'Go live.',
+      description: 'Call when listing or publishing a tenant agent.',
       capabilities: ['kb_search'],
     })
     const working = await memory.service.getWorkingSet({
@@ -636,6 +640,7 @@ async function main() {
       actorId: USER_ID,
       name: 'Draft only',
       roleInstruction: 'Invisible.',
+      description: 'Call when the draft is ready to go live.',
     })
     const listBefore = await callTool(adminDeps, MCP_AGENTS_LIST_TOOL, {})
     assert.equal(

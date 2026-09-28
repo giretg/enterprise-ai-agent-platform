@@ -8,6 +8,7 @@ export const agentIdSchema = z.object({ id: z.string().uuid() })
 export const createAgentSchema = z.object({
   name: z.string().trim().min(1).max(120),
   roleInstruction: z.string().trim().min(1).max(20_000),
+  description: z.string().trim().min(1).max(500),
 })
 
 export const updateAgentInstructionSchema = z.object({
@@ -20,11 +21,35 @@ export const updateAgentMemoryWriteModeSchema = z.object({
   memoryWriteMode: z.enum(['approval', 'direct']),
 })
 
+export const updateAgentOutputFolderSchema = z.object({
+  agentId: z.string().uuid(),
+  /** Drive mappa-id; üres string = törlés. */
+  folderId: z.string().trim().max(200),
+})
+
+export const updateAgentLocalRootsSchema = z.object({
+  agentId: z.string().uuid(),
+  /** Soronként egy path; üres = törlés. */
+  localRoots: z.string().max(4200),
+})
+
+export const updateAgentApproverSchema = z.object({
+  agentId: z.string().uuid(),
+  /** Tenant-tag user-id; null = megnevezett jóváhagyó törlése. */
+  approverUserId: z.string().uuid().nullable(),
+})
+
+export const updateConnectorApproverSchema = z.object({
+  connectorId: z.string().uuid(),
+  /** Tenant-tag user-id; null = megnevezett jóváhagyó törlése. */
+  approverUserId: z.string().uuid().nullable(),
+})
+
 export const updateAgentProfileSchema = z
   .object({
     agentId: z.string().uuid(),
     name: z.string().trim().min(1).max(120).optional(),
-    description: z.string().trim().max(500).optional(),
+    description: z.string().trim().min(1).max(500).optional(),
   })
   .refine((v) => v.name !== undefined || v.description !== undefined, {
     message: 'Nincs változás',

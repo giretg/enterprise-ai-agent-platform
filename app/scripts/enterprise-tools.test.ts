@@ -17,6 +17,7 @@ import {
   KB_GET_DOCUMENT_TOOL,
   KB_INGEST_TOOL,
   KB_SEARCH_TOOL,
+  SANDBOX_RUN_TOOL,
   type AuthorizeToolCallDeps,
   type EnterpriseToolDeps,
   type LiveConnectorRow,
@@ -126,6 +127,9 @@ function invokeDeps(opts?: {
   executeDriveTool?: EnterpriseToolDeps['executeDriveTool']
   executeHttpApiTool?: EnterpriseToolDeps['executeHttpApiTool']
   executeKbTool?: EnterpriseToolDeps['executeKbTool']
+  loadSkillVersion?: EnterpriseToolDeps['loadSkillVersion']
+  executeSandboxRun?: EnterpriseToolDeps['executeSandboxRun']
+  writeWorkFile?: EnterpriseToolDeps['writeWorkFile']
   resolveActingUser?: EnterpriseToolDeps['resolveActingUser']
   resolveError?: Error
   startAuthorization?: EnterpriseToolDeps['startAuthorization']
@@ -162,6 +166,9 @@ function invokeDeps(opts?: {
     startAuthorization: opts?.startAuthorization,
     executeHttpApiTool: opts?.executeHttpApiTool,
     executeKbTool: opts?.executeKbTool,
+    loadSkillVersion: opts?.loadSkillVersion,
+    executeSandboxRun: opts?.executeSandboxRun,
+    writeWorkFile: opts?.writeWorkFile,
     resolveActingUser: opts?.resolveActingUser,
   }
 }
@@ -1199,6 +1206,168 @@ async function main() {
     assert.equal(seen?.toolName, KB_INGEST_TOOL)
     assert.equal(seen?.filename, 'policy.md')
     assert.equal(parsePayload(result).searchable, true)
+  })
+
+  const SKILL_VERSION_ID = '99999999-9999-4999-8999-999999999999'
+  const OTHER_SKILL_VERSION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const sandboxConnector = connector({
+    type: 'code_sandbox',
+    authMode: 'service',
+    config: { provider: 'cloud_run', region: 'europe-west1', baseUrl: 'https://sandbox.example.test' },
+  })
+  const sandboxDefinition = definition({
+    snapshot: {
+      name: 'Kati',
+      roleInstruction: 'Report',
+      skills: [{ skillId: 'skill-1', skillVersionId: SKILL_VERSION_ID, name: 'napi-riport' }],
+      connectors: [{ connectorId: CONNECTOR_ID, type: 'code_sandbox', accessMode: 'write' }],
+      capabilities: [{ toolName: SANDBOX_RUN_TOOL, allowed: true }],
+    },
+  })
+  const scriptAttachment = {
+    path: 'scripts/run_napi_marketing_riport.py',
+    text: 'print("ok")\n',
+    bytes: 12,
+    sha256: 'abc123',
+  }
+
+  await check('sandbox_run authorizes without a user OAuth grant', async () => {
+    const result = await authorizeToolCall(
+      authorizeDeps({ connector: sandboxConnector, grant: null }),
+      {
+        principal: principal(),
+        definition: sandboxDefinition,
+        toolName: SANDBOX_RUN_TOOL,
+        args: {},
+      },
+    )
+    assert.equal(result.allowed, true)
+    if (result.allowed) {
+      assert.equal(result.grantId, null)
+      assert.equal(result.tokenRef, null)
+    }
+  })
+
+  await check('#662 unpinned skill script is denied', async () => {
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: sandboxDefinition,
+        connector: sandboxConnector,
+        grant: null,
+        loadSkillVersion: async () => ({
+          attachments: [scriptAttachment],
+          status: 'active',
+          tenantId: TENANT_ID,
+        }),
+        executeSandboxRun: async () => {
+          throw new Error('must not run')
+        },
+        writeWorkFile: async () => ({ path: 'nope' }),
+      }),
+      {
+        principal: principal(),
+        toolName: SANDBOX_RUN_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          skillVersionId: OTHER_SKILL_VERSION_ID,
+          entry: 'scripts/run_napi_marketing_riport.py',
+        },
+      },
+    )
+    assert.equal(result.isError, true)
+    assert.equal(parsePayload(result).code, 'skill_not_pinned')
+  })
+
+  await check('#662 pinned skill script runs and writes work files', async () => {
+    const written: string[] = []
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: sandboxDefinition,
+        connector: sandboxConnector,
+        grant: null,
+        loadSkillVersion: async (id) =>
+          id === SKILL_VERSION_ID
+            ? { attachments: [scriptAttachment], status: 'active', tenantId: TENANT_ID }
+            : null,
+        executeSandboxRun: async (input) => {
+          assert.deepEqual(input.command.slice(0, 2), [
+            'python3',
+            '/work/in/skill/scripts/run_napi_marketing_riport.py',
+          ])
+          assert.ok(input.files.some((file) => file.sandboxPath === '/work/run.py'))
+          return {
+            exitCode: 0,
+            stdout: 'ok',
+            stderr: '',
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            outputFiles: [{ path: 'report.html', bytes: Buffer.from('<html>ok</html>') }],
+            metrics: {
+              provider: 'cloud_run',
+              region: 'europe-west1',
+              provisionMs: 1,
+              execMs: 1,
+              totalMs: 2,
+              cpuProfile: '1',
+              memoryProfile: '512Mi',
+              inputBytes: 12,
+              outputBytes: 14,
+              egressBytes: null,
+              coldStart: false,
+              exitStatus: 0,
+            },
+          }
+        },
+        writeWorkFile: async (input) => {
+          written.push(input.path)
+          return { path: input.path }
+        },
+      }),
+      {
+        principal: principal(),
+        toolName: SANDBOX_RUN_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          skillVersionId: SKILL_VERSION_ID,
+          entry: 'scripts/run_napi_marketing_riport.py',
+        },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    const payload = parsePayload(result)
+    assert.equal(payload.exitCode, 0)
+    assert.equal(payload.scriptSha256, 'abc123')
+    assert.deepEqual(payload.outputs, ['sandbox-output/napi-riport/report.html'])
+    assert.deepEqual(written, ['sandbox-output/napi-riport/report.html'])
+  })
+
+  await check('sandbox_run missing connector is loud', async () => {
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: definition({
+          snapshot: {
+            name: 'Kati',
+            roleInstruction: 'Report',
+            skills: [{ skillId: 'skill-1', skillVersionId: SKILL_VERSION_ID, name: 'napi-riport' }],
+            connectors: [],
+            capabilities: [{ toolName: SANDBOX_RUN_TOOL, allowed: true }],
+          },
+        }),
+        connector: null,
+        grant: null,
+      }),
+      {
+        principal: principal(),
+        toolName: SANDBOX_RUN_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          skillVersionId: SKILL_VERSION_ID,
+          entry: 'scripts/run_napi_marketing_riport.py',
+        },
+      },
+    )
+    assert.equal(result.isError, true)
+    assert.equal(parsePayload(result).code, 'missing_code_sandbox_connector_write')
   })
 
   console.log(`\n${failures === 0 ? 'enterprise-tools: ok' : `enterprise-tools: ${failures} failed`}`)

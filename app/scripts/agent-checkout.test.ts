@@ -4,11 +4,15 @@
  */
 import assert from 'node:assert/strict'
 import { hashSnapshot, type AgentDefinition } from '../src/domain/agent-definition'
+import { MCP_ALLOWED_TOOLS } from '../src/auth/mcp-principal'
 import {
   assertSafeCheckoutPath,
   CHECKOUT_TOOL_DESCRIPTION,
   checkoutSlug,
+  hermesBotTitle,
+  renderAgentBriefing,
   renderAgentCheckout,
+  renderAgentPrompt,
   type CheckoutSkill,
 } from '../src/lib/agent-checkout'
 import type { SkillContent } from '../src/lib/skill/skill-content'
@@ -76,6 +80,22 @@ function skill(
     content,
     requires: [],
   }
+}
+
+function mentionedMcpToolNames(text: string): string[] {
+  const names = new Set<string>()
+  for (const match of text.matchAll(/\bplatform(?:\.[a-z][a-z0-9_]*)+/g)) {
+    names.add(match[0]!)
+  }
+  for (const match of text.matchAll(/\b(?:google_drive|gmail|http_api|kb)(?:_[a-z0-9]+)*\b/g)) {
+    names.add(match[0]!)
+  }
+  return [...names]
+}
+
+function isMcpAllowedMention(name: string): boolean {
+  const allowed = MCP_ALLOWED_TOOLS as readonly string[]
+  return allowed.includes(name) || allowed.some((tool) => tool.startsWith(`${name}.`) || tool.startsWith(`${name}_`))
 }
 
 async function main() {
@@ -221,6 +241,170 @@ async function main() {
     assert.match(agents, /platform\.agent\.get_definition/)
   })
 
+  await check('#652 briefing: fixed sections, same text in prompt, AGENTS.md and SOUL.md', () => {
+    const def = definition()
+    const skills = [skill(SKILL_A, VER_A, 'drive-search'), skill(SKILL_B, VER_B, 'drive-write')]
+    const briefing = renderAgentBriefing({ definition: def, skills })
+    const headings = briefing.match(/^## .+$/gm)
+    assert.deepEqual(headings, [
+      '## Who you are',
+      '## Rules you must not break',
+      '## Start',
+      '## Knowledge, memory, skills',
+      '## Closing',
+      '## Approvals and handoffs',
+    ])
+    assert.match(briefing, /kind "session_log"/)
+    assert.match(briefing, /4\. Append a session log/)
+    assert.match(briefing, /^## Who you are\n\nYou are now Drive asszisztens\./)
+    assert.match(briefing, /WHERE TO SAVE WHAT/)
+    assert.match(briefing, /platform\.work_file\.write/)
+    assert.match(
+      briefing,
+      /- drive-search: drive-search description Triggers: drive, search\. `skill:\/\/drive-search\/SKILL\.md`/,
+    )
+
+    const agents = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL }).files.find((f) => f.path === 'AGENTS.md')
+    assert.ok(agents?.content.includes(briefing))
+    assert.ok(renderAgentPrompt({ definition: def, skills }).includes(briefing))
+
+    const bound = renderAgentBriefing({ definition: def, skills, bound: true })
+    assert.notEqual(bound, briefing)
+    const soul = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'hermes' }).files.find(
+      (f) => f.path === 'SOUL.md',
+    )
+    assert.ok(soul?.content.includes(bound))
+    assert.ok(renderAgentPrompt({ definition: def, skills, bound: true }).includes(bound))
+  })
+
+  await check('#660 briefing includes published rules in full with override hint (blog / Csilla eval)', () => {
+    const csillaRule = 'Do not publish blog posts without Csilla approval.'
+    const def = definition({
+      snapshot: {
+        ...definition().snapshot,
+        rules: [
+          { text: csillaRule, source: 'hard' },
+          { text: 'Never store secrets in project memory.', source: 'hard' },
+        ],
+      },
+    })
+    const briefing = renderAgentBriefing({ definition: def, skills: [] })
+    assert.match(briefing, /## Published agent rules/)
+    assert.match(briefing, /override a conflicting user request/)
+    assert.match(briefing, /stop, name the rule/)
+    assert.ok(briefing.includes(csillaRule))
+    assert.match(briefing, /Never store secrets in project memory\./)
+  })
+
+  await check('#658 briefing lists recent session log titles when provided', () => {
+    const def = definition()
+    const skills = [skill(SKILL_A, VER_A, 'drive-search')]
+    const briefing = renderAgentBriefing({
+      definition: def,
+      skills,
+      recentSessionLogs: [
+        {
+          id: 'log-1',
+          title: 'Riport elküldve',
+          createdAt: '2026-09-20T10:00:00.000Z',
+          withUserName: 'Anna',
+        },
+      ],
+    })
+    assert.match(briefing, /## Recently/)
+    assert.match(briefing, /Riport elküldve/)
+    assert.match(briefing, /log-1/)
+  })
+
+  await check('#653 briefing leads with the entry skill and names it in Start', () => {
+    const def = definition({
+      snapshot: {
+        ...definition().snapshot,
+        skills: [
+          { skillId: SKILL_B, skillVersionId: VER_B, name: 'drive-write' },
+          { skillId: SKILL_A, skillVersionId: VER_A, name: 'drive-search', entry: true },
+        ],
+      },
+    })
+    const skills = [skill(SKILL_A, VER_A, 'drive-search'), skill(SKILL_B, VER_B, 'drive-write')]
+    const briefing = renderAgentBriefing({ definition: def, skills })
+    assert.match(
+      briefing,
+      /3\. For every new task, first read the entry skill drive-search \(`skill:\/\/drive-search\/SKILL\.md`\)/,
+    )
+    assert.match(briefing, /- drive-search \(entry skill — read first on every new task\):[^\n]*\n- drive-write:/)
+    const agents = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL }).files.find(
+      (f) => f.path === 'AGENTS.md',
+    )
+    assert.ok(agents?.content.includes(briefing))
+  })
+
+  await check('#652 briefing size: tables of contents only, bounded besides roleInstruction', () => {
+    const many = Array.from({ length: 200 }, (_, i) => {
+      const id = `${String(i).padStart(8, '0')}-0000-4000-8000-000000000000`
+      return {
+        ...skill(id, id, `skill-${i}`, { ...pinnedBody, triggerKeywords: Array.from({ length: 50 }, (_, t) => `trigger-${t}`) }),
+        description: 'x'.repeat(5000),
+      }
+    })
+    const roleInstruction = 'r'.repeat(20000)
+    const def = definition({
+      snapshot: {
+        ...definition().snapshot,
+        roleInstruction,
+        skills: many.map((row) => ({ skillId: row.skillId, skillVersionId: row.skillVersionId, name: row.name })),
+      },
+    })
+    const briefing = renderAgentBriefing({ definition: def, skills: many })
+    assert.ok(briefing.includes(roleInstruction))
+    assert.ok(briefing.length - roleInstruction.length < 16000, `${briefing.length - roleInstruction.length}`)
+    assert.match(briefing, /…and 175 more/)
+  })
+
+  await check('#655 AGENTS.md tool names are all in MCP_ALLOWED_TOOLS', () => {
+    const def = definition({
+      snapshot: {
+        ...definition().snapshot,
+        capabilities: [
+          { toolName: 'google_drive_search', allowed: true },
+          { toolName: 'sandbox_exec', allowed: true },
+        ],
+      },
+    })
+    const agents =
+      renderAgentCheckout({
+        definition: def,
+        skills: [skill(SKILL_A, VER_A, 'drive-search')],
+        mcpUrl: MCP_URL,
+      }).files.find((f) => f.path === 'AGENTS.md')?.content ?? ''
+    assert.match(agents, /MCP tools: google_drive_search\./)
+    assert.doesNotMatch(agents, /sandbox/i)
+    for (const name of mentionedMcpToolNames(agents)) {
+      assert.ok(isMcpAllowedMention(name), `${name} is not in MCP_ALLOWED_TOOLS`)
+    }
+  })
+
+  await check('#662 AGENTS.md tells the client to use sandbox_run for pinned skill code', () => {
+    const def = definition({
+      snapshot: {
+        ...definition().snapshot,
+        capabilities: [
+          { toolName: 'google_drive_search', allowed: true },
+          { toolName: 'sandbox_run', allowed: true },
+        ],
+      },
+    })
+    const agents =
+      renderAgentCheckout({
+        definition: def,
+        skills: [skill(SKILL_A, VER_A, 'drive-search')],
+        mcpUrl: MCP_URL,
+      }).files.find((f) => f.path === 'AGENTS.md')?.content ?? ''
+    assert.match(agents, /sandbox_run/)
+    assert.match(agents, /skillVersionId/)
+    assert.doesNotMatch(agents, /sandbox_exec/)
+  })
+
   await check('CHECKOUT_TOOL_DESCRIPTION tells MCP clients not to ask when one agent', () => {
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /exactly one published agent/)
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /do not ask which agent/)
@@ -244,6 +428,151 @@ async function main() {
       /codex app/,
     )
     assert.match(bundle.files.find((f) => f.path === 'AGENTS.md')?.content ?? '', /agent_stale/)
+  })
+
+  await check('hermes harness → profile distribution (#682 WP-1)', () => {
+    const def = definition()
+    const bundle = renderAgentCheckout({
+      definition: def,
+      skills: [skill(SKILL_A, VER_A, 'Napi Marketing Riport'), skill(SKILL_B, VER_B, 'drive-write')],
+      mcpUrl: MCP_URL,
+      harness: 'hermes',
+    })
+    // Pins decide the skill label; give the snapshot a non-slug name too.
+    const napi = renderAgentCheckout({
+      definition: definition({
+        snapshot: {
+          ...def.snapshot,
+          skills: [{ skillId: SKILL_A, skillVersionId: VER_A, name: 'Napi Marketing Riport' }],
+        },
+      }),
+      skills: [skill(SKILL_A, VER_A, 'Napi Marketing Riport')],
+      mcpUrl: MCP_URL,
+      harness: 'hermes',
+    })
+    const napiSkill = napi.files.find((f) => f.path.startsWith('skills/excellence/'))
+    assert.equal(napiSkill?.path, 'skills/excellence/napi-marketing-riport/SKILL.md')
+    assert.match(napiSkill?.content ?? '', /^---\nname: napi-marketing-riport\ntitle: Napi Marketing Riport\n/)
+
+    assert.equal(bundle.suggestedRoot, '.hermes/excellence/acme/drive-asszisztens')
+    assert.deepEqual(bundle.files.map((f) => f.path), bundle.generatedPaths)
+    for (const path of bundle.generatedPaths) assertSafeCheckoutPath(path)
+    assert.ok(bundle.generatedPaths.includes('SOUL.md'))
+    assert.ok(!bundle.generatedPaths.includes('AGENTS.md'))
+    for (const file of bundle.files.filter((f) => f.path.startsWith('skills/excellence/'))) {
+      const name = /^name: (.+)$/m.exec(file.content)?.[1] ?? ''
+      assert.match(name, /^[a-z0-9][a-z0-9._-]*$/)
+      assert.equal(file.path, `skills/excellence/${name}/SKILL.md`)
+    }
+
+    const content = (path: string) => bundle.files.find((f) => f.path === path)?.content ?? ''
+    const config = content('config.yaml')
+    assert.match(config, /memory_enabled: false/)
+    assert.match(config, /user_profile_enabled: false/)
+    assert.match(config, new RegExp(`X-Excellence-Agent-Id: ${AGENT_ID}`))
+    assert.match(config, /auth: oauth/)
+    assert.match(config, /- google_drive_search/)
+    assert.match(config, /- platform\.agent\.get_definition/)
+    assert.doesNotMatch(config, /platform\.agent\.publish|platform\.agent\.create_draft/)
+
+    const dist = content('distribution.yaml')
+    assert.match(dist, /name: exc-drive-asszisztens/)
+    assert.match(dist, /version: 3\.0\.0/)
+    const owned = dist.slice(dist.indexOf('distribution_owned'))
+    assert.doesNotMatch(owned, /config\.yaml|profile\.yaml/)
+    const profileYaml = content('profile.yaml')
+    assert.match(profileYaml, /display_name: Drive asszisztens \(Inspect Drive through MCP\)/)
+    assert.match(profileYaml, /title: Drive asszisztens \(Inspect Drive through MCP\)/)
+
+    const soul = content('SOUL.md')
+    assert.match(soul, /do not pass definitionId/)
+    assert.match(soul, new RegExp(`contentHash: ${hashSnapshot(def.snapshot)}`))
+    assert.doesNotMatch(soul, /agent_stale/)
+    assert.match(bundle.writeRecipe, /hermes profile install "\$HOME\/\.hermes\/excellence\/acme\/drive-asszisztens" --name exc-drive-asszisztens -y/)
+    assert.match(bundle.writeRecipe, /hermes profile update exc-drive-asszisztens -y/)
+    assert.match(bundle.writeRecipe, /display_name and ui_meta\.hermes-bots\.title/)
+    assert.doesNotMatch(bundle.writeRecipe, /hermes profile delete exc/)
+    assert.equal(JSON.parse(content('.enterprise-agent/manifest.json')).pin.harness, 'hermes')
+  })
+
+  await check('hermes profile name stays within 60 chars for long agent names', () => {
+    const long = renderAgentCheckout({
+      definition: definition({
+        snapshot: { ...definition().snapshot, name: 'A'.repeat(80) },
+      }),
+      skills: [],
+      mcpUrl: MCP_URL,
+      harness: 'hermes',
+    })
+    const distName = /^name: (.+)$/m.exec(
+      long.files.find((f) => f.path === 'distribution.yaml')?.content ?? '',
+    )?.[1]?.trim().replace(/^['"]|['"]$/g, '')
+    assert.ok(distName?.startsWith('exc-'))
+    assert.ok((distName?.length ?? 99) <= 60, distName)
+    assert.match(long.writeRecipe, new RegExp(`--name ${distName} -y`))
+  })
+
+  await check('hermes Bot title is name (role), not the exc- profile id', () => {
+    assert.equal(
+      hermesBotTitle({ name: 'Zoli', roleInstruction: 'POSnavigator marketing lead.\nHosszú utasítás.' }),
+      'Zoli (POSnavigator marketing lead)',
+    )
+    assert.equal(
+      hermesBotTitle({
+        name: 'Ági',
+        description: 'POS marketing',
+        roleInstruction: 'Egy egész oldalnyi szerep-utasítás, amit a címkébe nem írunk.',
+      }),
+      'Ági (POS marketing)',
+    )
+    assert.equal(hermesBotTitle({ name: 'Drive asszisztens', roleInstruction: 'Drive asszisztens' }), 'Drive asszisztens')
+    const titled = hermesBotTitle({ name: 'Kati', roleInstruction: 'A'.repeat(80) })
+    assert.match(titled, /^Kati \(.+…\)$/)
+    assert.ok(titled.length <= 56)
+  })
+
+  await check('#729 localRoots in briefing, json, and harness recipes', () => {
+    const def = definition({
+      snapshot: { ...definition().snapshot, localRoots: ['~/Projects/platform'] },
+    })
+    const skills = [skill(SKILL_A, VER_A, 'drive-search')]
+    const base = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL })
+    assert.match(base.files.find((file) => file.path === 'AGENTS.md')?.content ?? '', /## Local coding folders/)
+    assert.match(base.files.find((file) => file.path === 'AGENTS.md')?.content ?? '', /across machines/)
+    assert.ok(base.generatedPaths.includes('.enterprise-agent/local-roots.json'))
+    const json = base.files.find((file) => file.path === '.enterprise-agent/local-roots.json')
+    assert.deepEqual(JSON.parse(json?.content ?? '{}').paths, ['~/Projects/platform'])
+    assert.match(base.writeRecipe, /candidate hints for different machines/)
+    assert.match(base.writeRecipe, /THIS host/)
+    assert.doesNotMatch(base.writeRecipe, /first coding folder/)
+    assert.match(base.writeRecipe, /Open the path that exists on this machine/)
+
+    const two = renderAgentCheckout({
+      definition: definition({
+        snapshot: { ...definition().snapshot, localRoots: ['~/Projects/platform', '/home/gery/src/platform'] },
+      }),
+      skills,
+      mcpUrl: MCP_URL,
+      harness: 'codex',
+    })
+    assert.match(two.writeRecipe, /~\/Projects\/platform/)
+    assert.match(two.writeRecipe, /\/home\/gery\/src\/platform/)
+    assert.doesNotMatch(two.writeRecipe, /first coding/)
+
+    const codex = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'codex' })
+    assert.match(codex.writeRecipe, /codex app/)
+    assert.doesNotMatch(codex.writeRecipe, /absolute suggestedRoot/)
+
+    const claude = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'claude' })
+    assert.match(claude.writeRecipe, /File → Open folder/)
+
+    const goose = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'goose' })
+    assert.match(goose.writeRecipe, /session working directory/)
+
+    const hermes = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'hermes' })
+    assert.match(hermes.writeRecipe, /allowlist the union/)
+    assert.match(hermes.files.find((file) => file.path === 'SOUL.md')?.content ?? '', /Local coding folders/)
+    assert.match(hermes.files.find((file) => file.path === 'distribution.yaml')?.content ?? '', /local_roots/)
   })
 
   if (failures > 0) {

@@ -13,6 +13,7 @@ export {
 } from './authorize-tool-call'
 export {
   invokeEnterpriseTool,
+  isOutputFolderWrite,
   authorizationLinkFields,
   type EnterpriseToolDeps,
   type EnterpriseToolMcpResult,
@@ -55,6 +56,9 @@ export {
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
+  SANDBOX_RUN_TOOL,
+  ENTERPRISE_SANDBOX_TOOLS,
+  sandboxRunInputSchema,
   gmailGetMessageInputSchema,
   gmailGetThreadInputSchema,
   gmailListDraftsInputSchema,
@@ -80,10 +84,12 @@ export {
   isEnterpriseHttpTool,
   isEnterpriseHttpWriteTool,
   isEnterpriseKbTool,
+  isEnterpriseSandboxTool,
   isEnterpriseTool,
   isEnterpriseWriteTool,
   schemaForEnterpriseDriveTool,
   schemaForEnterpriseKbTool,
+  schemaForEnterpriseSandboxTool,
   schemaForEnterpriseTool,
   type EnterpriseDriveTool,
   type EnterpriseDriveWriteTool,
@@ -91,6 +97,7 @@ export {
   type EnterpriseGmailWriteTool,
   type EnterpriseHttpTool,
   type EnterpriseKbTool,
+  type EnterpriseSandboxTool,
   type EnterpriseTool,
   type EnterpriseWriteTool,
 } from './tool-definitions'

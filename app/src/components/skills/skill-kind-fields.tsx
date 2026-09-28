@@ -1,18 +1,20 @@
 'use client'
 
+import { useTranslations } from 'next-intl'
+import { asTranslate } from '@/i18n/translate'
 import {
-  SKILL_KIND_COPY,
   SKILL_KINDS,
   type SkillKind,
 } from '@/lib/skill/skill-kind'
 
 export function SkillKindLegend({ compact = false }: { compact?: boolean }) {
+  const t = asTranslate(useTranslations('SkillCatalog'))
   return (
     <ul className={compact ? 'space-y-1 text-[11px] text-ink-faint' : 'space-y-2 text-xs text-ink-soft'}>
       {SKILL_KINDS.map((kind) => (
         <li key={kind}>
-          <span className="font-semibold text-ink">{SKILL_KIND_COPY[kind].label}.</span>{' '}
-          {SKILL_KIND_COPY[kind].explanation}
+          <span className="font-semibold text-ink">{t(`kind.${kind}.label`)}.</span>{' '}
+          {t(`kind.${kind}.explanation`)}
         </li>
       ))}
     </ul>
@@ -34,9 +36,10 @@ export function SkillKindFields({
   name?: string
   disableKinds?: SkillKind[]
 }) {
+  const t = asTranslate(useTranslations('SkillCatalog'))
   return (
     <fieldset className="space-y-3" disabled={disabled}>
-      <legend className="text-xs font-medium text-ink-soft">A képesség fajtája</legend>
+      <legend className="text-xs font-medium text-ink-soft">{t('kindLegend')}</legend>
       <div className="space-y-2">
         {SKILL_KINDS.map((option) => {
           const locked =
@@ -58,12 +61,12 @@ export function SkillKindFields({
                   onChange={() => onChange({ kind: option })}
                 />
                 <span>
-                  <span className="text-sm font-medium text-ink">{SKILL_KIND_COPY[option].label}</span>
+                  <span className="text-sm font-medium text-ink">{t(`kind.${option}.label`)}</span>
                   {locked ? (
-                    <span className="ml-2 text-[11px] text-ink-faint">csak platform-admin</span>
+                    <span className="ml-2 text-[11px] text-ink-faint">{t('kindPlatformOnly')}</span>
                   ) : null}
                   <span className="mt-0.5 block text-[11px] leading-relaxed text-ink-faint">
-                    {SKILL_KIND_COPY[option].explanation}
+                    {t(`kind.${option}.explanation`)}
                   </span>
                 </span>
               </span>
