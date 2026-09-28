@@ -85,18 +85,29 @@ async function fetchWithBackoff(
   operation: string,
   input: RequestInfo | URL,
   init?: RequestInit,
+  opts?: { retryServerErrors?: boolean },
 ): Promise<Response> {
+  // A 429 nem-idempotens írásnál is biztonságosan ismételhető: a kérést elutasították,
+  // nem dolgozták fel. Az 5xx viszont kétértelmű — az írás lehet, hogy már lefutott a
+  // Gmailnél —, ezért egy nem-idempotens POST (küldés / piszkozat-létrehozás) NEM
+  // ismételheti: a Gmail nem fogad kliens-idempotencia tokent, és egy már lefutott 5xx
+  // utáni retry kétszer küldi el a levelet (vagy kétszer hozza létre a piszkozatot). Az
+  // olvasások és az idempotens írások (címke/kuka) a default 5xx-retryt tartják.
+  const retryable = opts?.retryServerErrors === false ? [429] : [429, 500, 502, 503, 504]
   const delays = [250, 750]
   for (let attempt = 0; attempt <= delays.length; attempt += 1) {
     const res = await fetch(input, init)
     if (res.ok || res.status === 401 || res.status === 403) return res
-    if (![429, 500, 502, 503, 504].includes(res.status) || attempt === delays.length) {
+    if (!retryable.includes(res.status) || attempt === delays.length) {
       return res
     }
     await sleep(delays[attempt])
   }
   throw new Error(`${operation} failed before response`)
 }
+
+/** Nem-idempotens Gmail-írás nem ismételhet egy kétértelmű 5xx-et (dupla küldés/piszkozat). */
+const NO_5XX_RETRY = { retryServerErrors: false } as const
 
 function decodeBase64Url(data: string): string {
   const normalized = data.replace(/-/g, '+').replace(/_/g, '/')
@@ -603,7 +614,7 @@ export class GmailApiClient {
       },
       body: JSON.stringify({ message }),
       signal: params.signal,
-    })
+    }, NO_5XX_RETRY)
     if (!res.ok) throw gmailApiError('gmail.create_draft', res.status)
     const data = (await res.json()) as { id?: string }
     return { draftId: data.id ?? 'unknown' }
@@ -647,7 +658,7 @@ export class GmailApiClient {
           'content-type': 'application/json',
         },
         body: JSON.stringify({ id: params.draftId }),
-      })
+      }, NO_5XX_RETRY)
       if (!res.ok) throw gmailApiError('gmail.send', res.status)
       const data = (await res.json()) as { id?: string; threadId?: string }
       return { messageId: data.id ?? 'unknown', ...(data.threadId ? { threadId: data.threadId } : {}) }
@@ -677,7 +688,7 @@ export class GmailApiClient {
         'content-type': 'application/json',
       },
       body: JSON.stringify(message),
-    })
+    }, NO_5XX_RETRY)
     if (!res.ok) throw gmailApiError('gmail.send', res.status)
     const data = (await res.json()) as { id?: string; threadId?: string }
     return { messageId: data.id ?? 'unknown', ...(data.threadId ? { threadId: data.threadId } : {}) }

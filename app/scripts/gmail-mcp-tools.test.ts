@@ -241,6 +241,101 @@ async function main() {
     }
   })
 
+  await check('gmail_send does NOT replay an ambiguous 5xx — no duplicate outbound email', async () => {
+    const original = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      return new Response('bad gateway', { status: 502 })
+    }) as typeof fetch
+    try {
+      await assert.rejects(
+        new GmailApiClient('real-token').send({ to: 'a@b.hu', subject: 's', body: 'x' }),
+        /gmail\.send failed: 502/,
+      )
+      // Gmail takes no client idempotency token: a retry after a 5xx that already
+      // committed would send the message twice, so send must be attempted once.
+      assert.equal(calls, 1)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  await check('gmail_send by draftId does NOT replay a 5xx either (drafts/send branch)', async () => {
+    const original = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      return new Response('service unavailable', { status: 503 })
+    }) as typeof fetch
+    try {
+      await assert.rejects(
+        new GmailApiClient('real-token').send({ draftId: 'draft-9' }),
+        /gmail\.send failed: 503/,
+      )
+      assert.equal(calls, 1)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  await check('gmail_create_draft does NOT replay a 5xx (no duplicate draft)', async () => {
+    const original = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      return new Response('bad gateway', { status: 502 })
+    }) as typeof fetch
+    try {
+      await assert.rejects(
+        new GmailApiClient('real-token').createDraft({ to: 'a@b.hu', subject: 's', body: 'x' }),
+        /gmail\.create_draft failed: 502/,
+      )
+      assert.equal(calls, 1)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  await check('gmail_send still retries a 429 (rejected, not processed) and then succeeds', async () => {
+    const original = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      return calls === 1
+        ? new Response('slow down', { status: 429 })
+        : new Response(JSON.stringify({ id: 'sent-9', threadId: 't9' }), { status: 200 })
+    }) as typeof fetch
+    try {
+      const res = await new GmailApiClient('real-token').send({ to: 'a@b.hu', subject: 's', body: 'x' })
+      assert.equal(res.messageId, 'sent-9')
+      assert.equal(calls, 2)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  await check('reads still retry a transient 5xx (retry helper regression guard)', async () => {
+    const original = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      return calls === 1
+        ? new Response('bad gateway', { status: 502 })
+        : new Response(
+            JSON.stringify({ id: 'm1', threadId: 't1', snippet: 's', payload: { headers: [] } }),
+            { status: 200 },
+          )
+    }) as typeof fetch
+    try {
+      const message = await new GmailApiClient('real-token').getMessage({ id: 'm1' })
+      assert.equal(message.id, 'm1')
+      assert.equal(calls, 2)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
   console.log(`\n${failures === 0 ? 'gmail-mcp-tools: ok' : `gmail-mcp-tools: ${failures} failed`}`)
   if (failures > 0) process.exit(1)
 }
