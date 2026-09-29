@@ -118,6 +118,15 @@ async function main() {
     assert.match(hint!, /aggregált/)
   })
 
+  await check('401 hint: céges API elutasítás, nem MCP-újrahitelesítés', () => {
+    const hint = buildHttpApiClientErrorHint({ status: 401 })
+    assert.ok(hint)
+    assert.match(hint!, /HTTP 401/)
+    assert.match(hint!, /nem MCP/)
+    assert.match(hint!, /X-Agent-Id/)
+    assert.doesNotMatch(hint!, /query/)
+  })
+
   await check('hatékonysági guidance analitikus / get_all / extract utat ír', () => {
     const text = buildHttpApiEfficiencyGuidance()
     assert.match(text, /http_api_get_all/)

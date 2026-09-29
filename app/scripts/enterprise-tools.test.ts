@@ -1107,6 +1107,94 @@ async function main() {
     assert.equal(receivedActingUser, null)
   })
 
+  await check('invoke http_api_get injects definition.agentId even when args omit agentId', async () => {
+    let receivedAgent: unknown
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        connector: connector({
+          type: 'http_api',
+          authMode: 'service',
+          config: { baseUrl: 'https://crm.example.test', auth: { scheme: 'none' } },
+        }),
+        grant: null,
+        definition: definition({
+          snapshot: {
+            name: 'CRM',
+            roleInstruction: 'Query CRM',
+            skills: [],
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'read' }],
+            capabilities: [{ toolName: HTTP_API_GET_TOOL, allowed: true }],
+          },
+        }),
+        executeHttpApiTool: async (_tool, args, _connector, _accessToken, _actingUser, agent) => {
+          receivedAgent = agent
+          assert.equal(args.agentId, undefined)
+          return { ok: true, path: args.path }
+        },
+      }),
+      {
+        principal: principal(),
+        toolName: HTTP_API_GET_TOOL,
+        args: { definitionId: DEFINITION_ID, path: '/reports/query' },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    assert.deepEqual(receivedAgent, { id: AGENT_ID, version: 1 })
+  })
+
+  await check('http_api_get without args.agentId still sends X-Agent-Id from the definition', async () => {
+    const previousStub = process.env.HTTP_API_STUB
+    delete process.env.HTTP_API_STUB
+    let captured: Record<string, string> | undefined
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_input, init) => {
+      captured = (init?.headers ?? {}) as Record<string, string>
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as typeof fetch
+    try {
+      const result = await invokeEnterpriseTool(
+        invokeDeps({
+          connector: connector({
+            type: 'http_api',
+            authMode: 'service',
+            secretAlias: null,
+            config: {
+              baseUrl: 'https://crm.example.test',
+              auth: { scheme: 'none' },
+              requestHeaders: { 'X-Agent-Id': '{{agent.id}}' },
+              endpoints: [{ method: 'GET', path: '/orders' }],
+              restrictToEndpoints: true,
+            },
+          }),
+          grant: null,
+          definition: definition({
+            snapshot: {
+              name: 'CRM',
+              roleInstruction: 'Query CRM',
+              skills: [],
+              connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'read' }],
+              capabilities: [{ toolName: HTTP_API_GET_TOOL, allowed: true }],
+            },
+          }),
+        }),
+        {
+          principal: principal(),
+          toolName: HTTP_API_GET_TOOL,
+          args: { definitionId: DEFINITION_ID, path: '/orders' },
+        },
+      )
+      assert.equal(result.isError, undefined)
+      assert.equal(captured?.['X-Agent-Id'], AGENT_ID)
+    } finally {
+      globalThis.fetch = originalFetch
+      if (previousStub === undefined) delete process.env.HTTP_API_STUB
+      else process.env.HTTP_API_STUB = previousStub
+    }
+  })
+
   await check('invoke upload and http_api_request enqueue', async () => {
     const enqueued: string[] = []
     const deps = {

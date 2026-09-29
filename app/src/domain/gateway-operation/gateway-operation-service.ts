@@ -101,6 +101,7 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     connector: LiveConnectorRow,
     accessToken?: string,
     actingUser?: { id: string; email: string; tenantId: string | null } | null,
+    agent?: { id: string; version?: number },
   ) => Promise<unknown>
   resolveActingUser?: (input: { userId: string }) => Promise<{ id: string; email: string } | null>
   startAuthorization?: StartDelegatedAuthorization
@@ -912,6 +913,7 @@ async function executeApprovedOperation(
           authorized.connector,
           accessToken,
           await resolveHttpActingUser(deps, operation.principalUserId, operation.tenantId),
+          { id: definition.agentId, version: definition.version },
         )
       : isEnterpriseGmailWriteTool(operation.toolName)
         ? await (deps.executeGmailTool ?? executeGmailTool)(operation.toolName, args, accessToken ?? '')

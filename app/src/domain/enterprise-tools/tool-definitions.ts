@@ -153,7 +153,13 @@ const definitionId = z
   .string()
   .uuid()
   .describe('Published agent definition id — from platform.agent.get_definition for the chosen agentId (required on every enterprise tool)')
-const optionalAgentId = z.string().uuid().optional()
+const optionalAgentId = z
+  .string()
+  .uuid()
+  .optional()
+  .describe(
+    'Optional consistency check against the published definition. Omit it — definitionId already selects the agent. The platform injects X-Agent-Id; do not pass trace headers.',
+  )
 const optionalConnectorId = z
   .string()
   .uuid()

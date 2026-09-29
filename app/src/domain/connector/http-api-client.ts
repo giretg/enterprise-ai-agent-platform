@@ -1242,7 +1242,7 @@ function applyHeaderTemplates(
 function renderTemplate(template: string, context: HttpApiTemplateContext): string {
   return template.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_match, key: string) => {
     const value = templateValue(key, context)
-    if (value === undefined || value === null) {
+    if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
       throw new HttpApiError(`template variable not available: ${key}`, 'template_variable_missing')
     }
     return String(value)

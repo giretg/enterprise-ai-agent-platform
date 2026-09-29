@@ -71,13 +71,22 @@ export function formatHttpApiEndpointCatalogSuffix(endpoint: HttpApiCatalogEndpo
   return bits.length > 0 ? ` — ${bits.join(' | ')}` : ''
 }
 
-/** 4xx válasz mellé: ne tippeljen új query neveket. */
+/** 4xx válasz mellé: ne tippeljen új query neveket, és 401-et ne nézze MCP-újrahitelesítésnek. */
 export function buildHttpApiClientErrorHint(input: {
   status: number
   endpoint?: HttpApiCatalogEndpoint | null
   usedQueryKeys?: readonly string[]
 }): string | undefined {
   if (input.status < 400 || input.status >= 500) return undefined
+  if (input.status === 401 || input.status === 403) {
+    return (
+      `A céges API elutasította a kérést (HTTP ${input.status}). ` +
+      'Ez nem MCP- vagy connector-újrahitelesítés — ne kérj token-frissítést, ' +
+      'és ne mutass „hitelesítsük” gombot, hacsak a válasz nem érvénytelen API-kulcsot jelez. ' +
+      'A nyomkövető fejléceket (X-Agent-Id, X-Acting-User, X-Connector-Call-Id) a platform injektálja: ' +
+      'ne add át a headers mezőben, és ne próbáld args.agentId-vel pótolni.'
+    )
+  }
   const allowed = resolveQueryParams(input.endpoint ?? undefined)
   if (!allowed || allowed.length === 0) {
     if (input.status === 422 || input.status === 400) {
