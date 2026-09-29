@@ -653,6 +653,9 @@ async function invokeHandoff(
 
   // Trusted intra-tenant write: bypasses the recipient's approval mode so the
   // handed-off task is visible immediately; the source is stamped in the body.
+  // confirmMisplaced: platform handoffs are the delivery channel — a long
+  // summary must not be blocked by the #659 document heuristic (MEMORY_FACT_SOFT_MAX),
+  // or the recipient only sees a title and cannot load the full text.
   let memoryId: string | null = null
   if (toAgentId) {
     const written = await deps.projectWork.writeMemory({
@@ -669,12 +672,25 @@ async function invokeHandoff(
       }),
       withUserId: principal.userId,
       confirmNew: true,
+      confirmMisplaced: true,
       mode: 'direct',
     })
-    if (written.ok && written.status === 'written') {
-      memoryId = written.item.id
-      await deps.handoffs.attachMemory(handoff.id, written.item.id)
+    if (!written.ok || written.status !== 'written') {
+      // Fail closed: do not leave an open handoff whose summary is invisible to
+      // the recipient agent (briefing lists title only; full text is memory).
+      await deps.handoffs.decide(handoff.id, 'rejected', principal.userId)
+      const code = !written.ok
+        ? written.code
+        : written.status === 'wrong_placement'
+          ? 'wrong_placement'
+          : written.status === 'possible_duplicate'
+            ? 'possible_duplicate'
+            : 'handoff_memory_failed'
+      await auditDenied(deps, principal, MCP_HANDOFF_TOOL, code, definition.definitionId, definition.agentId)
+      return errorResult(code, { handoffId: handoff.id })
     }
+    memoryId = written.item.id
+    await deps.handoffs.attachMemory(handoff.id, written.item.id)
   }
 
   await writeAudit(deps.audit, {

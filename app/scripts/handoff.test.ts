@@ -332,6 +332,72 @@ async function main() {
     assert.ok(body.includes('Kati') && body.includes('h-1'))
   })
 
+  await check('long summary (>1200) still lands as open_task (not silent wrong_placement)', async () => {
+    const { memory, handoffs, invokeArgs } = deps()
+    const summary = `${'A'.repeat(600)}\n\nFolytatás: ${'B'.repeat(700)}`
+    assert.ok(summary.length > 1200)
+    const out = parsePayload(
+      await invokeProjectWork(invokeArgs, {
+        principal: { userId: ANNA, tenantId: TENANT, role: 'operator', assumed: false },
+        toolName: 'platform.handoff',
+        args: {
+          definitionId: KATI_DEF,
+          toAgentId: GABOR,
+          title: 'Hosszú átadás',
+          summary,
+          idempotencyKey: 'h-long',
+        },
+      }),
+    )
+    assert.equal(out.ok, true, `expected ok, got ${JSON.stringify(out)}`)
+    assert.ok(out.memoryId)
+    const row = await handoffs.findById(out.handoffId as string)
+    assert.equal(row?.status, 'open')
+    assert.equal(row?.memoryId, out.memoryId)
+    const mem = await memory.findById(out.memoryId as string)
+    assert.ok(mem?.body.includes('handoffId'))
+    assert.ok(mem!.body.length > 1200)
+  })
+
+  await check('near-max summary stamps within MEMORY_BODY_MAX (no silent body reject)', async () => {
+    const { memory, handoffs, invokeArgs } = deps()
+    const summary = 'X'.repeat(8000)
+    const out = parsePayload(
+      await invokeProjectWork(invokeArgs, {
+        principal: { userId: ANNA, tenantId: TENANT, role: 'operator', assumed: false },
+        toolName: 'platform.handoff',
+        args: {
+          definitionId: KATI_DEF,
+          toAgentId: GABOR,
+          title: 'Max átadás',
+          summary,
+          links: 'Doc | https://example.com/long',
+          idempotencyKey: 'h-max',
+        },
+      }),
+    )
+    assert.equal(out.ok, true, `expected ok, got ${JSON.stringify(out)}`)
+    assert.ok(out.memoryId)
+    const mem = await memory.findById(out.memoryId as string)
+    assert.ok(mem)
+    assert.ok(mem!.body.length <= 8000)
+    assert.ok(mem!.body.includes('handoffId'))
+    assert.ok(mem!.body.endsWith('…') || mem!.body.includes('X'))
+    assert.equal((await handoffs.findById(out.handoffId as string))?.status, 'open')
+  })
+
+  await check('formatHandoffMemoryBody never exceeds maxBody', () => {
+    const body = formatHandoffMemoryBody({
+      fromAgentName: 'Nagyon hosszú agent név ami sok helyet foglal',
+      summary: 'Y'.repeat(8000),
+      links: 'a | https://example.com/1, b | https://example.com/2',
+      handoffId: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+      maxBody: 8000,
+    })
+    assert.ok(body.length <= 8000)
+    assert.ok(body.includes('handoffId'))
+  })
+
   await check('parseHandoffLinks splits label | href pairs', () => {
     const parsed = parseHandoffLinks('Ajánlat | work_file:/plans/acme.md, Doc | https://example.com/x, sima')
     assert.equal(parsed.length, 3)
