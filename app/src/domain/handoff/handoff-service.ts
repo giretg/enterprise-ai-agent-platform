@@ -65,9 +65,30 @@ export function validateHandoffInput(input: { toAgentId?: unknown; toUserId?: un
   return { ok: true, title, summary, links }
 }
 
-export function formatHandoffMemoryBody(input: { fromAgentName: string; summary: string; links: string | null; handoffId: string }): string {
+/**
+ * open_task body for the recipient. The stamp (from-agent + handoffId + links)
+ * must fit inside MEMORY_BODY_MAX (8000); otherwise prepareMemoryWrite rejects
+ * the body and the handoff would succeed with memoryId=null — silent loss of
+ * the only agent-visible full text. Cap the summary so the stamped body always fits.
+ */
+export function formatHandoffMemoryBody(input: {
+  fromAgentName: string
+  summary: string
+  links: string | null
+  handoffId: string
+  /** Defaults to MEMORY_BODY_MAX (8000). */
+  maxBody?: number
+}): string {
   const linksLine = input.links ? `\nLinks: ${input.links}` : ''
-  return `[átadás innen: ${input.fromAgentName}]\n${input.summary}${linksLine}\n(handoffId: ${input.handoffId})`
+  const prefix = `[átadás innen: ${input.fromAgentName}]\n`
+  const suffix = `${linksLine}\n(handoffId: ${input.handoffId})`
+  const maxBody = input.maxBody ?? 8_000
+  const budget = Math.max(0, maxBody - prefix.length - suffix.length)
+  const summary =
+    input.summary.length > budget
+      ? `${input.summary.slice(0, Math.max(0, budget - 1))}…`
+      : input.summary
+  return `${prefix}${summary}${suffix}`
 }
 
 export type ParsedHandoffLink = { label: string; href: string; kind: 'url' | 'work_file' | 'other' }
