@@ -131,6 +131,7 @@ function invokeDeps(opts?: {
   executeSandboxRun?: EnterpriseToolDeps['executeSandboxRun']
   writeWorkFile?: EnterpriseToolDeps['writeWorkFile']
   resolveActingUser?: EnterpriseToolDeps['resolveActingUser']
+  resolveTenantLanguage?: EnterpriseToolDeps['resolveTenantLanguage']
   resolveError?: Error
   startAuthorization?: EnterpriseToolDeps['startAuthorization']
   audit?: Array<{ action: string }>
@@ -170,6 +171,7 @@ function invokeDeps(opts?: {
     executeSandboxRun: opts?.executeSandboxRun,
     writeWorkFile: opts?.writeWorkFile,
     resolveActingUser: opts?.resolveActingUser,
+    resolveTenantLanguage: opts?.resolveTenantLanguage,
   }
 }
 
@@ -1001,6 +1003,51 @@ async function main() {
     const payload = parsePayload(result)
     assert.equal(payload.ok, true)
     assert.equal(payload.path, '/reports/query')
+  })
+
+  await check('#717: invoke passes the tenant language to the http_api executor', async () => {
+    const seen: Array<string | undefined> = []
+    const httpApiDeps = {
+      connector: connector({
+        type: 'http_api',
+        authMode: 'service',
+        config: { baseUrl: 'https://crm.example.test', auth: { scheme: 'none' } },
+      }),
+      grant: null,
+      definition: definition({
+        snapshot: {
+          name: 'CRM',
+          roleInstruction: 'Query CRM',
+          skills: [],
+          connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'read' }],
+          capabilities: [{ toolName: HTTP_API_GET_TOOL, allowed: true }],
+        },
+      }),
+      executeHttpApiTool: async (
+        _tool: unknown,
+        _args: Record<string, unknown>,
+        _connector: unknown,
+        _accessToken?: string,
+        _actingUser?: unknown,
+        language?: string,
+      ) => {
+        seen.push(language)
+        return { ok: true, stub: true }
+      },
+    }
+    const input = {
+      principal: principal(),
+      toolName: HTTP_API_GET_TOOL,
+      args: { definitionId: DEFINITION_ID, path: '/reports/query' },
+    }
+    // resolver nélkül a biztonságos alapértelmezés (hu) megy át
+    await invokeEnterpriseTool(invokeDeps(httpApiDeps), input)
+    // `en` tenant esetén a modellnek szóló hintek angolul jönnek
+    await invokeEnterpriseTool(
+      invokeDeps({ ...httpApiDeps, resolveTenantLanguage: async () => 'en' }),
+      input,
+    )
+    assert.deepEqual(seen, ['hu', 'en'])
   })
 
   await check('invoke http_api_get marks upstream HTTP failures as MCP errors', async () => {

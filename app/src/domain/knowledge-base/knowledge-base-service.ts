@@ -14,6 +14,8 @@ import {
   knowledgeBaseConnectorName,
   knowledgeCatalogConnectorName,
 } from '@/lib/agent-knowledge-base'
+import { isKbLanguage, resolveKbLanguage, type KbLanguage } from '@/lib/kb-language'
+import { tenantLanguageOrDefault, type TenantLanguage } from '@/lib/tenant-language'
 import {
   extractStructured,
   toExtractionMetadata,
@@ -42,8 +44,13 @@ export type KnowledgeBaseDeps = {
   artifacts: KnowledgeArtifactRepository
   chunks: KnowledgeChunkRepository
   agents: Pick<AgentRepository, 'findById' | 'upsertConnectorBinding'>
-  connectors: Pick<ConnectorRepository, 'findByTenantTypeAndName' | 'create'>
+  connectors: Pick<ConnectorRepository, 'findByTenantTypeAndName' | 'create'> & {
+    /** #717: tudástár-connector keresési nyelve (concrete repo; fakes nélkül is megy). */
+    setKbLanguage?: (connectorId: string, kbLanguage: KbLanguage) => Promise<Connector>
+  }
   audit: Pick<AuditRepository, 'append'>
+  /** #717: új KB-connector a tenant nyelvi alapértelmezésével (opcionális seam). */
+  resolveTenantLanguage?: (tenantId: string) => Promise<TenantLanguage>
 }
 
 function sanitizeFilename(filename: string): string {
@@ -53,6 +60,11 @@ function sanitizeFilename(filename: string): string {
 
 export class KnowledgeBaseService {
   constructor(private deps: KnowledgeBaseDeps) {}
+
+  /** #717: tenant kimeneti nyelv (új KB-connector alapértelmezése); resolver nélkül `hu`. */
+  private tenantLanguage(tenantId: string): Promise<TenantLanguage> {
+    return tenantLanguageOrDefault(this.deps.resolveTenantLanguage, tenantId)
+  }
 
   async ingest(input: {
     tenantId: string
@@ -71,7 +83,9 @@ export class KnowledgeBaseService {
 
     const agent = await this.deps.agents.findById(input.agentId, input.tenantId)
     if (!agent) throw new Error('Agent not found')
-    const connector = await ensureAgentKnowledgeBase(agent, this.deps)
+    const connector = await ensureAgentKnowledgeBase(agent, this.deps, {
+      defaultKbLanguage: await this.tenantLanguage(input.tenantId),
+    })
 
     const extraction = await extractStructured({
       buffer: input.buffer,
@@ -107,7 +121,9 @@ export class KnowledgeBaseService {
     const filename = sanitizeFilename(input.filename)
     if (!filename) throw new Error('Invalid filename')
 
-    const connector = await ensureCatalogKnowledgeBase(input.tenantId, this.deps)
+    const connector = await ensureCatalogKnowledgeBase(input.tenantId, this.deps, {
+      defaultKbLanguage: await this.tenantLanguage(input.tenantId),
+    })
     const extraction = await extractStructured({
       buffer: input.buffer,
       filename,
@@ -135,6 +151,90 @@ export class KnowledgeBaseService {
     )
     if (!connector) return []
     return this.deps.documents.listByConnectorId(connector.id)
+  }
+
+  /**
+   * #717 F3: a katalógus-tár keresési nyelve + a dokumentum-felülírások.
+   * `override: null` = öröklés a tárról (az UI alapértelmezése).
+   */
+  async getCatalogLanguage(input: { tenantId: string }) {
+    const connector = await this.deps.connectors.findByTenantTypeAndName(
+      input.tenantId,
+      'knowledge_base',
+      knowledgeCatalogConnectorName(),
+    )
+    const documents = connector ? await this.deps.documents.findByConnectorId(connector.id) : []
+    return {
+      connectorId: connector?.id ?? null,
+      kbLanguage: resolveKbLanguage(connector?.kbLanguage),
+      tenantLanguage: await this.tenantLanguage(input.tenantId),
+      documents: documents.map((doc) => ({
+        id: doc.id,
+        filename: doc.filename,
+        kbLanguageOverride: isKbLanguage(doc.kbLanguageOverride) ? doc.kbLanguageOverride : null,
+      })),
+    }
+  }
+
+  async setCatalogLanguage(input: { tenantId: string; kbLanguage: KbLanguage; actorId: string }) {
+    const connector = await ensureCatalogKnowledgeBase(input.tenantId, this.deps, {
+      defaultKbLanguage: await this.tenantLanguage(input.tenantId),
+    })
+    const from = resolveKbLanguage(connector.kbLanguage)
+    if (from === input.kbLanguage) return { connectorId: connector.id, kbLanguage: from, changed: false }
+    if (!this.deps.connectors.setKbLanguage) throw new Error('KB language change not supported')
+    const updated = await this.deps.connectors.setKbLanguage(connector.id, input.kbLanguage)
+    await this.deps.audit.append({
+      actorType: 'human',
+      actorId: input.actorId,
+      agentVersion: null,
+      action: 'kb.language.set',
+      targetType: 'connector',
+      targetId: connector.id,
+      modelUsed: null,
+      inputRef: from,
+      outputRef: input.kbLanguage,
+      policyDecision: 'allowed',
+      metadata: { scope: 'catalog' },
+      tenantId: input.tenantId,
+    })
+    return { connectorId: updated.id, kbLanguage: resolveKbLanguage(updated.kbLanguage), changed: true }
+  }
+
+  async setCatalogDocumentLanguage(input: {
+    tenantId: string
+    documentId: string
+    /** `null` = öröklés a tárról. */
+    kbLanguageOverride: KbLanguage | null
+    actorId: string
+  }) {
+    const connector = await this.deps.connectors.findByTenantTypeAndName(
+      input.tenantId,
+      'knowledge_base',
+      knowledgeCatalogConnectorName(),
+    )
+    if (!connector) throw new Error('Document not found')
+    const document = await this.deps.documents.findById(input.documentId)
+    if (!document || document.tenantId !== input.tenantId) throw new Error('Document not found')
+    if (document.connectorId !== connector.id) throw new Error('Document not found')
+    const from = isKbLanguage(document.kbLanguageOverride) ? document.kbLanguageOverride : null
+    if (from === input.kbLanguageOverride) return { documentId: document.id, kbLanguageOverride: from, changed: false }
+    await this.deps.documents.update(document.id, { kbLanguageOverride: input.kbLanguageOverride })
+    await this.deps.audit.append({
+      actorType: 'human',
+      actorId: input.actorId,
+      agentVersion: null,
+      action: 'kb.language.set',
+      targetType: 'document',
+      targetId: document.id,
+      modelUsed: null,
+      inputRef: from ?? 'inherited',
+      outputRef: input.kbLanguageOverride ?? 'inherited',
+      policyDecision: 'allowed',
+      metadata: { scope: 'catalog', connectorId: connector.id },
+      tenantId: input.tenantId,
+    })
+    return { documentId: document.id, kbLanguageOverride: input.kbLanguageOverride, changed: true }
   }
 
   async deleteCatalogDocument(input: {
@@ -194,7 +294,9 @@ export class KnowledgeBaseService {
     if (source.connectorId !== catalogConnector.id) throw new Error('Document not found')
     if (!source.extractedText) throw new Error('A dokumentum szövege nem elérhető')
 
-    const connector = await ensureAgentKnowledgeBase(agent, this.deps)
+    const connector = await ensureAgentKnowledgeBase(agent, this.deps, {
+      defaultKbLanguage: await this.tenantLanguage(input.tenantId),
+    })
     const result = await this.store({
       tenantId: input.tenantId,
       connector,
