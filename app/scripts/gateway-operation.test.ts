@@ -556,6 +556,44 @@ async function main() {
     assert.equal(driveCalls.length, 0)
   })
 
+  await check('definition replaced while pending → fails closed before the external write', async () => {
+    const driveCalls: unknown[] = []
+    const wired = deps({ driveCalls })
+    const enqueued = await enqueueGatewayOperation(wired.deps, {
+      principal: principal({ role: 'operator' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, idempotencyKey: 'idem-stale-after-enqueue' },
+    })
+    if (!enqueued.ok) throw new Error('enqueue failed')
+    wired.deps.findCurrentDefinitionId = async () => STALE_DEFINITION_ID
+    const approved = await approveGatewayOperation(wired.deps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal({ role: 'operator' }),
+    })
+    assert.equal(approved.ok && approved.view.errorCode, 'agent_stale')
+    assert.equal(driveCalls.length, 0)
+  })
+
+  await check('agent retired while pending → fails closed before the external write', async () => {
+    const driveCalls: unknown[] = []
+    const wired = deps({ driveCalls })
+    const enqueued = await enqueueGatewayOperation(wired.deps, {
+      principal: principal({ role: 'operator' }),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, idempotencyKey: 'idem-retired-after-enqueue' },
+    })
+    if (!enqueued.ok) throw new Error('enqueue failed')
+    wired.deps.loadDefinition = async () => ({ ...definition(), status: 'retired' })
+    const approved = await approveGatewayOperation(wired.deps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal({ role: 'operator' }),
+    })
+    assert.equal(approved.ok && approved.view.errorCode, 'agent_inactive')
+    assert.equal(driveCalls.length, 0)
+  })
+
   // ── #618 WP-2: MRTR form rounds (enqueueWriteForMcp) ──────────────────────
 
   const minted: WriteConfirmState[] = []
