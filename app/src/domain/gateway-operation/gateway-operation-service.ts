@@ -1,4 +1,5 @@
 import { canOperateAgent, isPrivilegedAgentReader, type AgentDefinition } from '@/domain/agent-definition'
+import { isDispatchable } from '@/lib/agent-lifecycle'
 import {
   GoogleDriveApiAuthError,
   GoogleDriveApiError,
@@ -794,6 +795,10 @@ async function executeApprovedOperation(
     definitionId: operation.agentDefinitionVersionId,
   })
   if (!definition) return fail('definition_not_found')
+  if (!isDispatchable(definition.status)) return fail('agent_inactive')
+  if (!(await checkDefinitionPin(deps, { tenantId: operation.tenantId, definition })).current) {
+    return fail('agent_stale')
+  }
 
   const agentGrant = await deps.findAgentGrant({
     tenantId: operation.tenantId,
