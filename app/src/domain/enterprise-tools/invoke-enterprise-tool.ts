@@ -135,6 +135,7 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     connector: LiveConnectorRow,
     accessToken?: string,
     actingUser?: HttpApiActingUser,
+    agent?: { id: string; version?: number },
   ) => Promise<unknown>
   resolveActingUser?: (input: { userId: string }) => Promise<{ id: string; email: string } | null>
   executeKbTool?: (
@@ -571,6 +572,7 @@ export async function invokeEnterpriseTool(
       connector,
       accessToken,
       actingUser,
+      agent: { id: definition.agentId, version: definition.version },
     })
     const upstreamFailure =
       isEnterpriseHttpTool(toolName) &&
@@ -648,6 +650,7 @@ async function dispatchTool(
     connector: LiveConnectorRow
     accessToken?: string
     actingUser?: HttpApiActingUser
+    agent?: { id: string; version?: number }
   },
 ): Promise<unknown> {
   if (isEnterpriseGmailTool(input.toolName)) {
@@ -656,7 +659,14 @@ async function dispatchTool(
   }
   if (isEnterpriseHttpTool(input.toolName)) {
     const execute = deps.executeHttpApiTool ?? executeHttpApiTool
-    return execute(input.toolName, input.args, input.connector, input.accessToken, input.actingUser)
+    return execute(
+      input.toolName,
+      input.args,
+      input.connector,
+      input.accessToken,
+      input.actingUser,
+      input.agent,
+    )
   }
   const execute = deps.executeDriveTool ?? executeGoogleDriveTool
   return execute(input.toolName as EnterpriseDriveTool, input.args, input.accessToken ?? '')

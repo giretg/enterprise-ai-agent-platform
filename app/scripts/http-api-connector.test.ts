@@ -908,6 +908,25 @@ async function main() {
     )
   })
 
+  await test('runtime: üres agent.id → template_variable_missing, nem megy ki üres X-Agent-Id', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://crm.example/api/v1',
+      auth: { scheme: 'bearer' },
+      requestHeaders: { 'X-Agent-Id': '{{agent.id}}' },
+      endpoints: [{ method: 'GET', path: '/orders' }],
+      restrictToEndpoints: true,
+    })
+    const client = new HttpApiClient(config, 'crm_key')
+    await assert.rejects(
+      client.request({
+        method: 'GET',
+        path: '/orders',
+        context: { ...crmTraceContext, agent: { id: '' } },
+      }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'template_variable_missing',
+    )
+  })
+
   await test('SSRF: idegen hostra mutató redirectet NEM követ (metadata/belső host blokk)', async () => {
     const calls: string[] = []
     const fakeFetch: typeof fetch = async (input) => {

@@ -1528,7 +1528,7 @@ async function createMcpResourceHandler(
         {
           title: 'HTTP API GET',
           description:
-            'One GET against a bound company HTTP API connector. Requires definitionId from platform.agent.get_definition. Path is relative to the connector baseUrl — do not send credentials. For large lists use http_api_get_all. Allowed paths are under connectors[].endpoints in get_definition. With several HTTP connectors, the server usually picks by method+path; otherwise pass connectorName (connectors[].name) or connectorId. Unlisted paths return endpoint_not_allowed with the allowed list.',
+            'One GET against a bound company HTTP API connector. Requires definitionId from platform.agent.get_definition — agentId is optional. Path is relative to the connector baseUrl — do not send credentials or trace headers (X-Agent-Id, X-Acting-User, X-Connector-Call-Id); the platform injects them. For large lists use http_api_get_all. Allowed paths are under connectors[].endpoints in get_definition. With several HTTP connectors, the server usually picks by method+path; otherwise pass connectorName (connectors[].name) or connectorId. Unlisted paths return endpoint_not_allowed with the allowed list.',
           inputSchema: httpApiGetInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -1539,7 +1539,7 @@ async function createMcpResourceHandler(
         {
           title: 'HTTP API GET all pages',
           description:
-            'Paginated GET of a company HTTP API list in one call. Requires definitionId from platform.agent.get_definition and pagination on the chosen connectors[].endpoints entry; without it the call returns an error. Required for ownerships/partners/large registers — do not page http_api_get yourself. Path is relative to the connector baseUrl. Disambiguate with connectorName or connectorId when needed.',
+            'Paginated GET of a company HTTP API list in one call. Requires definitionId from platform.agent.get_definition (agentId optional) and pagination on the chosen connectors[].endpoints entry; without it the call returns an error. Required for ownerships/partners/large registers — do not page http_api_get yourself. Path is relative to the connector baseUrl. The platform injects trace headers — do not pass them. Disambiguate with connectorName or connectorId when needed.',
           inputSchema: httpApiGetAllInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -1550,7 +1550,7 @@ async function createMcpResourceHandler(
         {
           title: 'HTTP API write',
           description:
-            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Requires definitionId from platform.agent.get_definition. body is a JSON string. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when several APIs are bound. Does not call the API until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Requires definitionId from platform.agent.get_definition (agentId optional). body is a JSON string. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when several APIs are bound. The platform injects trace headers and Idempotency-Key — do not pass them in headers. Does not call the API until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
           inputSchema: httpApiRequestInputSchema,
         },
         async (args) => enterpriseToolResult(principal, HTTP_API_REQUEST_TOOL, args, deps),

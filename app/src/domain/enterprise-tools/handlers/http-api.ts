@@ -65,12 +65,16 @@ function clientFor(config: HttpApiConfig, apiKey: string | undefined): HttpApiCl
   })
 }
 
+/** A published definition agentje — nem a modell args.agentId-je. */
+export type HttpApiCallAgent = { id: string; version?: number }
+
 export async function executeHttpApiTool(
   toolName: EnterpriseHttpTool | string,
   args: Record<string, unknown>,
   connector: LiveConnectorRow,
   delegatedAccessToken?: string,
   actingUser?: { id: string; email: string; tenantId: string | null } | null,
+  agent?: HttpApiCallAgent,
 ): Promise<unknown> {
   if (
     toolName !== HTTP_API_GET_TOOL &&
@@ -96,9 +100,12 @@ export async function executeHttpApiTool(
   const apiKey = await defaultApiKey(connector, delegatedAccessToken)
   const client = clientFor(config, apiKey)
   const callId = randomUUID()
-  const agentId = optionalString(args.agentId) ?? ''
+  // X-Agent-Id a published definitionből jön. args.agentId csak akkor esik be,
+  // ha egy hívó (régi teszt / kötött kliens) még nem adta át a 6. paramétert —
+  // a modellnek nem kell kitöltenie, és nem írhatja felül a definition agentjét.
+  const agentId = agent?.id?.trim() || optionalString(args.agentId)?.trim() || ''
   const context = {
-    agent: { id: agentId },
+    agent: { id: agentId, version: agent?.version },
     connector: { id: connector.id, name: connector.name ?? connector.id },
     tenant: connector.tenantId ? { id: connector.tenantId } : null,
     actingUser: actingUser ?? null,
