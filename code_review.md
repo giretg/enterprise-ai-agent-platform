@@ -8,6 +8,7 @@
 - Javítás: a közös sandbox HTTP-hívás átirányításkor hibával leáll. Az eredeti végpont hibája látható marad, de a platform nem küldi tovább a munkacsomagot ismeretlen címre. Nem került új függőség vagy konfiguráció a rendszerbe.
 - Üzleti hatás: a munkatárs által elindított, jóváhagyott skill kódja és mellékletei a beállított sandbox-szolgáltatóhoz kötöttek; egy átirányítás nem viheti át őket más szolgáltatóhoz vagy régióba.
 - Ellenőrzés: valós helyi HTTP-szerverekkel végzett regresszió a javítás előtt bizonyította a továbbítást, utána a céloldal nem kapott kérést. `test:sandbox-run`, `test:enterprise-tools`, célzott ESLint és `git diff --check` zöld. A teljes `tsc --noEmit` a már meglévő `localRoots` Prisma-kliens eltérésen áll meg, nem az érintett sandbox-fájlokban.
+- PR: https://github.com/giretg/enterprise-ai-agent-platform/pull/761 (`codex`, `codex-automation`, `security`).
 
 ## 2026-09-29 - MCP Gateway Operation jóváhagyás: visszavont vagy lecserélt agent még végrehajthatott függő külső írást
 
