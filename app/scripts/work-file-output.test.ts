@@ -36,6 +36,7 @@ function check(name: string, fn: () => void | Promise<void>) {
 
 class MemFiles {
   rows = new Map<string, WorkFileRecord>()
+  private readonly appendQueues = new Map<string, Promise<unknown>>()
   private key(tenantId: string, projectKey: string, path: string) {
     return `${tenantId}:${projectKey}:${path}`
   }
@@ -66,6 +67,52 @@ class MemFiles {
     }
     this.rows.set(this.key(input.tenantId, input.projectKey, input.path), row)
     return row
+  }
+  async appendAtomic(input: {
+    tenantId: string
+    projectKey: string
+    path: string
+    chunk: string
+    lastWriterUserId: string
+    maxFileBytes: number
+    maxProjectBytes: number
+    maxCount: number
+  }) {
+    const key = this.key(input.tenantId, input.projectKey, input.path)
+    const prev = this.appendQueues.get(key) ?? Promise.resolve()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    this.appendQueues.set(
+      key,
+      prev.then(() => gate),
+    )
+    await prev
+    try {
+      await Promise.resolve()
+      const existing = this.rows.get(key)
+      const content = `${existing?.content ?? ''}${input.chunk}`
+      const byteSize = Buffer.byteLength(content, 'utf8')
+      if (byteSize > input.maxFileBytes) return { ok: false as const, code: 'file_too_large' as const }
+      const quota = await this.quota(input.tenantId, input.projectKey)
+      const nextCount = existing ? quota.count : quota.count + 1
+      const nextBytes = quota.bytes - (existing?.byteSize ?? 0) + byteSize
+      if (nextCount > input.maxCount || nextBytes > input.maxProjectBytes) {
+        return { ok: false as const, code: 'quota_exceeded' as const }
+      }
+      const row = await this.upsert({
+        tenantId: input.tenantId,
+        projectKey: input.projectKey,
+        path: input.path,
+        content,
+        byteSize,
+        lastWriterUserId: input.lastWriterUserId,
+      })
+      return { ok: true as const, record: row }
+    } finally {
+      release()
+    }
   }
   async delete(tenantId: string, projectKey: string, path: string) {
     return this.rows.delete(this.key(tenantId, projectKey, path))
@@ -137,6 +184,23 @@ await check('30 egymás utáni append sorrendhelyes', async () => {
   const lines = read.file.content.trim().split('\n')
   assert.equal(lines.length, 30)
   lines.forEach((line, i) => assert.equal(line, `sor${i}`))
+})
+
+await check('párhuzamos append megőrzi az összes chunkot (nincs lost-update)', async () => {
+  const svc = service()
+  const chunks = Array.from({ length: 40 }, (_, i) => `P${i}`)
+  const results = await Promise.all(
+    chunks.map((line) =>
+      svc.appendFile({ tenantId: TENANT, path: 'data/parallel.jsonl', content: `${line}\n`, userId: ANNA }),
+    ),
+  )
+  assert.ok(results.every((res) => res.ok), 'minden append ok')
+  const read = await svc.readFile({ tenantId: TENANT, path: 'data/parallel.jsonl' })
+  assert.equal(read.ok, true)
+  if (!read.ok) return
+  const lines = read.file.content.trim().split('\n')
+  assert.equal(lines.length, 40)
+  assert.deepEqual([...lines].sort(), [...chunks].sort())
 })
 
 await check('append túllépéskor file_too_large, kvóta érvényesül', async () => {
