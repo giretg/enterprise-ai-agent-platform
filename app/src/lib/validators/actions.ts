@@ -21,6 +21,15 @@ export const updateAgentMemoryWriteModeSchema = z.object({
   memoryWriteMode: z.enum(['approval', 'direct']),
 })
 
+export const updateAgentWriteApprovalModesSchema = z.object({
+  agentId: z.string().uuid(),
+  memoryWriteMode: z.enum(['approval', 'direct']),
+  httpApiWriteMode: z.enum(['approval', 'direct']),
+  gmailWriteMode: z.enum(['approval', 'direct']),
+  driveWriteMode: z.enum(['approval', 'direct']),
+  approverUserId: z.string().uuid().nullable().optional(),
+})
+
 export const updateAgentOutputFolderSchema = z.object({
   agentId: z.string().uuid(),
   /** Drive mappa-id; üres string = törlés. */

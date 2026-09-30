@@ -11,6 +11,10 @@ import type { SkillContent, SkillRequirement } from '@/lib/skill/skill-content'
 import { renderKnowledgePlacementBlock } from '@/lib/agent-knowledge-placement'
 import { localRootsCheckoutFile } from '@/lib/agent-local-roots'
 import { HERMES_SYNC_PROMPT } from '@/lib/mcp-client-setup'
+import {
+  DEFAULT_WRITE_APPROVAL_MODES,
+  type AgentWriteApprovalModes,
+} from '@/domain/agent/write-approval-modes'
 
 const MCP_TOOL_SET = new Set<string>(MCP_ALLOWED_TOOLS)
 
@@ -263,6 +267,38 @@ function sandboxMcpRule(capabilities: Array<{ toolName: string; allowed: boolean
   return '- Do not run skill code on this machine.'
 }
 
+const DEFAULT_WRITE_APPROVAL_BRIEFING =
+  "Writes (for example creating a Drive folder or http_api_request) do not run until a human approves them in the Control Plane: the tool returns status awaiting_approval and an approvalUrl. Show that link to the user; do not poll or retry. Exception: google_drive_upload_file with no parentFolderId (or the agent's output folder id) runs immediately when an output folder is configured."
+
+function renderWriteApprovalBriefing(modes?: AgentWriteApprovalModes): string[] {
+  const resolved = modes ?? DEFAULT_WRITE_APPROVAL_MODES
+  const allApproval = Object.values(resolved).every((mode) => mode === 'approval')
+  if (allApproval) return [DEFAULT_WRITE_APPROVAL_BRIEFING]
+  const direct: string[] = []
+  const waiting: string[] = []
+  if (resolved.memory === 'direct') direct.push('memory')
+  else waiting.push('memory')
+  if (resolved.httpApi === 'direct') direct.push('company HTTP APIs')
+  else waiting.push('company HTTP APIs')
+  if (resolved.gmail === 'direct') direct.push('Gmail')
+  else waiting.push('Gmail')
+  if (resolved.drive === 'direct') direct.push('Drive and Sheets')
+  else waiting.push('Drive and Sheets')
+  const lines: string[] = []
+  if (direct.length > 0) {
+    lines.push(`These writes run immediately (logged, no approval link): ${direct.join(', ')}.`)
+  }
+  if (waiting.length > 0) {
+    lines.push(
+      `These writes wait for a human: ${waiting.join(', ')}. The tool returns awaiting_approval and an approvalUrl — show that link; do not poll or retry.`,
+    )
+  }
+  lines.push(
+    "Exception: google_drive_upload_file with no parentFolderId (or the agent's output folder id) still runs immediately when an output folder is configured.",
+  )
+  return lines
+}
+
 /**
  * The agent briefing (#652): one text for get_definition.briefing, the MCP
  * prompt and the checkout AGENTS.md / SOUL.md, so every channel loads the same
@@ -277,6 +313,8 @@ export function renderAgentBriefing(input: {
   handoffs?: Array<{ id: string; title: string; projectKey: string; createdAt: string; fromAgentName: string | null }>
   /** #663: az agent megnevezett jóváhagyója (üzleti nyelven a Jóváhagyások blokkba). */
   approverName?: string | null
+  /** #739: mely írások mennek azonnal, melyek várnak emberre. Hiányában minden jóváhagyásköteles. */
+  writeModes?: AgentWriteApprovalModes
 }): string {
   const { agentId, snapshot } = input.definition
   const roots = snapshot.localRoots ?? []
@@ -321,7 +359,7 @@ export function renderAgentBriefing(input: {
     '## Rules you must not break',
     '',
     '- This agent\'s memory is the source of company facts, decisions and locations. It overrides search results: if Drive, KB or API results contradict it, follow the memory and tell the user about the conflict.',
-    '- Never bypass approval: writes wait for a human in the Control Plane (see Approvals and handoffs). Exception: google_drive_upload_file into this agent\'s configured output folder (omit parentFolderId) runs immediately.',
+    '- Follow Approvals and handoffs: do not retry or invent success for a write that returned awaiting_approval. Exception: google_drive_upload_file into this agent\'s configured output folder (omit parentFolderId) runs immediately.',
     input.bound
       ? `- This client is bound to this agent by the ${AGENT_ID_HEADER} header on every MCP request: do not pass definitionId or agentId — the server uses the agent's current published definition.`
       : '- Pass definitionId from platform.agent.get_definition on every enterprise tool (Drive, Gmail, http_api_*, kb_*).',
@@ -440,7 +478,7 @@ export function renderAgentBriefing(input: {
     '',
     '## Approvals and handoffs',
     '',
-    'Writes (for example creating a Drive folder or http_api_request) do not run until a human approves them in the Control Plane: the tool returns status awaiting_approval and an approvalUrl. Show that link to the user; do not poll or retry. Exception: google_drive_upload_file with no parentFolderId (or the agent\'s output folder id) runs immediately when an output folder is configured.',
+    ...renderWriteApprovalBriefing(input.writeModes),
   )
   const approverName = input.approverName?.trim()
   if (approverName) {

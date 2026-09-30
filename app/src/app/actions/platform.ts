@@ -34,6 +34,7 @@ import {
   updateAgentAvatarSchema,
   updateAgentInstructionSchema,
   updateAgentMemoryWriteModeSchema,
+  updateAgentWriteApprovalModesSchema,
   updateAgentOutputFolderSchema,
   updateAgentLocalRootsSchema,
   updateAgentProfileSchema,
@@ -485,6 +486,67 @@ export async function updateAgentMemoryWriteMode(input: {
     return ok({ memoryWriteMode: updated.memoryWriteMode })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update memory write mode')
+  }
+}
+
+export async function updateAgentWriteApprovalModes(input: {
+  agentId: string
+  memoryWriteMode: 'approval' | 'direct'
+  httpApiWriteMode: 'approval' | 'direct'
+  gmailWriteMode: 'approval' | 'direct'
+  driveWriteMode: 'approval' | 'direct'
+  approverUserId?: string | null
+}) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = updateAgentWriteApprovalModesSchema.parse(input)
+    const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
+    if (!existing) return fail('Agent not found')
+    const updated = await repositories.agents.updateWriteApprovalModes({
+      agentId: parsed.agentId,
+      memoryWriteMode: parsed.memoryWriteMode,
+      httpApiWriteMode: parsed.httpApiWriteMode,
+      gmailWriteMode: parsed.gmailWriteMode,
+      driveWriteMode: parsed.driveWriteMode,
+    })
+    let approverUserId = existing.approverUserId
+    if (parsed.approverUserId !== undefined) {
+      const approver = await updateAgentApprover({
+        agentId: parsed.agentId,
+        approverUserId: parsed.approverUserId,
+      })
+      if (!approver.success) return fail(approver.error)
+      approverUserId = parsed.approverUserId
+    }
+    await services.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'agent.write_approval_modes',
+      targetType: 'agent',
+      targetId: updated.id,
+      modelUsed: null,
+      inputRef: `${parsed.memoryWriteMode},${parsed.httpApiWriteMode},${parsed.gmailWriteMode},${parsed.driveWriteMode}`,
+      outputRef: `${existing.memoryWriteMode},${existing.httpApiWriteMode},${existing.gmailWriteMode},${existing.driveWriteMode}`,
+      policyDecision: 'updated',
+      metadata: {
+        memoryWriteMode: parsed.memoryWriteMode,
+        httpApiWriteMode: parsed.httpApiWriteMode,
+        gmailWriteMode: parsed.gmailWriteMode,
+        driveWriteMode: parsed.driveWriteMode,
+      },
+      tenantId: user.activeTenantId,
+    })
+    revalidatePath(`/control-plane/agents/${parsed.agentId}`)
+    return ok({
+      memoryWriteMode: updated.memoryWriteMode,
+      httpApiWriteMode: updated.httpApiWriteMode,
+      gmailWriteMode: updated.gmailWriteMode,
+      driveWriteMode: updated.driveWriteMode,
+      approverUserId,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update write approval modes')
   }
 }
 

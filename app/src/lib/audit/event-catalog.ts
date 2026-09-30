@@ -62,6 +62,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.delete',
   'agent.profile',
   'agent.memory_write_mode',
+  'agent.write_approval_modes',
   'agent.output_folder',
   'agent.local_roots',
   'agent.approver',

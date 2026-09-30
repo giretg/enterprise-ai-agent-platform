@@ -1,13 +1,13 @@
 /**
- * #663 UI: jóváhagyó a Memóriaírás űrlapon, nem a Kapcsolt fiókok kártyán.
+ * #663 / #739 UI: jóváhagyó az Írások űrlapon, nem a Kapcsolt fiókok kártyán.
  * Futtatás: node --import tsx scripts/agent-memory-approver-ui.test.ts
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const memoryForm = readFileSync(
-  resolve(import.meta.dirname, '../src/components/agents/update-memory-write-mode-form.tsx'),
+const form = readFileSync(
+  resolve(import.meta.dirname, '../src/components/agents/update-write-approval-form.tsx'),
   'utf8',
 )
 const connectorCard = readFileSync(
@@ -19,8 +19,8 @@ const agentPage = readFileSync(
   'utf8',
 )
 
-assert.match(memoryForm, /updateAgentApprover/)
-assert.match(memoryForm, /mode === 'approval'/)
+assert.match(form, /updateAgentWriteApprovalModes/)
+assert.match(form, /needsApprover/)
 assert.doesNotMatch(agentPage, /UpdateApproverForm/)
 assert.doesNotMatch(connectorCard, /UpdateApproverForm/)
 console.log('agent-memory-approver-ui.test.ts: ok')
