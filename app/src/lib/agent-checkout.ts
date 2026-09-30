@@ -66,7 +66,7 @@ export const CHECKOUT_TOOL_DESCRIPTION = [
   '(3) Check whether suggestedRoot (or ~/Agents/<slug>) exists: missing = first checkout (create folder); present = re-sync (overwrite generated files only).',
   '(4) Call platform.agent.checkout { agentId }; pass version only when the user names a specific published version.',
   '(5) Write every files[] entry under suggestedRoot, then follow writeRecipe from the response.',
-  'Optional harness: claude | codex | goose | grok (stored only in v1).',
+  'Optional harness: claude | codex | goose | grok | hermes.',
   'Hermes: harness:"hermes" returns a Hermes profile distribution (one Bot per agent) — write files[] to suggestedRoot, then run the writeRecipe commands with the terminal tool.',
 ].join(' ')
 

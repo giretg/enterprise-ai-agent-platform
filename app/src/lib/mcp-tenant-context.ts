@@ -98,10 +98,15 @@ export function buildTenantContextPayload(input: {
   }
 }
 
+/**
+ * `bound`: the client sends the agent-id header, so `coworkers` is already narrowed to that one
+ * agent — it must not be told to pick or hand off to a teammate it cannot call.
+ */
 export function buildMcpServerInstructions(input: {
   tenant: Pick<Tenant, 'displayName' | 'legalName' | 'slug' | 'settings'> | null | undefined
   tenantSlug: string
   coworkers: McpCoworkerSummary[]
+  bound?: boolean
 }): string {
   const organization = tenantDisplayLabel(input.tenant)
   const intro =
@@ -127,15 +132,26 @@ export function buildMcpServerInstructions(input: {
     'A published agent may have a local folder (Claude Desktop project, Codex workspace). Use platform.agent.checkout to fetch AGENTS.md, manifest, and instruction-only skill files, then write them to suggestedRoot. The same MCP URL and tools apply — checkout files are instructions, not a separate agent process.',
     'When the user says checkout / sync / set up local agents: call platform.agents.list if needed; if exactly one agent is listed below, call platform.agent.checkout with that agentId immediately — do not ask which agent or whether to create vs update.',
     'Check whether suggestedRoot already exists on disk: missing folder = first checkout (create); existing folder = re-sync (overwrite generated paths only, per writeRecipe).',
-    `Hermes: "${HERMES_SYNC_PROMPT}" means one Bot per agent — for every agent in platform.agents.list call platform.agent.checkout with harness:"hermes", write files[] to suggestedRoot, then run the writeRecipe commands with the terminal tool.`,
   ]
+  if (!input.bound) {
+    lines.push(
+      `Hermes: "${HERMES_SYNC_PROMPT}" means one Bot per agent — for every agent in platform.agents.list call platform.agent.checkout with harness:"hermes", write files[] to suggestedRoot, then run the writeRecipe commands with the terminal tool.`,
+    )
+  }
 
   if (input.coworkers.length > 0) {
     lines.push('', 'PUBLISHED AGENTS (MCP)')
     for (const coworker of input.coworkers) {
       lines.push(coworkerInstructionLine(coworker))
     }
-    if (input.coworkers.length === 1) {
+    if (input.bound) {
+      const only = input.coworkers[0]!
+      lines.push(
+        '',
+        'BOUND TO ONE AGENT',
+        `This client is bound to ${only.name} by the X-Excellence-Agent-Id header on every request: work as ${only.name} for the whole conversation and call platform.agent.get_definition with no arguments. The organization has other agents, but this client cannot call them — a request that belongs to another teammate is a handoff you tell the user about, never another agentId. Do not run "${HERMES_SYNC_PROMPT}" from this Bot — that belongs in the default Hermes profile.`,
+      )
+    } else if (input.coworkers.length === 1) {
       const only = input.coworkers[0]!
       lines.push(
         `- Only one agent is visible — load ${only.name} (agentId ${only.agentId}) with platform.agent.get_definition and stay in that role. Default checkout target: ${only.name}.`,
@@ -148,6 +164,12 @@ export function buildMcpServerInstructions(input: {
         'A slash prompt named after an agent is an explicit choice — load that agent.',
       )
     }
+  } else if (input.bound) {
+    lines.push(
+      '',
+      'PUBLISHED AGENTS (MCP)',
+      '- The X-Excellence-Agent-Id header on this client names an agent that is not published or not visible to you. Every tool call will be refused until a tenant admin fixes the binding — tell the user that.',
+    )
   } else {
     lines.push('', 'PUBLISHED AGENTS (MCP)', '- None visible to this principal yet. Call platform.agents.list after grants are in place.')
   }
