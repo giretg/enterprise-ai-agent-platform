@@ -319,6 +319,8 @@
         "profil": "Name and responsibility",
         "localRoots": "Local coding folders",
         "munkakor": "Role",
+        "modell": "Reasoning engine",
+        "modellDesc": "Which AI model powers this agent, and which backup to use when a provider is down.",
         "kapcsolatok": "Connectors",
         "kapcsolatokDesc": "APIs, mail, Drive, and other external systems — in read or write mode.",
         "tudasbazis": "Knowledge base",
@@ -566,6 +568,7 @@
       "body": "This workspace’s own behaviour. The Google OAuth client lives under Platform · Settings; menu visibility is on the Menu access page.",
       "aria": "Workspace settings",
       "mcpIntro": "MCP introduction",
+      "models": "Allowed models",
       "language": "Language",
       "languageTitle": "Workspace language",
       "languageBody": "Skill descriptions and other human-readable text are written in this language. JSON keys stay in English.",
@@ -621,7 +624,8 @@
       "drive": "Google Drive OAuth",
       "picker": "Drive Picker",
       "googleApi": "Google API (Analytics / Ads / Calendar / Sheets)",
-      "nav": "NAV Online Invoice"
+      "nav": "NAV Online Invoice",
+      "fallbackChain": "Fallback chain"
     }
   },
   "GetStarted": {

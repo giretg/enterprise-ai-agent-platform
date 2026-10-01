@@ -319,6 +319,8 @@
         "profil": "Név és felelősségi kör",
         "localRoots": "Helyi kódmappák",
         "munkakor": "Munkakör",
+        "modell": "Gondolkodási motor",
+        "modellDesc": "Melyik AI-modell dolgozik a munkatárs mögött, és mi legyen a tartalék, ha egy szolgáltató kiesik.",
         "kapcsolatok": "Konnektorok",
         "kapcsolatokDesc": "API-k, levelezés, Drive és egyéb külső rendszerek — olvasási vagy írási módban.",
         "tudasbazis": "Tudásbázis",
@@ -566,6 +568,7 @@
       "body": "A tenant saját magatartása. A Google OAuth kliens a Platform · Beállítások alatt él, a menü-láthatóság a Menü-hozzáférés oldalon.",
       "aria": "Tenant beállítások",
       "mcpIntro": "MCP bemutatkozó",
+      "models": "Engedett modellek",
       "language": "Nyelv",
       "languageTitle": "Tenant nyelv",
       "languageBody": "A skill-leírások és egyéb emberi szövegek ezen a nyelven készülnek. A JSON kulcsok angolul maradnak.",
@@ -621,7 +624,8 @@
       "drive": "Google Drive OAuth",
       "picker": "Drive Picker",
       "googleApi": "Google API (Analytics / Ads / Calendar / Sheets)",
-      "nav": "NAV Online Számla"
+      "nav": "NAV Online Számla",
+      "fallbackChain": "Tartalék-lánc"
     }
   },
   "GetStarted": {

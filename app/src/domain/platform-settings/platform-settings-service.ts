@@ -10,9 +10,18 @@ import {
   type GoogleOAuthConfig,
   type GoogleOAuthResolved,
 } from '@/lib/platform-google-oauth-config'
+import { FALLBACK_CHAIN_SETTING_KEY } from '@/domain/model-gateway/fallback-chain'
+import {
+  parseModelPolicy,
+  parseModelRefs,
+  setModelEnabled,
+  type ModelPolicy,
+  type ModelRef,
+} from '@/lib/model-policy'
 import { NAV_SOFTWARE_PLATFORM_KEY, parseNavSoftware, type NavSoftware } from '@/lib/nav-online-invoice-software'
 
 export const PROVISIONING_EGRESS_ALLOWLIST_KEY = 'provisioning.egress_allowlist'
+export const MODEL_POLICY_KEY = 'model.policy'
 const EGRESS_GLOBAL_BUCKET = '__global__'
 type EgressAllowlistStore = Record<string, string[]>
 
@@ -80,6 +89,44 @@ export class PlatformSettingsService {
     )
 
     return { ok: true, added: true, host: normalized, hosts: next }
+  }
+
+  /** Tenant engedett modell-listája (#768) — `model.policy` kulcs alatt tenantId szerint. */
+  async getModelPolicy(tenantId: string): Promise<ModelPolicy> {
+    const raw = (await this.settings.get(MODEL_POLICY_KEY)) as Record<string, unknown> | null
+    return parseModelPolicy(raw && typeof raw === 'object' ? raw[tenantId] : null)
+  }
+
+  async setModelEnabled(
+    tenantId: string,
+    ref: ModelRef,
+    enabled: boolean,
+    actorId: string,
+  ): Promise<ModelPolicy> {
+    const raw = (await this.settings.get(MODEL_POLICY_KEY)) as Record<string, unknown> | null
+    const store = raw && typeof raw === 'object' ? { ...raw } : {}
+    const next = setModelEnabled(parseModelPolicy(store[tenantId]), ref, enabled)
+    store[tenantId] = next
+    await this.settings.set(MODEL_POLICY_KEY, store as unknown as Prisma.InputJsonObject, actorId)
+    return next
+  }
+
+  async assertModelAllowed(tenantId: string, ref: ModelRef): Promise<void> {
+    const policy = await this.getModelPolicy(tenantId)
+    if (!policy.enabled.some((e) => e.provider === ref.provider && e.model === ref.model)) {
+      throw new Error(`A modell nincs engedélyezve: ${ref.provider}/${ref.model}`)
+    }
+  }
+
+  /** Globális tartalék-lánc (platform-szintű) — `model.fallback_chain`. */
+  async getFallbackChain(): Promise<ModelRef[]> {
+    return parseModelRefs(await this.settings.get(FALLBACK_CHAIN_SETTING_KEY))
+  }
+
+  async setFallbackChain(chain: ModelRef[], actorId: string): Promise<ModelRef[]> {
+    const clean = parseModelRefs(chain)
+    await this.settings.set(FALLBACK_CHAIN_SETTING_KEY, clean as unknown as Prisma.InputJsonArray, actorId)
+    return clean
   }
 
   async getGoogleOAuthConfig(): Promise<GoogleOAuthResolved | null> {
