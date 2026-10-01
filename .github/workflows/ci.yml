@@ -84,6 +84,7 @@ jobs:
           npm run test:agent-local-roots
           npm run test:client-policy
           npm run test:model-gateway-token
+          npm run test:model-gateway-proxy
           npm run test:enterprise-tools
           npm run test:sandbox-run
           npm run test:gmail-mcp-tools
