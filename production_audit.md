@@ -7,6 +7,88 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-10-01 — Kimenő író-kliensek 5xx retry-duplikátum (Drive/Sheets/Docs/Slides + http_api)
+
+**Scope-választás (kockázati alapon):** a 2026-09-25-i kör a #674-ben a Gmail-küldés
+non-idempotens 5xx-retry duplikátumát javította, és a ledger **explicit prioritált
+követő körként** jegyezte a *többi* kimenő író-kliens ugyanezen retry-mintáját
+(`google_sheets_write_range`, `google_drive_upload_file`, `http_api_request` POST/PUT).
+Ez volt a legmagasabb nem-auditált, **visszavonhatatlan külső hatású** felület (dupla
+fájl / dupla sor / dupla megrendelés-számla). `gh pr list` + ledger után ezt vettem.
+
+**Coverage (teljes retry-mátrix + minden `fetchWithBackoff` hívási hely, 3 kliens):**
+`GoogleDriveApiClient`, `GoogleWorkspaceApiClient` (Docs/Sheets/Slides),
+`HttpApiClient` (közvetlen **és** protokoll ág). Minden írási/olvasási hívás
+idempotencia szerint osztályozva.
+
+### Bizonyított finding (reliability / correctness) — javítva (PR **#762**)
+
+**Non-idempotens kimenő POST újrapróbálja az ambivalens 5xx-et → dupla mellékhatás.**
+Mindhárom kliens `fetchWithBackoff`-ja 429 mellett **minden 5xx-re** (500/502/503/504)
+újrapróbált, **minden** művelettípusra. A nem-idempotens create/append POST-oknál ez
+duplikátumot okoz, ha a művelet a szerveren már lefutott, de a válasz ambivalens (502):
+- **Drive:** `uploadFile` (dupla feltöltött fájl), `createFolder`, `copyFile`, `shareFile`.
+- **Workspace:** `applyDocsEdits` / `applySlidesEdits` batchUpdate `insertText` (dupla
+  bekezdés), `writeSheetsRange` `:append` (dupla sor).
+- **http_api közvetlen ág** (`request()`, `route ~915`): POST/PUT/PATCH/DELETE egy
+  generikus üzleti API-n → **dupla megrendelés / dupla számla**. (A **protokoll-ág** —
+  `requestViaProtocol` ~1015 — már helyesen letiltotta: `READ_METHODS.has(method)`; a
+  közvetlen ág volt az **inkonzisztens, kapuzatlan** testvér-ingress.)
+
+- **Hatás:** kettős üzleti cselekvés (fájl/sor/bekezdés/bizonylat), bizalomvesztés,
+  költség. **Súlyosság:** közepes (hitelesített, de visszavonhatatlan külső hatás;
+  nincs cross-tenant szivárgás).
+
+### Javítás (root-cause, a határon — a #674 Gmail-mintát tükrözve)
+- A grant-kliensek `fetchWithBackoff`-ja `retryServerErrors` kapcsolót kap:
+  `false`-nál **csak a 429-et** ismétli (elutasított = fel nem dolgozott), az 5xx-et nem.
+  Minden nem-idempotens create/append POST a `NO_5XX_RETRY` ágra kerül; az **olvasások**
+  és az **idempotens** írások (Sheets range-felülíró **PUT**, Drive metaadat-**PATCH** /
+  átnevezés / áthelyezés / kuka) **tartják** az 5xx-retryt.
+- `http_api` közvetlen ág: `READ_METHODS.has(method)` átadása (a protokoll-ággal azonos).
+- **Code-review follow-up (mindkét axis egybehangzó nitje):** a http_api kliens a
+  `retry` boolean újrahasznosításával az írásoknál a **429-et is** letiltotta — a
+  grant-kliensek és a spec viszont a 429-et megtartják. A `fetchWithBackoff` mostantól a
+  grant-kliensekkel azonos `retryServerErrors` szemantikájú (írás = csak 429, olvasás =
+  429+5xx); ez a **protokoll-ágat is** javítja és megszünteti a kliensek közti eltérést.
+
+### Ellenőrzések
+- `test:google-drive-api-client` (3 új): upload/create_folder egyszer fut 5xx-en
+  (nincs dupla), olvasás továbbra is retryz. **Zöld.**
+- `test:google-workspace-api-client` (4 új): Sheets `:append` + Docs/Slides batchUpdate
+  egyszer fut; Sheets range-**PUT** retryz. **Zöld.**
+- `test:http-api` (3 új): nem-idempotens POST **nem** ismétel 5xx-et (1 hívás), de
+  **ismétel** 429-et (2 hívás), olvasó GET retryz (3 hívás). **Zöld.**
+- A Drive/Workspace kliens-tesztek eddig **nem futottak** CI-ben — most npm-scriptként
+  **és** a CI pipeline-ban is futnak (coverage-nyereség önmagában).
+- `tsc`/`eslint` tiszta a módosított fájlokra (a `localRoots` tsc-zaj pre-existing
+  Prisma-client drift a `main`-en, nem e kör).
+- Független `/code-review` (Matt Pocock, 2 párhuzamos axis): **Standards** — 0 hard
+  violation; a minta a már-mergelt `gmail-api-client` konvencióját követi (nem smell);
+  egyetlen actionable nit (http_api 429-divergencia) **átvezetve**. **Spec** — hű, teljes,
+  0 scope-creep; minden non-idempotens hely lefedve, az idempotensek helyesen retryznak;
+  az egyetlen P1 (429-megtartás) **átvezetve**.
+
+### PR
+- **#762** — `fix(connectors): don't replay ambiguous 5xx on non-idempotent write POSTs`
+  (branch `fix/write-client-5xx-retry-duplicate`, `origin/main`-ről, külön worktree).
+
+### Residual risk / következő audithoz
+- **🟡 batchUpdate szemcsézettség:** a Docs/Slides batchUpdate `replaceAllText`/`deleteObject`
+  önmagában idempotens; most az egész batchUpdate nem-retryző (mert `insertText`-et is
+  tartalmazhat). Konzervatív (dupla-mentes), de egy tiszta-replace batch 5xx-en fölöslegesen
+  elbukik. Finomhangolás (operation-típus szerint) lehetséges, de YAGNI — a dupla-mentesség
+  fontosabb.
+- **🟡 http_api idempotens-flagelt végpont retry-vesztése:** egy `idempotent:true` +
+  idempotencia-kulcs headeres végpont írása ma sem retryzi az 5xx-et (a protokoll-ág
+  mintáját követve). Biztonságos default; ha a megbízhatóság gond lesz, az idempotencia-kulcs
+  mellett az 5xx-retry visszaengedhető — jelen körben szándékosan nem.
+- **`create_draft`-szerű „bukás átmeneti 5xx-en" UX** (l. 09-25): a nem-idempotens írás
+  5xx-en hangosan elbukik (dupla helyett nulla) — a user/agent tudatos új művelettel
+  ismétel. Ha a bukás gyakori lesz, végpontonkénti idempotencia-kulcs az upgrade-út.
+- A VERIFIKÁLTAN lefedett kliensek (Gmail #674 + e kör 3 kliense) retry-politikája zárt;
+  új kimenő író-kliens bevezetésekor ugyanezt a `retryServerErrors`-mintát kell követni.
+
 ## 2026-09-26 — KB-keresés/-olvasás MCP-n (#678, `9be5b023`): nyers FTS-SQL, tenant-határ, HTML-ingest
 
 **Scope-választás (kockázati alapon):** `gh pr list` + ledger után a legmagasabb **nem-auditált**
