@@ -396,6 +396,33 @@ async function main() {
     }
   })
 
+  await test('valódi fetch: nem-idempotens POST tovább ismétli a 429-et (elutasított = fel nem dolgozott)', async () => {
+    let calls = 0
+    const fakeFetch: typeof fetch = async () => {
+      calls += 1
+      return calls < 2
+        ? new Response('rate limited', { status: 429 })
+        : new Response(JSON.stringify({ success: true, data: {} }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'pn_live_key')
+      const res = await client.request({
+        method: 'POST',
+        path: '/banks/507f1f77bcf86cd799439011/contacts',
+        body: { name: 'X' },
+      })
+      assert.equal(res.ok, true)
+      assert.equal(calls, 2, 'az író 429 biztonságosan ismételhető (nincs dupla, csak újra-próbálkozás)')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   await test('valódi fetch: olvasó GET tovább ismétli az átmeneti 5xx-et', async () => {
     let calls = 0
     const fakeFetch: typeof fetch = async () => {
