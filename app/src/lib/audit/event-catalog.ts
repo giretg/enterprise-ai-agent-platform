@@ -124,6 +124,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   'handoff.created',
   'handoff.acknowledged',
+
+  'model_gateway.token.issued',
+  'model_gateway.token.deny',
+  'model_gateway.token.revoked',
 ])
 
 export class UnregisteredAuditActionError extends Error {
