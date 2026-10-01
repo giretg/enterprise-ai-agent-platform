@@ -58,6 +58,10 @@ export const PUBLIC_ROUTE_PATTERNS = [
   '/.well-known/oauth-protected-resource/(.*)',
   '/.well-known/oauth-authorization-server',
   '/.well-known/oauth-authorization-server/(.*)',
+  // Hermes Managed Client (#772): saját Bearer-hitelesítés a handlerben (MCP OAuth token,
+  // illetve gateway-JWT) — a Clerk-süti nélküli Hermes-kliens ezeket hívja.
+  '/api/model-gateway/token',
+  '/api/client-policy/snapshot',
   // Delegált OAuth callback: a Google ide redirectel. MCP-consentnél nincs
   // Clerk-süti — a handler a signed OAuth state-tel hitelesít (lásd route).
   '/api/connectors/oauth/callback',
