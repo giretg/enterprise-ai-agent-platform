@@ -83,6 +83,7 @@ jobs:
           npm run test:agent-checkout
           npm run test:agent-local-roots
           npm run test:client-policy
+          npm run test:client-install
           npm run test:model-gateway-token
           npm run test:model-gateway-proxy
           npm run test:enterprise-tools

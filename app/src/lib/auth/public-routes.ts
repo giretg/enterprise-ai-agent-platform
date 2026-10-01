@@ -63,6 +63,7 @@ export const PUBLIC_ROUTE_PATTERNS = [
   '/api/model-gateway/token',
   '/api/model-gateway/v1/(.*)',
   '/api/client-policy/snapshot',
+  '/api/client-policy/heartbeat',
   // Delegált OAuth callback: a Google ide redirectel. MCP-consentnél nincs
   // Clerk-süti — a handler a signed OAuth state-tel hitelesít (lásd route).
   '/api/connectors/oauth/callback',
