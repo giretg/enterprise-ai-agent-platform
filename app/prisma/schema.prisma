@@ -390,6 +390,7 @@ model Tenant {
   projectMemoryItems ProjectMemoryItem[]
   handoffs          Handoff[]
   clientPolicies    ClientPolicy[]
+  aiInteractionEvents AiInteractionEvent[]
 
   @@index([status])
   @@map("tenants")
@@ -959,6 +960,31 @@ model PlatformSetting {
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   @@map("platform_settings")
+}
+
+/// Hermes Managed Client (#746 V1-5): nagy volumenű AI-használati napló (a `content` AES-GCM-mel titkosított).
+model AiInteractionEvent {
+  id            String   @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  agentId       String   @map("agent_id") @db.Uuid
+  installId     String   @map("install_id")
+  sessionId     String?  @map("session_id")
+  turnId        String?  @map("turn_id")
+  kind          String
+  source        String
+  content       String?
+  meta          Json     @default("{}")
+  policyVersion String   @map("policy_version")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  expiresAt     DateTime @map("expires_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, id])
+  @@index([tenantId, sessionId])
+  @@index([tenantId, userId, createdAt])
+  @@map("ai_interaction_events")
 }
 
 model AuditLog {
