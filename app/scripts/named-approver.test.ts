@@ -6,7 +6,8 @@
  * - a megnevezett a saját kérését is jóváhagyhatja,
  * - más (még approver szerepű) felhasználó approver_not_authorized-ot kap,
  * - admin-helyettes és assumált superadmin dönthet,
- * - az MCP-válasz megnevezi, kire vár a művelet.
+ * - az MCP-válasz megnevezi, kire vár a művelet,
+ * - inaktív/hiányzó megnevezett → approver_unavailable (ne fail-open self-approve).
  */
 import assert from 'node:assert/strict'
 import type { AgentDefinition } from '../src/domain/agent-definition'
@@ -21,6 +22,8 @@ import {
   enqueueGatewayOperation,
   enqueueResultToMcp,
   listPendingGatewayOperations,
+  resolveDesignatedApproverBinding,
+  type DesignatedApproverResolution,
   type GatewayOperationServiceDeps,
 } from '../src/domain/gateway-operation'
 import { MemoryGatewayOperationStore } from './memory-gateway-operation-store'
@@ -79,7 +82,13 @@ function connector(): LiveConnectorRow {
   }
 }
 
-function deps(designated: { userId: string; name: string } | null = { userId: CSILLA_ID, name: 'Csilla' }) {
+function deps(
+  designated: DesignatedApproverResolution = {
+    kind: 'designated',
+    userId: CSILLA_ID,
+    name: 'Csilla',
+  },
+) {
   const store = new MemoryGatewayOperationStore()
   const serviceDeps: GatewayOperationServiceDeps = {
     operations: store,
@@ -145,14 +154,14 @@ async function main() {
   })
 
   await check('megnevezett nélkül nincs designated', async () => {
-    const wired = deps(null)
+    const wired = deps({ kind: 'none' })
     const view = await enqueue(wired, 'idem-named-2')
     assert.equal(view.designatedApproverUserId, null)
     assert.equal(view.designatedApproverName, null)
   })
 
   await check('a megnevezett jóváhagyhatja a saját kérését', async () => {
-    const wired = deps({ userId: REQUESTER_ID, name: 'Kérelmező' })
+    const wired = deps({ kind: 'designated', userId: REQUESTER_ID, name: 'Kérelmező' })
     const view = await enqueue(wired, 'idem-named-3')
     const approved = await approveGatewayOperation(wired.deps, {
       tenantId: TENANT_ID,
@@ -225,6 +234,52 @@ async function main() {
     const payload = JSON.parse(text) as { waitingForApprover?: { name?: string }; message?: string }
     assert.equal(payload.waitingForApprover?.name, 'Csilla')
     assert.ok(payload.message?.includes('Csilla'))
+  })
+
+  await check('inaktív megnevezett → enqueue fail-closed (approver_unavailable)', async () => {
+    const wired = deps({ kind: 'unavailable' })
+    const result = await enqueueGatewayOperation(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...ARGS, idempotencyKey: 'idem-named-inactive' },
+    })
+    assert.deepEqual(result, { ok: false, code: 'approver_unavailable' })
+    assert.equal((await wired.store.listAwaitingApproval(TENANT_ID)).length, 0)
+  })
+
+  await check('binding feloldás: aktív → designated, felfüggesztett → unavailable', () => {
+    assert.deepEqual(
+      resolveDesignatedApproverBinding({
+        approverUserId: null,
+        membershipStatus: null,
+        user: null,
+      }),
+      { kind: 'none' },
+    )
+    assert.deepEqual(
+      resolveDesignatedApproverBinding({
+        approverUserId: CSILLA_ID,
+        membershipStatus: 'active',
+        user: { id: CSILLA_ID, name: 'Csilla', email: 'csilla@example.com' },
+      }),
+      { kind: 'designated', userId: CSILLA_ID, name: 'Csilla' },
+    )
+    assert.deepEqual(
+      resolveDesignatedApproverBinding({
+        approverUserId: CSILLA_ID,
+        membershipStatus: 'suspended',
+        user: { id: CSILLA_ID, name: 'Csilla', email: 'csilla@example.com' },
+      }),
+      { kind: 'unavailable' },
+    )
+    assert.deepEqual(
+      resolveDesignatedApproverBinding({
+        approverUserId: CSILLA_ID,
+        membershipStatus: 'active',
+        user: null,
+      }),
+      { kind: 'unavailable' },
+    )
   })
 
   console.log(`\nnamed-approver: ${failures === 0 ? 'ok' : `${failures} failed`}`)

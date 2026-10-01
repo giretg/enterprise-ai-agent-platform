@@ -32,6 +32,10 @@ import {
   type GatewayPendingOperationRow,
   type GatewayOperationHistoryRow,
 } from '@/domain/gateway-operation'
+import {
+  resolveDesignatedApproverBinding,
+  type DesignatedApproverResolution,
+} from '@/domain/gateway-operation/designated-approver'
 import type { GatewayOperationRecord } from '@/domain/gateway-operation/types'
 import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { clampWriteModesToCeiling, readTenantAutonomyCeiling } from '@/lib/agent-autonomy'
@@ -426,14 +430,14 @@ async function resolveRequester(input: { tenantId: string; userId: string }) {
 }
 
 /**
- * #663: megnevezett jóváhagyó feloldása (konnektor > agent). Csak aktív
- * tenant-tagság esetén érvényes; a nevet pillanatképként adjuk a művelethez.
+ * #663: megnevezett jóváhagyó feloldása (konnektor > agent). Binding van, de
+ * inaktív/hiányzó user → `unavailable` (fail-closed); ne essünk vissza nyitott sorra.
  */
 async function resolveDesignatedApprover(input: {
   tenantId: string
   agentId: string
   connectorId: string | null
-}): Promise<{ userId: string; name: string } | null> {
+}): Promise<DesignatedApproverResolution> {
   const [agent, connector] = await Promise.all([
     repositories.agents.findById(input.agentId, input.tenantId),
     input.connectorId
@@ -448,13 +452,16 @@ async function resolveDesignatedApprover(input: {
       ? wikiScope.userId
       : wikiScope.approverUserId
     : (connector?.approverUserId ?? agent?.approverUserId ?? null)
-  if (!approverUserId) return null
+  if (!approverUserId) return resolveDesignatedApproverBinding({ approverUserId: null, membershipStatus: null, user: null })
   const [membership, user] = await Promise.all([
     repositories.tenantMemberships.findByTenantAndUser(input.tenantId, approverUserId),
     repositories.users.findById(approverUserId),
   ])
-  if (membership?.status !== 'active' || !user) return null
-  return { userId: user.id, name: user.name || user.email }
+  return resolveDesignatedApproverBinding({
+    approverUserId,
+    membershipStatus: membership?.status,
+    user: user ? { id: user.id, name: user.name, email: user.email } : null,
+  })
 }
 
 async function startAuthorization(input: {
