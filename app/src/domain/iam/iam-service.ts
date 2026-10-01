@@ -499,6 +499,54 @@ export class IamService {
     return this.withMembershipView(updated, params.role, 'active', params.actorTenantId)
   }
 
+  /** Platform-superadmin approval for self-registered users without a tenant. */
+  async approvePlatformRegistration(params: {
+    targetUserId: string
+    tenantId: string
+    role: UserRole
+    actorId: string
+  }) {
+    const target = await this.users.findById(params.targetUserId)
+    if (!target) throw new Error('user: not found')
+    if (target.status !== 'pending' || target.role !== null) {
+      throw new Error('user: not pending platform registration')
+    }
+    if (!this.memberships) throw new Error('tenant membership repository unavailable')
+
+    const activatedAt = new Date()
+    await this.memberships.upsert({
+      tenantId: params.tenantId,
+      userId: target.id,
+      role: params.role,
+      status: 'active',
+      isDefault: true,
+      invitedById: params.actorId,
+    })
+    const updated = await this.users.update(target.id, {
+      role: params.role,
+      status: 'active',
+      activatedAt,
+      invitedById: params.actorId,
+    })
+
+    await this.append({
+      actorType: 'human',
+      actorId: params.actorId,
+      agentVersion: null,
+      action: 'user.role.assign',
+      targetType: 'user',
+      targetId: target.id,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: params.role,
+      policyDecision: 'approved',
+      metadata: { source: 'platform_registration', tenantId: params.tenantId },
+      tenantId: params.tenantId,
+    })
+
+    return updated
+  }
+
   async changeRole(params: { targetUserId: string; newRole: UserRole; actorId: string; actorTenantId: string | null }) {
     if (isSelfModification(params.actorId, params.targetUserId)) {
       throw new Error('self_modification_forbidden: admin cannot change own role')

@@ -13,5 +13,6 @@ export const routing = defineRouting({
     '/': '/',
     '/privacy': '/privacy',
     '/gtc': '/gtc',
+    '/contact': '/contact',
   } satisfies Record<(typeof publicPathnames)[number], string>,
 })

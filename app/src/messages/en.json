@@ -4,6 +4,8 @@
     "homeDescription": "Excellence AI is a secure enterprise MCP server that connects your team's AI tools to company systems — with governed access, a full audit trail, and human approval.",
     "privacyTitle": "Privacy Policy",
     "privacyDescription": "Privacy Policy for Excellence AI. How Excellence Pay Kft. accesses, collects, uses, stores, shares, protects, retains, and deletes personal data, including Google user data from Gmail and Google Drive.",
+    "contactTitle": "Contact us · Excellence AI",
+    "contactDescription": "Questions about Excellence AI or interested in joining the platform? Send us a message and our team will get back to you.",
     "gtcTitle": "Terms of Service",
     "gtcDescription": "General terms and conditions for Excellence AI, the enterprise MCP server operated by Excellence Pay Kft."
   },
@@ -12,13 +14,16 @@
     "home": "Home",
     "privacy": "Privacy Policy",
     "terms": "Terms",
+    "contact": "Contact",
     "signIn": "Sign in",
+    "signInShort": "Sign in",
     "tagline": "Enterprise MCP server"
   },
   "Footer": {
     "privacy": "Privacy Policy",
     "terms": "Terms of Service",
-    "signIn": "Sign in"
+    "signIn": "Sign in",
+    "contact": "Contact us"
   },
   "LocaleSwitcher": {
     "label": "Language",
@@ -28,10 +33,40 @@
   "Legal": {
     "updated": "Last updated: {date}"
   },
+  "Contact": {
+    "eyebrow": "Let’s talk",
+    "title": "How can we help?",
+    "intro": "Tell us what you’re looking for. Our team will get back to you soon, whether you have a question or want to join the platform.",
+    "sideTitle": "Let’s start a good conversation.",
+    "sideBody": "Tell us how your team works and we’ll show you how Excellence AI could fit.",
+    "pointOne": "Get answers to your questions",
+    "pointTwo": "Help joining the platform",
+    "pointThree": "A tailored product walkthrough",
+    "replyLabel": "When will we reply?",
+    "replyPromise": "We’ll be in touch soon.",
+    "formEyebrow": "Send a note",
+    "formTitle": "Write to us",
+    "formNote": "01 — 04 / DETAILS",
+    "name": "Name",
+    "phone": "Phone number",
+    "email": "Email address",
+    "message": "Message",
+    "namePlaceholder": "How should we address you?",
+    "phonePlaceholder": "+1 555 010 2040",
+    "emailPlaceholder": "you@company.com",
+    "messagePlaceholder": "Tell us briefly how we can help…",
+    "submit": "Send message",
+    "submitting": "Sending…",
+    "success": "Thanks for reaching out. Our team will be in touch soon.",
+    "error": "We couldn’t send your message just now. Please try again in a few minutes.",
+    "privacy": "We use these details only to respond to your message.",
+    "privacyLink": "Privacy Policy.",
+    "footerNote": "You can return to this page whenever you’re ready."
+  },
   "Privacy": {
     "title": "Privacy Policy",
     "description": "This Privacy Policy explains how Excellence AI accesses, collects, uses, stores, shares, protects, retains, and deletes personal data — including Google user data from Gmail and Google Drive.",
-    "updated": "14 September 2026"
+    "updated": "1 October 2026"
   },
   "Terms": {
     "title": "Terms of Service",
@@ -227,6 +262,7 @@
       "admin_menu-access": "Menu access",
       "admin_platform-tenants": "Platform · Workspaces",
       "admin_platform-iam": "Platform · IAM",
+      "admin_platform-contact": "Platform · Contact inbox",
       "admin_platform-settings": "Platform · Settings"
     },
     "pending": {
@@ -237,6 +273,14 @@
       "bodyAwaitingUnknown": "Your account is registered, but it has no role yet. An administrator must approve access before you can see anything on the control plane.",
       "suspended": "Your account is suspended.",
       "hint": "If this looks wrong, contact your administrator."
+    },
+    "signupNotice": {
+      "eyebrow": "Registration received",
+      "title": "Registration currently requires an invitation",
+      "body": "Thanks for registering. The platform is currently invite-only, so your account won’t have access until an administrator assigns it to an organization and gives it a role.",
+      "help": "If you’d like to join, get in touch with us — we’ll be happy to help.",
+      "contact": "Contact us",
+      "close": "Got it"
     },
     "agents": {
       "eyebrow": "Teammates",
@@ -840,7 +884,51 @@
     "colEvent": "Event",
     "colTarget": "Target",
     "colDecision": "Decision",
+    "registrationsTitle": "Sign-ups without an invitation ({count})",
+    "registrationsIntroTitle": "New access requests",
+    "registrationsIntro": "These people have registered but cannot use the platform yet. Choose an organization and role for each person. They can sign in as soon as you assign one.",
+    "registrationsEmptyTitle": "No new access requests",
+    "registrationsEmpty": "New registrations appear here until an administrator assigns them to an organization.",
+    "registrationPending": "Awaiting access",
+    "registrationDate": "Registered {date}",
+    "registrationTenant": "Organization",
+    "registrationNoTenants": "Create an active organization first",
+    "registrationAssign": "Assign role",
+    "registrationAssignPending": "Saving…",
+    "registrationAssigned": "Account activated and role assigned.",
+    "registrationSuperadminOnly": "Only a platform superadmin can assign a role.",
+    "roleLabel_admin": "Administrator",
+    "roleLabel_approver": "Approver",
+    "roleLabel_operator": "Operator",
+    "roleLabel_viewer": "Viewer",
     "unknownError": "Unknown error"
+  },
+  "PlatformContact": {
+    "eyebrow": "Platform · Messages",
+    "title": "Contact inquiries",
+    "body": "Review and reply to messages submitted through the public website.",
+    "loadError": "Could not load contact inquiries. Platform access is required for this page.",
+    "inboxTitle": "Inbox",
+    "inboxCount": "{count} inquiries total",
+    "newCount": "{count} new",
+    "filterLabel": "Filter messages",
+    "filterAll": "All",
+    "filterNew": "New",
+    "emptyTitle": "No messages yet",
+    "emptyBody": "Messages sent through the contact form will appear here.",
+    "emptyNew": "There are no new inquiries.",
+    "statusNew": "New",
+    "statusReviewed": "Reviewed",
+    "receivedAt": "Received {date}",
+    "reviewedAt": "Reviewed {date}",
+    "email": "Email address",
+    "phone": "Phone number",
+    "message": "Message",
+    "markReviewed": "Mark as reviewed",
+    "saving": "Saving…",
+    "keepInTouch": "Reach out to the sender.",
+    "reply": "Reply by email",
+    "replySubject": "A message from Excellence AI"
   },
   "PlatformTenants": {
     "createTitle": "Create a workspace",

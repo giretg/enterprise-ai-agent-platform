@@ -31,7 +31,7 @@ export class PostgresUserRepository implements UserRepository {
   async findMany(filter?: {
     tenantId?: string | null
     status?: UserStatus
-    role?: UserRole
+    role?: UserRole | null
     limit?: number
     offset?: number
     unbounded?: boolean
@@ -46,7 +46,7 @@ export class PostgresUserRepository implements UserRepository {
     const rows = await prisma.user.findMany({
       where: {
         ...(filter?.status ? { status: filter.status } : {}),
-        ...(filter?.role ? { role: filter.role } : {}),
+        ...(filter?.role !== undefined ? { role: filter.role } : {}),
       },
       orderBy: { createdAt: 'asc' },
       ...(take !== undefined ? { take, skip: offset } : {}),

@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation'
 import { getTranslations } from 'next-intl/server'
 import { getAuthContext } from '@/auth/context'
 import { Card } from '@/components/ui/shell'
+import { SignupNoticeDialog } from '@/components/auth/signup-notice-dialog'
 import {
   CONTROL_PLANE_PLATFORM_HOME,
   DEFAULT_AGENT_WORKSPACE_FALLBACK,
@@ -16,9 +17,14 @@ import {
  * újra ide küldene (loop → üres képernyő). Csak tenant- vagy platform-kontextus
  * léphet tovább.
  */
-export default async function PendingApprovalPage() {
+export default async function PendingApprovalPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ registration?: string }>
+}) {
   const ctx = await getAuthContext()
   const user = ctx?.user ?? null
+  const params = await searchParams
 
   if (ctx?.kind === 'tenant') {
     redirect(DEFAULT_AGENT_WORKSPACE_FALLBACK)
@@ -32,20 +38,25 @@ export default async function PendingApprovalPage() {
   const email = user?.email ?? ''
 
   return (
-    <div className="mx-auto max-w-xl">
-      <Card title={hasRole ? t('titleNoMembership') : t('titleAwaiting')}>
-        <p className="text-sm text-ink-soft">
-          {hasRole
-            ? t('bodyNoMembership', { email })
-            : user
-              ? t('bodyAwaitingKnown', { email })
-              : t('bodyAwaitingUnknown')}
-        </p>
-        {user?.status === 'suspended' && (
-          <p className="mt-3 text-sm text-coral-deep">{t('suspended')}</p>
-        )}
-        <p className="mt-4 text-xs text-ink-faint">{t('hint')}</p>
-      </Card>
-    </div>
+    <>
+      <div className="mx-auto max-w-xl">
+        <Card title={hasRole ? t('titleNoMembership') : t('titleAwaiting')}>
+          <p className="text-sm text-ink-soft">
+            {hasRole
+              ? t('bodyNoMembership', { email })
+              : user
+                ? t('bodyAwaitingKnown', { email })
+                : t('bodyAwaitingUnknown')}
+          </p>
+          {user?.status === 'suspended' && (
+            <p className="mt-3 text-sm text-coral-deep">{t('suspended')}</p>
+          )}
+          <p className="mt-4 text-xs text-ink-faint">{t('hint')}</p>
+        </Card>
+      </div>
+      {params.registration === 'complete' && user?.status === 'pending' && user.role === null ? (
+        <SignupNoticeDialog />
+      ) : null}
+    </>
   )
 }

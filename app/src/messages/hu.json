@@ -4,6 +4,8 @@
     "homeDescription": "Az Excellence AI biztonságos, vállalati MCP-szerver: összeköti a csapat AI-eszközeit a céges rendszerekkel, szabályozott hozzáféréssel, auditnaplóval és emberi jóváhagyással.",
     "privacyTitle": "Adatkezelési tájékoztató",
     "privacyDescription": "Az Excellence AI adatkezelési tájékoztatója. Az Excellence Pay Kft. hogyan fér hozzá, gyűjti, használja, tárolja, osztja meg, védi, őrzi meg és törli a személyes adatokat, beleértve a Gmail és Google Drive Google-felhasználói adatait.",
+    "contactTitle": "Kapcsolatfelvétel · Excellence AI",
+    "contactDescription": "Kérdésed van az Excellence AI-ról vagy csatlakoznál a platformhoz? Írd meg nekünk, és felvesszük veled a kapcsolatot.",
     "gtcTitle": "ÁSZF",
     "gtcDescription": "Az Excellence AI általános szerződési feltételei. A szolgáltatást az Excellence Pay Kft. üzemelteti."
   },
@@ -12,13 +14,16 @@
     "home": "Kezdőlap",
     "privacy": "Adatkezelés",
     "terms": "ÁSZF",
+    "contact": "Kapcsolat",
     "signIn": "Bejelentkezés",
+    "signInShort": "Belépés",
     "tagline": "Vállalati MCP-szerver"
   },
   "Footer": {
     "privacy": "Adatkezelési tájékoztató",
     "terms": "Általános szerződési feltételek",
-    "signIn": "Belépés"
+    "signIn": "Belépés",
+    "contact": "Kapcsolatfelvétel"
   },
   "LocaleSwitcher": {
     "label": "Nyelv",
@@ -28,10 +33,40 @@
   "Legal": {
     "updated": "Utolsó frissítés: {date}"
   },
+  "Contact": {
+    "eyebrow": "Beszéljünk",
+    "title": "Miben segíthetünk?",
+    "intro": "Írd meg, mire van szükséged. Csapatunk hamarosan válaszol, akár a platformról kérdeznél, akár csatlakozni szeretnél.",
+    "sideTitle": "Kezdjük egy jó beszélgetéssel.",
+    "sideBody": "Mondd el, hogyan dolgozik a csapatod, és megmutatjuk, hogyan illeszkedhet hozzá az Excellence AI.",
+    "pointOne": "Válasz a kérdéseidre",
+    "pointTwo": "Segítség a csatlakozáshoz",
+    "pointThree": "Személyre szabott bemutató",
+    "replyLabel": "Mikor válaszolunk?",
+    "replyPromise": "Hamarosan jelentkezünk.",
+    "formEyebrow": "Írj nekünk",
+    "formTitle": "Küldj üzenetet",
+    "formNote": "01 — 04 / ADATOK",
+    "name": "Név",
+    "phone": "Telefonszám",
+    "email": "E-mail-cím",
+    "message": "Üzenet",
+    "namePlaceholder": "Hogy szólíthatunk?",
+    "phonePlaceholder": "+36 30 123 4567",
+    "emailPlaceholder": "nev@ceg.hu",
+    "messagePlaceholder": "Írd le röviden, miben segíthetünk…",
+    "submit": "Üzenet elküldése",
+    "submitting": "Küldés…",
+    "success": "Köszönjük az üzenetet! Hamarosan felvesszük veled a kapcsolatot.",
+    "error": "Az üzenetet most nem sikerült elküldeni. Próbáld újra pár perc múlva.",
+    "privacy": "Az adatokat kizárólag a megkeresésed megválaszolásához használjuk.",
+    "privacyLink": "Adatkezelési tájékoztató.",
+    "footerNote": "Ha most nem tudsz írni, később is visszatérhetsz erre az oldalra."
+  },
   "Privacy": {
     "title": "Adatkezelési tájékoztató",
     "description": "Ez a tájékoztató leírja, hogyan fér hozzá, gyűjti, használja, tárolja, osztja meg, védi, őrzi meg és törli az Excellence AI a személyes adatokat — beleértve a Gmail és Google Drive Google-felhasználói adatait.",
-    "updated": "2026. szeptember 14."
+    "updated": "2026. október 1."
   },
   "Terms": {
     "title": "Általános szerződési feltételek",
@@ -227,6 +262,7 @@
       "admin_menu-access": "Menü-hozzáférés",
       "admin_platform-tenants": "Platform · Tenantok",
       "admin_platform-iam": "Platform · IAM",
+      "admin_platform-contact": "Platform · Kapcsolatfelvételek",
       "admin_platform-settings": "Platform · Beállítások"
     },
     "pending": {
@@ -237,6 +273,14 @@
       "bodyAwaitingUnknown": "A fiókod regisztrálva van, de még nincs hozzá szerepkör kiosztva. Egy adminisztrátornak jóvá kell hagynia a hozzáférést, mielőtt bármit láthatnál a Control Plane-en.",
       "suspended": "A fiókod fel van függesztve.",
       "hint": "Ha úgy gondolod, hogy ez tévedés, keresd meg a rendszergazdát."
+    },
+    "signupNotice": {
+      "eyebrow": "Regisztráció érkezett",
+      "title": "Jelenleg csak meghívóval lehet regisztrálni",
+      "body": "Köszönjük, hogy regisztráltál. A platformra jelenleg csak meghívóval lehet belépni, ezért a fiókod hozzáférés nélkül marad, amíg egy adminisztrátor nem rendeli hozzá a megfelelő szervezetet és szerepkört.",
+      "help": "Ha szeretnél csatlakozni, vedd fel velünk a kapcsolatot — szívesen segítünk.",
+      "contact": "Kapcsolatfelvétel",
+      "close": "Rendben"
     },
     "agents": {
       "eyebrow": "Munkatársak",
@@ -840,7 +884,51 @@
     "colEvent": "Esemény",
     "colTarget": "Cél",
     "colDecision": "Döntés",
+    "registrationsTitle": "Meghívó nélküli regisztrációk ({count})",
+    "registrationsIntroTitle": "Új hozzáférési kérelmek",
+    "registrationsIntro": "A regisztrált személyek még nem férnek hozzá a platformhoz. Válassz számukra szervezetet és szerepkört. A kiosztás után azonnal be tudnak lépni.",
+    "registrationsEmptyTitle": "Nincs új hozzáférési kérelem",
+    "registrationsEmpty": "Az új regisztrációk itt jelennek meg, amíg egy adminisztrátor hozzá nem rendeli őket egy szervezethez.",
+    "registrationPending": "Hozzáférésre vár",
+    "registrationDate": "Regisztrált: {date}",
+    "registrationTenant": "Szervezet",
+    "registrationNoTenants": "Előbb hozz létre egy aktív szervezetet",
+    "registrationAssign": "Szerepkör kiosztása",
+    "registrationAssignPending": "Mentés…",
+    "registrationAssigned": "A fiók aktiválva, a szerepkör kiosztva.",
+    "registrationSuperadminOnly": "A szerepkört platform superadmin tudja kiosztani.",
+    "roleLabel_admin": "Adminisztrátor",
+    "roleLabel_approver": "Jóváhagyó",
+    "roleLabel_operator": "Operátor",
+    "roleLabel_viewer": "Megfigyelő",
     "unknownError": "Ismeretlen hiba"
+  },
+  "PlatformContact": {
+    "eyebrow": "Platform · Üzenetek",
+    "title": "Kapcsolatfelvételek",
+    "body": "A weboldalról érkező megkeresések áttekintése és megválaszolása.",
+    "loadError": "A kapcsolatfelvételek betöltése nem sikerült. Ehhez a felülethez platform-szintű jogosultság szükséges.",
+    "inboxTitle": "Beérkező üzenetek",
+    "inboxCount": "Összesen {count} megkeresés",
+    "newCount": "{count} új",
+    "filterLabel": "Üzenetek szűrése",
+    "filterAll": "Összes",
+    "filterNew": "Új",
+    "emptyTitle": "Még nem érkezett üzenet",
+    "emptyBody": "Az űrlapon küldött megkeresések itt jelennek meg.",
+    "emptyNew": "Nincs új megkeresés.",
+    "statusNew": "Új",
+    "statusReviewed": "Átnézve",
+    "receivedAt": "Érkezett: {date}",
+    "reviewedAt": "Átnézve: {date}",
+    "email": "E-mail-cím",
+    "phone": "Telefonszám",
+    "message": "Üzenet",
+    "markReviewed": "Megjelölés átnézettként",
+    "saving": "Mentés…",
+    "keepInTouch": "Vedd fel a kapcsolatot a küldővel.",
+    "reply": "Válasz e-mailben",
+    "replySubject": "Kapcsolatfelvétel az Excellence AI-tól"
   },
   "PlatformTenants": {
     "createTitle": "Új tenant létrehozása",

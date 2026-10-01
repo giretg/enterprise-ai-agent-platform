@@ -252,6 +252,13 @@ enum ConversationSkillProposalStatus {
   @@map("conversation_skill_proposal_status")
 }
 
+enum ContactInquiryStatus {
+  new
+  reviewed
+
+  @@map("contact_inquiry_status")
+}
+
 enum GatewayOperationStatus {
   requested
   awaiting_approval
@@ -308,6 +315,7 @@ model User {
   projectMemoryItems          ProjectMemoryItem[]   @relation("ProjectMemoryWithUser")
   handoffsCreated             Handoff[]             @relation("HandoffCreatedBy")
   handoffsReceived            Handoff[]             @relation("HandoffToUser")
+  reviewedContactInquiries     ContactInquiry[]       @relation("ContactInquiryReviewedBy")
 
   @@index([status])
   @@map("users")
@@ -332,6 +340,23 @@ model Invitation {
 
   @@index([tenantId, status])
   @@map("invitations")
+}
+
+model ContactInquiry {
+  id           String               @id @default(uuid()) @db.Uuid
+  name         String
+  phone        String
+  email        String
+  message      String               @db.Text
+  status       ContactInquiryStatus @default(new)
+  createdAt    DateTime             @default(now()) @map("created_at") @db.Timestamptz
+  reviewedAt   DateTime?            @map("reviewed_at") @db.Timestamptz
+  reviewedById String?              @map("reviewed_by_id") @db.Uuid
+
+  reviewedBy User? @relation("ContactInquiryReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@map("contact_inquiries")
 }
 
 model Tenant {

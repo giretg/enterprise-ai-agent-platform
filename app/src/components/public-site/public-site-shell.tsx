@@ -12,23 +12,24 @@ export async function PublicSiteShell({ children }: { children: ReactNode }) {
     { href: '/' as const, label: t('home') },
     { href: '/privacy' as const, label: t('privacy') },
     { href: '/gtc' as const, label: t('terms') },
+    { href: '/contact' as const, label: t('contact') },
   ]
 
   return (
     <div className="signal-grid flex min-h-screen flex-col text-ink">
       <header className="sticky top-0 z-20 border-b border-ink bg-night/85 backdrop-blur-md">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-3.5">
-          <Link href="/" className="flex min-w-0 items-center gap-3">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-3.5 sm:gap-4 sm:px-5">
+          <Link href="/" className="flex min-w-0 items-center gap-2 sm:gap-3">
             <Image
               src="/excellence-ai-logo.png"
               alt="Excellence AI"
               width={44}
               height={44}
-              className="h-9 w-9 rounded-md object-cover"
+              className="h-8 w-8 rounded-md object-cover sm:h-9 sm:w-9"
               priority
             />
             <div className="min-w-0">
-              <p className="whitespace-nowrap text-lg font-bold leading-none tracking-[-0.03em]">
+              <p className="whitespace-nowrap text-[15px] font-bold leading-none tracking-[-0.03em] sm:text-lg">
                 Excellence AI
               </p>
               <p className="mt-1 hidden font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint sm:block">
@@ -46,12 +47,23 @@ export async function PublicSiteShell({ children }: { children: ReactNode }) {
                 {item.label}
               </Link>
             ))}
+            <Link
+              href="/contact"
+              aria-label={t('contact')}
+              title={t('contact')}
+              className="flex h-9 w-9 items-center justify-center rounded border border-line bg-card text-ink-soft transition-colors hover:border-ink hover:text-ink sm:hidden"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M4 5h16v14H4zM4 7l8 6 8-6" />
+              </svg>
+            </Link>
             <LocaleSwitcher />
             <NextLink
               href="/sign-in"
-              className="signal-btn rounded border border-ink bg-ink px-4 py-2 text-sm font-semibold text-white"
+              className="signal-btn rounded border border-ink bg-ink px-2.5 py-2 text-sm font-semibold text-white sm:px-4"
             >
-              {t('signIn')}
+              <span className="sm:hidden">{t('signInShort')}</span>
+              <span className="hidden sm:inline">{t('signIn')}</span>
             </NextLink>
           </nav>
         </div>
@@ -74,6 +86,9 @@ export async function PublicSiteShell({ children }: { children: ReactNode }) {
             <NextLink href="/sign-in" className="hover:text-ink">
               {footer('signIn')}
             </NextLink>
+            <Link href="/contact" className="hover:text-ink">
+              {footer('contact')}
+            </Link>
           </div>
         </div>
       </footer>
