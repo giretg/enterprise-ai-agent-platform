@@ -389,6 +389,7 @@ model Tenant {
   workFiles         WorkFile[]
   projectMemoryItems ProjectMemoryItem[]
   handoffs          Handoff[]
+  clientPolicies    ClientPolicy[]
 
   @@index([status])
   @@map("tenants")
@@ -1012,4 +1013,25 @@ model Handoff {
   @@index([tenantId, toAgentId, status])
   @@index([tenantId, toUserId, status])
   @@map("handoffs")
+}
+
+/// Hermes Managed Client policy (#746 V1-1): a tenant/user/agent szintű paraméterezés forrás-igazsága.
+/// `scopeId` polimorf (tenant → tenantId, user → users.id, agent → agents.id), ezért nincs rá FK.
+model ClientPolicy {
+  id            String   @id @default(uuid()) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  scope         String
+  scopeId       String   @map("scope_id") @db.Uuid
+  preset        String?
+  capabilities  Json     @default("{}")
+  toolOverrides Json     @default("{}") @map("tool_overrides")
+  version       Int      @default(1)
+  updatedById   String?  @map("updated_by_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, scope, scopeId])
+  @@map("client_policies")
 }
