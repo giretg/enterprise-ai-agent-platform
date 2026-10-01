@@ -195,7 +195,13 @@ export function resolveEffectivePolicy(input: {
   const apply = (raw: unknown, source: ToolRule['source'], strictest: boolean) => {
     for (const [pattern, action] of parseToolOverrides(raw)) {
       const prev = merged.get(pattern)
-      merged.set(pattern, { pattern, action: strictest && prev ? strictestAction(prev.action, action) : action, source })
+      if (!strictest || !prev) {
+        merged.set(pattern, { pattern, action, source })
+        continue
+      }
+      const winner = strictestAction(prev.action, action)
+      // A lazább agent-akció nem írja felül a forrást: a szigorúbb réteg marad a döntés oka.
+      merged.set(pattern, { pattern, action: winner, source: winner === prev.action ? prev.source : source })
     }
   }
   apply(tenant?.toolOverrides, 'tenant', false)

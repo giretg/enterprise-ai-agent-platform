@@ -86,6 +86,18 @@ assert.equal(decideToolRule(tools.toolRules, 'mcp__crm__delete'), 'deny') // ill
 assert.equal(decideToolRule(tools.toolRules, 'mcp__gmail__send'), 'deny')
 assert.equal(decideToolRule(tools.toolRules, 'terminal'), null)
 assert.equal(decideToolRule(resolve(row('tenant', { toolOverrides: { x: 'bogus' } })).toolRules, 'x'), 'deny')
+// agent allow nem oldja a tenant deny-t, és a forrás a tenant marad
+const agentLooser = resolve(
+  row('tenant', { toolOverrides: { 'mcp__gmail__send': 'deny' } }),
+  null,
+  row('agent', { toolOverrides: { 'mcp__gmail__send': 'allow' } }),
+)
+assert.equal(decideToolRule(agentLooser.toolRules, 'mcp__gmail__send'), 'deny')
+assert.equal(agentLooser.toolRules.find((r) => r.pattern === 'mcp__gmail__send')?.source, 'tenant')
+assert.equal(
+  resolve(row('tenant', { toolOverrides: { 'mcp__gmail__send': 'allow' } }), null, row('agent', { toolOverrides: { 'mcp__gmail__send': 'deny' } })).toolRules[0]?.source,
+  'agent',
+)
 
 // policyVersion: bármely bemeneti sor változására változik, változatlan bemenetre nem
 const base = [row('tenant', { preset: 'standard' }), row('user'), row('agent')] as const
