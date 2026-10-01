@@ -390,6 +390,7 @@ model Tenant {
   projectMemoryItems ProjectMemoryItem[]
   handoffs          Handoff[]
   clientPolicies    ClientPolicy[]
+  gatewaySurrogates GatewaySurrogate[]
 
   @@index([status])
   @@map("tenants")
@@ -1036,4 +1037,27 @@ model ClientPolicy {
 
   @@unique([tenantId, scope, scopeId])
   @@map("client_policies")
+}
+
+/// Model Gateway álnév-vault (#746 V1-4): `hermes_session` hatókörű e-mail/név → álnév leképezés.
+/// Az érték AES-GCM-mel titkosított; a HMAC a sort köti a hatókörhöz (manipuláció-felismerés).
+/// Fizikai törlés (retenció) a követő #747-ben.
+model GatewaySurrogate {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  scopeType      String   @map("scope_type")
+  scopeId        String   @map("scope_id")
+  entityType     String   @map("entity_type")
+  fingerprint    String
+  surrogate      String
+  hmac           String
+  encryptedValue String   @map("encrypted_value")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, scopeType, scopeId, entityType, fingerprint], map: "gateway_surrogates_scope_fingerprint_key")
+  @@unique([tenantId, scopeType, scopeId, surrogate], map: "gateway_surrogates_scope_surrogate_key")
+  @@index([createdAt])
+  @@map("gateway_surrogates")
 }
