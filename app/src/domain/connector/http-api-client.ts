@@ -912,7 +912,11 @@ export class HttpApiClient {
       ...(hasBody ? { body: JSON.stringify(params.body) } : {}),
     }
 
-    const res = await this.fetchWithBackoff(url, init)
+    // Nem-idempotens író hívás (POST/PUT/PATCH/DELETE egy generikus API-n, pl.
+    // megrendelés/számla POST) 5xx után sem ismételhető: egy ambivalens 502 után a
+    // retry kettős bizonylatot/dupla megrendelést okozna. Ugyanaz a döntés, mint a
+    // protokoll-ágon (lásd lent): csak az olvasások tartják a 5xx-retryt.
+    const res = await this.fetchWithBackoff(url, init, READ_METHODS.has(method))
     const text = await res.text()
     const max = this.config.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS
     const overLimit = text.length > max

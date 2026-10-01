@@ -47,18 +47,26 @@ async function fetchWithBackoff(
   operation: string,
   input: RequestInfo | URL,
   init?: RequestInit,
+  opts?: { retryServerErrors?: boolean },
 ): Promise<Response> {
   const delays = [250, 750]
+  // A nem-idempotens írások (Docs/Slides batchUpdate `insertText`, Sheets `:append`)
+  // 5xx után NEM ismételhetők: egy ambivalens 502 után a retry MÁSODSZOR szúrná be a
+  // szöveget / fűzné hozzá a sorokat (dupla tartalom). Csak a 429 (elutasított = fel nem
+  // dolgozott) biztonságos. A range-re író PUT (`values.update`) idempotens → retry marad.
+  const retryable = opts?.retryServerErrors === false ? [429] : [429, 500, 502, 503, 504]
   for (let attempt = 0; attempt <= delays.length; attempt += 1) {
     const res = await fetch(input, init)
     if (res.ok || res.status === 401 || res.status === 403 || res.status === 404) return res
-    if (![429, 500, 502, 503, 504].includes(res.status) || attempt === delays.length) {
+    if (!retryable.includes(res.status) || attempt === delays.length) {
       return res
     }
     await sleep(delays[attempt])
   }
   throw new Error(`${operation} failed before response`)
 }
+
+const NO_5XX_RETRY = { retryServerErrors: false } as const
 
 function validateDocsOperation(op: DocsEditOperation): void {
   const keys = Object.keys(op)
@@ -106,7 +114,7 @@ export class GoogleWorkspaceApiClient {
       method: 'POST',
       headers: { ...this.authHeaders(), 'content-type': 'application/json' },
       body: JSON.stringify({ requests: operations }),
-    })
+    }, NO_5XX_RETRY)
     if (!res.ok) {
       throw workspaceApiError('google_docs_apply_edits', res.status, await res.text())
     }
@@ -138,7 +146,7 @@ export class GoogleWorkspaceApiClient {
       method: mode === 'append' ? 'POST' : 'PUT',
       headers: { ...this.authHeaders(), 'content-type': 'application/json' },
       body: JSON.stringify({ values: params.values }),
-    })
+    }, mode === 'append' ? NO_5XX_RETRY : undefined)
     if (!res.ok) {
       throw workspaceApiError('google_sheets_write_range', res.status, await res.text())
     }
@@ -156,7 +164,7 @@ export class GoogleWorkspaceApiClient {
       method: 'POST',
       headers: { ...this.authHeaders(), 'content-type': 'application/json' },
       body: JSON.stringify({ requests: operations }),
-    })
+    }, NO_5XX_RETRY)
     if (!res.ok) {
       throw workspaceApiError('google_slides_apply_edits', res.status, await res.text())
     }

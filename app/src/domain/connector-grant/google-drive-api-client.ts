@@ -88,18 +88,26 @@ async function fetchWithBackoff(
   operation: string,
   input: RequestInfo | URL,
   init?: RequestInit,
+  opts?: { retryServerErrors?: boolean },
 ): Promise<Response> {
   const delays = [250, 750]
+  // A nem-idempotens create-POST-ok (mappa/fájl létrehozás, másolás, megosztás) 5xx
+  // után NEM ismételhetők: egy ambivalens 502 után a retry MÁSODIK fájlt/mappát hozna
+  // létre (dupla feltöltés). Csak a 429 (elutasított = fel nem dolgozott) biztonságos.
+  // Az olvasások és az idempotens PATCH-ek (átnevezés/áthelyezés/kuka) tartják az 5xx-retryt.
+  const retryable = opts?.retryServerErrors === false ? [429] : [429, 500, 502, 503, 504]
   for (let attempt = 0; attempt <= delays.length; attempt += 1) {
     const res = await fetch(input, init)
     if (res.ok || res.status === 401 || res.status === 403 || res.status === 404) return res
-    if (![429, 500, 502, 503, 504].includes(res.status) || attempt === delays.length) {
+    if (!retryable.includes(res.status) || attempt === delays.length) {
       return res
     }
     await sleep(delays[attempt])
   }
   throw new Error(`${operation} failed before response`)
 }
+
+const NO_5XX_RETRY = { retryServerErrors: false } as const
 
 function parseFileSummary(raw: Record<string, unknown>): DriveFileSummary | null {
   const id = String(raw.id ?? '')
@@ -387,7 +395,7 @@ export class GoogleDriveApiClient {
       headers: { ...this.authHeaders(), 'content-type': 'application/json' },
       body: JSON.stringify(metadata),
       signal: params.signal,
-    })
+    }, NO_5XX_RETRY)
     if (!res.ok) throw driveApiError('google_drive.create_folder', res.status, await res.text())
     const raw = (await res.json()) as Record<string, unknown>
     const file = parseFileSummary(raw)
@@ -473,7 +481,7 @@ export class GoogleDriveApiClient {
       method: 'POST',
       headers: this.authHeaders({ 'content-type': `multipart/related; boundary=${boundary}` }),
       body,
-    })
+    }, NO_5XX_RETRY)
     if (!res.ok) throw driveApiError('google_drive.upload_file', res.status, await res.text())
     const raw = (await res.json()) as Record<string, unknown>
     const file = parseFileSummary(raw)
@@ -540,7 +548,7 @@ export class GoogleDriveApiClient {
       method: 'POST',
       headers: { ...this.authHeaders(), 'content-type': 'application/json' },
       body: JSON.stringify(body),
-    })
+    }, NO_5XX_RETRY)
     if (!res.ok) throw driveApiError('google_drive.copy_file', res.status, await res.text())
     const raw = (await res.json()) as Record<string, unknown>
     const file = parseFileSummary(raw)
@@ -626,7 +634,7 @@ export class GoogleDriveApiClient {
       method: 'POST',
       headers: { ...this.authHeaders(), 'content-type': 'application/json' },
       body: JSON.stringify(body),
-    })
+    }, NO_5XX_RETRY)
     if (!res.ok) throw driveApiError('google_drive.share_file', res.status, await res.text())
     const data = (await res.json()) as { id?: string }
     return { permissionId: data.id ?? 'unknown' }

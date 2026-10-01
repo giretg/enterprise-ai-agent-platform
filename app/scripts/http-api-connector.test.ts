@@ -373,6 +373,52 @@ async function main() {
     }
   })
 
+  await test('valódi fetch: nem-idempotens POST NEM ismétel 5xx-et (nincs dupla írás)', async () => {
+    let calls = 0
+    const fakeFetch: typeof fetch = async () => {
+      calls += 1
+      return new Response('bad gateway', { status: 502 })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'pn_live_key')
+      const res = await client.request({
+        method: 'POST',
+        path: '/banks/507f1f77bcf86cd799439011/contacts',
+        body: { name: 'X' },
+      })
+      assert.equal(res.ok, false)
+      assert.equal(res.status, 502)
+      assert.equal(calls, 1, 'az író POST pontosan egyszer menjen ki 5xx-en (nincs retry-duplikátum)')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('valódi fetch: olvasó GET tovább ismétli az átmeneti 5xx-et', async () => {
+    let calls = 0
+    const fakeFetch: typeof fetch = async () => {
+      calls += 1
+      return calls < 3
+        ? new Response('bad gateway', { status: 502 })
+        : new Response(JSON.stringify({ success: true, data: { banks: [] } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'pn_live_key')
+      const res = await client.request({ method: 'GET', path: '/banks' })
+      assert.equal(res.ok, true)
+      assert.equal(calls, 3, 'az olvasás megtartja az 5xx-retryt')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   await test('valódi fetch: sablonozott fejléceket és idempotencia kulcsot injektál', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = []
     const fakeFetch: typeof fetch = async (input, init) => {
