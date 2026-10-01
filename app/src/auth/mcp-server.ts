@@ -265,7 +265,7 @@ export async function verifyClerkOAuthToken(bearerToken: string): Promise<Verifi
   }
 }
 
-async function canViewAgent(input: {
+export async function canViewAgent(input: {
   tenantId: string
   userId: string
   role: McpPrincipal['role']

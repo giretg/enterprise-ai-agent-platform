@@ -153,5 +153,12 @@ check('az MCP resource URL és az OAuth well-known discovery publikus (Clerk-kap
   assertPublic('/.well-known/oauth-authorization-server')
 })
 
+check('a Hermes gateway-token és policy-snapshot route publikus (saját Bearer), a testvér-route-ok nem', () => {
+  assertPublic('/api/model-gateway/token')
+  assertPublic('/api/client-policy/snapshot')
+  assertProtected('/api/model-gateway/token/admin')
+  assertProtected('/api/client-policy')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
