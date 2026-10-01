@@ -408,6 +408,52 @@ export async function listPlatformUsers() {
   }
 }
 
+/** New Clerk registrations without an invitation or assigned role, for superadmin review. */
+export async function listPendingPlatformRegistrations() {
+  try {
+    await requirePlatformRole('platform_auditor')
+    const users = await repositories.users.findMany({ status: 'pending', role: null, limit: 200 })
+    return ok(
+      users.map((user) => ({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        createdAt: user.createdAt.toISOString(),
+      })),
+    )
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list pending registrations')
+  }
+}
+
+const approvePlatformRegistrationSchema = z.object({
+  userId: z.string().uuid(),
+  tenantId: z.string().uuid(),
+  role: z.enum(['admin', 'approver', 'operator', 'viewer']),
+})
+
+/** Assign a self-registered account to a tenant and activate it. */
+export async function approvePlatformRegistration(input: z.infer<typeof approvePlatformRegistrationSchema>) {
+  try {
+    const ctx = await requirePlatformRole('superadmin')
+    const parsed = approvePlatformRegistrationSchema.parse(input)
+    const tenant = await repositories.tenants.findById(parsed.tenantId)
+    if (!tenant || tenant.status !== 'active') return fail('tenant: not found or inactive')
+
+    await services.iam.approvePlatformRegistration({
+      targetUserId: parsed.userId,
+      tenantId: parsed.tenantId,
+      role: parsed.role,
+      actorId: ctx.user.id,
+    })
+    revalidatePath('/control-plane/platform/iam')
+    revalidatePath('/control-plane/platform/tenants')
+    return ok({ approved: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to approve registration')
+  }
+}
+
 const platformTenantIdSchema = z.object({ tenantId: z.string().uuid() })
 
 export async function listPlatformTenantMembers(input: { tenantId: string }) {

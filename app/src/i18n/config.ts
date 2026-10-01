@@ -1,7 +1,7 @@
 /**
  * Locale catalog.
  *
- * Public marketing pages (`/`, `/privacy`, `/gtc`) are locale-prefixed
+ * Public marketing pages (`/`, `/privacy`, `/gtc`, `/contact`) are locale-prefixed
  * (`/hu`, `/en/privacy`). The control plane and auth stay unprefixed; their
  * UI language follows the `NEXT_LOCALE` cookie (same HU/EN switcher). To add
  * a public page later, append it to `publicPathnames` and add
@@ -15,7 +15,7 @@ export const defaultLocale: AppLocale = 'hu'
 export const localePrefix = 'always' as const
 
 /** Internal pathnames (no locale prefix). Shared by routing, Clerk, robots, crawler allowlist. */
-export const publicPathnames = ['/', '/privacy', '/gtc'] as const
+export const publicPathnames = ['/', '/privacy', '/gtc', '/contact'] as const
 export type PublicPathname = (typeof publicPathnames)[number]
 
 export const PUBLIC_SITE_ORIGIN = 'https://ai.excellencepay.com'

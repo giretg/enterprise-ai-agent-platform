@@ -1,7 +1,13 @@
 import { getTranslations } from 'next-intl/server'
-import { listPlatformMembers, getPlatformAuditTrail } from '@/app/actions/tenant'
+import {
+  getPlatformAuditTrail,
+  listPendingPlatformRegistrations,
+  listPlatformMembers,
+  listTenants,
+} from '@/app/actions/tenant'
 import { getAuthContext } from '@/auth/context'
 import { PlatformIamPanel } from '@/components/tenant/platform-iam-panel'
+import { PendingPlatformRegistrations } from '@/components/tenant/pending-platform-registrations'
 
 /**
  * Platform IAM (Tenant-Management §9.3): platform-tagok (superadmin / operator /
@@ -10,9 +16,11 @@ import { PlatformIamPanel } from '@/components/tenant/platform-iam-panel'
  * grant/revoke `superadmin`, a nézet `platform_auditor` minimummal.
  */
 export default async function PlatformIamPage() {
-  const [membersRes, auditRes, ctx] = await Promise.all([
+  const [membersRes, auditRes, registrationsRes, tenantsRes, ctx] = await Promise.all([
     listPlatformMembers(),
     getPlatformAuditTrail(),
+    listPendingPlatformRegistrations(),
+    listTenants(),
     getAuthContext(),
   ])
   const canManage = Boolean(ctx?.platformRoles.includes('superadmin'))
@@ -40,6 +48,12 @@ export default async function PlatformIamPage() {
         <h1 className="mt-2 font-display text-3xl font-semibold">{t('title')}</h1>
         <p className="mt-1 max-w-2xl text-ink-soft">{t('body')}</p>
       </header>
+      <PendingPlatformRegistrations
+        registrations={registrationsRes.success ? registrationsRes.data : []}
+        tenants={tenantsRes.success ? tenantsRes.data.filter((tenant) => tenant.status === 'active') : []}
+        canManage={canManage}
+        loadError={!registrationsRes.success ? registrationsRes.error : !tenantsRes.success ? tenantsRes.error : null}
+      />
       <PlatformIamPanel
         members={membersRes.data}
         audit={auditRes.success ? auditRes.data : []}

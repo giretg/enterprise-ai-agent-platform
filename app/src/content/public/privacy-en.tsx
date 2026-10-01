@@ -38,6 +38,11 @@ export function PrivacyEn() {
           membership, role, and sign-in events. Authentication is performed by Clerk.
         </li>
         <li>
+          <strong>Contact inquiries:</strong> the name, phone number, email address, and message
+          you submit through our public form. We use these details to respond; authorized
+          platform administrators can review the messages.
+        </li>
+        <li>
           <strong>Workspace content:</strong> conversations with AI agents, tickets, uploaded
           files, approvals, playbooks, knowledge-base documents, cost budgets, and audit logs.
           These belong to the customer organization and are isolated per tenant.
@@ -216,6 +221,10 @@ export function PrivacyEn() {
         <li>
           <strong>Workspace content:</strong> retained for the life of the customer contract, then
           deleted or anonymized according to the contract and legal retention duties.
+        </li>
+        <li>
+          <strong>Contact inquiries:</strong> retained for as long as needed to respond and follow
+          up on your request.
         </li>
         <li>
           <strong>Audit logs:</strong> may be kept for the contractual security-retention period,

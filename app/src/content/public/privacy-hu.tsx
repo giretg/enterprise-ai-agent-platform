@@ -39,6 +39,11 @@ export function PrivacyHu() {
           szerepkör és belépési események. A beléptetést a Clerk végzi.
         </li>
         <li>
+          <strong>Kapcsolatfelvétel:</strong> a név, telefonszám, e-mail-cím és üzenet, amelyet a
+          nyilvános űrlapon küldesz el. Ezeket a megkeresésed megválaszolásához használjuk; az
+          üzeneteket a platform arra jogosult adminisztrátorai látják.
+        </li>
+        <li>
           <strong>Munkatér-tartalom:</strong> AI-ügynökökkel folytatott beszélgetések, feladatok,
           feltöltött fájlok, jóváhagyások, playbookok, tudástári dokumentumok, költségkeretek és
           auditnaplók. Ezek a megrendelő szervezetéi, tenantonként elkülönítve.
@@ -217,6 +222,10 @@ export function PrivacyHu() {
         <li>
           <strong>Munkatér-tartalom:</strong> a megrendelői szerződés idejére, majd a szerződés
           és a jogi megőrzési kötelezettségek szerint törölve vagy anonimizálva.
+        </li>
+        <li>
+          <strong>Kapcsolatfelvételi megkeresések:</strong> a válaszadáshoz és a szükséges
+          utánkövetéshez szükséges ideig.
         </li>
         <li>
           <strong>Auditnaplók:</strong> a szerződéses biztonsági megőrzési ideig, majd törölve

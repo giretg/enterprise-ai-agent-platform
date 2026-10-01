@@ -148,6 +148,12 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         requires: { platformRole: 'platform_auditor' },
       },
       {
+        key: 'admin.platform-contact',
+        href: '/control-plane/platform/contact',
+        label: 'Platform · Kapcsolatfelvételek',
+        requires: { platformRole: 'platform_auditor' },
+      },
+      {
         key: 'admin.platform-settings',
         href: '/control-plane/platform/settings',
         label: 'Platform · Beállítások',

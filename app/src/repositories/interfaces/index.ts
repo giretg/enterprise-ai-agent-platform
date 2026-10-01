@@ -16,6 +16,8 @@ import type {
   ConnectorTemplate,
   ConnectorTemplateOrigin,
   ConnectorTemplateStatus,
+  ContactInquiry,
+  ContactInquiryStatus,
   ConnectorType,
   Document,
   DocumentStatus,
@@ -35,7 +37,6 @@ import type {
   SkillRiskTier,
   SkillSourceType,
   SkillVersion,
-  SkillVersionStatus,
   Tenant,
   TenantMembership,
   TenantMembershipStatus,
@@ -45,7 +46,6 @@ import type {
   UserStatus,
   KnowledgeArtifact,
   KnowledgeArtifactStatus,
-  KnowledgeChunk,
   KnowledgeProcessingMode,
 } from '@prisma/client'
 import type { ListPageResult } from '@/lib/list-pagination'
@@ -399,7 +399,7 @@ export interface UserRepository {
   findMany(filter?: {
     tenantId?: string
     status?: UserStatus
-    role?: UserRole
+    role?: UserRole | null
     limit?: number
     offset?: number
     unbounded?: boolean
@@ -445,6 +445,15 @@ export interface UserRepository {
       invitedById: string | null
     }>
   }): Promise<User>
+}
+
+export interface ContactInquiryRepository {
+  create(data: { name: string; phone: string; email: string; message: string }): Promise<ContactInquiry>
+  findMany(filter?: {
+    status?: ContactInquiryStatus
+    limit?: number
+  }): Promise<ContactInquiry[]>
+  markReviewed(id: string, reviewedById: string): Promise<ContactInquiry>
 }
 
 export interface InvitationRepository {
