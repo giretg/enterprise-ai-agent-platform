@@ -210,6 +210,32 @@ export function checkoutSlug(name: string): string {
   return trimmed || 'agent'
 }
 
+/** Compact agent id for Hermes profile / folder disambiguation (mirrors skillFolderName). */
+export function hermesAgentSuffix(agentId: string): string {
+  return agentId.replace(/-/g, '').slice(0, 8)
+}
+
+/**
+ * Hermes profile name: `exc-<slug>--<agentId8>`.
+ * Agent names are not unique and accents collapse (`Réka`≡`Reka`), so the id
+ * suffix is always present — otherwise two Bots share one profile and
+ * `hermes profile update` refreshes SOUL/skills while config.yaml (out of
+ * distribution_owned) keeps the first agent's X-Excellence-Agent-Id.
+ */
+export function hermesProfileName(agentName: string, agentId: string): string {
+  const suffix = hermesAgentSuffix(agentId)
+  const prefix = 'exc-'
+  const sep = '--'
+  const maxSlug = Math.max(1, 60 - prefix.length - sep.length - suffix.length)
+  const slug = checkoutSlug(agentName).slice(0, maxSlug).replace(/-+$/, '') || 'agent'
+  return `${prefix}${slug}${sep}${suffix}`
+}
+
+/** Hermes suggestedRoot folder under `.hermes/excellence/<tenant>/`. */
+export function hermesSuggestedFolder(agentName: string, agentId: string): string {
+  return `${checkoutSlug(agentName)}--${hermesAgentSuffix(agentId)}`
+}
+
 function extensionOf(path: string): string {
   const name = path.split('/').pop() ?? ''
   const dot = name.lastIndexOf('.')
@@ -591,9 +617,10 @@ export function renderAgentCheckout(input: {
 
   const tenantSlug = pin.tenantSlug
   const slug = checkoutSlug(snapshot.name)
-  // #682: the Hermes profile name (exc- + slug) must stay within 60 chars.
-  const profile = `exc-${slug}`.slice(0, 60).replace(/-+$/, '')
-  const suggestedRoot = hermes ? `.hermes/excellence/${tenantSlug}/${slug}` : `Agents/${slug}`
+  // Hermes: always suffix agentId so colliding names cannot share a Bot profile (#682 drift).
+  const profile = hermes ? hermesProfileName(snapshot.name, input.definition.agentId) : ''
+  const hermesFolder = hermes ? hermesSuggestedFolder(snapshot.name, input.definition.agentId) : slug
+  const suggestedRoot = hermes ? `.hermes/excellence/${tenantSlug}/${hermesFolder}` : `Agents/${slug}`
   const instructionsPath = hermes ? 'SOUL.md' : 'AGENTS.md'
   const manifestPath = '.enterprise-agent/manifest.json'
   const localRoots = snapshot.localRoots ?? []

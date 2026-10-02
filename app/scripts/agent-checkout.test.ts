@@ -10,6 +10,8 @@ import {
   CHECKOUT_TOOL_DESCRIPTION,
   checkoutSlug,
   hermesBotTitle,
+  hermesProfileName,
+  hermesSuggestedFolder,
   renderAgentBriefing,
   renderAgentCheckout,
   renderAgentPrompt,
@@ -456,7 +458,10 @@ async function main() {
     assert.equal(napiSkill?.path, 'skills/excellence/napi-marketing-riport/SKILL.md')
     assert.match(napiSkill?.content ?? '', /^---\nname: napi-marketing-riport\ntitle: Napi Marketing Riport\n/)
 
-    assert.equal(bundle.suggestedRoot, '.hermes/excellence/acme/drive-asszisztens')
+    const hermesRoot = `.hermes/excellence/acme/${hermesSuggestedFolder('Drive asszisztens', AGENT_ID)}`
+    const hermesProfile = hermesProfileName('Drive asszisztens', AGENT_ID)
+    assert.equal(hermesProfile, 'exc-drive-asszisztens--aaaaaaaa')
+    assert.equal(bundle.suggestedRoot, hermesRoot)
     assert.deepEqual(bundle.files.map((f) => f.path), bundle.generatedPaths)
     for (const path of bundle.generatedPaths) assertSafeCheckoutPath(path)
     assert.ok(bundle.generatedPaths.includes('SOUL.md'))
@@ -478,7 +483,7 @@ async function main() {
     assert.doesNotMatch(config, /platform\.agent\.publish|platform\.agent\.create_draft/)
 
     const dist = content('distribution.yaml')
-    assert.match(dist, /name: exc-drive-asszisztens/)
+    assert.match(dist, new RegExp(`name: ${hermesProfile}`))
     assert.match(dist, /version: 3\.0\.0/)
     const owned = dist.slice(dist.indexOf('distribution_owned'))
     assert.doesNotMatch(owned, /config\.yaml|profile\.yaml/)
@@ -490,8 +495,13 @@ async function main() {
     assert.match(soul, /do not pass definitionId/)
     assert.match(soul, new RegExp(`contentHash: ${hashSnapshot(def.snapshot)}`))
     assert.doesNotMatch(soul, /agent_stale/)
-    assert.match(bundle.writeRecipe, /hermes profile install "\$HOME\/\.hermes\/excellence\/acme\/drive-asszisztens" --name exc-drive-asszisztens -y/)
-    assert.match(bundle.writeRecipe, /hermes profile update exc-drive-asszisztens -y/)
+    assert.match(
+      bundle.writeRecipe,
+      new RegExp(
+        `hermes profile install "\\$HOME/${hermesRoot.replace(/\./g, '\\.')}" --name ${hermesProfile} -y`,
+      ),
+    )
+    assert.match(bundle.writeRecipe, new RegExp(`hermes profile update ${hermesProfile} -y`))
     assert.match(bundle.writeRecipe, /display_name and ui_meta\.hermes-bots\.title/)
     assert.doesNotMatch(bundle.writeRecipe, /hermes profile delete exc/)
     assert.equal(JSON.parse(content('.enterprise-agent/manifest.json')).pin.harness, 'hermes')
@@ -510,8 +520,38 @@ async function main() {
       long.files.find((f) => f.path === 'distribution.yaml')?.content ?? '',
     )?.[1]?.trim().replace(/^['"]|['"]$/g, '')
     assert.ok(distName?.startsWith('exc-'))
+    assert.ok(distName?.endsWith('--aaaaaaaa'), distName)
     assert.ok((distName?.length ?? 99) <= 60, distName)
     assert.match(long.writeRecipe, new RegExp(`--name ${distName} -y`))
+  })
+
+  await check('hermes colliding agent names get distinct profiles and roots', () => {
+    const otherId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const a = renderAgentCheckout({
+      definition: definition({ agentId: AGENT_ID, snapshot: { ...definition().snapshot, name: 'Réka' } }),
+      skills: [],
+      mcpUrl: MCP_URL,
+      harness: 'hermes',
+    })
+    const b = renderAgentCheckout({
+      definition: definition({
+        agentId: otherId,
+        snapshot: { ...definition().snapshot, name: 'Reka' },
+      }),
+      skills: [],
+      mcpUrl: MCP_URL,
+      harness: 'hermes',
+    })
+    assert.equal(hermesProfileName('Réka', AGENT_ID), hermesProfileName('Reka', AGENT_ID))
+    assert.notEqual(a.suggestedRoot, b.suggestedRoot)
+    assert.notEqual(
+      a.files.find((f) => f.path === 'distribution.yaml')?.content,
+      b.files.find((f) => f.path === 'distribution.yaml')?.content,
+    )
+    assert.match(a.files.find((f) => f.path === 'config.yaml')?.content ?? '', new RegExp(AGENT_ID))
+    assert.match(b.files.find((f) => f.path === 'config.yaml')?.content ?? '', new RegExp(otherId))
+    assert.match(a.writeRecipe, /exc-reka--aaaaaaaa/)
+    assert.match(b.writeRecipe, /exc-reka--bbbbbbbb/)
   })
 
   await check('hermes Bot title is name (role), not the exc- profile id', () => {
