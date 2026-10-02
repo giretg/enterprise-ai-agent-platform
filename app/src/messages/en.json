@@ -376,6 +376,7 @@
         "drive_write_not_allowed": "Google Drive writes are not allowed for this folder.",
         "google_drive_auth_failed": "Google Drive sign-in failed.",
         "google_drive_api_error": "The Google Drive request failed.",
+        "drive_file_modified": "The file changed on Drive in the meantime, so it was not overwritten. Read it again and retry.",
         "tool_execution_failed": "The action could not be executed.",
         "http_api_error": "The target system rejected the request.",
         "missing_api_key": "This connector has no API key configured.",

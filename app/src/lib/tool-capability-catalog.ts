@@ -11,6 +11,7 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = [
       'google_drive_read_file',
       'google_drive_create_folder',
       'google_drive_upload_file',
+      'google_drive_update_file',
       'google_sheets_write_range',
     ],
   },

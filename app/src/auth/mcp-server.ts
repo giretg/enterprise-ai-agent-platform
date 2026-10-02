@@ -59,6 +59,7 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  GOOGLE_DRIVE_UPDATE_FILE_TOOL,
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
   GOOGLE_SHEETS_WRITE_RANGE_TOOL,
   HTTP_API_GET_ALL_TOOL,
@@ -79,6 +80,7 @@ import {
   googleDriveCreateFolderInputSchema,
   googleDriveReadFileInputSchema,
   googleDriveSearchInputSchema,
+  googleDriveUpdateFileInputSchema,
   googleDriveUploadFileInputSchema,
   googleSheetsWriteRangeInputSchema,
   httpApiGetAllInputSchema,
@@ -1400,7 +1402,7 @@ async function createMcpResourceHandler(
         {
           title: 'Hand off work',
           description:
-            'Hand off a task outside this agent\'s responsibility to another AI coworker or a human. Agent recipient: pass toAgentId (from platform.agents.list) — the task lands as an open_task in their memory and in their next get_definition briefing ("Handed-off work"). Human recipient: pass toUserId — they see it in the Control Plane inbox. Pass definitionId from platform.agent.get_definition, a short title, summary (what, why, expected outcome), optional projectKey (defaults to __general__), and optional links as a comma-separated string ("label | work_file:/path, label | https://…"). Exactly one of toAgentId / toUserId.',
+            'Hand off a task outside this agent\'s responsibility to another AI coworker or a human. Agent recipient: pass toAgentId (from platform.agents.list) — the task lands as an open_task in their memory and in their next get_definition briefing ("Handed-off work"). Human recipient: pass toUserId, or toUserEmail (an active member of this tenant, resolved on the server) — they see it in the Control Plane inbox. Pass definitionId from platform.agent.get_definition, a short title, summary (what, why, expected outcome), optional projectKey (defaults to __general__), and optional links as a comma-separated string ("label | work_file:/path, label | https://…"). Exactly one of toAgentId / toUserId.',
           inputSchema: handoffInputSchema,
         },
         async (args) => projectWorkToolResult(principal, MCP_HANDOFF_TOOL, args, deps),
@@ -1455,6 +1457,16 @@ async function createMcpResourceHandler(
           inputSchema: googleDriveUploadFileInputSchema,
         },
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_UPLOAD_FILE_TOOL, args, deps),
+      )
+      server.registerTool(
+        GOOGLE_DRIVE_UPDATE_FILE_TOOL,
+        {
+          title: 'Overwrite Google Drive file',
+          description:
+            'Request replacing the whole text of an existing Drive text file (Markdown, plain text, JSON, CSV) — for example a wiki page or log. Not for native Google Docs/Sheets. Read the file first with google_drive_read_file and pass its file.modifiedTime as expectedModifiedTime so a concurrent edit is never overwritten. textContent is the complete new text. Pass definitionId from platform.agent.get_definition. Does not call Google until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+          inputSchema: googleDriveUpdateFileInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_UPDATE_FILE_TOOL, args, deps),
       )
       server.registerTool(
         GOOGLE_SHEETS_WRITE_RANGE_TOOL,
@@ -1569,7 +1581,7 @@ async function createMcpResourceHandler(
         {
           title: 'HTTP API GET',
           description:
-            'One GET against a bound company HTTP API connector. Requires definitionId from platform.agent.get_definition — agentId is optional. Path is relative to the connector baseUrl — do not send credentials or trace headers (X-Agent-Id, X-Acting-User, X-Connector-Call-Id); the platform injects them. For large lists use http_api_get_all. Allowed paths are under connectors[].endpoints in get_definition. With several HTTP connectors, the server usually picks by method+path; otherwise pass connectorName (connectors[].name) or connectorId. Unlisted paths return endpoint_not_allowed with the allowed list.',
+            'One GET against a bound company HTTP API connector. Requires definitionId from platform.agent.get_definition — agentId is optional. Path is relative to the connector baseUrl — do not send credentials or trace headers (X-Agent-Id, X-Acting-User, X-Connector-Call-Id); the platform injects them. For large lists use http_api_get_all. The result includes the response etag when the API sends one. Optional headers: only those the endpoint declares (get_definition → endpoints[].headers). Allowed paths are under connectors[].endpoints in get_definition. With several HTTP connectors, the server usually picks by method+path; otherwise pass connectorName (connectors[].name) or connectorId. Unlisted paths return endpoint_not_allowed with the allowed list.',
           inputSchema: httpApiGetInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -1591,7 +1603,7 @@ async function createMcpResourceHandler(
         {
           title: 'HTTP API write',
           description:
-            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Requires definitionId from platform.agent.get_definition (agentId optional). body is a JSON string. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when several APIs are bound. The platform injects trace headers and Idempotency-Key — do not pass them in headers. Does not call the API until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Requires definitionId from platform.agent.get_definition (agentId optional). body is a JSON string. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when several APIs are bound. The platform injects trace headers and Idempotency-Key — do not pass them in headers; pass only caller headers the endpoint declares, such as If-Match (the etag of your last read). body is at most 200000 characters. Does not call the API until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
           inputSchema: httpApiRequestInputSchema,
         },
         async (args) => enterpriseToolResult(principal, HTTP_API_REQUEST_TOOL, args, deps),
