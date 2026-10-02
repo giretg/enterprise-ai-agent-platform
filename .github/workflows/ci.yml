@@ -58,6 +58,9 @@ jobs:
       - name: Import-boundary guard
         run: npm run test:import-boundary
 
+      - name: Hermes Guard helper tests (Python)
+        run: python3 ../clients/hermes-guard/test_exc_token.py
+
       - name: KEEP stub-DB tests
         run: |
           npm run test:iam-policy
@@ -79,6 +82,9 @@ jobs:
           npm run test:conversation-skill
           npm run test:agent-checkout
           npm run test:agent-local-roots
+          npm run test:client-policy
+          npm run test:model-gateway-token
+          npm run test:model-fallback-chain
           npm run test:enterprise-tools
           npm run test:sandbox-run
           npm run test:gmail-mcp-tools

@@ -88,6 +88,7 @@ check('NEM váltó hiba-osztályok: auth, tartalom, blokk, ismeretlen', () => {
     new Error('invalid api key'),
     new Error('400 invalid_request: context length exceeded'),
     new GatewayBlockedError('napi keret elfogyott'),
+    new Error('failed to generate a reply'),
     new Error('valami váratlan'),
   ]) {
     assert.equal(shouldFallback({ error: err, firstTokenEmitted: false }), false, err.message)

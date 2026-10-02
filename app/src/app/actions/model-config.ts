@@ -77,7 +77,8 @@ export async function setGlobalFallbackChain(input: unknown) {
       agentVersion: null,
       action: 'model_fallback_chain.set',
       targetType: 'model_policy',
-      targetId: 'global',
+      // Platform-globális beállítás: nincs entitás-UUID; a null a „nincs cél" értéke.
+      targetId: null,
       modelUsed: null,
       inputRef: null,
       outputRef: saved.map(modelRefKey).join(','),

@@ -124,6 +124,16 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   'handoff.created',
   'handoff.acknowledged',
+
+  'model_gateway.token.issued',
+  'model_gateway.token.deny',
+  'model_gateway.token.revoked',
+  // Agent modell-konfig + tenant policy + globális tartalék-lánc (#768).
+  // Regisztráció nélkül az admin mentés UnregisteredAuditActionError-t dobna
+  // (a beállítás már elment, a UI hibát jelezne).
+  'model_policy.set',
+  'model_fallback_chain.set',
+  'agent.model_config',
 ])
 
 export class UnregisteredAuditActionError extends Error {
