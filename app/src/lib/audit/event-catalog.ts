@@ -124,6 +124,19 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   'handoff.created',
   'handoff.acknowledged',
+
+  'model_gateway.token.issued',
+  'model_gateway.token.deny',
+  'model_gateway.token.revoked',
+  // Model Gateway proxy + admin modell-konfig + Managed/Open heartbeat (#768/#769/#774).
+  // Regisztráció nélkül az AuditLog-írás `UnregisteredAuditActionError`-rel dob: Open-módú
+  // gateway-hívás és heartbeat-eltérés 500-at adna (a gate/heartbeat nem nyeli el az audit-hibát),
+  // az admin modell-mentés néma hibát jelezne, a modell-hívás audit pedig némán elveszne.
+  'model_call',
+  'client_policy.deviation',
+  'model_policy.set',
+  'model_fallback_chain.set',
+  'agent.model_config',
 ])
 
 export class UnregisteredAuditActionError extends Error {
