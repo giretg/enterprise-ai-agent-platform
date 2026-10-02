@@ -7,6 +7,104 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-10-02 — Model Gateway stack (#768/#769/#774): token-csere, Managed/Open kapu, modell-policy, streaming proxy
+
+**Scope-választás (kockázati alapon):** `gh pr list` + ledger után a 09-26 óta a legnagyobb **nem-auditált**
+felület a **Model Gateway stack** (#768 agent modell-konfig + engedett lista + tartalék-lánc, #769
+chat/completions streaming proxy, #774 client-policy heartbeat + Managed/Open kapu; nyitott PR-ek
+#779/#781/#784, a token-csere #772 már `main`-en). Ez egy **külső, OAuth-hitelesített LLM-proxy**: MCP
+OAuth → 10 perces HS256 JWT token-csere, Managed/Open döntés, per-user engedett-modell kényszerítés,
+és provider-felé (OpenRouter/Ollama) továbbított streaming tool-hívások. A legnagyobb blast-radius
+(a céges modell-kulcs egyetlen kapuja) és a ledgerben eddig **nem szerepelt** → a legnagyobb új kockázat.
+
+**Coverage (teljes bizalmi-határ + adatfolyam-trace, kötelező scoped security scan + kézi end-to-end):**
+`handleChatCompletion` (proxy.ts) auth→modellválasztás→tartalék-lánc→streaming; `verifyJwt`/`issueGatewayToken`/
+`verifyGatewayToken` (gateway-token.ts); `resolveEffectivePolicy`/`getPolicySnapshot` (client-policy);
+`recordHeartbeat`/`resolveClientMode`/`createManagedGate` (client-install.ts); `buildEffectiveFallbackChain`
++ `isModelAllowed`/`matchesRequested` (fallback-chain + model-policy); `envProviderRegistry`; a publikus
+route-allowlist (public-routes.ts); a `client-install-repository` DB-tranzakció; az admin szerver-action-ök
+(model-config.ts); és a `model-gateway-deps`/`client-policy-deps` élő wiring.
+
+### Biztonsági megállapítás — NINCS finding (≥8 konfidencia); a felület helytáll
+
+A kötelező scoped security scan (dedikált felderítő sub-agent + false-positive szűrés) **és** a független
+kézi trace **egyaránt 0 bizonyítható, ≥8-konfidenciájú** újonnan bevezetett sebezhetőséget talált:
+
+- **JWT / token-csere:** `alg` rögzített HS256 (nincs alg-confusion), `safeSecretEquals` aláírás-vetés,
+  `exp` ellenőrzött, rövid/hiányzó kulcs → fail-closed. `verifyGatewayToken` MINDEN híváskor újra-feloldja a
+  principalt és újra-futtatja az `agentAccessible`-t → a visszavont user/agent a következő híváskor elveszti.
+- **Modell-policy bypass — nincs.** `buildEffectiveFallbackChain` MINDEN jelöltet (primary + agent + globális)
+  átszűr az `isModelAllowed(userPolicy)`-n (userPolicy = tenant.enabled ∩ user-allowed). A user-tiltotta modell
+  sehogy sem ér el providert; a `FORWARDED_PARAMS` allowlist kiszűri az OpenRouter `models`/`provider`/`route`-ot.
+- **SSRF — nincs.** A provider host/protokoll kizárólag env-ből (`envProviderRegistry`); a `provider` zárt enum
+  admin-vezérelt policy-sorból. Csak a `/chat/completions` útvonal-suffix fix.
+- **Cross-tenant/-user — nincs.** `tenantId`/`userId` a verifikált principalból, `agentId`/`installId` a JWT-ből;
+  az `x-excellence-agent-id` header figyelmen kívül. A repo kulcs-szemantikája `(tenant,user,installId)` +
+  `(install,session,agent)`. A Managed-kapu nem hamisítható: az installId a JWT-ből, a sessiont csak a
+  (szintén JWT-hitelesített) heartbeat regisztrálja; hiányzó session-header → `session_unregistered` → Open.
+- **Céges kulcs-szivárgás — nincs.** A modell-kulcs csak a provider-hívás `Authorization`-fejlécében; nem kerül
+  auditba, hibaválaszba, kliens-bodyba. **Publikus route-allowlist szűk** (self-auth handlerek), testvér-admin
+  route-ok védettek (`public-routes.test.ts` bizonyítja).
+
+### Reliability / correctness — BIZONYÍTOTT finding (javítva)
+
+**A Model Gateway stack 8 új audit-action-t ír, de EGYIK sem volt a kötelező `REGISTERED_AUDIT_ACTIONS`
+katalógusban.** Mivel az `audit-repository.append` minden íráskor `assertAuditActionRegistered(action)`-t hív,
+és ismeretlen action-re `UnregisteredAuditActionError`-t **dob**, a hatás élesben (post-merge, az 5 nem-token
+action a `main`-en is hiányzik; a token-3 az ágon hiányzott, mert az ág a `14277b28` katalógus-javítás ELŐTTI
+pontról indult):
+
+- **`client_policy.deviation`** (gate + heartbeat, **nem elkapott**): minden **Open-módú** gateway-hívás **500**-at
+  ad a D15 szintetikus „indítsd újra Managed módban" üzenet helyett; a heartbeat-eltérés-jelzés is **500**.
+- **`model_policy.set` / `model_fallback_chain.set` / `agent.model_config`** (admin szerver-action): az „Engedett
+  modellek / Tartalék-lánc / Gondolkodási motor" mentése **hibát jelez** (pedig a mentés megtörtént), UI nem frissül.
+- **`model_call`** (proxy audit-sink, `.catch`): minden céges modell-hívás **audit némán elveszik** — az
+  auditálhatóság-ígéret teljes vakfoltja a gateway-forgalomra.
+- Ráadás: `setGlobalFallbackChain` audit `targetId`-ja `'global'` (nem UUID) → sérti a repo targetId-invariánst.
+
+**Bizonyíték:** a repo **saját CI-őre** (`npm run test:audit-log`, `ci.yml:97`) az ágon **buktatta** mindkét
+invariánst, pontosan a hiányzó action-öket és a `'global'` targetId-t felsorolva. A domain-tesztek azért nem
+fogták, mert **stub audit-sinket** használnak (`append: async a => audits.push(a)`), ami sosem hívja az
+`assertAuditActionRegistered`-et.
+
+### Javítás (PR #787, ág `fix/model-gateway-audit-catalog`, külön git worktree-ben → base `feat/774`)
+
+- `event-catalog.ts`: a 8 action regisztrálva (`model_gateway.token.{issued,deny,revoked}` + `model_call` +
+  `client_policy.deviation` + `model_policy.set` + `model_fallback_chain.set` + `agent.model_config`).
+- `model-config.ts`: `targetId: 'global'` → `null` (platform-globális beállításnak nincs entitás-célja; az
+  action + a `chain` metaadat azonosít). Root-cause szintű, két fájl, nincs viselkedés-változás a happy pathon.
+
+### Ellenőrzések
+- `test:audit-log` — **zöld (29)** (2 bukó → 0; katalógus-scan + targetId-UUID invariáns). Ez a scan a regresszió-őr.
+- `test:client-install`, `test:model-gateway-proxy`, `test:model-gateway-token`, `test:client-policy`,
+  `test:model-fallback-chain` — zöld. `tsc --noEmit` és `eslint` tiszta a módosított fájlokra.
+- Matt Pocock `/code-review` (Standards + Spec, párhuzamos sub-agentek): **Standards** 0 hard violation
+  (magyar kommentek, minimális diff OK); 1 judgement-call: a `model_call` lapos név (a többi dot-namespaced) —
+  **követő** (az írónál átnevezni, pl. `model_gateway.call`, külön change). **Spec** 0 hiány / 0 scope-creep /
+  0 hibás impl.; mind a 8 action pontosan illeszkedik az íróra, a `targetId:null` megőrzi a globális-lánc
+  azonosíthatóságát (`action` + metadata).
+
+### Residual risk / következő audithoz
+- **🟠 Nem-biztonságos failure mode (defense-in-depth, e körön kívül):** a gate (`createManagedGate`) és a
+  heartbeat-route NEM nyeli el az audit-írás hibáját (a proxy modell-hívás `.catch`-csel igen). A katalógus-fix
+  megszünteti a biztos dobást, de egy MÁS audit-hiba (DB-kiesés, hash-lánc-lock) így is 500-at adna Open-módú
+  hívásnál a D15 helyett. Érdemes a deviation-auditot a proxy mintájára best-effort-tá tenni. Nem bizonyított
+  él (nincs reprodukált DB-hiba), ezért nem e-kör-módosítás.
+- **🟡 Ág-elavulás:** a `feat/774` stack a `main` `14277b28` (token-katalógus) ELŐTTI pontról indult → token-500
+  az ágon, amíg a stacket nem rebase-elik/merge-elik friss `main`-re. A fix a token-3-at is regisztrálja, de a
+  stacket érdemes friss `main`-re hozni.
+- **V1-4 tartalomszűrő (PAN/PII) és V1-7/V1-8 Guard-attesztáció** a `productionModelGatewayDeps`-ben **még nincs
+  bekötve** (a `filterRequest`/`transformResponse` hook üres; `expectedManagedDirHash` nincs beállítva) → a
+  Managed-kapu ma **jelenlét-ellenőrzés**, nem valódi attesztáció; egy jogosult insider kézzel gyárthat heartbeatet.
+  Dokumentált, szándékos staged rollout (#773 PR #782 a szűrő; V1-8 az attesztáció) — követendő, hogy élesítéskor
+  bekössék (lásd `hermes-managed-client-spec`, `hermes-v1-4-content-filter-build`).
+- **Upstream hiba-body passthrough** (nem-fallback-eligible `ProviderHttpError` → nyers status+body a kliensnek,
+  D15 szándék): OpenRouter/Ollama hibatest nem echo-zza az `Authorization`-t → nincs kulcs-leak; <80% konfidencia.
+- **Streaming audit-paritás:** az `SseCollector` csonka/idegen SSE-sort csendben eldob (az audit nem blokkolhatja
+  a streamet) — korrekt, de az audit tartalom csak best-effort tükör; a V1-5 `AiInteractionEvent` váltja le.
+
+---
+
 ## 2026-09-26 — KB-keresés/-olvasás MCP-n (#678, `9be5b023`): nyers FTS-SQL, tenant-határ, HTML-ingest
 
 **Scope-választás (kockázati alapon):** `gh pr list` + ledger után a legmagasabb **nem-auditált**
