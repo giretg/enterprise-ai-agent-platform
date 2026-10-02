@@ -1,0 +1,11 @@
+{
+  "status": "ready_for_review",
+  "base_revision": "sha256:<az export exportMetadata.revision értéke>",
+  "source_urls": ["https://szolgaltato.hu/arak"],
+  "payload": {
+    "exportMetadata": { "bankId": "<BANK_ID>", "revision": "sha256:<ugyanaz>" },
+    "bank": { "_id": "<BANK_ID>" },
+    "mainservices": [],
+    "summary": {}
+  }
+}
