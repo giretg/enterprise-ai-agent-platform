@@ -1,6 +1,7 @@
 """D4 cache, audit-sor, managed-dir hash. Futtatás: python3 clients/hermes-guard/test_guard_runtime.py"""
 import json
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -30,7 +31,7 @@ class Runtime(unittest.TestCase):
         os.environ["EXC_GUARD_OFFLINE"] = "1"
         try:
             self.assertIsNone(guard.pre_tool_call("terminal", {"command": "ls"}, session_id="s1", tool_call_id="c1"))
-            clock[0] = 1_010  # a 15 s-os ablakon belül nincs újrahívás
+            clock[0] = 1_010  # D4: down mellett a friss snapshot 1 óráig marad
             box["status"] = "down"
             self.assertIsNone(guard.pre_tool_call("terminal", {}, session_id="s1"))
             clock[0] = 1_000 + 3601
@@ -41,11 +42,10 @@ class Runtime(unittest.TestCase):
             clock[0] += 1
             box["status"] = "ok"
             box["snap"] = policy.snapshot_of(policy.FREE, version="free-2")
-            guard.current(force=True)  # admin-változás a következő (kényszerített) frissítésnél
             self.assertIsNone(guard.pre_tool_call("terminal", {}, session_id="s1"))
 
+            clock[0] += 5  # P4: visszavonás a következő hívásnál, a 15 s-os revalidate ablakon belül is
             box["status"] = "revoked"
-            guard.current(force=True)
             revoked = guard.pre_tool_call("read_file", {}, session_id="s1")
             self.assertIn("nincs hozzáférésed", revoked["message"])
         finally:
@@ -67,7 +67,9 @@ class Runtime(unittest.TestCase):
         finally:
             os.environ.pop("EXC_GUARD_OFFLINE", None)
 
-        queued = runtime._read_queue(runtime._under(home, runtime.QUEUE_FILE))
+        queued_path = runtime._under(home, runtime.QUEUE_FILE)
+        self.assertEqual(stat.S_IMODE(os.stat(queued_path).st_mode), 0o600)
+        queued = runtime._read_queue(queued_path)
         kinds = [event["kind"] for event in queued]
         self.assertEqual(kinds, ["user_prompt", "tool_call", "final"])
         self.assertEqual(queued[0]["content"], "szia")
@@ -120,12 +122,13 @@ class Runtime(unittest.TestCase):
         guard.note_session("sess-1")
         guard._version = "0.21.5"
         guard._origin_and_token = lambda: ("https://ai.example", "jwt")
+        original_post = runtime.post_json
         runtime.post_json = fake_post
         try:
             os.environ.pop("EXC_GUARD_OFFLINE", None)
             guard.beat()
         finally:
-            pass
+            runtime.post_json = original_post
         body = sent["payload"]
         self.assertTrue(sent["url"].endswith("/api/client-policy/heartbeat"))
         self.assertEqual(body["policyVersion"], "v9")

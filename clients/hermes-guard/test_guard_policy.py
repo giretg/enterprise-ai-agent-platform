@@ -39,10 +39,19 @@ class Policy(unittest.TestCase):
         caps = {**p.FREE, "code_execution": "local_with_approval", "human_approval": "none"}
         self.assertEqual(p.decide(snap(caps), "terminal").action, "approve")
         always = snap({**p.FREE, "human_approval": "always"})
-        self.assertEqual(p.decide(always, "clarify").action, "approve")
+        self.assertEqual(p.decide(always, "read_file").action, "approve")
         risky = snap({**p.FREE, "human_approval": "risky"})
         self.assertEqual(p.decide(risky, "terminal").action, "approve")
         self.assertEqual(p.decide(risky, "read_file").action, "allow")
+
+    def test_unclassified_tool_is_denied_unless_explicit_rule(self):
+        bound = p.decide(snap(p.BOUND), "image_generate")
+        self.assertEqual(bound.action, "block")
+        self.assertIn("nincs engedve", bound.message)
+        free = p.decide(snap(p.FREE), "ha_call_service")
+        self.assertEqual(free.action, "block")
+        allowed = snap(p.FREE, ({"pattern": "image_generate", "action": "allow", "source": "user"},))
+        self.assertEqual(p.decide(allowed, "image_generate").action, "allow")
 
     def test_explicit_tool_rule_beats_capability_and_deny_wins(self):
         rules = (

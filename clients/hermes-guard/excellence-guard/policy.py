@@ -248,7 +248,8 @@ def _capability_action(kind, level, tool_name):
         if server and sanitize_mcp_component(server) in company_servers():
             return "allow"
         return "block"
-    return "allow"
+    # R2: ami nincs a katalógusban, az nincs engedve (explicit toolRules előbb nyer).
+    return "block"
 
 
 def decide(snapshot, tool_name, args=None):

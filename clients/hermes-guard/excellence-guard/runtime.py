@@ -206,7 +206,8 @@ def enqueue(home, event):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     line = json.dumps(event, ensure_ascii=False)
     with _lock:
-        with open(path, "a", encoding="utf-8") as fh:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
 
 
@@ -230,7 +231,8 @@ def _read_queue(path):
 def write_json_lines(path, events):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         for event in events:
             fh.write(json.dumps(event, ensure_ascii=False) + "\n")
     os.replace(tmp, path)
@@ -328,7 +330,8 @@ class Guard:
         try:
             if not isinstance(args, dict):
                 args = kwargs.get("tool_input") if isinstance(kwargs.get("tool_input"), dict) else {}
-            decision = policy.decide_interpreted(self.current(), tool_name, args)
+            # P4/NFR: visszavonás a következő hívásnál. Ha a Control Plane down, D4 cache marad.
+            decision = policy.decide_interpreted(self.current(force=True), tool_name, args)
             call_id = kwargs.get("tool_call_id")
             if call_id:
                 self.decisions[str(call_id)] = decision.action

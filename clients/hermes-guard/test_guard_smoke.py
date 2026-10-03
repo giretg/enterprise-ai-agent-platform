@@ -88,6 +88,7 @@ class Smoke(unittest.TestCase):
         finally:
             os.environ.pop("EXC_GUARD_OFFLINE", None)
             os.environ.pop("EXC_GUARD_DISABLE_BACKGROUND", None)
+            os.environ.pop("HERMES_HOME", None)
             sys.stderr = ctx_stderr
 
 
