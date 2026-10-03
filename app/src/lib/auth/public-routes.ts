@@ -33,6 +33,9 @@ export const PUBLIC_ROUTE_PATTERNS = [
   '/api/v1/harness(.*)',
   // Cloud Scheduler → token auth a route handlerben (x-dispatcher-token), nem Clerk.
   '/api/v1/internal/dispatch-cycle(.*)',
+  // #759: AI-használati napló retenciós sweep. Szűken ez a path — a szomszédos internal
+  // route-ok védettek maradnak (lásd public-routes teszt other-endpoint).
+  '/api/v1/internal/ai-audit-retention',
   '/api/webhooks(.*)',
   // Bejövő csatorna-webhook (Telegram): a Clerk-munkamenet HELYETT a route saját, konstans
   // idejű megosztott-titok fejléce hitelesít (`x-telegram-bot-api-secret-token`).

@@ -9,7 +9,7 @@ import os
 import re
 
 GUARD_VERSION = "0.1.0"
-NOTICE = "Ez a munkatárs céges módban fut, a beszélgetések naplózásra kerülnek."
+NOTICE = "Ez a munkatárs céges módban fut, a beszélgetéseid naplózásra kerülnek."
 ASK = "Ha erre szükséged van, kérd a rendszergazdát."
 OFFLINE_TTL_SECONDS = 3600
 REVALIDATE_SECONDS = 15

@@ -132,6 +132,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'model_call',
   // Admin GET /api/ai-audit/events?includeContent=true — maga a visszafejtés auditált (#770).
   'ai_audit.content_read',
+  // #759: négy szem a tartalomolvasáshoz + a retenciós sweep élő hívója.
+  'ai_audit.content_unlock.request',
+  'ai_audit.content_unlock.approve',
+  'ai_audit.retention_sweep',
   // Agent modell-konfig + tenant policy + globális tartalék-lánc (#768).
   // Regisztráció nélkül az admin mentés UnregisteredAuditActionError-t dobna
   // (a beállítás már elment, a UI hibát jelezne).

@@ -12,6 +12,12 @@ def snap(caps, rules=(), source="user_preset"):
 
 
 class Policy(unittest.TestCase):
+    def test_company_mode_notice_matches_spec(self):
+        self.assertEqual(
+            p.NOTICE,
+            "Ez a munkatárs céges módban fut, a beszélgetéseid naplózásra kerülnek.",
+        )
+
     def test_free_developer_runs_terminal_bound_billing_does_not(self):
         allow = p.decide(snap(p.FREE), "terminal", {"command": "ls"})
         block = p.decide(snap(p.BOUND, source="agent_ceiling"), "terminal", {"command": "ls"})

@@ -13,11 +13,19 @@ import {
   ingestGuardEvents,
   listAuditEvents,
   normalizeDepth,
+  drainExpiredAiAuditEvents,
+  sweepExpiredAiAuditEvents,
   type AiAuditDeps,
   type AiInteractionRow,
   type AiInteractionStore,
   type AuditDepth,
 } from '../src/domain/ai-audit/ai-audit-service'
+import {
+  approveUnlockRequest,
+  issueUnlockRequest,
+  verifyContentGrant,
+} from '../src/domain/ai-audit/content-grant'
+import { handleAiAuditRetentionRequest } from '../src/domain/ai-audit/retention-request'
 import type { ModelCallEvent } from '../src/domain/model-gateway/proxy'
 
 const TENANT = '22222222-2222-4222-8222-222222222222'
@@ -52,6 +60,14 @@ function setup(depth: AuditDepth) {
     },
     list: async (f) =>
       rows.filter((r) => r.tenantId === f.tenantId && (!f.sessionId || r.sessionId === f.sessionId)).slice(0, f.limit),
+    deleteExpired: async (now, limit) => {
+      const doomed = rows.filter((r) => r.expiresAt.getTime() <= now.getTime()).slice(0, limit)
+      for (const d of doomed) {
+        const i = rows.indexOf(d)
+        if (i >= 0) rows.splice(i, 1)
+      }
+      return doomed.length
+    },
   }
   const deps: AiAuditDeps = {
     store,
@@ -196,6 +212,122 @@ async function main() {
     const clear = await listAuditEvents(s.store, { tenantId: TENANT, limit: 10 }, { decrypt: true })
     assert.deepEqual(clear[0].content, { q: 'mennyi?' })
     assert.equal((await listAuditEvents(s.store, { tenantId: OTHER_TENANT, limit: 10 }, { decrypt: true })).length, 0)
+  })
+
+  await check('retenciós sweep: a lejárt sor törlődik, a még élő megmarad; a limit vág', async () => {
+    const s = setup('plus_tool_results')
+    await ingestGuardEvents(s.deps, ctx, { events: [ev(1), ev(2)] })
+    s.rows[0].expiresAt = new Date('2026-09-01T00:00:00Z')
+    s.rows[1].expiresAt = new Date('2026-12-30T10:00:00Z')
+    const hidden = await listAuditEvents(s.store, { tenantId: TENANT, limit: 10 }, {
+      decrypt: false,
+      now: new Date('2026-10-01T10:00:00Z'),
+    })
+    assert.equal(hidden.length, 1)
+    assert.equal(s.rows.length, 2)
+    assert.deepEqual(await sweepExpiredAiAuditEvents(s.store, { now: new Date('2026-10-01T10:00:00Z'), limit: 10 }), {
+      deleted: 1,
+    })
+    assert.equal(s.rows.length, 1)
+    assert.equal(s.rows[0].id, uuid(2))
+    const listed = await listAuditEvents(s.store, { tenantId: TENANT, limit: 10 }, {
+      decrypt: false,
+      now: new Date('2026-10-01T10:00:00Z'),
+    })
+    assert.equal(listed.length, 1)
+  })
+
+  await check('retenciós sweep drain: a napi járat a kötegméret felett is kiüríti a lejárt sorokat', async () => {
+    const s = setup('plus_tool_results')
+    await ingestGuardEvents(s.deps, ctx, { events: [ev(1), ev(2), ev(3), ev(4)] })
+    const now = new Date('2026-10-01T10:00:00Z')
+    for (const r of s.rows.slice(0, 3)) r.expiresAt = new Date('2026-09-01T00:00:00Z')
+    s.rows[3].expiresAt = new Date('2026-12-30T10:00:00Z')
+    assert.deepEqual(await drainExpiredAiAuditEvents(s.store, { now, batchSize: 2 }), {
+      deleted: 3,
+      complete: true,
+    })
+    assert.equal(s.rows.length, 1)
+    assert.equal(s.rows[0].id, uuid(4))
+  })
+
+  await check('retenciós sweep drain: maxBatches után megáll, a maradék a következő hívásra vár', async () => {
+    const s = setup('plus_tool_results')
+    await ingestGuardEvents(s.deps, ctx, { events: [ev(1), ev(2), ev(3)] })
+    const now = new Date('2026-10-01T10:00:00Z')
+    for (const r of s.rows) r.expiresAt = new Date('2026-09-01T00:00:00Z')
+    assert.deepEqual(await drainExpiredAiAuditEvents(s.store, { now, batchSize: 1, maxBatches: 2 }), {
+      deleted: 2,
+      complete: false,
+    })
+    assert.equal(s.rows.length, 1)
+  })
+
+  await check('retenciós sweep élő hívó: érvényes tokennel a sweep lefut; hiányzó/hibás tokennél el sem indul', async () => {
+    const TOKEN = 'sweep-token-abc123'
+    let calls = 0
+    const ok = await handleAiAuditRetentionRequest(
+      { providedToken: TOKEN, expectedToken: TOKEN },
+      async () => {
+        calls += 1
+        return { deleted: 4 }
+      },
+    )
+    assert.equal(ok.status, 200)
+    assert.deepEqual(ok.body, { ok: true, deleted: 4 })
+    assert.equal(calls, 1)
+
+    const denied = await handleAiAuditRetentionRequest(
+      { providedToken: 'wrong', expectedToken: TOKEN },
+      async () => {
+        calls += 1
+        return { deleted: 0 }
+      },
+    )
+    assert.equal(denied.status, 401)
+    assert.equal(calls, 1)
+
+    const missing = await handleAiAuditRetentionRequest(
+      { providedToken: TOKEN, expectedToken: undefined },
+      async () => {
+        calls += 1
+        return { deleted: 0 }
+      },
+    )
+    assert.equal(missing.status, 401)
+    assert.equal(calls, 1)
+  })
+
+  const GRANT_KEY = 'test-ai-audit-grant-key-32-bytes-min!!'
+  const ADMIN_A = USER
+  const ADMIN_B = '44444444-4444-4444-8444-444444444444'
+  const ADMIN_C = '55555555-5555-4555-8555-555555555555'
+
+  await check('négy szem: A kér, B jóváhagy; A vagy B olvashat, C és az önjóváhagyás nem', async () => {
+    const now = new Date('2026-10-01T10:00:00Z')
+    const requestToken = issueUnlockRequest(GRANT_KEY, { tenantId: TENANT, requesterId: ADMIN_A, now })
+    const self = approveUnlockRequest(GRANT_KEY, requestToken, { tenantId: TENANT, approverId: ADMIN_A, now })
+    assert.deepEqual(self, { ok: false, code: 'same_actor' })
+    const cross = approveUnlockRequest(GRANT_KEY, requestToken, { tenantId: OTHER_TENANT, approverId: ADMIN_B, now })
+    assert.deepEqual(cross, { ok: false, code: 'tenant_mismatch' })
+    const approved = approveUnlockRequest(GRANT_KEY, requestToken, { tenantId: TENANT, approverId: ADMIN_B, now })
+    assert.equal(approved.ok, true)
+    if (!approved.ok) throw new Error('expected grant')
+    assert.equal(verifyContentGrant(GRANT_KEY, approved.token, { tenantId: TENANT, readerId: ADMIN_A, now }).ok, true)
+    assert.equal(verifyContentGrant(GRANT_KEY, approved.token, { tenantId: TENANT, readerId: ADMIN_B, now }).ok, true)
+    assert.deepEqual(verifyContentGrant(GRANT_KEY, approved.token, { tenantId: TENANT, readerId: ADMIN_C, now }), {
+      ok: false,
+      code: 'not_party',
+    })
+    assert.deepEqual(verifyContentGrant(GRANT_KEY, null, { tenantId: TENANT, readerId: ADMIN_A, now }), {
+      ok: false,
+      code: 'invalid_token',
+    })
+    const later = new Date('2026-10-01T10:16:00Z')
+    assert.equal(
+      verifyContentGrant(GRANT_KEY, approved.token, { tenantId: TENANT, readerId: ADMIN_A, now: later }).ok,
+      false,
+    )
   })
 
   if (failures) process.exit(1)

@@ -134,6 +134,25 @@ Scheduler újra az UI-t hívja, a worker érintetlen marad.
 **Névzavar:** a `deploy-dispatcher-service.sh` / `Dockerfile.dispatcher` egy **másik**,
 legacy szolgáltatás (wiki-harness LISTEN/NOTIFY worker, `min-instances=1`) — nem ez.
 
+## 3.2 AI-használati napló retenciós sweep (#759)
+
+A Hermes Managed Client prompt-naplója (`ai_interaction_events`) 90 nap után lejár
+(D5, `AI_AUDIT_RETENTION_DAYS`). A lejárat mező önmagában nem töröl — kell **élő hívó**,
+különben a tartalom a táblában marad (a legacy `retentionSweep never runs` tanulsága).
+
+Cloud Scheduler, naponta egyszer, az App Hosting URL-re:
+
+```
+POST https://ai.excellencepay.com/api/v1/internal/ai-audit-retention
+Header: x-dispatcher-token: <DISPATCHER_CONTROL_TOKEN>
+```
+
+Ugyanaz a `DISPATCHER_CONTROL_TOKEN` Secret Manager-titok, mint a 3.1-es ciklusé
+(opcionális felülírás: `AI_AUDIT_SWEEP_TOKEN`). A route a Clerk-kapu előtt publikus,
+a tokent a handler ellenőrzi. A handler 5000-es kötegekben töröl, amíg van lejárt sor (legfeljebb 100 köteg /
+hívás, hogy a Cloud Run timeout előtt végezzen). A járat `ai_audit.retention_sweep`
+AuditLog-sort ír (hány sort törölt, `complete`). A DPIA: `docs/privacy/dpia-ai-interaction-audit.md`.
+
 ## 4. Clerk webhook regisztrálás
 
 Az éles domain: `https://ai.excellencepay.com`. A Clerk Dashboard-on:
