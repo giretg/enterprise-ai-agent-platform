@@ -149,8 +149,9 @@ Header: x-dispatcher-token: <DISPATCHER_CONTROL_TOKEN>
 
 Ugyanaz a `DISPATCHER_CONTROL_TOKEN` Secret Manager-titok, mint a 3.1-es ciklusé
 (opcionális felülírás: `AI_AUDIT_SWEEP_TOKEN`). A route a Clerk-kapu előtt publikus,
-a tokent a handler ellenőrzi. A járat `ai_audit.retention_sweep` AuditLog-sort ír
-(hány sort törölt). A DPIA: `docs/privacy/dpia-ai-interaction-audit.md`.
+a tokent a handler ellenőrzi. A handler 5000-es kötegekben töröl, amíg van lejárt sor (legfeljebb 100 köteg /
+hívás, hogy a Cloud Run timeout előtt végezzen). A járat `ai_audit.retention_sweep`
+AuditLog-sort ír (hány sort törölt, `complete`). A DPIA: `docs/privacy/dpia-ai-interaction-audit.md`.
 
 ## 4. Clerk webhook regisztrálás
 

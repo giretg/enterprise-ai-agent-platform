@@ -16,6 +16,8 @@ export const MAX_META_BYTES = 16 * 1024
 export const MAX_BATCH_BYTES = 8 * 1024 * 1024
 export const DEFAULT_RETENTION_DAYS = 90
 export const DEFAULT_SWEEP_LIMIT = 5000
+/** Egy Scheduler-hívás ennyi kötegnél megáll, hogy a request ne fusson a Cloud Run timeoutig. */
+export const MAX_SWEEP_BATCHES = 100
 export const MAX_LIST_LIMIT = 500
 
 export type AuditDepth = 'metadata' | 'prompt_and_response' | 'plus_tool_results'
@@ -244,7 +246,7 @@ export async function listAuditEvents(
     })
 }
 
-/** Lejárt `AiInteractionEvent` sorok törlése. A Cloud Scheduler ezt hívja a retention-route-on. */
+/** Egy köteg lejárt sor törlése. A napi járat `drainExpiredAiAuditEvents`-et hívja, mert 5000/nap kevés. */
 export async function sweepExpiredAiAuditEvents(
   store: Pick<AiInteractionStore, 'deleteExpired'>,
   input: { now?: Date; limit?: number } = {},
@@ -252,4 +254,23 @@ export async function sweepExpiredAiAuditEvents(
   const now = input.now ?? new Date()
   const limit = input.limit ?? DEFAULT_SWEEP_LIMIT
   return { deleted: await store.deleteExpired(now, Math.max(1, limit)) }
+}
+
+/**
+ * D5: a 90 napos tartalom-törlés nem állhat meg egy kötegnél. A napi POST addig
+ * húzza a kötegeket, amíg egy rövid köteg jön, vagy eléri a `maxBatches` plafont.
+ */
+export async function drainExpiredAiAuditEvents(
+  store: Pick<AiInteractionStore, 'deleteExpired'>,
+  input: { now?: Date; batchSize?: number; maxBatches?: number } = {},
+): Promise<{ deleted: number; complete: boolean }> {
+  const batchSize = Math.max(1, input.batchSize ?? DEFAULT_SWEEP_LIMIT)
+  const maxBatches = Math.max(1, input.maxBatches ?? MAX_SWEEP_BATCHES)
+  let deleted = 0
+  for (let i = 0; i < maxBatches; i++) {
+    const n = (await sweepExpiredAiAuditEvents(store, { now: input.now, limit: batchSize })).deleted
+    deleted += n
+    if (n < batchSize) return { deleted, complete: true }
+  }
+  return { deleted, complete: false }
 }

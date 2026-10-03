@@ -58,7 +58,7 @@ Ez a napló ilyen megfigyelés (minden céges beszélgetés).
 | Audit-mélység (`metadata` / `prompt_and_response` / `plus_tool_results`) | A tenant policyje dönti el, mennyi tartalom tárolódik. Ismeretlen szint → a legkevesebb (metadata). A tool-eredmény csak a legmélyebb szinten marad meg. |
 | Titkosítás | A `content` tenant-származtatott AES-256-GCM boríték; a listázó API alapból nem fejti vissza. |
 | 90 napos tartalom-retenció | D5, véglegesítve. Metaadat ugyanaddig él (egy sor, egy lejárat). Konfig: `AI_AUDIT_RETENTION_DAYS` > 0. |
-| Élő törlő járat | Napi `POST /api/v1/internal/ai-audit-retention`. A lejárt sor a listában a járat előtt sem jelenik meg. |
+| Élő törlő járat | Napi `POST /api/v1/internal/ai-audit-retention`. 5000-es kötegekben ürít, amíg van lejárt sor. A lejárt sor a listában a járat előtt sem jelenik meg. |
 | Lokális session-DB | v1-ben a Guard **nem** törli a gép session-tárolóját (D5). A szerveroldali tartalom a kötelező minimum. |
 | Tartalomszűrő | PAN nem jut el a modellhez és nem kerül a napló kérésébe; e-mail/név álnéven megy a modellhez. |
 | Nincs UI v1-ben | Olvasás csak admin API-n, négy szemmel (3. pont). A napló-UI későbbi issue (#750). |

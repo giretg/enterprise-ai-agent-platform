@@ -13,6 +13,7 @@ import {
   ingestGuardEvents,
   listAuditEvents,
   normalizeDepth,
+  drainExpiredAiAuditEvents,
   sweepExpiredAiAuditEvents,
   type AiAuditDeps,
   type AiInteractionRow,
@@ -234,6 +235,32 @@ async function main() {
       now: new Date('2026-10-01T10:00:00Z'),
     })
     assert.equal(listed.length, 1)
+  })
+
+  await check('retenciós sweep drain: a napi járat a kötegméret felett is kiüríti a lejárt sorokat', async () => {
+    const s = setup('plus_tool_results')
+    await ingestGuardEvents(s.deps, ctx, { events: [ev(1), ev(2), ev(3), ev(4)] })
+    const now = new Date('2026-10-01T10:00:00Z')
+    for (const r of s.rows.slice(0, 3)) r.expiresAt = new Date('2026-09-01T00:00:00Z')
+    s.rows[3].expiresAt = new Date('2026-12-30T10:00:00Z')
+    assert.deepEqual(await drainExpiredAiAuditEvents(s.store, { now, batchSize: 2 }), {
+      deleted: 3,
+      complete: true,
+    })
+    assert.equal(s.rows.length, 1)
+    assert.equal(s.rows[0].id, uuid(4))
+  })
+
+  await check('retenciós sweep drain: maxBatches után megáll, a maradék a következő hívásra vár', async () => {
+    const s = setup('plus_tool_results')
+    await ingestGuardEvents(s.deps, ctx, { events: [ev(1), ev(2), ev(3)] })
+    const now = new Date('2026-10-01T10:00:00Z')
+    for (const r of s.rows) r.expiresAt = new Date('2026-09-01T00:00:00Z')
+    assert.deepEqual(await drainExpiredAiAuditEvents(s.store, { now, batchSize: 1, maxBatches: 2 }), {
+      deleted: 2,
+      complete: false,
+    })
+    assert.equal(s.rows.length, 1)
   })
 
   await check('retenciós sweep élő hívó: érvényes tokennel a sweep lefut; hiányzó/hibás tokennél el sem indul', async () => {

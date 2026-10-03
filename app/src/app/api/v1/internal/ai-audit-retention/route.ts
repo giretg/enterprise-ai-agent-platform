@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { aiInteractionStore } from '@/auth/ai-audit-deps'
-import { sweepExpiredAiAuditEvents } from '@/domain/ai-audit/ai-audit-service'
+import { drainExpiredAiAuditEvents } from '@/domain/ai-audit/ai-audit-service'
 import { handleAiAuditRetentionRequest } from '@/domain/ai-audit/retention-request'
 import { repositories } from '@/repositories/postgres'
 import { writeAudit } from '@/lib/audit/types'
@@ -17,13 +17,13 @@ export async function POST(request: Request): Promise<Response> {
   const result = await handleAiAuditRetentionRequest(
     { providedToken: request.headers.get('x-dispatcher-token') },
     async () => {
-      const swept = await sweepExpiredAiAuditEvents(aiInteractionStore)
+      const swept = await drainExpiredAiAuditEvents(aiInteractionStore)
       await writeAudit(repositories.audit, {
         actorType: 'system',
         action: 'ai_audit.retention_sweep',
         targetType: 'ai_interaction_event',
         policyDecision: 'allowed',
-        metadata: { deleted: swept.deleted },
+        metadata: { deleted: swept.deleted, complete: swept.complete },
       })
       return swept
     },
