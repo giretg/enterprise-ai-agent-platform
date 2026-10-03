@@ -258,7 +258,7 @@ function sandboxMcpRule(capabilities: Array<{ toolName: string; allowed: boolean
     (name) => name === 'sandbox_run' || name === 'sandbox_exec',
   )
   if (sandboxTool) {
-    return `- Runnable skill code runs only via \`${sandboxTool}\` with the skillVersionId. Do not run skill code on this machine, and do not upload a local file into the sandbox.`
+    return `- Runnable skill code runs only via \`${sandboxTool}\` with the skillVersionId. Pass work-file paths in inputs (comma-separated); they appear at /work/in/<path>. Do not run skill code on this machine, and do not upload a local file into the sandbox.`
   }
   return '- Do not run skill code on this machine.'
 }

@@ -402,6 +402,8 @@ async function main() {
       }).files.find((f) => f.path === 'AGENTS.md')?.content ?? ''
     assert.match(agents, /sandbox_run/)
     assert.match(agents, /skillVersionId/)
+    assert.match(agents, /inputs/)
+    assert.match(agents, /\/work\/in\//)
     assert.doesNotMatch(agents, /sandbox_exec/)
   })
 

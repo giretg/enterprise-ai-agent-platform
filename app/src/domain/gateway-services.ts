@@ -412,6 +412,14 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
     }
   },
   executeSandboxRun,
+  readWorkFile: async (input) => {
+    const found = await projectWorkService.readFile(input)
+    if (!found.ok) {
+      if (found.code === 'file_not_found') return null
+      throw new Error(found.code)
+    }
+    return { path: found.file.path, content: found.file.content }
+  },
   writeWorkFile: async (input) => {
     const written = await projectWorkService.writeFile(input)
     if (!written.ok) throw new Error(written.code) // quota_exceeded | file_too_large | invalid_path
