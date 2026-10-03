@@ -390,6 +390,7 @@ model Tenant {
   projectMemoryItems ProjectMemoryItem[]
   handoffs          Handoff[]
   clientPolicies    ClientPolicy[]
+  clientInstalls    ClientInstall[]
   aiInteractionEvents AiInteractionEvent[]
   gatewaySurrogates GatewaySurrogate[]
 
@@ -1063,6 +1064,43 @@ model ClientPolicy {
 
   @@unique([tenantId, scope, scopeId])
   @@map("client_policies")
+}
+
+/// Hermes Managed Client heartbeat-regiszter (#746 V1-7, R8): a Guard jelenléte és a gép állapota.
+/// Egy user egy telepítése = egy sor; az `installId` kliens-oldali (a gateway-JWT-ben utazik), ezért a
+/// kulcs a (tenant, user, installId) hármas — idegen user vagy tenant nem hivatkozhat rá.
+model ClientInstall {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  installId       String   @map("install_id")
+  lastHeartbeatAt DateTime @map("last_heartbeat_at") @db.Timestamptz
+  configHash      String   @map("config_hash")
+  managedDirHash  String   @map("managed_dir_hash")
+  policyVersion   String   @map("policy_version")
+  guardVersion    String   @map("guard_version")
+  hermesVersion   String   @map("hermes_version")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant   Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sessions ClientInstallSession[]
+
+  @@unique([tenantId, userId, installId])
+  @@map("client_installs")
+}
+
+/// A Guard által regisztrált Hermes-session; a Model Gateway csak ilyen sessionnek ad céges modellt.
+model ClientInstallSession {
+  id              String   @id @default(uuid()) @db.Uuid
+  clientInstallId String   @map("client_install_id") @db.Uuid
+  sessionId       String   @map("session_id")
+  agentId         String   @map("agent_id") @db.Uuid
+  lastSeenAt      DateTime @map("last_seen_at") @db.Timestamptz
+
+  install ClientInstall @relation(fields: [clientInstallId], references: [id], onDelete: Cascade)
+
+  @@unique([clientInstallId, sessionId, agentId], map: "client_install_sessions_client_install_id_session_id_agent__key")
+  @@map("client_install_sessions")
 }
 
 /// Model Gateway álnév-vault (#746 V1-4): `hermes_session` hatókörű e-mail/név → álnév leképezés.
