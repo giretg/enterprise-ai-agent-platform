@@ -43,6 +43,7 @@ import type { SandboxRunResult } from '@/domain/code-sandbox/code-sandbox-servic
 import { CodeSandboxDeniedError } from '@/domain/code-sandbox/code-sandbox-service'
 import {
   resolvePinnedSkillScript,
+  resolveSandboxWorkInputs,
   sandboxWorkFilePrefix,
   splitSandboxArgs,
 } from '@/domain/code-sandbox/skill-script'
@@ -157,6 +158,11 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     },
     connector: LiveConnectorRow,
   ) => Promise<SandboxRunResult>
+  readWorkFile?: (input: {
+    tenantId: string
+    projectKey?: string
+    path: string
+  }) => Promise<{ path: string; content: string } | null>
   writeWorkFile?: (input: {
     tenantId: string
     userId: string
@@ -186,6 +192,19 @@ function textResult(payload: unknown, isError = false): EnterpriseToolMcpResult 
 
 function errorResult(code: string, extra?: Record<string, unknown>): EnterpriseToolMcpResult {
   return textResult(enterpriseToolErrorPayload(code, extra), true)
+}
+
+const WORK_FILE_TOOL_ERROR_CODES = new Set([
+  'invalid_path',
+  'unknown_project',
+  'invalid_project_key',
+  'file_too_large',
+  'quota_exceeded',
+])
+
+function workFileToolErrorCode(error: unknown): string {
+  const thrown = error instanceof Error ? error.message : ''
+  return WORK_FILE_TOOL_ERROR_CODES.has(thrown) ? thrown : 'tool_execution_failed'
 }
 
 export async function authorizationLinkFields(
@@ -874,6 +893,37 @@ async function invokeSandboxTool(
       bytes: Buffer.from(helper.text, 'utf8'),
     })),
   ]
+  const resolvedInputs = resolveSandboxWorkInputs(parsedArgs.inputs)
+  if (!resolvedInputs.ok) {
+    await auditDenied(deps, principal, toolName, resolvedInputs.reason, definitionId, definition.agentId)
+    return errorResult(resolvedInputs.reason)
+  }
+  const readWorkFile = deps.readWorkFile
+  if (resolvedInputs.inputs.length > 0 && !readWorkFile) {
+    await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
+    return errorResult('tool_not_configured')
+  }
+  const mounted: Array<{ path: string; sandboxPath: string }> = []
+  for (const item of resolvedInputs.inputs) {
+    let file: { path: string; content: string } | null
+    try {
+      file = await readWorkFile!({
+        tenantId: principal.tenantId,
+        projectKey: parsedArgs.projectKey,
+        path: item.workPath,
+      })
+    } catch (error) {
+      const code = workFileToolErrorCode(error)
+      await auditDenied(deps, principal, toolName, code, definitionId, definition.agentId)
+      return errorResult(code)
+    }
+    if (!file) {
+      await auditDenied(deps, principal, toolName, 'file_not_found', definitionId, definition.agentId)
+      return errorResult('file_not_found', { path: item.workPath })
+    }
+    files.push({ sandboxPath: item.sandboxPath, bytes: Buffer.from(file.content, 'utf8') })
+    mounted.push({ path: file.path, sandboxPath: item.sandboxPath })
+  }
   const execute = deps.executeSandboxRun ?? defaultExecuteSandboxRun
   try {
     const ran = await execute(
@@ -930,22 +980,21 @@ async function invokeSandboxTool(
       stdoutTruncated: ran.stdoutTruncated,
       stderrTruncated: ran.stderrTruncated,
       outputs,
+      inputs: mounted,
       skillVersionId: parsedArgs.skillVersionId,
       scriptPath: resolved.script.entry.path,
       scriptSha256: resolved.script.entry.sha256,
     })
   } catch (error) {
+    const thrown = error instanceof Error ? error.message : ''
     const code =
       error instanceof CodeSandboxDeniedError
         ? error.reason.split(':')[0]!
-        : error instanceof Error &&
-            (error.message === 'code_sandbox_disabled' ||
-              error.message === 'code_sandbox_base_url_missing' ||
-              error.message === 'invalid_sandbox_command' ||
-              error.message === 'quota_exceeded' ||
-              error.message === 'file_too_large' ||
-              error.message === 'invalid_path')
-          ? error.message
+        : thrown === 'code_sandbox_disabled' ||
+            thrown === 'code_sandbox_base_url_missing' ||
+            thrown === 'invalid_sandbox_command' ||
+            WORK_FILE_TOOL_ERROR_CODES.has(thrown)
+          ? thrown
           : 'tool_execution_failed'
     const payload = {
       toolName,

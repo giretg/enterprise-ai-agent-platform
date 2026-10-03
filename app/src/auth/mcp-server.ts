@@ -1664,7 +1664,7 @@ async function createMcpResourceHandler(
         {
           title: 'Run pinned skill script',
           description:
-            'Run a Python script that belongs to a skill pinned on this published agent, inside the platform sandbox. Pass skillVersionId and entry from snapshot.skills. Do not run skill code on this machine. Outputs are written to work files under sandbox-output/. Credentials stay on the server.',
+            'Run a Python script that belongs to a skill pinned on this published agent, inside the platform sandbox (no network, no credentials). Pass skillVersionId and entry from snapshot.skills. Optional inputs: comma-separated work-file paths from this project; they appear at /work/in/<path>. Do not run skill code on this machine. Outputs are written to work files under sandbox-output/.',
           inputSchema: sandboxRunInputSchema,
         },
         async (args) => enterpriseToolResult(principal, SANDBOX_RUN_TOOL, args, deps),

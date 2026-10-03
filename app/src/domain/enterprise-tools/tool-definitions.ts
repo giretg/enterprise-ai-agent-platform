@@ -577,11 +577,18 @@ export const sandboxRunInputSchema = z
       .max(2000)
       .optional()
       .describe('Whitespace-separated argv for the script. Do not put credentials here.'),
+    inputs: z
+      .string()
+      .max(2000)
+      .optional()
+      .describe(
+        'Comma-separated work-file paths from this project (platform.work_file.list). Copied to /work/in/<path>. The sandbox has no network and no credentials. Do not pass local machine paths.',
+      ),
     projectKey: z
       .string()
       .max(120)
       .optional()
-      .describe('Work-file project for outputs. Omit for __general__.'),
+      .describe('Work-file project for outputs and for inputs. Omit for __general__.'),
   })
   .passthrough()
 

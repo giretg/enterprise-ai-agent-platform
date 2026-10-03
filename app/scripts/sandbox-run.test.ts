@@ -11,7 +11,11 @@ import {
   type SandboxHandle,
   type SandboxProvider,
 } from '../src/domain/code-sandbox/code-sandbox-types'
-import { resolvePinnedSkillScript } from '../src/domain/code-sandbox/skill-script'
+import {
+  MAX_SANDBOX_WORK_INPUTS,
+  resolvePinnedSkillScript,
+  resolveSandboxWorkInputs,
+} from '../src/domain/code-sandbox/skill-script'
 import type { AgentDefinition } from '../src/domain/agent-definition'
 
 const SKILL_VERSION_ID = '99999999-9999-4999-8999-999999999999'
@@ -107,6 +111,29 @@ async function main() {
     })
     assert.equal(result.ok, false)
     if (!result.ok) assert.equal(result.reason, 'invalid_args')
+  })
+
+  await check('work-file inputs land under /work/in/', () => {
+    const result = resolveSandboxWorkInputs('sales.csv, notes/summary.txt')
+    assert.deepEqual(result, {
+      ok: true,
+      inputs: [
+        { workPath: 'sales.csv', sandboxPath: '/work/in/sales.csv' },
+        { workPath: 'notes/summary.txt', sandboxPath: '/work/in/notes/summary.txt' },
+      ],
+    })
+  })
+
+  await check('work-file input rejects traversal, skill collision and duplicates', () => {
+    assert.equal(resolveSandboxWorkInputs('../secret.csv').ok, false)
+    assert.equal(resolveSandboxWorkInputs('/etc/passwd').ok, false)
+    assert.equal(resolveSandboxWorkInputs('skill/run.py').ok, false)
+    assert.equal(resolveSandboxWorkInputs('sales.csv, sales.csv').ok, false)
+    assert.equal(
+      resolveSandboxWorkInputs(Array.from({ length: MAX_SANDBOX_WORK_INPUTS + 1 }, (_, i) => `f${i}.csv`).join(','))
+        .ok,
+      false,
+    )
   })
 
   await check('pinned .py entry resolves helpers', () => {
