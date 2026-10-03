@@ -114,6 +114,23 @@ export class PostgresUserRepository implements UserRepository {
     return prisma.user.update({ where: { id }, data })
   }
 
+  async activatePendingPlatformRegistration(
+    id: string,
+    data: { role: UserRole; activatedAt: Date; invitedById: string },
+  ) {
+    const { count } = await prisma.user.updateMany({
+      where: { id, status: 'pending', role: null },
+      data: {
+        role: data.role,
+        status: 'active',
+        activatedAt: data.activatedAt,
+        invitedById: data.invitedById,
+      },
+    })
+    if (count !== 1) return null
+    return prisma.user.findUnique({ where: { id } })
+  }
+
   async upsertByExternalAuthId(params: {
     externalAuthId: string
     create: {
