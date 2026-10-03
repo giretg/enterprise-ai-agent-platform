@@ -9,8 +9,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto'
 import type { CapabilityKey } from '@/domain/client-policy/capabilities'
-import type { ClientPolicyStore } from '@/domain/client-policy/policy-service'
-import { resolveEffectivePolicy, type EffectivePolicy } from '@/domain/client-policy/resolve-effective-policy'
+import { getPolicySnapshot, type ClientPolicyStore, type PolicySnapshot } from '@/domain/client-policy/policy-service'
 
 /** A toolset csak akkor kerül a padlóba, ha minden látható agent effektív szintje pontosan ez. */
 const TOOLSET_GATES: { key: CapabilityKey; denied: string; toolsets: readonly string[] }[] = [
@@ -106,7 +105,8 @@ export type MachineFloorPackage = {
 }
 
 export interface MachineFloorStore {
-  find(input: { tenantId: string; userId: string }): Promise<{ installId: string } | null>
+  /** Atomi kiosztás: párhuzamos első letöltések ugyanazt az ID-t kapják. */
+  getOrCreateInstallId(input: { tenantId: string; userId: string; installId: string }): Promise<string>
   save(input: { tenantId: string; userId: string; installId: string; managedDirHash: string }): Promise<void>
   /** null = ehhez az installhoz nincs kiadott padló (az env-tartalék dönthet). */
   expectedHash(input: { tenantId: string; userId: string; installId: string }): Promise<string | null>
@@ -128,7 +128,7 @@ export function modelGatewayBaseUrl(origin: string): string {
 }
 
 /** Üres lista: minden kapu tilt (nincs agent, amin engedve lenne). */
-export function disabledToolsetsForPolicies(policies: readonly EffectivePolicy[]): string[] {
+export function disabledToolsetsForPolicies(policies: readonly Pick<PolicySnapshot, 'capabilities'>[]): string[] {
   const disabled = new Set<string>()
   for (const gate of TOOLSET_GATES) {
     if (policies.every((p) => p.capabilities[gate.key] === gate.denied)) {
@@ -209,33 +209,12 @@ export function buildManagedFiles(input: {
   return { files, managedDirHash: managedDirHash(files) }
 }
 
-async function policiesForAgents(
-  store: ClientPolicyStore,
-  input: { tenantId: string; userId: string },
-  agentIds: readonly string[],
-): Promise<EffectivePolicy[]> {
-  const policies: EffectivePolicy[] = []
-  for (const agentId of agentIds) {
-    const rows = await store.findRows({ ...input, agentId })
-    const pick = (scope: 'tenant' | 'user' | 'agent', scopeId: string) =>
-      rows.find((r) => r.scope === scope && r.scopeId === scopeId) ?? null
-    policies.push(
-      resolveEffectivePolicy({
-        tenant: pick('tenant', input.tenantId),
-        user: pick('user', input.userId),
-        agent: pick('agent', agentId),
-      }),
-    )
-  }
-  return policies
-}
-
 export async function resolveMachineFloor(
   deps: Pick<MachineFloorDeps, 'policyStore' | 'listVisibleAgentIds'>,
   input: { tenantId: string; userId: string },
 ): Promise<{ agentIds: string[]; disabledToolsets: string[] }> {
   const agentIds = [...(await deps.listVisibleAgentIds(input))].sort()
-  const policies = await policiesForAgents(deps.policyStore, input, agentIds)
+  const policies = await Promise.all(agentIds.map((agentId) => getPolicySnapshot(deps.policyStore, { ...input, agentId })))
   return { agentIds, disabledToolsets: disabledToolsetsForPolicies(policies) }
 }
 
@@ -244,8 +223,7 @@ export async function issueMachineFloor(
   input: { tenantId: string; userId: string; gatewayBaseUrl: string },
 ): Promise<MachineFloorPackage> {
   const { agentIds, disabledToolsets } = await resolveMachineFloor(deps, input)
-  const existing = await deps.floors.find(input)
-  const installId = existing?.installId ?? (deps.newInstallId ?? randomUUID)()
+  const installId = await deps.floors.getOrCreateInstallId({ ...input, installId: (deps.newInstallId ?? randomUUID)() })
   const built = buildManagedFiles({ gatewayBaseUrl: input.gatewayBaseUrl, disabledToolsets, installId })
   await deps.floors.save({ ...input, installId, managedDirHash: built.managedDirHash })
   return { installId, gatewayBaseUrl: input.gatewayBaseUrl, agentIds, disabledToolsets, ...built }

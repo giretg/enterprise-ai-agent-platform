@@ -191,7 +191,7 @@ Jelölés: **[forrás]** = kódban/doksiban ellenőrizve · **[élő]** = ezen a
 | H-2 | `agent.disabled_toolsets` | Toolset globális eltávolítása minden platformon, a per-platform beállítás **után** alkalmazva. | **[forrás]** | — |
 | H-3 | `plugins.enabled` allowlist | Harmadik féltől származó plugin csak ennek alapján tölt be; managed pinnel a user nem kapcsolhat be saját plugint. | **[forrás][élő]** | A bundled platform-, backend-, memória- és provider-pluginok megkerülik (beépítettek). |
 | H-4 | **Shell hook** `hooks.pre_tool_call` + `fail_closed: true` + `hooks_auto_accept: true` | Külön processzként futó policy-bináris; hibánál, timeoutnál blokkol; a payload tartalmazza a `profile`-t (melyik Bot), a toolt, az argumentumokat. Managed scope-ból pinelhető. | Processz-izolált. **[forrás][élő]** | `--safe-mode` (H-9). |
-| H-5 | **Plugin hook** `pre_tool_call` | `block` / `approve` (emberi jóváhagyás) / `modify`; a `block` mindig nyer; **timeoutnál vagy kivételnél fail-closed**. | **[forrás]** | `--safe-mode`. |
+| H-5 | **Plugin hook** `pre_tool_call` | `block` / `approve` (emberi jóváhagyás) / `modify`; a `block` mindig nyer; **timeoutnál vagy kivételnél fail-closed**. MCP-toolra és `delegate_task`-ra is ez a dispatch fut (**[forrás]**, K2). | **[forrás]** | `--safe-mode`. Ha a dispatcher maga dob, a `model_tools.py` külső exceptje továbbenged — tartalék az `exc-guard` (K2). |
 | H-6 | **Prompt-hookok** `pre_llm_call` (a user eredeti szövege), `post_llm_call`, `pre/post_api_request` (a ténylegesen elküldött kérés), `pre/post_auxiliary_call`, `on_session_*`, `subagent_*`, `post_tool_call` | Teljes kliensoldali prompt- és válasz-audit. | Observer. **[forrás]** | Plugin nélkül (safe-mode) nincs. |
 | H-7 | **Middleware** `llm_request` / `llm_execution` / `tool_request` / `tool_execution` | A kimenő kérés (`messages`) átírható (kitakarás), az LLM-hívás lecserélhető szintetikus válaszra. | **Kivételnél fail-open.** **[forrás]** | Upstream rés U4. |
 | H-8 | **Terminál-backend plugin** | A `terminal`, az `execute_code` **és a fájl-toolok** saját backendre (céges sandbox) mennek. **Ismeretlen backend esetén elutasít, nem lokálisra esik vissza** (`terminal_tool_backends.py:360`). | Fail-closed. **[forrás]** | — |
@@ -361,7 +361,7 @@ A Guard heartbeatet küld: az effektív konfig hash-ét, a managed dir hash-ét,
 | B5 | Admin user törli az `/etc/hermes`-t | Elveszik a gép-padló | MDM drift-riasztás, heartbeat → Open | T3 |
 | B6 | Másik kliens saját kulccsal | Teljesen kívül | Céges modell, tool, adat nem érhető el | HR-policy, egress |
 | B7 | Mellékhívás más providerre | Prompt-szivárgás | `auxiliary.*: main` | **[POC K3]** |
-| B8 | Subagent tool-hívásai | Guard-kerülés? | `pre_tool_call` subagentben is (**[POC K2]**); `delegation` a policy szerint | — |
+| B8 | Subagent tool-hívásai | Guard-kerülés? | `pre_tool_call` a közös tool-dispatchen, MCP-névre és `delegate_task`-ra is (**[forrás]**, K2); `delegation` a policy szerint. A gyerek folyamat élő mérése nyitva (#754). | — |
 | B9 | A Bot profiljának kézi átírása (pl. `terminal.backend: local`) | Tiltott szint | A Guard a session backendjét a policyval veti össze, és blokkol | **[POC K9]** |
 | B10 | Guard-kivétel a middleware-ben | Fail-open | A blokkolás a fail-closed `pre_tool_call`-ban van, a szűrés a gateway-en | U4 |
 
@@ -413,13 +413,19 @@ Döntési szabály: **fork csak akkor, ha egy konkrét, tesztelhető követelmé
 | K10 | Mi a Hermes system promptjának stabil (cache-elt) része, és mit kell mégis tokenizálni benne (memória, context-fájlok)? |
 | K11 | A `key_cmd` helper a kiszolgált Bot-profil `HERMES_HOME`-jával fut-e (Desktop multiplex módban is), és eléri-e a profil `mcp-tokens/` tokenjét? **[forrás]:** igen (`tools/environments/local.py` `served_profile_child_env`, `mcp_oauth.py` `HERMES_HOME/mcp-tokens/`), a `key_cmd` kérésenként fut (`runtime_provider_custom.py:567`) → a helpernek cache-elnie kell. Élőben mérendő. |
 
-**V1-8 mérési eredmény (2026-10-03).** A generátor és a telepítő kész; élő Hermes (CLI és Desktop) ezen a gépen nem futott, ezért K1/K3/K4 forgalmi fele nyitva marad.
+**V1-8 mérési eredmény (2026-10-03).** A generátor és a telepítő kész, a V1-6 Guarddal összekötve. A helyben telepített Hermes v0.21.4+canary (`6ec05205a943cf813bd56c3c79d64bcf922dac67`) CLI konfigurációs belépési pontjai elkülönített profilban és managed könyvtárral ellenőrizve; a Desktop és a K3/K4 forgalmi része nyitva marad.
 
 | K | Eredmény |
 |---|---|
-| **K1** | A 2026-09-30-as CLI-mérés áll: a `hermes config` listázza a managed kulcsokat, a `config set` megtagadja, és a `model.base_url`-t külön kell pinelni. A generátor ezt a három modell-levelet, plusz a `plugins.enabled`, `hooks.pre_tool_call`, `hooks_auto_accept`, `agent.disabled_toolsets` kulcsokat kiírja. A Desktop élőben nem újramérve. A shell-hook doksi (Hermes, 2026-10) szerint a hook CLI-n, gatewayen, Desktopon, TUI-n és dashboardon is regisztrál, amikor az agent felépül. |
+| **K1** | A 2026-09-30-as CLI-mérés áll: a `hermes config` listázza a managed kulcsokat, a `config set` megtagadja, és a `model.base_url`-t külön kell pinelni. A generátor ezt a három modell-levelet, plusz a `plugins.enabled`, `hooks.pre_tool_call`, `hooks_auto_accept`, `agent.disabled_toolsets` kulcsokat kiírja. 2026-10-03: a generált 78 managed levél betöltése sikeres; a `model.provider`, `model.base_url` és `plugins.enabled` módosítását a CLI `set_config_value` megtagadta. A mérés az eredeti telepített runtime-ban, elkülönített tesztprofillal futott. A Desktop élőben nem újramérve. A shell-hook doksi (Hermes, 2026-10) szerint a hook CLI-n, gatewayen, Desktopon, TUI-n és dashboardon is regisztrál, amikor az agent felépül. |
 | **K3** | Generátor: minden ismert aux task `provider: main`, üres `base_url` / `api_key` / `model`, üres `fallback_chain`, és a top-level `fallback_providers: []`. Az aux hívások gateway-naplója élő Hermes nélkül nem mérhető. |
 | **K4** | Generátor: az ismert provider-kulcsok a managed `.env`-ben üresek, a modell-út levelenként pinelt. Élő `/model --provider openrouter` nem futott. |
+**V1-6 mérési eredmény (2026-10-03, Hermes v0.21.5 @ `d0288be5`).** Az eredeti V1-6 mérés forrásellenőrzés volt; a későbbi V1-8 CLI konfigurációs mérés fent szerepel. A Desktop K1 és a tool-dispatch K2 élő fele nyitva marad. A forrás a pinelt `hooks.md`, `middleware.md` és `model_tools.py`.
+
+| K | Eredmény |
+|---|---|
+| **K1** | A shell-hook doksi szerint a `hooks.pre_tool_call` CLI-n, gatewayen, Desktopon, TUI-n és dashboardon is regisztrál, amikor az agent felépül. `fail_closed: true` mellett a hiányzó bináris, a timeout és a nem-JSON stdout blokkol (P5 mechanizmus). Élő Desktop-mérés nincs. |
+| **K2** | **[forrás].** `model_tools.handle_function_call` → `_pre_dispatch_guards` → `_dispatch_pre_tool_call_hooks` minden toolnévre lefut, mielőtt a handler indulna. Az MCP-tool neve `mcp__<szerver>__<tool>` (`tools/mcp_tool_schema.py`). A `delegate_task` ugyanilyen tool-hívás; a doksi szerint a gyerek indítása előtt ez a hook blokkolja. A `skip_pre_tool_call_hook=True` ágak (`agent/tool_executor.py`, `agent/agent_runtime_helpers.py`) csak azért skipelnek, mert a hívó már lefuttatta a hookot. A gyerek-agent saját tool-hívása ugyanerre a dispatchre épül, ha a gyerek folyamat betölti a plugint — ezt élőben nem mértük (#754). Rés: ha a `_dispatch_pre_tool_call_hooks` maga dob, a `model_tools.py` külső `except` csak logol és továbbenged; ezért van az `exc-guard` `fail_closed` tartalék. A `subagent_start` nem blokkoló hook. |
 
 ---
 
@@ -487,7 +493,7 @@ A promptok naplózása munkavállalói adatkezelés. Kell hozzá: jogalap és el
 
 **Élő mérés (2026-09-30, macOS, v0.21.5):** `HERMES_MANAGED_DIR` + pinelt `agent.disabled_toolsets`, `plugins.enabled`, `hooks.pre_tool_call`, `hooks_auto_accept`, `model.provider`. A `hermes config` mind az ötöt managed kulcsként listázta; a `model.base_url` user-értéke megmaradt (H-1b).
 
-**V1-8 generátor (2026-10-03):** a kiadott `config.yaml` a H-1b leveleket külön pineli (`model.provider`, `model.base_url`, `model.api_mode`), és ugyanezt megteszi minden aux tasknál (`provider`, `model`, `base_url`, `api_key`, `fallback_chain`). A plugin betöltési útvonala forrásból mérve: `$HERMES_HOME/plugins/<név>/` (Desktop-profil: `~/.hermes/profiles/<profil>/plugins/`). Élő `hermes config` ezen a napon nem futott, a build gépen nincs Hermes.
+**V1-8 generátor (2026-10-03):** a kiadott `config.yaml` a H-1b leveleket külön pineli (`model.provider`, `model.base_url`, `model.api_mode`), és ugyanezt megteszi minden aux tasknál (`provider`, `model`, `base_url`, `api_key`, `fallback_chain`). A plugin betöltési útvonala forrásból mérve: `$HERMES_HOME/plugins/<név>/` (Desktop-profil: `~/.hermes/profiles/<profil>/plugins/`). A későbbi CLI konfigurációs mérés (78 managed levél és három visszautasított módosítás) a §12 táblában szerepel; a Desktop és a valódi auxiliary/provider-váltási forgalom még mérendő.
 
 **Excellence:** `docs/hermes-integration-foundation-2026-09-26.html`; `legacy/app/api/v1/gateway/v1/chat/completions/route.ts`; #682 / PR #683, #734; #485 sandbox; #272 / #320 APG.
 

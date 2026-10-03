@@ -35,23 +35,40 @@ else
   if [ "$(uname)" = "Darwin" ]; then OWNER="root:wheel"; else OWNER="root:root"; fi
 fi
 
-python3 - "$PKG" "$MANAGED" <<'PY'
-import json, os, sys
+# A Guard és a token-helper a padló élesítése előtt legyen jelen.
+for asset in exc_token.py exc-guard excellence-guard/plugin.yaml; do
+  [ -f "$SCRIPT_DIR/$asset" ] || { echo "Hiányzó telepítőfájl: $asset" >&2; exit 1; }
+done
+
+python3 - "$PKG" "$MANAGED" <<'PYVALIDATE'
+import hashlib, json, os, sys, tempfile
 pkg = json.load(open(sys.argv[1], encoding="utf-8"))
+names = ("config.yaml", ".env", "excellence-install-id")
+files = pkg["files"]
+if not isinstance(pkg["installId"], str) or not pkg["installId"] or files["excellence-install-id"] != pkg["installId"] + "\n":
+    raise ValueError("Hibás installId")
+if any(not isinstance(files[name], str) or not files[name].endswith("\n") for name in names):
+    raise ValueError("Hiányzó vagy hibás managed fájl")
+body = "".join(f"{name}\n{hashlib.sha256(files[name].encode()).hexdigest()}\n" for name in names)
+expected = hashlib.sha256(("excellence-managed-dir-v1\n" + body).encode()).hexdigest()
+if pkg["managedDirHash"] != expected:
+    raise ValueError("A csomag hash-e nem egyezik a tartalommal")
 dest = sys.argv[2]
+if os.path.islink(dest):
+    raise ValueError("A managed könyvtár nem lehet symlink")
 os.makedirs(dest, exist_ok=True)
 os.chmod(dest, 0o755)
-for name in ("config.yaml", ".env", "excellence-install-id"):
-    data = pkg["files"][name]
-    if not data.endswith("\n"):
-        data += "\n"
-    path = os.path.join(dest, name)
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(data)
-    os.chmod(path, 0o644)
+# Előbb minden fájl elkészül; hibás bemenet nem módosítja a régi padlót.
+with tempfile.TemporaryDirectory(dir=dest) as stage:
+    for name in names:
+        with open(os.path.join(stage, name), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(files[name])
+        os.chmod(os.path.join(stage, name), 0o644)
+    for name in names:
+        os.replace(os.path.join(stage, name), os.path.join(dest, name))
 print(pkg["installId"])
 print(pkg["managedDirHash"])
-PY
+PYVALIDATE
 
 if [ -n "$OWNER" ]; then
   chown "$OWNER" "$MANAGED" "$MANAGED/config.yaml" "$MANAGED/.env" "$MANAGED/excellence-install-id"
@@ -65,32 +82,11 @@ install_bin() {
   if [ -n "$OWNER" ]; then chown "$OWNER" "$dest"; fi
 }
 
-if [ -f "$SCRIPT_DIR/exc_token.py" ]; then
-  install_bin "$SCRIPT_DIR/exc_token.py" "$BIN/exc-token"
-else
-  echo "Hiányzik az exc_token.py a telepítő mellől." >&2
-  exit 1
-fi
+install_bin "$SCRIPT_DIR/exc_token.py" "$BIN/exc-token"
+install_bin "$SCRIPT_DIR/exc-guard" "$BIN/exc-guard"
 
-GUARD_SRC=""
-if [ -f "$SCRIPT_DIR/exc-guard" ]; then GUARD_SRC="$SCRIPT_DIR/exc-guard"
-elif [ -f "$SCRIPT_DIR/exc_guard.py" ]; then GUARD_SRC="$SCRIPT_DIR/exc_guard.py"
-fi
-if [ -n "$GUARD_SRC" ]; then
-  install_bin "$GUARD_SRC" "$BIN/exc-guard"
-else
-  echo "FIGYELEM: az exc-guard (V1-6) nincs a csomagban. A config a /opt/excellence/bin/exc-guard-ra mutat, fail_closed módban — amíg a bináris hiányzik, a Hermes minden tool-hívást blokkol." >&2
-fi
-
-# Plugin-útvonal (Hermes main, 2026-10, forrásból mérve — a gépen nem volt Hermes):
-# általános plugin: $HERMES_HOME/plugins/<név>/plugin.yaml
-#   alap: ~/.hermes/plugins/excellence-guard/
-#   Desktop-profil: ~/.hermes/profiles/<profil>/plugins/excellence-guard/
-# A HERMES_BUNDLED_PLUGINS a beépített pluginkönyvtárat CSERÉLI, ezért nem használjuk.
-PLUGIN_SRC=""
-if [ -f "$SCRIPT_DIR/excellence-guard/plugin.yaml" ]; then PLUGIN_SRC="$SCRIPT_DIR/excellence-guard"
-elif [ -f "$SCRIPT_DIR/plugin/excellence-guard/plugin.yaml" ]; then PLUGIN_SRC="$SCRIPT_DIR/plugin/excellence-guard"
-fi
+# Hermes: $HERMES_HOME/plugins/<név>/plugin.yaml, profiloknál külön HERMES_HOME.
+PLUGIN_SRC="$SCRIPT_DIR/excellence-guard"
 
 copy_plugin() {
   local dest="$1"
@@ -99,28 +95,22 @@ copy_plugin() {
   if [ -n "$OWNER" ]; then chown -R "$OWNER" "$dest"; fi
 }
 
-if [ -n "$PLUGIN_SRC" ]; then
-  copy_plugin "$PLUGIN_ROOT/excellence-guard"
-  TARGET_HOME=""
-  if [ -n "${SUDO_USER:-}" ]; then
-    TARGET_HOME=$(eval echo "~$SUDO_USER")
-  elif [ -n "$PREFIX" ]; then
-    TARGET_HOME="$PREFIX/home"
+copy_plugin "$PLUGIN_ROOT/excellence-guard"
+TARGET_HOME=""
+if [ -n "$PREFIX" ]; then
+  TARGET_HOME="$PREFIX/home"
+  mkdir -p "$TARGET_HOME"
+elif [ -n "${SUDO_USER:-}" ]; then
+  TARGET_HOME=$(python3 -c 'import pwd, sys; print(pwd.getpwnam(sys.argv[1]).pw_dir)' "$SUDO_USER")
+fi
+if [ -n "$TARGET_HOME" ] && [ -d "$TARGET_HOME" ]; then
+  copy_plugin "$TARGET_HOME/.hermes/plugins/excellence-guard"
+  if [ -d "$TARGET_HOME/.hermes/profiles" ]; then
+    for profile in "$TARGET_HOME/.hermes/profiles"/*; do
+      [ -d "$profile" ] || continue
+      copy_plugin "$profile/plugins/excellence-guard"
+    done
   fi
-  if [ -n "$TARGET_HOME" ] && [ -d "$TARGET_HOME" ]; then
-    if [ -d "$TARGET_HOME/.hermes" ] || [ -n "$PREFIX" ]; then
-      mkdir -p "$TARGET_HOME/.hermes"
-      copy_plugin "$TARGET_HOME/.hermes/plugins/excellence-guard"
-      if [ -d "$TARGET_HOME/.hermes/profiles" ]; then
-        for profile in "$TARGET_HOME/.hermes/profiles"/*; do
-          [ -d "$profile" ] || continue
-          copy_plugin "$profile/plugins/excellence-guard"
-        done
-      fi
-    fi
-  fi
-else
-  echo "FIGYELEM: a excellence-guard plugin (V1-6) nincs a csomagban. A plugins.enabled pin kész, a fájl a plugin megérkezése utáni újrafuttatáskor kerül fel." >&2
 fi
 
 echo "Gép-padló: $MANAGED"

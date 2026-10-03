@@ -57,8 +57,9 @@ function memoryFloors(): MachineFloorStore & { saved: { installId: string; manag
     set saved(v) {
       state.saved = v
     },
-    async find() {
-      return state.saved ? { installId: state.saved.installId } : null
+    async getOrCreateInstallId(input) {
+      state.saved ??= { installId: input.installId, managedDirHash: "" }
+      return state.saved.installId
     },
     async save(input) {
       state.saved = { installId: input.installId, managedDirHash: input.managedDirHash }
@@ -181,6 +182,24 @@ async function main() {
     )
     assert.equal(pkg.disabledToolsets.includes('terminal'), true)
     assert.match(pkg.files['config.yaml'], /- "terminal"/)
+  })
+
+  await check('párhuzamos első exportok ugyanazt a mentett installId-t kapják', async () => {
+    let allocated = 0
+    const floors = memoryFloors()
+    const deps = {
+      policyStore: storeFor({ 'agent-free': 'free' }),
+      listVisibleAgentIds: async () => ['agent-free'],
+      floors,
+      newInstallId: () => `inst-${++allocated}`,
+    }
+    const [first, second] = await Promise.all([
+      issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY }),
+      issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY }),
+    ])
+    assert.equal(first.installId, second.installId)
+    assert.equal(first.managedDirHash, second.managedDirHash)
+    assert.equal(await floors.expectedHash({ tenantId: T, userId: U, installId: first.installId }), first.managedDirHash)
   })
 
   await check('a gateway URL a publikus originból áll', () => {

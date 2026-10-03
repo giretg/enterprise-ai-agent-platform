@@ -2,12 +2,15 @@ import { prisma } from '@/lib/db'
 import type { MachineFloorStore } from '@/domain/client-policy/machine-floor'
 
 export class PostgresMachineFloorRepository implements MachineFloorStore {
-  async find(input: { tenantId: string; userId: string }) {
-    const row = await prisma.clientMachineFloor.findUnique({
+  async getOrCreateInstallId(input: { tenantId: string; userId: string; installId: string }) {
+    const row = await prisma.clientMachineFloor.upsert({
       where: { tenantId_userId: { tenantId: input.tenantId, userId: input.userId } },
+      create: { tenantId: input.tenantId, userId: input.userId, installId: input.installId, managedDirHash: '' },
+      // A nem üres update natív, atomi upsertet kér; az installId változatlan marad.
+      update: { userId: input.userId },
       select: { installId: true },
     })
-    return row
+    return row.installId
   }
 
   async save(input: { tenantId: string; userId: string; installId: string; managedDirHash: string }) {

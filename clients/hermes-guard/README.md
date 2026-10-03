@@ -28,13 +28,13 @@ Amit feltesz:
 |---|---|---|
 | `/etc/hermes/config.yaml`, `.env`, `excellence-install-id` | a letöltött padló | root, könyvtár 0755, fájl 0644 |
 | `/opt/excellence/bin/exc-token` | rövid életű modell-token | root, 0755 |
-| `/opt/excellence/bin/exc-guard` | shell-hook tartalék, ha a fájl már a csomagban van (V1-6) | root, 0755 |
+| `/opt/excellence/bin/exc-guard` | shell-hook tartalék (V1-6) | root, 0755 |
 
 A végén, ha a `hermes` parancs elérhető, lefut a `hermes config`. A managed kulcsokat onnan kell látni; a `hermes config set` ezekre „managed, cannot be changed” választ ad.
 
 ## Hova kerül a Guard plugin
 
-2026-10-03, a Hermes forrásából (`NousResearch/hermes-agent` main). Ezen a gépen nem volt telepített Hermes, ezért ez forrásmérés, nem élő `hermes plugins` kimenet.
+2026-10-03, a Hermes forrásából (`NousResearch/hermes-agent` main). A plugin-felderítési útvonal a forrás alapján rögzítve; a CLI managed konfigurációja a helyben telepített Hermes `6ec05205` runtime-ján, elkülönített profillal is ellenőrizve (spec §12). Desktop- és gateway-forgalmi mérés még nincs.
 
 Az általános plugin innen töltődik, ha a neve szerepel a `plugins.enabled` listában:
 
@@ -44,9 +44,9 @@ Az általános plugin innen töltődik, ha a neve szerepel a `plugins.enabled` l
 
 A `HERMES_BUNDLED_PLUGINS` a beépített pluginkönyvtárat cseréli, nem egészíti ki, ezért a telepítő nem nyúl hozzá.
 
-A telepítő a plugin-könyvtárat (ha a V1-6 már ide tette: `excellence-guard/plugin.yaml`) bemásolja a kanonikus `/opt/excellence/hermes-plugins/excellence-guard/` alá, és a sudozó user `~/.hermes` profiljaiba. A home könyvtár a useré, ezért a fájlt ki tudja törölni. A `plugins.enabled` és a `hooks.pre_tool_call` pinjét nem: azok az `/etc/hermes`-ben vannak, a `hermes config set` elutasítja. A hook `fail_closed`: ha az `exc-guard` hiányzik, timeoutol vagy hibázik, a tool nem fut le.
+A telepítő a plugin-könyvtárat (`excellence-guard/plugin.yaml`) bemásolja a kanonikus `/opt/excellence/hermes-plugins/excellence-guard/` alá, és a sudozó user `~/.hermes` profiljaiba. A home könyvtár a useré, ezért a fájlt ki tudja törölni. A `plugins.enabled` és a `hooks.pre_tool_call` pinjét nem: azok az `/etc/hermes`-ben vannak, a `hermes config set` elutasítja. A hook `fail_closed`: ha az `exc-guard` hiányzik, timeoutol vagy hibázik, a tool nem fut le.
 
-Amíg a V1-6 plugin és az `exc-guard` nincs a csomagban, a telepítő figyelmeztet. Ilyenkor ne telepítsd a laptopokra: a pinelt hook minden tool-hívást blokkolna.
+A telepítő hiányzó Guard- vagy token-segéd esetén megáll, mielőtt a padlót módosítaná. A letöltött csomag hash-ét és kötelező mezőit ellenőrzi; hibás csomag nem írja felül a meglévő beállításokat. Új Desktop-profil létrehozása után futtasd újra, hogy a Guard abba a profilba is bekerüljön.
 
 ## Átállás: a laptopokon tárolt kulcsok
 
