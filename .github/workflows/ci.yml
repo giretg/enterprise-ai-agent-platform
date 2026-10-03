@@ -106,6 +106,7 @@ jobs:
           npm run test:web-discovery
           npm run test:iam-tenant-boundary
           npm run test:iam-membership-scope
+          npm run test:platform-registration-approve
 
   migrations:
     name: Prisma migrate deploy (ephemeral Postgres)

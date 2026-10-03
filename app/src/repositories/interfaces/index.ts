@@ -430,6 +430,14 @@ export interface UserRepository {
       name: string
     }>,
   ): Promise<User>
+  /**
+   * CAS: only a pending self-registration (`status=pending` + `role=null`) may be
+   * activated. Returns null when another approver already claimed the row.
+   */
+  activatePendingPlatformRegistration(
+    id: string,
+    data: { role: UserRole; activatedAt: Date; invitedById: string },
+  ): Promise<User | null>
   upsertByExternalAuthId(params: {
     externalAuthId: string
     create: {

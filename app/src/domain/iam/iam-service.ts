@@ -499,7 +499,14 @@ export class IamService {
     return this.withMembershipView(updated, params.role, 'active', params.actorTenantId)
   }
 
-  /** Platform-superadmin approval for self-registered users without a tenant. */
+  /**
+   * Platform-superadmin approval for self-registered users without a tenant.
+   *
+   * Order matters: activate the User with a CAS first, then attach membership.
+   * Writing an active membership while the user is still `pending` used to open a
+   * tenant session (auth trusts membership, not User.status) — including a lasting
+   * bypass if the subsequent user update failed.
+   */
   async approvePlatformRegistration(params: {
     targetUserId: string
     tenantId: string
@@ -514,18 +521,21 @@ export class IamService {
     if (!this.memberships) throw new Error('tenant membership repository unavailable')
 
     const activatedAt = new Date()
+    const updated = await this.users.activatePendingPlatformRegistration(target.id, {
+      role: params.role,
+      activatedAt,
+      invitedById: params.actorId,
+    })
+    if (!updated) {
+      throw new Error('user: not pending platform registration')
+    }
+
     await this.memberships.upsert({
       tenantId: params.tenantId,
       userId: target.id,
       role: params.role,
       status: 'active',
       isDefault: true,
-      invitedById: params.actorId,
-    })
-    const updated = await this.users.update(target.id, {
-      role: params.role,
-      status: 'active',
-      activatedAt,
       invitedById: params.actorId,
     })
 
