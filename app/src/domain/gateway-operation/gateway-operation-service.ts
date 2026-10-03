@@ -46,6 +46,7 @@ import type {
   GatewayOperationStore,
   GatewayOperationView,
 } from './types'
+import type { DesignatedApproverResolution } from './designated-approver'
 import { computeDiffHash } from '@/lib/crypto/hash-chain'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
@@ -79,12 +80,16 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     tenantId: string
     userId: string
   }) => Promise<{ role: string; assumed: boolean } | null>
-  /** #663: konnektor > agent sorrendben a megnevezett jóváhagyó; null = általános sor. */
+  /**
+   * #663: konnektor > agent sorrendben a megnevezett jóváhagyó.
+   * `none` = általános sor; `unavailable` = binding van, de a user inaktív/hiányzik
+   * (fail-closed — ne essünk vissza nyitott jóváhagyásra).
+   */
   resolveDesignatedApprover?: (input: {
     tenantId: string
     agentId: string
     connectorId: string | null
-  }) => Promise<{ userId: string; name: string } | null>
+  }) => Promise<DesignatedApproverResolution>
   executeDriveTool?: (
     toolName: string,
     args: Record<string, unknown>,
@@ -123,6 +128,8 @@ const MESSAGES: Record<string, string> = {
   operation_not_awaiting_approval: 'Gateway operation is not awaiting approval',
   approval_already_decided: 'Gateway operation has already been decided',
   approver_not_authorized: 'Approver is not authorized',
+  approver_unavailable:
+    'The designated approver is inactive or missing — ask an admin to assign an active approver, then retry',
   drive_write_not_allowed: 'Google Drive write is not allowed for the selected files',
 }
 
@@ -516,11 +523,16 @@ export async function enqueueGatewayOperation(
   }
 
   const idempotencyKey = String(authorized.parsedArgs.idempotencyKey)
-  const designated = await deps.resolveDesignatedApprover?.({
+  const designatedResolution = await deps.resolveDesignatedApprover?.({
     tenantId: principal.tenantId,
     agentId: authorized.definition.agentId,
     connectorId: authorized.connectorId,
   })
+  if (designatedResolution?.kind === 'unavailable') return err('approver_unavailable')
+  const designated =
+    designatedResolution?.kind === 'designated'
+      ? { userId: designatedResolution.userId, name: designatedResolution.name }
+      : null
   const existing = await deps.operations.findByTenantAndIdempotencyKey(
     principal.tenantId,
     idempotencyKey,
